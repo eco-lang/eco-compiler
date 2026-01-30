@@ -130,6 +130,8 @@ MONO_015;Monomorphization;Accessors;enforced;When an accessor like .name with ca
 
 MONO_016;Monomorphization;Closures;enforced;For every MonoClosure whose MonoType is an MFunction the length of closureInfo.params equals the length of the outermost MFunction argument list of its monoType (i.e. stage arity). Simple directly-nested lambda chains are uncurried into a single flat MFunction stage while lambdas separated by let or case preserve nested MFunction structure with each stage closure matching its outermost arg count;Compiler.Generate.Monomorphize.Specialize|Compiler.Generate.Monomorphize.Closure
 
+MONO_017;Monomorphization;Registry;enforced;For every SpecId in SpecializationRegistry.reverseMapping with value (global monoType maybeLambda) there exists a MonoNode at graph.nodes[specId] and monoType equals the nodeType of that node ensuring registry keys match actual node types;Compiler.Generate.Monomorphize
+
 
 # =============================================================================
 # MLIR CODEGEN PHASE - Generate MLIR from monomorphized IR

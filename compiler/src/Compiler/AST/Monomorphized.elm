@@ -2,8 +2,8 @@ module Compiler.AST.Monomorphized exposing
     ( MonoType(..), Literal(..), Constraint(..)
     , CtorShape
     , LambdaId(..)
-    , Global(..), SpecKey(..), SpecId, SpecializationRegistry, emptyRegistry, getOrCreateSpecId, lookupSpecKey
-    , MonoGraph(..), MainInfo(..), MonoNode(..)
+    , Global(..), SpecKey(..), SpecId, SpecializationRegistry, emptyRegistry, getOrCreateSpecId, updateRegistryType, lookupSpecKey
+    , MonoGraph(..), MainInfo(..), MonoNode(..), nodeType
     , MonoExpr(..), ClosureInfo, MonoDef(..), MonoDestructor(..), MonoPath(..)
     , Decider(..), MonoChoice(..)
     , ContainerKind(..)
@@ -274,6 +274,27 @@ getOrCreateSpecId global monoType maybeLambda registry =
             )
 
 
+{-| Update the MonoType stored in reverseMapping for a given SpecId.
+
+This is called after specializeNode to ensure the registry stores the actual
+node type rather than the requested type. This is necessary because the actual
+type may differ (e.g., flattened MFunction vs nested MFunction) due to
+closure transformations.
+
+-}
+updateRegistryType : SpecId -> MonoType -> SpecializationRegistry -> SpecializationRegistry
+updateRegistryType specId actualType registry =
+    case Dict.get identity specId registry.reverseMapping of
+        Nothing ->
+            registry
+
+        Just ( global, _, maybeLambda ) ->
+            { registry
+                | reverseMapping =
+                    Dict.insert identity specId ( global, actualType, maybeLambda ) registry.reverseMapping
+            }
+
+
 {-| Look up the specialization information for a given SpecId.
 -}
 lookupSpecKey : SpecId -> SpecializationRegistry -> Maybe ( Global, MonoType, Maybe LambdaId )
@@ -351,6 +372,36 @@ type MonoNode
 -- ============================================================================
 -- ====== MONO EXPRESSIONS ======
 -- ============================================================================
+
+
+{-| Extract the MonoType from any MonoNode variant.
+-}
+nodeType : MonoNode -> MonoType
+nodeType node =
+    case node of
+        MonoDefine _ t ->
+            t
+
+        MonoTailFunc _ _ t ->
+            t
+
+        MonoCtor _ t ->
+            t
+
+        MonoEnum _ t ->
+            t
+
+        MonoExtern t ->
+            t
+
+        MonoPortIncoming _ t ->
+            t
+
+        MonoPortOutgoing _ t ->
+            t
+
+        MonoCycle _ t ->
+            t
 
 
 {-| A monomorphized expression with concrete types and explicit closures.

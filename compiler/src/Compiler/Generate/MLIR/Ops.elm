@@ -25,6 +25,7 @@ module Compiler.Generate.MLIR.Ops exposing
     , ecoCallNamed
     , ecoReturn
     , ecoYield
+    , ecoYieldMany
     , ecoStringLiteral
     , arithConstantInt
     , arithConstantInt32
@@ -35,11 +36,14 @@ module Compiler.Generate.MLIR.Ops exposing
     , ecoUnaryOp
     , ecoBinaryOp
     , ecoCase
+    , ecoCaseMany
     , ecoCaseString
+    , ecoCaseStringMany
     , ecoJoinpoint
     , ecoGetTag
     , scfIf
     , scfYield
+    , scfYieldMany
     , scfWhile
     , scfCondition
     , cfCondBr
@@ -505,12 +509,23 @@ ecoReturn ctx operand operandType =
 -}
 ecoYield : Ctx.Context -> String -> MlirType -> ( Ctx.Context, MlirOp )
 ecoYield ctx operand operandType =
+    ecoYieldMany ctx [ ( operand, operandType ) ]
+
+
+{-| eco.yield with multiple operands - yield values from an eco.case alternative region.
+The \_operand\_types attribute must exactly match the operand count (including empty list for 0 operands).
+-}
+ecoYieldMany : Ctx.Context -> List ( String, MlirType ) -> ( Ctx.Context, MlirOp )
+ecoYieldMany ctx operands =
     let
+        ( names, types ) =
+            List.unzip operands
+
         attrs =
-            Dict.singleton "_operand_types" (ArrayAttr Nothing [ TypeAttr operandType ])
+            Dict.singleton "_operand_types" (ArrayAttr Nothing (List.map TypeAttr types))
     in
     mlirOp ctx "eco.yield"
-        |> opBuilder.withOperands [ operand ]
+        |> opBuilder.withOperands names
         |> opBuilder.withAttrs attrs
         |> opBuilder.isTerminator True
         |> opBuilder.build
@@ -752,20 +767,7 @@ Each alternative region must terminate with eco.yield.
 -}
 ecoCase : Ctx.Context -> String -> String -> MlirType -> String -> List Int -> List MlirRegion -> MlirType -> ( Ctx.Context, MlirOp )
 ecoCase ctx resultVar scrutinee scrutineeType caseKind tags regions resultType =
-    let
-        attrs =
-            Dict.fromList
-                [ ( "_operand_types", ArrayAttr Nothing [ TypeAttr scrutineeType ] )
-                , ( "tags", ArrayAttr (Just I64) (List.map (\t -> IntAttr Nothing t) tags) )
-                , ( "case_kind", StringAttr caseKind )
-                ]
-    in
-    mlirOp ctx "eco.case"
-        |> opBuilder.withOperands [ scrutinee ]
-        |> opBuilder.withResults [ ( resultVar, resultType ) ]
-        |> opBuilder.withRegions regions
-        |> opBuilder.withAttrs attrs
-        |> opBuilder.build
+    ecoCaseMany ctx scrutinee scrutineeType caseKind tags regions [ ( resultVar, resultType ) ]
 
 
 {-| eco.case for string pattern matching.
@@ -781,6 +783,52 @@ Each alternative region must terminate with eco.yield.
 -}
 ecoCaseString : Ctx.Context -> String -> String -> MlirType -> List Int -> List String -> List MlirRegion -> MlirType -> ( Ctx.Context, MlirOp )
 ecoCaseString ctx resultVar scrutinee scrutineeType tags stringPatterns regions resultType =
+    ecoCaseStringMany ctx scrutinee scrutineeType tags stringPatterns regions [ ( resultVar, resultType ) ]
+
+
+{-| eco.case with multiple results - for TailRec step compilation.
+
+Takes scrutinee SSA name, scrutinee type, case kind, list of tags,
+list of regions (one per alternative), and list of result (name, type) pairs.
+Emits an eco.case operation that produces multiple SSA values.
+
+eco.case is NOT a terminator - it's a value-producing expression.
+Each alternative region must terminate with eco.yieldMany yielding values
+matching the result types in order.
+
+-}
+ecoCaseMany : Ctx.Context -> String -> MlirType -> String -> List Int -> List MlirRegion -> List ( String, MlirType ) -> ( Ctx.Context, MlirOp )
+ecoCaseMany ctx scrutinee scrutineeType caseKind tags regions results =
+    let
+        attrs =
+            Dict.fromList
+                [ ( "_operand_types", ArrayAttr Nothing [ TypeAttr scrutineeType ] )
+                , ( "tags", ArrayAttr (Just I64) (List.map (\t -> IntAttr Nothing t) tags) )
+                , ( "case_kind", StringAttr caseKind )
+                ]
+    in
+    mlirOp ctx "eco.case"
+        |> opBuilder.withOperands [ scrutinee ]
+        |> opBuilder.withResults results
+        |> opBuilder.withRegions regions
+        |> opBuilder.withAttrs attrs
+        |> opBuilder.build
+
+
+{-| eco.case for string pattern matching with multiple results.
+
+Takes scrutinee SSA name, scrutinee type, list of tags (positional indices),
+list of string patterns (N-1 for N alternatives, last is default),
+list of regions (one per alternative), and list of result (name, type) pairs.
+Emits an eco.case operation with string_patterns attribute.
+
+eco.case is NOT a terminator - it's a value-producing expression.
+Each alternative region must terminate with eco.yieldMany yielding values
+matching the result types in order.
+
+-}
+ecoCaseStringMany : Ctx.Context -> String -> MlirType -> List Int -> List String -> List MlirRegion -> List ( String, MlirType ) -> ( Ctx.Context, MlirOp )
+ecoCaseStringMany ctx scrutinee scrutineeType tags stringPatterns regions results =
     let
         attrs =
             Dict.fromList
@@ -792,7 +840,7 @@ ecoCaseString ctx resultVar scrutinee scrutineeType tags stringPatterns regions 
     in
     mlirOp ctx "eco.case"
         |> opBuilder.withOperands [ scrutinee ]
-        |> opBuilder.withResults [ ( resultVar, resultType ) ]
+        |> opBuilder.withResults results
         |> opBuilder.withRegions regions
         |> opBuilder.withAttrs attrs
         |> opBuilder.build
@@ -868,12 +916,23 @@ scfIf ctx condVar resultVar thenRegion elseRegion resultType =
 -}
 scfYield : Ctx.Context -> String -> MlirType -> ( Ctx.Context, MlirOp )
 scfYield ctx operand operandType =
+    scfYieldMany ctx [ ( operand, operandType ) ]
+
+
+{-| scf.yield with multiple operands - terminator for scf.if/scf.while regions.
+The \_operand\_types attribute must exactly match the operand count (including empty list for 0 operands).
+-}
+scfYieldMany : Ctx.Context -> List ( String, MlirType ) -> ( Ctx.Context, MlirOp )
+scfYieldMany ctx operands =
     let
+        ( names, types ) =
+            List.unzip operands
+
         attrs =
-            Dict.singleton "_operand_types" (ArrayAttr Nothing [ TypeAttr operandType ])
+            Dict.singleton "_operand_types" (ArrayAttr Nothing (List.map TypeAttr types))
     in
     mlirOp ctx "scf.yield"
-        |> opBuilder.withOperands [ operand ]
+        |> opBuilder.withOperands names
         |> opBuilder.withAttrs attrs
         |> opBuilder.isTerminator True
         |> opBuilder.build

@@ -339,9 +339,18 @@ processWorklist state =
                                     ( monoNode, stateAfter ) =
                                         Specialize.specializeNode name toptNode monoType state2
 
+                                    -- Update registry with actual node type (may differ from requested type
+                                    -- due to closure flattening, e.g., Int -> Int -> Int vs (Int, Int) -> Int)
+                                    actualType =
+                                        Mono.nodeType monoNode
+
+                                    updatedRegistry =
+                                        Mono.updateRegistryType specId actualType stateAfter.registry
+
                                     newState =
                                         { stateAfter
-                                            | nodes = Dict.insert identity specId monoNode stateAfter.nodes
+                                            | registry = updatedRegistry
+                                            , nodes = Dict.insert identity specId monoNode stateAfter.nodes
                                             , inProgress = EverySet.remove identity specId stateAfter.inProgress
                                             , currentGlobal = Nothing
                                         }

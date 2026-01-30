@@ -22,6 +22,7 @@ import Compiler.Generate.MLIR.Context as Ctx
 import Compiler.Generate.MLIR.Expr as Expr
 import Compiler.Generate.MLIR.Names as Names
 import Compiler.Generate.MLIR.Ops as Ops
+import Compiler.Generate.MLIR.TailRec as TailRec
 import Compiler.Generate.MLIR.Types as Types
 import Dict
 import Mlir.Loc
@@ -273,23 +274,15 @@ generateClosureFunc ctx funcName closureInfo body monoType =
 generateTailFunc : Ctx.Context -> String -> List ( Name.Name, Mono.MonoType ) -> Mono.MonoExpr -> Mono.MonoType -> ( MlirOp, Ctx.Context )
 generateTailFunc ctx funcName params expr monoType =
     let
-        -- Function parameters use anonymous names (%arg0, %arg1, ...) to avoid
-        -- collision with joinpoint parameters that the body actually references.
+        -- Function parameters use the original names (%n, %acc, ...) that
+        -- the body expression expects.
         funcArgPairs : List ( String, MlirType )
         funcArgPairs =
-            List.indexedMap
-                (\i ( _, ty ) -> ( "%arg" ++ String.fromInt i, Types.monoTypeToAbi ty ))
-                params
-
-        -- Joinpoint parameters use the original names (%n, %acc, ...) that
-        -- the body expression expects.
-        jpArgPairs : List ( String, MlirType )
-        jpArgPairs =
             List.map
                 (\( name, ty ) -> ( "%" ++ name, Types.monoTypeToAbi ty ))
                 params
 
-        -- Create fresh varMappings with only joinpoint parameters
+        -- Create fresh varMappings with function parameters
         -- Parameters are plain values, no call model.
         freshVarMappings : Dict.Dict String Ctx.VarInfo
         freshVarMappings =
@@ -323,53 +316,37 @@ generateTailFunc ctx funcName params expr monoType =
         retTy =
             Types.monoTypeToAbi actualReturnType
 
-        -- Generate multi-block joinpoint body for tail-recursive if-then-else
-        ( jpBodyRegion, ctx1 ) =
-            generateTailRecursiveBody ctxWithArgs expr retTy
+        -- Use TailRec to compile the function body to scf.while
+        ( bodyOps, ctx1 ) =
+            TailRec.compileTailFuncToWhile ctxWithArgs funcName funcArgPairs expr retTy
 
-        -- Continuation region: required by joinpoint semantics but never reached
-        -- for pure tail-recursive functions. Create a dummy return.
-        ( dummyOps, dummyVar, ctx2 ) =
-            Expr.createDummyValue ctx1 retTy
+        -- The body ops include init ops, scf.while, and eco.return
+        -- We need to separate the non-terminator ops from the terminator
+        ( bodyNonTermOps, bodyTerminator ) =
+            case List.reverse bodyOps of
+                term :: rest ->
+                    ( List.reverse rest, term )
 
-        ( ctx3, dummyRetOp ) =
-            Ops.ecoReturn ctx2 dummyVar retTy
+                [] ->
+                    -- This shouldn't happen - compileTailFuncToWhile always returns at least the return op
+                    let
+                        ( dummyOps, dummyVar, ctxDummy ) =
+                            Expr.createDummyValue ctx1 retTy
 
-        contRegion : MlirRegion
-        contRegion =
-            Ops.mkRegion [] dummyOps dummyRetOp
+                        ( _, dummyRetOp ) =
+                            Ops.ecoReturn ctxDummy dummyVar retTy
+                    in
+                    ( dummyOps, dummyRetOp )
 
-        -- Create the joinpoint (ID 0) with named params that body expects
-        ( ctx4, jpOp ) =
-            Ops.ecoJoinpoint ctx3 0 jpArgPairs jpBodyRegion contRegion [ retTy ]
-
-        -- Initial jump to enter the joinpoint, passing function args
-        argTypes : List MlirType
-        argTypes =
-            List.map Tuple.second funcArgPairs
-
-        initialJumpAttrs =
-            Dict.fromList
-                [ ( "_operand_types", ArrayAttr Nothing (List.map TypeAttr argTypes) )
-                , ( "target", IntAttr Nothing 0 )
-                ]
-
-        ( ctx5, initialJumpOp ) =
-            Ops.mlirOp ctx4 "eco.jump"
-                |> Ops.opBuilder.withOperands (List.map Tuple.first funcArgPairs)
-                |> Ops.opBuilder.withAttrs initialJumpAttrs
-                |> Ops.opBuilder.isTerminator True
-                |> Ops.opBuilder.build
-
-        -- Function body: joinpoint definition + initial jump
+        -- Function body region
         funcBodyRegion : MlirRegion
         funcBodyRegion =
-            Ops.mkRegion funcArgPairs [ jpOp ] initialJumpOp
+            Ops.mkRegion funcArgPairs bodyNonTermOps bodyTerminator
 
-        ( ctx6, funcOp ) =
-            Ops.funcFunc ctx5 funcName funcArgPairs retTy funcBodyRegion
+        ( ctx2, funcOp ) =
+            Ops.funcFunc ctx1 funcName funcArgPairs retTy funcBodyRegion
     in
-    ( funcOp, ctx6 )
+    ( funcOp, ctx2 )
 
 
 {-| Generate a multi-block region for a tail-recursive function body.

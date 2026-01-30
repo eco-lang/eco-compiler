@@ -692,8 +692,13 @@ specializeFuncDefInCycle subst def state =
 
                 ( monoExpr, state2 ) =
                     Closure.ensureCallableTopLevel monoExpr0 monoType state1
+
+                -- Use the actual type from the expression after ensureCallableTopLevel
+                -- to ensure consistency between the node type and its contained closure type
+                actualType =
+                    Mono.typeOf monoExpr
             in
-            ( Mono.MonoDefine monoExpr monoType, state2 )
+            ( Mono.MonoDefine monoExpr actualType, state2 )
 
         TOpt.TailDef _ _ args body returnType ->
             let

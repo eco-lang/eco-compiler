@@ -598,6 +598,21 @@ inputs: Monomorphized wrappers for higher-order functions; functions returning f
 oracle: No MonoCall passes more arguments than its callee type accepts; nested calls respect curried structure.
 tests: compiler/tests/Compiler/Generate/Monomorphize/WrapperCurriedCallsTest.elm
 --
+--
+name: Registry type matches node type
+phase: monomorphization
+invariants: MONO_017
+ir: MonoGraph (nodes + registry)
+logic: For each entry in registry.reverseMapping:
+  * Get (specId -> (global, regMonoType, maybeLambda))
+  * Look up node at graph.nodes[specId]
+  * If node not found: violation (orphan registry entry)
+  * Otherwise: assert regMonoType == nodeType(node)
+  * nodeType extracts the MonoType from any MonoNode variant
+inputs: Monomorphized graphs
+oracle: Every registry entry's MonoType matches the corresponding node's type.
+tests: compiler/tests/Compiler/Generate/Monomorphize/RegistryNodeTypeConsistencyTest.elm
+--
 
 ---
 

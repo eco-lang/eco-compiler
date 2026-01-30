@@ -1,0 +1,710 @@
+module Compiler.Generate.MLIR.TailRec exposing (compileTailFuncToWhile)
+
+{-| SCF-based tail-recursion compilation.
+
+This module compiles self-tail-recursive functions to scf.while loops.
+It replaces the joinpoint+eco.jump pattern with direct loop emission.
+
+The key insight is that a tail-recursive function can be compiled to:
+
+    scf.while (%params..., %done, %result) : (...) -> (...) {
+        // before-region: check if done
+        %continue = arith.xori %done, true
+        scf.condition(%continue) %params..., %done, %result
+    } do {
+        // after-region: compute next state via eco.case
+        %next_params..., %next_done, %next_result = eco.case ... { eco.yield ... }
+        scf.yield %next_params..., %next_done, %next_result
+    }
+
+@docs compileTailFuncToWhile
+
+-}
+
+import Compiler.AST.Monomorphized as Mono
+import Compiler.Data.Name as Name
+import Compiler.Generate.MLIR.Context as Ctx
+import Compiler.Generate.MLIR.Expr as Expr
+import Compiler.Generate.MLIR.Intrinsics as Intrinsics
+import Compiler.Generate.MLIR.Ops as Ops
+import Compiler.Generate.MLIR.Types as Types
+import Dict
+import Mlir.Mlir as Mlir exposing (MlirAttr(..), MlirOp, MlirRegion(..), MlirType(..), Visibility(..))
+import OrderedDict
+
+
+
+-- ============================================================================
+-- ====== TYPES ======
+-- ============================================================================
+
+
+{-| Specification of the loop being compiled.
+Contains information needed to compile step expressions.
+-}
+type alias LoopSpec =
+    { funcName : String
+    , paramVars : List ( String, MlirType ) -- SSA vars for params (scf.while after-region block args)
+    , retType : MlirType
+    }
+
+
+{-| Result of compiling a single step of the loop body.
+-}
+type alias StepResult =
+    { ops : List MlirOp
+    , nextParams : List ( String, MlirType ) -- SSA vars for next iteration
+    , doneVar : String -- i1: true = done, false = continue
+    , resultVar : String -- result when done
+    , resultType : MlirType -- type of resultVar
+    , ctx : Ctx.Context
+    }
+
+
+
+-- ============================================================================
+-- ====== MAIN ENTRY POINT ======
+-- ============================================================================
+
+
+{-| Compile a tail-recursive function body to an scf.while loop.
+
+Returns the ops for the function body (init-ops + scf.while + eco.return).
+
+-}
+compileTailFuncToWhile :
+    Ctx.Context
+    -> String -- func name
+    -> List ( String, MlirType ) -- function args (already in context)
+    -> Mono.MonoExpr -- body expression
+    -> MlirType -- return type
+    -> ( List MlirOp, Ctx.Context )
+compileTailFuncToWhile ctx funcName paramPairs body retTy =
+    let
+        -- Step 1: Define initial state
+        -- Loop state = (p1..pn, done, result) where done starts as false
+        -- and result starts as a dummy value
+        ( doneInitVar, ctx1 ) =
+            Ctx.freshVar ctx
+
+        ( ctx2, doneInitOp ) =
+            Ops.arithConstantBool ctx1 doneInitVar False
+
+        ( resInitOps, resInitVar, ctx3 ) =
+            Expr.createDummyValue ctx2 retTy
+
+        initOps =
+            doneInitOp :: resInitOps
+
+        -- Step 2: Collect initial values for loop state
+        -- Order: params..., done, result
+        paramInitVars =
+            List.map Tuple.first paramPairs
+
+        paramTypes =
+            List.map Tuple.second paramPairs
+
+        -- State types: (paramTypes..., i1, retTy)
+        stateTypes =
+            paramTypes ++ [ I1, retTy ]
+
+        initVars =
+            paramInitVars ++ [ doneInitVar, resInitVar ]
+
+        -- Step 3: Allocate fresh SSA names for scf.while results
+        ( resultVars, ctx4 ) =
+            allocateFreshVars ctx3 (List.length stateTypes)
+
+        -- Build triples for scf.while: (resultVar, initVar, type)
+        triples =
+            List.map3 (\r i t -> ( r, i, t )) resultVars initVars stateTypes
+
+        -- Step 4: Build before-region (condition check)
+        ( beforeRegion, beforeArgs, ctx5 ) =
+            buildBeforeRegion ctx4 stateTypes
+
+        -- Step 5: Build after-region (loop body)
+        loopSpec =
+            { funcName = funcName
+            , paramVars =
+                -- The after-region block args for params (first n args)
+                List.take (List.length paramPairs) (zip beforeArgs stateTypes)
+            , retType = retTy
+            }
+
+        -- Original parameter pairs (e.g., [("%acc", I64), ("%n", I64)])
+        -- These are needed to set up variable mappings in the after-region
+        originalParamPairs =
+            paramPairs
+
+        ( afterRegion, ctx6 ) =
+            buildAfterRegion ctx5 stateTypes loopSpec body originalParamPairs
+
+        -- Step 6: Emit scf.while
+        ( ctx7, whileOp ) =
+            Ops.scfWhile ctx6 triples beforeRegion afterRegion
+
+        -- Step 7: Return the result (last element of scf.while results)
+        resFinalVar =
+            List.drop (List.length stateTypes - 1) resultVars
+                |> List.head
+                |> Maybe.withDefault "%error_no_result"
+
+        ( ctx8, returnOp ) =
+            Ops.ecoReturn ctx7 resFinalVar retTy
+    in
+    ( initOps ++ [ whileOp, returnOp ], ctx8 )
+
+
+
+-- ============================================================================
+-- ====== BEFORE REGION (CONDITION) ======
+-- ============================================================================
+
+
+{-| Build the before-region for scf.while.
+
+The before-region checks if we should continue looping:
+%continue = arith.xori %done, true : i1
+scf.condition(%continue) %params..., %done, %result
+
+-}
+buildBeforeRegion :
+    Ctx.Context
+    -> List MlirType
+    -> ( MlirRegion, List String, Ctx.Context )
+buildBeforeRegion ctx stateTypes =
+    let
+        numParams =
+            List.length stateTypes - 2
+
+        -- Allocate block args
+        ( blockArgs, ctx1 ) =
+            allocateFreshVars ctx (List.length stateTypes)
+
+        blockArgPairs =
+            zip blockArgs stateTypes
+
+        -- done is at index numParams (second-to-last)
+        doneArg =
+            List.drop numParams blockArgs
+                |> List.head
+                |> Maybe.withDefault "%error_no_done"
+
+        -- Compute continue = xor(done, true)
+        ( continueVar, ctx2 ) =
+            Ctx.freshVar ctx1
+
+        ( trueVar, ctx3 ) =
+            Ctx.freshVar ctx2
+
+        ( ctx4, trueOp ) =
+            Ops.arithConstantBool ctx3 trueVar True
+
+        ( ctx5, xorOp ) =
+            Ops.ecoBinaryOp ctx4 "arith.xori" continueVar ( doneArg, I1 ) ( trueVar, I1 ) I1
+
+        -- scf.condition
+        ( ctx6, conditionOp ) =
+            Ops.scfCondition ctx5 continueVar blockArgPairs
+
+        region =
+            mkSingleBlockRegion blockArgPairs [ trueOp, xorOp ] conditionOp
+    in
+    ( region, blockArgs, ctx6 )
+
+
+
+-- ============================================================================
+-- ====== AFTER REGION (LOOP BODY) ======
+-- ============================================================================
+
+
+{-| Build the after-region for scf.while.
+
+The after-region computes the next loop state by compiling the body expression.
+
+-}
+buildAfterRegion :
+    Ctx.Context
+    -> List MlirType
+    -> LoopSpec
+    -> Mono.MonoExpr
+    -> List ( String, MlirType ) -- original parameter pairs (e.g., [("%acc", I64)])
+    -> ( MlirRegion, Ctx.Context )
+buildAfterRegion ctx stateTypes loopSpec body originalParamPairs =
+    let
+        -- Allocate block args
+        ( blockArgs, ctx1 ) =
+            allocateFreshVars ctx (List.length stateTypes)
+
+        blockArgPairs =
+            zip blockArgs stateTypes
+
+        -- Set up context with block args as variables
+        numParams =
+            List.length loopSpec.paramVars
+
+        -- The new block args for parameters (first numParams items)
+        newParamBlockArgs =
+            List.take numParams blockArgPairs
+
+        -- Update loopSpec to use actual after-region block args
+        updatedLoopSpec =
+            { loopSpec | paramVars = newParamBlockArgs }
+
+        -- Set up variable mappings for the block args
+        -- Map original Elm names to new block argument SSA names
+        ctxWithArgs =
+            setupVarMappings ctx1 originalParamPairs newParamBlockArgs
+
+        -- Compile the step
+        stepResult =
+            compileStep ctxWithArgs updatedLoopSpec body
+
+        -- Build scf.yield with (nextParams..., done, result)
+        -- Use actual types from stepResult
+        yieldOperands =
+            stepResult.nextParams ++ [ ( stepResult.doneVar, I1 ), ( stepResult.resultVar, stepResult.resultType ) ]
+
+        ( ctx2, yieldOp ) =
+            Ops.scfYieldMany stepResult.ctx yieldOperands
+
+        region =
+            mkSingleBlockRegion blockArgPairs stepResult.ops yieldOp
+    in
+    ( region, ctx2 )
+
+
+{-| Set up variable mappings so that parameter names in the body can be resolved.
+
+Takes the original parameter pairs (with SSA names like "%acc") and the new block
+argument pairs (with fresh SSA names like "%v5"), and updates the context's
+varMappings so that references to the original names resolve to the new block args.
+
+-}
+setupVarMappings : Ctx.Context -> List ( String, MlirType ) -> List ( String, MlirType ) -> Ctx.Context
+setupVarMappings ctx originalParamPairs newBlockArgPairs =
+    -- Zip the original and new pairs together, then update varMappings
+    List.foldl
+        (\( ( origSsaName, origType ), ( newSsaName, newType ) ) accCtx ->
+            -- Extract the Elm name by stripping the "%" prefix from the original SSA name
+            let
+                elmName =
+                    String.dropLeft 1 origSsaName
+            in
+            -- Update the mapping: elmName -> newSsaName with the new type
+            Ctx.addVarMapping elmName newSsaName newType Nothing accCtx
+        )
+        ctx
+        (zip originalParamPairs newBlockArgPairs)
+
+
+
+-- ============================================================================
+-- ====== STEP COMPILATION ======
+-- ============================================================================
+
+
+{-| Compile a single step of the loop body.
+
+This is the main dispatcher that handles different expression types:
+
+  - MonoTailCall -> continue looping with new args
+  - MonoCase -> multi-result eco.case for step computation
+  - MonoIf -> treat as 2-way case
+  - Other -> base case return (done=true)
+
+-}
+compileStep : Ctx.Context -> LoopSpec -> Mono.MonoExpr -> StepResult
+compileStep ctx loopSpec expr =
+    case expr of
+        Mono.MonoTailCall _ args _ ->
+            -- Inside a MonoTailFunc, MonoTailCall is always a self-recursive call
+            -- (the IR structure guarantees this - MonoTailCall only appears in
+            -- MonoTailFunc bodies and always refers back to the enclosing function)
+            compileTailCallStep ctx loopSpec args
+
+        Mono.MonoCase scrutinee1 scrutinee2 decider jumps resultType ->
+            -- Case expression -> multi-result eco.case
+            compileCaseStep ctx loopSpec scrutinee1 scrutinee2 decider jumps resultType
+
+        Mono.MonoIf branches final resultType ->
+            -- If expression -> treat as multi-way case
+            compileIfStep ctx loopSpec branches final resultType
+
+        Mono.MonoLet def body _ ->
+            -- Let expression -> compile def, then recurse on body
+            compileLetStep ctx loopSpec def body
+
+        _ ->
+            -- All other expressions -> base return (done=true)
+            compileBaseReturnStep ctx loopSpec expr
+
+
+-- ============================================================================
+-- ====== TAIL CALL STEP ======
+-- ============================================================================
+
+
+{-| Compile a MonoTailCall as a "continue" step.
+
+Sets done=false and evaluates new argument values.
+
+-}
+compileTailCallStep :
+    Ctx.Context
+    -> LoopSpec
+    -> List ( Name.Name, Mono.MonoExpr )
+    -> StepResult
+compileTailCallStep ctx loopSpec args =
+    let
+        -- Evaluate each argument expression
+        ( argOps, argVars, ctx1 ) =
+            List.foldl
+                (\( _, argExpr ) ( opsAcc, varsAcc, ctxAcc ) ->
+                    let
+                        argResult =
+                            Expr.generateExpr ctxAcc argExpr
+                    in
+                    ( opsAcc ++ argResult.ops
+                    , varsAcc ++ [ ( argResult.resultVar, argResult.resultType ) ]
+                    , argResult.ctx
+                    )
+                )
+                ( [], [], ctx )
+                args
+
+        -- done = false (continue looping)
+        ( doneVar, ctx2 ) =
+            Ctx.freshVar ctx1
+
+        ( ctx3, doneOp ) =
+            Ops.arithConstantBool ctx2 doneVar False
+
+        -- result = dummy (not used when continuing)
+        ( dummyOps, dummyVar, ctx4 ) =
+            Expr.createDummyValue ctx3 loopSpec.retType
+    in
+    { ops = argOps ++ [ doneOp ] ++ dummyOps
+    , nextParams = argVars
+    , doneVar = doneVar
+    , resultVar = dummyVar
+    , resultType = loopSpec.retType
+    , ctx = ctx4
+    }
+
+
+
+-- ============================================================================
+-- ====== BASE RETURN STEP ======
+-- ============================================================================
+
+
+{-| Compile a non-tail expression as a "done" step.
+
+Sets done=true and evaluates the expression as the result.
+
+-}
+compileBaseReturnStep :
+    Ctx.Context
+    -> LoopSpec
+    -> Mono.MonoExpr
+    -> StepResult
+compileBaseReturnStep ctx loopSpec expr =
+    let
+        -- Evaluate the expression
+        exprResult =
+            Expr.generateExpr ctx expr
+
+        -- done = true (exit loop)
+        ( doneVar, ctx1 ) =
+            Ctx.freshVar exprResult.ctx
+
+        ( ctx2, doneOp ) =
+            Ops.arithConstantBool ctx1 doneVar True
+
+        -- nextParams = unchanged (use current loopSpec.paramVars)
+        -- These are the block args, passed through unchanged
+        nextParams =
+            loopSpec.paramVars
+    in
+    { ops = exprResult.ops ++ [ doneOp ]
+    , nextParams = nextParams
+    , doneVar = doneVar
+    , resultVar = exprResult.resultVar
+    , resultType = exprResult.resultType
+    , ctx = ctx2
+    }
+
+
+
+-- ============================================================================
+-- ====== CASE STEP (Phase C) ======
+-- ============================================================================
+
+
+{-| Compile a MonoCase as a multi-result eco.case step.
+
+Each case alternative recursively calls compileStep, and the results
+are yielded via eco.yield.
+
+-}
+compileCaseStep :
+    Ctx.Context
+    -> LoopSpec
+    -> Name.Name
+    -> Name.Name
+    -> Mono.Decider Mono.MonoChoice
+    -> List ( Int, Mono.MonoExpr )
+    -> Mono.MonoType
+    -> StepResult
+compileCaseStep ctx loopSpec scrutinee1 scrutinee2 decider jumps resultType =
+    -- TODO: Implement in Phase C
+    -- For now, fall back to base return
+    let
+        -- Placeholder: compile the case normally and treat result as done
+        caseResult =
+            Expr.generateCase ctx scrutinee1 scrutinee2 decider jumps resultType
+
+        ( doneVar, ctx1 ) =
+            Ctx.freshVar caseResult.ctx
+
+        ( ctx2, doneOp ) =
+            Ops.arithConstantBool ctx1 doneVar True
+    in
+    { ops = caseResult.ops ++ [ doneOp ]
+    , nextParams = loopSpec.paramVars
+    , doneVar = doneVar
+    , resultVar = caseResult.resultVar
+    , resultType = caseResult.resultType
+    , ctx = ctx2
+    }
+
+
+
+-- ============================================================================
+-- ====== IF STEP ======
+-- ============================================================================
+
+
+{-| Compile a MonoIf as a step.
+
+Generates a multi-result eco.case where each branch recursively calls compileStep.
+The result is the step tuple (nextParams..., done, result).
+
+-}
+compileIfStep :
+    Ctx.Context
+    -> LoopSpec
+    -> List ( Mono.MonoExpr, Mono.MonoExpr )
+    -> Mono.MonoExpr
+    -> Mono.MonoType
+    -> StepResult
+compileIfStep ctx loopSpec branches final resultType =
+    case branches of
+        [] ->
+            -- No more branches, compile the final expression
+            compileStep ctx loopSpec final
+
+        ( condExpr, thenExpr ) :: restBranches ->
+            -- Compile the condition
+            let
+                condRes =
+                    Expr.generateExpr ctx condExpr
+
+                -- Ensure condition is i1 for eco.case
+                ( condUnboxOps, condVar, condCtx ) =
+                    if Types.isEcoValueType condRes.resultType then
+                        -- Unbox Bool to i1 using eco.unbox
+                        Intrinsics.unboxToType condRes.ctx condRes.resultVar I1
+
+                    else
+                        ( [], condRes.resultVar, condRes.ctx )
+
+                -- Compile then branch with compileStep
+                thenStep =
+                    compileStep condCtx loopSpec thenExpr
+
+                -- Build then region that yields the step tuple
+                thenYieldOperands =
+                    thenStep.nextParams ++ [ ( thenStep.doneVar, I1 ), ( thenStep.resultVar, thenStep.resultType ) ]
+
+                ( thenYieldCtx, thenYieldOp ) =
+                    Ops.ecoYieldMany thenStep.ctx thenYieldOperands
+
+                thenRegion =
+                    mkSingleBlockRegion [] thenStep.ops thenYieldOp
+
+                -- Compile else branch recursively (handles nested if-else chains)
+                elseStep =
+                    compileIfStep thenYieldCtx loopSpec restBranches final resultType
+
+                -- Build else region that yields the step tuple
+                elseYieldOperands =
+                    elseStep.nextParams ++ [ ( elseStep.doneVar, I1 ), ( elseStep.resultVar, elseStep.resultType ) ]
+
+                ( elseYieldCtx, elseYieldOp ) =
+                    Ops.ecoYieldMany elseStep.ctx elseYieldOperands
+
+                elseRegion =
+                    mkSingleBlockRegion [] elseStep.ops elseYieldOp
+
+                -- Build multi-result eco.case
+                -- Step tuple types: (paramTypes..., i1, retTy)
+                numParams =
+                    List.length loopSpec.paramVars
+
+                paramTypes =
+                    List.map Tuple.second loopSpec.paramVars
+
+                stepResultTypes =
+                    List.map (\( _, t ) -> ( "", t )) (loopSpec.paramVars ++ [ ( "", I1 ), ( "", loopSpec.retType ) ])
+
+                -- Allocate fresh names for the case results
+                ( caseResultNames, ctxWithResults ) =
+                    allocateFreshVars elseYieldCtx (numParams + 2)
+
+                caseResultPairs =
+                    zip caseResultNames (paramTypes ++ [ I1, loopSpec.retType ])
+
+                -- eco.case on i1: tag 1 for True (then), tag 0 for False (else)
+                ( ctxAfterCase, caseOp ) =
+                    Ops.ecoCaseMany ctxWithResults condVar I1 "bool" [ 1, 0 ] [ thenRegion, elseRegion ] caseResultPairs
+
+                -- Extract the step results from the case
+                nextParamVars =
+                    List.take numParams caseResultPairs
+
+                doneResultVar =
+                    List.drop numParams caseResultNames
+                        |> List.head
+                        |> Maybe.withDefault "%error_no_done"
+
+                resultResultVar =
+                    List.drop (numParams + 1) caseResultNames
+                        |> List.head
+                        |> Maybe.withDefault "%error_no_result"
+            in
+            { ops = condRes.ops ++ condUnboxOps ++ [ caseOp ]
+            , nextParams = nextParamVars
+            , doneVar = doneResultVar
+            , resultVar = resultResultVar
+            , resultType = loopSpec.retType
+            , ctx = ctxAfterCase
+            }
+
+
+
+-- ============================================================================
+-- ====== LET STEP ======
+-- ============================================================================
+
+
+{-| Compile a MonoLet step.
+
+Compiles the definition, then recursively compiles the body.
+
+-}
+compileLetStep :
+    Ctx.Context
+    -> LoopSpec
+    -> Mono.MonoDef
+    -> Mono.MonoExpr
+    -> StepResult
+compileLetStep ctx loopSpec def body =
+    case def of
+        Mono.MonoDef name defExpr ->
+            let
+                -- Compile the definition expression
+                exprResult =
+                    Expr.generateExpr ctx defExpr
+
+                -- Add the variable mapping for the defined name
+                ctx1 =
+                    Ctx.addVarMapping name exprResult.resultVar exprResult.resultType Nothing exprResult.ctx
+
+                -- Recursively compile the body
+                bodyStep =
+                    compileStep ctx1 loopSpec body
+            in
+            { ops = exprResult.ops ++ bodyStep.ops
+            , nextParams = bodyStep.nextParams
+            , doneVar = bodyStep.doneVar
+            , resultVar = bodyStep.resultVar
+            , resultType = bodyStep.resultType
+            , ctx = bodyStep.ctx
+            }
+
+        Mono.MonoTailDef _ _ defExpr ->
+            -- Local tail-recursive definitions are not yet supported in TailRec
+            -- Fall back to treating the entire let as a base return
+            -- We compile the full let expression by generating it as an expression
+            let
+                -- Generate the full let expression (this will use the existing joinpoint path)
+                letExpr =
+                    Mono.MonoLet def body (Mono.typeOf body)
+
+                exprResult =
+                    Expr.generateExpr ctx letExpr
+
+                ( doneVar, ctx1 ) =
+                    Ctx.freshVar exprResult.ctx
+
+                ( ctx2, doneOp ) =
+                    Ops.arithConstantBool ctx1 doneVar True
+            in
+            { ops = exprResult.ops ++ [ doneOp ]
+            , nextParams = loopSpec.paramVars
+            , doneVar = doneVar
+            , resultVar = exprResult.resultVar
+            , resultType = exprResult.resultType
+            , ctx = ctx2
+            }
+
+
+
+-- ============================================================================
+-- ====== HELPERS ======
+-- ============================================================================
+
+
+{-| Create a single-block region with the given args, body ops, and terminator.
+-}
+mkSingleBlockRegion :
+    List ( String, MlirType )
+    -> List MlirOp
+    -> MlirOp
+    -> MlirRegion
+mkSingleBlockRegion args body terminator =
+    MlirRegion
+        { entry =
+            { args = args
+            , body = body
+            , terminator = terminator
+            }
+        , blocks = OrderedDict.empty
+        }
+
+
+{-| Allocate N fresh variable names.
+-}
+allocateFreshVars : Ctx.Context -> Int -> ( List String, Ctx.Context )
+allocateFreshVars ctx n =
+    List.foldl
+        (\_ ( vars, ctxAcc ) ->
+            let
+                ( v, ctxNew ) =
+                    Ctx.freshVar ctxAcc
+            in
+            ( vars ++ [ v ], ctxNew )
+        )
+        ( [], ctx )
+        (List.range 1 n)
+
+
+{-| Zip two lists together.
+-}
+zip : List a -> List b -> List ( a, b )
+zip xs ys =
+    List.map2 Tuple.pair xs ys

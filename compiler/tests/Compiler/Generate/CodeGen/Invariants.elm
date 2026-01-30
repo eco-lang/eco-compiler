@@ -393,6 +393,7 @@ validTerminators =
     , "eco.crash"
     , "eco.yield"
     , "scf.yield"
+    , "scf.condition"
     , "cf.br"
     , "cf.cond_br"
     , "func.return"
