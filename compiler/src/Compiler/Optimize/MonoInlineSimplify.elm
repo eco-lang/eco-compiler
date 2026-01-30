@@ -319,7 +319,7 @@ collectCallsFromDef def =
 -}
 inlineThreshold : Int
 inlineThreshold =
-    3
+    10
 
 
 {-| Maximum number of inlines per function to prevent explosion.
@@ -1193,7 +1193,7 @@ createBindings ctx params args =
                     { origName = paramName
                     , freshName = freshName
                     , arg = arg
-                    , argType = paramType
+                    , argType = Mono.typeOf arg
                     }
             in
             ( acc ++ [ binding ], newCtx )
@@ -1227,7 +1227,7 @@ substitute oldName newName varType expr =
     case expr of
         MonoVarLocal name tipe ->
             if name == oldName then
-                MonoVarLocal newName tipe
+                MonoVarLocal newName varType
 
             else
                 expr

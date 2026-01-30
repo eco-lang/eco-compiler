@@ -195,6 +195,9 @@ kernelIntrinsic home name argTypes resultType =
         "Bitwise" ->
             bitwiseIntrinsic name argTypes resultType
 
+        "Utils" ->
+            utilsIntrinsic name argTypes resultType
+
         _ ->
             Nothing
 
@@ -412,6 +415,50 @@ bitwiseIntrinsic name argTypes _ =
         _ ->
             Nothing
 
+
+utilsIntrinsic : Name.Name -> List Mono.MonoType -> Mono.MonoType -> Maybe Intrinsic
+utilsIntrinsic name argTypes _ =
+    case ( name, argTypes ) of
+        -- Int comparisons
+        ( "equal", [ Mono.MInt, Mono.MInt ] ) ->
+            Just (IntComparison { op = "eco.int.eq" })
+
+        ( "notEqual", [ Mono.MInt, Mono.MInt ] ) ->
+            Just (IntComparison { op = "eco.int.ne" })
+
+        ( "lt", [ Mono.MInt, Mono.MInt ] ) ->
+            Just (IntComparison { op = "eco.int.lt" })
+
+        ( "le", [ Mono.MInt, Mono.MInt ] ) ->
+            Just (IntComparison { op = "eco.int.le" })
+
+        ( "gt", [ Mono.MInt, Mono.MInt ] ) ->
+            Just (IntComparison { op = "eco.int.gt" })
+
+        ( "ge", [ Mono.MInt, Mono.MInt ] ) ->
+            Just (IntComparison { op = "eco.int.ge" })
+
+        -- Float comparisons
+        ( "equal", [ Mono.MFloat, Mono.MFloat ] ) ->
+            Just (FloatComparison { op = "eco.float.eq" })
+
+        ( "notEqual", [ Mono.MFloat, Mono.MFloat ] ) ->
+            Just (FloatComparison { op = "eco.float.ne" })
+
+        ( "lt", [ Mono.MFloat, Mono.MFloat ] ) ->
+            Just (FloatComparison { op = "eco.float.lt" })
+
+        ( "le", [ Mono.MFloat, Mono.MFloat ] ) ->
+            Just (FloatComparison { op = "eco.float.le" })
+
+        ( "gt", [ Mono.MFloat, Mono.MFloat ] ) ->
+            Just (FloatComparison { op = "eco.float.gt" })
+
+        ( "ge", [ Mono.MFloat, Mono.MFloat ] ) ->
+            Just (FloatComparison { op = "eco.float.ge" })
+
+        _ ->
+            Nothing
 
 
 -- ====== INTRINSIC OP GENERATION ======
