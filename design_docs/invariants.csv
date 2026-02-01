@@ -78,6 +78,10 @@ POST_003;PostSolve;Completeness;enforced;After PostSolve all non-negative expres
 
 POST_004;PostSolve;Determinism;documented;For Group B expressions the structurally computed PostSolve types depend only on the canonical AST structure and the initial solver-produced nodeTypes so given the same canonical module and initial nodeTypes PostSolve deterministically produces the same fixed nodeTypes and kernelEnv;Compiler.Type.PostSolve
 
+POST_005;PostSolve;NonRegressionStructuredNodeTypes;enforced;For every non-negative expression/pattern node id whose solver-produced (pre-PostSolve) type is not a bare Can.TVar PostSolve must not change that node type (alpha-equivalent) except for VarKernel nodes whose types may be inferred/filled during PostSolve;Compiler.Type.PostSolve
+
+POST_006;PostSolve;NoNewFreeTypeVars;enforced;For every non-negative expression/pattern node id (excluding VarKernel and Accessor nodes) the set of free Can.TVar names appearing in the node post-PostSolve type must be a subset of those appearing in its pre-PostSolve solver type ensuring PostSolve does not introduce new polymorphism;Compiler.Type.PostSolve
+
 
 # =============================================================================
 # TYPED OPTIMIZATION PHASE - Preserve and exploit types in optimized IR
@@ -131,6 +135,8 @@ MONO_015;Monomorphization;Accessors;enforced;When an accessor like .name with ca
 MONO_016;Monomorphization;Closures;enforced;For every MonoClosure whose MonoType is an MFunction the length of closureInfo.params equals the length of the outermost MFunction argument list of its monoType (i.e. stage arity). Simple directly-nested lambda chains are uncurried into a single flat MFunction stage while lambdas separated by let or case preserve nested MFunction structure with each stage closure matching its outermost arg count;Compiler.Generate.Monomorphize.Specialize|Compiler.Generate.Monomorphize.Closure
 
 MONO_017;Monomorphization;Registry;enforced;For every SpecId in SpecializationRegistry.reverseMapping with value (global monoType maybeLambda) there exists a MonoNode at graph.nodes[specId] and monoType equals the nodeType of that node ensuring registry keys match actual node types;Compiler.Generate.Monomorphize
+
+MONO_018;Monomorphization;Types;enforced;Every MonoCase jump branch expression and every Inline leaf in the decider must have the same MonoType as the MonoCase resultType ensuring case expressions are well typed;Compiler.Generate.Monomorphize.Specialize (rewriteCaseLeavesToAbi)
 
 
 # =============================================================================

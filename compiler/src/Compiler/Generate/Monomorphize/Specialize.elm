@@ -1142,22 +1142,53 @@ specializeExpr expr subst state =
 
         TOpt.Case label root decider jumps canType ->
             let
-                monoType =
+                -- Type from canonical (used as fallback for non-function results)
+                monoTypeFromCan =
                     TypeSubst.applySubst subst canType
 
                 initialVarTypes =
                     state.varTypes
 
-                ( monoDecider, state1 ) =
+                ( monoDecider0, state1 ) =
                     specializeDecider decider subst state
 
                 state1WithResetVarTypes =
                     { state1 | varTypes = initialVarTypes }
 
-                ( monoJumps, state2 ) =
+                ( monoJumps0, state2 ) =
                     specializeJumps jumps subst state1WithResetVarTypes
+
+                -- Gather function-typed leaf results
+                leafFuncTypes =
+                    collectCaseLeafFunctions monoDecider0 monoJumps0
             in
-            ( Mono.MonoCase label root monoDecider monoJumps monoType, state2 )
+            case ( leafFuncTypes, monoTypeFromCan ) of
+                ( [], Mono.MFunction _ _ ) ->
+                    -- Sanity check: canonical says function, but no function-typed leaves
+                    -- This indicates a bug in earlier phases
+                    Utils.Crash.crash
+                        ("MonoCase has function result type but no function-typed leaves. "
+                            ++ "monoTypeFromCan = "
+                            ++ Debug.toString monoTypeFromCan
+                        )
+
+                ( [], _ ) ->
+                    -- Case returns non-function; use canonical type directly
+                    ( Mono.MonoCase label root monoDecider0 monoJumps0 monoTypeFromCan, state2 )
+
+                ( _ :: _, _ ) ->
+                    -- Case returns function; choose canonical ABI and coerce branches
+                    let
+                        ( canonicalSeg, flatArgs, flatRet ) =
+                            Types.chooseCanonicalSegmentation leafFuncTypes
+
+                        canonicalType =
+                            Types.buildSegmentedFunctionType flatArgs flatRet canonicalSeg
+
+                        ( monoDecider1, monoJumps1, state3 ) =
+                            rewriteCaseLeavesToAbi canonicalType canonicalSeg monoDecider0 monoJumps0 state2
+                    in
+                    ( Mono.MonoCase label root monoDecider1 monoJumps1 canonicalType, state3 )
 
         TOpt.Accessor region fieldName canType ->
             -- NOTE: This handles standalone accessor expressions (not passed as arguments).
@@ -2008,6 +2039,180 @@ specializeJumps jumps subst state =
         )
         ( [], state )
         jumps
+
+
+
+-- ========== JOIN-POINT ABI NORMALIZATION ==========
+
+
+{-| Collect MonoTypes of all function-typed leaf expressions in a MonoCase.
+Returns empty list if no branches return functions.
+-}
+collectCaseLeafFunctions :
+    Mono.Decider Mono.MonoChoice
+    -> List ( Int, Mono.MonoExpr )
+    -> List Mono.MonoType
+collectCaseLeafFunctions monoDecider monoJumps =
+    let
+        jumpDict =
+            Dict.fromList identity monoJumps
+
+        -- Collect from inline leaves and resolved jumps
+        collectFromDecider : Mono.Decider Mono.MonoChoice -> List Mono.MonoType -> List Mono.MonoType
+        collectFromDecider dec acc =
+            case dec of
+                Mono.Leaf choice ->
+                    case choice of
+                        Mono.Inline expr ->
+                            let
+                                t =
+                                    Mono.typeOf expr
+                            in
+                            case t of
+                                Mono.MFunction _ _ ->
+                                    t :: acc
+
+                                _ ->
+                                    acc
+
+                        Mono.Jump idx ->
+                            case Dict.get identity idx jumpDict of
+                                Just jumpExpr ->
+                                    let
+                                        t =
+                                            Mono.typeOf jumpExpr
+                                    in
+                                    case t of
+                                        Mono.MFunction _ _ ->
+                                            t :: acc
+
+                                        _ ->
+                                            acc
+
+                                Nothing ->
+                                    acc
+
+                Mono.Chain _ success failure ->
+                    collectFromDecider success (collectFromDecider failure acc)
+
+                Mono.FanOut _ edges fallback ->
+                    let
+                        accAfterEdges =
+                            List.foldl
+                                (\( _, d ) a -> collectFromDecider d a)
+                                acc
+                                edges
+                    in
+                    collectFromDecider fallback accAfterEdges
+    in
+    collectFromDecider monoDecider []
+
+
+{-| Rewrite all function-typed leaves in a MonoCase to use the canonical ABI type.
+Non-function leaves are left unchanged.
+
+State is threaded in a deterministic order (depth-first, left-to-right) to ensure
+lambdaCounter monotonically increases and each wrapper gets a unique LambdaId.
+
+-}
+rewriteCaseLeavesToAbi :
+    Mono.MonoType
+    -> Types.Segmentation
+    -> Mono.Decider Mono.MonoChoice
+    -> List ( Int, Mono.MonoExpr )
+    -> MonoState
+    -> ( Mono.Decider Mono.MonoChoice, List ( Int, Mono.MonoExpr ), MonoState )
+rewriteCaseLeavesToAbi targetType targetSeg monoDecider monoJumps state0 =
+    let
+        -- Rewrite a single expression if it's a function
+        rewriteExpr : Mono.MonoExpr -> MonoState -> ( Mono.MonoExpr, MonoState )
+        rewriteExpr expr st =
+            case Mono.typeOf expr of
+                Mono.MFunction _ _ ->
+                    if Types.segmentLengths (Mono.typeOf expr) == targetSeg then
+                        ( expr, st )
+
+                    else
+                        Closure.buildAbiWrapper targetType expr st
+
+                _ ->
+                    ( expr, st )
+
+        -- Rewrite the decider tree (depth-first, left-to-right)
+        rewriteDecider : Mono.Decider Mono.MonoChoice -> MonoState -> ( Mono.Decider Mono.MonoChoice, MonoState )
+        rewriteDecider dec st =
+            case dec of
+                Mono.Leaf choice ->
+                    case choice of
+                        Mono.Inline expr ->
+                            let
+                                ( newExpr, st1 ) =
+                                    rewriteExpr expr st
+                            in
+                            ( Mono.Leaf (Mono.Inline newExpr), st1 )
+
+                        Mono.Jump _ ->
+                            -- Jumps are rewritten via monoJumps, not here
+                            ( dec, st )
+
+                Mono.Chain testChain success failure ->
+                    let
+                        ( newSuccess, st1 ) =
+                            rewriteDecider success st
+
+                        ( newFailure, st2 ) =
+                            rewriteDecider failure st1
+                    in
+                    ( Mono.Chain testChain newSuccess newFailure, st2 )
+
+                Mono.FanOut path edges fallback ->
+                    let
+                        -- Process edges left-to-right (foldl), threading state forward
+                        ( newEdgesReversed, st1 ) =
+                            List.foldl
+                                (\( test, d ) ( accEdges, accSt ) ->
+                                    let
+                                        ( newD, newSt ) =
+                                            rewriteDecider d accSt
+                                    in
+                                    ( ( test, newD ) :: accEdges, newSt )
+                                )
+                                ( [], st )
+                                edges
+
+                        newEdges =
+                            List.reverse newEdgesReversed
+
+                        ( newFallback, st2 ) =
+                            rewriteDecider fallback st1
+                    in
+                    ( Mono.FanOut path newEdges newFallback, st2 )
+
+        -- Rewrite jump table (in index order)
+        rewriteJumps : List ( Int, Mono.MonoExpr ) -> MonoState -> ( List ( Int, Mono.MonoExpr ), MonoState )
+        rewriteJumps jumps st =
+            let
+                ( reversedJumps, finalSt ) =
+                    List.foldl
+                        (\( idx, expr ) ( accJumps, accSt ) ->
+                            let
+                                ( newExpr, newSt ) =
+                                    rewriteExpr expr accSt
+                            in
+                            ( ( idx, newExpr ) :: accJumps, newSt )
+                        )
+                        ( [], st )
+                        jumps
+            in
+            ( List.reverse reversedJumps, finalSt )
+
+        ( newDecider, state1 ) =
+            rewriteDecider monoDecider state0
+
+        ( newJumps, state2 ) =
+            rewriteJumps monoJumps state1
+    in
+    ( newDecider, newJumps, state2 )
 
 
 specializeRecordFields : Dict String Name TOpt.Expr -> Types.RecordLayout -> Substitution -> MonoState -> ( List Mono.MonoExpr, MonoState )

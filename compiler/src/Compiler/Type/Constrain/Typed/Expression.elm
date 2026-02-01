@@ -406,13 +406,26 @@ constrainGenericWithIdsProg rtv region info expected =
     Prog.opMkFlexVarS
         |> Prog.andThenS
             (\exprVar ->
-                Prog.opModifyS (NodeIds.recordNodeVar info.id exprVar)
+                -- Use recordSyntheticExprVar to mark this as a Group B synthetic placeholder
+                Prog.opModifyS (NodeIds.recordSyntheticExprVar info.id exprVar)
                     |> Prog.andThenS
                         (\() ->
+                            let
+                                exprType : Type
+                                exprType =
+                                    VarN exprVar
+                            in
+                            -- Pass through the original expected type to preserve constraint behavior
                             constrainNodeWithIdsProg rtv region info.node expected
                                 |> Prog.mapS
                                     (\con ->
-                                        Type.exists [ exprVar ] con
+                                        Type.exists [ exprVar ]
+                                            (CAnd
+                                                [ con
+                                                -- Unify exprVar with the expected type so nodeTypes gets the resolved type
+                                                , CEqual region E.List exprType expected
+                                                ]
+                                            )
                                     )
                         )
             )

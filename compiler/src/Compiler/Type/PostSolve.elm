@@ -506,17 +506,25 @@ postSolveLetType :
     -> KernelTypes.KernelTypeEnv
     -> ( NodeTypes, KernelTypes.KernelTypeEnv )
 postSolveLetType exprId body nodeTypes0 kernel0 =
-    let
-        bodyType =
-            case body of
-                A.At _ info ->
-                    Dict.get Basics.identity info.id nodeTypes0
-                        |> Maybe.withDefault (Can.TVar "a")
+    -- Check if solver already resolved the type for this let expression
+    case Dict.get Basics.identity exprId nodeTypes0 of
+        Just _ ->
+            -- Solver already resolved the type, trust it
+            ( nodeTypes0, kernel0 )
 
-        nodeTypes1 =
-            Dict.insert Basics.identity exprId bodyType nodeTypes0
-    in
-    ( nodeTypes1, kernel0 )
+        Nothing ->
+            -- No solver type available, compute from body
+            let
+                bodyType =
+                    case body of
+                        A.At _ info ->
+                            Dict.get Basics.identity info.id nodeTypes0
+                                |> Maybe.withDefault (Can.TVar "a")
+
+                nodeTypes1 =
+                    Dict.insert Basics.identity exprId bodyType nodeTypes0
+            in
+            ( nodeTypes1, kernel0 )
 
 
 {-| Handle Call expressions with special logic for kernel usage inference.
@@ -872,25 +880,38 @@ postSolveList annotations exprId elems nodeTypes0 kernel0 =
                 ( nodeTypes0, kernel0 )
                 elems
 
-        -- Get element type
-        elemType =
-            case elems of
-                [] ->
-                    -- Empty list: use polymorphic type
-                    Can.TVar "a"
-
-                (A.At _ info) :: _ ->
-                    -- Non-empty: use first element's type
-                    Dict.get Basics.identity info.id nodeTypes1
-                        |> Maybe.withDefault (Can.TVar "a")
-
-        listType =
-            Can.TType ModuleName.list Name.list [ elemType ]
-
-        nodeTypes2 =
-            Dict.insert Basics.identity exprId listType nodeTypes1
+        -- Check if solver already resolved the type for this list expression
+        -- If so, trust that type rather than computing a new one
+        existingType =
+            Dict.get Basics.identity exprId nodeTypes1
     in
-    ( nodeTypes2, kernel1 )
+    case existingType of
+        Just resolvedType ->
+            -- Solver already resolved the type (e.g., from context constraints)
+            -- Trust that type - don't overwrite with computed structural type
+            ( nodeTypes1, kernel1 )
+
+        Nothing ->
+            -- No solver type available, compute structurally
+            let
+                elemType =
+                    case elems of
+                        [] ->
+                            -- Empty list: use polymorphic type
+                            Can.TVar "a"
+
+                        (A.At _ info) :: _ ->
+                            -- Non-empty: use first element's type
+                            Dict.get Basics.identity info.id nodeTypes1
+                                |> Maybe.withDefault (Can.TVar "a")
+
+                listType =
+                    Can.TType ModuleName.list Name.list [ elemType ]
+
+                nodeTypes2 =
+                    Dict.insert Basics.identity exprId listType nodeTypes1
+            in
+            ( nodeTypes2, kernel1 )
 
 
 {-| Handle Tuple expression (Group B).
@@ -918,30 +939,39 @@ postSolveTuple annotations exprId a b cs nodeTypes0 kernel0 =
                 (\c ( nt, ke ) -> postSolveExpr annotations c nt ke)
                 ( nt2, ke2 )
                 cs
-
-        -- Get component types
-        getType expr nt =
-            case expr of
-                A.At _ info ->
-                    Dict.get Basics.identity info.id nt
-                        |> Maybe.withDefault (Can.TVar "a")
-
-        aType =
-            getType a nt3
-
-        bType =
-            getType b nt3
-
-        csTypes =
-            List.map (\c -> getType c nt3) cs
-
-        tupleType =
-            Can.TTuple aType bType csTypes
-
-        nodeTypes4 =
-            Dict.insert Basics.identity exprId tupleType nt3
     in
-    ( nodeTypes4, ke3 )
+    -- Check if solver already resolved the type for this tuple expression
+    case Dict.get Basics.identity exprId nt3 of
+        Just _ ->
+            -- Solver already resolved the type, trust it
+            ( nt3, ke3 )
+
+        Nothing ->
+            -- No solver type available, compute structurally
+            let
+                -- Get component types
+                getType expr nt =
+                    case expr of
+                        A.At _ info ->
+                            Dict.get Basics.identity info.id nt
+                                |> Maybe.withDefault (Can.TVar "a")
+
+                aType =
+                    getType a nt3
+
+                bType =
+                    getType b nt3
+
+                csTypes =
+                    List.map (\c -> getType c nt3) cs
+
+                tupleType =
+                    Can.TTuple aType bType csTypes
+
+                nodeTypes4 =
+                    Dict.insert Basics.identity exprId tupleType nt3
+            in
+            ( nodeTypes4, ke3 )
 
 
 {-| Handle Record expression (Group B).
@@ -966,33 +996,42 @@ postSolveRecord annotations exprId fields nodeTypes0 kernel0 =
                 )
                 ( nodeTypes0, kernel0 )
                 fieldList
-
-        -- Build field type map (Dict String Name FieldType)
-        fieldTypes =
-            List.foldl
-                (\( locatedName, fieldExpr ) acc ->
-                    let
-                        name =
-                            A.toValue locatedName
-
-                        tipe =
-                            case fieldExpr of
-                                A.At _ info ->
-                                    Dict.get Basics.identity info.id nodeTypes1
-                                        |> Maybe.withDefault (Can.TVar "a")
-                    in
-                    Dict.insert Basics.identity name (Can.FieldType 0 tipe) acc
-                )
-                Dict.empty
-                fieldList
-
-        recordType =
-            Can.TRecord fieldTypes Nothing
-
-        nodeTypes2 =
-            Dict.insert Basics.identity exprId recordType nodeTypes1
     in
-    ( nodeTypes2, kernel1 )
+    -- Check if solver already resolved the type for this record expression
+    case Dict.get Basics.identity exprId nodeTypes1 of
+        Just _ ->
+            -- Solver already resolved the type, trust it
+            ( nodeTypes1, kernel1 )
+
+        Nothing ->
+            -- No solver type available, compute structurally
+            let
+                -- Build field type map (Dict String Name FieldType)
+                fieldTypes =
+                    List.foldl
+                        (\( locatedName, fieldExpr ) acc ->
+                            let
+                                name =
+                                    A.toValue locatedName
+
+                                tipe =
+                                    case fieldExpr of
+                                        A.At _ info ->
+                                            Dict.get Basics.identity info.id nodeTypes1
+                                                |> Maybe.withDefault (Can.TVar "a")
+                            in
+                            Dict.insert Basics.identity name (Can.FieldType 0 tipe) acc
+                        )
+                        Dict.empty
+                        fieldList
+
+                recordType =
+                    Can.TRecord fieldTypes Nothing
+
+                nodeTypes2 =
+                    Dict.insert Basics.identity exprId recordType nodeTypes1
+            in
+            ( nodeTypes2, kernel1 )
 
 
 {-| Handle Lambda expression (Group B).
@@ -1013,33 +1052,42 @@ postSolveLambda annotations exprId args body nodeTypes0 kernel0 =
 
         ( nodeTypes2, kernel2 ) =
             postSolveExpr annotations body nodeTypes1 kernel1
+    in
+    -- Check if solver already resolved the type for this lambda expression
+    case Dict.get Basics.identity exprId nodeTypes2 of
+        Just _ ->
+            -- Solver already resolved the type, trust it
+            ( nodeTypes2, kernel2 )
 
-        -- Get arg types from pattern IDs
-        argTypes =
-            List.map
-                (\pat ->
-                    case pat of
+        Nothing ->
+            -- No solver type available, compute structurally
+            let
+                -- Get arg types from pattern IDs
+                argTypes =
+                    List.map
+                        (\pat ->
+                            case pat of
+                                A.At _ info ->
+                                    Dict.get Basics.identity info.id nodeTypes2
+                                        |> Maybe.withDefault (Can.TVar "a")
+                        )
+                        args
+
+                -- Get body type
+                bodyType =
+                    case body of
                         A.At _ info ->
                             Dict.get Basics.identity info.id nodeTypes2
-                                |> Maybe.withDefault (Can.TVar "a")
-                )
-                args
+                                |> Maybe.withDefault (Can.TVar "b")
 
-        -- Get body type
-        bodyType =
-            case body of
-                A.At _ info ->
-                    Dict.get Basics.identity info.id nodeTypes2
-                        |> Maybe.withDefault (Can.TVar "b")
+                -- Build function type: arg1 -> arg2 -> ... -> bodyType
+                funcType =
+                    List.foldr Can.TLambda bodyType argTypes
 
-        -- Build function type: arg1 -> arg2 -> ... -> bodyType
-        funcType =
-            List.foldr Can.TLambda bodyType argTypes
-
-        nodeTypes3 =
-            Dict.insert Basics.identity exprId funcType nodeTypes2
-    in
-    ( nodeTypes3, kernel2 )
+                nodeTypes3 =
+                    Dict.insert Basics.identity exprId funcType nodeTypes2
+            in
+            ( nodeTypes3, kernel2 )
 
 
 {-| Handle Accessor expression (Group B).
@@ -1055,23 +1103,31 @@ postSolveAccessor :
     -> KernelTypes.KernelTypeEnv
     -> ( NodeTypes, KernelTypes.KernelTypeEnv )
 postSolveAccessor _ exprId field nodeTypes0 kernel0 =
-    let
-        -- Accessor type is a function from record to field type
-        fieldType =
-            Can.TVar "a"
+    -- Check if solver already resolved the type for this accessor expression
+    case Dict.get Basics.identity exprId nodeTypes0 of
+        Just _ ->
+            -- Solver already resolved the type, trust it
+            ( nodeTypes0, kernel0 )
 
-        recordType =
-            Can.TRecord
-                (Dict.singleton Basics.identity field (Can.FieldType 0 fieldType))
-                (Just "ext")
+        Nothing ->
+            -- No solver type available, compute structurally
+            let
+                -- Accessor type is a function from record to field type
+                fieldType =
+                    Can.TVar "a"
 
-        accessorType =
-            Can.TLambda recordType fieldType
+                recordType =
+                    Can.TRecord
+                        (Dict.singleton Basics.identity field (Can.FieldType 0 fieldType))
+                        (Just "ext")
 
-        nodeTypes1 =
-            Dict.insert Basics.identity exprId accessorType nodeTypes0
-    in
-    ( nodeTypes1, kernel0 )
+                accessorType =
+                    Can.TLambda recordType fieldType
+
+                nodeTypes1 =
+                    Dict.insert Basics.identity exprId accessorType nodeTypes0
+            in
+            ( nodeTypes1, kernel0 )
 
 
 

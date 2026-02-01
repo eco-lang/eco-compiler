@@ -1,6 +1,7 @@
 module Compiler.Generate.Monomorphize.Closure exposing
     ( ensureCallableTopLevel
     , computeClosureCaptures
+    , buildAbiWrapper
     )
 
 {-| Closure handling and capture analysis for monomorphization.
@@ -219,6 +220,139 @@ makeGeneralClosure expr argTypes retType funcType state =
             Mono.MonoClosure closureInfo callExpr funcType
     in
     ( closureExpr, stateWithLambda )
+
+
+{-| Build nested calls that apply all params to a callee, respecting the callee's staging.
+
+Given calleeType with segmentation [2,3] and params [a,b,c,d,e]:
+
+  - First call: callee(a,b) -> intermediate1
+  - Second call: intermediate1(c,d,e) -> result
+
+This follows MONO\_016: never pass more args to a stage than it accepts.
+
+The region parameter (A.Region from Compiler.Reporting.Annotation) is propagated
+to generated MonoCall nodes for source location tracking in error messages.
+
+-}
+buildNestedCalls : A.Region -> Mono.MonoExpr -> List ( Name, Mono.MonoType ) -> Mono.MonoExpr
+buildNestedCalls region calleeExpr params =
+    let
+        calleeType =
+            Mono.typeOf calleeExpr
+
+        srcSeg =
+            Types.segmentLengths calleeType
+
+        -- Convert params to expressions
+        paramExprs =
+            List.map (\( name, ty ) -> Mono.MonoVarLocal name ty) params
+
+        -- Build calls stage by stage
+        buildCalls : Mono.MonoExpr -> List Mono.MonoExpr -> List Int -> Mono.MonoExpr
+        buildCalls currentCallee remainingArgs segLengths =
+            case ( segLengths, remainingArgs ) of
+                ( [], _ ) ->
+                    -- No more stages; return current callee (which should be the final result)
+                    currentCallee
+
+                ( m :: restSeg, _ ) ->
+                    let
+                        ( nowArgs, laterArgs ) =
+                            ( List.take m remainingArgs, List.drop m remainingArgs )
+
+                        currentCalleeType =
+                            Mono.typeOf currentCallee
+
+                        resultType =
+                            Types.stageReturnType currentCalleeType
+
+                        callExpr =
+                            Mono.MonoCall region currentCallee nowArgs resultType
+                    in
+                    buildCalls callExpr laterArgs restSeg
+    in
+    buildCalls calleeExpr paramExprs srcSeg
+
+
+{-| Build a closure that wraps a function expression to adapt its ABI.
+
+Given:
+
+  - targetType: the desired ABI type (e.g., MFunction [A,B,C,D] R)
+  - calleeExpr: the expression to wrap (e.g., has type MFunction [A] (MFunction [B,C,D] R))
+
+Returns a closure with targetType that calls calleeExpr using nested calls.
+
+If the segmentations already match, returns the callee unchanged.
+
+The wrapper is built entirely in Mono:
+
+  - Fresh lambdaId from state
+  - Params = flat argument list for canonical ABI
+  - Body = nested MonoCalls respecting callee's staging (MONO\_016)
+  - Captures = computeClosureCaptures params body
+
+-}
+buildAbiWrapper :
+    Mono.MonoType
+    -> Mono.MonoExpr
+    -> MonoState
+    -> ( Mono.MonoExpr, MonoState )
+buildAbiWrapper targetType calleeExpr state =
+    let
+        srcType =
+            Mono.typeOf calleeExpr
+
+        targetSeg =
+            Types.segmentLengths targetType
+
+        srcSeg =
+            Types.segmentLengths srcType
+    in
+    if targetSeg == srcSeg then
+        -- Segmentations match; no wrapper needed
+        ( calleeExpr, state )
+
+    else
+        let
+            -- Flatten to get all arg types
+            ( flatArgs, _ ) =
+                Types.decomposeFunctionType targetType
+
+            -- Fresh params for the wrapper
+            params =
+                freshParams flatArgs
+
+            -- Build the wrapper body: nested calls to calleeExpr
+            -- Propagate the callee's source region for error reporting
+            region =
+                extractRegion calleeExpr
+
+            bodyExpr =
+                buildNestedCalls region calleeExpr params
+
+            -- Create anonymous lambda ID
+            lambdaId =
+                Mono.AnonymousLambda state.currentModule state.lambdaCounter
+
+            stateWithLambda =
+                { state | lambdaCounter = state.lambdaCounter + 1 }
+
+            -- Compute captures (calleeExpr may reference outer variables)
+            captures =
+                computeClosureCaptures params bodyExpr
+
+            closureInfo =
+                { lambdaId = lambdaId
+                , captures = captures
+                , params = params
+                }
+
+            closureExpr =
+                Mono.MonoClosure closureInfo bodyExpr targetType
+        in
+        ( closureExpr, stateWithLambda )
 
 
 {-| Create an alias closure wrapping an existing expression.

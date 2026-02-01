@@ -1,4 +1,4 @@
-module Compiler.Type.Constrain.Typed.Module exposing (constrainWithIds)
+module Compiler.Type.Constrain.Typed.Module exposing (constrainWithIds, constrainWithIdsDetailed)
 
 {-| Generates type constraints for Elm modules during type checking (Typed pathway).
 
@@ -9,7 +9,7 @@ while tracking node IDs to solver variables for later type retrieval.
 
 # Constraint Generation with ID Tracking
 
-@docs constrainWithIds
+@docs constrainWithIds, constrainWithIdsDetailed
 
 -}
 
@@ -39,15 +39,27 @@ from expression/pattern IDs to solver variables for later type retrieval.
 
 -}
 constrainWithIds : Can.Module -> IO ( Constraint, NodeIds.NodeVarMap )
-constrainWithIds (Can.Module canData) =
+constrainWithIds canonical =
+    constrainWithIdsDetailed canonical
+        |> IO.map (\( con, state ) -> ( con, state.mapping ))
+
+
+{-| Generate type constraints with full node ID state including synthetic expr tracking.
+
+This is the detailed version of `constrainWithIds` that returns the full `NodeIdState`,
+including `syntheticExprIds` which tracks which expression IDs had synthetic placeholder
+variables allocated (Group B expressions). This metadata is useful for testing invariants
+like POST\_001 and POST\_003.
+
+-}
+constrainWithIdsDetailed : Can.Module -> IO ( Constraint, NodeIds.NodeIdState )
+constrainWithIdsDetailed (Can.Module canData) =
     case canData.effects of
         Can.NoEffects ->
             constrainDeclsWithVars canData.decls CSaveTheEnvironment Expr.emptyExprIdState
-                |> IO.map (\( con, state ) -> ( con, state.mapping ))
 
         Can.Ports ports ->
             Dict.foldr compare letPortWithVars (constrainDeclsWithVars canData.decls CSaveTheEnvironment Expr.emptyExprIdState) ports
-                |> IO.map (\( con, state ) -> ( con, state.mapping ))
 
         Can.Manager r0 r1 r2 manager ->
             case manager of
@@ -55,20 +67,17 @@ constrainWithIds (Can.Module canData) =
                     constrainEffectsWithIds canData.name r0 r1 r2 manager Expr.emptyExprIdState
                         |> IO.andThen (\( con, state ) -> constrainDeclsWithVars canData.decls con state)
                         |> IO.andThen (\( con, state ) -> letCmdWithVars canData.name cmdName con state)
-                        |> IO.map (\( con, state ) -> ( con, state.mapping ))
 
                 Can.Sub subName ->
                     constrainEffectsWithIds canData.name r0 r1 r2 manager Expr.emptyExprIdState
                         |> IO.andThen (\( con, state ) -> constrainDeclsWithVars canData.decls con state)
                         |> IO.andThen (\( con, state ) -> letSubWithVars canData.name subName con state)
-                        |> IO.map (\( con, state ) -> ( con, state.mapping ))
 
                 Can.Fx cmdName subName ->
                     constrainEffectsWithIds canData.name r0 r1 r2 manager Expr.emptyExprIdState
                         |> IO.andThen (\( con, state ) -> constrainDeclsWithVars canData.decls con state)
                         |> IO.andThen (\( con, state ) -> letSubWithVars canData.name subName con state)
                         |> IO.andThen (\( con, state ) -> letCmdWithVars canData.name cmdName con state)
-                        |> IO.map (\( con, state ) -> ( con, state.mapping ))
 
 
 

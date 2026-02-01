@@ -311,8 +311,9 @@ ir: PostSolve NodeTypes
 logic: Identify Group B expressions (lists, tuples, records, units, lambdas) whose pre-PostSolve solver types include unconstrained synthetic variables. After PostSolve:
   * Assert those entries are replaced with concrete `Can.Type` structures.
   * Reconstruct the type structurally from subexpression types and compare to PostSolve's result.
-inputs: TypedCanonical + pre-/post-PostSolve NodeTypes snapshots
+inputs: TypedCanonical + pre-/post-PostSolve NodeTypes snapshots + syntheticExprIds from constraint generation
 oracle: No Group B expression retains an unconstrained synthetic var; recomputed structural type matches PostSolve's.
+tests: compiler/tests/Compiler/Type/PostSolve/PostSolveGroupBStructuralTypesTest.elm
 --
 --
 name: Kernel function types inferred from usage
@@ -333,8 +334,10 @@ ir: Fixed NodeTypes
 logic: Scan NodeTypes for non-kernel expressions after PostSolve:
   * Assert all types contain no unconstrained synthetic vars.
   * For any placeholder kind that remain by design (kernel-related), assert they're limited to kernel expressions.
-inputs: PostSolve NodeTypes maps from many modules
+  * Use syntheticExprIds from constraint generation to identify which TVars were solver-allocated placeholders.
+inputs: PostSolve NodeTypes maps from many modules + syntheticExprIds from constraint generation
 oracle: NodeTypes is fully concrete for non-kernel expressions; any remaining synthetic variables are flagged as a violation.
+tests: compiler/tests/Compiler/Type/PostSolve/PostSolveNoSyntheticHolesTest.elm
 --
 --
 name: PostSolve is deterministic for Group B and kernels
@@ -346,6 +349,35 @@ logic: Given the same canonical module and initial solver-produced NodeTypes:
   * Assert the resulting fixed NodeTypes and KernelTypeEnv are byte-for-byte identical (or structurally equal).
 inputs: Saved canonical + pre-PostSolve NodeTypes; replay tests
 oracle: No nondeterminism in PostSolve outputs; hashed summaries remain stable across runs.
+--
+--
+name: PostSolve does not rewrite solver-structured node types
+phase: post-solve
+invariants: POST_005
+ir: Solver NodeTypes (pre-PostSolve) vs PostSolve NodeTypes (post-PostSolve)
+logic:
+  * Run Solve.runWithIds to obtain nodeTypesPre.
+  * Run PostSolve.postSolve to obtain nodeTypesPost.
+  * Traverse the canonical module to classify node ids (VarKernel, Accessor, other).
+  * For each node id >= 0 that is not VarKernel:
+      - if nodeTypesPre[id] is NOT a bare TVar, assert nodeTypesPost[id] is alpha-equivalent to nodeTypesPre[id].
+inputs: Canonical module + (annotations, nodeTypesPre) + nodeTypesPost
+oracle: PostSolve only fills placeholder TVars; it never changes already-structured solver types.
+tests: compiler/tests/Compiler/Type/PostSolve/PostSolveNonRegressionInvariantsTest.elm
+--
+--
+name: PostSolve does not introduce new free type variables
+phase: post-solve
+invariants: POST_006
+ir: Solver NodeTypes (pre-PostSolve) vs PostSolve NodeTypes (post-PostSolve)
+logic:
+  * Using the same nodeTypesPre/nodeTypesPost:
+  * For each node id >= 0 that is neither VarKernel nor Accessor:
+      - compute freeVars(preType) and freeVars(postType)
+      - assert freeVars(postType) ⊆ freeVars(preType)
+inputs: Canonical module + nodeTypesPre + nodeTypesPost
+oracle: PostSolve cannot make a node more polymorphic than what the solver inferred.
+tests: compiler/tests/Compiler/Type/PostSolve/PostSolveNonRegressionInvariantsTest.elm
 --
 
 ---
@@ -612,6 +644,22 @@ logic: For each entry in registry.reverseMapping:
 inputs: Monomorphized graphs
 oracle: Every registry entry's MonoType matches the corresponding node's type.
 tests: compiler/tests/Compiler/Generate/Monomorphize/RegistryNodeTypeConsistencyTest.elm
+--
+--
+name: MonoCase branches match case result type
+phase: monomorphization
+invariants: MONO_018
+ir: MonoCase expressions
+logic: For every MonoCase _ _ decider jumps resultType:
+  * For each (idx, branchExpr) in jumps:
+      Assert Mono.typeOf branchExpr == resultType
+  * Walk the decider tree:
+      For each Leaf (Inline expr): Assert Mono.typeOf expr == resultType
+      For each Leaf (Jump idx): No check needed (checked via jumps)
+  * Recursively check all sub-expressions in the MonoGraph
+inputs: Monomorphized graphs
+oracle: MonoCase resultType agrees with the types of all branch expressions.
+tests: compiler/tests/Compiler/Generate/Monomorphize/MonoCaseBranchResultTypeTest.elm
 --
 
 ---

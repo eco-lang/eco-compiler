@@ -3,7 +3,9 @@ module Compiler.Generate.MLIR.Types exposing
     , canUnbox, monoTypeToAbi, monoTypeToOperand
     , mlirTypeToString
     , isFunctionType, functionArity, countTotalArity, decomposeFunctionType
-    , stageParamTypes, stageArity, stageReturnType, isEcoValueType
+    , stageParamTypes, stageArity, stageReturnType
+    , Segmentation, segmentLengths, chooseCanonicalSegmentation, buildSegmentedFunctionType
+    , isEcoValueType
     , isUnboxable
     , RecordLayout, FieldInfo, TupleLayout, CtorLayout
     , computeRecordLayout, computeTupleLayout, computeCtorLayout
@@ -323,6 +325,135 @@ decomposeFunctionType monoType =
 
         other ->
             ( [], other )
+
+
+{-| A Segmentation is a list of stage arities: [m1, m2, ...] means
+stage 1 takes m1 args, stage 2 takes m2 args, etc.
+-}
+type alias Segmentation =
+    List Int
+
+
+{-| Extract the staging pattern (segment lengths) from a function type.
+For `MFunction [A,B] (MFunction [C,D] R)` returns `[2, 2]`.
+For `MFunction [A,B,C,D] R` returns `[4]`.
+For non-function types returns `[]`.
+-}
+segmentLengths : Mono.MonoType -> Segmentation
+segmentLengths monoType =
+    let
+        go t acc =
+            case t of
+                Mono.MFunction stageArgs stageRet ->
+                    go stageRet (List.length stageArgs :: acc)
+
+                _ ->
+                    List.reverse acc
+    in
+    go monoType []
+
+
+{-| Choose the canonical ABI segmentation for a join point.
+Given leaf function types from case branches:
+
+1.  Pick the segmentation that appears most often (minimize wrappers)
+2.  Among ties, pick the one with fewest stages (prefer flatter)
+
+Returns (canonicalSegmentation, flatArgs, flatRet).
+
+-}
+chooseCanonicalSegmentation : List Mono.MonoType -> ( Segmentation, List Mono.MonoType, Mono.MonoType )
+chooseCanonicalSegmentation leafTypes =
+    case leafTypes of
+        [] ->
+            -- Should not happen for well-formed MonoCase
+            ( [], [], Mono.MUnit )
+
+        firstType :: _ ->
+            let
+                -- Shared flattened signature (all branches must agree)
+                ( flatArgs, flatRet ) =
+                    decomposeFunctionType firstType
+
+                -- Count how often each segmentation occurs
+                countSegmentations : List Mono.MonoType -> Dict (List Int) (List Int) Int
+                countSegmentations types =
+                    List.foldl
+                        (\t accDict ->
+                            let
+                                seg =
+                                    segmentLengths t
+
+                                current =
+                                    Dict.get identity seg accDict |> Maybe.withDefault 0
+                            in
+                            Dict.insert identity seg (current + 1) accDict
+                        )
+                        Dict.empty
+                        types
+
+                freqDict =
+                    countSegmentations leafTypes
+
+                -- Find maximum count
+                maxCount =
+                    Dict.foldl compare (\_ count acc -> max count acc) 0 freqDict
+
+                -- All segmentations that hit maxCount
+                bestSegs =
+                    Dict.foldl compare
+                        (\seg count acc ->
+                            if count == maxCount then
+                                seg :: acc
+
+                            else
+                                acc
+                        )
+                        []
+                        freqDict
+
+                -- Among them, prefer fewest stages (most flat)
+                canonicalSeg =
+                    case List.sortBy List.length bestSegs of
+                        shortest :: _ ->
+                            shortest
+
+                        [] ->
+                            -- Fallback: use first type's segmentation
+                            segmentLengths firstType
+            in
+            ( canonicalSeg, flatArgs, flatRet )
+
+
+{-| Rebuild a nested MFunction from flat args and a segmentation.
+buildSegmentedFunctionType [A,B,C,D] R [2,2] = MFunction [A,B] (MFunction [C,D] R)
+buildSegmentedFunctionType [A,B,C,D] R [4] = MFunction [A,B,C,D] R
+-}
+buildSegmentedFunctionType : List Mono.MonoType -> Mono.MonoType -> Segmentation -> Mono.MonoType
+buildSegmentedFunctionType flatArgs finalRet seg =
+    let
+        -- Split flatArgs according to seg = [m1, m2, ...]
+        splitBySegments : List Mono.MonoType -> Segmentation -> List (List Mono.MonoType)
+        splitBySegments remaining segLengths =
+            case segLengths of
+                [] ->
+                    []
+
+                m :: rest ->
+                    let
+                        ( now, later ) =
+                            ( List.take m remaining, List.drop m remaining )
+                    in
+                    now :: splitBySegments later rest
+
+        stageArgsLists =
+            splitBySegments flatArgs seg
+    in
+    -- Build nested MFunction from inside out
+    List.foldr
+        (\stageArgs acc -> Mono.MFunction stageArgs acc)
+        finalRet
+        stageArgsLists
 
 
 
