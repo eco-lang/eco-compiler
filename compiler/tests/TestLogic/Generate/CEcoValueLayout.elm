@@ -15,9 +15,9 @@ CEcoValue layout is correctly computed.
 
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.Source as Src
-import TestLogic.Generate.TypedOptimizedMonomorphize as TOMono
 import Data.Map as Dict
 import Expect
+import TestLogic.Generate.TypedOptimizedMonomorphize as TOMono
 
 
 {-| Verify that CEcoValue MVars do not affect layout.

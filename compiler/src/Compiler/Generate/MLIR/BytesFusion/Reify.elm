@@ -2,10 +2,10 @@ module Compiler.Generate.MLIR.BytesFusion.Reify exposing
     ( DecoderNode(..)
     , EncoderNode(..)
     , decoderNodeToOps
+    , nodesToOps
     , reifyDecoder
     , reifyEncoder
     , reifyEndianness
-    , nodesToOps
     )
 
 {-| Reify MonoExpr representing Bytes.Encode.Encoder or Bytes.Decode.Decoder
@@ -700,17 +700,19 @@ reifyLoop registry stepFnExpr initialStateExpr =
 
 
 {-| Try to recognize sentinel-terminated loop patterns:
-    Decode.loop [] (\acc ->
-        Decode.unsignedInt8
-            |> Decode.andThen (\byte ->
-                if byte == 0 then Decode.succeed (Done ...)
-                else Decode.succeed (Loop ...)
-            )
-    )
+Decode.loop [] (\\acc ->
+Decode.unsignedInt8
+|> Decode.andThen (\\byte ->
+if byte == 0 then Decode.succeed (Done ...)
+else Decode.succeed (Loop ...)
+)
+)
 
 Key characteristics:
-- Initial state is empty list []
-- Step function reads a value, then uses andThen to check sentinel
+
+  - Initial state is empty list []
+  - Step function reads a value, then uses andThen to check sentinel
+
 -}
 trySentinelLoop : Mono.SpecializationRegistry -> Mono.MonoExpr -> Mono.MonoExpr -> Maybe DecoderNode
 trySentinelLoop registry stepFnExpr initialStateExpr =
@@ -727,7 +729,8 @@ trySentinelLoop registry stepFnExpr initialStateExpr =
 {-| Extract sentinel value and item decoder from a sentinel-terminated step function.
 
 Pattern:
-    \acc -> itemDecoder |> Decode.andThen (\val -> if val == SENTINEL then ... else ...)
+\\acc -> itemDecoder |> Decode.andThen (\\val -> if val == SENTINEL then ... else ...)
+
 -}
 extractSentinelFromStepFn : Mono.SpecializationRegistry -> Mono.MonoExpr -> Maybe DecoderNode
 extractSentinelFromStepFn registry stepFnExpr =
@@ -774,8 +777,9 @@ extractSentinelFromBody registry bodyExpr =
 
 {-| Extract sentinel value from the andThen body.
 
-The lambda has pattern: \val -> if val == SENTINEL then Done else Loop
+The lambda has pattern: \\val -> if val == SENTINEL then Done else Loop
 We need to find the sentinel value and confirm the decoder type.
+
 -}
 extractSentinelFromAndThenBody : Mono.SpecializationRegistry -> Mono.MonoExpr -> Mono.MonoExpr -> Maybe DecoderNode
 extractSentinelFromAndThenBody registry decoderExpr lambdaExpr =
@@ -796,7 +800,8 @@ extractSentinelFromAndThenBody registry decoderExpr lambdaExpr =
 
 {-| Extract the sentinel value from a lambda body containing an if expression.
 
-Pattern: \val -> if val == SENTINEL then ...
+Pattern: \\val -> if val == SENTINEL then ...
+
 -}
 extractSentinelValue : Mono.MonoExpr -> Maybe Int
 extractSentinelValue lambdaExpr =
@@ -832,6 +837,7 @@ extractSentinelFromIfExpr bodyExpr =
 {-| Extract sentinel value from a comparison condition.
 
 Pattern: val == SENTINEL (typically 0 for null-terminated)
+
 -}
 extractSentinelFromCondition : Mono.MonoExpr -> Maybe Int
 extractSentinelFromCondition condExpr =
@@ -897,9 +903,10 @@ extractCountSource expr =
 {-| Try to extract the item decoder from a loop step function.
 
 The step function has the pattern:
-    \( n, acc ) -> if n <= 0 then ... else Decode.map (\item -> ...) itemDecoder
+( n, acc ) -> if n <= 0 then ... else Decode.map (\\item -> ...) itemDecoder
 
 We need to find the Decode.map call and extract its second argument (itemDecoder).
+
 -}
 extractItemDecoderFromStepFn : Mono.SpecializationRegistry -> Mono.MonoExpr -> Maybe DecoderNode
 extractItemDecoderFromStepFn registry stepFnExpr =
@@ -916,6 +923,7 @@ extractItemDecoderFromStepFn registry stepFnExpr =
 
 This recursively looks through Let/Destruct nodes to find the MonoIf,
 then extracts the item decoder from the else branch's Decode.map call.
+
 -}
 extractItemDecoderFromBody : Mono.SpecializationRegistry -> Mono.MonoExpr -> Maybe DecoderNode
 extractItemDecoderFromBody registry bodyExpr =
@@ -946,8 +954,9 @@ extractItemDecoderFromBody registry bodyExpr =
 
 {-| Extract item decoder from a Decode.map call.
 
-Pattern: Decode.map (\item -> Loop ...) itemDecoder
+Pattern: Decode.map (\\item -> Loop ...) itemDecoder
 The itemDecoder is the second argument.
+
 -}
 extractItemDecoderFromMapCall : Mono.SpecializationRegistry -> Mono.MonoExpr -> Maybe DecoderNode
 extractItemDecoderFromMapCall registry expr =

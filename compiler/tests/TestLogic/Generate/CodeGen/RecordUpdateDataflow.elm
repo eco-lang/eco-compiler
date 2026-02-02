@@ -1,13 +1,10 @@
-module TestLogic.Generate.CodeGen.RecordUpdateDataflow exposing
-    ( expectRecordUpdateDataflow
-    , checkRecordUpdateDataflow
-    )
+module TestLogic.Generate.CodeGen.RecordUpdateDataflow exposing (expectRecordUpdateDataflow, checkRecordUpdateDataflow)
 
-{-| Test logic for CGEN_0D1: Record Update Dataflow Shape invariant.
+{-| Test logic for CGEN\_0D1: Record Update Dataflow Shape invariant.
 
 Detects when a whole record is incorrectly stored as a field during record
 update. The bug symptom: `{ original | x = 10 }` yields a record where field
-`x` becomes the *original record* instead of `10`.
+`x` becomes the _original record_ instead of `10`.
 
 This is detected by checking that `eco.construct.record` operands don't include
 the source record itself when other operands come from projections of that record.
@@ -17,6 +14,11 @@ the source record itself when other operands come from projections of that recor
 -}
 
 import Compiler.AST.Source as Src
+import Dict exposing (Dict)
+import Expect exposing (Expectation)
+import Mlir.Mlir exposing (MlirBlock, MlirModule, MlirOp, MlirRegion(..))
+import OrderedDict
+import Set exposing (Set)
 import TestLogic.Generate.CodeGen.GenerateMLIR exposing (compileToMlirModule)
 import TestLogic.Generate.CodeGen.Invariants
     exposing
@@ -26,11 +28,6 @@ import TestLogic.Generate.CodeGen.Invariants
         , violationsToExpectation
         , walkOpsInRegion
         )
-import Dict exposing (Dict)
-import Expect exposing (Expectation)
-import Mlir.Mlir exposing (MlirBlock, MlirModule, MlirOp, MlirRegion(..))
-import OrderedDict
-import Set exposing (Set)
 
 
 {-| Verify that record update dataflow invariants hold for a source module.

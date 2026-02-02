@@ -1,15 +1,15 @@
 module TestLogic.Generate.CodeGen.TupleProjectionTest exposing (suite)
 
-{-| Test suite for CGEN_022: Tuple Projection invariant.
+{-| Test suite for CGEN\_022: Tuple Projection invariant.
 
 Tuple destructuring must use `eco.project.tuple2` or `eco.project.tuple3`
 with valid field indices.
 
 -}
 
-import TestLogic.Generate.CodeGen.TupleProjection exposing (expectTupleProjection)
 import SourceIR.Suite.StandardTestSuites as StandardTestSuites
 import Test exposing (Test)
+import TestLogic.Generate.CodeGen.TupleProjection exposing (expectTupleProjection)
 
 
 suite : Test

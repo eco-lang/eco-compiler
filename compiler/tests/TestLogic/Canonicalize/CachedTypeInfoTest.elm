@@ -1,12 +1,11 @@
 module TestLogic.Canonicalize.CachedTypeInfoTest exposing (suite)
 
-{-| Test suite for invariant CANON_006: Cached type info matches source.
-
+{-| Test suite for invariant CANON\_006: Cached type info matches source.
 -}
 
 import Compiler.AST.SourceBuilder as SB
-import TestLogic.Canonicalize.CachedTypeInfo exposing (expectTypeInfoCached)
 import Test exposing (Test)
+import TestLogic.Canonicalize.CachedTypeInfo exposing (expectTypeInfoCached)
 
 
 suite : Test

@@ -1,9 +1,6 @@
-module TestLogic.Generate.CodeGen.CharTypeMapping exposing
-    ( expectCharTypeMapping
-    , checkCharTypeMapping
-    )
+module TestLogic.Generate.CodeGen.CharTypeMapping exposing (expectCharTypeMapping, checkCharTypeMapping)
 
-{-| Test logic for CGEN_015: Char Type Mapping invariant.
+{-| Test logic for CGEN\_015: Char Type Mapping invariant.
 
 `monoTypeToMlir` must map `MChar` to `i16` (not `i32`),
 and all char constants/ops must use `i16`.
@@ -13,6 +10,8 @@ and all char constants/ops must use `i16`.
 -}
 
 import Compiler.AST.Source as Src
+import Expect exposing (Expectation)
+import Mlir.Mlir exposing (MlirModule, MlirOp, MlirType(..))
 import TestLogic.Generate.CodeGen.GenerateMLIR exposing (compileToMlirModule)
 import TestLogic.Generate.CodeGen.Invariants
     exposing
@@ -22,8 +21,6 @@ import TestLogic.Generate.CodeGen.Invariants
         , findOpsWithPrefix
         , violationsToExpectation
         )
-import Expect exposing (Expectation)
-import Mlir.Mlir exposing (MlirModule, MlirOp, MlirType(..))
 
 
 {-| Verify that char type mapping invariants hold for a source module.

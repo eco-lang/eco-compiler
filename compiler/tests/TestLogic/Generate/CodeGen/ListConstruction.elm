@@ -1,9 +1,6 @@
-module TestLogic.Generate.CodeGen.ListConstruction exposing
-    ( expectListConstruction
-    , checkListConstruction
-    )
+module TestLogic.Generate.CodeGen.ListConstruction exposing (expectListConstruction, checkListConstruction)
 
-{-| Test logic for CGEN_016: List Construction invariant.
+{-| Test logic for CGEN\_016: List Construction invariant.
 
 List values must use `eco.construct.list` for cons cells and `eco.constant Nil`
 for empty lists; never `eco.construct.custom`.
@@ -13,6 +10,8 @@ for empty lists; never `eco.construct.custom`.
 -}
 
 import Compiler.AST.Source as Src
+import Expect exposing (Expectation)
+import Mlir.Mlir exposing (MlirModule, MlirOp)
 import TestLogic.Generate.CodeGen.GenerateMLIR exposing (compileToMlirModule)
 import TestLogic.Generate.CodeGen.Invariants
     exposing
@@ -21,8 +20,6 @@ import TestLogic.Generate.CodeGen.Invariants
         , getStringAttr
         , violationsToExpectation
         )
-import Expect exposing (Expectation)
-import Mlir.Mlir exposing (MlirModule, MlirOp)
 
 
 {-| Verify that list construction invariants hold for a source module.

@@ -111,14 +111,17 @@ dropNArgsFromType : Int -> Mono.MonoType -> Mono.MonoType
 dropNArgsFromType n monoType =
     if n <= 0 then
         monoType
+
     else
         case monoType of
             Mono.MFunction args result ->
                 let
-                    argsLen = List.length args
+                    argsLen =
+                        List.length args
                 in
                 if n >= argsLen then
                     dropNArgsFromType (n - argsLen) result
+
                 else
                     -- Partial consumption of this stage's args
                     Mono.MFunction (List.drop n args) result
@@ -129,14 +132,14 @@ dropNArgsFromType n monoType =
 
 {-| Specialize a lambda expression (Function or TrackedFunction) using two-mode logic.
 
-This implements the MONO_016 invariant with stage-aware closure construction:
+This implements the MONO\_016 invariant with stage-aware closure construction:
 
-1. **Fully Peelable (uncurried)**: Simple lambda chains like `\x -> \y -> \z -> body`
-   are flattened into a single `MFunction [x,y,z] ret` closure.
+1.  **Fully Peelable (uncurried)**: Simple lambda chains like `\x -> \y -> \z -> body`
+    are flattened into a single `MFunction [x,y,z] ret` closure.
 
-2. **Wrapper/Curried (staged)**: Lambdas separated by `let`/`case` like
-   `\x -> let ... in \y -> body` preserve nested `MFunction [x] (MFunction [y] ret)`
-   structure, with only the first stage params in this closure.
+2.  **Wrapper/Curried (staged)**: Lambdas separated by `let`/`case` like
+    `\x -> let ... in \y -> body` preserve nested `MFunction [x] (MFunction [y] ret)`
+    structure, with only the first stage params in this closure.
 
 This is the core Option A transformation: nested lambdas become a single
 uncurried closure. Partial application is represented only via PAPs downstream.
@@ -188,15 +191,18 @@ specializeLambda lambdaExpr canType subst state =
         Utils.Crash.crash
             ("specializeLambda: called with non-lambda or zero-arg lambda. "
                 ++ exprKind
-                ++ ", canType=" ++ Debug.toString canType
-                ++ ", monoType0=" ++ Debug.toString monoType0
-                ++ ", totalArity=" ++ String.fromInt totalArity
+                ++ ", canType="
+                ++ Debug.toString canType
+                ++ ", monoType0="
+                ++ Debug.toString monoType0
+                ++ ", totalArity="
+                ++ String.fromInt totalArity
             )
+        -- Guard: totalArity == 0 means non-function type
+        -- This is defensive and should not occur in well-typed Elm code, since specializeLambda
+        -- is only called on Function/TrackedFunction nodes which always have function types.
+        -- We handle it by rebuilding an MFunction from the params as a fallback.
 
-    -- Guard: totalArity == 0 means non-function type
-    -- This is defensive and should not occur in well-typed Elm code, since specializeLambda
-    -- is only called on Function/TrackedFunction nodes which always have function types.
-    -- We handle it by rebuilding an MFunction from the params as a fallback.
     else if totalArity == 0 then
         let
             -- Derive param types from canonical params
@@ -268,6 +274,7 @@ specializeLambda lambdaExpr canType subst state =
             effectiveMonoType =
                 if isFullyPeelable then
                     Mono.MFunction flatArgTypes flatRetType
+
                 else
                     -- Wrapper: build MFunction with first paramCount args
                     let
@@ -289,19 +296,23 @@ specializeLambda lambdaExpr canType subst state =
             effectiveParamTypes =
                 if isFullyPeelable then
                     flatArgTypes
+
                 else
-                    -- Wrapper/curried case: take first paramCount types from flattened type
-                    -- Guard: paramCount must not exceed totalArity
-                    if paramCount > totalArity then
-                        Utils.Crash.crash
-                            ("specializeLambda: paramCount ("
-                                ++ String.fromInt paramCount
-                                ++ ") > totalArity ("
-                                ++ String.fromInt totalArity
-                                ++ ") for lambda"
-                            )
-                    else
-                        List.take paramCount flatArgTypes
+                -- Wrapper/curried case: take first paramCount types from flattened type
+                -- Guard: paramCount must not exceed totalArity
+                if
+                    paramCount > totalArity
+                then
+                    Utils.Crash.crash
+                        ("specializeLambda: paramCount ("
+                            ++ String.fromInt paramCount
+                            ++ ") > totalArity ("
+                            ++ String.fromInt totalArity
+                            ++ ") for lambda"
+                        )
+
+                else
+                    List.take paramCount flatArgTypes
 
             deriveParamType : Int -> ( Name, Can.Type ) -> ( Name, Mono.MonoType )
             deriveParamType idx ( name, paramCanType ) =
@@ -349,6 +360,7 @@ specializeLambda lambdaExpr canType subst state =
                             ++ " params but effectiveMonoType has stage arity "
                             ++ String.fromInt (List.length stageArityCheck)
                         )
+
                 else
                     ()
 

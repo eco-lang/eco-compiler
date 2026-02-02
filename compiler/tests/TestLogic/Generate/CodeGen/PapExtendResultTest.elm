@@ -1,14 +1,14 @@
 module TestLogic.Generate.CodeGen.PapExtendResultTest exposing (suite)
 
-{-| Test suite for CGEN_034: PapExtend Result Type invariant.
+{-| Test suite for CGEN\_034: PapExtend Result Type invariant.
 
 `eco.papExtend` must produce `!eco.value` result.
 
 -}
 
-import TestLogic.Generate.CodeGen.PapExtendResult exposing (expectPapExtendResult)
 import SourceIR.Suite.StandardTestSuites as StandardTestSuites
 import Test exposing (Test)
+import TestLogic.Generate.CodeGen.PapExtendResult exposing (expectPapExtendResult)
 
 
 suite : Test

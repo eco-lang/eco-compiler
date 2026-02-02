@@ -1,9 +1,6 @@
-module TestLogic.Generate.CodeGen.TupleProjection exposing
-    ( expectTupleProjection
-    , checkTupleProjection
-    )
+module TestLogic.Generate.CodeGen.TupleProjection exposing (expectTupleProjection, checkTupleProjection)
 
-{-| Test logic for CGEN_022: Tuple Projection invariant.
+{-| Test logic for CGEN\_022: Tuple Projection invariant.
 
 Tuple destructuring must use `eco.project.tuple2` or `eco.project.tuple3`
 with valid field indices.
@@ -13,6 +10,8 @@ with valid field indices.
 -}
 
 import Compiler.AST.Source as Src
+import Expect exposing (Expectation)
+import Mlir.Mlir exposing (MlirModule, MlirOp)
 import TestLogic.Generate.CodeGen.GenerateMLIR exposing (compileToMlirModule)
 import TestLogic.Generate.CodeGen.Invariants
     exposing
@@ -21,8 +20,6 @@ import TestLogic.Generate.CodeGen.Invariants
         , getIntAttr
         , violationsToExpectation
         )
-import Expect exposing (Expectation)
-import Mlir.Mlir exposing (MlirModule, MlirOp)
 
 
 {-| Verify that tuple projection invariants hold for a source module.

@@ -1,12 +1,11 @@
 module TestLogic.Generate.DebugPolymorphismTest exposing (suite)
 
-{-| Test suite for invariant MONO_009: Debug.* kernel functions handle polymorphism.
-
+{-| Test suite for invariant MONO\_009: Debug.\* kernel functions handle polymorphism.
 -}
 
 import Compiler.AST.SourceBuilder as SB
-import TestLogic.Generate.DebugPolymorphism exposing (expectDebugPolymorphismResolved)
 import Test exposing (Test)
+import TestLogic.Generate.DebugPolymorphism exposing (expectDebugPolymorphismResolved)
 
 
 suite : Test

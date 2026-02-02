@@ -20,9 +20,9 @@ are properly computed and used.
 
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.Source as Src
-import TestLogic.Generate.TypedOptimizedMonomorphize as TOMono
 import Data.Map as Dict
 import Expect
+import TestLogic.Generate.TypedOptimizedMonomorphize as TOMono
 
 
 {-| MONO\_006: Verify record and tuple layouts capture shape completely.

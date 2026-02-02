@@ -7,9 +7,9 @@ the typed optimization pipeline, monomorphization, and MLIR code generation.
 
 -}
 
-import TestLogic.Generate.CodeGen.GenerateMLIR exposing (expectMLIRGeneration)
 import SourceIR.Suite.StandardTestSuites as StandardTestSuites
 import Test exposing (Test)
+import TestLogic.Generate.CodeGen.GenerateMLIR exposing (expectMLIRGeneration)
 
 
 suite : Test

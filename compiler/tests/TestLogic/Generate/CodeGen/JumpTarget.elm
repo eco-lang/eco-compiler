@@ -1,9 +1,6 @@
-module TestLogic.Generate.CodeGen.JumpTarget exposing
-    ( expectJumpTarget
-    , checkJumpTargets
-    )
+module TestLogic.Generate.CodeGen.JumpTarget exposing (expectJumpTarget, checkJumpTargets)
 
-{-| Test logic for CGEN_030: Jump Target Validity invariant.
+{-| Test logic for CGEN\_030: Jump Target Validity invariant.
 
 `eco.jump` target must refer to a lexically enclosing `eco.joinpoint` with
 matching id, and argument types must match.
@@ -13,6 +10,10 @@ matching id, and argument types must match.
 -}
 
 import Compiler.AST.Source as Src
+import Dict exposing (Dict)
+import Expect exposing (Expectation)
+import Mlir.Mlir exposing (MlirBlock, MlirModule, MlirOp, MlirRegion(..))
+import OrderedDict
 import TestLogic.Generate.CodeGen.GenerateMLIR exposing (compileToMlirModule)
 import TestLogic.Generate.CodeGen.Invariants
     exposing
@@ -23,10 +24,6 @@ import TestLogic.Generate.CodeGen.Invariants
         , typesMatch
         , violationsToExpectation
         )
-import Dict exposing (Dict)
-import Expect exposing (Expectation)
-import Mlir.Mlir exposing (MlirBlock, MlirModule, MlirOp, MlirRegion(..))
-import OrderedDict
 
 
 {-| Verify that jump target invariants hold for a source module.

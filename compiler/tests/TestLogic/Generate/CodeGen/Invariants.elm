@@ -4,10 +4,10 @@ module TestLogic.Generate.CodeGen.Invariants exposing
     , findOpsNamed, findOpsWithPrefix, findFuncOps
     , getIntAttr, getStringAttr, getArrayAttr, getTypeAttr, getBoolAttr
     , extractOperandTypes, extractResultTypes
-    , isEcoValueType, isUnboxable, isEcoPrimitive, ecoValueType
+    , isEcoValueType, ecoValueType
     , checkAll, checkNone
     , allBlocks
-    , TypeEnv, buildTypeEnv, findSymbolOps, isValidTerminator, typesMatch, validTerminators
+    , TypeEnv, buildTypeEnv, findSymbolOps, isEcoPrimitive, isUnboxable, isValidTerminator, typesMatch, validTerminators
     )
 
 {-| Shared infrastructure for MLIR codegen invariant tests.
@@ -294,8 +294,9 @@ isEcoValueType t =
 
 {-| Check if a type is unboxable for heap storage (i16, i64, f64).
 
-Per CGEN_026, only Int (i64), Float (f64), and Char (i16) are unboxable.
+Per CGEN\_026, only Int (i64), Float (f64), and Char (i16) are unboxable.
 Bool (i1) is NOT unboxable - it must be stored as !eco.value in heap objects.
+
 -}
 isUnboxable : MlirType -> Bool
 isUnboxable t =
@@ -317,6 +318,7 @@ isUnboxable t =
 
 This includes Bool (i1), which is a valid primitive for SSA operations
 like eco.unbox results, but cannot be stored unboxed in heap objects.
+
 -}
 isEcoPrimitive : MlirType -> Bool
 isEcoPrimitive t =
@@ -385,6 +387,7 @@ typesMatch t1 t2 =
 
 Note: eco.case is NOT a terminator - it is a value-producing expression.
 eco.yield is only valid inside eco.case alternatives.
+
 -}
 validTerminators : List String
 validTerminators =

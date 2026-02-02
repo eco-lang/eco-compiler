@@ -32,9 +32,9 @@ import Compiler.AST.SourceBuilder
         , varExpr
         )
 import Compiler.BulkCheck exposing (TestCase, bulkCheck)
-import TestLogic.Generate.TypedOptimizedMonomorphize exposing (expectMonomorphization)
 import Expect exposing (Expectation)
 import Test exposing (Test)
+import TestLogic.Generate.TypedOptimizedMonomorphize exposing (expectMonomorphization)
 
 
 suite : Test
@@ -232,7 +232,7 @@ singleFieldWrapper expectFn _ =
 
 {-| Wrapper type with Bool field.
 Tests that Bool values are correctly represented at ABI boundaries.
-This catches REP_ABI_001 violations where Bool might be passed as i1 instead of !eco.value.
+This catches REP\_ABI\_001 violations where Bool might be passed as i1 instead of !eco.value.
 -}
 boolWrapperType : (Src.Module -> Expectation) -> (() -> Expectation)
 boolWrapperType expectFn _ =

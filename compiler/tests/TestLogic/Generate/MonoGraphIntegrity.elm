@@ -20,10 +20,10 @@ invariants are satisfied.
 
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.Source as Src
-import TestLogic.Generate.TypedOptimizedMonomorphize as TOMono
 import Data.Map as Dict
 import Data.Set as Set exposing (EverySet)
 import Expect
+import TestLogic.Generate.TypedOptimizedMonomorphize as TOMono
 
 
 {-| MONO\_004: Verify that all function-typed nodes are callable.

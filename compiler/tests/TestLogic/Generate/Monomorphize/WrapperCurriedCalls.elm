@@ -1,7 +1,4 @@
-module TestLogic.Generate.Monomorphize.WrapperCurriedCalls exposing
-    ( expectWrapperCurriedCalls
-    , checkWrapperCurriedCalls
-    )
+module TestLogic.Generate.Monomorphize.WrapperCurriedCalls exposing (expectWrapperCurriedCalls, checkWrapperCurriedCalls)
 
 {-| Test logic for MONO\_016: Stage arity invariant for closures.
 
@@ -19,9 +16,9 @@ MFunction structure with each stage closure matching its outermost arg count.
 
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.Source as Src
-import TestLogic.Generate.TypedOptimizedMonomorphize as TOMono
 import Data.Map as Dict
 import Expect exposing (Expectation)
+import TestLogic.Generate.TypedOptimizedMonomorphize as TOMono
 
 
 {-| Violation record for reporting issues.

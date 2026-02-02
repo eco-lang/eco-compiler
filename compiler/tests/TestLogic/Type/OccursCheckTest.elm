@@ -1,12 +1,11 @@
 module TestLogic.Type.OccursCheckTest exposing (suite)
 
-{-| Test suite for invariant TYPE_004: Occurs check forbids infinite types.
-
+{-| Test suite for invariant TYPE\_004: Occurs check forbids infinite types.
 -}
 
 import Compiler.AST.SourceBuilder as SB
-import TestLogic.Type.OccursCheck exposing (expectInfiniteTypeDetected, expectNoInfiniteTypes)
 import Test exposing (Test)
+import TestLogic.Type.OccursCheck exposing (expectInfiniteTypeDetected, expectNoInfiniteTypes)
 
 
 suite : Test

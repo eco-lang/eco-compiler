@@ -28,8 +28,8 @@ import Compiler.Optimize.Typed.KernelTypes as KernelTypes
 import Compiler.Optimize.Typed.Names as Names
 import Compiler.Reporting.Annotation as A
 import Data.Map as Dict exposing (Dict)
-import System.TypeCheck.IO as IO
 import Data.Set as EverySet exposing (EverySet)
+import System.TypeCheck.IO as IO
 import Utils.Crash
 import Utils.Main as Utils
 

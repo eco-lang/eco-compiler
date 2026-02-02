@@ -422,6 +422,7 @@ constrainGenericWithIdsProg rtv region info expected =
                                         Type.exists [ exprVar ]
                                             (CAnd
                                                 [ con
+
                                                 -- Unify exprVar with the expected type so nodeTypes gets the resolved type
                                                 , CEqual region E.List exprType expected
                                                 ]

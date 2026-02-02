@@ -1,6 +1,6 @@
 module TestLogic.Generate.CodeGen.DestructorTypeProjectionTest exposing (suite)
 
-{-| Test suite for CGEN_004: Destructor Type Projection invariant.
+{-| Test suite for CGEN\_004: Destructor Type Projection invariant.
 
 generateDestruct and generateMonoPath must always use the destructor MonoType
 to determine the path target MLIR type. This ensures destruct paths yield
@@ -30,15 +30,15 @@ import Compiler.AST.SourceBuilder
         , tVar
         , varExpr
         )
+import Expect
+import SourceIR.Suite.StandardTestSuites as StandardTestSuites
+import Test exposing (Test)
 import TestLogic.Generate.CodeGen.DestructorTypeProjection
     exposing
         ( countProjectionUnboxSequences
         , expectDestructorTypeProjection
         )
 import TestLogic.Generate.CodeGen.GenerateMLIR exposing (compileToMlirModule)
-import SourceIR.Suite.StandardTestSuites as StandardTestSuites
-import Expect
-import Test exposing (Test)
 
 
 suite : Test

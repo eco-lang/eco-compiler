@@ -1,9 +1,6 @@
-module TestLogic.Generate.CodeGen.NoAllocateOps exposing
-    ( expectNoAllocateOps
-    , checkNoAllocateOps
-    )
+module TestLogic.Generate.CodeGen.NoAllocateOps exposing (expectNoAllocateOps, checkNoAllocateOps)
 
-{-| Test logic for CGEN_039: No Allocate Ops in Codegen invariant.
+{-| Test logic for CGEN\_039: No Allocate Ops in Codegen invariant.
 
 MLIR codegen must not emit `eco.allocate*` ops; these are introduced by later
 lowering passes.
@@ -13,6 +10,8 @@ lowering passes.
 -}
 
 import Compiler.AST.Source as Src
+import Expect exposing (Expectation)
+import Mlir.Mlir exposing (MlirModule)
 import TestLogic.Generate.CodeGen.GenerateMLIR exposing (compileToMlirModule)
 import TestLogic.Generate.CodeGen.Invariants
     exposing
@@ -21,8 +20,6 @@ import TestLogic.Generate.CodeGen.Invariants
         , violationsToExpectation
         , walkAllOps
         )
-import Expect exposing (Expectation)
-import Mlir.Mlir exposing (MlirModule)
 
 
 {-| Verify that no allocate ops invariants hold for a source module.

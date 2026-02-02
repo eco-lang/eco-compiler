@@ -1,6 +1,6 @@
 module TestLogic.Generate.CodeGen.PapExtendArityTest exposing (suite)
 
-{-| Test suite for CGEN_052: PapExtend remaining\_arity calculation invariant.
+{-| Test suite for CGEN\_052: PapExtend remaining\_arity calculation invariant.
 
 `eco.papExtend` requires:
 
@@ -9,9 +9,9 @@ module TestLogic.Generate.CodeGen.PapExtendArityTest exposing (suite)
 
 -}
 
-import TestLogic.Generate.CodeGen.PapExtendArity exposing (expectPapExtendArity)
 import SourceIR.Suite.StandardTestSuites as StandardTestSuites
 import Test exposing (Test)
+import TestLogic.Generate.CodeGen.PapExtendArity exposing (expectPapExtendArity)
 
 
 suite : Test

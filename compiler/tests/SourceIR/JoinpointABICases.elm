@@ -20,7 +20,6 @@ import Compiler.AST.SourceBuilder
         , UnionDef
         , binopsExpr
         , boolExpr
-        , pAnything
         , callExpr
         , caseExpr
         , ctorExpr
@@ -31,6 +30,7 @@ import Compiler.AST.SourceBuilder
         , letExpr
         , listExpr
         , makeModuleWithTypedDefsUnionsAliases
+        , pAnything
         , pCons
         , pCtor
         , pInt
@@ -42,9 +42,9 @@ import Compiler.AST.SourceBuilder
         , varExpr
         )
 import Compiler.BulkCheck exposing (TestCase, bulkCheck)
-import TestLogic.Generate.TypedOptimizedMonomorphize exposing (expectMonomorphization)
 import Expect exposing (Expectation)
 import Test exposing (Test)
+import TestLogic.Generate.TypedOptimizedMonomorphize exposing (expectMonomorphization)
 
 
 suite : Test
@@ -89,7 +89,7 @@ identicalStagingCases expectFn =
     ]
 
 
-{-| All branches return flat binary function: \a b -> expr
+{-| All branches return flat binary function: \\a b -> expr
 Segmentation: all [2]
 -}
 identicalFlat2 : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -138,7 +138,7 @@ identicalFlat2 expectFn _ =
     expectFn modul
 
 
-{-| All branches return curried unary functions: \a -> \b -> expr
+{-| All branches return curried unary functions: \\a -> \\b -> expr
 Segmentation: all [1,1]
 -}
 identicalCurried11 : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -187,7 +187,7 @@ identicalCurried11 expectFn _ =
     expectFn modul
 
 
-{-| All branches return flat ternary function: \a b c -> expr
+{-| All branches return flat ternary function: \\a b c -> expr
 Segmentation: all [3]
 -}
 identicalFlat3 : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -234,7 +234,7 @@ identicalFlat3 expectFn _ =
     expectFn modul
 
 
-{-| All branches return deeply curried: \a -> \b -> \c -> expr
+{-| All branches return deeply curried: \\a -> \\b -> \\c -> expr
 Segmentation: all [1,1,1]
 -}
 identicalCurried111 : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -295,7 +295,7 @@ identicalCurried111 expectFn _ =
     expectFn modul
 
 
-{-| All branches return mixed staging: \a b -> \c -> expr
+{-| All branches return mixed staging: \\a b -> \\c -> expr
 Segmentation: all [2,1]
 -}
 identicalMixed21 : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -1024,7 +1024,7 @@ letFunctionInBranch expectFn _ =
 
 
 {-| let creates separated staging [1,1] vs flat [2].
-\a -> let y = ... in \z -> ... creates [1,1]
+\\a -> let y = ... in \\z -> ... creates [1,1]
 -}
 letSeparatedStaging : (Src.Module -> Expectation) -> (() -> Expectation)
 letSeparatedStaging expectFn _ =

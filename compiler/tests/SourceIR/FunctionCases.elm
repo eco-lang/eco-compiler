@@ -485,10 +485,12 @@ polymorphicNumberCases expectFn =
     zabs n =
         if n < 0 then
             -n
+
         else
             n
 
-    testValue = zabs 5
+    testValue =
+        zabs 5
 
 When called with Int, this is straightforward - the 0 stays as Int.
 
@@ -536,11 +538,13 @@ zabsWithInt expectFn _ =
     zabs n =
         if n < 0 then
             -n
+
         else
             n
 
     testValue : Float
-    testValue = zabs 3.14
+    testValue =
+        zabs 3.14
 
 When called with Float, the 0 literal must be promoted to Float during
 monomorphization. This triggers the "Int literal used at Float type" code path.

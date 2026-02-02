@@ -1,12 +1,11 @@
 module TestLogic.Optimize.AnnotationsPreservedTest exposing (suite)
 
-{-| Test suite for invariant TOPT_003: Top-level annotations preserved in local graph.
-
+{-| Test suite for invariant TOPT\_003: Top-level annotations preserved in local graph.
 -}
 
-import TestLogic.Optimize.AnnotationsPreserved exposing (expectAnnotationsPreserved)
 import SourceIR.Suite.StandardTestSuites as StandardTestSuites
 import Test exposing (Test)
+import TestLogic.Optimize.AnnotationsPreserved exposing (expectAnnotationsPreserved)
 
 
 suite : Test

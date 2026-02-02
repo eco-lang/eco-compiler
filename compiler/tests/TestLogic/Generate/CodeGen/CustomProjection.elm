@@ -1,9 +1,6 @@
-module TestLogic.Generate.CodeGen.CustomProjection exposing
-    ( expectCustomProjection
-    , checkCustomProjection
-    )
+module TestLogic.Generate.CodeGen.CustomProjection exposing (expectCustomProjection, checkCustomProjection)
 
-{-| Test logic for CGEN_024: Custom ADT Projection invariant.
+{-| Test logic for CGEN\_024: Custom ADT Projection invariant.
 
 Custom ADT field access must use `eco.project.custom` with valid field index.
 
@@ -12,6 +9,8 @@ Custom ADT field access must use `eco.project.custom` with valid field index.
 -}
 
 import Compiler.AST.Source as Src
+import Expect exposing (Expectation)
+import Mlir.Mlir exposing (MlirModule, MlirOp)
 import TestLogic.Generate.CodeGen.GenerateMLIR exposing (compileToMlirModule)
 import TestLogic.Generate.CodeGen.Invariants
     exposing
@@ -20,8 +19,6 @@ import TestLogic.Generate.CodeGen.Invariants
         , getIntAttr
         , violationsToExpectation
         )
-import Expect exposing (Expectation)
-import Mlir.Mlir exposing (MlirModule, MlirOp)
 
 
 {-| Verify that custom projection invariants hold for a source module.

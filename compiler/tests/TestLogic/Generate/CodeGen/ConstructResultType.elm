@@ -1,9 +1,6 @@
-module TestLogic.Generate.CodeGen.ConstructResultType exposing
-    ( expectConstructResultType
-    , checkConstructResultTypes
-    )
+module TestLogic.Generate.CodeGen.ConstructResultType exposing (expectConstructResultType, checkConstructResultTypes)
 
-{-| Test logic for CGEN_025: Construct Result Types invariant.
+{-| Test logic for CGEN\_025: Construct Result Types invariant.
 
 All `eco.construct.*` ops must produce `!eco.value` result type.
 
@@ -12,6 +9,8 @@ All `eco.construct.*` ops must produce `!eco.value` result type.
 -}
 
 import Compiler.AST.Source as Src
+import Expect exposing (Expectation)
+import Mlir.Mlir exposing (MlirModule, MlirOp, MlirType(..))
 import TestLogic.Generate.CodeGen.GenerateMLIR exposing (compileToMlirModule)
 import TestLogic.Generate.CodeGen.Invariants
     exposing
@@ -20,8 +19,6 @@ import TestLogic.Generate.CodeGen.Invariants
         , isEcoValueType
         , violationsToExpectation
         )
-import Expect exposing (Expectation)
-import Mlir.Mlir exposing (MlirModule, MlirOp, MlirType(..))
 
 
 {-| Verify that construct result type invariants hold for a source module.

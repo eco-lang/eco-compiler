@@ -1,15 +1,15 @@
 module TestLogic.Generate.CodeGen.NoAllocateOpsTest exposing (suite)
 
-{-| Test suite for CGEN_039: No Allocate Ops in Codegen invariant.
+{-| Test suite for CGEN\_039: No Allocate Ops in Codegen invariant.
 
 MLIR codegen must not emit `eco.allocate*` ops; these are introduced by later
 lowering passes.
 
 -}
 
-import TestLogic.Generate.CodeGen.NoAllocateOps exposing (expectNoAllocateOps)
 import SourceIR.Suite.StandardTestSuites as StandardTestSuites
 import Test exposing (Test)
+import TestLogic.Generate.CodeGen.NoAllocateOps exposing (expectNoAllocateOps)
 
 
 suite : Test

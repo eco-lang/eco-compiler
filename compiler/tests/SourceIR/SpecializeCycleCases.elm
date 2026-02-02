@@ -28,9 +28,9 @@ import Compiler.AST.SourceBuilder
         , varExpr
         )
 import Compiler.BulkCheck exposing (TestCase, bulkCheck)
-import TestLogic.Generate.TypedOptimizedMonomorphize exposing (expectMonomorphization)
 import Expect exposing (Expectation)
 import Test exposing (Test)
+import TestLogic.Generate.TypedOptimizedMonomorphize exposing (expectMonomorphization)
 
 
 suite : Test

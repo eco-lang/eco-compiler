@@ -1,12 +1,11 @@
 module TestLogic.Type.PostSolve.GroupBTypesTest exposing (suite)
 
-{-| Test suite for invariant POST_001: GroupB types are fully resolved.
-
+{-| Test suite for invariant POST\_001: GroupB types are fully resolved.
 -}
 
 import Compiler.AST.SourceBuilder as SB
-import TestLogic.Type.PostSolve.GroupBTypes exposing (expectGroupBTypesValid)
 import Test exposing (Test)
+import TestLogic.Type.PostSolve.GroupBTypes exposing (expectGroupBTypesValid)
 
 
 suite : Test

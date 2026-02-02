@@ -1,7 +1,6 @@
 module TestLogic.Generate.CodeGen.GenerateMLIR exposing
     ( expectMLIRGeneration
-    , compileToMlirModule
-    , CompileResult
+    , compileToMlirModule, CompileResult
     )
 
 {-| Test infrastructure for verifying that monomorphized code can be compiled to MLIR.

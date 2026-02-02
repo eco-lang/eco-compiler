@@ -7,16 +7,16 @@ appropriate expectation functions.
 
 -}
 
+import SourceIR.ForeignCases as ForeignCases
+import SourceIR.KernelCases as KernelCases
 import SourceIR.Suite.StandardTestSuites as StandardTestSuites
+import SourceIR.TypeCheckFailsCases as TypeCheckFailsCases
+import Test exposing (Test)
 import TestLogic.Type.Constrain.TypedErasedCheckingParity
     exposing
         ( expectEquivalentTypeChecking
         , expectEquivalentTypeCheckingCanonical
         )
-import SourceIR.ForeignCases as ForeignCases
-import SourceIR.KernelCases as KernelCases
-import SourceIR.TypeCheckFailsCases as TypeCheckFailsCases
-import Test exposing (Test)
 
 
 suite : Test

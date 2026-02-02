@@ -2,13 +2,15 @@ module TestLogic.Generate.MonoGraphIntegrityTest exposing (suite)
 
 {-| Test suite for MonoGraph integrity invariants:
 
-  - MONO_004: All functions are callable MonoNodes
-  - MONO_005: Specialization registry is complete and consistent
-  - MONO_010: MonoGraph is type complete
-  - MONO_011: MonoGraph is closed and hygienic
+  - MONO\_004: All functions are callable MonoNodes
+  - MONO\_005: Specialization registry is complete and consistent
+  - MONO\_010: MonoGraph is type complete
+  - MONO\_011: MonoGraph is closed and hygienic
 
 -}
 
+import SourceIR.Suite.StandardTestSuites as StandardTestSuites
+import Test exposing (Test)
 import TestLogic.Generate.MonoGraphIntegrity
     exposing
         ( expectCallableMonoNodes
@@ -16,8 +18,6 @@ import TestLogic.Generate.MonoGraphIntegrity
         , expectMonoGraphComplete
         , expectSpecRegistryComplete
         )
-import SourceIR.Suite.StandardTestSuites as StandardTestSuites
-import Test exposing (Test)
 
 
 suite : Test

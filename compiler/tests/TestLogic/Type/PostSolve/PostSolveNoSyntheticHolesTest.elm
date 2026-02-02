@@ -7,20 +7,21 @@ non-kernel expression type anywhere in the type tree. This directly targets
 the MONO\_018 "polymorphic remnant" class of bugs.
 
 The test:
-1. Identifies "hole var names" - TVar names from pre-types of synthetic expressions
-2. Checks that no non-kernel expression's post-type contains any hole var names
+
+1.  Identifies "hole var names" - TVar names from pre-types of synthetic expressions
+2.  Checks that no non-kernel expression's post-type contains any hole var names
 
 -}
 
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Source as Src
-import SourceIR.Suite.StandardTestSuites as StandardTestSuites
-import TestLogic.Type.PostSolve.CompileThroughPostSolve as Compile
-import TestLogic.Type.PostSolve.PostSolveInvariantHelpers as Helpers
 import Data.Map as Dict
 import Data.Set as EverySet exposing (EverySet)
 import Expect
+import SourceIR.Suite.StandardTestSuites as StandardTestSuites
 import Test exposing (Test)
+import TestLogic.Type.PostSolve.CompileThroughPostSolve as Compile
+import TestLogic.Type.PostSolve.PostSolveInvariantHelpers as Helpers
 
 
 {-| A violation of POST\_003.

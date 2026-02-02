@@ -384,7 +384,7 @@ ppAttrs attrs =
 
 
 {-| Escape a string for MLIR output.
-Converts JavaScript-style \uXXXX escapes to MLIR-compatible \xNN UTF-8 byte escapes.
+Converts JavaScript-style \\uXXXX escapes to MLIR-compatible \\xNN UTF-8 byte escapes.
 Also escapes any non-ASCII characters that may be in the string.
 -}
 escapeForMlir : String -> String
@@ -394,7 +394,7 @@ escapeForMlir s =
     convertUnicodeEscapesToUtf8 s
 
 
-{-| Convert \uXXXX escapes to raw UTF-8 characters.
+{-| Convert \\uXXXX escapes to raw UTF-8 characters.
 MLIR accepts raw UTF-8 in string literals.
 -}
 convertUnicodeEscapesToUtf8 : String -> String
@@ -448,7 +448,7 @@ convertUnicodeEscapesToUtf8 s =
     go "" s
 
 
-{-| Escape non-ASCII characters to \xNN format.
+{-| Escape non-ASCII characters to \\xNN format.
 -}
 escapeNonAscii : String -> String
 escapeNonAscii s =

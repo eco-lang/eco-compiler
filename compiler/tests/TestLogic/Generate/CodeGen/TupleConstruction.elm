@@ -1,9 +1,6 @@
-module TestLogic.Generate.CodeGen.TupleConstruction exposing
-    ( expectTupleConstruction
-    , checkTupleConstruction
-    )
+module TestLogic.Generate.CodeGen.TupleConstruction exposing (expectTupleConstruction, checkTupleConstruction)
 
-{-| Test logic for CGEN_017: Tuple Construction invariant.
+{-| Test logic for CGEN\_017: Tuple Construction invariant.
 
 Tuples must use `eco.construct.tuple2` or `eco.construct.tuple3`;
 never `eco.construct.custom`.
@@ -13,6 +10,8 @@ never `eco.construct.custom`.
 -}
 
 import Compiler.AST.Source as Src
+import Expect exposing (Expectation)
+import Mlir.Mlir exposing (MlirModule, MlirOp)
 import TestLogic.Generate.CodeGen.GenerateMLIR exposing (compileToMlirModule)
 import TestLogic.Generate.CodeGen.Invariants
     exposing
@@ -21,8 +20,6 @@ import TestLogic.Generate.CodeGen.Invariants
         , getStringAttr
         , violationsToExpectation
         )
-import Expect exposing (Expectation)
-import Mlir.Mlir exposing (MlirModule, MlirOp)
 
 
 {-| Verify that tuple construction invariants hold for a source module.

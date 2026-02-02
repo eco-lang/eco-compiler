@@ -1,24 +1,24 @@
 module TestLogic.Generate.CodeGen.UnboxedBitmapTest exposing (suite)
 
-{-| Test suite for CGEN_026, CGEN_027, CGEN_003, and CGEN_049: Unboxed Bitmap Consistency invariants.
+{-| Test suite for CGEN\_026, CGEN\_027, CGEN\_003, and CGEN\_049: Unboxed Bitmap Consistency invariants.
 
-CGEN_026: For container construct ops, bit N of `unboxed_bitmap` must be set
+CGEN\_026: For container construct ops, bit N of `unboxed_bitmap` must be set
 iff operand N is a primitive type.
 
-CGEN_027: For `eco.construct.list`, `head_unboxed` must be true iff head
+CGEN\_027: For `eco.construct.list`, `head_unboxed` must be true iff head
 operand is primitive.
 
-CGEN_003: For `eco.papCreate`, bit N of `unboxed_bitmap` must be set iff
+CGEN\_003: For `eco.papCreate`, bit N of `unboxed_bitmap` must be set iff
 captured operand N is a primitive type.
 
-CGEN_049: For `eco.papExtend`, bit N of `newargs_unboxed_bitmap` must be set
+CGEN\_049: For `eco.papExtend`, bit N of `newargs_unboxed_bitmap` must be set
 iff new argument operand N is a primitive type.
 
 -}
 
-import TestLogic.Generate.CodeGen.UnboxedBitmap exposing (expectUnboxedBitmap)
 import SourceIR.Suite.StandardTestSuites as StandardTestSuites
 import Test exposing (Test)
+import TestLogic.Generate.CodeGen.UnboxedBitmap exposing (expectUnboxedBitmap)
 
 
 suite : Test

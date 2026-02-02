@@ -3,7 +3,7 @@ module TestLogic.Optimize.DeciderExhaustive exposing
     , expectDeciderNoNestedPatterns
     )
 
-{-| Test logic for invariant TOPT_002: Decider trees are exhaustive with no nested patterns.
+{-| Test logic for invariant TOPT\_002: Decider trees are exhaustive with no nested patterns.
 
 Examine the Decider data structure in TypedOptimized.Case:
 
@@ -17,15 +17,15 @@ decision trees are properly compiled.
 
 import Compiler.AST.Source as Src
 import Compiler.AST.TypedOptimized as TOpt
-import TestLogic.Generate.TypedOptimizedMonomorphize as TOMono
 import Compiler.Optimize.Typed.DecisionTree as DT
 import Compiler.Reporting.Annotation as A
 import Data.Map as Dict
 import Expect
 import System.TypeCheck.IO as IO
+import TestLogic.Generate.TypedOptimizedMonomorphize as TOMono
 
 
-{-| TOPT_002: Verify decision trees have no nested patterns.
+{-| TOPT\_002: Verify decision trees have no nested patterns.
 -}
 expectDeciderNoNestedPatterns : Src.Module -> Expect.Expectation
 expectDeciderNoNestedPatterns srcModule =
@@ -46,7 +46,7 @@ expectDeciderNoNestedPatterns srcModule =
                     Expect.all checks ()
 
 
-{-| TOPT_002: Verify decision trees are complete (exhaustive).
+{-| TOPT\_002: Verify decision trees are complete (exhaustive).
 -}
 expectDeciderComplete : Src.Module -> Expect.Expectation
 expectDeciderComplete srcModule =

@@ -16,9 +16,9 @@ polymorphism is properly resolved before code generation.
 
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.Source as Src
-import TestLogic.Generate.TypedOptimizedMonomorphize as TOMono
 import Data.Map as Dict
 import Expect
+import TestLogic.Generate.TypedOptimizedMonomorphize as TOMono
 
 
 {-| MONO\_002: Verify no CNumber MVars remain at MLIR codegen entry.

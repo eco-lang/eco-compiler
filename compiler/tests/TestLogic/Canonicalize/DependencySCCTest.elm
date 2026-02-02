@@ -1,12 +1,11 @@
 module TestLogic.Canonicalize.DependencySCCTest exposing (suite)
 
-{-| Test suite for invariant CANON_005: Dependency SCCs are correctly computed.
-
+{-| Test suite for invariant CANON\_005: Dependency SCCs are correctly computed.
 -}
 
 import Compiler.AST.SourceBuilder as SB
-import TestLogic.Canonicalize.DependencySCC exposing (expectValidSCCs)
 import Test exposing (Test)
+import TestLogic.Canonicalize.DependencySCC exposing (expectValidSCCs)
 
 
 suite : Test

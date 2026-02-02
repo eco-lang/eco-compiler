@@ -857,20 +857,30 @@ caseReturnsCurriedBinaryOp expectFn _ =
 
 {-| Tests MONO\_016 with a ternary curried function passed to a higher-order function.
 
-    type Mode = First | Second | Third
+    type Mode
+        = First
+        | Second
+        | Third
 
     choose : Mode -> Int -> Int -> Int -> Int
     choose mode =
         case mode of
-            First -> \a b c -> a
-            Second -> \a b c -> b
-            Third -> \a b c -> c
+            First ->
+                \a b c -> a
+
+            Second ->
+                \a b c -> b
+
+            Third ->
+                \a b c -> c
 
     -- Forces wrapper closure creation for choose
     applyChoice : (Mode -> Int -> Int -> Int -> Int) -> Mode -> Int -> Int -> Int -> Int
-    applyChoice f mode a b c = f mode a b c
+    applyChoice f mode a b c =
+        f mode a b c
 
-    testValue = applyChoice choose First 10 20 30
+    testValue =
+        applyChoice choose First 10 20 30
 
 -}
 caseReturnsCurriedTernaryFn : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -963,18 +973,23 @@ caseReturnsCurriedTernaryFn expectFn _ =
 This test creates different syntactic lambda nestings across branches that have
 the same Elm type but potentially different staging boundaries in Mono IR:
 
-    type Selector = UseFlat | UseNested
+    type Selector
+        = UseFlat
+        | UseNested
 
     selectFn : Selector -> Int -> Int -> Int -> Int
     selectFn sel a =
         case sel of
             UseFlat ->
-                \b c -> a + b + c           -- single 2-arg lambda
+                \b c -> a + b + c
 
+            -- single 2-arg lambda
             UseNested ->
-                \b -> \c -> a + b + c       -- nested single-arg lambdas
+                \b -> \c -> a + b + c
 
-    testValue = selectFn UseFlat 1 2 3
+    -- nested single-arg lambdas
+    testValue =
+        selectFn UseFlat 1 2 3
 
 If monomorphization doesn't normalize these to the same MFunction shape, the
 branches would have different MonoTypes, violating MONO\_018.

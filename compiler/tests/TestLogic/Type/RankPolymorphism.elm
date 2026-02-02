@@ -15,9 +15,9 @@ rank polymorphism is correctly handled.
 
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Source as Src
-import TestLogic.Generate.TypedOptimizedMonomorphize as TOMono
 import Data.Map as Dict
 import Expect
+import TestLogic.Generate.TypedOptimizedMonomorphize as TOMono
 
 
 {-| Verify that rank-based let-polymorphism is enforced.

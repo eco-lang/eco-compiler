@@ -163,7 +163,7 @@ applyAnnotated expectFn _ =
 {-| apply : (a -> b) -> a -> b
 apply f x = f x
 
-test = apply (\n -> n) True
+test = apply (\\n -> n) True
 
 -}
 applyWithUsage : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -264,7 +264,7 @@ composeAnnotated expectFn _ =
 {-| compose : (b -> c) -> (a -> b) -> a -> c
 compose f g x = f (g x)
 
-test = compose (\x -> x) (\y -> y) True
+test = compose (\\x -> x) (\\y -> y) True
 
 -}
 composeWithUsage : (Src.Module -> Expectation) -> (() -> Expectation)

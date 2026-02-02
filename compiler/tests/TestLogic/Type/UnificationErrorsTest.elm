@@ -7,12 +7,12 @@ This module tests that type mismatches are properly reported as errors.
 -}
 
 import Compiler.AST.SourceBuilder as SB
+import Test exposing (Test)
 import TestLogic.Type.UnificationErrors
     exposing
         ( expectNoTypeErrors
         , expectTypeMismatchError
         )
-import Test exposing (Test)
 
 
 suite : Test

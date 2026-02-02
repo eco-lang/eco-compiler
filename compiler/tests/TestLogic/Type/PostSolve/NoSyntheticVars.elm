@@ -1,8 +1,6 @@
-module TestLogic.Type.PostSolve.NoSyntheticVars exposing
-    ( expectNoSyntheticVars
-    )
+module TestLogic.Type.PostSolve.NoSyntheticVars exposing (expectNoSyntheticVars)
 
-{-| Test logic for invariant POST_003: No synthetic type variables remain.
+{-| Test logic for invariant POST\_003: No synthetic type variables remain.
 
 After solving, verify that no synthetic (unification) type variables
 remain in the final types. All type variables should be either:
@@ -14,9 +12,9 @@ remain in the final types. All type variables should be either:
 
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Source as Src
-import TestLogic.Generate.TypedOptimizedMonomorphize as TOMono
 import Data.Map as Dict
 import Expect
+import TestLogic.Generate.TypedOptimizedMonomorphize as TOMono
 
 
 {-| Verify that no unconstrained synthetic variables remain after PostSolve.
@@ -119,7 +117,7 @@ checkForSyntheticVars context canType =
 Synthetic variables from unification typically:
 
   - Have purely numeric names (e.g., "0", "1", "23")
-  - Have special prefixes like "_" or internal markers
+  - Have special prefixes like "\_" or internal markers
 
 User-declared type variables use lowercase letters (a, b, msg, etc.)
 

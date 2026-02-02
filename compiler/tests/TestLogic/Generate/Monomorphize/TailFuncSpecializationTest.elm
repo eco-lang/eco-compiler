@@ -1,6 +1,6 @@
 module TestLogic.Generate.Monomorphize.TailFuncSpecializationTest exposing (suite)
 
-{-| Test suite for invariant MONO_TAILFUNC_001: TailFunc specialization types match annotation.
+{-| Test suite for invariant MONO\_TAILFUNC\_001: TailFunc specialization types match annotation.
 
 This test verifies that for tail-recursive functions:
 
@@ -31,10 +31,10 @@ import Compiler.AST.SourceBuilder
         , varExpr
         )
 import Compiler.Data.Name as Name
-import TestLogic.Generate.TypedOptimizedMonomorphize as Pipeline
 import Data.Map as Dict
 import Expect exposing (Expectation)
 import Test exposing (Test)
+import TestLogic.Generate.TypedOptimizedMonomorphize as Pipeline
 
 
 suite : Test
@@ -59,6 +59,7 @@ suite =
     sumHelper acc n =
         if n <= 0 then
             acc
+
         else
             sumHelper (acc + n) (n - 1)
 

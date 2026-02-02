@@ -1,9 +1,6 @@
-module TestLogic.Generate.CodeGen.DbgTypeIds exposing
-    ( expectDbgTypeIds
-    , checkDbgTypeIds
-    )
+module TestLogic.Generate.CodeGen.DbgTypeIds exposing (expectDbgTypeIds, checkDbgTypeIds)
 
-{-| Test logic for CGEN_036: Dbg Type IDs Valid invariant.
+{-| Test logic for CGEN\_036: Dbg Type IDs Valid invariant.
 
 When `eco.dbg` has `arg_type_ids`, each ID must reference a valid type table entry.
 
@@ -12,6 +9,8 @@ When `eco.dbg` has `arg_type_ids`, each ID must reference a valid type table ent
 -}
 
 import Compiler.AST.Source as Src
+import Expect exposing (Expectation)
+import Mlir.Mlir exposing (MlirAttr(..), MlirModule, MlirOp)
 import TestLogic.Generate.CodeGen.GenerateMLIR exposing (compileToMlirModule)
 import TestLogic.Generate.CodeGen.Invariants
     exposing
@@ -20,8 +19,6 @@ import TestLogic.Generate.CodeGen.Invariants
         , getArrayAttr
         , violationsToExpectation
         )
-import Expect exposing (Expectation)
-import Mlir.Mlir exposing (MlirAttr(..), MlirModule, MlirOp)
 
 
 {-| Verify that dbg type IDs invariants hold for a source module.

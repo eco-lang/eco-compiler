@@ -1,8 +1,6 @@
-module TestLogic.Type.PostSolve.KernelTypes exposing
-    ( expectKernelTypesValid
-    )
+module TestLogic.Type.PostSolve.KernelTypes exposing (expectKernelTypesValid)
 
-{-| Test logic for invariant POST_002: Kernel types are correctly resolved.
+{-| Test logic for invariant POST\_002: Kernel types are correctly resolved.
 
 Verify that references to kernel (built-in) types like Int, Float, String,
 List, etc. are correctly resolved and consistent throughout the module.
@@ -11,10 +9,10 @@ List, etc. are correctly resolved and consistent throughout the module.
 
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Source as Src
-import TestLogic.Generate.TypedOptimizedMonomorphize as TOMono
 import Compiler.Optimize.Typed.KernelTypes as KernelTypes
 import Data.Map as Dict
 import Expect
+import TestLogic.Generate.TypedOptimizedMonomorphize as TOMono
 
 
 {-| Verify that kernel function types are inferred from usage.

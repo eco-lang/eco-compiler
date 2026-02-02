@@ -1,7 +1,4 @@
-module TestLogic.Generate.Monomorphize.RegistryNodeTypeConsistency exposing
-    ( expectRegistryNodeTypeConsistency
-    , checkRegistryNodeTypeConsistency
-    )
+module TestLogic.Generate.Monomorphize.RegistryNodeTypeConsistency exposing (expectRegistryNodeTypeConsistency, checkRegistryNodeTypeConsistency)
 
 {-| Test logic for MONO\_017: Registry type matches node type.
 
@@ -20,9 +17,9 @@ This invariant catches the "two type shapes floating around" bug where:
 
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.Source as Src
-import TestLogic.Generate.TypedOptimizedMonomorphize as TOMono
 import Data.Map as Dict
 import Expect exposing (Expectation)
+import TestLogic.Generate.TypedOptimizedMonomorphize as TOMono
 
 
 {-| Violation record for reporting issues.

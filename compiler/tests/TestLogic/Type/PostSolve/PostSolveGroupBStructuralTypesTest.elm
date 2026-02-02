@@ -16,14 +16,14 @@ import Compiler.AST.Source as Src
 import Compiler.Data.Name as Name
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Reporting.Annotation as A
-import SourceIR.Suite.StandardTestSuites as StandardTestSuites
 import Compiler.Type.PostSolve as PostSolve
-import TestLogic.Type.PostSolve.CompileThroughPostSolve as Compile
-import TestLogic.Type.PostSolve.PostSolveInvariantHelpers as Helpers
 import Data.Map as Dict
 import Data.Set as EverySet
 import Expect
+import SourceIR.Suite.StandardTestSuites as StandardTestSuites
 import Test exposing (Test)
+import TestLogic.Type.PostSolve.CompileThroughPostSolve as Compile
+import TestLogic.Type.PostSolve.PostSolveInvariantHelpers as Helpers
 
 
 {-| A violation of POST\_001.
@@ -91,8 +91,9 @@ expectGroupBStructuralTypes srcModule =
 {-| Check a single Group B expression.
 
 Returns a violation if:
-1. The pre-type was a bare TVar (placeholder)
-2. The post-type doesn't match the expected structural type
+
+1.  The pre-type was a bare TVar (placeholder)
+2.  The post-type doesn't match the expected structural type
 
 -}
 checkGroupBExpr :

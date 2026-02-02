@@ -15,11 +15,11 @@ SCC computation works correctly.
 
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Source as Src
-import TestLogic.Generate.TypedOptimizedMonomorphize as TOMono
 import Compiler.Reporting.Annotation as A
 import Data.Map as Dict
 import Data.Set as Set exposing (EverySet)
 import Expect
+import TestLogic.Generate.TypedOptimizedMonomorphize as TOMono
 
 
 {-| Verify that SCCs are correctly computed.

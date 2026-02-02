@@ -1,12 +1,11 @@
 module TestLogic.Canonicalize.ImportResolutionTest exposing (suite)
 
-{-| Test suite for invariant CANON_004: Import resolution produces valid references.
-
+{-| Test suite for invariant CANON\_004: Import resolution produces valid references.
 -}
 
 import Compiler.AST.SourceBuilder as SB
-import TestLogic.Canonicalize.ImportResolution exposing (expectImportsResolved)
 import Test exposing (Test)
+import TestLogic.Canonicalize.ImportResolution exposing (expectImportsResolved)
 
 
 suite : Test

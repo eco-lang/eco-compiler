@@ -7,9 +7,9 @@ MonoType must equal the type of the corresponding MonoNode.
 
 -}
 
-import TestLogic.Generate.Monomorphize.RegistryNodeTypeConsistency exposing (expectRegistryNodeTypeConsistency)
 import SourceIR.Suite.StandardTestSuites as StandardTestSuites
 import Test exposing (Test)
+import TestLogic.Generate.Monomorphize.RegistryNodeTypeConsistency exposing (expectRegistryNodeTypeConsistency)
 
 
 suite : Test

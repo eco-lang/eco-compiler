@@ -7,9 +7,9 @@ the typed optimization pipeline and then monomorphization.
 
 -}
 
-import TestLogic.Generate.TypedOptimizedMonomorphize exposing (expectMonomorphization)
 import SourceIR.Suite.StandardTestSuites as StandardTestSuites
 import Test exposing (Test)
+import TestLogic.Generate.TypedOptimizedMonomorphize exposing (expectMonomorphization)
 
 
 suite : Test

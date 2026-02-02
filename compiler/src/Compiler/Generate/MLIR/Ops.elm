@@ -1,52 +1,13 @@
 module Compiler.Generate.MLIR.Ops exposing
-    ( opBuilder
-    , mlirOp
-    , mkRegion
-    , mkRegionTerminatedByOps
-    , funcFunc
-    , ecoConstantUnit
-    , ecoConstantEmptyRec
-    , ecoConstantTrue
-    , ecoConstantFalse
-    , ecoConstantNil
-    , ecoConstantNothing
-    , ecoConstantEmptyString
-    , ecoConstructList
-    , ecoConstructTuple2
-    , ecoConstructTuple3
-    , ecoConstructRecord
-    , ecoConstructCustom
-    , ecoProjectListHead
-    , ecoProjectListTail
-    , ecoProjectTuple2
-    , ecoProjectTuple3
-    , ecoProjectRecord
-    , ecoProjectCustom
-    , ecoCallNamed
-    , ecoReturn
-    , ecoYield
-    , ecoYieldMany
-    , ecoStringLiteral
-    , arithConstantInt
-    , arithConstantInt32
-    , arithConstantFloat
-    , arithConstantBool
-    , arithConstantChar
-    , arithCmpI
-    , ecoUnaryOp
-    , ecoBinaryOp
-    , ecoCase
-    , ecoCaseMany
-    , ecoCaseString
-    , ecoCaseStringMany
-    , ecoJoinpoint
-    , ecoGetTag
-    , scfIf
-    , scfYield
-    , scfYieldMany
-    , scfWhile
-    , scfCondition
+    ( opBuilder, mlirOp, mkRegion, mkRegionTerminatedByOps, funcFunc
+    , ecoConstantUnit, ecoConstantEmptyRec, ecoConstantTrue, ecoConstantFalse, ecoConstantNil, ecoConstantNothing, ecoConstantEmptyString
+    , ecoConstructList, ecoConstructTuple2, ecoConstructTuple3, ecoConstructRecord, ecoConstructCustom
+    , ecoProjectListHead, ecoProjectListTail, ecoProjectTuple2, ecoProjectTuple3, ecoProjectRecord, ecoProjectCustom
+    , ecoCallNamed, ecoReturn, ecoYield, ecoStringLiteral, ecoUnaryOp, ecoBinaryOp, ecoCase, ecoCaseString, ecoJoinpoint, ecoGetTag
+    , arithConstantInt, arithConstantInt32, arithConstantFloat, arithConstantBool, arithConstantChar, arithCmpI
+    , scfIf, scfYield, scfWhile, scfCondition
     , cfCondBr
+    , ecoCaseMany, ecoCaseStringMany, ecoYieldMany, scfYieldMany
     )
 
 {-| MLIR operation builders.
@@ -775,7 +736,7 @@ ecoCase ctx resultVar scrutinee scrutineeType caseKind tags regions resultType =
 Takes a result variable name, scrutinee SSA name, scrutinee type, list of tags (positional indices),
 list of string patterns (N-1 for N alternatives, last is default),
 list of regions (one per alternative), and result type.
-Emits an eco.case operation with string_patterns attribute.
+Emits an eco.case operation with string\_patterns attribute.
 
 eco.case is NOT a terminator - it's a value-producing expression.
 Each alternative region must terminate with eco.yield.
@@ -820,7 +781,7 @@ ecoCaseMany ctx scrutinee scrutineeType caseKind tags regions results =
 Takes scrutinee SSA name, scrutinee type, list of tags (positional indices),
 list of string patterns (N-1 for N alternatives, last is default),
 list of regions (one per alternative), and list of result (name, type) pairs.
-Emits an eco.case operation with string_patterns attribute.
+Emits an eco.case operation with string\_patterns attribute.
 
 eco.case is NOT a terminator - it's a value-producing expression.
 Each alternative region must terminate with eco.yieldMany yielding values
@@ -941,17 +902,18 @@ scfYieldMany ctx operands =
 {-| scf.while - structured while loop.
 
 Structure:
-    %results = scf.while (%args = %inits) : (ArgTypes) -> ResultTypes {
-        // "before" region - condition computation
-        scf.condition(%cond) %args : ArgTypes
-    } do {
-    ^bb0(%args: ArgTypes):
-        // "after" region - body computation
-        scf.yield %newArgs : ArgTypes
-    }
+%results = scf.while (%args = %inits) : (ArgTypes) -> ResultTypes {
+// "before" region - condition computation
+scf.condition(%cond) %args : ArgTypes
+} do {
+^bb0(%args: ArgTypes):
+// "after" region - body computation
+scf.yield %newArgs : ArgTypes
+}
 
 The before region computes the condition and passes values to either exit or continue.
 The after region computes new values for the next iteration.
+
 -}
 scfWhile :
     Ctx.Context
@@ -985,6 +947,7 @@ scfWhile ctx loopVars beforeRegion afterRegion =
 
 If condition is true, continues to "after" region with the provided values.
 If condition is false, exits the while loop, returning the provided values as results.
+
 -}
 scfCondition : Ctx.Context -> String -> List ( String, MlirType ) -> ( Ctx.Context, MlirOp )
 scfCondition ctx condVar args =

@@ -661,10 +661,14 @@ Corresponds to E2E test: CustomTypePatternTest.elm
     type Person
         = Person Int Int
 
-    getId (Person id _) = id
-    getAge (Person _ age) = age
+    getId (Person id _) =
+        id
+
+    getAge (Person _ age) =
+        age
 
 Note: Using Int instead of String to match what the compiler currently supports.
+
 -}
 customTypePatternInFunctionArg : (Src.Module -> Expectation) -> (() -> Expectation)
 customTypePatternInFunctionArg expectFn _ =

@@ -1,8 +1,6 @@
-module TestLogic.Generate.MonoTypeShape exposing
-    ( expectMonoTypesFullyElaborated
-    )
+module TestLogic.Generate.MonoTypeShape exposing (expectMonoTypesFullyElaborated)
 
-{-| Test logic for invariant MONO_001: MonoTypes are fully elaborated.
+{-| Test logic for invariant MONO\_001: MonoTypes are fully elaborated.
 
 At all stages past monomorphization, every type has a concrete MonoType shape:
 MInt, MFloat, MBool, MChar, MString, MUnit, MList, MTuple, MRecord, MCustom,
@@ -15,12 +13,12 @@ that monomorphization produces valid MonoTypes.
 
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.Source as Src
-import TestLogic.Generate.TypedOptimizedMonomorphize as TOMono
 import Data.Map as Dict
 import Expect
+import TestLogic.Generate.TypedOptimizedMonomorphize as TOMono
 
 
-{-| MONO_001: Verify all MonoTypes are fully elaborated.
+{-| MONO\_001: Verify all MonoTypes are fully elaborated.
 -}
 expectMonoTypesFullyElaborated : Src.Module -> Expect.Expectation
 expectMonoTypesFullyElaborated srcModule =
@@ -191,7 +189,7 @@ collectDefTypeIssues context def =
 
 Returns list of issue descriptions. Empty list means the type is valid.
 
-MONO_001 rule: MVar is only allowed with CEcoValue constraint.
+MONO\_001 rule: MVar is only allowed with CEcoValue constraint.
 MVar with CNumber means numeric polymorphism wasn't resolved.
 
 -}

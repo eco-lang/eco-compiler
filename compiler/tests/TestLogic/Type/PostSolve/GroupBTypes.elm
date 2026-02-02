@@ -1,8 +1,6 @@
-module TestLogic.Type.PostSolve.GroupBTypes exposing
-    ( expectGroupBTypesValid
-    )
+module TestLogic.Type.PostSolve.GroupBTypes exposing (expectGroupBTypesValid)
 
-{-| Test logic for invariant POST_001: GroupB types are fully resolved.
+{-| Test logic for invariant POST\_001: GroupB types are fully resolved.
 
 After solving, verify that all GroupB (mutually recursive) definitions
 have fully resolved types with no remaining unification variables.
@@ -11,9 +9,9 @@ have fully resolved types with no remaining unification variables.
 
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Source as Src
-import TestLogic.Generate.TypedOptimizedMonomorphize as TOMono
 import Data.Map as Dict
 import Expect
+import TestLogic.Generate.TypedOptimizedMonomorphize as TOMono
 
 
 {-| Verify that Group B expressions get structural types.
@@ -120,8 +118,9 @@ checkAliasedTypeForSyntheticVars context aliasType =
 {-| Check if a type variable name looks like a synthetic variable.
 
 Synthetic variables from the solver typically have patterns like:
-- Numeric names (e.g., "1", "23")
-- Generated prefixes
+
+  - Numeric names (e.g., "1", "23")
+  - Generated prefixes
 
 User-declared type variables typically use lowercase letters.
 

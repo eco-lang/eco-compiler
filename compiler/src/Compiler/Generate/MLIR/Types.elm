@@ -2,13 +2,11 @@ module Compiler.Generate.MLIR.Types exposing
     ( ecoValue, ecoInt, ecoFloat, ecoChar
     , canUnbox, monoTypeToAbi, monoTypeToOperand
     , mlirTypeToString
-    , isFunctionType, functionArity, countTotalArity, decomposeFunctionType
-    , stageParamTypes, stageArity, stageReturnType
-    , Segmentation, segmentLengths, chooseCanonicalSegmentation, buildSegmentedFunctionType
-    , isEcoValueType
+    , isFunctionType, functionArity, countTotalArity, decomposeFunctionType, isEcoValueType
     , isUnboxable
     , RecordLayout, FieldInfo, TupleLayout, CtorLayout
     , computeRecordLayout, computeTupleLayout, computeCtorLayout
+    , Segmentation, buildSegmentedFunctionType, chooseCanonicalSegmentation, segmentLengths, stageArity, stageParamTypes, stageReturnType
     )
 
 {-| MLIR type definitions and conversions.
@@ -239,6 +237,7 @@ monoTypeToOperand monoType =
                     ecoValue
 
 
+
 -- ====== FUNCTION TYPE UTILITIES ======
 
 
@@ -278,7 +277,8 @@ countTotalArity monoType =
             0
 
 
-{-| Stage parameter types: outermost MFunction argument list. -}
+{-| Stage parameter types: outermost MFunction argument list.
+-}
 stageParamTypes : Mono.MonoType -> List Mono.MonoType
 stageParamTypes monoType =
     case monoType of
@@ -289,7 +289,8 @@ stageParamTypes monoType =
             []
 
 
-{-| Stage arity: number of arguments expected in the current stage. -}
+{-| Stage arity: number of arguments expected in the current stage.
+-}
 stageArity : Mono.MonoType -> Int
 stageArity monoType =
     List.length (stageParamTypes monoType)

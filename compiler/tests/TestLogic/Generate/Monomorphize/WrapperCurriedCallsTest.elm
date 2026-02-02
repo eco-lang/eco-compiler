@@ -8,9 +8,9 @@ argument list (i.e., stage arity).
 
 -}
 
-import TestLogic.Generate.Monomorphize.WrapperCurriedCalls exposing (expectWrapperCurriedCalls)
 import SourceIR.Suite.StandardTestSuites as StandardTestSuites
 import Test exposing (Test)
+import TestLogic.Generate.Monomorphize.WrapperCurriedCalls exposing (expectWrapperCurriedCalls)
 
 
 suite : Test

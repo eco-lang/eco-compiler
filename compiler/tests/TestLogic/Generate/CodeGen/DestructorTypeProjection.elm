@@ -1,10 +1,6 @@
-module TestLogic.Generate.CodeGen.DestructorTypeProjection exposing
-    ( expectDestructorTypeProjection
-    , checkDestructorTypeProjection
-    , countProjectionUnboxSequences
-    )
+module TestLogic.Generate.CodeGen.DestructorTypeProjection exposing (expectDestructorTypeProjection, checkDestructorTypeProjection, countProjectionUnboxSequences)
 
-{-| Test logic for CGEN_004: Destructor Type Projection invariant.
+{-| Test logic for CGEN\_004: Destructor Type Projection invariant.
 
 generateDestruct and generateMonoPath must always use the destructor MonoType
 to determine the path target MLIR type, not the body result type. This ensures
@@ -27,6 +23,10 @@ A spurious unbox pattern occurs when:
 -}
 
 import Compiler.AST.Source as Src
+import Dict
+import Expect exposing (Expectation)
+import Mlir.Mlir exposing (MlirBlock, MlirModule, MlirOp, MlirRegion(..), MlirType(..))
+import OrderedDict
 import TestLogic.Generate.CodeGen.GenerateMLIR exposing (compileToMlirModule)
 import TestLogic.Generate.CodeGen.Invariants
     exposing
@@ -38,10 +38,6 @@ import TestLogic.Generate.CodeGen.Invariants
         , violationsToExpectation
         , walkOpsInRegion
         )
-import Dict
-import Expect exposing (Expectation)
-import Mlir.Mlir exposing (MlirBlock, MlirModule, MlirOp, MlirRegion(..), MlirType(..))
-import OrderedDict
 
 
 {-| Verify that destructor type projection invariants hold for a source module.

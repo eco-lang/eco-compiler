@@ -1,9 +1,6 @@
-module TestLogic.Generate.CodeGen.ListProjection exposing
-    ( expectListProjection
-    , checkListProjection
-    )
+module TestLogic.Generate.CodeGen.ListProjection exposing (expectListProjection, checkListProjection)
 
-{-| Test logic for CGEN_021: List Projection invariant.
+{-| Test logic for CGEN\_021: List Projection invariant.
 
 List destructuring must use only `eco.project.list_head` and `eco.project.list_tail`.
 
@@ -12,6 +9,8 @@ List destructuring must use only `eco.project.list_head` and `eco.project.list_t
 -}
 
 import Compiler.AST.Source as Src
+import Expect exposing (Expectation)
+import Mlir.Mlir exposing (MlirModule, MlirOp)
 import TestLogic.Generate.CodeGen.GenerateMLIR exposing (compileToMlirModule)
 import TestLogic.Generate.CodeGen.Invariants
     exposing
@@ -21,8 +20,6 @@ import TestLogic.Generate.CodeGen.Invariants
         , isEcoValueType
         , violationsToExpectation
         )
-import Expect exposing (Expectation)
-import Mlir.Mlir exposing (MlirModule, MlirOp)
 
 
 {-| Verify that list projection invariants hold for a source module.

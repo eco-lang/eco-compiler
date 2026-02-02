@@ -1,12 +1,11 @@
 module TestLogic.Optimize.DeciderExhaustiveTest exposing (suite)
 
-{-| Test suite for invariant TOPT_002: Pattern matches compile to exhaustive decision trees.
-
+{-| Test suite for invariant TOPT\_002: Pattern matches compile to exhaustive decision trees.
 -}
 
-import TestLogic.Optimize.DeciderExhaustive exposing (expectDeciderComplete, expectDeciderNoNestedPatterns)
 import SourceIR.Suite.StandardTestSuites as StandardTestSuites
 import Test exposing (Test)
+import TestLogic.Optimize.DeciderExhaustive exposing (expectDeciderComplete, expectDeciderNoNestedPatterns)
 
 
 suite : Test

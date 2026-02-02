@@ -1,17 +1,17 @@
 module TestLogic.Canonicalize.GlobalNamesTest exposing (suite)
 
-{-| Test suite for invariant CANON_001: Global names are fully qualified.
+{-| Test suite for invariant CANON\_001: Global names are fully qualified.
 
 This module gathers test cases and runs them with the GlobalNames test logic.
 
 -}
 
-import TestLogic.Canonicalize.GlobalNames exposing (expectGlobalNamesQualified, expectGlobalNamesQualifiedCanonical)
-import SourceIR.Suite.StandardTestSuites as StandardTestSuites
 import SourceIR.ForeignCases as ForeignCases
 import SourceIR.KernelCases as KernelCases
+import SourceIR.Suite.StandardTestSuites as StandardTestSuites
 import SourceIR.TypeCheckFailsCases as TypeCheckFailsCases
 import Test exposing (Test)
+import TestLogic.Canonicalize.GlobalNames exposing (expectGlobalNamesQualified, expectGlobalNamesQualifiedCanonical)
 
 
 suite : Test

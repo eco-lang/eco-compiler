@@ -1,7 +1,4 @@
-module Compiler.Generate.MLIR.Names exposing
-    ( canonicalToMLIRName
-    , sanitizeName
-    )
+module Compiler.Generate.MLIR.Names exposing (canonicalToMLIRName, sanitizeName)
 
 {-| MLIR symbol naming utilities.
 

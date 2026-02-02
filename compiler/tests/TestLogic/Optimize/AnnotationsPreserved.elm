@@ -16,9 +16,9 @@ annotations are preserved through optimization.
 
 import Compiler.AST.Source as Src
 import Compiler.AST.TypedOptimized as TOpt
-import TestLogic.Generate.TypedOptimizedMonomorphize as TOMono
 import Data.Map as Dict
 import Expect
+import TestLogic.Generate.TypedOptimizedMonomorphize as TOMono
 
 
 {-| Verify that all top-level annotations are preserved in the LocalGraphData.

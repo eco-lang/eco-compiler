@@ -1,12 +1,11 @@
 module TestLogic.Type.RankPolymorphismTest exposing (suite)
 
-{-| Test suite for invariant TYPE_005: Rank polymorphism is correctly handled.
-
+{-| Test suite for invariant TYPE\_005: Rank polymorphism is correctly handled.
 -}
 
 import Compiler.AST.SourceBuilder as SB
-import TestLogic.Type.RankPolymorphism exposing (expectRankPolymorphismValid)
 import Test exposing (Test)
+import TestLogic.Type.RankPolymorphism exposing (expectRankPolymorphismValid)
 
 
 suite : Test

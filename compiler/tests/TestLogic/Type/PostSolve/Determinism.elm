@@ -1,8 +1,6 @@
-module TestLogic.Type.PostSolve.Determinism exposing
-    ( expectDeterministicTypes
-    )
+module TestLogic.Type.PostSolve.Determinism exposing (expectDeterministicTypes)
 
-{-| Test logic for invariant POST_004: Type inference is deterministic.
+{-| Test logic for invariant POST\_004: Type inference is deterministic.
 
 Verify that running type inference multiple times on the same input
 produces identical results. This is important for:
@@ -15,9 +13,9 @@ produces identical results. This is important for:
 
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Source as Src
-import TestLogic.Generate.TypedOptimizedMonomorphize as TOMono
 import Data.Map as Dict
 import Expect
+import TestLogic.Generate.TypedOptimizedMonomorphize as TOMono
 
 
 {-| Verify that PostSolve is deterministic for Group B and kernels.

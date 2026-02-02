@@ -1,9 +1,9 @@
 module TestLogic.Optimize.TypePreservation exposing
-    ( expectTypePreservation
-    , Violation
+    ( Violation
+    , expectTypePreservation
     )
 
-{-| Test logic for invariant TOPT_004: Typed optimization is type preserving.
+{-| Test logic for invariant TOPT\_004: Typed optimization is type preserving.
 
 For each TypedOptimized expression, derive its expected type via local typing
 rules and verify that the stored Can.Type matches via alpha-equivalence.
@@ -35,7 +35,6 @@ import Compiler.Elm.Interface.Basic as Basic
 import Compiler.Elm.Package as Pkg
 import Compiler.Optimize.Typed.KernelTypes as KernelTypes
 import Compiler.Optimize.Typed.Module as TypedOptimize
-import TestLogic.Optimize.Typed.TypeEq as TypeEq
 import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Result as RResult
 import Compiler.Type.Constrain.Typed.Module as ConstrainTyped
@@ -45,6 +44,7 @@ import Data.Map as Dict exposing (Dict)
 import Data.Set as EverySet
 import Expect
 import System.TypeCheck.IO as IO
+import TestLogic.Optimize.Typed.TypeEq as TypeEq
 
 
 
@@ -88,7 +88,7 @@ type alias TypedOptArtifacts =
 -- ============================================================================
 
 
-{-| TOPT_004: Verify type preservation in typed optimization.
+{-| TOPT\_004: Verify type preservation in typed optimization.
 -}
 expectTypePreservation : Src.Module -> Expect.Expectation
 expectTypePreservation srcModule =

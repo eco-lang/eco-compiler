@@ -1,10 +1,6 @@
 module Compiler.AST.LayoutShapes exposing
-    ( MRecordShape
-    , MTupleShape
-    , CtorShape
-    , toComparableRecordShape
-    , toComparableTupleShape
-    , toComparableCtorShape
+    ( MRecordShape, MTupleShape, CtorShape
+    , toComparableRecordShape, toComparableTupleShape, toComparableCtorShape
     )
 
 {-| Backend-agnostic shape types for monomorphization.

@@ -1,9 +1,6 @@
-module TestLogic.Generate.CodeGen.CallTargetValidity exposing
-    ( expectCallTargetValidity
-    , checkCallTargetValidity
-    )
+module TestLogic.Generate.CodeGen.CallTargetValidity exposing (expectCallTargetValidity, checkCallTargetValidity)
 
-{-| Test logic for CGEN_044: Call Target Validity invariant.
+{-| Test logic for CGEN\_044: Call Target Validity invariant.
 
 Every `eco.call` callee must resolve to an existing `func.func` symbol
 in the module, and calls must not target placeholder/stub implementations
@@ -14,6 +11,9 @@ when a non-stub implementation is present.
 -}
 
 import Compiler.AST.Source as Src
+import Dict exposing (Dict)
+import Expect exposing (Expectation)
+import Mlir.Mlir exposing (MlirBlock, MlirModule, MlirOp, MlirRegion(..))
 import TestLogic.Generate.CodeGen.GenerateMLIR exposing (compileToMlirModule)
 import TestLogic.Generate.CodeGen.Invariants
     exposing
@@ -23,9 +23,6 @@ import TestLogic.Generate.CodeGen.Invariants
         , getStringAttr
         , violationsToExpectation
         )
-import Dict exposing (Dict)
-import Expect exposing (Expectation)
-import Mlir.Mlir exposing (MlirBlock, MlirModule, MlirOp, MlirRegion(..))
 
 
 {-| Verify that call target validity invariants hold for a source module.

@@ -20,6 +20,7 @@ number of branches, nesting depth, etc.
 import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder as B
 import Compiler.Data.Name exposing (Name)
+import Fuzz exposing (Fuzzer)
 import SourceIR.Fuzz.TypedExpr
     exposing
         ( Scope
@@ -33,7 +34,6 @@ import SourceIR.Fuzz.TypedExpr
         , simpleTypeFuzzer
         , uniqueNameFuzzer
         )
-import Fuzz exposing (Fuzzer)
 
 
 

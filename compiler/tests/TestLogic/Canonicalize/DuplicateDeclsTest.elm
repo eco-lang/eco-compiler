@@ -9,6 +9,7 @@ duplicate declarations of various kinds.
 
 import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder as SB
+import Test exposing (Test)
 import TestLogic.Canonicalize.DuplicateDecls
     exposing
         ( expectDuplicateCtorError
@@ -17,7 +18,6 @@ import TestLogic.Canonicalize.DuplicateDecls
         , expectNoDuplicateErrors
         , expectShadowingError
         )
-import Test exposing (Test)
 
 
 suite : Test

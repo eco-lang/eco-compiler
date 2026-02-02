@@ -1,9 +1,6 @@
-module TestLogic.Generate.CodeGen.RecordProjection exposing
-    ( expectRecordProjection
-    , checkRecordProjection
-    )
+module TestLogic.Generate.CodeGen.RecordProjection exposing (expectRecordProjection, checkRecordProjection)
 
-{-| Test logic for CGEN_023: Record Projection invariant.
+{-| Test logic for CGEN\_023: Record Projection invariant.
 
 Record field access must use `eco.project.record` with valid field index.
 
@@ -12,6 +9,8 @@ Record field access must use `eco.project.record` with valid field index.
 -}
 
 import Compiler.AST.Source as Src
+import Expect exposing (Expectation)
+import Mlir.Mlir exposing (MlirModule, MlirOp)
 import TestLogic.Generate.CodeGen.GenerateMLIR exposing (compileToMlirModule)
 import TestLogic.Generate.CodeGen.Invariants
     exposing
@@ -20,8 +19,6 @@ import TestLogic.Generate.CodeGen.Invariants
         , getIntAttr
         , violationsToExpectation
         )
-import Expect exposing (Expectation)
-import Mlir.Mlir exposing (MlirModule, MlirOp)
 
 
 {-| Verify that record projection invariants hold for a source module.

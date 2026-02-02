@@ -13,9 +13,9 @@ This module reuses the existing typed optimization pipeline and adds arity verif
 
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.Source as Src
-import TestLogic.Generate.TypedOptimizedMonomorphize as TOMono
 import Data.Map as Dict
 import Expect
+import TestLogic.Generate.TypedOptimizedMonomorphize as TOMono
 
 
 {-| MONO\_012: Verify function arity matches parameters and closure info.

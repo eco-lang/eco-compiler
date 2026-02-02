@@ -3,9 +3,9 @@ module TestLogic.Optimize.TypedOptTypesTest exposing (suite)
 {-| Test suite for invariant TOPT\_001: TypedOptimized expressions always carry types.
 -}
 
-import TestLogic.Optimize.TypedOptTypes exposing (expectAllExprsHaveTypes)
 import SourceIR.Suite.StandardTestSuites as StandardTestSuites
 import Test exposing (Test)
+import TestLogic.Optimize.TypedOptTypes exposing (expectAllExprsHaveTypes)
 
 
 suite : Test

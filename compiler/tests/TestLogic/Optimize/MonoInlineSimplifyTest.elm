@@ -30,11 +30,11 @@ import Compiler.AST.SourceBuilder
         )
 import Compiler.AST.TypeEnv as TypeEnv
 import Compiler.Generate.Mode as Mode
-import TestLogic.Generate.TypedOptimizedMonomorphize as TOMono
 import Compiler.Optimize.MonoInlineSimplify as MonoInlineSimplify
-import SourceIR.Suite.StandardTestSuites as StandardTestSuites
 import Expect
+import SourceIR.Suite.StandardTestSuites as StandardTestSuites
 import Test exposing (Test)
+import TestLogic.Generate.TypedOptimizedMonomorphize as TOMono
 
 
 suite : Test
@@ -96,6 +96,7 @@ identity x = x
 
 testValue : Int
 testValue = identity 42
+
 -}
 simpleIdentityModule : Src.Module
 simpleIdentityModule =
@@ -124,7 +125,7 @@ simpleIdentityModule =
 
 {-| testValue : Int
 testValue =
-    let x = 42 in x
+let x = 42 in x
 -}
 simpleLetModule : Src.Module
 simpleLetModule =
@@ -168,9 +169,9 @@ lambdaApplicationModule =
 
 {-| testValue : Int
 testValue =
-    let x = 1 in
-    let y = 2 in
-    x
+let x = 1 in
+let y = 2 in
+x
 -}
 nestedLetModule : Src.Module
 nestedLetModule =

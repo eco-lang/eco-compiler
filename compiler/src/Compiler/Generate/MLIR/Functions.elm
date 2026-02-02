@@ -352,9 +352,11 @@ generateTailFunc ctx funcName params expr monoType =
 {-| Generate a multi-block region for a tail-recursive function body.
 For an if-then-else where one branch returns and one branch tail-calls,
 we generate:
-  - Entry block: evaluate condition, cf.cond_br to ^return or ^recurse
+
+  - Entry block: evaluate condition, cf.cond\_br to ^return or ^recurse
   - ^return block: evaluate return expression, eco.return
   - ^recurse block: evaluate tail call args, eco.jump 0(...)
+
 -}
 generateTailRecursiveBody : Ctx.Context -> Mono.MonoExpr -> MlirType -> ( MlirRegion, Ctx.Context )
 generateTailRecursiveBody ctx expr retTy =

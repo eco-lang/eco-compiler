@@ -1,9 +1,6 @@
-module TestLogic.Generate.CodeGen.BlockTerminator exposing
-    ( expectBlockTerminator
-    , checkBlockTerminators
-    )
+module TestLogic.Generate.CodeGen.BlockTerminator exposing (expectBlockTerminator, checkBlockTerminators)
 
-{-| Test logic for CGEN_042: Block Terminator Presence invariant.
+{-| Test logic for CGEN\_042: Block Terminator Presence invariant.
 
 Every block in every region emitted by MLIR codegen must end with a
 terminator operation (e.g. `eco.return`, `eco.jump`, `eco.yield`, `scf.yield`).
@@ -16,6 +13,8 @@ Note: `eco.case` is NOT a terminator - it is a value-producing expression.
 -}
 
 import Compiler.AST.Source as Src
+import Expect exposing (Expectation)
+import Mlir.Mlir exposing (MlirBlock, MlirModule, MlirOp, MlirRegion(..))
 import TestLogic.Generate.CodeGen.GenerateMLIR exposing (compileToMlirModule)
 import TestLogic.Generate.CodeGen.Invariants
     exposing
@@ -25,8 +24,6 @@ import TestLogic.Generate.CodeGen.Invariants
         , violationsToExpectation
         , walkAllOps
         )
-import Expect exposing (Expectation)
-import Mlir.Mlir exposing (MlirBlock, MlirModule, MlirOp, MlirRegion(..))
 
 
 {-| Verify that block terminator invariants hold for a source module.

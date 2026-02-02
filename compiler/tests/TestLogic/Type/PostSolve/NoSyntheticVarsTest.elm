@@ -1,12 +1,11 @@
 module TestLogic.Type.PostSolve.NoSyntheticVarsTest exposing (suite)
 
-{-| Test suite for invariant POST_003: No synthetic type variables remain.
-
+{-| Test suite for invariant POST\_003: No synthetic type variables remain.
 -}
 
 import Compiler.AST.SourceBuilder as SB
-import TestLogic.Type.PostSolve.NoSyntheticVars exposing (expectNoSyntheticVars)
 import Test exposing (Test)
+import TestLogic.Type.PostSolve.NoSyntheticVars exposing (expectNoSyntheticVars)
 
 
 suite : Test

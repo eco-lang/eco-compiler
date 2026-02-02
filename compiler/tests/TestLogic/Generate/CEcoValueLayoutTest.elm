@@ -3,9 +3,9 @@ module TestLogic.Generate.CEcoValueLayoutTest exposing (suite)
 {-| Test suite for invariant MONO\_003: CEcoValue layout is consistent.
 -}
 
-import TestLogic.Generate.CEcoValueLayout exposing (expectValidCEcoValueLayout)
 import SourceIR.Suite.StandardTestSuites as StandardTestSuites
 import Test exposing (Test)
+import TestLogic.Generate.CEcoValueLayout exposing (expectValidCEcoValueLayout)
 
 
 suite : Test

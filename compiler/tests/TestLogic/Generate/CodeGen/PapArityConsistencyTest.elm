@@ -1,15 +1,15 @@
 module TestLogic.Generate.CodeGen.PapArityConsistencyTest exposing (suite)
 
-{-| Test suite for CGEN_051: papCreate arity matches function parameter count.
+{-| Test suite for CGEN\_051: papCreate arity matches function parameter count.
 
 `eco.papCreate` arity must equal the number of arguments its referenced
 function symbol accepts.
 
 -}
 
-import TestLogic.Generate.CodeGen.PapArityConsistency exposing (expectPapArityConsistency)
 import SourceIR.Suite.StandardTestSuites as StandardTestSuites
 import Test exposing (Test)
+import TestLogic.Generate.CodeGen.PapArityConsistency exposing (expectPapArityConsistency)
 
 
 suite : Test

@@ -1,9 +1,6 @@
-module TestLogic.Generate.CodeGen.RecordConstruction exposing
-    ( expectRecordConstruction
-    , checkRecordConstruction
-    )
+module TestLogic.Generate.CodeGen.RecordConstruction exposing (expectRecordConstruction, checkRecordConstruction)
 
-{-| Test logic for CGEN_018: Record Construction invariant.
+{-| Test logic for CGEN\_018: Record Construction invariant.
 
 Non-empty records must use `eco.construct.record`;
 empty records must use `eco.constant EmptyRec`.
@@ -13,6 +10,8 @@ empty records must use `eco.constant EmptyRec`.
 -}
 
 import Compiler.AST.Source as Src
+import Expect exposing (Expectation)
+import Mlir.Mlir exposing (MlirModule, MlirOp)
 import TestLogic.Generate.CodeGen.GenerateMLIR exposing (compileToMlirModule)
 import TestLogic.Generate.CodeGen.Invariants
     exposing
@@ -21,8 +20,6 @@ import TestLogic.Generate.CodeGen.Invariants
         , getIntAttr
         , violationsToExpectation
         )
-import Expect exposing (Expectation)
-import Mlir.Mlir exposing (MlirModule, MlirOp)
 
 
 {-| Verify that record construction invariants hold for a source module.

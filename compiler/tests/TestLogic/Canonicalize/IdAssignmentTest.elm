@@ -7,12 +7,12 @@ appropriate expectation functions.
 
 -}
 
-import TestLogic.Canonicalize.IdAssignment exposing (expectUniqueIds, expectUniqueIdsCanonical)
-import SourceIR.Suite.StandardTestSuites as StandardTestSuites
 import SourceIR.ForeignCases as ForeignCases
 import SourceIR.KernelCases as KernelCases
+import SourceIR.Suite.StandardTestSuites as StandardTestSuites
 import SourceIR.TypeCheckFailsCases as TypeCheckFailsCases
 import Test exposing (Test)
+import TestLogic.Canonicalize.IdAssignment exposing (expectUniqueIds, expectUniqueIdsCanonical)
 
 
 suite : Test

@@ -1,9 +1,8 @@
 module Compiler.AST.Monomorphized exposing
     ( MonoType(..), Literal(..), Constraint(..)
-    , CtorShape
     , LambdaId(..)
-    , Global(..), SpecKey(..), SpecId, SpecializationRegistry, emptyRegistry, getOrCreateSpecId, updateRegistryType, lookupSpecKey
-    , MonoGraph(..), MainInfo(..), MonoNode(..), nodeType
+    , Global(..), SpecKey(..), SpecId, SpecializationRegistry, emptyRegistry, getOrCreateSpecId, lookupSpecKey
+    , MonoGraph(..), MainInfo(..), MonoNode(..), CtorShape
     , MonoExpr(..), ClosureInfo, MonoDef(..), MonoDestructor(..), MonoPath(..)
     , Decider(..), MonoChoice(..)
     , ContainerKind(..)
@@ -11,6 +10,7 @@ module Compiler.AST.Monomorphized exposing
     , toComparableSpecKey, toComparableMonoType
     , getMonoPathType
     , monoTypeToDebugString
+    , nodeType, updateRegistryType
     )
 
 {-| Monomorphized AST for backends that can optimize using concrete types.
@@ -633,6 +633,7 @@ typeOf expr =
 
         MonoUnit ->
             MUnit
+
 
 
 -- ============================================================================

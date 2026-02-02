@@ -1,6 +1,6 @@
 module TestLogic.Generate.CodeGen.PapCreateArityTest exposing (suite)
 
-{-| Test suite for CGEN_033: PapCreate Arity Constraints invariant.
+{-| Test suite for CGEN\_033: PapCreate Arity Constraints invariant.
 
 `eco.papCreate` requires:
 
@@ -10,9 +10,9 @@ module TestLogic.Generate.CodeGen.PapCreateArityTest exposing (suite)
 
 -}
 
-import TestLogic.Generate.CodeGen.PapCreateArity exposing (expectPapCreateArity)
 import SourceIR.Suite.StandardTestSuites as StandardTestSuites
 import Test exposing (Test)
+import TestLogic.Generate.CodeGen.PapCreateArity exposing (expectPapCreateArity)
 
 
 suite : Test

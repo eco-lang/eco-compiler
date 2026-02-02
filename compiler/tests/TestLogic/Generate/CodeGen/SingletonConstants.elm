@@ -1,9 +1,6 @@
-module TestLogic.Generate.CodeGen.SingletonConstants exposing
-    ( expectSingletonConstants
-    , checkSingletonConstants
-    )
+module TestLogic.Generate.CodeGen.SingletonConstants exposing (expectSingletonConstants, checkSingletonConstants)
 
-{-| Test logic for CGEN_019: Singleton Constants invariant.
+{-| Test logic for CGEN\_019: Singleton Constants invariant.
 
 Well-known singletons (Unit, True, False, Nil, Nothing, EmptyString, EmptyRec)
 must always use `eco.constant`, never `eco.construct.custom`.
@@ -13,6 +10,8 @@ must always use `eco.constant`, never `eco.construct.custom`.
 -}
 
 import Compiler.AST.Source as Src
+import Expect exposing (Expectation)
+import Mlir.Mlir exposing (MlirModule, MlirOp)
 import TestLogic.Generate.CodeGen.GenerateMLIR exposing (compileToMlirModule)
 import TestLogic.Generate.CodeGen.Invariants
     exposing
@@ -22,8 +21,6 @@ import TestLogic.Generate.CodeGen.Invariants
         , getStringAttr
         , violationsToExpectation
         )
-import Expect exposing (Expectation)
-import Mlir.Mlir exposing (MlirModule, MlirOp)
 
 
 {-| Verify that singleton constants invariants hold for a source module.

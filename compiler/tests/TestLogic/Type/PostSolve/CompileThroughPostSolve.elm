@@ -25,8 +25,8 @@ import Compiler.Type.Constrain.Typed.Module as ConstrainTyped
 import Compiler.Type.Constrain.Typed.NodeIds as NodeIds
 import Compiler.Type.PostSolve as PostSolve
 import Compiler.Type.Solve as Solve
-import Data.Set as EverySet
 import Data.Map as Dict
+import Data.Set as EverySet
 import System.TypeCheck.IO as IO
 
 
@@ -101,7 +101,8 @@ runWithIdsTypeCheck :
     Can.Module
     ->
         IO.IO
-            (Result Int
+            (Result
+                Int
                 { annotations : Dict.Dict String Name.Name Can.Annotation
                 , nodeTypes : PostSolve.NodeTypes
                 }
@@ -173,7 +174,8 @@ runWithIdsTypeCheckDetailed :
     Can.Module
     ->
         IO.IO
-            (Result Int
+            (Result
+                Int
                 { annotations : Dict.Dict String Name.Name Can.Annotation
                 , nodeTypes : PostSolve.NodeTypes
                 , syntheticExprIds : EverySet.EverySet Int Int

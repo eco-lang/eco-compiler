@@ -1,15 +1,15 @@
 module TestLogic.Type.AnnotationEnforcementTest exposing (suite)
 
-{-| Test suite for invariant TYPE_006: Annotations are enforced, not ignored.
-
+{-| Test suite for invariant TYPE\_006: Annotations are enforced, not ignored.
 -}
 
 import Compiler.AST.SourceBuilder as SB
-import TestLogic.Type.AnnotationEnforcement exposing
-    ( expectAnnotationMismatchError
-    , expectMatchingAnnotationSucceeds
-    )
 import Test exposing (Test)
+import TestLogic.Type.AnnotationEnforcement
+    exposing
+        ( expectAnnotationMismatchError
+        , expectMatchingAnnotationSucceeds
+        )
 
 
 suite : Test
@@ -30,7 +30,7 @@ matchingAnnotationTests =
                         SB.makeModuleWithTypedDefs "MatchInt"
                             [ { name = "x"
                               , args = []
-                              , tipe = SB.tType ("Int") []
+                              , tipe = SB.tType "Int" []
                               , body = SB.intExpr 42
                               }
                             ]
@@ -43,7 +43,7 @@ matchingAnnotationTests =
                         SB.makeModuleWithTypedDefs "MatchString"
                             [ { name = "s"
                               , args = []
-                              , tipe = SB.tType ("String") []
+                              , tipe = SB.tType "String" []
                               , body = SB.strExpr "hello"
                               }
                             ]
@@ -58,8 +58,8 @@ matchingAnnotationTests =
                               , args = [ SB.pVar "x" ]
                               , tipe =
                                     SB.tLambda
-                                        (SB.tType ("Int") [])
-                                        (SB.tType ("Int") [])
+                                        (SB.tType "Int" [])
+                                        (SB.tType "Int" [])
                               , body = SB.varExpr "x"
                               }
                             ]
@@ -73,8 +73,8 @@ matchingAnnotationTests =
                             [ { name = "xs"
                               , args = []
                               , tipe =
-                                    SB.tType ("List")
-                                        [ SB.tType ("Int") [] ]
+                                    SB.tType "List"
+                                        [ SB.tType "Int" [] ]
                               , body = SB.listExpr [ SB.intExpr 1, SB.intExpr 2 ]
                               }
                             ]
@@ -89,8 +89,8 @@ matchingAnnotationTests =
                               , args = []
                               , tipe =
                                     SB.tTuple
-                                        (SB.tType ("Int") [])
-                                        (SB.tType ("String") [])
+                                        (SB.tType "Int" [])
+                                        (SB.tType "String" [])
                               , body = SB.tupleExpr (SB.intExpr 1) (SB.strExpr "a")
                               }
                             ]
@@ -109,7 +109,7 @@ mismatchedAnnotationTests =
                         SB.makeModuleWithTypedDefs "MismatchIntStr"
                             [ { name = "x"
                               , args = []
-                              , tipe = SB.tType ("Int") []
+                              , tipe = SB.tType "Int" []
                               , body = SB.strExpr "hello"
                               }
                             ]
@@ -122,7 +122,7 @@ mismatchedAnnotationTests =
                         SB.makeModuleWithTypedDefs "MismatchStrInt"
                             [ { name = "x"
                               , args = []
-                              , tipe = SB.tType ("String") []
+                              , tipe = SB.tType "String" []
                               , body = SB.intExpr 42
                               }
                             ]
@@ -137,8 +137,8 @@ mismatchedAnnotationTests =
                               , args = [ SB.pVar "x" ]
                               , tipe =
                                     SB.tLambda
-                                        (SB.tType ("Int") [])
-                                        (SB.tType ("String") [])
+                                        (SB.tType "Int" [])
+                                        (SB.tType "String" [])
                               , body = SB.varExpr "x" -- Returns Int, not String
                               }
                             ]
@@ -152,8 +152,8 @@ mismatchedAnnotationTests =
                             [ { name = "xs"
                               , args = []
                               , tipe =
-                                    SB.tType ("List")
-                                        [ SB.tType ("String") [] ]
+                                    SB.tType "List"
+                                        [ SB.tType "String" [] ]
                               , body = SB.listExpr [ SB.intExpr 1 ] -- List Int, not List String
                               }
                             ]
@@ -168,8 +168,8 @@ mismatchedAnnotationTests =
                               , args = []
                               , tipe =
                                     SB.tTuple
-                                        (SB.tType ("String") [])
-                                        (SB.tType ("Int") [])
+                                        (SB.tType "String" [])
+                                        (SB.tType "Int" [])
                               , body = SB.tupleExpr (SB.intExpr 1) (SB.strExpr "a") -- Swapped
                               }
                             ]

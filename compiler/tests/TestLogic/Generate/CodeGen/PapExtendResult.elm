@@ -1,9 +1,6 @@
-module TestLogic.Generate.CodeGen.PapExtendResult exposing
-    ( expectPapExtendResult
-    , checkPapExtendResult
-    )
+module TestLogic.Generate.CodeGen.PapExtendResult exposing (expectPapExtendResult, checkPapExtendResult)
 
-{-| Test logic for CGEN_034: PapExtend Result Type invariant.
+{-| Test logic for CGEN\_034: PapExtend Result Type invariant.
 
 `eco.papExtend` must produce a valid result type:
 
@@ -17,6 +14,8 @@ module TestLogic.Generate.CodeGen.PapExtendResult exposing
 -}
 
 import Compiler.AST.Source as Src
+import Expect exposing (Expectation)
+import Mlir.Mlir exposing (MlirModule, MlirOp, MlirType(..))
 import TestLogic.Generate.CodeGen.GenerateMLIR exposing (compileToMlirModule)
 import TestLogic.Generate.CodeGen.Invariants
     exposing
@@ -25,8 +24,6 @@ import TestLogic.Generate.CodeGen.Invariants
         , getIntAttr
         , violationsToExpectation
         )
-import Expect exposing (Expectation)
-import Mlir.Mlir exposing (MlirModule, MlirOp, MlirType(..))
 
 
 {-| Verify that papExtend result type invariants hold for a source module.

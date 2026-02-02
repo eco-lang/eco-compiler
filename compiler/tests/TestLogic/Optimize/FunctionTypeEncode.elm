@@ -16,11 +16,11 @@ function types are properly encoded.
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Source as Src
 import Compiler.AST.TypedOptimized as TOpt
-import TestLogic.Generate.TypedOptimizedMonomorphize as TOMono
 import Compiler.Reporting.Annotation as A
 import Data.Map as Dict
 import Expect
 import System.TypeCheck.IO as IO
+import TestLogic.Generate.TypedOptimizedMonomorphize as TOMono
 
 
 {-| Verify that all function expressions have correctly encoded function types.

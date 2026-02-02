@@ -1,9 +1,6 @@
-module TestLogic.Generate.CodeGen.EcoUnboxSanity exposing
-    ( expectEcoUnboxSanity
-    , checkEcoUnboxSanity
-    )
+module TestLogic.Generate.CodeGen.EcoUnboxSanity exposing (expectEcoUnboxSanity, checkEcoUnboxSanity)
 
-{-| Test logic for CGEN_0E2: eco.unbox Sanity invariant.
+{-| Test logic for CGEN\_0E2: eco.unbox Sanity invariant.
 
 eco.unbox converts !eco.value (boxed) to a primitive type (i1, i16, i64, f64).
 This test verifies:
@@ -18,21 +15,21 @@ Note: i32 is NOT a primitive in eco.
 -}
 
 import Compiler.AST.Source as Src
+import Dict
+import Expect exposing (Expectation)
+import Mlir.Mlir exposing (MlirBlock, MlirModule, MlirOp, MlirRegion(..), MlirType(..))
+import OrderedDict
 import TestLogic.Generate.CodeGen.GenerateMLIR exposing (compileToMlirModule)
 import TestLogic.Generate.CodeGen.Invariants
     exposing
         ( TypeEnv
         , Violation
         , findFuncOps
-        , isEcoValueType
         , isEcoPrimitive
+        , isEcoValueType
         , violationsToExpectation
         , walkOpsInRegion
         )
-import Dict
-import Expect exposing (Expectation)
-import Mlir.Mlir exposing (MlirBlock, MlirModule, MlirOp, MlirRegion(..), MlirType(..))
-import OrderedDict
 
 
 {-| Verify that eco.unbox sanity invariants hold for a source module.

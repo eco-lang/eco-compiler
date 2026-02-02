@@ -55,6 +55,7 @@ control flow around each read.
 Bounds checking is handled via nested scf.if in the emitter, not via explicit
 Require/BranchOnFail ops. This removes the need for CF block jumps and makes
 control flow explicit.
+
 -}
 type DecoderOp
     = InitReadCursor String Mono.MonoExpr -- cursorName, bytes expression

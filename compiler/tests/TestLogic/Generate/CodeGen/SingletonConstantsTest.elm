@@ -1,15 +1,15 @@
 module TestLogic.Generate.CodeGen.SingletonConstantsTest exposing (suite)
 
-{-| Test suite for CGEN_019: Singleton Constants invariant.
+{-| Test suite for CGEN\_019: Singleton Constants invariant.
 
 Well-known singletons (Unit, True, False, Nil, Nothing, EmptyString, EmptyRec)
 must always use `eco.constant`, never `eco.construct.custom`.
 
 -}
 
-import TestLogic.Generate.CodeGen.SingletonConstants exposing (expectSingletonConstants)
 import SourceIR.Suite.StandardTestSuites as StandardTestSuites
 import Test exposing (Test)
+import TestLogic.Generate.CodeGen.SingletonConstants exposing (expectSingletonConstants)
 
 
 suite : Test

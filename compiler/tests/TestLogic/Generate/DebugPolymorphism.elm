@@ -1,8 +1,6 @@
-module TestLogic.Generate.DebugPolymorphism exposing
-    ( expectDebugPolymorphismResolved
-    )
+module TestLogic.Generate.DebugPolymorphism exposing (expectDebugPolymorphismResolved)
 
-{-| Test logic for invariant MONO_009: Debug.* kernel functions handle polymorphism.
+{-| Test logic for invariant MONO\_009: Debug.\* kernel functions handle polymorphism.
 
 For Debug.log, Debug.toString, and other kernel functions that operate
 on polymorphic values:
@@ -18,9 +16,9 @@ debug kernel polymorphism is correctly handled.
 
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.Source as Src
-import TestLogic.Generate.TypedOptimizedMonomorphize as TOMono
 import Data.Map as Dict
 import Expect
+import TestLogic.Generate.TypedOptimizedMonomorphize as TOMono
 
 
 {-| Verify that Debug kernel calls remain polymorphic with CEcoValue.

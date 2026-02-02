@@ -1,6 +1,6 @@
 module TestLogic.Generate.CodeGen.ProjectionContainerTypeTest exposing (suite)
 
-{-| Test suite for CGEN_0E1: Projection Container Type invariant.
+{-| Test suite for CGEN\_0E1: Projection Container Type invariant.
 
 All projection operations (eco.project.record, eco.project.custom, etc.)
 must have !eco.value as their container operand type. This prevents
@@ -11,9 +11,9 @@ where eco.unbox produces a primitive that is incorrectly used as a container.
 
 -}
 
-import TestLogic.Generate.CodeGen.ProjectionContainerType exposing (expectProjectionContainerType)
 import SourceIR.Suite.StandardTestSuites as StandardTestSuites
 import Test exposing (Test)
+import TestLogic.Generate.CodeGen.ProjectionContainerType exposing (expectProjectionContainerType)
 
 
 suite : Test

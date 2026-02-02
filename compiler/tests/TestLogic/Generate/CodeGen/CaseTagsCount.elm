@@ -1,9 +1,6 @@
-module TestLogic.Generate.CodeGen.CaseTagsCount exposing
-    ( expectCaseTagsCount
-    , checkCaseTagsCount
-    )
+module TestLogic.Generate.CodeGen.CaseTagsCount exposing (expectCaseTagsCount, checkCaseTagsCount)
 
-{-| Test logic for CGEN_029: Case Tags Count invariant.
+{-| Test logic for CGEN\_029: Case Tags Count invariant.
 
 The `eco.case` `tags` array length must equal the number of alternative regions.
 
@@ -12,6 +9,8 @@ The `eco.case` `tags` array length must equal the number of alternative regions.
 -}
 
 import Compiler.AST.Source as Src
+import Expect exposing (Expectation)
+import Mlir.Mlir exposing (MlirModule, MlirOp)
 import TestLogic.Generate.CodeGen.GenerateMLIR exposing (compileToMlirModule)
 import TestLogic.Generate.CodeGen.Invariants
     exposing
@@ -20,8 +19,6 @@ import TestLogic.Generate.CodeGen.Invariants
         , getArrayAttr
         , violationsToExpectation
         )
-import Expect exposing (Expectation)
-import Mlir.Mlir exposing (MlirModule, MlirOp)
 
 
 {-| Verify that case tags count invariants hold for a source module.

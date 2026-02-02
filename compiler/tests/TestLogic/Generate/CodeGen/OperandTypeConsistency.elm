@@ -1,9 +1,6 @@
-module TestLogic.Generate.CodeGen.OperandTypeConsistency exposing
-    ( expectOperandTypeConsistency
-    , checkOperandTypeConsistency
-    )
+module TestLogic.Generate.CodeGen.OperandTypeConsistency exposing (expectOperandTypeConsistency, checkOperandTypeConsistency)
 
-{-| Test logic for CGEN_040: Operand Type Consistency invariant.
+{-| Test logic for CGEN\_040: Operand Type Consistency invariant.
 
 For any operation with `_operand_types` attribute, the list length must equal
 SSA operand count and each declared type must match the corresponding SSA
@@ -14,6 +11,10 @@ operand type.
 -}
 
 import Compiler.AST.Source as Src
+import Dict
+import Expect exposing (Expectation)
+import Mlir.Mlir exposing (MlirBlock, MlirModule, MlirOp, MlirRegion(..), MlirType(..))
+import OrderedDict
 import TestLogic.Generate.CodeGen.GenerateMLIR exposing (compileToMlirModule)
 import TestLogic.Generate.CodeGen.Invariants
     exposing
@@ -24,10 +25,6 @@ import TestLogic.Generate.CodeGen.Invariants
         , typesMatch
         , violationsToExpectation
         )
-import Dict
-import Expect exposing (Expectation)
-import Mlir.Mlir exposing (MlirBlock, MlirModule, MlirOp, MlirRegion(..), MlirType(..))
-import OrderedDict
 
 
 {-| Verify that operand type consistency invariants hold for a source module.

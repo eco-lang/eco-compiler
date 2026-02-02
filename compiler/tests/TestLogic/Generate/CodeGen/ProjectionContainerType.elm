@@ -1,9 +1,6 @@
-module TestLogic.Generate.CodeGen.ProjectionContainerType exposing
-    ( expectProjectionContainerType
-    , checkProjectionContainerTypes
-    )
+module TestLogic.Generate.CodeGen.ProjectionContainerType exposing (expectProjectionContainerType, checkProjectionContainerTypes)
 
-{-| Test logic for CGEN_0E1: Projection Container Type invariant.
+{-| Test logic for CGEN\_0E1: Projection Container Type invariant.
 
 All projection operations (eco.project.record, eco.project.custom, etc.)
 must have !eco.value as their container operand type. This prevents
@@ -17,6 +14,10 @@ where eco.unbox produces a primitive that is incorrectly used as a container.
 -}
 
 import Compiler.AST.Source as Src
+import Dict
+import Expect exposing (Expectation)
+import Mlir.Mlir exposing (MlirBlock, MlirModule, MlirOp, MlirRegion(..), MlirType(..))
+import OrderedDict
 import TestLogic.Generate.CodeGen.GenerateMLIR exposing (compileToMlirModule)
 import TestLogic.Generate.CodeGen.Invariants
     exposing
@@ -27,10 +28,6 @@ import TestLogic.Generate.CodeGen.Invariants
         , violationsToExpectation
         , walkOpsInRegion
         )
-import Dict
-import Expect exposing (Expectation)
-import Mlir.Mlir exposing (MlirBlock, MlirModule, MlirOp, MlirRegion(..), MlirType(..))
-import OrderedDict
 
 
 {-| Verify that projection container type invariants hold for a source module.

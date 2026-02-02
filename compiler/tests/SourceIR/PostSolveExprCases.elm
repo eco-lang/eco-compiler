@@ -802,7 +802,8 @@ nestedRecordUpdateType expectFn _ =
         modul =
             makeModule "testValue"
                 (letExpr
-                    [ define "outer" []
+                    [ define "outer"
+                        []
                         (recordExpr
                             [ ( "inner", recordExpr [ ( "value", intExpr 1 ) ] )
                             ]

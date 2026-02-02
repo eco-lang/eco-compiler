@@ -26,9 +26,9 @@ import Compiler.AST.SourceBuilder
         , varExpr
         )
 import Compiler.BulkCheck exposing (TestCase, bulkCheck)
-import TestLogic.Generate.TypedOptimizedMonomorphize exposing (expectMonomorphization)
 import Expect exposing (Expectation)
 import Test exposing (Test)
+import TestLogic.Generate.TypedOptimizedMonomorphize exposing (expectMonomorphization)
 
 
 suite : Test
@@ -111,8 +111,8 @@ bitwiseOrTest expectFn _ =
             , tipe = tType "Int" []
             , body =
                 callExpr (qualVarExpr "Bitwise" "or")
-                    [ intExpr 0x00F0
-                    , intExpr 0x000F
+                    [ intExpr 0xF0
+                    , intExpr 0x0F
                     ]
             }
 
@@ -139,8 +139,8 @@ bitwiseXorTest expectFn _ =
             , tipe = tType "Int" []
             , body =
                 callExpr (qualVarExpr "Bitwise" "xor")
-                    [ intExpr 0x00FF
-                    , intExpr 0x000F
+                    [ intExpr 0xFF
+                    , intExpr 0x0F
                     ]
             }
 
@@ -265,7 +265,7 @@ shiftRightZfByTest expectFn _ =
             , body =
                 callExpr (qualVarExpr "Bitwise" "shiftRightZfBy")
                     [ intExpr 2
-                    , intExpr (-8)
+                    , intExpr -8
                     ]
             }
 
@@ -339,10 +339,10 @@ andWithOrTest expectFn _ =
             , body =
                 callExpr (qualVarExpr "Bitwise" "and")
                     [ callExpr (qualVarExpr "Bitwise" "or")
-                        [ intExpr 0x00F0
-                        , intExpr 0x000F
+                        [ intExpr 0xF0
+                        , intExpr 0x0F
                         ]
-                    , intExpr 0x00FF
+                    , intExpr 0xFF
                     ]
             }
 
@@ -369,7 +369,7 @@ xorWithComplementTest expectFn _ =
             , tipe = tType "Int" []
             , body =
                 callExpr (qualVarExpr "Bitwise" "xor")
-                    [ intExpr 0x00FF
+                    [ intExpr 0xFF
                     , callExpr (qualVarExpr "Bitwise" "complement")
                         [ intExpr 0 ]
                     ]
@@ -399,11 +399,11 @@ complexBitwiseTest expectFn _ =
             , body =
                 callExpr (qualVarExpr "Bitwise" "and")
                     [ callExpr (qualVarExpr "Bitwise" "or")
-                        [ intExpr 0x00F0
-                        , intExpr 0x000F
+                        [ intExpr 0xF0
+                        , intExpr 0x0F
                         ]
                     , callExpr (qualVarExpr "Bitwise" "complement")
-                        [ intExpr 0x0000 ]
+                        [ intExpr 0x00 ]
                     ]
             }
 
@@ -434,7 +434,7 @@ maskExtractionTest expectFn _ =
                         [ intExpr 4
                         , intExpr 0xABCD
                         ]
-                    , intExpr 0x000F
+                    , intExpr 0x0F
                     ]
             }
 
@@ -534,7 +534,7 @@ clearBitFunctionTest expectFn _ =
             { name = "testValue"
             , args = []
             , tipe = tType "Int" []
-            , body = callExpr (varExpr "clearBit") [ intExpr 3, intExpr 0x00FF ]
+            , body = callExpr (varExpr "clearBit") [ intExpr 3, intExpr 0xFF ]
             }
 
         modul =
@@ -573,7 +573,7 @@ toggleBitFunctionTest expectFn _ =
             { name = "testValue"
             , args = []
             , tipe = tType "Int" []
-            , body = callExpr (varExpr "toggleBit") [ intExpr 3, intExpr 0x00FF ]
+            , body = callExpr (varExpr "toggleBit") [ intExpr 3, intExpr 0xFF ]
             }
 
         modul =
@@ -612,7 +612,7 @@ testBitFunctionTest expectFn _ =
             { name = "testValue"
             , args = []
             , tipe = tType "Int" []
-            , body = callExpr (varExpr "testBit") [ intExpr 3, intExpr 0x00FF ]
+            , body = callExpr (varExpr "testBit") [ intExpr 3, intExpr 0xFF ]
             }
 
         modul =
@@ -655,7 +655,7 @@ bitwiseWithConditionalTest expectFn _ =
             { name = "testValue"
             , args = []
             , tipe = tType "Int" []
-            , body = callExpr (varExpr "conditionalBit") [ intExpr 1, intExpr 0x00FE ]
+            , body = callExpr (varExpr "conditionalBit") [ intExpr 1, intExpr 0xFE ]
             }
 
         modul =
@@ -687,12 +687,12 @@ rotateLeftTest expectFn _ =
                     [ callExpr (qualVarExpr "Bitwise" "and")
                         [ callExpr (qualVarExpr "Bitwise" "shiftLeftBy")
                             [ varExpr "amount", varExpr "n" ]
-                        , intExpr 0x00FF
+                        , intExpr 0xFF
                         ]
                     , callExpr (qualVarExpr "Bitwise" "shiftRightZfBy")
                         [ binopsExpr [ ( intExpr 8, "-" ) ] (varExpr "amount")
                         , callExpr (qualVarExpr "Bitwise" "and")
-                            [ varExpr "n", intExpr 0x00FF ]
+                            [ varExpr "n", intExpr 0xFF ]
                         ]
                     ]
             }
@@ -702,7 +702,7 @@ rotateLeftTest expectFn _ =
             { name = "testValue"
             , args = []
             , tipe = tType "Int" []
-            , body = callExpr (varExpr "rotateLeft8") [ intExpr 0x0081, intExpr 1 ]
+            , body = callExpr (varExpr "rotateLeft8") [ intExpr 0x81, intExpr 1 ]
             }
 
         modul =
@@ -732,7 +732,7 @@ extractByteTest expectFn _ =
                         [ binopsExpr [ ( varExpr "byteIndex", "*" ) ] (intExpr 8)
                         , varExpr "n"
                         ]
-                    , intExpr 0x00FF
+                    , intExpr 0xFF
                     ]
             }
 
@@ -770,10 +770,10 @@ packBytesTest expectFn _ =
                     [ callExpr (qualVarExpr "Bitwise" "shiftLeftBy")
                         [ intExpr 8
                         , callExpr (qualVarExpr "Bitwise" "and")
-                            [ varExpr "high", intExpr 0x00FF ]
+                            [ varExpr "high", intExpr 0xFF ]
                         ]
                     , callExpr (qualVarExpr "Bitwise" "and")
-                        [ varExpr "low", intExpr 0x00FF ]
+                        [ varExpr "low", intExpr 0xFF ]
                     ]
             }
 
@@ -782,7 +782,7 @@ packBytesTest expectFn _ =
             { name = "testValue"
             , args = []
             , tipe = tType "Int" []
-            , body = callExpr (varExpr "packBytes") [ intExpr 0x00AB, intExpr 0x00CD ]
+            , body = callExpr (varExpr "packBytes") [ intExpr 0xAB, intExpr 0xCD ]
             }
 
         modul =

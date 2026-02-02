@@ -1,11 +1,11 @@
 module TestLogic.Type.PostSolve.PostSolveInvariantHelpers exposing
     ( ExprNode
-    , walkExprs
-    , isGroupBExprNode
-    , isVarKernel
-    , freeTypeVars
     , collectExprIds
     , collectKernelExprIds
+    , freeTypeVars
+    , isGroupBExprNode
+    , isVarKernel
+    , walkExprs
     )
 
 {-| Shared helpers for POST\_001 and POST\_003 invariant tests.

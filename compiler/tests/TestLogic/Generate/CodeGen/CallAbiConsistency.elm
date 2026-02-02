@@ -1,7 +1,4 @@
-module TestLogic.Generate.CodeGen.CallAbiConsistency exposing
-    ( expectCallAbiConsistency
-    , checkCallAbiConsistency
-    )
+module TestLogic.Generate.CodeGen.CallAbiConsistency exposing (expectCallAbiConsistency, checkCallAbiConsistency)
 
 {-| Test logic for Call ABI Consistency invariant.
 
@@ -10,7 +7,7 @@ declared parameter types. This catches cases where a value is passed as
 a different type than the function expects (e.g., i1 passed to a function
 expecting !eco.value).
 
-This invariant is derived from REP_ABI_001 which requires consistent
+This invariant is derived from REP\_ABI\_001 which requires consistent
 representation at function call boundaries.
 
 @docs expectCallAbiConsistency, checkCallAbiConsistency
@@ -18,6 +15,9 @@ representation at function call boundaries.
 -}
 
 import Compiler.AST.Source as Src
+import Dict exposing (Dict)
+import Expect exposing (Expectation)
+import Mlir.Mlir exposing (MlirModule, MlirOp, MlirType(..))
 import TestLogic.Generate.CodeGen.GenerateMLIR exposing (compileToMlirModule)
 import TestLogic.Generate.CodeGen.Invariants
     exposing
@@ -29,9 +29,6 @@ import TestLogic.Generate.CodeGen.Invariants
         , getTypeAttr
         , violationsToExpectation
         )
-import Dict exposing (Dict)
-import Expect exposing (Expectation)
-import Mlir.Mlir exposing (MlirModule, MlirOp, MlirType(..))
 
 
 {-| Verify that call ABI consistency invariants hold for a source module.

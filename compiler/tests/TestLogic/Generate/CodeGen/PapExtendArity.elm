@@ -1,9 +1,6 @@
-module TestLogic.Generate.CodeGen.PapExtendArity exposing
-    ( expectPapExtendArity
-    , checkPapExtendArity
-    )
+module TestLogic.Generate.CodeGen.PapExtendArity exposing (expectPapExtendArity, checkPapExtendArity)
 
-{-| Test logic for CGEN_052: PapExtend remaining\_arity calculation invariant.
+{-| Test logic for CGEN\_052: PapExtend remaining\_arity calculation invariant.
 
 `eco.papExtend` remaining\_arity must equal the source PAP's remaining arity
 (before this application), satisfying:
@@ -20,6 +17,9 @@ each `eco.papExtend` uses the correct remaining\_arity matching its source PAP.
 -}
 
 import Compiler.AST.Source as Src
+import Dict exposing (Dict)
+import Expect exposing (Expectation)
+import Mlir.Mlir exposing (MlirModule, MlirOp)
 import TestLogic.Generate.CodeGen.GenerateMLIR exposing (compileToMlirModule)
 import TestLogic.Generate.CodeGen.Invariants
     exposing
@@ -29,9 +29,6 @@ import TestLogic.Generate.CodeGen.Invariants
         , violationsToExpectation
         , walkAllOps
         )
-import Dict exposing (Dict)
-import Expect exposing (Expectation)
-import Mlir.Mlir exposing (MlirModule, MlirOp)
 
 
 {-| Verify that papExtend remaining\_arity equals the source PAP's remaining arity.

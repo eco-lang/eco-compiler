@@ -1,6 +1,6 @@
 module TestLogic.Type.PostSolve.PostSolveNonRegressionInvariants exposing
-    ( Violation
-    , NodeKind(..)
+    ( NodeKind(..)
+    , Violation
     , checkPost005
     , checkPost006
     , collectNodeKinds
@@ -253,8 +253,9 @@ alphaEqExt ext1 ext2 =
             True
 
         ( Just _, Just _ ) ->
-            True -- Extension vars are alpha-equivalent
+            True
 
+        -- Extension vars are alpha-equivalent
         _ ->
             False
 

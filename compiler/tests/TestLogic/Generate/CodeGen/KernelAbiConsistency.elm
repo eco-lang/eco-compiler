@@ -1,9 +1,6 @@
-module TestLogic.Generate.CodeGen.KernelAbiConsistency exposing
-    ( expectKernelAbiConsistency
-    , checkKernelAbiConsistency
-    )
+module TestLogic.Generate.CodeGen.KernelAbiConsistency exposing (expectKernelAbiConsistency, checkKernelAbiConsistency)
 
-{-| Test logic for CGEN_038: Kernel ABI Consistency invariant.
+{-| Test logic for CGEN\_038: Kernel ABI Consistency invariant.
 
 All calls to the same kernel function must use identical MLIR argument and
 result types.
@@ -13,6 +10,9 @@ result types.
 -}
 
 import Compiler.AST.Source as Src
+import Dict exposing (Dict)
+import Expect exposing (Expectation)
+import Mlir.Mlir exposing (MlirModule, MlirOp, MlirType)
 import TestLogic.Generate.CodeGen.GenerateMLIR exposing (compileToMlirModule)
 import TestLogic.Generate.CodeGen.Invariants
     exposing
@@ -23,9 +23,6 @@ import TestLogic.Generate.CodeGen.Invariants
         , getStringAttr
         , violationsToExpectation
         )
-import Dict exposing (Dict)
-import Expect exposing (Expectation)
-import Mlir.Mlir exposing (MlirModule, MlirOp, MlirType)
 
 
 {-| Verify that kernel ABI consistency invariants hold for a source module.

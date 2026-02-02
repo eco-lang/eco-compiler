@@ -3,7 +3,7 @@ module TestLogic.Type.OccursCheck exposing
     , expectNoInfiniteTypes
     )
 
-{-| Test logic for invariant TYPE_004: Occurs check forbids infinite types.
+{-| Test logic for invariant TYPE\_004: Occurs check forbids infinite types.
 
 Force scenarios where a type variable must unify with a structure containing itself
 (e.g., `a ~ List a` or recursive record types). Assert `Compiler.Type.Occurs`
@@ -16,10 +16,10 @@ This module provides tests for the occurs check invariant.
 
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Source as Src
-import TestLogic.Generate.TypedOptimizedMonomorphize as TOMono
 import Data.Map as Dict
 import Data.Set as Set exposing (EverySet)
 import Expect
+import TestLogic.Generate.TypedOptimizedMonomorphize as TOMono
 
 
 {-| Expect type checking to detect an infinite type and report an error.

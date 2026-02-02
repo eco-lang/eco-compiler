@@ -1,29 +1,26 @@
-module TestLogic.Generate.CodeGen.UnboxedBitmap exposing
-    ( expectUnboxedBitmap
-    , checkUnboxedBitmap
-    )
+module TestLogic.Generate.CodeGen.UnboxedBitmap exposing (expectUnboxedBitmap, checkUnboxedBitmap)
 
-{-| Test logic for heap and closure boundary representation (CGEN_026, CGEN_027, CGEN_003, CGEN_049).
+{-| Test logic for heap and closure boundary representation (CGEN\_026, CGEN\_027, CGEN\_003, CGEN\_049).
 
 This tests the HEAP and CLOSURE boundaries, NOT the ABI boundary.
 ABI boundary testing (function parameters/returns) is separate.
 
-Per REP_CLOSURE_001 and CGEN_026, at heap/closure boundaries:
+Per REP\_CLOSURE\_001 and CGEN\_026, at heap/closure boundaries:
 
   - Only Int (i64), Float (f64), and Char (i16) may be unboxed
   - Bool must be !eco.value (i1 is a violation)
   - All other types must be !eco.value
 
-CGEN_026: For container construct ops, bit N of `unboxed_bitmap` must be set
+CGEN\_026: For container construct ops, bit N of `unboxed_bitmap` must be set
 iff operand N is unboxable (Int, Float, Char). Bool operands must be !eco.value.
 
-CGEN_027: For `eco.construct.list`, `head_unboxed` must be true iff head
+CGEN\_027: For `eco.construct.list`, `head_unboxed` must be true iff head
 operand is unboxable.
 
-CGEN_003: For `eco.papCreate`, bit N of `unboxed_bitmap` must be set iff
+CGEN\_003: For `eco.papCreate`, bit N of `unboxed_bitmap` must be set iff
 captured operand N is unboxable.
 
-CGEN_049: For `eco.papExtend`, bit N of `newargs_unboxed_bitmap` must be set
+CGEN\_049: For `eco.papExtend`, bit N of `newargs_unboxed_bitmap` must be set
 iff new argument operand N is unboxable.
 
 @docs expectUnboxedBitmap, checkUnboxedBitmap
@@ -32,6 +29,8 @@ iff new argument operand N is unboxable.
 
 import Bitwise
 import Compiler.AST.Source as Src
+import Expect exposing (Expectation)
+import Mlir.Mlir exposing (MlirModule, MlirOp, MlirType(..))
 import TestLogic.Generate.CodeGen.GenerateMLIR exposing (compileToMlirModule)
 import TestLogic.Generate.CodeGen.Invariants
     exposing
@@ -43,8 +42,6 @@ import TestLogic.Generate.CodeGen.Invariants
         , isUnboxable
         , violationsToExpectation
         )
-import Expect exposing (Expectation)
-import Mlir.Mlir exposing (MlirModule, MlirOp, MlirType(..))
 
 
 {-| Verify that unboxed bitmap invariants hold for a source module.
@@ -59,7 +56,7 @@ expectUnboxedBitmap srcModule =
             violationsToExpectation (checkUnboxedBitmap mlirModule)
 
 
-{-| Check unboxed bitmap consistency for containers and PAP ops (CGEN_026/027/003/049).
+{-| Check unboxed bitmap consistency for containers and PAP ops (CGEN\_026/027/003/049).
 -}
 checkUnboxedBitmap : MlirModule -> List Violation
 checkUnboxedBitmap mlirModule =

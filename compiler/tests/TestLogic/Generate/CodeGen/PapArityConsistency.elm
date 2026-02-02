@@ -1,9 +1,6 @@
-module TestLogic.Generate.CodeGen.PapArityConsistency exposing
-    ( expectPapArityConsistency
-    , checkPapArityConsistency
-    )
+module TestLogic.Generate.CodeGen.PapArityConsistency exposing (expectPapArityConsistency, checkPapArityConsistency)
 
-{-| Test logic for CGEN_051: papCreate arity matches function parameter count.
+{-| Test logic for CGEN\_051: papCreate arity matches function parameter count.
 
 `eco.papCreate` arity must equal the number of arguments its referenced
 function symbol accepts.
@@ -16,6 +13,9 @@ then verifies each `eco.papCreate` has an arity that matches.
 -}
 
 import Compiler.AST.Source as Src
+import Dict exposing (Dict)
+import Expect exposing (Expectation)
+import Mlir.Mlir exposing (MlirModule, MlirOp, MlirRegion(..))
 import TestLogic.Generate.CodeGen.GenerateMLIR exposing (compileToMlirModule)
 import TestLogic.Generate.CodeGen.Invariants
     exposing
@@ -26,9 +26,6 @@ import TestLogic.Generate.CodeGen.Invariants
         , getStringAttr
         , violationsToExpectation
         )
-import Dict exposing (Dict)
-import Expect exposing (Expectation)
-import Mlir.Mlir exposing (MlirModule, MlirOp, MlirRegion(..))
 
 
 {-| Verify that papCreate arity matches function parameter count.

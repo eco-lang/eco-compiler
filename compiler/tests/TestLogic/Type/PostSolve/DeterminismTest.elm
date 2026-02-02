@@ -1,12 +1,11 @@
 module TestLogic.Type.PostSolve.DeterminismTest exposing (suite)
 
-{-| Test suite for invariant POST_004: Type inference is deterministic.
-
+{-| Test suite for invariant POST\_004: Type inference is deterministic.
 -}
 
 import Compiler.AST.SourceBuilder as SB
-import TestLogic.Type.PostSolve.Determinism exposing (expectDeterministicTypes)
 import Test exposing (Test)
+import TestLogic.Type.PostSolve.Determinism exposing (expectDeterministicTypes)
 
 
 suite : Test

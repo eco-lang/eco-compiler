@@ -1,12 +1,11 @@
 module TestLogic.Type.PostSolve.KernelTypesTest exposing (suite)
 
-{-| Test suite for invariant POST_002: Kernel types are correctly resolved.
-
+{-| Test suite for invariant POST\_002: Kernel types are correctly resolved.
 -}
 
 import Compiler.AST.SourceBuilder as SB
-import TestLogic.Type.PostSolve.KernelTypes exposing (expectKernelTypesValid)
 import Test exposing (Test)
+import TestLogic.Type.PostSolve.KernelTypes exposing (expectKernelTypesValid)
 
 
 suite : Test

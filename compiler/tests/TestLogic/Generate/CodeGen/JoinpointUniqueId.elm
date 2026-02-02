@@ -1,9 +1,6 @@
-module TestLogic.Generate.CodeGen.JoinpointUniqueId exposing
-    ( expectJoinpointUniqueId
-    , checkJoinpointUniqueness
-    )
+module TestLogic.Generate.CodeGen.JoinpointUniqueId exposing (expectJoinpointUniqueId, checkJoinpointUniqueness)
 
-{-| Test logic for CGEN_031: Joinpoint ID Uniqueness invariant.
+{-| Test logic for CGEN\_031: Joinpoint ID Uniqueness invariant.
 
 Within a single `func.func`, each `eco.joinpoint` id must be unique.
 
@@ -12,6 +9,10 @@ Within a single `func.func`, each `eco.joinpoint` id must be unique.
 -}
 
 import Compiler.AST.Source as Src
+import Dict exposing (Dict)
+import Expect exposing (Expectation)
+import Mlir.Mlir exposing (MlirBlock, MlirModule, MlirOp, MlirRegion(..))
+import OrderedDict
 import TestLogic.Generate.CodeGen.GenerateMLIR exposing (compileToMlirModule)
 import TestLogic.Generate.CodeGen.Invariants
     exposing
@@ -21,10 +22,6 @@ import TestLogic.Generate.CodeGen.Invariants
         , getStringAttr
         , violationsToExpectation
         )
-import Dict exposing (Dict)
-import Expect exposing (Expectation)
-import Mlir.Mlir exposing (MlirBlock, MlirModule, MlirOp, MlirRegion(..))
-import OrderedDict
 
 
 {-| Verify that joinpoint ID uniqueness invariants hold for a source module.

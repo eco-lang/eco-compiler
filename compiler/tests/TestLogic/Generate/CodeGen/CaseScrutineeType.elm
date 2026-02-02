@@ -1,9 +1,6 @@
-module TestLogic.Generate.CodeGen.CaseScrutineeType exposing
-    ( expectCaseScrutineeType
-    , checkCaseScrutineeType
-    )
+module TestLogic.Generate.CodeGen.CaseScrutineeType exposing (expectCaseScrutineeType, checkCaseScrutineeType)
 
-{-| Test logic for CGEN_037: Case Scrutinee Type Agreement invariant.
+{-| Test logic for CGEN\_037: Case Scrutinee Type Agreement invariant.
 
 `eco.case` scrutinee is `i1` only for boolean cases; otherwise `!eco.value`.
 
@@ -12,6 +9,8 @@ module TestLogic.Generate.CodeGen.CaseScrutineeType exposing
 -}
 
 import Compiler.AST.Source as Src
+import Expect exposing (Expectation)
+import Mlir.Mlir exposing (MlirModule, MlirOp, MlirType(..))
 import TestLogic.Generate.CodeGen.GenerateMLIR exposing (compileToMlirModule)
 import TestLogic.Generate.CodeGen.Invariants
     exposing
@@ -22,8 +21,6 @@ import TestLogic.Generate.CodeGen.Invariants
         , isEcoValueType
         , violationsToExpectation
         )
-import Expect exposing (Expectation)
-import Mlir.Mlir exposing (MlirModule, MlirOp, MlirType(..))
 
 
 {-| Verify that case scrutinee type invariants hold for a source module.

@@ -1,6 +1,6 @@
 module TestLogic.Generate.CodeGen.EcoUnboxSanityTest exposing (suite)
 
-{-| Test suite for CGEN_0E2: eco.unbox Sanity invariant.
+{-| Test suite for CGEN\_0E2: eco.unbox Sanity invariant.
 
 eco.unbox converts !eco.value (boxed) to a primitive type (i1, i16, i64, f64).
 This test verifies:
@@ -12,9 +12,9 @@ Note: i32 is NOT a primitive in eco.
 
 -}
 
-import TestLogic.Generate.CodeGen.EcoUnboxSanity exposing (expectEcoUnboxSanity)
 import SourceIR.Suite.StandardTestSuites as StandardTestSuites
 import Test exposing (Test)
+import TestLogic.Generate.CodeGen.EcoUnboxSanity exposing (expectEcoUnboxSanity)
 
 
 suite : Test

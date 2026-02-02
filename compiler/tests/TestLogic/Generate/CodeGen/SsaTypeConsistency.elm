@@ -1,9 +1,6 @@
-module TestLogic.Generate.CodeGen.SsaTypeConsistency exposing
-    ( expectSsaTypeConsistency
-    , checkSsaTypeConsistency
-    )
+module TestLogic.Generate.CodeGen.SsaTypeConsistency exposing (expectSsaTypeConsistency, checkSsaTypeConsistency)
 
-{-| Test logic for CGEN_0B1: SSA Type Consistency invariant.
+{-| Test logic for CGEN\_0B1: SSA Type Consistency invariant.
 
 Within each function, an SSA name must never be assigned different types.
 This catches the "use of value '%X' expects different type than prior uses"
@@ -17,6 +14,10 @@ must be per-function, not module-wide.
 -}
 
 import Compiler.AST.Source as Src
+import Dict exposing (Dict)
+import Expect exposing (Expectation)
+import Mlir.Mlir exposing (MlirBlock, MlirModule, MlirOp, MlirRegion(..), MlirType(..))
+import OrderedDict
 import TestLogic.Generate.CodeGen.GenerateMLIR exposing (compileToMlirModule)
 import TestLogic.Generate.CodeGen.Invariants
     exposing
@@ -25,10 +26,6 @@ import TestLogic.Generate.CodeGen.Invariants
         , getStringAttr
         , violationsToExpectation
         )
-import Dict exposing (Dict)
-import Expect exposing (Expectation)
-import Mlir.Mlir exposing (MlirBlock, MlirModule, MlirOp, MlirRegion(..), MlirType(..))
-import OrderedDict
 
 
 {-| Verify that SSA type consistency invariants hold for a source module.

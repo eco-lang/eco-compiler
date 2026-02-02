@@ -1,7 +1,4 @@
-module TestLogic.Generate.Monomorphize.MonoCaseBranchResultType exposing
-    ( expectMonoCaseBranchResultTypes
-    , checkMonoCaseBranchResultTypes
-    )
+module TestLogic.Generate.Monomorphize.MonoCaseBranchResultType exposing (expectMonoCaseBranchResultTypes, checkMonoCaseBranchResultTypes)
 
 {-| Test logic for MONO\_018: MonoCase branch result types match MonoCase resultType.
 
@@ -21,9 +18,9 @@ This invariant catches the "different staging boundaries across branches" bug wh
 
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.Source as Src
-import TestLogic.Generate.TypedOptimizedMonomorphize as TOMono
 import Data.Map as Dict
 import Expect exposing (Expectation)
+import TestLogic.Generate.TypedOptimizedMonomorphize as TOMono
 
 
 {-| Violation record for reporting issues.

@@ -366,7 +366,7 @@ testIndexedMap expectFn _ =
 
 {-| filter : (a -> Bool) -> List a -> List a
 filter isGood list =
-foldr (\x xs -> if isGood x then cons x xs else xs) [] list
+foldr (\\x xs -> if isGood x then cons x xs else xs) [] list
 -}
 testFilter : (Src.Module -> Expectation) -> (() -> Expectation)
 testFilter expectFn _ =

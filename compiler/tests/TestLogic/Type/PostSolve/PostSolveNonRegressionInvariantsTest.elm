@@ -8,11 +8,11 @@ POST\_006: PostSolve does not introduce new free type variables
 -}
 
 import Compiler.AST.Source as Src
+import Expect
 import SourceIR.Suite.StandardTestSuites as StandardTestSuites
+import Test exposing (Test)
 import TestLogic.Type.PostSolve.CompileThroughPostSolve as Compile
 import TestLogic.Type.PostSolve.PostSolveNonRegressionInvariants as Invariants
-import Expect
-import Test exposing (Test)
 
 
 suite : Test

@@ -1,6 +1,6 @@
 module TestLogic.Generate.CodeGen.SsaTypeConsistencyTest exposing (suite)
 
-{-| Test suite for CGEN_0B1: SSA Type Consistency invariant.
+{-| Test suite for CGEN\_0B1: SSA Type Consistency invariant.
 
 Within each function, an SSA name must never be assigned different types.
 This catches the "use of value '%X' expects different type than prior uses"
@@ -11,9 +11,9 @@ must be per-function, not module-wide.
 
 -}
 
-import TestLogic.Generate.CodeGen.SsaTypeConsistency exposing (expectSsaTypeConsistency)
 import SourceIR.Suite.StandardTestSuites as StandardTestSuites
 import Test exposing (Test)
+import TestLogic.Generate.CodeGen.SsaTypeConsistency exposing (expectSsaTypeConsistency)
 
 
 suite : Test

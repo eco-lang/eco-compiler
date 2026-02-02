@@ -16,11 +16,11 @@ all expressions carry types.
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Source as Src
 import Compiler.AST.TypedOptimized as TOpt
-import TestLogic.Generate.TypedOptimizedMonomorphize as TOMono
 import Compiler.Reporting.Annotation as A
 import Data.Map as Dict
 import Expect
 import System.TypeCheck.IO as IO
+import TestLogic.Generate.TypedOptimizedMonomorphize as TOMono
 
 
 {-| TOPT\_001: Verify all expressions have types.

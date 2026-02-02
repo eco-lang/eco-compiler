@@ -1,6 +1,4 @@
-module TestLogic.Optimize.Typed.TypeEq exposing
-    ( alphaEqStrict
-    )
+module TestLogic.Optimize.Typed.TypeEq exposing (alphaEqStrict)
 
 {-| Strict alpha-equivalence for Can.Type values.
 
@@ -10,7 +8,7 @@ unlike the permissive alphaEq in TypePreservation.elm which treats TVar as wildc
 Key property: TVar only matches TVar via a consistent bidirectional mapping.
 TVar does NOT match a concrete type.
 
-This is critical for catching MONO_018-class bugs where:
+This is critical for catching MONO\_018-class bugs where:
 
     case : List Int
     branch expression has type : List a  ← Would fail strict check
@@ -356,7 +354,8 @@ applySubst subst tipe =
 
         Can.TAlias home name args at ->
             -- Recursively apply to alias args
-            Can.TAlias home name
+            Can.TAlias home
+                name
                 (List.map (\( n, t ) -> ( n, applySubst subst t )) args)
                 at
 

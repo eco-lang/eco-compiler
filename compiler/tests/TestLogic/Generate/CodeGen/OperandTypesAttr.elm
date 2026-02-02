@@ -1,9 +1,6 @@
-module TestLogic.Generate.CodeGen.OperandTypesAttr exposing
-    ( expectOperandTypesAttr
-    , checkOperandTypesAttr
-    )
+module TestLogic.Generate.CodeGen.OperandTypesAttr exposing (expectOperandTypesAttr, checkOperandTypesAttr)
 
-{-| Test logic for CGEN_032: Operand Types Attribute invariant.
+{-| Test logic for CGEN\_032: Operand Types Attribute invariant.
 
 `_operand_types` is required when an op has operands and must have correct length.
 
@@ -12,6 +9,8 @@ module TestLogic.Generate.CodeGen.OperandTypesAttr exposing
 -}
 
 import Compiler.AST.Source as Src
+import Expect exposing (Expectation)
+import Mlir.Mlir exposing (MlirModule, MlirOp)
 import TestLogic.Generate.CodeGen.GenerateMLIR exposing (compileToMlirModule)
 import TestLogic.Generate.CodeGen.Invariants
     exposing
@@ -20,8 +19,6 @@ import TestLogic.Generate.CodeGen.Invariants
         , violationsToExpectation
         , walkAllOps
         )
-import Expect exposing (Expectation)
-import Mlir.Mlir exposing (MlirModule, MlirOp)
 
 
 {-| Verify that operand types attribute invariants hold for a source module.

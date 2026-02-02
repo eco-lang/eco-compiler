@@ -45,9 +45,9 @@ module Compiler.AST.SourceBuilder exposing
     , pTuple3
     , pUnit
     , pVar
+    , parensExpr
     , portDecl
       -- Module builders
-    , parensExpr
     , qualVarExpr
     , recordExpr
     , strExpr

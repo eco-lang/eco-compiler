@@ -1,9 +1,9 @@
 module Compiler.Generate.MLIR.Expr exposing
     ( ExprResult
     , generateExpr
-    , generateCase
     , boxToEcoValue, coerceResultToType, boxArgsWithMlirTypes
     , createDummyValue
+    , generateCase
     )
 
 {-| Expression generation for the MLIR backend.
@@ -3264,9 +3264,11 @@ If the ExprResult is already terminated (ends with eco.yield), use it directly.
 Otherwise, wrap the value-producing expression with eco.yield.
 
 This handles:
-- Leaf expressions that already have eco.yield
-- Nested eco.case (value-producing) that needs wrapping
-- Any other value-producing expression
+
+  - Leaf expressions that already have eco.yield
+  - Nested eco.case (value-producing) that needs wrapping
+  - Any other value-producing expression
+
 -}
 mkCaseRegionFromDecider : ExprResult -> MlirType -> ( MlirRegion, Ctx.Context )
 mkCaseRegionFromDecider exprRes resultTy =

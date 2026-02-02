@@ -1,12 +1,11 @@
 module TestLogic.Optimize.FunctionTypeEncodeTest exposing (suite)
 
-{-| Test suite for invariant TOPT_005: Function expressions encode full function type.
-
+{-| Test suite for invariant TOPT\_005: Function expressions encode full function type.
 -}
 
-import TestLogic.Optimize.FunctionTypeEncode exposing (expectFunctionTypesEncoded)
 import SourceIR.Suite.StandardTestSuites as StandardTestSuites
 import Test exposing (Test)
+import TestLogic.Optimize.FunctionTypeEncode exposing (expectFunctionTypesEncoded)
 
 
 suite : Test

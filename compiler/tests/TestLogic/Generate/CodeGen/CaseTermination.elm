@@ -1,21 +1,21 @@
-module TestLogic.Generate.CodeGen.CaseTermination exposing
-    ( expectCaseTermination
-    , checkCaseTermination
-    )
+module TestLogic.Generate.CodeGen.CaseTermination exposing (expectCaseTermination, checkCaseTermination)
 
-{-| Test logic for CGEN_028: Case Alternative Termination invariant.
+{-| Test logic for CGEN\_028: Case Alternative Termination invariant.
 
 Every `eco.case` alternative region must terminate with `eco.yield`.
 This is the only valid terminator for case alternatives.
 
 eco.return, eco.jump, eco.crash, and other terminators are forbidden
-inside eco.case alternatives (per CGEN_054).
+inside eco.case alternatives (per CGEN\_054).
 
 @docs expectCaseTermination, checkCaseTermination
 
 -}
 
 import Compiler.AST.Source as Src
+import Expect exposing (Expectation)
+import Mlir.Mlir exposing (MlirBlock, MlirModule, MlirOp, MlirRegion(..))
+import OrderedDict
 import TestLogic.Generate.CodeGen.GenerateMLIR exposing (compileToMlirModule)
 import TestLogic.Generate.CodeGen.Invariants
     exposing
@@ -23,9 +23,6 @@ import TestLogic.Generate.CodeGen.Invariants
         , findOpsNamed
         , violationsToExpectation
         )
-import Expect exposing (Expectation)
-import Mlir.Mlir exposing (MlirBlock, MlirModule, MlirOp, MlirRegion(..))
-import OrderedDict
 
 
 {-| Verify that case termination invariants hold for a source module.

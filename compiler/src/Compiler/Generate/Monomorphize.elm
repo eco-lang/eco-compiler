@@ -23,11 +23,11 @@ The monomorphization algorithm works as follows:
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.TypeEnv as TypeEnv
-import Compiler.Generate.MLIR.Types as Types
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.Index as Index
 import Compiler.Data.Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
+import Compiler.Generate.MLIR.Types as Types
 import Compiler.Generate.Monomorphize.Analysis as Analysis
 import Compiler.Generate.Monomorphize.Specialize as Specialize
 import Compiler.Generate.Monomorphize.State as State exposing (WorkItem(..))

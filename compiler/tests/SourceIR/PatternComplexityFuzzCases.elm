@@ -15,6 +15,8 @@ that simpler deterministic tests might miss.
 
 import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder as B exposing (makeModule)
+import Expect exposing (Expectation)
+import Fuzz exposing (Fuzzer)
 import SourceIR.Fuzz.TypedExpr as TE
     exposing
         ( Scope
@@ -23,8 +25,6 @@ import SourceIR.Fuzz.TypedExpr as TE
         , decrementDepth
         , emptyScope
         )
-import Expect exposing (Expectation)
-import Fuzz exposing (Fuzzer)
 import Test exposing (Test)
 
 
@@ -287,7 +287,7 @@ overlappingIntPatternCaseFuzzer scope =
                         ( B.pInt 2, B.intExpr 102 )
 
                     branch4 =
-                        ( B.pInt (-1), B.intExpr 99 )
+                        ( B.pInt -1, B.intExpr 99 )
 
                     -- Catch-all
                     catchAll =

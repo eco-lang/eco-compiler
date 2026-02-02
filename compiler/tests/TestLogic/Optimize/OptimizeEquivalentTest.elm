@@ -8,9 +8,9 @@ both optimization pipelines and compares the resulting IRs.
 
 -}
 
-import TestLogic.Optimize.OptimizeEquivalent exposing (expectEquivalentOptimization)
 import SourceIR.Suite.StandardTestSuites as StandardTestSuites
 import Test exposing (Test)
+import TestLogic.Optimize.OptimizeEquivalent exposing (expectEquivalentOptimization)
 
 
 suite : Test

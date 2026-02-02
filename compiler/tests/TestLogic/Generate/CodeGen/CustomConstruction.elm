@@ -1,9 +1,6 @@
-module TestLogic.Generate.CodeGen.CustomConstruction exposing
-    ( expectCustomConstruction
-    , checkCustomConstruction
-    )
+module TestLogic.Generate.CodeGen.CustomConstruction exposing (expectCustomConstruction, checkCustomConstruction)
 
-{-| Test logic for CGEN_020: Custom ADT Construction invariant.
+{-| Test logic for CGEN\_020: Custom ADT Construction invariant.
 
 `eco.construct.custom` is only for user-defined custom ADTs.
 Attributes must have valid `tag` and `size`, and `size` must match operand count.
@@ -13,6 +10,8 @@ Attributes must have valid `tag` and `size`, and `size` must match operand count
 -}
 
 import Compiler.AST.Source as Src
+import Expect exposing (Expectation)
+import Mlir.Mlir exposing (MlirModule, MlirOp)
 import TestLogic.Generate.CodeGen.GenerateMLIR exposing (compileToMlirModule)
 import TestLogic.Generate.CodeGen.Invariants
     exposing
@@ -22,8 +21,6 @@ import TestLogic.Generate.CodeGen.Invariants
         , getStringAttr
         , violationsToExpectation
         )
-import Expect exposing (Expectation)
-import Mlir.Mlir exposing (MlirModule, MlirOp)
 
 
 {-| Verify that custom construction invariants hold for a source module.

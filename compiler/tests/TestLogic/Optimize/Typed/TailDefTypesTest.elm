@@ -1,6 +1,6 @@
 module TestLogic.Optimize.Typed.TailDefTypesTest exposing (suite)
 
-{-| Test suite for invariant TOPT_TAILDEF_001: TailDef argument and return types match annotation.
+{-| Test suite for invariant TOPT\_TAILDEF\_001: TailDef argument and return types match annotation.
 
 This test verifies that for tail-recursive functions with type annotations:
 
@@ -29,11 +29,11 @@ import Compiler.AST.SourceBuilder
         )
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.Name as Name
-import TestLogic.Generate.TypedOptimizedMonomorphize as Pipeline
 import Compiler.Reporting.Annotation as A
 import Data.Map as Dict exposing (Dict)
 import Expect exposing (Expectation)
 import Test exposing (Test)
+import TestLogic.Generate.TypedOptimizedMonomorphize as Pipeline
 
 
 suite : Test
@@ -56,6 +56,7 @@ suite =
     sumHelper acc n =
         if n <= 0 then
             acc
+
         else
             sumHelper (acc + n) (n - 1)
 
@@ -97,7 +98,6 @@ checkSumHelper =
 
         Ok { localGraph, annotations } ->
             checkTailDefTypes "sumHelper" localGraph annotations
-
 
 
 

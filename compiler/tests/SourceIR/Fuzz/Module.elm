@@ -15,6 +15,7 @@ and complex mixed expressions.
 import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder as B
 import Compiler.Data.Name exposing (Name)
+import Fuzz exposing (Fuzzer)
 import SourceIR.Fuzz.Structure
     exposing
         ( BinopCategory(..)
@@ -36,7 +37,6 @@ import SourceIR.Fuzz.TypedExpr as TE
         , simpleTypeFuzzer
         , uniqueNameFuzzer
         )
-import Fuzz exposing (Fuzzer)
 
 
 

@@ -2,13 +2,15 @@ module TestLogic.Generate.MonoLayoutIntegrityTest exposing (suite)
 
 {-| Test suite for invariants:
 
-  - MONO_006: Record and tuple layouts capture shape completely
-  - MONO_007: Record access matches layout metadata
-  - MONO_013: Constructor layouts define consistent custom types
-  - MONO_014: Structurally equivalent layouts are canonical
+  - MONO\_006: Record and tuple layouts capture shape completely
+  - MONO\_007: Record access matches layout metadata
+  - MONO\_013: Constructor layouts define consistent custom types
+  - MONO\_014: Structurally equivalent layouts are canonical
 
 -}
 
+import SourceIR.Suite.StandardTestSuites as StandardTestSuites
+import Test exposing (Test)
 import TestLogic.Generate.MonoLayoutIntegrity
     exposing
         ( expectCtorLayoutsConsistent
@@ -16,8 +18,6 @@ import TestLogic.Generate.MonoLayoutIntegrity
         , expectRecordAccessMatchesLayout
         , expectRecordTupleLayoutsComplete
         )
-import SourceIR.Suite.StandardTestSuites as StandardTestSuites
-import Test exposing (Test)
 
 
 suite : Test

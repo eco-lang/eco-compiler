@@ -17,6 +17,8 @@ functions, particularly when they're used in complex ways.
 import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder as B exposing (makeModule)
 import Compiler.Data.Name exposing (Name)
+import Expect exposing (Expectation)
+import Fuzz exposing (Fuzzer)
 import SourceIR.Fuzz.TypedExpr as TE
     exposing
         ( Scope
@@ -25,8 +27,6 @@ import SourceIR.Fuzz.TypedExpr as TE
         , emptyScope
         , nameFuzzer
         )
-import Expect exposing (Expectation)
-import Fuzz exposing (Fuzzer)
 import Test exposing (Test)
 
 

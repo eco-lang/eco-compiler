@@ -1,14 +1,14 @@
 module TestLogic.Generate.CodeGen.ConstructResultTypeTest exposing (suite)
 
-{-| Test suite for CGEN_025: Construct Result Types invariant.
+{-| Test suite for CGEN\_025: Construct Result Types invariant.
 
 All `eco.construct.*` ops must produce `!eco.value` result type.
 
 -}
 
-import TestLogic.Generate.CodeGen.ConstructResultType exposing (expectConstructResultType)
 import SourceIR.Suite.StandardTestSuites as StandardTestSuites
 import Test exposing (Test)
+import TestLogic.Generate.CodeGen.ConstructResultType exposing (expectConstructResultType)
 
 
 suite : Test

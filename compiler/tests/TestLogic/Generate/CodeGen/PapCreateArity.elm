@@ -1,9 +1,6 @@
-module TestLogic.Generate.CodeGen.PapCreateArity exposing
-    ( expectPapCreateArity
-    , checkPapCreateArity
-    )
+module TestLogic.Generate.CodeGen.PapCreateArity exposing (expectPapCreateArity, checkPapCreateArity)
 
-{-| Test logic for CGEN_033: PapCreate Arity Constraints invariant.
+{-| Test logic for CGEN\_033: PapCreate Arity Constraints invariant.
 
 `eco.papCreate` requires:
 
@@ -16,6 +13,8 @@ module TestLogic.Generate.CodeGen.PapCreateArity exposing
 -}
 
 import Compiler.AST.Source as Src
+import Expect exposing (Expectation)
+import Mlir.Mlir exposing (MlirModule, MlirOp)
 import TestLogic.Generate.CodeGen.GenerateMLIR exposing (compileToMlirModule)
 import TestLogic.Generate.CodeGen.Invariants
     exposing
@@ -25,8 +24,6 @@ import TestLogic.Generate.CodeGen.Invariants
         , getStringAttr
         , violationsToExpectation
         )
-import Expect exposing (Expectation)
-import Mlir.Mlir exposing (MlirModule, MlirOp)
 
 
 {-| Verify that papCreate arity constraint invariants hold for a source module.
