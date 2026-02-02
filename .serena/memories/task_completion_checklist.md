@@ -1,5 +1,18 @@
 # Task Completion Checklist
 
+## Startup Checklist (Do First!)
+
+Before starting any task, read these memories:
+1. `invariants_summary` - Critical compiler invariants
+2. `compiler_pipeline` - Pipeline overview
+3. `project_overview` - Component structure
+
+For code changes affecting representation/codegen, also read:
+- `design_docs/invariants.csv` (full invariant details)
+- Relevant theory docs in `design_docs/theory/`
+
+---
+
 When a task is completed, verify the following:
 
 ## For C++ Changes (Runtime)

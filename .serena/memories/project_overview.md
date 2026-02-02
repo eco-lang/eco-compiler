@@ -37,25 +37,54 @@ Property-based tests using RapidCheck:
 - Codegen tests (MLIR generation)
 - Elm integration tests
 
+## Key Files for Understanding
+
+**Must Read at Startup (per CLAUDE.md):**
+- `design_docs/invariants.csv` - All compiler invariants (REP_*, CGEN_*, HEAP_*, MONO_*, etc.)
+- `THEORY.md` - GC theory + compiler pipeline overview
+- `design_docs/theory/` - Detailed pass documentation
+
 ## Tech Stack
 
-- **Runtime**: C++20 with CMake, Clang, LLD
-- **Compiler**: Elm 0.19.1, Node.js
-- **Code generation**: MLIR/LLVM
-- **Testing**: RapidCheck (C++ property testing), elm-test, Jest
+- **Runtime**: C++20 with CMake
+- **Compiler**: Elm (compiled with guida)
+- **IR**: MLIR with custom ECO dialect
+- **Build**: cmake presets (ninja-clang-lld-linux)
 
-## Codebase Structure
+## Build Commands
+
+```bash
+# Setup
+cmake --preset ninja-clang-lld-linux
+
+# Build all
+cmake --build build
+
+# Run E2E tests (C++ backend)
+cmake --build build --target check
+
+# Run Elm frontend tests
+cd compiler && npx elm-test-rs --fuzz 1
+
+# Full rebuild (Elm + C++)
+cmake --build build --target full
+
+# Filter tests
+TEST_FILTER=elm cmake --build build --target check
+```
+
+## Memory Layout (Heap.hpp)
+
+All heap objects are 8-byte aligned with Header first:
+- Header: 8 bytes (tag:5, color:2, age:2, epoch:2, pin:1, size:32)
+- Specific structs: ElmInt, ElmFloat, ElmChar, String, Cons, Tuple2, Tuple3, Record, Custom, Closure
+
+## HPointer Encoding
 
 ```
-/work
-├── runtime/src/allocator/   # C++ GC implementation
-├── compiler/src/            # Guida Elm compiler (Elm source)
-├── elm-kernel-cpp/          # Elm kernel C++ implementations
-├── test/                    # RapidCheck and integration tests
-├── design_docs/             # Design documentation
-├── build/                   # CMake release build output
-├── debug/                   # CMake debug build output
-├── CLAUDE.md               # Main project documentation
-├── STYLE.md                # C++ style guide
-└── CMakeLists.txt          # Root build configuration
+Bits 0-39:  Heap offset (40 bits)
+Bits 40-43: Constant field (0=heap, 1-15=embedded constant)
+Bits 44-63: Reserved
 ```
+
+Embedded constants: Unit(1), True(3), False(4), Nil(5), EmptyString(7)
