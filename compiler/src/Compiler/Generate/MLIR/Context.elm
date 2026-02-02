@@ -5,7 +5,7 @@ module Compiler.Generate.MLIR.Context exposing
     , getOrCreateTypeIdForMonoType, registerKernelCall
     , buildSignatures, kernelFuncSignatureFromType
     , isTypeVar, hasKernelImplementation
-    , CallModel(..), VarInfo, isFlattenedExternalSpec, lookupVarCallModel
+    , CallModel(..), VarInfo, isFlattenedExternalSpec, lookupVarCallModel, lookupVarArity
     )
 
 {-| MLIR code generation context.
@@ -139,6 +139,7 @@ type alias VarInfo =
     { ssaVar : String
     , mlirType : MlirType
     , callModel : Maybe CallModel -- Nothing for non-function values
+    , sourceArity : Maybe Int -- Closure's param count for CGEN_052 (papExtend remaining_arity)
     }
 
 
@@ -370,19 +371,38 @@ lookupVarCallModel ctx name =
             Nothing
 
 
-{-| Add a variable mapping from a let-bound name to its SSA variable, type, and call model.
+{-| Add a variable mapping from a let-bound name to its SSA variable, type, call model, and source arity.
+
+sourceArity is the closure's param count, used for CGEN\_052 (papExtend remaining\_arity calculation).
+For closures, this is List.length closureInfo.params. For non-closures, pass Nothing.
+
 -}
-addVarMapping : String -> String -> MlirType -> Maybe CallModel -> Context -> Context
-addVarMapping name ssaVar mlirTy maybeCallModel ctx =
+addVarMapping : String -> String -> MlirType -> Maybe CallModel -> Maybe Int -> Context -> Context
+addVarMapping name ssaVar mlirTy maybeCallModel maybeSourceArity ctx =
     let
         info : VarInfo
         info =
             { ssaVar = ssaVar
             , mlirType = mlirTy
             , callModel = maybeCallModel
+            , sourceArity = maybeSourceArity
             }
     in
     { ctx | varMappings = Dict.insert name info ctx.varMappings }
+
+
+{-| Look up the source arity for a let-bound variable.
+Returns the closure's param count if it's a closure, Nothing otherwise.
+Used for CGEN\_052 (papExtend remaining\_arity calculation).
+-}
+lookupVarArity : Context -> String -> Maybe Int
+lookupVarArity ctx name =
+    case Dict.get name ctx.varMappings of
+        Just info ->
+            info.sourceArity
+
+        Nothing ->
+            Nothing
 
 
 

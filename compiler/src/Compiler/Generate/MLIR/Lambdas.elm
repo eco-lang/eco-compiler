@@ -86,6 +86,7 @@ generateLambdaFunc ctx lambda =
                         { ssaVar = varName
                         , mlirType = mlirType
                         , callModel = Nothing
+                        , sourceArity = Nothing
                         }
                         acc
                 )

@@ -294,7 +294,8 @@ setupVarMappings ctx originalParamPairs newBlockArgPairs =
                     String.dropLeft 1 origSsaName
             in
             -- Update the mapping: elmName -> newSsaName with the new type
-            Ctx.addVarMapping elmName newSsaName newType Nothing accCtx
+            -- Parameters are values, not closures, so no sourceArity
+            Ctx.addVarMapping elmName newSsaName newType Nothing Nothing accCtx
         )
         ctx
         (zip originalParamPairs newBlockArgPairs)
@@ -622,8 +623,9 @@ compileLetStep ctx loopSpec def body =
                     Expr.generateExpr ctx defExpr
 
                 -- Add the variable mapping for the defined name
+                -- TODO: Extract sourceArity from defExpr if it's a closure for CGEN_052
                 ctx1 =
-                    Ctx.addVarMapping name exprResult.resultVar exprResult.resultType Nothing exprResult.ctx
+                    Ctx.addVarMapping name exprResult.resultVar exprResult.resultType Nothing Nothing exprResult.ctx
 
                 -- Recursively compile the body
                 bodyStep =

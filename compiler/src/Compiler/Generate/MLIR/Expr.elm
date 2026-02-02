@@ -947,10 +947,11 @@ applyByStages :
     -> String -- funcVar: the closure variable
     -> MlirType -- funcMlirType: the closure's MLIR type
     -> Mono.MonoType -- funcMonoType: the function's MonoType (stage-curried)
+    -> Int -- sourceRemaining: the source PAP's remaining arity (CGEN_052)
     -> List ( String, MlirType ) -- args: remaining (var, mlirType) pairs to apply
     -> List MlirOp -- accumulated ops
     -> ApplyByStagesResult
-applyByStages ctx funcVar funcMlirType funcMonoType args accOps =
+applyByStages ctx funcVar funcMlirType funcMonoType sourceRemaining args accOps =
     case args of
         [] ->
             -- Base case: no more args to apply
@@ -1006,8 +1007,13 @@ applyByStages ctx funcVar funcMlirType funcMonoType args accOps =
                     batchSize =
                         List.length batch
 
+                    -- CGEN_052: remaining_arity is the SOURCE PAP's remaining, not the result's
                     remainingArity =
-                        stageN - batchSize
+                        sourceRemaining
+
+                    -- The result's remaining for the next iteration
+                    resultRemaining =
+                        sourceRemaining - batchSize
 
                     papExtendAttrs =
                         Dict.fromList
@@ -1024,7 +1030,7 @@ applyByStages ctx funcVar funcMlirType funcMonoType args accOps =
                             |> Ops.opBuilder.build
                 in
                 -- Recurse with the result closure and remaining args
-                applyByStages ctx2 resVar resultMlirType stageRetType rest (accOps ++ [ papExtendOp ])
+                applyByStages ctx2 resVar resultMlirType stageRetType resultRemaining rest (accOps ++ [ papExtendOp ])
 
 
 {-| Determine the call model for an expression being bound to a variable.
@@ -1159,11 +1165,9 @@ generateFlattenedPartialApplication ctx func args resultType =
                 boxedArgsWithTypes
                 |> List.foldl Bitwise.or 0
 
-        numArgsApplied =
-            List.length args
-
+        -- CGEN_052: remaining_arity is the SOURCE PAP's remaining, not the result's
         remainingArity =
-            totalArity - numArgsApplied
+            totalArity
 
         papExtendAttrs =
             Dict.fromList
@@ -1250,9 +1254,43 @@ generateClosureApplication ctx func args resultType =
                     funcType =
                         Mono.typeOf func
 
+                    -- CGEN_052: Initial sourceRemaining must match the papCreate's remaining arity.
+                    -- For let-bound closures (MonoVarLocal), use the stored sourceArity.
+                    -- For inline closures (MonoClosure), use params.length directly.
+                    -- For global functions (MonoVarGlobal), use the signature's paramTypes count.
+                    -- Otherwise, fall back to countTotalArity for stage-curried functions.
+                    initialRemaining =
+                        case func of
+                            Mono.MonoVarLocal name _ ->
+                                case Ctx.lookupVarArity ctx1b name of
+                                    Just arity ->
+                                        arity
+
+                                    Nothing ->
+                                        -- Fallback: use countTotalArity for stage-curried
+                                        Types.countTotalArity funcType
+
+                            Mono.MonoClosure closureInfo _ _ ->
+                                List.length closureInfo.params
+
+                            Mono.MonoVarGlobal _ specId _ ->
+                                -- Look up the signature's paramTypes count
+                                case Dict.get specId ctx1b.signatures of
+                                    Just sig ->
+                                        List.length sig.paramTypes
+
+                                    Nothing ->
+                                        -- Fallback: use countTotalArity
+                                        Types.countTotalArity funcType
+
+                            _ ->
+                                -- For other expressions (e.g., function returning closure),
+                                -- use countTotalArity as best estimate
+                                Types.countTotalArity funcType
+
                     -- Apply arguments by stages, emitting a chain of papExtend operations
                     papResult =
-                        applyByStages ctx1b funcResult.resultVar funcResult.resultType funcType boxedArgsWithTypes []
+                        applyByStages ctx1b funcResult.resultVar funcResult.resultType funcType initialRemaining boxedArgsWithTypes []
                 in
                 { ops = funcResult.ops ++ argOps ++ boxOps ++ papResult.ops
                 , resultVar = papResult.resultVar
@@ -1871,9 +1909,20 @@ generateSaturatedCall ctx func args resultType =
                             ( boxOps, boxedArgsWithTypes, ctx1b ) =
                                 boxArgsForClosureBoundary ctx1 argsWithTypes
 
+                            -- CGEN_052: Initial sourceRemaining must match the papCreate's remaining arity.
+                            -- For MonoVarLocal, use the stored sourceArity from the let binding.
+                            initialRemaining =
+                                case Ctx.lookupVarArity ctx1b name of
+                                    Just arity ->
+                                        arity
+
+                                    Nothing ->
+                                        -- Fallback: use countTotalArity for stage-curried
+                                        Types.countTotalArity funcType
+
                             -- Apply arguments by stages, emitting a chain of papExtend operations
                             papResult =
-                                applyByStages ctx1b funcVarName funcVarType funcType boxedArgsWithTypes []
+                                applyByStages ctx1b funcVarName funcVarType funcType initialRemaining boxedArgsWithTypes []
                         in
                         { ops = argOps ++ boxOps ++ papResult.ops
                         , resultVar = papResult.resultVar
@@ -1924,9 +1973,43 @@ generateSaturatedCall ctx func args resultType =
                     funcType =
                         Mono.typeOf func
 
+                    -- CGEN_052: Initial sourceRemaining must match the papCreate's remaining arity.
+                    -- For let-bound closures (MonoVarLocal), use the stored sourceArity.
+                    -- For inline closures (MonoClosure), use params.length directly.
+                    -- For global functions (MonoVarGlobal), use the signature's paramTypes count.
+                    -- Otherwise, fall back to countTotalArity for stage-curried functions.
+                    initialRemaining =
+                        case func of
+                            Mono.MonoVarLocal name _ ->
+                                case Ctx.lookupVarArity ctx1b name of
+                                    Just arity ->
+                                        arity
+
+                                    Nothing ->
+                                        -- Fallback: use countTotalArity for stage-curried
+                                        Types.countTotalArity funcType
+
+                            Mono.MonoClosure closureInfo _ _ ->
+                                List.length closureInfo.params
+
+                            Mono.MonoVarGlobal _ specId _ ->
+                                -- Look up the signature's paramTypes count
+                                case Dict.get specId ctx1b.signatures of
+                                    Just sig ->
+                                        List.length sig.paramTypes
+
+                                    Nothing ->
+                                        -- Fallback: use countTotalArity
+                                        Types.countTotalArity funcType
+
+                            _ ->
+                                -- For other expressions (e.g., function returning closure),
+                                -- use countTotalArity as best estimate
+                                Types.countTotalArity funcType
+
                     -- Apply arguments by stages, emitting a chain of papExtend operations
                     papResult =
-                        applyByStages ctx1b funcResult.resultVar funcResult.resultType funcType boxedArgsWithTypes []
+                        applyByStages ctx1b funcResult.resultVar funcResult.resultType funcType initialRemaining boxedArgsWithTypes []
                 in
                 { ops = funcResult.ops ++ argOps ++ boxOps ++ papResult.ops
                 , resultVar = papResult.resultVar
@@ -2271,7 +2354,7 @@ addPlaceholderMappings names ctx =
                     acc
 
                 Nothing ->
-                    Ctx.addVarMapping name ("%" ++ name) Types.ecoValue Nothing acc
+                    Ctx.addVarMapping name ("%" ++ name) Types.ecoValue Nothing Nothing acc
         )
         ctx
         names
@@ -2313,12 +2396,23 @@ generateLet ctx def body =
                 exprCallModel =
                     callModelForExpr ctxWithPlaceholders expr
 
+                -- Extract source arity from closure for CGEN_052 (papExtend remaining_arity)
+                -- This is the closure's params.length, which equals papCreate's remaining arity
+                exprSourceArity : Maybe Int
+                exprSourceArity =
+                    case expr of
+                        Mono.MonoClosure closureInfo _ _ ->
+                            Just (List.length closureInfo.params)
+
+                        _ ->
+                            Nothing
+
                 -- Instead of creating an eco.construct wrapper, just add a mapping
                 -- from the let-bound name to the expression's result variable.
                 -- This preserves the original type and avoids boxing issues.
                 ctx1 : Ctx.Context
                 ctx1 =
-                    Ctx.addVarMapping name exprResult.resultVar exprResult.resultType exprCallModel exprResult.ctx
+                    Ctx.addVarMapping name exprResult.resultVar exprResult.resultType exprCallModel exprSourceArity exprResult.ctx
 
                 bodyResult : ExprResult
                 bodyResult =
@@ -2360,22 +2454,25 @@ generateLet ctx def body =
             -- For now, we just add the function to varMappings as a closure reference.
             let
                 -- Add parameters to varMappings (use ctxWithPlaceholders for mutual recursion)
-                -- Parameters are plain values, no call model
+                -- Parameters are plain values, no call model, no sourceArity
                 ctxWithParams =
                     List.foldl
                         (\( paramName, paramType ) acc ->
-                            Ctx.addVarMapping paramName ("%" ++ paramName) (Types.monoTypeToAbi paramType) Nothing acc
+                            Ctx.addVarMapping paramName ("%" ++ paramName) (Types.monoTypeToAbi paramType) Nothing Nothing acc
                         )
                         ctxWithPlaceholders
                         params
 
                 -- Add the function name to varMappings
-                -- Local tail funcs are stage-curried
+                -- Local tail funcs are stage-curried with arity = params count
                 funcMlirType =
                     Types.ecoValue
 
+                tailFuncArity =
+                    List.length params
+
                 ctxWithFunc =
-                    Ctx.addVarMapping name ("%" ++ name) funcMlirType (Just Ctx.StageCurried) ctxWithParams
+                    Ctx.addVarMapping name ("%" ++ name) funcMlirType (Just Ctx.StageCurried) (Just tailFuncArity) ctxWithParams
 
                 -- Generate the let body (which calls the function)
                 bodyResult =
@@ -2433,10 +2530,10 @@ generateDestruct ctx (Mono.MonoDestructor name path monoType) body _ =
             Patterns.generateMonoPath ctx path targetType
 
         -- Use mapping with the path's type
-        -- Destructured bindings are values, no call model
+        -- Destructured bindings are values, no call model, no sourceArity
         ctx2 : Ctx.Context
         ctx2 =
-            Ctx.addVarMapping name pathVar targetType Nothing ctx1
+            Ctx.addVarMapping name pathVar targetType Nothing Nothing ctx1
 
         bodyResult : ExprResult
         bodyResult =

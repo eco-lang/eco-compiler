@@ -455,9 +455,9 @@ generateDTPath ctx root dtPath targetType =
                         Intrinsics.unboxToType ctx rootVar targetType
 
                     -- Make future uses of root see the unboxed SSA value
-                    -- Unboxed values are not functions, so no call model
+                    -- Unboxed values are not functions, so no call model and no sourceArity
                     ctx2 =
-                        Ctx.addVarMapping root unboxedVar targetType Nothing ctx1
+                        Ctx.addVarMapping root unboxedVar targetType Nothing Nothing ctx1
                 in
                 ( unboxOps, unboxedVar, ctx2 )
 
