@@ -11,46 +11,48 @@ module {
   // CHECK: eco.case
   // CHECK-SAME: case_kind = "str"
   // CHECK-SAME: string_patterns = ["foo", "bar"]
-  // eco.case is a terminator, so no func.return after it
-  func.func @string_case_3way(%s: !eco.value) {
+  func.func @string_case_3way(%s: !eco.value) -> !eco.value {
     // 3-way string case: "foo", "bar", default
-    eco.case %s : !eco.value [0, 1, 2] result_types [!eco.value] {
+    %result = eco.case %s : !eco.value [0, 1, 2] -> (!eco.value) {case_kind = "str", string_patterns = ["foo", "bar"]} {
       // "foo" branch
-      eco.return %s : !eco.value
+      eco.yield %s : !eco.value
     }, {
       // "bar" branch
-      eco.return %s : !eco.value
+      eco.yield %s : !eco.value
     }, {
       // default branch
-      eco.return %s : !eco.value
-    } {case_kind = "str", string_patterns = ["foo", "bar"]}
+      eco.yield %s : !eco.value
+    }
+    return %result : !eco.value
   }
 
   // CHECK: eco.case
   // CHECK-SAME: case_kind = "str"
   // CHECK-SAME: string_patterns = ["hello"]
-  func.func @string_case_2way(%s: !eco.value) {
+  func.func @string_case_2way(%s: !eco.value) -> !eco.value {
     // 2-way string case: "hello", default
-    eco.case %s : !eco.value [0, 1] result_types [!eco.value] {
+    %result = eco.case %s : !eco.value [0, 1] -> (!eco.value) {case_kind = "str", string_patterns = ["hello"]} {
       // "hello" branch
-      eco.return %s : !eco.value
+      eco.yield %s : !eco.value
     }, {
       // default branch
-      eco.return %s : !eco.value
-    } {case_kind = "str", string_patterns = ["hello"]}
+      eco.yield %s : !eco.value
+    }
+    return %result : !eco.value
   }
 
   // CHECK: eco.case
   // CHECK-SAME: case_kind = "str"
   // CHECK-SAME: string_patterns = [""]
-  func.func @string_case_empty(%s: !eco.value) {
+  func.func @string_case_empty(%s: !eco.value) -> !eco.value {
     // Empty string pattern
-    eco.case %s : !eco.value [0, 1] result_types [!eco.value] {
+    %result = eco.case %s : !eco.value [0, 1] -> (!eco.value) {case_kind = "str", string_patterns = [""]} {
       // "" (empty string) branch
-      eco.return %s : !eco.value
+      eco.yield %s : !eco.value
     }, {
       // default branch
-      eco.return %s : !eco.value
-    } {case_kind = "str", string_patterns = [""]}
+      eco.yield %s : !eco.value
+    }
+    return %result : !eco.value
   }
 }
