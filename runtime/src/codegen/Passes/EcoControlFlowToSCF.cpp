@@ -37,13 +37,6 @@ namespace {
 // Helpers
 //===----------------------------------------------------------------------===//
 
-/// Check if an operation is nested inside an SCF region.
-static bool isInsideScfRegion(Operation *op) {
-    return op->getParentOfType<scf::IfOp>() ||
-           op->getParentOfType<scf::IndexSwitchOp>() ||
-           op->getParentOfType<scf::WhileOp>();
-}
-
 /// Check if all alternatives in a case op end with eco.yield.
 /// eco.case alternatives must terminate with eco.yield (not eco.return).
 /// This is required for lowering to scf.if/scf.index_switch.
