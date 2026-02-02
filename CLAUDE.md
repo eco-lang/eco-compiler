@@ -24,6 +24,13 @@ Key representation rules:
 - Bool is always `!eco.value` in heap/closure storage (True/False are embedded HPointer constants)
 - SSA representation, ABI representation, and Heap representation are independent unless explicitly linked by an invariant
 
+## Start up
+
+When Clause Code first starts running:
+
+    1. Familiarize yourself with @design_docs/invariants.csv, @THEORY.md and all child files under @design_docs/theory/.
+    2. Update your memories around these files to keep them fresh.
+
 ## Build Commands
 
 ### Initial Setup
