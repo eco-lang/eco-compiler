@@ -192,15 +192,19 @@ Generates ES5-compatible JavaScript with:
 ### MLIR Backend
 
 For native compilation via LLVM:
-1. **Monomorphization** - Specialize all polymorphic code
+1. **Monomorphization** - Specialize all polymorphic code, including staged currying analysis
 2. **Layout computation** - Determine memory layout for types
-3. **MLIR generation** - Emit typed MLIR operations
+3. **MLIR generation** - Emit typed MLIR operations with expression-valued case
 
 **Core modules**:
-- `Generate/Monomorphize.elm` - Polymorphism elimination
+- `Generate/Monomorphize.elm` - Polymorphism elimination and staged currying
 - `Generate/CodeGen/MLIR.elm` - MLIR operation generation
 
 **AST definition**: `AST/Monomorphized.elm`
+
+**Key design decisions**:
+- **Staged currying**: Functions are analyzed to determine optimal argument grouping (e.g., `[2,1]` for `\a b -> \c -> ...`). See `design_docs/theory/staged_currying_theory.md`.
+- **Expression-valued case**: Case expressions compile to SCF (Structured Control Flow) operations that return values, matching Elm's expression semantics. See `design_docs/theory/pass_eco_control_flow_to_scf_theory.md`.
 
 ## Key Data Structures
 
@@ -292,6 +296,7 @@ The build system:
 2. **After type checking**: Every expression has a known type
 3. **After optimization**: No nested patterns remain (compiled to decision trees)
 4. **After monomorphization**: No type variables remain (all types concrete)
+5. **MONO_018**: All branches of a MonoCase returning functions have compatible staged currying signatures
 
 ## Directory Structure
 

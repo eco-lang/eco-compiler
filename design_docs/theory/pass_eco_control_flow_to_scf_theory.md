@@ -2,160 +2,186 @@
 
 ## Overview
 
-The EcoControlFlowToSCF pass lowers eligible `eco.case` and `eco.joinpoint` operations to the SCF (Structured Control Flow) dialect. This enables MLIR's standard optimization passes to work on the control flow and produces more efficient code than CFG-based lowering.
+The EcoControlFlowToSCF pass lowers `eco.case` operations to the SCF (Structured Control Flow) dialect. This pass produces expression-valued case statements that return values directly, matching Elm's expression-oriented semantics.
 
 **File**: `runtime/src/codegen/Passes/EcoControlFlowToSCF.cpp`
 
 **Phase**: MLIR_Codegen (see `invariants.csv` for related CGEN_* invariants)
 
-**Related Invariant**: **CGEN_010** — Every `eco.case` has an explicit `result_types` attribute and all alternative `eco.return` terminators match it. This pass depends on this invariant for correct type inference during SCF lowering.
+**Related Invariant**: **CGEN_010** — Every `eco.case` has an explicit `result_types` attribute and all alternative `eco.return` terminators match it.
+
+## Motivation: SCF as a Semantic Match for Elm
+
+Elm is an expression-oriented language where every construct produces a value. A case expression in Elm is not a statement that controls flow; it is an expression that evaluates to a value:
+
+```elm
+result =
+    case x of
+        Just n -> n + 1
+        Nothing -> 0
+```
+
+The SCF (Structured Control Flow) dialect in MLIR provides a natural representation for this semantics:
+
+- **`scf.if`**: Returns values from both branches, not just controls flow
+- **`scf.index_switch`**: Multi-way selection that produces a result value
+- **`scf.yield`**: Produces the value from a branch (analogous to expression evaluation)
+
+This is fundamentally different from CFG-based control flow where branches jump to different blocks and values must be communicated through phi nodes or memory. SCF preserves the structure that Elm programmers expect: case expressions are expressions.
+
+### Benefits of Expression-Valued Case
+
+1. **Semantic clarity**: Generated IR directly reflects Elm semantics
+2. **Optimization opportunities**: MLIR's SCF passes can reason about structured control flow
+3. **Simpler codegen**: No need to introduce phi nodes or SSA renaming for case results
+4. **Debugging**: Stack traces and debug info align with source structure
+
+## Expression-Valued Case Design
+
+### Core Principle
+
+Every `eco.case` lowers to an SCF operation that **produces its result as an SSA value**:
+
+```mlir
+// Before: eco.case as block terminator
+eco.case %scrutinee [tags] result_types [!eco.value] {
+    eco.return %result0 : !eco.value
+}, {
+    eco.return %result1 : !eco.value
+}
+
+// After: scf.if as expression
+%result = scf.if %cond -> (!eco.value) {
+    scf.yield %result1 : !eco.value
+} else {
+    scf.yield %result0 : !eco.value
+}
+```
+
+The `scf.if` produces `%result` which can be used in subsequent operations. This is the expression-valued pattern.
+
+### Nested Cases
+
+Expression-valued case composes naturally. Nested cases become nested `scf.if`:
+
+```elm
+classify x =
+    if x < 0 then "negative"
+    else if x == 0 then "zero"
+    else "positive"
+```
+
+Generates:
+```mlir
+%result = scf.if %cond0 -> (!eco.value) {
+    scf.yield %negative
+} else {
+    %inner = scf.if %cond1 -> (!eco.value) {
+        scf.yield %zero
+    } else {
+        scf.yield %positive
+    }
+    scf.yield %inner
+}
+```
+
+Each level produces a value that the outer level can yield.
 
 ## Lowering Patterns
 
 | Source Operation | Target Operation | Condition |
 |------------------|------------------|-----------|
-| `eco.case` (2 alternatives) | `scf.if` | Pure returns, terminal position |
-| `eco.case` (>2 alternatives) | `scf.index_switch` | Pure returns, terminal position |
-| `eco.joinpoint` (SCF-candidate) | `scf.while` | Has `scf_candidate` + `scf_case_loop` attributes |
+| `eco.case` (2 alternatives) | `scf.if` | All branches yield values |
+| `eco.case` (>2 alternatives) | `scf.index_switch` | All branches yield values |
+| `eco.joinpoint` (SCF-candidate) | `scf.while` | Has `scf_candidate` attribute |
 
-## Pseudocode
-
-### Pattern 1: eco.case (2 alternatives) -> scf.if
+## Pattern 1: Two-Way Case to scf.if
 
 ```
 FUNCTION matchAndRewrite(caseOp):
-    // Eligibility checks
     IF caseOp.alternatives.size() != 2:
         RETURN failure
-    IF NOT hasPureReturnAlternatives(caseOp):
-        RETURN failure
-    IF caseOp.isInsideJoinpoint():
-        RETURN failure  // Non-local exits not supported
 
-    resultTypes = getCaseResultTypes(caseOp)
+    resultTypes = caseOp.getResultTypes()
 
-    // eco.case must BE the block terminator (not followed by anything)
-    IF caseOp is not last op in block:
-        RETURN failure
-
-    insideScf = isInsideScfRegion(caseOp)
-
-    // Compute condition
+    // Build condition from scrutinee
     IF scrutinee.type == i1:
-        // Boolean: use directly or negate based on tag
-        cond = (tags[1] == 1) ? scrutinee : XOR(scrutinee, true)
+        cond = adjustForTags(scrutinee, tags)
     ELSE:
-        // ADT: extract tag and compare
         tag = eco.get_tag(scrutinee)
         cond = arith.cmpi(eq, tag, tags[1])
 
-    // Create scf.if
+    // Create expression-valued scf.if
     ifOp = scf.if(cond, resultTypes, withElse=true)
 
-    // Clone all ops from alt1 into then-region
-    // Convert eco.return to scf.yield; clone nested eco.case as-is
-    FOR EACH op IN alt1.body:
-        IF op IS eco.return:
-            CREATE scf.yield(op.operands)
-            BREAK
-        ELSE:
-            CLONE op  // includes nested eco.case
+    // Clone alternatives, converting eco.return to scf.yield
+    cloneWithYield(alt1.body, ifOp.thenRegion)
+    cloneWithYield(alt0.body, ifOp.elseRegion)
 
-    // Clone all ops from alt0 into else-region
-    FOR EACH op IN alt0.body:
-        IF op IS eco.return:
-            CREATE scf.yield(op.operands)
-            BREAK
-        ELSE:
-            CLONE op  // includes nested eco.case
-
-    // Insert NEW terminator (there was none after eco.case)
-    IF insideScf:
-        CREATE scf.yield(ifOp.results)
-    ELSE:
-        CREATE eco.return(ifOp.results)
-
+    // The scf.if result is now the case result
+    REPLACE caseOp.results WITH ifOp.results
     ERASE caseOp
     RETURN success
 ```
 
-### Pattern 2: eco.case (>2 alternatives) -> scf.index_switch
+### Converting Terminators
+
+When cloning branch bodies:
+- `eco.return %val` becomes `scf.yield %val`
+- Nested `eco.case` operations are recursively converted
+
+## Pattern 2: Multi-Way Case to scf.index_switch
+
+For case expressions with more than two alternatives:
 
 ```
 FUNCTION matchAndRewrite(caseOp):
-    // Similar eligibility checks as Pattern 1
     IF caseOp.alternatives.size() <= 2:
         RETURN failure
-    IF hasI1Scrutinee(caseOp):
-        RETURN failure  // Use scf.if instead
-    ...
 
-    // Extract and convert tag to index
+    // Extract tag as index
     tag = eco.get_tag(scrutinee)
     indexTag = arith.index_cast(tag)
 
-    // Build case values (tags[1..n-1], tags[0] becomes default)
-    caseValues = tags[1..n-1]
-
     // Create scf.index_switch
+    caseValues = tags[1..n-1]  // tags[0] is default
     switchOp = scf.index_switch(indexTag, resultTypes, caseValues)
 
-    // Clone each non-default alternative into case regions
-    FOR i = 1 TO alternatives.size() - 1:
-        CLONE alternatives[i].body INTO switchOp.caseRegions[i-1]
-        REPLACE eco.return WITH scf.yield
+    // Clone each alternative with yield conversion
+    FOR i = 1 TO n-1:
+        cloneWithYield(alternatives[i].body, switchOp.caseRegions[i-1])
+    cloneWithYield(alternatives[0].body, switchOp.defaultRegion)
 
-    // Clone alt0 into default region
-    CLONE alternatives[0].body INTO switchOp.defaultRegion
-    REPLACE eco.return WITH scf.yield
-
-    // Handle result propagation (same as Pattern 1)
-    ...
-
+    REPLACE caseOp.results WITH switchOp.results
     ERASE caseOp
     RETURN success
 ```
 
-### Pattern 3: eco.joinpoint (SCF-candidate) -> scf.while
+## Pattern 3: Joinpoint to scf.while
+
+Joinpoints with loop structure lower to `scf.while`:
 
 ```
 FUNCTION matchAndRewrite(joinpointOp):
-    // Check for SCF-candidate attributes
     IF NOT joinpointOp.hasAttr("scf_candidate"):
         RETURN failure
-    IF NOT joinpointOp.hasAttr("scf_case_loop"):
-        RETURN failure
 
-    // Find top-level case in body
-    topCase = findTopLevelCase(joinpointOp)
-    IF topCase IS NULL:
-        RETURN failure
-
-    // Analyze case: find exit and loop branches
-    (exitIdx, loopIdx, exitTag) = analyzeCaseAlternatives(topCase, joinpointOp.id)
-    IF exitIdx < 0 OR loopIdx < 0:
-        RETURN failure
-
-    // Get initial values from continuation's first jump
-    initialJump = getInitialJump(joinpointOp)
-    initialValues = initialJump.args
+    // Analyze: find exit and loop branches
+    (exitIdx, loopIdx, exitTag) = analyzeStructure(joinpointOp)
 
     // Create scf.while
     whileOp = scf.while(loopStateTypes, initialValues)
 
-    // Build "before" region (condition check)
-    beforeBlock = whileOp.getBefore()
-    tag = eco.get_tag(arg0)
+    // "before" region: condition check
+    tag = eco.get_tag(state)
     continueLoop = arith.cmpi(ne, tag, exitTag)
-    scf.condition(continueLoop, args)
+    scf.condition(continueLoop, state)
 
-    // Build "after" region (loop body)
-    afterBlock = whileOp.getAfter()
-    CLONE loopAlternative.body INTO afterBlock
-    REPLACE eco.jump WITH scf.yield
+    // "after" region: loop body producing next iteration state
+    cloneWithYield(loopBody, whileOp.afterRegion)
 
-    // Handle exit path after while
-    CLONE exitAlternative.body AFTER whileOp
+    // Exit path uses while result
+    cloneExitPath(exitBody, afterWhile)
 
     ERASE joinpointOp
     RETURN success
@@ -163,105 +189,93 @@ FUNCTION matchAndRewrite(joinpointOp):
 
 ## Pre-conditions
 
-1. Module has been processed by `JoinpointNormalizationPass` (for SCF-candidate attributes)
-2. Module has been processed by `ResultTypesInferencePass` (for result_types attributes)
-3. `eco.case` operations in terminal position have valid following terminators
-4. SCF-candidate joinpoints have the expected case-dispatch structure
+1. `eco.case` operations have valid `result_types` attributes (CGEN_010)
+2. All alternatives end with `eco.return` producing the result
+3. Joinpoints marked `scf_candidate` have analyzable structure
 
 ## Post-conditions
 
-1. All eligible `eco.case` operations are converted to `scf.if` or `scf.index_switch`
-2. All eligible `eco.joinpoint` operations are converted to `scf.while`
-3. Non-eligible operations remain unchanged (handled by subsequent CF lowering)
-4. `eco.return` terminators inside converted operations become `scf.yield`
-5. SSA value flow is preserved through SCF operation results
+1. All eligible `eco.case` operations become `scf.if` or `scf.index_switch`
+2. Case results are SSA values, not control flow artifacts
+3. Nested structure is preserved (nested if, not flattened CFG)
+4. Non-eligible operations remain for CFG lowering pass
 
-## Pass Behavior Guarantees
+## Example: Expression-Valued Transformation
 
-These are behavioral properties of the pass itself, not system-wide invariants (see `invariants.csv` for CGEN_* invariants, particularly **CGEN_010** referenced above):
-
-1. **Terminal Position**: Patterns only match case ops followed by `eco.return` or `scf.yield`
-2. **Pure Returns**: All alternatives must end with `eco.return` (not `eco.jump`)
-3. **No Nested Joinpoints**: Case ops inside joinpoint bodies are skipped
-4. **Nested Cases OK**: Case ops nested inside other case alternatives ARE processed
-5. **Priority Order**: Joinpoint patterns run first (benefit=10), then case patterns (benefit=5)
-
-## Pattern Priority
-
-The pass uses greedy pattern rewriting with different benefits:
-
-| Pattern | Benefit | Rationale |
-|---------|---------|-----------|
-| `JoinpointToScfWhilePattern` | 10 | Consume case+joinpoint together |
-| `CaseToScfIfPattern` | 5 | Lower remaining 2-way cases |
-| `CaseToScfIndexSwitchPattern` | 5 | Lower remaining multi-way cases |
-
-## Example Transformations
-
-### eco.case (i1 scrutinee) -> scf.if
-
-**Before:**
-```mlir
-eco.case %bool [0, 1] result_types [!eco.value] {
-    eco.return %false_result : !eco.value
-}, {
-    eco.return %true_result : !eco.value
-}
-eco.return %unused : !eco.value
+**Elm source:**
+```elm
+maybeDouble : Bool -> Int -> Int
+maybeDouble flag n =
+    if flag then n * 2 else n
 ```
 
-**After:**
+**Before (eco.case as terminator):**
 ```mlir
-%result = scf.if %bool -> (!eco.value) {
-    scf.yield %true_result : !eco.value
-} else {
-    scf.yield %false_result : !eco.value
-}
-eco.return %result : !eco.value
-```
-
-### eco.joinpoint -> scf.while
-
-**Before:**
-```mlir
-eco.joinpoint id(%val: !eco.value) {
-    eco.case %val [0, 1] {
-        eco.return
+func.func @maybeDouble(%flag: i1, %n: i64) -> i64 {
+    eco.case %flag [0, 1] result_types [i64] {
+        eco.return %n : i64
     }, {
-        %next = eco.project %val[1]
-        eco.jump id(%next)
+        %doubled = arith.muli %n, 2
+        eco.return %doubled : i64
     }
-} continuation {
-    eco.jump id(%list)
 }
 ```
 
-**After:**
+**After (expression-valued scf.if):**
 ```mlir
-%final = scf.while (%arg = %list) : (!eco.value) -> !eco.value {
-    %tag = eco.get_tag %arg
-    %continue = arith.cmpi ne, %tag, 0
-    scf.condition(%continue) %arg
-} do {
-^bb0(%arg : !eco.value):
-    %next = eco.project %arg[1]
-    scf.yield %next
+func.func @maybeDouble(%flag: i1, %n: i64) -> i64 {
+    %result = scf.if %flag -> (i64) {
+        %doubled = arith.muli %n, 2
+        scf.yield %doubled : i64
+    } else {
+        scf.yield %n : i64
+    }
+    eco.return %result : i64
 }
-// exit path code here
 ```
+
+The `scf.if` is an expression producing `%result`. The function's return uses this value.
 
 ## Relationship to Other Passes
 
-- **Requires**: `JoinpointNormalizationPass`, `ResultTypesInferencePass`
-- **Followed By**: `EcoToLLVM` (handles remaining CF ops)
-- **Benefit**: SCF ops enable MLIR loop optimizations (unrolling, vectorization)
+- **Requires**: `ResultTypesInferencePass` (for result_types), `JoinpointNormalizationPass` (for scf_candidate)
+- **Followed By**: `EcoToLLVM` (handles any remaining CF ops)
+- **Benefit**: Expression structure enables MLIR's SCF optimizations
 
-## Non-Handled Cases
+## Design Rationale
 
-Operations NOT converted to SCF (left for CF lowering):
-1. Case ops not in terminal position (eco.case must be block terminator)
-2. Case ops inside joinpoint bodies
-3. Joinpoints without `scf_candidate` attribute
-4. Joinpoints with complex body structure (not simple case dispatch)
+### Why SCF over CFG?
 
-Note: `eco.jump` in case alternatives is **illegal** per dialect specification.
+CFG (Control Flow Graph) lowering converts case expressions to conditional branches between basic blocks. This loses the expression structure:
+
+```mlir
+// CFG style (loses expression structure)
+^entry:
+    cond_br %cond, ^then, ^else
+^then:
+    br ^merge(%thenResult)
+^else:
+    br ^merge(%elseResult)
+^merge(%result: i64):
+    ...
+```
+
+SCF preserves the structure:
+```mlir
+// SCF style (preserves expression structure)
+%result = scf.if %cond -> i64 {
+    scf.yield %thenResult
+} else {
+    scf.yield %elseResult
+}
+```
+
+For Elm, where every if/case is an expression, SCF is the natural representation.
+
+### Not All Cases Can Be SCF
+
+Some patterns require CFG lowering:
+- Case inside joinpoint with non-local exit (`eco.jump`)
+- Case not in expression position (effectful contexts)
+
+These are handled by the subsequent `EcoToLLVM` pass using standard CFG conversion.

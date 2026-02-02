@@ -263,6 +263,15 @@ FUNCTION computeCaptures(params, body, env):
 
 Captures are stored in closure layouts for code generation.
 
+## Staged Currying
+
+Functions with multiple arguments undergo staged currying analysis to determine optimal argument grouping for code generation. See **[Staged Currying Theory](staged_currying_theory.md)** for full details.
+
+Key concepts:
+- **Staging signature**: How arguments are grouped (e.g., `[2,1]` for `\a b -> \c -> ...`)
+- **Joinpoint matching**: When case branches return functions with different stagings, they are normalized to a common staging via eta-wrappers
+- **MONO_018 invariant**: All branches of a MonoCase must have compatible calling conventions
+
 ## Kernel ABI Handling
 
 Kernel functions don't get specialized. Instead, they have ABIs:
