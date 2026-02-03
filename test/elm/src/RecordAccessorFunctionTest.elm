@@ -4,7 +4,7 @@ module RecordAccessorFunctionTest exposing (main)
 -}
 
 -- CHECK: names: ["Alice","Bob"]
--- CHECK: xs: [1,4]
+-- CHECK: xs: [1, 4]
 
 import Html exposing (text)
 

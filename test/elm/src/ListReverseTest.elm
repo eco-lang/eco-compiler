@@ -4,8 +4,8 @@ module ListReverseTest exposing (main)
 -}
 
 -- CHECK: rev1: []
--- CHECK: rev2: [3,2,1]
--- CHECK: rev3: [5,4,3,2,1]
+-- CHECK: rev2: [3, 2, 1]
+-- CHECK: rev3: [5, 4, 3, 2, 1]
 
 import Html exposing (text)
 

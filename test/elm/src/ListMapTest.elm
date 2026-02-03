@@ -3,9 +3,9 @@ module ListMapTest exposing (main)
 {-| Test List.map.
 -}
 
--- CHECK: map1: [2,4,6]
+-- CHECK: map1: [2, 4, 6]
 -- CHECK: map2: []
--- CHECK: map3: [1,4,9]
+-- CHECK: map3: [1, 4, 9]
 
 import Html exposing (text)
 

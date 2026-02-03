@@ -3,10 +3,10 @@ module ListTakeDropTest exposing (main)
 {-| Test List.take and List.drop.
 -}
 
--- CHECK: take1: [1,2]
+-- CHECK: take1: [1, 2]
 -- CHECK: take2: []
--- CHECK: drop1: [3,4,5]
--- CHECK: drop2: [1,2,3,4,5]
+-- CHECK: drop1: [3, 4, 5]
+-- CHECK: drop2: [1, 2, 3, 4, 5]
 
 import Html exposing (text)
 

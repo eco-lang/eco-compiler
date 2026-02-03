@@ -3,8 +3,8 @@ module ListFilterTest exposing (main)
 {-| Test List.filter.
 -}
 
--- CHECK: even: [2,4]
--- CHECK: positive: [1,2,3]
+-- CHECK: even: [2, 4]
+-- CHECK: positive: [1, 2, 3]
 -- CHECK: empty: []
 
 import Html exposing (text)

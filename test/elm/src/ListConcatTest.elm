@@ -3,9 +3,9 @@ module ListConcatTest exposing (main)
 {-| Test List.concat and ++.
 -}
 
--- CHECK: append: [1,2,3,4]
--- CHECK: concat: [1,2,3,4,5,6]
--- CHECK: empty: [1,2,3]
+-- CHECK: append: [1, 2, 3, 4]
+-- CHECK: concat: [1, 2, 3, 4, 5, 6]
+-- CHECK: empty: [1, 2, 3]
 
 import Html exposing (text)
 

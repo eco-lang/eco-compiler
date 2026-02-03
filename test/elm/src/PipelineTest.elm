@@ -4,7 +4,7 @@ module PipelineTest exposing (main)
 -}
 
 -- CHECK: pipe1: 12
--- CHECK: pipe2: [2,4,6]
+-- CHECK: pipe2: [2, 4, 6]
 -- CHECK: backpipe: 10
 
 import Html exposing (text)

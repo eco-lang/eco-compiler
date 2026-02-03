@@ -3,9 +3,9 @@ module AnonymousFunctionTest exposing (main)
 {-| Test anonymous functions (lambdas).
 -}
 
--- CHECK: lambda1: [2,4,6]
+-- CHECK: lambda1: [2, 4, 6]
 -- CHECK: lambda2: 15
--- CHECK: lambda3: [2,4]
+-- CHECK: lambda3: [2, 4]
 
 import Html exposing (text)
 

@@ -5,7 +5,7 @@ module PartialApplicationTest exposing (main)
 
 -- CHECK: partial1: 7
 -- CHECK: partial2: 15
--- CHECK: partial3: [2,3,4]
+-- CHECK: partial3: [2, 3, 4]
 
 import Html exposing (text)
 
