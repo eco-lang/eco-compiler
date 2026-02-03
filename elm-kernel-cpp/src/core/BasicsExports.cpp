@@ -266,28 +266,28 @@ double Elm_Kernel_Basics_toFloat(int64_t x) {
     return Basics::toFloat(x);
 }
 
-bool Elm_Kernel_Basics_isInfinite(double x) {
-    return Basics::isInfinite(x);
+uint64_t Elm_Kernel_Basics_isInfinite(double x) {
+    return Export::encodeBoxedBool(Basics::isInfinite(x));
 }
 
-bool Elm_Kernel_Basics_isNaN(double x) {
-    return Basics::isNaN(x);
+uint64_t Elm_Kernel_Basics_isNaN(double x) {
+    return Export::encodeBoxedBool(Basics::isNaN(x));
 }
 
-bool Elm_Kernel_Basics_and(bool a, bool b) {
-    return Basics::and_(a, b);
+uint64_t Elm_Kernel_Basics_and(uint64_t a, uint64_t b) {
+    return Export::encodeBoxedBool(Basics::and_(Export::decodeBoxedBool(a), Export::decodeBoxedBool(b)));
 }
 
-bool Elm_Kernel_Basics_or(bool a, bool b) {
-    return Basics::or_(a, b);
+uint64_t Elm_Kernel_Basics_or(uint64_t a, uint64_t b) {
+    return Export::encodeBoxedBool(Basics::or_(Export::decodeBoxedBool(a), Export::decodeBoxedBool(b)));
 }
 
-bool Elm_Kernel_Basics_xor(bool a, bool b) {
-    return Basics::xor_(a, b);
+uint64_t Elm_Kernel_Basics_xor(uint64_t a, uint64_t b) {
+    return Export::encodeBoxedBool(Basics::xor_(Export::decodeBoxedBool(a), Export::decodeBoxedBool(b)));
 }
 
-bool Elm_Kernel_Basics_not(bool a) {
-    return Basics::not_(a);
+uint64_t Elm_Kernel_Basics_not(uint64_t a) {
+    return Export::encodeBoxedBool(Basics::not_(Export::decodeBoxedBool(a)));
 }
 
 } // extern "C"

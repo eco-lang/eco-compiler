@@ -10,6 +10,7 @@
 
 #include "allocator/Heap.hpp"
 #include "allocator/Allocator.hpp"
+#include "allocator/HeapHelpers.hpp"
 #include <cstdint>
 #include <cstdio>
 
@@ -88,7 +89,24 @@ inline uint64_t fromPtr(void* ptr) {
     return encode(h);
 }
 
-// Encode a boolean as int64_t for the JIT interface.
+// Encode a boolean as a boxed !eco.value (HPointer constant) for ABI boundaries.
+// Per REP_ABI_001, Bool at ABI boundaries must be boxed as True/False HPointer constants.
+inline uint64_t encodeBoxedBool(bool b) {
+    return encode(b ? alloc::elmTrue() : alloc::elmFalse());
+}
+
+// Decode a boxed !eco.value boolean (HPointer constant) to raw bool.
+// Per REP_ABI_001, Bool at ABI boundaries is boxed as True/False HPointer constants.
+// True has constant field = Const_True + 1 = 3
+// False has constant field = Const_False + 1 = 4
+inline bool decodeBoxedBool(uint64_t val) {
+    HPointer h = decode(val);
+    // True has constant = 3 (Const_True + 1)
+    return h.constant == (Const_True + 1);
+}
+
+// Legacy: Encode a boolean as int64_t (raw 0/1) for internal use.
+// DEPRECATED: Use encodeBoxedBool for ABI boundaries.
 inline int64_t encodeBool(bool b) {
     return b ? 1 : 0;
 }

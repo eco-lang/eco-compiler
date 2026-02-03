@@ -92,16 +92,16 @@ uint64_t Elm_Kernel_String_trimRight(uint64_t str) {
     return Export::encode(result);
 }
 
-bool Elm_Kernel_String_startsWith(uint64_t prefix, uint64_t str) {
-    return String::startsWith(Export::toPtr(prefix), Export::toPtr(str));
+uint64_t Elm_Kernel_String_startsWith(uint64_t prefix, uint64_t str) {
+    return Export::encodeBoxedBool(String::startsWith(Export::toPtr(prefix), Export::toPtr(str)));
 }
 
-bool Elm_Kernel_String_endsWith(uint64_t suffix, uint64_t str) {
-    return String::endsWith(Export::toPtr(suffix), Export::toPtr(str));
+uint64_t Elm_Kernel_String_endsWith(uint64_t suffix, uint64_t str) {
+    return Export::encodeBoxedBool(String::endsWith(Export::toPtr(suffix), Export::toPtr(str)));
 }
 
-bool Elm_Kernel_String_contains(uint64_t needle, uint64_t haystack) {
-    return String::contains(Export::toPtr(needle), Export::toPtr(haystack));
+uint64_t Elm_Kernel_String_contains(uint64_t needle, uint64_t haystack) {
+    return Export::encodeBoxedBool(String::contains(Export::toPtr(needle), Export::toPtr(haystack)));
 }
 
 uint64_t Elm_Kernel_String_indexes(uint64_t needle, uint64_t haystack) {
@@ -217,36 +217,36 @@ uint64_t Elm_Kernel_String_filter(uint64_t closure, uint64_t str) {
     return Export::encode(Elm::alloc::allocString(result.data(), result.size()));
 }
 
-bool Elm_Kernel_String_any(uint64_t closure, uint64_t str) {
+uint64_t Elm_Kernel_String_any(uint64_t closure, uint64_t str) {
     void* closure_ptr = reinterpret_cast<void*>(closure);
     ElmString* s = static_cast<ElmString*>(Export::toPtr(str));
     if (!s) {
-        return false;
+        return Export::encodeBoxedBool(false);
     }
 
     u32 len = s->header.size;
     for (u32 i = 0; i < len; i++) {
         if (callCharToBoolClosure(closure_ptr, s->chars[i])) {
-            return true;
+            return Export::encodeBoxedBool(true);
         }
     }
-    return false;
+    return Export::encodeBoxedBool(false);
 }
 
-bool Elm_Kernel_String_all(uint64_t closure, uint64_t str) {
+uint64_t Elm_Kernel_String_all(uint64_t closure, uint64_t str) {
     void* closure_ptr = reinterpret_cast<void*>(closure);
     ElmString* s = static_cast<ElmString*>(Export::toPtr(str));
     if (!s) {
-        return true; // Empty string: all chars satisfy any predicate.
+        return Export::encodeBoxedBool(true); // Empty string: all chars satisfy any predicate.
     }
 
     u32 len = s->header.size;
     for (u32 i = 0; i < len; i++) {
         if (!callCharToBoolClosure(closure_ptr, s->chars[i])) {
-            return false;
+            return Export::encodeBoxedBool(false);
         }
     }
-    return true;
+    return Export::encodeBoxedBool(true);
 }
 
 uint64_t Elm_Kernel_String_foldl(uint64_t closure, uint64_t acc, uint64_t str) {

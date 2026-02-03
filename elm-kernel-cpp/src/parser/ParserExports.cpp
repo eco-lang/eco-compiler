@@ -16,22 +16,22 @@ using namespace Elm::Kernel;
 
 extern "C" {
 
-bool Elm_Kernel_Parser_isSubChar(uint64_t closure, int64_t offset, uint64_t str) {
+uint64_t Elm_Kernel_Parser_isSubChar(uint64_t closure, int64_t offset, uint64_t str) {
     (void)closure;
     (void)offset;
     (void)str;
     assert(false && "Elm_Kernel_Parser_isSubChar not implemented");
-    return false;
+    return Export::encodeBoxedBool(false);
 }
 
-bool Elm_Kernel_Parser_isSubString(uint64_t target, int64_t offset, int64_t row, int64_t col, uint64_t str) {
+uint64_t Elm_Kernel_Parser_isSubString(uint64_t target, int64_t offset, int64_t row, int64_t col, uint64_t str) {
     (void)target;
     (void)offset;
     (void)row;
     (void)col;
     (void)str;
     assert(false && "Elm_Kernel_Parser_isSubString not implemented");
-    return false;
+    return Export::encodeBoxedBool(false);
 }
 
 int64_t Elm_Kernel_Parser_findSubString(uint64_t target, int64_t offset, int64_t row, int64_t col, uint64_t str) {
@@ -66,12 +66,12 @@ uint64_t Elm_Kernel_Parser_consumeBase16(int64_t offset, uint64_t str) {
     return 0;
 }
 
-bool Elm_Kernel_Parser_isAsciiCode(int64_t code, int64_t offset, uint64_t str) {
+uint64_t Elm_Kernel_Parser_isAsciiCode(int64_t code, int64_t offset, uint64_t str) {
     (void)code;
     (void)offset;
     (void)str;
     assert(false && "Elm_Kernel_Parser_isAsciiCode not implemented");
-    return false;
+    return Export::encodeBoxedBool(false);
 }
 
 } // extern "C"

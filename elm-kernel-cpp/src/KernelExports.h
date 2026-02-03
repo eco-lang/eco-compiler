@@ -45,12 +45,12 @@ int64_t Elm_Kernel_Basics_floor(double x);
 int64_t Elm_Kernel_Basics_round(double x);
 int64_t Elm_Kernel_Basics_truncate(double x);
 double Elm_Kernel_Basics_toFloat(int64_t x);
-bool Elm_Kernel_Basics_isInfinite(double x);
-bool Elm_Kernel_Basics_isNaN(double x);
-bool Elm_Kernel_Basics_and(bool a, bool b);
-bool Elm_Kernel_Basics_or(bool a, bool b);
-bool Elm_Kernel_Basics_xor(bool a, bool b);
-bool Elm_Kernel_Basics_not(bool a);
+uint64_t Elm_Kernel_Basics_isInfinite(double x);
+uint64_t Elm_Kernel_Basics_isNaN(double x);
+uint64_t Elm_Kernel_Basics_and(uint64_t a, uint64_t b);
+uint64_t Elm_Kernel_Basics_or(uint64_t a, uint64_t b);
+uint64_t Elm_Kernel_Basics_xor(uint64_t a, uint64_t b);
+uint64_t Elm_Kernel_Basics_not(uint64_t a);
 
 //===----------------------------------------------------------------------===//
 // Bitwise Module (elm/core)
@@ -95,9 +95,9 @@ uint64_t Elm_Kernel_String_toLower(uint64_t str);
 uint64_t Elm_Kernel_String_trim(uint64_t str);
 uint64_t Elm_Kernel_String_trimLeft(uint64_t str);
 uint64_t Elm_Kernel_String_trimRight(uint64_t str);
-bool Elm_Kernel_String_startsWith(uint64_t prefix, uint64_t str);
-bool Elm_Kernel_String_endsWith(uint64_t suffix, uint64_t str);
-bool Elm_Kernel_String_contains(uint64_t needle, uint64_t haystack);
+uint64_t Elm_Kernel_String_startsWith(uint64_t prefix, uint64_t str);
+uint64_t Elm_Kernel_String_endsWith(uint64_t suffix, uint64_t str);
+uint64_t Elm_Kernel_String_contains(uint64_t needle, uint64_t haystack);
 uint64_t Elm_Kernel_String_indexes(uint64_t needle, uint64_t haystack);
 uint64_t Elm_Kernel_String_toInt(uint64_t str);
 uint64_t Elm_Kernel_String_toFloat(uint64_t str);
@@ -105,8 +105,8 @@ uint64_t Elm_Kernel_String_fromNumber(uint64_t n);
 // Higher-order String functions (closure is a pointer to Closure object)
 uint64_t Elm_Kernel_String_map(uint64_t closure, uint64_t str);
 uint64_t Elm_Kernel_String_filter(uint64_t closure, uint64_t str);
-bool Elm_Kernel_String_any(uint64_t closure, uint64_t str);
-bool Elm_Kernel_String_all(uint64_t closure, uint64_t str);
+uint64_t Elm_Kernel_String_any(uint64_t closure, uint64_t str);
+uint64_t Elm_Kernel_String_all(uint64_t closure, uint64_t str);
 uint64_t Elm_Kernel_String_foldl(uint64_t closure, uint64_t acc, uint64_t str);
 uint64_t Elm_Kernel_String_foldr(uint64_t closure, uint64_t acc, uint64_t str);
 
@@ -130,12 +130,12 @@ uint64_t Elm_Kernel_List_sortWith(uint64_t closure, uint64_t list);
 //===----------------------------------------------------------------------===//
 
 uint64_t Elm_Kernel_Utils_compare(uint64_t a, uint64_t b);
-bool Elm_Kernel_Utils_equal(uint64_t a, uint64_t b);
-bool Elm_Kernel_Utils_notEqual(uint64_t a, uint64_t b);
-bool Elm_Kernel_Utils_lt(uint64_t a, uint64_t b);
-bool Elm_Kernel_Utils_le(uint64_t a, uint64_t b);
-bool Elm_Kernel_Utils_gt(uint64_t a, uint64_t b);
-bool Elm_Kernel_Utils_ge(uint64_t a, uint64_t b);
+uint64_t Elm_Kernel_Utils_equal(uint64_t a, uint64_t b);
+uint64_t Elm_Kernel_Utils_notEqual(uint64_t a, uint64_t b);
+uint64_t Elm_Kernel_Utils_lt(uint64_t a, uint64_t b);
+uint64_t Elm_Kernel_Utils_le(uint64_t a, uint64_t b);
+uint64_t Elm_Kernel_Utils_gt(uint64_t a, uint64_t b);
+uint64_t Elm_Kernel_Utils_ge(uint64_t a, uint64_t b);
 uint64_t Elm_Kernel_Utils_append(uint64_t a, uint64_t b);
 
 //===----------------------------------------------------------------------===//
@@ -171,7 +171,7 @@ uint64_t Elm_Kernel_Debug_toString(uint64_t value);
 //===----------------------------------------------------------------------===//
 
 uint64_t Elm_Kernel_Debugger_init(uint64_t value);
-bool Elm_Kernel_Debugger_isOpen(uint64_t popout);
+uint64_t Elm_Kernel_Debugger_isOpen(uint64_t popout);
 uint64_t Elm_Kernel_Debugger_open(uint64_t popout);
 uint64_t Elm_Kernel_Debugger_scroll(uint64_t popout);
 uint64_t Elm_Kernel_Debugger_messageToString(uint64_t message);
@@ -382,13 +382,13 @@ uint64_t Elm_Kernel_File_makeBytesSafeForInternetExplorer(uint64_t bytes);
 // Parser Module (elm/parser) - STUBS
 //===----------------------------------------------------------------------===//
 
-bool Elm_Kernel_Parser_isSubChar(uint64_t closure, int64_t offset, uint64_t str);
-bool Elm_Kernel_Parser_isSubString(uint64_t target, int64_t offset, int64_t row, int64_t col, uint64_t str);
+uint64_t Elm_Kernel_Parser_isSubChar(uint64_t closure, int64_t offset, uint64_t str);
+uint64_t Elm_Kernel_Parser_isSubString(uint64_t target, int64_t offset, int64_t row, int64_t col, uint64_t str);
 int64_t Elm_Kernel_Parser_findSubString(uint64_t target, int64_t offset, int64_t row, int64_t col, uint64_t str);
 uint64_t Elm_Kernel_Parser_chompBase10(int64_t offset, uint64_t str);
 uint64_t Elm_Kernel_Parser_consumeBase(int64_t base, int64_t offset, uint64_t str);
 uint64_t Elm_Kernel_Parser_consumeBase16(int64_t offset, uint64_t str);
-bool Elm_Kernel_Parser_isAsciiCode(int64_t code, int64_t offset, uint64_t str);
+uint64_t Elm_Kernel_Parser_isAsciiCode(int64_t code, int64_t offset, uint64_t str);
 
 //===----------------------------------------------------------------------===//
 // Regex Module (elm/regex) - STUBS
@@ -397,7 +397,7 @@ bool Elm_Kernel_Parser_isAsciiCode(int64_t code, int64_t offset, uint64_t str);
 uint64_t Elm_Kernel_Regex_never();
 double Elm_Kernel_Regex_infinity();
 uint64_t Elm_Kernel_Regex_fromStringWith(uint64_t options, uint64_t pattern);
-bool Elm_Kernel_Regex_contains(uint64_t regex, uint64_t str);
+uint64_t Elm_Kernel_Regex_contains(uint64_t regex, uint64_t str);
 uint64_t Elm_Kernel_Regex_findAtMost(int64_t n, uint64_t regex, uint64_t str);
 uint64_t Elm_Kernel_Regex_replaceAtMost(int64_t n, uint64_t regex, uint64_t closure, uint64_t str);
 uint64_t Elm_Kernel_Regex_splitAtMost(int64_t n, uint64_t regex, uint64_t str);

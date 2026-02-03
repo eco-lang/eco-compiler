@@ -36,11 +36,11 @@ uint64_t Elm_Kernel_Regex_fromStringWith(uint64_t options, uint64_t pattern) {
     return 0;
 }
 
-bool Elm_Kernel_Regex_contains(uint64_t regex, uint64_t str) {
+uint64_t Elm_Kernel_Regex_contains(uint64_t regex, uint64_t str) {
     (void)regex;
     (void)str;
     assert(false && "Elm_Kernel_Regex_contains not implemented");
-    return false;
+    return Export::encodeBoxedBool(false);
 }
 
 uint64_t Elm_Kernel_Regex_findAtMost(int64_t n, uint64_t regex, uint64_t str) {

@@ -16,11 +16,11 @@ uint64_t Elm_Kernel_Debugger_init(uint64_t value) {
     return value;
 }
 
-bool Elm_Kernel_Debugger_isOpen(uint64_t popout) {
+uint64_t Elm_Kernel_Debugger_isOpen(uint64_t popout) {
     // Check if the debugger popout is open.
     // Always return false in this native implementation.
     (void)popout;
-    return false;
+    return Export::encodeBoxedBool(false);
 }
 
 uint64_t Elm_Kernel_Debugger_open(uint64_t popout) {
