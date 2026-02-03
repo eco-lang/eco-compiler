@@ -27,8 +27,11 @@ import Compiler.Generate.MLIR.Context as Ctx
 import Compiler.Generate.MLIR.Expr as Expr
 import Compiler.Generate.MLIR.Intrinsics as Intrinsics
 import Compiler.Generate.MLIR.Ops as Ops
+import Compiler.Generate.MLIR.Patterns as Patterns
 import Compiler.Generate.MLIR.Types as Types
+import Compiler.Optimize.Typed.DecisionTree as DT
 import Dict
+import Utils.Crash exposing (crash)
 import Mlir.Mlir as Mlir exposing (MlirAttr(..), MlirOp, MlirRegion(..), MlirType(..), Visibility(..))
 import OrderedDict
 
@@ -50,13 +53,17 @@ type alias LoopSpec =
 
 
 {-| Result of compiling a single step of the loop body.
+
+Invariant: resultType must always equal loopSpec.retType for the enclosing
+compileStep/LoopSpec. All step forms (tail calls, base returns, cases, ifs)
+are responsible for producing a resultVar of this type.
 -}
 type alias StepResult =
     { ops : List MlirOp
     , nextParams : List ( String, MlirType ) -- SSA vars for next iteration
     , doneVar : String -- i1: true = done, false = continue
     , resultVar : String -- result when done
-    , resultType : MlirType -- type of resultVar
+    , resultType : MlirType -- type of resultVar (== loopSpec.retType)
     , ctx : Ctx.Context
     }
 
@@ -338,6 +345,10 @@ compileStep ctx loopSpec expr =
             -- Let expression -> compile def, then recurse on body
             compileLetStep ctx loopSpec def body
 
+        Mono.MonoDestruct destructor body _ ->
+            -- Destruct expression -> generate path + binding, then recurse on body
+            compileDestructStep ctx loopSpec destructor body
+
         _ ->
             -- All other expressions -> base return (done=true)
             compileBaseReturnStep ctx loopSpec expr
@@ -415,41 +426,55 @@ compileBaseReturnStep :
     -> StepResult
 compileBaseReturnStep ctx loopSpec expr =
     let
-        -- Evaluate the expression
         exprResult =
             Expr.generateExpr ctx expr
-
-        -- done = true (exit loop)
-        ( doneVar, ctx1 ) =
-            Ctx.freshVar exprResult.ctx
-
-        ( ctx2, doneOp ) =
-            Ops.arithConstantBool ctx1 doneVar True
-
-        -- nextParams = unchanged (use current loopSpec.paramVars)
-        -- These are the block args, passed through unchanged
-        nextParams =
-            loopSpec.paramVars
     in
-    { ops = exprResult.ops ++ [ doneOp ]
-    , nextParams = nextParams
-    , doneVar = doneVar
-    , resultVar = exprResult.resultVar
-    , resultType = exprResult.resultType
-    , ctx = ctx2
-    }
+    if exprResult.isTerminated then
+        crash
+            "TailRec.compileBaseReturnStep: encountered terminated ExprResult; extend compileStep to handle this expression shape directly."
+
+    else
+        let
+            -- Coerce the expression result to the loop's result MLIR type.
+            -- This mirrors generateDefine/generateClosureFunc, which coerce to
+            -- the function's ABI return type before emitting eco.return.
+            ( coerceOps, finalVar, ctx1 ) =
+                Expr.coerceResultToType
+                    exprResult.ctx
+                    exprResult.resultVar
+                    exprResult.resultType
+                    loopSpec.retType
+
+            -- done = true (base case)
+            ( doneVar, ctx2 ) =
+                Ctx.freshVar ctx1
+
+            ( ctx3, doneOp ) =
+                Ops.arithConstantBool ctx2 doneVar True
+
+            nextParams =
+                loopSpec.paramVars
+        in
+        { ops = exprResult.ops ++ coerceOps ++ [ doneOp ]
+        , nextParams = nextParams
+        , doneVar = doneVar
+        , resultVar = finalVar
+        , resultType = loopSpec.retType
+        , ctx = ctx3
+        }
 
 
 
 -- ============================================================================
--- ====== CASE STEP (Phase C) ======
+-- ====== CASE STEP ======
 -- ============================================================================
 
 
 {-| Compile a MonoCase as a multi-result eco.case step.
 
 Each case alternative recursively calls compileStep, and the results
-are yielded via eco.yield.
+are yielded via eco.yieldMany. This mirrors Expr.generateCase but produces
+StepResult instead of ExprResult.
 
 -}
 compileCaseStep :
@@ -461,27 +486,352 @@ compileCaseStep :
     -> List ( Int, Mono.MonoExpr )
     -> Mono.MonoType
     -> StepResult
-compileCaseStep ctx loopSpec scrutinee1 scrutinee2 decider jumps resultType =
-    -- TODO: Implement in Phase C
-    -- For now, fall back to base return
+compileCaseStep ctx loopSpec _ root decider jumps _ =
     let
-        -- Placeholder: compile the case normally and treat result as done
-        caseResult =
-            Expr.generateCase ctx scrutinee1 scrutinee2 decider jumps resultType
-
-        ( doneVar, ctx1 ) =
-            Ctx.freshVar caseResult.ctx
-
-        ( ctx2, doneOp ) =
-            Ops.arithConstantBool ctx1 doneVar True
+        jumpLookup : Dict.Dict Int Mono.MonoExpr
+        jumpLookup =
+            Dict.fromList jumps
     in
-    { ops = caseResult.ops ++ [ doneOp ]
-    , nextParams = loopSpec.paramVars
-    , doneVar = doneVar
-    , resultVar = caseResult.resultVar
-    , resultType = caseResult.resultType
-    , ctx = ctx2
+    compileCaseDeciderStep ctx loopSpec root decider jumpLookup
+
+
+{-| Compile a decision tree for a case expression as a single loop step.
+
+This mirrors Expr.generateDeciderWithJumps, but instead of producing
+an ExprResult for the case *value*, it produces a StepResult for the
+loop state (nextParams..., done, result).
+
+-}
+compileCaseDeciderStep :
+    Ctx.Context
+    -> LoopSpec
+    -> Name.Name
+    -> Mono.Decider Mono.MonoChoice
+    -> Dict.Dict Int Mono.MonoExpr
+    -> StepResult
+compileCaseDeciderStep ctx loopSpec root decider jumpLookup =
+    case decider of
+        Mono.Leaf choice ->
+            compileCaseLeafStep ctx loopSpec choice jumpLookup
+
+        Mono.Chain testChain success failure ->
+            compileCaseChainStep ctx loopSpec root testChain success failure jumpLookup
+
+        Mono.FanOut path edges fallback ->
+            compileCaseFanOutStep ctx loopSpec root path edges fallback jumpLookup
+
+
+{-| Leaf node in the decision tree.
+
+Inline the branch expression and treat it as the step body.
+This lets compileStep see any MonoTailCall and compile it into a continue
+state, instead of going through Expr.generateTailCall/eco.jump.
+
+-}
+compileCaseLeafStep :
+    Ctx.Context
+    -> LoopSpec
+    -> Mono.MonoChoice
+    -> Dict.Dict Int Mono.MonoExpr
+    -> StepResult
+compileCaseLeafStep ctx loopSpec choice jumpLookup =
+    case choice of
+        Mono.Inline branchExpr ->
+            compileStep ctx loopSpec branchExpr
+
+        Mono.Jump index ->
+            case Dict.get index jumpLookup of
+                Just branchExpr ->
+                    compileStep ctx loopSpec branchExpr
+
+                Nothing ->
+                    crash
+                        ("compileCaseLeafStep: Jump index "
+                            ++ String.fromInt index
+                            ++ " not found in jumpLookup"
+                        )
+
+
+{-| Chain node: sequence of tests culminating in success/failure subtrees.
+
+We compile the chain condition to an i1, then build a 2-way eco.caseMany
+on that condition where each alternative yields the full step tuple.
+
+-}
+compileCaseChainStep :
+    Ctx.Context
+    -> LoopSpec
+    -> Name.Name
+    -> List ( DT.Path, DT.Test )
+    -> Mono.Decider Mono.MonoChoice
+    -> Mono.Decider Mono.MonoChoice
+    -> Dict.Dict Int Mono.MonoExpr
+    -> StepResult
+compileCaseChainStep ctx loopSpec root testChain success failure jumpLookup =
+    let
+        -- Compute the boolean condition (i1)
+        ( condOps, condVar, condCtx ) =
+            Patterns.generateChainCondition ctx root testChain
+
+        -- Then branch
+        thenStep =
+            compileCaseDeciderStep condCtx loopSpec root success jumpLookup
+
+        thenYieldOperands =
+            thenStep.nextParams
+                ++ [ ( thenStep.doneVar, I1 )
+                   , ( thenStep.resultVar, thenStep.resultType )
+                   ]
+
+        ( thenYieldCtx, thenYieldOp ) =
+            Ops.ecoYieldMany thenStep.ctx thenYieldOperands
+
+        thenRegion =
+            mkSingleBlockRegion [] thenStep.ops thenYieldOp
+
+        -- Else branch: reuse condCtx bindings but advance nextVar
+        ctxForElse =
+            { condCtx | nextVar = thenYieldCtx.nextVar }
+
+        elseStep =
+            compileCaseDeciderStep ctxForElse loopSpec root failure jumpLookup
+
+        elseYieldOperands =
+            elseStep.nextParams
+                ++ [ ( elseStep.doneVar, I1 )
+                   , ( elseStep.resultVar, elseStep.resultType )
+                   ]
+
+        ( elseYieldCtx, elseYieldOp ) =
+            Ops.ecoYieldMany elseStep.ctx elseYieldOperands
+
+        elseRegion =
+            mkSingleBlockRegion [] elseStep.ops elseYieldOp
+
+        -- Step tuple types: (paramTypes..., i1, retTy)
+        numParams =
+            List.length loopSpec.paramVars
+
+        paramTypes =
+            List.map Tuple.second loopSpec.paramVars
+
+        -- Allocate result names for the step tuple
+        ( caseResultNames, ctxWithResults ) =
+            allocateFreshVars elseYieldCtx (numParams + 2)
+
+        caseResultPairs =
+            zip caseResultNames (paramTypes ++ [ I1, loopSpec.retType ])
+
+        -- eco.case on i1: tag 1 for True (then), tag 0 for False (else)
+        ( ctxAfterCase, caseOp ) =
+            Ops.ecoCaseMany
+                ctxWithResults
+                condVar
+                I1
+                "bool"
+                [ 1, 0 ]
+                [ thenRegion, elseRegion ]
+                caseResultPairs
+
+        nextParamVars =
+            List.take numParams caseResultPairs
+
+        doneResultVar =
+            List.drop numParams caseResultNames
+                |> List.head
+                |> Maybe.withDefault "%error_no_done"
+
+        resultResultVar =
+            List.drop (numParams + 1) caseResultNames
+                |> List.head
+                |> Maybe.withDefault "%error_no_result"
+    in
+    { ops = condOps ++ [ caseOp ]
+    , nextParams = nextParamVars
+    , doneVar = doneResultVar
+    , resultVar = resultResultVar
+    , resultType = loopSpec.retType
+    , ctx = ctxAfterCase
     }
+
+
+{-| FanOut node: multi-way branching on constructor tags, ints, chars, or strings.
+
+We generate an eco.case/eco.case\_string whose result tuple is
+(nextParams..., done, result). Each alternative region yields this tuple
+via eco.yieldMany.
+
+-}
+compileCaseFanOutStep :
+    Ctx.Context
+    -> LoopSpec
+    -> Name.Name
+    -> DT.Path
+    -> List ( DT.Test, Mono.Decider Mono.MonoChoice )
+    -> Mono.Decider Mono.MonoChoice
+    -> Dict.Dict Int Mono.MonoExpr
+    -> StepResult
+compileCaseFanOutStep ctx loopSpec root path edges fallback jumpLookup =
+    let
+        edgeTests =
+            List.map Tuple.first edges
+
+        caseKind =
+            case edgeTests of
+                firstTest :: _ ->
+                    Patterns.caseKindFromTest firstTest
+
+                [] ->
+                    "ctor"
+
+        scrutineeType =
+            Patterns.scrutineeTypeFromCaseKind caseKind
+
+        ( pathOps, scrutineeVar, ctx1 ) =
+            Patterns.generateDTPath ctx root path scrutineeType
+
+        -- Tags and (optional) string patterns
+        ( tags, stringPatterns ) =
+            if caseKind == "str" then
+                let
+                    edgeCount =
+                        List.length edges
+
+                    altCount =
+                        edgeCount + 1
+
+                    patterns =
+                        edges
+                            |> List.map Tuple.first
+                            |> List.map extractStringPatternForStep
+
+                    sequentialTags =
+                        List.range 0 (altCount - 1)
+                in
+                ( sequentialTags, Just patterns )
+
+            else
+                let
+                    edgeTags =
+                        List.map (\( test, _ ) -> Patterns.testToTagInt test) edges
+
+                    fallbackTag =
+                        Patterns.computeFallbackTag edgeTests
+                in
+                ( edgeTags ++ [ fallbackTag ], Nothing )
+
+        -- Compile edge regions
+        ( edgeRegions, ctx2 ) =
+            List.foldl
+                (\( _, subTree ) ( accRegions, accCtx ) ->
+                    let
+                        subStep =
+                            compileCaseDeciderStep accCtx loopSpec root subTree jumpLookup
+
+                        yieldOperands =
+                            subStep.nextParams
+                                ++ [ ( subStep.doneVar, I1 )
+                                   , ( subStep.resultVar, subStep.resultType )
+                                   ]
+
+                        ( yieldCtx, yieldOp ) =
+                            Ops.ecoYieldMany subStep.ctx yieldOperands
+
+                        region =
+                            mkSingleBlockRegion [] subStep.ops yieldOp
+                    in
+                    ( accRegions ++ [ region ], yieldCtx )
+                )
+                ( [], ctx1 )
+                edges
+
+        -- Fallback region
+        fallbackStep =
+            compileCaseDeciderStep ctx2 loopSpec root fallback jumpLookup
+
+        fallbackYieldOperands =
+            fallbackStep.nextParams
+                ++ [ ( fallbackStep.doneVar, I1 )
+                   , ( fallbackStep.resultVar, fallbackStep.resultType )
+                   ]
+
+        ( fallbackYieldCtx, fallbackYieldOp ) =
+            Ops.ecoYieldMany fallbackStep.ctx fallbackYieldOperands
+
+        fallbackRegion =
+            mkSingleBlockRegion [] fallbackStep.ops fallbackYieldOp
+
+        allRegions =
+            edgeRegions ++ [ fallbackRegion ]
+
+        -- Step tuple result types
+        numParams =
+            List.length loopSpec.paramVars
+
+        paramTypes =
+            List.map Tuple.second loopSpec.paramVars
+
+        ( caseResultNames, ctxWithResults ) =
+            allocateFreshVars fallbackYieldCtx (numParams + 2)
+
+        caseResultPairs =
+            zip caseResultNames (paramTypes ++ [ I1, loopSpec.retType ])
+
+        -- Build eco.case / eco.case_string
+        ( ctx3, caseOp ) =
+            case stringPatterns of
+                Just patterns ->
+                    Ops.ecoCaseStringMany
+                        ctxWithResults
+                        scrutineeVar
+                        scrutineeType
+                        tags
+                        patterns
+                        allRegions
+                        caseResultPairs
+
+                Nothing ->
+                    Ops.ecoCaseMany
+                        ctxWithResults
+                        scrutineeVar
+                        scrutineeType
+                        caseKind
+                        tags
+                        allRegions
+                        caseResultPairs
+
+        nextParamVars =
+            List.take numParams caseResultPairs
+
+        doneResultVar =
+            List.drop numParams caseResultNames
+                |> List.head
+                |> Maybe.withDefault "%error_no_done"
+
+        resultResultVar =
+            List.drop (numParams + 1) caseResultNames
+                |> List.head
+                |> Maybe.withDefault "%error_no_result"
+    in
+    { ops = pathOps ++ [ caseOp ]
+    , nextParams = nextParamVars
+    , doneVar = doneResultVar
+    , resultVar = resultResultVar
+    , resultType = loopSpec.retType
+    , ctx = ctx3
+    }
+
+
+{-| Extract string pattern from a DT.Test, crash if not a string test.
+-}
+extractStringPatternForStep : DT.Test -> String
+extractStringPatternForStep test =
+    case test of
+        DT.IsStr s ->
+            s
+
+        _ ->
+            crash "extractStringPatternForStep: expected DT.IsStr but got non-string test"
 
 
 
@@ -664,6 +1014,61 @@ compileLetStep ctx loopSpec def body =
             , resultType = exprResult.resultType
             , ctx = ctx2
             }
+
+
+{-| Compile a MonoDestruct step.
+
+This mirrors Expr.generateDestruct but returns a StepResult instead of ExprResult:
+
+  - Generate path ops to navigate the MonoPath and extract the value.
+  - Bind the destructured name to the extracted SSA value in the context.
+  - Recursively compile the body as a step.
+
+This ensures that any MonoTailCall inside the body is still seen by compileStep
+and treated as a "continue" step, instead of going through Expr.generateTailCall.
+
+-}
+compileDestructStep :
+    Ctx.Context
+    -> LoopSpec
+    -> Mono.MonoDestructor
+    -> Mono.MonoExpr
+    -> StepResult
+compileDestructStep ctx loopSpec (Mono.MonoDestructor name path _) body =
+    let
+        -- Use the path's actual result type, as in Expr.generateDestruct.
+        -- The destructor's monoType may still contain unsubstituted vars;
+        -- the path carries the correctly-specialized concrete type.
+        pathResultType : Mono.MonoType
+        pathResultType =
+            Mono.getMonoPathType path
+
+        destructorMlirType : MlirType
+        destructorMlirType =
+            Types.monoTypeToAbi pathResultType
+
+        -- Navigate the path to produce the destructured value.
+        ( pathOps, pathVar, ctx1 ) =
+            Patterns.generateMonoPath ctx path destructorMlirType
+
+        -- Bind the destructured name to the extracted SSA value.
+        -- Destructured bindings are plain values (no sourceArity).
+        ctx2 : Ctx.Context
+        ctx2 =
+            Ctx.addVarMapping name pathVar destructorMlirType Nothing Nothing ctx1
+
+        -- Recursively compile the body as a loop step.
+        bodyStep : StepResult
+        bodyStep =
+            compileStep ctx2 loopSpec body
+    in
+    { ops = pathOps ++ bodyStep.ops
+    , nextParams = bodyStep.nextParams
+    , doneVar = bodyStep.doneVar
+    , resultVar = bodyStep.resultVar
+    , resultType = bodyStep.resultType
+    , ctx = bodyStep.ctx
+    }
 
 
 

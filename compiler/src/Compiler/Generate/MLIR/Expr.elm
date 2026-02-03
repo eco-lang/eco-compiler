@@ -3378,6 +3378,14 @@ mkCaseRegionFromDecider exprRes resultTy =
                 -- Already terminated with eco.yield, use as-is
                 ( mkRegionFromOps exprRes.ops, exprRes.ctx )
 
+            else if exprRes.resultVar == "" then
+                -- Defensive: non-yield terminator with empty resultVar indicates
+                -- a control-flow op (e.g., eco.jump) that shouldn't be wrapped
+                crash
+                    ("mkCaseRegionFromDecider: non-yield terminator with empty resultVar "
+                        ++ "(likely eco.jump); this should not happen in yield-based case codegen"
+                    )
+
             else
                 -- Value-producing expression (e.g., nested eco.case) - wrap with eco.yield
                 let
