@@ -18,7 +18,7 @@ This module handles generation of MLIR code for all Elm expressions.
 
 # Expression Generation
 
-@docs generateExpr
+@docs generateExpr, generateCase
 
 
 # Data Structure Generation

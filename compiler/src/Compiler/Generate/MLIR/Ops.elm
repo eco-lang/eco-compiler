@@ -55,6 +55,11 @@ in the eco dialect and standard dialects (arith, scf, func).
 
 @docs cfCondBr
 
+
+# Batch Operations
+
+@docs ecoCaseMany, ecoCaseStringMany, ecoYieldMany, scfYieldMany
+
 -}
 
 import Compiler.Generate.MLIR.Context as Ctx

@@ -59,6 +59,13 @@ These are computed from MonoType shapes during code generation.
 
 @docs computeRecordLayout, computeTupleLayout, computeCtorLayout
 
+
+# Function Segmentation
+
+For multi-stage function calling with currying support.
+
+@docs Segmentation, buildSegmentedFunctionType, chooseCanonicalSegmentation, segmentLengths, stageArity, stageParamTypes, stageReturnType
+
 -}
 
 import Compiler.AST.Monomorphized as Mono

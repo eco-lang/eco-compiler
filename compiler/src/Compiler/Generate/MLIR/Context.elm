@@ -43,6 +43,11 @@ state during MLIR code generation.
 
 @docs isTypeVar, hasKernelImplementation
 
+
+# Call Model
+
+@docs CallModel, VarInfo, isFlattenedExternalSpec, lookupVarCallModel
+
 -}
 
 import Compiler.AST.Monomorphized as Mono

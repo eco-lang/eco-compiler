@@ -27,7 +27,7 @@ the solver to later produce a mapping from node IDs to their inferred types.
 
 # Recording
 
-@docs recordNodeVar
+@docs recordNodeVar, recordSyntheticExprVar
 
 -}
 

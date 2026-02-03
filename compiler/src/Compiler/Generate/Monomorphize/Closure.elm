@@ -25,6 +25,11 @@ This module handles:
 
 @docs computeClosureCaptures
 
+
+# ABI Wrapper
+
+@docs buildAbiWrapper
+
 -}
 
 import Compiler.AST.Monomorphized as Mono
