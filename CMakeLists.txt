@@ -48,10 +48,12 @@ add_subdirectory(compiler)
 # is the legacy name. Both are set for maximum compatibility.
 set_property(DIRECTORY APPEND PROPERTY ADDITIONAL_CLEAN_FILES
     "${CMAKE_SOURCE_DIR}/test/elm/guida-stuff"
+    "${CMAKE_SOURCE_DIR}/test/elm-bytes/guida-stuff"
     "${CMAKE_SOURCE_DIR}/compiler/examples/guida-stuff"
 )
 set_property(DIRECTORY APPEND PROPERTY ADDITIONAL_MAKE_CLEAN_FILES
     "${CMAKE_SOURCE_DIR}/test/elm/guida-stuff"
+    "${CMAKE_SOURCE_DIR}/test/elm-bytes/guida-stuff"
     "${CMAKE_SOURCE_DIR}/compiler/examples/guida-stuff"
 )
 
@@ -59,6 +61,7 @@ set_property(DIRECTORY APPEND PROPERTY ADDITIONAL_MAKE_CLEAN_FILES
 # Usage: cmake --build build --target rebuild
 add_custom_target(rebuild
     COMMAND ${CMAKE_COMMAND} -E rm -rf "${CMAKE_SOURCE_DIR}/test/elm/guida-stuff"
+    COMMAND ${CMAKE_COMMAND} -E rm -rf "${CMAKE_SOURCE_DIR}/test/elm-bytes/guida-stuff"
     COMMAND ${CMAKE_COMMAND} -E rm -rf "${CMAKE_SOURCE_DIR}/compiler/examples/guida-stuff"
     COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target clean
     COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR}
@@ -87,6 +90,7 @@ add_custom_target(run-tests
 # Usage with filter: TEST_FILTER=elm cmake --build build --target full
 add_custom_target(full
     COMMAND ${CMAKE_COMMAND} -E rm -rf "${CMAKE_SOURCE_DIR}/test/elm/guida-stuff"
+    COMMAND ${CMAKE_COMMAND} -E rm -rf "${CMAKE_SOURCE_DIR}/test/elm-bytes/guida-stuff"
     COMMAND ${CMAKE_COMMAND} -E rm -rf "${CMAKE_SOURCE_DIR}/compiler/examples/guida-stuff"
     COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target clean
     COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR}
