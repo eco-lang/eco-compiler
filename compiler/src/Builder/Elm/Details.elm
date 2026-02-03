@@ -197,8 +197,8 @@ type alias Interfaces =
 {-| Load optimized objects for all dependencies in a background thread.
 Returns immediately with an MVar that will contain the objects when loading completes.
 -}
-loadObjects : FilePath -> Details -> Task Never (MVar (Maybe Opt.GlobalGraph))
-loadObjects root (Details detailsData) =
+loadObjects : FilePath -> Maybe String -> Details -> Task Never (MVar (Maybe Opt.GlobalGraph))
+loadObjects root maybeBuildDir (Details detailsData) =
     let
         extras =
             detailsData.extras
@@ -208,26 +208,26 @@ loadObjects root (Details detailsData) =
             Utils.newMVar (Utils.maybeEncoder Opt.globalGraphEncoder) (Just o)
 
         ArtifactsCached ->
-            fork (Utils.maybeEncoder Opt.globalGraphEncoder) (File.readBinary Opt.globalGraphDecoder (Stuff.objects root))
+            fork (Utils.maybeEncoder Opt.globalGraphEncoder) (File.readBinary Opt.globalGraphDecoder (Stuff.objectsWithBuildDir root maybeBuildDir))
 
 
 {-| Load typed global objects for MLIR backend.
 Loads both local typed objects and typed objects from all package dependencies.
 -}
-loadTypedObjects : FilePath -> Details -> Task Never (MVar (Maybe PackageTypedArtifacts))
-loadTypedObjects root (Details detailsData) =
+loadTypedObjects : FilePath -> Maybe String -> Details -> Task Never (MVar (Maybe PackageTypedArtifacts))
+loadTypedObjects root maybeBuildDir (Details detailsData) =
     fork (Utils.maybeEncoder packageTypedArtifactsEncoder)
         (Stuff.getPackageCache
-            |> Task.andThen (loadAllTypedObjects root detailsData.deps)
+            |> Task.andThen (loadAllTypedObjects root maybeBuildDir detailsData.deps)
         )
 
 
 {-| Load typed objects from local project and all packages.
 -}
-loadAllTypedObjects : FilePath -> Dict ( String, String ) Pkg.Name V.Version -> Stuff.PackageCache -> Task Never (Maybe PackageTypedArtifacts)
-loadAllTypedObjects root deps cache =
+loadAllTypedObjects : FilePath -> Maybe String -> Dict ( String, String ) Pkg.Name V.Version -> Stuff.PackageCache -> Task Never (Maybe PackageTypedArtifacts)
+loadAllTypedObjects root maybeBuildDir deps cache =
     -- Load local typed objects (graph only - type envs come from Fresh modules)
-    File.readBinary TOpt.globalGraphDecoder (Stuff.typedObjects root)
+    File.readBinary TOpt.globalGraphDecoder (Stuff.typedObjectsWithBuildDir root maybeBuildDir)
         |> Task.andThen
             (\maybeLocal ->
                 -- Load typed objects from all dependencies (both graph and type env)
@@ -322,14 +322,14 @@ packageTypedArtifactsDecoder =
 {-| Load type interfaces for all dependencies in a background thread.
 Returns immediately with an MVar that will contain the interfaces when loading completes.
 -}
-loadInterfaces : FilePath -> Details -> Task Never (MVar (Maybe Interfaces))
-loadInterfaces root (Details detailsData) =
+loadInterfaces : FilePath -> Maybe String -> Details -> Task Never (MVar (Maybe Interfaces))
+loadInterfaces root maybeBuildDir (Details detailsData) =
     case detailsData.extras of
         ArtifactsFresh i _ ->
             Utils.newMVar (Utils.maybeEncoder interfacesEncoder) (Just i)
 
         ArtifactsCached ->
-            fork (Utils.maybeEncoder interfacesEncoder) (File.readBinary interfacesDecoder (Stuff.interfaces root))
+            fork (Utils.maybeEncoder interfacesEncoder) (File.readBinary interfacesDecoder (Stuff.interfacesWithBuildDir root maybeBuildDir))
 
 
 
@@ -354,7 +354,7 @@ runVerifyInstall scope root cache manager connection registry outline time =
 
         env : Env
         env =
-            Env { key = key, scope = scope, root = root, cache = cache, manager = manager, connection = connection, registry = registry, needsTypedOpt = False, showPackageErrors = False }
+            Env { key = key, scope = scope, root = root, maybeBuildDir = Nothing, cache = cache, manager = manager, connection = connection, registry = registry, needsTypedOpt = False, showPackageErrors = False }
     in
     case outline of
         Outline.Pkg pkg ->
@@ -371,41 +371,41 @@ runVerifyInstall scope root cache manager connection registry outline time =
 {-| Load project details, verifying dependencies and building them if necessary.
 Checks if elm.json has changed and regenerates details if needed. Used by build commands.
 -}
-load : Reporting.Style -> BW.Scope -> FilePath -> Bool -> Bool -> Task Never (Result Exit.Details Details)
-load style scope root needsTypedOpt showPackageErrors =
+load : Reporting.Style -> BW.Scope -> FilePath -> Maybe String -> Bool -> Bool -> Task Never (Result Exit.Details Details)
+load style scope root maybeBuildDir needsTypedOpt showPackageErrors =
     File.getTime (root ++ "/elm.json")
-        |> Task.andThen (loadWithTime style scope root needsTypedOpt showPackageErrors)
+        |> Task.andThen (loadWithTime style scope root maybeBuildDir needsTypedOpt showPackageErrors)
 
 
-loadWithTime : Reporting.Style -> BW.Scope -> FilePath -> Bool -> Bool -> File.Time -> Task Never (Result Exit.Details Details)
-loadWithTime style scope root needsTypedOpt showPackageErrors newTime =
-    File.readBinary detailsDecoder (Stuff.details root)
-        |> Task.andThen (handleCachedDetails style scope root needsTypedOpt showPackageErrors newTime)
+loadWithTime : Reporting.Style -> BW.Scope -> FilePath -> Maybe String -> Bool -> Bool -> File.Time -> Task Never (Result Exit.Details Details)
+loadWithTime style scope root maybeBuildDir needsTypedOpt showPackageErrors newTime =
+    File.readBinary detailsDecoder (Stuff.detailsWithBuildDir root maybeBuildDir)
+        |> Task.andThen (handleCachedDetails style scope root maybeBuildDir needsTypedOpt showPackageErrors newTime)
 
 
-handleCachedDetails : Reporting.Style -> BW.Scope -> FilePath -> Bool -> Bool -> File.Time -> Maybe Details -> Task Never (Result Exit.Details Details)
-handleCachedDetails style scope root needsTypedOpt showPackageErrors newTime maybeDetails =
+handleCachedDetails : Reporting.Style -> BW.Scope -> FilePath -> Maybe String -> Bool -> Bool -> File.Time -> Maybe Details -> Task Never (Result Exit.Details Details)
+handleCachedDetails style scope root maybeBuildDir needsTypedOpt showPackageErrors newTime maybeDetails =
     case maybeDetails of
         Nothing ->
-            generate style scope root needsTypedOpt showPackageErrors newTime
+            generate style scope root maybeBuildDir needsTypedOpt showPackageErrors newTime
 
         Just (Details detailsData) ->
             if detailsData.time == newTime then
                 Task.succeed (Ok (Details { detailsData | buildID = detailsData.buildID + 1 }))
 
             else
-                generate style scope root needsTypedOpt showPackageErrors newTime
+                generate style scope root maybeBuildDir needsTypedOpt showPackageErrors newTime
 
 
 
 -- ====== GENERATE ======
 
 
-generate : Reporting.Style -> BW.Scope -> FilePath -> Bool -> Bool -> File.Time -> Task Never (Result Exit.Details Details)
-generate style scope root needsTypedOpt showPackageErrors time =
+generate : Reporting.Style -> BW.Scope -> FilePath -> Maybe String -> Bool -> Bool -> File.Time -> Task Never (Result Exit.Details Details)
+generate style scope root maybeBuildDir needsTypedOpt showPackageErrors time =
     Reporting.trackDetails style
         (\key ->
-            initEnv key scope root needsTypedOpt showPackageErrors
+            initEnv key scope root maybeBuildDir needsTypedOpt showPackageErrors
                 |> Task.andThen (verifyOutline time)
         )
 
@@ -433,6 +433,7 @@ type alias EnvData =
     { key : Reporting.DKey
     , scope : BW.Scope
     , root : FilePath
+    , maybeBuildDir : Maybe String
     , cache : Stuff.PackageCache
     , manager : Http.Manager
     , connection : Solver.Connection
@@ -446,37 +447,37 @@ type Env
     = Env EnvData
 
 
-initEnv : Reporting.DKey -> BW.Scope -> FilePath -> Bool -> Bool -> Task Never (Result Exit.Details ( Env, Outline.Outline ))
-initEnv key scope root needsTypedOpt showPackageErrors =
+initEnv : Reporting.DKey -> BW.Scope -> FilePath -> Maybe String -> Bool -> Bool -> Task Never (Result Exit.Details ( Env, Outline.Outline ))
+initEnv key scope root maybeBuildDir needsTypedOpt showPackageErrors =
     fork resultRegistryProblemEnvEncoder Solver.initEnv
-        |> Task.andThen (initEnvWithMVar key scope root needsTypedOpt showPackageErrors)
+        |> Task.andThen (initEnvWithMVar key scope root maybeBuildDir needsTypedOpt showPackageErrors)
 
 
-initEnvWithMVar : Reporting.DKey -> BW.Scope -> FilePath -> Bool -> Bool -> MVar (Result Exit.RegistryProblem Solver.Env) -> Task Never (Result Exit.Details ( Env, Outline.Outline ))
-initEnvWithMVar key scope root needsTypedOpt showPackageErrors mvar =
+initEnvWithMVar : Reporting.DKey -> BW.Scope -> FilePath -> Maybe String -> Bool -> Bool -> MVar (Result Exit.RegistryProblem Solver.Env) -> Task Never (Result Exit.Details ( Env, Outline.Outline ))
+initEnvWithMVar key scope root maybeBuildDir needsTypedOpt showPackageErrors mvar =
     Outline.read root
-        |> Task.andThen (handleOutlineForEnv key scope root needsTypedOpt showPackageErrors mvar)
+        |> Task.andThen (handleOutlineForEnv key scope root maybeBuildDir needsTypedOpt showPackageErrors mvar)
 
 
-handleOutlineForEnv : Reporting.DKey -> BW.Scope -> FilePath -> Bool -> Bool -> MVar (Result Exit.RegistryProblem Solver.Env) -> Result Exit.Outline Outline.Outline -> Task Never (Result Exit.Details ( Env, Outline.Outline ))
-handleOutlineForEnv key scope root needsTypedOpt showPackageErrors mvar eitherOutline =
+handleOutlineForEnv : Reporting.DKey -> BW.Scope -> FilePath -> Maybe String -> Bool -> Bool -> MVar (Result Exit.RegistryProblem Solver.Env) -> Result Exit.Outline Outline.Outline -> Task Never (Result Exit.Details ( Env, Outline.Outline ))
+handleOutlineForEnv key scope root maybeBuildDir needsTypedOpt showPackageErrors mvar eitherOutline =
     case eitherOutline of
         Err problem ->
             Task.succeed (Err (Exit.DetailsBadOutline problem))
 
         Ok outline ->
             Utils.readMVar resultRegistryProblemEnvDecoder mvar
-                |> Task.map (combineEnvAndOutline key scope root needsTypedOpt showPackageErrors outline)
+                |> Task.map (combineEnvAndOutline key scope root maybeBuildDir needsTypedOpt showPackageErrors outline)
 
 
-combineEnvAndOutline : Reporting.DKey -> BW.Scope -> FilePath -> Bool -> Bool -> Outline.Outline -> Result Exit.RegistryProblem Solver.Env -> Result Exit.Details ( Env, Outline.Outline )
-combineEnvAndOutline key scope root needsTypedOpt showPackageErrors outline maybeEnv =
+combineEnvAndOutline : Reporting.DKey -> BW.Scope -> FilePath -> Maybe String -> Bool -> Bool -> Outline.Outline -> Result Exit.RegistryProblem Solver.Env -> Result Exit.Details ( Env, Outline.Outline )
+combineEnvAndOutline key scope root maybeBuildDir needsTypedOpt showPackageErrors outline maybeEnv =
     case maybeEnv of
         Err problem ->
             Err (Exit.DetailsCannotGetRegistry problem)
 
         Ok (Solver.Env env) ->
-            Ok ( Env { key = key, scope = scope, root = root, cache = env.cache, manager = env.manager, connection = env.connection, registry = env.registry, needsTypedOpt = needsTypedOpt, showPackageErrors = showPackageErrors }, outline )
+            Ok ( Env { key = key, scope = scope, root = root, maybeBuildDir = maybeBuildDir, cache = env.cache, manager = env.manager, connection = env.connection, registry = env.registry, needsTypedOpt = needsTypedOpt, showPackageErrors = showPackageErrors }, outline )
 
 
 
@@ -624,7 +625,7 @@ verifyDependencies ((Env envData) as env) time outline solution directDeps =
         (Reporting.report envData.key (Reporting.DStart (Dict.size solution))
             |> Task.andThen (\_ -> Utils.newEmptyMVar)
             |> Task.andThen (verifyAllDeps env solution)
-            |> Task.andThen (finalizeDependencies envData.scope envData.root time outline directDeps depVersions)
+            |> Task.andThen (finalizeDependencies envData.scope envData.root envData.maybeBuildDir time outline directDeps depVersions)
         )
 
 
@@ -643,8 +644,8 @@ verifyAllDeps ((Env envData) as env) solution mvar =
 
 {-| Finalize dependency verification: build artifacts or report errors.
 -}
-finalizeDependencies : BW.Scope -> FilePath -> File.Time -> ValidOutline -> Dict ( String, String ) Pkg.Name a -> Dict ( String, String ) Pkg.Name V.Version -> Dict ( String, String ) Pkg.Name Dep -> Task Never (Result Exit.Details Details)
-finalizeDependencies scope root time outline directDeps depVersions deps =
+finalizeDependencies : BW.Scope -> FilePath -> Maybe String -> File.Time -> ValidOutline -> Dict ( String, String ) Pkg.Name a -> Dict ( String, String ) Pkg.Name V.Version -> Dict ( String, String ) Pkg.Name Dep -> Task Never (Result Exit.Details Details)
+finalizeDependencies scope root maybeBuildDir time outline directDeps depVersions deps =
     case Utils.sequenceDictResult identity Pkg.compareName deps of
         Err _ ->
             Stuff.getElmHome
@@ -657,7 +658,7 @@ finalizeDependencies scope root time outline directDeps depVersions deps =
                     )
 
         Ok artifacts ->
-            writeVerifiedArtifacts scope root time outline directDeps artifacts depVersions
+            writeVerifiedArtifacts scope root maybeBuildDir time outline directDeps artifacts depVersions
 
 
 {-| Write verified artifacts to disk.
@@ -665,13 +666,14 @@ finalizeDependencies scope root time outline directDeps depVersions deps =
 writeVerifiedArtifacts :
     BW.Scope
     -> FilePath
+    -> Maybe String
     -> File.Time
     -> ValidOutline
     -> Dict ( String, String ) Pkg.Name a
     -> Dict ( String, String ) Pkg.Name Artifacts
     -> Dict ( String, String ) Pkg.Name V.Version
     -> Task Never (Result Exit.Details Details)
-writeVerifiedArtifacts scope root time outline directDeps artifacts depVersions =
+writeVerifiedArtifacts scope root maybeBuildDir time outline directDeps artifacts depVersions =
     let
         objs : Opt.GlobalGraph
         objs =
@@ -697,9 +699,9 @@ writeVerifiedArtifacts scope root time outline directDeps artifacts depVersions 
                 , deps = depVersions
                 }
     in
-    BW.writeBinary Opt.globalGraphEncoder scope (Stuff.objects root) objs
-        |> Task.andThen (\_ -> BW.writeBinary interfacesEncoder scope (Stuff.interfaces root) ifaces)
-        |> Task.andThen (\_ -> BW.writeBinary detailsEncoder scope (Stuff.details root) details)
+    BW.writeBinary Opt.globalGraphEncoder scope (Stuff.objectsWithBuildDir root maybeBuildDir) objs
+        |> Task.andThen (\_ -> BW.writeBinary interfacesEncoder scope (Stuff.interfacesWithBuildDir root maybeBuildDir) ifaces)
+        |> Task.andThen (\_ -> BW.writeBinary detailsEncoder scope (Stuff.detailsWithBuildDir root maybeBuildDir) details)
         |> Task.map (\_ -> Ok details)
 
 

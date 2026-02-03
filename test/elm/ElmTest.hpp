@@ -13,6 +13,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <iomanip>
 #include <iostream>
 #include <memory>
@@ -21,10 +22,19 @@
 #include <stdexcept>
 #include <string>
 #include <sys/mman.h>
+#include <thread>
 #include <unistd.h>
 #include <vector>
 
 namespace ElmTest {
+
+// ============================================================================
+// Parallel Compilation Constants
+// ============================================================================
+
+// Maximum number of concurrent Elm compilations to avoid RAM exhaustion.
+// Each guida process can use significant memory during compilation.
+constexpr size_t MAX_PARALLEL_COMPILATIONS = 16;
 
 // ============================================================================
 // Elm-Specific Shared Memory Extension
@@ -300,8 +310,12 @@ inline void ensureMlirDirExists() {
 /**
  * Compile a single Elm file to MLIR.
  * Returns a CompileResult with success status and paths.
+ *
+ * @param elmPath Path to the .elm source file
+ * @param buildDir Optional build directory name for parallel compilation
+ *                 (uses --builddir flag to isolate build artifacts)
  */
-inline CompileResult compileElmToMlir(const std::string& elmPath) {
+inline CompileResult compileElmToMlir(const std::string& elmPath, const std::string& buildDir = "") {
     CompileResult result;
     result.elmPath = elmPath;
     result.mlirPath = getMlirPath(elmPath);
@@ -317,8 +331,12 @@ inline CompileResult compileElmToMlir(const std::string& elmPath) {
     std::string elmTestDir = getElmTestDir();
 
     // Compile Elm to MLIR using guida
+    // Include --builddir flag when buildDir is specified for parallel compilation
     std::string compileCmd = "cd \"" + elmTestDir + "\" && node \"" + guidaPath +
                              "\" make \"" + elmPath + "\" --output=\"" + result.mlirPath + "\"";
+    if (!buildDir.empty()) {
+        compileCmd += " --builddir=\"" + buildDir + "\"";
+    }
 
     auto [exitCode, output] = executeCommand(compileCmd);
 
@@ -348,8 +366,14 @@ inline CompileResult compileElmToMlir(const std::string& elmPath) {
 }
 
 /**
- * Compile all Elm test files to MLIR in a single process (Phase 1).
- * This avoids d.dat race conditions by running compilations sequentially.
+ * Compile all Elm test files to MLIR using parallel compilation.
+ * Uses --builddir flag to isolate build artifacts for each test, allowing
+ * parallel compilation without d.dat race conditions.
+ *
+ * Strategy:
+ * 1. First compile runs with its own builddir - populates shared package cache
+ * 2. Remaining compiles run in parallel, each with their own builddir
+ *
  * Supports incremental compilation - skips files where .mlir is up-to-date.
  *
  * @param elmPaths List of .elm file paths to compile
@@ -367,33 +391,121 @@ inline std::vector<CompileResult> compileAllElmTests(const std::vector<std::stri
     size_t skipped = 0;
     size_t failed = 0;
 
-    std::cout << "Compiling " << total << " Elm tests..." << std::endl;
+    std::cout << "Compiling " << total << " Elm tests (parallel with --builddir)..." << std::endl;
 
+    // Separate into cached and needs-compile lists
+    std::vector<size_t> needsCompile;
     for (size_t i = 0; i < elmPaths.size(); i++) {
         const auto& elmPath = elmPaths[i];
-        std::string filename = std::filesystem::path(elmPath).filename().string();
         std::string mlirPath = getMlirPath(elmPath);
 
-        // Check if we can skip
-        bool willSkip = !needsRecompile(elmPath, mlirPath);
-
-        // Show progress
-        std::cout << "  [" << std::setw(3) << (i + 1) << "/" << total << "] "
-                  << filename;
-
-        if (willSkip) {
-            std::cout << " (cached)" << std::endl;
-            skipped++;
+        if (!needsRecompile(elmPath, mlirPath)) {
+            // Cached - add result directly
             CompileResult result;
             result.elmPath = elmPath;
             result.mlirPath = mlirPath;
             result.success = true;
             results.push_back(result);
+            skipped++;
         } else {
-            std::cout << std::flush;
-            auto result = compileElmToMlir(elmPath);
+            needsCompile.push_back(i);
+            // Placeholder for result
+            CompileResult result;
+            result.elmPath = elmPath;
+            result.mlirPath = mlirPath;
+            result.success = false;
             results.push_back(result);
+        }
+    }
 
+    if (needsCompile.empty()) {
+        std::cout << "All " << skipped << " tests cached, nothing to compile." << std::endl;
+        return results;
+    }
+
+    std::cout << "  " << skipped << " cached, " << needsCompile.size() << " to compile" << std::endl;
+
+    // First compile without parallelism to populate package cache
+    if (!needsCompile.empty()) {
+        size_t firstIdx = needsCompile[0];
+        const auto& firstPath = elmPaths[firstIdx];
+        std::string filename = std::filesystem::path(firstPath).stem().string();
+
+        std::cout << "  [1/" << needsCompile.size() << "] " << filename << " (initial)" << std::flush;
+        auto result = compileElmToMlir(firstPath, filename);
+        results[firstIdx] = result;
+
+        if (result.success) {
+            std::cout << " ok" << std::endl;
+            compiled++;
+        } else {
+            std::cout << " FAILED" << std::endl;
+            failed++;
+        }
+    }
+
+    // Compile remaining tests in parallel using --builddir
+    // Uses sliding window: always keep MAX_PARALLEL_COMPILATIONS active
+    if (needsCompile.size() > 1) {
+        std::cout << "  Compiling remaining " << (needsCompile.size() - 1)
+                  << " tests (max " << MAX_PARALLEL_COMPILATIONS << " parallel)..." << std::endl;
+
+        // Track active compilations: (future, result index, filename)
+        struct ActiveCompile {
+            std::future<CompileResult> future;
+            size_t resultIdx;
+            std::string filename;
+        };
+        std::vector<ActiveCompile> active;
+
+        size_t nextToStart = 1;  // Start after the first (already compiled)
+        size_t progressCount = 2;
+
+        // Helper to start a new compilation
+        auto startNext = [&]() {
+            if (nextToStart < needsCompile.size()) {
+                size_t idx = needsCompile[nextToStart];
+                const auto& elmPath = elmPaths[idx];
+                std::string filename = std::filesystem::path(elmPath).stem().string();
+
+                active.push_back({
+                    std::async(std::launch::async, [elmPath, filename]() {
+                        return compileElmToMlir(elmPath, filename);
+                    }),
+                    idx,
+                    filename
+                });
+                nextToStart++;
+            }
+        };
+
+        // Fill initial slots
+        while (active.size() < MAX_PARALLEL_COMPILATIONS && nextToStart < needsCompile.size()) {
+            startNext();
+        }
+
+        // Process until all complete
+        while (!active.empty()) {
+            // Find a completed future
+            size_t completedIdx = 0;
+            while (true) {
+                for (size_t i = 0; i < active.size(); i++) {
+                    if (active[i].future.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready) {
+                        completedIdx = i;
+                        goto found;
+                    }
+                }
+                // None ready, wait a bit
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+            found:
+
+            // Get the result
+            auto& done = active[completedIdx];
+            auto result = done.future.get();
+            results[done.resultIdx] = result;
+
+            std::cout << "  [" << progressCount << "/" << total << "] " << done.filename;
             if (result.success) {
                 std::cout << " ok" << std::endl;
                 compiled++;
@@ -401,6 +513,11 @@ inline std::vector<CompileResult> compileAllElmTests(const std::vector<std::stri
                 std::cout << " FAILED" << std::endl;
                 failed++;
             }
+            progressCount++;
+
+            // Remove completed and start next
+            active.erase(active.begin() + completedIdx);
+            startNext();
         }
     }
 

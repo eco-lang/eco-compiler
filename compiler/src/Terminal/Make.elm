@@ -1,8 +1,8 @@
 module Terminal.Make exposing
     ( run
     , Flags(..), FlagsData, Output(..), ReportType(..)
-    , output, reportType, docsFile
-    , parseOutput, parseReportType, parseDocsFile
+    , output, reportType, docsFile, buildDir
+    , parseOutput, parseReportType, parseDocsFile, parseBuildDir
     )
 
 {-| Build command implementation for compiling Guida and Elm code.
@@ -69,6 +69,7 @@ type alias FlagsData =
     , report : Maybe ReportType
     , docs : Maybe String
     , showPackageErrors : Bool
+    , buildDir : Maybe String
     }
 
 
@@ -134,6 +135,7 @@ type alias BuildContext =
     , withSourceMaps : Bool
     , maybeOutput : Maybe Output
     , maybeDocs : Maybe FilePath
+    , maybeBuildDir : Maybe String
     , desiredMode : DesiredMode
     , details : Details.Details
     }
@@ -141,39 +143,39 @@ type alias BuildContext =
 
 runHelp : String -> List String -> Reporting.Style -> Flags -> Task Never (Result Exit.Make ())
 runHelp root paths style (Flags flagsData) =
-    BW.withScope (runHelpWithScope root paths style flagsData.debug flagsData.optimize flagsData.withSourceMaps flagsData.output flagsData.docs flagsData.showPackageErrors)
+    BW.withScope (runHelpWithScope root paths style flagsData.debug flagsData.optimize flagsData.withSourceMaps flagsData.output flagsData.docs flagsData.showPackageErrors flagsData.buildDir)
 
 
-runHelpWithScope : FilePath -> List String -> Reporting.Style -> Bool -> Bool -> Bool -> Maybe Output -> Maybe FilePath -> Bool -> BW.Scope -> Task Never (Result Exit.Make ())
-runHelpWithScope root paths style debug optimize withSourceMaps maybeOutput maybeDocs showPackageErrors scope =
-    Stuff.withRootLock root
+runHelpWithScope : FilePath -> List String -> Reporting.Style -> Bool -> Bool -> Bool -> Maybe Output -> Maybe FilePath -> Bool -> Maybe String -> BW.Scope -> Task Never (Result Exit.Make ())
+runHelpWithScope root paths style debug optimize withSourceMaps maybeOutput maybeDocs showPackageErrors maybeBuildDir scope =
+    Stuff.withRootLockBuildDir root maybeBuildDir
         (Task.run
             (getMode debug optimize
-                |> Task.andThen (loadDetailsAndBuild root paths style withSourceMaps maybeOutput maybeDocs showPackageErrors scope)
+                |> Task.andThen (loadDetailsAndBuild root paths style withSourceMaps maybeOutput maybeDocs showPackageErrors maybeBuildDir scope)
             )
         )
 
 
-loadDetailsAndBuild : FilePath -> List String -> Reporting.Style -> Bool -> Maybe Output -> Maybe FilePath -> Bool -> BW.Scope -> DesiredMode -> Task Exit.Make ()
-loadDetailsAndBuild root paths style withSourceMaps maybeOutput maybeDocs showPackageErrors scope desiredMode =
-    Task.eio Exit.MakeBadDetails (Details.load style scope root (shouldUseTypedOpt maybeOutput) showPackageErrors)
-        |> Task.andThen (buildWithDetails root paths style withSourceMaps maybeOutput maybeDocs desiredMode)
+loadDetailsAndBuild : FilePath -> List String -> Reporting.Style -> Bool -> Maybe Output -> Maybe FilePath -> Bool -> Maybe String -> BW.Scope -> DesiredMode -> Task Exit.Make ()
+loadDetailsAndBuild root paths style withSourceMaps maybeOutput maybeDocs showPackageErrors maybeBuildDir scope desiredMode =
+    Task.eio Exit.MakeBadDetails (Details.load style scope root maybeBuildDir (shouldUseTypedOpt maybeOutput) showPackageErrors)
+        |> Task.andThen (buildWithDetails root paths style withSourceMaps maybeOutput maybeDocs maybeBuildDir desiredMode)
 
 
-buildWithDetails : FilePath -> List String -> Reporting.Style -> Bool -> Maybe Output -> Maybe FilePath -> DesiredMode -> Details.Details -> Task Exit.Make ()
-buildWithDetails root paths style withSourceMaps maybeOutput maybeDocs desiredMode details =
+buildWithDetails : FilePath -> List String -> Reporting.Style -> Bool -> Maybe Output -> Maybe FilePath -> Maybe String -> DesiredMode -> Details.Details -> Task Exit.Make ()
+buildWithDetails root paths style withSourceMaps maybeOutput maybeDocs maybeBuildDir desiredMode details =
     let
         ctx : BuildContext
         ctx =
-            BuildContext root style withSourceMaps maybeOutput maybeDocs desiredMode details
+            BuildContext root style withSourceMaps maybeOutput maybeDocs maybeBuildDir desiredMode details
     in
     case paths of
         [] ->
             getExposed details
-                |> Task.andThen (buildExposed style root details maybeDocs)
+                |> Task.andThen (buildExposed style root maybeBuildDir details maybeDocs)
 
         p :: ps ->
-            buildPaths style root details (shouldUseTypedOpt maybeOutput) (NE.Nonempty p ps)
+            buildPaths style root maybeBuildDir details (shouldUseTypedOpt maybeOutput) (NE.Nonempty p ps)
                 |> Task.andThen (handleArtifacts ctx)
 
 
@@ -213,11 +215,11 @@ handleDefaultOutput ctx artifacts =
             Task.succeed ()
 
         [ name ] ->
-            toBuilder Generate.javascriptBackend ctx.withSourceMaps Html.leadingLines ctx.root ctx.details ctx.desiredMode artifacts
+            toBuilder Generate.javascriptBackend ctx.withSourceMaps Html.leadingLines ctx.root ctx.maybeBuildDir ctx.details ctx.desiredMode artifacts
                 |> Task.andThen (generateHtml ctx.style "index.html" name)
 
         name :: names ->
-            toBuilder Generate.javascriptBackend ctx.withSourceMaps 0 ctx.root ctx.details ctx.desiredMode artifacts
+            toBuilder Generate.javascriptBackend ctx.withSourceMaps 0 ctx.root ctx.maybeBuildDir ctx.details ctx.desiredMode artifacts
                 |> Task.andThen (\builder -> generate ctx.style "elm.js" builder (NE.Nonempty name names))
 
 
@@ -225,7 +227,7 @@ handleJsOutput : BuildContext -> FilePath -> Build.Artifacts -> Task Exit.Make (
 handleJsOutput ctx target artifacts =
     case getNoMains artifacts of
         [] ->
-            toBuilder Generate.javascriptBackend ctx.withSourceMaps 0 ctx.root ctx.details ctx.desiredMode artifacts
+            toBuilder Generate.javascriptBackend ctx.withSourceMaps 0 ctx.root ctx.maybeBuildDir ctx.details ctx.desiredMode artifacts
                 |> Task.andThen (\builder -> generate ctx.style target builder (Build.getRootNames artifacts))
 
         name :: names ->
@@ -240,7 +242,7 @@ handleHtmlOutput ctx target artifacts =
 
 buildAndGenerateHtml : BuildContext -> FilePath -> Build.Artifacts -> ModuleName.Raw -> Task Exit.Make ()
 buildAndGenerateHtml ctx target artifacts name =
-    toBuilder Generate.javascriptBackend ctx.withSourceMaps Html.leadingLines ctx.root ctx.details ctx.desiredMode artifacts
+    toBuilder Generate.javascriptBackend ctx.withSourceMaps Html.leadingLines ctx.root ctx.maybeBuildDir ctx.details ctx.desiredMode artifacts
         |> Task.andThen (generateHtml ctx.style target name)
 
 
@@ -253,7 +255,7 @@ handleMlirOutput : BuildContext -> FilePath -> Build.Artifacts -> Task Exit.Make
 handleMlirOutput ctx target artifacts =
     case getNoMains artifacts of
         [] ->
-            toMonoBuilder Generate.mlirBackend ctx.withSourceMaps 0 ctx.root ctx.details ctx.desiredMode artifacts
+            toMonoBuilder Generate.mlirBackend ctx.withSourceMaps 0 ctx.root ctx.maybeBuildDir ctx.details ctx.desiredMode artifacts
                 |> Task.andThen (\builder -> generate ctx.style target builder (Build.getRootNames artifacts))
 
         name :: names ->
@@ -309,8 +311,8 @@ getExposed (Details.Details detailsData) =
 -- ====== BUILD PROJECTS ======
 
 
-buildExposed : Reporting.Style -> FilePath -> Details.Details -> Maybe FilePath -> NE.Nonempty ModuleName.Raw -> Task Exit.Make ()
-buildExposed style root details maybeDocs exposed =
+buildExposed : Reporting.Style -> FilePath -> Maybe String -> Details.Details -> Maybe FilePath -> NE.Nonempty ModuleName.Raw -> Task Exit.Make ()
+buildExposed style root maybeBuildDir details maybeDocs exposed =
     let
         docsGoal : Build.DocsGoal ()
         docsGoal =
@@ -321,14 +323,15 @@ buildExposed style root details maybeDocs exposed =
             BE.unit
             style
             root
+            maybeBuildDir
             details
             docsGoal
             exposed
 
 
-buildPaths : Reporting.Style -> FilePath -> Details.Details -> Bool -> NE.Nonempty FilePath -> Task Exit.Make Build.Artifacts
-buildPaths style root details needsTypedOpt paths =
-    Build.fromPaths style root details needsTypedOpt paths |> Task.eio Exit.MakeCannotBuild
+buildPaths : Reporting.Style -> FilePath -> Maybe String -> Details.Details -> Bool -> NE.Nonempty FilePath -> Task Exit.Make Build.Artifacts
+buildPaths style root maybeBuildDir details needsTypedOpt paths =
+    Build.fromPaths style root maybeBuildDir details needsTypedOpt paths |> Task.eio Exit.MakeCannotBuild
 
 
 
@@ -424,17 +427,17 @@ generate style target builder names =
 -- ====== TO BUILDER ======
 
 
-toBuilder : CodeGen.CodeGen -> Bool -> Int -> FilePath -> Details.Details -> DesiredMode -> Build.Artifacts -> Task Exit.Make String
-toBuilder backend withSourceMaps leadingLines root details desiredMode artifacts =
+toBuilder : CodeGen.CodeGen -> Bool -> Int -> FilePath -> Maybe String -> Details.Details -> DesiredMode -> Build.Artifacts -> Task Exit.Make String
+toBuilder backend withSourceMaps leadingLines root maybeBuildDir details desiredMode artifacts =
     (case desiredMode of
         Debug ->
-            Generate.debug backend withSourceMaps leadingLines root details artifacts
+            Generate.debug backend withSourceMaps leadingLines root maybeBuildDir details artifacts
 
         Dev ->
-            Generate.dev backend withSourceMaps leadingLines root details artifacts
+            Generate.dev backend withSourceMaps leadingLines root maybeBuildDir details artifacts
 
         Prod ->
-            Generate.prod backend withSourceMaps leadingLines root details artifacts
+            Generate.prod backend withSourceMaps leadingLines root maybeBuildDir details artifacts
     )
         |> Task.map CodeGen.outputToString
         |> Task.mapError Exit.MakeBadGenerate
@@ -442,17 +445,17 @@ toBuilder backend withSourceMaps leadingLines root details desiredMode artifacts
 
 {-| Build using monomorphized code generation (for MLIR mono backend)
 -}
-toMonoBuilder : CodeGen.MonoCodeGen -> Bool -> Int -> FilePath -> Details.Details -> DesiredMode -> Build.Artifacts -> Task Exit.Make String
-toMonoBuilder backend withSourceMaps leadingLines root details desiredMode artifacts =
+toMonoBuilder : CodeGen.MonoCodeGen -> Bool -> Int -> FilePath -> Maybe String -> Details.Details -> DesiredMode -> Build.Artifacts -> Task Exit.Make String
+toMonoBuilder backend withSourceMaps leadingLines root maybeBuildDir details desiredMode artifacts =
     (case desiredMode of
         Debug ->
-            Generate.monoDev backend withSourceMaps leadingLines root details artifacts
+            Generate.monoDev backend withSourceMaps leadingLines root maybeBuildDir details artifacts
 
         Dev ->
-            Generate.monoDev backend withSourceMaps leadingLines root details artifacts
+            Generate.monoDev backend withSourceMaps leadingLines root maybeBuildDir details artifacts
 
         Prod ->
-            Generate.monoDev backend withSourceMaps leadingLines root details artifacts
+            Generate.monoDev backend withSourceMaps leadingLines root maybeBuildDir details artifacts
     )
         |> Task.map CodeGen.outputToString
         |> Task.mapError Exit.MakeBadGenerate
@@ -538,6 +541,33 @@ parseDocsFile name =
 
     else
         Nothing
+
+
+{-| Parser definition for build directory command-line arguments.
+-}
+buildDir : Parser
+buildDir =
+    Parser
+        { singular = "build directory"
+        , plural = "build directories"
+        , suggest = \_ -> Task.succeed []
+        , examples = \_ -> Task.succeed [ "TestName", "MyBuild" ]
+        }
+
+
+{-| Parse a string into a build directory name.
+Must be a simple directory name (no path separators).
+-}
+parseBuildDir : String -> Maybe String
+parseBuildDir dir =
+    if String.isEmpty dir then
+        Nothing
+
+    else if String.contains "/" dir || String.contains "\\" dir then
+        Nothing
+
+    else
+        Just dir
 
 
 hasExt : String -> String -> Bool

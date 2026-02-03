@@ -303,7 +303,7 @@ verifyBuild root =
 loadDetailsAndBuildDocs : String -> BW.Scope -> Task Never (Result Exit.Publish Docs.Documentation)
 loadDetailsAndBuildDocs root scope =
     Task.run
-        (Task.eio Exit.PublishBadDetails (Details.load Reporting.silent scope root False False)
+        (Task.eio Exit.PublishBadDetails (Details.load Reporting.silent scope root Nothing False False)
             |> Task.andThen (extractExposedAndBuildDocs root)
         )
 
@@ -329,7 +329,7 @@ getExposedModules outline =
 
 buildDocsFromExposed : String -> Details.Details -> NE.Nonempty ModuleName.Raw -> Task Exit.Publish Docs.Documentation
 buildDocsFromExposed root details exposed =
-    Build.fromExposed Docs.bytesDecoder Docs.bytesEncoder Reporting.silent root details Build.keepDocs exposed |> Task.eio Exit.PublishBuildProblem
+    Build.fromExposed Docs.bytesDecoder Docs.bytesEncoder Reporting.silent root Nothing details Build.keepDocs exposed |> Task.eio Exit.PublishBuildProblem
 
 
 
@@ -522,7 +522,7 @@ verifyZipBuild root =
 loadDetailsAndVerifyZip : FilePath -> BW.Scope -> Task Never (Result Exit.Publish ())
 loadDetailsAndVerifyZip root scope =
     Task.run
-        (Task.eio (\_ -> Exit.PublishZipBadDetails) (Details.load Reporting.silent scope root False False)
+        (Task.eio (\_ -> Exit.PublishZipBadDetails) (Details.load Reporting.silent scope root Nothing False False)
             |> Task.andThen (extractExposedAndBuildZip root)
         )
 
@@ -549,7 +549,7 @@ getZipExposedModules outline =
 buildZipFromExposed : FilePath -> Details.Details -> NE.Nonempty ModuleName.Raw -> Task Exit.Publish ()
 buildZipFromExposed root details exposed =
     Task.eio (\_ -> Exit.PublishZipBuildProblem)
-        (Build.fromExposed Docs.bytesDecoder Docs.bytesEncoder Reporting.silent root details Build.keepDocs exposed)
+        (Build.fromExposed Docs.bytesDecoder Docs.bytesEncoder Reporting.silent root Nothing details Build.keepDocs exposed)
         |> Task.map (\_ -> ())
 
 

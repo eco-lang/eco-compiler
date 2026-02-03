@@ -3,9 +3,11 @@ module Builder.Stuff exposing
     , PackageCache, getPackageCache, getReplCache, package, registry
     , typedPackageArtifacts, packageCacheEncoder, packageCacheDecoder
     , details, interfaces, objects, typedObjects
+    , detailsWithBuildDir, interfacesWithBuildDir, objectsWithBuildDir, typedObjectsWithBuildDir
     , guidai, guidao, guidato
+    , guidaiWithBuildDir, guidaoWithBuildDir, guidatoWithBuildDir
     , prepublishDir, testDir
-    , withRootLock, withRegistryLock
+    , withRootLock, withRootLockBuildDir, withRegistryLock
     )
 
 {-| File path management and artifact location for the Elm compiler build system.
@@ -40,7 +42,7 @@ managing file locks.
 
 # File Locking
 
-@docs withRootLock, withRegistryLock
+@docs withRootLock, withRootLockBuildDir, withRegistryLock
 
 -}
 
@@ -63,6 +65,18 @@ import Utils.Main as Utils
 stuff : String -> String
 stuff root =
     root ++ "/guida-stuff/" ++ compilerVersion
+
+
+{-| Get the stuff directory with an optional build subdirectory for parallel builds.
+-}
+stuffWithBuildDir : String -> Maybe String -> String
+stuffWithBuildDir root maybeBuildDir =
+    case maybeBuildDir of
+        Nothing ->
+            stuff root
+
+        Just buildDir ->
+            stuff root ++ "/" ++ buildDir
 
 
 {-| Returns the path to the details cache file for a project.
@@ -91,6 +105,34 @@ objects root =
 typedObjects : String -> String
 typedObjects root =
     stuff root ++ "/to.dat"
+
+
+{-| Returns the path to the details cache file with optional build subdirectory.
+-}
+detailsWithBuildDir : String -> Maybe String -> String
+detailsWithBuildDir root maybeBuildDir =
+    stuffWithBuildDir root maybeBuildDir ++ "/d.dat"
+
+
+{-| Returns the path to the interfaces cache file with optional build subdirectory.
+-}
+interfacesWithBuildDir : String -> Maybe String -> String
+interfacesWithBuildDir root maybeBuildDir =
+    stuffWithBuildDir root maybeBuildDir ++ "/i.dat"
+
+
+{-| Returns the path to the objects cache file with optional build subdirectory.
+-}
+objectsWithBuildDir : String -> Maybe String -> String
+objectsWithBuildDir root maybeBuildDir =
+    stuffWithBuildDir root maybeBuildDir ++ "/o.dat"
+
+
+{-| Returns the path to the typed objects cache file with optional build subdirectory.
+-}
+typedObjectsWithBuildDir : String -> Maybe String -> String
+typedObjectsWithBuildDir root maybeBuildDir =
+    stuffWithBuildDir root maybeBuildDir ++ "/to.dat"
 
 
 {-| Returns the path to the prepublish staging directory for a package.
@@ -142,6 +184,32 @@ toArtifactPath root name ext =
     Utils.fpCombine (stuff root) (Utils.fpAddExtension (ModuleName.toHyphenPath name) ext)
 
 
+toArtifactPathWithBuildDir : String -> Maybe String -> ModuleName.Raw -> String -> String
+toArtifactPathWithBuildDir root maybeBuildDir name ext =
+    Utils.fpCombine (stuffWithBuildDir root maybeBuildDir) (Utils.fpAddExtension (ModuleName.toHyphenPath name) ext)
+
+
+{-| Returns the path to a module's .guidai (interface) file with optional build subdirectory.
+-}
+guidaiWithBuildDir : String -> Maybe String -> ModuleName.Raw -> String
+guidaiWithBuildDir root maybeBuildDir name =
+    toArtifactPathWithBuildDir root maybeBuildDir name "guidai"
+
+
+{-| Returns the path to a module's .guidao (optimized) file with optional build subdirectory.
+-}
+guidaoWithBuildDir : String -> Maybe String -> ModuleName.Raw -> String
+guidaoWithBuildDir root maybeBuildDir name =
+    toArtifactPathWithBuildDir root maybeBuildDir name "guidao"
+
+
+{-| Returns the path to a module's .guidato (typed optimized) file with optional build subdirectory.
+-}
+guidatoWithBuildDir : String -> Maybe String -> ModuleName.Raw -> String
+guidatoWithBuildDir root maybeBuildDir name =
+    toArtifactPathWithBuildDir root maybeBuildDir name "guidato"
+
+
 
 -- ====== ROOT ======
 
@@ -187,6 +255,24 @@ withRootLock root work =
         dir : String
         dir =
             stuff root
+    in
+    Utils.dirCreateDirectoryIfMissing True dir
+        |> Task.andThen
+            (\_ ->
+                Utils.lockWithFileLock (dir ++ "/lock") Utils.LockExclusive (\_ -> work)
+            )
+
+
+{-| Executes a task while holding an exclusive lock on the project's guida-stuff directory,
+using a builddir-specific lock file when --builddir is specified. This enables parallel
+compilation with different builddirs without lock contention.
+-}
+withRootLockBuildDir : String -> Maybe String -> Task Never a -> Task Never a
+withRootLockBuildDir root maybeBuildDir work =
+    let
+        dir : String
+        dir =
+            stuffWithBuildDir root maybeBuildDir
     in
     Utils.dirCreateDirectoryIfMissing True dir
         |> Task.andThen

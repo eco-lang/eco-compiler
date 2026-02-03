@@ -284,6 +284,13 @@ make =
                     (Terminal.onOff "Xpackage-errors"
                         "Show full compilation errors when a package dependency fails to compile (experimental)."
                     )
+                |> Terminal.more
+                    (Terminal.flag "builddir"
+                        Make.buildDir
+                        ("Specify a subdirectory under guida-stuff/1.0.0/ for build artifacts. "
+                            ++ "Enables parallel builds with different builddirs to avoid cache conflicts."
+                        )
+                    )
     in
     Terminal.Command
         { name = "make"
@@ -298,7 +305,7 @@ make =
                     chunks
                     [ Chomp.chompMultiple (Chomp.pure identity) Terminal.guidaOrElmFile Terminal.parseGuidaOrElmFile
                     ]
-                    (Chomp.pure (\debug_ optimize_ withSourceMaps_ output_ report_ docs_ showPackageErrors_ -> Make.Flags { debug = debug_, optimize = optimize_, withSourceMaps = withSourceMaps_, output = output_, report = report_, docs = docs_, showPackageErrors = showPackageErrors_ })
+                    (Chomp.pure (\debug_ optimize_ withSourceMaps_ output_ report_ docs_ showPackageErrors_ buildDir_ -> Make.Flags { debug = debug_, optimize = optimize_, withSourceMaps = withSourceMaps_, output = output_, report = report_, docs = docs_, showPackageErrors = showPackageErrors_, buildDir = buildDir_ })
                         |> Chomp.apply (Chomp.chompOnOffFlag "debug")
                         |> Chomp.apply (Chomp.chompOnOffFlag "optimize")
                         |> Chomp.apply (Chomp.chompOnOffFlag "sourcemaps")
@@ -306,6 +313,7 @@ make =
                         |> Chomp.apply (Chomp.chompNormalFlag "report" Make.reportType Make.parseReportType)
                         |> Chomp.apply (Chomp.chompNormalFlag "docs" Make.docsFile Make.parseDocsFile)
                         |> Chomp.apply (Chomp.chompOnOffFlag "Xpackage-errors")
+                        |> Chomp.apply (Chomp.chompNormalFlag "builddir" Make.buildDir Make.parseBuildDir)
                         |> Chomp.andThen
                             (\value ->
                                 Chomp.checkForUnknownFlags makeFlags

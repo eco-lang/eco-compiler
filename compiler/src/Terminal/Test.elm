@@ -1241,7 +1241,7 @@ runMake root path =
     BW.withScope
         (\scope ->
             Task.run <|
-                (Task.eio Exit.TestBadDetails (Details.load style scope root False False)
+                (Task.eio Exit.TestBadDetails (Details.load style scope root Nothing False False)
                     |> Task.andThen (buildAndGenerate root path)
                 )
         )
@@ -1255,7 +1255,7 @@ buildAndGenerate root path details =
 
 buildPaths : FilePath -> Details.Details -> NE.Nonempty FilePath -> Task Exit.Test Build.Artifacts
 buildPaths root details paths =
-    Build.fromPaths style root details False paths |> Task.eio Exit.TestCannotBuild
+    Build.fromPaths style root Nothing details False paths |> Task.eio Exit.TestCannotBuild
 
 
 
@@ -1264,7 +1264,7 @@ buildPaths root details paths =
 
 toBuilder : Int -> FilePath -> Details.Details -> Build.Artifacts -> Task Exit.Test String
 toBuilder leadingLines root details artifacts =
-    Generate.dev Generate.javascriptBackend False leadingLines root details artifacts |> Task.map CodeGen.outputToString |> Task.mapError Exit.TestBadGenerate
+    Generate.dev Generate.javascriptBackend False leadingLines root Nothing details artifacts |> Task.map CodeGen.outputToString |> Task.mapError Exit.TestBadGenerate
 
 
 

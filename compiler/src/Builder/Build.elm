@@ -97,6 +97,7 @@ import Utils.Main as Utils exposing (FilePath, MVar(..))
 type alias EnvData =
     { key : Reporting.BKey
     , root : String
+    , maybeBuildDir : Maybe String
     , projectType : Parse.ProjectType
     , srcDirs : List AbsoluteSrcDir
     , buildID : Details.BuildID
@@ -110,8 +111,8 @@ type Env
     = Env EnvData
 
 
-makeEnv : Reporting.BKey -> FilePath -> Details.Details -> Bool -> Task Never Env
-makeEnv key root (Details.Details detailsData) needsTypedOpt =
+makeEnv : Reporting.BKey -> FilePath -> Maybe String -> Details.Details -> Bool -> Task Never Env
+makeEnv key root maybeBuildDir (Details.Details detailsData) needsTypedOpt =
     case detailsData.outline of
         Details.ValidApp givenSrcDirs ->
             Utils.listTraverse (toAbsoluteSrcDir root) (NE.toList givenSrcDirs)
@@ -120,6 +121,7 @@ makeEnv key root (Details.Details detailsData) needsTypedOpt =
                         Env
                             { key = key
                             , root = root
+                            , maybeBuildDir = maybeBuildDir
                             , projectType = Parse.Application
                             , srcDirs = srcDirs
                             , buildID = detailsData.buildID
@@ -136,6 +138,7 @@ makeEnv key root (Details.Details detailsData) needsTypedOpt =
                         Env
                             { key = key
                             , root = root
+                            , maybeBuildDir = maybeBuildDir
                             , projectType = Parse.Package pkg
                             , srcDirs = [ srcDir ]
                             , buildID = detailsData.buildID
@@ -207,25 +210,25 @@ documentation goal (keep, write, or ignore). It performs parallel compilation wi
 incremental rebuilding based on modification times and interface changes.
 
 -}
-fromExposed : Bytes.Decode.Decoder docs -> (docs -> Bytes.Encode.Encoder) -> Reporting.Style -> FilePath -> Details.Details -> DocsGoal docs -> NE.Nonempty ModuleName.Raw -> Task Never (Result Exit.BuildProblem docs)
-fromExposed docsDecoder docsEncoder style root details docsGoal ((NE.Nonempty e es) as exposed) =
+fromExposed : Bytes.Decode.Decoder docs -> (docs -> Bytes.Encode.Encoder) -> Reporting.Style -> FilePath -> Maybe String -> Details.Details -> DocsGoal docs -> NE.Nonempty ModuleName.Raw -> Task Never (Result Exit.BuildProblem docs)
+fromExposed docsDecoder docsEncoder style root maybeBuildDir details docsGoal ((NE.Nonempty e es) as exposed) =
     Reporting.trackBuild docsDecoder docsEncoder style <|
         \key ->
-            makeEnv key root details False
-                |> Task.andThen (crawlExposed root details docsGoal (e :: es))
-                |> Task.andThen (compileExposed root details docsGoal exposed)
+            makeEnv key root maybeBuildDir details False
+                |> Task.andThen (crawlExposed root maybeBuildDir details docsGoal (e :: es))
+                |> Task.andThen (compileExposed root maybeBuildDir details docsGoal exposed)
 
 
 {-| Crawl phase for exposed modules: discover all dependencies and their statuses.
 -}
-crawlExposed : FilePath -> Details.Details -> DocsGoal docs -> List ModuleName.Raw -> Env -> Task Never { dmvar : MVar (Maybe Dependencies), statuses : Dict String ModuleName.Raw Status, env : Env }
-crawlExposed root details docsGoal modules env =
+crawlExposed : FilePath -> Maybe String -> Details.Details -> DocsGoal docs -> List ModuleName.Raw -> Env -> Task Never { dmvar : MVar (Maybe Dependencies), statuses : Dict String ModuleName.Raw Status, env : Env }
+crawlExposed root maybeBuildDir details docsGoal modules env =
     let
         docsNeed : DocsNeed
         docsNeed =
             toDocsNeed docsGoal
     in
-    Details.loadInterfaces root details
+    Details.loadInterfaces root maybeBuildDir details
         |> Task.andThen (crawlExposedModules env docsNeed modules)
         |> Task.map (buildCrawlResult env)
 
@@ -258,36 +261,30 @@ buildCrawlResult env ( dmvar, statuses ) =
 
 {-| Compile phase for exposed modules: check midpoint and compile all modules.
 -}
-compileExposed :
-    FilePath
-    -> Details.Details
-    -> DocsGoal docs
-    -> NE.Nonempty ModuleName.Raw
-    -> { dmvar : MVar (Maybe Dependencies), statuses : Dict String ModuleName.Raw Status, env : Env }
-    -> Task Never (Result Exit.BuildProblem docs)
-compileExposed root details docsGoal exposed { dmvar, statuses, env } =
+compileExposed : FilePath -> Maybe String -> Details.Details -> DocsGoal docs -> NE.Nonempty ModuleName.Raw -> { dmvar : MVar (Maybe Dependencies), statuses : Dict String ModuleName.Raw Status, env : Env } -> Task Never (Result Exit.BuildProblem docs)
+compileExposed root maybeBuildDir details docsGoal exposed { dmvar, statuses, env } =
     checkMidpoint dmvar statuses
-        |> Task.andThen (handleExposedMidpoint root details docsGoal exposed statuses env)
+        |> Task.andThen (handleExposedMidpoint root maybeBuildDir details docsGoal exposed statuses env)
 
 
-handleExposedMidpoint : FilePath -> Details.Details -> DocsGoal docs -> NE.Nonempty ModuleName.Raw -> Dict String ModuleName.Raw Status -> Env -> Result Exit.BuildProjectProblem Dependencies -> Task Never (Result Exit.BuildProblem docs)
-handleExposedMidpoint root details docsGoal exposed statuses env midpoint =
+handleExposedMidpoint : FilePath -> Maybe String -> Details.Details -> DocsGoal docs -> NE.Nonempty ModuleName.Raw -> Dict String ModuleName.Raw Status -> Env -> Result Exit.BuildProjectProblem Dependencies -> Task Never (Result Exit.BuildProblem docs)
+handleExposedMidpoint root maybeBuildDir details docsGoal exposed statuses env midpoint =
     case midpoint of
         Err problem ->
             Task.succeed (Err (Exit.BuildProjectProblem problem))
 
         Ok foreigns ->
-            compileAndFinalize root details foreigns statuses env
+            compileAndFinalize root maybeBuildDir details foreigns statuses env
                 |> Task.andThen (finalizeExposed root docsGoal exposed)
 
 
 {-| Compile all modules and write details.
 -}
-compileAndFinalize : FilePath -> Details.Details -> Dependencies -> Dict String ModuleName.Raw Status -> Env -> Task Never (Dict String ModuleName.Raw BResult)
-compileAndFinalize root details foreigns statuses env =
+compileAndFinalize : FilePath -> Maybe String -> Details.Details -> Dependencies -> Dict String ModuleName.Raw Status -> Env -> Task Never (Dict String ModuleName.Raw BResult)
+compileAndFinalize root maybeBuildDir details foreigns statuses env =
     Utils.newEmptyMVar
         |> Task.andThen (compileAllModules env foreigns statuses)
-        |> Task.andThen (collectResultsAndWriteDetails root details)
+        |> Task.andThen (collectResultsAndWriteDetails root maybeBuildDir details)
 
 
 compileAllModules : Env -> Dependencies -> Dict String ModuleName.Raw Status -> MVar ResultDict -> Task Never ( MVar ResultDict, Dict String ModuleName.Raw (MVar BResult) )
@@ -296,16 +293,16 @@ compileAllModules env foreigns statuses rmvar =
         |> Task.map (\resultMVars -> ( rmvar, resultMVars ))
 
 
-collectResultsAndWriteDetails : FilePath -> Details.Details -> ( MVar ResultDict, Dict String ModuleName.Raw (MVar BResult) ) -> Task Never (Dict String ModuleName.Raw BResult)
-collectResultsAndWriteDetails root details ( rmvar, resultMVars ) =
+collectResultsAndWriteDetails : FilePath -> Maybe String -> Details.Details -> ( MVar (Dict String ModuleName.Raw (MVar BResult)), Dict String ModuleName.Raw (MVar BResult) ) -> Task Never (Dict String ModuleName.Raw BResult)
+collectResultsAndWriteDetails root maybeBuildDir details ( rmvar, resultMVars ) =
     Utils.putMVar dictRawMVarBResultEncoder rmvar resultMVars
         |> Task.andThen (\_ -> Utils.mapTraverse identity compare (Utils.readMVar bResultDecoder) resultMVars)
-        |> Task.andThen (writeDetailsAndReturn root details)
+        |> Task.andThen (writeDetailsAndReturn root maybeBuildDir details)
 
 
-writeDetailsAndReturn : FilePath -> Details.Details -> Dict String ModuleName.Raw BResult -> Task Never (Dict String ModuleName.Raw BResult)
-writeDetailsAndReturn root details results =
-    writeDetails root details results
+writeDetailsAndReturn : FilePath -> Maybe String -> Details.Details -> Dict String ModuleName.Raw BResult -> Task Never (Dict String ModuleName.Raw BResult)
+writeDetailsAndReturn root maybeBuildDir details results =
+    writeDetails root maybeBuildDir details results
         |> Task.map (\_ -> results)
 
 
@@ -348,29 +345,29 @@ This entry point discovers modules from the given file paths, crawls their depen
 and performs parallel incremental compilation.
 
 -}
-fromPaths : Reporting.Style -> FilePath -> Details.Details -> Bool -> NE.Nonempty FilePath -> Task Never (Result Exit.BuildProblem Artifacts)
-fromPaths style root details needsTypedOpt paths =
+fromPaths : Reporting.Style -> FilePath -> Maybe String -> Details.Details -> Bool -> NE.Nonempty FilePath -> Task Never (Result Exit.BuildProblem Artifacts)
+fromPaths style root maybeBuildDir details needsTypedOpt paths =
     Reporting.trackBuild artifactsDecoder artifactsEncoder style <|
         \key ->
-            makeEnv key root details needsTypedOpt
-                |> Task.andThen (findAndBuildFromPaths root details paths)
+            makeEnv key root maybeBuildDir details needsTypedOpt
+                |> Task.andThen (findAndBuildFromPaths root maybeBuildDir details paths)
 
 
-findAndBuildFromPaths : FilePath -> Details.Details -> NE.Nonempty FilePath -> Env -> Task Never (Result Exit.BuildProblem Artifacts)
-findAndBuildFromPaths root details paths env =
+findAndBuildFromPaths : FilePath -> Maybe String -> Details.Details -> NE.Nonempty FilePath -> Env -> Task Never (Result Exit.BuildProblem Artifacts)
+findAndBuildFromPaths root maybeBuildDir details paths env =
     findRoots env paths
-        |> Task.andThen (handleFoundRoots root details env)
+        |> Task.andThen (handleFoundRoots root maybeBuildDir details env)
 
 
-handleFoundRoots : FilePath -> Details.Details -> Env -> Result Exit.BuildProjectProblem (NE.Nonempty RootLocation) -> Task Never (Result Exit.BuildProblem Artifacts)
-handleFoundRoots root details env elroots =
+handleFoundRoots : FilePath -> Maybe String -> Details.Details -> Env -> Result Exit.BuildProjectProblem (NE.Nonempty RootLocation) -> Task Never (Result Exit.BuildProblem Artifacts)
+handleFoundRoots root maybeBuildDir details env elroots =
     case elroots of
         Err problem ->
             Task.succeed (Err (Exit.BuildProjectProblem problem))
 
         Ok lroots ->
-            crawlPaths root details env lroots
-                |> Task.andThen (compilePaths root details env)
+            crawlPaths root maybeBuildDir details env lroots
+                |> Task.andThen (compilePaths root maybeBuildDir details env)
 
 
 {-| Context passed between crawl and compile phases for path-based builds.
@@ -384,9 +381,9 @@ type alias PathsBuildContext =
 
 {-| Crawl phase for path-based builds: discover all module statuses and root statuses.
 -}
-crawlPaths : FilePath -> Details.Details -> Env -> NE.Nonempty RootLocation -> Task Never PathsBuildContext
-crawlPaths root details env lroots =
-    Details.loadInterfaces root details
+crawlPaths : FilePath -> Maybe String -> Details.Details -> Env -> NE.Nonempty RootLocation -> Task Never PathsBuildContext
+crawlPaths root maybeBuildDir details env lroots =
+    Details.loadInterfaces root maybeBuildDir details
         |> Task.andThen (crawlPathRoots env lroots)
 
 
@@ -412,29 +409,29 @@ collectPathStatuses dmvar smvar sroots =
 
 {-| Compile phase for path-based builds: check midpoint, compile modules, and build artifacts.
 -}
-compilePaths : FilePath -> Details.Details -> Env -> PathsBuildContext -> Task Never (Result Exit.BuildProblem Artifacts)
-compilePaths root details env { dmvar, statuses, sroots } =
+compilePaths : FilePath -> Maybe String -> Details.Details -> Env -> PathsBuildContext -> Task Never (Result Exit.BuildProblem Artifacts)
+compilePaths root maybeBuildDir details env { dmvar, statuses, sroots } =
     checkMidpointAndRoots dmvar statuses sroots
-        |> Task.andThen (handlePathsMidpoint root details env statuses sroots)
+        |> Task.andThen (handlePathsMidpoint root maybeBuildDir details env statuses sroots)
 
 
-handlePathsMidpoint : FilePath -> Details.Details -> Env -> Dict String ModuleName.Raw Status -> NE.Nonempty RootStatus -> Result Exit.BuildProjectProblem Dependencies -> Task Never (Result Exit.BuildProblem Artifacts)
-handlePathsMidpoint root details env statuses sroots midpoint =
+handlePathsMidpoint : FilePath -> Maybe String -> Details.Details -> Env -> Dict String ModuleName.Raw Status -> NE.Nonempty RootStatus -> Result Exit.BuildProjectProblem Dependencies -> Task Never (Result Exit.BuildProblem Artifacts)
+handlePathsMidpoint root maybeBuildDir details env statuses sroots midpoint =
     case midpoint of
         Err problem ->
             Task.succeed (Err (Exit.BuildProjectProblem problem))
 
         Ok foreigns ->
-            compilePathModules root details env foreigns statuses sroots
+            compilePathModules root maybeBuildDir details env foreigns statuses sroots
 
 
 {-| Compile all modules for path-based builds and produce artifacts.
 -}
-compilePathModules : FilePath -> Details.Details -> Env -> Dependencies -> Dict String ModuleName.Raw Status -> NE.Nonempty RootStatus -> Task Never (Result Exit.BuildProblem Artifacts)
-compilePathModules root details env foreigns statuses sroots =
+compilePathModules : FilePath -> Maybe String -> Details.Details -> Env -> Dependencies -> Dict String ModuleName.Raw Status -> NE.Nonempty RootStatus -> Task Never (Result Exit.BuildProblem Artifacts)
+compilePathModules root maybeBuildDir details env foreigns statuses sroots =
     Utils.newEmptyMVar
         |> Task.andThen (compilePathsWithMVar env foreigns statuses sroots)
-        |> Task.andThen (finalizePathBuild root details env foreigns)
+        |> Task.andThen (finalizePathBuild root maybeBuildDir details env foreigns)
 
 
 compilePathsWithMVar : Env -> Dependencies -> Dict String ModuleName.Raw Status -> NE.Nonempty RootStatus -> MVar ResultDict -> Task Never PathCompileState
@@ -456,16 +453,16 @@ checkRootsAndCollect env sroots rmvar resultsMVars =
         |> Task.map (\rrootMVars -> { resultsMVars = resultsMVars, rrootMVars = rrootMVars })
 
 
-finalizePathBuild : FilePath -> Details.Details -> Env -> Dependencies -> PathCompileState -> Task Never (Result Exit.BuildProblem Artifacts)
-finalizePathBuild root details env foreigns { resultsMVars, rrootMVars } =
+finalizePathBuild : FilePath -> Maybe String -> Details.Details -> Env -> Dependencies -> { resultsMVars : Dict String ModuleName.Raw (MVar BResult), rrootMVars : NE.Nonempty (MVar RootResult) } -> Task Never (Result Exit.BuildProblem Artifacts)
+finalizePathBuild root maybeBuildDir details env foreigns { resultsMVars, rrootMVars } =
     Utils.mapTraverse identity compare (Utils.readMVar bResultDecoder) resultsMVars
-        |> Task.andThen (writeDetailsAndCollectRoots root details rrootMVars)
+        |> Task.andThen (writeDetailsAndCollectRoots root maybeBuildDir details rrootMVars)
         |> Task.map (toArtifactsFromResults env foreigns)
 
 
-writeDetailsAndCollectRoots : FilePath -> Details.Details -> NE.Nonempty (MVar RootResult) -> Dict String ModuleName.Raw BResult -> Task Never ( Dict String ModuleName.Raw BResult, NE.Nonempty RootResult )
-writeDetailsAndCollectRoots root details rrootMVars results =
-    writeDetails root details results
+writeDetailsAndCollectRoots : FilePath -> Maybe String -> Details.Details -> NE.Nonempty (MVar RootResult) -> Dict String ModuleName.Raw BResult -> Task Never ( Dict String ModuleName.Raw BResult, NE.Nonempty RootResult )
+writeDetailsAndCollectRoots root maybeBuildDir details rrootMVars results =
+    writeDetails root maybeBuildDir details results
         |> Task.andThen (\_ -> Utils.nonEmptyListTraverse (Utils.readMVar rootResultDecoder) rrootMVars)
         |> Task.map (\rroots -> ( results, rroots ))
 
@@ -1616,9 +1613,9 @@ projectTypeToPkg projectType =
 -- ====== WRITE DETAILS ======
 
 
-writeDetails : FilePath -> Details.Details -> Dict String ModuleName.Raw BResult -> Task Never ()
-writeDetails root (Details.Details detailsData) results =
-    Details.Details { detailsData | locals = Dict.foldr compare addNewLocal detailsData.locals results } |> File.writeBinary Details.detailsEncoder (Stuff.details root)
+writeDetails : FilePath -> Maybe String -> Details.Details -> Dict String ModuleName.Raw BResult -> Task Never ()
+writeDetails root maybeBuildDir (Details.Details detailsData) results =
+    Details.Details { detailsData | locals = Dict.foldr compare addNewLocal detailsData.locals results } |> File.writeBinary Details.detailsEncoder (Stuff.detailsWithBuildDir root maybeBuildDir)
 
 
 addNewLocal : ModuleName.Raw -> BResult -> Dict String ModuleName.Raw Details.Local -> Dict String ModuleName.Raw Details.Local
@@ -1863,7 +1860,7 @@ artifacts suitable for interactive evaluation.
 -}
 fromRepl : FilePath -> Details.Details -> String -> Task Never (Result Exit.Repl ReplArtifacts)
 fromRepl root details source =
-    makeEnv Reporting.ignorer root details False
+    makeEnv Reporting.ignorer root Nothing details False
         |> Task.andThen
             (\((Env envData) as env) ->
                 case Parse.fromByteString SV.Guida envData.projectType source of
@@ -1876,8 +1873,8 @@ fromRepl root details source =
                             deps =
                                 List.map Src.getImportName srcData.imports
                         in
-                        crawlRepl root details env deps
-                            |> Task.andThen (compileRepl root details env source modul deps)
+                        crawlRepl root Nothing details env deps
+                            |> Task.andThen (compileRepl root Nothing details env source modul deps)
             )
 
 
@@ -1891,9 +1888,9 @@ type alias ReplBuildContext =
 
 {-| Crawl phase for REPL: discover module dependencies.
 -}
-crawlRepl : FilePath -> Details.Details -> Env -> List Name.Name -> Task Never ReplBuildContext
-crawlRepl root details env deps =
-    Details.loadInterfaces root details
+crawlRepl : FilePath -> Maybe String -> Details.Details -> Env -> List Name.Name -> Task Never ReplBuildContext
+crawlRepl root maybeBuildDir details env deps =
+    Details.loadInterfaces root maybeBuildDir details
         |> Task.andThen
             (\dmvar ->
                 Utils.newMVar statusDictEncoder Dict.empty
@@ -1909,8 +1906,8 @@ crawlRepl root details env deps =
 
 {-| Compile phase for REPL: check midpoint and compile modules.
 -}
-compileRepl : FilePath -> Details.Details -> Env -> String -> Src.Module -> List Name.Name -> ReplBuildContext -> Task Never (Result Exit.Repl ReplArtifacts)
-compileRepl root details env source modul deps { dmvar, statuses } =
+compileRepl : FilePath -> Maybe String -> Details.Details -> Env -> String -> Src.Module -> List Name.Name -> ReplBuildContext -> Task Never (Result Exit.Repl ReplArtifacts)
+compileRepl root maybeBuildDir details env source modul deps { dmvar, statuses } =
     checkMidpoint dmvar statuses
         |> Task.andThen
             (\midpoint ->
@@ -1919,14 +1916,14 @@ compileRepl root details env source modul deps { dmvar, statuses } =
                         Exit.ReplProjectProblem problem |> Err |> Task.succeed
 
                     Ok foreigns ->
-                        compileReplModules root details env source modul deps foreigns statuses
+                        compileReplModules root maybeBuildDir details env source modul deps foreigns statuses
             )
 
 
 {-| Compile REPL modules and finalize artifacts.
 -}
-compileReplModules : FilePath -> Details.Details -> Env -> String -> Src.Module -> List Name.Name -> Dependencies -> Dict String ModuleName.Raw Status -> Task Never (Result Exit.Repl ReplArtifacts)
-compileReplModules root details env source modul deps foreigns statuses =
+compileReplModules : FilePath -> Maybe String -> Details.Details -> Env -> String -> Src.Module -> List Name.Name -> Dependencies -> Dict String ModuleName.Raw Status -> Task Never (Result Exit.Repl ReplArtifacts)
+compileReplModules root maybeBuildDir details env source modul deps foreigns statuses =
     Utils.newEmptyMVar
         |> Task.andThen
             (\rmvar ->
@@ -1937,7 +1934,7 @@ compileReplModules root details env source modul deps foreigns statuses =
                                 |> Task.andThen (\_ -> Utils.mapTraverse identity compare (Utils.readMVar bResultDecoder) resultMVars)
                                 |> Task.andThen
                                     (\results ->
-                                        writeDetails root details results
+                                        writeDetails root maybeBuildDir details results
                                             |> Task.andThen (\_ -> checkDeps root resultMVars deps 0)
                                             |> Task.andThen (\depsStatus -> finalizeReplArtifacts env source modul depsStatus resultMVars results)
                                     )

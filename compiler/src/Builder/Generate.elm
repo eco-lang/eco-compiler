@@ -95,16 +95,16 @@ mlirBackend =
 
 {-| Generates debug-mode output with type information for runtime type checking.
 -}
-debug : CodeGen.CodeGen -> Bool -> Int -> FilePath -> Details.Details -> Build.Artifacts -> Task Exit.Generate CodeGen.Output
-debug backend withSourceMaps leadingLines root details (Build.Artifacts artifacts) =
-    loadObjects root details artifacts.modules
-        |> Task.andThen (loadTypesAndFinalize root artifacts.deps artifacts.modules)
+debug : CodeGen.CodeGen -> Bool -> Int -> FilePath -> Maybe String -> Details.Details -> Build.Artifacts -> Task Exit.Generate CodeGen.Output
+debug backend withSourceMaps leadingLines root maybeBuildDir details (Build.Artifacts artifacts) =
+    loadObjects root maybeBuildDir details artifacts.modules
+        |> Task.andThen (loadTypesAndFinalize root maybeBuildDir artifacts.deps artifacts.modules)
         |> Task.andThen (generateDebugOutput backend withSourceMaps leadingLines root artifacts.pkg artifacts.roots)
 
 
-loadTypesAndFinalize : FilePath -> Dict (List String) TypeCheck.Canonical I.DependencyInterface -> List Build.Module -> LoadingObjects -> Task Exit.Generate ( Objects, Extract.Types )
-loadTypesAndFinalize root ifaces modules loading =
-    loadTypes root ifaces modules
+loadTypesAndFinalize : FilePath -> Maybe String -> Dict (List String) TypeCheck.Canonical I.DependencyInterface -> List Build.Module -> LoadingObjects -> Task Exit.Generate ( Objects, Extract.Types )
+loadTypesAndFinalize root maybeBuildDir ifaces modules loading =
+    loadTypes root maybeBuildDir ifaces modules
         |> Task.andThen (finalizeObjectsWithTypes loading)
 
 
@@ -143,9 +143,9 @@ generateWithBackend backend leadingLines mode graph mains sourceMaps =
 
 {-| Generates development-mode output without optimization.
 -}
-dev : CodeGen.CodeGen -> Bool -> Int -> FilePath -> Details.Details -> Build.Artifacts -> Task Exit.Generate CodeGen.Output
-dev backend withSourceMaps leadingLines root details (Build.Artifacts artifacts) =
-    loadObjects root details artifacts.modules
+dev : CodeGen.CodeGen -> Bool -> Int -> FilePath -> Maybe String -> Details.Details -> Build.Artifacts -> Task Exit.Generate CodeGen.Output
+dev backend withSourceMaps leadingLines root maybeBuildDir details (Build.Artifacts artifacts) =
+    loadObjects root maybeBuildDir details artifacts.modules
         |> Task.andThen finalizeObjects
         |> Task.andThen (generateDevOutput backend withSourceMaps leadingLines root artifacts.pkg artifacts.roots)
 
@@ -168,9 +168,9 @@ generateDevOutput backend withSourceMaps leadingLines root pkg roots objects =
 
 {-| Generates production-mode output with optimizations and minified field names.
 -}
-prod : CodeGen.CodeGen -> Bool -> Int -> FilePath -> Details.Details -> Build.Artifacts -> Task Exit.Generate CodeGen.Output
-prod backend withSourceMaps leadingLines root details (Build.Artifacts artifacts) =
-    loadObjects root details artifacts.modules
+prod : CodeGen.CodeGen -> Bool -> Int -> FilePath -> Maybe String -> Details.Details -> Build.Artifacts -> Task Exit.Generate CodeGen.Output
+prod backend withSourceMaps leadingLines root maybeBuildDir details (Build.Artifacts artifacts) =
+    loadObjects root maybeBuildDir details artifacts.modules
         |> Task.andThen finalizeObjects
         |> Task.andThen (checkDebugAndGenerate backend withSourceMaps leadingLines root artifacts.pkg artifacts.roots)
 
@@ -213,7 +213,7 @@ prepareSourceMaps withSourceMaps root =
 -}
 repl : CodeGen.CodeGen -> FilePath -> Details.Details -> Bool -> Build.ReplArtifacts -> N.Name -> Task Exit.Generate CodeGen.Output
 repl backend root details ansi (Build.ReplArtifacts replArtifacts) name =
-    loadObjects root details replArtifacts.modules
+    loadObjects root Nothing details replArtifacts.modules
         |> Task.andThen finalizeObjects
         |> Task.map (generateReplOutput backend ansi replArtifacts.localizer replArtifacts.home name replArtifacts.annotations)
 
@@ -281,22 +281,22 @@ type LoadingObjects
     = LoadingObjects (MVar (Maybe Opt.GlobalGraph)) (Dict String ModuleName.Raw (MVar (Maybe Opt.LocalGraph)))
 
 
-loadObjects : FilePath -> Details.Details -> List Build.Module -> Task Exit.Generate LoadingObjects
-loadObjects root details modules =
+loadObjects : FilePath -> Maybe String -> Details.Details -> List Build.Module -> Task Exit.Generate LoadingObjects
+loadObjects root maybeBuildDir details modules =
     Task.io
-        (Details.loadObjects root details
-            |> Task.andThen (loadModuleObjects root modules)
+        (Details.loadObjects root maybeBuildDir details
+            |> Task.andThen (loadModuleObjects root maybeBuildDir modules)
         )
 
 
-loadModuleObjects : FilePath -> List Build.Module -> MVar (Maybe Opt.GlobalGraph) -> Task Never LoadingObjects
-loadModuleObjects root modules mvar =
-    Utils.listTraverse (loadObject root) modules
+loadModuleObjects : FilePath -> Maybe String -> List Build.Module -> MVar (Maybe Opt.GlobalGraph) -> Task Never LoadingObjects
+loadModuleObjects root maybeBuildDir modules mvar =
+    Utils.listTraverse (loadObject root maybeBuildDir) modules
         |> Task.map (\mvars -> LoadingObjects mvar (Dict.fromList identity mvars))
 
 
-loadObject : FilePath -> Build.Module -> Task Never ( ModuleName.Raw, MVar (Maybe Opt.LocalGraph) )
-loadObject root modul =
+loadObject : FilePath -> Maybe String -> Build.Module -> Task Never ( ModuleName.Raw, MVar (Maybe Opt.LocalGraph) )
+loadObject root maybeBuildDir modul =
     case modul of
         Build.Fresh name _ graph _ _ ->
             Utils.newMVar (Utils.maybeEncoder Opt.localGraphEncoder) (Just graph)
@@ -304,18 +304,18 @@ loadObject root modul =
 
         Build.Cached name _ _ ->
             Utils.newEmptyMVar
-                |> Task.andThen (forkLoadCachedObject root name)
+                |> Task.andThen (forkLoadCachedObject root maybeBuildDir name)
 
 
-forkLoadCachedObject : FilePath -> ModuleName.Raw -> MVar (Maybe Opt.LocalGraph) -> Task Never ( ModuleName.Raw, MVar (Maybe Opt.LocalGraph) )
-forkLoadCachedObject root name mvar =
-    Utils.forkIO (readAndStoreCachedObject root name mvar)
+forkLoadCachedObject : FilePath -> Maybe String -> ModuleName.Raw -> MVar (Maybe Opt.LocalGraph) -> Task Never ( ModuleName.Raw, MVar (Maybe Opt.LocalGraph) )
+forkLoadCachedObject root maybeBuildDir name mvar =
+    Utils.forkIO (readAndStoreCachedObject root maybeBuildDir name mvar)
         |> Task.map (\_ -> ( name, mvar ))
 
 
-readAndStoreCachedObject : FilePath -> ModuleName.Raw -> MVar (Maybe Opt.LocalGraph) -> Task Never ()
-readAndStoreCachedObject root name mvar =
-    File.readBinary Opt.localGraphDecoder (Stuff.guidao root name)
+readAndStoreCachedObject : FilePath -> Maybe String -> ModuleName.Raw -> MVar (Maybe Opt.LocalGraph) -> Task Never ()
+readAndStoreCachedObject root maybeBuildDir name mvar =
+    File.readBinary Opt.localGraphDecoder (Stuff.guidaoWithBuildDir root maybeBuildDir name)
         |> Task.andThen (Utils.putMVar (Utils.maybeEncoder Opt.localGraphEncoder) mvar)
 
 
@@ -360,10 +360,10 @@ objectsToGlobalGraph (Objects globals locals) =
 -- ====== LOAD TYPES ======
 
 
-loadTypes : FilePath -> Dict (List String) TypeCheck.Canonical I.DependencyInterface -> List Build.Module -> Task Exit.Generate Extract.Types
-loadTypes root ifaces modules =
+loadTypes : FilePath -> Maybe String -> Dict (List String) TypeCheck.Canonical I.DependencyInterface -> List Build.Module -> Task Exit.Generate Extract.Types
+loadTypes root maybeBuildDir ifaces modules =
     Task.eio identity
-        (Utils.listTraverse (loadTypesHelp root) modules
+        (Utils.listTraverse (loadTypesHelp root maybeBuildDir) modules
             |> Task.andThen (collectAndMergeTypes ifaces)
         )
 
@@ -389,23 +389,23 @@ mergeLoadedTypes foreigns results =
             Err Exit.GenerateCannotLoadArtifacts
 
 
-loadTypesHelp : FilePath -> Build.Module -> Task Never (MVar (Maybe Extract.Types))
-loadTypesHelp root modul =
+loadTypesHelp : FilePath -> Maybe String -> Build.Module -> Task Never (MVar (Maybe Extract.Types))
+loadTypesHelp root maybeBuildDir modul =
     case modul of
         Build.Fresh name iface _ _ _ ->
             Utils.newMVar (Utils.maybeEncoder Extract.typesEncoder) (Just (Extract.fromInterface name iface))
 
         Build.Cached name _ ciMVar ->
             Utils.readMVar Build.cachedInterfaceDecoder ciMVar
-                |> Task.andThen (handleCachedInterfaceForTypes root name)
+                |> Task.andThen (handleCachedInterfaceForTypes root maybeBuildDir name)
 
 
-handleCachedInterfaceForTypes : FilePath -> ModuleName.Raw -> Build.CachedInterface -> Task Never (MVar (Maybe Extract.Types))
-handleCachedInterfaceForTypes root name cachedInterface =
+handleCachedInterfaceForTypes : FilePath -> Maybe String -> ModuleName.Raw -> Build.CachedInterface -> Task Never (MVar (Maybe Extract.Types))
+handleCachedInterfaceForTypes root maybeBuildDir name cachedInterface =
     case cachedInterface of
         Build.Unneeded ->
             Utils.newEmptyMVar
-                |> Task.andThen (forkLoadInterfaceTypes root name)
+                |> Task.andThen (forkLoadInterfaceTypes root maybeBuildDir name)
 
         Build.Loaded iface ->
             Utils.newMVar (Utils.maybeEncoder Extract.typesEncoder) (Just (Extract.fromInterface name iface))
@@ -414,15 +414,15 @@ handleCachedInterfaceForTypes root name cachedInterface =
             Utils.newMVar (Utils.maybeEncoder Extract.typesEncoder) Nothing
 
 
-forkLoadInterfaceTypes : FilePath -> ModuleName.Raw -> MVar (Maybe Extract.Types) -> Task Never (MVar (Maybe Extract.Types))
-forkLoadInterfaceTypes root name mvar =
-    Utils.forkIO (loadAndStoreInterfaceTypes root name mvar)
+forkLoadInterfaceTypes : FilePath -> Maybe String -> ModuleName.Raw -> MVar (Maybe Extract.Types) -> Task Never (MVar (Maybe Extract.Types))
+forkLoadInterfaceTypes root maybeBuildDir name mvar =
+    Utils.forkIO (loadAndStoreInterfaceTypes root maybeBuildDir name mvar)
         |> Task.map (\_ -> mvar)
 
 
-loadAndStoreInterfaceTypes : FilePath -> ModuleName.Raw -> MVar (Maybe Extract.Types) -> Task Never ()
-loadAndStoreInterfaceTypes root name mvar =
-    File.readBinary I.interfaceDecoder (Stuff.guidai root name)
+loadAndStoreInterfaceTypes : FilePath -> Maybe String -> ModuleName.Raw -> MVar (Maybe Extract.Types) -> Task Never ()
+loadAndStoreInterfaceTypes root maybeBuildDir name mvar =
+    File.readBinary I.interfaceDecoder (Stuff.guidaiWithBuildDir root maybeBuildDir name)
         |> Task.andThen (\maybeIface -> Utils.putMVar (Utils.maybeEncoder Extract.typesEncoder) mvar (Maybe.map (Extract.fromInterface name) maybeIface))
 
 
@@ -434,22 +434,22 @@ type TypedLoadingObjects
     = TypedLoadingObjects (MVar (Maybe Details.PackageTypedArtifacts)) (Dict String ModuleName.Raw (MVar (Maybe TMod.TypedModuleArtifact)))
 
 
-loadTypedObjects : FilePath -> Details.Details -> List Build.Module -> Task Exit.Generate TypedLoadingObjects
-loadTypedObjects root details modules =
+loadTypedObjects : FilePath -> Maybe String -> Details.Details -> List Build.Module -> Task Exit.Generate TypedLoadingObjects
+loadTypedObjects root maybeBuildDir details modules =
     Task.io
-        (Details.loadTypedObjects root details
-            |> Task.andThen (loadTypedModuleObjects root modules)
+        (Details.loadTypedObjects root maybeBuildDir details
+            |> Task.andThen (loadTypedModuleObjects root maybeBuildDir modules)
         )
 
 
-loadTypedModuleObjects : FilePath -> List Build.Module -> MVar (Maybe Details.PackageTypedArtifacts) -> Task Never TypedLoadingObjects
-loadTypedModuleObjects root modules mvar =
-    Utils.listTraverse (loadTypedObject root) modules
+loadTypedModuleObjects : FilePath -> Maybe String -> List Build.Module -> MVar (Maybe Details.PackageTypedArtifacts) -> Task Never TypedLoadingObjects
+loadTypedModuleObjects root maybeBuildDir modules mvar =
+    Utils.listTraverse (loadTypedObject root maybeBuildDir) modules
         |> Task.map (\mvars -> TypedLoadingObjects mvar (Dict.fromList identity mvars))
 
 
-loadTypedObject : FilePath -> Build.Module -> Task Never ( ModuleName.Raw, MVar (Maybe TMod.TypedModuleArtifact) )
-loadTypedObject root modul =
+loadTypedObject : FilePath -> Maybe String -> Build.Module -> Task Never ( ModuleName.Raw, MVar (Maybe TMod.TypedModuleArtifact) )
+loadTypedObject root maybeBuildDir modul =
     case modul of
         Build.Fresh name _ _ maybeTypedGraph maybeTypeEnv ->
             -- Use the typed graph and type env from the build if available
@@ -468,22 +468,22 @@ loadTypedObject root modul =
                 _ ->
                     -- No typed info available, create empty MVar (will fall back to cached)
                     Utils.newEmptyMVar
-                        |> Task.andThen (forkLoadTypedCachedObject root name)
+                        |> Task.andThen (forkLoadTypedCachedObject root maybeBuildDir name)
 
         Build.Cached name _ _ ->
             Utils.newEmptyMVar
-                |> Task.andThen (forkLoadTypedCachedObject root name)
+                |> Task.andThen (forkLoadTypedCachedObject root maybeBuildDir name)
 
 
-forkLoadTypedCachedObject : FilePath -> ModuleName.Raw -> MVar (Maybe TMod.TypedModuleArtifact) -> Task Never ( ModuleName.Raw, MVar (Maybe TMod.TypedModuleArtifact) )
-forkLoadTypedCachedObject root name mvar =
-    Utils.forkIO (readAndStoreTypedCachedObject root name mvar)
+forkLoadTypedCachedObject : FilePath -> Maybe String -> ModuleName.Raw -> MVar (Maybe TMod.TypedModuleArtifact) -> Task Never ( ModuleName.Raw, MVar (Maybe TMod.TypedModuleArtifact) )
+forkLoadTypedCachedObject root maybeBuildDir name mvar =
+    Utils.forkIO (readAndStoreTypedCachedObject root maybeBuildDir name mvar)
         |> Task.map (\_ -> ( name, mvar ))
 
 
-readAndStoreTypedCachedObject : FilePath -> ModuleName.Raw -> MVar (Maybe TMod.TypedModuleArtifact) -> Task Never ()
-readAndStoreTypedCachedObject root name mvar =
-    File.readBinary TMod.typedModuleArtifactDecoder (Stuff.guidato root name)
+readAndStoreTypedCachedObject : FilePath -> Maybe String -> ModuleName.Raw -> MVar (Maybe TMod.TypedModuleArtifact) -> Task Never ()
+readAndStoreTypedCachedObject root maybeBuildDir name mvar =
+    File.readBinary TMod.typedModuleArtifactDecoder (Stuff.guidatoWithBuildDir root maybeBuildDir name)
         |> Task.andThen (storeTypedArtifactWithDefault mvar)
 
 
@@ -579,9 +579,9 @@ typedObjectsToGlobalTypeEnv (TypedObjects _ globalEnv locals) =
 
 {-| Generates monomorphized output for MLIR mono backend after specializing polymorphic functions.
 -}
-monoDev : CodeGen.MonoCodeGen -> Bool -> Int -> FilePath -> Details.Details -> Build.Artifacts -> Task Exit.Generate CodeGen.Output
-monoDev backend withSourceMaps leadingLines root details (Build.Artifacts artifacts) =
-    loadTypedObjects root details artifacts.modules
+monoDev : CodeGen.MonoCodeGen -> Bool -> Int -> FilePath -> Maybe String -> Details.Details -> Build.Artifacts -> Task Exit.Generate CodeGen.Output
+monoDev backend withSourceMaps leadingLines root maybeBuildDir details (Build.Artifacts artifacts) =
+    loadTypedObjects root maybeBuildDir details artifacts.modules
         |> Task.andThen finalizeTypedObjects
         |> Task.andThen (generateMonoDevOutput backend withSourceMaps leadingLines root artifacts.roots)
 
