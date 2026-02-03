@@ -6,6 +6,7 @@
 #include "allocator/Heap.hpp"
 #include "allocator/HeapHelpers.hpp"
 #include "allocator/StringOps.hpp"
+#include <cassert>
 #include <vector>
 
 using namespace Elm;
@@ -14,7 +15,13 @@ using namespace Elm::Kernel;
 extern "C" {
 
 int64_t Elm_Kernel_String_length(uint64_t str) {
-    return String::length(Export::toPtr(str));
+    HPointer h = Export::decode(str);
+    if (h.constant == Const_EmptyString + 1) {
+        return 0;
+    }
+    void* ptr = Export::toPtr(str);
+    assert(ptr && "Elm_Kernel_String_length: unexpected null pointer");
+    return String::length(ptr);
 }
 
 uint64_t Elm_Kernel_String_append(uint64_t a, uint64_t b) {
