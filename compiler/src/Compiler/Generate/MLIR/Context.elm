@@ -224,37 +224,140 @@ Otherwise, creates a new TypeId and registers the type.
 -}
 getOrCreateTypeIdForMonoType : Mono.MonoType -> Context -> ( Int, Context )
 getOrCreateTypeIdForMonoType monoType ctx =
+    -- Use an iterative worklist approach to avoid stack overflow on deeply nested types
     let
-        key =
-            Mono.toComparableMonoType monoType
+        -- Helper: get all immediate nested types for a MonoType
+        getNestedTypes : Mono.MonoType -> Context -> List Mono.MonoType
+        getNestedTypes mt c =
+            case mt of
+                Mono.MList elemType ->
+                    [ elemType ]
 
-        reg =
-            ctx.typeRegistry
+                Mono.MTuple elementTypes ->
+                    elementTypes
+
+                Mono.MRecord fields ->
+                    EveryDict.values compare fields
+
+                Mono.MCustom _ _ args ->
+                    -- Include type args and constructor field types
+                    let
+                        customKey =
+                            Mono.toComparableMonoType mt
+
+                        ctorShapesForType =
+                            EveryDict.get identity customKey c.typeRegistry.ctorShapes
+                                |> Maybe.withDefault []
+
+                        fieldTypes =
+                            List.concatMap .fieldTypes ctorShapesForType
+                                |> List.filter
+                                    (\ft ->
+                                        -- Exclude direct self-references to avoid infinite work
+                                        Mono.toComparableMonoType ft /= customKey
+                                    )
+                    in
+                    args ++ fieldTypes
+
+                Mono.MFunction argTypes resultType ->
+                    argTypes ++ [ resultType ]
+
+                Mono.MInt ->
+                    []
+
+                Mono.MFloat ->
+                    []
+
+                Mono.MChar ->
+                    []
+
+                Mono.MBool ->
+                    []
+
+                Mono.MString ->
+                    []
+
+                Mono.MUnit ->
+                    []
+
+                Mono.MVar _ _ ->
+                    []
+
+        -- Register a single type (assuming all nested types are already registered)
+        registerSingleType : Mono.MonoType -> Context -> Context
+        registerSingleType mt c =
+            let
+                typeKey =
+                    Mono.toComparableMonoType mt
+
+                reg =
+                    c.typeRegistry
+            in
+            case Dict.get typeKey reg.typeIds of
+                Just _ ->
+                    -- Already registered
+                    c
+
+                Nothing ->
+                    let
+                        typeId =
+                            reg.nextTypeId
+
+                        newReg =
+                            { nextTypeId = typeId + 1
+                            , typeIds = Dict.insert typeKey typeId reg.typeIds
+                            , typeInfos = ( typeId, mt ) :: reg.typeInfos
+                            , ctorShapes = reg.ctorShapes
+                            }
+                    in
+                    { c | typeRegistry = newReg }
+
+        -- Process the worklist iteratively
+        -- We use two lists: 'pending' for types to explore, 'toRegister' for types in reverse topological order
+        processWorklist : List Mono.MonoType -> List Mono.MonoType -> Context -> Context
+        processWorklist pending toRegister c =
+            case pending of
+                [] ->
+                    -- All types collected, now register them in order (deepest first)
+                    List.foldl registerSingleType c toRegister
+
+                current :: rest ->
+                    let
+                        currentKey =
+                            Mono.toComparableMonoType current
+                    in
+                    if Dict.member currentKey c.typeRegistry.typeIds then
+                        -- Already registered, skip
+                        processWorklist rest toRegister c
+
+                    else if List.any (\t -> Mono.toComparableMonoType t == currentKey) toRegister then
+                        -- Already in toRegister list, skip
+                        processWorklist rest toRegister c
+
+                    else
+                        -- Add nested types to pending (they need to be processed first)
+                        -- Add current to toRegister (it will be registered after its nested types)
+                        let
+                            nested =
+                                getNestedTypes current c
+                        in
+                        processWorklist (nested ++ rest) (current :: toRegister) c
+
+        -- Run the worklist starting with the requested type
+        finalCtx =
+            processWorklist [ monoType ] [] ctx
+
+        -- Look up the typeId for the original type
+        originalKey =
+            Mono.toComparableMonoType monoType
     in
-    case Dict.get key reg.typeIds of
+    case Dict.get originalKey finalCtx.typeRegistry.typeIds of
         Just typeId ->
-            ( typeId, ctx )
+            ( typeId, finalCtx )
 
         Nothing ->
-            -- First, recursively register any nested types
-            let
-                ctxWithNested =
-                    registerNestedTypes monoType ctx
-
-                regAfterNested =
-                    ctxWithNested.typeRegistry
-
-                typeId =
-                    regAfterNested.nextTypeId
-
-                newReg =
-                    { nextTypeId = typeId + 1
-                    , typeIds = Dict.insert key typeId regAfterNested.typeIds
-                    , typeInfos = ( typeId, monoType ) :: regAfterNested.typeInfos
-                    , ctorShapes = regAfterNested.ctorShapes
-                    }
-            in
-            ( typeId, { ctxWithNested | typeRegistry = newReg } )
+            -- This shouldn't happen, but provide a fallback
+            ( 0, finalCtx )
 
 
 {-| Register all constructor field types for a custom type.

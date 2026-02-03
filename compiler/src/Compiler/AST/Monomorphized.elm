@@ -1,8 +1,8 @@
 module Compiler.AST.Monomorphized exposing
     ( MonoType(..), Literal(..), Constraint(..)
     , LambdaId(..)
-    , Global(..), SpecKey(..), SpecId, SpecializationRegistry, emptyRegistry, getOrCreateSpecId, lookupSpecKey
-    , MonoGraph(..), MainInfo(..), MonoNode(..), CtorShape
+    , Global(..), SpecKey(..), SpecId, SpecializationRegistry, emptyRegistry, getOrCreateSpecId, lookupSpecKey, updateRegistryType
+    , MonoGraph(..), MainInfo(..), MonoNode(..), CtorShape, nodeType
     , MonoExpr(..), ClosureInfo, MonoDef(..), MonoDestructor(..), MonoPath(..)
     , Decider(..), MonoChoice(..)
     , ContainerKind(..)
@@ -10,7 +10,6 @@ module Compiler.AST.Monomorphized exposing
     , toComparableSpecKey, toComparableMonoType
     , getMonoPathType
     , monoTypeToDebugString
-    , nodeType, updateRegistryType
     )
 
 {-| Monomorphized AST for backends that can optimize using concrete types.
@@ -657,42 +656,118 @@ toComparableGlobal global =
 -}
 toComparableMonoType : MonoType -> List String
 toComparableMonoType monoType =
-    case monoType of
-        MInt ->
-            [ "Int" ]
+    -- Use explicit work stack to avoid deep recursion
+    toComparableMonoTypeHelper [ WorkType monoType ] []
 
-        MFloat ->
-            [ "Float" ]
 
-        MBool ->
-            [ "Bool" ]
+{-| Work item for the tail-recursive type comparison helper.
+-}
+type WorkItem
+    = WorkType MonoType
+    | WorkMarker String
 
-        MChar ->
-            [ "Char" ]
 
-        MString ->
-            [ "String" ]
+{-| Tail-recursive helper using explicit work stack.
 
-        MUnit ->
-            [ "Unit" ]
+The work list contains either MonoTypes to process or string markers.
+We process each item, adding strings to the accumulator and pushing
+any nested types onto the work stack for later processing.
 
-        MList inner ->
-            "List" :: toComparableMonoType inner
+-}
+toComparableMonoTypeHelper : List WorkItem -> List String -> List String
+toComparableMonoTypeHelper work acc =
+    -- Direct tail-recursive implementation using only TCO-safe operations
+    -- Avoid: List.map, List.concatMap, (++) - they use foldr which isn't TCO
+    case work of
+        [] ->
+            List.reverse acc
 
-        MTuple elementTypes ->
-            "Tuple" :: String.fromInt (List.length elementTypes) :: List.concatMap toComparableMonoType elementTypes
+        (WorkMarker s) :: rest ->
+            toComparableMonoTypeHelper rest (s :: acc)
 
-        MRecord fields ->
-            "Record" :: List.concatMap (\( name, ty ) -> name :: toComparableMonoType ty) (Dict.toList compare fields)
+        (WorkType monoType) :: rest ->
+            case monoType of
+                MInt ->
+                    toComparableMonoTypeHelper rest ("Int" :: acc)
 
-        MCustom canonical name args ->
-            "Custom" :: ModuleName.toComparableCanonical canonical ++ [ name ] ++ List.concatMap toComparableMonoType args
+                MFloat ->
+                    toComparableMonoTypeHelper rest ("Float" :: acc)
 
-        MFunction args ret ->
-            "Function" :: List.concatMap toComparableMonoType args ++ [ "->" ] ++ toComparableMonoType ret
+                MBool ->
+                    toComparableMonoTypeHelper rest ("Bool" :: acc)
 
-        MVar name constraint ->
-            [ "Var", name, constraintToString constraint ]
+                MChar ->
+                    toComparableMonoTypeHelper rest ("Char" :: acc)
+
+                MString ->
+                    toComparableMonoTypeHelper rest ("String" :: acc)
+
+                MUnit ->
+                    toComparableMonoTypeHelper rest ("Unit" :: acc)
+
+                MVar name constraint ->
+                    toComparableMonoTypeHelper rest (constraintToString constraint :: name :: "Var" :: acc)
+
+                MList inner ->
+                    toComparableMonoTypeHelper
+                        (WorkType inner :: WorkMarker "}" :: rest)
+                        ("List{" :: acc)
+
+                MTuple elementTypes ->
+                    -- Use foldl to cons items onto rest (builds work in reverse, which is fine)
+                    let
+                        workWithMarker =
+                            WorkMarker "}" :: rest
+
+                        newWork =
+                            List.foldl (\t w -> WorkType t :: w) workWithMarker elementTypes
+                    in
+                    toComparableMonoTypeHelper
+                        newWork
+                        ("{" :: String.fromInt (List.length elementTypes) :: "Tuple" :: acc)
+
+                MRecord fields ->
+                    let
+                        fieldList =
+                            Dict.toList compare fields
+
+                        workWithMarker =
+                            WorkMarker "}" :: rest
+
+                        -- Add fields in reverse using foldl (name then type for each)
+                        newWork =
+                            List.foldl
+                                (\( name, ty ) w -> WorkMarker name :: WorkType ty :: w)
+                                workWithMarker
+                                fieldList
+                    in
+                    toComparableMonoTypeHelper newWork ("Record{" :: acc)
+
+                MCustom canonical name args ->
+                    let
+                        workWithMarker =
+                            WorkMarker "}" :: rest
+
+                        newWork =
+                            List.foldl (\t w -> WorkType t :: w) workWithMarker args
+
+                        header =
+                            "{" :: name :: ModuleName.toComparableCanonical canonical ++ [ "Custom" ]
+
+                        newAcc =
+                            List.foldl (::) acc header
+                    in
+                    toComparableMonoTypeHelper newWork newAcc
+
+                MFunction args ret ->
+                    let
+                        workWithRetAndMarker =
+                            WorkMarker "->" :: WorkType ret :: WorkMarker "}" :: rest
+
+                        newWork =
+                            List.foldl (\t w -> WorkType t :: w) workWithRetAndMarker args
+                    in
+                    toComparableMonoTypeHelper newWork ("Function{" :: acc)
 
 
 {-| Convert a constraint to a string for comparison purposes.
