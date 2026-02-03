@@ -46,7 +46,7 @@ state during MLIR code generation.
 
 # Call Model
 
-@docs CallModel, VarInfo, isFlattenedExternalSpec, lookupVarCallModel
+@docs CallModel, VarInfo, isFlattenedExternalSpec, lookupVarCallModel, lookupVarArity
 
 -}
 
