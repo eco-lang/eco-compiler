@@ -264,9 +264,10 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateIntPow(OpBuilder &builder) const {
 }
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateUtilsEqual(OpBuilder &builder) const {
-    // Elm_Kernel_Utils_equal(a: i64, b: i64) -> i1
-    // Returns true (i1) if the two Elm values are structurally equal.
-    auto funcTy = LLVM::LLVMFunctionType::get(I1_TY, {I64_TY, I64_TY});
+    // Elm_Kernel_Utils_equal(a: i64, b: i64) -> i64 (boxed Bool)
+    // Returns a boxed Bool (True/False embedded constant) if the two Elm values
+    // are structurally equal. Caller must unbox by comparing with True constant.
+    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {I64_TY, I64_TY});
     return getOrCreateFunc(builder, "Elm_Kernel_Utils_equal", funcTy);
 }
 

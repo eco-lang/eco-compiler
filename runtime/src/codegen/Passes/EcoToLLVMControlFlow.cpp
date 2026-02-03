@@ -412,10 +412,16 @@ struct CaseOpLowering : public OpConversionPattern<CaseOp> {
                 patternValue = allocCall.getResult();
             }
 
-            // Call Elm_Kernel_Utils_equal(scrutinee, patternValue) -> i1
+            // Call Elm_Kernel_Utils_equal(scrutinee, patternValue) -> i64 (boxed Bool)
             auto cmpCall = rewriter.create<LLVM::CallOp>(loc, equalFunc,
                 ValueRange{scrutinee, patternValue});
-            Value isEqual = cmpCall.getResult();
+            Value boxedResult = cmpCall.getResult();
+
+            // Unbox the result: compare with True constant to get i1
+            auto trueConst = rewriter.create<LLVM::ConstantOp>(
+                loc, i64Ty, value_enc::encodeConstant(value_enc::True));
+            Value isEqual = rewriter.create<LLVM::ICmpOp>(
+                loc, LLVM::ICmpPredicate::eq, boxedResult, trueConst);
 
             // Save the current block (where comparison was built) before creating new blocks
             Block *compareBlock = rewriter.getInsertionBlock();
