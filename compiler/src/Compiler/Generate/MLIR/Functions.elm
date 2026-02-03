@@ -231,11 +231,13 @@ generateClosureFunc ctx funcName closureInfo body monoType =
         exprResult =
             Expr.generateExpr ctxWithArgs body
 
-        -- Extract return type from the closure's full type, not the body's type.
-        -- The body's type may be !eco.value if it's a parameter reference,
-        -- but the caller expects the actual return type (e.g., i64 for identity 42).
-        ( _, extractedReturnType ) =
-            Types.decomposeFunctionType monoType
+        -- Extract the STAGE return type from the closure's function type.
+        -- For stage-curried functions, monoType is the full function type
+        -- (e.g., MFunction [Op] (MFunction [Int,Int] Int)).
+        -- The first stage consumes closureInfo.params and returns stageReturnType monoType.
+        extractedReturnType : Mono.MonoType
+        extractedReturnType =
+            Types.stageReturnType monoType
 
         returnType : MlirType
         returnType =
