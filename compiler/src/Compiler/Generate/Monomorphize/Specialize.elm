@@ -742,10 +742,16 @@ specializeFuncDefInCycle subst def state =
                 ( monoBody, state1 ) =
                     specializeExpr body augmentedSubst stateWithParams
 
-                monoReturnType =
-                    TypeSubst.applySubst subst returnType
+                -- FIX: Use augmentedSubst (not subst) so the type reflects param constraints
+                -- (e.g., number constraints resolved to MInt/MFloat).
+                -- Note: `returnType` is misleadingly named - it's actually the FULL function
+                -- type of the definition (e.g., Int -> Int -> Int becomes MFunction [MInt] (MFunction [MInt] MInt)).
+                -- Context.extractNodeSignature expects this full function type and extracts
+                -- the actual return type from it.
+                monoFuncType =
+                    TypeSubst.applySubst augmentedSubst returnType
             in
-            ( Mono.MonoTailFunc monoArgs monoBody monoReturnType, state1 )
+            ( Mono.MonoTailFunc monoArgs monoBody monoFuncType, state1 )
 
 
 

@@ -304,16 +304,11 @@ generateTailFunc ctx funcName params expr monoType =
         ctxWithArgs =
             { ctx | nextVar = List.length params, varMappings = freshVarMappings }
 
-        -- monoType is the full function type (MFunction args returnType)
-        -- Extract the actual return type from it
-        actualReturnType =
-            case monoType of
-                Mono.MFunction _ ret ->
-                    ret
-
-                _ ->
-                    -- Shouldn't happen per MONO_004 invariant
-                    monoType
+        -- monoType is the full curried function type (e.g., MFunction [MInt] (MFunction [MInt] MInt))
+        -- Use decomposeFunctionType to extract the FINAL return type after all args are consumed.
+        -- For sumHelper : Int -> Int -> Int, this extracts MInt (not MFunction [MInt] MInt).
+        ( _, actualReturnType ) =
+            Types.decomposeFunctionType monoType
 
         retTy =
             Types.monoTypeToAbi actualReturnType
