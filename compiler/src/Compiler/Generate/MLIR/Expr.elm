@@ -3585,24 +3585,82 @@ generateRecordAccess ctx record _ index isUnboxed fieldType =
 {-| Generate MLIR code to update record fields.
 -}
 generateRecordUpdate : Ctx.Context -> Mono.MonoExpr -> List ( Int, Mono.MonoExpr ) -> Types.RecordLayout -> Mono.MonoType -> ExprResult
-generateRecordUpdate ctx record _ _ _ =
+generateRecordUpdate ctx record updates layout _ =
     let
+        -- Step 1: Evaluate the original record once
         recordResult : ExprResult
         recordResult =
             generateExpr ctx record
-
-        ( resultVar, ctx1 ) =
-            Ctx.freshVar recordResult.ctx
-
-        ( ctx2, constructOp ) =
-            Ops.ecoConstructRecord ctx1 resultVar [ ( recordResult.resultVar, Types.ecoValue ) ] 1 0
     in
-    { ops = recordResult.ops ++ [ constructOp ]
-    , resultVar = resultVar
-    , resultType = Types.ecoValue
-    , ctx = ctx2
-    , isTerminated = False
-    }
+    -- Step 2: Handle empty record edge case (CGEN_018)
+    if layout.fieldCount == 0 then
+        recordResult
+
+    else
+        let
+            -- Step 3: Build update dictionary (field index -> update expression)
+            updateDict : Dict Int Mono.MonoExpr
+            updateDict =
+                Dict.fromList updates
+
+            -- Step 4: Process each field in layout order
+            ( fieldVarsAndTypes, allOps, finalCtx ) =
+                List.foldl
+                    (\fieldInfo ( accVarsTypes, accOps, accCtx ) ->
+                        let
+                            -- Determine storage type for this field
+                            storageType =
+                                if fieldInfo.isUnboxed then
+                                    Types.monoTypeToAbi fieldInfo.monoType
+
+                                else
+                                    Types.ecoValue
+                        in
+                        case Dict.get fieldInfo.index updateDict of
+                            Just updateExpr ->
+                                -- Field is being updated: evaluate expression and coerce
+                                let
+                                    exprResult =
+                                        generateExpr accCtx updateExpr
+
+                                    ( coerceOps, coercedVar, ctxAfterCoerce ) =
+                                        coerceResultToType exprResult.ctx exprResult.resultVar exprResult.resultType storageType
+                                in
+                                ( accVarsTypes ++ [ ( coercedVar, storageType ) ]
+                                , accOps ++ exprResult.ops ++ coerceOps
+                                , ctxAfterCoerce
+                                )
+
+                            Nothing ->
+                                -- Field not updated: project from original record
+                                let
+                                    ( projectVar, ctxProj1 ) =
+                                        Ctx.freshVar accCtx
+
+                                    ( ctxProj2, projectOp ) =
+                                        Ops.ecoProjectRecord ctxProj1 projectVar fieldInfo.index storageType recordResult.resultVar
+                                in
+                                ( accVarsTypes ++ [ ( projectVar, storageType ) ]
+                                , accOps ++ [ projectOp ]
+                                , ctxProj2
+                                )
+                    )
+                    ( [], recordResult.ops, recordResult.ctx )
+                    layout.fields
+
+            -- Step 5: Construct the new record
+            ( resultVar, ctx1 ) =
+                Ctx.freshVar finalCtx
+
+            ( ctx2, constructOp ) =
+                Ops.ecoConstructRecord ctx1 resultVar fieldVarsAndTypes layout.fieldCount layout.unboxedBitmap
+        in
+        { ops = allOps ++ [ constructOp ]
+        , resultVar = resultVar
+        , resultType = Types.ecoValue
+        , ctx = ctx2
+        , isTerminated = False
+        }
 
 
 
