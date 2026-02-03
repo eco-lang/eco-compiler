@@ -4,7 +4,7 @@ module CompositionTest exposing (main)
 -}
 
 -- CHECK: compose1: 20
--- CHECK: compose2: 12
+-- CHECK: compose2: 11
 -- CHECK: pipe1: 20
 
 import Html exposing (text)
