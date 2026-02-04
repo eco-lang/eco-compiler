@@ -56,6 +56,9 @@ This is a restricted form of the "heapless" pipeline's η-expansion idea: we max
 | **Nested normalization** | **Local fixpoint per lambda** | Iterate let/case boundary lifting until no more changes |
 | **Case branch params** | **Alpha-rename to canonical names** | Fresh names via `freshName` with `_hl_` suffix |
 | Dict API | `Data.Map as Dict` with `identity` comparator for `Name` | Confirmed from codebase |
+| **Inline hoisting** | **Permanent** (Inline→Jump at TOpt level) | Simpler than virtual approach; later passes can re-inline if needed |
+| **Case eligibility** | **All-or-nothing** (all branches must be lambdas with matching arity+types) | Partial lifting would require eta-expansion, adding closures instead of removing them |
+| **Metrics/logging** | **Optional debug API** via `normalizeLocalGraphWithStats` | Keep production code clean; stats only in tests |
 
 ## Transformation Rules
 
@@ -83,10 +86,12 @@ Where `convertedInnerParams` are rebuilt using `rebuildLambda` with the outer `L
 ```elm
 Function outerParams (Case label scrut decider jumps caseType) lambdaType
 ```
-where every branch in `jumps` is `(tag, Function innerParams body _)` and all branches have:
+where every branch (whether in `jumps` or as `Inline` in the `Decider`) is a lambda and all branches have:
 - Same arity (number of params)
 - Same `Can.Type` sequence for params
 - Names may differ
+
+**Inline Handling**: The case optimizer creates `Inline expr` choices for branches referenced exactly once, and `Jump idx` for shared branches. We first **hoist lambda inlines to the jumps table** via `hoistInlineLambdaChoicesToJumps`, converting `Leaf (Inline (\params -> body))` to `Leaf (Jump idx)` with a new jump entry. This allows `extractAndUnifyBranchParams` to see all branches uniformly. Non-lambda inlines are left as-is and cause the transformation to abort (preserving the original structure).
 
 **Example Before**:
 ```elm
@@ -686,7 +691,111 @@ tryNormalizeLetBoundary outerParams body =
             Nothing
 ```
 
-### Step 10: Implement Case-Boundary Helper with Alpha-Renaming
+### Step 10: Implement Inline-Lambda Hoisting Helper
+
+The case optimizer creates `Inline` choices for branches referenced only once, and `Jump` choices for shared branches. Our `extractAndUnifyBranchParams` only operates on the `jumps` list. To handle simple cases where all branches are `Inline`, we first hoist lambda inlines into the jumps table.
+
+```elm
+{-| Hoist inline lambda leaves in the Decider into the jump table.
+
+We transform:
+    Leaf (Inline (\params -> body))
+into:
+    Leaf (Jump idx)
+
+and append (idx, \params -> body) to the jumps list, choosing fresh
+indices above any existing ones.
+
+Non-lambda Inline leaves are left as Inline; they will NOT be
+considered for case-boundary normalization.
+-}
+hoistInlineLambdaChoicesToJumps :
+    TOpt.Decider TOpt.Choice
+    -> List ( Int, TOpt.Expr )
+    -> ( TOpt.Decider TOpt.Choice, List ( Int, TOpt.Expr ) )
+hoistInlineLambdaChoicesToJumps decider jumps0 =
+    let
+        -- Determine the starting index for new jumps.
+        maxIndex : Int
+        maxIndex =
+            jumps0
+                |> List.map Tuple.first
+                |> List.maximum
+                |> Maybe.withDefault -1
+
+        startIndex : Int
+        startIndex =
+            maxIndex + 1
+
+        -- Walk the Decider, hoisting lambda Inlines.
+        step :
+            TOpt.Decider TOpt.Choice
+            -> Int
+            -> List ( Int, TOpt.Expr )
+            -> ( TOpt.Decider TOpt.Choice, Int, List ( Int, TOpt.Expr ) )
+        step dec nextIdx accJumps =
+            case dec of
+                TOpt.Leaf choice ->
+                    case choice of
+                        TOpt.Inline expr ->
+                            case expr of
+                                TOpt.Function _ _ _ ->
+                                    ( TOpt.Leaf (TOpt.Jump nextIdx)
+                                    , nextIdx + 1
+                                    , ( nextIdx, expr ) :: accJumps
+                                    )
+
+                                TOpt.TrackedFunction _ _ _ ->
+                                    ( TOpt.Leaf (TOpt.Jump nextIdx)
+                                    , nextIdx + 1
+                                    , ( nextIdx, expr ) :: accJumps
+                                    )
+
+                                -- Non-lambda Inline: leave as-is.
+                                _ ->
+                                    ( TOpt.Leaf (TOpt.Inline expr), nextIdx, accJumps )
+
+                        TOpt.Jump idx ->
+                            -- Already a jump; do nothing.
+                            ( TOpt.Leaf (TOpt.Jump idx), nextIdx, accJumps )
+
+                TOpt.Chain tests success failure ->
+                    let
+                        ( success1, next1, acc1 ) =
+                            step success nextIdx accJumps
+
+                        ( failure1, next2, acc2 ) =
+                            step failure next1 acc1
+                    in
+                    ( TOpt.Chain tests success1 failure1, next2, acc2 )
+
+                TOpt.FanOut path edges fallback ->
+                    let
+                        stepEdge ( test, subDecider ) ( edgeAcc, n, js ) =
+                            let
+                                ( subDecider1, n1, js1 ) =
+                                    step subDecider n js
+                            in
+                            ( ( test, subDecider1 ) :: edgeAcc, n1, js1 )
+
+                        ( edgesRev, next1, acc1 ) =
+                            List.foldl stepEdge ( [], nextIdx, accJumps ) edges
+
+                        ( fallback1, next2, acc2 ) =
+                            step fallback next1 acc1
+                    in
+                    ( TOpt.FanOut path (List.reverse edgesRev) fallback1, next2, acc2 )
+    in
+    let
+        ( newDecider, _, newJumpsRev ) =
+            step decider startIndex []
+    in
+    ( newDecider, jumps0 ++ List.reverse newJumpsRev )
+```
+
+**Why this is needed**: The case optimizer inlines small expressions (including lambdas) directly into `Leaf (Inline expr)` choices when they're referenced only once. Without hoisting, `extractAndUnifyBranchParams` sees an empty `jumps` list and returns `Nothing`, so case-boundary normalization never triggers.
+
+### Step 11: Implement Case-Boundary Helper with Alpha-Renaming
 
 ```elm
 tryNormalizeCaseBoundary :
@@ -694,28 +803,46 @@ tryNormalizeCaseBoundary :
     -> TOpt.Expr
     -> Can.Type
     -> Maybe ( List ( Name.Name, Can.Type ), TOpt.Expr )
-tryNormalizeCaseBoundary outerParams body lambdaType =
+tryNormalizeCaseBoundary outerParams body _ =
     case body of
         TOpt.Case label scrut decider jumps caseType ->
-            case extractAndUnifyBranchParams jumps of
+            let
+                -- Step 1: expose all lambda branches in the jump table.
+                ( deciderWithJumps, allJumps ) =
+                    hoistInlineLambdaChoicesToJumps decider jumps
+            in
+            case extractAndUnifyBranchParams allJumps of
                 Nothing ->
+                    -- Either some branch is not a lambda, or arities/types mismatch;
+                    -- do not normalize this case boundary.
                     Nothing
 
                 Just ( canonicalParams, renamedJumps, arityPeeled ) ->
+                    -- Step 2: peel arityPeeled argument types off the case result type.
                     case peelLambdaTypes arityPeeled caseType of
                         Just newCaseType ->
+                            -- Step 3: extend outer params and rebuild Case with:
+                            --   - deciderWithJumps (now using Jump choices),
+                            --   - renamed jump branch bodies,
+                            --   - peeled case result type.
                             Just
                                 ( outerParams ++ canonicalParams
-                                , TOpt.Case label scrut decider renamedJumps newCaseType
+                                , TOpt.Case label scrut deciderWithJumps renamedJumps newCaseType
                                 )
 
                         Nothing ->
+                            -- Case result type is not sufficiently-curried; abort.
                             Nothing
 
         _ ->
             Nothing
 
 
+### Step 12: Branch Parameter Extraction and Unification
+
+This function is unchanged from before - it extracts lambdas from the jump list, checks compatibility, and performs alpha-renaming:
+
+```elm
 extractAndUnifyBranchParams :
     List ( Int, TOpt.Expr )
     -> Maybe ( List ( Name.Name, Can.Type ), List ( Int, TOpt.Expr ), Int )
@@ -815,7 +942,7 @@ peelLambdaTypes count tipe =
                 Nothing
 ```
 
-### Step 11: Wire into optimizeTyped Pipeline
+### Step 13: Wire into optimizeTyped Pipeline
 
 Edit `compiler/src/Compiler/Optimize/Typed/Module.elm`:
 
@@ -839,7 +966,7 @@ This ensures:
 - Finalization continues to do only the "identity on types" canonicalization
 - Monomorphization sees normalized lambda boundaries
 
-### Step 12: Update Documentation
+### Step 14: Update Documentation
 
 Add to `THEORY.md` or create `design_docs/theory/pass_normalize_lambda_boundaries_theory.md`:
 
@@ -865,7 +992,7 @@ where semantically safe.
 - Runs before finalizeLocalGraph to work on fully-typed expressions
 ```
 
-### Step 13: Add Tests
+### Step 15: Add Tests
 
 Create `compiler/tests/Compiler/Optimize/NormalizeLambdaBoundariesTest.elm` with test cases for:
 1. Let-boundary normalization
@@ -875,6 +1002,51 @@ Create `compiler/tests/Compiler/Optimize/NormalizeLambdaBoundariesTest.elm` with
 5. Case-boundary with incompatible arities (should NOT flatten)
 6. Outer Function variant preservation
 7. Outer TrackedFunction variant preservation
+
+### Step 16: Optional Stats/Debug API (for development/testing)
+
+Add a debug-only variant that returns transformation statistics:
+
+```elm
+type alias Stats =
+    { letBoundariesSeen : Int
+    , letBoundariesTransformed : Int
+    , caseBoundariesSeen : Int
+    , caseCandidates : Int       -- All branches are lambdas
+    , caseTransformed : Int       -- Transformed (matching arity+types)
+    , caseSkippedMismatch : Int   -- Skipped due to arity/type mismatch
+    , caseSkippedNonLambda : Int  -- Skipped due to non-lambda branch
+    }
+
+
+emptyStats : Stats
+emptyStats =
+    { letBoundariesSeen = 0
+    , letBoundariesTransformed = 0
+    , caseBoundariesSeen = 0
+    , caseCandidates = 0
+    , caseTransformed = 0
+    , caseSkippedMismatch = 0
+    , caseSkippedNonLambda = 0
+    }
+
+
+{-| Debug variant that returns transformation statistics.
+    Use only in tests or analysis tools, not in production.
+-}
+normalizeLocalGraphWithStats : TOpt.LocalGraph -> ( TOpt.LocalGraph, Stats )
+```
+
+**Implementation notes:**
+- Thread a `Stats` record through the transformation functions
+- Increment counters in:
+  - `tryNormalizeLetBoundary`: increment `letBoundariesSeen`, and `letBoundariesTransformed` on `Just`
+  - `tryNormalizeCaseBoundary`: increment `caseBoundariesSeen`, and appropriate counter based on result
+  - `hoistInlineLambdaChoicesToJumps`: track how many inlines were hoisted
+- Wire into a test module (e.g. `LambdaBoundaryNormalizationStatsTest`) that asserts expected transformation counts
+- Keep `normalizeLocalGraph` as the production entrypoint (discards stats)
+
+**Rationale:** Stats help validate the pass is working as expected on real code, but should not be baked into production builds.
 
 ## Verification Plan
 
@@ -913,7 +1085,9 @@ After normalization:
 | Question | Resolution |
 |----------|------------|
 | TrackedFunction merging | **Always keep outer lambda's variant** via `LambdaKind` type. `rebuildLambda` uses outer kind. |
-| Decider inlines | Recursively normalize expressions inside `Choice.Inline` via `normalizeChoiceExpr`. Boundary lifting driven by `jumps` list only. |
+| Decider inlines | **Hoist lambda inlines to jumps table** via `hoistInlineLambdaChoicesToJumps`. The case optimizer creates `Inline` choices for branches referenced once; we convert lambda inlines to `Jump` choices so `extractAndUnifyBranchParams` can process them. Non-lambda inlines stay as-is. |
+| Hoisting style | **Permanent** (Inline→Jump at TOpt level). Simpler than virtual approach; `Inline` vs `Jump` is semantically equivalent. Later passes (codegen) can re-inline unique jumps if needed. |
+| Case eligibility | **All-or-nothing**. All branches must be lambdas with matching arity and parameter types. No partial transformation—eta-expanding non-lambda branches would add closures instead of removing them. |
 | Nested normalization | **Local fixpoint per lambda** via `normalizeLambdaBodyFixpoint`. |
 | Parameter identity for case | **Alpha-rename to canonical names** via `freshName` with `_hl_` suffix. |
 | Dict API | **`Data.Map as Dict`** with `identity` comparator for `Name`. |
@@ -922,6 +1096,7 @@ After normalization:
 | `Can.Type` equality | Structural equality (`==`) works for comparing types within case branches. |
 | Pipeline hook point | **Inside `optimizeTyped`** in Module.elm, composed before `finalizeLocalGraph`. |
 | Works on | **`TOpt.LocalGraph`** (per-module), not GlobalGraph. |
+| Metrics/logging | **Optional debug API** via `normalizeLocalGraphWithStats`. Keep production code clean; stats only for tests/analysis. |
 
 ## Assumptions
 
@@ -950,9 +1125,12 @@ After normalization:
 | 7 | normalizeExpr with recursion | Medium |
 | 8 | Fixpoint iteration | Low |
 | 9 | Let-boundary helper | Low |
-| 10 | Case-boundary + alpha-rename | Medium |
-| 11 | Pipeline wiring (Module.elm) | Low |
-| 12 | Documentation | Low |
-| 13 | Tests | Medium |
+| 10 | **Inline-lambda hoisting helper** | Medium |
+| 11 | Case-boundary + alpha-rename | Medium |
+| 12 | Branch param extraction/unification | Medium |
+| 13 | Pipeline wiring (Module.elm) | Low |
+| 14 | Documentation | Low |
+| 15 | Tests | Medium |
+| 16 | Optional Stats/Debug API | Low |
 
-Total estimated code: ~500-550 lines of Elm for the pass (including full renameExpr coverage), plus ~150 lines of tests.
+Total estimated code: ~650-700 lines of Elm for the pass (including full renameExpr coverage, inline hoisting, and optional stats API), plus ~150-200 lines of tests.
