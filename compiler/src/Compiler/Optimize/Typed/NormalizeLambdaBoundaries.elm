@@ -560,22 +560,31 @@ tryNormalizeLetBoundary :
     -> Maybe ( List ( Name.Name, Can.Type ), TOpt.Expr )
 tryNormalizeLetBoundary outerParams body =
     case body of
-        TOpt.Let def inner letType ->
+        TOpt.Let def inner _ ->
             case inner of
                 TOpt.Function innerParams innerBody _ ->
+                    let
+                        -- The Let's new type is the body's type (lambda params extracted)
+                        newLetType =
+                            TOpt.typeOf innerBody
+                    in
                     Just
                         ( outerParams ++ innerParams
-                        , TOpt.Let def innerBody letType
+                        , TOpt.Let def innerBody newLetType
                         )
 
                 TOpt.TrackedFunction innerParams innerBody _ ->
                     let
                         converted =
                             List.map (\( A.At _ n, t ) -> ( n, t )) innerParams
+
+                        -- The Let's new type is the body's type (lambda params extracted)
+                        newLetType =
+                            TOpt.typeOf innerBody
                     in
                     Just
                         ( outerParams ++ converted
-                        , TOpt.Let def innerBody letType
+                        , TOpt.Let def innerBody newLetType
                         )
 
                 _ ->
@@ -589,6 +598,128 @@ tryNormalizeLetBoundary outerParams body =
 -- CASE-BOUNDARY NORMALIZATION
 
 
+{-| Hoist inline lambda leaves in the Decider into the jump table.
+
+We transform:
+
+    Leaf (Inline (\params -> body))
+
+into:
+
+    Leaf (Jump idx)
+
+and append (idx, \params -> body) to the jumps list, choosing fresh
+indices above any existing ones.
+
+Non-lambda Inline leaves are left as Inline; they will NOT be
+considered for case-boundary normalization.
+
+-}
+hoistInlineLambdaChoicesToJumps :
+    TOpt.Decider TOpt.Choice
+    -> List ( Int, TOpt.Expr )
+    -> ( TOpt.Decider TOpt.Choice, List ( Int, TOpt.Expr ) )
+hoistInlineLambdaChoicesToJumps decider jumps0 =
+    let
+        -- Determine the starting index for new jumps.
+        maxIndex : Int
+        maxIndex =
+            jumps0
+                |> List.map Tuple.first
+                |> List.maximum
+                |> Maybe.withDefault -1
+
+        startIndex : Int
+        startIndex =
+            maxIndex + 1
+
+        -- Walk the Decider, hoisting lambda Inlines.
+        step :
+            TOpt.Decider TOpt.Choice
+            -> Int
+            -> List ( Int, TOpt.Expr )
+            -> ( TOpt.Decider TOpt.Choice, Int, List ( Int, TOpt.Expr ) )
+        step dec nextIdx accJumps =
+            case dec of
+                TOpt.Leaf choice ->
+                    case choice of
+                        TOpt.Inline expr ->
+                            case expr of
+                                TOpt.Function _ _ _ ->
+                                    ( TOpt.Leaf (TOpt.Jump nextIdx)
+                                    , nextIdx + 1
+                                    , ( nextIdx, expr ) :: accJumps
+                                    )
+
+                                TOpt.TrackedFunction _ _ _ ->
+                                    ( TOpt.Leaf (TOpt.Jump nextIdx)
+                                    , nextIdx + 1
+                                    , ( nextIdx, expr ) :: accJumps
+                                    )
+
+                                -- Non-lambda Inline: leave as-is.
+                                _ ->
+                                    ( TOpt.Leaf (TOpt.Inline expr), nextIdx, accJumps )
+
+                        TOpt.Jump idx ->
+                            -- Already a jump; do nothing.
+                            ( TOpt.Leaf (TOpt.Jump idx), nextIdx, accJumps )
+
+                TOpt.Chain tests success failure ->
+                    let
+                        ( success1, next1, acc1 ) =
+                            step success nextIdx accJumps
+
+                        ( failure1, next2, acc2 ) =
+                            step failure next1 acc1
+                    in
+                    ( TOpt.Chain tests success1 failure1, next2, acc2 )
+
+                TOpt.FanOut path edges fallback ->
+                    let
+                        stepEdge ( test, subDecider ) ( edgeAcc, n, js ) =
+                            let
+                                ( subDecider1, n1, js1 ) =
+                                    step subDecider n js
+                            in
+                            ( ( test, subDecider1 ) :: edgeAcc, n1, js1 )
+
+                        ( edgesRev, next1, acc1 ) =
+                            List.foldl stepEdge ( [], nextIdx, accJumps ) edges
+
+                        ( fallback1, next2, acc2 ) =
+                            step fallback next1 acc1
+                    in
+                    ( TOpt.FanOut path (List.reverse edgesRev) fallback1, next2, acc2 )
+    in
+    let
+        ( newDecider, _, newJumpsRev ) =
+            step decider startIndex []
+    in
+    ( newDecider, jumps0 ++ List.reverse newJumpsRev )
+
+
+{-| Check if a decider contains any Inline choices.
+If true, the decider has non-lambda branches that weren't hoisted.
+-}
+hasAnyInline : TOpt.Decider TOpt.Choice -> Bool
+hasAnyInline decider =
+    case decider of
+        TOpt.Leaf choice ->
+            case choice of
+                TOpt.Inline _ ->
+                    True
+
+                TOpt.Jump _ ->
+                    False
+
+        TOpt.Chain _ success failure ->
+            hasAnyInline success || hasAnyInline failure
+
+        TOpt.FanOut _ edges fallback ->
+            List.any (\( _, d ) -> hasAnyInline d) edges || hasAnyInline fallback
+
+
 tryNormalizeCaseBoundary :
     List ( Name.Name, Can.Type )
     -> TOpt.Expr
@@ -597,20 +728,40 @@ tryNormalizeCaseBoundary :
 tryNormalizeCaseBoundary outerParams body _ =
     case body of
         TOpt.Case label scrut decider jumps caseType ->
-            case extractAndUnifyBranchParams jumps of
-                Nothing ->
-                    Nothing
+            let
+                -- Step 1: expose all lambda branches in the jump table.
+                ( deciderWithJumps, allJumps ) =
+                    hoistInlineLambdaChoicesToJumps decider jumps
+            in
+            -- Guard: If any Inlines remain (non-lambda branches), abort.
+            -- This prevents changing the case type while leaving Inline branches
+            -- with the wrong type (would cause TOPT_004/MONO_018 violations).
+            if hasAnyInline deciderWithJumps then
+                Nothing
 
-                Just ( canonicalParams, renamedJumps, arityPeeled ) ->
-                    case peelLambdaTypes arityPeeled caseType of
-                        Just newCaseType ->
-                            Just
-                                ( outerParams ++ canonicalParams
-                                , TOpt.Case label scrut decider renamedJumps newCaseType
-                                )
+            else
+                case extractAndUnifyBranchParams allJumps of
+                    Nothing ->
+                        -- Either some branch is not a lambda, or arities/types mismatch;
+                        -- do not normalize this case boundary.
+                        Nothing
 
-                        Nothing ->
-                            Nothing
+                    Just ( canonicalParams, renamedJumps, arityPeeled ) ->
+                        -- Step 2: peel arityPeeled argument types off the case result type.
+                        case peelLambdaTypes arityPeeled caseType of
+                            Just newCaseType ->
+                                -- Step 3: extend outer params and rebuild Case with:
+                                --   - deciderWithJumps (now using Jump choices),
+                                --   - renamed jump branch bodies,
+                                --   - peeled case result type.
+                                Just
+                                    ( outerParams ++ canonicalParams
+                                    , TOpt.Case label scrut deciderWithJumps renamedJumps newCaseType
+                                    )
+
+                            Nothing ->
+                                -- Case result type is not sufficiently-curried; abort.
+                                Nothing
 
         _ ->
             Nothing
