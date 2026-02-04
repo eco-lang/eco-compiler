@@ -554,41 +554,59 @@ normalizeLambdaBodyFixpoint kind params body lambdaType =
 -- LET-BOUNDARY NORMALIZATION
 
 
+{-| Peel off nested Lets, collecting their defs in order.
+Returns (defs in order, innermost non-Let body).
+-}
+peelLets : TOpt.Expr -> List TOpt.Def -> ( List TOpt.Def, TOpt.Expr )
+peelLets expr acc =
+    case expr of
+        TOpt.Let def inner _ ->
+            peelLets inner (def :: acc)
+
+        _ ->
+            ( List.reverse acc, expr )
+
+
+{-| Rebuild nested Lets from a list of defs around a body.
+-}
+rebuildLets : List TOpt.Def -> TOpt.Expr -> TOpt.Expr
+rebuildLets defs innerBody =
+    List.foldr
+        (\def body -> TOpt.Let def body (TOpt.typeOf body))
+        innerBody
+        defs
+
+
 tryNormalizeLetBoundary :
     List ( Name.Name, Can.Type )
     -> TOpt.Expr
     -> Maybe ( List ( Name.Name, Can.Type ), TOpt.Expr )
 tryNormalizeLetBoundary outerParams body =
-    case body of
-        TOpt.Let def inner _ ->
-            case inner of
-                TOpt.Function innerParams innerBody _ ->
-                    let
-                        -- The Let's new type is the body's type (lambda params extracted)
-                        newLetType =
-                            TOpt.typeOf innerBody
-                    in
-                    Just
-                        ( outerParams ++ innerParams
-                        , TOpt.Let def innerBody newLetType
-                        )
+    -- Handle nested Lets: collect defs, find innermost lambda, rebuild
+    case peelLets body [] of
+        ( defs, TOpt.Function innerParams innerBody _ ) ->
+            if List.isEmpty defs then
+                Nothing
 
-                TOpt.TrackedFunction innerParams innerBody _ ->
-                    let
-                        converted =
-                            List.map (\( A.At _ n, t ) -> ( n, t )) innerParams
+            else
+                Just
+                    ( outerParams ++ innerParams
+                    , rebuildLets defs innerBody
+                    )
 
-                        -- The Let's new type is the body's type (lambda params extracted)
-                        newLetType =
-                            TOpt.typeOf innerBody
-                    in
-                    Just
-                        ( outerParams ++ converted
-                        , TOpt.Let def innerBody newLetType
-                        )
+        ( defs, TOpt.TrackedFunction innerParams innerBody _ ) ->
+            if List.isEmpty defs then
+                Nothing
 
-                _ ->
-                    Nothing
+            else
+                let
+                    converted =
+                        List.map (\( A.At _ n, t ) -> ( n, t )) innerParams
+                in
+                Just
+                    ( outerParams ++ converted
+                    , rebuildLets defs innerBody
+                    )
 
         _ ->
             Nothing

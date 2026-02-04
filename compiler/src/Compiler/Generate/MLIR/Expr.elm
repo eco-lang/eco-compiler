@@ -2798,8 +2798,9 @@ generateChainForBoolADT ctx root path success failure resultTy =
 
         -- Generate failure branch (False) with eco.yield
         -- Fork context: keep ctx1's variable mappings but advance nextVar to avoid SSA conflicts
+        -- Also propagate pendingLambdas to ensure closures from the then-branch are not lost
         ctxForElse =
-            { ctx1 | nextVar = ctx1a.nextVar }
+            { ctx1 | nextVar = ctx1a.nextVar, pendingLambdas = ctx1a.pendingLambdas }
 
         elseRes =
             generateDecider ctxForElse root failure resultTy
@@ -2842,8 +2843,9 @@ generateChainGeneral ctx root testChain success failure resultTy =
 
         -- Generate failure branch with eco.yield
         -- Fork context: keep ctx1's variable mappings but advance nextVar to avoid SSA conflicts
+        -- Also propagate pendingLambdas to ensure closures from the then-branch are not lost
         ctxForElse =
-            { ctx1 | nextVar = ctx1a.nextVar }
+            { ctx1 | nextVar = ctx1a.nextVar, pendingLambdas = ctx1a.pendingLambdas }
 
         elseRes =
             generateDecider ctxForElse root failure resultTy
@@ -2893,8 +2895,9 @@ generateChainForBoolADTWithJumps ctx root path success failure jumpLookup result
         ( thenRegion, ctx1a ) =
             mkCaseRegionFromDecider thenRes resultTy
 
+        -- Propagate pendingLambdas to ensure closures from the then-branch are not lost
         ctxForElse =
-            { ctx1 | nextVar = ctx1a.nextVar }
+            { ctx1 | nextVar = ctx1a.nextVar, pendingLambdas = ctx1a.pendingLambdas }
 
         elseRes =
             generateDeciderWithJumps ctxForElse root failure jumpLookup resultTy
@@ -2930,8 +2933,9 @@ generateChainGeneralWithJumps ctx root testChain success failure jumpLookup resu
         ( thenRegion, ctx1a ) =
             mkCaseRegionFromDecider thenRes resultTy
 
+        -- Propagate pendingLambdas to ensure closures from the then-branch are not lost
         ctxForElse =
-            { ctx1 | nextVar = ctx1a.nextVar }
+            { ctx1 | nextVar = ctx1a.nextVar, pendingLambdas = ctx1a.pendingLambdas }
 
         elseRes =
             generateDeciderWithJumps ctxForElse root failure jumpLookup resultTy
@@ -3005,8 +3009,9 @@ generateBoolFanOut ctx root path edges fallback resultTy =
 
         -- Generate False branch (tag 0) with eco.yield
         -- Fork context: keep ctx1's variable mappings but advance nextVar to avoid SSA conflicts
+        -- Also propagate pendingLambdas to ensure closures from the then-branch are not lost
         ctxForElse =
-            { ctx1 | nextVar = ctx1a.nextVar }
+            { ctx1 | nextVar = ctx1a.nextVar, pendingLambdas = ctx1a.pendingLambdas }
 
         elseRes =
             generateDecider ctxForElse root falseBranch resultTy
@@ -3206,8 +3211,9 @@ generateBoolFanOutWithJumps ctx root path edges fallback jumpLookup resultTy =
         ( thenRegion, ctx1a ) =
             mkCaseRegionFromDecider thenRes resultTy
 
+        -- Propagate pendingLambdas to ensure closures from the then-branch are not lost
         ctxForElse =
-            { ctx1 | nextVar = ctx1a.nextVar }
+            { ctx1 | nextVar = ctx1a.nextVar, pendingLambdas = ctx1a.pendingLambdas }
 
         elseRes =
             generateDeciderWithJumps ctxForElse root falseBranch jumpLookup resultTy

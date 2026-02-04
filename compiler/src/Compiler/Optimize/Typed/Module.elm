@@ -100,7 +100,7 @@ optimizeTyped annotations exprTypes kernelEnv (TCan.Module tData) =
         |> addUnions tData.name annotations tData.unions
         |> addEffects tData.name annotations tData.effects
         |> addDecls tData.name annotations exprTypes kernelEnv tData.decls
-        |> ReportingResult.map LambdaNorm.normalizeLocalGraph
+        --|> ReportingResult.map LambdaNorm.normalizeLocalGraph
         |> ReportingResult.map finalizeLocalGraph
 
 
