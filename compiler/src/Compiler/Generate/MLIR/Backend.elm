@@ -52,12 +52,22 @@ generateMlirModule mode typeEnv monoGraph0 =
         -- Run the Mono IR optimizer before MLIR generation
         --( Mono.MonoGraph { nodes, main, registry, ctorShapes }, _ ) =
         --    MonoInlineSimplify.optimize mode typeEnv monoGraph0
-        (Mono.MonoGraph { nodes, main, registry, ctorShapes }) =
+        (Mono.MonoGraph { nodes, main, registry, ctorShapes, returnedClosureParamCounts }) =
             monoGraph0
+
+        -- Convert Data.Map -> Elm Dict for returnedClosureParamCounts
+        returnedCounts : Dict.Dict Int (Maybe Int)
+        returnedCounts =
+            EveryDict.foldl compare
+                (\specId maybeCount acc ->
+                    Dict.insert specId maybeCount acc
+                )
+                Dict.empty
+                returnedClosureParamCounts
 
         signatures : Dict.Dict Int Ctx.FuncSignature
         signatures =
-            Ctx.buildSignatures nodes
+            Ctx.buildSignatures nodes returnedCounts
 
         ctx : Ctx.Context
         ctx =

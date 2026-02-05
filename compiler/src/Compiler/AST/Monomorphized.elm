@@ -335,6 +335,7 @@ type MonoGraph
         , main : Maybe MainInfo
         , registry : SpecializationRegistry
         , ctorShapes : Dict (List String) (List String) (List CtorShape)
+        , returnedClosureParamCounts : Dict Int SpecId (Maybe Int)
         }
 
 

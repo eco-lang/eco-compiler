@@ -2,6 +2,9 @@ module Compiler.Generate.Monomorphize.Closure exposing
     ( ensureCallableTopLevel
     , computeClosureCaptures
     , buildAbiWrapper
+    , freshParams
+    , extractRegion
+    , buildNestedCalls
     )
 
 {-| Closure handling and capture analysis for monomorphization.
@@ -19,6 +22,8 @@ This module handles:
 
 
 # Parameters and Regions
+
+@docs freshParams, extractRegion, buildNestedCalls
 
 
 # Free Variable Analysis

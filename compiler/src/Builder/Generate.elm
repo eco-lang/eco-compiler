@@ -57,6 +57,7 @@ import Compiler.Generate.CodeGen.JavaScript as JavaScript
 import Compiler.Generate.MLIR.Backend as MLIR
 import Compiler.Generate.Mode as Mode
 import Compiler.Generate.Monomorphize as Monomorphize
+import Compiler.Optimize.MonoGlobalOptimize as MonoGlobalOptimize
 import Compiler.Nitpick.Debug as Nitpick
 import Compiler.Reporting.Render.Type.Localizer as L
 import Data.Map as Dict exposing (Dict)
@@ -615,7 +616,11 @@ generateMonoDevOutput backend withSourceMaps leadingLines root roots objects =
         Err err ->
             Task.throw (Exit.GenerateMonomorphizationError err)
 
-        Ok monoGraph ->
+        Ok monoGraph0 ->
+            let
+                monoGraph =
+                    MonoGlobalOptimize.globalOptimize mode globalTypeEnv monoGraph0
+            in
             prepareSourceMaps withSourceMaps root
                 |> Task.map (generateMonoOutput backend leadingLines mode monoGraph globalTypeEnv)
 

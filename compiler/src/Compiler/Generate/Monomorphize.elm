@@ -207,6 +207,7 @@ monomorphizeFromEntry mainGlobal mainType globalTypeEnv nodes =
                     , registry = finalState.registry
                     , main = mainInfo
                     , ctorShapes = ctorShapes
+                    , returnedClosureParamCounts = Dict.empty
                     }
                 )
 

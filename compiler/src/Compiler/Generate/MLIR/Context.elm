@@ -630,9 +630,16 @@ Call model determines arity calculation:
   - FlattenedExternal: MonoExtern nodes use total ABI arity (decomposeFunctionType)
   - StageCurried: User-defined closures use stage arity (closureInfo.params)
 
+The `returnedCounts` parameter is a precomputed map from MonoGlobalOptimize
+that provides the returned closure parameter counts for MonoDefine and port nodes.
+
 -}
-extractNodeSignature : Mono.MonoNode -> Maybe FuncSignature
-extractNodeSignature node =
+extractNodeSignature : Int -> Mono.MonoNode -> Dict.Dict Int (Maybe Int) -> Maybe FuncSignature
+extractNodeSignature specId node returnedCounts =
+    let
+        returnedCountForThisNode =
+            Dict.get specId returnedCounts |> Maybe.withDefault Nothing
+    in
     case node of
         Mono.MonoDefine expr monoType ->
             -- For defines, check if the expression is a closure
@@ -640,12 +647,12 @@ extractNodeSignature node =
             case expr of
                 Mono.MonoClosure closureInfo body _ ->
                     -- Function with params (stage-curried)
-                    -- Compute the returned closure's param count if the body returns a closure
+                    -- Use precomputed returned closure param count
                     Just
                         { paramTypes = List.map Tuple.second closureInfo.params
                         , returnType = Mono.typeOf body
                         , callModel = StageCurried
-                        , returnedClosureParamCount = computeReturnedClosureParamCount body
+                        , returnedClosureParamCount = returnedCountForThisNode
                         }
 
                 _ ->
@@ -726,7 +733,7 @@ extractNodeSignature node =
                         { paramTypes = List.map Tuple.second closureInfo.params
                         , returnType = Mono.typeOf body
                         , callModel = StageCurried
-                        , returnedClosureParamCount = computeReturnedClosureParamCount body
+                        , returnedClosureParamCount = returnedCountForThisNode
                         }
 
                 _ ->
@@ -745,7 +752,7 @@ extractNodeSignature node =
                         { paramTypes = List.map Tuple.second closureInfo.params
                         , returnType = Mono.typeOf body
                         , callModel = StageCurried
-                        , returnedClosureParamCount = computeReturnedClosureParamCount body
+                        , returnedClosureParamCount = returnedCountForThisNode
                         }
 
                 _ ->
@@ -765,64 +772,18 @@ extractNodeSignature node =
                 }
 
 
-{-| Compute the number of explicit parameters in a returned closure.
-This analyzes the expression to find what closure it returns and counts its params.
--}
-computeReturnedClosureParamCount : Mono.MonoExpr -> Maybe Int
-computeReturnedClosureParamCount expr =
-    -- Structure-based analysis first, type-based as fallback
-    case expr of
-        Mono.MonoClosure closureInfo _ _ ->
-            -- Direct closure: count its explicit params (NOT type arity!)
-            -- This handles closures with captures correctly
-            Just (List.length closureInfo.params)
-
-        Mono.MonoLet _ body _ ->
-            -- Let expression: analyze the body (inner lambda may have captures)
-            computeReturnedClosureParamCount body
-
-        Mono.MonoCase _ _ _ jumps _ ->
-            -- Case expression: check first branch
-            case jumps of
-                ( _, branchExpr ) :: _ ->
-                    computeReturnedClosureParamCount branchExpr
-
-                [] ->
-                    -- Empty jumps: use type-based fallback
-                    typeBasedArity expr
-
-        Mono.MonoIf _ final _ ->
-            -- If expression: analyze the final branch
-            computeReturnedClosureParamCount final
-
-        _ ->
-            -- For other expressions (var, call, etc.), use type-based
-            typeBasedArity expr
-
-
-{-| Use type-based arity computation as fallback.
--}
-typeBasedArity : Mono.MonoExpr -> Maybe Int
-typeBasedArity expr =
-    let
-        exprType =
-            Mono.typeOf expr
-    in
-    if Types.isFunctionType exprType then
-        Just (Types.countTotalArity exprType)
-
-    else
-        Nothing
-
-
 {-| Build a map of SpecId -> FuncSignature from all nodes in the graph.
 Used for invariant checking at call sites.
+
+The `returnedCounts` parameter is a precomputed map from MonoGlobalOptimize
+that provides the returned closure parameter counts.
+
 -}
-buildSignatures : EveryDict.Dict Int Int Mono.MonoNode -> Dict.Dict Int FuncSignature
-buildSignatures nodes =
+buildSignatures : EveryDict.Dict Int Int Mono.MonoNode -> Dict.Dict Int (Maybe Int) -> Dict.Dict Int FuncSignature
+buildSignatures nodes returnedCounts =
     EveryDict.foldl compare
         (\specId node acc ->
-            case extractNodeSignature node of
+            case extractNodeSignature specId node returnedCounts of
                 Just sig ->
                     Dict.insert specId sig acc
 
