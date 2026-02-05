@@ -76,11 +76,18 @@ type CallModel
 
 
 {-| Function signature for invariant checking: param types, return type, and call model.
+
+`returnedClosureParamCount` is the number of explicit parameters in the returned closure
+(if the function returns a closure). This differs from the return type's arity when
+the returned closure has captures. For example:
+- `\a b -> expr` returns a closure with 2 params -> returnedClosureParamCount = Just 2
+- `\a -> let x = ... in \b -> expr` returns a closure with 1 param -> returnedClosureParamCount = Just 1
 -}
 type alias FuncSignature =
     { paramTypes : List Mono.MonoType
     , returnType : Mono.MonoType
     , callModel : CallModel
+    , returnedClosureParamCount : Maybe Int
     }
 
 
@@ -97,6 +104,7 @@ kernelFuncSignatureFromType funcType =
     { paramTypes = argTypes
     , returnType = retType
     , callModel = FlattenedExternal
+    , returnedClosureParamCount = Nothing
     }
 
 
@@ -632,10 +640,12 @@ extractNodeSignature node =
             case expr of
                 Mono.MonoClosure closureInfo body _ ->
                     -- Function with params (stage-curried)
+                    -- Compute the returned closure's param count if the body returns a closure
                     Just
                         { paramTypes = List.map Tuple.second closureInfo.params
                         , returnType = Mono.typeOf body
                         , callModel = StageCurried
+                        , returnedClosureParamCount = computeReturnedClosureParamCount body
                         }
 
                 _ ->
@@ -644,6 +654,7 @@ extractNodeSignature node =
                         { paramTypes = []
                         , returnType = monoType
                         , callModel = StageCurried
+                        , returnedClosureParamCount = Nothing
                         }
 
         Mono.MonoTailFunc params _ monoType ->
@@ -664,6 +675,7 @@ extractNodeSignature node =
                 { paramTypes = List.map Tuple.second params
                 , returnType = returnType
                 , callModel = StageCurried
+                , returnedClosureParamCount = Nothing
                 }
 
         Mono.MonoCtor ctorShape monoType ->
@@ -673,6 +685,7 @@ extractNodeSignature node =
                 { paramTypes = ctorShape.fieldTypes
                 , returnType = monoType
                 , callModel = FlattenedExternal
+                , returnedClosureParamCount = Nothing
                 }
 
         Mono.MonoEnum _ monoType ->
@@ -681,6 +694,7 @@ extractNodeSignature node =
                 { paramTypes = []
                 , returnType = monoType
                 , callModel = FlattenedExternal
+                , returnedClosureParamCount = Nothing
                 }
 
         Mono.MonoExtern monoType ->
@@ -697,6 +711,7 @@ extractNodeSignature node =
                         { paramTypes = argMonoTypes
                         , returnType = resultMonoType
                         , callModel = FlattenedExternal
+                        , returnedClosureParamCount = Nothing
                         }
 
                 -- Non-function externs are not callable; no signature.
@@ -711,6 +726,7 @@ extractNodeSignature node =
                         { paramTypes = List.map Tuple.second closureInfo.params
                         , returnType = Mono.typeOf body
                         , callModel = StageCurried
+                        , returnedClosureParamCount = computeReturnedClosureParamCount body
                         }
 
                 _ ->
@@ -718,6 +734,7 @@ extractNodeSignature node =
                         { paramTypes = []
                         , returnType = monoType
                         , callModel = StageCurried
+                        , returnedClosureParamCount = Nothing
                         }
 
         Mono.MonoPortOutgoing expr monoType ->
@@ -728,6 +745,7 @@ extractNodeSignature node =
                         { paramTypes = List.map Tuple.second closureInfo.params
                         , returnType = Mono.typeOf body
                         , callModel = StageCurried
+                        , returnedClosureParamCount = computeReturnedClosureParamCount body
                         }
 
                 _ ->
@@ -735,6 +753,7 @@ extractNodeSignature node =
                         { paramTypes = []
                         , returnType = monoType
                         , callModel = StageCurried
+                        , returnedClosureParamCount = Nothing
                         }
 
         Mono.MonoCycle _ monoType ->
@@ -742,7 +761,58 @@ extractNodeSignature node =
                 { paramTypes = []
                 , returnType = monoType
                 , callModel = StageCurried
+                , returnedClosureParamCount = Nothing
                 }
+
+
+{-| Compute the number of explicit parameters in a returned closure.
+This analyzes the expression to find what closure it returns and counts its params.
+-}
+computeReturnedClosureParamCount : Mono.MonoExpr -> Maybe Int
+computeReturnedClosureParamCount expr =
+    -- Structure-based analysis first, type-based as fallback
+    case expr of
+        Mono.MonoClosure closureInfo _ _ ->
+            -- Direct closure: count its explicit params (NOT type arity!)
+            -- This handles closures with captures correctly
+            Just (List.length closureInfo.params)
+
+        Mono.MonoLet _ body _ ->
+            -- Let expression: analyze the body (inner lambda may have captures)
+            computeReturnedClosureParamCount body
+
+        Mono.MonoCase _ _ _ jumps _ ->
+            -- Case expression: check first branch
+            case jumps of
+                ( _, branchExpr ) :: _ ->
+                    computeReturnedClosureParamCount branchExpr
+
+                [] ->
+                    -- Empty jumps: use type-based fallback
+                    typeBasedArity expr
+
+        Mono.MonoIf _ final _ ->
+            -- If expression: analyze the final branch
+            computeReturnedClosureParamCount final
+
+        _ ->
+            -- For other expressions (var, call, etc.), use type-based
+            typeBasedArity expr
+
+
+{-| Use type-based arity computation as fallback.
+-}
+typeBasedArity : Mono.MonoExpr -> Maybe Int
+typeBasedArity expr =
+    let
+        exprType =
+            Mono.typeOf expr
+    in
+    if Types.isFunctionType exprType then
+        Just (Types.countTotalArity exprType)
+
+    else
+        Nothing
 
 
 {-| Build a map of SpecId -> FuncSignature from all nodes in the graph.

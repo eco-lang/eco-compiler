@@ -405,8 +405,24 @@ specializeLambda lambdaExpr canType subst state =
                 , captures = captures
                 , params = monoParams
                 }
+
+            -- Reconcile function return type with the specialized body.
+            -- This is where we propagate canonical case types (e.g. [2]) back
+            -- into the enclosing function's return type.
+            bodyType : Mono.MonoType
+            bodyType =
+                Mono.typeOf monoBody
+
+            effectiveMonoTypeFixed : Mono.MonoType
+            effectiveMonoTypeFixed =
+                case effectiveMonoType of
+                    Mono.MFunction argTypes _ ->
+                        Mono.MFunction argTypes bodyType
+
+                    _ ->
+                        effectiveMonoType
         in
-        ( Mono.MonoClosure closureInfo monoBody effectiveMonoType, stateAfter )
+        ( Mono.MonoClosure closureInfo monoBody effectiveMonoTypeFixed, stateAfter )
 
 
 

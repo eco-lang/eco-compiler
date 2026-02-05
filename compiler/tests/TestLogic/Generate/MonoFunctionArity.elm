@@ -256,8 +256,9 @@ collectExprArityIssues context expr =
         Mono.MonoDestruct _ valueExpr _ ->
             collectExprArityIssues context valueExpr
 
-        Mono.MonoCase _ _ _ branches _ ->
-            List.concatMap (\( _, e ) -> collectExprArityIssues context e) branches
+        Mono.MonoCase _ _ decider branches _ ->
+            collectDeciderArityIssues context decider
+                ++ List.concatMap (\( _, e ) -> collectExprArityIssues context e) branches
 
         Mono.MonoRecordCreate fieldExprs _ ->
             List.concatMap (collectExprArityIssues context) fieldExprs
@@ -287,3 +288,26 @@ collectDefArityIssues context def =
         Mono.MonoTailDef _ _ expr ->
             -- Check that tail def param count matches expression type
             collectExprArityIssues context expr
+
+
+{-| Collect arity issues from a Decider tree (for MonoCase inline leaves).
+-}
+collectDeciderArityIssues : String -> Mono.Decider Mono.MonoChoice -> List String
+collectDeciderArityIssues context decider =
+    case decider of
+        Mono.Leaf choice ->
+            case choice of
+                Mono.Inline expr ->
+                    collectExprArityIssues (context ++ " inline-leaf") expr
+
+                Mono.Jump _ ->
+                    -- Jumps are checked via the branches list
+                    []
+
+        Mono.Chain _ success failure ->
+            collectDeciderArityIssues context success
+                ++ collectDeciderArityIssues context failure
+
+        Mono.FanOut _ edges fallback ->
+            List.concatMap (\( _, d ) -> collectDeciderArityIssues context d) edges
+                ++ collectDeciderArityIssues context fallback

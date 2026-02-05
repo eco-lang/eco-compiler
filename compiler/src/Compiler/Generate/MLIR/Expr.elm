@@ -914,13 +914,71 @@ coerceResultToType ctx var actualTy expectedTy =
 -}
 generateCall : Ctx.Context -> Mono.MonoExpr -> List Mono.MonoExpr -> Mono.MonoType -> ExprResult
 generateCall ctx func args resultType =
-    -- If the result type is still a function, this is a partial application.
-    -- Route through the closure path to avoid direct calls with insufficient args.
-    if Types.isFunctionType resultType then
-        generateClosureApplication ctx func args resultType
+    let
+        callModel =
+            callModelForCallee ctx func
+    in
+    case callModel of
+        Ctx.FlattenedExternal ->
+            -- Kernels / externs: use ABI-flattened model.
+            -- Here, resultType from MonoCall is the true result type.
+            if Types.isFunctionType resultType then
+                -- Partial application of an extern (rare but possible):
+                generateClosureApplication ctx func args resultType
 
-    else
-        generateSaturatedCall ctx func args resultType
+            else
+                -- Fully-saturated external call:
+                generateSaturatedCall ctx func args resultType
+
+        Ctx.StageCurried ->
+            -- User-defined function with stage-curried calling convention.
+            --
+            -- generateSaturatedCall can only handle calls within ONE stage.
+            -- If the function has multiple stages, we must use the closure path
+            -- to handle stage boundaries correctly.
+            --
+            -- Compare arg count to FIRST STAGE arity:
+            -- - If args <= firstStageArity AND args == totalArity: saturated single-stage call
+            -- - Otherwise: use closure path for multi-stage or partial application
+            let
+                ( firstStageArity, totalArity ) =
+                    case func of
+                        Mono.MonoVarGlobal _ specId _ ->
+                            case Dict.get specId ctx.signatures of
+                                Just sig ->
+                                    ( List.length sig.paramTypes
+                                    , List.length sig.paramTypes + Types.countTotalArity sig.returnType
+                                    )
+
+                                Nothing ->
+                                    let
+                                        t =
+                                            Mono.typeOf func
+                                    in
+                                    ( Types.stageArity t, Types.countTotalArity t )
+
+                        Mono.MonoClosure closureInfo _ closureType ->
+                            ( List.length closureInfo.params
+                            , List.length closureInfo.params + Types.countTotalArity (Types.stageReturnType closureType)
+                            )
+
+                        _ ->
+                            let
+                                t =
+                                    Mono.typeOf func
+                            in
+                            ( Types.stageArity t, Types.countTotalArity t )
+
+                argCount =
+                    List.length args
+            in
+            if argCount == totalArity && argCount <= firstStageArity && totalArity > 0 then
+                -- Single-stage saturated call: use saturated path (has intrinsic logic)
+                generateSaturatedCall ctx func args resultType
+
+            else
+                -- Multi-stage call or partial application: use closure path
+                generateClosureApplication ctx func args resultType
 
 
 {-| Result of applying arguments by stages.
@@ -948,10 +1006,11 @@ applyByStages :
     -> MlirType -- funcMlirType: the closure's MLIR type
     -> Mono.MonoType -- funcMonoType: the function's MonoType (stage-curried)
     -> Int -- sourceRemaining: the source PAP's remaining arity (CGEN_052)
+    -> Maybe Int -- returnedClosureParamCount: if known, the param count of returned closure
     -> List ( String, MlirType ) -- args: remaining (var, mlirType) pairs to apply
     -> List MlirOp -- accumulated ops
     -> ApplyByStagesResult
-applyByStages ctx funcVar funcMlirType funcMonoType sourceRemaining args accOps =
+applyByStages ctx funcVar funcMlirType funcMonoType sourceRemaining returnedClosureParamCount args accOps =
     case args of
         [] ->
             -- Base case: no more args to apply
@@ -1011,9 +1070,26 @@ applyByStages ctx funcVar funcMlirType funcMonoType sourceRemaining args accOps 
                     remainingArity =
                         sourceRemaining
 
-                    -- The result's remaining for the next iteration
-                    resultRemaining =
+                    -- The result's remaining for the next iteration.
+                    -- When a stage is fully applied but returns another function,
+                    -- the result is a NEW closure, so reset to its arity.
+                    rawResultRemaining =
                         sourceRemaining - batchSize
+
+                    resultRemaining =
+                        if rawResultRemaining <= 0 then
+                            -- Stage fully applied - result is a new closure
+                            -- Use returnedClosureParamCount if known, otherwise fall back to stageArity
+                            case returnedClosureParamCount of
+                                Just paramCount ->
+                                    paramCount
+
+                                Nothing ->
+                                    -- Fallback: use stageArity (assumes captures exist)
+                                    Types.stageArity stageRetType
+
+                        else
+                            rawResultRemaining
 
                     papExtendAttrs =
                         Dict.fromList
@@ -1030,7 +1106,8 @@ applyByStages ctx funcVar funcMlirType funcMonoType sourceRemaining args accOps 
                             |> Ops.opBuilder.build
                 in
                 -- Recurse with the result closure and remaining args
-                applyByStages ctx2 resVar resultMlirType stageRetType resultRemaining rest (accOps ++ [ papExtendOp ])
+                -- Note: after crossing a stage boundary, we don't know the next closure's param count
+                applyByStages ctx2 resVar resultMlirType stageRetType resultRemaining Nothing rest (accOps ++ [ papExtendOp ])
 
 
 {-| Determine the call model for an expression being bound to a variable.
@@ -1259,38 +1336,39 @@ generateClosureApplication ctx func args resultType =
                     -- For inline closures (MonoClosure), use params.length directly.
                     -- For global functions (MonoVarGlobal), use the signature's paramTypes count.
                     -- Otherwise, fall back to countTotalArity for stage-curried functions.
-                    initialRemaining =
+                    -- Also track returnedClosureParamCount for correct reset at stage boundaries.
+                    ( initialRemaining, returnedClosureParamCount ) =
                         case func of
                             Mono.MonoVarLocal name _ ->
                                 case Ctx.lookupVarArity ctx1b name of
                                     Just arity ->
-                                        arity
+                                        ( arity, Nothing )
 
                                     Nothing ->
                                         -- Fallback: use countTotalArity for stage-curried
-                                        Types.countTotalArity funcType
+                                        ( Types.countTotalArity funcType, Nothing )
 
                             Mono.MonoClosure closureInfo _ _ ->
-                                List.length closureInfo.params
+                                ( List.length closureInfo.params, Nothing )
 
                             Mono.MonoVarGlobal _ specId _ ->
-                                -- Look up the signature's paramTypes count
+                                -- Look up the signature's paramTypes count and returnedClosureParamCount
                                 case Dict.get specId ctx1b.signatures of
                                     Just sig ->
-                                        List.length sig.paramTypes
+                                        ( List.length sig.paramTypes, sig.returnedClosureParamCount )
 
                                     Nothing ->
                                         -- Fallback: use countTotalArity
-                                        Types.countTotalArity funcType
+                                        ( Types.countTotalArity funcType, Nothing )
 
                             _ ->
                                 -- For other expressions (e.g., function returning closure),
                                 -- use countTotalArity as best estimate
-                                Types.countTotalArity funcType
+                                ( Types.countTotalArity funcType, Nothing )
 
                     -- Apply arguments by stages, emitting a chain of papExtend operations
                     papResult =
-                        applyByStages ctx1b funcResult.resultVar funcResult.resultType funcType initialRemaining boxedArgsWithTypes []
+                        applyByStages ctx1b funcResult.resultVar funcResult.resultType funcType initialRemaining returnedClosureParamCount boxedArgsWithTypes []
                 in
                 { ops = funcResult.ops ++ argOps ++ boxOps ++ papResult.ops
                 , resultVar = papResult.resultVar
@@ -1921,8 +1999,9 @@ generateSaturatedCall ctx func args resultType =
                                         Types.countTotalArity funcType
 
                             -- Apply arguments by stages, emitting a chain of papExtend operations
+                            -- For MonoVarLocal, we don't have signature access, so pass Nothing
                             papResult =
-                                applyByStages ctx1b funcVarName funcVarType funcType initialRemaining boxedArgsWithTypes []
+                                applyByStages ctx1b funcVarName funcVarType funcType initialRemaining Nothing boxedArgsWithTypes []
                         in
                         { ops = argOps ++ boxOps ++ papResult.ops
                         , resultVar = papResult.resultVar
@@ -1978,38 +2057,39 @@ generateSaturatedCall ctx func args resultType =
                     -- For inline closures (MonoClosure), use params.length directly.
                     -- For global functions (MonoVarGlobal), use the signature's paramTypes count.
                     -- Otherwise, fall back to countTotalArity for stage-curried functions.
-                    initialRemaining =
+                    -- Also track returnedClosureParamCount for correct reset at stage boundaries.
+                    ( initialRemaining, returnedClosureParamCount ) =
                         case func of
                             Mono.MonoVarLocal name _ ->
                                 case Ctx.lookupVarArity ctx1b name of
                                     Just arity ->
-                                        arity
+                                        ( arity, Nothing )
 
                                     Nothing ->
                                         -- Fallback: use countTotalArity for stage-curried
-                                        Types.countTotalArity funcType
+                                        ( Types.countTotalArity funcType, Nothing )
 
                             Mono.MonoClosure closureInfo _ _ ->
-                                List.length closureInfo.params
+                                ( List.length closureInfo.params, Nothing )
 
                             Mono.MonoVarGlobal _ specId _ ->
-                                -- Look up the signature's paramTypes count
+                                -- Look up the signature's paramTypes count and returnedClosureParamCount
                                 case Dict.get specId ctx1b.signatures of
                                     Just sig ->
-                                        List.length sig.paramTypes
+                                        ( List.length sig.paramTypes, sig.returnedClosureParamCount )
 
                                     Nothing ->
                                         -- Fallback: use countTotalArity
-                                        Types.countTotalArity funcType
+                                        ( Types.countTotalArity funcType, Nothing )
 
                             _ ->
                                 -- For other expressions (e.g., function returning closure),
                                 -- use countTotalArity as best estimate
-                                Types.countTotalArity funcType
+                                ( Types.countTotalArity funcType, Nothing )
 
                     -- Apply arguments by stages, emitting a chain of papExtend operations
                     papResult =
-                        applyByStages ctx1b funcResult.resultVar funcResult.resultType funcType initialRemaining boxedArgsWithTypes []
+                        applyByStages ctx1b funcResult.resultVar funcResult.resultType funcType initialRemaining returnedClosureParamCount boxedArgsWithTypes []
                 in
                 { ops = funcResult.ops ++ argOps ++ boxOps ++ papResult.ops
                 , resultVar = papResult.resultVar
@@ -2398,11 +2478,28 @@ generateLet ctx def body =
 
                 -- Extract source arity from closure for CGEN_052 (papExtend remaining_arity)
                 -- This is the closure's params.length, which equals papCreate's remaining arity
+                -- For calls that return closures, we need to compute the arity of the returned closure
                 exprSourceArity : Maybe Int
                 exprSourceArity =
                     case expr of
                         Mono.MonoClosure closureInfo _ _ ->
                             Just (List.length closureInfo.params)
+
+                        Mono.MonoCall _ (Mono.MonoVarGlobal _ specId _) args _ ->
+                            -- Call to global function - check if it returns a closure
+                            -- Use returnedClosureParamCount if available
+                            case Dict.get specId ctxWithPlaceholders.signatures of
+                                Just sig ->
+                                    if List.length args >= List.length sig.paramTypes then
+                                        -- Fully applied first stage - returns a closure
+                                        sig.returnedClosureParamCount
+
+                                    else
+                                        -- Partial application of first stage
+                                        Just (List.length sig.paramTypes - List.length args)
+
+                                Nothing ->
+                                    Nothing
 
                         _ ->
                             Nothing

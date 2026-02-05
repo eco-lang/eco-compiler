@@ -280,23 +280,22 @@ buildNestedCalls region calleeExpr params =
     buildCalls calleeExpr paramExprs srcSeg
 
 
-{-| Build a closure that wraps a function expression to adapt its ABI.
+{-| Build a closure (or chain of closures) that wraps a function expression
+to adapt its ABI to a target staged function type.
 
 Given:
 
-  - targetType: the desired ABI type (e.g., MFunction [A,B,C,D] R)
-  - calleeExpr: the expression to wrap (e.g., has type MFunction [A] (MFunction [B,C,D] R))
+  - targetType: the desired ABI type (e.g., MFunction [A] (MFunction [B] R))
+  - calleeExpr: the expression to wrap (e.g., has type MFunction [A,B] R)
 
-Returns a closure with targetType that calls calleeExpr using nested calls.
+If the source and target segmentations already match, returns calleeExpr
+unchanged. Otherwise, builds nested MonoClosures:
 
-If the segmentations already match, returns the callee unchanged.
-
-The wrapper is built entirely in Mono:
-
-  - Fresh lambdaId from state
-  - Params = flat argument list for canonical ABI
-  - Body = nested MonoCalls respecting callee's staging (MONO\_016)
-  - Captures = computeClosureCaptures params body
+  - One closure per stage of targetType.
+  - Each closure's params list is exactly the first stage's param types
+    (Types.stageParamTypes) for its function type (MONO_016).
+  - The innermost body calls calleeExpr using buildNestedCalls, which
+    respects the callee's own staging.
 
 -}
 buildAbiWrapper :
@@ -304,7 +303,7 @@ buildAbiWrapper :
     -> Mono.MonoExpr
     -> MonoState
     -> ( Mono.MonoExpr, MonoState )
-buildAbiWrapper targetType calleeExpr state =
+buildAbiWrapper targetType calleeExpr state0 =
     let
         srcType =
             Mono.typeOf calleeExpr
@@ -317,47 +316,85 @@ buildAbiWrapper targetType calleeExpr state =
     in
     if targetSeg == srcSeg then
         -- Segmentations match; no wrapper needed
-        ( calleeExpr, state )
+        ( calleeExpr, state0 )
 
     else
         let
-            -- Flatten to get all arg types
-            ( flatArgs, _ ) =
-                Types.decomposeFunctionType targetType
-
-            -- Fresh params for the wrapper
-            params =
-                freshParams flatArgs
-
-            -- Build the wrapper body: nested calls to calleeExpr
-            -- Propagate the callee's source region for error reporting
+            -- Region for generated MonoCall nodes (taken from calleeExpr)
+            region : A.Region
             region =
                 extractRegion calleeExpr
 
-            bodyExpr =
-                buildNestedCalls region calleeExpr params
+            -- Recursively build nested closures for each stage of `remainingType`.
+            --
+            -- - `remainingType` is the function type for the current (outer) stage.
+            -- - `accParams` accumulates all params from *previous* stages;
+            --   these are the arguments we will eventually pass to calleeExpr.
+            --
+            -- Base case: no more stage params -> fully apply calleeExpr to
+            -- all accumulated params using buildNestedCalls.
+            buildStages :
+                Mono.MonoType
+                -> List ( Name, Mono.MonoType )
+                -> MonoState
+                -> ( Mono.MonoExpr, MonoState )
+            buildStages remainingType accParams st =
+                let
+                    stageArgTypes =
+                        Types.stageParamTypes remainingType
 
-            -- Create anonymous lambda ID
-            lambdaId =
-                Mono.AnonymousLambda state.currentModule state.lambdaCounter
+                    stageRetType =
+                        Types.stageReturnType remainingType
+                in
+                case stageArgTypes of
+                    [] ->
+                        -- No more stages: fully apply calleeExpr to all params,
+                        -- respecting the callee's own staging.
+                        let
+                            bodyExpr =
+                                buildNestedCalls region calleeExpr accParams
+                        in
+                        ( bodyExpr, st )
 
-            stateWithLambda =
-                { state | lambdaCounter = state.lambdaCounter + 1 }
+                    _ ->
+                        -- One staged lambda: params = this stage's arg types
+                        let
+                            paramsForStage : List ( Name, Mono.MonoType )
+                            paramsForStage =
+                                freshParams stageArgTypes
 
-            -- Compute captures (calleeExpr may reference outer variables)
-            captures =
-                computeClosureCaptures params bodyExpr
+                            -- Accumulate params for later call to calleeExpr
+                            newAccParams =
+                                accParams ++ paramsForStage
 
-            closureInfo =
-                { lambdaId = lambdaId
-                , captures = captures
-                , params = params
-                }
+                            ( innerBody, st1 ) =
+                                buildStages stageRetType newAccParams st
 
-            closureExpr =
-                Mono.MonoClosure closureInfo bodyExpr targetType
+                            captures =
+                                computeClosureCaptures paramsForStage innerBody
+
+                            lambdaId =
+                                Mono.AnonymousLambda st1.currentModule st1.lambdaCounter
+
+                            st2 =
+                                { st1 | lambdaCounter = st1.lambdaCounter + 1 }
+
+                            closureInfo =
+                                { lambdaId = lambdaId
+                                , captures = captures
+                                , params = paramsForStage
+                                }
+
+                            -- This stage's function type is exactly remainingType
+                            closureExpr =
+                                Mono.MonoClosure closureInfo innerBody remainingType
+                        in
+                        ( closureExpr, st2 )
+
+            ( wrapperExpr, state1 ) =
+                buildStages targetType [] state0
         in
-        ( closureExpr, stateWithLambda )
+        ( wrapperExpr, state1 )
 
 
 {-| Create an alias closure wrapping an existing expression.
