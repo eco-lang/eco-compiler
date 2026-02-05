@@ -34,7 +34,11 @@ namespace ElmBytesTest {
 
 // Maximum number of concurrent Elm compilations to avoid RAM exhaustion.
 // Each guida process can use significant memory during compilation.
-constexpr size_t MAX_PARALLEL_COMPILATIONS = 16;
+// Defaults to the number of CPU cores, or 4 if detection fails.
+inline size_t getMaxParallelCompilations() {
+    unsigned int cores = std::thread::hardware_concurrency();
+    return cores > 0 ? static_cast<size_t>(cores) : 4;
+}
 
 // ============================================================================
 // Elm-Specific Shared Memory Extension
@@ -439,10 +443,10 @@ inline std::vector<CompileResult> compileAllElmTests(const std::vector<std::stri
     }
 
     // Compile remaining tests in parallel using --builddir
-    // Uses sliding window: always keep MAX_PARALLEL_COMPILATIONS active
+    // Uses sliding window: always keep getMaxParallelCompilations() active
     if (needsCompile.size() > 1) {
         std::cout << "  Compiling remaining " << (needsCompile.size() - 1)
-                  << " tests (max " << MAX_PARALLEL_COMPILATIONS << " parallel)..." << std::endl;
+                  << " tests (max " << getMaxParallelCompilations() << " parallel)..." << std::endl;
 
         // Track active compilations: (future, result index, filename)
         struct ActiveCompile {
@@ -474,7 +478,7 @@ inline std::vector<CompileResult> compileAllElmTests(const std::vector<std::stri
         };
 
         // Fill initial slots
-        while (active.size() < MAX_PARALLEL_COMPILATIONS && nextToStart < needsCompile.size()) {
+        while (active.size() < getMaxParallelCompilations() && nextToStart < needsCompile.size()) {
             startNext();
         }
 
