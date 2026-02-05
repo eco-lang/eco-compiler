@@ -37,6 +37,7 @@ This module handles generation of MLIR code for all Elm expressions.
 
 import Bitwise
 import Compiler.AST.Monomorphized as Mono
+import List.Extra as ListX
 import Compiler.Data.Name as Name
 import Compiler.Elm.Package as Pkg
 import Compiler.Generate.MLIR.BytesFusion.Emit as BFEmit
@@ -194,22 +195,52 @@ generateExpr ctx expr =
         Mono.MonoCase scrutinee1 scrutinee2 decider jumps resultType ->
             generateCase ctx scrutinee1 scrutinee2 decider jumps resultType
 
-        Mono.MonoRecordCreate fields monoType ->
+        Mono.MonoRecordCreate namedFields monoType ->
             let
                 layout =
                     Types.computeRecordLayout (getRecordFields monoType)
+
+                -- Reorder fields according to layout order
+                orderedExprs =
+                    List.map
+                        (\fieldInfo ->
+                            ListX.find (\( n, _ ) -> n == fieldInfo.name) namedFields
+                                |> Maybe.map Tuple.second
+                                |> Maybe.withDefault Mono.MonoUnit
+                        )
+                        layout.fields
             in
-            generateRecordCreate ctx fields layout monoType
+            generateRecordCreate ctx orderedExprs layout monoType
 
-        Mono.MonoRecordAccess record fieldName index isUnboxed fieldType ->
-            generateRecordAccess ctx record fieldName index isUnboxed fieldType
+        Mono.MonoRecordAccess record fieldName fieldType ->
+            let
+                recordType =
+                    Mono.typeOf record
 
-        Mono.MonoRecordUpdate record updates monoType ->
+                layout =
+                    Types.computeRecordLayout (getRecordFields recordType)
+
+                fieldInfo =
+                    ListX.find (\fi -> fi.name == fieldName) layout.fields
+                        |> Maybe.withDefault { name = fieldName, index = 0, monoType = fieldType, isUnboxed = False }
+            in
+            generateRecordAccess ctx record fieldName fieldInfo.index fieldInfo.isUnboxed fieldType
+
+        Mono.MonoRecordUpdate record namedUpdates monoType ->
             let
                 layout =
                     Types.computeRecordLayout (getRecordFields monoType)
+
+                -- Convert named updates to indexed updates
+                indexedUpdates =
+                    List.filterMap
+                        (\( name, updateExpr ) ->
+                            ListX.find (\fi -> fi.name == name) layout.fields
+                                |> Maybe.map (\fi -> ( fi.index, updateExpr ))
+                        )
+                        namedUpdates
             in
-            generateRecordUpdate ctx record updates layout monoType
+            generateRecordUpdate ctx record indexedUpdates layout monoType
 
         Mono.MonoTupleCreate region elements monoType ->
             let

@@ -39,7 +39,6 @@ This module handles:
 
 import Compiler.AST.Monomorphized as Mono
 import Compiler.Data.Name exposing (Name)
-import Compiler.Generate.MLIR.Types as Types
 import Compiler.Monomorphize.State exposing (MonoState)
 import Compiler.Reporting.Annotation as A
 import Data.Map as Dict exposing (Dict)
@@ -60,10 +59,10 @@ ensureCallableTopLevel expr monoType state =
             let
                 -- MONO_016: Use stage arity (first MFunction params only)
                 stageArgTypes =
-                    Types.stageParamTypes monoType
+                    Mono.stageParamTypes monoType
 
                 stageRetType =
-                    Types.stageReturnType monoType
+                    Mono.stageReturnType monoType
 
                 stageArity =
                     List.length stageArgTypes
@@ -252,7 +251,7 @@ buildNestedCalls region calleeExpr params =
             Mono.typeOf calleeExpr
 
         srcSeg =
-            Types.segmentLengths calleeType
+            Mono.segmentLengths calleeType
 
         -- Convert params to expressions
         paramExprs =
@@ -275,7 +274,7 @@ buildNestedCalls region calleeExpr params =
                             Mono.typeOf currentCallee
 
                         resultType =
-                            Types.stageReturnType currentCalleeType
+                            Mono.stageReturnType currentCalleeType
 
                         callExpr =
                             Mono.MonoCall region currentCallee nowArgs resultType
@@ -298,7 +297,7 @@ unchanged. Otherwise, builds nested MonoClosures:
 
   - One closure per stage of targetType.
   - Each closure's params list is exactly the first stage's param types
-    (Types.stageParamTypes) for its function type (MONO_016).
+    (Mono.stageParamTypes) for its function type (MONO_016).
   - The innermost body calls calleeExpr using buildNestedCalls, which
     respects the callee's own staging.
 
@@ -314,10 +313,10 @@ buildAbiWrapper targetType calleeExpr state0 =
             Mono.typeOf calleeExpr
 
         targetSeg =
-            Types.segmentLengths targetType
+            Mono.segmentLengths targetType
 
         srcSeg =
-            Types.segmentLengths srcType
+            Mono.segmentLengths srcType
     in
     if targetSeg == srcSeg then
         -- Segmentations match; no wrapper needed
@@ -346,10 +345,10 @@ buildAbiWrapper targetType calleeExpr state0 =
             buildStages remainingType accParams st =
                 let
                     stageArgTypes =
-                        Types.stageParamTypes remainingType
+                        Mono.stageParamTypes remainingType
 
                     stageRetType =
-                        Types.stageReturnType remainingType
+                        Mono.stageReturnType remainingType
                 in
                 case stageArgTypes of
                     [] ->
@@ -471,7 +470,7 @@ extractRegion expr =
         Mono.MonoRecordCreate _ _ ->
             A.zero
 
-        Mono.MonoRecordAccess record _ _ _ _ ->
+        Mono.MonoRecordAccess record _ _ ->
             extractRegion record
 
         Mono.MonoRecordUpdate record _ _ ->
@@ -643,10 +642,10 @@ findFreeLocals bound expr =
         Mono.MonoTailCall _ namedExprs _ ->
             List.concatMap (\( _, e ) -> findFreeLocals bound e) namedExprs
 
-        Mono.MonoRecordCreate exprs _ ->
-            List.concatMap (findFreeLocals bound) exprs
+        Mono.MonoRecordCreate fields _ ->
+            List.concatMap (\( _, e ) -> findFreeLocals bound e) fields
 
-        Mono.MonoRecordAccess record _ _ _ _ ->
+        Mono.MonoRecordAccess record _ _ ->
             findFreeLocals bound record
 
         Mono.MonoRecordUpdate record updates _ ->
@@ -801,10 +800,10 @@ collectVarTypesHelper expr acc =
         Mono.MonoTailCall _ namedExprs _ ->
             List.foldl (\( _, e ) a -> collectVarTypesHelper e a) acc namedExprs
 
-        Mono.MonoRecordCreate exprs _ ->
-            List.foldl collectVarTypesHelper acc exprs
+        Mono.MonoRecordCreate fields _ ->
+            List.foldl (\( _, e ) a -> collectVarTypesHelper e a) acc fields
 
-        Mono.MonoRecordAccess record _ _ _ _ ->
+        Mono.MonoRecordAccess record _ _ ->
             collectVarTypesHelper record acc
 
         Mono.MonoRecordUpdate record updates _ ->

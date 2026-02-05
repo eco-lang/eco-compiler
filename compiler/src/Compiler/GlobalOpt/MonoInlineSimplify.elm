@@ -285,9 +285,9 @@ collectCalls expr =
             List.concatMap (\( _, e ) -> collectCalls e) branches
 
         MonoRecordCreate fields _ ->
-            List.concatMap collectCalls fields
+            List.concatMap (\( _, e ) -> collectCalls e) fields
 
-        MonoRecordAccess inner _ _ _ _ ->
+        MonoRecordAccess inner _ _ ->
             collectCalls inner
 
         MonoRecordUpdate inner updates _ ->
@@ -373,9 +373,9 @@ computeCost expr =
             3 + List.sum (List.map (\( _, e ) -> computeCost e) branches)
 
         MonoRecordCreate fields _ ->
-            3 + List.sum (List.map computeCost fields)
+            3 + List.sum (List.map (\( _, e ) -> computeCost e) fields)
 
-        MonoRecordAccess inner _ _ _ _ ->
+        MonoRecordAccess inner _ _ ->
             1 + computeCost inner
 
         MonoRecordUpdate inner updates _ ->
@@ -539,16 +539,16 @@ remapLambdaIds ctx expr =
         MonoRecordCreate fields recordType ->
             let
                 ( newFields, ctx1 ) =
-                    remapLambdaIdsInList ctx fields
+                    remapLambdaIdsInNamedFields ctx fields
             in
             ( MonoRecordCreate newFields recordType, ctx1 )
 
-        MonoRecordAccess inner fieldName fieldIndex isUnboxed resultType ->
+        MonoRecordAccess inner fieldName resultType ->
             let
                 ( newInner, ctx1 ) =
                     remapLambdaIds ctx inner
             in
-            ( MonoRecordAccess newInner fieldName fieldIndex isUnboxed resultType, ctx1 )
+            ( MonoRecordAccess newInner fieldName resultType, ctx1 )
 
         MonoRecordUpdate inner updates recordType ->
             let
@@ -556,7 +556,7 @@ remapLambdaIds ctx expr =
                     remapLambdaIds ctx inner
 
                 ( newUpdates, ctx2 ) =
-                    remapLambdaIdsInUpdates ctx1 updates
+                    remapLambdaIdsInNamedFields ctx1 updates
             in
             ( MonoRecordUpdate newInner newUpdates recordType, ctx2 )
 
@@ -668,18 +668,18 @@ remapLambdaIdsInCaseBranches ctx branches =
         branches
 
 
-remapLambdaIdsInUpdates : RewriteCtx -> List ( Int, MonoExpr ) -> ( List ( Int, MonoExpr ), RewriteCtx )
-remapLambdaIdsInUpdates ctx updates =
+remapLambdaIdsInNamedFields : RewriteCtx -> List ( Name, MonoExpr ) -> ( List ( Name, MonoExpr ), RewriteCtx )
+remapLambdaIdsInNamedFields ctx fields =
     List.foldl
-        (\( idx, e ) ( acc, accCtx ) ->
+        (\( name, e ) ( acc, accCtx ) ->
             let
                 ( newExpr, newCtx ) =
                     remapLambdaIds accCtx e
             in
-            ( acc ++ [ ( idx, newExpr ) ], newCtx )
+            ( acc ++ [ ( name, newExpr ) ], newCtx )
         )
         ( [], ctx )
-        updates
+        fields
 
 
 remapLambdaIdsInTailCallArgs : RewriteCtx -> List ( Name, MonoExpr ) -> ( List ( Name, MonoExpr ), RewriteCtx )
@@ -931,16 +931,16 @@ rewriteExpr ctx expr =
         MonoRecordCreate fields recordType ->
             let
                 ( rewrittenFields, ctx1 ) =
-                    rewriteExprs ctx fields
+                    rewriteNamedFields ctx fields
             in
             ( MonoRecordCreate rewrittenFields recordType, ctx1 )
 
-        MonoRecordAccess inner fieldName fieldIndex isUnboxed resultType ->
+        MonoRecordAccess inner fieldName resultType ->
             let
                 ( rewrittenInner, ctx1 ) =
                     rewriteExpr ctx inner
             in
-            ( MonoRecordAccess rewrittenInner fieldName fieldIndex isUnboxed resultType, ctx1 )
+            ( MonoRecordAccess rewrittenInner fieldName resultType, ctx1 )
 
         MonoRecordUpdate inner updates recordType ->
             let
@@ -948,7 +948,7 @@ rewriteExpr ctx expr =
                     rewriteExpr ctx inner
 
                 ( rewrittenUpdates, ctx2 ) =
-                    rewriteUpdates ctx1 updates
+                    rewriteNamedFields ctx1 updates
             in
             ( MonoRecordUpdate rewrittenInner rewrittenUpdates recordType, ctx2 )
 
@@ -1061,18 +1061,18 @@ rewriteCaseBranches ctx branches =
         branches
 
 
-rewriteUpdates : RewriteCtx -> List ( Int, MonoExpr ) -> ( List ( Int, MonoExpr ), RewriteCtx )
-rewriteUpdates ctx updates =
+rewriteNamedFields : RewriteCtx -> List ( Name, MonoExpr ) -> ( List ( Name, MonoExpr ), RewriteCtx )
+rewriteNamedFields ctx fields =
     List.foldl
-        (\( idx, expr ) ( acc, accCtx ) ->
+        (\( name, expr ) ( acc, accCtx ) ->
             let
                 ( rewritten, newCtx ) =
                     rewriteExpr accCtx expr
             in
-            ( acc ++ [ ( idx, rewritten ) ], newCtx )
+            ( acc ++ [ ( name, rewritten ) ], newCtx )
         )
         ( [], ctx )
-        updates
+        fields
 
 
 rewriteTailCallArgs : RewriteCtx -> List ( Name, MonoExpr ) -> ( List ( Name, MonoExpr ), RewriteCtx )
@@ -1325,15 +1325,15 @@ substitute oldName newName varType expr =
                 resultType
 
         MonoRecordCreate fields recordType ->
-            MonoRecordCreate (List.map (substitute oldName newName varType) fields) recordType
+            MonoRecordCreate (List.map (\( n, e ) -> ( n, substitute oldName newName varType e )) fields) recordType
 
-        MonoRecordAccess inner fieldName fieldIndex isUnboxed resultType ->
-            MonoRecordAccess (substitute oldName newName varType inner) fieldName fieldIndex isUnboxed resultType
+        MonoRecordAccess inner fieldName resultType ->
+            MonoRecordAccess (substitute oldName newName varType inner) fieldName resultType
 
         MonoRecordUpdate inner updates recordType ->
             MonoRecordUpdate
                 (substitute oldName newName varType inner)
-                (List.map (\( idx, e ) -> ( idx, substitute oldName newName varType e )) updates)
+                (List.map (\( n, e ) -> ( n, substitute oldName newName varType e )) updates)
                 recordType
 
         MonoTupleCreate region items tupleType ->
@@ -1655,16 +1655,16 @@ simplifyLets ctx expr =
         MonoRecordCreate fields recordType ->
             let
                 ( simplifiedFields, ctx1 ) =
-                    simplifyLetsExprs ctx fields
+                    simplifyLetsNamedFields ctx fields
             in
             ( MonoRecordCreate simplifiedFields recordType, ctx1 )
 
-        MonoRecordAccess inner fieldName fieldIndex isUnboxed resultType ->
+        MonoRecordAccess inner fieldName resultType ->
             let
                 ( simplifiedInner, ctx1 ) =
                     simplifyLets ctx inner
             in
-            ( MonoRecordAccess simplifiedInner fieldName fieldIndex isUnboxed resultType, ctx1 )
+            ( MonoRecordAccess simplifiedInner fieldName resultType, ctx1 )
 
         MonoRecordUpdate inner updates recordType ->
             let
@@ -1672,7 +1672,7 @@ simplifyLets ctx expr =
                     simplifyLets ctx inner
 
                 ( simplifiedUpdates, ctx2 ) =
-                    simplifyLetsUpdates ctx1 updates
+                    simplifyLetsNamedFields ctx1 updates
             in
             ( MonoRecordUpdate simplifiedInner simplifiedUpdates recordType, ctx2 )
 
@@ -1754,18 +1754,18 @@ simplifyLetsCaseBranches ctx branches =
         branches
 
 
-simplifyLetsUpdates : RewriteCtx -> List ( Int, MonoExpr ) -> ( List ( Int, MonoExpr ), RewriteCtx )
-simplifyLetsUpdates ctx updates =
+simplifyLetsNamedFields : RewriteCtx -> List ( Name, MonoExpr ) -> ( List ( Name, MonoExpr ), RewriteCtx )
+simplifyLetsNamedFields ctx fields =
     List.foldl
-        (\( idx, expr ) ( acc, accCtx ) ->
+        (\( name, expr ) ( acc, accCtx ) ->
             let
                 ( simplified, newCtx ) =
                     simplifyLets accCtx expr
             in
-            ( acc ++ [ ( idx, simplified ) ], newCtx )
+            ( acc ++ [ ( name, simplified ) ], newCtx )
         )
         ( [], ctx )
-        updates
+        fields
 
 
 simplifyLetsTailCallArgs : RewriteCtx -> List ( Name, MonoExpr ) -> ( List ( Name, MonoExpr ), RewriteCtx )
@@ -1885,9 +1885,9 @@ isPureExpr expr =
             List.all (\( _, e ) -> isPureExpr e) branches
 
         MonoRecordCreate fields _ ->
-            List.all isPureExpr fields
+            List.all (\( _, e ) -> isPureExpr e) fields
 
-        MonoRecordAccess inner _ _ _ _ ->
+        MonoRecordAccess inner _ _ ->
             isPureExpr inner
 
         MonoRecordUpdate inner updates _ ->
@@ -1980,9 +1980,9 @@ countUsages name expr =
             rootUsage + List.sum (List.map (\( _, e ) -> countUsages name e) branches)
 
         MonoRecordCreate fields _ ->
-            List.sum (List.map (countUsages name) fields)
+            List.sum (List.map (\( _, e ) -> countUsages name e) fields)
 
-        MonoRecordAccess inner _ _ _ _ ->
+        MonoRecordAccess inner _ _ ->
             countUsages name inner
 
         MonoRecordUpdate inner updates _ ->
@@ -2103,15 +2103,15 @@ inlineVar name replacement expr =
                 resultType
 
         MonoRecordCreate fields recordType ->
-            MonoRecordCreate (List.map (inlineVar name replacement) fields) recordType
+            MonoRecordCreate (List.map (\( n, e ) -> ( n, inlineVar name replacement e )) fields) recordType
 
-        MonoRecordAccess inner fieldName fieldIndex isUnboxed resultType ->
-            MonoRecordAccess (inlineVar name replacement inner) fieldName fieldIndex isUnboxed resultType
+        MonoRecordAccess inner fieldName resultType ->
+            MonoRecordAccess (inlineVar name replacement inner) fieldName resultType
 
         MonoRecordUpdate inner updates recordType ->
             MonoRecordUpdate
                 (inlineVar name replacement inner)
-                (List.map (\( idx, e ) -> ( idx, inlineVar name replacement e )) updates)
+                (List.map (\( n, e ) -> ( n, inlineVar name replacement e )) updates)
                 recordType
 
         MonoTupleCreate region items tupleType ->
@@ -2183,13 +2183,13 @@ dce expr =
                 resultType
 
         MonoRecordCreate fields recordType ->
-            MonoRecordCreate (List.map dce fields) recordType
+            MonoRecordCreate (List.map (\( n, e ) -> ( n, dce e )) fields) recordType
 
-        MonoRecordAccess inner fieldName fieldIndex isUnboxed resultType ->
-            MonoRecordAccess (dce inner) fieldName fieldIndex isUnboxed resultType
+        MonoRecordAccess inner fieldName resultType ->
+            MonoRecordAccess (dce inner) fieldName resultType
 
         MonoRecordUpdate inner updates recordType ->
-            MonoRecordUpdate (dce inner) (List.map (\( idx, e ) -> ( idx, dce e )) updates) recordType
+            MonoRecordUpdate (dce inner) (List.map (\( n, e ) -> ( n, dce e )) updates) recordType
 
         MonoTupleCreate region items tupleType ->
             MonoTupleCreate region (List.map dce items) tupleType
@@ -2233,9 +2233,9 @@ countClosures expr =
             List.sum (List.map countClosures items)
 
         MonoRecordCreate fields _ ->
-            List.sum (List.map countClosures fields)
+            List.sum (List.map (\( _, e ) -> countClosures e) fields)
 
-        MonoRecordAccess inner _ _ _ _ ->
+        MonoRecordAccess inner _ _ ->
             countClosures inner
 
         MonoRecordUpdate inner updates _ ->

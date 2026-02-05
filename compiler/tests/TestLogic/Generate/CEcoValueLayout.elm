@@ -203,9 +203,9 @@ collectExprCEcoValueIssues context expr =
             List.concatMap (\( _, e ) -> collectExprCEcoValueIssues context e) branches
 
         Mono.MonoRecordCreate fieldExprs _ ->
-            List.concatMap (collectExprCEcoValueIssues context) fieldExprs
+            List.concatMap (\( _, e ) -> collectExprCEcoValueIssues context e) fieldExprs
 
-        Mono.MonoRecordAccess recordExpr _ _ _ _ ->
+        Mono.MonoRecordAccess recordExpr _ _ ->
             collectExprCEcoValueIssues context recordExpr
 
         Mono.MonoRecordUpdate recordExpr updates _ ->

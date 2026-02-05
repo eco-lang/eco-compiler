@@ -176,12 +176,12 @@ collectCustomTypesFromExpr expr acc =
             in
             List.foldl (\( _, e ) a -> collectCustomTypesFromExpr e a) deciderAcc jumps
 
-        Mono.MonoRecordCreate exprs monoType ->
+        Mono.MonoRecordCreate fields monoType ->
             let
                 fieldTypes =
                     case monoType of
-                        Mono.MRecord fields ->
-                            Dict.values compare fields
+                        Mono.MRecord fieldDict ->
+                            Dict.values compare fieldDict
 
                         _ ->
                             []
@@ -189,9 +189,9 @@ collectCustomTypesFromExpr expr acc =
                 fieldAcc =
                     List.foldl collectCustomTypesFromMonoType accWithType fieldTypes
             in
-            List.foldl collectCustomTypesFromExpr fieldAcc exprs
+            List.foldl (\( _, e ) a -> collectCustomTypesFromExpr e a) fieldAcc fields
 
-        Mono.MonoRecordAccess record _ _ _ _ ->
+        Mono.MonoRecordAccess record _ _ ->
             collectCustomTypesFromExpr record accWithType
 
         Mono.MonoRecordUpdate record updates monoType ->

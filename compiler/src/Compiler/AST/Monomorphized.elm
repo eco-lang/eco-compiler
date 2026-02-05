@@ -7,9 +7,12 @@ module Compiler.AST.Monomorphized exposing
     , Decider(..), MonoChoice(..)
     , ContainerKind(..)
     , typeOf
-    , toComparableSpecKey, toComparableMonoType
+    , toComparableSpecKey, toComparableMonoType, toComparableGlobal, toComparableLambdaId
     , getMonoPathType
     , monoTypeToDebugString
+    , isFunctionType, functionArity, countTotalArity, decomposeFunctionType
+    , stageArity, stageParamTypes, stageReturnType
+    , Segmentation, segmentLengths, buildSegmentedFunctionType, chooseCanonicalSegmentation
     )
 
 {-| Monomorphized AST for backends that can optimize using concrete types.
@@ -419,9 +422,9 @@ type MonoExpr
     | MonoLet MonoDef MonoExpr MonoType
     | MonoDestruct MonoDestructor MonoExpr MonoType
     | MonoCase Name Name (Decider MonoChoice) (List ( Int, MonoExpr )) MonoType
-    | MonoRecordCreate (List MonoExpr) MonoType -- Layout computed at codegen from MonoType
-    | MonoRecordAccess MonoExpr Name Int Bool MonoType -- Index/isUnboxed precomputed (TODO: compute at codegen)
-    | MonoRecordUpdate MonoExpr (List ( Int, MonoExpr )) MonoType -- Layout computed at codegen
+    | MonoRecordCreate (List ( Name, MonoExpr )) MonoType -- Fields with names, codegen reorders by layout
+    | MonoRecordAccess MonoExpr Name MonoType -- Field name only, codegen computes index/isUnboxed
+    | MonoRecordUpdate MonoExpr (List ( Name, MonoExpr )) MonoType -- Field names, codegen computes indices
     | MonoTupleCreate Region (List MonoExpr) MonoType -- Layout computed at codegen
     | MonoUnit
 
@@ -622,7 +625,7 @@ typeOf expr =
         MonoRecordCreate _ t ->
             t
 
-        MonoRecordAccess _ _ _ _ t ->
+        MonoRecordAccess _ _ t ->
             t
 
         MonoRecordUpdate _ _ t ->
@@ -805,3 +808,225 @@ toComparableSpecKey (SpecKey global monoType maybeLambda) =
                 Just lambdaId ->
                     "Lambda" :: toComparableLambdaId lambdaId
            )
+
+
+
+-- ============================================================================
+-- ====== FUNCTION SHAPE HELPERS ======
+-- ============================================================================
+
+
+{-| Check if a MonoType is a function type.
+-}
+isFunctionType : MonoType -> Bool
+isFunctionType monoType =
+    case monoType of
+        MFunction _ _ ->
+            True
+
+        _ ->
+            False
+
+
+{-| Count the arity of a function type (number of arrow levels).
+-}
+functionArity : MonoType -> Int
+functionArity monoType =
+    case monoType of
+        MFunction _ result ->
+            1 + functionArity result
+
+        _ ->
+            0
+
+
+{-| Count the total number of arguments in a curried function type.
+-}
+countTotalArity : MonoType -> Int
+countTotalArity monoType =
+    case monoType of
+        MFunction argTypes result ->
+            List.length argTypes + countTotalArity result
+
+        _ ->
+            0
+
+
+{-| Stage parameter types: outermost MFunction argument list.
+-}
+stageParamTypes : MonoType -> List MonoType
+stageParamTypes monoType =
+    case monoType of
+        MFunction argTypes _ ->
+            argTypes
+
+        _ ->
+            []
+
+
+{-| Stage arity: number of arguments expected in the current stage.
+-}
+stageArity : MonoType -> Int
+stageArity monoType =
+    List.length (stageParamTypes monoType)
+
+
+{-| Stage return type: the result type after applying the current stage's arguments.
+
+For `MFunction [a, b] (MFunction [c] d)`, this returns `MFunction [c] d`.
+For non-function types, returns the type itself.
+
+-}
+stageReturnType : MonoType -> MonoType
+stageReturnType monoType =
+    case monoType of
+        MFunction _ result ->
+            result
+
+        other ->
+            other
+
+
+{-| Decompose a function type into its flattened arguments and final result.
+-}
+decomposeFunctionType : MonoType -> ( List MonoType, MonoType )
+decomposeFunctionType monoType =
+    case monoType of
+        MFunction argTypes result ->
+            let
+                ( nestedArgs, finalResult ) =
+                    decomposeFunctionType result
+            in
+            ( argTypes ++ nestedArgs, finalResult )
+
+        other ->
+            ( [], other )
+
+
+{-| A Segmentation is a list of stage arities: [m1, m2, ...] means
+stage 1 takes m1 args, stage 2 takes m2 args, etc.
+-}
+type alias Segmentation =
+    List Int
+
+
+{-| Extract the staging pattern (segment lengths) from a function type.
+For `MFunction [A,B] (MFunction [C,D] R)` returns `[2, 2]`.
+For `MFunction [A,B,C,D] R` returns `[4]`.
+For non-function types returns `[]`.
+-}
+segmentLengths : MonoType -> Segmentation
+segmentLengths monoType =
+    let
+        go t acc =
+            case t of
+                MFunction stageArgs stageRet ->
+                    go stageRet (List.length stageArgs :: acc)
+
+                _ ->
+                    List.reverse acc
+    in
+    go monoType []
+
+
+{-| Choose the canonical ABI segmentation for a join point.
+Given leaf function types from case branches:
+
+1.  Pick the segmentation that appears most often (minimize wrappers)
+2.  Among ties, pick the one with fewest stages (prefer flatter)
+
+Returns (canonicalSegmentation, flatArgs, flatRet).
+
+-}
+chooseCanonicalSegmentation : List MonoType -> ( Segmentation, List MonoType, MonoType )
+chooseCanonicalSegmentation leafTypes =
+    case leafTypes of
+        [] ->
+            -- Should not happen for well-formed MonoCase
+            ( [], [], MUnit )
+
+        firstType :: _ ->
+            let
+                -- Shared flattened signature (all branches must agree)
+                ( flatArgs, flatRet ) =
+                    decomposeFunctionType firstType
+
+                -- Count how often each segmentation occurs
+                countSegmentations : List MonoType -> Dict (List Int) (List Int) Int
+                countSegmentations types =
+                    List.foldl
+                        (\t accDict ->
+                            let
+                                seg =
+                                    segmentLengths t
+
+                                current =
+                                    Dict.get identity seg accDict |> Maybe.withDefault 0
+                            in
+                            Dict.insert identity seg (current + 1) accDict
+                        )
+                        Dict.empty
+                        types
+
+                freqDict =
+                    countSegmentations leafTypes
+
+                -- Find maximum count
+                maxCount =
+                    Dict.foldl compare (\_ count acc -> max count acc) 0 freqDict
+
+                -- All segmentations that hit maxCount
+                bestSegs =
+                    Dict.foldl compare
+                        (\seg count acc ->
+                            if count == maxCount then
+                                seg :: acc
+
+                            else
+                                acc
+                        )
+                        []
+                        freqDict
+
+                -- Among them, prefer fewest stages (most flat)
+                canonicalSeg =
+                    case List.sortBy List.length bestSegs of
+                        shortest :: _ ->
+                            shortest
+
+                        [] ->
+                            -- Fallback: use first type's segmentation
+                            segmentLengths firstType
+            in
+            ( canonicalSeg, flatArgs, flatRet )
+
+
+{-| Rebuild a nested MFunction from flat args and a segmentation.
+buildSegmentedFunctionType [A,B,C,D] R [2,2] = MFunction [A,B] (MFunction [C,D] R)
+buildSegmentedFunctionType [A,B,C,D] R [4] = MFunction [A,B,C,D] R
+-}
+buildSegmentedFunctionType : List MonoType -> MonoType -> Segmentation -> MonoType
+buildSegmentedFunctionType flatArgs finalRet seg =
+    let
+        -- Split flatArgs according to seg = [m1, m2, ...]
+        splitBySegments : List MonoType -> Segmentation -> List (List MonoType)
+        splitBySegments remaining segLengths =
+            case segLengths of
+                [] ->
+                    []
+
+                m :: rest ->
+                    let
+                        ( now, later ) =
+                            ( List.take m remaining, List.drop m remaining )
+                    in
+                    now :: splitBySegments later rest
+
+        stageArgsLists =
+            splitBySegments flatArgs seg
+    in
+    -- Build nested MFunction from inside out
+    List.foldr
+        (\stageArgs acc -> MFunction stageArgs acc)
+        finalRet
+        stageArgsLists

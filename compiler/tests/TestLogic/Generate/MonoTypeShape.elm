@@ -151,9 +151,9 @@ collectExprTypeIssues context expr =
 
         Mono.MonoRecordCreate fieldExprs monoType ->
             checkMonoType context monoType
-                ++ List.concatMap (collectExprTypeIssues context) fieldExprs
+                ++ List.concatMap (\( _, e ) -> collectExprTypeIssues context e) fieldExprs
 
-        Mono.MonoRecordAccess recordExpr _ _ _ monoType ->
+        Mono.MonoRecordAccess recordExpr _ monoType ->
             checkMonoType context monoType
                 ++ collectExprTypeIssues context recordExpr
 

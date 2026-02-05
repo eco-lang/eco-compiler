@@ -175,9 +175,9 @@ collectExprCNumberChecks context expr =
 
         Mono.MonoRecordCreate fieldExprs monoType ->
             checkForCNumber context monoType
-                ++ List.concatMap (collectExprCNumberChecks context) fieldExprs
+                ++ List.concatMap (\( _, e ) -> collectExprCNumberChecks context e) fieldExprs
 
-        Mono.MonoRecordAccess recordExpr _ _ _ monoType ->
+        Mono.MonoRecordAccess recordExpr _ monoType ->
             checkForCNumber context monoType
                 ++ collectExprCNumberChecks context recordExpr
 
@@ -347,9 +347,9 @@ collectExprCallSiteChecks context expr =
             List.concatMap (\( _, branchExpr ) -> collectExprCallSiteChecks context branchExpr) branches
 
         Mono.MonoRecordCreate fieldExprs _ ->
-            List.concatMap (collectExprCallSiteChecks context) fieldExprs
+            List.concatMap (\( _, e ) -> collectExprCallSiteChecks context e) fieldExprs
 
-        Mono.MonoRecordAccess recordExpr _ _ _ _ ->
+        Mono.MonoRecordAccess recordExpr _ _ ->
             collectExprCallSiteChecks context recordExpr
 
         Mono.MonoRecordUpdate recordExpr updates _ ->

@@ -29,7 +29,6 @@ by applying type variable substitutions.
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Monomorphized as Mono
 import Compiler.Data.Name as Name exposing (Name)
-import Compiler.Generate.MLIR.Types as Types
 import Compiler.Monomorphize.State exposing (Substitution)
 import Data.Map as Dict
 import System.TypeCheck.IO as IO

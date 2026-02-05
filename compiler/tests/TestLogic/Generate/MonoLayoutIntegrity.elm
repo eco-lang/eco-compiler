@@ -212,7 +212,7 @@ collectExprLayoutIssues context expr =
         Mono.MonoRecordCreate _ monoType ->
             checkTypeLayoutComplete context monoType
 
-        Mono.MonoRecordAccess recordExpr _ _ _ monoType ->
+        Mono.MonoRecordAccess recordExpr _ monoType ->
             checkTypeLayoutComplete context monoType
                 ++ collectExprLayoutIssues context recordExpr
 
@@ -325,7 +325,7 @@ checkNodeRecordAccess specId node =
 collectExprRecordAccessIssues : String -> Mono.MonoExpr -> List (() -> Expect.Expectation)
 collectExprRecordAccessIssues context expr =
     case expr of
-        Mono.MonoRecordAccess recordExpr fieldName fieldIndex _ _ ->
+        Mono.MonoRecordAccess recordExpr fieldName _ ->
             let
                 recordType =
                     Mono.typeOf recordExpr
@@ -333,16 +333,13 @@ collectExprRecordAccessIssues context expr =
                 checks =
                     case recordType of
                         Mono.MRecord fields ->
-                            -- Verify fieldIndex is within bounds
-                            let
-                                fieldCount =
-                                    Dict.size fields
-                            in
-                            if fieldIndex < 0 || fieldIndex >= fieldCount then
-                                [ \() -> Expect.fail (context ++ ": Record access ." ++ fieldName ++ " has invalid index " ++ String.fromInt fieldIndex ++ " (record has " ++ String.fromInt fieldCount ++ " fields)") ]
+                            -- Verify field exists in the record
+                            case Dict.get identity fieldName fields of
+                                Just _ ->
+                                    []
 
-                            else
-                                []
+                                Nothing ->
+                                    [ \() -> Expect.fail (context ++ ": Record access ." ++ fieldName ++ " not found in record type") ]
 
                         _ ->
                             [ \() -> Expect.fail (context ++ ": Record access ." ++ fieldName ++ " on non-record type") ]
@@ -357,18 +354,15 @@ collectExprRecordAccessIssues context expr =
                 checks =
                     case recordType of
                         Mono.MRecord fields ->
-                            -- Verify all update indices are valid
-                            let
-                                fieldCount =
-                                    Dict.size fields
-                            in
+                            -- Verify all update field names are valid
                             List.concatMap
-                                (\( idx, _ ) ->
-                                    if idx < 0 || idx >= fieldCount then
-                                        [ \() -> Expect.fail (context ++ ": Record update has invalid index " ++ String.fromInt idx) ]
+                                (\( fName, _ ) ->
+                                    case Dict.get identity fName fields of
+                                        Just _ ->
+                                            []
 
-                                    else
-                                        []
+                                        Nothing ->
+                                            [ \() -> Expect.fail (context ++ ": Record update has invalid field name " ++ fName) ]
                                 )
                                 updates
 
@@ -408,7 +402,7 @@ collectExprRecordAccessIssues context expr =
             List.concatMap (\( _, e ) -> collectExprRecordAccessIssues context e) branches
 
         Mono.MonoRecordCreate fieldExprs _ ->
-            List.concatMap (collectExprRecordAccessIssues context) fieldExprs
+            List.concatMap (\( _, e ) -> collectExprRecordAccessIssues context e) fieldExprs
 
         Mono.MonoTupleCreate _ elementExprs _ ->
             List.concatMap (collectExprRecordAccessIssues context) elementExprs

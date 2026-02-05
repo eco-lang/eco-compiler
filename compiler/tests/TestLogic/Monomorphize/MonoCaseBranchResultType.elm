@@ -143,9 +143,9 @@ checkExpr ctx expr =
             List.concatMap (checkExpr ctx) items
 
         Mono.MonoRecordCreate fields _ ->
-            List.concatMap (checkExpr ctx) fields
+            List.concatMap (\( _, e ) -> checkExpr ctx e) fields
 
-        Mono.MonoRecordAccess inner _ _ _ _ ->
+        Mono.MonoRecordAccess inner _ _ ->
             checkExpr ctx inner
 
         Mono.MonoRecordUpdate inner updates _ ->

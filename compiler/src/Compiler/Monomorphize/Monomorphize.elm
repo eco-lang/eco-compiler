@@ -27,7 +27,6 @@ import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.Index as Index
 import Compiler.Data.Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
-import Compiler.Generate.MLIR.Types as Types
 import Compiler.Monomorphize.Analysis as Analysis
 import Compiler.Monomorphize.Specialize as Specialize
 import Compiler.Monomorphize.State as State exposing (WorkItem(..))
@@ -367,9 +366,6 @@ specializeAccessorGlobal fieldName monoType state =
                 recordType =
                     Mono.MRecord fields
 
-                ( fieldIndex, isUnboxed ) =
-                    Specialize.lookupFieldIndex fieldName recordType
-
                 paramName =
                     "record"
 
@@ -377,8 +373,6 @@ specializeAccessorGlobal fieldName monoType state =
                     Mono.MonoRecordAccess
                         (Mono.MonoVarLocal paramName recordType)
                         fieldName
-                        fieldIndex
-                        isUnboxed
                         fieldType
             in
             ( Mono.MonoTailFunc [ ( paramName, recordType ) ] bodyExpr monoType, state )

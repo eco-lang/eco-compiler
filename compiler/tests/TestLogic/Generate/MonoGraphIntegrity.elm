@@ -274,9 +274,9 @@ collectCustomTypeRefsFromExpr expr =
 
         Mono.MonoRecordCreate fieldExprs monoType ->
             collectCustomTypeRefsFromType monoType
-                ++ List.concatMap collectCustomTypeRefsFromExpr fieldExprs
+                ++ List.concatMap (\( _, e ) -> collectCustomTypeRefsFromExpr e) fieldExprs
 
-        Mono.MonoRecordAccess recordExpr _ _ _ monoType ->
+        Mono.MonoRecordAccess recordExpr _ monoType ->
             collectCustomTypeRefsFromType monoType
                 ++ collectCustomTypeRefsFromExpr recordExpr
 
@@ -428,11 +428,11 @@ collectSpecIdRefsFromExpr expr =
 
         Mono.MonoRecordCreate fieldExprs _ ->
             List.foldl
-                (\e acc -> Set.union acc (collectSpecIdRefsFromExpr e))
+                (\( _, e ) acc -> Set.union acc (collectSpecIdRefsFromExpr e))
                 Set.empty
                 fieldExprs
 
-        Mono.MonoRecordAccess recordExpr _ _ _ _ ->
+        Mono.MonoRecordAccess recordExpr _ _ ->
             collectSpecIdRefsFromExpr recordExpr
 
         Mono.MonoRecordUpdate recordExpr updates _ ->

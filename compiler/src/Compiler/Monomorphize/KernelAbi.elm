@@ -35,7 +35,6 @@ Three cases:
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Monomorphized as Mono
 import Compiler.Data.Name as Name exposing (Name)
-import Compiler.Generate.MLIR.Types as Types
 import Data.Map as Dict
 import Data.Set as EverySet exposing (EverySet)
 import System.TypeCheck.IO as IO

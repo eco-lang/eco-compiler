@@ -188,13 +188,13 @@ collectExprStageArityIssues context expr =
             List.concatMap (\( _, e ) -> collectExprStageArityIssues context e) branches
 
         Mono.MonoRecordCreate fieldExprs _ ->
-            List.concatMap (collectExprStageArityIssues context) fieldExprs
+            List.concatMap (\( _, e ) -> collectExprStageArityIssues context e) fieldExprs
 
         Mono.MonoRecordUpdate recordExpr updates _ ->
             collectExprStageArityIssues context recordExpr
                 ++ List.concatMap (\( _, e ) -> collectExprStageArityIssues context e) updates
 
-        Mono.MonoRecordAccess recordExpr _ _ _ _ ->
+        Mono.MonoRecordAccess recordExpr _ _ ->
             collectExprStageArityIssues context recordExpr
 
         Mono.MonoTupleCreate _ exprs _ ->

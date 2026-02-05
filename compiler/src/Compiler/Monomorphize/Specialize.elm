@@ -1,6 +1,5 @@
 module Compiler.Monomorphize.Specialize exposing
     ( specializeNode
-    , lookupFieldIndex
     )
 
 {-| Expression and node specialization for monomorphization.
@@ -13,20 +12,6 @@ into monomorphized form by applying type substitutions.
 
 @docs specializeNode
 
-
-# Definition Utilities
-
-
-# Type Extraction
-
-@docs lookupFieldIndex
-
-
-# Type Building
-
-
-# Global Conversion
-
 -}
 
 import Compiler.AST.Canonical as Can
@@ -36,13 +21,13 @@ import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.Index as Index
 import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
-import Compiler.Generate.MLIR.Types as Types
 import Compiler.Monomorphize.Analysis as Analysis
 import Compiler.Monomorphize.Closure as Closure
 import Compiler.Monomorphize.KernelAbi as KernelAbi
 import Compiler.Monomorphize.State exposing (MonoState, Substitution, VarTypes, WorkItem(..))
 import Compiler.Monomorphize.TypeSubst as TypeSubst
 import Compiler.LocalOpt.Typed.DecisionTree as DT
+import Compiler.Generate.MLIR.Types as Types
 import Compiler.Reporting.Annotation as A
 import Data.Map as Dict exposing (Dict)
 import System.TypeCheck.IO as IO
@@ -160,7 +145,7 @@ specializeLambda lambdaExpr canType subst state =
 
         -- Total flattened args & final return (for fully-peelable lambdas)
         ( flatArgTypes, flatRetType ) =
-            Types.decomposeFunctionType monoType0
+            Mono.decomposeFunctionType monoType0
 
         totalArity : Int
         totalArity =
@@ -351,7 +336,7 @@ specializeLambda lambdaExpr canType subst state =
             _ =
                 let
                     stageArityCheck =
-                        Types.stageParamTypes effectiveMonoType
+                        Mono.stageParamTypes effectiveMonoType
                 in
                 if List.length monoParams /= List.length stageArityCheck then
                     Utils.Crash.crash
@@ -1233,14 +1218,8 @@ specializeExpr expr subst state =
 
                 ( monoRecord, stateAfter ) =
                     specializeExpr record subst state
-
-                recordType =
-                    Mono.typeOf monoRecord
-
-                ( fieldIndex, isUnboxed ) =
-                    lookupFieldIndex fieldName recordType
             in
-            ( Mono.MonoRecordAccess monoRecord fieldName fieldIndex isUnboxed monoType, stateAfter )
+            ( Mono.MonoRecordAccess monoRecord fieldName monoType, stateAfter )
 
         TOpt.Update _ record updates canType ->
             let
@@ -1250,14 +1229,8 @@ specializeExpr expr subst state =
                 ( monoRecord, state1 ) =
                     specializeExpr record subst state
 
-                recordType =
-                    Mono.typeOf monoRecord
-
-                layout =
-                    getRecordLayout recordType
-
                 ( monoUpdates, state2 ) =
-                    specializeUpdates updates layout subst state1
+                    specializeUpdates updates subst state1
             in
             ( Mono.MonoRecordUpdate monoRecord monoUpdates monoType, state2 )
 
@@ -1266,11 +1239,8 @@ specializeExpr expr subst state =
                 monoType =
                     TypeSubst.applySubst subst canType
 
-                layout =
-                    getRecordLayout monoType
-
                 ( monoFields, stateAfter ) =
-                    specializeRecordFields fields layout subst state
+                    specializeRecordFields fields subst state
             in
             ( Mono.MonoRecordCreate monoFields monoType, stateAfter )
 
@@ -1279,11 +1249,8 @@ specializeExpr expr subst state =
                 monoType =
                     TypeSubst.applySubst subst canType
 
-                layout =
-                    getRecordLayout monoType
-
                 ( monoFields, stateAfter ) =
-                    specializeTrackedRecordFields fields layout subst state
+                    specializeTrackedRecordFields fields subst state
             in
             ( Mono.MonoRecordCreate monoFields monoType, stateAfter )
 
@@ -1294,9 +1261,6 @@ specializeExpr expr subst state =
             let
                 monoType =
                     TypeSubst.applySubst subst canType
-
-                layout =
-                    getTupleLayout monoType
 
                 ( monoA, state1 ) =
                     specializeExpr a subst state
@@ -2046,57 +2010,39 @@ specializeJumps jumps subst state =
         jumps
 
 
-specializeRecordFields : Dict String Name TOpt.Expr -> Types.RecordLayout -> Substitution -> MonoState -> ( List Mono.MonoExpr, MonoState )
-specializeRecordFields fields layout subst state =
-    let
-        fieldsByName =
-            fields
-    in
-    List.foldr
-        (\fieldInfo ( acc, st ) ->
-            case Dict.get identity fieldInfo.name fieldsByName of
-                Just expr ->
-                    let
-                        ( monoExpr, newSt ) =
-                            specializeExpr expr subst st
-                    in
-                    ( monoExpr :: acc, newSt )
-
-                Nothing ->
-                    ( Mono.MonoUnit :: acc, st )
+specializeRecordFields : Dict String Name TOpt.Expr -> Substitution -> MonoState -> ( List ( Name, Mono.MonoExpr ), MonoState )
+specializeRecordFields fields subst state =
+    Dict.foldl compare
+        (\name expr ( acc, st ) ->
+            let
+                ( monoExpr, newSt ) =
+                    specializeExpr expr subst st
+            in
+            ( ( name, monoExpr ) :: acc, newSt )
         )
         ( [], state )
-        layout.fields
+        fields
 
 
-specializeTrackedRecordFields : Dict String (A.Located Name) TOpt.Expr -> Types.RecordLayout -> Substitution -> MonoState -> ( List Mono.MonoExpr, MonoState )
-specializeTrackedRecordFields fields layout subst state =
-    let
-        fieldsByName =
-            Dict.foldl A.compareLocated
-                (\locName expr acc -> Dict.insert identity (A.toValue locName) expr acc)
-                Dict.empty
-                fields
-    in
-    List.foldr
-        (\fieldInfo ( acc, st ) ->
-            case Dict.get identity fieldInfo.name fieldsByName of
-                Just expr ->
-                    let
-                        ( monoExpr, newSt ) =
-                            specializeExpr expr subst st
-                    in
-                    ( monoExpr :: acc, newSt )
+specializeTrackedRecordFields : Dict String (A.Located Name) TOpt.Expr -> Substitution -> MonoState -> ( List ( Name, Mono.MonoExpr ), MonoState )
+specializeTrackedRecordFields fields subst state =
+    Dict.foldl A.compareLocated
+        (\locName expr ( acc, st ) ->
+            let
+                name =
+                    A.toValue locName
 
-                Nothing ->
-                    ( Mono.MonoUnit :: acc, st )
+                ( monoExpr, newSt ) =
+                    specializeExpr expr subst st
+            in
+            ( ( name, monoExpr ) :: acc, newSt )
         )
         ( [], state )
-        layout.fields
+        fields
 
 
-specializeUpdates : Dict String (A.Located Name) TOpt.Expr -> Types.RecordLayout -> Substitution -> MonoState -> ( List ( Int, Mono.MonoExpr ), MonoState )
-specializeUpdates updates layout subst state =
+specializeUpdates : Dict String (A.Located Name) TOpt.Expr -> Substitution -> MonoState -> ( List ( Name, Mono.MonoExpr ), MonoState )
+specializeUpdates updates subst state =
     Dict.foldl A.compareLocated
         (\locName expr ( acc, st ) ->
             let
@@ -2105,20 +2051,8 @@ specializeUpdates updates layout subst state =
 
                 ( monoExpr, newSt ) =
                     specializeExpr expr subst st
-
-                fieldIndex =
-                    List.foldl
-                        (\f idx ->
-                            if f.name == fieldName then
-                                f.index
-
-                            else
-                                idx
-                        )
-                        0
-                        layout.fields
             in
-            ( ( fieldIndex, monoExpr ) :: acc, newSt )
+            ( ( fieldName, monoExpr ) :: acc, newSt )
         )
         ( [], state )
         updates
@@ -2137,65 +2071,6 @@ specializeArg subst ( locName, canType ) =
     in
     ( name, monoType )
 
-
-
--- ========== LAYOUT HELPERS ==========
-
-
-{-| Extract record layout from a monomorphic type.
--}
-getRecordLayout : Mono.MonoType -> Types.RecordLayout
-getRecordLayout monoType =
-    case monoType of
-        Mono.MRecord fields ->
-            Types.computeRecordLayout fields
-
-        _ ->
-            { fieldCount = 0
-            , unboxedCount = 0
-            , unboxedBitmap = 0
-            , fields = []
-            }
-
-
-{-| Extract the tuple layout from a tuple MonoType.
--}
-getTupleLayout : Mono.MonoType -> Types.TupleLayout
-getTupleLayout monoType =
-    case monoType of
-        Mono.MTuple elementTypes ->
-            Types.computeTupleLayout elementTypes
-
-        _ ->
-            { arity = 0
-            , unboxedBitmap = 0
-            , elements = []
-            }
-
-
-{-| Look up the index and unboxed status of a record field by name.
--}
-lookupFieldIndex : Name -> Mono.MonoType -> ( Int, Bool )
-lookupFieldIndex fieldName monoType =
-    case monoType of
-        Mono.MRecord fields ->
-            let
-                layout =
-                    Types.computeRecordLayout fields
-            in
-            List.foldl
-                (\f acc ->
-                    if f.name == fieldName then
-                        ( f.index, f.isUnboxed )
-
-                    else
-                        acc
-                )
-                ( 0, False )
-                layout.fields
-
-        _ ->
-            ( 0, False )
 
 
 {-| Build a function type from a list of arguments and a return type.

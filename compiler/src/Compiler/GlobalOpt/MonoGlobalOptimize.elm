@@ -13,7 +13,6 @@ This phase:
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.TypeEnv as TypeEnv
 import Compiler.Data.Name exposing (Name)
-import Compiler.Generate.MLIR.Types as Types
 import Compiler.Generate.Mode as Mode
 import Compiler.Monomorphize.Closure as Closure
 import Compiler.GlobalOpt.MonoInlineSimplify as MonoInlineSimplify
@@ -181,9 +180,9 @@ maxLambdaIndexInExpr expr =
             max decMax branchMax
 
         Mono.MonoRecordCreate fields _ ->
-            List.foldl (\e acc -> max acc (maxLambdaIndexInExpr e)) 0 fields
+            List.foldl (\( _, e ) acc -> max acc (maxLambdaIndexInExpr e)) 0 fields
 
-        Mono.MonoRecordAccess inner _ _ _ _ ->
+        Mono.MonoRecordAccess inner _ _ ->
             maxLambdaIndexInExpr inner
 
         Mono.MonoRecordUpdate record updates _ ->
@@ -319,10 +318,10 @@ buildAbiWrapperGO home targetType calleeExpr ctx0 =
             Mono.typeOf calleeExpr
 
         targetSeg =
-            Types.segmentLengths targetType
+            Mono.segmentLengths targetType
 
         srcSeg =
-            Types.segmentLengths srcType
+            Mono.segmentLengths srcType
     in
     if targetSeg == srcSeg then
         ( calleeExpr, ctx0 )
@@ -340,10 +339,10 @@ buildAbiWrapperGO home targetType calleeExpr ctx0 =
             buildStages remainingType accParams ctx =
                 let
                     stageArgTypes =
-                        Types.stageParamTypes remainingType
+                        Mono.stageParamTypes remainingType
 
                     stageRetType =
-                        Types.stageReturnType remainingType
+                        Mono.stageReturnType remainingType
                 in
                 case stageArgTypes of
                     [] ->
@@ -487,24 +486,24 @@ rewriteExprForAbi home expr ctx =
             let
                 ( newFields, ctx1 ) =
                     List.foldr
-                        (\field ( acc, accCtx ) ->
+                        (\( name, field ) ( acc, accCtx ) ->
                             let
                                 ( newField, accCtx1 ) =
                                     rewriteExprForAbi home field accCtx
                             in
-                            ( newField :: acc, accCtx1 )
+                            ( ( name, newField ) :: acc, accCtx1 )
                         )
                         ( [], ctx )
                         fields
             in
             ( Mono.MonoRecordCreate newFields tipe, ctx1 )
 
-        Mono.MonoRecordAccess inner name idx unboxed tipe ->
+        Mono.MonoRecordAccess inner name tipe ->
             let
                 ( newInner, ctx1 ) =
                     rewriteExprForAbi home inner ctx
             in
-            ( Mono.MonoRecordAccess newInner name idx unboxed tipe, ctx1 )
+            ( Mono.MonoRecordAccess newInner name tipe, ctx1 )
 
         Mono.MonoRecordUpdate record updates tipe ->
             let
@@ -513,12 +512,12 @@ rewriteExprForAbi home expr ctx =
 
                 ( newUpdates, ctx2 ) =
                     List.foldr
-                        (\( idx, e ) ( acc, accCtx ) ->
+                        (\( name, e ) ( acc, accCtx ) ->
                             let
                                 ( newE, accCtx1 ) =
                                     rewriteExprForAbi home e accCtx
                             in
-                            ( ( idx, newE ) :: acc, accCtx1 )
+                            ( ( name, newE ) :: acc, accCtx1 )
                         )
                         ( [], ctx1 )
                         updates
@@ -594,10 +593,10 @@ rewriteCaseForAbi home scrutName scrutTypeName decider branches resultType ctx0 
             -- Function leaves: normalize to canonical ABI
             let
                 ( canonicalSeg, flatArgs, flatRet ) =
-                    Types.chooseCanonicalSegmentation leafTypes
+                    Mono.chooseCanonicalSegmentation leafTypes
 
                 canonicalType =
-                    Types.buildSegmentedFunctionType flatArgs flatRet canonicalSeg
+                    Mono.buildSegmentedFunctionType flatArgs flatRet canonicalSeg
 
                 ( newDecider, newBranches, ctx1 ) =
                     rewriteCaseLeavesToAbiGO home canonicalType canonicalSeg decider branches ctx0
@@ -608,7 +607,7 @@ rewriteCaseForAbi home scrutName scrutTypeName decider branches resultType ctx0 
 rewriteCaseLeavesToAbiGO :
     IO.Canonical
     -> Mono.MonoType
-    -> Types.Segmentation
+    -> Mono.Segmentation
     -> Mono.Decider Mono.MonoChoice
     -> List ( Int, Mono.MonoExpr )
     -> GlobalCtx
@@ -619,7 +618,7 @@ rewriteCaseLeavesToAbiGO home targetType targetSeg decider jumps ctx0 =
         rewriteLeafExpr expr ctx =
             case Mono.typeOf expr of
                 Mono.MFunction _ _ ->
-                    if Types.segmentLengths (Mono.typeOf expr) == targetSeg then
+                    if Mono.segmentLengths (Mono.typeOf expr) == targetSeg then
                         ( expr, ctx )
 
                     else
@@ -819,16 +818,16 @@ rewriteIfForAbi home branches final resultType ctx0 =
             -- Function leaves: normalize to canonical ABI
             let
                 ( canonicalSeg, flatArgs, flatRet ) =
-                    Types.chooseCanonicalSegmentation leafTypes
+                    Mono.chooseCanonicalSegmentation leafTypes
 
                 canonicalType =
-                    Types.buildSegmentedFunctionType flatArgs flatRet canonicalSeg
+                    Mono.buildSegmentedFunctionType flatArgs flatRet canonicalSeg
 
                 rewriteResultExpr : Mono.MonoExpr -> GlobalCtx -> ( Mono.MonoExpr, GlobalCtx )
                 rewriteResultExpr expr ctx =
                     case Mono.typeOf expr of
                         Mono.MFunction _ _ ->
-                            if Types.segmentLengths (Mono.typeOf expr) == canonicalSeg then
+                            if Mono.segmentLengths (Mono.typeOf expr) == canonicalSeg then
                                 rewriteExprForAbi home expr ctx
 
                             else
@@ -987,7 +986,7 @@ validateExprClosures expr =
         Mono.MonoClosure info body tipe ->
             let
                 expectedParams =
-                    Types.stageParamTypes tipe
+                    Mono.stageParamTypes tipe
 
                 actualParams =
                     info.params
@@ -1053,9 +1052,9 @@ validateExprClosures expr =
             validateExprClosures inner
 
         Mono.MonoRecordCreate fields _ ->
-            List.foldl (\e () -> validateExprClosures e) () fields
+            List.foldl (\( _, e ) () -> validateExprClosures e) () fields
 
-        Mono.MonoRecordAccess inner _ _ _ _ ->
+        Mono.MonoRecordAccess inner _ _ ->
             validateExprClosures inner
 
         Mono.MonoRecordUpdate record updates _ ->
