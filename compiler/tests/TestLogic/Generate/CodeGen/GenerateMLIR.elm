@@ -45,8 +45,8 @@ import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Generate.CodeGen as CodeGen
 import Compiler.Generate.MLIR.Backend as MLIR
 import Compiler.Generate.Mode as Mode
-import Compiler.Generate.Monomorphize as Monomorphize
-import Compiler.Optimize.Typed.Module as TypedOptimize
+import Compiler.Monomorphize.Monomorphize as Monomorphize
+import Compiler.LocalOpt.Typed.Module as TypedOptimize
 import Compiler.Reporting.Result as Result
 import Compiler.Type.Constrain.Typed.Module as ConstrainTyped
 import Compiler.Type.PostSolve as PostSolve

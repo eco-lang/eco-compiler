@@ -21,7 +21,7 @@ import Compiler.Generate.MLIR.Context as Ctx
 import Compiler.Generate.MLIR.Intrinsics as Intrinsics
 import Compiler.Generate.MLIR.Ops as Ops
 import Compiler.Generate.MLIR.Types as Types
-import Compiler.Optimize.Typed.DecisionTree as DT
+import Compiler.LocalOpt.Typed.DecisionTree as DT
 import Data.Map as EveryDict
 import Dict
 import Mlir.Mlir exposing (MlirAttr(..), MlirOp, MlirType(..))

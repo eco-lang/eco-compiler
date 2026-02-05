@@ -67,11 +67,11 @@ import Compiler.Elm.Package as Pkg
 import Compiler.Generate.CodeGen as CodeGen
 import Compiler.Generate.MLIR.Backend as MLIR
 import Compiler.Generate.Mode as Mode
-import Compiler.Generate.Monomorphize as Monomorphize
+import Compiler.Monomorphize.Monomorphize as Monomorphize
 import Compiler.Nitpick.PatternMatches as PatternMatches
-import Compiler.Optimize.Erased.Module as Optimize
-import Compiler.Optimize.Typed.KernelTypes as KernelTypes
-import Compiler.Optimize.Typed.Module as TypedOptimize
+import Compiler.LocalOpt.Erased.Module as Optimize
+import Compiler.LocalOpt.Typed.KernelTypes as KernelTypes
+import Compiler.LocalOpt.Typed.Module as TypedOptimize
 import Compiler.Parse.Module as Parse
 import Compiler.Parse.SyntaxVersion as SV
 import Compiler.Reporting.Annotation as A

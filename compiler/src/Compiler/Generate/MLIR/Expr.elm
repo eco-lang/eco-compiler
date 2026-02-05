@@ -47,7 +47,7 @@ import Compiler.Generate.MLIR.Names as Names
 import Compiler.Generate.MLIR.Ops as Ops
 import Compiler.Generate.MLIR.Patterns as Patterns
 import Compiler.Generate.MLIR.Types as Types
-import Compiler.Optimize.Typed.DecisionTree as DT
+import Compiler.LocalOpt.Typed.DecisionTree as DT
 import Data.Map as EveryDict
 import Dict exposing (Dict)
 import Hex

@@ -29,7 +29,7 @@ import Compiler.Generate.MLIR.Intrinsics as Intrinsics
 import Compiler.Generate.MLIR.Ops as Ops
 import Compiler.Generate.MLIR.Patterns as Patterns
 import Compiler.Generate.MLIR.Types as Types
-import Compiler.Optimize.Typed.DecisionTree as DT
+import Compiler.LocalOpt.Typed.DecisionTree as DT
 import Dict
 import Utils.Crash exposing (crash)
 import Mlir.Mlir as Mlir exposing (MlirAttr(..), MlirOp, MlirRegion(..), MlirType(..), Visibility(..))

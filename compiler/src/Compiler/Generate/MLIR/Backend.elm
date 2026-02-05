@@ -18,7 +18,7 @@ import Compiler.Generate.MLIR.Functions as Functions
 import Compiler.Generate.MLIR.Lambdas as Lambdas
 import Compiler.Generate.MLIR.TypeTable as TypeTable
 import Compiler.Generate.Mode as Mode
-import Compiler.Optimize.MonoInlineSimplify as MonoInlineSimplify
+import Compiler.GlobalOpt.MonoInlineSimplify as MonoInlineSimplify
 import Data.Map as EveryDict
 import Dict
 import Mlir.Loc as Loc

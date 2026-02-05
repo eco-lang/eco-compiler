@@ -39,9 +39,9 @@ import Compiler.Data.NonEmptyList as NE
 import Compiler.Data.OneOrMore as OneOrMore
 import Compiler.Elm.Interface.Basic as Basic
 import Compiler.Elm.ModuleName as ModuleName
-import Compiler.Generate.Monomorphize as Monomorphize
-import Compiler.Optimize.Typed.KernelTypes as KernelTypes
-import Compiler.Optimize.Typed.Module as TypedOptimize
+import Compiler.Monomorphize.Monomorphize as Monomorphize
+import Compiler.LocalOpt.Typed.KernelTypes as KernelTypes
+import Compiler.LocalOpt.Typed.Module as TypedOptimize
 import Compiler.Reporting.Result as RResult
 import Compiler.Type.Constrain.Typed.Module as ConstrainTyped
 import Compiler.Type.PostSolve as PostSolve

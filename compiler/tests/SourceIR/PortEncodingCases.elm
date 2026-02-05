@@ -2,7 +2,7 @@ module SourceIR.PortEncodingCases exposing (expectSuite, testCases)
 
 {-| Test cases for port encoding/decoding.
 
-These tests exercise the Compiler.Optimize.Typed.Port module to improve coverage of:
+These tests exercise the Compiler.LocalOpt.Typed.Port module to improve coverage of:
 
   - Port encoder generation
   - Port decoder generation

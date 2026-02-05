@@ -4,12 +4,12 @@ module SourceIR.DecisionTreeAdvancedCases exposing (expectSuite, testCases)
 
 These tests exercise various pattern matching scenarios to improve coverage of:
 
-  - Compiler.Optimize.Typed.DecisionTree.toRelevantBranch
-  - Compiler.Optimize.Typed.DecisionTree.toDecisionTree
-  - Compiler.Optimize.Typed.DecisionTree.isComplete
-  - Compiler.Optimize.Typed.DecisionTree.flatten
-  - Compiler.Optimize.Typed.DecisionTree.gatherEdges
-  - Compiler.Optimize.Typed.Case
+  - Compiler.LocalOpt.Typed.DecisionTree.toRelevantBranch
+  - Compiler.LocalOpt.Typed.DecisionTree.toDecisionTree
+  - Compiler.LocalOpt.Typed.DecisionTree.isComplete
+  - Compiler.LocalOpt.Typed.DecisionTree.flatten
+  - Compiler.LocalOpt.Typed.DecisionTree.gatherEdges
+  - Compiler.LocalOpt.Typed.Case
 
 -}
 

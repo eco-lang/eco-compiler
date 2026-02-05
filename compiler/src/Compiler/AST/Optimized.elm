@@ -60,7 +60,7 @@ import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Elm.Kernel as K
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Elm.Package as Pkg
-import Compiler.Optimize.Erased.DecisionTree as DT
+import Compiler.LocalOpt.Erased.DecisionTree as DT
 import Compiler.Reporting.Annotation as A
 import Data.Map as Dict exposing (Dict)
 import Data.Set as EverySet exposing (EverySet)

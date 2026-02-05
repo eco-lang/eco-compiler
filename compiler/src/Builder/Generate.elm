@@ -56,8 +56,8 @@ import Compiler.Generate.CodeGen as CodeGen
 import Compiler.Generate.CodeGen.JavaScript as JavaScript
 import Compiler.Generate.MLIR.Backend as MLIR
 import Compiler.Generate.Mode as Mode
-import Compiler.Generate.Monomorphize as Monomorphize
-import Compiler.Optimize.MonoGlobalOptimize as MonoGlobalOptimize
+import Compiler.Monomorphize.Monomorphize as Monomorphize
+import Compiler.GlobalOpt.MonoGlobalOptimize as MonoGlobalOptimize
 import Compiler.Nitpick.Debug as Nitpick
 import Compiler.Reporting.Render.Type.Localizer as L
 import Data.Map as Dict exposing (Dict)
