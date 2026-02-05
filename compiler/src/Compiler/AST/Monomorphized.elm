@@ -489,7 +489,7 @@ In generateMonoPath, the container type for a MonoIndex is obtained via getMonoP
 -}
 type MonoPath
     = MonoIndex Int ContainerKind MonoType MonoPath -- MonoType = result type after projection
-    | MonoField Int MonoType MonoPath -- MonoType = result type after field access
+    | MonoField Name MonoType MonoPath -- MonoType = result type after field access (record field by name)
     | MonoUnbox MonoType MonoPath -- MonoType = result type after unwrapping (the field type)
     | MonoRoot Name MonoType -- MonoType = variable's type
 

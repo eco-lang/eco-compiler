@@ -27,7 +27,6 @@ import Compiler.Monomorphize.KernelAbi as KernelAbi
 import Compiler.Monomorphize.State exposing (MonoState, Substitution, VarTypes, WorkItem(..))
 import Compiler.Monomorphize.TypeSubst as TypeSubst
 import Compiler.LocalOpt.Typed.DecisionTree as DT
-import Compiler.Generate.MLIR.Types as Types
 import Compiler.Reporting.Annotation as A
 import Data.Map as Dict exposing (Dict)
 import System.TypeCheck.IO as IO
@@ -1681,10 +1680,26 @@ specializePath path subst varTypes globalTypeEnv =
                 recordType =
                     Mono.getMonoPathType monoSubPath
 
-                ( fieldIndex, resultType ) =
-                    computeFieldProjectionType fieldName recordType
+                resultType =
+                    case recordType of
+                        Mono.MRecord fields ->
+                            case Dict.get identity fieldName fields of
+                                Just fieldMonoType ->
+                                    fieldMonoType
+
+                                Nothing ->
+                                    Utils.Crash.crash
+                                        ("Specialize.specializePath: Field '" ++ fieldName
+                                            ++ "' not found in record type. This is a compiler bug."
+                                        )
+
+                        _ ->
+                            Utils.Crash.crash
+                                ("Specialize.specializePath: Expected MRecord for field path but got: "
+                                    ++ Mono.monoTypeToDebugString recordType
+                                )
             in
-            Mono.MonoField fieldIndex resultType monoSubPath
+            Mono.MonoField fieldName resultType monoSubPath
 
         TOpt.Unbox subPath ->
             let
@@ -1852,43 +1867,6 @@ computeArrayElementType containerType =
 
         _ ->
             Utils.Crash.crash ("Specialize.computeArrayElementType: Expected Array type but got: " ++ Mono.monoTypeToDebugString containerType)
-
-
-{-| Compute the field index and type from a record field access.
--}
-computeFieldProjectionType : Name -> Mono.MonoType -> ( Int, Mono.MonoType )
-computeFieldProjectionType fieldName recordType =
-    case recordType of
-        Mono.MRecord fields ->
-            let
-                layout =
-                    Types.computeRecordLayout fields
-            in
-            case findFieldInLayout fieldName layout.fields of
-                Just fieldInfo ->
-                    ( fieldInfo.index, fieldInfo.monoType )
-
-                Nothing ->
-                    Utils.Crash.crash ("Specialize.computeFieldProjectionType: Field '" ++ fieldName ++ "' not found in record layout")
-
-        _ ->
-            Utils.Crash.crash ("Specialize.computeFieldProjectionType: Expected MRecord but got: " ++ Mono.monoTypeToDebugString recordType)
-
-
-{-| Find a field by name in a list of field infos.
--}
-findFieldInLayout : Name -> List Types.FieldInfo -> Maybe Types.FieldInfo
-findFieldInLayout targetName fields =
-    case fields of
-        [] ->
-            Nothing
-
-        fieldInfo :: rest ->
-            if fieldInfo.name == targetName then
-                Just fieldInfo
-
-            else
-                findFieldInLayout targetName rest
 
 
 {-| Convert ContainerHint to ContainerKind for monomorphized paths.

@@ -28,6 +28,30 @@ import Mlir.Mlir exposing (MlirAttr(..), MlirOp, MlirType(..))
 
 
 
+-- ====== HELPERS ======
+
+
+{-| Extract record fields from a MonoType. Returns empty dict if not a record.
+-}
+getRecordFields : Mono.MonoType -> EveryDict.Dict String Name.Name Mono.MonoType
+getRecordFields monoType =
+    case monoType of
+        Mono.MRecord fields ->
+            fields
+
+        _ ->
+            EveryDict.empty
+
+
+{-| Find a FieldInfo by name in a list of FieldInfos.
+-}
+findFieldInfoByName : Name.Name -> List Types.FieldInfo -> Maybe Types.FieldInfo
+findFieldInfoByName targetName fields =
+    List.filter (\fi -> fi.name == targetName) fields
+        |> List.head
+
+
+
 -- ====== MONO PATH GENERATION ======
 
 
@@ -156,7 +180,7 @@ generateMonoPath ctx path targetType =
             , ctx3
             )
 
-        Mono.MonoField index resultType subPath ->
+        Mono.MonoField fieldName resultType subPath ->
             let
                 -- Navigate to the container object (always !eco.value)
                 ( subOps, subVar, ctx1 ) =
@@ -165,11 +189,27 @@ generateMonoPath ctx path targetType =
                 ( resultVar, ctx2 ) =
                     Ctx.freshVar ctx1
 
+                -- Compute record layout to get the field index
+                containerType =
+                    Mono.getMonoPathType subPath
+
+                layout =
+                    Types.computeRecordLayout (getRecordFields containerType)
+
+                fieldInfo =
+                    findFieldInfoByName fieldName layout.fields
+                        |> Maybe.withDefault
+                            { name = fieldName
+                            , index = 0
+                            , monoType = resultType
+                            , isUnboxed = False
+                            }
+
                 -- Project directly to the targetType using record projection.
                 -- MonoField is generated from TOpt.Field which is record field access.
                 -- Primitive types are stored unboxed and should be read directly.
                 ( ctx3, projectOp ) =
-                    Ops.ecoProjectRecord ctx2 resultVar index targetType subVar
+                    Ops.ecoProjectRecord ctx2 resultVar fieldInfo.index targetType subVar
             in
             ( subOps ++ [ projectOp ]
             , resultVar
