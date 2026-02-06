@@ -176,40 +176,35 @@ monomorphizeFromEntry mainGlobal mainType globalTypeEnv nodes =
         finalState : MonoState
         finalState =
             processWorklist stateWithMain
+
+        -- Note: checkCallableTopLevels is no longer called here.
+        -- GlobalOpt now owns the callable top-level invariant via ensureCallableForNode.
+        mainKey : List String
+        mainKey =
+            Mono.toComparableSpecKey (Mono.SpecKey (toptGlobalToMono mainGlobal) mainMonoType Nothing)
+
+        mainSpecId : Maybe Mono.SpecId
+        mainSpecId =
+            Dict.get identity mainKey finalState.registry.mapping
+
+        mainInfo : Maybe Mono.MainInfo
+        mainInfo =
+            Maybe.map Mono.StaticMain mainSpecId
+
+        -- Compute complete ctor shapes for all custom types
+        ctorShapes : Dict (List String) (List String) (List Mono.CtorShape)
+        ctorShapes =
+            computeCtorShapesForGraph finalState.globalTypeEnv finalState.nodes
     in
-    -- Check the callable-top-level invariant before returning
-    case checkCallableTopLevels finalState of
-        Err msg ->
-            Err ("COMPILER BUG: " ++ msg)
-
-        Ok () ->
-            let
-                mainKey : List String
-                mainKey =
-                    Mono.toComparableSpecKey (Mono.SpecKey (toptGlobalToMono mainGlobal) mainMonoType Nothing)
-
-                mainSpecId : Maybe Mono.SpecId
-                mainSpecId =
-                    Dict.get identity mainKey finalState.registry.mapping
-
-                mainInfo : Maybe Mono.MainInfo
-                mainInfo =
-                    Maybe.map Mono.StaticMain mainSpecId
-
-                -- Compute complete ctor shapes for all custom types
-                ctorShapes : Dict (List String) (List String) (List Mono.CtorShape)
-                ctorShapes =
-                    computeCtorShapesForGraph finalState.globalTypeEnv finalState.nodes
-            in
-            Ok
-                (Mono.MonoGraph
-                    { nodes = finalState.nodes
-                    , registry = finalState.registry
-                    , main = mainInfo
-                    , ctorShapes = ctorShapes
-                    , returnedClosureParamCounts = Dict.empty
-                    }
-                )
+    Ok
+        (Mono.MonoGraph
+            { nodes = finalState.nodes
+            , registry = finalState.registry
+            , main = mainInfo
+            , ctorShapes = ctorShapes
+            , returnedClosureParamCounts = Dict.empty
+            }
+        )
 
 
 

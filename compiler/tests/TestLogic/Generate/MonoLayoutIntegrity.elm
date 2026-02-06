@@ -232,7 +232,7 @@ collectExprLayoutIssues context expr =
                 ++ List.concatMap (\( _, e, _ ) -> collectExprLayoutIssues context e) closureInfo.captures
                 ++ collectExprLayoutIssues context bodyExpr
 
-        Mono.MonoCall _ fnExpr argExprs monoType ->
+        Mono.MonoCall _ fnExpr argExprs monoType _ ->
             checkTypeLayoutComplete context monoType
                 ++ collectExprLayoutIssues context fnExpr
                 ++ List.concatMap (collectExprLayoutIssues context) argExprs
@@ -380,7 +380,7 @@ collectExprRecordAccessIssues context expr =
             List.concatMap (\( _, e, _ ) -> collectExprRecordAccessIssues context e) closureInfo.captures
                 ++ collectExprRecordAccessIssues context bodyExpr
 
-        Mono.MonoCall _ fnExpr argExprs _ ->
+        Mono.MonoCall _ fnExpr argExprs _ _ ->
             collectExprRecordAccessIssues context fnExpr
                 ++ List.concatMap (collectExprRecordAccessIssues context) argExprs
 

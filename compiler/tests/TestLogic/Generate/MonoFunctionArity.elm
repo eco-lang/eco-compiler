@@ -216,7 +216,7 @@ collectExprArityIssues context expr =
                 ++ List.concatMap (\( _, e, _ ) -> collectExprArityIssues context e) closureInfo.captures
                 ++ collectExprArityIssues context bodyExpr
 
-        Mono.MonoCall _ fnExpr argExprs _ ->
+        Mono.MonoCall _ fnExpr argExprs _ _ ->
             -- Check that call site doesn't over-apply (use flattened arity)
             -- (Partial application is allowed, so under-application is fine)
             let

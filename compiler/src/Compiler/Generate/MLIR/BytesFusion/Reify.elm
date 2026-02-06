@@ -113,7 +113,7 @@ reifyEncoderHelp : Mono.SpecializationRegistry -> Mono.MonoExpr -> Maybe (List E
 reifyEncoderHelp registry expr =
     case expr of
         -- Call to a Bytes.Encode function
-        Mono.MonoCall _ func args _ ->
+        Mono.MonoCall _ func args _ _ ->
             case func of
                 Mono.MonoVarGlobal _ specId _ ->
                     case Registry.lookupSpecKey specId registry of
@@ -267,7 +267,7 @@ reifyEndianness registry expr =
                     Nothing
 
         -- Unwrap trivial zero-arg calls (sometimes nullary ctors get wrapped)
-        Mono.MonoCall _ fn [] _ ->
+        Mono.MonoCall _ fn [] _ _ ->
             reifyEndianness registry fn
 
         _ ->
@@ -383,7 +383,7 @@ or unsupported combinators (andThen, loop).
 reifyDecoder : Mono.SpecializationRegistry -> Mono.MonoExpr -> Maybe DecoderNode
 reifyDecoder registry expr =
     case expr of
-        Mono.MonoCall _ func args _ ->
+        Mono.MonoCall _ func args _ _ ->
             case func of
                 Mono.MonoVarGlobal _ specId _ ->
                     case Registry.lookupSpecKey specId registry of
@@ -597,7 +597,7 @@ matchLengthPrefixedPattern :
     -> Maybe (LengthDecoder -> DecoderNode)
 matchLengthPrefixedPattern registry paramName bodyExpr =
     case bodyExpr of
-        Mono.MonoCall _ func [ argExpr ] _ ->
+        Mono.MonoCall _ func [ argExpr ] _ _ ->
             case func of
                 Mono.MonoVarGlobal _ specId _ ->
                     case Registry.lookupSpecKey specId registry of
@@ -764,7 +764,7 @@ extractSentinelFromBody registry bodyExpr =
 
         -- Look for: decoder |> andThen (\val -> if val == sentinel then ...)
         -- This is MonoCall to andThen with [decoderExpr, lambdaExpr]
-        Mono.MonoCall _ func [ decoderExpr, lambdaExpr ] _ ->
+        Mono.MonoCall _ func [ decoderExpr, lambdaExpr ] _ _ ->
             case func of
                 Mono.MonoVarGlobal _ specId _ ->
                     -- Check if this is Decode.andThen
@@ -855,7 +855,7 @@ extractSentinelFromCondition : Mono.MonoExpr -> Maybe Int
 extractSentinelFromCondition condExpr =
     case condExpr of
         -- Look for equality comparison: var == literal or literal == var
-        Mono.MonoCall _ func [ arg1, arg2 ] _ ->
+        Mono.MonoCall _ func [ arg1, arg2 ] _ _ ->
             case func of
                 Mono.MonoVarKernel _ _ "eq" _ ->
                     -- Check if one arg is a literal int
@@ -973,7 +973,7 @@ The itemDecoder is the second argument.
 extractItemDecoderFromMapCall : Mono.SpecializationRegistry -> Mono.MonoExpr -> Maybe DecoderNode
 extractItemDecoderFromMapCall registry expr =
     case expr of
-        Mono.MonoCall _ func [ _, itemDecoderExpr ] _ ->
+        Mono.MonoCall _ func [ _, itemDecoderExpr ] _ _ ->
             -- Check if func is Decode.map
             case func of
                 Mono.MonoVarGlobal _ specId _ ->

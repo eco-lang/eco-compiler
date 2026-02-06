@@ -20,6 +20,8 @@ module Compiler.AST.Monomorphized exposing
     , chooseCanonicalSegmentation
     , buildSegmentedFunctionType
     , decomposeFunctionType
+      -- Call staging metadata
+    , CallModel(..), CallInfo, defaultCallInfo
     )
 
 {-| Monomorphized AST for backends that can optimize using concrete types.
@@ -429,7 +431,7 @@ type MonoExpr
     | MonoVarKernel Region Name Name MonoType -- Mutually recursive variable reference
     | MonoList Region (List MonoExpr) MonoType
     | MonoClosure ClosureInfo MonoExpr MonoType
-    | MonoCall Region MonoExpr (List MonoExpr) MonoType
+    | MonoCall Region MonoExpr (List MonoExpr) MonoType CallInfo
     | MonoTailCall Name (List ( Name, MonoExpr )) MonoType
     | MonoIf (List ( MonoExpr, MonoExpr )) MonoExpr MonoType
     | MonoLet MonoDef MonoExpr MonoType
@@ -617,7 +619,7 @@ typeOf expr =
         MonoClosure _ _ t ->
             t
 
-        MonoCall _ _ _ t ->
+        MonoCall _ _ _ t _ ->
             t
 
         MonoTailCall _ _ t ->
@@ -921,6 +923,48 @@ stage 1 takes m1 args, stage 2 takes m2 args, etc.
 -}
 type alias Segmentation =
     List Int
+
+
+{-| Call model of a function, independent of backend.
+This is the AST-side version; MLIR Context.CallModel can be removed.
+-}
+type CallModel
+    = FlattenedExternal
+    | StageCurried
+
+
+{-| Staging / call-site metadata for MonoCall.
+
+  - callModel: FlattenedExternal vs StageCurried
+  - stageArities: Full list of stage arities [a1, a2, ...] for the callee.
+  - isSingleStageSaturated: True if this call consumes all arguments and
+    fits entirely in the first stage.
+  - initialRemaining: Stage arity of the current closure value at this call site
+    (used as sourceRemaining in applyByStages).
+  - remainingStageArities: Stage arities for subsequent stages after saturating
+    the current closure (used in applyByStages).
+
+-}
+type alias CallInfo =
+    { callModel : CallModel
+    , stageArities : List Int
+    , isSingleStageSaturated : Bool
+    , initialRemaining : Int
+    , remainingStageArities : List Int
+    }
+
+
+{-| Default/placeholder CallInfo for newly constructed calls.
+Will be overwritten by annotateCallStaging pass in GlobalOpt.
+-}
+defaultCallInfo : CallInfo
+defaultCallInfo =
+    { callModel = StageCurried
+    , stageArities = []
+    , isSingleStageSaturated = False
+    , initialRemaining = 0
+    , remainingStageArities = []
+    }
 
 
 {-| Extract the staging pattern (segment lengths) from a function type.

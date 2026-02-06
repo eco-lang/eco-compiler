@@ -185,36 +185,28 @@ specializeNode ctorName node requestedMonoType state =
                 subst =
                     TypeSubst.unify canType requestedMonoType
 
-                ( monoExpr0, state1 ) =
+                ( monoExpr, state1 ) =
                     specializeExpr expr subst state
 
-                ( monoExpr, state2 ) =
-                    Closure.ensureCallableTopLevel monoExpr0 requestedMonoType state1
-
-                -- Use the expression's actual type for consistency (GOPT_016)
-                -- The closure inside monoExpr may have a different type than requestedMonoType
-                -- (e.g., flattened MFunction vs nested MFunction)
+                -- GlobalOpt will wrap bare expressions in closures via ensureCallableForNode
                 actualType =
                     Mono.typeOf monoExpr
             in
-            ( Mono.MonoDefine monoExpr actualType, state2 )
+            ( Mono.MonoDefine monoExpr actualType, state1 )
 
         TOpt.TrackedDefine _ expr _ canType ->
             let
                 subst =
                     TypeSubst.unify canType requestedMonoType
 
-                ( monoExpr0, state1 ) =
+                ( monoExpr, state1 ) =
                     specializeExpr expr subst state
 
-                ( monoExpr, state2 ) =
-                    Closure.ensureCallableTopLevel monoExpr0 requestedMonoType state1
-
-                -- Use the expression's actual type for consistency (GOPT_016)
+                -- GlobalOpt will wrap bare expressions in closures via ensureCallableForNode
                 actualType =
                     Mono.typeOf monoExpr
             in
-            ( Mono.MonoDefine monoExpr actualType, state2 )
+            ( Mono.MonoDefine monoExpr actualType, state1 )
 
         TOpt.Ctor index arity canType ->
             let
@@ -277,26 +269,22 @@ specializeNode ctorName node requestedMonoType state =
                 subst =
                     TypeSubst.unify canType requestedMonoType
 
-                ( monoExpr0, state1 ) =
+                ( monoExpr, state1 ) =
                     specializeExpr expr subst state
-
-                ( monoExpr, state2 ) =
-                    Closure.ensureCallableTopLevel monoExpr0 requestedMonoType state1
             in
-            ( Mono.MonoPortIncoming monoExpr requestedMonoType, state2 )
+            -- GlobalOpt will wrap bare expressions in closures via ensureCallableForNode
+            ( Mono.MonoPortIncoming monoExpr requestedMonoType, state1 )
 
         TOpt.PortOutgoing expr _ canType ->
             let
                 subst =
                     TypeSubst.unify canType requestedMonoType
 
-                ( monoExpr0, state1 ) =
+                ( monoExpr, state1 ) =
                     specializeExpr expr subst state
-
-                ( monoExpr, state2 ) =
-                    Closure.ensureCallableTopLevel monoExpr0 requestedMonoType state1
             in
-            ( Mono.MonoPortOutgoing monoExpr requestedMonoType, state2 )
+            -- GlobalOpt will wrap bare expressions in closures via ensureCallableForNode
+            ( Mono.MonoPortOutgoing monoExpr requestedMonoType, state1 )
 
 
 {-| Specialize a mutually recursive cycle, handling both value and function definitions.
@@ -460,18 +448,14 @@ specializeFuncDefInCycle subst def state =
                 monoType =
                     TypeSubst.applySubst subst canType
 
-                ( monoExpr0, state1 ) =
+                ( monoExpr, state1 ) =
                     specializeExpr expr subst state
 
-                ( monoExpr, state2 ) =
-                    Closure.ensureCallableTopLevel monoExpr0 monoType state1
-
-                -- Use the actual type from the expression after ensureCallableTopLevel
-                -- to ensure consistency between the node type and its contained closure type
+                -- GlobalOpt will wrap bare expressions in closures via ensureCallableForNode
                 actualType =
                     Mono.typeOf monoExpr
             in
-            ( Mono.MonoDefine monoExpr actualType, state2 )
+            ( Mono.MonoDefine monoExpr actualType, state1 )
 
         TOpt.TailDef _ _ args body returnType ->
             let
@@ -771,7 +755,7 @@ specializeExpr expr subst state =
                         monoFunc =
                             Mono.MonoVarGlobal funcRegion specId funcMonoType
                     in
-                    ( Mono.MonoCall region monoFunc monoArgs resultMonoType, newState )
+                    ( Mono.MonoCall region monoFunc monoArgs resultMonoType Mono.defaultCallInfo, newState )
 
                 TOpt.VarKernel funcRegion home name funcCanType ->
                     let
@@ -793,7 +777,7 @@ specializeExpr expr subst state =
                         monoFunc =
                             Mono.MonoVarKernel funcRegion home name funcMonoType
                     in
-                    ( Mono.MonoCall region monoFunc monoArgs resultMonoType, state2 )
+                    ( Mono.MonoCall region monoFunc monoArgs resultMonoType Mono.defaultCallInfo, state2 )
 
                 TOpt.VarDebug funcRegion name _ _ funcCanType ->
                     let
@@ -815,7 +799,7 @@ specializeExpr expr subst state =
                         monoFunc =
                             Mono.MonoVarKernel funcRegion "Debug" name funcMonoType
                     in
-                    ( Mono.MonoCall region monoFunc monoArgs resultMonoType, state2 )
+                    ( Mono.MonoCall region monoFunc monoArgs resultMonoType Mono.defaultCallInfo, state2 )
 
                 _ ->
                     -- Fallback: locally-bound or non-global function.
@@ -850,7 +834,7 @@ specializeExpr expr subst state =
                         resultMonoType =
                             TypeSubst.applySubst callSubst canType
                     in
-                    ( Mono.MonoCall region monoFunc monoArgs resultMonoType, state3 )
+                    ( Mono.MonoCall region monoFunc monoArgs resultMonoType Mono.defaultCallInfo, state3 )
 
         TOpt.TailCall name args canType ->
             let

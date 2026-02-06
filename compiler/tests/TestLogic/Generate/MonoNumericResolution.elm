@@ -146,7 +146,7 @@ collectExprCNumberChecks context expr =
                 ++ List.concatMap (\( _, captureExpr, _ ) -> collectExprCNumberChecks context captureExpr) closureInfo.captures
                 ++ collectExprCNumberChecks context bodyExpr
 
-        Mono.MonoCall _ fnExpr argExprs monoType ->
+        Mono.MonoCall _ fnExpr argExprs monoType _ ->
             checkForCNumber context monoType
                 ++ collectExprCNumberChecks context fnExpr
                 ++ List.concatMap (collectExprCNumberChecks context) argExprs
@@ -289,7 +289,7 @@ collectNodeCallSiteChecks specId node =
 collectExprCallSiteChecks : String -> Mono.MonoExpr -> List (() -> Expect.Expectation)
 collectExprCallSiteChecks context expr =
     case expr of
-        Mono.MonoCall _ fnExpr argExprs _ ->
+        Mono.MonoCall _ fnExpr argExprs _ _ ->
             -- Check that all numeric arguments are concrete MInt or MFloat
             let
                 argChecks =

@@ -1,27 +1,26 @@
 module Compiler.Monomorphize.Closure exposing
-    ( ensureCallableTopLevel
-    , freshParams, extractRegion, buildNestedCalls
+    ( freshParams
+    , extractRegion
     , computeClosureCaptures
     , flattenFunctionType
     )
 
-{-| Closure handling and capture analysis for monomorphization.
+{-| Closure utilities for monomorphization and GlobalOpt.
 
-This module handles:
+This module provides staging-neutral utilities for working with closures:
 
-  - Creating closures for function-typed expressions
   - Computing closure captures (free variables)
-  - Finding free local variables in expressions
+  - Generating fresh parameter names
+  - Extracting source regions from expressions
+  - Flattening curried function types
 
-
-# Closure Creation
-
-@docs ensureCallableTopLevel
+Note: Staging-aware wrapper creation (ensureCallableTopLevel, buildNestedCalls)
+has been moved to GlobalOpt.MonoGlobalOptimize as part of the staging consolidation.
 
 
 # Parameters and Regions
 
-@docs freshParams, extractRegion, buildNestedCalls
+@docs freshParams, extractRegion
 
 
 # Free Variable Analysis
@@ -29,81 +28,21 @@ This module handles:
 @docs computeClosureCaptures
 
 
-# ABI Wrapper
+# Type Utilities
 
-@docs buildAbiWrapper
+@docs flattenFunctionType
 
 -}
 
 import Compiler.AST.Monomorphized as Mono
 import Compiler.Data.Name exposing (Name)
-import Compiler.Monomorphize.State exposing (MonoState)
 import Compiler.Reporting.Annotation as A
 import Data.Map as Dict exposing (Dict)
 import Data.Set as EverySet exposing (EverySet)
-import Utils.Crash
 
 
 
--- ========== LAMBDA AND CLOSURE HANDLING ==========
-
-
-{-| Ensure that a top-level expression is directly callable by wrapping it in a closure if necessary.
--}
-ensureCallableTopLevel : Mono.MonoExpr -> Mono.MonoType -> MonoState -> ( Mono.MonoExpr, MonoState )
-ensureCallableTopLevel expr monoType state =
-    case monoType of
-        Mono.MFunction _ _ ->
-            let
-                -- Use stage arity (first MFunction params only) for wrapper creation.
-                -- Note: GOPT_016 is enforced by GlobalOpt, not here.
-                stageArgTypes =
-                    Mono.stageParamTypes monoType
-
-                stageRetType =
-                    Mono.stageReturnType monoType
-            in
-            case expr of
-                Mono.MonoClosure _ _ _ ->
-                    -- Accept closures as-is; GlobalOpt enforces staging consistency (GOPT_016).
-                    ( expr, state )
-
-                Mono.MonoVarGlobal region specId _ ->
-                    -- Create stage-aware closure wrapper
-                    makeAliasClosure
-                        (Mono.MonoVarGlobal region specId monoType)
-                        region
-                        stageArgTypes
-                        stageRetType
-                        monoType
-                        state
-
-                Mono.MonoVarKernel region home name kernelAbiType ->
-                    -- Kernels use flattened ABI (all params at once), not stage-curried.
-                    -- Create a fully flattened alias closure that calls the kernel with all args.
-                    let
-                        ( kernelFlatArgTypes, kernelFlatRetType ) =
-                            flattenFunctionType kernelAbiType
-
-                        -- Build a flattened function type for the wrapper so callers
-                        -- see the correct arity and apply all args at once.
-                        flattenedFuncType =
-                            Mono.MFunction kernelFlatArgTypes kernelFlatRetType
-                    in
-                    makeAliasClosure
-                        (Mono.MonoVarKernel region home name kernelAbiType)
-                        region
-                        kernelFlatArgTypes
-                        kernelFlatRetType
-                        flattenedFuncType
-                        state
-
-                _ ->
-                    -- Create stage-aware closure wrapper
-                    makeGeneralClosure expr stageArgTypes stageRetType monoType state
-
-        _ ->
-            ( expr, state )
+-- ========== TYPE UTILITIES ==========
 
 
 {-| Flatten a curried function type into a list of argument types and a final return type.
@@ -122,165 +61,8 @@ flattenFunctionType monoType =
             ( [], monoType )
 
 
-{-| Create an alias closure wrapping a callee expression.
--}
-makeAliasClosure :
-    Mono.MonoExpr
-    -> A.Region
-    -> List Mono.MonoType
-    -> Mono.MonoType
-    -> Mono.MonoType
-    -> MonoState
-    -> ( Mono.MonoExpr, MonoState )
-makeAliasClosure calleeExpr region argTypes retType funcType state =
-    let
-        params =
-            freshParams argTypes
 
-        paramExprs =
-            List.map (\( name, ty ) -> Mono.MonoVarLocal name ty) params
-
-        lambdaId =
-            Mono.AnonymousLambda state.currentModule state.lambdaCounter
-
-        stateWithLambda =
-            { state | lambdaCounter = state.lambdaCounter + 1 }
-
-        callExpr =
-            Mono.MonoCall region calleeExpr paramExprs retType
-
-        -- Compute captures from the call expression.
-        -- For MonoVarGlobal/MonoVarKernel callees this will be empty,
-        -- but we compute defensively for future-proofing.
-        captures =
-            computeClosureCaptures params callExpr
-
-        closureInfo =
-            { lambdaId = lambdaId
-            , captures = captures
-            , params = params
-            }
-
-        closureExpr =
-            Mono.MonoClosure closureInfo callExpr funcType
-    in
-    ( closureExpr, stateWithLambda )
-
-
-{-| Create a general closure around an expression.
--}
-makeGeneralClosure :
-    Mono.MonoExpr
-    -> List Mono.MonoType
-    -> Mono.MonoType
-    -> Mono.MonoType
-    -> MonoState
-    -> ( Mono.MonoExpr, MonoState )
-makeGeneralClosure expr argTypes retType funcType state =
-    let
-        region =
-            extractRegion expr
-
-        params =
-            freshParams argTypes
-
-        paramExprs =
-            List.map (\( name, ty ) -> Mono.MonoVarLocal name ty) params
-
-        lambdaId =
-            Mono.AnonymousLambda state.currentModule state.lambdaCounter
-
-        stateWithLambda =
-            { state | lambdaCounter = state.lambdaCounter + 1 }
-
-        callExpr =
-            Mono.MonoCall region expr paramExprs retType
-
-        -- Compute captures: find free locals in the call expression
-        -- that are not bound by the closure's own params.
-        -- This is critical when `expr` references outer variables.
-        captures =
-            computeClosureCaptures params callExpr
-
-        closureInfo =
-            { lambdaId = lambdaId
-            , captures = captures
-            , params = params
-            }
-
-        closureExpr =
-            Mono.MonoClosure closureInfo callExpr funcType
-    in
-    ( closureExpr, stateWithLambda )
-
-
-{-| Build nested calls that apply all params to a callee, respecting the callee's staging.
-
-Given calleeType with segmentation [2,3] and params [a,b,c,d,e]:
-
-  - First call: callee(a,b) -> intermediate1
-  - Second call: intermediate1(c,d,e) -> result
-
-This follows MONO\_016: never pass more args to a stage than it accepts.
-
-The region parameter (A.Region from Compiler.Reporting.Annotation) is propagated
-to generated MonoCall nodes for source location tracking in error messages.
-
--}
-buildNestedCalls : A.Region -> Mono.MonoExpr -> List ( Name, Mono.MonoType ) -> Mono.MonoExpr
-buildNestedCalls region calleeExpr params =
-    let
-        calleeType =
-            Mono.typeOf calleeExpr
-
-        srcSeg =
-            Mono.segmentLengths calleeType
-
-        -- Convert params to expressions
-        paramExprs =
-            List.map (\( name, ty ) -> Mono.MonoVarLocal name ty) params
-
-        -- Build calls stage by stage
-        buildCalls : Mono.MonoExpr -> List Mono.MonoExpr -> List Int -> Mono.MonoExpr
-        buildCalls currentCallee remainingArgs segLengths =
-            case ( segLengths, remainingArgs ) of
-                ( [], _ ) ->
-                    -- No more stages; return current callee (which should be the final result)
-                    currentCallee
-
-                ( m :: restSeg, _ ) ->
-                    let
-                        ( nowArgs, laterArgs ) =
-                            ( List.take m remainingArgs, List.drop m remainingArgs )
-
-                        currentCalleeType =
-                            Mono.typeOf currentCallee
-
-                        resultType =
-                            Mono.stageReturnType currentCalleeType
-
-                        callExpr =
-                            Mono.MonoCall region currentCallee nowArgs resultType
-                    in
-                    buildCalls callExpr laterArgs restSeg
-    in
-    buildCalls calleeExpr paramExprs srcSeg
-
-
-{-| Create an alias closure wrapping an existing expression.
--}
-makeAliasClosureOverExpr :
-    Mono.MonoExpr
-    -> List Mono.MonoType
-    -> Mono.MonoType
-    -> Mono.MonoType
-    -> MonoState
-    -> ( Mono.MonoExpr, MonoState )
-makeAliasClosureOverExpr expr argTypes retType funcType state =
-    -- For now, treat it like a general closure around the expression.
-    -- If you later want to reuse existing captures of an inner closure,
-    -- you can extend this to preserve them.
-    makeGeneralClosure expr argTypes retType funcType state
+-- ========== PARAMETERS AND REGIONS ==========
 
 
 {-| Generate fresh parameter names for a list of types.
@@ -315,7 +97,7 @@ extractRegion expr =
         Mono.MonoClosure _ _ _ ->
             A.zero
 
-        Mono.MonoCall region _ _ _ ->
+        Mono.MonoCall region _ _ _ _ ->
             region
 
         Mono.MonoTailCall _ _ _ ->
@@ -501,7 +283,7 @@ findFreeLocals bound expr =
         Mono.MonoList _ exprs _ ->
             List.concatMap (findFreeLocals bound) exprs
 
-        Mono.MonoCall _ func args _ ->
+        Mono.MonoCall _ func args _ _ ->
             findFreeLocals bound func
                 ++ List.concatMap (findFreeLocals bound) args
 
@@ -660,7 +442,7 @@ collectVarTypesHelper expr acc =
         Mono.MonoList _ exprs _ ->
             List.foldl collectVarTypesHelper acc exprs
 
-        Mono.MonoCall _ func args _ ->
+        Mono.MonoCall _ func args _ _ ->
             List.foldl collectVarTypesHelper (collectVarTypesHelper func acc) args
 
         Mono.MonoTailCall _ namedExprs _ ->

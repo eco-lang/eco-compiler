@@ -27,17 +27,21 @@ import TestLogic.TestPipeline as Pipeline
 
 
 {-| MONO\_004: Verify that all function-typed nodes are callable.
+
+Note: This invariant only applies AFTER GlobalOpt, which is responsible for
+wrapping non-closure function expressions in closures via ensureCallableForNode.
+
 -}
 expectCallableMonoNodes : Src.Module -> Expect.Expectation
 expectCallableMonoNodes srcModule =
-    case Pipeline.runToMono srcModule of
+    case Pipeline.runToGlobalOpt srcModule of
         Err msg ->
             Expect.fail msg
 
-        Ok { monoGraph } ->
+        Ok { optimizedMonoGraph } ->
             let
                 checks =
-                    collectCallabilityChecks monoGraph
+                    collectCallabilityChecks optimizedMonoGraph
             in
             case checks of
                 [] ->
@@ -245,7 +249,7 @@ collectCustomTypeRefsFromExpr expr =
                 ++ List.concatMap (\( _, e, _ ) -> collectCustomTypeRefsFromExpr e) closureInfo.captures
                 ++ collectCustomTypeRefsFromExpr bodyExpr
 
-        Mono.MonoCall _ fnExpr argExprs monoType ->
+        Mono.MonoCall _ fnExpr argExprs monoType _ ->
             collectCustomTypeRefsFromType monoType
                 ++ collectCustomTypeRefsFromExpr fnExpr
                 ++ List.concatMap collectCustomTypeRefsFromExpr argExprs
@@ -391,7 +395,7 @@ collectSpecIdRefsFromExpr expr =
                 (collectSpecIdRefsFromExpr bodyExpr)
                 closureInfo.captures
 
-        Mono.MonoCall _ fnExpr argExprs _ ->
+        Mono.MonoCall _ fnExpr argExprs _ _ ->
             List.foldl
                 (\e acc -> Set.union acc (collectSpecIdRefsFromExpr e))
                 (collectSpecIdRefsFromExpr fnExpr)

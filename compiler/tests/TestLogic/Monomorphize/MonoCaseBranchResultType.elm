@@ -130,7 +130,7 @@ checkExpr ctx expr =
             in
             captureViolations ++ checkExpr ctx body
 
-        Mono.MonoCall _ fn args _ ->
+        Mono.MonoCall _ fn args _ _ ->
             checkExpr ctx fn ++ List.concatMap (checkExpr ctx) args
 
         Mono.MonoTailCall _ namedArgs _ ->

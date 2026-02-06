@@ -181,7 +181,7 @@ collectExprCEcoValueIssues context expr =
         Mono.MonoList _ exprs _ ->
             List.concatMap (collectExprCEcoValueIssues context) exprs
 
-        Mono.MonoCall _ fnExpr argExprs _ ->
+        Mono.MonoCall _ fnExpr argExprs _ _ ->
             collectExprCEcoValueIssues context fnExpr
                 ++ List.concatMap (collectExprCEcoValueIssues context) argExprs
 

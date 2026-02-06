@@ -159,7 +159,7 @@ generateDefine ctx funcName expr monoType =
         _ ->
             -- Value (thunk) - wrap in nullary function
             let
-                -- Thunks have no parameters, but still need fresh scope
+                -- Thunks have no parameters, but still need fresh scope.
                 ctxFreshScope : Ctx.Context
                 ctxFreshScope =
                     { ctx | nextVar = 0, varMappings = Dict.empty }
@@ -232,13 +232,17 @@ generateClosureFunc ctx funcName closureInfo body monoType =
         exprResult =
             Expr.generateExpr ctxWithArgs body
 
-        -- Extract the STAGE return type from the closure's function type.
-        -- For stage-curried functions, monoType is the full function type
-        -- (e.g., MFunction [Op] (MFunction [Int,Int] Int)).
-        -- The first stage consumes closureInfo.params and returns stageReturnType monoType.
+        -- Extract the return type from the closure's function type.
+        -- After GlobalOpt canonicalization, MFunction params ret has ret as the
+        -- stage return type (no need for Mono.stageReturnType helper).
         extractedReturnType : Mono.MonoType
         extractedReturnType =
-            Mono.stageReturnType monoType
+            case monoType of
+                Mono.MFunction _ retType ->
+                    retType
+
+                _ ->
+                    monoType
 
         returnType : MlirType
         returnType =

@@ -131,7 +131,7 @@ collectCustomTypesFromExpr expr acc =
             in
             collectCustomTypesFromExpr body accWithParams
 
-        Mono.MonoCall _ func args _ ->
+        Mono.MonoCall _ func args _ _ ->
             List.foldl collectCustomTypesFromExpr
                 (collectCustomTypesFromExpr func accWithType)
                 args

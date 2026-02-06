@@ -163,7 +163,7 @@ collectExprStageArityIssues context expr =
                 ++ List.concatMap (\( _, e, _ ) -> collectExprStageArityIssues context e) closureInfo.captures
                 ++ collectExprStageArityIssues context bodyExpr
 
-        Mono.MonoCall _ fnExpr argExprs _ ->
+        Mono.MonoCall _ fnExpr argExprs _ _ ->
             collectExprStageArityIssues context fnExpr
                 ++ List.concatMap (collectExprStageArityIssues context) argExprs
 

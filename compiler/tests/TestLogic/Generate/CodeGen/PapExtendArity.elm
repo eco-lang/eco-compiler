@@ -12,6 +12,10 @@ module TestLogic.Generate.CodeGen.PapExtendArity exposing (expectPapExtendArity,
 This test tracks PAP remaining arities from `eco.papCreate` ops and verifies that
 each `eco.papExtend` uses the correct remaining\_arity matching its source PAP.
 
+Note: SSA variable names are only unique within each function, not globally.
+This test checks invariants per-function to avoid false positives from SSA
+name collisions across different functions.
+
 @docs expectPapExtendArity, checkPapExtendArity
 
 -}
@@ -24,10 +28,9 @@ import TestLogic.TestPipeline exposing (runToMlir)
 import TestLogic.Generate.CodeGen.Invariants
     exposing
         ( Violation
-        , findOpsNamed
         , getIntAttr
         , violationsToExpectation
-        , walkAllOps
+        , walkOpAndChildren
         )
 
 
@@ -45,29 +48,40 @@ expectPapExtendArity srcModule =
 
 {-| Check papExtend remaining\_arity calculation invariants.
 
-This builds a map of SSA value names to their PAP arities from eco.papCreate ops,
-then verifies each eco.papExtend uses the correct remaining\_arity.
+This processes each function independently to avoid SSA name collisions.
+For each function, it builds a map of SSA value names to their PAP arities
+from eco.papCreate ops, then verifies each eco.papExtend uses the correct
+remaining\_arity.
 
 -}
 checkPapExtendArity : MlirModule -> List Violation
 checkPapExtendArity mlirModule =
+    -- Process each top-level op (function) independently
+    List.concatMap checkFunction mlirModule.body
+
+
+{-| Check PAP arities within a single function.
+-}
+checkFunction : MlirOp -> List Violation
+checkFunction funcOp =
     let
-        -- Build a map from SSA value names to their PAP arities
+        -- Get all ops within this function
+        allOpsInFunc =
+            walkOpAndChildren funcOp
+
+        -- Build a map from SSA value names to their PAP arities for this function
         papArityMap =
-            buildPapArityMap mlirModule
+            buildPapArityMapForOps allOpsInFunc
 
-        -- Find all papExtend ops
+        -- Find all papExtend ops in this function
         papExtendOps =
-            findOpsNamed "eco.papExtend" mlirModule
-
-        -- Check each papExtend
-        violations =
-            List.filterMap (checkPapExtendOp papArityMap) papExtendOps
+            List.filter (\op -> op.name == "eco.papExtend") allOpsInFunc
     in
-    violations
+    -- Check each papExtend against the function-local arity map
+    List.filterMap (checkPapExtendOp papArityMap) papExtendOps
 
 
-{-| Build a map from SSA value names to their PAP remaining arities.
+{-| Build a map from SSA value names to their PAP remaining arities for a list of ops.
 
 This collects remaining arities from:
 
@@ -77,12 +91,9 @@ This collects remaining arities from:
 The map tracks how many arguments are still expected for each PAP value.
 
 -}
-buildPapArityMap : MlirModule -> Dict String Int
-buildPapArityMap mlirModule =
+buildPapArityMapForOps : List MlirOp -> Dict String Int
+buildPapArityMapForOps ops =
     let
-        allOps =
-            walkAllOps mlirModule
-
         -- Process each op and add to map
         processOp : MlirOp -> Dict String Int -> Dict String Int
         processOp op map =
@@ -123,7 +134,7 @@ buildPapArityMap mlirModule =
             else
                 map
     in
-    List.foldl processOp Dict.empty allOps
+    List.foldl processOp Dict.empty ops
 
 
 {-| Check a single papExtend op for remaining\_arity correctness.

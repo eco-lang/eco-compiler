@@ -109,7 +109,7 @@ collectExprDebugIssues context expr =
             else
                 []
 
-        Mono.MonoCall _ fnExpr argExprs _ ->
+        Mono.MonoCall _ fnExpr argExprs _ _ ->
             -- Check if this is a call to a Debug function
             let
                 debugCallIssues =

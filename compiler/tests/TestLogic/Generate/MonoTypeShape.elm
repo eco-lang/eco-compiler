@@ -122,7 +122,7 @@ collectExprTypeIssues context expr =
                 ++ List.concatMap (\( _, captureExpr, _ ) -> collectExprTypeIssues context captureExpr) closureInfo.captures
                 ++ collectExprTypeIssues context bodyExpr
 
-        Mono.MonoCall _ fnExpr argExprs monoType ->
+        Mono.MonoCall _ fnExpr argExprs monoType _ ->
             checkMonoType context monoType
                 ++ collectExprTypeIssues context fnExpr
                 ++ List.concatMap (collectExprTypeIssues context) argExprs

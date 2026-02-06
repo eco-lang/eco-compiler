@@ -264,7 +264,7 @@ collectCalls expr =
             in
             List.concatMap collectCalls captureExprs ++ collectCalls body
 
-        MonoCall _ func args _ ->
+        MonoCall _ func args _ _ ->
             collectCalls func ++ List.concatMap collectCalls args
 
         MonoTailCall _ args _ ->
@@ -353,7 +353,7 @@ computeCost expr =
         MonoClosure _ body _ ->
             5 + computeCost body
 
-        MonoCall _ func args _ ->
+        MonoCall _ func args _ _ ->
             5 + computeCost func + List.sum (List.map computeCost args)
 
         MonoTailCall _ args _ ->
@@ -482,7 +482,7 @@ remapLambdaIds ctx expr =
             in
             ( MonoClosure newInfo newBody closureType, ctx3 )
 
-        MonoCall region func args resultType ->
+        MonoCall region func args resultType callInfo ->
             let
                 ( newFunc, ctx1 ) =
                     remapLambdaIds ctx func
@@ -490,7 +490,7 @@ remapLambdaIds ctx expr =
                 ( newArgs, ctx2 ) =
                     remapLambdaIdsInList ctx1 args
             in
-            ( MonoCall region newFunc newArgs resultType, ctx2 )
+            ( MonoCall region newFunc newArgs resultType callInfo, ctx2 )
 
         MonoList region items itemType ->
             let
@@ -832,11 +832,11 @@ rewriteExpr : RewriteCtx -> MonoExpr -> ( MonoExpr, RewriteCtx )
 rewriteExpr ctx expr =
     case expr of
         -- Beta reduction: ((\\x -> body) arg)
-        MonoCall region (MonoClosure info closureBody closureType) args resultType ->
+        MonoCall region (MonoClosure info closureBody closureType) args resultType callInfo ->
             betaReduce ctx region info closureBody args resultType
 
         -- Direct call inlining
-        MonoCall region (MonoVarGlobal varRegion specId funcType) args resultType ->
+        MonoCall region (MonoVarGlobal varRegion specId funcType) args resultType callInfo ->
             let
                 ( maybeInlined, ctx1 ) =
                     tryInlineCall ctx specId args resultType
@@ -852,10 +852,10 @@ rewriteExpr ctx expr =
                         ( rewrittenArgs, ctx2 ) =
                             rewriteExprs ctx1 args
                     in
-                    ( MonoCall region (MonoVarGlobal varRegion specId funcType) rewrittenArgs resultType, ctx2 )
+                    ( MonoCall region (MonoVarGlobal varRegion specId funcType) rewrittenArgs resultType callInfo, ctx2 )
 
         -- Recursive cases - rewrite children
-        MonoCall region func args resultType ->
+        MonoCall region func args resultType callInfo ->
             let
                 ( rewrittenFunc, ctx1 ) =
                     rewriteExpr ctx func
@@ -863,7 +863,7 @@ rewriteExpr ctx expr =
                 ( rewrittenArgs, ctx2 ) =
                     rewriteExprs ctx1 args
             in
-            ( MonoCall region rewrittenFunc rewrittenArgs resultType, ctx2 )
+            ( MonoCall region rewrittenFunc rewrittenArgs resultType callInfo, ctx2 )
 
         MonoClosure info body closureType ->
             let
@@ -1174,7 +1174,7 @@ betaReduce ctx region info closureBody args resultType =
             innerExpr =
                 wrapInLets bindings substituted (Mono.typeOf closureBody)
         in
-        ( MonoCall region innerExpr extraArgs resultType
+        ( MonoCall region innerExpr extraArgs resultType Mono.defaultCallInfo
         , { ctx1 | metrics = newMetrics }
         )
 
@@ -1259,11 +1259,12 @@ substitute oldName newName varType expr =
                 in
                 MonoClosure { info | captures = newCaptures } (substitute oldName newName varType body) closureType
 
-        MonoCall region func args resultType ->
+        MonoCall region func args resultType callInfo ->
             MonoCall region
                 (substitute oldName newName varType func)
                 (List.map (substitute oldName newName varType) args)
                 resultType
+                callInfo
 
         MonoTailCall name args resultType ->
             MonoTailCall name
@@ -1598,7 +1599,7 @@ simplifyLets ctx expr =
                 ( MonoLet newDef simplifiedBody resultType, ctx2 )
 
         -- Recursive cases
-        MonoCall region func args resultType ->
+        MonoCall region func args resultType callInfo ->
             let
                 ( simplifiedFunc, ctx1 ) =
                     simplifyLets ctx func
@@ -1606,7 +1607,7 @@ simplifyLets ctx expr =
                 ( simplifiedArgs, ctx2 ) =
                     simplifyLetsExprs ctx1 args
             in
-            ( MonoCall region simplifiedFunc simplifiedArgs resultType, ctx2 )
+            ( MonoCall region simplifiedFunc simplifiedArgs resultType callInfo, ctx2 )
 
         MonoClosure info body closureType ->
             let
@@ -1859,7 +1860,7 @@ isPureExpr expr =
             -- Closure creation is pure (evaluation is not)
             True
 
-        MonoCall _ _ _ _ ->
+        MonoCall _ _ _ _ _ ->
             -- Function calls might have side effects
             False
 
@@ -1928,7 +1929,7 @@ countUsages name expr =
                 List.sum (List.map (\( _, e, _ ) -> countUsages name e) info.captures)
                     + countUsages name body
 
-        MonoCall _ func args _ ->
+        MonoCall _ func args _ _ ->
             countUsages name func + List.sum (List.map (countUsages name) args)
 
         MonoTailCall funcName args _ ->
@@ -2061,11 +2062,12 @@ inlineVar name replacement expr =
                 in
                 MonoClosure { info | captures = newCaptures } (inlineVar name replacement body) closureType
 
-        MonoCall region func args resultType ->
+        MonoCall region func args resultType callInfo ->
             MonoCall region
                 (inlineVar name replacement func)
                 (List.map (inlineVar name replacement) args)
                 resultType
+                callInfo
 
         MonoTailCall n args resultType ->
             MonoTailCall n
@@ -2150,8 +2152,8 @@ dce expr =
             in
             MonoLet (setDefBound def dcedBound) dcedBody resultType
 
-        MonoCall region func args resultType ->
-            MonoCall region (dce func) (List.map dce args) resultType
+        MonoCall region func args resultType callInfo ->
+            MonoCall region (dce func) (List.map dce args) resultType callInfo
 
         MonoClosure info body closureType ->
             let
@@ -2210,7 +2212,7 @@ countClosures expr =
         MonoClosure _ body _ ->
             1 + countClosures body
 
-        MonoCall _ func args _ ->
+        MonoCall _ func args _ _ ->
             countClosures func + List.sum (List.map countClosures args)
 
         MonoLet def body _ ->

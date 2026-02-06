@@ -22,6 +22,7 @@ import Compiler.Data.Name exposing (Name)
 import Compiler.GlobalOpt.MonoInlineSimplify as MonoInlineSimplify
 import Compiler.GlobalOpt.MonoReturnArity as MonoReturnArity
 import Compiler.Monomorphize.Closure as Closure
+import Compiler.Reporting.Annotation as A
 import Data.Map as Dict exposing (Dict)
 import System.TypeCheck.IO as IO
 
@@ -53,6 +54,26 @@ freshLambdaId home ctx =
 
 
 
+-- CALL STAGING ENVIRONMENT
+
+
+{-| Environment for tracking call models and source arities of local variables.
+This replaces MLIR's Ctx.lookupVarCallModel and Ctx.lookupVarArity logic.
+-}
+type alias CallEnv =
+    { varCallModel : Dict String Name Mono.CallModel
+    , varSourceArity : Dict String Name Int
+    }
+
+
+emptyCallEnv : CallEnv
+emptyCallEnv =
+    { varCallModel = Dict.empty
+    , varSourceArity = Dict.empty
+    }
+
+
+
 -- MAIN ENTRY POINT
 
 
@@ -74,15 +95,19 @@ globalOptimize typeEnv graph0 =
         graph3 =
             validateClosureStaging graph2
 
-        -- Phase 4: Returned-closure arity annotation
+        -- Phase 4: Annotate call staging metadata (call model, stage arities, etc.)
         graph4 =
-            annotateReturnedClosureArity graph3
+            annotateCallStaging graph3
 
-        -- Phase 5: Inlining and DCE (call as black box)
-        -- ( graph5, _ ) =
-        --     MonoInlineSimplify.optimize mode typeEnv graph4
+        -- Phase 5: Returned-closure arity annotation
+        graph5 =
+            annotateReturnedClosureArity graph4
+
+        -- Phase 6: Inlining and DCE (call as black box)
+        -- ( graph6, _ ) =
+        --     MonoInlineSimplify.optimize mode typeEnv graph5
     in
-    graph4
+    graph5
 
 
 
@@ -155,7 +180,7 @@ maxLambdaIndexInExpr expr =
             in
             max idx (maxLambdaIndexInExpr body)
 
-        Mono.MonoCall _ f args _ ->
+        Mono.MonoCall _ f args _ _ ->
             List.foldl (\e acc -> max acc (maxLambdaIndexInExpr e))
                 (maxLambdaIndexInExpr f)
                 args
@@ -345,11 +370,12 @@ canonicalizeExpr expr =
                 canonBody
                 canonType
 
-        Mono.MonoCall callType fn args resultType ->
+        Mono.MonoCall callType fn args resultType callInfo ->
             Mono.MonoCall callType
                 (canonicalizeExpr fn)
                 (List.map canonicalizeExpr args)
                 resultType
+                callInfo
 
         Mono.MonoTailCall specId args resultType ->
             Mono.MonoTailCall specId
@@ -593,6 +619,199 @@ collectCaseLeafFunctionsGO monoDecider monoJumps =
 
 
 
+-- BUILD NESTED CALLS (GlobalOpt version)
+
+
+{-| Build nested calls that apply all params to a callee, respecting the callee's staging.
+Given calleeType with segmentation [2,3] and params [a,b,c,d,e]:
+
+  - First call: callee(a,b) -> intermediate1
+  - Second call: intermediate1(c,d,e) -> result
+
+This follows MONO\_016: never pass more args to a stage than it accepts.
+
+-}
+buildNestedCallsGO : A.Region -> Mono.MonoExpr -> List ( Name, Mono.MonoType ) -> Mono.MonoExpr
+buildNestedCallsGO region calleeExpr params =
+    let
+        calleeType =
+            Mono.typeOf calleeExpr
+
+        srcSeg =
+            Mono.segmentLengths calleeType
+
+        paramExprs =
+            List.map (\( name, ty ) -> Mono.MonoVarLocal name ty) params
+
+        buildCalls : Mono.MonoExpr -> List Mono.MonoExpr -> List Int -> Mono.MonoExpr
+        buildCalls currentCallee remainingArgs segLengths =
+            case ( segLengths, remainingArgs ) of
+                ( [], _ ) ->
+                    currentCallee
+
+                ( m :: restSeg, _ ) ->
+                    let
+                        ( nowArgs, laterArgs ) =
+                            ( List.take m remainingArgs, List.drop m remainingArgs )
+
+                        currentCalleeType =
+                            Mono.typeOf currentCallee
+
+                        resultType =
+                            Mono.stageReturnType currentCalleeType
+
+                        callExpr =
+                            Mono.MonoCall region currentCallee nowArgs resultType Mono.defaultCallInfo
+                    in
+                    buildCalls callExpr laterArgs restSeg
+    in
+    buildCalls calleeExpr paramExprs srcSeg
+
+
+
+-- CLOSURE WRAPPER BUILDERS (GlobalOpt versions using GlobalCtx)
+
+
+{-| Create an alias closure wrapper around a callee expression.
+Used for wrapping MonoVarGlobal and MonoVarKernel in closures.
+-}
+makeAliasClosureGO :
+    IO.Canonical
+    -> Mono.MonoExpr
+    -> List Mono.MonoType
+    -> Mono.MonoType
+    -> Mono.MonoType
+    -> GlobalCtx
+    -> ( Mono.MonoExpr, GlobalCtx )
+makeAliasClosureGO home calleeExpr argTypes retType funcType ctx =
+    let
+        params =
+            Closure.freshParams argTypes
+
+        paramExprs =
+            List.map (\( name, ty ) -> Mono.MonoVarLocal name ty) params
+
+        ( lambdaId, ctx1 ) =
+            freshLambdaId home ctx
+
+        region =
+            Closure.extractRegion calleeExpr
+
+        callExpr =
+            Mono.MonoCall region calleeExpr paramExprs retType Mono.defaultCallInfo
+
+        captures =
+            Closure.computeClosureCaptures params callExpr
+
+        closureInfo =
+            { lambdaId = lambdaId
+            , captures = captures
+            , params = params
+            }
+    in
+    ( Mono.MonoClosure closureInfo callExpr funcType, ctx1 )
+
+
+{-| Create a general closure wrapper around an arbitrary expression.
+Used for wrapping non-closure, non-global expressions.
+-}
+makeGeneralClosureGO :
+    IO.Canonical
+    -> Mono.MonoExpr
+    -> List Mono.MonoType
+    -> Mono.MonoType
+    -> Mono.MonoType
+    -> GlobalCtx
+    -> ( Mono.MonoExpr, GlobalCtx )
+makeGeneralClosureGO home expr argTypes retType funcType ctx =
+    let
+        params =
+            Closure.freshParams argTypes
+
+        paramExprs =
+            List.map (\( name, ty ) -> Mono.MonoVarLocal name ty) params
+
+        ( lambdaId, ctx1 ) =
+            freshLambdaId home ctx
+
+        region =
+            Closure.extractRegion expr
+
+        callExpr =
+            Mono.MonoCall region expr paramExprs retType Mono.defaultCallInfo
+
+        captures =
+            Closure.computeClosureCaptures params callExpr
+
+        closureInfo =
+            { lambdaId = lambdaId
+            , captures = captures
+            , params = params
+            }
+    in
+    ( Mono.MonoClosure closureInfo callExpr funcType, ctx1 )
+
+
+{-| Ensure a top-level node expression is directly callable.
+This wraps bare MonoVarGlobal/MonoVarKernel in closures.
+Called during ABI normalization, BEFORE rewriteExprForAbi.
+-}
+ensureCallableForNode :
+    IO.Canonical
+    -> Mono.MonoExpr
+    -> Mono.MonoType
+    -> GlobalCtx
+    -> ( Mono.MonoExpr, GlobalCtx )
+ensureCallableForNode home expr monoType ctx =
+    case monoType of
+        Mono.MFunction _ _ ->
+            let
+                stageArgTypes =
+                    Mono.stageParamTypes monoType
+
+                stageRetType =
+                    Mono.stageReturnType monoType
+            in
+            case expr of
+                Mono.MonoClosure _ _ _ ->
+                    -- Already a closure: nothing to do
+                    ( expr, ctx )
+
+                Mono.MonoVarGlobal region specId _ ->
+                    -- Alias wrapper around a global function specialization
+                    makeAliasClosureGO home
+                        (Mono.MonoVarGlobal region specId monoType)
+                        stageArgTypes
+                        stageRetType
+                        monoType
+                        ctx
+
+                Mono.MonoVarKernel region kernelHome name kernelAbiType ->
+                    -- Kernels use flattened ABI (all params at once)
+                    let
+                        ( kernelFlatArgTypes, kernelFlatRetType ) =
+                            Closure.flattenFunctionType kernelAbiType
+
+                        flattenedFuncType =
+                            Mono.MFunction kernelFlatArgTypes kernelFlatRetType
+                    in
+                    makeAliasClosureGO home
+                        (Mono.MonoVarKernel region kernelHome name kernelAbiType)
+                        kernelFlatArgTypes
+                        kernelFlatRetType
+                        flattenedFuncType
+                        ctx
+
+                _ ->
+                    -- General expression: wrap in a closure using staging of monoType
+                    makeGeneralClosureGO home expr stageArgTypes stageRetType monoType ctx
+
+        _ ->
+            -- Non-function: leave as-is
+            ( expr, ctx )
+
+
+
 -- BUILD ABI WRAPPER
 
 
@@ -649,7 +868,7 @@ buildAbiWrapperGO home targetType calleeExpr ctx0 =
                 in
                 case stageArgTypes of
                     [] ->
-                        ( Closure.buildNestedCalls region calleeExpr accParams, ctx )
+                        ( buildNestedCallsGO region calleeExpr accParams, ctx )
 
                     _ ->
                         let
@@ -733,7 +952,7 @@ rewriteExprForAbi home expr ctx =
             in
             ( Mono.MonoClosure info newBody tipe, ctx1 )
 
-        Mono.MonoCall region f args tipe ->
+        Mono.MonoCall region f args tipe callInfo ->
             let
                 ( newF, ctx1 ) =
                     rewriteExprForAbi home f ctx
@@ -750,7 +969,7 @@ rewriteExprForAbi home expr ctx =
                         ( [], ctx1 )
                         args
             in
-            ( Mono.MonoCall region newF newArgs tipe, ctx2 )
+            ( Mono.MonoCall region newF newArgs tipe callInfo, ctx2 )
 
         Mono.MonoTailCall name args tipe ->
             let
@@ -1193,8 +1412,12 @@ rewriteNodeForAbi home node ctx =
     case node of
         Mono.MonoDefine expr tipe ->
             let
+                -- Ensure function-typed expressions are callable closures (Phase 1 of plan)
+                ( callableExpr, ctx0 ) =
+                    ensureCallableForNode home expr tipe ctx
+
                 ( newExpr, ctx1 ) =
-                    rewriteExprForAbi home expr ctx
+                    rewriteExprForAbi home callableExpr ctx0
             in
             ( Mono.MonoDefine newExpr tipe, ctx1 )
 
@@ -1207,15 +1430,23 @@ rewriteNodeForAbi home node ctx =
 
         Mono.MonoPortIncoming expr tipe ->
             let
+                -- Ensure function-typed expressions are callable closures
+                ( callableExpr, ctx0 ) =
+                    ensureCallableForNode home expr tipe ctx
+
                 ( newExpr, ctx1 ) =
-                    rewriteExprForAbi home expr ctx
+                    rewriteExprForAbi home callableExpr ctx0
             in
             ( Mono.MonoPortIncoming newExpr tipe, ctx1 )
 
         Mono.MonoPortOutgoing expr tipe ->
             let
+                -- Ensure function-typed expressions are callable closures
+                ( callableExpr, ctx0 ) =
+                    ensureCallableForNode home expr tipe ctx
+
                 ( newExpr, ctx1 ) =
-                    rewriteExprForAbi home expr ctx
+                    rewriteExprForAbi home callableExpr ctx0
             in
             ( Mono.MonoPortOutgoing newExpr tipe, ctx1 )
 
@@ -1308,7 +1539,7 @@ validateExprClosures expr =
             in
             validateExprClosures body
 
-        Mono.MonoCall _ f args _ ->
+        Mono.MonoCall _ f args _ _ ->
             let
                 _ =
                     validateExprClosures f
@@ -1408,6 +1639,621 @@ validateDeciderClosures dec =
                     List.foldl (\( _, d ) () -> validateDeciderClosures d) () edges
             in
             validateDeciderClosures fallback
+
+
+
+-- CALL STAGING ANNOTATION
+
+
+{-| Phase: Annotate all MonoCall nodes with precomputed staging metadata.
+After this phase, MLIR codegen can use CallInfo directly without
+recomputing call models or stage arities.
+-}
+annotateCallStaging : Mono.MonoGraph -> Mono.MonoGraph
+annotateCallStaging graph =
+    let
+        (Mono.MonoGraph record) =
+            graph
+
+        newNodes =
+            Dict.map (\_ node -> annotateNodeCalls graph emptyCallEnv node) record.nodes
+    in
+    Mono.MonoGraph { record | nodes = newNodes }
+
+
+annotateNodeCalls : Mono.MonoGraph -> CallEnv -> Mono.MonoNode -> Mono.MonoNode
+annotateNodeCalls graph env node =
+    case node of
+        Mono.MonoDefine expr tipe ->
+            Mono.MonoDefine (annotateExprCalls graph env expr) tipe
+
+        Mono.MonoTailFunc params body tipe ->
+            Mono.MonoTailFunc params (annotateExprCalls graph env body) tipe
+
+        Mono.MonoPortIncoming expr tipe ->
+            Mono.MonoPortIncoming (annotateExprCalls graph env expr) tipe
+
+        Mono.MonoPortOutgoing expr tipe ->
+            Mono.MonoPortOutgoing (annotateExprCalls graph env expr) tipe
+
+        Mono.MonoCycle defs tipe ->
+            let
+                newDefs =
+                    List.map
+                        (\( name, e ) -> ( name, annotateExprCalls graph env e ))
+                        defs
+            in
+            Mono.MonoCycle newDefs tipe
+
+        -- Constructors, enums, externs contain no expressions
+        _ ->
+            node
+
+
+annotateExprCalls : Mono.MonoGraph -> CallEnv -> Mono.MonoExpr -> Mono.MonoExpr
+annotateExprCalls graph env expr =
+    case expr of
+        Mono.MonoCall region func args resultType _ ->
+            let
+                func1 =
+                    annotateExprCalls graph env func
+
+                args1 =
+                    List.map (annotateExprCalls graph env) args
+
+                callInfo =
+                    computeCallInfo graph env func1 args1 resultType
+            in
+            Mono.MonoCall region func1 args1 resultType callInfo
+
+        Mono.MonoLet def body tipe ->
+            let
+                ( def1, env1 ) =
+                    annotateDefCalls graph env def
+
+                body1 =
+                    annotateExprCalls graph env1 body
+            in
+            Mono.MonoLet def1 body1 tipe
+
+        Mono.MonoClosure info body tipe ->
+            let
+                newCaptures =
+                    List.map
+                        (\( n, e, flag ) -> ( n, annotateExprCalls graph env e, flag ))
+                        info.captures
+
+                body1 =
+                    annotateExprCalls graph env body
+            in
+            Mono.MonoClosure { info | captures = newCaptures } body1 tipe
+
+        Mono.MonoIf branches final tipe ->
+            let
+                branches1 =
+                    List.map
+                        (\( c, t ) ->
+                            ( annotateExprCalls graph env c
+                            , annotateExprCalls graph env t
+                            )
+                        )
+                        branches
+
+                final1 =
+                    annotateExprCalls graph env final
+            in
+            Mono.MonoIf branches1 final1 tipe
+
+        Mono.MonoDestruct d inner tipe ->
+            Mono.MonoDestruct d (annotateExprCalls graph env inner) tipe
+
+        Mono.MonoCase s1 s2 decider branches tipe ->
+            let
+                decider1 =
+                    annotateDeciderCalls graph env decider
+
+                branches1 =
+                    List.map
+                        (\( p, e ) -> ( p, annotateExprCalls graph env e ))
+                        branches
+            in
+            Mono.MonoCase s1 s2 decider1 branches1 tipe
+
+        Mono.MonoList region items tipe ->
+            Mono.MonoList region (List.map (annotateExprCalls graph env) items) tipe
+
+        Mono.MonoRecordCreate fields tipe ->
+            Mono.MonoRecordCreate
+                (List.map (\( n, e ) -> ( n, annotateExprCalls graph env e )) fields)
+                tipe
+
+        Mono.MonoRecordAccess inner name tipe ->
+            Mono.MonoRecordAccess (annotateExprCalls graph env inner) name tipe
+
+        Mono.MonoRecordUpdate record updates tipe ->
+            Mono.MonoRecordUpdate
+                (annotateExprCalls graph env record)
+                (List.map (\( n, e ) -> ( n, annotateExprCalls graph env e )) updates)
+                tipe
+
+        Mono.MonoTupleCreate region items tipe ->
+            Mono.MonoTupleCreate region (List.map (annotateExprCalls graph env) items) tipe
+
+        Mono.MonoTailCall name args tipe ->
+            -- Tail calls use their own representation, no CallInfo needed
+            Mono.MonoTailCall name
+                (List.map (\( n, e ) -> ( n, annotateExprCalls graph env e )) args)
+                tipe
+
+        -- Leaves: literals, vars (no subexpressions)
+        _ ->
+            expr
+
+
+{-| Annotate calls in a definition and propagate call model to CallEnv.
+This replaces MLIR's Ctx.lookupVarCallModel logic for local aliases.
+-}
+annotateDefCalls :
+    Mono.MonoGraph
+    -> CallEnv
+    -> Mono.MonoDef
+    -> ( Mono.MonoDef, CallEnv )
+annotateDefCalls graph env def =
+    case def of
+        Mono.MonoDef name bound ->
+            let
+                bound1 =
+                    annotateExprCalls graph env bound
+
+                maybeModel =
+                    callModelForExpr graph env bound1
+
+                -- Extract source arity from the bound expression
+                maybeSourceArity =
+                    sourceArityForExpr graph env bound1
+
+                env1 =
+                    case maybeModel of
+                        Just model ->
+                            { env
+                                | varCallModel =
+                                    Dict.insert identity name model env.varCallModel
+                            }
+
+                        Nothing ->
+                            env
+
+                env2 =
+                    case maybeSourceArity of
+                        Just arity ->
+                            { env1
+                                | varSourceArity =
+                                    Dict.insert identity name arity env1.varSourceArity
+                            }
+
+                        Nothing ->
+                            env1
+            in
+            ( Mono.MonoDef name bound1, env2 )
+
+        Mono.MonoTailDef name params bound ->
+            -- Tail defs are only referenced by MonoTailCall (string name),
+            -- not VarLocal, so no callModel mapping is needed.
+            ( Mono.MonoTailDef name params (annotateExprCalls graph env bound), env )
+
+
+annotateDeciderCalls : Mono.MonoGraph -> CallEnv -> Mono.Decider Mono.MonoChoice -> Mono.Decider Mono.MonoChoice
+annotateDeciderCalls graph env decider =
+    case decider of
+        Mono.Leaf choice ->
+            Mono.Leaf (annotateChoiceCalls graph env choice)
+
+        Mono.Chain edges success failure ->
+            Mono.Chain edges
+                (annotateDeciderCalls graph env success)
+                (annotateDeciderCalls graph env failure)
+
+        Mono.FanOut path edges fallback ->
+            Mono.FanOut path
+                (List.map (\( test, d ) -> ( test, annotateDeciderCalls graph env d )) edges)
+                (annotateDeciderCalls graph env fallback)
+
+
+annotateChoiceCalls : Mono.MonoGraph -> CallEnv -> Mono.MonoChoice -> Mono.MonoChoice
+annotateChoiceCalls graph env choice =
+    case choice of
+        Mono.Inline expr ->
+            Mono.Inline (annotateExprCalls graph env expr)
+
+        Mono.Jump i ->
+            Mono.Jump i
+
+
+{-| Determine call model for an expression.
+Mirrors MLIR's Expr.callModelForExpr but operates on MonoGraph.
+-}
+callModelForExpr : Mono.MonoGraph -> CallEnv -> Mono.MonoExpr -> Maybe Mono.CallModel
+callModelForExpr (Mono.MonoGraph { nodes }) env expr =
+    case expr of
+        Mono.MonoVarGlobal _ specId _ ->
+            case Dict.get identity specId nodes of
+                Just (Mono.MonoExtern _) ->
+                    Just Mono.FlattenedExternal
+
+                Just (Mono.MonoCtor _ _) ->
+                    Just Mono.FlattenedExternal
+
+                Just (Mono.MonoEnum _ _) ->
+                    Just Mono.FlattenedExternal
+
+                _ ->
+                    Just Mono.StageCurried
+
+        Mono.MonoVarKernel _ _ _ _ ->
+            Just Mono.FlattenedExternal
+
+        Mono.MonoVarLocal name _ ->
+            Dict.get identity name env.varCallModel
+
+        Mono.MonoClosure _ _ _ ->
+            Just Mono.StageCurried
+
+        _ ->
+            Nothing
+
+
+{-| Get call model for a callee, defaulting to StageCurried. -}
+callModelForCallee : Mono.MonoGraph -> CallEnv -> Mono.MonoExpr -> Mono.CallModel
+callModelForCallee graph env funcExpr =
+    case callModelForExpr graph env funcExpr of
+        Just model ->
+            model
+
+        Nothing ->
+            -- Default: user closures / expressions use StageCurried model
+            Mono.StageCurried
+
+
+{-| Get the source arity for an expression (the papCreate arity).
+This is the closure's actual param count, which may differ from type-derived arities.
+Uses the same logic as Context.extractNodeSignature to ensure consistency with codegen.
+-}
+sourceArityForExpr : Mono.MonoGraph -> CallEnv -> Mono.MonoExpr -> Maybe Int
+sourceArityForExpr graph env expr =
+    let
+        (Mono.MonoGraph { nodes }) =
+            graph
+    in
+    case expr of
+        Mono.MonoVarGlobal _ specId _ ->
+            -- Look up the node to get its closure's param count
+            -- Match the exact logic of extractNodeSignature in Context.elm
+            case Dict.get identity specId nodes of
+                Just (Mono.MonoDefine innerExpr _) ->
+                    -- For defines, check if the expression is a closure
+                    case innerExpr of
+                        Mono.MonoClosure closureInfo _ _ ->
+                            Just (List.length closureInfo.params)
+
+                        _ ->
+                            -- Thunk (nullary function) - return 0, codegen calls directly
+                            Just 0
+
+                Just (Mono.MonoTailFunc params _ _) ->
+                    Just (List.length params)
+
+                Just (Mono.MonoExtern monoType) ->
+                    -- Externs use total ABI arity (flattened)
+                    Just (List.length (Tuple.first (Mono.decomposeFunctionType monoType)))
+
+                Just (Mono.MonoCtor shape _) ->
+                    Just (List.length shape.fieldTypes)
+
+                Just (Mono.MonoEnum _ _) ->
+                    -- Nullary enum constructor
+                    Just 0
+
+                Just (Mono.MonoPortIncoming innerExpr _) ->
+                    case innerExpr of
+                        Mono.MonoClosure closureInfo _ _ ->
+                            Just (List.length closureInfo.params)
+
+                        _ ->
+                            Just 0
+
+                Just (Mono.MonoPortOutgoing innerExpr _) ->
+                    case innerExpr of
+                        Mono.MonoClosure closureInfo _ _ ->
+                            Just (List.length closureInfo.params)
+
+                        _ ->
+                            Just 0
+
+                Just (Mono.MonoCycle _ _) ->
+                    Just 0
+
+                Nothing ->
+                    -- Node not found - shouldn't happen
+                    Nothing
+
+        Mono.MonoVarKernel _ _ _ kernelType ->
+            -- Kernels use total ABI arity (flattened)
+            Just (List.length (Tuple.first (Mono.decomposeFunctionType kernelType)))
+
+        Mono.MonoVarLocal name _ ->
+            -- Look up from CallEnv
+            Dict.get identity name env.varSourceArity
+
+        Mono.MonoClosure closureInfo _ _ ->
+            Just (List.length closureInfo.params)
+
+        Mono.MonoCall _ func args resultType _ ->
+            -- For partial applications, compute the result PAP's remaining arity
+            -- Result arity = source arity - args applied
+            case sourceArityForExpr graph env func of
+                Just sourceArity ->
+                    let
+                        resultArity =
+                            sourceArity - List.length args
+                    in
+                    if resultArity > 0 then
+                        -- Partial application: remaining = source - applied
+                        Just resultArity
+
+                    else
+                        -- Saturated call returning a function.
+                        -- For known callees (user closures), use the body's first-stage arity.
+                        -- For nested calls or unknown callees, use first-stage of result type
+                        -- (assuming stage-curried closures).
+                        case closureBodyStageArities graph func of
+                            Just (firstStage :: _) ->
+                                -- Known callee: use first-stage arity from body
+                                Just firstStage
+
+                            Just [] ->
+                                -- Body is not a function
+                                Nothing
+
+                            Nothing ->
+                                -- Nested call or unknown callee.
+                                -- Use first-stage arity of result type (stage-curried assumption).
+                                case MonoReturnArity.collectStageArities resultType of
+                                    firstStage :: _ ->
+                                        Just firstStage
+
+                                    [] ->
+                                        Nothing
+
+                Nothing ->
+                    -- Unknown callee (function parameter): use total arity for flattened externals
+                    Just (countTotalArityFromType resultType)
+
+        _ ->
+            Nothing
+
+
+{-| Get source arity for a callee, with fallback for unknown callees.
+For unknown callees (like function parameters), we use total arity since
+they could be flattened externals that expect all args at once.
+-}
+sourceArityForCallee : Mono.MonoGraph -> CallEnv -> Mono.MonoExpr -> Int
+sourceArityForCallee graph env funcExpr =
+    case sourceArityForExpr graph env funcExpr of
+        Just arity ->
+            arity
+
+        Nothing ->
+            -- Fallback: use TOTAL arity for unknown callees (function parameters)
+            -- Since they could be flattened externals, we must batch all args.
+            countTotalArityFromType (Mono.typeOf funcExpr)
+
+
+{-| Count total arity by summing all stage arities. -}
+countTotalArityFromType : Mono.MonoType -> Int
+countTotalArityFromType monoType =
+    case monoType of
+        Mono.MFunction argTypes resultType ->
+            List.length argTypes + countTotalArityFromType resultType
+
+        _ ->
+            0
+
+
+{-| Get the remaining stage arities from the closure's body type.
+This is used to get the actual staging after GlobalOpt canonicalization.
+
+For a function with params, this extracts the return type's stages from the closure's body
+(which may have been canonicalized differently than the declared type).
+-}
+closureBodyStageArities : Mono.MonoGraph -> Mono.MonoExpr -> Maybe (List Int)
+closureBodyStageArities graph expr =
+    let
+        (Mono.MonoGraph { nodes }) =
+            graph
+
+        -- Get stage arities from a node's closure body
+        getNodeBodyArities : Mono.MonoNode -> Maybe (List Int)
+        getNodeBodyArities node =
+            case node of
+                Mono.MonoDefine innerExpr _ ->
+                    getExprBodyArities innerExpr
+
+                Mono.MonoTailFunc _ bodyExpr _ ->
+                    Just (MonoReturnArity.collectStageArities (Mono.typeOf bodyExpr))
+
+                Mono.MonoPortIncoming innerExpr _ ->
+                    getExprBodyArities innerExpr
+
+                Mono.MonoPortOutgoing innerExpr _ ->
+                    getExprBodyArities innerExpr
+
+                _ ->
+                    Nothing
+
+        -- Get stage arities from an expression's body
+        getExprBodyArities : Mono.MonoExpr -> Maybe (List Int)
+        getExprBodyArities e =
+            case e of
+                Mono.MonoClosure _ body _ ->
+                    -- Check if the closure body is a case/if that returns closures.
+                    -- If so, look at the actual closures in branches (after canonicalization)
+                    -- rather than using the type, which may have a different staging.
+                    case body of
+                        Mono.MonoCase _ _ _ jumps _ ->
+                            case jumps of
+                                ( _, branchExpr ) :: _ ->
+                                    getClosureArityFromExpr branchExpr
+
+                                [] ->
+                                    Just (MonoReturnArity.collectStageArities (Mono.typeOf body))
+
+                        Mono.MonoIf branches _ _ ->
+                            case branches of
+                                ( _, thenExpr ) :: _ ->
+                                    getClosureArityFromExpr thenExpr
+
+                                [] ->
+                                    Just (MonoReturnArity.collectStageArities (Mono.typeOf body))
+
+                        _ ->
+                            -- For regular closures, use the body's type
+                            Just (MonoReturnArity.collectStageArities (Mono.typeOf body))
+
+                Mono.MonoCase _ _ _ jumps _ ->
+                    -- After canonicalization, all branches have the same staging.
+                    -- Look at the first jump's closure to get the actual staging.
+                    case jumps of
+                        ( _, branchExpr ) :: _ ->
+                            getClosureArityFromExpr branchExpr
+
+                        [] ->
+                            -- No jumps, use Nothing to trigger fallback
+                            Nothing
+
+                Mono.MonoIf branches _ _ ->
+                    -- Look at the first branch's expression for actual staging
+                    case branches of
+                        ( _, thenExpr ) :: _ ->
+                            getClosureArityFromExpr thenExpr
+
+                        [] ->
+                            Nothing
+
+                _ ->
+                    Nothing
+
+        -- Get the full stage arities from a closure expression (for case/if branches)
+        getClosureArityFromExpr : Mono.MonoExpr -> Maybe (List Int)
+        getClosureArityFromExpr e =
+            case e of
+                Mono.MonoClosure closureInfo body _ ->
+                    -- First stage arity = this closure's params
+                    -- Remaining stages = from body type
+                    Just (List.length closureInfo.params :: MonoReturnArity.collectStageArities (Mono.typeOf body))
+
+                _ ->
+                    -- Not a closure, fall back
+                    Nothing
+    in
+    case expr of
+        Mono.MonoVarGlobal _ specId _ ->
+            Dict.get identity specId nodes
+                |> Maybe.andThen getNodeBodyArities
+
+        Mono.MonoClosure _ body _ ->
+            Just (MonoReturnArity.collectStageArities (Mono.typeOf body))
+
+        _ ->
+            Nothing
+
+
+{-| Compute CallInfo for a MonoCall based on callee and arguments.
+This is the core logic that moves staging decisions into GlobalOpt.
+-}
+computeCallInfo :
+    Mono.MonoGraph
+    -> CallEnv
+    -> Mono.MonoExpr
+    -> List Mono.MonoExpr
+    -> Mono.MonoType
+    -> Mono.CallInfo
+computeCallInfo graph env func args resultType =
+    let
+        callModel =
+            callModelForCallee graph env func
+    in
+    case callModel of
+        Mono.FlattenedExternal ->
+            -- No staged-curried logic needed; existing MLIR code treats
+            -- extern partial vs saturated based on resultType alone.
+            { callModel = Mono.FlattenedExternal
+            , stageArities = []
+            , isSingleStageSaturated = False
+            , initialRemaining = 0
+            , remainingStageArities = []
+            }
+
+        Mono.StageCurried ->
+            let
+                funcType : Mono.MonoType
+                funcType =
+                    Mono.typeOf func
+
+                -- Full stage segmentation for the function type
+                stageAritiesFull : List Int
+                stageAritiesFull =
+                    MonoReturnArity.collectStageArities funcType
+
+                -- Source arity: the actual closure's param count (matches papCreate arity)
+                -- This is what CGEN_052 requires for papExtend's remaining_arity
+                sourceArity : Int
+                sourceArity =
+                    sourceArityForCallee graph env func
+
+                argCount : Int
+                argCount =
+                    List.length args
+
+                -- Single-stage saturated: all args provided in one call, fitting the closure's params
+                -- This uses sourceArity (closure's actual param count) not type-derived arity
+                isSingleStageSaturated : Bool
+                isSingleStageSaturated =
+                    argCount == sourceArity && sourceArity > 0
+
+                -- Stage arity at this call site (for applyByStages sourceRemaining)
+                -- CGEN_052: must match the source PAP's remaining_arity
+                initialRemaining : Int
+                initialRemaining =
+                    sourceArity
+
+                -- Stage arities for subsequent stages (for applyByStages)
+                -- IMPORTANT: Use the closure body's type (which reflects GlobalOpt canonicalization)
+                -- rather than the declared return type, because case expressions may have
+                -- different staging after canonicalization (e.g., [2] vs [1,1])
+                remainingStageArities : List Int
+                remainingStageArities =
+                    let
+                        bodyArities =
+                            closureBodyStageArities graph func
+                    in
+                    case bodyArities of
+                        Just arities ->
+                            -- Known callee: use actual body's stage arities
+                            arities
+
+                        Nothing ->
+                            -- Unknown callee (e.g., function parameter):
+                            -- Since we use total arity for sourceArity (treating it as flattened),
+                            -- remainingStageArities should be empty (no subsequent stages).
+                            -- This ensures isSaturatedCall is true when all args are consumed.
+                            []
+            in
+            { callModel = Mono.StageCurried
+            , stageArities = stageAritiesFull
+            , isSingleStageSaturated = isSingleStageSaturated
+            , initialRemaining = initialRemaining
+            , remainingStageArities = remainingStageArities
+            }
 
 
 
