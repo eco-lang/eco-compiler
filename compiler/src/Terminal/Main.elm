@@ -77,7 +77,7 @@ intro =
             , D.fromChars "for"
             , D.fromChars "trying"
             , D.fromChars "out"
-            , D.green (D.fromChars "Elm")
+            , D.green (D.fromChars "Eco")
             , D.green (D.fromChars (V.toChars V.compiler))
                 |> D.a (D.fromChars ".")
             , D.fromChars "I hope you like it!"
@@ -85,7 +85,7 @@ intro =
         , D.fromChars ""
         , D.black (D.fromChars "-------------------------------------------------------------------------------")
         , D.black (D.fromChars "I highly recommend working through <https://guide.elm-lang.org> to get started.")
-        , D.black (D.fromChars "It teaches many important concepts, including how to use `elm` in the terminal.")
+        , D.black (D.fromChars "It teaches many important concepts, including how to use `eco` in the terminal.")
         , D.black (D.fromChars "-------------------------------------------------------------------------------")
         ]
 
