@@ -178,13 +178,13 @@ toBuilder : Bool -> Int -> FilePath -> Details.Details -> DesiredMode -> Build.A
 toBuilder withSourceMaps leadingLines root details desiredMode artifacts =
     (case desiredMode of
         Debug ->
-            Generate.debug Generate.javascriptBackend withSourceMaps leadingLines root details artifacts
+            Generate.debug Generate.javascriptBackend withSourceMaps leadingLines root Nothing details artifacts
 
         Dev ->
-            Generate.dev Generate.javascriptBackend withSourceMaps leadingLines root details artifacts
+            Generate.dev Generate.javascriptBackend withSourceMaps leadingLines root Nothing details artifacts
 
         Prod ->
-            Generate.prod Generate.javascriptBackend withSourceMaps leadingLines root details artifacts
+            Generate.prod Generate.javascriptBackend withSourceMaps leadingLines root Nothing details artifacts
     )
         |> Task.map CodeGen.outputToString
         |> Task.mapError Exit.MakeBadGenerate

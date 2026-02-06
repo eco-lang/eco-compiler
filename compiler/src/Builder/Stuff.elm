@@ -43,6 +43,11 @@ managing file locks.
 
 @docs withRootLock, withRootLockBuildDir, withRegistryLock
 
+
+# Build Directory Variants
+
+@docs detailsWithBuildDir, guidaiWithBuildDir, guidaoWithBuildDir, guidatoWithBuildDir, interfacesWithBuildDir, objectsWithBuildDir, typedObjectsWithBuildDir
+
 -}
 
 import Bytes.Decode

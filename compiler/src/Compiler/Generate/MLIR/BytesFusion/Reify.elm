@@ -14,6 +14,21 @@ into normalized operation structures.
 This is a PURE AST RECOGNIZER that pattern-matches the monomorphized
 expression tree to identify Bytes.Encode/Decode combinator calls.
 
+
+# Types
+
+@docs EncoderNode, DecoderNode
+
+
+# Reification
+
+@docs reifyEncoder, reifyDecoder, reifyEndianness
+
+
+# Loop IR Conversion
+
+@docs nodesToOps, decoderNodeToOps
+
 -}
 
 import Compiler.AST.Monomorphized as Mono exposing (Global(..), MonoExpr(..))

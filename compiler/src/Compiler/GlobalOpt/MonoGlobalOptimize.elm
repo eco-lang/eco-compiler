@@ -8,6 +8,8 @@ This phase:
 2.  Validates closure staging invariants (MONO\_016)
 3.  Runs MonoInlineSimplify (inlining, DCE, let simplification)
 
+@docs globalOptimize
+
 -}
 
 import Compiler.AST.Monomorphized as Mono
@@ -50,6 +52,8 @@ freshLambdaId home ctx =
 -- MAIN ENTRY POINT
 
 
+{-| Run global optimization passes on a monomorphized program graph.
+-}
 globalOptimize : TypeEnv.GlobalTypeEnv -> Mono.MonoGraph -> Mono.MonoGraph
 globalOptimize typeEnv graph0 =
     let

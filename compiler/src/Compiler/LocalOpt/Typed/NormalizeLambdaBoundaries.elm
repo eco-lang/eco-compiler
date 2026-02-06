@@ -26,6 +26,21 @@ Transformations:
     `\x _a_hl_0 -> case s of A -> e1[a↦_a_hl_0]; B -> e2[b↦_a_hl_0]`
     (when all branches have same arity and param types; names are alpha-renamed)
 
+
+# Lambda Kind
+
+@docs LambdaKind, lambdaKindOf, rebuildLambda
+
+
+# Renaming Context
+
+@docs RenameCtx, RenameEnv, emptyRenameCtx, freshName, insertRename
+
+
+# Transformation
+
+@docs normalizeLocalGraph, renameDecider, renameExpr
+
 -}
 
 import Compiler.AST.Canonical as Can
@@ -112,6 +127,8 @@ type alias RenameCtx =
     }
 
 
+{-| Create an empty renaming context with initial ID counter.
+-}
 emptyRenameCtx : RenameCtx
 emptyRenameCtx =
     { nextId = 0 }
@@ -325,6 +342,8 @@ renamePath env path =
             TOpt.Root (lookupRename env name)
 
 
+{-| Apply renaming to a pattern match decider tree.
+-}
 renameDecider : RenameEnv -> TOpt.Decider TOpt.Choice -> TOpt.Decider TOpt.Choice
 renameDecider env decider =
     case decider of

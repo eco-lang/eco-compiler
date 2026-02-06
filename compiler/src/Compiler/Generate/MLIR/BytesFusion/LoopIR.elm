@@ -12,11 +12,23 @@ module Compiler.Generate.MLIR.BytesFusion.LoopIR exposing
 Values are represented as MonoExpr to preserve the original AST
 structure for later MLIR emission.
 
+
+# Types
+
+@docs Endianness, WidthExpr, Op, DecoderOp
+
+
+# Width Utilities
+
+@docs simplifyWidth, totalWidth
+
 -}
 
 import Compiler.AST.Monomorphized as Mono
 
 
+{-| Byte order for multi-byte reads and writes.
+-}
 type Endianness
     = LE
     | BE

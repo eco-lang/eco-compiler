@@ -32,6 +32,11 @@ source maps, and documentation generation.
 
 @docs parseOutput, parseReportType, parseDocsFile
 
+
+# Build Directory
+
+@docs buildDir, parseBuildDir
+
 -}
 
 import Builder.BackgroundWriter as BW

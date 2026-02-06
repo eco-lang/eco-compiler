@@ -98,6 +98,16 @@ This module defines the data structures for the monomorphized program
 
 @docs monoTypeToDebugString
 
+
+# Function Segmentation
+
+@docs Segmentation, buildSegmentedFunctionType, chooseCanonicalSegmentation, countTotalArity, decomposeFunctionType, functionArity, isFunctionType, segmentLengths, stageArity, stageParamTypes, stageReturnType
+
+
+# Comparable Conversions
+
+@docs toComparableGlobal, toComparableLambdaId
+
 -}
 
 import Compiler.AST.DecisionTree.Test as DT

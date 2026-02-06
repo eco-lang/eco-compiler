@@ -9,6 +9,8 @@ module Compiler.Generate.MLIR.BytesFusion.Emit exposing
 
 Takes Loop IR operations and emits bf dialect MLIR ops.
 
+@docs ExprCompiler, emitFusedDecoder, emitFusedEncoder, emitOps
+
 -}
 
 import Bitwise

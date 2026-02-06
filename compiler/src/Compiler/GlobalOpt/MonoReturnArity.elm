@@ -5,6 +5,8 @@ module Compiler.GlobalOpt.MonoReturnArity exposing (computeReturnedClosureParamC
 After ABI normalization, we can rely on `Mono.stageArity` instead of
 structural analysis of case/if branches.
 
+@docs computeReturnedClosureParamCount
+
 -}
 
 import Compiler.AST.Monomorphized as Mono

@@ -130,25 +130,29 @@ type Box
     | MustBreak Line
 
 
-{-| -}
+{-| Create a blank line (empty content on a single line).
+-}
 blankLine : Box
 blankLine =
     line (literal "")
 
 
-{-| -}
+{-| Wrap a Line into a single-line Box.
+-}
 line : Line -> Box
 line l =
     SingleLine l
 
 
-{-| -}
+{-| Create a Box that must appear on its own line (used for `--` comments).
+-}
 mustBreak : Line -> Box
 mustBreak l =
     MustBreak l
 
 
-{-| -}
+{-| Stack two boxes vertically, placing the second below the first.
+-}
 stack_ : Box -> Box -> Box
 stack_ b1 b2 =
     let
@@ -166,13 +170,15 @@ stack_ b1 b2 =
             Stack line1first first rest
 
 
-{-| -}
+{-| Stack multiple boxes after an initial box, building from left to right.
+-}
 andThen : List Box -> Box -> Box
 andThen rest first =
     List.foldl (flip stack_) first rest
 
 
-{-| -}
+{-| Stack a non-empty list of boxes vertically. Crashes if the list is empty.
+-}
 stack1 : List Box -> Box
 stack1 children =
     case children of
