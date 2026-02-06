@@ -36,7 +36,7 @@ import Compiler.Canonicalize.Ids as Ids
 import Compiler.Data.Index as Index
 import Compiler.Data.Name as Name
 import Compiler.Elm.ModuleName as ModuleName
-import Compiler.Parse.SyntaxVersion as SV exposing (SyntaxVersion)
+import Compiler.AST.SyntaxVersion as SV exposing (SyntaxVersion)
 import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Error.Canonicalize as Error
 import Compiler.Reporting.Result as ReportingResult

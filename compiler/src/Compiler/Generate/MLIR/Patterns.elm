@@ -21,6 +21,8 @@ import Compiler.Generate.MLIR.Context as Ctx
 import Compiler.Generate.MLIR.Intrinsics as Intrinsics
 import Compiler.Generate.MLIR.Ops as Ops
 import Compiler.Generate.MLIR.Types as Types
+import Compiler.AST.DecisionTree.Test as Test
+import Compiler.AST.DecisionTree.TypedPath as TypedPath
 import Compiler.LocalOpt.Typed.DecisionTree as DT
 import Data.Map as EveryDict
 import Dict
@@ -402,7 +404,7 @@ lookupFieldInfoByCtorName ctx ctorName fieldIndex =
 
 {-| Find if there's a single-constructor single-field type with an unboxed field.
 
-This is used by DT.Unbox handling to determine if the inner field is stored unboxed.
+This is used by TypedPath.Unbox handling to determine if the inner field is stored unboxed.
 Returns Just (fieldMonoType, isUnboxed) if found, Nothing otherwise.
 
 -}
@@ -477,7 +479,7 @@ The targetType parameter specifies what type the final value should be:
 generateDTPath : Ctx.Context -> Name.Name -> DT.Path -> MlirType -> ( List MlirOp, String, Ctx.Context )
 generateDTPath ctx root dtPath targetType =
     case dtPath of
-        DT.Empty ->
+        TypedPath.Empty ->
             -- The root is the scrutinee variable; look it up in varMappings.
             -- This correctly handles both boxed (!eco.value) and unboxed (i1, i64) parameters.
             let
@@ -505,7 +507,7 @@ generateDTPath ctx root dtPath targetType =
                 -- Types differ but we don't have a boxing rule here; just use rootVar.
                 ( [], rootVar, ctx )
 
-        DT.Index index hint subPath ->
+        TypedPath.Index index hint subPath ->
             let
                 -- Navigate to the container object (always !eco.value)
                 ( subOps, subVar, ctx1 ) =
@@ -522,7 +524,7 @@ generateDTPath ctx root dtPath targetType =
                 -- This ensures correct heap layout access for each container type.
                 ( projectOps, projectVar, ctx3 ) =
                     case hint of
-                        DT.HintList ->
+                        TypedPath.HintList ->
                             if fieldIndex == 0 then
                                 if Types.isEcoValueType targetType then
                                     -- Caller wants eco.value, project directly
@@ -554,21 +556,21 @@ generateDTPath ctx root dtPath targetType =
                                 in
                                 ( [ op ], resultVar, ctxL )
 
-                        DT.HintTuple2 ->
+                        TypedPath.HintTuple2 ->
                             let
                                 ( ctxT, op ) =
                                     Ops.ecoProjectTuple2 ctx2 resultVar fieldIndex targetType subVar
                             in
                             ( [ op ], resultVar, ctxT )
 
-                        DT.HintTuple3 ->
+                        TypedPath.HintTuple3 ->
                             let
                                 ( ctxT, op ) =
                                     Ops.ecoProjectTuple3 ctx2 resultVar fieldIndex targetType subVar
                             in
                             ( [ op ], resultVar, ctxT )
 
-                        DT.HintCustom ctorName ->
+                        TypedPath.HintCustom ctorName ->
                             -- Custom ADTs (Maybe, Result, user types, big tuples)
                             -- Look up field layout by constructor name to determine if field is unboxed.
                             case lookupFieldInfoByCtorName ctx2 ctorName fieldIndex of
@@ -609,7 +611,7 @@ generateDTPath ctx root dtPath targetType =
                                     in
                                     ( [ op ], resultVar, ctxC )
 
-                        DT.HintUnknown ->
+                        TypedPath.HintUnknown ->
                             -- Fallback: treat like custom
                             let
                                 ( ctxU, op ) =
@@ -619,8 +621,8 @@ generateDTPath ctx root dtPath targetType =
             in
             ( subOps ++ projectOps, projectVar, ctx3 )
 
-        DT.Unbox subPath ->
-            -- DT.Unbox represents unwrapping a single-constructor type to access its single field.
+        TypedPath.Unbox subPath ->
+            -- TypedPath.Unbox represents unwrapping a single-constructor type to access its single field.
             -- This is used for types like `Wrapper = Wrap Int` when pattern matching `Wrap x`.
             --
             -- We need to:
@@ -717,35 +719,35 @@ generateTest ctx root ( path, test ) =
         -- Determine target type based on the test
         targetType =
             case test of
-                DT.IsCtor _ _ _ _ _ ->
+                Test.IsCtor _ _ _ _ _ ->
                     Types.ecoValue
 
-                DT.IsBool _ ->
+                Test.IsBool _ ->
                     I1
 
-                DT.IsInt _ ->
+                Test.IsInt _ ->
                     I64
 
-                DT.IsChr _ ->
+                Test.IsChr _ ->
                     Types.ecoChar
 
-                DT.IsStr _ ->
+                Test.IsStr _ ->
                     Types.ecoValue
 
-                DT.IsCons ->
+                Test.IsCons ->
                     Types.ecoValue
 
-                DT.IsNil ->
+                Test.IsNil ->
                     Types.ecoValue
 
-                DT.IsTuple ->
+                Test.IsTuple ->
                     Types.ecoValue
 
         ( pathOps, valVar, ctx1 ) =
             generateDTPath ctx root path targetType
     in
     case test of
-        DT.IsCtor _ _ index _ _ ->
+        Test.IsCtor _ _ index _ _ ->
             -- Produce a boolean (i1) by comparing the tag
             let
                 expectedTag =
@@ -771,7 +773,7 @@ generateTest ctx root ( path, test ) =
             in
             ( pathOps ++ [ tagOp, constOp, cmpOp ], resVar, ctx7 )
 
-        DT.IsBool expected ->
+        Test.IsBool expected ->
             -- valVar is a Bool; if expected is False, invert it
             if expected then
                 ( pathOps, valVar, ctx1 )
@@ -793,7 +795,7 @@ generateTest ctx root ( path, test ) =
                 in
                 ( pathOps ++ [ constOp, xorOp ], resVar, ctx5 )
 
-        DT.IsInt i ->
+        Test.IsInt i ->
             let
                 ( constVar, ctx2 ) =
                     Ctx.freshVar ctx1
@@ -809,7 +811,7 @@ generateTest ctx root ( path, test ) =
             in
             ( pathOps ++ [ constOp, cmpOp ], resVar, ctx5 )
 
-        DT.IsChr c ->
+        Test.IsChr c ->
             -- Compare character codes
             let
                 charCode =
@@ -829,7 +831,7 @@ generateTest ctx root ( path, test ) =
             in
             ( pathOps ++ [ constOp, cmpOp ], resVar, ctx5 )
 
-        DT.IsStr s ->
+        Test.IsStr s ->
             -- String comparison - use kernel function
             let
                 ( strVar, ctx2 ) =
@@ -851,7 +853,7 @@ generateTest ctx root ( path, test ) =
             in
             ( pathOps ++ [ strOp, cmpOp ], resVar, ctx5 )
 
-        DT.IsCons ->
+        Test.IsCons ->
             -- Test if list is non-empty (tag == 1)
             let
                 ( tagVar, ctx2 ) =
@@ -874,7 +876,7 @@ generateTest ctx root ( path, test ) =
             in
             ( pathOps ++ [ tagOp, constOp, cmpOp ], resVar, ctx7 )
 
-        DT.IsNil ->
+        Test.IsNil ->
             -- Test if list is empty (tag == 0)
             let
                 ( tagVar, ctx2 ) =
@@ -897,7 +899,7 @@ generateTest ctx root ( path, test ) =
             in
             ( pathOps ++ [ tagOp, constOp, cmpOp ], resVar, ctx7 )
 
-        DT.IsTuple ->
+        Test.IsTuple ->
             -- Tuples always match (we just need the value)
             let
                 ( resVar, ctx2 ) =
@@ -950,31 +952,31 @@ generateChainCondition ctx root tests =
 testToTagInt : DT.Test -> Int
 testToTagInt test =
     case test of
-        DT.IsCtor _ _ index _ _ ->
+        Test.IsCtor _ _ index _ _ ->
             Index.toMachine index
 
-        DT.IsCons ->
+        Test.IsCons ->
             1
 
-        DT.IsNil ->
+        Test.IsNil ->
             0
 
-        DT.IsBool True ->
+        Test.IsBool True ->
             1
 
-        DT.IsBool False ->
+        Test.IsBool False ->
             0
 
-        DT.IsInt i ->
+        Test.IsInt i ->
             i
 
-        DT.IsChr c ->
+        Test.IsChr c ->
             String.toList c |> List.head |> Maybe.map Char.toCode |> Maybe.withDefault 0
 
-        DT.IsStr _ ->
+        Test.IsStr _ ->
             0
 
-        DT.IsTuple ->
+        Test.IsTuple ->
             0
 
 
@@ -991,28 +993,28 @@ Returns a string indicating how the runtime should handle the case:
 caseKindFromTest : DT.Test -> String
 caseKindFromTest test =
     case test of
-        DT.IsCtor _ _ _ _ _ ->
+        Test.IsCtor _ _ _ _ _ ->
             "ctor"
 
-        DT.IsCons ->
+        Test.IsCons ->
             "ctor"
 
-        DT.IsNil ->
+        Test.IsNil ->
             "ctor"
 
-        DT.IsBool _ ->
+        Test.IsBool _ ->
             "ctor"
 
-        DT.IsInt _ ->
+        Test.IsInt _ ->
             "int"
 
-        DT.IsChr _ ->
+        Test.IsChr _ ->
             "chr"
 
-        DT.IsStr _ ->
+        Test.IsStr _ ->
             "str"
 
-        DT.IsTuple ->
+        Test.IsTuple ->
             "ctor"
 
 
@@ -1045,16 +1047,16 @@ For N-way branches (custom types), this finds the first missing tag.
 computeFallbackTag : List DT.Test -> Int
 computeFallbackTag edgeTests =
     case edgeTests of
-        [ DT.IsBool True ] ->
+        [ Test.IsBool True ] ->
             0
 
-        [ DT.IsBool False ] ->
+        [ Test.IsBool False ] ->
             1
 
-        [ DT.IsCons ] ->
+        [ Test.IsCons ] ->
             0
 
-        [ DT.IsNil ] ->
+        [ Test.IsNil ] ->
             1
 
         _ ->

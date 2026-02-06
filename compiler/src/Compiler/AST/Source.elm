@@ -94,11 +94,11 @@ These types wrap values with their surrounding comments:
 
 import Bytes.Decode
 import Bytes.Encode
+import Compiler.AST.Snippet as Snippet exposing (Snippet)
+import Compiler.AST.SyntaxVersion as SV exposing (SyntaxVersion)
 import Compiler.AST.Utils.Binop as Binop
 import Compiler.AST.Utils.Shader as Shader
 import Compiler.Data.Name as Name exposing (Name)
-import Compiler.Parse.Primitives as P
-import Compiler.Parse.SyntaxVersion as SV exposing (SyntaxVersion)
 import Compiler.Reporting.Annotation as A
 import Utils.Bytes.Decode as BD
 import Utils.Bytes.Encode as BE
@@ -513,7 +513,7 @@ type Docs
 {-| A documentation comment containing source text.
 -}
 type Comment
-    = Comment P.Snippet
+    = Comment Snippet
 
 
 
@@ -1083,12 +1083,12 @@ effectsDecoder =
 
 commentEncoder : Comment -> Bytes.Encode.Encoder
 commentEncoder (Comment snippet) =
-    P.snippetEncoder snippet
+    Snippet.encoder snippet
 
 
 commentDecoder : Bytes.Decode.Decoder Comment
 commentDecoder =
-    Bytes.Decode.map Comment P.snippetDecoder
+    Bytes.Decode.map Comment Snippet.decoder
 
 
 portEncoder : Port -> Bytes.Encode.Encoder

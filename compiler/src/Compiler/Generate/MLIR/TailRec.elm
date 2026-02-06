@@ -29,6 +29,7 @@ import Compiler.Generate.MLIR.Intrinsics as Intrinsics
 import Compiler.Generate.MLIR.Ops as Ops
 import Compiler.Generate.MLIR.Patterns as Patterns
 import Compiler.Generate.MLIR.Types as Types
+import Compiler.AST.DecisionTree.Test as Test
 import Compiler.LocalOpt.Typed.DecisionTree as DT
 import Dict
 import Utils.Crash exposing (crash)
@@ -827,11 +828,11 @@ compileCaseFanOutStep ctx loopSpec root path edges fallback jumpLookup =
 extractStringPatternForStep : DT.Test -> String
 extractStringPatternForStep test =
     case test of
-        DT.IsStr s ->
+        Test.IsStr s ->
             s
 
         _ ->
-            crash "extractStringPatternForStep: expected DT.IsStr but got non-string test"
+            crash "extractStringPatternForStep: expected Test.IsStr but got non-string test"
 
 
 

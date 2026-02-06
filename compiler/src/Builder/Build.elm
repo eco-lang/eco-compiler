@@ -72,7 +72,7 @@ import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Elm.Package as Pkg
 import Compiler.Json.Encode as E
 import Compiler.Parse.Module as Parse
-import Compiler.Parse.SyntaxVersion as SV
+import Compiler.AST.SyntaxVersion as SV
 import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Error as Error
 import Compiler.Reporting.Error.Docs as EDocs

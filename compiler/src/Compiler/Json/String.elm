@@ -13,6 +13,7 @@ from comments, ensuring newlines, quotes, and backslashes are properly escaped f
 
 -}
 
+import Compiler.AST.Snippet as Snippet
 import Compiler.Data.Name as Name
 import Compiler.Parse.Primitives as P
 
@@ -23,8 +24,8 @@ import Compiler.Parse.Primitives as P
 
 {-| Extract a string from a parser snippet.
 -}
-fromSnippet : P.Snippet -> String
-fromSnippet (P.Snippet { fptr, offset, length }) =
+fromSnippet : Snippet.Snippet -> String
+fromSnippet (Snippet.Snippet { fptr, offset, length }) =
     String.slice offset (offset + length) fptr
 
 
@@ -41,8 +42,8 @@ fromName =
 
 {-| Extract a string from a comment snippet, properly escaping newlines, quotes, and backslashes.
 -}
-fromComment : P.Snippet -> String
-fromComment ((P.Snippet { fptr, offset, length }) as snippet) =
+fromComment : Snippet.Snippet -> String
+fromComment ((Snippet.Snippet { fptr, offset, length }) as snippet) =
     let
         pos : Int
         pos =
@@ -116,18 +117,18 @@ type Chunk
     | Escape Char
 
 
-fromChunks : P.Snippet -> List Chunk -> String
+fromChunks : Snippet.Snippet -> List Chunk -> String
 fromChunks snippet chunks =
     writeChunks snippet chunks
 
 
-writeChunks : P.Snippet -> List Chunk -> String
+writeChunks : Snippet.Snippet -> List Chunk -> String
 writeChunks snippet chunks =
     writeChunksHelp snippet chunks ""
 
 
-writeChunksHelp : P.Snippet -> List Chunk -> String -> String
-writeChunksHelp ((P.Snippet { fptr }) as snippet) chunks acc =
+writeChunksHelp : Snippet.Snippet -> List Chunk -> String -> String
+writeChunksHelp ((Snippet.Snippet { fptr }) as snippet) chunks acc =
     case chunks of
         [] ->
             acc

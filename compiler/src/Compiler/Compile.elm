@@ -41,7 +41,7 @@ import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Elm.Package as Pkg
 import Compiler.Nitpick.PatternMatches as PatternMatches
 import Compiler.LocalOpt.Erased.Module as Optimize
-import Compiler.LocalOpt.Typed.KernelTypes as KernelTypes
+import Compiler.Type.KernelTypes as KernelTypes
 import Compiler.LocalOpt.Typed.Module as TypedOptimize
 import Compiler.Reporting.Error as E
 import Compiler.Reporting.Render.Type.Localizer as Localizer

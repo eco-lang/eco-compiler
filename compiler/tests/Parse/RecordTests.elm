@@ -3,7 +3,7 @@ module Parse.RecordTests exposing (suite)
 import Compiler.AST.Source as Src
 import Compiler.Parse.Expression as E
 import Compiler.Parse.Primitives as P
-import Compiler.Parse.SyntaxVersion as SV exposing (SyntaxVersion)
+import Compiler.AST.SyntaxVersion as SV exposing (SyntaxVersion)
 import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Error.Syntax as E
 import Expect

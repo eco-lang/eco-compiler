@@ -9,7 +9,7 @@ List, etc. are correctly resolved and consistent throughout the module.
 
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Source as Src
-import Compiler.LocalOpt.Typed.KernelTypes as KernelTypes
+import Compiler.Type.KernelTypes as KernelTypes
 import Data.Map as Dict
 import Expect
 import TestLogic.Generate.TypedOptimizedMonomorphize as TOMono

@@ -33,6 +33,7 @@ syntax by checking indentation levels during parsing.
 
 -}
 
+import Compiler.AST.Snippet as Snippet
 import Compiler.AST.Source as Src
 import Compiler.Parse.Primitives as P exposing (Col, Row)
 import Compiler.Reporting.Annotation as A
@@ -379,9 +380,9 @@ docComment toExpectation toSpaceError =
                             len =
                                 newPos - pos3 - 2
 
-                            snippet : P.Snippet
+                            snippet : Snippet.Snippet
                             snippet =
-                                P.Snippet
+                                Snippet.Snippet
                                     { fptr = st.src
                                     , offset = off
                                     , length = len

@@ -38,8 +38,9 @@ import Compiler.Data.Name exposing (Name)
 import Compiler.Parse.Declaration as Decl
 import Compiler.Parse.Expression as Expr
 import Compiler.Parse.Module as M
+import Compiler.AST.Snippet as Snippet
 import Compiler.Parse.Primitives as P
-import Compiler.Parse.SyntaxVersion as SV
+import Compiler.AST.SyntaxVersion as SV
 import Compiler.Reporting.Annotation as A
 import Data.Map as Map exposing (Dict)
 import Data.Set as EverySet exposing (EverySet)
@@ -961,7 +962,7 @@ formatModu modu =
         modu.header
             |> Maybe.andThen (.docs >> Result.toMaybe)
             |> Maybe.map
-                (\(Src.Comment (P.Snippet { fptr, offset, length })) ->
+                (\(Src.Comment (Snippet.Snippet { fptr, offset, length })) ->
                     String.slice offset (offset + length) fptr
                         |> String.trim
                         |> Parse.markdown
@@ -997,7 +998,7 @@ declToDeclarations ( ( preDeclComments, postDeclComments ), decl ) =
                     in
                     (maybeDocs
                         |> Maybe.map
-                            (\(Src.Comment (P.Snippet { fptr, offset, length })) ->
+                            (\(Src.Comment (Snippet.Snippet { fptr, offset, length })) ->
                                 [ DocComment
                                     (String.slice offset (offset + length) fptr
                                         |> String.trim
@@ -1043,7 +1044,7 @@ declToDeclarations ( ( preDeclComments, postDeclComments ), decl ) =
                     in
                     (maybeDocs
                         |> Maybe.map
-                            (\(Src.Comment (P.Snippet { fptr, offset, length })) ->
+                            (\(Src.Comment (Snippet.Snippet { fptr, offset, length })) ->
                                 [ DocComment
                                     (String.slice offset (offset + length) fptr
                                         |> String.trim
@@ -1070,7 +1071,7 @@ declToDeclarations ( ( preDeclComments, postDeclComments ), decl ) =
                     in
                     (maybeDocs
                         |> Maybe.map
-                            (\(Src.Comment (P.Snippet { fptr, offset, length })) ->
+                            (\(Src.Comment (Snippet.Snippet { fptr, offset, length })) ->
                                 [ DocComment
                                     (String.slice offset (offset + length) fptr
                                         |> String.trim
@@ -1087,7 +1088,7 @@ declToDeclarations ( ( preDeclComments, postDeclComments ), decl ) =
                 Decl.Port maybeDocs (Src.Port comments name tipe) ->
                     (maybeDocs
                         |> Maybe.map
-                            (\(Src.Comment (P.Snippet { fptr, offset, length })) ->
+                            (\(Src.Comment (Snippet.Snippet { fptr, offset, length })) ->
                                 [ DocComment
                                     (String.slice offset (offset + length) fptr
                                         |> String.trim

@@ -1,4 +1,4 @@
-module Compiler.LocalOpt.Typed.KernelTypes exposing
+module Compiler.Type.KernelTypes exposing
     ( KernelTypeEnv
     , lookup, hasEntry
     , insertFirstUsage, buildFunctionType

@@ -102,9 +102,10 @@ This module defines the data structures for the monomorphized program
 
 -}
 
+import Compiler.AST.DecisionTree.Test as DT
+import Compiler.AST.DecisionTree.TypedPath as DT
 import Compiler.Data.Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
-import Compiler.LocalOpt.Typed.DecisionTree as DT
 import Compiler.Reporting.Annotation exposing (Region)
 import Data.Map as Dict exposing (Dict)
 import System.TypeCheck.IO as IO

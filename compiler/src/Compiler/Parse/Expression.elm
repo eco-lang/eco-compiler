@@ -29,7 +29,7 @@ import Compiler.Parse.Shader as Shader
 import Compiler.Parse.Space as Space
 import Compiler.Parse.String as String
 import Compiler.Parse.Symbol as Symbol
-import Compiler.Parse.SyntaxVersion as SV exposing (SyntaxVersion)
+import Compiler.AST.SyntaxVersion as SV exposing (SyntaxVersion)
 import Compiler.Parse.Type as Type
 import Compiler.Parse.Variable as Var
 import Compiler.Reporting.Annotation as A

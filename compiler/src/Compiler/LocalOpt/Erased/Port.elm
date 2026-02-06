@@ -35,9 +35,9 @@ import Compiler.AST.Canonical as Can
 import Compiler.AST.Optimized as Opt
 import Compiler.AST.Utils.Type as Type
 import Compiler.Data.Index as Index
+import Compiler.Data.IndexName as IndexName
 import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
-import Compiler.Generate.JavaScript.Name as JsName
 import Compiler.LocalOpt.Erased.Names as Names
 import Compiler.Reporting.Annotation as A
 import Data.Map as Dict exposing (Dict)
@@ -224,7 +224,7 @@ encodeTuple a b cs =
                                                     in
                                                     List.foldl
                                                         (\( _, i, tipe ) acc ->
-                                                            encodeArg (JsName.fromIndex i) tipe |> Names.andThen (\encodedArg -> Names.map (flip (++) [ encodedArg ]) acc)
+                                                            encodeArg (IndexName.fromIndex i) tipe |> Names.andThen (\encodedArg -> Names.map (flip (++) [ encodedArg ]) acc)
                                                         )
                                                         (Names.pure [ arg1, arg2 ])
                                                         indexedCs
@@ -235,7 +235,7 @@ encodeTuple a b cs =
                                                                         Index.first
                                                                         (let_ "b"
                                                                             Index.second
-                                                                            (List.foldr (\( i, index, _ ) -> letCs_ (JsName.fromIndex index) i)
+                                                                            (List.foldr (\( i, index, _ ) -> letCs_ (IndexName.fromIndex index) i)
                                                                                 (Opt.Call A.zero list [ identity, Opt.List A.zero args ])
                                                                                 indexedCs
                                                                             )

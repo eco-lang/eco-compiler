@@ -2,7 +2,7 @@ module Parse.NumberTests exposing (suite)
 
 import Compiler.Parse.Number as N
 import Compiler.Parse.Primitives as P
-import Compiler.Parse.SyntaxVersion as SyntaxVersion exposing (SyntaxVersion)
+import Compiler.AST.SyntaxVersion as SyntaxVersion exposing (SyntaxVersion)
 import Compiler.Reporting.Error.Syntax as E
 import Expect
 import Test exposing (Test)

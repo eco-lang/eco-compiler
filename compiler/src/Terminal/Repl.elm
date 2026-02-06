@@ -54,7 +54,7 @@ import Compiler.Parse.Expression as PE
 import Compiler.Parse.Module as PM
 import Compiler.Parse.Primitives as P exposing (Col, Row)
 import Compiler.Parse.Space as PS
-import Compiler.Parse.SyntaxVersion as SV
+import Compiler.AST.SyntaxVersion as SV
 import Compiler.Parse.Type as PT
 import Compiler.Parse.Variable as PV
 import Compiler.Reporting.Annotation as A

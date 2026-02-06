@@ -20,7 +20,7 @@ import Compiler.Parse.Number as Number
 import Compiler.Parse.Primitives as P
 import Compiler.Parse.Space as Space
 import Compiler.Parse.String as String
-import Compiler.Parse.SyntaxVersion as SV exposing (SyntaxVersion)
+import Compiler.AST.SyntaxVersion as SV exposing (SyntaxVersion)
 import Compiler.Parse.Variable as Var
 import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Error.Syntax as E

@@ -22,7 +22,7 @@ import Compiler.Elm.Package as Pkg
 import Compiler.Json.Encode as E
 import Compiler.Parse.Module as M
 import Compiler.Parse.Primitives as P
-import Compiler.Parse.SyntaxVersion as SV
+import Compiler.AST.SyntaxVersion as SV
 import Compiler.Reporting.Error as Error
 import Compiler.Reporting.Error.Syntax as E
 import Compiler.Reporting.Render.Code as Code

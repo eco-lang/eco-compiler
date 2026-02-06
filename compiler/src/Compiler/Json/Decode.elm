@@ -64,6 +64,7 @@ OneOrMore types, along with detailed error reporting for parse and decode failur
 import Compiler.Data.NonEmptyList as NE
 import Compiler.Json.String as Json
 import Compiler.Parse.Keyword as K
+import Compiler.AST.Snippet as Snippet
 import Compiler.Parse.Primitives as P exposing (Col, Row)
 import Compiler.Reporting.Annotation as A
 import Data.Map as Dict exposing (Dict)
@@ -355,7 +356,7 @@ pairs keyDecoder valueDecoder =
                     Err (Expecting region TObject)
 
 
-pairsHelp : KeyDecoder x k -> Decoder x a -> List ( P.Snippet, AST ) -> List ( k, a ) -> Result (Problem x) (List ( k, a ))
+pairsHelp : KeyDecoder x k -> Decoder x a -> List ( Snippet.Snippet, AST ) -> List ( k, a ) -> Result (Problem x) (List ( k, a ))
 pairsHelp ((KeyDecoder keyParser toBadEnd) as keyDecoder) ((Decoder decodeA) as valueDecoder) kvs revs =
     case kvs of
         [] ->
@@ -373,14 +374,14 @@ pairsHelp ((KeyDecoder keyParser toBadEnd) as keyDecoder) ((Decoder decodeA) as 
 
                         Err prob ->
                             let
-                                (P.Snippet { fptr, offset, length }) =
+                                (Snippet.Snippet { fptr, offset, length }) =
                                     snippet
                             in
                             Err (Field (String.slice offset (offset + length) fptr) prob)
 
 
-snippetToRegion : P.Snippet -> A.Region
-snippetToRegion (P.Snippet { length, offRow, offCol }) =
+snippetToRegion : Snippet.Snippet -> A.Region
+snippetToRegion (Snippet.Snippet { length, offRow, offCol }) =
     A.Region (A.Position offRow offCol) (A.Position offRow (offCol + length))
 
 
@@ -409,13 +410,13 @@ field key (Decoder decodeA) =
                     Err (Expecting region TObject)
 
 
-findField : String -> List ( P.Snippet, AST ) -> Maybe AST
+findField : String -> List ( Snippet.Snippet, AST ) -> Maybe AST
 findField key pairs_ =
     case pairs_ of
         [] ->
             Nothing
 
-        ( P.Snippet { fptr, offset, length }, value ) :: remainingPairs ->
+        ( Snippet.Snippet { fptr, offset, length }, value ) :: remainingPairs ->
             if key == String.slice offset (offset + length) fptr then
                 Just value
 
@@ -525,8 +526,8 @@ type alias AST =
 
 type AST_
     = Array (List AST)
-    | Object (List ( P.Snippet, AST ))
-    | String P.Snippet
+    | Object (List ( Snippet.Snippet, AST ))
+    | String Snippet.Snippet
     | Int Int
     | TRUE
     | FALSE
@@ -615,7 +616,7 @@ pObject =
             )
 
 
-pObjectHelp : List ( P.Snippet, AST ) -> Parser (P.Step (List ( P.Snippet, AST )) AST_)
+pObjectHelp : List ( Snippet.Snippet, AST ) -> Parser (P.Step (List ( Snippet.Snippet, AST )) AST_)
 pObjectHelp revEntries =
     P.oneOf ObjectEnd
         [ P.word1 ',' ObjectEnd
@@ -631,7 +632,7 @@ pObjectHelp revEntries =
         ]
 
 
-pField : Parser ( P.Snippet, AST )
+pField : Parser ( Snippet.Snippet, AST )
 pField =
     pString ObjectField
         |> P.andThen
@@ -687,7 +688,7 @@ pArrayHelp revEntries =
 -- ====== STRING ======
 
 
-pString : (Row -> Col -> ParseError) -> Parser P.Snippet
+pString : (Row -> Col -> ParseError) -> Parser Snippet.Snippet
 pString start =
     P.Parser <|
         \(P.State st) ->
@@ -716,9 +717,9 @@ pString start =
                             len =
                                 (newPos - pos1) - 1
 
-                            snp : P.Snippet
+                            snp : Snippet.Snippet
                             snp =
-                                P.Snippet
+                                Snippet.Snippet
                                     { fptr = st.src
                                     , offset = off
                                     , length = len

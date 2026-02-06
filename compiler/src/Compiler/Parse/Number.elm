@@ -29,7 +29,7 @@ improved readability (in Guida syntax mode) and validates numeric format rules.
 
 import Compiler.AST.Utils.Binop as Binop
 import Compiler.Parse.Primitives as P exposing (Col, Row)
-import Compiler.Parse.SyntaxVersion as SV exposing (SyntaxVersion)
+import Compiler.AST.SyntaxVersion as SV exposing (SyntaxVersion)
 import Compiler.Parse.Variable as Var
 import Compiler.Reporting.Error.Syntax as E
 

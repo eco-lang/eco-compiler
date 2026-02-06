@@ -42,6 +42,8 @@ import Compiler.Generate.JavaScript.Builder as JS
 import Compiler.Generate.JavaScript.Name as JsName
 import Compiler.Generate.Mode as Mode
 import Compiler.Json.Encode as Encode
+import Compiler.AST.DecisionTree.Path as Path
+import Compiler.AST.DecisionTree.Test as Test
 import Compiler.LocalOpt.Erased.DecisionTree as DT
 import Compiler.Reporting.Annotation as A
 import Data.Map as Dict exposing (Dict)
@@ -1250,7 +1252,7 @@ generateIfTest mode root ( path, test ) =
             pathToJsExpr mode root path
     in
     case test of
-        DT.IsCtor home name index _ opts ->
+        Test.IsCtor home name index _ opts ->
             let
                 tag : JS.Expr
                 tag =
@@ -1278,16 +1280,16 @@ generateIfTest mode root ( path, test ) =
                         JS.ExprInt (ctorToInt home name index)
                 )
 
-        DT.IsBool True ->
+        Test.IsBool True ->
             value
 
-        DT.IsBool False ->
+        Test.IsBool False ->
             JS.ExprPrefix JS.PrefixNot value
 
-        DT.IsInt int ->
+        Test.IsInt int ->
             strictEq value (JS.ExprInt int)
 
-        DT.IsChr char ->
+        Test.IsChr char ->
             strictEq (JS.ExprString char)
                 (case mode of
                     Mode.Dev _ ->
@@ -1297,16 +1299,16 @@ generateIfTest mode root ( path, test ) =
                         value
                 )
 
-        DT.IsStr string ->
+        Test.IsStr string ->
             strictEq value (JS.ExprString string)
 
-        DT.IsCons ->
+        Test.IsCons ->
             JS.ExprAccess value (JsName.fromLocal "b")
 
-        DT.IsNil ->
+        Test.IsNil ->
             JS.ExprAccess value (JsName.fromLocal "b") |> JS.ExprPrefix JS.PrefixNot
 
-        DT.IsTuple ->
+        Test.IsTuple ->
             crash "COMPILER BUG - there should never be tests on a tuple"
 
 
@@ -1320,7 +1322,7 @@ generateCaseBranch mode parentModule label root ( test, subTree ) =
 generateCaseValue : Mode.Mode -> DT.Test -> JS.Expr
 generateCaseValue mode test =
     case test of
-        DT.IsCtor home name index _ _ ->
+        Test.IsCtor home name index _ _ ->
             case mode of
                 Mode.Dev _ ->
                     JS.ExprString name
@@ -1328,25 +1330,25 @@ generateCaseValue mode test =
                 Mode.Prod _ ->
                     JS.ExprInt (ctorToInt home name index)
 
-        DT.IsInt int ->
+        Test.IsInt int ->
             JS.ExprInt int
 
-        DT.IsChr char ->
+        Test.IsChr char ->
             JS.ExprString char
 
-        DT.IsStr string ->
+        Test.IsStr string ->
             JS.ExprString string
 
-        DT.IsBool _ ->
+        Test.IsBool _ ->
             crash "COMPILER BUG - there should never be three tests on a boolean"
 
-        DT.IsCons ->
+        Test.IsCons ->
             crash "COMPILER BUG - there should never be three tests on a list"
 
-        DT.IsNil ->
+        Test.IsNil ->
             crash "COMPILER BUG - there should never be three tests on a list"
 
-        DT.IsTuple ->
+        Test.IsTuple ->
             crash "COMPILER BUG - there should never be three tests on a tuple"
 
 
@@ -1358,7 +1360,7 @@ generateCaseTest mode root path exampleTest =
             pathToJsExpr mode root path
     in
     case exampleTest of
-        DT.IsCtor home name _ _ opts ->
+        Test.IsCtor home name _ _ opts ->
             if name == Name.bool && home == ModuleName.basics then
                 value
 
@@ -1378,13 +1380,13 @@ generateCaseTest mode root path exampleTest =
                             Can.Unbox ->
                                 value
 
-        DT.IsInt _ ->
+        Test.IsInt _ ->
             value
 
-        DT.IsStr _ ->
+        Test.IsStr _ ->
             value
 
-        DT.IsChr _ ->
+        Test.IsChr _ ->
             case mode of
                 Mode.Dev _ ->
                     JS.ExprCall (JS.ExprAccess value (JsName.fromLocal "valueOf")) []
@@ -1392,16 +1394,16 @@ generateCaseTest mode root path exampleTest =
                 Mode.Prod _ ->
                     value
 
-        DT.IsBool _ ->
+        Test.IsBool _ ->
             crash "COMPILER BUG - there should never be three tests on a list"
 
-        DT.IsCons ->
+        Test.IsCons ->
             crash "COMPILER BUG - there should never be three tests on a list"
 
-        DT.IsNil ->
+        Test.IsNil ->
             crash "COMPILER BUG - there should never be three tests on a list"
 
-        DT.IsTuple ->
+        Test.IsTuple ->
             crash "COMPILER BUG - there should never be three tests on a list"
 
 
@@ -1412,10 +1414,10 @@ generateCaseTest mode root path exampleTest =
 pathToJsExpr : Mode.Mode -> Name.Name -> DT.Path -> JS.Expr
 pathToJsExpr mode root path =
     case path of
-        DT.Index index subPath ->
+        Path.Index index subPath ->
             JS.ExprAccess (pathToJsExpr mode root subPath) (JsName.fromIndex index)
 
-        DT.Unbox subPath ->
+        Path.Unbox subPath ->
             case mode of
                 Mode.Dev _ ->
                     JS.ExprAccess (pathToJsExpr mode root subPath) (JsName.fromIndex Index.first)
@@ -1423,7 +1425,7 @@ pathToJsExpr mode root path =
                 Mode.Prod _ ->
                     pathToJsExpr mode root subPath
 
-        DT.Empty ->
+        Path.Empty ->
             JS.ExprRef (JsName.fromLocal root)
 
 

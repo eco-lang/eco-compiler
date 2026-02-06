@@ -24,7 +24,7 @@ import Compiler.Data.Index as Index
 import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.LocalOpt.Typed.Case as Case
-import Compiler.LocalOpt.Typed.KernelTypes as KernelTypes
+import Compiler.Type.KernelTypes as KernelTypes
 import Compiler.LocalOpt.Typed.Names as Names
 import Compiler.Reporting.Annotation as A
 import Data.Map as Dict exposing (Dict)

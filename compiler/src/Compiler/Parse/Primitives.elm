@@ -4,7 +4,7 @@ module Compiler.Parse.Primitives exposing
     , Row, Col, getPosition, addLocation, addEnd
     , withIndent, withBacksetIndent
     , inContext, specialize
-    , fromByteString, fromSnippet, Snippet(..), snippetEncoder, snippetDecoder
+    , fromByteString, fromSnippet, Snippet, snippetEncoder, snippetDecoder
     , word1, word2, unsafeIndex, isWord, getCharWidth
     , Step(..)
     )
@@ -59,6 +59,7 @@ indentation-sensitive parsing, and efficient error reporting.
 
 import Bytes.Decode
 import Bytes.Encode
+import Compiler.AST.Snippet as Snippet
 import Compiler.Reporting.Annotation as A
 import Utils.Bytes.Decode as BD
 import Utils.Bytes.Encode as BE
@@ -337,26 +338,10 @@ toErr row col toError =
 
 
 {-| A snippet represents a slice of a source file with position information.
-
-This allows parsing a substring of a file while maintaining accurate row/column
-positions relative to the original file. Useful for incremental parsing or
-parsing embedded code fragments.
-
-  - `fptr`: The source string (file pointer/content)
-  - `offset`: Starting byte position in the source
-  - `length`: Number of bytes in the snippet
-  - `offRow`: Starting row number in the original file
-  - `offCol`: Starting column number in the original file
-
+Re-exported from Compiler.AST.Snippet for backward compatibility.
 -}
-type Snippet
-    = Snippet
-        { fptr : String
-        , offset : Int
-        , length : Int
-        , offRow : Row
-        , offCol : Col
-        }
+type alias Snippet =
+    Snippet.Snippet
 
 
 {-| Run a parser on a snippet of source code with position tracking.
@@ -367,7 +352,7 @@ relative to the original source file.
 
 -}
 fromSnippet : Parser x a -> (Row -> Col -> x) -> Snippet -> Result x a
-fromSnippet (Parser parser) toBadEnd (Snippet { fptr, offset, length, offRow, offCol }) =
+fromSnippet (Parser parser) toBadEnd (Snippet.Snippet { fptr, offset, length, offRow, offCol }) =
     let
         initialState : State
         initialState =
@@ -679,45 +664,19 @@ getCharWidth word =
 
 
 {-| Encode a Snippet to bytes for serialization.
-
-Encodes all fields (fptr, offset, length, offRow, offCol) in sequence for
-storage or transmission.
-
+Delegates to Compiler.AST.Snippet.
 -}
 snippetEncoder : Snippet -> Bytes.Encode.Encoder
-snippetEncoder (Snippet { fptr, offset, length, offRow, offCol }) =
-    Bytes.Encode.sequence
-        [ BE.string fptr
-        , BE.int offset
-        , BE.int length
-        , BE.int offRow
-        , BE.int offCol
-        ]
+snippetEncoder =
+    Snippet.encoder
 
 
 {-| Decode a Snippet from bytes.
-
-Decodes the fields in the same order as `snippetEncoder` (fptr, offset, length,
-offRow, offCol) to reconstruct the Snippet.
-
+Delegates to Compiler.AST.Snippet.
 -}
 snippetDecoder : Bytes.Decode.Decoder Snippet
 snippetDecoder =
-    Bytes.Decode.map5
-        (\fptr offset length offRow offCol ->
-            Snippet
-                { fptr = fptr
-                , offset = offset
-                , length = length
-                , offRow = offRow
-                , offCol = offCol
-                }
-        )
-        BD.string
-        BD.int
-        BD.int
-        BD.int
-        BD.int
+    Snippet.decoder
 
 
 

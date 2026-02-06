@@ -28,7 +28,7 @@ import Compiler.Canonicalize.Effects as Effects
 import Compiler.Data.Name as Name
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.LocalOpt.Typed.Expression as Expr
-import Compiler.LocalOpt.Typed.KernelTypes as KernelTypes
+import Compiler.Type.KernelTypes as KernelTypes
 import Compiler.LocalOpt.Typed.Names as Names
 import Compiler.LocalOpt.Typed.NormalizeLambdaBoundaries as LambdaNorm
 import Compiler.LocalOpt.Typed.Port as Port

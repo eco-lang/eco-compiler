@@ -1,5 +1,5 @@
 module Compiler.LocalOpt.Typed.DecisionTree exposing
-    ( DecisionTree(..), Test(..), Path(..), ContainerHint(..)
+    ( DecisionTree(..), Test, Path, ContainerHint
     , compile
     , pathEncoder, pathDecoder, testEncoder, testDecoder
     )
@@ -33,6 +33,8 @@ Heuristics Matter?" by Kevin Scott and Norman Ramsey.
 import Bytes.Decode
 import Bytes.Encode
 import Compiler.AST.Canonical as Can
+import Compiler.AST.DecisionTree.Test as Test
+import Compiler.AST.DecisionTree.TypedPath as TypedPath
 import Compiler.Data.Index as Index
 import Compiler.Data.Name as Name
 import Compiler.Elm.ModuleName as ModuleName
@@ -66,7 +68,7 @@ compile rawBranches =
     let
         format : ( Can.Pattern, Int ) -> Branch
         format ( pattern, index ) =
-            Branch index [ ( Empty, pattern ) ]
+            Branch index [ ( TypedPath.Empty, pattern ) ]
     in
     toDecisionTree (List.map format rawBranches)
 
@@ -87,50 +89,24 @@ type DecisionTree
 
 
 {-| A runtime test to determine which branch to take in a decision tree.
-
-  - `IsCtor`: Tests if a value is a specific custom type constructor
-  - `IsCons`: Tests if a list is non-empty (has cons cell)
-  - `IsNil`: Tests if a list is empty
-  - `IsTuple`: Tests if a value is a tuple
-  - `IsInt`: Tests if a value equals a specific integer
-  - `IsChr`: Tests if a value equals a specific character
-  - `IsStr`: Tests if a value equals a specific string
-  - `IsBool`: Tests if a value equals a specific boolean
-
+Re-exported from Compiler.AST.DecisionTree.Test for backward compatibility.
 -}
-type Test
-    = IsCtor IO.Canonical Name.Name Index.ZeroBased Int Can.CtorOpts
-    | IsCons
-    | IsNil
-    | IsTuple
-    | IsInt Int
-    | IsChr String
-    | IsStr String
-    | IsBool Bool
+type alias Test =
+    Test.Test
 
 
-{-| Indicates what kind of container an Index navigates into.
-This is used by typed/monomorphized backends to pick the right projection op.
+{-| Indicates what kind of container an TypedPath.Index navigates into.
+Re-exported from Compiler.AST.DecisionTree.TypedPath for backward compatibility.
 -}
-type ContainerHint
-    = HintList
-    | HintTuple2
-    | HintTuple3
-    | HintCustom Name.Name -- Constructor name for layout lookup
-    | HintUnknown
+type alias ContainerHint =
+    TypedPath.ContainerHint
 
 
 {-| A path describing how to access a value within a matched pattern.
-
-  - `Index`: Access the nth field of a container with a hint about container type
-  - `Unbox`: Unwrap a single-constructor custom type to access its contents
-  - `Empty`: The root path (the matched value itself)
-
+Re-exported from Compiler.AST.DecisionTree.TypedPath for backward compatibility.
 -}
-type Path
-    = Index Index.ZeroBased ContainerHint Path
-    | Unbox Path
-    | Empty
+type alias Path =
+    TypedPath.Path
 
 
 
@@ -182,28 +158,28 @@ toDecisionTree rawBranches =
 isComplete : List Test -> Bool
 isComplete tests =
     case Prelude.head tests of
-        IsCtor _ _ _ numAlts _ ->
+        Test.IsCtor _ _ _ numAlts _ ->
             numAlts == List.length tests
 
-        IsCons ->
+        Test.IsCons ->
             List.length tests == 2
 
-        IsNil ->
+        Test.IsNil ->
             List.length tests == 2
 
-        IsTuple ->
+        Test.IsTuple ->
             True
 
-        IsInt _ ->
+        Test.IsInt _ ->
             False
 
-        IsChr _ ->
+        Test.IsChr _ ->
             False
 
-        IsStr _ ->
+        Test.IsStr _ ->
             False
 
-        IsBool _ ->
+        Test.IsBool _ ->
             List.length tests == 2
 
 
@@ -236,10 +212,10 @@ flatten (( path, A.At region patternInfo ) as pathPattern) otherPathPatterns =
             if unionData.numAlts == 1 then
                 case List.map dearg args of
                     [ arg ] ->
-                        flatten ( Unbox path, arg ) otherPathPatterns
+                        flatten ( TypedPath.Unbox path, arg ) otherPathPatterns
 
                     args_ ->
-                        List.foldr flatten otherPathPatterns (subPositions (HintCustom name) path args_)
+                        List.foldr flatten otherPathPatterns (subPositions (TypedPath.HintCustom name) path args_)
 
             else
                 pathPattern :: otherPathPatterns
@@ -255,21 +231,21 @@ flatten (( path, A.At region patternInfo ) as pathPattern) otherPathPatterns =
                 hint =
                     case len of
                         2 ->
-                            HintTuple2
+                            TypedPath.HintTuple2
 
                         3 ->
-                            HintTuple3
+                            TypedPath.HintTuple3
 
                         _ ->
                             -- Larger tuples are encoded more like custom ADTs
                             -- Use empty string since tuples don't have constructor names
-                            HintCustom ""
+                            TypedPath.HintCustom ""
             in
             all
                 |> List.foldl
                     (\x ( index, acc ) ->
                         ( Index.next index
-                        , ( Index index hint path, x ) :: acc
+                        , ( TypedPath.Index index hint path, x ) :: acc
                         )
                     )
                     ( Index.first, [] )
@@ -309,7 +285,7 @@ flatten (( path, A.At region patternInfo ) as pathPattern) otherPathPatterns =
 
 subPositions : ContainerHint -> Path -> List Can.Pattern -> List ( Path, Can.Pattern )
 subPositions hint path patterns =
-    Index.indexedMap (\index pattern -> ( Index index hint path, pattern )) patterns
+    Index.indexedMap (\index pattern -> ( TypedPath.Index index hint path, pattern )) patterns
 
 
 dearg : Can.PatternCtorArg -> Can.Pattern
@@ -401,26 +377,26 @@ testAtPath selectedPath (Branch _ pathPatterns) =
                             (Can.Union unionData) =
                                 union
                         in
-                        Just (IsCtor home name index unionData.numAlts unionData.opts)
+                        Just (Test.IsCtor home name index unionData.numAlts unionData.opts)
 
                     Can.PList ps ->
                         Just
                             (case ps of
                                 [] ->
-                                    IsNil
+                                    Test.IsNil
 
                                 _ ->
-                                    IsCons
+                                    Test.IsCons
                             )
 
                     Can.PCons _ _ ->
-                        Just IsCons
+                        Just Test.IsCons
 
                     Can.PTuple _ _ _ ->
-                        Just IsTuple
+                        Just Test.IsTuple
 
                     Can.PUnit ->
-                        Just IsTuple
+                        Just Test.IsTuple
 
                     Can.PVar _ ->
                         Nothing
@@ -429,16 +405,16 @@ testAtPath selectedPath (Branch _ pathPatterns) =
                         Nothing
 
                     Can.PInt int ->
-                        Just (IsInt int)
+                        Just (Test.IsInt int)
 
                     Can.PStr str _ ->
-                        Just (IsStr str)
+                        Just (Test.IsStr str)
 
                     Can.PChr chr ->
-                        Just (IsChr chr)
+                        Just (Test.IsChr chr)
 
                     Can.PBool _ bool ->
-                        Just (IsBool bool)
+                        Just (Test.IsBool bool)
 
                     Can.PRecord _ ->
                         Nothing
@@ -466,7 +442,7 @@ toRelevantBranch test path ((Branch goal pathPatterns) as branch) =
             case patternInfo.node of
                 Can.PCtor { union, name, args } ->
                     case test of
-                        IsCtor _ testName _ _ _ ->
+                        Test.IsCtor _ testName _ _ _ ->
                             if name == testName then
                                 Just
                                     (Branch goal <|
@@ -477,13 +453,13 @@ toRelevantBranch test path ((Branch goal pathPatterns) as branch) =
                                                         union
                                                 in
                                                 if unionData.numAlts == 1 then
-                                                    start ++ (( Unbox path, arg ) :: end)
+                                                    start ++ (( TypedPath.Unbox path, arg ) :: end)
 
                                                 else
-                                                    start ++ subPositions (HintCustom name) path args_ ++ end
+                                                    start ++ subPositions (TypedPath.HintCustom name) path args_ ++ end
 
                                             args_ ->
-                                                start ++ subPositions (HintCustom name) path args_ ++ end
+                                                start ++ subPositions (TypedPath.HintCustom name) path args_ ++ end
                                     )
 
                             else
@@ -494,7 +470,7 @@ toRelevantBranch test path ((Branch goal pathPatterns) as branch) =
 
                 Can.PList [] ->
                     case test of
-                        IsNil ->
+                        Test.IsNil ->
                             Just (Branch goal (start ++ end))
 
                         _ ->
@@ -502,29 +478,29 @@ toRelevantBranch test path ((Branch goal pathPatterns) as branch) =
 
                 Can.PList (hd :: tl) ->
                     case test of
-                        IsCons ->
+                        Test.IsCons ->
                             let
                                 -- Use placeholder ID (-1) for synthesized patterns
                                 tl_ : Can.Pattern
                                 tl_ =
                                     A.At region { id = -1, node = Can.PList tl }
                             in
-                            Just (Branch goal (start ++ subPositions HintList path [ hd, tl_ ] ++ end))
+                            Just (Branch goal (start ++ subPositions TypedPath.HintList path [ hd, tl_ ] ++ end))
 
                         _ ->
                             Nothing
 
                 Can.PCons hd tl ->
                     case test of
-                        IsCons ->
-                            Just (Branch goal (start ++ subPositions HintList path [ hd, tl ] ++ end))
+                        Test.IsCons ->
+                            Just (Branch goal (start ++ subPositions TypedPath.HintList path [ hd, tl ] ++ end))
 
                         _ ->
                             Nothing
 
                 Can.PChr chr ->
                     case test of
-                        IsChr testChr ->
+                        Test.IsChr testChr ->
                             if chr == testChr then
                                 Just (Branch goal (start ++ end))
 
@@ -536,7 +512,7 @@ toRelevantBranch test path ((Branch goal pathPatterns) as branch) =
 
                 Can.PStr str _ ->
                     case test of
-                        IsStr testStr ->
+                        Test.IsStr testStr ->
                             if str == testStr then
                                 Just (Branch goal (start ++ end))
 
@@ -548,7 +524,7 @@ toRelevantBranch test path ((Branch goal pathPatterns) as branch) =
 
                 Can.PInt int ->
                     case test of
-                        IsInt testInt ->
+                        Test.IsInt testInt ->
                             if int == testInt then
                                 Just (Branch goal (start ++ end))
 
@@ -560,7 +536,7 @@ toRelevantBranch test path ((Branch goal pathPatterns) as branch) =
 
                 Can.PBool _ bool ->
                     case test of
-                        IsBool testBool ->
+                        Test.IsBool testBool ->
                             if bool == testBool then
                                 Just (Branch goal (start ++ end))
 
@@ -584,14 +560,14 @@ toRelevantBranch test path ((Branch goal pathPatterns) as branch) =
                         hint =
                             case len of
                                 2 ->
-                                    HintTuple2
+                                    TypedPath.HintTuple2
 
                                 3 ->
-                                    HintTuple3
+                                    TypedPath.HintTuple3
 
                                 _ ->
                                     -- Larger tuples use empty string for constructor name
-                                    HintCustom ""
+                                    TypedPath.HintCustom ""
                     in
                     Just
                         (Branch goal
@@ -781,189 +757,33 @@ smallBranchingFactor branches path =
 -- ====== ENCODERS and DECODERS ======
 
 
-{-| Encode a ContainerHint to bytes for serialization.
--}
-containerHintEncoder : ContainerHint -> Bytes.Encode.Encoder
-containerHintEncoder hint =
-    case hint of
-        HintList ->
-            Bytes.Encode.unsignedInt8 0
-
-        HintTuple2 ->
-            Bytes.Encode.unsignedInt8 1
-
-        HintTuple3 ->
-            Bytes.Encode.unsignedInt8 2
-
-        HintCustom ctorName ->
-            Bytes.Encode.sequence
-                [ Bytes.Encode.unsignedInt8 3
-                , BE.string ctorName
-                ]
-
-        HintUnknown ->
-            Bytes.Encode.unsignedInt8 4
-
-
-{-| Decode a ContainerHint from bytes.
--}
-containerHintDecoder : Bytes.Decode.Decoder ContainerHint
-containerHintDecoder =
-    Bytes.Decode.unsignedInt8
-        |> Bytes.Decode.andThen
-            (\n ->
-                case n of
-                    0 ->
-                        Bytes.Decode.succeed HintList
-
-                    1 ->
-                        Bytes.Decode.succeed HintTuple2
-
-                    2 ->
-                        Bytes.Decode.succeed HintTuple3
-
-                    3 ->
-                        Bytes.Decode.map HintCustom BD.string
-
-                    _ ->
-                        Bytes.Decode.succeed HintUnknown
-            )
-
-
 {-| Encode a Path to bytes for serialization.
+Delegates to Compiler.AST.DecisionTree.TypedPath.
 -}
 pathEncoder : Path -> Bytes.Encode.Encoder
-pathEncoder path_ =
-    case path_ of
-        Index index hint subPath ->
-            Bytes.Encode.sequence
-                [ Bytes.Encode.unsignedInt8 0
-                , Index.zeroBasedEncoder index
-                , containerHintEncoder hint
-                , pathEncoder subPath
-                ]
-
-        Unbox subPath ->
-            Bytes.Encode.sequence
-                [ Bytes.Encode.unsignedInt8 1
-                , pathEncoder subPath
-                ]
-
-        Empty ->
-            Bytes.Encode.unsignedInt8 2
+pathEncoder =
+    TypedPath.pathEncoder
 
 
 {-| Decode a Path from bytes.
+Delegates to Compiler.AST.DecisionTree.TypedPath.
 -}
 pathDecoder : Bytes.Decode.Decoder Path
 pathDecoder =
-    Bytes.Decode.unsignedInt8
-        |> Bytes.Decode.andThen
-            (\idx ->
-                case idx of
-                    0 ->
-                        Bytes.Decode.map3 Index
-                            Index.zeroBasedDecoder
-                            containerHintDecoder
-                            pathDecoder
-
-                    1 ->
-                        Bytes.Decode.map Unbox pathDecoder
-
-                    2 ->
-                        Bytes.Decode.succeed Empty
-
-                    _ ->
-                        Bytes.Decode.fail
-            )
+    TypedPath.pathDecoder
 
 
 {-| Encode a Test to bytes for serialization.
+Delegates to Compiler.AST.DecisionTree.Test.
 -}
 testEncoder : Test -> Bytes.Encode.Encoder
-testEncoder test =
-    case test of
-        IsCtor home name index numAlts opts ->
-            Bytes.Encode.sequence
-                [ Bytes.Encode.unsignedInt8 0
-                , ModuleName.canonicalEncoder home
-                , BE.string name
-                , Index.zeroBasedEncoder index
-                , BE.int numAlts
-                , Can.ctorOptsEncoder opts
-                ]
-
-        IsCons ->
-            Bytes.Encode.unsignedInt8 1
-
-        IsNil ->
-            Bytes.Encode.unsignedInt8 2
-
-        IsTuple ->
-            Bytes.Encode.unsignedInt8 3
-
-        IsInt value ->
-            Bytes.Encode.sequence
-                [ Bytes.Encode.unsignedInt8 4
-                , BE.int value
-                ]
-
-        IsChr value ->
-            Bytes.Encode.sequence
-                [ Bytes.Encode.unsignedInt8 5
-                , BE.string value
-                ]
-
-        IsStr value ->
-            Bytes.Encode.sequence
-                [ Bytes.Encode.unsignedInt8 6
-                , BE.string value
-                ]
-
-        IsBool value ->
-            Bytes.Encode.sequence
-                [ Bytes.Encode.unsignedInt8 7
-                , BE.bool value
-                ]
+testEncoder =
+    Test.testEncoder
 
 
 {-| Decode a Test from bytes.
+Delegates to Compiler.AST.DecisionTree.Test.
 -}
 testDecoder : Bytes.Decode.Decoder Test
 testDecoder =
-    Bytes.Decode.unsignedInt8
-        |> Bytes.Decode.andThen
-            (\idx ->
-                case idx of
-                    0 ->
-                        Bytes.Decode.map5 IsCtor
-                            ModuleName.canonicalDecoder
-                            BD.string
-                            Index.zeroBasedDecoder
-                            BD.int
-                            Can.ctorOptsDecoder
-
-                    1 ->
-                        Bytes.Decode.succeed IsCons
-
-                    2 ->
-                        Bytes.Decode.succeed IsNil
-
-                    3 ->
-                        Bytes.Decode.succeed IsTuple
-
-                    4 ->
-                        Bytes.Decode.map IsInt BD.int
-
-                    5 ->
-                        Bytes.Decode.map IsChr BD.string
-
-                    6 ->
-                        Bytes.Decode.map IsStr BD.string
-
-                    7 ->
-                        Bytes.Decode.map IsBool BD.bool
-
-                    _ ->
-                        Bytes.Decode.fail
-            )
+    Test.testDecoder

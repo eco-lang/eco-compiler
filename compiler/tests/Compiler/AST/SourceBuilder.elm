@@ -82,8 +82,8 @@ This module provides:
 -}
 
 import Compiler.AST.Source as Src
+import Compiler.AST.SyntaxVersion as SV
 import Compiler.Data.Name exposing (Name)
-import Compiler.Parse.SyntaxVersion as SV
 import Compiler.Reporting.Annotation as A
 import Fuzz exposing (Fuzzer)
 

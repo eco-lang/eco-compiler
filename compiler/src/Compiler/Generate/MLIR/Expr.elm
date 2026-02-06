@@ -48,6 +48,8 @@ import Compiler.Generate.MLIR.Names as Names
 import Compiler.Generate.MLIR.Ops as Ops
 import Compiler.Generate.MLIR.Patterns as Patterns
 import Compiler.Generate.MLIR.Types as Types
+import Compiler.AST.DecisionTree.Test as Test
+import Compiler.AST.DecisionTree.TypedPath as TypedPath
 import Compiler.LocalOpt.Typed.DecisionTree as DT
 import Data.Map as EveryDict
 import Dict exposing (Dict)
@@ -2897,7 +2899,7 @@ generateChain ctx root testChain success failure resultTy =
     -- pass the scrutinee directly to eco.case instead of unboxing and reboxing.
     -- This preserves the Bool ADT tags (True=1, False=0) for correct dispatch.
     case testChain of
-        [ ( path, DT.IsBool True ) ] ->
+        [ ( path, Test.IsBool True ) ] ->
             -- Direct Bool pattern match: pass the Bool ADT value to eco.case directly
             generateChainForBoolADT ctx root path success failure resultTy
 
@@ -3002,7 +3004,7 @@ generateChainGeneral ctx root testChain success failure resultTy =
 generateChainWithJumps : Ctx.Context -> Name.Name -> List ( DT.Path, DT.Test ) -> Mono.Decider Mono.MonoChoice -> Mono.Decider Mono.MonoChoice -> Dict Int Mono.MonoExpr -> MlirType -> ExprResult
 generateChainWithJumps ctx root testChain success failure jumpLookup resultTy =
     case testChain of
-        [ ( path, DT.IsBool True ) ] ->
+        [ ( path, Test.IsBool True ) ] ->
             generateChainForBoolADTWithJumps ctx root path success failure jumpLookup resultTy
 
         _ ->
@@ -3107,7 +3109,7 @@ isBoolFanOut edges =
 
         ( test, _ ) :: _ ->
             case test of
-                DT.IsBool _ ->
+                Test.IsBool _ ->
                     True
 
                 _ ->
@@ -3174,7 +3176,7 @@ findBoolBranches edges fallback =
                 |> List.filter
                     (\( test, _ ) ->
                         case test of
-                            DT.IsBool b ->
+                            Test.IsBool b ->
                                 b == target
 
                             _ ->
@@ -3193,11 +3195,11 @@ This ensures we never silently drop patterns in string fanouts.
 extractStringPatternStrict : DT.Test -> String
 extractStringPatternStrict test =
     case test of
-        DT.IsStr s ->
+        Test.IsStr s ->
             s
 
         _ ->
-            crash "CGEN: expected DT.IsStr in string fanout, but got non-string test"
+            crash "CGEN: expected Test.IsStr in string fanout, but got non-string test"
 
 
 {-| General case FanOut using eco.case (for non-Bool ADT patterns).

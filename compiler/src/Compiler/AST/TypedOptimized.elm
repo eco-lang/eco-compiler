@@ -71,13 +71,14 @@ The key difference from Optimized:
 import Bytes.Decode
 import Bytes.Encode
 import Compiler.AST.Canonical as Can
+import Compiler.AST.DecisionTree.Test as DT
+import Compiler.AST.DecisionTree.TypedPath as DT
 import Compiler.AST.Utils.Shader as Shader
 import Compiler.Data.Index as Index
 import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Elm.Kernel as K
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Elm.Package as Pkg
-import Compiler.LocalOpt.Typed.DecisionTree as DT
 import Compiler.Reporting.Annotation as A
 import Data.Map as Dict exposing (Dict)
 import Data.Set exposing (EverySet)

@@ -23,6 +23,9 @@ import Compiler.Data.Name as Name
 import Compiler.Data.NonEmptyList as NE
 import Compiler.Data.OneOrMore as OneOrMore
 import Compiler.Elm.Interface.Basic as Basic
+import Compiler.AST.DecisionTree.Path as Path
+import Compiler.AST.DecisionTree.Test as Test
+import Compiler.AST.DecisionTree.TypedPath as TypedPath
 import Compiler.LocalOpt.Erased.DecisionTree as DT
 import Compiler.LocalOpt.Erased.Module as ErasedOptimize
 import Compiler.LocalOpt.Typed.DecisionTree as TDT
@@ -1317,10 +1320,10 @@ compareDTTestLists erasedTests typedTests =
 compareDTPaths : DT.Path -> TDT.Path -> Maybe String
 compareDTPaths erasedPath typedPath =
     case ( erasedPath, typedPath ) of
-        ( DT.Empty, TDT.Empty ) ->
+        ( Path.Empty, TypedPath.Empty ) ->
             Nothing
 
-        ( DT.Index idx1 rest1, TDT.Index idx2 _ rest2 ) ->
+        ( Path.Index idx1 rest1, TypedPath.Index idx2 _ rest2 ) ->
             -- Ignore ContainerHint in typed path; just compare index and rest
             if idx1 /= idx2 then
                 Just "DT Path Index mismatch"
@@ -1328,7 +1331,7 @@ compareDTPaths erasedPath typedPath =
             else
                 compareDTPaths rest1 rest2
 
-        ( DT.Unbox rest1, TDT.Unbox rest2 ) ->
+        ( Path.Unbox rest1, TypedPath.Unbox rest2 ) ->
             compareDTPaths rest1 rest2
 
         _ ->
@@ -1338,44 +1341,44 @@ compareDTPaths erasedPath typedPath =
 compareDTTests : DT.Test -> TDT.Test -> Maybe String
 compareDTTests erasedTest typedTest =
     case ( erasedTest, typedTest ) of
-        ( DT.IsCtor home1 name1 idx1 arity1 opts1, TDT.IsCtor home2 name2 idx2 arity2 opts2 ) ->
+        ( Test.IsCtor home1 name1 idx1 arity1 opts1, Test.IsCtor home2 name2 idx2 arity2 opts2 ) ->
             if home1 /= home2 || name1 /= name2 || idx1 /= idx2 || arity1 /= arity2 || opts1 /= opts2 then
                 Just "DT Test IsCtor mismatch"
 
             else
                 Nothing
 
-        ( DT.IsCons, TDT.IsCons ) ->
+        ( Test.IsCons, Test.IsCons ) ->
             Nothing
 
-        ( DT.IsNil, TDT.IsNil ) ->
+        ( Test.IsNil, Test.IsNil ) ->
             Nothing
 
-        ( DT.IsTuple, TDT.IsTuple ) ->
+        ( Test.IsTuple, Test.IsTuple ) ->
             Nothing
 
-        ( DT.IsInt i1, TDT.IsInt i2 ) ->
+        ( Test.IsInt i1, Test.IsInt i2 ) ->
             if i1 /= i2 then
                 Just "DT Test IsInt mismatch"
 
             else
                 Nothing
 
-        ( DT.IsChr c1, TDT.IsChr c2 ) ->
+        ( Test.IsChr c1, Test.IsChr c2 ) ->
             if c1 /= c2 then
                 Just "DT Test IsChr mismatch"
 
             else
                 Nothing
 
-        ( DT.IsStr s1, TDT.IsStr s2 ) ->
+        ( Test.IsStr s1, Test.IsStr s2 ) ->
             if s1 /= s2 then
                 Just "DT Test IsStr mismatch"
 
             else
                 Nothing
 
-        ( DT.IsBool b1, TDT.IsBool b2 ) ->
+        ( Test.IsBool b1, Test.IsBool b2 ) ->
             if b1 /= b2 then
                 Just "DT Test IsBool mismatch"
 
