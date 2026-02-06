@@ -56,7 +56,7 @@ This module defines the data structures for the monomorphized program
 
 # Globals and Specialization
 
-@docs Global, SpecKey, SpecId, SpecializationRegistry, emptyRegistry, getOrCreateSpecId, lookupSpecKey, updateRegistryType
+@docs Global, SpecKey, SpecId, SpecializationRegistry
 
 
 # Program Graph

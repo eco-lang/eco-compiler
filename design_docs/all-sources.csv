@@ -60,6 +60,7 @@ compiler/src/Builder/Elm,Details.elm
 compiler/src/Builder/Elm,Outline.elm
 compiler/src/Builder,File.elm
 compiler/src/Builder,Generate.elm
+compiler/src/Builder,GraphAssembly.elm
 compiler/src/Builder,Http.elm
 compiler/src/Builder,Reporting.elm
 compiler/src/Builder/Reporting,Exit.elm
@@ -88,7 +89,6 @@ compiler/src/Compiler/AST,Monomorphized.elm
 compiler/src/Compiler/AST,Optimized.elm
 compiler/src/Compiler/AST,Snippet.elm
 compiler/src/Compiler/AST,Source.elm
-compiler/src/Compiler/AST,SyntaxVersion.elm
 compiler/src/Compiler/AST,TypedCanonical.elm
 compiler/src/Compiler/AST,TypedModuleArtifact.elm
 compiler/src/Compiler/AST,TypedOptimized.elm
@@ -175,6 +175,8 @@ compiler/src/Compiler/Monomorphize,Analysis.elm
 compiler/src/Compiler/Monomorphize,Closure.elm
 compiler/src/Compiler/Monomorphize,KernelAbi.elm
 compiler/src/Compiler/Monomorphize,Monomorphize.elm
+compiler/src/Compiler/Monomorphize,Registry.elm
+compiler/src/Compiler/Monomorphize,Segmentation.elm
 compiler/src/Compiler/Monomorphize,Specialize.elm
 compiler/src/Compiler/Monomorphize,State.elm
 compiler/src/Compiler/Monomorphize,TypeSubst.elm
@@ -191,7 +193,6 @@ compiler/src/Compiler/Parse,Shader.elm
 compiler/src/Compiler/Parse,Space.elm
 compiler/src/Compiler/Parse,String.elm
 compiler/src/Compiler/Parse,Symbol.elm
-compiler/src/Compiler/Parse,SyntaxVersion.elm
 compiler/src/Compiler/Parse,Type.elm
 compiler/src/Compiler/Parse,Variable.elm
 compiler/src/Compiler/Reporting,Annotation.elm
@@ -222,6 +223,7 @@ compiler/src/Compiler/Type/Constrain/Typed,Module.elm
 compiler/src/Compiler/Type/Constrain/Typed,NodeIds.elm
 compiler/src/Compiler/Type/Constrain/Typed,Pattern.elm
 compiler/src/Compiler/Type/Constrain/Typed,Program.elm
+compiler/src/Compiler/TypedCanonical,Build.elm
 compiler/src/Compiler/Type,Error.elm
 compiler/src/Compiler/Type,Instantiate.elm
 compiler/src/Compiler/Type,KernelTypes.elm
