@@ -316,7 +316,7 @@ forkLoadCachedObject root maybeBuildDir name mvar =
 
 readAndStoreCachedObject : FilePath -> Maybe String -> ModuleName.Raw -> MVar (Maybe Opt.LocalGraph) -> Task Never ()
 readAndStoreCachedObject root maybeBuildDir name mvar =
-    File.readBinary Opt.localGraphDecoder (Stuff.guidaoWithBuildDir root maybeBuildDir name)
+    File.readBinary Opt.localGraphDecoder (Stuff.ecoWithBuildDir root maybeBuildDir name)
         |> Task.andThen (Utils.putMVar (Utils.maybeEncoder Opt.localGraphEncoder) mvar)
 
 
@@ -423,7 +423,7 @@ forkLoadInterfaceTypes root maybeBuildDir name mvar =
 
 loadAndStoreInterfaceTypes : FilePath -> Maybe String -> ModuleName.Raw -> MVar (Maybe Extract.Types) -> Task Never ()
 loadAndStoreInterfaceTypes root maybeBuildDir name mvar =
-    File.readBinary I.interfaceDecoder (Stuff.guidaiWithBuildDir root maybeBuildDir name)
+    File.readBinary I.interfaceDecoder (Stuff.eciWithBuildDir root maybeBuildDir name)
         |> Task.andThen (\maybeIface -> Utils.putMVar (Utils.maybeEncoder Extract.typesEncoder) mvar (Maybe.map (Extract.fromInterface name) maybeIface))
 
 
@@ -484,13 +484,13 @@ forkLoadTypedCachedObject root maybeBuildDir name mvar =
 
 readAndStoreTypedCachedObject : FilePath -> Maybe String -> ModuleName.Raw -> MVar (Maybe TMod.TypedModuleArtifact) -> Task Never ()
 readAndStoreTypedCachedObject root maybeBuildDir name mvar =
-    File.readBinary TMod.typedModuleArtifactDecoder (Stuff.guidatoWithBuildDir root maybeBuildDir name)
+    File.readBinary TMod.typedModuleArtifactDecoder (Stuff.ecotWithBuildDir root maybeBuildDir name)
         |> Task.andThen (storeTypedArtifactWithDefault mvar)
 
 
 storeTypedArtifactWithDefault : MVar (Maybe TMod.TypedModuleArtifact) -> Maybe TMod.TypedModuleArtifact -> Task Never ()
 storeTypedArtifactWithDefault mvar maybeArtifact =
-    -- If .guidato file doesn't exist, return Nothing to signal an error
+    -- If .ecot file doesn't exist, return Nothing to signal an error
     -- This happens when modules were cached from a non-MLIR build
     Utils.putMVar (Utils.maybeEncoder TMod.typedModuleArtifactEncoder) mvar maybeArtifact
 

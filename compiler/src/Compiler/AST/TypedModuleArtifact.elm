@@ -3,7 +3,7 @@ module Compiler.AST.TypedModuleArtifact exposing
     , typedModuleArtifactEncoder, typedModuleArtifactDecoder
     )
 
-{-| TypedModuleArtifact represents the data stored in `.guidato` files.
+{-| TypedModuleArtifact represents the data stored in `.ecot` files.
 
 This combines the typed optimization IR (LocalGraph) with the module's
 type environment, allowing the monomorphization phase to access both

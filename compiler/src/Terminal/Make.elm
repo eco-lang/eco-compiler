@@ -6,7 +6,7 @@ module Terminal.Make exposing
     , buildDir, parseBuildDir
     )
 
-{-| Build command implementation for compiling Guida and Elm code.
+{-| Build command implementation for compiling Elm code.
 
 This module handles the `make` command which compiles source files into JavaScript,
 HTML, MLIR, or validates code without output. It supports debug mode, optimization,

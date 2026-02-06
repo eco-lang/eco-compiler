@@ -922,7 +922,7 @@ resolveFileByType path fileType =
             Task.succeed (Ok [ path ])
 
         IsDirectory ->
-            findAllGuidaAndElmFiles path
+            findAllElmFiles path
                 |> Task.map (validateElmFiles path)
 
         DoesNotExist ->
@@ -1029,10 +1029,10 @@ hasExtension ext path =
     ext == Utils.fpTakeExtension path
 
 
-findAllGuidaAndElmFiles : FilePath -> Task Never (List FilePath)
-findAllGuidaAndElmFiles inputFile =
+findAllElmFiles : FilePath -> Task Never (List FilePath)
+findAllElmFiles inputFile =
     fileList inputFile
-        |> Task.map (List.filter (\path -> hasExtension ".guida" path || hasExtension ".elm" path))
+        |> Task.map (List.filter (hasExtension ".elm"))
 
 
 hasFilename : String -> FilePath -> Bool

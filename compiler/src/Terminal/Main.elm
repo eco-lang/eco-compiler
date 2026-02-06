@@ -1,6 +1,6 @@
 module Terminal.Main exposing (main)
 
-{-| Command-line interface entry point for the Guida/Elm compiler.
+{-| Command-line interface entry point for the Eco compiler.
 
 This module defines the main entry point for the compiler's command-line interface,
 coordinating all available commands (repl, init, make, install, etc.) and providing
@@ -34,7 +34,7 @@ import Terminal.Uninstall as Uninstall
 import Utils.Impure as Impure
 
 
-{-| The main entry point for the Guida/Elm compiler CLI application.
+{-| The main entry point for the Eco compiler CLI application.
 -}
 main : IO.Program
 main =
@@ -232,15 +232,15 @@ make =
     let
         details : String
         details =
-            "The `make` command compiles Guida (and Elm) code into JS or HTML:"
+            "The `make` command compiles Elm code into JS or HTML:"
 
         example : D.Doc
         example =
             stack
                 [ reflow "For example:"
-                , D.green (D.fromChars "guida make src/Main.guida") |> D.indent 4
+                , D.green (D.fromChars "eco make src/Main.elm") |> D.indent 4
                 , reflow
-                    "This tries to compile an Guida (and Elm) file named src/Main.guida, generating an index.html file if possible."
+                    "This tries to compile an Elm file named src/Main.elm, generating an index.html file if possible."
                 ]
 
         makeFlags : Terminal.Flags
@@ -262,8 +262,8 @@ make =
                 |> Terminal.more
                     (Terminal.flag "output"
                         Make.output
-                        ("Specify the name of the resulting JS file. For example --output=assets/guida.js "
-                            ++ "to generate the JS at assets/guida.js or --output=/dev/null to generate no output at all!"
+                        ("Specify the name of the resulting JS file. For example --output=assets/eco.js "
+                            ++ "to generate the JS at assets/eco.js or --output=/dev/null to generate no output at all!"
                         )
                     )
                 |> Terminal.more
@@ -287,7 +287,7 @@ make =
                 |> Terminal.more
                     (Terminal.flag "builddir"
                         Make.buildDir
-                        ("Specify a subdirectory under guida-stuff/1.0.0/ for build artifacts. "
+                        ("Specify a subdirectory under eco-stuff/1.0.0/ for build artifacts. "
                             ++ "Enables parallel builds with different builddirs to avoid cache conflicts."
                         )
                     )
@@ -297,13 +297,13 @@ make =
         , summary = Terminal.Uncommon
         , details = details
         , example = example
-        , args = Terminal.zeroOrMore Terminal.guidaOrElmFile
+        , args = Terminal.zeroOrMore Terminal.elmFile
         , flags = makeFlags
         , run =
             \chunks ->
                 Chomp.chomp Nothing
                     chunks
-                    [ Chomp.chompMultiple (Chomp.pure identity) Terminal.guidaOrElmFile Terminal.parseGuidaOrElmFile
+                    [ Chomp.chompMultiple (Chomp.pure identity) Terminal.elmFile Terminal.parseElmFile
                     ]
                     (Chomp.pure (\debug_ optimize_ withSourceMaps_ output_ report_ docs_ showPackageErrors_ buildDir_ -> Make.Flags { debug = debug_, optimize = optimize_, withSourceMaps = withSourceMaps_, output = output_, report = report_, docs = docs_, showPackageErrors = showPackageErrors_, buildDir = buildDir_ })
                         |> Chomp.apply (Chomp.chompOnOffFlag "debug")
@@ -341,8 +341,8 @@ install =
             stack
                 [ reflow
                     "For example, if you want to get packages for HTTP and JSON, you would say:"
-                , [ D.fromChars "guida install elm/http"
-                  , D.fromChars "guida install elm/json"
+                , [ D.fromChars "eco install elm/http"
+                  , D.fromChars "eco install elm/json"
                   ]
                     |> D.vcat
                     |> D.green
@@ -417,8 +417,8 @@ uninstall =
             stack
                 [ reflow
                     "For example, if you want to remove the HTTP and JSON packages, you would say:"
-                , [ D.fromChars "guida uninstall elm/http"
-                  , D.fromChars "guida uninstall elm/json"
+                , [ D.fromChars "eco uninstall elm/http"
+                  , D.fromChars "eco uninstall elm/json"
                   ]
                     |> D.vcat
                     |> D.green
@@ -681,7 +681,7 @@ format =
         example =
             stack
                 [ reflow "For example:"
-                , D.green (D.fromChars "guida format src/Main.elm") |> D.indent 4
+                , D.green (D.fromChars "eco format src/Main.elm") |> D.indent 4
                 , reflow "This tries to format an Elm file named src/Main.elm, formatting it in place."
                 ]
 
@@ -751,9 +751,9 @@ test =
         example =
             stack
                 [ reflow "For example:"
-                , D.green (D.fromChars "guida test") |> D.indent 4
+                , D.green (D.fromChars "eco test") |> D.indent 4
                 , reflow "Run tests in the tests/ folder."
-                , D.green (D.fromChars "guida test src/Main.guida") |> D.indent 4
+                , D.green (D.fromChars "eco test src/Main.elm") |> D.indent 4
                 , reflow "Run tests in files matching the glob."
                 ]
 

@@ -1051,11 +1051,11 @@ envLookupEnv name =
         (Impure.DecoderResolver (Decode.maybe Decode.string))
 
 
-{-| Get the program name (hardcoded as "guida" in this implementation).
+{-| Get the program name (hardcoded as "eco" in this implementation).
 -}
 envGetProgName : Task Never String
 envGetProgName =
-    Task.succeed "guida"
+    Task.succeed "eco"
 
 
 {-| Get the command-line arguments passed to the program.

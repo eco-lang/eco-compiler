@@ -1167,7 +1167,7 @@ installToReport exit =
             Help.report "NEW PROJECT?"
                 Nothing
                 "Are you trying to start a new project? Try this command instead:"
-                [ D.green (D.fromChars "guida init") |> D.indent 4
+                [ D.green (D.fromChars "eco init") |> D.indent 4
                 , D.reflow "It will help you get started!"
                 ]
 
@@ -1181,9 +1181,9 @@ installToReport exit =
             Help.report "INSTALL WHAT?"
                 Nothing
                 "I am expecting commands like:"
-                [ [ D.fromChars "guida install elm/http"
-                  , D.fromChars "guida install elm/json"
-                  , D.fromChars "guida install elm/random"
+                [ [ D.fromChars "eco install elm/http"
+                  , D.fromChars "eco install elm/json"
+                  , D.fromChars "eco install elm/random"
                   ]
                     |> D.vcat
                     |> D.indent 4
@@ -1403,7 +1403,7 @@ uninstallToReport exit =
             Help.report "NEW PROJECT?"
                 Nothing
                 "Are you trying to start a new project? Try this command instead:"
-                [ D.green (D.fromChars "guida init") |> D.indent 4
+                [ D.green (D.fromChars "eco init") |> D.indent 4
                 , D.reflow "It will help you get started!"
                 ]
 
@@ -1417,9 +1417,9 @@ uninstallToReport exit =
             Help.report "UNINSTALL WHAT?"
                 Nothing
                 "I am expecting commands like:"
-                [ [ D.fromChars "guida uninstall elm/http"
-                  , D.fromChars "guida uninstall elm/json"
-                  , D.fromChars "guida uninstall elm/random"
+                [ [ D.fromChars "eco uninstall elm/http"
+                  , D.fromChars "eco uninstall elm/json"
+                  , D.fromChars "eco uninstall elm/random"
                   ]
                     |> D.vcat
                     |> D.indent 4
@@ -2221,7 +2221,7 @@ toDetailsReport details =
                         [ D.reflow <|
                             "I would try deleting the "
                                 ++ cacheDir
-                                ++ " and guida-stuff/ directories, then trying to build again. That will work if some cached files got corrupted somehow."
+                                ++ " and eco-stuff/ directories, then trying to build again. That will work if some cached files got corrupted somehow."
                         , "If that does not work, go to https://elm-lang.org/community and ask for help. This is a weird case!" |> D.reflow
                         ]
 
@@ -3028,11 +3028,11 @@ corruptCacheReport : Help.Report
 corruptCacheReport =
     Help.report "CORRUPT CACHE"
         Nothing
-        "It looks like some of the information cached in guida-stuff/ has been corrupted."
-        [ "Try deleting your guida-stuff/ directory to get unstuck." |> D.reflow
+        "It looks like some of the information cached in eco-stuff/ has been corrupted."
+        [ "Try deleting your eco-stuff/ directory to get unstuck." |> D.reflow
         , D.toSimpleNote <|
             "This almost certainly means that a 3rd party tool (or editor plugin) is causing problems "
-                ++ "to the guida-stuff/ directory. Try disabling 3rd party tools one by one until you figure out which it is!"
+                ++ "to the eco-stuff/ directory. Try disabling 3rd party tools one by one until you figure out which it is!"
         ]
 
 

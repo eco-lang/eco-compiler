@@ -3,16 +3,16 @@ module Builder.Stuff exposing
     , PackageCache, getPackageCache, getReplCache, package, registry
     , typedPackageArtifacts, packageCacheEncoder, packageCacheDecoder
     , details, interfaces, objects, typedObjects
-    , guidai, guidao, guidato
+    , eci, eco, ecot
     , prepublishDir, testDir
     , withRootLock, withRootLockBuildDir, withRegistryLock
-    , detailsWithBuildDir, guidaiWithBuildDir, guidaoWithBuildDir, guidatoWithBuildDir, interfacesWithBuildDir, objectsWithBuildDir, typedObjectsWithBuildDir
+    , detailsWithBuildDir, eciWithBuildDir, ecoWithBuildDir, ecotWithBuildDir, interfacesWithBuildDir, objectsWithBuildDir, typedObjectsWithBuildDir
     )
 
-{-| File path management and artifact location for the Elm compiler build system.
+{-| File path management and artifact location for the Eco compiler build system.
 
 This module centralizes all knowledge about where the compiler stores its build
-artifacts, caches, and intermediate files. It handles the `guida-stuff` directory
+artifacts, caches, and intermediate files. It handles the `eco-stuff` directory
 structure, package caches, and provides utilities for finding project roots and
 managing file locks.
 
@@ -31,7 +31,7 @@ managing file locks.
 # Build Artifacts
 
 @docs details, interfaces, objects, typedObjects
-@docs guidai, guidao, guidato
+@docs eci, eco, ecot
 
 
 # Special Directories
@@ -46,7 +46,7 @@ managing file locks.
 
 # Build Directory Variants
 
-@docs detailsWithBuildDir, guidaiWithBuildDir, guidaoWithBuildDir, guidatoWithBuildDir, interfacesWithBuildDir, objectsWithBuildDir, typedObjectsWithBuildDir
+@docs detailsWithBuildDir, eciWithBuildDir, ecoWithBuildDir, ecotWithBuildDir, interfacesWithBuildDir, objectsWithBuildDir, typedObjectsWithBuildDir
 
 -}
 
@@ -68,7 +68,7 @@ import Utils.Main as Utils
 
 stuff : String -> String
 stuff root =
-    root ++ "/guida-stuff/" ++ compilerVersion
+    root ++ "/eco-stuff/" ++ compilerVersion
 
 
 {-| Get the stuff directory with an optional build subdirectory for parallel builds.
@@ -159,28 +159,28 @@ compilerVersion =
 
 
 
--- ====== ELMI and ELMO ======
+-- ====== ECI and ECO ======
 
 
-{-| Returns the path to a module's .guidai (interface) file.
+{-| Returns the path to a module's .eci (interface) file.
 -}
-guidai : String -> ModuleName.Raw -> String
-guidai root name =
-    toArtifactPath root name "guidai"
+eci : String -> ModuleName.Raw -> String
+eci root name =
+    toArtifactPath root name "eci"
 
 
-{-| Returns the path to a module's .guidao (optimized) file.
+{-| Returns the path to a module's .eco (object) file.
 -}
-guidao : String -> ModuleName.Raw -> String
-guidao root name =
-    toArtifactPath root name "guidao"
+eco : String -> ModuleName.Raw -> String
+eco root name =
+    toArtifactPath root name "eco"
 
 
-{-| Returns the path to a module's .guidato (typed optimized) file for MLIR backend.
+{-| Returns the path to a module's .ecot (typed object) file for MLIR backend.
 -}
-guidato : String -> ModuleName.Raw -> String
-guidato root name =
-    toArtifactPath root name "guidato"
+ecot : String -> ModuleName.Raw -> String
+ecot root name =
+    toArtifactPath root name "ecot"
 
 
 toArtifactPath : String -> ModuleName.Raw -> String -> String
@@ -193,25 +193,25 @@ toArtifactPathWithBuildDir root maybeBuildDir name ext =
     Utils.fpCombine (stuffWithBuildDir root maybeBuildDir) (Utils.fpAddExtension (ModuleName.toHyphenPath name) ext)
 
 
-{-| Returns the path to a module's .guidai (interface) file with optional build subdirectory.
+{-| Returns the path to a module's .eci (interface) file with optional build subdirectory.
 -}
-guidaiWithBuildDir : String -> Maybe String -> ModuleName.Raw -> String
-guidaiWithBuildDir root maybeBuildDir name =
-    toArtifactPathWithBuildDir root maybeBuildDir name "guidai"
+eciWithBuildDir : String -> Maybe String -> ModuleName.Raw -> String
+eciWithBuildDir root maybeBuildDir name =
+    toArtifactPathWithBuildDir root maybeBuildDir name "eci"
 
 
-{-| Returns the path to a module's .guidao (optimized) file with optional build subdirectory.
+{-| Returns the path to a module's .eco (object) file with optional build subdirectory.
 -}
-guidaoWithBuildDir : String -> Maybe String -> ModuleName.Raw -> String
-guidaoWithBuildDir root maybeBuildDir name =
-    toArtifactPathWithBuildDir root maybeBuildDir name "guidao"
+ecoWithBuildDir : String -> Maybe String -> ModuleName.Raw -> String
+ecoWithBuildDir root maybeBuildDir name =
+    toArtifactPathWithBuildDir root maybeBuildDir name "eco"
 
 
-{-| Returns the path to a module's .guidato (typed optimized) file with optional build subdirectory.
+{-| Returns the path to a module's .ecot (typed object) file with optional build subdirectory.
 -}
-guidatoWithBuildDir : String -> Maybe String -> ModuleName.Raw -> String
-guidatoWithBuildDir root maybeBuildDir name =
-    toArtifactPathWithBuildDir root maybeBuildDir name "guidato"
+ecotWithBuildDir : String -> Maybe String -> ModuleName.Raw -> String
+ecotWithBuildDir root maybeBuildDir name =
+    toArtifactPathWithBuildDir root maybeBuildDir name "ecot"
 
 
 
@@ -251,7 +251,7 @@ findRootHelp dirs =
 -- ====== LOCKS ======
 
 
-{-| Executes a task while holding an exclusive lock on the project root's guida-stuff directory.
+{-| Executes a task while holding an exclusive lock on the project root's eco-stuff directory.
 -}
 withRootLock : String -> Task Never a -> Task Never a
 withRootLock root work =
@@ -267,7 +267,7 @@ withRootLock root work =
             )
 
 
-{-| Executes a task while holding an exclusive lock on the project's guida-stuff directory,
+{-| Executes a task while holding an exclusive lock on the project's eco-stuff directory,
 using a builddir-specific lock file when --builddir is specified. This enables parallel
 compilation with different builddirs without lock contention.
 -}
@@ -356,11 +356,11 @@ getCacheDir projectName =
             )
 
 
-{-| Returns the Elm home directory, checking GUIDA\_HOME environment variable first.
+{-| Returns the Elm home directory, checking ECO\_HOME environment variable first.
 -}
 getElmHome : Task Never String
 getElmHome =
-    Utils.envLookupEnv "GUIDA_HOME"
+    Utils.envLookupEnv "ECO_HOME"
         |> Task.andThen
             (\maybeCustomHome ->
                 case maybeCustomHome of
@@ -368,7 +368,7 @@ getElmHome =
                         Task.succeed customHome
 
                     Nothing ->
-                        Utils.dirGetAppUserDataDirectory "guida"
+                        Utils.dirGetAppUserDataDirectory "eco"
             )
 
 

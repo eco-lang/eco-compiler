@@ -5,7 +5,7 @@ module Terminal.Repl exposing
     , Output(..)
     )
 
-{-| Interactive Read-Eval-Print Loop for Guida/Elm.
+{-| Interactive Read-Eval-Print Loop for Elm.
 
 This module implements an interactive programming session where users can type
 Elm expressions, declarations, imports, and type definitions, and see the results
@@ -132,7 +132,7 @@ printWelcomeMessage =
 
         title : D.Doc
         title =
-            D.fromChars "Guida"
+            D.fromChars "Eco"
                 |> D.plus (D.fromChars vsn)
 
         dashes : String

@@ -1386,36 +1386,22 @@ type Status
 crawlModule : Dict String ModuleName.Raw ForeignInterface -> MVar StatusDict -> Pkg.Name -> FilePath -> DocsStatus -> ModuleName.Raw -> Task Never (Maybe Status)
 crawlModule foreignDeps mvar pkg src docsStatus name =
     let
-        path : String -> FilePath
-        path extension =
-            Utils.fpCombine src (Utils.fpAddExtension (ModuleName.toFilePath name) extension)
-
-        guidaPath : FilePath
-        guidaPath =
-            path "guida"
-
         elmPath : FilePath
         elmPath =
-            path "elm"
+            Utils.fpCombine src (Utils.fpAddExtension (ModuleName.toFilePath name) "elm")
     in
-    File.exists guidaPath
-        |> Task.andThen (checkElmPathAndCrawl foreignDeps mvar pkg src docsStatus name guidaPath elmPath)
-
-
-checkElmPathAndCrawl : Dict String ModuleName.Raw ForeignInterface -> MVar StatusDict -> Pkg.Name -> FilePath -> DocsStatus -> ModuleName.Raw -> FilePath -> FilePath -> Bool -> Task Never (Maybe Status)
-checkElmPathAndCrawl foreignDeps mvar pkg src docsStatus name guidaPath elmPath guidaExists =
     File.exists elmPath
-        |> Task.andThen (resolveCrawlAction foreignDeps mvar pkg src docsStatus name guidaPath elmPath guidaExists)
+        |> Task.andThen (resolveCrawlAction foreignDeps mvar pkg src docsStatus name elmPath)
 
 
-resolveCrawlAction : Dict String ModuleName.Raw ForeignInterface -> MVar StatusDict -> Pkg.Name -> FilePath -> DocsStatus -> ModuleName.Raw -> FilePath -> FilePath -> Bool -> Bool -> Task Never (Maybe Status)
-resolveCrawlAction foreignDeps mvar pkg src docsStatus name guidaPath elmPath guidaExists elmExists =
+resolveCrawlAction : Dict String ModuleName.Raw ForeignInterface -> MVar StatusDict -> Pkg.Name -> FilePath -> DocsStatus -> ModuleName.Raw -> FilePath -> Bool -> Task Never (Maybe Status)
+resolveCrawlAction foreignDeps mvar pkg src docsStatus name elmPath elmExists =
     case Dict.get identity name foreignDeps of
         Just ForeignAmbiguous ->
             Task.succeed Nothing
 
         Just (ForeignSpecific iface) ->
-            if guidaExists || elmExists then
+            if elmExists then
                 Task.succeed Nothing
 
             else

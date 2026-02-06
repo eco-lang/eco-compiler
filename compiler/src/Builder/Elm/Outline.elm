@@ -458,9 +458,8 @@ recursiveFindFilesHelp root =
         |> Task.andThen
             (\dirContents ->
                 let
-                    ( elmFiles, ( guidaFiles, others ) ) =
+                    ( elmFiles, others ) =
                         List.partition (hasExtension ".elm") dirContents
-                            |> Tuple.mapSecond (List.partition (hasExtension ".guida"))
                 in
                 Utils.filterM (\fp -> Utils.dirDoesDirectoryExist (root ++ "/" ++ fp)) others
                     |> Task.andThen
@@ -468,7 +467,7 @@ recursiveFindFilesHelp root =
                             Utils.listTraverse (\subDirectory -> recursiveFindFilesHelp (root ++ "/" ++ subDirectory)) subDirectories
                                 |> Task.map
                                     (\filesFromSubDirs ->
-                                        List.concat filesFromSubDirs ++ List.map (\fp -> root ++ "/" ++ fp) (elmFiles ++ guidaFiles)
+                                        List.concat filesFromSubDirs ++ List.map (\fp -> root ++ "/" ++ fp) elmFiles
                                     )
                         )
             )

@@ -1,6 +1,6 @@
 module Terminal.Terminal.Helpers exposing
     ( version, parseVersion
-    , guidaOrElmFile, parseGuidaOrElmFile, filePath, parseFilePath
+    , elmFile, parseElmFile, filePath, parseFilePath
     , package, parsePackage
     )
 
@@ -18,7 +18,7 @@ suggestions, and example generation for user feedback.
 
 # File Path Parsing
 
-@docs guidaOrElmFile, parseGuidaOrElmFile, filePath, parseFilePath
+@docs elmFile, parseElmFile, filePath, parseFilePath
 
 
 # Package Parsing
@@ -108,45 +108,41 @@ exampleVersions chars =
 
 
 
--- ====== GUIDA OR ELM FILE ======
+-- ====== ELM FILE ======
 
 
-{-| Parser for Guida or Elm source file paths.
+{-| Parser for Elm source file paths.
 
-Accepts file paths ending in .guida or .elm extensions.
+Accepts file paths ending in .elm extension.
 
 -}
-guidaOrElmFile : Parser
-guidaOrElmFile =
+elmFile : Parser
+elmFile =
     Parser
-        { singular = "guida or elm file"
-        , plural = "guida or elm files"
+        { singular = "elm file"
+        , plural = "elm files"
         , suggest = \_ -> Task.succeed []
-        , examples = exampleGuidaOrElmFiles
+        , examples = exampleElmFiles
         }
 
 
-{-| Parse a string as a Guida or Elm file path.
+{-| Parse a string as an Elm file path.
 
-Returns Just the file path if it has a .guida or .elm extension, Nothing otherwise.
+Returns Just the file path if it has an .elm extension, Nothing otherwise.
 
 -}
-parseGuidaOrElmFile : String -> Maybe FilePath
-parseGuidaOrElmFile chars =
-    case Utils.fpTakeExtension chars of
-        ".guida" ->
-            Just chars
+parseElmFile : String -> Maybe FilePath
+parseElmFile chars =
+    if Utils.fpTakeExtension chars == ".elm" then
+        Just chars
 
-        ".elm" ->
-            Just chars
-
-        _ ->
-            Nothing
+    else
+        Nothing
 
 
-exampleGuidaOrElmFiles : String -> Task Never (List String)
-exampleGuidaOrElmFiles _ =
-    Task.succeed [ "Main.guida", "src/Main.guida", "Main.elm" ]
+exampleElmFiles : String -> Task Never (List String)
+exampleElmFiles _ =
+    Task.succeed [ "Main.elm", "src/Main.elm" ]
 
 
 

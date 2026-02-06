@@ -544,33 +544,17 @@ updateStatusDictAndWait mvar statusDict statuses =
 crawlModule : Env -> MVar StatusDict -> DocsNeed -> ModuleName.Raw -> Task Never Status
 crawlModule ((Env envData) as env) mvar ((DocsNeed needsDocs) as docsNeed) name =
     let
-        guidaFileName : String
-        guidaFileName =
-            ModuleName.toFilePath name ++ ".guida"
-
         elmFileName : String
         elmFileName =
             ModuleName.toFilePath name ++ ".elm"
     in
-    findModulePaths envData.srcDirs guidaFileName elmFileName
+    findModulePaths envData.srcDirs elmFileName
         |> Task.andThen (crawlFoundPaths env mvar docsNeed name needsDocs envData.root envData.projectType envData.buildID envData.locals envData.foreigns)
 
 
-findModulePaths : List AbsoluteSrcDir -> String -> String -> Task Never (List FilePath)
-findModulePaths srcDirs guidaFileName elmFileName =
-    Utils.filterM File.exists (List.map (flip addRelative guidaFileName) srcDirs)
-        |> Task.andThen (addElmPathsIfNeeded srcDirs elmFileName)
-
-
-addElmPathsIfNeeded : List AbsoluteSrcDir -> String -> List FilePath -> Task Never (List FilePath)
-addElmPathsIfNeeded srcDirs elmFileName guidaPaths =
-    case guidaPaths of
-        [ path ] ->
-            Task.succeed [ path ]
-
-        _ ->
-            Utils.filterM File.exists (List.map (flip addRelative elmFileName) srcDirs)
-                |> Task.map (\elmPaths -> guidaPaths ++ elmPaths)
+findModulePaths : List AbsoluteSrcDir -> String -> Task Never (List FilePath)
+findModulePaths srcDirs elmFileName =
+    Utils.filterM File.exists (List.map (flip addRelative elmFileName) srcDirs)
 
 
 crawlFoundPaths : Env -> MVar StatusDict -> DocsNeed -> ModuleName.Raw -> Bool -> FilePath -> Parse.ProjectType -> Details.BuildID -> Dict String ModuleName.Raw Details.Local -> Dict String ModuleName.Raw Details.Foreign -> List FilePath -> Task Never Status
@@ -786,9 +770,9 @@ handleCachedDepsStatus :
 handleCachedDepsStatus ((Env envData) as env) root projectType name path time deps hasMain lastChange _ depsStatus =
     case depsStatus of
         DepsSame same cached ->
-            -- Check if typed optimization is needed but .guidato doesn't exist
+            -- Check if typed optimization is needed but .ecot doesn't exist
             if envData.needsTypedOpt then
-                File.exists (Stuff.guidato root name)
+                File.exists (Stuff.ecot root name)
                     |> Task.andThen (handleCachedWithTypedOptCheck env root projectType name path time deps hasMain lastChange same cached)
 
             else
@@ -822,14 +806,14 @@ handleCachedWithTypedOptCheck :
     -> List CDep
     -> Bool
     -> Task Never BResult
-handleCachedWithTypedOptCheck env root projectType name path time deps hasMain lastChange same cached guidatoExists =
-    if guidatoExists then
-        -- .guidato exists, can use cached
+handleCachedWithTypedOptCheck env root projectType name path time deps hasMain lastChange same cached ecotExists =
+    if ecotExists then
+        -- .ecot exists, can use cached
         Utils.newEmptyMVar
             |> Task.map (\mvar -> RCached hasMain lastChange mvar)
 
     else
-        -- .guidato doesn't exist, need to recompile with typed optimization
+        -- .ecot doesn't exist, need to recompile with typed optimization
         loadInterfaces root same cached
             |> Task.andThen (recompileIfInterfacesLoaded env root projectType name path time deps)
 
@@ -1135,7 +1119,7 @@ loadInterface root ( name, ciMvar ) =
                             |> Task.map (\_ -> Just ( name, iface ))
 
                     Unneeded ->
-                        File.readBinary I.interfaceDecoder (Stuff.guidai root name)
+                        File.readBinary I.interfaceDecoder (Stuff.eci root name)
                             |> Task.andThen
                                 (\maybeIface ->
                                     case maybeIface of
@@ -1444,7 +1428,7 @@ handleCompileResult key root pkg buildID docsNeed path time deps main lastChange
 
 writeObjectsAndFinalizeCompile : CompileResultContext -> Task Never BResult
 writeObjectsAndFinalizeCompile ctx =
-    File.writeBinary Opt.localGraphEncoder (Stuff.guidao ctx.root ctx.name) ctx.objects
+    File.writeBinary Opt.localGraphEncoder (Stuff.eco ctx.root ctx.name) ctx.objects
         |> Task.andThen (\_ -> writeTypedObjectsIfNeeded ctx)
         |> Task.andThen (\_ -> checkInterfaceAndFinalize ctx)
 
@@ -1460,25 +1444,25 @@ writeTypedObjectsIfNeeded ctx =
                     , typeEnv = moduleEnv
                     }
             in
-            File.writeBinary TMod.typedModuleArtifactEncoder (Stuff.guidato ctx.root ctx.name) artifact
+            File.writeBinary TMod.typedModuleArtifactEncoder (Stuff.ecot ctx.root ctx.name) artifact
 
         _ ->
-            -- No typed info or type env (erased build); do not write .guidato
+            -- No typed info or type env (erased build); do not write .ecot
             Task.succeed ()
 
 
 checkInterfaceAndFinalize : CompileResultContext -> Task Never BResult
 checkInterfaceAndFinalize ctx =
     let
-        guidai =
-            Stuff.guidai ctx.root ctx.name
+        eciPath =
+            Stuff.eci ctx.root ctx.name
     in
-    File.readBinary I.interfaceDecoder guidai
-        |> Task.andThen (finalizeBasedOnInterface ctx guidai)
+    File.readBinary I.interfaceDecoder eciPath
+        |> Task.andThen (finalizeBasedOnInterface ctx eciPath)
 
 
 finalizeBasedOnInterface : CompileResultContext -> FilePath -> Maybe I.Interface -> Task Never BResult
-finalizeBasedOnInterface ctx guidai maybeOldi =
+finalizeBasedOnInterface ctx eciPath maybeOldi =
     case maybeOldi of
         Just oldi ->
             if oldi == ctx.iface then
@@ -1488,13 +1472,13 @@ finalizeBasedOnInterface ctx guidai maybeOldi =
 
             else
                 -- Interface changed, write new interface and return RNew
-                File.writeBinary I.interfaceEncoder guidai ctx.iface
+                File.writeBinary I.interfaceEncoder eciPath ctx.iface
                     |> Task.andThen (\_ -> Reporting.report ctx.key Reporting.BDone)
                     |> Task.map (\_ -> buildRNew ctx)
 
         Nothing ->
             -- No old interface, write new interface and return RNew
-            File.writeBinary I.interfaceEncoder guidai ctx.iface
+            File.writeBinary I.interfaceEncoder eciPath ctx.iface
                 |> Task.andThen (\_ -> Reporting.report ctx.key Reporting.BDone)
                 |> Task.map (\_ -> buildRNew ctx)
 
@@ -2078,7 +2062,7 @@ getRootInfoHelp (Env envData) path absolutePath =
         ( final, ext ) =
             Utils.fpSplitExtension file
     in
-    if List.member ext [ ".guida", ".elm" ] then
+    if ext == ".elm" then
         let
             absoluteSegments : List String
             absoluteSegments =
@@ -2391,7 +2375,7 @@ gatherProblemsOrMains results (NE.Nonempty rootResult rootResults) =
             Err (NE.Nonempty e es)
 
         ( ROutsideBlocked, ( [], _ ) ) ->
-            crash "seems like guida-stuff/ is corrupted"
+            crash "seems like eco-stuff/ is corrupted"
 
         ( ROutsideBlocked, ( e :: es, _ ) ) ->
             Err (NE.Nonempty e es)

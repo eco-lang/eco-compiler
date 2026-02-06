@@ -72,8 +72,7 @@ toAnnotation env srcType =
 
 Transforms type variables, type constructors, function types, records, tuples,
 and units from source AST to canonical AST. Validates type constructor existence,
-checks arity of type applications, resolves qualified type names, and handles
-syntax version differences (e.g., tuple size restrictions in Elm vs Guida).
+checks arity of type applications, and resolves qualified type names.
 
 -}
 canonicalize : Env.Env -> Src.Type -> CResult i w Can.Type
