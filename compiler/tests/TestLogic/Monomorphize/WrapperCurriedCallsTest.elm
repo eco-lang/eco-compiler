@@ -1,10 +1,13 @@
 module TestLogic.Monomorphize.WrapperCurriedCallsTest exposing (suite)
 
-{-| Test suite for MONO\_016: Stage arity invariant for closures.
+{-| Test suite for GOPT\_016: Stage arity invariant for closures.
 
 For every MonoClosure whose MonoType is an MFunction, the length of
 closureInfo.params must equal the length of the outermost MFunction
 argument list (i.e., stage arity).
+
+Note: This invariant is enforced by GlobalOpt (as GOPT\_016), not Monomorphize.
+Monomorphize is now staging-agnostic.
 
 -}
 
@@ -15,6 +18,6 @@ import TestLogic.Monomorphize.WrapperCurriedCalls exposing (expectWrapperCurried
 
 suite : Test
 suite =
-    Test.describe "MONO_016: Stage arity invariant"
+    Test.describe "GOPT_016: Stage arity invariant"
         [ StandardTestSuites.expectSuite expectWrapperCurriedCalls "stage arity matches params"
         ]

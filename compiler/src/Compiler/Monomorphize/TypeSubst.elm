@@ -219,6 +219,17 @@ extractParamTypes monoType =
 
 
 {-| Apply a type substitution to a canonical type to produce a monomorphic type.
+
+INVARIANT: Preserves TLambda staging exactly.
+
+    a -> b -> c becomes MFunction [a] (MFunction [b] c), NOT MFunction [a, b] c.
+
+Each TLambda in the Can.Type produces a single-arg MFunction. This preserves
+Elm's curried semantics faithfully.
+
+GlobalOpt will flatten these types to match closure param counts (GOPT\_016).
+The flattening happens there, not here, because Monomorphize is staging-agnostic.
+
 -}
 applySubst : Substitution -> Can.Type -> Mono.MonoType
 applySubst subst canType =
@@ -246,6 +257,8 @@ applySubst subst canType =
                             Mono.MVar name constraint
 
         Can.TLambda from to ->
+            -- IMPORTANT: Preserve curried structure - each TLambda becomes a single-arg MFunction.
+            -- Do NOT flatten nested TLambdas here. GlobalOpt handles flattening (GOPT_016).
             let
                 argMono =
                     applySubst subst from

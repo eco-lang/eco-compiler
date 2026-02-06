@@ -1,9 +1,12 @@
 module TestLogic.Monomorphize.MonoCaseBranchResultTypeTest exposing (suite)
 
-{-| Test suite for MONO\_018: MonoCase branch result types match MonoCase resultType.
+{-| Test suite for GOPT\_018: MonoCase branch result types match MonoCase resultType.
 
 For every SpecId in SpecializationRegistry.reverseMapping, the stored
 MonoType must equal the type of the corresponding MonoNode.
+
+Note: This invariant is enforced by GlobalOpt (as GOPT\_018), not Monomorphize.
+Monomorphize is now staging-agnostic.
 
 -}
 
@@ -14,6 +17,6 @@ import TestLogic.Monomorphize.MonoCaseBranchResultType exposing (expectMonoCaseB
 
 suite : Test
 suite =
-    Test.describe "MONO_018: MonoCase branches match case result type"
+    Test.describe "GOPT_018: MonoCase branches match case result type"
         [ StandardTestSuites.expectSuite expectMonoCaseBranchResultTypes "case branch types match"
         ]

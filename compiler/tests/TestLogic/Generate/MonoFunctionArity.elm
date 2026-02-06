@@ -7,7 +7,7 @@ For each function/closure node:
   - Compare the function MonoType's arity with the parameter list length and closure bindings.
   - Verify each call site's argument count matches the function's MonoType.
 
-This module reuses the existing typed optimization pipeline and adds arity verification.
+This module runs after GlobalOpt since it also checks GOPT\_016 (stage arity invariant).
 
 -}
 
@@ -19,17 +19,19 @@ import TestLogic.TestPipeline as Pipeline
 
 
 {-| MONO\_012: Verify function arity matches parameters and closure info.
+
+Note: This runs after GlobalOpt since it also checks GOPT\_016 (closure params == stage arity).
 -}
 expectFunctionArityMatches : Src.Module -> Expect.Expectation
 expectFunctionArityMatches srcModule =
-    case Pipeline.runToMono srcModule of
+    case Pipeline.runToGlobalOpt srcModule of
         Err msg ->
             Expect.fail msg
 
-        Ok { monoGraph } ->
+        Ok { optimizedMonoGraph } ->
             let
                 issues =
-                    collectArityIssues monoGraph
+                    collectArityIssues optimizedMonoGraph
             in
             if List.isEmpty issues then
                 Expect.pass
@@ -174,9 +176,9 @@ checkTypeExprArityConsistency context monoType expr =
                 stageArity =
                     getStageArity monoType
             in
-            -- MONO_016: Closure params must exactly match stage arity
+            -- GOPT_016: Closure params must exactly match stage arity
             if paramCount /= stageArity then
-                [ context ++ ": Closure has " ++ String.fromInt paramCount ++ " params but type has stage arity " ++ String.fromInt stageArity ++ " (MONO_016 violation)" ]
+                [ context ++ ": Closure has " ++ String.fromInt paramCount ++ " params but type has stage arity " ++ String.fromInt stageArity ++ " (GOPT_016 violation)" ]
 
             else
                 []
@@ -195,7 +197,7 @@ collectExprArityIssues : String -> Mono.MonoExpr -> List String
 collectExprArityIssues context expr =
     case expr of
         Mono.MonoClosure closureInfo bodyExpr monoType ->
-            -- MONO_016: Closure params must exactly match stage arity
+            -- GOPT_016: Closure params must exactly match stage arity
             let
                 paramCount =
                     List.length closureInfo.params
@@ -205,7 +207,7 @@ collectExprArityIssues context expr =
 
                 closureIssue =
                     if paramCount /= stageArity then
-                        [ context ++ ": Closure expression has " ++ String.fromInt paramCount ++ " params but its type has stage arity " ++ String.fromInt stageArity ++ " (MONO_016 violation)" ]
+                        [ context ++ ": Closure expression has " ++ String.fromInt paramCount ++ " params but its type has stage arity " ++ String.fromInt stageArity ++ " (GOPT_016 violation)" ]
 
                     else
                         []

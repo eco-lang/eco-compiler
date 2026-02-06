@@ -15,7 +15,7 @@ import Utils.Crash as Utils
 
 {-| Compute how many parameters a returned closure takes (first stage only).
 
-For closures, validates MONO\_016 and returns stage param count.
+For closures, validates GOPT\_016 and returns stage param count.
 For other function-typed expressions, returns stage arity from type.
 For non-function expressions, returns Nothing.
 
@@ -30,7 +30,7 @@ computeReturnedClosureParamCount expr =
             in
             if List.length info.params /= stageParamCount then
                 Utils.crash
-                    ("MonoReturnArity: MONO_016 violation: closure params="
+                    ("MonoReturnArity: GOPT_016 violation: closure params="
                         ++ String.fromInt (List.length info.params)
                         ++ ", stage arity="
                         ++ String.fromInt stageParamCount

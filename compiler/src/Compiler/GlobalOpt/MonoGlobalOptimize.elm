@@ -4,9 +4,13 @@ module Compiler.GlobalOpt.MonoGlobalOptimize exposing (globalOptimize)
 
 This phase:
 
-1.  Normalizes ABI for case/if expressions with function-typed results
-2.  Validates closure staging invariants (MONO\_016)
-3.  Runs MonoInlineSimplify (inlining, DCE, let simplification)
+1.  Canonicalizes closure/tail-func types by flattening to match param counts (GOPT\_016)
+2.  Normalizes ABI for case/if expressions with function-typed results (GOPT\_018)
+3.  Validates closure staging invariants
+4.  Annotates returned closure arities
+
+Monomorphize is staging-agnostic - it preserves curried TLambda structure from TypeSubst.
+GlobalOpt owns all staging/ABI decisions and canonicalizes the types to match param counts.
 
 @docs globalOptimize
 
@@ -57,23 +61,28 @@ freshLambdaId home ctx =
 globalOptimize : TypeEnv.GlobalTypeEnv -> Mono.MonoGraph -> Mono.MonoGraph
 globalOptimize typeEnv graph0 =
     let
-        -- Phase 1: ABI normalization (case/if result types, wrapper generation)
+        -- Phase 1: Canonicalize closure/tail-func types (GOPT_016 fix)
+        -- Flatten types to match param counts: MFunction [a] (MFunction [b] c) -> MFunction [a,b] c
         graph1 =
-            normalizeCaseIfAbi graph0
+            canonicalizeClosureStaging graph0
 
-        -- Phase 2: Closure staging invariant check
+        -- Phase 2: ABI normalization (case/if result types, wrapper generation)
         graph2 =
-            validateClosureStaging graph1
+            normalizeCaseIfAbi graph1
 
-        -- Phase 3: Returned-closure arity annotation
+        -- Phase 3: Closure staging invariant validation (should pass after phases 1-2)
         graph3 =
-            annotateReturnedClosureArity graph2
+            validateClosureStaging graph2
 
-        -- Phase 4: Inlining and DCE (call as black box)
-        -- ( graph4, _ ) =
-        --     MonoInlineSimplify.optimize mode typeEnv graph3
+        -- Phase 4: Returned-closure arity annotation
+        graph4 =
+            annotateReturnedClosureArity graph3
+
+        -- Phase 5: Inlining and DCE (call as black box)
+        -- ( graph5, _ ) =
+        --     MonoInlineSimplify.optimize mode typeEnv graph4
     in
-    graph3
+    graph4
 
 
 
@@ -235,6 +244,284 @@ maxLambdaIndexInDecider dec =
 
 
 
+-- ============================================================================
+-- CLOSURE STAGING CANONICALIZATION (GOPT_016)
+-- ============================================================================
+
+
+{-| Canonicalize closure and tail-func types by flattening to match param counts.
+
+After this pass, for all MonoClosure and MonoTailFunc nodes:
+    length(closureInfo.params) == length(args of MFunction type)
+
+Monomorphize produces closures where:
+  - params come from TOpt.Function (flat list)
+  - type comes from TypeSubst.applySubst (curried TLambda chain)
+
+Example transformation:
+  Before: params=[(x,Int),(y,Int)], type=MFunction [Int] (MFunction [Int] Int)
+  After:  params=[(x,Int),(y,Int)], type=MFunction [Int, Int] Int
+
+This is the GOPT_016 canonicalization step.
+-}
+canonicalizeClosureStaging : Mono.MonoGraph -> Mono.MonoGraph
+canonicalizeClosureStaging (Mono.MonoGraph data) =
+    Mono.MonoGraph
+        { data
+            | nodes = Dict.map (\_ node -> canonicalizeNode node) data.nodes
+        }
+
+
+{-| Canonicalize a single MonoNode.
+-}
+canonicalizeNode : Mono.MonoNode -> Mono.MonoNode
+canonicalizeNode node =
+    case node of
+        Mono.MonoDefine expr monoType ->
+            let
+                canonExpr =
+                    canonicalizeExpr expr
+
+                -- If the expression is a closure, use its canonicalized type
+                canonType =
+                    case canonExpr of
+                        Mono.MonoClosure _ _ closureType ->
+                            closureType
+
+                        _ ->
+                            monoType
+            in
+            Mono.MonoDefine canonExpr canonType
+
+        Mono.MonoTailFunc params expr monoType ->
+            let
+                canonType =
+                    flattenTypeToArity (List.length params) monoType
+            in
+            Mono.MonoTailFunc params (canonicalizeExpr expr) canonType
+
+        Mono.MonoPortIncoming expr monoType ->
+            Mono.MonoPortIncoming (canonicalizeExpr expr) monoType
+
+        Mono.MonoPortOutgoing expr monoType ->
+            Mono.MonoPortOutgoing (canonicalizeExpr expr) monoType
+
+        Mono.MonoCycle defs monoType ->
+            Mono.MonoCycle
+                (List.map (\( name, e ) -> ( name, canonicalizeExpr e )) defs)
+                monoType
+
+        Mono.MonoCtor _ _ ->
+            node
+
+        Mono.MonoEnum _ _ ->
+            node
+
+        Mono.MonoExtern _ ->
+            node
+
+
+{-| Recursively canonicalize expressions, flattening closure types.
+-}
+canonicalizeExpr : Mono.MonoExpr -> Mono.MonoExpr
+canonicalizeExpr expr =
+    case expr of
+        Mono.MonoClosure closureInfo body closureType ->
+            let
+                paramCount =
+                    List.length closureInfo.params
+
+                canonType =
+                    flattenTypeToArity paramCount closureType
+
+                canonBody =
+                    canonicalizeExpr body
+
+                canonCaptures =
+                    List.map (\( n, e, t ) -> ( n, canonicalizeExpr e, t )) closureInfo.captures
+            in
+            Mono.MonoClosure
+                { closureInfo | captures = canonCaptures }
+                canonBody
+                canonType
+
+        Mono.MonoCall callType fn args resultType ->
+            Mono.MonoCall callType
+                (canonicalizeExpr fn)
+                (List.map canonicalizeExpr args)
+                resultType
+
+        Mono.MonoTailCall specId args resultType ->
+            Mono.MonoTailCall specId
+                (List.map (\( n, e ) -> ( n, canonicalizeExpr e )) args)
+                resultType
+
+        Mono.MonoIf branches final resultType ->
+            Mono.MonoIf
+                (List.map (\( c, t ) -> ( canonicalizeExpr c, canonicalizeExpr t )) branches)
+                (canonicalizeExpr final)
+                resultType
+
+        Mono.MonoLet def body resultType ->
+            Mono.MonoLet
+                (canonicalizeDef def)
+                (canonicalizeExpr body)
+                resultType
+
+        Mono.MonoCase label scrutinee decider jumps resultType ->
+            -- Note: label and scrutinee are Names, not expressions
+            Mono.MonoCase label scrutinee
+                (canonicalizeDecider decider)
+                (List.map (\( i, e ) -> ( i, canonicalizeExpr e )) jumps)
+                resultType
+
+        Mono.MonoDestruct path inner resultType ->
+            Mono.MonoDestruct path (canonicalizeExpr inner) resultType
+
+        Mono.MonoList region items resultType ->
+            Mono.MonoList region (List.map canonicalizeExpr items) resultType
+
+        Mono.MonoRecordCreate fields resultType ->
+            Mono.MonoRecordCreate
+                (List.map (\( n, e ) -> ( n, canonicalizeExpr e )) fields)
+                resultType
+
+        Mono.MonoRecordAccess inner field resultType ->
+            Mono.MonoRecordAccess (canonicalizeExpr inner) field resultType
+
+        Mono.MonoRecordUpdate record updates resultType ->
+            Mono.MonoRecordUpdate
+                (canonicalizeExpr record)
+                (List.map (\( n, e ) -> ( n, canonicalizeExpr e )) updates)
+                resultType
+
+        Mono.MonoTupleCreate region elements resultType ->
+            Mono.MonoTupleCreate region (List.map canonicalizeExpr elements) resultType
+
+        -- Leaf expressions - no sub-expressions to canonicalize
+        Mono.MonoLiteral _ _ ->
+            expr
+
+        Mono.MonoVarLocal _ _ ->
+            expr
+
+        Mono.MonoVarGlobal _ _ _ ->
+            expr
+
+        Mono.MonoVarKernel _ _ _ _ ->
+            expr
+
+        Mono.MonoUnit ->
+            expr
+
+
+{-| Canonicalize a definition.
+-}
+canonicalizeDef : Mono.MonoDef -> Mono.MonoDef
+canonicalizeDef def =
+    case def of
+        Mono.MonoDef name bound ->
+            Mono.MonoDef name (canonicalizeExpr bound)
+
+        Mono.MonoTailDef name params bound ->
+            Mono.MonoTailDef name params (canonicalizeExpr bound)
+
+
+{-| Canonicalize a decider tree.
+-}
+canonicalizeDecider : Mono.Decider Mono.MonoChoice -> Mono.Decider Mono.MonoChoice
+canonicalizeDecider decider =
+    case decider of
+        Mono.Leaf choice ->
+            Mono.Leaf (canonicalizeChoice choice)
+
+        Mono.Chain test success failure ->
+            Mono.Chain test
+                (canonicalizeDecider success)
+                (canonicalizeDecider failure)
+
+        Mono.FanOut path edges fallback ->
+            Mono.FanOut path
+                (List.map (\( test, d ) -> ( test, canonicalizeDecider d )) edges)
+                (canonicalizeDecider fallback)
+
+
+{-| Canonicalize a choice (inline expression or jump).
+-}
+canonicalizeChoice : Mono.MonoChoice -> Mono.MonoChoice
+canonicalizeChoice choice =
+    case choice of
+        Mono.Inline expr ->
+            Mono.Inline (canonicalizeExpr expr)
+
+        Mono.Jump idx ->
+            Mono.Jump idx
+
+
+{-| Flatten a function type to have exactly `targetArity` arguments in the outer MFunction.
+
+Example:
+    flattenTypeToArity 2 (MFunction [a] (MFunction [b] c))
+    => MFunction [a, b] c
+
+If the type has more args than targetArity, nest the rest.
+If the type has fewer args than targetArity, this is a GOPT_016 violation (bug).
+-}
+flattenTypeToArity : Int -> Mono.MonoType -> Mono.MonoType
+flattenTypeToArity targetArity monoType =
+    let
+        ( allArgs, finalResult ) =
+            Closure.flattenFunctionType monoType
+    in
+    if targetArity == 0 then
+        -- Not a function type, return as-is
+        monoType
+
+    else if List.length allArgs == targetArity then
+        -- Already correct arity
+        Mono.MFunction allArgs finalResult
+
+    else if List.length allArgs > targetArity then
+        -- More args than params - take first N, nest the rest
+        let
+            ( firstArgs, restArgs ) =
+                splitAt targetArity allArgs
+
+            nestedResult =
+                if List.isEmpty restArgs then
+                    finalResult
+
+                else
+                    Mono.MFunction restArgs finalResult
+        in
+        Mono.MFunction firstArgs nestedResult
+
+    else if List.length allArgs == 0 then
+        -- Non-function type being used where function expected
+        -- This can happen for thunks or partially applied values
+        -- Return as-is and let validation catch it if it's a real problem
+        monoType
+
+    else
+        -- Fewer args than params - this is a GOPT_016 violation
+        Debug.todo
+            ("GOPT_016 canonicalization error: type has "
+                ++ String.fromInt (List.length allArgs)
+                ++ " args but closure has "
+                ++ String.fromInt targetArity
+                ++ " params. Type: "
+                ++ Debug.toString monoType
+            )
+
+
+{-| Split a list at the given index.
+-}
+splitAt : Int -> List a -> ( List a, List a )
+splitAt n xs =
+    ( List.take n xs, List.drop n xs )
+
+
+
 -- SPEC HOME LOOKUP
 
 
@@ -325,6 +612,19 @@ buildAbiWrapperGO home targetType calleeExpr ctx0 =
 
         srcSeg =
             Mono.segmentLengths srcType
+
+        -- GOPT_018 defensive check: total arities must match
+        _ =
+            if List.sum srcSeg /= List.sum targetSeg then
+                Debug.todo
+                    ("GOPT_018: branch total arity mismatch: src="
+                        ++ Debug.toString srcSeg
+                        ++ ", target="
+                        ++ Debug.toString targetSeg
+                    )
+
+            else
+                ()
     in
     if targetSeg == srcSeg then
         ( calleeExpr, ctx0 )
@@ -997,7 +1297,7 @@ validateExprClosures expr =
                 _ =
                     if List.length actualParams /= List.length expectedParams then
                         Debug.todo
-                            ("MONO_016 violation: closure has "
+                            ("GOPT_016 violation: closure has "
                                 ++ String.fromInt (List.length actualParams)
                                 ++ " params but type expects "
                                 ++ String.fromInt (List.length expectedParams)

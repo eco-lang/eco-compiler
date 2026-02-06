@@ -5,6 +5,7 @@ module TestLogic.TestPipeline exposing
     , PostSolveArtifacts
     , TypedOptArtifacts
     , MonoArtifacts
+    , GlobalOptArtifacts
     , MlirArtifacts
       -- Pipeline entry points (each runs full pipeline to that stage)
     , runToCanonical
@@ -12,6 +13,7 @@ module TestLogic.TestPipeline exposing
     , runToPostSolve
     , runToTypedOpt
     , runToMono
+    , runToGlobalOpt
     , runToMlir
       -- Low-level helpers (for tests needing fine-grained control)
     , runWithIdsTypeCheck
@@ -61,6 +63,7 @@ import Compiler.Generate.MLIR.Backend as MLIR
 import Compiler.Generate.Mode as Mode
 import Compiler.LocalOpt.Typed.Module as TypedOptimize
 import Compiler.Monomorphize.Monomorphize as Monomorphize
+import Compiler.GlobalOpt.MonoGlobalOptimize as MonoGlobalOptimize
 import Compiler.Reporting.Result as RResult
 import Compiler.Type.Constrain.Typed.Module as ConstrainTyped
 import Compiler.Type.KernelTypes as KernelTypes
@@ -130,7 +133,26 @@ type alias MonoArtifacts =
     }
 
 
-{-| Stage 6: MLIR generation artifacts (includes Stages 1-5).
+{-| Stage 5.5: Global optimization artifacts (includes Stages 1-5).
+
+This stage runs GlobalOpt on the MonoGraph, which canonicalizes staging
+and enforces GOPT_016 (closure params == stage arity) and GOPT_018
+(case branch types match).
+-}
+type alias GlobalOptArtifacts =
+    { canonical : Can.Module
+    , annotations : Dict String Name.Name Can.Annotation
+    , nodeTypes : PostSolve.NodeTypes
+    , kernelEnv : KernelTypes.KernelTypeEnv
+    , localGraph : TOpt.LocalGraph
+    , globalGraph : TOpt.GlobalGraph
+    , globalTypeEnv : TypeEnv.GlobalTypeEnv
+    , monoGraph : Mono.MonoGraph
+    , optimizedMonoGraph : Mono.MonoGraph
+    }
+
+
+{-| Stage 6: MLIR generation artifacts (includes Stages 1-5.5).
 -}
 type alias MlirArtifacts =
     { canonical : Can.Module
@@ -275,21 +297,52 @@ runToMono srcModule =
                         }
 
 
-{-| Run pipeline through MLIR generation.
+{-| Run pipeline through global optimization.
+
+This stage applies MonoGlobalOptimize.globalOptimize which:
+- Canonicalizes staging (GOPT_016: closure params == stage arity)
+- Normalizes case branch types (GOPT_018)
+- Computes returned closure arity annotations
 -}
-runToMlir : Src.Module -> Result String MlirArtifacts
-runToMlir srcModule =
+runToGlobalOpt : Src.Module -> Result String GlobalOptArtifacts
+runToGlobalOpt srcModule =
     case runToMono srcModule of
         Err e ->
             Err e
 
         Ok { canonical, annotations, nodeTypes, kernelEnv, localGraph, globalGraph, globalTypeEnv, monoGraph } ->
             let
+                optimizedMonoGraph =
+                    MonoGlobalOptimize.globalOptimize globalTypeEnv monoGraph
+            in
+            Ok
+                { canonical = canonical
+                , annotations = annotations
+                , nodeTypes = nodeTypes
+                , kernelEnv = kernelEnv
+                , localGraph = localGraph
+                , globalGraph = globalGraph
+                , globalTypeEnv = globalTypeEnv
+                , monoGraph = monoGraph
+                , optimizedMonoGraph = optimizedMonoGraph
+                }
+
+
+{-| Run pipeline through MLIR generation.
+-}
+runToMlir : Src.Module -> Result String MlirArtifacts
+runToMlir srcModule =
+    case runToGlobalOpt srcModule of
+        Err e ->
+            Err e
+
+        Ok { canonical, annotations, nodeTypes, kernelEnv, localGraph, globalGraph, globalTypeEnv, optimizedMonoGraph } ->
+            let
                 mlirModule =
-                    MLIR.generateMlirModule (Mode.Dev Nothing) globalTypeEnv monoGraph
+                    MLIR.generateMlirModule (Mode.Dev Nothing) globalTypeEnv optimizedMonoGraph
 
                 mlirOutput =
-                    case runMLIRGeneration globalTypeEnv monoGraph of
+                    case runMLIRGeneration globalTypeEnv optimizedMonoGraph of
                         Ok output ->
                             output
 
@@ -304,7 +357,7 @@ runToMlir srcModule =
                 , localGraph = localGraph
                 , globalGraph = globalGraph
                 , globalTypeEnv = globalTypeEnv
-                , monoGraph = monoGraph
+                , monoGraph = optimizedMonoGraph
                 , mlirModule = mlirModule
                 , mlirOutput = mlirOutput
                 }

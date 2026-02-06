@@ -1,14 +1,14 @@
 module TestLogic.Monomorphize.WrapperCurriedCalls exposing (expectWrapperCurriedCalls, checkWrapperCurriedCalls)
 
-{-| Test logic for MONO\_016: Stage arity invariant for closures.
+{-| Test logic for GOPT\_016: Stage arity invariant for closures.
 
 For every MonoClosure whose MonoType is an MFunction, the length of
 closureInfo.params must equal the length of the outermost MFunction
 argument list (i.e., stage arity).
 
-Simple directly-nested lambda chains are uncurried into a single flat
-MFunction stage, while lambdas separated by let or case preserve nested
-MFunction structure with each stage closure matching its outermost arg count.
+This invariant is enforced by GlobalOpt, not Monomorphize. Monomorphize
+is now staging-agnostic - it preserves syntactic lambda structure without
+flattening. GlobalOpt canonicalizes staging via ABI normalization.
 
 @docs expectWrapperCurriedCalls, checkWrapperCurriedCalls
 
@@ -29,18 +29,18 @@ type alias Violation =
     }
 
 
-{-| MONO\_016: Verify stage arity invariant for closures.
+{-| GOPT\_016: Verify stage arity invariant for closures after GlobalOpt.
 -}
 expectWrapperCurriedCalls : Src.Module -> Expectation
 expectWrapperCurriedCalls srcModule =
-    case Pipeline.runToMono srcModule of
+    case Pipeline.runToGlobalOpt srcModule of
         Err msg ->
             Expect.fail ("Compilation failed: " ++ msg)
 
-        Ok { monoGraph } ->
+        Ok { optimizedMonoGraph } ->
             let
                 violations =
-                    checkWrapperCurriedCalls monoGraph
+                    checkWrapperCurriedCalls optimizedMonoGraph
             in
             if List.isEmpty violations then
                 Expect.pass
@@ -116,7 +116,7 @@ stageArity monoType =
 
 {-| Check if a MonoClosure violates the stage arity invariant.
 
-MONO\_016: For every MonoClosure whose MonoType is an MFunction,
+GOPT\_016: For every MonoClosure whose MonoType is an MFunction,
 closureInfo.params length must equal the outermost MFunction argument count.
 
 -}

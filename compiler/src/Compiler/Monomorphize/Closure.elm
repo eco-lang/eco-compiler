@@ -2,6 +2,7 @@ module Compiler.Monomorphize.Closure exposing
     ( ensureCallableTopLevel
     , freshParams, extractRegion, buildNestedCalls
     , computeClosureCaptures
+    , flattenFunctionType
     )
 
 {-| Closure handling and capture analysis for monomorphization.
@@ -54,36 +55,21 @@ ensureCallableTopLevel expr monoType state =
     case monoType of
         Mono.MFunction _ _ ->
             let
-                -- MONO_016: Use stage arity (first MFunction params only)
+                -- Use stage arity (first MFunction params only) for wrapper creation.
+                -- Note: GOPT_016 is enforced by GlobalOpt, not here.
                 stageArgTypes =
                     Mono.stageParamTypes monoType
 
                 stageRetType =
                     Mono.stageReturnType monoType
-
-                stageArity =
-                    List.length stageArgTypes
             in
             case expr of
-                Mono.MonoClosure closureInfo _ _ ->
-                    -- MONO_016: Check against stage arity, not flattened arity
-                    -- Closures from specializeLambda have exactly stage params
-                    if List.length closureInfo.params >= stageArity then
-                        ( expr, state )
-
-                    else
-                        Utils.Crash.crash
-                            ("ensureCallableTopLevel: under-parameterized closure for type "
-                                ++ Debug.toString monoType
-                                ++ " (have "
-                                ++ String.fromInt (List.length closureInfo.params)
-                                ++ " params, expected stage arity "
-                                ++ String.fromInt stageArity
-                                ++ "). This should not happen; fix monomorphization."
-                            )
+                Mono.MonoClosure _ _ _ ->
+                    -- Accept closures as-is; GlobalOpt enforces staging consistency (GOPT_016).
+                    ( expr, state )
 
                 Mono.MonoVarGlobal region specId _ ->
-                    -- MONO_016: Create stage-aware closure wrapper
+                    -- Create stage-aware closure wrapper
                     makeAliasClosure
                         (Mono.MonoVarGlobal region specId monoType)
                         region
@@ -113,7 +99,7 @@ ensureCallableTopLevel expr monoType state =
                         state
 
                 _ ->
-                    -- MONO_016: Create stage-aware closure wrapper
+                    -- Create stage-aware closure wrapper
                     makeGeneralClosure expr stageArgTypes stageRetType monoType state
 
         _ ->

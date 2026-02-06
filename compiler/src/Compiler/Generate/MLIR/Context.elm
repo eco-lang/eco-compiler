@@ -646,7 +646,7 @@ extractNodeSignature specId node returnedCounts =
     case node of
         Mono.MonoDefine expr monoType ->
             -- For defines, check if the expression is a closure
-            -- User-defined functions are stage-curried per MONO_016
+            -- User-defined functions are stage-curried per GOPT_016
             case expr of
                 Mono.MonoClosure closureInfo body _ ->
                     -- Function with params (stage-curried)

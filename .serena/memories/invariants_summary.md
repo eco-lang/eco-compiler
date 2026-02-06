@@ -68,7 +68,7 @@ Unit, True, False, Nil, Nothing, EmptyString, EmptyRec are **HPointer values wit
 
 **MONO_010**: MonoGraph contains all types including all constructors in ctorLayouts.
 
-**MONO_018**: All MonoCase branches must have same MonoType as resultType.
+**GOPT_018**: All MonoCase branches must have same MonoType as resultType (enforced by GlobalOpt, formerly MONO_018).
 
 ## Forbidden Patterns (FORBID_*)
 

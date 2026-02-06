@@ -70,7 +70,8 @@ Can.Type → (PostSolve) → Can.Type (complete)
 - **RecordLayout/TupleLayout/CtorLayout**: Field order + unboxedBitmap
 - **MlirOp**: MLIR operation with operands, results, attrs, regions
 
-## Staged Currying (MONO_018)
+## Staged Currying (GOPT_018)
 
 Functions segment arguments into stages: `[2,1]` = take 2 args, return closure taking 1.
 All MonoCase branches returning functions must have compatible staging signatures.
+Staging is now enforced by GlobalOpt (GOPT_016 for closures, GOPT_018 for case branches).
