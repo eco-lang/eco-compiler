@@ -34,37 +34,30 @@ import Review.Rule as Rule exposing (Rule)
 import Simplify
 
 
-
---config : List Rule
---config =
---    [ NoConfusingPrefixOperator.rule
---    , NoDebug.Log.rule
---    , NoDebug.TodoOrToString.rule
---        |> Rule.ignoreErrorsForDirectories [ "tests/" ]
---    , NoExposingEverything.rule
---    , NoImportingEverything.rule []
---    , NoMissingTypeAnnotation.rule
---    , NoMissingTypeExpose.rule
---    , NoSimpleLetBody.rule
---    , NoUnused.Dependencies.rule
---    , NoUnused.Variables.rule
---    , NoUnused.Patterns.rule
---    , NoUnused.Exports.rule
---        |> Rule.ignoreErrorsForFiles [ "src/Compiler/Parse/Expression.elm" ]
---    , Simplify.rule Simplify.defaults
---    , NoUnused.CustomTypeConstructors.rule []
---    , Docs.ReviewAtDocs.rule
---
---    --, NoUnused.CustomTypeConstructorArgs.rule
---    , NoUnused.Parameters.rule
---        |> Rule.ignoreErrorsForFiles [ "src/Utils/Crash.elm" ]
---    , EnforceBoundaries.rule moduleLayerRule
---    ]
-
-
 config : List Rule
 config =
-    [ EnforceBoundaries.rule moduleLayerRule
+    [ NoConfusingPrefixOperator.rule
+    , NoDebug.Log.rule
+    , NoDebug.TodoOrToString.rule
+        |> Rule.ignoreErrorsForDirectories [ "tests/" ]
+    , NoExposingEverything.rule
+    , NoImportingEverything.rule []
+    , NoMissingTypeAnnotation.rule
+    , NoMissingTypeExpose.rule
+    , NoSimpleLetBody.rule
+    , NoUnused.Dependencies.rule
+    , NoUnused.Variables.rule
+    , NoUnused.Patterns.rule
+    , NoUnused.Exports.rule
+        |> Rule.ignoreErrorsForFiles [ "src/Compiler/Parse/Expression.elm" ]
+    , Simplify.rule Simplify.defaults
+    , NoUnused.CustomTypeConstructors.rule []
+    , Docs.ReviewAtDocs.rule
+
+    --, NoUnused.CustomTypeConstructorArgs.rule
+    , NoUnused.Parameters.rule
+        |> Rule.ignoreErrorsForFiles [ "src/Utils/Crash.elm" ]
+    , EnforceBoundaries.rule moduleLayerRule
     ]
 
 
