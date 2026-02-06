@@ -33,13 +33,13 @@ import Compiler.LocalOpt.Typed.Module as TypedOptimize
 import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Result as Result
 import Compiler.Type.Constrain.Erased.Module as ConstrainErased
-import Compiler.Type.Constrain.Typed.Module as ConstrainTyped
 import Compiler.Type.PostSolve as PostSolve
 import Compiler.Type.Solve as Solve
 import Data.Map as Dict exposing (Dict)
 import Data.Set as EverySet exposing (EverySet)
 import Expect
 import System.TypeCheck.IO as IO
+import TestLogic.TestPipeline as Pipeline
 
 
 {-| Verify that Erased and Typed optimization paths produce equivalent results.
@@ -76,7 +76,7 @@ expectEquivalentOptimization srcModule =
                     IO.unsafePerformIO (runStandardTypeCheck canModule)
 
                 withIdsTypeCheck =
-                    IO.unsafePerformIO (runWithIdsTypeCheck canModule)
+                    IO.unsafePerformIO (Pipeline.runWithIdsTypeCheck canModule)
             in
             case ( standardTypeCheck, withIdsTypeCheck ) of
                 ( Err errCount, _ ) ->
@@ -139,25 +139,6 @@ runStandardTypeCheck modul =
                     Err (NE.Nonempty _ rest) ->
                         Err (1 + List.length rest)
             )
-
-
-runWithIdsTypeCheck : Can.Module -> IO.IO (Result Int { annotations : Dict String Name.Name Can.Annotation, nodeTypes : Dict Int Int Can.Type })
-runWithIdsTypeCheck modul =
-    ConstrainTyped.constrainWithIds modul
-        |> IO.andThen
-            (\( constraint, nodeVars ) ->
-                Solve.runWithIds constraint nodeVars
-            )
-        |> IO.map
-            (\result ->
-                case result of
-                    Ok data ->
-                        Ok data
-
-                    Err (NE.Nonempty _ rest) ->
-                        Err (1 + List.length rest)
-            )
-
 
 
 -- ============================================================================

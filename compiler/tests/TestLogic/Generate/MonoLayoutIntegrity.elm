@@ -22,18 +22,18 @@ import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.Source as Src
 import Data.Map as Dict
 import Expect
-import TestLogic.Generate.TypedOptimizedMonomorphize as TOMono
+import TestLogic.TestPipeline as Pipeline
 
 
 {-| MONO\_006: Verify record and tuple layouts capture shape completely.
 -}
 expectRecordTupleLayoutsComplete : Src.Module -> Expect.Expectation
 expectRecordTupleLayoutsComplete srcModule =
-    case TOMono.runToMonoGraph srcModule of
+    case Pipeline.runToMono srcModule of
         Err msg ->
             Expect.fail msg
 
-        Ok monoGraph ->
+        Ok { monoGraph } ->
             let
                 checks =
                     collectLayoutCompletenessChecks monoGraph
@@ -50,11 +50,11 @@ expectRecordTupleLayoutsComplete srcModule =
 -}
 expectRecordAccessMatchesLayout : Src.Module -> Expect.Expectation
 expectRecordAccessMatchesLayout srcModule =
-    case TOMono.runToMonoGraph srcModule of
+    case Pipeline.runToMono srcModule of
         Err msg ->
             Expect.fail msg
 
-        Ok monoGraph ->
+        Ok { monoGraph } ->
             let
                 checks =
                     collectRecordAccessChecks monoGraph
@@ -71,11 +71,11 @@ expectRecordAccessMatchesLayout srcModule =
 -}
 expectCtorLayoutsConsistent : Src.Module -> Expect.Expectation
 expectCtorLayoutsConsistent srcModule =
-    case TOMono.runToMonoGraph srcModule of
+    case Pipeline.runToMono srcModule of
         Err msg ->
             Expect.fail msg
 
-        Ok monoGraph ->
+        Ok { monoGraph } ->
             let
                 checks =
                     collectCtorLayoutChecks monoGraph
@@ -92,11 +92,11 @@ expectCtorLayoutsConsistent srcModule =
 -}
 expectLayoutsCanonical : Src.Module -> Expect.Expectation
 expectLayoutsCanonical srcModule =
-    case TOMono.runToMonoGraph srcModule of
+    case Pipeline.runToMono srcModule of
         Err msg ->
             Expect.fail msg
 
-        Ok monoGraph ->
+        Ok { monoGraph } ->
             let
                 checks =
                     collectCanonicalityChecks monoGraph

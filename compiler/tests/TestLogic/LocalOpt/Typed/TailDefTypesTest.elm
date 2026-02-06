@@ -33,7 +33,7 @@ import Compiler.Reporting.Annotation as A
 import Data.Map as Dict exposing (Dict)
 import Expect exposing (Expectation)
 import Test exposing (Test)
-import TestLogic.Generate.TypedOptimizedMonomorphize as Pipeline
+import TestLogic.TestPipeline as Pipeline
 
 
 suite : Test
@@ -92,7 +92,7 @@ sumHelperModule =
 -}
 checkSumHelper : Expectation
 checkSumHelper =
-    case Pipeline.runToTypedOptimized sumHelperModule of
+    case Pipeline.runToTypedOpt sumHelperModule of
         Err msg ->
             Expect.fail ("Pipeline failed: " ++ msg)
 

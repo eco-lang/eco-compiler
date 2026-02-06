@@ -19,7 +19,7 @@ import Compiler.AST.Source as Src
 import Data.Map as Dict
 import Data.Set as Set exposing (EverySet)
 import Expect
-import TestLogic.Generate.TypedOptimizedMonomorphize as TOMono
+import TestLogic.TestPipeline as Pipeline
 
 
 {-| Expect type checking to detect an infinite type and report an error.
@@ -31,7 +31,7 @@ infinite types (e.g., `let x = [x] in x`).
 expectInfiniteTypeDetected : Src.Module -> Expect.Expectation
 expectInfiniteTypeDetected srcModule =
     -- For infinite type detection, we expect compilation to fail
-    case TOMono.runToPostSolve srcModule of
+    case Pipeline.runToPostSolve srcModule of
         Err _ ->
             -- Expected - infinite type was detected and rejected
             Expect.pass
@@ -45,14 +45,14 @@ expectInfiniteTypeDetected srcModule =
 -}
 expectNoInfiniteTypes : Src.Module -> Expect.Expectation
 expectNoInfiniteTypes srcModule =
-    case TOMono.runToPostSolve srcModule of
+    case Pipeline.runToPostSolve srcModule of
         Err msg ->
             Expect.fail msg
 
         Ok result ->
             let
                 issues =
-                    collectInfiniteTypeIssues result.nodeTypes
+                    collectInfiniteTypeIssues result.nodeTypesPost
             in
             if List.isEmpty issues then
                 Expect.pass

@@ -15,7 +15,7 @@ import Compiler.Generate.MLIR.Types as Types
 import Data.Map as Dict
 import Expect exposing (Expectation)
 import Mlir.Mlir exposing (MlirModule, MlirOp, MlirType(..))
-import TestLogic.Generate.CodeGen.GenerateMLIR exposing (CompileResult, compileToMlirModule)
+import TestLogic.TestPipeline exposing (MlirArtifacts, runToMlir)
 import TestLogic.Generate.CodeGen.Invariants
     exposing
         ( Violation
@@ -29,7 +29,7 @@ import TestLogic.Generate.CodeGen.Invariants
 -}
 expectCtorLayoutConsistency : Src.Module -> Expectation
 expectCtorLayoutConsistency srcModule =
-    case compileToMlirModule srcModule of
+    case runToMlir srcModule of
         Err err ->
             Expect.fail ("Compilation failed: " ++ err)
 

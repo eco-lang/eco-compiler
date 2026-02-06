@@ -17,18 +17,18 @@ import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.Source as Src
 import Data.Map as Dict
 import Expect
-import TestLogic.Generate.TypedOptimizedMonomorphize as TOMono
+import TestLogic.TestPipeline as Pipeline
 
 
 {-| Verify that CEcoValue MVars do not affect layout.
 -}
 expectValidCEcoValueLayout : Src.Module -> Expect.Expectation
 expectValidCEcoValueLayout srcModule =
-    case TOMono.runToMonoGraph srcModule of
+    case Pipeline.runToMono srcModule of
         Err msg ->
             Expect.fail msg
 
-        Ok monoGraph ->
+        Ok { monoGraph } ->
             let
                 issues =
                     collectCEcoValueLayoutIssues monoGraph

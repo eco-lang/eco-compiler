@@ -19,7 +19,7 @@ import Dict
 import Expect exposing (Expectation)
 import Mlir.Mlir exposing (MlirBlock, MlirModule, MlirOp, MlirRegion(..), MlirType(..))
 import OrderedDict
-import TestLogic.Generate.CodeGen.GenerateMLIR exposing (compileToMlirModule)
+import TestLogic.TestPipeline exposing (runToMlir)
 import TestLogic.Generate.CodeGen.Invariants
     exposing
         ( TypeEnv
@@ -36,7 +36,7 @@ import TestLogic.Generate.CodeGen.Invariants
 -}
 expectEcoUnboxSanity : Src.Module -> Expectation
 expectEcoUnboxSanity srcModule =
-    case compileToMlirModule srcModule of
+    case runToMlir srcModule of
         Err err ->
             Expect.fail ("Compilation failed: " ++ err)
 

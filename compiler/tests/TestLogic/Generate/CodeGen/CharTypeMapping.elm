@@ -12,7 +12,7 @@ and all char constants/ops must use `i16`.
 import Compiler.AST.Source as Src
 import Expect exposing (Expectation)
 import Mlir.Mlir exposing (MlirModule, MlirOp, MlirType(..))
-import TestLogic.Generate.CodeGen.GenerateMLIR exposing (compileToMlirModule)
+import TestLogic.TestPipeline exposing (runToMlir)
 import TestLogic.Generate.CodeGen.Invariants
     exposing
         ( Violation
@@ -31,7 +31,7 @@ use i16 (not i32) for character values.
 -}
 expectCharTypeMapping : Src.Module -> Expectation
 expectCharTypeMapping srcModule =
-    case compileToMlirModule srcModule of
+    case runToMlir srcModule of
         Err err ->
             Expect.fail ("Compilation failed: " ++ err)
 

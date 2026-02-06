@@ -11,21 +11,21 @@ import Compiler.AST.Canonical as Can
 import Compiler.AST.Source as Src
 import Data.Map as Dict
 import Expect
-import TestLogic.Generate.TypedOptimizedMonomorphize as TOMono
+import TestLogic.TestPipeline as Pipeline
 
 
 {-| Verify that Group B expressions get structural types.
 -}
 expectGroupBTypesValid : Src.Module -> Expect.Expectation
 expectGroupBTypesValid srcModule =
-    case TOMono.runToPostSolve srcModule of
+    case Pipeline.runToPostSolve srcModule of
         Err msg ->
             Expect.fail msg
 
         Ok result ->
             let
                 checks =
-                    collectGroupBTypeChecks result.nodeTypes
+                    collectGroupBTypeChecks result.nodeTypesPost
             in
             case checks of
                 [] ->

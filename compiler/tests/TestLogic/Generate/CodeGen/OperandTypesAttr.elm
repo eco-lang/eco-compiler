@@ -11,7 +11,7 @@ module TestLogic.Generate.CodeGen.OperandTypesAttr exposing (expectOperandTypesA
 import Compiler.AST.Source as Src
 import Expect exposing (Expectation)
 import Mlir.Mlir exposing (MlirModule, MlirOp)
-import TestLogic.Generate.CodeGen.GenerateMLIR exposing (compileToMlirModule)
+import TestLogic.TestPipeline exposing (runToMlir)
 import TestLogic.Generate.CodeGen.Invariants
     exposing
         ( Violation
@@ -25,7 +25,7 @@ import TestLogic.Generate.CodeGen.Invariants
 -}
 expectOperandTypesAttr : Src.Module -> Expectation
 expectOperandTypesAttr srcModule =
-    case compileToMlirModule srcModule of
+    case runToMlir srcModule of
         Err err ->
             Expect.fail ("Compilation failed: " ++ err)
 

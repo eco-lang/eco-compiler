@@ -19,7 +19,7 @@ import Expect exposing (Expectation)
 import Mlir.Mlir exposing (MlirBlock, MlirModule, MlirOp, MlirRegion(..))
 import OrderedDict
 import Set exposing (Set)
-import TestLogic.Generate.CodeGen.GenerateMLIR exposing (compileToMlirModule)
+import TestLogic.TestPipeline exposing (runToMlir)
 import TestLogic.Generate.CodeGen.Invariants
     exposing
         ( Violation
@@ -34,7 +34,7 @@ import TestLogic.Generate.CodeGen.Invariants
 -}
 expectRecordUpdateDataflow : Src.Module -> Expectation
 expectRecordUpdateDataflow srcModule =
-    case compileToMlirModule srcModule of
+    case runToMlir srcModule of
         Err err ->
             Expect.fail ("Compilation failed: " ++ err)
 

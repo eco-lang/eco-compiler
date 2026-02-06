@@ -18,7 +18,7 @@ import Compiler.AST.Source as Src
 import Compiler.Reporting.Annotation as A
 import Data.Map as Dict
 import Expect
-import TestLogic.Generate.TypedOptimizedMonomorphize as TOMono
+import TestLogic.TestPipeline as Pipeline
 
 
 {-| Verify that all imports are properly resolved.
@@ -26,7 +26,7 @@ import TestLogic.Generate.TypedOptimizedMonomorphize as TOMono
 expectImportsResolved : Src.Module -> Expect.Expectation
 expectImportsResolved srcModule =
     -- If the module successfully canonicalizes, all imports were resolved
-    case TOMono.runToPostSolve srcModule of
+    case Pipeline.runToPostSolve srcModule of
         Err msg ->
             -- Check if this is an import resolution error
             if String.contains "import" (String.toLower msg) then

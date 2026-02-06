@@ -15,18 +15,18 @@ import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.Source as Src
 import Data.Map as Dict
 import Expect
-import TestLogic.Generate.TypedOptimizedMonomorphize as TOMono
+import TestLogic.TestPipeline as Pipeline
 
 
 {-| MONO\_012: Verify function arity matches parameters and closure info.
 -}
 expectFunctionArityMatches : Src.Module -> Expect.Expectation
 expectFunctionArityMatches srcModule =
-    case TOMono.runToMonoGraph srcModule of
+    case Pipeline.runToMono srcModule of
         Err msg ->
             Expect.fail msg
 
-        Ok monoGraph ->
+        Ok { monoGraph } ->
             let
                 issues =
                     collectArityIssues monoGraph

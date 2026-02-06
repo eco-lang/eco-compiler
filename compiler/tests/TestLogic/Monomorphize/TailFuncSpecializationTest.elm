@@ -34,7 +34,7 @@ import Compiler.Data.Name as Name
 import Data.Map as Dict
 import Expect exposing (Expectation)
 import Test exposing (Test)
-import TestLogic.Generate.TypedOptimizedMonomorphize as Pipeline
+import TestLogic.TestPipeline as Pipeline
 
 
 suite : Test
@@ -111,11 +111,11 @@ For sumHelper : Int -> Int -> Int, we expect:
 -}
 checkSumHelperMono : Expectation
 checkSumHelperMono =
-    case Pipeline.runToMonoGraph sumHelperModule of
+    case Pipeline.runToMono sumHelperModule of
         Err msg ->
             Expect.fail ("Pipeline failed: " ++ msg)
 
-        Ok monoGraph ->
+        Ok { monoGraph } ->
             checkMonoTailFuncType "sumHelper" monoGraph
 
 
@@ -123,11 +123,11 @@ checkSumHelperMono =
 -}
 checkMonoTailFuncArity : Expectation
 checkMonoTailFuncArity =
-    case Pipeline.runToMonoGraph sumHelperModule of
+    case Pipeline.runToMono sumHelperModule of
         Err msg ->
             Expect.fail ("Pipeline failed: " ++ msg)
 
-        Ok monoGraph ->
+        Ok { monoGraph } ->
             checkMonoTailFuncArgCount "sumHelper" 2 monoGraph
 
 

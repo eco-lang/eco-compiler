@@ -33,7 +33,7 @@ import Compiler.GlobalOpt.MonoInlineSimplify as MonoInlineSimplify
 import Expect
 import SourceIR.Suite.StandardTestSuites as StandardTestSuites
 import Test exposing (Test)
-import TestLogic.Generate.TypedOptimizedMonomorphize as TOMono
+import TestLogic.TestPipeline as Pipeline
 
 
 suite : Test
@@ -71,11 +71,11 @@ optimizerCompilesSuite =
 
 expectOptimizationSucceeds : Src.Module -> Expect.Expectation
 expectOptimizationSucceeds srcModule =
-    case TOMono.runToMonoGraph srcModule of
+    case Pipeline.runToMono srcModule of
         Err msg ->
             Expect.fail ("Failed to create MonoGraph: " ++ msg)
 
-        Ok monoGraph ->
+        Ok { monoGraph } ->
             let
                 typeEnv =
                     TypeEnv.emptyGlobalTypeEnv
@@ -210,11 +210,11 @@ metricsCollectionSuite =
 
 expectMetricsNonNegative : Src.Module -> Expect.Expectation
 expectMetricsNonNegative srcModule =
-    case TOMono.runToMonoGraph srcModule of
+    case Pipeline.runToMono srcModule of
         Err msg ->
             Expect.fail ("Failed to create MonoGraph: " ++ msg)
 
-        Ok monoGraph ->
+        Ok { monoGraph } ->
             let
                 typeEnv =
                     TypeEnv.emptyGlobalTypeEnv
@@ -234,11 +234,11 @@ expectMetricsNonNegative srcModule =
 
 expectClosureCountCollected : Src.Module -> Expect.Expectation
 expectClosureCountCollected srcModule =
-    case TOMono.runToMonoGraph srcModule of
+    case Pipeline.runToMono srcModule of
         Err msg ->
             Expect.fail ("Failed to create MonoGraph: " ++ msg)
 
-        Ok monoGraph ->
+        Ok { monoGraph } ->
             let
                 typeEnv =
                     TypeEnv.emptyGlobalTypeEnv
@@ -264,12 +264,12 @@ standardTestSuite =
 
 expectOptimizationPreservesValidity : Src.Module -> Expect.Expectation
 expectOptimizationPreservesValidity srcModule =
-    case TOMono.runToMonoGraph srcModule of
+    case Pipeline.runToMono srcModule of
         Err _ ->
             -- If monomorphization fails, that's not the optimizer's fault
             Expect.pass
 
-        Ok monoGraph ->
+        Ok { monoGraph } ->
             let
                 typeEnv =
                     TypeEnv.emptyGlobalTypeEnv

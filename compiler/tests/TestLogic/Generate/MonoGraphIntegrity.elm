@@ -23,18 +23,18 @@ import Compiler.AST.Source as Src
 import Data.Map as Dict
 import Data.Set as Set exposing (EverySet)
 import Expect
-import TestLogic.Generate.TypedOptimizedMonomorphize as TOMono
+import TestLogic.TestPipeline as Pipeline
 
 
 {-| MONO\_004: Verify that all function-typed nodes are callable.
 -}
 expectCallableMonoNodes : Src.Module -> Expect.Expectation
 expectCallableMonoNodes srcModule =
-    case TOMono.runToMonoGraph srcModule of
+    case Pipeline.runToMono srcModule of
         Err msg ->
             Expect.fail msg
 
-        Ok monoGraph ->
+        Ok { monoGraph } ->
             let
                 checks =
                     collectCallabilityChecks monoGraph
@@ -51,11 +51,11 @@ expectCallableMonoNodes srcModule =
 -}
 expectMonoGraphComplete : Src.Module -> Expect.Expectation
 expectMonoGraphComplete srcModule =
-    case TOMono.runToMonoGraph srcModule of
+    case Pipeline.runToMono srcModule of
         Err msg ->
             Expect.fail msg
 
-        Ok monoGraph ->
+        Ok { monoGraph } ->
             let
                 checks =
                     collectCompletenessChecks monoGraph
@@ -72,11 +72,11 @@ expectMonoGraphComplete srcModule =
 -}
 expectMonoGraphClosed : Src.Module -> Expect.Expectation
 expectMonoGraphClosed srcModule =
-    case TOMono.runToMonoGraph srcModule of
+    case Pipeline.runToMono srcModule of
         Err msg ->
             Expect.fail msg
 
-        Ok monoGraph ->
+        Ok { monoGraph } ->
             let
                 checks =
                     collectClosureChecks monoGraph
@@ -93,11 +93,11 @@ expectMonoGraphClosed srcModule =
 -}
 expectSpecRegistryComplete : Src.Module -> Expect.Expectation
 expectSpecRegistryComplete srcModule =
-    case TOMono.runToMonoGraph srcModule of
+    case Pipeline.runToMono srcModule of
         Err msg ->
             Expect.fail msg
 
-        Ok monoGraph ->
+        Ok { monoGraph } ->
             let
                 checks =
                     collectRegistryChecks monoGraph

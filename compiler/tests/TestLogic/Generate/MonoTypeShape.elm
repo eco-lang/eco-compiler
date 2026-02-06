@@ -15,18 +15,18 @@ import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.Source as Src
 import Data.Map as Dict
 import Expect
-import TestLogic.Generate.TypedOptimizedMonomorphize as TOMono
+import TestLogic.TestPipeline as Pipeline
 
 
 {-| MONO\_001: Verify all MonoTypes are fully elaborated.
 -}
 expectMonoTypesFullyElaborated : Src.Module -> Expect.Expectation
 expectMonoTypesFullyElaborated srcModule =
-    case TOMono.runToMonoGraph srcModule of
+    case Pipeline.runToMono srcModule of
         Err msg ->
             Expect.fail msg
 
-        Ok monoGraph ->
+        Ok { monoGraph } ->
             let
                 issues =
                     collectMonoTypeIssues monoGraph

@@ -19,14 +19,14 @@ import Compiler.Reporting.Annotation as A
 import Data.Map as Dict
 import Data.Set as Set exposing (EverySet)
 import Expect
-import TestLogic.Generate.TypedOptimizedMonomorphize as TOMono
+import TestLogic.TestPipeline as Pipeline
 
 
 {-| Verify that SCCs are correctly computed.
 -}
 expectValidSCCs : Src.Module -> Expect.Expectation
 expectValidSCCs srcModule =
-    case TOMono.runToPostSolve srcModule of
+    case Pipeline.runToPostSolve srcModule of
         Err msg ->
             -- Check if this is a recursion error
             if String.contains "recursive" (String.toLower msg) then

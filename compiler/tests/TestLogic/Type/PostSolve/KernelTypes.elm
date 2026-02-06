@@ -12,14 +12,14 @@ import Compiler.AST.Source as Src
 import Compiler.Type.KernelTypes as KernelTypes
 import Data.Map as Dict
 import Expect
-import TestLogic.Generate.TypedOptimizedMonomorphize as TOMono
+import TestLogic.TestPipeline as Pipeline
 
 
 {-| Verify that kernel function types are inferred from usage.
 -}
 expectKernelTypesValid : Src.Module -> Expect.Expectation
 expectKernelTypesValid srcModule =
-    case TOMono.runToPostSolve srcModule of
+    case Pipeline.runToPostSolve srcModule of
         Err msg ->
             Expect.fail msg
 

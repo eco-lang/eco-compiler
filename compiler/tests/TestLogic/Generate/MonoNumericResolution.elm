@@ -18,18 +18,18 @@ import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.Source as Src
 import Data.Map as Dict
 import Expect
-import TestLogic.Generate.TypedOptimizedMonomorphize as TOMono
+import TestLogic.TestPipeline as Pipeline
 
 
 {-| MONO\_002: Verify no CNumber MVars remain at MLIR codegen entry.
 -}
 expectNoNumericPolymorphism : Src.Module -> Expect.Expectation
 expectNoNumericPolymorphism srcModule =
-    case TOMono.runToMonoGraph srcModule of
+    case Pipeline.runToMono srcModule of
         Err msg ->
             Expect.fail msg
 
-        Ok monoGraph ->
+        Ok { monoGraph } ->
             let
                 checks =
                     collectCNumberChecks monoGraph
@@ -46,11 +46,11 @@ expectNoNumericPolymorphism srcModule =
 -}
 expectNumericTypesResolved : Src.Module -> Expect.Expectation
 expectNumericTypesResolved srcModule =
-    case TOMono.runToMonoGraph srcModule of
+    case Pipeline.runToMono srcModule of
         Err msg ->
             Expect.fail msg
 
-        Ok monoGraph ->
+        Ok { monoGraph } ->
             let
                 checks =
                     collectCallSiteNumericChecks monoGraph

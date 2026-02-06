@@ -18,14 +18,14 @@ import Compiler.AST.Source as Src
 import Compiler.Reporting.Annotation as A
 import Data.Map as Dict
 import Expect
-import TestLogic.Generate.TypedOptimizedMonomorphize as TOMono
+import TestLogic.TestPipeline as Pipeline
 
 
 {-| Verify that cached type info is consistent.
 -}
 expectTypeInfoCached : Src.Module -> Expect.Expectation
 expectTypeInfoCached srcModule =
-    case TOMono.runToPostSolve srcModule of
+    case Pipeline.runToPostSolve srcModule of
         Err msg ->
             Expect.fail msg
 

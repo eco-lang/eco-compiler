@@ -12,7 +12,7 @@ with valid field indices.
 import Compiler.AST.Source as Src
 import Expect exposing (Expectation)
 import Mlir.Mlir exposing (MlirModule, MlirOp)
-import TestLogic.Generate.CodeGen.GenerateMLIR exposing (compileToMlirModule)
+import TestLogic.TestPipeline exposing (runToMlir)
 import TestLogic.Generate.CodeGen.Invariants
     exposing
         ( Violation
@@ -26,7 +26,7 @@ import TestLogic.Generate.CodeGen.Invariants
 -}
 expectTupleProjection : Src.Module -> Expectation
 expectTupleProjection srcModule =
-    case compileToMlirModule srcModule of
+    case runToMlir srcModule of
         Err err ->
             Expect.fail ("Compilation failed: " ++ err)
 

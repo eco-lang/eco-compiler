@@ -18,14 +18,14 @@ import Compiler.AST.Source as Src
 import Compiler.AST.TypedOptimized as TOpt
 import Data.Map as Dict
 import Expect
-import TestLogic.Generate.TypedOptimizedMonomorphize as TOMono
+import TestLogic.TestPipeline as Pipeline
 
 
 {-| Verify that all top-level annotations are preserved in the LocalGraphData.
 -}
 expectAnnotationsPreserved : Src.Module -> Expect.Expectation
 expectAnnotationsPreserved srcModule =
-    case TOMono.runToTypedOptimized srcModule of
+    case Pipeline.runToTypedOpt srcModule of
         Err msg ->
             Expect.fail msg
 
@@ -52,7 +52,7 @@ expectAnnotationsPreserved srcModule =
 Compares annotations from the typed result with the LocalGraph annotations.
 
 -}
-collectAnnotationIssues : TOMono.TypedOptResult -> List String
+collectAnnotationIssues : Pipeline.TypedOptArtifacts -> List String
 collectAnnotationIssues result =
     let
         (TOpt.LocalGraph graphData) =

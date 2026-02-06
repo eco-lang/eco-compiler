@@ -14,21 +14,21 @@ import Compiler.AST.Canonical as Can
 import Compiler.AST.Source as Src
 import Data.Map as Dict
 import Expect
-import TestLogic.Generate.TypedOptimizedMonomorphize as TOMono
+import TestLogic.TestPipeline as Pipeline
 
 
 {-| Verify that no unconstrained synthetic variables remain after PostSolve.
 -}
 expectNoSyntheticVars : Src.Module -> Expect.Expectation
 expectNoSyntheticVars srcModule =
-    case TOMono.runToPostSolve srcModule of
+    case Pipeline.runToPostSolve srcModule of
         Err msg ->
             Expect.fail msg
 
         Ok result ->
             let
                 issues =
-                    collectSyntheticVarIssues result.nodeTypes
+                    collectSyntheticVarIssues result.nodeTypesPost
             in
             if List.isEmpty issues then
                 Expect.pass

@@ -18,18 +18,18 @@ import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.Source as Src
 import Data.Map as Dict
 import Expect
-import TestLogic.Generate.TypedOptimizedMonomorphize as TOMono
+import TestLogic.TestPipeline as Pipeline
 
 
 {-| Verify that Debug kernel calls remain polymorphic with CEcoValue.
 -}
 expectDebugPolymorphismResolved : Src.Module -> Expect.Expectation
 expectDebugPolymorphismResolved srcModule =
-    case TOMono.runToMonoGraph srcModule of
+    case Pipeline.runToMono srcModule of
         Err msg ->
             Expect.fail msg
 
-        Ok monoGraph ->
+        Ok { monoGraph } ->
             let
                 issues =
                     collectDebugPolymorphismIssues monoGraph

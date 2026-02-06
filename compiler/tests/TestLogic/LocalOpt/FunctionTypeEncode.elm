@@ -20,14 +20,14 @@ import Compiler.Reporting.Annotation as A
 import Data.Map as Dict
 import Expect
 import System.TypeCheck.IO as IO
-import TestLogic.Generate.TypedOptimizedMonomorphize as TOMono
+import TestLogic.TestPipeline as Pipeline
 
 
 {-| Verify that all function expressions have correctly encoded function types.
 -}
 expectFunctionTypesEncoded : Src.Module -> Expect.Expectation
 expectFunctionTypesEncoded srcModule =
-    case TOMono.runToTypedOptimized srcModule of
+    case Pipeline.runToTypedOpt srcModule of
         Err msg ->
             Expect.fail msg
 

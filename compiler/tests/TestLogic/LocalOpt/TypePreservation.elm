@@ -25,26 +25,17 @@ Key checks:
 
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Source as Src
-import Compiler.AST.TypedCanonical as TCan
 import Compiler.AST.TypedOptimized as TOpt
-import Compiler.Canonicalize.Module as Canonicalize
 import Compiler.Data.Name as Name
-import Compiler.Data.NonEmptyList as NE
-import Compiler.Data.OneOrMore as OneOrMore
-import Compiler.Elm.Interface.Basic as Basic
 import Compiler.Elm.Package as Pkg
-import Compiler.LocalOpt.Typed.Module as TypedOptimize
 import Compiler.Reporting.Annotation as A
-import Compiler.Reporting.Result as RResult
-import Compiler.Type.Constrain.Typed.Module as ConstrainTyped
 import Compiler.Type.KernelTypes as KernelTypes
-import Compiler.Type.PostSolve as PostSolve
-import Compiler.Type.Solve as Solve
 import Data.Map as Dict exposing (Dict)
 import Data.Set as EverySet
 import Expect
 import System.TypeCheck.IO as IO
 import TestLogic.LocalOpt.Typed.TypeEq as TypeEq
+import TestLogic.TestPipeline as Pipeline
 
 
 
@@ -76,10 +67,7 @@ type alias TypeEnv =
 {-| Result of running through typed optimization with all artifacts.
 -}
 type alias TypedOptArtifacts =
-    { localGraph : TOpt.LocalGraph
-    , annotations : Dict String Name.Name Can.Annotation
-    , kernelEnv : KernelTypes.KernelTypeEnv
-    }
+    Pipeline.TypedOptArtifacts
 
 
 
@@ -92,7 +80,7 @@ type alias TypedOptArtifacts =
 -}
 expectTypePreservation : Src.Module -> Expect.Expectation
 expectTypePreservation srcModule =
-    case runToTypedOptimizedWithKernelEnv srcModule of
+    case Pipeline.runToTypedOpt srcModule of
         Err msg ->
             Expect.fail msg
 
@@ -112,75 +100,6 @@ expectTypePreservation srcModule =
 
             else
                 Expect.fail (formatViolations violations)
-
-
-
--- ============================================================================
--- PIPELINE
--- ============================================================================
-
-
-{-| Run the pipeline through typed optimization and return artifacts including kernelEnv.
--}
-runToTypedOptimizedWithKernelEnv : Src.Module -> Result String TypedOptArtifacts
-runToTypedOptimizedWithKernelEnv srcModule =
-    let
-        canonResult =
-            Canonicalize.canonicalize ( "eco", "example" ) Basic.testIfaces srcModule
-    in
-    case RResult.run canonResult of
-        ( _, Err errors ) ->
-            let
-                errorCount =
-                    OneOrMore.destruct (::) errors |> List.length
-            in
-            Err ("Canonicalization failed with " ++ String.fromInt errorCount ++ " error(s)")
-
-        ( _, Ok canModule ) ->
-            let
-                typeCheckResult =
-                    IO.unsafePerformIO (runWithIdsTypeCheck canModule)
-            in
-            case typeCheckResult of
-                Err errCount ->
-                    Err ("Type checking failed with " ++ String.fromInt errCount ++ " error(s)")
-
-                Ok typedData ->
-                    let
-                        postSolveResult =
-                            PostSolve.postSolve typedData.annotations canModule typedData.nodeTypes
-
-                        typedModule =
-                            TCan.fromCanonical canModule postSolveResult.nodeTypes
-                    in
-                    case RResult.run (TypedOptimize.optimizeTyped typedData.annotations postSolveResult.nodeTypes postSolveResult.kernelEnv typedModule) of
-                        ( _, Ok graph ) ->
-                            Ok
-                                { localGraph = graph
-                                , annotations = typedData.annotations
-                                , kernelEnv = postSolveResult.kernelEnv
-                                }
-
-                        ( _, Err _ ) ->
-                            Err "Typed optimization produced an error"
-
-
-runWithIdsTypeCheck : Can.Module -> IO.IO (Result Int { annotations : Dict String Name.Name Can.Annotation, nodeTypes : PostSolve.NodeTypes })
-runWithIdsTypeCheck modul =
-    ConstrainTyped.constrainWithIds modul
-        |> IO.andThen
-            (\( constraint, nodeVars ) ->
-                Solve.runWithIds constraint nodeVars
-            )
-        |> IO.map
-            (\result ->
-                case result of
-                    Ok data ->
-                        Ok data
-
-                    Err (NE.Nonempty _ rest) ->
-                        Err (1 + List.length rest)
-            )
 
 
 

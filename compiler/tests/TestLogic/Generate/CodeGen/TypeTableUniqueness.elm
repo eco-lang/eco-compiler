@@ -11,7 +11,7 @@ Each module must have at most one `eco.type_table` op at module scope.
 import Compiler.AST.Source as Src
 import Expect exposing (Expectation)
 import Mlir.Mlir exposing (MlirModule)
-import TestLogic.Generate.CodeGen.GenerateMLIR exposing (compileToMlirModule)
+import TestLogic.TestPipeline exposing (runToMlir)
 import TestLogic.Generate.CodeGen.Invariants
     exposing
         ( Violation
@@ -23,7 +23,7 @@ import TestLogic.Generate.CodeGen.Invariants
 -}
 expectTypeTableUniqueness : Src.Module -> Expectation
 expectTypeTableUniqueness srcModule =
-    case compileToMlirModule srcModule of
+    case runToMlir srcModule of
         Err err ->
             Expect.fail ("Compilation failed: " ++ err)
 

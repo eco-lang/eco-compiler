@@ -21,13 +21,13 @@ import Compiler.Data.OneOrMore as OneOrMore
 import Compiler.Elm.Interface.Basic as Basic
 import Compiler.Reporting.Result as RResult
 import Compiler.Type.Constrain.Typed.Module as ConstrainTyped
-import Compiler.Type.Constrain.Typed.NodeIds as NodeIds
 import Compiler.Type.KernelTypes as KernelTypes
 import Compiler.Type.PostSolve as PostSolve
 import Compiler.Type.Solve as Solve
 import Data.Map as Dict
 import Data.Set as EverySet
 import System.TypeCheck.IO as IO
+import TestLogic.TestPipeline as Pipeline
 
 
 {-| Artifacts from running through PostSolve, including both pre and post snapshots.
@@ -57,70 +57,16 @@ type alias DetailedArtifacts =
 -}
 compileToPostSolve : Src.Module -> Result String Artifacts
 compileToPostSolve srcModule =
-    let
-        canonResult =
-            Canonicalize.canonicalize ( "eco", "example" ) Basic.testIfaces srcModule
-    in
-    case RResult.run canonResult of
-        ( _, Err errors ) ->
-            let
-                errorCount =
-                    OneOrMore.destruct (::) errors |> List.length
-            in
-            Err ("Canonicalization failed with " ++ String.fromInt errorCount ++ " error(s)")
-
-        ( _, Ok canModule ) ->
-            let
-                typeCheckResult =
-                    IO.unsafePerformIO (runWithIdsTypeCheck canModule)
-            in
-            case typeCheckResult of
-                Err errCount ->
-                    Err ("Type checking failed with " ++ String.fromInt errCount ++ " error(s)")
-
-                Ok typedData ->
-                    let
-                        postSolveResult =
-                            PostSolve.postSolve typedData.annotations canModule typedData.nodeTypes
-                    in
-                    Ok
-                        { annotations = typedData.annotations
-                        , nodeTypesPre = typedData.nodeTypes
-                        , nodeTypesPost = postSolveResult.nodeTypes
-                        , kernelEnv = postSolveResult.kernelEnv
-                        , canonical = canModule
-                        }
-
-
-{-| Run type checking with IDs, returning typed data or error count.
-
-This mirrors the implementation in TypedOptimizedMonomorphize.
-
--}
-runWithIdsTypeCheck :
-    Can.Module
-    ->
-        IO.IO
-            (Result
-                Int
-                { annotations : Dict.Dict String Name.Name Can.Annotation
-                , nodeTypes : PostSolve.NodeTypes
+    -- Delegate to shared pipeline
+    Pipeline.runToPostSolve srcModule
+        |> Result.map
+            (\pipelineResult ->
+                { annotations = pipelineResult.annotations
+                , nodeTypesPre = pipelineResult.nodeTypesPre
+                , nodeTypesPost = pipelineResult.nodeTypesPost
+                , kernelEnv = pipelineResult.kernelEnv
+                , canonical = pipelineResult.canonical
                 }
-            )
-runWithIdsTypeCheck canModule =
-    ConstrainTyped.constrainWithIds canModule
-        |> IO.andThen
-            (\( constraint, nodeVars ) ->
-                Solve.runWithIds constraint nodeVars
-            )
-        |> IO.map
-            (\result ->
-                case result of
-                    Ok data ->
-                        Ok data
-
-                    Err (NE.Nonempty _ rest) ->
-                        Err (1 + List.length rest)
             )
 
 

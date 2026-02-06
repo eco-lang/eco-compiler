@@ -22,14 +22,14 @@ import Compiler.Reporting.Annotation as A
 import Data.Map as Dict
 import Expect
 import System.TypeCheck.IO as IO
-import TestLogic.Generate.TypedOptimizedMonomorphize as TOMono
+import TestLogic.TestPipeline as Pipeline
 
 
 {-| TOPT\_002: Verify decision trees have no nested patterns.
 -}
 expectDeciderNoNestedPatterns : Src.Module -> Expect.Expectation
 expectDeciderNoNestedPatterns srcModule =
-    case TOMono.runToTypedOptimized srcModule of
+    case Pipeline.runToTypedOpt srcModule of
         Err msg ->
             Expect.fail msg
 
@@ -50,7 +50,7 @@ expectDeciderNoNestedPatterns srcModule =
 -}
 expectDeciderComplete : Src.Module -> Expect.Expectation
 expectDeciderComplete srcModule =
-    case TOMono.runToTypedOptimized srcModule of
+    case Pipeline.runToTypedOpt srcModule of
         Err msg ->
             Expect.fail msg
 

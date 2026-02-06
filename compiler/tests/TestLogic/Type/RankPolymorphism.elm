@@ -17,14 +17,14 @@ import Compiler.AST.Canonical as Can
 import Compiler.AST.Source as Src
 import Data.Map as Dict
 import Expect
-import TestLogic.Generate.TypedOptimizedMonomorphize as TOMono
+import TestLogic.TestPipeline as Pipeline
 
 
 {-| Verify that rank-based let-polymorphism is enforced.
 -}
 expectRankPolymorphismValid : Src.Module -> Expect.Expectation
 expectRankPolymorphismValid srcModule =
-    case TOMono.runToPostSolve srcModule of
+    case Pipeline.runToPostSolve srcModule of
         Err msg ->
             Expect.fail msg
 

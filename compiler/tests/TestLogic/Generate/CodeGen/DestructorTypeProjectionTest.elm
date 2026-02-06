@@ -38,7 +38,7 @@ import TestLogic.Generate.CodeGen.DestructorTypeProjection
         ( countProjectionUnboxSequences
         , expectDestructorTypeProjection
         )
-import TestLogic.Generate.CodeGen.GenerateMLIR exposing (compileToMlirModule)
+import TestLogic.TestPipeline exposing (runToMlir)
 
 
 suite : Test
@@ -151,7 +151,7 @@ testResultIntExtraction =
                         [ resultUnion ]
                         []
             in
-            case compileToMlirModule modul of
+            case runToMlir modul of
                 Err err ->
                     Expect.fail ("Compilation failed: " ++ err)
 
@@ -217,7 +217,7 @@ testMaybeIntExtraction =
                         [ maybeUnion ]
                         []
             in
-            case compileToMlirModule modul of
+            case runToMlir modul of
                 Err err ->
                     Expect.fail ("Compilation failed: " ++ err)
 
@@ -296,7 +296,7 @@ testNestedResultExtraction =
                         [ resultUnion ]
                         []
             in
-            case compileToMlirModule modul of
+            case runToMlir modul of
                 Err err ->
                     Expect.fail ("Compilation failed: " ++ err)
 

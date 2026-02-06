@@ -15,7 +15,7 @@ Note: `eco.case` is NOT a terminator - it is a value-producing expression.
 import Compiler.AST.Source as Src
 import Expect exposing (Expectation)
 import Mlir.Mlir exposing (MlirBlock, MlirModule, MlirOp, MlirRegion(..))
-import TestLogic.Generate.CodeGen.GenerateMLIR exposing (compileToMlirModule)
+import TestLogic.TestPipeline exposing (runToMlir)
 import TestLogic.Generate.CodeGen.Invariants
     exposing
         ( Violation
@@ -30,7 +30,7 @@ import TestLogic.Generate.CodeGen.Invariants
 -}
 expectBlockTerminator : Src.Module -> Expectation
 expectBlockTerminator srcModule =
-    case compileToMlirModule srcModule of
+    case runToMlir srcModule of
         Err err ->
             Expect.fail ("Compilation failed: " ++ err)
 

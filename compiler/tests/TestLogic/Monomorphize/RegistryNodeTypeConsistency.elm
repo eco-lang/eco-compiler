@@ -19,7 +19,7 @@ import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.Source as Src
 import Data.Map as Dict
 import Expect exposing (Expectation)
-import TestLogic.Generate.TypedOptimizedMonomorphize as TOMono
+import TestLogic.TestPipeline as Pipeline
 
 
 {-| Violation record for reporting issues.
@@ -34,11 +34,11 @@ type alias Violation =
 -}
 expectRegistryNodeTypeConsistency : Src.Module -> Expectation
 expectRegistryNodeTypeConsistency srcModule =
-    case TOMono.runToMonoGraph srcModule of
+    case Pipeline.runToMono srcModule of
         Err msg ->
             Expect.fail ("Compilation failed: " ++ msg)
 
-        Ok monoGraph ->
+        Ok { monoGraph } ->
             let
                 violations =
                     checkRegistryNodeTypeConsistency monoGraph

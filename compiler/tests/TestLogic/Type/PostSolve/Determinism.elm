@@ -15,7 +15,7 @@ import Compiler.AST.Canonical as Can
 import Compiler.AST.Source as Src
 import Data.Map as Dict
 import Expect
-import TestLogic.Generate.TypedOptimizedMonomorphize as TOMono
+import TestLogic.TestPipeline as Pipeline
 
 
 {-| Verify that PostSolve is deterministic for Group B and kernels.
@@ -23,7 +23,7 @@ import TestLogic.Generate.TypedOptimizedMonomorphize as TOMono
 expectDeterministicTypes : Src.Module -> Expect.Expectation
 expectDeterministicTypes srcModule =
     -- Run PostSolve twice and compare results
-    case ( TOMono.runToPostSolve srcModule, TOMono.runToPostSolve srcModule ) of
+    case ( Pipeline.runToPostSolve srcModule, Pipeline.runToPostSolve srcModule ) of
         ( Err msg1, _ ) ->
             Expect.fail ("First run failed: " ++ msg1)
 
@@ -33,7 +33,7 @@ expectDeterministicTypes srcModule =
         ( Ok result1, Ok result2 ) ->
             let
                 nodeTypesMatch =
-                    compareNodeTypes result1.nodeTypes result2.nodeTypes
+                    compareNodeTypes result1.nodeTypesPost result2.nodeTypesPost
             in
             if List.isEmpty nodeTypesMatch then
                 Expect.pass
