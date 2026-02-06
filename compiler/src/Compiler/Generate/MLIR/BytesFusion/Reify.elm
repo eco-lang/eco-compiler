@@ -29,6 +29,7 @@ expression tree to identify Bytes.Encode/Decode combinator calls.
 
 import Compiler.AST.Monomorphized as Mono exposing (Global(..), MonoExpr(..))
 import Compiler.Elm.Package as Pkg
+import Compiler.Monomorphize.Registry as Registry
 import Compiler.Generate.MLIR.BytesFusion.LoopIR as IR exposing (Endianness(..), Op(..), WidthExpr(..))
 import Dict exposing (Dict)
 import System.TypeCheck.IO as IO
@@ -115,7 +116,7 @@ reifyEncoderHelp registry expr =
         Mono.MonoCall _ func args _ ->
             case func of
                 Mono.MonoVarGlobal _ specId _ ->
-                    case Mono.lookupSpecKey specId registry of
+                    case Registry.lookupSpecKey specId registry of
                         Just ( Mono.Global (IO.Canonical pkg moduleName) name, _, _ ) ->
                             if pkg == Pkg.bytes && moduleName == "Bytes.Encode" then
                                 reifyBytesEncodeCall registry name args
@@ -235,7 +236,7 @@ reifyEncoderList registry listExpr =
 Based on MonoExpr structure:
 
   - `MonoVarGlobal Region SpecId MonoType` references global values including constructors
-  - `Mono.lookupSpecKey` returns `Maybe (Global, MonoType, Maybe LambdaId)` (a tuple!)
+  - `Registry.lookupSpecKey` returns `Maybe (Global, MonoType, Maybe LambdaId)` (a tuple!)
   - `Global = Global IO.Canonical Name | Accessor Name`
 
 Bytes.BE and Bytes.LE are nullary constructors of Bytes.Endianness.
@@ -246,7 +247,7 @@ reifyEndianness registry expr =
     case expr of
         -- Nullary constructors are represented as MonoVarGlobal
         Mono.MonoVarGlobal _ specId _ ->
-            case Mono.lookupSpecKey specId registry of
+            case Registry.lookupSpecKey specId registry of
                 Just ( Mono.Global (IO.Canonical pkg moduleName) name, _, _ ) ->
                     if pkg == Pkg.bytes && moduleName == "Bytes" then
                         case name of
@@ -385,7 +386,7 @@ reifyDecoder registry expr =
         Mono.MonoCall _ func args _ ->
             case func of
                 Mono.MonoVarGlobal _ specId _ ->
-                    case Mono.lookupSpecKey specId registry of
+                    case Registry.lookupSpecKey specId registry of
                         Just ( Mono.Global (IO.Canonical pkg moduleName) name, _, _ ) ->
                             if pkg == Pkg.bytes && moduleName == "Bytes.Decode" then
                                 reifyBytesDecodeCall registry name args
@@ -599,7 +600,7 @@ matchLengthPrefixedPattern registry paramName bodyExpr =
         Mono.MonoCall _ func [ argExpr ] _ ->
             case func of
                 Mono.MonoVarGlobal _ specId _ ->
-                    case Mono.lookupSpecKey specId registry of
+                    case Registry.lookupSpecKey specId registry of
                         Just ( Mono.Global (IO.Canonical pkg moduleName) name, _, _ ) ->
                             if pkg == Pkg.bytes && moduleName == "Bytes.Decode" then
                                 -- Check if the argument is just the parameter variable
@@ -767,7 +768,7 @@ extractSentinelFromBody registry bodyExpr =
             case func of
                 Mono.MonoVarGlobal _ specId _ ->
                     -- Check if this is Decode.andThen
-                    case Mono.lookupSpecKey specId registry of
+                    case Registry.lookupSpecKey specId registry of
                         Just ( Mono.Global (IO.Canonical pkg moduleName) name, _, _ ) ->
                             if pkg == Pkg.bytes && moduleName == "Bytes.Decode" && name == "andThen" then
                                 -- Found andThen, now extract sentinel and item decoder
@@ -976,7 +977,7 @@ extractItemDecoderFromMapCall registry expr =
             -- Check if func is Decode.map
             case func of
                 Mono.MonoVarGlobal _ specId _ ->
-                    case Mono.lookupSpecKey specId registry of
+                    case Registry.lookupSpecKey specId registry of
                         Just ( Mono.Global (IO.Canonical pkg moduleName) name, _, _ ) ->
                             if pkg == Pkg.bytes && moduleName == "Bytes.Decode" && name == "map" then
                                 reifyDecoder registry itemDecoderExpr

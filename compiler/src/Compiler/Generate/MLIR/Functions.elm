@@ -18,6 +18,7 @@ This module handles generation of all function types:
 
 import Compiler.AST.Monomorphized as Mono
 import Compiler.Data.Name as Name
+import Compiler.Monomorphize.Registry as Registry
 import Compiler.Generate.MLIR.Context as Ctx
 import Compiler.Generate.MLIR.Expr as Expr
 import Compiler.Generate.MLIR.Names as Names
@@ -99,7 +100,7 @@ generateNode ctx specId node =
                 -- Look up the spec key to get the constructor name
                 maybeCtorName : Maybe String
                 maybeCtorName =
-                    case Mono.lookupSpecKey specId ctx.registry of
+                    case Registry.lookupSpecKey specId ctx.registry of
                         Just ( Mono.Global _ ctorName, _, _ ) ->
                             Just (Name.toElmString ctorName)
 
@@ -134,7 +135,7 @@ generateNode ctx specId node =
 
 specIdToFuncName : Mono.SpecializationRegistry -> Mono.SpecId -> String
 specIdToFuncName registry specId =
-    case Mono.lookupSpecKey specId registry of
+    case Registry.lookupSpecKey specId registry of
         Just ( Mono.Global home name, _, _ ) ->
             Names.canonicalToMLIRName home ++ "_" ++ Names.sanitizeName name ++ "_$_" ++ String.fromInt specId
 

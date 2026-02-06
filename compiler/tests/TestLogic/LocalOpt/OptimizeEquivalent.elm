@@ -21,6 +21,7 @@ import Compiler.AST.Optimized as Opt
 import Compiler.AST.Source as Src
 import Compiler.AST.TypedCanonical as TCan
 import Compiler.AST.TypedOptimized as TOpt
+import Compiler.TypedCanonical.Build as TCanBuild
 import Compiler.Canonicalize.Module as Canonicalize
 import Compiler.Data.Name as Name
 import Compiler.Data.NonEmptyList as NE
@@ -170,7 +171,7 @@ runTypedOptimization annotations exprTypes canModule =
             postSolveResult.kernelEnv
 
         typedModule =
-            TCan.fromCanonical canModule fixedNodeTypes
+            TCanBuild.fromCanonical canModule fixedNodeTypes
     in
     case Result.run (TypedOptimize.optimizeTyped annotations fixedNodeTypes kernelEnv typedModule) of
         ( _, Ok graph ) ->

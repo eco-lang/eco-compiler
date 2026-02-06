@@ -58,6 +58,7 @@ import Builder.Deps.Solver as Solver
 import Builder.Deps.Website as Website
 import Builder.Elm.Outline as Outline
 import Builder.File as File
+import Builder.GraphAssembly as GA
 import Builder.Http as Http
 import Builder.Reporting as Reporting
 import Builder.Reporting.Exit as Exit
@@ -244,7 +245,7 @@ loadPackageTypedArtifacts cache deps =
             (\loadedArtifacts ->
                 Dict.foldl compare
                     (\_ arts acc ->
-                        { typedGraph = TOpt.addGlobalGraph arts.typedGraph acc.typedGraph
+                        { typedGraph = GA.addTypedGlobalGraph arts.typedGraph acc.typedGraph
                         , typeEnv = TypeEnv.mergeGlobalTypeEnv arts.typeEnv acc.typeEnv
                         }
                     )
@@ -273,7 +274,7 @@ combineTypedArtifacts maybeLocal packageArtifacts =
     case maybeLocal of
         Just local ->
             Just
-                { typedGraph = TOpt.addGlobalGraph local packageArtifacts.typedGraph
+                { typedGraph = GA.addTypedGlobalGraph local packageArtifacts.typedGraph
                 , typeEnv = packageArtifacts.typeEnv
                 }
 
@@ -706,7 +707,7 @@ writeVerifiedArtifacts scope root maybeBuildDir time outline directDeps artifact
 
 addObjects : Artifacts -> Opt.GlobalGraph -> Opt.GlobalGraph
 addObjects (Artifacts _ objs) graph =
-    Opt.addGlobalGraph objs graph
+    GA.addOptGlobalGraph objs graph
 
 
 addInterfaces : Dict ( String, String ) Pkg.Name a -> Pkg.Name -> Artifacts -> Interfaces -> Interfaces
@@ -1211,20 +1212,20 @@ printPackageCompileErrors cache pkg vsn firstErr restErrs =
 
 gatherObjects : Dict String ModuleName.Raw DResult -> Opt.GlobalGraph
 gatherObjects results =
-    Dict.foldr compare addLocalGraph Opt.empty results
+    Dict.foldr compare addLocalOptGraph Opt.empty results
 
 
-addLocalGraph : ModuleName.Raw -> DResult -> Opt.GlobalGraph -> Opt.GlobalGraph
-addLocalGraph name status graph =
+addLocalOptGraph : ModuleName.Raw -> DResult -> Opt.GlobalGraph -> Opt.GlobalGraph
+addLocalOptGraph name status graph =
     case status of
         RLocal _ objs _ _ _ ->
-            Opt.addLocalGraph objs graph
+            GA.addOptLocalGraph objs graph
 
         RForeign _ ->
             graph
 
         RKernelLocal cs ->
-            Opt.addKernel (Name.getKernel name) cs graph
+            GA.addOptKernel (Name.getKernel name) cs graph
 
         RKernelForeign ->
             graph
@@ -1234,18 +1235,18 @@ addLocalGraph name status graph =
 -}
 gatherTypedObjects : Dict String ModuleName.Raw DResult -> TOpt.GlobalGraph
 gatherTypedObjects results =
-    Dict.foldr compare addTypedLocalGraph TOpt.emptyGlobalGraph results
+    Dict.foldr compare addTypedLocalOptGraph TOpt.emptyGlobalGraph results
 
 
 {-| Add a typed local graph to the global graph.
 -}
-addTypedLocalGraph : ModuleName.Raw -> DResult -> TOpt.GlobalGraph -> TOpt.GlobalGraph
-addTypedLocalGraph _ status graph =
+addTypedLocalOptGraph : ModuleName.Raw -> DResult -> TOpt.GlobalGraph -> TOpt.GlobalGraph
+addTypedLocalOptGraph _ status graph =
     case status of
         RLocal _ _ maybeTypedObjs _ _ ->
             case maybeTypedObjs of
                 Just typedObjs ->
-                    TOpt.addLocalGraph typedObjs graph
+                    GA.addTypedLocalGraph typedObjs graph
 
                 Nothing ->
                     graph

@@ -37,7 +37,7 @@ import Bytes.Decode
 import Bytes.Encode
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Optimized as Opt
-import Compiler.AST.Utils.Type as Type
+import Compiler.Type.Normalize as Type
 import Compiler.Data.Name as Name
 import Compiler.Elm.Compiler.Type as T
 import Compiler.Elm.Interface as I

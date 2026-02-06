@@ -4,7 +4,7 @@ module Compiler.AST.TypedOptimized exposing
     , ContainerHint(..)
     , Decider(..), Choice(..)
     , GlobalGraph(..), LocalGraph(..), LocalGraphData, Node(..), Main(..), EffectsType(..)
-    , emptyGlobalGraph, addGlobalGraph, addLocalGraph
+    , emptyGlobalGraph
     , compareGlobal, toComparableGlobal, toKernelGlobal
     , typeOf
     , globalGraphEncoder, globalGraphDecoder, localGraphEncoder, localGraphDecoder
@@ -49,7 +49,7 @@ The key difference from Optimized:
 
 # Graph Operations
 
-@docs emptyGlobalGraph, addGlobalGraph, addLocalGraph
+@docs emptyGlobalGraph
 
 
 # Global Reference Utilities

@@ -32,7 +32,7 @@ dead code elimination and efficient code generation.
 
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Optimized as Opt
-import Compiler.AST.Utils.Type as Type
+import Compiler.Type.Normalize as Type
 import Compiler.Canonicalize.Effects as Effects
 import Compiler.Data.Name as Name
 import Compiler.Elm.ModuleName as ModuleName

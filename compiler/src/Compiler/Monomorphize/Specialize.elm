@@ -15,6 +15,8 @@ into monomorphized form by applying type substitutions.
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.TypeEnv as TypeEnv
+import Compiler.Monomorphize.Registry as Registry
+import Compiler.Monomorphize.Segmentation as Seg
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.Index as Index
 import Compiler.Data.Name as Name exposing (Name)
@@ -142,7 +144,7 @@ specializeLambda lambdaExpr canType subst state =
 
         -- Total flattened args & final return (for fully-peelable lambdas)
         ( flatArgTypes, flatRetType ) =
-            Mono.decomposeFunctionType monoType0
+            Seg.decomposeFunctionType monoType0
 
         totalArity : Int
         totalArity =
@@ -333,7 +335,7 @@ specializeLambda lambdaExpr canType subst state =
             _ =
                 let
                     stageArityCheck =
-                        Mono.stageParamTypes effectiveMonoType
+                        Seg.stageParamTypes effectiveMonoType
                 in
                 if List.length monoParams /= List.length stageArityCheck then
                     Utils.Crash.crash
@@ -623,7 +625,7 @@ specializeFunctionCycle requestedCanonical requestedName _ funcDefs requestedMon
             Mono.Global requestedCanonical requestedName
 
         ( requestedSpecId, _ ) =
-            Mono.getOrCreateSpecId requestedGlobal requestedMonoType Nothing stateAfter.registry
+            Registry.getOrCreateSpecId requestedGlobal requestedMonoType Nothing stateAfter.registry
     in
     case Dict.get identity requestedSpecId newNodes of
         Just requestedNode ->
@@ -666,7 +668,7 @@ specializeFunc requestedCanonical requestedName requestedMonoType sharedSubst de
                 monoTypeFromDef
 
         ( specId, newRegistry ) =
-            Mono.getOrCreateSpecId globalFun monoTypeForSpecId Nothing accState.registry
+            Registry.getOrCreateSpecId globalFun monoTypeForSpecId Nothing accState.registry
 
         accState1 =
             { accState | registry = newRegistry }
@@ -858,7 +860,7 @@ specializeExpr expr subst state =
                     toptGlobalToMono global
 
                 ( specId, newRegistry ) =
-                    Mono.getOrCreateSpecId monoGlobal monoType Nothing state.registry
+                    Registry.getOrCreateSpecId monoGlobal monoType Nothing state.registry
 
                 newState =
                     { state
@@ -890,7 +892,7 @@ specializeExpr expr subst state =
                     toptGlobalToMono global
 
                 ( specId, newRegistry ) =
-                    Mono.getOrCreateSpecId monoGlobal monoType Nothing state.registry
+                    Registry.getOrCreateSpecId monoGlobal monoType Nothing state.registry
 
                 newState =
                     { state
@@ -909,7 +911,7 @@ specializeExpr expr subst state =
                     toptGlobalToMono global
 
                 ( specId, newRegistry ) =
-                    Mono.getOrCreateSpecId monoGlobal monoType Nothing state.registry
+                    Registry.getOrCreateSpecId monoGlobal monoType Nothing state.registry
 
                 newState =
                     { state
@@ -928,7 +930,7 @@ specializeExpr expr subst state =
                     Mono.Global canonical name
 
                 ( specId, newRegistry ) =
-                    Mono.getOrCreateSpecId monoGlobal monoType Nothing state.registry
+                    Registry.getOrCreateSpecId monoGlobal monoType Nothing state.registry
 
                 newState =
                     { state
@@ -997,7 +999,7 @@ specializeExpr expr subst state =
                             toptGlobalToMono global
 
                         ( specId, newRegistry ) =
-                            Mono.getOrCreateSpecId monoGlobal funcMonoType Nothing state2.registry
+                            Registry.getOrCreateSpecId monoGlobal funcMonoType Nothing state2.registry
 
                         newState =
                             { state2
@@ -1198,7 +1200,7 @@ specializeExpr expr subst state =
                     Mono.Accessor fieldName
 
                 ( specId, newRegistry ) =
-                    Mono.getOrCreateSpecId accessorGlobal monoType Nothing state.registry
+                    Registry.getOrCreateSpecId accessorGlobal monoType Nothing state.registry
 
                 newState =
                     { state
@@ -1382,7 +1384,7 @@ resolveProcessedArg processedArg maybeParamType subst state =
                             Mono.Accessor fieldName
 
                         ( specId, newRegistry ) =
-                            Mono.getOrCreateSpecId accessorGlobal accessorMonoType Nothing state.registry
+                            Registry.getOrCreateSpecId accessorGlobal accessorMonoType Nothing state.registry
 
                         newState =
                             { state
@@ -1414,7 +1416,7 @@ resolveProcessedArg processedArg maybeParamType subst state =
                             Mono.Accessor fieldName
 
                         ( specId, newRegistry ) =
-                            Mono.getOrCreateSpecId accessorGlobal accessorMonoType Nothing state.registry
+                            Registry.getOrCreateSpecId accessorGlobal accessorMonoType Nothing state.registry
 
                         newState =
                             { state

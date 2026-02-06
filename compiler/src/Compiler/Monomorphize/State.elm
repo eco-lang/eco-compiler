@@ -25,6 +25,7 @@ the monomorphization process.
 
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.TypeEnv as TypeEnv
+import Compiler.Monomorphize.Registry as Registry
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.Name exposing (Name)
 import Data.Map as Dict exposing (Dict)
@@ -73,7 +74,7 @@ initState currentModule toptNodes globalTypeEnv =
     { worklist = []
     , nodes = Dict.empty
     , inProgress = EverySet.empty
-    , registry = Mono.emptyRegistry
+    , registry = Registry.emptyRegistry
     , lambdaCounter = 0
     , currentModule = currentModule
     , toptNodes = toptNodes

@@ -34,6 +34,7 @@ import Compiler.AST.Source as Src
 import Compiler.AST.TypeEnv as TypeEnv
 import Compiler.AST.TypedCanonical as TCan
 import Compiler.AST.TypedOptimized as TOpt
+import Compiler.TypedCanonical.Build as TCanBuild
 import Compiler.Canonicalize.Module as Canonicalize
 import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Elm.Interface as I
@@ -263,7 +264,7 @@ typeCheckTyped modul canonical =
             in
             Ok
                 { annotations = annotations
-                , typedCanonical = TCan.fromCanonical canonical fixedNodeTypes
+                , typedCanonical = TCanBuild.fromCanonical canonical fixedNodeTypes
                 , nodeTypes = fixedNodeTypes
                 , kernelEnv = kernelEnv
                 }

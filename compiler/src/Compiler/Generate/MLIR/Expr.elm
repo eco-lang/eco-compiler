@@ -39,6 +39,7 @@ import Compiler.AST.DecisionTree.Test as Test
 import Compiler.AST.DecisionTree.TypedPath as TypedPath
 import Compiler.AST.Monomorphized as Mono
 import Compiler.Data.Name as Name
+import Compiler.Monomorphize.Registry as Registry
 import Compiler.Elm.Package as Pkg
 import Compiler.Generate.MLIR.BytesFusion.Emit as BFEmit
 import Compiler.Generate.MLIR.BytesFusion.Reify as BFReify
@@ -89,7 +90,7 @@ emptyResult ctx var ty =
 
 specIdToFuncName : Mono.SpecializationRegistry -> Mono.SpecId -> String
 specIdToFuncName registry specId =
-    case Mono.lookupSpecKey specId registry of
+    case Registry.lookupSpecKey specId registry of
         Just ( Mono.Global home name, _, _ ) ->
             Names.canonicalToMLIRName home ++ "_" ++ Names.sanitizeName name ++ "_$_" ++ String.fromInt specId
 
@@ -1459,7 +1460,7 @@ generateSaturatedCall ctx func args resultType =
                 -- Check if this is a call to a core module function
                 maybeCoreInfo : Maybe ( String, String )
                 maybeCoreInfo =
-                    case Mono.lookupSpecKey specId ctx.registry of
+                    case Registry.lookupSpecKey specId ctx.registry of
                         Just ( Mono.Global (IO.Canonical pkg moduleName) name, _, _ ) ->
                             if pkg == Pkg.core then
                                 Just ( moduleName, name )
@@ -1477,7 +1478,7 @@ generateSaturatedCall ctx func args resultType =
                 -- Check if this is Bytes.Encode.encode for fusion
                 maybeBytesEncodeArg : Maybe Mono.MonoExpr
                 maybeBytesEncodeArg =
-                    case Mono.lookupSpecKey specId ctx.registry of
+                    case Registry.lookupSpecKey specId ctx.registry of
                         Just ( Mono.Global (IO.Canonical pkg moduleName) name, _, _ ) ->
                             if pkg == Pkg.bytes && moduleName == "Bytes.Encode" && name == "encode" then
                                 case args of
@@ -1496,7 +1497,7 @@ generateSaturatedCall ctx func args resultType =
                 -- Check if this is Bytes.Decode.decode for fusion
                 maybeBytesDecodeArgs : Maybe ( Mono.MonoExpr, Mono.MonoExpr )
                 maybeBytesDecodeArgs =
-                    case Mono.lookupSpecKey specId ctx.registry of
+                    case Registry.lookupSpecKey specId ctx.registry of
                         Just ( Mono.Global (IO.Canonical pkg moduleName) name, _, _ ) ->
                             if pkg == Pkg.bytes && moduleName == "Bytes.Decode" && name == "decode" then
                                 case args of

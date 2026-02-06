@@ -33,7 +33,7 @@ boundary without requiring manual encoder/decoder implementations.
 import Basics.Extra exposing (flip)
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Optimized as Opt
-import Compiler.AST.Utils.Type as Type
+import Compiler.Type.Normalize as Type
 import Compiler.Data.Index as Index
 import Compiler.Data.IndexName as IndexName
 import Compiler.Data.Name as Name exposing (Name)

@@ -56,6 +56,8 @@ import Compiler.AST.Source as Src
 import Compiler.AST.TypeEnv as TypeEnv
 import Compiler.AST.TypedCanonical as TCan
 import Compiler.AST.TypedOptimized as TOpt
+import Compiler.TypedCanonical.Build as TCanBuild
+import Builder.GraphAssembly as GA
 import Compiler.Canonicalize.Module as Canonicalize
 import Compiler.Data.Name as Name
 import Compiler.Data.NonEmptyList as NE
@@ -427,7 +429,7 @@ typeCheckTyped canonical =
             in
             Ok
                 { annotations = annotations
-                , typedCanonical = TCan.fromCanonical canonical fixedNodeTypes
+                , typedCanonical = TCanBuild.fromCanonical canonical fixedNodeTypes
                 , nodeTypes = fixedNodeTypes
                 , kernelEnv = kernelEnv
                 }
@@ -494,7 +496,7 @@ monomorphizeWithIfaces : Dict String ModuleName.Raw I.Interface -> CompileResult
 monomorphizeWithIfaces ifaces result =
     let
         globalGraph =
-            TOpt.addLocalGraph result.typedObjects TOpt.emptyGlobalGraph
+            GA.addTypedLocalGraph result.typedObjects TOpt.emptyGlobalGraph
 
         -- Build GlobalTypeEnv from both the canonical module and the interfaces
         globalTypeEnv =

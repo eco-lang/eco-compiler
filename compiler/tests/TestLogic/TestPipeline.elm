@@ -48,6 +48,8 @@ import Compiler.AST.Source as Src
 import Compiler.AST.TypeEnv as TypeEnv
 import Compiler.AST.TypedCanonical as TCan
 import Compiler.AST.TypedOptimized as TOpt
+import Compiler.TypedCanonical.Build as TCanBuild
+import Builder.GraphAssembly as GA
 import Compiler.Canonicalize.Module as Canonicalize
 import Compiler.Data.Name as Name
 import Compiler.Data.NonEmptyList as NE
@@ -224,7 +226,7 @@ runToTypedOpt srcModule =
         Ok { canonical, annotations, nodeTypesPost, kernelEnv } ->
             let
                 typedModule =
-                    TCan.fromCanonical canonical nodeTypesPost
+                    TCanBuild.fromCanonical canonical nodeTypesPost
             in
             case RResult.run (TypedOptimize.optimizeTyped annotations nodeTypesPost kernelEnv typedModule) of
                 ( _, Ok localGraph ) ->
@@ -338,7 +340,7 @@ runWithIdsTypeCheck modul =
 -}
 localGraphToGlobalGraph : TOpt.LocalGraph -> TOpt.GlobalGraph
 localGraphToGlobalGraph localGraph =
-    TOpt.addLocalGraph localGraph TOpt.emptyGlobalGraph
+    GA.addTypedLocalGraph localGraph TOpt.emptyGlobalGraph
 
 
 {-| Build a GlobalTypeEnv from a canonical module and test interfaces.

@@ -294,12 +294,12 @@ inline bool needsRecompile(const std::string& elmPath, const std::string& mlirPa
 
 /**
  * Get the MLIR output path for an Elm source file.
- * MLIR files are stored in guida-stuff/mlir/ relative to elm.json root.
+ * MLIR files are stored in eco-stuff/mlir/ relative to elm.json root.
  */
 inline std::string getMlirPath(const std::string& elmPath) {
     std::string testDir = getElmBytesTestDir();
     std::string filename = std::filesystem::path(elmPath).stem().string();
-    return testDir + "/guida-stuff/mlir/" + filename + ".mlir";
+    return testDir + "/eco-stuff/mlir/" + filename + ".mlir";
 }
 
 /**
@@ -307,7 +307,7 @@ inline std::string getMlirPath(const std::string& elmPath) {
  */
 inline void ensureMlirDirExists() {
     std::string testDir = getElmBytesTestDir();
-    std::string mlirDir = testDir + "/guida-stuff/mlir";
+    std::string mlirDir = testDir + "/eco-stuff/mlir";
     std::filesystem::create_directories(mlirDir);
 }
 

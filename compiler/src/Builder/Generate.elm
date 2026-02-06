@@ -38,6 +38,7 @@ import Builder.Build as Build
 import Builder.Elm.Details as Details
 import Builder.Elm.Outline as Outline
 import Builder.File as File
+import Builder.GraphAssembly as GA
 import Builder.Reporting.Exit as Exit
 import Builder.Stuff as Stuff
 import Compiler.AST.Canonical as Can
@@ -354,7 +355,7 @@ combineGlobalAndLocalObjects globalResult results =
 
 objectsToGlobalGraph : Objects -> Opt.GlobalGraph
 objectsToGlobalGraph (Objects globals locals) =
-    Dict.foldr compare (\_ -> Opt.addLocalGraph) globals locals
+    Dict.foldr compare (\_ -> GA.addOptLocalGraph) globals locals
 
 
 
@@ -555,7 +556,7 @@ combineTypedGlobalAndLocalObjects maybeGlobalArtifacts results =
 
 typedObjectsToGlobalGraph : TypedObjects -> TOpt.GlobalGraph
 typedObjectsToGlobalGraph (TypedObjects globals _ locals) =
-    Dict.foldr compare (\_ modTyped acc -> TOpt.addLocalGraph modTyped.graph acc) globals locals
+    Dict.foldr compare (\_ modTyped acc -> GA.addTypedLocalGraph modTyped.graph acc) globals locals
 
 
 typedObjectsToGlobalTypeEnv : TypedObjects -> TypeEnv.GlobalTypeEnv
@@ -646,7 +647,7 @@ addRootTypedGraph root graph =
         Build.Outside _ _ _ maybeTypedGraph _ ->
             case maybeTypedGraph of
                 Just typedGraph ->
-                    TOpt.addLocalGraph typedGraph graph
+                    GA.addTypedLocalGraph typedGraph graph
 
                 Nothing ->
                     graph

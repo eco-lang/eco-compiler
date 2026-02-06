@@ -37,6 +37,7 @@ This module handles:
 
 import Compiler.AST.Monomorphized as Mono
 import Compiler.Data.Name exposing (Name)
+import Compiler.Monomorphize.Segmentation as Seg
 import Compiler.Monomorphize.State exposing (MonoState)
 import Compiler.Reporting.Annotation as A
 import Data.Map as Dict exposing (Dict)
@@ -57,10 +58,10 @@ ensureCallableTopLevel expr monoType state =
             let
                 -- MONO_016: Use stage arity (first MFunction params only)
                 stageArgTypes =
-                    Mono.stageParamTypes monoType
+                    Seg.stageParamTypes monoType
 
                 stageRetType =
-                    Mono.stageReturnType monoType
+                    Seg.stageReturnType monoType
 
                 stageArity =
                     List.length stageArgTypes
@@ -249,7 +250,7 @@ buildNestedCalls region calleeExpr params =
             Mono.typeOf calleeExpr
 
         srcSeg =
-            Mono.segmentLengths calleeType
+            Seg.segmentLengths calleeType
 
         -- Convert params to expressions
         paramExprs =
@@ -272,7 +273,7 @@ buildNestedCalls region calleeExpr params =
                             Mono.typeOf currentCallee
 
                         resultType =
-                            Mono.stageReturnType currentCalleeType
+                            Seg.stageReturnType currentCalleeType
 
                         callExpr =
                             Mono.MonoCall region currentCallee nowArgs resultType
@@ -295,7 +296,7 @@ unchanged. Otherwise, builds nested MonoClosures:
 
   - One closure per stage of targetType.
   - Each closure's params list is exactly the first stage's param types
-    (Mono.stageParamTypes) for its function type (MONO\_016).
+    (Seg.stageParamTypes) for its function type (MONO\_016).
   - The innermost body calls calleeExpr using buildNestedCalls, which
     respects the callee's own staging.
 
@@ -311,10 +312,10 @@ buildAbiWrapper targetType calleeExpr state0 =
             Mono.typeOf calleeExpr
 
         targetSeg =
-            Mono.segmentLengths targetType
+            Seg.segmentLengths targetType
 
         srcSeg =
-            Mono.segmentLengths srcType
+            Seg.segmentLengths srcType
     in
     if targetSeg == srcSeg then
         -- Segmentations match; no wrapper needed
@@ -343,10 +344,10 @@ buildAbiWrapper targetType calleeExpr state0 =
             buildStages remainingType accParams st =
                 let
                     stageArgTypes =
-                        Mono.stageParamTypes remainingType
+                        Seg.stageParamTypes remainingType
 
                     stageRetType =
-                        Mono.stageReturnType remainingType
+                        Seg.stageReturnType remainingType
                 in
                 case stageArgTypes of
                     [] ->

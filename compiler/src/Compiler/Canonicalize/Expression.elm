@@ -32,7 +32,7 @@ import Basics.Extra exposing (flip)
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Source as Src
 import Compiler.AST.Utils.Binop as Binop
-import Compiler.AST.Utils.Type as Type
+import Compiler.Type.Normalize as Type
 import Compiler.Canonicalize.Environment as Env
 import Compiler.Canonicalize.Environment.Dups as Dups
 import Compiler.Canonicalize.Ids as Ids

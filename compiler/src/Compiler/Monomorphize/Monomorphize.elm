@@ -23,6 +23,7 @@ The monomorphization algorithm works as follows:
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.TypeEnv as TypeEnv
+import Compiler.Monomorphize.Registry as Registry
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.Index as Index
 import Compiler.Data.Name exposing (Name)
@@ -85,7 +86,7 @@ checkCallableTopLevels state =
                             _ ->
                                 let
                                     globalName =
-                                        case Mono.lookupSpecKey specId state.registry of
+                                        case Registry.lookupSpecKey specId state.registry of
                                             Just ( Mono.Global (IO.Canonical ( author, pkg ) moduleName) name, _, _ ) ->
                                                 author ++ "/" ++ pkg ++ ":" ++ moduleName ++ "." ++ name
 
@@ -270,7 +271,7 @@ processWorklist state =
         (SpecializeGlobal global monoType maybeLambda) :: rest ->
             let
                 ( specId, newRegistry ) =
-                    Mono.getOrCreateSpecId global monoType maybeLambda state.registry
+                    Registry.getOrCreateSpecId global monoType maybeLambda state.registry
 
                 state1 =
                     { state
@@ -345,7 +346,7 @@ processWorklist state =
                                         Mono.nodeType monoNode
 
                                     updatedRegistry =
-                                        Mono.updateRegistryType specId actualType stateAfter.registry
+                                        Registry.updateRegistryType specId actualType stateAfter.registry
 
                                     newState =
                                         { stateAfter

@@ -1,4 +1,4 @@
-module Compiler.AST.Utils.Type exposing
+module Compiler.Type.Normalize exposing
     ( dealias, deepDealias, iteratedDealias
     , delambda
     )

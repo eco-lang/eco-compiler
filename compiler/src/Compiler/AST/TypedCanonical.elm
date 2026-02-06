@@ -3,7 +3,6 @@ module Compiler.AST.TypedCanonical exposing
     , Expr, Expr_(..)
     , Def(..), Decls(..)
     , ExprTypes, NodeTypes
-    , fromCanonical, toTypedExpr
     )
 
 {-| The TypedCanonical AST pairs each canonical expression with its inferred type.
@@ -31,11 +30,6 @@ the expression types produced by the type checker.
 # Type Mapping
 
 @docs ExprTypes, NodeTypes
-
-
-# Construction
-
-@docs fromCanonical, toTypedExpr
 
 -}
 

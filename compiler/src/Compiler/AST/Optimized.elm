@@ -3,7 +3,7 @@ module Compiler.AST.Optimized exposing
     , Def(..), Destructor(..), Path(..)
     , Decider(..), Choice(..)
     , GlobalGraph(..), LocalGraph(..), Node(..), Main(..), EffectsType(..)
-    , empty, addGlobalGraph, addLocalGraph, addKernel, toKernelGlobal
+    , empty, toKernelGlobal
     , globalGraphEncoder, globalGraphDecoder
     , localGraphEncoder, localGraphDecoder
     )
@@ -41,7 +41,7 @@ Decision trees compile pattern matches into efficient branching:
 The compiler builds a graph of definitions for dead code elimination:
 
 @docs GlobalGraph, LocalGraph, Node, Main, EffectsType
-@docs empty, addGlobalGraph, addLocalGraph, addKernel, toKernelGlobal
+@docs empty, toKernelGlobal
 
 
 # Binary Serialization

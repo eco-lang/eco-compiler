@@ -1,7 +1,7 @@
 module Compiler.AST.Monomorphized exposing
     ( MonoType(..), Literal(..), Constraint(..)
     , LambdaId(..)
-    , Global(..), SpecKey(..), SpecId, SpecializationRegistry, emptyRegistry, getOrCreateSpecId, lookupSpecKey, updateRegistryType
+    , Global(..), SpecKey(..), SpecId, SpecializationRegistry
     , MonoGraph(..), MainInfo(..), MonoNode(..), CtorShape, nodeType
     , MonoExpr(..), ClosureInfo, MonoDef(..), MonoDestructor(..), MonoPath(..)
     , Decider(..), MonoChoice(..)
@@ -10,7 +10,6 @@ module Compiler.AST.Monomorphized exposing
     , toComparableSpecKey, toComparableMonoType
     , getMonoPathType
     , monoTypeToDebugString
-    , Segmentation, buildSegmentedFunctionType, chooseCanonicalSegmentation, countTotalArity, decomposeFunctionType, functionArity, isFunctionType, segmentLengths, stageArity, stageParamTypes, stageReturnType
     , toComparableGlobal, toComparableLambdaId
     )
 
@@ -98,11 +97,6 @@ This module defines the data structures for the monomorphized program
 # Debug
 
 @docs monoTypeToDebugString
-
-
-# Function Segmentation
-
-@docs Segmentation, buildSegmentedFunctionType, chooseCanonicalSegmentation, countTotalArity, decomposeFunctionType, functionArity, isFunctionType, segmentLengths, stageArity, stageParamTypes, stageReturnType
 
 
 # Comparable Conversions
