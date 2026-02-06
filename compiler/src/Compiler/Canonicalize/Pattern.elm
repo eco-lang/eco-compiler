@@ -30,7 +30,6 @@ in scope analysis.
 
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Source as Src
-import Compiler.AST.SyntaxVersion as SV exposing (SyntaxVersion)
 import Compiler.Canonicalize.Environment as Env
 import Compiler.Canonicalize.Environment.Dups as Dups
 import Compiler.Canonicalize.Ids as Ids
@@ -152,8 +151,8 @@ Like canonicalize but also threads an IdState through to assign unique IDs
 to each pattern. Returns both the canonical pattern and the updated state.
 
 -}
-canonicalizeWithIds : SyntaxVersion -> Env.Env -> Ids.IdState -> Src.Pattern -> PResult DupsDict w ( Can.Pattern, Ids.IdState )
-canonicalizeWithIds syntaxVersion env state0 (A.At region pattern) =
+canonicalizeWithIds : Env.Env -> Ids.IdState -> Src.Pattern -> PResult DupsDict w ( Can.Pattern, Ids.IdState )
+canonicalizeWithIds env state0 (A.At region pattern) =
     case pattern of
         Src.PAnything _ ->
             logVar_ region Can.PAnything
@@ -177,13 +176,13 @@ canonicalizeWithIds syntaxVersion env state0 (A.At region pattern) =
                 |> ReportingResult.map (\pattern_ -> makePattern region state0 pattern_)
 
         Src.PTuple ( _, a ) ( _, b ) cs ->
-            canonicalizeWithIds syntaxVersion env state0 a
+            canonicalizeWithIds env state0 a
                 |> ReportingResult.andThen
                     (\( canA, state1 ) ->
-                        canonicalizeWithIds syntaxVersion env state1 b
+                        canonicalizeWithIds env state1 b
                             |> ReportingResult.andThen
                                 (\( canB, state2 ) ->
-                                    canonicalizeTupleWithIds syntaxVersion region env state2 (List.map Src.c2Value cs)
+                                    canonicalizeTupleWithIds region env state2 (List.map Src.c2Value cs)
                                         |> ReportingResult.map
                                             (\( canCs, state3 ) ->
                                                 makePattern region state3 (Can.PTuple canA canB canCs)
@@ -193,26 +192,26 @@ canonicalizeWithIds syntaxVersion env state0 (A.At region pattern) =
 
         Src.PCtor nameRegion name patterns ->
             Env.findCtor nameRegion env name
-                |> ReportingResult.andThen (canonicalizeCtorWithIds syntaxVersion env state0 region name (List.map Src.c1Value patterns))
+                |> ReportingResult.andThen (canonicalizeCtorWithIds env state0 region name (List.map Src.c1Value patterns))
                 |> ReportingResult.map (\( pattern_, state1 ) -> makePattern region state1 pattern_)
 
         Src.PCtorQual nameRegion home name patterns ->
             Env.findCtorQual nameRegion env home name
-                |> ReportingResult.andThen (canonicalizeCtorWithIds syntaxVersion env state0 region name (List.map Src.c1Value patterns))
+                |> ReportingResult.andThen (canonicalizeCtorWithIds env state0 region name (List.map Src.c1Value patterns))
                 |> ReportingResult.map (\( pattern_, state1 ) -> makePattern region state1 pattern_)
 
         Src.PList ( _, patterns ) ->
-            canonicalizeListWithIds syntaxVersion env state0 (List.map Src.c2Value patterns)
+            canonicalizeListWithIds env state0 (List.map Src.c2Value patterns)
                 |> ReportingResult.map
                     (\( canPatterns, state1 ) ->
                         makePattern region state1 (Can.PList canPatterns)
                     )
 
         Src.PCons ( _, first ) ( _, rest ) ->
-            canonicalizeWithIds syntaxVersion env state0 first
+            canonicalizeWithIds env state0 first
                 |> ReportingResult.andThen
                     (\( canFirst, state1 ) ->
-                        canonicalizeWithIds syntaxVersion env state1 rest
+                        canonicalizeWithIds env state1 rest
                             |> ReportingResult.map
                                 (\( canRest, state2 ) ->
                                     makePattern region state2 (Can.PCons canFirst canRest)
@@ -220,7 +219,7 @@ canonicalizeWithIds syntaxVersion env state0 (A.At region pattern) =
                     )
 
         Src.PAlias ( _, ptrn ) ( _, A.At reg name ) ->
-            canonicalizeWithIds syntaxVersion env state0 ptrn
+            canonicalizeWithIds env state0 ptrn
                 |> ReportingResult.andThen
                     (\( cpattern, state1 ) ->
                         logVar name reg (Can.PAlias cpattern name)
@@ -240,7 +239,7 @@ canonicalizeWithIds syntaxVersion env state0 (A.At region pattern) =
                 |> ReportingResult.map (\pattern_ -> makePattern region state0 pattern_)
 
         Src.PParens ( _, pattern_ ) ->
-            canonicalizeWithIds syntaxVersion env state0 pattern_
+            canonicalizeWithIds env state0 pattern_
 
 
 {-| Helper to pass through a pattern without logging.
@@ -250,11 +249,11 @@ logVar_ _ value =
     ReportingResult.ok value
 
 
-canonicalizeCtorWithIds : SyntaxVersion -> Env.Env -> Ids.IdState -> A.Region -> Name.Name -> List Src.Pattern -> Env.Ctor -> PResult DupsDict w ( Can.Pattern_, Ids.IdState )
-canonicalizeCtorWithIds syntaxVersion env state0 region name patterns ctor =
+canonicalizeCtorWithIds : Env.Env -> Ids.IdState -> A.Region -> Name.Name -> List Src.Pattern -> Env.Ctor -> PResult DupsDict w ( Can.Pattern_, Ids.IdState )
+canonicalizeCtorWithIds env state0 region name patterns ctor =
     case ctor of
         Env.Ctor home tipe union index args ->
-            canonicalizeCtorArgsWithIds syntaxVersion env state0 patterns args
+            canonicalizeCtorArgsWithIds env state0 patterns args
                 |> ReportingResult.andThen
                     (\( cargs, finalState ) ->
                         case cargs of
@@ -273,26 +272,26 @@ canonicalizeCtorWithIds syntaxVersion env state0 region name patterns ctor =
             ReportingResult.throw (Error.PatternHasRecordCtor region name)
 
 
-canonicalizeCtorArgsWithIds : SyntaxVersion -> Env.Env -> Ids.IdState -> List Src.Pattern -> List Can.Type -> PResult DupsDict w ( Index.VerifiedList Can.PatternCtorArg, Ids.IdState )
-canonicalizeCtorArgsWithIds syntaxVersion env state0 patterns args =
-    canonicalizeCtorArgsWithIdsHelp syntaxVersion env state0 Index.first patterns args []
+canonicalizeCtorArgsWithIds : Env.Env -> Ids.IdState -> List Src.Pattern -> List Can.Type -> PResult DupsDict w ( Index.VerifiedList Can.PatternCtorArg, Ids.IdState )
+canonicalizeCtorArgsWithIds env state0 patterns args =
+    canonicalizeCtorArgsWithIdsHelp env state0 Index.first patterns args []
 
 
-canonicalizeCtorArgsWithIdsHelp : SyntaxVersion -> Env.Env -> Ids.IdState -> Index.ZeroBased -> List Src.Pattern -> List Can.Type -> List Can.PatternCtorArg -> PResult DupsDict w ( Index.VerifiedList Can.PatternCtorArg, Ids.IdState )
-canonicalizeCtorArgsWithIdsHelp syntaxVersion env state0 index patterns args acc =
+canonicalizeCtorArgsWithIdsHelp : Env.Env -> Ids.IdState -> Index.ZeroBased -> List Src.Pattern -> List Can.Type -> List Can.PatternCtorArg -> PResult DupsDict w ( Index.VerifiedList Can.PatternCtorArg, Ids.IdState )
+canonicalizeCtorArgsWithIdsHelp env state0 index patterns args acc =
     case ( patterns, args ) of
         ( [], [] ) ->
             ReportingResult.ok ( Index.LengthMatch (List.reverse acc), state0 )
 
         ( pattern :: restPatterns, argType :: restArgs ) ->
-            canonicalizeWithIds syntaxVersion env state0 pattern
+            canonicalizeWithIds env state0 pattern
                 |> ReportingResult.andThen
                     (\( canPattern, state1 ) ->
                         let
                             ctorArg =
                                 Can.PatternCtorArg index argType canPattern
                         in
-                        canonicalizeCtorArgsWithIdsHelp syntaxVersion env state1 (Index.next index) restPatterns restArgs (ctorArg :: acc)
+                        canonicalizeCtorArgsWithIdsHelp env state1 (Index.next index) restPatterns restArgs (ctorArg :: acc)
                     )
 
         ( [], _ ) ->
@@ -302,36 +301,31 @@ canonicalizeCtorArgsWithIdsHelp syntaxVersion env state0 index patterns args acc
             ReportingResult.ok ( Index.LengthMismatch (List.length acc + List.length patterns) (List.length acc), state0 )
 
 
-canonicalizeTupleWithIds : SyntaxVersion -> A.Region -> Env.Env -> Ids.IdState -> List Src.Pattern -> PResult DupsDict w ( List Can.Pattern, Ids.IdState )
-canonicalizeTupleWithIds syntaxVersion tupleRegion env state0 extras =
+canonicalizeTupleWithIds : A.Region -> Env.Env -> Ids.IdState -> List Src.Pattern -> PResult DupsDict w ( List Can.Pattern, Ids.IdState )
+canonicalizeTupleWithIds tupleRegion env state0 extras =
     case extras of
         [] ->
             ReportingResult.ok ( [], state0 )
 
         [ three ] ->
-            canonicalizeWithIds syntaxVersion env state0 three
+            canonicalizeWithIds env state0 three
                 |> ReportingResult.map (\( p, s ) -> ( [ p ], s ))
 
         _ ->
-            case syntaxVersion of
-                SV.Elm ->
-                    ReportingResult.throw (Error.TupleLargerThanThree tupleRegion)
-
-                SV.Guida ->
-                    canonicalizeListWithIds syntaxVersion env state0 extras
+            ReportingResult.throw (Error.TupleLargerThanThree tupleRegion)
 
 
-canonicalizeListWithIds : SyntaxVersion -> Env.Env -> Ids.IdState -> List Src.Pattern -> PResult DupsDict w ( List Can.Pattern, Ids.IdState )
-canonicalizeListWithIds syntaxVersion env state0 list =
+canonicalizeListWithIds : Env.Env -> Ids.IdState -> List Src.Pattern -> PResult DupsDict w ( List Can.Pattern, Ids.IdState )
+canonicalizeListWithIds env state0 list =
     case list of
         [] ->
             ReportingResult.ok ( [], state0 )
 
         pattern :: otherPatterns ->
-            canonicalizeWithIds syntaxVersion env state0 pattern
+            canonicalizeWithIds env state0 pattern
                 |> ReportingResult.andThen
                     (\( canPattern, state1 ) ->
-                        canonicalizeListWithIds syntaxVersion env state1 otherPatterns
+                        canonicalizeListWithIds env state1 otherPatterns
                             |> ReportingResult.map
                                 (\( restPatterns, state2 ) ->
                                     ( canPattern :: restPatterns, state2 )
@@ -373,30 +367,28 @@ ID space, such as lambda arguments or case patterns.
 
 -}
 traverseWithIds :
-    SyntaxVersion
-    -> Env.Env
+    Env.Env
     -> Ids.IdState
     -> List Src.Pattern
     -> PResult DupsDict w ( List Can.Pattern, Ids.IdState )
-traverseWithIds syntaxVersion env state patterns =
-    traverseWithIdsHelp syntaxVersion env state patterns []
+traverseWithIds env state patterns =
+    traverseWithIdsHelp env state patterns []
 
 
 traverseWithIdsHelp :
-    SyntaxVersion
-    -> Env.Env
+    Env.Env
     -> Ids.IdState
     -> List Src.Pattern
     -> List Can.Pattern
     -> PResult DupsDict w ( List Can.Pattern, Ids.IdState )
-traverseWithIdsHelp syntaxVersion env state patterns accum =
+traverseWithIdsHelp env state patterns accum =
     case patterns of
         [] ->
             ReportingResult.ok ( List.reverse accum, state )
 
         pattern :: rest ->
-            canonicalizeWithIds syntaxVersion env state pattern
+            canonicalizeWithIds env state pattern
                 |> ReportingResult.andThen
                     (\( canPattern, newState ) ->
-                        traverseWithIdsHelp syntaxVersion env newState rest (canPattern :: accum)
+                        traverseWithIdsHelp env newState rest (canPattern :: accum)
                     )

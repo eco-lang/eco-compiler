@@ -18,7 +18,6 @@ import API.Install as Install
 import API.Make as Make
 import API.Uninstall as Uninstall
 import Builder.Reporting.Exit as Exit
-import Compiler.AST.SyntaxVersion as SV
 import Compiler.Elm.Package as Pkg
 import Compiler.Json.Encode as E
 import Compiler.Parse.Module as M
@@ -88,7 +87,7 @@ app =
                                 exitWithResponse (Encode.object [ ( "error", Encode.string "Invalid package..." ) ])
 
                     DiagnosticsArgs (DiagnosticsSourceContent src) ->
-                        case P.fromByteString (M.chompModule SV.Guida M.Application) E.ModuleBadEnd src of
+                        case P.fromByteString (M.chompModule M.Application) E.ModuleBadEnd src of
                             Ok _ ->
                                 exitWithResponse (Encode.object [])
 
@@ -100,7 +99,7 @@ app =
 
                                     error : Encode.Value
                                     error =
-                                        E.encodeUgly (Error.reportToJson (E.toReport SV.Guida source (E.ParseError err)))
+                                        E.encodeUgly (Error.reportToJson (E.toReport source (E.ParseError err)))
                                             |> Decode.decodeString Decode.value
                                             |> Result.withDefault Encode.null
                                 in

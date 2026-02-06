@@ -16,7 +16,6 @@ import Common.Format.Box as Box
 import Common.Format.Render.Box as Render
 import Compiler.Parse.Module as M
 import Compiler.Parse.Primitives as P
-import Compiler.Parse.SyntaxVersion exposing (SyntaxVersion)
 import Compiler.Reporting.Error.Syntax as E
 
 
@@ -27,9 +26,9 @@ the code with consistent indentation and layout. Returns an error if the source
 cannot be parsed.
 
 -}
-format : SyntaxVersion -> M.ProjectType -> String -> Result E.Module String
-format syntaxVersion projectType src =
-    P.fromByteString (M.chompModule syntaxVersion projectType) E.ModuleBadEnd src
+format : M.ProjectType -> String -> Result E.Module String
+format projectType src =
+    P.fromByteString (M.chompModule projectType) E.ModuleBadEnd src
         |> Result.map render
 
 

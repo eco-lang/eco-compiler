@@ -45,7 +45,6 @@ import Compiler.Parse.Keyword as Keyword
 import Compiler.Parse.Primitives as P exposing (Col, Row)
 import Compiler.Parse.Space as Space
 import Compiler.Parse.Symbol as Symbol
-import Compiler.Parse.SyntaxVersion exposing (SyntaxVersion)
 import Compiler.Parse.Variable as Var
 import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Error.Syntax as E
@@ -57,15 +56,15 @@ import Compiler.Reporting.Error.Syntax as E
 
 {-| Parse a complete Elm module from source text.
 
-Takes a syntax version, project type, and source string. Returns either
+Takes a project type and source string. Returns either
 a parsed module or a syntax error. This is the main entry point for module parsing.
 
 -}
-fromByteString : SyntaxVersion -> ProjectType -> String -> Result E.Error Src.Module
-fromByteString syntaxVersion projectType source =
-    case P.fromByteString (chompModule syntaxVersion projectType) E.ModuleBadEnd source of
+fromByteString : ProjectType -> String -> Result E.Error Src.Module
+fromByteString projectType source =
+    case P.fromByteString (chompModule projectType) E.ModuleBadEnd source of
         Ok modul ->
-            checkModule syntaxVersion projectType modul
+            checkModule projectType modul
 
         Err err ->
             Err (E.ParseError err)
@@ -142,8 +141,8 @@ declarations. Handles different project types by conditionally including
 default imports and allowing/disallowing certain features.
 
 -}
-chompModule : SyntaxVersion -> ProjectType -> P.Parser E.Module Module
-chompModule syntaxVersion projectType =
+chompModule : ProjectType -> P.Parser E.Module Module
+chompModule projectType =
     chompHeader
         |> P.andThen
             (\( ( initialComments, headerComments ), header ) ->
@@ -164,7 +163,7 @@ chompModule syntaxVersion projectType =
                             )
                                 |> P.andThen
                                     (\infixes ->
-                                        P.specialize E.Declarations (chompDecls syntaxVersion)
+                                        P.specialize E.Declarations chompDecls
                                             |> P.map
                                                 (\decls ->
                                                     Module
@@ -183,8 +182,8 @@ chompModule syntaxVersion projectType =
 -- ====== CHECK MODULE ======
 
 
-checkModule : SyntaxVersion -> ProjectType -> Module -> Result E.Error Src.Module
-checkModule syntaxVersion projectType module_ =
+checkModule : ProjectType -> Module -> Result E.Error Src.Module
+checkModule projectType module_ =
     let
         ( ( values, unions ), ( aliases, ports ) ) =
             categorizeDecls [] [] [] [] (List.map Src.c2Value module_.decls)
@@ -205,8 +204,7 @@ checkModule syntaxVersion projectType module_ =
                 |> Result.map
                     (\checkedEffects ->
                         Src.Module
-                            { syntaxVersion = syntaxVersion
-                            , name = Just name
+                            { name = Just name
                             , exports = exports
                             , docs = toDocs docs (List.map Src.c2Value module_.decls)
                             , imports = List.map Src.c1Value imports
@@ -221,8 +219,7 @@ checkModule syntaxVersion projectType module_ =
         Nothing ->
             Ok
                 (Src.Module
-                    { syntaxVersion = syntaxVersion
-                    , name = Nothing
+                    { name = Nothing
                     , exports = A.At A.one (Src.Open [] [])
                     , docs = toDocs (Err A.one) (List.map Src.c2Value module_.decls)
                     , imports = List.map Src.c1Value imports
@@ -373,19 +370,19 @@ freshLine toFreshLineError =
 -- ====== CHOMP DECLARATIONS ======
 
 
-chompDecls : SyntaxVersion -> P.Parser E.Decl (List (Src.C2 Decl.Decl))
-chompDecls syntaxVersion =
-    Decl.declaration syntaxVersion
-        |> P.andThen (\( decl, _ ) -> P.loop (chompDeclsHelp syntaxVersion) [ decl ])
+chompDecls : P.Parser E.Decl (List (Src.C2 Decl.Decl))
+chompDecls =
+    Decl.declaration
+        |> P.andThen (\( decl, _ ) -> P.loop chompDeclsHelp [ decl ])
 
 
-chompDeclsHelp : SyntaxVersion -> List (Src.C2 Decl.Decl) -> P.Parser E.Decl (P.Step (List (Src.C2 Decl.Decl)) (List (Src.C2 Decl.Decl)))
-chompDeclsHelp syntaxVersion decls =
+chompDeclsHelp : List (Src.C2 Decl.Decl) -> P.Parser E.Decl (P.Step (List (Src.C2 Decl.Decl)) (List (Src.C2 Decl.Decl)))
+chompDeclsHelp decls =
     P.oneOfWithFallback
         [ Space.checkFreshLine E.DeclStart
             |> P.andThen
                 (\_ ->
-                    Decl.declaration syntaxVersion
+                    Decl.declaration
                         |> P.map (\( decl, _ ) -> P.Loop (decl :: decls))
                 )
         ]

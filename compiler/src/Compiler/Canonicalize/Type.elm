@@ -24,7 +24,6 @@ type variables for use in polymorphic type schemes (Forall quantification).
 import Basics.Extra exposing (flip)
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Source as Src
-import Compiler.AST.SyntaxVersion as SV exposing (SyntaxVersion)
 import Compiler.Canonicalize.Environment as Env
 import Compiler.Canonicalize.Environment.Dups as Dups
 import Compiler.Data.Name as Name
@@ -59,9 +58,9 @@ free type variables collected. This creates a polymorphic type scheme suitable
 for top-level type annotations.
 
 -}
-toAnnotation : SyntaxVersion -> Env.Env -> Src.Type -> CResult i w Can.Annotation
-toAnnotation syntaxVersion env srcType =
-    canonicalize syntaxVersion env srcType
+toAnnotation : Env.Env -> Src.Type -> CResult i w Can.Annotation
+toAnnotation env srcType =
+    canonicalize env srcType
         |> ReportingResult.andThen (\tipe -> ReportingResult.ok (Can.Forall (addFreeVars Dict.empty tipe) tipe))
 
 
@@ -77,26 +76,26 @@ checks arity of type applications, resolves qualified type names, and handles
 syntax version differences (e.g., tuple size restrictions in Elm vs Guida).
 
 -}
-canonicalize : SyntaxVersion -> Env.Env -> Src.Type -> CResult i w Can.Type
-canonicalize syntaxVersion env (A.At typeRegion tipe) =
+canonicalize : Env.Env -> Src.Type -> CResult i w Can.Type
+canonicalize env (A.At typeRegion tipe) =
     case tipe of
         Src.TVar x ->
             ReportingResult.ok (Can.TVar x)
 
         Src.TType region name args ->
             Env.findType region env name
-                |> ReportingResult.andThen (canonicalizeType syntaxVersion env typeRegion name (List.map Tuple.second args))
+                |> ReportingResult.andThen (canonicalizeType env typeRegion name (List.map Tuple.second args))
 
         Src.TTypeQual region home name args ->
             Env.findTypeQual region env home name
-                |> ReportingResult.andThen (canonicalizeType syntaxVersion env typeRegion name (List.map Tuple.second args))
+                |> ReportingResult.andThen (canonicalizeType env typeRegion name (List.map Tuple.second args))
 
         Src.TLambda ( _, a ) ( _, b ) ->
-            ReportingResult.map Can.TLambda (canonicalize syntaxVersion env a)
-                |> ReportingResult.apply (canonicalize syntaxVersion env b)
+            ReportingResult.map Can.TLambda (canonicalize env a)
+                |> ReportingResult.apply (canonicalize env b)
 
         Src.TRecord fields maybeExt _ ->
-            Dups.checkFields (canonicalizeFields syntaxVersion env fields)
+            Dups.checkFields (canonicalizeFields env fields)
                 |> ReportingResult.andThen (Utils.sequenceADict identity compare)
                 |> ReportingResult.map (\cfields -> Can.TRecord cfields (Maybe.map (\( _, A.At _ ext ) -> ext) maybeExt))
 
@@ -104,36 +103,31 @@ canonicalize syntaxVersion env (A.At typeRegion tipe) =
             ReportingResult.ok Can.TUnit
 
         Src.TTuple ( _, a ) ( _, b ) cs ->
-            ReportingResult.map Can.TTuple (canonicalize syntaxVersion env a)
-                |> ReportingResult.apply (canonicalize syntaxVersion env b)
+            ReportingResult.map Can.TTuple (canonicalize env a)
+                |> ReportingResult.apply (canonicalize env b)
                 |> ReportingResult.apply
                     (case cs of
                         [] ->
                             ReportingResult.ok []
 
                         [ ( _, c ) ] ->
-                            canonicalize syntaxVersion env c
+                            canonicalize env c
                                 |> ReportingResult.map List.singleton
 
                         _ ->
-                            case syntaxVersion of
-                                SV.Elm ->
-                                    ReportingResult.throw (Error.TupleLargerThanThree typeRegion)
-
-                                SV.Guida ->
-                                    ReportingResult.traverse (canonicalize syntaxVersion env) (List.map Src.c2EolValue cs)
+                            ReportingResult.throw (Error.TupleLargerThanThree typeRegion)
                     )
 
         Src.TParens ( _, tipe_ ) ->
-            canonicalize syntaxVersion env tipe_
+            canonicalize env tipe_
 
 
-canonicalizeFields : SyntaxVersion -> Env.Env -> List (Src.C2 ( Src.C1 (A.Located Name.Name), Src.C1 Src.Type )) -> List ( A.Located Name.Name, CResult i w Can.FieldType )
-canonicalizeFields syntaxVersion env fields =
+canonicalizeFields : Env.Env -> List (Src.C2 ( Src.C1 (A.Located Name.Name), Src.C1 Src.Type )) -> List ( A.Located Name.Name, CResult i w Can.FieldType )
+canonicalizeFields env fields =
     let
         canonicalizeField : Int -> Src.C2 ( Src.C1 a, Src.C1 Src.Type ) -> ( a, ReportingResult.RResult i w Error.Error Can.FieldType )
         canonicalizeField index ( _, ( ( _, name ), ( _, srcType ) ) ) =
-            ( name, ReportingResult.map (Can.FieldType index) (canonicalize syntaxVersion env srcType) )
+            ( name, ReportingResult.map (Can.FieldType index) (canonicalize env srcType) )
     in
     List.indexedMap canonicalizeField fields
 
@@ -142,9 +136,9 @@ canonicalizeFields syntaxVersion env fields =
 -- ====== CANONICALIZE TYPE ======
 
 
-canonicalizeType : SyntaxVersion -> Env.Env -> A.Region -> Name.Name -> List Src.Type -> Env.Type -> CResult i w Can.Type
-canonicalizeType syntaxVersion env region name args info =
-    ReportingResult.traverse (canonicalize syntaxVersion env) args
+canonicalizeType : Env.Env -> A.Region -> Name.Name -> List Src.Type -> Env.Type -> CResult i w Can.Type
+canonicalizeType env region name args info =
+    ReportingResult.traverse (canonicalize env) args
         |> ReportingResult.andThen
             (\cargs ->
                 case info of

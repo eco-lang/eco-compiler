@@ -25,7 +25,6 @@ import Builder.File as File
 import Common.Format
 import Compiler.Elm.Package as Pkg
 import Compiler.Parse.Module as M
-import Compiler.Parse.SyntaxVersion as SV
 import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Error.Syntax as E
 import Json.Encode as Encode
@@ -214,7 +213,7 @@ validate (( inputFile, inputText ) as input) =
 format : ( FilePath, String ) -> Result InfoMessage String
 format ( inputFile, inputText ) =
     -- FIXME fix hardcoded projectType
-    Common.Format.format (SV.fileSyntaxVersion inputFile) (M.Package Pkg.core) inputText
+    Common.Format.format (M.Package Pkg.core) inputText
         |> Result.mapError
             (\_ ->
                 -- FIXME show errors!

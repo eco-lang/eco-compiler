@@ -42,7 +42,6 @@ import Builder.Reporting as Reporting
 import Builder.Reporting.Exit as Exit
 import Builder.Stuff as Stuff
 import Compiler.AST.Source as Src
-import Compiler.AST.SyntaxVersion as SV
 import Compiler.Data.Name as N
 import Compiler.Elm.Constraint as C
 import Compiler.Elm.Licenses as Licenses
@@ -450,7 +449,7 @@ attemptDeclOrExpr lines =
 
         declParser : P.Parser ( Row, Col ) ( PD.Decl, A.Position )
         declParser =
-            P.specialize (toDeclPosition src) (P.map (Tuple.mapFirst Src.c2Value) (PD.declaration SV.Guida))
+            P.specialize (toDeclPosition src) (P.map (Tuple.mapFirst Src.c2Value) PD.declaration)
     in
     case P.fromByteString declParser Tuple.pair src of
         Ok ( decl, _ ) ->
@@ -486,7 +485,7 @@ attemptDeclOrExpr lines =
                 let
                     exprParser : P.Parser ( Row, Col ) ( Src.C1 Src.Expr, A.Position )
                     exprParser =
-                        P.specialize (toExprPosition src) (PE.expression SV.Guida)
+                        P.specialize (toExprPosition src) PE.expression
                 in
                 case P.fromByteString exprParser Tuple.pair src of
                     Ok _ ->
@@ -570,7 +569,7 @@ toDeclPosition src decl r c =
 
         report : Report.Report
         report =
-            ES.toReport SV.Guida (Code.toSource src) err
+            ES.toReport (Code.toSource src) err
 
         (Report.Report props) =
             report

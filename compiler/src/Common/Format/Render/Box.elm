@@ -33,7 +33,6 @@ import Common.Format.Render.ElmStructure as ElmStructure
 import Common.Format.Render.Markdown as Markdown
 import Compiler.AST.Snippet as Snippet
 import Compiler.AST.Source as Src
-import Compiler.AST.SyntaxVersion as SV
 import Compiler.AST.Utils.Binop as Binop
 import Compiler.AST.Utils.Shader as Shader
 import Compiler.Data.Name exposing (Name)
@@ -1333,24 +1332,21 @@ formatDocComment importInfo blocks =
 
 parseDeclarations : String -> Result () (List (TopLevelStructure Declaration))
 parseDeclarations source =
-    -- TODO/FIXME SyntaxVersion
-    P.fromByteString (P.specialize (\_ -> Tuple.pair) (Decl.declaration SV.Guida)) Tuple.pair source
+    P.fromByteString (P.specialize (\_ -> Tuple.pair) Decl.declaration) Tuple.pair source
         |> Result.mapError (\_ -> ())
         |> Result.map (\( decl, _ ) -> declToDeclarations decl)
 
 
 parseExpressions : String -> Result () (List (TopLevelStructure (Src.C0Eol Src.Expr)))
 parseExpressions source =
-    -- TODO/FIXME SyntaxVersion
-    P.fromByteString (P.specialize (\_ -> Tuple.pair) (Expr.expression SV.Guida)) Tuple.pair source
+    P.fromByteString (P.specialize (\_ -> Tuple.pair) Expr.expression) Tuple.pair source
         |> Result.mapError (\_ -> ())
         |> Result.map (\( ( _, expr ), _ ) -> [ Entry ( Nothing, expr ) ])
 
 
 parseModule : String -> Result () Module
 parseModule source =
-    -- TODO/FIXME SyntaxVersion
-    P.fromByteString (P.specialize (\_ -> Tuple.pair) (M.chompModule SV.Guida M.Application)) Tuple.pair source
+    P.fromByteString (P.specialize (\_ -> Tuple.pair) (M.chompModule M.Application)) Tuple.pair source
         |> Result.mapError (\_ -> ())
         |> Result.map formatModu
 

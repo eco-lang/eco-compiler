@@ -46,7 +46,6 @@ import Compiler.Elm.Package as Pkg
 import Compiler.Elm.Version as V
 import Compiler.Generate.CodeGen as CodeGen
 import Compiler.Parse.Module as Parse
-import Compiler.Parse.SyntaxVersion as SV
 import Compiler.Reporting.Annotation as A
 import Data.Map as Dict exposing (Dict)
 import Json.Encode as Encode
@@ -830,7 +829,7 @@ extractExposedPossiblyTests path =
 
 parseExposedValues : FilePath -> String -> Maybe ( String, List String )
 parseExposedValues path bytes =
-    case Parse.fromByteString (SV.fileSyntaxVersion path) Parse.Application bytes of
+    case Parse.fromByteString Parse.Application bytes of
         Ok (Src.Module srcData) ->
             case srcData.name of
                 Just (A.At _ name) ->

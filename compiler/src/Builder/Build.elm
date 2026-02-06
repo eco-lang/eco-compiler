@@ -58,7 +58,6 @@ import Bytes.Encode
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Optimized as Opt
 import Compiler.AST.Source as Src
-import Compiler.AST.SyntaxVersion as SV
 import Compiler.AST.TypeEnv as TypeEnv
 import Compiler.AST.TypedModuleArtifact as TMod
 import Compiler.AST.TypedOptimized as TOpt
@@ -649,7 +648,7 @@ crawlFile ((Env envData) as env) mvar docsNeed expectedName path time lastChange
     File.readUtf8 (Utils.fpCombine envData.root path)
         |> Task.andThen
             (\source ->
-                case Parse.fromByteString (SV.fileSyntaxVersion path) envData.projectType source of
+                case Parse.fromByteString envData.projectType source of
                     Err err ->
                         SBadSyntax path time source err |> Task.succeed
 
@@ -867,7 +866,7 @@ recompileCachedModule :
     -> String
     -> Task Never BResult
 recompileCachedModule env _ projectType name path time deps ifaces source =
-    case Parse.fromByteString (SV.fileSyntaxVersion path) projectType source of
+    case Parse.fromByteString projectType source of
         Err err ->
             Error.BadSyntax err |> Error.Module name path time source |> RProblem |> Task.succeed
 
@@ -1863,7 +1862,7 @@ fromRepl root details source =
     makeEnv Reporting.ignorer root Nothing details False
         |> Task.andThen
             (\((Env envData) as env) ->
-                case Parse.fromByteString SV.Guida envData.projectType source of
+                case Parse.fromByteString envData.projectType source of
                     Err syntaxError ->
                         Error.BadSyntax syntaxError |> Exit.ReplBadInput source |> Err |> Task.succeed
 
@@ -2211,7 +2210,7 @@ crawlRoot ((Env envData) as env) mvar root =
                         File.readUtf8 path
                             |> Task.andThen
                                 (\source ->
-                                    case Parse.fromByteString (SV.fileSyntaxVersion path) envData.projectType source of
+                                    case Parse.fromByteString envData.projectType source of
                                         Ok ((Src.Module srcData) as modul) ->
                                             let
                                                 deps : List Name.Name

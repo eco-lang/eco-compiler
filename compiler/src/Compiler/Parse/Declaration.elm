@@ -31,7 +31,6 @@ import Compiler.Parse.Pattern as Pattern
 import Compiler.Parse.Primitives as P
 import Compiler.Parse.Space as Space
 import Compiler.Parse.Symbol as Symbol
-import Compiler.Parse.SyntaxVersion exposing (SyntaxVersion)
 import Compiler.Parse.Type as Type
 import Compiler.Parse.Variable as Var
 import Compiler.Reporting.Annotation as A
@@ -54,8 +53,8 @@ type Decl
 {-| Parses a top-level declaration including doc comments, type annotations, and definitions.
 Handles value declarations, type aliases, custom types, and port declarations.
 -}
-declaration : SyntaxVersion -> Space.Parser E.Decl (Src.C2 Decl)
-declaration syntaxVersion =
+declaration : Space.Parser E.Decl (Src.C2 Decl)
+declaration =
     chompDocComment
         |> P.andThen
             (\( docComments, maybeDocs ) ->
@@ -65,7 +64,7 @@ declaration syntaxVersion =
                             P.oneOf E.DeclStart
                                 [ typeDecl maybeDocs start
                                 , portDecl maybeDocs
-                                , valueDecl syntaxVersion maybeDocs docComments start
+                                , valueDecl maybeDocs docComments start
                                 ]
                         )
             )
@@ -96,8 +95,8 @@ chompDocComment =
 -- ====== DEFINITION and ANNOTATION ======
 
 
-valueDecl : SyntaxVersion -> Maybe Src.Comment -> Src.FComments -> A.Position -> Space.Parser E.Decl (Src.C2 Decl)
-valueDecl syntaxVersion maybeDocs docComments start =
+valueDecl : Maybe Src.Comment -> Src.FComments -> A.Position -> Space.Parser E.Decl (Src.C2 Decl)
+valueDecl maybeDocs docComments start =
     Var.lower E.DeclStart
         |> P.andThen
             (\name ->
@@ -128,7 +127,7 @@ valueDecl syntaxVersion maybeDocs docComments start =
                                                                                                     typeAnnotation =
                                                                                                         Just ( postTipeComments, ( ( postNameComments, preTipeComments ), tipe ) )
                                                                                                 in
-                                                                                                chompDefArgsAndBody syntaxVersion maybeDocs docComments start defName typeAnnotation preArgComments []
+                                                                                                chompDefArgsAndBody maybeDocs docComments start defName typeAnnotation preArgComments []
                                                                                             )
                                                                                 )
                                                                     )
@@ -138,7 +137,7 @@ valueDecl syntaxVersion maybeDocs docComments start =
                                                     locatedName =
                                                         A.at start end name
                                                   in
-                                                  chompDefArgsAndBody syntaxVersion maybeDocs docComments start locatedName Nothing postNameComments []
+                                                  chompDefArgsAndBody maybeDocs docComments start locatedName Nothing postNameComments []
                                                 ]
                                         )
                                 )
@@ -147,8 +146,7 @@ valueDecl syntaxVersion maybeDocs docComments start =
 
 
 chompDefArgsAndBody :
-    SyntaxVersion
-    -> Maybe Src.Comment
+    Maybe Src.Comment
     -> Src.FComments
     -> A.Position
     -> A.Located Name
@@ -156,22 +154,22 @@ chompDefArgsAndBody :
     -> Src.FComments
     -> List (Src.C1 Src.Pattern)
     -> Space.Parser E.DeclDef (Src.C2 Decl)
-chompDefArgsAndBody syntaxVersion maybeDocs docComments start name tipe preArgComments revArgs =
+chompDefArgsAndBody maybeDocs docComments start name tipe preArgComments revArgs =
     P.oneOf E.DeclDefEquals
-        [ P.specialize E.DeclDefArg (Pattern.term syntaxVersion)
+        [ P.specialize E.DeclDefArg Pattern.term
             |> P.andThen
                 (\arg ->
                     Space.chompAndCheckIndent E.DeclDefSpace E.DeclDefIndentEquals
                         |> P.andThen
                             (\postArgComments ->
-                                chompDefArgsAndBody syntaxVersion maybeDocs docComments start name tipe postArgComments (( preArgComments, arg ) :: revArgs)
+                                chompDefArgsAndBody maybeDocs docComments start name tipe postArgComments (( preArgComments, arg ) :: revArgs)
                             )
                 )
         , P.word1 '=' E.DeclDefEquals
             |> P.andThen (\_ -> Space.chompAndCheckIndent E.DeclDefSpace E.DeclDefIndentBody)
             |> P.andThen
                 (\preBodyComments ->
-                    P.specialize E.DeclDefBody (Expr.expression syntaxVersion)
+                    P.specialize E.DeclDefBody Expr.expression
                         |> P.map
                             (\( ( trailingComments, body ), end ) ->
                                 let

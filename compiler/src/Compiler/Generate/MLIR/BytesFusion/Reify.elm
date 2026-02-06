@@ -1,11 +1,7 @@
 module Compiler.Generate.MLIR.BytesFusion.Reify exposing
-    ( DecoderNode(..)
-    , EncoderNode(..)
-    , decoderNodeToOps
-    , nodesToOps
-    , reifyDecoder
-    , reifyEncoder
-    , reifyEndianness
+    ( EncoderNode(..), DecoderNode(..)
+    , reifyEncoder, reifyDecoder, reifyEndianness
+    , nodesToOps, decoderNodeToOps
     )
 
 {-| Reify MonoExpr representing Bytes.Encode.Encoder or Bytes.Decode.Decoder

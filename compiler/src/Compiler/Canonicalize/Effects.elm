@@ -19,7 +19,6 @@ import Compiler.Canonicalize.Environment as Env
 import Compiler.Canonicalize.Type as Type
 import Compiler.Data.Name as Name
 import Compiler.Elm.ModuleName as ModuleName
-import Compiler.Parse.SyntaxVersion exposing (SyntaxVersion)
 import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Error.Canonicalize as Error
 import Compiler.Reporting.Result as ReportingResult
@@ -50,19 +49,18 @@ Validates that:
 
 -}
 canonicalize :
-    SyntaxVersion
-    -> Env.Env
+    Env.Env
     -> List (A.Located Src.Value)
     -> Dict String Name.Name union
     -> Src.Effects
     -> EResult i w Can.Effects
-canonicalize syntaxVersion env values unions effects =
+canonicalize env values unions effects =
     case effects of
         Src.NoEffects ->
             ReportingResult.ok Can.NoEffects
 
         Src.Ports ports ->
-            ReportingResult.traverse (canonicalizePort syntaxVersion env) ports
+            ReportingResult.traverse (canonicalizePort env) ports
                 |> ReportingResult.map (Can.Ports << Dict.fromList identity)
 
         Src.Manager region manager ->
@@ -112,9 +110,9 @@ canonicalize syntaxVersion env values unions effects =
 -- ====== CANONICALIZE PORT ======
 
 
-canonicalizePort : SyntaxVersion -> Env.Env -> Src.Port -> EResult i w ( Name.Name, Can.Port )
-canonicalizePort syntaxVersion env (Src.Port _ ( _, A.At region portName ) tipe) =
-    Type.toAnnotation syntaxVersion env tipe
+canonicalizePort : Env.Env -> Src.Port -> EResult i w ( Name.Name, Can.Port )
+canonicalizePort env (Src.Port _ ( _, A.At region portName ) tipe) =
+    Type.toAnnotation env tipe
         |> ReportingResult.andThen
             (\(Can.Forall freeVars ctipe) ->
                 case List.reverse (Type.delambda (Type.deepDealias ctipe)) of

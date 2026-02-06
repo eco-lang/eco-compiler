@@ -37,7 +37,6 @@ import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Elm.Interface as I
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Elm.Package as Pkg
-import Compiler.Parse.SyntaxVersion exposing (SyntaxVersion)
 import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Error.Canonicalize as Error
 import Compiler.Reporting.Result as ReportingResult
@@ -88,10 +87,10 @@ canonicalize pkg ifaces ((Src.Module srcData) as modul) =
         |> ReportingResult.andThen (Local.add modul)
         |> ReportingResult.andThen
             (\( env, cunions, caliases ) ->
-                canonicalizeValues srcData.syntaxVersion env srcData.values
+                canonicalizeValues env srcData.values
                     |> ReportingResult.andThen
                         (\cvalues ->
-                            Effects.canonicalize srcData.syntaxVersion env srcData.values cunions srcData.effects
+                            Effects.canonicalize env srcData.values cunions srcData.effects
                                 |> ReportingResult.andThen
                                     (\ceffects ->
                                         canonicalizeExports srcData.values cunions caliases cbinops ceffects srcData.exports
@@ -158,9 +157,9 @@ components to identify mutually recursive definitions.
 IdState is threaded through all definitions to ensure globally unique expression IDs.
 
 -}
-canonicalizeValues : SyntaxVersion -> Env.Env -> List (A.Located Src.Value) -> MResult i (List W.Warning) Can.Decls
-canonicalizeValues syntaxVersion env values =
-    traverseValuesWithState syntaxVersion env Ids.initialIdState values
+canonicalizeValues : Env.Env -> List (A.Located Src.Value) -> MResult i (List W.Warning) Can.Decls
+canonicalizeValues env values =
+    traverseValuesWithState env Ids.initialIdState values
         |> ReportingResult.andThen (\( nodes, _ ) -> detectCycles (Graph.stronglyConnComp nodes))
 
 
@@ -170,21 +169,20 @@ This ensures all expressions across all definitions get unique IDs within the mo
 
 -}
 traverseValuesWithState :
-    SyntaxVersion
-    -> Env.Env
+    Env.Env
     -> Ids.IdState
     -> List (A.Located Src.Value)
     -> MResult i (List W.Warning) ( List NodeOne, Ids.IdState )
-traverseValuesWithState syntaxVersion env state values =
+traverseValuesWithState env state values =
     case values of
         [] ->
             ReportingResult.ok ( [], state )
 
         value :: rest ->
-            toNodeOne syntaxVersion env state value
+            toNodeOne env state value
                 |> ReportingResult.andThen
                     (\( node, newState ) ->
-                        traverseValuesWithState syntaxVersion env newState rest
+                        traverseValuesWithState env newState rest
                             |> ReportingResult.map
                                 (\( restNodes, finalState ) ->
                                     ( node :: restNodes, finalState )
@@ -303,8 +301,8 @@ tracks all free variables as dependencies, and constructs a NodeOne for cycle de
 Now also threads IdState through to ensure unique IDs across all definitions.
 
 -}
-toNodeOne : SyntaxVersion -> Env.Env -> Ids.IdState -> A.Located Src.Value -> MResult i (List W.Warning) ( NodeOne, Ids.IdState )
-toNodeOne syntaxVersion env idState (A.At _ (Src.Value valueData)) =
+toNodeOne : Env.Env -> Ids.IdState -> A.Located Src.Value -> MResult i (List W.Warning) ( NodeOne, Ids.IdState )
+toNodeOne env idState (A.At _ (Src.Value valueData)) =
     let
         ( _, (A.At _ name) as aname ) =
             valueData.name
@@ -318,7 +316,7 @@ toNodeOne syntaxVersion env idState (A.At _ (Src.Value valueData)) =
     case valueData.tipe of
         Nothing ->
             Pattern.verifyWithIds (Error.DPFuncArgs name)
-                (Pattern.traverseWithIds syntaxVersion env idState (List.map Src.c1Value srcArgs))
+                (Pattern.traverseWithIds env idState (List.map Src.c1Value srcArgs))
                 |> ReportingResult.andThen
                     (\( args, argBindings, stateAfterArgs ) ->
                         Env.addLocals argBindings env
@@ -326,7 +324,7 @@ toNodeOne syntaxVersion env idState (A.At _ (Src.Value valueData)) =
                                 (\newEnv ->
                                     Expr.verifyBindingsWithIds W.Pattern
                                         argBindings
-                                        (Expr.canonicalizeWithIds syntaxVersion newEnv stateAfterArgs body)
+                                        (Expr.canonicalizeWithIds newEnv stateAfterArgs body)
                                         |> ReportingResult.map
                                             (\( ( cbody, finalState ), freeLocals ) ->
                                                 let
@@ -345,11 +343,11 @@ toNodeOne syntaxVersion env idState (A.At _ (Src.Value valueData)) =
                     )
 
         Just ( _, ( _, srcType ) ) ->
-            Type.toAnnotation syntaxVersion env srcType
+            Type.toAnnotation env srcType
                 |> ReportingResult.andThen
                     (\(Can.Forall freeVars tipe) ->
                         Pattern.verifyWithIds (Error.DPFuncArgs name)
-                            (Expr.gatherTypedArgsWithIds syntaxVersion env name idState (List.map Src.c1Value srcArgs) tipe Index.first [])
+                            (Expr.gatherTypedArgsWithIds env name idState (List.map Src.c1Value srcArgs) tipe Index.first [])
                             |> ReportingResult.andThen
                                 (\( ( args, resultType ), argBindings, stateAfterArgs ) ->
                                     Env.addLocals argBindings env
@@ -357,7 +355,7 @@ toNodeOne syntaxVersion env idState (A.At _ (Src.Value valueData)) =
                                             (\newEnv ->
                                                 Expr.verifyBindingsWithIds W.Pattern
                                                     argBindings
-                                                    (Expr.canonicalizeWithIds syntaxVersion newEnv stateAfterArgs body)
+                                                    (Expr.canonicalizeWithIds newEnv stateAfterArgs body)
                                                     |> ReportingResult.map
                                                         (\( ( cbody, finalState ), freeLocals ) ->
                                                             let

@@ -68,7 +68,6 @@ import Bytes.Encode
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Optimized as Opt
 import Compiler.AST.Source as Src
-import Compiler.AST.SyntaxVersion as SV exposing (SyntaxVersion)
 import Compiler.AST.TypeEnv as TypeEnv
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Compile as Compile
@@ -1423,11 +1422,8 @@ resolveCrawlAction foreignDeps mvar pkg src docsStatus name guidaPath elmPath gu
                 Task.succeed (Just (SForeign iface))
 
         Nothing ->
-            if guidaExists then
-                crawlFile SV.Guida foreignDeps mvar pkg src docsStatus name guidaPath
-
-            else if elmExists then
-                crawlFile SV.Elm foreignDeps mvar pkg src docsStatus name elmPath
+            if elmExists then
+                crawlFile foreignDeps mvar pkg src docsStatus name elmPath
 
             else if Pkg.isKernel pkg && Name.isKernel name then
                 crawlKernel foreignDeps mvar pkg src name
@@ -1436,15 +1432,15 @@ resolveCrawlAction foreignDeps mvar pkg src docsStatus name guidaPath elmPath gu
                 Task.succeed Nothing
 
 
-crawlFile : SyntaxVersion -> Dict String ModuleName.Raw ForeignInterface -> MVar StatusDict -> Pkg.Name -> FilePath -> DocsStatus -> ModuleName.Raw -> FilePath -> Task Never (Maybe Status)
-crawlFile syntaxVersion foreignDeps mvar pkg src docsStatus expectedName path =
+crawlFile : Dict String ModuleName.Raw ForeignInterface -> MVar StatusDict -> Pkg.Name -> FilePath -> DocsStatus -> ModuleName.Raw -> FilePath -> Task Never (Maybe Status)
+crawlFile foreignDeps mvar pkg src docsStatus expectedName path =
     File.readUtf8 path
-        |> Task.andThen (parseAndCrawlFile syntaxVersion foreignDeps mvar pkg src docsStatus expectedName)
+        |> Task.andThen (parseAndCrawlFile foreignDeps mvar pkg src docsStatus expectedName)
 
 
-parseAndCrawlFile : SyntaxVersion -> Dict String ModuleName.Raw ForeignInterface -> MVar StatusDict -> Pkg.Name -> FilePath -> DocsStatus -> ModuleName.Raw -> String -> Task Never (Maybe Status)
-parseAndCrawlFile syntaxVersion foreignDeps mvar pkg src docsStatus expectedName bytes =
-    case Parse.fromByteString syntaxVersion (Parse.Package pkg) bytes of
+parseAndCrawlFile : Dict String ModuleName.Raw ForeignInterface -> MVar StatusDict -> Pkg.Name -> FilePath -> DocsStatus -> ModuleName.Raw -> String -> Task Never (Maybe Status)
+parseAndCrawlFile foreignDeps mvar pkg src docsStatus expectedName bytes =
+    case Parse.fromByteString (Parse.Package pkg) bytes of
         Ok ((Src.Module srcData) as modul) ->
             case srcData.name of
                 Just (A.At _ actualName) ->
@@ -1609,21 +1605,9 @@ handleCompileResult ctx modul docsStatus result =
                 name =
                     Src.getName modul
 
-                (Src.Module srcData) =
-                    modul
-
-                extension : String
-                extension =
-                    case srcData.syntaxVersion of
-                        SV.Elm ->
-                            ".elm"
-
-                        SV.Guida ->
-                            ".guida"
-
                 path : FilePath
                 path =
-                    Stuff.package ctx.cache ctx.pkg ctx.vsn ++ "/src/" ++ ModuleName.toFilePath name ++ extension
+                    Stuff.package ctx.cache ctx.pkg ctx.vsn ++ "/src/" ++ ModuleName.toFilePath name ++ ".elm"
             in
             Task.map2
                 (\time source ->
@@ -1663,21 +1647,9 @@ handleTypedCompileResult ctx modul docsStatus result =
                 name =
                     Src.getName modul
 
-                (Src.Module srcData) =
-                    modul
-
-                extension : String
-                extension =
-                    case srcData.syntaxVersion of
-                        SV.Elm ->
-                            ".elm"
-
-                        SV.Guida ->
-                            ".guida"
-
                 path : FilePath
                 path =
-                    Stuff.package ctx.cache ctx.pkg ctx.vsn ++ "/src/" ++ ModuleName.toFilePath name ++ extension
+                    Stuff.package ctx.cache ctx.pkg ctx.vsn ++ "/src/" ++ ModuleName.toFilePath name ++ ".elm"
             in
             Task.map2
                 (\time source ->

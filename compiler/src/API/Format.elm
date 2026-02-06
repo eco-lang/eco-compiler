@@ -12,7 +12,6 @@ pretty-printing it with consistent indentation, spacing, and line breaks.
 -}
 
 import Common.Format
-import Compiler.AST.SyntaxVersion as SV
 import Compiler.Elm.Package as Pkg
 import Compiler.Parse.Module as M
 
@@ -26,7 +25,7 @@ Parses the source and returns formatted code, or an error message if parsing fai
 -}
 run : String -> Result String String
 run src =
-    Common.Format.format SV.Guida (M.Package Pkg.core) src
+    Common.Format.format (M.Package Pkg.core) src
         |> Result.mapError
             (\_ ->
                 -- FIXME missings errs

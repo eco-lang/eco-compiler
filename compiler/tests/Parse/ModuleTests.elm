@@ -1,7 +1,6 @@
 module Parse.ModuleTests exposing (suite)
 
 import Compiler.AST.Source as S
-import Compiler.AST.SyntaxVersion as SV
 import Compiler.Parse.Module as M
 import Compiler.Reporting.Annotation as A
 import Expect
@@ -13,7 +12,7 @@ suite =
     Test.describe "Parse.Module"
         [ Test.describe "fromByteString"
             [ (\_ ->
-                M.fromByteString SV.Elm M.Application """module Hello exposing (..)
+                M.fromByteString M.Application """module Hello exposing (..)
 
 import Html exposing (text)
 
@@ -24,8 +23,7 @@ main =
                     |> Expect.equal
                         (Ok
                             (S.Module
-                                { syntaxVersion = SV.Elm
-                                , name = Just (A.at (A.Position 1 8) (A.Position 1 13) "Hello")
+                                { name = Just (A.at (A.Position 1 8) (A.Position 1 13) "Hello")
                                 , exports = A.at (A.Position 1 23) (A.Position 1 27) (S.Open [] [])
                                 , docs = S.NoDocs (A.Region (A.Position 1 27) (A.Position 3 1)) []
                                 , imports =

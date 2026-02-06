@@ -82,7 +82,6 @@ This module provides:
 -}
 
 import Compiler.AST.Source as Src
-import Compiler.AST.SyntaxVersion as SV
 import Compiler.Data.Name exposing (Name)
 import Compiler.Reporting.Annotation as A
 import Fuzz exposing (Fuzzer)
@@ -541,8 +540,7 @@ makeModule name expr =
                 }
     in
     Src.Module
-        { syntaxVersion = SV.Elm
-        , name = Just (A.At A.zero "Test")
+        { name = Just (A.At A.zero "Test")
         , exports = A.At A.zero (Src.Open noComments noComments)
         , docs = Src.NoDocs A.zero []
         , imports = [ basicsImport, listImport ]
@@ -575,8 +573,7 @@ makeModuleWithDefs moduleName defs =
                 defs
     in
     Src.Module
-        { syntaxVersion = SV.Elm
-        , name = Just (A.At A.zero moduleName)
+        { name = Just (A.At A.zero moduleName)
         , exports = A.At A.zero (Src.Open noComments noComments)
         , docs = Src.NoDocs A.zero []
         , imports = [ basicsImport, listImport ]
@@ -619,8 +616,7 @@ makeModuleWithTypedDefs moduleName defs =
                 defs
     in
     Src.Module
-        { syntaxVersion = SV.Elm
-        , name = Just (A.At A.zero moduleName)
+        { name = Just (A.At A.zero moduleName)
         , exports = A.At A.zero (Src.Open noComments noComments)
         , docs = Src.NoDocs A.zero []
         , imports = standardImports
@@ -769,8 +765,7 @@ makeModuleWithTypedDefsUnionsAliases moduleName defs unions aliases =
                 defs
     in
     Src.Module
-        { syntaxVersion = SV.Elm
-        , name = Just (A.At A.zero moduleName)
+        { name = Just (A.At A.zero moduleName)
         , exports = A.At A.zero (Src.Open noComments noComments)
         , docs = Src.NoDocs A.zero []
         , imports = standardImports
@@ -803,8 +798,7 @@ makeModuleWithTypedDefsUnionsAliasesExtended moduleName defs unions aliases =
                 defs
     in
     Src.Module
-        { syntaxVersion = SV.Elm
-        , name = Just (A.At A.zero moduleName)
+        { name = Just (A.At A.zero moduleName)
         , exports = A.At A.zero (Src.Open noComments noComments)
         , docs = Src.NoDocs A.zero []
         , imports = extendedImports
@@ -870,8 +864,7 @@ makePortModule defName ports expr =
                 }
     in
     Src.Module
-        { syntaxVersion = SV.Elm
-        , name = Just (A.At A.zero "Test")
+        { name = Just (A.At A.zero "Test")
         , exports = A.At A.zero (Src.Open noComments noComments)
         , docs = Src.NoDocs A.zero []
         , imports = portModuleImports
@@ -904,8 +897,7 @@ makePortModuleWithTypedDefs moduleName ports defs =
                 defs
     in
     Src.Module
-        { syntaxVersion = SV.Elm
-        , name = Just (A.At A.zero moduleName)
+        { name = Just (A.At A.zero moduleName)
         , exports = A.At A.zero (Src.Open noComments noComments)
         , docs = Src.NoDocs A.zero []
         , imports = portModuleImports

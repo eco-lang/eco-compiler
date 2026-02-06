@@ -1,10 +1,6 @@
 module Compiler.Generate.MLIR.BytesFusion.LoopIR exposing
-    ( DecoderOp(..)
-    , Endianness(..)
-    , Op(..)
-    , WidthExpr(..)
-    , simplifyWidth
-    , totalWidth
+    ( Endianness(..), WidthExpr(..), Op(..), DecoderOp(..)
+    , simplifyWidth, totalWidth
     )
 
 {-| Loop IR for fused byte encoding and decoding.

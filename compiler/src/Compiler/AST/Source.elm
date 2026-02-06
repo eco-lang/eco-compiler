@@ -95,7 +95,6 @@ These types wrap values with their surrounding comments:
 import Bytes.Decode
 import Bytes.Encode
 import Compiler.AST.Snippet as Snippet exposing (Snippet)
-import Compiler.AST.SyntaxVersion as SV exposing (SyntaxVersion)
 import Compiler.AST.Utils.Binop as Binop
 import Compiler.AST.Utils.Shader as Shader
 import Compiler.Data.Name as Name exposing (Name)
@@ -382,8 +381,7 @@ type Type_
 {-| Data contained in a module, including all top-level declarations.
 -}
 type alias ModuleData =
-    { syntaxVersion : SyntaxVersion
-    , name : Maybe (A.Located Name)
+    { name : Maybe (A.Located Name)
     , exports : A.Located Exposing
     , docs : Docs
     , imports : List Import
@@ -823,8 +821,7 @@ internalTypeDecoder =
 moduleEncoder : Module -> Bytes.Encode.Encoder
 moduleEncoder (Module data) =
     Bytes.Encode.sequence
-        [ SV.encoder data.syntaxVersion
-        , BE.maybe (A.locatedEncoder BE.string) data.name
+        [ BE.maybe (A.locatedEncoder BE.string) data.name
         , A.locatedEncoder exposingEncoder data.exports
         , docsEncoder data.docs
         , BE.list importEncoder data.imports
@@ -841,10 +838,9 @@ moduleEncoder (Module data) =
 moduleDecoder : Bytes.Decode.Decoder Module
 moduleDecoder =
     BD.map8
-        (\( syntaxVersion, maybeName ) ( exports, docs ) imports values unions aliases infixes effects ->
+        (\maybeName ( exports, docs ) imports values unions aliases infixes effects ->
             Module
-                { syntaxVersion = syntaxVersion
-                , name = maybeName
+                { name = maybeName
                 , exports = exports
                 , docs = docs
                 , imports = imports
@@ -855,7 +851,7 @@ moduleDecoder =
                 , effects = effects
                 }
         )
-        (BD.jsonPair SV.decoder (BD.maybe (A.locatedDecoder BD.string)))
+        (BD.maybe (A.locatedDecoder BD.string))
         (BD.jsonPair (A.locatedDecoder exposingDecoder) docsDecoder)
         (BD.list importDecoder)
         (BD.list (A.locatedDecoder valueDecoder))

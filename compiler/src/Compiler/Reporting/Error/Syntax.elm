@@ -74,7 +74,6 @@ specific and helpful error messages.
 
 import Bytes.Decode
 import Bytes.Encode
-import Compiler.AST.SyntaxVersion as SV exposing (SyntaxVersion)
 import Compiler.Data.Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Parse.Primitives exposing (Col, Row)
@@ -584,8 +583,8 @@ type Space
 {-| Convert a syntax error into a user-friendly error report with source code
 snippets and suggestions for fixing parsing problems.
 -}
-toReport : SyntaxVersion -> Code.Source -> Error -> Report.Report
-toReport syntaxVersion source err =
+toReport : Code.Source -> Error -> Report.Report
+toReport source err =
     case err of
         ModuleNameUnspecified name ->
             let
@@ -724,7 +723,7 @@ toReport syntaxVersion source err =
                 |> Report.report "INVALID EFFECT MODULE" region []
 
         ParseError modul ->
-            toParseErrorReport syntaxVersion source modul
+            toParseErrorReport source modul
 
 
 noteForPortsInPackage : D.Doc
@@ -749,8 +748,8 @@ noteForPortsInPackage =
         ]
 
 
-toParseErrorReport : SyntaxVersion -> Code.Source -> Module -> Report.Report
-toParseErrorReport syntaxVersion source modul =
+toParseErrorReport : Code.Source -> Module -> Report.Report
+toParseErrorReport source modul =
     case modul of
         ModuleSpace space row col ->
             toSpaceReport source space row col
@@ -1110,7 +1109,7 @@ toParseErrorReport syntaxVersion source modul =
                 |> Report.report "BAD INFIX" region []
 
         Declarations decl _ _ ->
-            toDeclarationsReport syntaxVersion source decl
+            toDeclarationsReport source decl
 
 
 
@@ -1773,8 +1772,8 @@ toKeywordRegion row col keyword =
         (A.Position row (col + String.length keyword))
 
 
-toDeclarationsReport : SyntaxVersion -> Code.Source -> Decl -> Report.Report
-toDeclarationsReport syntaxVersion source decl =
+toDeclarationsReport : Code.Source -> Decl -> Report.Report
+toDeclarationsReport source decl =
     case decl of
         DeclStart row col ->
             toDeclStartReport source row col
@@ -1789,7 +1788,7 @@ toDeclarationsReport syntaxVersion source decl =
             toDeclTypeReport source declType row col
 
         DeclDef name declDef row col ->
-            toDeclDefReport syntaxVersion source name declDef row col
+            toDeclDefReport source name declDef row col
 
         DeclFreshLineAfterDocComment row col ->
             let
@@ -2720,8 +2719,8 @@ customTypeNote =
 -- ====== DECL DEF ======
 
 
-toDeclDefReport : SyntaxVersion -> Code.Source -> Name -> DeclDef -> Row -> Col -> Report.Report
-toDeclDefReport syntaxVersion source name declDef startRow startCol =
+toDeclDefReport : Code.Source -> Name -> DeclDef -> Row -> Col -> Report.Report
+toDeclDefReport source name declDef startRow startCol =
     case declDef of
         DeclDefSpace space row col ->
             toSpaceReport source space row col
@@ -2924,10 +2923,10 @@ toDeclDefReport syntaxVersion source name declDef startRow startCol =
             toTypeReport source (TC_Annotation name) tipe row col
 
         DeclDefArg pattern row col ->
-            toPatternReport syntaxVersion source PArg pattern row col
+            toPatternReport source PArg pattern row col
 
         DeclDefBody expr row col ->
-            toExprReport syntaxVersion source (InDef name startRow startCol) expr row col
+            toExprReport source (InDef name startRow startCol) expr row col
 
         DeclDefNameRepeat row col ->
             let
@@ -3119,29 +3118,29 @@ isWithin desiredNode context =
 -- ====== EXPR REPORTS ======
 
 
-toExprReport : SyntaxVersion -> Code.Source -> Context -> Expr -> Row -> Col -> Report.Report
-toExprReport syntaxVersion source context expr startRow startCol =
+toExprReport : Code.Source -> Context -> Expr -> Row -> Col -> Report.Report
+toExprReport source context expr startRow startCol =
     case expr of
         Let let_ row col ->
-            toLetReport syntaxVersion source context let_ row col
+            toLetReport source context let_ row col
 
         Case case_ row col ->
-            toCaseReport syntaxVersion source context case_ row col
+            toCaseReport source context case_ row col
 
         If if_ row col ->
-            toIfReport syntaxVersion source context if_ row col
+            toIfReport source context if_ row col
 
         List list row col ->
-            toListReport syntaxVersion source context list row col
+            toListReport source context list row col
 
         Record record row col ->
-            toRecordReport syntaxVersion source context record row col
+            toRecordReport source context record row col
 
         Tuple tuple row col ->
-            toTupleReport syntaxVersion source context tuple row col
+            toTupleReport source context tuple row col
 
         Func func row col ->
-            toFuncReport syntaxVersion source context func row col
+            toFuncReport source context func row col
 
         Dot row col ->
             let
@@ -3372,7 +3371,7 @@ toExprReport syntaxVersion source context expr startRow startCol =
             toStringReport source string row col
 
         Number number row col ->
-            toNumberReport syntaxVersion source number row col
+            toNumberReport source number row col
 
         Space space row col ->
             toSpaceReport source space row col
@@ -3720,8 +3719,8 @@ toEscapeReport source escape row col =
 -- ====== NUMBERS ======
 
 
-toNumberReport : SyntaxVersion -> Code.Source -> Number -> Row -> Col -> Report.Report
-toNumberReport syntaxVersion source number row col =
+toNumberReport : Code.Source -> Number -> Row -> Col -> Report.Report
+toNumberReport source number row col =
     let
         region : A.Region
         region =
@@ -3734,23 +3733,11 @@ toNumberReport syntaxVersion source number row col =
                 [ D.reflow "I recognize numbers in the following formats:"
                 , D.indent 4 <|
                     D.vcat
-                        (case syntaxVersion of
-                            SV.Elm ->
-                                [ D.fromChars "42"
-                                , D.fromChars "3.14"
-                                , D.fromChars "6.022e23"
-                                , D.fromChars "0x002B"
-                                ]
-
-                            SV.Guida ->
-                                [ D.fromChars "42"
-                                , D.fromChars "10_000"
-                                , D.fromChars "3.14"
-                                , D.fromChars "6.022e23"
-                                , D.fromChars "0x002B"
-                                , D.fromChars "0b01010110_00111000"
-                                ]
-                        )
+                        [ D.fromChars "42"
+                        , D.fromChars "3.14"
+                        , D.fromChars "6.022e23"
+                        , D.fromChars "0x002B"
+                        ]
                 , D.reflow "So is there a way to write it like one of those?"
                 ]
             )
@@ -4040,8 +4027,8 @@ toOperatorReport source context operator row col =
 -- ====== CASE ======
 
 
-toLetReport : SyntaxVersion -> Code.Source -> Context -> Let -> Row -> Col -> Report.Report
-toLetReport syntaxVersion source context let_ startRow startCol =
+toLetReport : Code.Source -> Context -> Let -> Row -> Col -> Report.Report
+toLetReport source context let_ startRow startCol =
     case let_ of
         LetSpace space row col ->
             toSpaceReport source space row col
@@ -4154,13 +4141,13 @@ toLetReport syntaxVersion source context let_ startRow startCol =
                             "I was expecting the name of a definition next."
 
         LetDef name def row col ->
-            toLetDefReport syntaxVersion source name def row col
+            toLetDefReport source name def row col
 
         LetDestruct destruct row col ->
-            toLetDestructReport syntaxVersion source destruct row col
+            toLetDestructReport source destruct row col
 
         LetBody expr row col ->
-            toExprReport syntaxVersion source context expr row col
+            toExprReport source context expr row col
 
         LetIndentDef row col ->
             toUnfinishLetReport source row col startRow startCol <|
@@ -4248,8 +4235,8 @@ toUnfinishLetReport source row col startRow startCol message =
         |> Report.report "UNFINISHED LET" region []
 
 
-toLetDefReport : SyntaxVersion -> Code.Source -> Name -> Def -> Row -> Col -> Report.Report
-toLetDefReport syntaxVersion source name def startRow startCol =
+toLetDefReport : Code.Source -> Name -> Def -> Row -> Col -> Report.Report
+toLetDefReport source name def startRow startCol =
     case def of
         DefSpace space row col ->
             toSpaceReport source space row col
@@ -4301,7 +4288,7 @@ toLetDefReport syntaxVersion source name def startRow startCol =
                 |> Report.report "NAME MISMATCH" region []
 
         DefArg pattern row col ->
-            toPatternReport syntaxVersion source PArg pattern row col
+            toPatternReport source PArg pattern row col
 
         DefEquals row col ->
             case Code.whatIsNext source row col of
@@ -4489,7 +4476,7 @@ toLetDefReport syntaxVersion source name def startRow startCol =
                         |> Report.report "PROBLEM IN DEFINITION" region []
 
         DefBody expr row col ->
-            toExprReport syntaxVersion source (InDef name startRow startCol) expr row col
+            toExprReport source (InDef name startRow startCol) expr row col
 
         DefIndentEquals row col ->
             let
@@ -4602,14 +4589,14 @@ defNote =
         ]
 
 
-toLetDestructReport : SyntaxVersion -> Code.Source -> Destruct -> Row -> Col -> Report.Report
-toLetDestructReport syntaxVersion source destruct startRow startCol =
+toLetDestructReport : Code.Source -> Destruct -> Row -> Col -> Report.Report
+toLetDestructReport source destruct startRow startCol =
     case destruct of
         DestructSpace space row col ->
             toSpaceReport source space row col
 
         DestructPattern pattern row col ->
-            toPatternReport syntaxVersion source PLet pattern row col
+            toPatternReport source PLet pattern row col
 
         DestructEquals row col ->
             let
@@ -4639,7 +4626,7 @@ toLetDestructReport syntaxVersion source destruct startRow startCol =
                 |> Report.report "PROBLEM IN DEFINITION" region []
 
         DestructBody expr row col ->
-            toExprReport syntaxVersion source (InDestruct startRow startCol) expr row col
+            toExprReport source (InDestruct startRow startCol) expr row col
 
         DestructIndentEquals row col ->
             let
@@ -4678,8 +4665,8 @@ toLetDestructReport syntaxVersion source destruct startRow startCol =
 -- ====== CASE ======
 
 
-toCaseReport : SyntaxVersion -> Code.Source -> Context -> Case -> Row -> Col -> Report.Report
-toCaseReport syntaxVersion source context case_ startRow startCol =
+toCaseReport : Code.Source -> Context -> Case -> Row -> Col -> Report.Report
+toCaseReport source context case_ startRow startCol =
     case case_ of
         CaseSpace space row col ->
             toSpaceReport source space row col
@@ -4704,7 +4691,7 @@ toCaseReport syntaxVersion source context case_ startRow startCol =
                 )
 
         CasePattern pattern row col ->
-            toPatternReport syntaxVersion source PCase pattern row col
+            toPatternReport source PCase pattern row col
 
         CaseArrow row col ->
             case Code.whatIsNext source row col of
@@ -4807,10 +4794,10 @@ toCaseReport syntaxVersion source context case_ startRow startCol =
                         )
 
         CaseExpr expr row col ->
-            toExprReport syntaxVersion source (InNode NCase startRow startCol context) expr row col
+            toExprReport source (InNode NCase startRow startCol context) expr row col
 
         CaseBranch expr row col ->
-            toExprReport syntaxVersion source (InNode NBranch startRow startCol context) expr row col
+            toExprReport source (InNode NBranch startRow startCol context) expr row col
 
         CaseIndentOf row col ->
             toUnfinishCaseReport source
@@ -4945,8 +4932,8 @@ noteForCaseIndentError =
 -- ====== IF ======
 
 
-toIfReport : SyntaxVersion -> Code.Source -> Context -> If -> Row -> Col -> Report.Report
-toIfReport syntaxVersion source context if_ startRow startCol =
+toIfReport : Code.Source -> Context -> If -> Row -> Col -> Report.Report
+toIfReport source context if_ startRow startCol =
     case if_ of
         IfSpace space row col ->
             toSpaceReport source space row col
@@ -5020,13 +5007,13 @@ toIfReport syntaxVersion source context if_ startRow startCol =
                 |> Report.report "UNFINISHED IF" region []
 
         IfCondition expr row col ->
-            toExprReport syntaxVersion source (InNode NCond startRow startCol context) expr row col
+            toExprReport source (InNode NCond startRow startCol context) expr row col
 
         IfThenBranch expr row col ->
-            toExprReport syntaxVersion source (InNode NThen startRow startCol context) expr row col
+            toExprReport source (InNode NThen startRow startCol context) expr row col
 
         IfElseBranch expr row col ->
-            toExprReport syntaxVersion source (InNode NElse startRow startCol context) expr row col
+            toExprReport source (InNode NElse startRow startCol context) expr row col
 
         IfIndentCondition row col ->
             let
@@ -5214,8 +5201,8 @@ toIfReport syntaxVersion source context if_ startRow startCol =
 -- ====== RECORD ======
 
 
-toRecordReport : SyntaxVersion -> Code.Source -> Context -> Record -> Row -> Col -> Report.Report
-toRecordReport syntaxVersion source context record startRow startCol =
+toRecordReport : Code.Source -> Context -> Record -> Row -> Col -> Report.Report
+toRecordReport source context record startRow startCol =
     case record of
         RecordOpen row col ->
             case Code.whatIsNext source row col of
@@ -5463,7 +5450,7 @@ toRecordReport syntaxVersion source context record startRow startCol =
                 |> Report.report "PROBLEM IN RECORD" region []
 
         RecordExpr expr row col ->
-            toExprReport syntaxVersion source (InNode NRecord startRow startCol context) expr row col
+            toExprReport source (InNode NRecord startRow startCol context) expr row col
 
         RecordSpace space row col ->
             toSpaceReport source space row col
@@ -5675,11 +5662,11 @@ noteForRecordIndentError =
 -- ====== TUPLE ======
 
 
-toTupleReport : SyntaxVersion -> Code.Source -> Context -> Tuple -> Row -> Col -> Report.Report
-toTupleReport syntaxVersion source context tuple startRow startCol =
+toTupleReport : Code.Source -> Context -> Tuple -> Row -> Col -> Report.Report
+toTupleReport source context tuple startRow startCol =
     case tuple of
         TupleExpr expr row col ->
-            toExprReport syntaxVersion source (InNode NParens startRow startCol context) expr row col
+            toExprReport source (InNode NParens startRow startCol context) expr row col
 
         TupleSpace space row col ->
             toSpaceReport source space row col
@@ -5929,8 +5916,8 @@ toTupleReport syntaxVersion source context tuple startRow startCol =
                 |> Report.report "UNFINISHED PARENTHESES" region []
 
 
-toListReport : SyntaxVersion -> Code.Source -> Context -> List_ -> Row -> Col -> Report.Report
-toListReport syntaxVersion source context list startRow startCol =
+toListReport : Code.Source -> Context -> List_ -> Row -> Col -> Report.Report
+toListReport source context list startRow startCol =
     case list of
         ListSpace space row col ->
             toSpaceReport source space row col
@@ -6007,7 +5994,7 @@ toListReport syntaxVersion source context list startRow startCol =
                         |> Report.report "UNFINISHED LIST" region []
 
                 _ ->
-                    toExprReport syntaxVersion source (InNode NList startRow startCol context) expr row col
+                    toExprReport source (InNode NList startRow startCol context) expr row col
 
         ListEnd row col ->
             let
@@ -6186,17 +6173,17 @@ toListReport syntaxVersion source context list startRow startCol =
                 |> Report.report "UNFINISHED LIST" region []
 
 
-toFuncReport : SyntaxVersion -> Code.Source -> Context -> Func -> Row -> Col -> Report.Report
-toFuncReport syntaxVersion source context func startRow startCol =
+toFuncReport : Code.Source -> Context -> Func -> Row -> Col -> Report.Report
+toFuncReport source context func startRow startCol =
     case func of
         FuncSpace space row col ->
             toSpaceReport source space row col
 
         FuncArg pattern row col ->
-            toPatternReport syntaxVersion source PArg pattern row col
+            toPatternReport source PArg pattern row col
 
         FuncBody expr row col ->
-            toExprReport syntaxVersion source (InNode NFunc startRow startCol context) expr row col
+            toExprReport source (InNode NFunc startRow startCol context) expr row col
 
         FuncArrow row col ->
             case Code.whatIsNext source row col of
@@ -6382,17 +6369,17 @@ type PContext
     | PLet
 
 
-toPatternReport : SyntaxVersion -> Code.Source -> PContext -> Pattern -> Row -> Col -> Report.Report
-toPatternReport syntaxVersion source context pattern startRow startCol =
+toPatternReport : Code.Source -> PContext -> Pattern -> Row -> Col -> Report.Report
+toPatternReport source context pattern startRow startCol =
     case pattern of
         PRecord record row col ->
             toPRecordReport source record row col
 
         PTuple tuple row col ->
-            toPTupleReport syntaxVersion source context tuple row col
+            toPTupleReport source context tuple row col
 
         PList list row col ->
-            toPListReport syntaxVersion source context list row col
+            toPListReport source context list row col
 
         PStart row col ->
             case Code.whatIsNext source row col of
@@ -6492,7 +6479,7 @@ toPatternReport syntaxVersion source context pattern startRow startCol =
             toStringReport source string row col
 
         PNumber number row col ->
-            toNumberReport syntaxVersion source number row col
+            toNumberReport source number row col
 
         PFloat width row col ->
             let
@@ -6891,8 +6878,8 @@ toUnfinishRecordPatternReport source row col startRow startCol message =
         |> Report.report "UNFINISHED RECORD PATTERN" region []
 
 
-toPTupleReport : SyntaxVersion -> Code.Source -> PContext -> PTuple -> Row -> Col -> Report.Report
-toPTupleReport syntaxVersion source context tuple startRow startCol =
+toPTupleReport : Code.Source -> PContext -> PTuple -> Row -> Col -> Report.Report
+toPTupleReport source context tuple startRow startCol =
     case tuple of
         PTupleOpen row col ->
             case Code.whatIsNext source row col of
@@ -7053,7 +7040,7 @@ toPTupleReport syntaxVersion source context tuple startRow startCol =
                         |> Report.report "UNFINISHED PARENTHESES" region []
 
         PTupleExpr pattern row col ->
-            toPatternReport syntaxVersion source context pattern row col
+            toPatternReport source context pattern row col
 
         PTupleSpace space row col ->
             toSpaceReport source space row col
@@ -7167,8 +7154,8 @@ toPTupleReport syntaxVersion source context tuple startRow startCol =
                 |> Report.report "UNFINISHED TUPLE PATTERN" region []
 
 
-toPListReport : SyntaxVersion -> Code.Source -> PContext -> PList -> Row -> Col -> Report.Report
-toPListReport syntaxVersion source context list startRow startCol =
+toPListReport : Code.Source -> PContext -> PList -> Row -> Col -> Report.Report
+toPListReport source context list startRow startCol =
     case list of
         PListOpen row col ->
             case Code.whatIsNext source row col of
@@ -7241,7 +7228,7 @@ toPListReport syntaxVersion source context list startRow startCol =
                 |> Report.report "UNFINISHED LIST PATTERN" region []
 
         PListExpr pattern row col ->
-            toPatternReport syntaxVersion source context pattern row col
+            toPatternReport source context pattern row col
 
         PListSpace space row col ->
             toSpaceReport source space row col

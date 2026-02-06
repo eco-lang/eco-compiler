@@ -53,7 +53,6 @@ import Compiler.AST.Canonical as Can
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.Optimized as Opt
 import Compiler.AST.Source as Src
-import Compiler.AST.SyntaxVersion as SV
 import Compiler.AST.TypeEnv as TypeEnv
 import Compiler.AST.TypedCanonical as TCan
 import Compiler.AST.TypedOptimized as TOpt
@@ -159,7 +158,7 @@ like elm/core.
 -}
 parseModule : Pkg.Name -> String -> Result Syntax.Error Src.Module
 parseModule pkg source =
-    Parse.fromByteString SV.Elm (Parse.Package pkg) source
+    Parse.fromByteString (Parse.Package pkg) source
 
 
 
