@@ -53,6 +53,7 @@ import Compiler.AST.Canonical as Can
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.Optimized as Opt
 import Compiler.AST.Source as Src
+import Compiler.AST.SyntaxVersion as SV
 import Compiler.AST.TypeEnv as TypeEnv
 import Compiler.AST.TypedCanonical as TCan
 import Compiler.AST.TypedOptimized as TOpt
@@ -67,13 +68,11 @@ import Compiler.Elm.Package as Pkg
 import Compiler.Generate.CodeGen as CodeGen
 import Compiler.Generate.MLIR.Backend as MLIR
 import Compiler.Generate.Mode as Mode
+import Compiler.LocalOpt.Erased.Module as Optimize
+import Compiler.LocalOpt.Typed.Module as TypedOptimize
 import Compiler.Monomorphize.Monomorphize as Monomorphize
 import Compiler.Nitpick.PatternMatches as PatternMatches
-import Compiler.LocalOpt.Erased.Module as Optimize
-import Compiler.Type.KernelTypes as KernelTypes
-import Compiler.LocalOpt.Typed.Module as TypedOptimize
 import Compiler.Parse.Module as Parse
-import Compiler.AST.SyntaxVersion as SV
 import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Error.Canonicalize as CanonicalizeError
 import Compiler.Reporting.Error.Main as MainError
@@ -82,6 +81,7 @@ import Compiler.Reporting.Error.Type as TypeError
 import Compiler.Reporting.Result as RResult
 import Compiler.Type.Constrain.Erased.Module as TypeErased
 import Compiler.Type.Constrain.Typed.Module as TypeTyped
+import Compiler.Type.KernelTypes as KernelTypes
 import Compiler.Type.PostSolve as PostSolve
 import Compiler.Type.Solve as Type
 import Data.Map as Dict exposing (Dict)

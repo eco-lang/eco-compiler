@@ -1,10 +1,8 @@
 module Compiler.Monomorphize.Closure exposing
     ( ensureCallableTopLevel
+    , freshParams, extractRegion, buildNestedCalls
     , computeClosureCaptures
     , buildAbiWrapper
-    , freshParams
-    , extractRegion
-    , buildNestedCalls
     )
 
 {-| Closure handling and capture analysis for monomorphization.
@@ -297,7 +295,7 @@ unchanged. Otherwise, builds nested MonoClosures:
 
   - One closure per stage of targetType.
   - Each closure's params list is exactly the first stage's param types
-    (Mono.stageParamTypes) for its function type (MONO_016).
+    (Mono.stageParamTypes) for its function type (MONO\_016).
   - The innermost body calls calleeExpr using buildNestedCalls, which
     respects the callee's own staging.
 

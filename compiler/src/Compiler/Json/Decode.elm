@@ -61,10 +61,10 @@ OneOrMore types, along with detailed error reporting for parse and decode failur
 
 -}
 
+import Compiler.AST.Snippet as Snippet
 import Compiler.Data.NonEmptyList as NE
 import Compiler.Json.String as Json
 import Compiler.Parse.Keyword as K
-import Compiler.AST.Snippet as Snippet
 import Compiler.Parse.Primitives as P exposing (Col, Row)
 import Compiler.Reporting.Annotation as A
 import Data.Map as Dict exposing (Dict)

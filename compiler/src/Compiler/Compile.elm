@@ -39,15 +39,15 @@ import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Elm.Interface as I
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Elm.Package as Pkg
-import Compiler.Nitpick.PatternMatches as PatternMatches
 import Compiler.LocalOpt.Erased.Module as Optimize
-import Compiler.Type.KernelTypes as KernelTypes
 import Compiler.LocalOpt.Typed.Module as TypedOptimize
+import Compiler.Nitpick.PatternMatches as PatternMatches
 import Compiler.Reporting.Error as E
 import Compiler.Reporting.Render.Type.Localizer as Localizer
 import Compiler.Reporting.Result as ReportingResult
 import Compiler.Type.Constrain.Erased.Module as TypeErased
 import Compiler.Type.Constrain.Typed.Module as TypeTyped
+import Compiler.Type.KernelTypes as KernelTypes
 import Compiler.Type.PostSolve as PostSolve
 import Compiler.Type.Solve as Type
 import Data.Map exposing (Dict)

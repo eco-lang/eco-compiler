@@ -31,6 +31,7 @@ performs binary operator precedence resolution, and validates pattern bindings.
 import Basics.Extra exposing (flip)
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Source as Src
+import Compiler.AST.SyntaxVersion as SV exposing (SyntaxVersion)
 import Compiler.AST.Utils.Binop as Binop
 import Compiler.AST.Utils.Type as Type
 import Compiler.Canonicalize.Environment as Env
@@ -42,7 +43,6 @@ import Compiler.Data.Index as Index
 import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Elm.Package as Pkg
-import Compiler.AST.SyntaxVersion as SV exposing (SyntaxVersion)
 import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Error.Canonicalize as Error
 import Compiler.Reporting.Result as ReportingResult

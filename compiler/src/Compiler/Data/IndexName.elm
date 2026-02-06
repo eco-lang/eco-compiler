@@ -1,6 +1,4 @@
-module Compiler.Data.IndexName exposing
-    ( fromIndex, fromInt
-    )
+module Compiler.Data.IndexName exposing (fromIndex, fromInt)
 
 {-| Generate short alphabetic names from indices.
 
@@ -19,7 +17,9 @@ import Compiler.Data.Name as Name
 {-| Convert a zero-based index to a short alphabetic name.
 
     fromIndex Index.first == "a"
+
     fromIndex Index.second == "b"
+
     fromIndex Index.third == "c"
 
 -}

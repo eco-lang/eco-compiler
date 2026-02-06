@@ -14,6 +14,9 @@ ignoring types, the structures are exactly the same.
 -}
 
 import Compiler.AST.Canonical as Can
+import Compiler.AST.DecisionTree.Path as Path
+import Compiler.AST.DecisionTree.Test as Test
+import Compiler.AST.DecisionTree.TypedPath as TypedPath
 import Compiler.AST.Optimized as Opt
 import Compiler.AST.Source as Src
 import Compiler.AST.TypedCanonical as TCan
@@ -23,9 +26,6 @@ import Compiler.Data.Name as Name
 import Compiler.Data.NonEmptyList as NE
 import Compiler.Data.OneOrMore as OneOrMore
 import Compiler.Elm.Interface.Basic as Basic
-import Compiler.AST.DecisionTree.Path as Path
-import Compiler.AST.DecisionTree.Test as Test
-import Compiler.AST.DecisionTree.TypedPath as TypedPath
 import Compiler.LocalOpt.Erased.DecisionTree as DT
 import Compiler.LocalOpt.Erased.Module as ErasedOptimize
 import Compiler.LocalOpt.Typed.DecisionTree as TDT

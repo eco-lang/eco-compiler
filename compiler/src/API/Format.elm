@@ -12,9 +12,9 @@ pretty-printing it with consistent indentation, spacing, and line breaks.
 -}
 
 import Common.Format
+import Compiler.AST.SyntaxVersion as SV
 import Compiler.Elm.Package as Pkg
 import Compiler.Parse.Module as M
-import Compiler.AST.SyntaxVersion as SV
 
 
 

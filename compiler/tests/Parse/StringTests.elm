@@ -1,8 +1,8 @@
 module Parse.StringTests exposing (suite)
 
+import Compiler.AST.SyntaxVersion as SyntaxVersion
 import Compiler.Parse.Primitives as P
 import Compiler.Parse.String as S
-import Compiler.AST.SyntaxVersion as SyntaxVersion
 import Expect
 import Test exposing (Test)
 

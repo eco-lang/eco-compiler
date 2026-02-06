@@ -28,7 +28,6 @@ import Compiler.Canonicalize.Effects as Effects
 import Compiler.Data.Name as Name
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.LocalOpt.Typed.Expression as Expr
-import Compiler.Type.KernelTypes as KernelTypes
 import Compiler.LocalOpt.Typed.Names as Names
 import Compiler.LocalOpt.Typed.NormalizeLambdaBoundaries as LambdaNorm
 import Compiler.LocalOpt.Typed.Port as Port
@@ -36,6 +35,7 @@ import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Error.Main as E
 import Compiler.Reporting.Result as ReportingResult
 import Compiler.Reporting.Warning as W
+import Compiler.Type.KernelTypes as KernelTypes
 import Data.Map as Dict exposing (Dict)
 import Data.Set as EverySet exposing (EverySet)
 import System.TypeCheck.IO as IO

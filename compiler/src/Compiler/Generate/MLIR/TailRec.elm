@@ -21,6 +21,7 @@ The key insight is that a tail-recursive function can be compiled to:
 
 -}
 
+import Compiler.AST.DecisionTree.Test as Test
 import Compiler.AST.Monomorphized as Mono
 import Compiler.Data.Name as Name
 import Compiler.Generate.MLIR.Context as Ctx
@@ -29,12 +30,11 @@ import Compiler.Generate.MLIR.Intrinsics as Intrinsics
 import Compiler.Generate.MLIR.Ops as Ops
 import Compiler.Generate.MLIR.Patterns as Patterns
 import Compiler.Generate.MLIR.Types as Types
-import Compiler.AST.DecisionTree.Test as Test
 import Compiler.LocalOpt.Typed.DecisionTree as DT
 import Dict
-import Utils.Crash exposing (crash)
 import Mlir.Mlir as Mlir exposing (MlirAttr(..), MlirOp, MlirRegion(..), MlirType(..), Visibility(..))
 import OrderedDict
+import Utils.Crash exposing (crash)
 
 
 
@@ -58,6 +58,7 @@ type alias LoopSpec =
 Invariant: resultType must always equal loopSpec.retType for the enclosing
 compileStep/LoopSpec. All step forms (tail calls, base returns, cases, ifs)
 are responsible for producing a resultVar of this type.
+
 -}
 type alias StepResult =
     { ops : List MlirOp
@@ -499,7 +500,7 @@ compileCaseStep ctx loopSpec _ root decider jumps _ =
 {-| Compile a decision tree for a case expression as a single loop step.
 
 This mirrors Expr.generateDeciderWithJumps, but instead of producing
-an ExprResult for the case *value*, it produces a StepResult for the
+an ExprResult for the case _value_, it produces a StepResult for the
 loop state (nextParams..., done, result).
 
 -}

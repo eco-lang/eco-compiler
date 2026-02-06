@@ -80,8 +80,10 @@ type CallModel
 `returnedClosureParamCount` is the number of explicit parameters in the returned closure
 (if the function returns a closure). This differs from the return type's arity when
 the returned closure has captures. For example:
-- `\a b -> expr` returns a closure with 2 params -> returnedClosureParamCount = Just 2
-- `\a -> let x = ... in \b -> expr` returns a closure with 1 param -> returnedClosureParamCount = Just 1
+
+  - `\a b -> expr` returns a closure with 2 params -> returnedClosureParamCount = Just 2
+  - `\a -> let x = ... in \b -> expr` returns a closure with 1 param -> returnedClosureParamCount = Just 1
+
 -}
 type alias FuncSignature =
     { paramTypes : List Mono.MonoType
@@ -378,6 +380,7 @@ itself gets a TypeId.
 We must be careful about recursive custom types: if a field's type is
 the same as the containing type, we skip it here to avoid infinite
 recursion.
+
 -}
 registerCustomCtorFieldTypes : Mono.MonoType -> Context -> Context
 registerCustomCtorFieldTypes monoType ctx =

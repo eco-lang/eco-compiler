@@ -449,7 +449,8 @@ normalizeExpr expr =
             TOpt.Let (normalizeDef def) (normalizeExpr body) letType
 
         TOpt.Case label root decider jumps caseType ->
-            TOpt.Case label root
+            TOpt.Case label
+                root
                 (normalizeDeciderExpr decider)
                 (List.map (\( i, e ) -> ( i, normalizeExpr e )) jumps)
                 caseType
@@ -626,7 +627,7 @@ into:
 
     Leaf (Jump idx)
 
-and append (idx, \params -> body) to the jumps list, choosing fresh
+and append (idx, \\params -> body) to the jumps list, choosing fresh
 indices above any existing ones.
 
 Non-lambda Inline leaves are left as Inline; they will NOT be

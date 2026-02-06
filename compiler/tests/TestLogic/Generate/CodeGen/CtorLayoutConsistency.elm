@@ -10,8 +10,8 @@ that match the CtorLayout computed from MonoGraph.ctorShapes.
 -}
 
 import Compiler.AST.Monomorphized as Mono
-import Compiler.Generate.MLIR.Types as Types
 import Compiler.AST.Source as Src
+import Compiler.Generate.MLIR.Types as Types
 import Data.Map as Dict
 import Expect exposing (Expectation)
 import Mlir.Mlir exposing (MlirModule, MlirOp, MlirType(..))

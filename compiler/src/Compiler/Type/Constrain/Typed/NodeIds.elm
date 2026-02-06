@@ -1,8 +1,7 @@
 module Compiler.Type.Constrain.Typed.NodeIds exposing
     ( NodeVarMap, NodeIdState
     , emptyNodeIdState
-    , recordNodeVar
-    , recordSyntheticExprVar
+    , recordNodeVar, recordSyntheticExprVar
     )
 
 {-| Unified node ID tracking for type constraint generation (Typed pathway).

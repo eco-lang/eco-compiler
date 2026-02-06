@@ -3,11 +3,10 @@ module Builder.Stuff exposing
     , PackageCache, getPackageCache, getReplCache, package, registry
     , typedPackageArtifacts, packageCacheEncoder, packageCacheDecoder
     , details, interfaces, objects, typedObjects
-    , detailsWithBuildDir, interfacesWithBuildDir, objectsWithBuildDir, typedObjectsWithBuildDir
     , guidai, guidao, guidato
-    , guidaiWithBuildDir, guidaoWithBuildDir, guidatoWithBuildDir
     , prepublishDir, testDir
     , withRootLock, withRootLockBuildDir, withRegistryLock
+    , detailsWithBuildDir, guidaiWithBuildDir, guidaoWithBuildDir, guidatoWithBuildDir, interfacesWithBuildDir, objectsWithBuildDir, typedObjectsWithBuildDir
     )
 
 {-| File path management and artifact location for the Elm compiler build system.

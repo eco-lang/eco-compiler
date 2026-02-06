@@ -1,9 +1,8 @@
 module Compiler.Generate.MLIR.Expr exposing
     ( ExprResult
-    , generateExpr
+    , generateExpr, generateCase
     , boxToEcoValue, coerceResultToType, boxArgsWithMlirTypes
     , createDummyValue
-    , generateCase
     )
 
 {-| Expression generation for the MLIR backend.
@@ -36,8 +35,9 @@ This module handles generation of MLIR code for all Elm expressions.
 -}
 
 import Bitwise
+import Compiler.AST.DecisionTree.Test as Test
+import Compiler.AST.DecisionTree.TypedPath as TypedPath
 import Compiler.AST.Monomorphized as Mono
-import List.Extra as ListX
 import Compiler.Data.Name as Name
 import Compiler.Elm.Package as Pkg
 import Compiler.Generate.MLIR.BytesFusion.Emit as BFEmit
@@ -48,12 +48,11 @@ import Compiler.Generate.MLIR.Names as Names
 import Compiler.Generate.MLIR.Ops as Ops
 import Compiler.Generate.MLIR.Patterns as Patterns
 import Compiler.Generate.MLIR.Types as Types
-import Compiler.AST.DecisionTree.Test as Test
-import Compiler.AST.DecisionTree.TypedPath as TypedPath
 import Compiler.LocalOpt.Typed.DecisionTree as DT
 import Data.Map as EveryDict
 import Dict exposing (Dict)
 import Hex
+import List.Extra as ListX
 import Mlir.Loc as Loc
 import Mlir.Mlir exposing (MlirAttr(..), MlirOp, MlirRegion(..), MlirType(..))
 import OrderedDict

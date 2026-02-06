@@ -13,9 +13,9 @@ This phase:
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.TypeEnv as TypeEnv
 import Compiler.Data.Name exposing (Name)
-import Compiler.Monomorphize.Closure as Closure
 import Compiler.GlobalOpt.MonoInlineSimplify as MonoInlineSimplify
 import Compiler.GlobalOpt.MonoReturnArity as MonoReturnArity
+import Compiler.Monomorphize.Closure as Closure
 import Data.Map as Dict exposing (Dict)
 import System.TypeCheck.IO as IO
 

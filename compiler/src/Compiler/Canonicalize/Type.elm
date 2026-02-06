@@ -24,10 +24,10 @@ type variables for use in polymorphic type schemes (Forall quantification).
 import Basics.Extra exposing (flip)
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Source as Src
+import Compiler.AST.SyntaxVersion as SV exposing (SyntaxVersion)
 import Compiler.Canonicalize.Environment as Env
 import Compiler.Canonicalize.Environment.Dups as Dups
 import Compiler.Data.Name as Name
-import Compiler.AST.SyntaxVersion as SV exposing (SyntaxVersion)
 import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Error.Canonicalize as Error
 import Compiler.Reporting.Result as ReportingResult

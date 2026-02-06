@@ -29,6 +29,8 @@ control flow requirements.
 -}
 
 import Compiler.AST.Canonical as Can
+import Compiler.AST.DecisionTree.Path as Path
+import Compiler.AST.DecisionTree.Test as Test
 import Compiler.AST.Optimized as Opt
 import Compiler.AST.Utils.Shader as Shader
 import Compiler.Data.Index as Index
@@ -42,8 +44,6 @@ import Compiler.Generate.JavaScript.Builder as JS
 import Compiler.Generate.JavaScript.Name as JsName
 import Compiler.Generate.Mode as Mode
 import Compiler.Json.Encode as Encode
-import Compiler.AST.DecisionTree.Path as Path
-import Compiler.AST.DecisionTree.Test as Test
 import Compiler.LocalOpt.Erased.DecisionTree as DT
 import Compiler.Reporting.Annotation as A
 import Data.Map as Dict exposing (Dict)

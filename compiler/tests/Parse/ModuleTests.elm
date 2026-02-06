@@ -1,8 +1,8 @@
 module Parse.ModuleTests exposing (suite)
 
 import Compiler.AST.Source as S
-import Compiler.Parse.Module as M
 import Compiler.AST.SyntaxVersion as SV
+import Compiler.Parse.Module as M
 import Compiler.Reporting.Annotation as A
 import Expect
 import Test exposing (Test)

@@ -14,13 +14,13 @@ constructors with arguments, tuples, lists, records, and cons patterns.
 -}
 
 import Compiler.AST.Source as Src
+import Compiler.AST.SyntaxVersion as SV exposing (SyntaxVersion)
 import Compiler.Data.Name as Name
 import Compiler.Parse.Keyword as Keyword
 import Compiler.Parse.Number as Number
 import Compiler.Parse.Primitives as P
 import Compiler.Parse.Space as Space
 import Compiler.Parse.String as String
-import Compiler.AST.SyntaxVersion as SV exposing (SyntaxVersion)
 import Compiler.Parse.Variable as Var
 import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Error.Syntax as E

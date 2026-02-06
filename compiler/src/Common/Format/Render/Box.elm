@@ -31,16 +31,16 @@ import Common.Format.ImportInfo as ImportInfo exposing (ImportInfo)
 import Common.Format.KnownContents as KnownContents
 import Common.Format.Render.ElmStructure as ElmStructure
 import Common.Format.Render.Markdown as Markdown
+import Compiler.AST.Snippet as Snippet
 import Compiler.AST.Source as Src
+import Compiler.AST.SyntaxVersion as SV
 import Compiler.AST.Utils.Binop as Binop
 import Compiler.AST.Utils.Shader as Shader
 import Compiler.Data.Name exposing (Name)
 import Compiler.Parse.Declaration as Decl
 import Compiler.Parse.Expression as Expr
 import Compiler.Parse.Module as M
-import Compiler.AST.Snippet as Snippet
 import Compiler.Parse.Primitives as P
-import Compiler.AST.SyntaxVersion as SV
 import Compiler.Reporting.Annotation as A
 import Data.Map as Map exposing (Dict)
 import Data.Set as EverySet exposing (EverySet)

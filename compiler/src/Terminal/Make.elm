@@ -1,8 +1,9 @@
 module Terminal.Make exposing
     ( run
     , Flags(..), FlagsData, Output(..), ReportType(..)
-    , output, reportType, docsFile, buildDir
-    , parseOutput, parseReportType, parseDocsFile, parseBuildDir
+    , output, reportType, docsFile
+    , parseOutput, parseReportType, parseDocsFile
+    , buildDir, parseBuildDir
     )
 
 {-| Build command implementation for compiling Guida and Elm code.
@@ -148,7 +149,8 @@ runHelp root paths style (Flags flagsData) =
 
 runHelpWithScope : FilePath -> List String -> Reporting.Style -> Bool -> Bool -> Bool -> Maybe Output -> Maybe FilePath -> Bool -> Maybe String -> BW.Scope -> Task Never (Result Exit.Make ())
 runHelpWithScope root paths style debug optimize withSourceMaps maybeOutput maybeDocs showPackageErrors maybeBuildDir scope =
-    Stuff.withRootLockBuildDir root maybeBuildDir
+    Stuff.withRootLockBuildDir root
+        maybeBuildDir
         (Task.run
             (getMode debug optimize
                 |> Task.andThen (loadDetailsAndBuild root paths style withSourceMaps maybeOutput maybeDocs showPackageErrors maybeBuildDir scope)

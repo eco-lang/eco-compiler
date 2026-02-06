@@ -42,6 +42,7 @@ import Builder.Reporting as Reporting
 import Builder.Reporting.Exit as Exit
 import Builder.Stuff as Stuff
 import Compiler.AST.Source as Src
+import Compiler.AST.SyntaxVersion as SV
 import Compiler.Data.Name as N
 import Compiler.Elm.Constraint as C
 import Compiler.Elm.Licenses as Licenses
@@ -54,7 +55,6 @@ import Compiler.Parse.Expression as PE
 import Compiler.Parse.Module as PM
 import Compiler.Parse.Primitives as P exposing (Col, Row)
 import Compiler.Parse.Space as PS
-import Compiler.AST.SyntaxVersion as SV
 import Compiler.Parse.Type as PT
 import Compiler.Parse.Variable as PV
 import Compiler.Reporting.Annotation as A

@@ -68,6 +68,7 @@ import Bytes.Encode
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Optimized as Opt
 import Compiler.AST.Source as Src
+import Compiler.AST.SyntaxVersion as SV exposing (SyntaxVersion)
 import Compiler.AST.TypeEnv as TypeEnv
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Compile as Compile
@@ -84,7 +85,6 @@ import Compiler.Elm.Version as V
 import Compiler.Json.Decode as D
 import Compiler.Json.Encode as E
 import Compiler.Parse.Module as Parse
-import Compiler.AST.SyntaxVersion as SV exposing (SyntaxVersion)
 import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Doc as Doc
 import Compiler.Reporting.Error as Error

@@ -7,12 +7,10 @@ module Compiler.AST.Monomorphized exposing
     , Decider(..), MonoChoice(..)
     , ContainerKind(..)
     , typeOf
-    , toComparableSpecKey, toComparableMonoType, toComparableGlobal, toComparableLambdaId
+    , toComparableSpecKey, toComparableMonoType
     , getMonoPathType
     , monoTypeToDebugString
-    , isFunctionType, functionArity, countTotalArity, decomposeFunctionType
-    , stageArity, stageParamTypes, stageReturnType
-    , Segmentation, segmentLengths, buildSegmentedFunctionType, chooseCanonicalSegmentation
+    , Segmentation, buildSegmentedFunctionType, chooseCanonicalSegmentation, countTotalArity, decomposeFunctionType, functionArity, isFunctionType, segmentLengths, stageArity, stageParamTypes, stageReturnType, toComparableGlobal, toComparableLambdaId
     )
 
 {-| Monomorphized AST for backends that can optimize using concrete types.
