@@ -14,7 +14,6 @@ This phase:
 
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.TypeEnv as TypeEnv
-import Compiler.Monomorphize.Segmentation as Seg
 import Compiler.Data.Name exposing (Name)
 import Compiler.GlobalOpt.MonoInlineSimplify as MonoInlineSimplify
 import Compiler.GlobalOpt.MonoReturnArity as MonoReturnArity
@@ -322,10 +321,10 @@ buildAbiWrapperGO home targetType calleeExpr ctx0 =
             Mono.typeOf calleeExpr
 
         targetSeg =
-            Seg.segmentLengths targetType
+            Mono.segmentLengths targetType
 
         srcSeg =
-            Seg.segmentLengths srcType
+            Mono.segmentLengths srcType
     in
     if targetSeg == srcSeg then
         ( calleeExpr, ctx0 )
@@ -343,10 +342,10 @@ buildAbiWrapperGO home targetType calleeExpr ctx0 =
             buildStages remainingType accParams ctx =
                 let
                     stageArgTypes =
-                        Seg.stageParamTypes remainingType
+                        Mono.stageParamTypes remainingType
 
                     stageRetType =
-                        Seg.stageReturnType remainingType
+                        Mono.stageReturnType remainingType
                 in
                 case stageArgTypes of
                     [] ->
@@ -597,10 +596,10 @@ rewriteCaseForAbi home scrutName scrutTypeName decider branches resultType ctx0 
             -- Function leaves: normalize to canonical ABI
             let
                 ( canonicalSeg, flatArgs, flatRet ) =
-                    Seg.chooseCanonicalSegmentation leafTypes
+                    Mono.chooseCanonicalSegmentation leafTypes
 
                 canonicalType =
-                    Seg.buildSegmentedFunctionType flatArgs flatRet canonicalSeg
+                    Mono.buildSegmentedFunctionType flatArgs flatRet canonicalSeg
 
                 ( newDecider, newBranches, ctx1 ) =
                     rewriteCaseLeavesToAbiGO home canonicalType canonicalSeg decider branches ctx0
@@ -611,7 +610,7 @@ rewriteCaseForAbi home scrutName scrutTypeName decider branches resultType ctx0 
 rewriteCaseLeavesToAbiGO :
     IO.Canonical
     -> Mono.MonoType
-    -> Seg.Segmentation
+    -> Mono.Segmentation
     -> Mono.Decider Mono.MonoChoice
     -> List ( Int, Mono.MonoExpr )
     -> GlobalCtx
@@ -622,7 +621,7 @@ rewriteCaseLeavesToAbiGO home targetType targetSeg decider jumps ctx0 =
         rewriteLeafExpr expr ctx =
             case Mono.typeOf expr of
                 Mono.MFunction _ _ ->
-                    if Seg.segmentLengths (Mono.typeOf expr) == targetSeg then
+                    if Mono.segmentLengths (Mono.typeOf expr) == targetSeg then
                         ( expr, ctx )
 
                     else
@@ -822,16 +821,16 @@ rewriteIfForAbi home branches final resultType ctx0 =
             -- Function leaves: normalize to canonical ABI
             let
                 ( canonicalSeg, flatArgs, flatRet ) =
-                    Seg.chooseCanonicalSegmentation leafTypes
+                    Mono.chooseCanonicalSegmentation leafTypes
 
                 canonicalType =
-                    Seg.buildSegmentedFunctionType flatArgs flatRet canonicalSeg
+                    Mono.buildSegmentedFunctionType flatArgs flatRet canonicalSeg
 
                 rewriteResultExpr : Mono.MonoExpr -> GlobalCtx -> ( Mono.MonoExpr, GlobalCtx )
                 rewriteResultExpr expr ctx =
                     case Mono.typeOf expr of
                         Mono.MFunction _ _ ->
-                            if Seg.segmentLengths (Mono.typeOf expr) == canonicalSeg then
+                            if Mono.segmentLengths (Mono.typeOf expr) == canonicalSeg then
                                 rewriteExprForAbi home expr ctx
 
                             else
@@ -990,7 +989,7 @@ validateExprClosures expr =
         Mono.MonoClosure info body tipe ->
             let
                 expectedParams =
-                    Seg.stageParamTypes tipe
+                    Mono.stageParamTypes tipe
 
                 actualParams =
                     info.params

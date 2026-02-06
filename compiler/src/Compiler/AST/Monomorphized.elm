@@ -11,6 +11,15 @@ module Compiler.AST.Monomorphized exposing
     , getMonoPathType
     , monoTypeToDebugString
     , toComparableGlobal, toComparableLambdaId
+      -- Staging/Segmentation helpers
+    , Segmentation
+    , segmentLengths
+    , stageParamTypes
+    , stageReturnType
+    , stageArity
+    , chooseCanonicalSegmentation
+    , buildSegmentedFunctionType
+    , decomposeFunctionType
     )
 
 {-| Monomorphized AST for backends that can optimize using concrete types.

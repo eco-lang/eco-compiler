@@ -16,7 +16,6 @@ import Compiler.AST.Canonical as Can
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.TypeEnv as TypeEnv
 import Compiler.Monomorphize.Registry as Registry
-import Compiler.Monomorphize.Segmentation as Seg
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.Index as Index
 import Compiler.Data.Name as Name exposing (Name)
@@ -144,7 +143,7 @@ specializeLambda lambdaExpr canType subst state =
 
         -- Total flattened args & final return (for fully-peelable lambdas)
         ( flatArgTypes, flatRetType ) =
-            Seg.decomposeFunctionType monoType0
+            Mono.decomposeFunctionType monoType0
 
         totalArity : Int
         totalArity =
@@ -335,7 +334,7 @@ specializeLambda lambdaExpr canType subst state =
             _ =
                 let
                     stageArityCheck =
-                        Seg.stageParamTypes effectiveMonoType
+                        Mono.stageParamTypes effectiveMonoType
                 in
                 if List.length monoParams /= List.length stageArityCheck then
                     Utils.Crash.crash

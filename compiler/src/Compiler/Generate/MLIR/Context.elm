@@ -101,7 +101,7 @@ kernelFuncSignatureFromType : Mono.MonoType -> FuncSignature
 kernelFuncSignatureFromType funcType =
     let
         ( argTypes, retType ) =
-            Types.decomposeFunctionType funcType
+            Mono.decomposeFunctionType funcType
     in
     { paramTypes = argTypes
     , returnType = retType
@@ -715,7 +715,7 @@ extractNodeSignature specId node returnedCounts =
                 Mono.MFunction _ _ ->
                     let
                         ( argMonoTypes, resultMonoType ) =
-                            Types.decomposeFunctionType monoType
+                            Mono.decomposeFunctionType monoType
                     in
                     Just
                         { paramTypes = argMonoTypes

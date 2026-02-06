@@ -238,7 +238,7 @@ generateClosureFunc ctx funcName closureInfo body monoType =
         -- The first stage consumes closureInfo.params and returns stageReturnType monoType.
         extractedReturnType : Mono.MonoType
         extractedReturnType =
-            Types.stageReturnType monoType
+            Mono.stageReturnType monoType
 
         returnType : MlirType
         returnType =
@@ -311,7 +311,7 @@ generateTailFunc ctx funcName params expr monoType =
         -- Use decomposeFunctionType to extract the FINAL return type after all args are consumed.
         -- For sumHelper : Int -> Int -> Int, this extracts MInt (not MFunction [MInt] MInt).
         ( _, actualReturnType ) =
-            Types.decomposeFunctionType monoType
+            Mono.decomposeFunctionType monoType
 
         retTy =
             Types.monoTypeToAbi actualReturnType
@@ -705,7 +705,7 @@ generateExtern ctx funcName monoType =
     let
         -- Decompose function type to get argument types and return type
         ( argMonoTypes, resultMonoType ) =
-            Types.decomposeFunctionType monoType
+            Mono.decomposeFunctionType monoType
 
         -- Convert to MLIR types
         argMlirTypes : List MlirType

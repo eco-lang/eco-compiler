@@ -2,7 +2,7 @@ module Compiler.GlobalOpt.MonoReturnArity exposing (computeReturnedClosureParamC
 
 {-| Compute returned closure parameter count using normalized types.
 
-After ABI normalization, we can rely on `Seg.stageArity` instead of
+After ABI normalization, we can rely on `Mono.stageArity` instead of
 structural analysis of case/if branches.
 
 @docs computeReturnedClosureParamCount
@@ -10,7 +10,6 @@ structural analysis of case/if branches.
 -}
 
 import Compiler.AST.Monomorphized as Mono
-import Compiler.Monomorphize.Segmentation as Seg
 import Utils.Crash as Utils
 
 
@@ -27,7 +26,7 @@ computeReturnedClosureParamCount expr =
         Mono.MonoClosure info _ closureType ->
             let
                 stageParamCount =
-                    List.length (Seg.stageParamTypes closureType)
+                    List.length (Mono.stageParamTypes closureType)
             in
             if List.length info.params /= stageParamCount then
                 Utils.crash
@@ -47,7 +46,7 @@ computeReturnedClosureParamCount expr =
             in
             case exprType of
                 Mono.MFunction _ _ ->
-                    Just (Seg.stageArity exprType)
+                    Just (Mono.stageArity exprType)
 
                 _ ->
                     Nothing

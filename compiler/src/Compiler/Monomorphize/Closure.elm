@@ -2,7 +2,6 @@ module Compiler.Monomorphize.Closure exposing
     ( ensureCallableTopLevel
     , freshParams, extractRegion, buildNestedCalls
     , computeClosureCaptures
-    , buildAbiWrapper
     )
 
 {-| Closure handling and capture analysis for monomorphization.
@@ -37,7 +36,6 @@ This module handles:
 
 import Compiler.AST.Monomorphized as Mono
 import Compiler.Data.Name exposing (Name)
-import Compiler.Monomorphize.Segmentation as Seg
 import Compiler.Monomorphize.State exposing (MonoState)
 import Compiler.Reporting.Annotation as A
 import Data.Map as Dict exposing (Dict)
@@ -58,10 +56,10 @@ ensureCallableTopLevel expr monoType state =
             let
                 -- MONO_016: Use stage arity (first MFunction params only)
                 stageArgTypes =
-                    Seg.stageParamTypes monoType
+                    Mono.stageParamTypes monoType
 
                 stageRetType =
-                    Seg.stageReturnType monoType
+                    Mono.stageReturnType monoType
 
                 stageArity =
                     List.length stageArgTypes
@@ -250,7 +248,7 @@ buildNestedCalls region calleeExpr params =
             Mono.typeOf calleeExpr
 
         srcSeg =
-            Seg.segmentLengths calleeType
+            Mono.segmentLengths calleeType
 
         -- Convert params to expressions
         paramExprs =
@@ -273,7 +271,7 @@ buildNestedCalls region calleeExpr params =
                             Mono.typeOf currentCallee
 
                         resultType =
-                            Seg.stageReturnType currentCalleeType
+                            Mono.stageReturnType currentCalleeType
 
                         callExpr =
                             Mono.MonoCall region currentCallee nowArgs resultType
@@ -281,123 +279,6 @@ buildNestedCalls region calleeExpr params =
                     buildCalls callExpr laterArgs restSeg
     in
     buildCalls calleeExpr paramExprs srcSeg
-
-
-{-| Build a closure (or chain of closures) that wraps a function expression
-to adapt its ABI to a target staged function type.
-
-Given:
-
-  - targetType: the desired ABI type (e.g., MFunction [A] (MFunction [B] R))
-  - calleeExpr: the expression to wrap (e.g., has type MFunction [A,B] R)
-
-If the source and target segmentations already match, returns calleeExpr
-unchanged. Otherwise, builds nested MonoClosures:
-
-  - One closure per stage of targetType.
-  - Each closure's params list is exactly the first stage's param types
-    (Seg.stageParamTypes) for its function type (MONO\_016).
-  - The innermost body calls calleeExpr using buildNestedCalls, which
-    respects the callee's own staging.
-
--}
-buildAbiWrapper :
-    Mono.MonoType
-    -> Mono.MonoExpr
-    -> MonoState
-    -> ( Mono.MonoExpr, MonoState )
-buildAbiWrapper targetType calleeExpr state0 =
-    let
-        srcType =
-            Mono.typeOf calleeExpr
-
-        targetSeg =
-            Seg.segmentLengths targetType
-
-        srcSeg =
-            Seg.segmentLengths srcType
-    in
-    if targetSeg == srcSeg then
-        -- Segmentations match; no wrapper needed
-        ( calleeExpr, state0 )
-
-    else
-        let
-            -- Region for generated MonoCall nodes (taken from calleeExpr)
-            region : A.Region
-            region =
-                extractRegion calleeExpr
-
-            -- Recursively build nested closures for each stage of `remainingType`.
-            --
-            -- - `remainingType` is the function type for the current (outer) stage.
-            -- - `accParams` accumulates all params from *previous* stages;
-            --   these are the arguments we will eventually pass to calleeExpr.
-            --
-            -- Base case: no more stage params -> fully apply calleeExpr to
-            -- all accumulated params using buildNestedCalls.
-            buildStages :
-                Mono.MonoType
-                -> List ( Name, Mono.MonoType )
-                -> MonoState
-                -> ( Mono.MonoExpr, MonoState )
-            buildStages remainingType accParams st =
-                let
-                    stageArgTypes =
-                        Seg.stageParamTypes remainingType
-
-                    stageRetType =
-                        Seg.stageReturnType remainingType
-                in
-                case stageArgTypes of
-                    [] ->
-                        -- No more stages: fully apply calleeExpr to all params,
-                        -- respecting the callee's own staging.
-                        let
-                            bodyExpr =
-                                buildNestedCalls region calleeExpr accParams
-                        in
-                        ( bodyExpr, st )
-
-                    _ ->
-                        -- One staged lambda: params = this stage's arg types
-                        let
-                            paramsForStage : List ( Name, Mono.MonoType )
-                            paramsForStage =
-                                freshParams stageArgTypes
-
-                            -- Accumulate params for later call to calleeExpr
-                            newAccParams =
-                                accParams ++ paramsForStage
-
-                            ( innerBody, st1 ) =
-                                buildStages stageRetType newAccParams st
-
-                            captures =
-                                computeClosureCaptures paramsForStage innerBody
-
-                            lambdaId =
-                                Mono.AnonymousLambda st1.currentModule st1.lambdaCounter
-
-                            st2 =
-                                { st1 | lambdaCounter = st1.lambdaCounter + 1 }
-
-                            closureInfo =
-                                { lambdaId = lambdaId
-                                , captures = captures
-                                , params = paramsForStage
-                                }
-
-                            -- This stage's function type is exactly remainingType
-                            closureExpr =
-                                Mono.MonoClosure closureInfo innerBody remainingType
-                        in
-                        ( closureExpr, st2 )
-
-            ( wrapperExpr, state1 ) =
-                buildStages targetType [] state0
-        in
-        ( wrapperExpr, state1 )
 
 
 {-| Create an alias closure wrapping an existing expression.

@@ -988,11 +988,11 @@ generateCall ctx func args resultType =
                                         t =
                                             Mono.typeOf func
                                     in
-                                    ( Types.stageArity t, Types.countTotalArity t )
+                                    ( Mono.stageArity t, Types.countTotalArity t )
 
                         Mono.MonoClosure closureInfo _ closureType ->
                             ( List.length closureInfo.params
-                            , List.length closureInfo.params + Types.countTotalArity (Types.stageReturnType closureType)
+                            , List.length closureInfo.params + Types.countTotalArity (Mono.stageReturnType closureType)
                             )
 
                         _ ->
@@ -1000,7 +1000,7 @@ generateCall ctx func args resultType =
                                 t =
                                     Mono.typeOf func
                             in
-                            ( Types.stageArity t, Types.countTotalArity t )
+                            ( Mono.stageArity t, Types.countTotalArity t )
 
                 argCount =
                     List.length args
@@ -1052,10 +1052,10 @@ applyByStages ctx funcVar funcMlirType funcMonoType sourceRemaining returnedClos
         _ ->
             let
                 stageN =
-                    Types.stageArity funcMonoType
+                    Mono.stageArity funcMonoType
 
                 stageRetType =
-                    Types.stageReturnType funcMonoType
+                    Mono.stageReturnType funcMonoType
 
                 resultMlirType =
                     Types.monoTypeToAbi stageRetType
@@ -1119,7 +1119,7 @@ applyByStages ctx funcVar funcMlirType funcMonoType sourceRemaining returnedClos
 
                                 Nothing ->
                                     -- Fallback: use stageArity (assumes captures exist)
-                                    Types.stageArity stageRetType
+                                    Mono.stageArity stageRetType
 
                         else
                             rawResultRemaining
