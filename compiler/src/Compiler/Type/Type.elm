@@ -64,7 +64,7 @@ Used by the solver to track generalization levels:
 -}
 
 import Compiler.AST.Canonical as Can
-import Compiler.Type.Normalize as Type
+import Compiler.AST.Utils.Type as Type
 import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Reporting.Annotation as A

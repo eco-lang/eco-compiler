@@ -14,7 +14,7 @@ This module handles the canonicalization of Elm's effects system, including:
 
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Source as Src
-import Compiler.Type.Normalize as Type
+import Compiler.AST.Utils.Type as Type
 import Compiler.Canonicalize.Environment as Env
 import Compiler.Canonicalize.Type as Type
 import Compiler.Data.Name as Name

@@ -23,7 +23,7 @@ type information on every expression.
 import Compiler.AST.Canonical as Can
 import Compiler.AST.TypedCanonical as TCan exposing (ExprTypes)
 import Compiler.AST.TypedOptimized as TOpt
-import Compiler.Type.Normalize as Type
+import Compiler.AST.Utils.Type as Type
 import Compiler.Canonicalize.Effects as Effects
 import Compiler.Data.Name as Name
 import Compiler.Elm.ModuleName as ModuleName

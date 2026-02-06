@@ -16,7 +16,7 @@ TOpt.Expr values with Can.Type annotations instead of Opt.Expr.
 import Basics.Extra exposing (flip)
 import Compiler.AST.Canonical as Can
 import Compiler.AST.TypedOptimized as TOpt
-import Compiler.Type.Normalize as Type
+import Compiler.AST.Utils.Type as Type
 import Compiler.Data.Index as Index
 import Compiler.Data.IndexName as IndexName
 import Compiler.Data.Name as Name exposing (Name)
