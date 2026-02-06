@@ -21,7 +21,6 @@ Key optimizations:
 import Compiler.AST.Monomorphized as Mono exposing (MonoExpr(..), MonoGraph(..), MonoNode(..), SpecId)
 import Compiler.AST.TypeEnv as TypeEnv
 import Compiler.Data.Name exposing (Name)
-import Compiler.Generate.Mode as Mode
 import Compiler.Reporting.Annotation exposing (Region)
 import Data.Graph as Graph
 import Data.Map as Dict exposing (Dict)
@@ -47,8 +46,8 @@ type alias Metrics =
 
 {-| Optimize a MonoGraph by inlining small functions and simplifying expressions.
 -}
-optimize : Mode.Mode -> TypeEnv.GlobalTypeEnv -> MonoGraph -> ( MonoGraph, Metrics )
-optimize mode _ graph =
+optimize : TypeEnv.GlobalTypeEnv -> MonoGraph -> ( MonoGraph, Metrics )
+optimize _ graph =
     let
         (MonoGraph { nodes, main, registry, ctorShapes, returnedClosureParamCounts }) =
             graph
@@ -60,7 +59,7 @@ optimize mode _ graph =
             buildCallGraph nodes registry
 
         ctx =
-            initRewriteCtx mode nodes registry callGraph
+            initRewriteCtx nodes registry callGraph
 
         ( optimizedNodes, finalCtx ) =
             Dict.foldl compare
@@ -410,7 +409,6 @@ type alias RewriteCtx =
     , varCounter : Int
     , lambdaCounter : Int
     , metrics : InternalMetrics
-    , mode : Mode.Mode
     }
 
 
@@ -421,8 +419,8 @@ type alias InternalMetrics =
     }
 
 
-initRewriteCtx : Mode.Mode -> Dict Int SpecId MonoNode -> Mono.SpecializationRegistry -> CallGraph -> RewriteCtx
-initRewriteCtx mode nodes registry callGraph =
+initRewriteCtx : Dict Int SpecId MonoNode -> Mono.SpecializationRegistry -> CallGraph -> RewriteCtx
+initRewriteCtx nodes registry callGraph =
     { nodes = nodes
     , registry = registry
     , callGraph = callGraph
@@ -435,7 +433,6 @@ initRewriteCtx mode nodes registry callGraph =
         , betaReductions = 0
         , letEliminations = 0
         }
-    , mode = mode
     }
 
 

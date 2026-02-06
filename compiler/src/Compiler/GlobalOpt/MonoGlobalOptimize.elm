@@ -13,7 +13,6 @@ This phase:
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.TypeEnv as TypeEnv
 import Compiler.Data.Name exposing (Name)
-import Compiler.Generate.Mode as Mode
 import Compiler.Monomorphize.Closure as Closure
 import Compiler.GlobalOpt.MonoInlineSimplify as MonoInlineSimplify
 import Compiler.GlobalOpt.MonoReturnArity as MonoReturnArity
@@ -51,8 +50,8 @@ freshLambdaId home ctx =
 -- MAIN ENTRY POINT
 
 
-globalOptimize : Mode.Mode -> TypeEnv.GlobalTypeEnv -> Mono.MonoGraph -> Mono.MonoGraph
-globalOptimize mode typeEnv graph0 =
+globalOptimize : TypeEnv.GlobalTypeEnv -> Mono.MonoGraph -> Mono.MonoGraph
+globalOptimize typeEnv graph0 =
     let
         -- Phase 1: ABI normalization (case/if result types, wrapper generation)
         graph1 =

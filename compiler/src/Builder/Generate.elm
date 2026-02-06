@@ -619,7 +619,7 @@ generateMonoDevOutput backend withSourceMaps leadingLines root roots objects =
         Ok monoGraph0 ->
             let
                 monoGraph =
-                    MonoGlobalOptimize.globalOptimize mode globalTypeEnv monoGraph0
+                    MonoGlobalOptimize.globalOptimize globalTypeEnv monoGraph0
             in
             prepareSourceMaps withSourceMaps root
                 |> Task.map (generateMonoOutput backend leadingLines mode monoGraph globalTypeEnv)
