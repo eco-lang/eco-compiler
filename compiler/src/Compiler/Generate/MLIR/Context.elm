@@ -1,11 +1,10 @@
 module Compiler.Generate.MLIR.Context exposing
-    ( Context, FuncSignature, PendingLambda, TypeRegistry
+    ( Context, FuncSignature, PendingLambda, TypeRegistry, VarInfo
     , initContext
     , freshVar, freshOpId, lookupVar, addVarMapping
     , getOrCreateTypeIdForMonoType, registerKernelCall
     , buildSignatures, kernelFuncSignatureFromType
     , isTypeVar, hasKernelImplementation
-    , CallModel(..), VarInfo, isFlattenedExternalSpec, lookupVarCallModel, lookupVarArity
     )
 
 {-| MLIR code generation context.
@@ -16,7 +15,7 @@ state during MLIR code generation.
 
 # Types
 
-@docs Context, FuncSignature, PendingLambda, TypeRegistry
+@docs Context, FuncSignature, PendingLambda, TypeRegistry, VarInfo
 
 
 # Context Management
@@ -43,11 +42,6 @@ state during MLIR code generation.
 
 @docs isTypeVar, hasKernelImplementation
 
-
-# Call Model
-
-@docs CallModel, VarInfo, isFlattenedExternalSpec, lookupVarCallModel, lookupVarArity
-
 -}
 
 import Compiler.AST.Monomorphized as Mono
@@ -64,38 +58,20 @@ import Utils.Crash exposing (crash)
 -- ====== CONTEXT ======
 
 
-{-| Call model for a function: determines arity calculation strategy.
+{-| Function signature for type lookup: param types and return type.
 
-  - FlattenedExternal: External/kernel functions use total ABI arity (all params at once)
-  - StageCurried: User closures use stage arity (one stage at a time per MONO\_016)
-
--}
-type CallModel
-    = FlattenedExternal
-    | StageCurried
-
-
-{-| Function signature for invariant checking: param types, return type, and call model.
-
-`returnedClosureParamCount` is the number of explicit parameters in the returned closure
-(if the function returns a closure). This differs from the return type's arity when
-the returned closure has captures. For example:
-
-  - `\a b -> expr` returns a closure with 2 params -> returnedClosureParamCount = Just 2
-  - `\a -> let x = ... in \b -> expr` returns a closure with 1 param -> returnedClosureParamCount = Just 1
+Used for invariant checking and kernel declaration generation.
+All staging/call-model decisions are now made in GlobalOpt and stored in Mono.CallInfo.
 
 -}
 type alias FuncSignature =
     { paramTypes : List Mono.MonoType
     , returnType : Mono.MonoType
-    , callModel : CallModel
-    , returnedClosureParamCount : Maybe Int
     }
 
 
 {-| Derive a FuncSignature from a monomorphic function type.
 Used for kernel functions where we derive the ABI from the Elm type.
-Kernels use flattened ABI (all params at once).
 -}
 kernelFuncSignatureFromType : Mono.MonoType -> FuncSignature
 kernelFuncSignatureFromType funcType =
@@ -105,8 +81,6 @@ kernelFuncSignatureFromType funcType =
     in
     { paramTypes = argTypes
     , returnType = retType
-    , callModel = FlattenedExternal
-    , returnedClosureParamCount = Nothing
     }
 
 
@@ -136,25 +110,11 @@ hasKernelImplementation _ _ =
     False
 
 
-{-| Check if a SpecId refers to a flattened external function.
--}
-isFlattenedExternalSpec : Int -> Context -> Bool
-isFlattenedExternalSpec specId ctx =
-    case Dict.get specId ctx.signatures of
-        Just sig ->
-            sig.callModel == FlattenedExternal
-
-        Nothing ->
-            False
-
-
-{-| Variable info for tracking SSA variables with their types and call models.
+{-| Variable info for tracking SSA variables with their types.
 -}
 type alias VarInfo =
     { ssaVar : String
     , mlirType : MlirType
-    , callModel : Maybe CallModel -- Nothing for non-function values
-    , sourceArity : Maybe Int -- Closure's param count for CGEN_052 (papExtend remaining_arity)
     }
 
 
@@ -531,51 +491,18 @@ lookupVar ctx name =
             crash ("lookupVar: unbound variable " ++ name)
 
 
-{-| Look up the call model for a let-bound variable.
-Returns Nothing if the variable is not found or has no call model.
+{-| Add a variable mapping from a let-bound name to its SSA variable and type.
 -}
-lookupVarCallModel : Context -> String -> Maybe CallModel
-lookupVarCallModel ctx name =
-    case Dict.get name ctx.varMappings of
-        Just info ->
-            info.callModel
-
-        Nothing ->
-            Nothing
-
-
-{-| Add a variable mapping from a let-bound name to its SSA variable, type, call model, and source arity.
-
-sourceArity is the closure's param count, used for CGEN\_052 (papExtend remaining\_arity calculation).
-For closures, this is List.length closureInfo.params. For non-closures, pass Nothing.
-
--}
-addVarMapping : String -> String -> MlirType -> Maybe CallModel -> Maybe Int -> Context -> Context
-addVarMapping name ssaVar mlirTy maybeCallModel maybeSourceArity ctx =
+addVarMapping : String -> String -> MlirType -> Context -> Context
+addVarMapping name ssaVar mlirTy ctx =
     let
         info : VarInfo
         info =
             { ssaVar = ssaVar
             , mlirType = mlirTy
-            , callModel = maybeCallModel
-            , sourceArity = maybeSourceArity
             }
     in
     { ctx | varMappings = Dict.insert name info ctx.varMappings }
-
-
-{-| Look up the source arity for a let-bound variable.
-Returns the closure's param count if it's a closure, Nothing otherwise.
-Used for CGEN\_052 (papExtend remaining\_arity calculation).
--}
-lookupVarArity : Context -> String -> Maybe Int
-lookupVarArity ctx name =
-    case Dict.get name ctx.varMappings of
-        Just info ->
-            info.sourceArity
-
-        Nothing ->
-            Nothing
 
 
 
@@ -625,52 +552,30 @@ registerKernelCall ctx name callSiteArgTypes callSiteReturnType =
 -- ====== SIGNATURE EXTRACTION (for invariant checking)
 
 
-{-| Extract the function signature (param types, return type, call model) from a MonoNode.
+{-| Extract the function signature (param types, return type) from a MonoNode.
 Returns Nothing for nodes that aren't callable functions.
 
-Call model determines arity calculation:
-
-  - FlattenedExternal: MonoExtern nodes use total ABI arity (decomposeFunctionType)
-  - StageCurried: User-defined closures use stage arity (closureInfo.params)
-
-The `returnedCounts` parameter is a precomputed map from MonoGlobalOptimize
-that provides the returned closure parameter counts for MonoDefine and port nodes.
+This is a pure type extractor. All staging/call-model decisions are made in GlobalOpt.
 
 -}
-extractNodeSignature : Int -> Mono.MonoNode -> Dict.Dict Int (Maybe Int) -> Maybe FuncSignature
-extractNodeSignature specId node returnedCounts =
-    let
-        returnedCountForThisNode =
-            Dict.get specId returnedCounts |> Maybe.withDefault Nothing
-    in
+extractNodeSignature : Mono.MonoNode -> Maybe FuncSignature
+extractNodeSignature node =
     case node of
         Mono.MonoDefine expr monoType ->
-            -- For defines, check if the expression is a closure
-            -- User-defined functions are stage-curried per GOPT_016
             case expr of
                 Mono.MonoClosure closureInfo body _ ->
-                    -- Function with params (stage-curried)
-                    -- Use precomputed returned closure param count
                     Just
                         { paramTypes = List.map Tuple.second closureInfo.params
                         , returnType = Mono.typeOf body
-                        , callModel = StageCurried
-                        , returnedClosureParamCount = returnedCountForThisNode
                         }
 
                 _ ->
-                    -- Thunk (nullary function) - no params
                     Just
                         { paramTypes = []
                         , returnType = monoType
-                        , callModel = StageCurried
-                        , returnedClosureParamCount = Nothing
                         }
 
         Mono.MonoTailFunc params _ monoType ->
-            -- monoType is the full function type (MFunction args returnType)
-            -- Extract the actual return type from it
-            -- Tail functions are stage-curried
             let
                 returnType =
                     case monoType of
@@ -678,39 +583,26 @@ extractNodeSignature specId node returnedCounts =
                             ret
 
                         _ ->
-                            -- Shouldn't happen per MONO_004 invariant
                             monoType
             in
             Just
                 { paramTypes = List.map Tuple.second params
                 , returnType = returnType
-                , callModel = StageCurried
-                , returnedClosureParamCount = Nothing
                 }
 
         Mono.MonoCtor ctorShape monoType ->
-            -- Constructor - params are the field types
-            -- Constructors are called with all args at once (flattened)
             Just
                 { paramTypes = ctorShape.fieldTypes
                 , returnType = monoType
-                , callModel = FlattenedExternal
-                , returnedClosureParamCount = Nothing
                 }
 
         Mono.MonoEnum _ monoType ->
-            -- Nullary enum constructor
             Just
                 { paramTypes = []
                 , returnType = monoType
-                , callModel = FlattenedExternal
-                , returnedClosureParamCount = Nothing
                 }
 
         Mono.MonoExtern monoType ->
-            -- External value or function.
-            -- If it's a function type, decompose it to get ALL arguments + result.
-            -- External functions are NOT stage-curried; they use flattened parameter lists.
             case monoType of
                 Mono.MFunction _ _ ->
                     let
@@ -720,73 +612,54 @@ extractNodeSignature specId node returnedCounts =
                     Just
                         { paramTypes = argMonoTypes
                         , returnType = resultMonoType
-                        , callModel = FlattenedExternal
-                        , returnedClosureParamCount = Nothing
                         }
 
-                -- Non-function externs are not callable; no signature.
                 _ ->
                     Nothing
 
         Mono.MonoPortIncoming expr monoType ->
-            -- Ports with closures are stage-curried
             case expr of
                 Mono.MonoClosure closureInfo body _ ->
                     Just
                         { paramTypes = List.map Tuple.second closureInfo.params
                         , returnType = Mono.typeOf body
-                        , callModel = StageCurried
-                        , returnedClosureParamCount = returnedCountForThisNode
                         }
 
                 _ ->
                     Just
                         { paramTypes = []
                         , returnType = monoType
-                        , callModel = StageCurried
-                        , returnedClosureParamCount = Nothing
                         }
 
         Mono.MonoPortOutgoing expr monoType ->
-            -- Ports with closures are stage-curried
             case expr of
                 Mono.MonoClosure closureInfo body _ ->
                     Just
                         { paramTypes = List.map Tuple.second closureInfo.params
                         , returnType = Mono.typeOf body
-                        , callModel = StageCurried
-                        , returnedClosureParamCount = returnedCountForThisNode
                         }
 
                 _ ->
                     Just
                         { paramTypes = []
                         , returnType = monoType
-                        , callModel = StageCurried
-                        , returnedClosureParamCount = Nothing
                         }
 
         Mono.MonoCycle _ monoType ->
             Just
                 { paramTypes = []
                 , returnType = monoType
-                , callModel = StageCurried
-                , returnedClosureParamCount = Nothing
                 }
 
 
 {-| Build a map of SpecId -> FuncSignature from all nodes in the graph.
 Used for invariant checking at call sites.
-
-The `returnedCounts` parameter is a precomputed map from MonoGlobalOptimize
-that provides the returned closure parameter counts.
-
 -}
-buildSignatures : EveryDict.Dict Int Int Mono.MonoNode -> Dict.Dict Int (Maybe Int) -> Dict.Dict Int FuncSignature
-buildSignatures nodes returnedCounts =
+buildSignatures : EveryDict.Dict Int Int Mono.MonoNode -> Dict.Dict Int FuncSignature
+buildSignatures nodes =
     EveryDict.foldl compare
         (\specId node acc ->
-            case extractNodeSignature specId node returnedCounts of
+            case extractNodeSignature node of
                 Just sig ->
                     Dict.insert specId sig acc
 

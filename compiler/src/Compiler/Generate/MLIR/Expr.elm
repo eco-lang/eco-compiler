@@ -2316,7 +2316,7 @@ addPlaceholderMappings names ctx =
                     acc
 
                 Nothing ->
-                    Ctx.addVarMapping name ("%" ++ name) Types.ecoValue Nothing Nothing acc
+                    Ctx.addVarMapping name ("%" ++ name) Types.ecoValue acc
         )
         ctx
         names
@@ -2353,44 +2353,11 @@ generateLet ctx def body =
                 exprResult =
                     generateExpr ctxWithPlaceholders expr
 
-                -- Call model is now tracked in GlobalOpt via CallEnv and stored in CallInfo.
-                -- Codegen no longer needs to track call models through let bindings.
-
-                -- Extract source arity from closure for CGEN_052 (papExtend remaining_arity)
-                -- This is the closure's params.length, which equals papCreate's remaining arity
-                -- For calls that return closures, we need to compute the arity of the returned closure
-                exprSourceArity : Maybe Int
-                exprSourceArity =
-                    case expr of
-                        Mono.MonoClosure closureInfo _ _ ->
-                            Just (List.length closureInfo.params)
-
-                        Mono.MonoCall _ (Mono.MonoVarGlobal _ specId _) args _ _ ->
-                            -- Call to global function - check if it returns a closure
-                            -- Use returnedClosureParamCount if available
-                            case Dict.get specId ctxWithPlaceholders.signatures of
-                                Just sig ->
-                                    if List.length args >= List.length sig.paramTypes then
-                                        -- Fully applied first stage - returns a closure
-                                        sig.returnedClosureParamCount
-
-                                    else
-                                        -- Partial application of first stage
-                                        Just (List.length sig.paramTypes - List.length args)
-
-                                Nothing ->
-                                    Nothing
-
-                        _ ->
-                            Nothing
-
-                -- Instead of creating an eco.construct wrapper, just add a mapping
-                -- from the let-bound name to the expression's result variable.
-                -- This preserves the original type and avoids boxing issues.
-                -- Note: call model is now tracked in GlobalOpt, so we pass Nothing here.
+                -- Add a mapping from the let-bound name to the expression's result variable.
+                -- All staging metadata is now in Mono.CallInfo from GlobalOpt.
                 ctx1 : Ctx.Context
                 ctx1 =
-                    Ctx.addVarMapping name exprResult.resultVar exprResult.resultType Nothing exprSourceArity exprResult.ctx
+                    Ctx.addVarMapping name exprResult.resultVar exprResult.resultType exprResult.ctx
 
                 bodyResult : ExprResult
                 bodyResult =
@@ -2432,26 +2399,20 @@ generateLet ctx def body =
             -- For now, we just add the function to varMappings as a closure reference.
             let
                 -- Add parameters to varMappings (use ctxWithPlaceholders for mutual recursion)
-                -- Parameters are plain values, no call model, no sourceArity
                 ctxWithParams =
                     List.foldl
                         (\( paramName, paramType ) acc ->
-                            Ctx.addVarMapping paramName ("%" ++ paramName) (Types.monoTypeToAbi paramType) Nothing Nothing acc
+                            Ctx.addVarMapping paramName ("%" ++ paramName) (Types.monoTypeToAbi paramType) acc
                         )
                         ctxWithPlaceholders
                         params
 
                 -- Add the function name to varMappings
-                -- Local tail funcs are stage-curried with arity = params count
-                -- Note: call model is now tracked in GlobalOpt, so we pass Nothing here.
                 funcMlirType =
                     Types.ecoValue
 
-                tailFuncArity =
-                    List.length params
-
                 ctxWithFunc =
-                    Ctx.addVarMapping name ("%" ++ name) funcMlirType Nothing (Just tailFuncArity) ctxWithParams
+                    Ctx.addVarMapping name ("%" ++ name) funcMlirType ctxWithParams
 
                 -- Generate the let body (which calls the function)
                 bodyResult =
@@ -2509,10 +2470,9 @@ generateDestruct ctx (Mono.MonoDestructor name path monoType) body _ =
             Patterns.generateMonoPath ctx path targetType
 
         -- Use mapping with the path's type
-        -- Destructured bindings are values, no call model, no sourceArity
         ctx2 : Ctx.Context
         ctx2 =
-            Ctx.addVarMapping name pathVar targetType Nothing Nothing ctx1
+            Ctx.addVarMapping name pathVar targetType ctx1
 
         bodyResult : ExprResult
         bodyResult =

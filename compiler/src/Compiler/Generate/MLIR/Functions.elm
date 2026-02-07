@@ -208,7 +208,6 @@ generateClosureFunc ctx funcName closureInfo body monoType =
                 closureInfo.params
 
         -- Create fresh varMappings with only function parameters
-        -- Parameters are plain values, no call model, no sourceArity.
         freshVarMappings : Dict.Dict String Ctx.VarInfo
         freshVarMappings =
             List.foldl
@@ -216,8 +215,6 @@ generateClosureFunc ctx funcName closureInfo body monoType =
                     Dict.insert name
                         { ssaVar = "%" ++ name
                         , mlirType = Types.monoTypeToAbi ty
-                        , callModel = Nothing
-                        , sourceArity = Nothing
                         }
                         acc
                 )
@@ -291,7 +288,6 @@ generateTailFunc ctx funcName params expr monoType =
                 params
 
         -- Create fresh varMappings with function parameters
-        -- Parameters are plain values, no call model, no sourceArity.
         freshVarMappings : Dict.Dict String Ctx.VarInfo
         freshVarMappings =
             List.foldl
@@ -299,8 +295,6 @@ generateTailFunc ctx funcName params expr monoType =
                     Dict.insert name
                         { ssaVar = "%" ++ name
                         , mlirType = Types.monoTypeToAbi ty
-                        , callModel = Nothing
-                        , sourceArity = Nothing
                         }
                         acc
                 )

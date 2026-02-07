@@ -99,15 +99,11 @@ globalOptimize typeEnv graph0 =
         graph4 =
             annotateCallStaging graph3
 
-        -- Phase 5: Returned-closure arity annotation
-        graph5 =
-            annotateReturnedClosureArity graph4
-
-        -- Phase 6: Inlining and DCE (call as black box)
-        -- ( graph6, _ ) =
-        --     MonoInlineSimplify.optimize mode typeEnv graph5
+        -- Phase 5: Inlining and DCE (call as black box)
+        -- ( graph5, _ ) =
+        --     MonoInlineSimplify.optimize mode typeEnv graph4
     in
-    graph5
+    graph4
 
 
 
@@ -2254,56 +2250,3 @@ computeCallInfo graph env func args resultType =
             , initialRemaining = initialRemaining
             , remainingStageArities = remainingStageArities
             }
-
-
-
--- RETURNED CLOSURE ARITY ANNOTATION
-
-
-{-| Annotate the MonoGraph with precomputed returned-closure parameter counts.
-
-This computes `returnedClosureParamCount` for each node that needs it
-(MonoDefine, MonoPortIncoming, MonoPortOutgoing with MonoClosure bodies)
-and stores the result in the graph for MLIR codegen to consume.
-
--}
-annotateReturnedClosureArity : Mono.MonoGraph -> Mono.MonoGraph
-annotateReturnedClosureArity (Mono.MonoGraph record) =
-    let
-        returnedMap : Dict Int Mono.SpecId (Maybe Int)
-        returnedMap =
-            Dict.foldl compare
-                (\specId node acc ->
-                    case node of
-                        Mono.MonoDefine expr _ ->
-                            case expr of
-                                Mono.MonoClosure _ body _ ->
-                                    Dict.insert identity specId (MonoReturnArity.computeReturnedClosureParamCount body) acc
-
-                                _ ->
-                                    acc
-
-                        Mono.MonoPortIncoming expr _ ->
-                            case expr of
-                                Mono.MonoClosure _ body _ ->
-                                    Dict.insert identity specId (MonoReturnArity.computeReturnedClosureParamCount body) acc
-
-                                _ ->
-                                    acc
-
-                        Mono.MonoPortOutgoing expr _ ->
-                            case expr of
-                                Mono.MonoClosure _ body _ ->
-                                    Dict.insert identity specId (MonoReturnArity.computeReturnedClosureParamCount body) acc
-
-                                _ ->
-                                    acc
-
-                        -- MonoTailFunc, MonoCycle, MonoCtor, MonoEnum, MonoExtern: no annotation
-                        _ ->
-                            acc
-                )
-                Dict.empty
-                record.nodes
-    in
-    Mono.MonoGraph { record | returnedClosureParamCounts = returnedMap }

@@ -70,7 +70,6 @@ generateLambdaFunc ctx lambda =
 
         -- Build varMappings directly from typed parameters (no unboxing needed)
         -- Parameters arrive in their actual types due to typed calling convention.
-        -- Parameters are plain values, no call model.
         varMappingsWithArgs : Dict.Dict String Ctx.VarInfo
         varMappingsWithArgs =
             List.foldl
@@ -85,8 +84,6 @@ generateLambdaFunc ctx lambda =
                     Dict.insert name
                         { ssaVar = varName
                         , mlirType = mlirType
-                        , callModel = Nothing
-                        , sourceArity = Nothing
                         }
                         acc
                 )

@@ -303,8 +303,7 @@ setupVarMappings ctx originalParamPairs newBlockArgPairs =
                     String.dropLeft 1 origSsaName
             in
             -- Update the mapping: elmName -> newSsaName with the new type
-            -- Parameters are values, not closures, so no sourceArity
-            Ctx.addVarMapping elmName newSsaName newType Nothing Nothing accCtx
+            Ctx.addVarMapping elmName newSsaName newType accCtx
         )
         ctx
         (zip originalParamPairs newBlockArgPairs)
@@ -975,9 +974,8 @@ compileLetStep ctx loopSpec def body =
                     Expr.generateExpr ctx defExpr
 
                 -- Add the variable mapping for the defined name
-                -- TODO: Extract sourceArity from defExpr if it's a closure for CGEN_052
                 ctx1 =
-                    Ctx.addVarMapping name exprResult.resultVar exprResult.resultType Nothing Nothing exprResult.ctx
+                    Ctx.addVarMapping name exprResult.resultVar exprResult.resultType exprResult.ctx
 
                 -- Recursively compile the body
                 bodyStep =
@@ -1054,10 +1052,9 @@ compileDestructStep ctx loopSpec (Mono.MonoDestructor name path _) body =
             Patterns.generateMonoPath ctx path destructorMlirType
 
         -- Bind the destructured name to the extracted SSA value.
-        -- Destructured bindings are plain values (no sourceArity).
         ctx2 : Ctx.Context
         ctx2 =
-            Ctx.addVarMapping name pathVar destructorMlirType Nothing Nothing ctx1
+            Ctx.addVarMapping name pathVar destructorMlirType ctx1
 
         -- Recursively compile the body as a loop step.
         bodyStep : StepResult
