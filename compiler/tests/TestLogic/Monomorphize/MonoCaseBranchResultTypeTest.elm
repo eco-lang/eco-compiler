@@ -17,6 +17,6 @@ import TestLogic.Monomorphize.MonoCaseBranchResultType exposing (expectMonoCaseB
 
 suite : Test
 suite =
-    Test.describe "GOPT_018: MonoCase branches match case result type"
+    Test.describe "GOPT_003: MonoCase branches match case result type"
         [ StandardTestSuites.expectSuite expectMonoCaseBranchResultTypes "case branch types match"
         ]

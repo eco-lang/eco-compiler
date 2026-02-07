@@ -64,7 +64,7 @@ computeReturnedClosureParamCount expr =
             in
             if List.length info.params /= stageParamCount then
                 Utils.crash
-                    ("MonoReturnArity: GOPT_016 violation: closure params="
+                    ("MonoReturnArity: GOPT_001 violation: closure params="
                         ++ String.fromInt (List.length info.params)
                         ++ ", stage arity="
                         ++ String.fromInt stageParamCount

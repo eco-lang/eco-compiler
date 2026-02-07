@@ -258,7 +258,7 @@ applySubst subst canType =
 
         Can.TLambda from to ->
             -- IMPORTANT: Preserve curried structure - each TLambda becomes a single-arg MFunction.
-            -- Do NOT flatten nested TLambdas here. GlobalOpt handles flattening (GOPT_016).
+            -- Do NOT flatten nested TLambdas here. GlobalOpt handles flattening (GOPT_001).
             let
                 argMono =
                     applySubst subst from

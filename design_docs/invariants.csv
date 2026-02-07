@@ -138,11 +138,11 @@ MONO_017;Monomorphization;Registry;enforced;For every SpecId in SpecializationRe
 # GLOBAL OPTIMIZATION PHASE - Staging normalization and ABI consistency
 # =============================================================================
 
-GOPT_016;GlobalOptimization;Closures;enforced;For every MonoClosure with function type MFunction after GlobalOpt the length of closureInfo.params equals the length of stageParamTypes(monoType). This is validated by validateClosureStaging after ABI normalization. Monomorphize is staging-agnostic and does not enforce this; GlobalOpt is the sole enforcer.;Compiler.GlobalOpt.MonoGlobalOptimize (validateClosureStaging)|Compiler.GlobalOpt.MonoReturnArity
+GOPT_001;GlobalOptimization;Closures;enforced;For every MonoClosure with function type MFunction after GlobalOpt the length of closureInfo.params equals the length of stageParamTypes(monoType). This is validated by validateClosureStaging after ABI normalization. Monomorphize is staging-agnostic and does not enforce this; GlobalOpt is the sole enforcer.;Compiler.GlobalOpt.MonoGlobalOptimize (validateClosureStaging)|Compiler.GlobalOpt.MonoReturnArity
 
-GOPT_017;GlobalOptimization;Closures;enforced;For every function that returns a closure the returnedClosureParamCounts map entry equals the first-stage parameter count of the returned closure type. This is computed by computeReturnedClosureParamCount after ABI normalization. Note: For multi-stage closures the full stage arity sequence is computed at MLIR generation time from the return type.;Compiler.GlobalOpt.MonoReturnArity (computeReturnedClosureParamCount)
+GOPT_002;GlobalOptimization;Closures;enforced;For every function that returns a closure the returnedClosureParamCounts map entry equals the first-stage parameter count of the returned closure type. This is computed by computeReturnedClosureParamCount after ABI normalization. Note: For multi-stage closures the full stage arity sequence is computed at MLIR generation time from the return type.;Compiler.GlobalOpt.MonoReturnArity (computeReturnedClosureParamCount)
 
-GOPT_018;GlobalOptimization;Types;enforced;For every MonoCase after normalizeCaseIfAbi all branch result types equal the case result type including staging. The ABI normalization pass uses chooseCanonicalSegmentation to pick a common staging and buildAbiWrapperGO to wrap branches that differ.;Compiler.GlobalOpt.MonoGlobalOptimize (normalizeCaseIfAbi|buildAbiWrapperGO)
+GOPT_003;GlobalOptimization;Types;enforced;For every MonoCase after normalizeCaseIfAbi all branch result types equal the case result type including staging. The ABI normalization pass uses chooseCanonicalSegmentation to pick a common staging and buildAbiWrapperGO to wrap branches that differ.;Compiler.GlobalOpt.MonoGlobalOptimize (normalizeCaseIfAbi|buildAbiWrapperGO)
 
 
 # =============================================================================
@@ -257,7 +257,7 @@ CGEN_053;MLIR_Codegen;ControlFlow;enforced;eco.yield may only appear as the term
 
 CGEN_054;MLIR_Codegen;ControlFlow;enforced;eco.return is forbidden inside eco.case alternative regions (eco.yield is the only legal case-alternative terminator) to prevent accidental non-local exits from within a value-producing case;runtime/src/codegen/Ops.td and Compiler.Generate.MLIR.Expr
 
-CGEN_055;MLIR_Codegen;Closures;enforced;When an ABI wrapper closure is created for a target segmentation [s1 s2 ...] the wrapper must have nested closure structure where the outermost closure has exactly s1 parameters (not the total flat arity) so that papCreate.remaining equals s1 and all case branches producing closures with the same staged type have identical papCreate.remaining values. This is a defense-in-depth check at MLIR level that depends on GOPT_016 being satisfied at the GlobalOpt level;Compiler.GlobalOpt.MonoGlobalOptimize (buildAbiWrapperGO)
+CGEN_055;MLIR_Codegen;Closures;enforced;When an ABI wrapper closure is created for a target segmentation [s1 s2 ...] the wrapper must have nested closure structure where the outermost closure has exactly s1 parameters (not the total flat arity) so that papCreate.remaining equals s1 and all case branches producing closures with the same staged type have identical papCreate.remaining values. This is a defense-in-depth check at MLIR level that depends on GOPT_001 being satisfied at the GlobalOpt level;Compiler.GlobalOpt.MonoGlobalOptimize (buildAbiWrapperGO)
 
 
 # =============================================================================

@@ -68,7 +68,13 @@ Unit, True, False, Nil, Nothing, EmptyString, EmptyRec are **HPointer values wit
 
 **MONO_010**: MonoGraph contains all types including all constructors in ctorLayouts.
 
-**GOPT_018**: All MonoCase branches must have same MonoType as resultType (enforced by GlobalOpt, formerly MONO_018).
+## GlobalOpt Invariants
+
+**GOPT_001**: Closure params match stage arity - for every MonoClosure after GlobalOpt, length(params) == length(stageParamTypes(type)).
+
+**GOPT_002**: Returned closure param counts are tracked - for functions returning closures, the returnedClosureParamCounts map entry equals the first-stage parameter count.
+
+**GOPT_003**: All MonoCase branches must have same MonoType as resultType (enforced by GlobalOpt, formerly MONO_018).
 
 ## Forbidden Patterns (FORBID_*)
 

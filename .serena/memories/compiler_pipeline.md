@@ -12,7 +12,9 @@ PostSolve (fix Group B types, infer kernel types)
     ↓
 Typed Optimization (preserve types, decision trees)
     ↓
-Monomorphization (specialize polymorphism, compute layouts)
+Monomorphization (specialize polymorphism, compute layouts, staging-agnostic)
+    ↓
+GlobalOpt (canonicalize staging, normalize ABI, compute CallInfo)
     ↓
 MLIR Generation (ECO dialect)
     ↓
@@ -40,7 +42,15 @@ LLVM IR → Native Code
 - MonoType: MInt, MFloat, MBool, MChar, MString, MList, MTuple, MRecord, MCustom, MFunction, MVar
 - Computes RecordLayout, TupleLayout, CtorLayout with unboxedBitmap
 - SpecId uniquely identifies each specialization
-- File: `compiler/src/Compiler/Generate/Monomorphize.elm`
+- **Staging-agnostic**: Preserves curried type structure, defers staging to GlobalOpt
+- File: `compiler/src/Compiler/Monomorphize/Monomorphize.elm`
+
+### GlobalOpt
+- Canonicalizes closure staging (GOPT_001): flattens types to match param counts
+- Normalizes case/if ABI (GOPT_003): ensures compatible staging across branches
+- Computes CallInfo metadata for MLIR (callModel, stageArities, etc.)
+- Validates closure staging invariants
+- File: `compiler/src/Compiler/GlobalOpt/MonoGlobalOptimize.elm`
 
 ### MLIR Generation
 - 11 modules under `compiler/src/Compiler/Generate/MLIR/`
@@ -58,7 +68,8 @@ LLVM IR → Native Code
 ```
 Can.Type → (PostSolve) → Can.Type (complete)
 → (TypedOpt) → TOpt.Expr with Can.Type
-→ (Mono) → MonoType (MInt, MFloat, etc.)
+→ (Mono) → MonoType (curried, e.g., MFunction [a] (MFunction [b] c))
+→ (GlobalOpt) → MonoType (canonical, e.g., MFunction [a,b] c) + CallInfo
 → (MLIR) → MlirType (i64, f64, !eco.value)
 → (EcoToLLVM) → LLVM types
 ```
@@ -70,8 +81,8 @@ Can.Type → (PostSolve) → Can.Type (complete)
 - **RecordLayout/TupleLayout/CtorLayout**: Field order + unboxedBitmap
 - **MlirOp**: MLIR operation with operands, results, attrs, regions
 
-## Staged Currying (GOPT_018)
+## Staged Currying (GOPT_003)
 
 Functions segment arguments into stages: `[2,1]` = take 2 args, return closure taking 1.
 All MonoCase branches returning functions must have compatible staging signatures.
-Staging is now enforced by GlobalOpt (GOPT_016 for closures, GOPT_018 for case branches).
+Staging is now enforced by GlobalOpt (GOPT_001 for closures, GOPT_003 for case branches).

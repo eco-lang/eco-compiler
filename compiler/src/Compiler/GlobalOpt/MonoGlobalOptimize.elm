@@ -82,7 +82,7 @@ emptyCallEnv =
 globalOptimize : TypeEnv.GlobalTypeEnv -> Mono.MonoGraph -> Mono.MonoGraph
 globalOptimize typeEnv graph0 =
     let
-        -- Phase 1: Canonicalize closure/tail-func types (GOPT_016 fix)
+        -- Phase 1: Canonicalize closure/tail-func types (GOPT_001 fix)
         -- Flatten types to match param counts: MFunction [a] (MFunction [b] c) -> MFunction [a,b] c
         graph1 =
             canonicalizeClosureStaging graph0
@@ -266,7 +266,7 @@ maxLambdaIndexInDecider dec =
 
 
 -- ============================================================================
--- CLOSURE STAGING CANONICALIZATION (GOPT_016)
+-- CLOSURE STAGING CANONICALIZATION (GOPT_001)
 -- ============================================================================
 
 
@@ -283,7 +283,7 @@ Example transformation:
   Before: params=[(x,Int),(y,Int)], type=MFunction [Int] (MFunction [Int] Int)
   After:  params=[(x,Int),(y,Int)], type=MFunction [Int, Int] Int
 
-This is the GOPT_016 canonicalization step.
+This is the GOPT_001 canonicalization step.
 -}
 canonicalizeClosureStaging : Mono.MonoGraph -> Mono.MonoGraph
 canonicalizeClosureStaging (Mono.MonoGraph data) =
@@ -487,7 +487,7 @@ Example:
     => MFunction [a, b] c
 
 If the type has more args than targetArity, nest the rest.
-If the type has fewer args than targetArity, this is a GOPT_016 violation (bug).
+If the type has fewer args than targetArity, this is a GOPT_001 violation (bug).
 -}
 flattenTypeToArity : Int -> Mono.MonoType -> Mono.MonoType
 flattenTypeToArity targetArity monoType =
@@ -525,9 +525,9 @@ flattenTypeToArity targetArity monoType =
         monoType
 
     else
-        -- Fewer args than params - this is a GOPT_016 violation
+        -- Fewer args than params - this is a GOPT_001 violation
         Debug.todo
-            ("GOPT_016 canonicalization error: type has "
+            ("GOPT_001 canonicalization error: type has "
                 ++ String.fromInt (List.length allArgs)
                 ++ " args but closure has "
                 ++ String.fromInt targetArity
@@ -828,11 +828,11 @@ buildAbiWrapperGO home targetType calleeExpr ctx0 =
         srcSeg =
             Mono.segmentLengths srcType
 
-        -- GOPT_018 defensive check: total arities must match
+        -- GOPT_003 defensive check: total arities must match
         _ =
             if List.sum srcSeg /= List.sum targetSeg then
                 Debug.todo
-                    ("GOPT_018: branch total arity mismatch: src="
+                    ("GOPT_003: branch total arity mismatch: src="
                         ++ Debug.toString srcSeg
                         ++ ", target="
                         ++ Debug.toString targetSeg
@@ -1524,7 +1524,7 @@ validateExprClosures expr =
                 _ =
                     if List.length actualParams /= List.length expectedParams then
                         Debug.todo
-                            ("GOPT_016 violation: closure has "
+                            ("GOPT_001 violation: closure has "
                                 ++ String.fromInt (List.length actualParams)
                                 ++ " params but type expects "
                                 ++ String.fromInt (List.length expectedParams)

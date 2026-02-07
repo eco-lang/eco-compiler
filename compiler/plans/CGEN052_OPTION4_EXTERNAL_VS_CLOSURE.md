@@ -2,7 +2,7 @@
 
 ## Problem Summary
 
-After GOPT_016, user-defined closures are **stage-curried** (params match stage arity), but external/kernel functions remain **flattened** (all params at once). This creates a mismatch:
+After GOPT_001, user-defined closures are **stage-curried** (params match stage arity), but external/kernel functions remain **flattened** (all params at once). This creates a mismatch:
 
 - `List.map` PAP created with `arity=2` (total params)
 - `applyByStages` emits `remaining_arity=1` (stage arity)

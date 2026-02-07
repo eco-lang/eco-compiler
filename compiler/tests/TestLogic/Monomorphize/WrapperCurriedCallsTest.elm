@@ -18,6 +18,6 @@ import TestLogic.Monomorphize.WrapperCurriedCalls exposing (expectWrapperCurried
 
 suite : Test
 suite =
-    Test.describe "GOPT_016: Stage arity invariant"
+    Test.describe "GOPT_001: Stage arity invariant"
         [ StandardTestSuites.expectSuite expectWrapperCurriedCalls "stage arity matches params"
         ]

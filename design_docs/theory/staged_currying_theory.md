@@ -4,11 +4,13 @@
 
 Staged currying is a technique for determining how functions should segment their arguments when generating efficient native code. Rather than naively currying all functions (creating closures for each argument), or requiring all arguments at once (losing Elm's currying semantics), staged currying finds an optimal balance.
 
-**Phase**: Monomorphization
+**Phase**: Global Optimization (GlobalOpt)
 
-**Pipeline Position**: Integrated into monomorphization pass
+**Pipeline Position**: After Monomorphization, before MLIR Generation
 
-**Related Invariant**: **MONO_018** — All branches of a MonoCase must have compatible calling conventions (staged currying signatures).
+**Related Invariant**: **GOPT_003** — All branches of a MonoCase must have compatible calling conventions (staged currying signatures).
+
+**Note**: This logic was moved from Monomorphization to GlobalOpt to achieve a clean separation of concerns: Monomorphization is staging-agnostic and focuses on specialization, while GlobalOpt handles all calling-convention and ABI decisions.
 
 ## Motivation
 
@@ -133,13 +135,13 @@ chooser b =
         \x y -> (\x -> \y -> x * y) x y   -- [1,1] wrapped to [2]
 ```
 
-## Invariant MONO_018
+## Invariant GOPT_003
 
 **Statement**: All branches of a MonoCase that return functions must have compatible staged currying signatures.
 
 **Rationale**: The case expression's result type must be uniform. If branches return functions with different calling conventions, the caller cannot know how to invoke the result.
 
-**Enforcement**: The joinpoint matching algorithm runs during monomorphization for any case expression whose result type is a function.
+**Enforcement**: The `normalizeCaseIfAbi` pass runs during GlobalOpt for any case expression whose result type is a function. It uses `chooseCanonicalSegmentation` to pick a common staging and `buildAbiWrapperGO` to wrap branches that differ.
 
 **Violation Detection**: If no majority can be determined (e.g., all branches different) or transformation fails, this is a compiler bug.
 
@@ -171,25 +173,32 @@ mappedList = List.map f
 
 ### Staging Detection
 
-During monomorphization, when processing a function:
+During GlobalOpt, when processing a function:
 
 ```
 FUNCTION detectStaging(monoExpr):
     CASE monoExpr OF
-        MonoFunction params _ body _:
+        MonoClosure closureInfo body _:
             innerStaging = detectStaging(body)
-            RETURN [length(params)] ++ innerStaging
+            RETURN [length(closureInfo.params)] ++ innerStaging
 
         _:
             RETURN []  -- Not a function, no more stages
 ```
 
-### Integration with Monomorphization
+### Integration with GlobalOpt
 
-The joinpoint matching algorithm is invoked:
-1. When monomorphizing a `MonoCase` expression
+The GlobalOpt pass runs in four phases:
+
+1. **canonicalizeClosureStaging**: Flatten nested `MFunction` types to match closure param counts (GOPT_001)
+2. **normalizeCaseIfAbi**: Create ABI wrappers for case/if branches with incompatible stagings (GOPT_003)
+3. **validateClosureStaging**: Verify all closures have consistent staging
+4. **annotateCallStaging**: Compute `CallInfo` metadata for MLIR codegen
+
+The joinpoint matching algorithm is invoked during `normalizeCaseIfAbi`:
+1. When processing a `MonoCase` or `MonoIf` expression
 2. Whose branches return `MFunction` types
-3. Before the branches are individually specialized
+3. After monomorphization has specialized all branches
 
 ### Cost Model
 
@@ -226,6 +235,31 @@ Result: Branches 1 and 3 get eta-wrapped to `[2]`.
 
 ## Relationship to Other Passes
 
-- **Requires**: Type-checked monomorphized expressions
-- **Enables**: Consistent function ABIs for code generation
+- **Requires**: Monomorphized expressions (MonoGraph from Monomorphization pass)
+- **Enables**: Consistent function ABIs for MLIR code generation
 - **Key Insight**: Function staging is a code generation concern, not a semantic one; all stagings produce the same values, just with different performance characteristics
+
+### Why GlobalOpt, Not Monomorphization?
+
+The staging logic was moved from Monomorphization to GlobalOpt to achieve a clean separation of concerns:
+
+**Monomorphization responsibilities** (staging-agnostic):
+- Specialize polymorphic functions
+- Compute concrete layouts for records, tuples, custom types
+- Preserve curried type structure from Elm semantics
+- No closure wrappers created due to staging
+
+**GlobalOpt responsibilities** (staging-aware):
+- Canonicalize closure types to match param counts
+- Generate ABI wrappers for incompatible case branches
+- Compute call staging metadata (`CallInfo`) for MLIR
+- All calling-convention decisions resolved
+
+**MLIR codegen responsibilities** (staging-consuming):
+- Switch on `CallInfo.callModel` (FlattenedExternal vs StageCurried)
+- Use pre-computed `CallInfo` fields for partial application
+- No independent staging computations
+
+This separation ensures that Monomorphization remains focused on specialization semantics, while all ABI/calling-convention complexity is isolated in GlobalOpt.
+
+**See also**: [Global Optimization Theory](pass_global_optimization_theory.md)

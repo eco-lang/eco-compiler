@@ -209,7 +209,7 @@ checkExpr env context expr =
         TOpt.Unit tipe ->
             checkLiteralType context "Unit" tipe Can.TUnit
 
-        -- VarLocal (STRICT: catches GOPT_018-class bugs)
+        -- VarLocal (STRICT: catches GOPT_003-class bugs)
         TOpt.VarLocal name tipe ->
             case Dict.get identity name env.locals of
                 Just envType ->
@@ -235,7 +235,7 @@ checkExpr env context expr =
                 Nothing ->
                     []
 
-        -- VarKernel (STRICT: catches GOPT_018-class bugs)
+        -- VarKernel (STRICT: catches GOPT_003-class bugs)
         TOpt.VarKernel _ home name tipe ->
             case KernelTypes.lookup home name env.kernelEnv of
                 Just kernelType ->
@@ -332,7 +332,7 @@ checkExpr env context expr =
             List.concatMap checkBranch branches
                 ++ checkExpr env context else_
 
-        -- Case (Critical for GOPT_018)
+        -- Case (Critical for GOPT_003)
         TOpt.Case _ _ decider jumps tipe ->
             checkDecider env context tipe decider
                 ++ checkJumps env context tipe jumps
@@ -417,7 +417,7 @@ checkDef env context def =
 
 
 -- ============================================================================
--- DECIDER CHECKING (Critical for GOPT_018)
+-- DECIDER CHECKING (Critical for GOPT_003)
 -- ============================================================================
 
 
@@ -444,7 +444,7 @@ checkChoice env context expectedType choice =
                 exprType =
                     TOpt.typeOf expr
             in
-            -- STRICT: catches GOPT_018-class bugs where branch has polymorphic remnant
+            -- STRICT: catches GOPT_003-class bugs where branch has polymorphic remnant
             if TypeEq.alphaEqStrict exprType expectedType then
                 checkExpr env context expr
 
@@ -464,7 +464,7 @@ checkJumps env context expectedType jumps =
                 exprType =
                     TOpt.typeOf expr
             in
-            -- STRICT: catches GOPT_018-class bugs where branch has polymorphic remnant
+            -- STRICT: catches GOPT_003-class bugs where branch has polymorphic remnant
             if TypeEq.alphaEqStrict exprType expectedType then
                 checkExpr env context expr
 

@@ -176,9 +176,9 @@ checkTypeExprArityConsistency context monoType expr =
                 stageArity =
                     getStageArity monoType
             in
-            -- GOPT_016: Closure params must exactly match stage arity
+            -- GOPT_001: Closure params must exactly match stage arity
             if paramCount /= stageArity then
-                [ context ++ ": Closure has " ++ String.fromInt paramCount ++ " params but type has stage arity " ++ String.fromInt stageArity ++ " (GOPT_016 violation)" ]
+                [ context ++ ": Closure has " ++ String.fromInt paramCount ++ " params but type has stage arity " ++ String.fromInt stageArity ++ " (GOPT_001 violation)" ]
 
             else
                 []
@@ -197,7 +197,7 @@ collectExprArityIssues : String -> Mono.MonoExpr -> List String
 collectExprArityIssues context expr =
     case expr of
         Mono.MonoClosure closureInfo bodyExpr monoType ->
-            -- GOPT_016: Closure params must exactly match stage arity
+            -- GOPT_001: Closure params must exactly match stage arity
             let
                 paramCount =
                     List.length closureInfo.params
@@ -207,7 +207,7 @@ collectExprArityIssues context expr =
 
                 closureIssue =
                     if paramCount /= stageArity then
-                        [ context ++ ": Closure expression has " ++ String.fromInt paramCount ++ " params but its type has stage arity " ++ String.fromInt stageArity ++ " (GOPT_016 violation)" ]
+                        [ context ++ ": Closure expression has " ++ String.fromInt paramCount ++ " params but its type has stage arity " ++ String.fromInt stageArity ++ " (GOPT_001 violation)" ]
 
                     else
                         []

@@ -136,7 +136,7 @@ type alias MonoArtifacts =
 {-| Stage 5.5: Global optimization artifacts (includes Stages 1-5).
 
 This stage runs GlobalOpt on the MonoGraph, which canonicalizes staging
-and enforces GOPT_016 (closure params == stage arity) and GOPT_018
+and enforces GOPT_001 (closure params == stage arity) and GOPT_003
 (case branch types match).
 -}
 type alias GlobalOptArtifacts =
@@ -300,8 +300,8 @@ runToMono srcModule =
 {-| Run pipeline through global optimization.
 
 This stage applies MonoGlobalOptimize.globalOptimize which:
-- Canonicalizes staging (GOPT_016: closure params == stage arity)
-- Normalizes case branch types (GOPT_018)
+- Canonicalizes staging (GOPT_001: closure params == stage arity)
+- Normalizes case branch types (GOPT_003)
 - Computes returned closure arity annotations
 -}
 runToGlobalOpt : Src.Module -> Result String GlobalOptArtifacts

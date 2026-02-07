@@ -746,7 +746,7 @@ higherOrderWithAliasPattern expectFn _ =
 
 
 -- ============================================================================
--- CASE RETURNING FUNCTION (GOPT_016) (2 tests)
+-- CASE RETURNING FUNCTION (GOPT_001) (2 tests)
 -- ============================================================================
 
 

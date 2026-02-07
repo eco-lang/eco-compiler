@@ -335,6 +335,12 @@ Elm Source
 │  Monomorphization                                   │
 │    - Specialize polymorphic functions               │
 │    - Compute concrete layouts                       │
+│    - Preserve curried type structure (staging-agnostic)
+│    ↓                                                │
+│  Global Optimization (GlobalOpt)                    │
+│    - Canonicalize closure staging (GOPT_001)        │
+│    - Normalize case/if ABI (GOPT_003)               │
+│    - Compute call staging metadata                  │
 │    ↓                                                │
 │  MLIR Generation (ECO Dialect)                      │
 │    - Generate typed IR                              │
@@ -402,7 +408,26 @@ Each specialization gets a unique `SpecId`. The pass also computes concrete layo
 - `SpecKey`: (Global, [MonoType]) identifying a specialization
 - `SpecializationRegistry`: Maps SpecKey ↔ SpecId
 
+**Important**: Monomorphization is staging-agnostic. It preserves curried type structure from Elm semantics (e.g., `MFunction [Int] (MFunction [Int] Int)`). All staging and calling-convention decisions are deferred to GlobalOpt.
+
 **See**: [Monomorphization Theory](design_docs/theory/pass_monomorphization_theory.md)
+
+### Global Optimization (GlobalOpt)
+
+After monomorphization, function types are still curried and may have incompatible calling conventions across case branches. GlobalOpt resolves all staging and ABI decisions:
+
+1. **Canonicalize closure staging** (GOPT_001): Flatten nested `MFunction` types to match closure param counts
+2. **Normalize case/if ABI** (GOPT_003): Ensure all branches returning functions have compatible staging
+3. **Compute call metadata**: Build `CallInfo` for MLIR codegen with call model, stage arities, etc.
+
+**Key concepts**:
+- `Segmentation`: List of stage arities (e.g., `[2,1]` = take 2 args, return closure taking 1)
+- `CallModel`: `FlattenedExternal` (kernels) or `StageCurried` (user-defined)
+- `CallInfo`: Pre-computed metadata for each call site
+
+This separation ensures Monomorphization stays simple while GlobalOpt handles all ABI complexity.
+
+**See**: [Global Optimization Theory](design_docs/theory/pass_global_optimization_theory.md), [Staged Currying Theory](design_docs/theory/staged_currying_theory.md)
 
 ### MLIR Generation
 
@@ -490,6 +515,8 @@ Each pass has comprehensive documentation in [`design_docs/theory/`](design_docs
 | [pass_post_solve_theory.md](design_docs/theory/pass_post_solve_theory.md) | PostSolve type fixing |
 | [pass_typed_optimization_theory.md](design_docs/theory/pass_typed_optimization_theory.md) | Type-preserving optimization |
 | [pass_monomorphization_theory.md](design_docs/theory/pass_monomorphization_theory.md) | Polymorphism elimination |
+| [pass_global_optimization_theory.md](design_docs/theory/pass_global_optimization_theory.md) | Staging canonicalization and ABI normalization |
+| [staged_currying_theory.md](design_docs/theory/staged_currying_theory.md) | Staged currying theory |
 | [pass_type_table_theory.md](design_docs/theory/pass_type_table_theory.md) | Runtime type metadata |
 | [pass_mlir_generation_theory.md](design_docs/theory/pass_mlir_generation_theory.md) | MLIR code generation |
 | [pass_joinpoint_normalization_theory.md](design_docs/theory/pass_joinpoint_normalization_theory.md) | Joinpoint cleanup |

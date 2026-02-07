@@ -491,7 +491,7 @@ cmake --build build --target check
    FORBID_STAGING_001,No phase other than GlobalOpt may use stageParamTypes/stageReturnType/segmentLengths for ABI/wrapper decisions,CODE_REVIEW,NONE
    ```
 
-3. **Clarify GOPT_016-018** as the authoritative staging enforcement points
+3. **Clarify GOPT_001-003** as the authoritative staging enforcement points
 
 ### Step 4.2: Final verification
 

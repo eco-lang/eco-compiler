@@ -65,8 +65,8 @@ Complete the refactoring to ensure all call-site staging and calling-convention 
 
 1. Monomorphization produces `MonoGraph` with `Mono.defaultCallInfo` placeholders
 2. `GlobalOpt.globalOptimize` runs:
-   - Closure staging canonicalization (GOPT_016)
-   - Case/if ABI normalization (GOPT_018)
+   - Closure staging canonicalization (GOPT_001)
+   - Case/if ABI normalization (GOPT_003)
    - Staging validation
    - `annotateCallStaging` to populate `CallInfo` on each `MonoCall`
    - ~~`annotateReturnedClosureArity`~~ (REMOVED)

@@ -765,7 +765,7 @@ tryNormalizeCaseBoundary outerParams body _ =
             in
             -- Guard: If any Inlines remain (non-lambda branches), abort.
             -- This prevents changing the case type while leaving Inline branches
-            -- with the wrong type (would cause TOPT_004/GOPT_018 violations).
+            -- with the wrong type (would cause TOPT_004/GOPT_003 violations).
             if hasAnyInline deciderWithJumps then
                 Nothing
 

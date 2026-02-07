@@ -187,7 +187,7 @@ checkJumps ctx resultType jumps =
             else
                 [ { context = ctx ++ " jump=" ++ String.fromInt idx
                   , message =
-                        "GOPT_018 violation: branch type != MonoCase resultType\n"
+                        "GOPT_003 violation: branch type != MonoCase resultType\n"
                             ++ "  resultType: "
                             ++ Debug.toString resultType
                             ++ "\n"
@@ -222,7 +222,7 @@ checkDecider ctx resultType decider =
                     else
                         { context = ctx ++ " inline-leaf"
                         , message =
-                            "GOPT_018 violation: inline leaf type != MonoCase resultType\n"
+                            "GOPT_003 violation: inline leaf type != MonoCase resultType\n"
                                 ++ "  resultType: "
                                 ++ Debug.toString resultType
                                 ++ "\n"

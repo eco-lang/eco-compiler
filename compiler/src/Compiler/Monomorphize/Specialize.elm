@@ -89,7 +89,7 @@ specializeLambda lambdaExpr canType subst state =
         -- Monomorphize preserves the curried structure from TypeSubst.applySubst.
         -- The closure will have N params (from TOpt syntax) but type with stage arity < N.
         -- Example: \x y -> body has params=2, type=MFunction [a] (MFunction [b] c) (stage arity 1).
-        -- GlobalOpt (GOPT_016) will flatten: MFunction [a, b] c.
+        -- GlobalOpt (GOPT_001) will flatten: MFunction [a, b] c.
         monoType0 : Mono.MonoType
         monoType0 =
             TypeSubst.applySubst subst canType
@@ -162,7 +162,7 @@ specializeLambda lambdaExpr canType subst state =
 
         -- 6. Use the monomorphic function type from TypeSubst.applySubst unchanged.
         -- Under staging-agnostic Monomorphize, we must NOT change the type's staging.
-        -- GlobalOpt (GOPT_016) will canonicalize by flattening to match param count.
+        -- GlobalOpt (GOPT_001) will canonicalize by flattening to match param count.
         monoTypeFixed : Mono.MonoType
         monoTypeFixed =
             monoType0

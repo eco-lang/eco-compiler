@@ -192,18 +192,21 @@ Generates ES5-compatible JavaScript with:
 ### MLIR Backend
 
 For native compilation via LLVM:
-1. **Monomorphization** - Specialize all polymorphic code, including staged currying analysis
-2. **Layout computation** - Determine memory layout for types
-3. **MLIR generation** - Emit typed MLIR operations with expression-valued case
+1. **Monomorphization** - Specialize all polymorphic code (staging-agnostic)
+2. **Global Optimization** - Canonicalize staging, normalize calling conventions
+3. **Layout computation** - Determine memory layout for types
+4. **MLIR generation** - Emit typed MLIR operations with expression-valued case
 
 **Core modules**:
-- `Generate/Monomorphize.elm` - Polymorphism elimination and staged currying
-- `Generate/CodeGen/MLIR.elm` - MLIR operation generation
+- `Monomorphize/Monomorphize.elm` - Polymorphism elimination (staging-agnostic)
+- `GlobalOpt/MonoGlobalOptimize.elm` - Staging canonicalization and ABI normalization
+- `Generate/MLIR/*.elm` - MLIR operation generation (11 modules)
 
 **AST definition**: `AST/Monomorphized.elm`
 
 **Key design decisions**:
-- **Staged currying**: Functions are analyzed to determine optimal argument grouping (e.g., `[2,1]` for `\a b -> \c -> ...`). See `design_docs/theory/staged_currying_theory.md`.
+- **Staging-agnostic monomorphization**: Monomorphize preserves curried type structure from Elm. All staging decisions are deferred to GlobalOpt for clean separation of concerns.
+- **Staged currying**: GlobalOpt analyzes and normalizes function staging (e.g., `[2,1]` for `\a b -> \c -> ...`). See `design_docs/theory/staged_currying_theory.md` and `design_docs/theory/pass_global_optimization_theory.md`.
 - **Expression-valued case**: Case expressions compile to SCF (Structured Control Flow) operations that return values, matching Elm's expression semantics. See `design_docs/theory/pass_eco_control_flow_to_scf_theory.md`.
 
 ## Key Data Structures
@@ -295,8 +298,8 @@ The build system:
 1. **After canonicalization**: All names are fully qualified (`Package.Module.Name`)
 2. **After type checking**: Every expression has a known type
 3. **After optimization**: No nested patterns remain (compiled to decision trees)
-4. **After monomorphization**: No type variables remain (all types concrete)
-5. **MONO_018**: All branches of a MonoCase returning functions have compatible staged currying signatures
+4. **After monomorphization**: No type variables remain (all types concrete), but function types remain curried (staging-agnostic)
+5. **After GlobalOpt**: All closures have types matching their param counts (GOPT_001), all case/if branches have compatible staging (GOPT_003)
 
 ## Directory Structure
 

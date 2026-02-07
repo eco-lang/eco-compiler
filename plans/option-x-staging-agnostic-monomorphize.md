@@ -4,7 +4,7 @@
 
 1. **Monomorphization becomes staging-agnostic** - does only type specialization + closure creation
 2. **GlobalOpt owns all staging/ABI decisions** - canonicalizes staging, enforces invariants
-3. **Invariants renamed** - MONO_016 → GOPT_016, MONO_018 → GOPT_018
+3. **Invariants renamed** - MONO_016 → GOPT_001, MONO_018 → GOPT_003
 
 ---
 
@@ -201,7 +201,7 @@ GlobalOpt can wrap these if Elm code expects staged ABI, but the kernel call its
 
 **File:** `compiler/src/Compiler/GlobalOpt/MonoGlobalOptimize.elm`
 
-### 3.1 Rename MONO_016 → GOPT_016 in `validateExprClosures`
+### 3.1 Rename MONO_016 → GOPT_001 in `validateExprClosures`
 
 **Location:** Lines 996-1003
 
@@ -215,7 +215,7 @@ Debug.todo
 to:
 ```elm
 Debug.todo
-    ("GOPT_016 violation: closure has "
+    ("GOPT_001 violation: closure has "
         ++ ...
     )
 ```
@@ -229,7 +229,7 @@ Add:
 _ =
     if List.sum srcSeg /= List.sum targetSeg then
         Debug.todo
-            ("GOPT_018: branch total arity mismatch: src="
+            ("GOPT_003: branch total arity mismatch: src="
                 ++ Debug.toString srcSeg
                 ++ ", target="
                 ++ Debug.toString targetSeg
@@ -250,7 +250,7 @@ Change:
 ```
 to:
 ```elm
-"MonoReturnArity: GOPT_016 violation: ..."
+"MonoReturnArity: GOPT_001 violation: ..."
 ```
 
 ---
@@ -262,31 +262,31 @@ to:
 ### 4.1 Mark MONO_016 as migrated
 
 Update the MONO_016 row:
-- Add note: "Migrated to GOPT_016; see GlobalOpt section"
+- Add note: "Migrated to GOPT_001; see GlobalOpt section"
 - Remove Monomorphization as enforcer
 
 ### 4.2 Mark MONO_018 as migrated
 
 Update the MONO_018 row:
-- Add note: "Migrated to GOPT_018; see GlobalOpt section"
+- Add note: "Migrated to GOPT_003; see GlobalOpt section"
 - Remove Monomorphization as enforcer
 
-### 4.3 Add GOPT_016 row
+### 4.3 Add GOPT_001 row
 
 ```csv
-GOPT_016,GlobalOpt,Closure params match stage arity,"For every MonoClosure with function type MFunction after GlobalOpt, length(closureInfo.params) == length(stageParamTypes(monoType))",MonoGlobalOptimize.validateClosureStaging
+GOPT_001,GlobalOpt,Closure params match stage arity,"For every MonoClosure with function type MFunction after GlobalOpt, length(closureInfo.params) == length(stageParamTypes(monoType))",MonoGlobalOptimize.validateClosureStaging
 ```
 
-### 4.4 Add GOPT_018 row
+### 4.4 Add GOPT_003 row
 
 ```csv
-GOPT_018,GlobalOpt,Case branch types match after ABI normalization,"For every MonoCase after normalizeCaseIfAbi, all branch result types equal the case result type (including staging)",MonoGlobalOptimize.normalizeCaseIfAbi
+GOPT_003,GlobalOpt,Case branch types match after ABI normalization,"For every MonoCase after normalizeCaseIfAbi, all branch result types equal the case result type (including staging)",MonoGlobalOptimize.normalizeCaseIfAbi
 ```
 
-### 4.5 Add GOPT_017 row (returned closure arity)
+### 4.5 Add GOPT_002 row (returned closure arity)
 
 ```csv
-GOPT_017,GlobalOpt,Returned closure param counts match stage arity,"For every function returning a closure, returnedClosureParamCounts[specId] equals the first-stage param count of the returned closure type",MonoReturnArity.annotateReturnedClosureArity
+GOPT_002,GlobalOpt,Returned closure param counts match stage arity,"For every function returning a closure, returnedClosureParamCounts[specId] equals the first-stage param count of the returned closure type",MonoReturnArity.annotateReturnedClosureArity
 ```
 
 **Note:** Do NOT renumber existing MONO_* invariants. Gaps in numbering preserve historical references.
@@ -303,7 +303,7 @@ grep -r "MONO_016" compiler/tests/
 ```
 
 For each match:
-- Update comments to reference GOPT_016
+- Update comments to reference GOPT_001
 - Ensure test runs on graph AFTER `globalOptimize`
 
 ### 5.2 Update MONO_018 test references
@@ -313,7 +313,7 @@ For each match:
 - `compiler/tests/Compiler/GlobalOpt/JoinpointABITest.elm`
 
 For each:
-- Update comments/names to reference GOPT_018
+- Update comments/names to reference GOPT_003
 - Ensure tests validate after `normalizeCaseIfAbi`
 
 **Expected outcome:** The 2 pre-existing MONO_018 failures should disappear once Monomorphize stops flattening, since the "curried vs flat" mismatch was caused by `isFullyPeelable` logic.
@@ -425,7 +425,7 @@ If issues arise:
 
 4. **TrackedFunction handled identically** - Just strip `A.At` wrappers from param names
 
-5. **MLIR codegen unaffected** - Works with per-stage arity; GlobalOpt guarantees GOPT_016/018 before MLIR
+5. **MLIR codegen unaffected** - Works with per-stage arity; GlobalOpt guarantees GOPT_001/018 before MLIR
 
 6. **No invariant renumbering** - Mark MONO_016/018 as "migrated to GOPT_*" to preserve historical references
 

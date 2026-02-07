@@ -6,14 +6,14 @@ This plan "locks in" the four architectural pieces that make Monomorphize purely
 
 **Current State:**
 - Monomorphize produces closures with flat params but nested MFunction types
-- GlobalOpt validates GOPT_016 but crashes (`Debug.todo`) instead of fixing the mismatch
+- GlobalOpt validates GOPT_001 but crashes (`Debug.todo`) instead of fixing the mismatch
 - 1131 tests fail because GlobalOpt can't handle the staging mismatch
 
 **Target State:**
 - TOpt decides function structure; Monomorphize just specializes it
 - `TypeSubst` preserves curried TLambda semantics
 - `Specialize` produces closures whose types match TOpt exactly (after substitution)
-- GlobalOpt canonicalizes staging and enforces GOPT_016/018
+- GlobalOpt canonicalizes staging and enforces GOPT_001/018
 
 ---
 
@@ -41,7 +41,7 @@ Rationale:
 - `MonoTailFunc` has flat params + potentially curried function type
 - Apply same canonicalization: flatten type to match params
 - Keeps call sites simple and backends happy
-- GOPT_016 applies to all "callable things", not just closures
+- GOPT_001 applies to all "callable things", not just closures
 
 ### Q3: Order of operations?
 
@@ -49,8 +49,8 @@ Rationale:
 
 Pipeline order:
 1. `canonicalizeClosureStaging` - Flatten closure/tail-func types
-2. `normalizeCaseIfAbi` - Align branch ABIs and case result types (GOPT_018)
-3. `validateClosureStaging` - Assert GOPT_016 (can fold into step 1)
+2. `normalizeCaseIfAbi` - Align branch ABIs and case result types (GOPT_003)
+3. `validateClosureStaging` - Assert GOPT_001 (can fold into step 1)
 4. `annotateReturnedClosureArity`
 
 Rationale:
@@ -60,7 +60,7 @@ Rationale:
 
 ### Q4: Can `params < stageArity`?
 
-**Decision: No - treat as GOPT_016 violation**
+**Decision: No - treat as GOPT_001 violation**
 
 Under this design:
 - Each `MonoClosure` comes from a single TOpt lambda
@@ -98,7 +98,7 @@ After canonicalization:
 -- Invariant: `canType` is the TLambda encoding of this function (TOPT_005).
 -- Monomorphize must not change its staging; only apply substitution.
 -- The flat param list from TOpt.Function is syntactic; the type is semantic.
--- GlobalOpt (GOPT_016) will canonicalize by flattening the type to match params.
+-- GlobalOpt (GOPT_001) will canonicalize by flattening the type to match params.
 ```
 
 ### Piece 2: `TypeSubst.applySubst` Purely Curried (Already Correct)
@@ -128,7 +128,7 @@ Current `specializeLambda`:
 -- NOTE: The closure may have more params than the type's stage arity.
 -- This is intentional. Example:
 --   \x y -> body has 2 params but type MFunction [a] (MFunction [b] c) has stage arity 1.
--- GlobalOpt will flatten the type to MFunction [a, b] c (GOPT_016).
+-- GlobalOpt will flatten the type to MFunction [a, b] c (GOPT_001).
 ```
 
 ### Piece 4: GlobalOpt Owns Staging (Core Implementation Work)
@@ -151,7 +151,7 @@ Current `specializeLambda`:
 After this pass, for all MonoClosure and MonoTailFunc nodes:
     length(closureInfo.params) == length(args of MFunction type)
 
-This is the GOPT_016 canonicalization step.
+This is the GOPT_001 canonicalization step.
 -}
 canonicalizeClosureStaging : Mono.MonoGraph -> Mono.MonoGraph
 canonicalizeClosureStaging (Mono.MonoGraph data) =
@@ -261,9 +261,9 @@ flattenTypeToArity targetArity monoType =
         in
         Mono.MFunction firstArgs nestedResult
     else
-        -- Fewer args than params - this is a GOPT_016 violation
+        -- Fewer args than params - this is a GOPT_001 violation
         Debug.todo
-            ("GOPT_016: type has fewer args ("
+            ("GOPT_001: type has fewer args ("
                 ++ String.fromInt (List.length allArgs)
                 ++ ") than closure has params ("
                 ++ String.fromInt targetArity
@@ -281,11 +281,11 @@ Change `globalOptimize` to:
 globalOptimize : TypeEnv.GlobalTypeEnv -> Mono.MonoGraph -> Mono.MonoGraph
 globalOptimize typeEnv graph0 =
     let
-        -- Step 1: Canonicalize closure/tail-func types (GOPT_016 fix)
+        -- Step 1: Canonicalize closure/tail-func types (GOPT_001 fix)
         graph1 =
             canonicalizeClosureStaging graph0
 
-        -- Step 2: Normalize case/if branch ABIs (GOPT_018)
+        -- Step 2: Normalize case/if branch ABIs (GOPT_003)
         graph2 =
             normalizeCaseIfAbi typeEnv graph1
 
@@ -305,7 +305,7 @@ globalOptimize typeEnv graph0 =
 Change from "crash on mismatch" to "assert canonicalization worked":
 
 ```elm
-{-| Validate GOPT_016: closure params match type's flattened arity.
+{-| Validate GOPT_001: closure params match type's flattened arity.
 
 After canonicalizeClosureStaging, this should never fail.
 A failure here indicates a bug in canonicalization.
@@ -327,7 +327,7 @@ Add to `specializeLambda`:
 -- Monomorphize preserves the curried structure from TypeSubst.applySubst.
 -- The closure will have N params (from TOpt syntax) but type with stage arity < N.
 -- Example: \x y -> body has params=2, type=MFunction [a] (MFunction [b] c) (stage arity 1).
--- GlobalOpt (GOPT_016) will flatten: MFunction [a, b] c.
+-- GlobalOpt (GOPT_001) will flatten: MFunction [a, b] c.
 ```
 
 **File:** `Compiler/Monomorphize/TypeSubst.elm`
@@ -336,7 +336,7 @@ Add to `applySubst` TLambda case:
 ```elm
 -- INVARIANT: Preserves TLambda staging exactly.
 -- a -> b -> c becomes MFunction [a] (MFunction [b] c).
--- GlobalOpt will flatten to match closure param counts (GOPT_016).
+-- GlobalOpt will flatten to match closure param counts (GOPT_001).
 ```
 
 ---
@@ -347,7 +347,7 @@ After implementation:
 
 | Test Category | Expected Result |
 |---------------|-----------------|
-| GOPT_016 tests (51) | Pass - closures canonicalized |
+| GOPT_001 tests (51) | Pass - closures canonicalized |
 | MLIR generation tests | Pass - types are flat |
 | Other tests (6386) | Pass - no regressions |
 
