@@ -21,6 +21,7 @@ import Compiler.AST.TypeEnv as TypeEnv
 import Compiler.Data.Name exposing (Name)
 import Compiler.GlobalOpt.MonoInlineSimplify as MonoInlineSimplify
 import Compiler.GlobalOpt.MonoReturnArity as MonoReturnArity
+import Compiler.GlobalOpt.MonoTraverse as Traverse
 import Compiler.Monomorphize.Closure as Closure
 import Compiler.Reporting.Annotation as A
 import Data.Map as Dict exposing (Dict)
@@ -82,10 +83,15 @@ emptyCallEnv =
 globalOptimize : TypeEnv.GlobalTypeEnv -> Mono.MonoGraph -> Mono.MonoGraph
 globalOptimize typeEnv graph0 =
     let
+        -- Phase 0: Inlining and simplification (runs first so subsequent phases
+        -- can canonicalize/normalize any new closures or case/if expressions)
+        ( graph0a, _ ) =
+            MonoInlineSimplify.optimize typeEnv graph0
+
         -- Phase 1: Canonicalize closure/tail-func types (GOPT_001 fix)
         -- Flatten types to match param counts: MFunction [a] (MFunction [b] c) -> MFunction [a,b] c
         graph1 =
-            canonicalizeClosureStaging graph0
+            canonicalizeClosureStaging graph0a
 
         -- Phase 2: ABI normalization (case/if result types, wrapper generation)
         graph2 =
@@ -98,10 +104,6 @@ globalOptimize typeEnv graph0 =
         -- Phase 4: Annotate call staging metadata (call model, stage arities, etc.)
         graph4 =
             annotateCallStaging graph3
-
-        -- Phase 5: Inlining and DCE (call as black box)
-        -- ( graph5, _ ) =
-        --     MonoInlineSimplify.optimize mode typeEnv graph4
     in
     graph4
 
@@ -146,122 +148,33 @@ maxLambdaIndexInNode node =
             0
 
 
-maxLambdaIndexInExpr : Mono.MonoExpr -> Int
-maxLambdaIndexInExpr expr =
+{-| Extract lambda index from closure, or 0 for other expressions.
+-}
+lambdaIndexOf : Mono.MonoExpr -> Int
+lambdaIndexOf expr =
     case expr of
-        Mono.MonoLiteral _ _ ->
+        Mono.MonoClosure info _ _ ->
+            case info.lambdaId of
+                Mono.AnonymousLambda _ i ->
+                    i
+
+        _ ->
             0
 
-        Mono.MonoVarLocal _ _ ->
-            0
 
-        Mono.MonoVarGlobal _ _ _ ->
-            0
-
-        Mono.MonoVarKernel _ _ _ _ ->
-            0
-
-        Mono.MonoUnit ->
-            0
-
-        Mono.MonoList _ items _ ->
-            List.foldl (\e acc -> max acc (maxLambdaIndexInExpr e)) 0 items
-
-        Mono.MonoClosure info body _ ->
-            let
-                idx =
-                    case info.lambdaId of
-                        Mono.AnonymousLambda _ i ->
-                            i
-            in
-            max idx (maxLambdaIndexInExpr body)
-
-        Mono.MonoCall _ f args _ _ ->
-            List.foldl (\e acc -> max acc (maxLambdaIndexInExpr e))
-                (maxLambdaIndexInExpr f)
-                args
-
-        Mono.MonoTailCall _ args _ ->
-            List.foldl (\( _, e ) acc -> max acc (maxLambdaIndexInExpr e)) 0 args
-
-        Mono.MonoIf branches final _ ->
-            let
-                branchMax =
-                    List.foldl
-                        (\( cond, then_ ) acc ->
-                            max acc (max (maxLambdaIndexInExpr cond) (maxLambdaIndexInExpr then_))
-                        )
-                        0
-                        branches
-            in
-            max branchMax (maxLambdaIndexInExpr final)
-
-        Mono.MonoLet def body _ ->
-            max (maxLambdaIndexInDef def) (maxLambdaIndexInExpr body)
-
-        Mono.MonoDestruct _ inner _ ->
-            maxLambdaIndexInExpr inner
-
-        Mono.MonoCase _ _ decider branches _ ->
-            let
-                decMax =
-                    maxLambdaIndexInDecider decider
-
-                branchMax =
-                    List.foldl (\( _, e ) acc -> max acc (maxLambdaIndexInExpr e)) 0 branches
-            in
-            max decMax branchMax
-
-        Mono.MonoRecordCreate fields _ ->
-            List.foldl (\( _, e ) acc -> max acc (maxLambdaIndexInExpr e)) 0 fields
-
-        Mono.MonoRecordAccess inner _ _ ->
-            maxLambdaIndexInExpr inner
-
-        Mono.MonoRecordUpdate record updates _ ->
-            let
-                recMax =
-                    maxLambdaIndexInExpr record
-
-                updMax =
-                    List.foldl (\( _, e ) acc -> max acc (maxLambdaIndexInExpr e)) 0 updates
-            in
-            max recMax updMax
-
-        Mono.MonoTupleCreate _ elements _ ->
-            List.foldl (\e acc -> max acc (maxLambdaIndexInExpr e)) 0 elements
+maxLambdaIndexInExpr : Mono.MonoExpr -> Int
+maxLambdaIndexInExpr =
+    Traverse.foldExpr (\e acc -> max (lambdaIndexOf e) acc) 0
 
 
 maxLambdaIndexInDef : Mono.MonoDef -> Int
-maxLambdaIndexInDef def =
-    case def of
-        Mono.MonoDef _ bound ->
-            maxLambdaIndexInExpr bound
-
-        Mono.MonoTailDef _ _ bound ->
-            maxLambdaIndexInExpr bound
+maxLambdaIndexInDef =
+    Traverse.foldDef (\e acc -> max (lambdaIndexOf e) acc) 0
 
 
 maxLambdaIndexInDecider : Mono.Decider Mono.MonoChoice -> Int
-maxLambdaIndexInDecider dec =
-    case dec of
-        Mono.Leaf choice ->
-            case choice of
-                Mono.Inline expr ->
-                    maxLambdaIndexInExpr expr
-
-                Mono.Jump _ ->
-                    0
-
-        Mono.Chain _ success failure ->
-            max (maxLambdaIndexInDecider success) (maxLambdaIndexInDecider failure)
-
-        Mono.FanOut _ edges fallback ->
-            let
-                edgeMax =
-                    List.foldl (\( _, d ) acc -> max acc (maxLambdaIndexInDecider d)) 0 edges
-            in
-            max edgeMax (maxLambdaIndexInDecider fallback)
+maxLambdaIndexInDecider =
+    Traverse.foldDecider (\e acc -> max (lambdaIndexOf e) acc) 0
 
 
 
@@ -273,17 +186,19 @@ maxLambdaIndexInDecider dec =
 {-| Canonicalize closure and tail-func types by flattening to match param counts.
 
 After this pass, for all MonoClosure and MonoTailFunc nodes:
-    length(closureInfo.params) == length(args of MFunction type)
+length(closureInfo.params) == length(args of MFunction type)
 
 Monomorphize produces closures where:
+
   - params come from TOpt.Function (flat list)
   - type comes from TypeSubst.applySubst (curried TLambda chain)
 
 Example transformation:
-  Before: params=[(x,Int),(y,Int)], type=MFunction [Int] (MFunction [Int] Int)
-  After:  params=[(x,Int),(y,Int)], type=MFunction [Int, Int] Int
+Before: params=[(x,Int),(y,Int)], type=MFunction [Int] (MFunction [Int] Int)
+After: params=[(x,Int),(y,Int)], type=MFunction [Int, Int] Int
 
-This is the GOPT_001 canonicalization step.
+This is the GOPT\_001 canonicalization step.
+
 -}
 canonicalizeClosureStaging : Mono.MonoGraph -> Mono.MonoGraph
 canonicalizeClosureStaging (Mono.MonoGraph data) =
@@ -342,10 +257,11 @@ canonicalizeNode node =
             node
 
 
-{-| Recursively canonicalize expressions, flattening closure types.
+{-| Canonicalize closure types by flattening to match param counts.
+Only closures need special handling - the type is flattened to match the param count.
 -}
-canonicalizeExpr : Mono.MonoExpr -> Mono.MonoExpr
-canonicalizeExpr expr =
+canonicalizeClosureType : Mono.MonoExpr -> Mono.MonoExpr
+canonicalizeClosureType expr =
     case expr of
         Mono.MonoClosure closureInfo body closureType ->
             let
@@ -354,140 +270,50 @@ canonicalizeExpr expr =
 
                 canonType =
                     flattenTypeToArity paramCount closureType
-
-                canonBody =
-                    canonicalizeExpr body
-
-                canonCaptures =
-                    List.map (\( n, e, t ) -> ( n, canonicalizeExpr e, t )) closureInfo.captures
             in
-            Mono.MonoClosure
-                { closureInfo | captures = canonCaptures }
-                canonBody
-                canonType
+            Mono.MonoClosure closureInfo body canonType
 
-        Mono.MonoCall callType fn args resultType callInfo ->
-            Mono.MonoCall callType
-                (canonicalizeExpr fn)
-                (List.map canonicalizeExpr args)
-                resultType
-                callInfo
-
-        Mono.MonoTailCall specId args resultType ->
-            Mono.MonoTailCall specId
-                (List.map (\( n, e ) -> ( n, canonicalizeExpr e )) args)
-                resultType
-
-        Mono.MonoIf branches final resultType ->
-            Mono.MonoIf
-                (List.map (\( c, t ) -> ( canonicalizeExpr c, canonicalizeExpr t )) branches)
-                (canonicalizeExpr final)
-                resultType
-
-        Mono.MonoLet def body resultType ->
-            Mono.MonoLet
-                (canonicalizeDef def)
-                (canonicalizeExpr body)
-                resultType
-
-        Mono.MonoCase label scrutinee decider jumps resultType ->
-            -- Note: label and scrutinee are Names, not expressions
-            Mono.MonoCase label scrutinee
-                (canonicalizeDecider decider)
-                (List.map (\( i, e ) -> ( i, canonicalizeExpr e )) jumps)
-                resultType
-
-        Mono.MonoDestruct path inner resultType ->
-            Mono.MonoDestruct path (canonicalizeExpr inner) resultType
-
-        Mono.MonoList region items resultType ->
-            Mono.MonoList region (List.map canonicalizeExpr items) resultType
-
-        Mono.MonoRecordCreate fields resultType ->
-            Mono.MonoRecordCreate
-                (List.map (\( n, e ) -> ( n, canonicalizeExpr e )) fields)
-                resultType
-
-        Mono.MonoRecordAccess inner field resultType ->
-            Mono.MonoRecordAccess (canonicalizeExpr inner) field resultType
-
-        Mono.MonoRecordUpdate record updates resultType ->
-            Mono.MonoRecordUpdate
-                (canonicalizeExpr record)
-                (List.map (\( n, e ) -> ( n, canonicalizeExpr e )) updates)
-                resultType
-
-        Mono.MonoTupleCreate region elements resultType ->
-            Mono.MonoTupleCreate region (List.map canonicalizeExpr elements) resultType
-
-        -- Leaf expressions - no sub-expressions to canonicalize
-        Mono.MonoLiteral _ _ ->
+        _ ->
             expr
 
-        Mono.MonoVarLocal _ _ ->
-            expr
 
-        Mono.MonoVarGlobal _ _ _ ->
-            expr
-
-        Mono.MonoVarKernel _ _ _ _ ->
-            expr
-
-        Mono.MonoUnit ->
-            expr
+{-| Recursively canonicalize expressions, flattening closure types.
+-}
+canonicalizeExpr : Mono.MonoExpr -> Mono.MonoExpr
+canonicalizeExpr =
+    Traverse.mapExpr canonicalizeClosureType
 
 
 {-| Canonicalize a definition.
 -}
 canonicalizeDef : Mono.MonoDef -> Mono.MonoDef
-canonicalizeDef def =
-    case def of
-        Mono.MonoDef name bound ->
-            Mono.MonoDef name (canonicalizeExpr bound)
-
-        Mono.MonoTailDef name params bound ->
-            Mono.MonoTailDef name params (canonicalizeExpr bound)
+canonicalizeDef =
+    Traverse.mapDef canonicalizeClosureType
 
 
 {-| Canonicalize a decider tree.
 -}
 canonicalizeDecider : Mono.Decider Mono.MonoChoice -> Mono.Decider Mono.MonoChoice
-canonicalizeDecider decider =
-    case decider of
-        Mono.Leaf choice ->
-            Mono.Leaf (canonicalizeChoice choice)
-
-        Mono.Chain test success failure ->
-            Mono.Chain test
-                (canonicalizeDecider success)
-                (canonicalizeDecider failure)
-
-        Mono.FanOut path edges fallback ->
-            Mono.FanOut path
-                (List.map (\( test, d ) -> ( test, canonicalizeDecider d )) edges)
-                (canonicalizeDecider fallback)
+canonicalizeDecider =
+    Traverse.mapDecider canonicalizeClosureType
 
 
 {-| Canonicalize a choice (inline expression or jump).
 -}
 canonicalizeChoice : Mono.MonoChoice -> Mono.MonoChoice
-canonicalizeChoice choice =
-    case choice of
-        Mono.Inline expr ->
-            Mono.Inline (canonicalizeExpr expr)
-
-        Mono.Jump idx ->
-            Mono.Jump idx
+canonicalizeChoice =
+    Traverse.mapChoice canonicalizeClosureType
 
 
 {-| Flatten a function type to have exactly `targetArity` arguments in the outer MFunction.
 
 Example:
-    flattenTypeToArity 2 (MFunction [a] (MFunction [b] c))
-    => MFunction [a, b] c
+flattenTypeToArity 2 (MFunction [a] (MFunction [b] c))
+=> MFunction [a, b] c
 
 If the type has more args than targetArity, nest the rest.
-If the type has fewer args than targetArity, this is a GOPT_001 violation (bug).
+If the type has fewer args than targetArity, this is a GOPT\_001 violation (bug).
+
 -}
 flattenTypeToArity : Int -> Mono.MonoType -> Mono.MonoType
 flattenTypeToArity targetArity monoType =
@@ -612,6 +438,148 @@ collectCaseLeafFunctionsGO monoDecider monoJumps =
                     collectFromDecider fallback accAfterEdges
     in
     collectFromDecider monoDecider []
+
+
+
+-- BRANCH NORMALIZATION HELPERS
+
+
+{-| Information about ABI normalization needed for function-typed branches.
+-}
+type alias BranchNormalizationInfo =
+    { canonicalType : Mono.MonoType
+    , canonicalSeg : List Int
+    }
+
+
+{-| Analyze function types from branches to determine if ABI normalization is needed.
+Returns Nothing if no function-typed branches exist.
+-}
+computeBranchNormalization : List Mono.MonoType -> Maybe BranchNormalizationInfo
+computeBranchNormalization funcTypes =
+    case funcTypes of
+        [] ->
+            Nothing
+
+        _ ->
+            let
+                ( canonicalSeg, flatArgs, flatRet ) =
+                    Mono.chooseCanonicalSegmentation funcTypes
+
+                canonicalType =
+                    Mono.buildSegmentedFunctionType flatArgs flatRet canonicalSeg
+            in
+            Just
+                { canonicalType = canonicalType
+                , canonicalSeg = canonicalSeg
+                }
+
+
+{-| Process a branch result expression with optional ABI normalization.
+Always recursively processes the expression for nested case/if normalization.
+If normalization info is provided and the expression is function-typed with
+non-matching segmentation, wraps it with a canonical-ABI closure.
+-}
+processBranchResult :
+    IO.Canonical
+    -> Maybe BranchNormalizationInfo
+    -> Mono.MonoExpr
+    -> GlobalCtx
+    -> ( Mono.MonoExpr, GlobalCtx )
+processBranchResult home maybeNorm expr ctx =
+    -- Always process the expression first for nested case/if normalization
+    let
+        ( processedExpr, ctx1 ) =
+            rewriteExprForAbi home expr ctx
+    in
+    case maybeNorm of
+        Nothing ->
+            ( processedExpr, ctx1 )
+
+        Just norm ->
+            case Mono.typeOf processedExpr of
+                Mono.MFunction _ _ ->
+                    if Mono.segmentLengths (Mono.typeOf processedExpr) == norm.canonicalSeg then
+                        ( processedExpr, ctx1 )
+
+                    else
+                        buildAbiWrapperGO home norm.canonicalType processedExpr ctx1
+
+                _ ->
+                    ( processedExpr, ctx1 )
+
+
+{-| Process a decider tree, recursing into leaves and optionally normalizing function-typed results.
+-}
+processDeciderForAbi :
+    IO.Canonical
+    -> Maybe BranchNormalizationInfo
+    -> Mono.Decider Mono.MonoChoice
+    -> GlobalCtx
+    -> ( Mono.Decider Mono.MonoChoice, GlobalCtx )
+processDeciderForAbi home normInfo dec ctx =
+    case dec of
+        Mono.Leaf choice ->
+            case choice of
+                Mono.Inline expr ->
+                    let
+                        ( newExpr, ctx1 ) =
+                            processBranchResult home normInfo expr ctx
+                    in
+                    ( Mono.Leaf (Mono.Inline newExpr), ctx1 )
+
+                Mono.Jump _ ->
+                    ( dec, ctx )
+
+        Mono.Chain testChain success failure ->
+            let
+                ( newSuccess, ctx1 ) =
+                    processDeciderForAbi home normInfo success ctx
+
+                ( newFailure, ctx2 ) =
+                    processDeciderForAbi home normInfo failure ctx1
+            in
+            ( Mono.Chain testChain newSuccess newFailure, ctx2 )
+
+        Mono.FanOut path edges fallback ->
+            let
+                ( newEdges, ctx1 ) =
+                    List.foldr
+                        (\( test, d ) ( acc, accCtx ) ->
+                            let
+                                ( newD, accCtx1 ) =
+                                    processDeciderForAbi home normInfo d accCtx
+                            in
+                            ( ( test, newD ) :: acc, accCtx1 )
+                        )
+                        ( [], ctx )
+                        edges
+
+                ( newFallback, ctx2 ) =
+                    processDeciderForAbi home normInfo fallback ctx1
+            in
+            ( Mono.FanOut path newEdges newFallback, ctx2 )
+
+
+{-| Process jump branches, recursing and optionally normalizing function-typed results.
+-}
+processJumpsForAbi :
+    IO.Canonical
+    -> Maybe BranchNormalizationInfo
+    -> List ( Int, Mono.MonoExpr )
+    -> GlobalCtx
+    -> ( List ( Int, Mono.MonoExpr ), GlobalCtx )
+processJumpsForAbi home normInfo branches ctx =
+    List.foldr
+        (\( idx, expr ) ( acc, accCtx ) ->
+            let
+                ( newExpr, accCtx1 ) =
+                    processBranchResult home normInfo expr accCtx
+            in
+            ( ( idx, newExpr ) :: acc, accCtx1 )
+        )
+        ( [], ctx )
+        branches
 
 
 
@@ -895,20 +863,169 @@ buildAbiWrapperGO home targetType calleeExpr ctx0 =
 
 
 
--- REWRITE EXPR FOR ABI (COMPLETE TRAVERSAL)
+-- REWRITE EXPR FOR ABI
+--
+-- Uses MonoTraverse for structural recursion, with special handling for
+-- MonoCase and MonoIf (the ABI normalization targets).
 
 
 rewriteExprForAbi : IO.Canonical -> Mono.MonoExpr -> GlobalCtx -> ( Mono.MonoExpr, GlobalCtx )
 rewriteExprForAbi home expr ctx =
     case expr of
-        -- ABI normalization targets
+        -- ABI normalization targets - use dedicated handlers
         Mono.MonoCase scrutName scrutTypeName decider branches resultType ->
             rewriteCaseForAbi home scrutName scrutTypeName decider branches resultType ctx
 
         Mono.MonoIf branches final resultType ->
             rewriteIfForAbi home branches final resultType ctx
 
-        -- Structural recursion (no lambdas in these)
+        -- Manual recursion for other expression types
+        Mono.MonoClosure info body closureType ->
+            let
+                ( newCaptures, ctx1 ) =
+                    List.foldr
+                        (\( n, e, t ) ( acc, accCtx ) ->
+                            let
+                                ( newE, accCtx1 ) =
+                                    rewriteExprForAbi home e accCtx
+                            in
+                            ( ( n, newE, t ) :: acc, accCtx1 )
+                        )
+                        ( [], ctx )
+                        info.captures
+
+                ( newBody, ctx2 ) =
+                    rewriteExprForAbi home body ctx1
+            in
+            ( Mono.MonoClosure { info | captures = newCaptures } newBody closureType, ctx2 )
+
+        Mono.MonoCall region func args resultType callInfo ->
+            let
+                ( newFunc, ctx1 ) =
+                    rewriteExprForAbi home func ctx
+
+                ( newArgs, ctx2 ) =
+                    List.foldr
+                        (\e ( acc, accCtx ) ->
+                            let
+                                ( newE, accCtx1 ) =
+                                    rewriteExprForAbi home e accCtx
+                            in
+                            ( newE :: acc, accCtx1 )
+                        )
+                        ( [], ctx1 )
+                        args
+            in
+            ( Mono.MonoCall region newFunc newArgs resultType callInfo, ctx2 )
+
+        Mono.MonoTailCall name args resultType ->
+            let
+                ( newArgs, ctx1 ) =
+                    List.foldr
+                        (\( n, e ) ( acc, accCtx ) ->
+                            let
+                                ( newE, accCtx1 ) =
+                                    rewriteExprForAbi home e accCtx
+                            in
+                            ( ( n, newE ) :: acc, accCtx1 )
+                        )
+                        ( [], ctx )
+                        args
+            in
+            ( Mono.MonoTailCall name newArgs resultType, ctx1 )
+
+        Mono.MonoLet def body resultType ->
+            let
+                ( newDef, ctx1 ) =
+                    rewriteDefForAbi home def ctx
+
+                ( newBody, ctx2 ) =
+                    rewriteExprForAbi home body ctx1
+            in
+            ( Mono.MonoLet newDef newBody resultType, ctx2 )
+
+        Mono.MonoDestruct path inner resultType ->
+            let
+                ( newInner, ctx1 ) =
+                    rewriteExprForAbi home inner ctx
+            in
+            ( Mono.MonoDestruct path newInner resultType, ctx1 )
+
+        Mono.MonoList region items resultType ->
+            let
+                ( newItems, ctx1 ) =
+                    List.foldr
+                        (\e ( acc, accCtx ) ->
+                            let
+                                ( newE, accCtx1 ) =
+                                    rewriteExprForAbi home e accCtx
+                            in
+                            ( newE :: acc, accCtx1 )
+                        )
+                        ( [], ctx )
+                        items
+            in
+            ( Mono.MonoList region newItems resultType, ctx1 )
+
+        Mono.MonoRecordCreate fields resultType ->
+            let
+                ( newFields, ctx1 ) =
+                    List.foldr
+                        (\( n, e ) ( acc, accCtx ) ->
+                            let
+                                ( newE, accCtx1 ) =
+                                    rewriteExprForAbi home e accCtx
+                            in
+                            ( ( n, newE ) :: acc, accCtx1 )
+                        )
+                        ( [], ctx )
+                        fields
+            in
+            ( Mono.MonoRecordCreate newFields resultType, ctx1 )
+
+        Mono.MonoRecordAccess inner field resultType ->
+            let
+                ( newInner, ctx1 ) =
+                    rewriteExprForAbi home inner ctx
+            in
+            ( Mono.MonoRecordAccess newInner field resultType, ctx1 )
+
+        Mono.MonoRecordUpdate record updates resultType ->
+            let
+                ( newRecord, ctx1 ) =
+                    rewriteExprForAbi home record ctx
+
+                ( newUpdates, ctx2 ) =
+                    List.foldr
+                        (\( n, e ) ( acc, accCtx ) ->
+                            let
+                                ( newE, accCtx1 ) =
+                                    rewriteExprForAbi home e accCtx
+                            in
+                            ( ( n, newE ) :: acc, accCtx1 )
+                        )
+                        ( [], ctx1 )
+                        updates
+            in
+            ( Mono.MonoRecordUpdate newRecord newUpdates resultType, ctx2 )
+
+        Mono.MonoTupleCreate region elements resultType ->
+            let
+                ( newElements, ctx1 ) =
+                    List.foldr
+                        (\e ( acc, accCtx ) ->
+                            let
+                                ( newE, accCtx1 ) =
+                                    rewriteExprForAbi home e accCtx
+                            in
+                            ( newE :: acc, accCtx1 )
+                        )
+                        ( [], ctx )
+                        elements
+            in
+            ( Mono.MonoTupleCreate region newElements resultType, ctx1 )
+
+        -- Leaf expressions - no children to process
         Mono.MonoLiteral _ _ ->
             ( expr, ctx )
 
@@ -923,140 +1040,6 @@ rewriteExprForAbi home expr ctx =
 
         Mono.MonoUnit ->
             ( expr, ctx )
-
-        -- Structural recursion (may contain lambdas)
-        Mono.MonoList region items tipe ->
-            let
-                ( newItems, ctx1 ) =
-                    List.foldr
-                        (\item ( acc, accCtx ) ->
-                            let
-                                ( newItem, accCtx1 ) =
-                                    rewriteExprForAbi home item accCtx
-                            in
-                            ( newItem :: acc, accCtx1 )
-                        )
-                        ( [], ctx )
-                        items
-            in
-            ( Mono.MonoList region newItems tipe, ctx1 )
-
-        Mono.MonoClosure info body tipe ->
-            let
-                ( newBody, ctx1 ) =
-                    rewriteExprForAbi home body ctx
-            in
-            ( Mono.MonoClosure info newBody tipe, ctx1 )
-
-        Mono.MonoCall region f args tipe callInfo ->
-            let
-                ( newF, ctx1 ) =
-                    rewriteExprForAbi home f ctx
-
-                ( newArgs, ctx2 ) =
-                    List.foldr
-                        (\arg ( acc, accCtx ) ->
-                            let
-                                ( newArg, accCtx1 ) =
-                                    rewriteExprForAbi home arg accCtx
-                            in
-                            ( newArg :: acc, accCtx1 )
-                        )
-                        ( [], ctx1 )
-                        args
-            in
-            ( Mono.MonoCall region newF newArgs tipe callInfo, ctx2 )
-
-        Mono.MonoTailCall name args tipe ->
-            let
-                ( newArgs, ctx1 ) =
-                    List.foldr
-                        (\( n, e ) ( acc, accCtx ) ->
-                            let
-                                ( newE, accCtx1 ) =
-                                    rewriteExprForAbi home e accCtx
-                            in
-                            ( ( n, newE ) :: acc, accCtx1 )
-                        )
-                        ( [], ctx )
-                        args
-            in
-            ( Mono.MonoTailCall name newArgs tipe, ctx1 )
-
-        Mono.MonoLet def body tipe ->
-            let
-                ( newDef, ctx1 ) =
-                    rewriteDefForAbi home def ctx
-
-                ( newBody, ctx2 ) =
-                    rewriteExprForAbi home body ctx1
-            in
-            ( Mono.MonoLet newDef newBody tipe, ctx2 )
-
-        Mono.MonoDestruct destructor inner tipe ->
-            let
-                ( newInner, ctx1 ) =
-                    rewriteExprForAbi home inner ctx
-            in
-            ( Mono.MonoDestruct destructor newInner tipe, ctx1 )
-
-        Mono.MonoRecordCreate fields tipe ->
-            let
-                ( newFields, ctx1 ) =
-                    List.foldr
-                        (\( name, field ) ( acc, accCtx ) ->
-                            let
-                                ( newField, accCtx1 ) =
-                                    rewriteExprForAbi home field accCtx
-                            in
-                            ( ( name, newField ) :: acc, accCtx1 )
-                        )
-                        ( [], ctx )
-                        fields
-            in
-            ( Mono.MonoRecordCreate newFields tipe, ctx1 )
-
-        Mono.MonoRecordAccess inner name tipe ->
-            let
-                ( newInner, ctx1 ) =
-                    rewriteExprForAbi home inner ctx
-            in
-            ( Mono.MonoRecordAccess newInner name tipe, ctx1 )
-
-        Mono.MonoRecordUpdate record updates tipe ->
-            let
-                ( newRecord, ctx1 ) =
-                    rewriteExprForAbi home record ctx
-
-                ( newUpdates, ctx2 ) =
-                    List.foldr
-                        (\( name, e ) ( acc, accCtx ) ->
-                            let
-                                ( newE, accCtx1 ) =
-                                    rewriteExprForAbi home e accCtx
-                            in
-                            ( ( name, newE ) :: acc, accCtx1 )
-                        )
-                        ( [], ctx1 )
-                        updates
-            in
-            ( Mono.MonoRecordUpdate newRecord newUpdates tipe, ctx2 )
-
-        Mono.MonoTupleCreate region elements tipe ->
-            let
-                ( newElements, ctx1 ) =
-                    List.foldr
-                        (\elem ( acc, accCtx ) ->
-                            let
-                                ( newElem, accCtx1 ) =
-                                    rewriteExprForAbi home elem accCtx
-                            in
-                            ( newElem :: acc, accCtx1 )
-                        )
-                        ( [], ctx )
-                        elements
-            in
-            ( Mono.MonoTupleCreate region newElements tipe, ctx1 )
 
 
 rewriteDefForAbi : IO.Canonical -> Mono.MonoDef -> GlobalCtx -> ( Mono.MonoDef, GlobalCtx )
@@ -1094,188 +1077,25 @@ rewriteCaseForAbi home scrutName scrutTypeName decider branches resultType ctx0 
     let
         leafTypes =
             collectCaseLeafFunctionsGO decider branches
+
+        normInfo =
+            computeBranchNormalization leafTypes
+
+        ( newDecider, ctx1 ) =
+            processDeciderForAbi home normInfo decider ctx0
+
+        ( newBranches, ctx2 ) =
+            processJumpsForAbi home normInfo branches ctx1
+
+        finalType =
+            case normInfo of
+                Nothing ->
+                    resultType
+
+                Just info ->
+                    info.canonicalType
     in
-    case leafTypes of
-        [] ->
-            -- No function leaves, just recurse into components
-            let
-                ( newDecider, ctx1 ) =
-                    rewriteDeciderForAbi home decider ctx0
-
-                ( newBranches, ctx2 ) =
-                    rewriteBranchesForAbi home branches ctx1
-            in
-            ( Mono.MonoCase scrutName scrutTypeName newDecider newBranches resultType, ctx2 )
-
-        _ ->
-            -- Function leaves: normalize to canonical ABI
-            let
-                ( canonicalSeg, flatArgs, flatRet ) =
-                    Mono.chooseCanonicalSegmentation leafTypes
-
-                canonicalType =
-                    Mono.buildSegmentedFunctionType flatArgs flatRet canonicalSeg
-
-                ( newDecider, newBranches, ctx1 ) =
-                    rewriteCaseLeavesToAbiGO home canonicalType canonicalSeg decider branches ctx0
-            in
-            ( Mono.MonoCase scrutName scrutTypeName newDecider newBranches canonicalType, ctx1 )
-
-
-rewriteCaseLeavesToAbiGO :
-    IO.Canonical
-    -> Mono.MonoType
-    -> Mono.Segmentation
-    -> Mono.Decider Mono.MonoChoice
-    -> List ( Int, Mono.MonoExpr )
-    -> GlobalCtx
-    -> ( Mono.Decider Mono.MonoChoice, List ( Int, Mono.MonoExpr ), GlobalCtx )
-rewriteCaseLeavesToAbiGO home targetType targetSeg decider jumps ctx0 =
-    let
-        rewriteLeafExpr : Mono.MonoExpr -> GlobalCtx -> ( Mono.MonoExpr, GlobalCtx )
-        rewriteLeafExpr expr ctx =
-            case Mono.typeOf expr of
-                Mono.MFunction _ _ ->
-                    if Mono.segmentLengths (Mono.typeOf expr) == targetSeg then
-                        ( expr, ctx )
-
-                    else
-                        buildAbiWrapperGO home targetType expr ctx
-
-                _ ->
-                    ( expr, ctx )
-
-        rewriteDecider : Mono.Decider Mono.MonoChoice -> GlobalCtx -> ( Mono.Decider Mono.MonoChoice, GlobalCtx )
-        rewriteDecider dec ctx =
-            case dec of
-                Mono.Leaf choice ->
-                    case choice of
-                        Mono.Inline expr ->
-                            let
-                                ( newExpr, ctx1 ) =
-                                    rewriteLeafExpr expr ctx
-                            in
-                            ( Mono.Leaf (Mono.Inline newExpr), ctx1 )
-
-                        Mono.Jump _ ->
-                            ( dec, ctx )
-
-                Mono.Chain testChain success failure ->
-                    let
-                        ( newSuccess, ctx1 ) =
-                            rewriteDecider success ctx
-
-                        ( newFailure, ctx2 ) =
-                            rewriteDecider failure ctx1
-                    in
-                    ( Mono.Chain testChain newSuccess newFailure, ctx2 )
-
-                Mono.FanOut path edges fallback ->
-                    let
-                        ( newEdges, ctx1 ) =
-                            List.foldr
-                                (\( test, d ) ( acc, accCtx ) ->
-                                    let
-                                        ( newD, accCtx1 ) =
-                                            rewriteDecider d accCtx
-                                    in
-                                    ( ( test, newD ) :: acc, accCtx1 )
-                                )
-                                ( [], ctx )
-                                edges
-
-                        ( newFallback, ctx2 ) =
-                            rewriteDecider fallback ctx1
-                    in
-                    ( Mono.FanOut path newEdges newFallback, ctx2 )
-
-        rewriteJumps : List ( Int, Mono.MonoExpr ) -> GlobalCtx -> ( List ( Int, Mono.MonoExpr ), GlobalCtx )
-        rewriteJumps js ctx =
-            List.foldr
-                (\( idx, expr ) ( acc, accCtx ) ->
-                    let
-                        ( newExpr, accCtx1 ) =
-                            rewriteLeafExpr expr accCtx
-                    in
-                    ( ( idx, newExpr ) :: acc, accCtx1 )
-                )
-                ( [], ctx )
-                js
-
-        ( newDecider, ctxAfterDecider ) =
-            rewriteDecider decider ctx0
-
-        ( newJumps, ctxAfterJumps ) =
-            rewriteJumps jumps ctxAfterDecider
-    in
-    ( newDecider, newJumps, ctxAfterJumps )
-
-
-rewriteDeciderForAbi :
-    IO.Canonical
-    -> Mono.Decider Mono.MonoChoice
-    -> GlobalCtx
-    -> ( Mono.Decider Mono.MonoChoice, GlobalCtx )
-rewriteDeciderForAbi home dec ctx =
-    case dec of
-        Mono.Leaf choice ->
-            case choice of
-                Mono.Inline expr ->
-                    let
-                        ( newExpr, ctx1 ) =
-                            rewriteExprForAbi home expr ctx
-                    in
-                    ( Mono.Leaf (Mono.Inline newExpr), ctx1 )
-
-                Mono.Jump _ ->
-                    ( dec, ctx )
-
-        Mono.Chain testChain success failure ->
-            let
-                ( newSuccess, ctx1 ) =
-                    rewriteDeciderForAbi home success ctx
-
-                ( newFailure, ctx2 ) =
-                    rewriteDeciderForAbi home failure ctx1
-            in
-            ( Mono.Chain testChain newSuccess newFailure, ctx2 )
-
-        Mono.FanOut path edges fallback ->
-            let
-                ( newEdges, ctx1 ) =
-                    List.foldr
-                        (\( test, d ) ( acc, accCtx ) ->
-                            let
-                                ( newD, accCtx1 ) =
-                                    rewriteDeciderForAbi home d accCtx
-                            in
-                            ( ( test, newD ) :: acc, accCtx1 )
-                        )
-                        ( [], ctx )
-                        edges
-
-                ( newFallback, ctx2 ) =
-                    rewriteDeciderForAbi home fallback ctx1
-            in
-            ( Mono.FanOut path newEdges newFallback, ctx2 )
-
-
-rewriteBranchesForAbi :
-    IO.Canonical
-    -> List ( Int, Mono.MonoExpr )
-    -> GlobalCtx
-    -> ( List ( Int, Mono.MonoExpr ), GlobalCtx )
-rewriteBranchesForAbi home branches ctx =
-    List.foldr
-        (\( idx, expr ) ( acc, accCtx ) ->
-            let
-                ( newExpr, accCtx1 ) =
-                    rewriteExprForAbi home expr accCtx
-            in
-            ( ( idx, newExpr ) :: acc, accCtx1 )
-        )
-        ( [], ctx )
-        branches
+    ( Mono.MonoCase scrutName scrutTypeName newDecider newBranches finalType, ctx2 )
 
 
 
@@ -1291,11 +1111,9 @@ rewriteIfForAbi :
     -> ( Mono.MonoExpr, GlobalCtx )
 rewriteIfForAbi home branches final resultType ctx0 =
     let
-        branchResults : List Mono.MonoExpr
         branchResults =
             List.map Tuple.second branches ++ [ final ]
 
-        leafTypes : List Mono.MonoType
         leafTypes =
             branchResults
                 |> List.filterMap
@@ -1307,72 +1125,39 @@ rewriteIfForAbi home branches final resultType ctx0 =
                             _ ->
                                 Nothing
                     )
+
+        normInfo =
+            computeBranchNormalization leafTypes
+
+        ( newBranches, ctx1 ) =
+            List.foldr
+                (\( cond, then_ ) ( acc, accCtx ) ->
+                    let
+                        -- Process condition normally (no normalization)
+                        ( newCond, accCtx1 ) =
+                            rewriteExprForAbi home cond accCtx
+
+                        -- Process then-branch with potential normalization
+                        ( newThen, accCtx2 ) =
+                            processBranchResult home normInfo then_ accCtx1
+                    in
+                    ( ( newCond, newThen ) :: acc, accCtx2 )
+                )
+                ( [], ctx0 )
+                branches
+
+        ( newFinal, ctx2 ) =
+            processBranchResult home normInfo final ctx1
+
+        finalType =
+            case normInfo of
+                Nothing ->
+                    resultType
+
+                Just info ->
+                    info.canonicalType
     in
-    case leafTypes of
-        [] ->
-            -- No function leaves, just recurse structurally
-            let
-                ( newBranches, ctx1 ) =
-                    List.foldr
-                        (\( cond, then_ ) ( acc, accCtx ) ->
-                            let
-                                ( newCond, accCtx1 ) =
-                                    rewriteExprForAbi home cond accCtx
-
-                                ( newThen, accCtx2 ) =
-                                    rewriteExprForAbi home then_ accCtx1
-                            in
-                            ( ( newCond, newThen ) :: acc, accCtx2 )
-                        )
-                        ( [], ctx0 )
-                        branches
-
-                ( newFinal, ctx2 ) =
-                    rewriteExprForAbi home final ctx1
-            in
-            ( Mono.MonoIf newBranches newFinal resultType, ctx2 )
-
-        _ ->
-            -- Function leaves: normalize to canonical ABI
-            let
-                ( canonicalSeg, flatArgs, flatRet ) =
-                    Mono.chooseCanonicalSegmentation leafTypes
-
-                canonicalType =
-                    Mono.buildSegmentedFunctionType flatArgs flatRet canonicalSeg
-
-                rewriteResultExpr : Mono.MonoExpr -> GlobalCtx -> ( Mono.MonoExpr, GlobalCtx )
-                rewriteResultExpr expr ctx =
-                    case Mono.typeOf expr of
-                        Mono.MFunction _ _ ->
-                            if Mono.segmentLengths (Mono.typeOf expr) == canonicalSeg then
-                                rewriteExprForAbi home expr ctx
-
-                            else
-                                buildAbiWrapperGO home canonicalType expr ctx
-
-                        _ ->
-                            rewriteExprForAbi home expr ctx
-
-                ( newBranches, ctx1 ) =
-                    List.foldr
-                        (\( cond, then_ ) ( acc, accCtx ) ->
-                            let
-                                ( newCond, accCtx1 ) =
-                                    rewriteExprForAbi home cond accCtx
-
-                                ( newThen, accCtx2 ) =
-                                    rewriteResultExpr then_ accCtx1
-                            in
-                            ( ( newCond, newThen ) :: acc, accCtx2 )
-                        )
-                        ( [], ctx0 )
-                        branches
-
-                ( newFinal, ctx2 ) =
-                    rewriteResultExpr final ctx1
-            in
-            ( Mono.MonoIf newBranches newFinal canonicalType, ctx2 )
+    ( Mono.MonoIf newBranches newFinal finalType, ctx2 )
 
 
 
@@ -1510,131 +1295,104 @@ validateNodeClosures node =
             ()
 
 
-validateExprClosures : Mono.MonoExpr -> ()
-validateExprClosures expr =
+{-| Validate that closure params match their type.
+-}
+validateClosureParams : Mono.MonoExpr -> () -> ()
+validateClosureParams expr () =
     case expr of
-        Mono.MonoClosure info body tipe ->
+        Mono.MonoClosure info _ tipe ->
             let
                 expectedParams =
                     Mono.stageParamTypes tipe
 
                 actualParams =
                     info.params
-
-                _ =
-                    if List.length actualParams /= List.length expectedParams then
-                        Debug.todo
-                            ("GOPT_001 violation: closure has "
-                                ++ String.fromInt (List.length actualParams)
-                                ++ " params but type expects "
-                                ++ String.fromInt (List.length expectedParams)
-                            )
-
-                    else
-                        ()
             in
-            validateExprClosures body
+            if List.length actualParams /= List.length expectedParams then
+                Debug.todo
+                    ("GOPT_001 violation: closure has "
+                        ++ String.fromInt (List.length actualParams)
+                        ++ " params but type expects "
+                        ++ String.fromInt (List.length expectedParams)
+                    )
 
-        Mono.MonoCall _ f args _ _ ->
-            let
-                _ =
-                    validateExprClosures f
-            in
-            List.foldl (\e () -> validateExprClosures e) () args
-
-        Mono.MonoLet def body _ ->
-            let
-                _ =
-                    validateDefClosures def
-            in
-            validateExprClosures body
-
-        Mono.MonoCase _ _ decider branches _ ->
-            let
-                _ =
-                    validateDeciderClosures decider
-            in
-            List.foldl (\( _, e ) () -> validateExprClosures e) () branches
-
-        Mono.MonoIf branches final _ ->
-            let
-                _ =
-                    List.foldl
-                        (\( c, t ) () ->
-                            let
-                                _ =
-                                    validateExprClosures c
-                            in
-                            validateExprClosures t
-                        )
-                        ()
-                        branches
-            in
-            validateExprClosures final
-
-        Mono.MonoList _ items _ ->
-            List.foldl (\e () -> validateExprClosures e) () items
-
-        Mono.MonoTailCall _ args _ ->
-            List.foldl (\( _, e ) () -> validateExprClosures e) () args
-
-        Mono.MonoDestruct _ inner _ ->
-            validateExprClosures inner
-
-        Mono.MonoRecordCreate fields _ ->
-            List.foldl (\( _, e ) () -> validateExprClosures e) () fields
-
-        Mono.MonoRecordAccess inner _ _ ->
-            validateExprClosures inner
-
-        Mono.MonoRecordUpdate record updates _ ->
-            let
-                _ =
-                    validateExprClosures record
-            in
-            List.foldl (\( _, e ) () -> validateExprClosures e) () updates
-
-        Mono.MonoTupleCreate _ elements _ ->
-            List.foldl (\e () -> validateExprClosures e) () elements
+            else
+                ()
 
         _ ->
             ()
 
 
-validateDefClosures : Mono.MonoDef -> ()
-validateDefClosures def =
-    case def of
-        Mono.MonoDef _ bound ->
-            validateExprClosures bound
+validateExprClosures : Mono.MonoExpr -> ()
+validateExprClosures =
+    Traverse.foldExpr validateClosureParams ()
 
-        Mono.MonoTailDef _ _ bound ->
-            validateExprClosures bound
+
+validateDefClosures : Mono.MonoDef -> ()
+validateDefClosures =
+    Traverse.foldDef validateClosureParams ()
 
 
 validateDeciderClosures : Mono.Decider Mono.MonoChoice -> ()
-validateDeciderClosures dec =
-    case dec of
-        Mono.Leaf choice ->
-            case choice of
-                Mono.Inline expr ->
-                    validateExprClosures expr
+validateDeciderClosures =
+    Traverse.foldDecider validateClosureParams ()
 
-                Mono.Jump _ ->
-                    ()
 
-        Mono.Chain _ success failure ->
-            let
-                _ =
-                    validateDeciderClosures success
-            in
-            validateDeciderClosures failure
 
-        Mono.FanOut _ edges fallback ->
-            let
-                _ =
-                    List.foldl (\( _, d ) () -> validateDeciderClosures d) () edges
-            in
-            validateDeciderClosures fallback
+-- COMBINED PHASE: CANONICALIZE + ABI NORMALIZE + VALIDATE
+
+
+{-| Combined pass that replaces phases 1-3:
+
+1.  Canonicalize closure types (flatten to match param counts)
+2.  Apply ABI normalization (case/if result types, wrapper generation)
+3.  Validate GOPT\_001 inline (closure params match stage arity)
+
+This does in a single graph traversal what the three separate phases did.
+
+-}
+canonicalizeAndNormalizeAbi : Mono.MonoGraph -> Mono.MonoGraph
+canonicalizeAndNormalizeAbi (Mono.MonoGraph record0) =
+    let
+        ctx0 =
+            initGlobalCtx (Mono.MonoGraph record0)
+
+        ( newNodes, _ ) =
+            Dict.foldl compare
+                (\specId node ( accNodes, accCtx ) ->
+                    let
+                        home =
+                            specHome accCtx.registry specId
+
+                        ( newNode, accCtx1 ) =
+                            canonicalizeAndRewriteNode home node accCtx
+                    in
+                    ( Dict.insert identity specId newNode accNodes, accCtx1 )
+                )
+                ( Dict.empty, ctx0 )
+                record0.nodes
+    in
+    Mono.MonoGraph { record0 | nodes = newNodes }
+
+
+{-| Combined node handler: canonicalize, then ABI normalize, then validate.
+-}
+canonicalizeAndRewriteNode : IO.Canonical -> Mono.MonoNode -> GlobalCtx -> ( Mono.MonoNode, GlobalCtx )
+canonicalizeAndRewriteNode home node ctx =
+    let
+        -- Step 1: Canonicalize the node (pure transformation)
+        canonNode =
+            canonicalizeNode node
+
+        -- Step 2: Apply ABI normalization (context-threaded)
+        ( abiNode, ctx1 ) =
+            rewriteNodeForAbi home canonNode ctx
+
+        -- Step 3: Validate inline (crashes on GOPT_001 violation)
+        _ =
+            validateNodeClosures abiNode
+    in
+    ( abiNode, ctx1 )
 
 
 
@@ -1688,20 +1446,12 @@ annotateNodeCalls graph env node =
 
 annotateExprCalls : Mono.MonoGraph -> CallEnv -> Mono.MonoExpr -> Mono.MonoExpr
 annotateExprCalls graph env expr =
+    let
+        recurse =
+            annotateExprCalls graph env
+    in
     case expr of
-        Mono.MonoCall region func args resultType _ ->
-            let
-                func1 =
-                    annotateExprCalls graph env func
-
-                args1 =
-                    List.map (annotateExprCalls graph env) args
-
-                callInfo =
-                    computeCallInfo graph env func1 args1 resultType
-            in
-            Mono.MonoCall region func1 args1 resultType callInfo
-
+        -- Special case: MonoLet needs proper CallEnv scoping
         Mono.MonoLet def body tipe ->
             let
                 ( def1, env1 ) =
@@ -1712,77 +1462,110 @@ annotateExprCalls graph env expr =
             in
             Mono.MonoLet def1 body1 tipe
 
-        Mono.MonoClosure info body tipe ->
+        -- MonoCall: annotate with call info after recursing on children
+        Mono.MonoCall region func args resultType _ ->
             let
-                newCaptures =
-                    List.map
-                        (\( n, e, flag ) -> ( n, annotateExprCalls graph env e, flag ))
-                        info.captures
+                newFunc =
+                    recurse func
 
-                body1 =
-                    annotateExprCalls graph env body
+                newArgs =
+                    List.map recurse args
+
+                callInfo =
+                    computeCallInfo graph env newFunc newArgs resultType
             in
-            Mono.MonoClosure { info | captures = newCaptures } body1 tipe
+            Mono.MonoCall region newFunc newArgs resultType callInfo
 
-        Mono.MonoIf branches final tipe ->
+        -- MonoCase: recurse into decider and jumps
+        Mono.MonoCase label scrutinee decider jumps resultType ->
             let
-                branches1 =
-                    List.map
-                        (\( c, t ) ->
-                            ( annotateExprCalls graph env c
-                            , annotateExprCalls graph env t
-                            )
-                        )
-                        branches
-
-                final1 =
-                    annotateExprCalls graph env final
-            in
-            Mono.MonoIf branches1 final1 tipe
-
-        Mono.MonoDestruct d inner tipe ->
-            Mono.MonoDestruct d (annotateExprCalls graph env inner) tipe
-
-        Mono.MonoCase s1 s2 decider branches tipe ->
-            let
-                decider1 =
+                newDecider =
                     annotateDeciderCalls graph env decider
 
-                branches1 =
-                    List.map
-                        (\( p, e ) -> ( p, annotateExprCalls graph env e ))
-                        branches
+                newJumps =
+                    List.map (\( i, e ) -> ( i, recurse e )) jumps
             in
-            Mono.MonoCase s1 s2 decider1 branches1 tipe
+            Mono.MonoCase label scrutinee newDecider newJumps resultType
 
-        Mono.MonoList region items tipe ->
-            Mono.MonoList region (List.map (annotateExprCalls graph env) items) tipe
+        -- MonoIf: recurse into branches and final
+        Mono.MonoIf branches final resultType ->
+            let
+                newBranches =
+                    List.map (\( c, t ) -> ( recurse c, recurse t )) branches
 
-        Mono.MonoRecordCreate fields tipe ->
-            Mono.MonoRecordCreate
-                (List.map (\( n, e ) -> ( n, annotateExprCalls graph env e )) fields)
-                tipe
+                newFinal =
+                    recurse final
+            in
+            Mono.MonoIf newBranches newFinal resultType
 
-        Mono.MonoRecordAccess inner name tipe ->
-            Mono.MonoRecordAccess (annotateExprCalls graph env inner) name tipe
+        -- MonoClosure: recurse into captures and body
+        Mono.MonoClosure info body closureType ->
+            let
+                newCaptures =
+                    List.map (\( n, e, t ) -> ( n, recurse e, t )) info.captures
 
-        Mono.MonoRecordUpdate record updates tipe ->
-            Mono.MonoRecordUpdate
-                (annotateExprCalls graph env record)
-                (List.map (\( n, e ) -> ( n, annotateExprCalls graph env e )) updates)
-                tipe
+                newBody =
+                    recurse body
+            in
+            Mono.MonoClosure { info | captures = newCaptures } newBody closureType
 
-        Mono.MonoTupleCreate region items tipe ->
-            Mono.MonoTupleCreate region (List.map (annotateExprCalls graph env) items) tipe
+        -- MonoTailCall: recurse into args
+        Mono.MonoTailCall name args resultType ->
+            let
+                newArgs =
+                    List.map (\( n, e ) -> ( n, recurse e )) args
+            in
+            Mono.MonoTailCall name newArgs resultType
 
-        Mono.MonoTailCall name args tipe ->
-            -- Tail calls use their own representation, no CallInfo needed
-            Mono.MonoTailCall name
-                (List.map (\( n, e ) -> ( n, annotateExprCalls graph env e )) args)
-                tipe
+        -- MonoDestruct: recurse into inner
+        Mono.MonoDestruct path inner resultType ->
+            Mono.MonoDestruct path (recurse inner) resultType
 
-        -- Leaves: literals, vars (no subexpressions)
-        _ ->
+        -- MonoList: recurse into items
+        Mono.MonoList region items resultType ->
+            Mono.MonoList region (List.map recurse items) resultType
+
+        -- MonoRecordCreate: recurse into fields
+        Mono.MonoRecordCreate fields resultType ->
+            let
+                newFields =
+                    List.map (\( n, e ) -> ( n, recurse e )) fields
+            in
+            Mono.MonoRecordCreate newFields resultType
+
+        -- MonoRecordAccess: recurse into inner
+        Mono.MonoRecordAccess inner field resultType ->
+            Mono.MonoRecordAccess (recurse inner) field resultType
+
+        -- MonoRecordUpdate: recurse into record and updates
+        Mono.MonoRecordUpdate record updates resultType ->
+            let
+                newRecord =
+                    recurse record
+
+                newUpdates =
+                    List.map (\( n, e ) -> ( n, recurse e )) updates
+            in
+            Mono.MonoRecordUpdate newRecord newUpdates resultType
+
+        -- MonoTupleCreate: recurse into elements
+        Mono.MonoTupleCreate region elements resultType ->
+            Mono.MonoTupleCreate region (List.map recurse elements) resultType
+
+        -- Leaf expressions: no recursion needed
+        Mono.MonoLiteral _ _ ->
+            expr
+
+        Mono.MonoVarLocal _ _ ->
+            expr
+
+        Mono.MonoVarGlobal _ _ _ ->
+            expr
+
+        Mono.MonoVarKernel _ _ _ _ ->
+            expr
+
+        Mono.MonoUnit ->
             expr
 
 
@@ -1898,7 +1681,8 @@ callModelForExpr (Mono.MonoGraph { nodes }) env expr =
             Nothing
 
 
-{-| Get call model for a callee, defaulting to StageCurried. -}
+{-| Get call model for a callee, defaulting to StageCurried.
+-}
 callModelForCallee : Mono.MonoGraph -> CallEnv -> Mono.MonoExpr -> Mono.CallModel
 callModelForCallee graph env funcExpr =
     case callModelForExpr graph env funcExpr of
@@ -2044,7 +1828,8 @@ sourceArityForCallee graph env funcExpr =
             countTotalArityFromType (Mono.typeOf funcExpr)
 
 
-{-| Count total arity by summing all stage arities. -}
+{-| Count total arity by summing all stage arities.
+-}
 countTotalArityFromType : Mono.MonoType -> Int
 countTotalArityFromType monoType =
     case monoType of
@@ -2060,6 +1845,7 @@ This is used to get the actual staging after GlobalOpt canonicalization.
 
 For a function with params, this extracts the return type's stages from the closure's body
 (which may have been canonicalized differently than the declared type).
+
 -}
 closureBodyStageArities : Mono.MonoGraph -> Mono.MonoExpr -> Maybe (List Int)
 closureBodyStageArities graph expr =

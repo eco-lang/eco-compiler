@@ -21,7 +21,9 @@ Key optimizations:
 import Compiler.AST.Monomorphized as Mono exposing (MonoExpr(..), MonoGraph(..), MonoNode(..), SpecId)
 import Compiler.AST.TypeEnv as TypeEnv
 import Compiler.Data.Name exposing (Name)
-import Compiler.Reporting.Annotation exposing (Region)
+import Compiler.GlobalOpt.MonoTraverse as Traverse
+import Compiler.Monomorphize.Closure as Closure
+import Compiler.Reporting.Annotation as A exposing (Region)
 import Data.Graph as Graph
 import Data.Map as Dict exposing (Dict)
 import System.TypeCheck.IO as IO
@@ -188,7 +190,7 @@ buildCallGraph nodes registry =
             Graph.stronglyConnComp graphNodes
 
         -- Mark recursive nodes (those in CyclicSCC)
-        isRecursive =
+        isRecursiveFromSCC =
             List.foldl
                 (\scc acc ->
                     case scc of
@@ -205,6 +207,24 @@ buildCallGraph nodes registry =
                 )
                 Dict.empty
                 sccs
+
+        -- Mark all MonoCycle nodes as recursive.
+        -- MonoCycle contains mutually recursive definitions that reference each other
+        -- via MonoVarLocal, which aren't tracked by the SCC analysis above (it only
+        -- tracks MonoVarGlobal references). By marking them all as recursive, we prevent
+        -- incorrect inlining of cycle-internal functions.
+        isRecursive =
+            Dict.foldl compare
+                (\specId node acc ->
+                    case node of
+                        MonoCycle _ _ ->
+                            Dict.insert identity specId True acc
+
+                        _ ->
+                            acc
+                )
+                isRecursiveFromSCC
+                nodes
     in
     { edges = edges
     , isRecursive = isRecursive
@@ -239,74 +259,26 @@ collectCallsFromNode node =
             List.concatMap (\( _, expr ) -> collectCalls expr) defs
 
 
-collectCalls : MonoExpr -> List SpecId
-collectCalls expr =
+{-| Extract SpecId from global variable references.
+-}
+extractSpecId : MonoExpr -> List SpecId -> List SpecId
+extractSpecId expr acc =
     case expr of
-        MonoLiteral _ _ ->
-            []
-
-        MonoVarLocal _ _ ->
-            []
-
         MonoVarGlobal _ specId _ ->
-            [ specId ]
+            specId :: acc
 
-        MonoVarKernel _ _ _ _ ->
-            []
+        _ ->
+            acc
 
-        MonoList _ items _ ->
-            List.concatMap collectCalls items
 
-        MonoClosure info body _ ->
-            let
-                captureExprs =
-                    List.map (\( _, e, _ ) -> e) info.captures
-            in
-            List.concatMap collectCalls captureExprs ++ collectCalls body
-
-        MonoCall _ func args _ _ ->
-            collectCalls func ++ List.concatMap collectCalls args
-
-        MonoTailCall _ args _ ->
-            List.concatMap (\( _, e ) -> collectCalls e) args
-
-        MonoIf branches final _ ->
-            List.concatMap (\( c, t ) -> collectCalls c ++ collectCalls t) branches
-                ++ collectCalls final
-
-        MonoLet def body _ ->
-            collectCallsFromDef def ++ collectCalls body
-
-        MonoDestruct _ inner _ ->
-            collectCalls inner
-
-        MonoCase _ _ _ branches _ ->
-            List.concatMap (\( _, e ) -> collectCalls e) branches
-
-        MonoRecordCreate fields _ ->
-            List.concatMap (\( _, e ) -> collectCalls e) fields
-
-        MonoRecordAccess inner _ _ ->
-            collectCalls inner
-
-        MonoRecordUpdate inner updates _ ->
-            collectCalls inner ++ List.concatMap (\( _, e ) -> collectCalls e) updates
-
-        MonoTupleCreate _ items _ ->
-            List.concatMap collectCalls items
-
-        MonoUnit ->
-            []
+collectCalls : MonoExpr -> List SpecId
+collectCalls =
+    Traverse.foldExpr extractSpecId []
 
 
 collectCallsFromDef : Mono.MonoDef -> List SpecId
-collectCallsFromDef def =
-    case def of
-        Mono.MonoDef _ bound ->
-            collectCalls bound
-
-        Mono.MonoTailDef _ _ bound ->
-            collectCalls bound
+collectCallsFromDef =
+    Traverse.foldDef extractSpecId []
 
 
 
@@ -452,14 +424,34 @@ freshLambdaId ctx home =
     )
 
 
-{-| Remap all lambda IDs in an expression to fresh values.
-This is necessary when inlining to avoid duplicate lambda function names in MLIR.
+{-| Generate a fresh lambda ID for a specialization, looking up the home module.
 -}
-remapLambdaIds : RewriteCtx -> MonoExpr -> ( MonoExpr, RewriteCtx )
-remapLambdaIds ctx expr =
+freshLambdaIdForSpec : RewriteCtx -> Mono.SpecId -> ( Mono.LambdaId, RewriteCtx )
+freshLambdaIdForSpec ctx specId =
+    let
+        home =
+            case Dict.get identity specId ctx.registry.reverseMapping of
+                Just ( Mono.Global h _, _, _ ) ->
+                    h
+
+                Just ( Mono.Accessor _, _, _ ) ->
+                    -- Accessor doesn't have a home, use a placeholder
+                    IO.Canonical ( "", "" ) ""
+
+                Nothing ->
+                    -- Fallback if not found
+                    IO.Canonical ( "", "" ) ""
+    in
+    freshLambdaId ctx home
+
+
+{-| Generate a fresh lambda ID for a closure.
+This is called after children are processed, so nested closures get IDs first.
+-}
+remapClosureLambdaId : RewriteCtx -> MonoExpr -> ( MonoExpr, RewriteCtx )
+remapClosureLambdaId ctx expr =
     case expr of
         MonoClosure info body closureType ->
-            -- Get the home module from the existing lambdaId
             let
                 home =
                     case info.lambdaId of
@@ -469,228 +461,26 @@ remapLambdaIds ctx expr =
                 ( newLambdaId, ctx1 ) =
                     freshLambdaId ctx home
 
-                -- Recursively remap lambda IDs in captures
-                ( newCaptures, ctx2 ) =
-                    remapLambdaIdsInCaptures ctx1 info.captures
-
-                -- Recursively remap lambda IDs in the body
-                ( newBody, ctx3 ) =
-                    remapLambdaIds ctx2 body
-
                 newInfo =
-                    { info | lambdaId = newLambdaId, captures = newCaptures }
+                    { info | lambdaId = newLambdaId }
             in
-            ( MonoClosure newInfo newBody closureType, ctx3 )
+            ( MonoClosure newInfo body closureType, ctx1 )
 
-        MonoCall region func args resultType callInfo ->
-            let
-                ( newFunc, ctx1 ) =
-                    remapLambdaIds ctx func
-
-                ( newArgs, ctx2 ) =
-                    remapLambdaIdsInList ctx1 args
-            in
-            ( MonoCall region newFunc newArgs resultType callInfo, ctx2 )
-
-        MonoList region items itemType ->
-            let
-                ( newItems, ctx1 ) =
-                    remapLambdaIdsInList ctx items
-            in
-            ( MonoList region newItems itemType, ctx1 )
-
-        MonoIf branches final resultType ->
-            let
-                ( newBranches, ctx1 ) =
-                    remapLambdaIdsInBranches ctx branches
-
-                ( newFinal, ctx2 ) =
-                    remapLambdaIds ctx1 final
-            in
-            ( MonoIf newBranches newFinal resultType, ctx2 )
-
-        MonoLet def body resultType ->
-            let
-                ( newDef, ctx1 ) =
-                    remapLambdaIdsInDef ctx def
-
-                ( newBody, ctx2 ) =
-                    remapLambdaIds ctx1 body
-            in
-            ( MonoLet newDef newBody resultType, ctx2 )
-
-        MonoDestruct destructor inner resultType ->
-            let
-                ( newInner, ctx1 ) =
-                    remapLambdaIds ctx inner
-            in
-            ( MonoDestruct destructor newInner resultType, ctx1 )
-
-        MonoCase scrutName scrutType decider branches resultType ->
-            let
-                ( newBranches, ctx1 ) =
-                    remapLambdaIdsInCaseBranches ctx branches
-            in
-            ( MonoCase scrutName scrutType decider newBranches resultType, ctx1 )
-
-        MonoRecordCreate fields recordType ->
-            let
-                ( newFields, ctx1 ) =
-                    remapLambdaIdsInNamedFields ctx fields
-            in
-            ( MonoRecordCreate newFields recordType, ctx1 )
-
-        MonoRecordAccess inner fieldName resultType ->
-            let
-                ( newInner, ctx1 ) =
-                    remapLambdaIds ctx inner
-            in
-            ( MonoRecordAccess newInner fieldName resultType, ctx1 )
-
-        MonoRecordUpdate inner updates recordType ->
-            let
-                ( newInner, ctx1 ) =
-                    remapLambdaIds ctx inner
-
-                ( newUpdates, ctx2 ) =
-                    remapLambdaIdsInNamedFields ctx1 updates
-            in
-            ( MonoRecordUpdate newInner newUpdates recordType, ctx2 )
-
-        MonoTupleCreate region items tupleType ->
-            let
-                ( newItems, ctx1 ) =
-                    remapLambdaIdsInList ctx items
-            in
-            ( MonoTupleCreate region newItems tupleType, ctx1 )
-
-        MonoTailCall name args resultType ->
-            let
-                ( newArgs, ctx1 ) =
-                    remapLambdaIdsInTailCallArgs ctx args
-            in
-            ( MonoTailCall name newArgs resultType, ctx1 )
-
-        -- Leaves - no lambda IDs to remap
-        MonoLiteral _ _ ->
-            ( expr, ctx )
-
-        MonoVarLocal _ _ ->
-            ( expr, ctx )
-
-        MonoVarGlobal _ _ _ ->
-            ( expr, ctx )
-
-        MonoVarKernel _ _ _ _ ->
-            ( expr, ctx )
-
-        MonoUnit ->
+        _ ->
             ( expr, ctx )
 
 
-remapLambdaIdsInList : RewriteCtx -> List MonoExpr -> ( List MonoExpr, RewriteCtx )
-remapLambdaIdsInList ctx exprs =
-    List.foldl
-        (\e ( acc, accCtx ) ->
-            let
-                ( newExpr, newCtx ) =
-                    remapLambdaIds accCtx e
-            in
-            ( acc ++ [ newExpr ], newCtx )
-        )
-        ( [], ctx )
-        exprs
-
-
-remapLambdaIdsInCaptures : RewriteCtx -> List ( Name, MonoExpr, Bool ) -> ( List ( Name, MonoExpr, Bool ), RewriteCtx )
-remapLambdaIdsInCaptures ctx captures =
-    List.foldl
-        (\( name, e, isUnboxed ) ( acc, accCtx ) ->
-            let
-                ( newExpr, newCtx ) =
-                    remapLambdaIds accCtx e
-            in
-            ( acc ++ [ ( name, newExpr, isUnboxed ) ], newCtx )
-        )
-        ( [], ctx )
-        captures
-
-
-remapLambdaIdsInBranches : RewriteCtx -> List ( MonoExpr, MonoExpr ) -> ( List ( MonoExpr, MonoExpr ), RewriteCtx )
-remapLambdaIdsInBranches ctx branches =
-    List.foldl
-        (\( cond, body ) ( acc, accCtx ) ->
-            let
-                ( newCond, ctx1 ) =
-                    remapLambdaIds accCtx cond
-
-                ( newBody, ctx2 ) =
-                    remapLambdaIds ctx1 body
-            in
-            ( acc ++ [ ( newCond, newBody ) ], ctx2 )
-        )
-        ( [], ctx )
-        branches
+{-| Remap all lambda IDs in an expression to fresh values.
+This is necessary when inlining to avoid duplicate lambda function names in MLIR.
+-}
+remapLambdaIds : RewriteCtx -> MonoExpr -> ( MonoExpr, RewriteCtx )
+remapLambdaIds =
+    Traverse.traverseExpr remapClosureLambdaId
 
 
 remapLambdaIdsInDef : RewriteCtx -> Mono.MonoDef -> ( Mono.MonoDef, RewriteCtx )
-remapLambdaIdsInDef ctx def =
-    case def of
-        Mono.MonoDef name bound ->
-            let
-                ( newBound, newCtx ) =
-                    remapLambdaIds ctx bound
-            in
-            ( Mono.MonoDef name newBound, newCtx )
-
-        Mono.MonoTailDef name params bound ->
-            let
-                ( newBound, newCtx ) =
-                    remapLambdaIds ctx bound
-            in
-            ( Mono.MonoTailDef name params newBound, newCtx )
-
-
-remapLambdaIdsInCaseBranches : RewriteCtx -> List ( Int, MonoExpr ) -> ( List ( Int, MonoExpr ), RewriteCtx )
-remapLambdaIdsInCaseBranches ctx branches =
-    List.foldl
-        (\( idx, body ) ( acc, accCtx ) ->
-            let
-                ( newBody, newCtx ) =
-                    remapLambdaIds accCtx body
-            in
-            ( acc ++ [ ( idx, newBody ) ], newCtx )
-        )
-        ( [], ctx )
-        branches
-
-
-remapLambdaIdsInNamedFields : RewriteCtx -> List ( Name, MonoExpr ) -> ( List ( Name, MonoExpr ), RewriteCtx )
-remapLambdaIdsInNamedFields ctx fields =
-    List.foldl
-        (\( name, e ) ( acc, accCtx ) ->
-            let
-                ( newExpr, newCtx ) =
-                    remapLambdaIds accCtx e
-            in
-            ( acc ++ [ ( name, newExpr ) ], newCtx )
-        )
-        ( [], ctx )
-        fields
-
-
-remapLambdaIdsInTailCallArgs : RewriteCtx -> List ( Name, MonoExpr ) -> ( List ( Name, MonoExpr ), RewriteCtx )
-remapLambdaIdsInTailCallArgs ctx args =
-    List.foldl
-        (\( name, e ) ( acc, accCtx ) ->
-            let
-                ( newExpr, newCtx ) =
-                    remapLambdaIds accCtx e
-            in
-            ( acc ++ [ ( name, newExpr ) ], newCtx )
-        )
-        ( [], ctx )
-        args
+remapLambdaIdsInDef =
+    Traverse.traverseDef remapClosureLambdaId
 
 
 {-| A binding created during beta reduction or inlining.
@@ -1140,8 +930,14 @@ betaReduce ctx region info closureBody args resultType =
             newClosureType =
                 Mono.MFunction (List.map Tuple.second remainingParams) resultType
 
+            -- Recompute captures for the new closure body.
+            -- The substitution may have introduced new free variables (the fresh names
+            -- bound in the surrounding lets) that need to be captured.
+            newCaptures =
+                Closure.computeClosureCaptures remainingParams substituted
+
             newInfo =
-                { info | params = remainingParams }
+                { info | params = remainingParams, captures = newCaptures }
 
             newMetrics =
                 { inlineCount = ctx1.metrics.inlineCount
@@ -1252,9 +1048,21 @@ substitute oldName newName varType expr =
 
             else
                 let
+                    -- When substituting, also rename capture names that match oldName.
+                    -- This ensures that if the body now references newName (due to substitution),
+                    -- the capture binding also uses newName.
                     newCaptures =
                         List.map
-                            (\( n, e, isUnboxed ) -> ( n, substitute oldName newName varType e, isUnboxed ))
+                            (\( n, e, isUnboxed ) ->
+                                ( if n == oldName then
+                                    newName
+
+                                  else
+                                    n
+                                , substitute oldName newName varType e
+                                , isUnboxed
+                                )
+                            )
                             info.captures
                 in
                 MonoClosure { info | captures = newCaptures } (substitute oldName newName varType body) closureType
@@ -1429,6 +1237,12 @@ tryInlineCall ctx specId args resultType =
 
                         Just ( params, body ) ->
                             let
+                                numParams =
+                                    List.length params
+
+                                numArgs =
+                                    List.length args
+
                                 cost =
                                     computeCost body
                             in
@@ -1436,8 +1250,117 @@ tryInlineCall ctx specId args resultType =
                             if cost > inlineThreshold && not whitelisted then
                                 ( Nothing, ctx )
 
+                            else if numParams == 0 && numArgs > 0 then
+                                -- Inlining a non-closure value that's being called.
+                                -- The body is likely a function reference. Inline it and
+                                -- wrap with a call to apply the remaining arguments.
+                                let
+                                    ( remappedBody, ctx1 ) =
+                                        remapLambdaIds ctx body
+
+                                    inlined =
+                                        MonoCall A.zero remappedBody args resultType Mono.defaultCallInfo
+
+                                    newMetrics =
+                                        { inlineCount = ctx1.metrics.inlineCount + 1
+                                        , betaReductions = ctx1.metrics.betaReductions
+                                        , letEliminations = ctx1.metrics.letEliminations
+                                        }
+                                in
+                                ( Just inlined
+                                , { ctx1
+                                    | metrics = newMetrics
+                                    , inlineCountThisFunction = ctx1.inlineCountThisFunction + 1
+                                  }
+                                )
+
+                            else if numArgs < numParams then
+                                -- Partial application: bind available params, return closure with remaining
+                                let
+                                    ( remappedBody, ctx1 ) =
+                                        remapLambdaIds ctx body
+
+                                    ( usedParams, remainingParams ) =
+                                        ( List.take numArgs params, List.drop numArgs params )
+
+                                    ( bindings, ctx2 ) =
+                                        createBindingsForInline ctx1 usedParams args
+
+                                    substituted =
+                                        substituteAllForInline bindings remappedBody
+
+                                    -- Create a new closure with the remaining parameters
+                                    ( newLambdaId, ctx3 ) =
+                                        freshLambdaIdForSpec ctx2 specId
+
+                                    newClosureType =
+                                        Mono.MFunction (List.map Tuple.second remainingParams) resultType
+
+                                    -- Compute captures for the new closure
+                                    newCaptures =
+                                        Closure.computeClosureCaptures remainingParams substituted
+
+                                    newClosureInfo =
+                                        { lambdaId = newLambdaId
+                                        , params = remainingParams
+                                        , captures = newCaptures
+                                        }
+
+                                    newClosure =
+                                        MonoClosure newClosureInfo substituted newClosureType
+
+                                    inlined =
+                                        wrapInLetsForInline bindings newClosure newClosureType
+
+                                    newMetrics =
+                                        { inlineCount = ctx3.metrics.inlineCount + 1
+                                        , betaReductions = ctx3.metrics.betaReductions
+                                        , letEliminations = ctx3.metrics.letEliminations
+                                        }
+                                in
+                                ( Just inlined
+                                , { ctx3
+                                    | metrics = newMetrics
+                                    , inlineCountThisFunction = ctx3.inlineCountThisFunction + 1
+                                  }
+                                )
+
+                            else if numArgs > numParams then
+                                -- Over-application: apply all params, then call result with extra args
+                                let
+                                    ( remappedBody, ctx1 ) =
+                                        remapLambdaIds ctx body
+
+                                    ( usedArgs, extraArgs ) =
+                                        ( List.take numParams args, List.drop numParams args )
+
+                                    ( bindings, ctx2 ) =
+                                        createBindingsForInline ctx1 params usedArgs
+
+                                    substituted =
+                                        substituteAllForInline bindings remappedBody
+
+                                    innerExpr =
+                                        wrapInLetsForInline bindings substituted (Mono.typeOf body)
+
+                                    inlined =
+                                        MonoCall A.zero innerExpr extraArgs resultType Mono.defaultCallInfo
+
+                                    newMetrics =
+                                        { inlineCount = ctx2.metrics.inlineCount + 1
+                                        , betaReductions = ctx2.metrics.betaReductions
+                                        , letEliminations = ctx2.metrics.letEliminations
+                                        }
+                                in
+                                ( Just inlined
+                                , { ctx2
+                                    | metrics = newMetrics
+                                    , inlineCountThisFunction = ctx2.inlineCountThisFunction + 1
+                                  }
+                                )
+
                             else
-                                -- Inline!
+                                -- Exact application: bind all params to args
                                 let
                                     -- First, remap all lambda IDs in the body to avoid duplicate names
                                     ( remappedBody, ctx1 ) =
@@ -1558,8 +1481,12 @@ simplifyLets ctx expr =
                 usageCount =
                     countUsages defName body
             in
-            if usageCount == 0 && isPureExpr defBound then
-                -- Unused binding with pure expression - safe to eliminate
+            if usageCount == 0 && isPureExpr defBound && not (isClosure defBound) then
+                -- Unused binding with pure non-closure expression - safe to eliminate.
+                -- We exclude closures because in let-rec structures, closures may reference
+                -- each other via MonoVarLocal, but those references live in sibling/parent
+                -- let bindings, not in the immediate body. Eliminating a "unused" closure
+                -- would break those cross-references.
                 let
                     newMetrics =
                         { inlineCount = ctx.metrics.inlineCount
@@ -1824,6 +1751,18 @@ isFunctionType : Mono.MonoType -> Bool
 isFunctionType tipe =
     case tipe of
         Mono.MFunction _ _ ->
+            True
+
+        _ ->
+            False
+
+
+{-| Check if an expression is a closure.
+-}
+isClosure : MonoExpr -> Bool
+isClosure expr =
+    case expr of
+        MonoClosure _ _ _ ->
             True
 
         _ ->
