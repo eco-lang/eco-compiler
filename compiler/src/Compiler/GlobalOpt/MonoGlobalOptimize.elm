@@ -794,18 +794,8 @@ buildAbiWrapperGO home targetType calleeExpr ctx0 =
         srcSeg =
             Mono.segmentLengths srcType
 
-        -- GOPT_003 defensive check: total arities must match
-        _ =
-            if List.sum srcSeg /= List.sum targetSeg then
-                Debug.todo
-                    ("GOPT_003: branch total arity mismatch: src="
-                        ++ Debug.toString srcSeg
-                        ++ ", target="
-                        ++ Debug.toString targetSeg
-                    )
-
-            else
-                ()
+        -- Note: GOPT_003 (total arities match) is verified by tests,
+        -- not at runtime. See TestLogic.Monomorphize.MonoCaseBranchResultType.
     in
     if targetSeg == srcSeg then
         ( calleeExpr, ctx0 )

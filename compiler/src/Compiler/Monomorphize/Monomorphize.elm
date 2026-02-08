@@ -60,74 +60,6 @@ isFunctionType monoType =
             False
 
 
-{-| Verify that all function-typed MonoDefine nodes have MonoClosure expressions.
-Returns an error message if the invariant is violated.
-
-This enforces the invariant:
-
-> Every MonoNode whose MonoType is a function (MFunction) must be callable, i.e.:
->
->   - either MonoTailFunc params body monoType, or
->   - MonoDefine expr monoType where expr is MonoClosure closureInfo body monoType.
-
--}
-checkCallableTopLevels : MonoState -> Result String ()
-checkCallableTopLevels state =
-    let
-        checkNode : ( Int, Mono.MonoNode ) -> Maybe String
-        checkNode ( specId, node ) =
-            case node of
-                Mono.MonoDefine expr monoType ->
-                    if isFunctionType monoType then
-                        case expr of
-                            Mono.MonoClosure _ _ _ ->
-                                Nothing
-
-                            _ ->
-                                let
-                                    globalName =
-                                        case Registry.lookupSpecKey specId state.registry of
-                                            Just ( Mono.Global (IO.Canonical ( author, pkg ) moduleName) name, _, _ ) ->
-                                                author ++ "/" ++ pkg ++ ":" ++ moduleName ++ "." ++ name
-
-                                            Just ( Mono.Accessor fieldName, _, _ ) ->
-                                                "accessor_" ++ fieldName
-
-                                            Nothing ->
-                                                "unknown"
-                                in
-                                Just
-                                    ("Monomorphization invariant violated: "
-                                        ++ "function-typed MonoDefine is not a MonoClosure.\n"
-                                        ++ "  Global: "
-                                        ++ globalName
-                                        ++ "\n"
-                                        ++ "  SpecId: "
-                                        ++ String.fromInt specId
-                                        ++ "\n"
-                                        ++ "  Type: <MonoType>"
-                                        ++ "\n"
-                                        ++ "  Expr: <MonoExpr>"
-                                    )
-
-                    else
-                        Nothing
-
-                _ ->
-                    Nothing
-    in
-    case
-        Dict.toList compare state.nodes
-            |> List.filterMap checkNode
-            |> List.head
-    of
-        Just msg ->
-            Err msg
-
-        Nothing ->
-            Ok ()
-
-
 
 -- ========== ENTRY POINT ==========
 
@@ -177,8 +109,7 @@ monomorphizeFromEntry mainGlobal mainType globalTypeEnv nodes =
         finalState =
             processWorklist stateWithMain
 
-        -- Note: checkCallableTopLevels is no longer called here.
-        -- GlobalOpt now owns the callable top-level invariant via ensureCallableForNode.
+        -- Note: The callable top-level invariant is enforced by GlobalOpt via ensureCallableForNode.
         mainKey : List String
         mainKey =
             Mono.toComparableSpecKey (Mono.SpecKey (toptGlobalToMono mainGlobal) mainMonoType Nothing)
