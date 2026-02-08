@@ -563,11 +563,22 @@ phase: monomorphization
 invariants: MONO_011
 ir: MonoGraph
 logic: For each local/global variable and specialization:
-  * Check every `MonoVarLocal` resolves to a binder in scope.
+  * Check every `MonoVarLocal` resolves to a binder in its lexical region:
+      - Parameters of the enclosing closure or tail function
+      - Destruct bindings (MonoDestruct)
+      - Local value definitions (MonoLet), treating any contiguous chain of
+        nested MonoLets as a single mutually visible scope.
+      - Forward references within such a MonoLet chain are allowed.
   * Check every `MonoVarGlobal` and `SpecId` refer to existing MonoNodes.
   * Detect unreachable `SpecId`s and ensure they're either optimized away or flagged.
 inputs: Monomorphized graphs including randomized stress graphs
 oracle: No dangling references, no undefined globals, no unreachable specs in the registry.
+note: Typed optimization and monomorphization encode `let rec` groups as nested
+  `MonoLet` expressions. At Mono level, scoping for such chains is *mutual*, not
+  sequential: all definitions in a contiguous `MonoLet` chain are considered in
+  scope for each other's bodies and for the chain's final body. MONO_011 enforces
+  that every `MonoVarLocal` is backed by some binder in this sense, rather than
+  enforcing source-level sequential-let rules.
 --
 --
 name: Function arity matches parameters and closure info

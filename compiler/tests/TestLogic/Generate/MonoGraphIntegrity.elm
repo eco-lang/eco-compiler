@@ -443,15 +443,34 @@ checkExprLocalVarScoping context inScope expr =
                 ++ checkExprLocalVarScoping context inScope elseExpr
 
         Mono.MonoLet def bodyExpr _ ->
+            -- Treat any contiguous chain of MonoLet as a single
+            -- mutually recursive scope. This handles let-rec groups
+            -- which are encoded as nested MonoLet expressions.
             let
-                defName =
-                    getDefName def
+                ( defs, finalBody ) =
+                    collectLetChain def bodyExpr
 
-                defScope =
-                    Set.insert identity defName inScope
+                groupNames : Set.EverySet String String
+                groupNames =
+                    defs
+                        |> List.map getDefName
+                        |> List.foldl (Set.insert identity) Set.empty
+
+                groupScope : Set.EverySet String String
+                groupScope =
+                    Set.union inScope groupNames
+
+                defViolations : List (() -> Expect.Expectation)
+                defViolations =
+                    -- Pass groupScope so each def body sees all names in chain
+                    defs
+                        |> List.concatMap (checkDefLocalVarScoping context groupScope)
+
+                bodyViolations : List (() -> Expect.Expectation)
+                bodyViolations =
+                    checkExprLocalVarScoping context groupScope finalBody
             in
-            checkDefLocalVarScoping context inScope def
-                ++ checkExprLocalVarScoping context defScope bodyExpr
+            defViolations ++ bodyViolations
 
         Mono.MonoDestruct (Mono.MonoDestructor name path _) bodyExpr _ ->
             -- MonoDestruct binds 'name' by extracting a value via 'path' from an existing variable.
@@ -536,6 +555,34 @@ getDefName def =
 
         Mono.MonoTailDef name _ _ ->
             name
+
+
+{-| Collect a contiguous chain of nested MonoLet expressions.
+
+Starting from the first `def` and `body`, walks down
+`MonoLet nextDef nextBody _` as long as they occur directly in the body
+position. Returns the full list of defs (in order) and the final body
+expression after the chain.
+
+This is used to handle mutually recursive let-bindings, which are encoded
+as nested MonoLet expressions but should be treated as a single scope.
+
+-}
+collectLetChain :
+    Mono.MonoDef
+    -> Mono.MonoExpr
+    -> ( List Mono.MonoDef, Mono.MonoExpr )
+collectLetChain firstDef firstBody =
+    let
+        go defs expr =
+            case expr of
+                Mono.MonoLet def nextBody _ ->
+                    go (defs ++ [ def ]) nextBody
+
+                _ ->
+                    ( defs, expr )
+    in
+    go [ firstDef ] firstBody
 
 
 {-| Check local var scoping in a MonoDef.
