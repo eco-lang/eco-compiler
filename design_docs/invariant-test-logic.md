@@ -614,22 +614,6 @@ inputs: Programs passing accessors as first-class functions
 oracle: Accessor specializations have complete record layouts; no partial layouts.
 --
 --
-name: Wrapper closures generate curried calls
-phase: monomorphization
-invariants: MONO_016
-ir: MonoClosure wrapper expressions
-logic: When creating uncurried wrapper closures for functions that return functions:
-  * Get the callee expression's type and determine how many arguments it accepts at the first application level.
-  * If the callee accepts fewer arguments than the wrapper provides, generate nested MonoCall expressions.
-  * Each MonoCall must pass only the number of arguments the callee type accepts at that level.
-  * The result of each intermediate call becomes the callee for subsequent arguments.
-  * Example: For `f : A -> B -> C -> D` called with `(a, b, c)` where `f` is `MFunction [A] (MFunction [B, C] D)`:
-    - First call: `call(f, [a])` returns `MFunction [B, C] D`
-    - Second call: `call(result, [b, c])` returns `D`
-inputs: Monomorphized wrappers for higher-order functions; functions returning functions
-oracle: No MonoCall passes more arguments than its callee type accepts; nested calls respect curried structure.
-tests: compiler/tests/Compiler/Generate/Monomorphize/WrapperCurriedCallsTest.elm
---
 --
 name: Registry type matches node type
 phase: monomorphization
@@ -659,7 +643,158 @@ logic: For every MonoCase _ _ decider jumps resultType:
   * Recursively check all sub-expressions in the MonoGraph
 inputs: Monomorphized graphs
 oracle: MonoCase resultType agrees with the types of all branch expressions.
-tests: compiler/tests/Compiler/Generate/Monomorphize/MonoCaseBranchResultTypeTest.elm
+tests: compiler/tests/TestLogic/Monomorphize/MonoCaseBranchResultTypeTest.elm
+--
+--
+name: Lambda IDs are unique within graph
+phase: monomorphization
+invariants: MONO_019
+ir: MonoGraph (all MonoClosure and MonoTailFunc nodes)
+logic: Collect all lambdaId values from:
+  * closureInfo.lambdaId in MonoClosure expressions
+  * Any lambdaId in related structures
+Assert the collected set has no duplicates.
+inputs: Monomorphized graphs with many closures
+oracle: Every closure/function has a unique lambdaId.
+tests: compiler/tests/TestLogic/Monomorphize/LambdaIdUniquenessTest.elm
+--
+
+---
+
+## Global Optimization Phase (GOPT_*)
+
+--
+name: Closure params match stage arity
+phase: global optimization
+invariants: GOPT_001
+ir: MonoClosure after GlobalOpt
+logic: For every MonoClosure with MFunction type after GlobalOpt:
+  * Compute stageArity = length of outermost MFunction param list
+  * Assert length(closureInfo.params) == stageArity
+  * Established by canonicalizeClosureStaging in GlobalOpt
+inputs: GlobalOpt output graphs
+oracle: All closures have param counts matching their stage arity.
+tests: compiler/tests/TestLogic/GlobalOpt/ClosureStageArityTest.elm
+--
+--
+name: Returned closure param counts tracked
+phase: global optimization
+invariants: GOPT_002
+ir: MonoGraph.returnedClosureParamCounts
+logic: For every function that returns a closure:
+  * The returnedClosureParamCounts map entry equals the first-stage parameter count
+  * Computed by computeReturnedClosureParamCount after ABI normalization
+inputs: GlobalOpt output graphs
+oracle: Map is complete for all closure-returning functions.
+tests: NOT YET IMPLEMENTED
+--
+--
+name: Case/if branches have compatible staging
+phase: global optimization
+invariants: GOPT_003
+ir: MonoCase, MonoIf after normalizeCaseIfAbi
+logic: For every MonoCase and MonoIf returning function types after GlobalOpt:
+  * All branch result types have identical staging signatures
+  * Non-conforming branches were wrapped via buildAbiWrapperGO
+  * This extends MONO_018 (type equality) to include staging equality
+inputs: GlobalOpt output with function-returning cases
+oracle: All branches unify to a common staging; no ABI mismatches.
+tests: compiler/tests/TestLogic/GlobalOpt/CaseBranchStagingTest.elm
+--
+--
+name: No placeholder CallInfo after GlobalOpt
+phase: global optimization
+invariants: GOPT_010
+ir: MonoCall expressions
+logic: Walk all MonoCall expressions in the optimized graph:
+  * Assert callInfo does not equal defaultCallInfo
+  * defaultCallInfo has stageArities=[] and initialRemaining=0
+  * Every call site must have a computed CallInfo reflecting staging decisions
+inputs: GlobalOpt output graphs
+oracle: Every MonoCall has computed CallInfo; no placeholders remain.
+tests: compiler/tests/TestLogic/GlobalOpt/CallInfoCompleteTest.elm
+--
+--
+name: StageCurried stageArities is non-empty and positive
+phase: global optimization
+invariants: GOPT_011
+ir: CallInfo in MonoCall
+logic: For every MonoCall with callModel == StageCurried:
+  * Assert stageArities is non-empty
+  * Assert all elements in stageArities are positive integers
+inputs: GlobalOpt output graphs
+oracle: StageCurried calls always have valid stage arities.
+tests: compiler/tests/TestLogic/GlobalOpt/CallInfoCompleteTest.elm
+--
+--
+name: stageArities sum equals flattened arity
+phase: global optimization
+invariants: GOPT_012
+ir: CallInfo in MonoCall
+logic: For every MonoCall with StageCurried callModel:
+  * Compute sum = List.sum callInfo.stageArities
+  * Compute flattenedArity = total params in flattened MFunction type
+  * Assert sum == flattenedArity
+inputs: GlobalOpt output graphs with various function arities
+oracle: Stage groupings cover exactly all function parameters.
+tests: compiler/tests/TestLogic/GlobalOpt/CallInfoCompleteTest.elm
+--
+--
+name: PAP remaining-arity semantics
+phase: global optimization
+invariants: GOPT_013
+ir: CallInfo in MonoCall for partial applications
+logic: For StageCurried calls creating/extending PAPs:
+  * Assert callInfo.initialRemaining == List.sum callInfo.remainingStageArities
+  * remainingStageArities contains arities of unsatisfied stages
+  * Example: stageArities=[2,3], argCount=2 -> remainingStageArities=[3], initialRemaining=3
+inputs: GlobalOpt graphs with partial applications
+oracle: initialRemaining correctly reflects unsatisfied stages.
+tests: compiler/tests/TestLogic/GlobalOpt/CallInfoCompleteTest.elm
+--
+--
+name: isSingleStageSaturated semantics
+phase: global optimization
+invariants: GOPT_014
+ir: CallInfo in MonoCall
+logic: Assert callInfo.isSingleStageSaturated is true iff:
+  * This call does not create/extend a PAP for the current stage
+  * Equivalently: argCount >= stageArities[0]
+inputs: GlobalOpt graphs with various call patterns
+oracle: Flag correctly identifies single-stage saturation.
+tests: compiler/tests/TestLogic/GlobalOpt/CallInfoCompleteTest.elm
+--
+--
+name: FlattenedExternal has no staged currying
+phase: global optimization
+invariants: GOPT_015
+ir: CallInfo in MonoCall for kernel/extern calls
+logic: For every MonoCall with callModel == FlattenedExternal:
+  * Assert stageArities == []
+  * Assert remainingStageArities == []
+  * Assert initialRemaining == 0
+  * MLIR treats such calls as flat ABI calls
+inputs: GlobalOpt graphs with kernel calls
+oracle: Kernel calls have empty stage information.
+tests: compiler/tests/TestLogic/GlobalOpt/CallInfoCompleteTest.elm
+--
+--
+name: ABI wrapper nested calls respect segmentation
+phase: global optimization
+invariants: GOPT_016
+ir: Wrapper closures created by buildAbiWrapperGO/buildNestedCallsGO
+logic: When ABI normalization creates wrapper closures that call functions with multi-stage types:
+  * Get the callee's segmentation via Mono.segmentLengths (Mono.typeOf callee)
+  * For each segment length m in the segmentation:
+    - A MonoCall passes exactly m arguments to the current callee
+    - The result of that call becomes the callee for the next stage
+  * No MonoCall in a wrapper chain passes more arguments than its stage accepts
+  * Example: For callee with segmentation [2,3] called with params [a,b,c,d,e]:
+    - First call: callee(a,b) -> intermediate with segment [3]
+    - Second call: intermediate(c,d,e) -> result
+inputs: N/A (verified by construction)
+oracle: Wrapper nested calls match callee segmentation exactly; no over-application at any stage.
+verification: structural (by construction in buildNestedCallsGO; indirectly verified via CallInfo invariants GOPT_010-015)
 --
 
 ---
@@ -1608,6 +1743,33 @@ logic: For all boxed values from MLIR:
   * Confirm MLIR never produces boxed values that violate heap invariants (misaligned or missing header).
 inputs: End-to-end programs with heavy boxing/unboxing and GC
 oracle: Every eco.value corresponds to a well-formed heap object; heap and IR representations remain consistent.
+--
+--
+name: CallInfo flows unchanged to MLIR
+phase: cross-phase (GlobalOpt -> MLIR codegen)
+invariants: XPHASE_010
+ir: MonoGraph from GlobalOpt to MLIR codegen
+logic: Structural verification by code inspection:
+  * MLIR codegen only pattern-matches on MonoCall
+  * It never constructs MonoCall expressions
+  * It never uses defaultCallInfo
+  * Therefore CallInfo values from GlobalOpt pass through unchanged
+inputs: Code review
+oracle: No MonoCall construction or defaultCallInfo usage in MLIR codegen.
+verification: structural (code inspection)
+--
+--
+name: Types preserved except MFunction canonicalization
+phase: cross-phase (Monomorphization -> GlobalOpt)
+invariants: XPHASE_011
+ir: MonoTypes before/after GlobalOpt
+logic: Compare MonoTypes before and after GlobalOpt:
+  * MFunction types may be canonicalized (nested -> flat per GOPT_001)
+  * No other type changes allowed
+  * No type information lost
+inputs: Monomorphized graphs before/after GlobalOpt
+oracle: Type mutations are limited to documented canonicalization.
+tests: compiler/tests/TestLogic/CrossPhase/TypeConsistencyTest.elm
 --
 
 ---

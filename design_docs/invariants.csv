@@ -133,6 +133,10 @@ MONO_015;Monomorphization;Accessors;enforced;When an accessor like .name with ca
 
 MONO_017;Monomorphization;Registry;enforced;For every SpecId in SpecializationRegistry.reverseMapping with value (global monoType maybeLambda) there exists a MonoNode at graph.nodes[specId] and monoType equals the nodeType of that node ensuring registry keys match actual node types;Compiler.Generate.Monomorphize
 
+MONO_018;Monomorphization;Types;tested;For every MonoCase expression in the MonoGraph the types of all branch expressions both in the jumps list and inline leaves in the decider must equal the MonoCase resultType ensuring consistent branch result types.;TestLogic.Monomorphize.MonoCaseBranchResultType (checkMonoCaseBranchResultTypes)
+
+MONO_019;Monomorphization;Closures;tested;Within a single MonoGraph each lambdaId identifies a unique logical lambda; no two MonoClosure or MonoTailFunc nodes share the same lambdaId.;TestLogic.Monomorphize.LambdaIdUniqueness (checkLambdaIdUniqueness)
+
 
 # =============================================================================
 # GLOBAL OPTIMIZATION PHASE - Staging normalization and ABI consistency
@@ -143,6 +147,20 @@ GOPT_001;GlobalOptimization;Closures;tested;For every MonoClosure with function 
 GOPT_002;GlobalOptimization;Closures;enforced;For every function that returns a closure the returnedClosureParamCounts map entry equals the first-stage parameter count of the returned closure type. This is computed by computeReturnedClosureParamCount after ABI normalization. Note: For multi-stage closures the full stage arity sequence is computed at MLIR generation time from the return type.;Compiler.GlobalOpt.MonoReturnArity (computeReturnedClosureParamCount)
 
 GOPT_003;GlobalOptimization;Types;enforced;For every MonoCase after normalizeCaseIfAbi all branch result types equal the case result type including staging. The ABI normalization pass uses chooseCanonicalSegmentation to pick a common staging and buildAbiWrapperGO to wrap branches that differ.;Compiler.GlobalOpt.MonoGlobalOptimize (normalizeCaseIfAbi|buildAbiWrapperGO)
+
+GOPT_010;GlobalOptimization;CallInfo;tested;After GlobalOpt every MonoCall has a non-placeholder CallInfo that reflects a staging decision for that call site; no call retains an unknown or default CallInfo.;TestLogic.GlobalOpt.CallInfoComplete (checkNoPlaceholderCallInfo)
+
+GOPT_011;GlobalOptimization;CallInfo;tested;For StageCurried calls CallInfo.stageArities encodes the full stage segmentation of the callee's canonical function type as a non-empty list of positive integers.;TestLogic.GlobalOpt.CallInfoComplete (checkStageAritiesNonEmpty)
+
+GOPT_012;GlobalOptimization;CallInfo;tested;For StageCurried calls the sum of CallInfo.stageArities equals the total number of parameters in the callee's canonical flattened MFunction type.;TestLogic.GlobalOpt.CallInfoComplete (checkStageAritiesSumMatchesArity)
+
+GOPT_013;GlobalOptimization;CallInfo;tested;For StageCurried calls that create or extend a partial application CallInfo.initialRemaining and CallInfo.remainingStageArities together describe exactly how many arguments remain to fully saturate the current closure stage and any subsequent stages in a way consistent with the callee's stageArities and the number of arguments supplied at this call site.;TestLogic.GlobalOpt.CallInfoComplete (checkPartialApplicationAritySemantics)
+
+GOPT_014;GlobalOptimization;CallInfo;tested;For StageCurried calls CallInfo.isSingleStageSaturated is true iff this call does not create or extend a partial application for the callee's current closure stage—that is after applying the provided arguments there is no remaining first-stage arity to carry forward.;TestLogic.GlobalOpt.CallInfoComplete (checkSingleStageSaturated)
+
+GOPT_015;GlobalOptimization;CallInfo;tested;For FlattenedExternal calls CallInfo encodes that there is no staged currying: callModel is FlattenedExternal and stageArities and remainingStageArities are empty with initialRemaining equal to zero; MLIR treats such calls as flat ABI calls.;TestLogic.GlobalOpt.CallInfoComplete (checkFlattenedExternalCallInfo)
+
+GOPT_016;GlobalOptimization;WrapperCalls;documented;ABI wrapper closures created by buildAbiWrapperGO and buildNestedCallsGO invoke their callees stage by stage according to the callee's segmentation; each nested MonoCall passes exactly the number of arguments for that stage and the result becomes the callee for subsequent stages. Verified by construction in buildNestedCallsGO and indirectly via CallInfo invariants GOPT_010-015.;Compiler.GlobalOpt.MonoGlobalOptimize (buildNestedCallsGO)
 
 
 # =============================================================================
@@ -406,6 +424,10 @@ BFOPS_038;BytesFusion_Ops;PerfDeterministicFusion;documented;Fusion success is d
 XPHASE_001;CrossPhase;Layouts;implied;RecordLayout TupleLayout and CtorLayout from the monomorphized IR must agree with eco.construct attributes tag size and unboxed_bitmap and with the Custom and Record C plus plus structs so that MLIR objects match runtime layouts;Compiler.AST.Monomorphized and Compiler.Generate.MLIRMono and Heap.hpp
 
 XPHASE_002;CrossPhase;Types;documented;All !eco.value SSA operands produced by codegen must correspond to valid HPointer values (heap pointers or embedded constants) that satisfy runtime heap alignment and header invariants;THEORY.md and Heap.hpp and Compiler.Generate.MLIRMono
+
+XPHASE_010;CrossPhase;CallInfo;structural;MLIR code generation treats CallInfo on each MonoCall as the single source of truth for call staging and call model; it does not re-derive stage segmentation or call model from MonoTypes independently of GlobalOpt.;Compiler.Generate.MLIR.Expr (code inspection only)
+
+XPHASE_011;CrossPhase;Types;tested;Between Monomorphization and GlobalOpt MonoTypes are preserved up to MFunction staging canonicalization; GlobalOpt may flatten nested function types to match closure parameter counts but may not otherwise change types or layout metadata.;TestLogic.CrossPhase.TypeConsistency (checkTypePreservation)
 
 # =============================================================================
 # FORBIDDEN INVARIANTS - What not to do

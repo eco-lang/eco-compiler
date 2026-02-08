@@ -1,18 +1,14 @@
-module TestLogic.Monomorphize.MonoCaseBranchResultType exposing (expectMonoCaseBranchResultTypes, checkMonoCaseBranchResultTypes)
+module TestLogic.GlobalOpt.CaseBranchStaging exposing (expectCaseBranchStaging, checkCaseBranchStaging)
 
-{-| Test logic for MONO\_018: MonoCase branch result types match MonoCase resultType.
+{-| Test logic for GOPT\_003: Case/if branches have compatible staging.
 
-For every MonoCase in the MonoGraph, the types of all branch expressions (both
-in the jumps list and inline leaves in the decider) must equal the MonoCase's
-resultType.
+For every MonoCase and MonoIf returning function types after GlobalOpt,
+all branch result types must have identical staging signatures.
+Non-conforming branches should have been wrapped via buildAbiWrapperGO.
 
-This invariant catches the "different staging boundaries across branches" bug where:
+This extends MONO\_018 (type equality) to include staging equality after GlobalOpt.
 
-  - Branch expressions have structurally different MonoTypes
-  - MonoCase resultType stores one shape while branches have another
-  - Mono.typeOf would return incorrect types for the case expression
-
-@docs expectMonoCaseBranchResultTypes, checkMonoCaseBranchResultTypes
+@docs expectCaseBranchStaging, checkCaseBranchStaging
 
 -}
 
@@ -31,18 +27,18 @@ type alias Violation =
     }
 
 
-{-| MONO\_018: Verify MonoCase branch result types match MonoCase resultType.
+{-| GOPT\_003: Verify case/if branches have compatible staging after GlobalOpt.
 -}
-expectMonoCaseBranchResultTypes : Src.Module -> Expectation
-expectMonoCaseBranchResultTypes srcModule =
-    case Pipeline.runToMono srcModule of
+expectCaseBranchStaging : Src.Module -> Expectation
+expectCaseBranchStaging srcModule =
+    case Pipeline.runToGlobalOpt srcModule of
         Err msg ->
             Expect.fail ("Compilation failed: " ++ msg)
 
-        Ok { monoGraph } ->
+        Ok { optimizedMonoGraph } ->
             let
                 violations =
-                    checkMonoCaseBranchResultTypes monoGraph
+                    checkCaseBranchStaging optimizedMonoGraph
             in
             if List.isEmpty violations then
                 Expect.pass
@@ -51,10 +47,10 @@ expectMonoCaseBranchResultTypes srcModule =
                 Expect.fail (formatViolations violations)
 
 
-{-| Check MonoCase branch result type consistency for all expressions in the MonoGraph.
+{-| Check case branch staging for all expressions in the MonoGraph.
 -}
-checkMonoCaseBranchResultTypes : Mono.MonoGraph -> List Violation
-checkMonoCaseBranchResultTypes (Mono.MonoGraph data) =
+checkCaseBranchStaging : Mono.MonoGraph -> List Violation
+checkCaseBranchStaging (Mono.MonoGraph data) =
     Dict.foldl compare
         (\specId node acc ->
             acc ++ checkNode specId node
@@ -63,7 +59,22 @@ checkMonoCaseBranchResultTypes (Mono.MonoGraph data) =
         data.nodes
 
 
-{-| Check a single MonoNode for MonoCase violations.
+{-| Format violations as a readable string.
+-}
+formatViolations : List Violation -> String
+formatViolations violations =
+    violations
+        |> List.map (\v -> v.context ++ ": " ++ v.message)
+        |> String.join "\n\n"
+
+
+
+-- ============================================================================
+-- GOPT_003: CASE BRANCH STAGING VERIFICATION
+-- ============================================================================
+
+
+{-| Check a single MonoNode for case branch staging violations.
 -}
 checkNode : Int -> Mono.MonoNode -> List Violation
 checkNode specId node =
@@ -97,18 +108,66 @@ checkNode specId node =
             []
 
 
-{-| Recursively check a MonoExpr for MonoCase violations.
+{-| Recursively check a MonoExpr for case branch staging violations.
 -}
 checkExpr : String -> Mono.MonoExpr -> List Violation
 checkExpr ctx expr =
     case expr of
         Mono.MonoCase _ _ decider jumps resultType ->
+            -- Check that all branch types match resultType (including staging)
             checkDecider ctx resultType decider
                 ++ checkJumps ctx resultType jumps
                 ++ List.concatMap (\( _, branchExpr ) -> checkExpr ctx branchExpr) jumps
 
-        Mono.MonoIf branches final _ ->
-            List.concatMap (\( c, t ) -> checkExpr ctx c ++ checkExpr ctx t) branches
+        Mono.MonoIf branches final resultType ->
+            -- Check MonoIf branches too
+            let
+                branchViolations =
+                    List.concatMap
+                        (\( condExpr, thenExpr ) ->
+                            let
+                                thenType =
+                                    Mono.typeOf thenExpr
+                            in
+                            if thenType /= resultType then
+                                [ { context = ctx ++ " if-branch"
+                                  , message =
+                                        "GOPT_003 violation: if branch type != resultType\n"
+                                            ++ "  resultType: "
+                                            ++ Debug.toString resultType
+                                            ++ "\n"
+                                            ++ "  branch type: "
+                                            ++ Debug.toString thenType
+                                  }
+                                ]
+
+                            else
+                                []
+                        )
+                        branches
+
+                finalType =
+                    Mono.typeOf final
+
+                finalViolation =
+                    if finalType /= resultType then
+                        [ { context = ctx ++ " if-else"
+                          , message =
+                                "GOPT_003 violation: if else type != resultType\n"
+                                    ++ "  resultType: "
+                                    ++ Debug.toString resultType
+                                    ++ "\n"
+                                    ++ "  else type: "
+                                    ++ Debug.toString finalType
+                          }
+                        ]
+
+                    else
+                        []
+            in
+            branchViolations
+                ++ finalViolation
+                ++ List.concatMap (\( c, t ) -> checkExpr ctx c ++ checkExpr ctx t) branches
                 ++ checkExpr ctx final
 
         Mono.MonoLet def body _ ->
@@ -154,7 +213,7 @@ checkExpr ctx expr =
         Mono.MonoTupleCreate _ items _ ->
             List.concatMap (checkExpr ctx) items
 
-        -- Leaf expressions - no sub-expressions to check
+        -- Leaf expressions
         Mono.MonoLiteral _ _ ->
             []
 
@@ -187,7 +246,7 @@ checkJumps ctx resultType jumps =
             else
                 [ { context = ctx ++ " jump=" ++ String.fromInt idx
                   , message =
-                        "MONO_018 violation: branch type != MonoCase resultType\n"
+                        "GOPT_003 violation: branch type != MonoCase resultType\n"
                             ++ "  resultType: "
                             ++ Debug.toString resultType
                             ++ "\n"
@@ -216,13 +275,13 @@ checkDecider ctx resultType decider =
                             Mono.typeOf expr
                     in
                     if ty == resultType then
-                        -- Also check sub-expressions in the inlined expression
+                        -- Also check sub-expressions
                         checkExpr (ctx ++ " inline-leaf") expr
 
                     else
                         { context = ctx ++ " inline-leaf"
                         , message =
-                            "MONO_018 violation: inline leaf type != MonoCase resultType\n"
+                            "GOPT_003 violation: inline leaf type != MonoCase resultType\n"
                                 ++ "  resultType: "
                                 ++ Debug.toString resultType
                                 ++ "\n"
@@ -238,12 +297,3 @@ checkDecider ctx resultType decider =
         Mono.FanOut _ edges fallback ->
             List.concatMap (\( _, d ) -> checkDecider ctx resultType d) edges
                 ++ checkDecider ctx resultType fallback
-
-
-{-| Format violations as a readable string.
--}
-formatViolations : List Violation -> String
-formatViolations violations =
-    violations
-        |> List.map (\v -> v.context ++ ": " ++ v.message)
-        |> String.join "\n\n"
