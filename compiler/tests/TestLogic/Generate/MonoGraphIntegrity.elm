@@ -317,6 +317,11 @@ collectCustomTypeRefsFromDef def =
 
 
 {-| Collect closure checks (no dangling references).
+
+Checks both:
+1. All referenced SpecIds are defined in nodes
+2. All MonoVarLocal references have corresponding binders in scope
+
 -}
 collectClosureChecks : Mono.MonoGraph -> List (() -> Expect.Expectation)
 collectClosureChecks (Mono.MonoGraph data) =
@@ -332,14 +337,253 @@ collectClosureChecks (Mono.MonoGraph data) =
                 Set.empty
                 data.nodes
 
-        -- Find undefined references
+        -- Find undefined SpecId references
         undefinedRefs =
             Set.diff referencedSpecIds definedSpecIds
                 |> Set.toList compare
+
+        specIdIssues =
+            List.map
+                (\specId -> \() -> Expect.fail ("MONO_011: Referenced SpecId " ++ String.fromInt specId ++ " is not defined in nodes"))
+                undefinedRefs
+
+        -- Check MonoVarLocal scoping for all nodes
+        localVarIssues =
+            Dict.foldl compare
+                (\specId node acc -> checkNodeLocalVarScoping specId node ++ acc)
+                []
+                data.nodes
     in
-    List.map
-        (\specId -> \() -> Expect.fail ("Referenced SpecId " ++ String.fromInt specId ++ " is not defined in nodes"))
-        undefinedRefs
+    specIdIssues ++ localVarIssues
+
+
+{-| Check that all MonoVarLocal references in a node are in scope.
+-}
+checkNodeLocalVarScoping : Int -> Mono.MonoNode -> List (() -> Expect.Expectation)
+checkNodeLocalVarScoping specId node =
+    let
+        context =
+            "SpecId " ++ String.fromInt specId
+    in
+    case node of
+        Mono.MonoDefine expr _ ->
+            checkExprLocalVarScoping context Set.empty expr
+
+        Mono.MonoTailFunc params expr _ ->
+            let
+                boundNames =
+                    List.map (\( name, _ ) -> name) params
+                        |> Set.fromList identity
+            in
+            checkExprLocalVarScoping context boundNames expr
+
+        Mono.MonoPortIncoming expr _ ->
+            checkExprLocalVarScoping context Set.empty expr
+
+        Mono.MonoPortOutgoing expr _ ->
+            checkExprLocalVarScoping context Set.empty expr
+
+        Mono.MonoCycle defs _ ->
+            let
+                -- All cycle names are in scope for each definition
+                cycleNames =
+                    List.map (\( name, _ ) -> name) defs
+                        |> Set.fromList identity
+            in
+            List.concatMap (\( _, e ) -> checkExprLocalVarScoping context cycleNames e) defs
+
+        _ ->
+            []
+
+
+{-| Check that all MonoVarLocal references in an expression are in scope.
+-}
+checkExprLocalVarScoping : String -> Set.EverySet String String -> Mono.MonoExpr -> List (() -> Expect.Expectation)
+checkExprLocalVarScoping context inScope expr =
+    case expr of
+        Mono.MonoVarLocal name _ ->
+            if Set.member identity name inScope then
+                []
+
+            else
+                [ \() -> Expect.fail ("MONO_011: MonoVarLocal '" ++ name ++ "' is not in scope at " ++ context) ]
+
+        Mono.MonoList _ exprs _ ->
+            List.concatMap (checkExprLocalVarScoping context inScope) exprs
+
+        Mono.MonoClosure closureInfo bodyExpr _ ->
+            -- Add params and captures to scope
+            let
+                paramNames =
+                    List.map (\( name, _ ) -> name) closureInfo.params
+                        |> Set.fromList identity
+
+                captureNames =
+                    List.map (\( name, _, _ ) -> name) closureInfo.captures
+                        |> Set.fromList identity
+
+                bodyScope =
+                    Set.union inScope (Set.union paramNames captureNames)
+
+                -- Check capture expressions in outer scope
+                captureIssues =
+                    List.concatMap (\( _, e, _ ) -> checkExprLocalVarScoping context inScope e) closureInfo.captures
+            in
+            captureIssues ++ checkExprLocalVarScoping context bodyScope bodyExpr
+
+        Mono.MonoCall _ fnExpr argExprs _ _ ->
+            checkExprLocalVarScoping context inScope fnExpr
+                ++ List.concatMap (checkExprLocalVarScoping context inScope) argExprs
+
+        Mono.MonoTailCall _ args _ ->
+            List.concatMap (\( _, e ) -> checkExprLocalVarScoping context inScope e) args
+
+        Mono.MonoIf branches elseExpr _ ->
+            List.concatMap (\( c, t ) -> checkExprLocalVarScoping context inScope c ++ checkExprLocalVarScoping context inScope t) branches
+                ++ checkExprLocalVarScoping context inScope elseExpr
+
+        Mono.MonoLet def bodyExpr _ ->
+            let
+                defName =
+                    getDefName def
+
+                defScope =
+                    Set.insert identity defName inScope
+            in
+            checkDefLocalVarScoping context inScope def
+                ++ checkExprLocalVarScoping context defScope bodyExpr
+
+        Mono.MonoDestruct (Mono.MonoDestructor name path _) bodyExpr _ ->
+            -- MonoDestruct binds 'name' by extracting a value via 'path' from an existing variable.
+            -- The path's root variable must be in scope; 'name' becomes in scope for bodyExpr.
+            let
+                -- Check that the path's root variable is in scope
+                pathRootIssues =
+                    checkPathRootInScope context inScope path
+
+                -- The body is checked with name in scope
+                destructScope =
+                    Set.insert identity name inScope
+            in
+            pathRootIssues ++ checkExprLocalVarScoping context destructScope bodyExpr
+
+        Mono.MonoCase scrutName _ decider branches _ ->
+            -- scrutName is bound in the case branches
+            let
+                caseScope =
+                    Set.insert identity scrutName inScope
+            in
+            checkDeciderLocalVarScoping context caseScope decider
+                ++ List.concatMap (\( _, e ) -> checkExprLocalVarScoping context caseScope e) branches
+
+        Mono.MonoRecordCreate fieldExprs _ ->
+            List.concatMap (\( _, e ) -> checkExprLocalVarScoping context inScope e) fieldExprs
+
+        Mono.MonoRecordAccess recordExpr _ _ ->
+            checkExprLocalVarScoping context inScope recordExpr
+
+        Mono.MonoRecordUpdate recordExpr updates _ ->
+            checkExprLocalVarScoping context inScope recordExpr
+                ++ List.concatMap (\( _, e ) -> checkExprLocalVarScoping context inScope e) updates
+
+        Mono.MonoTupleCreate _ elementExprs _ ->
+            List.concatMap (checkExprLocalVarScoping context inScope) elementExprs
+
+        _ ->
+            []
+
+
+{-| Check that the root variable of a MonoPath is in scope.
+-}
+checkPathRootInScope : String -> Set.EverySet String String -> Mono.MonoPath -> List (() -> Expect.Expectation)
+checkPathRootInScope context inScope path =
+    let
+        rootName =
+            getPathRootName path
+    in
+    if Set.member identity rootName inScope then
+        []
+
+    else
+        [ \() -> Expect.fail ("MONO_011: MonoPath root variable '" ++ rootName ++ "' is not in scope at " ++ context) ]
+
+
+{-| Extract the root variable name from a MonoPath.
+-}
+getPathRootName : Mono.MonoPath -> String
+getPathRootName path =
+    case path of
+        Mono.MonoRoot name _ ->
+            name
+
+        Mono.MonoIndex _ _ _ subPath ->
+            getPathRootName subPath
+
+        Mono.MonoField _ _ subPath ->
+            getPathRootName subPath
+
+        Mono.MonoUnbox _ subPath ->
+            getPathRootName subPath
+
+
+{-| Get the name from a MonoDef.
+-}
+getDefName : Mono.MonoDef -> String
+getDefName def =
+    case def of
+        Mono.MonoDef name _ ->
+            name
+
+        Mono.MonoTailDef name _ _ ->
+            name
+
+
+{-| Check local var scoping in a MonoDef.
+-}
+checkDefLocalVarScoping : String -> Set.EverySet String String -> Mono.MonoDef -> List (() -> Expect.Expectation)
+checkDefLocalVarScoping context inScope def =
+    case def of
+        Mono.MonoDef name expr ->
+            -- Name is in scope for recursive references
+            let
+                defScope =
+                    Set.insert identity name inScope
+            in
+            checkExprLocalVarScoping context defScope expr
+
+        Mono.MonoTailDef name params expr ->
+            -- Name and params are in scope
+            let
+                paramNames =
+                    List.map (\( n, _ ) -> n) params
+                        |> Set.fromList identity
+
+                defScope =
+                    Set.union (Set.insert identity name inScope) paramNames
+            in
+            checkExprLocalVarScoping context defScope expr
+
+
+{-| Check local var scoping in a Decider tree.
+-}
+checkDeciderLocalVarScoping : String -> Set.EverySet String String -> Mono.Decider Mono.MonoChoice -> List (() -> Expect.Expectation)
+checkDeciderLocalVarScoping context inScope decider =
+    case decider of
+        Mono.Leaf choice ->
+            case choice of
+                Mono.Inline expr ->
+                    checkExprLocalVarScoping context inScope expr
+
+                Mono.Jump _ ->
+                    []
+
+        Mono.Chain _ success failure ->
+            checkDeciderLocalVarScoping context inScope success
+                ++ checkDeciderLocalVarScoping context inScope failure
+
+        Mono.FanOut _ edges fallback ->
+            List.concatMap (\( _, d ) -> checkDeciderLocalVarScoping context inScope d) edges
+                ++ checkDeciderLocalVarScoping context inScope fallback
 
 
 {-| Collect SpecId references from a node.

@@ -51,7 +51,7 @@ type alias Metrics =
 optimize : TypeEnv.GlobalTypeEnv -> MonoGraph -> ( MonoGraph, Metrics )
 optimize _ graph =
     let
-        (MonoGraph { nodes, main, registry, ctorShapes, returnedClosureParamCounts }) =
+        (MonoGraph { nodes, main, registry, ctorShapes }) =
             graph
 
         closuresBefore =
@@ -91,7 +91,6 @@ optimize _ graph =
         , main = main
         , registry = registry
         , ctorShapes = ctorShapes
-        , returnedClosureParamCounts = returnedClosureParamCounts
         }
     , metrics
     )
