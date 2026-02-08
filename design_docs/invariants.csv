@@ -138,7 +138,7 @@ MONO_017;Monomorphization;Registry;enforced;For every SpecId in SpecializationRe
 # GLOBAL OPTIMIZATION PHASE - Staging normalization and ABI consistency
 # =============================================================================
 
-GOPT_001;GlobalOptimization;Closures;enforced;For every MonoClosure with function type MFunction after GlobalOpt the length of closureInfo.params equals the length of stageParamTypes(monoType). This is validated by validateClosureStaging after ABI normalization. Monomorphize is staging-agnostic and does not enforce this; GlobalOpt is the sole enforcer.;Compiler.GlobalOpt.MonoGlobalOptimize (validateClosureStaging)|Compiler.GlobalOpt.MonoReturnArity
+GOPT_001;GlobalOptimization;Closures;tested;For every MonoClosure with function type MFunction after GlobalOpt the length of closureInfo.params equals the length of stageParamTypes(monoType). This is established by canonicalizeClosureStaging and verified by TestLogic.Generate.MonoFunctionArity test suite. Monomorphize is staging-agnostic; GlobalOpt canonicalizes types to match param counts.;TestLogic.Generate.MonoFunctionArity (collectExprArityIssues)|Compiler.GlobalOpt.MonoGlobalOptimize (canonicalizeClosureStaging)
 
 GOPT_002;GlobalOptimization;Closures;enforced;For every function that returns a closure the returnedClosureParamCounts map entry equals the first-stage parameter count of the returned closure type. This is computed by computeReturnedClosureParamCount after ABI normalization. Note: For multi-stage closures the full stage arity sequence is computed at MLIR generation time from the return type.;Compiler.GlobalOpt.MonoReturnArity (computeReturnedClosureParamCount)
 

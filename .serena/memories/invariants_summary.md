@@ -70,7 +70,7 @@ Unit, True, False, Nil, Nothing, EmptyString, EmptyRec are **HPointer values wit
 
 ## GlobalOpt Invariants
 
-**GOPT_001**: Closure params match stage arity - for every MonoClosure after GlobalOpt, length(params) == length(stageParamTypes(type)).
+**GOPT_001**: Closure params match stage arity - for every MonoClosure after GlobalOpt, length(params) == length(stageParamTypes(type)). Established by `canonicalizeClosureStaging`, verified by `TestLogic.Generate.MonoFunctionArity` tests (not at runtime).
 
 **GOPT_002**: Returned closure param counts are tracked - for functions returning closures, the returnedClosureParamCounts map entry equals the first-stage parameter count.
 

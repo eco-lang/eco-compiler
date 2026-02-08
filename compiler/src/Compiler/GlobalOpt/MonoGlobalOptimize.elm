@@ -4,13 +4,15 @@ module Compiler.GlobalOpt.MonoGlobalOptimize exposing (globalOptimize)
 
 This phase:
 
-1.  Canonicalizes closure/tail-func types by flattening to match param counts (GOPT\_016)
-2.  Normalizes ABI for case/if expressions with function-typed results (GOPT\_018)
-3.  Validates closure staging invariants
-4.  Annotates returned closure arities
+1.  Canonicalizes closure/tail-func types by flattening to match param counts (GOPT\_001)
+2.  Normalizes ABI for case/if expressions with function-typed results (GOPT\_003)
+3.  Annotates call staging metadata (call model, stage arities, etc.)
 
 Monomorphize is staging-agnostic - it preserves curried TLambda structure from TypeSubst.
 GlobalOpt owns all staging/ABI decisions and canonicalizes the types to match param counts.
+
+Note: GOPT\_001 (closure params == stage arity) is verified by TestLogic.Generate.MonoFunctionArity,
+not at runtime. The compiler trusts that canonicalizeClosureStaging produces correct output.
 
 @docs globalOptimize
 
@@ -97,15 +99,11 @@ globalOptimize typeEnv graph0 =
         graph2 =
             normalizeCaseIfAbi graph1
 
-        -- Phase 3: Closure staging invariant validation (should pass after phases 1-2)
+        -- Phase 3: Annotate call staging metadata (call model, stage arities, etc.)
         graph3 =
-            validateClosureStaging graph2
-
-        -- Phase 4: Annotate call staging metadata (call model, stage arities, etc.)
-        graph4 =
-            annotateCallStaging graph3
+            annotateCallStaging graph2
     in
-    graph4
+    graph3
 
 
 
@@ -1255,144 +1253,6 @@ rewriteNodeForAbi home node ctx =
 
         Mono.MonoExtern _ ->
             ( node, ctx )
-
-
-
--- VALIDATE CLOSURE STAGING
-
-
-validateClosureStaging : Mono.MonoGraph -> Mono.MonoGraph
-validateClosureStaging (Mono.MonoGraph record) =
-    let
-        _ =
-            Dict.foldl compare
-                (\_ node () -> validateNodeClosures node)
-                ()
-                record.nodes
-    in
-    Mono.MonoGraph record
-
-
-validateNodeClosures : Mono.MonoNode -> ()
-validateNodeClosures node =
-    case node of
-        Mono.MonoDefine expr _ ->
-            validateExprClosures expr
-
-        Mono.MonoTailFunc _ body _ ->
-            validateExprClosures body
-
-        Mono.MonoPortIncoming expr _ ->
-            validateExprClosures expr
-
-        Mono.MonoPortOutgoing expr _ ->
-            validateExprClosures expr
-
-        Mono.MonoCycle defs _ ->
-            List.foldl (\( _, e ) () -> validateExprClosures e) () defs
-
-        _ ->
-            ()
-
-
-{-| Validate that closure params match their type.
--}
-validateClosureParams : Mono.MonoExpr -> () -> ()
-validateClosureParams expr () =
-    case expr of
-        Mono.MonoClosure info _ tipe ->
-            let
-                expectedParams =
-                    Mono.stageParamTypes tipe
-
-                actualParams =
-                    info.params
-            in
-            if List.length actualParams /= List.length expectedParams then
-                Debug.todo
-                    ("GOPT_001 violation: closure has "
-                        ++ String.fromInt (List.length actualParams)
-                        ++ " params but type expects "
-                        ++ String.fromInt (List.length expectedParams)
-                    )
-
-            else
-                ()
-
-        _ ->
-            ()
-
-
-validateExprClosures : Mono.MonoExpr -> ()
-validateExprClosures =
-    Traverse.foldExpr validateClosureParams ()
-
-
-validateDefClosures : Mono.MonoDef -> ()
-validateDefClosures =
-    Traverse.foldDef validateClosureParams ()
-
-
-validateDeciderClosures : Mono.Decider Mono.MonoChoice -> ()
-validateDeciderClosures =
-    Traverse.foldDecider validateClosureParams ()
-
-
-
--- COMBINED PHASE: CANONICALIZE + ABI NORMALIZE + VALIDATE
-
-
-{-| Combined pass that replaces phases 1-3:
-
-1.  Canonicalize closure types (flatten to match param counts)
-2.  Apply ABI normalization (case/if result types, wrapper generation)
-3.  Validate GOPT\_001 inline (closure params match stage arity)
-
-This does in a single graph traversal what the three separate phases did.
-
--}
-canonicalizeAndNormalizeAbi : Mono.MonoGraph -> Mono.MonoGraph
-canonicalizeAndNormalizeAbi (Mono.MonoGraph record0) =
-    let
-        ctx0 =
-            initGlobalCtx (Mono.MonoGraph record0)
-
-        ( newNodes, _ ) =
-            Dict.foldl compare
-                (\specId node ( accNodes, accCtx ) ->
-                    let
-                        home =
-                            specHome accCtx.registry specId
-
-                        ( newNode, accCtx1 ) =
-                            canonicalizeAndRewriteNode home node accCtx
-                    in
-                    ( Dict.insert identity specId newNode accNodes, accCtx1 )
-                )
-                ( Dict.empty, ctx0 )
-                record0.nodes
-    in
-    Mono.MonoGraph { record0 | nodes = newNodes }
-
-
-{-| Combined node handler: canonicalize, then ABI normalize, then validate.
--}
-canonicalizeAndRewriteNode : IO.Canonical -> Mono.MonoNode -> GlobalCtx -> ( Mono.MonoNode, GlobalCtx )
-canonicalizeAndRewriteNode home node ctx =
-    let
-        -- Step 1: Canonicalize the node (pure transformation)
-        canonNode =
-            canonicalizeNode node
-
-        -- Step 2: Apply ABI normalization (context-threaded)
-        ( abiNode, ctx1 ) =
-            rewriteNodeForAbi home canonNode ctx
-
-        -- Step 3: Validate inline (crashes on GOPT_001 violation)
-        _ =
-            validateNodeClosures abiNode
-    in
-    ( abiNode, ctx1 )
 
 
 
