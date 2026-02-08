@@ -771,6 +771,8 @@ def Eco_CallOp : Eco_Op<"call"> {
     OptionalAttr<I64Attr>:$remaining_arity  // For indirect calls
   );
   let results = (outs Variadic<Eco_AnyValue>:$results);
+
+  let hasVerifier = 1;
 }
 
 def Eco_PapCreateOp : Eco_Op<"papCreate", [Pure]> {

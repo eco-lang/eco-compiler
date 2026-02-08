@@ -12,9 +12,26 @@
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 
 using namespace mlir;
 using namespace eco;
+
+//===----------------------------------------------------------------------===//
+// Helper Functions for Verifiers
+//===----------------------------------------------------------------------===//
+
+namespace {
+
+/// Lookup func.func by FlatSymbolRefAttr within the surrounding module.
+static func::FuncOp lookupFunc(Operation *anchor, FlatSymbolRefAttr sym) {
+  if (!sym) return nullptr;
+  auto module = anchor->getParentOfType<ModuleOp>();
+  if (!module) return nullptr;
+  return SymbolTable::lookupNearestSymbolFrom<func::FuncOp>(module, sym);
+}
+
+} // end anonymous namespace
 
 //===----------------------------------------------------------------------===//
 // Operation Verifiers
@@ -304,6 +321,43 @@ LogicalResult PapCreateOp::verify() {
     }
   }
 
+  // === NEW: Check against target function signature ===
+
+  auto funcOp = lookupFunc(getOperation(), getFunctionAttr());
+  if (!funcOp) {
+    return emitOpError("could not resolve function symbol '")
+           << getFunctionAttr().getValue() << "'";
+  }
+
+  auto funcType = funcOp.getFunctionType();
+  auto paramTypes = funcType.getInputs();
+
+  // Verify arity matches function parameter count
+  if (static_cast<int64_t>(paramTypes.size()) != arity) {
+    return emitOpError("arity (") << arity
+           << ") does not match target function parameter count ("
+           << paramTypes.size() << ")";
+  }
+
+  // Verify captured operand types match the first num_captured parameters
+  for (size_t i = 0; i < captured.size(); ++i) {
+    Type actualTy = captured[i].getType();
+    Type expectedTy = paramTypes[i];
+    if (actualTy != expectedTy) {
+      return emitOpError("captured operand ") << i << " has type " << actualTy
+             << " but target function expects " << expectedTy;
+    }
+  }
+
+  // REP_CLOSURE_001: Bool (i1) must NOT be captured at closure boundary
+  for (size_t i = 0; i < captured.size(); ++i) {
+    Type ty = captured[i].getType();
+    if (ty.isInteger(1)) {
+      return emitOpError("captured Bool (i1) at index ") << i
+             << " violates REP_CLOSURE_001: Bool must be boxed to !eco.value at closure boundary";
+    }
+  }
+
   return success();
 }
 
@@ -336,6 +390,198 @@ LogicalResult PapExtendOp::verify() {
              << (isBitSet ? "set" : "unset") << " but operand type is "
              << newargs[i].getType();
     }
+  }
+
+  // === NEW: REP_CLOSURE_001: Bool must not be passed at closure boundary ===
+  for (size_t i = 0; i < newargs.size(); ++i) {
+    Type ty = newargs[i].getType();
+    if (ty.isInteger(1)) {
+      return emitOpError("newarg Bool (i1) at index ") << i
+             << " violates REP_CLOSURE_001: Bool must be boxed to !eco.value at closure boundary";
+    }
+  }
+
+  // === NEW: Walk closure-def chain to find root papCreate ===
+  // This allows us to verify newargs types against the evaluator's parameter types.
+  // If we can't trace back to papCreate (e.g., block argument, external op),
+  // we skip evaluator-parameter compatibility checks and only enforce local invariants.
+  //
+  // IMPORTANT: We must stop walking when we cross a STAGE SATURATION BOUNDARY.
+  // When a papExtend saturates its stage (remaining_arity == newargs.size()),
+  // the result is a NEW closure (the function's return value), not a partial
+  // application of the original function. Subsequent papExtends operate on this
+  // new closure, which has its own arity from the returned function.
+
+  unsigned alreadyApplied = 0;
+  Operation *currentDef = getClosure().getDefiningOp();
+  FlatSymbolRefAttr funcSym;
+  int64_t arityFromCreate = -1;
+
+  while (currentDef) {
+    if (auto priorExt = dyn_cast<PapExtendOp>(currentDef)) {
+      // Check if this papExtend saturated its stage (CGEN_052 stage boundary)
+      int64_t priorRemaining = priorExt.getRemainingArity();
+      unsigned priorNewargs = priorExt.getNewargs().size();
+
+      if (priorRemaining == static_cast<int64_t>(priorNewargs)) {
+        // Stage saturation boundary - the result is a NEW closure returned by
+        // calling the function, not a partial application. We cannot trace
+        // further back through the original papCreate chain.
+        // Skip evaluator-parameter compatibility checks for this papExtend.
+        break;
+      }
+
+      alreadyApplied += priorNewargs;
+      currentDef = priorExt.getClosure().getDefiningOp();
+      continue;
+    }
+    if (auto create = dyn_cast<PapCreateOp>(currentDef)) {
+      alreadyApplied += create.getNumCaptured();
+      funcSym = create.getFunctionAttr();
+      arityFromCreate = create.getArity();
+      break;
+    }
+    // Non-PAP closure source (block arg, external op) - can't trace further.
+    // Skip evaluator-parameter compatibility checks; only local invariants enforced.
+    break;
+  }
+
+  // If we found the root papCreate, verify type compatibility
+  if (funcSym && arityFromCreate >= 0) {
+    auto funcOp = lookupFunc(getOperation(), funcSym);
+    if (!funcOp) {
+      return emitOpError("could not resolve function symbol '")
+             << funcSym.getValue() << "' from papExtend closure chain";
+    }
+
+    auto funcType = funcOp.getFunctionType();
+    auto paramTypes = funcType.getInputs();
+    auto resultTypes = funcType.getResults();
+
+    // Verify remaining_arity consistency
+    int64_t remainingArityAttr = getRemainingArity();
+    int64_t computedRemaining = arityFromCreate - static_cast<int64_t>(alreadyApplied);
+    if (computedRemaining != remainingArityAttr) {
+      return emitOpError("remaining_arity = ") << remainingArityAttr
+             << " but computed remaining arity from papCreate chain is "
+             << computedRemaining;
+    }
+
+    // Verify newargs types match corresponding parameters
+    unsigned firstParamIndex = alreadyApplied;
+    if (firstParamIndex + newargs.size() > paramTypes.size()) {
+      return emitOpError("papExtend would apply arguments past function parameter list");
+    }
+
+    for (size_t j = 0; j < newargs.size(); ++j) {
+      unsigned paramIndex = firstParamIndex + j;
+      Type expectedTy = paramTypes[paramIndex];
+      Type actualTy = newargs[j].getType();
+      if (actualTy != expectedTy) {
+        return emitOpError("newarg ") << j << " has type " << actualTy
+               << " but evaluator parameter " << paramIndex << " expects " << expectedTy;
+      }
+    }
+
+    // For saturated calls, verify result type
+    bool isSaturated = (remainingArityAttr == static_cast<int64_t>(newargs.size()));
+
+    if (isSaturated) {
+      if (resultTypes.size() != 1) {
+        return emitOpError("saturated papExtend requires function with single result");
+      }
+      Type expectedResultTy = resultTypes[0];
+      Type actualResultTy = getResult().getType();
+      if (actualResultTy != expectedResultTy) {
+        return emitOpError("saturated papExtend result type ") << actualResultTy
+               << " does not match function result type " << expectedResultTy;
+      }
+    }
+  }
+
+  return success();
+}
+
+LogicalResult CallOp::verify() {
+  auto operands = getOperands();
+  auto results = getResults();
+  auto calleeAttr = getCalleeAttr();
+  auto remainingArityAttr = getRemainingArityAttr();
+
+  // Case 1: Direct call (callee present)
+  if (calleeAttr) {
+    if (remainingArityAttr) {
+      return emitOpError("must not have both 'callee' and 'remaining_arity' attributes");
+    }
+
+    auto funcOp = lookupFunc(getOperation(), calleeAttr);
+    if (!funcOp) {
+      return emitOpError("could not resolve callee '") << calleeAttr.getValue() << "'";
+    }
+
+    auto funcType = funcOp.getFunctionType();
+    auto paramTypes = funcType.getInputs();
+    auto resultTypes = funcType.getResults();
+
+    // Verify operand count
+    if (operands.size() != paramTypes.size()) {
+      return emitOpError("has ") << operands.size() << " operands but callee '"
+             << funcOp.getSymName() << "' expects " << paramTypes.size() << " parameters";
+    }
+
+    // Verify result count
+    if (results.size() != resultTypes.size()) {
+      return emitOpError("has ") << results.size() << " results but callee '"
+             << funcOp.getSymName() << "' returns " << resultTypes.size() << " values";
+    }
+
+    // Verify operand types
+    for (size_t i = 0; i < operands.size(); ++i) {
+      Type actualTy = operands[i].getType();
+      Type expectedTy = paramTypes[i];
+      if (actualTy != expectedTy) {
+        return emitOpError("operand ") << i << " has type " << actualTy
+               << " but callee expects " << expectedTy;
+      }
+    }
+
+    // Verify result types
+    for (size_t i = 0; i < results.size(); ++i) {
+      Type actualTy = results[i].getType();
+      Type expectedTy = resultTypes[i];
+      if (actualTy != expectedTy) {
+        return emitOpError("result ") << i << " has type " << actualTy
+               << " but callee returns " << expectedTy;
+      }
+    }
+
+    return success();
+  }
+
+  // Case 2: Indirect call (closure application)
+  if (operands.empty()) {
+    return emitOpError("indirect call must have at least one operand (closure)");
+  }
+
+  Value closure = operands.front();
+  if (!isa<eco::ValueType>(closure.getType())) {
+    return emitOpError("first operand of indirect call must be !eco.value (closure)");
+  }
+
+  if (!remainingArityAttr) {
+    return emitOpError("indirect call must specify 'remaining_arity' attribute");
+  }
+
+  int64_t remainingArity = remainingArityAttr.getValue().getSExtValue();
+  unsigned numNewArgs = operands.size() - 1;
+
+  if (remainingArity <= 0) {
+    return emitOpError("remaining_arity must be > 0, got ") << remainingArity;
+  }
+
+  if (remainingArity != static_cast<int64_t>(numNewArgs)) {
+    return emitOpError("remaining_arity (") << remainingArity
+           << ") must equal number of new arguments (" << numNewArgs << ")";
   }
 
   return success();
