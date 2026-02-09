@@ -145,8 +145,41 @@ rewriteNode solution producerInfo nodeId node ctx0 =
                 -- Use the rewritten expression's type to ensure GOPT_001 consistency
                 newType =
                     Mono.typeOf newExpr
+
+                -- Ensure function-typed bare expressions are wrapped in closures.
+                -- Without this, bare MonoVarKernel/MonoVarGlobal remain unwrapped and
+                -- codegen emits eco.papCreate pointing directly at kernel symbols
+                -- (which lack func.func declarations and violate the kernel call ABI).
+                ( callableExpr, ctx2 ) =
+                    ensureCallable newExpr newType ctx1
             in
-            ( Mono.MonoDefine newExpr newType, ctx1 )
+            ( Mono.MonoDefine callableExpr (Mono.typeOf callableExpr), ctx2 )
+
+        Mono.MonoPortIncoming expr monoType ->
+            let
+                ( newExpr, ctx1 ) =
+                    rewriteExpr solution producerInfo expr ctx0
+
+                newType =
+                    Mono.typeOf newExpr
+
+                ( callableExpr, ctx2 ) =
+                    ensureCallable newExpr newType ctx1
+            in
+            ( Mono.MonoPortIncoming callableExpr monoType, ctx2 )
+
+        Mono.MonoPortOutgoing expr monoType ->
+            let
+                ( newExpr, ctx1 ) =
+                    rewriteExpr solution producerInfo expr ctx0
+
+                newType =
+                    Mono.typeOf newExpr
+
+                ( callableExpr, ctx2 ) =
+                    ensureCallable newExpr newType ctx1
+            in
+            ( Mono.MonoPortOutgoing callableExpr monoType, ctx2 )
 
         Mono.MonoCycle bindings monoType ->
             let
@@ -496,6 +529,107 @@ rewriteChoice solution producerInfo choice ctx0 =
 
         Mono.Jump idx ->
             ( Mono.Jump idx, ctx0 )
+
+
+
+-- ============================================================================
+-- ENSURE CALLABLE
+-- ============================================================================
+
+
+{-| Ensure that function-typed expressions at the top level of a MonoDefine
+are wrapped in closures. Bare MonoVarKernel and MonoVarGlobal expressions
+need this so that codegen creates a lambda function (called via eco.call)
+rather than emitting eco.papCreate directly referencing a kernel symbol.
+-}
+ensureCallable : Mono.MonoExpr -> Mono.MonoType -> RewriteCtx -> ( Mono.MonoExpr, RewriteCtx )
+ensureCallable expr monoType ctx =
+    case monoType of
+        Mono.MFunction _ _ ->
+            case expr of
+                Mono.MonoClosure _ _ _ ->
+                    ( expr, ctx )
+
+                Mono.MonoVarGlobal region specId _ ->
+                    let
+                        stageArgTypes =
+                            Mono.stageParamTypes monoType
+
+                        stageRetType =
+                            Mono.stageReturnType monoType
+                    in
+                    makeAliasClosure
+                        (Mono.MonoVarGlobal region specId monoType)
+                        stageArgTypes
+                        stageRetType
+                        monoType
+                        ctx
+
+                Mono.MonoVarKernel region kernelHome name kernelAbiType ->
+                    let
+                        ( kernelFlatArgTypes, kernelFlatRetType ) =
+                            Closure.flattenFunctionType kernelAbiType
+
+                        flattenedFuncType =
+                            Mono.MFunction kernelFlatArgTypes kernelFlatRetType
+                    in
+                    makeAliasClosure
+                        (Mono.MonoVarKernel region kernelHome name kernelAbiType)
+                        kernelFlatArgTypes
+                        kernelFlatRetType
+                        flattenedFuncType
+                        ctx
+
+                _ ->
+                    let
+                        stageArgTypes =
+                            Mono.stageParamTypes monoType
+
+                        stageRetType =
+                            Mono.stageReturnType monoType
+                    in
+                    makeAliasClosure expr stageArgTypes stageRetType monoType ctx
+
+        _ ->
+            ( expr, ctx )
+
+
+{-| Wrap a callee expression in a closure that takes fresh params and calls it.
+-}
+makeAliasClosure :
+    Mono.MonoExpr
+    -> List Mono.MonoType
+    -> Mono.MonoType
+    -> Mono.MonoType
+    -> RewriteCtx
+    -> ( Mono.MonoExpr, RewriteCtx )
+makeAliasClosure calleeExpr argTypes retType funcType ctx =
+    let
+        params =
+            Closure.freshParams argTypes
+
+        paramExprs =
+            List.map (\( name, ty ) -> Mono.MonoVarLocal name ty) params
+
+        ( lambdaId, ctx1 ) =
+            freshLambdaId ctx
+
+        region =
+            Closure.extractRegion calleeExpr
+
+        callExpr =
+            Mono.MonoCall region calleeExpr paramExprs retType Mono.defaultCallInfo
+
+        captures =
+            Closure.computeClosureCaptures params callExpr
+
+        closureInfo =
+            { lambdaId = lambdaId
+            , captures = captures
+            , params = params
+            }
+    in
+    ( Mono.MonoClosure closureInfo callExpr funcType, ctx1 )
 
 
 
