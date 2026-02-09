@@ -4,9 +4,10 @@ module Compiler.GlobalOpt.MonoGlobalOptimize exposing (globalOptimize)
 
 This phase:
 
-1.  Canonicalizes closure/tail-func types by flattening to match param counts (GOPT\_001)
-2.  Normalizes ABI for case/if expressions with function-typed results (GOPT\_003)
-3.  Annotates call staging metadata (call model, stage arities, etc.)
+1.  Ensures top-level function-typed values (globals/ports) are represented as closures before staging
+2.  Canonicalizes closure/tail-func types by flattening to match param counts (GOPT\_001)
+3.  Normalizes ABI for case/if expressions with function-typed results (GOPT\_003)
+4.  Annotates call staging metadata (call model, stage arities, etc.)
 
 Monomorphize is staging-agnostic - it preserves curried TLambda structure from TypeSubst.
 GlobalOpt owns all staging/ABI decisions and canonicalizes the types to match param counts.
@@ -99,9 +100,14 @@ globalOptimize typeEnv graph0 =
         ( graph0a, _ ) =
             MonoInlineSimplify.optimize typeEnv graph0
 
+        -- Phase 0.5: Wrap top-level function-typed values in closures
+        -- (alias wrappers for globals/kernels, general closures for other exprs).
+        graph0b =
+            wrapTopLevelCallables graph0a
+
         -- Phase 1+2: Staging analysis + graph rewrite (wrappers + types)
         ( _, graph1 ) =
-            Staging.analyzeAndSolveStaging typeEnv graph0a
+            Staging.analyzeAndSolveStaging typeEnv graph0b
 
         -- Phase 3: Validate closure staging invariants (GOPT_001, GOPT_003)
         graph2 =
@@ -1158,6 +1164,86 @@ rewriteIfForAbi home branches final resultType ctx0 =
                     info.canonicalType
     in
     ( Mono.MonoIf newBranches newFinal finalType, ctx2 )
+
+
+
+-- WRAP TOP-LEVEL CALLABLES (GRAPH-LEVEL)
+
+
+{-| Phase: Ensure all top-level function-typed values are closures.
+
+This runs after inlining/simplification but before the staging solver.
+It wraps bare MonoVarGlobal and MonoVarKernel in alias closures via
+ensureCallableForNode, and wraps other function-typed expressions in
+general closures.
+
+-}
+wrapTopLevelCallables : Mono.MonoGraph -> Mono.MonoGraph
+wrapTopLevelCallables (Mono.MonoGraph record0) =
+    let
+        ctx0 =
+            initGlobalCtx (Mono.MonoGraph record0)
+
+        ( newNodes, _ ) =
+            Dict.foldl compare
+                (\specId node ( accNodes, accCtx ) ->
+                    let
+                        home =
+                            specHome accCtx.registry specId
+
+                        ( newNode, accCtx1 ) =
+                            wrapNodeCallables home node accCtx
+                    in
+                    ( Dict.insert identity specId newNode accNodes, accCtx1 )
+                )
+                ( Dict.empty, ctx0 )
+                record0.nodes
+    in
+    Mono.MonoGraph { record0 | nodes = newNodes }
+
+
+wrapNodeCallables :
+    IO.Canonical
+    -> Mono.MonoNode
+    -> GlobalCtx
+    -> ( Mono.MonoNode, GlobalCtx )
+wrapNodeCallables home node ctx =
+    case node of
+        Mono.MonoDefine expr tipe ->
+            let
+                ( callableExpr, ctx1 ) =
+                    ensureCallableForNode home expr tipe ctx
+            in
+            ( Mono.MonoDefine callableExpr tipe, ctx1 )
+
+        Mono.MonoPortIncoming expr tipe ->
+            let
+                ( callableExpr, ctx1 ) =
+                    ensureCallableForNode home expr tipe ctx
+            in
+            ( Mono.MonoPortIncoming callableExpr tipe, ctx1 )
+
+        Mono.MonoPortOutgoing expr tipe ->
+            let
+                ( callableExpr, ctx1 ) =
+                    ensureCallableForNode home expr tipe ctx
+            in
+            ( Mono.MonoPortOutgoing callableExpr tipe, ctx1 )
+
+        Mono.MonoTailFunc params body tipe ->
+            ( Mono.MonoTailFunc params body tipe, ctx )
+
+        Mono.MonoCycle defs tipe ->
+            ( Mono.MonoCycle defs tipe, ctx )
+
+        Mono.MonoCtor shape tipe ->
+            ( Mono.MonoCtor shape tipe, ctx )
+
+        Mono.MonoEnum tag tipe ->
+            ( Mono.MonoEnum tag tipe, ctx )
+
+        Mono.MonoExtern tipe ->
+            ( Mono.MonoExtern tipe, ctx )
 
 
 

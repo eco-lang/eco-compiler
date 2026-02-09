@@ -37,27 +37,38 @@ This separation ensures that Monomorphization remains simple and focused, while 
 - All case/if branches have compatible stagings (GOPT_003)
 - All calls have computed `CallInfo` metadata for codegen
 
-## The Four Phases
+## The Five Phases
 
-GlobalOpt runs four sequential phases:
+GlobalOpt runs five sequential phases:
 
 ```elm
 globalOptimize typeEnv graph0 =
     let
-        -- Phase 1: Canonicalize closure/tail-func types (GOPT_001)
-        graph1 = canonicalizeClosureStaging graph0
+        -- Phase 0: Inlining and simplification
+        (graph0a, _) = MonoInlineSimplify.optimize typeEnv graph0
 
-        -- Phase 2: ABI normalization (case/if result types, wrapper generation)
-        graph2 = normalizeCaseIfAbi graph1
+        -- Phase 0.5: Wrap top-level callables in closures
+        graph0b = wrapTopLevelCallables graph0a
 
-        -- Phase 3: Closure staging invariant validation
-        graph3 = validateClosureStaging graph2
+        -- Phase 1+2: Staging analysis + graph rewrite
+        (_, graph1) = analyzeAndSolveStaging typeEnv graph0b
+
+        -- Phase 3: Validate closure staging
+        graph2 = validateClosureStaging graph1
 
         -- Phase 4: Annotate call staging metadata
-        graph4 = annotateCallStaging graph3
+        graph3 = annotateCallStaging graph2
     in
-    graph4
+    graph3
 ```
+
+### Phase 0.5: Wrap Top-Level Callables
+
+**Function**: `wrapTopLevelCallables` (calls `ensureCallableForNode` per node)
+
+**Purpose**: Ensure all top-level function-typed values (Define, PortIncoming, PortOutgoing) are `MonoClosure` before the staging solver runs. Bare `MonoVarKernel` and `MonoVarGlobal` references are wrapped in alias closures; other function-typed expressions become general closures.
+
+**Why before staging**: The staging producer graph should only see closures (for user functions and alias wrappers) or tail-funcs/`MonoExtern`. Bare `MonoVarKernel`/`MonoVarGlobal` references have no segmentation info and would confuse staging analysis.
 
 ### Phase 1: Canonicalize Closure Staging
 
@@ -105,12 +116,12 @@ Each branch has a different staging signature. The caller cannot know how to inv
 **Algorithm** (`rewriteExprForAbi`):
 1. For case expressions: collect leaf types, pick canonical segmentation, wrap branches
 2. For if expressions: similarly normalize branch results
-3. For closures: ensure they're properly formed via `ensureCallableForNode`
+3. For closures: verify they're properly formed (wrapping was done in Phase 0.5)
 
 **Key functions**:
 - `chooseCanonicalSegmentation`: Picks the most common staging pattern
 - `buildAbiWrapperGO`: Creates wrapper closures that adapt one staging to another
-- `ensureCallableForNode`: Wraps non-closure function values in closures
+- `ensureCallableForNode`: Wraps non-closure function values in closures (called in Phase 0.5)
 
 ### Phase 3: Validate Closure Staging
 
