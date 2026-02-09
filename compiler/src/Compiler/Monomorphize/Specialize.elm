@@ -36,13 +36,20 @@ import Utils.Crash
 -- ========== INTERNAL TYPES ==========
 
 
-{-| A processed argument that might be pending accessor specialization.
+{-| A processed argument that might be pending specialization.
+
 Accessors need special handling because they must be specialized AFTER
 call-site type unification to receive the fully-resolved record type.
+
+Number-boxed kernels (like Basics.add) need special handling because they
+must be specialized AFTER call-site type unification to determine if they
+can use the monomorphic numeric type (enabling intrinsics) or must fall
+back to the boxed ABI.
 -}
 type ProcessedArg
     = ResolvedArg Mono.MonoExpr
     | PendingAccessor A.Region Name Can.Type
+    | PendingKernel A.Region String String Can.Type
 
 
 
@@ -1074,6 +1081,34 @@ processCallArgs args subst state =
                     , st
                     )
 
+                TOpt.VarKernel region home name canType ->
+                    -- Check if this is a number-boxed kernel that needs deferred specialization.
+                    -- Number-boxed kernels (like Basics.add) should be specialized AFTER
+                    -- call-site unification so we can determine if they can use the
+                    -- monomorphic numeric type (enabling intrinsics like eco.int.add).
+                    case KernelAbi.deriveKernelAbiMode ( home, name ) canType of
+                        KernelAbi.NumberBoxed ->
+                            let
+                                -- Type for unification only; we'll re-derive after call-site unification.
+                                monoType =
+                                    TypeSubst.applySubst subst canType
+                            in
+                            ( PendingKernel region home name canType :: accArgs
+                            , monoType :: accTypes
+                            , st
+                            )
+
+                        _ ->
+                            -- Non-number-boxed kernels can be specialized immediately.
+                            let
+                                ( monoExpr, st1 ) =
+                                    specializeExpr arg subst st
+                            in
+                            ( ResolvedArg monoExpr :: accArgs
+                            , Mono.typeOf monoExpr :: accTypes
+                            , st1
+                            )
+
                 _ ->
                     let
                         ( monoExpr, st1 ) =
@@ -1173,6 +1208,17 @@ resolveProcessedArg processedArg maybeParamType subst state =
 
                 _ ->
                     Utils.Crash.crash "Specialize.resolveProcessedArg: Accessor argument did not receive a record parameter type after monomorphization. This is a compiler bug."
+
+        PendingKernel region home name canType ->
+            -- Number-boxed kernel argument. Now that we have the call-site substitution,
+            -- we can properly specialize it. If the type is fully monomorphic (e.g., Int -> Int -> Int),
+            -- we'll get a specialized numeric type that enables intrinsics like eco.int.add.
+            -- Otherwise, we fall back to the boxed ABI.
+            let
+                kernelMonoType =
+                    deriveKernelAbiType ( home, name ) canType subst
+            in
+            ( Mono.MonoVarKernel region home name kernelMonoType, state )
 
 
 {-| Resolve a list of processed arguments using the callee's parameter types.
@@ -1839,22 +1885,116 @@ extractFieldTypes n monoType =
 
 
 
+{-| Return True if a MonoType contains no remaining type variables.
+
+Used to detect when a kernel use has been fully specialized at a call site
+(e.g. Basics.add : number -> number -> number instantiated as
+Int -> Int -> Int or Float -> Float -> Float).
+
+-}
+isFullyMonomorphicType : Mono.MonoType -> Bool
+isFullyMonomorphicType monoType =
+    case monoType of
+        Mono.MVar _ _ ->
+            False
+
+        Mono.MList inner ->
+            isFullyMonomorphicType inner
+
+        Mono.MFunction args result ->
+            List.all isFullyMonomorphicType args
+                && isFullyMonomorphicType result
+
+        Mono.MTuple elems ->
+            List.all isFullyMonomorphicType elems
+
+        Mono.MRecord fields ->
+            Dict.foldl compare
+                (\_ fieldType acc -> acc && isFullyMonomorphicType fieldType)
+                True
+                fields
+
+        Mono.MCustom _ _ args ->
+            List.all isFullyMonomorphicType args
+
+        -- Primitive / unit types are trivially monomorphic
+        Mono.MInt ->
+            True
+
+        Mono.MFloat ->
+            True
+
+        Mono.MBool ->
+            True
+
+        Mono.MChar ->
+            True
+
+        Mono.MString ->
+            True
+
+        Mono.MUnit ->
+            True
+
+
+
 -- ========== KERNEL ABI TYPE DERIVATION ==========
 
 
 {-| Derive the MonoType for a kernel function's ABI.
+
+This is *call-site aware*:
+
+  - For monomorphic uses (no remaining MVar in the instantiated function type),
+    we prefer the fully specialized MonoType obtained by applying the call-site
+    substitution. This enables specializing number-polymorphic kernels like
+    Basics.add to Int/Float and using intrinsics (eco.int.add / eco.float.add).
+
+  - For genuinely polymorphic uses, we fall back to the KernelAbiMode-driven
+    behavior:
+
+        - UseSubstitution  -> applySubst
+        - PreserveVars     -> all CEcoValue (boxed) vars
+        - NumberBoxed      -> treat CNumber vars as CEcoValue (boxed)
+
 -}
 deriveKernelAbiType : ( String, String ) -> Can.Type -> Substitution -> Mono.MonoType
 deriveKernelAbiType kernelId canFuncType callSubst =
-    case KernelAbi.deriveKernelAbiMode kernelId canFuncType of
-        KernelAbi.UseSubstitution ->
+    let
+        -- Monomorphic function type at this use-site, if substitution is complete.
+        -- Example for Basics.add in an Int context:
+        --   canFuncType = number -> number -> number
+        --   monoAfterSubst = MFunction [MInt] (MFunction [MInt] MInt)
+        monoAfterSubst : Mono.MonoType
+        monoAfterSubst =
             TypeSubst.applySubst callSubst canFuncType
 
-        KernelAbi.PreserveVars ->
-            KernelAbi.canTypeToMonoType_preserveVars canFuncType
-
+        mode : KernelAbi.KernelAbiMode
+        mode =
+            KernelAbi.deriveKernelAbiMode kernelId canFuncType
+    in
+    case mode of
         KernelAbi.NumberBoxed ->
-            KernelAbi.canTypeToMonoType_numberBoxed canFuncType
+            -- Special case: number-polymorphic kernels like Basics.add/sub/mul/pow.
+            --
+            -- If this PARTICULAR use-site has been fully specialized (e.g. Int or
+            -- Float everywhere), prefer the fully-monomorphic type. This lets
+            -- MLIR see concrete MInt/MFloat arguments for intrinsics and avoids
+            -- going through the boxed C ABI (@Elm_Kernel_Basics_add).
+            if isFullyMonomorphicType monoAfterSubst then
+                monoAfterSubst
+
+            else
+                -- Still genuinely number-polymorphic here: fall back to boxed ABI.
+                KernelAbi.canTypeToMonoType_numberBoxed canFuncType
+
+        KernelAbi.UseSubstitution ->
+            -- Monomorphic kernel type from the outset (no type variables).
+            monoAfterSubst
+
+        KernelAbi.PreserveVars ->
+            -- Polymorphic kernel whose ABI must remain fully boxed (!eco.value).
+            KernelAbi.canTypeToMonoType_preserveVars canFuncType
 
 
 
