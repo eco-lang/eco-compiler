@@ -1,444 +1,425 @@
-# Option X: Make Monomorphize Staging-Agnostic
+# Option X: Staging-Agnostic Monomorphize for Closures and Tail Functions
 
-## Goals
+## Overview
 
-1. **Monomorphization becomes staging-agnostic** - does only type specialization + closure creation
-2. **GlobalOpt owns all staging/ABI decisions** - canonicalizes staging, enforces invariants
-3. **Invariants renamed** - MONO_016 → GOPT_001, MONO_018 → GOPT_003
+This plan extends the staging system to ensure **every function value** (both `MonoClosure` and `MonoTailFunc`) satisfies the GOPT_001 invariant after GlobalOpt:
 
----
+> `length(params) == stageArity(type)`
 
-## Phase 1: Simplify `specializeLambda` (Staging-Agnostic)
+Currently, closures and tail functions only have their types canonicalized when they participate in staging classes with `naturalSeg != canonicalSeg`. This plan ensures type canonicalization happens for **all** function producers, regardless of class membership.
 
-**File:** `compiler/src/Compiler/Monomorphize/Specialize.elm`
+### Key Insight: Inner Functions Must Also Be Canonical
 
-### 1.1 Replace `specializeLambda` with staging-agnostic version
+When a wrapper is built (`naturalSeg != canonicalSeg`), the **inner** closure/tail function is still a real node in the mono graph with its own `params` and `type`. If we leave the inner node's type in curried form:
+- The inner node violates GOPT_001
+- Any passes/checks that inspect that inner node will see the mismatch
 
-**Current behavior (to remove):**
-- Uses `peelFunctionChain` to gather all params from nested lambdas
-- Computes `flatArgTypes`, `flatRetType` via `Mono.decomposeFunctionType`
-- Computes `totalArity`, `isFullyPeelable`
-- Picks `effectiveMonoType` based on flat vs staged encoding
-- Uses `dropNArgsFromType` for wrapper return types
-- Enforces MONO_016 assertion
+**Rule:** The inner closure/tail function must also have `canonType`, even when wrapped. The wrapper exists only to adapt segmentation/staging ABI, not to exempt the inner node from the invariant.
 
-**New behavior:**
-- Specialize exactly one `TOpt.Function`/`TOpt.TrackedFunction` node at a time
-- Use direct `params` and `body` from the node (no `peelFunctionChain`)
-- Specialize the whole function type once with `TypeSubst.applySubst`
-- Specialize each parameter's declared `Can.Type`
-- Build closure with the specialized type as-is (no flattening/currying decisions)
-- No MONO_016 enforcement
+## Current State Analysis
 
-**Key insight:** With this approach:
-- `\x y -> body` (one `TOpt.Function [x,y] body`) → one `MonoClosure` with 2 params
-- `\x -> \y -> body` (nested `TOpt.Function [x] (TOpt.Function [y] body)`) → outer `MonoClosure` with 1 param, body contains inner `MonoClosure`
+### GraphBuilder.elm (lines 108-387)
+- **Closures** (`MonoClosure`): Adds capture constraints but does NOT register the closure as a `NodeProducer` in the staging graph
+- **Tail functions** (`MonoTailFunc` in `foldNode`, lines 51-90): Creates parameter slots but does NOT register as a `NodeProducer`
 
-The syntactic difference is preserved. GlobalOpt's wrapper generation handles unification if needed.
+### Rewriter.elm
+- **Closures** (`rewriteExpr`, lines 183-225):
+  - `Nothing` case (no class): Returns `monoType` unchanged ❌
+  - `naturalSeg == canonicalSeg` case: Returns `monoType` unchanged ❌
+  - Only flattens type when `naturalSeg != canonicalSeg`
 
-### 1.2 New `specializeLambda` implementation
+- **Tail functions** (`rewriteNode`, lines 93-168):
+  - `Nothing` case: Returns `monoType` unchanged ❌
+  - `naturalSeg == canonicalSeg` case: Returns `monoType` unchanged ❌
+  - Only flattens type when `naturalSeg != canonicalSeg`
 
-```elm
-specializeLambda :
-    TOpt.Expr
-    -> Can.Type
-    -> Substitution
-    -> MonoState
-    -> ( Mono.MonoExpr, MonoState )
-specializeLambda lambdaExpr canType subst state =
-    let
-        -- 1. Specialize the whole function type once (no flattening).
-        monoType0 : Mono.MonoType
-        monoType0 =
-            TypeSubst.applySubst subst canType
+### wrapClosureToCanonical (lines 433-450)
+- Currently passes `Mono.MonoClosure originalInfo originalBody originalType` to wrapper builder
+- The inner closure retains `originalType` (curried form) ❌ violates GOPT_001
 
-        -- 2. Extract params and body directly (no peelFunctionChain).
-        ( params, bodyExpr ) =
-            case lambdaExpr of
-                TOpt.Function ps body _ ->
-                    ( ps, body )
-
-                TOpt.TrackedFunction trackedPs body _ ->
-                    ( List.map (\( A.At _ n, t ) -> ( n, t )) trackedPs, body )
-
-                _ ->
-                    Utils.Crash.crash
-                        ("specializeLambda: called with non-lambda: "
-                            ++ Debug.toString lambdaExpr
-                        )
-
-        -- Guard: paramCount == 0 is a bug
-        paramCount =
-            List.length params
-
-        _ =
-            if paramCount == 0 then
-                Utils.Crash.crash "specializeLambda: called with zero-param lambda"
-            else
-                ()
-
-        -- 3. Specialize each parameter's declared Can.Type.
-        monoParams : List ( Name, Mono.MonoType )
-        monoParams =
-            List.map
-                (\( name, paramCanType ) ->
-                    ( name, TypeSubst.applySubst subst paramCanType )
-                )
-                params
-
-        lambdaId =
-            Mono.AnonymousLambda state.currentModule state.lambdaCounter
-
-        newVarTypes =
-            List.foldl
-                (\( name, monoParamType ) vt ->
-                    Dict.insert identity name monoParamType vt
-                )
-                state.varTypes
-                monoParams
-
-        stateWithLambda =
-            { state
-                | lambdaCounter = state.lambdaCounter + 1
-                , varTypes = newVarTypes
-            }
-
-        -- 4. Specialize the body.
-        ( monoBody, stateAfter ) =
-            specializeExpr bodyExpr subst stateWithLambda
-
-        -- 5. Compute captures.
-        captures =
-            Closure.computeClosureCaptures monoParams monoBody
-
-        closureInfo =
-            { lambdaId = lambdaId
-            , captures = captures
-            , params = monoParams
-            }
-
-        -- 6. Reconcile return type with body type (no staging changes).
-        bodyType : Mono.MonoType
-        bodyType =
-            Mono.typeOf monoBody
-
-        monoTypeFixed : Mono.MonoType
-        monoTypeFixed =
-            case monoType0 of
-                Mono.MFunction argTypes _ ->
-                    Mono.MFunction argTypes bodyType
-
-                _ ->
-                    monoType0
-    in
-    ( Mono.MonoClosure closureInfo monoBody monoTypeFixed, stateAfter )
-```
-
-### 1.3 Delete unused code
-
-- Delete `dropNArgsFromType` helper (lines 93-112)
-- Delete `peelFunctionChain` helper if no longer used elsewhere
-- Remove all `isFullyPeelable`, `totalArity`, `flatArgTypes`, `effectiveMonoType` logic
+### ProducerInfo.elm (lines 38-88)
+- Already computes `naturalSeg` and `totalArity` for both `MonoClosure` and `MonoTailFunc`
+- This information is already available for all function producers
 
 ---
 
-## Phase 2: Remove MONO_016 Enforcement from Closure.elm
+## Implementation Plan
 
-**File:** `compiler/src/Compiler/Monomorphize/Closure.elm`
+### Step 1: flattenTypeToArity - Add Error for Invalid State
 
-### 2.1 Simplify `ensureCallableTopLevel`
+**File:** `compiler/src/Compiler/GlobalOpt/Staging/Rewriter.elm`
+**Function:** `flattenTypeToArity` (lines 555-589)
 
-**Current behavior (lines 52-119):**
-- Computes `stageArgTypes`, `stageRetType`, `stageArity`
-- For `MonoClosure`: crashes if `length closureInfo.params < stageArity`
-- For other expressions: creates alias/general closures
-
-**New behavior:**
-- Keep `stageArgTypes`, `stageRetType` computation (structural helpers for alias/general closures)
-- For `MonoClosure`: accept as-is, defer staging consistency to GlobalOpt
-- For other expressions: unchanged (alias/general closure creation)
-
-**Code change:** Replace the `MonoClosure` branch:
+**Change:** Make `allArgs.length < paramCount` a hard error instead of silently returning the type unchanged. This case indicates a broken mono graph (params/type mismatch).
 
 ```elm
-Mono.MonoClosure _ _ _ ->
-    -- Do not enforce MONO_016 here; GlobalOpt will.
-    ( expr, state )
-```
-
-Remove the crash block (lines 68-83) that checks `List.length closureInfo.params >= stageArity`.
-
-### 2.2 Keep kernel handling unchanged
-
-The `MonoVarKernel` branch must remain as-is:
-- Kernels have a fixed C-like ABI (all args at once, fully flattened)
-- `flattenFunctionType kernelAbiType` produces the flat arg list
-- `makeAliasClosure` builds a flattened closure for the kernel
-
-```elm
-Mono.MonoVarKernel region home name kernelAbiType ->
-    let
-        ( kernelFlatArgTypes, kernelFlatRetType ) =
-            flattenFunctionType kernelAbiType
-
-        flattenedFuncType =
-            Mono.MFunction kernelFlatArgTypes kernelFlatRetType
-    in
-    makeAliasClosure
-        (Mono.MonoVarKernel region home name kernelAbiType)
-        region
-        kernelFlatArgTypes
-        kernelFlatRetType
-        flattenedFuncType
-        state
-```
-
-GlobalOpt can wrap these if Elm code expects staged ABI, but the kernel call itself stays flat.
-
----
-
-## Phase 3: Update GlobalOpt Error Messages
-
-**File:** `compiler/src/Compiler/GlobalOpt/MonoGlobalOptimize.elm`
-
-### 3.1 Rename MONO_016 → GOPT_001 in `validateExprClosures`
-
-**Location:** Lines 996-1003
-
-Change:
-```elm
-Debug.todo
-    ("MONO_016 violation: closure has "
-        ++ ...
-    )
-```
-to:
-```elm
-Debug.todo
-    ("GOPT_001 violation: closure has "
-        ++ ...
-    )
-```
-
-### 3.2 Add defensive total arity check to `buildAbiWrapperGO`
-
-**Location:** After line 327 (after computing `targetSeg` and `srcSeg`)
-
-Add:
-```elm
-_ =
-    if List.sum srcSeg /= List.sum targetSeg then
-        Debug.todo
-            ("GOPT_003: branch total arity mismatch: src="
-                ++ Debug.toString srcSeg
-                ++ ", target="
-                ++ Debug.toString targetSeg
-            )
+-- BEFORE (line 583-589):
     else
-        ()
+        -- Fewer args than params - error case
+        monoType
+
+-- AFTER:
+    else
+        -- Fewer args than params - mono graph is inconsistent
+        Debug.todo
+            ("flattenTypeToArity: paramCount ("
+                ++ String.fromInt targetArity
+                ++ ") > number of flattened args ("
+                ++ String.fromInt (List.length allArgs)
+                ++ "); mono graph is inconsistent"
+            )
 ```
 
-### 3.3 Rename in `MonoReturnArity.elm`
+**Rationale:** If `allArgs.length < paramCount`, the syntax says "this function has N parameters" but the type says "fewer than N argument slots." This is a hard inconsistency that should never happen in a well-formed mono graph. Silently returning the type unchanged would mask bugs and re-introduce exactly the kind of mismatch GOPT_001 is designed to detect.
 
-**File:** `compiler/src/Compiler/GlobalOpt/MonoReturnArity.elm`
+### Step 2: GraphBuilder.elm - Register Closures as Producers
 
-**Location:** Lines 31-37
+**File:** `compiler/src/Compiler/GlobalOpt/Staging/GraphBuilder.elm`
+**Function:** `buildStagingGraphExpr` (lines 216-244, `MonoClosure` branch)
 
-Change:
+**Change:** Add `ensureNode (NodeProducer pid) sg0` before processing captures.
+
 ```elm
-"MonoReturnArity: MONO_016 violation: ..."
+-- BEFORE (line 218-244):
+Mono.MonoClosure closureInfo body _ ->
+    let
+        pid =
+            ProducerClosure closureInfo.lambdaId
+
+        sg1 =
+            List.foldl
+                (\( index, ( _, captureExpr, _ ) ) accSg -> ...)
+                sg0
+                (List.indexedMap Tuple.pair closureInfo.captures)
+    in
+    buildStagingGraphExpr body sg1 ctx0
+
+-- AFTER:
+Mono.MonoClosure closureInfo body _ ->
+    let
+        pid =
+            ProducerClosure closureInfo.lambdaId
+
+        -- Ensure the producer node exists in the staging graph
+        ( _, sgWithProducer ) =
+            ensureNode (NodeProducer pid) sg0
+
+        sg1 =
+            List.foldl
+                (\( index, ( _, captureExpr, _ ) ) accSg -> ...)
+                sgWithProducer  -- Changed from sg0
+                (List.indexedMap Tuple.pair closureInfo.captures)
+    in
+    buildStagingGraphExpr body sg1 ctx0
 ```
-to:
+
+### Step 3: GraphBuilder.elm - Register Tail Functions as Producers
+
+**File:** `compiler/src/Compiler/GlobalOpt/Staging/GraphBuilder.elm`
+**Function:** `foldNode` (lines 51-90, `MonoTailFunc` branch)
+
+**Change:** Add `ensureNode (NodeProducer pid) sg` at the start.
+
 ```elm
-"MonoReturnArity: GOPT_001 violation: ..."
+-- BEFORE (line 57-81):
+Mono.MonoTailFunc params body _ ->
+    let
+        ( sg1, ctx1 ) =
+            List.foldl
+                (\( index, ( _, ty ) ) ( accSg, accCtx ) -> ...)
+                ( sg, ctx )
+                (List.indexedMap Tuple.pair params)
+    in
+    buildStagingGraphExpr body sg1 ctx1
+
+-- AFTER:
+Mono.MonoTailFunc params body _ ->
+    let
+        pid =
+            ProducerTailFunc nodeId
+
+        -- Ensure the producer node exists in the staging graph
+        ( _, sgWithProducer ) =
+            ensureNode (NodeProducer pid) sg
+
+        ( sg1, ctx1 ) =
+            List.foldl
+                (\( index, ( _, ty ) ) ( accSg, accCtx ) -> ...)
+                ( sgWithProducer, ctx )  -- Changed from ( sg, ctx )
+                (List.indexedMap Tuple.pair params)
+    in
+    buildStagingGraphExpr body sg1 ctx1
 ```
+
+### Step 4: Rewriter.elm - Canonicalize Closure Types (All Branches)
+
+**File:** `compiler/src/Compiler/GlobalOpt/Staging/Rewriter.elm`
+**Function:** `rewriteExpr` (lines 183-225, `MonoClosure` branch)
+
+**Change:** Compute `canonType` and use it in **all** cases, including when passing to `wrapClosureToCanonical`. The inner closure must satisfy GOPT_001 even when wrapped.
+
+```elm
+-- BEFORE:
+Mono.MonoClosure closureInfo body monoType ->
+    let
+        pid = ProducerClosure closureInfo.lambdaId
+        key = producerIdToKey pid
+        maybeClassId = Dict.get identity key solution.producerClass
+        ( newBody, ctx1 ) = rewriteExpr solution producerInfo body ctx0
+    in
+    case maybeClassId of
+        Nothing ->
+            ( Mono.MonoClosure closureInfo newBody monoType, ctx1 )
+
+        Just classId ->
+            let
+                canonicalSeg = Dict.get identity classId solution.classSeg |> Maybe.withDefault []
+                naturalSeg = Dict.get identity key producerInfo.naturalSeg |> Maybe.withDefault []
+            in
+            if naturalSeg == canonicalSeg then
+                ( Mono.MonoClosure closureInfo newBody monoType, ctx1 )
+            else
+                wrapClosureToCanonical closureInfo newBody monoType canonicalSeg ctx1
+
+-- AFTER:
+Mono.MonoClosure closureInfo body monoType ->
+    let
+        pid = ProducerClosure closureInfo.lambdaId
+        key = producerIdToKey pid
+        maybeClassId = Dict.get identity key solution.producerClass
+        ( newBody, ctx1 ) = rewriteExpr solution producerInfo body ctx0
+
+        -- GOPT_001: Always compute canonical type for this closure
+        paramCount = List.length closureInfo.params
+        canonType = flattenTypeToArity paramCount monoType
+    in
+    case maybeClassId of
+        Nothing ->
+            -- No staging class: enforce GOPT_001
+            ( Mono.MonoClosure closureInfo newBody canonType, ctx1 )
+
+        Just classId ->
+            let
+                canonicalSeg = Dict.get identity classId solution.classSeg |> Maybe.withDefault []
+                naturalSeg = Dict.get identity key producerInfo.naturalSeg |> Maybe.withDefault []
+            in
+            if naturalSeg == canonicalSeg then
+                -- No wrapper needed: enforce GOPT_001
+                ( Mono.MonoClosure closureInfo newBody canonType, ctx1 )
+            else
+                -- Wrapper needed: pass canonType so inner closure satisfies GOPT_001
+                -- Pass monoType for segmentation derivation
+                wrapClosureToCanonical closureInfo newBody monoType canonType canonicalSeg ctx1
+```
+
+### Step 5: Rewriter.elm - Update wrapClosureToCanonical Signature
+
+**File:** `compiler/src/Compiler/GlobalOpt/Staging/Rewriter.elm`
+**Function:** `wrapClosureToCanonical` (lines 433-450)
+
+**Change:** Accept both `originalType` (for segmentation derivation) and `canonType` (for inner closure's type).
+
+```elm
+-- BEFORE:
+wrapClosureToCanonical originalInfo originalBody originalType canonicalSeg ctx0 =
+    let
+        ( flatArgs, flatRet ) =
+            Mono.decomposeFunctionType originalType
+
+        targetType =
+            buildSegmentedFunctionType canonicalSeg flatArgs flatRet
+
+        region =
+            Closure.extractRegion (Mono.MonoClosure originalInfo originalBody originalType)
+    in
+    buildNestedWrapper
+        targetType
+        (Mono.MonoClosure originalInfo originalBody originalType)  -- Uses originalType
+        []
+        ctx0
+
+-- AFTER:
+wrapClosureToCanonical originalInfo originalBody originalType canonType canonicalSeg ctx0 =
+    let
+        -- Use originalType for segmentation derivation (flat args/ret)
+        ( flatArgs, flatRet ) =
+            Mono.decomposeFunctionType originalType
+
+        targetType =
+            buildSegmentedFunctionType canonicalSeg flatArgs flatRet
+
+        region =
+            Closure.extractRegion (Mono.MonoClosure originalInfo originalBody canonType)
+    in
+    buildNestedWrapper
+        targetType
+        (Mono.MonoClosure originalInfo originalBody canonType)  -- Uses canonType for GOPT_001
+        []
+        ctx0
+```
+
+### Step 6: Rewriter.elm - Canonicalize Tail Function Types (All Branches)
+
+**File:** `compiler/src/Compiler/GlobalOpt/Staging/Rewriter.elm`
+**Function:** `rewriteNode` (lines 93-168, `MonoTailFunc` branch)
+
+**Change:** Compute `canonType` and use it in all cases. (Tail functions don't have wrapper helpers like closures, so the existing wrapper path already uses `flattenTypeToArity`.)
+
+```elm
+-- BEFORE:
+Mono.MonoTailFunc params body monoType ->
+    let
+        pid = ProducerTailFunc nodeId
+        key = producerIdToKey pid
+        maybeClassId = Dict.get identity key solution.producerClass
+    in
+    case maybeClassId of
+        Nothing ->
+            let ( newBody, ctx1 ) = rewriteExpr solution producerInfo body ctx0
+            in ( Mono.MonoTailFunc params newBody monoType, ctx1 )
+
+        Just classId ->
+            let
+                canonicalSeg = Dict.get identity classId solution.classSeg |> Maybe.withDefault []
+                naturalSeg = Dict.get identity key producerInfo.naturalSeg |> Maybe.withDefault []
+                ( newBody, ctx1 ) = rewriteExpr solution producerInfo body ctx0
+            in
+            if naturalSeg == canonicalSeg then
+                ( Mono.MonoTailFunc params newBody monoType, ctx1 )
+            else
+                let
+                    totalArity = Dict.get identity key producerInfo.totalArity |> Maybe.withDefault (List.length params)
+                    newType = flattenTypeToArity totalArity monoType
+                in
+                ( Mono.MonoTailFunc params newBody newType, ctx1 )
+
+-- AFTER:
+Mono.MonoTailFunc params body monoType ->
+    let
+        pid = ProducerTailFunc nodeId
+        key = producerIdToKey pid
+        maybeClassId = Dict.get identity key solution.producerClass
+        ( newBody, ctx1 ) = rewriteExpr solution producerInfo body ctx0
+
+        -- GOPT_001: Always compute canonical type
+        paramCount = List.length params
+        canonType = flattenTypeToArity paramCount monoType
+    in
+    case maybeClassId of
+        Nothing ->
+            -- No staging class: enforce GOPT_001
+            ( Mono.MonoTailFunc params newBody canonType, ctx1 )
+
+        Just classId ->
+            let
+                canonicalSeg = Dict.get identity classId solution.classSeg |> Maybe.withDefault []
+                naturalSeg = Dict.get identity key producerInfo.naturalSeg |> Maybe.withDefault []
+            in
+            if naturalSeg == canonicalSeg then
+                -- No wrapper needed: enforce GOPT_001
+                ( Mono.MonoTailFunc params newBody canonType, ctx1 )
+            else
+                -- Wrapper/adaptation needed: canonType already satisfies GOPT_001
+                ( Mono.MonoTailFunc params newBody canonType, ctx1 )
+```
+
+**Note:** The tail function wrapper path now simplifies since `canonType` already handles the type flattening. The old `totalArity` lookup is no longer needed because `paramCount` is the correct arity for GOPT_001.
 
 ---
 
-## Phase 4: Update Invariants Documentation
+## Verification Plan
 
-**File:** `design_docs/invariants.csv`
-
-### 4.1 Mark MONO_016 as migrated
-
-Update the MONO_016 row:
-- Add note: "Migrated to GOPT_001; see GlobalOpt section"
-- Remove Monomorphization as enforcer
-
-### 4.2 Mark MONO_018 as migrated
-
-Update the MONO_018 row:
-- Add note: "Migrated to GOPT_003; see GlobalOpt section"
-- Remove Monomorphization as enforcer
-
-### 4.3 Add GOPT_001 row
-
-```csv
-GOPT_001,GlobalOpt,Closure params match stage arity,"For every MonoClosure with function type MFunction after GlobalOpt, length(closureInfo.params) == length(stageParamTypes(monoType))",MonoGlobalOptimize.validateClosureStaging
-```
-
-### 4.4 Add GOPT_003 row
-
-```csv
-GOPT_003,GlobalOpt,Case branch types match after ABI normalization,"For every MonoCase after normalizeCaseIfAbi, all branch result types equal the case result type (including staging)",MonoGlobalOptimize.normalizeCaseIfAbi
-```
-
-### 4.5 Add GOPT_002 row (returned closure arity)
-
-```csv
-GOPT_002,GlobalOpt,Returned closure param counts match stage arity,"For every function returning a closure, returnedClosureParamCounts[specId] equals the first-stage param count of the returned closure type",MonoReturnArity.annotateReturnedClosureArity
-```
-
-**Note:** Do NOT renumber existing MONO_* invariants. Gaps in numbering preserve historical references.
-
----
-
-## Phase 5: Update Tests
-
-### 5.1 Update MONO_016 test references
-
-Search for files referencing MONO_016:
-```bash
-grep -r "MONO_016" compiler/tests/
-```
-
-For each match:
-- Update comments to reference GOPT_001
-- Ensure test runs on graph AFTER `globalOptimize`
-
-### 5.2 Update MONO_018 test references
-
-**Files:**
-- `compiler/tests/Compiler/GlobalOpt/MonoCaseBranchResultTypeTest.elm`
-- `compiler/tests/Compiler/GlobalOpt/JoinpointABITest.elm`
-
-For each:
-- Update comments/names to reference GOPT_003
-- Ensure tests validate after `normalizeCaseIfAbi`
-
-**Expected outcome:** The 2 pre-existing MONO_018 failures should disappear once Monomorphize stops flattening, since the "curried vs flat" mismatch was caused by `isFullyPeelable` logic.
-
-### 5.3 Update tests that assume `\x y ->` == `\x -> \y ->` at Monomorphize
-
-Search for tests that may expect staging equivalence at Monomorphize boundary:
-```bash
-grep -r "WrapperCurried\|peelable\|flatten" compiler/tests/
-```
-
-For each match:
-- If test asserts staging equality at Monomorphize output → move assertion to after GlobalOpt
-- If test asserts closure structure at Monomorphize → weaken to "well-typed" or move to GlobalOpt
-
-**New contract:**
-- **After Monomorphize:** Lambda shape follows syntax; staging may vary
-- **After GlobalOpt:** Staging is normalized and ABI is consistent
-
----
-
-## Phase 6: Clean Up Unused Code
-
-### 6.1 Remove unused helpers from Specialize.elm
-
-After simplifying `specializeLambda`:
-- Delete `dropNArgsFromType` (lines 93-112)
-- Delete `peelFunctionChain` if unused (keep if used by other transforms like `NormalizeLambdaBoundaries`)
-
-### 6.2 Verify no stale MONO_016/018 references
+### Step 7: Run Existing Tests
 
 ```bash
-grep -r "MONO_016\|MONO_018" compiler/src/
-```
-
-Update any remaining references in comments/error messages.
-
----
-
-## Phase 7: Run Tests and Verify
-
-### 7.1 Run elm-test-rs
-```bash
+# Frontend tests
 cd compiler && npx elm-test-rs --fuzz 1
+
+# Backend E2E tests
+cmake --build build --target full
 ```
 
-**Expected:**
-- Tests should pass
-- The 2 pre-existing MONO_018 failures should now pass (curried vs flat mismatch is eliminated)
+### Step 8: Verify GOPT_001 Invariant
 
-### 7.2 Run cmake check
-```bash
-cmake --build build --target check
+The existing GOPT_001 invariant tests should now pass for all cases:
+- Lambdas (`MonoClosure`) - standalone and in staging classes
+- Tail functions (`MonoTailFunc`) - top-level and let-bound
+- Functions that don't participate in any staging class
+- Inner closures within wrappers
+
+### Step 9: Verify Related Invariants
+
+Run tests for:
+- CGEN_052 (remaining_arity consistency)
+- REP_ABI_001 (ABI representation)
+- MONO_004 (function-typed defines)
+
+### Step 10: Add Explicit Tail Function Test
+
+Add a test case that mirrors the "Two-argument lambda" closure test but as a tail function:
+
+```elm
+-- Test case: Two-argument tail function (GOPT_001)
+foo : Int -> Int -> Int
+foo x y = x
 ```
 
-**Expected:** Same pass rate or better.
-
-### 7.3 Run boundary check
-```bash
-cd compiler && npx elm-review --rules EnforceBoundaries
-```
-
-**Expected:** No errors.
+After GlobalOpt:
+- `foo`'s `MonoTailFunc` type must be flattened to match `params`
+- Type: `MFunction [Int, Int] Int` (not `MFunction [Int] (MFunction [Int] Int)`)
+- No GOPT_001 failure reported
 
 ---
 
-## Implementation Order
+## Resolved Questions
 
-1. **Phase 1:** Simplify `specializeLambda` (highest risk, most complex)
-2. **Phase 2:** Remove MONO_016 from Closure.elm (dependent on Phase 1)
-3. **Phase 7 (partial):** Run tests to verify Phases 1-2 work
-4. **Phase 3:** Update GlobalOpt error messages (low risk)
-5. **Phase 4:** Update invariants documentation (low risk)
-6. **Phase 5:** Update tests (dependent on Phases 3-4)
-7. **Phase 6:** Clean up unused code (after all else works)
-8. **Phase 7 (full):** Final test verification
+### Q1: Wrapper behavior when `naturalSeg != canonicalSeg` ✓ RESOLVED
+
+**Answer:** The inner closure/tail function **must** also have `canonType`. The wrapper exists only to adapt segmentation/staging ABI, not to exempt the inner node from GOPT_001. The inner node is still a real node in the mono graph with its own `params` and `type`, so leaving it in curried form would:
+- Violate GOPT_001 for the inner node
+- Cause passes/checks that inspect the inner node to see the mismatch
+
+**Implementation:** Pass `canonType` to `wrapClosureToCanonical` and use it for the inner closure's type.
+
+### Q2: flattenTypeToArity edge case ✓ RESOLVED
+
+**Answer:** When `allArgs.length < paramCount`, this is a hard inconsistency that should never happen in a well-formed mono graph. The current behavior (return unchanged) masks bugs.
+
+**Implementation:** Change to `Debug.todo` with descriptive error message. This ensures:
+- On correct programs, it never fires
+- If it does fire, you get a precise "mono graph inconsistent" error
+
+### Q3: Import of `ProducerTailFunc` in GraphBuilder ✓ RESOLVED
+
+**Answer:** Yes, `ProducerId(..)` is imported in GraphBuilder, which exposes all constructors including `ProducerTailFunc`.
+
+### Q4: nodeId availability in foldNode ✓ RESOLVED
+
+**Answer:** Yes, confirmed by reading ProducerInfo.elm line 47: `ProducerTailFunc nodeId` uses the same node ID that's passed to `foldNode`.
+
+### Q5: Test coverage for standalone closures ✓ RESOLVED
+
+**Answer:** The "Two-argument lambda" test (`\x y -> x`) is the concrete failing case:
+- No captures
+- Not a branch result
+- Not in an aggregate
+- Not passed as a function argument
+
+This closure never became a producer node, never got a class, never had its type flattened → violated GOPT_001.
 
 ---
 
 ## Risk Assessment
 
-**High risk:**
-- Phase 1: `specializeLambda` is complex; must handle all edge cases correctly
+### Low Risk
+- GraphBuilder changes are additive (just ensure producer nodes exist)
+- `flattenTypeToArity` error case only fires on broken input (defensive)
 
-**Medium risk:**
-- Phase 2: `ensureCallableTopLevel` changes could affect closure creation
+### Medium Risk
+- If some downstream code depends on the nested function type structure (e.g., `MFunction [Int] (MFunction [Int] Int)` vs `MFunction [Int, Int] Int`), canonicalization could break it
+- Wrapper function signature change requires updating call sites
 
-**Low risk:**
-- Phases 3-6: Documentation, error messages, and cleanup
-
----
-
-## Rollback Strategy
-
-If issues arise:
-1. Revert `specializeLambda` changes first (Phase 1)
-2. Re-enable MONO_016 checks in Closure.elm (Phase 2)
-3. Revert invariant renames last (Phases 3-5 are cosmetic)
-
----
-
-## Key Design Decisions (from Q&A)
-
-1. **No `peelFunctionChain` in `specializeLambda`** - Specialize one lambda node at a time, preserving syntactic structure
-
-2. **`normalizeCaseIfAbi` unchanged** - Already handles arbitrary staging via `chooseCanonicalSegmentation` and `buildAbiWrapperGO`
-
-3. **MONO_018 failures expected to resolve** - Caused by `isFullyPeelable` flattening, which is being removed
-
-4. **TrackedFunction handled identically** - Just strip `A.At` wrappers from param names
-
-5. **MLIR codegen unaffected** - Works with per-stage arity; GlobalOpt guarantees GOPT_001/018 before MLIR
-
-6. **No invariant renumbering** - Mark MONO_016/018 as "migrated to GOPT_*" to preserve historical references
-
-7. **No `augmentedSubst` needed** - Since monoParams are computed directly via `applySubst subst`, the body sees the same mappings. `augmentedSubst` was only needed when `specializeLambda` could pick param types different from what `applySubst` produced (via `effectiveParamTypes`). With the staging-agnostic version, we use `subst` unchanged for the body.
-
-8. **Kernel handling unchanged** - Kernels have a fixed C-like ABI (all args at once, fully flattened). Keep the special `MonoVarKernel` branch in `ensureCallableTopLevel` that builds flattened alias closures. GlobalOpt can wrap these if Elm code expects staged ABI, but the inner kernel call stays flat.
-
-9. **Tests assuming `\x y ->` == `\x -> \y ->` must be updated** - After this change, these produce different MonoType shapes at Monomorphize output:
-   - `\x y -> body` → one `MonoClosure` with 2 params, type `MFunction [A, B] R`
-   - `\x -> \y -> body` → outer closure with 1 param, inner closure with 1 param, type `MFunction [A] (MFunction [B] R)`
-
-   Tests that assert these are equal at Monomorphize boundary should be updated to either:
-   - Assert equality **after GlobalOpt** (where ABI normalization unifies them), or
-   - Weaken expectations to "well-typed but not staging-normalized"
-
-   Look for tests named like `*WrapperCurriedCallsTest*` and anything referencing MONO_016/018 at Monomorphize boundary.
+### Mitigation
+- Run full test suite after each step
+- The wrapper logic (segmentation derivation) is unchanged; only the inner closure's type annotation changes
+- After GraphBuilder fix, formerly "standalone" closures/tail funcs will normally get a class, so the `Nothing` branch becomes a safety net

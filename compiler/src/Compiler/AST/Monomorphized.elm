@@ -20,6 +20,9 @@ module Compiler.AST.Monomorphized exposing
     , chooseCanonicalSegmentation
     , buildSegmentedFunctionType
     , decomposeFunctionType
+    , isFunctionType
+    , countTotalArity
+    , functionArity
       -- Call staging metadata
     , CallModel(..), CallInfo, defaultCallInfo
     )

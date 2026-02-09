@@ -131,6 +131,15 @@ collectCallabilityChecks (Mono.MonoGraph data) =
 
 
 {-| Check if a function-typed node is properly callable.
+
+Function-typed MonoDefine nodes are callable if their expression is one of:
+
+1.  MonoClosure: Direct closure definition
+2.  MonoVarGlobal: Reference to another function-typed node (creates papCreate)
+3.  MonoCall: Partial application that returns a function (creates papExtend)
+
+Cases 2 and 3 are handled by codegen as thunks that return callable PAPs.
+
 -}
 checkNodeCallability : Int -> Mono.MonoNode -> List (() -> Expect.Expectation)
 checkNodeCallability specId node =
@@ -142,13 +151,16 @@ checkNodeCallability specId node =
         Mono.MonoDefine expr monoType ->
             case monoType of
                 Mono.MFunction _ _ ->
-                    -- Function-typed define must have a closure as its expression
-                    case expr of
-                        Mono.MonoClosure _ _ _ ->
-                            []
+                    -- Function-typed define is callable if the expression:
+                    -- 1. Is a MonoClosure (direct closure)
+                    -- 2. Is a MonoVarGlobal to a function (creates papCreate in codegen)
+                    -- 3. Is a MonoCall returning a function (partial application, creates papExtend)
+                    -- 4. Any other expression that has a function type (thunk returning callable)
+                    if isCallableExpression expr then
+                        []
 
-                        _ ->
-                            [ \() -> Expect.fail (context ++ ": Function-typed MonoDefine doesn't contain a MonoClosure") ]
+                    else
+                        [ \() -> Expect.fail (context ++ ": Function-typed MonoDefine has non-callable expression") ]
 
                 _ ->
                     -- Non-function types are fine
@@ -186,6 +198,82 @@ checkNodeCallability specId node =
         Mono.MonoCycle _ _ ->
             -- Cycle nodes are internal
             []
+
+
+{-| Check if an expression is callable (can produce a function value).
+
+Callable expressions include:
+
+  - MonoClosure: Direct closure definition
+  - MonoVarGlobal with function type: Reference to function (codegen creates papCreate)
+  - MonoVarKernel with function type: Kernel function reference
+  - MonoCall with function result type: Partial application (codegen creates papExtend)
+  - MonoLet/MonoIf/MonoCase with function result: Control flow returning callable
+  - MonoDestruct with function result: Destructuring returning callable
+
+-}
+isCallableExpression : Mono.MonoExpr -> Bool
+isCallableExpression expr =
+    case expr of
+        Mono.MonoClosure _ _ _ ->
+            -- Direct closure - always callable
+            True
+
+        Mono.MonoVarLocal _ monoType ->
+            -- Local variable reference - callable if function-typed
+            -- The variable holds a callable value
+            isFunctionType monoType
+
+        Mono.MonoVarGlobal _ _ monoType ->
+            -- Reference to a global - callable if function-typed
+            -- Codegen generates papCreate for function-typed globals
+            isFunctionType monoType
+
+        Mono.MonoVarKernel _ _ _ monoType ->
+            -- Kernel reference - callable if function-typed
+            isFunctionType monoType
+
+        Mono.MonoCall _ _ _ resultType _ ->
+            -- Call expression - callable if result is function-typed
+            -- This handles partial applications (codegen generates papExtend)
+            isFunctionType resultType
+
+        Mono.MonoLet _ body _ ->
+            -- Let expression - callable if body is callable
+            isCallableExpression body
+
+        Mono.MonoIf _ final _ ->
+            -- If expression - callable if branches are callable (check final branch)
+            isCallableExpression final
+
+        Mono.MonoCase _ _ _ branches _ ->
+            -- Case expression - callable if branches are callable (check first branch)
+            case branches of
+                ( _, branchExpr ) :: _ ->
+                    isCallableExpression branchExpr
+
+                [] ->
+                    False
+
+        Mono.MonoDestruct _ inner _ ->
+            -- Destruct - callable if inner is callable
+            isCallableExpression inner
+
+        _ ->
+            -- Other expressions (literals, records, tuples, etc.) are not callable
+            False
+
+
+{-| Check if a MonoType is a function type.
+-}
+isFunctionType : Mono.MonoType -> Bool
+isFunctionType monoType =
+    case monoType of
+        Mono.MFunction _ _ ->
+            True
+
+        _ ->
+            False
 
 
 

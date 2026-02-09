@@ -24,6 +24,7 @@ import Compiler.Data.Name exposing (Name)
 import Compiler.GlobalOpt.MonoInlineSimplify as MonoInlineSimplify
 import Compiler.GlobalOpt.MonoReturnArity as MonoReturnArity
 import Compiler.GlobalOpt.MonoTraverse as Traverse
+import Compiler.GlobalOpt.Staging as Staging
 import Compiler.Monomorphize.Closure as Closure
 import Compiler.Reporting.Annotation as A
 import Data.Map as Dict exposing (Dict)
@@ -81,6 +82,14 @@ emptyCallEnv =
 
 
 {-| Run global optimization passes on a monomorphized program graph.
+
+New structure using global staging algorithm:
+
+1.  Phase 0: Inlining and simplification
+2.  Phase 1+2: Staging analysis + graph rewrite (wrappers + types)
+3.  Phase 3: Validate closure staging invariants (GOPT\_001, GOPT\_003)
+4.  Phase 4: Annotate call staging metadata using staging solution
+
 -}
 globalOptimize : TypeEnv.GlobalTypeEnv -> Mono.MonoGraph -> Mono.MonoGraph
 globalOptimize typeEnv graph0 =
@@ -90,16 +99,19 @@ globalOptimize typeEnv graph0 =
         ( graph0a, _ ) =
             MonoInlineSimplify.optimize typeEnv graph0
 
-        -- Phase 1: Canonicalize closure/tail-func types (GOPT_001 fix)
-        -- Flatten types to match param counts: MFunction [a] (MFunction [b] c) -> MFunction [a,b] c
-        graph1 =
-            canonicalizeClosureStaging graph0a
+        -- Phase 1+2: Staging analysis + graph rewrite (wrappers + types)
+        ( _, graph1 ) =
+            Staging.analyzeAndSolveStaging typeEnv graph0a
 
-        -- Phase 2: ABI normalization (case/if result types, wrapper generation)
+        -- Phase 3: Validate closure staging invariants (GOPT_001, GOPT_003)
         graph2 =
-            normalizeCaseIfAbi graph1
+            Staging.validateClosureStaging graph1
 
-        -- Phase 3: Annotate call staging metadata (call model, stage arities, etc.)
+        -- Phase 4: Annotate call staging metadata using CallEnv + computeCallInfo
+        -- This uses the local annotateCallStaging which has the correct PAP arity
+        -- semantics via sourceArityForCallee and closureBodyStageArities.
+        -- Note: stagingSolution is unused here since all staging-dependent rewrites
+        -- were applied in Phase 1+2 by Rewriter.applyStagingSolution.
         graph3 =
             annotateCallStaging graph2
     in
