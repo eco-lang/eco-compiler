@@ -321,31 +321,28 @@ LogicalResult PapCreateOp::verify() {
     }
   }
 
-  // === NEW: Check against target function signature ===
-
+  // Check against target function signature (when available).
+  // Skip if function is external/not yet defined in the module.
   auto funcOp = lookupFunc(getOperation(), getFunctionAttr());
-  if (!funcOp) {
-    return emitOpError("could not resolve function symbol '")
-           << getFunctionAttr().getValue() << "'";
-  }
+  if (funcOp) {
+    auto funcType = funcOp.getFunctionType();
+    auto paramTypes = funcType.getInputs();
 
-  auto funcType = funcOp.getFunctionType();
-  auto paramTypes = funcType.getInputs();
+    // Verify arity matches function parameter count
+    if (static_cast<int64_t>(paramTypes.size()) != arity) {
+      return emitOpError("arity (") << arity
+             << ") does not match target function parameter count ("
+             << paramTypes.size() << ")";
+    }
 
-  // Verify arity matches function parameter count
-  if (static_cast<int64_t>(paramTypes.size()) != arity) {
-    return emitOpError("arity (") << arity
-           << ") does not match target function parameter count ("
-           << paramTypes.size() << ")";
-  }
-
-  // Verify captured operand types match the first num_captured parameters
-  for (size_t i = 0; i < captured.size(); ++i) {
-    Type actualTy = captured[i].getType();
-    Type expectedTy = paramTypes[i];
-    if (actualTy != expectedTy) {
-      return emitOpError("captured operand ") << i << " has type " << actualTy
-             << " but target function expects " << expectedTy;
+    // Verify captured operand types match the first num_captured parameters
+    for (size_t i = 0; i < captured.size(); ++i) {
+      Type actualTy = captured[i].getType();
+      Type expectedTy = paramTypes[i];
+      if (actualTy != expectedTy) {
+        return emitOpError("captured operand ") << i << " has type " << actualTy
+               << " but target function expects " << expectedTy;
+      }
     }
   }
 
@@ -446,55 +443,52 @@ LogicalResult PapExtendOp::verify() {
     break;
   }
 
-  // If we found the root papCreate, verify type compatibility
+  // If we found the root papCreate, verify type compatibility (when function is available)
   if (funcSym && arityFromCreate >= 0) {
     auto funcOp = lookupFunc(getOperation(), funcSym);
-    if (!funcOp) {
-      return emitOpError("could not resolve function symbol '")
-             << funcSym.getValue() << "' from papExtend closure chain";
-    }
+    if (funcOp) {
+      auto funcType = funcOp.getFunctionType();
+      auto paramTypes = funcType.getInputs();
+      auto resultTypes = funcType.getResults();
 
-    auto funcType = funcOp.getFunctionType();
-    auto paramTypes = funcType.getInputs();
-    auto resultTypes = funcType.getResults();
-
-    // Verify remaining_arity consistency
-    int64_t remainingArityAttr = getRemainingArity();
-    int64_t computedRemaining = arityFromCreate - static_cast<int64_t>(alreadyApplied);
-    if (computedRemaining != remainingArityAttr) {
-      return emitOpError("remaining_arity = ") << remainingArityAttr
-             << " but computed remaining arity from papCreate chain is "
-             << computedRemaining;
-    }
-
-    // Verify newargs types match corresponding parameters
-    unsigned firstParamIndex = alreadyApplied;
-    if (firstParamIndex + newargs.size() > paramTypes.size()) {
-      return emitOpError("papExtend would apply arguments past function parameter list");
-    }
-
-    for (size_t j = 0; j < newargs.size(); ++j) {
-      unsigned paramIndex = firstParamIndex + j;
-      Type expectedTy = paramTypes[paramIndex];
-      Type actualTy = newargs[j].getType();
-      if (actualTy != expectedTy) {
-        return emitOpError("newarg ") << j << " has type " << actualTy
-               << " but evaluator parameter " << paramIndex << " expects " << expectedTy;
+      // Verify remaining_arity consistency
+      int64_t remainingArityAttr = getRemainingArity();
+      int64_t computedRemaining = arityFromCreate - static_cast<int64_t>(alreadyApplied);
+      if (computedRemaining != remainingArityAttr) {
+        return emitOpError("remaining_arity = ") << remainingArityAttr
+               << " but computed remaining arity from papCreate chain is "
+               << computedRemaining;
       }
-    }
 
-    // For saturated calls, verify result type
-    bool isSaturated = (remainingArityAttr == static_cast<int64_t>(newargs.size()));
-
-    if (isSaturated) {
-      if (resultTypes.size() != 1) {
-        return emitOpError("saturated papExtend requires function with single result");
+      // Verify newargs types match corresponding parameters
+      unsigned firstParamIndex = alreadyApplied;
+      if (firstParamIndex + newargs.size() > paramTypes.size()) {
+        return emitOpError("papExtend would apply arguments past function parameter list");
       }
-      Type expectedResultTy = resultTypes[0];
-      Type actualResultTy = getResult().getType();
-      if (actualResultTy != expectedResultTy) {
-        return emitOpError("saturated papExtend result type ") << actualResultTy
-               << " does not match function result type " << expectedResultTy;
+
+      for (size_t j = 0; j < newargs.size(); ++j) {
+        unsigned paramIndex = firstParamIndex + j;
+        Type expectedTy = paramTypes[paramIndex];
+        Type actualTy = newargs[j].getType();
+        if (actualTy != expectedTy) {
+          return emitOpError("newarg ") << j << " has type " << actualTy
+                 << " but evaluator parameter " << paramIndex << " expects " << expectedTy;
+        }
+      }
+
+      // For saturated calls, verify result type
+      bool isSaturated = (remainingArityAttr == static_cast<int64_t>(newargs.size()));
+
+      if (isSaturated) {
+        if (resultTypes.size() != 1) {
+          return emitOpError("saturated papExtend requires function with single result");
+        }
+        Type expectedResultTy = resultTypes[0];
+        Type actualResultTy = getResult().getType();
+        if (actualResultTy != expectedResultTy) {
+          return emitOpError("saturated papExtend result type ") << actualResultTy
+                 << " does not match function result type " << expectedResultTy;
+        }
       }
     }
   }
@@ -515,43 +509,41 @@ LogicalResult CallOp::verify() {
     }
 
     auto funcOp = lookupFunc(getOperation(), calleeAttr);
-    if (!funcOp) {
-      return emitOpError("could not resolve callee '") << calleeAttr.getValue() << "'";
-    }
+    if (funcOp) {
+      auto funcType = funcOp.getFunctionType();
+      auto paramTypes = funcType.getInputs();
+      auto resultTypes = funcType.getResults();
 
-    auto funcType = funcOp.getFunctionType();
-    auto paramTypes = funcType.getInputs();
-    auto resultTypes = funcType.getResults();
-
-    // Verify operand count
-    if (operands.size() != paramTypes.size()) {
-      return emitOpError("has ") << operands.size() << " operands but callee '"
-             << funcOp.getSymName() << "' expects " << paramTypes.size() << " parameters";
-    }
-
-    // Verify result count
-    if (results.size() != resultTypes.size()) {
-      return emitOpError("has ") << results.size() << " results but callee '"
-             << funcOp.getSymName() << "' returns " << resultTypes.size() << " values";
-    }
-
-    // Verify operand types
-    for (size_t i = 0; i < operands.size(); ++i) {
-      Type actualTy = operands[i].getType();
-      Type expectedTy = paramTypes[i];
-      if (actualTy != expectedTy) {
-        return emitOpError("operand ") << i << " has type " << actualTy
-               << " but callee expects " << expectedTy;
+      // Verify operand count
+      if (operands.size() != paramTypes.size()) {
+        return emitOpError("has ") << operands.size() << " operands but callee '"
+               << funcOp.getSymName() << "' expects " << paramTypes.size() << " parameters";
       }
-    }
 
-    // Verify result types
-    for (size_t i = 0; i < results.size(); ++i) {
-      Type actualTy = results[i].getType();
-      Type expectedTy = resultTypes[i];
-      if (actualTy != expectedTy) {
-        return emitOpError("result ") << i << " has type " << actualTy
-               << " but callee returns " << expectedTy;
+      // Verify result count
+      if (results.size() != resultTypes.size()) {
+        return emitOpError("has ") << results.size() << " results but callee '"
+               << funcOp.getSymName() << "' returns " << resultTypes.size() << " values";
+      }
+
+      // Verify operand types
+      for (size_t i = 0; i < operands.size(); ++i) {
+        Type actualTy = operands[i].getType();
+        Type expectedTy = paramTypes[i];
+        if (actualTy != expectedTy) {
+          return emitOpError("operand ") << i << " has type " << actualTy
+                 << " but callee expects " << expectedTy;
+        }
+      }
+
+      // Verify result types
+      for (size_t i = 0; i < results.size(); ++i) {
+        Type actualTy = results[i].getType();
+        Type expectedTy = resultTypes[i];
+        if (actualTy != expectedTy) {
+          return emitOpError("result ") << i << " has type " << actualTy
+                 << " but callee returns " << expectedTy;
+        }
       }
     }
 
