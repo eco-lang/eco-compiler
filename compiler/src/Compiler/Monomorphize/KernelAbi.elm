@@ -120,13 +120,13 @@ numberBoxedKernels =
         ]
 
 
-{-| Kernels whose container element representation we want to specialize
-based on call-site types.
+{-| Kernels that benefit from element-aware specialization at fully monomorphic
+call sites. The specialized MonoType drives Elm-level wrapper generation
+(different List\_cons\_$\_N closures per element type), NOT the C++ kernel ABI.
 
-These kernels use PreserveVars mode but can benefit from element-aware
-specialization when the call-site provides fully monomorphic types.
-
-Start small and expand incrementally after invariant tests pass.
+The actual C++ kernel ABI is determined by kernelBackendAbiPolicy in
+MLIR codegen (Context.elm), which may force all-boxed !eco.value arguments
+regardless of the wrapper's specialized types.
 
 -}
 containerSpecializedKernels : EverySet (List String) ( String, String )

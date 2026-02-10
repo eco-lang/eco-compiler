@@ -1847,39 +1847,87 @@ generateSaturatedCall ctx func args resultType callInfo =
                             }
 
                         Nothing ->
-                            -- Generic kernel ABI path derived solely from MonoType.
-                            -- Polymorphic kernels have MVar in their funcType, which
-                            -- Types.monoTypeToAbi maps to !eco.value, so they naturally
-                            -- get all-boxed ABI without name-based checks.
                             let
-                                elmSig : Ctx.FuncSignature
-                                elmSig =
-                                    Ctx.kernelFuncSignatureFromType funcType
-
-                                -- Use boxToMatchSignatureTyped with actual SSA types
-                                ( boxOps, argVarPairs, ctx1b ) =
-                                    boxToMatchSignatureTyped ctx1 argsWithTypes elmSig.paramTypes
-
-                                ( resVar, ctx2 ) =
-                                    Ctx.freshVar ctx1b
-
-                                kernelName : String
-                                kernelName =
-                                    "Elm_Kernel_" ++ home ++ "_" ++ name
-
-                                resultMlirType : MlirType
-                                resultMlirType =
-                                    Types.monoTypeToAbi elmSig.returnType
-
-                                ( ctx3, callOp ) =
-                                    Ops.ecoCallNamed ctx2 resVar kernelName argVarPairs resultMlirType
+                                policy : Ctx.KernelBackendAbiPolicy
+                                policy =
+                                    Ctx.kernelBackendAbiPolicy home name
                             in
-                            { ops = argOps ++ boxOps ++ [ callOp ]
-                            , resultVar = resVar
-                            , resultType = resultMlirType
-                            , ctx = ctx3
-                            , isTerminated = False
-                            }
+                            case policy of
+                                Ctx.AllBoxed ->
+                                    -- Underlying C++ ABI: all args and result are !eco.value,
+                                    -- regardless of the monomorphic Elm wrapper type.
+                                    -- Box any primitive SSA values to match the kernel ABI.
+                                    let
+                                        elmSig : Ctx.FuncSignature
+                                        elmSig =
+                                            Ctx.kernelFuncSignatureFromType funcType
+
+                                        numArgs : Int
+                                        numArgs =
+                                            List.length elmSig.paramTypes
+
+                                        -- Backend ABI: all MUnit => all !eco.value
+                                        backendParamTypes : List Mono.MonoType
+                                        backendParamTypes =
+                                            List.repeat numArgs Mono.MUnit
+
+                                        ( boxOps, argVarPairs, ctx1b ) =
+                                            boxToMatchSignatureTyped ctx1 argsWithTypes backendParamTypes
+
+                                        ( resVar, ctx2 ) =
+                                            Ctx.freshVar ctx1b
+
+                                        kernelName : String
+                                        kernelName =
+                                            "Elm_Kernel_" ++ home ++ "_" ++ name
+
+                                        resultMlirType : MlirType
+                                        resultMlirType =
+                                            Types.ecoValue
+
+                                        ( ctx3, callOp ) =
+                                            Ops.ecoCallNamed ctx2 resVar kernelName argVarPairs resultMlirType
+                                    in
+                                    { ops = argOps ++ boxOps ++ [ callOp ]
+                                    , resultVar = resVar
+                                    , resultType = resultMlirType
+                                    , ctx = ctx3
+                                    , isTerminated = False
+                                    }
+
+                                Ctx.ElmDerived ->
+                                    -- ABI derived from the Elm wrapper's funcType.
+                                    -- Polymorphic kernels have MVar in their funcType, which
+                                    -- Types.monoTypeToAbi maps to !eco.value, so they naturally
+                                    -- get all-boxed ABI without name-based checks.
+                                    let
+                                        elmSig : Ctx.FuncSignature
+                                        elmSig =
+                                            Ctx.kernelFuncSignatureFromType funcType
+
+                                        ( boxOps, argVarPairs, ctx1b ) =
+                                            boxToMatchSignatureTyped ctx1 argsWithTypes elmSig.paramTypes
+
+                                        ( resVar, ctx2 ) =
+                                            Ctx.freshVar ctx1b
+
+                                        kernelName : String
+                                        kernelName =
+                                            "Elm_Kernel_" ++ home ++ "_" ++ name
+
+                                        resultMlirType : MlirType
+                                        resultMlirType =
+                                            Types.monoTypeToAbi elmSig.returnType
+
+                                        ( ctx3, callOp ) =
+                                            Ops.ecoCallNamed ctx2 resVar kernelName argVarPairs resultMlirType
+                                    in
+                                    { ops = argOps ++ boxOps ++ [ callOp ]
+                                    , resultVar = resVar
+                                    , resultType = resultMlirType
+                                    , ctx = ctx3
+                                    , isTerminated = False
+                                    }
 
         Mono.MonoVarLocal name _ ->
             let

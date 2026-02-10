@@ -1997,7 +1997,10 @@ deriveKernelAbiType kernelId canFuncType callSubst =
             monoAfterSubst
 
         KernelAbi.PreserveVars ->
-            -- Container-specializable kernels get monomorphic, element-aware ABI
+            -- Container-specializable kernels get monomorphic, element-aware type
+            -- for Elm-level wrapper specialization. The C++ kernel ABI is determined
+            -- separately by kernelBackendAbiPolicy in MLIR codegen, which may
+            -- override this type with all-boxed !eco.value arguments.
             if EverySet.member KernelAbi.comparePair kernelId KernelAbi.containerSpecializedKernels
                 && isFullyMonomorphicType monoAfterSubst
             then

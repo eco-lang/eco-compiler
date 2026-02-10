@@ -5,6 +5,7 @@ module Compiler.Generate.MLIR.Context exposing
     , getOrCreateTypeIdForMonoType, registerKernelCall
     , buildSignatures, kernelFuncSignatureFromType
     , isTypeVar, hasKernelImplementation
+    , KernelBackendAbiPolicy(..), kernelBackendAbiPolicy
     )
 
 {-| MLIR code generation context.
@@ -82,6 +83,71 @@ kernelFuncSignatureFromType funcType =
     { paramTypes = argTypes
     , returnType = retType
     }
+
+
+{-| Backend ABI policy for kernel function calls.
+
+    AllBoxed   -> All args and result are !eco.value in MLIR, regardless of
+                  the monomorphized Elm wrapper type. Used for kernels whose
+                  C++ implementation uniformly takes boxed uint64_t values
+                  (e.g., List.cons).
+
+    ElmDerived -> ABI is derived from the Elm wrapper's funcType via
+                  kernelFuncSignatureFromType + monoTypeToAbi. Used for
+                  kernels with typed C++ signatures (e.g., Basics.fdiv takes
+                  double, String.cons takes uint16_t).
+-}
+type KernelBackendAbiPolicy
+    = AllBoxed
+    | ElmDerived
+
+
+{-| Determine the backend ABI policy for a kernel call.
+
+Only kernels whose C++ implementation takes ALL arguments as boxed
+uint64_t (eco.value) and returns uint64_t should be marked AllBoxed.
+When in doubt, use ElmDerived (safe default — preserves current behavior).
+-}
+kernelBackendAbiPolicy : String -> String -> KernelBackendAbiPolicy
+kernelBackendAbiPolicy home name =
+    case ( home, name ) of
+        --
+        -- AllBoxed: C++ ABI is uniformly uint64_t for all params and return.
+        -- Audited against elm-kernel-cpp/src/KernelExports.h.
+        --
+        -- List: cons, fromArray, toArray, map2..map5, sortBy, sortWith
+        ( "List", _ ) ->
+            AllBoxed
+
+        -- Utils: compare, equal, notEqual, lt, le, gt, ge, append
+        ( "Utils", _ ) ->
+            AllBoxed
+
+        --
+        -- ElmDerived: C++ ABI has typed (non-uint64_t) params or returns.
+        -- ABI is derived from the Elm wrapper's funcType via monoTypeToAbi.
+        --
+        -- Basics:  double (trig, fdiv, toFloat), int64_t (idiv, modBy, floor, etc.)
+        -- Bitwise: all int64_t
+        -- Char:    uint16_t, int64_t
+        -- String:  length->int64_t, cons(uint16_t,...), slice(int64_t,int64_t,...)
+        -- Json:    decodeIndex(int64_t,...), encode(int64_t,...)
+        -- JsArray: uint32_t params (length, unsafeGet, unsafeSet, slice, appendN, etc.)
+        -- Browser: reload(bool), go(int64_t), setViewport(double,double)
+        -- Bytes:   int64_t offsets, bool endianness, double floats
+        -- Parser:  int64_t offsets
+        -- Regex:   infinity->double, int64_t counts
+        -- File:    size->int64_t, lastModified->int64_t
+        -- Process: sleep(double)
+        -- Time:    setInterval(double,...)
+        -- Debugger: download(int64_t,...)
+        -- Platform: sendToApp->void
+        --
+        -- Also ElmDerived (all uint64_t in C++ but no mismatch bug today):
+        -- Debug, Scheduler, VirtualDom, Url, Http
+        --
+        _ ->
+            ElmDerived
 
 
 {-| Check if a type is a type variable (MVar).
