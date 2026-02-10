@@ -1721,26 +1721,41 @@ sourceArityForExpr graph env expr =
             case sourceArityForExpr graph env func of
                 Just sourceArity ->
                     let
+                        argCount =
+                            List.length args
+
                         resultArity =
-                            sourceArity - List.length args
+                            sourceArity - argCount
                     in
                     if resultArity > 0 then
                         -- Partial application: remaining = source - applied
                         Just resultArity
 
                     else
-                        -- Saturated call returning a function.
-                        -- For known callees (user closures), use the body's first-stage arity.
-                        -- For nested calls or unknown callees, use first-stage of result type
-                        -- (assuming stage-curried closures).
-                        case closureBodyStageArities graph func of
-                            Just (firstStage :: _) ->
-                                -- Known callee: use first-stage arity from body
-                                Just firstStage
+                        -- Saturated or over-applied call returning a function.
+                        -- Use the body's stage arities and consume any excess args.
+                        let
+                            excessArgs =
+                                argCount - sourceArity
 
-                            Just [] ->
-                                -- Body is not a function
-                                Nothing
+                            -- Consume excess args from the returned closure's stage arities.
+                            -- For saturated calls (excessArgs == 0), returns the first stage arity.
+                            -- For over-applied calls (excessArgs > 0), subtracts consumed args.
+                            consumeFromStages excess stages =
+                                case stages of
+                                    [] ->
+                                        Nothing
+
+                                    stage :: rest ->
+                                        if excess >= stage then
+                                            consumeFromStages (excess - stage) rest
+
+                                        else
+                                            Just (stage - excess)
+                        in
+                        case closureBodyStageArities graph func of
+                            Just stages ->
+                                consumeFromStages excessArgs stages
 
                             Nothing ->
                                 -- Nested call or unknown callee.
@@ -1820,6 +1835,55 @@ closureBodyStageArities graph expr =
                 _ ->
                     Nothing
 
+        -- Extract the first Inline expression from a Decider tree.
+        -- When all case branches are simple (used once), the optimizer inlines them
+        -- directly into Leaf nodes as Inline expressions, leaving the jumps list empty.
+        firstInlineExpr : Mono.Decider Mono.MonoChoice -> Maybe Mono.MonoExpr
+        firstInlineExpr decider =
+            case decider of
+                Mono.Leaf (Mono.Inline inlineExpr) ->
+                    Just inlineExpr
+
+                Mono.Leaf (Mono.Jump _) ->
+                    Nothing
+
+                Mono.Chain _ yes no ->
+                    case firstInlineExpr yes of
+                        Just e ->
+                            Just e
+
+                        Nothing ->
+                            firstInlineExpr no
+
+                Mono.FanOut _ tests fallback ->
+                    let
+                        tryTests ts =
+                            case ts of
+                                [] ->
+                                    firstInlineExpr fallback
+
+                                ( _, d ) :: rest ->
+                                    case firstInlineExpr d of
+                                        Just e ->
+                                            Just e
+
+                                        Nothing ->
+                                            tryTests rest
+                    in
+                    tryTests tests
+
+        -- Try to get closure arity from a case expression, checking both jumps and inline decider leaves
+        getClosureArityFromCase : Mono.Decider Mono.MonoChoice -> List ( Int, Mono.MonoExpr ) -> Maybe (List Int)
+        getClosureArityFromCase decider jumps =
+            case jumps of
+                ( _, branchExpr ) :: _ ->
+                    getClosureArityFromExpr branchExpr
+
+                [] ->
+                    -- Jumps list empty: branches are inlined in the decider tree
+                    firstInlineExpr decider
+                        |> Maybe.andThen getClosureArityFromExpr
+
         -- Get stage arities from an expression's body
         getExprBodyArities : Mono.MonoExpr -> Maybe (List Int)
         getExprBodyArities e =
@@ -1829,12 +1893,12 @@ closureBodyStageArities graph expr =
                     -- If so, look at the actual closures in branches (after canonicalization)
                     -- rather than using the type, which may have a different staging.
                     case body of
-                        Mono.MonoCase _ _ _ jumps _ ->
-                            case jumps of
-                                ( _, branchExpr ) :: _ ->
-                                    getClosureArityFromExpr branchExpr
+                        Mono.MonoCase _ _ decider jumps _ ->
+                            case getClosureArityFromCase decider jumps of
+                                Just arities ->
+                                    Just arities
 
-                                [] ->
+                                Nothing ->
                                     Just (MonoReturnArity.collectStageArities (Mono.typeOf body))
 
                         Mono.MonoIf branches _ _ ->
@@ -1849,16 +1913,10 @@ closureBodyStageArities graph expr =
                             -- For regular closures, use the body's type
                             Just (MonoReturnArity.collectStageArities (Mono.typeOf body))
 
-                Mono.MonoCase _ _ _ jumps _ ->
+                Mono.MonoCase _ _ decider jumps _ ->
                     -- After canonicalization, all branches have the same staging.
-                    -- Look at the first jump's closure to get the actual staging.
-                    case jumps of
-                        ( _, branchExpr ) :: _ ->
-                            getClosureArityFromExpr branchExpr
-
-                        [] ->
-                            -- No jumps, use Nothing to trigger fallback
-                            Nothing
+                    -- Look at the first jump's closure or inline expression.
+                    getClosureArityFromCase decider jumps
 
                 Mono.MonoIf branches _ _ ->
                     -- Look at the first branch's expression for actual staging

@@ -1140,9 +1140,9 @@ generateFlattenedPartialApplication ctx func args resultType =
         ( argOps, argsWithTypes, ctx1 ) =
             generateExprListTyped funcResult.ctx args
 
-        -- 3. Box for closure boundary
+        -- 3. Box Bool for closure boundary (callee is a known external/kernel function)
         ( boxOps, boxedArgsWithTypes, ctx1b ) =
-            boxArgsForClosureBoundary ctx1 argsWithTypes
+            boxArgsForClosureBoundary False ctx1 argsWithTypes
 
         -- 4. Get total ABI arity from signature
         totalArity : Int
@@ -1265,10 +1265,9 @@ generateClosureApplication ctx func args resultType callInfo =
                     ( argOps, argsWithTypes, ctx1 ) =
                         generateExprListTyped funcResult.ctx args
 
-                    -- Box non-unboxable primitives (i1) to !eco.value for closure boundary
-                    -- Per REP_CLOSURE_001: Bool must be !eco.value at closure boundaries
+                    -- Box Bool (i1) to !eco.value at closure boundary per REP_CLOSURE_001
                     ( boxOps, boxedArgsWithTypes, ctx1b ) =
-                        boxArgsForClosureBoundary ctx1 argsWithTypes
+                        boxArgsForClosureBoundary False ctx1 argsWithTypes
 
                     -- Use precomputed staging metadata from CallInfo (CGEN_052)
                     -- initialRemaining = stage arity at this call site (sourceRemaining for applyByStages)
@@ -1295,17 +1294,29 @@ generateClosureApplication ctx func args resultType callInfo =
 
 {-| Box arguments for closure boundary.
 
-Per REP\_CLOSURE\_001, Bool (i1) must be !eco.value at closure boundaries.
-This function boxes any i1 values to !eco.value, leaving unboxable primitives
-(i64, f64, i16) and already-boxed values unchanged.
+When boxAllPrimitives is True (unknown callee), boxes ALL primitive types
+(i64, f64, i16, i1) to !eco.value since the target function's expected
+parameter types are unknown.
+
+When boxAllPrimitives is False (known callee), only boxes i1 (Bool) per
+REP\_CLOSURE\_001, leaving i64/f64/i16 as-is for known function signatures.
 
 -}
-boxArgsForClosureBoundary : Ctx.Context -> List ( String, MlirType ) -> ( List MlirOp, List ( String, MlirType ), Ctx.Context )
-boxArgsForClosureBoundary ctx argsWithTypes =
+boxArgsForClosureBoundary : Bool -> Ctx.Context -> List ( String, MlirType ) -> ( List MlirOp, List ( String, MlirType ), Ctx.Context )
+boxArgsForClosureBoundary boxAllPrimitives ctx argsWithTypes =
     List.foldl
         (\( var, mlirTy ) ( opsAcc, argsAcc, ctxAcc ) ->
-            if mlirTy == I1 then
-                -- Bool (i1) must be boxed to !eco.value at closure boundary
+            let
+                needsBoxing =
+                    if boxAllPrimitives then
+                        -- Unknown callee: box ALL primitives (i64, f64, i16, i1) to !eco.value
+                        not (Types.isEcoValueType mlirTy)
+
+                    else
+                        -- Known callee: only box Bool (i1) per REP_CLOSURE_001
+                        mlirTy == I1
+            in
+            if needsBoxing then
                 let
                     ( boxOps, boxedVar, ctx1 ) =
                         boxToEcoValue ctxAcc var mlirTy
@@ -1313,7 +1324,6 @@ boxArgsForClosureBoundary ctx argsWithTypes =
                 ( opsAcc ++ boxOps, argsAcc ++ [ ( boxedVar, Types.ecoValue ) ], ctx1 )
 
             else
-                -- Unboxable primitives (i64, f64, i16) stay as-is; !eco.value stays as-is
                 ( opsAcc, argsAcc ++ [ ( var, mlirTy ) ], ctxAcc )
         )
         ( [], [], ctx )
@@ -1894,10 +1904,9 @@ generateSaturatedCall ctx func args resultType callInfo =
                             ( argOps, argsWithTypes, ctx1 ) =
                                 generateExprListTyped ctx args
 
-                            -- Box non-unboxable primitives (i1) to !eco.value for closure boundary
-                            -- Per REP_CLOSURE_001: Bool must be !eco.value at closure boundaries
+                            -- Box Bool (i1) to !eco.value at closure boundary per REP_CLOSURE_001
                             ( boxOps, boxedArgsWithTypes, ctx1b ) =
-                                boxArgsForClosureBoundary ctx1 argsWithTypes
+                                boxArgsForClosureBoundary False ctx1 argsWithTypes
 
                             -- CGEN_052: Use precomputed staging metadata from CallInfo.
                             -- initialRemaining = stage arity at this call site (for applyByStages sourceRemaining)
@@ -1953,10 +1962,9 @@ generateSaturatedCall ctx func args resultType callInfo =
                     ( argOps, argsWithTypes, ctx1 ) =
                         generateExprListTyped funcResult.ctx args
 
-                    -- Box non-unboxable primitives (i1) to !eco.value for closure boundary
-                    -- Per REP_CLOSURE_001: Bool must be !eco.value at closure boundaries
+                    -- Box Bool (i1) to !eco.value at closure boundary per REP_CLOSURE_001
                     ( boxOps, boxedArgsWithTypes, ctx1b ) =
-                        boxArgsForClosureBoundary ctx1 argsWithTypes
+                        boxArgsForClosureBoundary False ctx1 argsWithTypes
 
                     -- CGEN_052: Use precomputed staging metadata from CallInfo.
                     -- initialRemaining = stage arity at this call site (for applyByStages sourceRemaining)
