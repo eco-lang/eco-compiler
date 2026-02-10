@@ -4,7 +4,7 @@ module ListFoldrTest exposing (main)
 -}
 
 -- CHECK: sum: 10
--- CHECK: concat: "cba"
+-- CHECK: concat: "abc"
 
 import Html exposing (text)
 

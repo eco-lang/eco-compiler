@@ -5,7 +5,7 @@ module ListFoldlTest exposing (main)
 
 -- CHECK: sum: 10
 -- CHECK: product: 24
--- CHECK: concat: "abc"
+-- CHECK: concat: "cba"
 
 import Html exposing (text)
 
