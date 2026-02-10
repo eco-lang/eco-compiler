@@ -233,11 +233,24 @@ extractType attr =
             Nothing
 
 
-{-| Get a boolean attribute value (interprets int as bool).
+{-| Get a boolean attribute value (handles both BoolAttr and IntAttr).
 -}
 getBoolAttr : String -> MlirOp -> Maybe Bool
 getBoolAttr key op =
-    getIntAttr key op |> Maybe.map (\n -> n /= 0)
+    Dict.get key op.attrs |> Maybe.andThen extractBool
+
+
+extractBool : MlirAttr -> Maybe Bool
+extractBool attr =
+    case attr of
+        BoolAttr b ->
+            Just b
+
+        IntAttr _ n ->
+            Just (n /= 0)
+
+        _ ->
+            Nothing
 
 
 

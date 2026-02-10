@@ -1865,6 +1865,35 @@ extern "C" double eco_cons_head_f64(uint64_t cons) {
     }
 }
 
+/// Gets the head of a Cons cell as an unboxed i16 (Elm Char).
+/// Handles both boxed and unboxed heads.
+extern "C" int16_t eco_cons_head_i16(uint64_t cons) {
+    HPointer hp;
+    memcpy(&hp, &cons, sizeof(hp));
+
+    // Resolve the Cons cell pointer.
+    void* obj = Allocator::instance().resolve(hp);
+    if (!obj) return 0;  // Should not happen for valid Cons
+
+    Cons* consCell = static_cast<Cons*>(obj);
+
+    // Check if head is unboxed (bit 0 of Header.unboxed field).
+    if (consCell->header.unboxed & 1) {
+        // Head is unboxed: return the i16 value directly.
+        return consCell->head.c;
+    } else {
+        // Head is boxed: resolve the HPointer and load from ElmChar.
+        HPointer headHp = consCell->head.p;
+        void* headObj = Allocator::instance().resolve(headHp);
+        if (!headObj) return 0;  // Should not happen
+
+        // ElmChar has layout: [Header:8][value:2][padding:6]
+        // value is at offset 8.
+        ElmChar* elmChar = static_cast<ElmChar*>(headObj);
+        return static_cast<int16_t>(elmChar->value);
+    }
+}
+
 //===----------------------------------------------------------------------===//
 // Arithmetic Helpers
 //===----------------------------------------------------------------------===//

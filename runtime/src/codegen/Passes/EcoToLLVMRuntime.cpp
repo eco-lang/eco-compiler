@@ -239,6 +239,14 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateConsHeadF64(OpBuilder &builder) const {
     return getOrCreateFunc(builder, "eco_cons_head_f64", funcTy);
 }
 
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateConsHeadI16(OpBuilder &builder) const {
+    // eco_cons_head_i16(cons: i64) -> i16
+    // Gets head of Cons cell (Char), handling both boxed and unboxed heads.
+    auto i16Ty = IntegerType::get(ctx, 16);
+    auto funcTy = LLVM::LLVMFunctionType::get(i16Ty, {I64_TY});
+    return getOrCreateFunc(builder, "eco_cons_head_i16", funcTy);
+}
+
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateCrash(OpBuilder &builder) const {
     // eco_crash(message_val: i64) -> void
     auto funcTy = LLVM::LLVMFunctionType::get(VOID_TY, {I64_TY});

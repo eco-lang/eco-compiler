@@ -310,6 +310,14 @@ int64_t eco_cons_head_i64(uint64_t cons);
 /// @return The head value as f64
 double eco_cons_head_f64(uint64_t cons);
 
+/// Gets the head of a Cons cell as an unboxed i16 (Elm Char).
+/// Handles both boxed and unboxed heads:
+/// - If head is unboxed: returns the value directly from Cons.head
+/// - If head is boxed: resolves the HPointer and loads from ElmChar.value
+/// @param cons HPointer (as uint64_t) to the Cons cell
+/// @return The head value as i16
+int16_t eco_cons_head_i16(uint64_t cons);
+
 //===----------------------------------------------------------------------===//
 // Arithmetic Helpers
 //===----------------------------------------------------------------------===//

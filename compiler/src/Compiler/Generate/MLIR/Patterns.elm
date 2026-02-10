@@ -84,28 +84,19 @@ generateMonoPath ctx path targetType =
                     case containerKind of
                         Mono.ListContainer ->
                             if index == 0 then
-                                -- List head - always stored as boxed !eco.value in heap
-                                if Types.isEcoValueType targetType then
-                                    -- Caller wants eco.value, project directly
-                                    let
-                                        ( ctx_, op ) =
-                                            Ops.ecoProjectListHead ctx2 resultVar Types.ecoValue subVar
-                                    in
-                                    ( [ op ], resultVar, ctx_ )
+                                -- List head projection. Element may be stored unboxed (Int, Float, Char)
+                                -- or boxed (!eco.value) depending on the element type.
+                                -- The runtime helper functions (eco_cons_head_i64, etc.) handle
+                                -- both boxed and unboxed storage transparently.
+                                let
+                                    -- Determine the MLIR type to project based on the element's MonoType
+                                    elementMlirType =
+                                        Types.monoTypeToOperand resultType
 
-                                else
-                                    -- Caller wants primitive, project as eco.value then unbox
-                                    let
-                                        ( boxedVar, ctxA ) =
-                                            Ctx.freshVar ctx2
-
-                                        ( ctxB, projectOp ) =
-                                            Ops.ecoProjectListHead ctxA boxedVar Types.ecoValue subVar
-
-                                        ( unboxOps, unboxedVar, ctxC ) =
-                                            Intrinsics.unboxToType ctxB boxedVar targetType
-                                    in
-                                    ( projectOp :: unboxOps, unboxedVar, ctxC )
+                                    ( ctx_, op ) =
+                                        Ops.ecoProjectListHead ctx2 resultVar elementMlirType subVar
+                                in
+                                ( [ op ], resultVar, ctx_ )
 
                             else
                                 -- List tail (index 1)
@@ -525,27 +516,14 @@ generateDTPath ctx root dtPath targetType =
                     case hint of
                         TypedPath.HintList ->
                             if fieldIndex == 0 then
-                                if Types.isEcoValueType targetType then
-                                    -- Caller wants eco.value, project directly
-                                    let
-                                        ( ctxL, op ) =
-                                            Ops.ecoProjectListHead ctx2 resultVar Types.ecoValue subVar
-                                    in
-                                    ( [ op ], resultVar, ctxL )
-
-                                else
-                                    -- Caller wants primitive, project as eco.value then unbox
-                                    let
-                                        ( boxedVar, ctxL1 ) =
-                                            Ctx.freshVar ctx2
-
-                                        ( ctxL2, projectOp ) =
-                                            Ops.ecoProjectListHead ctxL1 boxedVar Types.ecoValue subVar
-
-                                        ( unboxOps, unboxedVar, ctxL3 ) =
-                                            Intrinsics.unboxToType ctxL2 boxedVar targetType
-                                    in
-                                    ( projectOp :: unboxOps, unboxedVar, ctxL3 )
+                                -- List head projection. Project with the target type directly.
+                                -- The runtime helper functions (eco_cons_head_i64, etc.) handle
+                                -- both boxed and unboxed storage transparently.
+                                let
+                                    ( ctxL, op ) =
+                                        Ops.ecoProjectListHead ctx2 resultVar targetType subVar
+                                in
+                                ( [ op ], resultVar, ctxL )
 
                             else
                                 -- List tail (index 1)

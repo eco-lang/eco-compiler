@@ -217,6 +217,10 @@ void registerRuntimeSymbols(ExecutionEngine &engine) {
             llvm::orc::ExecutorSymbolDef(
                 llvm::orc::ExecutorAddr::fromPtr(&eco_cons_head_f64),
                 llvm::JITSymbolFlags::Exported);
+        symbolMap[interner("eco_cons_head_i16")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_cons_head_i16),
+                llvm::JITSymbolFlags::Exported);
 
         // =================================================================
         // ByteFusion Runtime Symbols (for fused Bytes.Encode/Decode)

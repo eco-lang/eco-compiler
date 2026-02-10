@@ -262,7 +262,7 @@ struct ListHeadOpLowering : public OpConversionPattern<ListHeadOp> {
         // Check the original ECO result type to decide how to extract the head.
         Type origResultType = op.getResult().getType();
 
-        // For primitive types (i64, f64), use runtime helpers that handle
+        // For primitive types (i64, f64, i16), use runtime helpers that handle
         // both boxed and unboxed heads correctly.
         if (origResultType.isInteger(64)) {
             auto helperFunc = runtime.getOrCreateConsHeadI64(rewriter);
@@ -272,6 +272,12 @@ struct ListHeadOpLowering : public OpConversionPattern<ListHeadOp> {
         }
         if (origResultType.isF64()) {
             auto helperFunc = runtime.getOrCreateConsHeadF64(rewriter);
+            auto call = rewriter.create<LLVM::CallOp>(loc, helperFunc, ValueRange{input});
+            rewriter.replaceOp(op, call.getResult());
+            return success();
+        }
+        if (origResultType.isInteger(16)) {
+            auto helperFunc = runtime.getOrCreateConsHeadI16(rewriter);
             auto call = rewriter.create<LLVM::CallOp>(loc, helperFunc, ValueRange{input});
             rewriter.replaceOp(op, call.getResult());
             return success();

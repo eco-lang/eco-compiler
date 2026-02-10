@@ -648,19 +648,36 @@ generateList ctx items listType =
                                 result =
                                     generateExpr accCtx item
 
-                                -- Box primitive elements before storing in the list
-                                ( boxOps, boxedVar, ctx3 ) =
-                                    boxToEcoValue result.ctx result.resultVar result.resultType
-
-                                ( consVar, ctx4 ) =
-                                    Ctx.freshVar ctx3
-
-                                -- Use eco.construct.list to create cons cells with proper Cons layout
-                                -- head_unboxed=false since we box all list elements
-                                ( ctx5, consOp ) =
-                                    Ops.ecoConstructList ctx4 consVar ( boxedVar, Types.ecoValue ) ( tailVar, Types.ecoValue ) False
+                                -- Check if element can be stored unboxed based on ACTUAL SSA type
+                                -- (not MonoType, which may not match SSA type in all cases)
+                                headUnboxed : Bool
+                                headUnboxed =
+                                    Types.isUnboxable result.resultType
                             in
-                            ( accOps ++ result.ops ++ boxOps ++ [ consOp ], consVar, ctx5 )
+                            if headUnboxed then
+                                -- Store element unboxed directly (no boxing needed)
+                                let
+                                    ( consVar, ctx3 ) =
+                                        Ctx.freshVar result.ctx
+
+                                    ( ctx4, consOp ) =
+                                        Ops.ecoConstructList ctx3 consVar ( result.resultVar, result.resultType ) ( tailVar, Types.ecoValue ) True
+                                in
+                                ( accOps ++ result.ops ++ [ consOp ], consVar, ctx4 )
+
+                            else
+                                -- Box element before storing in the list
+                                let
+                                    ( boxOps, boxedVar, ctx3 ) =
+                                        boxToEcoValue result.ctx result.resultVar result.resultType
+
+                                    ( consVar, ctx4 ) =
+                                        Ctx.freshVar ctx3
+
+                                    ( ctx5, consOp ) =
+                                        Ops.ecoConstructList ctx4 consVar ( boxedVar, Types.ecoValue ) ( tailVar, Types.ecoValue ) False
+                                in
+                                ( accOps ++ result.ops ++ boxOps ++ [ consOp ], consVar, ctx5 )
                         )
                         ( [], nilVar, ctx2 )
                         items
