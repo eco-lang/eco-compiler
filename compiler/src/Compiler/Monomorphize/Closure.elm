@@ -2,6 +2,7 @@ module Compiler.Monomorphize.Closure exposing
     ( freshParams
     , extractRegion
     , computeClosureCaptures
+    , findFreeLocals
     , flattenFunctionType
     )
 
@@ -25,7 +26,7 @@ has been moved to GlobalOpt.MonoGlobalOptimize as part of the staging consolidat
 
 # Free Variable Analysis
 
-@docs computeClosureCaptures
+@docs computeClosureCaptures, findFreeLocals
 
 
 # Type Utilities
@@ -39,6 +40,7 @@ import Compiler.Data.Name exposing (Name)
 import Compiler.Reporting.Annotation as A
 import Data.Map as Dict exposing (Dict)
 import Data.Set as EverySet exposing (EverySet)
+import Utils.Crash
 
 
 
@@ -163,14 +165,16 @@ computeClosureCaptures params body =
             collectVarTypes body
 
         captureFor name =
-            let
-                -- Look up the actual type from the body expression.
-                -- If not found (shouldn't happen for well-typed code), fall back to MUnit.
-                actualType =
-                    Dict.get identity name varTypeMap
-                        |> Maybe.withDefault Mono.MUnit
-            in
-            ( name, Mono.MonoVarLocal name actualType, False )
+            case Dict.get identity name varTypeMap of
+                Just actualType ->
+                    ( name, Mono.MonoVarLocal name actualType, False )
+
+                Nothing ->
+                    Utils.Crash.crash
+                        ("computeClosureCaptures: missing type for captured var `"
+                            ++ name
+                            ++ "`; this violates Mono typing invariants"
+                        )
     in
     List.map captureFor freeNames
 
@@ -303,8 +307,40 @@ findFreeLocals bound expr =
         Mono.MonoTupleCreate _ exprs _ ->
             List.concatMap (findFreeLocals bound) exprs
 
+        Mono.MonoDestruct (Mono.MonoDestructor name path _) body _ ->
+            let
+                pathFree =
+                    findPathFreeLocals bound path
+
+                newBound =
+                    EverySet.insert identity name bound
+            in
+            pathFree ++ findFreeLocals newBound body
+
         _ ->
             []
+
+
+{-| Find free variables referenced in a MonoPath (via MonoRoot).
+-}
+findPathFreeLocals : EverySet String Name -> Mono.MonoPath -> List Name
+findPathFreeLocals bound path =
+    case path of
+        Mono.MonoRoot name _ ->
+            if EverySet.member identity name bound then
+                []
+
+            else
+                [ name ]
+
+        Mono.MonoIndex _ _ _ inner ->
+            findPathFreeLocals bound inner
+
+        Mono.MonoField _ _ inner ->
+            findPathFreeLocals bound inner
+
+        Mono.MonoUnbox _ inner ->
+            findPathFreeLocals bound inner
 
 
 {-| Collect all definitions from a let-chain, returning them along with the final body.

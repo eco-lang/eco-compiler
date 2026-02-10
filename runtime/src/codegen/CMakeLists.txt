@@ -186,6 +186,7 @@ add_mlir_library(EcoPasses
     Passes/JoinpointNormalization.cpp
     Passes/EcoControlFlowToSCF.cpp
     Passes/UndefinedFunction.cpp
+    Passes/CheckEcoClosureCaptures.cpp
     # EcoToLLVM modular pass files
     Passes/EcoToLLVM.cpp
     Passes/EcoToLLVMRuntime.cpp

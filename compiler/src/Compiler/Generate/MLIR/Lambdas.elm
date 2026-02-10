@@ -9,12 +9,16 @@ with typed ABIs (parameters in their actual types, not all boxed).
 
 -}
 
+import Compiler.Data.Name exposing (Name)
 import Compiler.Generate.MLIR.Context as Ctx
 import Compiler.Generate.MLIR.Expr as Expr
 import Compiler.Generate.MLIR.Ops as Ops
 import Compiler.Generate.MLIR.Types as Types
+import Compiler.Monomorphize.Closure as Closure
+import Data.Set as EverySet exposing (EverySet)
 import Dict
 import Mlir.Mlir exposing (MlirOp, MlirRegion, MlirType)
+import Utils.Crash exposing (crash)
 
 
 
@@ -38,6 +42,9 @@ processLambdas ctx =
                     List.foldl
                         (\lambda ( accOps, accCtx ) ->
                             let
+                                _ =
+                                    validatePendingLambdaFreeVars lambda
+
                                 ( op, newCtx ) =
                                     generateLambdaFunc accCtx lambda
                             in
@@ -50,6 +57,46 @@ processLambdas ctx =
                     processLambdas ctxAfter
             in
             ( lambdaOps ++ moreOps, finalCtx )
+
+
+{-| Validate CGEN\_CLOSURE\_003: all free variables in a lambda body must be
+in params, captures, or siblingMappings.
+-}
+validatePendingLambdaFreeVars : Ctx.PendingLambda -> ()
+validatePendingLambdaFreeVars lambda =
+    let
+        paramNames =
+            List.map Tuple.first lambda.params
+
+        captureNames =
+            List.map Tuple.first lambda.captures
+
+        siblingNames =
+            Dict.keys lambda.siblingMappings
+
+        allowed =
+            EverySet.fromList identity (paramNames ++ captureNames ++ siblingNames)
+
+        -- Compute free variables of the body with empty initial bound,
+        -- then filter against allowed names
+        freeInBody =
+            Closure.findFreeLocals EverySet.empty lambda.body
+
+        badFreeVars =
+            List.filter (\name -> not (EverySet.member identity name allowed)) freeInBody
+    in
+    case badFreeVars of
+        [] ->
+            ()
+
+        _ ->
+            crash
+                ("CGEN_CLOSURE_003 violated for lambda "
+                    ++ lambda.name
+                    ++ ": free variables not in params/captures/siblings = ["
+                    ++ String.join ", " badFreeVars
+                    ++ "]"
+                )
 
 
 generateLambdaFunc : Ctx.Context -> Ctx.PendingLambda -> ( MlirOp, Ctx.Context )

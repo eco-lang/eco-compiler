@@ -52,6 +52,11 @@ void buildEcoToEcoPipeline(PassManager &pm) {
     // pm.addPass(eco::createConstructLoweringPass());
     pm.addPass(eco::createRCEliminationPass());
 
+    // Verify closure capture integrity (CGEN_CLOSURE_003):
+    // papCreate consistency + no cross-function SSA refs in lambda bodies.
+    // Must run early, before PAP simplification may rewrite closure ops.
+    pm.addPass(eco::createCheckEcoClosureCapturesPass());
+
     // PAP simplification: fuse closures, convert saturated PAPs to direct calls
     pm.addPass(eco::createEcoPAPSimplifyPass());
 

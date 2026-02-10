@@ -36,6 +36,11 @@ std::unique_ptr<mlir::Pass> createRCEliminationPass();
 // Fails the build if any undefined functions are found.
 std::unique_ptr<mlir::Pass> createUndefinedFunctionPass();
 
+// Validates closure capture integrity (CGEN_CLOSURE_003):
+// 1. eco.papCreate num_captured and operand types match target function signature.
+// 2. Lambda func.func bodies (matching *_lambda_*) have no cross-function SSA refs.
+std::unique_ptr<mlir::Pass> createCheckEcoClosureCapturesPass();
+
 // Optimizes partial application patterns:
 // - Converts saturated papCreate+papExtend to direct calls (P1)
 // - Fuses papExtend chains (P2)

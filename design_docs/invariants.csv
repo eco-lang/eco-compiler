@@ -24,6 +24,8 @@ REP_CLOSURE_001;CrossPhase;Closures;enforced;Closure objects capture values usin
 
 REP_CLOSURE_002;CrossPhase;Closures;enforced;Closure application preserves captured value representation: captured unboxed fields remain unboxed across partial application extension and captured boxed values remain !eco.value, with bitmap merging performed by the runtime;CGEN_003|CGEN_034|CGEN_049
 
+CGEN_CLOSURE_003;Mono+MLIR;Closures;enforced;For every closure lambda FV(body) is a subset of params union captures union siblingMappings keys: all free variables in the body must be either parameters or explicitly captured or mutually-recursive siblings. Prevents missing captures and cross-function SSA leakage into lambda bodies;Compiler.Monomorphize.Closure|Compiler.Generate.MLIR.Lambdas|CheckEcoClosureCaptures.cpp
+
 REP_CONSTANT_001;Runtime_Heap;Constants;enforced;Well-known constants such as Unit, True, False, Nil, Nothing, EmptyString, and EmptyRec are represented as HPointer values with nonzero constant bits and are never heap allocated; GC and debug logic must treat such values as non-heap and must not attempt to trace them;HEAP_010|HEAP_014|CGEN_019
 
 REP_CONSTANT_002;CrossPhase;Constants;enforced;SSA values of type !eco.value may denote either heap pointers or embedded constants, and codegen, GC, and runtime helpers must rely on HPointer constant bits rather than pointer range checks to distinguish them;HEAP_010|HEAP_014|XPHASE_002

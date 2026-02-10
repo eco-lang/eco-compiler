@@ -755,15 +755,12 @@ generateClosure ctx closureInfo body monoType =
                 captureVarsWithTypes
                 |> List.foldl Bitwise.or 0
 
-        -- Use currentLetSiblings if inside a let-rec group, otherwise fall back to varMappings
-        -- This ensures closures in mutually recursive let bindings see all siblings
+        -- Use currentLetSiblings only for mutually recursive let bindings.
+        -- Do NOT fall back to varMappings; non-recursive closures must capture
+        -- all free variables explicitly (CGEN_CLOSURE_003).
         baseSiblings : Dict.Dict String Ctx.VarInfo
         baseSiblings =
-            if Dict.isEmpty ctx.currentLetSiblings then
-                ctx.varMappings
-
-            else
-                ctx.currentLetSiblings
+            ctx.currentLetSiblings
 
         pendingLambda : Ctx.PendingLambda
         pendingLambda =
@@ -2415,9 +2412,24 @@ generateLet ctx def body =
         groupVarMappings =
             addPlaceholderMappings boundNames ctx
 
-        -- Set both varMappings and currentLetSiblings to the group environment
+        -- Only include the let-bound names in currentLetSiblings (not all varMappings).
+        -- This prevents outer-scope variables from leaking into lambda siblingMappings,
+        -- which would cause cross-function SSA references (CGEN_CLOSURE_003).
+        letBoundSiblings =
+            List.foldl
+                (\name acc ->
+                    case Dict.get name groupVarMappings.varMappings of
+                        Just info ->
+                            Dict.insert name info acc
+
+                        Nothing ->
+                            acc
+                )
+                Dict.empty
+                boundNames
+
         ctxWithPlaceholders =
-            { groupVarMappings | currentLetSiblings = groupVarMappings.varMappings }
+            { groupVarMappings | currentLetSiblings = letBoundSiblings }
     in
     case def of
         Mono.MonoDef name expr ->
