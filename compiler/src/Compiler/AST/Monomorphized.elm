@@ -10,6 +10,7 @@ module Compiler.AST.Monomorphized exposing
     , toComparableSpecKey, toComparableMonoType
     , getMonoPathType
     , monoTypeToDebugString
+    , forceCNumberToInt
     , toComparableGlobal, toComparableLambdaId
       -- Staging/Segmentation helpers
     , Segmentation
@@ -216,6 +217,66 @@ type Constraint
 -- ============================================================================
 -- ====== LAMBDA SETS ======
 -- ============================================================================
+
+
+{-| Force all numeric-constrained type variables (MVar _ CNumber)
+to concrete Int (MInt) inside a MonoType.
+
+Backend policy: when we have an ambiguous `number` that has not
+been resolved to Float by constraints, we default it to Int.
+This is sound for ECO because Elm `number` is morally "Int or Float",
+and we only commit to Int where no Float-specific behaviour is required.
+
+IMPORTANT: This does NOT affect MFloat or Float-typed code. Only
+unresolved MVar _ CNumber is converted. Float-specific operations
+(Basics./, trig functions, etc.) have canonical Float types and
+resolve to MFloat directly without going through CNumber.
+
+-}
+forceCNumberToInt : MonoType -> MonoType
+forceCNumberToInt monoType =
+    case monoType of
+        MVar _ CNumber ->
+            MInt
+
+        MVar name CEcoValue ->
+            MVar name CEcoValue
+
+        MList elemType ->
+            MList (forceCNumberToInt elemType)
+
+        MFunction args result ->
+            MFunction
+                (List.map forceCNumberToInt args)
+                (forceCNumberToInt result)
+
+        MTuple elems ->
+            MTuple (List.map forceCNumberToInt elems)
+
+        MRecord fields ->
+            MRecord (Dict.map (\_ t -> forceCNumberToInt t) fields)
+
+        MCustom can name args ->
+            MCustom can name (List.map forceCNumberToInt args)
+
+        -- Primitives unchanged (including MFloat!)
+        MInt ->
+            MInt
+
+        MFloat ->
+            MFloat
+
+        MBool ->
+            MBool
+
+        MChar ->
+            MChar
+
+        MString ->
+            MString
+
+        MUnit ->
+            MUnit
 
 
 {-| Identifier for lambda functions in lambda sets, distinguishing named functions from closures.

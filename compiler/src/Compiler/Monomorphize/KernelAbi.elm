@@ -1,6 +1,7 @@
 module Compiler.Monomorphize.KernelAbi exposing
     ( KernelAbiMode(..), deriveKernelAbiMode
     , canTypeToMonoType_preserveVars, canTypeToMonoType_numberBoxed
+    , containerSpecializedKernels, comparePair
     )
 
 {-| Kernel ABI type derivation for monomorphization.
@@ -116,6 +117,22 @@ numberBoxedKernels =
         , ( "Basics", "sub" )
         , ( "Basics", "mul" )
         , ( "Basics", "pow" )
+        ]
+
+
+{-| Kernels whose container element representation we want to specialize
+based on call-site types.
+
+These kernels use PreserveVars mode but can benefit from element-aware
+specialization when the call-site provides fully monomorphic types.
+
+Start small and expand incrementally after invariant tests pass.
+
+-}
+containerSpecializedKernels : EverySet (List String) ( String, String )
+containerSpecializedKernels =
+    EverySet.fromList comparePair
+        [ ( "List", "cons" )
         ]
 
 

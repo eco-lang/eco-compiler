@@ -28,6 +28,7 @@ import Compiler.Monomorphize.State exposing (MonoState, Substitution, VarTypes, 
 import Compiler.Monomorphize.TypeSubst as TypeSubst
 import Compiler.Reporting.Annotation as A
 import Data.Map as Dict exposing (Dict)
+import Data.Set as EverySet exposing (EverySet)
 import System.TypeCheck.IO as IO
 import Utils.Crash
 
@@ -99,7 +100,7 @@ specializeLambda lambdaExpr canType subst state =
         -- GlobalOpt (GOPT_001) will flatten: MFunction [a, b] c.
         monoType0 : Mono.MonoType
         monoType0 =
-            TypeSubst.applySubst subst canType
+            Mono.forceCNumberToInt (TypeSubst.applySubst subst canType)
 
         -- 2. Extract params and body directly (no peelFunctionChain).
         ( params, bodyExpr ) =
@@ -132,7 +133,7 @@ specializeLambda lambdaExpr canType subst state =
         monoParams =
             List.map
                 (\( name, paramCanType ) ->
-                    ( name, TypeSubst.applySubst subst paramCanType )
+                    ( name, Mono.forceCNumberToInt (TypeSubst.applySubst subst paramCanType) )
                 )
                 params
 
@@ -221,7 +222,7 @@ specializeNode ctorName node requestedMonoType state =
                     TypeSubst.unify canType requestedMonoType
 
                 ctorMonoType =
-                    TypeSubst.applySubst subst canType
+                    Mono.forceCNumberToInt (TypeSubst.applySubst subst canType)
 
                 tag =
                     Index.toMachine index
@@ -237,7 +238,7 @@ specializeNode ctorName node requestedMonoType state =
         TOpt.Enum tag canType ->
             let
                 monoType =
-                    TypeSubst.applySubst (TypeSubst.unify canType requestedMonoType) canType
+                    Mono.forceCNumberToInt (TypeSubst.applySubst (TypeSubst.unify canType requestedMonoType) canType)
             in
             ( Mono.MonoEnum (Index.toMachine tag) monoType, state )
 
@@ -411,7 +412,7 @@ specializeFunc requestedCanonical requestedName requestedMonoType sharedSubst de
             getDefCanonicalType def
 
         monoTypeFromDef =
-            TypeSubst.applySubst sharedSubst canType
+            Mono.forceCNumberToInt (TypeSubst.applySubst sharedSubst canType)
 
         -- For the requested function in this cycle, use the exact MonoType
         -- from the worklist (requestedMonoType) as the specialization key.
@@ -453,7 +454,7 @@ specializeFuncDefInCycle subst def state =
         TOpt.Def _ _ expr canType ->
             let
                 monoType =
-                    TypeSubst.applySubst subst canType
+                    Mono.forceCNumberToInt (TypeSubst.applySubst subst canType)
 
                 ( monoExpr, state1 ) =
                     specializeExpr expr subst state
@@ -501,7 +502,7 @@ specializeFuncDefInCycle subst def state =
                 -- Context.extractNodeSignature expects this full function type and extracts
                 -- the actual return type from it.
                 monoFuncType =
-                    TypeSubst.applySubst augmentedSubst returnType
+                    Mono.forceCNumberToInt (TypeSubst.applySubst augmentedSubst returnType)
             in
             ( Mono.MonoTailFunc monoArgs monoBody monoFuncType, state1 )
 
@@ -551,7 +552,7 @@ specializeExpr expr subst state =
         TOpt.Int _ value canType ->
             let
                 monoType =
-                    TypeSubst.applySubst subst canType
+                    Mono.forceCNumberToInt (TypeSubst.applySubst subst canType)
             in
             case monoType of
                 Mono.MFloat ->
@@ -563,44 +564,44 @@ specializeExpr expr subst state =
         TOpt.Float _ value canType ->
             let
                 monoType =
-                    TypeSubst.applySubst subst canType
+                    Mono.forceCNumberToInt (TypeSubst.applySubst subst canType)
             in
             ( Mono.MonoLiteral (Mono.LFloat value) monoType, state )
 
         TOpt.VarLocal name canType ->
             let
                 monoType =
-                    TypeSubst.applySubst subst canType
+                    Mono.forceCNumberToInt (TypeSubst.applySubst subst canType)
             in
             ( Mono.MonoVarLocal name monoType, state )
 
         TOpt.TrackedVarLocal _ name canType ->
             let
                 monoType =
-                    TypeSubst.applySubst subst canType
+                    Mono.forceCNumberToInt (TypeSubst.applySubst subst canType)
             in
             ( Mono.MonoVarLocal name monoType, state )
 
         TOpt.VarGlobal region global canType ->
             let
                 monoType0 =
-                    TypeSubst.applySubst subst canType
+                    Mono.forceCNumberToInt (TypeSubst.applySubst subst canType)
 
                 monoType =
                     case monoType0 of
                         Mono.MVar _ _ ->
                             case Dict.get TOpt.toComparableGlobal global state.toptNodes of
                                 Just (TOpt.Define _ _ defCanType) ->
-                                    TypeSubst.applySubst subst defCanType
+                                    Mono.forceCNumberToInt (TypeSubst.applySubst subst defCanType)
 
                                 Just (TOpt.TrackedDefine _ _ _ defCanType) ->
-                                    TypeSubst.applySubst subst defCanType
+                                    Mono.forceCNumberToInt (TypeSubst.applySubst subst defCanType)
 
                                 Just (TOpt.Enum _ enumCanType) ->
-                                    TypeSubst.applySubst subst enumCanType
+                                    Mono.forceCNumberToInt (TypeSubst.applySubst subst enumCanType)
 
                                 Just (TOpt.Ctor _ _ ctorCanType) ->
-                                    TypeSubst.applySubst subst ctorCanType
+                                    Mono.forceCNumberToInt (TypeSubst.applySubst subst ctorCanType)
 
                                 _ ->
                                     monoType0
@@ -625,14 +626,14 @@ specializeExpr expr subst state =
         TOpt.VarEnum region global _ canType ->
             let
                 monoType0 =
-                    TypeSubst.applySubst subst canType
+                    Mono.forceCNumberToInt (TypeSubst.applySubst subst canType)
 
                 monoType =
                     case monoType0 of
                         Mono.MVar _ _ ->
                             case Dict.get TOpt.toComparableGlobal global state.toptNodes of
                                 Just (TOpt.Enum _ enumCanType) ->
-                                    TypeSubst.applySubst subst enumCanType
+                                    Mono.forceCNumberToInt (TypeSubst.applySubst subst enumCanType)
 
                                 _ ->
                                     monoType0
@@ -657,7 +658,7 @@ specializeExpr expr subst state =
         TOpt.VarBox region global canType ->
             let
                 monoType =
-                    TypeSubst.applySubst subst canType
+                    Mono.forceCNumberToInt (TypeSubst.applySubst subst canType)
 
                 monoGlobal =
                     toptGlobalToMono global
@@ -676,7 +677,7 @@ specializeExpr expr subst state =
         TOpt.VarCycle region canonical name canType ->
             let
                 monoType =
-                    TypeSubst.applySubst subst canType
+                    Mono.forceCNumberToInt (TypeSubst.applySubst subst canType)
 
                 monoGlobal =
                     Mono.Global canonical name
@@ -709,7 +710,7 @@ specializeExpr expr subst state =
         TOpt.List region exprs canType ->
             let
                 monoType =
-                    TypeSubst.applySubst subst canType
+                    Mono.forceCNumberToInt (TypeSubst.applySubst subst canType)
 
                 ( monoExprs, stateAfter ) =
                     specializeExprs exprs subst state
@@ -736,7 +737,7 @@ specializeExpr expr subst state =
                             TypeSubst.unifyFuncCall funcCanType argTypes canType subst
 
                         funcMonoType =
-                            TypeSubst.applySubst callSubst funcCanType
+                            Mono.forceCNumberToInt (TypeSubst.applySubst callSubst funcCanType)
 
                         paramTypes =
                             TypeSubst.extractParamTypes funcMonoType
@@ -745,7 +746,7 @@ specializeExpr expr subst state =
                             resolveProcessedArgs processedArgs paramTypes callSubst state1
 
                         resultMonoType =
-                            TypeSubst.applySubst callSubst canType
+                            Mono.forceCNumberToInt (TypeSubst.applySubst callSubst canType)
 
                         monoGlobal =
                             toptGlobalToMono global
@@ -779,7 +780,7 @@ specializeExpr expr subst state =
                             resolveProcessedArgs processedArgs paramTypes callSubst state1
 
                         resultMonoType =
-                            TypeSubst.applySubst callSubst canType
+                            Mono.forceCNumberToInt (TypeSubst.applySubst callSubst canType)
 
                         monoFunc =
                             Mono.MonoVarKernel funcRegion home name funcMonoType
@@ -801,7 +802,7 @@ specializeExpr expr subst state =
                             resolveProcessedArgs processedArgs paramTypes callSubst state1
 
                         resultMonoType =
-                            TypeSubst.applySubst callSubst canType
+                            Mono.forceCNumberToInt (TypeSubst.applySubst callSubst canType)
 
                         monoFunc =
                             Mono.MonoVarKernel funcRegion "Debug" name funcMonoType
@@ -823,7 +824,7 @@ specializeExpr expr subst state =
 
                         -- Monomorphized function type for this *call*, with call-site constraints.
                         funcMonoType =
-                            TypeSubst.applySubst callSubst funcCanType
+                            Mono.forceCNumberToInt (TypeSubst.applySubst callSubst funcCanType)
 
                         -- Parameter types derived from the unified function type.
                         paramTypes =
@@ -839,14 +840,14 @@ specializeExpr expr subst state =
 
                         -- Call result type, also under the unified substitution.
                         resultMonoType =
-                            TypeSubst.applySubst callSubst canType
+                            Mono.forceCNumberToInt (TypeSubst.applySubst callSubst canType)
                     in
                     ( Mono.MonoCall region monoFunc monoArgs resultMonoType Mono.defaultCallInfo, state3 )
 
         TOpt.TailCall name args canType ->
             let
                 monoType =
-                    TypeSubst.applySubst subst canType
+                    Mono.forceCNumberToInt (TypeSubst.applySubst subst canType)
 
                 ( monoArgs, stateAfter ) =
                     specializeNamedExprs args subst state
@@ -856,7 +857,7 @@ specializeExpr expr subst state =
         TOpt.If branches final canType ->
             let
                 monoType =
-                    TypeSubst.applySubst subst canType
+                    Mono.forceCNumberToInt (TypeSubst.applySubst subst canType)
 
                 ( monoBranches, state1 ) =
                     specializeBranches branches subst state
@@ -869,7 +870,7 @@ specializeExpr expr subst state =
         TOpt.Let def body canType ->
             let
                 monoType =
-                    TypeSubst.applySubst subst canType
+                    Mono.forceCNumberToInt (TypeSubst.applySubst subst canType)
 
                 ( monoDef, state1 ) =
                     specializeDef def subst state
@@ -881,7 +882,7 @@ specializeExpr expr subst state =
                     getDefCanonicalType def
 
                 defMonoType =
-                    TypeSubst.applySubst subst defCanType
+                    Mono.forceCNumberToInt (TypeSubst.applySubst subst defCanType)
 
                 stateWithVar =
                     { state1 | varTypes = Dict.insert identity defName defMonoType state1.varTypes }
@@ -894,7 +895,7 @@ specializeExpr expr subst state =
         TOpt.Destruct destructor body canType ->
             let
                 monoType =
-                    TypeSubst.applySubst subst canType
+                    Mono.forceCNumberToInt (TypeSubst.applySubst subst canType)
 
                 monoDestructor =
                     specializeDestructor destructor subst state.varTypes state.globalTypeEnv
@@ -915,7 +916,7 @@ specializeExpr expr subst state =
             -- Here we simply specialize the branches and use the type from the substitution.
             let
                 monoTypeFromCan =
-                    TypeSubst.applySubst subst canType
+                    Mono.forceCNumberToInt (TypeSubst.applySubst subst canType)
 
                 initialVarTypes =
                     state.varTypes
@@ -946,7 +947,7 @@ specializeExpr expr subst state =
             -- participates in layout-dependent operations (e.g., dead code or debug output).
             let
                 monoType =
-                    TypeSubst.applySubst subst canType
+                    Mono.forceCNumberToInt (TypeSubst.applySubst subst canType)
 
                 accessorGlobal =
                     Mono.Accessor fieldName
@@ -965,7 +966,7 @@ specializeExpr expr subst state =
         TOpt.Access record _ fieldName canType ->
             let
                 monoType =
-                    TypeSubst.applySubst subst canType
+                    Mono.forceCNumberToInt (TypeSubst.applySubst subst canType)
 
                 ( monoRecord, stateAfter ) =
                     specializeExpr record subst state
@@ -975,7 +976,7 @@ specializeExpr expr subst state =
         TOpt.Update _ record updates canType ->
             let
                 monoType =
-                    TypeSubst.applySubst subst canType
+                    Mono.forceCNumberToInt (TypeSubst.applySubst subst canType)
 
                 ( monoRecord, state1 ) =
                     specializeExpr record subst state
@@ -988,7 +989,7 @@ specializeExpr expr subst state =
         TOpt.Record fields canType ->
             let
                 monoType =
-                    TypeSubst.applySubst subst canType
+                    Mono.forceCNumberToInt (TypeSubst.applySubst subst canType)
 
                 ( monoFields, stateAfter ) =
                     specializeRecordFields fields subst state
@@ -998,7 +999,7 @@ specializeExpr expr subst state =
         TOpt.TrackedRecord _ fields canType ->
             let
                 monoType =
-                    TypeSubst.applySubst subst canType
+                    Mono.forceCNumberToInt (TypeSubst.applySubst subst canType)
 
                 ( monoFields, stateAfter ) =
                     specializeTrackedRecordFields fields subst state
@@ -1011,7 +1012,7 @@ specializeExpr expr subst state =
         TOpt.Tuple region a b rest canType ->
             let
                 monoType =
-                    TypeSubst.applySubst subst canType
+                    Mono.forceCNumberToInt (TypeSubst.applySubst subst canType)
 
                 ( monoA, state1 ) =
                     specializeExpr a subst state
@@ -1074,7 +1075,7 @@ processCallArgs args subst state =
                         -- Type for unification only; may have incomplete row.
                         -- We will NOT use this to derive the accessor's final MonoType.
                         monoType =
-                            TypeSubst.applySubst subst canType
+                            Mono.forceCNumberToInt (TypeSubst.applySubst subst canType)
                     in
                     ( PendingAccessor region fieldName canType :: accArgs
                     , monoType :: accTypes
@@ -1091,7 +1092,7 @@ processCallArgs args subst state =
                             let
                                 -- Type for unification only; we'll re-derive after call-site unification.
                                 monoType =
-                                    TypeSubst.applySubst subst canType
+                                    Mono.forceCNumberToInt (TypeSubst.applySubst subst canType)
                             in
                             ( PendingKernel region home name canType :: accArgs
                             , monoType :: accTypes
@@ -1420,7 +1421,7 @@ specializeDestructor (TOpt.Destructor name path canType) subst varTypes globalTy
             specializePath path subst varTypes globalTypeEnv
 
         monoType =
-            TypeSubst.applySubst subst canType
+            Mono.forceCNumberToInt (TypeSubst.applySubst subst canType)
     in
     Mono.MonoDestructor name monoPath monoType
 
@@ -1594,7 +1595,7 @@ computeCustomFieldType globalTypeEnv ctorName index containerType =
                                             List.map2 Tuple.pair unionData.vars typeArgs
                                                 |> List.foldl (\( varName, monoArg ) acc -> Dict.insert identity varName monoArg acc) Dict.empty
                                     in
-                                    TypeSubst.applySubst typeVarSubst canArgType
+                                    Mono.forceCNumberToInt (TypeSubst.applySubst typeVarSubst canArgType)
 
                                 [] ->
                                     Utils.Crash.crash ("Specialize.computeCustomFieldType: Constructor arg index " ++ String.fromInt index ++ " out of bounds for " ++ ctorName)
@@ -1637,7 +1638,7 @@ computeUnboxResultType globalTypeEnv containerType =
                                             List.map2 Tuple.pair unionData.vars typeArgs
                                                 |> List.foldl (\( varName, monoArg ) acc -> Dict.insert identity varName monoArg acc) Dict.empty
                                     in
-                                    TypeSubst.applySubst typeVarSubst canArgType
+                                    Mono.forceCNumberToInt (TypeSubst.applySubst typeVarSubst canArgType)
 
                                 _ ->
                                     Utils.Crash.crash ("Specialize.computeUnboxResultType: Expected single-arg constructor but got " ++ String.fromInt (List.length ctorData.args) ++ " args for " ++ typeName)
@@ -1837,7 +1838,7 @@ specializeArg subst ( locName, canType ) =
             A.toValue locName
 
         monoType =
-            TypeSubst.applySubst subst canType
+            Mono.forceCNumberToInt (TypeSubst.applySubst subst canType)
     in
     ( name, monoType )
 
@@ -1961,13 +1962,16 @@ This is *call-site aware*:
 deriveKernelAbiType : ( String, String ) -> Can.Type -> Substitution -> Mono.MonoType
 deriveKernelAbiType kernelId canFuncType callSubst =
     let
-        -- Monomorphic function type at this use-site, if substitution is complete.
-        -- Example for Basics.add in an Int context:
-        --   canFuncType = number -> number -> number
-        --   monoAfterSubst = MFunction [MInt] (MFunction [MInt] MInt)
+        -- Monomorphic function type at this use-site, after substitution.
+        monoAfterSubstRaw : Mono.MonoType
+        monoAfterSubstRaw =
+            TypeSubst.applySubst callSubst canFuncType
+
+        -- Backend policy: eagerly resolve any remaining CNumber vars to Int.
+        -- This does NOT affect MFloat - only unresolved numeric vars.
         monoAfterSubst : Mono.MonoType
         monoAfterSubst =
-            TypeSubst.applySubst callSubst canFuncType
+            Mono.forceCNumberToInt monoAfterSubstRaw
 
         mode : KernelAbi.KernelAbiMode
         mode =
@@ -1993,8 +1997,15 @@ deriveKernelAbiType kernelId canFuncType callSubst =
             monoAfterSubst
 
         KernelAbi.PreserveVars ->
-            -- Polymorphic kernel whose ABI must remain fully boxed (!eco.value).
-            KernelAbi.canTypeToMonoType_preserveVars canFuncType
+            -- Container-specializable kernels get monomorphic, element-aware ABI
+            if EverySet.member KernelAbi.comparePair kernelId KernelAbi.containerSpecializedKernels
+                && isFullyMonomorphicType monoAfterSubst
+            then
+                -- e.g. List.cons : Int -> List Int -> List Int at this site
+                monoAfterSubst
+            else
+                -- default: all vars become CEcoValue (fully boxed ABI)
+                KernelAbi.canTypeToMonoType_preserveVars canFuncType
 
 
 
