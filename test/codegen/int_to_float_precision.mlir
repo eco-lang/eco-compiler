@@ -15,14 +15,14 @@ module {
     %i_2_53 = arith.constant 9007199254740992 : i64
     %f_2_53 = eco.int.toFloat %i_2_53 : i64 -> f64
     eco.dbg %f_2_53 : f64
-    // CHECK: 9.0072e+15
+    // CHECK: 9007199254740992
 
     // 2^53 + 1 - this loses precision (rounds to 2^53)
     %i_2_53_plus_1 = arith.constant 9007199254740993 : i64
     %f_2_53_plus_1 = eco.int.toFloat %i_2_53_plus_1 : i64 -> f64
     // May print as same value due to precision loss
     eco.dbg %f_2_53_plus_1 : f64
-    // CHECK: 9.0072e+15
+    // CHECK: 9007199254740992
 
     // Very large integer
     %i_large = arith.constant 1000000000000000000 : i64
@@ -40,13 +40,13 @@ module {
     %i_max = arith.constant 9223372036854775807 : i64
     %f_max = eco.int.toFloat %i_max : i64 -> f64
     eco.dbg %f_max : f64
-    // CHECK: 9.22337e+18
+    // CHECK: 9223372036854775808
 
     // INT64_MIN
     %i_min = arith.constant -9223372036854775808 : i64
     %f_min = eco.int.toFloat %i_min : i64 -> f64
     eco.dbg %f_min : f64
-    // CHECK: -9.22337e+18
+    // CHECK: -9223372036854775808
 
     // Zero
     %i_zero = arith.constant 0 : i64

@@ -438,7 +438,7 @@ def BF_ReadBytesOp : BF_Op<"read.bytes", [MemoryEffects<[MemRead, MemWrite]>]> {
   }];
 
   let arguments = (ins BF_Cursor:$cursor, I32:$len);
-  let results = (outs I64:$bytes, BF_Cursor:$newCursor, I1:$ok);
+  let results = (outs AnyType:$bytes, BF_Cursor:$newCursor, I1:$ok);
 
   let assemblyFormat = "$cursor `,` $len attr-dict `:` type($bytes) `,` type($newCursor) `,` type($ok)";
 }
@@ -454,7 +454,7 @@ def BF_ReadUtf8Op : BF_Op<"read.utf8", [MemoryEffects<[MemRead, MemWrite]>]> {
   }];
 
   let arguments = (ins BF_Cursor:$cursor, I32:$len);
-  let results = (outs I64:$string, BF_Cursor:$newCursor, I1:$ok);
+  let results = (outs AnyType:$string, BF_Cursor:$newCursor, I1:$ok);
 
   let assemblyFormat = "$cursor `,` $len attr-dict `:` type($string) `,` type($newCursor) `,` type($ok)";
 }

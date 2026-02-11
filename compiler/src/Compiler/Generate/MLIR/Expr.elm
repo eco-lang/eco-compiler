@@ -189,7 +189,12 @@ generateExpr ctx expr =
             generateIf ctx branches final
 
         Mono.MonoLet def body _ ->
-            generateLet ctx def body
+            case tryInlinedDecodeFusion ctx def body of
+                Just result ->
+                    result
+
+                Nothing ->
+                    generateLet ctx def body
 
         Mono.MonoDestruct destructor body destType ->
             generateDestruct ctx destructor body destType
@@ -1344,6 +1349,253 @@ boxArgsForClosureBoundary boxAllPrimitives ctx argsWithTypes =
         argsWithTypes
 
 
+{-| Detect inlined Bytes.Decode.decode pattern:
+
+    MonoLet (MonoDef name decoderExpr)
+        (MonoDestruct ...
+            (MonoCall (MonoVarKernel "Bytes" "decode") [_, bytesExpr] ...))
+
+When the monomorphizer inlines Bytes.Decode.decode, it produces a let binding for
+the decoder value, a destructuring to extract the inner step function, and a kernel
+call. We intercept this pattern to try fusion on the original decoder expression.
+-}
+tryInlinedDecodeFusion : Ctx.Context -> Mono.MonoDef -> Mono.MonoExpr -> Maybe ExprResult
+tryInlinedDecodeFusion ctx def body =
+    case def of
+        Mono.MonoDef defName decoderExpr ->
+            -- Collect this binding and search for the decode pattern in the body
+            tryDecodeFusionWithBindings ctx [ ( defName, decoderExpr ) ] body
+
+        Mono.MonoTailDef _ _ _ ->
+            Nothing
+
+
+{-| Scan a MonoDestruct body to find kernel Bytes.decode call and extract the bytes argument.
+Matches the pattern: MonoDestruct _ (MonoCall (MonoVarKernel "Bytes" "decode") [_, bytesExpr] _ _) _
+-}
+findKernelDecodeInDestructBody : Mono.MonoExpr -> Maybe Mono.MonoExpr
+findKernelDecodeInDestructBody body =
+    case body of
+        Mono.MonoDestruct _ innerBody _ ->
+            findKernelDecodeCall innerBody
+
+        _ ->
+            Nothing
+
+
+{-| Search for the decode fusion pattern through nested MonoLet bindings.
+Accumulates let bindings to resolve the decoder expression when found.
+-}
+tryDecodeFusionWithBindings ctx bindings body =
+    case body of
+        Mono.MonoDestruct _ innerBody _ ->
+            -- Found a destruct - check if its body is a kernel decode call
+            case findKernelDecodeCall innerBody of
+                Just bytesExpr ->
+                    -- Found the decode pattern - resolve the decoder from accumulated bindings
+                    case resolveDecoderExpr ctx.registry ctx.decoderExprs bindings of
+                        Just decoderNode ->
+                            -- Fusion successful - compile skipped let-bindings to register variables
+                            let
+                                ( bindingOps, ctx0 ) =
+                                    compileSkippedBindings ctx (List.reverse bindings)
+
+                                ( bytesOps, bytesArgsWithTypes, ctx1 ) =
+                                    generateExprListTyped ctx0 [ bytesExpr ]
+
+                                bytesVar : String
+                                bytesVar =
+                                    case bytesArgsWithTypes of
+                                        [ ( bVar, _ ) ] ->
+                                            bVar
+
+                                        _ ->
+                                            "invalid_bytes"
+
+                                ( decoderOps, _ ) =
+                                    BFReify.decoderNodeToOps decoderNode
+
+                                exprCompiler : BFEmit.ExprCompiler
+                                exprCompiler monoExpr compilerCtx =
+                                    let
+                                        result =
+                                            generateExpr compilerCtx monoExpr
+                                    in
+                                    { ops = result.ops
+                                    , resultVar = result.resultVar
+                                    , resultType = result.resultType
+                                    , ctx = result.ctx
+                                    }
+
+                                ( mlirOps, resultVar, ctx2 ) =
+                                    BFEmit.emitFusedDecoder exprCompiler ctx1 bytesVar decoderOps
+                            in
+                            Just
+                                { ops = bindingOps ++ bytesOps ++ mlirOps
+                                , resultVar = resultVar
+                                , resultType = Types.ecoValue
+                                , ctx = ctx2
+                                , isTerminated = False
+                                }
+
+                        Nothing ->
+                            -- Reification failed - fall back to normal compilation
+                            Nothing
+
+
+                Nothing ->
+                    Nothing
+
+        Mono.MonoLet (Mono.MonoDef innerName innerExpr) innerBody _ ->
+            -- Accumulate this binding and continue searching
+            tryDecodeFusionWithBindings ctx (( innerName, innerExpr ) :: bindings) innerBody
+
+        _ ->
+            Nothing
+
+
+
+{-| Resolve a decoder expression from accumulated let bindings.
+Follows MonoVarLocal references through the binding chain.
+-}
+resolveDecoderExpr : Mono.SpecializationRegistry -> Dict.Dict String Mono.MonoExpr -> List ( Name.Name, Mono.MonoExpr ) -> Maybe BFReify.DecoderNode
+resolveDecoderExpr registry decoderExprs bindings =
+    case bindings of
+        [] ->
+            Nothing
+
+        ( _, expr ) :: rest ->
+            case BFReify.reifyDecoder registry decoderExprs expr of
+                Just node ->
+                    Just node
+
+                Nothing ->
+                    -- If this binding's expression is a local variable reference,
+                    -- try to find the original expression in earlier bindings,
+                    -- then check the context's cached decoder expressions from outer scopes.
+                    case expr of
+                        Mono.MonoVarLocal name _ ->
+                            case resolveDecoderByName registry decoderExprs name rest of
+                                Just node ->
+                                    Just node
+
+                                Nothing ->
+                                    -- Check outer scope decoder cache
+                                    case Dict.get name decoderExprs of
+                                        Just outerExpr ->
+                                            case BFReify.reifyDecoder registry decoderExprs outerExpr of
+                                                Just node ->
+                                                    Just node
+
+                                                Nothing ->
+                                                    resolveDecoderExpr registry decoderExprs rest
+
+                                        Nothing ->
+                                            resolveDecoderExpr registry decoderExprs rest
+
+                        _ ->
+                            -- Try the next binding
+                            resolveDecoderExpr registry decoderExprs rest
+
+
+{-| Find a binding by name and try to reify its expression as a decoder.
+-}
+resolveDecoderByName : Mono.SpecializationRegistry -> Dict.Dict String Mono.MonoExpr -> Name.Name -> List ( Name.Name, Mono.MonoExpr ) -> Maybe BFReify.DecoderNode
+resolveDecoderByName registry decoderExprs targetName bindings =
+    case bindings of
+        [] ->
+            Nothing
+
+        ( name, expr ) :: rest ->
+            if name == targetName then
+                case BFReify.reifyDecoder registry decoderExprs expr of
+                    Just node ->
+                        Just node
+
+                    Nothing ->
+                        -- Follow another level of indirection
+                        case expr of
+                            Mono.MonoVarLocal innerName _ ->
+                                resolveDecoderByName registry decoderExprs innerName rest
+
+                            _ ->
+                                Nothing
+
+            else
+                resolveDecoderByName registry decoderExprs targetName rest
+
+
+{-| Try to resolve a decoder node from an expression, falling back to the
+context's decoderExprs cache when the expression is a local variable reference.
+This handles the case where D.decode is called with a let-bound decoder variable
+that was already cached during decoder-skipping in generateLet.
+-}
+resolveDecoderNode : Ctx.Context -> Mono.MonoExpr -> Maybe BFReify.DecoderNode
+resolveDecoderNode ctx expr =
+    BFReify.reifyDecoder ctx.registry ctx.decoderExprs expr
+
+
+{-| Check if an expression is a fusible bytes encoder or decoder.
+Used in generateLet to skip compilation of expressions that will be
+resolved from the cache during fusion instead.
+-}
+isFusibleBytesExpr : Ctx.Context -> Mono.MonoExpr -> Bool
+isFusibleBytesExpr ctx expr =
+    case BFReify.reifyDecoder ctx.registry ctx.decoderExprs expr of
+        Just _ ->
+            True
+
+        Nothing ->
+            case BFReify.reifyEncoder ctx.registry ctx.decoderExprs expr of
+                Just _ ->
+                    True
+
+                Nothing ->
+                    False
+
+
+compileSkippedBindings : Ctx.Context -> List ( Name.Name, Mono.MonoExpr ) -> ( List MlirOp, Ctx.Context )
+compileSkippedBindings ctx bindings =
+    case bindings of
+        [] ->
+            ( [], ctx )
+
+        ( name, expr ) :: rest ->
+            let
+                exprResult =
+                    generateExpr ctx expr
+
+                ctx1 =
+                    Ctx.addVarMapping name exprResult.resultVar exprResult.resultType exprResult.ctx
+
+                ( restOps, ctxFinal ) =
+                    compileSkippedBindings ctx1 rest
+            in
+            ( exprResult.ops ++ restOps, ctxFinal )
+
+
+
+{-| Find a kernel Bytes.decode call and return the bytes argument.
+-}
+findKernelDecodeCall : Mono.MonoExpr -> Maybe Mono.MonoExpr
+findKernelDecodeCall expr =
+    case expr of
+        Mono.MonoCall _ (Mono.MonoVarKernel _ "Bytes" "decode" _) args _ _ ->
+            case args of
+                [ _, bytesExpr ] ->
+                    Just bytesExpr
+
+                _ ->
+                    Nothing
+
+        -- The kernel decode call might be nested in more let bindings
+        Mono.MonoLet _ innerBody _ ->
+            findKernelDecodeCall innerBody
+
+        _ ->
+            Nothing
+
+
 {-| Generate a saturated function call where all arguments are provided.
 -}
 generateSaturatedCall : Ctx.Context -> Mono.MonoExpr -> List Mono.MonoExpr -> Mono.MonoType -> Mono.CallInfo -> ExprResult
@@ -1423,7 +1675,7 @@ generateSaturatedCall ctx func args resultType callInfo =
             case maybeBytesEncodeArg of
                 Just encoderExpr ->
                     -- Attempt to fuse the encoder
-                    case BFReify.reifyEncoder ctx.registry encoderExpr of
+                    case BFReify.reifyEncoder ctx.registry ctx.decoderExprs encoderExpr of
                         Just nodes ->
                             -- Fusion successful - emit fused byte encoding ops
                             let
@@ -1487,8 +1739,8 @@ generateSaturatedCall ctx func args resultType callInfo =
                     -- Not a bytes encode call - check for bytes decode fusion
                     case maybeBytesDecodeArgs of
                         Just ( decoderExpr, bytesExpr ) ->
-                            -- Attempt to fuse the decoder
-                            case BFReify.reifyDecoder ctx.registry decoderExpr of
+                            -- Attempt to fuse the decoder (also resolves local var refs via decoderExprs cache)
+                            case resolveDecoderNode ctx decoderExpr of
                                 Just decoderNode ->
                                     -- Fusion successful - emit fused byte decoding ops
                                     let
@@ -1818,6 +2070,157 @@ generateSaturatedCall ctx func args resultType callInfo =
                     , ctx = ctx2
                     , isTerminated = False
                     }
+
+                -- BytesFusion: intercept Bytes.encode kernel call
+                ( "Bytes", "encode", [ _ ] ) ->
+                    case args of
+                        [ encoderExpr ] ->
+                            case BFReify.reifyEncoder ctx.registry ctx.decoderExprs encoderExpr of
+                                Just nodes ->
+                                    -- Fusion successful - emit fused byte encoding ops
+                                    let
+                                        loopOps =
+                                            BFReify.nodesToOps nodes
+
+                                        exprCompiler : BFEmit.ExprCompiler
+                                        exprCompiler monoExpr compilerCtx =
+                                            let
+                                                result =
+                                                    generateExpr compilerCtx monoExpr
+                                            in
+                                            { ops = result.ops
+                                            , resultVar = result.resultVar
+                                            , resultType = result.resultType
+                                            , ctx = result.ctx
+                                            }
+
+                                        ( mlirOps, bufferVar, ctx2 ) =
+                                            BFEmit.emitFusedEncoder exprCompiler ctx1 loopOps
+                                    in
+                                    { ops = argOps ++ mlirOps
+                                    , resultVar = bufferVar
+                                    , resultType = Types.ecoValue
+                                    , ctx = ctx2
+                                    , isTerminated = False
+                                    }
+
+                                Nothing ->
+                                    -- Fusion failed - fall back to kernel call
+                                    let
+                                        ( boxOps, argVarPairs, ctx1b ) =
+                                            boxToMatchSignatureTyped ctx1 argsWithTypes [ Mono.MUnit ]
+
+                                        ( resVar, ctx2 ) =
+                                            Ctx.freshVar ctx1b
+
+                                        ( ctx3, callOp ) =
+                                            Ops.ecoCallNamed ctx2 resVar "Elm_Kernel_Bytes_encode" argVarPairs Types.ecoValue
+                                    in
+                                    { ops = argOps ++ boxOps ++ [ callOp ]
+                                    , resultVar = resVar
+                                    , resultType = Types.ecoValue
+                                    , ctx = ctx3
+                                    , isTerminated = False
+                                    }
+
+                        _ ->
+                            -- Should not happen for valid Bytes.encode call
+                            let
+                                ( boxOps, argVarPairs, ctx1b ) =
+                                    boxToMatchSignatureTyped ctx1 argsWithTypes [ Mono.MUnit ]
+
+                                ( resVar, ctx2 ) =
+                                    Ctx.freshVar ctx1b
+
+                                ( ctx3, callOp ) =
+                                    Ops.ecoCallNamed ctx2 resVar "Elm_Kernel_Bytes_encode" argVarPairs Types.ecoValue
+                            in
+                            { ops = argOps ++ boxOps ++ [ callOp ]
+                            , resultVar = resVar
+                            , resultType = Types.ecoValue
+                            , ctx = ctx3
+                            , isTerminated = False
+                            }
+
+                -- BytesFusion: intercept Bytes.decode kernel call
+                ( "Bytes", "decode", [ _, _ ] ) ->
+                    case args of
+                        [ decoderExpr, _ ] ->
+                            case resolveDecoderNode ctx decoderExpr of
+                                Just decoderNode ->
+                                    -- Fusion successful - emit fused byte decoding ops
+                                    let
+                                        bytesVar : String
+                                        bytesVar =
+                                            case argsWithTypes of
+                                                [ _, ( bVar, _ ) ] ->
+                                                    bVar
+
+                                                _ ->
+                                                    "invalid_bytes"
+
+                                        ( decoderOps, _ ) =
+                                            BFReify.decoderNodeToOps decoderNode
+
+                                        exprCompiler : BFEmit.ExprCompiler
+                                        exprCompiler monoExpr compilerCtx =
+                                            let
+                                                result =
+                                                    generateExpr compilerCtx monoExpr
+                                            in
+                                            { ops = result.ops
+                                            , resultVar = result.resultVar
+                                            , resultType = result.resultType
+                                            , ctx = result.ctx
+                                            }
+
+                                        ( mlirOps, resultVar, ctx2 ) =
+                                            BFEmit.emitFusedDecoder exprCompiler ctx1 bytesVar decoderOps
+                                    in
+                                    { ops = argOps ++ mlirOps
+                                    , resultVar = resultVar
+                                    , resultType = Types.ecoValue
+                                    , ctx = ctx2
+                                    , isTerminated = False
+                                    }
+
+                                Nothing ->
+                                    -- Fusion failed - fall back to kernel call
+                                    let
+                                        ( boxOps, argVarPairs, ctx1b ) =
+                                            boxToMatchSignatureTyped ctx1 argsWithTypes [ Mono.MUnit, Mono.MUnit ]
+
+                                        ( resVar, ctx2 ) =
+                                            Ctx.freshVar ctx1b
+
+                                        ( ctx3, callOp ) =
+                                            Ops.ecoCallNamed ctx2 resVar "Elm_Kernel_Bytes_decode" argVarPairs Types.ecoValue
+                                    in
+                                    { ops = argOps ++ boxOps ++ [ callOp ]
+                                    , resultVar = resVar
+                                    , resultType = Types.ecoValue
+                                    , ctx = ctx3
+                                    , isTerminated = False
+                                    }
+
+                        _ ->
+                            -- Should not happen for valid Bytes.decode call
+                            let
+                                ( boxOps, argVarPairs, ctx1b ) =
+                                    boxToMatchSignatureTyped ctx1 argsWithTypes [ Mono.MUnit, Mono.MUnit ]
+
+                                ( resVar, ctx2 ) =
+                                    Ctx.freshVar ctx1b
+
+                                ( ctx3, callOp ) =
+                                    Ops.ecoCallNamed ctx2 resVar "Elm_Kernel_Bytes_decode" argVarPairs Types.ecoValue
+                            in
+                            { ops = argOps ++ boxOps ++ [ callOp ]
+                            , resultVar = resVar
+                            , resultType = Types.ecoValue
+                            , ctx = ctx3
+                            , isTerminated = False
+                            }
 
                 _ ->
                     case Intrinsics.kernelIntrinsic home name argTypes resultType of
@@ -2433,44 +2836,45 @@ generateLet ctx def body =
     in
     case def of
         Mono.MonoDef name expr ->
-            let
-                exprResult : ExprResult
-                exprResult =
-                    generateExpr ctxWithPlaceholders expr
+                    let
+                        exprResult : ExprResult
+                        exprResult =
+                            generateExpr ctxWithPlaceholders expr
 
-                -- Add a mapping from the let-bound name to the expression's result variable.
-                -- All staging metadata is now in Mono.CallInfo from GlobalOpt.
-                ctx1 : Ctx.Context
-                ctx1 =
-                    Ctx.addVarMapping name exprResult.resultVar exprResult.resultType exprResult.ctx
+                        -- Add a mapping from the let-bound name to the expression's result variable.
+                        -- All staging metadata is now in Mono.CallInfo from GlobalOpt.
+                        ctx1 : Ctx.Context
+                        ctx1 =
+                            Ctx.addVarMapping name exprResult.resultVar exprResult.resultType exprResult.ctx
+                                |> Ctx.addDecoderExpr name expr
 
-                bodyResult : ExprResult
-                bodyResult =
-                    generateExpr ctx1 body
+                        bodyResult : ExprResult
+                        bodyResult =
+                            generateExpr ctx1 body
 
-                -- Restore outer siblings on exit from the let-rec group
-                bodyCtx : Ctx.Context
-                bodyCtx =
-                    bodyResult.ctx
+                        -- Restore outer siblings on exit from the let-rec group
+                        bodyCtx : Ctx.Context
+                        bodyCtx =
+                            bodyResult.ctx
 
-                ctxOut : Ctx.Context
-                ctxOut =
-                    { bodyCtx | currentLetSiblings = outerSiblings }
+                        ctxOut : Ctx.Context
+                        ctxOut =
+                            { bodyCtx | currentLetSiblings = outerSiblings }
 
-                -- Propagate isTerminated when:
-                -- 1. The bound expression is terminated (eco.case, eco.jump), AND
-                --    the body is trivial (just returning the let-bound variable, so no body ops)
-                -- 2. OR the body itself is terminated
-                -- In these cases, the case alternatives already contain the correct returns.
-                finalIsTerminated =
-                    (exprResult.isTerminated && List.isEmpty bodyResult.ops) || bodyResult.isTerminated
-            in
-            { ops = exprResult.ops ++ bodyResult.ops
-            , resultVar = bodyResult.resultVar
-            , resultType = bodyResult.resultType
-            , ctx = ctxOut
-            , isTerminated = finalIsTerminated
-            }
+                        -- Propagate isTerminated when:
+                        -- 1. The bound expression is terminated (eco.case, eco.jump), AND
+                        --    the body is trivial (just returning the let-bound variable, so no body ops)
+                        -- 2. OR the body itself is terminated
+                        -- In these cases, the case alternatives already contain the correct returns.
+                        finalIsTerminated =
+                            (exprResult.isTerminated && List.isEmpty bodyResult.ops) || bodyResult.isTerminated
+                    in
+                    { ops = exprResult.ops ++ bodyResult.ops
+                    , resultVar = bodyResult.resultVar
+                    , resultType = bodyResult.resultType
+                    , ctx = ctxOut
+                    , isTerminated = finalIsTerminated
+                    }
 
         Mono.MonoTailDef name params _ ->
             -- For local tail-recursive functions, we need to:

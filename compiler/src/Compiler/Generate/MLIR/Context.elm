@@ -1,7 +1,7 @@
 module Compiler.Generate.MLIR.Context exposing
     ( Context, FuncSignature, PendingLambda, TypeRegistry, VarInfo
     , initContext
-    , freshVar, freshOpId, lookupVar, addVarMapping
+    , freshVar, freshOpId, lookupVar, addVarMapping, addDecoderExpr
     , getOrCreateTypeIdForMonoType, registerKernelCall
     , buildSignatures, kernelFuncSignatureFromType
     , isTypeVar, hasKernelImplementation
@@ -123,6 +123,10 @@ kernelBackendAbiPolicy home name =
         ( "Utils", _ ) ->
             AllBoxed
 
+        -- String.fromNumber: number-polymorphic, C++ takes boxed uint64_t
+        ( "String", "fromNumber" ) ->
+            AllBoxed
+
         --
         -- ElmDerived: C++ ABI has typed (non-uint64_t) params or returns.
         -- ABI is derived from the Elm wrapper's funcType via monoTypeToAbi.
@@ -197,6 +201,7 @@ type alias Context =
     , currentLetSiblings : Dict.Dict String VarInfo -- Sibling mappings for current let-rec group
     , kernelDecls : Dict.Dict String ( List MlirType, MlirType ) -- Kernel function name -> (argTypes, returnType)
     , typeRegistry : TypeRegistry -- Type graph: MonoType -> TypeId for debug printing
+    , decoderExprs : Dict.Dict String Mono.MonoExpr -- Cache of let-bound decoder expressions for BytesFusion
     }
 
 
@@ -240,6 +245,7 @@ initContext mode registry signatures initialCtorShapes =
         { emptyTypeRegistry
             | ctorShapes = initialCtorShapes
         }
+    , decoderExprs = Dict.empty
     }
 
 
@@ -569,6 +575,15 @@ addVarMapping name ssaVar mlirTy ctx =
             }
     in
     { ctx | varMappings = Dict.insert name info ctx.varMappings }
+
+
+{-| Cache a let-bound expression for BytesFusion decoder resolution.
+When a let-binding is compiled, store its original MonoExpr so that
+inner decoder fusion can resolve variables defined in outer scopes.
+-}
+addDecoderExpr : String -> Mono.MonoExpr -> Context -> Context
+addDecoderExpr name expr ctx =
+    { ctx | decoderExprs = Dict.insert name expr ctx.decoderExprs }
 
 
 

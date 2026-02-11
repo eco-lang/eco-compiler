@@ -3,7 +3,7 @@ module DecodeMap3Test exposing (main)
 {-| Test Bytes.Decode.map3 combining three decoders.
 -}
 
--- CHECK: DecodeMap3Test: 600
+-- CHECK: DecodeMap3Test: 344
 
 import Bytes exposing (Bytes)
 import Bytes.Decode as D

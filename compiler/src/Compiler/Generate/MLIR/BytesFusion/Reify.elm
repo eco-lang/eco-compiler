@@ -102,15 +102,15 @@ type CountSource
 {-| Try to reify a MonoExpr into a list of encoder nodes.
 Returns Nothing if the expression contains dynamic/opaque encoders.
 -}
-reifyEncoder : Mono.SpecializationRegistry -> Mono.MonoExpr -> Maybe (List EncoderNode)
-reifyEncoder registry expr =
-    reifyEncoderHelp registry expr
+reifyEncoder : Mono.SpecializationRegistry -> Dict String Mono.MonoExpr -> Mono.MonoExpr -> Maybe (List EncoderNode)
+reifyEncoder registry exprCache expr =
+    reifyEncoderHelp registry exprCache expr
 
 
 {-| Internal helper that returns nested structure.
 -}
-reifyEncoderHelp : Mono.SpecializationRegistry -> Mono.MonoExpr -> Maybe (List EncoderNode)
-reifyEncoderHelp registry expr =
+reifyEncoderHelp : Mono.SpecializationRegistry -> Dict String Mono.MonoExpr -> Mono.MonoExpr -> Maybe (List EncoderNode)
+reifyEncoderHelp registry exprCache expr =
     case expr of
         -- Call to a Bytes.Encode function
         Mono.MonoCall _ func args _ _ ->
@@ -119,7 +119,7 @@ reifyEncoderHelp registry expr =
                     case Registry.lookupSpecKey specId registry of
                         Just ( Mono.Global (IO.Canonical pkg moduleName) name, _, _ ) ->
                             if pkg == Pkg.bytes && moduleName == "Bytes.Encode" then
-                                reifyBytesEncodeCall registry name args
+                                reifyBytesEncodeCall registry exprCache name args
 
                             else
                                 -- Not a Bytes.Encode function
@@ -130,16 +130,77 @@ reifyEncoderHelp registry expr =
 
                 Mono.MonoVarKernel _ "Bytes" name _ ->
                     -- Kernel function from Bytes module
-                    reifyBytesKernelCall registry name args
+                    reifyBytesKernelCall registry exprCache name args
+
+                -- Curried call: func is itself a call (e.g. from pipe operator expansion).
+                -- Flatten inner args with outer args and try again.
+                Mono.MonoCall _ innerFunc innerArgs _ _ ->
+                    case innerFunc of
+                        Mono.MonoVarGlobal _ innerSpecId _ ->
+                            case Registry.lookupSpecKey innerSpecId registry of
+                                Just ( Mono.Global (IO.Canonical pkg2 moduleName2) name2, _, _ ) ->
+                                    if pkg2 == Pkg.bytes && moduleName2 == "Bytes.Encode" then
+                                        reifyBytesEncodeCall registry exprCache name2 (innerArgs ++ args)
+
+                                    else
+                                        Nothing
+
+                                _ ->
+                                    Nothing
+
+                        Mono.MonoVarKernel _ "Bytes" name2 _ ->
+                            reifyBytesKernelCall registry exprCache name2 (innerArgs ++ args)
+
+                        _ ->
+                            Nothing
+
+                -- Local variable in function position: resolve from exprCache.
+                Mono.MonoVarLocal funcName _ ->
+                    case Dict.get funcName exprCache of
+                        Just (Mono.MonoCall _ innerFunc innerArgs _ _) ->
+                            case innerFunc of
+                                Mono.MonoVarGlobal _ innerSpecId _ ->
+                                    case Registry.lookupSpecKey innerSpecId registry of
+                                        Just ( Mono.Global (IO.Canonical pkg2 moduleName2) name2, _, _ ) ->
+                                            if pkg2 == Pkg.bytes && moduleName2 == "Bytes.Encode" then
+                                                reifyBytesEncodeCall registry exprCache name2 (innerArgs ++ args)
+
+                                            else
+                                                Nothing
+
+                                        _ ->
+                                            Nothing
+
+                                Mono.MonoVarKernel _ "Bytes" name2 _ ->
+                                    reifyBytesKernelCall registry exprCache name2 (innerArgs ++ args)
+
+                                _ ->
+                                    Nothing
+
+                        _ ->
+                            Nothing
 
                 _ ->
                     -- Unknown function - can't reify
                     Nothing
 
-        -- A let binding - currently not supported
-        -- See plan: HARD GATE (C18) - do not implement until MonoLet/MonoLetDef is grounded
-        Mono.MonoLet _ _ _ ->
-            Nothing
+        -- Let binding: add the binding to exprCache and recurse on the body
+        Mono.MonoLet def body _ ->
+            case def of
+                Mono.MonoDef name defExpr ->
+                    reifyEncoderHelp registry (Dict.insert name defExpr exprCache) body
+
+                _ ->
+                    Nothing
+
+        -- Local variable reference - look up in exprCache
+        Mono.MonoVarLocal name _ ->
+            case Dict.get name exprCache of
+                Just cachedExpr ->
+                    reifyEncoderHelp registry exprCache cachedExpr
+
+                Nothing ->
+                    Nothing
 
         -- Variable reference - can't statically analyze
         _ ->
@@ -148,12 +209,12 @@ reifyEncoderHelp registry expr =
 
 {-| Reify a call to a Bytes.Encode.\* function.
 -}
-reifyBytesEncodeCall : Mono.SpecializationRegistry -> String -> List Mono.MonoExpr -> Maybe (List EncoderNode)
-reifyBytesEncodeCall registry name args =
+reifyBytesEncodeCall : Mono.SpecializationRegistry -> Dict String Mono.MonoExpr -> String -> List Mono.MonoExpr -> Maybe (List EncoderNode)
+reifyBytesEncodeCall registry exprCache name args =
     case ( name, args ) of
         ( "sequence", [ listExpr ] ) ->
             -- sequence : List Encoder -> Encoder
-            reifyEncoderList registry listExpr
+            reifyEncoderList registry exprCache listExpr
 
         ( "unsignedInt8", [ valueExpr ] ) ->
             Just [ EU8 valueExpr ]
@@ -162,11 +223,29 @@ reifyBytesEncodeCall registry name args =
             -- Signed and unsigned have same encoding for 8 bits
             Just [ EU8 valueExpr ]
 
+        -- Constructor name after inlining: U8(value)
+        ( "U8", [ valueExpr ] ) ->
+            Just [ EU8 valueExpr ]
+
+        -- Constructor name after inlining: I8(value)
+        ( "I8", [ valueExpr ] ) ->
+            Just [ EU8 valueExpr ]
+
         ( "unsignedInt16", [ endiannessExpr, valueExpr ] ) ->
             reifyEndianness registry endiannessExpr
                 |> Maybe.map (\e -> [ EU16 e valueExpr ])
 
         ( "signedInt16", [ endiannessExpr, valueExpr ] ) ->
+            reifyEndianness registry endiannessExpr
+                |> Maybe.map (\e -> [ EU16 e valueExpr ])
+
+        -- Constructor name after inlining: U16(endianness, value)
+        ( "U16", [ endiannessExpr, valueExpr ] ) ->
+            reifyEndianness registry endiannessExpr
+                |> Maybe.map (\e -> [ EU16 e valueExpr ])
+
+        -- Constructor name after inlining: I16(endianness, value)
+        ( "I16", [ endiannessExpr, valueExpr ] ) ->
             reifyEndianness registry endiannessExpr
                 |> Maybe.map (\e -> [ EU16 e valueExpr ])
 
@@ -178,6 +257,16 @@ reifyBytesEncodeCall registry name args =
             reifyEndianness registry endiannessExpr
                 |> Maybe.map (\e -> [ EU32 e valueExpr ])
 
+        -- Constructor name after inlining: U32(endianness, value)
+        ( "U32", [ endiannessExpr, valueExpr ] ) ->
+            reifyEndianness registry endiannessExpr
+                |> Maybe.map (\e -> [ EU32 e valueExpr ])
+
+        -- Constructor name after inlining: I32(endianness, value)
+        ( "I32", [ endiannessExpr, valueExpr ] ) ->
+            reifyEndianness registry endiannessExpr
+                |> Maybe.map (\e -> [ EU32 e valueExpr ])
+
         ( "float32", [ endiannessExpr, valueExpr ] ) ->
             reifyEndianness registry endiannessExpr
                 |> Maybe.map (\e -> [ EF32 e valueExpr ])
@@ -186,11 +275,33 @@ reifyBytesEncodeCall registry name args =
             reifyEndianness registry endiannessExpr
                 |> Maybe.map (\e -> [ EF64 e valueExpr ])
 
+        -- Constructor name after inlining: F32(endianness, value)
+        ( "F32", [ endiannessExpr, valueExpr ] ) ->
+            reifyEndianness registry endiannessExpr
+                |> Maybe.map (\e -> [ EF32 e valueExpr ])
+
+        -- Constructor name after inlining: F64(endianness, value)
+        ( "F64", [ endiannessExpr, valueExpr ] ) ->
+            reifyEndianness registry endiannessExpr
+                |> Maybe.map (\e -> [ EF64 e valueExpr ])
+
         ( "bytes", [ bytesExpr ] ) ->
+            Just [ EBytes bytesExpr ]
+
+        -- Constructor name after inlining: Bytes(bytes)
+        ( "Bytes", [ bytesExpr ] ) ->
             Just [ EBytes bytesExpr ]
 
         ( "string", [ stringExpr ] ) ->
             Just [ EUtf8 stringExpr ]
+
+        -- Constructor name after inlining: Utf8(width, string)
+        ( "Utf8", [ _, stringExpr ] ) ->
+            Just [ EUtf8 stringExpr ]
+
+        -- Constructor name after inlining: Seq(width, list)
+        ( "Seq", [ _, listExpr ] ) ->
+            reifyEncoderList registry exprCache listExpr
 
         _ ->
             -- Unknown Bytes.Encode function
@@ -199,8 +310,8 @@ reifyBytesEncodeCall registry name args =
 
 {-| Reify a kernel call (e.g., from Elm.Kernel.Bytes).
 -}
-reifyBytesKernelCall : Mono.SpecializationRegistry -> String -> List Mono.MonoExpr -> Maybe (List EncoderNode)
-reifyBytesKernelCall _ name args =
+reifyBytesKernelCall : Mono.SpecializationRegistry -> Dict String Mono.MonoExpr -> String -> List Mono.MonoExpr -> Maybe (List EncoderNode)
+reifyBytesKernelCall _ _ name args =
     -- Kernel functions like write_i8, write_u16, etc.
     case ( name, args ) of
         ( "write_u8", [ valueExpr ] ) ->
@@ -216,13 +327,13 @@ reifyBytesKernelCall _ name args =
 
 {-| Reify a list of encoders (from sequence argument).
 -}
-reifyEncoderList : Mono.SpecializationRegistry -> Mono.MonoExpr -> Maybe (List EncoderNode)
-reifyEncoderList registry listExpr =
+reifyEncoderList : Mono.SpecializationRegistry -> Dict String Mono.MonoExpr -> Mono.MonoExpr -> Maybe (List EncoderNode)
+reifyEncoderList registry exprCache listExpr =
     case listExpr of
         Mono.MonoList _ items _ ->
             -- Literal list of encoders
             items
-                |> List.map (reifyEncoderHelp registry)
+                |> List.map (reifyEncoderHelp registry exprCache)
                 |> combineResults
                 |> Maybe.map List.concat
 
@@ -380,8 +491,8 @@ combineResults maybes =
 Returns Nothing if the expression contains dynamic/opaque decoders
 or unsupported combinators (andThen, loop).
 -}
-reifyDecoder : Mono.SpecializationRegistry -> Mono.MonoExpr -> Maybe DecoderNode
-reifyDecoder registry expr =
+reifyDecoder : Mono.SpecializationRegistry -> Dict String Mono.MonoExpr -> Mono.MonoExpr -> Maybe DecoderNode
+reifyDecoder registry exprCache expr =
     case expr of
         Mono.MonoCall _ func args _ _ ->
             case func of
@@ -389,7 +500,7 @@ reifyDecoder registry expr =
                     case Registry.lookupSpecKey specId registry of
                         Just ( Mono.Global (IO.Canonical pkg moduleName) name, _, _ ) ->
                             if pkg == Pkg.bytes && moduleName == "Bytes.Decode" then
-                                reifyBytesDecodeCall registry name args
+                                reifyBytesDecodeCall registry exprCache name args
 
                             else
                                 Nothing
@@ -398,14 +509,91 @@ reifyDecoder registry expr =
                             Nothing
 
                 Mono.MonoVarKernel _ "Bytes" name _ ->
-                    reifyBytesKernelDecodeCall registry name args
+                    reifyBytesKernelDecodeCall registry exprCache name args
+
+                -- Curried call: func is itself a call (e.g. from pipe operator expansion).
+                -- Flatten inner args with outer args and try again.
+                Mono.MonoCall _ innerFunc innerArgs _ _ ->
+                    case innerFunc of
+                        Mono.MonoVarGlobal _ innerSpecId _ ->
+                            case Registry.lookupSpecKey innerSpecId registry of
+                                Just ( Mono.Global (IO.Canonical pkg2 moduleName2) name2, _, _ ) ->
+                                    if pkg2 == Pkg.bytes && moduleName2 == "Bytes.Decode" then
+                                        reifyBytesDecodeCall registry exprCache name2 (innerArgs ++ args)
+
+                                    else
+                                        Nothing
+
+                                _ ->
+                                    Nothing
+
+                        Mono.MonoVarKernel _ "Bytes" name2 _ ->
+                            reifyBytesKernelDecodeCall registry exprCache name2 (innerArgs ++ args)
+
+                        _ ->
+                            Nothing
+
+                -- Local variable in function position: resolve from exprCache.
+                -- Handles the pattern where pipe inlining produces
+                -- let _f = D.andThen callback in _f decoder
+                Mono.MonoVarLocal funcName _ ->
+                    case Dict.get funcName exprCache of
+                        Just (Mono.MonoCall _ innerFunc innerArgs _ _) ->
+                            case innerFunc of
+                                Mono.MonoVarGlobal _ innerSpecId _ ->
+                                    case Registry.lookupSpecKey innerSpecId registry of
+                                        Just ( Mono.Global (IO.Canonical pkg2 moduleName2) name2, _, _ ) ->
+                                            if pkg2 == Pkg.bytes && moduleName2 == "Bytes.Decode" then
+                                                reifyBytesDecodeCall registry exprCache name2 (innerArgs ++ args)
+
+                                            else
+                                                Nothing
+
+                                        _ ->
+                                            Nothing
+
+                                Mono.MonoVarKernel _ "Bytes" name2 _ ->
+                                    reifyBytesKernelDecodeCall registry exprCache name2 (innerArgs ++ args)
+
+                                _ ->
+                                    Nothing
+
+                        _ ->
+                            Nothing
 
                 _ ->
                     Nothing
 
-        -- Let bindings not yet supported (HARD GATE C18)
-        Mono.MonoLet _ _ _ ->
-            Nothing
+        -- Zero-argument decoder values (e.g. unsignedInt8, signedInt8) are bare MonoVarGlobal
+        Mono.MonoVarGlobal _ specId _ ->
+            case Registry.lookupSpecKey specId registry of
+                Just ( Mono.Global (IO.Canonical pkg moduleName) name, _, _ ) ->
+                    if pkg == Pkg.bytes && moduleName == "Bytes.Decode" then
+                        reifyBytesDecodeCall registry exprCache name []
+
+                    else
+                        Nothing
+
+                _ ->
+                    Nothing
+
+        -- Let binding: add the binding to exprCache and recurse on the body
+        Mono.MonoLet def body _ ->
+            case def of
+                Mono.MonoDef name defExpr ->
+                    reifyDecoder registry (Dict.insert name defExpr exprCache) body
+
+                _ ->
+                    Nothing
+
+        -- Local variable reference - look up in exprCache
+        Mono.MonoVarLocal name _ ->
+            case Dict.get name exprCache of
+                Just cachedExpr ->
+                    reifyDecoder registry exprCache cachedExpr
+
+                Nothing ->
+                    Nothing
 
         -- Variable reference - can't statically analyze
         _ ->
@@ -414,8 +602,8 @@ reifyDecoder registry expr =
 
 {-| Reify a call to a Bytes.Decode.\* function.
 -}
-reifyBytesDecodeCall : Mono.SpecializationRegistry -> String -> List Mono.MonoExpr -> Maybe DecoderNode
-reifyBytesDecodeCall registry name args =
+reifyBytesDecodeCall : Mono.SpecializationRegistry -> Dict String Mono.MonoExpr -> String -> List Mono.MonoExpr -> Maybe DecoderNode
+reifyBytesDecodeCall registry exprCache name args =
     case ( name, args ) of
         -- Primitive decoders (zero-arg)
         ( "unsignedInt8", [] ) ->
@@ -465,43 +653,43 @@ reifyBytesDecodeCall registry name args =
 
         -- Map combinators
         ( "map", [ fnExpr, decoderExpr ] ) ->
-            reifyDecoder registry decoderExpr
+            reifyDecoder registry exprCache decoderExpr
                 |> Maybe.map (DMap fnExpr)
 
         ( "map2", [ fnExpr, d1Expr, d2Expr ] ) ->
             Maybe.map2 (DMap2 fnExpr)
-                (reifyDecoder registry d1Expr)
-                (reifyDecoder registry d2Expr)
+                (reifyDecoder registry exprCache d1Expr)
+                (reifyDecoder registry exprCache d2Expr)
 
         ( "map3", [ fnExpr, d1Expr, d2Expr, d3Expr ] ) ->
             Maybe.map3 (DMap3 fnExpr)
-                (reifyDecoder registry d1Expr)
-                (reifyDecoder registry d2Expr)
-                (reifyDecoder registry d3Expr)
+                (reifyDecoder registry exprCache d1Expr)
+                (reifyDecoder registry exprCache d2Expr)
+                (reifyDecoder registry exprCache d3Expr)
 
         ( "map4", [ fnExpr, d1Expr, d2Expr, d3Expr, d4Expr ] ) ->
             map4 (DMap4 fnExpr)
-                (reifyDecoder registry d1Expr)
-                (reifyDecoder registry d2Expr)
-                (reifyDecoder registry d3Expr)
-                (reifyDecoder registry d4Expr)
+                (reifyDecoder registry exprCache d1Expr)
+                (reifyDecoder registry exprCache d2Expr)
+                (reifyDecoder registry exprCache d3Expr)
+                (reifyDecoder registry exprCache d4Expr)
 
         ( "map5", [ fnExpr, d1Expr, d2Expr, d3Expr, d4Expr, d5Expr ] ) ->
             map5 (DMap5 fnExpr)
-                (reifyDecoder registry d1Expr)
-                (reifyDecoder registry d2Expr)
-                (reifyDecoder registry d3Expr)
-                (reifyDecoder registry d4Expr)
-                (reifyDecoder registry d5Expr)
+                (reifyDecoder registry exprCache d1Expr)
+                (reifyDecoder registry exprCache d2Expr)
+                (reifyDecoder registry exprCache d3Expr)
+                (reifyDecoder registry exprCache d4Expr)
+                (reifyDecoder registry exprCache d5Expr)
 
         -- Phase 3: andThen support
         ( "andThen", [ lambdaExpr, firstDecoderExpr ] ) ->
-            reifyAndThen registry lambdaExpr firstDecoderExpr
+            reifyAndThen registry exprCache lambdaExpr firstDecoderExpr
 
         -- Phase 4: loop support
         -- loop : (state -> Decoder (Step state a)) -> state -> Decoder a
         ( "loop", [ stepFnExpr, initialStateExpr ] ) ->
-            reifyLoop registry stepFnExpr initialStateExpr
+            reifyLoop registry exprCache stepFnExpr initialStateExpr
 
         _ ->
             Nothing
@@ -509,8 +697,8 @@ reifyBytesDecodeCall registry name args =
 
 {-| Reify kernel decode calls.
 -}
-reifyBytesKernelDecodeCall : Mono.SpecializationRegistry -> String -> List Mono.MonoExpr -> Maybe DecoderNode
-reifyBytesKernelDecodeCall _ _ _ =
+reifyBytesKernelDecodeCall : Mono.SpecializationRegistry -> Dict String Mono.MonoExpr -> String -> List Mono.MonoExpr -> Maybe DecoderNode
+reifyBytesKernelDecodeCall _ _ _ _ =
     -- Kernel decode functions are internal; typically not exposed
     Nothing
 
@@ -523,10 +711,10 @@ reifyBytesKernelDecodeCall _ _ _ =
 
 {-| Try to reify an andThen expression into a fuseable pattern.
 -}
-reifyAndThen : Mono.SpecializationRegistry -> Mono.MonoExpr -> Mono.MonoExpr -> Maybe DecoderNode
-reifyAndThen registry lambdaExpr firstDecoderExpr =
+reifyAndThen : Mono.SpecializationRegistry -> Dict String Mono.MonoExpr -> Mono.MonoExpr -> Mono.MonoExpr -> Maybe DecoderNode
+reifyAndThen registry exprCache lambdaExpr firstDecoderExpr =
     -- First, reify the initial decoder
-    case reifyDecoder registry firstDecoderExpr of
+    case reifyDecoder registry exprCache firstDecoderExpr of
         Nothing ->
             Nothing
 
@@ -534,7 +722,7 @@ reifyAndThen registry lambdaExpr firstDecoderExpr =
             -- Analyze the lambda
             case lambdaExpr of
                 Mono.MonoClosure closureInfo bodyExpr _ ->
-                    reifyAndThenBody registry firstDecoder closureInfo bodyExpr
+                    reifyAndThenBody registry exprCache firstDecoder closureInfo bodyExpr
 
                 _ ->
                     Nothing
@@ -544,11 +732,12 @@ reifyAndThen registry lambdaExpr firstDecoderExpr =
 -}
 reifyAndThenBody :
     Mono.SpecializationRegistry
+    -> Dict String Mono.MonoExpr
     -> DecoderNode
     -> Mono.ClosureInfo
     -> Mono.MonoExpr
     -> Maybe DecoderNode
-reifyAndThenBody registry firstDecoder closureInfo bodyExpr =
+reifyAndThenBody registry exprCache firstDecoder closureInfo bodyExpr =
     let
         -- Get the lambda parameter name
         maybeParamName =
@@ -566,7 +755,7 @@ reifyAndThenBody registry firstDecoder closureInfo bodyExpr =
 
         Just paramName ->
             -- Try to match length-prefixed patterns first
-            case matchLengthPrefixedPattern registry paramName bodyExpr of
+            case matchLengthPrefixedPattern registry exprCache paramName bodyExpr of
                 Just patternConstructor ->
                     -- Convert firstDecoder to LengthDecoder if it's an integer type
                     case decoderToLengthDecoder firstDecoder of
@@ -579,7 +768,7 @@ reifyAndThenBody registry firstDecoder closureInfo bodyExpr =
 
                 Nothing ->
                     -- Try general andThen pattern (recursive analysis)
-                    case reifyDecoder registry bodyExpr of
+                    case reifyDecoder registry exprCache bodyExpr of
                         Just bodyDecoder ->
                             Just (DAndThen firstDecoder paramName bodyDecoder)
 
@@ -592,10 +781,11 @@ Returns a constructor that takes a LengthDecoder.
 -}
 matchLengthPrefixedPattern :
     Mono.SpecializationRegistry
+    -> Dict String Mono.MonoExpr
     -> String
     -> Mono.MonoExpr
     -> Maybe (LengthDecoder -> DecoderNode)
-matchLengthPrefixedPattern registry paramName bodyExpr =
+matchLengthPrefixedPattern registry _ paramName bodyExpr =
     case bodyExpr of
         Mono.MonoCall _ func [ argExpr ] _ _ ->
             case func of
@@ -692,23 +882,23 @@ the initial state is a tuple (count, []) and the step function decrements
 the count.
 
 -}
-reifyLoop : Mono.SpecializationRegistry -> Mono.MonoExpr -> Mono.MonoExpr -> Maybe DecoderNode
-reifyLoop registry stepFnExpr initialStateExpr =
+reifyLoop : Mono.SpecializationRegistry -> Dict String Mono.MonoExpr -> Mono.MonoExpr -> Mono.MonoExpr -> Maybe DecoderNode
+reifyLoop registry exprCache stepFnExpr initialStateExpr =
     -- Try count-based pattern first:
     -- Decode.loop ( count, [] ) (\( n, acc ) -> if n <= 0 then ... else Decode.map ... itemDecoder)
     case extractCountFromInitialState initialStateExpr of
         Just countSource ->
-            case extractItemDecoderFromStepFn registry stepFnExpr of
+            case extractItemDecoderFromStepFn registry exprCache stepFnExpr of
                 Just itemDecoder ->
                     Just (DCountLoop countSource itemDecoder)
 
                 Nothing ->
                     -- Count source found but item decoder extraction failed
-                    trySentinelLoop registry stepFnExpr initialStateExpr
+                    trySentinelLoop registry exprCache stepFnExpr initialStateExpr
 
         Nothing ->
             -- Not a count-based loop, try sentinel pattern
-            trySentinelLoop registry stepFnExpr initialStateExpr
+            trySentinelLoop registry exprCache stepFnExpr initialStateExpr
 
 
 {-| Try to recognize sentinel-terminated loop patterns:
@@ -726,13 +916,13 @@ Key characteristics:
   - Step function reads a value, then uses andThen to check sentinel
 
 -}
-trySentinelLoop : Mono.SpecializationRegistry -> Mono.MonoExpr -> Mono.MonoExpr -> Maybe DecoderNode
-trySentinelLoop registry stepFnExpr initialStateExpr =
+trySentinelLoop : Mono.SpecializationRegistry -> Dict String Mono.MonoExpr -> Mono.MonoExpr -> Mono.MonoExpr -> Maybe DecoderNode
+trySentinelLoop registry exprCache stepFnExpr initialStateExpr =
     -- Check if initial state is empty list []
     case initialStateExpr of
         Mono.MonoList _ [] _ ->
             -- Try to extract sentinel and item decoder from step function
-            extractSentinelFromStepFn registry stepFnExpr
+            extractSentinelFromStepFn registry exprCache stepFnExpr
 
         _ ->
             Nothing
@@ -744,11 +934,11 @@ Pattern:
 \\acc -> itemDecoder |> Decode.andThen (\\val -> if val == SENTINEL then ... else ...)
 
 -}
-extractSentinelFromStepFn : Mono.SpecializationRegistry -> Mono.MonoExpr -> Maybe DecoderNode
-extractSentinelFromStepFn registry stepFnExpr =
+extractSentinelFromStepFn : Mono.SpecializationRegistry -> Dict String Mono.MonoExpr -> Mono.MonoExpr -> Maybe DecoderNode
+extractSentinelFromStepFn registry exprCache stepFnExpr =
     case stepFnExpr of
         Mono.MonoClosure _ bodyExpr _ ->
-            extractSentinelFromBody registry bodyExpr
+            extractSentinelFromBody registry exprCache bodyExpr
 
         _ ->
             Nothing
@@ -756,11 +946,11 @@ extractSentinelFromStepFn registry stepFnExpr =
 
 {-| Extract sentinel from the body of a sentinel loop step function.
 -}
-extractSentinelFromBody : Mono.SpecializationRegistry -> Mono.MonoExpr -> Maybe DecoderNode
-extractSentinelFromBody registry bodyExpr =
+extractSentinelFromBody : Mono.SpecializationRegistry -> Dict String Mono.MonoExpr -> Mono.MonoExpr -> Maybe DecoderNode
+extractSentinelFromBody registry exprCache bodyExpr =
     case bodyExpr of
         Mono.MonoLet _ innerExpr _ ->
-            extractSentinelFromBody registry innerExpr
+            extractSentinelFromBody registry exprCache innerExpr
 
         -- Look for: decoder |> andThen (\val -> if val == sentinel then ...)
         -- This is MonoCall to andThen with [decoderExpr, lambdaExpr]
@@ -772,7 +962,7 @@ extractSentinelFromBody registry bodyExpr =
                         Just ( Mono.Global (IO.Canonical pkg moduleName) name, _, _ ) ->
                             if pkg == Pkg.bytes && moduleName == "Bytes.Decode" && name == "andThen" then
                                 -- Found andThen, now extract sentinel and item decoder
-                                extractSentinelFromAndThenBody registry decoderExpr lambdaExpr
+                                extractSentinelFromAndThenBody registry exprCache decoderExpr lambdaExpr
 
                             else
                                 Nothing
@@ -793,10 +983,10 @@ The lambda has pattern: \\val -> if val == SENTINEL then Done else Loop
 We need to find the sentinel value and confirm the decoder type.
 
 -}
-extractSentinelFromAndThenBody : Mono.SpecializationRegistry -> Mono.MonoExpr -> Mono.MonoExpr -> Maybe DecoderNode
-extractSentinelFromAndThenBody registry decoderExpr lambdaExpr =
+extractSentinelFromAndThenBody : Mono.SpecializationRegistry -> Dict String Mono.MonoExpr -> Mono.MonoExpr -> Mono.MonoExpr -> Maybe DecoderNode
+extractSentinelFromAndThenBody registry exprCache decoderExpr lambdaExpr =
     -- First try to reify the decoder (typically DU8 for null-terminated)
-    case reifyDecoder registry decoderExpr of
+    case reifyDecoder registry exprCache decoderExpr of
         Just itemDecoder ->
             -- Now extract sentinel value from the lambda body
             case extractSentinelValue lambdaExpr of
@@ -920,12 +1110,12 @@ The step function has the pattern:
 We need to find the Decode.map call and extract its second argument (itemDecoder).
 
 -}
-extractItemDecoderFromStepFn : Mono.SpecializationRegistry -> Mono.MonoExpr -> Maybe DecoderNode
-extractItemDecoderFromStepFn registry stepFnExpr =
+extractItemDecoderFromStepFn : Mono.SpecializationRegistry -> Dict String Mono.MonoExpr -> Mono.MonoExpr -> Maybe DecoderNode
+extractItemDecoderFromStepFn registry exprCache stepFnExpr =
     case stepFnExpr of
         Mono.MonoClosure _ bodyExpr _ ->
             -- Body may have destructs for tuple extraction, then an if
-            extractItemDecoderFromBody registry bodyExpr
+            extractItemDecoderFromBody registry exprCache bodyExpr
 
         _ ->
             Nothing
@@ -937,14 +1127,14 @@ This recursively looks through Let/Destruct nodes to find the MonoIf,
 then extracts the item decoder from the else branch's Decode.map call.
 
 -}
-extractItemDecoderFromBody : Mono.SpecializationRegistry -> Mono.MonoExpr -> Maybe DecoderNode
-extractItemDecoderFromBody registry bodyExpr =
+extractItemDecoderFromBody : Mono.SpecializationRegistry -> Dict String Mono.MonoExpr -> Mono.MonoExpr -> Maybe DecoderNode
+extractItemDecoderFromBody registry exprCache bodyExpr =
     case bodyExpr of
         Mono.MonoLet _ innerExpr _ ->
-            extractItemDecoderFromBody registry innerExpr
+            extractItemDecoderFromBody registry exprCache innerExpr
 
         Mono.MonoDestruct _ innerExpr _ ->
-            extractItemDecoderFromBody registry innerExpr
+            extractItemDecoderFromBody registry exprCache innerExpr
 
         Mono.MonoIf branches elseExpr _ ->
             -- The else branch (or last branch if/else) contains Decode.map ... itemDecoder
@@ -954,14 +1144,14 @@ extractItemDecoderFromBody registry bodyExpr =
             case branches of
                 [ ( _, _ ) ] ->
                     -- Single if-then-else: else branch has the item decoder
-                    extractItemDecoderFromMapCall registry elseExpr
+                    extractItemDecoderFromMapCall registry exprCache elseExpr
 
                 _ ->
                     Nothing
 
         _ ->
             -- Also check if this is directly a Decode.map call (simpler patterns)
-            extractItemDecoderFromMapCall registry bodyExpr
+            extractItemDecoderFromMapCall registry exprCache bodyExpr
 
 
 {-| Extract item decoder from a Decode.map call.
@@ -970,8 +1160,8 @@ Pattern: Decode.map (\\item -> Loop ...) itemDecoder
 The itemDecoder is the second argument.
 
 -}
-extractItemDecoderFromMapCall : Mono.SpecializationRegistry -> Mono.MonoExpr -> Maybe DecoderNode
-extractItemDecoderFromMapCall registry expr =
+extractItemDecoderFromMapCall : Mono.SpecializationRegistry -> Dict String Mono.MonoExpr -> Mono.MonoExpr -> Maybe DecoderNode
+extractItemDecoderFromMapCall registry exprCache expr =
     case expr of
         Mono.MonoCall _ func [ _, itemDecoderExpr ] _ _ ->
             -- Check if func is Decode.map
@@ -980,7 +1170,7 @@ extractItemDecoderFromMapCall registry expr =
                     case Registry.lookupSpecKey specId registry of
                         Just ( Mono.Global (IO.Canonical pkg moduleName) name, _, _ ) ->
                             if pkg == Pkg.bytes && moduleName == "Bytes.Decode" && name == "map" then
-                                reifyDecoder registry itemDecoderExpr
+                                reifyDecoder registry exprCache itemDecoderExpr
 
                             else
                                 Nothing

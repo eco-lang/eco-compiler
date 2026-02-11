@@ -8,7 +8,7 @@ module {
     %max_exact = arith.constant 9007199254740992 : i64
     %max_float = eco.int.toFloat %max_exact : i64 -> f64
     eco.dbg %max_float : f64
-    // CHECK: 9.0072e+15
+    // CHECK: 9007199254740992
 
     // toFloat(0) = 0.0
     %i0 = arith.constant 0 : i64

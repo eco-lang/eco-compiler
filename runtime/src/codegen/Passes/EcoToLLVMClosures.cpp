@@ -329,6 +329,7 @@ struct PapExtendOpLowering : public OpConversionPattern<PapExtendOp> {
         if (isSaturated) {
             // Saturated call: use runtime helper
             auto helperFunc = runtime.getOrCreateClosureCallSaturated(rewriter);
+            auto f64Ty = Float64Type::get(ctx);
 
             // Build args array on stack
             auto numArgsConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, rewriter.getI64IntegerAttr(numNewArgs));
@@ -338,7 +339,10 @@ struct PapExtendOpLowering : public OpConversionPattern<PapExtendOp> {
                 auto idxConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, rewriter.getI64IntegerAttr(i));
                 auto slotPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i64Ty, argsArray, ValueRange{idxConst});
                 Value arg = newargs[i];
-                if (arg.getType() != i64Ty && isa<LLVM::LLVMPointerType>(arg.getType())) {
+                if (arg.getType() == f64Ty) {
+                    // Bitcast f64 to i64 for storage in the args array.
+                    arg = rewriter.create<LLVM::BitcastOp>(loc, i64Ty, arg);
+                } else if (arg.getType() != i64Ty && isa<LLVM::LLVMPointerType>(arg.getType())) {
                     arg = rewriter.create<LLVM::PtrToIntOp>(loc, i64Ty, arg);
                 }
                 rewriter.create<LLVM::StoreOp>(loc, arg, slotPtr);
@@ -348,7 +352,15 @@ struct PapExtendOpLowering : public OpConversionPattern<PapExtendOp> {
 
             auto call =
                 rewriter.create<LLVM::CallOp>(loc, helperFunc, ValueRange{closureI64, argsArray, numNewArgsConst});
-            rewriter.replaceOp(op, call.getResult());
+            Value result = call.getResult();
+
+            // The runtime helper returns i64. If the op's result type is f64
+            // (unboxed float), bitcast i64 back to f64.
+            Type convertedResultTy = getTypeConverter()->convertType(op.getResult().getType());
+            if (convertedResultTy == f64Ty) {
+                result = rewriter.create<LLVM::BitcastOp>(loc, f64Ty, result);
+            }
+            rewriter.replaceOp(op, result);
         } else {
             // Partial application: use runtime helper to create extended closure
             auto helperFunc = runtime.getOrCreatePapExtend(rewriter);

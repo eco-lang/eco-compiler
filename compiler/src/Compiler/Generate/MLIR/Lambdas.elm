@@ -17,6 +17,7 @@ import Compiler.Generate.MLIR.Types as Types
 import Compiler.Monomorphize.Closure as Closure
 import Data.Set as EverySet exposing (EverySet)
 import Dict
+import Set
 import Mlir.Mlir exposing (MlirOp, MlirRegion, MlirType)
 import Utils.Crash exposing (crash)
 
@@ -38,6 +39,25 @@ processLambdas ctx =
                 ctxCleared =
                     { ctx | pendingLambdas = [] }
 
+                -- Deduplicate lambdas by name to avoid duplicate function definitions
+                -- (can happen when BytesFusion compiles a decoder binding AND the fused path
+                -- references the same lambda)
+                dedupedLambdas =
+                    let
+                        ( _, result ) =
+                            List.foldl
+                                (\lambda ( seen, acc ) ->
+                                    if Set.member lambda.name seen then
+                                        ( seen, acc )
+
+                                    else
+                                        ( Set.insert lambda.name seen, acc ++ [ lambda ] )
+                                )
+                                ( Set.empty, [] )
+                                lambdas
+                    in
+                    result
+
                 ( lambdaOps, ctxAfter ) =
                     List.foldl
                         (\lambda ( accOps, accCtx ) ->
@@ -51,7 +71,7 @@ processLambdas ctx =
                             ( accOps ++ [ op ], newCtx )
                         )
                         ( [], ctxCleared )
-                        lambdas
+                        dedupedLambdas
 
                 ( moreOps, finalCtx ) =
                     processLambdas ctxAfter

@@ -11,6 +11,7 @@
 #include "HeapHelpers.hpp"
 #include "TypeInfo.hpp"
 
+#include <charconv>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -104,7 +105,12 @@ void print_float(double d) {
         // Print both +0.0 and -0.0 as "0", like Elm does.
         output_text("0");
     } else {
-        output_format("%g", d);
+        // Use std::to_chars for the shortest round-trip representation,
+        // matching JavaScript/Elm's Number.prototype.toString() behavior.
+        char buf[32];
+        auto [ptr, ec] = std::to_chars(buf, buf + sizeof(buf), d);
+        *ptr = '\0';
+        output_text(buf);
     }
 }
 

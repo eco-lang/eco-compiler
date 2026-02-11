@@ -137,18 +137,11 @@ optimizeExpr kernelEnv annotations exprTypes home cycle region tipe expr =
                 Names.registerGlobal region varHome name defType
 
         Can.VarKernel kernelHome name ->
-            let
-                kernelType : Can.Type
-                kernelType =
-                    case KernelTypes.lookup kernelHome name kernelEnv of
-                        Just t ->
-                            t
-
-                        Nothing ->
-                            Utils.Crash.crash
-                                ("Typed.Expression.optimizeExpr: Missing kernel type for " ++ kernelHome ++ "." ++ name)
-            in
-            Names.registerKernel kernelHome (TOpt.VarKernel region kernelHome name kernelType)
+            -- Use the solver-inferred type (tipe) rather than the kernel env type.
+            -- The kernel env stores a single type per kernel (first-usage-wins),
+            -- which is wrong for polymorphic kernels used through aliases
+            -- (e.g., String.fromFloat vs String.fromInt both alias String.fromNumber).
+            Names.registerKernel kernelHome (TOpt.VarKernel region kernelHome name tipe)
 
         Can.VarForeign foreignHome name _ ->
             Names.registerGlobal region foreignHome name tipe

@@ -117,6 +117,7 @@ numberBoxedKernels =
         , ( "Basics", "sub" )
         , ( "Basics", "mul" )
         , ( "Basics", "pow" )
+        , ( "String", "fromNumber" )
         ]
 
 

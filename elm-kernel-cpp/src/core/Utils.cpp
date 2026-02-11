@@ -28,6 +28,36 @@ static Tag getTag(void* obj) {
     return static_cast<Tag>(hdr->tag);
 }
 
+// Safely resolve an HPointer field value.
+// Returns nullptr for embedded constants (caller must handle constant comparison).
+static void* safeResolve(Allocator& allocator, HPointer p) {
+    if (alloc::isConstant(p)) return nullptr;
+    return allocator.resolve(p);
+}
+
+// Compare two HPointer field values that may be embedded constants.
+// Both must be boxed (non-unboxed) fields. Returns:
+//   1 if both resolved successfully (caller should call eqHelp/cmp on aOut, bOut)
+//   0 if comparison is determined (result stored in *result)
+static int resolveAndCompare(Allocator& allocator, HPointer ap, HPointer bp,
+                              void** aOut, void** bOut, bool* eqResult) {
+    bool aConst = alloc::isConstant(ap);
+    bool bConst = alloc::isConstant(bp);
+
+    if (aConst || bConst) {
+        // At least one is an embedded constant - compare raw i64 values
+        union { HPointer hp; uint64_t val; } ua, ub;
+        ua.hp = ap;
+        ub.hp = bp;
+        *eqResult = (ua.val == ub.val);
+        return 0;  // Comparison determined
+    }
+
+    *aOut = allocator.resolve(ap);
+    *bOut = allocator.resolve(bp);
+    return 1;  // Need recursive comparison
+}
+
 // Low-level comparison returning -1 (LT), 0 (EQ), or 1 (GT)
 static int cmp(void* a, void* b) {
     // Null checks
@@ -78,38 +108,53 @@ static int cmp(void* a, void* b) {
             Elm::Tuple2* atup = static_cast<Elm::Tuple2*>(a);
             Elm::Tuple2* btup = static_cast<Elm::Tuple2*>(b);
 
-            // Compare first element
-            void* a1 = allocator.resolve(atup->a.p);
-            void* b1 = allocator.resolve(btup->a.p);
-            int ord = cmp(a1, b1);
-            if (ord != 0) return ord;
-
-            // Compare second element
-            void* a2 = allocator.resolve(atup->b.p);
-            void* b2 = allocator.resolve(btup->b.p);
-            return cmp(a2, b2);
+            {
+                void* a1; void* b1; bool eq;
+                if (resolveAndCompare(allocator, atup->a.p, btup->a.p, &a1, &b1, &eq) == 0) {
+                    if (!eq) return atup->a.p.constant < btup->a.p.constant ? -1 : 1;
+                } else {
+                    int ord = cmp(a1, b1);
+                    if (ord != 0) return ord;
+                }
+            }
+            {
+                void* a2; void* b2; bool eq;
+                if (resolveAndCompare(allocator, atup->b.p, btup->b.p, &a2, &b2, &eq) == 0) {
+                    return eq ? 0 : (atup->b.p.constant < btup->b.p.constant ? -1 : 1);
+                }
+                return cmp(a2, b2);
+            }
         }
 
         case Tag_Tuple3: {
             Elm::Tuple3* atup = static_cast<Elm::Tuple3*>(a);
             Elm::Tuple3* btup = static_cast<Elm::Tuple3*>(b);
 
-            // Compare first element
-            void* a1 = allocator.resolve(atup->a.p);
-            void* b1 = allocator.resolve(btup->a.p);
-            int ord = cmp(a1, b1);
-            if (ord != 0) return ord;
-
-            // Compare second element
-            void* a2 = allocator.resolve(atup->b.p);
-            void* b2 = allocator.resolve(btup->b.p);
-            ord = cmp(a2, b2);
-            if (ord != 0) return ord;
-
-            // Compare third element
-            void* a3 = allocator.resolve(atup->c.p);
-            void* b3 = allocator.resolve(btup->c.p);
-            return cmp(a3, b3);
+            {
+                void* a1; void* b1; bool eq;
+                if (resolveAndCompare(allocator, atup->a.p, btup->a.p, &a1, &b1, &eq) == 0) {
+                    if (!eq) return atup->a.p.constant < btup->a.p.constant ? -1 : 1;
+                } else {
+                    int ord = cmp(a1, b1);
+                    if (ord != 0) return ord;
+                }
+            }
+            {
+                void* a2; void* b2; bool eq;
+                if (resolveAndCompare(allocator, atup->b.p, btup->b.p, &a2, &b2, &eq) == 0) {
+                    if (!eq) return atup->b.p.constant < btup->b.p.constant ? -1 : 1;
+                } else {
+                    int ord = cmp(a2, b2);
+                    if (ord != 0) return ord;
+                }
+            }
+            {
+                void* a3; void* b3; bool eq;
+                if (resolveAndCompare(allocator, atup->c.p, btup->c.p, &a3, &b3, &eq) == 0) {
+                    return eq ? 0 : (atup->c.p.constant < btup->c.p.constant ? -1 : 1);
+                }
+                return cmp(a3, b3);
+            }
         }
 
         case Tag_Cons: {
@@ -121,32 +166,45 @@ static int cmp(void* a, void* b) {
                 Header* ahdr = getHeader(ax);
                 Header* bhdr = getHeader(bx);
 
-                // Compare heads
-                void* aHead;
-                void* bHead;
+                bool aHUnboxed = (ahdr->unboxed & 1);
+                bool bHUnboxed = (bhdr->unboxed & 1);
 
-                if (ahdr->unboxed & 1) {
-                    // Unboxed - box for comparison
-                    aHead = allocator.resolve(alloc::allocInt(ax->head.i));
+                if (aHUnboxed && bHUnboxed) {
+                    if (ax->head.i != bx->head.i) {
+                        return ax->head.i < bx->head.i ? -1 : 1;
+                    }
+                } else if (!aHUnboxed && !bHUnboxed) {
+                    void* aHead; void* bHead; bool eq;
+                    if (resolveAndCompare(allocator, ax->head.p, bx->head.p,
+                                          &aHead, &bHead, &eq) == 0) {
+                        if (!eq) return ax->head.p.constant < bx->head.p.constant ? -1 : 1;
+                    } else {
+                        int ord = cmp(aHead, bHead);
+                        if (ord != 0) return ord;
+                    }
                 } else {
-                    aHead = allocator.resolve(ax->head.p);
+                    // Mixed unboxed/boxed: resolve the boxed head for comparison.
+                    i64 unboxedVal = aHUnboxed ? ax->head.i : bx->head.i;
+                    HPointer boxedHP = aHUnboxed ? bx->head.p : ax->head.p;
+                    void* boxedPtr = safeResolve(allocator, boxedHP);
+                    if (!boxedPtr) return aHUnboxed ? -1 : 1;
+                    Header* hdr = static_cast<Header*>(boxedPtr);
+                    if (hdr->tag == Tag_Int) {
+                        i64 boxedVal = static_cast<ElmInt*>(boxedPtr)->value;
+                        if (unboxedVal != boxedVal) {
+                            return unboxedVal < boxedVal ? -1 : 1;
+                        }
+                    } else {
+                        return aHUnboxed ? -1 : 1;
+                    }
                 }
-
-                if (bhdr->unboxed & 1) {
-                    bHead = allocator.resolve(alloc::allocInt(bx->head.i));
-                } else {
-                    bHead = allocator.resolve(bx->head.p);
-                }
-
-                int ord = cmp(aHead, bHead);
-                if (ord != 0) return ord;
 
                 // Move to tails
                 if (alloc::isNil(ax->tail)) ax = nullptr;
-                else ax = static_cast<Cons*>(allocator.resolve(ax->tail));
+                else ax = static_cast<Cons*>(safeResolve(allocator, ax->tail));
 
                 if (alloc::isNil(bx->tail)) bx = nullptr;
-                else bx = static_cast<Cons*>(allocator.resolve(bx->tail));
+                else bx = static_cast<Cons*>(safeResolve(allocator, bx->tail));
             }
 
             // Shorter list is less
@@ -230,30 +288,50 @@ static bool eqHelp(void* a, void* b, int depth) {
             Elm::Tuple2* atup = static_cast<Elm::Tuple2*>(a);
             Elm::Tuple2* btup = static_cast<Elm::Tuple2*>(b);
 
-            void* a1 = allocator.resolve(atup->a.p);
-            void* b1 = allocator.resolve(btup->a.p);
-            if (!eqHelp(a1, b1, depth + 1)) return false;
-
-            void* a2 = allocator.resolve(atup->b.p);
-            void* b2 = allocator.resolve(btup->b.p);
-            return eqHelp(a2, b2, depth + 1);
+            {
+                void* a1; void* b1; bool eq;
+                if (resolveAndCompare(allocator, atup->a.p, btup->a.p, &a1, &b1, &eq) == 0) {
+                    if (!eq) return false;
+                } else {
+                    if (!eqHelp(a1, b1, depth + 1)) return false;
+                }
+            }
+            {
+                void* a2; void* b2; bool eq;
+                if (resolveAndCompare(allocator, atup->b.p, btup->b.p, &a2, &b2, &eq) == 0) {
+                    return eq;
+                }
+                return eqHelp(a2, b2, depth + 1);
+            }
         }
 
         case Tag_Tuple3: {
             Elm::Tuple3* atup = static_cast<Elm::Tuple3*>(a);
             Elm::Tuple3* btup = static_cast<Elm::Tuple3*>(b);
 
-            void* a1 = allocator.resolve(atup->a.p);
-            void* b1 = allocator.resolve(btup->a.p);
-            if (!eqHelp(a1, b1, depth + 1)) return false;
-
-            void* a2 = allocator.resolve(atup->b.p);
-            void* b2 = allocator.resolve(btup->b.p);
-            if (!eqHelp(a2, b2, depth + 1)) return false;
-
-            void* a3 = allocator.resolve(atup->c.p);
-            void* b3 = allocator.resolve(btup->c.p);
-            return eqHelp(a3, b3, depth + 1);
+            {
+                void* a1; void* b1; bool eq;
+                if (resolveAndCompare(allocator, atup->a.p, btup->a.p, &a1, &b1, &eq) == 0) {
+                    if (!eq) return false;
+                } else {
+                    if (!eqHelp(a1, b1, depth + 1)) return false;
+                }
+            }
+            {
+                void* a2; void* b2; bool eq;
+                if (resolveAndCompare(allocator, atup->b.p, btup->b.p, &a2, &b2, &eq) == 0) {
+                    if (!eq) return false;
+                } else {
+                    if (!eqHelp(a2, b2, depth + 1)) return false;
+                }
+            }
+            {
+                void* a3; void* b3; bool eq;
+                if (resolveAndCompare(allocator, atup->c.p, btup->c.p, &a3, &b3, &eq) == 0) {
+                    return eq;
+                }
+                return eqHelp(a3, b3, depth + 1);
+            }
         }
 
         case Tag_Cons: {
@@ -266,29 +344,40 @@ static bool eqHelp(void* a, void* b, int depth) {
                 Header* bhdr = getHeader(bx);
 
                 // Compare heads
-                void* aHead;
-                void* bHead;
+                bool aHUnboxed = (ahdr->unboxed & 1);
+                bool bHUnboxed = (bhdr->unboxed & 1);
 
-                if (ahdr->unboxed & 1) {
-                    aHead = allocator.resolve(alloc::allocInt(ax->head.i));
+                if (aHUnboxed && bHUnboxed) {
+                    if (ax->head.i != bx->head.i) return false;
+                } else if (aHUnboxed != bHUnboxed) {
+                    // Mixed: one head is unboxed (raw i64), other is boxed (HPointer).
+                    // Resolve the boxed head and compare values.
+                    i64 unboxedVal = aHUnboxed ? ax->head.i : bx->head.i;
+                    HPointer boxedHP = aHUnboxed ? bx->head.p : ax->head.p;
+                    void* boxedPtr = safeResolve(allocator, boxedHP);
+                    if (!boxedPtr) return false;
+                    Header* hdr = static_cast<Header*>(boxedPtr);
+                    if (hdr->tag == Tag_Int) {
+                        if (static_cast<ElmInt*>(boxedPtr)->value != unboxedVal) return false;
+                    } else {
+                        return false;
+                    }
                 } else {
-                    aHead = allocator.resolve(ax->head.p);
+                    void* aHead; void* bHead; bool eq;
+                    if (resolveAndCompare(allocator, ax->head.p, bx->head.p,
+                                          &aHead, &bHead, &eq) == 0) {
+                        if (!eq) return false;
+                    } else {
+                        if (!eqHelp(aHead, bHead, depth + 1)) return false;
+                    }
                 }
-
-                if (bhdr->unboxed & 1) {
-                    bHead = allocator.resolve(alloc::allocInt(bx->head.i));
-                } else {
-                    bHead = allocator.resolve(bx->head.p);
-                }
-
-                if (!eqHelp(aHead, bHead, depth + 1)) return false;
 
                 // Move to tails
                 if (alloc::isNil(ax->tail)) ax = nullptr;
-                else ax = static_cast<Cons*>(allocator.resolve(ax->tail));
+                else ax = static_cast<Cons*>(safeResolve(allocator, ax->tail));
 
                 if (alloc::isNil(bx->tail)) bx = nullptr;
-                else bx = static_cast<Cons*>(allocator.resolve(bx->tail));
+                else bx = static_cast<Cons*>(safeResolve(allocator, bx->tail));
             }
 
             return ax == nullptr && bx == nullptr;
@@ -308,22 +397,24 @@ static bool eqHelp(void* a, void* b, int depth) {
                 bool aUnboxed = (ac->unboxed >> i) & 1;
                 bool bUnboxed = (bc->unboxed >> i) & 1;
 
-                void* aVal;
-                void* bVal;
-
-                if (aUnboxed) {
-                    aVal = allocator.resolve(alloc::allocInt(ac->values[i].i));
+                if (aUnboxed && bUnboxed) {
+                    // Both unboxed - compare raw values
+                    if (ac->values[i].i != bc->values[i].i) return false;
+                } else if (aUnboxed || bUnboxed) {
+                    // Mixed unboxed/boxed - not equal
+                    return false;
                 } else {
-                    aVal = allocator.resolve(ac->values[i].p);
+                    // Both boxed - handle embedded constants
+                    void* aVal;
+                    void* bVal;
+                    bool eqResult;
+                    if (resolveAndCompare(allocator, ac->values[i].p, bc->values[i].p,
+                                          &aVal, &bVal, &eqResult) == 0) {
+                        if (!eqResult) return false;
+                    } else {
+                        if (!eqHelp(aVal, bVal, depth + 1)) return false;
+                    }
                 }
-
-                if (bUnboxed) {
-                    bVal = allocator.resolve(alloc::allocInt(bc->values[i].i));
-                } else {
-                    bVal = allocator.resolve(bc->values[i].p);
-                }
-
-                if (!eqHelp(aVal, bVal, depth + 1)) return false;
             }
 
             return true;
@@ -340,22 +431,19 @@ static bool eqHelp(void* a, void* b, int depth) {
                 bool aUnboxed = (ar->unboxed >> i) & 1;
                 bool bUnboxed = (br->unboxed >> i) & 1;
 
-                void* aVal;
-                void* bVal;
-
-                if (aUnboxed) {
-                    aVal = allocator.resolve(alloc::allocInt(ar->values[i].i));
+                if (aUnboxed && bUnboxed) {
+                    if (ar->values[i].i != br->values[i].i) return false;
+                } else if (aUnboxed || bUnboxed) {
+                    return false;
                 } else {
-                    aVal = allocator.resolve(ar->values[i].p);
+                    void* aVal; void* bVal; bool eq;
+                    if (resolveAndCompare(allocator, ar->values[i].p, br->values[i].p,
+                                          &aVal, &bVal, &eq) == 0) {
+                        if (!eq) return false;
+                    } else {
+                        if (!eqHelp(aVal, bVal, depth + 1)) return false;
+                    }
                 }
-
-                if (bUnboxed) {
-                    bVal = allocator.resolve(alloc::allocInt(br->values[i].i));
-                } else {
-                    bVal = allocator.resolve(br->values[i].p);
-                }
-
-                if (!eqHelp(aVal, bVal, depth + 1)) return false;
             }
 
             return true;
@@ -371,22 +459,19 @@ static bool eqHelp(void* a, void* b, int depth) {
                 bool aUnboxed = (aa->unboxed >> i) & 1;
                 bool bUnboxed = (ba->unboxed >> i) & 1;
 
-                void* aVal;
-                void* bVal;
-
-                if (aUnboxed) {
-                    aVal = allocator.resolve(alloc::allocInt(aa->elements[i].i));
+                if (aUnboxed && bUnboxed) {
+                    if (aa->elements[i].i != ba->elements[i].i) return false;
+                } else if (aUnboxed || bUnboxed) {
+                    return false;
                 } else {
-                    aVal = allocator.resolve(aa->elements[i].p);
+                    void* aVal; void* bVal; bool eq;
+                    if (resolveAndCompare(allocator, aa->elements[i].p, ba->elements[i].p,
+                                          &aVal, &bVal, &eq) == 0) {
+                        if (!eq) return false;
+                    } else {
+                        if (!eqHelp(aVal, bVal, depth + 1)) return false;
+                    }
                 }
-
-                if (bUnboxed) {
-                    bVal = allocator.resolve(alloc::allocInt(ba->elements[i].i));
-                } else {
-                    bVal = allocator.resolve(ba->elements[i].p);
-                }
-
-                if (!eqHelp(aVal, bVal, depth + 1)) return false;
             }
 
             return true;

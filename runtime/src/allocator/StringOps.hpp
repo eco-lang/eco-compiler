@@ -20,6 +20,7 @@
 #include "Allocator.hpp"
 #include "HeapHelpers.hpp"
 #include <cctype>
+#include <charconv>
 #include <cmath>
 #include <cstdlib>
 #include <limits>
@@ -590,10 +591,13 @@ inline HPointer fromFloat(f64 n) {
         return n > 0 ? alloc::allocString(u"Infinity")
                      : alloc::allocString(u"-Infinity");
     }
+    if (n == 0.0) return alloc::allocString(u"0");
 
-    std::ostringstream oss;
-    oss << std::setprecision(17) << n;
-    std::string s = oss.str();
+    // Use std::to_chars for the shortest round-trip representation,
+    // matching JavaScript/Elm's Number.prototype.toString() behavior.
+    char buf[32];
+    auto [ptr, ec] = std::to_chars(buf, buf + sizeof(buf), n);
+    std::string s(buf, ptr);
     std::u16string u16(s.begin(), s.end());
     return alloc::allocString(u16);
 }

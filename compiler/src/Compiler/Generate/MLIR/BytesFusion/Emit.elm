@@ -774,9 +774,9 @@ emitReadWithNestedScfIf byteCount readOpName maybeEndian resultType placeholderV
         ( nothingVar, ctx8 ) =
             Context.freshVar ctx7
 
-        -- Use eco.construct.custom with constructor "Nothing", tag 1, size 0
+        -- Use eco.constant Nothing (embedded constant, matches non-fused path)
         ( ctx9, nothingOp ) =
-            Ops.ecoConstructCustom ctx8 nothingVar 1 0 0 [] (Just "Nothing")
+            Ops.ecoConstantNothing ctx8 nothingVar
 
         ( ctx10, elseYieldOp ) =
             Ops.mlirOp ctx9 "scf.yield"
@@ -805,43 +805,56 @@ emitReadWithNestedScfIf byteCount readOpName maybeEndian resultType placeholderV
 emitReadBytesNested : Mono.MonoExpr -> String -> List DecoderOp -> DecoderEmitState -> ( List MlirOp, String, Context )
 emitReadBytesNested lenExpr placeholderVar restOps state =
     let
-        -- Compile the length expression
         lenResult =
             state.compileExpr lenExpr state.ctx
 
-        -- bf.require with dynamic length
-        ( okVar, ctx1 ) =
+        -- Truncate i64 length to i32 for bf ops
+        ( lenI32Var, ctxTrunc0 ) =
             Context.freshVar lenResult.ctx
 
-        -- Add _operand_types for cursor and length (eco.value)
+        truncAttrs =
+            Dict.singleton "_operand_types"
+                (ArrayAttr Nothing [ TypeAttr lenResult.resultType ])
+
+        ( ctxTrunc1, truncOp ) =
+            Ops.mlirOp ctxTrunc0 "arith.trunci"
+                |> Ops.opBuilder.withOperands [ lenResult.resultVar ]
+                |> Ops.opBuilder.withResults [ ( lenI32Var, I32 ) ]
+                |> Ops.opBuilder.withAttrs truncAttrs
+                |> Ops.opBuilder.build
+
+        ( okVar, ctx1 ) =
+            Context.freshVar ctxTrunc1
+
         requireAttrs =
             Dict.singleton "_operand_types"
-                (ArrayAttr Nothing [ TypeAttr bfCursorType, TypeAttr Types.ecoValue ])
+                (ArrayAttr Nothing [ TypeAttr bfCursorType, TypeAttr I32 ])
 
         ( ctx2, requireOp ) =
             Ops.mlirOp ctx1 "bf.require"
-                |> Ops.opBuilder.withOperands [ state.cursor, lenResult.resultVar ]
+                |> Ops.opBuilder.withOperands [ state.cursor, lenI32Var ]
                 |> Ops.opBuilder.withResults [ ( okVar, I1 ) ]
                 |> Ops.opBuilder.withAttrs requireAttrs
                 |> Ops.opBuilder.build
 
-        -- Build then block: read bytes and continue
         ( bytesVar, ctx3 ) =
             Context.freshVar ctx2
 
         ( newCursor, ctx4 ) =
             Context.freshVar ctx3
 
-        -- Add _operand_types for cursor and length
+        ( readOkVar, ctx4b ) =
+            Context.freshVar ctx4
+
         readAttrs =
             Dict.singleton "_operand_types"
-                (ArrayAttr Nothing [ TypeAttr bfCursorType, TypeAttr Types.ecoValue ])
+                (ArrayAttr Nothing [ TypeAttr bfCursorType, TypeAttr I32 ])
 
         ( ctx5, readOp ) =
-            Ops.mlirOp ctx4 "bf.read.bytes"
-                |> Ops.opBuilder.withOperands [ state.cursor, lenResult.resultVar ]
+            Ops.mlirOp ctx4b "bf.read.bytes"
+                |> Ops.opBuilder.withOperands [ state.cursor, lenI32Var ]
                 |> Ops.opBuilder.withAttrs readAttrs
-                |> Ops.opBuilder.withResults [ ( bytesVar, Types.ecoValue ), ( newCursor, bfCursorType ) ]
+                |> Ops.opBuilder.withResults [ ( bytesVar, Types.ecoValue ), ( newCursor, bfCursorType ), ( readOkVar, I1 ) ]
                 |> Ops.opBuilder.build
 
         updatedState =
@@ -864,13 +877,11 @@ emitReadBytesNested lenExpr placeholderVar restOps state =
         thenRegion =
             Ops.mkRegion [] (readOp :: thenBodyOps) thenYieldOp
 
-        -- Else block: Nothing
         ( nothingVar, ctx8 ) =
             Context.freshVar ctx7
 
-        -- Use eco.construct.custom with constructor "Nothing", tag 1, size 0
         ( ctx9, nothingOp ) =
-            Ops.ecoConstructCustom ctx8 nothingVar 1 0 0 [] (Just "Nothing")
+            Ops.ecoConstantNothing ctx8 nothingVar
 
         ( ctx10, elseYieldOp ) =
             Ops.mlirOp ctx9 "scf.yield"
@@ -880,7 +891,6 @@ emitReadBytesNested lenExpr placeholderVar restOps state =
         elseRegion =
             Ops.mkRegion [] [ nothingOp ] elseYieldOp
 
-        -- scf.if
         ( ifResultVar, ctx11 ) =
             Context.freshVar ctx10
 
@@ -891,7 +901,7 @@ emitReadBytesNested lenExpr placeholderVar restOps state =
                 |> Ops.opBuilder.withRegions [ thenRegion, elseRegion ]
                 |> Ops.opBuilder.build
     in
-    ( lenResult.ops ++ [ requireOp, ifOp ], ifResultVar, ctx12 )
+    ( lenResult.ops ++ [ truncOp, requireOp, ifOp ], ifResultVar, ctx12 )
 
 
 {-| Emit ReadUtf8 with nested scf.if pattern.
@@ -902,17 +912,31 @@ emitReadUtf8Nested lenExpr placeholderVar restOps state =
         lenResult =
             state.compileExpr lenExpr state.ctx
 
-        ( okVar, ctx1 ) =
+        -- Truncate i64 length to i32 for bf ops
+        ( lenI32Var, ctxTrunc0 ) =
             Context.freshVar lenResult.ctx
 
-        -- Add _operand_types for cursor and length (eco.value)
+        truncAttrs =
+            Dict.singleton "_operand_types"
+                (ArrayAttr Nothing [ TypeAttr lenResult.resultType ])
+
+        ( ctxTrunc1, truncOp ) =
+            Ops.mlirOp ctxTrunc0 "arith.trunci"
+                |> Ops.opBuilder.withOperands [ lenResult.resultVar ]
+                |> Ops.opBuilder.withResults [ ( lenI32Var, I32 ) ]
+                |> Ops.opBuilder.withAttrs truncAttrs
+                |> Ops.opBuilder.build
+
+        ( okVar, ctx1 ) =
+            Context.freshVar ctxTrunc1
+
         requireAttrs =
             Dict.singleton "_operand_types"
-                (ArrayAttr Nothing [ TypeAttr bfCursorType, TypeAttr Types.ecoValue ])
+                (ArrayAttr Nothing [ TypeAttr bfCursorType, TypeAttr I32 ])
 
         ( ctx2, requireOp ) =
             Ops.mlirOp ctx1 "bf.require"
-                |> Ops.opBuilder.withOperands [ state.cursor, lenResult.resultVar ]
+                |> Ops.opBuilder.withOperands [ state.cursor, lenI32Var ]
                 |> Ops.opBuilder.withResults [ ( okVar, I1 ) ]
                 |> Ops.opBuilder.withAttrs requireAttrs
                 |> Ops.opBuilder.build
@@ -923,16 +947,18 @@ emitReadUtf8Nested lenExpr placeholderVar restOps state =
         ( newCursor, ctx4 ) =
             Context.freshVar ctx3
 
-        -- Add _operand_types for cursor and length
+        ( readOkVar, ctx4b ) =
+            Context.freshVar ctx4
+
         readAttrs =
             Dict.singleton "_operand_types"
-                (ArrayAttr Nothing [ TypeAttr bfCursorType, TypeAttr Types.ecoValue ])
+                (ArrayAttr Nothing [ TypeAttr bfCursorType, TypeAttr I32 ])
 
         ( ctx5, readOp ) =
-            Ops.mlirOp ctx4 "bf.read.utf8"
-                |> Ops.opBuilder.withOperands [ state.cursor, lenResult.resultVar ]
+            Ops.mlirOp ctx4b "bf.read.utf8"
+                |> Ops.opBuilder.withOperands [ state.cursor, lenI32Var ]
                 |> Ops.opBuilder.withAttrs readAttrs
-                |> Ops.opBuilder.withResults [ ( stringVar, Types.ecoValue ), ( newCursor, bfCursorType ) ]
+                |> Ops.opBuilder.withResults [ ( stringVar, Types.ecoValue ), ( newCursor, bfCursorType ), ( readOkVar, I1 ) ]
                 |> Ops.opBuilder.build
 
         updatedState =
@@ -958,9 +984,8 @@ emitReadUtf8Nested lenExpr placeholderVar restOps state =
         ( nothingVar, ctx8 ) =
             Context.freshVar ctx7
 
-        -- Use eco.construct.custom with constructor "Nothing", tag 1, size 0
         ( ctx9, nothingOp ) =
-            Ops.ecoConstructCustom ctx8 nothingVar 1 0 0 [] (Just "Nothing")
+            Ops.ecoConstantNothing ctx8 nothingVar
 
         ( ctx10, elseYieldOp ) =
             Ops.mlirOp ctx9 "scf.yield"
@@ -980,7 +1005,7 @@ emitReadUtf8Nested lenExpr placeholderVar restOps state =
                 |> Ops.opBuilder.withRegions [ thenRegion, elseRegion ]
                 |> Ops.opBuilder.build
     in
-    ( lenResult.ops ++ [ requireOp, ifOp ], ifResultVar, ctx12 )
+    ( lenResult.ops ++ [ truncOp, requireOp, ifOp ], ifResultVar, ctx12 )
 
 
 {-| Emit ReadBytesVar with nested scf.if pattern (length from previously decoded SSA var).
@@ -989,22 +1014,39 @@ Looks up the lenPlaceholderVar in varMapping to get the actual SSA variable.
 emitReadBytesVarNested : String -> String -> List DecoderOp -> DecoderEmitState -> ( List MlirOp, String, Context )
 emitReadBytesVarNested lenPlaceholderVar resultPlaceholderVar restOps state =
     let
-        -- Look up the actual SSA variable for the length
         actualLenVar =
             Dict.get lenPlaceholderVar state.varMapping
                 |> Maybe.withDefault lenPlaceholderVar
 
-        ( okVar, ctx1 ) =
+        lenType =
+            Dict.get actualLenVar state.varTypes
+                |> Maybe.withDefault I64
+
+        -- Truncate to i32 for bf ops
+        ( lenI32Var, ctxTrunc0 ) =
             Context.freshVar state.ctx
 
-        -- Add _operand_types for cursor and length (eco.value)
+        truncAttrs =
+            Dict.singleton "_operand_types"
+                (ArrayAttr Nothing [ TypeAttr lenType ])
+
+        ( ctxTrunc1, truncOp ) =
+            Ops.mlirOp ctxTrunc0 "arith.trunci"
+                |> Ops.opBuilder.withOperands [ actualLenVar ]
+                |> Ops.opBuilder.withResults [ ( lenI32Var, I32 ) ]
+                |> Ops.opBuilder.withAttrs truncAttrs
+                |> Ops.opBuilder.build
+
+        ( okVar, ctx1 ) =
+            Context.freshVar ctxTrunc1
+
         requireAttrs =
             Dict.singleton "_operand_types"
-                (ArrayAttr Nothing [ TypeAttr bfCursorType, TypeAttr Types.ecoValue ])
+                (ArrayAttr Nothing [ TypeAttr bfCursorType, TypeAttr I32 ])
 
         ( ctx2, requireOp ) =
             Ops.mlirOp ctx1 "bf.require"
-                |> Ops.opBuilder.withOperands [ state.cursor, actualLenVar ]
+                |> Ops.opBuilder.withOperands [ state.cursor, lenI32Var ]
                 |> Ops.opBuilder.withResults [ ( okVar, I1 ) ]
                 |> Ops.opBuilder.withAttrs requireAttrs
                 |> Ops.opBuilder.build
@@ -1015,16 +1057,18 @@ emitReadBytesVarNested lenPlaceholderVar resultPlaceholderVar restOps state =
         ( newCursor, ctx4 ) =
             Context.freshVar ctx3
 
-        -- Add _operand_types for cursor and length
+        ( readOkVar, ctx4b ) =
+            Context.freshVar ctx4
+
         readAttrs =
             Dict.singleton "_operand_types"
-                (ArrayAttr Nothing [ TypeAttr bfCursorType, TypeAttr Types.ecoValue ])
+                (ArrayAttr Nothing [ TypeAttr bfCursorType, TypeAttr I32 ])
 
         ( ctx5, readOp ) =
-            Ops.mlirOp ctx4 "bf.read.bytes"
-                |> Ops.opBuilder.withOperands [ state.cursor, actualLenVar ]
+            Ops.mlirOp ctx4b "bf.read.bytes"
+                |> Ops.opBuilder.withOperands [ state.cursor, lenI32Var ]
                 |> Ops.opBuilder.withAttrs readAttrs
-                |> Ops.opBuilder.withResults [ ( bytesVar, Types.ecoValue ), ( newCursor, bfCursorType ) ]
+                |> Ops.opBuilder.withResults [ ( bytesVar, Types.ecoValue ), ( newCursor, bfCursorType ), ( readOkVar, I1 ) ]
                 |> Ops.opBuilder.build
 
         updatedState =
@@ -1050,9 +1094,8 @@ emitReadBytesVarNested lenPlaceholderVar resultPlaceholderVar restOps state =
         ( nothingVar, ctx8 ) =
             Context.freshVar ctx7
 
-        -- Use eco.construct.custom with constructor "Nothing", tag 1, size 0
         ( ctx9, nothingOp ) =
-            Ops.ecoConstructCustom ctx8 nothingVar 1 0 0 [] (Just "Nothing")
+            Ops.ecoConstantNothing ctx8 nothingVar
 
         ( ctx10, elseYieldOp ) =
             Ops.mlirOp ctx9 "scf.yield"
@@ -1072,7 +1115,7 @@ emitReadBytesVarNested lenPlaceholderVar resultPlaceholderVar restOps state =
                 |> Ops.opBuilder.withRegions [ thenRegion, elseRegion ]
                 |> Ops.opBuilder.build
     in
-    ( [ requireOp, ifOp ], ifResultVar, ctx12 )
+    ( [ truncOp, requireOp, ifOp ], ifResultVar, ctx12 )
 
 
 {-| Emit ReadUtf8Var with nested scf.if pattern (length from previously decoded SSA var).
@@ -1081,22 +1124,39 @@ Looks up the lenPlaceholderVar in varMapping to get the actual SSA variable.
 emitReadUtf8VarNested : String -> String -> List DecoderOp -> DecoderEmitState -> ( List MlirOp, String, Context )
 emitReadUtf8VarNested lenPlaceholderVar resultPlaceholderVar restOps state =
     let
-        -- Look up the actual SSA variable for the length
         actualLenVar =
             Dict.get lenPlaceholderVar state.varMapping
                 |> Maybe.withDefault lenPlaceholderVar
 
-        ( okVar, ctx1 ) =
+        lenType =
+            Dict.get actualLenVar state.varTypes
+                |> Maybe.withDefault I64
+
+        -- Truncate to i32 for bf ops
+        ( lenI32Var, ctxTrunc0 ) =
             Context.freshVar state.ctx
 
-        -- Add _operand_types for cursor and length (eco.value)
+        truncAttrs =
+            Dict.singleton "_operand_types"
+                (ArrayAttr Nothing [ TypeAttr lenType ])
+
+        ( ctxTrunc1, truncOp ) =
+            Ops.mlirOp ctxTrunc0 "arith.trunci"
+                |> Ops.opBuilder.withOperands [ actualLenVar ]
+                |> Ops.opBuilder.withResults [ ( lenI32Var, I32 ) ]
+                |> Ops.opBuilder.withAttrs truncAttrs
+                |> Ops.opBuilder.build
+
+        ( okVar, ctx1 ) =
+            Context.freshVar ctxTrunc1
+
         requireAttrs =
             Dict.singleton "_operand_types"
-                (ArrayAttr Nothing [ TypeAttr bfCursorType, TypeAttr Types.ecoValue ])
+                (ArrayAttr Nothing [ TypeAttr bfCursorType, TypeAttr I32 ])
 
         ( ctx2, requireOp ) =
             Ops.mlirOp ctx1 "bf.require"
-                |> Ops.opBuilder.withOperands [ state.cursor, actualLenVar ]
+                |> Ops.opBuilder.withOperands [ state.cursor, lenI32Var ]
                 |> Ops.opBuilder.withResults [ ( okVar, I1 ) ]
                 |> Ops.opBuilder.withAttrs requireAttrs
                 |> Ops.opBuilder.build
@@ -1107,16 +1167,18 @@ emitReadUtf8VarNested lenPlaceholderVar resultPlaceholderVar restOps state =
         ( newCursor, ctx4 ) =
             Context.freshVar ctx3
 
-        -- Add _operand_types for cursor and length
+        ( readOkVar, ctx4b ) =
+            Context.freshVar ctx4
+
         readAttrs =
             Dict.singleton "_operand_types"
-                (ArrayAttr Nothing [ TypeAttr bfCursorType, TypeAttr Types.ecoValue ])
+                (ArrayAttr Nothing [ TypeAttr bfCursorType, TypeAttr I32 ])
 
         ( ctx5, readOp ) =
-            Ops.mlirOp ctx4 "bf.read.utf8"
-                |> Ops.opBuilder.withOperands [ state.cursor, actualLenVar ]
+            Ops.mlirOp ctx4b "bf.read.utf8"
+                |> Ops.opBuilder.withOperands [ state.cursor, lenI32Var ]
                 |> Ops.opBuilder.withAttrs readAttrs
-                |> Ops.opBuilder.withResults [ ( stringVar, Types.ecoValue ), ( newCursor, bfCursorType ) ]
+                |> Ops.opBuilder.withResults [ ( stringVar, Types.ecoValue ), ( newCursor, bfCursorType ), ( readOkVar, I1 ) ]
                 |> Ops.opBuilder.build
 
         updatedState =
@@ -1142,9 +1204,8 @@ emitReadUtf8VarNested lenPlaceholderVar resultPlaceholderVar restOps state =
         ( nothingVar, ctx8 ) =
             Context.freshVar ctx7
 
-        -- Use eco.construct.custom with constructor "Nothing", tag 1, size 0
         ( ctx9, nothingOp ) =
-            Ops.ecoConstructCustom ctx8 nothingVar 1 0 0 [] (Just "Nothing")
+            Ops.ecoConstantNothing ctx8 nothingVar
 
         ( ctx10, elseYieldOp ) =
             Ops.mlirOp ctx9 "scf.yield"
@@ -1164,7 +1225,7 @@ emitReadUtf8VarNested lenPlaceholderVar resultPlaceholderVar restOps state =
                 |> Ops.opBuilder.withRegions [ thenRegion, elseRegion ]
                 |> Ops.opBuilder.build
     in
-    ( [ requireOp, ifOp ], ifResultVar, ctx12 )
+    ( [ truncOp, requireOp, ifOp ], ifResultVar, ctx12 )
 
 
 {-| Emit Apply with nested continuation.
@@ -1178,39 +1239,68 @@ emitApplyNested _ fnExpr argPlaceholders resultPlaceholder restOps state =
         fnResult =
             state.compileExpr fnExpr state.ctx
 
-        -- Look up actual SSA variables for args
-        actualArgVars =
+        -- Look up actual SSA variables and their types for args
+        actualArgVarsAndTypes =
             List.map
                 (\placeholder ->
-                    Dict.get placeholder state.varMapping
-                        |> Maybe.withDefault placeholder
+                    let
+                        var =
+                            Dict.get placeholder state.varMapping
+                                |> Maybe.withDefault placeholder
+
+                        ty =
+                            Dict.get var state.varTypes
+                                |> Maybe.withDefault Types.ecoValue
+                    in
+                    ( var, ty )
                 )
                 argPlaceholders
+
+        actualArgVars =
+            List.map Tuple.first actualArgVarsAndTypes
+
+        actualArgTypes =
+            List.map Tuple.second actualArgVarsAndTypes
+
+        -- Determine the result type for a saturated call by examining the function's MonoType
+        saturatedResultType =
+            fnExprReturnType fnExpr (List.length argPlaceholders)
 
         -- Build eco.papExtend call
         ( resVar, ctx1 ) =
             Context.freshVar fnResult.ctx
 
-        -- All decoded values are boxed eco.value
         allOperandNames =
             fnResult.resultVar :: actualArgVars
 
-        -- Use function result type for first operand, eco.value for args
+        -- Use function result type for first operand, actual types for args
         allOperandTypes =
-            fnResult.resultType :: List.repeat (List.length actualArgVars) Types.ecoValue
+            fnResult.resultType :: actualArgTypes
 
-        -- Remaining arity is 0 since we're fully applying
+        -- Compute unboxed bitmap from actual arg types
+        newargsUnboxedBitmap =
+            List.indexedMap
+                (\i ty ->
+                    if Types.isUnboxable ty then
+                        Bitwise.shiftLeftBy i 1
+
+                    else
+                        0
+                )
+                actualArgTypes
+                |> List.foldl Bitwise.or 0
+
         papExtendAttrs =
             Dict.fromList
                 [ ( "_operand_types", ArrayAttr Nothing (List.map TypeAttr allOperandTypes) )
-                , ( "remaining_arity", IntAttr Nothing 0 )
-                , ( "newargs_unboxed_bitmap", IntAttr Nothing 0 )
+                , ( "remaining_arity", IntAttr Nothing (List.length argPlaceholders) )
+                , ( "newargs_unboxed_bitmap", IntAttr Nothing newargsUnboxedBitmap )
                 ]
 
         ( ctx2, papExtendOp ) =
             Ops.mlirOp ctx1 "eco.papExtend"
                 |> Ops.opBuilder.withOperands allOperandNames
-                |> Ops.opBuilder.withResults [ ( resVar, Types.ecoValue ) ]
+                |> Ops.opBuilder.withResults [ ( resVar, saturatedResultType ) ]
                 |> Ops.opBuilder.withAttrs papExtendAttrs
                 |> Ops.opBuilder.build
 
@@ -1219,13 +1309,71 @@ emitApplyNested _ fnExpr argPlaceholders resultPlaceholder restOps state =
                 | ctx = ctx2
                 , decodedVars = resVar :: state.decodedVars
                 , varMapping = Dict.insert resultPlaceholder resVar state.varMapping
-                , varTypes = Dict.insert resVar Types.ecoValue state.varTypes
+                , varTypes = Dict.insert resVar saturatedResultType state.varTypes
             }
 
         ( restBodyOps, resultVar, finalCtx ) =
             emitDecoderOpsNested restOps updatedState
     in
     ( fnResult.ops ++ [ papExtendOp ] ++ restBodyOps, resultVar, finalCtx )
+
+
+{-| Extract the return type of a function expression when applied to N arguments.
+Examines the MonoType annotation of the function expression.
+-}
+fnExprReturnType : Mono.MonoExpr -> Int -> MlirType
+fnExprReturnType fnExpr nArgs =
+    let
+        fnType =
+            monoExprType fnExpr
+    in
+    Types.monoTypeToAbi (uncurryReturnType fnType nArgs)
+
+
+{-| Unwrap curried MFunction types to find the final return type after consuming N args.
+E.g. MFunction [MInt] (MFunction [MInt] MInt) with nArgs=2 -> MInt
+-}
+uncurryReturnType : Mono.MonoType -> Int -> Mono.MonoType
+uncurryReturnType monoType remainingArgs =
+    if remainingArgs <= 0 then
+        monoType
+
+    else
+        case monoType of
+            Mono.MFunction params returnType ->
+                let
+                    consumed =
+                        min (List.length params) remainingArgs
+                in
+                uncurryReturnType returnType (remainingArgs - consumed)
+
+            _ ->
+                -- Not a function type but still have args to consume - shouldn't happen
+                monoType
+
+
+{-| Extract the MonoType from a MonoExpr.
+-}
+monoExprType : Mono.MonoExpr -> Mono.MonoType
+monoExprType expr =
+    case expr of
+        Mono.MonoLiteral _ ty -> ty
+        Mono.MonoVarLocal _ ty -> ty
+        Mono.MonoVarGlobal _ _ ty -> ty
+        Mono.MonoVarKernel _ _ _ ty -> ty
+        Mono.MonoList _ _ ty -> ty
+        Mono.MonoClosure _ _ ty -> ty
+        Mono.MonoCall _ _ _ ty _ -> ty
+        Mono.MonoTailCall _ _ ty -> ty
+        Mono.MonoIf _ _ ty -> ty
+        Mono.MonoLet _ _ ty -> ty
+        Mono.MonoDestruct _ _ ty -> ty
+        Mono.MonoCase _ _ _ _ ty -> ty
+        Mono.MonoRecordCreate _ ty -> ty
+        Mono.MonoRecordAccess _ _ ty -> ty
+        Mono.MonoRecordUpdate _ _ ty -> ty
+        Mono.MonoTupleCreate _ _ ty -> ty
+        Mono.MonoUnit -> Mono.MUnit
 
 
 {-| Emit PushValue with nested continuation.
@@ -1324,9 +1472,9 @@ emitNothingResult state =
         ( nothingVar, ctx1 ) =
             Context.freshVar state.ctx
 
-        -- Use eco.construct.custom with constructor "Nothing", tag 1, size 0
+        -- Use eco.constant Nothing (embedded constant, matches non-fused path)
         ( ctx2, nothingOp ) =
-            Ops.ecoConstructCustom ctx1 nothingVar 1 0 0 [] (Just "Nothing")
+            Ops.ecoConstantNothing ctx1 nothingVar
     in
     ( [ nothingOp ], nothingVar, ctx2 )
 
@@ -1876,25 +2024,38 @@ emitReadThenApply1 byteCount readOpName maybeEndian resultType fnExpr argPlaceho
         fnResult =
             state.compileExpr fnExpr readResult.ctx
 
+        -- Determine the return type for a saturated call
+        saturatedResultType =
+            fnExprReturnType fnExpr 1
+
         -- Apply the function to the read result
         ( resVar, ctx2 ) =
             Context.freshVar fnResult.ctx
 
+        -- Compute unboxed bitmap for the decoded value
+        newargsUnboxedBitmap =
+            if Types.isUnboxable resultType then
+                1
+
+            else
+                0
+
         papExtendAttrs =
             Dict.fromList
-                [ ( "n_args", IntAttr Nothing 1 )
-                , ( "_operand_types"
+                [ ( "_operand_types"
                   , ArrayAttr Nothing
                         [ TypeAttr Types.ecoValue -- fn
-                        , TypeAttr Types.ecoValue -- arg
+                        , TypeAttr resultType -- arg (actual decoded type)
                         ]
                   )
+                , ( "remaining_arity", IntAttr Nothing 1 )
+                , ( "newargs_unboxed_bitmap", IntAttr Nothing newargsUnboxedBitmap )
                 ]
 
         ( ctx3, applyOp ) =
-            Ops.mlirOp ctx2 "eco.pap_extend"
+            Ops.mlirOp ctx2 "eco.papExtend"
                 |> Ops.opBuilder.withOperands [ fnResult.resultVar, readResult.resultVar ]
-                |> Ops.opBuilder.withResults [ ( resVar, Types.ecoValue ) ]
+                |> Ops.opBuilder.withResults [ ( resVar, saturatedResultType ) ]
                 |> Ops.opBuilder.withAttrs papExtendAttrs
                 |> Ops.opBuilder.build
     in
@@ -1915,6 +2076,9 @@ emitTwoReadsThenApply2 read1 read2 fnExpr resultPlaceholder state =
         read1Result =
             emitSingleReadOp read1 state
 
+        read1Type =
+            readOpResultType read1
+
         -- Emit second read with updated cursor
         state2 =
             { state | ctx = read1Result.ctx, cursor = read1Result.newCursor }
@@ -1922,30 +2086,50 @@ emitTwoReadsThenApply2 read1 read2 fnExpr resultPlaceholder state =
         read2Result =
             emitSingleReadOp read2 state2
 
+        read2Type =
+            readOpResultType read2
+
         -- Compile the function expression
         fnResult =
             state.compileExpr fnExpr read2Result.ctx
+
+        -- Determine the return type for a saturated call
+        saturatedResultType =
+            fnExprReturnType fnExpr 2
 
         -- Apply the function to both results
         ( resVar, ctx3 ) =
             Context.freshVar fnResult.ctx
 
+        argTypes =
+            [ read1Type, read2Type ]
+
+        newargsUnboxedBitmap =
+            List.indexedMap
+                (\i ty ->
+                    if Types.isUnboxable ty then
+                        Bitwise.shiftLeftBy i 1
+
+                    else
+                        0
+                )
+                argTypes
+                |> List.foldl Bitwise.or 0
+
         papExtendAttrs =
             Dict.fromList
-                [ ( "n_args", IntAttr Nothing 2 )
-                , ( "_operand_types"
+                [ ( "_operand_types"
                   , ArrayAttr Nothing
-                        [ TypeAttr Types.ecoValue -- fn
-                        , TypeAttr Types.ecoValue -- arg1
-                        , TypeAttr Types.ecoValue -- arg2
-                        ]
+                        (TypeAttr Types.ecoValue :: List.map TypeAttr argTypes)
                   )
+                , ( "remaining_arity", IntAttr Nothing 2 )
+                , ( "newargs_unboxed_bitmap", IntAttr Nothing newargsUnboxedBitmap )
                 ]
 
         ( ctx4, applyOp ) =
-            Ops.mlirOp ctx3 "eco.pap_extend"
+            Ops.mlirOp ctx3 "eco.papExtend"
                 |> Ops.opBuilder.withOperands [ fnResult.resultVar, read1Result.resultVar, read2Result.resultVar ]
-                |> Ops.opBuilder.withResults [ ( resVar, Types.ecoValue ) ]
+                |> Ops.opBuilder.withResults [ ( resVar, saturatedResultType ) ]
                 |> Ops.opBuilder.withAttrs papExtendAttrs
                 |> Ops.opBuilder.build
     in
@@ -1954,6 +2138,26 @@ emitTwoReadsThenApply2 read1 read2 fnExpr resultPlaceholder state =
     , newCursor = read2Result.newCursor
     , ctx = ctx4
     }
+
+
+{-| Get the result type of a decoder read op.
+-}
+readOpResultType : DecoderOp -> MlirType
+readOpResultType op =
+    case op of
+        ReadU8 _ _ -> I64
+        ReadI8 _ _ -> I64
+        ReadU16 _ _ _ -> I64
+        ReadI16 _ _ _ -> I64
+        ReadU32 _ _ _ -> I64
+        ReadI32 _ _ _ -> I64
+        ReadF32 _ _ _ -> F64
+        ReadF64 _ _ _ -> F64
+        ReadBytes _ _ _ -> Types.ecoValue
+        ReadUtf8 _ _ _ -> Types.ecoValue
+        ReadBytesVar _ _ _ -> Types.ecoValue
+        ReadUtf8Var _ _ _ -> Types.ecoValue
+        _ -> Types.ecoValue
 
 
 {-| Emit a single read op, returns (ops, resultVar, newCursor, ctx).

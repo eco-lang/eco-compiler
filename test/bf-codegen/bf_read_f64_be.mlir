@@ -18,7 +18,7 @@ module {
     %read_val, %read_cursor1 = bf.read.f64 %read_cursor0 (be) : f64, !bf.cursor
 
     eco.dbg %read_val : f64
-    // CHECK: 1.23457
+    // CHECK: 1.2345678901234567
 
     %zero = arith.constant 0 : i64
     return %zero : i64

@@ -242,9 +242,23 @@ specializeNode ctorName node requestedMonoType state =
             in
             ( Mono.MonoEnum (Index.toMachine tag) monoType, state )
 
-        TOpt.Box _ ->
-            -- Box (for runtime representation) - treat as extern
-            ( Mono.MonoExtern requestedMonoType, state )
+        TOpt.Box canType ->
+            -- @unbox types have a single constructor (tag=0) with one field (arity=1).
+            -- Treat them as regular constructors so eco.construct.custom is emitted.
+            let
+                subst =
+                    TypeSubst.unify canType requestedMonoType
+
+                ctorMonoType =
+                    Mono.forceCNumberToInt (TypeSubst.applySubst subst canType)
+
+                shape =
+                    buildCtorShapeFromArity ctorName 0 1 ctorMonoType
+
+                ctorResultType =
+                    extractCtorResultType 1 requestedMonoType
+            in
+            ( Mono.MonoCtor shape ctorResultType, state )
 
         TOpt.Link linkedGlobal ->
             -- Link to another global - follow the link

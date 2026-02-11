@@ -219,15 +219,35 @@ postSolveDef annotations def nodeTypes0 kernel0 =
             in
             postSolveExpr annotations body nodeTypes1 kernel1
 
-        Can.TypedDef _ _ typedArgs body _ ->
-            let
-                patterns =
-                    List.map Tuple.first typedArgs
+        Can.TypedDef _ _ typedArgs body resultType ->
+            case typedArgs of
+                [] ->
+                    -- Zero-arg typed def: if body is a VarKernel alias, use the
+                    -- definition's result type directly. The kernel env may have the
+                    -- wrong type when multiple aliases (fromFloat, fromInt) share a
+                    -- polymorphic kernel (fromNumber).
+                    let
+                        bodyInfo =
+                            A.toValue body
+                    in
+                    case bodyInfo.node of
+                        Can.VarKernel _ _ ->
+                            ( Dict.insert Basics.identity bodyInfo.id resultType nodeTypes0
+                            , kernel0
+                            )
 
-                ( nodeTypes1, kernel1 ) =
-                    postSolvePatterns patterns nodeTypes0 kernel0
-            in
-            postSolveExpr annotations body nodeTypes1 kernel1
+                        _ ->
+                            postSolveExpr annotations body nodeTypes0 kernel0
+
+                _ ->
+                    let
+                        patterns =
+                            List.map Tuple.first typedArgs
+
+                        ( nodeTypes1, kernel1 ) =
+                            postSolvePatterns patterns nodeTypes0 kernel0
+                    in
+                    postSolveExpr annotations body nodeTypes1 kernel1
 
 
 {-| Walk a list of patterns, processing any nested expressions.

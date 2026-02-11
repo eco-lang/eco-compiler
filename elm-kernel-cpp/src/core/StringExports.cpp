@@ -127,9 +127,10 @@ uint64_t Elm_Kernel_String_toFloat(uint64_t str) {
 }
 
 uint64_t Elm_Kernel_String_fromNumber(uint64_t n) {
-    // The MLIR type signature is (i64) -> !eco.value, meaning we receive
-    // an unboxed integer directly. Convert it to string.
-    HPointer result = StringOps::fromInt(static_cast<int64_t>(n));
+    // AllBoxed ABI: we receive a boxed number (HPointer to ElmInt or ElmFloat).
+    // Dispatch based on the tag to handle both Int and Float.
+    void* ptr = Export::toPtr(n);
+    HPointer result = String::fromNumber(ptr);
     return Export::encode(result);
 }
 

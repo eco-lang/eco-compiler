@@ -201,6 +201,8 @@ generateDefine ctx funcName expr monoType =
 generateClosureFunc : Ctx.Context -> String -> Mono.ClosureInfo -> Mono.MonoExpr -> Mono.MonoType -> ( MlirOp, Ctx.Context )
 generateClosureFunc ctx funcName closureInfo body monoType =
     let
+        _ = ()
+
         argPairs : List ( String, MlirType )
         argPairs =
             List.map
