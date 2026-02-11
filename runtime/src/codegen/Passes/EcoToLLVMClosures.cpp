@@ -11,6 +11,7 @@
 #include "EcoToLLVMInternal.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 
 using namespace mlir;
 using namespace eco;
@@ -302,6 +303,145 @@ struct PapCreateOpLowering : public OpConversionPattern<PapCreateOp> {
 };
 
 //===----------------------------------------------------------------------===//
+// Shared helper: inline closure call
+//===----------------------------------------------------------------------===//
+
+/// Emit inline LLVM ops to call a closure's evaluator with combined
+/// (captured + new) arguments. Used by both papExtend-saturated and
+/// indirect eco.call.
+///
+/// closureI64:  the closure HPointer as i64
+/// newArgs:     the new arguments to append
+/// resultType:  the expected LLVM result type (i64, f64, or ptr)
+/// Returns the result Value with the correct type.
+///
+/// This function uses scf.while for the captured values copy loop, ensuring
+/// it can be used inside scf.if regions without violating the single-block
+/// constraint. No block splitting occurs.
+static Value emitInlineClosureCall(ConversionPatternRewriter &rewriter, Location loc, const EcoRuntime &runtime,
+                                   Value closureI64, ValueRange newArgs, Type resultType) {
+    auto *ctx = rewriter.getContext();
+    auto i8Ty = IntegerType::get(ctx, 8);
+    auto i64Ty = IntegerType::get(ctx, 64);
+    auto f64Ty = Float64Type::get(ctx);
+    auto ptrTy = LLVM::LLVMPointerType::get(ctx);
+
+    // Resolve closure HPointer to raw pointer
+    auto resolveFunc = runtime.getOrCreateResolveHPtr(rewriter);
+    auto resolveCall = rewriter.create<LLVM::CallOp>(loc, resolveFunc, ValueRange{closureI64});
+    Value closurePtr = resolveCall.getResult();
+
+    // Load packed field at offset 8
+    auto offset8 = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, layout::ClosurePackedOffset);
+    auto packedPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i8Ty, closurePtr, ValueRange{offset8});
+    Value packed = rewriter.create<LLVM::LoadOp>(loc, i64Ty, packedPtr);
+
+    // Extract n_values (bits 0-5)
+    auto mask6 = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, 0x3F);
+    Value nValues = rewriter.create<LLVM::AndOp>(loc, packed, mask6);
+
+    // Load evaluator pointer at offset 16
+    auto offset16 = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, layout::ClosureEvaluatorOffset);
+    auto evalPtrPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i8Ty, closurePtr, ValueRange{offset16});
+    Value evaluator = rewriter.create<LLVM::LoadOp>(loc, ptrTy, evalPtrPtr);
+
+    // Total args = n_values + newArgs.size()
+    int64_t numNewArgs = newArgs.size();
+    auto numNewArgsConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, numNewArgs);
+    Value totalArgs = rewriter.create<LLVM::AddOp>(loc, nValues, numNewArgsConst);
+
+    // Allocate args array on stack
+    Value argsArray = rewriter.create<LLVM::AllocaOp>(loc, ptrTy, i64Ty, totalArgs);
+
+    // Use scf.while to copy captured values (avoids block splitting)
+    // Loop: for i in [0, nValues): argsArray[i] = captured[i]
+    Value zero = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, 0);
+
+    // Create scf.while with one loop-carried variable: i : i64
+    auto whileOp = rewriter.create<scf::WhileOp>(
+        loc,
+        /*resultTypes=*/TypeRange{i64Ty},
+        /*operands=*/ValueRange{zero});
+
+    // "before" region: condition check (i < nValues)
+    {
+        OpBuilder::InsertionGuard guard(rewriter);
+        Block *beforeBlock = rewriter.createBlock(&whileOp.getBefore());
+        beforeBlock->addArgument(i64Ty, loc);
+        Value iArg = beforeBlock->getArgument(0);
+
+        rewriter.setInsertionPointToStart(beforeBlock);
+        // cond = (iArg < nValues)
+        auto cond = rewriter.create<LLVM::ICmpOp>(loc, LLVM::ICmpPredicate::slt, iArg, nValues);
+        // Pass iArg through as the loop-carried value
+        rewriter.create<scf::ConditionOp>(loc, cond, ValueRange{iArg});
+    }
+
+    // "after" region: copy one captured value and increment i
+    {
+        OpBuilder::InsertionGuard guard(rewriter);
+        Block *afterBlock = rewriter.createBlock(&whileOp.getAfter());
+        afterBlock->addArgument(i64Ty, loc);
+        Value iIter = afterBlock->getArgument(0);
+
+        rewriter.setInsertionPointToStart(afterBlock);
+
+        // Compute pointer to closure->values[iIter]
+        auto offset24 = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, layout::ClosureValuesOffset);
+        auto eight = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, layout::PtrSize);
+        auto valueOffset = rewriter.create<LLVM::MulOp>(loc, iIter, eight);
+        auto totalOffset = rewriter.create<LLVM::AddOp>(loc, offset24, valueOffset);
+        auto srcPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i8Ty, closurePtr, ValueRange{totalOffset});
+        Value capturedVal = rewriter.create<LLVM::LoadOp>(loc, i64Ty, srcPtr);
+
+        // Compute pointer to argsArray[iIter]
+        auto dstPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i64Ty, argsArray, ValueRange{iIter});
+        rewriter.create<LLVM::StoreOp>(loc, capturedVal, dstPtr);
+
+        // iNext = iIter + 1
+        auto one = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, 1);
+        Value iNext = rewriter.create<LLVM::AddOp>(loc, iIter, one);
+
+        // Yield new i
+        rewriter.create<scf::YieldOp>(loc, ValueRange{iNext});
+    }
+
+    // Continue after the while loop (insertion point is already after whileOp)
+    rewriter.setInsertionPointAfter(whileOp);
+
+    // Copy new arguments to argsArray[nValues + j]
+    for (size_t j = 0; j < newArgs.size(); ++j) {
+        auto jConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, static_cast<int64_t>(j));
+        auto idx = rewriter.create<LLVM::AddOp>(loc, nValues, jConst);
+        auto argDstPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i64Ty, argsArray, ValueRange{idx});
+        // Store directly - opaque pointers handle any 64-bit type
+        rewriter.create<LLVM::StoreOp>(loc, newArgs[j], argDstPtr);
+    }
+
+    // Indirect call through evaluator: ptr(ptr) -> ptr
+    auto evalFuncTy = LLVM::LLVMFunctionType::get(ptrTy, {ptrTy});
+    SmallVector<Value> callOperands;
+    callOperands.push_back(evaluator);
+    callOperands.push_back(argsArray);
+    auto indirectCallOp = rewriter.create<LLVM::CallOp>(loc, evalFuncTy, callOperands);
+
+    // Convert ptr result to i64, then to final resultType
+    Value resultI64 = rewriter.create<LLVM::PtrToIntOp>(loc, i64Ty, indirectCallOp.getResult());
+
+    Value result = resultI64;
+    if (resultType == f64Ty) {
+        // i64 -> f64 via bitcast
+        result = rewriter.create<LLVM::BitcastOp>(loc, f64Ty, resultI64);
+    } else if (isa<LLVM::LLVMPointerType>(resultType)) {
+        // i64 -> ptr via inttoptr
+        result = rewriter.create<LLVM::IntToPtrOp>(loc, resultType, resultI64);
+    }
+    // else: resultType is i64, no conversion needed
+
+    return result;
+}
+
+//===----------------------------------------------------------------------===//
 // eco.papExtend -> extend closure or call if saturated
 //===----------------------------------------------------------------------===//
 
@@ -327,39 +467,9 @@ struct PapExtendOpLowering : public OpConversionPattern<PapExtendOp> {
         bool isSaturated = (numNewArgs == remainingArity);
 
         if (isSaturated) {
-            // Saturated call: use runtime helper
-            auto helperFunc = runtime.getOrCreateClosureCallSaturated(rewriter);
-            auto f64Ty = Float64Type::get(ctx);
-
-            // Build args array on stack
-            auto numArgsConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, rewriter.getI64IntegerAttr(numNewArgs));
-            Value argsArray = rewriter.create<LLVM::AllocaOp>(loc, ptrTy, i64Ty, numArgsConst);
-
-            for (size_t i = 0; i < newargs.size(); ++i) {
-                auto idxConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, rewriter.getI64IntegerAttr(i));
-                auto slotPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i64Ty, argsArray, ValueRange{idxConst});
-                Value arg = newargs[i];
-                if (arg.getType() == f64Ty) {
-                    // Bitcast f64 to i64 for storage in the args array.
-                    arg = rewriter.create<LLVM::BitcastOp>(loc, i64Ty, arg);
-                } else if (arg.getType() != i64Ty && isa<LLVM::LLVMPointerType>(arg.getType())) {
-                    arg = rewriter.create<LLVM::PtrToIntOp>(loc, i64Ty, arg);
-                }
-                rewriter.create<LLVM::StoreOp>(loc, arg, slotPtr);
-            }
-
-            auto numNewArgsConst = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, static_cast<int32_t>(numNewArgs));
-
-            auto call =
-                rewriter.create<LLVM::CallOp>(loc, helperFunc, ValueRange{closureI64, argsArray, numNewArgsConst});
-            Value result = call.getResult();
-
-            // The runtime helper returns i64. If the op's result type is f64
-            // (unboxed float), bitcast i64 back to f64.
+            // Saturated call: emit inline closure call
             Type convertedResultTy = getTypeConverter()->convertType(op.getResult().getType());
-            if (convertedResultTy == f64Ty) {
-                result = rewriter.create<LLVM::BitcastOp>(loc, f64Ty, result);
-            }
+            Value result = emitInlineClosureCall(rewriter, loc, runtime, closureI64, newargs, convertedResultTy);
             rewriter.replaceOp(op, result);
         } else {
             // Partial application: use runtime helper to create extended closure
@@ -406,7 +516,6 @@ struct CallOpLowering : public OpConversionPattern<CallOp> {
 
     LogicalResult matchAndRewrite(CallOp op, OpAdaptor adaptor, ConversionPatternRewriter &rewriter) const override {
         auto loc = op.getLoc();
-        auto *ctx = rewriter.getContext();
 
         // Convert result types
         SmallVector<Type> resultTypes;
@@ -434,90 +543,9 @@ struct CallOpLowering : public OpConversionPattern<CallOp> {
                 return op.emitError("remaining_arity must equal number of new arguments");
             }
 
-            auto i8Ty = IntegerType::get(ctx, 8);
-            auto i64Ty = IntegerType::get(ctx, 64);
-            auto ptrTy = LLVM::LLVMPointerType::get(ctx);
-
-            auto resolveFunc = runtime.getOrCreateResolveHPtr(rewriter);
-            auto resolveCall = rewriter.create<LLVM::CallOp>(loc, resolveFunc, ValueRange{closureI64});
-            Value closurePtr = resolveCall.getResult();
-
-            // Load packed field at offset 8
-            auto offset8 = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, layout::ClosurePackedOffset);
-            auto packedPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i8Ty, closurePtr, ValueRange{offset8});
-            Value packed = rewriter.create<LLVM::LoadOp>(loc, i64Ty, packedPtr);
-
-            // Extract n_values (bits 0-5)
-            auto mask6 = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, 0x3F);
-            Value nValues = rewriter.create<LLVM::AndOp>(loc, packed, mask6);
-
-            // Load evaluator pointer at offset 16
-            auto offset16 = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, layout::ClosureEvaluatorOffset);
-            auto evalPtrPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i8Ty, closurePtr, ValueRange{offset16});
-            Value evaluator = rewriter.create<LLVM::LoadOp>(loc, ptrTy, evalPtrPtr);
-
-            // Total args = n_values + remainingArity
-            auto remainingConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, remainingArity);
-            Value totalArgs = rewriter.create<LLVM::AddOp>(loc, nValues, remainingConst);
-
-            // Allocate args array on stack
-            Value argsArray = rewriter.create<LLVM::AllocaOp>(loc, ptrTy, i64Ty, totalArgs);
-
-            // Create loop to copy captured values
-            Block *currentBlock = rewriter.getInsertionBlock();
-            Region *region = currentBlock->getParent();
-            Block *contBlock = rewriter.splitBlock(currentBlock, rewriter.getInsertionPoint());
-            contBlock->addArgument(i64Ty, loc);
-
-            Block *loopCheck = rewriter.createBlock(region, contBlock->getIterator());
-            Block *loopBody = rewriter.createBlock(region, contBlock->getIterator());
-            Block *loopDone = rewriter.createBlock(region, contBlock->getIterator());
-
-            rewriter.setInsertionPointToEnd(currentBlock);
-            auto zero = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, 0);
-            rewriter.create<LLVM::BrOp>(loc, ValueRange{zero}, loopCheck);
-
-            loopCheck->addArgument(i64Ty, loc);
-            Value i = loopCheck->getArgument(0);
-            rewriter.setInsertionPointToStart(loopCheck);
-            auto cmp = rewriter.create<LLVM::ICmpOp>(loc, LLVM::ICmpPredicate::uge, i, nValues);
-            rewriter.create<LLVM::CondBrOp>(loc, cmp, loopDone, loopBody);
-
-            rewriter.setInsertionPointToStart(loopBody);
-            auto offset24 = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, layout::ClosureValuesOffset);
-            auto eight = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, layout::PtrSize);
-            auto valueOffset = rewriter.create<LLVM::MulOp>(loc, i, eight);
-            auto totalOffset = rewriter.create<LLVM::AddOp>(loc, offset24, valueOffset);
-            auto srcPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i8Ty, closurePtr, ValueRange{totalOffset});
-            Value capturedVal = rewriter.create<LLVM::LoadOp>(loc, i64Ty, srcPtr);
-
-            auto dstPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i64Ty, argsArray, ValueRange{i});
-            rewriter.create<LLVM::StoreOp>(loc, capturedVal, dstPtr);
-
-            auto one = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, 1);
-            Value iNext = rewriter.create<LLVM::AddOp>(loc, i, one);
-            rewriter.create<LLVM::BrOp>(loc, ValueRange{iNext}, loopCheck);
-
-            // Copy new arguments
-            rewriter.setInsertionPointToStart(loopDone);
-            for (size_t j = 0; j < newArgs.size(); ++j) {
-                auto jConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, static_cast<int64_t>(j));
-                auto idx = rewriter.create<LLVM::AddOp>(loc, nValues, jConst);
-                auto dstPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i64Ty, argsArray, ValueRange{idx});
-                rewriter.create<LLVM::StoreOp>(loc, newArgs[j], dstPtr);
-            }
-
-            // Indirect call through evaluator
-            auto evalFuncTy = LLVM::LLVMFunctionType::get(ptrTy, {ptrTy});
-            SmallVector<Value> callOperands;
-            callOperands.push_back(evaluator);
-            callOperands.push_back(argsArray);
-            auto indirectCallOp = rewriter.create<LLVM::CallOp>(loc, evalFuncTy, callOperands);
-
-            Value result = rewriter.create<LLVM::PtrToIntOp>(loc, i64Ty, indirectCallOp.getResult());
-            rewriter.create<LLVM::BrOp>(loc, ValueRange{result}, contBlock);
-
-            rewriter.replaceOp(op, contBlock->getArgument(0));
+            Type convertedResultTy = resultTypes[0];
+            Value result = emitInlineClosureCall(rewriter, loc, runtime, closureI64, newArgs, convertedResultTy);
+            rewriter.replaceOp(op, result);
         }
 
         return success();

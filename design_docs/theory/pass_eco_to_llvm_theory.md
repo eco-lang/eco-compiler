@@ -235,7 +235,7 @@ eco.papCreate @func, arity, captured=[]
 **papExtend (apply arguments to closure):**
 ```
 IF saturated (newargs.size == remaining_arity):
-    -> eco_closure_call_saturated(closure, args_array, num_args)
+    -> inline LLVM ops (resolve closure, copy captured + new args, indirect call)
 ELSE:
     -> eco_pap_extend(closure, args_array, num_args)
 ```
@@ -489,7 +489,7 @@ The pass generates calls to these runtime functions:
 | `eco_alloc_closure` | Closure allocation |
 | `eco_store_*_field*` | Field storage |
 | `eco_pap_extend` | Partial application |
-| `eco_closure_call_saturated` | Saturated closure call |
+| `eco_closure_call_saturated` | Saturated closure call (C++ kernel only, not used by MLIR lowering) |
 | `eco_resolve_hptr` | Convert HPointer to raw pointer |
 | `eco_crash` | Runtime error |
 | `eco_dbg_print*` | Debug output |

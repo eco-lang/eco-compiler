@@ -75,12 +75,18 @@ static Value emitInlineClosureCall(
 The logic is copied from `CallOpLowering` lines 441–518 with these changes:
 
 - **Args storage**: Store `newArgs[j]` directly (no f64 bitcast — opaque pointer handles it).
-- **Result conversion**: After the indirect call returns `ptr`, convert to `resultType`:
-  - If `resultType` is `i64`: `PtrToIntOp` (existing behavior)
-  - If `resultType` is `f64`: `PtrToIntOp` then `BitcastOp i64→f64`
-  - If `resultType` is `ptr`: no conversion needed
-- The contBlock argument type matches `resultType` (or i64 for the intermediate, with a
-  final bitcast).
+- **Result conversion**: The evaluator wrapper always returns `ptr`. Converting to the final
+  type requires:
+  - `ptrtoint ptr → i64` (always required)
+  - Branch to contBlock with i64 argument (contBlock always takes i64)
+  - In contBlock: if `resultType == f64`, `bitcast i64 → f64`; if `resultType == ptr`,
+    `inttoptr i64 → ptr`; if `resultType == i64`, no-op
+- **No runtime sanity checks** — follows existing `CallOpLowering` pattern (trusts compiler).
+
+**Rationale for result conversion**: Converting `ptr → f64` requires two ops (`ptrtoint` +
+`bitcast`) — this is unavoidable with the current evaluator ABI (`ptr(ptr)`). Keeping contBlock
+as `i64` simplifies the CFG (single block argument type) and puts the type-specific conversion
+in one place.
 
 ### Step 2: Rewrite PapExtendOpLowering saturated case
 
@@ -128,18 +134,87 @@ Replace lines 422–521 with a call to the same helper:
 
 This also fixes the latent f64-result bug in the indirect call path.
 
-### Step 4: Remove dead code
+### Step 4: Remove unused MLIR lowering helper
 
-After verifying tests pass, remove:
+Remove `getOrCreateClosureCallSaturated` (no longer called from MLIR lowering):
 
-1. `eco_closure_call_saturated` from `RuntimeExports.cpp` (lines 559–598) and
-   `RuntimeExports.h` (line 181)
-2. `getOrCreateClosureCallSaturated` from `EcoToLLVMRuntime.cpp` (lines 204–208) and
-   `EcoToLLVMInternal.h` (line 154)
-3. The JIT symbol registration in `RuntimeSymbols.cpp` (lines 122–125)
-4. The comment referencing it in `eco_pap_extend` (line 521)
+| File | Lines | Change |
+|------|-------|--------|
+| `runtime/src/codegen/Passes/EcoToLLVMRuntime.cpp` | 204–208 | Delete function |
+| `runtime/src/codegen/Passes/EcoToLLVMInternal.h` | 154 | Delete declaration |
 
-### Step 5: Run tests
+**Keep** `eco_closure_call_saturated` in runtime — it is used by C++ kernel code:
+- `elm-kernel-cpp/src/bytes/BytesExports.cpp:360` calls it in `Elm_Kernel_Bytes_decode`
+
+### Step 5: Update documentation
+
+Update `design_docs/theory/pass_eco_to_llvm_theory.md` line 238:
+
+```diff
+ **papExtend (apply arguments to closure):**
+ IF saturated (newargs.size == remaining_arity):
+-    -> eco_closure_call_saturated(closure, args_array, num_args)
++    -> inline LLVM ops (resolve closure, copy captured + new args, indirect call)
+ ELSE:
+     -> eco_pap_extend(closure, args_array, num_args)
+```
+
+### Step 6: Add test cases for f64 indirect calls
+
+#### MLIR codegen tests (`test/codegen/`)
+
+Add two MLIR test files:
+
+1. **`call_indirect_float_result.mlir`** — indirect `eco.call` returning f64
+   - Create closure wrapping a function that takes f64, returns f64
+   - Call via `eco.call` without `callee` attribute (indirect path)
+   - Verify the `ptr → i64 → f64` result conversion works correctly
+
+2. **`papextend_saturated_float_result.mlir`** — `eco.papExtend` saturating with f64 result
+   - Create PAP with arity > captured args
+   - Extend with remaining args to saturate, returning f64
+   - Verify the inline closure call handles f64 results
+
+#### Elm E2E tests (`test/elm/src/`)
+
+Add **`IndirectCallFloatTest.elm`** — higher-order functions with Float returns.
+
+**How to trigger indirect calls in Elm:**
+- Pass a function as a parameter to another function
+- Call that function parameter inside the body
+- The compiler cannot statically determine which function it is → generates indirect call
+
+**Test cases:**
+```elm
+-- Apply a Float->Float function (indirect call, f64 result)
+applyFloat : (Float -> Float) -> Float -> Float
+applyFloat f x = f x
+
+-- Apply twice (chained indirect calls)
+twiceFloat : (Float -> Float) -> Float -> Float
+twiceFloat f x = f (f x)
+
+-- Various float operations passed as closures
+double x = x * 2.0
+negate x = 0.0 - x
+addTen x = x + 10.0
+
+main =
+    let
+        _ = Debug.log "apply_double" (applyFloat double 5.0)     -- 10.0
+        _ = Debug.log "apply_negate" (applyFloat negate 3.0)     -- -3.0
+        _ = Debug.log "twice_double" (twiceFloat double 2.0)     -- 8.0
+        _ = Debug.log "twice_addTen" (twiceFloat addTen 0.0)     -- 20.0
+    in
+    text "done"
+```
+
+**Why this triggers the bug path:**
+- `applyFloat double 5.0` → compiler doesn't know `f` is `double` at the call site
+- Generates `eco.call` with `remaining_arity` attribute (indirect call)
+- Result type is f64 (Float) → exercises the `ptr → i64 → f64` conversion
+
+### Step 7: Run tests
 
 ```bash
 cmake --build build
@@ -151,34 +226,26 @@ cmake --build build --target check
 ## Files Modified
 
 | File | Change |
-|---|---|
-| `runtime/src/codegen/Passes/EcoToLLVMClosures.cpp` | Add `emitInlineClosureCall`, rewrite both lowering patterns |
-| `runtime/src/allocator/RuntimeExports.cpp` | Remove `eco_closure_call_saturated` |
-| `runtime/src/allocator/RuntimeExports.h` | Remove declaration |
-| `runtime/src/codegen/Passes/EcoToLLVMRuntime.cpp` | Remove `getOrCreateClosureCallSaturated` |
-| `runtime/src/codegen/Passes/EcoToLLVMInternal.h` | Remove declaration |
-| `runtime/src/codegen/RuntimeSymbols.cpp` | Remove JIT symbol registration |
+|------|--------|
+| `runtime/src/codegen/Passes/EcoToLLVMClosures.cpp` | Add `emitInlineClosureCall` (~60 lines), simplify both lowering patterns (~80 lines removed) |
+| `runtime/src/codegen/Passes/EcoToLLVMRuntime.cpp` | Remove `getOrCreateClosureCallSaturated` (5 lines) |
+| `runtime/src/codegen/Passes/EcoToLLVMInternal.h` | Remove declaration (1 line) |
+| `design_docs/theory/pass_eco_to_llvm_theory.md` | Update papExtend description |
+| `test/codegen/call_indirect_float_result.mlir` | New test: indirect eco.call returning f64 |
+| `test/codegen/papextend_saturated_float_result.mlir` | New test: papExtend saturating with f64 result |
+| `test/elm/src/IndirectCallFloatTest.elm` | New test: Elm higher-order functions with Float |
 
-## Questions / Open Issues
+**NOT modified** (contrary to earlier draft):
+- `runtime/src/allocator/RuntimeExports.cpp` — keep `eco_closure_call_saturated`
+- `runtime/src/allocator/RuntimeExports.h` — keep declaration
+- `runtime/src/codegen/RuntimeSymbols.cpp` — keep JIT symbol registration
 
-1. **contBlock pattern complexity**: The CallOpLowering indirect path uses block splitting
-   (splitBlock + contBlock + loopCheck + loopBody + loopDone) to implement the captured-values
-   copy loop. This is because `n_values` is a runtime value, requiring a real loop. The helper
-   function must emit this same block structure. The caller (PapExtendOpLowering) must be
-   prepared for the rewriter's insertion point to have moved to a different block after the
-   helper returns. **This is the trickiest part of the implementation.**
+## Decisions Made
 
-2. **Result type via evaluator wrapper**: The evaluator wrapper always returns `ptr`. The
-   conversion `ptr → i64 → f64` involves two ops. An alternative would be to have the helper
-   return i64 always, and let each call site do the final bitcast. This is simpler but less
-   encapsulated. **Recommendation**: have the helper accept the desired result type and handle
-   the full conversion internally, since that's the whole point.
-
-3. **Should we keep `eco_closure_call_saturated` as a fallback?** The inline version is
-   strictly better (fewer calls, no unnecessary bitcasts), so no. However, it produces more
-   LLVM IR per call site. **Recommendation**: remove it. The extra IR is small (the loop is
-   ~15 ops) and LLVM will optimize it well.
-
-4. **Latent bug in indirect eco.call for f64 results**: Currently never triggered, but the
-   shared helper fixes it for free. Should we add a test for an indirect eco.call returning
-   f64? **Recommendation**: yes, add a small MLIR test case.
+| Issue | Decision | Rationale |
+|-------|----------|-----------|
+| contBlock argument type | Always `i64` | Simplifies CFG; type-specific conversion happens after in one place |
+| Result conversion | `ptrtoint` + optional `bitcast`/`inttoptr` inside helper | Cannot avoid with current evaluator ABI (`ptr(ptr)`) |
+| Sanity checks in inline code | None | Matches existing `CallOpLowering` pattern; trust compiler |
+| Keep `eco_closure_call_saturated` | Yes, in runtime only | Used by `BytesExports.cpp`; remove only MLIR lowering helper |
+| f64 indirect call test | Add 2 MLIR tests + 1 Elm E2E test | Exercises the fixed latent bug path at both MLIR and Elm levels |
