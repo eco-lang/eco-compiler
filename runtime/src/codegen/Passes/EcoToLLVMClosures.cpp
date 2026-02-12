@@ -20,6 +20,65 @@ using namespace eco::detail;
 namespace {
 
 //===----------------------------------------------------------------------===//
+// eco.project.closure -> load capture from closure values array
+//===----------------------------------------------------------------------===//
+
+struct ProjectClosureOpLowering : public OpConversionPattern<ProjectClosureOp> {
+    EcoRuntime runtime;
+
+    ProjectClosureOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx, EcoRuntime runtime) :
+        OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
+
+    LogicalResult matchAndRewrite(ProjectClosureOp op, OpAdaptor adaptor,
+                                  ConversionPatternRewriter &rewriter) const override {
+        auto loc = op.getLoc();
+        auto *ctx = rewriter.getContext();
+        auto i8Ty = IntegerType::get(ctx, 8);
+        auto i64Ty = IntegerType::get(ctx, 64);
+        auto f64Ty = Float64Type::get(ctx);
+        auto ptrTy = LLVM::LLVMPointerType::get(ctx);
+
+        int64_t index = op.getIndex();
+        bool isUnboxed = op.getIsUnboxed();
+
+        Value closureI64 = adaptor.getClosure();
+
+        // Resolve closure HPointer to raw pointer
+        auto resolveFunc = runtime.getOrCreateResolveHPtr(rewriter);
+        auto resolveCall = rewriter.create<LLVM::CallOp>(loc, resolveFunc, ValueRange{closureI64});
+        Value closurePtr = resolveCall.getResult();
+
+        // Compute offset: values[index] is at offset ClosureValuesOffset + index * 8
+        int64_t valueOffset = layout::ClosureValuesOffset + index * layout::PtrSize;
+        auto offsetConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, rewriter.getI64IntegerAttr(valueOffset));
+        auto valuePtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i8Ty, closurePtr, ValueRange{offsetConst});
+
+        // Load the value as i64
+        Value loadedValue = rewriter.create<LLVM::LoadOp>(loc, i64Ty, valuePtr);
+
+        // Convert to result type
+        Type resultType = getTypeConverter()->convertType(op.getResult().getType());
+        Value result = loadedValue;
+
+        if (isUnboxed) {
+            // Unboxed value - convert based on target type
+            if (resultType == f64Ty) {
+                result = rewriter.create<LLVM::BitcastOp>(loc, f64Ty, loadedValue);
+            } else if (isa<LLVM::LLVMPointerType>(resultType)) {
+                result = rewriter.create<LLVM::IntToPtrOp>(loc, resultType, loadedValue);
+            }
+            // else: i64, no conversion needed
+        } else {
+            // Boxed value (!eco.value) - keep as i64
+            // Result type should be i64 after type conversion
+        }
+
+        rewriter.replaceOp(op, result);
+        return success();
+    }
+};
+
+//===----------------------------------------------------------------------===//
 // eco.allocate_closure -> call eco_alloc_closure
 //===----------------------------------------------------------------------===//
 
@@ -242,8 +301,18 @@ struct PapCreateOpLowering : public OpConversionPattern<PapCreateOp> {
         auto resolveFunc = runtime.getOrCreateResolveHPtr(rewriter);
 
         // Get wrapper function that adapts calling convention
-        auto funcSymbol = op.getFunction();
+        // For closures with captures, prefer the fast clone (_fast_evaluator) for the wrapper
+        // since it takes captures + params as direct arguments (compatible with args-array).
+        // The generic clone ($clo) takes (Closure*, params...) which is used for typed closure dispatch.
         auto module = op->getParentOfType<ModuleOp>();
+        StringRef funcSymbol;
+        if (auto fastEval = op->getAttrOfType<SymbolRefAttr>("_fast_evaluator")) {
+            // Has fast clone - use it for the wrapper (typed closure calling)
+            funcSymbol = fastEval.getRootReference();
+        } else {
+            // No fast clone - use the function attribute directly (zero-capture or legacy)
+            funcSymbol = op.getFunction();
+        }
         auto wrapperFunc = getOrCreateWrapper(rewriter, module, funcSymbol, arity, loc, getTypeConverter());
         Value funcPtr = rewriter.create<LLVM::AddressOfOp>(loc, ptrTy, wrapperFunc.getSymName());
 
@@ -303,7 +372,167 @@ struct PapCreateOpLowering : public OpConversionPattern<PapCreateOp> {
 };
 
 //===----------------------------------------------------------------------===//
-// Shared helper: inline closure call
+// Typed closure call helpers (Phase 5 - Typed Closure Calling)
+//===----------------------------------------------------------------------===//
+
+/// Emit a typed closure call when capture ABI is known at compile time.
+/// Loads captures from closure, calls fast clone directly with typed args.
+/// This is used when _dispatch_mode="fast".
+static Value emitFastClosureCall(ConversionPatternRewriter &rewriter, Location loc, const EcoRuntime &runtime,
+                                 Value closureI64, ValueRange newArgs, SymbolRefAttr fastEvaluator,
+                                 ArrayAttr captureAbiTypes, Type resultType) {
+    auto *ctx = rewriter.getContext();
+    auto i8Ty = IntegerType::get(ctx, 8);
+    auto i64Ty = IntegerType::get(ctx, 64);
+    auto f64Ty = Float64Type::get(ctx);
+    auto ptrTy = LLVM::LLVMPointerType::get(ctx);
+
+    // Resolve closure HPointer to raw pointer
+    auto resolveFunc = runtime.getOrCreateResolveHPtr(rewriter);
+    auto resolveCall = rewriter.create<LLVM::CallOp>(loc, resolveFunc, ValueRange{closureI64});
+    Value closurePtr = resolveCall.getResult();
+
+    // Build argument list: captures from closure + newArgs
+    SmallVector<Value> callArgs;
+    SmallVector<Type> paramTypes;
+
+    // Load captures from closure values array based on captureAbiTypes
+    for (size_t i = 0; i < captureAbiTypes.size(); ++i) {
+        int64_t valueOffset = layout::ClosureValuesOffset + i * layout::PtrSize;
+        auto offsetConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, rewriter.getI64IntegerAttr(valueOffset));
+        auto valuePtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i8Ty, closurePtr, ValueRange{offsetConst});
+        Value loadedValue = rewriter.create<LLVM::LoadOp>(loc, i64Ty, valuePtr);
+
+        // Convert loaded i64 to the capture's actual type
+        // captureAbiTypes contains TypeAttr elements
+        auto typeAttr = mlir::dyn_cast<TypeAttr>(captureAbiTypes[i]);
+        Type captureType = typeAttr ? typeAttr.getValue() : i64Ty;
+        Value captureVal = loadedValue;
+
+        if (captureType.isF64()) {
+            captureVal = rewriter.create<LLVM::BitcastOp>(loc, f64Ty, loadedValue);
+            paramTypes.push_back(f64Ty);
+        } else if (isa<LLVM::LLVMPointerType>(captureType)) {
+            captureVal = rewriter.create<LLVM::IntToPtrOp>(loc, captureType, loadedValue);
+            paramTypes.push_back(captureType);
+        } else {
+            // i64 or other integer types
+            paramTypes.push_back(i64Ty);
+        }
+        callArgs.push_back(captureVal);
+    }
+
+    // Add new arguments
+    for (Value arg : newArgs) {
+        callArgs.push_back(arg);
+        paramTypes.push_back(arg.getType());
+    }
+
+    // Get address of fast clone function
+    auto flatSymbol = FlatSymbolRefAttr::get(ctx, fastEvaluator.getRootReference());
+    Value funcPtr = rewriter.create<LLVM::AddressOfOp>(loc, ptrTy, flatSymbol);
+
+    // Build function type and indirect call (funcPtr first, then args)
+    Type llvmResultType = resultType;
+    auto funcType = LLVM::LLVMFunctionType::get(llvmResultType, paramTypes, /*isVarArg=*/false);
+    SmallVector<Value> callOperands;
+    callOperands.push_back(funcPtr);
+    callOperands.append(callArgs.begin(), callArgs.end());
+    auto callOp = rewriter.create<LLVM::CallOp>(loc, funcType, callOperands);
+
+    return callOp.getResult();
+}
+
+/// Emit a closure call via the generic clone.
+/// Calls the generic clone stored in closure.evaluator with (Closure*, args...).
+/// This is used when _dispatch_mode="closure".
+static Value emitClosureCall(ConversionPatternRewriter &rewriter, Location loc, const EcoRuntime &runtime,
+                             Value closureI64, ValueRange newArgs, Type resultType) {
+    auto *ctx = rewriter.getContext();
+    auto i8Ty = IntegerType::get(ctx, 8);
+    auto i64Ty = IntegerType::get(ctx, 64);
+    auto ptrTy = LLVM::LLVMPointerType::get(ctx);
+
+    // Resolve closure HPointer to raw pointer
+    auto resolveFunc = runtime.getOrCreateResolveHPtr(rewriter);
+    auto resolveCall = rewriter.create<LLVM::CallOp>(loc, resolveFunc, ValueRange{closureI64});
+    Value closurePtr = resolveCall.getResult();
+
+    // Load evaluator pointer (generic clone) at offset 16
+    auto offset16 = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, layout::ClosureEvaluatorOffset);
+    auto evalPtrPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i8Ty, closurePtr, ValueRange{offset16});
+    Value evaluator = rewriter.create<LLVM::LoadOp>(loc, ptrTy, evalPtrPtr);
+
+    // Build argument list: closurePtr + newArgs
+    SmallVector<Value> callArgs;
+    SmallVector<Type> paramTypes;
+
+    // First arg is the closure pointer (not HPointer)
+    callArgs.push_back(closurePtr);
+    paramTypes.push_back(ptrTy);
+
+    // Add new arguments
+    for (Value arg : newArgs) {
+        callArgs.push_back(arg);
+        paramTypes.push_back(arg.getType());
+    }
+
+    // Build function type and indirect call
+    Type llvmResultType = resultType;
+    auto funcType = LLVM::LLVMFunctionType::get(llvmResultType, paramTypes, /*isVarArg=*/false);
+
+    SmallVector<Value> callOperands;
+    callOperands.push_back(evaluator);
+    callOperands.append(callArgs.begin(), callArgs.end());
+    auto callOp = rewriter.create<LLVM::CallOp>(loc, funcType, callOperands);
+
+    return callOp.getResult();
+}
+
+/// Emit a closure call when dispatch mode is unknown.
+/// Logs a diagnostic and falls back to generic closure call via emitInlineClosureCall.
+/// This is used when _dispatch_mode="unknown".
+static Value emitUnknownClosureCall(ConversionPatternRewriter &rewriter, Location loc, const EcoRuntime &runtime,
+                                    Value closureI64, ValueRange newArgs, Type resultType);  // Forward declaration
+
+/// Dispatch a closure call based on the _dispatch_mode attribute.
+/// Returns Value() and emits error if dispatch mode is invalid or missing required attributes.
+static Value emitDispatchedClosureCall(ConversionPatternRewriter &rewriter, Location loc, const EcoRuntime &runtime,
+                                       Operation *op, Value closureI64, ValueRange newArgs, Type resultType) {
+    auto dispatchMode = op->getAttrOfType<StringAttr>("_dispatch_mode");
+
+    // Missing _dispatch_mode on a closure call = pipeline bug
+    if (!dispatchMode) {
+        op->emitError("closure call missing _dispatch_mode attribute");
+        return Value();
+    }
+
+    StringRef mode = dispatchMode.getValue();
+
+    if (mode == "fast") {
+        auto fastEval = op->getAttrOfType<SymbolRefAttr>("_fast_evaluator");
+        auto captureAbi = op->getAttrOfType<ArrayAttr>("_capture_abi");
+        if (!fastEval || !captureAbi) {
+            op->emitError("_dispatch_mode='fast' requires _fast_evaluator and _capture_abi attributes");
+            return Value();
+        }
+        return emitFastClosureCall(rewriter, loc, runtime, closureI64, newArgs, fastEval, captureAbi, resultType);
+    }
+
+    if (mode == "closure") {
+        return emitClosureCall(rewriter, loc, runtime, closureI64, newArgs, resultType);
+    }
+
+    if (mode == "unknown") {
+        return emitUnknownClosureCall(rewriter, loc, runtime, closureI64, newArgs, resultType);
+    }
+
+    op->emitError("unrecognized _dispatch_mode: ") << mode;
+    return Value();
+}
+
+//===----------------------------------------------------------------------===//
+// Shared helper: inline closure call (legacy path)
 //===----------------------------------------------------------------------===//
 
 /// Emit inline LLVM ops to call a closure's evaluator with combined
@@ -441,6 +670,17 @@ static Value emitInlineClosureCall(ConversionPatternRewriter &rewriter, Location
     return result;
 }
 
+/// Implementation of emitUnknownClosureCall.
+/// Emits a warning diagnostic and falls back to the legacy inline closure call.
+static Value emitUnknownClosureCall(ConversionPatternRewriter &rewriter, Location loc, const EcoRuntime &runtime,
+                                    Value closureI64, ValueRange newArgs, Type resultType) {
+    emitWarning(loc) << "closure call with _dispatch_mode='unknown' - "
+                     << "closure kind metadata was not propagated; "
+                     << "using generic dispatch";
+    // Fall back to legacy inline closure call (args-array convention)
+    return emitInlineClosureCall(rewriter, loc, runtime, closureI64, newArgs, resultType);
+}
+
 //===----------------------------------------------------------------------===//
 // eco.papExtend -> extend closure or call if saturated
 //===----------------------------------------------------------------------===//
@@ -467,9 +707,25 @@ struct PapExtendOpLowering : public OpConversionPattern<PapExtendOp> {
         bool isSaturated = (numNewArgs == remainingArity);
 
         if (isSaturated) {
-            // Saturated call: emit inline closure call
+            // Saturated call: use typed closure call if attributes present
             Type convertedResultTy = getTypeConverter()->convertType(op.getResult().getType());
-            Value result = emitInlineClosureCall(rewriter, loc, runtime, closureI64, newargs, convertedResultTy);
+            Value result;
+
+            // Check for typed closure calling attributes
+            auto fastEval = op->getAttrOfType<SymbolRefAttr>("_fast_evaluator");
+            auto captureAbi = op->getAttrOfType<ArrayAttr>("_capture_abi");
+            auto closureKind = op->getAttr("_closure_kind");
+
+            if (fastEval && captureAbi) {
+                // Fast path: known homogeneous closure, call fast clone directly
+                result = emitFastClosureCall(rewriter, loc, runtime, closureI64, newargs, fastEval, captureAbi, convertedResultTy);
+            } else if (closureKind) {
+                // Has closure kind but not fast path -> heterogeneous, use closure call
+                result = emitClosureCall(rewriter, loc, runtime, closureI64, newargs, convertedResultTy);
+            } else {
+                // No typed closure info -> use legacy inline closure call
+                result = emitInlineClosureCall(rewriter, loc, runtime, closureI64, newargs, convertedResultTy);
+            }
             rewriter.replaceOp(op, result);
         } else {
             // Partial application: use runtime helper to create extended closure
@@ -544,7 +800,20 @@ struct CallOpLowering : public OpConversionPattern<CallOp> {
             }
 
             Type convertedResultTy = resultTypes[0];
-            Value result = emitInlineClosureCall(rewriter, loc, runtime, closureI64, newArgs, convertedResultTy);
+            Value result;
+
+            // Check for typed closure calling attributes
+            auto dispatchMode = op->getAttrOfType<StringAttr>("_dispatch_mode");
+            if (dispatchMode) {
+                // Use dispatched closure call based on _dispatch_mode
+                result = emitDispatchedClosureCall(rewriter, loc, runtime, op, closureI64, newArgs, convertedResultTy);
+                if (!result) {
+                    return failure();  // Error was already emitted
+                }
+            } else {
+                // No _dispatch_mode -> use legacy inline closure call
+                result = emitInlineClosureCall(rewriter, loc, runtime, closureI64, newArgs, convertedResultTy);
+            }
             rewriter.replaceOp(op, result);
         }
 
@@ -562,6 +831,7 @@ void eco::detail::populateEcoClosurePatterns(EcoTypeConverter &typeConverter, Re
                                              EcoRuntime runtime) {
 
     auto *ctx = patterns.getContext();
+    patterns.add<ProjectClosureOpLowering>(typeConverter, ctx, runtime);
     patterns.add<AllocateClosureOpLowering>(typeConverter, ctx, runtime);
     patterns.add<PapCreateOpLowering>(typeConverter, ctx, runtime);
     patterns.add<PapExtendOpLowering>(typeConverter, ctx, runtime);

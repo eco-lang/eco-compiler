@@ -1303,6 +1303,8 @@ tryInlineCall ctx specId args resultType =
                                         { lambdaId = newLambdaId
                                         , params = remainingParams
                                         , captures = newCaptures
+                                        , closureKind = Nothing
+                                        , captureAbi = Nothing
                                         }
 
                                     newClosure =

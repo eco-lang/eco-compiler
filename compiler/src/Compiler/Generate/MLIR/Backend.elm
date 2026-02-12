@@ -67,10 +67,10 @@ generateMlirModule mode typeEnv monoGraph0 =
             EveryDict.foldl compare
                 (\specId node ( accOps, accCtx ) ->
                     let
-                        ( op, newCtx ) =
+                        ( nodeOps, newCtx ) =
                             Functions.generateNode accCtx specId node
                     in
-                    ( accOps ++ [ op ], newCtx )
+                    ( accOps ++ nodeOps, newCtx )
                 )
                 ( [], ctx )
                 nodes

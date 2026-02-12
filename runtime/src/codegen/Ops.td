@@ -786,13 +786,22 @@ def Eco_PapCreateOp : Eco_Op<"papCreate", [Pure]> {
     stored as unboxed primitives (bit N set = capture N is unboxed).
     This is the source-of-truth; lowering trusts this value.
 
+    For typed closure calling, closures with captures have:
+    - `function`: References the generic clone (funcName$clo)
+    - `_fast_evaluator`: References the fast clone (funcName$cap)
+    - `_closure_kind`: Integer ID or "heterogeneous" (omit if unknown)
+
+    Zero-capture closures have no _fast_evaluator or _closure_kind.
+
     Example:
     ```mlir
     // Partially apply `add` with first argument captured as i64
-    %add_5 = eco.papCreate @add(%five) {
+    %add_5 = eco.papCreate @add$clo(%five) {
       arity = 2 : i64,
       num_captured = 1 : i64,
-      unboxed_bitmap = 1 : i64  // bit 0 set = capture 0 is unboxed
+      unboxed_bitmap = 1 : i64,
+      _fast_evaluator = @add$cap,
+      _closure_kind = 42 : i64
     } : (i64) -> !eco.value
     ```
   }];
@@ -802,7 +811,9 @@ def Eco_PapCreateOp : Eco_Op<"papCreate", [Pure]> {
     FlatSymbolRefAttr:$function,
     I64Attr:$arity,
     I64Attr:$num_captured,
-    DefaultValuedAttr<I64Attr, "0">:$unboxed_bitmap
+    DefaultValuedAttr<I64Attr, "0">:$unboxed_bitmap,
+    OptionalAttr<FlatSymbolRefAttr>:$_fast_evaluator,
+    OptionalAttr<AnyAttr>:$_closure_kind
   );
   let results = (outs Eco_Value:$result);
 
@@ -827,13 +838,20 @@ def Eco_PapExtendOp : Eco_Op<"papExtend"> {
     are unboxed primitives (bit N set = newarg N is unboxed).
     This is the source-of-truth; lowering trusts this value.
 
+    For typed closure calling:
+    - `_closure_kind`: Propagated from source closure (int or "heterogeneous")
+    - `_dispatch_mode`: How to lower this call ("fast", "closure", "unknown")
+    - `_fast_evaluator`: Fast clone symbol (required when _dispatch_mode="fast")
+
     Example:
     ```mlir
     // Apply one more argument to a partially applied function (arity 1 remaining)
     // This saturates the closure, so it becomes a direct call
     %result = eco.papExtend %closure(%arg) {
       remaining_arity = 1 : i64,
-      newargs_unboxed_bitmap = 1 : i64  // bit 0 set = arg is unboxed
+      newargs_unboxed_bitmap = 1 : i64,
+      _dispatch_mode = "fast",
+      _fast_evaluator = @add$cap
     } : !eco.value, (i64) -> i64
     ```
   }];
@@ -842,7 +860,47 @@ def Eco_PapExtendOp : Eco_Op<"papExtend"> {
     Eco_Value:$closure,
     Variadic<Eco_AnyValue>:$newargs,
     I64Attr:$remaining_arity,
-    DefaultValuedAttr<I64Attr, "0">:$newargs_unboxed_bitmap
+    DefaultValuedAttr<I64Attr, "0">:$newargs_unboxed_bitmap,
+    OptionalAttr<AnyAttr>:$_closure_kind,
+    OptionalAttr<StrAttr>:$_dispatch_mode,
+    OptionalAttr<FlatSymbolRefAttr>:$_fast_evaluator
+  );
+  let results = (outs Eco_AnyValue:$result);
+
+  let hasVerifier = 1;
+}
+
+def Eco_ProjectClosureOp : Eco_Op<"project.closure", [Pure]> {
+  let summary = "Project a captured value from a closure";
+  let description = [{
+    Load a captured value from a closure at the specified index.
+    Used in the generic clone body to extract captures before
+    calling the fast clone.
+
+    The `index` attribute specifies which capture to load (0-indexed).
+    The `is_unboxed` attribute indicates whether the capture is stored
+    as an unboxed primitive.
+
+    Example:
+    ```mlir
+    // Load the first capture (unboxed i64) from closure
+    %cap0 = eco.project.closure %closure {
+      index = 0 : i64,
+      is_unboxed = true
+    } : (!eco.value) -> i64
+
+    // Load the second capture (boxed value) from closure
+    %cap1 = eco.project.closure %closure {
+      index = 1 : i64,
+      is_unboxed = false
+    } : (!eco.value) -> !eco.value
+    ```
+  }];
+
+  let arguments = (ins
+    Eco_Value:$closure,
+    I64Attr:$index,
+    DefaultValuedAttr<BoolAttr, "false">:$is_unboxed
   );
   let results = (outs Eco_AnyValue:$result);
 

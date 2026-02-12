@@ -22,6 +22,7 @@ not at runtime. The compiler trusts that canonicalizeClosureStaging produces cor
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.TypeEnv as TypeEnv
 import Compiler.Data.Name exposing (Name)
+import Compiler.GlobalOpt.AbiCloning as AbiCloning
 import Compiler.GlobalOpt.MonoInlineSimplify as MonoInlineSimplify
 import Compiler.GlobalOpt.MonoReturnArity as MonoReturnArity
 import Compiler.GlobalOpt.MonoTraverse as Traverse
@@ -113,13 +114,19 @@ globalOptimize typeEnv graph0 =
         graph2 =
             Staging.validateClosureStaging graph1
 
+        -- Phase 3.5: ABI Cloning - ensure homogeneous closure parameters
+        -- Clones functions when a closure-typed parameter receives different
+        -- capture ABIs at different call sites.
+        graph2a =
+            AbiCloning.abiCloningPass graph2
+
         -- Phase 4: Annotate call staging metadata using CallEnv + computeCallInfo
         -- This uses the local annotateCallStaging which has the correct PAP arity
         -- semantics via sourceArityForCallee and closureBodyStageArities.
         -- Note: stagingSolution is unused here since all staging-dependent rewrites
         -- were applied in Phase 1+2 by Rewriter.applyStagingSolution.
         graph3 =
-            annotateCallStaging graph2
+            annotateCallStaging graph2a
     in
     graph3
 
@@ -687,6 +694,8 @@ makeAliasClosureGO home calleeExpr argTypes retType funcType ctx =
             { lambdaId = lambdaId
             , captures = captures
             , params = params
+            , closureKind = Nothing
+            , captureAbi = Nothing
             }
     in
     ( Mono.MonoClosure closureInfo callExpr funcType, ctx1 )
@@ -727,6 +736,8 @@ makeGeneralClosureGO home expr argTypes retType funcType ctx =
             { lambdaId = lambdaId
             , captures = captures
             , params = params
+            , closureKind = Nothing
+            , captureAbi = Nothing
             }
     in
     ( Mono.MonoClosure closureInfo callExpr funcType, ctx1 )
@@ -861,6 +872,8 @@ buildAbiWrapperGO home targetType calleeExpr ctx0 =
                                 { lambdaId = lambdaId
                                 , captures = captures
                                 , params = paramsForStage
+                                , closureKind = Nothing
+                                , captureAbi = Nothing
                                 }
                         in
                         ( Mono.MonoClosure closureInfo innerBody remainingType, ctx2 )
@@ -1979,6 +1992,9 @@ computeCallInfo graph env func args resultType =
             , isSingleStageSaturated = False
             , initialRemaining = 0
             , remainingStageArities = []
+            , closureKind = Nothing
+            , dispatchMode = Nothing
+            , captureAbi = Nothing
             }
 
         Mono.StageCurried ->
@@ -2041,4 +2057,7 @@ computeCallInfo graph env func args resultType =
             , isSingleStageSaturated = isSingleStageSaturated
             , initialRemaining = initialRemaining
             , remainingStageArities = remainingStageArities
+            , closureKind = Nothing
+            , dispatchMode = Nothing
+            , captureAbi = Nothing
             }

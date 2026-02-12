@@ -801,6 +801,20 @@ generateClosure ctx closureInfo body monoType =
     else
         -- Non-zero arity: create a PAP with captures (typed closure ABI)
         let
+            hasCaptures =
+                not (List.isEmpty closureInfo.captures)
+
+            baseFuncName =
+                lambdaIdToString closureInfo.lambdaId
+
+            -- For closures with captures, reference generic clone; otherwise original
+            functionName =
+                if hasCaptures then
+                    baseFuncName ++ "$clo"
+
+                else
+                    baseFuncName
+
             operandTypesAttr =
                 if List.isEmpty captureVarNames then
                     Dict.empty
@@ -810,14 +824,38 @@ generateClosure ctx closureInfo body monoType =
                     Dict.singleton "_operand_types"
                         (ArrayAttr Nothing (List.map TypeAttr captureTypesList))
 
+            -- Add _fast_evaluator attribute for closures with captures
+            fastEvaluatorAttr =
+                if hasCaptures then
+                    Dict.singleton "_fast_evaluator" (SymbolRefAttr (baseFuncName ++ "$cap"))
+
+                else
+                    Dict.empty
+
+            -- Add _closure_kind attribute if available
+            closureKindAttr =
+                case closureInfo.closureKind of
+                    Just (Mono.Known (Mono.ClosureKindId kindId)) ->
+                        Dict.singleton "_closure_kind" (IntAttr Nothing kindId)
+
+                    Just Mono.Heterogeneous ->
+                        Dict.singleton "_closure_kind" (StringAttr "heterogeneous")
+
+                    Nothing ->
+                        Dict.empty
+
             papAttrs =
-                Dict.union operandTypesAttr
-                    (Dict.fromList
-                        [ ( "function", SymbolRefAttr (lambdaIdToString closureInfo.lambdaId) )
-                        , ( "arity", IntAttr Nothing arity )
-                        , ( "num_captured", IntAttr Nothing numCaptured )
-                        , ( "unboxed_bitmap", IntAttr Nothing unboxedBitmap )
-                        ]
+                Dict.union closureKindAttr
+                    (Dict.union fastEvaluatorAttr
+                        (Dict.union operandTypesAttr
+                            (Dict.fromList
+                                [ ( "function", SymbolRefAttr functionName )
+                                , ( "arity", IntAttr Nothing arity )
+                                , ( "num_captured", IntAttr Nothing numCaptured )
+                                , ( "unboxed_bitmap", IntAttr Nothing unboxedBitmap )
+                                ]
+                            )
+                        )
                     )
 
             ( ctx3, papOp ) =

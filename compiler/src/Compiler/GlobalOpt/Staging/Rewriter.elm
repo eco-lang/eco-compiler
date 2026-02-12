@@ -585,6 +585,8 @@ buildNestedWrapper remainingType calleeExpr accParams ctx0 =
                     { lambdaId = lambdaId
                     , captures = captures
                     , params = paramsForStage
+                    , closureKind = Nothing
+                    , captureAbi = Nothing
                     }
             in
             ( Mono.MonoClosure closureInfo innerBody remainingType, ctx2 )

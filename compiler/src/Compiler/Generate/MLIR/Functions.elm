@@ -70,8 +70,9 @@ generateMainEntry ctx mainInfo =
 
 
 {-| Generate MLIR code for a monomorphized node.
+Returns a list of MlirOps (may be multiple for closures with captures).
 -}
-generateNode : Ctx.Context -> Mono.SpecId -> Mono.MonoNode -> ( MlirOp, Ctx.Context )
+generateNode : Ctx.Context -> Mono.SpecId -> Mono.MonoNode -> ( List MlirOp, Ctx.Context )
 generateNode ctx specId node =
     let
         funcName : String
@@ -83,7 +84,11 @@ generateNode ctx specId node =
             generateDefine ctx funcName expr monoType
 
         Mono.MonoTailFunc params expr monoType ->
-            generateTailFunc ctx funcName params expr monoType
+            let
+                ( op, ctx1 ) =
+                    generateTailFunc ctx funcName params expr monoType
+            in
+            ( [ op ], ctx1 )
 
         Mono.MonoCtor ctorShape monoType ->
             let
@@ -93,7 +98,7 @@ generateNode ctx specId node =
                 ( ctx1, op ) =
                     generateCtor ctx funcName ctorLayout monoType
             in
-            ( op, ctx1 )
+            ( [ op ], ctx1 )
 
         Mono.MonoEnum tag monoType ->
             let
@@ -114,14 +119,14 @@ generateNode ctx specId node =
                 ( ctx1, op ) =
                     generateEnum ctx funcName tag monoType maybeCtorName
             in
-            ( op, ctx1 )
+            ( [ op ], ctx1 )
 
         Mono.MonoExtern monoType ->
             let
                 ( ctx1, op ) =
                     generateExtern ctx funcName monoType
             in
-            ( op, ctx1 )
+            ( [ op ], ctx1 )
 
         Mono.MonoPortIncoming expr monoType ->
             generateDefine ctx funcName expr monoType
@@ -130,7 +135,11 @@ generateNode ctx specId node =
             generateDefine ctx funcName expr monoType
 
         Mono.MonoCycle definitions monoType ->
-            generateCycle ctx funcName definitions monoType
+            let
+                ( op, ctx1 ) =
+                    generateCycle ctx funcName definitions monoType
+            in
+            ( [ op ], ctx1 )
 
 
 specIdToFuncName : Mono.SpecializationRegistry -> Mono.SpecId -> String
@@ -150,7 +159,7 @@ specIdToFuncName registry specId =
 -- ====== GENERATE DEFINE ======
 
 
-generateDefine : Ctx.Context -> String -> Mono.MonoExpr -> Mono.MonoType -> ( MlirOp, Ctx.Context )
+generateDefine : Ctx.Context -> String -> Mono.MonoExpr -> Mono.MonoType -> ( List MlirOp, Ctx.Context )
 generateDefine ctx funcName expr monoType =
     case expr of
         Mono.MonoClosure closureInfo body _ ->
@@ -195,14 +204,34 @@ generateDefine ctx funcName expr monoType =
                 ( ctx2, funcOp ) =
                     Ops.funcFunc exprResult.ctx funcName [] retTy region
             in
-            ( funcOp, ctx2 )
+            ( [ funcOp ], ctx2 )
 
 
-generateClosureFunc : Ctx.Context -> String -> Mono.ClosureInfo -> Mono.MonoExpr -> Mono.MonoType -> ( MlirOp, Ctx.Context )
+{-| Generate closure functions.
+For closures with captures: generates both fast clone (captures + params)
+and generic clone (Closure* + params).
+For zero-capture closures: generates just the original function.
+-}
+generateClosureFunc : Ctx.Context -> String -> Mono.ClosureInfo -> Mono.MonoExpr -> Mono.MonoType -> ( List MlirOp, Ctx.Context )
 generateClosureFunc ctx funcName closureInfo body monoType =
     let
-        _ = ()
+        hasCaptures =
+            not (List.isEmpty closureInfo.captures)
+    in
+    if hasCaptures then
+        -- Two-clone model: fast clone + generic clone
+        generateClosureFuncWithClones ctx funcName closureInfo body monoType
 
+    else
+        -- Zero captures: single function (original lambda)
+        generateClosureFuncSingle ctx funcName closureInfo body monoType
+
+
+{-| Generate a single function for zero-capture closures.
+-}
+generateClosureFuncSingle : Ctx.Context -> String -> Mono.ClosureInfo -> Mono.MonoExpr -> Mono.MonoType -> ( List MlirOp, Ctx.Context )
+generateClosureFuncSingle ctx funcName closureInfo body monoType =
+    let
         argPairs : List ( String, MlirType )
         argPairs =
             List.map
@@ -231,9 +260,6 @@ generateClosureFunc ctx funcName closureInfo body monoType =
         exprResult =
             Expr.generateExpr ctxWithArgs body
 
-        -- Extract the return type from the closure's function type.
-        -- After GlobalOpt canonicalization, MFunction params ret has ret as the
-        -- stage return type (no need for Mono.stageReturnType helper).
         extractedReturnType : Mono.MonoType
         extractedReturnType =
             case monoType of
@@ -250,16 +276,10 @@ generateClosureFunc ctx funcName closureInfo body monoType =
         region : MlirRegion
         region =
             if exprResult.isTerminated then
-                -- Expression is a control-flow exit (eco.case, eco.jump).
-                -- The ops already contain the terminator - don't add eco.return.
-                -- IMPORTANT: Do NOT access exprResult.resultVar here - it is meaningless!
                 Ops.mkRegionTerminatedByOps argPairs exprResult.ops
 
             else
-                -- Normal expression - add eco.return with the result value.
                 let
-                    -- Handle type mismatch between expression result and expected return type.
-                    -- Uses symmetric coercion: primitive <-> !eco.value in either direction.
                     ( coerceOps, finalVar, ctxFinal ) =
                         Expr.coerceResultToType exprResult.ctx exprResult.resultVar exprResult.resultType returnType
 
@@ -271,7 +291,190 @@ generateClosureFunc ctx funcName closureInfo body monoType =
         ( ctx2, funcOp ) =
             Ops.funcFunc exprResult.ctx funcName argPairs returnType region
     in
-    ( funcOp, ctx2 )
+    ( [ funcOp ], ctx2 )
+
+
+{-| Generate two clones for closures with captures:
+- Fast clone (funcName$cap): (captures..., params...) -> R
+- Generic clone (funcName$clo): (Closure*, params...) -> R
+
+The generic clone body loads captures from closure and calls the fast clone.
+-}
+generateClosureFuncWithClones : Ctx.Context -> String -> Mono.ClosureInfo -> Mono.MonoExpr -> Mono.MonoType -> ( List MlirOp, Ctx.Context )
+generateClosureFuncWithClones ctx funcName closureInfo body monoType =
+    let
+        fastCloneName =
+            funcName ++ "$cap"
+
+        genericCloneName =
+            funcName ++ "$clo"
+
+        -- Capture types for fast clone signature
+        captureTypes : List ( String, MlirType )
+        captureTypes =
+            List.indexedMap
+                (\idx ( name, expr, _ ) ->
+                    ( "%cap_" ++ String.fromInt idx, Types.monoTypeToAbi (Mono.typeOf expr) )
+                )
+                closureInfo.captures
+
+        -- Parameter types
+        paramPairs : List ( String, MlirType )
+        paramPairs =
+            List.map
+                (\( name, ty ) -> ( "%" ++ name, Types.monoTypeToAbi ty ))
+                closureInfo.params
+
+        -- Fast clone arguments: captures + params
+        fastCloneArgs : List ( String, MlirType )
+        fastCloneArgs =
+            captureTypes ++ paramPairs
+
+        extractedReturnType : Mono.MonoType
+        extractedReturnType =
+            case monoType of
+                Mono.MFunction _ retType ->
+                    retType
+
+                _ ->
+                    monoType
+
+        returnType : MlirType
+        returnType =
+            Types.monoTypeToAbi extractedReturnType
+
+        -- Build var mappings for fast clone: captures use cap_N names,
+        -- but the body references original capture names
+        captureMappings : Dict.Dict String Ctx.VarInfo
+        captureMappings =
+            List.foldl
+                (\( idx, ( name, expr, _ ) ) acc ->
+                    Dict.insert name
+                        { ssaVar = "%cap_" ++ String.fromInt idx
+                        , mlirType = Types.monoTypeToAbi (Mono.typeOf expr)
+                        }
+                        acc
+                )
+                Dict.empty
+                (List.indexedMap Tuple.pair closureInfo.captures)
+
+        paramMappings : Dict.Dict String Ctx.VarInfo
+        paramMappings =
+            List.foldl
+                (\( name, ty ) acc ->
+                    Dict.insert name
+                        { ssaVar = "%" ++ name
+                        , mlirType = Types.monoTypeToAbi ty
+                        }
+                        acc
+                )
+                Dict.empty
+                closureInfo.params
+
+        fastCloneMappings : Dict.Dict String Ctx.VarInfo
+        fastCloneMappings =
+            Dict.union paramMappings captureMappings
+
+        ctxFastClone : Ctx.Context
+        ctxFastClone =
+            { ctx
+                | nextVar = List.length fastCloneArgs
+                , varMappings = fastCloneMappings
+            }
+
+        exprResult : Expr.ExprResult
+        exprResult =
+            Expr.generateExpr ctxFastClone body
+
+        fastCloneRegion : MlirRegion
+        fastCloneRegion =
+            if exprResult.isTerminated then
+                Ops.mkRegionTerminatedByOps fastCloneArgs exprResult.ops
+
+            else
+                let
+                    ( coerceOps, finalVar, _ ) =
+                        Expr.coerceResultToType exprResult.ctx exprResult.resultVar exprResult.resultType returnType
+
+                    ( _, returnOp ) =
+                        Ops.ecoReturn exprResult.ctx finalVar returnType
+                in
+                Ops.mkRegion fastCloneArgs (exprResult.ops ++ coerceOps) returnOp
+
+        ( ctx1, fastCloneOp ) =
+            Ops.funcFunc exprResult.ctx fastCloneName fastCloneArgs returnType fastCloneRegion
+
+        -- Generic clone: (Closure*, params...) -> R
+        -- Body: load captures, call fast clone
+        genericCloneArgs : List ( String, MlirType )
+        genericCloneArgs =
+            ( "%closure", Types.ecoValue ) :: paramPairs
+
+        ( genericCloneOps, genericCloneResult, ctx2 ) =
+            generateGenericCloneBody ctx1 closureInfo fastCloneName paramPairs returnType
+
+        genericCloneRegion : MlirRegion
+        genericCloneRegion =
+            let
+                ( _, returnOp ) =
+                    Ops.ecoReturn ctx2 genericCloneResult returnType
+            in
+            Ops.mkRegion genericCloneArgs genericCloneOps returnOp
+
+        ( ctx3, genericCloneOp ) =
+            Ops.funcFunc ctx2 genericCloneName genericCloneArgs returnType genericCloneRegion
+    in
+    ( [ fastCloneOp, genericCloneOp ], ctx3 )
+
+
+{-| Generate the body of the generic clone.
+Loads captures from the closure and calls the fast clone.
+Returns (ops, resultVar, ctx).
+-}
+generateGenericCloneBody : Ctx.Context -> Mono.ClosureInfo -> String -> List ( String, MlirType ) -> MlirType -> ( List MlirOp, String, Ctx.Context )
+generateGenericCloneBody ctx closureInfo fastCloneName paramPairs returnType =
+    let
+        -- Generate eco.project.closure ops to load each capture
+        -- Collect both ops and (var, type) pairs for the call
+        ( projectOps, captureVarsWithTypes, ctxAfterProject ) =
+            List.foldl
+                (\( idx, ( _, expr, isUnboxed ) ) ( accOps, accVars, accCtx ) ->
+                    let
+                        captureType =
+                            Types.monoTypeToAbi (Mono.typeOf expr)
+
+                        ( captureVar, ctxA ) =
+                            Ctx.freshVar accCtx
+
+                        projectAttrs =
+                            Dict.fromList
+                                [ ( "index", IntAttr Nothing idx )
+                                , ( "is_unboxed", BoolAttr isUnboxed )
+                                ]
+
+                        ( ctxB, projectOp ) =
+                            Ops.mlirOp ctxA "eco.project.closure"
+                                |> Ops.opBuilder.withOperands [ "%closure" ]
+                                |> Ops.opBuilder.withResults [ ( captureVar, captureType ) ]
+                                |> Ops.opBuilder.withAttrs projectAttrs
+                                |> Ops.opBuilder.build
+                    in
+                    ( accOps ++ [ projectOp ], accVars ++ [ ( captureVar, captureType ) ], ctxB )
+                )
+                ( [], [], ctx )
+                (List.indexedMap Tuple.pair closureInfo.captures)
+
+        -- Build the call to the fast clone with captures + params
+        callArgs =
+            captureVarsWithTypes ++ paramPairs
+
+        ( resultVar, ctxAfterFresh ) =
+            Ctx.freshVar ctxAfterProject
+
+        ( ctxFinal, callOp ) =
+            Ops.ecoCallNamed ctxAfterFresh resultVar fastCloneName callArgs returnType
+    in
+    ( projectOps ++ [ callOp ], resultVar, ctxFinal )
 
 
 

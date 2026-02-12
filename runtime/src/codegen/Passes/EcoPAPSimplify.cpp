@@ -166,14 +166,19 @@ struct FusePapExtendChainPattern : public OpRewritePattern<PapExtendOp> {
         Type resultType = extendOp.getResult().getType();
 
         // Create fused papExtend with remaining_arity from first extend
-        // PapExtendOp build signature: (result, closure, newargs, remaining_arity, newargs_unboxed_bitmap)
+        // PapExtendOp build signature: (result, closure, newargs, remaining_arity, newargs_unboxed_bitmap,
+        //                               _closure_kind, _dispatch_mode, _fast_evaluator)
+        // Propagate typed closure calling attributes from the first extend (prevExtend)
         auto fusedOp = rewriter.create<PapExtendOp>(
             extendOp.getLoc(),
-            resultType,                         // Result type
-            prevExtend.getClosure(),            // Original closure (skip intermediate)
-            fusedNewargs,                       // Fused newargs
-            prevExtend.getRemainingArity(),     // Use K1 (arity before first apply)
-            fusedBitmap);                       // Computed bitmap
+            resultType,                             // Result type
+            prevExtend.getClosure(),                // Original closure (skip intermediate)
+            fusedNewargs,                           // Fused newargs
+            prevExtend.getRemainingArity(),         // Use K1 (arity before first apply)
+            fusedBitmap,                            // Computed bitmap
+            prevExtend->getAttr("_closure_kind"),   // Propagate _closure_kind
+            prevExtend->getAttrOfType<StringAttr>("_dispatch_mode"),    // Propagate _dispatch_mode
+            prevExtend->getAttrOfType<FlatSymbolRefAttr>("_fast_evaluator"));  // Propagate _fast_evaluator
 
         rewriter.replaceOp(extendOp, fusedOp.getResult());
         // prevExtend will be DCE'd since it now has no uses

@@ -166,6 +166,8 @@ specializeLambda lambdaExpr canType subst state =
             { lambdaId = lambdaId
             , captures = captures
             , params = monoParams
+            , closureKind = Nothing
+            , captureAbi = Nothing
             }
 
         -- 6. Use the monomorphic function type from TypeSubst.applySubst unchanged.

@@ -26,6 +26,12 @@ module Compiler.AST.Monomorphized exposing
     , functionArity
       -- Call staging metadata
     , CallModel(..), CallInfo, defaultCallInfo
+      -- Typed closure calling (ABI cloning)
+    , ClosureKindId(..), ClosureKind(..), MaybeClosureKind
+    , CaptureABI, DispatchMode(..)
+    , mergeClosureKinds
+    , ClosureKindRegistry, ClosureKindEntry
+    , emptyClosureKindRegistry
     )
 
 {-| Monomorphized AST for backends that can optimize using concrete types.
@@ -518,11 +524,19 @@ type Literal
 
 
 {-| Information about a closure including its lambda ID, captured variables, and parameters.
+
+Extended for typed closure calling:
+
+  - closureKind: Three-way lattice state for ABI cloning
+  - captureAbi: Explicit capture ABI (for closures with captures)
+
 -}
 type alias ClosureInfo =
     { lambdaId : LambdaId
     , captures : List ( Name, MonoExpr, Bool )
     , params : List ( Name, MonoType )
+    , closureKind : MaybeClosureKind
+    , captureAbi : Maybe CaptureABI
     }
 
 
@@ -1007,6 +1021,12 @@ type CallModel
   - remainingStageArities: Stage arities for subsequent stages after saturating
     the current closure (used in applyByStages).
 
+Extended for typed closure calling:
+
+  - closureKind: Three-way lattice for callee value's closure kind
+  - dispatchMode: Lowering strategy for closure calls (Just for closure calls)
+  - captureAbi: For typed closure calls with known ABI
+
 -}
 type alias CallInfo =
     { callModel : CallModel
@@ -1014,6 +1034,9 @@ type alias CallInfo =
     , isSingleStageSaturated : Bool
     , initialRemaining : Int
     , remainingStageArities : List Int
+    , closureKind : MaybeClosureKind
+    , dispatchMode : Maybe DispatchMode
+    , captureAbi : Maybe CaptureABI
     }
 
 
@@ -1027,6 +1050,9 @@ defaultCallInfo =
     , isSingleStageSaturated = False
     , initialRemaining = 0
     , remainingStageArities = []
+    , closureKind = Nothing
+    , dispatchMode = Nothing
+    , captureAbi = Nothing
     }
 
 
@@ -1150,3 +1176,157 @@ buildSegmentedFunctionType flatArgs finalRet seg =
         (\stageArgs acc -> MFunction stageArgs acc)
         finalRet
         stageArgsLists
+
+
+
+-- ============================================================================
+-- ====== TYPED CLOSURE CALLING (ABI CLONING) ======
+-- ============================================================================
+
+
+{-| Unique identifier for a closure kind (lambda + capture ABI combination).
+Each distinct closure creation site with a unique capture ABI gets its own ID.
+-}
+type ClosureKindId
+    = ClosureKindId Int
+
+
+{-| Three-way lattice for closure kind tracking.
+
+  - Known id: definitely this specific closure kind (homogeneous)
+  - Heterogeneous: definitely one of several closure kinds (analysis proved it)
+
+This is wrapped in Maybe to provide the third state (Nothing = unknown/untracked).
+
+-}
+type ClosureKind
+    = Known ClosureKindId
+    | Heterogeneous
+
+
+{-| Maybe ClosureKind provides the third state:
+
+  - Just (Known id): homogeneous - SSA value is definitely closure kind `id`
+  - Just Heterogeneous: known heterogeneous - SSA value is one of multiple closure kinds
+  - Nothing: unknown - no closure-kind info (non-closure, legacy path, or analysis bug)
+
+-}
+type alias MaybeClosureKind =
+    Maybe ClosureKind
+
+
+{-| The ABI signature for a closure's captures + params + return.
+Used to determine if two closures have compatible calling conventions.
+-}
+type alias CaptureABI =
+    { captureTypes : List MonoType
+    , paramTypes : List MonoType
+    , returnType : MonoType
+    }
+
+
+{-| Lowering strategy for closure calls.
+Always present on closure call sites in well-formed MLIR.
+
+  - Fast: Known homogeneous, use (captures..., params...) typed entry
+  - Closure: Known heterogeneous, use (Closure*, params...) generic entry
+  - Unknown: Missing kind info, use generic path + diagnostic
+
+-}
+type DispatchMode
+    = Fast
+    | Closure
+    | Unknown
+
+
+{-| Merge closure kinds at control-flow joins (phi nodes).
+Implements the three-way lattice merge rule.
+Conservative: Nothing + Known → Heterogeneous
+-}
+mergeClosureKinds : List MaybeClosureKind -> MaybeClosureKind
+mergeClosureKinds kinds =
+    let
+        hasHeterogeneous =
+            List.any (\k -> k == Just Heterogeneous) kinds
+
+        hasNothing =
+            List.any (\k -> k == Nothing) kinds
+
+        knownIds =
+            kinds
+                |> List.filterMap identity
+                |> List.filterMap
+                    (\k ->
+                        case k of
+                            Known (ClosureKindId id) ->
+                                Just id
+
+                            Heterogeneous ->
+                                Nothing
+                    )
+
+        uniqueIds =
+            List.foldl
+                (\id acc ->
+                    if List.member id acc then
+                        acc
+
+                    else
+                        id :: acc
+                )
+                []
+                knownIds
+
+        allNothing =
+            List.all (\k -> k == Nothing) kinds
+    in
+    if hasHeterogeneous then
+        Just Heterogeneous
+
+    else if allNothing then
+        Nothing
+
+    else if List.length uniqueIds >= 2 then
+        Just Heterogeneous
+
+    else if List.length uniqueIds == 1 && hasNothing then
+        -- Conservative: partial info means heterogeneous
+        Just Heterogeneous
+
+    else if List.length uniqueIds == 1 then
+        case List.head uniqueIds of
+            Just id ->
+                Just (Known (ClosureKindId id))
+
+            Nothing ->
+                Nothing
+
+    else
+        Nothing
+
+
+{-| Registry tracking all closure kinds and their clone relationships.
+-}
+type alias ClosureKindRegistry =
+    { nextId : Int
+    , kinds : Dict Int Int ClosureKindEntry
+    }
+
+
+{-| Entry for a single closure kind in the registry.
+-}
+type alias ClosureKindEntry =
+    { lambdaId : LambdaId
+    , captureAbi : CaptureABI
+    , fastCloneName : String
+    , genericCloneName : String
+    }
+
+
+{-| Create an empty closure kind registry.
+-}
+emptyClosureKindRegistry : ClosureKindRegistry
+emptyClosureKindRegistry =
+    { nextId = 0
+    , kinds = Dict.empty
+    }

@@ -26,6 +26,22 @@ REP_CLOSURE_002;CrossPhase;Closures;enforced;Closure application preserves captu
 
 CGEN_CLOSURE_003;Mono+MLIR;Closures;enforced;For every closure lambda FV(body) is a subset of params union captures union siblingMappings keys: all free variables in the body must be either parameters or explicitly captured or mutually-recursive siblings. Prevents missing captures and cross-function SSA leakage into lambda bodies;Compiler.Monomorphize.Closure|Compiler.Generate.MLIR.Lambdas|CheckEcoClosureCaptures.cpp
 
+CGEN_CLOSURE_004;MLIR;Closures;enforced;Every eco.papCreate with captures must have _fast_evaluator attribute referencing a valid function symbol with compatible signature; zero-capture closures have neither _fast_evaluator nor _closure_kind;Compiler.Generate.MLIR.Expr|EcoOps.cpp
+
+CGEN_CLOSURE_005;MLIR;Closures;enforced;Closure calls with _dispatch_mode=fast require _fast_evaluator and _capture_abi attributes; the capture ABI types must match the fast clone parameter prefix;EcoToLLVMClosures.cpp
+
+CGEN_CLOSURE_006;MLIR;Closures;enforced;At control-flow merges (eco.case eco.if) closures with differing closure_kind values must result in _closure_kind=heterogeneous or absent; Nothing + Known = Heterogeneous (conservative);Compiler.Generate.MLIR.Expr
+
+CGEN_CLOSURE_007;MLIR;Closures;enforced;Every closure call must have _dispatch_mode attribute (fast closure or unknown); absence indicates a pipeline bug;EcoToLLVMClosures.cpp
+
+CGEN_CLOSURE_008;MLIR;Closures;enforced;_dispatch_mode=unknown indicates missing closure kind metadata and should trigger a diagnostic; in well-formed MLIR after full ABI analysis it should not occur;Compiler.Generate.MLIR.Expr|EcoToLLVMClosures.cpp
+
+ABI_CLONE_001;GlobalOpt;Cloning;enforced;After ABI cloning each closure-typed parameter within a single function specialization has at most one capture ABI across all call sites;Compiler.GlobalOpt.AbiCloning
+
+CLONE_RELATION_001;MLIR;Closures;enforced;For every closure with captures the fast clone signature must be (capture_types ++ param_types) -> return_type and the generic clone signature must be (Closure* param_types) -> return_type;Compiler.Generate.MLIR.Functions
+
+ZERO_CAPTURE_001;MLIR;Closures;enforced;Zero-capture closures do not have _closure_kind _fast_evaluator or _generic_evaluator attributes; they reference the original lambda directly via the function attribute;Compiler.Generate.MLIR.Expr
+
 REP_CONSTANT_001;Runtime_Heap;Constants;enforced;Well-known constants such as Unit, True, False, Nil, Nothing, EmptyString, and EmptyRec are represented as HPointer values with nonzero constant bits and are never heap allocated; GC and debug logic must treat such values as non-heap and must not attempt to trace them;HEAP_010|HEAP_014|CGEN_019
 
 REP_CONSTANT_002;CrossPhase;Constants;enforced;SSA values of type !eco.value may denote either heap pointers or embedded constants, and codegen, GC, and runtime helpers must rely on HPointer constant bits rather than pointer range checks to distinguish them;HEAP_010|HEAP_014|XPHASE_002

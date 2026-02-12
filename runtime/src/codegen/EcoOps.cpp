@@ -496,6 +496,21 @@ LogicalResult PapExtendOp::verify() {
   return success();
 }
 
+LogicalResult ProjectClosureOp::verify() {
+  // Verify index is non-negative
+  int64_t index = getIndex();
+  if (index < 0) {
+    return emitOpError("index must be non-negative, got ") << index;
+  }
+
+  // Verify closure operand is !eco.value type
+  if (!isa<eco::ValueType>(getClosure().getType())) {
+    return emitOpError("closure operand must be !eco.value type");
+  }
+
+  return success();
+}
+
 LogicalResult CallOp::verify() {
   auto operands = getOperands();
   auto results = getResults();
