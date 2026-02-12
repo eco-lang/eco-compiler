@@ -322,10 +322,13 @@ LogicalResult PapCreateOp::verify() {
   }
 
   // Check against target function signature (when available).
-  // Skip if function is external/not yet defined in the module.
-  auto funcOp = lookupFunc(getOperation(), getFunctionAttr());
-  if (funcOp) {
-    auto funcType = funcOp.getFunctionType();
+  // For two-clone closures (_fast_evaluator present), validate against the
+  // $cap function whose params are (captures..., params...). The $clo function
+  // has (Closure*, params...) which doesn't match capture operand types.
+  auto fastEvalAttr = getOperation()->getAttrOfType<FlatSymbolRefAttr>("_fast_evaluator");
+  auto targetFuncOp = lookupFunc(getOperation(), fastEvalAttr ? fastEvalAttr : getFunctionAttr());
+  if (targetFuncOp) {
+    auto funcType = targetFuncOp.getFunctionType();
     auto paramTypes = funcType.getInputs();
 
     // Verify arity matches function parameter count

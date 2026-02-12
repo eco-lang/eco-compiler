@@ -46,7 +46,12 @@ struct CheckEcoClosureCapturesPass
         // === Phase 1: Validate eco.papCreate ops ===
         module.walk([&](PapCreateOp createOp) {
             int64_t numCaptured = createOp.getNumCaptured();
-            auto funcSym = createOp.getFunctionAttr();
+
+            // For two-clone closures, validate against $cap (which has
+            // captures as individual typed params) rather than $clo (which
+            // has Closure* as first param).
+            auto fastEvalAttr = createOp->getAttrOfType<FlatSymbolRefAttr>("_fast_evaluator");
+            auto funcSym = fastEvalAttr ? fastEvalAttr : createOp.getFunctionAttr();
 
             // Resolve the referenced function
             auto funcOp = module.lookupSymbol<func::FuncOp>(funcSym.getValue());

@@ -94,6 +94,11 @@ buildFuncParamCountMap mlirModule =
 
 
 {-| Check a single papCreate op for arity consistency with its function.
+
+For the two-clone model (when \_fast\_evaluator is set), the arity represents
+the total logical arity (captures + params) and should match the $cap function's
+parameter count. The $clo function has (Closure\*, params...) which has fewer
+parameters by design.
 -}
 checkPapCreateOp : Dict String Int -> MlirOp -> Maybe Violation
 checkPapCreateOp funcParamCountMap op =
@@ -103,6 +108,9 @@ checkPapCreateOp funcParamCountMap op =
 
         maybeFuncName =
             getStringAttr "function" op
+
+        maybeFastEval =
+            getStringAttr "_fast_evaluator" op
     in
     case ( maybeArity, maybeFuncName ) of
         ( Nothing, _ ) ->
@@ -114,7 +122,20 @@ checkPapCreateOp funcParamCountMap op =
             Nothing
 
         ( Just arity, Just funcName ) ->
-            case Dict.get funcName funcParamCountMap of
+            -- When _fast_evaluator is set, validate arity against the $cap
+            -- function (which has all captures + params as individual args).
+            -- The $clo function has (Closure*, params...) and is expected to
+            -- have fewer parameters than arity.
+            let
+                targetFuncName =
+                    case maybeFastEval of
+                        Just fastEvalName ->
+                            fastEvalName
+
+                        Nothing ->
+                            funcName
+            in
+            case Dict.get targetFuncName funcParamCountMap of
                 Nothing ->
                     -- Function not found - could be an external kernel function
                     -- that we don't have the definition for. Skip this check.
@@ -129,7 +150,7 @@ checkPapCreateOp funcParamCountMap op =
                                 "eco.papCreate arity="
                                     ++ String.fromInt arity
                                     ++ " but function "
-                                    ++ funcName
+                                    ++ targetFuncName
                                     ++ " has "
                                     ++ String.fromInt paramCount
                                     ++ " parameters"

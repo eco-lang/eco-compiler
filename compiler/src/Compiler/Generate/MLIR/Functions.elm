@@ -1,4 +1,4 @@
-module Compiler.Generate.MLIR.Functions exposing (generateMainEntry, generateNode, generateKernelDecl)
+module Compiler.Generate.MLIR.Functions exposing (generateMainEntry, generateNode, generateKernelDecl, generateGenericCloneFunc)
 
 {-| Function generation for the MLIR backend.
 
@@ -406,43 +406,69 @@ generateClosureFuncWithClones ctx funcName closureInfo body monoType =
 
         -- Generic clone: (Closure*, params...) -> R
         -- Body: load captures, call fast clone
-        genericCloneArgs : List ( String, MlirType )
+        captureSpecs : List ( MlirType, Bool )
+        captureSpecs =
+            List.map
+                (\( _, expr, isUnboxed ) ->
+                    ( Types.monoTypeToAbi (Mono.typeOf expr), isUnboxed )
+                )
+                closureInfo.captures
+
+        ( genericCloneOp, ctx2 ) =
+            generateGenericCloneFunc ctx1 genericCloneName fastCloneName captureSpecs paramPairs returnType
+    in
+    ( [ fastCloneOp, genericCloneOp ], ctx2 )
+
+
+{-| Generate a complete generic clone ($clo) func.func op.
+The generic clone takes (Closure*, params...) and loads captures from the
+closure object, then calls the fast clone ($cap).
+
+This is shared by both the top-level closure path (Functions.generateClosureFuncWithClones)
+and the inline lambda path (Lambdas.generateLambdaFunc).
+-}
+generateGenericCloneFunc : Ctx.Context -> String -> String -> List ( MlirType, Bool ) -> List ( String, MlirType ) -> MlirType -> ( MlirOp, Ctx.Context )
+generateGenericCloneFunc ctx genericCloneName fastCloneName captureSpecs paramPairs returnType =
+    let
         genericCloneArgs =
             ( "%closure", Types.ecoValue ) :: paramPairs
 
-        ( genericCloneOps, genericCloneResult, ctx2 ) =
-            generateGenericCloneBody ctx1 closureInfo fastCloneName paramPairs returnType
+        -- Reset nextVar for the generic clone's own SSA scope.
+        -- Entry block args are %0 (%closure), %1..%N (params), so
+        -- body SSA values start after those.
+        ctxFreshScope =
+            { ctx | nextVar = List.length genericCloneArgs }
 
-        genericCloneRegion : MlirRegion
+        ( genericCloneOps, genericCloneResult, ctx1 ) =
+            generateGenericCloneBodyFromSpecs ctxFreshScope captureSpecs fastCloneName paramPairs returnType
+
         genericCloneRegion =
             let
                 ( _, returnOp ) =
-                    Ops.ecoReturn ctx2 genericCloneResult returnType
+                    Ops.ecoReturn ctx1 genericCloneResult returnType
             in
             Ops.mkRegion genericCloneArgs genericCloneOps returnOp
 
-        ( ctx3, genericCloneOp ) =
-            Ops.funcFunc ctx2 genericCloneName genericCloneArgs returnType genericCloneRegion
+        ( ctx2, genericCloneOp ) =
+            Ops.funcFunc ctx1 genericCloneName genericCloneArgs returnType genericCloneRegion
     in
-    ( [ fastCloneOp, genericCloneOp ], ctx3 )
+    ( genericCloneOp, ctx2 )
 
 
 {-| Generate the body of the generic clone.
 Loads captures from the closure and calls the fast clone.
+Takes a list of (MlirType, isUnboxed) specs for each capture.
 Returns (ops, resultVar, ctx).
 -}
-generateGenericCloneBody : Ctx.Context -> Mono.ClosureInfo -> String -> List ( String, MlirType ) -> MlirType -> ( List MlirOp, String, Ctx.Context )
-generateGenericCloneBody ctx closureInfo fastCloneName paramPairs returnType =
+generateGenericCloneBodyFromSpecs : Ctx.Context -> List ( MlirType, Bool ) -> String -> List ( String, MlirType ) -> MlirType -> ( List MlirOp, String, Ctx.Context )
+generateGenericCloneBodyFromSpecs ctx captureSpecs fastCloneName paramPairs returnType =
     let
         -- Generate eco.project.closure ops to load each capture
         -- Collect both ops and (var, type) pairs for the call
         ( projectOps, captureVarsWithTypes, ctxAfterProject ) =
             List.foldl
-                (\( idx, ( _, expr, isUnboxed ) ) ( accOps, accVars, accCtx ) ->
+                (\( idx, ( captureType, isUnboxed ) ) ( accOps, accVars, accCtx ) ->
                     let
-                        captureType =
-                            Types.monoTypeToAbi (Mono.typeOf expr)
-
                         ( captureVar, ctxA ) =
                             Ctx.freshVar accCtx
 
@@ -462,7 +488,7 @@ generateGenericCloneBody ctx closureInfo fastCloneName paramPairs returnType =
                     ( accOps ++ [ projectOp ], accVars ++ [ ( captureVar, captureType ) ], ctxB )
                 )
                 ( [], [], ctx )
-                (List.indexedMap Tuple.pair closureInfo.captures)
+                (List.indexedMap Tuple.pair captureSpecs)
 
         -- Build the call to the fast clone with captures + params
         callArgs =

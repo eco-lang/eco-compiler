@@ -12,6 +12,7 @@ with typed ABIs (parameters in their actual types, not all boxed).
 import Compiler.Data.Name exposing (Name)
 import Compiler.Generate.MLIR.Context as Ctx
 import Compiler.Generate.MLIR.Expr as Expr
+import Compiler.Generate.MLIR.Functions as Functions
 import Compiler.Generate.MLIR.Ops as Ops
 import Compiler.Generate.MLIR.Types as Types
 import Compiler.Monomorphize.Closure as Closure
@@ -65,10 +66,10 @@ processLambdas ctx =
                                 _ =
                                     validatePendingLambdaFreeVars lambda
 
-                                ( op, newCtx ) =
+                                ( ops, newCtx ) =
                                     generateLambdaFunc accCtx lambda
                             in
-                            ( accOps ++ [ op ], newCtx )
+                            ( accOps ++ ops, newCtx )
                         )
                         ( [], ctxCleared )
                         dedupedLambdas
@@ -119,9 +120,12 @@ validatePendingLambdaFreeVars lambda =
                 )
 
 
-generateLambdaFunc : Ctx.Context -> Ctx.PendingLambda -> ( MlirOp, Ctx.Context )
+generateLambdaFunc : Ctx.Context -> Ctx.PendingLambda -> ( List MlirOp, Ctx.Context )
 generateLambdaFunc ctx lambda =
     let
+        hasCaptures =
+            not (List.isEmpty lambda.captures)
+
         -- Parameters use their actual MLIR types (typed calling convention)
         captureArgPairs : List ( String, MlirType )
         captureArgPairs =
@@ -162,11 +166,6 @@ generateLambdaFunc ctx lambda =
         nextVarAfterParams =
             List.length allArgPairs
 
-        -- No unboxOps needed - parameters arrive in their actual types
-        unboxOps : List MlirOp
-        unboxOps =
-            []
-
         -- Merge sibling mappings with captures and params (captures/params take precedence)
         varMappingsWithSiblings : Dict.Dict String Ctx.VarInfo
         varMappingsWithSiblings =
@@ -188,14 +187,9 @@ generateLambdaFunc ctx lambda =
         region : MlirRegion
         region =
             if exprResult.isTerminated then
-                -- Expression is a control-flow exit (eco.case, eco.jump).
-                -- The ops already contain the terminator - don't add eco.return.
-                -- IMPORTANT: Do NOT access exprResult.resultVar here - it is meaningless!
-                Ops.mkRegionTerminatedByOps allArgPairs (unboxOps ++ exprResult.ops)
+                Ops.mkRegionTerminatedByOps allArgPairs exprResult.ops
 
             else
-                -- Normal expression - coerce result to ABI return type if needed, then add eco.return.
-                -- This handles cases like Bool where SSA type is i1 but ABI return type is eco.value.
                 let
                     ( coerceOps, finalVar, coerceCtx ) =
                         Expr.coerceResultToType exprResult.ctx exprResult.resultVar exprResult.resultType actualResultType
@@ -203,9 +197,46 @@ generateLambdaFunc ctx lambda =
                     ( _, returnOp ) =
                         Ops.ecoReturn coerceCtx finalVar actualResultType
                 in
-                Ops.mkRegion allArgPairs (unboxOps ++ exprResult.ops ++ coerceOps) returnOp
+                Ops.mkRegion allArgPairs (exprResult.ops ++ coerceOps) returnOp
 
-        ( ctx2, funcOp ) =
-            Ops.funcFunc exprResult.ctx lambda.name allArgPairs actualResultType region
+        -- For closures with captures: name is $cap (fast clone)
+        -- For zero-capture closures: name is the base name
+        funcName =
+            if hasCaptures then
+                lambda.name ++ "$cap"
+
+            else
+                lambda.name
+
+        ( ctx2, fastCloneOp ) =
+            Ops.funcFunc exprResult.ctx funcName allArgPairs actualResultType region
     in
-    ( funcOp, ctx2 )
+    if hasCaptures then
+        -- Two-clone model: generate $cap (fast clone) + $clo (generic clone)
+        -- Uses shared helper from Functions.elm
+        let
+            captureSpecs : List ( MlirType, Bool )
+            captureSpecs =
+                List.map
+                    (\( _, monoTy ) ->
+                        let
+                            mlirTy =
+                                Types.monoTypeToAbi monoTy
+                        in
+                        ( mlirTy, Types.isUnboxable mlirTy )
+                    )
+                    lambda.captures
+
+            ( genericCloneOp, ctx3 ) =
+                Functions.generateGenericCloneFunc ctx2
+                    (lambda.name ++ "$clo")
+                    (lambda.name ++ "$cap")
+                    captureSpecs
+                    paramArgPairs
+                    actualResultType
+        in
+        ( [ fastCloneOp, genericCloneOp ], ctx3 )
+
+    else
+        -- Zero captures: single function with base name
+        ( [ fastCloneOp ], ctx2 )

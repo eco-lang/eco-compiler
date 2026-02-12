@@ -76,12 +76,16 @@ struct SaturatedPapToCallPattern : public OpRewritePattern<PapExtendOp> {
         if (!extendOp.getClosure().hasOneUse())
             return failure();  // Closure used elsewhere
 
+        // For two-clone closures, the direct call targets $cap (whose params
+        // are captures + params) rather than $clo (Closure* + params).
+        auto fastEvalAttr = createOp->getAttrOfType<FlatSymbolRefAttr>("_fast_evaluator");
+        FlatSymbolRefAttr calleeAttr = fastEvalAttr ? fastEvalAttr : createOp.getFunctionAttr();
+
         // Look up the target function to verify it has a compatible signature.
         // Skip transformation if the function uses the args-array calling convention
         // (i.e., llvm.func with (ptr) -> i64), as those are meant for closure calls.
         auto module = extendOp->getParentOfType<ModuleOp>();
-        StringRef funcName = createOp.getFunction();
-        auto targetFunc = module.lookupSymbol(funcName);
+        auto targetFunc = module.lookupSymbol(calleeAttr.getValue());
         if (!targetFunc)
             return failure();  // Function not found - let later passes handle it
 
@@ -104,7 +108,7 @@ struct SaturatedPapToCallPattern : public OpRewritePattern<PapExtendOp> {
             extendOp.getLoc(),
             TypeRange{resultType},              // Result types
             allOperands,                        // Operands
-            createOp.getFunctionAttr(),         // callee (FlatSymbolRefAttr)
+            calleeAttr,                         // callee (FlatSymbolRefAttr)
             nullptr,                            // musttail (not a tail call)
             nullptr);                           // remaining_arity (not indirect)
 
