@@ -20,10 +20,12 @@ import Compiler.AST.SourceBuilder
         , UnionDef
         , accessExpr
         , binopsExpr
+        , boolExpr
         , callExpr
         , caseExpr
         , ctorExpr
         , define
+        , floatExpr
         , ifExpr
         , intExpr
         , lambdaExpr
@@ -35,6 +37,7 @@ import Compiler.AST.SourceBuilder
         , pList
         , pTuple
         , pVar
+        , qualVarExpr
         , recordExpr
         , tLambda
         , tRecord
@@ -72,6 +75,7 @@ testCases expectFn =
         , closureInCaseCases expectFn
         , closureCapturingTypesCases expectFn
         , closureWithRecursionCases expectFn
+        , heteroClosureCases expectFn
         ]
 
 
@@ -1177,6 +1181,197 @@ closureWithTailRecursion expectFn _ =
             makeModuleWithTypedDefsUnionsAliases "Test"
                 [ tailRecWithClosureDef, testValueDef ]
                 []
+                []
+    in
+    expectFn modul
+
+
+
+-- ============================================================================
+-- HETEROGENEOUS CLOSURE ABI TESTS
+-- ============================================================================
+
+
+heteroClosureCases : (Src.Module -> Expectation) -> List TestCase
+heteroClosureCases expectFn =
+    [ { label = "Hetero closure: Int vs Float capture", run = heteroClosureIntFloat expectFn }
+    , { label = "Hetero closure: boxed vs unboxed capture", run = heteroClosureBoxedUnboxed expectFn }
+    ]
+
+
+{-| Two functions with different unboxed capture types (Int=i64 vs Float=f64),
+partially applied, chosen with if, then called. Exercises heterogeneous
+closure ABI through a single call site.
+
+    addN : Int -> Int -> Int
+    addN n x = n + x
+
+    mulF : Float -> Int -> Int
+    mulF f x = truncate (f * toFloat x)
+
+    testValue : Int
+    testValue =
+        let
+            f = if True then addN 10 else mulF 2.5
+        in
+        f 3
+
+-}
+heteroClosureIntFloat : (Src.Module -> Expectation) -> (() -> Expectation)
+heteroClosureIntFloat expectFn _ =
+    let
+        -- addN : Int -> Int -> Int
+        -- addN n x = n + x
+        addNDef : TypedDef
+        addNDef =
+            { name = "addN"
+            , args = [ pVar "n", pVar "x" ]
+            , tipe =
+                tLambda (tType "Int" [])
+                    (tLambda (tType "Int" []) (tType "Int" []))
+            , body =
+                binopsExpr [ ( varExpr "n", "+" ) ] (varExpr "x")
+            }
+
+        -- mulF : Float -> Int -> Int
+        -- mulF f x = truncate (f * toFloat x)
+        mulFDef : TypedDef
+        mulFDef =
+            { name = "mulF"
+            , args = [ pVar "f", pVar "x" ]
+            , tipe =
+                tLambda (tType "Float" [])
+                    (tLambda (tType "Int" []) (tType "Int" []))
+            , body =
+                callExpr (qualVarExpr "Basics" "truncate")
+                    [ binopsExpr
+                        [ ( varExpr "f", "*" ) ]
+                        (callExpr (qualVarExpr "Basics" "toFloat") [ varExpr "x" ])
+                    ]
+            }
+
+        -- testValue =
+        --     let f = if True then addN 10 else mulF 2.5
+        --     in f 3
+        testValueDef : TypedDef
+        testValueDef =
+            { name = "testValue"
+            , args = []
+            , tipe = tType "Int" []
+            , body =
+                letExpr
+                    [ define "f"
+                        []
+                        (ifExpr (boolExpr True)
+                            (callExpr (varExpr "addN") [ intExpr 10 ])
+                            (callExpr (varExpr "mulF") [ floatExpr 2.5 ])
+                        )
+                    ]
+                    (callExpr (varExpr "f") [ intExpr 3 ])
+            }
+
+        modul =
+            makeModuleWithTypedDefsUnionsAliases "Test"
+                [ addNDef, mulFDef, testValueDef ]
+                []
+                []
+    in
+    expectFn modul
+
+
+{-| One function captures a boxed custom type (!eco.value), another captures
+an unboxed Int (i64). Chosen with if, then called. Exercises mixed
+boxed/unboxed capture ABI through a single call site.
+
+    type Shape = Circle | Square
+
+    shapeBonus : Shape -> Int -> Int
+    shapeBonus shape x =
+        case shape of
+            Circle -> x + 10
+            Square -> x + 20
+
+    addN : Int -> Int -> Int
+    addN n x = n + x
+
+    testValue : Int
+    testValue =
+        let
+            f = if True then shapeBonus Circle else addN 5
+        in
+        f 3
+
+-}
+heteroClosureBoxedUnboxed : (Src.Module -> Expectation) -> (() -> Expectation)
+heteroClosureBoxedUnboxed expectFn _ =
+    let
+        shapeUnion : UnionDef
+        shapeUnion =
+            { name = "Shape"
+            , args = []
+            , ctors =
+                [ { name = "Circle", args = [] }
+                , { name = "Square", args = [] }
+                ]
+            }
+
+        -- shapeBonus : Shape -> Int -> Int
+        -- shapeBonus shape x = case shape of Circle -> x + 10; Square -> x + 20
+        shapeBonusDef : TypedDef
+        shapeBonusDef =
+            { name = "shapeBonus"
+            , args = [ pVar "shape", pVar "x" ]
+            , tipe =
+                tLambda (tType "Shape" [])
+                    (tLambda (tType "Int" []) (tType "Int" []))
+            , body =
+                caseExpr (varExpr "shape")
+                    [ ( pCtor "Circle" []
+                      , binopsExpr [ ( varExpr "x", "+" ) ] (intExpr 10)
+                      )
+                    , ( pCtor "Square" []
+                      , binopsExpr [ ( varExpr "x", "+" ) ] (intExpr 20)
+                      )
+                    ]
+            }
+
+        -- addN : Int -> Int -> Int
+        -- addN n x = n + x
+        addNDef : TypedDef
+        addNDef =
+            { name = "addN"
+            , args = [ pVar "n", pVar "x" ]
+            , tipe =
+                tLambda (tType "Int" [])
+                    (tLambda (tType "Int" []) (tType "Int" []))
+            , body =
+                binopsExpr [ ( varExpr "n", "+" ) ] (varExpr "x")
+            }
+
+        -- testValue =
+        --     let f = if True then shapeBonus Circle else addN 5
+        --     in f 3
+        testValueDef : TypedDef
+        testValueDef =
+            { name = "testValue"
+            , args = []
+            , tipe = tType "Int" []
+            , body =
+                letExpr
+                    [ define "f"
+                        []
+                        (ifExpr (boolExpr True)
+                            (callExpr (varExpr "shapeBonus") [ ctorExpr "Circle" ])
+                            (callExpr (varExpr "addN") [ intExpr 5 ])
+                        )
+                    ]
+                    (callExpr (varExpr "f") [ intExpr 3 ])
+            }
+
+        modul =
+            makeModuleWithTypedDefsUnionsAliases "Test"
+                [ shapeBonusDef, addNDef, testValueDef ]
+                [ shapeUnion ]
                 []
     in
     expectFn modul
