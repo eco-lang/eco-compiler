@@ -1,4 +1,4 @@
-# Invariants Summary
+# Invariants Summary (refreshed 2026-02-19)
 
 This memory contains essential invariants from `design_docs/invariants.csv`. Read this at startup.
 

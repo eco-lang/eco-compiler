@@ -1,4 +1,4 @@
-# Project Overview
+# Project Overview (refreshed 2026-02-19)
 
 ## Purpose
 

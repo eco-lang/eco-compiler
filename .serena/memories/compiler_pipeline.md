@@ -1,4 +1,4 @@
-# Compiler Pipeline Summary
+# Compiler Pipeline Summary (refreshed 2026-02-19)
 
 This memory summarizes the ECO compiler backend pipeline. Read at startup.
 
