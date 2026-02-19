@@ -263,14 +263,42 @@ FUNCTION computeCaptures(params, body, env):
 
 Captures are stored in closure layouts for code generation.
 
-## Staged Currying
+## Container Element Specialization
 
-Functions with multiple arguments undergo staged currying analysis to determine optimal argument grouping for code generation. See **[Staged Currying Theory](staged_currying_theory.md)** for full details.
+Lists, tuples, and records can store **unboxable values** (Int, Float, Char) inline without heap allocation:
 
-Key concepts:
-- **Staging signature**: How arguments are grouped (e.g., `[2,1]` for `\a b -> \c -> ...`)
-- **Joinpoint matching**: When case branches return functions with different stagings, they are normalized to a common staging via eta-wrappers
-- **MONO_018 invariant**: All branches of a MonoCase must have compatible calling conventions
+**List Unboxing**: When a list contains unboxable elements, the Cons cells store the head value unboxed:
+```elm
+-- List Int: Cons cells have unboxed i64 head, boxed tail pointer
+-- List (List Int): Cons cells have boxed head (pointer to inner list)
+```
+
+The `unboxed_head` flag in the Cons cell header indicates whether the head is unboxed.
+
+**Tuple/Record Unboxing**: The `unboxedBitmap` indicates which fields are stored unboxed:
+```elm
+-- { x : Int, y : Float, name : String }
+-- unboxedBitmap = 0b011 (x and y unboxed, name boxed)
+```
+
+This optimization is computed during monomorphization based on field types. The MLIR codegen uses these layouts to generate appropriate load/store operations.
+
+## Staging-Agnostic Design
+
+**Important**: Monomorphization is **staging-agnostic**. It preserves the curried type structure from Elm semantics without making any staging or calling-convention decisions:
+
+```elm
+-- Input: add : Int -> Int -> Int
+-- Output: MFunction [Int] (MFunction [Int] Int)  -- Still curried!
+```
+
+All staging decisions (how to group arguments, how to handle incompatible case branches) are deferred to the **GlobalOpt** phase. This separation ensures:
+
+1. Monomorphization stays simple—focused on type specialization
+2. Staging logic is centralized in GlobalOpt
+3. Changes to calling conventions don't affect specialization
+
+See **[Global Optimization Theory](pass_global_optimization_theory.md)** and **[Staged Currying Theory](staged_currying_theory.md)** for details on how staging is resolved after monomorphization.
 
 ## Kernel ABI Handling
 
@@ -284,12 +312,37 @@ type KernelAbi
         }
 ```
 
-Some kernel functions use `CEcoValue` constraint to accept any boxed value:
+### ABI Modes
 
+Different kernels use different ABI modes:
+
+**AllBoxed** (CEcoValue): For kernels that work on any boxed value:
 ```elm
 -- List.cons : a -> List a -> List a
 -- ABI: (CEcoValue, MList CEcoValue) -> MList CEcoValue
 ```
+
+**NumberBoxed** (CNumber): For kernels polymorphic over number (Int or Float). The type variable is treated as boxed CEcoValue so the C++ kernel receives a uniform uint64_t:
+```elm
+-- String.fromNumber : number -> String
+-- At call site: fromNumber 42 passes boxed Int
+-- Kernel receives uint64_t, checks tag to dispatch
+```
+
+Kernels using NumberBoxed mode include:
+- `String.fromNumber`
+- `Basics.add`, `sub`, `mul` (when used polymorphically)
+- `Basics.pow` (polymorphic power)
+
+**Specialized**: Some kernels can specialize to unboxable types and are converted back to boxed in codegen if necessary:
+```elm
+-- Kernel wrapper can specialize: List.cons with Int head
+-- Codegen boxes the Int before calling the kernel
+```
+
+### Kernel Wrapper Specialization
+
+The monomorphizer allows kernel wrappers to specialize to unboxable primitive types (Int, Float, Char). When the kernel ABI requires boxed values, the MLIR codegen phase handles the boxing/unboxing conversion. This enables container elements to be stored unboxed in the heap while still calling boxed-ABI kernels.
 
 ## Specialization Registry
 

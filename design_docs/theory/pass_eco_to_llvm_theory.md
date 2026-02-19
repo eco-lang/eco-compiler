@@ -233,12 +233,58 @@ eco.papCreate @func, arity, captured=[]
 ```
 
 **papExtend (apply arguments to closure):**
+
+The `papExtend` operation is now lowered inline (as of Feb 2026) rather than calling a runtime helper. This enables better optimization by LLVM.
+
 ```
-IF saturated (newargs.size == remaining_arity):
-    -> inline LLVM ops (resolve closure, copy captured + new args, indirect call)
-ELSE:
-    -> eco_pap_extend(closure, args_array, num_args)
+FUNCTION lowerPapExtend(op):
+    closurePtr = inttoptr closure
+    packed = load [offset 8]
+    nCaptured = packed & 0x3F
+    maxValues = (packed >> 6) & 0x3F
+    unboxedBitmap = packed >> 12
+    evaluator = load [offset 16]
+
+    remainingArity = maxValues - nCaptured
+    newArgCount = op.newargs.size
+
+    IF saturated (newArgCount == remainingArity):
+        -- Inline saturated call
+        totalArgs = nCaptured + newArgCount
+        argsArray = alloca [totalArgs x i64]
+
+        -- Copy captured values, handling unboxed types
+        FOR i in 0..nCaptured:
+            val = load [offset 24 + i*8]
+            IF isUnboxed(i, unboxedBitmap):
+                -- f64 values need bitcast from i64
+                IF type(i) == f64:
+                    val = bitcast val : i64 to f64
+            store val to argsArray[i]
+
+        -- Copy new arguments, handling f64 -> i64 conversion
+        FOR i, arg in newargs:
+            IF arg.type == f64:
+                val = bitcast arg : f64 to i64
+            ELSE:
+                val = arg
+            store val to argsArray[nCaptured + i]
+
+        -- Indirect call to evaluator
+        result = llvm.call %evaluator(argsArray)
+
+        -- Handle f64 result type
+        IF op.resultType == f64:
+            result = bitcast result : i64 to f64
+
+        RETURN result
+
+    ELSE:
+        -- Unsaturated: extend the PAP
+        eco_pap_extend(closure, args_array, num_args)
 ```
+
+**Float Bitcasting**: Since the closure stores all values as `i64` but may contain `f64` captures/arguments, the lowering includes bitcasts between `i64` and `f64` as needed.
 
 ### 7. Function Calls
 
@@ -249,7 +295,40 @@ eco.call @func(%args) : (T...) -> R
     // Later converted to llvm.call by func-to-llvm
 ```
 
-**Indirect Call (through closure):**
+**Typed Closure Calling (PAP Wrapper Elimination):**
+
+As of Feb 2026, the compiler implements typed closure calling which enables direct function calls even when partial application and closures are involved. This eliminates the overhead of runtime PAP type checking.
+
+The call ABI is split based on whether the closure structure is statically known:
+
+**Homogeneous Call Path**: When all callsites flow to closures with the same structure (same captures, same types), the compiler generates a direct call with captures unpacked:
+
+```
+eco.call %closure(%newargs) call_abi="homogeneous"
+    -- The closure structure is known: unpacks captures as direct arguments
+    -> closurePtr = inttoptr %closure
+    -> capture0 = load [offset 24]     -- Unpacked capture
+    -> capture1 = load [offset 32]     -- Unpacked capture
+    -> func.call @target(capture0, capture1, newargs...)
+```
+
+**Heterogeneous Call Path**: When different branches may produce closures with different capture structures, the compiler passes the entire closure pointer:
+
+```
+eco.call %closure(%newargs) call_abi="heterogeneous"
+    -- Closure structure varies: pass closure pointer
+    -> closurePtr = inttoptr %closure
+    -> func.call @target_indirect(closurePtr, newargs...)
+    -- The callee unpacks its own captures
+```
+
+**ABI Cloning**: For heterogeneous cases, the compiler generates two entry points per function:
+- `@func_direct(captures..., args...)` — for homogeneous calls
+- `@func_indirect(closure_ptr, args...)` — for heterogeneous calls
+
+This is handled by `AbiCloning.elm` which clones functions and rewrites callsites.
+
+**Legacy Indirect Call (fallback):**
 ```
 eco.call %closure(%newargs) remaining_arity=N
     -> closurePtr = inttoptr %closure

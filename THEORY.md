@@ -416,14 +416,26 @@ Each specialization gets a unique `SpecId`. The pass also computes concrete layo
 
 After monomorphization, function types are still curried and may have incompatible calling conventions across case branches. GlobalOpt resolves all staging and ABI decisions:
 
-1. **Canonicalize closure staging** (GOPT_001): Flatten nested `MFunction` types to match closure param counts
-2. **Normalize case/if ABI** (GOPT_003): Ensure all branches returning functions have compatible staging
-3. **Compute call metadata**: Build `CallInfo` for MLIR codegen with call model, stage arities, etc.
+1. **Inline small functions** (Phase 0): `MonoInlineSimplify` inlines small functions to reduce call overhead
+2. **Wrap top-level callables** (Phase 0.5): Ensure all function values are closures before staging analysis
+3. **Build staging graph** (Phase 1): `Staging.GraphBuilder` constructs a constraint graph connecting producers to slots
+4. **Solve staging** (Phase 2): `Staging.Solver` uses union-find with majority voting to choose canonical segmentations
+5. **Rewrite with staging** (Phase 3): `Staging.Rewriter` wraps closures with non-canonical staging in eta-expansions
+6. **Compute call metadata** (Phase 4): Build `CallInfo` for MLIR codegen
+
+**The Staging Subsystem** (`compiler/src/Compiler/GlobalOpt/Staging/`):
+- `Types.elm`: ProducerId, SlotId, Node, StagingGraph types
+- `GraphBuilder.elm`: Builds staging constraint graph from MonoGraph
+- `Solver.elm`: Union-find solver with majority voting
+- `Rewriter.elm`: Applies staging solution via eta-wrapping
+- `ProducerInfo.elm`: Computes natural segmentations
+- `UnionFind.elm`: Union-find data structure
 
 **Key concepts**:
 - `Segmentation`: List of stage arities (e.g., `[2,1]` = take 2 args, return closure taking 1)
 - `CallModel`: `FlattenedExternal` (kernels) or `StageCurried` (user-defined)
 - `CallInfo`: Pre-computed metadata for each call site
+- `MonoTraverse`: Common iteration infrastructure for graph traversal
 
 This separation ensures Monomorphization stays simple while GlobalOpt handles all ABI complexity.
 
@@ -448,6 +460,11 @@ Converts MonoGraph to MLIR using the ECO dialect.
 - **Closures**: Lambdas hoisted to top-level, captured values tracked
 - **Boxing/unboxing**: Primitives (i64, f64, i16) ↔ `eco.value` conversions
 
+**Bytes Fusion Optimization** (`BytesFusion/`): The compiler intercepts `Bytes.encode` and `Bytes.decode` calls and lowers them directly to fused BF dialect operations (cursor-based read/write) instead of going through the interpreter-style kernel:
+- `Reify.elm`: Pattern-matches Elm AST to build encoder/decoder node trees
+- `Emit.elm`: Emits fused BF dialect ops from reified nodes
+- `BFOps.td`: Defines the BF MLIR dialect (alloc, cursor, read/write ops)
+
 **See**: [MLIR Generation Theory](design_docs/theory/pass_mlir_generation_theory.md), [Type Table Theory](design_docs/theory/pass_type_table_theory.md)
 
 ### ECO Dialect Lowering
@@ -458,6 +475,7 @@ Stage 2 passes transform ECO dialect toward LLVM:
 - **ECO Control Flow to SCF**: Converts eco.case to scf.if/switch
 - **RC Elimination**: Removes reference counting ops (unused in tracing GC)
 - **Undefined Function Stubs**: Generates stubs for missing functions
+- **CheckEcoClosureCaptures** (verification): Validates closure capture consistency—ensures lambda free variables match closure captures
 
 **See**: [JoinPoint Normalization Theory](design_docs/theory/pass_joinpoint_normalization_theory.md), [ECO Control Flow to SCF Theory](design_docs/theory/pass_eco_control_flow_to_scf_theory.md), [RC Elimination Theory](design_docs/theory/pass_rc_elimination_theory.md), [Undefined Function Theory](design_docs/theory/pass_undefined_function_theory.md)
 
@@ -469,6 +487,14 @@ Final lowering from ECO dialect to LLVM dialect:
 - Heap allocation via runtime calls
 - Closure creation and invocation
 - Tagged pointer encoding for embedded constants
+
+**PAP Wrapper Elimination (Typed Closure Calling)**: The compiler generates direct function calls even when partial application and closures are involved:
+
+- **Homogeneous call path**: When closure structure is statically known, captures are unpacked as direct arguments
+- **Heterogeneous call path**: When closure structure varies (e.g., across case branches), the closure pointer is passed
+- **ABI cloning** (`AbiCloning.elm`): Functions are cloned into direct and indirect entry points as needed
+
+**Inline papExtend**: The `eco.papExtend` operation is lowered inline (not as a runtime call), enabling LLVM to optimize saturated calls. Float arguments/results require `i64`↔`f64` bitcasts since closures store all values as `i64`.
 
 **See**: [EcoToLLVM Theory](design_docs/theory/pass_eco_to_llvm_theory.md)
 
@@ -500,18 +526,25 @@ This enables:
 Kernel functions are C++/runtime implementations called from Elm code. They're handled specially:
 
 1. **PostSolve** infers types from aliases and usage
-2. **Typed Optimization** tracks them as `VarKernel` expressions
-3. **MLIR Generation** emits declarations (not definitions)
+2. **Monomorphization** determines ABI mode (UseSubstitution, PreserveVars, NumberBoxed)
+3. **MLIR Generation** emits declarations with boxing/unboxing at boundaries
 4. **Linking** connects to C++ implementations in the runtime
 
-Example: `Basics.add` is a kernel function implemented in C++ that the generated code calls.
+**ABI Modes**:
+- **UseSubstitution**: Monomorphic kernels use typed parameters directly
+- **PreserveVars**: Polymorphic kernels use boxed `eco.value` for all type variables
+- **NumberBoxed**: Number-polymorphic kernels (`add`, `fromNumber`) receive boxed numbers
+
+**See**: [Kernel ABI Theory](design_docs/theory/kernel_abi_theory.md)
 
 ## Detailed Documentation
 
-Each pass has comprehensive documentation in [`design_docs/theory/`](design_docs/theory/):
+Each pass and subsystem has comprehensive documentation in [`design_docs/theory/`](design_docs/theory/):
 
-| Document | Pass |
-|----------|------|
+### Compilation Passes
+
+| Document | Description |
+|----------|-------------|
 | [pass_post_solve_theory.md](design_docs/theory/pass_post_solve_theory.md) | PostSolve type fixing |
 | [pass_typed_optimization_theory.md](design_docs/theory/pass_typed_optimization_theory.md) | Type-preserving optimization |
 | [pass_monomorphization_theory.md](design_docs/theory/pass_monomorphization_theory.md) | Polymorphism elimination |
@@ -524,6 +557,21 @@ Each pass has comprehensive documentation in [`design_docs/theory/`](design_docs
 | [pass_rc_elimination_theory.md](design_docs/theory/pass_rc_elimination_theory.md) | RC operation removal |
 | [pass_undefined_function_theory.md](design_docs/theory/pass_undefined_function_theory.md) | Missing function stubs |
 | [pass_eco_to_llvm_theory.md](design_docs/theory/pass_eco_to_llvm_theory.md) | Final LLVM lowering |
+
+### Optimizations and Subsystems
+
+| Document | Description |
+|----------|-------------|
+| [bytes_fusion_theory.md](design_docs/theory/bytes_fusion_theory.md) | Bytes.encode/decode fusion to BF dialect |
+| [typed_closure_calling_theory.md](design_docs/theory/typed_closure_calling_theory.md) | PAP wrapper elimination, ABI cloning |
+| [kernel_abi_theory.md](design_docs/theory/kernel_abi_theory.md) | Kernel function ABI modes and type handling |
+
+### Cross-Cutting Concerns
+
+| Document | Description |
+|----------|-------------|
+| [heap_representation_theory.md](design_docs/theory/heap_representation_theory.md) | Four representation models, unboxing, layouts |
+| [mlir_verification_theory.md](design_docs/theory/mlir_verification_theory.md) | MLIR verifiers and invariant checking |
 
 ## Invariant Testing Infrastructure
 

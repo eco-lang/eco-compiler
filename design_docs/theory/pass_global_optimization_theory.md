@@ -37,9 +37,9 @@ This separation ensures that Monomorphization remains simple and focused, while 
 - All case/if branches have compatible stagings (GOPT_003)
 - All calls have computed `CallInfo` metadata for codegen
 
-## The Five Phases
+## The Phases
 
-GlobalOpt runs five sequential phases:
+GlobalOpt runs several sequential phases, coordinated by a common traversal infrastructure:
 
 ```elm
 globalOptimize typeEnv graph0 =
@@ -50,8 +50,11 @@ globalOptimize typeEnv graph0 =
         -- Phase 0.5: Wrap top-level callables in closures
         graph0b = wrapTopLevelCallables graph0a
 
-        -- Phase 1+2: Staging analysis + graph rewrite
-        (_, graph1) = analyzeAndSolveStaging typeEnv graph0b
+        -- Phase 1: Staging analysis via graph-based solver
+        stagingResult = Staging.solveStaging typeEnv graph0b
+
+        -- Phase 2: Rewrite graph with staging solution
+        graph1 = Staging.rewriteWithStaging stagingResult graph0b
 
         -- Phase 3: Validate closure staging
         graph2 = validateClosureStaging graph1
@@ -61,6 +64,23 @@ globalOptimize typeEnv graph0 =
     in
     graph3
 ```
+
+### MonoTraverse: Common Iteration Infrastructure
+
+The `MonoTraverse` module provides a unified way to walk the `MonoGraph`:
+
+```elm
+-- Traverse all nodes, accumulating state
+traverseGraph : (MonoNode -> State -> State) -> State -> MonoGraph -> State
+
+-- Transform nodes, building new graph
+mapGraph : (MonoNode -> MonoNode) -> MonoGraph -> MonoGraph
+
+-- Walk expressions within a node
+traverseExpr : (MonoExpr -> State -> State) -> State -> MonoExpr -> State
+```
+
+This eliminates duplicate traversal code and ensures consistent handling across all transformation phases.
 
 ### Phase 0.5: Wrap Top-Level Callables
 
@@ -160,6 +180,94 @@ type alias CallInfo =
 
 **Why this matters**: MLIR's `generateCall` switches on `callInfo.callModel` and uses the pre-computed arities for `papExtend` operations.
 
+## The Staging Subsystem
+
+The staging analysis is implemented as a graph-based constraint solver in `compiler/src/Compiler/GlobalOpt/Staging/`. This subsystem determines the canonical segmentation for all functions by analyzing data flow through the program.
+
+### Architecture
+
+The staging subsystem has six modules:
+
+| Module | Purpose |
+|--------|---------|
+| `Types.elm` | Core types: Segmentation, ProducerId, SlotId, Node, StagingGraph |
+| `GraphBuilder.elm` | Builds the staging graph from MonoGraph |
+| `Solver.elm` | Union-find based solver choosing canonical segmentations |
+| `Rewriter.elm` | Rewrites MonoGraph with solved segmentations |
+| `ProducerInfo.elm` | Computes natural segmentation for each producer |
+| `UnionFind.elm` | Union-find data structure for equivalence classes |
+
+### The Staging Graph
+
+The staging graph connects **producers** (functions) to **slots** (places where function values flow):
+
+```elm
+type ProducerId
+    = ProducerClosure LambdaId    -- User-defined closure
+    | ProducerTailFunc Int        -- Tail-recursive function
+    | ProducerKernel String       -- Kernel function
+
+type SlotId
+    = SlotVar String Int          -- Variable binding
+    | SlotParam Int Int           -- Function parameter
+    | SlotCapture LambdaId Int    -- Closure capture
+    | SlotIfResult Int            -- If branch result
+    | SlotCaseResult Int          -- Case branch result
+    | SlotRecord String String    -- Record field
+    | SlotTuple String Int        -- Tuple element
+    | SlotList String Int         -- List element
+    | SlotCtor String Int         -- Constructor argument
+
+type Node
+    = NodeProducer ProducerId
+    | NodeSlot SlotId
+```
+
+Edges connect producers to slots when a function value flows to that location. When two slots must have the same segmentation (e.g., both branches of an if expression), they are unified.
+
+### The Solving Algorithm
+
+1. **Build Graph**: `GraphBuilder.buildStagingGraph` traverses the MonoGraph, creating nodes for all producers and slots, and edges for data flow.
+
+2. **Compute ProducerInfo**: For each producer, determine its **natural segmentation** from its parameter structure:
+   ```elm
+   -- \x y -> \z -> body has natural segmentation [2, 1]
+   detectNaturalSegFromParams : MonoClosure -> Segmentation
+   ```
+
+3. **Build Equivalence Classes**: Using union-find, group all nodes that must have the same segmentation (e.g., branches of case expressions).
+
+4. **Choose Canonical Segmentation**: For each equivalence class, use majority voting:
+   ```elm
+   chooseCanonicalSegs : Dict ClassId (List Segmentation) -> Dict ClassId Segmentation
+   ```
+   - Kernel functions provide fixed segmentations
+   - Among user functions, the most common segmentation wins
+   - Ties broken by preferring larger first stage (more args at once)
+
+5. **Rewrite Graph**: `Rewriter.applyStagingSolution` transforms closures whose natural segmentation differs from the canonical one by wrapping them in eta-expansion closures.
+
+### Example: Solving Case Branch Staging
+
+```elm
+picker b =
+    if b then
+        \x y -> x + y      -- Producer P1, natural seg [2]
+    else
+        \x -> \y -> x * y  -- Producer P2, natural seg [1,1]
+```
+
+1. **Graph building**:
+   - P1 → SlotIfResult(0)
+   - P2 → SlotIfResult(0)
+   - SlotIfResult(0) unified because both branches flow to same result
+
+2. **Equivalence class**: {P1, P2, SlotIfResult(0)}
+
+3. **Majority vote**: [2] appears once, [1,1] appears once → tie broken by larger first stage → [2] wins
+
+4. **Rewrite**: P2 gets wrapped: `\x y -> ((\x -> \y -> x * y) x) y`
+
 ## Key Data Structures
 
 ### Segmentation
@@ -213,22 +321,32 @@ By moving all staging logic to GlobalOpt:
 
 ### Helper Modules
 
+- `MonoTraverse.elm`: Common iteration infrastructure for graph traversal
 - `MonoReturnArity.elm`: Stage arity computation utilities
+- `MonoInlineSimplify.elm`: Small function inlining pass (Phase 0)
+- `Staging/`: Graph-based staging solver subsystem
+  - `Types.elm`: Core types (ProducerId, SlotId, Node, StagingGraph)
+  - `GraphBuilder.elm`: Builds staging graph from MonoGraph
+  - `Solver.elm`: Union-find solver with majority voting
+  - `Rewriter.elm`: Applies staging solution to MonoGraph
+  - `ProducerInfo.elm`: Computes natural segmentations
+  - `UnionFind.elm`: Union-find data structure
 - `Closure.elm` (in Monomorphize): Shared utilities like `flattenFunctionType`
 
 ### Key Functions
 
-| Function | Purpose |
-|----------|---------|
-| `globalOptimize` | Main entry point |
-| `canonicalizeClosureStaging` | Phase 1: flatten types |
-| `normalizeCaseIfAbi` | Phase 2: ABI wrappers |
-| `validateClosureStaging` | Phase 3: validation |
-| `annotateCallStaging` | Phase 4: compute CallInfo |
-| `flattenTypeToArity` | Flatten MFunction types |
-| `buildAbiWrapperGO` | Create staging adapters |
-| `chooseCanonicalSegmentation` | Pick majority staging |
-| `computeCallInfo` | Build CallInfo for a call |
+| Function | Module | Purpose |
+|----------|--------|---------|
+| `globalOptimize` | MonoGlobalOptimize | Main entry point |
+| `wrapTopLevelCallables` | MonoGlobalOptimize | Phase 0.5: wrap bare globals/kernels |
+| `buildStagingGraph` | Staging.GraphBuilder | Build staging constraint graph |
+| `solveStagingGraph` | Staging.Solver | Solve for canonical segmentations |
+| `applyStagingSolution` | Staging.Rewriter | Rewrite closures to canonical form |
+| `computeProducerInfo` | Staging.ProducerInfo | Compute natural segmentations |
+| `flattenTypeToArity` | Staging.Rewriter | Flatten MFunction types |
+| `wrapClosureToCanonical` | Staging.Rewriter | Create staging adapters |
+| `chooseCanonicalSegs` | Staging.Solver | Pick majority staging per class |
+| `mapExpr` / `traverseExpr` | MonoTraverse | Common graph iteration |
 
 ## Example: Full Transformation
 

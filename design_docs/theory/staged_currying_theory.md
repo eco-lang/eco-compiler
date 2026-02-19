@@ -169,6 +169,103 @@ mappedList = List.map f
 -- pap_List_map_1 arg0 arg1 = List_map(arg0, arg1)
 ```
 
+## Callsite Derivation Algorithm
+
+The staging solver uses a graph-based approach to propagate staging constraints across the entire program. This **callsite derivation algorithm** ensures that every callsite uses the correct calling convention.
+
+### The Problem
+
+Consider a function that flows through multiple intermediate bindings:
+
+```elm
+adder = \x y -> x + y              -- natural staging [2]
+alias = adder                       -- what staging?
+result = alias 1 2                  -- how to call?
+```
+
+The callsite `alias 1 2` needs to know that `alias` has staging `[2]`. But this information must be propagated from the original closure definition.
+
+### The Graph-Based Solution
+
+1. **Producers**: Every closure/function definition is a **producer** with a natural segmentation.
+
+2. **Slots**: Every place a function value can be stored is a **slot** (variable bindings, function parameters, captures, record fields, etc.).
+
+3. **Edges**: When a producer flows to a slot, an edge is created.
+
+4. **Unification**: When the same value must have consistent staging across locations (e.g., both branches of an if-expression), slots are unified.
+
+5. **Solving**: All nodes in an equivalence class get the same canonical segmentation, chosen by majority vote among the producers in that class.
+
+### Example: Variable Propagation
+
+```elm
+f = \x y -> x + y    -- Producer P1, staging [2]
+g = f                -- Slot S1
+h = g                -- Slot S2, unified with S1
+r = h 1 2            -- Callsite: lookup S2's class → [2]
+```
+
+Graph edges: P1 → S1 → S2
+After solving: class {P1, S1, S2} has staging [2]
+The callsite at `h 1 2` queries the staging for S2 and gets [2].
+
+### Kernel Function Integration
+
+Kernel functions have fixed segmentations (all args at once):
+
+```elm
+kernelSeg("List_map") = [2]
+kernelSeg("Basics_add") = [2]
+```
+
+When a kernel flows to a slot, it contributes its fixed segmentation to the equivalence class. If user-defined closures flow to the same class, the kernel's segmentation takes precedence (kernel ABIs are immutable).
+
+## PAP Wrapper Elimination
+
+**PAP Wrapper Elimination** is an optimization that enables direct function calls even when partial application and closures are involved, eliminating the overhead of PAP (partial application) wrapper functions.
+
+### The Problem
+
+Previously, when calling a function that might be a partial application:
+
+```elm
+applyTwice f x = f (f x)
+```
+
+The generated code had to:
+1. Check if `f` is a PAP at runtime
+2. If so, call through a generic `papExtend` mechanism
+3. This added indirection and prevented optimization
+
+### The Solution: Typed Closure Calling
+
+The compiler now generates **direct calls** by leveraging type information:
+
+1. **Homogeneous Call Path**: When all callsites can be statically determined to have the same closure structure (same captures, same parameter types), generate a direct call with captures unpacked as arguments.
+
+2. **Heterogeneous Call Path**: When the closure structure varies across callsites (e.g., different branches return closures with different captures), generate a call that passes the entire closure pointer.
+
+### ABI Splitting
+
+For heterogeneous cases, the compiler generates two entry points:
+
+```
+-- Direct entry (homogeneous): captures unpacked
+func_direct(capture1, capture2, arg1, arg2) -> result
+
+-- Indirect entry (heterogeneous): closure passed
+func_indirect(closure_ptr, arg1, arg2) -> result
+```
+
+The callsite derivation determines which entry point to use based on whether the callee's structure is statically known.
+
+### Benefits
+
+- **No runtime PAP checks**: The calling convention is determined at compile time
+- **Direct calls**: Most calls are direct function calls, not indirect through PAP machinery
+- **Better optimization**: LLVM can inline and optimize direct calls
+
 ## Implementation Details
 
 ### Staging Detection
@@ -188,17 +285,30 @@ FUNCTION detectStaging(monoExpr):
 
 ### Integration with GlobalOpt
 
-The GlobalOpt pass runs in four phases:
+The GlobalOpt pass runs several phases:
 
-1. **canonicalizeClosureStaging**: Flatten nested `MFunction` types to match closure param counts (GOPT_001)
-2. **normalizeCaseIfAbi**: Create ABI wrappers for case/if branches with incompatible stagings (GOPT_003)
-3. **validateClosureStaging**: Verify all closures have consistent staging
-4. **annotateCallStaging**: Compute `CallInfo` metadata for MLIR codegen
+1. **Phase 0**: `MonoInlineSimplify` - Inline small functions
+2. **Phase 0.5**: `wrapTopLevelCallables` - Wrap bare kernel/global references
+3. **Phase 1**: `Staging.buildStagingGraph` - Build staging constraint graph
+4. **Phase 2**: `Staging.solveStagingGraph` - Solve for canonical segmentations
+5. **Phase 3**: `Staging.applyStagingSolution` - Rewrite closures to canonical form
+6. **Phase 4**: Annotate `CallInfo` metadata for MLIR codegen
 
-The joinpoint matching algorithm is invoked during `normalizeCaseIfAbi`:
-1. When processing a `MonoCase` or `MonoIf` expression
-2. Whose branches return `MFunction` types
-3. After monomorphization has specialized all branches
+The staging subsystem in `compiler/src/Compiler/GlobalOpt/Staging/` handles the graph-based solving:
+
+| Module | Purpose |
+|--------|---------|
+| `Types.elm` | ProducerId, SlotId, Node, StagingGraph types |
+| `GraphBuilder.elm` | Build constraint graph from MonoGraph |
+| `Solver.elm` | Union-find solver with majority voting |
+| `Rewriter.elm` | Apply solution via eta-wrapping |
+| `ProducerInfo.elm` | Compute natural segmentations |
+| `UnionFind.elm` | Union-find data structure |
+
+The joinpoint matching is now integrated into the graph solver:
+1. Both branches of an if/case are connected to the same result slot
+2. The solver unifies these slots automatically
+3. Non-conforming branches are eta-wrapped during rewriting
 
 ### Cost Model
 
