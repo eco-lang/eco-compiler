@@ -31,6 +31,11 @@ Three cases:
 
 @docs canTypeToMonoType_preserveVars, canTypeToMonoType_numberBoxed
 
+
+# Container Specialized Kernels
+
+@docs containerSpecializedKernels, comparePair
+
 -}
 
 import Compiler.AST.Canonical as Can

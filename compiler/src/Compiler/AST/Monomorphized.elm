@@ -124,6 +124,31 @@ This module defines the data structures for the monomorphized program
 
 @docs toComparableGlobal, toComparableLambdaId
 
+
+# Constraint Utilities
+
+@docs forceCNumberToInt
+
+
+# Staging and Segmentation
+
+@docs Segmentation, segmentLengths, stageParamTypes, stageReturnType, stageArity
+@docs chooseCanonicalSegmentation, buildSegmentedFunctionType
+@docs decomposeFunctionType, isFunctionType, countTotalArity, functionArity
+
+
+# Call Staging Metadata
+
+@docs CallModel, CallInfo, defaultCallInfo
+
+
+# Typed Closure Calling (ABI Cloning)
+
+@docs ClosureKindId, ClosureKind, MaybeClosureKind
+@docs CaptureABI, DispatchMode
+@docs mergeClosureKinds
+@docs ClosureKindRegistry, ClosureKindEntry, emptyClosureKindRegistry
+
 -}
 
 import Compiler.AST.DecisionTree.Test as DT

@@ -12,7 +12,7 @@ This module handles generation of all function types:
   - Externs
   - Cycles
 
-@docs generateMainEntry, generateNode, generateKernelDecl
+@docs generateMainEntry, generateNode, generateKernelDecl, generateGenericCloneFunc
 
 -}
 

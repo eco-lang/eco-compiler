@@ -26,7 +26,7 @@ state during MLIR code generation.
 
 # Variable Management
 
-@docs freshVar, freshOpId, lookupVar, addVarMapping
+@docs freshVar, freshOpId, lookupVar, addVarMapping, addDecoderExpr
 
 
 # Type Registration
@@ -42,6 +42,11 @@ state during MLIR code generation.
 # Type Inspection
 
 @docs isTypeVar, hasKernelImplementation
+
+
+# Kernel Backend ABI Policy
+
+@docs KernelBackendAbiPolicy, kernelBackendAbiPolicy
 
 -}
 

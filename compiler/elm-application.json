@@ -135,7 +135,6 @@
         "Compiler.Monomorphize.KernelAbi",
         "Compiler.Monomorphize.Monomorphize",
         "Compiler.Monomorphize.Registry",
-        "Compiler.Monomorphize.Segmentation",
         "Compiler.Monomorphize.Specialize",
         "Compiler.Monomorphize.State",
         "Compiler.Monomorphize.TypeSubst",
