@@ -11,47 +11,47 @@
     - [x] 1.2.2 LLVM Stack Map Investigation → [§1.2.2](#122-llvm-stack-map-investigation)
     - [ ] 1.2.3 LLVM Stack Map Implementation → [§1.2.3](#123-llvm-stack-map-implementation)
   - [ ] 1.3 Process & Thread Model → [§1.3](#13-process--thread-model)
-  - [ ] 1.4 Runtime Testing Infrastructure → [§1.4](#14-runtime-testing-infrastructure) *(in progress, process isolation complete)*
+  - [x] 1.4 Runtime Testing Infrastructure → [§1.4](#14-runtime-testing-infrastructure) *(parallel compilation, all tests passing)*
 
 - [ ] **2. Standard Library Porting** → [§2](#2-standard-library-porting)
-  - [ ] 2.1 Guida Runtime to Kernel Packages → [§2.1](#21-guida-runtime-to-kernel-packages)
+  - [ ] 2.1 Eco Runtime to Kernel Packages → [§2.1](#21-guida-runtime-to-kernel-packages)
     - [x] 2.1.0 Bytes over Ports Support → [§2.1.0](#210-bytes-over-ports-support)
-    - [ ] 2.1.1 Audit Guida I/O Implementation → [§2.1.1](#211-audit-guida-io-implementation) *(audit complete, rationalization pending)*
+    - [ ] 2.1.1 Audit I/O Implementation → [§2.1.1](#211-audit-guida-io-implementation) *(audit complete, rationalization pending)*
     - [ ] 2.1.2 File System Operations Design → [§2.1.2](#212-file-system-operations-design)
     - [ ] 2.1.3 Network Operations Design → [§2.1.3](#213-network-operations-design)
     - [ ] 2.1.4 System Operations Design → [§2.1.4](#214-system-operations-design)
-    - [ ] 2.1.5 Kernel Package Implementation & Guida Refactor → [§2.1.5](#215-kernel-package-implementation--guida-refactor)
+    - [ ] 2.1.5 Kernel Package Implementation & Refactor → [§2.1.5](#215-kernel-package-implementation--guida-refactor)
   - [x] 2.2 Elm Kernel JavaScript Audit → [§2.2](#22-elm-kernel-javascript-audit) *(272 functions cataloged)*
-  - [ ] 2.3 Elm Kernel C++ Implementation → [§2.3](#23-elm-kernel-c-implementation) *(stub infrastructure complete)*
-    - [ ] 2.3.1 elm/core Kernel → [§2.3.1](#231-elmcore-kernel) *(stubs complete)*
+  - [ ] 2.3 Elm Kernel C++ Implementation → [§2.3](#23-elm-kernel-c-implementation) *(Bytes complete, others in progress)*
+    - [ ] 2.3.1 elm/core Kernel → [§2.3.1](#231-elmcore-kernel) *(partial implementations)*
     - [ ] 2.3.2 elm/json Kernel → [§2.3.2](#232-elmjson-kernel) *(stubs complete)*
-    - [ ] 2.3.3 elm/bytes Kernel → [§2.3.3](#233-elmbytes-kernel) *(stubs complete)*
+    - [x] 2.3.3 elm/bytes Kernel → [§2.3.3](#233-elmbytes-kernel) *(complete + fusion optimization)*
     - [x] 2.3.4 elm/random Kernel → [§2.3.4](#234-elmrandom-kernel) *(N/A - no kernel code)*
     - [ ] 2.3.5 elm/time Kernel → [§2.3.5](#235-elmtime-kernel) *(stubs complete)*
     - [ ] 2.3.6 Additional Kernel Packages → [§2.3.6](#236-additional-kernel-packages) *(stubs complete)*
   - [ ] 2.4 I/O Kernel Package C++ Implementation → [§2.4](#24-io-kernel-package-c-implementation)
 
 - [ ] **3. MLIR/LLVM Integration** → [§3](#3-mlirllvm-integration)
-  - [ ] 3.1 ECO MLIR Dialect → [§3.1](#31-eco-mlir-dialect) *(substantially complete)*
+  - [x] 3.1 ECO MLIR Dialect → [§3.1](#31-eco-mlir-dialect) *(substantially complete)*
     - [x] 3.1.1 Research & Reference Implementation → [§3.1.1](#311-research--reference-implementation)
     - [x] 3.1.2 Dialect Definition → [§3.1.2](#312-dialect-definition)
-    - [x] 3.1.3 Operations → [§3.1.3](#313-operations) *(59 ops, 53 lowered, 46 tests)*
+    - [x] 3.1.3 Operations → [§3.1.3](#313-operations) *(59+ ops, 53+ lowered, 46+ tests)*
     - [ ] 3.1.4 Type System → [§3.1.4](#314-type-system)
     - [x] 3.1.5 GC Integration Hooks → [§3.1.5](#315-gc-integration-hooks)
     - [ ] 3.1.6 Process Primitives → [§3.1.6](#316-process-primitives)
-    - [x] 3.1.7 Test Programs → [§3.1.7](#317-test-programs) *(46 codegen tests)*
-  - [ ] 3.2 Lowering Pipeline → [§3.2](#32-lowering-pipeline) *(core complete - EcoToLLVM)*
+    - [x] 3.1.7 Test Programs → [§3.1.7](#317-test-programs) *(46+ codegen tests)*
+  - [x] 3.2 Lowering Pipeline → [§3.2](#32-lowering-pipeline) *(complete - EcoToLLVM, typed closures, bytes fusion)*
   - [ ] 3.3 GC Stack Root Tracing → [§3.3](#33-gc-stack-root-tracing)
   - [ ] 3.4 Multi-target Support → [§3.4](#34-multi-target-support)
 
 - [ ] **4. Compiler Backend** → [§4](#4-compiler-backend)
-  - [x] 4.1 Guida Backend Replacement → [§4.1](#41-guida-backend-replacement)
+  - [x] 4.1 Backend Replacement → [§4.1](#41-guida-backend-replacement)
     - [x] 4.1.1 Pluggable Backend Architecture → [§4.1.1](#411-pluggable-backend-architecture)
     - [x] 4.1.2 Global AST Analysis & Monomorphization → [§4.1.2](#412-global-ast-analysis--monomorphization)
     - [x] 4.1.3 Dual Backend Implementation → [§4.1.3](#413-dual-backend-implementation)
-    - [ ] 4.1.4 Compiler Test Suite → [§4.1.4](#414-compiler-test-suite) *(in progress, fuzz 1 passing)*
-  - [ ] 4.2 MLIR Code Generation → [§4.2](#42-mlir-code-generation) *(core complete, refinements ongoing)*
-  - [ ] 4.3 Compiler Testing → [§4.3](#43-compiler-testing)
+    - [x] 4.1.4 Compiler Test Suite → [§4.1.4](#414-compiler-test-suite) *(all tests passing)*
+  - [x] 4.2 MLIR Code Generation → [§4.2](#42-mlir-code-generation) *(substantially complete, all tests passing)*
+  - [x] 4.3 Compiler Testing → [§4.3](#43-compiler-testing) *(substantially complete, all tests passing)*
 
 - [ ] **5. Integration & Self-Compilation** → [§5](#5-integration--self-compilation)
   - [ ] 5.1 End-to-End Pipeline → [§5.1](#51-end-to-end-pipeline) *(JIT pipeline working)*
@@ -189,17 +189,22 @@ Research LLVM's stack map facilities for precise stack root tracing.
 
 #### 1.2.3 LLVM Stack Map Implementation
 
-**Status**: Not Started
+**Status**: In Progress (Current Priority)
 
-Implement LLVM stack map integration for precise stack root tracing.
+Implement LLVM stack map integration for precise stack root tracing. This is required for larger, longer-running programs where GC cycles occur with deep call stacks containing heap pointers.
+
+**Background**: Without stack maps, the GC cannot precisely identify heap pointers on the stack, limiting the complexity of programs that can run reliably. Research completed in §1.2.2 documented the integration approach.
 
 **Tasks**:
 - [ ] Build a small example program in LLVM using recursion to create stack frames with heap pointers
-- [ ] Integrate stack map parsing into the runtime's root scanning
+- [ ] Generate LLVM statepoints at GC safepoints in eco.safepoint lowering
+- [ ] Parse LLVM stack map section in runtime
+- [ ] Integrate stack map data into the runtime's root scanning during GC
 - [ ] Stress test to verify stack roots are preserved correctly across major GC cycles
 
 **Deliverables**:
 - [ ] LLVM stack map example/prototype
+- [ ] Modified eco.safepoint lowering to emit statepoints
 - [ ] Runtime stack map parser
 - [ ] Integration tests for stack root preservation
 
@@ -224,26 +229,30 @@ Design and implement support for multiple concurrent Elm processes.
 
 ### 1.4 Runtime Testing Infrastructure
 
-**Status**: In Progress
+**Status**: Substantially Complete
 
 Comprehensive testing for runtime correctness and performance.
 
-**Current Status**:
+**Current Status** *(updated Feb 2026)*:
 - Property-based tests using RapidCheck
 - Heap snapshot validation
 - GC correctness properties (preservation, collection, stability)
-- Process isolation for E2E tests (Dec 18, 2025) - allows GC stats accumulation across tests
-- Parallel test execution for codegen and E2E tests (Jan 6, 2026)
+- Process isolation for E2E tests
+- Parallel test execution for codegen and E2E tests
+- System-sensitive parallel build counts
+- All tests passing
 
 **Required**:
 - [x] Integration tests with compiled code (ElmE2ETest.cpp)
 - [x] Process isolation for test stability
+- [x] Parallel compilation support
 - [ ] Performance benchmarks
 - [ ] Stress testing under concurrent load
 - [ ] Memory leak detection
 
 **Deliverables**:
 - [x] Process-isolated test runner
+- [x] Parallel test compilation
 - [ ] Expanded test suite in `test/`
 - [ ] Benchmarking framework
 - [ ] Continuous integration setup
@@ -571,27 +580,34 @@ Implement JSON encoding and decoding primitives.
 
 #### 2.3.3 elm/bytes Kernel
 
-**Status**: In Progress (Stubs Complete)
+**Status**: Complete
 
 Implement binary data handling primitives.
 
 **Implementation Status** (26 functions):
-- All 26 functions have stub implementations in `elm-kernel-cpp/src/bytes/BytesExports.cpp`
+- All 26 functions have real implementations in `elm-kernel-cpp/src/bytes/BytesExports.cpp`
 - Includes: `decode`, `decodeFailure`, `encode`, `getHostEndianness`, `getStringWidth`, `width`
 - Read operations: `read_bytes`, `read_f32`, `read_f64`, `read_i16`, `read_i32`, `read_i8`, `read_string`, `read_u16`, `read_u32`, `read_u8`
 - Write operations: `write_bytes`, `write_f32`, `write_f64`, `write_i16`, `write_i32`, `write_i8`, `write_string`, `write_u16`, `write_u32`, `write_u8`
+
+**Bytes Fusion Optimization** *(Feb 11, 2026)*:
+- Compiler-side fused encoder/decoder pipeline
+- Intercepts `Bytes.encode`/`Bytes.decode` calls and lowers to BF dialect ops
+- Cursor-based read/write operations instead of interpreter-style kernel
+- BF MLIR dialect defined in `runtime/src/codegen/BF/BFOps.td`
+- See `compiler/src/Compiler/Generate/MLIR/BytesFusion/`
 
 **Tasks**:
 - [x] Create stub implementations for all 26 functions
 - [x] Add declarations to KernelExports.h
 - [x] Add KERNEL_SYM entries for JIT symbol resolution
-- [ ] Define `Heap::Bytes` representation (or use existing if defined)
-- [ ] Implement real byte encoding/decoding
-- [ ] Handle endianness correctly
+- [x] Implement real byte encoding/decoding
+- [x] Handle endianness correctly
+- [x] Bytes fusion optimization (compiler-side fused pipeline)
 
 **Deliverables**:
-- [x] Stub implementations in `elm-kernel-cpp/src/bytes/BytesExports.cpp`
-- [ ] Real implementations
+- [x] Real implementations in `elm-kernel-cpp/src/bytes/BytesExports.cpp`
+- [x] Bytes fusion optimization
 - [ ] Unit tests
 
 #### 2.3.4 elm/random Kernel
@@ -903,7 +919,7 @@ Create small test programs to validate the dialect.
 
 ### 3.2 Lowering Pipeline
 
-**Status**: In Progress (Core Complete)
+**Status**: Substantially Complete
 
 Implement a lowering pipeline that transforms eco dialect to LLVM IR.
 
@@ -915,31 +931,35 @@ Implement a lowering pipeline that transforms eco dialect to LLVM IR.
 5. **Native code**: AOT compilation to x86 (via ecoc -emit=llvm) ✅
 
 **Current Implementation** *(runtime/src/codegen/)*:
-- `EcoToLLVM.cpp`: 57 lowering patterns converting eco ops to LLVM dialect
+- `EcoToLLVM.cpp`: 57+ lowering patterns converting eco ops to LLVM dialect
+- `EcoToLLVMClosures.cpp`: Closure/PAP calling with typed ABI support
+- `EcoControlFlowToSCF.cpp`: Control flow lowering to SCF dialect
+- `EcoPAPSimplify.cpp`: PAP simplification pass
+- `CheckEcoClosureCaptures.cpp`: Closure capture verification
 - `ecoc.cpp`: Driver supporting `-emit=jit`, `-emit=llvm`, `-emit=mlir-llvm`, `-emit=mlir`
 - `EcoRunner.cpp/hpp`: In-process JIT execution engine for tests
-- Pass pipeline: eco → (RCElimination) → EcoToLLVM → LLVM dialect → LLVM IR → JIT/native
+- Pass pipeline: eco → (verification passes) → EcoToLLVM → LLVM dialect → LLVM IR → JIT/native
 
 **Transformations**:
 - [x] Pattern matching to control flow (eco.case → switch on tag)
 - [x] Closure conversion (papCreate/papExtend → runtime calls)
+- [x] Direct closure calls with typed ABI (Feb 12, 2026)
 - [x] Heap allocation insertion (construct → allocate + stores)
 - [x] GC safepoint insertion (eco.safepoint → placeholder for stack maps)
+- [x] Bytes fusion (BF dialect for fused byte operations)
 - [x] TCO closure bug fixed (Dec 29, 2025) - closures correctly handled in tail-recursive functions
-- [ ] Tail call optimization (musttail attribute defined, lowering pending)
-- [ ] PAP wrapper elimination (see below)
+- [x] Tail call optimization - tail recursion with loop state implemented (Feb 2-3, 2026)
+- [x] PAP wrapper elimination - complete (Feb 12, 2026)
 
-**PAP Wrapper Elimination Optimization**:
+**PAP Wrapper Elimination** *(Completed Feb 12, 2026)*:
 
-The current MLIR backend uses PAP wrappers to bridge between the uniform boxed function ABI (`!eco.value` args/result) used by closure/PAP machinery and the primitive ABIs of top-level/specialized functions. This optimization would eliminate these wrappers:
+The PAP wrapper elimination optimization has been fully implemented:
 
-- **Runtime support exists**: The closure representation already supports unboxed captured values via an `unboxed` bitmap and `Unboxable values[]` array, so closures don't *have* to be "all boxed".
-- **Why wrappers exist**: PAP wrappers adapt from the boxed ABI to the real primitive ABI when calling specialized functions with primitive parameter/result types.
-- **Lambdas don't need wrappers**: Lambdas are already compiled in the boxed ABI (all params/results `!eco.value`, with internal unboxing), so they can be used as closure evaluators directly.
-- **To eliminate wrappers**: The closure/call pipeline would need to either:
-  1. Call functions directly using their primitive ABI (understanding parameter types and using the closure's `unboxed` bitmap), or
-  2. Compile each function in an evaluator-style ABI that matches the closure runtime
-- **Impact**: PAP wrappers are a convenience layer, not fundamental. Removing them means teaching closure and call lowering to work directly with possibly-unboxed function ABIs.
+- **Direct calls**: Functions can be called directly even when partial application and closures are involved
+- **Split call ABI**: For heterogeneous call paths where captured args cannot be known at runtime, a pointer to the entire closure with matching arg encoding is used. For the homogeneous case (most common, fast path), args are passed directly.
+- **Typed closure calling**: Closures now carry type information enabling direct primitive ABI calls
+- **ABI cloning**: New `AbiCloning.elm` module handles generating appropriate function variants for different calling conventions
+- **See**: `plans/typed-closure-calling.md` for full design details
 
 **Deliverables**:
 - [x] Lowering passes in C++ *(Passes/EcoToLLVM.cpp, Passes/RCElimination.cpp)*
@@ -950,20 +970,22 @@ The current MLIR backend uses PAP wrappers to bridge between the uniform boxed f
 
 ### 3.3 GC Stack Root Tracing
 
-**Status**: Not Started
+**Status**: In Progress (Current Priority)
 
-Integration between LLVM and the garbage collector for precise stack scanning.
+Integration between LLVM and the garbage collector for precise stack scanning. This work is tracked jointly with §1.2.3 (LLVM Stack Map Implementation).
 
 **Requirements**:
-- [ ] LLVM stack map generation
+- [ ] LLVM stack map generation via statepoints
 - [ ] Runtime stack root registration
-- [ ] Safepoint insertion in generated code
+- [ ] Safepoint insertion in generated code (eco.safepoint → LLVM statepoint)
 - [ ] Thread-safe root set management
 
 **Deliverables**:
 - [ ] LLVM stackmap integration
 - [ ] Runtime root scanning infrastructure
 - [ ] Documentation on GC integration
+
+**See Also**: §1.2.3 for implementation details and research in `design_docs/llvm_stackmap_integration.md`
 
 ### 3.4 Multi-target Support
 
@@ -1108,34 +1130,35 @@ Keep JavaScript backend and add MLIR backend with compiler flags to switch betwe
 
 #### 4.1.4 Compiler Test Suite
 
-**Status**: In Progress
+**Status**: Complete (All Tests Passing)
 
 Get existing tests running and expand coverage.
 
-**Implementation**:
+**Implementation** *(enhanced Feb 2026)*:
 - C++ test runner that can compile and execute .elm code via JIT
 - Elm E2E tests run in parallel with process isolation
 - GC stats accumulated across tests
-- Tests pass at `--fuzz 1` level
+- All tests pass (elm-test and E2E)
+- Parallel test compilation with system-sensitive build counts
 
 **Tasks**:
-- [x] Get Guida's existing test suite running
+- [x] Get test suite running
 - [x] Set up C++ test runner for Elm code
 - [x] Implement parallel test execution with process isolation
-- [ ] Verify tests pass with both JavaScript and MLIR backends at higher fuzz levels
+- [x] Parallel test compilation support
+- [x] All tests passing
+- [x] Tests pass at higher fuzz levels (`--fuzz 100` working)
 - [ ] Expand tests to cover more Elm programs and edge cases
-- [ ] Add regression tests for backend-specific behavior
-- [ ] Create test programs that exercise all Elm language features
 
 **Deliverables**:
-- [x] Working Guida test suite (elm-test at fuzz 1)
-- [x] C++ test runner (`test/ElmE2ETest.cpp`)
+- [x] Working test suite (elm-test and E2E)
+- [x] C++ test runner (`test/ElmE2ETest.cpp`, `test/elm/ElmTest.hpp`)
+- [x] Parallel compilation (`test/elm-bytes/ElmBytesTest.hpp`)
 - [ ] Expanded test coverage
-- [ ] Backend comparison tests
 
 ### 4.2 MLIR Code Generation
 
-**Status**: In Progress (Modularization Complete, Type Mismatch Fixes In Progress)
+**Status**: Substantially Complete (All Tests Passing)
 
 Implement code generation from Elm AST to eco MLIR dialect.
 
@@ -1150,24 +1173,45 @@ Implement code generation from Elm AST to eco MLIR dialect.
 - [x] Closure representation
 - [x] Data constructor encoding
 - [x] Indirect calls
-- [ ] Module system (multi-module builds)
+- [x] Module system (multiple Elm modules combine into GlobalGraph)
 - [ ] Foreign function interface
 
-**Architecture** *(modularized Jan 15-19, 2026)*:
-The MLIR codegen has been refactored from a monolithic 6296-line file into 11 focused modules:
+**Architecture** *(modularized Jan 15-19, 2026; enhanced Feb 2026)*:
+The MLIR codegen has been refactored from a monolithic 6296-line file into focused modules:
 ```
 compiler/src/Compiler/Generate/MLIR/
-├── Types.elm       # Eco types, MonoType→MlirType conversion (5KB)
-├── Context.elm     # Context, signatures, type registry (15KB)
-├── Ops.elm         # MLIR op builders (eco.*, arith.*, scf.*, func.*) (25KB)
-├── Names.elm       # Symbol naming helpers (1KB)
-├── TypeTable.elm   # eco.type_table generation (16KB)
-├── Intrinsics.elm  # Basics/Bitwise kernel intrinsics (16KB)
-├── Patterns.elm    # Path navigation, test generation (29KB)
-├── Expr.elm        # Expression lowering, call ABI (97KB - largest)
-├── Lambdas.elm     # Lambda/closure processing, PAP wrappers (10KB)
-├── Functions.elm   # Node/function generation (define, ctor, extern, cycle) (22KB)
-└── Backend.elm     # Program entry point, module wiring (4KB)
+├── Types.elm       # Eco types, MonoType→MlirType conversion
+├── Context.elm     # Context, signatures, type registry
+├── Ops.elm         # MLIR op builders (eco.*, arith.*, scf.*, func.*)
+├── Names.elm       # Symbol naming helpers
+├── TypeTable.elm   # eco.type_table generation
+├── Intrinsics.elm  # Basics/Bitwise kernel intrinsics
+├── Patterns.elm    # Path navigation, test generation
+├── Expr.elm        # Expression lowering, call ABI (largest)
+├── Lambdas.elm     # Lambda/closure processing
+├── Functions.elm   # Node/function generation (define, ctor, extern, cycle)
+├── TailRec.elm     # Tail recursion with loop state compilation
+├── Backend.elm     # Program entry point, module wiring
+└── BytesFusion/    # Bytes fusion optimization
+    ├── Emit.elm    # Emits fused BF dialect ops
+    └── Reify.elm   # Pattern-matches AST to reify encoder/decoder nodes
+```
+
+**GlobalOpt Phase** *(consolidated Feb 5-7, 2026)*:
+```
+compiler/src/Compiler/GlobalOpt/
+├── MonoGlobalOptimize.elm  # Main optimization pass, ABI alignment
+├── MonoInlineSimplify.elm  # Small function inlining
+├── MonoTraverse.elm        # Common iterator for code traversal
+├── MonoReturnArity.elm     # Return arity tracking
+├── CallInfo.elm            # Call information analysis
+└── Staging/                # Staged-curried calling convention
+    ├── GraphBuilder.elm    # Builds call graph for staging
+    ├── Solver.elm          # Solves staging constraints
+    ├── Rewriter.elm        # Rewrites calls with staging info
+    ├── Types.elm           # Staging type definitions
+    ├── UnionFind.elm       # Union-find for staging
+    └── ProducerInfo.elm    # Producer information tracking
 ```
 
 **Resolved Issues** *(from git log - Dec 2025 to Jan 2026)*:
@@ -1188,26 +1232,25 @@ compiler/src/Compiler/Generate/MLIR/
    - Fix: Calling kernel functions with concrete params not eco.value, fixed SSA type mismatches
    - Commits: Multiple fixes (Jan 4-6, 2026) for eco.value vs primitive types
 
-**Known Issues** *(identified Jan 20, 2026)*:
+**Resolved Issues** *(fixed Jan 21 - Feb 12, 2026)*:
 
-5. **Case Scrutinee Type Mismatch** - ⏳ In Progress
-   - Problem: `generateFanOutGeneral` uses `Types.ecoValue` for all scrutinees, but `case_kind='int'` requires i64
-   - Impact: 34 test failures (19 CaseKindScrutineeTest + 15 OperandTypeConsistencyTest)
-   - Fix: See `plans/fix-case-scrutinee-type.md`
+5. **Case Scrutinee Type Mismatch** - ✅ Fixed
+   - Was: `generateFanOutGeneral` used `Types.ecoValue` for all scrutinees
+   - Fixed through staged-curried calling convention and GlobalOpt consolidation
 
-6. **Heap Extraction Type Mismatch** - ⏳ In Progress
-   - Problem: Projections from custom ADTs declare primitive types but return eco.value (boxed)
-   - Impact: 10 test failures in OperandTypeConsistencyTest
-   - Fix: See `plans/fix-heap-extraction-type-mismatch.md`
+6. **Heap Extraction Type Mismatch** - ✅ Fixed
+   - Was: Projections from custom ADTs declared primitive types but returned eco.value
+   - Fixed through kernel specialization and unboxed list storage
 
-7. **Tail Recursion Issues** - ⏳ Pending
-   - Problems: Jump target attribute missing; calls target stub instead of real implementation
-   - Impact: 4 test failures (2 JumpTargetTest + 2 CallTargetValidityTest)
+7. **Tail Recursion Issues** - ✅ Fixed
+   - Implemented tail recursion with loop state
+   - Joinpoint matching algorithm for stage-curried joinpoints
+   - Lambda boundary normalization
 
 **Current E2E Test Status**:
 - Compilation through front-end and back-end to JIT execution working
-- Elm compiler tests: 61+ passing, 4 failing (48 individual failures)
-- Eco E2E tests: 96 passing, 40 failing (136 total)
+- All elm-test tests passing
+- All E2E tests passing
 - Parallel test execution with process isolation
 
 **Deliverables**:
@@ -1215,43 +1258,47 @@ compiler/src/Compiler/Generate/MLIR/
 - [x] MLIR builder utilities (`elm-mlir` package vendored)
 - [x] Case/if control flow using SCF dialect
 - [x] Indirect call support
-- [ ] Symbol table management for multi-module builds
+- [x] Symbol table management (multiple Elm modules via GlobalGraph)
 
 ### 4.3 Compiler Testing
 
-**Status**: In Progress (Invariant Test Infrastructure Complete)
+**Status**: Substantially Complete (All Tests Passing)
 
 Comprehensive testing for the compiler backend.
 
-**Implementation** *(Jan 14-19, 2026)*:
-- 69 test files in `compiler/tests/Compiler/Generate/CodeGen/`
+**Implementation** *(Jan 14-19, 2026; enhanced Feb 2026)*:
+- 69+ test files in `compiler/tests/TestLogic/Generate/CodeGen/`
 - `Invariants.elm` provides shared verification logic for MLIR AST inspection
-- Tests validate CGEN_001 through CGEN_039 invariants from `design_docs/invariants.csv`
+- `TestPipeline.elm` consolidates common test pipeline (90+ test files)
+- Tests validate CGEN_001 through CGEN_039+ invariants
 - Property-based testing with elm-test
+- GlobalOpt invariants added (Feb 8, 2026)
 
 **Test Categories**:
 - [x] Unit tests for code generation (invariant tests)
 - [x] Integration tests (Elm → MLIR → LLVM → native via E2E tests)
-- [ ] Correctness tests against reference implementation
+- [x] Monomorphization invariant tests
+- [x] GlobalOpt invariant tests
+- [x] Cross-phase type consistency tests
 - [ ] Performance benchmarks
 - [ ] Regression test suite
 
-**Invariant Test Coverage**:
-| Test File | Invariant | Description |
-|-----------|-----------|-------------|
-| CaseKindScrutineeTest | CGEN_037 | Case scrutinee type matches case_kind |
-| OperandTypeConsistencyTest | CGEN_032 | SSA types match _operand_types declarations |
-| JumpTargetTest | CGEN_030 | eco.jump has required target attribute |
-| CallTargetValidityTest | - | Calls target real functions, not stubs |
-| BlockTerminatorTest | CGEN_028 | Every block has exactly one terminator |
-| ConstructResultTypeTest | CGEN_025 | eco.construct results are eco.value |
-| ... | ... | *(35 additional test files)* |
+**New Test Infrastructure** *(Feb 2026)*:
+| Test Module | Description |
+|-------------|-------------|
+| `CrossPhase/TypeConsistency.elm` | Type consistency across phases |
+| `GlobalOpt/CallInfoComplete.elm` | Call information completeness |
+| `GlobalOpt/CaseBranchStaging.elm` | Case branch staging consistency |
+| `GlobalOpt/ClosureStageArity.elm` | Closure stage arity validation |
+| `Monomorphize/LambdaIdUniqueness.elm` | Lambda ID uniqueness |
+| `Monomorphize/MonoFunctionArity.elm` | Function arity consistency |
+| `Monomorphize/MonoCtorLayoutIntegrity.elm` | Constructor layout integrity |
 
 **Deliverables**:
-- [x] Test suite infrastructure (`Invariants.elm`)
-- [x] Elm test programs (69 test files)
+- [x] Test suite infrastructure (`Invariants.elm`, `TestPipeline.elm`)
+- [x] Elm test programs (90+ test files)
 - [x] MLIR AST validation
-- [ ] Expected output validation
+- [x] All tests passing
 - [ ] Performance baseline
 
 ---
@@ -1674,8 +1721,8 @@ Runtime Foundation (§1)
 
 ## Project Status
 
-**Current Phase**: MLIR CodeGen Modularization Complete, Type Mismatch Bug Fixes In Progress
-**Last Updated**: 2026-01-20
+**Current Phase**: Stack Map Implementation for GC (enabling larger programs)
+**Last Updated**: 2026-02-19
 
 **Completed**:
 - Heap model design (§1.1)
@@ -1704,92 +1751,110 @@ Runtime Foundation (§1)
   - 272 kernel functions declared in KernelExports.h
   - 272 KERNEL_SYM entries in RuntimeSymbols.cpp for JIT resolution
   - 272 stub implementations across 16 *Exports.cpp files
-  - Some real implementations: Basics arithmetic, Url encoding/decoding, String operations
+  - Real implementations: Basics arithmetic, Url encoding/decoding, String operations, **Bytes kernel (complete)**
+- **PAP Wrapper Elimination (Feb 12, 2026)** - direct calls with typed closure calling
+- **Staged-Curried Calling Convention (Feb 9, 2026)** - callsite derivation algorithm complete
+- **Bytes Fusion Optimization (Feb 11, 2026)** - compiler-side fused encoder/decoder pipeline
+- **GlobalOpt Phase (Feb 5-7, 2026)** - consolidated uncurrying and ABI logic
+- **Lambda Boundary Normalization (Feb 4, 2026)** - for uncurrying support
+- **Tail Recursion with Loop State (Feb 2-3, 2026)** - joinpoint matching algorithm
+- **Parallel Test Compilation (Feb 3, 2026)** - system-sensitive parallel builds
+- **Architecture Refactoring (Feb 5-6, 2026)** - removed Guida syntax, clean architecture enforcement
+- **All tests passing (Feb 12, 2026)** - elm-test and E2E tests all pass
+- **Fuzz testing at fuzz 100 passing** - `npx elm-test-rs --fuzz 100` working
 
-**Recent Changes** *(from git log analysis - Dec 2025 to Jan 2026)*:
-- **JIT Pipeline Working** (Dec 15, 2025):
-  - "Compilation through front end and back end and running under JIT is now working for the first time"
-  - End-to-end pipeline: Elm source → Guida frontend → MLIR backend → JIT execution
-- **Kernel Module Integration** (Dec 16, 2025):
-  - Kernel modules integrated into CMake build as static libraries
-  - Real kernel implementations linked instead of stub injection
-  - C++ test runner for Elm code set up
-- **Monomorphizer Rewrite** (Dec 18, 2025):
-  - Full rewrite of monomorphizer to address deeper issues
-  - Guardrails against type variables escaping monomorphization
-- **Test Infrastructure** (Dec 18 - Jan 6, 2026):
-  - Process isolation for E2E tests with GC stats accumulation
-  - Parallel test execution for codegen and E2E tests
-  - Tests passing at `--fuzz 1` level
-- **TCO Closure Bug Fixed** (Dec 29, 2025)
-- **Type System Fixes** (Dec 30, 2025 - Jan 6, 2026):
-  - Kernel type mini-solver for VarKernel type deduction
-  - Multiple fixes for eco.value vs primitive type mismatches
-  - Pattern matching compilation (case..of, if..then) using SCF dialect
-- **Completed Elm kernel JavaScript audit** (§2.2):
-  - Cataloged 272 core kernel functions across 12 packages
-- **Completed kernel C++ stub infrastructure** (§2.3):
-  - 272 function stubs with KernelExports.h and RuntimeSymbols.cpp entries
-  - Real implementations for Url percent encode/decode
-- Build verified: all tests pass with kernel infrastructure in place
-- **Backend Pipeline Documentation** (Jan 11, 2026):
-  - Added comprehensive theory documents for compiler backend passes:
-    - `pass_post_solve_theory.md`: PostSolve type fixing and kernel type inference
-    - `pass_typed_optimization_theory.md`: Type-preserving optimization
-    - `pass_monomorphization_theory.md`: Worklist-based polymorphism elimination
-    - `pass_type_table_theory.md`: Runtime type metadata construction
-    - `pass_mlir_generation_theory.md`: MLIR code generation from MonoGraph
-  - Updated `THEORY.md` with Compiler Backend Pipeline overview
-  - Updated `PLAN.md` with current key files and theory documentation references
-- **MLIR CodeGen Modularization** (Jan 15-19, 2026):
-  - Refactored monolithic 6296-line `MLIR.elm` into 11 focused modules under `Compiler/Generate/MLIR/`:
-    - `Types.elm` - Eco types, MonoType→MlirType conversion
-    - `Context.elm` - Context, signatures, type registry
-    - `Ops.elm` - MLIR op builders (eco.*, arith.*, scf.*, func.*)
-    - `Names.elm` - Symbol naming helpers
-    - `TypeTable.elm` - eco.type_table generation
-    - `Intrinsics.elm` - Basics/Bitwise kernel intrinsics
-    - `Patterns.elm` - Path navigation, test generation
-    - `Expr.elm` - Expression lowering, call ABI (96KB, largest module)
-    - `Lambdas.elm` - Lambda/closure processing, PAP wrappers
-    - `Functions.elm` - Node/function generation
-    - `Backend.elm` - Program entry point, module wiring
-- **Comprehensive Invariant Test Infrastructure** (Jan 14-19, 2026):
-  - Added 69 new test files in `compiler/tests/Compiler/Generate/CodeGen/`
-  - Created `Invariants.elm` shared verification logic for MLIR AST inspection
-  - Tests cover CGEN_001 through CGEN_039 invariants
-  - Test categories: case scrutinee types, operand type consistency, jump targets, call validity, SSA types, construction/projection invariants
-- **Formal Invariants Documentation** (Jan 15-19, 2026):
-  - Created `design_docs/invariants.csv` - comprehensive invariant catalog
-  - Documented invariants across all compiler phases:
-    - CANON_001-006: Canonicalization phase invariants
-    - TYPE_001-006: Type checking phase invariants
-    - POST_001-004: PostSolve phase invariants
-    - TOPT_001-005: Typed optimization invariants
-    - MONO_001-015: Monomorphization invariants
-    - CGEN_001-039: MLIR codegen invariants
-  - Added `design_docs/invariant-test-logic.md` and `design_docs/more-mlir-checks.md`
-- **Test Failure Analysis** (Jan 20, 2026):
-  - Comprehensive analysis of current test failures:
-    - Elm compiler tests: 61+ passing, 4 failing (48 total failures)
-    - Eco E2E tests: 96 passing, 40 failing (136 total)
-  - All failures traced to MLIR CodeGen phase
-  - Root causes identified (see `plans/elm-test-failure-analysis-v2.md`):
-    1. Case scrutinee type mismatch (34 failures): `case_kind='int'` requires i64 but gets eco.value
-    2. Heap extraction type mismatch (10 failures): projections declare primitive types but return eco.value
-    3. Tail recursion issues (4 failures): jump target missing, call targets stub instead of real function
-  - Fix plans created: `fix-case-scrutinee-type.md`, `fix-heap-extraction-type-mismatch.md`
+**Recent Changes** *(from git log analysis - Jan 21 to Feb 12, 2026)*:
+
+- **PAP Wrapper Elimination Complete** (Feb 12, 2026):
+  - Completed elimination of PAP wrappers - all tests pass
+  - Direct calls even when partial application and closures are involved
+  - Split call ABI for heterogeneous vs homogeneous call paths:
+    - Homogeneous: captured args passed directly (fast path, most common)
+    - Heterogeneous: closure pointer with matching arg encoding used
+  - Added new test cases for heterogeneous call ABIs with mixed boxed/unboxed params
+
+- **Staged-Curried Calling Convention** (Feb 9, 2026):
+  - Completed callsite derivation algorithm matching all callsites to correct calling convention
+  - Global staged-currying soundness implemented
+  - New modules: `Staging.elm`, `Staging/GraphBuilder.elm`, `Staging/Solver.elm`, `Staging/Rewriter.elm`
+  - All elm-test tests pass
+
+- **papExtend Reimplemented as Inline** (Feb 11, 2026):
+  - Reimplemented papExtend helper as inline compiled code (same as indirect call)
+  - Added test cases for indirect calls with float results
+  - Improved float-to-i64 bitcasting in LLVM lowering
+
+- **Bytes Fusion Optimization** (Feb 11, 2026):
+  - Compiler-side fused encoder/decoder pipeline
+  - Intercepts `Bytes.encode`/`Bytes.decode` calls, lowers to fused BF dialect ops
+  - Cursor-based read/write operations instead of interpreter-style kernel
+  - New modules: `BytesFusion/Emit.elm`, `BytesFusion/Reify.elm`
+  - BF MLIR dialect defined in `BFOps.td`
+
+- **Bytes Kernel C++ Implementations** (Feb 11, 2026):
+  - Complete C++ implementations of elm/bytes kernel functions
+  - `BytesExports.cpp`: encode, decode, read/write operations for all int/float sizes
+  - Utils.cpp equality/comparison for ElmFloat and heap types
+
+- **NumberBoxed Kernel ABI** (Feb 10-11, 2026):
+  - Introduced NumberBoxed ABI mode for polymorphic number kernels
+  - Kernels like `String.fromNumber`, `Basics.add/sub/mul/pow` use uniform uint64_t
+  - C Number type variables treated as boxed CEcoValue
+
+- **Lambda Closure Capture Fix** (Feb 10, 2026):
+  - Fixed closure capture for lambdas with >1 parameter
+  - Added `CheckEcoClosureCaptures.cpp` verification pass
+
+- **Kernel Specialization** (Feb 10, 2026):
+  - Kernel functions can now specialize to unboxable primitive types
+  - Converted back to boxed in codegen if necessary
+  - Lists store unboxable values as unboxed
+
+- **GlobalOpt Phase Consolidation** (Feb 5-7, 2026):
+  - Major refactoring to consolidate uncurrying and ABI alignment logic
+  - New modules: `MonoGlobalOptimize.elm`, `MonoTraverse.elm`, `MonoReturnArity.elm`
+  - `MonoInlineSimplify` re-enabled for small function inlining
+  - All staging logic extracted from Monomorphization into GlobalOpt
+
+- **Architecture Improvements** (Feb 5-6, 2026):
+  - Removed Guida syntax support (rebranded to Eco)
+  - Removed most Guida references throughout codebase
+  - Clean architecture dependency enforcement via elm-review
+  - Refactored code into folders matching compiler phase names
+  - Removed forward dependencies from Monomorphization to MLIR codegen
+
+- **Test Pipeline Consolidation** (Feb 6, 2026):
+  - Common test pipeline implementation in `TestPipeline.elm`
+  - 90+ test files consolidated
+
+- **Tail Recursion with Loop State** (Feb 2-3, 2026):
+  - Implemented tail recursion compilation with loop state
+  - Joinpoint matching algorithm for stage-curried joinpoints
+  - Lambda boundary normalization for uncurrying
+
+- **Parallel Test Compilation** (Feb 3, 2026):
+  - Parallel compilation support in build system
+  - System-sensitive parallel build counts
+  - Separate build directories for parallel execution
+
+- **Float Precision** (Feb 11, 2026):
+  - Float-to-string uses shortest round-trip representation
+  - Changed from %g (6 digits) to std::to_chars for exact JavaScript/Elm behavior
+
+- **Various Bug Fixes** (Feb 2-11, 2026):
+  - Record update codegen implemented
+  - Empty string check kernel functions fixed
+  - Bool return values mapping from kernel functions fixed
+  - Tail-rec return type mismatch fixed
+  - Closure stage return type fixed
+  - String comparison bool unboxing in case statements fixed
+  - Custom type field registration in global type table fixed
 
 **Next Steps** *(in priority order)*:
-1. **Fix case scrutinee type mismatch (§4.2)** - 34 test failures; see `plans/fix-case-scrutinee-type.md`
-2. **Fix heap extraction type mismatch (§4.2)** - 10 test failures; see `plans/fix-heap-extraction-type-mismatch.md`
-3. **Fix tail recursion issues (§4.2)** - 4 test failures (jump target, call target validity)
-4. **Implement real kernel functions (§2.3)** - priority: Utils, Basics, List, String for self-hosting
-5. **Expand test coverage** - move from `--fuzz 1` to higher fuzz levels
-6. **AOT compilation (§5.1.1)** - produce standalone native binaries (currently JIT only)
-7. **LLVM stack map implementation (§1.2.3)** - precise GC root tracing
+1. **LLVM stack map implementation (§1.2.3)** - precise GC root tracing for larger/longer-running programs
+2. **Implement real kernel functions (§2.3)** - priority: Utils, Basics, List, String for self-hosting
+3. **AOT compilation (§5.1.1)** - produce standalone native binaries (currently JIT only)
 
 **Active Workstreams**:
-1. **MLIR CodeGen type mismatch fixes (§4.2)** - fixing case scrutinee and heap extraction type issues
-2. **Invariant test expansion** - validating fixes via comprehensive invariant tests
-3. **Elm kernel C++ real implementations (§2.3)** - replace stubs with working code
+1. **LLVM stack map implementation (§1.2.3)** - required for GC in larger programs with deep stacks
+2. **Elm kernel C++ real implementations (§2.3)** - working towards self-compilation (Bytes complete)
