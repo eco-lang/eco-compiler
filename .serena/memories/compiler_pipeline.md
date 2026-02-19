@@ -54,8 +54,9 @@ LLVM IR → Native Code
 
 ### MLIR Generation
 - 11 modules under `compiler/src/Compiler/Generate/MLIR/`
-- Key: Types.elm, Context.elm, Ops.elm, Expr.elm, Functions.elm
+- Key: Types.elm, Context.elm, Ops.elm, Expr.elm, Functions.elm, Intrinsics.elm
 - Generates eco.* operations, type table, kernel declarations
+- **Intrinsics**: Basics/Bitwise ops emit direct eco.int.*/eco.float.* ops (see intrinsics_theory.md)
 
 ### EcoToLLVM
 - Converts !eco.value → i64 (tagged pointer)

@@ -26,6 +26,8 @@ This requires a **boxed ABI** where all values are passed as `uint64_t` (HPointe
 
 However, some kernels (like `Basics.add : Int -> Int -> Int`) are monomorphic and can use typed parameters directly.
 
+**Important**: Many arithmetic operations from `Basics` and `Bitwise` modules are handled by [compiler intrinsics](intrinsics_theory.md) rather than kernel calls. Intrinsics bypass the kernel ABI entirely and emit direct MLIR operations. The kernel ABI is only used when intrinsics don't apply.
+
 ## ABI Modes
 
 The `KernelAbiMode` type determines how kernel function types are derived:
@@ -274,6 +276,8 @@ numberBoxedKernels =
 
 These receive boxed numbers and dispatch by runtime tag.
 
+**Note**: In practice, the `Basics` operations listed above (`add`, `sub`, `mul`, `pow`) are almost always handled by [intrinsics](intrinsics_theory.md) when argument types are concrete (`MInt` or `MFloat`). The NumberBoxed kernel path is only taken when types remain polymorphic after monomorphization—which is rare. The primary user of NumberBoxed is `String.fromNumber`, which has no intrinsic equivalent.
+
 ### Container-Specialized Kernels
 
 ```elm
@@ -301,6 +305,7 @@ These can have specialized Elm wrappers even though the C++ ABI is boxed.
 
 ## See Also
 
+- [Intrinsics Theory](intrinsics_theory.md) — Direct MLIR ops that bypass kernel ABI
 - [Monomorphization Theory](pass_monomorphization_theory.md) — Type specialization context
 - [MLIR Generation Theory](pass_mlir_generation_theory.md) — Kernel call emission
 - [Heap Representation Theory](heap_representation_theory.md) — Boxing/unboxing semantics

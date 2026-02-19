@@ -26,7 +26,9 @@ Key files in `runtime/src/allocator/`:
 - Performs monomorphization (removes polymorphism)
 - Generates code for the eco-runtime GC
 
-Key file: `compiler/src/Compiler/Generate/CodeGen/MLIR.elm` - MLIR backend
+Key files:
+- `compiler/src/Compiler/Generate/MLIR/` - MLIR backend modules
+- `compiler/src/Compiler/Generate/MLIR/Intrinsics.elm` - Direct MLIR lowering for Basics/Bitwise ops
 
 ### 3. Elm Kernel C++ (`elm-kernel-cpp/`)
 C++ implementations of Elm's kernel functions (Basics, String, List, etc.)

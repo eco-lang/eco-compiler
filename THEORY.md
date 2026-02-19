@@ -527,15 +527,17 @@ Kernel functions are C++/runtime implementations called from Elm code. They're h
 
 1. **PostSolve** infers types from aliases and usage
 2. **Monomorphization** determines ABI mode (UseSubstitution, PreserveVars, NumberBoxed)
-3. **MLIR Generation** emits declarations with boxing/unboxing at boundaries
+3. **MLIR Generation** checks for intrinsics first, then emits kernel calls with boxing/unboxing
 4. **Linking** connects to C++ implementations in the runtime
 
-**ABI Modes**:
+**Intrinsics**: Many `Basics` and `Bitwise` operations are handled by [compiler intrinsics](design_docs/theory/intrinsics_theory.md) that emit direct MLIR operations, bypassing kernel calls entirely. This covers arithmetic (`add`, `sub`, `mul`, `div`), comparisons (`lt`, `le`, `gt`, `ge`), trigonometry (`sin`, `cos`, `tan`), and bitwise operations (`and`, `or`, `xor`, `shiftLeftBy`).
+
+**ABI Modes** (for operations without intrinsics):
 - **UseSubstitution**: Monomorphic kernels use typed parameters directly
 - **PreserveVars**: Polymorphic kernels use boxed `eco.value` for all type variables
-- **NumberBoxed**: Number-polymorphic kernels (`add`, `fromNumber`) receive boxed numbers
+- **NumberBoxed**: Number-polymorphic kernels (`fromNumber`) receive boxed numbers
 
-**See**: [Kernel ABI Theory](design_docs/theory/kernel_abi_theory.md)
+**See**: [Intrinsics Theory](design_docs/theory/intrinsics_theory.md), [Kernel ABI Theory](design_docs/theory/kernel_abi_theory.md)
 
 ## Detailed Documentation
 
@@ -564,6 +566,7 @@ Each pass and subsystem has comprehensive documentation in [`design_docs/theory/
 |----------|-------------|
 | [bytes_fusion_theory.md](design_docs/theory/bytes_fusion_theory.md) | Bytes.encode/decode fusion to BF dialect |
 | [typed_closure_calling_theory.md](design_docs/theory/typed_closure_calling_theory.md) | PAP wrapper elimination, ABI cloning |
+| [intrinsics_theory.md](design_docs/theory/intrinsics_theory.md) | Direct MLIR lowering for arithmetic/bitwise ops |
 | [kernel_abi_theory.md](design_docs/theory/kernel_abi_theory.md) | Kernel function ABI modes and type handling |
 
 ### Cross-Cutting Concerns
