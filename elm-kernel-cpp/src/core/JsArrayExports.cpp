@@ -10,6 +10,74 @@
 using namespace Elm;
 using namespace Elm::Kernel;
 
+namespace {
+
+//===----------------------------------------------------------------------===//
+// Closure-calling helpers (StringExports pattern)
+//===----------------------------------------------------------------------===//
+
+// Call a closure with one argument (index for initialize)
+static uint64_t callUnaryInitClosure(void* closure_ptr, uint32_t index) {
+    Closure* closure = static_cast<Closure*>(closure_ptr);
+    uint32_t n_values = closure->n_values;
+
+    void* args[16];
+    for (uint32_t i = 0; i < n_values; i++) {
+        args[i] = reinterpret_cast<void*>(closure->values[i].i);
+    }
+    // Index is passed as unboxed i64
+    args[n_values] = reinterpret_cast<void*>(static_cast<uint64_t>(index));
+
+    return reinterpret_cast<uint64_t>(closure->evaluator(args));
+}
+
+// Call a closure with one argument (element for map)
+static uint64_t callUnaryMapClosure(void* closure_ptr, uint64_t elem) {
+    Closure* closure = static_cast<Closure*>(closure_ptr);
+    uint32_t n_values = closure->n_values;
+
+    void* args[16];
+    for (uint32_t i = 0; i < n_values; i++) {
+        args[i] = reinterpret_cast<void*>(closure->values[i].i);
+    }
+    args[n_values] = reinterpret_cast<void*>(elem);
+
+    return reinterpret_cast<uint64_t>(closure->evaluator(args));
+}
+
+// Call a closure with two arguments (index, element for indexedMap)
+static uint64_t callBinaryIndexMapClosure(void* closure_ptr, uint32_t index, uint64_t elem) {
+    Closure* closure = static_cast<Closure*>(closure_ptr);
+    uint32_t n_values = closure->n_values;
+
+    void* args[16];
+    for (uint32_t i = 0; i < n_values; i++) {
+        args[i] = reinterpret_cast<void*>(closure->values[i].i);
+    }
+    // Index is passed as unboxed i64
+    args[n_values] = reinterpret_cast<void*>(static_cast<uint64_t>(index));
+    args[n_values + 1] = reinterpret_cast<void*>(elem);
+
+    return reinterpret_cast<uint64_t>(closure->evaluator(args));
+}
+
+// Call a closure with two arguments (element, acc for foldl/foldr)
+static uint64_t callBinaryFoldClosure(void* closure_ptr, uint64_t elem, uint64_t acc) {
+    Closure* closure = static_cast<Closure*>(closure_ptr);
+    uint32_t n_values = closure->n_values;
+
+    void* args[16];
+    for (uint32_t i = 0; i < n_values; i++) {
+        args[i] = reinterpret_cast<void*>(closure->values[i].i);
+    }
+    args[n_values] = reinterpret_cast<void*>(elem);
+    args[n_values + 1] = reinterpret_cast<void*>(acc);
+
+    return reinterpret_cast<uint64_t>(closure->evaluator(args));
+}
+
+} // anonymous namespace
+
 extern "C" {
 
 uint64_t Elm_Kernel_JsArray_empty() {
@@ -30,9 +98,17 @@ uint32_t Elm_Kernel_JsArray_length(uint64_t array) {
 
 uint64_t Elm_Kernel_JsArray_unsafeGet(uint32_t index, uint64_t array) {
     void* ptr = Export::toPtr(array);
+    ElmArray* arr = static_cast<ElmArray*>(ptr);
     Unboxable val = alloc::arrayGet(ptr, index);
-    // Assume boxed for safety
-    return Export::encode(val.p);
+
+    // Check uniform unboxed flag
+    if (arr->unboxed) {
+        // Return unboxed value directly
+        return static_cast<uint64_t>(val.i);
+    } else {
+        // Return encoded pointer
+        return Export::encode(val.p);
+    }
 }
 
 uint64_t Elm_Kernel_JsArray_unsafeSet(uint32_t index, uint64_t value, uint64_t array) {
@@ -50,16 +126,13 @@ uint64_t Elm_Kernel_JsArray_unsafeSet(uint32_t index, uint64_t value, uint64_t a
         dst->elements[i] = src->elements[i];
     }
     dst->length = len;
-    dst->unboxed = src->unboxed;
 
-    // Set the new value at index
+    // Set the new value at index (always boxed when coming from export)
     if (index < len) {
         dst->elements[index].p = Export::decode(value);
-        // Mark as boxed
-        if (index < 64) {
-            dst->unboxed &= ~(1ULL << index);
-        }
     }
+    // Result is boxed since we're setting a boxed value
+    dst->unboxed = 0;
 
     return Export::encode(result);
 }
@@ -77,10 +150,11 @@ uint64_t Elm_Kernel_JsArray_push(uint64_t value, uint64_t array) {
     for (uint32_t i = 0; i < len; i++) {
         dst->elements[i] = src->elements[i];
     }
-    // Add new element
+    // Add new element (boxed)
     dst->elements[len].p = Export::decode(value);
     dst->length = len + 1;
-    dst->unboxed = src->unboxed; // New element is boxed
+    // Result is boxed since we're pushing a boxed value
+    dst->unboxed = 0;
 
     return Export::encode(result);
 }
@@ -108,8 +182,8 @@ uint64_t Elm_Kernel_JsArray_slice(int64_t start, int64_t end, uint64_t array) {
         dst->elements[i] = src->elements[start + i];
     }
     dst->length = static_cast<uint32_t>(newLen);
-    // Copy relevant unboxed bits (simplified - just set all boxed)
-    dst->unboxed = 0;
+    // Preserve unboxed flag from source
+    dst->unboxed = src->unboxed;
 
     return Export::encode(result);
 }
@@ -138,59 +212,116 @@ uint64_t Elm_Kernel_JsArray_appendN(uint32_t n, uint64_t dest, uint64_t source) 
         resultArr->elements[destLen + i] = srcArr->elements[i];
     }
     resultArr->length = newLen;
-    resultArr->unboxed = 0;
+    // Both arrays should have same unboxed status; use dest's
+    resultArr->unboxed = destArr->unboxed;
 
     return Export::encode(result);
 }
 
 //===----------------------------------------------------------------------===//
-// Higher-order functions (stubs - require closure support)
+// Higher-order functions (implemented with closure calling)
 //===----------------------------------------------------------------------===//
 
 uint64_t Elm_Kernel_JsArray_initialize(uint32_t size, uint32_t offset, uint64_t closure) {
-    (void)size;
-    (void)offset;
-    (void)closure;
-    assert(false && "Elm_Kernel_JsArray_initialize not implemented - requires closure calling");
-    return 0;
+    void* closure_ptr = Export::toPtr(closure);
+    HPointer arr = alloc::allocArray(size);
+    auto& allocator = Allocator::instance();
+
+    for (uint32_t i = 0; i < size; i++) {
+        uint64_t value = callUnaryInitClosure(closure_ptr, offset + i);
+        void* arrObj = allocator.resolve(arr);
+        // Results from closure are boxed HPointers
+        Unboxable elem;
+        elem.p = Export::decode(value);
+        alloc::arrayPush(arrObj, elem, true);  // isBoxed=true
+    }
+    return Export::encode(arr);
 }
 
 uint64_t Elm_Kernel_JsArray_initializeFromList(uint32_t max, uint64_t list) {
-    (void)max;
-    (void)list;
-    assert(false && "Elm_Kernel_JsArray_initializeFromList not implemented");
-    return 0;
+    HPointer result = JsArray::initializeFromList(max, Export::decode(list));
+    return Export::encode(result);
 }
 
 uint64_t Elm_Kernel_JsArray_map(uint64_t closure, uint64_t array) {
-    (void)closure;
-    (void)array;
-    assert(false && "Elm_Kernel_JsArray_map not implemented - requires closure calling");
-    return 0;
+    void* closure_ptr = Export::toPtr(closure);
+    void* srcPtr = Export::toPtr(array);
+    ElmArray* src = static_cast<ElmArray*>(srcPtr);
+    uint32_t len = src->length;
+    bool srcUnboxed = src->unboxed != 0;
+
+    HPointer arr = alloc::allocArray(len);
+    auto& allocator = Allocator::instance();
+
+    for (uint32_t i = 0; i < len; i++) {
+        // Pass element directly as uint64_t (no boxing)
+        uint64_t elem = srcUnboxed ? static_cast<uint64_t>(src->elements[i].i)
+                                   : Export::encode(src->elements[i].p);
+        uint64_t result = callUnaryMapClosure(closure_ptr, elem);
+
+        void* arrObj = allocator.resolve(arr);
+        Unboxable val;
+        val.p = Export::decode(result);
+        alloc::arrayPush(arrObj, val, true);  // results are boxed
+    }
+    return Export::encode(arr);
 }
 
 uint64_t Elm_Kernel_JsArray_indexedMap(uint64_t closure, uint32_t offset, uint64_t array) {
-    (void)closure;
-    (void)offset;
-    (void)array;
-    assert(false && "Elm_Kernel_JsArray_indexedMap not implemented - requires closure calling");
-    return 0;
+    void* closure_ptr = Export::toPtr(closure);
+    void* srcPtr = Export::toPtr(array);
+    ElmArray* src = static_cast<ElmArray*>(srcPtr);
+    uint32_t len = src->length;
+    bool srcUnboxed = src->unboxed != 0;
+
+    HPointer arr = alloc::allocArray(len);
+    auto& allocator = Allocator::instance();
+
+    for (uint32_t i = 0; i < len; i++) {
+        // Pass element directly as uint64_t (no boxing)
+        uint64_t elem = srcUnboxed ? static_cast<uint64_t>(src->elements[i].i)
+                                   : Export::encode(src->elements[i].p);
+        uint64_t result = callBinaryIndexMapClosure(closure_ptr, offset + i, elem);
+
+        void* arrObj = allocator.resolve(arr);
+        Unboxable val;
+        val.p = Export::decode(result);
+        alloc::arrayPush(arrObj, val, true);  // results are boxed
+    }
+    return Export::encode(arr);
 }
 
 uint64_t Elm_Kernel_JsArray_foldl(uint64_t closure, uint64_t acc, uint64_t array) {
-    (void)closure;
-    (void)acc;
-    (void)array;
-    assert(false && "Elm_Kernel_JsArray_foldl not implemented - requires closure calling");
-    return 0;
+    void* closure_ptr = Export::toPtr(closure);
+    void* srcPtr = Export::toPtr(array);
+    ElmArray* src = static_cast<ElmArray*>(srcPtr);
+    uint32_t len = src->length;
+    bool srcUnboxed = src->unboxed != 0;
+
+    uint64_t accumulator = acc;
+    for (uint32_t i = 0; i < len; i++) {
+        uint64_t elem = srcUnboxed ? static_cast<uint64_t>(src->elements[i].i)
+                                   : Export::encode(src->elements[i].p);
+        accumulator = callBinaryFoldClosure(closure_ptr, elem, accumulator);
+    }
+    return accumulator;
 }
 
 uint64_t Elm_Kernel_JsArray_foldr(uint64_t closure, uint64_t acc, uint64_t array) {
-    (void)closure;
-    (void)acc;
-    (void)array;
-    assert(false && "Elm_Kernel_JsArray_foldr not implemented - requires closure calling");
-    return 0;
+    void* closure_ptr = Export::toPtr(closure);
+    void* srcPtr = Export::toPtr(array);
+    ElmArray* src = static_cast<ElmArray*>(srcPtr);
+    uint32_t len = src->length;
+    bool srcUnboxed = src->unboxed != 0;
+
+    uint64_t accumulator = acc;
+    for (uint32_t i = len; i > 0; i--) {
+        uint32_t idx = i - 1;
+        uint64_t elem = srcUnboxed ? static_cast<uint64_t>(src->elements[idx].i)
+                                   : Export::encode(src->elements[idx].p);
+        accumulator = callBinaryFoldClosure(closure_ptr, elem, accumulator);
+    }
+    return accumulator;
 }
 
 } // extern "C"

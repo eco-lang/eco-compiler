@@ -294,7 +294,7 @@ typedef struct elm_bytebuffer ByteBuffer;
  * Memory layout:
  *   - header.size = allocated capacity (in elements)
  *   - length = current number of elements
- *   - unboxed = bitmap indicating which elements are unboxed primitives
+ *   - unboxed = flag indicating if ALL elements are unboxed primitives
  *   - elements[] = array of Unboxable values
  *
  * Capacity vs Length:
@@ -302,17 +302,21 @@ typedef struct elm_bytebuffer ByteBuffer;
  *   - length = number of slots currently in use
  *   - Allows efficient push() without reallocating every time
  *
+ * Uniformity:
+ *   - Arrays are uniform: either ALL elements are boxed or ALL are unboxed
+ *   - Single bit flag replaces per-element bitmap
+ *
  * GC notes:
- *   - Must scan elements[0..length-1] for pointers
- *   - Check unboxed bitmap to skip unboxed primitives
+ *   - Must scan elements[0..length-1] for pointers if !unboxed
+ *   - If unboxed flag is set, all elements are primitives (skip scanning)
  *   - When copying, only copy header + used elements (not full capacity)
  */
 typedef struct {
     Header header;     // header.size = capacity (allocated element count)
     u32 length;        // Current number of elements in use
-    u32 padding;       // Alignment padding
-    u64 unboxed;       // Bitmap: bit N set means elements[N] is unboxed primitive
-    Unboxable elements[];  // Flexible array of values (up to 64 elements with unboxing)
+    u32 unboxed : 1;   // Flag: 1 = all elements unboxed, 0 = all elements boxed
+    u32 padding : 31;  // Alignment padding
+    Unboxable elements[];  // Flexible array of values
 } ElmArray;
 
 typedef union HeapValue {

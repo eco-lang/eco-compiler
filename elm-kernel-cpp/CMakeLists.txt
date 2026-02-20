@@ -134,17 +134,6 @@ target_include_directories(ElmKernel_Process PUBLIC
 )
 target_compile_features(ElmKernel_Process PUBLIC cxx_std_20)
 
-# Debugger module
-add_library(ElmKernel_Debugger STATIC
-    src/core/Debugger.cpp
-    src/core/DebuggerExports.cpp
-)
-target_include_directories(ElmKernel_Debugger PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}/src
-    ${RUNTIME_INCLUDE_DIR}
-)
-target_compile_features(ElmKernel_Debugger PUBLIC cxx_std_20)
-
 # VirtualDom module
 add_library(ElmKernel_VirtualDom STATIC
     src/virtual-dom/VirtualDom.cpp
@@ -272,7 +261,6 @@ target_link_libraries(ElmKernel INTERFACE
     ElmKernel_Scheduler
     ElmKernel_Platform
     ElmKernel_Process
-    ElmKernel_Debugger
     ElmKernel_VirtualDom
     ElmKernel_Json
     ElmKernel_Browser
@@ -289,7 +277,7 @@ target_link_libraries(ElmKernel INTERFACE
 foreach(target
     ElmKernel_Basics ElmKernel_Bitwise ElmKernel_Char ElmKernel_String
     ElmKernel_List ElmKernel_Utils ElmKernel_JsArray ElmKernel_Debug
-    ElmKernel_Scheduler ElmKernel_Platform ElmKernel_Process ElmKernel_Debugger
+    ElmKernel_Scheduler ElmKernel_Platform ElmKernel_Process
     ElmKernel_VirtualDom ElmKernel_Json ElmKernel_Browser ElmKernel_Bytes
     ElmKernel_File ElmKernel_Http ElmKernel_Parser ElmKernel_Regex
     ElmKernel_Time ElmKernel_Url

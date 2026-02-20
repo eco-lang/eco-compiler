@@ -142,4 +142,56 @@ uint64_t Elm_Kernel_Browser_call(uint64_t closure) {
     return 0;
 }
 
+//===----------------------------------------------------------------------===//
+// Debugger Module (elm/browser) - Browser debugging tools
+//===----------------------------------------------------------------------===//
+
+uint64_t Elm_Kernel_Debugger_init(uint64_t value) {
+    (void)value;
+    assert(false && "Elm_Kernel_Debugger_init not implemented - requires browser");
+    return 0;
+}
+
+uint64_t Elm_Kernel_Debugger_isOpen(uint64_t popout) {
+    (void)popout;
+    assert(false && "Elm_Kernel_Debugger_isOpen not implemented - requires browser");
+    return 0;
+}
+
+uint64_t Elm_Kernel_Debugger_open(uint64_t popout) {
+    (void)popout;
+    assert(false && "Elm_Kernel_Debugger_open not implemented - requires browser");
+    return 0;
+}
+
+uint64_t Elm_Kernel_Debugger_scroll(uint64_t popout) {
+    (void)popout;
+    assert(false && "Elm_Kernel_Debugger_scroll not implemented - requires browser");
+    return 0;
+}
+
+uint64_t Elm_Kernel_Debugger_messageToString(uint64_t message) {
+    (void)message;
+    assert(false && "Elm_Kernel_Debugger_messageToString not implemented - requires browser");
+    return 0;
+}
+
+uint64_t Elm_Kernel_Debugger_download(int64_t historyLength, uint64_t json) {
+    (void)historyLength;
+    (void)json;
+    assert(false && "Elm_Kernel_Debugger_download not implemented - requires browser");
+    return 0;
+}
+
+uint64_t Elm_Kernel_Debugger_upload() {
+    assert(false && "Elm_Kernel_Debugger_upload not implemented - requires browser");
+    return 0;
+}
+
+uint64_t Elm_Kernel_Debugger_unsafeCoerce(uint64_t value) {
+    (void)value;
+    assert(false && "Elm_Kernel_Debugger_unsafeCoerce not implemented - requires browser");
+    return 0;
+}
+
 } // extern "C"

@@ -167,19 +167,6 @@ uint64_t Elm_Kernel_Debug_todo(uint64_t message);
 uint64_t Elm_Kernel_Debug_toString(uint64_t value);
 
 //===----------------------------------------------------------------------===//
-// Debugger Module (elm/core)
-//===----------------------------------------------------------------------===//
-
-uint64_t Elm_Kernel_Debugger_init(uint64_t value);
-uint64_t Elm_Kernel_Debugger_isOpen(uint64_t popout);
-uint64_t Elm_Kernel_Debugger_open(uint64_t popout);
-uint64_t Elm_Kernel_Debugger_scroll(uint64_t popout);
-uint64_t Elm_Kernel_Debugger_messageToString(uint64_t message);
-uint64_t Elm_Kernel_Debugger_download(int64_t historyLength, uint64_t json);
-uint64_t Elm_Kernel_Debugger_upload();
-uint64_t Elm_Kernel_Debugger_unsafeCoerce(uint64_t value);
-
-//===----------------------------------------------------------------------===//
 // Platform Module (elm/core)
 //===----------------------------------------------------------------------===//
 
@@ -262,6 +249,19 @@ uint64_t Elm_Kernel_Browser_rAF();
 uint64_t Elm_Kernel_Browser_now();
 uint64_t Elm_Kernel_Browser_visibilityInfo();
 uint64_t Elm_Kernel_Browser_call(uint64_t closure);
+
+//===----------------------------------------------------------------------===//
+// Debugger Module (elm/browser)
+//===----------------------------------------------------------------------===//
+
+uint64_t Elm_Kernel_Debugger_init(uint64_t value);
+uint64_t Elm_Kernel_Debugger_isOpen(uint64_t popout);
+uint64_t Elm_Kernel_Debugger_open(uint64_t popout);
+uint64_t Elm_Kernel_Debugger_scroll(uint64_t popout);
+uint64_t Elm_Kernel_Debugger_messageToString(uint64_t message);
+uint64_t Elm_Kernel_Debugger_download(int64_t historyLength, uint64_t json);
+uint64_t Elm_Kernel_Debugger_upload();
+uint64_t Elm_Kernel_Debugger_unsafeCoerce(uint64_t value);
 
 //===----------------------------------------------------------------------===//
 // Json Module (elm/json)

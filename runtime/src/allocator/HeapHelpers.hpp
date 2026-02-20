@@ -654,10 +654,8 @@ inline HPointer arrayFromInts(const std::vector<i64>& elements) {
     ElmArray* arr = static_cast<ElmArray*>(allocator.allocate(total_size, Tag_Array));
     arr->header.size = static_cast<u32>(capacity);
     arr->length = static_cast<u32>(elements.size());
+    arr->unboxed = 1;  // All elements are unboxed
     arr->padding = 0;
-
-    // Set all bits in unboxed mask (up to 64 elements)
-    arr->unboxed = (capacity >= 64) ? ~0ULL : ((1ULL << capacity) - 1);
 
     for (size_t i = 0; i < elements.size(); ++i) {
         arr->elements[i].i = elements[i];
@@ -684,6 +682,9 @@ inline size_t arrayCapacity(void* arr) {
 /**
  * Pushes a value onto an Array (must have capacity).
  *
+ * Arrays are uniform: all elements must be either boxed or unboxed.
+ * The first push sets the unboxed flag; subsequent pushes must be consistent.
+ *
  * @param arr      Pointer to the Array.
  * @param value    Value to push.
  * @param is_boxed True if value is a heap pointer.
@@ -698,12 +699,11 @@ inline bool arrayPush(void* arr, Unboxable value, bool is_boxed) {
     size_t idx = a->length;
     a->elements[idx] = value;
 
-    // Update unboxed mask
-    if (!is_boxed && idx < 64) {
-        a->unboxed |= (1ULL << idx);
-    } else if (is_boxed && idx < 64) {
-        a->unboxed &= ~(1ULL << idx);
+    // Set unboxed flag on first push; arrays are uniform
+    if (idx == 0) {
+        a->unboxed = is_boxed ? 0 : 1;
     }
+    // Note: subsequent pushes must be consistent (not enforced here)
 
     a->length++;
     return true;
@@ -722,16 +722,16 @@ inline Unboxable arrayGet(void* arr, size_t index) {
 }
 
 /**
- * Checks if an array element is unboxed.
+ * Checks if an array's elements are unboxed.
+ *
+ * Arrays are uniform: either ALL elements are unboxed or ALL are boxed.
  *
  * @param arr   Pointer to the Array.
- * @param index Index to check.
- * @return True if element is unboxed (primitive), false if boxed (pointer).
+ * @return True if all elements are unboxed primitives, false if all are boxed pointers.
  */
-inline bool arrayIsUnboxed(void* arr, size_t index) {
+inline bool arrayIsUnboxed(void* arr) {
     ElmArray* a = static_cast<ElmArray*>(arr);
-    if (index >= 64) return false;  // Can only track 64 elements
-    return (a->unboxed & (1ULL << index)) != 0;
+    return a->unboxed != 0;
 }
 
 // ============================================================================

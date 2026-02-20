@@ -103,6 +103,7 @@ HPointer unsafeSet(u32 index, HPointer value, void* array) {
 
     HPointer newArr = alloc::allocArray(len);
     auto& allocator = Allocator::instance();
+    bool srcUnboxed = alloc::arrayIsUnboxed(array);
 
     // Copy elements
     for (u32 i = 0; i < len; ++i) {
@@ -112,8 +113,7 @@ HPointer unsafeSet(u32 index, HPointer value, void* array) {
             alloc::arrayPush(dstObj, alloc::boxed(value), true);
         } else {
             Unboxable elem = src->elements[i];
-            bool isUnboxed = alloc::arrayIsUnboxed(array, i);
-            alloc::arrayPush(dstObj, elem, !isUnboxed);
+            alloc::arrayPush(dstObj, elem, !srcUnboxed);
         }
     }
 
@@ -131,13 +131,13 @@ HPointer push(HPointer value, void* array) {
     // Create a new array with copy + new element
     HPointer newArr = alloc::allocArray(len + 1);
     auto& allocator = Allocator::instance();
+    bool srcUnboxed = alloc::arrayIsUnboxed(array);
 
     // Copy existing elements
     for (u32 i = 0; i < len; ++i) {
         void* dstObj = allocator.resolve(newArr);
         Unboxable elem = src->elements[i];
-        bool isUnboxed = alloc::arrayIsUnboxed(array, i);
-        alloc::arrayPush(dstObj, elem, !isUnboxed);
+        alloc::arrayPush(dstObj, elem, !srcUnboxed);
     }
 
     // Add new element
@@ -155,13 +155,14 @@ HPointer foldl(FoldFunc func, HPointer acc, void* array) {
     auto& allocator = Allocator::instance();
     ElmArray* arr = static_cast<ElmArray*>(array);
     u32 len = arr->length;
+    bool srcUnboxed = alloc::arrayIsUnboxed(array);
 
     HPointer result = acc;
 
     for (u32 i = 0; i < len; ++i) {
         // Get element and resolve if pointer
         void* elem;
-        if (alloc::arrayIsUnboxed(array, i)) {
+        if (srcUnboxed) {
             // Box the value for the callback
             HPointer boxed = alloc::allocInt(arr->elements[i].i);
             elem = allocator.resolve(boxed);
@@ -180,6 +181,7 @@ HPointer foldr(FoldFunc func, HPointer acc, void* array) {
     auto& allocator = Allocator::instance();
     ElmArray* arr = static_cast<ElmArray*>(array);
     u32 len = arr->length;
+    bool srcUnboxed = alloc::arrayIsUnboxed(array);
 
     HPointer result = acc;
 
@@ -188,7 +190,7 @@ HPointer foldr(FoldFunc func, HPointer acc, void* array) {
 
         // Get element and resolve if pointer
         void* elem;
-        if (alloc::arrayIsUnboxed(array, idx)) {
+        if (srcUnboxed) {
             // Box the value for the callback
             HPointer boxed = alloc::allocInt(arr->elements[idx].i);
             elem = allocator.resolve(boxed);
@@ -211,13 +213,14 @@ HPointer map(MapFunc func, void* array) {
     auto& allocator = Allocator::instance();
     ElmArray* arr = static_cast<ElmArray*>(array);
     u32 len = arr->length;
+    bool srcUnboxed = alloc::arrayIsUnboxed(array);
 
     HPointer newArr = alloc::allocArray(len);
 
     for (u32 i = 0; i < len; ++i) {
         // Get element and resolve if pointer
         void* elem;
-        if (alloc::arrayIsUnboxed(array, i)) {
+        if (srcUnboxed) {
             // Box the value for the callback
             HPointer boxed = alloc::allocInt(arr->elements[i].i);
             elem = allocator.resolve(boxed);
@@ -237,13 +240,14 @@ HPointer indexedMap(IndexedMapFunc func, u32 offset, void* array) {
     auto& allocator = Allocator::instance();
     ElmArray* arr = static_cast<ElmArray*>(array);
     u32 len = arr->length;
+    bool srcUnboxed = alloc::arrayIsUnboxed(array);
 
     HPointer newArr = alloc::allocArray(len);
 
     for (u32 i = 0; i < len; ++i) {
         // Get element and resolve if pointer
         void* elem;
-        if (alloc::arrayIsUnboxed(array, i)) {
+        if (srcUnboxed) {
             // Box the value for the callback
             HPointer boxed = alloc::allocInt(arr->elements[i].i);
             elem = allocator.resolve(boxed);
@@ -282,14 +286,14 @@ HPointer slice(i64 start, i64 end, void* array) {
     u32 newLen = static_cast<u32>(end - start);
     HPointer newArr = alloc::allocArray(newLen);
     auto& allocator = Allocator::instance();
+    bool srcUnboxed = alloc::arrayIsUnboxed(array);
 
     for (i64 i = start; i < end; ++i) {
         u32 idx = static_cast<u32>(i);
         Unboxable elem = arr->elements[idx];
-        bool isUnboxed = alloc::arrayIsUnboxed(array, idx);
 
         void* dstObj = allocator.resolve(newArr);
-        alloc::arrayPush(dstObj, elem, !isUnboxed);
+        alloc::arrayPush(dstObj, elem, !srcUnboxed);
     }
 
     return newArr;
@@ -310,23 +314,23 @@ HPointer appendN(u32 n, void* dest, void* source) {
     u32 totalLen = destLen + itemsToCopy;
     HPointer newArr = alloc::allocArray(totalLen);
     auto& allocator = Allocator::instance();
+    bool destUnboxed = alloc::arrayIsUnboxed(dest);
+    bool srcUnboxed = alloc::arrayIsUnboxed(source);
 
     // Copy all from dest
     for (u32 i = 0; i < destLen; ++i) {
         Unboxable elem = dstArr->elements[i];
-        bool isUnboxed = alloc::arrayIsUnboxed(dest, i);
 
         void* resultObj = allocator.resolve(newArr);
-        alloc::arrayPush(resultObj, elem, !isUnboxed);
+        alloc::arrayPush(resultObj, elem, !destUnboxed);
     }
 
     // Copy itemsToCopy from source
     for (u32 i = 0; i < itemsToCopy; ++i) {
         Unboxable elem = srcArr->elements[i];
-        bool isUnboxed = alloc::arrayIsUnboxed(source, i);
 
         void* resultObj = allocator.resolve(newArr);
-        alloc::arrayPush(resultObj, elem, !isUnboxed);
+        alloc::arrayPush(resultObj, elem, !srcUnboxed);
     }
 
     return newArr;

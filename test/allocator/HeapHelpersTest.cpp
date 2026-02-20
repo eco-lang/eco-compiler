@@ -435,10 +435,10 @@ Testing::TestCase testArrayFromIntsRoundtrip("arrayFromInts roundtrip", []() {
         void* obj = alloc.resolve(ptr);
 
         RC_ASSERT(arrayLength(obj) == len);
+        RC_ASSERT(arrayIsUnboxed(obj));  // Arrays are uniform - check once
 
         for (size_t i = 0; i < len; ++i) {
             RC_ASSERT(arrayGet(obj, i).i == values[i]);
-            RC_ASSERT(arrayIsUnboxed(obj, i));
         }
     });
 });
