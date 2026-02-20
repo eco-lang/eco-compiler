@@ -530,8 +530,9 @@ uint64_t Elm_Kernel_Http_toTask(uint64_t requestEnc) {
         return reinterpret_cast<void*>(encodeHP(unit()));
     };
 
-    // Allocate the closure
-    HPointer bindingCallback = allocClosure(reinterpret_cast<EvalFunction>(bindingEval), 2);
+    // Allocate the closure (+ converts captureless lambda to function pointer)
+    EvalFunction bindingFn = +bindingEval;
+    HPointer bindingCallback = allocClosure(bindingFn, 2);
     void* clPtr = Allocator::instance().resolve(bindingCallback);
     if (clPtr) {
         // Capture the data pointer
