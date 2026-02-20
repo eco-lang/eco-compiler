@@ -597,6 +597,11 @@ void registerRuntimeSymbols(ExecutionEngine &engine) {
         KERNEL_SYM(Elm_Kernel_Regex_replaceAtMost)
         KERNEL_SYM(Elm_Kernel_Regex_splitAtMost)
 
+        // Effect Manager Registration
+        KERNEL_SYM(eco_register_time_effect_manager)
+        KERNEL_SYM(eco_register_http_effect_manager)
+        KERNEL_SYM(eco_register_all_effect_managers)
+
         #undef KERNEL_SYM
 
         return symbolMap;

@@ -585,66 +585,133 @@ uint64_t Elm_Kernel_Bytes_read_string(int64_t length, uint64_t bytes, int64_t of
     return makeTuple2_ip(offset + length, allocator.wrap(str));
 }
 
-// --- write functions (used by non-fused encoder path, stubs for now) ---
+// --- write functions: create Encoder tree nodes (Custom types) ---
+// These are processed by writeEncoder() in Elm_Kernel_Bytes_encode
+
+// Helper to create a 1-field encoder Custom (for i8, u8)
+static uint64_t makeEncoder1(u16 tag, int64_t value) {
+    auto& allocator = Allocator::instance();
+    size_t size = sizeof(Custom) + sizeof(Unboxable);
+    size = (size + 7) & ~7;
+    Custom* enc = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
+    enc->header.size = 1;
+    enc->ctor = tag;
+    enc->unboxed = 1;  // value is unboxed
+    enc->values[0].i = value;
+    return Export::encode(allocator.wrap(enc));
+}
+
+// Helper to create a 2-field encoder Custom (for i16, i32, u16, u32, f32, f64)
+// Field 0: endianness (boxed HPointer to LE/BE Custom)
+// Field 1: value (unboxed int or float)
+static uint64_t makeEncoder2_pi(u16 tag, uint64_t endianness, int64_t value) {
+    auto& allocator = Allocator::instance();
+    size_t size = sizeof(Custom) + 2 * sizeof(Unboxable);
+    size = (size + 7) & ~7;
+    Custom* enc = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
+    enc->header.size = 2;
+    enc->ctor = tag;
+    enc->unboxed = 2;  // field 1 unboxed (value), field 0 boxed (endianness)
+    enc->values[0].p = Export::decode(endianness);
+    enc->values[1].i = value;
+    return Export::encode(allocator.wrap(enc));
+}
+
+static uint64_t makeEncoder2_pf(u16 tag, uint64_t endianness, double value) {
+    auto& allocator = Allocator::instance();
+    size_t size = sizeof(Custom) + 2 * sizeof(Unboxable);
+    size = (size + 7) & ~7;
+    Custom* enc = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
+    enc->header.size = 2;
+    enc->ctor = tag;
+    enc->unboxed = 2;  // field 1 unboxed (value), field 0 boxed (endianness)
+    enc->values[0].p = Export::decode(endianness);
+    enc->values[1].f = value;
+    return Export::encode(allocator.wrap(enc));
+}
+
+// Helper to create a 1-field encoder with boxed HPointer (for bytes, string)
+static uint64_t makeEncoder1_p(u16 tag, uint64_t ptr) {
+    auto& allocator = Allocator::instance();
+    size_t size = sizeof(Custom) + sizeof(Unboxable);
+    size = (size + 7) & ~7;
+    Custom* enc = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
+    enc->header.size = 1;
+    enc->ctor = tag;
+    enc->unboxed = 0;  // value is boxed
+    enc->values[0].p = Export::decode(ptr);
+    return Export::encode(allocator.wrap(enc));
+}
+
+// Helper to create UTF8 encoder with size + string pointer
+static uint64_t makeEncoderUtf8(uint64_t str) {
+    auto& allocator = Allocator::instance();
+
+    // Calculate UTF-8 byte count
+    int64_t utf8Size = Elm_Kernel_Bytes_getStringWidth(str);
+
+    size_t size = sizeof(Custom) + 2 * sizeof(Unboxable);
+    size = (size + 7) & ~7;
+    Custom* enc = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
+    enc->header.size = 2;
+    enc->ctor = ENC_UTF8;
+    enc->unboxed = 1;  // field 0 unboxed (size), field 1 boxed (string)
+    enc->values[0].i = utf8Size;
+    enc->values[1].p = Export::decode(str);
+    return Export::encode(allocator.wrap(enc));
+}
+
+// Helper to create BYTES encoder
+static uint64_t makeEncoderBytes(uint64_t bytes) {
+    auto& allocator = Allocator::instance();
+    size_t size = sizeof(Custom) + sizeof(Unboxable);
+    size = (size + 7) & ~7;
+    Custom* enc = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
+    enc->header.size = 1;
+    enc->ctor = ENC_BYTES;
+    enc->unboxed = 0;
+    enc->values[0].p = Export::decode(bytes);
+    return Export::encode(allocator.wrap(enc));
+}
 
 uint64_t Elm_Kernel_Bytes_write_i8(int64_t value) {
-    (void)value;
-    assert(false && "Elm_Kernel_Bytes_write_i8 not implemented");
-    return 0;
+    return makeEncoder1(ENC_I8, value);
 }
 
-uint64_t Elm_Kernel_Bytes_write_i16(int64_t value, bool isBigEndian) {
-    (void)value; (void)isBigEndian;
-    assert(false && "Elm_Kernel_Bytes_write_i16 not implemented");
-    return 0;
+uint64_t Elm_Kernel_Bytes_write_i16(uint64_t endianness, int64_t value) {
+    return makeEncoder2_pi(ENC_I16, endianness, value);
 }
 
-uint64_t Elm_Kernel_Bytes_write_i32(int64_t value, bool isBigEndian) {
-    (void)value; (void)isBigEndian;
-    assert(false && "Elm_Kernel_Bytes_write_i32 not implemented");
-    return 0;
+uint64_t Elm_Kernel_Bytes_write_i32(uint64_t endianness, int64_t value) {
+    return makeEncoder2_pi(ENC_I32, endianness, value);
 }
 
-uint64_t Elm_Kernel_Bytes_write_u8(uint64_t value) {
-    (void)value;
-    assert(false && "Elm_Kernel_Bytes_write_u8 not implemented");
-    return 0;
+uint64_t Elm_Kernel_Bytes_write_u8(int64_t value) {
+    return makeEncoder1(ENC_U8, value);
 }
 
-uint64_t Elm_Kernel_Bytes_write_u16(uint64_t value, bool isBigEndian) {
-    (void)value; (void)isBigEndian;
-    assert(false && "Elm_Kernel_Bytes_write_u16 not implemented");
-    return 0;
+uint64_t Elm_Kernel_Bytes_write_u16(uint64_t endianness, int64_t value) {
+    return makeEncoder2_pi(ENC_U16, endianness, value);
 }
 
-uint64_t Elm_Kernel_Bytes_write_u32(uint64_t value, bool isBigEndian) {
-    (void)value; (void)isBigEndian;
-    assert(false && "Elm_Kernel_Bytes_write_u32 not implemented");
-    return 0;
+uint64_t Elm_Kernel_Bytes_write_u32(uint64_t endianness, int64_t value) {
+    return makeEncoder2_pi(ENC_U32, endianness, value);
 }
 
-uint64_t Elm_Kernel_Bytes_write_f32(double value, bool isBigEndian) {
-    (void)value; (void)isBigEndian;
-    assert(false && "Elm_Kernel_Bytes_write_f32 not implemented");
-    return 0;
+uint64_t Elm_Kernel_Bytes_write_f32(uint64_t endianness, double value) {
+    return makeEncoder2_pf(ENC_F32, endianness, value);
 }
 
-uint64_t Elm_Kernel_Bytes_write_f64(double value, bool isBigEndian) {
-    (void)value; (void)isBigEndian;
-    assert(false && "Elm_Kernel_Bytes_write_f64 not implemented");
-    return 0;
+uint64_t Elm_Kernel_Bytes_write_f64(uint64_t endianness, double value) {
+    return makeEncoder2_pf(ENC_F64, endianness, value);
 }
 
 uint64_t Elm_Kernel_Bytes_write_bytes(uint64_t bytes) {
-    (void)bytes;
-    assert(false && "Elm_Kernel_Bytes_write_bytes not implemented");
-    return 0;
+    return makeEncoderBytes(bytes);
 }
 
 uint64_t Elm_Kernel_Bytes_write_string(uint64_t str) {
-    (void)str;
-    assert(false && "Elm_Kernel_Bytes_write_string not implemented");
-    return 0;
+    return makeEncoderUtf8(str);
 }
 
 } // extern "C"

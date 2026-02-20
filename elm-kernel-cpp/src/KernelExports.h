@@ -349,14 +349,16 @@ uint64_t Elm_Kernel_Bytes_read_f32(uint64_t isLE, uint64_t bytes, int64_t offset
 uint64_t Elm_Kernel_Bytes_read_f64(uint64_t isLE, uint64_t bytes, int64_t offset);
 uint64_t Elm_Kernel_Bytes_read_bytes(int64_t length, uint64_t bytes, int64_t offset);
 uint64_t Elm_Kernel_Bytes_read_string(int64_t length, uint64_t bytes, int64_t offset);
+// Write functions create Encoder tree nodes (Custom types)
+// Endianness parameter is eco.value (LE=ctor 0, BE=ctor 1), NOT bool
 uint64_t Elm_Kernel_Bytes_write_i8(int64_t value);
-uint64_t Elm_Kernel_Bytes_write_i16(int64_t value, bool isBigEndian);
-uint64_t Elm_Kernel_Bytes_write_i32(int64_t value, bool isBigEndian);
-uint64_t Elm_Kernel_Bytes_write_u8(uint64_t value);
-uint64_t Elm_Kernel_Bytes_write_u16(uint64_t value, bool isBigEndian);
-uint64_t Elm_Kernel_Bytes_write_u32(uint64_t value, bool isBigEndian);
-uint64_t Elm_Kernel_Bytes_write_f32(double value, bool isBigEndian);
-uint64_t Elm_Kernel_Bytes_write_f64(double value, bool isBigEndian);
+uint64_t Elm_Kernel_Bytes_write_i16(uint64_t endianness, int64_t value);
+uint64_t Elm_Kernel_Bytes_write_i32(uint64_t endianness, int64_t value);
+uint64_t Elm_Kernel_Bytes_write_u8(int64_t value);
+uint64_t Elm_Kernel_Bytes_write_u16(uint64_t endianness, int64_t value);
+uint64_t Elm_Kernel_Bytes_write_u32(uint64_t endianness, int64_t value);
+uint64_t Elm_Kernel_Bytes_write_f32(uint64_t endianness, double value);
+uint64_t Elm_Kernel_Bytes_write_f64(uint64_t endianness, double value);
 uint64_t Elm_Kernel_Bytes_write_bytes(uint64_t bytes);
 uint64_t Elm_Kernel_Bytes_write_string(uint64_t str);
 
@@ -401,6 +403,14 @@ uint64_t Elm_Kernel_Regex_contains(uint64_t regex, uint64_t str);
 uint64_t Elm_Kernel_Regex_findAtMost(int64_t n, uint64_t regex, uint64_t str);
 uint64_t Elm_Kernel_Regex_replaceAtMost(int64_t n, uint64_t regex, uint64_t closure, uint64_t str);
 uint64_t Elm_Kernel_Regex_splitAtMost(int64_t n, uint64_t regex, uint64_t str);
+
+//===----------------------------------------------------------------------===//
+// Effect Manager Registration
+//===----------------------------------------------------------------------===//
+
+void eco_register_time_effect_manager();
+void eco_register_http_effect_manager();
+void eco_register_all_effect_managers();
 
 } // extern "C"
 

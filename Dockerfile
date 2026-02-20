@@ -46,6 +46,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     cmake ninja-build clang lld zlib1g-dev libxml2-dev \
     gosu curl libcmark-dev ccache \
     less \
+    # HTTP/HTTPS support for elm/http kernel
+    libcurl4-openssl-dev libssl-dev \
     # Debugging and profiling tools (essential for GC development)
     gdb lldb linux-perf strace \
     # Code quality tools

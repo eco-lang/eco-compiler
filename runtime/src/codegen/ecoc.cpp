@@ -69,6 +69,7 @@
 #include "RuntimeSymbols.h"
 
 #include "../allocator/Allocator.hpp"
+#include "KernelExports.h"
 
 using namespace mlir;
 
@@ -257,6 +258,9 @@ static int runJIT(ModuleOp module) {
         // Consume the error to avoid assertion failure on destruction.
         llvm::consumeError(initGlobalsSymbol.takeError());
     }
+
+    // Register effect managers
+    eco_register_all_effect_managers();
 
     // Invoke the main function with packed calling convention.
     // invokePacked expects pointers to result storage followed by argument values.

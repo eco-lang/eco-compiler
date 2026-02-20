@@ -48,6 +48,7 @@
 #include "RuntimeSymbols.h"
 
 #include "../allocator/RuntimeExports.h"
+#include "KernelExports.h"
 #include "../allocator/Allocator.hpp"
 
 #include <mutex>
@@ -210,6 +211,9 @@ private:
         } else {
             llvm::consumeError(initGlobalsSymbol.takeError());
         }
+
+        // Register effect managers
+        eco_register_all_effect_managers();
 
         // Start output capture if requested
         if (options.captureOutput) {

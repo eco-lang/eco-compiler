@@ -7,6 +7,21 @@ project(elm-kernel LANGUAGES CXX)
 # Runtime include directory (for allocator headers)
 set(RUNTIME_INCLUDE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../runtime/src)
 
+# Vendor include directory (for nlohmann/json, SRELL)
+set(VENDOR_INCLUDE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/vendor)
+
+# Find libcurl for HTTP module (optional - HTTP will use stubs if not found)
+find_package(CURL QUIET)
+find_package(OpenSSL QUIET)
+
+if(CURL_FOUND AND OPENSSL_FOUND)
+    set(HTTP_AVAILABLE ON)
+    message(STATUS "libcurl and OpenSSL found - HTTP module will be fully functional")
+else()
+    set(HTTP_AVAILABLE OFF)
+    message(STATUS "libcurl or OpenSSL not found - HTTP module will use stubs")
+endif()
+
 #------------------------------------------------------------------------------
 # Per-module static libraries
 #------------------------------------------------------------------------------
@@ -153,6 +168,7 @@ add_library(ElmKernel_Json STATIC
 target_include_directories(ElmKernel_Json PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${RUNTIME_INCLUDE_DIR}
+    ${VENDOR_INCLUDE_DIR}
 )
 target_compile_features(ElmKernel_Json PUBLIC cxx_std_20)
 
@@ -193,11 +209,17 @@ target_compile_features(ElmKernel_File PUBLIC cxx_std_20)
 add_library(ElmKernel_Http STATIC
     src/http/Http.cpp
     src/http/HttpExports.cpp
+    src/http/HttpEffectManager.cpp
 )
 target_include_directories(ElmKernel_Http PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${RUNTIME_INCLUDE_DIR}
+    ${RUNTIME_INCLUDE_DIR}/platform
 )
+if(HTTP_AVAILABLE)
+    target_link_libraries(ElmKernel_Http PRIVATE CURL::libcurl OpenSSL::SSL OpenSSL::Crypto)
+    target_compile_definitions(ElmKernel_Http PRIVATE HTTP_CURL_AVAILABLE=1)
+endif()
 target_compile_features(ElmKernel_Http PUBLIC cxx_std_20)
 
 # Parser module
@@ -219,6 +241,7 @@ add_library(ElmKernel_Regex STATIC
 target_include_directories(ElmKernel_Regex PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${RUNTIME_INCLUDE_DIR}
+    ${VENDOR_INCLUDE_DIR}
 )
 target_compile_features(ElmKernel_Regex PUBLIC cxx_std_20)
 
@@ -226,10 +249,12 @@ target_compile_features(ElmKernel_Regex PUBLIC cxx_std_20)
 add_library(ElmKernel_Time STATIC
     src/time/Time.cpp
     src/time/TimeExports.cpp
+    src/time/TimeEffectManager.cpp
 )
 target_include_directories(ElmKernel_Time PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${RUNTIME_INCLUDE_DIR}
+    ${RUNTIME_INCLUDE_DIR}/platform
 )
 target_compile_features(ElmKernel_Time PUBLIC cxx_std_20)
 
@@ -243,6 +268,17 @@ target_include_directories(ElmKernel_Url PUBLIC
     ${RUNTIME_INCLUDE_DIR}
 )
 target_compile_features(ElmKernel_Url PUBLIC cxx_std_20)
+
+# Effect Manager Registry
+add_library(ElmKernel_EffectRegistry STATIC
+    src/EffectManagerRegistry.cpp
+)
+target_include_directories(ElmKernel_EffectRegistry PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${RUNTIME_INCLUDE_DIR}
+    ${RUNTIME_INCLUDE_DIR}/platform
+)
+target_compile_features(ElmKernel_EffectRegistry PUBLIC cxx_std_20)
 
 #------------------------------------------------------------------------------
 # Combined convenience library
@@ -271,6 +307,7 @@ target_link_libraries(ElmKernel INTERFACE
     ElmKernel_Regex
     ElmKernel_Time
     ElmKernel_Url
+    ElmKernel_EffectRegistry
 )
 
 # Keep asserts enabled even in release builds
@@ -280,7 +317,7 @@ foreach(target
     ElmKernel_Scheduler ElmKernel_Platform ElmKernel_Process
     ElmKernel_VirtualDom ElmKernel_Json ElmKernel_Browser ElmKernel_Bytes
     ElmKernel_File ElmKernel_Http ElmKernel_Parser ElmKernel_Regex
-    ElmKernel_Time ElmKernel_Url
+    ElmKernel_Time ElmKernel_Url ElmKernel_EffectRegistry
 )
     target_compile_options(${target} PRIVATE -UNDEBUG)
 endforeach()
