@@ -33,6 +33,28 @@ static inline void* resolveHP(HPointer h) {
     return Allocator::instance().resolve(h);
 }
 
+// Convert ElmString (UTF-16) to std::string (UTF-8)
+static std::string elmStringToStd(void* ptr) {
+    if (!ptr) return "";
+    ElmString* s = static_cast<ElmString*>(ptr);
+    std::string result;
+    result.reserve(s->header.size);
+    for (u32 i = 0; i < s->header.size; i++) {
+        u16 c = s->chars[i];
+        if (c < 0x80) {
+            result.push_back(static_cast<char>(c));
+        } else if (c < 0x800) {
+            result.push_back(static_cast<char>(0xC0 | (c >> 6)));
+            result.push_back(static_cast<char>(0x80 | (c & 0x3F)));
+        } else {
+            result.push_back(static_cast<char>(0xE0 | (c >> 12)));
+            result.push_back(static_cast<char>(0x80 | ((c >> 6) & 0x3F)));
+            result.push_back(static_cast<char>(0x80 | (c & 0x3F)));
+        }
+    }
+    return result;
+}
+
 // ============================================================================
 // Singleton
 // ============================================================================
@@ -65,8 +87,6 @@ HPointer PlatformRuntime::setupEffects(HPointer sendToAppClosure) {
         // Create the manager's self-process
         // The self-process runs a Receive loop that handles onSelfMsg
         HPointer recvCallback = info.onSelfMsg;  // will be wrapped later
-        // For now, create a simple process with a null root
-        HPointer nilHP = listNil();
         HPointer selfProc = sched.rawSpawn(
             sched.taskReceive(recvCallback));
 
@@ -78,13 +98,33 @@ HPointer PlatformRuntime::setupEffects(HPointer sendToAppClosure) {
         HPointer router = custom(CTOR_Router, routerFields, 0);
 
         // Run the init task to get initial manager state
-        // For now, just store nil as initial state
-        // Full implementation would run the init Task through the scheduler
+        HPointer initTask = info.init;
+        HPointer initialState = listNil();  // fallback
+
+        if (!alloc::isNil(initTask) && !hpIsConstant(initTask)) {
+            // Spawn a process to run the init task
+            HPointer initProc = sched.rawSpawn(initTask);
+            sched.drain();
+
+            // Extract the result from the completed process
+            // The process root should now be Task_Succeed with the state value
+            void* procPtr = resolveHP(initProc);
+            if (procPtr) {
+                Process* proc = static_cast<Process*>(procPtr);
+                void* rootPtr = resolveHP(proc->root);
+                if (rootPtr) {
+                    Task* rootTask = static_cast<Task*>(rootPtr);
+                    if (rootTask->ctor == Task_Succeed) {
+                        initialState = rootTask->value;
+                    }
+                }
+            }
+        }
 
         ManagerState ms;
         ms.selfProcess = encodeHP(selfProc);
         ms.router = encodeHP(router);
-        ms.state = encodeHP(nilHP);
+        ms.state = encodeHP(initialState);
         managerStates_[home] = ms;
     }
 
@@ -151,14 +191,33 @@ void PlatformRuntime::dispatchEffects(HPointer cmdBag, HPointer subBag) {
             subList = cons(boxed(decodeHP(*rit)), subList, true);
         }
 
-        // TODO: Call onEffects(router, cmdList, subList, state) -> Task state
-        // For now, just skip the actual onEffects call
-        // This would be:
-        //   HPointer router = decodeHP(ms.router);
-        //   HPointer state = decodeHP(ms.state);
-        //   HPointer newStateTask = Scheduler::callClosure4(
-        //       managerIt->second.onEffects, router, cmdList, subList, state);
-        //   ... run the task and update ms.state
+        // Call onEffects(router, cmdList, subList, state) -> Task newState
+        HPointer router = decodeHP(ms.router);
+        HPointer state = decodeHP(ms.state);
+        HPointer onEffectsFn = managerIt->second.onEffects;
+
+        // Only call if onEffects is not nil
+        if (!alloc::isNil(onEffectsFn) && !hpIsConstant(onEffectsFn)) {
+            HPointer newStateTask = Scheduler::callClosure4(
+                onEffectsFn, router, cmdList, subList, state);
+
+            // Run the returned Task to get the new state
+            HPointer effectProc = sched.rawSpawn(newStateTask);
+            sched.drain();
+
+            // Extract the result and update the manager state
+            void* procPtr = resolveHP(effectProc);
+            if (procPtr) {
+                Process* proc = static_cast<Process*>(procPtr);
+                void* rootPtr = resolveHP(proc->root);
+                if (rootPtr) {
+                    Task* rootTask = static_cast<Task*>(rootPtr);
+                    if (rootTask->ctor == Task_Succeed) {
+                        ms.state = encodeHP(rootTask->value);
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -177,10 +236,28 @@ void PlatformRuntime::gatherEffects(
     u16 ctor = static_cast<u16>(custom->ctor);
 
     if (ctor == Fx_Leaf) {
-        // Leaf: values[0] = home (String), values[1] = value
-        // For now, we don't have a way to extract the home string from
-        // a boxed ElmString easily, so skip actual gathering
-        // TODO: Extract home string and apply taggers to value
+        // Leaf: values[0] = home (ElmString), values[1] = value
+        HPointer homeHP = custom->values[0].p;
+        HPointer value = custom->values[1].p;
+
+        // Resolve and extract the home string
+        void* homePtr = resolveHP(homeHP);
+        if (!homePtr) return;
+        std::string home = elmStringToStd(homePtr);
+
+        // Apply taggers to value (taggers list is innermost-first)
+        HPointer taggedValue = applyTaggers(taggers, value);
+
+        // Add to the appropriate effects list (cmd or sub)
+        auto it = effects.find(home);
+        if (it != effects.end()) {
+            if (isCmd) {
+                it->second.first.push_back(encodeHP(taggedValue));
+            } else {
+                it->second.second.push_back(encodeHP(taggedValue));
+            }
+        }
+        // If manager not registered, silently drop the effect
     }
     else if (ctor == Fx_Node) {
         // Node: values[0] = list of bags

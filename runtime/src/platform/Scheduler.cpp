@@ -100,6 +100,19 @@ HPointer Scheduler::callClosure2(HPointer closurePtr, HPointer arg1, HPointer ar
     return decodeHP(result);
 }
 
+HPointer Scheduler::callClosure4(HPointer closurePtr, HPointer arg1, HPointer arg2,
+                                  HPointer arg3, HPointer arg4) {
+    uint64_t args[4];
+    args[0] = encodeHP(arg1);
+    args[1] = encodeHP(arg2);
+    args[2] = encodeHP(arg3);
+    args[3] = encodeHP(arg4);
+    uint64_t closureEnc = encodeHP(closurePtr);
+
+    uint64_t result = eco_apply_closure(closureEnc, args, 4);
+    return decodeHP(result);
+}
+
 // ============================================================================
 // Mailbox Helpers (Elm List as FIFO queue)
 // ============================================================================
@@ -363,12 +376,8 @@ void Scheduler::stepProcess(uint64_t procEncoded) {
                 continue;
             } else {
                 // Process finished - no matching handler
-                HPointer nil = listNil();
-                // Re-resolve
-                procPtr = resolveHP(procHP);
-                if (!procPtr) return;
-                proc = static_cast<Process*>(procPtr);
-                proc->root = nil;
+                // Leave proc->root as the final Task_Succeed/Task_Fail
+                // so callers can inspect the result value
                 return;
             }
         }

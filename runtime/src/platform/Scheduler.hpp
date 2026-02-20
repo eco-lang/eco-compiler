@@ -37,6 +37,9 @@ public:
     static HPointer callClosure1(HPointer closurePtr, HPointer arg);
     // Calls a 2-arg Elm closure
     static HPointer callClosure2(HPointer closurePtr, HPointer arg1, HPointer arg2);
+    // Calls a 4-arg Elm closure (for onEffects: router, cmds, subs, state)
+    static HPointer callClosure4(HPointer closurePtr, HPointer arg1, HPointer arg2,
+                                 HPointer arg3, HPointer arg4);
 
     u32 nextProcessId() { return nextProcId_.fetch_add(1); }
 
