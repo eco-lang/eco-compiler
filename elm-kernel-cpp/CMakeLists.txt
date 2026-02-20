@@ -101,12 +101,12 @@ target_compile_features(ElmKernel_Debug PUBLIC cxx_std_20)
 
 # Scheduler module
 add_library(ElmKernel_Scheduler STATIC
-    src/core/Scheduler.cpp
     src/core/SchedulerExports.cpp
 )
 target_include_directories(ElmKernel_Scheduler PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${RUNTIME_INCLUDE_DIR}
+    ${RUNTIME_INCLUDE_DIR}/platform
 )
 target_compile_features(ElmKernel_Scheduler PUBLIC cxx_std_20)
 
@@ -118,6 +118,7 @@ add_library(ElmKernel_Platform STATIC
 target_include_directories(ElmKernel_Platform PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${RUNTIME_INCLUDE_DIR}
+    ${RUNTIME_INCLUDE_DIR}/platform
 )
 target_compile_features(ElmKernel_Platform PUBLIC cxx_std_20)
 
@@ -129,6 +130,7 @@ add_library(ElmKernel_Process STATIC
 target_include_directories(ElmKernel_Process PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${RUNTIME_INCLUDE_DIR}
+    ${RUNTIME_INCLUDE_DIR}/platform
 )
 target_compile_features(ElmKernel_Process PUBLIC cxx_std_20)
 

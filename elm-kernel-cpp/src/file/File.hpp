@@ -10,12 +10,10 @@
 
 #include "allocator/Heap.hpp"
 #include "allocator/HeapHelpers.hpp"
-#include "../core/Scheduler.hpp"
 #include "../json/Json.hpp"
 
 namespace Elm::Kernel::File {
 
-using TaskPtr = Scheduler::TaskPtr;
 using DecoderPtr = Json::DecoderPtr;
 
 /**
@@ -63,35 +61,35 @@ HPointer lastModified(void* file);
  * @param file A File value
  * @return Task that produces String
  */
-TaskPtr toString(void* file);
+HPointer toString(void* file);
 
 /**
  * Read file contents as bytes.
  * @param file A File value
  * @return Task that produces Bytes
  */
-TaskPtr toBytes(void* file);
+HPointer toBytes(void* file);
 
 /**
  * Read file contents as a data URL.
  * @param file A File value
  * @return Task that produces String (data: URL)
  */
-TaskPtr toUrl(void* file);
+HPointer toUrl(void* file);
 
 /**
  * Open file selector for single file.
  * @param mimeTypes List of acceptable MIME types
  * @return Task that produces Maybe File
  */
-TaskPtr uploadOne(void* mimeTypes);
+HPointer uploadOne(void* mimeTypes);
 
 /**
  * Open file selector for one or more files.
  * @param mimeTypes List of acceptable MIME types
  * @return Task that produces (File, List File)
  */
-TaskPtr uploadOneOrMore(void* mimeTypes);
+HPointer uploadOneOrMore(void* mimeTypes);
 
 /**
  * Download string content as a file.
@@ -100,7 +98,7 @@ TaskPtr uploadOneOrMore(void* mimeTypes);
  * @param content String content to download
  * @return Task that produces ()
  */
-TaskPtr download(void* fileName, void* mimeType, void* content);
+HPointer download(void* fileName, void* mimeType, void* content);
 
 /**
  * Download a URL as a file.
@@ -108,7 +106,7 @@ TaskPtr download(void* fileName, void* mimeType, void* content);
  * @param url URL to download
  * @return Task that produces ()
  */
-TaskPtr downloadUrl(void* fileName, void* url);
+HPointer downloadUrl(void* fileName, void* url);
 
 } // namespace Elm::Kernel::File
 

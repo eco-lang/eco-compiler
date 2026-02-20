@@ -8,24 +8,16 @@
 #include "Http.hpp"
 #include "allocator/Allocator.hpp"
 #include "allocator/StringOps.hpp"
+#include <cassert>
 
 namespace Elm::Kernel::Http {
-
-// HTTP type IDs (use generic 1 for compatibility)
-constexpr u16 HTTP_TYPE_ID = 1;
-
-// Body type tags
-constexpr u16 BODY_EMPTY = 0;
-
-// Error type tags
-constexpr u16 ERR_NETWORK = 2;
 
 // ============================================================================
 // Body Construction
 // ============================================================================
 
 HPointer emptyBody() {
-    return alloc::custom(BODY_EMPTY, {}, 0);
+    return alloc::custom(0, {}, 0);
 }
 
 // ============================================================================
@@ -42,15 +34,10 @@ HPointer pair(void* key, void* value) {
 // Request Conversion
 // ============================================================================
 
-TaskPtr toTask(HPointer request) {
+HPointer toTask(HPointer request) {
     (void)request;
-    // Always fail with NetworkError for stub
-    return Scheduler::binding([](Scheduler::Callback callback) -> std::function<void()> {
-        // NetworkError has no fields
-        HPointer networkError = alloc::custom(ERR_NETWORK, {}, 0);
-        callback(alloc::err(alloc::boxed(networkError), false));
-        return []() {};
-    });
+    assert(false && "not implemented");
+    return alloc::unit();
 }
 
 // ============================================================================

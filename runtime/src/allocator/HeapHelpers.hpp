@@ -786,6 +786,63 @@ inline bool closureCapture(void* closure, Unboxable value, bool is_boxed) {
 }
 
 // ============================================================================
+// Task / Process / StackFrame Allocation
+// ============================================================================
+
+enum TaskCtor : u16 {
+    Task_Succeed  = 0,
+    Task_Fail     = 1,
+    Task_Binding  = 2,
+    Task_AndThen  = 3,
+    Task_OnError  = 4,
+    Task_Receive  = 5,
+};
+
+static constexpr u16 CTOR_StackFrame = 0xFFFE;
+static constexpr u16 CTOR_Router     = 0xFFFD;
+
+enum FxBagTag : u16 {
+    Fx_Leaf = 0,
+    Fx_Node = 1,
+    Fx_Map  = 2,
+};
+
+inline HPointer allocTask(u16 ctor, HPointer value, HPointer callback,
+                          HPointer kill, HPointer innerTask) {
+    auto& allocator = Allocator::instance();
+    size_t total_size = (sizeof(Task) + 7) & ~7;
+    Task* t = static_cast<Task*>(allocator.allocate(total_size, Tag_Task));
+    t->ctor = ctor;
+    t->id = 0;
+    t->padding = 0;
+    t->value = value;
+    t->callback = callback;
+    t->kill = kill;
+    t->task = innerTask;
+    return allocator.wrap(t);
+}
+
+inline HPointer allocProcess(u16 id, HPointer root, HPointer stack, HPointer mailbox) {
+    auto& allocator = Allocator::instance();
+    size_t total_size = (sizeof(Process) + 7) & ~7;
+    Process* p = static_cast<Process*>(allocator.allocate(total_size, Tag_Process));
+    p->id = id;
+    p->padding = 0;
+    p->root = root;
+    p->stack = stack;
+    p->mailbox = mailbox;
+    return allocator.wrap(p);
+}
+
+inline HPointer stackFrame(u64 expectedTag, HPointer callback, HPointer rest) {
+    std::vector<Unboxable> fields(3);
+    fields[0].i = static_cast<i64>(expectedTag);
+    fields[1].p = callback;
+    fields[2].p = rest;
+    return custom(CTOR_StackFrame, fields, 0x1);  // bit 0 = field 0 is unboxed
+}
+
+// ============================================================================
 // Type Checking Helpers
 // ============================================================================
 

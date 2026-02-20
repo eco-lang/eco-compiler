@@ -10,11 +10,8 @@
 
 #include "allocator/Heap.hpp"
 #include "allocator/HeapHelpers.hpp"
-#include "Scheduler.hpp"
 
 namespace Elm::Kernel::Debugger {
-
-using TaskPtr = Scheduler::TaskPtr;
 
 // Expando types for debugger value display.
 enum class ExpandoTag {
@@ -39,19 +36,19 @@ HPointer init(HPointer value);
 bool isOpen(HPointer popout);
 
 // Opens the debugger popout window.
-TaskPtr open(HPointer popout);
+HPointer open(HPointer popout);
 
 // Scrolls debugger sidebar to bottom.
-TaskPtr scroll(HPointer popout);
+HPointer scroll(HPointer popout);
 
 // Converts a message value to display string.
 HPointer messageToString(HPointer message);
 
 // Downloads history as JSON file.
-TaskPtr download(i64 historyLength, HPointer json);
+HPointer download(i64 historyLength, HPointer json);
 
 // Uploads history file.
-TaskPtr upload();
+HPointer upload();
 
 // Identity function (for internal type coercion).
 HPointer unsafeCoerce(HPointer value);

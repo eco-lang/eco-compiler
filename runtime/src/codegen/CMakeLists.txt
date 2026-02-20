@@ -279,6 +279,8 @@ add_llvm_executable(ecoc
     ../allocator/ListOps.cpp
     ../allocator/BytesOps.cpp
     ../allocator/ElmBytesRuntime.cpp
+    ../platform/Scheduler.cpp
+    ../platform/PlatformRuntime.cpp
     PARTIAL_SOURCES_INTENDED
 )
 
@@ -350,6 +352,8 @@ add_mlir_library(EcoRunner
     ../allocator/ListOps.cpp
     ../allocator/BytesOps.cpp
     ../allocator/ElmBytesRuntime.cpp
+    ../platform/Scheduler.cpp
+    ../platform/PlatformRuntime.cpp
     PARTIAL_SOURCES_INTENDED
 
     ADDITIONAL_HEADER_DIRS

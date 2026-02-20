@@ -10,11 +10,9 @@
 
 #include "allocator/Heap.hpp"
 #include "allocator/HeapHelpers.hpp"
-#include "../core/Scheduler.hpp"
+#include <functional>
 
 namespace Elm::Kernel::Http {
-
-using TaskPtr = Scheduler::TaskPtr;
 
 // ============================================================================
 // Body Construction
@@ -42,7 +40,7 @@ HPointer pair(void* key, void* value);
  * Convert HTTP request to Task.
  * Returns Task that fails with NetworkError (not implemented).
  */
-TaskPtr toTask(HPointer request);
+HPointer toTask(HPointer request);
 
 // ============================================================================
 // Expect/Response handling

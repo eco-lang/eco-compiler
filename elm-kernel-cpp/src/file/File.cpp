@@ -9,6 +9,7 @@
 #include "allocator/Allocator.hpp"
 #include "allocator/StringOps.hpp"
 #include "allocator/BytesOps.hpp"
+#include <cassert>
 
 namespace Elm::Kernel::File {
 
@@ -93,79 +94,57 @@ HPointer lastModified(void* file) {
 // File Reading - Stubs
 // ============================================================================
 
-TaskPtr toString(void* file) {
+HPointer toString(void* file) {
     (void)file;
-    return Scheduler::binding([](Scheduler::Callback callback) -> std::function<void()> {
-        // Stub - return empty string
-        callback(alloc::emptyString());
-        return []() {};
-    });
+    assert(false && "not implemented");
+    return alloc::unit();
 }
 
-TaskPtr toBytes(void* file) {
+HPointer toBytes(void* file) {
     (void)file;
-    return Scheduler::binding([](Scheduler::Callback callback) -> std::function<void()> {
-        // Stub - return empty bytes
-        callback(BytesOps::empty());
-        return []() {};
-    });
+    assert(false && "not implemented");
+    return alloc::unit();
 }
 
-TaskPtr toUrl(void* file) {
+HPointer toUrl(void* file) {
     (void)file;
-    return Scheduler::binding([](Scheduler::Callback callback) -> std::function<void()> {
-        // Stub - return empty data URL
-        HPointer result = alloc::allocStringFromUTF8("data:;base64,");
-        callback(result);
-        return []() {};
-    });
+    assert(false && "not implemented");
+    return alloc::unit();
 }
 
 // ============================================================================
 // File Selection - Stubs (Browser/GUI specific)
 // ============================================================================
 
-TaskPtr uploadOne(void* mimeTypes) {
+HPointer uploadOne(void* mimeTypes) {
     (void)mimeTypes;
-    return Scheduler::binding([](Scheduler::Callback callback) -> std::function<void()> {
-        // Stub - return Nothing (no file selected)
-        callback(alloc::nothing());
-        return []() {};
-    });
+    assert(false && "not implemented");
+    return alloc::unit();
 }
 
-TaskPtr uploadOneOrMore(void* mimeTypes) {
+HPointer uploadOneOrMore(void* mimeTypes) {
     (void)mimeTypes;
-    return Scheduler::binding([](Scheduler::Callback callback) -> std::function<void()> {
-        // Stub - return Nothing (no files selected)
-        callback(alloc::nothing());
-        return []() {};
-    });
+    assert(false && "not implemented");
+    return alloc::unit();
 }
 
 // ============================================================================
 // File Downloading - Stubs
 // ============================================================================
 
-TaskPtr download(void* fileName, void* mimeType, void* content) {
+HPointer download(void* fileName, void* mimeType, void* content) {
     (void)fileName;
     (void)mimeType;
     (void)content;
-    return Scheduler::binding([](Scheduler::Callback callback) -> std::function<void()> {
-        // Stub - return unit
-        callback(alloc::unit());
-        return []() {};
-    });
+    assert(false && "not implemented");
+    return alloc::unit();
 }
 
-TaskPtr downloadUrl(void* fileName, void* url) {
+HPointer downloadUrl(void* fileName, void* url) {
     (void)fileName;
     (void)url;
-    return Scheduler::binding([](Scheduler::Callback callback) -> std::function<void()> {
-        // Stub - return unit
-        callback(alloc::unit());
-        return []() {};
-    });
+    assert(false && "not implemented");
+    return alloc::unit();
 }
 
 } // namespace Elm::Kernel::File

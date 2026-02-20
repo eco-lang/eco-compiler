@@ -8,17 +8,9 @@
 #include "Debugger.hpp"
 #include "allocator/Allocator.hpp"
 #include "allocator/StringOps.hpp"
+#include <cassert>
 
 namespace Elm::Kernel::Debugger {
-
-// Expando type and constructor tags
-constexpr u16 EXPANDO_TYPE_ID = 3;  // Debugger Expando type
-constexpr u16 TAG_PRIMITIVE = 0;
-constexpr u16 TAG_STRING = 1;
-constexpr u16 TAG_CONSTRUCTOR = 2;
-constexpr u16 TAG_SEQUENCE = 3;
-constexpr u16 TAG_DICTIONARY = 4;
-constexpr u16 TAG_RECORD = 5;
 
 // ============================================================================
 // Value display initialization - Stub
@@ -30,7 +22,7 @@ HPointer init(HPointer value) {
 
     // Return Primitive("<value>")
     HPointer label = alloc::allocStringFromUTF8("<value>");
-    return alloc::custom(TAG_PRIMITIVE, {alloc::boxed(label)}, 0);
+    return alloc::custom(0, {alloc::boxed(label)}, 0);
 }
 
 // ============================================================================
@@ -43,20 +35,16 @@ bool isOpen(HPointer popout) {
     return false;
 }
 
-TaskPtr open(HPointer popout) {
+HPointer open(HPointer popout) {
     (void)popout;
-    return Scheduler::binding([](Scheduler::Callback callback) -> std::function<void()> {
-        callback(alloc::unit());
-        return []() {};
-    });
+    assert(false && "not implemented");
+    return alloc::unit();
 }
 
-TaskPtr scroll(HPointer popout) {
+HPointer scroll(HPointer popout) {
     (void)popout;
-    return Scheduler::binding([](Scheduler::Callback callback) -> std::function<void()> {
-        callback(alloc::unit());
-        return []() {};
-    });
+    assert(false && "not implemented");
+    return alloc::unit();
 }
 
 // ============================================================================
@@ -73,21 +61,16 @@ HPointer messageToString(HPointer message) {
 // History upload/download - Stubs
 // ============================================================================
 
-TaskPtr download(i64 historyLength, HPointer json) {
+HPointer download(i64 historyLength, HPointer json) {
     (void)historyLength;
     (void)json;
-    return Scheduler::binding([](Scheduler::Callback callback) -> std::function<void()> {
-        callback(alloc::unit());
-        return []() {};
-    });
+    assert(false && "not implemented");
+    return alloc::unit();
 }
 
-TaskPtr upload() {
-    return Scheduler::binding([](Scheduler::Callback callback) -> std::function<void()> {
-        // Return empty string (no file selected)
-        callback(alloc::emptyString());
-        return []() {};
-    });
+HPointer upload() {
+    assert(false && "not implemented");
+    return alloc::unit();
 }
 
 // ============================================================================

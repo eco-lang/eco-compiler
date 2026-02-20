@@ -9,31 +9,28 @@
 
 #include "allocator/Heap.hpp"
 #include "allocator/HeapHelpers.hpp"
-#include "../core/Scheduler.hpp"
 
 namespace Elm::Kernel::Time {
-
-using TaskPtr = Scheduler::TaskPtr;
 
 /**
  * Get current time as Posix (milliseconds since epoch).
  */
-TaskPtr now();
+HPointer now();
 
 /**
  * Get local timezone offset.
  */
-TaskPtr here();
+HPointer here();
 
 /**
  * Get timezone name.
  */
-TaskPtr getZoneName();
+HPointer getZoneName();
 
 /**
  * Set up repeating interval timer.
  */
-TaskPtr setInterval(f64 intervalMs, TaskPtr task);
+HPointer setInterval(f64 intervalMs, HPointer task);
 
 } // namespace Elm::Kernel::Time
 
