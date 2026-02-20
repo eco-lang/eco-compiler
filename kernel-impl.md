@@ -12,14 +12,12 @@
 | Debugger  | 8        | 4           | 4       | 0       | ⚠️ Partial |
 | JsArray   | 15       | 8           | 6       | 1       | ⚠️ Partial |
 | List      | 9        | 3           | 6       | 0       | ⚠️ Partial |
-| Platform  | 5        | 2*          | 3       | 0       | ⚠️ Partial |
-| Process   | 1        | 0           | 1       | 0       | ❌ Stubbed |
-| Scheduler | 6        | 0           | 6       | 0       | ❌ Stubbed |
+| Platform  | 5        | 5           | 0       | 0       | ✅ Complete |
+| Process   | 1        | 1           | 0       | 0       | ✅ Complete |
+| Scheduler | 6        | 6           | 0       | 0       | ✅ Complete |
 | String    | 29       | 29          | 0       | 0       | ✅ Complete |
 | Utils     | 8        | 8           | 0       | 0       | ✅ Complete |
-| **Total** | **126**  | **99**      | **26**  | **1**   | **78%** |
-
-*\* Platform: sendToApp is no-op, worker returns input unchanged*
+| **Total** | **126**  | **109**     | **16**  | **1**   | **87%** |
 
 ### Detailed Status
 
@@ -71,24 +69,24 @@
 | Debug | log | ✅ | |
 | Debug | todo | ✅ | |
 | Debug | toString | ✅ | |
-| Debugger | download | ❌ | Requires Task type |
+| Debugger | download | ❌ | Stubbed — requires browser |
 | Debugger | init | ✅ | |
 | Debugger | isOpen | ✅ | Always returns false |
 | Debugger | messageToString | ✅ | Delegates to Debug.toString |
-| Debugger | open | ❌ | Requires Task type |
-| Debugger | scroll | ❌ | Requires Task type |
+| Debugger | open | ❌ | Stubbed — requires browser |
+| Debugger | scroll | ❌ | Stubbed — requires browser |
 | Debugger | unsafeCoerce | ✅ | |
-| Debugger | upload | ❌ | Requires Task type |
+| Debugger | upload | ❌ | Stubbed — requires browser |
 | JsArray | appendN | ✅ | |
 | JsArray | empty | ✅ | |
 | JsArray | equals | ❌ | Missing entirely |
-| JsArray | foldl | ❌ | Requires closure support |
-| JsArray | foldr | ❌ | Requires closure support |
-| JsArray | indexedMap | ❌ | Requires closure support |
-| JsArray | initialize | ❌ | Requires closure support |
-| JsArray | initializeFromList | ❌ | Requires closure support |
+| JsArray | foldl | ❌ | Stubbed — requires closure support |
+| JsArray | foldr | ❌ | Stubbed — requires closure support |
+| JsArray | indexedMap | ❌ | Stubbed — requires closure support |
+| JsArray | initialize | ❌ | Stubbed — requires closure support |
+| JsArray | initializeFromList | ❌ | Stubbed — requires closure support |
 | JsArray | length | ✅ | |
-| JsArray | map | ❌ | Requires closure support |
+| JsArray | map | ❌ | Stubbed — requires closure support |
 | JsArray | push | ✅ | |
 | JsArray | singleton | ✅ | |
 | JsArray | slice | ✅ | |
@@ -96,25 +94,25 @@
 | JsArray | unsafeSet | ✅ | |
 | List | cons | ✅ | |
 | List | fromArray | ✅ | |
-| List | map2 | ❌ | Requires closure support |
-| List | map3 | ❌ | Requires closure support |
-| List | map4 | ❌ | Requires closure support |
-| List | map5 | ❌ | Requires closure support |
-| List | sortBy | ❌ | Requires closure support |
-| List | sortWith | ❌ | Requires closure support |
+| List | map2 | ❌ | Stubbed — requires closure support |
+| List | map3 | ❌ | Stubbed — requires closure support |
+| List | map4 | ❌ | Stubbed — requires closure support |
+| List | map5 | ❌ | Stubbed — requires closure support |
+| List | sortBy | ❌ | Stubbed — requires closure support |
+| List | sortWith | ❌ | Stubbed — requires closure support |
 | List | toArray | ✅ | |
-| Platform | batch | ❌ | Requires Cmd support |
-| Platform | map | ❌ | Requires Cmd support |
-| Platform | sendToApp | ⚠️ | No-op stub |
-| Platform | sendToSelf | ❌ | Requires Task support |
-| Platform | worker | ⚠️ | Returns input unchanged |
-| Process | sleep | ❌ | Requires platform runtime |
-| Scheduler | andThen | ❌ | Requires Task type |
-| Scheduler | fail | ❌ | Requires Task type |
-| Scheduler | kill | ❌ | Requires Task type |
-| Scheduler | onError | ❌ | Requires Task type |
-| Scheduler | spawn | ❌ | Requires Task type |
-| Scheduler | succeed | ❌ | Requires Task type |
+| Platform | batch | ✅ | Creates Fx_Node Custom heap object |
+| Platform | map | ✅ | Creates Fx_Map Custom heap object |
+| Platform | sendToApp | ✅ | Routes via PlatformRuntime |
+| Platform | sendToSelf | ✅ | Sends to manager self-process |
+| Platform | worker | ✅ | TEA init loop, GC-rooted model, effect dispatch |
+| Process | sleep | ✅ | Binding task with std::thread timer |
+| Scheduler | andThen | ✅ | Allocates heap Task (ctor=AndThen) |
+| Scheduler | fail | ✅ | Allocates heap Task (ctor=Fail) |
+| Scheduler | kill | ✅ | Kills process, invokes kill handle |
+| Scheduler | onError | ✅ | Allocates heap Task (ctor=OnError) |
+| Scheduler | spawn | ✅ | Creates process, enqueues, returns Task.succeed(proc) |
+| Scheduler | succeed | ✅ | Allocates heap Task (ctor=Succeed) |
 | String | all | ✅ | Has closure support |
 | String | any | ✅ | Has closure support |
 | String | append | ✅ | |
@@ -153,14 +151,25 @@
 | Utils | lt | ✅ | |
 | Utils | notEqual | ✅ | |
 
+### Architecture Notes
+
+**Scheduler/Platform runtime** — Heap-native implementation in `runtime/src/platform/`:
+- `Scheduler.hpp/.cpp` — Cooperative task execution with GC-managed Task/Process objects
+- `PlatformRuntime.hpp/.cpp` — Effect manager registry, Cmd/Sub dispatch, Platform.worker init
+- Tasks are heap-allocated objects (Tag_Task) with ctor tags: Succeed=0, Fail=1, Binding=2, AndThen=3, OnError=4, Receive=5
+- Processes are heap-allocated (Tag_Process) with root task, stack (linked list of StackFrame Custom objects), and mailbox (Elm List)
+- Old std::shared_ptr-based Scheduler retired to `design_docs/reference/Scheduler_old.cpp`
+
 ### Key Findings
 
 1. **Pure computational functions are complete** — Basics, Bitwise, Char, String, Utils fully implemented.
 
 2. **Higher-order functions are the main gap** — JsArray and List stubs all involve closures (map, fold, sort).
 
-3. **Task/Cmd runtime not implemented** — Scheduler, Process, Platform stubs require a Task type.
+3. **Scheduler/Platform/Process now implemented** — Full heap-native cooperative scheduler with task constructors, step loop, effect manager dispatch, and Platform.worker TEA initialization.
 
-4. **Working closure patterns exist** — StringExports.cpp has closure-calling helpers that could be reused.
+4. **Working closure patterns exist** — StringExports.cpp has closure-calling helpers. Scheduler uses `eco_apply_closure` for calling Elm closures from C++.
 
 5. **One function missing entirely** — JsArray.equals not in implementation.
+
+6. **Browser-dependent stubs remain** — Debugger's open/scroll/download/upload require browser APIs not available in the native runtime.
