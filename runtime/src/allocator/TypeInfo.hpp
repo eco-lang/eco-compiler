@@ -31,7 +31,7 @@
  *   - Tuple2/Tuple3: Header.unboxed bits 0-2 for fields a/b/c
  *   - Record: record->unboxed bitmap (up to 64 fields)
  *   - Custom: custom->unboxed bitmap (up to 48 fields)
- *   - ElmArray: array->unboxed bitmap (up to 64 elements)
+ *   - ElmArray: Header.unboxed bit 0 (uniform: all boxed or all unboxed)
  *   - Closure: closure->unboxed bitmap for captured values
  *
  * For unboxed fields, when the type is primitive, the 64-bit slot contains:

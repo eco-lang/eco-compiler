@@ -102,7 +102,7 @@ uint64_t Elm_Kernel_JsArray_unsafeGet(uint32_t index, uint64_t array) {
     Unboxable val = alloc::arrayGet(ptr, index);
 
     // Check uniform unboxed flag
-    if (arr->unboxed) {
+    if (arr->header.unboxed) {
         // Return unboxed value directly
         return static_cast<uint64_t>(val.i);
     } else {
@@ -132,7 +132,7 @@ uint64_t Elm_Kernel_JsArray_unsafeSet(uint32_t index, uint64_t value, uint64_t a
         dst->elements[index].p = Export::decode(value);
     }
     // Result is boxed since we're setting a boxed value
-    dst->unboxed = 0;
+    dst->header.unboxed = 0;
 
     return Export::encode(result);
 }
@@ -154,7 +154,7 @@ uint64_t Elm_Kernel_JsArray_push(uint64_t value, uint64_t array) {
     dst->elements[len].p = Export::decode(value);
     dst->length = len + 1;
     // Result is boxed since we're pushing a boxed value
-    dst->unboxed = 0;
+    dst->header.unboxed = 0;
 
     return Export::encode(result);
 }
@@ -183,7 +183,7 @@ uint64_t Elm_Kernel_JsArray_slice(int64_t start, int64_t end, uint64_t array) {
     }
     dst->length = static_cast<uint32_t>(newLen);
     // Preserve unboxed flag from source
-    dst->unboxed = src->unboxed;
+    dst->header.unboxed = src->header.unboxed;
 
     return Export::encode(result);
 }
@@ -213,7 +213,7 @@ uint64_t Elm_Kernel_JsArray_appendN(uint32_t n, uint64_t dest, uint64_t source) 
     }
     resultArr->length = newLen;
     // Both arrays should have same unboxed status; use dest's
-    resultArr->unboxed = destArr->unboxed;
+    resultArr->header.unboxed = destArr->header.unboxed;
 
     return Export::encode(result);
 }
@@ -248,7 +248,7 @@ uint64_t Elm_Kernel_JsArray_map(uint64_t closure, uint64_t array) {
     void* srcPtr = Export::toPtr(array);
     ElmArray* src = static_cast<ElmArray*>(srcPtr);
     uint32_t len = src->length;
-    bool srcUnboxed = src->unboxed != 0;
+    bool srcUnboxed = src->header.unboxed != 0;
 
     HPointer arr = alloc::allocArray(len);
     auto& allocator = Allocator::instance();
@@ -272,7 +272,7 @@ uint64_t Elm_Kernel_JsArray_indexedMap(uint64_t closure, uint32_t offset, uint64
     void* srcPtr = Export::toPtr(array);
     ElmArray* src = static_cast<ElmArray*>(srcPtr);
     uint32_t len = src->length;
-    bool srcUnboxed = src->unboxed != 0;
+    bool srcUnboxed = src->header.unboxed != 0;
 
     HPointer arr = alloc::allocArray(len);
     auto& allocator = Allocator::instance();
@@ -296,7 +296,7 @@ uint64_t Elm_Kernel_JsArray_foldl(uint64_t closure, uint64_t acc, uint64_t array
     void* srcPtr = Export::toPtr(array);
     ElmArray* src = static_cast<ElmArray*>(srcPtr);
     uint32_t len = src->length;
-    bool srcUnboxed = src->unboxed != 0;
+    bool srcUnboxed = src->header.unboxed != 0;
 
     uint64_t accumulator = acc;
     for (uint32_t i = 0; i < len; i++) {
@@ -312,7 +312,7 @@ uint64_t Elm_Kernel_JsArray_foldr(uint64_t closure, uint64_t acc, uint64_t array
     void* srcPtr = Export::toPtr(array);
     ElmArray* src = static_cast<ElmArray*>(srcPtr);
     uint32_t len = src->length;
-    bool srcUnboxed = src->unboxed != 0;
+    bool srcUnboxed = src->header.unboxed != 0;
 
     uint64_t accumulator = acc;
     for (uint32_t i = len; i > 0; i--) {

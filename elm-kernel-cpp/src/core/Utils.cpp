@@ -455,14 +455,14 @@ static bool eqHelp(void* a, void* b, int depth) {
 
             if (aa->length != ba->length) return false;
 
-            for (u32 i = 0; i < aa->length; ++i) {
-                bool aUnboxed = (aa->unboxed >> i) & 1;
-                bool bUnboxed = (ba->unboxed >> i) & 1;
+            bool aUnboxed = aa->header.unboxed != 0;
+            bool bUnboxed = ba->header.unboxed != 0;
 
-                if (aUnboxed && bUnboxed) {
+            if (aUnboxed != bUnboxed) return false;
+
+            for (u32 i = 0; i < aa->length; ++i) {
+                if (aUnboxed) {
                     if (aa->elements[i].i != ba->elements[i].i) return false;
-                } else if (aUnboxed || bUnboxed) {
-                    return false;
                 } else {
                     void* aVal; void* bVal; bool eq;
                     if (resolveAndCompare(allocator, aa->elements[i].p, ba->elements[i].p,

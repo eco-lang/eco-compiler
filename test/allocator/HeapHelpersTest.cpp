@@ -443,6 +443,72 @@ Testing::TestCase testArrayFromIntsRoundtrip("arrayFromInts roundtrip", []() {
     });
 });
 
+Testing::TestCase testCreateBoxedArrayRoundtrip("createBoxedArray roundtrip", []() {
+    rc::check([]() {
+        auto& alloc = initAllocator();
+
+        size_t len = *rc::gen::inRange<size_t>(1, 20);
+        std::vector<i64> values;
+        std::vector<HPointer> ptrs;
+        for (size_t i = 0; i < len; ++i) {
+            i64 v = *rc::gen::inRange<i64>(-1000, 1000);
+            values.push_back(v);
+            ptrs.push_back(allocInt(v));
+        }
+
+        HPointer arr = arrayFromPointers(ptrs);
+        void* obj = alloc.resolve(arr);
+
+        RC_ASSERT(arrayLength(obj) == len);
+        RC_ASSERT(!arrayIsUnboxed(obj));
+
+        for (size_t i = 0; i < len; ++i) {
+            HPointer elem = arrayGet(obj, i).p;
+            void* elemObj = alloc.resolve(elem);
+            ElmInt* intVal = static_cast<ElmInt*>(elemObj);
+            RC_ASSERT(intVal->value == values[i]);
+        }
+    });
+});
+
+Testing::TestCase testBoxedArrayPush("boxedArrayPush keeps unboxed flag 0", []() {
+    rc::check([]() {
+        auto& alloc = initAllocator();
+
+        size_t capacity = *rc::gen::inRange<size_t>(3, 10);
+        HPointer arr = allocArray(capacity);
+        void* obj = alloc.resolve(arr);
+
+        for (size_t i = 0; i < capacity; ++i) {
+            HPointer val = allocInt(static_cast<i64>(i * 100));
+            obj = alloc.resolve(arr);
+            RC_ASSERT(arrayPush(obj, boxed(val), true));
+        }
+
+        obj = alloc.resolve(arr);
+        RC_ASSERT(!arrayIsUnboxed(obj));
+        RC_ASSERT(arrayLength(obj) == capacity);
+    });
+});
+
+Testing::TestCase testArrayUnboxedFlagInHeader("array unboxed flag stored in header", []() {
+    rc::check([]() {
+        auto& alloc = initAllocator();
+
+        // Boxed array
+        std::vector<HPointer> ptrs = {allocInt(1), allocInt(2)};
+        HPointer boxedArr = arrayFromPointers(ptrs);
+        ElmArray* ba = static_cast<ElmArray*>(alloc.resolve(boxedArr));
+        RC_ASSERT(ba->header.unboxed == 0);
+
+        // Unboxed array
+        std::vector<i64> ints = {10, 20, 30};
+        HPointer unboxedArr = arrayFromInts(ints);
+        ElmArray* ua = static_cast<ElmArray*>(alloc.resolve(unboxedArr));
+        RC_ASSERT(ua->header.unboxed == 1);
+    });
+});
+
 // ============================================================================
 // ByteBuffer Allocation Tests
 // ============================================================================
@@ -624,6 +690,186 @@ Testing::TestCase testAllocatedArraySurvivesMinorGC("Allocated array survives mi
     });
 });
 
+Testing::TestCase testBoxedArraySurvivesMinorGC("Boxed array survives minor GC", []() {
+    rc::check([]() {
+        auto& alloc = initAllocator();
+
+        size_t len = *rc::gen::inRange<size_t>(2, 15);
+        std::vector<i64> values;
+        for (size_t i = 0; i < len; ++i) {
+            values.push_back(*rc::gen::inRange<i64>(-500, 500));
+        }
+
+        // Create boxed array of ElmInt pointers
+        std::vector<HPointer> ptrs;
+        for (size_t i = 0; i < len; ++i) {
+            ptrs.push_back(allocInt(values[i]));
+        }
+        HPointer arr = arrayFromPointers(ptrs);
+        alloc.getRootSet().addRoot(&arr);
+
+        alloc.minorGC();
+
+        void* obj = alloc.resolve(arr);
+        RC_ASSERT(static_cast<bool>(obj));
+        RC_ASSERT(arrayLength(obj) == len);
+        RC_ASSERT(!arrayIsUnboxed(obj));
+
+        for (size_t i = 0; i < len; ++i) {
+            HPointer elem = arrayGet(obj, i).p;
+            void* elemObj = alloc.resolve(elem);
+            RC_ASSERT(static_cast<bool>(elemObj));
+            ElmInt* intVal = static_cast<ElmInt*>(elemObj);
+            RC_ASSERT(intVal->value == values[i]);
+        }
+
+        alloc.getRootSet().removeRoot(&arr);
+    });
+});
+
+Testing::TestCase testBoxedArrayElementsTracedByGC("Boxed array elements all traced by GC", []() {
+    rc::check([]() {
+        auto& alloc = initAllocator();
+
+        // Create several ElmInts that are ONLY reachable through the array
+        size_t len = *rc::gen::inRange<size_t>(3, 20);
+        std::vector<i64> values;
+        std::vector<HPointer> ptrs;
+        for (size_t i = 0; i < len; ++i) {
+            i64 v = static_cast<i64>(i * 1000 + 7);
+            values.push_back(v);
+            ptrs.push_back(allocInt(v));
+        }
+        HPointer arr = arrayFromPointers(ptrs);
+
+        // Only root the array, not the individual ints
+        alloc.getRootSet().addRoot(&arr);
+
+        alloc.minorGC();
+
+        // All elements (not just element 0) must survive
+        void* obj = alloc.resolve(arr);
+        RC_ASSERT(static_cast<bool>(obj));
+        RC_ASSERT(arrayLength(obj) == len);
+
+        for (size_t i = 0; i < len; ++i) {
+            HPointer elem = arrayGet(obj, i).p;
+            void* elemObj = alloc.resolve(elem);
+            RC_ASSERT(static_cast<bool>(elemObj));
+            ElmInt* intVal = static_cast<ElmInt*>(elemObj);
+            RC_ASSERT(intVal->value == values[i]);
+        }
+
+        alloc.getRootSet().removeRoot(&arr);
+    });
+});
+
+Testing::TestCase testUnboxedArrayElementsNotTracedByGC("Unboxed array elements not traced as pointers", []() {
+    rc::check([]() {
+        auto& alloc = initAllocator();
+
+        // Create unboxed array with arbitrary integer values
+        size_t len = *rc::gen::inRange<size_t>(2, 30);
+        std::vector<i64> values;
+        for (size_t i = 0; i < len; ++i) {
+            values.push_back(*rc::gen::inRange<i64>(-100000, 100000));
+        }
+        HPointer arr = arrayFromInts(values);
+        alloc.getRootSet().addRoot(&arr);
+
+        // GC should not crash trying to trace integers as pointers
+        alloc.minorGC();
+
+        void* obj = alloc.resolve(arr);
+        RC_ASSERT(static_cast<bool>(obj));
+        RC_ASSERT(arrayIsUnboxed(obj));
+        RC_ASSERT(arrayLength(obj) == len);
+
+        for (size_t i = 0; i < len; ++i) {
+            RC_ASSERT(arrayGet(obj, i).i == values[i]);
+        }
+
+        alloc.getRootSet().removeRoot(&arr);
+    });
+});
+
+Testing::TestCase testArrayUnboxedFlagPreservedAcrossGC("Array unboxed flag preserved across GC", []() {
+    rc::check([]() {
+        auto& alloc = initAllocator();
+
+        // Create one boxed and one unboxed array
+        std::vector<HPointer> bPtrs = {allocInt(1), allocInt(2)};
+        HPointer boxedArr = arrayFromPointers(bPtrs);
+
+        std::vector<i64> uInts = {10, 20, 30};
+        HPointer unboxedArr = arrayFromInts(uInts);
+
+        alloc.getRootSet().addRoot(&boxedArr);
+        alloc.getRootSet().addRoot(&unboxedArr);
+
+        alloc.minorGC();
+
+        ElmArray* ba = static_cast<ElmArray*>(alloc.resolve(boxedArr));
+        RC_ASSERT(ba->header.unboxed == 0);
+
+        ElmArray* ua = static_cast<ElmArray*>(alloc.resolve(unboxedArr));
+        RC_ASSERT(ua->header.unboxed == 1);
+
+        alloc.getRootSet().removeRoot(&boxedArr);
+        alloc.getRootSet().removeRoot(&unboxedArr);
+    });
+});
+
+Testing::TestCase testEmptyArraySurvivesGC("Empty array survives GC", []() {
+    rc::check([]() {
+        auto& alloc = initAllocator();
+
+        HPointer arr = allocArray(0);
+        alloc.getRootSet().addRoot(&arr);
+
+        alloc.minorGC();
+
+        void* obj = alloc.resolve(arr);
+        RC_ASSERT(static_cast<bool>(obj));
+        RC_ASSERT(arrayLength(obj) == 0);
+
+        alloc.getRootSet().removeRoot(&arr);
+    });
+});
+
+Testing::TestCase testLargeBoxedArraySurvivesGC("Large boxed array (100+ elements) survives GC", []() {
+    rc::check([]() {
+        auto& alloc = initAllocator();
+
+        size_t len = *rc::gen::inRange<size_t>(100, 150);
+        std::vector<i64> values;
+        std::vector<HPointer> ptrs;
+        for (size_t i = 0; i < len; ++i) {
+            i64 v = static_cast<i64>(i);
+            values.push_back(v);
+            ptrs.push_back(allocInt(v));
+        }
+        HPointer arr = arrayFromPointers(ptrs);
+        alloc.getRootSet().addRoot(&arr);
+
+        alloc.minorGC();
+
+        void* obj = alloc.resolve(arr);
+        RC_ASSERT(static_cast<bool>(obj));
+        RC_ASSERT(arrayLength(obj) == len);
+
+        for (size_t i = 0; i < len; ++i) {
+            HPointer elem = arrayGet(obj, i).p;
+            void* elemObj = alloc.resolve(elem);
+            RC_ASSERT(static_cast<bool>(elemObj));
+            ElmInt* intVal = static_cast<ElmInt*>(elemObj);
+            RC_ASSERT(intVal->value == values[i]);
+        }
+
+        alloc.getRootSet().removeRoot(&arr);
+    });
+});
+
 Testing::TestCase testAllocatedByteBufferSurvivesMinorGC("Allocated ByteBuffer survives minor GC", []() {
     rc::check([]() {
         auto& alloc = initAllocator();
@@ -735,6 +981,9 @@ void registerHeapHelpersTests(Testing::TestSuite& suite) {
     suite.add(testArrayPushIncrementsLength);
     suite.add(testArrayPushRespectsCapacity);
     suite.add(testArrayFromIntsRoundtrip);
+    suite.add(testCreateBoxedArrayRoundtrip);
+    suite.add(testBoxedArrayPush);
+    suite.add(testArrayUnboxedFlagInHeader);
 
     // ByteBuffer allocation
     suite.add(testAllocByteBufferPreservesData);
@@ -750,6 +999,12 @@ void registerHeapHelpersTests(Testing::TestSuite& suite) {
     suite.add(testAllocatedStringSurvivesMinorGC);
     suite.add(testAllocatedListSurvivesMinorGC);
     suite.add(testAllocatedArraySurvivesMinorGC);
+    suite.add(testBoxedArraySurvivesMinorGC);
+    suite.add(testBoxedArrayElementsTracedByGC);
+    suite.add(testUnboxedArrayElementsNotTracedByGC);
+    suite.add(testArrayUnboxedFlagPreservedAcrossGC);
+    suite.add(testEmptyArraySurvivesGC);
+    suite.add(testLargeBoxedArraySurvivesGC);
     suite.add(testAllocatedByteBufferSurvivesMinorGC);
     suite.add(testMixedStructuresSurviveGC);
 }

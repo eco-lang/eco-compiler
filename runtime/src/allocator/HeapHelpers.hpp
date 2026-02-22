@@ -611,7 +611,7 @@ inline HPointer allocArray(size_t capacity) {
     arr->header.size = static_cast<u32>(capacity);
     arr->length = 0;
     arr->padding = 0;
-    arr->unboxed = 0;
+    arr->header.unboxed = 0;
     return allocator.wrap(arr);
 }
 
@@ -631,7 +631,7 @@ inline HPointer arrayFromPointers(const std::vector<HPointer>& elements) {
     arr->header.size = static_cast<u32>(capacity);
     arr->length = static_cast<u32>(elements.size());
     arr->padding = 0;
-    arr->unboxed = 0;  // All elements are boxed pointers
+    arr->header.unboxed = 0;  // All elements are boxed pointers
 
     for (size_t i = 0; i < elements.size(); ++i) {
         arr->elements[i].p = elements[i];
@@ -654,7 +654,7 @@ inline HPointer arrayFromInts(const std::vector<i64>& elements) {
     ElmArray* arr = static_cast<ElmArray*>(allocator.allocate(total_size, Tag_Array));
     arr->header.size = static_cast<u32>(capacity);
     arr->length = static_cast<u32>(elements.size());
-    arr->unboxed = 1;  // All elements are unboxed
+    arr->header.unboxed = 1;  // All elements are unboxed
     arr->padding = 0;
 
     for (size_t i = 0; i < elements.size(); ++i) {
@@ -701,7 +701,7 @@ inline bool arrayPush(void* arr, Unboxable value, bool is_boxed) {
 
     // Set unboxed flag on first push; arrays are uniform
     if (idx == 0) {
-        a->unboxed = is_boxed ? 0 : 1;
+        a->header.unboxed = is_boxed ? 0 : 1;
     }
     // Note: subsequent pushes must be consistent (not enforced here)
 
@@ -731,7 +731,7 @@ inline Unboxable arrayGet(void* arr, size_t index) {
  */
 inline bool arrayIsUnboxed(void* arr) {
     ElmArray* a = static_cast<ElmArray*>(arr);
-    return a->unboxed != 0;
+    return a->header.unboxed != 0;
 }
 
 // ============================================================================

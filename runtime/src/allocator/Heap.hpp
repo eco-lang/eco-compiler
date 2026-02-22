@@ -90,7 +90,7 @@ typedef struct {
     u32 pin : 1; // Memory-pinned object (prevents relocation).
     u32 epoch : 2; // GC epoch when this object was last marked.
     u32 age : 2; // Number of minor GC cycles survived.
-    u32 unboxed : 3; // Unboxed flags for Cons, Tuple2, Tuple3 only.
+    u32 unboxed : 3; // Unboxed flags for Cons, Tuple2, Tuple3, ElmArray (bit 0).
     u32 padding : 1;
     u32 refcount : 16; // Reference count (unused currently).
     u32 size; // Object size in type-specific units.
@@ -312,10 +312,9 @@ typedef struct elm_bytebuffer ByteBuffer;
  *   - When copying, only copy header + used elements (not full capacity)
  */
 typedef struct {
-    Header header;     // header.size = capacity (allocated element count)
+    Header header;     // header.size = capacity; header.unboxed bit 0 = all-unboxed flag
     u32 length;        // Current number of elements in use
-    u32 unboxed : 1;   // Flag: 1 = all elements unboxed, 0 = all elements boxed
-    u32 padding : 31;  // Alignment padding
+    u32 padding;       // Alignment padding
     Unboxable elements[];  // Flexible array of values
 } ElmArray;
 

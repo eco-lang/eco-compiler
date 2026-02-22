@@ -1038,10 +1038,11 @@ static void print_dynrecord(DynRecord* dynrec, int depth) {
 // Print an array
 static void print_array(ElmArray* array, int depth) {
     output_text("Array.fromList [");
+    bool is_unboxed = array->header.unboxed;
     for (uint32_t i = 0; i < array->length; i++) {
         if (i > 0) output_text(", ");
 
-        if (array->unboxed & (1ULL << i)) {
+        if (is_unboxed) {
             output_format("%lld", (long long)array->elements[i].i);
         } else {
             // Read as full 64-bit value for JIT mode

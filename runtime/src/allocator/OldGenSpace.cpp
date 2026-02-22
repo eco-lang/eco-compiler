@@ -447,13 +447,9 @@ void OldGenSpace::markChildren(void *obj) {
         }
         case Tag_Array: {
             ElmArray *arr = static_cast<ElmArray *>(obj);
-            // Mark only the used elements (length), not the full capacity.
-            for (u32 i = 0; i < arr->length && i < 64; i++) {
-                markUnboxable(arr->elements[i], !(arr->unboxed & (1ULL << i)));
-            }
-            // Elements beyond index 63 are always treated as boxed pointers.
-            for (u32 i = 64; i < arr->length; i++) {
-                markHPointer(arr->elements[i].p);
+            bool is_boxed = !arr->header.unboxed;
+            for (u32 i = 0; i < arr->length; i++) {
+                markUnboxable(arr->elements[i], is_boxed);
             }
             break;
         }
@@ -1089,13 +1085,9 @@ void OldGenSpace::fixPointersInObject(void* obj) {
         }
         case Tag_Array: {
             ElmArray* arr = static_cast<ElmArray*>(obj);
-            // Fix only the used elements (length), not the full capacity.
-            for (u32 i = 0; i < arr->length && i < 64; i++) {
-                fixUnboxable(arr->elements[i], !(arr->unboxed & (1ULL << i)));
-            }
-            // Elements beyond index 63 are always treated as boxed pointers.
-            for (u32 i = 64; i < arr->length; i++) {
-                fixHPointer(arr->elements[i].p);
+            bool is_boxed = !arr->header.unboxed;
+            for (u32 i = 0; i < arr->length; i++) {
+                fixUnboxable(arr->elements[i], is_boxed);
             }
             break;
         }

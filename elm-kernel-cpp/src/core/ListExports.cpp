@@ -213,7 +213,7 @@ uint64_t Elm_Kernel_List_fromArray(uint64_t array) {
 
     ElmArray* elmArr = static_cast<ElmArray*>(arr_ptr);
     u32 len = elmArr->length;
-    bool isUnboxed = elmArr->unboxed != 0;
+    bool isUnboxed = elmArr->header.unboxed != 0;
 
     HPointer result = alloc::listNil();
     for (u32 i = len; i > 0; i--) {
@@ -235,7 +235,7 @@ uint64_t Elm_Kernel_List_toArray(uint64_t list) {
         elmArr->elements[i].p = Export::decode(vec[i]);
     }
     elmArr->length = static_cast<u32>(vec.size());
-    elmArr->unboxed = 0;  // Elements are boxed
+    elmArr->header.unboxed = 0;  // Elements are boxed
 
     return Export::encode(arr);
 }
