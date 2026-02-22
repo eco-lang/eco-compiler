@@ -162,7 +162,6 @@ target_compile_features(ElmKernel_VirtualDom PUBLIC cxx_std_20)
 
 # Json module
 add_library(ElmKernel_Json STATIC
-    src/json/Json.cpp
     src/json/JsonExports.cpp
 )
 target_include_directories(ElmKernel_Json PUBLIC

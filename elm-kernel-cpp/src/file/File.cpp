@@ -27,9 +27,8 @@ constexpr u32 FIELD_SIZE = 4;
 // ============================================================================
 
 DecoderPtr decoder() {
-    // Return a decoder that extracts a File from a JSON event
-    // In practice, this decodes files from drag/drop and form events
-    return Json::decodeValue();
+    // Stub - return null decoder
+    return DecoderPtr{};
 }
 
 HPointer makeBytesSafeForInternetExplorer(HPointer bytes) {

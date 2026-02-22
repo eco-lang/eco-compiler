@@ -1,6 +1,8 @@
 //===- JsonExports.cpp - C-linkage exports for Json module -----------------===//
 //
 // Full JSON decoder/encoder implementation using nlohmann/json.
+// JSON values are represented as heap-resident Custom objects using the
+// JSON value ADT (CTOR_JSON_* ctors), not as foreign C++ pointers.
 //
 //===----------------------------------------------------------------------===//
 
@@ -23,11 +25,18 @@ using namespace Elm::alloc;
 extern "C" uint64_t eco_apply_closure(uint64_t closure, uint64_t* args, uint32_t num_args);
 
 //===----------------------------------------------------------------------===//
-// JsonValue Heap Type
+// JSON Value Heap ADT
 //===----------------------------------------------------------------------===//
 
-// Custom tag for JsonValue (using Tag_Custom with a specific ctor)
-static constexpr u16 CTOR_JsonValue = 100;  // Arbitrary high ctor to avoid conflicts
+// Ctor tags for the heap-resident JSON value ADT.
+// All use Tag_Custom with these ctor values.
+static constexpr u16 CTOR_JSON_NULL   = 100;
+static constexpr u16 CTOR_JSON_BOOL   = 101;  // 1 boxed field: True/False constant
+static constexpr u16 CTOR_JSON_INT    = 102;  // 1 unboxed field: i64
+static constexpr u16 CTOR_JSON_FLOAT  = 103;  // 1 unboxed field: f64
+static constexpr u16 CTOR_JSON_STRING = 104;  // 1 boxed field: HPointer to ElmString
+static constexpr u16 CTOR_JSON_ARRAY  = 105;  // 1 boxed field: HPointer to ElmArray
+static constexpr u16 CTOR_JSON_OBJECT = 106;  // 1 boxed field: Elm List of (String, JsonValue) tuples
 
 // Decoder ctor values
 static constexpr u16 DEC_STRING = 0;
@@ -67,58 +76,12 @@ static constexpr u16 ENC_OBJECT = 6;
 // Helper Functions
 //===----------------------------------------------------------------------===//
 
-// Create an Elm String from a C++ string
+// Create an Elm String from a C++ string (UTF-8 to UTF-16 conversion).
 static HPointer allocElmString(const std::string& str) {
-    auto& allocator = Allocator::instance();
-
-    // Convert UTF-8 to UTF-16
-    std::u16string utf16;
-    size_t i = 0;
-    while (i < str.size()) {
-        uint32_t cp;
-        uint8_t c = str[i];
-        if ((c & 0x80) == 0) {
-            cp = c;
-            i += 1;
-        } else if ((c & 0xE0) == 0xC0) {
-            cp = (c & 0x1F) << 6;
-            if (i + 1 < str.size()) cp |= (str[i+1] & 0x3F);
-            i += 2;
-        } else if ((c & 0xF0) == 0xE0) {
-            cp = (c & 0x0F) << 12;
-            if (i + 1 < str.size()) cp |= (str[i+1] & 0x3F) << 6;
-            if (i + 2 < str.size()) cp |= (str[i+2] & 0x3F);
-            i += 3;
-        } else if ((c & 0xF8) == 0xF0) {
-            cp = (c & 0x07) << 18;
-            if (i + 1 < str.size()) cp |= (str[i+1] & 0x3F) << 12;
-            if (i + 2 < str.size()) cp |= (str[i+2] & 0x3F) << 6;
-            if (i + 3 < str.size()) cp |= (str[i+3] & 0x3F);
-            i += 4;
-        } else {
-            cp = 0xFFFD;  // replacement character
-            i += 1;
-        }
-
-        if (cp <= 0xFFFF) {
-            utf16.push_back(static_cast<char16_t>(cp));
-        } else {
-            cp -= 0x10000;
-            utf16.push_back(static_cast<char16_t>(0xD800 + (cp >> 10)));
-            utf16.push_back(static_cast<char16_t>(0xDC00 + (cp & 0x3FF)));
-        }
-    }
-
-    size_t allocSize = sizeof(ElmString) + utf16.size() * sizeof(u16);
-    allocSize = (allocSize + 7) & ~7;
-    ElmString* elmStr = static_cast<ElmString*>(allocator.allocate(allocSize, Tag_String));
-    elmStr->header.size = static_cast<u32>(utf16.size());
-    std::memcpy(elmStr->chars, utf16.data(), utf16.size() * sizeof(u16));
-
-    return allocator.wrap(elmStr);
+    return allocStringFromUTF8(str);
 }
 
-// Convert Elm String to C++ string
+// Convert Elm String to C++ string (UTF-16 to UTF-8 conversion).
 static std::string elmStringToStd(uint64_t strEnc) {
     HPointer h = Export::decode(strEnc);
     if (h.constant == Const_EmptyString + 1) {
@@ -163,7 +126,7 @@ static std::string elmStringToStd(uint64_t strEnc) {
     return result;
 }
 
-// Create Ok result
+// Create Ok result.
 static uint64_t makeOk(HPointer value) {
     auto& allocator = Allocator::instance();
     size_t size = sizeof(Custom) + sizeof(Unboxable);
@@ -176,12 +139,12 @@ static uint64_t makeOk(HPointer value) {
     return Export::encode(allocator.wrap(result));
 }
 
-// Create Err result with a Json.Error
+// Create Err result with a Json.Error.
 static uint64_t makeErr(const std::string& message) {
     HPointer msgStr = allocElmString(message);
 
     auto& allocator = Allocator::instance();
-    // Create Error.Failure message value (simplified)
+    // Create Error.Failure message value (simplified).
     size_t size = sizeof(Custom) + 2 * sizeof(Unboxable);
     size = (size + 7) & ~7;
     Custom* failure = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
@@ -191,7 +154,7 @@ static uint64_t makeErr(const std::string& message) {
     failure->values[0].p = msgStr;  // message
     failure->values[1].p = listNil();  // context (empty)
 
-    // Wrap in Err
+    // Wrap in Err.
     size = sizeof(Custom) + sizeof(Unboxable);
     size = (size + 7) & ~7;
     Custom* err = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
@@ -203,7 +166,7 @@ static uint64_t makeErr(const std::string& message) {
     return Export::encode(allocator.wrap(err));
 }
 
-// Check if a result is Ok
+// Check if a result is Ok.
 static bool isOk(uint64_t result) {
     void* ptr = Export::toPtr(result);
     if (!ptr) return false;
@@ -211,7 +174,7 @@ static bool isOk(uint64_t result) {
     return c->ctor == 0;
 }
 
-// Get value from Ok result
+// Get value from Ok result.
 static HPointer getOkValue(uint64_t result) {
     void* ptr = Export::toPtr(result);
     Custom* c = static_cast<Custom*>(ptr);
@@ -219,42 +182,244 @@ static HPointer getOkValue(uint64_t result) {
 }
 
 //===----------------------------------------------------------------------===//
-// JSON Value Storage
+// JSON Value ADT - Construction Helpers
 //===----------------------------------------------------------------------===//
 
-// Store JSON as a heap-allocated pointer in a Custom
-// We use C++ new/delete for the json object and store the raw pointer.
-// This is not GC-friendly but works for the kernel implementation.
-
-struct JsonStorage {
-    json* data;
-};
-
-static std::vector<JsonStorage> jsonValues;
-
-static uint64_t wrapJson(const json& j) {
+// Create a heap-resident JSON null.
+static HPointer makeJsonNull() {
     auto& allocator = Allocator::instance();
+    size_t size = sizeof(Custom);
+    size = (size + 7) & ~7;
+    Custom* c = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
+    c->header.size = 0;
+    c->ctor = CTOR_JSON_NULL;
+    c->unboxed = 0;
+    return allocator.wrap(c);
+}
 
-    // Store JSON in a Custom with the pointer encoded as an integer
-    json* jptr = new json(j);
-
+// Create a heap-resident JSON bool.
+static HPointer makeJsonBool(bool b) {
+    auto& allocator = Allocator::instance();
     size_t size = sizeof(Custom) + sizeof(Unboxable);
     size = (size + 7) & ~7;
     Custom* c = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
     c->header.size = 1;
-    c->ctor = CTOR_JsonValue;
-    c->unboxed = 1;
-    c->values[0].i = reinterpret_cast<int64_t>(jptr);
-
-    return Export::encode(allocator.wrap(c));
+    c->ctor = CTOR_JSON_BOOL;
+    c->unboxed = 0;
+    c->values[0].p = b ? elmTrue() : elmFalse();
+    return allocator.wrap(c);
 }
 
-static json* unwrapJson(uint64_t enc) {
-    void* ptr = Export::toPtr(enc);
-    if (!ptr) return nullptr;
+// Create a heap-resident JSON int.
+static HPointer makeJsonInt(i64 val) {
+    auto& allocator = Allocator::instance();
+    size_t size = sizeof(Custom) + sizeof(Unboxable);
+    size = (size + 7) & ~7;
+    Custom* c = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
+    c->header.size = 1;
+    c->ctor = CTOR_JSON_INT;
+    c->unboxed = 1;
+    c->values[0].i = val;
+    return allocator.wrap(c);
+}
+
+// Create a heap-resident JSON float.
+static HPointer makeJsonFloat(f64 val) {
+    auto& allocator = Allocator::instance();
+    size_t size = sizeof(Custom) + sizeof(Unboxable);
+    size = (size + 7) & ~7;
+    Custom* c = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
+    c->header.size = 1;
+    c->ctor = CTOR_JSON_FLOAT;
+    c->unboxed = 1;
+    c->values[0].f = val;
+    return allocator.wrap(c);
+}
+
+// Create a heap-resident JSON string.
+static HPointer makeJsonString(HPointer elmStr) {
+    auto& allocator = Allocator::instance();
+    size_t size = sizeof(Custom) + sizeof(Unboxable);
+    size = (size + 7) & ~7;
+    Custom* c = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
+    c->header.size = 1;
+    c->ctor = CTOR_JSON_STRING;
+    c->unboxed = 0;
+    c->values[0].p = elmStr;
+    return allocator.wrap(c);
+}
+
+// Create a heap-resident JSON array from an ElmArray of JSON values.
+static HPointer makeJsonArray(HPointer elmArray) {
+    auto& allocator = Allocator::instance();
+    size_t size = sizeof(Custom) + sizeof(Unboxable);
+    size = (size + 7) & ~7;
+    Custom* c = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
+    c->header.size = 1;
+    c->ctor = CTOR_JSON_ARRAY;
+    c->unboxed = 0;
+    c->values[0].p = elmArray;
+    return allocator.wrap(c);
+}
+
+// Create a heap-resident JSON object from an Elm List of (String, JsonValue) tuples.
+static HPointer makeJsonObject(HPointer kvList) {
+    auto& allocator = Allocator::instance();
+    size_t size = sizeof(Custom) + sizeof(Unboxable);
+    size = (size + 7) & ~7;
+    Custom* c = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
+    c->header.size = 1;
+    c->ctor = CTOR_JSON_OBJECT;
+    c->unboxed = 0;
+    c->values[0].p = kvList;
+    return allocator.wrap(c);
+}
+
+//===----------------------------------------------------------------------===//
+// JSON Value ADT - Query Helpers
+//===----------------------------------------------------------------------===//
+
+// Get the ctor tag of a heap-resident JSON value.
+// Returns 0 for non-JSON-value inputs (e.g. embedded constants).
+static u16 jsonValueCtor(uint64_t jvalEnc) {
+    void* ptr = Export::toPtr(jvalEnc);
+    if (!ptr) return 0;
     Custom* c = static_cast<Custom*>(ptr);
-    if (c->ctor != CTOR_JsonValue) return nullptr;
-    return reinterpret_cast<json*>(c->values[0].i);
+    return c->ctor;
+}
+
+//===----------------------------------------------------------------------===//
+// jsonToHeap - Convert nlohmann::json to heap-resident JSON value ADT
+//===----------------------------------------------------------------------===//
+
+static HPointer jsonToHeap(const json& j) {
+    auto& allocator = Allocator::instance();
+
+    if (j.is_null()) {
+        return makeJsonNull();
+    }
+
+    if (j.is_boolean()) {
+        return makeJsonBool(j.get<bool>());
+    }
+
+    if (j.is_number_integer()) {
+        return makeJsonInt(j.get<i64>());
+    }
+
+    if (j.is_number_float()) {
+        return makeJsonFloat(j.get<f64>());
+    }
+
+    if (j.is_string()) {
+        HPointer str = allocElmString(j.get<std::string>());
+        return makeJsonString(str);
+    }
+
+    if (j.is_array()) {
+        // Convert each element to heap, collecting HPointers.
+        std::vector<HPointer> elements;
+        elements.reserve(j.size());
+        for (const auto& elem : j) {
+            elements.push_back(jsonToHeap(elem));
+        }
+
+        // Build ElmArray from collected HPointers.
+        HPointer arr = arrayFromPointers(elements);
+        return makeJsonArray(arr);
+    }
+
+    if (j.is_object()) {
+        // Build list of (key, value) tuples in reverse iteration order
+        // so the final list preserves insertion order.
+        std::vector<std::string> keys;
+        for (auto it = j.begin(); it != j.end(); ++it) {
+            keys.push_back(it.key());
+        }
+
+        HPointer kvList = listNil();
+        for (auto it = keys.rbegin(); it != keys.rend(); ++it) {
+            HPointer keyStr = allocElmString(*it);
+            HPointer val = jsonToHeap(j[*it]);
+
+            HPointer tup = tuple2(boxed(keyStr), boxed(val), 0);
+            kvList = cons(boxed(tup), kvList, true);
+        }
+
+        return makeJsonObject(kvList);
+    }
+
+    // Fallback: null.
+    return makeJsonNull();
+}
+
+//===----------------------------------------------------------------------===//
+// heapJsonToNlohmann - Convert heap-resident JSON value ADT to nlohmann::json
+//===----------------------------------------------------------------------===//
+
+static json heapJsonToNlohmann(uint64_t jvalEnc) {
+    auto& allocator = Allocator::instance();
+
+    void* ptr = Export::toPtr(jvalEnc);
+    if (!ptr) return json(nullptr);
+
+    Header* hdr = static_cast<Header*>(ptr);
+    if (hdr->tag != Tag_Custom) return json(nullptr);
+
+    Custom* c = static_cast<Custom*>(ptr);
+
+    switch (c->ctor) {
+        case CTOR_JSON_NULL:
+            return json(nullptr);
+
+        case CTOR_JSON_BOOL: {
+            HPointer boolVal = c->values[0].p;
+            return json(boolVal.constant == Const_True + 1);
+        }
+
+        case CTOR_JSON_INT:
+            return json(c->values[0].i);
+
+        case CTOR_JSON_FLOAT:
+            return json(c->values[0].f);
+
+        case CTOR_JSON_STRING: {
+            return json(elmStringToStd(Export::encode(c->values[0].p)));
+        }
+
+        case CTOR_JSON_ARRAY: {
+            json arr = json::array();
+            void* arrPtr = allocator.resolve(c->values[0].p);
+            ElmArray* elmArr = static_cast<ElmArray*>(arrPtr);
+            u32 len = elmArr->header.size;
+            for (u32 i = 0; i < len; i++) {
+                arr.push_back(heapJsonToNlohmann(Export::encode(elmArr->elements[i].p)));
+            }
+            return arr;
+        }
+
+        case CTOR_JSON_OBJECT: {
+            json obj = json::object();
+            HPointer kvList = c->values[0].p;
+            while (!isNil(kvList)) {
+                void* cellPtr = allocator.resolve(kvList);
+                Cons* cell = static_cast<Cons*>(cellPtr);
+
+                void* tuplePtr = allocator.resolve(cell->head.p);
+                Tuple2* tup = static_cast<Tuple2*>(tuplePtr);
+
+                std::string key = elmStringToStd(Export::encode(tup->a.p));
+                json val = heapJsonToNlohmann(Export::encode(tup->b.p));
+                obj[key] = val;
+
+                kvList = cell->tail;
+            }
+            return obj;
+        }
+
+        default:
+            return json(nullptr);
+    }
 }
 
 //===----------------------------------------------------------------------===//
@@ -323,53 +488,61 @@ static uint64_t makeDecoder2ip(u16 ctor, int64_t arg1, uint64_t arg2) {
 }
 
 //===----------------------------------------------------------------------===//
-// Decoder Execution
+// Decoder Execution - operates on heap-resident JSON values
 //===----------------------------------------------------------------------===//
 
-// Forward declaration
-static uint64_t runDecoder(Custom* decoder, const json& jval);
-
-// Run decoder on a JSON value and return Result
-static uint64_t runDecoder(Custom* decoder, const json& jval) {
+// Run decoder on a heap-resident JSON value and return Result.
+// jvalEnc is an encoded HPointer to a CTOR_JSON_* Custom object.
+static uint64_t runDecoder(Custom* decoder, uint64_t jvalEnc) {
     auto& allocator = Allocator::instance();
+
+    // Resolve the JSON value to inspect its ctor.
+    void* jvalPtr = Export::toPtr(jvalEnc);
+    Custom* jval = (jvalPtr && static_cast<Header*>(jvalPtr)->tag == Tag_Custom)
+                   ? static_cast<Custom*>(jvalPtr) : nullptr;
+    u16 jctor = jval ? jval->ctor : 0;
 
     switch (decoder->ctor) {
         case DEC_STRING: {
-            if (!jval.is_string()) {
+            if (!jval || jctor != CTOR_JSON_STRING) {
                 return makeErr("Expecting a STRING");
             }
-            HPointer str = allocElmString(jval.get<std::string>());
-            return makeOk(str);
+            // The string is already an ElmString on the heap.
+            return makeOk(jval->values[0].p);
         }
 
         case DEC_BOOL: {
-            if (!jval.is_boolean()) {
+            if (!jval || jctor != CTOR_JSON_BOOL) {
                 return makeErr("Expecting a BOOL");
             }
-            bool b = jval.get<bool>();
-            return makeOk(b ? elmTrue() : elmFalse());
+            return makeOk(jval->values[0].p);
         }
 
         case DEC_INT: {
-            if (!jval.is_number_integer()) {
+            if (!jval || jctor != CTOR_JSON_INT) {
                 return makeErr("Expecting an INT");
             }
-            int64_t n = jval.get<int64_t>();
-            HPointer intVal = allocInt(n);
+            HPointer intVal = allocInt(jval->values[0].i);
             return makeOk(intVal);
         }
 
         case DEC_FLOAT: {
-            if (!jval.is_number()) {
+            // Accept both JSON int and JSON float as numbers.
+            if (!jval || (jctor != CTOR_JSON_FLOAT && jctor != CTOR_JSON_INT)) {
                 return makeErr("Expecting a FLOAT");
             }
-            double d = jval.get<double>();
+            f64 d;
+            if (jctor == CTOR_JSON_FLOAT) {
+                d = jval->values[0].f;
+            } else {
+                d = static_cast<f64>(jval->values[0].i);
+            }
             HPointer floatVal = allocFloat(d);
             return makeOk(floatVal);
         }
 
         case DEC_NULL: {
-            if (!jval.is_null()) {
+            if (!jval || jctor != CTOR_JSON_NULL) {
                 return makeErr("Expecting null");
             }
             HPointer fallback = decoder->values[0].p;
@@ -377,26 +550,40 @@ static uint64_t runDecoder(Custom* decoder, const json& jval) {
         }
 
         case DEC_VALUE: {
-            // Wrap the json value as a JsonValue
-            uint64_t wrapped = wrapJson(jval);
-            return makeOk(Export::decode(wrapped));
+            // Return the heap-resident JSON value directly.
+            return makeOk(Export::decode(jvalEnc));
         }
 
         case DEC_LIST: {
-            if (!jval.is_array()) {
+            if (!jval || jctor != CTOR_JSON_ARRAY) {
                 return makeErr("Expecting a LIST");
             }
 
-            // Get element decoder
+            // Get element decoder.
             void* elemDecPtr = allocator.resolve(decoder->values[0].p);
             Custom* elemDec = static_cast<Custom*>(elemDecPtr);
 
-            // Decode each element in reverse to build list
+            // Get the ElmArray.
+            void* arrPtr = allocator.resolve(jval->values[0].p);
+            ElmArray* arr = static_cast<ElmArray*>(arrPtr);
+            u32 len = arr->header.size;
+
+            // Decode each element in reverse to build list.
             HPointer result = listNil();
-            for (auto it = jval.rbegin(); it != jval.rend(); ++it) {
-                uint64_t elemResult = runDecoder(elemDec, *it);
+            for (i64 i = static_cast<i64>(len) - 1; i >= 0; i--) {
+                // Re-resolve after allocations in recursive calls.
+                arrPtr = allocator.resolve(jval->values[0].p);
+                arr = static_cast<ElmArray*>(arrPtr);
+
+                uint64_t elemEnc = Export::encode(arr->elements[i].p);
+
+                // Re-resolve decoder after potential GC.
+                elemDecPtr = allocator.resolve(decoder->values[0].p);
+                elemDec = static_cast<Custom*>(elemDecPtr);
+
+                uint64_t elemResult = runDecoder(elemDec, elemEnc);
                 if (!isOk(elemResult)) {
-                    return elemResult;  // Propagate error
+                    return elemResult;
                 }
                 HPointer elemVal = getOkValue(elemResult);
                 result = cons(boxed(elemVal), result, true);
@@ -405,99 +592,148 @@ static uint64_t runDecoder(Custom* decoder, const json& jval) {
         }
 
         case DEC_ARRAY: {
-            if (!jval.is_array()) {
+            if (!jval || jctor != CTOR_JSON_ARRAY) {
                 return makeErr("Expecting an ARRAY");
             }
 
-            // Get element decoder
+            // Get element decoder.
             void* elemDecPtr = allocator.resolve(decoder->values[0].p);
             Custom* elemDec = static_cast<Custom*>(elemDecPtr);
 
-            // Decode each element
-            std::vector<uint64_t> elements;
-            for (const auto& elem : jval) {
-                uint64_t elemResult = runDecoder(elemDec, elem);
+            // Get the ElmArray.
+            void* arrPtr = allocator.resolve(jval->values[0].p);
+            ElmArray* arr = static_cast<ElmArray*>(arrPtr);
+            u32 len = arr->header.size;
+
+            // Decode each element, collecting results.
+            std::vector<HPointer> elements;
+            elements.reserve(len);
+            for (u32 i = 0; i < len; i++) {
+                // Re-resolve after allocations in recursive calls.
+                arrPtr = allocator.resolve(jval->values[0].p);
+                arr = static_cast<ElmArray*>(arrPtr);
+
+                uint64_t elemEnc = Export::encode(arr->elements[i].p);
+
+                elemDecPtr = allocator.resolve(decoder->values[0].p);
+                elemDec = static_cast<Custom*>(elemDecPtr);
+
+                uint64_t elemResult = runDecoder(elemDec, elemEnc);
                 if (!isOk(elemResult)) {
                     return elemResult;
                 }
-                elements.push_back(Export::encode(getOkValue(elemResult)));
+                elements.push_back(getOkValue(elemResult));
             }
 
-            // Build Array (ElmArray)
-            size_t arrSize = sizeof(ElmArray) + elements.size() * sizeof(Unboxable);
-            arrSize = (arrSize + 7) & ~7;
-            ElmArray* arr = static_cast<ElmArray*>(allocator.allocate(arrSize, Tag_Array));
-            arr->header.size = static_cast<u32>(elements.size());
-            for (size_t i = 0; i < elements.size(); i++) {
-                arr->elements[i].p = Export::decode(elements[i]);
-            }
-
-            return makeOk(allocator.wrap(arr));
+            // Build ElmArray from results.
+            HPointer resultArr = arrayFromPointers(elements);
+            return makeOk(resultArr);
         }
 
         case DEC_FIELD: {
-            if (!jval.is_object()) {
+            if (!jval || jctor != CTOR_JSON_OBJECT) {
                 return makeErr("Expecting an OBJECT");
             }
 
-            // Get field name
+            // Get field name from decoder.
             std::string fieldName = elmStringToStd(Export::encode(decoder->values[0].p));
 
-            if (!jval.contains(fieldName)) {
-                return makeErr("Expecting an OBJECT with a field named `" + fieldName + "`");
+            // Search the key-value list for a matching key.
+            HPointer kvList = jval->values[0].p;
+            while (!isNil(kvList)) {
+                void* cellPtr = allocator.resolve(kvList);
+                Cons* cell = static_cast<Cons*>(cellPtr);
+
+                void* tuplePtr = allocator.resolve(cell->head.p);
+                Tuple2* tup = static_cast<Tuple2*>(tuplePtr);
+
+                std::string key = elmStringToStd(Export::encode(tup->a.p));
+                if (key == fieldName) {
+                    // Found: run the nested decoder on the value.
+                    uint64_t valEnc = Export::encode(tup->b.p);
+
+                    void* nestedDecPtr = allocator.resolve(decoder->values[1].p);
+                    Custom* nestedDec = static_cast<Custom*>(nestedDecPtr);
+
+                    return runDecoder(nestedDec, valEnc);
+                }
+
+                kvList = cell->tail;
             }
 
-            // Get nested decoder
-            void* nestedDecPtr = allocator.resolve(decoder->values[1].p);
-            Custom* nestedDec = static_cast<Custom*>(nestedDecPtr);
-
-            return runDecoder(nestedDec, jval[fieldName]);
+            return makeErr("Expecting an OBJECT with a field named `" + fieldName + "`");
         }
 
         case DEC_INDEX: {
-            if (!jval.is_array()) {
+            if (!jval || jctor != CTOR_JSON_ARRAY) {
                 return makeErr("Expecting an ARRAY");
             }
 
             int64_t index = decoder->values[0].i;
-            if (index < 0 || static_cast<size_t>(index) >= jval.size()) {
+
+            // Get the ElmArray.
+            void* arrPtr = allocator.resolve(jval->values[0].p);
+            ElmArray* arr = static_cast<ElmArray*>(arrPtr);
+
+            if (index < 0 || static_cast<u32>(index) >= arr->header.size) {
                 return makeErr("Expecting a LONGER array");
             }
 
-            // Get nested decoder
+            uint64_t elemEnc = Export::encode(arr->elements[index].p);
+
+            // Get nested decoder.
             void* nestedDecPtr = allocator.resolve(decoder->values[1].p);
             Custom* nestedDec = static_cast<Custom*>(nestedDecPtr);
 
-            return runDecoder(nestedDec, jval[static_cast<size_t>(index)]);
+            return runDecoder(nestedDec, elemEnc);
         }
 
         case DEC_KEYVALUE: {
-            if (!jval.is_object()) {
+            if (!jval || jctor != CTOR_JSON_OBJECT) {
                 return makeErr("Expecting an OBJECT");
             }
 
-            // Get value decoder
+            // Get value decoder.
             void* valDecPtr = allocator.resolve(decoder->values[0].p);
             Custom* valDec = static_cast<Custom*>(valDecPtr);
 
-            // Build list of (key, value) tuples in reverse
+            // Collect key-value pairs into a vector first, then build the list
+            // in reverse to preserve original order.
+            HPointer kvList = jval->values[0].p;
+
+            // First, collect all pairs into a vector.
+            std::vector<HPointer> tuples;
+            while (!isNil(kvList)) {
+                void* cellPtr = allocator.resolve(kvList);
+                Cons* cell = static_cast<Cons*>(cellPtr);
+                tuples.push_back(cell->head.p);
+                kvList = cell->tail;
+            }
+
+            // Build result list in reverse.
             HPointer result = listNil();
-            for (auto it = jval.rbegin(); it != jval.rend(); ++it) {
-                uint64_t valResult = runDecoder(valDec, it.value());
+            for (auto it = tuples.rbegin(); it != tuples.rend(); ++it) {
+                void* tuplePtr = allocator.resolve(*it);
+                Tuple2* srcTup = static_cast<Tuple2*>(tuplePtr);
+
+                // Decode the value.
+                uint64_t valEnc = Export::encode(srcTup->b.p);
+                HPointer keyStr = srcTup->a.p;
+
+                // Re-resolve decoder after potential GC.
+                valDecPtr = allocator.resolve(decoder->values[0].p);
+                valDec = static_cast<Custom*>(valDecPtr);
+
+                uint64_t valResult = runDecoder(valDec, valEnc);
                 if (!isOk(valResult)) {
                     return valResult;
                 }
 
-                // Create Tuple2 (key, value)
-                HPointer keyStr = allocElmString(it.key());
-                HPointer val = getOkValue(valResult);
+                HPointer decodedVal = getOkValue(valResult);
 
-                Tuple2* tuple = static_cast<Tuple2*>(allocator.allocate(sizeof(Tuple2), Tag_Tuple2));
-                tuple->header.unboxed = 0;
-                tuple->a.p = keyStr;
-                tuple->b.p = val;
-
-                result = cons(boxed(allocator.wrap(tuple)), result, true);
+                // Create result Tuple2 (key, decodedValue).
+                HPointer resTup = tuple2(boxed(keyStr), boxed(decodedVal), 0);
+                result = cons(boxed(resTup), result, true);
             }
             return makeOk(result);
         }
@@ -512,27 +748,27 @@ static uint64_t runDecoder(Custom* decoder, const json& jval) {
         }
 
         case DEC_ANDTHEN: {
-            // First run the decoder
+            // Run the inner decoder first.
             void* innerDecPtr = allocator.resolve(decoder->values[1].p);
             Custom* innerDec = static_cast<Custom*>(innerDecPtr);
 
-            uint64_t innerResult = runDecoder(innerDec, jval);
+            uint64_t innerResult = runDecoder(innerDec, jvalEnc);
             if (!isOk(innerResult)) {
                 return innerResult;
             }
 
-            // Call the callback with the result to get a new decoder
+            // Call the callback closure with the decoded value to get a new decoder.
             HPointer callback = decoder->values[0].p;
             HPointer value = getOkValue(innerResult);
 
             uint64_t args[1] = { Export::encode(value) };
             uint64_t newDecEnc = eco_apply_closure(Export::encode(callback), args, 1);
 
-            // Run the new decoder
+            // Run the new decoder on the same JSON value.
             void* newDecPtr = Export::toPtr(newDecEnc);
             Custom* newDec = static_cast<Custom*>(newDecPtr);
 
-            return runDecoder(newDec, jval);
+            return runDecoder(newDec, jvalEnc);
         }
 
         case DEC_ONEOF: {
@@ -545,11 +781,14 @@ static uint64_t runDecoder(Custom* decoder, const json& jval) {
                 void* decPtr = allocator.resolve(cell->head.p);
                 Custom* dec = static_cast<Custom*>(decPtr);
 
-                uint64_t result = runDecoder(dec, jval);
+                uint64_t result = runDecoder(dec, jvalEnc);
                 if (isOk(result)) {
                     return result;
                 }
 
+                // Re-resolve after potential GC in runDecoder.
+                cellPtr = allocator.resolve(decoders);
+                cell = static_cast<Cons*>(cellPtr);
                 decoders = cell->tail;
             }
 
@@ -560,7 +799,7 @@ static uint64_t runDecoder(Custom* decoder, const json& jval) {
             void* dec1Ptr = allocator.resolve(decoder->values[1].p);
             Custom* dec1 = static_cast<Custom*>(dec1Ptr);
 
-            uint64_t result1 = runDecoder(dec1, jval);
+            uint64_t result1 = runDecoder(dec1, jvalEnc);
             if (!isOk(result1)) return result1;
 
             HPointer callback = decoder->values[0].p;
@@ -576,9 +815,14 @@ static uint64_t runDecoder(Custom* decoder, const json& jval) {
             Custom* dec1 = static_cast<Custom*>(dec1Ptr);
             Custom* dec2 = static_cast<Custom*>(dec2Ptr);
 
-            uint64_t result1 = runDecoder(dec1, jval);
+            uint64_t result1 = runDecoder(dec1, jvalEnc);
             if (!isOk(result1)) return result1;
-            uint64_t result2 = runDecoder(dec2, jval);
+
+            // Re-resolve dec2 after potential GC.
+            dec2Ptr = allocator.resolve(decoder->values[2].p);
+            dec2 = static_cast<Custom*>(dec2Ptr);
+
+            uint64_t result2 = runDecoder(dec2, jvalEnc);
             if (!isOk(result2)) return result2;
 
             HPointer callback = decoder->values[0].p;
@@ -591,134 +835,31 @@ static uint64_t runDecoder(Custom* decoder, const json& jval) {
             return makeOk(Export::decode(mapped));
         }
 
-        case DEC_MAP3: {
-            Custom* decs[3];
-            for (int i = 0; i < 3; i++) {
-                decs[i] = static_cast<Custom*>(allocator.resolve(decoder->values[i+1].p));
-            }
-
-            uint64_t results[3];
-            for (int i = 0; i < 3; i++) {
-                results[i] = runDecoder(decs[i], jval);
-                if (!isOk(results[i])) return results[i];
-            }
-
-            HPointer callback = decoder->values[0].p;
-            uint64_t args[3];
-            for (int i = 0; i < 3; i++) {
-                args[i] = Export::encode(getOkValue(results[i]));
-            }
-            uint64_t mapped = eco_apply_closure(Export::encode(callback), args, 3);
-
-            return makeOk(Export::decode(mapped));
-        }
-
-        case DEC_MAP4: {
-            Custom* decs[4];
-            for (int i = 0; i < 4; i++) {
-                decs[i] = static_cast<Custom*>(allocator.resolve(decoder->values[i+1].p));
-            }
-
-            uint64_t results[4];
-            for (int i = 0; i < 4; i++) {
-                results[i] = runDecoder(decs[i], jval);
-                if (!isOk(results[i])) return results[i];
-            }
-
-            HPointer callback = decoder->values[0].p;
-            uint64_t args[4];
-            for (int i = 0; i < 4; i++) {
-                args[i] = Export::encode(getOkValue(results[i]));
-            }
-            uint64_t mapped = eco_apply_closure(Export::encode(callback), args, 4);
-
-            return makeOk(Export::decode(mapped));
-        }
-
-        case DEC_MAP5: {
-            Custom* decs[5];
-            for (int i = 0; i < 5; i++) {
-                decs[i] = static_cast<Custom*>(allocator.resolve(decoder->values[i+1].p));
-            }
-
-            uint64_t results[5];
-            for (int i = 0; i < 5; i++) {
-                results[i] = runDecoder(decs[i], jval);
-                if (!isOk(results[i])) return results[i];
-            }
-
-            HPointer callback = decoder->values[0].p;
-            uint64_t args[5];
-            for (int i = 0; i < 5; i++) {
-                args[i] = Export::encode(getOkValue(results[i]));
-            }
-            uint64_t mapped = eco_apply_closure(Export::encode(callback), args, 5);
-
-            return makeOk(Export::decode(mapped));
-        }
-
-        case DEC_MAP6: {
-            Custom* decs[6];
-            for (int i = 0; i < 6; i++) {
-                decs[i] = static_cast<Custom*>(allocator.resolve(decoder->values[i+1].p));
-            }
-
-            uint64_t results[6];
-            for (int i = 0; i < 6; i++) {
-                results[i] = runDecoder(decs[i], jval);
-                if (!isOk(results[i])) return results[i];
-            }
-
-            HPointer callback = decoder->values[0].p;
-            uint64_t args[6];
-            for (int i = 0; i < 6; i++) {
-                args[i] = Export::encode(getOkValue(results[i]));
-            }
-            uint64_t mapped = eco_apply_closure(Export::encode(callback), args, 6);
-
-            return makeOk(Export::decode(mapped));
-        }
-
-        case DEC_MAP7: {
-            Custom* decs[7];
-            for (int i = 0; i < 7; i++) {
-                decs[i] = static_cast<Custom*>(allocator.resolve(decoder->values[i+1].p));
-            }
-
-            uint64_t results[7];
-            for (int i = 0; i < 7; i++) {
-                results[i] = runDecoder(decs[i], jval);
-                if (!isOk(results[i])) return results[i];
-            }
-
-            HPointer callback = decoder->values[0].p;
-            uint64_t args[7];
-            for (int i = 0; i < 7; i++) {
-                args[i] = Export::encode(getOkValue(results[i]));
-            }
-            uint64_t mapped = eco_apply_closure(Export::encode(callback), args, 7);
-
-            return makeOk(Export::decode(mapped));
-        }
-
+        // Generic mapN for 3-8 decoders.
+        case DEC_MAP3:
+        case DEC_MAP4:
+        case DEC_MAP5:
+        case DEC_MAP6:
+        case DEC_MAP7:
         case DEC_MAP8: {
-            Custom* decs[8];
-            for (int i = 0; i < 8; i++) {
-                decs[i] = static_cast<Custom*>(allocator.resolve(decoder->values[i+1].p));
-            }
+            int n = decoder->ctor - DEC_MAP1 + 1;
 
             uint64_t results[8];
-            for (int i = 0; i < 8; i++) {
-                results[i] = runDecoder(decs[i], jval);
+            for (int i = 0; i < n; i++) {
+                // Re-resolve decoder sub-field each iteration.
+                void* decIPtr = allocator.resolve(decoder->values[i+1].p);
+                Custom* decI = static_cast<Custom*>(decIPtr);
+
+                results[i] = runDecoder(decI, jvalEnc);
                 if (!isOk(results[i])) return results[i];
             }
 
             HPointer callback = decoder->values[0].p;
             uint64_t args[8];
-            for (int i = 0; i < 8; i++) {
+            for (int i = 0; i < n; i++) {
                 args[i] = Export::encode(getOkValue(results[i]));
             }
-            uint64_t mapped = eco_apply_closure(Export::encode(callback), args, 8);
+            uint64_t mapped = eco_apply_closure(Export::encode(callback), args, static_cast<u32>(n));
 
             return makeOk(Export::decode(mapped));
         }
@@ -732,120 +873,102 @@ static uint64_t runDecoder(Custom* decoder, const json& jval) {
 // Encoding Helper
 //===----------------------------------------------------------------------===//
 
-// Convert Elm value to JSON (for encoding)
-static json elmToJson(uint64_t valueEnc);
-
+// Convert Elm encoder value to nlohmann::json.
 static json elmToJson(uint64_t valueEnc) {
     auto& allocator = Allocator::instance();
     HPointer h = Export::decode(valueEnc);
 
-    // Check for embedded constants
-    if (h.constant == Const_Unit + 1 || h.constant == 0) {
-        // Check if it's actually a null encoder
-        void* ptr = Export::toPtr(valueEnc);
-        if (!ptr) {
-            return json(nullptr);
-        }
+    // Check for embedded constants.
+    if (h.constant == Const_True + 1) return json(true);
+    if (h.constant == Const_False + 1) return json(false);
+    if (h.constant == Const_Nil + 1) return json::array();
+    if (h.constant != 0 && h.constant != Const_Unit + 1) return json(nullptr);
 
-        // Check the tag
-        Header* header = static_cast<Header*>(ptr);
+    void* ptr = Export::toPtr(valueEnc);
+    if (!ptr) return json(nullptr);
 
-        if (header->tag == Tag_Custom) {
-            Custom* c = static_cast<Custom*>(ptr);
+    Header* header = static_cast<Header*>(ptr);
 
-            switch (c->ctor) {
-                case ENC_NULL:
-                    return json(nullptr);
+    if (header->tag == Tag_Custom) {
+        Custom* c = static_cast<Custom*>(ptr);
 
-                case ENC_BOOL: {
-                    HPointer boolVal = c->values[0].p;
-                    bool b = (boolVal.constant == Const_True + 1);
-                    return json(b);
-                }
+        switch (c->ctor) {
+            case ENC_NULL:
+                return json(nullptr);
 
-                case ENC_INT:
-                    return json(c->values[0].i);
-
-                case ENC_FLOAT:
-                    return json(c->values[0].f);
-
-                case ENC_STRING: {
-                    std::string s = elmStringToStd(Export::encode(c->values[0].p));
-                    return json(s);
-                }
-
-                case ENC_ARRAY: {
-                    json arr = json::array();
-                    HPointer list = c->values[0].p;
-                    while (!isNil(list)) {
-                        void* cellPtr = allocator.resolve(list);
-                        Cons* cell = static_cast<Cons*>(cellPtr);
-                        arr.push_back(elmToJson(Export::encode(cell->head.p)));
-                        list = cell->tail;
-                    }
-                    return arr;
-                }
-
-                case ENC_OBJECT: {
-                    json obj = json::object();
-                    HPointer list = c->values[0].p;
-                    while (!isNil(list)) {
-                        void* cellPtr = allocator.resolve(list);
-                        Cons* cell = static_cast<Cons*>(cellPtr);
-
-                        // Each entry is a tuple (key, value)
-                        void* tuplePtr = allocator.resolve(cell->head.p);
-                        Tuple2* tuple = static_cast<Tuple2*>(tuplePtr);
-
-                        std::string key = elmStringToStd(Export::encode(tuple->a.p));
-                        json val = elmToJson(Export::encode(tuple->b.p));
-                        obj[key] = val;
-
-                        list = cell->tail;
-                    }
-                    return obj;
-                }
-
-                case CTOR_JsonValue: {
-                    // Already a JSON value
-                    json* jptr = reinterpret_cast<json*>(c->values[0].i);
-                    return *jptr;
-                }
-
-                default:
-                    // Unknown encoder type - try to handle raw values
-                    break;
+            case ENC_BOOL: {
+                HPointer boolVal = c->values[0].p;
+                return json(boolVal.constant == Const_True + 1);
             }
-        }
 
-        // Check for primitives
-        if (header->tag == Tag_Int) {
-            ElmInt* i = static_cast<ElmInt*>(ptr);
-            return json(i->value);
-        }
+            case ENC_INT:
+                return json(c->values[0].i);
 
-        if (header->tag == Tag_Float) {
-            ElmFloat* f = static_cast<ElmFloat*>(ptr);
-            return json(f->value);
-        }
+            case ENC_FLOAT:
+                return json(c->values[0].f);
 
-        if (header->tag == Tag_String) {
-            return json(elmStringToStd(valueEnc));
-        }
+            case ENC_STRING:
+                return json(elmStringToStd(Export::encode(c->values[0].p)));
 
-        // Default to null for unknown types
-        return json(nullptr);
+            case ENC_ARRAY: {
+                json arr = json::array();
+                HPointer list = c->values[0].p;
+                while (!isNil(list)) {
+                    void* cellPtr = allocator.resolve(list);
+                    Cons* cell = static_cast<Cons*>(cellPtr);
+                    arr.push_back(elmToJson(Export::encode(cell->head.p)));
+                    list = cell->tail;
+                }
+                return arr;
+            }
+
+            case ENC_OBJECT: {
+                json obj = json::object();
+                HPointer list = c->values[0].p;
+                while (!isNil(list)) {
+                    void* cellPtr = allocator.resolve(list);
+                    Cons* cell = static_cast<Cons*>(cellPtr);
+
+                    void* tuplePtr = allocator.resolve(cell->head.p);
+                    Tuple2* tuple = static_cast<Tuple2*>(tuplePtr);
+
+                    std::string key = elmStringToStd(Export::encode(tuple->a.p));
+                    json val = elmToJson(Export::encode(tuple->b.p));
+                    obj[key] = val;
+
+                    list = cell->tail;
+                }
+                return obj;
+            }
+
+            // Heap-resident JSON value ADT: convert back to nlohmann::json.
+            case CTOR_JSON_NULL:
+            case CTOR_JSON_BOOL:
+            case CTOR_JSON_INT:
+            case CTOR_JSON_FLOAT:
+            case CTOR_JSON_STRING:
+            case CTOR_JSON_ARRAY:
+            case CTOR_JSON_OBJECT:
+                return heapJsonToNlohmann(valueEnc);
+
+            default:
+                break;
+        }
     }
 
-    // Handle True/False constants
-    if (h.constant == Const_True + 1) {
-        return json(true);
+    // Check for primitives.
+    if (header->tag == Tag_Int) {
+        ElmInt* i = static_cast<ElmInt*>(ptr);
+        return json(i->value);
     }
-    if (h.constant == Const_False + 1) {
-        return json(false);
+
+    if (header->tag == Tag_Float) {
+        ElmFloat* f = static_cast<ElmFloat*>(ptr);
+        return json(f->value);
     }
-    if (h.constant == Const_Nil + 1) {
-        return json::array();
+
+    if (header->tag == Tag_String) {
+        return json(elmStringToStd(valueEnc));
     }
 
     return json(nullptr);
@@ -1057,16 +1180,14 @@ uint64_t Elm_Kernel_Json_map8(uint64_t closure, uint64_t d1, uint64_t d2, uint64
 //===----------------------------------------------------------------------===//
 
 uint64_t Elm_Kernel_Json_run(uint64_t decoder, uint64_t value) {
-    // Value should be a JsonValue (wrapped json pointer)
-    json* jptr = unwrapJson(value);
-    if (!jptr) {
-        return makeErr("Invalid JSON value");
-    }
-
+    // Value is a heap-resident JSON value (CTOR_JSON_* Custom).
     void* decPtr = Export::toPtr(decoder);
+    if (!decPtr) {
+        return makeErr("Invalid decoder");
+    }
     Custom* dec = static_cast<Custom*>(decPtr);
 
-    return runDecoder(dec, *jptr);
+    return runDecoder(dec, value);
 }
 
 uint64_t Elm_Kernel_Json_runOnString(uint64_t decoder, uint64_t jsonString) {
@@ -1075,10 +1196,14 @@ uint64_t Elm_Kernel_Json_runOnString(uint64_t decoder, uint64_t jsonString) {
     try {
         json jval = json::parse(str);
 
+        // Convert the parsed JSON tree to heap-resident objects.
+        HPointer heapJson = jsonToHeap(jval);
+        // nlohmann::json falls out of scope here - no leak.
+
         void* decPtr = Export::toPtr(decoder);
         Custom* dec = static_cast<Custom*>(decPtr);
 
-        return runDecoder(dec, jval);
+        return runDecoder(dec, Export::encode(heapJson));
     } catch (const json::parse_error& e) {
         return makeErr(std::string("Problem with the given value:\n\n") + e.what());
     }
@@ -1101,8 +1226,8 @@ uint64_t Elm_Kernel_Json_encode(int64_t indent, uint64_t value) {
 }
 
 uint64_t Elm_Kernel_Json_wrap(uint64_t value) {
-    // For primitive Elm values, we need to wrap them in an encoder
-    // For now, just return as-is since we handle it in elmToJson
+    // For primitive Elm values, we need to wrap them in an encoder.
+    // For now, just return as-is since we handle it in elmToJson.
     return value;
 }
 
@@ -1144,14 +1269,11 @@ uint64_t Elm_Kernel_Json_emptyObject() {
 uint64_t Elm_Kernel_Json_addEntry(uint64_t entry, uint64_t array) {
     auto& allocator = Allocator::instance();
 
-    // Get existing array
     void* arrPtr = Export::toPtr(array);
     Custom* arr = static_cast<Custom*>(arrPtr);
 
-    // Prepend entry to the list
     HPointer newList = cons(boxed(Export::decode(entry)), arr->values[0].p, true);
 
-    // Create new array encoder
     size_t size = sizeof(Custom) + sizeof(Unboxable);
     size = (size + 7) & ~7;
     Custom* enc = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
@@ -1166,20 +1288,16 @@ uint64_t Elm_Kernel_Json_addEntry(uint64_t entry, uint64_t array) {
 uint64_t Elm_Kernel_Json_addField(uint64_t key, uint64_t value, uint64_t object) {
     auto& allocator = Allocator::instance();
 
-    // Get existing object
     void* objPtr = Export::toPtr(object);
     Custom* obj = static_cast<Custom*>(objPtr);
 
-    // Create a tuple (key, value)
     Tuple2* tuple = static_cast<Tuple2*>(allocator.allocate(sizeof(Tuple2), Tag_Tuple2));
     tuple->header.unboxed = 0;
     tuple->a.p = Export::decode(key);
     tuple->b.p = Export::decode(value);
 
-    // Prepend tuple to the list
     HPointer newList = cons(boxed(allocator.wrap(tuple)), obj->values[0].p, true);
 
-    // Create new object encoder
     size_t size = sizeof(Custom) + sizeof(Unboxable);
     size = (size + 7) & ~7;
     Custom* enc = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
