@@ -49,11 +49,23 @@ add_subdirectory(compiler)
 set_property(DIRECTORY APPEND PROPERTY ADDITIONAL_CLEAN_FILES
     "${CMAKE_SOURCE_DIR}/test/elm/eco-stuff"
     "${CMAKE_SOURCE_DIR}/test/elm-bytes/eco-stuff"
+    "${CMAKE_SOURCE_DIR}/test/elm-core/eco-stuff"
+    "${CMAKE_SOURCE_DIR}/test/elm-http/eco-stuff"
+    "${CMAKE_SOURCE_DIR}/test/elm-json/eco-stuff"
+    "${CMAKE_SOURCE_DIR}/test/elm-regex/eco-stuff"
+    "${CMAKE_SOURCE_DIR}/test/elm-time/eco-stuff"
+    "${CMAKE_SOURCE_DIR}/test/elm-url/eco-stuff"
     "${CMAKE_SOURCE_DIR}/compiler/examples/eco-stuff"
 )
 set_property(DIRECTORY APPEND PROPERTY ADDITIONAL_MAKE_CLEAN_FILES
     "${CMAKE_SOURCE_DIR}/test/elm/eco-stuff"
     "${CMAKE_SOURCE_DIR}/test/elm-bytes/eco-stuff"
+    "${CMAKE_SOURCE_DIR}/test/elm-core/eco-stuff"
+    "${CMAKE_SOURCE_DIR}/test/elm-http/eco-stuff"
+    "${CMAKE_SOURCE_DIR}/test/elm-json/eco-stuff"
+    "${CMAKE_SOURCE_DIR}/test/elm-regex/eco-stuff"
+    "${CMAKE_SOURCE_DIR}/test/elm-time/eco-stuff"
+    "${CMAKE_SOURCE_DIR}/test/elm-url/eco-stuff"
     "${CMAKE_SOURCE_DIR}/compiler/examples/eco-stuff"
 )
 
@@ -62,6 +74,12 @@ set_property(DIRECTORY APPEND PROPERTY ADDITIONAL_MAKE_CLEAN_FILES
 add_custom_target(rebuild
     COMMAND ${CMAKE_COMMAND} -E rm -rf "${CMAKE_SOURCE_DIR}/test/elm/eco-stuff"
     COMMAND ${CMAKE_COMMAND} -E rm -rf "${CMAKE_SOURCE_DIR}/test/elm-bytes/eco-stuff"
+    COMMAND ${CMAKE_COMMAND} -E rm -rf "${CMAKE_SOURCE_DIR}/test/elm-core/eco-stuff"
+    COMMAND ${CMAKE_COMMAND} -E rm -rf "${CMAKE_SOURCE_DIR}/test/elm-http/eco-stuff"
+    COMMAND ${CMAKE_COMMAND} -E rm -rf "${CMAKE_SOURCE_DIR}/test/elm-json/eco-stuff"
+    COMMAND ${CMAKE_COMMAND} -E rm -rf "${CMAKE_SOURCE_DIR}/test/elm-regex/eco-stuff"
+    COMMAND ${CMAKE_COMMAND} -E rm -rf "${CMAKE_SOURCE_DIR}/test/elm-time/eco-stuff"
+    COMMAND ${CMAKE_COMMAND} -E rm -rf "${CMAKE_SOURCE_DIR}/test/elm-url/eco-stuff"
     COMMAND ${CMAKE_COMMAND} -E rm -rf "${CMAKE_SOURCE_DIR}/compiler/examples/eco-stuff"
     COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target clean
     COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR}
@@ -91,6 +109,12 @@ add_custom_target(run-tests
 add_custom_target(full
     COMMAND ${CMAKE_COMMAND} -E rm -rf "${CMAKE_SOURCE_DIR}/test/elm/eco-stuff"
     COMMAND ${CMAKE_COMMAND} -E rm -rf "${CMAKE_SOURCE_DIR}/test/elm-bytes/eco-stuff"
+    COMMAND ${CMAKE_COMMAND} -E rm -rf "${CMAKE_SOURCE_DIR}/test/elm-core/eco-stuff"
+    COMMAND ${CMAKE_COMMAND} -E rm -rf "${CMAKE_SOURCE_DIR}/test/elm-http/eco-stuff"
+    COMMAND ${CMAKE_COMMAND} -E rm -rf "${CMAKE_SOURCE_DIR}/test/elm-json/eco-stuff"
+    COMMAND ${CMAKE_COMMAND} -E rm -rf "${CMAKE_SOURCE_DIR}/test/elm-regex/eco-stuff"
+    COMMAND ${CMAKE_COMMAND} -E rm -rf "${CMAKE_SOURCE_DIR}/test/elm-time/eco-stuff"
+    COMMAND ${CMAKE_COMMAND} -E rm -rf "${CMAKE_SOURCE_DIR}/test/elm-url/eco-stuff"
     COMMAND ${CMAKE_COMMAND} -E rm -rf "${CMAKE_SOURCE_DIR}/compiler/examples/eco-stuff"
     COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target clean
     COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR}
