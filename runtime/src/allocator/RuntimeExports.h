@@ -340,6 +340,12 @@ int64_t eco_int_pow(int64_t base, int64_t exp);
 /// @return Raw pointer to the heap object, or nullptr
 void* eco_resolve_hptr(uint64_t hptr);
 
+/// Clone an ElmArray, returning a new array with the same contents.
+/// Used by eco.array.set lowering for functional array update.
+/// @param array_hptr HPointer to source ElmArray (as uint64_t)
+/// @return HPointer to new ElmArray copy (as uint64_t)
+uint64_t eco_clone_array(uint64_t array_hptr);
+
 } // extern "C"
 
 #endif // ECO_RUNTIME_EXPORTS_H

@@ -1936,3 +1936,28 @@ extern "C" int64_t eco_int_pow(int64_t base, int64_t exp) {
 extern "C" void* eco_resolve_hptr(uint64_t hptr) {
     return hpointerToPtr(hptr);
 }
+
+extern "C" uint64_t eco_clone_array(uint64_t array_hptr) {
+    void* srcPtr = hpointerToPtr(array_hptr);
+    ElmArray* src = static_cast<ElmArray*>(srcPtr);
+    uint32_t len = src->length;
+
+    HPointer resultHp = alloc::allocArray(len);
+    // Re-resolve source in case allocation triggered GC and moved it
+    srcPtr = hpointerToPtr(array_hptr);
+    src = static_cast<ElmArray*>(srcPtr);
+
+    void* dstPtr = Allocator::instance().resolve(resultHp);
+    ElmArray* dst = static_cast<ElmArray*>(dstPtr);
+
+    // Copy header flags (unboxed), length, and all elements
+    dst->header.unboxed = src->header.unboxed;
+    dst->length = len;
+    for (uint32_t i = 0; i < len; i++) {
+        dst->elements[i] = src->elements[i];
+    }
+
+    uint64_t result;
+    memcpy(&result, &resultHp, sizeof(result));
+    return result;
+}

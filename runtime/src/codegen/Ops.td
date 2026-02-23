@@ -711,6 +711,77 @@ def Eco_CustomProjectOp : Eco_Op<"project.custom", [Pure]> {
 }
 
 //===----------------------------------------------------------------------===//
+// 2b. Array Operations (ElmArray intrinsics)
+//===----------------------------------------------------------------------===//
+
+def Eco_ArrayGetOp : Eco_Op<"array.get", [Pure]> {
+  let summary = "Get element from Elm array by index";
+  let description = [{
+    Load element at index from an ElmArray. The result type is determined
+    by the monomorphized element type:
+    - i64 for Int elements (read unboxed from elements[])
+    - f64 for Float elements (bitcast from i64 in elements[])
+    - i16 for Char elements (truncate from i64 in elements[])
+    - !eco.value for boxed elements (pointer from elements[])
+
+    No bounds checking is performed (mirrors JsArray.unsafeGet semantics).
+
+    Example:
+    ```mlir
+    %elt = eco.array.get %arr[%i] : i64
+    %boxed = eco.array.get %arr[%i] : !eco.value
+    ```
+  }];
+
+  let arguments = (ins Eco_Value:$array, Eco_Int:$index);
+  let results = (outs Eco_AnyValue:$result);
+  let assemblyFormat = "$array `[` $index `]` attr-dict `:` type($result)";
+}
+
+def Eco_ArraySetOp : Eco_Op<"array.set"> {
+  let summary = "Functional update of Elm array element";
+  let description = [{
+    Return a new ElmArray with element at index replaced by value.
+    Allocates a new array (Elm arrays are immutable). The value type
+    determines how it is stored in elements[]:
+    - i64 stored directly
+    - f64 bitcast to i64
+    - i16 zero-extended to i64
+    - !eco.value stored as pointer bits
+
+    No bounds checking (mirrors JsArray.unsafeSet semantics).
+
+    Example:
+    ```mlir
+    %arr2 = eco.array.set %arr[%i] = %v : i64
+    %arr3 = eco.array.set %arr[%i] = %boxed_v : !eco.value
+    ```
+  }];
+
+  let arguments = (ins Eco_Value:$array, Eco_Int:$index, Eco_AnyValue:$value);
+  let results = (outs Eco_Value:$result);
+  let assemblyFormat =
+    "$array `[` $index `]` `=` $value attr-dict `:` type($value)";
+}
+
+def Eco_ArrayLengthOp : Eco_Op<"array.length", [Pure]> {
+  let summary = "Get length of Elm array";
+  let description = [{
+    Read the length field from an ElmArray header. Returns the count
+    of elements currently in use (not capacity).
+
+    Example:
+    ```mlir
+    %len = eco.array.length %arr
+    ```
+  }];
+
+  let arguments = (ins Eco_Value:$array);
+  let results = (outs Eco_Int:$result);
+  let assemblyFormat = "$array attr-dict";
+}
+
+//===----------------------------------------------------------------------===//
 // 3. String Operations
 //===----------------------------------------------------------------------===//
 

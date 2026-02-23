@@ -55,7 +55,7 @@ import Dict exposing (Dict)
 import Hex
 import List.Extra as ListX
 import Mlir.Loc as Loc
-import Mlir.Mlir exposing (MlirAttr(..), MlirOp, MlirRegion(..), MlirType(..))
+import Mlir.Mlir exposing (MlirAttr(..), MlirBlock, MlirOp, MlirRegion(..), MlirType(..))
 import OrderedDict
 import Set
 import System.TypeCheck.IO as IO
@@ -82,6 +82,104 @@ type alias ExprResult =
 emptyResult : Ctx.Context -> String -> MlirType -> ExprResult
 emptyResult ctx var ty =
     { ops = [], resultVar = var, resultType = ty, ctx = ctx, isTerminated = False }
+
+
+{-| Rename an SSA variable in a list of MlirOps, recursing into nested regions.
+
+Replaces all occurrences of `fromVar` with `toVar` in:
+
+  - op.id (the result SSA name)
+  - op.operands (input SSA names)
+  - Nested regions, blocks, body ops and terminators (recursive)
+
+Block arguments are NOT renamed because they define new SSA bindings in their
+own scope, distinct from the enclosing let-binding scope.
+
+This is used by generateLet to force the result SSA id to match a pre-installed
+placeholder (e.g., "%helper") so that mutually recursive closures can safely
+capture each other via currentLetSiblings.
+
+-}
+renameSsaVarInOps : String -> String -> List MlirOp -> List MlirOp
+renameSsaVarInOps fromVar toVar ops =
+    let
+        renameVar : String -> String
+        renameVar v =
+            if v == fromVar then
+                toVar
+
+            else
+                v
+
+        renameOp : MlirOp -> MlirOp
+        renameOp op =
+            { op
+                | id = renameVar op.id
+                , operands = List.map renameVar op.operands
+                , regions = List.map (renameSsaVarInRegion fromVar toVar) op.regions
+            }
+    in
+    List.map renameOp ops
+
+
+renameSsaVarInRegion : String -> String -> MlirRegion -> MlirRegion
+renameSsaVarInRegion fromVar toVar (MlirRegion r) =
+    MlirRegion
+        { entry = renameSsaVarInBlock fromVar toVar r.entry
+        , blocks = OrderedDict.map (\_ block -> renameSsaVarInBlock fromVar toVar block) r.blocks
+        }
+
+
+renameSsaVarInBlock : String -> String -> MlirBlock -> MlirBlock
+renameSsaVarInBlock fromVar toVar block =
+    { block
+        | body = renameSsaVarInOps fromVar toVar block.body
+        , terminator = renameSsaVarInSingleOp fromVar toVar block.terminator
+    }
+
+
+renameSsaVarInSingleOp : String -> String -> MlirOp -> MlirOp
+renameSsaVarInSingleOp fromVar toVar op =
+    let
+        renameVar : String -> String
+        renameVar v =
+            if v == fromVar then
+                toVar
+
+            else
+                v
+    in
+    { op
+        | id = renameVar op.id
+        , operands = List.map renameVar op.operands
+        , regions = List.map (renameSsaVarInRegion fromVar toVar) op.regions
+    }
+
+
+{-| Force an ExprResult to use a specific SSA id as its resultVar.
+
+If the expression's resultVar already matches `desiredVar`, this is a no-op.
+Otherwise it renames all uses/defs of the old resultVar to `desiredVar` throughout
+the ops (including nested regions), and updates resultVar accordingly.
+
+Used by generateLet to ensure that let-bound names in a recursive group define
+the same SSA var that closures captured via currentLetSiblings' placeholders.
+
+-}
+forceResultVar : String -> ExprResult -> ExprResult
+forceResultVar desiredVar exprResult =
+    if exprResult.resultVar == desiredVar then
+        exprResult
+
+    else
+        let
+            renamedOps =
+                renameSsaVarInOps exprResult.resultVar desiredVar exprResult.ops
+        in
+        { exprResult
+            | ops = renamedOps
+            , resultVar = desiredVar
+        }
 
 
 
@@ -2875,15 +2973,37 @@ generateLet ctx def body =
     case def of
         Mono.MonoDef name expr ->
                     let
-                        exprResult : ExprResult
-                        exprResult =
+                        -- Look up the placeholder SSA var installed by addPlaceholderMappings.
+                        -- This is "%name" with type !eco.value for each let-bound name.
+                        ( placeholderVar, _ ) =
+                            Ctx.lookupVar ctxWithPlaceholders name
+
+                        -- Generate the bound expression with placeholders in scope.
+                        rawResult : ExprResult
+                        rawResult =
                             generateExpr ctxWithPlaceholders expr
 
-                        -- Add a mapping from the let-bound name to the expression's result variable.
-                        -- All staging metadata is now in Mono.CallInfo from GlobalOpt.
+                        -- Force the bound expression's result SSA id to be the placeholder var.
+                        -- This ensures that:
+                        --
+                        --   1. The placeholder (%helper) that sibling closures captured via
+                        --      currentLetSiblings now has a real definition (the papCreate op).
+                        --
+                        --   2. Any further uses of the let-bound name (in the body) will
+                        --      refer to %helper, which is now dominantly defined.
+                        --
+                        -- For recursive closures this creates a self-capture pattern where the
+                        -- eco.papCreate op both defines %helper and uses it as a captured operand.
+                        -- This is valid SSA: an operation may reference its own result.
+                        exprResult : ExprResult
+                        exprResult =
+                            forceResultVar placeholderVar rawResult
+
+                        -- Update varMappings for this name to use the placeholder SSA var,
+                        -- but refine the MLIR type to the actual result type (usually !eco.value).
                         ctx1 : Ctx.Context
                         ctx1 =
-                            Ctx.addVarMapping name exprResult.resultVar exprResult.resultType exprResult.ctx
+                            Ctx.addVarMapping name placeholderVar exprResult.resultType exprResult.ctx
                                 |> Ctx.addDecoderExpr name expr
 
                         bodyResult : ExprResult

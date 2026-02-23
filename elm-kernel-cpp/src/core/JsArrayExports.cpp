@@ -1,4 +1,10 @@
 //===- JsArrayExports.cpp - C-linkage exports for JsArray module -----------===//
+//
+// AllBoxed ABI: all params and returns are uint64_t (boxed eco.value).
+// Integer arguments (index, length, etc.) arrive as boxed Elm Int HPointers
+// and are unboxed inside the implementation.
+//
+//===----------------------------------------------------------------------===//
 
 #include "../KernelExports.h"
 #include "../ExportHelpers.hpp"
@@ -11,6 +17,23 @@ using namespace Elm;
 using namespace Elm::Kernel;
 
 namespace {
+
+//===----------------------------------------------------------------------===//
+// Boxing/unboxing helpers for AllBoxed ABI
+//===----------------------------------------------------------------------===//
+
+// Unbox a boxed Elm Int (eco.value HPointer) to int64_t.
+static int64_t unboxInt(uint64_t val) {
+    void* ptr = Export::toPtr(val);
+    ElmInt* elmInt = static_cast<ElmInt*>(ptr);
+    return elmInt->value;
+}
+
+// Box an int64_t as a boxed Elm Int (eco.value HPointer).
+static uint64_t boxInt(int64_t val) {
+    HPointer h = alloc::allocInt(val);
+    return Export::encode(h);
+}
 
 //===----------------------------------------------------------------------===//
 // Closure-calling helpers (StringExports pattern)
@@ -91,15 +114,17 @@ uint64_t Elm_Kernel_JsArray_singleton(uint64_t value) {
     return Export::encode(arr);
 }
 
-uint32_t Elm_Kernel_JsArray_length(uint64_t array) {
+uint64_t Elm_Kernel_JsArray_length(uint64_t array) {
     void* ptr = Export::toPtr(array);
-    return static_cast<uint32_t>(alloc::arrayLength(ptr));
+    int64_t len = static_cast<int64_t>(alloc::arrayLength(ptr));
+    return boxInt(len);
 }
 
-uint64_t Elm_Kernel_JsArray_unsafeGet(uint32_t index, uint64_t array) {
+uint64_t Elm_Kernel_JsArray_unsafeGet(uint64_t index, uint64_t array) {
+    int64_t idx = unboxInt(index);
     void* ptr = Export::toPtr(array);
     ElmArray* arr = static_cast<ElmArray*>(ptr);
-    Unboxable val = alloc::arrayGet(ptr, index);
+    Unboxable val = alloc::arrayGet(ptr, static_cast<uint32_t>(idx));
 
     // Check uniform unboxed flag
     if (arr->header.unboxed) {
@@ -111,7 +136,8 @@ uint64_t Elm_Kernel_JsArray_unsafeGet(uint32_t index, uint64_t array) {
     }
 }
 
-uint64_t Elm_Kernel_JsArray_unsafeSet(uint32_t index, uint64_t value, uint64_t array) {
+uint64_t Elm_Kernel_JsArray_unsafeSet(uint64_t index, uint64_t value, uint64_t array) {
+    int64_t idx = unboxInt(index);
     // Array.set creates a new array (Elm arrays are immutable)
     void* srcPtr = Export::toPtr(array);
     ElmArray* src = static_cast<ElmArray*>(srcPtr);
@@ -128,8 +154,8 @@ uint64_t Elm_Kernel_JsArray_unsafeSet(uint32_t index, uint64_t value, uint64_t a
     dst->length = len;
 
     // Set the new value at index (always boxed when coming from export)
-    if (index < len) {
-        dst->elements[index].p = Export::decode(value);
+    if (static_cast<uint32_t>(idx) < len) {
+        dst->elements[idx].p = Export::decode(value);
     }
     // Result is boxed since we're setting a boxed value
     dst->header.unboxed = 0;
@@ -159,7 +185,10 @@ uint64_t Elm_Kernel_JsArray_push(uint64_t value, uint64_t array) {
     return Export::encode(result);
 }
 
-uint64_t Elm_Kernel_JsArray_slice(int64_t start, int64_t end, uint64_t array) {
+uint64_t Elm_Kernel_JsArray_slice(uint64_t start_val, uint64_t end_val, uint64_t array) {
+    int64_t start = unboxInt(start_val);
+    int64_t end = unboxInt(end_val);
+
     void* srcPtr = Export::toPtr(array);
     ElmArray* src = static_cast<ElmArray*>(srcPtr);
     int64_t len = static_cast<int64_t>(src->length);
@@ -188,7 +217,9 @@ uint64_t Elm_Kernel_JsArray_slice(int64_t start, int64_t end, uint64_t array) {
     return Export::encode(result);
 }
 
-uint64_t Elm_Kernel_JsArray_appendN(uint32_t n, uint64_t dest, uint64_t source) {
+uint64_t Elm_Kernel_JsArray_appendN(uint64_t n_val, uint64_t dest, uint64_t source) {
+    uint32_t n = static_cast<uint32_t>(unboxInt(n_val));
+
     void* destPtr = Export::toPtr(dest);
     void* srcPtr = Export::toPtr(source);
     ElmArray* destArr = static_cast<ElmArray*>(destPtr);
@@ -222,7 +253,10 @@ uint64_t Elm_Kernel_JsArray_appendN(uint32_t n, uint64_t dest, uint64_t source) 
 // Higher-order functions (implemented with closure calling)
 //===----------------------------------------------------------------------===//
 
-uint64_t Elm_Kernel_JsArray_initialize(uint32_t size, uint32_t offset, uint64_t closure) {
+uint64_t Elm_Kernel_JsArray_initialize(uint64_t size_val, uint64_t offset_val, uint64_t closure) {
+    uint32_t size = static_cast<uint32_t>(unboxInt(size_val));
+    uint32_t offset = static_cast<uint32_t>(unboxInt(offset_val));
+
     void* closure_ptr = Export::toPtr(closure);
     HPointer arr = alloc::allocArray(size);
     auto& allocator = Allocator::instance();
@@ -238,7 +272,8 @@ uint64_t Elm_Kernel_JsArray_initialize(uint32_t size, uint32_t offset, uint64_t 
     return Export::encode(arr);
 }
 
-uint64_t Elm_Kernel_JsArray_initializeFromList(uint32_t max, uint64_t list) {
+uint64_t Elm_Kernel_JsArray_initializeFromList(uint64_t max_val, uint64_t list) {
+    uint32_t max = static_cast<uint32_t>(unboxInt(max_val));
     HPointer result = JsArray::initializeFromList(max, Export::decode(list));
     return Export::encode(result);
 }
@@ -267,7 +302,9 @@ uint64_t Elm_Kernel_JsArray_map(uint64_t closure, uint64_t array) {
     return Export::encode(arr);
 }
 
-uint64_t Elm_Kernel_JsArray_indexedMap(uint64_t closure, uint32_t offset, uint64_t array) {
+uint64_t Elm_Kernel_JsArray_indexedMap(uint64_t closure, uint64_t offset_val, uint64_t array) {
+    uint32_t offset = static_cast<uint32_t>(unboxInt(offset_val));
+
     void* closure_ptr = Export::toPtr(closure);
     void* srcPtr = Export::toPtr(array);
     ElmArray* src = static_cast<ElmArray*>(srcPtr);

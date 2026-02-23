@@ -37,6 +37,9 @@ type Intrinsic
     | FloatComparison { op : String }
     | FloatClassify { op : String }
     | ConstantFloat { value : Float }
+    | ArrayGet { elementMlirType : MlirType }
+    | ArraySet { elementMlirType : MlirType }
+    | ArrayLength
 
 
 
@@ -84,6 +87,15 @@ intrinsicResultMlirType intrinsic =
         ConstantFloat _ ->
             Types.ecoFloat
 
+        ArrayGet { elementMlirType } ->
+            elementMlirType
+
+        ArraySet _ ->
+            Types.ecoValue
+
+        ArrayLength ->
+            Types.ecoInt
+
 
 {-| Get the expected operand types for an intrinsic operation.
 -}
@@ -125,6 +137,18 @@ intrinsicOperandTypes intrinsic =
 
         ConstantFloat _ ->
             []
+
+        ArrayGet _ ->
+            -- Elm arg order: unsafeGet index array
+            [ I64, Types.ecoValue ]
+
+        ArraySet { elementMlirType } ->
+            -- Elm arg order: unsafeSet index value array
+            [ I64, elementMlirType, Types.ecoValue ]
+
+        ArrayLength ->
+            -- array : !eco.value
+            [ Types.ecoValue ]
 
 
 
@@ -197,6 +221,9 @@ kernelIntrinsic home name argTypes resultType =
 
         "Utils" ->
             utilsIntrinsic name argTypes resultType
+
+        "JsArray" ->
+            jsArrayIntrinsic name argTypes resultType
 
         _ ->
             Nothing
@@ -461,6 +488,42 @@ utilsIntrinsic name argTypes _ =
             Nothing
 
 
+jsArrayIntrinsic : Name.Name -> List Mono.MonoType -> Mono.MonoType -> Maybe Intrinsic
+jsArrayIntrinsic name argTypes resultType =
+    case name of
+        "length" ->
+            -- JsArray.length : Array a -> Int
+            case resultType of
+                Mono.MInt ->
+                    Just ArrayLength
+
+                _ ->
+                    Nothing
+
+        "unsafeGet" ->
+            -- JsArray.unsafeGet : Int -> Array a -> a
+            -- argTypes = [ MInt, MCustom _ "Array" [elt] ], resultType = elt
+            case argTypes of
+                [ Mono.MInt, _ ] ->
+                    Just (ArrayGet { elementMlirType = Types.monoTypeToAbi resultType })
+
+                _ ->
+                    Nothing
+
+        "unsafeSet" ->
+            -- JsArray.unsafeSet : Int -> a -> Array a -> Array a
+            -- argTypes = [ MInt, elt, MCustom _ "Array" [elt] ]
+            case argTypes of
+                [ Mono.MInt, elt, _ ] ->
+                    Just (ArraySet { elementMlirType = Types.monoTypeToAbi elt })
+
+                _ ->
+                    Nothing
+
+        _ ->
+            Nothing
+
+
 
 -- ====== INTRINSIC OP GENERATION ======
 
@@ -554,3 +617,29 @@ generateIntrinsicOp ctx intrinsic resultVar argVars =
 
         ConstantFloat { value } ->
             Ops.arithConstantFloat ctx resultVar value
+
+        ArrayGet { elementMlirType } ->
+            -- Elm arg order: unsafeGet index array
+            case argVars of
+                [ indexVar, arrayVar ] ->
+                    Ops.ecoArrayGet ctx resultVar arrayVar indexVar elementMlirType
+
+                _ ->
+                    Ops.ecoArrayGet ctx resultVar "%error" "%error" elementMlirType
+
+        ArraySet { elementMlirType } ->
+            -- Elm arg order: unsafeSet index value array
+            case argVars of
+                [ indexVar, valueVar, arrayVar ] ->
+                    Ops.ecoArraySet ctx resultVar arrayVar indexVar valueVar elementMlirType
+
+                _ ->
+                    Ops.ecoArraySet ctx resultVar "%error" "%error" "%error" elementMlirType
+
+        ArrayLength ->
+            case argVars of
+                [ arrayVar ] ->
+                    Ops.ecoArrayLength ctx resultVar arrayVar
+
+                _ ->
+                    Ops.ecoArrayLength ctx resultVar "%error"

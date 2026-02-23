@@ -4,6 +4,7 @@ module Compiler.Generate.MLIR.Ops exposing
     , ecoConstructList, ecoConstructTuple2, ecoConstructTuple3, ecoConstructRecord, ecoConstructCustom
     , ecoProjectListHead, ecoProjectListTail, ecoProjectTuple2, ecoProjectTuple3, ecoProjectRecord, ecoProjectCustom
     , ecoCallNamed, ecoReturn, ecoYield, ecoStringLiteral, ecoUnaryOp, ecoBinaryOp, ecoCase, ecoCaseString, ecoJoinpoint, ecoGetTag
+    , ecoArrayGet, ecoArraySet, ecoArrayLength
     , arithConstantInt, arithConstantInt32, arithConstantFloat, arithConstantBool, arithConstantChar, arithCmpI
     , scfIf, scfYield, scfWhile, scfCondition
     , cfCondBr
@@ -649,6 +650,51 @@ ecoBinaryOp ctx opName resultVar ( lhs, lhsTy ) ( rhs, rhsTy ) resultTy =
     mlirOp ctx opName
         |> opBuilder.withOperands [ lhs, rhs ]
         |> opBuilder.withResults [ ( resultVar, resultTy ) ]
+        |> opBuilder.withAttrs attrs
+        |> opBuilder.build
+
+
+{-| Generate an eco.array.get operation.
+-}
+ecoArrayGet : Ctx.Context -> String -> String -> String -> MlirType -> ( Ctx.Context, MlirOp )
+ecoArrayGet ctx resultVar arrayVar indexVar elementType =
+    let
+        attrs =
+            Dict.singleton "_operand_types" (ArrayAttr Nothing [ TypeAttr Types.ecoValue, TypeAttr I64 ])
+    in
+    mlirOp ctx "eco.array.get"
+        |> opBuilder.withOperands [ arrayVar, indexVar ]
+        |> opBuilder.withResults [ ( resultVar, elementType ) ]
+        |> opBuilder.withAttrs attrs
+        |> opBuilder.build
+
+
+{-| Generate an eco.array.set operation.
+-}
+ecoArraySet : Ctx.Context -> String -> String -> String -> String -> MlirType -> ( Ctx.Context, MlirOp )
+ecoArraySet ctx resultVar arrayVar indexVar valueVar valueType =
+    let
+        attrs =
+            Dict.singleton "_operand_types" (ArrayAttr Nothing [ TypeAttr Types.ecoValue, TypeAttr I64, TypeAttr valueType ])
+    in
+    mlirOp ctx "eco.array.set"
+        |> opBuilder.withOperands [ arrayVar, indexVar, valueVar ]
+        |> opBuilder.withResults [ ( resultVar, Types.ecoValue ) ]
+        |> opBuilder.withAttrs attrs
+        |> opBuilder.build
+
+
+{-| Generate an eco.array.length operation.
+-}
+ecoArrayLength : Ctx.Context -> String -> String -> ( Ctx.Context, MlirOp )
+ecoArrayLength ctx resultVar arrayVar =
+    let
+        attrs =
+            Dict.singleton "_operand_types" (ArrayAttr Nothing [ TypeAttr Types.ecoValue ])
+    in
+    mlirOp ctx "eco.array.length"
+        |> opBuilder.withOperands [ arrayVar ]
+        |> opBuilder.withResults [ ( resultVar, I64 ) ]
         |> opBuilder.withAttrs attrs
         |> opBuilder.build
 

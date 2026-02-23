@@ -142,19 +142,22 @@ uint64_t Elm_Kernel_Utils_append(uint64_t a, uint64_t b);
 // JsArray Module (elm/core)
 //===----------------------------------------------------------------------===//
 
+// AllBoxed ABI: all params and returns are uint64_t (boxed eco.value).
+// Integer arguments (index, length, etc.) arrive as boxed Elm Int HPointers
+// and are unboxed inside the implementation.
 uint64_t Elm_Kernel_JsArray_empty();
 uint64_t Elm_Kernel_JsArray_singleton(uint64_t value);
-uint32_t Elm_Kernel_JsArray_length(uint64_t array);
-uint64_t Elm_Kernel_JsArray_unsafeGet(uint32_t index, uint64_t array);
-uint64_t Elm_Kernel_JsArray_unsafeSet(uint32_t index, uint64_t value, uint64_t array);
+uint64_t Elm_Kernel_JsArray_length(uint64_t array);
+uint64_t Elm_Kernel_JsArray_unsafeGet(uint64_t index, uint64_t array);
+uint64_t Elm_Kernel_JsArray_unsafeSet(uint64_t index, uint64_t value, uint64_t array);
 uint64_t Elm_Kernel_JsArray_push(uint64_t value, uint64_t array);
-uint64_t Elm_Kernel_JsArray_slice(int64_t start, int64_t end, uint64_t array);
-uint64_t Elm_Kernel_JsArray_appendN(uint32_t n, uint64_t dest, uint64_t source);
+uint64_t Elm_Kernel_JsArray_slice(uint64_t start, uint64_t end, uint64_t array);
+uint64_t Elm_Kernel_JsArray_appendN(uint64_t n, uint64_t dest, uint64_t source);
 // Higher-order JsArray functions
-uint64_t Elm_Kernel_JsArray_initialize(uint32_t size, uint32_t offset, uint64_t closure);
-uint64_t Elm_Kernel_JsArray_initializeFromList(uint32_t max, uint64_t list);
+uint64_t Elm_Kernel_JsArray_initialize(uint64_t size, uint64_t offset, uint64_t closure);
+uint64_t Elm_Kernel_JsArray_initializeFromList(uint64_t max, uint64_t list);
 uint64_t Elm_Kernel_JsArray_map(uint64_t closure, uint64_t array);
-uint64_t Elm_Kernel_JsArray_indexedMap(uint64_t closure, uint32_t offset, uint64_t array);
+uint64_t Elm_Kernel_JsArray_indexedMap(uint64_t closure, uint64_t offset, uint64_t array);
 uint64_t Elm_Kernel_JsArray_foldl(uint64_t closure, uint64_t acc, uint64_t array);
 uint64_t Elm_Kernel_JsArray_foldr(uint64_t closure, uint64_t acc, uint64_t array);
 

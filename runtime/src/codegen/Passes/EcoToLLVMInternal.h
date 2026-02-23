@@ -97,6 +97,10 @@ constexpr uint64_t RecordFieldsOffset = HeaderSize + PtrSize;
 constexpr uint64_t CustomCtorOffset = HeaderSize;
 constexpr uint64_t CustomFieldsOffset = HeaderSize + PtrSize;
 
+// Array layout: [Header:8][length:4][padding:4][elements:N*8]
+constexpr uint64_t ArrayLengthOffset = HeaderSize;          // 8
+constexpr uint64_t ArrayElementsOffset = HeaderSize + PtrSize; // 16 (length:4 + padding:4 = 8)
+
 // Closure layout: [Header:8][packed:8][evaluator:8][values:N*8]
 // packed = n_values:6 | max_values:6 | unboxed:52
 constexpr uint64_t ClosurePackedOffset = HeaderSize;
@@ -163,6 +167,9 @@ struct EcoRuntime {
     mlir::LLVM::LLVMFuncOp getOrCreateRegisterTypeGraph(mlir::OpBuilder &builder) const;
     mlir::LLVM::LLVMFuncOp getOrCreateIntPow(mlir::OpBuilder &builder) const;
     mlir::LLVM::LLVMFuncOp getOrCreateUtilsEqual(mlir::OpBuilder &builder) const;
+
+    // Array functions
+    mlir::LLVM::LLVMFuncOp getOrCreateCloneArray(mlir::OpBuilder &builder) const;
 
     // Debug functions
     mlir::LLVM::LLVMFuncOp getOrCreateDbgPrint(mlir::OpBuilder &builder) const;

@@ -274,6 +274,17 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateUtilsEqual(OpBuilder &builder) const {
 }
 
 //===----------------------------------------------------------------------===//
+// Array Functions
+//===----------------------------------------------------------------------===//
+
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateCloneArray(OpBuilder &builder) const {
+    // eco_clone_array(array_hptr: i64) -> i64
+    // Clones an ElmArray for functional update (eco.array.set).
+    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {I64_TY});
+    return getOrCreateFunc(builder, "eco_clone_array", funcTy);
+}
+
+//===----------------------------------------------------------------------===//
 // Debug Functions
 //===----------------------------------------------------------------------===//
 

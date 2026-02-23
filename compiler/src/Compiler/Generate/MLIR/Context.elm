@@ -132,6 +132,12 @@ kernelBackendAbiPolicy home name =
         ( "String", "fromNumber" ) ->
             AllBoxed
 
+        -- JsArray: C++ ABI now uniformly uint64_t for all params and return.
+        -- Integer arguments (index, length, etc.) are boxed Elm Int HPointers
+        -- and unboxed inside the C++ implementations.
+        ( "JsArray", _ ) ->
+            AllBoxed
+
         --
         -- ElmDerived: C++ ABI has typed (non-uint64_t) params or returns.
         -- ABI is derived from the Elm wrapper's funcType via monoTypeToAbi.
@@ -141,7 +147,6 @@ kernelBackendAbiPolicy home name =
         -- Char:    uint16_t, int64_t
         -- String:  length->int64_t, cons(uint16_t,...), slice(int64_t,int64_t,...)
         -- Json:    decodeIndex(int64_t,...), encode(int64_t,...)
-        -- JsArray: uint32_t params (length, unsafeGet, unsafeSet, slice, appendN, etc.)
         -- Browser: reload(bool), go(int64_t), setViewport(double,double)
         -- Bytes:   int64_t offsets, bool endianness, double floats
         -- Parser:  int64_t offsets

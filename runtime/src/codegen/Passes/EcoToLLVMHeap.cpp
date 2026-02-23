@@ -699,6 +699,184 @@ struct CustomProjectOpLowering : public OpConversionPattern<CustomProjectOp> {
     }
 };
 
+//===----------------------------------------------------------------------===//
+// eco.array.length -> resolve + GEP + load length field
+//===----------------------------------------------------------------------===//
+
+struct ArrayLengthOpLowering : public OpConversionPattern<ArrayLengthOp> {
+    EcoRuntime runtime;
+
+    ArrayLengthOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
+                          EcoRuntime runtime)
+        : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
+
+    LogicalResult
+    matchAndRewrite(ArrayLengthOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        auto loc = op.getLoc();
+        auto *ctx = rewriter.getContext();
+        auto i64Ty = IntegerType::get(ctx, 64);
+        auto i32Ty = IntegerType::get(ctx, 32);
+        auto i8Ty = IntegerType::get(ctx, 8);
+        auto ptrTy = LLVM::LLVMPointerType::get(ctx);
+
+        Value input = adaptor.getArray();
+
+        // Resolve HPointer to raw pointer
+        auto resolveFunc = runtime.getOrCreateResolveHPtr(rewriter);
+        auto resolveCall = rewriter.create<LLVM::CallOp>(loc, resolveFunc, ValueRange{input});
+        Value ptr = resolveCall.getResult();
+
+        // GEP to length field at offset 8 (after Header)
+        auto offset = rewriter.create<LLVM::ConstantOp>(
+            loc, i64Ty, static_cast<int64_t>(layout::ArrayLengthOffset));
+        auto fieldPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i8Ty, ptr,
+                                                      ValueRange{offset});
+
+        // Load u32 length
+        Value len32 = rewriter.create<LLVM::LoadOp>(loc, i32Ty, fieldPtr);
+
+        // Zero-extend to i64 (Elm Int)
+        Value len64 = rewriter.create<LLVM::ZExtOp>(loc, i64Ty, len32);
+
+        rewriter.replaceOp(op, len64);
+        return success();
+    }
+};
+
+//===----------------------------------------------------------------------===//
+// eco.array.get -> resolve + GEP to elements[index] + load + type conversion
+//===----------------------------------------------------------------------===//
+
+struct ArrayGetOpLowering : public OpConversionPattern<ArrayGetOp> {
+    EcoRuntime runtime;
+
+    ArrayGetOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
+                       EcoRuntime runtime)
+        : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
+
+    LogicalResult
+    matchAndRewrite(ArrayGetOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        auto loc = op.getLoc();
+        auto *ctx = rewriter.getContext();
+        auto i64Ty = IntegerType::get(ctx, 64);
+        auto i8Ty = IntegerType::get(ctx, 8);
+        auto ptrTy = LLVM::LLVMPointerType::get(ctx);
+
+        Value arrayVal = adaptor.getArray();
+        Value indexVal = adaptor.getIndex();
+
+        // Resolve HPointer to raw pointer
+        auto resolveFunc = runtime.getOrCreateResolveHPtr(rewriter);
+        auto resolveCall = rewriter.create<LLVM::CallOp>(loc, resolveFunc, ValueRange{arrayVal});
+        Value ptr = resolveCall.getResult();
+
+        // Compute element pointer: base + ArrayElementsOffset + index * 8
+        auto baseOffset = rewriter.create<LLVM::ConstantOp>(
+            loc, i64Ty, static_cast<int64_t>(layout::ArrayElementsOffset));
+        auto elemSize = rewriter.create<LLVM::ConstantOp>(
+            loc, i64Ty, static_cast<int64_t>(layout::PtrSize));
+        auto indexOffset = rewriter.create<LLVM::MulOp>(loc, i64Ty, indexVal, elemSize);
+        auto totalOffset = rewriter.create<LLVM::AddOp>(loc, i64Ty, baseOffset, indexOffset);
+        auto elemPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i8Ty, ptr,
+                                                     ValueRange{totalOffset});
+
+        // Load i64 (Unboxable is always 8 bytes)
+        Value raw = rewriter.create<LLVM::LoadOp>(loc, i64Ty, elemPtr);
+
+        // Interpret based on result type
+        Type origResultType = op.getResult().getType();
+        if (isa<eco::ValueType>(origResultType) || origResultType.isInteger(64)) {
+            // eco.value or Int: raw i64 is the result directly
+            rewriter.replaceOp(op, raw);
+        } else if (origResultType.isF64()) {
+            // Float: bitcast i64 to f64
+            auto f64Ty = Float64Type::get(ctx);
+            Value result = rewriter.create<LLVM::BitcastOp>(loc, f64Ty, raw);
+            rewriter.replaceOp(op, result);
+        } else if (origResultType.isInteger(16)) {
+            // Char: truncate i64 to i16
+            auto i16Ty = IntegerType::get(ctx, 16);
+            Value result = rewriter.create<LLVM::TruncOp>(loc, i16Ty, raw);
+            rewriter.replaceOp(op, result);
+        } else {
+            return op.emitError("unsupported element type for eco.array.get");
+        }
+
+        return success();
+    }
+};
+
+//===----------------------------------------------------------------------===//
+// eco.array.set -> clone array + resolve + GEP + store
+//===----------------------------------------------------------------------===//
+
+struct ArraySetOpLowering : public OpConversionPattern<ArraySetOp> {
+    EcoRuntime runtime;
+
+    ArraySetOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
+                       EcoRuntime runtime)
+        : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
+
+    LogicalResult
+    matchAndRewrite(ArraySetOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        auto loc = op.getLoc();
+        auto *ctx = rewriter.getContext();
+        auto i64Ty = IntegerType::get(ctx, 64);
+        auto i8Ty = IntegerType::get(ctx, 8);
+        auto ptrTy = LLVM::LLVMPointerType::get(ctx);
+
+        Value arrayVal = adaptor.getArray();
+        Value indexVal = adaptor.getIndex();
+        Value valueVal = adaptor.getValue();
+
+        // Clone the array via runtime helper (handles GC-safe allocation)
+        auto cloneFunc = runtime.getOrCreateCloneArray(rewriter);
+        auto cloneCall = rewriter.create<LLVM::CallOp>(loc, cloneFunc, ValueRange{arrayVal});
+        Value newArrayHPtr = cloneCall.getResult();
+
+        // Resolve new array HPointer to raw pointer
+        auto resolveFunc = runtime.getOrCreateResolveHPtr(rewriter);
+        auto resolveCall = rewriter.create<LLVM::CallOp>(loc, resolveFunc, ValueRange{newArrayHPtr});
+        Value ptr = resolveCall.getResult();
+
+        // Compute element pointer: base + ArrayElementsOffset + index * 8
+        auto baseOffset = rewriter.create<LLVM::ConstantOp>(
+            loc, i64Ty, static_cast<int64_t>(layout::ArrayElementsOffset));
+        auto elemSize = rewriter.create<LLVM::ConstantOp>(
+            loc, i64Ty, static_cast<int64_t>(layout::PtrSize));
+        auto indexOffset = rewriter.create<LLVM::MulOp>(loc, i64Ty, indexVal, elemSize);
+        auto totalOffset = rewriter.create<LLVM::AddOp>(loc, i64Ty, baseOffset, indexOffset);
+        auto elemPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i8Ty, ptr,
+                                                     ValueRange{totalOffset});
+
+        // Normalize value to i64 for storage in Unboxable slot
+        Type origValueType = op.getValue().getType();
+        Value raw;
+        if (isa<eco::ValueType>(origValueType) || origValueType.isInteger(64)) {
+            // eco.value or Int: already i64
+            raw = valueVal;
+        } else if (origValueType.isF64()) {
+            // Float: bitcast f64 to i64
+            raw = rewriter.create<LLVM::BitcastOp>(loc, i64Ty, valueVal);
+        } else if (origValueType.isInteger(16)) {
+            // Char: zero-extend i16 to i64
+            raw = rewriter.create<LLVM::ZExtOp>(loc, i64Ty, valueVal);
+        } else {
+            return op.emitError("unsupported value type for eco.array.set");
+        }
+
+        // Store into the element slot
+        rewriter.create<LLVM::StoreOp>(loc, raw, elemPtr);
+
+        // Return new array as eco.value (i64 HPointer)
+        rewriter.replaceOp(op, newArrayHPtr);
+        return success();
+    }
+};
+
 } // namespace
 
 //===----------------------------------------------------------------------===//
@@ -727,4 +905,7 @@ void eco::detail::populateEcoHeapPatterns(
     patterns.add<RecordProjectOpLowering>(typeConverter, ctx, runtime);
     patterns.add<CustomConstructOpLowering>(typeConverter, ctx, runtime);
     patterns.add<CustomProjectOpLowering>(typeConverter, ctx, runtime);
+    patterns.add<ArrayLengthOpLowering>(typeConverter, ctx, runtime);
+    patterns.add<ArrayGetOpLowering>(typeConverter, ctx, runtime);
+    patterns.add<ArraySetOpLowering>(typeConverter, ctx, runtime);
 }
