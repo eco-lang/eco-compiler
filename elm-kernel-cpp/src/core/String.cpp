@@ -120,6 +120,7 @@ bool all(CharPredicate pred, void* str) {
 // ============================================================================
 
 HPointer foldl(FoldFunc func, HPointer acc, void* str) {
+    if (!str) return acc;
     auto& allocator = Allocator::instance();
     ElmString* s = static_cast<ElmString*>(str);
 
@@ -132,6 +133,7 @@ HPointer foldl(FoldFunc func, HPointer acc, void* str) {
 }
 
 HPointer foldr(FoldFunc func, HPointer acc, void* str) {
+    if (!str) return acc;
     auto& allocator = Allocator::instance();
     ElmString* s = static_cast<ElmString*>(str);
 
@@ -160,6 +162,9 @@ HPointer split(void* sep, void* str) {
 }
 
 HPointer lines(void* str) {
+    if (!str) {
+        return alloc::cons(alloc::boxed(alloc::emptyString()), alloc::listNil(), true);
+    }
     // Split by \r\n, \r, or \n
     ElmString* s = static_cast<ElmString*>(str);
     size_t len = s->header.size;
@@ -299,6 +304,7 @@ HPointer toFloat(void* str) {
 }
 
 HPointer fromNumber(void* n) {
+    if (!n) return alloc::emptyString();
     // Detect type and convert accordingly
     Header* hdr = static_cast<Header*>(n);
     if (hdr->tag == Tag_Int) {

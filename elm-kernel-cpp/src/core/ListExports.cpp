@@ -135,13 +135,19 @@ std::vector<uint64_t> listToVectorU64(HPointer list) {
     return result;
 }
 
-// Convert vector of uint64_t back to list (all boxed).
-HPointer vectorU64ToList(const std::vector<uint64_t>& vec) {
+// Convert vector of uint64_t back to list.
+// The headIsBoxed parameter determines whether values are stored as
+// boxed HPointers (true) or unboxed i64 (false).
+HPointer vectorU64ToList(const std::vector<uint64_t>& vec, bool headIsBoxed) {
     HPointer result = alloc::listNil();
     for (auto it = vec.rbegin(); it != vec.rend(); ++it) {
         Unboxable head;
-        head.p = Export::decode(*it);
-        result = List::cons(head, result, true);  // All results are boxed
+        if (headIsBoxed) {
+            head.p = Export::decode(*it);
+        } else {
+            head.i = static_cast<int64_t>(*it);
+        }
+        result = List::cons(head, result, headIsBoxed);
     }
     return result;
 }
@@ -178,7 +184,9 @@ HPointer vectorToList(const std::vector<void*>& vec) {
     return result;
 }
 
-// Get element from Cons as uint64_t (handles unboxed flag)
+// Get element from Cons as uint64_t (handles unboxed flag).
+// For unboxed ints, returns raw i64 (matching the function signature).
+// For boxed values, returns encoded HPointer.
 inline uint64_t getConsHead(Cons* cons, Header* hdr) {
     if (hdr->unboxed & 1) {
         return static_cast<uint64_t>(cons->head.i);
@@ -250,25 +258,35 @@ uint64_t Elm_Kernel_List_map2(uint64_t closure, uint64_t xs, uint64_t ys) {
     HPointer yList = Export::decode(ys);
     auto& allocator = Allocator::instance();
 
+    // Determine if inputs have unboxed heads (peek at first element).
+    // If all inputs are unboxed, the closure result is also unboxed.
+    bool resultIsUnboxed = false;
+    if (!alloc::isNil(xList)) {
+        Header* h = static_cast<Header*>(allocator.resolve(xList));
+        resultIsUnboxed = (h->unboxed & 1);
+    }
+
     std::vector<uint64_t> results;
 
     while (!alloc::isNil(xList) && !alloc::isNil(yList)) {
         Cons* xCons = static_cast<Cons*>(allocator.resolve(xList));
         Cons* yCons = static_cast<Cons*>(allocator.resolve(yList));
-        Header* xHdr = &xCons->header;
-        Header* yHdr = &yCons->header;
 
-        uint64_t x = getConsHead(xCons, xHdr);
-        uint64_t y = getConsHead(yCons, yHdr);
+        // Save stable values BEFORE closure call (which may trigger GC)
+        HPointer xTail = xCons->tail;
+        HPointer yTail = yCons->tail;
+
+        uint64_t x = getConsHead(xCons, &xCons->header);
+        uint64_t y = getConsHead(yCons, &yCons->header);
 
         uint64_t result = callBinaryClosure(closure_ptr, x, y);
         results.push_back(result);
 
-        xList = xCons->tail;
-        yList = yCons->tail;
+        xList = xTail;
+        yList = yTail;
     }
 
-    return Export::encode(vectorU64ToList(results));
+    return Export::encode(vectorU64ToList(results, !resultIsUnboxed));
 }
 
 uint64_t Elm_Kernel_List_map3(uint64_t closure, uint64_t xs, uint64_t ys, uint64_t zs) {
@@ -278,29 +296,32 @@ uint64_t Elm_Kernel_List_map3(uint64_t closure, uint64_t xs, uint64_t ys, uint64
     HPointer zList = Export::decode(zs);
     auto& allocator = Allocator::instance();
 
+    bool resultIsUnboxed = false;
+    if (!alloc::isNil(xList)) {
+        Header* h = static_cast<Header*>(allocator.resolve(xList));
+        resultIsUnboxed = (h->unboxed & 1);
+    }
+
     std::vector<uint64_t> results;
 
     while (!alloc::isNil(xList) && !alloc::isNil(yList) && !alloc::isNil(zList)) {
         Cons* xCons = static_cast<Cons*>(allocator.resolve(xList));
         Cons* yCons = static_cast<Cons*>(allocator.resolve(yList));
         Cons* zCons = static_cast<Cons*>(allocator.resolve(zList));
-        Header* xHdr = &xCons->header;
-        Header* yHdr = &yCons->header;
-        Header* zHdr = &zCons->header;
 
-        uint64_t x = getConsHead(xCons, xHdr);
-        uint64_t y = getConsHead(yCons, yHdr);
-        uint64_t z = getConsHead(zCons, zHdr);
+        HPointer xTail = xCons->tail, yTail = yCons->tail, zTail = zCons->tail;
+
+        uint64_t x = getConsHead(xCons, &xCons->header);
+        uint64_t y = getConsHead(yCons, &yCons->header);
+        uint64_t z = getConsHead(zCons, &zCons->header);
 
         uint64_t result = callTernaryClosure(closure_ptr, x, y, z);
         results.push_back(result);
 
-        xList = xCons->tail;
-        yList = yCons->tail;
-        zList = zCons->tail;
+        xList = xTail; yList = yTail; zList = zTail;
     }
 
-    return Export::encode(vectorU64ToList(results));
+    return Export::encode(vectorU64ToList(results, !resultIsUnboxed));
 }
 
 uint64_t Elm_Kernel_List_map4(uint64_t closure, uint64_t ws, uint64_t xs, uint64_t ys, uint64_t zs) {
@@ -311,6 +332,12 @@ uint64_t Elm_Kernel_List_map4(uint64_t closure, uint64_t ws, uint64_t xs, uint64
     HPointer zList = Export::decode(zs);
     auto& allocator = Allocator::instance();
 
+    bool resultIsUnboxed = false;
+    if (!alloc::isNil(wList)) {
+        Header* h = static_cast<Header*>(allocator.resolve(wList));
+        resultIsUnboxed = (h->unboxed & 1);
+    }
+
     std::vector<uint64_t> results;
 
     while (!alloc::isNil(wList) && !alloc::isNil(xList) &&
@@ -319,26 +346,21 @@ uint64_t Elm_Kernel_List_map4(uint64_t closure, uint64_t ws, uint64_t xs, uint64
         Cons* xCons = static_cast<Cons*>(allocator.resolve(xList));
         Cons* yCons = static_cast<Cons*>(allocator.resolve(yList));
         Cons* zCons = static_cast<Cons*>(allocator.resolve(zList));
-        Header* wHdr = &wCons->header;
-        Header* xHdr = &xCons->header;
-        Header* yHdr = &yCons->header;
-        Header* zHdr = &zCons->header;
 
-        uint64_t w = getConsHead(wCons, wHdr);
-        uint64_t x = getConsHead(xCons, xHdr);
-        uint64_t y = getConsHead(yCons, yHdr);
-        uint64_t z = getConsHead(zCons, zHdr);
+        HPointer wT = wCons->tail, xT = xCons->tail, yT = yCons->tail, zT = zCons->tail;
+
+        uint64_t w = getConsHead(wCons, &wCons->header);
+        uint64_t x = getConsHead(xCons, &xCons->header);
+        uint64_t y = getConsHead(yCons, &yCons->header);
+        uint64_t z = getConsHead(zCons, &zCons->header);
 
         uint64_t result = callQuaternaryClosure(closure_ptr, w, x, y, z);
         results.push_back(result);
 
-        wList = wCons->tail;
-        xList = xCons->tail;
-        yList = yCons->tail;
-        zList = zCons->tail;
+        wList = wT; xList = xT; yList = yT; zList = zT;
     }
 
-    return Export::encode(vectorU64ToList(results));
+    return Export::encode(vectorU64ToList(results, !resultIsUnboxed));
 }
 
 uint64_t Elm_Kernel_List_map5(uint64_t closure, uint64_t vs, uint64_t ws,
@@ -351,6 +373,12 @@ uint64_t Elm_Kernel_List_map5(uint64_t closure, uint64_t vs, uint64_t ws,
     HPointer zList = Export::decode(zs);
     auto& allocator = Allocator::instance();
 
+    bool resultIsUnboxed = false;
+    if (!alloc::isNil(vList)) {
+        Header* h = static_cast<Header*>(allocator.resolve(vList));
+        resultIsUnboxed = (h->unboxed & 1);
+    }
+
     std::vector<uint64_t> results;
 
     while (!alloc::isNil(vList) && !alloc::isNil(wList) && !alloc::isNil(xList) &&
@@ -360,29 +388,23 @@ uint64_t Elm_Kernel_List_map5(uint64_t closure, uint64_t vs, uint64_t ws,
         Cons* xCons = static_cast<Cons*>(allocator.resolve(xList));
         Cons* yCons = static_cast<Cons*>(allocator.resolve(yList));
         Cons* zCons = static_cast<Cons*>(allocator.resolve(zList));
-        Header* vHdr = &vCons->header;
-        Header* wHdr = &wCons->header;
-        Header* xHdr = &xCons->header;
-        Header* yHdr = &yCons->header;
-        Header* zHdr = &zCons->header;
 
-        uint64_t v = getConsHead(vCons, vHdr);
-        uint64_t w = getConsHead(wCons, wHdr);
-        uint64_t x = getConsHead(xCons, xHdr);
-        uint64_t y = getConsHead(yCons, yHdr);
-        uint64_t z = getConsHead(zCons, zHdr);
+        HPointer vT = vCons->tail, wT = wCons->tail, xT = xCons->tail;
+        HPointer yT = yCons->tail, zT = zCons->tail;
+
+        uint64_t v = getConsHead(vCons, &vCons->header);
+        uint64_t w = getConsHead(wCons, &wCons->header);
+        uint64_t x = getConsHead(xCons, &xCons->header);
+        uint64_t y = getConsHead(yCons, &yCons->header);
+        uint64_t z = getConsHead(zCons, &zCons->header);
 
         uint64_t result = callQuinaryClosure(closure_ptr, v, w, x, y, z);
         results.push_back(result);
 
-        vList = vCons->tail;
-        wList = wCons->tail;
-        xList = xCons->tail;
-        yList = yCons->tail;
-        zList = zCons->tail;
+        vList = vT; wList = wT; xList = xT; yList = yT; zList = zT;
     }
 
-    return Export::encode(vectorU64ToList(results));
+    return Export::encode(vectorU64ToList(results, !resultIsUnboxed));
 }
 
 uint64_t Elm_Kernel_List_sortBy(uint64_t closure, uint64_t list) {
@@ -408,10 +430,12 @@ uint64_t Elm_Kernel_List_sortBy(uint64_t closure, uint64_t list) {
 
     std::stable_sort(indices.begin(), indices.end(), [&](size_t a, size_t b) {
         // Utils::compare returns Order (heap Custom with ctor 0=LT, 1=EQ, 2=GT)
+        // Re-resolve each time since compare may trigger GC
         void* keyA = Export::toPtr(keys[a]);
         void* keyB = Export::toPtr(keys[b]);
         HPointer orderHP = Utils::compare(keyA, keyB);
-        Custom* order = static_cast<Custom*>(allocator.resolve(orderHP));
+        void* orderObj = allocator.resolve(orderHP);
+        Custom* order = static_cast<Custom*>(orderObj);
         return order->ctor == 0;  // LT
     });
 
@@ -422,7 +446,14 @@ uint64_t Elm_Kernel_List_sortBy(uint64_t closure, uint64_t list) {
         sorted.push_back(elements[idx]);
     }
 
-    return Export::encode(vectorU64ToList(sorted));
+    // Sort preserves element types - check if unboxed
+    bool elemIsUnboxed = false;
+    HPointer origList = Export::decode(list);
+    if (!alloc::isNil(origList)) {
+        Header* h = static_cast<Header*>(allocator.resolve(origList));
+        elemIsUnboxed = (h->unboxed & 1);
+    }
+    return Export::encode(vectorU64ToList(sorted, !elemIsUnboxed));
 }
 
 uint64_t Elm_Kernel_List_sortWith(uint64_t closure, uint64_t list) {
@@ -442,7 +473,14 @@ uint64_t Elm_Kernel_List_sortWith(uint64_t closure, uint64_t list) {
         return orderVal->ctor == 0;  // LT means a < b
     });
 
-    return Export::encode(vectorU64ToList(elements));
+    // sortWith preserves element types
+    bool elemIsUnboxed = false;
+    HPointer origList = Export::decode(list);
+    if (!alloc::isNil(origList)) {
+        Header* h = static_cast<Header*>(allocator.resolve(origList));
+        elemIsUnboxed = (h->unboxed & 1);
+    }
+    return Export::encode(vectorU64ToList(elements, !elemIsUnboxed));
 }
 
 } // extern "C"

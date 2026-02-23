@@ -39,6 +39,7 @@ namespace StringOps {
  * Equivalent to Elm's String.length for BMP characters.
  */
 inline i64 length(void* str) {
+    if (!str) return 0;
     ElmString* s = static_cast<ElmString*>(str);
     return static_cast<i64>(s->header.size);
 }
@@ -70,6 +71,11 @@ inline u16 charAt(void* str, i64 index) {
  * Appends two strings: a ++ b
  */
 inline HPointer append(void* a, void* b) {
+    // Handle nullptr from EmptyString embedded constant
+    if (!a && !b) return alloc::emptyString();
+    if (!a) return Allocator::instance().wrap(b);
+    if (!b) return Allocator::instance().wrap(a);
+
     ElmString* sa = static_cast<ElmString*>(a);
     ElmString* sb = static_cast<ElmString*>(b);
 
@@ -115,6 +121,7 @@ HPointer join(void* sep, HPointer stringList);
  * Negative indices count from end. Clamps to valid range.
  */
 inline HPointer slice(void* str, i64 start, i64 end) {
+    if (!str) return alloc::emptyString();
     ElmString* s = static_cast<ElmString*>(str);
     i64 len = static_cast<i64>(s->header.size);
 
@@ -178,6 +185,9 @@ inline HPointer dropRight(void* str, i64 n) {
  * Checks if the substring needle is contained in haystack.
  */
 inline bool contains(void* needle, void* haystack) {
+    if (!needle) return true;  // Empty needle always matches
+    if (!haystack) return false;  // Empty haystack never contains non-empty
+
     ElmString* n = static_cast<ElmString*>(needle);
     ElmString* h = static_cast<ElmString*>(haystack);
 
@@ -202,6 +212,9 @@ inline bool contains(void* needle, void* haystack) {
  * Checks if str starts with prefix.
  */
 inline bool startsWith(void* prefix, void* str) {
+    if (!prefix) return true;   // Empty prefix always matches
+    if (!str) return false;     // Empty string only starts with empty
+
     ElmString* p = static_cast<ElmString*>(prefix);
     ElmString* s = static_cast<ElmString*>(str);
 
@@ -220,6 +233,9 @@ inline bool startsWith(void* prefix, void* str) {
  * Checks if str ends with suffix.
  */
 inline bool endsWith(void* suffix, void* str) {
+    if (!suffix) return true;   // Empty suffix always matches
+    if (!str) return false;     // Empty string only ends with empty
+
     ElmString* x = static_cast<ElmString*>(suffix);
     ElmString* s = static_cast<ElmString*>(str);
 
@@ -248,6 +264,7 @@ HPointer indexes(void* needle, void* haystack);
  * Converts string to uppercase (ASCII only).
  */
 inline HPointer toUpper(void* str) {
+    if (!str) return alloc::emptyString();
     ElmString* s = static_cast<ElmString*>(str);
     size_t len = s->header.size;
 
@@ -277,6 +294,7 @@ inline HPointer toUpper(void* str) {
  * Converts string to lowercase (ASCII only).
  */
 inline HPointer toLower(void* str) {
+    if (!str) return alloc::emptyString();
     ElmString* s = static_cast<ElmString*>(str);
     size_t len = s->header.size;
 
@@ -306,6 +324,7 @@ inline HPointer toLower(void* str) {
  * Reverses a string.
  */
 inline HPointer reverse(void* str) {
+    if (!str) return alloc::emptyString();
     ElmString* s = static_cast<ElmString*>(str);
     size_t len = s->header.size;
 
@@ -331,6 +350,7 @@ inline HPointer reverse(void* str) {
  * Trims whitespace from both ends.
  */
 inline HPointer trim(void* str) {
+    if (!str) return alloc::emptyString();
     ElmString* s = static_cast<ElmString*>(str);
     size_t len = s->header.size;
 
@@ -364,6 +384,7 @@ inline HPointer trim(void* str) {
  * Trims whitespace from the left.
  */
 inline HPointer trimLeft(void* str) {
+    if (!str) return alloc::emptyString();
     ElmString* s = static_cast<ElmString*>(str);
     size_t len = s->header.size;
 
@@ -387,6 +408,7 @@ inline HPointer trimLeft(void* str) {
  * Trims whitespace from the right.
  */
 inline HPointer trimRight(void* str) {
+    if (!str) return alloc::emptyString();
     ElmString* s = static_cast<ElmString*>(str);
     size_t len = s->header.size;
 
@@ -410,7 +432,7 @@ inline HPointer trimRight(void* str) {
  * Repeats a string n times.
  */
 inline HPointer repeat(void* str, i64 n) {
-    if (n <= 0) return alloc::emptyString();
+    if (n <= 0 || !str) return alloc::emptyString();
 
     ElmString* s = static_cast<ElmString*>(str);
     size_t len = s->header.size;
@@ -437,6 +459,19 @@ inline HPointer repeat(void* str, i64 n) {
  * Pads string on the left to reach at least n characters.
  */
 inline HPointer padLeft(void* str, i64 n, u16 padChar) {
+    if (!str) {
+        // Empty string needs full padding
+        size_t total_len = static_cast<size_t>(n > 0 ? n : 0);
+        if (total_len == 0) return alloc::emptyString();
+        size_t data_size = total_len * sizeof(u16);
+        size_t total_size = sizeof(ElmString) + data_size;
+        total_size = (total_size + 7) & ~7;
+        auto& allocator = Allocator::instance();
+        ElmString* result = static_cast<ElmString*>(allocator.allocate(total_size, Tag_String));
+        result->header.size = static_cast<u32>(total_len);
+        for (size_t i = 0; i < total_len; ++i) result->chars[i] = padChar;
+        return allocator.wrap(result);
+    }
     ElmString* s = static_cast<ElmString*>(str);
     i64 len = static_cast<i64>(s->header.size);
 
@@ -466,6 +501,18 @@ inline HPointer padLeft(void* str, i64 n, u16 padChar) {
  * Pads string on the right to reach at least n characters.
  */
 inline HPointer padRight(void* str, i64 n, u16 padChar) {
+    if (!str) {
+        size_t total_len = static_cast<size_t>(n > 0 ? n : 0);
+        if (total_len == 0) return alloc::emptyString();
+        size_t data_size = total_len * sizeof(u16);
+        size_t total_size = sizeof(ElmString) + data_size;
+        total_size = (total_size + 7) & ~7;
+        auto& allocator = Allocator::instance();
+        ElmString* result = static_cast<ElmString*>(allocator.allocate(total_size, Tag_String));
+        result->header.size = static_cast<u32>(total_len);
+        for (size_t i = 0; i < total_len; ++i) result->chars[i] = padChar;
+        return allocator.wrap(result);
+    }
     ElmString* s = static_cast<ElmString*>(str);
     i64 len = static_cast<i64>(s->header.size);
 
@@ -513,6 +560,7 @@ HPointer toList(void* str);
  * Returns Just(int) on success, Nothing on failure.
  */
 inline HPointer toInt(void* str) {
+    if (!str) return alloc::nothing();
     ElmString* s = static_cast<ElmString*>(str);
     size_t len = s->header.size;
 
@@ -544,6 +592,7 @@ inline HPointer toInt(void* str) {
  * Returns Just(float) on success, Nothing on failure.
  */
 inline HPointer toFloat(void* str) {
+    if (!str) return alloc::nothing();
     ElmString* s = static_cast<ElmString*>(str);
     size_t len = s->header.size;
 
@@ -614,6 +663,7 @@ inline HPointer fromChar(u16 c) {
  * Prepends a character to a string: cons.
  */
 inline HPointer cons(u16 c, void* str) {
+    if (!str) return fromChar(c);
     ElmString* s = static_cast<ElmString*>(str);
     size_t len = s->header.size;
     size_t total_len = len + 1;

@@ -26,6 +26,12 @@
 #include "bf-codegen/BFCodegenTest.hpp"
 #include "elm/ElmTest.hpp"
 #include "elm-bytes/ElmBytesTest.hpp"
+#include "elm-core/ElmCoreTest.hpp"
+#include "elm-json/ElmJsonTest.hpp"
+#include "elm-regex/ElmRegexTest.hpp"
+#include "elm-url/ElmUrlTest.hpp"
+#include "elm-http/ElmHttpTest.hpp"
+#include "elm-time/ElmTimeTest.hpp"
 #include "TestSuite.hpp"
 
 using namespace Elm;
@@ -654,6 +660,14 @@ int main(int argc, char* argv[]) {
     // Elm Bytes end-to-end tests (test Bytes.Encode/Decode through full pipeline)
     auto elmBytesTests = ElmBytesTest::buildElmBytesTestSuite();
 
+    // Elm package E2E tests
+    auto elmCoreTests = ElmCoreTest::buildElmCoreTestSuite();
+    auto elmJsonTests = ElmJsonTest::buildElmJsonTestSuite();
+    auto elmRegexTests = ElmRegexTest::buildElmRegexTestSuite();
+    auto elmUrlTests = ElmUrlTest::buildElmUrlTestSuite();
+    auto elmHttpTests = ElmHttpTest::buildElmHttpTestSuite();
+    auto elmTimeTests = ElmTimeTest::buildElmTimeTestSuite();
+
     // Root suite containing all sub-suites.
     Testing::TestSuite suite("All Tests");
     suite.add(std::move(nurseryTests));
@@ -670,6 +684,12 @@ int main(int argc, char* argv[]) {
     suite.add(std::move(bfCodegenTests));
     suite.add(std::move(elmE2ETests));
     suite.add(std::move(elmBytesTests));
+    suite.add(std::move(elmCoreTests));
+    suite.add(std::move(elmJsonTests));
+    suite.add(std::move(elmRegexTests));
+    suite.add(std::move(elmUrlTests));
+    suite.add(std::move(elmHttpTests));
+    suite.add(std::move(elmTimeTests));
 
     // Handle --list option.
     if (config.list_tests) {

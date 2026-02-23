@@ -1,10 +1,10 @@
 #pragma once
 
-#include "../IsolatedTestRunner.hpp"
-#include "../TestSuite.hpp"
-#include "../../runtime/src/codegen/EcoRunner.hpp"
-#include "../../runtime/src/allocator/GCStats.hpp"
-#include "../../runtime/src/allocator/Allocator.hpp"
+#include "IsolatedTestRunner.hpp"
+#include "TestSuite.hpp"
+#include "../runtime/src/codegen/EcoRunner.hpp"
+#include "../runtime/src/allocator/GCStats.hpp"
+#include "../runtime/src/allocator/Allocator.hpp"
 
 #include <algorithm>
 #include <array>
@@ -26,15 +26,12 @@
 #include <unistd.h>
 #include <vector>
 
-namespace ElmTest {
+namespace ElmE2EBase {
 
 // ============================================================================
 // Parallel Compilation Constants
 // ============================================================================
 
-// Maximum number of concurrent Elm compilations to avoid RAM exhaustion.
-// Each guida process can use significant memory during compilation.
-// Defaults to the number of CPU cores, or 4 if detection fails.
 inline size_t getMaxParallelCompilations() {
     unsigned int cores = std::thread::hardware_concurrency();
     return cores > 0 ? static_cast<size_t>(cores) : 4;
@@ -44,18 +41,12 @@ inline size_t getMaxParallelCompilations() {
 // Elm-Specific Shared Memory Extension
 // ============================================================================
 
-/**
- * Extended shared memory structure for Elm tests.
- * Includes GCStats fields for accumulation across forked processes.
- */
 struct ElmSharedTestResult {
-    // Base fields (matching IsolatedTestRunner::SharedTestResult)
     bool completed;
     bool passed;
     char error[4096];
     char output[8192];
 
-    // GCStats fields (copied from child's stats)
     uint64_t objects_allocated;
     uint64_t bytes_allocated;
     uint64_t minor_gc_count;
@@ -71,17 +62,11 @@ struct ElmSharedTestResult {
     uint64_t mark_sweeps_completed;
 };
 
-/**
- * Global accumulated GCStats across all forked test processes.
- */
 inline Elm::GCStats& getAccumulatedStats() {
     static Elm::GCStats accumulated;
     return accumulated;
 }
 
-/**
- * Copy GCStats from the Allocator to shared memory (called in child process).
- */
 inline void copyStatsToShared(ElmSharedTestResult* shared) {
 #if ENABLE_GC_STATS
     Elm::GCStats stats = Elm::Allocator::instance().getCombinedStats();
@@ -101,9 +86,6 @@ inline void copyStatsToShared(ElmSharedTestResult* shared) {
 #endif
 }
 
-/**
- * Copy GCStats from shared memory to a GCStats object for accumulation.
- */
 inline void accumulateFromShared(const ElmSharedTestResult* shared) {
     Elm::GCStats childStats;
     childStats.objects_allocated = shared->objects_allocated;
@@ -127,15 +109,10 @@ inline void accumulateFromShared(const ElmSharedTestResult* shared) {
 // Helper Functions
 // ============================================================================
 
-/**
- * Execute a command and capture its output.
- * Returns a pair of (exit_code, output).
- */
 inline std::pair<int, std::string> executeCommand(const std::string& cmd) {
     std::array<char, 4096> buffer;
     std::string result;
 
-    // Use popen to run command and capture output
     std::string fullCmd = cmd + " 2>&1";
     std::unique_ptr<FILE, decltype(&pclose)> pipe(popen(fullCmd.c_str(), "r"), pclose);
 
@@ -147,16 +124,12 @@ inline std::pair<int, std::string> executeCommand(const std::string& cmd) {
         result += buffer.data();
     }
 
-    // Get exit status
     int status = pclose(pipe.release());
     int exitCode = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
 
     return {exitCode, result};
 }
 
-/**
- * Read entire file contents.
- */
 inline std::string readFile(const std::string& path) {
     std::ifstream file(path);
     if (!file.is_open()) {
@@ -167,11 +140,7 @@ inline std::string readFile(const std::string& path) {
     return buffer.str();
 }
 
-/**
- * Get the guida compiler path.
- */
 inline std::string getGuidaPath() {
-    // Try common locations relative to test execution directory
     std::vector<std::string> candidates = {
         "compiler/bin/index.js",
         "../compiler/bin/index.js",
@@ -184,33 +153,9 @@ inline std::string getGuidaPath() {
         }
     }
 
-    // Fallback to absolute path
     return "/work/compiler/bin/index.js";
 }
 
-/**
- * Get the test/elm directory path.
- */
-inline std::string getElmTestDir() {
-    std::vector<std::string> candidates = {
-        "test/elm",
-        "../test/elm",
-        "../../test/elm",
-    };
-
-    for (const auto& dir : candidates) {
-        if (std::filesystem::exists(dir) && std::filesystem::is_directory(dir)) {
-            return std::filesystem::absolute(dir).string();
-        }
-    }
-
-    return "/work/test/elm";
-}
-
-/**
- * Extract expected output from Elm source file.
- * Looks for pattern: Expected output: "..."
- */
 inline std::string extractExpectedOutput(const std::string& content) {
     std::regex pattern(R"(Expected output:\s*\"([^\"]+)\")");
     std::smatch match;
@@ -220,21 +165,15 @@ inline std::string extractExpectedOutput(const std::string& content) {
     return "";
 }
 
-/**
- * Extract CHECK patterns from Elm file comments.
- * Looks for: -- CHECK: <pattern>
- */
 inline std::vector<std::string> extractCheckPatterns(const std::string& content) {
     std::vector<std::string> patterns;
     std::istringstream stream(content);
     std::string line;
 
     while (std::getline(stream, line)) {
-        // Look for -- CHECK: patterns
         size_t pos = line.find("-- CHECK:");
         if (pos != std::string::npos) {
-            std::string pattern = line.substr(pos + 10);  // Skip "-- CHECK: "
-            // Trim whitespace
+            std::string pattern = line.substr(pos + 10);
             size_t start = pattern.find_first_not_of(" \t");
             if (start != std::string::npos) {
                 pattern = pattern.substr(start);
@@ -251,10 +190,6 @@ inline std::vector<std::string> extractCheckPatterns(const std::string& content)
     return patterns;
 }
 
-/**
- * Verify that output contains all CHECK patterns.
- * Returns empty string on success, error message on failure.
- */
 inline std::string verifyPatterns(const std::string& output,
                                    const std::vector<std::string>& patterns) {
     for (const auto& pattern : patterns) {
@@ -262,16 +197,13 @@ inline std::string verifyPatterns(const std::string& output,
             return "Missing pattern: " + pattern;
         }
     }
-    return "";  // Success
+    return "";
 }
 
 // ============================================================================
-// Two-Phase Compilation Support
+// Parameterized Two-Phase Compilation
 // ============================================================================
 
-/**
- * Result of compiling a single Elm file to MLIR.
- */
 struct CompileResult {
     std::string elmPath;
     std::string mlirPath;
@@ -279,10 +211,6 @@ struct CompileResult {
     std::string errorMessage;
 };
 
-/**
- * Check if an Elm file needs recompilation.
- * Returns true if .mlir doesn't exist or .elm is newer than .mlir.
- */
 inline bool needsRecompile(const std::string& elmPath, const std::string& mlirPath) {
     if (!std::filesystem::exists(mlirPath)) {
         return true;
@@ -292,51 +220,30 @@ inline bool needsRecompile(const std::string& elmPath, const std::string& mlirPa
     return elmTime > mlirTime;
 }
 
-/**
- * Get the MLIR output path for an Elm source file.
- * MLIR files are stored in eco-stuff/mlir/ relative to elm.json root.
- */
-inline std::string getMlirPath(const std::string& elmPath) {
-    std::string elmTestDir = getElmTestDir();
+inline std::string getMlirPath(const std::string& testDir, const std::string& elmPath) {
     std::string filename = std::filesystem::path(elmPath).stem().string();
-    return elmTestDir + "/eco-stuff/mlir/" + filename + ".mlir";
+    return testDir + "/eco-stuff/mlir/" + filename + ".mlir";
 }
 
-/**
- * Ensure the MLIR output directory exists.
- */
-inline void ensureMlirDirExists() {
-    std::string elmTestDir = getElmTestDir();
-    std::string mlirDir = elmTestDir + "/eco-stuff/mlir";
+inline void ensureMlirDirExists(const std::string& testDir) {
+    std::string mlirDir = testDir + "/eco-stuff/mlir";
     std::filesystem::create_directories(mlirDir);
 }
 
-/**
- * Compile a single Elm file to MLIR.
- * Returns a CompileResult with success status and paths.
- *
- * @param elmPath Path to the .elm source file
- * @param buildDir Optional build directory name for parallel compilation
- *                 (uses --builddir flag to isolate build artifacts)
- */
-inline CompileResult compileElmToMlir(const std::string& elmPath, const std::string& buildDir = "") {
+inline CompileResult compileElmToMlir(const std::string& testDir, const std::string& elmPath, const std::string& buildDir = "") {
     CompileResult result;
     result.elmPath = elmPath;
-    result.mlirPath = getMlirPath(elmPath);
+    result.mlirPath = getMlirPath(testDir, elmPath);
     result.success = false;
 
-    // Check for incremental compilation
     if (!needsRecompile(elmPath, result.mlirPath)) {
         result.success = true;
         return result;
     }
 
     std::string guidaPath = getGuidaPath();
-    std::string elmTestDir = getElmTestDir();
 
-    // Compile Elm to MLIR using guida
-    // Include --builddir flag when buildDir is specified for parallel compilation
-    std::string compileCmd = "cd \"" + elmTestDir + "\" && node \"" + guidaPath +
+    std::string compileCmd = "cd \"" + testDir + "\" && node \"" + guidaPath +
                              "\" make \"" + elmPath + "\" --output=\"" + result.mlirPath + "\"";
     if (!buildDir.empty()) {
         compileCmd += " --builddir=\"" + buildDir + "\"";
@@ -345,7 +252,6 @@ inline CompileResult compileElmToMlir(const std::string& elmPath, const std::str
     auto [exitCode, output] = executeCommand(compileCmd);
 
     if (exitCode != 0) {
-        // Clean up partial MLIR file if it exists
         std::filesystem::remove(result.mlirPath);
 
         std::ostringstream msg;
@@ -356,7 +262,6 @@ inline CompileResult compileElmToMlir(const std::string& elmPath, const std::str
         return result;
     }
 
-    // Verify MLIR was generated
     if (!std::filesystem::exists(result.mlirPath)) {
         std::ostringstream msg;
         msg << "MLIR file not generated: " << result.mlirPath << "\n";
@@ -369,74 +274,52 @@ inline CompileResult compileElmToMlir(const std::string& elmPath, const std::str
     return result;
 }
 
-/**
- * Compile all Elm test files to MLIR using parallel compilation.
- * Uses --builddir flag to isolate build artifacts for each test, allowing
- * parallel compilation without d.dat race conditions.
- *
- * Strategy:
- * 1. First compile runs with its own builddir - populates shared package cache
- * 2. Remaining compiles run in parallel, each with their own builddir
- *
- * Supports incremental compilation - skips files where .mlir is up-to-date.
- *
- * @param elmPaths List of .elm file paths to compile
- * @return Vector of CompileResults (one per input file)
- */
-inline std::vector<CompileResult> compileAllElmTests(const std::vector<std::string>& elmPaths) {
+inline std::vector<CompileResult> compileAllElmTests(const std::string& testDir,
+                                                       const std::string& suiteName,
+                                                       const std::vector<std::string>& elmPaths) {
     std::vector<CompileResult> results;
-    results.reserve(elmPaths.size());
+    results.resize(elmPaths.size());
 
-    // Ensure output directory exists
-    ensureMlirDirExists();
+    ensureMlirDirExists(testDir);
 
     size_t total = elmPaths.size();
     size_t compiled = 0;
     size_t skipped = 0;
     size_t failed = 0;
 
-    std::cout << "Compiling " << total << " Elm tests (parallel with --builddir)..." << std::endl;
+    std::cout << "Compiling " << total << " " << suiteName << " tests (parallel with --builddir)..." << std::endl;
 
-    // Separate into cached and needs-compile lists
     std::vector<size_t> needsCompile;
     for (size_t i = 0; i < elmPaths.size(); i++) {
         const auto& elmPath = elmPaths[i];
-        std::string mlirPath = getMlirPath(elmPath);
+        std::string mlirPath = getMlirPath(testDir, elmPath);
 
         if (!needsRecompile(elmPath, mlirPath)) {
-            // Cached - add result directly
+            skipped++;
             CompileResult result;
             result.elmPath = elmPath;
             result.mlirPath = mlirPath;
             result.success = true;
-            results.push_back(result);
-            skipped++;
+            results[i] = result;
         } else {
             needsCompile.push_back(i);
-            // Placeholder for result
-            CompileResult result;
-            result.elmPath = elmPath;
-            result.mlirPath = mlirPath;
-            result.success = false;
-            results.push_back(result);
         }
     }
 
     if (needsCompile.empty()) {
-        std::cout << "All " << skipped << " tests cached, nothing to compile." << std::endl;
+        std::cout << "  All " << skipped << " tests cached, nothing to compile" << std::endl;
         return results;
     }
 
     std::cout << "  " << skipped << " cached, " << needsCompile.size() << " to compile" << std::endl;
 
-    // First compile without parallelism to populate package cache
     if (!needsCompile.empty()) {
         size_t firstIdx = needsCompile[0];
         const auto& firstPath = elmPaths[firstIdx];
         std::string filename = std::filesystem::path(firstPath).stem().string();
 
         std::cout << "  [1/" << needsCompile.size() << "] " << filename << " (initial)" << std::flush;
-        auto result = compileElmToMlir(firstPath, filename);
+        auto result = compileElmToMlir(testDir, firstPath, filename);
         results[firstIdx] = result;
 
         if (result.success) {
@@ -448,13 +331,10 @@ inline std::vector<CompileResult> compileAllElmTests(const std::vector<std::stri
         }
     }
 
-    // Compile remaining tests in parallel using --builddir
-    // Uses sliding window: always keep getMaxParallelCompilations() active
     if (needsCompile.size() > 1) {
         std::cout << "  Compiling remaining " << (needsCompile.size() - 1)
                   << " tests (max " << getMaxParallelCompilations() << " parallel)..." << std::endl;
 
-        // Track active compilations: (future, result index, filename)
         struct ActiveCompile {
             std::future<CompileResult> future;
             size_t resultIdx;
@@ -462,19 +342,19 @@ inline std::vector<CompileResult> compileAllElmTests(const std::vector<std::stri
         };
         std::vector<ActiveCompile> active;
 
-        size_t nextToStart = 1;  // Start after the first (already compiled)
+        size_t nextToStart = 1;
         size_t progressCount = 2;
 
-        // Helper to start a new compilation
         auto startNext = [&]() {
             if (nextToStart < needsCompile.size()) {
                 size_t idx = needsCompile[nextToStart];
                 const auto& elmPath = elmPaths[idx];
                 std::string filename = std::filesystem::path(elmPath).stem().string();
+                std::string td = testDir;
 
                 active.push_back({
-                    std::async(std::launch::async, [elmPath, filename]() {
-                        return compileElmToMlir(elmPath, filename);
+                    std::async(std::launch::async, [td, elmPath, filename]() {
+                        return compileElmToMlir(td, elmPath, filename);
                     }),
                     idx,
                     filename
@@ -483,14 +363,11 @@ inline std::vector<CompileResult> compileAllElmTests(const std::vector<std::stri
             }
         };
 
-        // Fill initial slots
         while (active.size() < getMaxParallelCompilations() && nextToStart < needsCompile.size()) {
             startNext();
         }
 
-        // Process until all complete
         while (!active.empty()) {
-            // Find a completed future
             size_t completedIdx = 0;
             while (true) {
                 for (size_t i = 0; i < active.size(); i++) {
@@ -499,17 +376,15 @@ inline std::vector<CompileResult> compileAllElmTests(const std::vector<std::stri
                         goto found;
                     }
                 }
-                // None ready, wait a bit
                 std::this_thread::sleep_for(std::chrono::milliseconds(10));
             }
             found:
 
-            // Get the result
             auto& done = active[completedIdx];
             auto result = done.future.get();
             results[done.resultIdx] = result;
 
-            std::cout << "  [" << progressCount << "/" << total << "] " << done.filename;
+            std::cout << "  [" << progressCount << "/" << needsCompile.size() << "] " << done.filename;
             if (result.success) {
                 std::cout << " ok" << std::endl;
                 compiled++;
@@ -519,7 +394,6 @@ inline std::vector<CompileResult> compileAllElmTests(const std::vector<std::stri
             }
             progressCount++;
 
-            // Remove completed and start next
             active.erase(active.begin() + completedIdx);
             startNext();
         }
@@ -535,133 +409,30 @@ inline std::vector<CompileResult> compileAllElmTests(const std::vector<std::stri
 // EcoRunner-based Test Execution
 // ============================================================================
 
-/**
- * Shared EcoRunner instance for all tests.
- * Thread-local to support parallel test execution.
- */
 inline eco::EcoRunner& getRunner() {
     static thread_local eco::EcoRunner runner;
     return runner;
 }
 
-/**
- * Run a single Elm test.
- *
- * 1. Compile .elm file to .mlir using guida compiler (exec)
- * 2. Run .mlir through EcoRunner (in-process JIT)
- * 3. Verify output matches expected patterns
- */
-inline void runElmTest(const std::string& elmPath) {
-    // Get paths
-    std::string guidaPath = getGuidaPath();
-    std::string elmTestDir = getElmTestDir();
-    std::string filename = std::filesystem::path(elmPath).stem().string();
-
-    // MLIR output goes to the elm test directory
-    std::string mlirPath = elmTestDir + "/" + filename + ".mlir";
-
-    // Read Elm source for expected patterns
-    std::string elmContent = readFile(elmPath);
-    auto checkPatterns = extractCheckPatterns(elmContent);
-    std::string expectedOutput = extractExpectedOutput(elmContent);
-
-    // If no CHECK patterns and there's an expected output, use that
-    if (checkPatterns.empty() && !expectedOutput.empty()) {
-        checkPatterns.push_back(expectedOutput);
-    }
-
-    // Step 1: Compile Elm to MLIR using guida
-    // Must run from directory containing elm.json
-    std::string compileCmd = "cd \"" + elmTestDir + "\" && node \"" + guidaPath +
-                             "\" make \"" + elmPath + "\" --output=\"" + mlirPath + "\"";
-
-    auto [compileExitCode, compileOutput] = executeCommand(compileCmd);
-
-    if (compileExitCode != 0) {
-        // Clean up partial MLIR file if it exists
-        std::filesystem::remove(mlirPath);
-
-        std::ostringstream msg;
-        msg << "Guida compilation failed (exit code " << compileExitCode << ")\n";
-        msg << "Command: " << compileCmd << "\n";
-        msg << "Output:\n" << compileOutput.substr(0, 1000);
-        throw std::runtime_error(msg.str());
-    }
-
-    // Verify MLIR was generated
-    if (!std::filesystem::exists(mlirPath)) {
-        std::ostringstream msg;
-        msg << "MLIR file not generated: " << mlirPath << "\n";
-        msg << "Compiler output:\n" << compileOutput;
-        throw std::runtime_error(msg.str());
-    }
-
-    // Step 2: Run MLIR through EcoRunner (in-process)
-    auto& runner = getRunner();
-    runner.reset();
-
-    auto result = runner.runFile(mlirPath);
-
-    // Clean up MLIR file -- temporarily disabled for debugging
-    // std::filesystem::remove(mlirPath);
-
-    // Check for execution failure
-    if (!result.success) {
-        std::ostringstream msg;
-        msg << "JIT execution failed: " << result.errorMessage << "\n";
-        msg << "Output:\n" << result.output.substr(0, 500);
-        throw std::runtime_error(msg.str());
-    }
-
-    // Step 3: Verify output patterns
-    if (!checkPatterns.empty()) {
-        std::string error = verifyPatterns(result.output, checkPatterns);
-        if (!error.empty()) {
-            std::ostringstream msg;
-            msg << error << "\n";
-            msg << "Actual output:\n" << result.output.substr(0, 500);
-            if (result.output.length() > 500) {
-                msg << "\n... (truncated)";
-            }
-            throw std::runtime_error(msg.str());
-        }
-    }
-}
-
-/**
- * Run a single Elm test from a pre-compiled MLIR file (Phase 2).
- *
- * This function assumes the MLIR file already exists (compiled in Phase 1).
- * It reads CHECK patterns from the original Elm source, runs the MLIR
- * through EcoRunner, and verifies the output.
- *
- * @param mlirPath Path to the pre-compiled .mlir file
- * @param elmPath Path to the original .elm source (for CHECK patterns)
- */
 inline void runElmTestFromMlir(const std::string& mlirPath, const std::string& elmPath) {
-    // Read Elm source for expected patterns
     std::string elmContent = readFile(elmPath);
     auto checkPatterns = extractCheckPatterns(elmContent);
     std::string expectedOutput = extractExpectedOutput(elmContent);
 
-    // If no CHECK patterns and there's an expected output, use that
     if (checkPatterns.empty() && !expectedOutput.empty()) {
         checkPatterns.push_back(expectedOutput);
     }
 
-    // Verify MLIR file exists (should have been compiled in Phase 1)
     if (!std::filesystem::exists(mlirPath)) {
         throw std::runtime_error("MLIR file not found: " + mlirPath +
                                  " (should have been compiled in Phase 1)");
     }
 
-    // Run MLIR through EcoRunner (in-process)
     auto& runner = getRunner();
     runner.reset();
 
     auto result = runner.runFile(mlirPath);
 
-    // Check for execution failure
     if (!result.success) {
         std::ostringstream msg;
         msg << "JIT execution failed: " << result.errorMessage << "\n";
@@ -669,7 +440,6 @@ inline void runElmTestFromMlir(const std::string& mlirPath, const std::string& e
         throw std::runtime_error(msg.str());
     }
 
-    // Verify output patterns
     if (!checkPatterns.empty()) {
         std::string error = verifyPatterns(result.output, checkPatterns);
         if (!error.empty()) {
@@ -688,21 +458,11 @@ inline void runElmTestFromMlir(const std::string& mlirPath, const std::string& e
 // Parallel Test Execution with GCStats
 // ============================================================================
 
-/**
- * Run multiple MLIR tests in parallel with GCStats accumulation (Phase 2).
- *
- * This function runs pre-compiled MLIR files through EcoRunner in parallel.
- * It assumes all MLIR files have already been compiled (Phase 1).
- */
 inline IsolatedTestRunner::ParallelTestSummary runMlirTestsParallel(
     const std::vector<std::string>& mlirPaths,
     const std::vector<std::string>& elmPaths,
     const std::vector<std::string>& testNames)
 {
-    // We need custom shared memory for GCStats, so we can't use the
-    // generic runner directly. Instead, we implement our own version
-    // that uses ElmSharedTestResult.
-
     using namespace IsolatedTestRunner;
 
     const size_t numTests = mlirPaths.size();
@@ -710,14 +470,12 @@ inline IsolatedTestRunner::ParallelTestSummary runMlirTestsParallel(
         return {};
     }
 
-    // Summary to track results
     ParallelTestSummary summary;
 
-    // Elm-specific contexts with extended shared memory
     struct ElmTestContext {
         size_t index;
-        std::string mlirPath;   // Pre-compiled MLIR file
-        std::string elmPath;    // Original Elm source (for CHECK patterns)
+        std::string mlirPath;
+        std::string elmPath;
         std::string name;
         ElmSharedTestResult* shared;
         pid_t pid;
@@ -739,7 +497,6 @@ inline IsolatedTestRunner::ParallelTestSummary runMlirTestsParallel(
         contexts[i].completed = false;
     }
 
-    // Pre-allocate shared memory for all tests (with GCStats)
     for (auto& ctx : contexts) {
         ctx.shared = static_cast<ElmSharedTestResult*>(mmap(
             nullptr,
@@ -765,7 +522,6 @@ inline IsolatedTestRunner::ParallelTestSummary runMlirTestsParallel(
         std::memset(ctx.shared, 0, sizeof(ElmSharedTestResult));
     }
 
-    // Track active child PIDs for SIGINT handler
     std::vector<pid_t> activeChildren;
     std::unordered_map<pid_t, size_t> pidToIndex;
 
@@ -802,14 +558,12 @@ inline IsolatedTestRunner::ParallelTestSummary runMlirTestsParallel(
                 ctx.completed = true;
                 testsCompleted++;
             } else if (pid == 0) {
-                // ============ CHILD PROCESS ============
                 close(ctx.outputPipe[0]);
                 dup2(ctx.outputPipe[1], STDOUT_FILENO);
                 dup2(ctx.outputPipe[1], STDERR_FILENO);
                 close(ctx.outputPipe[1]);
 
                 try {
-                    // Run pre-compiled MLIR (no compilation in child process)
                     runElmTestFromMlir(ctx.mlirPath, ctx.elmPath);
                     ctx.shared->passed = true;
                     ctx.shared->completed = true;
@@ -824,11 +578,9 @@ inline IsolatedTestRunner::ParallelTestSummary runMlirTestsParallel(
                     std::strncpy(ctx.shared->error, "Unknown exception", sizeof(ctx.shared->error) - 1);
                 }
 
-                // Copy GCStats to shared memory
                 copyStatsToShared(ctx.shared);
                 _exit(ctx.shared->passed ? 0 : 1);
             } else {
-                // ============ PARENT PROCESS ============
                 close(ctx.outputPipe[1]);
                 ctx.pid = pid;
                 ctx.startTime = std::chrono::steady_clock::now();
@@ -875,7 +627,6 @@ inline IsolatedTestRunner::ParallelTestSummary runMlirTestsParallel(
                         ctx.result.error = ctx.shared->error;
                         ctx.result.output = ctx.shared->output;
 
-                        // Accumulate GCStats
                         accumulateFromShared(ctx.shared);
                     } else {
                         ctx.result.passed = false;
@@ -942,7 +693,7 @@ inline IsolatedTestRunner::ParallelTestSummary runMlirTestsParallel(
                 }
             }
 
-            usleep(10000);  // 10ms
+            usleep(10000);
         } else if (finished == -1 && errno != ECHILD) {
             break;
         }
@@ -988,12 +739,9 @@ inline IsolatedTestRunner::ParallelTestSummary runMlirTestsParallel(
 }
 
 // ============================================================================
-// Test Suite Builder
+// Test Discovery
 // ============================================================================
 
-/**
- * Discover all .elm test files in the elm test directory.
- */
 inline std::vector<std::string> discoverTests(const std::string& testDir) {
     std::vector<std::string> tests;
 
@@ -1008,29 +756,21 @@ inline std::vector<std::string> discoverTests(const std::string& testDir) {
         }
     }
 
-    // Sort for consistent ordering
     std::sort(tests.begin(), tests.end());
     return tests;
 }
 
-/**
- * A simple Test wrapper for listing purposes.
- * This is only used for collectTests() to support --list and --filter.
- */
-class ElmTestEntry : public Testing::Test {
+// ============================================================================
+// Parameterized Test Suite
+// ============================================================================
+
+class ElmE2ETestEntry : public Testing::Test {
 public:
-    ElmTestEntry(std::string name, std::string path)
+    ElmE2ETestEntry(std::string name, std::string path)
         : name_(std::move(name)), path_(std::move(path)) {}
 
-    void run() const override {
-        // Should not be called directly - parallel suite handles execution
-    }
-
-    bool runWithResult() const override {
-        // Should not be called directly - parallel suite handles execution
-        return true;
-    }
-
+    void run() const override {}
+    bool runWithResult() const override { return true; }
     const std::string& getName() const override { return name_; }
     const std::string& getPath() const { return path_; }
     size_t countTests() const override { return 1; }
@@ -1047,30 +787,18 @@ private:
     std::string path_;
 };
 
-/**
- * Parallel test suite for Elm E2E tests.
- *
- * This suite runs all Elm tests in parallel (up to MAX_PARALLEL_TESTS at a time)
- * and prints results immediately as each test completes.
- *
- * Key features:
- * - Parallel execution with configurable worker count
- * - 60 second timeout per test
- * - Clean shutdown on SIGINT (Ctrl+C)
- * - Immediate output as tests complete (completion order)
- * - Supports filtering via --filter
- * - Accumulates GCStats from all forked processes
- */
-class ElmParallelTestSuite : public Testing::Test {
+class ElmE2EParallelTestSuite : public Testing::Test {
 public:
-    explicit ElmParallelTestSuite(const std::string& testDir) : name_("Elm E2E") {
-        // Discover all test files
+    ElmE2EParallelTestSuite(const std::string& testDir,
+                             const std::string& suiteName,
+                             const std::string& testPrefix)
+        : name_(suiteName), testDir_(testDir), testPrefix_(testPrefix) {
         auto testPaths = discoverTests(testDir);
 
         for (const auto& path : testPaths) {
             std::string filename = std::filesystem::path(path).filename().string();
-            std::string testName = "elm/" + filename;
-            testEntries_.push_back(std::make_unique<ElmTestEntry>(testName, path));
+            std::string testName = testPrefix + filename;
+            testEntries_.push_back(std::make_unique<ElmE2ETestEntry>(testName, path));
         }
     }
 
@@ -1079,7 +807,6 @@ public:
     }
 
     bool runWithResult() const override {
-        // Use the thread-local filter set by TestSuite
         return runFiltered(Testing::CurrentFilter::get());
     }
 
@@ -1098,16 +825,7 @@ public:
         }
     }
 
-    /**
-     * Run tests matching the filter pattern.
-     * This is the main execution entry point.
-     *
-     * Two-phase approach to avoid d.dat race condition:
-     * - Phase 1: Compile all Elm → MLIR sequentially (single process)
-     * - Phase 2: Run MLIR tests in parallel (isolated processes)
-     */
     bool runFiltered(const std::string& filter) const {
-        // Collect tests matching the filter
         std::vector<std::string> pathsToRun;
         std::vector<std::string> namesToRun;
 
@@ -1115,30 +833,25 @@ public:
             const std::string& name = entry->getName();
             if (filter.empty() || name.find(filter) != std::string::npos) {
                 pathsToRun.push_back(
-                    static_cast<const ElmTestEntry*>(entry.get())->getPath());
+                    static_cast<const ElmE2ETestEntry*>(entry.get())->getPath());
                 namesToRun.push_back(name);
             }
         }
 
         if (pathsToRun.empty()) {
-            // Clear previous results
             lastPassCount_ = 0;
             lastFailCount_ = 0;
             lastFailedTests_.clear();
-            return true;  // No tests to run
+            return true;
         }
 
-        // Clear previous results
         lastPassCount_ = 0;
         lastFailCount_ = 0;
         lastFailedTests_.clear();
 
-        // ================================================================
-        // PHASE 1: Compile all Elm files to MLIR (sequential, single process)
-        // ================================================================
-        auto compileResults = compileAllElmTests(pathsToRun);
+        // PHASE 1: Compile all Elm files to MLIR
+        auto compileResults = compileAllElmTests(testDir_, name_, pathsToRun);
 
-        // Separate successful compilations from failures
         std::vector<std::string> mlirPaths;
         std::vector<std::string> elmPaths;
         std::vector<std::string> testNames;
@@ -1151,7 +864,6 @@ public:
                 elmPaths.push_back(result.elmPath);
                 testNames.push_back(namesToRun[i]);
             } else {
-                // Report compilation failure immediately
                 IsolatedTestRunner::printTestResult(namesToRun[i], "",
                     false, result.errorMessage);
                 lastFailedTests_.push_back(namesToRun[i]);
@@ -1159,9 +871,7 @@ public:
             }
         }
 
-        // ================================================================
-        // PHASE 2: Run MLIR tests in parallel (no Guida compiler involved)
-        // ================================================================
+        // PHASE 2: Run MLIR tests in parallel
         std::cout << "\nRunning " << mlirPaths.size() << " MLIR tests in parallel...\n";
 
         IsolatedTestRunner::ParallelTestSummary summary;
@@ -1169,7 +879,6 @@ public:
             summary = runMlirTestsParallel(mlirPaths, elmPaths, testNames);
         }
 
-        // Combine compilation failures with runtime failures
         lastPassCount_ = summary.passCount;
         lastFailCount_ = summary.failCount + compileFailed;
         lastFailedTests_.insert(lastFailedTests_.end(),
@@ -1178,14 +887,6 @@ public:
         return lastFailCount_ == 0;
     }
 
-    /**
-     * Get the test paths for external use (e.g., filtering).
-     */
-    const std::vector<std::unique_ptr<ElmTestEntry>>& getEntries() const {
-        return testEntries_;
-    }
-
-    // Override Test methods for detailed result tracking
     bool hasDetailedResults() const override { return true; }
     size_t getLastPassCount() const override { return lastPassCount_; }
     size_t getLastFailCount() const override { return lastFailCount_; }
@@ -1193,26 +894,46 @@ public:
 
 private:
     std::string name_;
-    std::vector<std::unique_ptr<ElmTestEntry>> testEntries_;
+    std::string testDir_;
+    std::string testPrefix_;
+    std::vector<std::unique_ptr<ElmE2ETestEntry>> testEntries_;
 
-    // Results from last run (mutable since runFiltered is const)
     mutable size_t lastPassCount_ = 0;
     mutable size_t lastFailCount_ = 0;
     mutable std::vector<std::string> lastFailedTests_;
 };
 
-/**
- * Build the complete Elm test suite with parallel execution.
- * Call this from main.cpp to integrate with the test framework.
- */
-inline std::unique_ptr<ElmParallelTestSuite> buildElmTestSuite() {
-    std::string testDir = getElmTestDir();
+// ============================================================================
+// Factory Function
+// ============================================================================
 
-    if (!std::filesystem::exists(testDir) || !std::filesystem::is_directory(testDir)) {
-        std::cerr << "Warning: Could not find Elm test directory: " << testDir << std::endl;
+inline std::string findTestDir(const std::string& dirName) {
+    std::vector<std::string> candidates = {
+        "test/" + dirName,
+        "../test/" + dirName,
+        "../../test/" + dirName,
+    };
+
+    for (const auto& dir : candidates) {
+        if (std::filesystem::exists(dir) && std::filesystem::is_directory(dir)) {
+            return std::filesystem::absolute(dir).string();
+        }
     }
 
-    return std::make_unique<ElmParallelTestSuite>(testDir);
+    return "/work/test/" + dirName;
 }
 
-}  // namespace ElmTest
+inline std::unique_ptr<ElmE2EParallelTestSuite> buildTestSuite(
+    const std::string& dirName,
+    const std::string& suiteName,
+    const std::string& testPrefix) {
+    std::string testDir = findTestDir(dirName);
+
+    if (!std::filesystem::exists(testDir) || !std::filesystem::is_directory(testDir)) {
+        std::cerr << "Warning: Could not find test directory: " << testDir << std::endl;
+    }
+
+    return std::make_unique<ElmE2EParallelTestSuite>(testDir, suiteName, testPrefix);
+}
+
+}  // namespace ElmE2EBase

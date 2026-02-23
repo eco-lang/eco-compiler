@@ -62,7 +62,7 @@ HPointer concat(HPointer stringList) {
 HPointer join(void* sep, HPointer stringList) {
     auto& allocator = Allocator::instance();
     ElmString* separator = static_cast<ElmString*>(sep);
-    size_t sep_len = separator->header.size;
+    size_t sep_len = separator ? separator->header.size : 0;
 
     // First pass: count strings and total length
     size_t total_len = 0;
@@ -129,6 +129,20 @@ HPointer indexes(void* needle, void* haystack) {
     ElmString* n = static_cast<ElmString*>(needle);
     ElmString* h = static_cast<ElmString*>(haystack);
 
+    // Handle nullptr from EmptyString embedded constant
+    if (!n || !h) {
+        if (!h) return alloc::listFromInts({});
+        // Empty needle matches every position
+        if (!n) {
+            size_t haystack_len = h->header.size;
+            std::vector<i64> indices;
+            for (size_t i = 0; i <= haystack_len; ++i) {
+                indices.push_back(static_cast<i64>(i));
+            }
+            return alloc::listFromInts(indices);
+        }
+    }
+
     size_t needle_len = n->header.size;
     size_t haystack_len = h->header.size;
 
@@ -161,7 +175,13 @@ HPointer split(void* sep, void* str) {
     ElmString* separator = static_cast<ElmString*>(sep);
     ElmString* s = static_cast<ElmString*>(str);
 
-    size_t sep_len = separator->header.size;
+    // Handle nullptr from EmptyString embedded constant
+    if (!s) {
+        // Empty string -> list with one empty string
+        return alloc::cons(alloc::boxed(alloc::emptyString()), alloc::listNil(), true);
+    }
+
+    size_t sep_len = separator ? separator->header.size : 0;
     size_t str_len = s->header.size;
 
     if (str_len == 0) {
@@ -169,7 +189,7 @@ HPointer split(void* sep, void* str) {
         return alloc::cons(alloc::boxed(alloc::emptyString()), alloc::listNil(), true);
     }
 
-    if (sep_len == 0) {
+    if (sep_len == 0 || !separator) {
         // Empty separator -> split into individual characters
         return toList(str);
     }
@@ -200,6 +220,7 @@ HPointer split(void* sep, void* str) {
 
 HPointer toList(void* str) {
     ElmString* s = static_cast<ElmString*>(str);
+    if (!s) return alloc::listNil();
     size_t len = s->header.size;
 
     HPointer result = alloc::listNil();
@@ -216,7 +237,7 @@ HPointer toList(void* str) {
 HPointer uncons(void* str) {
     ElmString* s = static_cast<ElmString*>(str);
 
-    if (s->header.size == 0) {
+    if (!s || s->header.size == 0) {
         return alloc::nothing();
     }
 
@@ -290,6 +311,7 @@ HPointer filter(CharPredicate pred, void* str) {
 
 Unboxable foldl(CharFolder fold, Unboxable acc, void* str) {
     ElmString* s = static_cast<ElmString*>(str);
+    if (!s) return acc;
     Unboxable result = acc;
 
     for (size_t i = 0; i < s->header.size; ++i) {
@@ -301,6 +323,7 @@ Unboxable foldl(CharFolder fold, Unboxable acc, void* str) {
 
 Unboxable foldr(CharFolder fold, Unboxable acc, void* str) {
     ElmString* s = static_cast<ElmString*>(str);
+    if (!s) return acc;
     Unboxable result = acc;
 
     for (size_t i = s->header.size; i > 0; --i) {

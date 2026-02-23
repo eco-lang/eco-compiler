@@ -167,7 +167,7 @@ static bool callCharToBoolClosure(void* closure_ptr, uint16_t c) {
     args[n_values] = reinterpret_cast<void*>(static_cast<uint64_t>(c));
 
     void* result = closure->evaluator(args);
-    return reinterpret_cast<uint64_t>(result) != 0;
+    return Export::decodeBoxedBool(reinterpret_cast<uint64_t>(result));
 }
 
 // Helper to call a fold closure: (Char, acc) -> acc
@@ -187,7 +187,7 @@ static uint64_t callFoldClosure(void* closure_ptr, uint16_t c, uint64_t acc) {
 }
 
 uint64_t Elm_Kernel_String_map(uint64_t closure, uint64_t str) {
-    void* closure_ptr = reinterpret_cast<void*>(closure);
+    void* closure_ptr = Export::toPtr(closure);
     ElmString* s = static_cast<ElmString*>(Export::toPtr(str));
     if (!s) {
         return Export::encode(Elm::alloc::emptyString());
@@ -206,7 +206,7 @@ uint64_t Elm_Kernel_String_map(uint64_t closure, uint64_t str) {
 }
 
 uint64_t Elm_Kernel_String_filter(uint64_t closure, uint64_t str) {
-    void* closure_ptr = reinterpret_cast<void*>(closure);
+    void* closure_ptr = Export::toPtr(closure);
     ElmString* s = static_cast<ElmString*>(Export::toPtr(str));
     if (!s) {
         return Export::encode(Elm::alloc::emptyString());
@@ -226,7 +226,7 @@ uint64_t Elm_Kernel_String_filter(uint64_t closure, uint64_t str) {
 }
 
 uint64_t Elm_Kernel_String_any(uint64_t closure, uint64_t str) {
-    void* closure_ptr = reinterpret_cast<void*>(closure);
+    void* closure_ptr = Export::toPtr(closure);
     ElmString* s = static_cast<ElmString*>(Export::toPtr(str));
     if (!s) {
         return Export::encodeBoxedBool(false);
@@ -242,7 +242,7 @@ uint64_t Elm_Kernel_String_any(uint64_t closure, uint64_t str) {
 }
 
 uint64_t Elm_Kernel_String_all(uint64_t closure, uint64_t str) {
-    void* closure_ptr = reinterpret_cast<void*>(closure);
+    void* closure_ptr = Export::toPtr(closure);
     ElmString* s = static_cast<ElmString*>(Export::toPtr(str));
     if (!s) {
         return Export::encodeBoxedBool(true); // Empty string: all chars satisfy any predicate.
@@ -258,7 +258,7 @@ uint64_t Elm_Kernel_String_all(uint64_t closure, uint64_t str) {
 }
 
 uint64_t Elm_Kernel_String_foldl(uint64_t closure, uint64_t acc, uint64_t str) {
-    void* closure_ptr = reinterpret_cast<void*>(closure);
+    void* closure_ptr = Export::toPtr(closure);
     ElmString* s = static_cast<ElmString*>(Export::toPtr(str));
     if (!s) {
         return acc;
@@ -273,7 +273,7 @@ uint64_t Elm_Kernel_String_foldl(uint64_t closure, uint64_t acc, uint64_t str) {
 }
 
 uint64_t Elm_Kernel_String_foldr(uint64_t closure, uint64_t acc, uint64_t str) {
-    void* closure_ptr = reinterpret_cast<void*>(closure);
+    void* closure_ptr = Export::toPtr(closure);
     ElmString* s = static_cast<ElmString*>(Export::toPtr(str));
     if (!s) {
         return acc;
