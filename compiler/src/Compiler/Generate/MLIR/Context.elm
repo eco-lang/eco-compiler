@@ -56,7 +56,7 @@ import Compiler.Generate.MLIR.Types as Types
 import Compiler.Generate.Mode as Mode
 import Data.Map as EveryDict
 import Dict
-import Mlir.Mlir exposing (MlirType)
+import Mlir.Mlir exposing (MlirOp, MlirType)
 import Utils.Crash exposing (crash)
 
 
@@ -206,6 +206,7 @@ type alias Context =
     , mode : Mode.Mode
     , registry : Mono.SpecializationRegistry
     , pendingLambdas : List PendingLambda
+    , pendingFuncOps : List MlirOp -- Pre-generated func.func ops (e.g. from local tail-rec functions)
     , signatures : Dict.Dict Int FuncSignature -- SpecId -> signature for invariant checking
     , varMappings : Dict.Dict String VarInfo -- Let-bound name -> variable info with call model
     , currentLetSiblings : Dict.Dict String VarInfo -- Sibling mappings for current let-rec group
@@ -235,6 +236,7 @@ type alias PendingLambda =
     , body : Mono.MonoExpr
     , returnType : Mono.MonoType -- Explicit return type for typed ABI
     , siblingMappings : Dict.Dict String VarInfo -- For mutually recursive let bindings
+    , isTailRecursive : Bool -- True for local tail-recursive functions (MonoTailDef)
     }
 
 
@@ -247,6 +249,7 @@ initContext mode registry signatures initialCtorShapes =
     , mode = mode
     , registry = registry
     , pendingLambdas = []
+    , pendingFuncOps = []
     , signatures = signatures
     , varMappings = Dict.empty
     , currentLetSiblings = Dict.empty

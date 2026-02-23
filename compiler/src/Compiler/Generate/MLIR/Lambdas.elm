@@ -14,6 +14,7 @@ import Compiler.Generate.MLIR.Context as Ctx
 import Compiler.Generate.MLIR.Expr as Expr
 import Compiler.Generate.MLIR.Functions as Functions
 import Compiler.Generate.MLIR.Ops as Ops
+import Compiler.Generate.MLIR.TailRec as TailRec
 import Compiler.Generate.MLIR.Types as Types
 import Compiler.Monomorphize.Closure as Closure
 import Data.Set as EverySet exposing (EverySet)
@@ -33,12 +34,17 @@ processLambdas : Ctx.Context -> ( List MlirOp, Ctx.Context )
 processLambdas ctx =
     case ctx.pendingLambdas of
         [] ->
-            ( [], ctx )
+            -- Also drain any pre-generated func ops (e.g. from local tail-rec functions)
+            ( ctx.pendingFuncOps, { ctx | pendingFuncOps = [] } )
 
         lambdas ->
             let
                 ctxCleared =
-                    { ctx | pendingLambdas = [] }
+                    { ctx | pendingLambdas = [], pendingFuncOps = [] }
+
+                -- Pre-generated func ops accumulated before this round
+                priorFuncOps =
+                    ctx.pendingFuncOps
 
                 -- Deduplicate lambdas by name to avoid duplicate function definitions
                 -- (can happen when BytesFusion compiles a decoder binding AND the fused path
@@ -77,7 +83,7 @@ processLambdas ctx =
                 ( moreOps, finalCtx ) =
                     processLambdas ctxAfter
             in
-            ( lambdaOps ++ moreOps, finalCtx )
+            ( priorFuncOps ++ lambdaOps ++ moreOps, finalCtx )
 
 
 {-| Validate CGEN\_CLOSURE\_003: all free variables in a lambda body must be
@@ -175,68 +181,130 @@ generateLambdaFunc ctx lambda =
         ctxWithArgs =
             { ctx | varMappings = varMappingsWithSiblings, nextVar = nextVarAfterParams }
 
-        exprResult : Expr.ExprResult
-        exprResult =
-            Expr.generateExpr ctxWithArgs lambda.body
-
         -- Actual return type from the lambda (typed ABI)
         actualResultType : MlirType
         actualResultType =
             Types.monoTypeToAbi lambda.returnType
-
-        region : MlirRegion
-        region =
-            if exprResult.isTerminated then
-                Ops.mkRegionTerminatedByOps allArgPairs exprResult.ops
-
-            else
-                let
-                    ( coerceOps, finalVar, coerceCtx ) =
-                        Expr.coerceResultToType exprResult.ctx exprResult.resultVar exprResult.resultType actualResultType
-
-                    ( _, returnOp ) =
-                        Ops.ecoReturn coerceCtx finalVar actualResultType
-                in
-                Ops.mkRegion allArgPairs (exprResult.ops ++ coerceOps) returnOp
-
-        -- For closures with captures: name is $cap (fast clone)
-        -- For zero-capture closures: name is the base name
-        funcName =
-            if hasCaptures then
-                lambda.name ++ "$cap"
-
-            else
-                lambda.name
-
-        ( ctx2, fastCloneOp ) =
-            Ops.funcFunc exprResult.ctx funcName allArgPairs actualResultType region
     in
-    if hasCaptures then
-        -- Two-clone model: generate $cap (fast clone) + $clo (generic clone)
-        -- Uses shared helper from Functions.elm
+    if lambda.isTailRecursive then
+        -- Tail-recursive lambda: use TailRec.compileTailFuncToWhile for the body.
+        -- Only params participate in the loop state; captures are accessed from the
+        -- enclosing func.func scope (scf.while is NOT IsolatedFromAbove).
         let
-            captureSpecs : List ( MlirType, Bool )
-            captureSpecs =
-                List.map
-                    (\( _, monoTy ) ->
-                        let
-                            mlirTy =
-                                Types.monoTypeToAbi monoTy
-                        in
-                        ( mlirTy, Types.isUnboxable mlirTy )
-                    )
-                    lambda.captures
+            ( bodyOps, ctx1 ) =
+                TailRec.compileTailFuncToWhile ctxWithArgs lambda.name paramArgPairs lambda.body actualResultType
 
-            ( genericCloneOp, ctx3 ) =
-                Functions.generateGenericCloneFunc ctx2
-                    (lambda.name ++ "$clo")
-                    (lambda.name ++ "$cap")
-                    captureSpecs
-                    paramArgPairs
-                    actualResultType
+            ( bodyNonTermOps, bodyTerminator ) =
+                case List.reverse bodyOps of
+                    term :: rest ->
+                        ( List.reverse rest, term )
+
+                    [] ->
+                        let
+                            ( dummyOps, dummyVar, ctxDummy ) =
+                                Expr.createDummyValue ctx1 actualResultType
+
+                            ( _, dummyRetOp ) =
+                                Ops.ecoReturn ctxDummy dummyVar actualResultType
+                        in
+                        ( dummyOps, dummyRetOp )
+
+            funcBodyRegion : MlirRegion
+            funcBodyRegion =
+                Ops.mkRegion allArgPairs bodyNonTermOps bodyTerminator
+
+            funcName =
+                if hasCaptures then
+                    lambda.name ++ "$cap"
+
+                else
+                    lambda.name
+
+            ( ctx2, fastCloneOp ) =
+                Ops.funcFunc ctx1 funcName allArgPairs actualResultType funcBodyRegion
         in
-        ( [ fastCloneOp, genericCloneOp ], ctx3 )
+        if hasCaptures then
+            let
+                captureSpecs : List ( MlirType, Bool )
+                captureSpecs =
+                    List.map
+                        (\( _, monoTy ) ->
+                            let
+                                mlirTy =
+                                    Types.monoTypeToAbi monoTy
+                            in
+                            ( mlirTy, Types.isUnboxable mlirTy )
+                        )
+                        lambda.captures
+
+                ( genericCloneOp, ctx3 ) =
+                    Functions.generateGenericCloneFunc ctx2
+                        (lambda.name ++ "$clo")
+                        (lambda.name ++ "$cap")
+                        captureSpecs
+                        paramArgPairs
+                        actualResultType
+            in
+            ( [ fastCloneOp, genericCloneOp ], ctx3 )
+
+        else
+            ( [ fastCloneOp ], ctx2 )
 
     else
-        -- Zero captures: single function with base name
-        ( [ fastCloneOp ], ctx2 )
+        -- Regular (non-tail-recursive) lambda
+        let
+            exprResult : Expr.ExprResult
+            exprResult =
+                Expr.generateExpr ctxWithArgs lambda.body
+
+            region : MlirRegion
+            region =
+                if exprResult.isTerminated then
+                    Ops.mkRegionTerminatedByOps allArgPairs exprResult.ops
+
+                else
+                    let
+                        ( coerceOps, finalVar, coerceCtx ) =
+                            Expr.coerceResultToType exprResult.ctx exprResult.resultVar exprResult.resultType actualResultType
+
+                        ( _, returnOp ) =
+                            Ops.ecoReturn coerceCtx finalVar actualResultType
+                    in
+                    Ops.mkRegion allArgPairs (exprResult.ops ++ coerceOps) returnOp
+
+            funcName =
+                if hasCaptures then
+                    lambda.name ++ "$cap"
+
+                else
+                    lambda.name
+
+            ( ctx2, fastCloneOp ) =
+                Ops.funcFunc exprResult.ctx funcName allArgPairs actualResultType region
+        in
+        if hasCaptures then
+            let
+                captureSpecs : List ( MlirType, Bool )
+                captureSpecs =
+                    List.map
+                        (\( _, monoTy ) ->
+                            let
+                                mlirTy =
+                                    Types.monoTypeToAbi monoTy
+                            in
+                            ( mlirTy, Types.isUnboxable mlirTy )
+                        )
+                        lambda.captures
+
+                ( genericCloneOp, ctx3 ) =
+                    Functions.generateGenericCloneFunc ctx2
+                        (lambda.name ++ "$clo")
+                        (lambda.name ++ "$cap")
+                        captureSpecs
+                        paramArgPairs
+                        actualResultType
+            in
+            ( [ fastCloneOp, genericCloneOp ], ctx3 )
+
+        else
+            ( [ fastCloneOp ], ctx2 )

@@ -43,6 +43,8 @@ import Compiler.Monomorphize.Registry as Registry
 import Compiler.Elm.Package as Pkg
 import Compiler.Generate.MLIR.BytesFusion.Emit as BFEmit
 import Compiler.Generate.MLIR.BytesFusion.Reify as BFReify
+import Compiler.Monomorphize.Closure as Closure
+import Data.Set as EverySet
 import Compiler.Generate.MLIR.Context as Ctx
 import Compiler.Generate.MLIR.Intrinsics as Intrinsics
 import Compiler.Generate.MLIR.Names as Names
@@ -116,6 +118,7 @@ renameSsaVarInOps fromVar toVar ops =
             { op
                 | id = renameVar op.id
                 , operands = List.map renameVar op.operands
+                , results = List.map (\( n, t ) -> ( renameVar n, t )) op.results
                 , regions = List.map (renameSsaVarInRegion fromVar toVar) op.regions
             }
     in
@@ -152,6 +155,7 @@ renameSsaVarInSingleOp fromVar toVar op =
     { op
         | id = renameVar op.id
         , operands = List.map renameVar op.operands
+        , results = List.map (\( n, t ) -> ( renameVar n, t )) op.results
         , regions = List.map (renameSsaVarInRegion fromVar toVar) op.regions
     }
 
@@ -873,6 +877,7 @@ generateClosure ctx closureInfo body monoType =
             , body = body
             , returnType = Mono.typeOf body
             , siblingMappings = baseSiblings
+            , isTailRecursive = False
             }
     in
     if arity == 0 then
@@ -2888,6 +2893,27 @@ generateIfWithTerminatedElse ctx condVar thenRes elseRes resultMlirType condOps 
 -- ====== LET GENERATION ======
 
 
+{-| Approximate reverse mapping from MlirType to MonoType.
+Used for PendingLambda capture types where only MlirType is available.
+Correctly round-trips: monoTypeToAbi (mlirTypeToApproxMonoType t) == t
+for all ABI types (I64, F64, I32, ecoValue).
+-}
+mlirTypeToApproxMonoType : MlirType -> Mono.MonoType
+mlirTypeToApproxMonoType mlirType =
+    case mlirType of
+        I64 ->
+            Mono.MInt
+
+        F64 ->
+            Mono.MFloat
+
+        I32 ->
+            Mono.MChar
+
+        _ ->
+            Mono.MUnit
+
+
 {-| Collect all names bound in a chain of nested Let expressions.
 This is used to add placeholder mappings for mutually recursive definitions
 before generating any closures.
@@ -2984,26 +3010,25 @@ generateLet ctx def body =
                             generateExpr ctxWithPlaceholders expr
 
                         -- Force the bound expression's result SSA id to be the placeholder var.
-                        -- This ensures that:
+                        -- When the RHS produces ops, forceResultVar renames the result to the
+                        -- placeholder, so the defining op (e.g. eco.papCreate) directly defines
+                        -- the placeholder SSA var that sibling closures captured.
                         --
-                        --   1. The placeholder (%helper) that sibling closures captured via
-                        --      currentLetSiblings now has a real definition (the papCreate op).
-                        --
-                        --   2. Any further uses of the let-bound name (in the body) will
-                        --      refer to %helper, which is now dominantly defined.
-                        --
-                        -- For recursive closures this creates a self-capture pattern where the
-                        -- eco.papCreate op both defines %helper and uses it as a captured operand.
-                        -- This is valid SSA: an operation may reference its own result.
-                        exprResult : ExprResult
-                        exprResult =
-                            forceResultVar placeholderVar rawResult
+                        -- When the RHS produces NO ops (e.g. a simple variable reference),
+                        -- there is no defining op to rename, so we alias the let-bound name
+                        -- to the existing SSA var instead.
+                        ( exprResult, effectiveVar ) =
+                            if List.isEmpty rawResult.ops then
+                                ( rawResult, rawResult.resultVar )
 
-                        -- Update varMappings for this name to use the placeholder SSA var,
-                        -- but refine the MLIR type to the actual result type (usually !eco.value).
+                            else
+                                ( forceResultVar placeholderVar rawResult, placeholderVar )
+
+                        -- Update varMappings for this name to use the effective SSA var,
+                        -- with the actual result type.
                         ctx1 : Ctx.Context
                         ctx1 =
-                            Ctx.addVarMapping name placeholderVar exprResult.resultType exprResult.ctx
+                            Ctx.addVarMapping name effectiveVar exprResult.resultType exprResult.ctx
                                 |> Ctx.addDecoderExpr name expr
 
                         bodyResult : ExprResult
@@ -3034,51 +3059,183 @@ generateLet ctx def body =
                     , isTerminated = finalIsTerminated
                     }
 
-        Mono.MonoTailDef name params _ ->
-            -- For local tail-recursive functions, we need to:
-            -- 1. Add the function parameters to varMappings
-            -- 2. Add the function name to varMappings (so the let body can call it)
-            -- 3. Generate the function body (which contains TailCalls)
-            -- 4. Generate the let body
-            --
-            -- Note: This is a simplified implementation. A proper implementation
-            -- would generate a loop construct (scf.while) for the tail recursion.
-            -- For now, we just add the function to varMappings as a closure reference.
+        Mono.MonoTailDef name params tailBody ->
+            -- For local tail-recursive functions:
+            -- 1. Find free variables of the body (captures)
+            -- 2. Create a PendingLambda with isTailRecursive=True
+            -- 3. Generate eco.papCreate to define %name
+            -- 4. Apply forceResultVar to match the placeholder
+            -- 5. Generate the let body
             let
-                -- Add parameters to varMappings (use ctxWithPlaceholders for mutual recursion)
-                ctxWithParams =
-                    List.foldl
-                        (\( paramName, paramType ) acc ->
-                            Ctx.addVarMapping paramName ("%" ++ paramName) (Types.monoTypeToAbi paramType) acc
+                -- Look up the placeholder SSA var
+                ( placeholderVar, _ ) =
+                    Ctx.lookupVar ctxWithPlaceholders name
+
+                -- Find free variables in the tail body.
+                -- Exclude params and function name (they are bound, not captured).
+                paramNames =
+                    List.map Tuple.first params
+
+                boundSet =
+                    EverySet.fromList identity (name :: paramNames)
+
+                freeVarNames =
+                    Closure.findFreeLocals boundSet tailBody
+
+                -- Separate free vars into siblings (in currentLetSiblings) and captures
+                captureNames =
+                    List.filter
+                        (\n -> not (Dict.member n ctxWithPlaceholders.currentLetSiblings))
+                        freeVarNames
+                        |> Set.fromList
+                        |> Set.toList
+
+                -- Look up capture SSA vars and MlirTypes from varMappings
+                captureInfos =
+                    List.filterMap
+                        (\capName ->
+                            case Dict.get capName ctxWithPlaceholders.varMappings of
+                                Just info ->
+                                    Just ( capName, info.ssaVar, info.mlirType )
+
+                                Nothing ->
+                                    Nothing
                         )
-                        ctxWithPlaceholders
-                        params
+                        captureNames
 
-                -- Add the function name to varMappings
-                funcMlirType =
-                    Types.ecoValue
+                -- Convert captures to PendingLambda format (name, approxMonoType)
+                captureTypes =
+                    List.map
+                        (\( capName, _, mlirTy ) -> ( capName, mlirTypeToApproxMonoType mlirTy ))
+                        captureInfos
 
-                ctxWithFunc =
-                    Ctx.addVarMapping name ("%" ++ name) funcMlirType ctxWithParams
+                captureVarNames =
+                    List.map (\( _, ssaVar, _ ) -> ssaVar) captureInfos
 
-                -- Generate the let body (which calls the function)
+                captureMlirTypes =
+                    List.map (\( _, _, mlirTy ) -> mlirTy) captureInfos
+
+                -- Generate a unique function name using the opId counter
+                tailFuncName =
+                    "$tail_" ++ name ++ "_" ++ String.fromInt ctxWithPlaceholders.nextOpId
+
+                -- Create the PendingLambda (isTailRecursive = True)
+                pendingLambda : Ctx.PendingLambda
+                pendingLambda =
+                    { name = tailFuncName
+                    , captures = captureTypes
+                    , params = params
+                    , body = tailBody
+                    , returnType = Mono.typeOf tailBody
+                    , siblingMappings = ctxWithPlaceholders.currentLetSiblings
+                    , isTailRecursive = True
+                    }
+
+                ctx1 =
+                    { ctxWithPlaceholders
+                        | pendingLambdas = pendingLambda :: ctxWithPlaceholders.pendingLambdas
+                    }
+
+                -- Generate eco.papCreate to define the closure value
+                hasCaptures =
+                    not (List.isEmpty captureInfos)
+
+                numCaptured =
+                    List.length captureInfos
+
+                arity =
+                    numCaptured + List.length params
+
+                functionName =
+                    if hasCaptures then
+                        tailFuncName ++ "$clo"
+
+                    else
+                        tailFuncName
+
+                ( resultVar, ctx2 ) =
+                    Ctx.freshVar ctx1
+
+                unboxedBitmap =
+                    List.indexedMap
+                        (\i mlirTy ->
+                            if Types.isUnboxable mlirTy then
+                                Bitwise.shiftLeftBy i 1
+
+                            else
+                                0
+                        )
+                        captureMlirTypes
+                        |> List.foldl Bitwise.or 0
+
+                operandTypesAttr =
+                    if List.isEmpty captureMlirTypes then
+                        Dict.empty
+
+                    else
+                        Dict.singleton "_operand_types"
+                            (ArrayAttr Nothing (List.map TypeAttr captureMlirTypes))
+
+                fastEvaluatorAttr =
+                    if hasCaptures then
+                        Dict.singleton "_fast_evaluator" (SymbolRefAttr (tailFuncName ++ "$cap"))
+
+                    else
+                        Dict.empty
+
+                papAttrs =
+                    Dict.union fastEvaluatorAttr
+                        (Dict.union operandTypesAttr
+                            (Dict.fromList
+                                [ ( "function", SymbolRefAttr functionName )
+                                , ( "arity", IntAttr Nothing arity )
+                                , ( "num_captured", IntAttr Nothing numCaptured )
+                                , ( "unboxed_bitmap", IntAttr Nothing unboxedBitmap )
+                                ]
+                            )
+                        )
+
+                ( ctx3, papOp ) =
+                    Ops.mlirOp ctx2 "eco.papCreate"
+                        |> Ops.opBuilder.withOperands captureVarNames
+                        |> Ops.opBuilder.withResults [ ( resultVar, Types.ecoValue ) ]
+                        |> Ops.opBuilder.withAttrs papAttrs
+                        |> Ops.opBuilder.build
+
+                -- Force result to placeholder var
+                rawResult =
+                    { ops = [ papOp ]
+                    , resultVar = resultVar
+                    , resultType = Types.ecoValue
+                    , ctx = ctx3
+                    , isTerminated = False
+                    }
+
+                exprResult =
+                    forceResultVar placeholderVar rawResult
+
+                -- Update varMappings for the let body
+                ctx4 =
+                    Ctx.addVarMapping name placeholderVar exprResult.resultType exprResult.ctx
+
+                -- Generate the let body
                 bodyResult =
-                    generateExpr ctxWithFunc body
+                    generateExpr ctx4 body
 
-                -- Restore outer siblings on exit from the let-rec group
-                bodyCtx : Ctx.Context
                 bodyCtx =
                     bodyResult.ctx
 
-                ctxOut : Ctx.Context
                 ctxOut =
                     { bodyCtx | currentLetSiblings = outerSiblings }
+
+                finalIsTerminated =
+                    (exprResult.isTerminated && List.isEmpty bodyResult.ops) || bodyResult.isTerminated
             in
-            { ops = bodyResult.ops
+            { ops = exprResult.ops ++ bodyResult.ops
             , resultVar = bodyResult.resultVar
             , resultType = bodyResult.resultType
             , ctx = ctxOut
-            , isTerminated = bodyResult.isTerminated
+            , isTerminated = finalIsTerminated
             }
 
 
