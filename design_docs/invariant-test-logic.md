@@ -1450,6 +1450,20 @@ logic: Lambda functions:
 inputs: MLIR with lambdas
 oracle: Lambda signatures are typed; no unnecessary boxing.
 --
+--
+name: Saturated papExtend result type matches func.func return type
+phase: MLIR codegen
+invariants: CGEN_056
+ir: eco.papExtend ops that represent fully saturated closure applications
+logic: For every eco.papExtend that is a saturated call (isSaturatedCall) of some func.func @f:
+  * Resolve the target function @f from the eco.papExtend's closure provenance (e.g. via _fast_evaluator or the function attribute on the originating eco.papCreate).
+  * Look up @f's func.func signature and extract its result type.
+  * Assert the eco.papExtend result MLIR type equals @f's result type.
+  * Non-saturated papExtend ops (those producing a PAP, not a final result) are excluded from this check since they always return !eco.value.
+inputs: MLIR with closure applications including both saturated and partial applications
+oracle: Every saturated eco.papExtend has a result type matching the callee func.func's return type; any mismatch is a codegen bug.
+tests: compiler/tests/Compiler/Generate/CodeGen/PapExtendResultTest.elm
+--
 
 ---
 

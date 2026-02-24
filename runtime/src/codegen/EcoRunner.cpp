@@ -27,8 +27,6 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/OwningOpRef.h"
-#include "mlir/IR/Verifier.h"
-
 #include "mlir/IR/AsmState.h"
 #include "mlir/Parser/Parser.h"
 #include "mlir/Pass/PassManager.h"
@@ -43,7 +41,6 @@
 #include "llvm/Support/MemoryBuffer.h"
 
 #include "EcoDialect.h"
-#include "EcoOps.h"
 #include "Passes.h"
 #include "EcoPipeline.h"
 #include "RuntimeSymbols.h"
@@ -114,19 +111,10 @@ public:
         eco::loadRequiredDialects(context);
         context.allowUnregisteredDialects();
 
-        // Parse MLIR source (without verification to allow fixups first)
+        // Parse and verify MLIR source
         auto module = parseMLIR(context, source);
         if (!module) {
-            result.errorMessage = "Failed to parse MLIR source";
-            return result;
-        }
-
-        // Fix eco.call result type mismatches before verification
-        fixCallResultTypes(*module);
-
-        // Verify module
-        if (failed(verify(*module))) {
-            result.errorMessage = "Module verification failed";
+            result.errorMessage = "Failed to parse or verify MLIR source";
             return result;
         }
 
@@ -166,65 +154,7 @@ private:
         llvm::SourceMgr sourceMgr;
         auto memBuffer = llvm::MemoryBuffer::getMemBuffer(source, "eco_runner_input");
         sourceMgr.AddNewSourceBuffer(std::move(memBuffer), llvm::SMLoc());
-        // Parse without verification so we can fix eco.call type mismatches first
-        ParserConfig config(&context, /*verifyAfterParse=*/false);
-        return parseSourceFile<ModuleOp>(sourceMgr, config);
-    }
-
-    /// Fix eco.call ops whose result type doesn't match the callee's declared
-    /// return type. This happens when the Elm compiler generates a call with
-    /// the call-site's expected type (e.g. i64) but the callee function returns
-    /// a different type (e.g. !eco.value for polymorphic kernel wrappers).
-    void fixCallResultTypes(ModuleOp module) {
-        module.walk([&](CallOp callOp) {
-            auto calleeAttr = callOp.getCalleeAttr();
-            if (!calleeAttr)
-                return;  // Indirect call, skip
-
-            // Look up the callee function
-            auto *symbol = module.lookupSymbol(calleeAttr.getValue());
-            if (!symbol)
-                return;
-
-            auto funcOp = dyn_cast<func::FuncOp>(symbol);
-            if (!funcOp)
-                return;
-
-            auto funcType = funcOp.getFunctionType();
-            if (funcType.getNumResults() == 0)
-                return;
-
-            Type calleeReturnType = funcType.getResult(0);
-            if (callOp.getNumResults() == 0)
-                return;
-
-            Type callResultType = callOp.getResult(0).getType();
-            if (callResultType == calleeReturnType)
-                return;  // Types already match
-
-            // Fix the result type by creating a new call with correct type
-            // and adding an unbox/box to convert
-            OpBuilder builder(callOp->getContext());
-            builder.setInsertionPointAfter(callOp);
-
-            // Update the call op's result type in-place
-            callOp.getResult(0).setType(calleeReturnType);
-
-            // If the callee returns !eco.value but call site expects a primitive,
-            // insert an unbox after the call
-            if (isa<ValueType>(calleeReturnType) && !isa<ValueType>(callResultType)) {
-                auto unboxOp = builder.create<UnboxOp>(
-                    callOp.getLoc(), callResultType, callOp.getResult(0));
-                callOp.getResult(0).replaceAllUsesExcept(unboxOp.getResult(), unboxOp);
-            }
-            // If the callee returns a primitive but call site expects !eco.value,
-            // insert a box after the call
-            else if (!isa<ValueType>(calleeReturnType) && isa<ValueType>(callResultType)) {
-                auto boxOp = builder.create<BoxOp>(
-                    callOp.getLoc(), callResultType, callOp.getResult(0));
-                callOp.getResult(0).replaceAllUsesExcept(boxOp.getResult(), boxOp);
-            }
-        });
+        return parseSourceFile<ModuleOp>(sourceMgr, &context);
     }
 
     bool runPipeline(ModuleOp module) {

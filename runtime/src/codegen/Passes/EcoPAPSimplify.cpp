@@ -99,39 +99,19 @@ struct SaturatedPapToCallPattern : public OpRewritePattern<PapExtendOp> {
                           createOp.getCaptured().end());
         allOperands.append(newargs.begin(), newargs.end());
 
-        // Get the result type from the papExtend (what the caller expects)
-        Type expectedResultType = extendOp.getResult().getType();
+        // CGEN_056: saturated papExtend result type == callee's func.func return type
+        // (enforced by Elm codegen, verified by PapExtendSaturatedResultType test)
+        Type resultType = extendOp.getResult().getType();
 
-        // Look up the callee function's actual return type.
-        // Polymorphic wrapper functions may return !eco.value even when the
-        // monomorphized call site expects a primitive like i64.
-        Type calleeReturnType = expectedResultType;
-        if (auto funcOp = dyn_cast<func::FuncOp>(targetFunc)) {
-            auto funcType = funcOp.getFunctionType();
-            if (funcType.getNumResults() > 0)
-                calleeReturnType = funcType.getResult(0);
-        }
-
-        // Create direct call with the callee's actual return type
         auto callOp = rewriter.create<CallOp>(
             extendOp.getLoc(),
-            TypeRange{calleeReturnType},        // Use callee's return type
-            allOperands,                        // Operands
-            calleeAttr,                         // callee (FlatSymbolRefAttr)
-            nullptr,                            // musttail (not a tail call)
-            nullptr);                           // remaining_arity (not indirect)
+            TypeRange{resultType},
+            allOperands,
+            calleeAttr,
+            nullptr,   // musttail
+            nullptr);  // remaining_arity
 
-        // If the callee returns a different type than expected (e.g., !eco.value
-        // vs i64), add an unbox operation to convert the result.
-        if (calleeReturnType != expectedResultType && isa<ValueType>(calleeReturnType)) {
-            auto unboxOp = rewriter.create<UnboxOp>(
-                extendOp.getLoc(),
-                expectedResultType,
-                callOp.getResult(0));
-            rewriter.replaceOp(extendOp, unboxOp.getResult());
-        } else {
-            rewriter.replaceOp(extendOp, callOp.getResults());
-        }
+        rewriter.replaceOp(extendOp, callOp.getResults());
         // papCreate will be DCE'd since it now has no uses
         return success();
     }

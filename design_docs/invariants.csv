@@ -293,6 +293,7 @@ CGEN_054;MLIR_Codegen;ControlFlow;enforced;eco.return is forbidden inside eco.ca
 
 CGEN_055;MLIR_Codegen;Closures;enforced;When an ABI wrapper closure is created for a target segmentation [s1 s2 ...] the wrapper must have nested closure structure where the outermost closure has exactly s1 parameters (not the total flat arity) so that papCreate.remaining equals s1 and all case branches producing closures with the same staged type have identical papCreate.remaining values. This is a defense-in-depth check at MLIR level that depends on GOPT_001 being satisfied at the GlobalOpt level;Compiler.GlobalOpt.MonoGlobalOptimize (buildAbiWrapperGO)
 
+CGEN_056; MLIR_Codegen;Closures;enforced;For every eco.papExtend that represents a fully saturated closure application (isSaturatedCall) of some func.func @f, the eco.papExtend result MLIR type must equal the result type of @f’s func.func signature.
 
 # =============================================================================
 # RUNTIME HEAP PHASE - Memory layout and GC invariants

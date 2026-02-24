@@ -1228,6 +1228,8 @@ This implements the stage-curried closure model required by MONO\_016 and CGEN\_
 
 For partial applications, result type is `!eco.value` per CGEN\_034 (PAPs are boxed closures).
 For fully saturated calls, result type is `saturatedReturnType` (the actual ABI return type).
+CGEN\_056: `saturatedReturnType` must equal the callee's `func.func` result type, which is
+guaranteed because both are derived via `Types.monoTypeToAbi` from the same Mono return type.
 
 -}
 applyByStages :
@@ -1236,7 +1238,7 @@ applyByStages :
     -> MlirType -- funcMlirType: the closure's MLIR type (always !eco.value)
     -> Int -- sourceRemaining: the source PAP's remaining arity (CGEN_052)
     -> List Int -- remainingStageArities: arities of subsequent stages after saturation
-    -> MlirType -- saturatedReturnType: the ABI return type when fully saturated
+    -> MlirType -- saturatedReturnType: callee's ABI return type (CGEN_056: must equal func.func result type)
     -> List ( String, MlirType ) -- args: remaining (var, mlirType) pairs to apply
     -> List MlirOp -- accumulated ops
     -> ApplyByStagesResult
@@ -1471,7 +1473,8 @@ generateClosureApplication ctx func args resultType callInfo =
                 funcResult =
                     generateExpr ctx func
 
-                -- Result is a closure (!eco.value)
+                -- CGEN_056: expectedType becomes the saturated papExtend result type,
+                -- which must equal the callee's func.func return type.
                 expectedType =
                     Types.monoTypeToAbi resultType
             in
