@@ -15,6 +15,8 @@
 #include <string>
 #include <cstring>
 #include <cassert>
+#include <vector>
+#include <algorithm>
 
 using json = nlohmann::json;
 using namespace Elm;
@@ -911,15 +913,18 @@ static json elmToJson(uint64_t valueEnc) {
                 return json(elmStringToStd(Export::encode(c->values[0].p)));
 
             case ENC_ARRAY: {
-                json arr = json::array();
+                // The internal list is in reverse order because List.foldl + cons
+                // prepends each element. Collect and reverse to restore original order.
+                std::vector<json> elements;
                 HPointer list = c->values[0].p;
                 while (!isNil(list)) {
                     void* cellPtr = allocator.resolve(list);
                     Cons* cell = static_cast<Cons*>(cellPtr);
-                    arr.push_back(elmToJson(Export::encode(cell->head.p)));
+                    elements.push_back(elmToJson(Export::encode(cell->head.p)));
                     list = cell->tail;
                 }
-                return arr;
+                std::reverse(elements.begin(), elements.end());
+                return json(elements);
             }
 
             case ENC_OBJECT: {
@@ -1226,8 +1231,66 @@ uint64_t Elm_Kernel_Json_encode(int64_t indent, uint64_t value) {
 }
 
 uint64_t Elm_Kernel_Json_wrap(uint64_t value) {
-    // For primitive Elm values, we need to wrap them in an encoder.
-    // For now, just return as-is since we handle it in elmToJson.
+    // Wrap a boxed Elm value into an encoder Custom object for elmToJson.
+    // Called with AllBoxed ABI: the compiler auto-boxes primitives (i64→ElmInt,
+    // f64→ElmFloat) before calling, so we always receive an HPointer.
+    auto& allocator = Allocator::instance();
+    HPointer h = Export::decode(value);
+
+    // Embedded constant booleans → ENC_BOOL
+    if (h.constant == Const_True + 1 || h.constant == Const_False + 1) {
+        size_t size = (sizeof(Custom) + sizeof(Unboxable) + 7) & ~7;
+        Custom* enc = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
+        enc->header.size = 1;
+        enc->ctor = ENC_BOOL;
+        enc->unboxed = 0;
+        enc->values[0].p = (h.constant == Const_True + 1) ? elmTrue() : elmFalse();
+        return Export::encode(allocator.wrap(enc));
+    }
+
+    // Other embedded constants (Unit, Nil, Nothing) → ENC_NULL
+    if (h.constant != 0) {
+        return Elm_Kernel_Json_encodeNull();
+    }
+
+    void* ptr = Export::toPtr(value);
+    if (!ptr) return Elm_Kernel_Json_encodeNull();
+
+    Header* header = static_cast<Header*>(ptr);
+
+    if (header->tag == Tag_Int) {
+        ElmInt* i = static_cast<ElmInt*>(ptr);
+        size_t size = (sizeof(Custom) + sizeof(Unboxable) + 7) & ~7;
+        Custom* enc = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
+        enc->header.size = 1;
+        enc->ctor = ENC_INT;
+        enc->unboxed = 1;
+        enc->values[0].i = i->value;
+        return Export::encode(allocator.wrap(enc));
+    }
+
+    if (header->tag == Tag_Float) {
+        ElmFloat* f = static_cast<ElmFloat*>(ptr);
+        size_t size = (sizeof(Custom) + sizeof(Unboxable) + 7) & ~7;
+        Custom* enc = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
+        enc->header.size = 1;
+        enc->ctor = ENC_FLOAT;
+        enc->unboxed = 1;
+        enc->values[0].f = f->value;
+        return Export::encode(allocator.wrap(enc));
+    }
+
+    if (header->tag == Tag_String) {
+        size_t size = (sizeof(Custom) + sizeof(Unboxable) + 7) & ~7;
+        Custom* enc = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
+        enc->header.size = 1;
+        enc->ctor = ENC_STRING;
+        enc->unboxed = 0;
+        enc->values[0].p = h;
+        return Export::encode(allocator.wrap(enc));
+    }
+
+    // Already an encoder Custom (ENC_OBJECT, ENC_ARRAY, etc.) — return as-is.
     return value;
 }
 
@@ -1266,13 +1329,18 @@ uint64_t Elm_Kernel_Json_emptyObject() {
     return Export::encode(allocator.wrap(enc));
 }
 
-uint64_t Elm_Kernel_Json_addEntry(uint64_t entry, uint64_t array) {
+uint64_t Elm_Kernel_Json_addEntry(uint64_t func, uint64_t entry, uint64_t array) {
     auto& allocator = Allocator::instance();
 
+    // Call the encoder function on the entry: encoded = func(entry)
+    uint64_t args[] = { entry };
+    uint64_t encoded = eco_apply_closure(func, args, 1);
+
+    // Re-resolve array after potential GC from the closure call
     void* arrPtr = Export::toPtr(array);
     Custom* arr = static_cast<Custom*>(arrPtr);
 
-    HPointer newList = cons(boxed(Export::decode(entry)), arr->values[0].p, true);
+    HPointer newList = cons(boxed(Export::decode(encoded)), arr->values[0].p, true);
 
     size_t size = sizeof(Custom) + sizeof(Unboxable);
     size = (size + 7) & ~7;

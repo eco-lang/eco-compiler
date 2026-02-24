@@ -300,7 +300,7 @@ uint64_t Elm_Kernel_Json_wrap(uint64_t value);
 uint64_t Elm_Kernel_Json_encodeNull();
 uint64_t Elm_Kernel_Json_emptyArray();
 uint64_t Elm_Kernel_Json_emptyObject();
-uint64_t Elm_Kernel_Json_addEntry(uint64_t entry, uint64_t array);
+uint64_t Elm_Kernel_Json_addEntry(uint64_t func, uint64_t entry, uint64_t array);
 uint64_t Elm_Kernel_Json_addField(uint64_t key, uint64_t value, uint64_t object);
 
 //===----------------------------------------------------------------------===//

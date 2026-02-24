@@ -138,6 +138,12 @@ kernelBackendAbiPolicy home name =
         ( "JsArray", _ ) ->
             AllBoxed
 
+        -- Json.wrap: polymorphic (a -> Value), C++ inspects heap tag at runtime.
+        -- Must be AllBoxed to avoid signature mismatch across monomorphized
+        -- call sites (Encode.int passes i64, Encode.string passes !eco.value).
+        ( "Json", "wrap" ) ->
+            AllBoxed
+
         --
         -- ElmDerived: C++ ABI has typed (non-uint64_t) params or returns.
         -- ABI is derived from the Elm wrapper's funcType via monoTypeToAbi.
