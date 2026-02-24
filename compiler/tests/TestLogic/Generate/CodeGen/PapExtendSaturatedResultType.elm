@@ -54,8 +54,35 @@ expectPapExtendSaturatedResultType srcModule =
         Err err ->
             Expect.fail ("Compilation failed: " ++ err)
 
-        Ok { mlirModule } ->
-            violationsToExpectation (checkPapExtendSaturatedResultType mlirModule)
+        Ok { mlirModule, mlirOutput } ->
+            let
+                violations =
+                    checkPapExtendSaturatedResultType mlirModule
+            in
+            if List.isEmpty violations then
+                Expect.pass
+
+            else
+                let
+                    funcReturnTypeMap =
+                        buildFuncReturnTypeMap mlirModule
+
+                    funcMapStr =
+                        Dict.toList funcReturnTypeMap
+                            |> List.map (\( name, ty ) -> "  @" ++ name ++ " -> " ++ typeToString ty)
+                            |> String.join "\n"
+
+                    violationStrs =
+                        List.map (\v -> v.message) violations
+                            |> String.join "\n"
+                in
+                Expect.fail
+                    (violationStrs
+                        ++ "\n\nfuncReturnTypeMap:\n"
+                        ++ funcMapStr
+                        ++ "\n\nMLIR:\n"
+                        ++ mlirOutput
+                    )
 
 
 {-| Check saturated papExtend result type invariants across the module.

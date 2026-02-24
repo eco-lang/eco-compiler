@@ -888,17 +888,31 @@ specializeExpr expr subst state =
                 monoType =
                     Mono.forceCNumberToInt (TypeSubst.applySubst subst canType)
 
-                ( monoDef, state1 ) =
-                    specializeDef def subst state
-
                 defName =
                     getDefName def
 
                 defCanType =
                     getDefCanonicalType def
 
+                -- MONO_020: For function defs, collect call-site substitution
+                -- to ensure the local function's MonoType is fully concrete.
+                substForDef =
+                    case defCanType of
+                        Can.TLambda _ _ ->
+                            let
+                                extraSubst =
+                                    collectLocalCallSubst defName defCanType body subst
+                            in
+                            Dict.union extraSubst subst
+
+                        _ ->
+                            subst
+
+                ( monoDef, state1 ) =
+                    specializeDef def substForDef state
+
                 defMonoType =
-                    Mono.forceCNumberToInt (TypeSubst.applySubst subst defCanType)
+                    Mono.forceCNumberToInt (TypeSubst.applySubst substForDef defCanType)
 
                 stateWithVar =
                     { state1 | varTypes = Dict.insert identity defName defMonoType state1.varTypes }
@@ -2036,3 +2050,325 @@ deriveKernelAbiType kernelId canFuncType callSubst =
 toptGlobalToMono : TOpt.Global -> Mono.Global
 toptGlobalToMono (TOpt.Global canonical name) =
     Mono.Global canonical name
+
+
+
+-- ========== LOCAL FUNCTION SPECIALIZATION ==========
+
+
+{-| Collect an additional substitution for a local function `defName`
+based on all calls to it in `bodyExpr` at this specialization.
+
+The intent is to discover mappings like `a ↦ MInt` for `id2 : a -> a`
+when we see calls `id2 42` in this body.
+
+`outerSubst` is the current substitution for the enclosing global.
+
+MONO\_020: After monomorphization, every user-defined local function
+or lambda (non-kernel) that is reachable from MLIR codegen has no MVar with
+CEcoValue constraint in its MFunction parameter or result positions.
+-}
+collectLocalCallSubst :
+    Name
+    -> Can.Type
+    -> TOpt.Expr
+    -> Substitution
+    -> Substitution
+collectLocalCallSubst defName defCanType bodyExpr outerSubst =
+    collectCallSubstExpr defName defCanType outerSubst bodyExpr Dict.empty
+
+
+collectCallSubstExpr :
+    Name
+    -> Can.Type
+    -> Substitution
+    -> TOpt.Expr
+    -> Substitution
+    -> Substitution
+collectCallSubstExpr defName defCanType outerSubst expr accSubst =
+    case expr of
+        TOpt.Call _ func args canType ->
+            let
+                -- First check if this call targets our defName
+                acc1 =
+                    case func of
+                        TOpt.VarLocal name _ ->
+                            if name == defName then
+                                collectCallSubstFromCallSite defName defCanType outerSubst args canType accSubst
+
+                            else
+                                accSubst
+
+                        TOpt.TrackedVarLocal _ name _ ->
+                            if name == defName then
+                                collectCallSubstFromCallSite defName defCanType outerSubst args canType accSubst
+
+                            else
+                                accSubst
+
+                        _ ->
+                            accSubst
+
+                -- Recurse into func expression
+                acc2 =
+                    collectCallSubstExpr defName defCanType outerSubst func acc1
+
+                -- Recurse into args
+                acc3 =
+                    List.foldl
+                        (\arg acc -> collectCallSubstExpr defName defCanType outerSubst arg acc)
+                        acc2
+                        args
+            in
+            acc3
+
+        TOpt.Let innerDef innerBody _ ->
+            let
+                -- Recurse into the def's body expression
+                acc1 =
+                    collectCallSubstDef defName defCanType outerSubst innerDef accSubst
+
+                -- Recurse into the let body
+                acc2 =
+                    collectCallSubstExpr defName defCanType outerSubst innerBody acc1
+            in
+            acc2
+
+        TOpt.If branches final _ ->
+            let
+                acc1 =
+                    List.foldl
+                        (\( cond, then_ ) acc ->
+                            let
+                                accA =
+                                    collectCallSubstExpr defName defCanType outerSubst cond acc
+                            in
+                            collectCallSubstExpr defName defCanType outerSubst then_ accA
+                        )
+                        accSubst
+                        branches
+
+                acc2 =
+                    collectCallSubstExpr defName defCanType outerSubst final acc1
+            in
+            acc2
+
+        TOpt.Case _ _ decider jumps _ ->
+            let
+                acc1 =
+                    collectCallSubstDecider defName defCanType outerSubst decider accSubst
+
+                acc2 =
+                    List.foldl
+                        (\( _, jumpExpr ) acc ->
+                            collectCallSubstExpr defName defCanType outerSubst jumpExpr acc
+                        )
+                        acc1
+                        jumps
+            in
+            acc2
+
+        TOpt.Destruct _ destBody _ ->
+            collectCallSubstExpr defName defCanType outerSubst destBody accSubst
+
+        TOpt.List _ exprs _ ->
+            List.foldl
+                (\e acc -> collectCallSubstExpr defName defCanType outerSubst e acc)
+                accSubst
+                exprs
+
+        TOpt.Tuple _ a b rest _ ->
+            let
+                acc1 =
+                    collectCallSubstExpr defName defCanType outerSubst a accSubst
+
+                acc2 =
+                    collectCallSubstExpr defName defCanType outerSubst b acc1
+            in
+            List.foldl
+                (\e acc -> collectCallSubstExpr defName defCanType outerSubst e acc)
+                acc2
+                rest
+
+        TOpt.Record fields _ ->
+            Dict.foldl compare
+                (\_ fieldExpr acc -> collectCallSubstExpr defName defCanType outerSubst fieldExpr acc)
+                accSubst
+                fields
+
+        TOpt.TrackedRecord _ fields _ ->
+            Dict.foldl A.compareLocated
+                (\_ fieldExpr acc -> collectCallSubstExpr defName defCanType outerSubst fieldExpr acc)
+                accSubst
+                fields
+
+        TOpt.Update _ record updates _ ->
+            let
+                acc1 =
+                    collectCallSubstExpr defName defCanType outerSubst record accSubst
+            in
+            Dict.foldl A.compareLocated
+                (\_ updateExpr acc -> collectCallSubstExpr defName defCanType outerSubst updateExpr acc)
+                acc1
+                updates
+
+        TOpt.Access record _ _ _ ->
+            collectCallSubstExpr defName defCanType outerSubst record accSubst
+
+        TOpt.Function _ funcBody _ ->
+            collectCallSubstExpr defName defCanType outerSubst funcBody accSubst
+
+        TOpt.TrackedFunction _ funcBody _ ->
+            collectCallSubstExpr defName defCanType outerSubst funcBody accSubst
+
+        TOpt.TailCall _ namedArgs _ ->
+            List.foldl
+                (\( _, argExpr ) acc -> collectCallSubstExpr defName defCanType outerSubst argExpr acc)
+                accSubst
+                namedArgs
+
+        -- Leaf nodes: no recursion needed
+        TOpt.Bool _ _ _ ->
+            accSubst
+
+        TOpt.Chr _ _ _ ->
+            accSubst
+
+        TOpt.Str _ _ _ ->
+            accSubst
+
+        TOpt.Int _ _ _ ->
+            accSubst
+
+        TOpt.Float _ _ _ ->
+            accSubst
+
+        TOpt.VarLocal _ _ ->
+            accSubst
+
+        TOpt.TrackedVarLocal _ _ _ ->
+            accSubst
+
+        TOpt.VarGlobal _ _ _ ->
+            accSubst
+
+        TOpt.VarEnum _ _ _ _ ->
+            accSubst
+
+        TOpt.VarBox _ _ _ ->
+            accSubst
+
+        TOpt.VarCycle _ _ _ _ ->
+            accSubst
+
+        TOpt.VarDebug _ _ _ _ _ ->
+            accSubst
+
+        TOpt.VarKernel _ _ _ _ ->
+            accSubst
+
+        TOpt.Accessor _ _ _ ->
+            accSubst
+
+        TOpt.Unit _ ->
+            accSubst
+
+        TOpt.Shader _ _ _ _ ->
+            accSubst
+
+
+{-| Process a single call site to defName, deriving substitution mappings
+from the argument types and result type.
+-}
+collectCallSubstFromCallSite :
+    Name
+    -> Can.Type
+    -> Substitution
+    -> List TOpt.Expr
+    -> Can.Type
+    -> Substitution
+    -> Substitution
+collectCallSubstFromCallSite _ defCanType outerSubst args callCanType accSubst =
+    let
+        -- Compute arg MonoTypes from outer subst (lightweight, no MonoState needed)
+        argTypes =
+            List.map
+                (\arg -> Mono.forceCNumberToInt (TypeSubst.applySubst outerSubst (TOpt.typeOf arg)))
+                args
+
+        -- Use existing unification machinery to derive call-site substitution
+        callSubst =
+            TypeSubst.unifyFuncCall defCanType argTypes callCanType outerSubst
+    in
+    -- Union call-site mappings into accumulator; new mappings take precedence
+    Dict.union callSubst accSubst
+
+
+{-| Recurse into a TOpt.Def's body expression to find calls to defName.
+-}
+collectCallSubstDef :
+    Name
+    -> Can.Type
+    -> Substitution
+    -> TOpt.Def
+    -> Substitution
+    -> Substitution
+collectCallSubstDef defName defCanType outerSubst def accSubst =
+    case def of
+        TOpt.Def _ _ defBody _ ->
+            collectCallSubstExpr defName defCanType outerSubst defBody accSubst
+
+        TOpt.TailDef _ _ _ defBody _ ->
+            collectCallSubstExpr defName defCanType outerSubst defBody accSubst
+
+
+{-| Recurse into a Decider tree to find calls to defName.
+-}
+collectCallSubstDecider :
+    Name
+    -> Can.Type
+    -> Substitution
+    -> TOpt.Decider TOpt.Choice
+    -> Substitution
+    -> Substitution
+collectCallSubstDecider defName defCanType outerSubst decider accSubst =
+    case decider of
+        TOpt.Leaf choice ->
+            collectCallSubstChoice defName defCanType outerSubst choice accSubst
+
+        TOpt.Chain _ success failure ->
+            let
+                acc1 =
+                    collectCallSubstDecider defName defCanType outerSubst success accSubst
+            in
+            collectCallSubstDecider defName defCanType outerSubst failure acc1
+
+        TOpt.FanOut _ edges fallback ->
+            let
+                acc1 =
+                    List.foldl
+                        (\( _, edgeDecider ) acc ->
+                            collectCallSubstDecider defName defCanType outerSubst edgeDecider acc
+                        )
+                        accSubst
+                        edges
+            in
+            collectCallSubstDecider defName defCanType outerSubst fallback acc1
+
+
+{-| Recurse into a Choice to find calls to defName.
+-}
+collectCallSubstChoice :
+    Name
+    -> Can.Type
+    -> Substitution
+    -> TOpt.Choice
+    -> Substitution
+    -> Substitution
+collectCallSubstChoice defName defCanType outerSubst choice accSubst =
+    case choice of
+        TOpt.Inline inlineExpr ->
+            collectCallSubstExpr defName defCanType outerSubst inlineExpr accSubst
+
+        TOpt.Jump _ ->
+            accSubst

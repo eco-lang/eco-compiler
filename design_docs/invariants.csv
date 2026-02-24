@@ -155,6 +155,8 @@ MONO_018;Monomorphization;Types;tested;For every MonoCase expression in the Mono
 
 MONO_019;Monomorphization;Closures;tested;Within a single MonoGraph each lambdaId identifies a unique logical lambda; no two MonoClosure or MonoTailFunc nodes share the same lambdaId.;TestLogic.Monomorphize.LambdaIdUniqueness (checkLambdaIdUniqueness)
 
+MONO_020;Monomorphization;Let-Bound Functions;documented;After monomorphization every user-defined local function or lambda (non-kernel) that is reachable from MLIR codegen has no MVar with CEcoValue constraint in its MFunction parameter or result positions. Remaining CEcoValue MVar in those positions indicates a failed specialization. Enforced structurally by collectLocalCallSubst which derives concrete type variable mappings from call sites before specializing the local definition.;Compiler.Monomorphize.Specialize (collectLocalCallSubst)
+
 
 # =============================================================================
 # GLOBAL OPTIMIZATION PHASE - Staging normalization and ABI consistency
