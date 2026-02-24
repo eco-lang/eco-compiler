@@ -239,6 +239,12 @@ void eco_print_elm_value(uint64_t value);
 /// @return HPointer (as uint64_t) to the allocated ElmString
 uint64_t eco_value_to_string(uint64_t value);
 
+/// Convert a value to its string representation using type graph information.
+/// @param value The value to convert (as 64-bit encoded pointer)
+/// @param type_id The type graph type ID for the value (-1 for untyped fallback)
+/// @return HPointer (as uint64_t) to the allocated ElmString
+uint64_t eco_value_to_string_typed(uint64_t value, int64_t type_id);
+
 //===----------------------------------------------------------------------===//
 // GC Interface
 //===----------------------------------------------------------------------===//

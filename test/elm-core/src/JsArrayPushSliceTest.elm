@@ -1,10 +1,10 @@
 module JsArrayPushSliceTest exposing (main)
 
--- CHECK: push1: [1,2,3,4]
+-- CHECK: push1: [1, 2, 3, 4]
 -- CHECK: push_empty: [42]
--- CHECK: slice_mid: [2,3]
--- CHECK: slice_neg: [3,4]
--- CHECK: append1: [1,2,3,4,5]
+-- CHECK: slice_mid: [2, 3]
+-- CHECK: slice_neg: [4, 5]
+-- CHECK: append1: [1, 2, 3, 4, 5]
 
 import Array
 import Html exposing (text)

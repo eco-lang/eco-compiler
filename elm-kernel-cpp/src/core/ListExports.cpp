@@ -14,22 +14,37 @@
 using namespace Elm;
 using namespace Elm::Kernel;
 
+extern "C" uint64_t eco_alloc_int(int64_t value);
+
 namespace {
 
 //===----------------------------------------------------------------------===//
 // Closure-calling helpers
 //===----------------------------------------------------------------------===//
 
+// Load captured values from closure into args array, boxing unboxed captures.
+// The wrapper expects ALL args as HPointer-encoded values.
+// Unboxed captures (raw i64 for Int/Float/Char) are boxed via eco_alloc_int.
+inline void loadCapturedValues(Closure* closure, void** args) {
+    uint32_t n_values = closure->n_values;
+    uint64_t unboxed = closure->unboxed;  // Bitfield already extracts bits 12+
+    for (uint32_t i = 0; i < n_values; i++) {
+        uint64_t val = closure->values[i].i;
+        if ((unboxed >> i) & 1) {
+            // Unboxed capture: box as Int so wrapper can unbox
+            val = eco_alloc_int(static_cast<int64_t>(val));
+        }
+        args[i] = reinterpret_cast<void*>(val);
+    }
+}
+
 // Call a closure with 1 argument
 inline uint64_t callUnaryClosure(void* closure_ptr, uint64_t arg) {
     Closure* closure = static_cast<Closure*>(closure_ptr);
-    uint32_t n_values = closure->n_values;
 
     void* args[16];
-    for (uint32_t i = 0; i < n_values; i++) {
-        args[i] = reinterpret_cast<void*>(closure->values[i].i);
-    }
-    args[n_values] = reinterpret_cast<void*>(arg);
+    loadCapturedValues(closure, args);
+    args[closure->n_values] = reinterpret_cast<void*>(arg);
 
     return reinterpret_cast<uint64_t>(closure->evaluator(args));
 }
@@ -40,9 +55,7 @@ inline uint64_t callBinaryClosure(void* closure_ptr, uint64_t arg1, uint64_t arg
     uint32_t n_values = closure->n_values;
 
     void* args[16];
-    for (uint32_t i = 0; i < n_values; i++) {
-        args[i] = reinterpret_cast<void*>(closure->values[i].i);
-    }
+    loadCapturedValues(closure, args);
     args[n_values] = reinterpret_cast<void*>(arg1);
     args[n_values + 1] = reinterpret_cast<void*>(arg2);
 
@@ -55,9 +68,7 @@ inline uint64_t callTernaryClosure(void* closure_ptr, uint64_t arg1, uint64_t ar
     uint32_t n_values = closure->n_values;
 
     void* args[16];
-    for (uint32_t i = 0; i < n_values; i++) {
-        args[i] = reinterpret_cast<void*>(closure->values[i].i);
-    }
+    loadCapturedValues(closure, args);
     args[n_values] = reinterpret_cast<void*>(arg1);
     args[n_values + 1] = reinterpret_cast<void*>(arg2);
     args[n_values + 2] = reinterpret_cast<void*>(arg3);
@@ -72,9 +83,7 @@ inline uint64_t callQuaternaryClosure(void* closure_ptr, uint64_t arg1, uint64_t
     uint32_t n_values = closure->n_values;
 
     void* args[16];
-    for (uint32_t i = 0; i < n_values; i++) {
-        args[i] = reinterpret_cast<void*>(closure->values[i].i);
-    }
+    loadCapturedValues(closure, args);
     args[n_values] = reinterpret_cast<void*>(arg1);
     args[n_values + 1] = reinterpret_cast<void*>(arg2);
     args[n_values + 2] = reinterpret_cast<void*>(arg3);
@@ -90,9 +99,7 @@ inline uint64_t callQuinaryClosure(void* closure_ptr, uint64_t arg1, uint64_t ar
     uint32_t n_values = closure->n_values;
 
     void* args[16];
-    for (uint32_t i = 0; i < n_values; i++) {
-        args[i] = reinterpret_cast<void*>(closure->values[i].i);
-    }
+    loadCapturedValues(closure, args);
     args[n_values] = reinterpret_cast<void*>(arg1);
     args[n_values + 1] = reinterpret_cast<void*>(arg2);
     args[n_values + 2] = reinterpret_cast<void*>(arg3);
@@ -106,8 +113,8 @@ inline uint64_t callQuinaryClosure(void* closure_ptr, uint64_t arg1, uint64_t ar
 // List conversion helpers
 //===----------------------------------------------------------------------===//
 
-// Convert list to vector of uint64_t (encoded values).
-// Properly handles unboxed Cons heads.
+// Convert list to vector of uint64_t (all HPointer-encoded).
+// For unboxed ints, boxes via allocInt so values are HPointer-encoded.
 std::vector<uint64_t> listToVectorU64(HPointer list) {
     std::vector<uint64_t> result;
     Allocator& allocator = Allocator::instance();
@@ -121,12 +128,9 @@ std::vector<uint64_t> listToVectorU64(HPointer list) {
         if (hdr->tag != Tag_Cons) break;
 
         Cons* cons = static_cast<Cons*>(ptr);
-        // Check unboxed flag in header to determine how to interpret head
         if (hdr->unboxed & 1) {
-            // Head is unboxed primitive - pass raw i64
-            result.push_back(static_cast<uint64_t>(cons->head.i));
+            result.push_back(Export::encode(alloc::allocInt(static_cast<int64_t>(cons->head.i))));
         } else {
-            // Head is boxed HPointer - encode it
             result.push_back(Export::encode(cons->head.p));
         }
         current = cons->tail;
@@ -184,12 +188,12 @@ HPointer vectorToList(const std::vector<void*>& vec) {
     return result;
 }
 
-// Get element from Cons as uint64_t (handles unboxed flag).
-// For unboxed ints, returns raw i64 (matching the function signature).
-// For boxed values, returns encoded HPointer.
+// Get element from Cons as uint64_t, always HPointer-encoded.
+// For unboxed ints, boxes via allocInt so the wrapper can unbox.
+// For boxed values, returns encoded HPointer directly.
 inline uint64_t getConsHead(Cons* cons, Header* hdr) {
     if (hdr->unboxed & 1) {
-        return static_cast<uint64_t>(cons->head.i);
+        return Export::encode(alloc::allocInt(static_cast<int64_t>(cons->head.i)));
     } else {
         return Export::encode(cons->head.p);
     }
@@ -258,14 +262,6 @@ uint64_t Elm_Kernel_List_map2(uint64_t closure, uint64_t xs, uint64_t ys) {
     HPointer yList = Export::decode(ys);
     auto& allocator = Allocator::instance();
 
-    // Determine if inputs have unboxed heads (peek at first element).
-    // If all inputs are unboxed, the closure result is also unboxed.
-    bool resultIsUnboxed = false;
-    if (!alloc::isNil(xList)) {
-        Header* h = static_cast<Header*>(allocator.resolve(xList));
-        resultIsUnboxed = (h->unboxed & 1);
-    }
-
     std::vector<uint64_t> results;
 
     while (!alloc::isNil(xList) && !alloc::isNil(yList)) {
@@ -276,9 +272,11 @@ uint64_t Elm_Kernel_List_map2(uint64_t closure, uint64_t xs, uint64_t ys) {
         HPointer xTail = xCons->tail;
         HPointer yTail = yCons->tail;
 
+        // getConsHead returns HPointer-encoded values (boxes unboxed ints)
         uint64_t x = getConsHead(xCons, &xCons->header);
         uint64_t y = getConsHead(yCons, &yCons->header);
 
+        // Closure result is always HPointer-encoded (wrapper boxes return)
         uint64_t result = callBinaryClosure(closure_ptr, x, y);
         results.push_back(result);
 
@@ -286,7 +284,8 @@ uint64_t Elm_Kernel_List_map2(uint64_t closure, uint64_t xs, uint64_t ys) {
         yList = yTail;
     }
 
-    return Export::encode(vectorU64ToList(results, !resultIsUnboxed));
+    // Results are always HPointer-encoded (boxed)
+    return Export::encode(vectorU64ToList(results, true));
 }
 
 uint64_t Elm_Kernel_List_map3(uint64_t closure, uint64_t xs, uint64_t ys, uint64_t zs) {
@@ -295,12 +294,6 @@ uint64_t Elm_Kernel_List_map3(uint64_t closure, uint64_t xs, uint64_t ys, uint64
     HPointer yList = Export::decode(ys);
     HPointer zList = Export::decode(zs);
     auto& allocator = Allocator::instance();
-
-    bool resultIsUnboxed = false;
-    if (!alloc::isNil(xList)) {
-        Header* h = static_cast<Header*>(allocator.resolve(xList));
-        resultIsUnboxed = (h->unboxed & 1);
-    }
 
     std::vector<uint64_t> results;
 
@@ -321,7 +314,7 @@ uint64_t Elm_Kernel_List_map3(uint64_t closure, uint64_t xs, uint64_t ys, uint64
         xList = xTail; yList = yTail; zList = zTail;
     }
 
-    return Export::encode(vectorU64ToList(results, !resultIsUnboxed));
+    return Export::encode(vectorU64ToList(results, true));
 }
 
 uint64_t Elm_Kernel_List_map4(uint64_t closure, uint64_t ws, uint64_t xs, uint64_t ys, uint64_t zs) {
@@ -331,12 +324,6 @@ uint64_t Elm_Kernel_List_map4(uint64_t closure, uint64_t ws, uint64_t xs, uint64
     HPointer yList = Export::decode(ys);
     HPointer zList = Export::decode(zs);
     auto& allocator = Allocator::instance();
-
-    bool resultIsUnboxed = false;
-    if (!alloc::isNil(wList)) {
-        Header* h = static_cast<Header*>(allocator.resolve(wList));
-        resultIsUnboxed = (h->unboxed & 1);
-    }
 
     std::vector<uint64_t> results;
 
@@ -360,7 +347,7 @@ uint64_t Elm_Kernel_List_map4(uint64_t closure, uint64_t ws, uint64_t xs, uint64
         wList = wT; xList = xT; yList = yT; zList = zT;
     }
 
-    return Export::encode(vectorU64ToList(results, !resultIsUnboxed));
+    return Export::encode(vectorU64ToList(results, true));
 }
 
 uint64_t Elm_Kernel_List_map5(uint64_t closure, uint64_t vs, uint64_t ws,
@@ -372,12 +359,6 @@ uint64_t Elm_Kernel_List_map5(uint64_t closure, uint64_t vs, uint64_t ws,
     HPointer yList = Export::decode(ys);
     HPointer zList = Export::decode(zs);
     auto& allocator = Allocator::instance();
-
-    bool resultIsUnboxed = false;
-    if (!alloc::isNil(vList)) {
-        Header* h = static_cast<Header*>(allocator.resolve(vList));
-        resultIsUnboxed = (h->unboxed & 1);
-    }
 
     std::vector<uint64_t> results;
 
@@ -404,7 +385,7 @@ uint64_t Elm_Kernel_List_map5(uint64_t closure, uint64_t vs, uint64_t ws,
         vList = vT; wList = wT; xList = xT; yList = yT; zList = zT;
     }
 
-    return Export::encode(vectorU64ToList(results, !resultIsUnboxed));
+    return Export::encode(vectorU64ToList(results, true));
 }
 
 uint64_t Elm_Kernel_List_sortBy(uint64_t closure, uint64_t list) {
@@ -446,7 +427,7 @@ uint64_t Elm_Kernel_List_sortBy(uint64_t closure, uint64_t list) {
         sorted.push_back(elements[idx]);
     }
 
-    // Sort preserves element types - check if unboxed
+    // Sort preserves element types - check if original was unboxed
     bool elemIsUnboxed = false;
     HPointer origList = Export::decode(list);
     if (!alloc::isNil(origList)) {
@@ -473,7 +454,7 @@ uint64_t Elm_Kernel_List_sortWith(uint64_t closure, uint64_t list) {
         return orderVal->ctor == 0;  // LT means a < b
     });
 
-    // sortWith preserves element types
+    // sortWith preserves element types - check if original was unboxed
     bool elemIsUnboxed = false;
     HPointer origList = Export::decode(list);
     if (!alloc::isNil(origList)) {

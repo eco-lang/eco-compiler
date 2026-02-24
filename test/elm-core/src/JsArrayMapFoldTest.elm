@@ -1,8 +1,8 @@
 module JsArrayMapFoldTest exposing (main)
 
--- CHECK: map1: [2,4,6]
+-- CHECK: map1: [2, 4, 6]
 -- CHECK: foldl_sum: 15
--- CHECK: foldr_build: [1,2,3,4,5]
+-- CHECK: foldr_build: [1, 2, 3, 4, 5]
 
 import Array
 import Html exposing (text)

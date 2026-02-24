@@ -492,14 +492,45 @@ extern "C" uint64_t eco_apply_closure(uint64_t closure_hptr, uint64_t* args, uin
     void* closure_ptr = hpointerToPtr(closure_hptr);
     if (!closure_ptr) return 0;
 
-    // TODO: Implement closure application
-    // This needs to:
-    // 1. Check if closure becomes fully saturated
-    // 2. If so, call the evaluator function
-    // 3. Otherwise, create a new PAP with additional captured args
+    Closure* closure = static_cast<Closure*>(closure_ptr);
+    uint32_t n_values = closure->n_values;
+    uint32_t max_values = closure->max_values;
+    uint32_t total = n_values + num_args;
 
-    fprintf(stderr, "eco_apply_closure: not yet implemented\n");
-    return 0;
+    if (total == max_values) {
+        // Saturated: call the evaluator
+        void* stack_args[16];
+        void** combined_args = (max_values <= 16) ? stack_args :
+                               static_cast<void**>(alloca(max_values * sizeof(void*)));
+
+        // Copy captured values, boxing unboxed ones for the wrapper.
+        uint64_t unboxed_bitmap = closure->unboxed;  // Bitfield already extracts bits 12+
+        for (uint32_t i = 0; i < n_values; i++) {
+            uint64_t val = closure->values[i].i;
+            if ((unboxed_bitmap >> i) & 1) {
+                val = eco_alloc_int(static_cast<int64_t>(val));
+            }
+            combined_args[i] = reinterpret_cast<void*>(val);
+        }
+
+        // Copy new arguments (already HPointer-encoded from callers).
+        for (uint32_t i = 0; i < num_args; i++) {
+            combined_args[n_values + i] = reinterpret_cast<void*>(args[i]);
+        }
+
+        void* result = closure->evaluator(combined_args);
+        return reinterpret_cast<uint64_t>(result);
+    } else if (total < max_values) {
+        // Partial application: create new PAP with additional args.
+        // New args are treated as boxed (!eco.value) with unboxed_bitmap=0.
+        return eco_pap_extend(closure_hptr, args, num_args, 0);
+    } else {
+        // Over-saturated: not yet supported
+        fprintf(stderr, "eco_apply_closure: over-saturated call not yet implemented "
+                "(n_values=%u + num_args=%u > max_values=%u)\n",
+                n_values, num_args, max_values);
+        return 0;
+    }
 }
 
 extern "C" uint64_t eco_pap_extend(uint64_t closure_hptr, uint64_t* args, uint32_t num_newargs,
@@ -580,9 +611,16 @@ extern "C" uint64_t eco_closure_call_saturated(uint64_t closure_hptr, uint64_t* 
     void** combined_args = (max_values <= 16) ? stack_args :
                            static_cast<void**>(alloca(max_values * sizeof(void*)));
 
-    // Copy captured values from closure.
+    // Copy captured values from closure, boxing unboxed ones.
+    // The wrapper expects ALL args as HPointer-encoded.
+    uint64_t unboxed_bitmap = closure->unboxed;  // Bitfield already extracts bits 12+
     for (uint32_t i = 0; i < n_values; i++) {
-        combined_args[i] = reinterpret_cast<void*>(closure->values[i].i);
+        uint64_t val = closure->values[i].i;
+        if ((unboxed_bitmap >> i) & 1) {
+            // Unboxed capture: box as Int so wrapper can unbox
+            val = eco_alloc_int(static_cast<int64_t>(val));
+        }
+        combined_args[i] = reinterpret_cast<void*>(val);
     }
 
     // Copy new arguments.
@@ -1711,6 +1749,32 @@ extern "C" uint64_t eco_value_to_string(uint64_t value) {
     HPointer strPtr = alloc::allocStringFromUTF8(result);
 
     // Return as HPointer (uint64_t)
+    uint64_t hptr_result;
+    memcpy(&hptr_result, &strPtr, sizeof(hptr_result));
+    return hptr_result;
+}
+
+extern "C" uint64_t eco_value_to_string_typed(uint64_t value, int64_t type_id) {
+    // Temporarily capture output to a string
+    std::ostringstream capture;
+    std::ostringstream* prev = tl_output_stream;
+    tl_output_stream = &capture;
+
+    // Print the value using type information for constructor names
+    if (type_id >= 0 && g_type_graph && g_type_graph->types &&
+        static_cast<uint32_t>(type_id) < g_type_graph->type_count) {
+        print_typed_value(value, static_cast<uint32_t>(type_id), 0);
+    } else {
+        print_value(value, 0);
+    }
+
+    // Restore previous stream
+    tl_output_stream = prev;
+
+    // Allocate and return an ElmString from the captured output
+    std::string result = capture.str();
+    HPointer strPtr = alloc::allocStringFromUTF8(result);
+
     uint64_t hptr_result;
     memcpy(&hptr_result, &strPtr, sizeof(hptr_result));
     return hptr_result;

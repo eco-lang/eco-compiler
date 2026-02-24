@@ -44,10 +44,13 @@ HPointer uncons(void* str) {
 }
 
 HPointer fromList(HPointer chars) {
-    // Convert list of character strings to a single string
+    // Convert list of Char values to a single string.
+    // List heads can be either:
+    //   - Unboxed: raw i16 char value in head.c (header.unboxed bit 0 set)
+    //   - Boxed: HPointer to ElmChar in head.p (header.unboxed bit 0 clear)
     auto& allocator = Allocator::instance();
 
-    // First pass: count total characters
+    // First pass: count total characters (one per cons cell)
     size_t total_len = 0;
     HPointer current = chars;
 
@@ -56,11 +59,7 @@ HPointer fromList(HPointer chars) {
         if (!cell) break;
 
         Cons* c = static_cast<Cons*>(cell);
-        void* charStr = allocator.resolve(c->head.p);
-        if (charStr) {
-            ElmString* s = static_cast<ElmString*>(charStr);
-            total_len += s->header.size;
-        }
+        total_len++;
         current = c->tail;
     }
 
@@ -74,7 +73,7 @@ HPointer fromList(HPointer chars) {
     ElmString* result = static_cast<ElmString*>(allocator.allocate(total_size, Tag_String));
     result->header.size = static_cast<u32>(total_len);
 
-    // Second pass: copy characters
+    // Second pass: extract char values
     size_t offset = 0;
     current = chars;
 
@@ -83,12 +82,17 @@ HPointer fromList(HPointer chars) {
         if (!cell) break;
 
         Cons* c = static_cast<Cons*>(cell);
-        void* charStr = allocator.resolve(c->head.p);
-        if (charStr) {
-            ElmString* s = static_cast<ElmString*>(charStr);
-            std::memcpy(result->chars + offset, s->chars, s->header.size * sizeof(u16));
-            offset += s->header.size;
+        u16 charVal;
+        if (c->header.unboxed & 1) {
+            // Unboxed: raw char value stored directly
+            charVal = c->head.c;
+        } else {
+            // Boxed: HPointer to ElmChar
+            void* charObj = allocator.resolve(c->head.p);
+            ElmChar* ec = static_cast<ElmChar*>(charObj);
+            charVal = ec->value;
         }
+        result->chars[offset++] = charVal;
         current = c->tail;
     }
 

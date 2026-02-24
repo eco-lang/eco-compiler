@@ -5,6 +5,7 @@
 #include "String.hpp"
 #include "allocator/Heap.hpp"
 #include "allocator/HeapHelpers.hpp"
+#include "allocator/RuntimeExports.h"
 #include "allocator/StringOps.hpp"
 #include <cassert>
 #include <vector>
@@ -127,8 +128,7 @@ uint64_t Elm_Kernel_String_toFloat(uint64_t str) {
 }
 
 uint64_t Elm_Kernel_String_fromNumber(uint64_t n) {
-    // AllBoxed ABI: we receive a boxed number (HPointer to ElmInt or ElmFloat).
-    // Dispatch based on the tag to handle both Int and Float.
+    // n is an HPointer to either ElmInt or ElmFloat (polymorphic number type).
     void* ptr = Export::toPtr(n);
     HPointer result = String::fromNumber(ptr);
     return Export::encode(result);
@@ -138,48 +138,64 @@ uint64_t Elm_Kernel_String_fromNumber(uint64_t n) {
 // Higher-order String functions (closure-based)
 //===----------------------------------------------------------------------===//
 
+// Load captured values, boxing unboxed ones via eco_alloc_int.
+// The wrapper expects ALL args as HPointer-encoded values.
+static void loadCapturedValues(Closure* closure, void* args[]) {
+    uint32_t n_values = closure->n_values;
+    uint64_t unboxed = closure->unboxed;  // Bitfield already extracts bits 12+
+    for (uint32_t i = 0; i < n_values; i++) {
+        uint64_t val = closure->values[i].i;
+        if ((unboxed >> i) & 1) {
+            val = eco_alloc_int(static_cast<int64_t>(val));
+        }
+        args[i] = reinterpret_cast<void*>(val);
+    }
+}
+
 // Helper to call a closure with a single Char argument and get Char result.
+// Char arg is passed as raw i16 value (zext to i64). The wrapper truncates back to i16.
+// Wrapper boxes Char result as HPointer; we unbox it here.
 static uint16_t callCharToCharClosure(void* closure_ptr, uint16_t c) {
     Closure* closure = static_cast<Closure*>(closure_ptr);
     uint32_t n_values = closure->n_values;
 
-    // Build argument array: captured values + the char argument.
+    // Build argument array: captured values + the char argument (raw value).
     void* args[16];
-    for (uint32_t i = 0; i < n_values; i++) {
-        args[i] = reinterpret_cast<void*>(closure->values[i].i);
-    }
-    args[n_values] = reinterpret_cast<void*>(static_cast<uint64_t>(c));
+    loadCapturedValues(closure, args);
+    args[n_values] = reinterpret_cast<void*>(eco_alloc_char(static_cast<uint32_t>(c)));
 
-    // Call the evaluator.
+    // Call the evaluator. Result is a boxed Char HPointer.
     void* result = closure->evaluator(args);
-    return static_cast<uint16_t>(reinterpret_cast<uint64_t>(result));
+    uint64_t resultU64 = reinterpret_cast<uint64_t>(result);
+    // Unbox: resolve HPointer, read Char value from offset 8
+    void* charObj = reinterpret_cast<void*>(eco_resolve_hptr(resultU64));
+    ElmChar* ec = static_cast<ElmChar*>(charObj);
+    return ec->value;
 }
 
 // Helper to call a closure with a single Char argument and get Bool result.
+// Bool is !eco.value (True/False embedded constants), not a primitive.
 static bool callCharToBoolClosure(void* closure_ptr, uint16_t c) {
     Closure* closure = static_cast<Closure*>(closure_ptr);
     uint32_t n_values = closure->n_values;
 
     void* args[16];
-    for (uint32_t i = 0; i < n_values; i++) {
-        args[i] = reinterpret_cast<void*>(closure->values[i].i);
-    }
-    args[n_values] = reinterpret_cast<void*>(static_cast<uint64_t>(c));
+    loadCapturedValues(closure, args);
+    args[n_values] = reinterpret_cast<void*>(eco_alloc_char(static_cast<uint32_t>(c)));
 
     void* result = closure->evaluator(args);
     return Export::decodeBoxedBool(reinterpret_cast<uint64_t>(result));
 }
 
 // Helper to call a fold closure: (Char, acc) -> acc
+// Char is passed as raw value, acc flows through as HPointer-encoded.
 static uint64_t callFoldClosure(void* closure_ptr, uint16_t c, uint64_t acc) {
     Closure* closure = static_cast<Closure*>(closure_ptr);
     uint32_t n_values = closure->n_values;
 
     void* args[16];
-    for (uint32_t i = 0; i < n_values; i++) {
-        args[i] = reinterpret_cast<void*>(closure->values[i].i);
-    }
-    args[n_values] = reinterpret_cast<void*>(static_cast<uint64_t>(c));
+    loadCapturedValues(closure, args);
+    args[n_values] = reinterpret_cast<void*>(eco_alloc_char(static_cast<uint32_t>(c)));
     args[n_values + 1] = reinterpret_cast<void*>(acc);
 
     void* result = closure->evaluator(args);

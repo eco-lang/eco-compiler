@@ -1,6 +1,6 @@
 module StringToListFromListTest exposing (main)
 
--- CHECK: toList1: ['h','e','l','l','o']
+-- CHECK: toList1: ['h', 'e', 'l', 'l', 'o']
 -- CHECK: fromList1: "hello"
 -- CHECK: roundtrip: "abc"
 -- CHECK: empty_toList: []

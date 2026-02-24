@@ -4,8 +4,8 @@ module JsArrayGetSetTest exposing (main)
 -- CHECK: get_last: Just 30
 -- CHECK: get_oob: Nothing
 -- CHECK: get_neg: Nothing
--- CHECK: set_mid: [10,99,30]
--- CHECK: set_oob: [10,20,30]
+-- CHECK: set_mid: [10, 99, 30]
+-- CHECK: set_oob: [10, 20, 30]
 
 import Array
 import Html exposing (text)

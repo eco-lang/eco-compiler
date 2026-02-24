@@ -196,6 +196,12 @@ void registerRuntimeSymbols(ExecutionEngine &engine) {
                 llvm::orc::ExecutorAddr::fromPtr(&eco_int_pow),
                 llvm::JITSymbolFlags::Exported);
 
+        // Array cloning (for immutable Array.set operations).
+        symbolMap[interner("eco_clone_array")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_clone_array),
+                llvm::JITSymbolFlags::Exported);
+
         // HPointer conversion.
         symbolMap[interner("eco_resolve_hptr")] =
             llvm::orc::ExecutorSymbolDef(

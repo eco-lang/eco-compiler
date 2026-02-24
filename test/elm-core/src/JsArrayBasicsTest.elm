@@ -1,6 +1,6 @@
 module JsArrayBasicsTest exposing (main)
 
--- CHECK: toList: [1,2,3]
+-- CHECK: toList: [1, 2, 3]
 -- CHECK: length: 3
 -- CHECK: isEmpty_empty: True
 -- CHECK: isEmpty_nonempty: False

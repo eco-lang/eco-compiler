@@ -167,7 +167,7 @@ uint64_t Elm_Kernel_JsArray_foldr(uint64_t closure, uint64_t acc, uint64_t array
 
 uint64_t Elm_Kernel_Debug_log(uint64_t tag, uint64_t value);
 uint64_t Elm_Kernel_Debug_todo(uint64_t message);
-uint64_t Elm_Kernel_Debug_toString(uint64_t value);
+uint64_t Elm_Kernel_Debug_toString(uint64_t value, int64_t type_id);
 
 //===----------------------------------------------------------------------===//
 // Platform Module (elm/core)

@@ -225,12 +225,20 @@ struct ListConstructOpLowering : public OpConversionPattern<ListConstructOp> {
         auto loc = op.getLoc();
         auto *ctx = rewriter.getContext();
         auto i32Ty = IntegerType::get(ctx, 32);
+        auto i64Ty = IntegerType::get(ctx, 64);
 
         auto func = runtime.getOrCreateAllocCons(rewriter);
         auto headVal = adaptor.getHead();
         auto tailVal = adaptor.getTail();
         uint32_t headUnboxed = op.getHeadUnboxed() ? 1 : 0;
         auto headUnboxedVal = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, headUnboxed);
+
+        // eco_alloc_cons expects i64 for head; widen narrower integer types (e.g. i16 Char)
+        if (auto intTy = dyn_cast<IntegerType>(headVal.getType())) {
+            if (intTy.getWidth() < 64) {
+                headVal = rewriter.create<LLVM::ZExtOp>(loc, i64Ty, headVal);
+            }
+        }
 
         auto call = rewriter.create<LLVM::CallOp>(
             loc, func, ValueRange{headVal, tailVal, headUnboxedVal});

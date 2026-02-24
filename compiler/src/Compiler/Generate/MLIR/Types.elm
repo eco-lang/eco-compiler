@@ -2,7 +2,7 @@ module Compiler.Generate.MLIR.Types exposing
     ( ecoValue, ecoInt, ecoFloat, ecoChar
     , canUnbox, monoTypeToAbi, monoTypeToOperand
     , mlirTypeToString
-    , isFunctionType, functionArity, countTotalArity, isEcoValueType
+    , isFunctionType, functionArity, countTotalArity, flattenFunctionType, isEcoValueType
     , isUnboxable
     , RecordLayout, FieldInfo, TupleLayout, CtorLayout
     , computeRecordLayout, computeTupleLayout, computeCtorLayout
@@ -38,7 +38,7 @@ See design\_docs/invariants.csv for REP\_ABI\_001, REP\_CLOSURE\_001, REP\_SSA\_
 
 # Function Type Utilities
 
-@docs isFunctionType, functionArity, countTotalArity, isEcoValueType
+@docs isFunctionType, functionArity, countTotalArity, flattenFunctionType, isEcoValueType
 
 
 # Primitive Type Checks
@@ -274,6 +274,30 @@ countTotalArity monoType =
 
         _ ->
             0
+
+
+{-| Flatten a curried function type into all ABI parameter types and the result type.
+For example, `Int -> String -> Bool -> Char` becomes `([i64, !eco.value, !eco.value], i16)`.
+Uses monoTypeToAbi for each parameter and the final result.
+-}
+flattenFunctionType : Mono.MonoType -> ( List MlirType, MlirType )
+flattenFunctionType monoType =
+    let
+        collectParams : Mono.MonoType -> List Mono.MonoType -> ( List Mono.MonoType, Mono.MonoType )
+        collectParams mt acc =
+            case mt of
+                Mono.MFunction argTypes result ->
+                    collectParams result (acc ++ argTypes)
+
+                _ ->
+                    ( acc, mt )
+
+        ( paramMonoTypes, resultMonoType ) =
+            collectParams monoType []
+    in
+    ( List.map monoTypeToAbi paramMonoTypes
+    , monoTypeToAbi resultMonoType
+    )
 
 
 

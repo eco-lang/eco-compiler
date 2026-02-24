@@ -186,6 +186,65 @@ forceResultVar desiredVar exprResult =
         }
 
 
+isVarDefinedInOps : String -> List MlirOp -> Bool
+isVarDefinedInOps var ops =
+    List.any (\op -> List.any (\( name, _ ) -> name == var) op.results) ops
+
+
+fixSelfCaptures : String -> String -> Ctx.Context -> ExprResult -> ( ExprResult, Ctx.Context )
+fixSelfCaptures placeholderVar unitVar ctx result =
+    let
+        fixOp : MlirOp -> MlirOp
+        fixOp op =
+            if op.name == "eco.papCreate" && List.member placeholderVar op.operands then
+                let
+                    selfIndices =
+                        List.indexedMap
+                            (\i v ->
+                                if v == placeholderVar then
+                                    Just i
+
+                                else
+                                    Nothing
+                            )
+                            op.operands
+                            |> List.filterMap identity
+
+                    newOperands =
+                        List.map
+                            (\v ->
+                                if v == placeholderVar then
+                                    unitVar
+
+                                else
+                                    v
+                            )
+                            op.operands
+
+                    selfCaptureAttr =
+                        Dict.singleton "self_capture_indices"
+                            (ArrayAttr (Just I64)
+                                (List.map (\i -> IntAttr Nothing i) selfIndices)
+                            )
+                in
+                { op
+                    | operands = newOperands
+                    , attrs = Dict.union selfCaptureAttr op.attrs
+                }
+
+            else
+                op
+    in
+    ( { result | ops = List.map fixOp result.ops }, ctx )
+
+
+hasSelfCapture : String -> List MlirOp -> Bool
+hasSelfCapture placeholderVar ops =
+    List.any
+        (\op -> op.name == "eco.papCreate" && List.member placeholderVar op.operands)
+        ops
+
+
 
 -- ====== HELPER FUNCTIONS ======
 
@@ -603,7 +662,15 @@ generateVarKernel ctx home name monoType =
 
                     else
                         -- Function-typed kernel with arity > 0: create a closure (papCreate)
+                        -- Register kernel call so func.func declaration is emitted,
+                        -- enabling the closure wrapper to know parameter types.
                         let
+                            ( paramTypes, resultType ) =
+                                Types.flattenFunctionType monoType
+
+                            ctxWithKernel =
+                                Ctx.registerKernelCall ctx1 kernelName paramTypes resultType
+
                             attrs =
                                 Dict.fromList
                                     [ ( "function", SymbolRefAttr kernelName )
@@ -612,7 +679,7 @@ generateVarKernel ctx home name monoType =
                                     ]
 
                             ( ctx2, papOp ) =
-                                Ops.mlirOp ctx1 "eco.papCreate"
+                                Ops.mlirOp ctxWithKernel "eco.papCreate"
                                     |> Ops.opBuilder.withResults [ ( var, Types.ecoValue ) ]
                                     |> Ops.opBuilder.withAttrs attrs
                                     |> Ops.opBuilder.build
@@ -668,7 +735,15 @@ generateVarKernel ctx home name monoType =
 
                     else
                         -- Function-typed kernel with arity > 0: create a closure (papCreate)
+                        -- Register kernel call so func.func declaration is emitted,
+                        -- enabling the closure wrapper to know parameter types.
                         let
+                            ( paramTypes, resultType ) =
+                                Types.flattenFunctionType monoType
+
+                            ctxWithKernel =
+                                Ctx.registerKernelCall ctx1 kernelName paramTypes resultType
+
                             attrs =
                                 Dict.fromList
                                     [ ( "function", SymbolRefAttr kernelName )
@@ -677,7 +752,7 @@ generateVarKernel ctx home name monoType =
                                     ]
 
                             ( ctx2, papOp ) =
-                                Ops.mlirOp ctx1 "eco.papCreate"
+                                Ops.mlirOp ctxWithKernel "eco.papCreate"
                                     |> Ops.opBuilder.withResults [ ( var, Types.ecoValue ) ]
                                     |> Ops.opBuilder.withAttrs attrs
                                     |> Ops.opBuilder.build
@@ -2039,15 +2114,15 @@ generateSaturatedCall ctx func args resultType callInfo =
                                                     ( resultVar, ctx2 ) =
                                                         Ctx.freshVar ctx1b
 
-                                                    callResultType =
+                                                    resultMlirType =
                                                         Types.monoTypeToAbi resultType
 
                                                     ( ctx3, callOp ) =
-                                                        Ops.ecoCallNamed ctx2 resultVar funcName argVarPairs callResultType
+                                                        Ops.ecoCallNamed ctx2 resultVar funcName argVarPairs resultMlirType
                                                 in
                                                 { ops = argOps ++ boxOps ++ [ callOp ]
                                                 , resultVar = resultVar
-                                                , resultType = callResultType
+                                                , resultType = resultMlirType
                                                 , ctx = ctx3
                                                 , isTerminated = False
                                                 }
@@ -2077,15 +2152,15 @@ generateSaturatedCall ctx func args resultType callInfo =
                                         ( resultVar, ctx2 ) =
                                             Ctx.freshVar ctx1b
 
-                                        callResultType =
+                                        resultMlirType =
                                             Types.monoTypeToAbi resultType
 
                                         ( ctx3, callOp ) =
-                                            Ops.ecoCallNamed ctx2 resultVar funcName argVarPairs callResultType
+                                            Ops.ecoCallNamed ctx2 resultVar funcName argVarPairs resultMlirType
                                     in
                                     { ops = argOps ++ boxOps ++ [ callOp ]
                                     , resultVar = resultVar
-                                    , resultType = callResultType
+                                    , resultType = resultMlirType
                                     , ctx = ctx3
                                     , isTerminated = False
                                     }
@@ -2209,6 +2284,69 @@ generateSaturatedCall ctx func args resultType callInfo =
                     , resultVar = boxedValueVar -- Return the value (boxed)
                     , resultType = Types.ecoValue
                     , ctx = ctx2
+                    , isTerminated = False
+                    }
+
+                ( "Debug", "toString", [ ( valueVar, valueType ) ] ) ->
+                    -- Special handling for Debug.toString: pass type_id for constructor names
+                    let
+                        valueMonoType : Mono.MonoType
+                        valueMonoType =
+                            case args of
+                                [ valueExpr ] ->
+                                    Mono.typeOf valueExpr
+
+                                _ ->
+                                    Mono.MUnit
+
+                        ( typeId, ctx1b ) =
+                            Ctx.getOrCreateTypeIdForMonoType valueMonoType ctx1
+
+                        -- Box the value if needed
+                        ( boxOps, boxedValueVar, ctx1c ) =
+                            if Types.isEcoValueType valueType then
+                                ( [], valueVar, ctx1b )
+
+                            else
+                                let
+                                    ( boxVar, ctx1c_ ) =
+                                        Ctx.freshVar ctx1b
+
+                                    boxAttrs =
+                                        Dict.singleton "_operand_types" (ArrayAttr Nothing [ TypeAttr valueType ])
+
+                                    ( ctx1c__, boxOp ) =
+                                        Ops.mlirOp ctx1c_ "eco.box"
+                                            |> Ops.opBuilder.withOperands [ valueVar ]
+                                            |> Ops.opBuilder.withResults [ ( boxVar, Types.ecoValue ) ]
+                                            |> Ops.opBuilder.withAttrs boxAttrs
+                                            |> Ops.opBuilder.build
+                                in
+                                ( [ boxOp ], boxVar, ctx1c__ )
+
+                        -- Create the type_id constant
+                        ( typeIdVar, ctx2a ) =
+                            Ctx.freshVar ctx1c
+
+                        ( ctx2b, typeIdOp ) =
+                            Ops.arithConstantInt ctx2a typeIdVar typeId
+
+                        ( resultVar, ctx2c ) =
+                            Ctx.freshVar ctx2b
+
+                        ( ctx2d, callOp ) =
+                            Ops.ecoCallNamed ctx2c
+                                resultVar
+                                "Elm_Kernel_Debug_toString"
+                                [ ( boxedValueVar, Types.ecoValue )
+                                , ( typeIdVar, Types.ecoInt )
+                                ]
+                                Types.ecoValue
+                    in
+                    { ops = argOps ++ boxOps ++ [ typeIdOp, callOp ]
+                    , resultVar = resultVar
+                    , resultType = Types.ecoValue
+                    , ctx = ctx2d
                     , isTerminated = False
                     }
 
@@ -3017,12 +3155,39 @@ generateLet ctx def body =
                         -- When the RHS produces NO ops (e.g. a simple variable reference),
                         -- there is no defining op to rename, so we alias the let-bound name
                         -- to the existing SSA var instead.
-                        ( exprResult, effectiveVar ) =
-                            if List.isEmpty rawResult.ops then
-                                ( rawResult, rawResult.resultVar )
+                        -- Handle self-capturing closures (e.g., recursive helper in Array.foldr).
+                        -- If a papCreate uses the placeholder var as a capture operand,
+                        -- replace it with a Unit constant and mark the self-capture index.
+                        -- The C++ lowering will patch the closure to point to itself.
+                        ( fixedResult, ctxAfterFix ) =
+                            if hasSelfCapture placeholderVar rawResult.ops then
+                                let
+                                    ( unitVar, ctxWithUnit ) =
+                                        Ctx.freshVar rawResult.ctx
+
+                                    ( ctxWithUnit2, unitOp ) =
+                                        Ops.ecoConstantUnit ctxWithUnit unitVar
+
+                                    resultWithUnit =
+                                        { rawResult | ops = [ unitOp ] ++ rawResult.ops, ctx = ctxWithUnit2 }
+                                in
+                                fixSelfCaptures placeholderVar unitVar ctxWithUnit2 resultWithUnit
 
                             else
-                                ( forceResultVar placeholderVar rawResult, placeholderVar )
+                                ( rawResult, rawResult.ctx )
+
+                        ( exprResult, effectiveVar ) =
+                            if List.isEmpty fixedResult.ops then
+                                ( fixedResult, fixedResult.resultVar )
+
+                            else if not (isVarDefinedInOps fixedResult.resultVar fixedResult.ops) then
+                                -- The result var is from an outer scope (not defined by this
+                                -- expression's ops), e.g. Debug.log returning an already-boxed
+                                -- value. Renaming would break SSA references, so just alias.
+                                ( fixedResult, fixedResult.resultVar )
+
+                            else
+                                ( forceResultVar placeholderVar fixedResult, placeholderVar )
 
                         -- Update varMappings for this name to use the effective SSA var,
                         -- with the actual result type.

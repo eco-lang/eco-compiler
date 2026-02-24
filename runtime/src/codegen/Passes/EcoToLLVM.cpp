@@ -241,6 +241,83 @@ struct EcoToLLVMPass : public PassWrapper<EcoToLLVMPass, OperationPass<ModuleOp>
         EcoCFContext cfCtx;
         cfCtx.clear();
 
+        // Pre-scan all func::FuncOps to save original types before conversion.
+        // This is needed because getOrCreateWrapper must distinguish primitive
+        // params (Int i64) from !eco.value params (HPointer i64), but after
+        // conversion both become LLVM i64 and the func::FuncOp is gone.
+        module.walk([&](func::FuncOp funcOp) {
+            runtime.origFuncTypes[funcOp.getSymName()] = funcOp.getFunctionType();
+        });
+
+        // Also scan papCreate ops for kernel functions referenced only by name
+        // (e.g. Elm_Kernel_Bitwise_*) that have no func::FuncOp declaration.
+        // Build param types from papCreate captured operand types and papExtend
+        // new arg types to correctly distinguish Int (i64) from !eco.value params.
+        {
+            auto valueType = eco::ValueType::get(ctx);
+
+            // For each undeclared kernel function, collect param types from
+            // papCreate captures and papExtend new args.
+            llvm::StringMap<SmallVector<Type>> kernelParamTypes;
+            llvm::StringMap<int64_t> kernelArities;
+            llvm::StringMap<Type> kernelResultTypes;
+
+            module.walk([&](eco::PapCreateOp papOp) {
+                StringRef funcName = papOp.getFunction();
+                if (runtime.origFuncTypes.count(funcName) > 0)
+                    return;  // Already declared via func::FuncOp
+
+                int64_t arity = papOp.getArity();
+                auto &types = kernelParamTypes[funcName];
+                kernelArities[funcName] = arity;
+
+                // Initialize with !eco.value (safe default)
+                if (types.empty()) {
+                    types.resize(arity, valueType);
+                    kernelResultTypes[funcName] = valueType;
+                }
+
+                // Fill captured param types (first num_captured params)
+                int64_t numCaptured = papOp.getNumCaptured();
+                for (int64_t i = 0; i < numCaptured; ++i) {
+                    Type capType = papOp.getCaptured()[i].getType();
+                    types[i] = capType;
+                }
+
+                // Follow uses to papExtend ops to get new arg types
+                for (auto &use : papOp.getResult().getUses()) {
+                    auto papExtend = dyn_cast<eco::PapExtendOp>(use.getOwner());
+                    if (!papExtend) continue;
+
+                    int64_t remaining = papExtend.getRemainingArity();
+                    int64_t paramOffset = arity - remaining;
+
+                    // Fill new arg types at their positions
+                    for (size_t j = 0; j < papExtend.getNewargs().size(); ++j) {
+                        int64_t paramIdx = paramOffset + j;
+                        if (paramIdx < arity) {
+                            types[paramIdx] = papExtend.getNewargs()[j].getType();
+                        }
+                    }
+
+                    // If this papExtend saturates and has a typed result, use it
+                    if (papExtend.getNewargs().size() == (size_t)remaining) {
+                        kernelResultTypes[funcName] = papExtend.getResult().getType();
+                    }
+                }
+            });
+
+            // Register the inferred types
+            for (auto &entry : kernelParamTypes) {
+                StringRef funcName = entry.getKey();
+                auto &types = entry.getValue();
+                Type resultType = kernelResultTypes.count(funcName) ?
+                                  kernelResultTypes[funcName] : valueType;
+                auto funcType = FunctionType::get(ctx, types, {resultType});
+                runtime.origFuncTypes[funcName] = funcType;
+            }
+        }
+
         // Add kernel function lowering first (higher priority)
         populateEcoFuncPatterns(typeConverter, patterns);
 

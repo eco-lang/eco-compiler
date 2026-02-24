@@ -1,7 +1,7 @@
 module JsArrayInitializeRepeatTest exposing (main)
 
--- CHECK: init1: [0,1,4,9,16]
--- CHECK: repeat1: [7,7,7]
+-- CHECK: init1: [0, 1, 4, 9, 16]
+-- CHECK: repeat1: [7, 7, 7]
 -- CHECK: repeat_zero: []
 -- CHECK: init_zero: []
 

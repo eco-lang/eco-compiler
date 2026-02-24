@@ -14,6 +14,7 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Transforms/DialectConversion.h"
 
+#include "llvm/ADT/StringMap.h"
 #include <vector>
 
 namespace eco {
@@ -121,6 +122,12 @@ constexpr uint64_t ClosureValuesOffset = HeaderSize + 2 * PtrSize;
 struct EcoRuntime {
     mutable mlir::ModuleOp module;
     mlir::MLIRContext *ctx;
+
+    /// Pre-scanned original function types (before LLVM conversion).
+    /// Maps function name -> original FunctionType (with eco::ValueType etc.).
+    /// Populated before conversion so wrapper generation can distinguish
+    /// primitive params (Int i64) from !eco.value params (HPointer i64).
+    llvm::StringMap<mlir::FunctionType> origFuncTypes;
 
     explicit EcoRuntime(mlir::ModuleOp m) : module(m), ctx(m.getContext()) {}
 

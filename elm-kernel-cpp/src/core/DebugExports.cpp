@@ -65,10 +65,10 @@ uint64_t Elm_Kernel_Debug_todo(uint64_t message) {
     return 0;
 }
 
-uint64_t Elm_Kernel_Debug_toString(uint64_t value) {
-    // Convert the value to its string representation
-    // eco_value_to_string returns HPointer as uint64_t
-    return eco_value_to_string(value);
+uint64_t Elm_Kernel_Debug_toString(uint64_t value, int64_t type_id) {
+    // Convert the value to its string representation using type info
+    // eco_value_to_string_typed returns HPointer as uint64_t
+    return eco_value_to_string_typed(value, type_id);
 }
 
 } // extern "C"
