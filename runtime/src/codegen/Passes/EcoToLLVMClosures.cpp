@@ -669,136 +669,29 @@ static Value emitInlineClosureCall(ConversionPatternRewriter &rewriter, Location
     auto *ctx = rewriter.getContext();
     auto i8Ty = IntegerType::get(ctx, 8);
     auto i64Ty = IntegerType::get(ctx, 64);
+    auto i32Ty = IntegerType::get(ctx, 32);
     auto f64Ty = Float64Type::get(ctx);
     auto ptrTy = LLVM::LLVMPointerType::get(ctx);
 
-    // Resolve closure HPointer to raw pointer
-    auto resolveFunc = runtime.getOrCreateResolveHPtr(rewriter);
-    auto resolveCall = rewriter.create<LLVM::CallOp>(loc, resolveFunc, ValueRange{closureI64});
-    Value closurePtr = resolveCall.getResult();
+    // INV_2: Route through eco_closure_call_saturated instead of inline
+    // bitmap interpretation + evaluator call.
+    // We only need to: (1) box new args to HPointer, (2) call the runtime.
 
-    // Load packed field at offset 8
-    auto offset8 = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, layout::ClosurePackedOffset);
-    auto packedPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i8Ty, closurePtr, ValueRange{offset8});
-    Value packed = rewriter.create<LLVM::LoadOp>(loc, i64Ty, packedPtr);
-
-    // Extract n_values (bits 0-5)
-    auto mask6 = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, 0x3F);
-    Value nValues = rewriter.create<LLVM::AndOp>(loc, packed, mask6);
-
-    // Extract unboxed bitmap (bits 12+) for captured values boxing
-    auto shift12 = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, 12);
-    Value unboxedBitmap = rewriter.create<LLVM::LShrOp>(loc, packed, shift12);
-
-    // Load evaluator pointer at offset 16
-    auto offset16 = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, layout::ClosureEvaluatorOffset);
-    auto evalPtrPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i8Ty, closurePtr, ValueRange{offset16});
-    Value evaluator = rewriter.create<LLVM::LoadOp>(loc, ptrTy, evalPtrPtr);
-
-    // Total args = n_values + newArgs.size()
     int64_t numNewArgs = newArgs.size();
-    auto numNewArgsConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, numNewArgs);
-    Value totalArgs = rewriter.create<LLVM::AddOp>(loc, nValues, numNewArgsConst);
 
-    // Allocate args array on stack
-    Value argsArray = rewriter.create<LLVM::AllocaOp>(loc, ptrTy, i64Ty, totalArgs);
-
-    // === Copy captured values into args array ===
-    // Unboxed captures (raw Int/Float/Char bits stored as i64) must be boxed
-    // to HPointer before passing to the wrapper. We use eco_alloc_int for all
-    // unboxed captures regardless of actual type: the wrapper reads the i64 bits
-    // at offset 8 and interprets them based on the function's original param types.
-    Value zero = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, 0);
-    auto one64Const = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, 1);
+    // === Box new arguments to HPointer-encoded i64 ===
     auto allocIntFunc = runtime.getOrCreateAllocInt(rewriter);
-
-    auto whileOp = rewriter.create<scf::WhileOp>(
-        loc, TypeRange{i64Ty}, ValueRange{zero});
-
-    // "before" region: condition check (i < nValues)
-    {
-        OpBuilder::InsertionGuard guard(rewriter);
-        Block *beforeBlock = rewriter.createBlock(&whileOp.getBefore());
-        beforeBlock->addArgument(i64Ty, loc);
-        Value iArg = beforeBlock->getArgument(0);
-
-        rewriter.setInsertionPointToStart(beforeBlock);
-        auto cond = rewriter.create<LLVM::ICmpOp>(loc, LLVM::ICmpPredicate::slt, iArg, nValues);
-        rewriter.create<scf::ConditionOp>(loc, cond, ValueRange{iArg});
-    }
-
-    // "after" region: copy one captured value, boxing if unboxed (bitmap bit set).
-    {
-        OpBuilder::InsertionGuard guard(rewriter);
-        Block *afterBlock = rewriter.createBlock(&whileOp.getAfter());
-        afterBlock->addArgument(i64Ty, loc);
-        Value iIter = afterBlock->getArgument(0);
-
-        rewriter.setInsertionPointToStart(afterBlock);
-
-        // Compute pointer to closure->values[iIter]
-        auto offset24 = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, layout::ClosureValuesOffset);
-        auto eight = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, layout::PtrSize);
-        auto valueOffset = rewriter.create<LLVM::MulOp>(loc, iIter, eight);
-        auto totalOffset = rewriter.create<LLVM::AddOp>(loc, offset24, valueOffset);
-        auto srcPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i8Ty, closurePtr, ValueRange{totalOffset});
-        Value capturedVal = rewriter.create<LLVM::LoadOp>(loc, i64Ty, srcPtr);
-
-        // Check if this capture is unboxed: (unboxedBitmap >> iIter) & 1
-        Value shiftedBitmap = rewriter.create<LLVM::LShrOp>(loc, unboxedBitmap, iIter);
-        Value isUnboxed = rewriter.create<LLVM::AndOp>(loc, shiftedBitmap, one64Const);
-        Value isUnboxedBit = rewriter.create<LLVM::ICmpOp>(
-            loc, LLVM::ICmpPredicate::ne, isUnboxed, zero);
-
-        // Use scf.if to conditionally box: if unboxed, call eco_alloc_int
-        auto ifOp = rewriter.create<scf::IfOp>(
-            loc, TypeRange{i64Ty}, isUnboxedBit, /*withElseRegion=*/true);
-
-        // Then: box the raw value via eco_alloc_int
-        {
-            OpBuilder::InsertionGuard ifGuard(rewriter);
-            rewriter.setInsertionPointToStart(&ifOp.getThenRegion().front());
-            auto boxCall = rewriter.create<LLVM::CallOp>(loc, allocIntFunc, ValueRange{capturedVal});
-            rewriter.create<scf::YieldOp>(loc, ValueRange{boxCall.getResult()});
-        }
-
-        // Else: already HPointer, pass through
-        {
-            OpBuilder::InsertionGuard ifGuard(rewriter);
-            rewriter.setInsertionPointToStart(&ifOp.getElseRegion().front());
-            rewriter.create<scf::YieldOp>(loc, ValueRange{capturedVal});
-        }
-
-        rewriter.setInsertionPointAfter(ifOp);
-        Value boxedVal = ifOp.getResult(0);
-
-        // Store to argsArray[iIter]
-        auto dstPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i64Ty, argsArray, ValueRange{iIter});
-        rewriter.create<LLVM::StoreOp>(loc, boxedVal, dstPtr);
-
-        // iNext = iIter + 1
-        Value iNext = rewriter.create<LLVM::AddOp>(loc, iIter, one64Const);
-        rewriter.create<scf::YieldOp>(loc, ValueRange{iNext});
-    }
-
-    rewriter.setInsertionPointAfter(whileOp);
-
-    // === Copy new arguments into args array ===
-    // All new args must be HPointer-encoded for the wrapper.
-    // Use origNewArgTypes to determine boxing:
-    //   - !eco.value → pass through (already HPointer i64)
-    //   - Int (i64)  → box via eco_alloc_int
-    //   - Float (f64) → box via eco_alloc_float
-    //   - Char (i16)  → box via eco_alloc_char
-    //   - No orig type → fallback: box f64/i16, pass through i64
     auto allocCharFunc = runtime.getOrCreateAllocChar(rewriter);
     auto allocFloatFunc = runtime.getOrCreateAllocFloat(rewriter);
     bool hasOrigNewArgTypes = !origNewArgTypes.empty();
 
+    // Allocate array for new args only (runtime handles captures)
+    auto numNewArgsConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, numNewArgs);
+    Value newArgsArray = rewriter.create<LLVM::AllocaOp>(loc, ptrTy, i64Ty, numNewArgsConst);
+
     for (size_t j = 0; j < newArgs.size(); ++j) {
         auto jConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, static_cast<int64_t>(j));
-        auto idx = rewriter.create<LLVM::AddOp>(loc, nValues, jConst);
-        auto argDstPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i64Ty, argsArray, ValueRange{idx});
+        auto argDstPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i64Ty, newArgsArray, ValueRange{jConst});
         Value arg = newArgs[j];
 
         Type origArgType = (hasOrigNewArgTypes && j < origNewArgTypes.size())
@@ -835,21 +728,21 @@ static Value emitInlineClosureCall(ConversionPatternRewriter &rewriter, Location
         rewriter.create<LLVM::StoreOp>(loc, arg, argDstPtr);
     }
 
-    // === Call evaluator ===
-    auto evalFuncTy = LLVM::LLVMFunctionType::get(ptrTy, {ptrTy});
-    SmallVector<Value> callOperands;
-    callOperands.push_back(evaluator);
-    callOperands.push_back(argsArray);
-    auto indirectCallOp = rewriter.create<LLVM::CallOp>(loc, evalFuncTy, callOperands);
+    // === Call eco_closure_call_saturated(closure_hptr, new_args, num_newargs) ===
+    auto closureCallFunc = runtime.getOrCreateClosureCallSaturated(rewriter);
+    auto numNewArgsI32 = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, static_cast<int64_t>(numNewArgs));
+    auto runtimeCall = rewriter.create<LLVM::CallOp>(
+        loc, closureCallFunc, ValueRange{closureI64, newArgsArray, numNewArgsI32});
+    Value resultI64 = runtimeCall.getResult();
 
-    // === Convert result from ptr to caller's expected type ===
-    // The wrapper returns HPointer-encoded ptr. Use origResultType to unbox:
-    //   - !eco.value → ptrtoint (pass through HPointer)
-    //   - Int (i64) → resolve HPointer → load value at offset 8
+    // === Convert result from HPointer i64 to caller's expected type ===
+    // The runtime returns HPointer-encoded i64. Use origResultType to unbox:
+    //   - !eco.value → pass through HPointer
+    //   - Int (i64)  → resolve HPointer → load value at offset 8
     //   - Float (f64) → resolve → load i64 → bitcast to f64
-    //   - Char (i16) → resolve → load i64 → trunc
-    //   - No orig type → fallback: if converted type is f64, unbox; else pass through
-    Value resultI64 = rewriter.create<LLVM::PtrToIntOp>(loc, i64Ty, indirectCallOp.getResult());
+    //   - Char (i16)  → resolve → load i64 → trunc
+    //   - No orig type → fallback
+    auto resolveFunc = runtime.getOrCreateResolveHPtr(rewriter);
 
     Value result;
     if (origResultType && isa<eco::ValueType>(origResultType)) {

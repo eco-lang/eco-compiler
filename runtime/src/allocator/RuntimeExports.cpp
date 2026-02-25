@@ -11,6 +11,7 @@
 #include "HeapHelpers.hpp"
 #include "TypeInfo.hpp"
 
+#include <cassert>
 #include <charconv>
 #include <cmath>
 #include <cstdio>
@@ -488,6 +489,51 @@ extern "C" void eco_store_field_f64(uint64_t obj_hptr, uint32_t index, double va
 // Closure Operations
 //===----------------------------------------------------------------------===//
 
+namespace {
+
+/// Build the argument array for calling a closure's evaluator.
+///
+/// Copies captured values from the closure into out_args, boxing any unboxed
+/// captures, then appends the new arguments (which are already HPointer-encoded).
+///
+/// INVARIANT (RUNTIME_CLOSURE_002 / INV_5): Unboxed captures are always boxed
+/// via eco_alloc_int() regardless of their logical type (Int, Float, or Char).
+/// This is intentional bit-pattern boxing — the bitmap has only a 1-bit-per-slot
+/// presence flag with no type information. The evaluator (wrapper function) knows
+/// the original types from its compiled signature and reinterprets the raw i64
+/// bits accordingly (identity for Int, bitcast for Float, truncate for Char).
+/// The heap tag on the boxing object is NOT trusted by the evaluator.
+///
+/// This function is the SINGLE implementation of closure bitmap interpretation
+/// and evaluator argument construction (RUNTIME_CLOSURE_001 / INV_1).
+size_t buildEvaluatorArgs(
+    Closure* closure,
+    const uint64_t* new_args, uint32_t num_newargs,
+    void** out_args
+) {
+    const uint32_t nCaptured = closure->n_values;
+    const uint64_t bitmap    = closure->unboxed;
+    size_t idx = 0;
+
+    // 1. Captured values: box unboxed ones via bit-pattern boxing.
+    for (uint32_t i = 0; i < nCaptured; ++i) {
+        uint64_t val = closure->values[i].i;
+        if ((bitmap >> i) & 1) {
+            val = eco_alloc_int(static_cast<int64_t>(val));
+        }
+        out_args[idx++] = reinterpret_cast<void*>(val);
+    }
+
+    // 2. New args (already HPointer-encoded).
+    for (uint32_t j = 0; j < num_newargs; ++j) {
+        out_args[idx++] = reinterpret_cast<void*>(new_args[j]);
+    }
+
+    return idx;
+}
+
+} // anonymous namespace
+
 extern "C" uint64_t eco_apply_closure(uint64_t closure_hptr, uint64_t* args, uint32_t num_args) {
     void* closure_ptr = hpointerToPtr(closure_hptr);
     if (!closure_ptr) return 0;
@@ -498,38 +544,17 @@ extern "C" uint64_t eco_apply_closure(uint64_t closure_hptr, uint64_t* args, uin
     uint32_t total = n_values + num_args;
 
     if (total == max_values) {
-        // Saturated: call the evaluator
-        void* stack_args[16];
-        void** combined_args = (max_values <= 16) ? stack_args :
-                               static_cast<void**>(alloca(max_values * sizeof(void*)));
-
-        // Copy captured values, boxing unboxed ones for the wrapper.
-        uint64_t unboxed_bitmap = closure->unboxed;  // Bitfield already extracts bits 12+
-        for (uint32_t i = 0; i < n_values; i++) {
-            uint64_t val = closure->values[i].i;
-            if ((unboxed_bitmap >> i) & 1) {
-                val = eco_alloc_int(static_cast<int64_t>(val));
-            }
-            combined_args[i] = reinterpret_cast<void*>(val);
-        }
-
-        // Copy new arguments (already HPointer-encoded from callers).
-        for (uint32_t i = 0; i < num_args; i++) {
-            combined_args[n_values + i] = reinterpret_cast<void*>(args[i]);
-        }
-
-        void* result = closure->evaluator(combined_args);
-        return reinterpret_cast<uint64_t>(result);
+        // Saturated: delegate to single evaluator callsite (INV_1).
+        return eco_closure_call_saturated(closure_hptr, args, num_args);
     } else if (total < max_values) {
         // Partial application: create new PAP with additional args.
         // New args are treated as boxed (!eco.value) with unboxed_bitmap=0.
         return eco_pap_extend(closure_hptr, args, num_args, 0);
     } else {
-        // Over-saturated: not yet supported
-        fprintf(stderr, "eco_apply_closure: over-saturated call not yet implemented "
-                "(n_values=%u + num_args=%u > max_values=%u)\n",
-                n_values, num_args, max_values);
-        return 0;
+        // Over-saturated: staging invariants (GOPT_001, GOPT_011-014) prevent this.
+        // If we reach here, it indicates a compiler bug (RUNTIME_CLOSURE_003 / INV_6).
+        assert(false && "eco_apply_closure: over-saturated call — compiler staging invariant violated");
+        __builtin_unreachable();
     }
 }
 
@@ -592,46 +617,22 @@ extern "C" uint64_t eco_closure_call_saturated(uint64_t closure_hptr, uint64_t* 
     if (!closure_ptr) return 0;
 
     Closure* closure = static_cast<Closure*>(closure_ptr);
-
-    // Get the closure state.
-    uint32_t n_values = closure->n_values;
     uint32_t max_values = closure->max_values;
 
     // Sanity check: n_values + num_newargs should equal max_values for a saturated call.
-    if (n_values + num_newargs != max_values) {
-        fprintf(stderr, "eco_closure_call_saturated: argument count mismatch "
-                "(n_values=%u + num_newargs=%u != max_values=%u)\n",
-                n_values, num_newargs, max_values);
-        return 0;
-    }
+    assert(closure->n_values + num_newargs == max_values &&
+           "eco_closure_call_saturated: argument count mismatch");
 
     // Build the combined argument array.
-    // Stack-allocate for small arities, heap-allocate for large.
+    // Stack-allocate for small arities, alloca for large.
     void* stack_args[16];
     void** combined_args = (max_values <= 16) ? stack_args :
                            static_cast<void**>(alloca(max_values * sizeof(void*)));
 
-    // Copy captured values from closure, boxing unboxed ones.
-    // The wrapper expects ALL args as HPointer-encoded.
-    uint64_t unboxed_bitmap = closure->unboxed;  // Bitfield already extracts bits 12+
-    for (uint32_t i = 0; i < n_values; i++) {
-        uint64_t val = closure->values[i].i;
-        if ((unboxed_bitmap >> i) & 1) {
-            // Unboxed capture: box as Int so wrapper can unbox
-            val = eco_alloc_int(static_cast<int64_t>(val));
-        }
-        combined_args[i] = reinterpret_cast<void*>(val);
-    }
+    // Single implementation of bitmap interpretation + boxing (INV_1).
+    buildEvaluatorArgs(closure, new_args, num_newargs, combined_args);
 
-    // Copy new arguments.
-    for (uint32_t i = 0; i < num_newargs; i++) {
-        combined_args[n_values + i] = reinterpret_cast<void*>(new_args[i]);
-    }
-
-    // Call the evaluator function.
-    EvalFunction evaluator = closure->evaluator;
-    void* result = evaluator(combined_args);
-
+    void* result = closure->evaluator(combined_args);
     return reinterpret_cast<uint64_t>(result);
 }
 

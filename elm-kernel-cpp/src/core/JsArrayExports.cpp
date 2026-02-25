@@ -32,77 +32,35 @@ static int64_t unboxInt(uint64_t val) {
 }
 
 //===----------------------------------------------------------------------===//
-// Closure-calling helpers
-//
-// Captured values are copied as raw i64 from the closure's values array.
-// New arguments are passed as HPointer-encoded i64.
-// The evaluator wrapper returns void* whose bits are the i64 result.
+// Closure-calling helpers (INV_2: delegate to runtime via eco_closure_call_saturated)
 //===----------------------------------------------------------------------===//
-
-// Load captured values from closure, boxing unboxed ones via eco_alloc_int.
-// The wrapper expects ALL args as HPointer-encoded values.
-static void loadCapturedValues(Closure* closure, void** args) {
-    uint32_t n_values = closure->n_values;
-    uint64_t unboxed = closure->unboxed;  // Bitfield already extracts bits 12+
-    for (uint32_t i = 0; i < n_values; i++) {
-        uint64_t val = closure->values[i].i;
-        if ((unboxed >> i) & 1) {
-            val = eco_alloc_int(static_cast<int64_t>(val));
-        }
-        args[i] = reinterpret_cast<void*>(val);
-    }
-}
 
 // Call a closure with one argument (index for initialize).
 // index is boxed via eco_alloc_int so the wrapper can unbox it.
-static uint64_t callUnaryInitClosure(void* closure_ptr, int64_t index) {
-    Closure* closure = static_cast<Closure*>(closure_ptr);
-
-    void* args[16];
-    loadCapturedValues(closure, args);
-    args[closure->n_values] = reinterpret_cast<void*>(eco_alloc_int(index));
-
-    return reinterpret_cast<uint64_t>(closure->evaluator(args));
+static uint64_t callUnaryInitClosure(uint64_t closure_hptr, int64_t index) {
+    uint64_t args[1] = { eco_alloc_int(index) };
+    return eco_closure_call_saturated(closure_hptr, args, 1);
 }
 
 // Call a closure with one argument (element for map).
 // Element is already HPointer-encoded (!eco.value).
-static uint64_t callUnaryMapClosure(void* closure_ptr, uint64_t elem) {
-    Closure* closure = static_cast<Closure*>(closure_ptr);
-
-    void* args[16];
-    loadCapturedValues(closure, args);
-    args[closure->n_values] = reinterpret_cast<void*>(elem);
-
-    return reinterpret_cast<uint64_t>(closure->evaluator(args));
+static uint64_t callUnaryMapClosure(uint64_t closure_hptr, uint64_t elem) {
+    uint64_t args[1] = { elem };
+    return eco_closure_call_saturated(closure_hptr, args, 1);
 }
 
 // Call a closure with two arguments (index, element for indexedMap).
 // index is boxed, element is HPointer-encoded.
-static uint64_t callBinaryIndexMapClosure(void* closure_ptr, int64_t index, uint64_t elem) {
-    Closure* closure = static_cast<Closure*>(closure_ptr);
-    uint32_t n_values = closure->n_values;
-
-    void* args[16];
-    loadCapturedValues(closure, args);
-    args[n_values] = reinterpret_cast<void*>(eco_alloc_int(static_cast<int64_t>(index)));
-    args[n_values + 1] = reinterpret_cast<void*>(elem);
-
-    return reinterpret_cast<uint64_t>(closure->evaluator(args));
+static uint64_t callBinaryIndexMapClosure(uint64_t closure_hptr, int64_t index, uint64_t elem) {
+    uint64_t args[2] = { eco_alloc_int(index), elem };
+    return eco_closure_call_saturated(closure_hptr, args, 2);
 }
 
 // Call a closure with two arguments (element, acc for foldl/foldr).
 // Both are HPointer-encoded (!eco.value).
-static uint64_t callBinaryFoldClosure(void* closure_ptr, uint64_t elem, uint64_t acc) {
-    Closure* closure = static_cast<Closure*>(closure_ptr);
-    uint32_t n_values = closure->n_values;
-
-    void* args[16];
-    loadCapturedValues(closure, args);
-    args[n_values] = reinterpret_cast<void*>(elem);
-    args[n_values + 1] = reinterpret_cast<void*>(acc);
-
-    return reinterpret_cast<uint64_t>(closure->evaluator(args));
+static uint64_t callBinaryFoldClosure(uint64_t closure_hptr, uint64_t elem, uint64_t acc) {
+    uint64_t args[2] = { elem, acc };
+    return eco_closure_call_saturated(closure_hptr, args, 2);
 }
 
 } // anonymous namespace
@@ -283,12 +241,11 @@ uint64_t Elm_Kernel_JsArray_initialize(uint64_t size_val, uint64_t offset_val, u
     int64_t size = unboxInt(size_val);
     int64_t offset = unboxInt(offset_val);
 
-    void* closure_ptr = Export::toPtr(closure);
     HPointer arr = alloc::allocArray(static_cast<size_t>(size));
     auto& allocator = Allocator::instance();
 
     for (int64_t i = 0; i < size; i++) {
-        uint64_t value = callUnaryInitClosure(closure_ptr, offset + i);
+        uint64_t value = callUnaryInitClosure(closure, offset + i);
         void* arrObj = allocator.resolve(arr);
         Unboxable elem;
         elem.p = Export::decode(value);
@@ -304,7 +261,6 @@ uint64_t Elm_Kernel_JsArray_initializeFromList(uint64_t max_val, uint64_t list) 
 }
 
 uint64_t Elm_Kernel_JsArray_map(uint64_t closure, uint64_t array) {
-    void* closure_ptr = Export::toPtr(closure);
     void* srcPtr = Export::toPtr(array);
     ElmArray* src = static_cast<ElmArray*>(srcPtr);
     uint32_t len = src->length;
@@ -324,7 +280,7 @@ uint64_t Elm_Kernel_JsArray_map(uint64_t closure, uint64_t array) {
         } else {
             elem = Export::encode(src->elements[i].p);
         }
-        uint64_t result = callUnaryMapClosure(closure_ptr, elem);
+        uint64_t result = callUnaryMapClosure(closure, elem);
 
         void* arrObj = allocator.resolve(arr);
         Unboxable val;
@@ -337,7 +293,6 @@ uint64_t Elm_Kernel_JsArray_map(uint64_t closure, uint64_t array) {
 uint64_t Elm_Kernel_JsArray_indexedMap(uint64_t closure, uint64_t offset_val, uint64_t array) {
     int64_t offset = unboxInt(offset_val);
 
-    void* closure_ptr = Export::toPtr(closure);
     void* srcPtr = Export::toPtr(array);
     ElmArray* src = static_cast<ElmArray*>(srcPtr);
     uint32_t len = src->length;
@@ -356,7 +311,7 @@ uint64_t Elm_Kernel_JsArray_indexedMap(uint64_t closure, uint64_t offset_val, ui
         } else {
             elem = Export::encode(src->elements[i].p);
         }
-        uint64_t result = callBinaryIndexMapClosure(closure_ptr, offset + i, elem);
+        uint64_t result = callBinaryIndexMapClosure(closure, offset + i, elem);
 
         void* arrObj = allocator.resolve(arr);
         Unboxable val;
@@ -367,7 +322,6 @@ uint64_t Elm_Kernel_JsArray_indexedMap(uint64_t closure, uint64_t offset_val, ui
 }
 
 uint64_t Elm_Kernel_JsArray_foldl(uint64_t closure, uint64_t acc, uint64_t array) {
-    void* closure_ptr = Export::toPtr(closure);
     void* srcPtr = Export::toPtr(array);
     ElmArray* src = static_cast<ElmArray*>(srcPtr);
     uint32_t len = src->length;
@@ -384,13 +338,12 @@ uint64_t Elm_Kernel_JsArray_foldl(uint64_t closure, uint64_t acc, uint64_t array
         } else {
             elem = Export::encode(src->elements[i].p);
         }
-        accumulator = callBinaryFoldClosure(closure_ptr, elem, accumulator);
+        accumulator = callBinaryFoldClosure(closure, elem, accumulator);
     }
     return accumulator;
 }
 
 uint64_t Elm_Kernel_JsArray_foldr(uint64_t closure, uint64_t acc, uint64_t array) {
-    void* closure_ptr = Export::toPtr(closure);
     void* srcPtr = Export::toPtr(array);
     ElmArray* src = static_cast<ElmArray*>(srcPtr);
     uint32_t len = src->length;
@@ -408,7 +361,7 @@ uint64_t Elm_Kernel_JsArray_foldr(uint64_t closure, uint64_t acc, uint64_t array
         } else {
             elem = Export::encode(src->elements[idx].p);
         }
-        accumulator = callBinaryFoldClosure(closure_ptr, elem, accumulator);
+        accumulator = callBinaryFoldClosure(closure, elem, accumulator);
     }
     return accumulator;
 }

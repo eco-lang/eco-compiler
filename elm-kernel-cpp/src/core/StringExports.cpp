@@ -138,72 +138,37 @@ uint64_t Elm_Kernel_String_fromNumber(uint64_t n) {
 // Higher-order String functions (closure-based)
 //===----------------------------------------------------------------------===//
 
-// Load captured values, boxing unboxed ones via eco_alloc_int.
-// The wrapper expects ALL args as HPointer-encoded values.
-static void loadCapturedValues(Closure* closure, void* args[]) {
-    uint32_t n_values = closure->n_values;
-    uint64_t unboxed = closure->unboxed;  // Bitfield already extracts bits 12+
-    for (uint32_t i = 0; i < n_values; i++) {
-        uint64_t val = closure->values[i].i;
-        if ((unboxed >> i) & 1) {
-            val = eco_alloc_int(static_cast<int64_t>(val));
-        }
-        args[i] = reinterpret_cast<void*>(val);
-    }
-}
+//===----------------------------------------------------------------------===//
+// Closure-calling helpers (INV_2: delegate to runtime via eco_closure_call_saturated)
+//===----------------------------------------------------------------------===//
 
-// Helper to call a closure with a single Char argument and get Char result.
-// Char arg is passed as raw i16 value (zext to i64). The wrapper truncates back to i16.
-// Wrapper boxes Char result as HPointer; we unbox it here.
-static uint16_t callCharToCharClosure(void* closure_ptr, uint16_t c) {
-    Closure* closure = static_cast<Closure*>(closure_ptr);
-    uint32_t n_values = closure->n_values;
-
-    // Build argument array: captured values + the char argument (raw value).
-    void* args[16];
-    loadCapturedValues(closure, args);
-    args[n_values] = reinterpret_cast<void*>(eco_alloc_char(static_cast<uint32_t>(c)));
-
-    // Call the evaluator. Result is a boxed Char HPointer.
-    void* result = closure->evaluator(args);
-    uint64_t resultU64 = reinterpret_cast<uint64_t>(result);
-    // Unbox: resolve HPointer, read Char value from offset 8
-    void* charObj = reinterpret_cast<void*>(eco_resolve_hptr(resultU64));
+// Call a closure with a single Char argument and get Char result.
+// Char arg is boxed via eco_alloc_char. Result is unboxed from ElmChar.
+static uint16_t callCharToCharClosure(uint64_t closure_hptr, uint16_t c) {
+    uint64_t boxed_char = eco_alloc_char(static_cast<uint32_t>(c));
+    uint64_t result_hptr = eco_closure_call_saturated(closure_hptr, &boxed_char, 1);
+    // Unbox: resolve HPointer, read Char value
+    void* charObj = reinterpret_cast<void*>(eco_resolve_hptr(result_hptr));
     ElmChar* ec = static_cast<ElmChar*>(charObj);
     return ec->value;
 }
 
-// Helper to call a closure with a single Char argument and get Bool result.
+// Call a closure with a single Char argument and get Bool result.
 // Bool is !eco.value (True/False embedded constants), not a primitive.
-static bool callCharToBoolClosure(void* closure_ptr, uint16_t c) {
-    Closure* closure = static_cast<Closure*>(closure_ptr);
-    uint32_t n_values = closure->n_values;
-
-    void* args[16];
-    loadCapturedValues(closure, args);
-    args[n_values] = reinterpret_cast<void*>(eco_alloc_char(static_cast<uint32_t>(c)));
-
-    void* result = closure->evaluator(args);
-    return Export::decodeBoxedBool(reinterpret_cast<uint64_t>(result));
+static bool callCharToBoolClosure(uint64_t closure_hptr, uint16_t c) {
+    uint64_t boxed_char = eco_alloc_char(static_cast<uint32_t>(c));
+    uint64_t result_hptr = eco_closure_call_saturated(closure_hptr, &boxed_char, 1);
+    return Export::decodeBoxedBool(result_hptr);
 }
 
-// Helper to call a fold closure: (Char, acc) -> acc
-// Char is passed as raw value, acc flows through as HPointer-encoded.
-static uint64_t callFoldClosure(void* closure_ptr, uint16_t c, uint64_t acc) {
-    Closure* closure = static_cast<Closure*>(closure_ptr);
-    uint32_t n_values = closure->n_values;
-
-    void* args[16];
-    loadCapturedValues(closure, args);
-    args[n_values] = reinterpret_cast<void*>(eco_alloc_char(static_cast<uint32_t>(c)));
-    args[n_values + 1] = reinterpret_cast<void*>(acc);
-
-    void* result = closure->evaluator(args);
-    return reinterpret_cast<uint64_t>(result);
+// Call a fold closure: (Char, acc) -> acc
+// Char is boxed via eco_alloc_char, acc flows through as HPointer-encoded.
+static uint64_t callFoldClosure(uint64_t closure_hptr, uint16_t c, uint64_t acc) {
+    uint64_t args[2] = { eco_alloc_char(static_cast<uint32_t>(c)), acc };
+    return eco_closure_call_saturated(closure_hptr, args, 2);
 }
 
 uint64_t Elm_Kernel_String_map(uint64_t closure, uint64_t str) {
-    void* closure_ptr = Export::toPtr(closure);
     ElmString* s = static_cast<ElmString*>(Export::toPtr(str));
     if (!s) {
         return Export::encode(Elm::alloc::emptyString());
@@ -214,7 +179,7 @@ uint64_t Elm_Kernel_String_map(uint64_t closure, uint64_t str) {
     result.reserve(len);
 
     for (u32 i = 0; i < len; i++) {
-        u16 mappedChar = callCharToCharClosure(closure_ptr, s->chars[i]);
+        u16 mappedChar = callCharToCharClosure(closure, s->chars[i]);
         result.push_back(mappedChar);
     }
 
@@ -222,7 +187,6 @@ uint64_t Elm_Kernel_String_map(uint64_t closure, uint64_t str) {
 }
 
 uint64_t Elm_Kernel_String_filter(uint64_t closure, uint64_t str) {
-    void* closure_ptr = Export::toPtr(closure);
     ElmString* s = static_cast<ElmString*>(Export::toPtr(str));
     if (!s) {
         return Export::encode(Elm::alloc::emptyString());
@@ -233,7 +197,7 @@ uint64_t Elm_Kernel_String_filter(uint64_t closure, uint64_t str) {
     result.reserve(len);
 
     for (u32 i = 0; i < len; i++) {
-        if (callCharToBoolClosure(closure_ptr, s->chars[i])) {
+        if (callCharToBoolClosure(closure, s->chars[i])) {
             result.push_back(s->chars[i]);
         }
     }
@@ -242,7 +206,6 @@ uint64_t Elm_Kernel_String_filter(uint64_t closure, uint64_t str) {
 }
 
 uint64_t Elm_Kernel_String_any(uint64_t closure, uint64_t str) {
-    void* closure_ptr = Export::toPtr(closure);
     ElmString* s = static_cast<ElmString*>(Export::toPtr(str));
     if (!s) {
         return Export::encodeBoxedBool(false);
@@ -250,7 +213,7 @@ uint64_t Elm_Kernel_String_any(uint64_t closure, uint64_t str) {
 
     u32 len = s->header.size;
     for (u32 i = 0; i < len; i++) {
-        if (callCharToBoolClosure(closure_ptr, s->chars[i])) {
+        if (callCharToBoolClosure(closure, s->chars[i])) {
             return Export::encodeBoxedBool(true);
         }
     }
@@ -258,7 +221,6 @@ uint64_t Elm_Kernel_String_any(uint64_t closure, uint64_t str) {
 }
 
 uint64_t Elm_Kernel_String_all(uint64_t closure, uint64_t str) {
-    void* closure_ptr = Export::toPtr(closure);
     ElmString* s = static_cast<ElmString*>(Export::toPtr(str));
     if (!s) {
         return Export::encodeBoxedBool(true); // Empty string: all chars satisfy any predicate.
@@ -266,7 +228,7 @@ uint64_t Elm_Kernel_String_all(uint64_t closure, uint64_t str) {
 
     u32 len = s->header.size;
     for (u32 i = 0; i < len; i++) {
-        if (!callCharToBoolClosure(closure_ptr, s->chars[i])) {
+        if (!callCharToBoolClosure(closure, s->chars[i])) {
             return Export::encodeBoxedBool(false);
         }
     }
@@ -274,7 +236,6 @@ uint64_t Elm_Kernel_String_all(uint64_t closure, uint64_t str) {
 }
 
 uint64_t Elm_Kernel_String_foldl(uint64_t closure, uint64_t acc, uint64_t str) {
-    void* closure_ptr = Export::toPtr(closure);
     ElmString* s = static_cast<ElmString*>(Export::toPtr(str));
     if (!s) {
         return acc;
@@ -283,13 +244,12 @@ uint64_t Elm_Kernel_String_foldl(uint64_t closure, uint64_t acc, uint64_t str) {
     uint64_t accumulator = acc;
     u32 len = s->header.size;
     for (u32 i = 0; i < len; i++) {
-        accumulator = callFoldClosure(closure_ptr, s->chars[i], accumulator);
+        accumulator = callFoldClosure(closure, s->chars[i], accumulator);
     }
     return accumulator;
 }
 
 uint64_t Elm_Kernel_String_foldr(uint64_t closure, uint64_t acc, uint64_t str) {
-    void* closure_ptr = Export::toPtr(closure);
     ElmString* s = static_cast<ElmString*>(Export::toPtr(str));
     if (!s) {
         return acc;
@@ -298,7 +258,7 @@ uint64_t Elm_Kernel_String_foldr(uint64_t closure, uint64_t acc, uint64_t str) {
     uint64_t accumulator = acc;
     u32 len = s->header.size;
     for (u32 i = len; i > 0; i--) {
-        accumulator = callFoldClosure(closure_ptr, s->chars[i - 1], accumulator);
+        accumulator = callFoldClosure(closure, s->chars[i - 1], accumulator);
     }
     return accumulator;
 }

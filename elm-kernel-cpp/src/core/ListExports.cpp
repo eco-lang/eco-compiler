@@ -6,6 +6,7 @@
 #include "Utils.hpp"
 #include "allocator/Heap.hpp"
 #include "allocator/HeapHelpers.hpp"
+#include "allocator/RuntimeExports.h"
 #include <vector>
 #include <algorithm>
 #include <numeric>
@@ -14,99 +15,37 @@
 using namespace Elm;
 using namespace Elm::Kernel;
 
-extern "C" uint64_t eco_alloc_int(int64_t value);
-
 namespace {
 
 //===----------------------------------------------------------------------===//
-// Closure-calling helpers
+// Closure-calling helpers (INV_2: delegate to runtime via eco_closure_call_saturated)
 //===----------------------------------------------------------------------===//
 
-// Load captured values from closure into args array, boxing unboxed captures.
-// The wrapper expects ALL args as HPointer-encoded values.
-// Unboxed captures (raw i64 for Int/Float/Char) are boxed via eco_alloc_int.
-inline void loadCapturedValues(Closure* closure, void** args) {
-    uint32_t n_values = closure->n_values;
-    uint64_t unboxed = closure->unboxed;  // Bitfield already extracts bits 12+
-    for (uint32_t i = 0; i < n_values; i++) {
-        uint64_t val = closure->values[i].i;
-        if ((unboxed >> i) & 1) {
-            // Unboxed capture: box as Int so wrapper can unbox
-            val = eco_alloc_int(static_cast<int64_t>(val));
-        }
-        args[i] = reinterpret_cast<void*>(val);
-    }
+inline uint64_t callUnaryClosure(uint64_t closure_hptr, uint64_t arg) {
+    uint64_t args[1] = { arg };
+    return eco_closure_call_saturated(closure_hptr, args, 1);
 }
 
-// Call a closure with 1 argument
-inline uint64_t callUnaryClosure(void* closure_ptr, uint64_t arg) {
-    Closure* closure = static_cast<Closure*>(closure_ptr);
-
-    void* args[16];
-    loadCapturedValues(closure, args);
-    args[closure->n_values] = reinterpret_cast<void*>(arg);
-
-    return reinterpret_cast<uint64_t>(closure->evaluator(args));
+inline uint64_t callBinaryClosure(uint64_t closure_hptr, uint64_t arg1, uint64_t arg2) {
+    uint64_t args[2] = { arg1, arg2 };
+    return eco_closure_call_saturated(closure_hptr, args, 2);
 }
 
-// Call a closure with 2 arguments
-inline uint64_t callBinaryClosure(void* closure_ptr, uint64_t arg1, uint64_t arg2) {
-    Closure* closure = static_cast<Closure*>(closure_ptr);
-    uint32_t n_values = closure->n_values;
-
-    void* args[16];
-    loadCapturedValues(closure, args);
-    args[n_values] = reinterpret_cast<void*>(arg1);
-    args[n_values + 1] = reinterpret_cast<void*>(arg2);
-
-    return reinterpret_cast<uint64_t>(closure->evaluator(args));
+inline uint64_t callTernaryClosure(uint64_t closure_hptr, uint64_t arg1, uint64_t arg2, uint64_t arg3) {
+    uint64_t args[3] = { arg1, arg2, arg3 };
+    return eco_closure_call_saturated(closure_hptr, args, 3);
 }
 
-// Call a closure with 3 arguments
-inline uint64_t callTernaryClosure(void* closure_ptr, uint64_t arg1, uint64_t arg2, uint64_t arg3) {
-    Closure* closure = static_cast<Closure*>(closure_ptr);
-    uint32_t n_values = closure->n_values;
-
-    void* args[16];
-    loadCapturedValues(closure, args);
-    args[n_values] = reinterpret_cast<void*>(arg1);
-    args[n_values + 1] = reinterpret_cast<void*>(arg2);
-    args[n_values + 2] = reinterpret_cast<void*>(arg3);
-
-    return reinterpret_cast<uint64_t>(closure->evaluator(args));
-}
-
-// Call a closure with 4 arguments
-inline uint64_t callQuaternaryClosure(void* closure_ptr, uint64_t arg1, uint64_t arg2,
+inline uint64_t callQuaternaryClosure(uint64_t closure_hptr, uint64_t arg1, uint64_t arg2,
                                        uint64_t arg3, uint64_t arg4) {
-    Closure* closure = static_cast<Closure*>(closure_ptr);
-    uint32_t n_values = closure->n_values;
-
-    void* args[16];
-    loadCapturedValues(closure, args);
-    args[n_values] = reinterpret_cast<void*>(arg1);
-    args[n_values + 1] = reinterpret_cast<void*>(arg2);
-    args[n_values + 2] = reinterpret_cast<void*>(arg3);
-    args[n_values + 3] = reinterpret_cast<void*>(arg4);
-
-    return reinterpret_cast<uint64_t>(closure->evaluator(args));
+    uint64_t args[4] = { arg1, arg2, arg3, arg4 };
+    return eco_closure_call_saturated(closure_hptr, args, 4);
 }
 
-// Call a closure with 5 arguments
-inline uint64_t callQuinaryClosure(void* closure_ptr, uint64_t arg1, uint64_t arg2,
+inline uint64_t callQuinaryClosure(uint64_t closure_hptr, uint64_t arg1, uint64_t arg2,
                                     uint64_t arg3, uint64_t arg4, uint64_t arg5) {
-    Closure* closure = static_cast<Closure*>(closure_ptr);
-    uint32_t n_values = closure->n_values;
-
-    void* args[16];
-    loadCapturedValues(closure, args);
-    args[n_values] = reinterpret_cast<void*>(arg1);
-    args[n_values + 1] = reinterpret_cast<void*>(arg2);
-    args[n_values + 2] = reinterpret_cast<void*>(arg3);
-    args[n_values + 3] = reinterpret_cast<void*>(arg4);
-    args[n_values + 4] = reinterpret_cast<void*>(arg5);
-
-    return reinterpret_cast<uint64_t>(closure->evaluator(args));
+    uint64_t args[5] = { arg1, arg2, arg3, arg4, arg5 };
+    return eco_closure_call_saturated(closure_hptr, args, 5);
 }
 
 //===----------------------------------------------------------------------===//
@@ -257,7 +196,6 @@ uint64_t Elm_Kernel_List_toArray(uint64_t list) {
 //===----------------------------------------------------------------------===//
 
 uint64_t Elm_Kernel_List_map2(uint64_t closure, uint64_t xs, uint64_t ys) {
-    void* closure_ptr = Export::toPtr(closure);
     HPointer xList = Export::decode(xs);
     HPointer yList = Export::decode(ys);
     auto& allocator = Allocator::instance();
@@ -277,7 +215,7 @@ uint64_t Elm_Kernel_List_map2(uint64_t closure, uint64_t xs, uint64_t ys) {
         uint64_t y = getConsHead(yCons, &yCons->header);
 
         // Closure result is always HPointer-encoded (wrapper boxes return)
-        uint64_t result = callBinaryClosure(closure_ptr, x, y);
+        uint64_t result = callBinaryClosure(closure, x, y);
         results.push_back(result);
 
         xList = xTail;
@@ -289,7 +227,6 @@ uint64_t Elm_Kernel_List_map2(uint64_t closure, uint64_t xs, uint64_t ys) {
 }
 
 uint64_t Elm_Kernel_List_map3(uint64_t closure, uint64_t xs, uint64_t ys, uint64_t zs) {
-    void* closure_ptr = Export::toPtr(closure);
     HPointer xList = Export::decode(xs);
     HPointer yList = Export::decode(ys);
     HPointer zList = Export::decode(zs);
@@ -308,7 +245,7 @@ uint64_t Elm_Kernel_List_map3(uint64_t closure, uint64_t xs, uint64_t ys, uint64
         uint64_t y = getConsHead(yCons, &yCons->header);
         uint64_t z = getConsHead(zCons, &zCons->header);
 
-        uint64_t result = callTernaryClosure(closure_ptr, x, y, z);
+        uint64_t result = callTernaryClosure(closure, x, y, z);
         results.push_back(result);
 
         xList = xTail; yList = yTail; zList = zTail;
@@ -318,7 +255,6 @@ uint64_t Elm_Kernel_List_map3(uint64_t closure, uint64_t xs, uint64_t ys, uint64
 }
 
 uint64_t Elm_Kernel_List_map4(uint64_t closure, uint64_t ws, uint64_t xs, uint64_t ys, uint64_t zs) {
-    void* closure_ptr = Export::toPtr(closure);
     HPointer wList = Export::decode(ws);
     HPointer xList = Export::decode(xs);
     HPointer yList = Export::decode(ys);
@@ -341,7 +277,7 @@ uint64_t Elm_Kernel_List_map4(uint64_t closure, uint64_t ws, uint64_t xs, uint64
         uint64_t y = getConsHead(yCons, &yCons->header);
         uint64_t z = getConsHead(zCons, &zCons->header);
 
-        uint64_t result = callQuaternaryClosure(closure_ptr, w, x, y, z);
+        uint64_t result = callQuaternaryClosure(closure, w, x, y, z);
         results.push_back(result);
 
         wList = wT; xList = xT; yList = yT; zList = zT;
@@ -352,7 +288,6 @@ uint64_t Elm_Kernel_List_map4(uint64_t closure, uint64_t ws, uint64_t xs, uint64
 
 uint64_t Elm_Kernel_List_map5(uint64_t closure, uint64_t vs, uint64_t ws,
                                uint64_t xs, uint64_t ys, uint64_t zs) {
-    void* closure_ptr = Export::toPtr(closure);
     HPointer vList = Export::decode(vs);
     HPointer wList = Export::decode(ws);
     HPointer xList = Export::decode(xs);
@@ -379,7 +314,7 @@ uint64_t Elm_Kernel_List_map5(uint64_t closure, uint64_t vs, uint64_t ws,
         uint64_t y = getConsHead(yCons, &yCons->header);
         uint64_t z = getConsHead(zCons, &zCons->header);
 
-        uint64_t result = callQuinaryClosure(closure_ptr, v, w, x, y, z);
+        uint64_t result = callQuinaryClosure(closure, v, w, x, y, z);
         results.push_back(result);
 
         vList = vT; wList = wT; xList = xT; yList = yT; zList = zT;
@@ -389,7 +324,6 @@ uint64_t Elm_Kernel_List_map5(uint64_t closure, uint64_t vs, uint64_t ws,
 }
 
 uint64_t Elm_Kernel_List_sortBy(uint64_t closure, uint64_t list) {
-    void* closure_ptr = Export::toPtr(closure);
     std::vector<uint64_t> elements = listToVectorU64(Export::decode(list));
     auto& allocator = Allocator::instance();
 
@@ -401,7 +335,7 @@ uint64_t Elm_Kernel_List_sortBy(uint64_t closure, uint64_t list) {
     std::vector<uint64_t> keys;
     keys.reserve(elements.size());
     for (uint64_t elem : elements) {
-        uint64_t key = callUnaryClosure(closure_ptr, elem);
+        uint64_t key = callUnaryClosure(closure, elem);
         keys.push_back(key);
     }
 
@@ -438,7 +372,6 @@ uint64_t Elm_Kernel_List_sortBy(uint64_t closure, uint64_t list) {
 }
 
 uint64_t Elm_Kernel_List_sortWith(uint64_t closure, uint64_t list) {
-    void* closure_ptr = Export::toPtr(closure);
     std::vector<uint64_t> elements = listToVectorU64(Export::decode(list));
     auto& allocator = Allocator::instance();
 
@@ -447,7 +380,7 @@ uint64_t Elm_Kernel_List_sortWith(uint64_t closure, uint64_t list) {
     }
 
     std::stable_sort(elements.begin(), elements.end(), [&](uint64_t a, uint64_t b) {
-        uint64_t order = callBinaryClosure(closure_ptr, a, b);
+        uint64_t order = callBinaryClosure(closure, a, b);
         // Order is heap-allocated Custom: ctor 0=LT, 1=EQ, 2=GT
         HPointer orderHP = Export::decode(order);
         Custom* orderVal = static_cast<Custom*>(allocator.resolve(orderHP));
