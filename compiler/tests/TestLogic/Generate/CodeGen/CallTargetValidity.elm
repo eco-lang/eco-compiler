@@ -14,7 +14,6 @@ import Compiler.AST.Source as Src
 import Dict exposing (Dict)
 import Expect exposing (Expectation)
 import Mlir.Mlir exposing (MlirBlock, MlirModule, MlirOp, MlirRegion(..))
-import TestLogic.TestPipeline exposing (runToMlir)
 import TestLogic.Generate.CodeGen.Invariants
     exposing
         ( Violation
@@ -23,6 +22,7 @@ import TestLogic.Generate.CodeGen.Invariants
         , getStringAttr
         , violationsToExpectation
         )
+import TestLogic.TestPipeline exposing (runToMlir)
 
 
 {-| Verify that call target validity invariants hold for a source module.

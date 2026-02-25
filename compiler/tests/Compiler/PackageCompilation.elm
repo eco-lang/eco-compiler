@@ -49,6 +49,7 @@ This ensures the standard JS pathway and the MLIR pathway behave consistently.
 
 -}
 
+import Builder.GraphAssembly as GA
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.Optimized as Opt
@@ -56,8 +57,6 @@ import Compiler.AST.Source as Src
 import Compiler.AST.TypeEnv as TypeEnv
 import Compiler.AST.TypedCanonical as TCan
 import Compiler.AST.TypedOptimized as TOpt
-import Compiler.TypedCanonical.Build as TCanBuild
-import Builder.GraphAssembly as GA
 import Compiler.Canonicalize.Module as Canonicalize
 import Compiler.Data.Name as Name
 import Compiler.Data.NonEmptyList as NE
@@ -85,6 +84,7 @@ import Compiler.Type.Constrain.Typed.Module as TypeTyped
 import Compiler.Type.KernelTypes as KernelTypes
 import Compiler.Type.PostSolve as PostSolve
 import Compiler.Type.Solve as Type
+import Compiler.TypedCanonical.Build as TCanBuild
 import Data.Map as Dict exposing (Dict)
 import System.TypeCheck.IO as TypeCheck
 

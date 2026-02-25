@@ -19,7 +19,6 @@ import Expect exposing (Expectation)
 import Mlir.Mlir exposing (MlirBlock, MlirModule, MlirOp, MlirRegion(..))
 import OrderedDict
 import Set exposing (Set)
-import TestLogic.TestPipeline exposing (runToMlir)
 import TestLogic.Generate.CodeGen.Invariants
     exposing
         ( Violation
@@ -28,6 +27,7 @@ import TestLogic.Generate.CodeGen.Invariants
         , violationsToExpectation
         , walkOpsInRegion
         )
+import TestLogic.TestPipeline exposing (runToMlir)
 
 
 {-| Verify that record update dataflow invariants hold for a source module.

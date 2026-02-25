@@ -18,7 +18,6 @@ import Dict exposing (Dict)
 import Expect exposing (Expectation)
 import Mlir.Mlir exposing (MlirBlock, MlirModule, MlirOp, MlirRegion(..), MlirType(..))
 import OrderedDict
-import TestLogic.TestPipeline exposing (runToMlir)
 import TestLogic.Generate.CodeGen.Invariants
     exposing
         ( Violation
@@ -26,6 +25,7 @@ import TestLogic.Generate.CodeGen.Invariants
         , getStringAttr
         , violationsToExpectation
         )
+import TestLogic.TestPipeline exposing (runToMlir)
 
 
 {-| Verify that SSA type consistency invariants hold for a source module.

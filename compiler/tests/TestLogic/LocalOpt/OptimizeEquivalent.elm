@@ -21,7 +21,6 @@ import Compiler.AST.Optimized as Opt
 import Compiler.AST.Source as Src
 import Compiler.AST.TypedCanonical as TCan
 import Compiler.AST.TypedOptimized as TOpt
-import Compiler.TypedCanonical.Build as TCanBuild
 import Compiler.Canonicalize.Module as Canonicalize
 import Compiler.Data.Name as Name
 import Compiler.Data.NonEmptyList as NE
@@ -36,6 +35,7 @@ import Compiler.Reporting.Result as Result
 import Compiler.Type.Constrain.Erased.Module as ConstrainErased
 import Compiler.Type.PostSolve as PostSolve
 import Compiler.Type.Solve as Solve
+import Compiler.TypedCanonical.Build as TCanBuild
 import Data.Map as Dict exposing (Dict)
 import Data.Set as EverySet exposing (EverySet)
 import Expect
@@ -140,6 +140,7 @@ runStandardTypeCheck modul =
                     Err (NE.Nonempty _ rest) ->
                         Err (1 + List.length rest)
             )
+
 
 
 -- ============================================================================

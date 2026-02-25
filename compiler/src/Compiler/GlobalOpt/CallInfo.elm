@@ -1,7 +1,4 @@
-module Compiler.GlobalOpt.CallInfo exposing
-    ( new
-    , computeRemaining
-    )
+module Compiler.GlobalOpt.CallInfo exposing (new, computeRemaining)
 
 {-| Helper module for constructing CallInfo records.
 

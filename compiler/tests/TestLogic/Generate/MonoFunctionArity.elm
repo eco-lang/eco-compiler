@@ -21,6 +21,7 @@ import TestLogic.TestPipeline as Pipeline
 {-| MONO\_012: Verify function arity matches parameters and closure info.
 
 Note: This runs after GlobalOpt since it also checks GOPT\_016 (closure params == stage arity).
+
 -}
 expectFunctionArityMatches : Src.Module -> Expect.Expectation
 expectFunctionArityMatches srcModule =

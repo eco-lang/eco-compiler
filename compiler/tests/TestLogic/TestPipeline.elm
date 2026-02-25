@@ -1,30 +1,30 @@
 module TestLogic.TestPipeline exposing
     ( -- Cumulative artifact types
       CanonicalArtifacts
-    , TypeCheckArtifacts
-    , PostSolveArtifacts
-    , TypedOptArtifacts
-    , MonoArtifacts
     , GlobalOptArtifacts
     , MlirArtifacts
       -- Pipeline entry points (each runs full pipeline to that stage)
+    , MonoArtifacts
+    , PostSolveArtifacts
+    , TypeCheckArtifacts
+    , TypedOptArtifacts
+    , buildGlobalTypeEnv
+    , expectMLIRGeneration
+    , expectMonomorphization
+    , findAnyEntryPoint
+    , localGraphToGlobalGraph
+    , monomorphizeAny
+    , runMLIRGeneration
+      -- Expectation helpers
     , runToCanonical
-    , runToTypeCheck
-    , runToPostSolve
-    , runToTypedOpt
-    , runToMono
     , runToGlobalOpt
     , runToMlir
       -- Low-level helpers (for tests needing fine-grained control)
+    , runToMono
+    , runToPostSolve
+    , runToTypeCheck
+    , runToTypedOpt
     , runWithIdsTypeCheck
-    , localGraphToGlobalGraph
-    , buildGlobalTypeEnv
-    , monomorphizeAny
-    , findAnyEntryPoint
-    , runMLIRGeneration
-      -- Expectation helpers
-    , expectMonomorphization
-    , expectMLIRGeneration
     )
 
 {-| Unified test pipeline for the Eco compiler.
@@ -44,14 +44,13 @@ Pipeline stages:
 
 -}
 
+import Builder.GraphAssembly as GA
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.Source as Src
 import Compiler.AST.TypeEnv as TypeEnv
 import Compiler.AST.TypedCanonical as TCan
 import Compiler.AST.TypedOptimized as TOpt
-import Compiler.TypedCanonical.Build as TCanBuild
-import Builder.GraphAssembly as GA
 import Compiler.Canonicalize.Module as Canonicalize
 import Compiler.Data.Name as Name
 import Compiler.Data.NonEmptyList as NE
@@ -61,14 +60,15 @@ import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Generate.CodeGen as CodeGen
 import Compiler.Generate.MLIR.Backend as MLIR
 import Compiler.Generate.Mode as Mode
+import Compiler.GlobalOpt.MonoGlobalOptimize as MonoGlobalOptimize
 import Compiler.LocalOpt.Typed.Module as TypedOptimize
 import Compiler.Monomorphize.Monomorphize as Monomorphize
-import Compiler.GlobalOpt.MonoGlobalOptimize as MonoGlobalOptimize
 import Compiler.Reporting.Result as RResult
 import Compiler.Type.Constrain.Typed.Module as ConstrainTyped
 import Compiler.Type.KernelTypes as KernelTypes
 import Compiler.Type.PostSolve as PostSolve
 import Compiler.Type.Solve as Solve
+import Compiler.TypedCanonical.Build as TCanBuild
 import Data.Map as Dict exposing (Dict)
 import Expect
 import Mlir.Mlir exposing (MlirModule)
@@ -136,8 +136,9 @@ type alias MonoArtifacts =
 {-| Stage 5.5: Global optimization artifacts (includes Stages 1-5).
 
 This stage runs GlobalOpt on the MonoGraph, which canonicalizes staging
-and enforces GOPT_001 (closure params == stage arity) and GOPT_003
+and enforces GOPT\_001 (closure params == stage arity) and GOPT\_003
 (case branch types match).
+
 -}
 type alias GlobalOptArtifacts =
     { canonical : Can.Module
@@ -300,9 +301,11 @@ runToMono srcModule =
 {-| Run pipeline through global optimization.
 
 This stage applies MonoGlobalOptimize.globalOptimize which:
-- Canonicalizes staging (GOPT_001: closure params == stage arity)
-- Normalizes case branch types (GOPT_003)
-- Computes returned closure arity annotations
+
+  - Canonicalizes staging (GOPT\_001: closure params == stage arity)
+  - Normalizes case branch types (GOPT\_003)
+  - Computes returned closure arity annotations
+
 -}
 runToGlobalOpt : Src.Module -> Result String GlobalOptArtifacts
 runToGlobalOpt srcModule =

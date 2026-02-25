@@ -11,12 +11,12 @@ Each module must have at most one `eco.type_table` op at module scope.
 import Compiler.AST.Source as Src
 import Expect exposing (Expectation)
 import Mlir.Mlir exposing (MlirModule)
-import TestLogic.TestPipeline exposing (runToMlir)
 import TestLogic.Generate.CodeGen.Invariants
     exposing
         ( Violation
         , violationsToExpectation
         )
+import TestLogic.TestPipeline exposing (runToMlir)
 
 
 {-| Verify that type table uniqueness invariants hold for a source module.

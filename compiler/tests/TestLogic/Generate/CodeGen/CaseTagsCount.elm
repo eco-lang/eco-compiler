@@ -11,7 +11,6 @@ The `eco.case` `tags` array length must equal the number of alternative regions.
 import Compiler.AST.Source as Src
 import Expect exposing (Expectation)
 import Mlir.Mlir exposing (MlirModule, MlirOp)
-import TestLogic.TestPipeline exposing (runToMlir)
 import TestLogic.Generate.CodeGen.Invariants
     exposing
         ( Violation
@@ -19,6 +18,7 @@ import TestLogic.Generate.CodeGen.Invariants
         , getArrayAttr
         , violationsToExpectation
         )
+import TestLogic.TestPipeline exposing (runToMlir)
 
 
 {-| Verify that case tags count invariants hold for a source module.

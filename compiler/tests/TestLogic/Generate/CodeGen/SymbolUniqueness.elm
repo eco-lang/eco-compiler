@@ -13,13 +13,13 @@ import Compiler.AST.Source as Src
 import Dict exposing (Dict)
 import Expect exposing (Expectation)
 import Mlir.Mlir exposing (MlirModule, MlirOp)
-import TestLogic.TestPipeline exposing (runToMlir)
 import TestLogic.Generate.CodeGen.Invariants
     exposing
         ( Violation
         , findSymbolOps
         , violationsToExpectation
         )
+import TestLogic.TestPipeline exposing (runToMlir)
 
 
 {-| Verify that symbol uniqueness invariants hold for a source module.

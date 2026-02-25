@@ -1,8 +1,6 @@
 module Compiler.Monomorphize.Closure exposing
-    ( freshParams
-    , extractRegion
-    , computeClosureCaptures
-    , findFreeLocals
+    ( freshParams, extractRegion
+    , computeClosureCaptures, findFreeLocals
     , flattenFunctionType
     )
 

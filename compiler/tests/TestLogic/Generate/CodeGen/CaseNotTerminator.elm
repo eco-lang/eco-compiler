@@ -13,13 +13,13 @@ import Compiler.AST.Source as Src
 import Expect exposing (Expectation)
 import Mlir.Mlir exposing (MlirBlock, MlirModule, MlirOp, MlirRegion(..))
 import OrderedDict
-import TestLogic.TestPipeline exposing (runToMlir)
 import TestLogic.Generate.CodeGen.Invariants
     exposing
         ( Violation
         , violationsToExpectation
         , walkAllOps
         )
+import TestLogic.TestPipeline exposing (runToMlir)
 
 
 {-| Verify that eco.case is never used as a block terminator.

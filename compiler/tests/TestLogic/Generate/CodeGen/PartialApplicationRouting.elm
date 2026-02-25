@@ -13,7 +13,6 @@ produce non-function results (fully saturated calls).
 import Compiler.AST.Source as Src
 import Expect exposing (Expectation)
 import Mlir.Mlir exposing (MlirModule, MlirOp, MlirType(..))
-import TestLogic.TestPipeline exposing (runToMlir)
 import TestLogic.Generate.CodeGen.Invariants
     exposing
         ( Violation
@@ -21,6 +20,7 @@ import TestLogic.Generate.CodeGen.Invariants
         , findOpsNamed
         , violationsToExpectation
         )
+import TestLogic.TestPipeline exposing (runToMlir)
 
 
 {-| Verify that partial applications are routed through closure generation.

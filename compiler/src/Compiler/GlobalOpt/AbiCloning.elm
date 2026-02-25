@@ -1,7 +1,4 @@
-module Compiler.GlobalOpt.AbiCloning exposing
-    ( abiCloningPass
-    , computeCaptureAbi
-    )
+module Compiler.GlobalOpt.AbiCloning exposing (abiCloningPass, computeCaptureAbi)
 
 {-| ABI Cloning Pass
 
@@ -10,10 +7,11 @@ It analyzes closure-typed parameters in higher-order functions and clones functi
 when a parameter receives closures with different capture ABIs at different call sites.
 
 Algorithm:
-1. Traverse all call sites to collect capture ABIs for each closure-typed parameter
-2. If any parameter has multiple distinct capture ABIs, clone the function
-3. Rewrite call sites to target appropriate clones
-4. Iterate until fixed point
+
+1.  Traverse all call sites to collect capture ABIs for each closure-typed parameter
+2.  If any parameter has multiple distinct capture ABIs, clone the function
+3.  Rewrite call sites to target appropriate clones
+4.  Iterate until fixed point
 
 
 # API

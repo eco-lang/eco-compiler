@@ -18,7 +18,6 @@ import Compiler.Generate.MLIR.Types as Types
 import Data.Map as Dict
 import Expect exposing (Expectation)
 import Mlir.Mlir exposing (MlirModule, MlirOp, MlirType(..))
-import TestLogic.TestPipeline exposing (runToMlir)
 import TestLogic.Generate.CodeGen.Invariants
     exposing
         ( Violation
@@ -29,6 +28,7 @@ import TestLogic.Generate.CodeGen.Invariants
         , isUnboxable
         , violationsToExpectation
         )
+import TestLogic.TestPipeline exposing (runToMlir)
 
 
 {-| Verify that projection layout bitmap invariants hold for a source module.

@@ -18,13 +18,13 @@ This module handles generation of all function types:
 
 import Compiler.AST.Monomorphized as Mono
 import Compiler.Data.Name as Name
-import Compiler.Monomorphize.Registry as Registry
 import Compiler.Generate.MLIR.Context as Ctx
 import Compiler.Generate.MLIR.Expr as Expr
 import Compiler.Generate.MLIR.Names as Names
 import Compiler.Generate.MLIR.Ops as Ops
 import Compiler.Generate.MLIR.TailRec as TailRec
 import Compiler.Generate.MLIR.Types as Types
+import Compiler.Monomorphize.Registry as Registry
 import Dict
 import Mlir.Loc
 import Mlir.Mlir as Mlir exposing (MlirAttr(..), MlirOp, MlirRegion(..), MlirType(..), Visibility(..))
@@ -209,7 +209,7 @@ generateDefine ctx funcName expr monoType =
 
 {-| Generate closure functions.
 For closures with captures: generates both fast clone (captures + params)
-and generic clone (Closure* + params).
+and generic clone (Closure\* + params).
 For zero-capture closures: generates just the original function.
 -}
 generateClosureFunc : Ctx.Context -> String -> Mono.ClosureInfo -> Mono.MonoExpr -> Mono.MonoType -> ( List MlirOp, Ctx.Context )
@@ -295,10 +295,12 @@ generateClosureFuncSingle ctx funcName closureInfo body monoType =
 
 
 {-| Generate two clones for closures with captures:
-- Fast clone (funcName$cap): (captures..., params...) -> R
-- Generic clone (funcName$clo): (Closure*, params...) -> R
+
+  - Fast clone (funcName$cap): (captures..., params...) -> R
+  - Generic clone (funcName$clo): (Closure\*, params...) -> R
 
 The generic clone body loads captures from closure and calls the fast clone.
+
 -}
 generateClosureFuncWithClones : Ctx.Context -> String -> Mono.ClosureInfo -> Mono.MonoExpr -> Mono.MonoType -> ( List MlirOp, Ctx.Context )
 generateClosureFuncWithClones ctx funcName closureInfo body monoType =
@@ -421,11 +423,12 @@ generateClosureFuncWithClones ctx funcName closureInfo body monoType =
 
 
 {-| Generate a complete generic clone ($clo) func.func op.
-The generic clone takes (Closure*, params...) and loads captures from the
+The generic clone takes (Closure\*, params...) and loads captures from the
 closure object, then calls the fast clone ($cap).
 
 This is shared by both the top-level closure path (Functions.generateClosureFuncWithClones)
 and the inline lambda path (Lambdas.generateLambdaFunc).
+
 -}
 generateGenericCloneFunc : Ctx.Context -> String -> String -> List ( MlirType, Bool ) -> List ( String, MlirType ) -> MlirType -> ( MlirOp, Ctx.Context )
 generateGenericCloneFunc ctx genericCloneName fastCloneName captureSpecs paramPairs returnType =

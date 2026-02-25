@@ -15,7 +15,6 @@ into monomorphized form by applying type substitutions.
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.TypeEnv as TypeEnv
-import Compiler.Monomorphize.Registry as Registry
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.Index as Index
 import Compiler.Data.Name as Name exposing (Name)
@@ -24,7 +23,8 @@ import Compiler.LocalOpt.Typed.DecisionTree as DT
 import Compiler.Monomorphize.Analysis as Analysis
 import Compiler.Monomorphize.Closure as Closure
 import Compiler.Monomorphize.KernelAbi as KernelAbi
-import Compiler.Monomorphize.State exposing (MonoState, Substitution, VarTypes, WorkItem(..), LocalInstanceInfo, LocalMultiState)
+import Compiler.Monomorphize.Registry as Registry
+import Compiler.Monomorphize.State exposing (LocalInstanceInfo, LocalMultiState, MonoState, Substitution, VarTypes, WorkItem(..))
 import Compiler.Monomorphize.TypeSubst as TypeSubst
 import Compiler.Reporting.Annotation as A
 import Data.Map as Dict exposing (Dict)
@@ -46,6 +46,7 @@ Number-boxed kernels (like Basics.add) need special handling because they
 must be specialized AFTER call-site type unification to determine if they
 can use the monomorphic numeric type (enabling intrinsics) or must fall
 back to the boxed ABI.
+
 -}
 type ProcessedArg
     = ResolvedArg Mono.MonoExpr
@@ -64,6 +65,7 @@ isLocalMultiTarget name state =
 
     Searches the localMulti stack for the entry matching `defName`, and
     either returns an existing instance or creates a new one.
+
 -}
 getOrCreateLocalInstance :
     Name
@@ -161,7 +163,7 @@ The flat param list comes from TOpt.Function syntax.
 The curried type comes from TypeSubst.applySubst preserving TLambda structure.
 
 GlobalOpt (GOPT\_016) will canonicalize by flattening the type:
-    MFunction [Int] (MFunction [Int] Int) → MFunction [Int, Int] Int
+MFunction [Int] (MFunction [Int] Int) → MFunction [Int, Int] Int
 
 Invariant relied upon: TOPT\_005 - the Can.Type on the TOpt node is the
 authoritative TLambda encoding of this function's params and result.
@@ -2138,7 +2140,6 @@ extractFieldTypes n monoType =
                 []
 
 
-
 {-| Return True if a MonoType contains no remaining type variables.
 
 Used to detect when a kernel use has been fully specialized at a call site
@@ -2197,7 +2198,7 @@ isFullyMonomorphicType monoType =
 
 {-| Derive the MonoType for a kernel function's ABI.
 
-This is *call-site aware*:
+This is _call-site aware_:
 
   - For monomorphic uses (no remaining MVar in the instantiated function type),
     we prefer the fully specialized MonoType obtained by applying the call-site
@@ -2254,11 +2255,13 @@ deriveKernelAbiType kernelId canFuncType callSubst =
             -- for Elm-level wrapper specialization. The C++ kernel ABI is determined
             -- separately by kernelBackendAbiPolicy in MLIR codegen, which may
             -- override this type with all-boxed !eco.value arguments.
-            if EverySet.member KernelAbi.comparePair kernelId KernelAbi.containerSpecializedKernels
-                && isFullyMonomorphicType monoAfterSubst
+            if
+                EverySet.member KernelAbi.comparePair kernelId KernelAbi.containerSpecializedKernels
+                    && isFullyMonomorphicType monoAfterSubst
             then
                 -- e.g. List.cons : Int -> List Int -> List Int at this site
                 monoAfterSubst
+
             else
                 -- default: all vars become CEcoValue (fully boxed ABI)
                 KernelAbi.canTypeToMonoType_preserveVars canFuncType
@@ -2295,6 +2298,7 @@ renameMonoDef newName def =
 
 Used when cloning MonoTailDef for local multi-specialization so that
 each cloned definition's internal MonoTailCall refers to its own name.
+
 -}
 renameTailCalls : Name -> Name -> Mono.MonoExpr -> Mono.MonoExpr
 renameTailCalls oldName newName expr =
@@ -2370,7 +2374,8 @@ renameTailCalls oldName newName expr =
             Mono.MonoDestruct destructor (renameTailCalls oldName newName body) t
 
         Mono.MonoCase scrutName scrutVar decider jumps t ->
-            Mono.MonoCase scrutName scrutVar
+            Mono.MonoCase scrutName
+                scrutVar
                 (renameTailCallsDecider oldName newName decider)
                 (List.map (\( i, e ) -> ( i, renameTailCalls oldName newName e )) jumps)
                 t
@@ -2417,4 +2422,3 @@ renameTailCallsChoice oldName newName choice =
 
         Mono.Jump i ->
             Mono.Jump i
-

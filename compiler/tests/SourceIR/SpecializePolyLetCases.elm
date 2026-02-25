@@ -114,7 +114,8 @@ applyMulti expectFn _ =
         modul =
             makeModule "testValue"
                 (letExpr
-                    [ define "apply" [ pVar "f", pVar "x" ]
+                    [ define "apply"
+                        [ pVar "f", pVar "x" ]
                         (callExpr (varExpr "f") [ varExpr "x" ])
                     ]
                     (tupleExpr
@@ -147,11 +148,13 @@ composeMulti expectFn _ =
         modul =
             makeModule "testValue"
                 (letExpr
-                    [ define "compose" [ pVar "f", pVar "g", pVar "x" ]
+                    [ define "compose"
+                        [ pVar "f", pVar "g", pVar "x" ]
                         (callExpr (varExpr "f")
                             [ callExpr (varExpr "g") [ varExpr "x" ] ]
                         )
-                    , define "addOne" [ pVar "n" ]
+                    , define "addOne"
+                        [ pVar "n" ]
                         (binopsExpr [ ( varExpr "n", "+" ) ] (intExpr 1))
                     ]
                     (tupleExpr
@@ -179,7 +182,8 @@ lengthMulti expectFn _ =
         modul =
             makeModule "testValue"
                 (letExpr
-                    [ define "length" [ pVar "xs" ]
+                    [ define "length"
+                        [ pVar "xs" ]
                         (caseExpr (varExpr "xs")
                             [ ( pList [], intExpr 0 )
                             , ( pCons pAnything (pVar "rest")
@@ -211,7 +215,8 @@ foldlMulti expectFn _ =
         modul =
             makeModule "testValue"
                 (letExpr
-                    [ define "foldl" [ pVar "f", pVar "acc", pVar "xs" ]
+                    [ define "foldl"
+                        [ pVar "f", pVar "acc", pVar "xs" ]
                         (caseExpr (varExpr "xs")
                             [ ( pList [], varExpr "acc" )
                             , ( pCons (pVar "x") (pVar "rest")
@@ -259,7 +264,8 @@ mapMulti expectFn _ =
         modul =
             makeModule "testValue"
                 (letExpr
-                    [ define "map" [ pVar "f", pVar "xs" ]
+                    [ define "map"
+                        [ pVar "f", pVar "xs" ]
                         (caseExpr (varExpr "xs")
                             [ ( pList [], listExpr [] )
                             , ( pCons (pVar "x") (pVar "rest")
@@ -300,7 +306,8 @@ mapPartialMulti expectFn _ =
         modul =
             makeModule "testValue"
                 (letExpr
-                    [ define "map" [ pVar "f", pVar "xs" ]
+                    [ define "map"
+                        [ pVar "f", pVar "xs" ]
                         (caseExpr (varExpr "xs")
                             [ ( pList [], listExpr [] )
                             , ( pCons (pVar "x") (pVar "rest")
@@ -310,13 +317,15 @@ mapPartialMulti expectFn _ =
                               )
                             ]
                         )
-                    , define "mapAddOne" []
+                    , define "mapAddOne"
+                        []
                         (callExpr (varExpr "map")
                             [ lambdaExpr [ pVar "n" ]
                                 (binopsExpr [ ( varExpr "n", "+" ) ] (intExpr 1))
                             ]
                         )
-                    , define "mapId" []
+                    , define "mapId"
+                        []
                         (callExpr (varExpr "map")
                             [ lambdaExpr [ pVar "s" ] (varExpr "s") ]
                         )
@@ -342,7 +351,8 @@ pairMulti expectFn _ =
         modul =
             makeModule "testValue"
                 (letExpr
-                    [ define "pair" [ pVar "a", pVar "b" ]
+                    [ define "pair"
+                        [ pVar "a", pVar "b" ]
                         (tupleExpr (varExpr "a") (varExpr "b"))
                     ]
                     (tupleExpr
@@ -366,7 +376,8 @@ reverseMulti expectFn _ =
         modul =
             makeModule "testValue"
                 (letExpr
-                    [ define "reverseHelper" [ pVar "acc", pVar "xs" ]
+                    [ define "reverseHelper"
+                        [ pVar "acc", pVar "xs" ]
                         (caseExpr (varExpr "xs")
                             [ ( pList [], varExpr "acc" )
                             , ( pCons (pVar "x") (pVar "rest")
@@ -377,7 +388,8 @@ reverseMulti expectFn _ =
                               )
                             ]
                         )
-                    , define "reverse" [ pVar "xs" ]
+                    , define "reverse"
+                        [ pVar "xs" ]
                         (callExpr (varExpr "reverseHelper") [ listExpr [], varExpr "xs" ])
                     ]
                     (tupleExpr
@@ -401,7 +413,8 @@ twiceMulti expectFn _ =
         modul =
             makeModule "testValue"
                 (letExpr
-                    [ define "twice" [ pVar "f", pVar "x" ]
+                    [ define "twice"
+                        [ pVar "f", pVar "x" ]
                         (callExpr (varExpr "f")
                             [ callExpr (varExpr "f") [ varExpr "x" ] ]
                         )
@@ -436,7 +449,8 @@ singletonMulti expectFn _ =
         modul =
             makeModule "testValue"
                 (letExpr
-                    [ define "singleton" [ pVar "x" ]
+                    [ define "singleton"
+                        [ pVar "x" ]
                         (listExpr [ varExpr "x" ])
                     ]
                     (tupleExpr

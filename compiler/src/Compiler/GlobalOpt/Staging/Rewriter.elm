@@ -1,6 +1,4 @@
-module Compiler.GlobalOpt.Staging.Rewriter exposing
-    ( applyStagingSolution
-    )
+module Compiler.GlobalOpt.Staging.Rewriter exposing (applyStagingSolution)
 
 {-| Applies the staging solution to rewrite the MonoGraph.
 

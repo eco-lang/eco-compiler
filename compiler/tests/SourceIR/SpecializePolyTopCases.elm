@@ -449,10 +449,12 @@ mapPartialMulti expectFn _ =
             , body =
                 letExpr
                     [ -- mapAddOne = map addOne  (partially applied)
-                      define "mapAddOne" []
+                      define "mapAddOne"
+                        []
                         (callExpr (varExpr "map") [ varExpr "addOne" ])
                     , -- mapId = map (\s -> s)  (partially applied)
-                      define "mapId" []
+                      define "mapId"
+                        []
                         (callExpr (varExpr "map")
                             [ lambdaExpr [ pVar "s" ] (varExpr "s") ]
                         )

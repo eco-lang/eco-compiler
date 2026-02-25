@@ -1357,23 +1357,56 @@ uncurryReturnType monoType remainingArgs =
 monoExprType : Mono.MonoExpr -> Mono.MonoType
 monoExprType expr =
     case expr of
-        Mono.MonoLiteral _ ty -> ty
-        Mono.MonoVarLocal _ ty -> ty
-        Mono.MonoVarGlobal _ _ ty -> ty
-        Mono.MonoVarKernel _ _ _ ty -> ty
-        Mono.MonoList _ _ ty -> ty
-        Mono.MonoClosure _ _ ty -> ty
-        Mono.MonoCall _ _ _ ty _ -> ty
-        Mono.MonoTailCall _ _ ty -> ty
-        Mono.MonoIf _ _ ty -> ty
-        Mono.MonoLet _ _ ty -> ty
-        Mono.MonoDestruct _ _ ty -> ty
-        Mono.MonoCase _ _ _ _ ty -> ty
-        Mono.MonoRecordCreate _ ty -> ty
-        Mono.MonoRecordAccess _ _ ty -> ty
-        Mono.MonoRecordUpdate _ _ ty -> ty
-        Mono.MonoTupleCreate _ _ ty -> ty
-        Mono.MonoUnit -> Mono.MUnit
+        Mono.MonoLiteral _ ty ->
+            ty
+
+        Mono.MonoVarLocal _ ty ->
+            ty
+
+        Mono.MonoVarGlobal _ _ ty ->
+            ty
+
+        Mono.MonoVarKernel _ _ _ ty ->
+            ty
+
+        Mono.MonoList _ _ ty ->
+            ty
+
+        Mono.MonoClosure _ _ ty ->
+            ty
+
+        Mono.MonoCall _ _ _ ty _ ->
+            ty
+
+        Mono.MonoTailCall _ _ ty ->
+            ty
+
+        Mono.MonoIf _ _ ty ->
+            ty
+
+        Mono.MonoLet _ _ ty ->
+            ty
+
+        Mono.MonoDestruct _ _ ty ->
+            ty
+
+        Mono.MonoCase _ _ _ _ ty ->
+            ty
+
+        Mono.MonoRecordCreate _ ty ->
+            ty
+
+        Mono.MonoRecordAccess _ _ ty ->
+            ty
+
+        Mono.MonoRecordUpdate _ _ ty ->
+            ty
+
+        Mono.MonoTupleCreate _ _ ty ->
+            ty
+
+        Mono.MonoUnit ->
+            Mono.MUnit
 
 
 {-| Emit PushValue with nested continuation.
@@ -2145,19 +2178,44 @@ emitTwoReadsThenApply2 read1 read2 fnExpr resultPlaceholder state =
 readOpResultType : DecoderOp -> MlirType
 readOpResultType op =
     case op of
-        ReadU8 _ _ -> I64
-        ReadI8 _ _ -> I64
-        ReadU16 _ _ _ -> I64
-        ReadI16 _ _ _ -> I64
-        ReadU32 _ _ _ -> I64
-        ReadI32 _ _ _ -> I64
-        ReadF32 _ _ _ -> F64
-        ReadF64 _ _ _ -> F64
-        ReadBytes _ _ _ -> Types.ecoValue
-        ReadUtf8 _ _ _ -> Types.ecoValue
-        ReadBytesVar _ _ _ -> Types.ecoValue
-        ReadUtf8Var _ _ _ -> Types.ecoValue
-        _ -> Types.ecoValue
+        ReadU8 _ _ ->
+            I64
+
+        ReadI8 _ _ ->
+            I64
+
+        ReadU16 _ _ _ ->
+            I64
+
+        ReadI16 _ _ _ ->
+            I64
+
+        ReadU32 _ _ _ ->
+            I64
+
+        ReadI32 _ _ _ ->
+            I64
+
+        ReadF32 _ _ _ ->
+            F64
+
+        ReadF64 _ _ _ ->
+            F64
+
+        ReadBytes _ _ _ ->
+            Types.ecoValue
+
+        ReadUtf8 _ _ _ ->
+            Types.ecoValue
+
+        ReadBytesVar _ _ _ ->
+            Types.ecoValue
+
+        ReadUtf8Var _ _ _ ->
+            Types.ecoValue
+
+        _ ->
+            Types.ecoValue
 
 
 {-| Emit a single read op, returns (ops, resultVar, newCursor, ctx).

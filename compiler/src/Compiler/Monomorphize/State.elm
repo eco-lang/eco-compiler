@@ -1,7 +1,7 @@
 module Compiler.Monomorphize.State exposing
     ( MonoState, WorkItem(..), Substitution, VarTypes
-    , LocalInstanceInfo, LocalMultiState
     , initState
+    , LocalInstanceInfo, LocalMultiState
     )
 
 {-| State types and utilities for monomorphization.
@@ -28,9 +28,9 @@ the monomorphization process.
 
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.TypeEnv as TypeEnv
-import Compiler.Monomorphize.Registry as Registry
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.Name exposing (Name)
+import Compiler.Monomorphize.Registry as Registry
 import Data.Map as Dict exposing (Dict)
 import Data.Set as EverySet exposing (EverySet)
 import System.TypeCheck.IO as IO
@@ -86,6 +86,7 @@ type alias LocalInstanceInfo =
     - defName  : the let-bound function we're currently multi-specializing
     - instances: all discovered (typeKey -> instance) mappings for this let,
                  keyed by Mono.toComparableMonoType of the instance type.
+
 -}
 type alias LocalMultiState =
     { defName : Name

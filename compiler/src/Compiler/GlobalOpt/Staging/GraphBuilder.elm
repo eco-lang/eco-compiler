@@ -1,6 +1,4 @@
-module Compiler.GlobalOpt.Staging.GraphBuilder exposing
-    ( buildStagingGraph
-    )
+module Compiler.GlobalOpt.Staging.GraphBuilder exposing (buildStagingGraph)
 
 {-| Builds the staging graph by traversing the MonoGraph and creating
 union-find edges between producers and slots that must share staging.
@@ -464,7 +462,6 @@ addAggregateJoinpointsFromBranches branches ctx sg =
     -- This is complex because we need to match up field names/indices
     -- For simplicity, we'll handle this by ensuring all corresponding
     -- slots are in the same equivalence class
-
     -- Group branches by their structure (record, tuple, list)
     let
         recordBranches =

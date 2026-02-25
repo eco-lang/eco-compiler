@@ -18,7 +18,6 @@ import Compiler.AST.Source as Src
 import Dict exposing (Dict)
 import Expect exposing (Expectation)
 import Mlir.Mlir exposing (MlirModule, MlirOp, MlirType(..))
-import TestLogic.TestPipeline exposing (runToMlir)
 import TestLogic.Generate.CodeGen.Invariants
     exposing
         ( Violation
@@ -29,6 +28,7 @@ import TestLogic.Generate.CodeGen.Invariants
         , getTypeAttr
         , violationsToExpectation
         )
+import TestLogic.TestPipeline exposing (runToMlir)
 
 
 {-| Verify that call ABI consistency invariants hold for a source module.

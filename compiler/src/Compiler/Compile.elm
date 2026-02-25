@@ -34,7 +34,6 @@ import Compiler.AST.Source as Src
 import Compiler.AST.TypeEnv as TypeEnv
 import Compiler.AST.TypedCanonical as TCan
 import Compiler.AST.TypedOptimized as TOpt
-import Compiler.TypedCanonical.Build as TCanBuild
 import Compiler.Canonicalize.Module as Canonicalize
 import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Elm.Interface as I
@@ -51,6 +50,7 @@ import Compiler.Type.Constrain.Typed.Module as TypeTyped
 import Compiler.Type.KernelTypes as KernelTypes
 import Compiler.Type.PostSolve as PostSolve
 import Compiler.Type.Solve as Type
+import Compiler.TypedCanonical.Build as TCanBuild
 import Data.Map exposing (Dict)
 import System.TypeCheck.IO as TypeCheck
 import Task exposing (Task)

@@ -407,8 +407,9 @@ collectCustomTypeRefsFromDef def =
 {-| Collect closure checks (no dangling references).
 
 Checks both:
-1. All referenced SpecIds are defined in nodes
-2. All MonoVarLocal references have corresponding binders in scope
+
+1.  All referenced SpecIds are defined in nodes
+2.  All MonoVarLocal references have corresponding binders in scope
 
 -}
 collectClosureChecks : Mono.MonoGraph -> List (() -> Expect.Expectation)

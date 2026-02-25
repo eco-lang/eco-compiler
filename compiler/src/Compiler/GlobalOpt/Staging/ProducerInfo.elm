@@ -1,7 +1,4 @@
-module Compiler.GlobalOpt.Staging.ProducerInfo exposing
-    ( computeProducerInfo
-    , detectNaturalSegFromExpr
-    )
+module Compiler.GlobalOpt.Staging.ProducerInfo exposing (computeProducerInfo, detectNaturalSegFromExpr)
 
 {-| Computes natural staging information for all function producers.
 

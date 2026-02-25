@@ -1,6 +1,4 @@
-module Compiler.GlobalOpt.Staging.Solver exposing
-    ( solveStagingGraph
-    )
+module Compiler.GlobalOpt.Staging.Solver exposing (solveStagingGraph)
 
 {-| Solves the staging graph to produce a StagingSolution.
 

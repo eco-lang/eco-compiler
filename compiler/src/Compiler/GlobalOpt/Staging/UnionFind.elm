@@ -1,11 +1,6 @@
 module Compiler.GlobalOpt.Staging.UnionFind exposing
-    ( ufFind
-    , ufUnion
-    , ensureNode
-    , unionNodes
-    , nodeToKey
-    , producerIdToKey
-    , slotIdToKey
+    ( ufFind, ufUnion, ensureNode, unionNodes
+    , nodeToKey, producerIdToKey, slotIdToKey
     )
 
 {-| Union-find operations for the staging graph.

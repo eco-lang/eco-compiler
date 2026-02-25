@@ -1,8 +1,6 @@
 module Compiler.GlobalOpt.Staging exposing
     ( StagingSolution
-    , analyzeAndSolveStaging
-    , validateClosureStaging
-    , annotateCallStaging
+    , analyzeAndSolveStaging, validateClosureStaging, annotateCallStaging
     )
 
 {-| Global staging algorithm for determining correct staged-currying calling

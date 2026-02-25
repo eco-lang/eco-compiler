@@ -15,7 +15,6 @@ import Dict
 import Expect exposing (Expectation)
 import Mlir.Mlir exposing (MlirBlock, MlirModule, MlirOp, MlirRegion(..), MlirType(..))
 import OrderedDict
-import TestLogic.TestPipeline exposing (runToMlir)
 import TestLogic.Generate.CodeGen.Invariants
     exposing
         ( TypeEnv
@@ -25,6 +24,7 @@ import TestLogic.Generate.CodeGen.Invariants
         , typesMatch
         , violationsToExpectation
         )
+import TestLogic.TestPipeline exposing (runToMlir)
 
 
 {-| Verify that operand type consistency invariants hold for a source module.

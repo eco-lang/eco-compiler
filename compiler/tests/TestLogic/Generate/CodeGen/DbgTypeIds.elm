@@ -11,7 +11,6 @@ When `eco.dbg` has `arg_type_ids`, each ID must reference a valid type table ent
 import Compiler.AST.Source as Src
 import Expect exposing (Expectation)
 import Mlir.Mlir exposing (MlirAttr(..), MlirModule, MlirOp)
-import TestLogic.TestPipeline exposing (runToMlir)
 import TestLogic.Generate.CodeGen.Invariants
     exposing
         ( Violation
@@ -19,6 +18,7 @@ import TestLogic.Generate.CodeGen.Invariants
         , getArrayAttr
         , violationsToExpectation
         )
+import TestLogic.TestPipeline exposing (runToMlir)
 
 
 {-| Verify that dbg type IDs invariants hold for a source module.

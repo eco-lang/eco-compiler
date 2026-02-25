@@ -29,8 +29,8 @@ expression tree to identify Bytes.Encode/Decode combinator calls.
 
 import Compiler.AST.Monomorphized as Mono exposing (Global(..), MonoExpr(..))
 import Compiler.Elm.Package as Pkg
-import Compiler.Monomorphize.Registry as Registry
 import Compiler.Generate.MLIR.BytesFusion.LoopIR as IR exposing (Endianness(..), Op(..), WidthExpr(..))
+import Compiler.Monomorphize.Registry as Registry
 import Dict exposing (Dict)
 import System.TypeCheck.IO as IO
 

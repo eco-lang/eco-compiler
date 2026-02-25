@@ -16,7 +16,6 @@ import Compiler.AST.Source as Src
 import Dict exposing (Dict)
 import Expect exposing (Expectation)
 import Mlir.Mlir exposing (MlirModule, MlirOp, MlirRegion(..))
-import TestLogic.TestPipeline exposing (runToMlir)
 import TestLogic.Generate.CodeGen.Invariants
     exposing
         ( Violation
@@ -26,6 +25,7 @@ import TestLogic.Generate.CodeGen.Invariants
         , getStringAttr
         , violationsToExpectation
         )
+import TestLogic.TestPipeline exposing (runToMlir)
 
 
 {-| Verify that papCreate arity matches function parameter count.
@@ -99,6 +99,7 @@ For the two-clone model (when \_fast\_evaluator is set), the arity represents
 the total logical arity (captures + params) and should match the $cap function's
 parameter count. The $clo function has (Closure\*, params...) which has fewer
 parameters by design.
+
 -}
 checkPapCreateOp : Dict String Int -> MlirOp -> Maybe Violation
 checkPapCreateOp funcParamCountMap op =

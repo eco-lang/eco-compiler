@@ -10,28 +10,19 @@ module Compiler.AST.Monomorphized exposing
     , toComparableSpecKey, toComparableMonoType
     , getMonoPathType
     , monoTypeToDebugString
-    , forceCNumberToInt
     , toComparableGlobal, toComparableLambdaId
-      -- Staging/Segmentation helpers
-    , Segmentation
-    , segmentLengths
-    , stageParamTypes
-    , stageReturnType
-    , stageArity
-    , chooseCanonicalSegmentation
-    , buildSegmentedFunctionType
-    , decomposeFunctionType
-    , isFunctionType
-    , countTotalArity
-    , functionArity
-      -- Call staging metadata
+    , forceCNumberToInt
+    , Segmentation, segmentLengths, stageParamTypes, stageReturnType, stageArity
+    , chooseCanonicalSegmentation, buildSegmentedFunctionType
+    , decomposeFunctionType, isFunctionType, countTotalArity, functionArity
     , CallModel(..), CallInfo, defaultCallInfo
-      -- Typed closure calling (ABI cloning)
     , ClosureKindId(..), ClosureKind(..), MaybeClosureKind
     , CaptureABI, DispatchMode(..)
     , mergeClosureKinds
-    , ClosureKindRegistry, ClosureKindEntry
-    , emptyClosureKindRegistry
+    , ClosureKindRegistry, ClosureKindEntry, emptyClosureKindRegistry
+    -- Typed closure calling (ABI cloning)
+    -- Call staging metadata
+    -- Staging/Segmentation helpers
     )
 
 {-| Monomorphized AST for backends that can optimize using concrete types.
@@ -250,7 +241,7 @@ type Constraint
 -- ============================================================================
 
 
-{-| Force all numeric-constrained type variables (MVar _ CNumber)
+{-| Force all numeric-constrained type variables (MVar \_ CNumber)
 to concrete Int (MInt) inside a MonoType.
 
 Backend policy: when we have an ambiguous `number` that has not
@@ -259,7 +250,7 @@ This is sound for ECO because Elm `number` is morally "Int or Float",
 and we only commit to Int where no Float-specific behaviour is required.
 
 IMPORTANT: This does NOT affect MFloat or Float-typed code. Only
-unresolved MVar _ CNumber is converted. Float-specific operations
+unresolved MVar \_ CNumber is converted. Float-specific operations
 (Basics./, trig functions, etc.) have canonical Float types and
 resolve to MFloat directly without going through CNumber.
 
@@ -1254,7 +1245,7 @@ type alias CaptureABI =
 Always present on closure call sites in well-formed MLIR.
 
   - Fast: Known homogeneous, use (captures..., params...) typed entry
-  - Closure: Known heterogeneous, use (Closure*, params...) generic entry
+  - Closure: Known heterogeneous, use (Closure\*, params...) generic entry
   - Unknown: Missing kind info, use generic path + diagnostic
 
 -}

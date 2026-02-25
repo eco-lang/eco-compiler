@@ -1204,15 +1204,22 @@ partially applied, chosen with if, then called. Exercises heterogeneous
 closure ABI through a single call site.
 
     addN : Int -> Int -> Int
-    addN n x = n + x
+    addN n x =
+        n + x
 
     mulF : Float -> Int -> Int
-    mulF f x = truncate (f * toFloat x)
+    mulF f x =
+        truncate (f * toFloat x)
 
     testValue : Int
     testValue =
         let
-            f = if True then addN 10 else mulF 2.5
+            f =
+                if True then
+                    addN 10
+
+                else
+                    mulF 2.5
         in
         f 3
 
@@ -1283,21 +1290,32 @@ heteroClosureIntFloat expectFn _ =
 an unboxed Int (i64). Chosen with if, then called. Exercises mixed
 boxed/unboxed capture ABI through a single call site.
 
-    type Shape = Circle | Square
+    type Shape
+        = Circle
+        | Square
 
     shapeBonus : Shape -> Int -> Int
     shapeBonus shape x =
         case shape of
-            Circle -> x + 10
-            Square -> x + 20
+            Circle ->
+                x + 10
+
+            Square ->
+                x + 20
 
     addN : Int -> Int -> Int
-    addN n x = n + x
+    addN n x =
+        n + x
 
     testValue : Int
     testValue =
         let
-            f = if True then shapeBonus Circle else addN 5
+            f =
+                if True then
+                    shapeBonus Circle
+
+                else
+                    addN 5
         in
         f 3
 

@@ -13,7 +13,6 @@ with case\_kind="bool".
 import Compiler.AST.Source as Src
 import Expect exposing (Expectation)
 import Mlir.Mlir exposing (MlirModule, MlirOp, MlirType(..))
-import TestLogic.TestPipeline exposing (runToMlir)
 import TestLogic.Generate.CodeGen.Invariants
     exposing
         ( Violation
@@ -25,6 +24,7 @@ import TestLogic.Generate.CodeGen.Invariants
         , violationsToExpectation
         , walkAllOps
         )
+import TestLogic.TestPipeline exposing (runToMlir)
 
 
 {-| Verify that boolean constant invariants hold for a source module.

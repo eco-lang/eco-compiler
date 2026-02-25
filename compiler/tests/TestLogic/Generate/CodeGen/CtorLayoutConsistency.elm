@@ -15,7 +15,6 @@ import Compiler.Generate.MLIR.Types as Types
 import Data.Map as Dict
 import Expect exposing (Expectation)
 import Mlir.Mlir exposing (MlirModule, MlirOp, MlirType(..))
-import TestLogic.TestPipeline exposing (MlirArtifacts, runToMlir)
 import TestLogic.Generate.CodeGen.Invariants
     exposing
         ( Violation
@@ -23,6 +22,7 @@ import TestLogic.Generate.CodeGen.Invariants
         , getIntAttr
         , violationsToExpectation
         )
+import TestLogic.TestPipeline exposing (MlirArtifacts, runToMlir)
 
 
 {-| Verify that ctor layout consistency invariants hold for a source module.

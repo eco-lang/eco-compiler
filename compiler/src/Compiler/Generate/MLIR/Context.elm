@@ -101,6 +101,7 @@ kernelFuncSignatureFromType funcType =
                   kernelFuncSignatureFromType + monoTypeToAbi. Used for
                   kernels with typed C++ signatures (e.g., Basics.fdiv takes
                   double, String.cons takes uint16_t).
+
 -}
 type KernelBackendAbiPolicy
     = AllBoxed
@@ -110,8 +111,9 @@ type KernelBackendAbiPolicy
 {-| Determine the backend ABI policy for a kernel call.
 
 Only kernels whose C++ implementation takes ALL arguments as boxed
-uint64_t (eco.value) and returns uint64_t should be marked AllBoxed.
+uint64\_t (eco.value) and returns uint64\_t should be marked AllBoxed.
 When in doubt, use ElmDerived (safe default — preserves current behavior).
+
 -}
 kernelBackendAbiPolicy : String -> String -> KernelBackendAbiPolicy
 kernelBackendAbiPolicy home name =

@@ -39,12 +39,9 @@ import Compiler.AST.DecisionTree.Test as Test
 import Compiler.AST.DecisionTree.TypedPath as TypedPath
 import Compiler.AST.Monomorphized as Mono
 import Compiler.Data.Name as Name
-import Compiler.Monomorphize.Registry as Registry
 import Compiler.Elm.Package as Pkg
 import Compiler.Generate.MLIR.BytesFusion.Emit as BFEmit
 import Compiler.Generate.MLIR.BytesFusion.Reify as BFReify
-import Compiler.Monomorphize.Closure as Closure
-import Data.Set as EverySet
 import Compiler.Generate.MLIR.Context as Ctx
 import Compiler.Generate.MLIR.Intrinsics as Intrinsics
 import Compiler.Generate.MLIR.Names as Names
@@ -52,7 +49,10 @@ import Compiler.Generate.MLIR.Ops as Ops
 import Compiler.Generate.MLIR.Patterns as Patterns
 import Compiler.Generate.MLIR.Types as Types
 import Compiler.LocalOpt.Typed.DecisionTree as DT
+import Compiler.Monomorphize.Closure as Closure
+import Compiler.Monomorphize.Registry as Registry
 import Data.Map as EveryDict
+import Data.Set as EverySet
 import Dict exposing (Dict)
 import Hex
 import List.Extra as ListX
@@ -1577,6 +1577,7 @@ boxArgsForClosureBoundary boxAllPrimitives ctx argsWithTypes =
 When the monomorphizer inlines Bytes.Decode.decode, it produces a let binding for
 the decoder value, a destructuring to extract the inner step function, and a kernel
 call. We intercept this pattern to try fusion on the original decoder expression.
+
 -}
 tryInlinedDecodeFusion : Ctx.Context -> Mono.MonoDef -> Mono.MonoExpr -> Maybe ExprResult
 tryInlinedDecodeFusion ctx def body =
@@ -1590,7 +1591,7 @@ tryInlinedDecodeFusion ctx def body =
 
 
 {-| Scan a MonoDestruct body to find kernel Bytes.decode call and extract the bytes argument.
-Matches the pattern: MonoDestruct _ (MonoCall (MonoVarKernel "Bytes" "decode") [_, bytesExpr] _ _) _
+Matches the pattern: MonoDestruct \_ (MonoCall (MonoVarKernel "Bytes" "decode") [\_, bytesExpr][_, bytesExpr] \_ _) _
 -}
 findKernelDecodeInDestructBody : Mono.MonoExpr -> Maybe Mono.MonoExpr
 findKernelDecodeInDestructBody body =
@@ -1661,7 +1662,6 @@ tryDecodeFusionWithBindings ctx bindings body =
                             -- Reification failed - fall back to normal compilation
                             Nothing
 
-
                 Nothing ->
                     Nothing
 
@@ -1671,7 +1671,6 @@ tryDecodeFusionWithBindings ctx bindings body =
 
         _ ->
             Nothing
-
 
 
 {-| Resolve a decoder expression from accumulated let bindings.
@@ -1791,7 +1790,6 @@ compileSkippedBindings ctx bindings =
                     compileSkippedBindings ctx1 rest
             in
             ( exprResult.ops ++ restOps, ctxFinal )
-
 
 
 {-| Find a kernel Bytes.decode call and return the bytes argument.
@@ -3149,93 +3147,93 @@ generateLet ctx def body =
     in
     case def of
         Mono.MonoDef name expr ->
-                    let
-                        -- Look up the placeholder SSA var installed by addPlaceholderMappings.
-                        -- This is "%name" with type !eco.value for each let-bound name.
-                        ( placeholderVar, _ ) =
-                            Ctx.lookupVar ctxWithPlaceholders name
+            let
+                -- Look up the placeholder SSA var installed by addPlaceholderMappings.
+                -- This is "%name" with type !eco.value for each let-bound name.
+                ( placeholderVar, _ ) =
+                    Ctx.lookupVar ctxWithPlaceholders name
 
-                        -- Generate the bound expression with placeholders in scope.
-                        rawResult : ExprResult
-                        rawResult =
-                            generateExpr ctxWithPlaceholders expr
+                -- Generate the bound expression with placeholders in scope.
+                rawResult : ExprResult
+                rawResult =
+                    generateExpr ctxWithPlaceholders expr
 
-                        -- Force the bound expression's result SSA id to be the placeholder var.
-                        -- When the RHS produces ops, forceResultVar renames the result to the
-                        -- placeholder, so the defining op (e.g. eco.papCreate) directly defines
-                        -- the placeholder SSA var that sibling closures captured.
-                        --
-                        -- When the RHS produces NO ops (e.g. a simple variable reference),
-                        -- there is no defining op to rename, so we alias the let-bound name
-                        -- to the existing SSA var instead.
-                        -- Handle self-capturing closures (e.g., recursive helper in Array.foldr).
-                        -- If a papCreate uses the placeholder var as a capture operand,
-                        -- replace it with a Unit constant and mark the self-capture index.
-                        -- The C++ lowering will patch the closure to point to itself.
-                        ( fixedResult, ctxAfterFix ) =
-                            if hasSelfCapture placeholderVar rawResult.ops then
-                                let
-                                    ( unitVar, ctxWithUnit ) =
-                                        Ctx.freshVar rawResult.ctx
+                -- Force the bound expression's result SSA id to be the placeholder var.
+                -- When the RHS produces ops, forceResultVar renames the result to the
+                -- placeholder, so the defining op (e.g. eco.papCreate) directly defines
+                -- the placeholder SSA var that sibling closures captured.
+                --
+                -- When the RHS produces NO ops (e.g. a simple variable reference),
+                -- there is no defining op to rename, so we alias the let-bound name
+                -- to the existing SSA var instead.
+                -- Handle self-capturing closures (e.g., recursive helper in Array.foldr).
+                -- If a papCreate uses the placeholder var as a capture operand,
+                -- replace it with a Unit constant and mark the self-capture index.
+                -- The C++ lowering will patch the closure to point to itself.
+                ( fixedResult, ctxAfterFix ) =
+                    if hasSelfCapture placeholderVar rawResult.ops then
+                        let
+                            ( unitVar, ctxWithUnit ) =
+                                Ctx.freshVar rawResult.ctx
 
-                                    ( ctxWithUnit2, unitOp ) =
-                                        Ops.ecoConstantUnit ctxWithUnit unitVar
+                            ( ctxWithUnit2, unitOp ) =
+                                Ops.ecoConstantUnit ctxWithUnit unitVar
 
-                                    resultWithUnit =
-                                        { rawResult | ops = [ unitOp ] ++ rawResult.ops, ctx = ctxWithUnit2 }
-                                in
-                                fixSelfCaptures placeholderVar unitVar ctxWithUnit2 resultWithUnit
+                            resultWithUnit =
+                                { rawResult | ops = [ unitOp ] ++ rawResult.ops, ctx = ctxWithUnit2 }
+                        in
+                        fixSelfCaptures placeholderVar unitVar ctxWithUnit2 resultWithUnit
 
-                            else
-                                ( rawResult, rawResult.ctx )
+                    else
+                        ( rawResult, rawResult.ctx )
 
-                        ( exprResult, effectiveVar ) =
-                            if List.isEmpty fixedResult.ops then
-                                ( fixedResult, fixedResult.resultVar )
+                ( exprResult, effectiveVar ) =
+                    if List.isEmpty fixedResult.ops then
+                        ( fixedResult, fixedResult.resultVar )
 
-                            else if not (isVarDefinedInOps fixedResult.resultVar fixedResult.ops) then
-                                -- The result var is from an outer scope (not defined by this
-                                -- expression's ops), e.g. Debug.log returning an already-boxed
-                                -- value. Renaming would break SSA references, so just alias.
-                                ( fixedResult, fixedResult.resultVar )
+                    else if not (isVarDefinedInOps fixedResult.resultVar fixedResult.ops) then
+                        -- The result var is from an outer scope (not defined by this
+                        -- expression's ops), e.g. Debug.log returning an already-boxed
+                        -- value. Renaming would break SSA references, so just alias.
+                        ( fixedResult, fixedResult.resultVar )
 
-                            else
-                                ( forceResultVar placeholderVar fixedResult, placeholderVar )
+                    else
+                        ( forceResultVar placeholderVar fixedResult, placeholderVar )
 
-                        -- Update varMappings for this name to use the effective SSA var,
-                        -- with the actual result type.
-                        ctx1 : Ctx.Context
-                        ctx1 =
-                            Ctx.addVarMapping name effectiveVar exprResult.resultType exprResult.ctx
-                                |> Ctx.addDecoderExpr name expr
+                -- Update varMappings for this name to use the effective SSA var,
+                -- with the actual result type.
+                ctx1 : Ctx.Context
+                ctx1 =
+                    Ctx.addVarMapping name effectiveVar exprResult.resultType exprResult.ctx
+                        |> Ctx.addDecoderExpr name expr
 
-                        bodyResult : ExprResult
-                        bodyResult =
-                            generateExpr ctx1 body
+                bodyResult : ExprResult
+                bodyResult =
+                    generateExpr ctx1 body
 
-                        -- Restore outer siblings on exit from the let-rec group
-                        bodyCtx : Ctx.Context
-                        bodyCtx =
-                            bodyResult.ctx
+                -- Restore outer siblings on exit from the let-rec group
+                bodyCtx : Ctx.Context
+                bodyCtx =
+                    bodyResult.ctx
 
-                        ctxOut : Ctx.Context
-                        ctxOut =
-                            { bodyCtx | currentLetSiblings = outerSiblings }
+                ctxOut : Ctx.Context
+                ctxOut =
+                    { bodyCtx | currentLetSiblings = outerSiblings }
 
-                        -- Propagate isTerminated when:
-                        -- 1. The bound expression is terminated (eco.case, eco.jump), AND
-                        --    the body is trivial (just returning the let-bound variable, so no body ops)
-                        -- 2. OR the body itself is terminated
-                        -- In these cases, the case alternatives already contain the correct returns.
-                        finalIsTerminated =
-                            (exprResult.isTerminated && List.isEmpty bodyResult.ops) || bodyResult.isTerminated
-                    in
-                    { ops = exprResult.ops ++ bodyResult.ops
-                    , resultVar = bodyResult.resultVar
-                    , resultType = bodyResult.resultType
-                    , ctx = ctxOut
-                    , isTerminated = finalIsTerminated
-                    }
+                -- Propagate isTerminated when:
+                -- 1. The bound expression is terminated (eco.case, eco.jump), AND
+                --    the body is trivial (just returning the let-bound variable, so no body ops)
+                -- 2. OR the body itself is terminated
+                -- In these cases, the case alternatives already contain the correct returns.
+                finalIsTerminated =
+                    (exprResult.isTerminated && List.isEmpty bodyResult.ops) || bodyResult.isTerminated
+            in
+            { ops = exprResult.ops ++ bodyResult.ops
+            , resultVar = bodyResult.resultVar
+            , resultType = bodyResult.resultType
+            , ctx = ctxOut
+            , isTerminated = finalIsTerminated
+            }
 
         Mono.MonoTailDef name params tailBody ->
             -- For local tail-recursive functions:

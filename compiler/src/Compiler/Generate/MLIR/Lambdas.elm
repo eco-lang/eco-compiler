@@ -19,8 +19,8 @@ import Compiler.Generate.MLIR.Types as Types
 import Compiler.Monomorphize.Closure as Closure
 import Data.Set as EverySet exposing (EverySet)
 import Dict
-import Set
 import Mlir.Mlir exposing (MlirOp, MlirRegion, MlirType)
+import Set
 import Utils.Crash exposing (crash)
 
 

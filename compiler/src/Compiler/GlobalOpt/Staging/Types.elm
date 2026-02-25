@@ -1,17 +1,8 @@
 module Compiler.GlobalOpt.Staging.Types exposing
-    ( ProducerId(..)
-    , SlotId(..)
-    , Node(..)
-    , NodeId
-    , ClassId
-    , StagingGraph
-    , Uf
-    , StagingSolution
-    , ProducerInfo
-    , Segmentation
-    , emptyStagingGraph
-    , emptyUf
-    , emptyProducerInfo
+    ( ProducerId(..), SlotId(..), NodeId, ClassId
+    , Node(..), StagingGraph, Uf, StagingSolution
+    , ProducerInfo, Segmentation
+    , emptyStagingGraph, emptyUf, emptyProducerInfo
     )
 
 {-| Core data types for the global staging algorithm.

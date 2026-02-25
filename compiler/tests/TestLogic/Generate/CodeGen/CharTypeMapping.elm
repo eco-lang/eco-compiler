@@ -12,7 +12,6 @@ and all char constants/ops must use `i16`.
 import Compiler.AST.Source as Src
 import Expect exposing (Expectation)
 import Mlir.Mlir exposing (MlirModule, MlirOp, MlirType(..))
-import TestLogic.TestPipeline exposing (runToMlir)
 import TestLogic.Generate.CodeGen.Invariants
     exposing
         ( Violation
@@ -21,6 +20,7 @@ import TestLogic.Generate.CodeGen.Invariants
         , findOpsWithPrefix
         , violationsToExpectation
         )
+import TestLogic.TestPipeline exposing (runToMlir)
 
 
 {-| Verify that char type mapping invariants hold for a source module.

@@ -1,6 +1,4 @@
-module Compiler.GlobalOpt.MonoReturnArity exposing
-    ( collectStageArities
-    )
+module Compiler.GlobalOpt.MonoReturnArity exposing (collectStageArities)
 
 {-| Compute stage arities for multi-stage closures.
 

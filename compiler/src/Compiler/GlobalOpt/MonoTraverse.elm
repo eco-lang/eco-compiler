@@ -1,18 +1,7 @@
 module Compiler.GlobalOpt.MonoTraverse exposing
-    ( foldChoice
-    , foldDecider
-    , foldDef
-    , foldExpr
-    , mapChoice
-    , mapDecider
-    , mapDef
-    , mapExpr
-    , mapExprChildren
-    , traverseChoice
-    , traverseDecider
-    , traverseDef
-    , traverseExpr
-    , traverseExprChildren
+    ( mapExpr, mapExprChildren, mapDef, mapChoice, mapDecider
+    , traverseExpr, traverseExprChildren, traverseDef, traverseChoice, traverseDecider
+    , foldExpr, foldDef, foldChoice, foldDecider
     )
 
 {-| Generic AST traversal abstractions for MonoExpr.
