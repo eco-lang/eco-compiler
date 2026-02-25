@@ -42,6 +42,8 @@ import SourceIR.SpecializeAccessorCases as SpecializeAccessorCases
 import SourceIR.SpecializeConstructorCases as SpecializeConstructorCases
 import SourceIR.SpecializeCycleCases as SpecializeCycleCases
 import SourceIR.SpecializeExprCases as SpecializeExprCases
+import SourceIR.SpecializePolyLetCases as SpecializePolyLetCases
+import SourceIR.SpecializePolyTopCases as SpecializePolyTopCases
 import SourceIR.TupleCases as TupleCases
 import Test exposing (Test)
 
@@ -80,6 +82,8 @@ expectSuite expectFn condStr =
         , SpecializeConstructorCases.expectSuite expectFn condStr
         , SpecializeCycleCases.expectSuite expectFn condStr
         , SpecializeExprCases.expectSuite expectFn condStr
+        , SpecializePolyLetCases.expectSuite expectFn condStr
+        , SpecializePolyTopCases.expectSuite expectFn condStr
         , TupleCases.expectSuite expectFn condStr
 
         -- Fuzz Tests
