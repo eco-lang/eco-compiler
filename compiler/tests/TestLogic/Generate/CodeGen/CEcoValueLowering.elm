@@ -1,4 +1,4 @@
-module TestLogic.Generate.CodeGen.CEcoValueLowering exposing (expectCEcoValueLowering, checkCEcoValueLowering)
+module TestLogic.Generate.CodeGen.CEcoValueLowering exposing (expectCEcoValueLowering)
 
 {-| Test logic for CGEN\_013: CEcoValue MVars Always Lower to eco.value.
 
@@ -6,22 +6,20 @@ MonoType variables with CEcoValue constraint must always lower to !eco.value
 in MLIR. This is tested indirectly by checking Debug.\* kernel calls, which
 are known to preserve CEcoValue polymorphism.
 
-@docs expectCEcoValueLowering, checkCEcoValueLowering
+@docs expectCEcoValueLowering
 
 -}
 
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.Source as Src
 import Expect exposing (Expectation)
-import Mlir.Mlir exposing (MlirModule, MlirOp, MlirType(..))
+import Mlir.Mlir exposing (MlirModule, MlirOp, MlirType)
 import TestLogic.Generate.CodeGen.Invariants
     exposing
         ( Violation
         , extractOperandTypes
         , findOpsNamed
         , getStringAttr
-        , isEcoValueType
-        , isUnboxable
         , violationsToExpectation
         )
 import TestLogic.TestPipeline exposing (runToMlir)
@@ -97,13 +95,7 @@ checkDebugCallOperands op =
                         -- First operand is polymorphic
                         checkPolymorphicOperands op callee operandTypes
 
-                    else if String.contains "todo" callee then
-                        -- Debug.todo has signature: String -> a
-                        -- Result is polymorphic but no polymorphic input
-                        []
-
                     else
-                        -- Other debug functions - check all non-primitive operands are eco.value
                         []
 
                 Nothing ->

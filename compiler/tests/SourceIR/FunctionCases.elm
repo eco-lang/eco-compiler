@@ -1,4 +1,4 @@
-module SourceIR.FunctionCases exposing (expectSuite, testCases)
+module SourceIR.FunctionCases exposing (expectSuite)
 
 {-| Tests for function expressions: lambdas, calls, partial application.
 -}

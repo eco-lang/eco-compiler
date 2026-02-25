@@ -1,4 +1,4 @@
-module TestLogic.Generate.CodeGen.DestructorTypeProjection exposing (expectDestructorTypeProjection, checkDestructorTypeProjection, countProjectionUnboxSequences)
+module TestLogic.Generate.CodeGen.DestructorTypeProjection exposing (expectDestructorTypeProjection, countProjectionUnboxSequences)
 
 {-| Test logic for CGEN\_004: Destructor Type Projection invariant.
 
@@ -18,7 +18,7 @@ A spurious unbox pattern occurs when:
 3.  The primitive is a heap-unboxable type, suggesting the projection should have
     yielded the primitive directly if the MonoType was correctly specialized
 
-@docs expectDestructorTypeProjection, checkDestructorTypeProjection, countProjectionUnboxSequences
+@docs expectDestructorTypeProjection, countProjectionUnboxSequences
 
 -}
 
@@ -32,7 +32,6 @@ import TestLogic.Generate.CodeGen.Invariants
         ( TypeEnv
         , Violation
         , findFuncOps
-        , isEcoValueType
         , isUnboxable
         , violationsToExpectation
         , walkOpsInRegion
@@ -165,11 +164,8 @@ buildTypeEnvFromOp op =
                 (\( name, t ) acc -> Dict.insert name t acc)
                 Dict.empty
                 op.results
-
-        withRegions =
-            List.foldl collectFromRegion withResults op.regions
     in
-    withRegions
+    List.foldl collectFromRegion withResults op.regions
 
 
 collectFromRegion : MlirRegion -> TypeEnv -> TypeEnv
@@ -186,11 +182,8 @@ collectFromRegion (MlirRegion { entry, blocks }) env =
 
         withEntryTerm =
             collectFromOp entry.terminator withEntryBody
-
-        withBlocks =
-            List.foldl collectFromBlock withEntryTerm (OrderedDict.values blocks)
     in
-    withBlocks
+    List.foldl collectFromBlock withEntryTerm (OrderedDict.values blocks)
 
 
 collectFromBlock : MlirBlock -> TypeEnv -> TypeEnv
@@ -204,11 +197,8 @@ collectFromBlock block env =
 
         withBody =
             collectFromOps block.body withArgs
-
-        withTerm =
-            collectFromOp block.terminator withBody
     in
-    withTerm
+    collectFromOp block.terminator withBody
 
 
 collectFromOps : List MlirOp -> TypeEnv -> TypeEnv
@@ -224,11 +214,8 @@ collectFromOp op env =
                 (\( name, t ) acc -> Dict.insert name t acc)
                 env
                 op.results
-
-        withRegions =
-            List.foldl collectFromRegion withResults op.regions
     in
-    withRegions
+    List.foldl collectFromRegion withResults op.regions
 
 
 walkOpsInOp : MlirOp -> List MlirOp

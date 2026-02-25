@@ -327,11 +327,11 @@ computeExpectedType expr nodeTypes exprNodes =
                 Nothing ->
                     Nothing
 
-        Can.Lambda patterns (A.At _ bodyInfo) ->
+        Can.Lambda _ (A.At _ bodyInfo) ->
             -- Lambda: List.foldr TLambda bodyType argTypes
             -- Get body type
             case Dict.get identity bodyInfo.id nodeTypes of
-                Just bodyType ->
+                Just _ ->
                     -- For lambda, we need the pattern types as arg types
                     -- But patterns don't always have direct types in nodeTypes
                     -- Skip precise verification for now

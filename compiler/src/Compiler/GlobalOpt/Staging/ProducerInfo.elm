@@ -1,4 +1,4 @@
-module Compiler.GlobalOpt.Staging.ProducerInfo exposing (computeProducerInfo, detectNaturalSegFromExpr)
+module Compiler.GlobalOpt.Staging.ProducerInfo exposing (computeProducerInfo)
 
 {-| Computes natural staging information for all function producers.
 
@@ -11,14 +11,14 @@ This module traverses the MonoGraph to identify:
 
 # API
 
-@docs computeProducerInfo, detectNaturalSegFromExpr
+@docs computeProducerInfo
 
 -}
 
 import Compiler.AST.Monomorphized as Mono
-import Compiler.GlobalOpt.Staging.Types as Types exposing (ProducerId(..), ProducerInfo, Segmentation, emptyProducerInfo)
+import Compiler.GlobalOpt.Staging.Types exposing (ProducerId(..), ProducerInfo, Segmentation, emptyProducerInfo)
 import Compiler.GlobalOpt.Staging.UnionFind exposing (producerIdToKey)
-import Data.Map as Dict exposing (Dict)
+import Data.Map as Dict
 
 
 

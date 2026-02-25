@@ -1,16 +1,16 @@
-module TestLogic.Generate.CodeGen.SymbolUniqueness exposing (expectSymbolUniqueness, checkSymbolUniqueness)
+module TestLogic.Generate.CodeGen.SymbolUniqueness exposing (expectSymbolUniqueness)
 
 {-| Test logic for CGEN\_041: Symbol Uniqueness invariant.
 
 Within a module, all symbol definitions must be unique: no two `func.func`
 operations may have the same `sym_name`.
 
-@docs expectSymbolUniqueness, checkSymbolUniqueness
+@docs expectSymbolUniqueness
 
 -}
 
 import Compiler.AST.Source as Src
-import Dict exposing (Dict)
+import Dict
 import Expect exposing (Expectation)
 import Mlir.Mlir exposing (MlirModule, MlirOp)
 import TestLogic.Generate.CodeGen.Invariants
@@ -58,12 +58,9 @@ checkSymbolUniqueness mlirModule =
                 )
                 Dict.empty
                 symbolOps
-
-        violations =
-            Dict.toList grouped
-                |> List.concatMap checkDuplicates
     in
-    violations
+    Dict.toList grouped
+        |> List.concatMap checkDuplicates
 
 
 checkDuplicates : ( String, List MlirOp ) -> List Violation

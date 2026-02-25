@@ -906,7 +906,7 @@ postSolveList annotations exprId elems nodeTypes0 kernel0 =
             Dict.get Basics.identity exprId nodeTypes1
     in
     case existingType of
-        Just resolvedType ->
+        Just _ ->
             -- Solver already resolved the type (e.g., from context constraints)
             -- Trust that type - don't overwrite with computed structural type
             ( nodeTypes1, kernel1 )

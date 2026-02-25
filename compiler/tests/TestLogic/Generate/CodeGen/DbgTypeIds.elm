@@ -1,10 +1,10 @@
-module TestLogic.Generate.CodeGen.DbgTypeIds exposing (expectDbgTypeIds, checkDbgTypeIds)
+module TestLogic.Generate.CodeGen.DbgTypeIds exposing (expectDbgTypeIds)
 
 {-| Test logic for CGEN\_036: Dbg Type IDs Valid invariant.
 
 When `eco.dbg` has `arg_type_ids`, each ID must reference a valid type table entry.
 
-@docs expectDbgTypeIds, checkDbgTypeIds
+@docs expectDbgTypeIds
 
 -}
 
@@ -56,11 +56,8 @@ checkDbgTypeIds mlirModule =
 
         dbgOps =
             findOpsNamed "eco.dbg" mlirModule
-
-        violations =
-            List.concatMap (checkDbgOp maxTypeId) dbgOps
     in
-    violations
+    List.concatMap (checkDbgOp maxTypeId) dbgOps
 
 
 checkDbgOp : Int -> MlirOp -> List Violation

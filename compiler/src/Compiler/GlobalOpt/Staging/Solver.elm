@@ -15,8 +15,7 @@ This module:
 
 -}
 
-import Compiler.AST.Monomorphized as Mono
-import Compiler.GlobalOpt.Staging.Types as Types exposing (ClassId, Node(..), NodeId, ProducerId(..), ProducerInfo, Segmentation, StagingGraph, StagingSolution, Uf)
+import Compiler.GlobalOpt.Staging.Types exposing (ClassId, Node(..), NodeId, ProducerId(..), ProducerInfo, Segmentation, StagingGraph, StagingSolution, Uf)
 import Compiler.GlobalOpt.Staging.UnionFind exposing (producerIdToKey, slotIdToKey, ufFind)
 import Data.Map as Dict exposing (Dict)
 
@@ -308,7 +307,7 @@ mapProducersAndSlotsToClasses :
     -> ( Dict String String ClassId, Dict String String ClassId )
 mapProducersAndSlotsToClasses sg nodeToClass =
     Dict.foldl compare
-        (\nodeKey nid ( prodMap, slotMap ) ->
+        (\_ nid ( prodMap, slotMap ) ->
             case Dict.get identity nid nodeToClass of
                 Nothing ->
                     ( prodMap, slotMap )

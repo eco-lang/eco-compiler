@@ -1,4 +1,4 @@
-module TestLogic.Generate.CodeGen.BoxingValidation exposing (expectBoxingValidation, checkBoxingValidation)
+module TestLogic.Generate.CodeGen.BoxingValidation exposing (expectBoxingValidation)
 
 {-| Test logic for CGEN\_001: Boxing Validation invariant.
 
@@ -6,7 +6,7 @@ Boxing operations must only convert between primitive MLIR types (i64, f64, i16)
 and `!eco.value`. Any conversion between mismatched primitives or no-op
 boxing/unboxing is a violation.
 
-@docs expectBoxingValidation, checkBoxingValidation
+@docs expectBoxingValidation
 
 -}
 
@@ -20,7 +20,6 @@ import TestLogic.Generate.CodeGen.Invariants
         , extractResultTypes
         , findOpsNamed
         , isEcoValueType
-        , isUnboxable
         , violationsToExpectation
         )
 import TestLogic.TestPipeline exposing (runToMlir)

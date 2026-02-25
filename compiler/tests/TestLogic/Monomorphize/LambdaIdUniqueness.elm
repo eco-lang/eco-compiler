@@ -1,4 +1,7 @@
-module TestLogic.Monomorphize.LambdaIdUniqueness exposing (expectLambdaIdUniqueness, checkLambdaIdUniqueness)
+module TestLogic.Monomorphize.LambdaIdUniqueness exposing
+    ( expectLambdaIdUniqueness, checkLambdaIdUniqueness
+    , Violation
+    )
 
 {-| Test logic for MONO\_019: Lambda IDs are unique within graph.
 
@@ -13,7 +16,6 @@ import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.Source as Src
 import Data.Map as Dict
 import Expect exposing (Expectation)
-import Set exposing (Set)
 import TestLogic.TestPipeline as Pipeline
 
 

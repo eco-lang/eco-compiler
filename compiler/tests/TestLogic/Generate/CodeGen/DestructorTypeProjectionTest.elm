@@ -12,7 +12,6 @@ rather than !eco.value followed by eco.unbox.
 
 -}
 
-import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
         ( TypedDef

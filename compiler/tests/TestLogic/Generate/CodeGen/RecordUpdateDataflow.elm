@@ -1,4 +1,4 @@
-module TestLogic.Generate.CodeGen.RecordUpdateDataflow exposing (expectRecordUpdateDataflow, checkRecordUpdateDataflow)
+module TestLogic.Generate.CodeGen.RecordUpdateDataflow exposing (expectRecordUpdateDataflow)
 
 {-| Test logic for CGEN\_0D1: Record Update Dataflow Shape invariant.
 
@@ -9,7 +9,7 @@ update. The bug symptom: `{ original | x = 10 }` yields a record where field
 This is detected by checking that `eco.construct.record` operands don't include
 the source record itself when other operands come from projections of that record.
 
-@docs expectRecordUpdateDataflow, checkRecordUpdateDataflow
+@docs expectRecordUpdateDataflow
 
 -}
 
@@ -25,7 +25,6 @@ import TestLogic.Generate.CodeGen.Invariants
         , findFuncOps
         , getStringAttr
         , violationsToExpectation
-        , walkOpsInRegion
         )
 import TestLogic.TestPipeline exposing (runToMlir)
 

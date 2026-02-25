@@ -1,4 +1,4 @@
-module TestLogic.Generate.CodeGen.KernelDeclCompleteness exposing (expectKernelDeclCompleteness, checkKernelDeclCompleteness)
+module TestLogic.Generate.CodeGen.KernelDeclCompleteness exposing (expectKernelDeclCompleteness)
 
 {-| Test logic for CGEN\_057: Kernel Declaration Completeness invariant.
 
@@ -6,7 +6,7 @@ Every kernel function symbol (Elm\_Kernel\_\*) that appears in a papCreate,
 papExtend, or eco.call operation must have a corresponding func.func
 declaration with is\_kernel=true.
 
-@docs expectKernelDeclCompleteness, checkKernelDeclCompleteness
+@docs expectKernelDeclCompleteness
 
 -}
 
@@ -18,7 +18,6 @@ import TestLogic.Generate.CodeGen.Invariants
     exposing
         ( Violation
         , findFuncOps
-        , findOpsNamed
         , getBoolAttr
         , getStringAttr
         , violationsToExpectation
@@ -54,11 +53,8 @@ checkKernelDeclCompleteness mlirModule =
 
         allOps =
             walkAllOps mlirModule
-
-        violations =
-            List.filterMap (checkOp kernelDecls) allOps
     in
-    violations
+    List.filterMap (checkOp kernelDecls) allOps
 
 
 {-| Build a set of kernel function names that have func.func declarations.

@@ -1,6 +1,6 @@
 module Compiler.GlobalOpt.Staging exposing
     ( StagingSolution
-    , analyzeAndSolveStaging, validateClosureStaging, annotateCallStaging
+    , analyzeAndSolveStaging, validateClosureStaging
     )
 
 {-| Global staging algorithm for determining correct staged-currying calling
@@ -22,7 +22,7 @@ This module coordinates:
 
 # API
 
-@docs analyzeAndSolveStaging, validateClosureStaging, annotateCallStaging
+@docs analyzeAndSolveStaging, validateClosureStaging
 
 -}
 
@@ -32,7 +32,7 @@ import Compiler.GlobalOpt.Staging.GraphBuilder as GraphBuilder
 import Compiler.GlobalOpt.Staging.ProducerInfo as ProducerInfo
 import Compiler.GlobalOpt.Staging.Rewriter as Rewriter
 import Compiler.GlobalOpt.Staging.Solver as Solver
-import Compiler.GlobalOpt.Staging.Types as Types exposing (..)
+import Compiler.GlobalOpt.Staging.Types as Types
 
 
 {-| Re-export StagingSolution for external use.
@@ -106,24 +106,3 @@ validateClosureStaging graph =
 -- ============================================================================
 -- ANNOTATE CALL STAGING
 -- ============================================================================
-
-
-{-| Annotate all call sites with CallInfo.
-
-NOTE: This is now a no-op stub. The actual CallInfo annotation is done by
-MonoGlobalOptimize.annotateCallStaging, which is called directly from
-globalOptimize. This function is kept for API compatibility but does nothing.
-
-The staging solution parameter was previously used here but all staging-dependent
-rewrites (wrappers, type canonicalization) are applied in earlier phases by
-Rewriter.applyStagingSolution.
-
--}
-annotateCallStaging :
-    StagingSolution
-    -> Mono.MonoGraph
-    -> Mono.MonoGraph
-annotateCallStaging _ graph =
-    -- No-op: actual CallInfo annotation is done by MGO.annotateCallStaging
-    -- which is called directly from globalOptimize to avoid import cycle
-    graph

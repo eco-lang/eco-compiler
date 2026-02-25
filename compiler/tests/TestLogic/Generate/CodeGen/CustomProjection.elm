@@ -1,10 +1,10 @@
-module TestLogic.Generate.CodeGen.CustomProjection exposing (expectCustomProjection, checkCustomProjection)
+module TestLogic.Generate.CodeGen.CustomProjection exposing (expectCustomProjection)
 
 {-| Test logic for CGEN\_024: Custom ADT Projection invariant.
 
 Custom ADT field access must use `eco.project.custom` with valid field index.
 
-@docs expectCustomProjection, checkCustomProjection
+@docs expectCustomProjection
 
 -}
 
@@ -40,11 +40,8 @@ checkCustomProjection mlirModule =
     let
         customProjectOps =
             findOpsNamed "eco.project.custom" mlirModule
-
-        violations =
-            List.filterMap checkCustomProjectOp customProjectOps
     in
-    violations
+    List.filterMap checkCustomProjectOp customProjectOps
 
 
 checkCustomProjectOp : MlirOp -> Maybe Violation

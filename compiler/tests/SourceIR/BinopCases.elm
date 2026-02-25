@@ -1,4 +1,4 @@
-module SourceIR.BinopCases exposing (expectSuite, testCases)
+module SourceIR.BinopCases exposing (expectSuite)
 
 {-| Tests for binary operator expressions.
 -}
@@ -14,7 +14,6 @@ import Compiler.AST.SourceBuilder
         , floatExpr
         , ifExpr
         , intExpr
-        , lambdaExpr
         , letExpr
         , listExpr
         , makeModule
@@ -132,15 +131,6 @@ powerOp expectFn _ =
     expectFn modul
 
 
-additionWithConstants : (Src.Module -> Expectation) -> (() -> Expectation)
-additionWithConstants expectFn _ =
-    let
-        modul =
-            makeModule "testValue" (binopsExpr [ ( intExpr 42, "+" ) ] (intExpr 42))
-    in
-    expectFn modul
-
-
 
 -- ============================================================================
 -- COMPARISON BINOPS (8 tests)
@@ -213,15 +203,6 @@ greaterThanOrEqual expectFn _ =
     expectFn modul
 
 
-comparisonWithConstants : (Src.Module -> Expectation) -> (() -> Expectation)
-comparisonWithConstants expectFn _ =
-    let
-        modul =
-            makeModule "testValue" (binopsExpr [ ( intExpr 1, "<" ) ] (intExpr 2))
-    in
-    expectFn modul
-
-
 compareOnStrings : (Src.Module -> Expectation) -> (() -> Expectation)
 compareOnStrings expectFn _ =
     let
@@ -257,24 +238,6 @@ andOp expectFn _ =
 
 orOp : (Src.Module -> Expectation) -> (() -> Expectation)
 orOp expectFn _ =
-    let
-        modul =
-            makeModule "testValue" (binopsExpr [ ( boolExpr True, "||" ) ] (boolExpr False))
-    in
-    expectFn modul
-
-
-andWithConstants : (Src.Module -> Expectation) -> (() -> Expectation)
-andWithConstants expectFn _ =
-    let
-        modul =
-            makeModule "testValue" (binopsExpr [ ( boolExpr True, "&&" ) ] (boolExpr False))
-    in
-    expectFn modul
-
-
-orWithConstants : (Src.Module -> Expectation) -> (() -> Expectation)
-orWithConstants expectFn _ =
     let
         modul =
             makeModule "testValue" (binopsExpr [ ( boolExpr True, "||" ) ] (boolExpr False))
@@ -331,15 +294,6 @@ stringConcat expectFn _ =
     let
         modul =
             makeModule "testValue" (binopsExpr [ ( strExpr "hello", "++" ) ] (strExpr " world"))
-    in
-    expectFn modul
-
-
-stringConcatWithConstants : (Src.Module -> Expectation) -> (() -> Expectation)
-stringConcatWithConstants expectFn _ =
-    let
-        modul =
-            makeModule "testValue" (binopsExpr [ ( strExpr "hello", "++" ) ] (strExpr "hello"))
     in
     expectFn modul
 
@@ -403,19 +357,6 @@ consOperator expectFn _ =
                 (binopsExpr
                     [ ( intExpr 1, "::" ) ]
                     (listExpr [ intExpr 2, intExpr 3 ])
-                )
-    in
-    expectFn modul
-
-
-listAppendWithConstants : (Src.Module -> Expectation) -> (() -> Expectation)
-listAppendWithConstants expectFn _ =
-    let
-        modul =
-            makeModule "testValue"
-                (binopsExpr
-                    [ ( listExpr [ intExpr 1, intExpr 2, intExpr 3 ], "++" ) ]
-                    (listExpr [ intExpr 0 ])
                 )
     in
     expectFn modul
@@ -491,37 +432,6 @@ longChain expectFn _ =
                     , ( intExpr 4, "+" )
                     ]
                     (intExpr 5)
-                )
-    in
-    expectFn modul
-
-
-chainWithConstants : (Src.Module -> Expectation) -> (() -> Expectation)
-chainWithConstants expectFn _ =
-    let
-        modul =
-            makeModule "testValue"
-                (binopsExpr
-                    [ ( intExpr 1, "+" )
-                    , ( intExpr 2, "+" )
-                    ]
-                    (intExpr 3)
-                )
-    in
-    expectFn modul
-
-
-chainOfComparisons : (Src.Module -> Expectation) -> (() -> Expectation)
-chainOfComparisons expectFn _ =
-    let
-        -- Note: In Elm, chained comparisons like a < b < c don't work as expected,
-        -- but we're testing ID uniqueness of the AST
-        modul =
-            makeModule "testValue"
-                (binopsExpr
-                    [ ( intExpr 1, "<" )
-                    ]
-                    (intExpr 2)
                 )
     in
     expectFn modul
@@ -673,23 +583,6 @@ binopWithFunctionCall expectFn _ =
                 (letExpr [ fn ]
                     (binopsExpr [ ( call, "+" ) ] (intExpr 2))
                 )
-    in
-    expectFn modul
-
-
-binopWithLambda : (Src.Module -> Expectation) -> (() -> Expectation)
-binopWithLambda expectFn _ =
-    let
-        -- Storing functions in a tuple, then "comparing" them
-        -- (would fail at runtime but tests ID uniqueness)
-        fn1 =
-            lambdaExpr [ pVar "x" ] (varExpr "x")
-
-        fn2 =
-            lambdaExpr [ pVar "y" ] (varExpr "y")
-
-        modul =
-            makeModule "testValue" (tupleExpr fn1 fn2)
     in
     expectFn modul
 

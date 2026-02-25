@@ -1,4 +1,4 @@
-module SourceIR.OperatorCases exposing (expectSuite, testCases)
+module SourceIR.OperatorCases exposing (expectSuite)
 
 {-| Tests for operator expressions and if expressions.
 -}
@@ -59,15 +59,6 @@ ifCases expectFn =
 
 simpleIf : (Src.Module -> Expectation) -> (() -> Expectation)
 simpleIf expectFn _ =
-    let
-        modul =
-            makeModule "testValue" (ifExpr (boolExpr True) (intExpr 1) (intExpr 0))
-    in
-    expectFn modul
-
-
-ifWithBoolCondition : (Src.Module -> Expectation) -> (() -> Expectation)
-ifWithBoolCondition expectFn _ =
     let
         modul =
             makeModule "testValue" (ifExpr (boolExpr True) (intExpr 1) (intExpr 0))
@@ -166,15 +157,6 @@ ifWithVariableCondition expectFn _ =
     expectFn modul
 
 
-ifWithFixedValues : (Src.Module -> Expectation) -> (() -> Expectation)
-ifWithFixedValues expectFn _ =
-    let
-        modul =
-            makeModule "testValue" (ifExpr (boolExpr True) (intExpr 1) (intExpr 2))
-    in
-    expectFn modul
-
-
 
 -- ============================================================================
 -- NEGATE EXPRESSIONS (6 tests)
@@ -199,26 +181,8 @@ negateInt expectFn _ =
     expectFn modul
 
 
-negateIntValue : (Src.Module -> Expectation) -> (() -> Expectation)
-negateIntValue expectFn _ =
-    let
-        modul =
-            makeModule "testValue" (negateExpr (intExpr 42))
-    in
-    expectFn modul
-
-
 negateFloat : (Src.Module -> Expectation) -> (() -> Expectation)
 negateFloat expectFn _ =
-    let
-        modul =
-            makeModule "testValue" (negateExpr (floatExpr 3.14))
-    in
-    expectFn modul
-
-
-negateFloatValue : (Src.Module -> Expectation) -> (() -> Expectation)
-negateFloatValue expectFn _ =
     let
         modul =
             makeModule "testValue" (negateExpr (floatExpr 3.14))

@@ -1,4 +1,4 @@
-module TestLogic.Generate.CodeGen.CallAbiConsistency exposing (expectCallAbiConsistency, checkCallAbiConsistency)
+module TestLogic.Generate.CodeGen.CallAbiConsistency exposing (expectCallAbiConsistency)
 
 {-| Test logic for Call ABI Consistency invariant.
 
@@ -10,7 +10,7 @@ expecting !eco.value).
 This invariant is derived from REP\_ABI\_001 which requires consistent
 representation at function call boundaries.
 
-@docs expectCallAbiConsistency, checkCallAbiConsistency
+@docs expectCallAbiConsistency
 
 -}
 
@@ -55,12 +55,8 @@ checkCallAbiConsistency mlirModule =
         -- Find all eco.call ops
         callOps =
             findOpsNamed "eco.call" mlirModule
-
-        -- Check each call
-        violations =
-            List.filterMap (checkCallOp funcParamTypes) callOps
     in
-    violations
+    List.filterMap (checkCallOp funcParamTypes) callOps
 
 
 {-| Build a map from function symbol names to their parameter types.

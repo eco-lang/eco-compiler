@@ -18,17 +18,16 @@ import Compiler.AST.TypeEnv as TypeEnv
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.Index as Index
 import Compiler.Data.Name as Name exposing (Name)
-import Compiler.Elm.ModuleName as ModuleName
 import Compiler.LocalOpt.Typed.DecisionTree as DT
 import Compiler.Monomorphize.Analysis as Analysis
 import Compiler.Monomorphize.Closure as Closure
 import Compiler.Monomorphize.KernelAbi as KernelAbi
 import Compiler.Monomorphize.Registry as Registry
-import Compiler.Monomorphize.State exposing (LocalInstanceInfo, LocalMultiState, MonoState, Substitution, VarTypes, WorkItem(..))
+import Compiler.Monomorphize.State exposing (LocalMultiState, MonoState, Substitution, VarTypes, WorkItem(..))
 import Compiler.Monomorphize.TypeSubst as TypeSubst
 import Compiler.Reporting.Annotation as A
 import Data.Map as Dict exposing (Dict)
-import Data.Set as EverySet exposing (EverySet)
+import Data.Set as EverySet
 import System.TypeCheck.IO as IO
 import Utils.Crash
 
@@ -203,16 +202,6 @@ specializeLambda lambdaExpr canType subst state =
                         )
 
         -- Guard: paramCount == 0 is a bug
-        paramCount =
-            List.length params
-
-        _ =
-            if paramCount == 0 then
-                Utils.Crash.crash "specializeLambda: called with zero-param lambda"
-
-            else
-                ()
-
         -- 3. Specialize each parameter's declared Can.Type.
         monoParams : List ( Name, Mono.MonoType )
         monoParams =
@@ -552,11 +541,8 @@ specializeFuncDefInCycle :
     -> ( Mono.MonoNode, MonoState )
 specializeFuncDefInCycle subst def state =
     case def of
-        TOpt.Def _ _ expr canType ->
+        TOpt.Def _ _ expr _ ->
             let
-                monoType =
-                    Mono.forceCNumberToInt (TypeSubst.applySubst subst canType)
-
                 ( monoExpr, state1 ) =
                     specializeExpr expr subst state
 
@@ -954,8 +940,7 @@ specializeExpr expr subst state =
                         -- Call result type, also under the unified substitution.
                         resultMonoType =
                             Mono.forceCNumberToInt (TypeSubst.applySubst callSubst canType)
-                    in
-                    let
+
                         localMultiName =
                             case func of
                                 TOpt.VarLocal name _ ->

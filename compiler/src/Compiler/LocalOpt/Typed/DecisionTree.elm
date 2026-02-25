@@ -1,7 +1,6 @@
 module Compiler.LocalOpt.Typed.DecisionTree exposing
     ( DecisionTree(..), Test, Path, ContainerHint
     , compile
-    , pathEncoder, pathDecoder, testEncoder, testDecoder
     )
 
 {-| Compiles pattern matching into efficient decision trees with container type hints.
@@ -26,25 +25,17 @@ Heuristics Matter?" by Kevin Scott and Norman Ramsey.
 
 # Binary Encoding
 
-@docs pathEncoder, pathDecoder, testEncoder, testDecoder
-
 -}
 
-import Bytes.Decode
 import Bytes.Encode
 import Compiler.AST.Canonical as Can
 import Compiler.AST.DecisionTree.Test as Test
 import Compiler.AST.DecisionTree.TypedPath as TypedPath
 import Compiler.Data.Index as Index
-import Compiler.Data.Name as Name
-import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Reporting.Annotation as A
 import Data.Set as EverySet
 import Hex.Convert
 import Prelude
-import System.TypeCheck.IO as IO
-import Utils.Bytes.Decode as BD
-import Utils.Bytes.Encode as BE
 import Utils.Crash exposing (crash)
 import Utils.Main as Utils
 
@@ -757,33 +748,9 @@ smallBranchingFactor branches path =
 -- ====== ENCODERS and DECODERS ======
 
 
-{-| Encode a Path to bytes for serialization.
-Delegates to Compiler.AST.DecisionTree.TypedPath.
--}
-pathEncoder : Path -> Bytes.Encode.Encoder
-pathEncoder =
-    TypedPath.pathEncoder
-
-
-{-| Decode a Path from bytes.
-Delegates to Compiler.AST.DecisionTree.TypedPath.
--}
-pathDecoder : Bytes.Decode.Decoder Path
-pathDecoder =
-    TypedPath.pathDecoder
-
-
 {-| Encode a Test to bytes for serialization.
 Delegates to Compiler.AST.DecisionTree.Test.
 -}
 testEncoder : Test -> Bytes.Encode.Encoder
 testEncoder =
     Test.testEncoder
-
-
-{-| Decode a Test from bytes.
-Delegates to Compiler.AST.DecisionTree.Test.
--}
-testDecoder : Bytes.Decode.Decoder Test
-testDecoder =
-    Test.testDecoder

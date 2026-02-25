@@ -1,4 +1,7 @@
-module TestLogic.Monomorphize.MonoFunctionArity exposing (expectMonoFunctionArity, checkMonoFunctionArity)
+module TestLogic.Monomorphize.MonoFunctionArity exposing
+    ( expectMonoFunctionArity, checkMonoFunctionArity
+    , Violation
+    )
 
 {-| Test logic for MONO\_012: Function arity matches parameters and closure info.
 

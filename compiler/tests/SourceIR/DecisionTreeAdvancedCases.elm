@@ -1,4 +1,4 @@
-module SourceIR.DecisionTreeAdvancedCases exposing (expectSuite, testCases)
+module SourceIR.DecisionTreeAdvancedCases exposing (expectSuite)
 
 {-| Advanced test cases for decision tree compilation and pattern matching.
 
@@ -16,9 +16,7 @@ These tests exercise various pattern matching scenarios to improve coverage of:
 import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
-        ( AliasDef
-        , TypedDef
-        , UnionCtor
+        ( TypedDef
         , UnionDef
         , binopsExpr
         , boolExpr
@@ -40,7 +38,6 @@ import Compiler.AST.SourceBuilder
         , pInt
         , pList
         , pRecord
-        , pStr
         , pTuple
         , pTuple3
         , pUnit
@@ -440,39 +437,6 @@ listPatternCases expectFn =
     ]
 
 
-emptyListPattern : (Src.Module -> Expectation) -> (() -> Expectation)
-emptyListPattern expectFn _ =
-    let
-        -- isEmpty : List Int -> Bool
-        isEmptyDef : TypedDef
-        isEmptyDef =
-            { name = "isEmpty"
-            , args = [ pVar "xs" ]
-            , tipe = tLambda (tType "List" [ tType "Int" [] ]) (tType "Bool" [])
-            , body =
-                caseExpr (varExpr "xs")
-                    [ ( pList [], boolExpr True )
-                    , ( pCons pAnything pAnything, boolExpr False )
-                    ]
-            }
-
-        testValueDef : TypedDef
-        testValueDef =
-            { name = "testValue"
-            , args = []
-            , tipe = tType "Bool" []
-            , body = callExpr (varExpr "isEmpty") [ listExpr [] ]
-            }
-
-        modul =
-            makeModuleWithTypedDefsUnionsAliases "Test"
-                [ isEmptyDef, testValueDef ]
-                []
-                []
-    in
-    expectFn modul
-
-
 singletonListPattern : (Src.Module -> Expectation) -> (() -> Expectation)
 singletonListPattern expectFn _ =
     let
@@ -533,39 +497,6 @@ twoElementListPattern expectFn _ =
         modul =
             makeModuleWithTypedDefsUnionsAliases "Test"
                 [ sumTwoDef, testValueDef ]
-                []
-                []
-    in
-    expectFn modul
-
-
-consPattern : (Src.Module -> Expectation) -> (() -> Expectation)
-consPattern expectFn _ =
-    let
-        -- head : List Int -> Int
-        headDef : TypedDef
-        headDef =
-            { name = "head"
-            , args = [ pVar "xs" ]
-            , tipe = tLambda (tType "List" [ tType "Int" [] ]) (tType "Int" [])
-            , body =
-                caseExpr (varExpr "xs")
-                    [ ( pCons (pVar "x") (pVar "_"), varExpr "x" )
-                    , ( pList [], intExpr 0 )
-                    ]
-            }
-
-        testValueDef : TypedDef
-        testValueDef =
-            { name = "testValue"
-            , args = []
-            , tipe = tType "Int" []
-            , body = callExpr (varExpr "head") [ listExpr [ intExpr 10, intExpr 20 ] ]
-            }
-
-        modul =
-            makeModuleWithTypedDefsUnionsAliases "Test"
-                [ headDef, testValueDef ]
                 []
                 []
     in
@@ -724,77 +655,6 @@ multipleIntPatterns expectFn _ =
     expectFn modul
 
 
-stringLiteralPattern : (Src.Module -> Expectation) -> (() -> Expectation)
-stringLiteralPattern expectFn _ =
-    let
-        -- greet : String -> String
-        greetDef : TypedDef
-        greetDef =
-            { name = "greet"
-            , args = [ pVar "name" ]
-            , tipe = tLambda (tType "String" []) (tType "String" [])
-            , body =
-                caseExpr (varExpr "name")
-                    [ ( pStr "Alice", strExpr "Hello Alice!" )
-                    , ( pStr "Bob", strExpr "Hi Bob!" )
-                    , ( pAnything, strExpr "Hello stranger!" )
-                    ]
-            }
-
-        testValueDef : TypedDef
-        testValueDef =
-            { name = "testValue"
-            , args = []
-            , tipe = tType "String" []
-            , body = callExpr (varExpr "greet") [ strExpr "Alice" ]
-            }
-
-        modul =
-            makeModuleWithTypedDefsUnionsAliases "Test"
-                [ greetDef, testValueDef ]
-                []
-                []
-    in
-    expectFn modul
-
-
-charLiteralPattern : (Src.Module -> Expectation) -> (() -> Expectation)
-charLiteralPattern expectFn _ =
-    let
-        -- isVowel : Char -> Bool
-        isVowelDef : TypedDef
-        isVowelDef =
-            { name = "isVowel"
-            , args = [ pVar "c" ]
-            , tipe = tLambda (tType "Char" []) (tType "Bool" [])
-            , body =
-                caseExpr (varExpr "c")
-                    [ ( pChr "a", boolExpr True )
-                    , ( pChr "e", boolExpr True )
-                    , ( pChr "i", boolExpr True )
-                    , ( pChr "o", boolExpr True )
-                    , ( pChr "u", boolExpr True )
-                    , ( pAnything, boolExpr False )
-                    ]
-            }
-
-        testValueDef : TypedDef
-        testValueDef =
-            { name = "testValue"
-            , args = []
-            , tipe = tType "Bool" []
-            , body = callExpr (varExpr "isVowel") [ chrExpr "e" ]
-            }
-
-        modul =
-            makeModuleWithTypedDefsUnionsAliases "Test"
-                [ isVowelDef, testValueDef ]
-                []
-                []
-    in
-    expectFn modul
-
-
 multipleCharPatterns : (Src.Module -> Expectation) -> (() -> Expectation)
 multipleCharPatterns expectFn _ =
     let
@@ -860,38 +720,6 @@ tuplePatternCases expectFn =
     ]
 
 
-tuple2Pattern : (Src.Module -> Expectation) -> (() -> Expectation)
-tuple2Pattern expectFn _ =
-    let
-        -- swap : ( Int, Int ) -> ( Int, Int )
-        swapDef : TypedDef
-        swapDef =
-            { name = "swap"
-            , args = [ pVar "t" ]
-            , tipe = tLambda (tTuple (tType "Int" []) (tType "Int" [])) (tTuple (tType "Int" []) (tType "Int" []))
-            , body =
-                caseExpr (varExpr "t")
-                    [ ( pTuple (pVar "a") (pVar "b"), tupleExpr (varExpr "b") (varExpr "a") )
-                    ]
-            }
-
-        testValueDef : TypedDef
-        testValueDef =
-            { name = "testValue"
-            , args = []
-            , tipe = tTuple (tType "Int" []) (tType "Int" [])
-            , body = callExpr (varExpr "swap") [ tupleExpr (intExpr 1) (intExpr 2) ]
-            }
-
-        modul =
-            makeModuleWithTypedDefsUnionsAliases "Test"
-                [ swapDef, testValueDef ]
-                []
-                []
-    in
-    expectFn modul
-
-
 tuple3Pattern : (Src.Module -> Expectation) -> (() -> Expectation)
 tuple3Pattern expectFn _ =
     let
@@ -909,40 +737,6 @@ tuple3Pattern expectFn _ =
                 ]
                 (callExpr (varExpr "sumTriple") [ tuple3Expr (intExpr 1) (intExpr 2) (intExpr 3) ])
                 |> makeModule "testValue"
-    in
-    expectFn modul
-
-
-nestedTuplePattern : (Src.Module -> Expectation) -> (() -> Expectation)
-nestedTuplePattern expectFn _ =
-    let
-        -- extractInner : ( ( Int, Int ), Int ) -> Int
-        extractInnerDef : TypedDef
-        extractInnerDef =
-            { name = "extractInner"
-            , args = [ pVar "t" ]
-            , tipe = tLambda (tTuple (tTuple (tType "Int" []) (tType "Int" [])) (tType "Int" [])) (tType "Int" [])
-            , body =
-                caseExpr (varExpr "t")
-                    [ ( pTuple (pTuple (pVar "a") (pVar "b")) (pVar "c")
-                      , binopsExpr [ ( varExpr "a", "+" ), ( varExpr "b", "+" ) ] (varExpr "c")
-                      )
-                    ]
-            }
-
-        testValueDef : TypedDef
-        testValueDef =
-            { name = "testValue"
-            , args = []
-            , tipe = tType "Int" []
-            , body = callExpr (varExpr "extractInner") [ tupleExpr (tupleExpr (intExpr 1) (intExpr 2)) (intExpr 3) ]
-            }
-
-        modul =
-            makeModuleWithTypedDefsUnionsAliases "Test"
-                [ extractInnerDef, testValueDef ]
-                []
-                []
     in
     expectFn modul
 

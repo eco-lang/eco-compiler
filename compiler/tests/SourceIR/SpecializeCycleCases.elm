@@ -1,4 +1,4 @@
-module SourceIR.SpecializeCycleCases exposing (expectSuite, suite, testCases)
+module SourceIR.SpecializeCycleCases exposing (expectSuite, suite)
 
 {-| Test cases for cycle detection and mutual recursion in Specialize.elm.
 

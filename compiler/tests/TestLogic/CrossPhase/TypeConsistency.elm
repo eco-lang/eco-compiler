@@ -1,4 +1,7 @@
-module TestLogic.CrossPhase.TypeConsistency exposing (expectTypePreservation, checkTypePreservation)
+module TestLogic.CrossPhase.TypeConsistency exposing
+    ( expectTypePreservation, checkTypePreservation
+    , Violation
+    )
 
 {-| Test logic for XPHASE\_011: Types preserved except MFunction canonicalization.
 
@@ -250,7 +253,7 @@ This allows:
 typesEquivalentModuloCanonicalization : Mono.MonoType -> Mono.MonoType -> Bool
 typesEquivalentModuloCanonicalization before after =
     case ( before, after ) of
-        ( Mono.MFunction beforeParams beforeResult, Mono.MFunction afterParams afterResult ) ->
+        ( Mono.MFunction _ _, Mono.MFunction _ _ ) ->
             -- For functions, allow canonicalization: compare flattened forms
             let
                 ( flatBeforeParams, flatBeforeResult ) =

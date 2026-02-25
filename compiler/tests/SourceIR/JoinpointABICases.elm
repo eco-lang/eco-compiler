@@ -1,4 +1,4 @@
-module SourceIR.JoinpointABICases exposing (expectSuite, suite, testCases)
+module SourceIR.JoinpointABICases exposing (expectSuite, suite)
 
 {-| Test cases for join-point ABI coercion in MonoCase expressions.
 
@@ -19,12 +19,10 @@ import Compiler.AST.SourceBuilder
         ( TypedDef
         , UnionDef
         , binopsExpr
-        , boolExpr
         , callExpr
         , caseExpr
         , ctorExpr
         , define
-        , ifExpr
         , intExpr
         , lambdaExpr
         , letExpr
@@ -38,7 +36,6 @@ import Compiler.AST.SourceBuilder
         , pVar
         , tLambda
         , tType
-        , tVar
         , varExpr
         )
 import Compiler.BulkCheck exposing (TestCase, bulkCheck)

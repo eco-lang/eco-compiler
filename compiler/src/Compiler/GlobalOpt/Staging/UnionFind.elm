@@ -1,6 +1,6 @@
 module Compiler.GlobalOpt.Staging.UnionFind exposing
-    ( ufFind, ufUnion, ensureNode, unionNodes
-    , nodeToKey, producerIdToKey, slotIdToKey
+    ( ufFind, ensureNode, unionNodes
+    , producerIdToKey, slotIdToKey
     )
 
 {-| Union-find operations for the staging graph.
@@ -15,18 +15,18 @@ This module provides:
 
 # Core Operations
 
-@docs ufFind, ufUnion, ensureNode, unionNodes
+@docs ufFind, ensureNode, unionNodes
 
 
 # Key Generation
 
-@docs nodeToKey, producerIdToKey, slotIdToKey
+@docs producerIdToKey, slotIdToKey
 
 -}
 
 import Compiler.AST.Monomorphized as Mono
-import Compiler.GlobalOpt.Staging.Types as Types exposing (..)
-import Data.Map as Dict exposing (Dict)
+import Compiler.GlobalOpt.Staging.Types exposing (..)
+import Data.Map as Dict
 import System.TypeCheck.IO as IO
 
 
@@ -68,9 +68,6 @@ producerIdToKey pid =
 slotIdToKey : SlotId -> String
 slotIdToKey sid =
     case sid of
-        SlotVar name bindingId ->
-            "V:" ++ name ++ ":" ++ String.fromInt bindingId
-
         SlotParam funcId paramIndex ->
             "P:" ++ String.fromInt funcId ++ ":" ++ String.fromInt paramIndex
 
@@ -79,9 +76,6 @@ slotIdToKey sid =
 
         SlotTuple tupleKey elemIndex ->
             "Tu:" ++ tupleKey ++ ":" ++ String.fromInt elemIndex
-
-        SlotCtor ctorName argIndex ->
-            "Ct:" ++ ctorName ++ ":" ++ String.fromInt argIndex
 
         SlotList listKey elemIndex ->
             "L:" ++ listKey ++ ":" ++ String.fromInt elemIndex

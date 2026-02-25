@@ -1,10 +1,8 @@
 module TestLogic.Type.PostSolve.PostSolveInvariantHelpers exposing
     ( ExprNode
-    , collectExprIds
     , collectKernelExprIds
     , freeTypeVars
     , isGroupBExprNode
-    , isVarKernel
     , walkExprs
     )
 
@@ -16,7 +14,6 @@ and extracting type information needed by the synthetic provenance tests.
 -}
 
 import Compiler.AST.Canonical as Can
-import Compiler.Data.Name as Name
 import Compiler.Reporting.Annotation as A
 import Data.Map as Dict
 import Data.Set as EverySet exposing (EverySet)
@@ -173,11 +170,8 @@ walkExpr (A.At _ exprInfo) acc =
                     let
                         scrAcc =
                             walkExpr scrutinee acc
-
-                        branchAcc =
-                            List.foldl walkBranch scrAcc branches
                     in
-                    branchAcc
+                    List.foldl walkBranch scrAcc branches
 
                 Can.Accessor _ ->
                     acc
@@ -333,15 +327,6 @@ isVarKernel node =
 
         _ ->
             False
-
-
-{-| Collect all expression IDs from a module.
--}
-collectExprIds : Can.Module -> EverySet Int Int
-collectExprIds canModule =
-    walkExprs canModule
-        |> List.map .id
-        |> EverySet.fromList identity
 
 
 {-| Collect expression IDs that are VarKernel nodes.

@@ -52,7 +52,6 @@ state during MLIR code generation.
 
 import Compiler.AST.Monomorphized as Mono
 import Compiler.Data.Name as Name
-import Compiler.Generate.MLIR.Types as Types
 import Compiler.Generate.Mode as Mode
 import Data.Map as EveryDict
 import Dict
@@ -423,134 +422,6 @@ getOrCreateTypeIdForMonoType monoType ctx =
             ( 0, finalCtx )
 
 
-{-| Register all constructor field types for a custom type.
-
-This uses the pre-computed ctorShapes map from monomorphization to
-find the Mono.CtorShape entries for the given MCustom and ensures all
-field types are registered in the TypeRegistry before the custom type
-itself gets a TypeId.
-
-We must be careful about recursive custom types: if a field's type is
-the same as the containing type, we skip it here to avoid infinite
-recursion.
-
--}
-registerCustomCtorFieldTypes : Mono.MonoType -> Context -> Context
-registerCustomCtorFieldTypes monoType ctx =
-    let
-        key =
-            Mono.toComparableMonoType monoType
-
-        ctorShapesForType : List Mono.CtorShape
-        ctorShapesForType =
-            EveryDict.get identity key ctx.typeRegistry.ctorShapes
-                |> Maybe.withDefault []
-
-        registerFieldTypesForCtor : Mono.CtorShape -> Context -> Context
-        registerFieldTypesForCtor ctorShape accCtx =
-            List.foldl
-                (\fieldType innerCtx ->
-                    -- Avoid infinite recursion on directly recursive fields:
-                    if Mono.toComparableMonoType fieldType == Mono.toComparableMonoType monoType then
-                        innerCtx
-
-                    else
-                        Tuple.second (getOrCreateTypeIdForMonoType fieldType innerCtx)
-                )
-                accCtx
-                ctorShape.fieldTypes
-    in
-    List.foldl registerFieldTypesForCtor ctx ctorShapesForType
-
-
-{-| Register nested types for a MonoType.
-This ensures all element/field/argument types are registered before the containing type.
--}
-registerNestedTypes : Mono.MonoType -> Context -> Context
-registerNestedTypes monoType ctx =
-    case monoType of
-        Mono.MList elemType ->
-            -- Register element type
-            Tuple.second (getOrCreateTypeIdForMonoType elemType ctx)
-
-        Mono.MTuple elementTypes ->
-            -- Register all element types
-            List.foldl
-                (\elemType accCtx ->
-                    Tuple.second (getOrCreateTypeIdForMonoType elemType accCtx)
-                )
-                ctx
-                elementTypes
-
-        Mono.MRecord fields ->
-            -- Register all field types
-            List.foldl
-                (\fieldType accCtx ->
-                    Tuple.second (getOrCreateTypeIdForMonoType fieldType accCtx)
-                )
-                ctx
-                (EveryDict.values compare fields)
-
-        Mono.MCustom _ _ args ->
-            -- First, register all type argument types (e.g. the `a` in Maybe a)
-            let
-                ctxWithArgs =
-                    List.foldl
-                        (\argType accCtx ->
-                            Tuple.second (getOrCreateTypeIdForMonoType argType accCtx)
-                        )
-                        ctx
-                        args
-
-                -- Then, register all constructor field types for this concrete
-                -- MCustom instance using the pre-computed ctorShapes map.
-                --
-                -- This is crucial for custom types whose field types are NOT
-                -- also type arguments (e.g. `type Point = Point Int Int`):
-                -- those Int field types live only in ctorShapes and would
-                -- otherwise never be registered, causing lookupTypeId to
-                -- fall back to 0 (the default) when generating the type table.
-                ctxWithFields =
-                    registerCustomCtorFieldTypes monoType ctxWithArgs
-            in
-            ctxWithFields
-
-        Mono.MFunction argTypes resultType ->
-            -- Register all argument types and result type
-            let
-                ctxWithArgs =
-                    List.foldl
-                        (\argType accCtx ->
-                            Tuple.second (getOrCreateTypeIdForMonoType argType accCtx)
-                        )
-                        ctx
-                        argTypes
-            in
-            Tuple.second (getOrCreateTypeIdForMonoType resultType ctxWithArgs)
-
-        -- Primitives have no nested types
-        Mono.MInt ->
-            ctx
-
-        Mono.MFloat ->
-            ctx
-
-        Mono.MChar ->
-            ctx
-
-        Mono.MBool ->
-            ctx
-
-        Mono.MString ->
-            ctx
-
-        Mono.MUnit ->
-            ctx
-
-        Mono.MVar _ _ ->
-            ctx
-
-
 {-| Generate a fresh SSA variable name.
 -}
 freshVar : Context -> ( String, Context )
@@ -665,7 +536,7 @@ extractNodeSignature node =
     case node of
         Mono.MonoDefine expr monoType ->
             case expr of
-                Mono.MonoClosure closureInfo body _ ->
+                Mono.MonoClosure closureInfo _ _ ->
                     let
                         extractedReturnType =
                             case monoType of
@@ -730,7 +601,7 @@ extractNodeSignature node =
 
         Mono.MonoPortIncoming expr monoType ->
             case expr of
-                Mono.MonoClosure closureInfo body _ ->
+                Mono.MonoClosure closureInfo _ _ ->
                     let
                         extractedReturnType =
                             case monoType of
@@ -753,7 +624,7 @@ extractNodeSignature node =
 
         Mono.MonoPortOutgoing expr monoType ->
             case expr of
-                Mono.MonoClosure closureInfo body _ ->
+                Mono.MonoClosure closureInfo _ _ ->
                     let
                         extractedReturnType =
                             case monoType of

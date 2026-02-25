@@ -1,4 +1,4 @@
-module SourceIR.MultiDefCases exposing (expectSuite, testCases)
+module SourceIR.MultiDefCases exposing (expectSuite)
 
 {-| Tests for modules with multiple top-level definitions.
 

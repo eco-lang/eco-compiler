@@ -1,11 +1,11 @@
-module TestLogic.Generate.CodeGen.CtorLayoutConsistency exposing (expectCtorLayoutConsistency, checkCtorLayoutConsistency)
+module TestLogic.Generate.CodeGen.CtorLayoutConsistency exposing (expectCtorLayoutConsistency)
 
 {-| Test logic for CGEN\_014: MLIR Uses Only MonoGraph ctorLayouts.
 
 eco.construct.custom ops must have tag, size, and unboxed\_bitmap attributes
 that match the CtorLayout computed from MonoGraph.ctorShapes.
 
-@docs expectCtorLayoutConsistency, checkCtorLayoutConsistency
+@docs expectCtorLayoutConsistency
 
 -}
 
@@ -14,7 +14,7 @@ import Compiler.AST.Source as Src
 import Compiler.Generate.MLIR.Types as Types
 import Data.Map as Dict
 import Expect exposing (Expectation)
-import Mlir.Mlir exposing (MlirModule, MlirOp, MlirType(..))
+import Mlir.Mlir exposing (MlirModule, MlirOp)
 import TestLogic.Generate.CodeGen.Invariants
     exposing
         ( Violation
@@ -22,7 +22,7 @@ import TestLogic.Generate.CodeGen.Invariants
         , getIntAttr
         , violationsToExpectation
         )
-import TestLogic.TestPipeline exposing (MlirArtifacts, runToMlir)
+import TestLogic.TestPipeline exposing (runToMlir)
 
 
 {-| Verify that ctor layout consistency invariants hold for a source module.

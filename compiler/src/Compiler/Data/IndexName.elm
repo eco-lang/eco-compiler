@@ -1,4 +1,4 @@
-module Compiler.Data.IndexName exposing (fromIndex, fromInt)
+module Compiler.Data.IndexName exposing (fromIndex)
 
 {-| Generate short alphabetic names from indices.
 
@@ -6,7 +6,7 @@ This module provides functions to convert numeric indices to short alphabetic
 names suitable for variable naming. It is placed in the Data layer to be
 accessible from both LocalOpt and Generate layers.
 
-@docs fromIndex, fromInt
+@docs fromIndex
 
 -}
 

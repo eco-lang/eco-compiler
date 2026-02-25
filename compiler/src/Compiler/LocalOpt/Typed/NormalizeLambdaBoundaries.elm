@@ -721,8 +721,7 @@ hoistInlineLambdaChoicesToJumps decider jumps0 =
                             step fallback next1 acc1
                     in
                     ( TOpt.FanOut path (List.reverse edgesRev) fallback1, next2, acc2 )
-    in
-    let
+
         ( newDecider, _, newJumpsRev ) =
             step decider startIndex []
     in

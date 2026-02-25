@@ -1,4 +1,4 @@
-module TestLogic.Generate.CodeGen.BlockTerminator exposing (expectBlockTerminator, checkBlockTerminators)
+module TestLogic.Generate.CodeGen.BlockTerminator exposing (expectBlockTerminator)
 
 {-| Test logic for CGEN\_042: Block Terminator Presence invariant.
 
@@ -8,13 +8,13 @@ terminator operation (e.g. `eco.return`, `eco.jump`, `eco.yield`, `scf.yield`).
 Note: `eco.case` is NOT a terminator - it is a value-producing expression.
 `eco.yield` is used to terminate eco.case alternative regions.
 
-@docs expectBlockTerminator, checkBlockTerminators
+@docs expectBlockTerminator
 
 -}
 
 import Compiler.AST.Source as Src
 import Expect exposing (Expectation)
-import Mlir.Mlir exposing (MlirBlock, MlirModule, MlirOp, MlirRegion(..))
+import Mlir.Mlir exposing (MlirBlock, MlirModule, MlirOp, MlirRegion)
 import TestLogic.Generate.CodeGen.Invariants
     exposing
         ( Violation
@@ -45,11 +45,8 @@ checkBlockTerminators mlirModule =
     let
         allOps =
             walkAllOps mlirModule
-
-        violations =
-            List.concatMap checkOpRegions allOps
     in
-    violations
+    List.concatMap checkOpRegions allOps
 
 
 checkOpRegions : MlirOp -> List Violation

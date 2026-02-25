@@ -15,7 +15,6 @@ not flattened. For `Int -> Int -> Int`, we get `MFunction [MInt] (MFunction [MIn
 
 -}
 
-import Compiler.AST.Canonical as Can
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
@@ -30,7 +29,6 @@ import Compiler.AST.SourceBuilder
         , tType
         , varExpr
         )
-import Compiler.Data.Name as Name
 import Data.Map as Dict
 import Expect exposing (Expectation)
 import Test exposing (Test)
@@ -350,7 +348,7 @@ monoTypeToString monoType =
         Mono.MCustom _ name args ->
             "MCustom " ++ name ++ " [" ++ String.join ", " (List.map monoTypeToString args) ++ "]"
 
-        Mono.MRecord layout ->
+        Mono.MRecord _ ->
             "MRecord {...}"
 
         Mono.MTuple _ ->

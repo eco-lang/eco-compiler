@@ -48,18 +48,6 @@ type alias MonoState =
     State.MonoState
 
 
-{-| Check if a MonoType represents a function type.
--}
-isFunctionType : Mono.MonoType -> Bool
-isFunctionType monoType =
-    case monoType of
-        Mono.MFunction _ _ ->
-            True
-
-        _ ->
-            False
-
-
 
 -- ========== ENTRY POINT ==========
 

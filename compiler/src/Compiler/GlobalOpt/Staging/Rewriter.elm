@@ -20,7 +20,7 @@ import Compiler.GlobalOpt.Staging.Types exposing (..)
 import Compiler.GlobalOpt.Staging.UnionFind exposing (producerIdToKey)
 import Compiler.Monomorphize.Closure as Closure
 import Compiler.Reporting.Annotation as A
-import Data.Map as Dict exposing (Dict)
+import Data.Map as Dict
 import System.TypeCheck.IO as IO
 
 
@@ -122,23 +122,8 @@ rewriteNode solution producerInfo nodeId node ctx0 =
                     -- No staging class: enforce GOPT_001
                     ( Mono.MonoTailFunc params newBody canonType, ctx1 )
 
-                Just classId ->
-                    let
-                        canonicalSeg =
-                            Dict.get identity classId solution.classSeg
-                                |> Maybe.withDefault []
-
-                        naturalSeg =
-                            Dict.get identity key producerInfo.naturalSeg
-                                |> Maybe.withDefault []
-                    in
-                    if naturalSeg == canonicalSeg then
-                        -- No wrapper needed: enforce GOPT_001
-                        ( Mono.MonoTailFunc params newBody canonType, ctx1 )
-
-                    else
-                        -- Wrapper/adaptation needed: canonType already satisfies GOPT_001
-                        ( Mono.MonoTailFunc params newBody canonType, ctx1 )
+                Just _ ->
+                    ( Mono.MonoTailFunc params newBody canonType, ctx1 )
 
         Mono.MonoDefine expr _ ->
             let
@@ -528,8 +513,6 @@ wrapClosureToCanonical originalInfo originalBody originalType canonType canonica
             buildSegmentedFunctionType canonicalSeg flatArgs flatRet
 
         -- Build nested closures matching canonical staging
-        region =
-            Closure.extractRegion (Mono.MonoClosure originalInfo originalBody canonType)
     in
     buildNestedWrapper
         targetType
@@ -670,7 +653,7 @@ flattenTypeToArity targetArity monoType =
         in
         Mono.MFunction firstArgs nestedResult
 
-    else if List.length allArgs == 0 then
+    else if List.isEmpty allArgs then
         -- Non-function type - return as-is
         monoType
 

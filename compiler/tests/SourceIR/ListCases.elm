@@ -1,4 +1,4 @@
-module SourceIR.ListCases exposing (expectSuite, testCases)
+module SourceIR.ListCases exposing (expectSuite)
 
 {-| Tests for list expressions.
 -}

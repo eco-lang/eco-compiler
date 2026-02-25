@@ -1,4 +1,4 @@
-module TestLogic.Generate.CodeGen.PartialApplicationRouting exposing (expectPartialApplicationRouting, checkPartialApplicationRouting)
+module TestLogic.Generate.CodeGen.PartialApplicationRouting exposing (expectPartialApplicationRouting)
 
 {-| Test logic for CGEN\_002: Partial Applications Through Closure Generation.
 
@@ -6,7 +6,7 @@ When a call produces a function-typed result (partial application), it must
 go through eco.papCreate/eco.papExtend, not eco.call. eco.call should only
 produce non-function results (fully saturated calls).
 
-@docs expectPartialApplicationRouting, checkPartialApplicationRouting
+@docs expectPartialApplicationRouting
 
 -}
 

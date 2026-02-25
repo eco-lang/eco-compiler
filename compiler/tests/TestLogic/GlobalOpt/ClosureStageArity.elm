@@ -1,4 +1,7 @@
-module TestLogic.GlobalOpt.ClosureStageArity exposing (expectClosureStageArity, checkClosureStageArity)
+module TestLogic.GlobalOpt.ClosureStageArity exposing
+    ( expectClosureStageArity, checkClosureStageArity
+    , Violation
+    )
 
 {-| Test logic for GOPT\_001: Closure params match stage arity.
 

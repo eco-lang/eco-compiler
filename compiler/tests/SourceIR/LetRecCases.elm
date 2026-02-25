@@ -1,4 +1,4 @@
-module SourceIR.LetRecCases exposing (expectSuite, testCases)
+module SourceIR.LetRecCases exposing (expectSuite)
 
 {-| Tests for mutually recursive let expressions.
 Note: In Elm, mutually recursive functions are detected automatically,

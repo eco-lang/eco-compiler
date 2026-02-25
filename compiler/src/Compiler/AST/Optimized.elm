@@ -64,7 +64,7 @@ import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Elm.Package as Pkg
 import Compiler.Reporting.Annotation as A
 import Data.Map as Dict exposing (Dict)
-import Data.Set as EverySet exposing (EverySet)
+import Data.Set exposing (EverySet)
 import System.TypeCheck.IO as IO
 import Utils.Bytes.Decode as BD
 import Utils.Bytes.Encode as BE
@@ -243,70 +243,6 @@ type EffectsType
 empty : GlobalGraph
 empty =
     GlobalGraph Dict.empty Dict.empty
-
-
-{-| Merge two global graphs by combining their nodes and fields.
--}
-addGlobalGraph : GlobalGraph -> GlobalGraph -> GlobalGraph
-addGlobalGraph (GlobalGraph nodes1 fields1) (GlobalGraph nodes2 fields2) =
-    GlobalGraph
-        (Dict.union nodes1 nodes2)
-        (Dict.union fields1 fields2)
-
-
-{-| Add a local graph to a global graph by merging nodes and fields.
--}
-addLocalGraph : LocalGraph -> GlobalGraph -> GlobalGraph
-addLocalGraph (LocalGraph _ nodes1 fields1) (GlobalGraph nodes2 fields2) =
-    GlobalGraph
-        (Dict.union nodes1 nodes2)
-        (Dict.union fields1 fields2)
-
-
-{-| Add a kernel definition to the global graph.
--}
-addKernel : Name -> List K.Chunk -> GlobalGraph -> GlobalGraph
-addKernel shortName chunks (GlobalGraph nodes fields) =
-    let
-        global : Global
-        global =
-            toKernelGlobal shortName
-
-        node : Node
-        node =
-            Kernel chunks (List.foldr addKernelDep EverySet.empty chunks)
-    in
-    GlobalGraph
-        (Dict.insert toComparableGlobal global node nodes)
-        (Dict.union (K.countFields chunks) fields)
-
-
-addKernelDep : K.Chunk -> EverySet (List String) Global -> EverySet (List String) Global
-addKernelDep chunk deps =
-    case chunk of
-        K.JS _ ->
-            deps
-
-        K.ElmVar home name ->
-            EverySet.insert toComparableGlobal (Global home name) deps
-
-        K.JsVar shortName _ ->
-            EverySet.insert toComparableGlobal (toKernelGlobal shortName) deps
-
-        K.ElmField _ ->
-            deps
-
-        K.JsField _ ->
-            deps
-
-        K.JsEnum _ ->
-            deps
-
-        K.Debug ->
-            deps
-
-        K.Prod ->
-            deps
 
 
 {-| Convert a kernel short name to a global reference.

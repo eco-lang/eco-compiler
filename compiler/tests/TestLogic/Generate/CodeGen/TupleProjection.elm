@@ -1,11 +1,11 @@
-module TestLogic.Generate.CodeGen.TupleProjection exposing (expectTupleProjection, checkTupleProjection)
+module TestLogic.Generate.CodeGen.TupleProjection exposing (expectTupleProjection)
 
 {-| Test logic for CGEN\_022: Tuple Projection invariant.
 
 Tuple destructuring must use `eco.project.tuple2` or `eco.project.tuple3`
 with valid field indices.
 
-@docs expectTupleProjection, checkTupleProjection
+@docs expectTupleProjection
 
 -}
 

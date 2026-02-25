@@ -1,4 +1,4 @@
-module TestLogic.Generate.CodeGen.PapCreateArity exposing (expectPapCreateArity, checkPapCreateArity)
+module TestLogic.Generate.CodeGen.PapCreateArity exposing (expectPapCreateArity)
 
 {-| Test logic for CGEN\_033: PapCreate Arity Constraints invariant.
 
@@ -8,7 +8,7 @@ module TestLogic.Generate.CodeGen.PapCreateArity exposing (expectPapCreateArity,
   - `num_captured == operand count`
   - `num_captured < arity`
 
-@docs expectPapCreateArity, checkPapCreateArity
+@docs expectPapCreateArity
 
 -}
 
@@ -45,11 +45,8 @@ checkPapCreateArity mlirModule =
     let
         papCreateOps =
             findOpsNamed "eco.papCreate" mlirModule
-
-        violations =
-            List.concatMap checkPapCreateOp papCreateOps
     in
-    violations
+    List.concatMap checkPapCreateOp papCreateOps
 
 
 checkPapCreateOp : MlirOp -> List Violation

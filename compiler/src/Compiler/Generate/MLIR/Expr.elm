@@ -1,7 +1,7 @@
 module Compiler.Generate.MLIR.Expr exposing
     ( ExprResult
-    , generateExpr, generateCase
-    , boxToEcoValue, coerceResultToType, boxArgsWithMlirTypes
+    , generateExpr
+    , coerceResultToType, boxArgsWithMlirTypes
     , createDummyValue
     )
 
@@ -17,7 +17,7 @@ This module handles generation of MLIR code for all Elm expressions.
 
 # Expression Generation
 
-@docs generateExpr, generateCase
+@docs generateExpr
 
 
 # Data Structure Generation
@@ -25,7 +25,7 @@ This module handles generation of MLIR code for all Elm expressions.
 
 # Boxing and Coercion
 
-@docs boxToEcoValue, coerceResultToType, boxArgsWithMlirTypes
+@docs coerceResultToType, boxArgsWithMlirTypes
 
 
 # Utilities
@@ -36,7 +36,6 @@ This module handles generation of MLIR code for all Elm expressions.
 
 import Bitwise
 import Compiler.AST.DecisionTree.Test as Test
-import Compiler.AST.DecisionTree.TypedPath as TypedPath
 import Compiler.AST.Monomorphized as Mono
 import Compiler.Data.Name as Name
 import Compiler.Elm.Package as Pkg
@@ -56,7 +55,6 @@ import Data.Set as EverySet
 import Dict exposing (Dict)
 import Hex
 import List.Extra as ListX
-import Mlir.Loc as Loc
 import Mlir.Mlir exposing (MlirAttr(..), MlirBlock, MlirOp, MlirRegion(..), MlirType(..))
 import OrderedDict
 import Set
@@ -410,7 +408,7 @@ generateExpr ctx expr =
             in
             generateRecordUpdate ctx record indexedUpdates layout monoType
 
-        Mono.MonoTupleCreate region elements monoType ->
+        Mono.MonoTupleCreate _ elements monoType ->
             let
                 layout =
                     Types.computeTupleLayout (getTupleElements monoType)
@@ -1016,9 +1014,6 @@ generateClosure ctx closureInfo body monoType =
                     Just (Mono.Known (Mono.ClosureKindId kindId)) ->
                         Dict.singleton "_closure_kind" (IntAttr Nothing kindId)
 
-                    Just Mono.Heterogeneous ->
-                        Dict.singleton "_closure_kind" (StringAttr "heterogeneous")
-
                     Nothing ->
                         Dict.empty
 
@@ -1590,19 +1585,6 @@ tryInlinedDecodeFusion ctx def body =
             Nothing
 
 
-{-| Scan a MonoDestruct body to find kernel Bytes.decode call and extract the bytes argument.
-Matches the pattern: MonoDestruct \_ (MonoCall (MonoVarKernel "Bytes" "decode") [\_, bytesExpr][_, bytesExpr] \_ _) _
--}
-findKernelDecodeInDestructBody : Mono.MonoExpr -> Maybe Mono.MonoExpr
-findKernelDecodeInDestructBody body =
-    case body of
-        Mono.MonoDestruct _ innerBody _ ->
-            findKernelDecodeCall innerBody
-
-        _ ->
-            Nothing
-
-
 {-| Search for the decode fusion pattern through nested MonoLet bindings.
 Accumulates let bindings to resolve the decoder expression when found.
 -}
@@ -1753,25 +1735,6 @@ resolveDecoderNode ctx expr =
     BFReify.reifyDecoder ctx.registry ctx.decoderExprs expr
 
 
-{-| Check if an expression is a fusible bytes encoder or decoder.
-Used in generateLet to skip compilation of expressions that will be
-resolved from the cache during fusion instead.
--}
-isFusibleBytesExpr : Ctx.Context -> Mono.MonoExpr -> Bool
-isFusibleBytesExpr ctx expr =
-    case BFReify.reifyDecoder ctx.registry ctx.decoderExprs expr of
-        Just _ ->
-            True
-
-        Nothing ->
-            case BFReify.reifyEncoder ctx.registry ctx.decoderExprs expr of
-                Just _ ->
-                    True
-
-                Nothing ->
-                    False
-
-
 compileSkippedBindings : Ctx.Context -> List ( Name.Name, Mono.MonoExpr ) -> ( List MlirOp, Ctx.Context )
 compileSkippedBindings ctx bindings =
     case bindings of
@@ -1823,10 +1786,6 @@ generateSaturatedCall ctx func args resultType callInfo =
                 -- Use generateExprListTyped to get actual SSA types
                 ( argOps, argsWithTypes, ctx1 ) =
                     generateExprListTyped ctx args
-
-                argVars : List String
-                argVars =
-                    List.map Tuple.first argsWithTypes
 
                 argTypes : List Mono.MonoType
                 argTypes =
@@ -1955,7 +1914,7 @@ generateSaturatedCall ctx func args resultType callInfo =
                 Nothing ->
                     -- Not a bytes encode call - check for bytes decode fusion
                     case maybeBytesDecodeArgs of
-                        Just ( decoderExpr, bytesExpr ) ->
+                        Just ( decoderExpr, _ ) ->
                             -- Attempt to fuse the decoder (also resolves local var refs via decoderExprs cache)
                             case resolveDecoderNode ctx decoderExpr of
                                 Just decoderNode ->
@@ -3011,7 +2970,7 @@ generateIfWithTerminatedElse ctx condVar thenRes elseRes resultMlirType condOps 
         ( thenCoerceOps, thenFinalVar, thenCoerceCtx ) =
             coerceResultToType thenRes.ctx thenRes.resultVar thenRes.resultType resultMlirType
 
-        ( thenYieldCtx, thenYieldOp ) =
+        ( _, thenYieldOp ) =
             Ops.ecoYield thenCoerceCtx thenFinalVar resultMlirType
 
         thenRegion =
@@ -3170,7 +3129,7 @@ generateLet ctx def body =
                 -- If a papCreate uses the placeholder var as a capture operand,
                 -- replace it with a Unit constant and mark the self-capture index.
                 -- The C++ lowering will patch the closure to point to itself.
-                ( fixedResult, ctxAfterFix ) =
+                ( fixedResult, _ ) =
                     if hasSelfCapture placeholderVar rawResult.ops then
                         let
                             ( unitVar, ctxWithUnit ) =
@@ -3180,7 +3139,7 @@ generateLet ctx def body =
                                 Ops.ecoConstantUnit ctxWithUnit unitVar
 
                             resultWithUnit =
-                                { rawResult | ops = [ unitOp ] ++ rawResult.ops, ctx = ctxWithUnit2 }
+                                { rawResult | ops = unitOp :: rawResult.ops, ctx = ctxWithUnit2 }
                         in
                         fixSelfCaptures placeholderVar unitVar ctxWithUnit2 resultWithUnit
 
@@ -3470,71 +3429,6 @@ generateDestruct ctx (Mono.MonoDestructor name path monoType) body _ =
 -- ====== CASE GENERATION ======
 
 
-{-| Generate shared joinpoints for case branches that are referenced multiple times.
-
-Each (index, branchExpr) in jumps becomes an eco.joinpoint that can be jumped to
-from multiple leaves in the decision tree.
-
--}
-generateSharedJoinpoints : Ctx.Context -> List ( Int, Mono.MonoExpr ) -> MlirType -> ( Ctx.Context, List MlirOp )
-generateSharedJoinpoints ctx jumps resultTy =
-    List.foldl
-        (\( index, branchExpr ) ( accCtx, accOps ) ->
-            let
-                -- Body: generate the branch expression, then eco.return
-                branchRes =
-                    generateExpr accCtx branchExpr
-
-                -- Build the joinpoint body region.
-                -- If branchRes is already terminated (e.g., tail call with eco.jump),
-                -- use mkRegionTerminatedByOps without adding extra coercion/return.
-                ( jpRegion, ctx1 ) =
-                    if branchRes.isTerminated then
-                        ( Ops.mkRegionTerminatedByOps [] branchRes.ops, branchRes.ctx )
-
-                    else
-                        let
-                            -- Use the ACTUAL SSA type from branchRes, not Mono.typeOf
-                            actualTy =
-                                branchRes.resultType
-
-                            -- Symmetric boxing/unboxing based on actual vs expected type
-                            ( coerceOps, finalVar, coerceCtx ) =
-                                coerceResultToType branchRes.ctx branchRes.resultVar actualTy resultTy
-
-                            ( retCtx, retOp ) =
-                                Ops.ecoReturn coerceCtx finalVar resultTy
-                        in
-                        ( Ops.mkRegion [] (branchRes.ops ++ coerceOps) retOp, retCtx )
-
-                -- Continuation: a dummy region with a return (joinpoint semantics require it)
-                -- Use createDummyValue to generate correct type for resultTy
-                ( dummyOps, dummyVar, ctx2 ) =
-                    createDummyValue ctx1 resultTy
-
-                ( ctx3, dummyRetOp ) =
-                    Ops.ecoReturn ctx2 dummyVar resultTy
-
-                contRegion =
-                    Ops.mkRegion [] dummyOps dummyRetOp
-
-                ( ctx4, jpOp ) =
-                    Ops.ecoJoinpoint ctx3 index [] jpRegion contRegion [ resultTy ]
-            in
-            ( ctx4, accOps ++ [ jpOp ] )
-        )
-        ( ctx, [] )
-        jumps
-
-
-{-| Generate the decision tree control flow for a case expression.
--}
-generateDecider : Ctx.Context -> Name.Name -> Mono.Decider Mono.MonoChoice -> MlirType -> ExprResult
-generateDecider ctx root decider resultTy =
-    -- Legacy version without jump inlining - delegates to new version with empty lookup
-    generateDeciderWithJumps ctx root decider Dict.empty resultTy
-
-
 {-| Generate the decision tree with jump expression inlining (yield-based mode).
 Instead of generating eco.jump to joinpoints, this version inlines branch bodies
 directly when encountering Mono.Jump. This enables single-block alternative regions
@@ -3551,64 +3445,6 @@ generateDeciderWithJumps ctx root decider jumpLookup resultTy =
 
         Mono.FanOut path edges fallback ->
             generateFanOutWithJumps ctx root path edges fallback jumpLookup resultTy
-
-
-{-| Generate code for a Leaf node in the decision tree.
-Generates eco.yield to terminate case alternatives.
--}
-generateLeaf : Ctx.Context -> Name.Name -> Mono.MonoChoice -> MlirType -> ExprResult
-generateLeaf ctx _ choice resultTy =
-    case choice of
-        Mono.Inline branchExpr ->
-            -- Evaluate the branch expression and yield it
-            let
-                branchRes =
-                    generateExpr ctx branchExpr
-            in
-            -- If the branch expression is already terminated with eco.yield,
-            -- just propagate it.
-            if branchRes.isTerminated then
-                branchRes
-
-            else
-                let
-                    -- Use the ACTUAL SSA type from branchRes, not Mono.typeOf
-                    actualTy =
-                        branchRes.resultType
-
-                    -- Symmetric boxing/unboxing based on actual vs expected type
-                    ( coerceOps, finalVar, ctx1 ) =
-                        coerceResultToType branchRes.ctx branchRes.resultVar actualTy resultTy
-
-                    -- Use eco.yield for case alternatives (not eco.return)
-                    ( ctx2, yieldOp ) =
-                        Ops.ecoYield ctx1 finalVar resultTy
-                in
-                -- The yield op MUST be last so mkRegionFromOps picks it as terminator
-                { ops = branchRes.ops ++ coerceOps ++ [ yieldOp ]
-                , resultVar = finalVar
-                , resultType = resultTy
-                , ctx = ctx2
-                , isTerminated = True
-                }
-
-        Mono.Jump _ ->
-            -- Jump to a joinpoint - generate eco.jump
-            -- Use createDummyValue to generate correct type for resultTy
-            let
-                ( dummyOps, dummyVar, ctx1 ) =
-                    createDummyValue ctx resultTy
-
-                -- Use eco.yield for case alternatives (not eco.return)
-                ( ctx2, yieldOp ) =
-                    Ops.ecoYield ctx1 dummyVar resultTy
-            in
-            { ops = dummyOps ++ [ yieldOp ]
-            , resultVar = dummyVar
-            , resultType = resultTy
-            , ctx = ctx2
-            , isTerminated = True
-            }
 
 
 {-| Generate code for a Leaf node with jump inlining (yield-based mode).
@@ -3678,114 +3514,6 @@ generateLeafWithJumps ctx root choice jumpLookup resultTy =
                 Nothing ->
                     -- Jump index not found - this shouldn't happen with valid IR
                     crash ("generateLeafWithJumps: Jump index " ++ String.fromInt index ++ " not found in jumpLookup")
-
-
-{-| Generate code for a Chain node (test chain with success/failure branches).
--}
-generateChain : Ctx.Context -> Name.Name -> List ( DT.Path, DT.Test ) -> Mono.Decider Mono.MonoChoice -> Mono.Decider Mono.MonoChoice -> MlirType -> ExprResult
-generateChain ctx root testChain success failure resultTy =
-    -- Special case: If this is a direct Bool ADT pattern match (single IsBool test),
-    -- pass the scrutinee directly to eco.case instead of unboxing and reboxing.
-    -- This preserves the Bool ADT tags (True=1, False=0) for correct dispatch.
-    case testChain of
-        [ ( path, Test.IsBool True ) ] ->
-            -- Direct Bool pattern match: pass the Bool ADT value to eco.case directly
-            generateChainForBoolADT ctx root path success failure resultTy
-
-        _ ->
-            -- General case: compute boolean condition (i1) and box it
-            generateChainGeneral ctx root testChain success failure resultTy
-
-
-{-| Special handling for direct Bool ADT pattern matching.
-For `case b of True -> X; False -> Y`, use eco.case with i1 scrutinee.
-eco.case now accepts i1 directly (lowered to scf.if by SCF pass).
--}
-generateChainForBoolADT : Ctx.Context -> Name.Name -> DT.Path -> Mono.Decider Mono.MonoChoice -> Mono.Decider Mono.MonoChoice -> MlirType -> ExprResult
-generateChainForBoolADT ctx root path success failure resultTy =
-    let
-        -- Get the Bool value (i1 type)
-        ( pathOps, boolVar, ctx1 ) =
-            Patterns.generateDTPath ctx root path I1
-
-        -- Generate success branch (True) with eco.yield
-        thenRes =
-            generateDecider ctx1 root success resultTy
-
-        ( thenRegion, ctx1a ) =
-            mkCaseRegionFromDecider thenRes resultTy
-
-        -- Generate failure branch (False) with eco.yield
-        -- Fork context: keep ctx1's variable mappings but advance nextVar to avoid SSA conflicts
-        -- Also propagate pendingLambdas to ensure closures from the then-branch are not lost
-        ctxForElse =
-            { ctx1 | nextVar = ctx1a.nextVar, pendingLambdas = ctx1a.pendingLambdas }
-
-        elseRes =
-            generateDecider ctxForElse root failure resultTy
-
-        ( elseRegion, ctx1b ) =
-            mkCaseRegionFromDecider elseRes resultTy
-
-        -- Allocate result variable for eco.case
-        ( caseResultVar, ctxWithResult ) =
-            Ctx.freshVar ctx1b
-
-        -- eco.case on Bool: tag 1 for True (success), tag 0 for False (failure)
-        ( ctx2, caseOp ) =
-            Ops.ecoCase ctxWithResult caseResultVar boolVar I1 "bool" [ 1, 0 ] [ thenRegion, elseRegion ] resultTy
-    in
-    { ops = pathOps ++ [ caseOp ]
-    , resultVar = caseResultVar
-    , resultType = resultTy
-    , ctx = ctx2
-    , isTerminated = False
-    }
-
-
-{-| General case for Chain node: compute boolean condition and dispatch.
-Uses eco.case with i1 scrutinee (lowered to scf.if by SCF pass).
--}
-generateChainGeneral : Ctx.Context -> Name.Name -> List ( DT.Path, DT.Test ) -> Mono.Decider Mono.MonoChoice -> Mono.Decider Mono.MonoChoice -> MlirType -> ExprResult
-generateChainGeneral ctx root testChain success failure resultTy =
-    let
-        -- Compute the boolean condition (produces i1)
-        ( condOps, condVar, ctx1 ) =
-            Patterns.generateChainCondition ctx root testChain
-
-        -- Generate success branch with eco.yield
-        thenRes =
-            generateDecider ctx1 root success resultTy
-
-        ( thenRegion, ctx1a ) =
-            mkCaseRegionFromDecider thenRes resultTy
-
-        -- Generate failure branch with eco.yield
-        -- Fork context: keep ctx1's variable mappings but advance nextVar to avoid SSA conflicts
-        -- Also propagate pendingLambdas to ensure closures from the then-branch are not lost
-        ctxForElse =
-            { ctx1 | nextVar = ctx1a.nextVar, pendingLambdas = ctx1a.pendingLambdas }
-
-        elseRes =
-            generateDecider ctxForElse root failure resultTy
-
-        ( elseRegion, ctx1b ) =
-            mkCaseRegionFromDecider elseRes resultTy
-
-        -- Allocate result variable for eco.case
-        ( caseResultVar, ctxWithResult ) =
-            Ctx.freshVar ctx1b
-
-        -- eco.case on Bool: tag 1 for True (success), tag 0 for False (failure)
-        ( ctx2, caseOp ) =
-            Ops.ecoCase ctxWithResult caseResultVar condVar I1 "bool" [ 1, 0 ] [ thenRegion, elseRegion ] resultTy
-    in
-    { ops = condOps ++ [ caseOp ]
-    , resultVar = caseResultVar
-    , resultType = resultTy
-    , ctx = ctx2
-    , isTerminated = False
-    }
 
 
 {-| Generate code for a Chain node with jump inlining (yield-based mode).
@@ -3876,18 +3604,6 @@ generateChainGeneralWithJumps ctx root testChain success failure jumpLookup resu
     }
 
 
-{-| Generate code for a FanOut node (multi-way branching on constructor tags).
--}
-generateFanOut : Ctx.Context -> Name.Name -> DT.Path -> List ( DT.Test, Mono.Decider Mono.MonoChoice ) -> Mono.Decider Mono.MonoChoice -> MlirType -> ExprResult
-generateFanOut ctx root path edges fallback resultTy =
-    -- Check if this is a Bool FanOut pattern (all edges are IsBool tests)
-    if isBoolFanOut edges then
-        generateBoolFanOut ctx root path edges fallback resultTy
-
-    else
-        generateFanOutGeneral ctx root path edges fallback resultTy
-
-
 {-| Check if FanOut is a Bool pattern match (has IsBool True or IsBool False tests).
 -}
 isBoolFanOut : List ( DT.Test, Mono.Decider Mono.MonoChoice ) -> Bool
@@ -3903,56 +3619,6 @@ isBoolFanOut edges =
 
                 _ ->
                     False
-
-
-{-| Handle Bool FanOut with eco.case on i1 scrutinee.
-eco.case now accepts i1 directly (lowered to scf.if by SCF pass).
--}
-generateBoolFanOut : Ctx.Context -> Name.Name -> DT.Path -> List ( DT.Test, Mono.Decider Mono.MonoChoice ) -> Mono.Decider Mono.MonoChoice -> MlirType -> ExprResult
-generateBoolFanOut ctx root path edges fallback resultTy =
-    let
-        -- Get the Bool value as i1 type
-        ( pathOps, boolVar, ctx1 ) =
-            Patterns.generateDTPath ctx root path I1
-
-        -- Find True and False branches
-        ( trueBranch, falseBranch ) =
-            findBoolBranches edges fallback
-
-        -- Generate True branch (tag 1) with eco.yield
-        thenRes =
-            generateDecider ctx1 root trueBranch resultTy
-
-        ( thenRegion, ctx1a ) =
-            mkCaseRegionFromDecider thenRes resultTy
-
-        -- Generate False branch (tag 0) with eco.yield
-        -- Fork context: keep ctx1's variable mappings but advance nextVar to avoid SSA conflicts
-        -- Also propagate pendingLambdas to ensure closures from the then-branch are not lost
-        ctxForElse =
-            { ctx1 | nextVar = ctx1a.nextVar, pendingLambdas = ctx1a.pendingLambdas }
-
-        elseRes =
-            generateDecider ctxForElse root falseBranch resultTy
-
-        ( elseRegion, ctx1b ) =
-            mkCaseRegionFromDecider elseRes resultTy
-
-        -- Allocate result variable for eco.case
-        ( caseResultVar, ctxWithResult ) =
-            Ctx.freshVar ctx1b
-
-        -- eco.case on Bool: tag 1 for True, tag 0 for False
-        -- Regions: [True region, False region] corresponding to tags [1, 0]
-        ( ctx2, caseOp ) =
-            Ops.ecoCase ctxWithResult caseResultVar boolVar I1 "bool" [ 1, 0 ] [ thenRegion, elseRegion ] resultTy
-    in
-    { ops = pathOps ++ [ caseOp ]
-    , resultVar = caseResultVar
-    , resultType = resultTy
-    , ctx = ctx2
-    , isTerminated = False
-    }
 
 
 {-| Find True and False branches from Bool FanOut edges.
@@ -3989,117 +3655,6 @@ extractStringPatternStrict test =
 
         _ ->
             crash "CGEN: expected Test.IsStr in string fanout, but got non-string test"
-
-
-{-| General case FanOut using eco.case (for non-Bool ADT patterns).
-eco.case accepts !eco.value scrutinee; for Bool patterns, generateBoolFanOut uses i1.
--}
-generateFanOutGeneral : Ctx.Context -> Name.Name -> DT.Path -> List ( DT.Test, Mono.Decider Mono.MonoChoice ) -> Mono.Decider Mono.MonoChoice -> MlirType -> ExprResult
-generateFanOutGeneral ctx root path edges fallback resultTy =
-    let
-        -- Collect edge tests for case kind and tag computation
-        edgeTests =
-            List.map Tuple.first edges
-
-        -- Determine case kind from the first edge test
-        caseKind =
-            case edgeTests of
-                firstTest :: _ ->
-                    Patterns.caseKindFromTest firstTest
-
-                [] ->
-                    "ctor"
-
-        -- Derive scrutinee type from case_kind:
-        -- "int" -> i64, "chr" -> i16, others -> eco.value
-        scrutineeType =
-            Patterns.scrutineeTypeFromCaseKind caseKind
-
-        -- Generate path to scrutinee with correct type
-        -- If root is boxed but we need primitive, generateDTPath emits eco.unbox
-        ( pathOps, scrutineeVar, ctx1 ) =
-            Patterns.generateDTPath ctx root path scrutineeType
-
-        -- Handle string cases specially: use positional tags and collect string patterns
-        ( tags, stringPatterns ) =
-            if caseKind == "str" then
-                let
-                    edgeCount =
-                        List.length edges
-
-                    altCount =
-                        edgeCount + 1
-
-                    -- Strictly extract string patterns - crash if any non-IsStr test
-                    patterns =
-                        edges
-                            |> List.map Tuple.first
-                            |> List.map extractStringPatternStrict
-
-                    -- Use positional tags [0, 1, ..., N-1]
-                    sequentialTags =
-                        List.range 0 (altCount - 1)
-                in
-                ( sequentialTags, Just patterns )
-
-            else
-                let
-                    edgeTags =
-                        List.map (\( test, _ ) -> Patterns.testToTagInt test) edges
-
-                    fallbackTag =
-                        Patterns.computeFallbackTag edgeTests
-                in
-                ( edgeTags ++ [ fallbackTag ], Nothing )
-
-        -- Generate regions for each edge
-        ( edgeRegions, ctx2 ) =
-            List.foldl
-                (\( _, subTree ) ( accRegions, accCtx ) ->
-                    let
-                        subRes =
-                            generateDecider accCtx root subTree resultTy
-
-                        ( region, ctxAfterRegion ) =
-                            mkCaseRegionFromDecider subRes resultTy
-                    in
-                    ( accRegions ++ [ region ], ctxAfterRegion )
-                )
-                ( [], ctx1 )
-                edges
-
-        -- Generate fallback region
-        fallbackRes =
-            generateDecider ctx2 root fallback resultTy
-
-        ( fallbackRegion, ctx2a ) =
-            mkCaseRegionFromDecider fallbackRes resultTy
-
-        -- Build eco.case with all regions (edges + fallback)
-        allRegions =
-            edgeRegions ++ [ fallbackRegion ]
-
-        -- Allocate result variable for eco.case
-        ( caseResultVar, ctxWithResult ) =
-            Ctx.freshVar ctx2a
-
-        -- Build eco.case with correct scrutinee type
-        -- For string cases, use ecoCaseString which includes string_patterns
-        ( ctx3, caseOp ) =
-            case stringPatterns of
-                Just patterns ->
-                    Ops.ecoCaseString ctxWithResult caseResultVar scrutineeVar scrutineeType tags patterns allRegions resultTy
-
-                Nothing ->
-                    Ops.ecoCase ctxWithResult caseResultVar scrutineeVar scrutineeType caseKind tags allRegions resultTy
-    in
-    -- eco.case produces an SSA result
-    { ops = pathOps ++ [ caseOp ]
-    , resultVar = caseResultVar
-    , resultType = resultTy
-    , ctx = ctx3
-    , isTerminated = False
-    }
 
 
 {-| Generate code for a FanOut node with jump inlining (yield-based mode).
@@ -4262,13 +3817,6 @@ mkRegionFromOps ops =
                 { entry = { args = [], body = List.reverse restReversed, terminator = terminator }
                 , blocks = OrderedDict.empty
                 }
-
-
-{-| Check if an operation is a valid region terminator.
--}
-isValidTerminator : MlirOp -> Bool
-isValidTerminator op =
-    List.member op.name [ "eco.return", "eco.jump", "eco.crash" ]
 
 
 {-| Check if an op is a valid terminator for eco.case alternative regions.

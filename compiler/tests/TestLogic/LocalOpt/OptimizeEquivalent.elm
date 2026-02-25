@@ -19,7 +19,6 @@ import Compiler.AST.DecisionTree.Test as Test
 import Compiler.AST.DecisionTree.TypedPath as TypedPath
 import Compiler.AST.Optimized as Opt
 import Compiler.AST.Source as Src
-import Compiler.AST.TypedCanonical as TCan
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Canonicalize.Module as Canonicalize
 import Compiler.Data.Name as Name
@@ -1100,11 +1099,6 @@ compareRecordFields erasedFields typedFields =
                         Just ("Missing record field: " ++ key)
         in
         List.filterMap compareField erasedKeys |> List.head
-
-
-compareLocatedNameLists : List (A.Located Name.Name) -> List (A.Located Name.Name) -> Bool
-compareLocatedNameLists list1 list2 =
-    list1 == list2
 
 
 

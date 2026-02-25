@@ -1,4 +1,4 @@
-module TestLogic.Generate.CodeGen.PapArityConsistency exposing (expectPapArityConsistency, checkPapArityConsistency)
+module TestLogic.Generate.CodeGen.PapArityConsistency exposing (expectPapArityConsistency)
 
 {-| Test logic for CGEN\_051: papCreate arity matches function parameter count.
 
@@ -8,7 +8,7 @@ function symbol accepts.
 This test builds a map of function symbols to their parameter counts,
 then verifies each `eco.papCreate` has an arity that matches.
 
-@docs expectPapArityConsistency, checkPapArityConsistency
+@docs expectPapArityConsistency
 
 -}
 
@@ -52,12 +52,8 @@ checkPapArityConsistency mlirModule =
         -- Find all papCreate ops
         papCreateOps =
             findOpsNamed "eco.papCreate" mlirModule
-
-        -- Check each papCreate
-        violations =
-            List.filterMap (checkPapCreateOp funcParamCountMap) papCreateOps
     in
-    violations
+    List.filterMap (checkPapCreateOp funcParamCountMap) papCreateOps
 
 
 {-| Build a map from function symbol names to their parameter counts.

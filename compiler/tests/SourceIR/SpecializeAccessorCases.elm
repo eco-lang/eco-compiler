@@ -1,4 +1,4 @@
-module SourceIR.SpecializeAccessorCases exposing (expectSuite, suite, testCases)
+module SourceIR.SpecializeAccessorCases exposing (expectSuite, suite)
 
 {-| Test cases for accessor specialization in Specialize.elm.
 

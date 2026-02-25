@@ -1,4 +1,4 @@
-module SourceIR.LiteralCases exposing (expectSuite, testCases)
+module SourceIR.LiteralCases exposing (expectSuite)
 
 {-| Tests for literal expressions: Int, Float, String, Char, Unit, Bool.
 These tests verify that the canonicalizer assigns unique IDs to literal expressions.

@@ -1,11 +1,11 @@
-module TestLogic.Generate.CodeGen.JumpTarget exposing (expectJumpTarget, checkJumpTargets)
+module TestLogic.Generate.CodeGen.JumpTarget exposing (expectJumpTarget)
 
 {-| Test logic for CGEN\_030: Jump Target Validity invariant.
 
 `eco.jump` target must refer to a lexically enclosing `eco.joinpoint` with
 matching id, and argument types must match.
 
-@docs expectJumpTarget, checkJumpTargets
+@docs expectJumpTarget
 
 -}
 
@@ -45,11 +45,8 @@ checkJumpTargets mlirModule =
     let
         funcOps =
             findFuncOps mlirModule
-
-        violations =
-            List.concatMap checkFunctionJumps funcOps
     in
-    violations
+    List.concatMap checkFunctionJumps funcOps
 
 
 checkFunctionJumps : MlirOp -> List Violation

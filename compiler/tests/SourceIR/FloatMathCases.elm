@@ -1,4 +1,4 @@
-module SourceIR.FloatMathCases exposing (expectSuite, suite, testCases)
+module SourceIR.FloatMathCases exposing (expectSuite, suite)
 
 {-| Test cases for Float math operations in MLIR codegen.
 

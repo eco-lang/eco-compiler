@@ -1,7 +1,6 @@
 module Compiler.LocalOpt.Erased.DecisionTree exposing
     ( DecisionTree(..), Test, Path
     , compile
-    , pathEncoder, pathDecoder, testEncoder, testDecoder
     )
 
 {-| Compiles pattern matching into efficient decision trees.
@@ -29,8 +28,6 @@ The algorithm uses heuristics similar to SML/NJ:
 
 # Binary Encoding
 
-@docs pathEncoder, pathDecoder, testEncoder, testDecoder
-
 -}
 
 {- To learn more about how this works, definitely read through:
@@ -44,21 +41,15 @@ The algorithm uses heuristics similar to SML/NJ:
    as SML/NJ to get nice trees.
 -}
 
-import Bytes.Decode
 import Bytes.Encode
 import Compiler.AST.Canonical as Can
 import Compiler.AST.DecisionTree.Path as Path
 import Compiler.AST.DecisionTree.Test as Test
 import Compiler.Data.Index as Index
-import Compiler.Data.Name as Name
-import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Reporting.Annotation as A
 import Data.Set as EverySet
 import Hex.Convert
 import Prelude
-import System.TypeCheck.IO as IO
-import Utils.Bytes.Decode as BD
-import Utils.Bytes.Encode as BE
 import Utils.Crash exposing (crash)
 import Utils.Main as Utils
 
@@ -725,33 +716,9 @@ smallBranchingFactor branches path =
 -- ====== ENCODERS and DECODERS ======
 
 
-{-| Encode a Path to bytes for serialization.
-Delegates to Compiler.AST.DecisionTree.Path.
--}
-pathEncoder : Path -> Bytes.Encode.Encoder
-pathEncoder =
-    Path.pathEncoder
-
-
-{-| Decode a Path from bytes.
-Delegates to Compiler.AST.DecisionTree.Path.
--}
-pathDecoder : Bytes.Decode.Decoder Path
-pathDecoder =
-    Path.pathDecoder
-
-
 {-| Encode a Test to bytes for serialization.
 Delegates to Compiler.AST.DecisionTree.Test.
 -}
 testEncoder : Test -> Bytes.Encode.Encoder
 testEncoder =
     Test.testEncoder
-
-
-{-| Decode a Test from bytes.
-Delegates to Compiler.AST.DecisionTree.Test.
--}
-testDecoder : Bytes.Decode.Decoder Test
-testDecoder =
-    Test.testDecoder

@@ -1,4 +1,4 @@
-module TestLogic.Generate.CodeGen.CaseTermination exposing (expectCaseTermination, checkCaseTermination)
+module TestLogic.Generate.CodeGen.CaseTermination exposing (expectCaseTermination)
 
 {-| Test logic for CGEN\_028: Case Alternative Termination invariant.
 
@@ -8,7 +8,7 @@ This is the only valid terminator for case alternatives.
 eco.return, eco.jump, eco.crash, and other terminators are forbidden
 inside eco.case alternatives (per CGEN\_054).
 
-@docs expectCaseTermination, checkCaseTermination
+@docs expectCaseTermination
 
 -}
 
@@ -51,11 +51,8 @@ checkCaseTermination mlirModule =
     let
         caseOps =
             findOpsNamed "eco.case" mlirModule
-
-        violations =
-            List.concatMap checkCaseOp caseOps
     in
-    violations
+    List.concatMap checkCaseOp caseOps
 
 
 checkCaseOp : MlirOp -> List Violation

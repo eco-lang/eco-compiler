@@ -1,4 +1,7 @@
-module TestLogic.Monomorphize.MonoCtorLayoutIntegrity exposing (expectMonoCtorLayoutIntegrity, checkMonoCtorLayoutIntegrity)
+module TestLogic.Monomorphize.MonoCtorLayoutIntegrity exposing
+    ( expectMonoCtorLayoutIntegrity
+    , Violation
+    )
 
 {-| Test logic for MONO\_013: Constructor layouts define consistent custom types.
 
@@ -11,7 +14,7 @@ For each custom type and each constructor in MonoGraph.ctorShapes:
 Note: MVar types in fieldTypes are allowed for polymorphic types, as long as
 they are marked as boxed (isUnboxed = False).
 
-@docs expectMonoCtorLayoutIntegrity, checkMonoCtorLayoutIntegrity
+@docs expectMonoCtorLayoutIntegrity
 
 -}
 

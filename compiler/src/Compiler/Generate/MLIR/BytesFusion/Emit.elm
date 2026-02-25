@@ -1,10 +1,13 @@
-module Compiler.Generate.MLIR.BytesFusion.Emit exposing (ExprCompiler, emitFusedDecoder, emitFusedEncoder, emitOps)
+module Compiler.Generate.MLIR.BytesFusion.Emit exposing
+    ( ExprCompiler, emitFusedDecoder, emitFusedEncoder
+    , CompileExprResult
+    )
 
 {-| Emit MLIR operations for fused byte encoding and decoding.
 
 Takes Loop IR operations and emits bf dialect MLIR ops.
 
-@docs ExprCompiler, emitFusedDecoder, emitFusedEncoder, emitOps
+@docs ExprCompiler, emitFusedDecoder, emitFusedEncoder
 
 -}
 
@@ -74,17 +77,6 @@ emitFusedEncoder compileExpr ctx ops =
             List.foldl emitOp initialState ops
     in
     ( List.reverse finalState.ops, finalState.bufferVar, finalState.ctx )
-
-
-{-| Emit Loop IR operations to MLIR ops.
--}
-emitOps : ExprCompiler -> Context -> List Op -> ( List MlirOp, Context )
-emitOps exprCompiler ctx ops =
-    let
-        ( mlirOps, _, newCtx ) =
-            emitFusedEncoder exprCompiler ctx ops
-    in
-    ( mlirOps, newCtx )
 
 
 {-| Emit a single Loop IR operation.
@@ -1631,7 +1623,6 @@ emitLoopDecodeListNested countVarName itemOps resultPlaceholder restOps state =
                 | ctx = ctx13
                 , cursor = afterCursorArg
                 , decodedVars = []
-                , varMapping = state.varMapping
             }
 
         -- Emit item decoder ops - now returns ItemDecoderResult record
@@ -1785,7 +1776,6 @@ emitLoopSentinelDecodeListNested sentinel itemOps resultPlaceholder restOps stat
                 | ctx = ctx6
                 , cursor = beforeCursorArg
                 , decodedVars = []
-                , varMapping = state.varMapping
             }
 
         beforeItemResult =
@@ -1955,26 +1945,26 @@ emitItemDecoderOps ops state =
             emitSimpleRead 8 "bf.read.f64" (Just endian) F64 placeholderVar state
 
         -- Read + Apply1 (map pattern): decode item, then apply function
-        [ ReadU8 _ readPlaceholder, Apply1 fnExpr argPlaceholder resultPlaceholder ] ->
+        [ ReadU8 _ _, Apply1 fnExpr argPlaceholder resultPlaceholder ] ->
             emitReadThenApply1 1 "bf.read.u8" Nothing I64 fnExpr argPlaceholder resultPlaceholder state
 
-        [ ReadU16 _ endian readPlaceholder, Apply1 fnExpr argPlaceholder resultPlaceholder ] ->
+        [ ReadU16 _ endian _, Apply1 fnExpr argPlaceholder resultPlaceholder ] ->
             emitReadThenApply1 2 "bf.read.u16" (Just endian) I64 fnExpr argPlaceholder resultPlaceholder state
 
-        [ ReadU32 _ endian readPlaceholder, Apply1 fnExpr argPlaceholder resultPlaceholder ] ->
+        [ ReadU32 _ endian _, Apply1 fnExpr argPlaceholder resultPlaceholder ] ->
             emitReadThenApply1 4 "bf.read.u32" (Just endian) I64 fnExpr argPlaceholder resultPlaceholder state
 
-        [ ReadI32 _ endian readPlaceholder, Apply1 fnExpr argPlaceholder resultPlaceholder ] ->
+        [ ReadI32 _ endian _, Apply1 fnExpr argPlaceholder resultPlaceholder ] ->
             emitReadThenApply1 4 "bf.read.i32" (Just endian) I64 fnExpr argPlaceholder resultPlaceholder state
 
-        [ ReadF32 _ endian readPlaceholder, Apply1 fnExpr argPlaceholder resultPlaceholder ] ->
+        [ ReadF32 _ endian _, Apply1 fnExpr argPlaceholder resultPlaceholder ] ->
             emitReadThenApply1 4 "bf.read.f32" (Just endian) F64 fnExpr argPlaceholder resultPlaceholder state
 
-        [ ReadF64 _ endian readPlaceholder, Apply1 fnExpr argPlaceholder resultPlaceholder ] ->
+        [ ReadF64 _ endian _, Apply1 fnExpr argPlaceholder resultPlaceholder ] ->
             emitReadThenApply1 8 "bf.read.f64" (Just endian) F64 fnExpr argPlaceholder resultPlaceholder state
 
         -- Two reads + Apply2 (map2 pattern)
-        [ read1, read2, Apply2 fnExpr arg1Placeholder arg2Placeholder resultPlaceholder ] ->
+        [ read1, read2, Apply2 fnExpr _ _ resultPlaceholder ] ->
             emitTwoReadsThenApply2 read1 read2 fnExpr resultPlaceholder state
 
         _ ->

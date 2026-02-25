@@ -6,6 +6,7 @@ module TestLogic.GlobalOpt.CallInfoComplete exposing
     , checkPartialApplicationAritySemantics
     , checkSingleStageSaturated
     , checkFlattenedExternalCallInfo
+    , Violation
     )
 
 {-| Test logic for GOPT\_010-015: CallInfo invariants after GlobalOpt.
@@ -273,13 +274,12 @@ checkFlattenedExternalCallInfo graph =
                 Mono.FlattenedExternal ->
                     let
                         issues =
-                            []
-                                ++ (if not (List.isEmpty callInfo.stageArities) then
-                                        [ "stageArities not empty" ]
+                            (if not (List.isEmpty callInfo.stageArities) then
+                                [ "stageArities not empty" ]
 
-                                    else
-                                        []
-                                   )
+                             else
+                                []
+                            )
                                 ++ (if not (List.isEmpty callInfo.remainingStageArities) then
                                         [ "remainingStageArities not empty" ]
 

@@ -1,4 +1,4 @@
-module SourceIR.CaseCases exposing (expectSuite, testCases)
+module SourceIR.CaseCases exposing (expectSuite)
 
 {-| Tests for case expressions and pattern matching.
 -}
@@ -315,23 +315,6 @@ caseOnTupleWithLiteralPatterns expectFn _ =
     expectFn modul
 
 
-caseOnTuple : (Src.Module -> Expectation) -> (() -> Expectation)
-caseOnTuple expectFn _ =
-    let
-        subject =
-            tupleExpr (intExpr 1) (intExpr 2)
-
-        case_ =
-            caseExpr subject
-                [ ( pTuple (pVar "x") (pVar "y"), tupleExpr (varExpr "y") (varExpr "x") )
-                ]
-
-        modul =
-            makeModule "testValue" case_
-    in
-    expectFn modul
-
-
 caseOnNestedTuples : (Src.Module -> Expectation) -> (() -> Expectation)
 caseOnNestedTuples expectFn _ =
     let
@@ -484,23 +467,6 @@ caseOnMultiFieldRecordPattern expectFn _ =
     expectFn modul
 
 
-caseOnRecord : (Src.Module -> Expectation) -> (() -> Expectation)
-caseOnRecord expectFn _ =
-    let
-        subject =
-            recordExpr [ ( "value", intExpr 42 ) ]
-
-        case_ =
-            caseExpr subject
-                [ ( pRecord [ "value" ], varExpr "value" )
-                ]
-
-        modul =
-            makeModule "testValue" case_
-    in
-    expectFn modul
-
-
 caseOnPartialRecordPattern : (Src.Module -> Expectation) -> (() -> Expectation)
 caseOnPartialRecordPattern expectFn _ =
     let
@@ -576,23 +542,6 @@ caseWithListAliasPattern expectFn _ =
             caseExpr subject
                 [ ( pAlias (pCons (pVar "h") (pVar "t")) "list", varExpr "list" )
                 , ( pList [], listExpr [] )
-                ]
-
-        modul =
-            makeModule "testValue" case_
-    in
-    expectFn modul
-
-
-caseWithAliasPattern : (Src.Module -> Expectation) -> (() -> Expectation)
-caseWithAliasPattern expectFn _ =
-    let
-        subject =
-            intExpr 42
-
-        case_ =
-            caseExpr subject
-                [ ( pAlias (pVar "x") "y", tupleExpr (varExpr "x") (varExpr "y") )
                 ]
 
         modul =

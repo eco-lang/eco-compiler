@@ -448,34 +448,6 @@ convertUnicodeEscapesToUtf8 s =
     go "" s
 
 
-{-| Escape non-ASCII characters to \\xNN format.
--}
-escapeNonAscii : String -> String
-escapeNonAscii s =
-    String.toList s
-        |> List.concatMap
-            (\c ->
-                let
-                    code =
-                        Char.toCode c
-                in
-                if code >= 128 then
-                    -- Encode as UTF-8 bytes
-                    encodeUtf8 code
-                        |> List.map (\b -> "\\x" ++ toHex2 b)
-                        |> List.map String.toList
-                        |> List.concat
-
-                else if code == 0 then
-                    -- Null byte
-                    [ '\\', 'x', '0', '0' ]
-
-                else
-                    [ c ]
-            )
-        |> String.fromList
-
-
 {-| Parse a 4-character hex string to an integer.
 -}
 parseHex : String -> Maybe Int
@@ -510,64 +482,11 @@ parseHex s =
         s
 
 
-{-| Convert an integer to a 2-digit uppercase hex string.
--}
-toHex2 : Int -> String
-toHex2 n =
-    let
-        hi =
-            n // 16
-
-        lo =
-            modBy 16 n
-
-        hexChar i =
-            if i < 10 then
-                String.fromChar (Char.fromCode (48 + i))
-
-            else
-                String.fromChar (Char.fromCode (65 + i - 10))
-    in
-    hexChar hi ++ hexChar lo
-
-
-{-| Encode a Unicode code point to UTF-8 bytes.
--}
-encodeUtf8 : Int -> List Int
-encodeUtf8 code =
-    if code < 128 then
-        [ code ]
-
-    else if code < 2048 then
-        -- 2-byte encoding
-        [ 192 + (code // 64)
-        , 128 + modBy 64 code
-        ]
-
-    else if code < 65536 then
-        -- 3-byte encoding
-        [ 224 + (code // 4096)
-        , 128 + modBy 64 (code // 64)
-        , 128 + modBy 64 code
-        ]
-
-    else
-        -- 4-byte encoding
-        [ 240 + (code // 262144)
-        , 128 + modBy 64 (code // 4096)
-        , 128 + modBy 64 (code // 64)
-        , 128 + modBy 64 code
-        ]
-
-
 ppAttr : MlirAttr -> String
 ppAttr attr =
     case attr of
         StringAttr s ->
             "\"" ++ escapeForMlir s ++ "\""
-
-        IdentifierAttr s ->
-            s
 
         BoolAttr b ->
             if b then

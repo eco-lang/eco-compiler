@@ -1,4 +1,4 @@
-module TestLogic.Generate.CodeGen.SsaTypeConsistency exposing (expectSsaTypeConsistency, checkSsaTypeConsistency)
+module TestLogic.Generate.CodeGen.SsaTypeConsistency exposing (expectSsaTypeConsistency)
 
 {-| Test logic for CGEN\_0B1: SSA Type Consistency invariant.
 
@@ -9,7 +9,7 @@ runtime error.
 Note: SSA names like %0 are routinely reused across functions, so checking
 must be per-function, not module-wide.
 
-@docs expectSsaTypeConsistency, checkSsaTypeConsistency
+@docs expectSsaTypeConsistency
 
 -}
 
@@ -89,11 +89,8 @@ buildTypeEnvWithConflictCheck funcName op =
     let
         initial =
             Ok Dict.empty
-
-        withRegions =
-            List.foldl (collectFromRegionChecked funcName) initial op.regions
     in
-    withRegions
+    List.foldl (collectFromRegionChecked funcName) initial op.regions
 
 
 {-| Record an SSA name and type, checking for conflicts.
@@ -143,11 +140,8 @@ collectFromRegionChecked funcName (MlirRegion { entry, blocks }) result =
 
         withEntryTerm =
             collectFromOpChecked funcName entry.terminator withEntryBody
-
-        withBlocks =
-            List.foldl (collectFromBlockChecked funcName) withEntryTerm (OrderedDict.values blocks)
     in
-    withBlocks
+    List.foldl (collectFromBlockChecked funcName) withEntryTerm (OrderedDict.values blocks)
 
 
 collectFromBlockChecked : String -> MlirBlock -> TypeEnvResult -> TypeEnvResult
@@ -161,11 +155,8 @@ collectFromBlockChecked funcName block result =
 
         withBody =
             List.foldl (collectFromOpChecked funcName) withArgs block.body
-
-        withTerm =
-            collectFromOpChecked funcName block.terminator withBody
     in
-    withTerm
+    collectFromOpChecked funcName block.terminator withBody
 
 
 collectFromOpChecked : String -> MlirOp -> TypeEnvResult -> TypeEnvResult
@@ -176,11 +167,8 @@ collectFromOpChecked funcName op result =
                 (\( name, t ) acc -> recordSsa funcName name t acc)
                 result
                 op.results
-
-        withRegions =
-            List.foldl (collectFromRegionChecked funcName) withResults op.regions
     in
-    withRegions
+    List.foldl (collectFromRegionChecked funcName) withResults op.regions
 
 
 typeToString : MlirType -> String

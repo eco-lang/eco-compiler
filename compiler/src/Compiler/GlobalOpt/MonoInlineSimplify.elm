@@ -275,11 +275,6 @@ collectCalls =
     Traverse.foldExpr extractSpecId []
 
 
-collectCallsFromDef : Mono.MonoDef -> List SpecId
-collectCallsFromDef =
-    Traverse.foldDef extractSpecId []
-
-
 
 -- ============================================================================
 -- ====== COST MODEL ======
@@ -477,11 +472,6 @@ remapLambdaIds =
     Traverse.traverseExpr remapClosureLambdaId
 
 
-remapLambdaIdsInDef : RewriteCtx -> Mono.MonoDef -> ( Mono.MonoDef, RewriteCtx )
-remapLambdaIdsInDef =
-    Traverse.traverseDef remapClosureLambdaId
-
-
 {-| A binding created during beta reduction or inlining.
 -}
 type alias Binding =
@@ -621,7 +611,7 @@ rewriteExpr : RewriteCtx -> MonoExpr -> ( MonoExpr, RewriteCtx )
 rewriteExpr ctx expr =
     case expr of
         -- Beta reduction: ((\\x -> body) arg)
-        MonoCall region (MonoClosure info closureBody closureType) args resultType callInfo ->
+        MonoCall region (MonoClosure info closureBody _) args resultType _ ->
             betaReduce ctx region info closureBody args resultType
 
         -- Direct call inlining
@@ -977,7 +967,7 @@ betaReduce ctx region info closureBody args resultType =
 createBindings : RewriteCtx -> List ( Name, Mono.MonoType ) -> List MonoExpr -> ( List Binding, RewriteCtx )
 createBindings ctx params args =
     List.foldl
-        (\( ( paramName, paramType ), arg ) ( acc, accCtx ) ->
+        (\( ( paramName, _ ), arg ) ( acc, accCtx ) ->
             let
                 ( freshName, newCtx ) =
                     freshVar accCtx
@@ -1018,7 +1008,7 @@ substituteAll bindings expr =
 substitute : Name -> Name -> Mono.MonoType -> MonoExpr -> MonoExpr
 substitute oldName newName varType expr =
     case expr of
-        MonoVarLocal name tipe ->
+        MonoVarLocal name _ ->
             if name == oldName then
                 MonoVarLocal newName varType
 
@@ -1497,23 +1487,7 @@ simplifyLets ctx expr =
                 in
                 simplifyLets { ctx | metrics = newMetrics } body
 
-            else if False && usageCount == 1 && isTrivial defBound then
-                -- DISABLED: Single use of trivial expression - substitute
-                let
-                    substituted =
-                        substitute defName defName (Mono.typeOf defBound) body
-                            |> inlineVar defName defBound
-
-                    newMetrics =
-                        { inlineCount = ctx.metrics.inlineCount
-                        , betaReductions = ctx.metrics.betaReductions
-                        , letEliminations = ctx.metrics.letEliminations + 1
-                        }
-                in
-                simplifyLets { ctx | metrics = newMetrics } substituted
-
             else
-                -- Keep the let, but simplify children
                 let
                     ( simplifiedBound, ctx1 ) =
                         simplifyLets ctx defBound
@@ -1728,36 +1702,6 @@ setDefBound def newBound =
             Mono.MonoTailDef name params newBound
 
 
-isTrivial : MonoExpr -> Bool
-isTrivial expr =
-    case expr of
-        MonoLiteral _ _ ->
-            True
-
-        MonoVarLocal _ _ ->
-            True
-
-        MonoVarGlobal _ _ tipe ->
-            -- Only trivial if not a function type
-            not (isFunctionType tipe)
-
-        MonoUnit ->
-            True
-
-        _ ->
-            False
-
-
-isFunctionType : Mono.MonoType -> Bool
-isFunctionType tipe =
-    case tipe of
-        Mono.MFunction _ _ ->
-            True
-
-        _ ->
-            False
-
-
 {-| Check if an expression is a closure.
 -}
 isClosure : MonoExpr -> Bool
@@ -1900,7 +1844,7 @@ countUsages name expr =
             else
                 boundUsages + countUsages name body
 
-        MonoDestruct (Mono.MonoDestructor destructName path _) inner _ ->
+        MonoDestruct (Mono.MonoDestructor _ path _) inner _ ->
             -- Count usage in the path (the source being destructured) + usage in inner
             -- Note: destructName is the OUTPUT binding, not an input usage
             countUsagesInPath name path + countUsages name inner
@@ -1967,7 +1911,7 @@ countUsagesInPath name path =
 inlineVar : Name -> MonoExpr -> MonoExpr -> MonoExpr
 inlineVar name replacement expr =
     case expr of
-        MonoVarLocal n tipe ->
+        MonoVarLocal n _ ->
             if n == name then
                 replacement
 

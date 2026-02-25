@@ -1,4 +1,4 @@
-module SourceIR.KernelCases exposing (expectSuite, testCases)
+module SourceIR.KernelCases exposing (expectSuite)
 
 {-| Tests for VarKernel expressions.
 

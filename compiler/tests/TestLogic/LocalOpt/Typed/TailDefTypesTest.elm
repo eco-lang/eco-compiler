@@ -29,7 +29,6 @@ import Compiler.AST.SourceBuilder
         )
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.Name as Name
-import Compiler.Reporting.Annotation as A
 import Data.Map as Dict exposing (Dict)
 import Expect exposing (Expectation)
 import Test exposing (Test)

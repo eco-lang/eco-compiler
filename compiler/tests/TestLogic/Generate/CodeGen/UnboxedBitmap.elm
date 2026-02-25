@@ -1,4 +1,4 @@
-module TestLogic.Generate.CodeGen.UnboxedBitmap exposing (expectUnboxedBitmap, checkUnboxedBitmap)
+module TestLogic.Generate.CodeGen.UnboxedBitmap exposing (expectUnboxedBitmap)
 
 {-| Test logic for heap and closure boundary representation (CGEN\_026, CGEN\_027, CGEN\_003, CGEN\_049).
 
@@ -23,7 +23,7 @@ captured operand N is unboxable.
 CGEN\_049: For `eco.papExtend`, bit N of `newargs_unboxed_bitmap` must be set
 iff new argument operand N is unboxable.
 
-@docs expectUnboxedBitmap, checkUnboxedBitmap
+@docs expectUnboxedBitmap
 
 -}
 

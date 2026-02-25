@@ -1,4 +1,4 @@
-module TestLogic.Generate.CodeGen.ProjectionLayoutBitmap exposing (expectProjectionLayoutBitmap, checkProjectionLayoutBitmap)
+module TestLogic.Generate.CodeGen.ProjectionLayoutBitmap exposing (expectProjectionLayoutBitmap)
 
 {-| Test logic for CGEN\_005: Heap Projection Respects Layout Bitmap.
 
@@ -7,7 +7,7 @@ eco.project.custom result types must match what the layout bitmap indicates:
   - If the field is marked unboxed in the bitmap -> result should be primitive (i64, f64, i16)
   - If the field is boxed -> result should be !eco.value
 
-@docs expectProjectionLayoutBitmap, checkProjectionLayoutBitmap
+@docs expectProjectionLayoutBitmap
 
 -}
 

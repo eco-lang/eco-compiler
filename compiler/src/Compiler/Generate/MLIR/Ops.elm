@@ -3,11 +3,10 @@ module Compiler.Generate.MLIR.Ops exposing
     , ecoConstantUnit, ecoConstantEmptyRec, ecoConstantTrue, ecoConstantFalse, ecoConstantNil, ecoConstantNothing, ecoConstantEmptyString
     , ecoConstructList, ecoConstructTuple2, ecoConstructTuple3, ecoConstructRecord, ecoConstructCustom
     , ecoProjectListHead, ecoProjectListTail, ecoProjectTuple2, ecoProjectTuple3, ecoProjectRecord, ecoProjectCustom
-    , ecoCallNamed, ecoReturn, ecoYield, ecoStringLiteral, ecoUnaryOp, ecoBinaryOp, ecoCase, ecoCaseString, ecoJoinpoint, ecoGetTag
+    , ecoCallNamed, ecoReturn, ecoYield, ecoStringLiteral, ecoUnaryOp, ecoBinaryOp, ecoCase, ecoCaseString, ecoGetTag
     , ecoArrayGet, ecoArraySet, ecoArrayLength
     , arithConstantInt, arithConstantInt32, arithConstantFloat, arithConstantBool, arithConstantChar, arithCmpI
     , scfIf, scfYield, scfWhile, scfCondition
-    , cfCondBr
     , ecoCaseMany, ecoCaseStringMany, ecoYieldMany, scfYieldMany
     )
 
@@ -39,7 +38,7 @@ in the eco dialect and standard dialects (arith, scf, func).
 
 # Eco Operations
 
-@docs ecoCallNamed, ecoReturn, ecoYield, ecoStringLiteral, ecoUnaryOp, ecoBinaryOp, ecoCase, ecoCaseString, ecoJoinpoint, ecoGetTag
+@docs ecoCallNamed, ecoReturn, ecoYield, ecoStringLiteral, ecoUnaryOp, ecoBinaryOp, ecoCase, ecoCaseString, ecoGetTag
 
 
 # Eco Array Operations
@@ -58,8 +57,6 @@ in the eco dialect and standard dialects (arith, scf, func).
 
 
 # CF Operations
-
-@docs cfCondBr
 
 
 # Batch Operations
@@ -863,39 +860,6 @@ ecoCaseStringMany ctx scrutinee scrutineeType tags stringPatterns regions result
         |> opBuilder.build
 
 
-{-| eco.joinpoint - local control-flow join with a body and continuation
-
-Takes a joinpoint id, parameter types, the body region, continuation region,
-and result types.
-
--}
-ecoJoinpoint : Ctx.Context -> Int -> List ( String, MlirType ) -> MlirRegion -> MlirRegion -> List MlirType -> ( Ctx.Context, MlirOp )
-ecoJoinpoint ctx id params jpRegion contRegion resultTypes =
-    let
-        attrsBase =
-            Dict.fromList [ ( "id", IntAttr Nothing id ) ]
-
-        attrs =
-            if List.isEmpty resultTypes then
-                attrsBase
-
-            else
-                Dict.insert "jpResultTypes"
-                    (ArrayAttr Nothing (List.map TypeAttr resultTypes))
-                    attrsBase
-
-        -- Build the jp region with params
-        jpRegionWithParams =
-            case jpRegion of
-                MlirRegion r ->
-                    MlirRegion { r | entry = { args = params, body = r.entry.body, terminator = r.entry.terminator } }
-    in
-    mlirOp ctx "eco.joinpoint"
-        |> opBuilder.withRegions [ jpRegionWithParams, contRegion ]
-        |> opBuilder.withAttrs attrs
-        |> opBuilder.build
-
-
 {-| eco.getTag - get the tag from a value (for eco.case scrutinee)
 -}
 ecoGetTag : Ctx.Context -> String -> String -> ( Ctx.Context, MlirOp )
@@ -1019,30 +983,6 @@ scfCondition ctx condVar args =
     in
     mlirOp ctx "scf.condition"
         |> opBuilder.withOperands (condVar :: argVars)
-        |> opBuilder.withAttrs attrs
-        |> opBuilder.isTerminator True
-        |> opBuilder.build
-
-
-{-| cf.cond\_br - conditional branch to two different blocks.
-Used inside joinpoints for tail-recursive loops where one path returns
-and another path jumps back.
-
-cf.cond\_br %cond, ^trueBlock, ^falseBlock
-
--}
-cfCondBr : Ctx.Context -> String -> String -> String -> ( Ctx.Context, MlirOp )
-cfCondBr ctx condVar trueBlock falseBlock =
-    let
-        attrs =
-            Dict.fromList
-                [ ( "_operand_types", ArrayAttr Nothing [ TypeAttr I1 ] )
-                , ( "operandSegmentSizes", ArrayAttr (Just I32) [ IntAttr Nothing 1, IntAttr Nothing 0, IntAttr Nothing 0 ] )
-                ]
-    in
-    mlirOp ctx "cf.cond_br"
-        |> opBuilder.withOperands [ condVar ]
-        |> opBuilder.withSuccessors [ "^" ++ trueBlock, "^" ++ falseBlock ]
         |> opBuilder.withAttrs attrs
         |> opBuilder.isTerminator True
         |> opBuilder.build

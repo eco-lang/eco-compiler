@@ -435,7 +435,7 @@ collectVarTypesHelper expr acc =
             else
                 Dict.insert identity name monoType acc
 
-        Mono.MonoClosure closureInfo body _ ->
+        Mono.MonoClosure _ body _ ->
             -- Recurse into closure body
             collectVarTypesHelper body acc
 
@@ -467,11 +467,8 @@ collectVarTypesHelper expr acc =
             let
                 accAfterDecider =
                     collectDeciderVarTypes decider acc
-
-                accAfterJumps =
-                    List.foldl (\( _, e ) a -> collectVarTypesHelper e a) accAfterDecider jumps
             in
-            accAfterJumps
+            List.foldl (\( _, e ) a -> collectVarTypesHelper e a) accAfterDecider jumps
 
         Mono.MonoList _ exprs _ ->
             List.foldl collectVarTypesHelper acc exprs

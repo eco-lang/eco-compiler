@@ -1,4 +1,4 @@
-module SourceIR.SpecializePolyTopCases exposing (expectSuite, testCases)
+module SourceIR.SpecializePolyTopCases exposing (expectSuite)
 
 {-| Tests for top-level polymorphic functions specialized at multiple types.
 
@@ -16,8 +16,6 @@ import Compiler.AST.SourceBuilder
         , callExpr
         , caseExpr
         , define
-        , floatExpr
-        , ifExpr
         , intExpr
         , lambdaExpr
         , letExpr

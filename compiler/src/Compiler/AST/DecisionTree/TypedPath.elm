@@ -1,7 +1,6 @@
 module Compiler.AST.DecisionTree.TypedPath exposing
     ( Path(..), ContainerHint(..)
     , pathEncoder, pathDecoder
-    , containerHintEncoder, containerHintDecoder
     )
 
 {-| Path type for typed decision trees with container hints.
@@ -11,7 +10,6 @@ This module defines the `Path` type used by typed decision trees, including
 
 @docs Path, ContainerHint
 @docs pathEncoder, pathDecoder
-@docs containerHintEncoder, containerHintDecoder
 
 -}
 

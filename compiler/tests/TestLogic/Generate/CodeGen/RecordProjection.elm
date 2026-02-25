@@ -1,10 +1,10 @@
-module TestLogic.Generate.CodeGen.RecordProjection exposing (expectRecordProjection, checkRecordProjection)
+module TestLogic.Generate.CodeGen.RecordProjection exposing (expectRecordProjection)
 
 {-| Test logic for CGEN\_023: Record Projection invariant.
 
 Record field access must use `eco.project.record` with valid field index.
 
-@docs expectRecordProjection, checkRecordProjection
+@docs expectRecordProjection
 
 -}
 
@@ -40,11 +40,8 @@ checkRecordProjection mlirModule =
     let
         recordProjectOps =
             findOpsNamed "eco.project.record" mlirModule
-
-        violations =
-            List.filterMap checkRecordProjectOp recordProjectOps
     in
-    violations
+    List.filterMap checkRecordProjectOp recordProjectOps
 
 
 checkRecordProjectOp : MlirOp -> Maybe Violation

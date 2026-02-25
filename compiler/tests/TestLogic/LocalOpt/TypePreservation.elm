@@ -27,7 +27,6 @@ import Compiler.AST.Canonical as Can
 import Compiler.AST.Source as Src
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.Name as Name
-import Compiler.Elm.Package as Pkg
 import Compiler.Reporting.Annotation as A
 import Compiler.Type.KernelTypes as KernelTypes
 import Data.Map as Dict exposing (Dict)
@@ -62,12 +61,6 @@ type alias TypeEnv =
     , annotations : Dict String Name.Name Can.Annotation
     , kernelEnv : KernelTypes.KernelTypeEnv
     }
-
-
-{-| Result of running through typed optimization with all artifacts.
--}
-type alias TypedOptArtifacts =
-    Pipeline.TypedOptArtifacts
 
 
 
@@ -182,10 +175,6 @@ checkNode env context node =
 
 checkExpr : TypeEnv -> String -> TOpt.Expr -> List Violation
 checkExpr env context expr =
-    let
-        exprType =
-            TOpt.typeOf expr
-    in
     case expr of
         -- Literals
         -- Note: Int literals have type `number` (constrained TVar), not TType Int
@@ -288,7 +277,7 @@ checkExpr env context expr =
         -- Call
         -- Note: The result type may be more specific than the function's return type
         -- (due to polymorphism), so we just check structure, not exact match
-        TOpt.Call _ func args tipe ->
+        TOpt.Call _ func args _ ->
             checkExpr env context func
                 ++ List.concatMap (checkExpr env context) args
 
@@ -338,27 +327,27 @@ checkExpr env context expr =
                 ++ checkJumps env context tipe jumps
 
         -- List
-        TOpt.List _ items tipe ->
+        TOpt.List _ items _ ->
             List.concatMap (checkExpr env context) items
 
         -- Access
-        TOpt.Access recordExpr _ _ tipe ->
+        TOpt.Access recordExpr _ _ _ ->
             checkExpr env context recordExpr
 
         -- Update
-        TOpt.Update _ recordExpr updates tipe ->
+        TOpt.Update _ recordExpr updates _ ->
             checkExpr env context recordExpr
                 ++ Dict.foldl A.compareLocated (\_ updateExpr acc -> checkExpr env context updateExpr ++ acc) [] updates
 
         -- Record
-        TOpt.Record fields tipe ->
+        TOpt.Record fields _ ->
             Dict.foldl compare (\_ fieldExpr acc -> checkExpr env context fieldExpr ++ acc) [] fields
 
-        TOpt.TrackedRecord _ fields tipe ->
+        TOpt.TrackedRecord _ fields _ ->
             Dict.foldl A.compareLocated (\_ fieldExpr acc -> checkExpr env context fieldExpr ++ acc) [] fields
 
         -- Tuple
-        TOpt.Tuple _ e1 e2 rest tipe ->
+        TOpt.Tuple _ e1 e2 rest _ ->
             checkExpr env context e1
                 ++ checkExpr env context e2
                 ++ List.concatMap (checkExpr env context) rest
@@ -490,26 +479,6 @@ getDefNameAndType def =
             ( name, tipe )
 
 
-buildCurriedFunctionType : List Can.Type -> Can.Type -> Can.Type
-buildCurriedFunctionType paramTypes resultType =
-    List.foldr Can.TLambda resultType paramTypes
-
-
-applyArgsToFuncType : Can.Type -> List Can.Type -> Maybe Can.Type
-applyArgsToFuncType funcType argTypes =
-    case argTypes of
-        [] ->
-            Just funcType
-
-        _ :: rest ->
-            case funcType of
-                Can.TLambda _ resultType ->
-                    applyArgsToFuncType resultType rest
-
-                _ ->
-                    Nothing
-
-
 checkLiteralType : String -> String -> Can.Type -> Can.Type -> List Violation
 checkLiteralType context kind actual expected =
     if alphaEq actual expected then
@@ -517,15 +486,6 @@ checkLiteralType context kind actual expected =
 
     else
         [ violation context kind actual (Just expected) "Literal type mismatch" ]
-
-
-checkTypeMatch : String -> String -> Can.Type -> Can.Type -> List Violation
-checkTypeMatch context kind actual expected =
-    if alphaEq actual expected then
-        []
-
-    else
-        [ violation context kind actual (Just expected) "Type mismatch" ]
 
 
 violation : String -> String -> Can.Type -> Maybe Can.Type -> String -> Violation
@@ -692,23 +652,6 @@ alphaEqAlias at1 at2 =
 -- ============================================================================
 -- SCHEME INSTANTIATION CHECK
 -- ============================================================================
-
-
-{-| Check if instanceType is an instance of schemeType.
-
-An instance is formed by substituting the scheme's free variables with
-concrete types. Uses one-way unification where scheme variables
-can bind but instance structure must match.
-
--}
-isInstanceOf : EverySet.EverySet String Name.Name -> Can.Type -> Can.Type -> Bool
-isInstanceOf schemeVars schemeType instanceType =
-    case oneWayUnify schemeVars schemeType instanceType Dict.empty of
-        Just _ ->
-            True
-
-        Nothing ->
-            False
 
 
 oneWayUnify : EverySet.EverySet String Name.Name -> Can.Type -> Can.Type -> Dict String Name.Name Can.Type -> Maybe (Dict String Name.Name Can.Type)

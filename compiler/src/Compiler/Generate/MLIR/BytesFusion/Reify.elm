@@ -1,7 +1,8 @@
 module Compiler.Generate.MLIR.BytesFusion.Reify exposing
     ( EncoderNode(..), DecoderNode(..)
-    , reifyEncoder, reifyDecoder, reifyEndianness
+    , reifyEncoder, reifyDecoder
     , nodesToOps, decoderNodeToOps
+    , CountSource, LengthDecoder
     )
 
 {-| Reify MonoExpr representing Bytes.Encode.Encoder or Bytes.Decode.Decoder
@@ -18,7 +19,7 @@ expression tree to identify Bytes.Encode/Decode combinator calls.
 
 # Reification
 
-@docs reifyEncoder, reifyDecoder, reifyEndianness
+@docs reifyEncoder, reifyDecoder
 
 
 # Loop IR Conversion
@@ -27,7 +28,7 @@ expression tree to identify Bytes.Encode/Decode combinator calls.
 
 -}
 
-import Compiler.AST.Monomorphized as Mono exposing (Global(..), MonoExpr(..))
+import Compiler.AST.Monomorphized as Mono exposing (MonoExpr(..))
 import Compiler.Elm.Package as Pkg
 import Compiler.Generate.MLIR.BytesFusion.LoopIR as IR exposing (Endianness(..), Op(..), WidthExpr(..))
 import Compiler.Monomorphize.Registry as Registry
@@ -400,7 +401,7 @@ nodesToOps nodes =
         writeOps =
             List.map (nodeToOp cursorName) nodes
     in
-    [ InitCursor cursorName width ] ++ writeOps ++ [ ReturnBuffer ]
+    InitCursor cursorName width :: writeOps ++ [ ReturnBuffer ]
 
 
 {-| Convert a single encoder node to a Loop IR operation.
@@ -1142,7 +1143,7 @@ extractItemDecoderFromBody registry exprCache bodyExpr =
             -- The elseExpr is the final else branch
             -- For count-based loops, the else branch is the "continue" path with item decoding
             case branches of
-                [ ( _, _ ) ] ->
+                [ _ ] ->
                     -- Single if-then-else: else branch has the item decoder
                     extractItemDecoderFromMapCall registry exprCache elseExpr
 
@@ -1548,30 +1549,14 @@ compileDecoderNode node state =
                 -- This allows DBytes/DString in the body to use ReadBytesVar/ReadUtf8Var
                 stateWithBinding =
                     { state1 | paramBindings = Dict.insert paramName firstVar state1.paramBindings }
-
-                -- Compile the body decoder with the binding in scope
-                ( resultVar, state2 ) =
-                    compileDecoderNode bodyDecoder stateWithBinding
             in
-            ( resultVar, state2 )
+            compileDecoderNode bodyDecoder stateWithBinding
 
         DCountLoop countSource itemDecoder ->
             -- Count-based loop: decode a fixed number of items into a list
             -- The count comes from either a bound variable or a constant
             let
                 -- Get the count variable name
-                countVarName =
-                    case countSource of
-                        CountFromVar varName ->
-                            -- Look up the actual SSA var from paramBindings
-                            Dict.get varName state.paramBindings
-                                |> Maybe.withDefault varName
-
-                        CountConst _ ->
-                            -- For constants, we'll generate a special name
-                            -- The emitter will handle creating the constant
-                            "loop_count_const"
-
                 -- Compile the item decoder in a fresh state to get its ops
                 itemState =
                     { cursorName = state.cursorName
@@ -1580,7 +1565,7 @@ compileDecoderNode node state =
                     , paramBindings = state.paramBindings
                     }
 
-                ( itemResultVar, itemStateAfter ) =
+                ( _, itemStateAfter ) =
                     compileDecoderNode itemDecoder itemState
 
                 -- The item ops are in reverse order, reverse them
@@ -1624,7 +1609,7 @@ compileDecoderNode node state =
                     , paramBindings = state.paramBindings
                     }
 
-                ( itemResultVar, itemStateAfter ) =
+                ( _, itemStateAfter ) =
                     compileDecoderNode itemDecoder itemState
 
                 -- The item ops are in reverse order, reverse them

@@ -1,11 +1,11 @@
-module TestLogic.Generate.CodeGen.TupleConstruction exposing (expectTupleConstruction, checkTupleConstruction)
+module TestLogic.Generate.CodeGen.TupleConstruction exposing (expectTupleConstruction)
 
 {-| Test logic for CGEN\_017: Tuple Construction invariant.
 
 Tuples must use `eco.construct.tuple2` or `eco.construct.tuple3`;
 never `eco.construct.custom`.
 
-@docs expectTupleConstruction, checkTupleConstruction
+@docs expectTupleConstruction
 
 -}
 

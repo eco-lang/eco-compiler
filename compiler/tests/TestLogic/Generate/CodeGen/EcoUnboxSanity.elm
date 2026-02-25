@@ -1,4 +1,4 @@
-module TestLogic.Generate.CodeGen.EcoUnboxSanity exposing (expectEcoUnboxSanity, checkEcoUnboxSanity)
+module TestLogic.Generate.CodeGen.EcoUnboxSanity exposing (expectEcoUnboxSanity)
 
 {-| Test logic for CGEN\_0E2: eco.unbox Sanity invariant.
 
@@ -10,7 +10,7 @@ This test verifies:
 
 Note: i32 is NOT a primitive in eco.
 
-@docs expectEcoUnboxSanity, checkEcoUnboxSanity
+@docs expectEcoUnboxSanity
 
 -}
 
@@ -134,11 +134,8 @@ buildTypeEnvFromOp op =
                 (\( name, t ) acc -> Dict.insert name t acc)
                 Dict.empty
                 op.results
-
-        withRegions =
-            List.foldl collectFromRegion withResults op.regions
     in
-    withRegions
+    List.foldl collectFromRegion withResults op.regions
 
 
 collectFromRegion : MlirRegion -> TypeEnv -> TypeEnv
@@ -155,11 +152,8 @@ collectFromRegion (MlirRegion { entry, blocks }) env =
 
         withEntryTerm =
             collectFromOp entry.terminator withEntryBody
-
-        withBlocks =
-            List.foldl collectFromBlock withEntryTerm (OrderedDict.values blocks)
     in
-    withBlocks
+    List.foldl collectFromBlock withEntryTerm (OrderedDict.values blocks)
 
 
 collectFromBlock : MlirBlock -> TypeEnv -> TypeEnv
@@ -173,11 +167,8 @@ collectFromBlock block env =
 
         withBody =
             collectFromOps block.body withArgs
-
-        withTerm =
-            collectFromOp block.terminator withBody
     in
-    withTerm
+    collectFromOp block.terminator withBody
 
 
 collectFromOps : List MlirOp -> TypeEnv -> TypeEnv
@@ -193,11 +184,8 @@ collectFromOp op env =
                 (\( name, t ) acc -> Dict.insert name t acc)
                 env
                 op.results
-
-        withRegions =
-            List.foldl collectFromRegion withResults op.regions
     in
-    withRegions
+    List.foldl collectFromRegion withResults op.regions
 
 
 walkOpsInOp : MlirOp -> List MlirOp

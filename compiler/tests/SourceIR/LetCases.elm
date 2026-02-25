@@ -1,4 +1,4 @@
-module SourceIR.LetCases exposing (expectSuite, testCases)
+module SourceIR.LetCases exposing (expectSuite)
 
 {-| Tests for let expressions.
 -}

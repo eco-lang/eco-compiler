@@ -2,7 +2,7 @@ module Compiler.GlobalOpt.Staging.Types exposing
     ( ProducerId(..), SlotId(..), NodeId, ClassId
     , Node(..), StagingGraph, Uf, StagingSolution
     , ProducerInfo, Segmentation
-    , emptyStagingGraph, emptyUf, emptyProducerInfo
+    , emptyStagingGraph, emptyProducerInfo
     )
 
 {-| Core data types for the global staging algorithm.
@@ -33,7 +33,7 @@ This module defines:
 
 # Constructors
 
-@docs emptyStagingGraph, emptyUf, emptyProducerInfo
+@docs emptyStagingGraph, emptyProducerInfo
 
 -}
 
@@ -65,11 +65,9 @@ type ProducerId
 {-| Slots: semantic places that can hold a function value.
 -}
 type SlotId
-    = SlotVar String Int
-    | SlotParam Int Int
+    = SlotParam Int Int
     | SlotRecord String String
     | SlotTuple String Int
-    | SlotCtor String Int
     | SlotList String Int
     | SlotCapture Mono.LambdaId Int
     | SlotIfResult Int

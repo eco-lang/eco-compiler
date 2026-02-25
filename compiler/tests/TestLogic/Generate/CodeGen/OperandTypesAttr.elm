@@ -1,10 +1,10 @@
-module TestLogic.Generate.CodeGen.OperandTypesAttr exposing (expectOperandTypesAttr, checkOperandTypesAttr)
+module TestLogic.Generate.CodeGen.OperandTypesAttr exposing (expectOperandTypesAttr)
 
 {-| Test logic for CGEN\_032: Operand Types Attribute invariant.
 
 `_operand_types` is required when an op has operands and must have correct length.
 
-@docs expectOperandTypesAttr, checkOperandTypesAttr
+@docs expectOperandTypesAttr
 
 -}
 
@@ -61,11 +61,8 @@ checkOperandTypesAttr mlirModule =
 
         targetOps =
             List.filter (\op -> List.member op.name requiredOps) allOps
-
-        violations =
-            List.filterMap checkOperandTypesOp targetOps
     in
-    violations
+    List.filterMap checkOperandTypesOp targetOps
 
 
 checkOperandTypesOp : MlirOp -> Maybe Violation

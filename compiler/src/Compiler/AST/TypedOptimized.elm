@@ -405,26 +405,6 @@ emptyGlobalGraph =
     GlobalGraph Dict.empty Dict.empty Dict.empty
 
 
-{-| Merge two global graphs by unioning their nodes, fields, and annotations.
--}
-addGlobalGraph : GlobalGraph -> GlobalGraph -> GlobalGraph
-addGlobalGraph (GlobalGraph nodes1 fields1 ann1) (GlobalGraph nodes2 fields2 ann2) =
-    GlobalGraph
-        (Dict.union nodes1 nodes2)
-        (Dict.union fields1 fields2)
-        (Dict.union ann1 ann2)
-
-
-{-| Add a local graph's definitions to a global graph.
--}
-addLocalGraph : LocalGraph -> GlobalGraph -> GlobalGraph
-addLocalGraph (LocalGraph data) (GlobalGraph nodes2 fields2 ann2) =
-    GlobalGraph
-        (Dict.union data.nodes nodes2)
-        (Dict.union data.fields fields2)
-        (Dict.union data.annotations ann2)
-
-
 
 -- ====== ENCODERS and DECODERS ======
 

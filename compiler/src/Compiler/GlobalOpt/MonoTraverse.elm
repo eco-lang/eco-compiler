@@ -1,7 +1,6 @@
 module Compiler.GlobalOpt.MonoTraverse exposing
-    ( mapExpr, mapExprChildren, mapDef, mapChoice, mapDecider
-    , traverseExpr, traverseExprChildren, traverseDef, traverseChoice, traverseDecider
-    , foldExpr, foldDef, foldChoice, foldDecider
+    ( traverseExpr
+    , foldExpr
     )
 
 {-| Generic AST traversal abstractions for MonoExpr.
@@ -18,21 +17,19 @@ function on each node after processing children.
 
 # Pure Mapping
 
-@docs mapExpr, mapExprChildren, mapDef, mapChoice, mapDecider
-
 
 # Context-Threaded Traversal
 
-@docs traverseExpr, traverseExprChildren, traverseDef, traverseChoice, traverseDecider
+@docs traverseExpr
 
 
 # Fold
 
-@docs foldExpr, foldDef, foldChoice, foldDecider
+@docs foldExpr
 
 -}
 
-import Compiler.AST.Monomorphized as Mono exposing (Decider(..), MonoChoice(..), MonoDef(..), MonoExpr(..))
+import Compiler.AST.Monomorphized exposing (Decider(..), MonoChoice(..), MonoDef(..), MonoExpr(..))
 
 
 

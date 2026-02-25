@@ -1,4 +1,4 @@
-module SourceIR.SpecializePolyLetCases exposing (expectSuite, testCases)
+module SourceIR.SpecializePolyLetCases exposing (expectSuite)
 
 {-| Tests for let-bound polymorphic functions specialized at multiple types.
 
@@ -15,8 +15,6 @@ import Compiler.AST.SourceBuilder
         , callExpr
         , caseExpr
         , define
-        , floatExpr
-        , ifExpr
         , intExpr
         , lambdaExpr
         , letExpr

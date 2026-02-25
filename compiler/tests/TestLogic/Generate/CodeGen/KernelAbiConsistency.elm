@@ -1,11 +1,11 @@
-module TestLogic.Generate.CodeGen.KernelAbiConsistency exposing (expectKernelAbiConsistency, checkKernelAbiConsistency)
+module TestLogic.Generate.CodeGen.KernelAbiConsistency exposing (expectKernelAbiConsistency)
 
 {-| Test logic for CGEN\_038: Kernel ABI Consistency invariant.
 
 All calls to the same kernel function must use identical MLIR argument and
 result types.
 
-@docs expectKernelAbiConsistency, checkKernelAbiConsistency
+@docs expectKernelAbiConsistency
 
 -}
 
@@ -47,11 +47,8 @@ checkKernelAbiConsistency mlirModule =
 
         callsByCallee =
             List.foldl groupCallByCallee Dict.empty callOps
-
-        violations =
-            Dict.foldl checkCalleeConsistency [] callsByCallee
     in
-    violations
+    Dict.foldl checkCalleeConsistency [] callsByCallee
 
 
 groupCallByCallee : MlirOp -> Dict String (List MlirOp) -> Dict String (List MlirOp)

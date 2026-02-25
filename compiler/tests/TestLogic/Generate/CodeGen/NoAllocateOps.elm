@@ -1,11 +1,11 @@
-module TestLogic.Generate.CodeGen.NoAllocateOps exposing (expectNoAllocateOps, checkNoAllocateOps)
+module TestLogic.Generate.CodeGen.NoAllocateOps exposing (expectNoAllocateOps)
 
 {-| Test logic for CGEN\_039: No Allocate Ops in Codegen invariant.
 
 MLIR codegen must not emit `eco.allocate*` ops; these are introduced by later
 lowering passes.
 
-@docs expectNoAllocateOps, checkNoAllocateOps
+@docs expectNoAllocateOps
 
 -}
 

@@ -1,4 +1,4 @@
-module SourceIR.ControlFlowCases exposing (expectSuite, suite, testCases)
+module SourceIR.ControlFlowCases exposing (expectSuite, suite)
 
 {-| Test cases for control flow in MLIR codegen.
 

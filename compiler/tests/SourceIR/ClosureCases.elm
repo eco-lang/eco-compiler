@@ -1,4 +1,4 @@
-module SourceIR.ClosureCases exposing (expectSuite, suite, testCases)
+module SourceIR.ClosureCases exposing (expectSuite, suite)
 
 {-| Test cases for closure handling in Monomorphize.
 

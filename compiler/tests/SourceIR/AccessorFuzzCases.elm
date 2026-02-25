@@ -25,7 +25,6 @@ import SourceIR.Fuzz.TypedExpr as TE
         , SimpleType(..)
         , decrementDepth
         , emptyScope
-        , nameFuzzer
         )
 import Test exposing (Test)
 

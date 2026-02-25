@@ -1,4 +1,4 @@
-module SourceIR.PatternMatchingCases exposing (expectSuite, suite, testCases)
+module SourceIR.PatternMatchingCases exposing (expectSuite, suite)
 
 {-| Test cases for pattern matching in MLIR codegen.
 

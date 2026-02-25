@@ -21,7 +21,7 @@ annotating each expression with its inferred type from the type checker.
 -}
 
 import Compiler.AST.Canonical as Can
-import Compiler.AST.TypedCanonical as TCan exposing (Decls(..), Def(..), ExprTypes, Expr_, Module(..))
+import Compiler.AST.TypedCanonical as TCan exposing (Decls(..), Def(..), ExprTypes, Module(..))
 import Compiler.Reporting.Annotation as A
 import Data.Map as Dict
 import Utils.Crash exposing (crash)

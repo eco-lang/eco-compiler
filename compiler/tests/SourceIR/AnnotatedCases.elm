@@ -1,4 +1,4 @@
-module SourceIR.AnnotatedCases exposing (expectSuite, testCases)
+module SourceIR.AnnotatedCases exposing (expectSuite)
 
 {-| Tests for type-annotated definitions with polymorphic type variables.
 
@@ -139,29 +139,6 @@ polymorphicCases expectFn =
 
 {-| apply : (a -> b) -> a -> b
 apply f x = f x
--}
-applyAnnotated : (Src.Module -> Expectation) -> (() -> Expectation)
-applyAnnotated expectFn _ =
-    let
-        -- Type: (a -> b) -> a -> b
-        tipe =
-            tLambda (tLambda (tVar "a") (tVar "b"))
-                (tLambda (tVar "a") (tVar "b"))
-
-        modul =
-            makeModuleWithTypedDefs "Test"
-                [ { name = "apply"
-                  , args = [ pVar "f", pVar "x" ]
-                  , tipe = tipe
-                  , body = callExpr (varExpr "f") [ varExpr "x" ]
-                  }
-                ]
-    in
-    expectFn modul
-
-
-{-| apply : (a -> b) -> a -> b
-apply f x = f x
 
 test = apply (\\n -> n) True
 
@@ -234,31 +211,6 @@ higherOrderAnnotatedCases expectFn =
     [ { label = "Compose with usage", run = composeWithUsage expectFn }
     , { label = "On function", run = onAnnotated expectFn }
     ]
-
-
-{-| compose : (b -> c) -> (a -> b) -> a -> c
-compose f g x = f (g x)
--}
-composeAnnotated : (Src.Module -> Expectation) -> (() -> Expectation)
-composeAnnotated expectFn _ =
-    let
-        -- Type: (b -> c) -> (a -> b) -> a -> c
-        tipe =
-            tLambda (tLambda (tVar "b") (tVar "c"))
-                (tLambda (tLambda (tVar "a") (tVar "b"))
-                    (tLambda (tVar "a") (tVar "c"))
-                )
-
-        modul =
-            makeModuleWithTypedDefs "Test"
-                [ { name = "compose"
-                  , args = [ pVar "f", pVar "g", pVar "x" ]
-                  , tipe = tipe
-                  , body = callExpr (varExpr "f") [ callExpr (varExpr "g") [ varExpr "x" ] ]
-                  }
-                ]
-    in
-    expectFn modul
 
 
 {-| compose : (b -> c) -> (a -> b) -> a -> c
@@ -391,28 +343,6 @@ wrapInTupleAnnotated expectFn _ =
     expectFn modul
 
 
-{-| makePair : a -> b -> ( a, b )
-makePair x y = ( x, y )
--}
-makePairAnnotated : (Src.Module -> Expectation) -> (() -> Expectation)
-makePairAnnotated expectFn _ =
-    let
-        -- Type: a -> b -> ( a, b )
-        tipe =
-            tLambda (tVar "a") (tLambda (tVar "b") (tTuple (tVar "a") (tVar "b")))
-
-        modul =
-            makeModuleWithTypedDefs "Test"
-                [ { name = "makePair"
-                  , args = [ pVar "x", pVar "y" ]
-                  , tipe = tipe
-                  , body = tupleExpr (varExpr "x") (varExpr "y")
-                  }
-                ]
-    in
-    expectFn modul
-
-
 {-| constTuple : a -> b -> ( a, a )
 constTuple x y = ( x, x )
 -}
@@ -506,28 +436,6 @@ tupleTypeCases : (Src.Module -> Expectation) -> List TestCase
 tupleTypeCases expectFn =
     [ { label = "Nest tuple", run = nestTupleAnnotated expectFn }
     ]
-
-
-{-| duplicate : a -> ( a, a )
-duplicate x = ( x, x )
--}
-duplicateAnnotated : (Src.Module -> Expectation) -> (() -> Expectation)
-duplicateAnnotated expectFn _ =
-    let
-        -- Type: a -> ( a, a )
-        tipe =
-            tLambda (tVar "a") (tTuple (tVar "a") (tVar "a"))
-
-        modul =
-            makeModuleWithTypedDefs "Test"
-                [ { name = "duplicate"
-                  , args = [ pVar "x" ]
-                  , tipe = tipe
-                  , body = tupleExpr (varExpr "x") (varExpr "x")
-                  }
-                ]
-    in
-    expectFn modul
 
 
 {-| nest : a -> b -> ( ( a, b ), ( b, a ) )

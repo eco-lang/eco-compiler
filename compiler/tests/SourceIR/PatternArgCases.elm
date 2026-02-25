@@ -1,4 +1,4 @@
-module SourceIR.PatternArgCases exposing (expectSuite, testCases)
+module SourceIR.PatternArgCases exposing (expectSuite)
 
 {-| Tests for function arguments with various patterns.
 -}
@@ -8,11 +8,8 @@ import Compiler.AST.SourceBuilder
     exposing
         ( TypedDef
         , UnionDef
-        , callExpr
-        , define
         , intExpr
         , lambdaExpr
-        , letExpr
         , listExpr
         , makeModule
         , makeModuleWithDefs
@@ -124,18 +121,6 @@ variablePatternReturningList expectFn _ =
         modul =
             makeModuleWithDefs "Test"
                 [ ( "toList", [ pVar "x" ], listExpr [ varExpr "x" ] )
-                ]
-    in
-    expectFn modul
-
-
-multipleFunctionsWithVariablePatterns : (Src.Module -> Expectation) -> (() -> Expectation)
-multipleFunctionsWithVariablePatterns expectFn _ =
-    let
-        modul =
-            makeModuleWithDefs "Test"
-                [ ( "f", [ pVar "x" ], varExpr "x" )
-                , ( "g", [ pVar "y" ], varExpr "y" )
                 ]
     in
     expectFn modul
@@ -612,17 +597,6 @@ allSamePatternType expectFn _ =
                     ]
                   , varExpr "a"
                   )
-                ]
-    in
-    expectFn modul
-
-
-allWildcards : (Src.Module -> Expectation) -> (() -> Expectation)
-allWildcards expectFn _ =
-    let
-        modul =
-            makeModuleWithDefs "Test"
-                [ ( "ignoreAll", [ pAnything, pAnything, pAnything, pAnything ], intExpr 0 )
                 ]
     in
     expectFn modul

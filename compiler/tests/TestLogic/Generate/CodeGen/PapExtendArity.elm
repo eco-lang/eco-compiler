@@ -1,4 +1,4 @@
-module TestLogic.Generate.CodeGen.PapExtendArity exposing (expectPapExtendArity, checkPapExtendArity)
+module TestLogic.Generate.CodeGen.PapExtendArity exposing (expectPapExtendArity)
 
 {-| Test logic for CGEN\_052: PapExtend remaining\_arity calculation invariant.
 
@@ -16,7 +16,7 @@ Note: SSA variable names are only unique within each function, not globally.
 This test checks invariants per-function to avoid false positives from SSA
 name collisions across different functions.
 
-@docs expectPapExtendArity, checkPapExtendArity
+@docs expectPapExtendArity
 
 -}
 

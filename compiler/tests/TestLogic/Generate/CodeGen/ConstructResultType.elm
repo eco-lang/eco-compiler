@@ -1,10 +1,10 @@
-module TestLogic.Generate.CodeGen.ConstructResultType exposing (expectConstructResultType, checkConstructResultTypes)
+module TestLogic.Generate.CodeGen.ConstructResultType exposing (expectConstructResultType)
 
 {-| Test logic for CGEN\_025: Construct Result Types invariant.
 
 All `eco.construct.*` ops must produce `!eco.value` result type.
 
-@docs expectConstructResultType, checkConstructResultTypes
+@docs expectConstructResultType
 
 -}
 
@@ -40,11 +40,8 @@ checkConstructResultTypes mlirModule =
     let
         constructOps =
             findOpsWithPrefix "eco.construct." mlirModule
-
-        violations =
-            List.filterMap checkConstructResultTypeSingle constructOps
     in
-    violations
+    List.filterMap checkConstructResultTypeSingle constructOps
 
 
 checkConstructResultTypeSingle : MlirOp -> Maybe Violation

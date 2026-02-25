@@ -4,7 +4,7 @@ module Compiler.Parse.Primitives exposing
     , Row, Col, getPosition, addLocation, addEnd
     , withIndent, withBacksetIndent
     , inContext, specialize
-    , fromByteString, fromSnippet, Snippet, snippetEncoder, snippetDecoder
+    , fromByteString, fromSnippet, Snippet
     , word1, word2, unsafeIndex, isWord, getCharWidth
     , Step(..)
     )
@@ -43,7 +43,7 @@ indentation-sensitive parsing, and efficient error reporting.
 
 # Running Parsers
 
-@docs fromByteString, fromSnippet, Snippet, snippetEncoder, snippetDecoder
+@docs fromByteString, fromSnippet, Snippet
 
 
 # Character Utilities
@@ -57,12 +57,8 @@ indentation-sensitive parsing, and efficient error reporting.
 
 -}
 
-import Bytes.Decode
-import Bytes.Encode
 import Compiler.AST.Snippet as Snippet
 import Compiler.Reporting.Annotation as A
-import Utils.Bytes.Decode as BD
-import Utils.Bytes.Encode as BE
 import Utils.Crash exposing (crash)
 
 
@@ -661,25 +657,6 @@ getCharWidth word =
 
 
 -- ====== ENCODERS and DECODERS ======
-
-
-{-| Encode a Snippet to bytes for serialization.
-Delegates to Compiler.AST.Snippet.
--}
-snippetEncoder : Snippet -> Bytes.Encode.Encoder
-snippetEncoder =
-    Snippet.encoder
-
-
-{-| Decode a Snippet from bytes.
-Delegates to Compiler.AST.Snippet.
--}
-snippetDecoder : Bytes.Decode.Decoder Snippet
-snippetDecoder =
-    Snippet.decoder
-
-
-
 -- ====== LOOP ======
 
 

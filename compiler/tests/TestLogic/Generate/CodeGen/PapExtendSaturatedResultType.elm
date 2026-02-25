@@ -1,4 +1,4 @@
-module TestLogic.Generate.CodeGen.PapExtendSaturatedResultType exposing (expectPapExtendSaturatedResultType, checkPapExtendSaturatedResultType)
+module TestLogic.Generate.CodeGen.PapExtendSaturatedResultType exposing (expectPapExtendSaturatedResultType)
 
 {-| Test logic for CGEN\_056: Saturated PapExtend Result Type invariant.
 
@@ -16,7 +16,7 @@ The test works by:
 3.  Identifying saturated `eco.papExtend` ops (where remaining args ≤ 0) and
     asserting their result type matches the target function's return type.
 
-@docs expectPapExtendSaturatedResultType, checkPapExtendSaturatedResultType
+@docs expectPapExtendSaturatedResultType
 
 -}
 
@@ -31,7 +31,6 @@ import TestLogic.Generate.CodeGen.Invariants
         , getIntAttr
         , getStringAttr
         , getTypeAttr
-        , violationsToExpectation
         , walkOpAndChildren
         )
 import TestLogic.TestPipeline exposing (runToMlir)

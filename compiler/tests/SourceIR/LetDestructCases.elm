@@ -1,4 +1,4 @@
-module SourceIR.LetDestructCases exposing (expectSuite, testCases)
+module SourceIR.LetDestructCases exposing (expectSuite)
 
 {-| Tests for destructuring let expressions.
 -}

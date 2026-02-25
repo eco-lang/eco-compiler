@@ -1,4 +1,4 @@
-module TestLogic.Generate.CodeGen.LetRecSsaDefinedness exposing (expectLetRecSsaDefinedness, checkLetRecSsaDefinedness)
+module TestLogic.Generate.CodeGen.LetRecSsaDefinedness exposing (expectLetRecSsaDefinedness)
 
 {-| Test logic for SSA Definedness in let-rec codegen.
 
@@ -12,14 +12,13 @@ by sibling closures as operands. The forceResultVar mechanism must ensure that
 the closure-construction op defines that same placeholder var in its results,
 so every use has a corresponding definition.
 
-@docs expectLetRecSsaDefinedness, checkLetRecSsaDefinedness
+@docs expectLetRecSsaDefinedness
 
 -}
 
 import Compiler.AST.Source as Src
-import Dict exposing (Dict)
 import Expect exposing (Expectation)
-import Mlir.Mlir exposing (MlirBlock, MlirModule, MlirOp, MlirRegion(..), MlirType(..))
+import Mlir.Mlir exposing (MlirBlock, MlirModule, MlirOp, MlirRegion(..))
 import OrderedDict
 import Set exposing (Set)
 import TestLogic.Generate.CodeGen.Invariants
@@ -106,11 +105,8 @@ collectDefsFromRegion (MlirRegion { entry, blocks }) acc =
     let
         withEntry =
             collectDefsFromBlock entry acc
-
-        withBlocks =
-            List.foldl collectDefsFromBlock withEntry (OrderedDict.values blocks)
     in
-    withBlocks
+    List.foldl collectDefsFromBlock withEntry (OrderedDict.values blocks)
 
 
 collectDefsFromBlock : MlirBlock -> Set String -> Set String
@@ -123,11 +119,8 @@ collectDefsFromBlock block acc =
         -- Op results define SSA values
         withBody =
             List.foldl collectDefsFromOp withArgs block.body
-
-        withTerm =
-            collectDefsFromOp block.terminator withBody
     in
-    withTerm
+    collectDefsFromOp block.terminator withBody
 
 
 collectDefsFromOp : MlirOp -> Set String -> Set String
@@ -136,12 +129,8 @@ collectDefsFromOp op acc =
         -- Results define SSA values
         withResults =
             List.foldl (\( name, _ ) s -> Set.insert name s) acc op.results
-
-        -- Recurse into nested regions
-        withRegions =
-            List.foldl collectDefsFromRegion withResults op.regions
     in
-    withRegions
+    List.foldl collectDefsFromRegion withResults op.regions
 
 
 {-| Collect all SSA uses in a function (from op operands starting with "%").
@@ -156,11 +145,8 @@ collectUsesFromRegion (MlirRegion { entry, blocks }) acc =
     let
         withEntry =
             collectUsesFromBlock entry acc
-
-        withBlocks =
-            List.foldl collectUsesFromBlock withEntry (OrderedDict.values blocks)
     in
-    withBlocks
+    List.foldl collectUsesFromBlock withEntry (OrderedDict.values blocks)
 
 
 collectUsesFromBlock : MlirBlock -> Set String -> Set String
@@ -168,11 +154,8 @@ collectUsesFromBlock block acc =
     let
         withBody =
             List.foldl collectUsesFromOp acc block.body
-
-        withTerm =
-            collectUsesFromOp block.terminator withBody
     in
-    withTerm
+    collectUsesFromOp block.terminator withBody
 
 
 collectUsesFromOp : MlirOp -> Set String -> Set String
@@ -184,9 +167,5 @@ collectUsesFromOp op acc =
 
         withOperands =
             List.foldl Set.insert acc ssaOperands
-
-        -- Recurse into nested regions
-        withRegions =
-            List.foldl collectUsesFromRegion withOperands op.regions
     in
-    withRegions
+    List.foldl collectUsesFromRegion withOperands op.regions

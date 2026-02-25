@@ -1,4 +1,7 @@
-module TestLogic.GlobalOpt.CaseBranchStaging exposing (expectCaseBranchStaging, checkCaseBranchStaging)
+module TestLogic.GlobalOpt.CaseBranchStaging exposing
+    ( expectCaseBranchStaging, checkCaseBranchStaging
+    , Violation
+    )
 
 {-| Test logic for GOPT\_003: Case/if branches have compatible staging.
 
@@ -124,7 +127,7 @@ checkExpr ctx expr =
             let
                 branchViolations =
                     List.concatMap
-                        (\( condExpr, thenExpr ) ->
+                        (\( _, thenExpr ) ->
                             let
                                 thenType =
                                     Mono.typeOf thenExpr

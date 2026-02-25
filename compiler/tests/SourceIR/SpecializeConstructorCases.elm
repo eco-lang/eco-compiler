@@ -1,4 +1,4 @@
-module SourceIR.SpecializeConstructorCases exposing (expectSuite, suite, testCases)
+module SourceIR.SpecializeConstructorCases exposing (expectSuite, suite)
 
 {-| Test cases for constructor specialization in Specialize.elm.
 

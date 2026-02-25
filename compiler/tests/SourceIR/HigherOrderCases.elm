@@ -1,4 +1,4 @@
-module SourceIR.HigherOrderCases exposing (expectSuite, testCases)
+module SourceIR.HigherOrderCases exposing (expectSuite)
 
 {-| Tests for higher-order function expressions.
 -}
@@ -333,25 +333,6 @@ compositionCases expectFn =
     , { label = "Identity composition", run = identityComposition expectFn }
     , { label = "Pipe-like apply", run = pipeLikeApply expectFn }
     ]
-
-
-manualCompose : (Src.Module -> Expectation) -> (() -> Expectation)
-manualCompose expectFn _ =
-    let
-        compose =
-            define "compose"
-                [ pVar "f", pVar "g" ]
-                (lambdaExpr [ pVar "x" ]
-                    (callExpr (varExpr "f") [ callExpr (varExpr "g") [ varExpr "x" ] ])
-                )
-
-        modul =
-            makeModule "testValue"
-                (letExpr [ compose ]
-                    (varExpr "compose")
-                )
-    in
-    expectFn modul
 
 
 composeTwoFunctions : (Src.Module -> Expectation) -> (() -> Expectation)

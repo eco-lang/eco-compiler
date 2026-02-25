@@ -2,9 +2,8 @@ module Compiler.Parse.Variable exposing
     ( Upper(..)
     , lower, upper, moduleName, foreignUpper, foreignAlpha
     , isReservedWord
-    , chompLower, chompUpper, chompInnerChars
+    , chompInnerChars
     , getInnerWidth, getInnerWidthHelp, getUpperWidth
-    , isDot
     )
 
 {-| Parser for variable names and identifiers in Elm.
@@ -32,9 +31,8 @@ checking.
 
 # Character Utilities
 
-@docs chompLower, chompUpper, chompInnerChars
+@docs chompInnerChars
 @docs getInnerWidth, getInnerWidthHelp, getUpperWidth
-@docs isDot
 
 -}
 

@@ -1,11 +1,11 @@
-module TestLogic.Generate.CodeGen.RecordConstruction exposing (expectRecordConstruction, checkRecordConstruction)
+module TestLogic.Generate.CodeGen.RecordConstruction exposing (expectRecordConstruction)
 
 {-| Test logic for CGEN\_018: Record Construction invariant.
 
 Non-empty records must use `eco.construct.record`;
 empty records must use `eco.constant EmptyRec`.
 
-@docs expectRecordConstruction, checkRecordConstruction
+@docs expectRecordConstruction
 
 -}
 
@@ -48,11 +48,8 @@ checkRecordConstruction mlirModule =
     let
         recordOps =
             findOpsNamed "eco.construct.record" mlirModule
-
-        recordViolations =
-            List.filterMap checkRecordOp recordOps
     in
-    recordViolations
+    List.filterMap checkRecordOp recordOps
 
 
 checkRecordOp : MlirOp -> Maybe Violation

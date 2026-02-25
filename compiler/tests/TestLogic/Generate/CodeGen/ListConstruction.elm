@@ -1,11 +1,11 @@
-module TestLogic.Generate.CodeGen.ListConstruction exposing (expectListConstruction, checkListConstruction)
+module TestLogic.Generate.CodeGen.ListConstruction exposing (expectListConstruction)
 
 {-| Test logic for CGEN\_016: List Construction invariant.
 
 List values must use `eco.construct.list` for cons cells and `eco.constant Nil`
 for empty lists; never `eco.construct.custom`.
 
-@docs expectListConstruction, checkListConstruction
+@docs expectListConstruction
 
 -}
 
@@ -46,11 +46,8 @@ checkListConstruction mlirModule =
     let
         customOps =
             findOpsNamed "eco.construct.custom" mlirModule
-
-        listConstructorViolations =
-            List.filterMap checkForListConstructorMisuse customOps
     in
-    listConstructorViolations
+    List.filterMap checkForListConstructorMisuse customOps
 
 
 {-| Check if an eco.construct.custom op is incorrectly used for list construction.

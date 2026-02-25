@@ -1,4 +1,7 @@
-module TestLogic.Monomorphize.MonoCaseBranchResultType exposing (expectMonoCaseBranchResultTypes, checkMonoCaseBranchResultTypes)
+module TestLogic.Monomorphize.MonoCaseBranchResultType exposing
+    ( expectMonoCaseBranchResultTypes
+    , Violation
+    )
 
 {-| Test logic for MONO\_018: MonoCase branch result types match MonoCase resultType.
 
@@ -12,7 +15,7 @@ This invariant catches the "different staging boundaries across branches" bug wh
   - MonoCase resultType stores one shape while branches have another
   - Mono.typeOf would return incorrect types for the case expression
 
-@docs expectMonoCaseBranchResultTypes, checkMonoCaseBranchResultTypes
+@docs expectMonoCaseBranchResultTypes
 
 -}
 

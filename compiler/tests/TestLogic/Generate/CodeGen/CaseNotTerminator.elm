@@ -1,11 +1,11 @@
-module TestLogic.Generate.CodeGen.CaseNotTerminator exposing (expectCaseNotTerminator, checkCaseNotTerminator)
+module TestLogic.Generate.CodeGen.CaseNotTerminator exposing (expectCaseNotTerminator)
 
 {-| Test logic for CGEN\_045: eco.case is NOT a block terminator.
 
 eco.case is a value-producing expression, not a control-flow terminator.
 It must appear in block.body, never as block.terminator.
 
-@docs expectCaseNotTerminator, checkCaseNotTerminator
+@docs expectCaseNotTerminator
 
 -}
 

@@ -20,11 +20,11 @@ This module parses Elm expressions into the Source AST, handling:
 -}
 
 import Compiler.AST.Source as Src
-import Compiler.Data.Name as Name exposing (Name)
+import Compiler.Data.Name as Name
 import Compiler.Parse.Keyword as Keyword
 import Compiler.Parse.Number as Number
 import Compiler.Parse.Pattern as Pattern
-import Compiler.Parse.Primitives as P exposing (Col, Row)
+import Compiler.Parse.Primitives as P
 import Compiler.Parse.Shader as Shader
 import Compiler.Parse.Space as Space
 import Compiler.Parse.String as String
@@ -368,72 +368,6 @@ chompRecordAccessField start expr pos =
 
 
 -- ====== FOREIGN ALPHA ======
-
-
-foreignAlpha : (Row -> Col -> x) -> P.Parser x Src.Expr_
-foreignAlpha toError =
-    P.Parser <|
-        \(P.State st) ->
-            let
-                ( ( alphaStart, alphaEnd ), ( newCol, varType ) ) =
-                    foreignAlphaHelp st.src st.pos st.end st.col
-            in
-            if alphaStart == alphaEnd then
-                P.Eerr st.row newCol toError
-
-            else
-                case varType of
-                    Src.LowVar ->
-                        let
-                            name : Name
-                            name =
-                                Name.fromPtr st.src alphaStart alphaEnd
-
-                            newState : P.State
-                            newState =
-                                P.State { st | pos = alphaEnd, col = newCol }
-                        in
-                        if alphaStart == st.pos then
-                            if Var.isReservedWord name then
-                                P.Eerr st.row st.col toError
-
-                            else
-                                P.Cok (Src.Var varType name) newState
-
-                        else
-                            let
-                                home : Name
-                                home =
-                                    Name.fromPtr st.src st.pos (alphaStart + -1)
-                            in
-                            P.Cok (Src.VarQual varType home name) newState
-
-                    Src.CapVar ->
-                        P.Eerr st.row st.col toError
-
-
-foreignAlphaHelp : String -> Int -> Int -> Col -> ( ( Int, Int ), ( Col, Src.VarType ) )
-foreignAlphaHelp src pos end col =
-    let
-        ( lowerPos, lowerCol ) =
-            Var.chompLower src pos end col
-    in
-    if pos < lowerPos then
-        ( ( pos, lowerPos ), ( lowerCol, Src.LowVar ) )
-
-    else
-        let
-            ( upperPos, upperCol ) =
-                Var.chompUpper src pos end col
-        in
-        if pos == upperPos then
-            ( ( pos, pos ), ( col, Src.CapVar ) )
-
-        else if Var.isDot src upperPos end then
-            foreignAlphaHelp src (upperPos + 1) end (upperCol + 1)
-
-        else
-            ( ( pos, upperPos ), ( upperCol, Src.CapVar ) )
 
 
 type alias Field =

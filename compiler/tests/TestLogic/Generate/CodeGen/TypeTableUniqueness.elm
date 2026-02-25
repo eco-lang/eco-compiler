@@ -1,10 +1,10 @@
-module TestLogic.Generate.CodeGen.TypeTableUniqueness exposing (expectTypeTableUniqueness, checkTypeTableUniqueness)
+module TestLogic.Generate.CodeGen.TypeTableUniqueness exposing (expectTypeTableUniqueness)
 
 {-| Test logic for CGEN\_035: Type Table Uniqueness invariant.
 
 Each module must have at most one `eco.type_table` op at module scope.
 
-@docs expectTypeTableUniqueness, checkTypeTableUniqueness
+@docs expectTypeTableUniqueness
 
 -}
 

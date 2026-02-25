@@ -1,4 +1,4 @@
-module SourceIR.BitwiseCases exposing (expectSuite, suite, testCases)
+module SourceIR.BitwiseCases exposing (expectSuite, suite)
 
 {-| Test cases for Bitwise operations in MLIR codegen.
 

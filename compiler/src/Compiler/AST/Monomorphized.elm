@@ -10,16 +10,14 @@ module Compiler.AST.Monomorphized exposing
     , toComparableSpecKey, toComparableMonoType
     , getMonoPathType
     , monoTypeToDebugString
-    , toComparableGlobal, toComparableLambdaId
+    , toComparableLambdaId
     , forceCNumberToInt
-    , Segmentation, segmentLengths, stageParamTypes, stageReturnType, stageArity
+    , Segmentation, segmentLengths, stageParamTypes, stageReturnType
     , chooseCanonicalSegmentation, buildSegmentedFunctionType
-    , decomposeFunctionType, isFunctionType, countTotalArity, functionArity
+    , decomposeFunctionType, isFunctionType, countTotalArity
     , CallModel(..), CallInfo, defaultCallInfo
     , ClosureKindId(..), ClosureKind(..), MaybeClosureKind
     , CaptureABI, DispatchMode(..)
-    , mergeClosureKinds
-    , ClosureKindRegistry, ClosureKindEntry, emptyClosureKindRegistry
     -- Typed closure calling (ABI cloning)
     -- Call staging metadata
     -- Staging/Segmentation helpers
@@ -113,7 +111,7 @@ This module defines the data structures for the monomorphized program
 
 # Comparable Conversions
 
-@docs toComparableGlobal, toComparableLambdaId
+@docs toComparableLambdaId
 
 
 # Constraint Utilities
@@ -123,9 +121,9 @@ This module defines the data structures for the monomorphized program
 
 # Staging and Segmentation
 
-@docs Segmentation, segmentLengths, stageParamTypes, stageReturnType, stageArity
+@docs Segmentation, segmentLengths, stageParamTypes, stageReturnType
 @docs chooseCanonicalSegmentation, buildSegmentedFunctionType
-@docs decomposeFunctionType, isFunctionType, countTotalArity, functionArity
+@docs decomposeFunctionType, isFunctionType, countTotalArity
 
 
 # Call Staging Metadata
@@ -137,8 +135,6 @@ This module defines the data structures for the monomorphized program
 
 @docs ClosureKindId, ClosureKind, MaybeClosureKind
 @docs CaptureABI, DispatchMode
-@docs mergeClosureKinds
-@docs ClosureKindRegistry, ClosureKindEntry, emptyClosureKindRegistry
 
 -}
 
@@ -340,69 +336,6 @@ type alias SpecializationRegistry =
     , mapping : Dict (List String) (List String) SpecId
     , reverseMapping : Dict Int Int ( Global, MonoType, Maybe LambdaId )
     }
-
-
-{-| Create an empty specialization registry.
--}
-emptyRegistry : SpecializationRegistry
-emptyRegistry =
-    { nextId = 0
-    , mapping = Dict.empty
-    , reverseMapping = Dict.empty
-    }
-
-
-{-| Get or create a SpecId for a function specialization, updating the registry if needed.
--}
-getOrCreateSpecId : Global -> MonoType -> Maybe LambdaId -> SpecializationRegistry -> ( SpecId, SpecializationRegistry )
-getOrCreateSpecId global monoType maybeLambda registry =
-    let
-        key =
-            toComparableSpecKey (SpecKey global monoType maybeLambda)
-    in
-    case Dict.get identity key registry.mapping of
-        Just specId ->
-            ( specId, registry )
-
-        Nothing ->
-            let
-                specId =
-                    registry.nextId
-            in
-            ( specId
-            , { nextId = specId + 1
-              , mapping = Dict.insert identity key specId registry.mapping
-              , reverseMapping = Dict.insert identity specId ( global, monoType, maybeLambda ) registry.reverseMapping
-              }
-            )
-
-
-{-| Update the MonoType stored in reverseMapping for a given SpecId.
-
-This is called after specializeNode to ensure the registry stores the actual
-node type rather than the requested type. This is necessary because the actual
-type may differ (e.g., flattened MFunction vs nested MFunction) due to
-closure transformations.
-
--}
-updateRegistryType : SpecId -> MonoType -> SpecializationRegistry -> SpecializationRegistry
-updateRegistryType specId actualType registry =
-    case Dict.get identity specId registry.reverseMapping of
-        Nothing ->
-            registry
-
-        Just ( global, _, maybeLambda ) ->
-            { registry
-                | reverseMapping =
-                    Dict.insert identity specId ( global, actualType, maybeLambda ) registry.reverseMapping
-            }
-
-
-{-| Look up the specialization information for a given SpecId.
--}
-lookupSpecKey : SpecId -> SpecializationRegistry -> Maybe ( Global, MonoType, Maybe LambdaId )
-lookupSpecKey specId registry =
-    Dict.get identity specId registry.reverseMapping
 
 
 
@@ -936,18 +869,6 @@ isFunctionType monoType =
             False
 
 
-{-| Count the arity of a function type (number of arrow levels).
--}
-functionArity : MonoType -> Int
-functionArity monoType =
-    case monoType of
-        MFunction _ result ->
-            1 + functionArity result
-
-        _ ->
-            0
-
-
 {-| Count the total number of arguments in a curried function type.
 -}
 countTotalArity : MonoType -> Int
@@ -970,13 +891,6 @@ stageParamTypes monoType =
 
         _ ->
             []
-
-
-{-| Stage arity: number of arguments expected in the current stage.
--}
-stageArity : MonoType -> Int
-stageArity monoType =
-    List.length (stageParamTypes monoType)
 
 
 {-| Stage return type: the result type after applying the current stage's arguments.
@@ -1217,7 +1131,6 @@ This is wrapped in Maybe to provide the third state (Nothing = unknown/untracked
 -}
 type ClosureKind
     = Known ClosureKindId
-    | Heterogeneous
 
 
 {-| Maybe ClosureKind provides the third state:
@@ -1250,99 +1163,4 @@ Always present on closure call sites in well-formed MLIR.
 
 -}
 type DispatchMode
-    = Fast
-    | Closure
-    | Unknown
-
-
-{-| Merge closure kinds at control-flow joins (phi nodes).
-Implements the three-way lattice merge rule.
-Conservative: Nothing + Known → Heterogeneous
--}
-mergeClosureKinds : List MaybeClosureKind -> MaybeClosureKind
-mergeClosureKinds kinds =
-    let
-        hasHeterogeneous =
-            List.any (\k -> k == Just Heterogeneous) kinds
-
-        hasNothing =
-            List.any (\k -> k == Nothing) kinds
-
-        knownIds =
-            kinds
-                |> List.filterMap identity
-                |> List.filterMap
-                    (\k ->
-                        case k of
-                            Known (ClosureKindId id) ->
-                                Just id
-
-                            Heterogeneous ->
-                                Nothing
-                    )
-
-        uniqueIds =
-            List.foldl
-                (\id acc ->
-                    if List.member id acc then
-                        acc
-
-                    else
-                        id :: acc
-                )
-                []
-                knownIds
-
-        allNothing =
-            List.all (\k -> k == Nothing) kinds
-    in
-    if hasHeterogeneous then
-        Just Heterogeneous
-
-    else if allNothing then
-        Nothing
-
-    else if List.length uniqueIds >= 2 then
-        Just Heterogeneous
-
-    else if List.length uniqueIds == 1 && hasNothing then
-        -- Conservative: partial info means heterogeneous
-        Just Heterogeneous
-
-    else if List.length uniqueIds == 1 then
-        case List.head uniqueIds of
-            Just id ->
-                Just (Known (ClosureKindId id))
-
-            Nothing ->
-                Nothing
-
-    else
-        Nothing
-
-
-{-| Registry tracking all closure kinds and their clone relationships.
--}
-type alias ClosureKindRegistry =
-    { nextId : Int
-    , kinds : Dict Int Int ClosureKindEntry
-    }
-
-
-{-| Entry for a single closure kind in the registry.
--}
-type alias ClosureKindEntry =
-    { lambdaId : LambdaId
-    , captureAbi : CaptureABI
-    , fastCloneName : String
-    , genericCloneName : String
-    }
-
-
-{-| Create an empty closure kind registry.
--}
-emptyClosureKindRegistry : ClosureKindRegistry
-emptyClosureKindRegistry =
-    { nextId = 0
-    , kinds = Dict.empty
-    }
+    = Unknown

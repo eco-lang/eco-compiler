@@ -20,8 +20,6 @@ import Fuzz exposing (Fuzzer)
 import SourceIR.Fuzz.TypedExpr as TE
     exposing
         ( Scope
-        , SimpleType(..)
-        , addVar
         , decrementDepth
         , emptyScope
         )

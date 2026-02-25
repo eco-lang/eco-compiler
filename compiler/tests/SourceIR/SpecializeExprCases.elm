@@ -1,4 +1,4 @@
-module SourceIR.SpecializeExprCases exposing (expectSuite, suite, testCases)
+module SourceIR.SpecializeExprCases exposing (expectSuite, suite)
 
 {-| Test cases for specializeExpr branches in Specialize.elm.
 

@@ -10,9 +10,7 @@ to improve coverage of Compiler.Type.PostSolve.postSolveExpr and related functio
 import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
-        ( AliasDef
-        , TypedDef
-        , UnionDef
+        ( TypedDef
         , accessExpr
         , accessorExpr
         , binopsExpr
@@ -20,7 +18,6 @@ import Compiler.AST.SourceBuilder
         , callExpr
         , caseExpr
         , chrExpr
-        , ctorExpr
         , define
         , destruct
         , floatExpr
@@ -31,10 +28,8 @@ import Compiler.AST.SourceBuilder
         , listExpr
         , makeModule
         , makeModuleWithTypedDefs
-        , makeModuleWithTypedDefsUnionsAliases
         , negateExpr
         , pAnything
-        , pCtor
         , pInt
         , pRecord
         , pTuple

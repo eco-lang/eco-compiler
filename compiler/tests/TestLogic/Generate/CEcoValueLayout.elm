@@ -123,15 +123,10 @@ checkCEcoValueInLayoutPosition context monoType =
             -- List element type can be CEcoValue (boxed reference)
             checkCEcoValueInLayoutPosition context elemType
 
-        Mono.MRecord fields ->
+        Mono.MRecord _ ->
             -- Record fields should not directly be CEcoValue in unboxed positions
             -- (For now, we just check the shape is valid)
-            if Dict.isEmpty fields then
-                -- Empty records are fine (Unit-like)
-                []
-
-            else
-                []
+            []
 
         Mono.MTuple elementTypes ->
             -- Tuple elements should not directly be CEcoValue in unboxed positions

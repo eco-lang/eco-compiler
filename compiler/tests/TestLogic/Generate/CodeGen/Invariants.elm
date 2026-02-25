@@ -1,13 +1,13 @@
 module TestLogic.Generate.CodeGen.Invariants exposing
     ( Violation, violationsToExpectation
-    , walkAllOps, walkOpAndChildren, walkOpsInRegion, walkOpsInBlock
+    , walkAllOps, walkOpAndChildren, walkOpsInRegion
     , findOpsNamed, findOpsWithPrefix, findFuncOps
     , getIntAttr, getStringAttr, getArrayAttr, getTypeAttr, getBoolAttr
     , extractOperandTypes, extractResultTypes
-    , isEcoValueType, ecoValueType
-    , checkAll, checkNone
+    , isEcoValueType
+    , checkNone
     , allBlocks
-    , TypeEnv, buildTypeEnv, findSymbolOps, isEcoPrimitive, isUnboxable, isValidTerminator, typesMatch, validTerminators
+    , TypeEnv, findSymbolOps, isEcoPrimitive, isUnboxable, isValidTerminator, typesMatch
     )
 
 {-| Shared infrastructure for MLIR codegen invariant tests.
@@ -23,7 +23,7 @@ structures to verify MLIR codegen invariants.
 
 # Op Walking
 
-@docs walkAllOps, walkOpAndChildren, walkOpsInRegion, walkOpsInBlock
+@docs walkAllOps, walkOpAndChildren, walkOpsInRegion
 
 
 # Op Finding
@@ -43,12 +43,12 @@ structures to verify MLIR codegen invariants.
 
 # Type Predicates
 
-@docs isEcoValueType, isPrimitiveType, ecoValueType
+@docs isEcoValueType, isPrimitiveType
 
 
 # Checking Utilities
 
-@docs checkAll, checkNone
+@docs checkNone
 
 
 # Block Utilities
@@ -286,13 +286,6 @@ extractResultTypes op =
 -- TYPE PREDICATES
 
 
-{-| The !eco.value type representation.
--}
-ecoValueType : MlirType
-ecoValueType =
-    NamedStruct "eco.value"
-
-
 {-| Check if a type is eco.value.
 -}
 isEcoValueType : MlirType -> Bool
@@ -354,13 +347,6 @@ isEcoPrimitive t =
 
 
 -- CHECKING UTILITIES
-
-
-{-| Check all items with a predicate, collect violations.
--}
-checkAll : (a -> Maybe Violation) -> List a -> List Violation
-checkAll check items =
-    List.filterMap check items
 
 
 {-| Check that no items exist (list should be empty).
@@ -447,72 +433,3 @@ findSymbolOps mod =
 -}
 type alias TypeEnv =
     Dict String MlirType
-
-
-{-| Build a type environment from a module by collecting all result definitions.
--}
-buildTypeEnv : MlirModule -> TypeEnv
-buildTypeEnv mod =
-    let
-        collectFromOps : List MlirOp -> TypeEnv -> TypeEnv
-        collectFromOps ops env =
-            List.foldl collectFromOp env ops
-
-        collectFromOp : MlirOp -> TypeEnv -> TypeEnv
-        collectFromOp op env =
-            let
-                -- Add results from this op
-                withResults =
-                    List.foldl
-                        (\( name, t ) acc -> Dict.insert name t acc)
-                        env
-                        op.results
-
-                -- Recurse into regions
-                withRegions =
-                    List.foldl collectFromRegion withResults op.regions
-            in
-            withRegions
-
-        collectFromRegion : MlirRegion -> TypeEnv -> TypeEnv
-        collectFromRegion (MlirRegion { entry, blocks }) env =
-            let
-                -- Add block arguments from entry
-                withEntryArgs =
-                    List.foldl
-                        (\( name, t ) acc -> Dict.insert name t acc)
-                        env
-                        entry.args
-
-                -- Add ops from entry block
-                withEntryBody =
-                    collectFromOps entry.body withEntryArgs
-
-                -- Add terminator
-                withEntryTerm =
-                    collectFromOp entry.terminator withEntryBody
-
-                -- Process additional blocks
-                withBlocks =
-                    List.foldl collectFromBlock withEntryTerm (OrderedDict.values blocks)
-            in
-            withBlocks
-
-        collectFromBlock : MlirBlock -> TypeEnv -> TypeEnv
-        collectFromBlock block env =
-            let
-                withArgs =
-                    List.foldl
-                        (\( name, t ) acc -> Dict.insert name t acc)
-                        env
-                        block.args
-
-                withBody =
-                    collectFromOps block.body withArgs
-
-                withTerm =
-                    collectFromOp block.terminator withBody
-            in
-            withTerm
-    in
-    collectFromOps mod.body Dict.empty

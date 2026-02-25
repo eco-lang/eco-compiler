@@ -1,11 +1,11 @@
-module TestLogic.Generate.CodeGen.SingletonConstants exposing (expectSingletonConstants, checkSingletonConstants)
+module TestLogic.Generate.CodeGen.SingletonConstants exposing (expectSingletonConstants)
 
 {-| Test logic for CGEN\_019: Singleton Constants invariant.
 
 Well-known singletons (Unit, True, False, Nil, Nothing, EmptyString, EmptyRec)
 must always use `eco.constant`, never `eco.construct.custom`.
 
-@docs expectSingletonConstants, checkSingletonConstants
+@docs expectSingletonConstants
 
 -}
 

@@ -1,4 +1,4 @@
-module TestLogic.Generate.CodeGen.OperandTypeConsistency exposing (expectOperandTypeConsistency, checkOperandTypeConsistency)
+module TestLogic.Generate.CodeGen.OperandTypeConsistency exposing (expectOperandTypeConsistency)
 
 {-| Test logic for CGEN\_040: Operand Type Consistency invariant.
 
@@ -6,7 +6,7 @@ For any operation with `_operand_types` attribute, the list length must equal
 SSA operand count and each declared type must match the corresponding SSA
 operand type.
 
-@docs expectOperandTypeConsistency, checkOperandTypeConsistency
+@docs expectOperandTypeConsistency
 
 -}
 
@@ -50,11 +50,8 @@ checkOperandTypeConsistency mlirModule =
     let
         funcOps =
             findFuncOps mlirModule
-
-        violations =
-            List.concatMap checkFunction funcOps
     in
-    violations
+    List.concatMap checkFunction funcOps
 
 
 checkFunction : MlirOp -> List Violation
@@ -77,11 +74,8 @@ buildTypeEnvFromOp op =
                 (\( name, t ) acc -> Dict.insert name t acc)
                 Dict.empty
                 op.results
-
-        withRegions =
-            List.foldl collectFromRegion withResults op.regions
     in
-    withRegions
+    List.foldl collectFromRegion withResults op.regions
 
 
 collectFromRegion : MlirRegion -> TypeEnv -> TypeEnv
@@ -98,11 +92,8 @@ collectFromRegion (MlirRegion { entry, blocks }) env =
 
         withEntryTerm =
             collectFromOp entry.terminator withEntryBody
-
-        withBlocks =
-            List.foldl collectFromBlock withEntryTerm (OrderedDict.values blocks)
     in
-    withBlocks
+    List.foldl collectFromBlock withEntryTerm (OrderedDict.values blocks)
 
 
 collectFromBlock : MlirBlock -> TypeEnv -> TypeEnv
@@ -116,11 +107,8 @@ collectFromBlock block env =
 
         withBody =
             collectFromOps block.body withArgs
-
-        withTerm =
-            collectFromOp block.terminator withBody
     in
-    withTerm
+    collectFromOp block.terminator withBody
 
 
 collectFromOps : List MlirOp -> TypeEnv -> TypeEnv
@@ -136,11 +124,8 @@ collectFromOp op env =
                 (\( name, t ) acc -> Dict.insert name t acc)
                 env
                 op.results
-
-        withRegions =
-            List.foldl collectFromRegion withResults op.regions
     in
-    withRegions
+    List.foldl collectFromRegion withResults op.regions
 
 
 walkOpsInOp : MlirOp -> List MlirOp

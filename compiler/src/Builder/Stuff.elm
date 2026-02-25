@@ -2,11 +2,11 @@ module Builder.Stuff exposing
     ( findRoot, getElmHome
     , PackageCache, getPackageCache, getReplCache, package, registry
     , typedPackageArtifacts, packageCacheEncoder, packageCacheDecoder
-    , details, interfaces, objects, typedObjects
     , eci, eco, ecot
     , prepublishDir, testDir
     , withRootLock, withRootLockBuildDir, withRegistryLock
-    , detailsWithBuildDir, eciWithBuildDir, ecoWithBuildDir, ecotWithBuildDir, interfacesWithBuildDir, objectsWithBuildDir, typedObjectsWithBuildDir
+    , detailsWithBuildDir, eciWithBuildDir, ecoWithBuildDir
+    , ecotWithBuildDir, interfacesWithBuildDir, objectsWithBuildDir, typedObjectsWithBuildDir
     )
 
 {-| File path management and artifact location for the Eco compiler build system.
@@ -30,7 +30,7 @@ managing file locks.
 
 # Build Artifacts
 
-@docs details, interfaces, objects, typedObjects
+@docs interfaces, objects, typedObjects
 @docs eci, eco, ecot
 
 
@@ -46,7 +46,7 @@ managing file locks.
 
 # Build Directory Variants
 
-@docs detailsWithBuildDir, eciWithBuildDir, ecoWithBuildDir, ecotWithBuildDir, interfacesWithBuildDir, objectsWithBuildDir, typedObjectsWithBuildDir
+@docs detailsWithBuildDir, eciWithBuildDir, ecoWithBuildDir, ecotWithBuildDirWithBuildDirWithBuildDirWithBuildDir
 
 -}
 
@@ -81,34 +81,6 @@ stuffWithBuildDir root maybeBuildDir =
 
         Just buildDir ->
             stuff root ++ "/" ++ buildDir
-
-
-{-| Returns the path to the details cache file for a project.
--}
-details : String -> String
-details root =
-    stuff root ++ "/d.dat"
-
-
-{-| Returns the path to the interfaces cache file for a project.
--}
-interfaces : String -> String
-interfaces root =
-    stuff root ++ "/i.dat"
-
-
-{-| Returns the path to the objects cache file for a project.
--}
-objects : String -> String
-objects root =
-    stuff root ++ "/o.dat"
-
-
-{-| Returns the path to the typed objects cache file for MLIR backend.
--}
-typedObjects : String -> String
-typedObjects root =
-    stuff root ++ "/to.dat"
 
 
 {-| Returns the path to the details cache file with optional build subdirectory.

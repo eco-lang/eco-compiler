@@ -1,4 +1,4 @@
-module SourceIR.TupleCases exposing (expectSuite, testCases)
+module SourceIR.TupleCases exposing (expectSuite)
 
 {-| Tests for tuple expressions: 2-tuples and 3-tuples.
 -}

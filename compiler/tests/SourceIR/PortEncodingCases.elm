@@ -1,4 +1,4 @@
-module SourceIR.PortEncodingCases exposing (expectSuite, testCases)
+module SourceIR.PortEncodingCases exposing (expectSuite)
 
 {-| Test cases for port encoding/decoding.
 
@@ -14,10 +14,8 @@ import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
         ( PortDef
-        , TypedDef
         , intExpr
         , makePortModule
-        , makePortModuleWithTypedDefs
         , tCmd
         , tLambda
         , tRecord
@@ -25,7 +23,6 @@ import Compiler.AST.SourceBuilder
         , tTuple
         , tType
         , tVar
-        , varExpr
         )
 import Compiler.BulkCheck exposing (TestCase, bulkCheck)
 import Expect exposing (Expectation)
@@ -348,23 +345,6 @@ encodeMaybeRecord expectFn _ =
     expectFn modul
 
 
-{-| port out : Json.Encode.Value -> Cmd msg
--}
-encodeJsonValue : (Src.Module -> Expectation) -> (() -> Expectation)
-encodeJsonValue expectFn _ =
-    let
-        outPort : PortDef
-        outPort =
-            { name = "out"
-            , tipe = tLambda (tType "Value" []) (tCmd (tVar "msg"))
-            }
-
-        modul =
-            makePortModule "testValue" [ outPort ] (intExpr 0)
-    in
-    expectFn modul
-
-
 
 -- ============================================================================
 -- DECODER TESTS (Incoming Ports)
@@ -603,23 +583,6 @@ decodeMaybeRecord expectFn _ =
         inPort =
             { name = "inp"
             , tipe = incomingPortType (tType "Maybe" [ tRecord [ ( "x", tType "Int" [] ) ] ])
-            }
-
-        modul =
-            makePortModule "testValue" [ inPort ] (intExpr 0)
-    in
-    expectFn modul
-
-
-{-| port inp : (Json.Decode.Value -> msg) -> Sub msg
--}
-decodeJsonValue : (Src.Module -> Expectation) -> (() -> Expectation)
-decodeJsonValue expectFn _ =
-    let
-        inPort : PortDef
-        inPort =
-            { name = "inp"
-            , tipe = incomingPortType (tType "Value" [])
             }
 
         modul =

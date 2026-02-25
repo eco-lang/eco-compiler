@@ -1,4 +1,4 @@
-module SourceIR.TypeCheckFailsCases exposing (expectSuite, testCases)
+module SourceIR.TypeCheckFailsCases exposing (expectSuite)
 
 {-| Tests for cases where type checking fails in the constrainWithIds path.
 These are test cases that produce type errors in both the standard and

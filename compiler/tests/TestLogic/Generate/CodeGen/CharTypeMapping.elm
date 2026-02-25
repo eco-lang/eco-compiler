@@ -1,11 +1,11 @@
-module TestLogic.Generate.CodeGen.CharTypeMapping exposing (expectCharTypeMapping, checkCharTypeMapping)
+module TestLogic.Generate.CodeGen.CharTypeMapping exposing (expectCharTypeMapping)
 
 {-| Test logic for CGEN\_015: Char Type Mapping invariant.
 
 `monoTypeToMlir` must map `MChar` to `i16` (not `i32`),
 and all char constants/ops must use `i16`.
 
-@docs expectCharTypeMapping, checkCharTypeMapping
+@docs expectCharTypeMapping
 
 -}
 
@@ -46,11 +46,8 @@ checkCharTypeMapping mlirModule =
     let
         charOps =
             findOpsWithPrefix "eco.char." mlirModule
-
-        violations =
-            List.filterMap checkCharOp charOps
     in
-    violations
+    List.filterMap checkCharOp charOps
 
 
 checkCharOp : MlirOp -> Maybe Violation

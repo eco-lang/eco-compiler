@@ -1,4 +1,4 @@
-module Compiler.GlobalOpt.AbiCloning exposing (abiCloningPass, computeCaptureAbi)
+module Compiler.GlobalOpt.AbiCloning exposing (abiCloningPass)
 
 {-| ABI Cloning Pass
 
@@ -16,12 +16,11 @@ Algorithm:
 
 # API
 
-@docs abiCloningPass, computeCaptureAbi
+@docs abiCloningPass
 
 -}
 
 import Compiler.AST.Monomorphized as Mono
-import Compiler.Data.Name exposing (Name)
 import Data.Map as Dict exposing (Dict)
 
 
@@ -38,14 +37,6 @@ has at most one capture ABI across all call sites.
 abiCloningPass : Mono.MonoGraph -> Mono.MonoGraph
 abiCloningPass graph =
     -- Phase 1: Collect all parameter ABIs from call sites
-    let
-        parameterAbis : Dict Int Int (Dict Int Int (List Mono.CaptureABI))
-        parameterAbis =
-            collectAllParameterAbis graph
-    in
-    -- Phase 2: Determine which functions need cloning
-    -- For now, we don't actually clone - just pass through
-    -- The infrastructure is in place for future implementation
     graph
 
 
@@ -55,7 +46,7 @@ Returns Nothing for non-closure expressions.
 computeCaptureAbi : Mono.MonoExpr -> Maybe Mono.CaptureABI
 computeCaptureAbi expr =
     case expr of
-        Mono.MonoClosure closureInfo body closureType ->
+        Mono.MonoClosure closureInfo _ closureType ->
             let
                 captureTypes =
                     List.map (\( _, e, _ ) -> Mono.typeOf e) closureInfo.captures
@@ -80,43 +71,6 @@ computeCaptureAbi expr =
 -- ============================================================================
 -- ====== INTERNAL: COLLECTION PHASE ======
 -- ============================================================================
-
-
-{-| Collect parameter ABIs from all call sites in the graph.
-Returns a map from SpecId -> ParamIndex -> List CaptureABI
--}
-collectAllParameterAbis : Mono.MonoGraph -> Dict Int Int (Dict Int Int (List Mono.CaptureABI))
-collectAllParameterAbis (Mono.MonoGraph data) =
-    Dict.foldl compare
-        (\_ node acc ->
-            collectFromNode node acc
-        )
-        Dict.empty
-        data.nodes
-
-
-{-| Collect parameter ABIs from a single node.
--}
-collectFromNode : Mono.MonoNode -> Dict Int Int (Dict Int Int (List Mono.CaptureABI)) -> Dict Int Int (Dict Int Int (List Mono.CaptureABI))
-collectFromNode node acc =
-    case node of
-        Mono.MonoDefine expr _ ->
-            collectFromExpr expr acc
-
-        Mono.MonoTailFunc _ expr _ ->
-            collectFromExpr expr acc
-
-        Mono.MonoPortIncoming expr _ ->
-            collectFromExpr expr acc
-
-        Mono.MonoPortOutgoing expr _ ->
-            collectFromExpr expr acc
-
-        Mono.MonoCycle defs _ ->
-            List.foldl (\( _, expr ) accDefs -> collectFromExpr expr accDefs) acc defs
-
-        _ ->
-            acc
 
 
 {-| Collect parameter ABIs from an expression.
@@ -255,40 +209,3 @@ recordCallAbis specId args acc =
 -- ============================================================================
 -- ====== INTERNAL: ANALYSIS PHASE ======
 -- ============================================================================
-
-
-{-| Check if any parameter has multiple distinct capture ABIs.
--}
-shouldClone : Dict Int Int (List Mono.CaptureABI) -> Bool
-shouldClone paramAbis =
-    Dict.foldl compare
-        (\_ abis acc ->
-            acc || List.length (dedupeAbis abis) > 1
-        )
-        False
-        paramAbis
-
-
-{-| Deduplicate ABIs based on structural equality.
--}
-dedupeAbis : List Mono.CaptureABI -> List Mono.CaptureABI
-dedupeAbis abis =
-    List.foldl
-        (\abi acc ->
-            if List.any (abiEqual abi) acc then
-                acc
-
-            else
-                abi :: acc
-        )
-        []
-        abis
-
-
-{-| Check if two CaptureABIs are structurally equal.
--}
-abiEqual : Mono.CaptureABI -> Mono.CaptureABI -> Bool
-abiEqual a b =
-    (a.captureTypes == b.captureTypes)
-        && (a.paramTypes == b.paramTypes)
-        && (a.returnType == b.returnType)

@@ -245,12 +245,8 @@ buildStagingGraphExpr expr sg0 ctx0 =
 
                                     nodeSlot =
                                         NodeSlot slot
-
-                                    -- Connect captured producer to capture slot
-                                    accSg1 =
-                                        connectBranchProducer captureExpr nodeSlot ctx0 accSg
                                 in
-                                accSg1
+                                connectBranchProducer captureExpr nodeSlot ctx0 accSg
 
                             else
                                 accSg
@@ -491,12 +487,8 @@ addAggregateJoinpointsFromBranches branches ctx sg =
         -- Unify record fields across branches
         sg1 =
             unifyRecordFieldsAcrossBranches recordBranches sg ctx
-
-        -- Unify tuple elements across branches
-        sg2 =
-            unifyTupleElementsAcrossBranches tupleBranches sg1 ctx
     in
-    sg2
+    unifyTupleElementsAcrossBranches tupleBranches sg1 ctx
 
 
 unifyRecordFieldsAcrossBranches :

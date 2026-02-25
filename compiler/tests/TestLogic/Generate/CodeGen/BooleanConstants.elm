@@ -1,4 +1,4 @@
-module TestLogic.Generate.CodeGen.BooleanConstants exposing (expectBooleanConstants, checkBooleanConstants)
+module TestLogic.Generate.CodeGen.BooleanConstants exposing (expectBooleanConstants)
 
 {-| Test logic for CGEN\_009: Boolean Constants invariant.
 
@@ -6,7 +6,7 @@ Boolean constants (True, False) must use !eco.value representation except
 in control-flow contexts. i1 values may only appear as eco.case scrutinees
 with case\_kind="bool".
 
-@docs expectBooleanConstants, checkBooleanConstants
+@docs expectBooleanConstants
 
 -}
 

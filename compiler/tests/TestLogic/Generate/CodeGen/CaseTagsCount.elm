@@ -1,10 +1,10 @@
-module TestLogic.Generate.CodeGen.CaseTagsCount exposing (expectCaseTagsCount, checkCaseTagsCount)
+module TestLogic.Generate.CodeGen.CaseTagsCount exposing (expectCaseTagsCount)
 
 {-| Test logic for CGEN\_029: Case Tags Count invariant.
 
 The `eco.case` `tags` array length must equal the number of alternative regions.
 
-@docs expectCaseTagsCount, checkCaseTagsCount
+@docs expectCaseTagsCount
 
 -}
 
@@ -40,11 +40,8 @@ checkCaseTagsCount mlirModule =
     let
         caseOps =
             findOpsNamed "eco.case" mlirModule
-
-        violations =
-            List.filterMap checkCaseTagsMatch caseOps
     in
-    violations
+    List.filterMap checkCaseTagsMatch caseOps
 
 
 checkCaseTagsMatch : MlirOp -> Maybe Violation

@@ -1,10 +1,10 @@
-module TestLogic.Generate.CodeGen.ListProjection exposing (expectListProjection, checkListProjection)
+module TestLogic.Generate.CodeGen.ListProjection exposing (expectListProjection)
 
 {-| Test logic for CGEN\_021: List Projection invariant.
 
 List destructuring must use only `eco.project.list_head` and `eco.project.list_tail`.
 
-@docs expectListProjection, checkListProjection
+@docs expectListProjection
 
 -}
 

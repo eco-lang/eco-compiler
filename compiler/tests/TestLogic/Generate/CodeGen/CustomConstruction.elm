@@ -1,11 +1,11 @@
-module TestLogic.Generate.CodeGen.CustomConstruction exposing (expectCustomConstruction, checkCustomConstruction)
+module TestLogic.Generate.CodeGen.CustomConstruction exposing (expectCustomConstruction)
 
 {-| Test logic for CGEN\_020: Custom ADT Construction invariant.
 
 `eco.construct.custom` is only for user-defined custom ADTs.
 Attributes must have valid `tag` and `size`, and `size` must match operand count.
 
-@docs expectCustomConstruction, checkCustomConstruction
+@docs expectCustomConstruction
 
 -}
 
@@ -50,11 +50,8 @@ checkCustomConstruction mlirModule =
     let
         customOps =
             findOpsNamed "eco.construct.custom" mlirModule
-
-        violations =
-            List.concatMap checkCustomOp customOps
     in
-    violations
+    List.concatMap checkCustomOp customOps
 
 
 checkCustomOp : MlirOp -> List Violation

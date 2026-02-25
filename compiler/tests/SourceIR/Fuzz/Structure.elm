@@ -360,8 +360,6 @@ paramFuzzer scope =
 -}
 type BinopCategory
     = Arithmetic
-    | Comparison
-    | Equality
     | Boolean
     | Append
 
@@ -378,12 +376,6 @@ binopChainFuzzer scope category =
         -- Arithmetic can be chained normally.
         lengthFuzzer =
             case category of
-                Comparison ->
-                    Fuzz.constant 1
-
-                Equality ->
-                    Fuzz.constant 1
-
                 Boolean ->
                     Fuzz.constant 2
 
@@ -427,12 +419,6 @@ categoryInfo category =
     case category of
         Arithmetic ->
             ( TInt, [ "+", "-", "*" ] )
-
-        Comparison ->
-            ( TInt, [ "<", ">", "<=", ">=" ] )
-
-        Equality ->
-            ( TInt, [ "==", "/=" ] )
 
         Boolean ->
             ( TBool, [ "&&", "||" ] )

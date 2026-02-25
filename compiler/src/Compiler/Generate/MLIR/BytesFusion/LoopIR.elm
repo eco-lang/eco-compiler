@@ -1,6 +1,6 @@
 module Compiler.Generate.MLIR.BytesFusion.LoopIR exposing
     ( Endianness(..), WidthExpr(..), Op(..), DecoderOp(..)
-    , simplifyWidth, totalWidth
+    , simplifyWidth
     )
 
 {-| Loop IR for fused byte encoding and decoding.
@@ -16,7 +16,7 @@ structure for later MLIR emission.
 
 # Width Utilities
 
-@docs simplifyWidth, totalWidth
+@docs simplifyWidth
 
 -}
 
@@ -135,42 +135,3 @@ simplifyWidth expr =
 
         _ ->
             expr
-
-
-{-| Compute total width from a list of operations.
--}
-totalWidth : List Op -> WidthExpr
-totalWidth ops =
-    List.foldl addOpWidth (WConst 0) ops
-        |> simplifyWidth
-
-
-addOpWidth : Op -> WidthExpr -> WidthExpr
-addOpWidth op acc =
-    case op of
-        InitCursor _ _ ->
-            acc
-
-        WriteU8 _ _ ->
-            WAdd acc (WConst 1)
-
-        WriteU16 _ _ _ ->
-            WAdd acc (WConst 2)
-
-        WriteU32 _ _ _ ->
-            WAdd acc (WConst 4)
-
-        WriteF32 _ _ _ ->
-            WAdd acc (WConst 4)
-
-        WriteF64 _ _ _ ->
-            WAdd acc (WConst 8)
-
-        WriteBytesCopy _ bytesExpr ->
-            WAdd acc (WBytesWidth bytesExpr)
-
-        WriteUtf8 _ stringExpr ->
-            WAdd acc (WStringUtf8Width stringExpr)
-
-        ReturnBuffer ->
-            acc

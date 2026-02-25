@@ -1,4 +1,4 @@
-module TestLogic.Generate.CodeGen.PapExtendResult exposing (expectPapExtendResult, checkPapExtendResult)
+module TestLogic.Generate.CodeGen.PapExtendResult exposing (expectPapExtendResult)
 
 {-| Test logic for CGEN\_034: PapExtend Result Type invariant.
 
@@ -9,7 +9,7 @@ module TestLogic.Generate.CodeGen.PapExtendResult exposing (expectPapExtendResul
   - `i64` (typed primitive result)
   - `f64` (typed primitive result)
 
-@docs expectPapExtendResult, checkPapExtendResult
+@docs expectPapExtendResult
 
 -}
 
@@ -45,11 +45,8 @@ checkPapExtendResult mlirModule =
     let
         papExtendOps =
             findOpsNamed "eco.papExtend" mlirModule
-
-        violations =
-            List.filterMap checkPapExtendOp papExtendOps
     in
-    violations
+    List.filterMap checkPapExtendOp papExtendOps
 
 
 checkPapExtendOp : MlirOp -> Maybe Violation

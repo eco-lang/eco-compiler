@@ -11,7 +11,6 @@ module Compiler.AST.SourceBuilder exposing
     , boolExpr
     , callExpr
     , caseExpr
-    , charFuzzer
     , chrExpr
     , ctorExpr
     , define
@@ -29,7 +28,6 @@ module Compiler.AST.SourceBuilder exposing
     , makeModuleWithTypedDefsUnionsAliases
     , makeModuleWithTypedDefsUnionsAliasesExtended
     , makePortModule
-    , makePortModuleWithTypedDefs
       -- Fuzzers
     , negateExpr
     , pAlias
@@ -46,7 +44,6 @@ module Compiler.AST.SourceBuilder exposing
     , pUnit
     , pVar
     , parensExpr
-    , portDecl
       -- Module builders
     , qualVarExpr
     , recordExpr
@@ -84,7 +81,6 @@ This module provides:
 import Compiler.AST.Source as Src
 import Compiler.Data.Name exposing (Name)
 import Compiler.Reporting.Annotation as A
-import Fuzz exposing (Fuzzer)
 
 
 
@@ -876,39 +872,6 @@ makePortModule defName ports expr =
         }
 
 
-{-| Create a port module with ports and typed definitions.
--}
-makePortModuleWithTypedDefs : Name -> List PortDef -> List TypedDef -> Src.Module
-makePortModuleWithTypedDefs moduleName ports defs =
-    let
-        values =
-            List.map
-                (\{ name, args, tipe, body } ->
-                    A.At A.zero
-                        (Src.Value
-                            { comments = noComments
-                            , name = c1 (A.At A.zero name)
-                            , args = List.map c1 args
-                            , body = c1 body
-                            , tipe = Just (c1 (c2 tipe))
-                            }
-                        )
-                )
-                defs
-    in
-    Src.Module
-        { name = Just (A.At A.zero moduleName)
-        , exports = A.At A.zero (Src.Open noComments noComments)
-        , docs = Src.NoDocs A.zero []
-        , imports = portModuleImports
-        , values = values
-        , unions = []
-        , aliases = []
-        , infixes = []
-        , effects = Src.Ports (List.map portDecl ports)
-        }
-
-
 {-| Imports for port modules (includes Json.Encode, Json.Decode, Platform.Cmd, Platform.Sub).
 -}
 portModuleImports : List Src.Import
@@ -981,10 +944,3 @@ platformSubImport =
 -- ============================================================================
 -- FUZZERS
 -- ============================================================================
-
-
-{-| Fuzzer for single characters (as strings).
--}
-charFuzzer : Fuzzer String
-charFuzzer =
-    Fuzz.map String.fromChar (Fuzz.intRange 32 126 |> Fuzz.map Char.fromCode)

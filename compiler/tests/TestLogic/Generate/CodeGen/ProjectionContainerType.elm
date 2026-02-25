@@ -1,4 +1,4 @@
-module TestLogic.Generate.CodeGen.ProjectionContainerType exposing (expectProjectionContainerType, checkProjectionContainerTypes)
+module TestLogic.Generate.CodeGen.ProjectionContainerType exposing (expectProjectionContainerType)
 
 {-| Test logic for CGEN\_0E1: Projection Container Type invariant.
 
@@ -9,7 +9,7 @@ segfaults from treating primitives as heap pointers.
 The dangerous pattern is: project -> eco.unbox -> project
 where eco.unbox produces a primitive that is incorrectly used as a container.
 
-@docs expectProjectionContainerType, checkProjectionContainerTypes
+@docs expectProjectionContainerType
 
 -}
 
@@ -128,11 +128,8 @@ buildTypeEnvFromOp op =
                 (\( name, t ) acc -> Dict.insert name t acc)
                 Dict.empty
                 op.results
-
-        withRegions =
-            List.foldl collectFromRegion withResults op.regions
     in
-    withRegions
+    List.foldl collectFromRegion withResults op.regions
 
 
 collectFromRegion : MlirRegion -> TypeEnv -> TypeEnv
@@ -149,11 +146,8 @@ collectFromRegion (MlirRegion { entry, blocks }) env =
 
         withEntryTerm =
             collectFromOp entry.terminator withEntryBody
-
-        withBlocks =
-            List.foldl collectFromBlock withEntryTerm (OrderedDict.values blocks)
     in
-    withBlocks
+    List.foldl collectFromBlock withEntryTerm (OrderedDict.values blocks)
 
 
 collectFromBlock : MlirBlock -> TypeEnv -> TypeEnv
@@ -167,11 +161,8 @@ collectFromBlock block env =
 
         withBody =
             collectFromOps block.body withArgs
-
-        withTerm =
-            collectFromOp block.terminator withBody
     in
-    withTerm
+    collectFromOp block.terminator withBody
 
 
 collectFromOps : List MlirOp -> TypeEnv -> TypeEnv
@@ -187,11 +178,8 @@ collectFromOp op env =
                 (\( name, t ) acc -> Dict.insert name t acc)
                 env
                 op.results
-
-        withRegions =
-            List.foldl collectFromRegion withResults op.regions
     in
-    withRegions
+    List.foldl collectFromRegion withResults op.regions
 
 
 walkOpsInOp : MlirOp -> List MlirOp

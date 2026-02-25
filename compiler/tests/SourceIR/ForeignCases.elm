@@ -1,4 +1,4 @@
-module SourceIR.ForeignCases exposing (expectSuite, testCases)
+module SourceIR.ForeignCases exposing (expectSuite)
 
 {-| Tests for VarForeign expressions.
 

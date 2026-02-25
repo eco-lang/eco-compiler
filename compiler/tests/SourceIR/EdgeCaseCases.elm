@@ -1,4 +1,4 @@
-module SourceIR.EdgeCaseCases exposing (expectSuite, testCases)
+module SourceIR.EdgeCaseCases exposing (expectSuite)
 
 {-| Tests for edge cases and special constructs.
 These test various edge cases, parens, deep nesting, and complex expression
@@ -129,26 +129,6 @@ complexExpressionCases expectFn =
     , { label = "If in case", run = ifInCase expectFn }
     , { label = "Multiple accessors in list", run = multipleAccessorsInList expectFn }
     ]
-
-
-recordAccessInBinop : (Src.Module -> Expectation) -> (() -> Expectation)
-recordAccessInBinop expectFn _ =
-    let
-        record =
-            recordExpr [ ( "x", intExpr 1 ), ( "y", intExpr 2 ) ]
-
-        def =
-            define "r" [] record
-
-        binop =
-            binopsExpr
-                [ ( accessExpr (varExpr "r") "x", "+" ) ]
-                (accessExpr (varExpr "r") "y")
-
-        modul =
-            makeModule "testValue" (letExpr [ def ] binop)
-    in
-    expectFn modul
 
 
 nestedRecordUpdates : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -285,15 +265,6 @@ unitExpression expectFn _ =
     let
         modul =
             makeModule "testValue" unitExpr
-    in
-    expectFn modul
-
-
-lambdaWithNoBodyComplexity : (Src.Module -> Expectation) -> (() -> Expectation)
-lambdaWithNoBodyComplexity expectFn _ =
-    let
-        modul =
-            makeModule "testValue" (lambdaExpr [ pVar "x" ] (varExpr "x"))
     in
     expectFn modul
 

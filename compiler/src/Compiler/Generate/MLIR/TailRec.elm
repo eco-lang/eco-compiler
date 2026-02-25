@@ -32,7 +32,7 @@ import Compiler.Generate.MLIR.Patterns as Patterns
 import Compiler.Generate.MLIR.Types as Types
 import Compiler.LocalOpt.Typed.DecisionTree as DT
 import Dict
-import Mlir.Mlir as Mlir exposing (MlirAttr(..), MlirOp, MlirRegion(..), MlirType(..), Visibility(..))
+import Mlir.Mlir exposing (MlirOp, MlirRegion(..), MlirType(..))
 import OrderedDict
 import Utils.Crash exposing (crash)
 
@@ -296,7 +296,7 @@ setupVarMappings : Ctx.Context -> List ( String, MlirType ) -> List ( String, Ml
 setupVarMappings ctx originalParamPairs newBlockArgPairs =
     -- Zip the original and new pairs together, then update varMappings
     List.foldl
-        (\( ( origSsaName, origType ), ( newSsaName, newType ) ) accCtx ->
+        (\( ( origSsaName, _ ), ( newSsaName, newType ) ) accCtx ->
             -- Extract the Elm name by stripping the "%" prefix from the original SSA name
             let
                 elmName =
@@ -911,9 +911,6 @@ compileIfStep ctx loopSpec branches final resultType =
                 paramTypes =
                     List.map Tuple.second loopSpec.paramVars
 
-                stepResultTypes =
-                    List.map (\( _, t ) -> ( "", t )) (loopSpec.paramVars ++ [ ( "", I1 ), ( "", loopSpec.retType ) ])
-
                 -- Allocate fresh names for the case results
                 ( caseResultNames, ctxWithResults ) =
                     allocateFreshVars elseYieldCtx (numParams + 2)
@@ -989,7 +986,7 @@ compileLetStep ctx loopSpec def body =
             , ctx = bodyStep.ctx
             }
 
-        Mono.MonoTailDef _ _ defExpr ->
+        Mono.MonoTailDef _ _ _ ->
             -- Local tail-recursive definitions are not yet supported in TailRec
             -- Fall back to treating the entire let as a base return
             -- We compile the full let expression by generating it as an expression

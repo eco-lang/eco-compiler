@@ -1,4 +1,4 @@
-module TestLogic.Generate.CodeGen.CaseKindScrutinee exposing (expectCaseKindScrutinee, checkCaseKindScrutinee)
+module TestLogic.Generate.CodeGen.CaseKindScrutinee exposing (expectCaseKindScrutinee)
 
 {-| Test logic for CGEN\_043: Case Kind Scrutinee Type Agreement invariant.
 
@@ -10,7 +10,7 @@ module TestLogic.Generate.CodeGen.CaseKindScrutinee exposing (expectCaseKindScru
   - `case_kind="ctor"` requires `!eco.value` scrutinee
   - `case_kind="str"` requires `!eco.value` scrutinee
 
-@docs expectCaseKindScrutinee, checkCaseKindScrutinee
+@docs expectCaseKindScrutinee
 
 -}
 
@@ -48,11 +48,8 @@ checkCaseKindScrutinee mlirModule =
     let
         caseOps =
             findOpsNamed "eco.case" mlirModule
-
-        violations =
-            List.filterMap checkCaseOp caseOps
     in
-    violations
+    List.filterMap checkCaseOp caseOps
 
 
 checkCaseOp : MlirOp -> Maybe Violation

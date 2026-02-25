@@ -1,4 +1,4 @@
-module SourceIR.RecordCases exposing (expectSuite, testCases)
+module SourceIR.RecordCases exposing (expectSuite)
 
 {-| Tests for record expressions: creation, access, update.
 -}

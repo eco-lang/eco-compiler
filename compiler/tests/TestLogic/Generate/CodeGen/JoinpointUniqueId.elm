@@ -1,15 +1,15 @@
-module TestLogic.Generate.CodeGen.JoinpointUniqueId exposing (expectJoinpointUniqueId, checkJoinpointUniqueness)
+module TestLogic.Generate.CodeGen.JoinpointUniqueId exposing (expectJoinpointUniqueId)
 
 {-| Test logic for CGEN\_031: Joinpoint ID Uniqueness invariant.
 
 Within a single `func.func`, each `eco.joinpoint` id must be unique.
 
-@docs expectJoinpointUniqueId, checkJoinpointUniqueness
+@docs expectJoinpointUniqueId
 
 -}
 
 import Compiler.AST.Source as Src
-import Dict exposing (Dict)
+import Dict
 import Expect exposing (Expectation)
 import Mlir.Mlir exposing (MlirBlock, MlirModule, MlirOp, MlirRegion(..))
 import OrderedDict
@@ -43,11 +43,8 @@ checkJoinpointUniqueness mlirModule =
     let
         funcOps =
             findFuncOps mlirModule
-
-        violations =
-            List.concatMap checkFunctionJoinpoints funcOps
     in
-    violations
+    List.concatMap checkFunctionJoinpoints funcOps
 
 
 checkFunctionJoinpoints : MlirOp -> List Violation

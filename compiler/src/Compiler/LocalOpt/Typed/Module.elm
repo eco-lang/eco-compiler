@@ -29,7 +29,6 @@ import Compiler.Data.Name as Name
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.LocalOpt.Typed.Expression as Expr
 import Compiler.LocalOpt.Typed.Names as Names
-import Compiler.LocalOpt.Typed.NormalizeLambdaBoundaries as LambdaNorm
 import Compiler.LocalOpt.Typed.Port as Port
 import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Error.Main as E
@@ -139,9 +138,6 @@ finalizeNode node =
     let
         fin =
             identity
-
-        finalizeArg ( locName, argType ) =
-            ( locName, fin argType )
     in
     case node of
         TOpt.Define expr deps itype ->

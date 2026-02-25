@@ -1,4 +1,7 @@
-module TestLogic.Monomorphize.RegistryNodeTypeConsistency exposing (expectRegistryNodeTypeConsistency, checkRegistryNodeTypeConsistency)
+module TestLogic.Monomorphize.RegistryNodeTypeConsistency exposing
+    ( expectRegistryNodeTypeConsistency
+    , Violation
+    )
 
 {-| Test logic for MONO\_017: Registry type matches node type.
 
@@ -11,7 +14,7 @@ This invariant catches the "two type shapes floating around" bug where:
   - Node bodies are recorded with a different shape
   - Registry type diverges from actual node type
 
-@docs expectRegistryNodeTypeConsistency, checkRegistryNodeTypeConsistency
+@docs expectRegistryNodeTypeConsistency
 
 -}
 
@@ -55,7 +58,7 @@ expectRegistryNodeTypeConsistency srcModule =
 checkRegistryNodeTypeConsistency : Mono.MonoGraph -> List Violation
 checkRegistryNodeTypeConsistency (Mono.MonoGraph data) =
     Dict.foldl compare
-        (\specId ( global, regMonoType, maybeLambda ) acc ->
+        (\specId ( _, regMonoType, _ ) acc ->
             case Dict.get identity specId data.nodes of
                 Nothing ->
                     acc

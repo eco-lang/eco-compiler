@@ -1,4 +1,4 @@
-module SourceIR.AsPatternCases exposing (expectSuite, testCases)
+module SourceIR.AsPatternCases exposing (expectSuite)
 
 {-| Tests for as-patterns (alias patterns).
 -}
@@ -213,20 +213,6 @@ aliasOnRecordPattern expectFn _ =
     expectFn modul
 
 
-aliasOnSingleFieldRecord : (Src.Module -> Expectation) -> (() -> Expectation)
-aliasOnSingleFieldRecord expectFn _ =
-    let
-        modul =
-            makeModuleWithDefs "Test"
-                [ ( "getValue"
-                  , [ pAlias (pRecord [ "value" ]) "wrapper" ]
-                  , tupleExpr (varExpr "wrapper") (varExpr "value")
-                  )
-                ]
-    in
-    expectFn modul
-
-
 multipleRecordAliases : (Src.Module -> Expectation) -> (() -> Expectation)
 multipleRecordAliases expectFn _ =
     let
@@ -406,20 +392,6 @@ aliasInFunctionsCases expectFn =
     ]
 
 
-aliasInCaseBranch : (Src.Module -> Expectation) -> (() -> Expectation)
-aliasInCaseBranch expectFn _ =
-    let
-        case_ =
-            caseExpr (tupleExpr (intExpr 1) (intExpr 2))
-                [ ( pAlias (pTuple (pVar "a") (pVar "b")) "pair", varExpr "pair" )
-                ]
-
-        modul =
-            makeModule "testValue" case_
-    in
-    expectFn modul
-
-
 aliasInLetDestruct : (Src.Module -> Expectation) -> (() -> Expectation)
 aliasInLetDestruct expectFn _ =
     let
@@ -456,23 +428,6 @@ aliasAdditionalCases : (Src.Module -> Expectation) -> List TestCase
 aliasAdditionalCases expectFn =
     [ { label = "Alias with value", run = aliasWithValue expectFn }
     ]
-
-
-aliasPatternWithTupleValues : (Src.Module -> Expectation) -> (() -> Expectation)
-aliasPatternWithTupleValues expectFn _ =
-    let
-        fn =
-            define "f"
-                [ pAlias (pTuple (pVar "x") (pVar "y")) "pair" ]
-                (tupleExpr (varExpr "pair") (varExpr "x"))
-
-        call =
-            callExpr (varExpr "f") [ tupleExpr (intExpr 1) (intExpr 2) ]
-
-        modul =
-            makeModule "testValue" (letExpr [ fn ] call)
-    in
-    expectFn modul
 
 
 aliasWithValue : (Src.Module -> Expectation) -> (() -> Expectation)

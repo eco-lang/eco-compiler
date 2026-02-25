@@ -1,8 +1,8 @@
 module Compiler.Generate.MLIR.Types exposing
     ( ecoValue, ecoInt, ecoFloat, ecoChar
-    , canUnbox, monoTypeToAbi, monoTypeToOperand
+    , monoTypeToAbi, monoTypeToOperand
     , mlirTypeToString
-    , isFunctionType, functionArity, countTotalArity, flattenFunctionType, isEcoValueType
+    , isFunctionType, countTotalArity, flattenFunctionType, isEcoValueType
     , isUnboxable
     , RecordLayout, FieldInfo, TupleLayout, CtorLayout
     , computeRecordLayout, computeTupleLayout, computeCtorLayout
@@ -28,7 +28,7 @@ This module provides:
 These functions implement the invariant rules for type representation in different contexts.
 See design\_docs/invariants.csv for REP\_ABI\_001, REP\_CLOSURE\_001, REP\_SSA\_001, CGEN\_012.
 
-@docs canUnbox, monoTypeToAbi, monoTypeToOperand
+@docs monoTypeToAbi, monoTypeToOperand
 
 
 # Type String Conversion
@@ -38,7 +38,7 @@ See design\_docs/invariants.csv for REP\_ABI\_001, REP\_CLOSURE\_001, REP\_SSA\_
 
 # Function Type Utilities
 
-@docs isFunctionType, functionArity, countTotalArity, flattenFunctionType, isEcoValueType
+@docs isFunctionType, countTotalArity, flattenFunctionType, isEcoValueType
 
 
 # Primitive Type Checks
@@ -250,18 +250,6 @@ isFunctionType monoType =
 
         _ ->
             False
-
-
-{-| Count the arity of a function type (number of arrow levels).
--}
-functionArity : Mono.MonoType -> Int
-functionArity monoType =
-    case monoType of
-        Mono.MFunction _ result ->
-            1 + functionArity result
-
-        _ ->
-            0
 
 
 {-| Count the total number of arguments in a curried function type.

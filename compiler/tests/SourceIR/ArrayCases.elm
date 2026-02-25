@@ -1,4 +1,4 @@
-module SourceIR.ArrayCases exposing (expectSuite, testCases)
+module SourceIR.ArrayCases exposing (expectSuite)
 
 {-| Tests for Array functions that expose type variable scoping issues.
 

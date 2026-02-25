@@ -209,7 +209,7 @@ generateMonoPath ctx path targetType =
             , ctx3
             )
 
-        Mono.MonoUnbox resultType subPath ->
+        Mono.MonoUnbox _ subPath ->
             -- MonoUnbox represents unwrapping a single-constructor type (Can.Unbox).
             -- For types like `Wrapper = Wrap Int`, MonoUnbox extracts the inner value.
             -- The resultType is the type of the inner value (the single field's type).
@@ -368,7 +368,7 @@ lookupFieldInfoByCtorName ctx ctorName fieldIndex =
             EveryDict.values compare ctx.typeRegistry.ctorShapes
 
         allShapes =
-            List.concatMap identity allShapeLists
+            List.concat allShapeLists
 
         -- Flatten all shapes and find matching constructor
         matchingShape =
