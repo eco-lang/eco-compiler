@@ -1,251 +1,111 @@
-# Let-Polymorphism Multi-Specialization
+# Plan: Comparable Type Keys for Local Multi-Specialization Lookup
 
 ## Problem
 
-The current monomorphization produces **one** specialization for let-bound polymorphic functions, using `collectLocalCallSubst` to derive a single substitution from all call sites. When the same let-bound function is used at **two different concrete types** in one body:
+`findInstance` in `Specialize.elm` (line 2294) matches `MonoVarLocal` occurrences to their specialized `LocalFunInstance` using raw `MonoType` structural equality (`==`). When inner lets are later specialized, the `MonoVarLocal`'s type can become more concrete (e.g. `MInt`) while `LocalFunInstance.monoType` retains `MVar` placeholders. Structural `==` fails, leaving references unbound (MONO_011 violation).
 
-```elm
-let id x = x in (id 1, id "hello")
-```
+The global `SpecializationRegistry` avoids this by always comparing via `Mono.toComparableMonoType` keys. We adopt the same pattern for locals.
 
-...the single-substitution approach picks one mapping (`a -> MInt` or `a -> MString`) and applies it everywhere. This produces a single `id` with a mixed/incorrect ABI: one call site's `papExtend` result type won't match the callee's return type (CGEN_056 violation).
+## Scope
 
-## Solution
+All changes in **one file**: `compiler/src/Compiler/Monomorphize/Specialize.elm`.
 
-Clone the let-bound function **per distinct concrete instantiation**, giving each clone a fresh name, and rewrite calls in the body to target the appropriate clone.
-
-Conceptually:
-```elm
--- Before:
-let id x = x in (id 1, id "hello")
-
--- After:
-let id$0 : Int -> Int = \x -> x in
-let id$1 : String -> String = \x -> x in
-(id$0 1, id$1 "hello")
-```
-
-## File: `compiler/src/Compiler/Monomorphize/Specialize.elm`
-
-All changes are in this single file.
+No new imports needed — `Mono.toComparableMonoType : MonoType -> List String` is already available via `import Compiler.AST.Monomorphized as Mono` (line 16).
 
 ---
 
-### Step 1: Add `LocalFunInstance` type alias
+## Steps
 
-Add near the top of the file (after the `ProcessedArg` type around line 40):
+### Step 1: Extend `LocalFunInstance` with `typeKey`
+
+**Location:** `Specialize.elm:55-60`
+
+Add a `typeKey : List String` field:
 
 ```elm
 type alias LocalFunInstance =
     { origName : Name
     , freshName : Name
-    , monoType : Mono.MonoType   -- The monomorphic function type (MFunction [...] ...)
-    , subst : Substitution        -- The substitution used to specialize this instance
+    , monoType : Mono.MonoType
+    , typeKey : List String
+    , subst : Substitution
     }
 ```
 
-### Step 2: Add `collectLocalInstantiations` function
+### Step 2: Compute `typeKey` at instance construction
 
-Replace the existing `collectLocalCallSubst` + `collectCallSubstExpr` + `collectCallSubstFromCallSite` + `collectCallSubstDef` + `collectCallSubstDecider` + `collectCallSubstChoice` family of functions (~280 lines, lines 2056–2355) with a new `collectLocalInstantiations` function that returns a **list** of `(MonoType, Substitution)` pairs instead of a single merged substitution.
+**Location:** `Specialize.elm:912-947` (the `instances = ...` block in the `TOpt.Let` / `Can.TLambda` branch)
 
-The new function traverses the body expression tree (same recursive structure as the existing `collectCallSubstExpr`), but instead of merging all call-site substitutions into one `Dict`, it **accumulates a list** of `(funcMonoType, callSubst)` pairs — one per call site that targets `defName`.
-
-For each call `defName args` found in the body:
-1. Compute `argTypes` by `List.map (\arg -> Mono.forceCNumberToInt (TypeSubst.applySubst outerSubst (TOpt.typeOf arg))) args`
-2. Run `TypeSubst.unifyFuncCall defCanType argTypes callCanType outerSubst` to get `callSubst`
-3. Derive `funcMonoType = Mono.forceCNumberToInt (TypeSubst.applySubst callSubst defCanType)`
-4. Append `(funcMonoType, callSubst)` to the accumulator
-
-After traversal, **deduplicate** by `funcMonoType` using `Mono.toComparableMonoType`.
-
-The recursive structure mirrors the existing `collectCallSubstExpr` exactly — every branch recurses into subexpressions the same way, the only difference is the accumulator type (`List (MonoType, Substitution)` instead of `Substitution`) and the call-site handler (append to list instead of `Dict.union`).
-
-### Step 3: Modify the `TOpt.Let` branch in `specializeExpr`
-
-Replace lines 886–923 (the current `TOpt.Let` case) with new logic:
+In all three branches (no calls, single instantiation, multiple instantiations), compute `Mono.toComparableMonoType funcMT` and store as `typeKey`. Example for the multi-instance branch:
 
 ```elm
-TOpt.Let def body canType ->
+List.indexedMap
+    (\i ( funcMT, instSubst ) ->
+        { origName = defName
+        , freshName = defName ++ "$" ++ String.fromInt i
+        , monoType = funcMT
+        , typeKey = Mono.toComparableMonoType funcMT
+        , subst = instSubst
+        }
+    )
+    instPairs
+```
+
+Same pattern for the zero-calls and single-instantiation branches.
+
+### Step 3: Replace `findInstance` with key-based lookup
+
+**Location:** `Specialize.elm:2294-2304`
+
+Replace the body to compute the desired key once, then delegate to a helper:
+
+```elm
+findInstance : List LocalFunInstance -> Name -> Mono.MonoType -> Maybe Name
+findInstance instances name monoType =
     let
-        monoType =
-            Mono.forceCNumberToInt (TypeSubst.applySubst subst canType)
-
-        defName =
-            getDefName def
-
-        defCanType =
-            getDefCanonicalType def
+        desiredKey =
+            Mono.toComparableMonoType monoType
     in
-    case defCanType of
-        Can.TLambda _ _ ->
-            -- Function def: may need multi-specialization
-            let
-                instPairs =
-                    collectLocalInstantiations defName defCanType body subst
-
-                instances =
-                    if List.isEmpty instPairs then
-                        -- No calls found: single instance with outer subst
-                        [ { origName = defName
-                          , freshName = defName
-                          , monoType = Mono.forceCNumberToInt (TypeSubst.applySubst subst defCanType)
-                          , subst = subst
-                          }
-                        ]
-                    else if List.length instPairs == 1 then
-                        -- Single instantiation: keep original name
-                        case instPairs of
-                            [ ( funcMT, instSubst ) ] ->
-                                [ { origName = defName
-                                  , freshName = defName
-                                  , monoType = funcMT
-                                  , subst = instSubst
-                                  }
-                                ]
-                            _ ->
-                                -- unreachable
-                                []
-                    else
-                        -- Multiple instantiations: generate fresh names
-                        List.indexedMap
-                            (\i ( funcMT, instSubst ) ->
-                                { origName = defName
-                                , freshName = defName ++ "$" ++ String.fromInt i
-                                , monoType = funcMT
-                                , subst = instSubst
-                                }
-                            )
-                            instPairs
-
-                -- Specialize each instance into a MonoDef
-                ( instanceDefs, state1 ) =
-                    List.foldl
-                        (\inst ( defsAcc, stAcc ) ->
-                            let
-                                ( monoDef0, st1 ) =
-                                    specializeDef def inst.subst stAcc
-
-                                monoDef =
-                                    renameMonoDef inst.freshName monoDef0
-                            in
-                            ( monoDef :: defsAcc, st1 )
-                        )
-                        ( [], state )
-                        instances
-
-                -- Register varTypes for all instances
-                stateWithVars =
-                    List.foldl
-                        (\inst st ->
-                            { st | varTypes = Dict.insert identity inst.freshName inst.monoType st.varTypes }
-                        )
-                        state1
-                        instances
-
-                -- Specialize the body under the outer subst
-                ( monoBody, state2 ) =
-                    specializeExpr body subst stateWithVars
-
-                -- Rewrite MonoVarLocal/MonoCall references to use instance freshNames
-                monoBodyRewritten =
-                    if List.length instances > 1 then
-                        rewriteLocalCalls instances monoBody
-                    else
-                        monoBody
-
-                -- Build nested MonoLet chain
-                finalExpr =
-                    List.foldl
-                        (\def_ accBody -> Mono.MonoLet def_ accBody (Mono.typeOf accBody))
-                        monoBodyRewritten
-                        instanceDefs
-            in
-            ( finalExpr, state2 )
-
-        _ ->
-            -- Non-function let: original behavior
-            let
-                ( monoDef, state1 ) =
-                    specializeDef def subst state
-
-                defMonoType =
-                    Mono.forceCNumberToInt (TypeSubst.applySubst subst defCanType)
-
-                stateWithVar =
-                    { state1 | varTypes = Dict.insert identity defName defMonoType state1.varTypes }
-
-                ( monoBody, state2 ) =
-                    specializeExpr body subst stateWithVar
-            in
-            ( Mono.MonoLet monoDef monoBody monoType, state2 )
+    findInstanceWithKey instances name desiredKey
 ```
 
-### Step 4: Add helper `renameMonoDef`
+### Step 4: Add `findInstanceWithKey` helper
+
+**Location:** Insert after `findInstance` (after line 2304)
 
 ```elm
-renameMonoDef : Name -> Mono.MonoDef -> Mono.MonoDef
-renameMonoDef newName def =
-    case def of
-        Mono.MonoDef _ expr ->
-            Mono.MonoDef newName expr
+findInstanceWithKey : List LocalFunInstance -> Name -> List String -> Maybe Name
+findInstanceWithKey instances name desiredKey =
+    case instances of
+        [] ->
+            Nothing
 
-        Mono.MonoTailDef _ args expr ->
-            Mono.MonoTailDef newName args expr
+        inst :: rest ->
+            if inst.origName == name && inst.typeKey == desiredKey then
+                Just inst.freshName
+
+            else
+                findInstanceWithKey rest name desiredKey
 ```
 
-### Step 5: Add `rewriteLocalCalls`
+### Step 5: Verify no other changes needed
 
-This function walks the `MonoExpr` tree and replaces `MonoVarLocal origName monoType` with `MonoVarLocal freshName monoType` by matching the `origName` and `monoType` against the instance list.
+- `findInstanceByName` (line 2311): unchanged — TailCall lookup by name only is correct.
+- `rewriteLocalCalls` (line 2165): unchanged — already delegates to `findInstance`.
+- `rewriteLocalCalls` is only invoked when `List.length instances > 1` (line 983), so single-instance lets are unaffected.
+- `deduplicateByMonoType` (line 2353): already uses `Mono.toComparableMonoType` — semantically aligned.
 
-The matching logic: for a given `MonoVarLocal name monoType`, find the first `LocalFunInstance` where `inst.origName == name` and `inst.monoType == monoType`, then replace `name` with `inst.freshName`.
+### Step 6: Run tests
 
-The rewrite must recurse into all `MonoExpr` constructors (similar to `MonoTraverse` helpers or the pattern in `collectCallSubstExpr`). The key constructors to handle:
-
-- `MonoVarLocal name t` → check & rewrite name
-- `MonoCall region func args resultType callInfo` → rewrite func (if VarLocal), recurse into args
-- `MonoLet def body t` → recurse into def body and body
-- `MonoIf branches final t` → recurse
-- `MonoCase` → recurse into branches
-- `MonoClosure info body t` → recurse into body
-- `MonoList`, `MonoTupleCreate`, `MonoRecordCreate`, `MonoRecordUpdate`, `MonoRecordAccess` → recurse
-- `MonoDestruct` → recurse into body
-- `MonoTailCall` → rewrite named args
-- Literals, Unit, VarGlobal, VarKernel → return unchanged
-
-For `MonoType` comparison, use structural equality (Elm's `==` on the MonoType ADT). This is safe because both the instance's `monoType` and the `MonoVarLocal`'s type were produced by the same `applySubst`/`forceCNumberToInt` pipeline.
-
-### Step 6: Remove old `collectLocalCallSubst` family
-
-Delete the following functions which are now replaced by `collectLocalInstantiations`:
-- `collectLocalCallSubst` (lines 2071–2078)
-- `collectCallSubstExpr` (lines 2081–2276)
-- `collectCallSubstFromCallSite` (lines 2278–2303)
-- `collectCallSubstDef` (lines 2305–2321)
-- `collectCallSubstDecider` (lines 2323–2355)
-- `collectCallSubstChoice` (lines 2357–end)
+1. `cd compiler && npx elm-test-rs --fuzz 1` — frontend tests (includes `letWithFunctionCallingAnother` in LetCases.elm).
+2. `cmake --build build --target check` — full E2E tests.
 
 ---
 
-## Edge Cases
+## Resolved Assumptions
 
-1. **Single instantiation**: When `instPairs` has length 1, we keep the original name — no rename needed, no rewrite needed. Behavior is identical to the current single-substitution approach but with the correct call-site-derived substitution.
+1. **Single-instance skip is safe.** Confirmed. `rewriteLocalCalls` is gated on `List.length instances > 1` (line 983). For single instances, `freshName == origName`, so no rewriting is needed.
 
-2. **Zero call sites** (function defined but never called in body): `instPairs` is empty. Fallback to a single instance with `subst`, same as current behavior. The function will be dead code but that's fine.
+2. **`toComparableMonoType` normalization is consistent.** Confirmed. Both sides go through `forceCNumberToInt` + `applySubst` — no asymmetric transformations exist.
 
-3. **Higher-order uses** (passing `id` to another function without calling it directly): If `id` appears as `VarLocal` but NOT as the callee of a `Call`, `collectLocalInstantiations` won't find it. This is handled by the fallback: if there are zero call-site instantiations, we specialize once with `subst`. If there ARE call-site instantiations AND a higher-order use, the higher-order use gets the outer `subst`-derived type via `specializeExpr` on the `VarLocal` node — the rewrite pass will find the closest matching instance by type, or leave the name unchanged if no match.
-
-4. **Non-function let bindings**: Handled by the `_ ->` branch — completely unchanged from current behavior.
-
-5. **TailDef**: `specializeDef` already handles `TailDef` correctly. `renameMonoDef` handles both `MonoDef` and `MonoTailDef`. The fresh name propagates through `MonoTailCall` via the `rewriteLocalCalls` pass (which must also handle `MonoTailCall` name rewriting).
-
-6. **Nested lets**: Each `TOpt.Let` is processed independently during `specializeExpr` recursion. Inner lets with polymorphic functions get their own `collectLocalInstantiations` call. The outer let's instances are already resolved by the time the inner let is processed.
-
----
-
-## Questions for Implementation
-
-1. **MonoType equality for matching**: Using Elm's structural `==` on `MonoType` should be correct since both sides come from the same `applySubst`/`forceCNumberToInt` pipeline. Should we use `toComparableMonoType` instead for robustness?
-
-2. **`rewriteLocalCalls` scope**: The rewrite should only apply to instances from the current let, not interfere with any outer lets that might have the same original name. Since each let's instances have unique freshNames and we only rewrite when `origName` and `monoType` both match, this should be safe — but worth verifying.
-
-3. **Interaction with `callSubst` in the `_ ->` Call branch**: When `specializeExpr` processes a `Call` to a local function (lines 828–861), it uses `callSubst` (from `unifyFuncCall`) to specialize the `func` expression. For `VarLocal`, this produces `MonoVarLocal name (applySubst callSubst canType)`. This is exactly the per-call-site `monoType` that `collectLocalInstantiations` computed. So the rewrite will find the right instance. **This is the critical linkage that makes the design work.**
+3. **No new regression test needed.** Confirmed. Existing `letWithFunctionCallingAnother` test in LetCases.elm covers the failing scenario.

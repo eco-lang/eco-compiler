@@ -1,5 +1,6 @@
 module Compiler.Monomorphize.State exposing
     ( MonoState, WorkItem(..), Substitution, VarTypes
+    , LocalInstanceInfo, LocalMultiState
     , initState
     )
 
@@ -46,6 +47,7 @@ type alias MonoState =
     , currentGlobal : Maybe Mono.Global
     , globalTypeEnv : TypeEnv.GlobalTypeEnv
     , varTypes : VarTypes -- Mapping of variable names to their MonoTypes
+    , localMulti : List LocalMultiState
     }
 
 
@@ -67,6 +69,28 @@ type alias VarTypes =
     Dict String Name Mono.MonoType
 
 
+{-| Information about a single local function instance discovered during
+specialization of a particular let-bound function.
+-}
+type alias LocalInstanceInfo =
+    { freshName : Name
+    , monoType : Mono.MonoType
+    , subst : Substitution
+    }
+
+
+{-| Per-let state for local multi-specialization.
+
+    - defName  : the let-bound function we're currently multi-specializing
+    - instances: all discovered (typeKey -> instance) mappings for this let,
+                 keyed by Mono.toComparableMonoType of the instance type.
+-}
+type alias LocalMultiState =
+    { defName : Name
+    , instances : Dict (List String) (List String) LocalInstanceInfo
+    }
+
+
 {-| Initialize the monomorphization state with empty worklist and registry.
 -}
 initState : IO.Canonical -> Dict (List String) TOpt.Global TOpt.Node -> TypeEnv.GlobalTypeEnv -> MonoState
@@ -81,4 +105,5 @@ initState currentModule toptNodes globalTypeEnv =
     , currentGlobal = Nothing
     , globalTypeEnv = globalTypeEnv
     , varTypes = Dict.empty
+    , localMulti = []
     }

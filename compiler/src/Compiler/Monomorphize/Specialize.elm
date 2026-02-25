@@ -24,7 +24,7 @@ import Compiler.LocalOpt.Typed.DecisionTree as DT
 import Compiler.Monomorphize.Analysis as Analysis
 import Compiler.Monomorphize.Closure as Closure
 import Compiler.Monomorphize.KernelAbi as KernelAbi
-import Compiler.Monomorphize.State exposing (MonoState, Substitution, VarTypes, WorkItem(..))
+import Compiler.Monomorphize.State exposing (MonoState, Substitution, VarTypes, WorkItem(..), LocalInstanceInfo, LocalMultiState)
 import Compiler.Monomorphize.TypeSubst as TypeSubst
 import Compiler.Reporting.Annotation as A
 import Data.Map as Dict exposing (Dict)
@@ -52,6 +52,89 @@ type ProcessedArg
     | PendingAccessor A.Region Name Can.Type
     | PendingKernel A.Region String String Can.Type
 
+
+{-| Check if the given name matches any active localMulti context in the stack.
+-}
+isLocalMultiTarget : Name -> MonoState -> Bool
+isLocalMultiTarget name state =
+    List.any (\ls -> ls.defName == name) state.localMulti
+
+
+{-| Allocate or reuse a local function instance for a let-bound function.
+
+    Searches the localMulti stack for the entry matching `defName`, and
+    either returns an existing instance or creates a new one.
+-}
+getOrCreateLocalInstance :
+    Name
+    -> Mono.MonoType
+    -> Substitution
+    -> MonoState
+    -> ( Name, MonoState )
+getOrCreateLocalInstance defName funcMonoType callSubst state =
+    let
+        key =
+            Mono.toComparableMonoType funcMonoType
+
+        ( updatedStack, freshName ) =
+            updateLocalMultiStack defName key funcMonoType callSubst state.localMulti
+    in
+    ( freshName, { state | localMulti = updatedStack } )
+
+
+{-| Walk the localMulti stack, find the entry for defName, and update it.
+-}
+updateLocalMultiStack :
+    Name
+    -> List String
+    -> Mono.MonoType
+    -> Substitution
+    -> List LocalMultiState
+    -> ( List LocalMultiState, Name )
+updateLocalMultiStack defName key funcMonoType callSubst stack =
+    case stack of
+        [] ->
+            Utils.Crash.crash
+                ("Specialize.updateLocalMultiStack: defName not found in stack: " ++ defName)
+
+        localState :: rest ->
+            if localState.defName == defName then
+                case Dict.get identity key localState.instances of
+                    Just info ->
+                        ( stack, info.freshName )
+
+                    Nothing ->
+                        let
+                            freshIndex =
+                                Dict.size localState.instances
+
+                            freshName =
+                                if freshIndex == 0 then
+                                    defName
+
+                                else
+                                    defName ++ "$" ++ String.fromInt freshIndex
+
+                            newInfo =
+                                { freshName = freshName
+                                , monoType = funcMonoType
+                                , subst = callSubst
+                                }
+
+                            newInstances =
+                                Dict.insert identity key newInfo localState.instances
+
+                            newLocalState =
+                                { localState | instances = newInstances }
+                        in
+                        ( newLocalState :: rest, freshName )
+
+            else
+                let
+                    ( updatedRest, freshName ) =
+                        updateLocalMultiStack defName key funcMonoType callSubst rest
+                in
+                ( localState :: updatedRest, freshName )
 
 
 {-| Specialize a lambda expression (Function or TrackedFunction).
@@ -589,14 +672,30 @@ specializeExpr expr subst state =
                 monoType =
                     Mono.forceCNumberToInt (TypeSubst.applySubst subst canType)
             in
-            ( Mono.MonoVarLocal name monoType, state )
+            if isLocalMultiTarget name state then
+                let
+                    ( freshName, state1 ) =
+                        getOrCreateLocalInstance name monoType subst state
+                in
+                ( Mono.MonoVarLocal freshName monoType, state1 )
+
+            else
+                ( Mono.MonoVarLocal name monoType, state )
 
         TOpt.TrackedVarLocal _ name canType ->
             let
                 monoType =
                     Mono.forceCNumberToInt (TypeSubst.applySubst subst canType)
             in
-            ( Mono.MonoVarLocal name monoType, state )
+            if isLocalMultiTarget name state then
+                let
+                    ( freshName, state1 ) =
+                        getOrCreateLocalInstance name monoType subst state
+                in
+                ( Mono.MonoVarLocal freshName monoType, state1 )
+
+            else
+                ( Mono.MonoVarLocal name monoType, state )
 
         TOpt.VarGlobal region global canType ->
             let
@@ -850,15 +949,51 @@ specializeExpr expr subst state =
                         ( monoArgs, state2 ) =
                             resolveProcessedArgs processedArgs paramTypes callSubst state1
 
-                        -- Now specialize the callee expression itself under the unified substitution.
-                        ( monoFunc, state3 ) =
-                            specializeExpr func callSubst state2
-
                         -- Call result type, also under the unified substitution.
                         resultMonoType =
                             Mono.forceCNumberToInt (TypeSubst.applySubst callSubst canType)
                     in
-                    ( Mono.MonoCall region monoFunc monoArgs resultMonoType Mono.defaultCallInfo, state3 )
+                    let
+                        localMultiName =
+                            case func of
+                                TOpt.VarLocal name _ ->
+                                    if isLocalMultiTarget name state2 then
+                                        Just name
+
+                                    else
+                                        Nothing
+
+                                TOpt.TrackedVarLocal _ name _ ->
+                                    if isLocalMultiTarget name state2 then
+                                        Just name
+
+                                    else
+                                        Nothing
+
+                                _ ->
+                                    Nothing
+                    in
+                    case localMultiName of
+                        Just name ->
+                            let
+                                ( freshName, state3 ) =
+                                    getOrCreateLocalInstance name funcMonoType callSubst state2
+
+                                monoFunc =
+                                    Mono.MonoVarLocal freshName funcMonoType
+                            in
+                            ( Mono.MonoCall region monoFunc monoArgs resultMonoType Mono.defaultCallInfo
+                            , state3
+                            )
+
+                        Nothing ->
+                            let
+                                ( monoFunc, state3 ) =
+                                    specializeExpr func callSubst state2
+                            in
+                            ( Mono.MonoCall region monoFunc monoArgs resultMonoType Mono.defaultCallInfo
+                            , state3
+                            )
 
         TOpt.TailCall name args canType ->
             let
@@ -893,34 +1028,122 @@ specializeExpr expr subst state =
 
                 defCanType =
                     getDefCanonicalType def
-
-                -- MONO_020: For function defs, collect call-site substitution
-                -- to ensure the local function's MonoType is fully concrete.
-                substForDef =
-                    case defCanType of
-                        Can.TLambda _ _ ->
-                            let
-                                extraSubst =
-                                    collectLocalCallSubst defName defCanType body subst
-                            in
-                            Dict.union extraSubst subst
-
-                        _ ->
-                            subst
-
-                ( monoDef, state1 ) =
-                    specializeDef def substForDef state
-
-                defMonoType =
-                    Mono.forceCNumberToInt (TypeSubst.applySubst substForDef defCanType)
-
-                stateWithVar =
-                    { state1 | varTypes = Dict.insert identity defName defMonoType state1.varTypes }
-
-                ( monoBody, state2 ) =
-                    specializeExpr body subst stateWithVar
             in
-            ( Mono.MonoLet monoDef monoBody monoType, state2 )
+            case defCanType of
+                Can.TLambda _ _ ->
+                    -- Function def: demand-driven local multi-specialization.
+                    -- Push a fresh entry onto the localMulti stack for this defName.
+                    let
+                        newEntry =
+                            { defName = defName
+                            , instances = Dict.empty
+                            }
+
+                        stateForBody =
+                            { state | localMulti = newEntry :: state.localMulti }
+
+                        -- Specialize the body under the outer substitution,
+                        -- with the new localMulti stack entry for this defName.
+                        ( monoBody, stateAfterBody ) =
+                            specializeExpr body subst stateForBody
+                    in
+                    -- Pop our entry from the stack and extract discovered instances.
+                    case stateAfterBody.localMulti of
+                        topEntry :: restOfStack ->
+                            if Dict.isEmpty topEntry.instances then
+                                -- No calls to this def were recorded in the body:
+                                -- fall back to single-instance behavior using the original name.
+                                let
+                                    -- Keep restOfStack so outer contexts are visible during specializeDef
+                                    ( monoDef, state1 ) =
+                                        specializeDef def subst { stateAfterBody | localMulti = restOfStack }
+
+                                    defMonoType =
+                                        Mono.forceCNumberToInt (TypeSubst.applySubst subst defCanType)
+
+                                    stateWithVar =
+                                        { state1 | varTypes = Dict.insert identity defName defMonoType state1.varTypes }
+                                in
+                                ( Mono.MonoLet monoDef monoBody monoType, stateWithVar )
+
+                            else
+                                -- We have one or more concrete instances discovered from call sites.
+                                let
+                                    instancesList =
+                                        Dict.values compare topEntry.instances
+
+                                    -- Build MonoDefs for each instance, using the call-site substitution.
+                                    -- Keep restOfStack so outer contexts are visible.
+                                    ( instanceDefs, stateWithDefs ) =
+                                        List.foldl
+                                            (\info ( defsAcc, stAcc ) ->
+                                                let
+                                                    mergedSubst =
+                                                        Dict.union info.subst subst
+
+                                                    ( monoDef0, st1 ) =
+                                                        specializeDef def mergedSubst stAcc
+
+                                                    monoDef =
+                                                        renameMonoDef info.freshName monoDef0
+                                                in
+                                                ( monoDef :: defsAcc, st1 )
+                                            )
+                                            ( [], { stateAfterBody | localMulti = restOfStack } )
+                                            instancesList
+
+                                    -- Register varTypes for all instances
+                                    stateWithVars =
+                                        List.foldl
+                                            (\info st ->
+                                                { st
+                                                    | varTypes =
+                                                        Dict.insert identity info.freshName info.monoType st.varTypes
+                                                }
+                                            )
+                                            stateWithDefs
+                                            instancesList
+
+                                    -- Build nested MonoLet chain
+                                    finalExpr =
+                                        List.foldl
+                                            (\def_ accBody -> Mono.MonoLet def_ accBody (Mono.typeOf accBody))
+                                            monoBody
+                                            instanceDefs
+                                in
+                                ( finalExpr, stateWithVars )
+
+                        [] ->
+                            -- Should not happen: we pushed an entry above.
+                            -- Fall back to single-instance behavior.
+                            let
+                                ( monoDef, state1 ) =
+                                    specializeDef def subst stateAfterBody
+
+                                defMonoType =
+                                    Mono.forceCNumberToInt (TypeSubst.applySubst subst defCanType)
+
+                                stateWithVar =
+                                    { state1 | varTypes = Dict.insert identity defName defMonoType state1.varTypes }
+                            in
+                            ( Mono.MonoLet monoDef monoBody monoType, stateWithVar )
+
+                _ ->
+                    -- Non-function let: original behavior
+                    let
+                        ( monoDef, state1 ) =
+                            specializeDef def subst state
+
+                        defMonoType =
+                            Mono.forceCNumberToInt (TypeSubst.applySubst subst defCanType)
+
+                        stateWithVar =
+                            { state1 | varTypes = Dict.insert identity defName defMonoType state1.varTypes }
+
+                        ( monoBody, state2 ) =
+                            specializeExpr body subst stateWithVar
+                    in
+                    ( Mono.MonoLet monoDef monoBody monoType, state2 )
 
         TOpt.Destruct destructor body canType ->
             let
@@ -2053,322 +2276,145 @@ toptGlobalToMono (TOpt.Global canonical name) =
 
 
 
--- ========== LOCAL FUNCTION SPECIALIZATION ==========
+-- ========== LOCAL FUNCTION CLONE HELPERS ==========
 
 
-{-| Collect an additional substitution for a local function `defName`
-based on all calls to it in `bodyExpr` at this specialization.
-
-The intent is to discover mappings like `a ↦ MInt` for `id2 : a -> a`
-when we see calls `id2 42` in this body.
-
-`outerSubst` is the current substitution for the enclosing global.
-
-MONO\_020: After monomorphization, every user-defined local function
-or lambda (non-kernel) that is reachable from MLIR codegen has no MVar with
-CEcoValue constraint in its MFunction parameter or result positions.
+{-| Rename a MonoDef to use a fresh name (for multi-specialization clones).
 -}
-collectLocalCallSubst :
-    Name
-    -> Can.Type
-    -> TOpt.Expr
-    -> Substitution
-    -> Substitution
-collectLocalCallSubst defName defCanType bodyExpr outerSubst =
-    collectCallSubstExpr defName defCanType outerSubst bodyExpr Dict.empty
-
-
-collectCallSubstExpr :
-    Name
-    -> Can.Type
-    -> Substitution
-    -> TOpt.Expr
-    -> Substitution
-    -> Substitution
-collectCallSubstExpr defName defCanType outerSubst expr accSubst =
-    case expr of
-        TOpt.Call _ func args canType ->
-            let
-                -- First check if this call targets our defName
-                acc1 =
-                    case func of
-                        TOpt.VarLocal name _ ->
-                            if name == defName then
-                                collectCallSubstFromCallSite defName defCanType outerSubst args canType accSubst
-
-                            else
-                                accSubst
-
-                        TOpt.TrackedVarLocal _ name _ ->
-                            if name == defName then
-                                collectCallSubstFromCallSite defName defCanType outerSubst args canType accSubst
-
-                            else
-                                accSubst
-
-                        _ ->
-                            accSubst
-
-                -- Recurse into func expression
-                acc2 =
-                    collectCallSubstExpr defName defCanType outerSubst func acc1
-
-                -- Recurse into args
-                acc3 =
-                    List.foldl
-                        (\arg acc -> collectCallSubstExpr defName defCanType outerSubst arg acc)
-                        acc2
-                        args
-            in
-            acc3
-
-        TOpt.Let innerDef innerBody _ ->
-            let
-                -- Recurse into the def's body expression
-                acc1 =
-                    collectCallSubstDef defName defCanType outerSubst innerDef accSubst
-
-                -- Recurse into the let body
-                acc2 =
-                    collectCallSubstExpr defName defCanType outerSubst innerBody acc1
-            in
-            acc2
-
-        TOpt.If branches final _ ->
-            let
-                acc1 =
-                    List.foldl
-                        (\( cond, then_ ) acc ->
-                            let
-                                accA =
-                                    collectCallSubstExpr defName defCanType outerSubst cond acc
-                            in
-                            collectCallSubstExpr defName defCanType outerSubst then_ accA
-                        )
-                        accSubst
-                        branches
-
-                acc2 =
-                    collectCallSubstExpr defName defCanType outerSubst final acc1
-            in
-            acc2
-
-        TOpt.Case _ _ decider jumps _ ->
-            let
-                acc1 =
-                    collectCallSubstDecider defName defCanType outerSubst decider accSubst
-
-                acc2 =
-                    List.foldl
-                        (\( _, jumpExpr ) acc ->
-                            collectCallSubstExpr defName defCanType outerSubst jumpExpr acc
-                        )
-                        acc1
-                        jumps
-            in
-            acc2
-
-        TOpt.Destruct _ destBody _ ->
-            collectCallSubstExpr defName defCanType outerSubst destBody accSubst
-
-        TOpt.List _ exprs _ ->
-            List.foldl
-                (\e acc -> collectCallSubstExpr defName defCanType outerSubst e acc)
-                accSubst
-                exprs
-
-        TOpt.Tuple _ a b rest _ ->
-            let
-                acc1 =
-                    collectCallSubstExpr defName defCanType outerSubst a accSubst
-
-                acc2 =
-                    collectCallSubstExpr defName defCanType outerSubst b acc1
-            in
-            List.foldl
-                (\e acc -> collectCallSubstExpr defName defCanType outerSubst e acc)
-                acc2
-                rest
-
-        TOpt.Record fields _ ->
-            Dict.foldl compare
-                (\_ fieldExpr acc -> collectCallSubstExpr defName defCanType outerSubst fieldExpr acc)
-                accSubst
-                fields
-
-        TOpt.TrackedRecord _ fields _ ->
-            Dict.foldl A.compareLocated
-                (\_ fieldExpr acc -> collectCallSubstExpr defName defCanType outerSubst fieldExpr acc)
-                accSubst
-                fields
-
-        TOpt.Update _ record updates _ ->
-            let
-                acc1 =
-                    collectCallSubstExpr defName defCanType outerSubst record accSubst
-            in
-            Dict.foldl A.compareLocated
-                (\_ updateExpr acc -> collectCallSubstExpr defName defCanType outerSubst updateExpr acc)
-                acc1
-                updates
-
-        TOpt.Access record _ _ _ ->
-            collectCallSubstExpr defName defCanType outerSubst record accSubst
-
-        TOpt.Function _ funcBody _ ->
-            collectCallSubstExpr defName defCanType outerSubst funcBody accSubst
-
-        TOpt.TrackedFunction _ funcBody _ ->
-            collectCallSubstExpr defName defCanType outerSubst funcBody accSubst
-
-        TOpt.TailCall _ namedArgs _ ->
-            List.foldl
-                (\( _, argExpr ) acc -> collectCallSubstExpr defName defCanType outerSubst argExpr acc)
-                accSubst
-                namedArgs
-
-        -- Leaf nodes: no recursion needed
-        TOpt.Bool _ _ _ ->
-            accSubst
-
-        TOpt.Chr _ _ _ ->
-            accSubst
-
-        TOpt.Str _ _ _ ->
-            accSubst
-
-        TOpt.Int _ _ _ ->
-            accSubst
-
-        TOpt.Float _ _ _ ->
-            accSubst
-
-        TOpt.VarLocal _ _ ->
-            accSubst
-
-        TOpt.TrackedVarLocal _ _ _ ->
-            accSubst
-
-        TOpt.VarGlobal _ _ _ ->
-            accSubst
-
-        TOpt.VarEnum _ _ _ _ ->
-            accSubst
-
-        TOpt.VarBox _ _ _ ->
-            accSubst
-
-        TOpt.VarCycle _ _ _ _ ->
-            accSubst
-
-        TOpt.VarDebug _ _ _ _ _ ->
-            accSubst
-
-        TOpt.VarKernel _ _ _ _ ->
-            accSubst
-
-        TOpt.Accessor _ _ _ ->
-            accSubst
-
-        TOpt.Unit _ ->
-            accSubst
-
-        TOpt.Shader _ _ _ _ ->
-            accSubst
-
-
-{-| Process a single call site to defName, deriving substitution mappings
-from the argument types and result type.
--}
-collectCallSubstFromCallSite :
-    Name
-    -> Can.Type
-    -> Substitution
-    -> List TOpt.Expr
-    -> Can.Type
-    -> Substitution
-    -> Substitution
-collectCallSubstFromCallSite _ defCanType outerSubst args callCanType accSubst =
-    let
-        -- Compute arg MonoTypes from outer subst (lightweight, no MonoState needed)
-        argTypes =
-            List.map
-                (\arg -> Mono.forceCNumberToInt (TypeSubst.applySubst outerSubst (TOpt.typeOf arg)))
-                args
-
-        -- Use existing unification machinery to derive call-site substitution
-        callSubst =
-            TypeSubst.unifyFuncCall defCanType argTypes callCanType outerSubst
-    in
-    -- Union call-site mappings into accumulator; new mappings take precedence
-    Dict.union callSubst accSubst
-
-
-{-| Recurse into a TOpt.Def's body expression to find calls to defName.
--}
-collectCallSubstDef :
-    Name
-    -> Can.Type
-    -> Substitution
-    -> TOpt.Def
-    -> Substitution
-    -> Substitution
-collectCallSubstDef defName defCanType outerSubst def accSubst =
+renameMonoDef : Name -> Mono.MonoDef -> Mono.MonoDef
+renameMonoDef newName def =
     case def of
-        TOpt.Def _ _ defBody _ ->
-            collectCallSubstExpr defName defCanType outerSubst defBody accSubst
+        Mono.MonoDef _ expr ->
+            Mono.MonoDef newName expr
 
-        TOpt.TailDef _ _ _ defBody _ ->
-            collectCallSubstExpr defName defCanType outerSubst defBody accSubst
+        Mono.MonoTailDef oldName args expr ->
+            Mono.MonoTailDef newName args (renameTailCalls oldName newName expr)
 
 
-{-| Recurse into a Decider tree to find calls to defName.
+{-| Rename self tail-calls from oldName to newName in a MonoExpr.
+
+Used when cloning MonoTailDef for local multi-specialization so that
+each cloned definition's internal MonoTailCall refers to its own name.
 -}
-collectCallSubstDecider :
-    Name
-    -> Can.Type
-    -> Substitution
-    -> TOpt.Decider TOpt.Choice
-    -> Substitution
-    -> Substitution
-collectCallSubstDecider defName defCanType outerSubst decider accSubst =
+renameTailCalls : Name -> Name -> Mono.MonoExpr -> Mono.MonoExpr
+renameTailCalls oldName newName expr =
+    case expr of
+        Mono.MonoTailCall name args resultType ->
+            Mono.MonoTailCall
+                (if name == oldName then
+                    newName
+
+                 else
+                    name
+                )
+                (List.map (\( n, e ) -> ( n, renameTailCalls oldName newName e )) args)
+                resultType
+
+        Mono.MonoCall region func args resultType callInfo ->
+            Mono.MonoCall region
+                (renameTailCalls oldName newName func)
+                (List.map (renameTailCalls oldName newName) args)
+                resultType
+                callInfo
+
+        Mono.MonoIf branches final resultType ->
+            Mono.MonoIf
+                (List.map (\( c, t ) -> ( renameTailCalls oldName newName c, renameTailCalls oldName newName t )) branches)
+                (renameTailCalls oldName newName final)
+                resultType
+
+        Mono.MonoLet def_ body resultType ->
+            let
+                newDef =
+                    case def_ of
+                        Mono.MonoDef n bound ->
+                            Mono.MonoDef n (renameTailCalls oldName newName bound)
+
+                        Mono.MonoTailDef n params bound ->
+                            Mono.MonoTailDef
+                                (if n == oldName then
+                                    newName
+
+                                 else
+                                    n
+                                )
+                                params
+                                (renameTailCalls oldName newName bound)
+            in
+            Mono.MonoLet newDef (renameTailCalls oldName newName body) resultType
+
+        Mono.MonoClosure info body closureType ->
+            Mono.MonoClosure info (renameTailCalls oldName newName body) closureType
+
+        Mono.MonoList region items t ->
+            Mono.MonoList region (List.map (renameTailCalls oldName newName) items) t
+
+        Mono.MonoTupleCreate region items t ->
+            Mono.MonoTupleCreate region (List.map (renameTailCalls oldName newName) items) t
+
+        Mono.MonoRecordCreate fields t ->
+            Mono.MonoRecordCreate
+                (List.map (\( n, e ) -> ( n, renameTailCalls oldName newName e )) fields)
+                t
+
+        Mono.MonoRecordUpdate record updates t ->
+            Mono.MonoRecordUpdate
+                (renameTailCalls oldName newName record)
+                (List.map (\( n, e ) -> ( n, renameTailCalls oldName newName e )) updates)
+                t
+
+        Mono.MonoRecordAccess record fieldName t ->
+            Mono.MonoRecordAccess (renameTailCalls oldName newName record) fieldName t
+
+        Mono.MonoDestruct destructor body t ->
+            Mono.MonoDestruct destructor (renameTailCalls oldName newName body) t
+
+        Mono.MonoCase scrutName scrutVar decider jumps t ->
+            Mono.MonoCase scrutName scrutVar
+                (renameTailCallsDecider oldName newName decider)
+                (List.map (\( i, e ) -> ( i, renameTailCalls oldName newName e )) jumps)
+                t
+
+        -- Leaf nodes: unchanged
+        Mono.MonoLiteral _ _ ->
+            expr
+
+        Mono.MonoVarLocal _ _ ->
+            expr
+
+        Mono.MonoVarGlobal _ _ _ ->
+            expr
+
+        Mono.MonoVarKernel _ _ _ _ ->
+            expr
+
+        Mono.MonoUnit ->
+            expr
+
+
+renameTailCallsDecider : Name -> Name -> Mono.Decider Mono.MonoChoice -> Mono.Decider Mono.MonoChoice
+renameTailCallsDecider oldName newName decider =
     case decider of
-        TOpt.Leaf choice ->
-            collectCallSubstChoice defName defCanType outerSubst choice accSubst
+        Mono.Leaf choice ->
+            Mono.Leaf (renameTailCallsChoice oldName newName choice)
 
-        TOpt.Chain _ success failure ->
-            let
-                acc1 =
-                    collectCallSubstDecider defName defCanType outerSubst success accSubst
-            in
-            collectCallSubstDecider defName defCanType outerSubst failure acc1
+        Mono.Chain tests success failure ->
+            Mono.Chain tests
+                (renameTailCallsDecider oldName newName success)
+                (renameTailCallsDecider oldName newName failure)
 
-        TOpt.FanOut _ edges fallback ->
-            let
-                acc1 =
-                    List.foldl
-                        (\( _, edgeDecider ) acc ->
-                            collectCallSubstDecider defName defCanType outerSubst edgeDecider acc
-                        )
-                        accSubst
-                        edges
-            in
-            collectCallSubstDecider defName defCanType outerSubst fallback acc1
+        Mono.FanOut path edges fallback ->
+            Mono.FanOut path
+                (List.map (\( test, d ) -> ( test, renameTailCallsDecider oldName newName d )) edges)
+                (renameTailCallsDecider oldName newName fallback)
 
 
-{-| Recurse into a Choice to find calls to defName.
--}
-collectCallSubstChoice :
-    Name
-    -> Can.Type
-    -> Substitution
-    -> TOpt.Choice
-    -> Substitution
-    -> Substitution
-collectCallSubstChoice defName defCanType outerSubst choice accSubst =
+renameTailCallsChoice : Name -> Name -> Mono.MonoChoice -> Mono.MonoChoice
+renameTailCallsChoice oldName newName choice =
     case choice of
-        TOpt.Inline inlineExpr ->
-            collectCallSubstExpr defName defCanType outerSubst inlineExpr accSubst
+        Mono.Inline e ->
+            Mono.Inline (renameTailCalls oldName newName e)
 
-        TOpt.Jump _ ->
-            accSubst
+        Mono.Jump i ->
+            Mono.Jump i
+
