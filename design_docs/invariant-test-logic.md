@@ -1464,6 +1464,25 @@ inputs: MLIR with closure applications including both saturated and partial appl
 oracle: Every saturated eco.papExtend has a result type matching the callee func.func's return type; any mismatch is a codegen bug.
 tests: compiler/tests/Compiler/Generate/CodeGen/PapExtendResultTest.elm
 --
+--
+name: Kernel declaration completeness
+phase: MLIR codegen
+invariants: CGEN_057
+ir: func.func declarations, eco.papCreate, eco.papExtend, eco.call ops
+logic: For every kernel function symbol (Elm_Kernel_*) referenced in the MLIR module:
+  * Build a set of func.func declarations that have is_kernel=true.
+  * For each eco.papCreate, check the "function" attribute: if it starts with
+    "Elm_Kernel_", assert a matching func.func is_kernel=true declaration exists.
+  * For each eco.papExtend, check the "function" attribute (if present): same check.
+  * For each eco.call, check the "callee" attribute: if it references an
+    Elm_Kernel_* symbol, assert a matching func.func is_kernel=true declaration exists.
+inputs: MLIR from programs using kernel functions (List operations, Basics arithmetic,
+  String operations, higher-order usage of kernel functions, partial application of kernels)
+oracle: Every Elm_Kernel_* symbol referenced in papCreate, papExtend, or eco.call has a
+  corresponding func.func declaration with is_kernel=true. Any missing declaration is a
+  compiler bug (registerKernelCall + generateKernelDecl pipeline failure).
+tests: compiler/tests/TestLogic/Generate/CodeGen/KernelDeclCompletenessTest.elm
+--
 
 ---
 
