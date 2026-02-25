@@ -10,7 +10,7 @@
     - [x] 1.2.1 Old Generation Algorithm → [§1.2.1](#121-old-generation-algorithm)
     - [x] 1.2.2 LLVM Stack Map Investigation → [§1.2.2](#122-llvm-stack-map-investigation)
     - [ ] 1.2.3 LLVM Stack Map Implementation → [§1.2.3](#123-llvm-stack-map-implementation)
-  - [ ] 1.3 Process & Thread Model → [§1.3](#13-process--thread-model)
+  - [ ] 1.3 Process & Thread Model → [§1.3](#13-process--thread-model) *(first-pass Platform & Scheduler complete)*
   - [x] 1.4 Runtime Testing Infrastructure → [§1.4](#14-runtime-testing-infrastructure) *(parallel compilation, all tests passing)*
 
 - [ ] **2. Standard Library Porting** → [§2](#2-standard-library-porting)
@@ -22,13 +22,13 @@
     - [ ] 2.1.4 System Operations Design → [§2.1.4](#214-system-operations-design)
     - [ ] 2.1.5 Kernel Package Implementation & Refactor → [§2.1.5](#215-kernel-package-implementation--guida-refactor)
   - [x] 2.2 Elm Kernel JavaScript Audit → [§2.2](#22-elm-kernel-javascript-audit) *(272 functions cataloged)*
-  - [ ] 2.3 Elm Kernel C++ Implementation → [§2.3](#23-elm-kernel-c-implementation) *(Bytes complete, others in progress)*
-    - [ ] 2.3.1 elm/core Kernel → [§2.3.1](#231-elmcore-kernel) *(partial implementations)*
-    - [ ] 2.3.2 elm/json Kernel → [§2.3.2](#232-elmjson-kernel) *(stubs complete)*
+  - [ ] 2.3 Elm Kernel C++ Implementation → [§2.3](#23-elm-kernel-c-implementation) *(core kernels complete, E2E tests passing)*
+    - [x] 2.3.1 elm/core Kernel → [§2.3.1](#231-elmcore-kernel) *(complete - Feb 20, 2026)*
+    - [x] 2.3.2 elm/json Kernel → [§2.3.2](#232-elmjson-kernel) *(complete - Feb 20, 2026)*
     - [x] 2.3.3 elm/bytes Kernel → [§2.3.3](#233-elmbytes-kernel) *(complete + fusion optimization)*
     - [x] 2.3.4 elm/random Kernel → [§2.3.4](#234-elmrandom-kernel) *(N/A - no kernel code)*
-    - [ ] 2.3.5 elm/time Kernel → [§2.3.5](#235-elmtime-kernel) *(stubs complete)*
-    - [ ] 2.3.6 Additional Kernel Packages → [§2.3.6](#236-additional-kernel-packages) *(stubs complete)*
+    - [x] 2.3.5 elm/time Kernel → [§2.3.5](#235-elmtime-kernel) *(complete - Feb 20, 2026)*
+    - [ ] 2.3.6 Additional Kernel Packages → [§2.3.6](#236-additional-kernel-packages) *(http, regex, debugger complete; file, browser, parser pending)*
   - [ ] 2.4 I/O Kernel Package C++ Implementation → [§2.4](#24-io-kernel-package-c-implementation)
 
 - [ ] **3. MLIR/LLVM Integration** → [§3](#3-mlirllvm-integration)
@@ -167,7 +167,7 @@ Choose and implement an appropriate algorithm for old generation garbage collect
 - [x] Implement chosen algorithm
 - [x] Ensure it is well tested
 - [ ] Enable automatic compaction triggering (currently manual only)
-- [ ] Expand stress test coverage to exercise all heap object types under GC
+- [x] Expand stress test coverage to exercise all heap object types under GC *(Feb 22, 2026)*
 - [ ] Verify correctness under extended load testing
 
 **Deliverables**:
@@ -210,7 +210,7 @@ Implement LLVM stack map integration for precise stack root tracing. This is req
 
 ### 1.3 Process & Thread Model
 
-**Status**: Not Started
+**Status**: In Progress (First-pass Implementation Complete)
 
 Design and implement support for multiple concurrent Elm processes.
 
@@ -221,8 +221,22 @@ Design and implement support for multiple concurrent Elm processes.
 - High-performance update loop execution
 - Process isolation and memory management
 
+**Current Implementation** *(Feb 20, 2026)*:
+- First-pass Platform and Scheduler implementation:
+  - `runtime/src/platform/PlatformRuntime.cpp/hpp` - Platform runtime
+  - `runtime/src/platform/Scheduler.cpp/hpp` - Task scheduler
+- Kernel-side process support:
+  - `elm-kernel-cpp/src/core/Platform.cpp/hpp` - Platform kernel
+  - `elm-kernel-cpp/src/core/Process.cpp/hpp` - Process kernel
+  - `elm-kernel-cpp/src/core/Scheduler.cpp/hpp` - Scheduler kernel
+  - `elm-kernel-cpp/src/browser/Browser.cpp/hpp` - Browser runtime adapter
+- Effect manager infrastructure:
+  - `elm-kernel-cpp/src/EffectManagerRegistry.cpp` - Effect manager registration
+  - Time and Http effect managers registered
+
 **Deliverables**:
-- [ ] Process lifecycle management
+- [x] Process lifecycle management *(first pass - Feb 20, 2026)*
+- [x] Scheduler implementation *(first pass)*
 - [ ] Message queue implementation (disruptor pattern)
 - [ ] Thread-safe process coordination
 - [ ] Process handle storage in heap model
@@ -446,7 +460,7 @@ Audit all kernel JavaScript files in Elm's standard packages to understand what 
 
 ### 2.3 Elm Kernel C++ Implementation
 
-**Status**: In Progress (Stub Infrastructure Complete)
+**Status**: In Progress (Core Kernels Complete, E2E Tests Passing)
 
 Implement Elm kernel functions in C++ using the ECO runtime's heap model.
 
@@ -459,9 +473,15 @@ Implement Elm kernel functions in C++ using the ECO runtime's heap model.
 **Current Implementation**:
 - **272 kernel functions** have C++ declarations in `elm-kernel-cpp/src/KernelExports.h`
 - **272 KERNEL_SYM entries** in `runtime/src/codegen/RuntimeSymbols.cpp` for JIT symbol resolution
-- **272 stub implementations** across package-specific `*Exports.cpp` files
-- Functions use `assert(false)` stubs for unimplemented operations (allows clean compilation)
-- Some functions have real implementations (Basics arithmetic, String operations, Url encoding/decoding)
+- **elm/core kernel fully implemented** (Feb 20, 2026) - JsArray, List, Debug, Debugger complete
+- **elm/json kernel implemented** (Feb 20, 2026) - using nlohmann/json, heap-resident values (Feb 22)
+- **elm/bytes kernel complete** with fusion optimization
+- **elm/http kernel implemented** (Feb 20, 2026) - integrated with libcurl and openssl
+- **elm/regex kernel implemented** (Feb 20, 2026) - using srell.hpp
+- **elm/time kernel implemented** (Feb 20, 2026) - with effect manager
+- **elm/url kernel complete** - real implementations
+- **Effect managers registered** for Time and Http (Feb 20, 2026)
+- Remaining packages (browser, file, virtual-dom, parser, debugger) have stub implementations
 
 **Source Files**:
 - `elm-kernel-cpp/src/core/` - BasicsExports.cpp, ListExports.cpp, StringExports.cpp, CharExports.cpp, UtilsExports.cpp, BitwiseExports.cpp, DebugExports.cpp, JsArrayExports.cpp, PlatformExports.cpp, ProcessExports.cpp, SchedulerExports.cpp
@@ -492,24 +512,24 @@ Implement Elm kernel functions in C++ using the ECO runtime's heap model.
 
 #### 2.3.1 elm/core Kernel
 
-**Status**: In Progress (Stubs Complete, Partial Implementations)
+**Status**: Complete (Feb 20, 2026)
 
 Implement the core kernel functions that all Elm programs depend on.
 
 **Implementation Status** (11 modules, 178 functions):
 | Module | Functions | Status |
 |--------|-----------|--------|
-| `Basics` | 30 | Stubs + some real implementations (arithmetic) |
-| `List` | 9 | Stubs (cons, fromArray, toArray, map2-5, sortBy, sortWith) |
-| `String` | 29 | Stubs + some real implementations |
-| `Char` | 6 | Stubs |
-| `JsArray` | 14 | Stubs |
-| `Bitwise` | 7 | Stubs |
-| `Debug` | 3 | Stubs |
-| `Utils` | 8 | Stubs |
-| `Scheduler` | 6 | Stubs |
-| `Platform` | 5 | Stubs |
-| `Process` | 1 | Stubs |
+| `Basics` | 30 | **Complete** - arithmetic, comparisons, boolean ops |
+| `List` | 9 | **Complete** - cons, fromArray, toArray, map2-5, sortBy, sortWith |
+| `String` | 29 | **Complete** - full string operations |
+| `Char` | 6 | **Complete** - toCode, fromCode, toUpper, toLower |
+| `JsArray` | 14 | **Complete** - with fast array intrinsic ops (Feb 23) |
+| `Bitwise` | 7 | **Complete** - and, or, xor, shifts |
+| `Debug` | 3 | **Complete** - log, toString |
+| `Utils` | 8 | **Complete** - eq, cmp, append, etc. |
+| `Scheduler` | 6 | **Complete** - task scheduling primitives |
+| `Platform` | 5 | **Complete** - program initialization |
+| `Process` | 1 | **Complete** - process primitives |
 
 **Priority Order** (for self-hosting):
 1. `Utils` - Fundamental operations used everywhere
@@ -528,36 +548,35 @@ Implement the core kernel functions that all Elm programs depend on.
 - [x] Create stub implementations for all 178 functions
 - [x] Add declarations to KernelExports.h
 - [x] Add KERNEL_SYM entries for JIT symbol resolution
-- [ ] Implement `UtilsExports.cpp` - eq, cmp, Tuple0/2/3, update, append, chr
-- [ ] Implement `BasicsExports.cpp` - arithmetic, comparison, boolean ops
-- [ ] Implement `ListExports.cpp` - cons, head, tail, map, filter, foldl, foldr, etc.
-- [ ] Implement `StringExports.cpp` - concat, slice, split, etc.
-- [ ] Implement `CharExports.cpp` - toCode, fromCode, toUpper, toLower
-- [ ] Implement `BitwiseExports.cpp` - and, or, xor, shiftLeft, shiftRight
-- [ ] Implement `JsArrayExports.cpp` - get, set, push, slice, etc.
-- [ ] Implement `DebugExports.cpp` - log, toString
-- [ ] Implement `SchedulerExports.cpp` - task scheduling primitives
-- [ ] Implement `PlatformExports.cpp` - program initialization
-- [ ] Implement `ProcessExports.cpp` - process primitives
+- [x] Implement `UtilsExports.cpp` - eq, cmp, Tuple0/2/3, update, append, chr
+- [x] Implement `BasicsExports.cpp` - arithmetic, comparison, boolean ops
+- [x] Implement `ListExports.cpp` - cons, head, tail, map, filter, foldl, foldr, etc.
+- [x] Implement `StringExports.cpp` - concat, slice, split, etc.
+- [x] Implement `CharExports.cpp` - toCode, fromCode, toUpper, toLower
+- [x] Implement `BitwiseExports.cpp` - and, or, xor, shiftLeft, shiftRight
+- [x] Implement `JsArrayExports.cpp` - get, set, push, slice, etc.
+- [x] Implement `DebugExports.cpp` - log, toString
+- [x] Implement `SchedulerExports.cpp` - task scheduling primitives
+- [x] Implement `PlatformExports.cpp` - program initialization
+- [x] Implement `ProcessExports.cpp` - process primitives
 
 **Deliverables**:
 - [x] C++ stub implementations in `elm-kernel-cpp/src/core/`
 - [x] Header declarations in `elm-kernel-cpp/src/KernelExports.h`
-- [ ] Real implementations for all functions
-- [ ] Unit tests for each kernel module
+- [x] Real implementations for all functions *(Feb 20, 2026)*
+- [x] E2E tests for core kernel modules *(Feb 23, 2026 - see test/elm-core/)*
 
 #### 2.3.2 elm/json Kernel
 
-**Status**: In Progress (Stubs Complete)
+**Status**: Complete (Feb 20, 2026)
 
 Implement JSON encoding and decoding primitives.
 
 **Implementation Status** (32 functions):
-- All 32 functions have stub implementations in `elm-kernel-cpp/src/json/JsonExports.cpp`
-- `Elm_Kernel_Json_wrap` - Real implementation (pass-through)
-- `Elm_Kernel_Json_encodeNull` - Real implementation (returns Unit)
-- `Elm_Kernel_Json_emptyObject` - Real implementation (returns empty list)
-- Remaining functions use `assert(false)` stubs
+- All 32 functions implemented in `elm-kernel-cpp/src/json/JsonExports.cpp`
+- Uses nlohmann/json library (vendored at `elm-kernel-cpp/vendor/nlohmann/json.hpp`)
+- JSON values rewritten to heap-resident format (Feb 22, 2026) - avoids foreign pointers on heap
+- Roundtrip tests passing (Feb 24, 2026) - encode→decode for all JSON types
 
 **Kernel Functions**:
 - Decoders: `decodeInt`, `decodeFloat`, `decodeString`, `decodeBool`, `decodeNull`, `decodeList`, `decodeArray`, `decodeField`, `decodeIndex`, `decodeKeyValuePairs`, `decodeValue`
@@ -569,14 +588,15 @@ Implement JSON encoding and decoding primitives.
 - [x] Create stub implementations for all 32 functions
 - [x] Add declarations to KernelExports.h
 - [x] Add KERNEL_SYM entries for JIT symbol resolution
-- [ ] Implement JSON parser (or integrate existing C++ JSON library)
-- [ ] Implement decoder combinators
-- [ ] Implement encoder functions
+- [x] Implement JSON parser (integrated nlohmann/json library)
+- [x] Implement decoder combinators
+- [x] Implement encoder functions
+- [x] Rewrite to heap-resident JSON values (Feb 22, 2026)
 
 **Deliverables**:
-- [x] Stub implementations in `elm-kernel-cpp/src/json/JsonExports.cpp`
-- [ ] Full JSON parsing/serialization
-- [ ] Unit tests
+- [x] Full implementations in `elm-kernel-cpp/src/json/JsonExports.cpp`
+- [x] Full JSON parsing/serialization
+- [x] Roundtrip E2E tests *(test/elm-json/ - Feb 24, 2026)*
 
 #### 2.3.3 elm/bytes Kernel
 
@@ -626,12 +646,13 @@ Implement random number generation primitives.
 
 #### 2.3.5 elm/time Kernel
 
-**Status**: In Progress (Stubs Complete)
+**Status**: Complete (Feb 20, 2026)
 
 Implement time-related primitives.
 
 **Implementation Status** (4 functions):
-- All 4 functions have stub implementations in `elm-kernel-cpp/src/time/TimeExports.cpp`
+- All 4 functions implemented in `elm-kernel-cpp/src/time/TimeExports.cpp`
+- Time effect manager registered (`elm-kernel-cpp/src/time/TimeEffectManager.cpp`)
 - Functions: `getZoneName`, `here`, `now`, `setInterval`
 
 **Kernel Functions**:
@@ -644,13 +665,13 @@ Implement time-related primitives.
 - [x] Create stub implementations for all 4 functions
 - [x] Add declarations to KernelExports.h
 - [x] Add KERNEL_SYM entries for JIT symbol resolution
-- [ ] Implement real time functions
-- [ ] Handle time zone database (may need external dependency)
+- [x] Implement real time functions
+- [x] Effect manager for Time subscriptions
 
 **Deliverables**:
-- [x] Stub implementations in `elm-kernel-cpp/src/time/TimeExports.cpp`
-- [ ] Real implementations
-- [ ] Unit tests
+- [x] Real implementations in `elm-kernel-cpp/src/time/TimeExports.cpp`
+- [x] Time effect manager (`TimeEffectManager.cpp`)
+- [x] E2E tests *(test/elm-time/ - Feb 23, 2026)*
 
 #### 2.3.6 Additional Kernel Packages
 
@@ -662,17 +683,21 @@ Additional kernel packages identified during the audit that also need C++ implem
 | Package | Functions | File | Status |
 |---------|-----------|------|--------|
 | `elm/browser` | 22 | `BrowserExports.cpp` | Stubs |
-| `elm/http` | 8 | `HttpExports.cpp` | Stubs |
+| `elm/http` | 8 | `HttpExports.cpp` | **Complete** (Feb 20) - libcurl/openssl |
 | `elm/file` | 13 | `FileExports.cpp` | Stubs |
-| `elm/url` | 2 | `UrlExports.cpp` | **Real implementations** |
+| `elm/url` | 2 | `UrlExports.cpp` | **Complete** |
 | `elm/virtual-dom` | 25 | `VirtualDomExports.cpp` | Stubs |
 | `elm/parser` | 7 | `ParserExports.cpp` | Stubs |
-| `elm/regex` | 7 | `RegexExports.cpp` | Stubs |
-| `elm/debugger` | 8 | `DebuggerExports.cpp` | Stubs |
+| `elm/regex` | 7 | `RegexExports.cpp` | **Complete** (Feb 20) - srell.hpp |
+| `elm/debugger` | 8 | `DebuggerExports.cpp` | **Complete** (Feb 20) |
 
 **Notable Implementations**:
 - `Elm_Kernel_Url_percentEncode` - Full URL encoding implementation
 - `Elm_Kernel_Url_percentDecode` - Full URL decoding implementation with UTF-8 support
+- Http kernel integrated with libcurl and openssl (Feb 20, 2026)
+- Http effect manager registered (`elm-kernel-cpp/src/http/HttpEffectManager.cpp`)
+- Regex kernel uses srell.hpp (vendored header-only regex library)
+- Debugger kernel complete with `Debugger.cpp/hpp` implementation
 
 **Tasks**:
 - [x] Create stub implementations for all 92 functions
@@ -680,17 +705,19 @@ Additional kernel packages identified during the audit that also need C++ implem
 - [x] Add KERNEL_SYM entries for JIT symbol resolution
 - [x] Implement Url encoding/decoding (real implementations)
 - [ ] Implement Browser primitives (most are browser-specific, may be N/A for CLI)
-- [ ] Implement Http primitives
+- [x] Implement Http primitives *(Feb 20, 2026 - libcurl/openssl)*
 - [ ] Implement File primitives
 - [ ] Implement VirtualDom primitives (likely N/A for CLI)
 - [ ] Implement Parser primitives
-- [ ] Implement Regex primitives
+- [x] Implement Regex primitives *(Feb 20, 2026 - srell.hpp)*
+- [x] Implement Debugger primitives *(Feb 20, 2026)*
 
 **Deliverables**:
 - [x] Stub implementations in `elm-kernel-cpp/src/*/`
 - [x] Full Url kernel implementation
-- [ ] Real implementations for CLI-essential packages
-- [ ] Unit tests
+- [x] Http, Regex, Debugger implementations *(Feb 20, 2026)*
+- [x] E2E tests for http, regex, time, url packages *(test/elm-*/  - Feb 23, 2026)*
+- [ ] File, Browser, VirtualDom, Parser implementations
 
 ### 2.4 I/O Kernel Package C++ Implementation
 
@@ -960,6 +987,15 @@ The PAP wrapper elimination optimization has been fully implemented:
 - **Typed closure calling**: Closures now carry type information enabling direct primitive ABI calls
 - **ABI cloning**: New `AbiCloning.elm` module handles generating appropriate function variants for different calling conventions
 - **See**: `plans/typed-closure-calling.md` for full design details
+
+**Centralized Closure ABI** *(Feb 25, 2026)*:
+
+Closure calling knowledge has been centralized:
+
+- **Compiler as sole ABI arbiter**: Compiler determines kernel ABI types; MLIR enforces type-level consistency
+- **EcoToLLVM simplified**: No longer reverse-engineers or repairs ABI types—simply reflects them to LLVM
+- **Centralized closure calling**: `EcoToLLVMClosures.cpp` and `EcoToLLVMInternal.h` consolidated
+- **Dead code removed**: Eliminated redundant ABI inference logic from the lowering pipeline
 
 **Deliverables**:
 - [x] Lowering passes in C++ *(Passes/EcoToLLVM.cpp, Passes/RCElimination.cpp)*
@@ -1247,10 +1283,38 @@ compiler/src/Compiler/GlobalOpt/
    - Joinpoint matching algorithm for stage-curried joinpoints
    - Lambda boundary normalization
 
+**Resolved Issues** *(fixed Feb 23-25, 2026)*:
+
+8. **SSA Value Renaming for Recursive Let Defs** - ✅ Fixed (Feb 23)
+   - Inlined self-referential rec let defs required SSA value renaming
+   - New test: `LetRecSsaDefinedness.elm`
+
+9. **Array Intrinsic Ops** - ✅ Added (Feb 23)
+   - New intrinsic ops for fast array access (`eco.array.get`, `eco.array.set`, etc.)
+   - Corrected kernel calling convention to AllBoxed for broken kernels
+
+10. **CGEN_056: papExtend Saturated Result Type** - ✅ Fixed (Feb 24)
+    - Added invariant requiring saturating papExtends to follow return type ABI conventions
+    - Enables optimization to `eco.call` during lowering
+    - Removed compensating `fixCallResultTypes` pass
+
+11. **Polymorphic Let-Bound Functions** - ✅ Fixed (Feb 24-25)
+    - Monomorphizing out type variables unless necessary for polymorphic kernels
+    - Multiple specialization of let-bound functions at different call sites
+    - Added extensive specialization tests
+
+12. **AllBoxed Kernel Return Types** - ✅ Fixed (Feb 25)
+    - Fixed call return type for AllBoxed kernels with polymorphic return types
+
+13. **Compiler as Sole ABI Arbiter** - ✅ Refactored (Feb 25)
+    - Compiler is now sole arbiter of kernel ABI types
+    - MLIR enforces that PAPs and calls match function declarations at the type level
+    - EcoToLLVM simply reflects types into LLVM; no longer reverse-engineers or repairs them
+
 **Current E2E Test Status**:
 - Compilation through front-end and back-end to JIT execution working
 - All elm-test tests passing
-- All E2E tests passing
+- All E2E tests passing (across elm-core, elm-json, elm-http, elm-regex, elm-time, elm-url packages)
 - Parallel test execution with process isolation
 
 **Deliverables**:
@@ -1293,6 +1357,25 @@ Comprehensive testing for the compiler backend.
 | `Monomorphize/LambdaIdUniqueness.elm` | Lambda ID uniqueness |
 | `Monomorphize/MonoFunctionArity.elm` | Function arity consistency |
 | `Monomorphize/MonoCtorLayoutIntegrity.elm` | Constructor layout integrity |
+| `PapExtendSaturatedResultType.elm` | CGEN_056 - papExtend return type ABI *(Feb 24)* |
+| `LetRecSsaDefinedness.elm` | SSA definedness for recursive let bindings *(Feb 23)* |
+| `KernelDeclCompleteness.elm` | CGEN_057 - kernel declaration completeness *(Feb 25)* |
+
+**E2E Test Suites** *(Feb 23-24, 2026)*:
+| Suite | Location | Description |
+|-------|----------|-------------|
+| elm-core | `test/elm-core/` | Basics, List, String, JsArray, Debug tests |
+| elm-json | `test/elm-json/` | Decode + roundtrip tests for all JSON types |
+| elm-http | `test/elm-http/` | HTTP header and JSON body tests |
+| elm-regex | `test/elm-regex/` | Contains, find, fromString, split tests |
+| elm-time | `test/elm-time/` | POSIX time and time parts tests |
+| elm-url | `test/elm-url/` | Percent encode/decode and roundtrip tests |
+
+**Specialization Test Suites** *(Feb 25, 2026)*:
+| Suite | Description |
+|-------|-------------|
+| `SpecializePolyTopCases.elm` | Top-level polymorphic function specialization |
+| `SpecializePolyLetCases.elm` | Let-bound polymorphic function specialization |
 
 **Deliverables**:
 - [x] Test suite infrastructure (`Invariants.elm`, `TestPipeline.elm`)
@@ -1676,6 +1759,10 @@ Build system support for cross-compilation to all targets.
 - **C++20 Compiler**: Clang or GCC with C++20 support
 - **CMake**: Build system
 - **RapidCheck**: Property-based testing (currently in use)
+- **nlohmann/json**: JSON library for elm/json kernel (vendored)
+- **srell.hpp**: Regular expression library for elm/regex kernel (vendored)
+- **libcurl**: HTTP client library for elm/http kernel
+- **openssl**: TLS support for elm/http kernel
 
 ### Critical Path
 
@@ -1721,8 +1808,8 @@ Runtime Foundation (§1)
 
 ## Project Status
 
-**Current Phase**: Stack Map Implementation for GC (enabling larger programs)
-**Last Updated**: 2026-02-19
+**Current Phase**: Stack Map Implementation for GC + Kernel Stabilization
+**Last Updated**: 2026-02-25
 
 **Completed**:
 - Heap model design (§1.1)
@@ -1732,6 +1819,7 @@ Runtime Foundation (§1)
   - Lazy sweeping and allocation-paced incremental marking
   - Incremental compaction (implemented, manual trigger)
   - Optional DFS locality optimization for list copying
+  - GC stress test coverage across all heap object types (Feb 22, 2026)
 - Property-based testing infrastructure
 - Dockerfile for reproducible builds (§5.1.3)
 - LLVM stack map API research (§1.2.2) - see design_docs/llvm_stackmap_integration.md
@@ -1747,11 +1835,19 @@ Runtime Foundation (§1)
 - Global AST analysis & monomorphization (§4.1.2) - TypedOptimized AST and Mono pass
 - Dual backend implementation (§4.1.3) - JS and MLIR backends with extension-based selection
 - **Elm kernel JavaScript audit complete (§2.2)** - 272 core functions cataloged in elm_kernel_functions.csv
-- **Elm kernel C++ stub infrastructure complete (§2.3)**:
+- **Elm kernel C++ implementations substantially complete (§2.3)**:
   - 272 kernel functions declared in KernelExports.h
   - 272 KERNEL_SYM entries in RuntimeSymbols.cpp for JIT resolution
-  - 272 stub implementations across 16 *Exports.cpp files
-  - Real implementations: Basics arithmetic, Url encoding/decoding, String operations, **Bytes kernel (complete)**
+  - **elm/core kernel complete** (Feb 20, 2026) - all 178 functions implemented
+  - **elm/json kernel complete** (Feb 20, 2026) - nlohmann/json, heap-resident values
+  - **elm/bytes kernel complete** - with fusion optimization
+  - **elm/http kernel complete** (Feb 20, 2026) - libcurl/openssl integration
+  - **elm/regex kernel complete** (Feb 20, 2026) - srell.hpp
+  - **elm/time kernel complete** (Feb 20, 2026) - with effect manager
+  - **elm/url kernel complete** - full implementations
+  - **Debugger kernel complete** (Feb 20, 2026)
+  - Remaining stubs: browser, file, virtual-dom, parser
+- **Platform & Scheduler first-pass implementation (Feb 20, 2026)** - PlatformRuntime, Scheduler, effect managers
 - **PAP Wrapper Elimination (Feb 12, 2026)** - direct calls with typed closure calling
 - **Staged-Curried Calling Convention (Feb 9, 2026)** - callsite derivation algorithm complete
 - **Bytes Fusion Optimization (Feb 11, 2026)** - compiler-side fused encoder/decoder pipeline
@@ -1760,46 +1856,92 @@ Runtime Foundation (§1)
 - **Tail Recursion with Loop State (Feb 2-3, 2026)** - joinpoint matching algorithm
 - **Parallel Test Compilation (Feb 3, 2026)** - system-sensitive parallel builds
 - **Architecture Refactoring (Feb 5-6, 2026)** - removed Guida syntax, clean architecture enforcement
-- **All tests passing (Feb 12, 2026)** - elm-test and E2E tests all pass
+- **All tests passing (Feb 24, 2026)** - elm-test and all E2E test suites pass
 - **Fuzz testing at fuzz 100 passing** - `npx elm-test-rs --fuzz 100` working
+- **Centralized Closure ABI (Feb 25, 2026)** - compiler as sole ABI arbiter, EcoToLLVM simplified
+- **Let-bound Function Specialization (Feb 24-25, 2026)** - multiple specializations at different call sites
+- **CGEN_056/057 invariants (Feb 24-25, 2026)** - papExtend result types + kernel decl completeness
 
-**Recent Changes** *(from git log analysis - Jan 21 to Feb 12, 2026)*:
+**Recent Changes** *(from git log analysis - Feb 19 to Feb 25, 2026)*:
+
+- **Kernel Implementation Sprint** (Feb 20, 2026):
+  - Completed elm/core kernel - all 178 functions (JsArray, List, Debug, Debugger, etc.)
+  - First-pass Platform & Scheduler implementation
+  - Implemented kernels for http (libcurl/openssl), json (nlohmann), regex (srell), time
+  - Registered effect managers for Time and Http
+  - Cleaned up unused design files
+
+- **Runtime Improvements** (Feb 22, 2026):
+  - Array implementation using unboxed bits in heap Header (`Tag_Array`)
+  - JSON kernel rewrite to heap-resident values (avoids foreign pointers on heap)
+  - Improved GC test coverage across all heap element kinds
+
+- **E2E Test Suite Expansion** (Feb 23, 2026):
+  - Comprehensive E2E test suites for elm-core, elm-json, elm-http, elm-regex, elm-time, elm-url
+  - Tests for pure functions across all implemented kernels
+  - Each package has its own test directory under `test/`
+
+- **Compiler Kernel Integration** (Feb 23, 2026):
+  - New intrinsic ops for fast array access
+  - Corrected kernel calling convention to AllBoxed for broken kernel functions
+  - SSA value renaming for inlined self-referential rec let defs
+
+- **All E2E Tests Passing** (Feb 24, 2026):
+  - Fixed all E2E test failures across all package test suites
+  - Fixed elm-json roundtrip tests
+  - JSON roundtrip tests added for all JSON types (bool, float, int, list, string, nested, etc.)
+  - Recorded tech debt arising from e2e test fixes
+
+- **CGEN_056: papExtend Saturated Result Types** (Feb 24, 2026):
+  - New invariant requiring saturating papExtends to follow return type ABI conventions
+  - Enables optimization to `eco.call` during lowering
+  - Removed compensating `fixCallResultTypes` pass
+
+- **Monomorphization Improvements** (Feb 24-25, 2026):
+  - Monomorphizing out type variables unless necessary for polymorphic kernel functions
+  - Strengthened invariants around monomorphization
+  - Multiple specialization of let-bound functions used at different call sites
+  - Extensive new specialization tests (`SpecializePolyTopCases.elm`, `SpecializePolyLetCases.elm`)
+
+- **Centralized Closure ABI** (Feb 25, 2026):
+  - Compiler made sole arbiter of kernel ABI types
+  - MLIR enforces PAPs and calls match function declarations at type level
+  - EcoToLLVM simplified: no longer reverse-engineers or repairs ABI types
+  - Centralized closure calling knowledge in `EcoToLLVMClosures.cpp`
+
+- **AllBoxed Kernel Return Type Fix** (Feb 25, 2026):
+  - Fixed call return type for AllBoxed kernels with polymorphic return types
+
+- **CGEN_057: Kernel Declaration Completeness** (Feb 25, 2026):
+  - New test logic ensuring all referenced kernels have declarations
+  - `KernelDeclCompleteness.elm` + `KernelDeclCompletenessTest.elm`
+
+- **Array Optimization Design** (Feb 25, 2026):
+  - New design outline for array optimization (`design_docs/array-optimisation.md`)
+
+**Previous Changes** *(Jan 21 to Feb 12, 2026)*:
 
 - **PAP Wrapper Elimination Complete** (Feb 12, 2026):
   - Completed elimination of PAP wrappers - all tests pass
   - Direct calls even when partial application and closures are involved
-  - Split call ABI for heterogeneous vs homogeneous call paths:
-    - Homogeneous: captured args passed directly (fast path, most common)
-    - Heterogeneous: closure pointer with matching arg encoding used
-  - Added new test cases for heterogeneous call ABIs with mixed boxed/unboxed params
+  - Split call ABI for heterogeneous vs homogeneous call paths
 
 - **Staged-Curried Calling Convention** (Feb 9, 2026):
   - Completed callsite derivation algorithm matching all callsites to correct calling convention
-  - Global staged-currying soundness implemented
-  - New modules: `Staging.elm`, `Staging/GraphBuilder.elm`, `Staging/Solver.elm`, `Staging/Rewriter.elm`
-  - All elm-test tests pass
+  - New modules: `Staging/GraphBuilder.elm`, `Staging/Solver.elm`, `Staging/Rewriter.elm`
 
 - **papExtend Reimplemented as Inline** (Feb 11, 2026):
   - Reimplemented papExtend helper as inline compiled code (same as indirect call)
-  - Added test cases for indirect calls with float results
-  - Improved float-to-i64 bitcasting in LLVM lowering
 
 - **Bytes Fusion Optimization** (Feb 11, 2026):
   - Compiler-side fused encoder/decoder pipeline
-  - Intercepts `Bytes.encode`/`Bytes.decode` calls, lowers to fused BF dialect ops
-  - Cursor-based read/write operations instead of interpreter-style kernel
-  - New modules: `BytesFusion/Emit.elm`, `BytesFusion/Reify.elm`
   - BF MLIR dialect defined in `BFOps.td`
 
 - **Bytes Kernel C++ Implementations** (Feb 11, 2026):
   - Complete C++ implementations of elm/bytes kernel functions
-  - `BytesExports.cpp`: encode, decode, read/write operations for all int/float sizes
-  - Utils.cpp equality/comparison for ElmFloat and heap types
 
 - **NumberBoxed Kernel ABI** (Feb 10-11, 2026):
   - Introduced NumberBoxed ABI mode for polymorphic number kernels
-  - Kernels like `String.fromNumber`, `Basics.add/sub/mul/pow` use uniform uint64_t
-  - C Number type variables treated as boxed CEcoValue
 
 - **Lambda Closure Capture Fix** (Feb 10, 2026):
   - Fixed closure capture for lambdas with >1 parameter
@@ -1807,54 +1949,28 @@ Runtime Foundation (§1)
 
 - **Kernel Specialization** (Feb 10, 2026):
   - Kernel functions can now specialize to unboxable primitive types
-  - Converted back to boxed in codegen if necessary
-  - Lists store unboxable values as unboxed
 
 - **GlobalOpt Phase Consolidation** (Feb 5-7, 2026):
   - Major refactoring to consolidate uncurrying and ABI alignment logic
-  - New modules: `MonoGlobalOptimize.elm`, `MonoTraverse.elm`, `MonoReturnArity.elm`
-  - `MonoInlineSimplify` re-enabled for small function inlining
-  - All staging logic extracted from Monomorphization into GlobalOpt
 
 - **Architecture Improvements** (Feb 5-6, 2026):
   - Removed Guida syntax support (rebranded to Eco)
-  - Removed most Guida references throughout codebase
   - Clean architecture dependency enforcement via elm-review
-  - Refactored code into folders matching compiler phase names
-  - Removed forward dependencies from Monomorphization to MLIR codegen
-
-- **Test Pipeline Consolidation** (Feb 6, 2026):
-  - Common test pipeline implementation in `TestPipeline.elm`
-  - 90+ test files consolidated
 
 - **Tail Recursion with Loop State** (Feb 2-3, 2026):
   - Implemented tail recursion compilation with loop state
   - Joinpoint matching algorithm for stage-curried joinpoints
-  - Lambda boundary normalization for uncurrying
-
-- **Parallel Test Compilation** (Feb 3, 2026):
-  - Parallel compilation support in build system
-  - System-sensitive parallel build counts
-  - Separate build directories for parallel execution
 
 - **Float Precision** (Feb 11, 2026):
   - Float-to-string uses shortest round-trip representation
-  - Changed from %g (6 digits) to std::to_chars for exact JavaScript/Elm behavior
-
-- **Various Bug Fixes** (Feb 2-11, 2026):
-  - Record update codegen implemented
-  - Empty string check kernel functions fixed
-  - Bool return values mapping from kernel functions fixed
-  - Tail-rec return type mismatch fixed
-  - Closure stage return type fixed
-  - String comparison bool unboxing in case statements fixed
-  - Custom type field registration in global type table fixed
 
 **Next Steps** *(in priority order)*:
 1. **LLVM stack map implementation (§1.2.3)** - precise GC root tracing for larger/longer-running programs
-2. **Implement real kernel functions (§2.3)** - priority: Utils, Basics, List, String for self-hosting
+2. **Remaining kernel implementations (§2.3)** - file, browser, parser, virtual-dom (lower priority for CLI)
 3. **AOT compilation (§5.1.1)** - produce standalone native binaries (currently JIT only)
+4. **Array optimization** - design outlined in `design_docs/array-optimisation.md`
 
 **Active Workstreams**:
 1. **LLVM stack map implementation (§1.2.3)** - required for GC in larger programs with deep stacks
-2. **Elm kernel C++ real implementations (§2.3)** - working towards self-compilation (Bytes complete)
+2. **Compiler correctness stabilization** - new invariants (CGEN_056/057), let-bound specialization
+3. **Kernel function testing** - E2E test suites validating kernel implementations

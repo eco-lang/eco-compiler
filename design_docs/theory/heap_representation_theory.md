@@ -125,6 +125,12 @@ Heap layout:
 
 ### Container Unboxing
 
+The `unboxed` bits in the heap object Header indicate whether container elements are stored unboxed. This mechanism is shared by `Cons`, `Tuple2`, `Tuple3`, and `ElmArray`:
+
+```cpp
+u32 unboxed : 3; // Unboxed flags for Cons, Tuple2, Tuple3, ElmArray (bit 0).
+```
+
 **Lists** can store unboxed head values:
 
 ```elm
@@ -135,7 +141,7 @@ myList : List Int
 Cons layout with unboxed head:
 ```
 [Header:8][head:i64][tail:HPointer]
-         ^-- unboxed_head flag in header
+         ^-- unboxed bit 0 in header
 ```
 
 **Tuples** use per-element bitmap:
@@ -149,6 +155,24 @@ Heap layout:
 ```
 [Header:8][a:i64][b:HPointer][c:f64]
 ```
+
+**Arrays** use the `unboxed` bit 0 in the header to indicate element storage:
+
+- `unboxed` bit 0 = 1: Elements are stored as unboxed primitives (e.g., raw `int64_t` values)
+- `unboxed` bit 0 = 0: Elements are stored as boxed `HPointer` values (default)
+
+```elm
+myArray : Array Int
+-- Elements stored as raw i64, not HPointer
+```
+
+Heap layout with unboxed elements:
+```
+[Header:8][size:8][elem0:i64][elem1:i64][...]
+          ^-- unboxed bit 0 in header indicates all elements are unboxed
+```
+
+This enables arrays of Int, Float, or Char to store elements without boxing overhead, similar to how `Cons` cells store unboxed head values.
 
 ## Representation Boundaries
 
@@ -219,9 +243,12 @@ struct Header {
     uint64_t age : 2;        // Survival count
     uint64_t epoch : 2;      // GC epoch
     uint64_t pin : 1;        // Pinned flag
-    uint64_t size : 52;      // Object-specific (varies by type)
+    uint64_t unboxed : 3;    // Unboxed flags for Cons, Tuple2, Tuple3, ElmArray (bit 0)
+    uint64_t size : 49;      // Object-specific (varies by type)
 };
 ```
+
+The `unboxed` field stores per-element unboxing flags. For `Cons`, bit 0 indicates an unboxed head. For `Tuple2`, bits 0-1 correspond to each element. For `Tuple3`, bits 0-2 correspond to each element. For `ElmArray`, bit 0 indicates whether all elements are stored unboxed.
 
 ### Cons (List Node)
 
@@ -231,7 +258,7 @@ struct Cons {
     Unboxable head;          // 8 bytes (unboxed or HPointer)
     HPointer tail;           // 8 bytes
 };
-// header.size encodes unboxed_head flag
+// header.unboxed bit 0 encodes unboxed_head flag
 ```
 
 ### Tuple2/Tuple3
@@ -241,14 +268,27 @@ struct Tuple2 {
     Header header;           // tag = Tag_Tuple2
     Unboxable a, b;          // 8 bytes each
 };
-// header.size encodes unboxed_bitmap (2 bits)
+// header.unboxed encodes unboxed_bitmap (2 bits)
 
 struct Tuple3 {
     Header header;           // tag = Tag_Tuple3
     Unboxable a, b, c;       // 8 bytes each
 };
-// header.size encodes unboxed_bitmap (3 bits)
+// header.unboxed encodes unboxed_bitmap (3 bits)
 ```
+
+### ElmArray
+
+```cpp
+struct ElmArray {
+    Header header;           // tag = Tag_ElmArray
+    Unboxable values[];      // Variable-length array of elements
+};
+// header.unboxed bit 0: 1 = elements are unboxed primitives, 0 = elements are boxed HPointer
+// header.size = element count
+```
+
+When `unboxed` bit 0 is set, elements are stored as raw unboxed primitives (e.g., `int64_t` for Int, `double` for Float) instead of `HPointer` values. This avoids boxing overhead for arrays of Int, Float, or Char.
 
 ### Record
 
@@ -321,10 +361,23 @@ void scanObject(void* obj) {
             }
             break;
         }
+        case Tag_ElmArray: {
+            ElmArray* arr = (ElmArray*)obj;
+            if (!(hdr->unboxed & 1)) {
+                // Elements are boxed HPointers—trace them
+                for (int i = 0; i < hdr->size; i++) {
+                    trace(arr->values[i].hptr);
+                }
+            }
+            // If unboxed bit 0 is set, elements are raw primitives—skip tracing
+            break;
+        }
         // ...
     }
 }
 ```
+
+The GC implementations in `NurserySpace.cpp` and `OldGenSpace.cpp` check the `unboxed` flag in the header when scanning arrays. When elements are unboxed primitives (bit 0 set), the GC skips tracing them since they are not heap pointers.
 
 ### No Cycles (HEAP_018)
 

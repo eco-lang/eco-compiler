@@ -218,6 +218,37 @@ compiler/tests/TestLogic/Generate/CodeGen/
 | **CGEN_032** | `_operand_types` matches SSA operand types | Elm-side test |
 | **CGEN_037** | Case scrutinee type matches `case_kind` | Op verifier + Elm-side |
 | **CGEN_CLOSURE_003** | Closure captures match function parameters | Pass verifier |
+| **CGEN_056** | papExtend saturated result type matches callee signature | Op verifier + Elm-side |
+| **CGEN_057** | Kernel declarations complete for all kernel call sites | Op verifier + Pass + Elm-side |
+
+### CGEN_056: papExtend Saturated Result Type
+
+When a `papExtend` operation is saturating (providing all remaining arguments), its result type must match the return type of the callee's `func.func` declaration. This catches mismatches where the monomorphized call-site type disagrees with the declared function signature.
+
+```cpp
+LogicalResult PapExtendOp::verify() {
+    // If extending to saturation, the result type must match the callee's
+    // declared return type, not the monomorphized call-site type.
+    if (isSaturating()) {
+        auto callee = lookupFunc(this, getCalleeAttr());
+        if (callee && getResult().getType() != callee.getResultTypes()[0]) {
+            return emitOpError("saturated papExtend result type mismatch");
+        }
+    }
+}
+```
+
+**Why this matters**: Previously, saturating `papExtend` operations could carry incorrect result types derived from the monomorphized call-site type rather than the actual function declaration. This led to type mismatches at LLVM lowering time, especially for AllBoxed kernels where the C++ ABI returns `uint64_t` (`!eco.value`) regardless of the Elm-level return type.
+
+### CGEN_057: Kernel Declaration Completeness
+
+Every kernel function symbol (`Elm_Kernel_*`) that appears in a `papCreate`, `papExtend`, or `eco.call` must have a corresponding `func.func` declaration with `is_kernel=true`. The declaration's `function_type` parameter and result types must match the ABI-level types computed by the Elm compiler.
+
+This is enforced by:
+1. **UndefinedFunctionPass**: Walks all call/papCreate/papExtend operations and checks that referenced symbols have declarations
+2. **Elm-side test**: Verifies that `kernelDecls` in Context tracks all kernel references
+
+**Why this matters**: Missing kernel declarations cause LLVM linking failures. Type mismatches between the declaration and call site cause verification errors or runtime crashes. The compiler's `kernelBackendAbiPolicy` is the sole source of truth for kernel ABI types (see also KERN_006).
 
 ## Error Reporting
 

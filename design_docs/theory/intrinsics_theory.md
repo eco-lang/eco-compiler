@@ -48,6 +48,9 @@ type Intrinsic
     | FloatComparison { op : String } -- f64, f64 -> i1
     | FloatClassify { op : String } -- f64 -> i1
     | ConstantFloat { value : Float } -- () -> f64
+    | ArrayGet { elementMlirType : MlirType } -- i64, !eco.value -> element type
+    | ArraySet { elementMlirType : MlirType } -- i64, element type, !eco.value -> !eco.value
+    | ArrayLength                              -- !eco.value -> i64
 ```
 
 Each category specifies:
@@ -66,6 +69,7 @@ kernelIntrinsic home name argTypes resultType =
         "Basics"  -> basicsIntrinsic name argTypes resultType
         "Bitwise" -> bitwiseIntrinsic name argTypes resultType
         "Utils"   -> utilsIntrinsic name argTypes resultType
+        "JsArray" -> jsArrayIntrinsic name argTypes resultType
         _         -> Nothing
 ```
 
@@ -146,6 +150,18 @@ The `Utils` kernel module provides comparison primitives:
 | `equal` | `[MFloat, MFloat]` | `eco.float.eq` |
 | `notEqual` | `[MFloat, MFloat]` | `eco.float.ne` |
 | `lt`, `le`, `gt`, `ge` | `[MFloat, MFloat]` | `eco.float.{lt,le,gt,ge}` |
+
+### JsArray Module Intrinsics
+
+The `JsArray` kernel module provides typed intrinsics for array access. Unlike the simpler `BinaryInt`/`UnaryFloat` categories, these intrinsics carry element type information (`elementMlirType`) so that the generated MLIR operations can perform typed access to array storage. The element type is derived from the monomorphized type of the array contents.
+
+| Elm Function | Signature | Arg Types | Intrinsic | MLIR Op |
+|--------------|-----------|-----------|-----------|---------|
+| `JsArray.unsafeGet` | `Int -> Array a -> a` | `[MInt, MArray a]` | `ArrayGet { elementMlirType }` | `eco.array.get` |
+| `JsArray.unsafeSet` | `Int -> a -> Array a -> Array a` | `[MInt, a, MArray a]` | `ArraySet { elementMlirType }` | `eco.array.set` |
+| `JsArray.length` | `Array a -> Int` | `[MArray a]` | `ArrayLength` | `eco.array.length` |
+
+The `elementMlirType` field is populated from the monomorphized element type of the array. For example, `Array Int` yields `elementMlirType = i64`, while `Array (List String)` yields `elementMlirType = !eco.value`. These MLIR ops are lowered to LLVM in `EcoToLLVMHeap.cpp`.
 
 ## Integration with MLIR Generation
 
@@ -251,6 +267,7 @@ Emit: %result = eco.int.add %2, %3 : i64, i64 -> i64
 - **INTR_003**: Intrinsic result types are always primitive (`i64`, `f64`, `i1`) except for constants
 - **INTR_004**: Unboxing is automatically inserted when arguments have `!eco.value` type
 - **INTR_005**: Intrinsics have priority over kernel calls—if an intrinsic matches, it is always used
+- **INTR_006**: Array intrinsics carry element type information for typed access to array storage
 
 ## Performance Benefits
 

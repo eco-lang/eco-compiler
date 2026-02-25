@@ -12,21 +12,23 @@ The EcoToLLVM pass is the main lowering pass that converts ECO dialect operation
 
 The pass is internally modularized by concern while remaining a single pass externally. This improves maintainability while keeping the public API stable.
 
+**Architectural simplification (Feb 25, 2026):** The pass underwent significant simplification through two refactoring steps: (1) all closure calling logic was centralized into `EcoToLLVMClosures.cpp`, and (2) the pass no longer attempts to reverse-engineer or repair kernel ABI types -- the Elm compiler is now the sole ABI arbiter (see [Centralized Closure ABI and Simplified EcoToLLVM](#centralized-closure-abi-and-simplified-ecotollvm) below).
+
 ### File Organization
 
 ```
 runtime/src/codegen/Passes/
 ├── EcoToLLVM.cpp              # Pass orchestrator (~150 lines)
-├── EcoToLLVMInternal.h        # Private header: EcoRuntime, layout constants, type converter
-├── EcoToLLVMRuntime.cpp       # Runtime function helper implementation
+├── EcoToLLVMInternal.h        # Private header: EcoRuntime, layout constants, type converter, shared utilities
+├── EcoToLLVMRuntime.cpp       # Runtime function helper generation
 ├── EcoToLLVMTypes.cpp         # Constants, string literals
 ├── EcoToLLVMHeap.cpp          # Heap allocation, boxing, construct/project
-├── EcoToLLVMClosures.cpp      # Closures, PAP, calls
+├── EcoToLLVMClosures.cpp      # All closure calling: PAP create/extend, direct/indirect calls, kernel calls
 ├── EcoToLLVMControlFlow.cpp   # Case, joinpoint, jump, return, get_tag
 ├── EcoToLLVMArith.cpp         # Arithmetic, comparisons, conversions
 ├── EcoToLLVMGlobals.cpp       # Globals, GC root initialization
 ├── EcoToLLVMErrorDebug.cpp    # Crash, expect, dbg, safepoint
-└── EcoToLLVMFunc.cpp          # Kernel function lowering
+└── EcoToLLVMFunc.cpp          # func.func lowering (kernel declarations reflected from compiler-declared types)
 ```
 
 ### Shared Infrastructure
@@ -54,12 +56,12 @@ Each module provides an internal `populate*Patterns()` function:
 |--------|----------|---------|
 | Types | 2 | `eco.constant`, `eco.string_literal` |
 | Heap | 17 | Box, Unbox, Allocate*, List*, Tuple*, Record*, Custom* |
-| Closures | 4 | `papCreate`, `papExtend`, `call` (direct + indirect) |
+| Closures | 4+ | `papCreate`, `papExtend`, `call` (direct + indirect), kernel calls |
 | ControlFlow | 5 | `case`, `joinpoint`, `jump`, `return`, `get_tag` |
 | Arith | 59 | Int*, Float*, Bool*, Char* ops |
 | Globals | 3 | `global`, `load_global`, `store_global` |
 | ErrorDebug | 4 | `safepoint`, `dbg`, `crash`, `expect` |
-| Func | 1 | Kernel function lowering |
+| Func | 1 | `func.func` lowering (kernel declarations use compiler-declared ABI types) |
 
 ## Related Invariants
 
@@ -288,7 +290,10 @@ FUNCTION lowerPapExtend(op):
 
 ### 7. Function Calls
 
-**Direct Call:**
+**Direct Call (including kernel calls):**
+
+As of Feb 25, 2026, kernel function calls follow the same direct call path. The Elm compiler determines kernel ABI types via `kernelBackendAbiPolicy` and emits `func.func` declarations with `is_kernel=true`. EcoToLLVM simply reflects the declared types into LLVM -- no ABI inference or repair is performed by the lowering pass.
+
 ```
 eco.call @func(%args) : (T...) -> R
     -> func.call @func(%converted_args) : (T...) -> R
@@ -551,6 +556,7 @@ These are behavioral properties of the pass itself (see "Related Invariants" sec
 3. **SSA Preservation**: Value flow through control flow is preserved via block arguments
 4. **No Dead Code**: Every path through converted case/joinpoint has proper terminator
 5. **No Static Global State**: Joinpoint mappings use per-pass EcoCFContext, not static globals
+6. **No ABI Inference**: The pass does not infer, guess, or repair kernel ABI types. It reflects the types declared by the compiler in `func.func` declarations (see [Compiler as Sole ABI Arbiter](#2-compiler-as-sole-abi-arbiter))
 
 ## Runtime Functions Referenced
 
@@ -581,3 +587,34 @@ The pass generates calls to these runtime functions:
 - **Requires**: All earlier ECO passes (JoinpointNormalization, EcoControlFlowToSCF, RCElimination, UndefinedFunction)
 - **Enables**: LLVM optimization and code generation
 - **Pipeline Position**: Final ECO-to-LLVM step (Stage 3)
+
+## Centralized Closure ABI and Simplified EcoToLLVM
+
+*Architectural change: Feb 25, 2026*
+
+The EcoToLLVM pass underwent significant simplification through two refactoring steps that reduced complexity and removed dead code.
+
+### 1. Centralized Closure Calling Logic
+
+All closure calling logic that was previously spread across multiple files has been consolidated into `EcoToLLVMClosures.cpp`. This includes:
+
+- PAP creation and extension (`papCreate`, `papExtend`)
+- Direct and indirect calls
+- Kernel function calls (previously handled separately)
+
+The `EcoToLLVMInternal.h` header provides shared utilities consumed by all modules, and `EcoToLLVMRuntime.cpp` handles runtime helper generation. This consolidation means there is a single authoritative location for understanding how any kind of function call is lowered to LLVM.
+
+### 2. Compiler as Sole ABI Arbiter
+
+Previously, the EcoToLLVM lowering pass contained logic to infer or repair what types a kernel function expected based on its name or usage patterns. This was fragile and created a second source of truth for kernel ABI types. The pass has been simplified so that:
+
+- The **Elm compiler** determines definitive ABI types via `kernelBackendAbiPolicy` + `monoTypeToAbi` (audited against the actual C++ `KernelExports.h`)
+- MLIR `func.func` declarations carry these types with the `is_kernel=true` attribute
+- **EcoToLLVM simply reflects** the declared types into LLVM and implements the calling convention
+- All dead code for ABI inference/repair has been removed
+
+This means the lowering pass is now a straightforward type-reflecting translator for kernel calls rather than an ABI decision-maker. If kernel ABI types need to change, the change is made in the compiler's `kernelBackendAbiPolicy`, not in the lowering pass.
+
+### 3. Removal of fixCallResultTypes
+
+The `fixCallResultTypes` pass that was previously part of `EcoPAPSimplify.cpp` has been removed. It was a compensating pass that corrected incorrect `papExtend` result types after the fact. With the **CGEN_056** invariant now enforced at the compiler level, saturating `papExtend` operations always carry correct result types from the start, making the fixup pass unnecessary.

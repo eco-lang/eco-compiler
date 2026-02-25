@@ -140,18 +140,82 @@ For `List.cons`:
 
 ### Backend ABI Policy
 
-`Context.elm` defines `kernelBackendAbiPolicy` which may override specialization:
+`Context.elm` defines `kernelBackendAbiPolicy` which determines whether a kernel's MLIR calling convention uses all-boxed `!eco.value` types or derives typed signatures from the Elm wrapper.
+
+The type (renamed from the earlier `AbiPolicy`) is:
 
 ```elm
-kernelBackendAbiPolicy : ( String, String ) -> AbiPolicy
-kernelBackendAbiPolicy ( home, name ) =
-    case ( home, name ) of
-        ( "String", "fromNumber" ) -> AllBoxed
-        ( "List", "cons" ) -> AllBoxed
-        _ -> UseMonoType
+type KernelBackendAbiPolicy
+    = AllBoxed     -- All args and result are !eco.value in MLIR
+    | ElmDerived   -- ABI derived from the Elm wrapper's funcType via monoTypeToAbi
 ```
 
-This ensures the MLIR codegen emits boxing/unboxing when calling C++ kernels.
+The policy function has been **audited against the actual C++ kernel exports** (elm-kernel-cpp/src/KernelExports.h) as of Feb 23, 2026. The comprehensive mapping is:
+
+```elm
+kernelBackendAbiPolicy : String -> String -> KernelBackendAbiPolicy
+kernelBackendAbiPolicy home name =
+    case ( home, name ) of
+        --
+        -- AllBoxed: C++ ABI is uniformly uint64_t for all params and return.
+        -- Audited against elm-kernel-cpp/src/KernelExports.h.
+        --
+        -- List: cons, fromArray, toArray, map2..map5, sortBy, sortWith
+        ( "List", _ ) ->
+            AllBoxed
+
+        -- Utils: compare, equal, notEqual, lt, le, gt, ge, append
+        ( "Utils", _ ) ->
+            AllBoxed
+
+        -- String.fromNumber: number-polymorphic, C++ takes boxed uint64_t
+        ( "String", "fromNumber" ) ->
+            AllBoxed
+
+        -- JsArray: C++ ABI uniformly uint64_t for all params and return.
+        -- Integer arguments (index, length, etc.) are boxed Elm Int HPointers
+        -- and unboxed inside the C++ implementations.
+        ( "JsArray", _ ) ->
+            AllBoxed
+
+        -- Json.wrap: polymorphic (a -> Value), C++ inspects heap tag at runtime.
+        -- Must be AllBoxed to avoid signature mismatch across monomorphized
+        -- call sites (Encode.int passes i64, Encode.string passes !eco.value).
+        ( "Json", "wrap" ) ->
+            AllBoxed
+
+        --
+        -- ElmDerived: C++ ABI has typed (non-uint64_t) params or returns.
+        -- ABI is derived from the Elm wrapper's funcType via monoTypeToAbi.
+        --
+        -- Basics:  double (trig, fdiv, toFloat), int64_t (idiv, modBy, floor, etc.)
+        -- Bitwise: int64_t
+        -- Char:    uint16_t (toCode, fromCode)
+        -- String:  length(uint64_t)->i64, cons(i16,uint64_t)->uint64_t,
+        --          slice(i64,i64,uint64_t)->uint64_t
+        -- Json:    decodeIndex(i64, ...), encode(i64, ...)
+        -- Browser, Bytes, Parser, Regex, File, Process, Time,
+        -- Debugger, Platform: typed C++ signatures
+        --
+        -- Also ElmDerived (all uint64_t in C++ but no mismatch bug today):
+        -- Debug, Scheduler, VirtualDom, Url, Http
+        --
+        _ ->
+            ElmDerived
+```
+
+**AllBoxed modules/functions** (C++ ABI uniformly `uint64_t`):
+- **List** (all functions): `cons`, `fromArray`, `toArray`, `map2`..`map5`, `sortBy`, `sortWith`
+- **Utils** (all functions): `compare`, `equal`, `notEqual`, `lt`, `le`, `gt`, `ge`, `append`
+- **String.fromNumber**: number-polymorphic, C++ takes boxed `uint64_t`
+- **JsArray** (all functions): C++ ABI uniformly `uint64_t`; integer args (index, length) are boxed Elm Int HPointers, unboxed inside C++ implementations
+- **Json.wrap**: polymorphic (`a -> Value`), C++ inspects heap tag at runtime
+
+**ElmDerived** (remaining functions): ABI derived from the Elm wrapper's `funcType` via `monoTypeToAbi`. This covers `Basics` (typed arithmetic), `Bitwise`, `Char`, `String` (length, cons, slice), `Json` (decodeIndex, encode), `Browser`, `Bytes`, `Parser`, `Regex`, `File`, `Process`, `Time`, `Debugger`, `Platform`, etc.
+
+**AllBoxed return type rule**: For AllBoxed kernels with polymorphic return types, the call result type must be `!eco.value` regardless of what the monomorphized type says, because the C++ function always returns `uint64_t`. The compiler enforces this by using `ecoValueType` as the result type for AllBoxed kernels rather than `monoTypeToAbi` of the call-site return type.
+
+This ensures the MLIR codegen emits correct boxing/unboxing when calling C++ kernels.
 
 ## Kernel Type Inference (PostSolve)
 
@@ -204,6 +268,20 @@ When the kernel returns boxed but the result is used as unboxed:
 %boxed_result = func.call @Elm_Kernel_Basics_add(%a, %b)
 %unboxed = eco.unbox %boxed_result : !eco.value -> i64
 ```
+
+## Compiler as Sole ABI Arbiter (KERN_006)
+
+As of Feb 25, 2026, the compiler is the **sole arbiter** of kernel ABI types. The architecture has been simplified to a clear three-layer model:
+
+1. **Compiler determines ABI types**: `kernelBackendAbiPolicy` + `monoTypeToAbi` compute the definitive MLIR types for all kernel function parameters and return values. The compiler emits `func.func` declarations with these types and ensures all `eco.papCreate`, `eco.papExtend`, and `eco.call` operations match the declared types.
+
+2. **MLIR enforces type-level consistency**: `func.func` declarations carry the ABI types as their `function_type` attribute. Any `eco.papCreate`, `eco.papExtend`, or `eco.call` that references a kernel symbol must have argument and result types consistent with the kernel's declaration. Mismatches are caught by MLIR verifiers and the `UndefinedFunctionPass`.
+
+3. **EcoToLLVM simply reflects**: The LLVM lowering pass no longer tries to reverse-engineer or repair ABI types. It takes the MLIR types at face value and lowers them directly to LLVM IR. If the compiler emits correct MLIR types, the lowering is correct by construction.
+
+This is captured in invariant **CGEN_057**: Every kernel function symbol (`Elm_Kernel_*`) that appears in a `papCreate`, `papExtend`, or `eco.call` must have a corresponding `func.func` declaration with `is_kernel=true` and a `function_type` whose parameter and result types match the ABI-level types computed by the Elm compiler.
+
+**Why this matters**: Previously, some layers attempted to independently derive or fix up kernel ABI types, leading to subtle mismatches (e.g., an `eco.call` passing `i64` to a kernel declared with `!eco.value` parameters). By making the compiler the single source of truth and having downstream passes trust the MLIR types, the entire pipeline becomes simpler and more reliable.
 
 ## C++ Kernel Implementation Patterns
 
@@ -295,6 +373,7 @@ These can have specialized Elm wrappers even though the C++ ABI is boxed.
 - **KERN_003**: NumberBoxed kernels treat `CNumber` as boxed for ABI
 - **KERN_004**: Container specialization doesn't affect C++ kernel ABI
 - **KERN_005**: MLIR codegen inserts box/unbox at kernel call boundaries
+- **KERN_006**: The compiler is the sole source of truth for kernel ABI types. `kernelBackendAbiPolicy` + `monoTypeToAbi` determine the definitive MLIR types for all kernel parameters and return values. MLIR declarations carry these types; the LLVM lowering pass reflects them without repair. (See also CGEN_057.)
 
 ## Relationship to Other Passes
 

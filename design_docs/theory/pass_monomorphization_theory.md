@@ -51,6 +51,23 @@ type Constraint
 - `CEcoValue`: Used for kernel functions that work on any boxed value. Can remain unspecialized through to MLIR codegen where it becomes `eco.value`.
 - `CNumber`: Used for `number` typeclass (arithmetic operations). MUST be resolved to `MInt` or `MFloat` by specialization; any remaining `CNumber` at codegen is a compiler bug.
 
+### Monomorphizing Out Type Variables (Feb 2026)
+
+The monomorphizer aggressively resolves type variables to concrete types, ensuring that the monomorphized AST is fully concrete. The key mechanism is `forceCNumberToInt`, which defaults unresolved numeric type variables to `MInt`:
+
+```elm
+-- forceCNumberToInt converts:
+--   MVar "n" CNumber  -->  MInt
+-- when no concrete numeric type is known from context.
+```
+
+This means:
+- Type variables no longer escape into the monomorphized AST unless they are genuinely necessary (e.g., `CEcoValue` for polymorphic kernel function ABIs).
+- The `CNumber` constraint is resolved to `MInt` by default when no concrete numeric type (Int or Float) is determined from the call-site context.
+- **Strengthened invariant**: After monomorphization, MONO types should be fully concrete. The only surviving type variables are `MVar _ CEcoValue` for kernel ABIs.
+
+This change tightens the contract between monomorphization and downstream passes (MLIR codegen), reducing the surface area for type variable handling in code generation.
+
 ### SpecKey and SpecId
 
 Functions are identified by their specialization:
@@ -162,6 +179,84 @@ FUNCTION specializeExpr(expr, subst, state):
 
         -- ... similar for all expression types
 ```
+
+## Let-Bound Function Multi-Specialization (Feb 2026)
+
+The monomorphizer supports demand-driven multi-specialization of let-bound polymorphic functions. When a polymorphic function is defined in a `let` expression and used at multiple call sites with different concrete types, the monomorphizer creates separate specialized instances for each distinct call-site type.
+
+### Motivation
+
+Consider:
+```elm
+let
+    identity x = x
+in
+( identity 42, identity "hello" )
+```
+
+Without multi-specialization, `identity` would receive a single monomorphized type, losing the ability to generate type-specific code for each call site. With multi-specialization, the monomorphizer produces:
+```elm
+-- Generates:
+--   identity_0 : Int -> Int
+--   identity_1 : String -> String
+```
+
+### Mechanism
+
+The algorithm works in three phases during expression specialization:
+
+1. **Discovery**: When encountering a let-bound function definition, push a `localMulti` entry onto a stack within `MonoState`. This entry tracks the function's name and an initially empty dictionary of discovered instances.
+
+2. **Collection**: Specialize the body expression of the `let`. Any calls to the let-bound function during body specialization record their concrete substitution in the stack entry. Each distinct type instantiation is keyed by its string representation, and a fresh name is generated for each.
+
+3. **Emission**: After body specialization completes, pop the `localMulti` entry and examine the discovered instances:
+   - **Multiple instances found**: Create separate `MonoDef` clones using `renameMonoDef`, each specialized with its call-site substitution. Build a nested `MonoLet` chain binding each specialized definition.
+   - **Zero or one instances**: Fall back to single-instance behavior (the original let-specialization path).
+
+### Data Structures
+
+The multi-specialization state is stored in `MonoState`:
+
+```elm
+type alias MonoState =
+    { ...
+    , localMulti : List
+        { defName : Name
+        , instances : Dict String
+            { freshName : Name
+            , subst : Substitution
+            , monoType : MonoType
+            }
+        }
+    }
+```
+
+Each entry in the `localMulti` stack corresponds to a let-bound function currently being analyzed. The `instances` dictionary maps a string key (derived from the concrete type) to:
+- `freshName`: A uniquified name for this specialization (e.g., `identity_0`, `identity_1`)
+- `subst`: The type substitution mapping type variables to concrete types at this call site
+- `monoType`: The fully concrete monomorphized type of the function at this call site
+
+### Example Walkthrough
+
+```elm
+let
+    pair a b = (a, b)
+in
+( pair 1 2, pair "x" "y" )
+```
+
+1. Push `{ defName = "pair", instances = {} }` onto `localMulti`
+2. Specialize body `( pair 1 2, pair "x" "y" )`:
+   - `pair 1 2` records instance: `{ freshName = "pair_0", subst = {a: MInt, b: MInt}, monoType = MFunction [MInt, MInt] (MTuple ...) }`
+   - `pair "x" "y"` records instance: `{ freshName = "pair_1", subst = {a: MString, b: MString}, monoType = MFunction [MString, MString] (MTuple ...) }`
+3. Pop entry, find 2 instances. Generate:
+   ```
+   MonoLet "pair_0" (specialized def for Int,Int) (
+     MonoLet "pair_1" (specialized def for String,String) (
+       ( MonoCall pair_0 [1, 2], MonoCall pair_1 ["x", "y"] )
+     )
+   )
+   ```
 
 ## Layout Computation
 
@@ -397,6 +492,14 @@ type alias MonoState =
     , processed : Set (List String) SpecKey
     , registry : SpecializationRegistry
     , nodes : Dict Int Int MonoNode
+    , localMulti : List                         -- Stack for let-bound multi-specialization (Feb 2026)
+        { defName : Name
+        , instances : Dict String
+            { freshName : Name
+            , subst : Substitution
+            , monoType : MonoType
+            }
+        }
     }
 ```
 
@@ -438,9 +541,10 @@ monomorphize :
 ## Post-conditions
 
 1. All polymorphic functions are specialized to concrete types
-2. No type variables remain (except `CEcoValue`/`CNumber` in kernel ABIs)
+2. No type variables remain except `MVar _ CEcoValue` in kernel ABIs. `CNumber` variables are resolved to `MInt` by `forceCNumberToInt` when no concrete numeric type is determined from context (strengthened Feb 2026)
 3. All layouts are computed
 4. SpecializationRegistry has unique IDs for all specializations
+5. Let-bound polymorphic functions used at multiple distinct types are multi-specialized into separate definitions with fresh names (Feb 2026)
 
 ## Example
 

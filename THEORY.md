@@ -407,6 +407,8 @@ Each specialization gets a unique `SpecId`. The pass also computes concrete layo
 - `MonoType`: Monomorphized type (MInt, MFloat, MList MonoType, etc.)
 - `SpecKey`: (Global, [MonoType]) identifying a specialization
 - `SpecializationRegistry`: Maps SpecKey ↔ SpecId
+- `forceCNumberToInt`: Aggressively resolves unresolved `CNumber` type variables to `MInt`, ensuring no `CNumber` survives to codegen
+- **Let-bound multi-specialization**: When a polymorphic let-bound function is used at multiple distinct types, the monomorphizer creates separate specialized instances with fresh names (e.g., `identity_0 : Int -> Int`, `identity_1 : String -> String`)
 
 **Important**: Monomorphization is staging-agnostic. It preserves curried type structure from Elm semantics (e.g., `MFunction [Int] (MFunction [Int] Int)`). All staging and calling-convention decisions are deferred to GlobalOpt.
 
@@ -481,12 +483,13 @@ Stage 2 passes transform ECO dialect toward LLVM:
 
 ### EcoToLLVM
 
-Final lowering from ECO dialect to LLVM dialect:
+Final lowering from ECO dialect to LLVM dialect. As of Feb 2026, the pass underwent significant simplification: all closure calling logic is centralized in `EcoToLLVMClosures.cpp`, and the pass no longer reverse-engineers kernel ABI types (the compiler is the sole ABI arbiter).
 
 - Type conversion: `!eco.value` → `i64` (tagged pointers)
 - Heap allocation via runtime calls
-- Closure creation and invocation
+- Closure creation and invocation (centralized in `EcoToLLVMClosures.cpp`)
 - Tagged pointer encoding for embedded constants
+- Kernel calls reflect compiler-declared types without repair
 
 **PAP Wrapper Elimination (Typed Closure Calling)**: The compiler generates direct function calls even when partial application and closures are involved:
 
@@ -530,12 +533,14 @@ Kernel functions are C++/runtime implementations called from Elm code. They're h
 3. **MLIR Generation** checks for intrinsics first, then emits kernel calls with boxing/unboxing
 4. **Linking** connects to C++ implementations in the runtime
 
-**Intrinsics**: Many `Basics` and `Bitwise` operations are handled by [compiler intrinsics](design_docs/theory/intrinsics_theory.md) that emit direct MLIR operations, bypassing kernel calls entirely. This covers arithmetic (`add`, `sub`, `mul`, `div`), comparisons (`lt`, `le`, `gt`, `ge`), trigonometry (`sin`, `cos`, `tan`), and bitwise operations (`and`, `or`, `xor`, `shiftLeftBy`).
+**Intrinsics**: Many `Basics`, `Bitwise`, `Utils`, and `JsArray` operations are handled by [compiler intrinsics](design_docs/theory/intrinsics_theory.md) that emit direct MLIR operations, bypassing kernel calls entirely. This covers arithmetic (`add`, `sub`, `mul`, `div`), comparisons (`lt`, `le`, `gt`, `ge`), trigonometry (`sin`, `cos`, `tan`), bitwise operations (`and`, `or`, `xor`, `shiftLeftBy`), and typed array access (`JsArray.unsafeGet`, `JsArray.unsafeSet`, `JsArray.length`).
 
 **ABI Modes** (for operations without intrinsics):
 - **UseSubstitution**: Monomorphic kernels use typed parameters directly
 - **PreserveVars**: Polymorphic kernels use boxed `eco.value` for all type variables
 - **NumberBoxed**: Number-polymorphic kernels (`fromNumber`) receive boxed numbers
+
+**Backend ABI Policy**: The compiler's `kernelBackendAbiPolicy` (audited against C++ `KernelExports.h`) determines whether each kernel uses `AllBoxed` (uniform `uint64_t` C++ ABI — List, Utils, JsArray, String.fromNumber, Json.wrap) or `ElmDerived` (typed C++ ABI — Basics, Bitwise, Char, etc.). The compiler is the **sole arbiter** of kernel ABI types (KERN_006); downstream passes (EcoToLLVM) simply reflect the declared types.
 
 **See**: [Intrinsics Theory](design_docs/theory/intrinsics_theory.md), [Kernel ABI Theory](design_docs/theory/kernel_abi_theory.md)
 
@@ -591,7 +596,7 @@ All compiler invariants are documented in [`design_docs/invariants.csv`](design_
 | POST | POST_001-004 | Group B type fixing, kernel type inference |
 | TOPT | TOPT_001-005 | Type carrying, decision trees, annotations preserved |
 | MONO | MONO_001-015 | MonoType completeness, layouts, specialization registry |
-| CGEN | CGEN_001-039 | Boxing rules, SSA consistency, operation attributes |
+| CGEN | CGEN_001-057 | Boxing rules, SSA consistency, operation attributes, kernel declarations |
 
 ### MLIR AST Inspection
 

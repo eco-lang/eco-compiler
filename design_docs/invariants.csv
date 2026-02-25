@@ -299,6 +299,8 @@ CGEN_056; MLIR_Codegen;Closures;enforced;For every eco.papExtend that represents
 
 CGEN_057;MLIR_Codegen;KernelABI;enforced;Every kernel function symbol (Elm_Kernel_*) that appears in a papCreate papExtend or eco.call operation must have a corresponding func.func declaration with is_kernel=true and a function_type attribute whose parameter and result types match the ABI-level types computed by the Elm compiler from MonoType via monoTypeToAbi. Enforced by: (1) compiler registerKernelCall + generateKernelDecl at construction time (2) PapCreateOp and PapExtendOp verifiers hard-error on missing kernel declarations (3) UndefinedFunctionPass catches eco.call to undeclared symbols (4) EcoToLLVM getOrCreateWrapper fatal error on missing origFuncTypes entry for kernel functions;Context.registerKernelCall|Functions.generateKernelDecl|EcoOps.cpp|EcoToLLVMClosures.cpp
 
+KERN_006;MLIR_Codegen;KernelABI;enforced;The compiler is the sole arbiter of kernel ABI types: kernelBackendAbiPolicy + monoTypeToAbi compute the definitive MLIR types for all kernel function parameters and return values and func.func declarations carry these types and the LLVM lowering pass (EcoToLLVM) reflects them without repair or reverse-engineering. For AllBoxed kernels with polymorphic return types the call result type must be eco.value regardless of the monomorphized type because the C++ function always returns uint64_t;Context.kernelBackendAbiPolicy|Context.registerKernelCall|Functions.generateKernelDecl|EcoToLLVM
+
 # =============================================================================
 # RUNTIME HEAP PHASE - Memory layout and GC invariants
 # =============================================================================
@@ -339,7 +341,7 @@ HEAP_017;Runtime_Heap;NoNullPointers;enforced;Elm never produces null pointers s
 
 HEAP_018;Runtime_Heap;NoCyclicValues;enforced;Elm values are always acyclic because Elm is a pure functional language with immutable data and no recursive let bindings so any traversal of a value graph is guaranteed to terminate and runtime operations like debug printing may safely follow nested references without cycle detection;Language semantics
 
-HEAP_019;Runtime_Heap;UnboxedBitmap;enforced;Container heap objects such as Custom Cons and Record store an unboxed bitmap indicating which fields contain unboxed runtime values (Int, Float, Char) rather than HPointer references and GC and debug logic must use this bitmap to distinguish pointers from unboxed values;Heap.hpp and RuntimeExports.cpp
+HEAP_019;Runtime_Heap;UnboxedBitmap;enforced;Container heap objects such as Custom Cons ElmArray and Record store an unboxed bitmap indicating which fields contain unboxed runtime values (Int, Float, Char) rather than HPointer references and GC and debug logic must use this bitmap to distinguish pointers from unboxed values;Heap.hpp and RuntimeExports.cpp
 
 
 # =============================================================================

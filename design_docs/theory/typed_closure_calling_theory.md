@@ -214,10 +214,12 @@ Same as generic path, but emits a diagnostic warning during lowering.
 
 ### EcoToLLVM
 
-`EcoToLLVMClosures.cpp`:
+`EcoToLLVMClosures.cpp` (centralized as of Feb 2026):
+- All closure calling logic consolidated into this single file (PAP create/extend, direct/indirect calls, kernel calls)
 - `papCreate` stores generic clone pointer as evaluator
 - Call lowering reads `_dispatch_mode` to choose lowering path
 - Fast calls resolve symbols at compile time
+- Kernel function calls use compiler-declared ABI types without inference or repair
 
 ## Example
 

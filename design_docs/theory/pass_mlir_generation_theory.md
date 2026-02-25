@@ -244,6 +244,19 @@ MonoLet name boundExpr body ->
     RETURN (boundOps ++ bodyOps, resultVar, ctx''')
 ```
 
+#### SSA Renaming for Recursive Let Definitions (Feb 2026)
+
+When a let-bound definition is recursive (self-referential) and inlined, the generated MLIR may contain duplicate SSA variable names from repeated expansions. The codegen handles this with SSA value renaming utilities in `Expr.elm`:
+
+```elm
+renameSsaVarInOps : String -> String -> List MlirOp -> List MlirOp
+renameSsaVarInRegion : String -> String -> MlirRegion -> MlirRegion
+renameSsaVarInBlock : String -> String -> MlirBlock -> MlirBlock
+renameSsaVarInSingleOp : String -> String -> MlirOp -> MlirOp
+```
+
+These functions perform substitution of one SSA variable name for another throughout a list of operations, recursing into regions and blocks. This ensures that after inlining a recursive definition, all SSA references within the inlined copy are unique and properly scoped.
+
 ### Case Expressions
 
 ```
@@ -378,7 +391,7 @@ The MLIR codegen is organized into 11 modules under `compiler/src/Compiler/Gener
 | `Ops.elm` | MLIR op builders (eco.*, arith.*, scf.*, func.*) | 25KB |
 | `Names.elm` | Symbol naming helpers | 1KB |
 | `TypeTable.elm` | eco.type_table generation | 16KB |
-| `Intrinsics.elm` | Basics/Bitwise kernel intrinsics | 16KB |
+| `Intrinsics.elm` | Basics/Bitwise/JsArray kernel intrinsics | 16KB |
 | `Patterns.elm` | Decision tree path navigation, test generation | 29KB |
 | `Expr.elm` | Expression lowering, call ABI | 97KB |
 | `Lambdas.elm` | Lambda/closure processing, PAP wrappers | 10KB |
