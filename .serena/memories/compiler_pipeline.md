@@ -1,4 +1,4 @@
-# Compiler Pipeline Summary (refreshed 2026-02-19)
+# Compiler Pipeline Summary (refreshed 2026-02-25)
 
 This memory summarizes the ECO compiler backend pipeline. Read at startup.
 
@@ -46,10 +46,15 @@ LLVM IR → Native Code
 - File: `compiler/src/Compiler/Monomorphize/Monomorphize.elm`
 
 ### GlobalOpt
+- Phase 0: `MonoInlineSimplify` inlines small functions
+- Phase 0.5: Wraps top-level callables as closures before staging
+- Phase 1: `Staging.GraphBuilder` builds constraint graph (producers → slots)
+- Phase 2: `Staging.Solver` uses union-find with majority voting for canonical segmentations
+- Phase 3: `Staging.Rewriter` wraps closures with non-canonical staging via eta-expansion
+- Phase 4: Computes CallInfo metadata for MLIR (callModel, stageArities, etc.)
 - Canonicalizes closure staging (GOPT_001): flattens types to match param counts
 - Normalizes case/if ABI (GOPT_003): ensures compatible staging across branches
-- Computes CallInfo metadata for MLIR (callModel, stageArities, etc.)
-- Validates closure staging invariants
+- Staging subsystem: `compiler/src/Compiler/GlobalOpt/Staging/{Types,GraphBuilder,Solver,Rewriter,ProducerInfo,UnionFind}.elm`
 - File: `compiler/src/Compiler/GlobalOpt/MonoGlobalOptimize.elm`
 
 ### MLIR Generation
