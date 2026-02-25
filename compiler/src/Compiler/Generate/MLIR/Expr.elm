@@ -2118,7 +2118,12 @@ generateSaturatedCall ctx func args resultType callInfo =
                                                         Ctx.freshVar ctx1b
 
                                                     resultMlirType =
-                                                        Types.monoTypeToAbi resultType
+                                                        case maybeSig of
+                                                            Just sig ->
+                                                                Types.monoTypeToAbi sig.returnType
+
+                                                            Nothing ->
+                                                                Types.monoTypeToAbi resultType
 
                                                     ( ctx3, callOp ) =
                                                         Ops.ecoCallNamed ctx2 resultVar funcName argVarPairs resultMlirType
@@ -2156,7 +2161,12 @@ generateSaturatedCall ctx func args resultType callInfo =
                                             Ctx.freshVar ctx1b
 
                                         resultMlirType =
-                                            Types.monoTypeToAbi resultType
+                                            case maybeSig of
+                                                Just sig ->
+                                                    Types.monoTypeToAbi sig.returnType
+
+                                                Nothing ->
+                                                    Types.monoTypeToAbi resultType
 
                                         ( ctx3, callOp ) =
                                             Ops.ecoCallNamed ctx2 resultVar funcName argVarPairs resultMlirType

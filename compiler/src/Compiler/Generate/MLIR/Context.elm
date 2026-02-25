@@ -664,9 +664,18 @@ extractNodeSignature node =
         Mono.MonoDefine expr monoType ->
             case expr of
                 Mono.MonoClosure closureInfo body _ ->
+                    let
+                        extractedReturnType =
+                            case monoType of
+                                Mono.MFunction _ retType ->
+                                    retType
+
+                                _ ->
+                                    monoType
+                    in
                     Just
                         { paramTypes = List.map Tuple.second closureInfo.params
-                        , returnType = Mono.typeOf body
+                        , returnType = extractedReturnType
                         }
 
                 _ ->
@@ -720,9 +729,18 @@ extractNodeSignature node =
         Mono.MonoPortIncoming expr monoType ->
             case expr of
                 Mono.MonoClosure closureInfo body _ ->
+                    let
+                        extractedReturnType =
+                            case monoType of
+                                Mono.MFunction _ retType ->
+                                    retType
+
+                                _ ->
+                                    monoType
+                    in
                     Just
                         { paramTypes = List.map Tuple.second closureInfo.params
-                        , returnType = Mono.typeOf body
+                        , returnType = extractedReturnType
                         }
 
                 _ ->
@@ -734,9 +752,18 @@ extractNodeSignature node =
         Mono.MonoPortOutgoing expr monoType ->
             case expr of
                 Mono.MonoClosure closureInfo body _ ->
+                    let
+                        extractedReturnType =
+                            case monoType of
+                                Mono.MFunction _ retType ->
+                                    retType
+
+                                _ ->
+                                    monoType
+                    in
                     Just
                         { paramTypes = List.map Tuple.second closureInfo.params
-                        , returnType = Mono.typeOf body
+                        , returnType = extractedReturnType
                         }
 
                 _ ->
