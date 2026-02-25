@@ -1,7 +1,7 @@
 module Compiler.LocalOpt.Typed.NormalizeLambdaBoundaries exposing
-    ( LambdaKind(..), lambdaKindOf, rebuildLambda
-    , RenameCtx, RenameEnv, emptyRenameCtx, freshName, insertRename
-    , normalizeLocalGraph, renameDecider, renameExpr
+    ( LambdaKind(..)
+    , RenameCtx, RenameEnv
+    , normalizeLocalGraph
     )
 
 {-| Lambda Boundary Normalization Pass
@@ -21,17 +21,17 @@ Transformations:
 
 # Lambda Kind
 
-@docs LambdaKind, lambdaKindOf, rebuildLambda
+@docs LambdaKind
 
 
 # Renaming Context
 
-@docs RenameCtx, RenameEnv, emptyRenameCtx, freshName, insertRename
+@docs RenameCtx, RenameEnv
 
 
 # Transformation
 
-@docs normalizeLocalGraph, renameDecider, renameExpr
+@docs normalizeLocalGraph
 
 -}
 
@@ -53,27 +53,6 @@ TrackedLambda = TOpt.TrackedFunction (carries region for Located names)
 type LambdaKind
     = PlainLambda
     | TrackedLambda A.Region
-
-
-{-| Determine the LambdaKind of an expression (if it's a lambda).
--}
-lambdaKindOf : TOpt.Expr -> Maybe LambdaKind
-lambdaKindOf expr =
-    case expr of
-        TOpt.Function _ _ _ ->
-            Just PlainLambda
-
-        TOpt.TrackedFunction params _ _ ->
-            case params of
-                ( A.At region _, _ ) :: _ ->
-                    Just (TrackedLambda region)
-
-                [] ->
-                    -- Should not happen in well-formed code, but be defensive.
-                    Nothing
-
-        _ ->
-            Nothing
 
 
 {-| Rebuild a lambda from flat (Name, Can.Type) params using the outer kind.

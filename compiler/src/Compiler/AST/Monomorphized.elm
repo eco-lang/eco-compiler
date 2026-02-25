@@ -10,7 +10,6 @@ module Compiler.AST.Monomorphized exposing
     , toComparableSpecKey, toComparableMonoType
     , getMonoPathType
     , monoTypeToDebugString
-    , toComparableLambdaId
     , forceCNumberToInt
     , Segmentation, segmentLengths, stageParamTypes, stageReturnType
     , chooseCanonicalSegmentation, buildSegmentedFunctionType
@@ -110,8 +109,6 @@ This module defines the data structures for the monomorphized program
 
 
 # Comparable Conversions
-
-@docs toComparableLambdaId
 
 
 # Constraint Utilities

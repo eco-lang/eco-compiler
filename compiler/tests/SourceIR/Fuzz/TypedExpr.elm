@@ -3,28 +3,11 @@ module SourceIR.Fuzz.TypedExpr exposing
       -- Scope operations
     , -- Types
       SimpleType(..)
-    , addVar
-    , boolExprFuzzer
     , decrementDepth
       -- Expression fuzzers
     , emptyScope
     , exprFuzzerForType
-      -- Pattern fuzzers
-    , floatExprFuzzer
     , intExprFuzzer
-    , intPatternFuzzer
-    , listExprFuzzer
-    , nameFuzzer
-    , patternFuzzerForType
-      -- Utilities
-    , recordExprFuzzer
-    , reserveName
-    , simpleTypeFuzzer
-    , stringExprFuzzer
-    , tuple3ExprFuzzer
-    , tupleExprFuzzer
-    , uniqueNameFuzzer
-    , unitExprFuzzer
     )
 
 {-| Type-indexed expression and pattern fuzzers.
@@ -53,7 +36,6 @@ type SimpleType
     | TFloat
     | TString
     | TBool
-    | TUnit
     | TList SimpleType
     | TTuple SimpleType SimpleType
     | TRecord (List ( Name, SimpleType ))
@@ -214,13 +196,6 @@ uniqueNameFuzzer scope =
 
         avail ->
             Fuzz.oneOfValues avail
-
-
-{-| Fuzzer for simple types (non-recursive).
--}
-simpleTypeFuzzer : Fuzzer SimpleType
-simpleTypeFuzzer =
-    Fuzz.oneOfValues [ TInt, TFloat, TString, TBool, TUnit ]
 
 
 
@@ -557,16 +532,6 @@ boolIfFuzzer scope =
 -- =============================================================================
 -- UNIT EXPRESSION FUZZER
 -- =============================================================================
-
-
-{-| Generate an expression of type ().
--}
-unitExprFuzzer : Fuzzer Src.Expr
-unitExprFuzzer =
-    Fuzz.constant B.unitExpr
-
-
-
 -- =============================================================================
 -- LIST EXPRESSION FUZZER
 -- =============================================================================
@@ -701,20 +666,6 @@ tupleIfFuzzer scope typeA typeB =
         (tupleExprFuzzer innerScope typeA typeB)
 
 
-{-| Generate an expression of type (a, b, c).
--}
-tuple3ExprFuzzer : Scope -> SimpleType -> SimpleType -> SimpleType -> Fuzzer Src.Expr
-tuple3ExprFuzzer scope typeA typeB typeC =
-    let
-        innerScope =
-            decrementDepth scope
-    in
-    Fuzz.map3 B.tuple3Expr
-        (exprFuzzerForType innerScope typeA)
-        (exprFuzzerForType innerScope typeB)
-        (exprFuzzerForType innerScope typeC)
-
-
 
 -- =============================================================================
 -- RECORD EXPRESSION FUZZER
@@ -810,9 +761,6 @@ exprFuzzerForType scope tipe =
 
         TBool ->
             boolExprFuzzer scope
-
-        TUnit ->
-            unitExprFuzzer
 
         TList elemType ->
             listExprFuzzer scope elemType
@@ -927,12 +875,6 @@ patternFuzzerForType tipe =
             -- Bool patterns: just use variable or wildcard
             Fuzz.oneOf
                 [ Fuzz.map (\name -> ( B.pVar name, [ ( name, TBool ) ] )) nameFuzzer
-                , Fuzz.constant ( B.pAnything, [] )
-                ]
-
-        TUnit ->
-            Fuzz.oneOf
-                [ Fuzz.constant ( B.pUnit, [] )
                 , Fuzz.constant ( B.pAnything, [] )
                 ]
 
