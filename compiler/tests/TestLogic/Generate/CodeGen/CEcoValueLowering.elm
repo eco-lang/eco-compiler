@@ -118,7 +118,7 @@ a primitive type.
 
 -}
 checkPolymorphicOperands : MlirOp -> String -> List MlirType -> List Violation
-checkPolymorphicOperands op callee operandTypes =
+checkPolymorphicOperands _ _ _ =
     -- For now, we don't report violations here because:
     -- 1. Debug.log "x" 42 legitimately has an i64 operand for Int
     -- 2. We'd need MonoType info to know which positions are truly polymorphic vs concrete

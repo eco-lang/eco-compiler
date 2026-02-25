@@ -15,7 +15,7 @@ This invariant catches the "different staging boundaries across branches" bug wh
   - MonoCase resultType stores one shape while branches have another
   - Mono.typeOf would return incorrect types for the case expression
 
-@docs expectMonoCaseBranchResultTypes
+@docs expectMonoCaseBranchResultTypes, Violation
 
 -}
 

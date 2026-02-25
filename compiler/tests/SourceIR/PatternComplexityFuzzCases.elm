@@ -66,7 +66,7 @@ nestedPatternTests expectFn condStr =
 Patterns like: ((a, b), (c, d)) or ((1, x), (y, 2))
 -}
 nestedTuplePatternCaseFuzzer : Scope -> Fuzzer Src.Expr
-nestedTuplePatternCaseFuzzer scope =
+nestedTuplePatternCaseFuzzer _ =
     Fuzz.map2
         (\val1 val2 ->
             let
@@ -105,7 +105,7 @@ nestedTuplePatternCaseFuzzer scope =
 Patterns like: (x :: xs) :: rest or [[a], [b, c]]
 -}
 nestedListPatternCaseFuzzer : Scope -> Fuzzer Src.Expr
-nestedListPatternCaseFuzzer scope =
+nestedListPatternCaseFuzzer _ =
     Fuzz.map2
         (\val1 val2 ->
             let
@@ -149,7 +149,7 @@ nestedListPatternCaseFuzzer scope =
 Combines tuples and lists in patterns.
 -}
 mixedNestedPatternCaseFuzzer : Scope -> Fuzzer Src.Expr
-mixedNestedPatternCaseFuzzer scope =
+mixedNestedPatternCaseFuzzer _ =
     Fuzz.map3
         (\val1 val2 val3 ->
             let
@@ -212,7 +212,7 @@ asPatternTests expectFn condStr =
 Patterns like: ((a, b) as pair) or (x :: xs as whole)
 -}
 asPatternCaseFuzzer : Scope -> Fuzzer Src.Expr
-asPatternCaseFuzzer scope =
+asPatternCaseFuzzer _ =
     Fuzz.map2
         (\val1 val2 ->
             let
@@ -299,7 +299,7 @@ overlappingIntPatternCaseFuzzer scope =
 Different patterns match different components of the tuple.
 -}
 overlappingTuplePatternCaseFuzzer : Scope -> Fuzzer Src.Expr
-overlappingTuplePatternCaseFuzzer scope =
+overlappingTuplePatternCaseFuzzer _ =
     Fuzz.map2
         (\val1 val2 ->
             let

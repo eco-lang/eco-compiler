@@ -1675,7 +1675,7 @@ computeCallInfo :
     -> List Mono.MonoExpr
     -> Mono.MonoType
     -> Mono.CallInfo
-computeCallInfo graph env func args resultType =
+computeCallInfo graph env func args _ =
     let
         callModel =
             callModelForCallee graph env func

@@ -9,7 +9,7 @@ Between Monomorphization and GlobalOpt, MonoTypes are preserved up to MFunction
 staging canonicalization. GlobalOpt may flatten nested function types to match
 closure parameter counts but may not otherwise change types or layout metadata.
 
-@docs expectTypePreservation, checkTypePreservation
+@docs expectTypePreservation, checkTypePreservation, Violation
 
 -}
 

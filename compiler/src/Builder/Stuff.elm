@@ -30,7 +30,6 @@ managing file locks.
 
 # Build Artifacts
 
-@docs interfaces, objects, typedObjects
 @docs eci, eco, ecot
 
 
@@ -46,7 +45,8 @@ managing file locks.
 
 # Build Directory Variants
 
-@docs detailsWithBuildDir, eciWithBuildDir, ecoWithBuildDir, ecotWithBuildDirWithBuildDirWithBuildDirWithBuildDir
+@docs detailsWithBuildDir, eciWithBuildDir, ecoWithBuildDir
+@docs ecotWithBuildDir, interfacesWithBuildDir, objectsWithBuildDir, typedObjectsWithBuildDir
 
 -}
 

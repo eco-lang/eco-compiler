@@ -828,7 +828,7 @@ extractExposedPossiblyTests path =
 
 
 parseExposedValues : FilePath -> String -> Maybe ( String, List String )
-parseExposedValues path bytes =
+parseExposedValues _ bytes =
     case Parse.fromByteString Parse.Application bytes of
         Ok (Src.Module srcData) ->
             case srcData.name of

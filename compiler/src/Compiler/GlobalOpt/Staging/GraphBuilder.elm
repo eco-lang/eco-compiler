@@ -18,8 +18,8 @@ This module handles:
 -}
 
 import Compiler.AST.Monomorphized as Mono
-import Compiler.GlobalOpt.Staging.Types exposing (..)
-import Compiler.GlobalOpt.Staging.UnionFind exposing (..)
+import Compiler.GlobalOpt.Staging.Types exposing (Node(..), ProducerInfo, ProducerId(..), SlotId(..), StagingGraph, emptyStagingGraph)
+import Compiler.GlobalOpt.Staging.UnionFind exposing (ensureNode, unionNodes)
 import Data.Map as Dict exposing (Dict)
 
 
@@ -50,7 +50,7 @@ freshExprId ctx =
 {-| Build the staging graph from a MonoGraph.
 -}
 buildStagingGraph : Mono.MonoGraph -> ProducerInfo -> StagingGraph
-buildStagingGraph (Mono.MonoGraph mono) producerInfo =
+buildStagingGraph (Mono.MonoGraph mono) _ =
     let
         foldNode nodeId node ( sg, ctx ) =
             case node of

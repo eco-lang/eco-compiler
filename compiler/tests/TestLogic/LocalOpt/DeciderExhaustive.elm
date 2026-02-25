@@ -304,7 +304,7 @@ collectExprExhaustivenessIssues context expr =
     case expr of
         TOpt.Case _ _ decider branches _ ->
             -- Check that the decider has proper coverage
-            checkDeciderExhaustiveness context decider
+            checkDeciderExhaustiveness decider
                 ++ List.concatMap (\( _, branchExpr ) -> collectExprExhaustivenessIssues context branchExpr) branches
 
         TOpt.Function _ bodyExpr _ ->
@@ -364,8 +364,8 @@ A decision tree is exhaustive if:
   - All paths through the tree lead to a Leaf
 
 -}
-checkDeciderExhaustiveness : String -> TOpt.Decider TOpt.Choice -> List (() -> Expect.Expectation)
-checkDeciderExhaustiveness context decider =
+checkDeciderExhaustiveness : TOpt.Decider TOpt.Choice -> List (() -> Expect.Expectation)
+checkDeciderExhaustiveness decider =
     case decider of
         TOpt.Leaf _ ->
             -- Leaf is always exhaustive for its branch
@@ -373,11 +373,11 @@ checkDeciderExhaustiveness context decider =
 
         TOpt.Chain _ success failure ->
             -- Both branches must be exhaustive
-            checkDeciderExhaustiveness context success
-                ++ checkDeciderExhaustiveness context failure
+            checkDeciderExhaustiveness success
+                ++ checkDeciderExhaustiveness failure
 
         TOpt.FanOut _ tests fallback ->
             -- The fallback ensures exhaustiveness for any missed cases
             -- Just verify all sub-trees are exhaustive
-            List.concatMap (\( _, subDecider ) -> checkDeciderExhaustiveness context subDecider) tests
-                ++ checkDeciderExhaustiveness context fallback
+            List.concatMap (\( _, subDecider ) -> checkDeciderExhaustiveness subDecider) tests
+                ++ checkDeciderExhaustiveness fallback

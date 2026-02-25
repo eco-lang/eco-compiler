@@ -129,7 +129,7 @@ generateDefsForNames scope names accDefs =
 {-| Generate just the body (and optionally args) for a pre-determined name.
 -}
 topLevelDefBodyFuzzer : Scope -> Name -> Fuzzer ( List Src.Pattern, Src.Expr )
-topLevelDefBodyFuzzer scope name =
+topLevelDefBodyFuzzer scope _ =
     Fuzz.oneOf
         [ -- Simple value definition
           simpleTypeFuzzer

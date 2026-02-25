@@ -155,7 +155,7 @@ type alias CallGraph =
 
 
 buildCallGraph : Dict Int SpecId MonoNode -> Mono.SpecializationRegistry -> CallGraph
-buildCallGraph nodes registry =
+buildCallGraph nodes _ =
     let
         -- Build edges: for each node, collect specIds it calls
         edges =
@@ -489,7 +489,7 @@ type alias Binding =
 
 
 optimizeNode : RewriteCtx -> SpecId -> MonoNode -> ( MonoNode, RewriteCtx )
-optimizeNode ctx specId node =
+optimizeNode ctx _ node =
     -- Reset per-function inline count at start of each node
     let
         ctxForNode =

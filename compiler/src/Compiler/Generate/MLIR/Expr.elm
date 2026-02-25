@@ -1588,6 +1588,7 @@ tryInlinedDecodeFusion ctx def body =
 {-| Search for the decode fusion pattern through nested MonoLet bindings.
 Accumulates let bindings to resolve the decoder expression when found.
 -}
+tryDecodeFusionWithBindings : Ctx.Context -> List ( Name.Name, Mono.MonoExpr ) -> Mono.MonoExpr -> Maybe ExprResult
 tryDecodeFusionWithBindings ctx bindings body =
     case body of
         Mono.MonoDestruct _ innerBody _ ->
@@ -2753,7 +2754,7 @@ boxArgsWithMlirTypes ctx args =
 {-| Generate MLIR code for a tail call.
 -}
 generateTailCall : Ctx.Context -> Name.Name -> List ( Name.Name, Mono.MonoExpr ) -> ExprResult
-generateTailCall ctx name args =
+generateTailCall ctx _ args =
     let
         -- Generate arguments and track actual SSA types
         ( argsOps, argsWithTypes, ctx1 ) =
@@ -2909,7 +2910,7 @@ generateIf ctx branches final =
 {-| Generate if-then-else using eco.case when the then branch is terminated.
 -}
 generateIfWithTerminatedBranch : Ctx.Context -> String -> ExprResult -> List ( Mono.MonoExpr, Mono.MonoExpr ) -> Mono.MonoExpr -> List MlirOp -> ExprResult
-generateIfWithTerminatedBranch ctx condVar thenRes restBranches final condOps =
+generateIfWithTerminatedBranch _ condVar thenRes restBranches final condOps =
     let
         -- Build then region - it already has a terminator (should be eco.yield)
         thenRegion =
@@ -2964,7 +2965,7 @@ generateIfWithTerminatedBranch ctx condVar thenRes restBranches final condOps =
 The then branch has already been processed and yields a value.
 -}
 generateIfWithTerminatedElse : Ctx.Context -> String -> ExprResult -> ExprResult -> MlirType -> List MlirOp -> ExprResult
-generateIfWithTerminatedElse ctx condVar thenRes elseRes resultMlirType condOps =
+generateIfWithTerminatedElse _ condVar thenRes elseRes resultMlirType condOps =
     let
         -- Build then region with eco.yield (not terminated)
         ( thenCoerceOps, thenFinalVar, thenCoerceCtx ) =
@@ -3379,7 +3380,7 @@ generateLet ctx def body =
 
 
 generateDestruct : Ctx.Context -> Mono.MonoDestructor -> Mono.MonoExpr -> Mono.MonoType -> ExprResult
-generateDestruct ctx (Mono.MonoDestructor name path monoType) body _ =
+generateDestruct ctx (Mono.MonoDestructor name path _) body _ =
     let
         -- Use the path's actual result type for generating the destructor.
         -- The path's MonoIndex/MonoField/etc. nodes carry the correctly-specialized
@@ -3452,7 +3453,7 @@ Instead of emitting eco.jump to joinpoints, this looks up the branch expression
 and inlines it directly. This enables single-block alternative regions.
 -}
 generateLeafWithJumps : Ctx.Context -> Name.Name -> Mono.MonoChoice -> Dict Int Mono.MonoExpr -> MlirType -> ExprResult
-generateLeafWithJumps ctx root choice jumpLookup resultTy =
+generateLeafWithJumps ctx _ choice jumpLookup resultTy =
     case choice of
         Mono.Inline branchExpr ->
             -- Same as generateLeaf - evaluate and yield

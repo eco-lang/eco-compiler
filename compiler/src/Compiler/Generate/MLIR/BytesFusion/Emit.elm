@@ -7,7 +7,7 @@ module Compiler.Generate.MLIR.BytesFusion.Emit exposing
 
 Takes Loop IR operations and emits bf dialect MLIR ops.
 
-@docs ExprCompiler, emitFusedDecoder, emitFusedEncoder
+@docs ExprCompiler, emitFusedDecoder, emitFusedEncoder, CompileExprResult
 
 -}
 
@@ -262,6 +262,7 @@ endianToAttr endian =
 
 {-| Emit bf.write.u8 operation.
 -}
+emitWriteU8 : Mono.MonoExpr -> EmitState -> EmitState
 emitWriteU8 valueExpr state =
     let
         exprResult =
@@ -1976,7 +1977,7 @@ emitItemDecoderOps ops state =
 Assumes bounds have already been checked or will be checked at higher level.
 -}
 emitSimpleRead : Int -> String -> Maybe Endianness -> MlirType -> String -> DecoderEmitState -> ItemDecoderResult
-emitSimpleRead byteCount readOpName maybeEndian resultType placeholderVar state =
+emitSimpleRead _ readOpName maybeEndian resultType _ state =
     let
         ( valueVar, ctx1 ) =
             Context.freshVar state.ctx
@@ -2037,7 +2038,7 @@ emitSimpleRead byteCount readOpName maybeEndian resultType placeholderVar state 
 Returns (ops, resultVar, newCursor, ctx).
 -}
 emitReadThenApply1 : Int -> String -> Maybe Endianness -> MlirType -> Mono.MonoExpr -> String -> String -> DecoderEmitState -> ItemDecoderResult
-emitReadThenApply1 byteCount readOpName maybeEndian resultType fnExpr argPlaceholder resultPlaceholder state =
+emitReadThenApply1 byteCount readOpName maybeEndian resultType fnExpr argPlaceholder _ state =
     let
         -- First emit the read
         readResult =
@@ -2093,7 +2094,7 @@ emitReadThenApply1 byteCount readOpName maybeEndian resultType fnExpr argPlaceho
 Returns (ops, resultVar, newCursor, ctx).
 -}
 emitTwoReadsThenApply2 : DecoderOp -> DecoderOp -> Mono.MonoExpr -> String -> DecoderEmitState -> ItemDecoderResult
-emitTwoReadsThenApply2 read1 read2 fnExpr resultPlaceholder state =
+emitTwoReadsThenApply2 read1 read2 fnExpr _ state =
     let
         -- Emit first read
         read1Result =

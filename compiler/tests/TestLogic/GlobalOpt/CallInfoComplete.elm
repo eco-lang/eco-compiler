@@ -20,7 +20,7 @@ correctly computed by GlobalOpt's annotateCallStaging phase.
 @docs checkStageAritiesSumMatchesArity
 @docs checkPartialApplicationAritySemantics
 @docs checkSingleStageSaturated
-@docs checkFlattenedExternalCallInfo
+@docs checkFlattenedExternalCallInfo, Violation
 
 -}
 

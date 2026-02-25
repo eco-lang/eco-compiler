@@ -587,13 +587,16 @@ zabsWithFloat expectFn _ =
     expectFn modul
 
 
+tLambda : Src.Type -> Src.Type -> Src.Type
 tLambda =
     Compiler.AST.SourceBuilder.tLambda
 
 
+tVar : String -> Src.Type
 tVar =
     Compiler.AST.SourceBuilder.tVar
 
 
+tType : String -> List Src.Type -> Src.Type
 tType =
     Compiler.AST.SourceBuilder.tType

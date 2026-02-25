@@ -11,7 +11,7 @@ Non-conforming branches should have been wrapped via buildAbiWrapperGO.
 
 This extends MONO\_018 (type equality) to include staging equality after GlobalOpt.
 
-@docs expectCaseBranchStaging, checkCaseBranchStaging
+@docs expectCaseBranchStaging, checkCaseBranchStaging, Violation
 
 -}
 

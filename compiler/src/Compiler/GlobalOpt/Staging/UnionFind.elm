@@ -25,7 +25,7 @@ This module provides:
 -}
 
 import Compiler.AST.Monomorphized as Mono
-import Compiler.GlobalOpt.Staging.Types exposing (..)
+import Compiler.GlobalOpt.Staging.Types exposing (Node(..), NodeId, ProducerId(..), SlotId(..), StagingGraph, Uf)
 import Data.Map as Dict
 import System.TypeCheck.IO as IO
 

@@ -428,7 +428,7 @@ normalizeExpr expr =
                     normalizeExpr body
 
                 ( finalParams, finalBody ) =
-                    normalizeLambdaBodyFixpoint PlainLambda params normalizedBody lambdaType
+                    normalizeLambdaBodyFixpoint params normalizedBody lambdaType
             in
             rebuildLambda PlainLambda finalParams finalBody lambdaType
 
@@ -451,7 +451,7 @@ normalizeExpr expr =
                     List.map (\( A.At _ n, t ) -> ( n, t )) params
 
                 ( finalParams, finalBody ) =
-                    normalizeLambdaBodyFixpoint kind flatParams normalizedBody lambdaType
+                    normalizeLambdaBodyFixpoint flatParams normalizedBody lambdaType
             in
             rebuildLambda kind finalParams finalBody lambdaType
 
@@ -542,21 +542,20 @@ normalizeChoiceExpr choice =
 {-| Iterate let/case boundary lifting until no more changes.
 -}
 normalizeLambdaBodyFixpoint :
-    LambdaKind
-    -> List ( Name.Name, Can.Type )
+    List ( Name.Name, Can.Type )
     -> TOpt.Expr
     -> Can.Type
     -> ( List ( Name.Name, Can.Type ), TOpt.Expr )
-normalizeLambdaBodyFixpoint kind params body lambdaType =
+normalizeLambdaBodyFixpoint params body lambdaType =
     case tryNormalizeLetBoundary params body of
         Just ( newParams, newBody ) ->
             -- Keep iterating
-            normalizeLambdaBodyFixpoint kind newParams newBody lambdaType
+            normalizeLambdaBodyFixpoint newParams newBody lambdaType
 
         Nothing ->
             case tryNormalizeCaseBoundary params body lambdaType of
                 Just ( newParams, newBody ) ->
-                    normalizeLambdaBodyFixpoint kind newParams newBody lambdaType
+                    normalizeLambdaBodyFixpoint newParams newBody lambdaType
 
                 Nothing ->
                     ( params, body )

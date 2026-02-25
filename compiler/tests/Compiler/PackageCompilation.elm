@@ -47,6 +47,11 @@ This ensures the standard JS pathway and the MLIR pathway behave consistently.
 
 @docs errorToString
 
+
+# Typed Compilation Results
+
+@docs TypeCheckTypedResult, generateMLIRFromResult
+
 -}
 
 import Builder.GraphAssembly as GA

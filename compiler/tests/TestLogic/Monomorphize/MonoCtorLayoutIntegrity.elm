@@ -14,7 +14,7 @@ For each custom type and each constructor in MonoGraph.ctorShapes:
 Note: MVar types in fieldTypes are allowed for polymorphic types, as long as
 they are marked as boxed (isUnboxed = False).
 
-@docs expectMonoCtorLayoutIntegrity
+@docs expectMonoCtorLayoutIntegrity, Violation
 
 -}
 

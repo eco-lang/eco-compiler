@@ -112,7 +112,7 @@ A spurious unbox is detected when:
 
 -}
 checkForSpuriousUnbox : TypeEnv -> Dict.Dict String MlirOp -> MlirOp -> Maybe Violation
-checkForSpuriousUnbox typeEnv definingOps unboxOp =
+checkForSpuriousUnbox _ definingOps unboxOp =
     case unboxOp.operands of
         [ operandName ] ->
             case unboxOp.results of

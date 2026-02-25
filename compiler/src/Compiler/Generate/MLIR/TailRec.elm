@@ -338,9 +338,9 @@ compileStep ctx loopSpec expr =
             -- Case expression -> multi-result eco.case
             compileCaseStep ctx loopSpec scrutinee1 scrutinee2 decider jumps resultType
 
-        Mono.MonoIf branches final resultType ->
+        Mono.MonoIf branches final _ ->
             -- If expression -> treat as multi-way case
-            compileIfStep ctx loopSpec branches final resultType
+            compileIfStep ctx loopSpec branches final
 
         Mono.MonoLet def body _ ->
             -- Let expression -> compile def, then recurse on body
@@ -852,9 +852,8 @@ compileIfStep :
     -> LoopSpec
     -> List ( Mono.MonoExpr, Mono.MonoExpr )
     -> Mono.MonoExpr
-    -> Mono.MonoType
     -> StepResult
-compileIfStep ctx loopSpec branches final resultType =
+compileIfStep ctx loopSpec branches final =
     case branches of
         [] ->
             -- No more branches, compile the final expression
@@ -891,7 +890,7 @@ compileIfStep ctx loopSpec branches final resultType =
 
                 -- Compile else branch recursively (handles nested if-else chains)
                 elseStep =
-                    compileIfStep thenYieldCtx loopSpec restBranches final resultType
+                    compileIfStep thenYieldCtx loopSpec restBranches final
 
                 -- Build else region that yields the step tuple
                 elseYieldOperands =

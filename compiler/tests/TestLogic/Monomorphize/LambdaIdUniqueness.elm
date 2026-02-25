@@ -8,7 +8,7 @@ module TestLogic.Monomorphize.LambdaIdUniqueness exposing
 Within a single MonoGraph, each lambdaId identifies a unique logical lambda.
 No two MonoClosure or MonoTailFunc nodes should share the same lambdaId.
 
-@docs expectLambdaIdUniqueness, checkLambdaIdUniqueness
+@docs expectLambdaIdUniqueness, checkLambdaIdUniqueness, Violation
 
 -}
 

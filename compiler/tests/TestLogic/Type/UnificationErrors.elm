@@ -179,7 +179,7 @@ canErrorToString error =
 {-| Convert a region to a string.
 -}
 regionToString : A.Region -> String
-regionToString (A.Region (A.Position startRow startCol) (A.Position endRow endCol)) =
+regionToString (A.Region (A.Position startRow startCol) (A.Position _ _)) =
     String.fromInt startRow ++ ":" ++ String.fromInt startCol
 
 

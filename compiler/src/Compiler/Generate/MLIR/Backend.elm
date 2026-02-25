@@ -46,7 +46,7 @@ backend =
 {-| Generate an MlirModule directly, for use in invariant testing.
 -}
 generateMlirModule : Mode.Mode -> TypeEnv.GlobalTypeEnv -> Mono.MonoGraph -> MlirModule
-generateMlirModule mode typeEnv monoGraph0 =
+generateMlirModule mode _ monoGraph0 =
     let
         -- Run the Mono IR optimizer before MLIR generation
         --( Mono.MonoGraph { nodes, main, registry, ctorShapes }, _ ) =

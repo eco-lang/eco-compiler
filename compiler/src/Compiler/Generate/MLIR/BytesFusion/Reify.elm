@@ -26,6 +26,11 @@ expression tree to identify Bytes.Encode/Decode combinator calls.
 
 @docs nodesToOps, decoderNodeToOps
 
+
+# Auxiliary Types
+
+@docs CountSource, LengthDecoder
+
 -}
 
 import Compiler.AST.Monomorphized as Mono exposing (MonoExpr(..))

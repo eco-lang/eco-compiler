@@ -285,7 +285,7 @@ isFunctionType monoType =
 {-| Collect type completeness checks.
 -}
 collectCompletenessChecks : Mono.MonoGraph -> List (() -> Expect.Expectation)
-collectCompletenessChecks (Mono.MonoGraph data) =
+collectCompletenessChecks (Mono.MonoGraph _) =
     []
 
 

@@ -181,7 +181,7 @@ chainedAccessTests expectFn condStr =
 {-| Generate: record.outer.inner
 -}
 twoLevelAccessFuzzer : Scope -> Fuzzer Src.Expr
-twoLevelAccessFuzzer scope =
+twoLevelAccessFuzzer _ =
     Fuzz.map2
         (\outerField innerField ->
             let
@@ -204,7 +204,7 @@ twoLevelAccessFuzzer scope =
 {-| Generate: record.a.b.c
 -}
 threeLevelAccessFuzzer : Scope -> Fuzzer Src.Expr
-threeLevelAccessFuzzer scope =
+threeLevelAccessFuzzer _ =
     Fuzz.map3
         (\fieldA fieldB fieldC ->
             let
@@ -253,7 +253,7 @@ multiFieldRecordTests expectFn condStr =
 Tests accessor lookup in records with many fields.
 -}
 manyFieldAccessFuzzer : Scope -> Fuzzer Src.Expr
-manyFieldAccessFuzzer scope =
+manyFieldAccessFuzzer _ =
     Fuzz.intRange 5 8
         |> Fuzz.andThen
             (\fieldCount ->

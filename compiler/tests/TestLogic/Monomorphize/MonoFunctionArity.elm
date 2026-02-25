@@ -13,7 +13,7 @@ For each function/closure node at the Monomorphization phase:
 This test runs after Monomorphization (not GlobalOpt) to verify the invariant
 at the correct phase. Stage arity checks (GOPT\_001) are separate and run after GlobalOpt.
 
-@docs expectMonoFunctionArity, checkMonoFunctionArity
+@docs expectMonoFunctionArity, checkMonoFunctionArity, Violation
 
 -}
 

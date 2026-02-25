@@ -417,7 +417,7 @@ addRecordType typeId layout accum =
 {-| Add a custom type descriptor with constructor information.
 -}
 addCustomType : Int -> Name.Name -> Mono.MonoType -> TypeTableAccum -> TypeTableAccum
-addCustomType typeId typeName monoType accum =
+addCustomType typeId _ monoType accum =
     let
         -- Look up constructor shapes and compute layouts
         key =

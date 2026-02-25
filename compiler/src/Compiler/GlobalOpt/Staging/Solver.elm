@@ -156,7 +156,7 @@ chooseCanonicalSegs :
     -> Dict Int Int ClassId
     -> Dict Int Int (List NodeId)
     -> Dict Int Int Segmentation
-chooseCanonicalSegs producerInfo sg nodeToClass classMembers =
+chooseCanonicalSegs producerInfo sg _ classMembers =
     Dict.foldl compare
         (\classId nodeIds acc ->
             let

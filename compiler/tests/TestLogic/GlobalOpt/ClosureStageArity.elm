@@ -11,7 +11,7 @@ of closureInfo.params must equal the length of the outermost MFunction param lis
 
 This is established by canonicalizeClosureStaging in GlobalOpt.
 
-@docs expectClosureStageArity, checkClosureStageArity
+@docs expectClosureStageArity, checkClosureStageArity, Violation
 
 -}
 

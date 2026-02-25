@@ -16,7 +16,7 @@ This module:
 
 import Compiler.AST.Monomorphized as Mono
 import Compiler.Data.Name exposing (Name)
-import Compiler.GlobalOpt.Staging.Types exposing (..)
+import Compiler.GlobalOpt.Staging.Types exposing (ProducerInfo, ProducerId(..), Segmentation, StagingSolution)
 import Compiler.GlobalOpt.Staging.UnionFind exposing (producerIdToKey)
 import Compiler.Monomorphize.Closure as Closure
 import Compiler.Reporting.Annotation as A

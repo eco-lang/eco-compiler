@@ -14,7 +14,7 @@ This invariant catches the "two type shapes floating around" bug where:
   - Node bodies are recorded with a different shape
   - Registry type diverges from actual node type
 
-@docs expectRegistryNodeTypeConsistency
+@docs expectRegistryNodeTypeConsistency, Violation
 
 -}
 

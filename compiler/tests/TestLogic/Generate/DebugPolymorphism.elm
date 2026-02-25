@@ -192,13 +192,14 @@ checkDebugKernelType context name monoType =
     case monoType of
         Mono.MFunction paramTypes returnType ->
             -- Check parameter types for CNumber constraints (should not be present)
-            List.indexedMap
-                (\idx paramType ->
-                    checkNoCNumberInDebugArg (context ++ ", Debug." ++ name ++ " param " ++ String.fromInt idx) paramType
-                )
-                paramTypes
-                |> List.concat
-                |> (++) (checkNoCNumberInDebugArg (context ++ ", Debug." ++ name ++ " return") returnType)
+            checkNoCNumberInDebugArg (context ++ ", Debug." ++ name ++ " return") returnType
+                ++ (List.indexedMap
+                        (\idx paramType ->
+                            checkNoCNumberInDebugArg (context ++ ", Debug." ++ name ++ " param " ++ String.fromInt idx) paramType
+                        )
+                        paramTypes
+                        |> List.concat
+                   )
 
         _ ->
             -- Non-function Debug kernel - unusual but not an error

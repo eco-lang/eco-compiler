@@ -43,7 +43,7 @@ structures to verify MLIR codegen invariants.
 
 # Type Predicates
 
-@docs isEcoValueType, isPrimitiveType
+@docs isEcoValueType
 
 
 # Checking Utilities
@@ -54,6 +54,11 @@ structures to verify MLIR codegen invariants.
 # Block Utilities
 
 @docs allBlocks
+
+
+# Type Environment and Helpers
+
+@docs TypeEnv, findSymbolOps, isEcoPrimitive, isUnboxable, isValidTerminator, typesMatch
 
 -}
 

@@ -235,7 +235,7 @@ computeExpectedType :
     -> PostSolve.NodeTypes
     -> Dict.Dict Int Int Helpers.ExprNode
     -> Maybe Can.Type
-computeExpectedType expr nodeTypes exprNodes =
+computeExpectedType expr nodeTypes _ =
     case expr of
         Can.Str _ ->
             Just (Can.TType ModuleName.string Name.string [])

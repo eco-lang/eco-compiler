@@ -1658,7 +1658,7 @@ specializeDestructor : TOpt.Destructor -> Substitution -> VarTypes -> TypeEnv.Gl
 specializeDestructor (TOpt.Destructor name path canType) subst varTypes globalTypeEnv =
     let
         monoPath =
-            specializePath path subst varTypes globalTypeEnv
+            specializePath path varTypes globalTypeEnv
 
         monoType =
             Mono.forceCNumberToInt (TypeSubst.applySubst subst canType)
@@ -1674,13 +1674,13 @@ The path is structured from leaf (root variable) outward, so we:
 2.  Walk back out through the path, computing types at each step
 
 -}
-specializePath : TOpt.Path -> Substitution -> VarTypes -> TypeEnv.GlobalTypeEnv -> Mono.MonoPath
-specializePath path subst varTypes globalTypeEnv =
+specializePath : TOpt.Path -> VarTypes -> TypeEnv.GlobalTypeEnv -> Mono.MonoPath
+specializePath path varTypes globalTypeEnv =
     case path of
         TOpt.Index index hint subPath ->
             let
                 monoSubPath =
-                    specializePath subPath subst varTypes globalTypeEnv
+                    specializePath subPath varTypes globalTypeEnv
 
                 containerType =
                     Mono.getMonoPathType monoSubPath
@@ -1693,7 +1693,7 @@ specializePath path subst varTypes globalTypeEnv =
         TOpt.ArrayIndex idx subPath ->
             let
                 monoSubPath =
-                    specializePath subPath subst varTypes globalTypeEnv
+                    specializePath subPath varTypes globalTypeEnv
 
                 containerType =
                     Mono.getMonoPathType monoSubPath
@@ -1707,7 +1707,7 @@ specializePath path subst varTypes globalTypeEnv =
         TOpt.Field fieldName subPath ->
             let
                 monoSubPath =
-                    specializePath subPath subst varTypes globalTypeEnv
+                    specializePath subPath varTypes globalTypeEnv
 
                 recordType =
                     Mono.getMonoPathType monoSubPath
@@ -1737,7 +1737,7 @@ specializePath path subst varTypes globalTypeEnv =
         TOpt.Unbox subPath ->
             let
                 monoSubPath =
-                    specializePath subPath subst varTypes globalTypeEnv
+                    specializePath subPath varTypes globalTypeEnv
 
                 containerType =
                     Mono.getMonoPathType monoSubPath

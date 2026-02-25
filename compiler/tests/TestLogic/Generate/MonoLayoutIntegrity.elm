@@ -438,17 +438,18 @@ collectCtorLayoutChecks (Mono.MonoGraph data) =
     -- - Field counts should be non-negative
     Dict.foldl compare
         (\_ ctors acc ->
-            List.indexedMap
-                (\idx shape ->
-                    if shape.tag /= idx then
-                        Just (\() -> Expect.fail ("Constructor at position " ++ String.fromInt idx ++ " has tag " ++ String.fromInt shape.tag))
+            acc
+                ++ (List.indexedMap
+                        (\idx shape ->
+                            if shape.tag /= idx then
+                                Just (\() -> Expect.fail ("Constructor at position " ++ String.fromInt idx ++ " has tag " ++ String.fromInt shape.tag))
 
-                    else
-                        Nothing
-                )
-                ctors
-                |> List.filterMap identity
-                |> (++) acc
+                            else
+                                Nothing
+                        )
+                        ctors
+                        |> List.filterMap identity
+                   )
         )
         []
         data.ctorShapes
