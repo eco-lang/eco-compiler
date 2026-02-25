@@ -216,7 +216,17 @@ static LLVM::LLVMFuncOp getOrCreateWrapper(PatternRewriter &rewriter, ModuleOp m
         }
         targetResultType = funcType.getReturnType();
     } else {
-        // Target function not found - create external declaration with all-i64 signature
+        // Target function not found.
+        // CGEN_057: Kernel functions must have func.func is_kernel declarations
+        // emitted by the compiler. A missing declaration is a compiler bug.
+        if (funcName.starts_with("Elm_Kernel_")) {
+            llvm::report_fatal_error(
+                "getOrCreateWrapper: missing original function types for kernel '" +
+                funcName + "'; compiler must emit func.func is_kernel declaration");
+        }
+        // For non-kernel functions (e.g. hand-crafted test MLIR), fall back to
+        // all-i64 signature. These should be caught by usesArgsArrayConvention()
+        // above, but this is a safety net.
         for (int64_t i = 0; i < arity; ++i) {
             targetParamTypes.push_back(i64Ty);
         }

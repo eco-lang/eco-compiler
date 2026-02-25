@@ -123,10 +123,17 @@ struct EcoRuntime {
     mutable mlir::ModuleOp module;
     mlir::MLIRContext *ctx;
 
-    /// Pre-scanned original function types (before LLVM conversion).
+    /// Pre-scanned original function types (before LLVM type conversion).
     /// Maps function name -> original FunctionType (with eco::ValueType etc.).
-    /// Populated before conversion so wrapper generation can distinguish
-    /// primitive params (Int i64) from !eco.value params (HPointer i64).
+    ///
+    /// Populated exclusively from func::FuncOp declarations in the module
+    /// (see EcoToLLVM.cpp pre-scan). For kernel functions (is_kernel=true),
+    /// the types come from the Elm compiler's registerKernelCall +
+    /// generateKernelDecl pipeline. EcoToLLVM must NOT attempt to infer or
+    /// reconstruct these types from papCreate/papExtend usage.
+    ///
+    /// Missing entries for Elm_Kernel_* functions are treated as fatal errors
+    /// in getOrCreateWrapper (CGEN_057).
     llvm::StringMap<mlir::FunctionType> origFuncTypes;
 
     explicit EcoRuntime(mlir::ModuleOp m) : module(m), ctx(m.getContext()) {}

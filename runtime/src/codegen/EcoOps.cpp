@@ -347,6 +347,15 @@ LogicalResult PapCreateOp::verify() {
                << " but target function expects " << expectedTy;
       }
     }
+  } else {
+    // CGEN_057: Kernel functions must have func.func is_kernel declarations.
+    // A missing declaration for an Elm_Kernel_* symbol is a compiler bug.
+    auto funcName = getFunctionAttr().getValue();
+    if (funcName.starts_with("Elm_Kernel_")) {
+      return emitOpError("kernel function '") << funcName
+             << "' has no func.func declaration; compiler must emit one "
+             << "(CGEN_057)";
+    }
   }
 
   // REP_CLOSURE_001: Bool (i1) must NOT be captured at closure boundary
@@ -492,6 +501,14 @@ LogicalResult PapExtendOp::verify() {
           return emitOpError("saturated papExtend result type ") << actualResultTy
                  << " does not match function result type " << expectedResultTy;
         }
+      }
+    } else {
+      // CGEN_057: Kernel functions must have func.func is_kernel declarations.
+      auto funcName = funcSym.getValue();
+      if (funcName.starts_with("Elm_Kernel_")) {
+        return emitOpError("kernel function '") << funcName
+               << "' has no func.func declaration; compiler must emit one "
+               << "(CGEN_057)";
       }
     }
   }
