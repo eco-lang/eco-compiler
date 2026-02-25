@@ -29,6 +29,7 @@ import Compiler.Data.Name as Name
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.LocalOpt.Typed.Expression as Expr
 import Compiler.LocalOpt.Typed.Names as Names
+import Compiler.LocalOpt.Typed.NormalizeLambdaBoundaries as LambdaNorm
 import Compiler.LocalOpt.Typed.Port as Port
 import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Error.Main as E
@@ -99,8 +100,7 @@ optimizeTyped annotations exprTypes kernelEnv (TCan.Module tData) =
         |> addUnions tData.name annotations tData.unions
         |> addEffects tData.name annotations tData.effects
         |> addDecls tData.name annotations exprTypes kernelEnv tData.decls
-        --|> ReportingResult.map LambdaNorm.normalizeLocalGraph
-        |> ReportingResult.map finalizeLocalGraph
+        |> ReportingResult.map (LambdaNorm.normalizeLocalGraph >> finalizeLocalGraph)
 
 
 
