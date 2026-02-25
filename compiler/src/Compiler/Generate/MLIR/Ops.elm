@@ -42,6 +42,11 @@ in the eco dialect and standard dialects (arith, scf, func).
 @docs ecoCallNamed, ecoReturn, ecoYield, ecoStringLiteral, ecoUnaryOp, ecoBinaryOp, ecoCase, ecoCaseString, ecoJoinpoint, ecoGetTag
 
 
+# Eco Array Operations
+
+@docs ecoArrayGet, ecoArraySet, ecoArrayLength
+
+
 # Arith Operations
 
 @docs arithConstantInt, arithConstantInt32, arithConstantFloat, arithConstantBool, arithConstantChar, arithCmpI

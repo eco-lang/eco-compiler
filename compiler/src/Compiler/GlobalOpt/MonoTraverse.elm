@@ -26,6 +26,21 @@ This module provides three core traversal patterns:
 Each function handles structural recursion, calling the user-provided
 function on each node after processing children.
 
+
+# Pure Mapping
+
+@docs mapExpr, mapExprChildren, mapDef, mapChoice, mapDecider
+
+
+# Context-Threaded Traversal
+
+@docs traverseExpr, traverseExprChildren, traverseDef, traverseChoice, traverseDecider
+
+
+# Fold
+
+@docs foldExpr, foldDef, foldChoice, foldDecider
+
 -}
 
 import Compiler.AST.Monomorphized as Mono exposing (Decider(..), MonoChoice(..), MonoDef(..), MonoExpr(..))

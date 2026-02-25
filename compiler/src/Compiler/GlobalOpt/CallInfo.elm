@@ -9,6 +9,11 @@ This module provides:
 
   - `new` - Construct a CallInfo, computing derived fields from inputs
 
+
+# API
+
+@docs new, computeRemaining
+
 -}
 
 import Compiler.AST.Monomorphized as Mono
@@ -54,6 +59,9 @@ new { callModel, stageArities, argsApplied } =
     , isSingleStageSaturated = isSingleStageSaturated
     , initialRemaining = initialRemaining
     , remainingStageArities = remainingStageArities
+    , closureKind = Nothing
+    , dispatchMode = Nothing
+    , captureAbi = Nothing
     }
 
 

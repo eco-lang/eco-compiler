@@ -9,6 +9,11 @@ This module:
 1.  Wraps producers whose natural staging differs from canonical
 2.  Adjusts types to match canonical staging (flattening)
 
+
+# API
+
+@docs applyStagingSolution
+
 -}
 
 import Compiler.AST.Monomorphized as Mono

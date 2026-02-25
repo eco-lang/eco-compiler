@@ -16,6 +16,16 @@ This module coordinates:
 4.  Rewriting non-conforming producers with wrappers
 5.  Annotating calls with pre-computed CallInfo
 
+
+# Types
+
+@docs StagingSolution
+
+
+# API
+
+@docs analyzeAndSolveStaging, validateClosureStaging, annotateCallStaging
+
 -}
 
 import Compiler.AST.Monomorphized as Mono

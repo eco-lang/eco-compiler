@@ -11,6 +11,11 @@ This module traverses the MonoGraph to identify:
   - Tail functions and their natural segmentation
   - Kernels/externs with fixed flat ABI
 
+
+# API
+
+@docs computeProducerInfo, detectNaturalSegFromExpr
+
 -}
 
 import Compiler.AST.Monomorphized as Mono

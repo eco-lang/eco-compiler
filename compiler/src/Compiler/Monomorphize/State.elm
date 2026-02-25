@@ -20,7 +20,9 @@ the monomorphization process.
 @docs initState
 
 
-# Utilities
+# Local Specialization
+
+@docs LocalInstanceInfo, LocalMultiState
 
 -}
 

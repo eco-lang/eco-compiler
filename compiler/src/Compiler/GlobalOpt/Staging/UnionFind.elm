@@ -17,6 +17,16 @@ This module provides:
   - `ensureNode` - Add a node to the graph if not present
   - `unionNodes` - Ensure two nodes exist and union them
 
+
+# Core Operations
+
+@docs ufFind, ufUnion, ensureNode, unionNodes
+
+
+# Key Generation
+
+@docs nodeToKey, producerIdToKey, slotIdToKey
+
 -}
 
 import Compiler.AST.Monomorphized as Mono

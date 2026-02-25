@@ -10,6 +10,11 @@ This module:
 2.  Chooses canonical segmentation for each class (majority voting)
 3.  Maps producers and slots to their classes
 
+
+# API
+
+@docs solveStagingGraph
+
 -}
 
 import Compiler.AST.Monomorphized as Mono

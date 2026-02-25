@@ -12,6 +12,11 @@ This module handles:
   - Let bindings that bind function values
   - Captures in closures that are function-typed
 
+
+# API
+
+@docs buildStagingGraph
+
 -}
 
 import Compiler.AST.Monomorphized as Mono

@@ -15,6 +15,11 @@ Algorithm:
 3. Rewrite call sites to target appropriate clones
 4. Iterate until fixed point
 
+
+# API
+
+@docs abiCloningPass, computeCaptureAbi
+
 -}
 
 import Compiler.AST.Monomorphized as Mono

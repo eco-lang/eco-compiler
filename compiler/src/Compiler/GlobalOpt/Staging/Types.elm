@@ -24,6 +24,26 @@ This module defines:
   - `StagingGraph` - Union-find graph for computing equivalence classes
   - `StagingSolution` - Output mapping classes to canonical segmentations
 
+
+# IDs
+
+@docs ProducerId, SlotId, NodeId, ClassId
+
+
+# Graph Types
+
+@docs Node, StagingGraph, Uf, StagingSolution
+
+
+# Producer Info
+
+@docs ProducerInfo, Segmentation
+
+
+# Constructors
+
+@docs emptyStagingGraph, emptyUf, emptyProducerInfo
+
 -}
 
 import Compiler.AST.Monomorphized as Mono
@@ -107,12 +127,16 @@ type alias StagingGraph =
     }
 
 
+{-| An empty union-find structure.
+-}
 emptyUf : Uf
 emptyUf =
     { parent = Dict.empty
     }
 
 
+{-| An empty staging graph.
+-}
 emptyStagingGraph : StagingGraph
 emptyStagingGraph =
     { nextNodeId = 0
@@ -137,6 +161,8 @@ type alias ProducerInfo =
     }
 
 
+{-| An empty producer info collection.
+-}
 emptyProducerInfo : ProducerInfo
 emptyProducerInfo =
     { naturalSeg = Dict.empty
