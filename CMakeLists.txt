@@ -40,6 +40,9 @@ add_subdirectory(runtime/src/codegen)
 # Elm kernel C++ implementation
 add_subdirectory(elm-kernel-cpp)
 
+# Eco kernel C++ implementation (IO operations)
+add_subdirectory(eco-kernel-cpp)
+
 # Guida compiler (Elm compiler written in Elm)
 add_subdirectory(compiler)
 
