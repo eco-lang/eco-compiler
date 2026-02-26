@@ -385,7 +385,9 @@ type Expr
 
 This enables type-directed code generation and monomorphization.
 
-**See**: [Typed Optimization Theory](design_docs/theory/pass_typed_optimization_theory.md)
+As part of Typed Optimization, the **NormalizeLambdaBoundaries** pass flattens nested lambda structures by lifting let-bindings and case expressions out of lambda boundaries. This reduces spurious staging boundaries for downstream GlobalOpt.
+
+**See**: [Typed Optimization Theory](design_docs/theory/pass_typed_optimization_theory.md), [NormalizeLambdaBoundaries Theory](design_docs/theory/pass_normalize_lambda_boundaries_theory.md)
 
 ### Monomorphization
 
@@ -501,6 +503,12 @@ Final lowering from ECO dialect to LLVM dialect. As of Feb 2026, the pass underw
 
 **See**: [EcoToLLVM Theory](design_docs/theory/pass_eco_to_llvm_theory.md)
 
+### Runtime: Platform & Scheduler
+
+At execution time, the Platform and Scheduler subsystem implements Elm's effect manager architecture. Commands and subscriptions produced by the Elm update cycle are collected into effect bag trees (`Fx_Leaf`/`Fx_Node`/`Fx_Map`), gathered per manager, and dispatched via `onEffects` callbacks. The Scheduler drives a cooperative task-based concurrency model: each process has a root task, a continuation stack, and a mailbox. The `stepProcess` loop interprets the Task ADT (Succeed/Fail/AndThen/OnError/Binding/Receive) to advance processes through their task chains.
+
+**See**: [Platform & Scheduler Theory](design_docs/theory/platform_scheduler_theory.md)
+
 ## Type Information Flow
 
 A key design principle is **type preservation**: type information flows through the entire pipeline.
@@ -554,6 +562,7 @@ Each pass and subsystem has comprehensive documentation in [`design_docs/theory/
 |----------|-------------|
 | [pass_post_solve_theory.md](design_docs/theory/pass_post_solve_theory.md) | PostSolve type fixing |
 | [pass_typed_optimization_theory.md](design_docs/theory/pass_typed_optimization_theory.md) | Type-preserving optimization |
+| [pass_normalize_lambda_boundaries_theory.md](design_docs/theory/pass_normalize_lambda_boundaries_theory.md) | Lambda boundary flattening (let/case lifting) |
 | [pass_monomorphization_theory.md](design_docs/theory/pass_monomorphization_theory.md) | Polymorphism elimination |
 | [pass_global_optimization_theory.md](design_docs/theory/pass_global_optimization_theory.md) | Staging canonicalization and ABI normalization |
 | [staged_currying_theory.md](design_docs/theory/staged_currying_theory.md) | Staged currying theory |
@@ -573,6 +582,7 @@ Each pass and subsystem has comprehensive documentation in [`design_docs/theory/
 | [typed_closure_calling_theory.md](design_docs/theory/typed_closure_calling_theory.md) | PAP wrapper elimination, ABI cloning |
 | [intrinsics_theory.md](design_docs/theory/intrinsics_theory.md) | Direct MLIR lowering for arithmetic/bitwise ops |
 | [kernel_abi_theory.md](design_docs/theory/kernel_abi_theory.md) | Kernel function ABI modes and type handling |
+| [json_heap_representation_theory.md](design_docs/theory/json_heap_representation_theory.md) | JSON values as heap-resident Custom objects |
 
 ### Cross-Cutting Concerns
 
@@ -580,6 +590,7 @@ Each pass and subsystem has comprehensive documentation in [`design_docs/theory/
 |----------|-------------|
 | [heap_representation_theory.md](design_docs/theory/heap_representation_theory.md) | Four representation models, unboxing, layouts |
 | [mlir_verification_theory.md](design_docs/theory/mlir_verification_theory.md) | MLIR verifiers and invariant checking |
+| [platform_scheduler_theory.md](design_docs/theory/platform_scheduler_theory.md) | Platform effect dispatch, task scheduling, process model |
 
 ## Invariant Testing Infrastructure
 
