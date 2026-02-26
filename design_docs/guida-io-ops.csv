@@ -1,38 +1,112 @@
-name,num_params,can_return_errors,async_sync,num_usages
-read,1,no,async,17
-writeString,2,no,async,8
-write,2,no,async,4
-binaryDecodeFileOrFail,2,yes,async,5
-dirDoesFileExist,1,no,async,14
-dirDoesDirectoryExist,1,no,async,14
-dirCreateDirectoryIfMissing,2,no,async,18
-dirListDirectory,1,no,async,7
-dirGetModificationTime,1,no,async,5
-dirGetCurrentDirectory,0,no,async,6
-dirCanonicalizePath,1,no,async,7
-dirGetAppUserDataDirectory,1,no,async,5
-lockFile,1,no,async,4
-unlockFile,1,no,async,4
-hPutStr,2,no,sync,11
-hPutStrLn,2,no,sync,13
-putStr,1,no,sync,9
-putStrLn,1,no,sync,42
-envLookupEnv,1,no,sync,6
-getArgs,0,no,sync,5
-exitWithResponse,1,no,sync,0
-getArchive,1,no,async,6
-newEmptyMVar,0,no,sync,21
-readMVar,2,no,async,43
-takeMVar,2,no,async,16
-putMVar,3,no,async,32
-forkIO,1,no,sync,11
-newChan,1,no,sync,5
-readChan,2,no,async,5
-writeChan,3,no,async,7
-dirRemoveFile,1,no,async,5
-dirRemoveDirectoryRecursive,1,no,async,5
-dirFindExecutable,1,no,async,10
-dirWithCurrentDirectory,2,no,async,7
-replGetInputLine,1,no,async,6
-getLine,0,no,async,7
-binaryEncodeFile,3,no,async,4
+name,new_name,num_params,can_return_errors,elm_type,num_usages,is_primitive,atomicity,notes
+
+# =============================================================================
+# ATOMIC FILE I/O - Read and write files by path, file handles, locks, dirs.
+# =============================================================================
+
+read,readString,1,no,task,17,yes,atomic,read file as UTF-8 string
+writeString,writeString,2,no,task,8,yes,atomic,write UTF-8 string to file
+readBytes,readBytes,1,no,task,0,yes,atomic,NEW - read file as raw bytes (extracted from binaryDecodeFileOrFail)
+write,writeBytes,2,no,task,4,yes,atomic,write raw bytes to file
+withFile,open,2,no,task,1,yes,atomic,open file handle with IOMode
+hClose,close,1,no,task,2,yes,atomic,close file handle
+hFileSize,size,1,no,task,1,yes,atomic,get file size via handle
+lockFile,lock,1,no,task,4,yes,atomic,blocks until lock acquired
+unlockFile,unlock,1,no,task,4,yes,atomic,release file lock
+dirDoesFileExist,fileExists,1,no,task,14,yes,atomic,returns Bool
+dirDoesDirectoryExist,dirExists,1,no,task,14,yes,atomic,returns Bool
+dirFindExecutable,findExecutable,1,no,task,10,yes,atomic,returns Maybe String
+dirListDirectory,list,1,no,task,7,yes,atomic,returns List String
+dirGetModificationTime,modificationTime,1,no,task,5,yes,atomic,returns Time.Posix
+dirGetCurrentDirectory,getCwd,0,no,task,6,yes,atomic,returns current working directory
+dirSetCurrentDirectory,setCwd,1,no,task,0,yes,atomic,NEW - set CWD (extracted from dirWithCurrentDirectory)
+dirCanonicalizePath,canonicalize,1,no,task,7,yes,atomic,resolve symlinks and normalize
+dirGetAppUserDataDirectory,appDataDir,1,no,task,5,yes,atomic,returns app-specific user data dir
+dirCreateDirectoryIfMissing,createDir,2,no,task,18,yes,atomic,create dir optionally with parents
+dirRemoveFile,removeFile,1,no,task,5,yes,atomic,remove a file
+dirRemoveDirectoryRecursive,removeDir,1,no,task,5,yes,atomic,remove a directory tree
+
+# =============================================================================
+# ATOMIC CONSOLE - Write to handles and read from stdin
+# =============================================================================
+
+hPutStr,write,2,no,cmd,11,yes,atomic,write string to console handle (stdout/stderr)
+getLine,readLine,0,no,task,7,yes,atomic,read one line from stdin
+readStdin,readAll,0,no,task,4,yes,atomic,read all of stdin as string
+
+# =============================================================================
+# ATOMIC ENVIRONMENT/PROCESS - Look up env vars and CLI args, process management
+# =============================================================================
+
+envLookupEnv,lookup,1,no,task,6,yes,atomic,returns Maybe String
+envGetArgs,rawArgs,0,no,task,1,yes,atomic,returns raw CLI args as List String
+exitWith,exit,1,no,cmd,5,yes,atomic,exit process with ExitCode - never returns
+withCreateProcess,spawn,1,no,task,3,yes,atomic,spawn external process - returns (stdin Handle + ProcessHandle)
+waitForProcess,wait,1,no,task,3,yes,atomic,blocks until process exits - returns ExitCode
+
+# =============================================================================
+# ATOMIC CONCURRENCY - MVar primitives (new/read/take/put)
+# =============================================================================
+
+newEmptyMVar,new,0,no,task,21,yes,atomic,returns MVar id
+readMVar,read,2,no,task,43,yes,atomic,blocks until MVar full - returns value without removing
+takeMVar,take,2,no,task,16,yes,atomic,blocks until MVar full - returns value and empties MVar
+putMVar,put,3,no,task,32,yes,atomic,blocks until MVar empty - puts value
+
+# =============================================================================
+# ATOMIC RUNTIME - Node.js specific and REPL state
+# =============================================================================
+
+nodeGetDirname,dirname,0,no,task,1,yes,atomic,returns directory of current script/binary
+nodeMathRandom,random,0,no,task,1,yes,atomic,returns random Float from runtime
+putStateT,saveState,1,no,task,1,yes,atomic,persist REPL state to runtime storage
+
+# =============================================================================
+# COMPOUND FILE - Built from atomic file ops + pure functions
+# =============================================================================
+
+binaryDecodeFileOrFail,decodeFile,2,yes,task,5,yes,compound,readBytes + pure Bytes.Decode
+binaryEncodeFile,encodeFile,3,no,task,4,no,compound,pure Bytes.Encode + writeBytes
+dirWithCurrentDirectory,withCwd,2,no,task,7,yes,compound,getCwd + setCwd + action + setCwd (bracket)
+
+# =============================================================================
+# COMPOUND CONSOLE - Built from hPutStr and getLine
+# =============================================================================
+
+hPutStrLn,writeLn,2,no,cmd,13,no,compound,write(handle content ++ "\n")
+putStr,print,1,no,cmd,9,no,compound,write(stdout content)
+putStrLn,printLn,1,no,cmd,42,no,compound,write(stdout content ++ "\n")
+replGetInputLine,prompt,1,no,task,6,yes,compound,print(prompt) + readLine. Would be atomic if readline features (history/editing) needed
+
+# =============================================================================
+# COMPOUND ENVIRONMENT/PROCESS - Built from atomic env/process ops
+# =============================================================================
+
+getArgs,parseArgs,0,no,task,5,yes,compound,rawArgs + pure JSON parse
+exitWithResponse,respond,1,no,cmd,0,yes,compound,pure Json.Encode.encode + print + exit
+
+# =============================================================================
+# COMPOUND CONCURRENCY - Channels and fork built from MVar ops / Elm core
+# =============================================================================
+
+newChan,new,1,no,task,5,no,compound,MVar.new + MVar.put
+readChan,read,2,no,task,5,no,compound,MVar.read + MVar.take + MVar.put
+writeChan,write,3,no,task,7,no,compound,MVar.new + MVar.take + MVar.put
+forkIO,fork,1,no,task,11,no,compound,standard Elm Process.spawn - no custom runtime support
+
+# =============================================================================
+# COMPOUND NETWORK - Built from elm/http + pure functions
+# =============================================================================
+
+getArchive,fetchArchive,1,no,task,6,yes,compound,elm/http GET + pure ZIP decompress + pure SHA1. Currently bundled as single Impure.task for performance
+httpUpload,upload,1,no,task,1,yes,compound,pure multipart encode + elm/http POST
+
+# =============================================================================
+# NOOP - Haskell API stubs that need no implementation
+# =============================================================================
+
+hFlush,flush,1,no,noop,1,noop,noop,Task.succeed () - Haskell API stub
+hIsTerminalDevice,isTerminal,1,no,noop,1,noop,noop,Task.succeed True - Haskell API stub
+envGetProgName,progName,0,no,noop,1,noop,noop,Task.succeed "eco" - hardcoded
+getManager,manager,0,no,noop,4,noop,noop,Task.succeed Manager - HTTP manager is a no-op in JS
+replWithInterrupt,withInterrupt,1,no,noop,1,noop,noop,identity - Haskell API stub
