@@ -55,6 +55,7 @@ import Compiler.Data.Name as Name
 import Compiler.Generate.Mode as Mode
 import Data.Map as EveryDict
 import Dict
+import Compiler.Generate.MLIR.Types as Types
 import Mlir.Mlir exposing (MlirOp, MlirType)
 import Utils.Crash exposing (crash)
 
@@ -506,17 +507,21 @@ registerKernelCall ctx name callSiteArgTypes callSiteReturnType =
                 ctx
 
             else
+                let
+                    showTypes ts =
+                        ts |> List.map Types.mlirTypeToString |> String.join ", "
+                in
                 crash
                     ("Kernel signature mismatch for "
                         ++ name
                         ++ ": existing ("
-                        ++ Debug.toString existingArgs
+                        ++ showTypes existingArgs
                         ++ " -> "
-                        ++ Debug.toString existingReturn
+                        ++ Types.mlirTypeToString existingReturn
                         ++ ") vs new ("
-                        ++ Debug.toString callSiteArgTypes
+                        ++ showTypes callSiteArgTypes
                         ++ " -> "
-                        ++ Debug.toString callSiteReturnType
+                        ++ Types.mlirTypeToString callSiteReturnType
                         ++ ")"
                     )
 

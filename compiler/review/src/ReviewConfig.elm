@@ -40,6 +40,7 @@ config =
     , NoDebug.Log.rule
     , NoDebug.TodoOrToString.rule
         |> Rule.ignoreErrorsForDirectories [ "tests/" ]
+        |> Rule.ignoreErrorsForFiles [ "src/Utils/Crash.elm" ]
     , NoExposingEverything.rule
     , NoImportingEverything.rule []
     , NoMissingTypeAnnotation.rule
@@ -49,9 +50,9 @@ config =
     , NoUnused.Variables.rule
     , NoUnused.Patterns.rule
     , NoUnused.Exports.rule
-        |> Rule.ignoreErrorsForFiles [ "src/Compiler/Parse/Expression.elm" ]
     , Simplify.rule Simplify.defaults
     , NoUnused.CustomTypeConstructors.rule []
+        |> Rule.ignoreErrorsForFiles [ "src/Compiler/AST/Monomorphized.elm" ]
     , Docs.ReviewAtDocs.rule
 
     --, NoUnused.CustomTypeConstructorArgs.rule

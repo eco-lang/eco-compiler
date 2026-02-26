@@ -16,7 +16,7 @@ module Compiler.AST.Monomorphized exposing
     , decomposeFunctionType, isFunctionType, countTotalArity
     , CallModel(..), CallInfo, defaultCallInfo
     , ClosureKindId(..), ClosureKind(..), MaybeClosureKind
-    , CaptureABI, DispatchMode(..)
+    , CaptureABI
     -- Typed closure calling (ABI cloning)
     -- Call staging metadata
     -- Staging/Segmentation helpers
@@ -131,7 +131,7 @@ This module defines the data structures for the monomorphized program
 # Typed Closure Calling (ABI Cloning)
 
 @docs ClosureKindId, ClosureKind, MaybeClosureKind
-@docs CaptureABI, DispatchMode
+@docs CaptureABI
 
 -}
 
@@ -951,7 +951,6 @@ type CallModel
 Extended for typed closure calling:
 
   - closureKind: Three-way lattice for callee value's closure kind
-  - dispatchMode: Lowering strategy for closure calls (Just for closure calls)
   - captureAbi: For typed closure calls with known ABI
 
 -}
@@ -962,7 +961,6 @@ type alias CallInfo =
     , initialRemaining : Int
     , remainingStageArities : List Int
     , closureKind : MaybeClosureKind
-    , dispatchMode : Maybe DispatchMode
     , captureAbi : Maybe CaptureABI
     }
 
@@ -978,7 +976,6 @@ defaultCallInfo =
     , initialRemaining = 0
     , remainingStageArities = []
     , closureKind = Nothing
-    , dispatchMode = Nothing
     , captureAbi = Nothing
     }
 
@@ -1151,13 +1148,3 @@ type alias CaptureABI =
     }
 
 
-{-| Lowering strategy for closure calls.
-Always present on closure call sites in well-formed MLIR.
-
-  - Fast: Known homogeneous, use (captures..., params...) typed entry
-  - Closure: Known heterogeneous, use (Closure\*, params...) generic entry
-  - Unknown: Missing kind info, use generic path + diagnostic
-
--}
-type DispatchMode
-    = Unknown

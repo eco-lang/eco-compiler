@@ -197,9 +197,7 @@ specializeLambda lambdaExpr canType subst state =
 
                 _ ->
                     Utils.Crash.crash
-                        ("specializeLambda: called with non-lambda: "
-                            ++ Debug.toString (TOpt.typeOf lambdaExpr)
-                        )
+                        "specializeLambda: called with non-lambda expression"
 
         -- Guard: paramCount == 0 is a bug
         -- 3. Specialize each parameter's declared Can.Type.

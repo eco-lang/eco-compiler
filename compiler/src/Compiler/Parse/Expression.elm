@@ -1,4 +1,4 @@
-module Compiler.Parse.Expression exposing (expression, record)
+module Compiler.Parse.Expression exposing (expression)
 
 {-| Expression parser for Elm source code.
 
@@ -15,7 +15,7 @@ This module parses Elm expressions into the Source AST, handling:
 
 # Parsing
 
-@docs expression, record
+@docs expression
 
 -}
 

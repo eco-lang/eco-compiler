@@ -1,6 +1,6 @@
 module Mlir.Mlir exposing
     ( MlirAttr(..)
-    , Dim(..), DenseF64Value(..), Visibility(..)
+    , Visibility(..)
     , MlirType(..)
     , MlirOp
     , MlirBlock, MlirRegion(..), MlirModule
@@ -17,7 +17,7 @@ processing by the MLIR tool-chain and development system.
 ## Atributes
 
 @docs MlirAttr
-@docs Dim, DenseF64Value, Visibility
+@docs Visibility
 
 
 ## Types
@@ -67,18 +67,6 @@ type MlirAttr
 -}
 type Visibility
     = Private
-
-
-{-| Array dimensions.
--}
-type Dim
-    = Static Int
-
-
-{-| Dense F64 values, such as tensors.
--}
-type DenseF64Value
-    = Tensor (List DenseF64Value)
 
 
 

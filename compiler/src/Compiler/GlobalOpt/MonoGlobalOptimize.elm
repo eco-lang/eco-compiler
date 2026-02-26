@@ -1690,7 +1690,6 @@ computeCallInfo graph env func args _ =
             , initialRemaining = 0
             , remainingStageArities = []
             , closureKind = Nothing
-            , dispatchMode = Nothing
             , captureAbi = Nothing
             }
 
@@ -1755,6 +1754,5 @@ computeCallInfo graph env func args _ =
             , initialRemaining = initialRemaining
             , remainingStageArities = remainingStageArities
             , closureKind = Nothing
-            , dispatchMode = Nothing
             , captureAbi = Nothing
             }

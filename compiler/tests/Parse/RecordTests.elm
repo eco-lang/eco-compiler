@@ -1,7 +1,7 @@
 module Parse.RecordTests exposing (suite)
 
 import Compiler.AST.Source as Src
-import Compiler.Parse.Expression as E
+import Compiler.Parse.Expression exposing (expression)
 import Compiler.Parse.Primitives as P
 import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Error.Syntax as E
@@ -59,5 +59,6 @@ suite =
 
 
 record : String -> Result E.Expr Src.Expr
-record =
-    P.fromByteString (E.record (A.Position 1 1)) E.Start
+record str =
+    P.fromByteString expression E.Start str
+        |> Result.map (\( ( _, expr ), _ ) -> expr)

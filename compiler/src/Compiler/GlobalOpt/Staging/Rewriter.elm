@@ -22,6 +22,7 @@ import Compiler.Monomorphize.Closure as Closure
 import Compiler.Reporting.Annotation as A
 import Data.Map as Dict
 import System.TypeCheck.IO as IO
+import Utils.Crash exposing (crash)
 
 
 type alias RewriteCtx =
@@ -659,7 +660,7 @@ flattenTypeToArity targetArity monoType =
 
     else
         -- Fewer args than params - mono graph is inconsistent
-        Debug.todo
+        crash
             ("flattenTypeToArity: paramCount ("
                 ++ String.fromInt targetArity
                 ++ ") > number of flattened args ("
