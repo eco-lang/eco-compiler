@@ -49,11 +49,11 @@ import Compiler.Elm.Version as V
 import Compiler.Json.Encode as Encode
 import Compiler.Reporting.Doc as D
 import System.Exit as Exit
-import System.IO as IO
+import System.IO as IO exposing (MVar)
 import Task exposing (Task)
 import Utils.Bytes.Decode as BD
 import Utils.Bytes.Encode as BE
-import Utils.Main as Utils exposing (Chan, MVar)
+import Utils.Main as Utils exposing (Chan)
 
 
 

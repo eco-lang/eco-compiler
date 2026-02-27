@@ -50,9 +50,11 @@ config =
     , NoUnused.Variables.rule
     , NoUnused.Patterns.rule
     , NoUnused.Exports.rule
+        |> Rule.ignoreErrorsForDirectories [ "src-xhr/" ]
     , Simplify.rule Simplify.defaults
     , NoUnused.CustomTypeConstructors.rule []
         |> Rule.ignoreErrorsForFiles [ "src/Compiler/AST/Monomorphized.elm" ]
+        |> Rule.ignoreErrorsForDirectories [ "src-xhr/" ]
     , Docs.ReviewAtDocs.rule
 
     --, NoUnused.CustomTypeConstructorArgs.rule

@@ -65,7 +65,8 @@ import Data.Map as Dict exposing (Dict)
 import System.TypeCheck.IO as TypeCheck
 import Task exposing (Task)
 import Utils.Bytes.Decode as BD
-import Utils.Main as Utils exposing (FilePath, MVar)
+import System.IO exposing (FilePath, MVar)
+import Utils.Main as Utils
 import Utils.Task.Extra as Task
 
 

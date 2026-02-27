@@ -59,6 +59,7 @@ import Prelude
 import Task exposing (Task)
 import Utils.Bytes.Decode as BD
 import Utils.Bytes.Encode as BE
+import System.IO as IO exposing (FilePath)
 import Utils.Main as Utils
 
 
@@ -228,7 +229,7 @@ withRootLock root work =
     Utils.dirCreateDirectoryIfMissing True dir
         |> Task.andThen
             (\_ ->
-                Utils.lockWithFileLock (dir ++ "/lock") Utils.LockExclusive (\_ -> work)
+                Utils.lockWithFileLock (dir ++ "/lock") IO.LockExclusive (\_ -> work)
             )
 
 
@@ -246,7 +247,7 @@ withRootLockBuildDir root maybeBuildDir work =
     Utils.dirCreateDirectoryIfMissing True dir
         |> Task.andThen
             (\_ ->
-                Utils.lockWithFileLock (dir ++ "/lock") Utils.LockExclusive (\_ -> work)
+                Utils.lockWithFileLock (dir ++ "/lock") IO.LockExclusive (\_ -> work)
             )
 
 
@@ -254,7 +255,7 @@ withRootLockBuildDir root maybeBuildDir work =
 -}
 withRegistryLock : PackageCache -> Task Never a -> Task Never a
 withRegistryLock (PackageCache dir) work =
-    Utils.lockWithFileLock (dir ++ "/lock") Utils.LockExclusive (\_ -> work)
+    Utils.lockWithFileLock (dir ++ "/lock") IO.LockExclusive (\_ -> work)
 
 
 
@@ -312,7 +313,7 @@ getCacheDir projectName =
         |> Task.andThen
             (\home ->
                 let
-                    root : Utils.FilePath
+                    root : FilePath
                     root =
                         Utils.fpCombine home (Utils.fpCombine compilerVersion projectName)
                 in

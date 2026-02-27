@@ -49,6 +49,7 @@ import Compiler.Reporting.Report as Report
 import Time
 import Utils.Bytes.Decode as BD
 import Utils.Bytes.Encode as BE
+import System.IO exposing (FilePath)
 import Utils.Main as Utils
 
 
@@ -197,7 +198,7 @@ moduleToDoc root { absolutePath, source, error } =
         reports =
             toReports (Code.toSource source) error
 
-        relativePath : Utils.FilePath
+        relativePath : FilePath
         relativePath =
             Utils.fpMakeRelative root absolutePath
     in

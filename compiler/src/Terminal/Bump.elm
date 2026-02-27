@@ -31,9 +31,9 @@ import Compiler.Elm.Magnitude as M
 import Compiler.Elm.Version as V
 import Compiler.Reporting.Doc as D
 import Prelude
-import System.IO as IO
+import System.IO as IO exposing (FilePath)
 import Task exposing (Task)
-import Utils.Main as Utils exposing (FilePath)
+import Utils.Main as Utils
 import Utils.Task.Extra as Task
 
 

@@ -1,12 +1,12 @@
 module Utils.Main exposing
-    ( FilePath, fpCombine, fpAddExtension, fpDropExtension, fpDropFileName, fpSplitExtension
+    ( fpCombine, fpAddExtension, fpDropExtension, fpDropFileName, fpSplitExtension
     , fpSplitFileName, fpSplitDirectories, fpJoinPath, fpMakeRelative, fpAddTrailingPathSeparator
     , fpPathSeparator, fpIsRelative, fpTakeFileName, fpTakeExtension, fpTakeDirectory
     , dirDoesFileExist, dirDoesDirectoryExist, dirFindExecutable, dirCreateDirectoryIfMissing
     , dirGetCurrentDirectory, dirGetAppUserDataDirectory, dirGetModificationTime, dirListDirectory
     , dirRemoveFile, dirCanonicalizePath, dirWithCurrentDirectory
     , envLookupEnv, envGetProgName, envGetArgs
-    , LockSharedExclusive(..), lockWithFileLock
+    , lockWithFileLock
     , binaryDecodeFileOrFail, binaryEncodeFile, builderHPutBuilder
     , HttpExceptionContent(..), HttpResponse(..), HttpResponseHeaders, HttpStatus(..)
     , httpResponseStatus, httpResponseHeaders, httpHLocation
@@ -14,10 +14,10 @@ module Utils.Main exposing
     , SomeException(..)
     , someExceptionEncoder, someExceptionDecoder
     , ThreadId, forkIO
-    , MVar(..), newMVar, newEmptyMVar, readMVar, takeMVar, putMVar
+    , newMVar, newEmptyMVar, readMVar, takeMVar, putMVar
     , mVarEncoder, mVarDecoder
-    , Chan, ChItem, newChan, readChan, writeChan
-    , ReplSettings(..), ReplInputT
+    , Chan, newChan, readChan, writeChan
+    , ReplInputT
     , replRunInputT, replWithInterrupt, replGetInputLine
     , replGetInputLineWithInitial, liftInputT, liftIOInputT
     , nodeGetDirname, nodeMathRandom
@@ -36,13 +36,13 @@ module Utils.Main exposing
 
 {-| Utility module providing data structure utilities, HTTP types, and pure helper functions.
 
-IO operations are now also available in System.IO. This module re-exports them
-for backward compatibility. New code should use System.IO directly.
+IO-related types (FilePath, MVar, ChItem, Stream, ReplSettings, LockSharedExclusive) are
+defined in System.IO.
 
 
 # File Path Operations
 
-@docs FilePath, fpCombine, fpAddExtension, fpDropExtension, fpDropFileName, fpSplitExtension
+@docs fpCombine, fpAddExtension, fpDropExtension, fpDropFileName, fpSplitExtension
 @docs fpSplitFileName, fpSplitDirectories, fpJoinPath, fpMakeRelative, fpAddTrailingPathSeparator
 @docs fpPathSeparator, fpIsRelative, fpTakeFileName, fpTakeExtension, fpTakeDirectory
 
@@ -61,7 +61,7 @@ for backward compatibility. New code should use System.IO directly.
 
 # File Locking
 
-@docs LockSharedExclusive, lockWithFileLock
+@docs lockWithFileLock
 
 
 # Binary Serialization
@@ -89,18 +89,18 @@ for backward compatibility. New code should use System.IO directly.
 
 # MVar Operations
 
-@docs MVar, newMVar, newEmptyMVar, readMVar, takeMVar, putMVar
+@docs newMVar, newEmptyMVar, readMVar, takeMVar, putMVar
 @docs mVarEncoder, mVarDecoder
 
 
 # Channel Operations
 
-@docs Chan, ChItem, newChan, readChan, writeChan
+@docs Chan, newChan, readChan, writeChan
 
 
 # REPL Support
 
-@docs ReplSettings, ReplInputT
+@docs ReplInputT
 @docs replRunInputT, replWithInterrupt, replGetInputLine
 @docs replGetInputLineWithInitial, liftInputT, liftIOInputT
 
@@ -167,7 +167,7 @@ import Maybe.Extra as Maybe
 import Prelude
 import Process
 import System.Exit as Exit
-import System.IO as IO
+import System.IO as IO exposing (ChItem(..), FilePath, LockSharedExclusive(..), MVar(..), ReplSettings, Stream)
 import Task exposing (Task)
 import Time
 import Utils.Bytes.Decode as BD
@@ -706,16 +706,6 @@ unlines xs =
 
 
 
--- ====== GHC.IO ======
-
-
-{-| A file path represented as a string.
--}
-type alias FilePath =
-    String
-
-
-
 -- System.FilePath
 
 
@@ -858,12 +848,6 @@ fpTakeDirectory filename =
 
 
 -- System.FileLock
-
-
-{-| File locking mode for exclusive or shared access.
--}
-type LockSharedExclusive
-    = LockExclusive
 
 
 {-| Execute an action while holding an exclusive file lock, releasing the lock when done.
@@ -1113,12 +1097,6 @@ forkIO =
 -- Control.Concurrent.MVar
 
 
-{-| A mutable variable for communication between threads, identified by an integer reference.
--}
-type MVar a
-    = MVar Int
-
-
 {-| Create a new MVar with an initial value.
 -}
 newMVar : (a -> Bytes.Encode.Encoder) -> a -> Task Never (MVar a)
@@ -1178,18 +1156,6 @@ newEmptyMVar =
 -}
 type Chan a
     = Chan (MVar (Stream a)) (MVar (Stream a))
-
-
-{-| Internal stream type for channel implementation.
--}
-type alias Stream a =
-    MVar (ChItem a)
-
-
-{-| A channel item containing a value and a pointer to the next item in the stream.
--}
-type ChItem a
-    = ChItem a (Stream a)
 
 
 {-| Create a new empty channel.
@@ -1282,12 +1248,6 @@ binaryEncodeFile toEncoder path value =
 
 
 -- System.Console.Haskeline
-
-
-{-| Settings for the REPL including history file, auto-history, and completion function.
--}
-type ReplSettings
-    = ReplSettings
 
 
 {-| The REPL input monad, which is just a Task in this implementation.

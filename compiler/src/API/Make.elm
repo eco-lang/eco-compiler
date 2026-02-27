@@ -27,8 +27,8 @@ import Compiler.Generate.CodeGen as CodeGen
 import Compiler.Generate.Html as Html
 import Maybe.Extra as Maybe
 import Task exposing (Task)
+import System.IO exposing (FilePath)
 import Utils.Crash exposing (crash)
-import Utils.Main exposing (FilePath)
 import Utils.Task.Extra as Task
 
 

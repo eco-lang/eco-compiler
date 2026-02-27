@@ -30,9 +30,9 @@ import Compiler.Reporting.Error.Syntax as E
 import Json.Encode as Encode
 import Result.Extra as Result
 import System.Exit as Exit
-import System.IO as IO
+import System.IO as IO exposing (FilePath)
 import Task exposing (Task)
-import Utils.Main as Utils exposing (FilePath)
+import Utils.Main as Utils
 import Utils.Task.Extra as Task
 
 

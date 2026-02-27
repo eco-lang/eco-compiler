@@ -68,11 +68,11 @@ import List.Extra as List
 import Maybe.Extra as Maybe
 import Prelude
 import System.Exit as Exit
-import System.IO as IO
+import System.IO as IO exposing (FilePath)
 import System.Process as Process
 import Task exposing (Task)
 import Utils.Crash exposing (crash)
-import Utils.Main as Utils exposing (FilePath)
+import Utils.Main as Utils
 import Utils.Task.Extra as Task
 
 
@@ -102,13 +102,13 @@ run () flags =
         |> Task.andThen (startReplWithSettings flags)
 
 
-startReplWithSettings : Flags -> Utils.ReplSettings -> Task Never ()
+startReplWithSettings : Flags -> IO.ReplSettings -> Task Never ()
 startReplWithSettings flags settings =
     initEnv flags
         |> Task.andThen (runReplLoop settings)
 
 
-runReplLoop : Utils.ReplSettings -> Env -> Task Never ()
+runReplLoop : IO.ReplSettings -> Env -> Task Never ()
 runReplLoop settings env =
     let
         looper : M Exit.ExitCode
@@ -943,10 +943,10 @@ exeNotFound name =
 -- ====== SETTINGS ======
 
 
-initSettings : Task Never Utils.ReplSettings
+initSettings : Task Never IO.ReplSettings
 initSettings =
     Stuff.getReplCache
         |> Task.map
             (\_ ->
-                Utils.ReplSettings
+                IO.ReplSettings
             )

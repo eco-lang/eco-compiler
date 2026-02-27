@@ -2,11 +2,11 @@ module System.IO exposing
     ( Program, Model, Msg, run
     , FilePath, Handle(..)
     , stdout, stderr
-    , IOMode(..)
     , writeString
     , LockSharedExclusive(..)
     , write
     , MVar(..)
+    , Stream
     , ChItem(..)
     , ReplState(..), initialReplState
     , ReplSettings(..)
@@ -42,7 +42,6 @@ Function names follow the `guida-io-ops.csv` naming conventions.
 
 # File operations
 
-@docs IOMode
 @docs writeString
 
 
@@ -70,7 +69,7 @@ Function names follow the `guida-io-ops.csv` naming conventions.
 
 # Channels (built on MVars)
 
-@docs ChItem
+@docs Stream, ChItem
 
 
 # Concurrency
@@ -162,12 +161,6 @@ stderr =
 
 
 -- ====== FILE OPERATIONS ======
-
-
-{-| File opening mode specifying read, write, append, or read-write access.
--}
-type IOMode
-    = ReadMode
 
 
 {-| Close an open file handle.

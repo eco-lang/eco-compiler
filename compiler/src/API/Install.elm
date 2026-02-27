@@ -26,9 +26,9 @@ import Compiler.Elm.Constraint as C
 import Compiler.Elm.Package as Pkg
 import Compiler.Elm.Version as V
 import Data.Map as Dict exposing (Dict)
-import System.IO as IO
+import System.IO as IO exposing (FilePath)
 import Task exposing (Task)
-import Utils.Main as Utils exposing (FilePath)
+import Utils.Main as Utils
 import Utils.Task.Extra as Task
 
 

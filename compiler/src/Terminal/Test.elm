@@ -52,12 +52,12 @@ import Json.Encode as Encode
 import Maybe.Extra as Maybe
 import Regex exposing (Regex)
 import System.Exit as Exit
-import System.IO as IO
+import System.IO as IO exposing (FilePath)
 import System.Process as Process
 import Task exposing (Task)
 import Terminal.Terminal.Internal exposing (Parser(..))
 import Utils.Crash exposing (crash)
-import Utils.Main as Utils exposing (FilePath)
+import Utils.Main as Utils
 import Utils.Task.Extra as Task
 
 

@@ -36,7 +36,8 @@ import Compiler.Reporting.Suggest as Suggest
 import Data.Map as Dict
 import Task exposing (Task)
 import Terminal.Terminal.Internal exposing (Parser(..))
-import Utils.Main as Utils exposing (FilePath)
+import System.IO exposing (FilePath)
+import Utils.Main as Utils
 
 
 

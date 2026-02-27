@@ -57,7 +57,8 @@ import Task exposing (Task)
 import Terminal.Terminal.Internal exposing (Parser(..))
 import Utils.Bytes.Decode as BD
 import Utils.Bytes.Encode as BE
-import Utils.Main as Utils exposing (FilePath)
+import System.IO exposing (FilePath)
+import Utils.Main as Utils
 import Utils.Task.Extra as Task
 
 

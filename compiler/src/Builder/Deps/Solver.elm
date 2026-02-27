@@ -68,6 +68,7 @@ import Compiler.Json.Decode as D
 import Data.Map as Dict exposing (Dict)
 import Task exposing (Task)
 import Utils.Crash exposing (crash)
+import System.IO as IO
 import Utils.Main as Utils
 
 
@@ -782,7 +783,7 @@ initEnv =
         |> Task.andThen forkHttpManagerAndInitCache
 
 
-forkHttpManagerAndInitCache : Utils.MVar Http.Manager -> Task Never (Result Exit.RegistryProblem Env)
+forkHttpManagerAndInitCache : IO.MVar Http.Manager -> Task Never (Result Exit.RegistryProblem Env)
 forkHttpManagerAndInitCache mvar =
     Utils.forkIO (Http.getManager |> Task.andThen (Utils.putMVar Http.managerEncoder mvar))
         |> Task.andThen (\_ -> Stuff.getPackageCache)
@@ -791,7 +792,7 @@ forkHttpManagerAndInitCache mvar =
 
 {-| Initialize environment with a package cache.
 -}
-initEnvWithCache : Stuff.PackageCache -> Utils.MVar Http.Manager -> Task Never (Result Exit.RegistryProblem Env)
+initEnvWithCache : Stuff.PackageCache -> IO.MVar Http.Manager -> Task Never (Result Exit.RegistryProblem Env)
 initEnvWithCache cache mvar =
     Stuff.withRegistryLock cache
         (Registry.read cache
@@ -801,7 +802,7 @@ initEnvWithCache cache mvar =
 
 {-| Load or fetch the registry.
 -}
-loadRegistry : Stuff.PackageCache -> Utils.MVar Http.Manager -> Maybe Registry.Registry -> Task Never (Result Exit.RegistryProblem Env)
+loadRegistry : Stuff.PackageCache -> IO.MVar Http.Manager -> Maybe Registry.Registry -> Task Never (Result Exit.RegistryProblem Env)
 loadRegistry cache mvar maybeRegistry =
     Utils.readMVar Http.managerDecoder mvar
         |> Task.andThen
