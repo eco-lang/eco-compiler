@@ -113,13 +113,19 @@ uint64_t Eco_Kernel_Env_rawArgs();
 // Process Module - exit and external process management
 //===----------------------------------------------------------------------===//
 
-// Exit process with ExitCode. Never returns. Returns Task Never () nominally.
-uint64_t Eco_Kernel_Process_exit(uint64_t code);
+// Exit process with exit code (unboxed Int). Never returns.
+uint64_t Eco_Kernel_Process_exit(int64_t code);
 
-// Spawn external process. Returns (Maybe Handle, ProcessHandle) (boxed tuple).
-uint64_t Eco_Kernel_Process_spawn(uint64_t config);
+// Spawn external process with inherited stdio. Returns pid (unboxed Int).
+uint64_t Eco_Kernel_Process_spawn(uint64_t cmd, uint64_t args);
 
-// Wait for process to exit. Returns ExitCode (boxed).
+// Spawn external process with configurable stdio.
+// stdin_/stdout_/stderr_ are boxed Strings ("inherit" or "pipe").
+// Returns record { stdinHandle: Maybe Int, processHandle: Int } (boxed).
+uint64_t Eco_Kernel_Process_spawnProcess(uint64_t cmd, uint64_t args,
+    uint64_t stdin_, uint64_t stdout_, uint64_t stderr_);
+
+// Wait for process to exit. Returns Int (exit code, unboxed).
 uint64_t Eco_Kernel_Process_wait(uint64_t handle);
 
 //===----------------------------------------------------------------------===//
@@ -151,6 +157,20 @@ double Eco_Kernel_Runtime_random();
 
 // Persist REPL state to runtime storage. Returns Task Never ().
 uint64_t Eco_Kernel_Runtime_saveState(uint64_t state);
+
+// Load persisted REPL state from runtime storage. Returns boxed value.
+uint64_t Eco_Kernel_Runtime_loadState();
+
+//===----------------------------------------------------------------------===//
+// Http Module - HTTP requests and archive downloads
+//===----------------------------------------------------------------------===//
+
+// Fetch URL with method and headers. Returns Task Never (Result error String) (boxed).
+// method and url are boxed Strings, headers is boxed List (String, String).
+uint64_t Eco_Kernel_Http_fetch(uint64_t method, uint64_t url, uint64_t headers);
+
+// Download and extract ZIP archive. Returns Task Never (Result String record) (boxed).
+uint64_t Eco_Kernel_Http_getArchive(uint64_t url);
 
 } // extern "C"
 

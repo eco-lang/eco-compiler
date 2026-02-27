@@ -16,3 +16,7 @@ double Eco_Kernel_Runtime_random() {
 uint64_t Eco_Kernel_Runtime_saveState(uint64_t state) {
     return Runtime::saveState(state);
 }
+
+uint64_t Eco_Kernel_Runtime_loadState() {
+    return Runtime::loadState();
+}

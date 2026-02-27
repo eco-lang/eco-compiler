@@ -1,5 +1,6 @@
 /*
 import Eco.Kernel.Scheduler exposing (succeed, fail, binding)
+import Maybe exposing (Just, Nothing)
 */
 
 var _Process_exit = function(code) {
@@ -8,25 +9,29 @@ var _Process_exit = function(code) {
     });
 };
 
-var _Process_spawn = function(config) {
+var _Process_spawn = function(cmd, args) {
     return __Scheduler_binding(function(callback) {
         try {
             var child_process = require('child_process');
-            var cmd = config.__$cmd;
-            var args = config.__$args;
-            var opts = {};
+            var child = child_process.spawn(cmd, _List_toArray(args),
+                { stdio: ['inherit', 'inherit', 'inherit'] });
+            callback(__Scheduler_succeed(child.pid));
+        } catch (e) {
+            callback(__Scheduler_fail(e.message));
+        }
+    });
+};
 
-            if (config.__$stdin === 'pipe') {
-                opts.stdio = ['pipe', 'inherit', 'inherit'];
-            } else {
-                opts.stdio = ['inherit', 'inherit', 'inherit'];
-            }
-
-            var child = child_process.spawn(cmd, args, opts);
-            var stdinHandle = child.stdin ? child.pid * 1000 : null;
+var _Process_spawnProcess = function(cmd, args, stdin, stdout, stderr) {
+    return __Scheduler_binding(function(callback) {
+        try {
+            var child_process = require('child_process');
+            var child = child_process.spawn(cmd, _List_toArray(args),
+                { stdio: [stdin, stdout, stderr] });
+            var stdinHandle = child.stdin ? __Maybe_Just(child.pid * 1000) : __Maybe_Nothing;
             callback(__Scheduler_succeed({
-                __$stdinHandle: stdinHandle,
-                __$ph: child.pid
+                stdinHandle: stdinHandle,
+                processHandle: child.pid
             }));
         } catch (e) {
             callback(__Scheduler_fail(e.message));

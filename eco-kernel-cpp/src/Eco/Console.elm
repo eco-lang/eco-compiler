@@ -1,5 +1,5 @@
 module Eco.Console exposing
-    ( Handle, stdout, stderr
+    ( Handle(..), stdout, stderr
     , write, readLine, readAll
     )
 

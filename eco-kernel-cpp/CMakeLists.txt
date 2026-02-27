@@ -77,6 +77,17 @@ target_include_directories(EcoKernel_Runtime PUBLIC
 )
 target_compile_features(EcoKernel_Runtime PUBLIC cxx_std_20)
 
+# Http module (HTTP requests, archive downloads)
+add_library(EcoKernel_Http STATIC
+    src/eco/Http.cpp
+    src/eco/HttpExports.cpp
+)
+target_include_directories(EcoKernel_Http PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${RUNTIME_INCLUDE_DIR}
+)
+target_compile_features(EcoKernel_Http PUBLIC cxx_std_20)
+
 #------------------------------------------------------------------------------
 # Combined convenience library
 #------------------------------------------------------------------------------
@@ -89,12 +100,14 @@ target_link_libraries(EcoKernel INTERFACE
     EcoKernel_Process
     EcoKernel_MVar
     EcoKernel_Runtime
+    EcoKernel_Http
 )
 
 # Keep asserts enabled even in release builds
 foreach(target
     EcoKernel_File EcoKernel_Console EcoKernel_Env
     EcoKernel_Process EcoKernel_MVar EcoKernel_Runtime
+    EcoKernel_Http
 )
     target_compile_options(${target} PRIVATE -UNDEBUG)
 endforeach()

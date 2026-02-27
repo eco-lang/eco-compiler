@@ -1,5 +1,5 @@
 module Eco.MVar exposing
-    ( MVar
+    ( MVar(..)
     , new, read, take, put
     )
 
@@ -7,6 +7,10 @@ module Eco.MVar exposing
 
 MVars are mutable variables that can be empty or full. Operations on empty
 or full MVars block until the MVar reaches the required state.
+
+Values are encoded to raw bytes on put and decoded on read/take, matching
+the XHR variant's API so that call sites are identical across both
+implementations.
 
 All operations are atomic IO primitives backed by kernel implementations.
 
@@ -22,6 +26,9 @@ All operations are atomic IO primitives backed by kernel implementations.
 
 -}
 
+import Bytes
+import Bytes.Decode
+import Bytes.Encode
 import Eco.Kernel.MVar
 import Task exposing (Task)
 
@@ -42,24 +49,42 @@ new =
 
 
 {-| Read the value from an MVar without removing it.
-Blocks if the MVar is empty.
+Blocks if the MVar is empty. Returns raw bytes decoded via the provided decoder.
 -}
-read : MVar a -> Task Never a
-read (MVar id) =
+read : Bytes.Decode.Decoder a -> MVar a -> Task Never a
+read decoder (MVar id) =
     Eco.Kernel.MVar.read id
+        |> Task.map
+            (\bytes ->
+                case Bytes.Decode.decode decoder bytes of
+                    Just value ->
+                        value
+
+                    Nothing ->
+                        Debug.todo "Eco.MVar.read: bytes decode failed"
+            )
 
 
 {-| Take the value from an MVar, leaving it empty.
-Blocks if the MVar is empty.
+Blocks if the MVar is empty. Returns raw bytes decoded via the provided decoder.
 -}
-take : MVar a -> Task Never a
-take (MVar id) =
+take : Bytes.Decode.Decoder a -> MVar a -> Task Never a
+take decoder (MVar id) =
     Eco.Kernel.MVar.take id
+        |> Task.map
+            (\bytes ->
+                case Bytes.Decode.decode decoder bytes of
+                    Just value ->
+                        value
+
+                    Nothing ->
+                        Debug.todo "Eco.MVar.take: bytes decode failed"
+            )
 
 
-{-| Put a value into an MVar.
-Blocks if the MVar is already full.
+{-| Put a value into an MVar. Blocks if the MVar is already full.
+The value is encoded to raw bytes via the provided encoder.
 -}
-put : MVar a -> a -> Task Never ()
-put (MVar id) value =
-    Eco.Kernel.MVar.put id value
+put : (a -> Bytes.Encode.Encoder) -> MVar a -> a -> Task Never ()
+put encoder (MVar id) value =
+    Eco.Kernel.MVar.put id (Bytes.Encode.encode (encoder value))

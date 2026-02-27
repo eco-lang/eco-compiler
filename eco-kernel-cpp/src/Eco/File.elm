@@ -1,6 +1,6 @@
 module Eco.File exposing
     ( readString, writeString, readBytes, writeBytes
-    , Handle, IOMode(..), open, close, size
+    , Handle(..), IOMode(..), open, close, size
     , lock, unlock
     , fileExists, dirExists
     , findExecutable, list, modificationTime

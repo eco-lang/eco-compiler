@@ -49,7 +49,7 @@ type StdStream
 -}
 exit : ExitCode -> Task Never ()
 exit code =
-    Eco.Kernel.Process.exit code
+    Eco.Kernel.Process.exit (exitCodeToInt code)
 
 
 {-| Spawn an external process with inherited stdio. Returns a process handle.
@@ -62,6 +62,7 @@ spawn cmd args =
 
 {-| Spawn an external process with configurable stdio.
 Returns a process handle and optionally a stdin handle ID (if stdin was CreatePipe).
+The stdin handle ID can be used with Console.write and File.close.
 -}
 spawnProcess :
     { cmd : String
@@ -72,7 +73,12 @@ spawnProcess :
     }
     -> Task Never { stdinHandle : Maybe Int, processHandle : ProcessHandle }
 spawnProcess config =
-    Eco.Kernel.Process.spawnProcess config.cmd config.args config.stdin config.stdout config.stderr
+    Eco.Kernel.Process.spawnProcess
+        config.cmd
+        config.args
+        (stdStreamToString config.stdin)
+        (stdStreamToString config.stdout)
+        (stdStreamToString config.stderr)
         |> Task.map
             (\result ->
                 { stdinHandle = result.stdinHandle
@@ -86,3 +92,33 @@ spawnProcess config =
 wait : ProcessHandle -> Task Never ExitCode
 wait (ProcessHandle ph) =
     Eco.Kernel.Process.wait ph
+        |> Task.map intToExitCode
+
+
+exitCodeToInt : ExitCode -> Int
+exitCodeToInt code =
+    case code of
+        ExitSuccess ->
+            0
+
+        ExitFailure n ->
+            n
+
+
+intToExitCode : Int -> ExitCode
+intToExitCode code =
+    if code == 0 then
+        ExitSuccess
+
+    else
+        ExitFailure code
+
+
+stdStreamToString : StdStream -> String
+stdStreamToString stream =
+    case stream of
+        Inherit ->
+            "inherit"
+
+        CreatePipe ->
+            "pipe"
