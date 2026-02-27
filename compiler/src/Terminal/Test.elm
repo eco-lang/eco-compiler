@@ -314,7 +314,7 @@ compileTestsWithStyle root terminalStyle =
 
 executeTests : String -> Task Never Exit.ExitCode
 executeTests content =
-    IO.hPutStrLn IO.stdout "Starting tests"
+    IO.writeLn IO.stdout "Starting tests"
         |> Task.andThen (\_ -> getInterpreter)
         |> Task.andThen (runInterpreterWithContent content)
 
@@ -354,7 +354,7 @@ interpret interpreter javascript =
 writeAndWaitForProcess : IO.Handle -> Process.ProcessHandle -> String -> Task Never Exit.ExitCode
 writeAndWaitForProcess stdin handle javascript =
     Utils.builderHPutBuilder stdin javascript
-        |> Task.andThen (\_ -> IO.hClose stdin)
+        |> Task.andThen (\_ -> IO.close stdin)
         |> Task.andThen (\_ -> Process.waitForProcess handle)
 
 
@@ -1219,7 +1219,7 @@ requireInterpreter name maybePath =
 
 reportMissingInterpreterAndExit : String -> Task Never FilePath
 reportMissingInterpreterAndExit name =
-    IO.hPutStrLn IO.stderr (exeNotFound name)
+    IO.writeLn IO.stderr (exeNotFound name)
         |> Task.andThen (\_ -> Exit.exitFailure)
 
 

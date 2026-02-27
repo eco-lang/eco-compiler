@@ -87,7 +87,7 @@ attemptChanges : String -> Solver.Env -> Outline.Outline -> (a -> String) -> Cha
 attemptChanges root env oldOutline _ changes =
     case changes of
         AlreadyInstalled ->
-            Task.io (IO.putStrLn "It is already installed!")
+            Task.io (IO.printLn "It is already installed!")
 
         PromoteIndirect newOutline ->
             attemptChangesHelp root env oldOutline newOutline
@@ -114,7 +114,7 @@ attemptChangesHelp root env oldOutline newOutline =
                                         |> Task.map (\_ -> Err exit)
 
                                 Ok () ->
-                                    IO.putStrLn "Success!"
+                                    IO.printLn "Success!"
                                         |> Task.map (\_ -> Ok ())
                         )
             )

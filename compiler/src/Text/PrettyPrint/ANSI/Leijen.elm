@@ -90,7 +90,7 @@ type SimpleDoc
 -}
 displayIO : IO.Handle -> SimpleDoc -> Task Never ()
 displayIO handle simpleDoc =
-    IO.hPutStr handle (displayS simpleDoc "")
+    IO.write handle (displayS simpleDoc "")
 
 
 {-| Renders a Doc into a SimpleDoc with the specified page width.

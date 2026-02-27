@@ -10,7 +10,7 @@ module System.IO exposing
     , ChItem(..)
     , ReplState(..), initialReplState
     , ReplSettings(..)
-    , getLine, hClose, hFlush, hIsTerminalDevice, hPutStr, hPutStrLn, putStr, putStrLn
+    , writeLn, print, printLn, readLine, close, flush, isTerminal
     )
 
 {-| Centralized IO operations for the Elm compiler.
@@ -56,7 +56,7 @@ Function names follow the `guida-io-ops.csv` naming conventions.
 # Console I/O
 
 @docs write
-@docs getLine, hClose, hFlush, hIsTerminalDevice, hPutStr, hPutStrLn, putStr, putStrLn
+@docs writeLn, print, printLn, readLine, close, flush, isTerminal
 
 
 # Environment and process
@@ -290,64 +290,3 @@ initialReplState =
 type ReplSettings
     = ReplSettings
 
-
-
--- ====== BACKWARD-COMPATIBLE ALIASES ======
--- These aliases preserve the old Haskell-style names used throughout the
--- compiler. New code should use the renamed functions above.
-
-
-{-| Write a string to a handle. Alias for `write`.
--}
-hPutStr : Handle -> String -> Task Never ()
-hPutStr =
-    write
-
-
-{-| Write a string followed by a newline to a handle. Alias for `writeLn`.
--}
-hPutStrLn : Handle -> String -> Task Never ()
-hPutStrLn =
-    writeLn
-
-
-{-| Print a string to stdout. Alias for `print`.
--}
-putStr : String -> Task Never ()
-putStr =
-    print
-
-
-{-| Print a string followed by a newline to stdout. Alias for `printLn`.
--}
-putStrLn : String -> Task Never ()
-putStrLn =
-    printLn
-
-
-{-| Read a line from stdin. Alias for `readLine`.
--}
-getLine : Task Never String
-getLine =
-    readLine
-
-
-{-| Close a file handle. Alias for `close`.
--}
-hClose : Handle -> Task Never ()
-hClose =
-    close
-
-
-{-| Flush a file handle. Alias for `flush`.
--}
-hFlush : Handle -> Task Never ()
-hFlush =
-    flush
-
-
-{-| Check if a handle refers to a terminal device. Alias for `isTerminal`.
--}
-hIsTerminalDevice : Handle -> Task Never Bool
-hIsTerminalDevice =
-    isTerminal

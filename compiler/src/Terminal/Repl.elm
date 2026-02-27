@@ -617,11 +617,11 @@ eval env ((IO.ReplState imports types decls) as state) input =
             Task.succeed (End Exit.ExitSuccess)
 
         Reset ->
-            IO.putStrLn "<reset>"
+            IO.printLn "<reset>"
                 |> Task.map (\_ -> Loop IO.initialReplState)
 
         Help maybeUnknownCommand ->
-            IO.putStrLn (toHelpMessage maybeUnknownCommand)
+            IO.printLn (toHelpMessage maybeUnknownCommand)
                 |> Task.map (\_ -> Loop state)
 
         Import name src ->
@@ -641,7 +641,7 @@ eval env ((IO.ReplState imports types decls) as state) input =
             Task.map Loop (attemptEval env state newState OutputNothing)
 
         Port ->
-            IO.putStrLn "I cannot handle port declarations."
+            IO.printLn "I cannot handle port declarations."
                 |> Task.map (\_ -> Loop state)
 
         Decl name src ->
@@ -750,7 +750,7 @@ interpret interpreter javascript =
 writeAndWaitForProcess : IO.Handle -> Process.ProcessHandle -> String -> Task Never Exit.ExitCode
 writeAndWaitForProcess stdin handle javascript =
     Utils.builderHPutBuilder stdin javascript
-        |> Task.andThen (\_ -> IO.hClose stdin)
+        |> Task.andThen (\_ -> IO.close stdin)
         |> Task.andThen (\_ -> Process.waitForProcess handle)
 
 
@@ -925,7 +925,7 @@ requireInterpreter name maybePath =
             Task.succeed path
 
         Nothing ->
-            IO.hPutStrLn IO.stderr (exeNotFound name)
+            IO.writeLn IO.stderr (exeNotFound name)
                 |> Task.andThen (\_ -> Exit.exitFailure)
 
 

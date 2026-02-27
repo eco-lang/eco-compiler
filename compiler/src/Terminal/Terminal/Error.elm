@@ -55,7 +55,7 @@ exitFailure =
 
 exitWith : Exit.ExitCode -> List P.Doc -> Task Never a
 exitWith code docs =
-    IO.hIsTerminalDevice IO.stderr
+    IO.isTerminal IO.stderr
         |> Task.andThen
             (\isTerminal ->
                 let
@@ -72,7 +72,7 @@ exitWith code docs =
                         80
                         (adjust (P.vcat (List.concatMap (\d -> [ d, P.text "" ]) docs)))
                     )
-                    |> Task.andThen (\_ -> IO.hPutStrLn IO.stderr "")
+                    |> Task.andThen (\_ -> IO.writeLn IO.stderr "")
                     |> Task.andThen (\_ -> Exit.exitWith code)
             )
 

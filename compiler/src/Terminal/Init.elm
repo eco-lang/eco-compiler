@@ -99,7 +99,7 @@ handleInitApproval package approved =
         init package
 
     else
-        IO.putStrLn "Okay, I did not make any changes!"
+        IO.printLn "Okay, I did not make any changes!"
             |> Task.map (\_ -> Ok ())
 
 
@@ -210,7 +210,7 @@ createProjectFiles package details result =
                 |> Task.andThen (\_ -> Utils.dirCreateDirectoryIfMissing True "tests")
                 |> Task.andThen (\_ -> File.writeUtf8 "tests/Example.elm" testExample)
                 |> Task.andThen (\_ -> writeOutline package (InitDetails details testDetails))
-                |> Task.andThen (\_ -> IO.putStrLn "Okay, I created it. Now read that link!")
+                |> Task.andThen (\_ -> IO.printLn "Okay, I created it. Now read that link!")
                 |> Task.map (\_ -> Ok ())
 
 

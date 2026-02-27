@@ -109,7 +109,7 @@ readBinary decoder path =
                                         Task.succeed (Just a)
 
                                     Err ( offset, message ) ->
-                                        IO.hPutStrLn IO.stderr
+                                        IO.writeLn IO.stderr
                                             (Utils.unlines
                                                 [ "+-------------------------------------------------------------------------------"
                                                 , "|  Corrupt File: " ++ path

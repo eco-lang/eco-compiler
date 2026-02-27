@@ -61,7 +61,7 @@ app intro outro commands =
                         Error.exitWithOverview intro outro commands
 
                     [ "--version" ] ->
-                        IO.hPutStrLn IO.stdout (V.toChars V.compiler)
+                        IO.writeLn IO.stdout (V.toChars V.compiler)
                             |> Task.andThen (\_ -> Exit.exitSuccess)
 
                     command :: chunks ->

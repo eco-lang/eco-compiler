@@ -233,8 +233,8 @@ ask doc =
 
 askHelp : Task Never Bool
 askHelp =
-    IO.hFlush IO.stdout
-        |> Task.andThen (\_ -> IO.getLine)
+    IO.flush IO.stdout
+        |> Task.andThen (\_ -> IO.readLine)
         |> Task.andThen parseYesNoResponse
 
 
@@ -259,7 +259,7 @@ parseYesNoResponse input =
 
 promptAndRetry : Task Never Bool
 promptAndRetry =
-    IO.putStr "Must type 'y' for yes or 'n' for no: "
+    IO.print "Must type 'y' for yes or 'n' for no: "
         |> Task.andThen (\_ -> askHelp)
 
 
@@ -338,7 +338,7 @@ handleDetailsMessage chan state total built msg =
 
 printFinalDetailsStatus : Int -> Int -> Task Never ()
 printFinalDetailsStatus total built =
-    IO.putStrLn
+    IO.printLn
         (clear (toBuildProgress total total)
             (if built == total then
                 "Dependencies ready!"
@@ -387,7 +387,7 @@ detailsStep msg (DState ds) =
 
         DRequested ->
             (if ds.requested == 0 then
-                IO.putStrLn "Starting downloads...\n"
+                IO.printLn "Starting downloads...\n"
 
              else
                 Task.succeed ()
@@ -561,7 +561,7 @@ printFinalBuildMessage done result =
         width =
             12 + String.length (String.fromInt done)
     in
-    IO.putStrLn
+    IO.printLn
         (if String.length message < width then
             String.cons '\u{000D}' (String.repeat width " ")
                 ++ String.cons '\u{000D}' message
@@ -624,7 +624,7 @@ printGenerateDiagram names output =
         cnames =
             NE.map (Name.toChars >> String.fromList) names
     in
-    IO.putStrLn (String.cons '\n' (toGenDiagram cnames output))
+    IO.printLn (String.cons '\n' (toGenDiagram cnames output))
 
 
 toGenDiagram : NE.Nonempty String -> String -> String
@@ -695,8 +695,8 @@ vbottom =
 
 putStrFlush : String -> Task Never ()
 putStrFlush str =
-    IO.hPutStr IO.stdout str
-        |> Task.andThen (\_ -> IO.hFlush IO.stdout)
+    IO.write IO.stdout str
+        |> Task.andThen (\_ -> IO.flush IO.stdout)
 
 
 

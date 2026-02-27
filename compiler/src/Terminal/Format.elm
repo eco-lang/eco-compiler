@@ -81,7 +81,7 @@ determineFromConfig : Flags -> Result (List Error) (List FilePath) -> Task Never
 determineFromConfig flags resolvedInputFiles =
     case determineWhatToDoFromConfig flags resolvedInputFiles of
         Err err ->
-            IO.hPutStrLn IO.stderr (toConsoleErrorMessage err)
+            IO.writeLn IO.stderr (toConsoleErrorMessage err)
                 |> Task.andThen (\_ -> Exit.exitFailure)
 
         Ok a ->
@@ -396,8 +396,8 @@ determineFileType isFile isDirectory =
 
 getYesOrNo : Task Never Bool
 getYesOrNo =
-    IO.hFlush IO.stdout
-        |> Task.andThen (\_ -> IO.getLine)
+    IO.flush IO.stdout
+        |> Task.andThen (\_ -> IO.readLine)
         |> Task.andThen parseYesOrNo
 
 
@@ -411,7 +411,7 @@ parseYesOrNo input =
             Task.succeed False
 
         _ ->
-            IO.putStr "Must type 'y' for yes or 'n' for no: "
+            IO.print "Must type 'y' for yes or 'n' for no: "
                 |> Task.andThen (\_ -> getYesOrNo)
 
 
@@ -438,10 +438,10 @@ putStrLn : Bool -> String -> Task Never ()
 putStrLn usingStdout =
     -- we log to stdout unless it is being used for file output (in that case, we log to stderr)
     if usingStdout then
-        IO.hPutStrLn IO.stderr
+        IO.writeLn IO.stderr
 
     else
-        IO.putStrLn
+        IO.printLn
 
 
 resultsToJsonString : List (Result (Maybe String) ()) -> String
@@ -619,15 +619,15 @@ applyTransformation processingFile autoYes confirmPrompt transform mode =
         onInfo : InfoMessage -> Task Never ()
         onInfo info =
             if usesStdout then
-                IO.hPutStrLn IO.stderr (toConsoleInfoMessage info)
+                IO.writeLn IO.stderr (toConsoleInfoMessage info)
 
             else
-                IO.putStrLn (toConsoleInfoMessage info)
+                IO.printLn (toConsoleInfoMessage info)
     in
     case mode of
         StdinToStdout ->
             readStdin
-                |> Task.andThen (logErrorOr onInfo IO.putStr << transform)
+                |> Task.andThen (logErrorOr onInfo IO.print << transform)
 
         StdinToFile outputFile ->
             readStdin
@@ -686,7 +686,7 @@ validateStdinContent ( filePath, content ) =
         result =
             newValidate filePath content
     in
-    IO.putStrLn (resultsToJsonString [ result ])
+    IO.printLn (resultsToJsonString [ result ])
         |> Task.map (\_ -> Result.isOk result)
 
 
@@ -698,7 +698,7 @@ validateFileContent filePath =
 
 outputValidationResults : List (Result (Maybe String) ()) -> Task Never Bool
 outputValidationResults results =
-    IO.putStrLn (resultsToJsonString results)
+    IO.printLn (resultsToJsonString results)
         |> Task.map (\_ -> List.all Result.isOk results)
 
 

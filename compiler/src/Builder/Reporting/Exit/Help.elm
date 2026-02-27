@@ -158,12 +158,12 @@ toStderr doc =
 
 toHandle : IO.Handle -> D.Doc -> Task Never ()
 toHandle handle doc =
-    IO.hIsTerminalDevice handle
+    IO.isTerminal handle
         |> Task.andThen
             (\isTerminal ->
                 if isTerminal then
                     D.toAnsi handle doc
 
                 else
-                    IO.hPutStr handle (D.toString doc)
+                    IO.write handle (D.toString doc)
             )

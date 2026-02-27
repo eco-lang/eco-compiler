@@ -132,7 +132,7 @@ attemptChanges : String -> Solver.Env -> Outline.Outline -> (a -> String) -> Cha
 attemptChanges root env oldOutline toChars changes autoYes =
     case changes of
         AlreadyNotPresent ->
-            Task.io (IO.putStrLn "It is not currently installed!")
+            Task.io (IO.printLn "It is not currently installed!")
 
         Changes changeDict newOutline ->
             let
@@ -180,7 +180,7 @@ applyUninstallChanges scope root env oldOutline newOutline approved =
             |> Task.andThen (handleUninstallResult root oldOutline)
 
     else
-        IO.putStrLn "Okay, I did not change anything!"
+        IO.printLn "Okay, I did not change anything!"
             |> Task.map (\_ -> Ok ())
 
 
@@ -192,7 +192,7 @@ handleUninstallResult root oldOutline result =
                 |> Task.map (\_ -> Err exit)
 
         Ok () ->
-            IO.putStrLn "Success!"
+            IO.printLn "Success!"
                 |> Task.map (\_ -> Ok ())
 
 

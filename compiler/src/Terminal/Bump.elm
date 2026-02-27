@@ -159,14 +159,14 @@ bump ((Env envData) as env) =
 
 checkNewPackage : FilePath -> Outline.PkgOutline -> Task Never ()
 checkNewPackage root ((Outline.PkgOutline pkgData) as outline) =
-    IO.putStrLn "This package has not been published before. Let me verify the version number."
+    IO.printLn "This package has not been published before. Let me verify the version number."
         |> Task.andThen (\_ -> validateNewPackageVersion root outline pkgData.version)
 
 
 validateNewPackageVersion : FilePath -> Outline.PkgOutline -> V.Version -> Task Never ()
 validateNewPackageVersion root outline version =
     if version == V.one then
-        IO.putStrLn "The version number in elm.json is correct so you are all set!"
+        IO.printLn "The version number in elm.json is correct so you are all set!"
 
     else
         let
@@ -285,7 +285,7 @@ changeVersion root outline targetVersion question =
 applyVersionChange : FilePath -> Outline.PkgOutline -> V.Version -> Bool -> Task Never ()
 applyVersionChange root outline targetVersion approved =
     if not approved then
-        IO.putStrLn "Okay, I did not change anything!"
+        IO.printLn "Okay, I did not change anything!"
 
     else
         writeNewOutline root outline targetVersion
