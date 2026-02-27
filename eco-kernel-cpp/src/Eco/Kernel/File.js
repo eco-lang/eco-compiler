@@ -68,8 +68,13 @@ var _File_open = function(path, mode) {
 var _File_close = function(handle) {
     return __Scheduler_binding(function(callback) {
         try {
-            var fs = require('fs');
-            fs.closeSync(handle);
+            if (typeof _Process_streamHandles !== 'undefined' && _Process_streamHandles[handle]) {
+                _Process_streamHandles[handle].end();
+                delete _Process_streamHandles[handle];
+            } else {
+                var fs = require('fs');
+                fs.closeSync(handle);
+            }
             callback(__Scheduler_succeed(0 /* Unit */));
         } catch (e) {
             callback(__Scheduler_fail(e.message));
@@ -198,7 +203,8 @@ var _File_canonicalize = function(path) {
             var resolved = fs.realpathSync(path);
             callback(__Scheduler_succeed(resolved));
         } catch (e) {
-            callback(__Scheduler_fail(e.message));
+            var pathMod = require('path');
+            callback(__Scheduler_succeed(pathMod.resolve(path)));
         }
     });
 };

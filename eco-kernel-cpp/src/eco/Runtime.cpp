@@ -1,28 +1,50 @@
-//===- Runtime.cpp - Stub implementations for Runtime kernel module -------===//
+//===- Runtime.cpp - Runtime kernel module implementation -----------------===//
 
 #include "Runtime.hpp"
-#include <cassert>
+#include "KernelHelpers.hpp"
+#include <random>
+#include <string>
+#include <unistd.h>
+#include <climits>
 
 namespace Eco::Kernel::Runtime {
 
+static HPointer s_savedState = {};
+static bool s_hasState = false;
+
 uint64_t dirname() {
-    // TODO: return directory of current script/binary as String
-    return 0;
+    char buf[PATH_MAX];
+    ssize_t len = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+    if (len < 0) {
+        return taskFailString("Cannot determine executable path");
+    }
+    buf[len] = '\0';
+    // Extract directory component.
+    std::string path(buf);
+    auto pos = path.rfind('/');
+    if (pos != std::string::npos) {
+        path = path.substr(0, pos);
+    }
+    return taskSucceedString(path);
 }
 
 double random() {
-    // TODO: return random Float from runtime
-    return 0.0;
+    static std::mt19937_64 gen(std::random_device{}());
+    static std::uniform_real_distribution<double> dist(0.0, 1.0);
+    return dist(gen);
 }
 
-uint64_t saveState(uint64_t /*state*/) {
-    // TODO: persist REPL state to runtime storage, return Unit
-    return 0;
+uint64_t saveState(uint64_t state) {
+    s_savedState = Export::decode(state);
+    s_hasState = true;
+    return taskSucceedUnit();
 }
 
 uint64_t loadState() {
-    assert(false && "Eco::Kernel::Runtime::loadState not implemented");
-    return 0;
+    if (s_hasState) {
+        return taskSucceed(s_savedState);
+    }
+    return taskSucceed(Elm::alloc::nothing());
 }
 
 } // namespace Eco::Kernel::Runtime

@@ -9,6 +9,8 @@ var _Console_write = function(handle, content) {
                 process.stdout.write(content);
             } else if (handle === 2) {
                 process.stderr.write(content);
+            } else if (typeof _Process_streamHandles !== 'undefined' && _Process_streamHandles[handle]) {
+                _Process_streamHandles[handle].write(content);
             }
             callback(__Scheduler_succeed(0 /* Unit */));
         } catch (e) {

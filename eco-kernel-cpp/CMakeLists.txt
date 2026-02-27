@@ -7,6 +7,28 @@ project(eco-kernel LANGUAGES CXX)
 # Runtime include directory (for allocator headers)
 set(RUNTIME_INCLUDE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../runtime/src)
 
+# Find optional dependencies for Http module
+find_package(CURL QUIET)
+find_package(OpenSSL QUIET)
+find_package(PkgConfig QUIET)
+if(PkgConfig_FOUND)
+    pkg_check_modules(LIBZIP QUIET libzip)
+endif()
+
+if(CURL_FOUND AND OPENSSL_FOUND)
+    set(HTTP_AVAILABLE ON)
+    message(STATUS "eco-kernel: libcurl and OpenSSL found - Http module will be fully functional")
+else()
+    set(HTTP_AVAILABLE OFF)
+    message(STATUS "eco-kernel: libcurl or OpenSSL not found - Http module will use stubs")
+endif()
+
+if(LIBZIP_FOUND)
+    message(STATUS "eco-kernel: libzip found - archive extraction available")
+else()
+    message(STATUS "eco-kernel: libzip not found - archive extraction will use stubs")
+endif()
+
 #------------------------------------------------------------------------------
 # Per-module static libraries
 #------------------------------------------------------------------------------
@@ -66,7 +88,7 @@ target_include_directories(EcoKernel_MVar PUBLIC
 )
 target_compile_features(EcoKernel_MVar PUBLIC cxx_std_20)
 
-# Runtime module (Node.js-specific, REPL state)
+# Runtime module (dirname, random, REPL state)
 add_library(EcoKernel_Runtime STATIC
     src/eco/Runtime.cpp
     src/eco/RuntimeExports.cpp
@@ -86,6 +108,15 @@ target_include_directories(EcoKernel_Http PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${RUNTIME_INCLUDE_DIR}
 )
+if(HTTP_AVAILABLE)
+    target_link_libraries(EcoKernel_Http PRIVATE CURL::libcurl OpenSSL::SSL OpenSSL::Crypto)
+    target_compile_definitions(EcoKernel_Http PRIVATE HTTP_CURL_AVAILABLE=1)
+endif()
+if(LIBZIP_FOUND)
+    target_link_libraries(EcoKernel_Http PRIVATE ${LIBZIP_LIBRARIES})
+    target_include_directories(EcoKernel_Http PRIVATE ${LIBZIP_INCLUDE_DIRS})
+    target_compile_definitions(EcoKernel_Http PRIVATE LIBZIP_AVAILABLE=1)
+endif()
 target_compile_features(EcoKernel_Http PUBLIC cxx_std_20)
 
 #------------------------------------------------------------------------------

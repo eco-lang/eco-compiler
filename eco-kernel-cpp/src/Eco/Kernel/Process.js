@@ -3,6 +3,10 @@ import Eco.Kernel.Scheduler exposing (succeed, fail, binding)
 import Maybe exposing (Just, Nothing)
 */
 
+var _Process_children = {};
+var _Process_streamHandles = {};
+var _Process_nextStreamHandle = 10000;
+
 var _Process_exit = function(code) {
     return __Scheduler_binding(function(callback) {
         process.exit(code);
@@ -15,6 +19,7 @@ var _Process_spawn = function(cmd, args) {
             var child_process = require('child_process');
             var child = child_process.spawn(cmd, _List_toArray(args),
                 { stdio: ['inherit', 'inherit', 'inherit'] });
+            _Process_children[child.pid] = child;
             callback(__Scheduler_succeed(child.pid));
         } catch (e) {
             callback(__Scheduler_fail(e.message));
@@ -28,7 +33,15 @@ var _Process_spawnProcess = function(cmd, args, stdin, stdout, stderr) {
             var child_process = require('child_process');
             var child = child_process.spawn(cmd, _List_toArray(args),
                 { stdio: [stdin, stdout, stderr] });
-            var stdinHandle = child.stdin ? __Maybe_Just(child.pid * 1000) : __Maybe_Nothing;
+            _Process_children[child.pid] = child;
+            var stdinHandle;
+            if (child.stdin) {
+                var handleId = _Process_nextStreamHandle++;
+                _Process_streamHandles[handleId] = child.stdin;
+                stdinHandle = __Maybe_Just(handleId);
+            } else {
+                stdinHandle = __Maybe_Nothing;
+            }
             callback(__Scheduler_succeed({
                 stdinHandle: stdinHandle,
                 processHandle: child.pid
@@ -41,7 +54,19 @@ var _Process_spawnProcess = function(cmd, args, stdin, stdout, stderr) {
 
 var _Process_wait = function(handle) {
     return __Scheduler_binding(function(callback) {
-        // TODO: track spawned processes and wait for exit
-        callback(__Scheduler_succeed(0));
+        var child = _Process_children[handle];
+        if (!child) {
+            callback(__Scheduler_succeed(0));
+            return;
+        }
+        if (child.exitCode !== null) {
+            delete _Process_children[handle];
+            callback(__Scheduler_succeed(child.exitCode));
+            return;
+        }
+        child.on('exit', function(code) {
+            delete _Process_children[handle];
+            callback(__Scheduler_succeed(code || 0));
+        });
     });
 };

@@ -15,6 +15,9 @@
 
 namespace Eco::Kernel::Export {
 
+using Elm::HPointer;
+using Elm::Allocator;
+
 // Encode HPointer as uint64_t for JIT interface.
 inline uint64_t encode(HPointer h) {
     union { HPointer hp; uint64_t val; } u;
@@ -56,18 +59,18 @@ inline uint64_t fromPtr(void* ptr) {
 
 // Encode a boolean as a boxed !eco.value (HPointer constant).
 inline uint64_t encodeBoxedBool(bool b) {
-    return encode(b ? alloc::elmTrue() : alloc::elmFalse());
+    return encode(b ? Elm::alloc::elmTrue() : Elm::alloc::elmFalse());
 }
 
 // Decode a boxed !eco.value boolean (HPointer constant) to raw bool.
 inline bool decodeBoxedBool(uint64_t val) {
     HPointer h = decode(val);
-    return h.constant == (Const_True + 1);
+    return h.constant == (Elm::Const_True + 1);
 }
 
 // Encode Unit as a boxed HPointer constant.
 inline uint64_t encodeUnit() {
-    return encode(alloc::elmUnit());
+    return encode(Elm::alloc::unit());
 }
 
 } // namespace Eco::Kernel::Export
