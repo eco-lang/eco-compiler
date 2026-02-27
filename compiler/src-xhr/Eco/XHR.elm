@@ -15,7 +15,6 @@ and decodes the response.
 
 import Bytes exposing (Bytes)
 import Bytes.Decode
-import Bytes.Encode
 import Http
 import Json.Decode as Decode
 import Json.Encode as Encode

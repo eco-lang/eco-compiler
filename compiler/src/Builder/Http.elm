@@ -192,7 +192,7 @@ shaToChars =
 {-| Downloads a package archive from a URL, returning the SHA hash and archive contents.
 -}
 getArchive : Manager -> String -> (Error -> e) -> e -> (( Sha, Zip.Archive ) -> Task Never (Result e a)) -> Task Never (Result e a)
-getArchive _ url onError defaultError onSuccess =
+getArchive _ url _ defaultError onSuccess =
     Eco.Http.getArchive url
         |> Task.andThen
             (\result ->
