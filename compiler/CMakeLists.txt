@@ -17,6 +17,7 @@ set(ELM_EXECUTABLE "${COMPILER_DIR}/node_modules/.bin/elm")
 # Collect all Elm source files for dependency tracking
 file(GLOB_RECURSE ELM_SOURCES
     "${COMPILER_DIR}/src/*.elm"
+    "${COMPILER_DIR}/src-xhr/*.elm"
 )
 
 # Also track key config files

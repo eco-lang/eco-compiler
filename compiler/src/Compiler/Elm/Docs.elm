@@ -3,7 +3,7 @@ module Compiler.Elm.Docs exposing
     , Alias(..), Union(..), Value(..), Binop(..), DocsBinopData
     , Error(..)
     , fromModule
-    , encode, decoder, jsonEncoder
+    , encode, decoder
     , bytesEncoder, bytesModuleEncoder, bytesDecoder, bytesModuleDecoder
     )
 
@@ -28,7 +28,7 @@ for package publishing with full type information and module comments.
 
 # JSON Encoding
 
-@docs encode, decoder, jsonEncoder
+@docs encode, decoder
 
 
 # Binary Encoding
@@ -60,7 +60,6 @@ import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Error.Docs as E
 import Compiler.Reporting.Result as ReportingResult
 import Data.Map as Dict exposing (Dict)
-import Json.Encode as Encode
 import System.TypeCheck.IO as IO
 import Utils.Bytes.Decode as BD
 import Utils.Bytes.Encode as BE
@@ -829,16 +828,6 @@ addDef types def =
 
 
 -- ====== JSON ENCODERS and DECODERS ======
-
-
-{-| Encodes Documentation to a standard Json.Encode.Value for external consumption.
--}
-jsonEncoder : Documentation -> Encode.Value
-jsonEncoder =
-    encode >> E.toJsonValue
-
-
-
 -- ====== ENCODERS and DECODERS ======
 
 

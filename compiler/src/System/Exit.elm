@@ -23,8 +23,9 @@ Ref.: <https://hackage.haskell.org/package/base-4.20.0.1/docs/System-Exit.html>
 
 -}
 
+import Eco.Process
 import Task exposing (Task)
-import Utils.Impure as Impure
+import Utils.Crash exposing (crash)
 
 
 {-| Exit code representing success (0) or failure (non-zero integer).
@@ -39,19 +40,17 @@ type ExitCode
 exitWith : ExitCode -> Task Never a
 exitWith exitCode =
     let
-        code : Int
-        code =
+        ecoExitCode : Eco.Process.ExitCode
+        ecoExitCode =
             case exitCode of
                 ExitSuccess ->
-                    0
+                    Eco.Process.ExitSuccess
 
                 ExitFailure int ->
-                    int
+                    Eco.Process.ExitFailure int
     in
-    Impure.task "exitWith"
-        []
-        (Impure.StringBody (String.fromInt code))
-        Impure.Crash
+    Eco.Process.exit ecoExitCode
+        |> Task.map (\_ -> crash "exitWith: process should have exited")
 
 
 {-| Exit the program with exit code 1, indicating failure.

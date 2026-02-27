@@ -4,7 +4,6 @@ module Compiler.Json.Encode exposing
     , array, list, object, dict
     , encodeUgly
     , write, writeUgly
-    , toJsonValue
     )
 
 {-| JSON encoding utilities for the Elm compiler.
@@ -45,12 +44,9 @@ as well as pretty-printed and compact JSON output.
 
 # Conversion
 
-@docs toJsonValue
-
 -}
 
 import Data.Map as Dict exposing (Dict)
-import Json.Encode as Encode
 import System.IO as IO
 import Task exposing (Task)
 
@@ -333,27 +329,3 @@ encodeField indent ( key, value ) =
 
 
 -- ====== JSON VALUE ======
-
-
-{-| Convert the compiler's custom Value type to the standard Json.Encode.Value type.
--}
-toJsonValue : Value -> Encode.Value
-toJsonValue value =
-    case value of
-        Array arr ->
-            Encode.list toJsonValue arr
-
-        Object obj ->
-            Encode.object (List.map (Tuple.mapSecond toJsonValue) obj)
-
-        StringVal builder ->
-            Encode.string builder
-
-        Boolean boolean ->
-            Encode.bool boolean
-
-        Integer n ->
-            Encode.int n
-
-        Null ->
-            Encode.null

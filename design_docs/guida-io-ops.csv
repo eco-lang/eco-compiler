@@ -60,6 +60,7 @@ putMVar,put,3,no,task,32,yes,atomic,blocks until MVar empty - puts value
 nodeGetDirname,dirname,0,no,task,1,yes,atomic,returns directory of current script/binary
 nodeMathRandom,random,0,no,task,1,yes,atomic,returns random Float from runtime
 putStateT,saveState,1,no,task,1,yes,atomic,persist REPL state to runtime storage
+getStateT,loadState,0,no,task,1,yes,atomic,load REPL state from runtime storage
 
 # =============================================================================
 # COMPOUND FILE - Built from atomic file ops + pure functions

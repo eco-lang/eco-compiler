@@ -222,7 +222,6 @@
         "Terminal.Install",
         "Terminal.Main",
         "Terminal.Make",
-        "Terminal.Publish",
         "Terminal.Repl",
         "Terminal.Terminal",
         "Terminal.Terminal.Chomp",
@@ -235,7 +234,6 @@
         "Utils.Bytes.Decode",
         "Utils.Bytes.Encode",
         "Utils.Crash",
-        "Utils.Impure",
         "Utils.Main",
         "Utils.Task.Extra"
     ]

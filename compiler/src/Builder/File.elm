@@ -42,12 +42,13 @@ tracking, and package extraction.
 import Bytes.Decode
 import Bytes.Encode
 import Codec.Archive.Zip as Zip
+import Eco.Console
+import Eco.File
 import System.IO as IO
 import Task exposing (Task)
 import Time
 import Utils.Bytes.Decode as BD
 import Utils.Bytes.Encode as BE
-import Utils.Impure as Impure
 import Utils.Main as Utils exposing (FilePath)
 
 
@@ -147,14 +148,14 @@ writeUtf8 =
 -}
 readUtf8 : FilePath -> Task Never String
 readUtf8 path =
-    Impure.task "read" [] (Impure.StringBody path) (Impure.StringResolver identity)
+    Eco.File.readString path
 
 
 {-| Reads all input from stdin as a string.
 -}
 readStdin : Task Never String
 readStdin =
-    Impure.task "readStdin" [] Impure.EmptyBody (Impure.StringResolver identity)
+    Eco.Console.readAll
 
 
 

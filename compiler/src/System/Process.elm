@@ -24,12 +24,10 @@ Ref.: <https://hackage.haskell.org/package/process-1.6.25.0/docs/System-Process.
 
 -}
 
-import Json.Decode as Decode
-import Json.Encode as Encode
+import Eco.Process
 import System.Exit as Exit
 import System.IO as IO
 import Task exposing (Task)
-import Utils.Impure as Impure
 
 
 {-| Specification of a command to execute, with the executable and its arguments.
@@ -76,55 +74,33 @@ proc cmd args =
 -}
 withCreateProcess : CreateProcess -> (Maybe IO.Handle -> Maybe IO.Handle -> Maybe IO.Handle -> ProcessHandle -> Task Never Exit.ExitCode) -> Task Never Exit.ExitCode
 withCreateProcess createProcess f =
-    Impure.task "withCreateProcess"
-        []
-        (Impure.JsonBody
-            (Encode.object
-                [ ( "cmdspec"
-                  , case createProcess.cmdspec of
-                        RawCommand cmd args ->
-                            Encode.object
-                                [ ( "type", Encode.string "RawCommand" )
-                                , ( "cmd", Encode.string cmd )
-                                , ( "args", Encode.list Encode.string args )
-                                ]
-                  )
-                , ( "stdin"
-                  , case createProcess.std_in of
-                        Inherit ->
-                            Encode.string "inherit"
+    let
+        ( cmd, cmdArgs ) =
+            case createProcess.cmdspec of
+                RawCommand c a ->
+                    ( c, a )
 
-                        CreatePipe ->
-                            Encode.string "pipe"
-                  )
-                , ( "stdout"
-                  , case createProcess.std_out of
-                        Inherit ->
-                            Encode.string "inherit"
+        toEcoStream stdStream =
+            case stdStream of
+                Inherit ->
+                    Eco.Process.Inherit
 
-                        CreatePipe ->
-                            Encode.string "pipe"
-                  )
-                , ( "stderr"
-                  , case createProcess.std_err of
-                        Inherit ->
-                            Encode.string "inherit"
-
-                        CreatePipe ->
-                            Encode.string "pipe"
-                  )
-                ]
-            )
-        )
-        (Impure.DecoderResolver
-            (Decode.map2 Tuple.pair
-                (Decode.field "stdinHandle" (Decode.maybe Decode.int))
-                (Decode.field "ph" Decode.int)
-            )
-        )
+                CreatePipe ->
+                    Eco.Process.CreatePipe
+    in
+    Eco.Process.spawnProcess
+        { cmd = cmd
+        , args = cmdArgs
+        , stdin = toEcoStream createProcess.std_in
+        , stdout = toEcoStream createProcess.std_out
+        , stderr = toEcoStream createProcess.std_err
+        }
         |> Task.andThen
-            (\( stdinHandle, ph ) ->
-                f (Maybe.map IO.Handle stdinHandle) Nothing Nothing (ProcessHandle ph)
+            (\result ->
+                f (Maybe.map IO.Handle result.stdinHandle)
+                    Nothing
+                    Nothing
+                    (ProcessHandle (unwrapProcessHandle result.processHandle))
             )
 
 
@@ -132,18 +108,18 @@ withCreateProcess createProcess f =
 -}
 waitForProcess : ProcessHandle -> Task Never Exit.ExitCode
 waitForProcess (ProcessHandle ph) =
-    Impure.task "waitForProcess"
-        []
-        (Impure.StringBody (String.fromInt ph))
-        (Impure.DecoderResolver
-            (Decode.map
-                (\int ->
-                    if int == 0 then
+    Eco.Process.wait (Eco.Process.ProcessHandle ph)
+        |> Task.map
+            (\exitCode ->
+                case exitCode of
+                    Eco.Process.ExitSuccess ->
                         Exit.ExitSuccess
 
-                    else
-                        Exit.ExitFailure int
-                )
-                Decode.int
+                    Eco.Process.ExitFailure n ->
+                        Exit.ExitFailure n
             )
-        )
+
+
+unwrapProcessHandle : Eco.Process.ProcessHandle -> Int
+unwrapProcessHandle (Eco.Process.ProcessHandle ph) =
+    ph

@@ -3,7 +3,7 @@ module Builder.Stuff exposing
     , PackageCache, getPackageCache, getReplCache, package, registry
     , typedPackageArtifacts, packageCacheEncoder, packageCacheDecoder
     , eci, eco, ecot
-    , prepublishDir, testDir
+    , testDir
     , withRootLock, withRootLockBuildDir, withRegistryLock
     , detailsWithBuildDir, eciWithBuildDir, ecoWithBuildDir
     , ecotWithBuildDir, interfacesWithBuildDir, objectsWithBuildDir, typedObjectsWithBuildDir
@@ -35,7 +35,7 @@ managing file locks.
 
 # Special Directories
 
-@docs prepublishDir, testDir
+@docs testDir
 
 
 # File Locking
@@ -109,13 +109,6 @@ objectsWithBuildDir root maybeBuildDir =
 typedObjectsWithBuildDir : String -> Maybe String -> String
 typedObjectsWithBuildDir root maybeBuildDir =
     stuffWithBuildDir root maybeBuildDir ++ "/to.dat"
-
-
-{-| Returns the path to the prepublish staging directory for a package.
--}
-prepublishDir : String -> String
-prepublishDir root =
-    stuff root ++ "/prepublish"
 
 
 {-| Returns the path to the test output directory.

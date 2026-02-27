@@ -4,16 +4,16 @@ module Utils.Main exposing
     , fpPathSeparator, fpIsRelative, fpTakeFileName, fpTakeExtension, fpTakeDirectory
     , dirDoesFileExist, dirDoesDirectoryExist, dirFindExecutable, dirCreateDirectoryIfMissing
     , dirGetCurrentDirectory, dirGetAppUserDataDirectory, dirGetModificationTime, dirListDirectory
-    , dirRemoveFile, dirRemoveDirectoryRecursive, dirCanonicalizePath, dirWithCurrentDirectory
+    , dirRemoveFile, dirCanonicalizePath, dirWithCurrentDirectory
     , envLookupEnv, envGetProgName, envGetArgs
     , LockSharedExclusive(..), lockWithFileLock
     , binaryDecodeFileOrFail, binaryEncodeFile, builderHPutBuilder
     , HttpExceptionContent(..), HttpResponse(..), HttpResponseHeaders, HttpStatus(..)
-    , httpResponseStatus, httpStatusCode, httpResponseHeaders, httpHLocation
+    , httpResponseStatus, httpResponseHeaders, httpHLocation
     , httpExceptionContentEncoder, httpExceptionContentDecoder
     , SomeException(..)
     , someExceptionEncoder, someExceptionDecoder
-    , ThreadId, forkIO, bracket_
+    , ThreadId, forkIO
     , MVar(..), newMVar, newEmptyMVar, readMVar, takeMVar, putMVar
     , mVarEncoder, mVarDecoder
     , Chan, ChItem, newChan, readChan, writeChan
@@ -34,9 +34,10 @@ module Utils.Main exposing
     , foldM
     )
 
-{-| Comprehensive utility module providing cross-platform system operations, data structure utilities,
-and interoperability with the underlying runtime environment. This module serves as the compiler's
-primary interface to system resources and provides Haskell-like abstractions adapted for Elm.
+{-| Utility module providing data structure utilities, HTTP types, and pure helper functions.
+
+IO operations are now also available in System.IO. This module re-exports them
+for backward compatibility. New code should use System.IO directly.
 
 
 # File Path Operations
@@ -50,7 +51,7 @@ primary interface to system resources and provides Haskell-like abstractions ada
 
 @docs dirDoesFileExist, dirDoesDirectoryExist, dirFindExecutable, dirCreateDirectoryIfMissing
 @docs dirGetCurrentDirectory, dirGetAppUserDataDirectory, dirGetModificationTime, dirListDirectory
-@docs dirRemoveFile, dirRemoveDirectoryRecursive, dirCanonicalizePath, dirWithCurrentDirectory
+@docs dirRemoveFile, dirCanonicalizePath, dirWithCurrentDirectory
 
 
 # Environment Operations
@@ -71,7 +72,7 @@ primary interface to system resources and provides Haskell-like abstractions ada
 # HTTP Types and Operations
 
 @docs HttpExceptionContent, HttpResponse, HttpResponseHeaders, HttpStatus
-@docs httpResponseStatus, httpStatusCode, httpResponseHeaders, httpHLocation
+@docs httpResponseStatus, httpResponseHeaders, httpHLocation
 @docs httpExceptionContentEncoder, httpExceptionContentDecoder
 
 
@@ -83,7 +84,7 @@ primary interface to system resources and provides Haskell-like abstractions ada
 
 # Concurrency Primitives
 
-@docs ThreadId, forkIO, bracket_
+@docs ThreadId, forkIO
 
 
 # MVar Operations
@@ -157,9 +158,11 @@ import Compiler.Reporting.Result as ReportingResult
 import Control.Monad.State.Strict as State
 import Data.Map as Map exposing (Dict)
 import Data.Set as EverySet exposing (EverySet)
-import Http
-import Json.Decode as Decode
-import Json.Encode as Encode
+import Eco.Console
+import Eco.Env
+import Eco.File
+import Eco.MVar
+import Eco.Runtime
 import Maybe.Extra as Maybe
 import Prelude
 import Process
@@ -170,7 +173,6 @@ import Time
 import Utils.Bytes.Decode as BD
 import Utils.Bytes.Encode as BE
 import Utils.Crash exposing (crash)
-import Utils.Impure as Impure
 import Utils.Task.Extra as Task
 
 
@@ -881,18 +883,12 @@ lockWithFileLock path mode ioFunc =
 
 lockFile : FilePath -> Task Never ()
 lockFile path =
-    Impure.task "lockFile"
-        []
-        (Impure.StringBody path)
-        (Impure.Always ())
+    Eco.File.lock path
 
 
 unlockFile : FilePath -> Task Never ()
 unlockFile path =
-    Impure.task "unlockFile"
-        []
-        (Impure.StringBody path)
-        (Impure.Always ())
+    Eco.File.unlock path
 
 
 
@@ -903,106 +899,63 @@ unlockFile path =
 -}
 dirDoesFileExist : FilePath -> Task Never Bool
 dirDoesFileExist filename =
-    Impure.task "dirDoesFileExist"
-        []
-        (Impure.StringBody filename)
-        (Impure.DecoderResolver Decode.bool)
+    Eco.File.fileExists filename
 
 
 {-| Search for an executable in the system PATH, returning its full path if found.
 -}
 dirFindExecutable : FilePath -> Task Never (Maybe FilePath)
 dirFindExecutable filename =
-    Impure.task "dirFindExecutable"
-        []
-        (Impure.StringBody filename)
-        (Impure.DecoderResolver (Decode.maybe Decode.string))
+    Eco.File.findExecutable filename
 
 
 {-| Create a directory if it doesn't exist, optionally creating parent directories.
 -}
 dirCreateDirectoryIfMissing : Bool -> FilePath -> Task Never ()
 dirCreateDirectoryIfMissing createParents filename =
-    Impure.task "dirCreateDirectoryIfMissing"
-        []
-        (Impure.JsonBody
-            (Encode.object
-                [ ( "createParents", Encode.bool createParents )
-                , ( "filename", Encode.string filename )
-                ]
-            )
-        )
-        (Impure.Always ())
+    Eco.File.createDir createParents filename
 
 
 {-| Get the current working directory.
 -}
 dirGetCurrentDirectory : Task Never String
 dirGetCurrentDirectory =
-    Impure.task "dirGetCurrentDirectory"
-        []
-        Impure.EmptyBody
-        (Impure.StringResolver identity)
+    Eco.File.getCwd
 
 
 {-| Get the application-specific user data directory for the given application name.
 -}
 dirGetAppUserDataDirectory : FilePath -> Task Never FilePath
 dirGetAppUserDataDirectory filename =
-    Impure.task "dirGetAppUserDataDirectory"
-        []
-        (Impure.StringBody filename)
-        (Impure.StringResolver identity)
+    Eco.File.appDataDir filename
 
 
 {-| Get the last modification time of a file or directory.
 -}
 dirGetModificationTime : FilePath -> Task Never Time.Posix
 dirGetModificationTime filename =
-    Impure.task "dirGetModificationTime"
-        []
-        (Impure.StringBody filename)
-        (Impure.DecoderResolver (Decode.map Time.millisToPosix Decode.int))
+    Eco.File.modificationTime filename
 
 
 {-| Remove a file at the given path.
 -}
 dirRemoveFile : FilePath -> Task Never ()
 dirRemoveFile path =
-    Impure.task "dirRemoveFile"
-        []
-        (Impure.StringBody path)
-        (Impure.Always ())
-
-
-{-| Remove a directory and all its contents recursively.
--}
-dirRemoveDirectoryRecursive : FilePath -> Task Never ()
-dirRemoveDirectoryRecursive path =
-    Impure.task "dirRemoveDirectoryRecursive"
-        []
-        (Impure.StringBody path)
-        (Impure.Always ())
+    Eco.File.removeFile path
 
 
 {-| Check if a directory exists at the given path.
 -}
 dirDoesDirectoryExist : FilePath -> Task Never Bool
 dirDoesDirectoryExist path =
-    Impure.task "dirDoesDirectoryExist"
-        []
-        (Impure.StringBody path)
-        (Impure.DecoderResolver Decode.bool)
+    Eco.File.dirExists path
 
 
 {-| Convert a path to its canonical form, resolving symbolic links and removing redundant components.
 -}
 dirCanonicalizePath : FilePath -> Task Never FilePath
 dirCanonicalizePath path =
-    Impure.task "dirCanonicalizePath"
-        []
-        (Impure.StringBody path)
-        (Impure.StringResolver identity)
+    Eco.File.canonicalize path
 
 
 {-| Run an action with a temporarily changed current directory, restoring the original directory afterward.
@@ -1013,16 +966,8 @@ dirWithCurrentDirectory dir action =
         |> Task.andThen
             (\currentDir ->
                 bracket_
-                    (Impure.task "dirWithCurrentDirectory"
-                        []
-                        (Impure.StringBody dir)
-                        (Impure.Always ())
-                    )
-                    (Impure.task "dirWithCurrentDirectory"
-                        []
-                        (Impure.StringBody currentDir)
-                        (Impure.Always ())
-                    )
+                    (Eco.File.setCwd dir)
+                    (Eco.File.setCwd currentDir)
                     action
             )
 
@@ -1031,10 +976,7 @@ dirWithCurrentDirectory dir action =
 -}
 dirListDirectory : FilePath -> Task Never (List FilePath)
 dirListDirectory path =
-    Impure.task "dirListDirectory"
-        []
-        (Impure.StringBody path)
-        (Impure.DecoderResolver (Decode.list Decode.string))
+    Eco.File.list path
 
 
 
@@ -1045,10 +987,7 @@ dirListDirectory path =
 -}
 envLookupEnv : String -> Task Never (Maybe String)
 envLookupEnv name =
-    Impure.task "envLookupEnv"
-        []
-        (Impure.StringBody name)
-        (Impure.DecoderResolver (Decode.maybe Decode.string))
+    Eco.Env.lookup name
 
 
 {-| Get the program name (hardcoded as "eco" in this implementation).
@@ -1062,10 +1001,7 @@ envGetProgName =
 -}
 envGetArgs : Task Never (List String)
 envGetArgs =
-    Impure.task "envGetArgs"
-        []
-        Impure.EmptyBody
-        (Impure.DecoderResolver (Decode.list Decode.string))
+    Eco.Env.rawArgs
 
 
 
@@ -1101,13 +1037,6 @@ type alias HttpResponseHeaders =
 httpResponseStatus : HttpResponse body -> HttpStatus
 httpResponseStatus (HttpResponse { responseStatus }) =
     responseStatus
-
-
-{-| Extract the numeric status code from an HTTP status.
--}
-httpStatusCode : HttpStatus -> Int
-httpStatusCode (HttpStatus statusCode _) =
-    statusCode
 
 
 {-| Extract the headers from an HTTP response.
@@ -1206,10 +1135,7 @@ newMVar toEncoder value =
 -}
 readMVar : Bytes.Decode.Decoder a -> MVar a -> Task Never a
 readMVar decoder (MVar ref) =
-    Impure.task "readMVar"
-        []
-        (Impure.StringBody (String.fromInt ref))
-        (Impure.BytesResolver decoder)
+    Eco.MVar.read decoder (Eco.MVar.MVar ref)
 
 
 modifyMVar : Bytes.Decode.Decoder a -> (a -> Bytes.Encode.Encoder) -> MVar a -> (a -> Task Never ( a, b )) -> Task Never b
@@ -1227,30 +1153,21 @@ modifyMVar decoder toEncoder m io =
 -}
 takeMVar : Bytes.Decode.Decoder a -> MVar a -> Task Never a
 takeMVar decoder (MVar ref) =
-    Impure.task "takeMVar"
-        []
-        (Impure.StringBody (String.fromInt ref))
-        (Impure.BytesResolver decoder)
+    Eco.MVar.take decoder (Eco.MVar.MVar ref)
 
 
 {-| Put a value into an MVar, blocking if the MVar is already full.
 -}
 putMVar : (a -> Bytes.Encode.Encoder) -> MVar a -> a -> Task Never ()
 putMVar encoder (MVar ref) value =
-    Impure.task "putMVar"
-        [ Http.header "id" (String.fromInt ref) ]
-        (Impure.BytesBody (encoder value))
-        (Impure.Always ())
+    Eco.MVar.put encoder (Eco.MVar.MVar ref) value
 
 
 {-| Create a new empty MVar.
 -}
 newEmptyMVar : Task Never (MVar a)
 newEmptyMVar =
-    Impure.task "newEmptyMVar"
-        []
-        Impure.EmptyBody
-        (Impure.DecoderResolver (Decode.map MVar Decode.int))
+    Eco.MVar.new |> Task.map (\(Eco.MVar.MVar id) -> MVar id)
 
 
 
@@ -1333,7 +1250,7 @@ writeChan toEncoder (Chan _ writeVar) val =
 -}
 builderHPutBuilder : IO.Handle -> String -> Task Never ()
 builderHPutBuilder =
-    IO.hPutStr
+    IO.write
 
 
 
@@ -1344,20 +1261,23 @@ builderHPutBuilder =
 -}
 binaryDecodeFileOrFail : Bytes.Decode.Decoder a -> FilePath -> Task Never (Result ( Int, String ) a)
 binaryDecodeFileOrFail decoder filename =
-    Impure.task "binaryDecodeFileOrFail"
-        []
-        (Impure.StringBody filename)
-        (Impure.BytesResolver (Bytes.Decode.map Ok decoder))
+    Eco.File.readBytes filename
+        |> Task.map
+            (\bytes ->
+                case Bytes.Decode.decode decoder bytes of
+                    Just value ->
+                        Ok value
+
+                    Nothing ->
+                        Err ( 0, "binary decode failed" )
+            )
 
 
 {-| Encode a value to binary and write it to a file.
 -}
 binaryEncodeFile : (a -> Bytes.Encode.Encoder) -> FilePath -> a -> Task Never ()
 binaryEncodeFile toEncoder path value =
-    Impure.task "write"
-        [ Http.header "path" path ]
-        (Impure.BytesBody (toEncoder value))
-        (Impure.Always ())
+    Eco.File.writeBytes path (Bytes.Encode.encode (toEncoder value))
 
 
 
@@ -1394,10 +1314,9 @@ replWithInterrupt =
 -}
 replGetInputLine : String -> ReplInputT (Maybe String)
 replGetInputLine prompt =
-    Impure.task "replGetInputLine"
-        []
-        (Impure.StringBody prompt)
-        (Impure.DecoderResolver (Decode.maybe Decode.string))
+    Eco.Console.write Eco.Console.stdout prompt
+        |> Task.andThen (\_ -> Eco.Console.readLine)
+        |> Task.map Just
 
 
 {-| Read a line of input with initial text on the left and right of the cursor.
@@ -1415,20 +1334,14 @@ replGetInputLineWithInitial prompt ( left, right ) =
 -}
 nodeGetDirname : Task Never String
 nodeGetDirname =
-    Impure.task "nodeGetDirname"
-        []
-        Impure.EmptyBody
-        (Impure.StringResolver identity)
+    Eco.Runtime.dirname
 
 
 {-| Generate a random float between 0 and 1 using Node.js Math.random().
 -}
 nodeMathRandom : Task Never Float
 nodeMathRandom =
-    Impure.task "nodeMathRandom"
-        []
-        Impure.EmptyBody
-        (Impure.DecoderResolver Decode.float)
+    Eco.Runtime.random
 
 
 

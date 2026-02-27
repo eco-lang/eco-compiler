@@ -33,10 +33,10 @@ strictly, ensuring predictable evaluation order.
 
 -}
 
+import Eco.Runtime
 import Json.Encode as Encode
 import System.IO as IO
 import Task exposing (Task)
-import Utils.Impure as Impure
 
 
 {-| newtype StateT s m a
@@ -73,14 +73,10 @@ liftIO io =
 -}
 put : IO.ReplState -> Task Never ()
 put (IO.ReplState imports types decls) =
-    Impure.task "putStateT"
-        []
-        (Impure.JsonBody
-            (Encode.object
-                [ ( "imports", Encode.dict identity Encode.string imports )
-                , ( "types", Encode.dict identity Encode.string types )
-                , ( "decls", Encode.dict identity Encode.string decls )
-                ]
-            )
+    Eco.Runtime.saveState
+        (Encode.object
+            [ ( "imports", Encode.dict identity Encode.string imports )
+            , ( "types", Encode.dict identity Encode.string types )
+            , ( "decls", Encode.dict identity Encode.string decls )
+            ]
         )
-        (Impure.Always ())

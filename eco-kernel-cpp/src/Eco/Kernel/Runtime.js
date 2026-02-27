@@ -18,3 +18,7 @@ var _Runtime_saveState = function(state) {
         callback(__Scheduler_succeed(0 /* Unit */));
     });
 };
+
+var _Runtime_loadState = __Scheduler_binding(function(callback) {
+    callback(__Scheduler_succeed(_Runtime_replState));
+});

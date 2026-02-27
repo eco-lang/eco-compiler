@@ -2,24 +2,30 @@ module System.IO exposing
     ( Program, Model, Msg, run
     , FilePath, Handle(..)
     , stdout, stderr
-    , withFile, IOMode(..)
-    , hClose
-    , hFileSize
-    , hFlush
-    , hIsTerminalDevice
-    , hPutStr, hPutStrLn
-    , putStr, putStrLn, getLine
-    , ReplState(..), initialReplState
+    , IOMode(..)
     , writeString
+    , LockSharedExclusive(..)
+    , write
+    , MVar(..)
+    , ChItem(..)
+    , ReplState(..), initialReplState
+    , ReplSettings(..)
+    , getLine, hClose, hFlush, hIsTerminalDevice, hPutStr, hPutStrLn, putStr, putStrLn
     )
 
-{-| File I/O operations for the Elm compiler runtime.
+{-| Centralized IO operations for the Elm compiler.
 
-This module provides a portable interface for file and console I/O operations,
-modeled after Haskell's System.IO. It enables the compiler to interact with the
-file system and standard streams through an impure effects system.
+This is the single IO routing layer for the compiler. All IO operations go
+through this module — callers import `System.IO as IO` and call `IO.<name>`.
 
-Ref.: <https://hackage.haskell.org/package/base-4.20.0.1/docs/System-IO.html>
+The implementation delegates to the `Eco.*` modules (Eco.File, Eco.Console,
+Eco.Env, Eco.MVar, Eco.Process, Eco.Runtime) which are backed by either XHR
+(bootstrap build) or kernel calls (native build).
+
+Function names follow the `guida-io-ops.csv` naming conventions.
+
+
+# Program
 
 @docs Program, Model, Msg, run
 
@@ -34,57 +40,59 @@ Ref.: <https://hackage.haskell.org/package/base-4.20.0.1/docs/System-IO.html>
 @docs stdout, stderr
 
 
-# Opening files
+# File operations
 
-@docs withFile, IOMode
+@docs IOMode
+@docs writeString
 
 
-# Closing files
-
-@docs hClose
+# File and directory queries
 
 
 # File locking
 
-@docs hFileSize
+@docs LockSharedExclusive
 
 
-# Buffering operations
+# Console I/O
 
-@docs hFlush
-
-
-# Terminal operations (not portable: GHC only)
-
-@docs hIsTerminalDevice
+@docs write
 
 
-# Text output
-
-@docs hPutStr, hPutStrLn
+# Environment and process
 
 
-# Special cases for standard input and output
+# MVars (concurrency primitives)
 
-@docs putStr, putStrLn, getLine
+@docs MVar
 
 
-# Repl State
+# Channels (built on MVars)
+
+@docs ChItem
+
+
+# Concurrency
+
+
+# Runtime
+
+
+# REPL support
 
 @docs ReplState, initialReplState
-
-
-# Internal helpers
-
-@docs writeString
+@docs ReplSettings
 
 -}
 
 import Dict exposing (Dict)
-import Http
-import Json.Decode as Decode
+import Eco.Console
+import Eco.File
 import Task exposing (Task)
-import Utils.Impure as Impure
+
+
+
+-- ====== PROGRAM ======
 
 
 {-| Type alias for an IO program that runs impure tasks.
@@ -122,21 +130,7 @@ update msg () =
 
 
 
--- Interal helpers
-
-
-{-| Write a string to a file at the given path.
--}
-writeString : FilePath -> String -> Task Never ()
-writeString path content =
-    Impure.task "writeString"
-        [ Http.header "path" path ]
-        (Impure.StringBody content)
-        (Impure.Always ())
-
-
-
--- Files and handles
+-- ====== FILES AND HANDLES ======
 
 
 {-| Type alias for file paths represented as strings.
@@ -149,10 +143,6 @@ type alias FilePath =
 -}
 type Handle
     = Handle Int
-
-
-
--- Standard handles
 
 
 {-| Handle to the standard output stream.
@@ -170,23 +160,7 @@ stderr =
 
 
 
--- Opening files
-
-
-{-| Open a file with the specified mode, pass the handle to a callback, and automatically close it afterward.
--}
-withFile : String -> IOMode -> (Handle -> Task Never a) -> Task Never a
-withFile path mode callback =
-    Impure.task "withFile"
-        [ Http.header "mode"
-            (case mode of
-                ReadMode ->
-                    "r"
-            )
-        ]
-        (Impure.StringBody path)
-        (Impure.DecoderResolver (Decode.map Handle Decode.int))
-        |> Task.andThen callback
+-- ====== FILE OPERATIONS ======
 
 
 {-| File opening mode specifying read, write, append, or read-write access.
@@ -195,111 +169,175 @@ type IOMode
     = ReadMode
 
 
-
--- Closing files
-
-
 {-| Close an open file handle.
 -}
-hClose : Handle -> Task Never ()
-hClose (Handle handle) =
-    Impure.task "hClose" [] (Impure.StringBody (String.fromInt handle)) (Impure.Always ())
+close : Handle -> Task Never ()
+close (Handle handle) =
+    Eco.File.close (Eco.File.Handle handle)
 
 
-
--- File locking
-
-
-{-| Get the size in bytes of the file associated with the handle.
+{-| Write a UTF-8 string to a file.
 -}
-hFileSize : Handle -> Task Never Int
-hFileSize (Handle handle) =
-    Impure.task "hFileSize"
-        []
-        (Impure.StringBody (String.fromInt handle))
-        (Impure.DecoderResolver Decode.int)
+writeString : FilePath -> String -> Task Never ()
+writeString path content =
+    Eco.File.writeString path content
 
 
 
--- Buffering operations
+-- ====== FILE AND DIRECTORY QUERIES ======
+-- ====== FILE LOCKING ======
 
 
-{-| Flush any buffered output on the handle (currently a no-op).
+{-| Lock mode. Currently only exclusive is supported.
 -}
-hFlush : Handle -> Task Never ()
-hFlush _ =
-    Task.succeed ()
+type LockSharedExclusive
+    = LockExclusive
 
 
 
--- Terminal operations (not portable: GHC only)
-
-
-{-| Check if the handle is connected to a terminal device (currently always returns True).
--}
-hIsTerminalDevice : Handle -> Task Never Bool
-hIsTerminalDevice _ =
-    Task.succeed True
-
-
-
--- Text output
+-- ====== CONSOLE I/O ======
 
 
 {-| Write a string to the specified handle without adding a newline.
 -}
-hPutStr : Handle -> String -> Task Never ()
-hPutStr (Handle fd) content =
-    Impure.task "hPutStr"
-        [ Http.header "fd" (String.fromInt fd) ]
-        (Impure.StringBody content)
-        (Impure.Always ())
+write : Handle -> String -> Task Never ()
+write (Handle fd) content =
+    Eco.Console.write (Eco.Console.Handle fd) content
 
 
 {-| Write a string to the specified handle followed by a newline.
 -}
-hPutStrLn : Handle -> String -> Task Never ()
-hPutStrLn handle content =
-    hPutStr handle (content ++ "\n")
-
-
-
--- Special cases for standard input and output
+writeLn : Handle -> String -> Task Never ()
+writeLn handle content =
+    write handle (content ++ "\n")
 
 
 {-| Write a string to stdout without adding a newline.
 -}
-putStr : String -> Task Never ()
-putStr =
-    hPutStr stdout
+print : String -> Task Never ()
+print =
+    write stdout
 
 
 {-| Write a string to stdout followed by a newline.
 -}
-putStrLn : String -> Task Never ()
-putStrLn s =
-    putStr (s ++ "\n")
+printLn : String -> Task Never ()
+printLn s =
+    print (s ++ "\n")
 
 
 {-| Read a line of input from stdin.
 -}
-getLine : Task Never String
-getLine =
-    Impure.task "getLine" [] Impure.EmptyBody (Impure.StringResolver identity)
+readLine : Task Never String
+readLine =
+    Eco.Console.readLine
+
+
+{-| Flush any buffered output on the handle (currently a no-op).
+-}
+flush : Handle -> Task Never ()
+flush _ =
+    Task.succeed ()
+
+
+{-| Check if the handle is connected to a terminal (currently always True).
+-}
+isTerminal : Handle -> Task Never Bool
+isTerminal _ =
+    Task.succeed True
 
 
 
--- Repl State (Terminal.Repl)
+-- ====== ENVIRONMENT AND PROCESS ======
+-- ====== MVARS ======
 
 
-{-| State maintained by the REPL, containing three dictionaries for tracking REPL session data.
+{-| A mutable variable for communication between threads, identified by an integer reference.
+-}
+type MVar a
+    = MVar Int
+
+
+
+-- ====== CHANNELS ======
+
+
+{-| An item in a channel stream.
+-}
+type ChItem a
+    = ChItem a (Stream a)
+
+
+type alias Stream a =
+    MVar (ChItem a)
+
+
+
+-- ====== CONCURRENCY ======
+-- ====== RUNTIME ======
+-- ====== REPL STATE ======
+
+
+{-| State maintained by the REPL.
 -}
 type ReplState
     = ReplState (Dict String String) (Dict String String) (Dict String String)
 
 
-{-| Initial empty REPL state with empty dictionaries.
+{-| Initial empty REPL state.
 -}
 initialReplState : ReplState
 initialReplState =
     ReplState Dict.empty Dict.empty Dict.empty
+
+
+{-| REPL settings type (no-op placeholder).
+-}
+type ReplSettings
+    = ReplSettings
+
+
+
+-- ====== BACKWARD-COMPATIBLE ALIASES ======
+-- These aliases preserve the old Haskell-style names used throughout the
+-- compiler. New code should use the renamed functions above.
+
+
+hPutStr : Handle -> String -> Task Never ()
+hPutStr =
+    write
+
+
+hPutStrLn : Handle -> String -> Task Never ()
+hPutStrLn =
+    writeLn
+
+
+putStr : String -> Task Never ()
+putStr =
+    print
+
+
+putStrLn : String -> Task Never ()
+putStrLn =
+    printLn
+
+
+getLine : Task Never String
+getLine =
+    readLine
+
+
+hClose : Handle -> Task Never ()
+hClose =
+    close
+
+
+hFlush : Handle -> Task Never ()
+hFlush =
+    flush
+
+
+hIsTerminalDevice : Handle -> Task Never Bool
+hIsTerminalDevice =
+    isTerminal

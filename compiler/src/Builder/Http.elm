@@ -1,52 +1,19 @@
 module Builder.Http exposing
     ( Manager, getManager, managerEncoder, managerDecoder
-    , get, post, upload
+    , get, post
     , toUrl
-    , Header, accept
+    , Header
     , getArchive, Sha, shaToChars
-    , MultiPart, filePart, jsonPart, stringPart
     , Error(..), errorEncoder, errorDecoder
     )
 
-{-| HTTP client utilities for package downloads and uploads.
-
-This module provides a high-level HTTP interface for the Elm package manager,
-handling package downloads, archive fetching with SHA verification, and
-multipart uploads for package publishing.
-
-
-# HTTP Manager
+{-| HTTP client utilities for the Elm package manager.
 
 @docs Manager, getManager, managerEncoder, managerDecoder
-
-
-# Making Requests
-
-@docs get, post, upload
-
-
-# URL Construction
-
+@docs get, post
 @docs toUrl
-
-
-# Headers
-
-@docs Header, accept
-
-
-# Archive Downloads
-
+@docs Header
 @docs getArchive, Sha, shaToChars
-
-
-# Multipart Uploads
-
-@docs MultiPart, filePart, jsonPart, stringPart
-
-
-# Error Handling
-
 @docs Error, errorEncoder, errorDecoder
 
 -}
@@ -56,14 +23,11 @@ import Bytes.Decode
 import Bytes.Encode
 import Codec.Archive.Zip as Zip
 import Compiler.Elm.Version as V
-import Http
-import Json.Decode as Decode
-import Json.Encode as Encode
+import Eco.Http
 import Task exposing (Task)
 import Url.Builder
 import Utils.Bytes.Decode as BD
 import Utils.Bytes.Encode as BE
-import Utils.Impure as Impure
 import Utils.Main as Utils exposing (SomeException)
 
 
@@ -155,13 +119,31 @@ post =
 
 
 fetch : String -> Manager -> String -> List Header -> (Error -> e) -> (String -> Task Never (Result e a)) -> Task Never (Result e a)
-fetch method _ url headers _ onSuccess =
-    Impure.customTask method
-        url
-        (List.map (\( a, b ) -> Http.header a b) (addDefaultHeaders headers))
-        Impure.EmptyBody
-        (Impure.StringResolver identity)
-        |> Task.andThen onSuccess
+fetch method _ url headers onError onSuccess =
+    Eco.Http.fetch method url (addDefaultHeaders headers)
+        |> Task.andThen
+            (\result ->
+                case result of
+                    Ok body ->
+                        onSuccess body
+
+                    Err { statusCode, statusText } ->
+                        Task.succeed
+                            (Err
+                                (onError
+                                    (BadHttp url
+                                        (Utils.StatusCodeException
+                                            (Utils.HttpResponse
+                                                { responseStatus = Utils.HttpStatus statusCode statusText
+                                                , responseHeaders = []
+                                                }
+                                            )
+                                            ""
+                                        )
+                                    )
+                                )
+                            )
+            )
 
 
 addDefaultHeaders : List Header -> List Header
@@ -172,13 +154,6 @@ addDefaultHeaders headers =
 userAgent : String
 userAgent =
     "elm/" ++ V.toChars V.compiler
-
-
-{-| Creates an Accept header with the given MIME type.
--}
-accept : String -> Header
-accept mime =
-    ( "Accept", mime )
 
 
 
@@ -217,101 +192,20 @@ shaToChars =
 {-| Downloads a package archive from a URL, returning the SHA hash and archive contents.
 -}
 getArchive : Manager -> String -> (Error -> e) -> e -> (( Sha, Zip.Archive ) -> Task Never (Result e a)) -> Task Never (Result e a)
-getArchive _ url _ _ onSuccess =
-    Impure.task "getArchive"
-        []
-        (Impure.StringBody url)
-        (Impure.DecoderResolver
-            (Decode.map2 Tuple.pair
-                (Decode.field "sha" Decode.string)
-                (Decode.field "archive"
-                    (Decode.list
-                        (Decode.map2 Zip.Entry
-                            (Decode.field "eRelativePath" Decode.string)
-                            (Decode.field "eData" Decode.string)
-                        )
-                    )
-                )
+getArchive _ url onError defaultError onSuccess =
+    Eco.Http.getArchive url
+        |> Task.andThen
+            (\result ->
+                case result of
+                    Ok { sha, archive } ->
+                        onSuccess
+                            ( sha
+                            , List.map (\entry -> Zip.Entry entry.relativePath entry.data) archive
+                            )
+
+                    Err _ ->
+                        Task.succeed (Err defaultError)
             )
-        )
-        |> Task.andThen onSuccess
-
-
-
--- ====== UPLOAD ======
-
-
-{-| Represents parts of a multipart form upload.
--}
-type MultiPart
-    = FilePart String String
-    | JsonPart String String Encode.Value
-    | StringPart String String
-
-
-{-| Uploads multipart form data to a URL.
--}
-upload : Manager -> String -> List MultiPart -> Task Never (Result Error ())
-upload _ url parts =
-    Impure.task "httpUpload"
-        []
-        (Impure.JsonBody
-            (Encode.object
-                [ ( "urlStr", Encode.string url )
-                , ( "headers", Encode.object (List.map (Tuple.mapSecond Encode.string) (addDefaultHeaders [])) )
-                , ( "parts"
-                  , Encode.list
-                        (\part ->
-                            case part of
-                                FilePart name filePath ->
-                                    Encode.object
-                                        [ ( "type", Encode.string "FilePart" )
-                                        , ( "name", Encode.string name )
-                                        , ( "filePath", Encode.string filePath )
-                                        ]
-
-                                JsonPart name filePath value ->
-                                    Encode.object
-                                        [ ( "type", Encode.string "JsonPart" )
-                                        , ( "name", Encode.string name )
-                                        , ( "filePath", Encode.string filePath )
-                                        , ( "value", value )
-                                        ]
-
-                                StringPart name string ->
-                                    Encode.object
-                                        [ ( "type", Encode.string "StringPart" )
-                                        , ( "name", Encode.string name )
-                                        , ( "string", Encode.string string )
-                                        ]
-                        )
-                        parts
-                  )
-                ]
-            )
-        )
-        (Impure.Always (Ok ()))
-
-
-{-| Creates a file part for multipart upload with a field name and file path.
--}
-filePart : String -> String -> MultiPart
-filePart name filePath =
-    FilePart name filePath
-
-
-{-| Creates a JSON part for multipart upload with a field name, file path, and JSON value.
--}
-jsonPart : String -> String -> Encode.Value -> MultiPart
-jsonPart name filePath value =
-    JsonPart name filePath value
-
-
-{-| Creates a string part for multipart upload with a field name and string value.
--}
-stringPart : String -> String -> MultiPart
-stringPart name string =
-    StringPart name string
 
 
 

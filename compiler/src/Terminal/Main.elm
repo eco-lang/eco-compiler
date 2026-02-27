@@ -15,6 +15,7 @@ a unified interface for users interacting with the compiler through the terminal
 
 import Compiler.Elm.Version as V
 import Compiler.Reporting.Doc as D
+import System.Exit as Exit
 import System.IO as IO
 import Task exposing (Task)
 import Terminal.Bump as Bump
@@ -23,7 +24,6 @@ import Terminal.Format as Format
 import Terminal.Init as Init
 import Terminal.Install as Install
 import Terminal.Make as Make
-import Terminal.Publish as Publish
 import Terminal.Repl as Repl
 import Terminal.Terminal as Terminal
 import Terminal.Terminal.Chomp as Chomp
@@ -31,7 +31,6 @@ import Terminal.Terminal.Helpers as Terminal
 import Terminal.Terminal.Internal as Terminal
 import Terminal.Test as Test
 import Terminal.Uninstall as Uninstall
-import Utils.Impure as Impure
 
 
 {-| The main entry point for the Eco compiler CLI application.
@@ -40,13 +39,7 @@ main : IO.Program
 main =
     IO.run
         (app
-            |> Task.andThen
-                (\() ->
-                    Impure.task "exitWith"
-                        []
-                        (Impure.StringBody "0")
-                        Impure.Crash
-                )
+            |> Task.andThen (\() -> Exit.exitSuccess)
         )
 
 
@@ -61,7 +54,6 @@ app =
         , uninstall
         , bump
         , diff
-        , publish
         , format
         , test
         ]
@@ -471,61 +463,6 @@ uninstall =
         }
 
 
-
--- ====== PUBLISH ======
-
-
-publish : Terminal.Command
-publish =
-    let
-        details : String
-        details =
-            "The `publish` command publishes your package on <https://package.elm-lang.org> "
-                ++ "so that anyone in the Elm community can use it."
-
-        example : D.Doc
-        example =
-            stack
-                [ reflow
-                    "Think hard if you are ready to publish NEW packages though!"
-                , reflow <|
-                    "Part of what makes Elm great is the packages ecosystem. The fact that there is usually one option "
-                        ++ "(usually very well done) makes it way easier to pick packages and become productive. "
-                        ++ "So having a million packages would be a failure in Elm. We do not need twenty of everything, "
-                        ++ "all coded in a single weekend."
-                , reflow <|
-                    "So as community members gain wisdom through experience, we want them to share that through thoughtful API design "
-                        ++ "and excellent documentation. It is more about sharing ideas and insights than just sharing code! "
-                        ++ "The first step may be asking for advice from people you respect, or in community forums. "
-                        ++ "The second step may be using it at work to see if it is as nice as you think. Maybe it ends up "
-                        ++ "as an experiment on GitHub only. Point is, try to be respectful of the community and package ecosystem!"
-                , reflow
-                    "Check out <https://package.elm-lang.org/help/design-guidelines> for guidance on how to create great packages!"
-                ]
-    in
-    Terminal.Command
-        { name = "publish"
-        , summary = Terminal.Uncommon
-        , details = details
-        , example = example
-        , args = Terminal.noArgs
-        , flags = Terminal.noFlags
-        , run =
-            \chunks ->
-                Chomp.chomp Nothing
-                    chunks
-                    [ Chomp.chompExactly (Chomp.pure ())
-                    ]
-                    (Chomp.pure ()
-                        |> Chomp.andThen
-                            (\value ->
-                                Chomp.checkForUnknownFlags Terminal.noFlags
-                                    |> Chomp.map (\_ -> value)
-                            )
-                    )
-                    |> Tuple.second
-                    |> Result.map (\( args, flags ) -> Publish.run args flags)
-        }
 
 
 

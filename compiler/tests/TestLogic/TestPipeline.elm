@@ -16,7 +16,6 @@ module TestLogic.TestPipeline exposing
     , runToMono
     , runToPostSolve
     , runToTypedOpt
-    , runWithIdsTypeCheck
     )
 
 {-| Unified test pipeline for the Eco compiler.

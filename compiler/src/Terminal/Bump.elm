@@ -159,7 +159,7 @@ bump ((Env envData) as env) =
 
 checkNewPackage : FilePath -> Outline.PkgOutline -> Task Never ()
 checkNewPackage root ((Outline.PkgOutline pkgData) as outline) =
-    IO.putStrLn Exit.newPackageOverview
+    IO.putStrLn "This package has not been published before. Let me verify the version number."
         |> Task.andThen (\_ -> validateNewPackageVersion root outline pkgData.version)
 
 

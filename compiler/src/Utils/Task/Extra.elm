@@ -1,7 +1,7 @@
 module Utils.Task.Extra exposing
     ( run, throw
     , io, mio, eio
-    , void, apply, mapM
+    , apply, mapM
     )
 
 {-| Additional utilities for working with Elm tasks, providing common patterns for error handling
@@ -20,7 +20,7 @@ and task composition.
 
 # Task Combinators
 
-@docs void, apply, mapM
+@docs apply, mapM
 
 -}
 
@@ -99,14 +99,6 @@ eio func work =
 
 
 -- ====== INSTANCES ======
-
-
-{-| Discards the result of a task, replacing it with unit.
-Useful when you need to execute a task for its side effects but don't care about its return value.
--}
-void : Task x a -> Task x ()
-void =
-    Task.map (always ())
 
 
 {-| Applies a task containing a function to a task containing a value.

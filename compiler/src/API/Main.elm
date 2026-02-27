@@ -25,11 +25,13 @@ import Compiler.Parse.Primitives as P
 import Compiler.Reporting.Error as Error
 import Compiler.Reporting.Error.Syntax as E
 import Compiler.Reporting.Render.Code as Code
+import Eco.Console
+import Eco.Env
+import Eco.Process
 import Json.Decode as Decode
 import Json.Encode as Encode
 import System.IO as IO
 import Task exposing (Task)
-import Utils.Impure as Impure
 
 
 {-| Entry point for the Elm compiler API server.
@@ -123,18 +125,38 @@ app =
             )
 
 
-{-| Reads command arguments from the runtime via the impure bridge.
+{-| Reads command arguments from the runtime.
+
+In the library API path (lib/index.js), the getArgs handler returns a JSON
+command object directly. In the CLI path, this would get raw argv, which
+would fail to decode. This is fine since API/Main is only loaded by lib/index.js.
+
 -}
 getArgs : Task Never Args
 getArgs =
-    Impure.task "getArgs" [] Impure.EmptyBody (Impure.DecoderResolver argsDecoder)
+    Eco.Env.rawArgs
+        |> Task.map
+            (\rawArgsList ->
+                case rawArgsList of
+                    jsonArg :: _ ->
+                        case Decode.decodeString argsDecoder jsonArg of
+                            Ok args ->
+                                args
+
+                            Err _ ->
+                                MakeArgs "" False False False
+
+                    [] ->
+                        MakeArgs "" False False False
+            )
 
 
 {-| Exits the process after writing a JSON response to stdout.
 -}
-exitWithResponse : Encode.Value -> Task Never a
+exitWithResponse : Encode.Value -> Task Never ()
 exitWithResponse value =
-    Impure.task "exitWithResponse" [] (Impure.JsonBody value) Impure.Crash
+    Eco.Console.write Eco.Console.stdout (Encode.encode 0 value)
+        |> Task.andThen (\_ -> Eco.Process.exit Eco.Process.ExitSuccess)
 
 
 
