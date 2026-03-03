@@ -27,7 +27,6 @@ Eco compiles Elm to native x86 binaries via MLIR and LLVM. The compiler is writt
 
 The initial release establishing the foundation of the Eco compiler toolchain.
 
-- [ ] Forked from [Guida](https://github.com/guida-lang/compiler) compiler port
 - [x] MLIR `eco` dialect established, compilation via LLVM to x86 binaries
 - [x] Standard library scaffolding (core, json, bytes, http, regex, url, parser, time)
 - [x] Bytes fusion DSL compilation
