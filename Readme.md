@@ -1,69 +1,139 @@
-# Elm Runtime in C
+# Eco
 
-## Building with Docker (recommended for reproducible builds)
+A native compiler and runtime for the [Elm](https://elm-lang.org/) programming language.
 
-The Dockerfile provides all build dependencies in a reproducible environment.
+Eco compiles Elm to native x86 binaries via MLIR and LLVM. The compiler is written in Elm.
+
+## Status
+
+**Working today:**
+
+- Elm source code compiles through: Elm → IR → custom MLIR dialect (`eco`) → LLVM (AOT and JIT execution)
+- Full program optimisation and monomorphisation pass
+- Bytes fusion DSL compilation (a dedicated MLIR dialect compiling `Bytes.Encode`/`Bytes.Decode` pipelines into fused loops)
+- 144 MLIR operations across the `eco` and `bf` (bytes fusion) dialects, with lowering to LLVM
+- C++ implementations of Elm kernel packages: core, json, bytes, time, http, regex, url, parser, file, browser, virtual-dom
+- Generational garbage collector exploiting Elm's immutability (no write barrier needed)
+- Extensive test coverage: 466 codegen/E2E test programs, 87 compiler test suites (~8,000 fuzz iterations), property-based GC tests
+
+**In progress towards 0.1.0:**
+
+- Bootstrapping (the compiler compiles itself to native code)
+- Kernel I/O integration for building larger programs
+- Scheduler and effects runtime correctness for real applications
+- GC stack root tracing via LLVM stack maps (required for long-running programs)
+
+## 0.1.0 Criteria
+
+The initial release establishing the foundation of the Eco compiler toolchain.
+
+- [ ] Forked from [Guida](https://github.com/guida-lang/compiler) compiler port
+- [x] MLIR `eco` dialect established, compilation via LLVM to x86 binaries
+- [x] Standard library scaffolding (core, json, bytes, http, regex, url, parser, time)
+- [x] Bytes fusion DSL compilation
+- [x] Full program optimisation and monomorphisation pass
+- [x] Extensive test suite confirming compiler correctness
+- [x] Generational garbage collector
+- [ ] Self-compilation (bootstrapping in progress)
+- [ ] GC stack root tracing for long-running programs
+- [ ] Scheduler correctness for effect managers
+- [ ] Linux only
+
+## Architecture
+
+```
+  Elm source
+      │
+      ▼
+┌──────────┐   compiler/     Elm compiler written in Elm
+│  Parse &  │                 (forked from Guida)
+│ Typecheck │
+└────┬─────┘
+     │  Typed AST
+     ▼
+┌──────────┐   compiler/src/Compiler/Generate/MLIR/
+│  MLIR    │                 Monomorphisation, optimisation,
+│  Codegen │                 bytes fusion, code generation
+└────┬─────┘
+     │  eco dialect MLIR
+     ▼
+┌──────────┐   runtime/src/codegen/
+│  LLVM    │                 EcoToLLVM lowering passes
+│ Lowering │
+└────┬─────┘
+     │  LLVM IR
+     ▼
+┌──────────┐
+│  Native  │   x86 binary (AOT) or JIT execution
+│  Code    │
+└──────────┘
+     │
+     ▼
+┌──────────┐   runtime/src/allocator/
+│ Runtime  │                 GC, heap, process scheduling
+│          │   elm-kernel-cpp/
+│          │                 C++ kernel implementations
+└──────────┘
+```
+
+### Key directories
+
+| Directory | Contents |
+|-----------|----------|
+| `compiler/` | Elm compiler (written in Elm) with MLIR backend |
+| `runtime/` | C++20 runtime: MLIR dialect, LLVM lowering, GC, heap |
+| `elm-kernel-cpp/` | C++ implementations of Elm kernel packages |
+| `eco-kernel-cpp/` | Eco-specific kernel extensions (console, file, env, process) |
+| `test/` | Codegen tests, E2E tests, property-based GC tests |
+| `design_docs/` | Invariants, theory documentation, design decisions |
+
+## Building
 
 ### Prerequisites
 
-Follow the advice here on installing Docker:
-- [Install Docker](https://docs.docker.com/engine/install/debian/)
-- [Configure non-root users](https://docs.docker.com/engine/install/linux-postinstall/#manage-docker-as-a-non-root-user)
+**Docker (recommended):**
 
-To confirm Docker is working correctly, run these commands (`newgrp docker` only
-needs to be run if you are not logging out and back in again):
+```bash
+docker build -t eco-build .
+docker run --rm -v "$PWD":/work eco-build
+```
 
-    newgrp docker
-    docker run hello-world
+**Debian/Ubuntu host:**
 
-### Build the Docker image
+```bash
+sudo apt install clang lld ninja-build cmake ccache
+```
 
-    docker build -t eco-runtime-build .
+### Configure and build
 
-### Build the project using Docker
+```bash
+# Release
+cmake --preset ninja-clang-lld-linux
+cmake --build build
 
-To configure and build the project in one step:
+# Debug
+cmake --preset ninja-clang-lld-linux-debug
+cmake --build build
+```
 
-    docker run --rm -v "$PWD":/work eco-runtime-build
+### Running tests
 
-To run an interactive session inside the container for development, recommend creating
-a named docker volume to preserve your home directory across sessions:
+```bash
+# Incremental build + run all tests
+cmake --build build --target check
 
-    docker volume create eco-dev-home
-    docker run -it --rm -v "$PWD":/work -v eco-dev-home:/home/dev eco-runtime-build bash
+# Full clean rebuild + tests (use after compiler changes)
+cmake --build build --target full
 
-To pass an OpenAI API key (for AI-assisted development tools), use the `-e` flag:
+# Filter tests by name
+TEST_FILTER=elm cmake --build build --target check
+TEST_FILTER=String cmake --build build --target run-tests
 
-    docker run -it --rm -v "$PWD":/work -v eco-dev-home:/home/dev -e OPENAI_API_KEY="sk-proj-abc123..." eco-runtime-build bash
+# Compiler frontend tests
+cd compiler && npx elm-test-rs --fuzz 1
+```
 
-Or export it first and pass it through:
-
-    export OPENAI_API_KEY="sk-proj-abc123..."
-    docker run -it --rm -v "$PWD":/work -v eco-dev-home:/home/dev -e OPENAI_API_KEY eco-runtime-build bash
-
-Inside the container, you can configure and build manually:
-
-    cmake --preset ninja-clang-lld-linux
-    cmake --build build
-
-### Run tests using Docker
-
-    docker run --rm -v "$PWD":/work eco-runtime-build bash -c "cmake --preset ninja-clang-lld-linux && cmake --build build && ./build/test/test"
-
-## To work directly on a Debian or other apt-based Linux host
-
-Install the following packages:
-
-    sudo apt install clang lld ninja-build cmake ccache
-
-A CMake preset configuration to build with ninja, clang and lld exists in
-`CMakePresets.json`. Set up the build in this project with:
-
-    cmake --preset ninja-clang-lld-linux
-
-## Convenience Build Targets
-
-After configuring with a preset, these convenience targets are available:
+### Build targets
 
 | Target | Description |
 |--------|-------------|
@@ -72,35 +142,31 @@ After configuring with a preset, these convenience targets are available:
 | `rebuild` | Clean + rebuild (no tests) |
 | `full` | Clean + rebuild + run tests |
 
-### Build and test (most common)
+### Running the test binary directly
 
-    cmake --build build --target check
+```bash
+./build/test/test                    # Run all tests
+./build/test/test --filter elm       # Filter by name
+./build/test/test -n 1000           # Run 1000 tests
+./build/test/test --seed 42          # Reproducible run
+./build/test/test --max-size 500     # Higher complexity tests
+```
 
-### Run tests only
+## Docker development
 
-    cmake --build build --target run-tests
+```bash
+# Build image
+docker build -t eco-build .
 
-### Full clean rebuild and test
+# Interactive session with persistent home directory
+docker volume create eco-dev-home
+docker run -it --rm -v "$PWD":/work -v eco-dev-home:/home/dev eco-build bash
 
-    cmake --build build --target full
+# One-shot build + test
+docker run --rm -v "$PWD":/work eco-build bash -c \
+  "cmake --preset ninja-clang-lld-linux && cmake --build build --target check"
+```
 
-### Filter tests by name
+## Acknowledgements
 
-Use the `TEST_FILTER` environment variable with any test target:
-
-    TEST_FILTER=elm cmake --build build --target check
-    TEST_FILTER=String cmake --build build --target run-tests
-
-### Clean rebuild without tests
-
-    cmake --build build --target rebuild
-
-## Running Tests Directly
-
-For more control over test execution, run the test binary directly:
-
-    ./build/test/test                    # Run all tests
-    ./build/test/test --filter elm       # Filter by name
-    ./build/test/test -n 1000            # Run 1000 tests
-    ./build/test/test --seed 42          # Reproducible run
-    ./build/test/test --max-size 500     # Higher complexity tests
+The Eco compiler frontend is forked from [Guida](https://github.com/guida-lang/compiler), an Elm compiler port. Guida is itself a port of the original [Elm compiler](https://github.com/elm/compiler) by Evan Czaplicki.
