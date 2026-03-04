@@ -121,7 +121,7 @@ getEnv =
 
 addPackageCache : Maybe String -> Task Exit.Diff ( Maybe String, Stuff.PackageCache )
 addPackageCache maybeRoot =
-    Task.io Stuff.getPackageCache
+    Task.io (Stuff.getPackageCache Nothing)
         |> Task.map (\cache -> ( maybeRoot, cache ))
 
 
@@ -285,7 +285,7 @@ generateDocs (Env props) =
             Task.throw Exit.DiffNoOutline
 
         Just root ->
-            Task.eio Exit.DiffBadDetails (BW.withScope (\scope -> Details.load Reporting.silent scope root Nothing False False))
+            Task.eio Exit.DiffBadDetails (BW.withScope (\scope -> Details.load Reporting.silent scope root Nothing False False Nothing))
                 |> Task.andThen (buildDocsFromDetails root)
 
 
@@ -306,7 +306,7 @@ buildDocsFromExposed root details exposed =
             Task.throw Exit.DiffNoExposed
 
         e :: es ->
-            Build.fromExposed Docs.bytesDecoder Docs.bytesEncoder Reporting.silent root Nothing details Build.keepDocs (NE.Nonempty e es) |> Task.eio Exit.DiffBadBuild
+            Build.fromExposed Docs.bytesDecoder Docs.bytesEncoder Reporting.silent root Nothing Nothing details Build.keepDocs (NE.Nonempty e es) |> Task.eio Exit.DiffBadBuild
 
 
 

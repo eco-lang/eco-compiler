@@ -94,7 +94,7 @@ requireRoot maybeRoot =
 
 addPackageCache : FilePath -> Task Exit.Bump ( FilePath, Stuff.PackageCache )
 addPackageCache root =
-    Task.io Stuff.getPackageCache
+    Task.io (Stuff.getPackageCache Nothing)
         |> Task.map (\cache -> ( root, cache ))
 
 
@@ -258,7 +258,7 @@ promptVersionChange ( suggestion, newDocs ) =
 
 generateDocs : FilePath -> Outline.PkgOutline -> Task Exit.Bump Docs.Documentation
 generateDocs root (Outline.PkgOutline pkgData) =
-    Task.eio Exit.BumpBadDetails (BW.withScope (\scope -> Details.load Reporting.silent scope root Nothing False False))
+    Task.eio Exit.BumpBadDetails (BW.withScope (\scope -> Details.load Reporting.silent scope root Nothing False False Nothing))
         |> Task.andThen (buildDocsFromExposed root pkgData.exposed)
 
 
@@ -269,7 +269,7 @@ buildDocsFromExposed root exposed details =
             Task.throw Exit.BumpNoExposed
 
         e :: es ->
-            Build.fromExposed Docs.bytesDecoder Docs.bytesEncoder Reporting.silent root Nothing details Build.keepDocs (NE.Nonempty e es) |> Task.eio Exit.BumpBadBuild
+            Build.fromExposed Docs.bytesDecoder Docs.bytesEncoder Reporting.silent root Nothing Nothing details Build.keepDocs (NE.Nonempty e es) |> Task.eio Exit.BumpBadBuild
 
 
 

@@ -1,6 +1,6 @@
 module Builder.Stuff exposing
     ( findRoot, getElmHome
-    , PackageCache, getPackageCache, getReplCache, package, registry
+    , PackageCache, getPackageCache, getReplCache, package, isLocalPackage, registry
     , typedPackageArtifacts, packageCacheEncoder, packageCacheDecoder
     , eci, eco, ecot
     , testDir
@@ -254,7 +254,7 @@ withRootLockBuildDir root maybeBuildDir work =
 {-| Executes a task while holding an exclusive lock on the package registry.
 -}
 withRegistryLock : PackageCache -> Task Never a -> Task Never a
-withRegistryLock (PackageCache dir) work =
+withRegistryLock (PackageCache dir _) work =
     Utils.lockWithFileLock (dir ++ "/lock") IO.LockExclusive (\_ -> work)
 
 
@@ -265,28 +265,47 @@ withRegistryLock (PackageCache dir) work =
 {-| Represents the package cache directory location.
 -}
 type PackageCache
-    = PackageCache String
+    = PackageCache String (Maybe ( Pkg.Name, FilePath ))
 
 
 {-| Returns the package cache directory, creating it if necessary.
 -}
-getPackageCache : Task Never PackageCache
-getPackageCache =
-    Task.map PackageCache (getCacheDir "packages")
+getPackageCache : Maybe ( Pkg.Name, FilePath ) -> Task Never PackageCache
+getPackageCache maybeLocal =
+    Task.map (\dir -> PackageCache dir maybeLocal) (getCacheDir "packages")
 
 
 {-| Returns the path to the package registry cache file.
 -}
 registry : PackageCache -> String
-registry (PackageCache dir) =
+registry (PackageCache dir _) =
     Utils.fpCombine dir "registry.dat"
 
 
 {-| Returns the directory path for a specific package version in the cache.
 -}
 package : PackageCache -> Pkg.Name -> V.Version -> String
-package (PackageCache dir) name version =
-    Utils.fpCombine dir (Utils.fpCombine (Pkg.toString name) (V.toChars version))
+package (PackageCache dir maybeLocal) name version =
+    case maybeLocal of
+        Just ( localPkg, localPath ) ->
+            if localPkg == name then
+                localPath
+
+            else
+                Utils.fpCombine dir (Utils.fpCombine (Pkg.toString name) (V.toChars version))
+
+        Nothing ->
+            Utils.fpCombine dir (Utils.fpCombine (Pkg.toString name) (V.toChars version))
+
+
+isLocalPackage : PackageCache -> Pkg.Name -> Bool
+isLocalPackage (PackageCache _ maybeLocal) name =
+    case maybeLocal of
+        Just ( localPkg, _ ) ->
+            localPkg == name
+
+        Nothing ->
+            False
 
 
 {-| Returns the path to typed artifacts cache for a specific package version.
@@ -345,12 +364,17 @@ getElmHome =
 {-| Encodes a package cache location to bytes.
 -}
 packageCacheEncoder : PackageCache -> Bytes.Encode.Encoder
-packageCacheEncoder (PackageCache dir) =
-    BE.string dir
+packageCacheEncoder (PackageCache dir maybeLocal) =
+    Bytes.Encode.sequence
+        [ BE.string dir
+        , BE.maybe (\( name, path ) -> Bytes.Encode.sequence [ Pkg.nameEncoder name, BE.string path ]) maybeLocal
+        ]
 
 
 {-| Decodes a package cache location from bytes.
 -}
 packageCacheDecoder : Bytes.Decode.Decoder PackageCache
 packageCacheDecoder =
-    Bytes.Decode.map PackageCache BD.string
+    Bytes.Decode.map2 PackageCache
+        BD.string
+        (BD.maybe (Bytes.Decode.map2 (\a b -> ( a, b )) Pkg.nameDecoder BD.string))

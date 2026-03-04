@@ -1,5 +1,7 @@
 /*
 import Eco.Kernel.Scheduler exposing (succeed, fail, binding, asyncCallback)
+import Elm.Kernel.List exposing (fromArray)
+import Elm.Kernel.Utils exposing (Tuple0)
 import Maybe exposing (Just, Nothing)
 */
 
@@ -15,17 +17,17 @@ var _File_readString = function(path) {
     });
 };
 
-var _File_writeString = function(path, content) {
+var _File_writeString = F2(function(path, content) {
     return __Scheduler_binding(function(callback) {
         try {
             var fs = require('fs');
             fs.writeFileSync(path, content, 'utf8');
-            callback(__Scheduler_succeed(0 /* Unit */));
+            callback(__Scheduler_succeed(__Utils_Tuple0));
         } catch (e) {
             callback(__Scheduler_fail(e.message));
         }
     });
-};
+});
 
 var _File_readBytes = function(path) {
     return __Scheduler_binding(function(callback) {
@@ -39,20 +41,20 @@ var _File_readBytes = function(path) {
     });
 };
 
-var _File_writeBytes = function(path, bytes) {
+var _File_writeBytes = F2(function(path, bytes) {
     return __Scheduler_binding(function(callback) {
         try {
             var fs = require('fs');
             var buffer = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
             fs.writeFileSync(path, buffer);
-            callback(__Scheduler_succeed(0 /* Unit */));
+            callback(__Scheduler_succeed(__Utils_Tuple0));
         } catch (e) {
             callback(__Scheduler_fail(e.message));
         }
     });
-};
+});
 
-var _File_open = function(path, mode) {
+var _File_open = F2(function(path, mode) {
     return __Scheduler_binding(function(callback) {
         try {
             var fs = require('fs');
@@ -63,7 +65,7 @@ var _File_open = function(path, mode) {
             callback(__Scheduler_fail(e.message));
         }
     });
-};
+});
 
 var _File_close = function(handle) {
     return __Scheduler_binding(function(callback) {
@@ -75,7 +77,7 @@ var _File_close = function(handle) {
                 var fs = require('fs');
                 fs.closeSync(handle);
             }
-            callback(__Scheduler_succeed(0 /* Unit */));
+            callback(__Scheduler_succeed(__Utils_Tuple0));
         } catch (e) {
             callback(__Scheduler_fail(e.message));
         }
@@ -97,14 +99,14 @@ var _File_size = function(handle) {
 var _File_lock = function(path) {
     return __Scheduler_binding(function(callback) {
         // TODO: implement file locking (e.g., via lockfile or fs-ext)
-        callback(__Scheduler_succeed(0 /* Unit */));
+        callback(__Scheduler_succeed(__Utils_Tuple0));
     });
 };
 
 var _File_unlock = function(path) {
     return __Scheduler_binding(function(callback) {
         // TODO: implement file unlocking
-        callback(__Scheduler_succeed(0 /* Unit */));
+        callback(__Scheduler_succeed(__Utils_Tuple0));
     });
 };
 
@@ -162,7 +164,7 @@ var _File_list = function(path) {
         try {
             var fs = require('fs');
             var entries = fs.readdirSync(path);
-            callback(__Scheduler_succeed(entries));
+            callback(__Scheduler_succeed(__List_fromArray(entries)));
         } catch (e) {
             callback(__Scheduler_fail(e.message));
         }
@@ -189,7 +191,7 @@ var _File_setCwd = function(path) {
     return __Scheduler_binding(function(callback) {
         try {
             process.chdir(path);
-            callback(__Scheduler_succeed(0 /* Unit */));
+            callback(__Scheduler_succeed(__Utils_Tuple0));
         } catch (e) {
             callback(__Scheduler_fail(e.message));
         }
@@ -226,24 +228,24 @@ var _File_appDataDir = function(name) {
     });
 };
 
-var _File_createDir = function(createParents, path) {
+var _File_createDir = F2(function(createParents, path) {
     return __Scheduler_binding(function(callback) {
         try {
             var fs = require('fs');
             fs.mkdirSync(path, { recursive: createParents });
-            callback(__Scheduler_succeed(0 /* Unit */));
+            callback(__Scheduler_succeed(__Utils_Tuple0));
         } catch (e) {
             callback(__Scheduler_fail(e.message));
         }
     });
-};
+});
 
 var _File_removeFile = function(path) {
     return __Scheduler_binding(function(callback) {
         try {
             var fs = require('fs');
             fs.unlinkSync(path);
-            callback(__Scheduler_succeed(0 /* Unit */));
+            callback(__Scheduler_succeed(__Utils_Tuple0));
         } catch (e) {
             callback(__Scheduler_fail(e.message));
         }
@@ -255,7 +257,7 @@ var _File_removeDir = function(path) {
         try {
             var fs = require('fs');
             fs.rmSync(path, { recursive: true, force: true });
-            callback(__Scheduler_succeed(0 /* Unit */));
+            callback(__Scheduler_succeed(__Utils_Tuple0));
         } catch (e) {
             callback(__Scheduler_fail(e.message));
         }

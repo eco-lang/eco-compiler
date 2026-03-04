@@ -4,14 +4,19 @@
 
 set -e
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+COMPILER_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+BUILD_XHR_DIR="$COMPILER_DIR/build-xhr"
+ELM="$COMPILER_DIR/node_modules/.bin/elm"
+
 case $1 in
   "api")
-    filepath="lib/guida"
-    elm_entry="src/API/Main.elm"
+    filepath="$COMPILER_DIR/lib/guida"
+    elm_entry="$COMPILER_DIR/src/API/Main.elm"
     ;;
   "bin")
-    filepath="bin/guida"
-    elm_entry="src/Terminal/Main.elm"
+    filepath="$BUILD_XHR_DIR/bin/guida"
+    elm_entry="$COMPILER_DIR/src/Terminal/Main.elm"
     ;;
   *)
     echo "Usage: $0 api|bin"
@@ -20,14 +25,7 @@ case $1 in
 esac
 
 js="$filepath.js"
-min="$filepath.min.js"
 
-elm make --output=$js $elm_entry
-#elm make --optimize --output=$js $elm_entry
-node scripts/replacements.js $js
-
-#uglifyjs $js --compress "pure_funcs=[F2,F3,F4,F5,F6,F7,F8,F9,A2,A3,A4,A5,A6,A7,A8,A9],pure_getters,keep_fargs=false,unsafe_comps,unsafe" | uglifyjs --mangle --output $min
-
-#echo "Initial size: $(cat $js | wc -c) bytes  ($js)"
-#echo "Minified size:$(cat $min | wc -c) bytes  ($min)"
-#echo "Gzipped size: $(cat $min | gzip -c | wc -c) bytes"
+cd "$BUILD_XHR_DIR"
+$ELM make --output=$js $elm_entry
+node "$COMPILER_DIR/scripts/replacements.js" $js

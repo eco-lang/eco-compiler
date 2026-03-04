@@ -1,14 +1,14 @@
 /*
 import Eco.Kernel.Scheduler exposing (succeed, fail, binding)
 import Eco.Kernel.Utils exposing (Tuple2)
-import List exposing (Nil, Cons)
+import Elm.Kernel.List exposing (Nil, Cons, toArray)
 import Result exposing (Ok, Err)
 */
 
-var _Http_fetch = function(method, url, headers) {
+var _Http_fetch = F3(function(method, url, headers) {
     return __Scheduler_binding(function(callback) {
         try {
-            var headerArr = _List_toArray(headers);
+            var headerArr = __List_toArray(headers);
             var headerObj = {};
             for (var i = 0; i < headerArr.length; i++) {
                 headerObj[headerArr[i].a] = headerArr[i].b;
@@ -77,7 +77,7 @@ var _Http_fetch = function(method, url, headers) {
             })));
         }
     });
-};
+});
 
 var _Http_getArchive = function(url) {
     return __Scheduler_binding(function(callback) {

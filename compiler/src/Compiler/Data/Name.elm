@@ -127,7 +127,8 @@ splitDots =
 -- ====== GET KERNEL ======
 
 
-{-| Strip the "Elm.Kernel." prefix from a kernel module name. Crashes if the name is not a kernel module.
+{-| Strip the "Elm.Kernel." or "Eco.Kernel." prefix from a kernel module name. Crashes if the name is not a kernel module.
+Both prefixes are exactly 11 characters, so the same dropLeft works for either.
 -}
 getKernel : Name -> Name
 getKernel name =
@@ -142,11 +143,11 @@ getKernel name =
 -- ====== STARTS WITH ======
 
 
-{-| Check if a Name starts with "Elm.Kernel." prefix (identifies kernel modules).
+{-| Check if a Name starts with "Elm.Kernel." or "Eco.Kernel." prefix (identifies kernel modules).
 -}
 isKernel : Name -> Bool
-isKernel =
-    String.startsWith prefixKernel
+isKernel name =
+    String.startsWith prefixKernel name || String.startsWith prefixEcoKernel name
 
 
 {-| Check if a Name starts with "number" prefix (identifies number type constraint variables).
@@ -180,6 +181,11 @@ isCompappendType =
 prefixKernel : Name
 prefixKernel =
     "Elm.Kernel."
+
+
+prefixEcoKernel : Name
+prefixEcoKernel =
+    "Eco.Kernel."
 
 
 prefixNumber : Name

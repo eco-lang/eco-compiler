@@ -483,5 +483,5 @@ server.setDefaultHandler((request) => {
 // Install mock XHR and run the bootstrap compiler
 server.install();
 
-const { Elm } = require("./eco-boot.js");
+const { Elm } = require("../build-kernel/bin/eco-boot.js");
 Elm.Terminal.Main.init();

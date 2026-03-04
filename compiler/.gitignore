@@ -10,9 +10,11 @@ guida-stuff
 lib/guida.js
 lib/guida.min.js
 
-# Command line
-bin/guida.js
-bin/guida.min.js
+# Build outputs
+build-xhr/bin/
+build-xhr/elm-stuff/
+build-kernel/bin/
+build-kernel/elm-stuff/
 
 # Try
 try/public/app.js

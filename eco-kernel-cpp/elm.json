@@ -5,11 +5,12 @@
     "license": "BSD-3-Clause",
     "version": "1.0.0",
     "exposed-modules": [
-        "Eco.File",
         "Eco.Console",
         "Eco.Env",
-        "Eco.Process",
+        "Eco.File",
+        "Eco.Http",
         "Eco.MVar",
+        "Eco.Process",
         "Eco.Runtime"
     ],
     "elm-version": "0.19.0 <= v < 0.20.0",

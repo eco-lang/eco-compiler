@@ -1,8 +1,9 @@
 /*
 import Eco.Kernel.Scheduler exposing (succeed, fail, binding)
+import Elm.Kernel.Utils exposing (Tuple0)
 */
 
-var _Console_write = function(handle, content) {
+var _Console_write = F2(function(handle, content) {
     return __Scheduler_binding(function(callback) {
         try {
             if (handle === 1) {
@@ -12,12 +13,12 @@ var _Console_write = function(handle, content) {
             } else if (typeof _Process_streamHandles !== 'undefined' && _Process_streamHandles[handle]) {
                 _Process_streamHandles[handle].write(content);
             }
-            callback(__Scheduler_succeed(0 /* Unit */));
+            callback(__Scheduler_succeed(__Utils_Tuple0));
         } catch (e) {
             callback(__Scheduler_fail(e.message));
         }
     });
-};
+});
 
 var _Console_readLine = __Scheduler_binding(function(callback) {
     var readline = require('readline');

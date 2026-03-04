@@ -1,5 +1,6 @@
 /*
 import Eco.Kernel.Scheduler exposing (succeed, binding)
+import Elm.Kernel.Utils exposing (Tuple0)
 */
 
 var _MVar_nextId = 1;
@@ -11,7 +12,7 @@ var _MVar_new = __Scheduler_binding(function(callback) {
     callback(__Scheduler_succeed(id));
 });
 
-var _MVar_read = function(typeTag, id) {
+var _MVar_read = function(id) {
     return __Scheduler_binding(function(callback) {
         var mvar = _MVar_store[id];
         if (!mvar) {
@@ -26,7 +27,7 @@ var _MVar_read = function(typeTag, id) {
     });
 };
 
-var _MVar_take = function(typeTag, id) {
+var _MVar_take = function(id) {
     return __Scheduler_binding(function(callback) {
         var mvar = _MVar_store[id];
         if (!mvar) {
@@ -44,22 +45,22 @@ var _MVar_take = function(typeTag, id) {
     });
 };
 
-var _MVar_put = function(typeTag, id, value) {
+var _MVar_put = F2(function(id, value) {
     return __Scheduler_binding(function(callback) {
         var mvar = _MVar_store[id];
         if (!mvar) {
-            callback(__Scheduler_succeed(0 /* Unit */));
+            callback(__Scheduler_succeed(__Utils_Tuple0));
             return;
         }
         if (mvar.value === undefined) {
             mvar.value = value;
             _MVar_wakeUp(mvar);
-            callback(__Scheduler_succeed(0 /* Unit */));
+            callback(__Scheduler_succeed(__Utils_Tuple0));
         } else {
             mvar.waiters.push({ action: 'put', value: value, callback: callback });
         }
     });
-};
+});
 
 function _MVar_wakeUp(mvar) {
     var i = 0;
@@ -76,7 +77,7 @@ function _MVar_wakeUp(mvar) {
         } else if (w.action === 'put' && mvar.value === undefined) {
             mvar.waiters.splice(i, 1);
             mvar.value = w.value;
-            w.callback(__Scheduler_succeed(0 /* Unit */));
+            w.callback(__Scheduler_succeed(__Utils_Tuple0));
         } else {
             i++;
         }

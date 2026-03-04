@@ -437,10 +437,10 @@ type TypedLoadingObjects
     = TypedLoadingObjects (MVar (Maybe Details.PackageTypedArtifacts)) (Dict String ModuleName.Raw (MVar (Maybe TMod.TypedModuleArtifact)))
 
 
-loadTypedObjects : FilePath -> Maybe String -> Details.Details -> List Build.Module -> Task Exit.Generate TypedLoadingObjects
-loadTypedObjects root maybeBuildDir details modules =
+loadTypedObjects : FilePath -> Maybe String -> Maybe ( Pkg.Name, FilePath ) -> Details.Details -> List Build.Module -> Task Exit.Generate TypedLoadingObjects
+loadTypedObjects root maybeBuildDir maybeLocal details modules =
     Task.io
-        (Details.loadTypedObjects root maybeBuildDir details
+        (Details.loadTypedObjects root maybeBuildDir maybeLocal details
             |> Task.andThen (loadTypedModuleObjects root maybeBuildDir modules)
         )
 
@@ -582,9 +582,9 @@ typedObjectsToGlobalTypeEnv (TypedObjects _ globalEnv locals) =
 
 {-| Generates monomorphized output for MLIR mono backend after specializing polymorphic functions.
 -}
-monoDev : CodeGen.MonoCodeGen -> Bool -> Int -> FilePath -> Maybe String -> Details.Details -> Build.Artifacts -> Task Exit.Generate CodeGen.Output
-monoDev backend withSourceMaps leadingLines root maybeBuildDir details (Build.Artifacts artifacts) =
-    loadTypedObjects root maybeBuildDir details artifacts.modules
+monoDev : CodeGen.MonoCodeGen -> Bool -> Int -> FilePath -> Maybe String -> Maybe ( Pkg.Name, FilePath ) -> Details.Details -> Build.Artifacts -> Task Exit.Generate CodeGen.Output
+monoDev backend withSourceMaps leadingLines root maybeBuildDir maybeLocal details (Build.Artifacts artifacts) =
+    loadTypedObjects root maybeBuildDir maybeLocal details artifacts.modules
         |> Task.andThen finalizeTypedObjects
         |> Task.andThen (generateMonoDevOutput backend withSourceMaps leadingLines root artifacts.roots)
 

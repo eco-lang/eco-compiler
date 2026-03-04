@@ -58,7 +58,7 @@ Compiler front-end tests with elm-test-rs:
 
 ```bash
 cd compiler
-npx elm-test-rs --fuzz 1
+npx elm-test-rs --project build-xhr --fuzz 1
 ```
 
 Full E2E tests including the backend and runtime:

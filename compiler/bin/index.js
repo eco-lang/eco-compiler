@@ -27,6 +27,6 @@ server.post("eco-io", (request) => {
 
 server.install();
 
-const { Elm } = require("./guida.js");
+const { Elm } = require("../build-xhr/bin/guida.js");
 
 Elm.Terminal.Main.init();

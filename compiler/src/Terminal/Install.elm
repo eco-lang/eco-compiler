@@ -102,7 +102,7 @@ handleArgs root args forTest autoYes =
 
 installPackage : FilePath -> Pkg.Name -> Bool -> Bool -> Task Exit.Install ()
 installPackage root pkg forTest autoYes =
-    Task.eio Exit.InstallBadRegistry Solver.initEnv
+    Task.eio Exit.InstallBadRegistry (Solver.initEnv Nothing)
         |> Task.andThen (installWithEnv root pkg forTest autoYes)
 
 

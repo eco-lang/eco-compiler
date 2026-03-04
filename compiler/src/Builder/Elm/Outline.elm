@@ -489,7 +489,7 @@ moduleNameFromFilePath root filePath =
 
 resolvePackagePaths : Pkg.Name -> V.Version -> Task Never ( Pkg.Name, FilePath )
 resolvePackagePaths pkgName vsn =
-    Stuff.getPackageCache
+    Stuff.getPackageCache Nothing
         |> Task.map (\packageCache -> ( pkgName, Stuff.package packageCache pkgName vsn ))
 
 

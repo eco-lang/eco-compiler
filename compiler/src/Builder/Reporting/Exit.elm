@@ -1490,6 +1490,7 @@ type Details
 type DetailsBadDep
     = BD_BadDownload Pkg.Name V.Version PackageProblem
     | BD_BadBuild Pkg.Name V.Version (Dict ( String, String ) Pkg.Name V.Version)
+    | BD_LocalPackageNotFound Pkg.Name
 
 
 toDetailsReport : Details -> Help.Report
@@ -1670,6 +1671,13 @@ toDetailsReport details =
                                         ++ "which will in turn make it easier for the package author to fix it!"
                                 ]
 
+                        BD_LocalPackageNotFound pkg ->
+                            Help.report "LOCAL PACKAGE NOT FOUND"
+                                Nothing
+                                ("Local package " ++ Pkg.toChars pkg ++ " not found.")
+                                [ D.reflow "Check the path in your --local-package flag."
+                                ]
+
 
 toBadDepRank :
     DetailsBadDep
@@ -1681,6 +1689,9 @@ toBadDepRank badDep =
 
         BD_BadBuild _ _ _ ->
             1
+
+        BD_LocalPackageNotFound _ ->
+            0
 
 
 
@@ -2671,6 +2682,12 @@ detailsBadDepEncoder detailsBadDep =
                 , BE.assocListDict compare Pkg.nameEncoder V.versionEncoder fingerprint
                 ]
 
+        BD_LocalPackageNotFound pkg ->
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 2
+                , Pkg.nameEncoder pkg
+                ]
+
 
 {-| Decodes a dependency error from bytes.
 -}
@@ -2691,6 +2708,10 @@ detailsBadDepDecoder =
                             Pkg.nameDecoder
                             V.versionDecoder
                             (BD.assocListDict identity Pkg.nameDecoder V.versionDecoder)
+
+                    2 ->
+                        Bytes.Decode.map BD_LocalPackageNotFound
+                            Pkg.nameDecoder
 
                     _ ->
                         Bytes.Decode.fail

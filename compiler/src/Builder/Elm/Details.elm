@@ -215,10 +215,10 @@ loadObjects root maybeBuildDir (Details detailsData) =
 {-| Load typed global objects for MLIR backend.
 Loads both local typed objects and typed objects from all package dependencies.
 -}
-loadTypedObjects : FilePath -> Maybe String -> Details -> Task Never (MVar (Maybe PackageTypedArtifacts))
-loadTypedObjects root maybeBuildDir (Details detailsData) =
+loadTypedObjects : FilePath -> Maybe String -> Maybe ( Pkg.Name, FilePath ) -> Details -> Task Never (MVar (Maybe PackageTypedArtifacts))
+loadTypedObjects root maybeBuildDir maybeLocal (Details detailsData) =
     fork (Utils.maybeEncoder packageTypedArtifactsEncoder)
-        (Stuff.getPackageCache
+        (Stuff.getPackageCache maybeLocal
             |> Task.andThen (loadAllTypedObjects root maybeBuildDir detailsData.deps)
         )
 
@@ -372,41 +372,41 @@ runVerifyInstall scope root cache manager connection registry outline time =
 {-| Load project details, verifying dependencies and building them if necessary.
 Checks if elm.json has changed and regenerates details if needed. Used by build commands.
 -}
-load : Reporting.Style -> BW.Scope -> FilePath -> Maybe String -> Bool -> Bool -> Task Never (Result Exit.Details Details)
-load style scope root maybeBuildDir needsTypedOpt showPackageErrors =
+load : Reporting.Style -> BW.Scope -> FilePath -> Maybe String -> Bool -> Bool -> Maybe ( Pkg.Name, FilePath ) -> Task Never (Result Exit.Details Details)
+load style scope root maybeBuildDir needsTypedOpt showPackageErrors maybeLocal =
     File.getTime (root ++ "/elm.json")
-        |> Task.andThen (loadWithTime style scope root maybeBuildDir needsTypedOpt showPackageErrors)
+        |> Task.andThen (loadWithTime style scope root maybeBuildDir needsTypedOpt showPackageErrors maybeLocal)
 
 
-loadWithTime : Reporting.Style -> BW.Scope -> FilePath -> Maybe String -> Bool -> Bool -> File.Time -> Task Never (Result Exit.Details Details)
-loadWithTime style scope root maybeBuildDir needsTypedOpt showPackageErrors newTime =
+loadWithTime : Reporting.Style -> BW.Scope -> FilePath -> Maybe String -> Bool -> Bool -> Maybe ( Pkg.Name, FilePath ) -> File.Time -> Task Never (Result Exit.Details Details)
+loadWithTime style scope root maybeBuildDir needsTypedOpt showPackageErrors maybeLocal newTime =
     File.readBinary detailsDecoder (Stuff.detailsWithBuildDir root maybeBuildDir)
-        |> Task.andThen (handleCachedDetails style scope root maybeBuildDir needsTypedOpt showPackageErrors newTime)
+        |> Task.andThen (handleCachedDetails style scope root maybeBuildDir needsTypedOpt showPackageErrors maybeLocal newTime)
 
 
-handleCachedDetails : Reporting.Style -> BW.Scope -> FilePath -> Maybe String -> Bool -> Bool -> File.Time -> Maybe Details -> Task Never (Result Exit.Details Details)
-handleCachedDetails style scope root maybeBuildDir needsTypedOpt showPackageErrors newTime maybeDetails =
+handleCachedDetails : Reporting.Style -> BW.Scope -> FilePath -> Maybe String -> Bool -> Bool -> Maybe ( Pkg.Name, FilePath ) -> File.Time -> Maybe Details -> Task Never (Result Exit.Details Details)
+handleCachedDetails style scope root maybeBuildDir needsTypedOpt showPackageErrors maybeLocal newTime maybeDetails =
     case maybeDetails of
         Nothing ->
-            generate style scope root maybeBuildDir needsTypedOpt showPackageErrors newTime
+            generate style scope root maybeBuildDir needsTypedOpt showPackageErrors maybeLocal newTime
 
         Just (Details detailsData) ->
             if detailsData.time == newTime then
                 Task.succeed (Ok (Details { detailsData | buildID = detailsData.buildID + 1 }))
 
             else
-                generate style scope root maybeBuildDir needsTypedOpt showPackageErrors newTime
+                generate style scope root maybeBuildDir needsTypedOpt showPackageErrors maybeLocal newTime
 
 
 
 -- ====== GENERATE ======
 
 
-generate : Reporting.Style -> BW.Scope -> FilePath -> Maybe String -> Bool -> Bool -> File.Time -> Task Never (Result Exit.Details Details)
-generate style scope root maybeBuildDir needsTypedOpt showPackageErrors time =
+generate : Reporting.Style -> BW.Scope -> FilePath -> Maybe String -> Bool -> Bool -> Maybe ( Pkg.Name, FilePath ) -> File.Time -> Task Never (Result Exit.Details Details)
+generate style scope root maybeBuildDir needsTypedOpt showPackageErrors maybeLocal time =
     Reporting.trackDetails style
         (\key ->
-            initEnv key scope root maybeBuildDir needsTypedOpt showPackageErrors
+            initEnv key scope root maybeBuildDir needsTypedOpt showPackageErrors maybeLocal
                 |> Task.andThen (verifyOutline time)
         )
 
@@ -448,9 +448,9 @@ type Env
     = Env EnvData
 
 
-initEnv : Reporting.DKey -> BW.Scope -> FilePath -> Maybe String -> Bool -> Bool -> Task Never (Result Exit.Details ( Env, Outline.Outline ))
-initEnv key scope root maybeBuildDir needsTypedOpt showPackageErrors =
-    fork resultRegistryProblemEnvEncoder Solver.initEnv
+initEnv : Reporting.DKey -> BW.Scope -> FilePath -> Maybe String -> Bool -> Bool -> Maybe ( Pkg.Name, FilePath ) -> Task Never (Result Exit.Details ( Env, Outline.Outline ))
+initEnv key scope root maybeBuildDir needsTypedOpt showPackageErrors maybeLocal =
+    fork resultRegistryProblemEnvEncoder (Solver.initEnv maybeLocal)
         |> Task.andThen (initEnvWithMVar key scope root maybeBuildDir needsTypedOpt showPackageErrors)
 
 
@@ -791,6 +791,9 @@ handleDepExistence : VerifyDepContext -> Bool -> Task Never Dep
 handleDepExistence ctx exists =
     if exists then
         handleCachedDep ctx
+
+    else if Stuff.isLocalPackage ctx.cache ctx.pkg then
+        Task.succeed (Err (Just (Exit.BD_LocalPackageNotFound ctx.pkg)))
 
     else
         downloadAndBuildDep ctx

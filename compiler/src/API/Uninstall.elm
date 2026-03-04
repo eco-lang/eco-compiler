@@ -50,7 +50,7 @@ run pkg =
 
                         Just root ->
                             Task.run
-                                (Task.eio Exit.UninstallBadRegistry Solver.initEnv
+                                (Task.eio Exit.UninstallBadRegistry (Solver.initEnv Nothing)
                                     |> Task.andThen
                                         (\env ->
                                             Task.eio Exit.UninstallBadOutline (Outline.read root)

@@ -83,6 +83,7 @@ default imports are included.
 type ProjectType
     = Package Pkg.Name
     | Application
+    | KernelApplication Pkg.Name
 
 
 
@@ -96,6 +97,9 @@ isCore projectType =
             pkg == Pkg.core
 
         Application ->
+            False
+
+        KernelApplication _ ->
             False
 
 
@@ -113,6 +117,9 @@ isKernel projectType =
 
         Application ->
             False
+
+        KernelApplication pkg ->
+            Pkg.isKernel pkg
 
 
 
@@ -254,12 +261,23 @@ checkEffects projectType ports effects =
                         Application ->
                             Err (E.UnexpectedPort region)
 
+                        KernelApplication _ ->
+                            Err (E.UnexpectedPort region)
+
         Ports region _ ->
             case projectType of
                 Package _ ->
                     Err (E.NoPortModulesInPackage region)
 
                 Application ->
+                    case ports of
+                        [] ->
+                            Err (E.NoPorts region)
+
+                        _ :: _ ->
+                            Ok (Src.Ports ports)
+
+                KernelApplication _ ->
                     case ports of
                         [] ->
                             Err (E.NoPorts region)

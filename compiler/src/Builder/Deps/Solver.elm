@@ -568,17 +568,26 @@ getRelevantVersions : Pkg.Name -> C.Constraint -> Solver ( V.Version, List V.Ver
 getRelevantVersions name constraint =
     Solver <|
         \((State st) as state) ->
-            case Registry.getVersions name st.registry of
-                Just (Registry.KnownVersions newest previous) ->
-                    case List.filter (C.satisfies constraint) (newest :: previous) of
-                        [] ->
-                            Task.succeed (ISBack state)
+            if Stuff.isLocalPackage st.cache name then
+                case List.filter (C.satisfies constraint) [ V.one ] of
+                    [] ->
+                        Task.succeed (ISBack state)
 
-                        v :: vs ->
-                            Task.succeed (ISOk state ( v, vs ))
+                    v :: vs ->
+                        Task.succeed (ISOk state ( v, vs ))
 
-                Nothing ->
-                    Task.succeed (ISBack state)
+            else
+                case Registry.getVersions name st.registry of
+                    Just (Registry.KnownVersions newest previous) ->
+                        case List.filter (C.satisfies constraint) (newest :: previous) of
+                            [] ->
+                                Task.succeed (ISBack state)
+
+                            v :: vs ->
+                                Task.succeed (ISOk state ( v, vs ))
+
+                    Nothing ->
+                        Task.succeed (ISBack state)
 
 
 
@@ -777,16 +786,16 @@ package registry. Falls back to offline mode if registry update fails but a
 cached registry exists.
 
 -}
-initEnv : Task Never (Result Exit.RegistryProblem Env)
-initEnv =
+initEnv : Maybe ( Pkg.Name, IO.FilePath ) -> Task Never (Result Exit.RegistryProblem Env)
+initEnv maybeLocal =
     Utils.newEmptyMVar
-        |> Task.andThen forkHttpManagerAndInitCache
+        |> Task.andThen (forkHttpManagerAndInitCache maybeLocal)
 
 
-forkHttpManagerAndInitCache : IO.MVar Http.Manager -> Task Never (Result Exit.RegistryProblem Env)
-forkHttpManagerAndInitCache mvar =
+forkHttpManagerAndInitCache : Maybe ( Pkg.Name, IO.FilePath ) -> IO.MVar Http.Manager -> Task Never (Result Exit.RegistryProblem Env)
+forkHttpManagerAndInitCache maybeLocal mvar =
     Utils.forkIO (Http.getManager |> Task.andThen (Utils.putMVar Http.managerEncoder mvar))
-        |> Task.andThen (\_ -> Stuff.getPackageCache)
+        |> Task.andThen (\_ -> Stuff.getPackageCache maybeLocal)
         |> Task.andThen (\cache -> initEnvWithCache cache mvar)
 
 

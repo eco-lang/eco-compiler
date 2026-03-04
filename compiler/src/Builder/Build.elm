@@ -68,6 +68,7 @@ import Compiler.Data.NonEmptyList as NE
 import Compiler.Data.OneOrMore as OneOrMore
 import Compiler.Elm.Docs as Docs
 import Compiler.Elm.Interface as I
+import Compiler.Elm.Kernel as Kernel
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Elm.Package as Pkg
 import Compiler.Json.Encode as E
@@ -111,8 +112,8 @@ type Env
     = Env EnvData
 
 
-makeEnv : Reporting.BKey -> FilePath -> Maybe String -> Details.Details -> Bool -> Task Never Env
-makeEnv key root maybeBuildDir (Details.Details detailsData) needsTypedOpt =
+makeEnv : Reporting.BKey -> FilePath -> Maybe String -> Maybe Pkg.Name -> Details.Details -> Bool -> Task Never Env
+makeEnv key root maybeBuildDir maybeKernelPackage (Details.Details detailsData) needsTypedOpt =
     case detailsData.outline of
         Details.ValidApp givenSrcDirs ->
             Utils.listTraverse (toAbsoluteSrcDir root) (NE.toList givenSrcDirs)
@@ -122,7 +123,13 @@ makeEnv key root maybeBuildDir (Details.Details detailsData) needsTypedOpt =
                             { key = key
                             , root = root
                             , maybeBuildDir = maybeBuildDir
-                            , projectType = Parse.Application
+                            , projectType =
+                                case maybeKernelPackage of
+                                    Nothing ->
+                                        Parse.Application
+
+                                    Just pkg ->
+                                        Parse.KernelApplication pkg
                             , srcDirs = srcDirs
                             , buildID = detailsData.buildID
                             , locals = detailsData.locals
@@ -210,11 +217,11 @@ documentation goal (keep, write, or ignore). It performs parallel compilation wi
 incremental rebuilding based on modification times and interface changes.
 
 -}
-fromExposed : Bytes.Decode.Decoder docs -> (docs -> Bytes.Encode.Encoder) -> Reporting.Style -> FilePath -> Maybe String -> Details.Details -> DocsGoal docs -> NE.Nonempty ModuleName.Raw -> Task Never (Result Exit.BuildProblem docs)
-fromExposed docsDecoder docsEncoder style root maybeBuildDir details docsGoal ((NE.Nonempty e es) as exposed) =
+fromExposed : Bytes.Decode.Decoder docs -> (docs -> Bytes.Encode.Encoder) -> Reporting.Style -> FilePath -> Maybe String -> Maybe Pkg.Name -> Details.Details -> DocsGoal docs -> NE.Nonempty ModuleName.Raw -> Task Never (Result Exit.BuildProblem docs)
+fromExposed docsDecoder docsEncoder style root maybeBuildDir maybeKernelPackage details docsGoal ((NE.Nonempty e es) as exposed) =
     Reporting.trackBuild docsDecoder docsEncoder style <|
         \key ->
-            makeEnv key root maybeBuildDir details False
+            makeEnv key root maybeBuildDir maybeKernelPackage details False
                 |> Task.andThen (crawlExposed root maybeBuildDir details docsGoal (e :: es))
                 |> Task.andThen (compileExposed root maybeBuildDir details docsGoal exposed)
 
@@ -345,11 +352,11 @@ This entry point discovers modules from the given file paths, crawls their depen
 and performs parallel incremental compilation.
 
 -}
-fromPaths : Reporting.Style -> FilePath -> Maybe String -> Details.Details -> Bool -> NE.Nonempty FilePath -> Task Never (Result Exit.BuildProblem Artifacts)
-fromPaths style root maybeBuildDir details needsTypedOpt paths =
+fromPaths : Reporting.Style -> FilePath -> Maybe String -> Maybe Pkg.Name -> Details.Details -> Bool -> NE.Nonempty FilePath -> Task Never (Result Exit.BuildProblem Artifacts)
+fromPaths style root maybeBuildDir maybeKernelPackage details needsTypedOpt paths =
     Reporting.trackBuild artifactsDecoder artifactsEncoder style <|
         \key ->
-            makeEnv key root maybeBuildDir details needsTypedOpt
+            makeEnv key root maybeBuildDir maybeKernelPackage details needsTypedOpt
                 |> Task.andThen (findAndBuildFromPaths root maybeBuildDir details paths)
 
 
@@ -568,7 +575,11 @@ crawlFoundPaths env mvar docsNeed name needsDocs root projectType buildID locals
             Import.AmbiguousLocal (Utils.fpMakeRelative root p1) (Utils.fpMakeRelative root p2) (List.map (Utils.fpMakeRelative root) ps) |> SBadImport |> Task.succeed
 
         [] ->
-            crawlNoLocalPath name projectType foreigns
+            let
+                (Env envData) =
+                    env
+            in
+            crawlNoLocalPath name projectType foreigns envData.srcDirs
 
 
 crawlSinglePath : Env -> MVar StatusDict -> DocsNeed -> ModuleName.Raw -> Bool -> Details.BuildID -> Dict String ModuleName.Raw Details.Local -> Dict String ModuleName.Raw Details.Foreign -> FilePath -> Task Never Status
@@ -596,8 +607,8 @@ crawlWithTime env mvar docsNeed name needsDocs buildID locals path newTime =
                 crawlDeps env mvar localData.deps (SCached local)
 
 
-crawlNoLocalPath : ModuleName.Raw -> Parse.ProjectType -> Dict String ModuleName.Raw Details.Foreign -> Task Never Status
-crawlNoLocalPath name projectType foreigns =
+crawlNoLocalPath : ModuleName.Raw -> Parse.ProjectType -> Dict String ModuleName.Raw Details.Foreign -> List AbsoluteSrcDir -> Task Never Status
+crawlNoLocalPath name projectType foreigns srcDirs =
     case Dict.get identity name foreigns of
         Just (Details.Foreign dep deps) ->
             case deps of
@@ -609,23 +620,48 @@ crawlNoLocalPath name projectType foreigns =
 
         Nothing ->
             if Name.isKernel name && Parse.isKernel projectType then
-                checkKernelExists name
+                let
+                    pkg =
+                        projectTypeToPkg projectType
+
+                    foreignHomes =
+                        Dict.map (\_ (Details.Foreign home _) -> home) foreigns
+                in
+                checkKernelExistsInDirs name pkg foreignHomes srcDirs
 
             else
                 SBadImport Import.NotFound |> Task.succeed
 
 
-checkKernelExists : ModuleName.Raw -> Task Never Status
-checkKernelExists name =
-    File.exists ("src/" ++ ModuleName.toFilePath name ++ ".js")
-        |> Task.map
-            (\exists ->
-                if exists then
-                    SKernel
+checkKernelExistsInDirs : ModuleName.Raw -> Pkg.Name -> Dict String ModuleName.Raw Pkg.Name -> List AbsoluteSrcDir -> Task Never Status
+checkKernelExistsInDirs name pkg foreignHomes srcDirs =
+    case srcDirs of
+        [] ->
+            SBadImport Import.NotFound |> Task.succeed
 
-                else
-                    SBadImport Import.NotFound
-            )
+        (AbsoluteSrcDir dir) :: rest ->
+            let
+                jsPath =
+                    dir ++ "/" ++ ModuleName.toFilePath name ++ ".js"
+            in
+            File.exists jsPath
+                |> Task.andThen
+                    (\exists ->
+                        if exists then
+                            File.readUtf8 jsPath
+                                |> Task.map
+                                    (\bytes ->
+                                        case Kernel.fromByteString pkg foreignHomes bytes of
+                                            Just (Kernel.Content _ _) ->
+                                                SKernel
+
+                                            Nothing ->
+                                                SKernel
+                                    )
+
+                        else
+                            checkKernelExistsInDirs name pkg foreignHomes rest
+                    )
 
 
 crawlFile : Env -> MVar StatusDict -> DocsNeed -> ModuleName.Raw -> FilePath -> File.Time -> Details.BuildID -> Task Never Status
@@ -698,6 +734,7 @@ type BResult
     | RBlocked
     | RForeign I.Interface
     | RKernel
+    | RKernelLocal (List Kernel.Chunk)
 
 
 {-| State of a cached module interface: unneeded, successfully loaded, or corrupted.
@@ -1018,6 +1055,9 @@ checkDepsHelp root results deps new same cached importProblems isBlocked lastDep
                                 checkDepsHelp root results otherDeps new (( dep, iface ) :: same) cached importProblems isBlocked lastDepChange lastCompile
 
                             RKernel ->
+                                checkDepsHelp root results otherDeps new same cached importProblems isBlocked lastDepChange lastCompile
+
+                            RKernelLocal _ ->
                                 checkDepsHelp root results otherDeps new same cached importProblems isBlocked lastDepChange lastCompile
                     )
 
@@ -1592,6 +1632,9 @@ projectTypeToPkg projectType =
         Parse.Application ->
             Pkg.dummyName
 
+        Parse.KernelApplication pkg ->
+            pkg
+
 
 
 -- ====== WRITE DETAILS ======
@@ -1627,6 +1670,9 @@ addNewLocal name result locals =
             locals
 
         RKernel ->
+            locals
+
+        RKernelLocal _ ->
             locals
 
 
@@ -1676,6 +1722,9 @@ addErrors result errors =
         RKernel ->
             errors
 
+        RKernelLocal _ ->
+            errors
+
 
 addImportProblems : Dict String ModuleName.Raw BResult -> ModuleName.Raw -> List ( ModuleName.Raw, Import.Problem ) -> List ( ModuleName.Raw, Import.Problem )
 addImportProblems results name problems =
@@ -1702,6 +1751,9 @@ addImportProblems results name problems =
             problems
 
         RKernel ->
+            problems
+
+        RKernelLocal _ ->
             problems
 
 
@@ -1812,6 +1864,9 @@ toDocs result =
         RKernel ->
             Nothing
 
+        RKernelLocal _ ->
+            Nothing
+
 
 
 -------------------------------------------------------------------------------
@@ -1844,7 +1899,7 @@ artifacts suitable for interactive evaluation.
 -}
 fromRepl : FilePath -> Details.Details -> String -> Task Never (Result Exit.Repl ReplArtifacts)
 fromRepl root details source =
-    makeEnv Reporting.ignorer root Nothing details False
+    makeEnv Reporting.ignorer root Nothing Nothing details False
         |> Task.andThen
             (\((Env envData) as env) ->
                 case Parse.fromByteString envData.projectType source of
@@ -2409,6 +2464,9 @@ addInside name result modules =
         RKernel ->
             modules
 
+        RKernelLocal _ ->
+            modules
+
 
 badInside : ModuleName.Raw -> String
 badInside name =
@@ -2497,6 +2555,12 @@ bResultEncoder bResult =
         RKernel ->
             Bytes.Encode.unsignedInt8 7
 
+        RKernelLocal chunks ->
+            Bytes.Encode.sequence
+                [ Bytes.Encode.unsignedInt8 8
+                , BE.list Kernel.chunkEncoder chunks
+                ]
+
 
 bResultDecoder : Bytes.Decode.Decoder BResult
 bResultDecoder =
@@ -2542,6 +2606,9 @@ bResultDecoder =
 
                     7 ->
                         Bytes.Decode.succeed RKernel
+
+                    8 ->
+                        Bytes.Decode.map RKernelLocal (BD.list Kernel.chunkDecoder)
 
                     _ ->
                         Bytes.Decode.fail

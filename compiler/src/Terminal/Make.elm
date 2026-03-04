@@ -4,6 +4,8 @@ module Terminal.Make exposing
     , output, reportType, docsFile
     , parseOutput, parseReportType, parseDocsFile
     , buildDir, parseBuildDir
+    , kernelPackage, parseKernelPackage
+    , localPackage, parseLocalPackage
     )
 
 {-| Build command implementation for compiling Elm code.
@@ -50,6 +52,7 @@ import Builder.Stuff as Stuff
 import Compiler.AST.Optimized as Opt
 import Compiler.Data.NonEmptyList as NE
 import Compiler.Elm.ModuleName as ModuleName
+import Compiler.Elm.Package as Pkg
 import Compiler.Generate.CodeGen as CodeGen
 import Compiler.Generate.Html as Html
 import Maybe.Extra as Maybe
@@ -77,6 +80,8 @@ type alias FlagsData =
     , docs : Maybe String
     , showPackageErrors : Bool
     , buildDir : Maybe String
+    , kernelPackage : Maybe Pkg.Name
+    , localPackage : Maybe ( Pkg.Name, FilePath )
     }
 
 
@@ -145,45 +150,46 @@ type alias BuildContext =
     , maybeBuildDir : Maybe String
     , desiredMode : DesiredMode
     , details : Details.Details
+    , localPackage : Maybe ( Pkg.Name, FilePath )
     }
 
 
 runHelp : String -> List String -> Reporting.Style -> Flags -> Task Never (Result Exit.Make ())
 runHelp root paths style (Flags flagsData) =
-    BW.withScope (runHelpWithScope root paths style flagsData.debug flagsData.optimize flagsData.withSourceMaps flagsData.output flagsData.docs flagsData.showPackageErrors flagsData.buildDir)
+    BW.withScope (runHelpWithScope root paths style flagsData.debug flagsData.optimize flagsData.withSourceMaps flagsData.output flagsData.docs flagsData.showPackageErrors flagsData.buildDir flagsData.kernelPackage flagsData.localPackage)
 
 
-runHelpWithScope : FilePath -> List String -> Reporting.Style -> Bool -> Bool -> Bool -> Maybe Output -> Maybe FilePath -> Bool -> Maybe String -> BW.Scope -> Task Never (Result Exit.Make ())
-runHelpWithScope root paths style debug optimize withSourceMaps maybeOutput maybeDocs showPackageErrors maybeBuildDir scope =
+runHelpWithScope : FilePath -> List String -> Reporting.Style -> Bool -> Bool -> Bool -> Maybe Output -> Maybe FilePath -> Bool -> Maybe String -> Maybe Pkg.Name -> Maybe ( Pkg.Name, FilePath ) -> BW.Scope -> Task Never (Result Exit.Make ())
+runHelpWithScope root paths style debug optimize withSourceMaps maybeOutput maybeDocs showPackageErrors maybeBuildDir maybeKernelPackage maybeLocalPackage scope =
     Stuff.withRootLockBuildDir root
         maybeBuildDir
         (Task.run
             (getMode debug optimize
-                |> Task.andThen (loadDetailsAndBuild root paths style withSourceMaps maybeOutput maybeDocs showPackageErrors maybeBuildDir scope)
+                |> Task.andThen (loadDetailsAndBuild root paths style withSourceMaps maybeOutput maybeDocs showPackageErrors maybeBuildDir maybeKernelPackage maybeLocalPackage scope)
             )
         )
 
 
-loadDetailsAndBuild : FilePath -> List String -> Reporting.Style -> Bool -> Maybe Output -> Maybe FilePath -> Bool -> Maybe String -> BW.Scope -> DesiredMode -> Task Exit.Make ()
-loadDetailsAndBuild root paths style withSourceMaps maybeOutput maybeDocs showPackageErrors maybeBuildDir scope desiredMode =
-    Task.eio Exit.MakeBadDetails (Details.load style scope root maybeBuildDir (shouldUseTypedOpt maybeOutput) showPackageErrors)
-        |> Task.andThen (buildWithDetails root paths style withSourceMaps maybeOutput maybeDocs maybeBuildDir desiredMode)
+loadDetailsAndBuild : FilePath -> List String -> Reporting.Style -> Bool -> Maybe Output -> Maybe FilePath -> Bool -> Maybe String -> Maybe Pkg.Name -> Maybe ( Pkg.Name, FilePath ) -> BW.Scope -> DesiredMode -> Task Exit.Make ()
+loadDetailsAndBuild root paths style withSourceMaps maybeOutput maybeDocs showPackageErrors maybeBuildDir maybeKernelPackage maybeLocalPackage scope desiredMode =
+    Task.eio Exit.MakeBadDetails (Details.load style scope root maybeBuildDir (shouldUseTypedOpt maybeOutput) showPackageErrors maybeLocalPackage)
+        |> Task.andThen (buildWithDetails root paths style withSourceMaps maybeOutput maybeDocs maybeBuildDir maybeKernelPackage maybeLocalPackage desiredMode)
 
 
-buildWithDetails : FilePath -> List String -> Reporting.Style -> Bool -> Maybe Output -> Maybe FilePath -> Maybe String -> DesiredMode -> Details.Details -> Task Exit.Make ()
-buildWithDetails root paths style withSourceMaps maybeOutput maybeDocs maybeBuildDir desiredMode details =
+buildWithDetails : FilePath -> List String -> Reporting.Style -> Bool -> Maybe Output -> Maybe FilePath -> Maybe String -> Maybe Pkg.Name -> Maybe ( Pkg.Name, FilePath ) -> DesiredMode -> Details.Details -> Task Exit.Make ()
+buildWithDetails root paths style withSourceMaps maybeOutput maybeDocs maybeBuildDir maybeKernelPackage maybeLocalPackage desiredMode details =
     let
         ctx : BuildContext
         ctx =
-            BuildContext root style withSourceMaps maybeOutput maybeDocs maybeBuildDir desiredMode details
+            BuildContext root style withSourceMaps maybeOutput maybeDocs maybeBuildDir desiredMode details maybeLocalPackage
     in
     case paths of
         [] ->
             getExposed details
-                |> Task.andThen (buildExposed style root maybeBuildDir details maybeDocs)
+                |> Task.andThen (buildExposed style root maybeBuildDir maybeKernelPackage details maybeDocs)
 
         p :: ps ->
-            buildPaths style root maybeBuildDir details (shouldUseTypedOpt maybeOutput) (NE.Nonempty p ps)
+            buildPaths style root maybeBuildDir maybeKernelPackage details (shouldUseTypedOpt maybeOutput) (NE.Nonempty p ps)
                 |> Task.andThen (handleArtifacts ctx)
 
 
@@ -263,7 +269,7 @@ handleMlirOutput : BuildContext -> FilePath -> Build.Artifacts -> Task Exit.Make
 handleMlirOutput ctx target artifacts =
     case getNoMains artifacts of
         [] ->
-            toMonoBuilder Generate.mlirBackend ctx.withSourceMaps 0 ctx.root ctx.maybeBuildDir ctx.details ctx.desiredMode artifacts
+            toMonoBuilder Generate.mlirBackend ctx.withSourceMaps 0 ctx.root ctx.maybeBuildDir ctx.localPackage ctx.details ctx.desiredMode artifacts
                 |> Task.andThen (\builder -> generate ctx.style target builder (Build.getRootNames artifacts))
 
         name :: names ->
@@ -319,8 +325,8 @@ getExposed (Details.Details detailsData) =
 -- ====== BUILD PROJECTS ======
 
 
-buildExposed : Reporting.Style -> FilePath -> Maybe String -> Details.Details -> Maybe FilePath -> NE.Nonempty ModuleName.Raw -> Task Exit.Make ()
-buildExposed style root maybeBuildDir details maybeDocs exposed =
+buildExposed : Reporting.Style -> FilePath -> Maybe String -> Maybe Pkg.Name -> Details.Details -> Maybe FilePath -> NE.Nonempty ModuleName.Raw -> Task Exit.Make ()
+buildExposed style root maybeBuildDir maybeKernelPackage details maybeDocs exposed =
     let
         docsGoal : Build.DocsGoal ()
         docsGoal =
@@ -332,14 +338,15 @@ buildExposed style root maybeBuildDir details maybeDocs exposed =
             style
             root
             maybeBuildDir
+            maybeKernelPackage
             details
             docsGoal
             exposed
 
 
-buildPaths : Reporting.Style -> FilePath -> Maybe String -> Details.Details -> Bool -> NE.Nonempty FilePath -> Task Exit.Make Build.Artifacts
-buildPaths style root maybeBuildDir details needsTypedOpt paths =
-    Build.fromPaths style root maybeBuildDir details needsTypedOpt paths |> Task.eio Exit.MakeCannotBuild
+buildPaths : Reporting.Style -> FilePath -> Maybe String -> Maybe Pkg.Name -> Details.Details -> Bool -> NE.Nonempty FilePath -> Task Exit.Make Build.Artifacts
+buildPaths style root maybeBuildDir maybeKernelPackage details needsTypedOpt paths =
+    Build.fromPaths style root maybeBuildDir maybeKernelPackage details needsTypedOpt paths |> Task.eio Exit.MakeCannotBuild
 
 
 
@@ -453,17 +460,17 @@ toBuilder backend withSourceMaps leadingLines root maybeBuildDir details desired
 
 {-| Build using monomorphized code generation (for MLIR mono backend)
 -}
-toMonoBuilder : CodeGen.MonoCodeGen -> Bool -> Int -> FilePath -> Maybe String -> Details.Details -> DesiredMode -> Build.Artifacts -> Task Exit.Make String
-toMonoBuilder backend withSourceMaps leadingLines root maybeBuildDir details desiredMode artifacts =
+toMonoBuilder : CodeGen.MonoCodeGen -> Bool -> Int -> FilePath -> Maybe String -> Maybe ( Pkg.Name, FilePath ) -> Details.Details -> DesiredMode -> Build.Artifacts -> Task Exit.Make String
+toMonoBuilder backend withSourceMaps leadingLines root maybeBuildDir maybeLocal details desiredMode artifacts =
     (case desiredMode of
         Debug ->
-            Generate.monoDev backend withSourceMaps leadingLines root maybeBuildDir details artifacts
+            Generate.monoDev backend withSourceMaps leadingLines root maybeBuildDir maybeLocal details artifacts
 
         Dev ->
-            Generate.monoDev backend withSourceMaps leadingLines root maybeBuildDir details artifacts
+            Generate.monoDev backend withSourceMaps leadingLines root maybeBuildDir maybeLocal details artifacts
 
         Prod ->
-            Generate.monoDev backend withSourceMaps leadingLines root maybeBuildDir details artifacts
+            Generate.monoDev backend withSourceMaps leadingLines root maybeBuildDir maybeLocal details artifacts
     )
         |> Task.map CodeGen.outputToString
         |> Task.mapError Exit.MakeBadGenerate
@@ -576,6 +583,47 @@ parseBuildDir dir =
 
     else
         Just dir
+
+
+kernelPackage : Parser
+kernelPackage =
+    Parser
+        { singular = "kernel package"
+        , plural = "kernel packages"
+        , suggest = \_ -> Task.succeed []
+        , examples = \_ -> Task.succeed [ "eco/compiler" ]
+        }
+
+
+parseKernelPackage : String -> Maybe Pkg.Name
+parseKernelPackage str =
+    case String.split "/" str of
+        [ author, name ] ->
+            Just ( author, name )
+
+        _ ->
+            Nothing
+
+
+localPackage : Parser
+localPackage =
+    Parser
+        { singular = "local package mapping"
+        , plural = "local package mappings"
+        , suggest = \_ -> Task.succeed []
+        , examples = \_ -> Task.succeed [ "eco/kernel=../eco-kernel-cpp" ]
+        }
+
+
+parseLocalPackage : String -> Maybe ( Pkg.Name, FilePath )
+parseLocalPackage str =
+    case String.split "=" str of
+        [ pkgStr, path ] ->
+            parseKernelPackage pkgStr
+                |> Maybe.map (\pkg -> ( pkg, path ))
+
+        _ ->
+            Nothing
 
 
 hasExt : String -> String -> Bool

@@ -1,5 +1,6 @@
 /*
 import Eco.Kernel.Scheduler exposing (succeed, binding)
+import Elm.Kernel.List exposing (fromArray)
 import Maybe exposing (Just, Nothing)
 */
 
@@ -15,5 +16,5 @@ var _Env_lookup = function(name) {
 };
 
 var _Env_rawArgs = __Scheduler_binding(function(callback) {
-    callback(__Scheduler_succeed(process.argv.slice(2)));
+    callback(__Scheduler_succeed(__List_fromArray(process.argv.slice(2))));
 });

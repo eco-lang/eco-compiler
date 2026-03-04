@@ -283,6 +283,16 @@ make =
                             ++ "Enables parallel builds with different builddirs to avoid cache conflicts."
                         )
                     )
+                |> Terminal.more
+                    (Terminal.flag "kernel-package"
+                        Make.kernelPackage
+                        "Give the application kernel privileges under the specified package name (e.g. eco/compiler)."
+                    )
+                |> Terminal.more
+                    (Terminal.flag "local-package"
+                        Make.localPackage
+                        "Resolve a package dependency from a local filesystem path (e.g. eco/kernel=../eco-kernel-cpp)."
+                    )
     in
     Terminal.Command
         { name = "make"
@@ -297,7 +307,7 @@ make =
                     chunks
                     [ Chomp.chompMultiple (Chomp.pure identity) Terminal.elmFile Terminal.parseElmFile
                     ]
-                    (Chomp.pure (\debug_ optimize_ withSourceMaps_ output_ report_ docs_ showPackageErrors_ buildDir_ -> Make.Flags { debug = debug_, optimize = optimize_, withSourceMaps = withSourceMaps_, output = output_, report = report_, docs = docs_, showPackageErrors = showPackageErrors_, buildDir = buildDir_ })
+                    (Chomp.pure (\debug_ optimize_ withSourceMaps_ output_ report_ docs_ showPackageErrors_ buildDir_ kernelPackage_ localPackage_ -> Make.Flags { debug = debug_, optimize = optimize_, withSourceMaps = withSourceMaps_, output = output_, report = report_, docs = docs_, showPackageErrors = showPackageErrors_, buildDir = buildDir_, kernelPackage = kernelPackage_, localPackage = localPackage_ })
                         |> Chomp.apply (Chomp.chompOnOffFlag "debug")
                         |> Chomp.apply (Chomp.chompOnOffFlag "optimize")
                         |> Chomp.apply (Chomp.chompOnOffFlag "sourcemaps")
@@ -306,6 +316,8 @@ make =
                         |> Chomp.apply (Chomp.chompNormalFlag "docs" Make.docsFile Make.parseDocsFile)
                         |> Chomp.apply (Chomp.chompOnOffFlag "Xpackage-errors")
                         |> Chomp.apply (Chomp.chompNormalFlag "builddir" Make.buildDir Make.parseBuildDir)
+                        |> Chomp.apply (Chomp.chompNormalFlag "kernel-package" Make.kernelPackage Make.parseKernelPackage)
+                        |> Chomp.apply (Chomp.chompNormalFlag "local-package" Make.localPackage Make.parseLocalPackage)
                         |> Chomp.andThen
                             (\value ->
                                 Chomp.checkForUnknownFlags makeFlags

@@ -2,7 +2,7 @@ module Compiler.Elm.Package exposing
     ( Name, Author, Project
     , compareName, toString, toChars, toUrl, toJsonString
     , isKernel
-    , dummyName, kernel, core, browser, virtualDom, html, json, bytes, random, time, webgl, linearAlgebra, test
+    , dummyName, kernel, ecoKernel, isKernelPackage, core, browser, virtualDom, html, json, bytes, random, time, webgl, linearAlgebra, test
     , suggestions, nearbyNames
     , encode, decoder, keyDecoder
     , nameEncoder, nameDecoder, parser
@@ -117,7 +117,7 @@ type alias Project =
 -}
 isKernel : Name -> Bool
 isKernel ( author, _ ) =
-    author == elm || author == elmExplorations
+    author == elm || author == elmExplorations || author == eco
 
 
 {-| Convert a package name to a character string in the form "author/project".
@@ -162,6 +162,16 @@ dummyName =
 kernel : Name
 kernel =
     toName elm "kernel"
+
+
+ecoKernel : Name
+ecoKernel =
+    toName eco "kernel"
+
+
+isKernelPackage : Name -> Bool
+isKernelPackage pkg =
+    pkg == kernel || pkg == ecoKernel
 
 
 {-| The "elm/core" package name.
@@ -259,6 +269,11 @@ elm =
 elmExplorations : Author
 elmExplorations =
     "elm-explorations"
+
+
+eco : String
+eco =
+    "eco"
 
 
 

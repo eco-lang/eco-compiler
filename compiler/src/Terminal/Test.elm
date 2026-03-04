@@ -144,7 +144,7 @@ checkTestsDirAndInitEnv nodeDirname baseOutline =
 
 initEnvWithContext : FilePath -> Outline.Outline -> Bool -> Task Exit.Test TestSetupContext
 initEnvWithContext nodeDirname baseOutline testsDirExists =
-    Task.eio Exit.TestBadRegistry Solver.initEnv
+    Task.eio Exit.TestBadRegistry (Solver.initEnv Nothing)
         |> Task.map
             (\env ->
                 { nodeDirname = nodeDirname
@@ -1240,7 +1240,7 @@ runMake root path =
     BW.withScope
         (\scope ->
             Task.run <|
-                (Task.eio Exit.TestBadDetails (Details.load style scope root Nothing False False)
+                (Task.eio Exit.TestBadDetails (Details.load style scope root Nothing False False Nothing)
                     |> Task.andThen (buildAndGenerate root path)
                 )
         )
@@ -1254,7 +1254,7 @@ buildAndGenerate root path details =
 
 buildPaths : FilePath -> Details.Details -> NE.Nonempty FilePath -> Task Exit.Test Build.Artifacts
 buildPaths root details paths =
-    Build.fromPaths style root Nothing details False paths |> Task.eio Exit.TestCannotBuild
+    Build.fromPaths style root Nothing Nothing details False paths |> Task.eio Exit.TestCannotBuild
 
 
 

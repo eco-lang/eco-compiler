@@ -77,7 +77,7 @@ runHelp root path (Flags debug optimize withSourceMaps) =
                                     style =
                                         Reporting.json
                                 in
-                                Task.eio Exit.MakeBadDetails (Details.load style scope root Nothing False False)
+                                Task.eio Exit.MakeBadDetails (Details.load style scope root Nothing False False Nothing)
                                     |> Task.andThen
                                         (\details ->
                                             buildPaths style root details (NE.Nonempty path [])
@@ -127,7 +127,7 @@ getMode debug optimize =
 
 buildPaths : Reporting.Style -> FilePath -> Details.Details -> NE.Nonempty FilePath -> Task Exit.Make Build.Artifacts
 buildPaths style root details paths =
-    Build.fromPaths style root Nothing details False paths |> Task.eio Exit.MakeCannotBuild
+    Build.fromPaths style root Nothing Nothing details False paths |> Task.eio Exit.MakeCannotBuild
 
 
 

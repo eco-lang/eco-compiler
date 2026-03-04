@@ -1,5 +1,6 @@
 /*
 import Eco.Kernel.Scheduler exposing (succeed, fail, binding)
+import Elm.Kernel.List exposing (toArray)
 import Maybe exposing (Just, Nothing)
 */
 
@@ -13,11 +14,11 @@ var _Process_exit = function(code) {
     });
 };
 
-var _Process_spawn = function(cmd, args) {
+var _Process_spawn = F2(function(cmd, args) {
     return __Scheduler_binding(function(callback) {
         try {
             var child_process = require('child_process');
-            var child = child_process.spawn(cmd, _List_toArray(args),
+            var child = child_process.spawn(cmd, __List_toArray(args),
                 { stdio: ['inherit', 'inherit', 'inherit'] });
             _Process_children[child.pid] = child;
             callback(__Scheduler_succeed(child.pid));
@@ -25,13 +26,13 @@ var _Process_spawn = function(cmd, args) {
             callback(__Scheduler_fail(e.message));
         }
     });
-};
+});
 
-var _Process_spawnProcess = function(cmd, args, stdin, stdout, stderr) {
+var _Process_spawnProcess = F5(function(cmd, args, stdin, stdout, stderr) {
     return __Scheduler_binding(function(callback) {
         try {
             var child_process = require('child_process');
-            var child = child_process.spawn(cmd, _List_toArray(args),
+            var child = child_process.spawn(cmd, __List_toArray(args),
                 { stdio: [stdin, stdout, stderr] });
             _Process_children[child.pid] = child;
             var stdinHandle;
@@ -50,7 +51,7 @@ var _Process_spawnProcess = function(cmd, args, stdin, stdout, stderr) {
             callback(__Scheduler_fail(e.message));
         }
     });
-};
+});
 
 var _Process_wait = function(handle) {
     return __Scheduler_binding(function(callback) {

@@ -1,5 +1,6 @@
 /*
 import Eco.Kernel.Scheduler exposing (succeed, binding)
+import Elm.Kernel.Utils exposing (Tuple0)
 */
 
 var _Runtime_dirname = __Scheduler_binding(function(callback) {
@@ -15,7 +16,7 @@ var _Runtime_replState = null;
 var _Runtime_saveState = function(state) {
     return __Scheduler_binding(function(callback) {
         _Runtime_replState = state;
-        callback(__Scheduler_succeed(0 /* Unit */));
+        callback(__Scheduler_succeed(__Utils_Tuple0));
     });
 };
 

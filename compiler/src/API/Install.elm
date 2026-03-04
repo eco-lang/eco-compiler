@@ -51,7 +51,7 @@ run pkg =
 
                         Just root ->
                             Task.run
-                                (Task.eio Exit.InstallBadRegistry Solver.initEnv
+                                (Task.eio Exit.InstallBadRegistry (Solver.initEnv Nothing)
                                     |> Task.andThen
                                         (\env ->
                                             Task.eio Exit.InstallBadOutline (Outline.read root)
