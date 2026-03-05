@@ -39,6 +39,12 @@ source maps, and documentation generation.
 
 @docs buildDir, parseBuildDir
 
+
+# Kernel and Local Packages
+
+@docs kernelPackage, parseKernelPackage
+@docs localPackage, parseLocalPackage
+
 -}
 
 import Builder.BackgroundWriter as BW
@@ -585,6 +591,8 @@ parseBuildDir dir =
         Just dir
 
 
+{-| Parser for kernel package names in "author/project" format.
+-}
 kernelPackage : Parser
 kernelPackage =
     Parser
@@ -595,6 +603,8 @@ kernelPackage =
         }
 
 
+{-| Parse a kernel package string like "eco/kernel" into a package name.
+-}
 parseKernelPackage : String -> Maybe Pkg.Name
 parseKernelPackage str =
     case String.split "/" str of
@@ -605,6 +615,8 @@ parseKernelPackage str =
             Nothing
 
 
+{-| Parser for local package mappings in "author/project=path" format.
+-}
 localPackage : Parser
 localPackage =
     Parser
@@ -615,6 +627,8 @@ localPackage =
         }
 
 
+{-| Parse a local package mapping string like "eco/kernel=../path" into a name and path.
+-}
 parseLocalPackage : String -> Maybe ( Pkg.Name, FilePath )
 parseLocalPackage str =
     case String.split "=" str of

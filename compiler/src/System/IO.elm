@@ -262,6 +262,8 @@ type ChItem a
     = ChItem a (Stream a)
 
 
+{-| A stream of values backed by an MVar chain.
+-}
 type alias Stream a =
     MVar (ChItem a)
 

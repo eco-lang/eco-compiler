@@ -24,7 +24,7 @@ managing file locks.
 
 # Package Cache
 
-@docs PackageCache, getPackageCache, getReplCache, package, registry
+@docs PackageCache, getPackageCache, getReplCache, package, isLocalPackage, registry
 @docs typedPackageArtifacts, packageCacheEncoder, packageCacheDecoder
 
 
@@ -298,6 +298,8 @@ package (PackageCache dir maybeLocal) name version =
             Utils.fpCombine dir (Utils.fpCombine (Pkg.toString name) (V.toChars version))
 
 
+{-| Check whether a package name matches the locally linked package, if any.
+-}
 isLocalPackage : PackageCache -> Pkg.Name -> Bool
 isLocalPackage (PackageCache _ maybeLocal) name =
     case maybeLocal of

@@ -33,7 +33,7 @@ using Levenshtein distance.
 
 # Common Packages
 
-@docs dummyName, kernel, core, browser, virtualDom, html, json, bytes, random, time, webgl, linearAlgebra, test
+@docs dummyName, kernel, ecoKernel, isKernelPackage, core, browser, virtualDom, html, json, bytes, random, time, webgl, linearAlgebra, test
 
 
 # Package Suggestions
@@ -164,11 +164,15 @@ kernel =
     toName elm "kernel"
 
 
+{-| The "eco/kernel" package name.
+-}
 ecoKernel : Name
 ecoKernel =
     toName eco "kernel"
 
 
+{-| Check whether a package is a kernel package (elm/kernel or eco/kernel).
+-}
 isKernelPackage : Name -> Bool
 isKernelPackage pkg =
     pkg == kernel || pkg == ecoKernel
