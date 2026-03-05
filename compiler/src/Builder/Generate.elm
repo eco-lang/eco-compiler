@@ -592,39 +592,38 @@ monoDev backend withSourceMaps leadingLines root maybeBuildDir maybeLocal detail
 generateMonoDevOutput : CodeGen.MonoCodeGen -> Bool -> Int -> FilePath -> NE.Nonempty Build.Root -> TypedObjects -> Task Exit.Generate CodeGen.Output
 generateMonoDevOutput backend withSourceMaps leadingLines root roots objects =
     let
-        mode : Mode.Mode
-        mode =
-            Mode.Dev Nothing
-
-        baseGraph : TOpt.GlobalGraph
-        baseGraph =
-            typedObjectsToGlobalGraph objects
-
-        baseTypeEnv : TypeEnv.GlobalTypeEnv
-        baseTypeEnv =
-            typedObjectsToGlobalTypeEnv objects
-
-        -- Add typed graphs from roots (for Outside roots that have typed graphs)
+        -- Build typed graph and type env from objects + roots.
+        -- After this function returns, `objects` and `roots` go out of scope.
         typedGraph : TOpt.GlobalGraph
         typedGraph =
-            List.foldl addRootTypedGraph baseGraph (NE.toList roots)
+            List.foldl addRootTypedGraph (typedObjectsToGlobalGraph objects) (NE.toList roots)
 
-        -- Add type envs from roots (for Outside roots that have type envs)
         globalTypeEnv : TypeEnv.GlobalTypeEnv
         globalTypeEnv =
-            List.foldl addRootTypeEnv baseTypeEnv (NE.toList roots)
+            List.foldl addRootTypeEnv (typedObjectsToGlobalTypeEnv objects) (NE.toList roots)
     in
-    case Monomorphize.monomorphize "main" globalTypeEnv typedGraph of
-        Err err ->
-            Task.throw (Exit.GenerateMonomorphizationError err)
+    Task.succeed ( typedGraph, globalTypeEnv )
+        |> Task.andThen
+            (\( tGraph, typeEnv ) ->
+                -- GC boundary: `objects`, `roots` are now unreachable.
+                case Monomorphize.monomorphize "main" typeEnv tGraph of
+                    Err err ->
+                        Task.throw (Exit.GenerateMonomorphizationError err)
 
-        Ok monoGraph0 ->
-            let
-                monoGraph =
-                    MonoGlobalOptimize.globalOptimize globalTypeEnv monoGraph0
-            in
-            prepareSourceMaps withSourceMaps root
-                |> Task.map (generateMonoOutput backend leadingLines mode monoGraph globalTypeEnv)
+                    Ok monoGraph0 ->
+                        Task.succeed ( monoGraph0, typeEnv )
+            )
+        |> Task.andThen
+            (\( monoGraph0, typeEnv ) ->
+                -- GC boundary: `typedGraph` is now unreachable.
+                let
+                    monoGraph =
+                        MonoGlobalOptimize.globalOptimize typeEnv monoGraph0
+                in
+                -- After this callback returns, `monoGraph0` goes out of scope.
+                prepareSourceMaps withSourceMaps root
+                    |> Task.map (generateMonoOutput backend leadingLines (Mode.Dev Nothing) monoGraph typeEnv)
+            )
 
 
 generateMonoOutput : CodeGen.MonoCodeGen -> Int -> Mode.Mode -> Mono.MonoGraph -> TypeEnv.GlobalTypeEnv -> CodeGen.SourceMaps -> CodeGen.Output

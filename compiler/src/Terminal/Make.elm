@@ -247,8 +247,15 @@ handleJsOutput : BuildContext -> FilePath -> Build.Artifacts -> Task Exit.Make (
 handleJsOutput ctx target artifacts =
     case getNoMains artifacts of
         [] ->
+            let
+                rootNames =
+                    Build.getRootNames artifacts
+
+                style =
+                    ctx.style
+            in
             toBuilder Generate.javascriptBackend ctx.withSourceMaps 0 ctx.root ctx.maybeBuildDir ctx.details ctx.desiredMode artifacts
-                |> Task.andThen (\builder -> generate ctx.style target builder (Build.getRootNames artifacts))
+                |> Task.andThen (\builder -> generate style target builder rootNames)
 
         name :: names ->
             Task.throw (Exit.MakeNonMainFilesIntoJavaScript name names)
@@ -275,8 +282,15 @@ handleMlirOutput : BuildContext -> FilePath -> Build.Artifacts -> Task Exit.Make
 handleMlirOutput ctx target artifacts =
     case getNoMains artifacts of
         [] ->
+            let
+                rootNames =
+                    Build.getRootNames artifacts
+
+                style =
+                    ctx.style
+            in
             toMonoBuilder Generate.mlirBackend ctx.withSourceMaps 0 ctx.root ctx.maybeBuildDir ctx.localPackage ctx.details ctx.desiredMode artifacts
-                |> Task.andThen (\builder -> generate ctx.style target builder (Build.getRootNames artifacts))
+                |> Task.andThen (\builder -> generate style target builder rootNames)
 
         name :: names ->
             Task.throw (Exit.MakeNonMainFilesIntoJavaScript name names)
