@@ -123,6 +123,12 @@ static cl::opt<std::string> frontendRunner(
     cl::value_desc("path"),
     cl::init(""));
 
+static cl::opt<std::string> workDir(
+    "workdir",
+    cl::desc("Working directory for frontend (auto-detected from elm.json if omitted)"),
+    cl::value_desc("path"),
+    cl::init(""));
+
 static cl::opt<bool> verbose(
     "verbose",
     cl::desc("Print subcommands being executed"),
@@ -140,6 +146,27 @@ static bool isMlirFile(llvm::StringRef path) {
     return path.ends_with(".mlir");
 }
 
+/// Walk up from `startPath` looking for a directory containing elm.json.
+static std::string findElmProjectRoot(const std::string &startPath) {
+    llvm::SmallString<256> dir(startPath);
+    llvm::sys::path::remove_filename(dir); // start from file's parent
+
+    while (!dir.empty()) {
+        llvm::SmallString<256> candidate(dir);
+        llvm::sys::path::append(candidate, "elm.json");
+        if (llvm::sys::fs::exists(candidate))
+            return std::string(dir);
+
+        // parent_path returns a StringRef into dir's buffer, so copy it
+        // to a temporary before reassigning.
+        std::string parent(llvm::sys::path::parent_path(dir));
+        if (parent == std::string(dir))
+            break; // reached filesystem root
+        dir = parent;
+    }
+    return "";
+}
+
 static int compileElmToMlir(const std::string &elmFile,
                              const std::string &mlirOutput) {
     if (frontendRunner.empty()) {
@@ -153,26 +180,55 @@ static int compileElmToMlir(const std::string &elmFile,
         return 1;
     }
 
-    std::string outputArg = "--output=" + mlirOutput;
+    // Determine the Elm project directory (must contain elm.json).
+    std::string projectDir = workDir;
+    if (projectDir.empty())
+        projectDir = findElmProjectRoot(elmFile);
+    if (projectDir.empty()) {
+        llvm::errs() << "Error: Could not find elm.json for '" << elmFile
+                     << "'. Use --workdir=<dir> to specify the project root.\n";
+        return 1;
+    }
+
+    // Make elmFile and mlirOutput absolute before changing cwd.
+    llvm::SmallString<256> absElm(elmFile);
+    llvm::sys::fs::make_absolute(absElm);
+    llvm::SmallString<256> absOutput(mlirOutput);
+    llvm::sys::fs::make_absolute(absOutput);
+
+    std::string outputArg = "--output=" + std::string(absOutput);
 
     llvm::SmallVector<llvm::StringRef> args;
     args.push_back(*nodeOrErr);
     args.push_back(frontendRunner);
     args.push_back("make");
     args.push_back(outputArg);
-    args.push_back(elmFile);
+    args.push_back(llvm::StringRef(absElm));
 
     if (verbose) {
-        llvm::errs() << "[eco-boot] frontend:";
+        llvm::errs() << "[eco-boot] frontend (cwd=" << projectDir << "):";
         for (auto &a : args)
             llvm::errs() << " " << a;
         llvm::errs() << "\n";
+    }
+
+    // Save current directory, cd to project root, invoke frontend, restore.
+    llvm::SmallString<256> savedCwd;
+    llvm::sys::fs::current_path(savedCwd);
+    if (auto ec = llvm::sys::fs::set_current_path(projectDir)) {
+        llvm::errs() << "Error: Could not change to directory '"
+                     << projectDir << "': " << ec.message() << "\n";
+        return 1;
     }
 
     std::string errMsg;
     int rc = llvm::sys::ExecuteAndWait(
         *nodeOrErr, args, /*env=*/std::nullopt,
         /*redirects=*/{}, /*secondsToWait=*/0, /*memoryLimit=*/0, &errMsg);
+
+    // Restore original working directory.
+    llvm::sys::fs::set_current_path(savedCwd);
+
     if (rc != 0) {
         llvm::errs() << "Error: frontend compilation failed";
         if (!errMsg.empty())
