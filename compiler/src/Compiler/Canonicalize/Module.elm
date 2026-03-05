@@ -41,7 +41,7 @@ import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Error.Canonicalize as Error
 import Compiler.Reporting.Result as ReportingResult
 import Compiler.Reporting.Warning as W
-import Data.Graph as Graph
+import Compiler.Graph as Graph
 import Data.Map as Dict exposing (Dict)
 import System.TypeCheck.IO as IO
 import Utils.Crash exposing (crash)

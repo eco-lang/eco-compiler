@@ -24,7 +24,7 @@ import Compiler.Data.Name exposing (Name)
 import Compiler.GlobalOpt.MonoTraverse as Traverse
 import Compiler.Monomorphize.Closure as Closure
 import Compiler.Reporting.Annotation as A exposing (Region)
-import Data.Graph as Graph
+import Compiler.Graph as Graph
 import Data.Map as Dict exposing (Dict)
 import System.TypeCheck.IO as IO
 
