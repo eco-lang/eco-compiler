@@ -699,10 +699,13 @@ rewriteExpr ctx expr =
 
         MonoCase scrutName scrutType decider branches resultType ->
             let
-                ( rewrittenBranches, ctx1 ) =
-                    rewriteCaseBranches ctx branches
+                ( rewrittenDecider, ctx1 ) =
+                    rewriteDecider ctx decider
+
+                ( rewrittenBranches, ctx2 ) =
+                    rewriteCaseBranches ctx1 branches
             in
-            ( MonoCase scrutName scrutType decider rewrittenBranches resultType, ctx1 )
+            ( MonoCase scrutName scrutType rewrittenDecider rewrittenBranches resultType, ctx2 )
 
         MonoRecordCreate fields recordType ->
             let
@@ -835,6 +838,51 @@ rewriteCaseBranches ctx branches =
         )
         ( [], ctx )
         branches
+
+
+rewriteDecider : RewriteCtx -> Mono.Decider Mono.MonoChoice -> ( Mono.Decider Mono.MonoChoice, RewriteCtx )
+rewriteDecider ctx decider =
+    case decider of
+        Mono.Leaf choice ->
+            case choice of
+                Mono.Inline expr ->
+                    let
+                        ( rewritten, ctx1 ) =
+                            rewriteExpr ctx expr
+                    in
+                    ( Mono.Leaf (Mono.Inline rewritten), ctx1 )
+
+                Mono.Jump _ ->
+                    ( decider, ctx )
+
+        Mono.Chain testChain success failure ->
+            let
+                ( rewrittenSuccess, ctx1 ) =
+                    rewriteDecider ctx success
+
+                ( rewrittenFailure, ctx2 ) =
+                    rewriteDecider ctx1 failure
+            in
+            ( Mono.Chain testChain rewrittenSuccess rewrittenFailure, ctx2 )
+
+        Mono.FanOut path edges fallback ->
+            let
+                ( rewrittenEdges, ctx1 ) =
+                    List.foldl
+                        (\( test, d ) ( acc, accCtx ) ->
+                            let
+                                ( rewritten, newCtx ) =
+                                    rewriteDecider accCtx d
+                            in
+                            ( acc ++ [ ( test, rewritten ) ], newCtx )
+                        )
+                        ( [], ctx )
+                        edges
+
+                ( rewrittenFallback, ctx2 ) =
+                    rewriteDecider ctx1 fallback
+            in
+            ( Mono.FanOut path rewrittenEdges rewrittenFallback, ctx2 )
 
 
 rewriteNamedFields : RewriteCtx -> List ( Name, MonoExpr ) -> ( List ( Name, MonoExpr ), RewriteCtx )
@@ -1112,10 +1160,13 @@ substitute oldName newName varType expr =
 
                     else
                         rootName
+
+                newDecider =
+                    substituteDecider oldName newName varType decider
             in
             MonoCase unused
                 newRootName
-                decider
+                newDecider
                 (List.map (\( idx, e ) -> ( idx, substitute oldName newName varType e )) branches)
                 resultType
 
@@ -1168,6 +1219,28 @@ substitutePath oldName newName path =
 
         Mono.MonoUnbox resultType innerPath ->
             Mono.MonoUnbox resultType (substitutePath oldName newName innerPath)
+
+
+substituteDecider : Name -> Name -> Mono.MonoType -> Mono.Decider Mono.MonoChoice -> Mono.Decider Mono.MonoChoice
+substituteDecider oldName newName varType decider =
+    case decider of
+        Mono.Leaf choice ->
+            case choice of
+                Mono.Inline expr ->
+                    Mono.Leaf (Mono.Inline (substitute oldName newName varType expr))
+
+                Mono.Jump _ ->
+                    decider
+
+        Mono.Chain testChain success failure ->
+            Mono.Chain testChain
+                (substituteDecider oldName newName varType success)
+                (substituteDecider oldName newName varType failure)
+
+        Mono.FanOut path edges fallback ->
+            Mono.FanOut path
+                (List.map (\( test, d ) -> ( test, substituteDecider oldName newName varType d )) edges)
+                (substituteDecider oldName newName varType fallback)
 
 
 getDefName : Mono.MonoDef -> Name
@@ -1547,10 +1620,13 @@ simplifyLets ctx expr =
 
         MonoCase scrutName scrutType decider branches resultType ->
             let
-                ( simplifiedBranches, ctx1 ) =
-                    simplifyLetsCaseBranches ctx branches
+                ( simplifiedDecider, ctx1 ) =
+                    simplifyLetsDecider ctx decider
+
+                ( simplifiedBranches, ctx2 ) =
+                    simplifyLetsCaseBranches ctx1 branches
             in
-            ( MonoCase scrutName scrutType decider simplifiedBranches resultType, ctx1 )
+            ( MonoCase scrutName scrutType simplifiedDecider simplifiedBranches resultType, ctx2 )
 
         MonoRecordCreate fields recordType ->
             let
@@ -1652,6 +1728,51 @@ simplifyLetsCaseBranches ctx branches =
         )
         ( [], ctx )
         branches
+
+
+simplifyLetsDecider : RewriteCtx -> Mono.Decider Mono.MonoChoice -> ( Mono.Decider Mono.MonoChoice, RewriteCtx )
+simplifyLetsDecider ctx decider =
+    case decider of
+        Mono.Leaf choice ->
+            case choice of
+                Mono.Inline expr ->
+                    let
+                        ( simplified, ctx1 ) =
+                            simplifyLets ctx expr
+                    in
+                    ( Mono.Leaf (Mono.Inline simplified), ctx1 )
+
+                Mono.Jump _ ->
+                    ( decider, ctx )
+
+        Mono.Chain testChain success failure ->
+            let
+                ( simplifiedSuccess, ctx1 ) =
+                    simplifyLetsDecider ctx success
+
+                ( simplifiedFailure, ctx2 ) =
+                    simplifyLetsDecider ctx1 failure
+            in
+            ( Mono.Chain testChain simplifiedSuccess simplifiedFailure, ctx2 )
+
+        Mono.FanOut path edges fallback ->
+            let
+                ( simplifiedEdges, ctx1 ) =
+                    List.foldl
+                        (\( test, d ) ( acc, accCtx ) ->
+                            let
+                                ( simplified, newCtx ) =
+                                    simplifyLetsDecider accCtx d
+                            in
+                            ( acc ++ [ ( test, simplified ) ], newCtx )
+                        )
+                        ( [], ctx )
+                        edges
+
+                ( simplifiedFallback, ctx2 ) =
+                    simplifyLetsDecider ctx1 fallback
+            in
+            ( Mono.FanOut path simplifiedEdges simplifiedFallback, ctx2 )
 
 
 simplifyLetsNamedFields : RewriteCtx -> List ( Name, MonoExpr ) -> ( List ( Name, MonoExpr ), RewriteCtx )
@@ -1849,7 +1970,7 @@ countUsages name expr =
             -- Note: destructName is the OUTPUT binding, not an input usage
             countUsagesInPath name path + countUsages name inner
 
-        MonoCase _ rootName _ branches _ ->
+        MonoCase _ rootName decider branches _ ->
             -- MonoCase has two Names: first is unused, second is the root variable
             let
                 rootUsage =
@@ -1859,7 +1980,7 @@ countUsages name expr =
                     else
                         0
             in
-            rootUsage + List.sum (List.map (\( _, e ) -> countUsages name e) branches)
+            rootUsage + countUsagesInDecider name decider + List.sum (List.map (\( _, e ) -> countUsages name e) branches)
 
         MonoRecordCreate fields _ ->
             List.sum (List.map (\( _, e ) -> countUsages name e) fields)
@@ -1906,6 +2027,25 @@ countUsagesInPath name path =
 
         Mono.MonoUnbox _ innerPath ->
             countUsagesInPath name innerPath
+
+
+countUsagesInDecider : Name -> Mono.Decider Mono.MonoChoice -> Int
+countUsagesInDecider name decider =
+    case decider of
+        Mono.Leaf choice ->
+            case choice of
+                Mono.Inline expr ->
+                    countUsages name expr
+
+                Mono.Jump _ ->
+                    0
+
+        Mono.Chain _ success failure ->
+            countUsagesInDecider name success + countUsagesInDecider name failure
+
+        Mono.FanOut _ edges fallback ->
+            List.sum (List.map (\( _, d ) -> countUsagesInDecider name d) edges)
+                + countUsagesInDecider name fallback
 
 
 inlineVar : Name -> MonoExpr -> MonoExpr -> MonoExpr
@@ -1975,13 +2115,24 @@ inlineVar name replacement expr =
             else
                 MonoLet (inlineVarInDef name replacement def) (inlineVar name replacement body) resultType
 
-        MonoDestruct destructor inner resultType ->
-            MonoDestruct destructor (inlineVar name replacement inner) resultType
+        MonoDestruct (Mono.MonoDestructor destructName path destructType) inner resultType ->
+            let
+                newPath =
+                    inlineVarInPath name replacement path
+
+                newInner =
+                    if destructName == name then
+                        inner
+
+                    else
+                        inlineVar name replacement inner
+            in
+            MonoDestruct (Mono.MonoDestructor destructName newPath destructType) newInner resultType
 
         MonoCase scrutName scrutType decider branches resultType ->
             MonoCase scrutName
                 scrutType
-                decider
+                (inlineVarInDecider name replacement decider)
                 (List.map (\( idx, e ) -> ( idx, inlineVar name replacement e )) branches)
                 resultType
 
@@ -2013,6 +2164,54 @@ inlineVarInDef name replacement def =
 
             else
                 Mono.MonoTailDef n params (inlineVar name replacement bound)
+
+
+inlineVarInPath : Name -> MonoExpr -> Mono.MonoPath -> Mono.MonoPath
+inlineVarInPath name replacement path =
+    case path of
+        Mono.MonoRoot rootName rootType ->
+            if rootName == name then
+                case replacement of
+                    MonoVarLocal newName _ ->
+                        Mono.MonoRoot newName rootType
+
+                    _ ->
+                        -- Can't inline a non-variable expression into a path root
+                        path
+
+            else
+                path
+
+        Mono.MonoIndex idx container resultType innerPath ->
+            Mono.MonoIndex idx container resultType (inlineVarInPath name replacement innerPath)
+
+        Mono.MonoField fieldIdx resultType innerPath ->
+            Mono.MonoField fieldIdx resultType (inlineVarInPath name replacement innerPath)
+
+        Mono.MonoUnbox resultType innerPath ->
+            Mono.MonoUnbox resultType (inlineVarInPath name replacement innerPath)
+
+
+inlineVarInDecider : Name -> MonoExpr -> Mono.Decider Mono.MonoChoice -> Mono.Decider Mono.MonoChoice
+inlineVarInDecider name replacement decider =
+    case decider of
+        Mono.Leaf choice ->
+            case choice of
+                Mono.Inline expr ->
+                    Mono.Leaf (Mono.Inline (inlineVar name replacement expr))
+
+                Mono.Jump _ ->
+                    decider
+
+        Mono.Chain testChain success failure ->
+            Mono.Chain testChain
+                (inlineVarInDecider name replacement success)
+                (inlineVarInDecider name replacement failure)
+
+        Mono.FanOut path edges fallback ->
+            Mono.FanOut path
+                (List.map (\( test, d ) -> ( test, inlineVarInDecider name replacement d )) edges)
+                (inlineVarInDecider name replacement fallback)
 
 
 

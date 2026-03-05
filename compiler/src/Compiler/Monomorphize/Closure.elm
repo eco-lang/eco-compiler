@@ -491,11 +491,35 @@ collectVarTypesHelper expr acc =
         Mono.MonoTupleCreate _ exprs _ ->
             List.foldl collectVarTypesHelper acc exprs
 
-        Mono.MonoDestruct _ body _ ->
-            collectVarTypesHelper body acc
+        Mono.MonoDestruct (Mono.MonoDestructor _ path _) body _ ->
+            let
+                accAfterPath =
+                    collectPathVarTypes path acc
+            in
+            collectVarTypesHelper body accAfterPath
 
         _ ->
             acc
+
+
+collectPathVarTypes : Mono.MonoPath -> Dict String String Mono.MonoType -> Dict String String Mono.MonoType
+collectPathVarTypes path acc =
+    case path of
+        Mono.MonoRoot name monoType ->
+            if Dict.member identity name acc then
+                acc
+
+            else
+                Dict.insert identity name monoType acc
+
+        Mono.MonoIndex _ _ _ inner ->
+            collectPathVarTypes inner acc
+
+        Mono.MonoField _ _ inner ->
+            collectPathVarTypes inner acc
+
+        Mono.MonoUnbox _ inner ->
+            collectPathVarTypes inner acc
 
 
 collectDeciderVarTypes : Mono.Decider Mono.MonoChoice -> Dict String String Mono.MonoType -> Dict String String Mono.MonoType
