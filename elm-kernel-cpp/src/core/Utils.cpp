@@ -519,10 +519,9 @@ bool ge(void* a, void* b) {
 // ============================================================================
 
 HPointer append(void* a, void* b) {
-    if (!a || !b) {
-        if (!a) return Allocator::instance().wrap(b);
-        return Allocator::instance().wrap(a);
-    }
+    if (!a && !b) return alloc::emptyString();
+    if (!a) return Allocator::instance().wrap(b);
+    if (!b) return Allocator::instance().wrap(a);
 
     Tag tagA = getTag(a);
     Tag tagB = getTag(b);

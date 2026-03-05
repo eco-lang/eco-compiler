@@ -42,6 +42,9 @@ uint64_t Elm_Kernel_Utils_ge(uint64_t a, uint64_t b) {
 uint64_t Elm_Kernel_Utils_append(uint64_t a, uint64_t b) {
     void* ptrA = Export::toPtr(a);
     void* ptrB = Export::toPtr(b);
+    // Both are embedded constants (e.g. "" ++ "" or [] ++ []).
+    // toPtr returns nullptr for embedded constants, so return either one directly.
+    if (!ptrA && !ptrB) return a;
     HPointer result = Utils::append(ptrA, ptrB);
     return Export::encode(result);
 }
