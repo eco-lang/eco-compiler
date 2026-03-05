@@ -32,12 +32,14 @@ import Compiler.AST.SourceBuilder
         , letExpr
         , listExpr
         , makeModuleWithTypedDefsUnionsAliases
+        , pAnything
         , pCons
         , pCtor
         , pList
         , pTuple
         , pVar
         , qualVarExpr
+        , strExpr
         , recordExpr
         , tLambda
         , tRecord
@@ -76,6 +78,7 @@ testCases expectFn =
         , closureCapturingTypesCases expectFn
         , closureWithRecursionCases expectFn
         , heteroClosureCases expectFn
+        , closureDestructCaptureCases expectFn
         ]
 
 
@@ -1390,6 +1393,167 @@ heteroClosureBoxedUnboxed expectFn _ =
             makeModuleWithTypedDefsUnionsAliases "Test"
                 [ shapeBonusDef, addNDef, testValueDef ]
                 [ shapeUnion ]
+                []
+    in
+    expectFn modul
+
+
+
+-- ============================================================================
+-- CLOSURE CAPTURE WITH DESTRUCTURING TESTS
+-- ============================================================================
+-- Tests for the bug where computeClosureCaptures crashes when a captured
+-- variable appears only as a MonoRoot in a MonoDestruct path, not as a
+-- MonoVarLocal. findFreeLocals finds the variable (via findPathFreeLocals)
+-- but collectVarTypes misses it (only recurses into body, not path).
+
+
+closureDestructCaptureCases : (Src.Module -> Expectation) -> List TestCase
+closureDestructCaptureCases expectFn =
+    [ { label = "Closure captures variable used only in single-ctor destruct"
+      , run = closureCapturesDestructRoot expectFn
+      }
+    , { label = "Closure captures Maybe variable used only in case destruct"
+      , run = closureCaptureMaybeCaseDestruct expectFn
+      }
+    ]
+
+
+{-| A closure captures a variable of a single-constructor type, and the only
+reference to that variable is as the root of a MonoDestruct path.
+
+    type Wrapper a = Wrap a
+
+    unwrapLater : Wrapper Int -> Int -> Int
+    unwrapLater w dummy =
+        case w of
+            Wrap x -> x
+
+    testValue : Int
+    testValue = unwrapLater (Wrap 42) 0
+
+After monomorphization, the inner lambda body (from currying) contains:
+  MonoDestruct (MonoDestructor "x" (MonoIndex 0 ... (MonoRoot "w" ...))) bodyUsingX
+where "w" is free but only appears as MonoRoot, not as MonoVarLocal.
+-}
+closureCapturesDestructRoot : (Src.Module -> Expectation) -> (() -> Expectation)
+closureCapturesDestructRoot expectFn _ =
+    let
+        wrapperUnion : UnionDef
+        wrapperUnion =
+            { name = "Wrapper"
+            , args = [ "a" ]
+            , ctors =
+                [ { name = "Wrap", args = [ tVar "a" ] }
+                ]
+            }
+
+        -- unwrapLater : Wrapper Int -> Int -> Int
+        -- unwrapLater w dummy = case w of Wrap x -> x
+        unwrapLaterDef : TypedDef
+        unwrapLaterDef =
+            { name = "unwrapLater"
+            , args = [ pVar "w" ]
+            , tipe =
+                tLambda (tType "Wrapper" [ tType "Int" [] ])
+                    (tLambda (tType "Int" []) (tType "Int" []))
+            , body =
+                lambdaExpr [ pVar "dummy" ]
+                    (caseExpr (varExpr "w")
+                        [ ( pCtor "Wrap" [ pVar "x" ]
+                          , varExpr "x"
+                          )
+                        ]
+                    )
+            }
+
+        testValueDef : TypedDef
+        testValueDef =
+            { name = "testValue"
+            , args = []
+            , tipe = tType "Int" []
+            , body =
+                callExpr
+                    (callExpr (varExpr "unwrapLater")
+                        [ callExpr (ctorExpr "Wrap") [ intExpr 42 ] ]
+                    )
+                    [ intExpr 0 ]
+            }
+
+        modul =
+            makeModuleWithTypedDefsUnionsAliases "Test"
+                [ unwrapLaterDef, testValueDef ]
+                [ wrapperUnion ]
+                []
+    in
+    expectFn modul
+
+
+{-| A closure captures a Maybe variable where the case expression destructures it.
+The Just branch's MonoDestruct has "m" as MonoRoot in the path.
+
+    toLabel : Maybe String -> Int -> String
+    toLabel m dummy =
+        case m of
+            Just s -> s
+            Nothing -> "none"
+
+    testValue : String
+    testValue = toLabel (Just "hello") 0
+
+-}
+closureCaptureMaybeCaseDestruct : (Src.Module -> Expectation) -> (() -> Expectation)
+closureCaptureMaybeCaseDestruct expectFn _ =
+    let
+        maybeUnion : UnionDef
+        maybeUnion =
+            { name = "Maybe"
+            , args = [ "a" ]
+            , ctors =
+                [ { name = "Just", args = [ tVar "a" ] }
+                , { name = "Nothing", args = [] }
+                ]
+            }
+
+        -- toLabel : Maybe String -> Int -> String
+        -- toLabel m dummy = case m of Just s -> s; Nothing -> "none"
+        toLabelDef : TypedDef
+        toLabelDef =
+            { name = "toLabel"
+            , args = [ pVar "m" ]
+            , tipe =
+                tLambda (tType "Maybe" [ tType "String" [] ])
+                    (tLambda (tType "Int" []) (tType "String" []))
+            , body =
+                lambdaExpr [ pVar "dummy" ]
+                    (caseExpr (varExpr "m")
+                        [ ( pCtor "Just" [ pVar "s" ]
+                          , varExpr "s"
+                          )
+                        , ( pCtor "Nothing" []
+                          , strExpr "none"
+                          )
+                        ]
+                    )
+            }
+
+        testValueDef : TypedDef
+        testValueDef =
+            { name = "testValue"
+            , args = []
+            , tipe = tType "String" []
+            , body =
+                callExpr
+                    (callExpr (varExpr "toLabel")
+                        [ callExpr (ctorExpr "Just") [ strExpr "hello" ] ]
+                    )
+                    [ intExpr 0 ]
+            }
+
+        modul =
+            makeModuleWithTypedDefsUnionsAliases "Test"
+                [ toLabelDef, testValueDef ]
+                [ maybeUnion ]
                 []
     in
     expectFn modul

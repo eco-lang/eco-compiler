@@ -1,8 +1,8 @@
 {
-  "name": "guida",
+  "name": "eco",
   "version": "1.0.0-alpha",
-  "description": "Guida is a functional programming language that builds upon the solid foundation of Elm, offering backward compatibility with all existing Elm 0.19.1 projects",
-  "author": "Decio Ferreira",
+  "description": "Eco is a compiler for Elm, targetting native execution.",
+  "author": "Rupert Smith",
   "license": "BSD-3-Clause",
   "main": "lib/index.js",
   "bin": {
@@ -13,7 +13,7 @@
     "build:bin": "./scripts/build.sh bin",
     "buildself": "./scripts/build-self.sh bin",
     "watch": "onchange \"src/**/*.elm\" -- npm run build:bin",
-    "test": "elm-test-rs --fuzz 10",
+    "test": "elm-test-rs --project build-xhr --fuzz 10",
     "elm-format": "elm-format . --yes",
     "prepare": "npm run build"
   },
