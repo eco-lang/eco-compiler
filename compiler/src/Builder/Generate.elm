@@ -611,29 +611,28 @@ generateMonoDevOutput backend withSourceMaps leadingLines root roots objects =
                         Task.throw (Exit.GenerateMonomorphizationError err)
 
                     Ok monoGraph0 ->
-                        Task.succeed ( monoGraph0, typeEnv )
+                        Task.succeed monoGraph0
             )
         |> Task.andThen
-            (\( monoGraph0, typeEnv ) ->
-                -- GC boundary: `typedGraph` is now unreachable.
+            (\monoGraph0 ->
+                -- GC boundary: `typedGraph` and `globalTypeEnv` are now unreachable.
                 let
                     monoGraph =
-                        MonoGlobalOptimize.globalOptimize typeEnv monoGraph0
+                        MonoGlobalOptimize.globalOptimize monoGraph0
                 in
                 -- After this callback returns, `monoGraph0` goes out of scope.
                 prepareSourceMaps withSourceMaps root
-                    |> Task.map (generateMonoOutput backend leadingLines (Mode.Dev Nothing) monoGraph typeEnv)
+                    |> Task.map (generateMonoOutput backend leadingLines (Mode.Dev Nothing) monoGraph)
             )
 
 
-generateMonoOutput : CodeGen.MonoCodeGen -> Int -> Mode.Mode -> Mono.MonoGraph -> TypeEnv.GlobalTypeEnv -> CodeGen.SourceMaps -> CodeGen.Output
-generateMonoOutput backend leadingLines mode monoGraph typeEnv sourceMaps =
+generateMonoOutput : CodeGen.MonoCodeGen -> Int -> Mode.Mode -> Mono.MonoGraph -> CodeGen.SourceMaps -> CodeGen.Output
+generateMonoOutput backend leadingLines mode monoGraph sourceMaps =
     backend.generate
         { sourceMaps = sourceMaps
         , leadingLines = leadingLines
         , mode = mode
         , graph = monoGraph
-        , typeEnv = typeEnv
         }
 
 

@@ -306,7 +306,7 @@ runToGlobalOpt srcModule =
         Ok { canonical, annotations, nodeTypes, kernelEnv, localGraph, globalGraph, globalTypeEnv, monoGraph } ->
             let
                 optimizedMonoGraph =
-                    MonoGlobalOptimize.globalOptimize globalTypeEnv monoGraph
+                    MonoGlobalOptimize.globalOptimize monoGraph
             in
             Ok
                 { canonical = canonical
@@ -332,10 +332,10 @@ runToMlir srcModule =
         Ok { canonical, annotations, nodeTypes, kernelEnv, localGraph, globalGraph, globalTypeEnv, optimizedMonoGraph } ->
             let
                 mlirModule =
-                    MLIR.generateMlirModule (Mode.Dev Nothing) globalTypeEnv optimizedMonoGraph
+                    MLIR.generateMlirModule (Mode.Dev Nothing) optimizedMonoGraph
 
                 mlirOutput =
-                    case runMLIRGeneration globalTypeEnv optimizedMonoGraph of
+                    case runMLIRGeneration optimizedMonoGraph of
                         Ok output ->
                             output
 
@@ -444,15 +444,14 @@ findAnyEntryPoint nodes =
 
 {-| Run MLIR code generation on a monomorphized graph.
 -}
-runMLIRGeneration : TypeEnv.GlobalTypeEnv -> Mono.MonoGraph -> Result String String
-runMLIRGeneration globalTypeEnv monoGraph =
+runMLIRGeneration : Mono.MonoGraph -> Result String String
+runMLIRGeneration monoGraph =
     let
         config =
             { sourceMaps = CodeGen.NoSourceMaps
             , leadingLines = 0
             , mode = Mode.Dev Nothing
             , graph = monoGraph
-            , typeEnv = globalTypeEnv
             }
 
         output =

@@ -19,7 +19,6 @@ Key optimizations:
 -}
 
 import Compiler.AST.Monomorphized as Mono exposing (MonoExpr(..), MonoGraph(..), MonoNode(..), SpecId)
-import Compiler.AST.TypeEnv as TypeEnv
 import Compiler.Data.Name exposing (Name)
 import Compiler.GlobalOpt.MonoTraverse as Traverse
 import Compiler.Monomorphize.Closure as Closure
@@ -48,8 +47,8 @@ type alias Metrics =
 
 {-| Optimize a MonoGraph by inlining small functions and simplifying expressions.
 -}
-optimize : TypeEnv.GlobalTypeEnv -> MonoGraph -> ( MonoGraph, Metrics )
-optimize _ graph =
+optimize : MonoGraph -> ( MonoGraph, Metrics )
+optimize graph =
     let
         (MonoGraph { nodes, main, registry, ctorShapes }) =
             graph

@@ -39,7 +39,6 @@ It supports three different backend types based on the level of type information
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.Optimized as Opt
-import Compiler.AST.TypeEnv as TypeEnv
 import Compiler.Data.Name as Name
 import Compiler.Generate.Mode as Mode
 import Compiler.Reporting.Render.Type.Localizer as L
@@ -145,5 +144,4 @@ type alias MonoCodeGenConfig =
     , leadingLines : Int
     , mode : Mode.Mode
     , graph : Mono.MonoGraph
-    , typeEnv : TypeEnv.GlobalTypeEnv -- Complete union definitions for all custom types
     }

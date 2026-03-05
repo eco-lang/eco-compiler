@@ -20,7 +20,6 @@ not at runtime. The compiler trusts that canonicalizeClosureStaging produces cor
 -}
 
 import Compiler.AST.Monomorphized as Mono
-import Compiler.AST.TypeEnv as TypeEnv
 import Compiler.Data.Name exposing (Name)
 import Compiler.GlobalOpt.AbiCloning as AbiCloning
 import Compiler.GlobalOpt.MonoInlineSimplify as MonoInlineSimplify
@@ -93,13 +92,13 @@ New structure using global staging algorithm:
 4.  Phase 4: Annotate call staging metadata using staging solution
 
 -}
-globalOptimize : TypeEnv.GlobalTypeEnv -> Mono.MonoGraph -> Mono.MonoGraph
-globalOptimize typeEnv graph0 =
+globalOptimize : Mono.MonoGraph -> Mono.MonoGraph
+globalOptimize graph0 =
     let
         -- Phase 0: Inlining and simplification (runs first so subsequent phases
         -- can canonicalize/normalize any new closures or case/if expressions)
         ( graph0a, _ ) =
-            MonoInlineSimplify.optimize typeEnv graph0
+            MonoInlineSimplify.optimize graph0
 
         -- Phase 0.5: Wrap top-level function-typed values in closures
         -- (alias wrappers for globals/kernels, general closures for other exprs).
@@ -108,7 +107,7 @@ globalOptimize typeEnv graph0 =
 
         -- Phase 1+2: Staging analysis + graph rewrite (wrappers + types)
         ( _, graph1 ) =
-            Staging.analyzeAndSolveStaging typeEnv graph0b
+            Staging.analyzeAndSolveStaging graph0b
 
         -- Phase 3: Validate closure staging invariants (GOPT_001, GOPT_003)
         graph2 =

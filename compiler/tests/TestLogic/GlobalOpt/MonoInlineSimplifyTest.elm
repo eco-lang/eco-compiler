@@ -27,7 +27,7 @@ import Compiler.AST.SourceBuilder
         , tType
         , varExpr
         )
-import Compiler.AST.TypeEnv as TypeEnv
+
 import Compiler.GlobalOpt.MonoInlineSimplify as MonoInlineSimplify
 import Expect
 import SourceIR.Suite.StandardTestSuites as StandardTestSuites
@@ -207,11 +207,8 @@ expectMetricsNonNegative srcModule =
 
         Ok { monoGraph } ->
             let
-                typeEnv =
-                    TypeEnv.emptyGlobalTypeEnv
-
                 ( _, metrics ) =
-                    MonoInlineSimplify.optimize typeEnv monoGraph
+                    MonoInlineSimplify.optimize monoGraph
             in
             Expect.all
                 [ \_ -> Expect.atLeast 0 metrics.closureCountBefore
@@ -231,11 +228,8 @@ expectClosureCountCollected srcModule =
 
         Ok { monoGraph } ->
             let
-                typeEnv =
-                    TypeEnv.emptyGlobalTypeEnv
-
                 ( _, metrics ) =
-                    MonoInlineSimplify.optimize typeEnv monoGraph
+                    MonoInlineSimplify.optimize monoGraph
             in
             -- Module with lambda should have at least one closure before optimization
             -- (may or may not after, depending on optimization)
@@ -262,11 +256,8 @@ expectOptimizationPreservesValidity srcModule =
 
         Ok { monoGraph } ->
             let
-                typeEnv =
-                    TypeEnv.emptyGlobalTypeEnv
-
                 ( optimizedGraph, _ ) =
-                    MonoInlineSimplify.optimize typeEnv monoGraph
+                    MonoInlineSimplify.optimize monoGraph
             in
             -- Verify the optimized graph is still valid
             expectGraphValid optimizedGraph

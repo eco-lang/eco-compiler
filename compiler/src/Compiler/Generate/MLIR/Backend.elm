@@ -11,7 +11,6 @@ in the types.
 -}
 
 import Compiler.AST.Monomorphized as Mono
-import Compiler.AST.TypeEnv as TypeEnv
 import Compiler.Generate.CodeGen as CodeGen
 import Compiler.Generate.MLIR.Context as Ctx
 import Compiler.Generate.MLIR.Functions as Functions
@@ -35,7 +34,7 @@ backend : CodeGen.MonoCodeGen
 backend =
     { generate =
         \config ->
-            generateProgram config.mode config.typeEnv config.graph |> CodeGen.TextOutput
+            generateProgram config.mode config.graph |> CodeGen.TextOutput
     }
 
 
@@ -45,12 +44,9 @@ backend =
 
 {-| Generate an MlirModule directly, for use in invariant testing.
 -}
-generateMlirModule : Mode.Mode -> TypeEnv.GlobalTypeEnv -> Mono.MonoGraph -> MlirModule
-generateMlirModule mode _ monoGraph0 =
+generateMlirModule : Mode.Mode -> Mono.MonoGraph -> MlirModule
+generateMlirModule mode monoGraph0 =
     let
-        -- Run the Mono IR optimizer before MLIR generation
-        --( Mono.MonoGraph { nodes, main, registry, ctorShapes }, _ ) =
-        --    MonoInlineSimplify.optimize mode typeEnv monoGraph0
         (Mono.MonoGraph { nodes, main, registry, ctorShapes }) =
             monoGraph0
 
@@ -110,6 +106,6 @@ generateMlirModule mode _ monoGraph0 =
     }
 
 
-generateProgram : Mode.Mode -> TypeEnv.GlobalTypeEnv -> Mono.MonoGraph -> String
-generateProgram mode typeEnv monoGraph =
-    Pretty.ppModule (generateMlirModule mode typeEnv monoGraph)
+generateProgram : Mode.Mode -> Mono.MonoGraph -> String
+generateProgram mode monoGraph =
+    Pretty.ppModule (generateMlirModule mode monoGraph)

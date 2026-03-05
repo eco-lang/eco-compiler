@@ -593,15 +593,14 @@ findAnyEntryPoint nodes =
 Returns the MLIR output as a string.
 
 -}
-generateMLIR : TypeEnv.GlobalTypeEnv -> Mono.MonoGraph -> String
-generateMLIR globalTypeEnv monoGraph =
+generateMLIR : Mono.MonoGraph -> String
+generateMLIR monoGraph =
     let
         config =
             { sourceMaps = CodeGen.NoSourceMaps
             , leadingLines = 0
             , mode = Mode.Dev Nothing
             , graph = monoGraph
-            , typeEnv = globalTypeEnv
             }
 
         output =
@@ -618,16 +617,12 @@ Uses extendedTestIfaces to provide type information for dependencies like JsArra
 -}
 generateMLIRFromResult : CompileResult -> Result CompileError String
 generateMLIRFromResult result =
-    let
-        globalTypeEnv =
-            buildGlobalTypeEnvWithIfaces extendedTestIfaces result.canonical
-    in
     case monomorphize result of
         Err err ->
             Err err
 
         Ok monoGraph ->
-            Ok (generateMLIR globalTypeEnv monoGraph)
+            Ok (generateMLIR monoGraph)
 
 
 

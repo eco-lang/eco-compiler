@@ -27,7 +27,6 @@ This module coordinates:
 -}
 
 import Compiler.AST.Monomorphized as Mono
-import Compiler.AST.TypeEnv as TypeEnv
 import Compiler.GlobalOpt.Staging.GraphBuilder as GraphBuilder
 import Compiler.GlobalOpt.Staging.ProducerInfo as ProducerInfo
 import Compiler.GlobalOpt.Staging.Rewriter as Rewriter
@@ -58,10 +57,9 @@ This function:
 
 -}
 analyzeAndSolveStaging :
-    TypeEnv.GlobalTypeEnv
-    -> Mono.MonoGraph
+    Mono.MonoGraph
     -> ( StagingSolution, Mono.MonoGraph )
-analyzeAndSolveStaging _ graph0 =
+analyzeAndSolveStaging graph0 =
     let
         -- 1. Compute natural staging for all producers
         producerInfo =
