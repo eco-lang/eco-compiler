@@ -40,6 +40,7 @@ import SourceIR.PostSolveExprCases as PostSolveExprCases
 import SourceIR.RecordCases as RecordCases
 import SourceIR.SpecializeAccessorCases as SpecializeAccessorCases
 import SourceIR.SpecializeConstructorCases as SpecializeConstructorCases
+import SourceIR.SpecializeRecordCtorCases as SpecializeRecordCtorCases
 import SourceIR.SpecializeCycleCases as SpecializeCycleCases
 import SourceIR.SpecializeExprCases as SpecializeExprCases
 import SourceIR.SpecializePolyLetCases as SpecializePolyLetCases
@@ -80,6 +81,7 @@ expectSuite expectFn condStr =
         , RecordCases.expectSuite expectFn condStr
         , SpecializeAccessorCases.expectSuite expectFn condStr
         , SpecializeConstructorCases.expectSuite expectFn condStr
+        , SpecializeRecordCtorCases.expectSuite expectFn condStr
         , SpecializeCycleCases.expectSuite expectFn condStr
         , SpecializeExprCases.expectSuite expectFn condStr
         , SpecializePolyLetCases.expectSuite expectFn condStr

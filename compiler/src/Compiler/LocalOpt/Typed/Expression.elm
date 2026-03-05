@@ -20,6 +20,7 @@ import Compiler.AST.Canonical as Can
 import Compiler.AST.TypedCanonical as TCan exposing (ExprTypes)
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.AST.Utils.Shader as Shader
+import Compiler.AST.Utils.Type as Type
 import Compiler.Data.Index as Index
 import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
@@ -1111,7 +1112,7 @@ destructHelpWithType exprTypes maybeParentPatId maybeType path (A.At region patt
                     -- Try to get record field type from pattern's type
                     let
                         fieldType =
-                            case Dict.get identity effectivePatId exprTypes of
+                            case Maybe.map Type.iteratedDealias (Dict.get identity effectivePatId exprTypes) of
                                 Just (Can.TRecord fieldDict _) ->
                                     case Dict.get identity name fieldDict of
                                         Just (Can.FieldType _ t) ->
