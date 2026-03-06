@@ -113,6 +113,9 @@ nodeType node =
         Mono.MonoExtern t ->
             t
 
+        Mono.MonoManagerLeaf _ t ->
+            t
+
         Mono.MonoPortIncoming _ t ->
             t
 

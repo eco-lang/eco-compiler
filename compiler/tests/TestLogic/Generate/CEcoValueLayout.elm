@@ -92,6 +92,9 @@ checkNodeCEcoValueLayout specId node =
         Mono.MonoExtern monoType ->
             checkCEcoValueInLayoutPosition context monoType
 
+        Mono.MonoManagerLeaf _ monoType ->
+            checkCEcoValueInLayoutPosition context monoType
+
         Mono.MonoPortIncoming expr monoType ->
             checkCEcoValueInLayoutPosition context monoType
                 ++ collectExprCEcoValueIssues context expr

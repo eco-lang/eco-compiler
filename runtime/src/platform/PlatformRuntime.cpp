@@ -343,16 +343,18 @@ static void* workerSendToAppEvaluator(void* rawArgs[]) {
     // 4. subs = subscriptions(model)
     // 5. enqueueEffects(newCmd, subs)
 
+    // Captured: args[0] = impl (boxed HPointer)
+    // Argument: args[1] = msg (boxed HPointer)
     uint64_t implEnc = reinterpret_cast<uint64_t>(rawArgs[0]);
-    uint64_t modelPtrEnc = reinterpret_cast<uint64_t>(rawArgs[1]);
-    uint64_t msgEnc = reinterpret_cast<uint64_t>(rawArgs[2]);
+    uint64_t msgEnc = reinterpret_cast<uint64_t>(rawArgs[1]);
 
     HPointer impl = decodeHP(implEnc);
     HPointer msg = decodeHP(msgEnc);
 
-    // Read current model from the model storage location
-    uint64_t* modelStoragePtr = reinterpret_cast<uint64_t*>(modelPtrEnc);
-    HPointer currentModel = decodeHP(*modelStoragePtr);
+    // Access model storage via the PlatformRuntime singleton
+    // (Can't pass raw pointer through closure because buildEvaluatorArgs boxes unboxed captures)
+    auto& runtime = PlatformRuntime::instance();
+    HPointer currentModel = decodeHP(runtime.getModelStorage());
 
     // Access impl fields. impl is a Record with fields in canonical order:
     // For Platform.worker's impl: { init, subscriptions, update }
@@ -375,13 +377,13 @@ static void* workerSendToAppEvaluator(void* rawArgs[]) {
     HPointer newCmd = tuple->b.p;
 
     // Update model storage
-    *modelStoragePtr = encodeHP(newModel);
+    runtime.setModelStorage(encodeHP(newModel));
 
     // Get new subscriptions
     HPointer newSubs = Scheduler::callClosure1(subscriptionsFn, newModel);
 
     // Enqueue effects
-    PlatformRuntime::instance().enqueueEffects(newCmd, newSubs);
+    runtime.enqueueEffects(newCmd, newSubs);
 
     return reinterpret_cast<void*>(encodeHP(Elm::alloc::unit()));
 }
@@ -419,16 +421,12 @@ HPointer PlatformRuntime::initWorker(HPointer impl) {
     }
 
     // Phase 4: Build sendToApp closure
-    // Create a closure that captures impl and a pointer to modelStorage_
+    // Create a closure that captures impl; model is accessed via PlatformRuntime singleton
     HPointer sendToAppCl = allocClosure(
-        reinterpret_cast<EvalFunction>(workerSendToAppEvaluator), 3);
+        reinterpret_cast<EvalFunction>(workerSendToAppEvaluator), 2);
     void* clPtr = resolveHP(sendToAppCl);
     if (clPtr) {
         closureCapture(clPtr, boxed(impl), true);  // captured[0] = impl
-        // Store the address of modelStorage_ as an unboxed integer
-        Unboxable modelPtrVal;
-        modelPtrVal.i = reinterpret_cast<int64_t>(&modelStorage_);
-        closureCapture(clPtr, modelPtrVal, false);  // captured[1] = &modelStorage_ (unboxed)
     }
 
     // Phase 5: Setup effect managers
@@ -445,8 +443,8 @@ HPointer PlatformRuntime::initWorker(HPointer impl) {
         enqueueEffects(cmd0, subs0);
     }
 
-    // Phase 7: Drain the scheduler to process initial effects
-    Scheduler::instance().drain();
+    // Phase 7: Run the event loop (blocks until program is idle)
+    Scheduler::instance().runEventLoop();
 
     return ports;
 }

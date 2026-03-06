@@ -61,9 +61,15 @@ void timerWorker(double intervalMs) {
     {
         std::lock_guard<std::mutex> lock(g_timerMutex);
         auto it = g_activeTimers.find(intervalMs);
-        if (it == g_activeTimers.end()) return;
+        if (it == g_activeTimers.end()) {
+            Scheduler::instance().decrementPendingAsync();
+            return;
+        }
         state = it->second.get();
     }
+
+    // Init GC for this thread so we can allocate heap objects
+    Allocator::instance().initThread();
 
     auto interval = std::chrono::milliseconds(static_cast<int64_t>(intervalMs));
 
@@ -90,6 +96,9 @@ void timerWorker(double intervalMs) {
         HPointer msg = decodeHP(msgEnc);
         PlatformRuntime::instance().sendToApp(router, msg);
     }
+
+    Allocator::instance().cleanupThread();
+    Scheduler::instance().decrementPendingAsync();
 }
 
 // Stop all timers for given intervals
@@ -131,6 +140,9 @@ void startTimer(double intervalMs, uint64_t taggerEnc, uint64_t routerEnc) {
     state->routerEnc = routerEnc;
 
     g_activeTimers[intervalMs] = std::move(state);
+
+    // Track pending async work before spawning thread
+    Scheduler::instance().incrementPendingAsync();
 
     // Start timer thread
     g_timerThreads[intervalMs] = std::thread(timerWorker, intervalMs);

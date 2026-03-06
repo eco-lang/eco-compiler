@@ -155,6 +155,9 @@ checkNodeLayoutCompleteness specId node =
         Mono.MonoExtern monoType ->
             checkTypeLayoutComplete context monoType
 
+        Mono.MonoManagerLeaf _ monoType ->
+            checkTypeLayoutComplete context monoType
+
         Mono.MonoPortIncoming expr monoType ->
             checkTypeLayoutComplete context monoType
                 ++ collectExprLayoutIssues context expr

@@ -39,6 +39,10 @@ public:
     // Platform.worker initialization
     HPointer initWorker(HPointer impl);
 
+    // Model storage access (for workerSendToAppEvaluator)
+    uint64_t getModelStorage() const { return modelStorage_; }
+    void setModelStorage(uint64_t val) { modelStorage_ = val; }
+
 private:
     PlatformRuntime();
 

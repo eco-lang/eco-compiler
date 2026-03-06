@@ -86,6 +86,29 @@ foldNode nodeId node acc =
                 , totalArity = Dict.insert identity key arity acc.totalArity
             }
 
+        Mono.MonoManagerLeaf _ monoType ->
+            let
+                pid =
+                    ProducerKernel (kernelNameFromNodeId nodeId)
+
+                arity =
+                    Mono.countTotalArity monoType
+
+                seg =
+                    if arity > 0 then
+                        [ arity ]
+
+                    else
+                        []
+
+                key =
+                    producerIdToKey pid
+            in
+            { acc
+                | naturalSeg = Dict.insert identity key seg acc.naturalSeg
+                , totalArity = Dict.insert identity key arity acc.totalArity
+            }
+
         _ ->
             acc
 

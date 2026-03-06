@@ -604,6 +604,21 @@ extractNodeSignature node =
                 _ ->
                     Nothing
 
+        Mono.MonoManagerLeaf _ monoType ->
+            case monoType of
+                Mono.MFunction _ _ ->
+                    let
+                        ( argMonoTypes, resultMonoType ) =
+                            Mono.decomposeFunctionType monoType
+                    in
+                    Just
+                        { paramTypes = argMonoTypes
+                        , returnType = resultMonoType
+                        }
+
+                _ ->
+                    Nothing
+
         Mono.MonoPortIncoming expr monoType ->
             case expr of
                 Mono.MonoClosure closureInfo _ _ ->

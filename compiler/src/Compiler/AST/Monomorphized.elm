@@ -396,6 +396,7 @@ type MonoNode
     | MonoCtor CtorShape MonoType -- Layout computed from shape at codegen
     | MonoEnum Int MonoType
     | MonoExtern MonoType
+    | MonoManagerLeaf String MonoType -- Effect manager leaf: home module name, type
     | MonoPortIncoming MonoExpr MonoType
     | MonoPortOutgoing MonoExpr MonoType
     | MonoCycle (List ( Name, MonoExpr )) MonoType
@@ -425,6 +426,9 @@ nodeType node =
             t
 
         MonoExtern t ->
+            t
+
+        MonoManagerLeaf _ t ->
             t
 
         MonoPortIncoming _ t ->

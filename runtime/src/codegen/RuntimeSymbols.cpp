@@ -460,6 +460,7 @@ void registerRuntimeSymbols(ExecutionEngine &engine) {
         KERNEL_SYM(Elm_Kernel_Platform_sendToApp)
         KERNEL_SYM(Elm_Kernel_Platform_sendToSelf)
         KERNEL_SYM(Elm_Kernel_Platform_worker)
+        KERNEL_SYM(Elm_Kernel_Platform_leaf)
 
         // Process module
         KERNEL_SYM(Elm_Kernel_Process_sleep)
@@ -606,6 +607,7 @@ void registerRuntimeSymbols(ExecutionEngine &engine) {
         // Effect Manager Registration
         KERNEL_SYM(eco_register_time_effect_manager)
         KERNEL_SYM(eco_register_http_effect_manager)
+        KERNEL_SYM(eco_register_task_effect_manager)
         KERNEL_SYM(eco_register_all_effect_managers)
 
         #undef KERNEL_SYM

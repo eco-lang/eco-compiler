@@ -302,13 +302,13 @@ void Scheduler::enqueue(HPointer proc) {
         std::lock_guard<std::mutex> lock(mutex_);
         RootedProc rp;
         rp.encoded = encodeHP(proc);
-        // Register as GC root
         runQueue_.push_back(rp);
     }
+    eventCV_.notify_one();
 
-    if (!working_) {
-        drain();
-    }
+    // If we're already inside drain() on the main thread, the newly enqueued
+    // process will be picked up by drain's loop. Otherwise, the event loop
+    // (runEventLoop) will wake up and call drain().
 }
 
 void Scheduler::drain() {
@@ -326,6 +326,31 @@ void Scheduler::drain() {
     }
 
     working_ = false;
+}
+
+void Scheduler::runEventLoop() {
+    while (true) {
+        drain();  // Process all queued work on main thread
+
+        std::unique_lock<std::mutex> lock(mutex_);
+        // Exit when no queued work AND no pending async operations
+        if (runQueue_.empty() && pendingAsync_.load() == 0) {
+            break;
+        }
+        // Block until something is enqueued or all async work finishes
+        eventCV_.wait(lock, [this] {
+            return !runQueue_.empty() || pendingAsync_.load() == 0;
+        });
+    }
+}
+
+void Scheduler::incrementPendingAsync() {
+    pendingAsync_.fetch_add(1);
+}
+
+void Scheduler::decrementPendingAsync() {
+    pendingAsync_.fetch_sub(1);
+    eventCV_.notify_one();
 }
 
 // ============================================================================

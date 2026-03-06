@@ -178,6 +178,7 @@ uint64_t Elm_Kernel_Platform_map(uint64_t closure, uint64_t cmd);
 void Elm_Kernel_Platform_sendToApp(uint64_t router, uint64_t msg);
 uint64_t Elm_Kernel_Platform_sendToSelf(uint64_t router, uint64_t msg);
 uint64_t Elm_Kernel_Platform_worker(uint64_t impl);
+uint64_t Elm_Kernel_Platform_leaf(uint64_t home, uint64_t value);
 
 //===----------------------------------------------------------------------===//
 // Process Module (elm/core)
@@ -413,6 +414,7 @@ uint64_t Elm_Kernel_Regex_splitAtMost(int64_t n, uint64_t regex, uint64_t str);
 
 void eco_register_time_effect_manager();
 void eco_register_http_effect_manager();
+void eco_register_task_effect_manager();
 void eco_register_all_effect_managers();
 
 } // extern "C"

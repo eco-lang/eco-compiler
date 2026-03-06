@@ -284,6 +284,9 @@ collectAllCustomTypes nodes =
                 Mono.MonoExtern monoType ->
                     collectCustomTypesFromMonoType monoType acc
 
+                Mono.MonoManagerLeaf _ monoType ->
+                    collectCustomTypesFromMonoType monoType acc
+
                 Mono.MonoPortIncoming expr monoType ->
                     collectCustomTypesFromExpr expr
                         (collectCustomTypesFromMonoType monoType acc)

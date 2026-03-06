@@ -7,6 +7,7 @@
 #include <deque>
 #include <mutex>
 #include <atomic>
+#include <condition_variable>
 #include <cstdint>
 
 namespace Elm::Platform {
@@ -32,6 +33,11 @@ public:
     // Run queue management
     void enqueue(HPointer proc);
     void drain();
+
+    // Event loop for single-threaded Elm execution
+    void runEventLoop();
+    void incrementPendingAsync();
+    void decrementPendingAsync();
 
     // Closure calling helper: calls a 1-arg Elm closure, returns result
     static HPointer callClosure1(HPointer closurePtr, HPointer arg);
@@ -63,6 +69,8 @@ private:
     std::deque<RootedProc> runQueue_;
     bool working_ = false;
     std::mutex mutex_;
+    std::condition_variable eventCV_;
+    std::atomic<int> pendingAsync_{0};
     std::atomic<u32> nextProcId_{0};
 };
 

@@ -129,6 +129,7 @@ target_compile_features(ElmKernel_Scheduler PUBLIC cxx_std_20)
 add_library(ElmKernel_Platform STATIC
     src/core/Platform.cpp
     src/core/PlatformExports.cpp
+    src/core/TaskEffectManager.cpp
 )
 target_include_directories(ElmKernel_Platform PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src

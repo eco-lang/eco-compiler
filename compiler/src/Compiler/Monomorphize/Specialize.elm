@@ -354,8 +354,17 @@ specializeNode ctorName node requestedMonoType state =
             ( Mono.MonoExtern requestedMonoType, state )
 
         TOpt.Manager _ ->
-            -- Effect manager - treat as extern
-            ( Mono.MonoExtern requestedMonoType, state )
+            -- Effect manager leaf: generate a function that calls Elm_Kernel_Platform_leaf
+            let
+                homeModuleName =
+                    case state.currentGlobal of
+                        Just (Mono.Global (IO.Canonical _ modName) _) ->
+                            Name.toElmString modName
+
+                        _ ->
+                            "Unknown"
+            in
+            ( Mono.MonoManagerLeaf homeModuleName requestedMonoType, state )
 
         TOpt.Cycle names valueDefs funcDefs _ ->
             specializeCycle names valueDefs funcDefs requestedMonoType state

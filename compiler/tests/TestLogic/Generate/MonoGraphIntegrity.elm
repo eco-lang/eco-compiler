@@ -187,6 +187,10 @@ checkNodeCallability specId node =
             -- Externs with function types are callable (FFI)
             []
 
+        Mono.MonoManagerLeaf _ _ ->
+            -- Manager leaves are callable
+            []
+
         Mono.MonoPortIncoming _ _ ->
             -- Ports are callable
             []
@@ -740,6 +744,9 @@ collectSpecIdRefsFromNode node =
             Set.empty
 
         Mono.MonoExtern _ ->
+            Set.empty
+
+        Mono.MonoManagerLeaf _ _ ->
             Set.empty
 
         Mono.MonoPortIncoming expr _ ->

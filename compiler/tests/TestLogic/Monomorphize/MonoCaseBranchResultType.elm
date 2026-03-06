@@ -99,6 +99,9 @@ checkNode specId node =
         Mono.MonoExtern _ ->
             []
 
+        Mono.MonoManagerLeaf _ _ ->
+            []
+
 
 {-| Recursively check a MonoExpr for MonoCase violations.
 -}

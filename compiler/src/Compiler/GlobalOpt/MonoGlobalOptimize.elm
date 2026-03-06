@@ -161,6 +161,9 @@ maxLambdaIndexInNode node =
         Mono.MonoExtern _ ->
             0
 
+        Mono.MonoManagerLeaf _ _ ->
+            0
+
 
 {-| Extract lambda index from closure, or 0 for other expressions.
 -}
@@ -1050,6 +1053,9 @@ wrapNodeCallables home node ctx =
         Mono.MonoExtern tipe ->
             ( Mono.MonoExtern tipe, ctx )
 
+        Mono.MonoManagerLeaf leafHome tipe ->
+            ( Mono.MonoManagerLeaf leafHome tipe, ctx )
+
 
 
 -- NORMALIZE CASE/IF ABI (GRAPH-LEVEL)
@@ -1316,6 +1322,9 @@ callModelForExpr (Mono.MonoGraph { nodes }) env expr =
                 Just (Mono.MonoExtern _) ->
                     Just Mono.FlattenedExternal
 
+                Just (Mono.MonoManagerLeaf _ _) ->
+                    Just Mono.FlattenedExternal
+
                 Just (Mono.MonoCtor _ _) ->
                     Just Mono.FlattenedExternal
 
@@ -1381,6 +1390,10 @@ sourceArityForExpr graph env expr =
 
                 Just (Mono.MonoExtern monoType) ->
                     -- Externs use total ABI arity (flattened)
+                    Just (List.length (Tuple.first (Mono.decomposeFunctionType monoType)))
+
+                Just (Mono.MonoManagerLeaf _ monoType) ->
+                    -- Manager leaf uses total ABI arity (flattened), like extern
                     Just (List.length (Tuple.first (Mono.decomposeFunctionType monoType)))
 
                 Just (Mono.MonoCtor shape _) ->

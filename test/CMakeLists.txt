@@ -30,12 +30,10 @@ add_executable(test
         allocator/ListOpsTest.cpp
         allocator/BytesOpsTest.cpp
         allocator/RuntimeExportsTest.cpp
-        # String/List/Bytes ops - these are NOT in EcoRunner, so we compile them here
-        ../runtime/src/allocator/StringOps.cpp
-        ../runtime/src/allocator/ListOps.cpp
-        ../runtime/src/allocator/BytesOps.cpp
 )
 
 target_compile_features(test PRIVATE cxx_std_20)
 target_compile_options(test PRIVATE -fexceptions)
-target_link_libraries(test rapidcheck EcoRunner)
+# Use --whole-archive for EcoRunner so that Scheduler/PlatformRuntime symbols
+# are available when ElmKernel transitive dependencies are processed by the linker.
+target_link_libraries(test rapidcheck -Wl,--whole-archive EcoRunner -Wl,--no-whole-archive)

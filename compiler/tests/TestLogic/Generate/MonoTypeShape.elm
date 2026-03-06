@@ -82,6 +82,9 @@ collectNodeTypeIssues specId node =
         Mono.MonoExtern monoType ->
             checkMonoType context monoType
 
+        Mono.MonoManagerLeaf _ monoType ->
+            checkMonoType context monoType
+
         Mono.MonoPortIncoming expr monoType ->
             checkMonoType context monoType
                 ++ collectExprTypeIssues context expr

@@ -54,4 +54,15 @@ uint64_t Elm_Kernel_Platform_worker(uint64_t impl) {
     return encode(result);
 }
 
+uint64_t Elm_Kernel_Platform_leaf(uint64_t home, uint64_t value) {
+    // Create a LEAF bag: Custom with ctor=Fx_Leaf, 2 boxed fields (home string, value)
+    HPointer homeHP = decode(home);
+    HPointer valueHP = decode(value);
+    std::vector<Unboxable> fields(2);
+    fields[0].p = homeHP;
+    fields[1].p = valueHP;
+    HPointer bag = alloc::custom(alloc::Fx_Leaf, fields, 0);
+    return encode(bag);
+}
+
 } // extern "C"

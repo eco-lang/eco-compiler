@@ -106,6 +106,9 @@ collectNodeCNumberChecks specId node =
         Mono.MonoExtern monoType ->
             checkForCNumber context monoType
 
+        Mono.MonoManagerLeaf _ monoType ->
+            checkForCNumber context monoType
+
         Mono.MonoPortIncoming expr monoType ->
             checkForCNumber context monoType
                 ++ collectExprCNumberChecks context expr
@@ -272,6 +275,9 @@ collectNodeCallSiteChecks specId node =
             []
 
         Mono.MonoExtern _ ->
+            []
+
+        Mono.MonoManagerLeaf _ _ ->
             []
 
         Mono.MonoPortIncoming expr _ ->

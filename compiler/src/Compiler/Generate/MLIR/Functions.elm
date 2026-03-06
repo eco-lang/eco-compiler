@@ -126,6 +126,13 @@ generateNode ctx specId node =
             in
             ( [ op ], ctx1 )
 
+        Mono.MonoManagerLeaf homeModuleName monoType ->
+            let
+                ( ctx1, op ) =
+                    generateManagerLeaf ctx funcName homeModuleName monoType
+            in
+            ( [ op ], ctx1 )
+
         Mono.MonoPortIncoming expr monoType ->
             generateDefine ctx funcName expr monoType
 
@@ -773,6 +780,87 @@ generateExtern ctx funcName monoType =
                 ]
     in
     Ops.mlirOp ctx3 "func.func"
+        |> Ops.opBuilder.withRegions [ region ]
+        |> Ops.opBuilder.withAttrs attrs
+        |> Ops.opBuilder.build
+
+
+{-| Generate a manager leaf function that calls Elm\_Kernel\_Platform\_leaf.
+
+Effect module `command` and `subscription` globals are compiled to functions
+that create Fx\_Leaf bags. This is the MLIR equivalent of the JS backend's
+`_Platform_leaf(moduleName)`.
+
+The generated function takes one argument (the effect value) and calls
+`Elm_Kernel_Platform_leaf(homeString, value)` to create an Fx\_Leaf bag.
+
+-}
+generateManagerLeaf : Ctx.Context -> String -> String -> Mono.MonoType -> ( Ctx.Context, MlirOp )
+generateManagerLeaf ctx funcName homeModuleName monoType =
+    let
+        -- Decompose function type to get argument types and return type
+        ( argMonoTypes, resultMonoType ) =
+            Mono.decomposeFunctionType monoType
+
+        -- Convert to MLIR types
+        argMlirTypes : List MlirType
+        argMlirTypes =
+            List.map Types.monoTypeToAbi argMonoTypes
+
+        resultMlirType : MlirType
+        resultMlirType =
+            Types.monoTypeToAbi resultMonoType
+
+        -- Create block argument pairs (arg0, arg1, etc.)
+        argPairs : List ( String, MlirType )
+        argPairs =
+            List.indexedMap (\i ty -> ( "%arg" ++ String.fromInt i, ty )) argMlirTypes
+
+        -- Start fresh var counter after block args
+        ctxWithArgs : Ctx.Context
+        ctxWithArgs =
+            { ctx | nextVar = List.length argPairs }
+
+        -- Create string constant for home module name
+        ( homeVar, ctx1 ) =
+            Ctx.freshVar ctxWithArgs
+
+        ( ctx2, homeOp ) =
+            Ops.ecoStringLiteral ctx1 homeVar homeModuleName
+
+        -- Call Elm_Kernel_Platform_leaf(home, arg0)
+        ( resultVar, ctx3 ) =
+            Ctx.freshVar ctx2
+
+        ( ctx4, callOp ) =
+            Ops.ecoCallNamed ctx3
+                resultVar
+                "Elm_Kernel_Platform_leaf"
+                [ ( homeVar, Types.ecoValue ), ( "%arg0", Types.ecoValue ) ]
+                Types.ecoValue
+
+        ( ctx5, returnOp ) =
+            Ops.ecoReturn ctx4 resultVar Types.ecoValue
+
+        region : MlirRegion
+        region =
+            Ops.mkRegion argPairs [ homeOp, callOp ] returnOp
+
+        attrs =
+            Dict.fromList
+                [ ( "sym_name", StringAttr funcName )
+                , ( "sym_visibility", VisibilityAttr Private )
+                , ( "function_type"
+                  , TypeAttr
+                        (FunctionType
+                            { inputs = argMlirTypes
+                            , results = [ resultMlirType ]
+                            }
+                        )
+                  )
+                ]
+    in
+    Ops.mlirOp ctx5 "func.func"
         |> Ops.opBuilder.withRegions [ region ]
         |> Ops.opBuilder.withAttrs attrs
         |> Ops.opBuilder.build

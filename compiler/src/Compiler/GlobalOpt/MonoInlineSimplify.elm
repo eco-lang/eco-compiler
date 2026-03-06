@@ -247,6 +247,9 @@ collectCallsFromNode node =
         MonoExtern _ ->
             []
 
+        MonoManagerLeaf _ _ ->
+            []
+
         MonoPortIncoming expr _ ->
             collectCalls expr
 
@@ -530,7 +533,7 @@ optimizeNode ctx _ node =
             in
             ( MonoPortOutgoing optimized tipe, newCtx )
 
-        -- MonoCtor, MonoEnum, MonoExtern pass through unchanged
+        -- MonoCtor, MonoEnum, MonoExtern, MonoManagerLeaf pass through unchanged
         _ ->
             ( node, ctx )
 

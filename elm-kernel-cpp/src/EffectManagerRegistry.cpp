@@ -16,6 +16,9 @@ void eco_register_all_effect_managers() {
 
     // Register Http effect manager (for Http.get/post/request commands)
     eco_register_http_effect_manager();
+
+    // Register Task effect manager (for Task.perform/attempt commands)
+    eco_register_task_effect_manager();
 }
 
 } // extern "C"
