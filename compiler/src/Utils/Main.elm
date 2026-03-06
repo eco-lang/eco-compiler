@@ -429,7 +429,7 @@ sequenceListMaybe =
 -}
 sequenceNonemptyListResult : NE.Nonempty (Result e v) -> Result e (NE.Nonempty v)
 sequenceNonemptyListResult (NE.Nonempty x xs) =
-    List.foldr (\a acc -> Result.map2 NE.cons a acc) (Result.map NE.singleton x) xs
+    List.foldl (\a acc -> Result.map2 NE.snoc a acc) (Result.map NE.singleton x) xs
 
 
 {-| Extract all keys from a dictionary as a set.
@@ -549,7 +549,7 @@ listMaybeTraverse f =
 -}
 nonEmptyListTraverse : (a -> Task Never b) -> NE.Nonempty a -> Task Never (NE.Nonempty b)
 nonEmptyListTraverse f (NE.Nonempty x list) =
-    List.foldl (\a -> Task.andThen (\c -> Task.map (\va -> NE.cons va c) (f a)))
+    List.foldl (\a -> Task.andThen (\c -> Task.map (\va -> NE.snoc va c) (f a)))
         (Task.map NE.singleton (f x))
         list
 

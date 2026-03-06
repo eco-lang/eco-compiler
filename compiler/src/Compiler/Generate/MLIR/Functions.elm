@@ -493,14 +493,14 @@ generateGenericCloneBodyFromSpecs ctx captureSpecs fastCloneName paramPairs retu
                                 |> Ops.opBuilder.withAttrs projectAttrs
                                 |> Ops.opBuilder.build
                     in
-                    ( accOps ++ [ projectOp ], accVars ++ [ ( captureVar, captureType ) ], ctxB )
+                    ( projectOp :: accOps, ( captureVar, captureType ) :: accVars, ctxB )
                 )
                 ( [], [], ctx )
                 (List.indexedMap Tuple.pair captureSpecs)
 
         -- Build the call to the fast clone with captures + params
         callArgs =
-            captureVarsWithTypes ++ paramPairs
+            List.reverse captureVarsWithTypes ++ paramPairs
 
         ( resultVar, ctxAfterFresh ) =
             Ctx.freshVar ctxAfterProject
@@ -508,7 +508,7 @@ generateGenericCloneBodyFromSpecs ctx captureSpecs fastCloneName paramPairs retu
         ( ctxFinal, callOp ) =
             Ops.ecoCallNamed ctxAfterFresh resultVar fastCloneName callArgs returnType
     in
-    ( projectOps ++ [ callOp ], resultVar, ctxFinal )
+    ( List.reverse projectOps ++ [ callOp ], resultVar, ctxFinal )
 
 
 
@@ -985,8 +985,8 @@ generateCycle ctx funcName definitions monoType =
                         result =
                             Expr.generateExpr accCtx expr
                     in
-                    ( accOps ++ result.ops
-                    , accVars ++ [ ( result.resultVar, result.resultType ) ]
+                    ( List.reverse result.ops ++ accOps
+                    , ( result.resultVar, result.resultType ) :: accVars
                     , result.ctx
                     )
                 )
@@ -995,7 +995,7 @@ generateCycle ctx funcName definitions monoType =
 
         -- Box any primitive values before storing in the cycle using actual SSA types
         ( boxOps, boxedVars, ctxAfterBox ) =
-            Expr.boxArgsWithMlirTypes finalCtx defVarsWithTypes
+            Expr.boxArgsWithMlirTypes finalCtx (List.reverse defVarsWithTypes)
 
         ( resultVar, ctx1 ) =
             Ctx.freshVar ctxAfterBox
@@ -1016,7 +1016,7 @@ generateCycle ctx funcName definitions monoType =
 
         region : MlirRegion
         region =
-            Ops.mkRegion [] (defOps ++ boxOps ++ [ cycleOp ]) returnOp
+            Ops.mkRegion [] (List.reverse defOps ++ boxOps ++ [ cycleOp ]) returnOp
 
         ( ctx4, funcOp ) =
             Ops.funcFunc ctx3 funcName [] (Types.monoTypeToAbi monoType) region

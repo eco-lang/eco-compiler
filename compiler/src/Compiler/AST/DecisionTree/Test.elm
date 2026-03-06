@@ -1,5 +1,6 @@
 module Compiler.AST.DecisionTree.Test exposing
     ( Test(..)
+    , testToComparable
     , testEncoder, testDecoder
     )
 
@@ -46,6 +47,66 @@ type Test
     | IsChr String
     | IsStr String
     | IsBool Bool
+
+
+testToComparable : Test -> String
+testToComparable test =
+    case test of
+        IsCtor (IO.Canonical ( author, pkg ) moduleName) name zeroBased numAlts opts ->
+            String.concat
+                [ "C"
+                , author
+                , "/"
+                , pkg
+                , ":"
+                , moduleName
+                , "."
+                , name
+                , "/"
+                , String.fromInt (Index.toMachine zeroBased)
+                , "/"
+                , String.fromInt numAlts
+                , "/"
+                , ctorOptsToString opts
+                ]
+
+        IsCons ->
+            "cons"
+
+        IsNil ->
+            "nil"
+
+        IsTuple ->
+            "tup"
+
+        IsInt n ->
+            "I" ++ String.fromInt n
+
+        IsChr c ->
+            "H" ++ c
+
+        IsStr s ->
+            "S" ++ s
+
+        IsBool b ->
+            if b then
+                "Bt"
+
+            else
+                "Bf"
+
+
+ctorOptsToString : Can.CtorOpts -> String
+ctorOptsToString opts =
+    case opts of
+        Can.Normal ->
+            "N"
+
+        Can.Enum ->
+            "E"
+
+        Can.Unbox ->
+            "U"
 
 
 {-| Encode a Test to bytes for serialization.

@@ -185,23 +185,26 @@ unboxArgsForIntrinsic ctx argsWithTypes intrinsic =
     let
         expectedTypes =
             intrinsicOperandTypes intrinsic
-    in
-    List.foldl
-        (\( ( var, actualType ), expectedType ) ( opsAcc, varsAcc, ctxAcc ) ->
-            if Types.isEcoValueType actualType && not (Types.isEcoValueType expectedType) then
-                -- Need to unbox: actual is !eco.value, expected is primitive
-                let
-                    ( unboxOps, unboxedVar, newCtx ) =
-                        unboxToType ctxAcc var expectedType
-                in
-                ( opsAcc ++ unboxOps, varsAcc ++ [ unboxedVar ], newCtx )
 
-            else
-                -- No unboxing needed
-                ( opsAcc, varsAcc ++ [ var ], ctxAcc )
-        )
-        ( [], [], ctx )
-        (List.map2 Tuple.pair argsWithTypes expectedTypes)
+        ( revOps, revVars, finalCtx ) =
+            List.foldl
+                (\( ( var, actualType ), expectedType ) ( opsAcc, varsAcc, ctxAcc ) ->
+                    if Types.isEcoValueType actualType && not (Types.isEcoValueType expectedType) then
+                        -- Need to unbox: actual is !eco.value, expected is primitive
+                        let
+                            ( unboxOps, unboxedVar, newCtx ) =
+                                unboxToType ctxAcc var expectedType
+                        in
+                        ( List.reverse unboxOps ++ opsAcc, unboxedVar :: varsAcc, newCtx )
+
+                    else
+                        -- No unboxing needed
+                        ( opsAcc, var :: varsAcc, ctxAcc )
+                )
+                ( [], [], ctx )
+                (List.map2 Tuple.pair argsWithTypes expectedTypes)
+    in
+    ( List.reverse revOps, List.reverse revVars, finalCtx )
 
 
 

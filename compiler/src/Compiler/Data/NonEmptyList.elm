@@ -1,6 +1,6 @@
 module Compiler.Data.NonEmptyList exposing
     ( Nonempty(..)
-    , singleton, cons
+    , singleton, prepend, snoc
     , toList
     , map, foldr, sortBy
     )
@@ -19,7 +19,7 @@ in many scenarios.
 
 # Construction
 
-@docs singleton, cons
+@docs singleton, prepend, snoc
 
 
 # Conversion
@@ -49,10 +49,17 @@ singleton a =
     Nonempty a []
 
 
-{-| Add an element to the end of a non-empty list.
+{-| Add an element to the front of a non-empty list. O(1).
 -}
-cons : a -> Nonempty a -> Nonempty a
-cons a (Nonempty b bs) =
+prepend : a -> Nonempty a -> Nonempty a
+prepend a (Nonempty b bs) =
+    Nonempty a (b :: bs)
+
+
+{-| Add an element to the end of a non-empty list. O(n).
+-}
+snoc : a -> Nonempty a -> Nonempty a
+snoc a (Nonempty b bs) =
     Nonempty b (bs ++ [ a ])
 
 

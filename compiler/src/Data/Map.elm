@@ -347,7 +347,6 @@ with the most recently inserted key at the head of the list.
 keys : (k -> k -> Order) -> Dict c k v -> List k
 keys keyComparison (D dict) =
     Dict.values dict
-        |> List.sortWith (\( k1, _ ) ( k2, _ ) -> keyComparison k1 k2)
         |> List.map Tuple.first
 
 
@@ -361,7 +360,6 @@ with the most recently inserted value at the head of the list.
 values : (k -> k -> Order) -> Dict c k v -> List v
 values keyComparison (D dict) =
     Dict.values dict
-        |> List.sortWith (\( k1, _ ) ( k2, _ ) -> keyComparison k1 k2)
         |> List.map Tuple.second
 
 
@@ -372,7 +370,6 @@ head of the list.
 toList : (k -> k -> Order) -> Dict c k v -> List ( k, v )
 toList keyComparison (D dict) =
     Dict.values dict
-        |> List.sortWith (\( k1, _ ) ( k2, _ ) -> keyComparison k1 k2)
 
 
 {-| Convert an association list into a dictionary. The elements are inserted

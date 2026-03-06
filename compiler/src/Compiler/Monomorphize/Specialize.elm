@@ -613,16 +613,20 @@ specializeValueDefs :
     -> MonoState
     -> ( List ( Name, Mono.MonoExpr ), MonoState )
 specializeValueDefs values subst state =
-    List.foldl
-        (\( name, expr ) ( accDefs, accState ) ->
-            let
-                ( monoExpr, newState ) =
-                    specializeExpr expr subst accState
-            in
-            ( accDefs ++ [ ( name, monoExpr ) ], newState )
-        )
-        ( [], state )
-        values
+    let
+        ( revDefs, finalState ) =
+            List.foldl
+                (\( name, expr ) ( accDefs, accState ) ->
+                    let
+                        ( monoExpr, newState ) =
+                            specializeExpr expr subst accState
+                    in
+                    ( ( name, monoExpr ) :: accDefs, newState )
+                )
+                ( [], state )
+                values
+    in
+    ( List.reverse revDefs, finalState )
 
 
 

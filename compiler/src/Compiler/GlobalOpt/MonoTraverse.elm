@@ -152,17 +152,20 @@ traverseDecider f ctx decider =
 
         FanOut path edges fallback ->
             let
-                ( newEdges, ctx1 ) =
+                ( newEdgesRev, ctx1 ) =
                     List.foldl
                         (\( test, d ) ( acc, c ) ->
                             let
                                 ( newD, c1 ) =
                                     traverseDecider f c d
                             in
-                            ( acc ++ [ ( test, newD ) ], c1 )
+                            ( ( test, newD ) :: acc, c1 )
                         )
                         ( [], ctx )
                         edges
+
+                newEdges =
+                    List.reverse newEdgesRev
 
                 ( newFallback, ctx2 ) =
                     traverseDecider f ctx1 fallback
@@ -605,7 +608,8 @@ traverseList f ctx list =
                 ( newItem, c1 ) =
                     f c item
             in
-            ( acc ++ [ newItem ], c1 )
+            ( newItem :: acc, c1 )
         )
         ( [], ctx )
         list
+        |> Tuple.mapFirst List.reverse

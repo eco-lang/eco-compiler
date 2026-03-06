@@ -2992,10 +2992,10 @@ formatType (A.At region atype) =
                         go ( comments, type_ ) acc =
                             case type_ of
                                 A.At _ (Src.TLambda ( _, subFirst ) subRest) ->
-                                    go subRest (acc ++ [ ( comments, subFirst ) ])
+                                    go subRest (( comments, subFirst ) :: acc)
 
                                 _ ->
-                                    acc ++ [ ( comments, type_ ) ]
+                                    List.reverse (( comments, type_ ) :: acc)
                     in
                     go result []
 

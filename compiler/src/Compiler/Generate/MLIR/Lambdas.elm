@@ -47,28 +47,28 @@ processLambdas ctx =
                 -- references the same lambda)
                 dedupedLambdas =
                     let
-                        ( _, result ) =
+                        ( _, revResult ) =
                             List.foldl
                                 (\lambda ( seen, acc ) ->
                                     if Set.member lambda.name seen then
                                         ( seen, acc )
 
                                     else
-                                        ( Set.insert lambda.name seen, acc ++ [ lambda ] )
+                                        ( Set.insert lambda.name seen, lambda :: acc )
                                 )
                                 ( Set.empty, [] )
                                 lambdas
                     in
-                    result
+                    List.reverse revResult
 
-                ( lambdaOps, ctxAfter ) =
+                ( revLambdaOps, ctxAfter ) =
                     List.foldl
                         (\lambda ( accOps, accCtx ) ->
                             let
                                 ( ops, newCtx ) =
                                     generateLambdaFunc accCtx lambda
                             in
-                            ( accOps ++ ops, newCtx )
+                            ( List.reverse ops ++ accOps, newCtx )
                         )
                         ( [], ctxCleared )
                         dedupedLambdas
@@ -76,7 +76,7 @@ processLambdas ctx =
                 ( moreOps, finalCtx ) =
                     processLambdas ctxAfter
             in
-            ( priorFuncOps ++ lambdaOps ++ moreOps, finalCtx )
+            ( priorFuncOps ++ List.reverse revLambdaOps ++ moreOps, finalCtx )
 
 
 generateLambdaFunc : Ctx.Context -> Ctx.PendingLambda -> ( List MlirOp, Ctx.Context )

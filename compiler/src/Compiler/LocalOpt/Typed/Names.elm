@@ -409,4 +409,5 @@ Returns a Tracker containing the list of all results with all dependencies accum
 -}
 traverse : (a -> Tracker b) -> List a -> Tracker (List b)
 traverse func =
-    List.foldl (\a -> andThen (\acc -> map (\b -> acc ++ [ b ]) (func a))) (pure [])
+    List.foldl (\a -> andThen (\acc -> map (\b -> b :: acc) (func a))) (pure [])
+        >> map List.reverse

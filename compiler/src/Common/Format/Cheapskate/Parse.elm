@@ -296,7 +296,7 @@ closeContainer =
                                         (\_ ->
                                             case rest of
                                                 (Container ct_ cs_) :: rs ->
-                                                    RWS.put (ContainerStack (Container ct_ (cs_ ++ [ C top ])) rs)
+                                                    RWS.put (ContainerStack (Container ct_ (C top :: cs_)) rs)
 
                                                 [] ->
                                                     RWS.return ()
@@ -320,16 +320,16 @@ closeContainer =
                                         RWS.put
                                             (ContainerStack
                                                 (if List.isEmpty zs then
-                                                    Container ct_ (cs_ ++ [ C (Container li zs) ])
+                                                    Container ct_ (C (Container li zs) :: cs_)
 
                                                  else
-                                                    Container ct_ (cs_ ++ [ C (Container li zs), b ])
+                                                    Container ct_ (b :: C (Container li zs) :: cs_)
                                                 )
                                                 rs
                                             )
 
                                     _ ->
-                                        RWS.put (ContainerStack (Container ct_ (cs_ ++ [ C top ])) rs)
+                                        RWS.put (ContainerStack (Container ct_ (C top :: cs_)) rs)
 
                             [] ->
                                 RWS.return ()
@@ -337,7 +337,7 @@ closeContainer =
                     _ ->
                         case rest of
                             (Container ct_ cs_) :: rs ->
-                                RWS.put (ContainerStack (Container ct_ (cs_ ++ [ C top ])) rs)
+                                RWS.put (ContainerStack (Container ct_ (C top :: cs_)) rs)
 
                             [] ->
                                 RWS.return ()
@@ -391,7 +391,7 @@ processDocument : ( Container, ReferenceMap ) -> Blocks
 processDocument ( Container ct cs, remap ) =
     case ct of
         Document ->
-            processElts remap cs
+            processElts remap (List.reverse cs)
 
         _ ->
             crash "top level container is not Document"
@@ -485,8 +485,11 @@ processElts remap elts =
                 Rule ->
                     HRule :: processElts remap rest
 
-        (C (Container ct cs)) :: rest ->
+        (C (Container ct csRev)) :: rest ->
             let
+                cs =
+                    List.reverse csRev
+
                 isBlankLine : Elt -> Bool
                 isBlankLine x =
                     case x of
@@ -580,7 +583,7 @@ processElts remap elts =
                         getItem container =
                             case container of
                                 Container (ListItem _) cs_ ->
-                                    Just cs_
+                                    Just (List.reverse cs_)
 
                                 _ ->
                                     Nothing

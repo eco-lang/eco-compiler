@@ -34,7 +34,6 @@ import Compiler.AST.DecisionTree.TypedPath as TypedPath
 import Compiler.Data.Index as Index
 import Compiler.Reporting.Annotation as A
 import Data.Set as EverySet
-import Hex.Convert
 import Prelude
 import Utils.Crash exposing (crash)
 import Utils.Main as Utils
@@ -346,12 +345,12 @@ testsAtPath selectedPath branches =
 
         skipVisited : Test -> ( List Test, EverySet.EverySet String Test ) -> ( List Test, EverySet.EverySet String Test )
         skipVisited test (( uniqueTests, visitedTests ) as curr) =
-            if EverySet.member (testEncoder >> Bytes.Encode.encode >> Hex.Convert.toString) test visitedTests then
+            if EverySet.member Test.testToComparable test visitedTests then
                 curr
 
             else
                 ( test :: uniqueTests
-                , EverySet.insert (testEncoder >> Bytes.Encode.encode >> Hex.Convert.toString) test visitedTests
+                , EverySet.insert Test.testToComparable test visitedTests
                 )
     in
     Tuple.first (List.foldr skipVisited ( [], EverySet.empty ) allTests)

@@ -91,7 +91,7 @@ generateMlirModule mode monoGraph0 =
                         ( newCtx, declOp ) =
                             Functions.generateKernelDecl accCtx name sig
                     in
-                    ( accOps ++ [ declOp ], newCtx )
+                    ( declOp :: accOps, newCtx )
                 )
                 ( [], finalCtx )
                 finalCtx.kernelDecls
@@ -101,7 +101,7 @@ generateMlirModule mode monoGraph0 =
         typeTableOp =
             TypeTable.generateTypeTable finalCtx
     in
-    { body = typeTableOp :: kernelDeclOps ++ lambdaOps ++ ops ++ mainOps
+    { body = typeTableOp :: List.reverse kernelDeclOps ++ lambdaOps ++ ops ++ mainOps
     , loc = Loc.unknown
     }
 

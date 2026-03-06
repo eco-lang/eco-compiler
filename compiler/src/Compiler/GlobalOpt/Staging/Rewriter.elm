@@ -146,10 +146,11 @@ rewriteNode solution producerInfo nodeId node ctx0 =
                                 ( newExpr, ctxN ) =
                                     rewriteExpr solution producerInfo expr accCtx
                             in
-                            ( accBindings ++ [ ( name, newExpr ) ], ctxN )
+                            ( ( name, newExpr ) :: accBindings, ctxN )
                         )
                         ( [], ctx0 )
                         bindings
+                        |> Tuple.mapFirst List.reverse
             in
             ( Mono.MonoCycle newBindings monoType, ctx1 )
 
@@ -235,10 +236,11 @@ rewriteExpr solution producerInfo expr ctx0 =
                                 ( newThen, ctxNN ) =
                                     rewriteExpr solution producerInfo then_ ctxN
                             in
-                            ( accBranches ++ [ ( newCond, newThen ) ], ctxNN )
+                            ( ( newCond, newThen ) :: accBranches, ctxNN )
                         )
                         ( [], ctx0 )
                         branches
+                        |> Tuple.mapFirst List.reverse
 
                 ( newElse, ctx2 ) =
                     rewriteExpr solution producerInfo elseExpr ctx1
@@ -258,10 +260,11 @@ rewriteExpr solution producerInfo expr ctx0 =
                                 ( newExpr, ctxN ) =
                                     rewriteExpr solution producerInfo branchExpr accCtx
                             in
-                            ( accBranches ++ [ ( idx, newExpr ) ], ctxN )
+                            ( ( idx, newExpr ) :: accBranches, ctxN )
                         )
                         ( [], ctx1 )
                         branches
+                        |> Tuple.mapFirst List.reverse
             in
             ( Mono.MonoCase name1 name2 newDecider newBranches monoType, ctx2 )
 
@@ -287,10 +290,11 @@ rewriteExpr solution producerInfo expr ctx0 =
                                 ( newArg, ctxN ) =
                                     rewriteExpr solution producerInfo arg accCtx
                             in
-                            ( accArgs ++ [ newArg ], ctxN )
+                            ( newArg :: accArgs, ctxN )
                         )
                         ( [], ctx1 )
                         args
+                        |> Tuple.mapFirst List.reverse
             in
             ( Mono.MonoCall region newCallee newArgs monoType callInfo, ctx2 )
 
@@ -303,10 +307,11 @@ rewriteExpr solution producerInfo expr ctx0 =
                                 ( newExpr, ctxN ) =
                                     rewriteExpr solution producerInfo fieldExpr accCtx
                             in
-                            ( accFields ++ [ ( name, newExpr ) ], ctxN )
+                            ( ( name, newExpr ) :: accFields, ctxN )
                         )
                         ( [], ctx0 )
                         fields
+                        |> Tuple.mapFirst List.reverse
             in
             ( Mono.MonoRecordCreate newFields monoType, ctx1 )
 
@@ -322,10 +327,11 @@ rewriteExpr solution producerInfo expr ctx0 =
                                 ( newExpr, ctxN ) =
                                     rewriteExpr solution producerInfo fieldExpr accCtx
                             in
-                            ( accFields ++ [ ( name, newExpr ) ], ctxN )
+                            ( ( name, newExpr ) :: accFields, ctxN )
                         )
                         ( [], ctx1 )
                         fields
+                        |> Tuple.mapFirst List.reverse
             in
             ( Mono.MonoRecordUpdate newBase newFields monoType, ctx2 )
 
@@ -338,10 +344,11 @@ rewriteExpr solution producerInfo expr ctx0 =
                                 ( newExpr, ctxN ) =
                                     rewriteExpr solution producerInfo e accCtx
                             in
-                            ( accExprs ++ [ newExpr ], ctxN )
+                            ( newExpr :: accExprs, ctxN )
                         )
                         ( [], ctx0 )
                         exprs
+                        |> Tuple.mapFirst List.reverse
             in
             ( Mono.MonoTupleCreate region newExprs monoType, ctx1 )
 
@@ -354,10 +361,11 @@ rewriteExpr solution producerInfo expr ctx0 =
                                 ( newExpr, ctxN ) =
                                     rewriteExpr solution producerInfo e accCtx
                             in
-                            ( accExprs ++ [ newExpr ], ctxN )
+                            ( newExpr :: accExprs, ctxN )
                         )
                         ( [], ctx0 )
                         exprs
+                        |> Tuple.mapFirst List.reverse
             in
             ( Mono.MonoList region newExprs monoType, ctx1 )
 
@@ -384,10 +392,11 @@ rewriteExpr solution producerInfo expr ctx0 =
                                 ( newExpr, ctxN ) =
                                     rewriteExpr solution producerInfo argExpr accCtx
                             in
-                            ( accArgs ++ [ ( argName, newExpr ) ], ctxN )
+                            ( ( argName, newExpr ) :: accArgs, ctxN )
                         )
                         ( [], ctx0 )
                         args
+                        |> Tuple.mapFirst List.reverse
             in
             ( Mono.MonoTailCall name newArgs monoType, ctx1 )
 
@@ -455,10 +464,11 @@ rewriteDecider solution producerInfo decider ctx0 =
                                 ( newSubDecider, ctxN ) =
                                     rewriteDecider solution producerInfo subDecider accCtx
                             in
-                            ( accEdges ++ [ ( test, newSubDecider ) ], ctxN )
+                            ( ( test, newSubDecider ) :: accEdges, ctxN )
                         )
                         ( [], ctx0 )
                         edges
+                        |> Tuple.mapFirst List.reverse
 
                 ( newFallback, ctx2 ) =
                     rewriteDecider solution producerInfo fallback ctx1

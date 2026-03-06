@@ -163,8 +163,8 @@ processOutlineAndApplyChanges root { nodeDirname, baseOutline, testsDirExists, e
             srcDirs
                 |> addOptionalTests testsDirExists
                 |> NE.map makeRelativePathsPortable
-                |> NE.cons (Outline.AbsoluteSrcDir (Utils.fpCombine nodeDirname "../libraries/test/src"))
-                |> NE.cons (Outline.RelativeSrcDir "src")
+                |> NE.snoc (Outline.AbsoluteSrcDir (Utils.fpCombine nodeDirname "../libraries/test/src"))
+                |> NE.snoc (Outline.RelativeSrcDir "src")
     in
     buildTestOutline env newSrcDirs baseOutline
         |> Task.andThen (attemptChanges root env)
@@ -173,7 +173,7 @@ processOutlineAndApplyChanges root { nodeDirname, baseOutline, testsDirExists, e
 addOptionalTests : Bool -> NE.Nonempty Outline.SrcDir -> NE.Nonempty Outline.SrcDir
 addOptionalTests testsDirExists =
     if testsDirExists then
-        NE.cons (Outline.RelativeSrcDir "tests")
+        NE.snoc (Outline.RelativeSrcDir "tests")
 
     else
         identity

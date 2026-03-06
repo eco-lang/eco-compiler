@@ -61,19 +61,31 @@ findFieldInfoByName targetName fields =
 -}
 generateMonoPath : Ctx.Context -> Mono.MonoPath -> MlirType -> ( List MlirOp, String, Ctx.Context )
 generateMonoPath ctx path targetType =
+    let
+        ( revOps, var, ctx_ ) =
+            generateMonoPathHelper ctx path targetType []
+    in
+    ( List.reverse revOps, var, ctx_ )
+
+
+{-| Internal helper for generateMonoPath that accumulates ops in reverse order
+to avoid quadratic ++ [ behavior.
+-}
+generateMonoPathHelper : Ctx.Context -> Mono.MonoPath -> MlirType -> List MlirOp -> ( List MlirOp, String, Ctx.Context )
+generateMonoPathHelper ctx path targetType revAcc =
     case path of
         Mono.MonoRoot name _ ->
             let
                 ( varName, _ ) =
                     Ctx.lookupVar ctx name
             in
-            ( [], varName, ctx )
+            ( revAcc, varName, ctx )
 
         Mono.MonoIndex index containerKind resultType subPath ->
             let
                 -- Navigate to the container object (always !eco.value)
-                ( subOps, subVar, ctx1 ) =
-                    generateMonoPath ctx subPath Types.ecoValue
+                ( revAcc1, subVar, ctx1 ) =
+                    generateMonoPathHelper ctx subPath Types.ecoValue revAcc
 
                 ( resultVar, ctx2 ) =
                     Ctx.freshVar ctx1
@@ -168,7 +180,7 @@ generateMonoPath ctx path targetType =
                                     in
                                     ( [ op ], resultVar, ctx_ )
             in
-            ( subOps ++ projectOps
+            ( List.foldl (::) revAcc1 projectOps
             , projectVar
             , ctx3
             )
@@ -176,8 +188,8 @@ generateMonoPath ctx path targetType =
         Mono.MonoField fieldName resultType subPath ->
             let
                 -- Navigate to the container object (always !eco.value)
-                ( subOps, subVar, ctx1 ) =
-                    generateMonoPath ctx subPath Types.ecoValue
+                ( revAcc1, subVar, ctx1 ) =
+                    generateMonoPathHelper ctx subPath Types.ecoValue revAcc
 
                 ( resultVar, ctx2 ) =
                     Ctx.freshVar ctx1
@@ -204,7 +216,7 @@ generateMonoPath ctx path targetType =
                 ( ctx3, projectOp ) =
                     Ops.ecoProjectRecord ctx2 resultVar fieldInfo.index targetType subVar
             in
-            ( subOps ++ [ projectOp ]
+            ( projectOp :: revAcc1
             , resultVar
             , ctx3
             )
@@ -224,8 +236,8 @@ generateMonoPath ctx path targetType =
                     Mono.getMonoPathType subPath
 
                 -- Navigate to the container object (always !eco.value)
-                ( subOps, subVar, ctx1 ) =
-                    generateMonoPath ctx subPath Types.ecoValue
+                ( revAcc1, subVar, ctx1 ) =
+                    generateMonoPathHelper ctx subPath Types.ecoValue revAcc
 
                 -- Look up the shape for this unbox type
                 typeKey =
@@ -265,11 +277,11 @@ generateMonoPath ctx path targetType =
                                         ( ctx5, boxOp ) =
                                             boxPrimitive ctx4 boxedVar resultVar fieldMlirType
                                     in
-                                    ( subOps ++ [ projectOp, boxOp ], boxedVar, ctx5 )
+                                    ( boxOp :: projectOp :: revAcc1, boxedVar, ctx5 )
 
                                 else
                                     -- Caller wants primitive, return directly
-                                    ( subOps ++ [ projectOp ], resultVar, ctx3 )
+                                    ( projectOp :: revAcc1, resultVar, ctx3 )
 
                             else
                                 -- Field is stored boxed (as eco.value)
@@ -293,20 +305,20 @@ generateMonoPath ctx path targetType =
                                                 |> Ops.opBuilder.withAttrs attrs
                                                 |> Ops.opBuilder.build
                                     in
-                                    ( subOps ++ [ projectOp, unboxOp ], unboxedVar, ctx5 )
+                                    ( unboxOp :: projectOp :: revAcc1, unboxedVar, ctx5 )
 
                                 else
                                     -- Caller wants eco.value, return directly
-                                    ( subOps ++ [ projectOp ], resultVar, ctx3 )
+                                    ( projectOp :: revAcc1, resultVar, ctx3 )
 
                         [] ->
                             -- No fields in layout - fall back to pass-through
-                            ( subOps, subVar, ctx1 )
+                            ( revAcc1, subVar, ctx1 )
 
                 _ ->
                     -- No layout found - fall back to pass-through (treat as eco.value)
                     -- This preserves backward compatibility for cases where layout isn't available.
-                    ( subOps, subVar, ctx1 )
+                    ( revAcc1, subVar, ctx1 )
 
 
 {-| Look up whether a field in a custom type constructor is stored unboxed.
@@ -469,6 +481,18 @@ The targetType parameter specifies what type the final value should be:
 -}
 generateDTPath : Ctx.Context -> Name.Name -> DT.Path -> MlirType -> ( List MlirOp, String, Ctx.Context )
 generateDTPath ctx root dtPath targetType =
+    let
+        ( revOps, var, ctx_ ) =
+            generateDTPathHelper ctx root dtPath targetType []
+    in
+    ( List.reverse revOps, var, ctx_ )
+
+
+{-| Internal helper for generateDTPath that accumulates ops in reverse order
+to avoid quadratic ++ [ behavior.
+-}
+generateDTPathHelper : Ctx.Context -> Name.Name -> DT.Path -> MlirType -> List MlirOp -> ( List MlirOp, String, Ctx.Context )
+generateDTPathHelper ctx root dtPath targetType revAcc =
     case dtPath of
         TypedPath.Empty ->
             -- The root is the scrutinee variable; look it up in varMappings.
@@ -479,7 +503,7 @@ generateDTPath ctx root dtPath targetType =
             in
             if rootTy == targetType then
                 -- Already the right type (e.g. Bool param already i1)
-                ( [], rootVar, ctx )
+                ( revAcc, rootVar, ctx )
 
             else if Types.isEcoValueType rootTy && not (Types.isEcoValueType targetType) then
                 -- Currently boxed, need primitive -> unbox and update mapping
@@ -491,17 +515,17 @@ generateDTPath ctx root dtPath targetType =
                     ctx2 =
                         Ctx.addVarMapping root unboxedVar targetType ctx1
                 in
-                ( unboxOps, unboxedVar, ctx2 )
+                ( List.foldl (::) revAcc unboxOps, unboxedVar, ctx2 )
 
             else
                 -- Types differ but we don't have a boxing rule here; just use rootVar.
-                ( [], rootVar, ctx )
+                ( revAcc, rootVar, ctx )
 
         TypedPath.Index index hint subPath ->
             let
                 -- Navigate to the container object (always !eco.value)
-                ( subOps, subVar, ctx1 ) =
-                    generateDTPath ctx root subPath Types.ecoValue
+                ( revAcc1, subVar, ctx1 ) =
+                    generateDTPathHelper ctx root subPath Types.ecoValue revAcc
 
                 ( resultVar, ctx2 ) =
                     Ctx.freshVar ctx1
@@ -596,7 +620,7 @@ generateDTPath ctx root dtPath targetType =
                             in
                             ( [ op ], resultVar, ctxU )
             in
-            ( subOps ++ projectOps, projectVar, ctx3 )
+            ( List.foldl (::) revAcc1 projectOps, projectVar, ctx3 )
 
         TypedPath.Unbox subPath ->
             -- TypedPath.Unbox represents unwrapping a single-constructor type to access its single field.
@@ -613,8 +637,8 @@ generateDTPath ctx root dtPath targetType =
             -- that might have unboxed fields.
             let
                 -- Navigate to the container object (always !eco.value)
-                ( subOps, subVar, ctx1 ) =
-                    generateDTPath ctx root subPath Types.ecoValue
+                ( revAcc1, subVar, ctx1 ) =
+                    generateDTPathHelper ctx root subPath Types.ecoValue revAcc
 
                 ( resultVar, ctx2 ) =
                     Ctx.freshVar ctx1
@@ -681,7 +705,7 @@ generateDTPath ctx root dtPath targetType =
                                 -- Caller wants eco.value, return directly
                                 ( [ projectOp ], resultVar, ctxP1 )
             in
-            ( subOps ++ projectOps, projectVar, ctx3 )
+            ( List.foldl (::) revAcc1 projectOps, projectVar, ctx3 )
 
 
 {-| Generate MLIR ops to evaluate a DT.Test, returning a boolean result.
@@ -908,20 +932,32 @@ generateChainCondition ctx root tests =
             generateTest ctx root singleTest
 
         firstTest :: restTests ->
+            -- Evaluate the first test
             let
                 ( firstOps, firstVar, ctx1 ) =
                     generateTest ctx root firstTest
 
-                ( restOps, restVar, ctx2 ) =
-                    generateChainCondition ctx1 root restTests
+                -- Fold over remaining tests, accumulating ops in reverse and
+                -- ANDing boolean results together
+                ( revOps, finalVar, finalCtx ) =
+                    List.foldl
+                        (\test ( accRevOps, prevVar, accCtx ) ->
+                            let
+                                ( testOps, testVar, ctx2 ) =
+                                    generateTest accCtx root test
 
-                ( resVar, ctx3 ) =
-                    Ctx.freshVar ctx2
+                                ( resVar, ctx3 ) =
+                                    Ctx.freshVar ctx2
 
-                ( ctx4, andOp ) =
-                    Ops.ecoBinaryOp ctx3 "arith.andi" resVar ( firstVar, I1 ) ( restVar, I1 ) I1
+                                ( ctx4, andOp ) =
+                                    Ops.ecoBinaryOp ctx3 "arith.andi" resVar ( prevVar, I1 ) ( testVar, I1 ) I1
+                            in
+                            ( andOp :: List.foldl (::) accRevOps testOps, resVar, ctx4 )
+                        )
+                        ( List.foldl (::) [] firstOps, firstVar, ctx1 )
+                        restTests
             in
-            ( firstOps ++ restOps ++ [ andOp ], resVar, ctx4 )
+            ( List.reverse revOps, finalVar, finalCtx )
 
 
 {-| Get the tag from a DT.Test for use with eco.case

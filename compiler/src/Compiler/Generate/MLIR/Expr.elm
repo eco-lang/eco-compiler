@@ -820,7 +820,7 @@ generateList ctx items listType =
                 ( ctx2, nilOp ) =
                     Ops.ecoConstantNil ctx1 nilVar
 
-                ( consOps, finalVar, finalCtx ) =
+                ( consOpsReversed, finalVar, finalCtx ) =
                     List.foldr
                         (\item ( accOps, tailVar, accCtx ) ->
                             let
@@ -843,7 +843,7 @@ generateList ctx items listType =
                                     ( ctx4, consOp ) =
                                         Ops.ecoConstructList ctx3 consVar ( result.resultVar, result.resultType ) ( tailVar, Types.ecoValue ) True
                                 in
-                                ( accOps ++ result.ops ++ [ consOp ], consVar, ctx4 )
+                                ( consOp :: List.reverse result.ops ++ accOps, consVar, ctx4 )
 
                             else
                                 -- Box element before storing in the list
@@ -857,12 +857,12 @@ generateList ctx items listType =
                                     ( ctx5, consOp ) =
                                         Ops.ecoConstructList ctx4 consVar ( boxedVar, Types.ecoValue ) ( tailVar, Types.ecoValue ) False
                                 in
-                                ( accOps ++ result.ops ++ boxOps ++ [ consOp ], consVar, ctx5 )
+                                ( consOp :: List.reverse boxOps ++ List.reverse result.ops ++ accOps, consVar, ctx5 )
                         )
                         ( [], nilVar, ctx2 )
                         items
             in
-            { ops = nilOp :: consOps
+            { ops = nilOp :: List.reverse consOpsReversed
             , resultVar = finalVar
             , resultType = Types.ecoValue
             , ctx = finalCtx
@@ -880,7 +880,7 @@ generateClosure : Ctx.Context -> Mono.ClosureInfo -> Mono.MonoExpr -> Mono.MonoT
 generateClosure ctx closureInfo body monoType =
     let
         -- Generate expressions and track ACTUAL SSA types, not Mono types
-        ( captureOps, captureVarsWithTypes, ctx1 ) =
+        ( captureOpsReversed, captureVarsWithTypesReversed, ctx1 ) =
             List.foldl
                 (\( _, expr, _ ) ( accOps, accVars, accCtx ) ->
                     let
@@ -888,13 +888,19 @@ generateClosure ctx closureInfo body monoType =
                         result =
                             generateExpr accCtx expr
                     in
-                    ( accOps ++ result.ops
-                    , accVars ++ [ ( result.resultVar, result.resultType ) ]
+                    ( List.reverse result.ops ++ accOps
+                    , ( result.resultVar, result.resultType ) :: accVars
                     , result.ctx
                     )
                 )
                 ( [], [], ctx )
                 closureInfo.captures
+
+        captureOps =
+            List.reverse captureOpsReversed
+
+        captureVarsWithTypes =
+            List.reverse captureVarsWithTypesReversed
 
         -- No boxing - use captures with their actual types (typed closure ABI)
         captureVarNames : List String
@@ -1107,7 +1113,7 @@ boxToMatchSignatureTyped ctx actualArgs expectedTypes =
                     Types.monoTypeToAbi expectedTy
             in
             if expectedMlirTy == actualTy then
-                ( opsAcc, pairsAcc ++ [ ( var, actualTy ) ], ctxAcc )
+                ( opsAcc, ( var, actualTy ) :: pairsAcc, ctxAcc )
 
             else if Types.isEcoValueType expectedMlirTy && not (Types.isEcoValueType actualTy) then
                 -- Function expects boxed, we have primitive -> box using actual SSA type
@@ -1115,8 +1121,8 @@ boxToMatchSignatureTyped ctx actualArgs expectedTypes =
                     ( boxOps, boxedVar, ctx1 ) =
                         boxToEcoValue ctxAcc var actualTy
                 in
-                ( opsAcc ++ boxOps
-                , pairsAcc ++ [ ( boxedVar, Types.ecoValue ) ]
+                ( List.reverse boxOps ++ opsAcc
+                , ( boxedVar, Types.ecoValue ) :: pairsAcc
                 , ctx1
                 )
 
@@ -1126,16 +1132,19 @@ boxToMatchSignatureTyped ctx actualArgs expectedTypes =
                     ( unboxOps, unboxedVar, ctx1 ) =
                         Intrinsics.unboxToType ctxAcc var expectedMlirTy
                 in
-                ( opsAcc ++ unboxOps
-                , pairsAcc ++ [ ( unboxedVar, expectedMlirTy ) ]
+                ( List.reverse unboxOps ++ opsAcc
+                , ( unboxedVar, expectedMlirTy ) :: pairsAcc
                 , ctx1
                 )
 
             else
                 -- No boxing solution (e.g. i64 vs f64) - use actual type for now
-                ( opsAcc, pairsAcc ++ [ ( var, actualTy ) ], ctxAcc )
+                ( opsAcc, ( var, actualTy ) :: pairsAcc, ctxAcc )
+
+        ( opsReversed, pairsReversed, ctxFinal ) =
+            List.foldl helper ( [], [], ctx ) (List.map2 Tuple.pair actualArgs expectedTypes)
     in
-    List.foldl helper ( [], [], ctx ) (List.map2 Tuple.pair actualArgs expectedTypes)
+    ( List.reverse opsReversed, List.reverse pairsReversed, ctxFinal )
 
 
 {-| Coerce an expression result to a desired MLIR type by inserting
@@ -1235,20 +1244,20 @@ applyByStages :
     -> List Int -- remainingStageArities: arities of subsequent stages after saturation
     -> MlirType -- saturatedReturnType: callee's ABI return type (CGEN_056: must equal func.func result type)
     -> List ( String, MlirType ) -- args: remaining (var, mlirType) pairs to apply
-    -> List MlirOp -- accumulated ops
+    -> List MlirOp -- accumulated ops (in reverse order)
     -> ApplyByStagesResult
 applyByStages ctx funcVar funcMlirType sourceRemaining remainingStageArities saturatedReturnType args accOps =
     case args of
         [] ->
             -- Base case: no more args to apply
-            { ops = accOps, resultVar = funcVar, resultType = funcMlirType, ctx = ctx }
+            { ops = List.reverse accOps, resultVar = funcVar, resultType = funcMlirType, ctx = ctx }
 
         _ ->
             if sourceRemaining <= 0 then
                 -- Defensive: zero-arity stage shouldn't happen with remaining args
                 -- (zero-arity functions use direct calls, not PAPs)
                 -- Return current value (treat as fully applied)
-                { ops = accOps, resultVar = funcVar, resultType = funcMlirType, ctx = ctx }
+                { ops = List.reverse accOps, resultVar = funcVar, resultType = funcMlirType, ctx = ctx }
 
             else
                 let
@@ -1339,11 +1348,11 @@ applyByStages ctx funcVar funcMlirType sourceRemaining remainingStageArities sat
                             |> Ops.opBuilder.build
 
                     nextOps =
-                        accOps ++ [ papExtendOp ]
+                        papExtendOp :: accOps
                 in
                 if List.isEmpty rest then
                     -- No more args to apply after this batch.
-                    { ops = nextOps, resultVar = resVar, resultType = resultMlirType, ctx = ctx2 }
+                    { ops = List.reverse nextOps, resultVar = resVar, resultType = resultMlirType, ctx = ctx2 }
 
                 else
                     -- More args to apply in later batches.
@@ -1537,30 +1546,34 @@ REP\_CLOSURE\_001, leaving i64/f64/i16 as-is for known function signatures.
 -}
 boxArgsForClosureBoundary : Bool -> Ctx.Context -> List ( String, MlirType ) -> ( List MlirOp, List ( String, MlirType ), Ctx.Context )
 boxArgsForClosureBoundary boxAllPrimitives ctx argsWithTypes =
-    List.foldl
-        (\( var, mlirTy ) ( opsAcc, argsAcc, ctxAcc ) ->
-            let
-                needsBoxing =
-                    if boxAllPrimitives then
-                        -- Unknown callee: box ALL primitives (i64, f64, i16, i1) to !eco.value
-                        not (Types.isEcoValueType mlirTy)
+    let
+        ( opsReversed, argsReversed, ctxFinal ) =
+            List.foldl
+                (\( var, mlirTy ) ( opsAcc, argsAcc, ctxAcc ) ->
+                    let
+                        needsBoxing =
+                            if boxAllPrimitives then
+                                -- Unknown callee: box ALL primitives (i64, f64, i16, i1) to !eco.value
+                                not (Types.isEcoValueType mlirTy)
+
+                            else
+                                -- Known callee: only box Bool (i1) per REP_CLOSURE_001
+                                mlirTy == I1
+                    in
+                    if needsBoxing then
+                        let
+                            ( boxOps, boxedVar, ctx1 ) =
+                                boxToEcoValue ctxAcc var mlirTy
+                        in
+                        ( List.reverse boxOps ++ opsAcc, ( boxedVar, Types.ecoValue ) :: argsAcc, ctx1 )
 
                     else
-                        -- Known callee: only box Bool (i1) per REP_CLOSURE_001
-                        mlirTy == I1
-            in
-            if needsBoxing then
-                let
-                    ( boxOps, boxedVar, ctx1 ) =
-                        boxToEcoValue ctxAcc var mlirTy
-                in
-                ( opsAcc ++ boxOps, argsAcc ++ [ ( boxedVar, Types.ecoValue ) ], ctx1 )
-
-            else
-                ( opsAcc, argsAcc ++ [ ( var, mlirTy ) ], ctxAcc )
-        )
-        ( [], [], ctx )
-        argsWithTypes
+                        ( opsAcc, ( var, mlirTy ) :: argsAcc, ctxAcc )
+                )
+                ( [], [], ctx )
+                argsWithTypes
+    in
+    ( List.reverse opsReversed, List.reverse argsReversed, ctxFinal )
 
 
 {-| Detect inlined Bytes.Decode.decode pattern:
@@ -2710,20 +2723,24 @@ SSA values have correct types.
 -}
 generateExprListTyped : Ctx.Context -> List Mono.MonoExpr -> ( List MlirOp, List ( String, MlirType ), Ctx.Context )
 generateExprListTyped ctx exprs =
-    List.foldl
-        (\expr ( accOps, accVarsWithTypes, accCtx ) ->
-            let
-                result : ExprResult
-                result =
-                    generateExpr accCtx expr
-            in
-            ( accOps ++ result.ops
-            , accVarsWithTypes ++ [ ( result.resultVar, result.resultType ) ]
-            , result.ctx
-            )
-        )
-        ( [], [], ctx )
-        exprs
+    let
+        ( opsReversed, varsReversed, ctxFinal ) =
+            List.foldl
+                (\expr ( accOps, accVarsWithTypes, accCtx ) ->
+                    let
+                        result : ExprResult
+                        result =
+                            generateExpr accCtx expr
+                    in
+                    ( List.reverse result.ops ++ accOps
+                    , ( result.resultVar, result.resultType ) :: accVarsWithTypes
+                    , result.ctx
+                    )
+                )
+                ( [], [], ctx )
+                exprs
+    in
+    ( List.reverse opsReversed, List.reverse varsReversed, ctxFinal )
 
 
 {-| Box arguments to !eco.value using their ACTUAL MLIR types.
@@ -2735,16 +2752,20 @@ boxArgsWithMlirTypes :
     -> List ( String, MlirType )
     -> ( List MlirOp, List String, Ctx.Context )
 boxArgsWithMlirTypes ctx args =
-    List.foldl
-        (\( var, mlirTy ) ( opsAcc, varsAcc, ctxAcc ) ->
-            let
-                ( moreOps, boxedVar, ctx1 ) =
-                    boxToEcoValue ctxAcc var mlirTy
-            in
-            ( opsAcc ++ moreOps, varsAcc ++ [ boxedVar ], ctx1 )
-        )
-        ( [], [], ctx )
-        args
+    let
+        ( opsReversed, varsReversed, ctxFinal ) =
+            List.foldl
+                (\( var, mlirTy ) ( opsAcc, varsAcc, ctxAcc ) ->
+                    let
+                        ( moreOps, boxedVar, ctx1 ) =
+                            boxToEcoValue ctxAcc var mlirTy
+                    in
+                    ( List.reverse moreOps ++ opsAcc, boxedVar :: varsAcc, ctx1 )
+                )
+                ( [], [], ctx )
+                args
+    in
+    ( List.reverse opsReversed, List.reverse varsReversed, ctxFinal )
 
 
 
@@ -2757,7 +2778,7 @@ generateTailCall : Ctx.Context -> Name.Name -> List ( Name.Name, Mono.MonoExpr )
 generateTailCall ctx _ args =
     let
         -- Generate arguments and track actual SSA types
-        ( argsOps, argsWithTypes, ctx1 ) =
+        ( argsOpsReversed, argsWithTypesReversed, ctx1 ) =
             List.foldl
                 (\( _, expr ) ( accOps, accVarsWithTypes, accCtx ) ->
                     let
@@ -2765,13 +2786,19 @@ generateTailCall ctx _ args =
                         result =
                             generateExpr accCtx expr
                     in
-                    ( accOps ++ result.ops
-                    , accVarsWithTypes ++ [ ( result.resultVar, result.resultType ) ]
+                    ( List.reverse result.ops ++ accOps
+                    , ( result.resultVar, result.resultType ) :: accVarsWithTypes
                     , result.ctx
                     )
                 )
                 ( [], [], ctx )
                 args
+
+        argsOps =
+            List.reverse argsOpsReversed
+
+        argsWithTypes =
+            List.reverse argsWithTypesReversed
 
         -- Extract variable names and their actual SSA types
         argVarNames : List String
@@ -3761,7 +3788,7 @@ generateFanOutGeneralWithJumps ctx root path edges fallback jumpLookup resultTy 
                 in
                 ( edgeTags ++ [ fallbackTag ], Nothing )
 
-        ( edgeRegions, ctx2 ) =
+        ( edgeRegionsReversed, ctx2 ) =
             List.foldl
                 (\( _, subTree ) ( accRegions, accCtx ) ->
                     let
@@ -3771,10 +3798,13 @@ generateFanOutGeneralWithJumps ctx root path edges fallback jumpLookup resultTy 
                         ( region, ctxAfterRegion ) =
                             mkCaseRegionFromDecider subRes resultTy
                     in
-                    ( accRegions ++ [ region ], ctxAfterRegion )
+                    ( region :: accRegions, ctxAfterRegion )
                 )
                 ( [], ctx1 )
                 edges
+
+        edgeRegions =
+            List.reverse edgeRegionsReversed
 
         fallbackRes =
             generateDeciderWithJumps ctx2 root fallback jumpLookup resultTy
@@ -3948,12 +3978,12 @@ generateRecordCreate ctx fields layout recordType =
                 generateExprListTyped ctxWithType fields
 
             -- Box fields that need to be boxed (layout says boxed, but expression is primitive)
-            ( boxOps, boxedFieldVars, ctx2 ) =
+            ( boxOpsReversed, boxedFieldVarsReversed, ctx2 ) =
                 List.foldl
                     (\( ( var, ssaType ), fieldInfo ) ( opsAcc, varsAcc, ctxAcc ) ->
                         if fieldInfo.isUnboxed then
                             -- Field is stored unboxed, use as-is
-                            ( opsAcc, varsAcc ++ [ var ], ctxAcc )
+                            ( opsAcc, var :: varsAcc, ctxAcc )
 
                         else
                             -- Field should be boxed - box using actual SSA type
@@ -3961,10 +3991,16 @@ generateRecordCreate ctx fields layout recordType =
                                 ( moreOps, boxedVar, newCtx ) =
                                     boxToEcoValue ctxAcc var ssaType
                             in
-                            ( opsAcc ++ moreOps, varsAcc ++ [ boxedVar ], newCtx )
+                            ( List.reverse moreOps ++ opsAcc, boxedVar :: varsAcc, newCtx )
                     )
                     ( [], [], ctx1 )
                     (List.map2 Tuple.pair fieldVarsWithTypes layout.fields)
+
+            boxOps =
+                List.reverse boxOpsReversed
+
+            boxedFieldVars =
+                List.reverse boxedFieldVarsReversed
 
             ( resultVar, ctx3 ) =
                 Ctx.freshVar ctx2
@@ -4078,7 +4114,7 @@ generateRecordUpdate ctx record updates layout _ =
                 Dict.fromList updates
 
             -- Step 4: Process each field in layout order
-            ( fieldVarsAndTypes, allOps, finalCtx ) =
+            ( fieldVarsAndTypesReversed, allOpsReversed, finalCtx ) =
                 List.foldl
                     (\fieldInfo ( accVarsTypes, accOps, accCtx ) ->
                         let
@@ -4100,8 +4136,8 @@ generateRecordUpdate ctx record updates layout _ =
                                     ( coerceOps, coercedVar, ctxAfterCoerce ) =
                                         coerceResultToType exprResult.ctx exprResult.resultVar exprResult.resultType storageType
                                 in
-                                ( accVarsTypes ++ [ ( coercedVar, storageType ) ]
-                                , accOps ++ exprResult.ops ++ coerceOps
+                                ( ( coercedVar, storageType ) :: accVarsTypes
+                                , List.reverse coerceOps ++ List.reverse exprResult.ops ++ accOps
                                 , ctxAfterCoerce
                                 )
 
@@ -4114,13 +4150,19 @@ generateRecordUpdate ctx record updates layout _ =
                                     ( ctxProj2, projectOp ) =
                                         Ops.ecoProjectRecord ctxProj1 projectVar fieldInfo.index storageType recordResult.resultVar
                                 in
-                                ( accVarsTypes ++ [ ( projectVar, storageType ) ]
-                                , accOps ++ [ projectOp ]
+                                ( ( projectVar, storageType ) :: accVarsTypes
+                                , projectOp :: accOps
                                 , ctxProj2
                                 )
                     )
-                    ( [], recordResult.ops, recordResult.ctx )
+                    ( [], List.reverse recordResult.ops, recordResult.ctx )
                     layout.fields
+
+            fieldVarsAndTypes =
+                List.reverse fieldVarsAndTypesReversed
+
+            allOps =
+                List.reverse allOpsReversed
 
             -- Step 5: Construct the new record
             ( resultVar, ctx1 ) =
@@ -4155,12 +4197,12 @@ generateTupleCreate ctx elements layout tupleType =
             generateExprListTyped ctxWithType elements
 
         -- Box elements that need to be boxed (layout says boxed, but expression is primitive)
-        ( boxOps, boxedElemVars, ctx2 ) =
+        ( boxOpsReversed, boxedElemVarsReversed, ctx2 ) =
             List.foldl
                 (\( ( var, ssaType ), ( _, isUnboxed ) ) ( opsAcc, varsAcc, ctxAcc ) ->
                     if isUnboxed then
                         -- Element is stored unboxed, use as-is
-                        ( opsAcc, varsAcc ++ [ var ], ctxAcc )
+                        ( opsAcc, var :: varsAcc, ctxAcc )
 
                     else
                         -- Element should be boxed - box using actual SSA type
@@ -4168,10 +4210,16 @@ generateTupleCreate ctx elements layout tupleType =
                             ( moreOps, boxedVar, newCtx ) =
                                 boxToEcoValue ctxAcc var ssaType
                         in
-                        ( opsAcc ++ moreOps, varsAcc ++ [ boxedVar ], newCtx )
+                        ( List.reverse moreOps ++ opsAcc, boxedVar :: varsAcc, newCtx )
                 )
                 ( [], [], ctx1 )
                 (List.map2 Tuple.pair elemVarsWithTypes layout.elements)
+
+        boxOps =
+            List.reverse boxOpsReversed
+
+        boxedElemVars =
+            List.reverse boxedElemVarsReversed
 
         ( resultVar, ctx3 ) =
             Ctx.freshVar ctx2

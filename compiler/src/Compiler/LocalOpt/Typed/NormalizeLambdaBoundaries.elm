@@ -822,17 +822,20 @@ extractAndUnifyBranchParams jumps =
                 else
                     let
                         -- Generate fresh canonical names
-                        ( canonicalParams, _ ) =
+                        ( revCanonicalParams, _ ) =
                             List.foldl
                                 (\( name, tipe ) ( acc, ctx ) ->
                                     let
                                         ( freshN, ctx1 ) =
                                             freshName name ctx
                                     in
-                                    ( acc ++ [ ( freshN, tipe ) ], ctx1 )
+                                    ( ( freshN, tipe ) :: acc, ctx1 )
                                 )
                                 ( [], emptyRenameCtx )
                                 firstParams
+
+                        canonicalParams =
+                            List.reverse revCanonicalParams
 
                         canonicalNames =
                             List.map Tuple.first canonicalParams

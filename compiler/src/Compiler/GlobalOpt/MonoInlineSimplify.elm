@@ -540,16 +540,20 @@ optimizeNode ctx _ node =
 
 optimizeCycleDefs : RewriteCtx -> List ( Name, MonoExpr ) -> ( List ( Name, MonoExpr ), RewriteCtx )
 optimizeCycleDefs ctx defs =
-    List.foldl
-        (\( name, expr ) ( accDefs, accCtx ) ->
-            let
-                ( optimized, newCtx ) =
-                    fixpoint accCtx expr
-            in
-            ( accDefs ++ [ ( name, optimized ) ], newCtx )
-        )
-        ( [], ctx )
-        defs
+    let
+        ( revDefs, finalCtx ) =
+            List.foldl
+                (\( name, expr ) ( accDefs, accCtx ) ->
+                    let
+                        ( optimized, newCtx ) =
+                            fixpoint accCtx expr
+                    in
+                    ( ( name, optimized ) :: accDefs, newCtx )
+                )
+                ( [], ctx )
+                defs
+    in
+    ( List.reverse revDefs, finalCtx )
 
 
 
@@ -767,47 +771,59 @@ rewriteExpr ctx expr =
 
 rewriteExprs : RewriteCtx -> List MonoExpr -> ( List MonoExpr, RewriteCtx )
 rewriteExprs ctx exprs =
-    List.foldl
-        (\expr ( acc, accCtx ) ->
-            let
-                ( rewritten, newCtx ) =
-                    rewriteExpr accCtx expr
-            in
-            ( acc ++ [ rewritten ], newCtx )
-        )
-        ( [], ctx )
-        exprs
+    let
+        ( revExprs, finalCtx ) =
+            List.foldl
+                (\expr ( acc, accCtx ) ->
+                    let
+                        ( rewritten, newCtx ) =
+                            rewriteExpr accCtx expr
+                    in
+                    ( rewritten :: acc, newCtx )
+                )
+                ( [], ctx )
+                exprs
+    in
+    ( List.reverse revExprs, finalCtx )
 
 
 rewriteCaptures : RewriteCtx -> List ( Name, MonoExpr, Bool ) -> ( List ( Name, MonoExpr, Bool ), RewriteCtx )
 rewriteCaptures ctx captures =
-    List.foldl
-        (\( name, expr, isUnboxed ) ( acc, accCtx ) ->
-            let
-                ( rewritten, newCtx ) =
-                    rewriteExpr accCtx expr
-            in
-            ( acc ++ [ ( name, rewritten, isUnboxed ) ], newCtx )
-        )
-        ( [], ctx )
-        captures
+    let
+        ( revCaptures, finalCtx ) =
+            List.foldl
+                (\( name, expr, isUnboxed ) ( acc, accCtx ) ->
+                    let
+                        ( rewritten, newCtx ) =
+                            rewriteExpr accCtx expr
+                    in
+                    ( ( name, rewritten, isUnboxed ) :: acc, newCtx )
+                )
+                ( [], ctx )
+                captures
+    in
+    ( List.reverse revCaptures, finalCtx )
 
 
 rewriteBranches : RewriteCtx -> List ( MonoExpr, MonoExpr ) -> ( List ( MonoExpr, MonoExpr ), RewriteCtx )
 rewriteBranches ctx branches =
-    List.foldl
-        (\( cond, body ) ( acc, accCtx ) ->
-            let
-                ( rewrittenCond, ctx1 ) =
-                    rewriteExpr accCtx cond
+    let
+        ( revBranches, finalCtx ) =
+            List.foldl
+                (\( cond, body ) ( acc, accCtx ) ->
+                    let
+                        ( rewrittenCond, ctx1 ) =
+                            rewriteExpr accCtx cond
 
-                ( rewrittenBody, ctx2 ) =
-                    rewriteExpr ctx1 body
-            in
-            ( acc ++ [ ( rewrittenCond, rewrittenBody ) ], ctx2 )
-        )
-        ( [], ctx )
-        branches
+                        ( rewrittenBody, ctx2 ) =
+                            rewriteExpr ctx1 body
+                    in
+                    ( ( rewrittenCond, rewrittenBody ) :: acc, ctx2 )
+                )
+                ( [], ctx )
+                branches
+    in
+    ( List.reverse revBranches, finalCtx )
 
 
 rewriteDef : RewriteCtx -> Mono.MonoDef -> ( Mono.MonoDef, RewriteCtx )
@@ -830,16 +846,20 @@ rewriteDef ctx def =
 
 rewriteCaseBranches : RewriteCtx -> List ( Int, MonoExpr ) -> ( List ( Int, MonoExpr ), RewriteCtx )
 rewriteCaseBranches ctx branches =
-    List.foldl
-        (\( idx, body ) ( acc, accCtx ) ->
-            let
-                ( rewritten, newCtx ) =
-                    rewriteExpr accCtx body
-            in
-            ( acc ++ [ ( idx, rewritten ) ], newCtx )
-        )
-        ( [], ctx )
-        branches
+    let
+        ( revBranches, finalCtx ) =
+            List.foldl
+                (\( idx, body ) ( acc, accCtx ) ->
+                    let
+                        ( rewritten, newCtx ) =
+                            rewriteExpr accCtx body
+                    in
+                    ( ( idx, rewritten ) :: acc, newCtx )
+                )
+                ( [], ctx )
+                branches
+    in
+    ( List.reverse revBranches, finalCtx )
 
 
 rewriteDecider : RewriteCtx -> Mono.Decider Mono.MonoChoice -> ( Mono.Decider Mono.MonoChoice, RewriteCtx )
@@ -869,17 +889,20 @@ rewriteDecider ctx decider =
 
         Mono.FanOut path edges fallback ->
             let
-                ( rewrittenEdges, ctx1 ) =
+                ( revEdges, ctx1 ) =
                     List.foldl
                         (\( test, d ) ( acc, accCtx ) ->
                             let
                                 ( rewritten, newCtx ) =
                                     rewriteDecider accCtx d
                             in
-                            ( acc ++ [ ( test, rewritten ) ], newCtx )
+                            ( ( test, rewritten ) :: acc, newCtx )
                         )
                         ( [], ctx )
                         edges
+
+                rewrittenEdges =
+                    List.reverse revEdges
 
                 ( rewrittenFallback, ctx2 ) =
                     rewriteDecider ctx1 fallback
@@ -889,30 +912,38 @@ rewriteDecider ctx decider =
 
 rewriteNamedFields : RewriteCtx -> List ( Name, MonoExpr ) -> ( List ( Name, MonoExpr ), RewriteCtx )
 rewriteNamedFields ctx fields =
-    List.foldl
-        (\( name, expr ) ( acc, accCtx ) ->
-            let
-                ( rewritten, newCtx ) =
-                    rewriteExpr accCtx expr
-            in
-            ( acc ++ [ ( name, rewritten ) ], newCtx )
-        )
-        ( [], ctx )
-        fields
+    let
+        ( revFields, finalCtx ) =
+            List.foldl
+                (\( name, expr ) ( acc, accCtx ) ->
+                    let
+                        ( rewritten, newCtx ) =
+                            rewriteExpr accCtx expr
+                    in
+                    ( ( name, rewritten ) :: acc, newCtx )
+                )
+                ( [], ctx )
+                fields
+    in
+    ( List.reverse revFields, finalCtx )
 
 
 rewriteTailCallArgs : RewriteCtx -> List ( Name, MonoExpr ) -> ( List ( Name, MonoExpr ), RewriteCtx )
 rewriteTailCallArgs ctx args =
-    List.foldl
-        (\( name, expr ) ( acc, accCtx ) ->
-            let
-                ( rewritten, newCtx ) =
-                    rewriteExpr accCtx expr
-            in
-            ( acc ++ [ ( name, rewritten ) ], newCtx )
-        )
-        ( [], ctx )
-        args
+    let
+        ( revArgs, finalCtx ) =
+            List.foldl
+                (\( name, expr ) ( acc, accCtx ) ->
+                    let
+                        ( rewritten, newCtx ) =
+                            rewriteExpr accCtx expr
+                    in
+                    ( ( name, rewritten ) :: acc, newCtx )
+                )
+                ( [], ctx )
+                args
+    in
+    ( List.reverse revArgs, finalCtx )
 
 
 
@@ -1016,23 +1047,27 @@ betaReduce ctx region info closureBody args resultType =
 
 createBindings : RewriteCtx -> List ( Name, Mono.MonoType ) -> List MonoExpr -> ( List Binding, RewriteCtx )
 createBindings ctx params args =
-    List.foldl
-        (\( ( paramName, _ ), arg ) ( acc, accCtx ) ->
-            let
-                ( freshName, newCtx ) =
-                    freshVar accCtx
+    let
+        ( revBindings, finalCtx ) =
+            List.foldl
+                (\( ( paramName, _ ), arg ) ( acc, accCtx ) ->
+                    let
+                        ( freshName, newCtx ) =
+                            freshVar accCtx
 
-                binding =
-                    { origName = paramName
-                    , freshName = freshName
-                    , arg = arg
-                    , argType = Mono.typeOf arg
-                    }
-            in
-            ( acc ++ [ binding ], newCtx )
-        )
-        ( [], ctx )
-        (List.map2 Tuple.pair params args)
+                        binding =
+                            { origName = paramName
+                            , freshName = freshName
+                            , arg = arg
+                            , argType = Mono.typeOf arg
+                            }
+                    in
+                    ( binding :: acc, newCtx )
+                )
+                ( [], ctx )
+                (List.map2 Tuple.pair params args)
+    in
+    ( List.reverse revBindings, finalCtx )
 
 
 wrapInLets : List Binding -> MonoExpr -> Mono.MonoType -> MonoExpr
@@ -1675,61 +1710,77 @@ simplifyLets ctx expr =
 
 simplifyLetsExprs : RewriteCtx -> List MonoExpr -> ( List MonoExpr, RewriteCtx )
 simplifyLetsExprs ctx exprs =
-    List.foldl
-        (\expr ( acc, accCtx ) ->
-            let
-                ( simplified, newCtx ) =
-                    simplifyLets accCtx expr
-            in
-            ( acc ++ [ simplified ], newCtx )
-        )
-        ( [], ctx )
-        exprs
+    let
+        ( revExprs, finalCtx ) =
+            List.foldl
+                (\expr ( acc, accCtx ) ->
+                    let
+                        ( simplified, newCtx ) =
+                            simplifyLets accCtx expr
+                    in
+                    ( simplified :: acc, newCtx )
+                )
+                ( [], ctx )
+                exprs
+    in
+    ( List.reverse revExprs, finalCtx )
 
 
 simplifyLetsCaptures : RewriteCtx -> List ( Name, MonoExpr, Bool ) -> ( List ( Name, MonoExpr, Bool ), RewriteCtx )
 simplifyLetsCaptures ctx captures =
-    List.foldl
-        (\( name, expr, isUnboxed ) ( acc, accCtx ) ->
-            let
-                ( simplified, newCtx ) =
-                    simplifyLets accCtx expr
-            in
-            ( acc ++ [ ( name, simplified, isUnboxed ) ], newCtx )
-        )
-        ( [], ctx )
-        captures
+    let
+        ( revCaptures, finalCtx ) =
+            List.foldl
+                (\( name, expr, isUnboxed ) ( acc, accCtx ) ->
+                    let
+                        ( simplified, newCtx ) =
+                            simplifyLets accCtx expr
+                    in
+                    ( ( name, simplified, isUnboxed ) :: acc, newCtx )
+                )
+                ( [], ctx )
+                captures
+    in
+    ( List.reverse revCaptures, finalCtx )
 
 
 simplifyLetsBranches : RewriteCtx -> List ( MonoExpr, MonoExpr ) -> ( List ( MonoExpr, MonoExpr ), RewriteCtx )
 simplifyLetsBranches ctx branches =
-    List.foldl
-        (\( cond, body ) ( acc, accCtx ) ->
-            let
-                ( simplifiedCond, ctx1 ) =
-                    simplifyLets accCtx cond
+    let
+        ( revBranches, finalCtx ) =
+            List.foldl
+                (\( cond, body ) ( acc, accCtx ) ->
+                    let
+                        ( simplifiedCond, ctx1 ) =
+                            simplifyLets accCtx cond
 
-                ( simplifiedBody, ctx2 ) =
-                    simplifyLets ctx1 body
-            in
-            ( acc ++ [ ( simplifiedCond, simplifiedBody ) ], ctx2 )
-        )
-        ( [], ctx )
-        branches
+                        ( simplifiedBody, ctx2 ) =
+                            simplifyLets ctx1 body
+                    in
+                    ( ( simplifiedCond, simplifiedBody ) :: acc, ctx2 )
+                )
+                ( [], ctx )
+                branches
+    in
+    ( List.reverse revBranches, finalCtx )
 
 
 simplifyLetsCaseBranches : RewriteCtx -> List ( Int, MonoExpr ) -> ( List ( Int, MonoExpr ), RewriteCtx )
 simplifyLetsCaseBranches ctx branches =
-    List.foldl
-        (\( idx, body ) ( acc, accCtx ) ->
-            let
-                ( simplified, newCtx ) =
-                    simplifyLets accCtx body
-            in
-            ( acc ++ [ ( idx, simplified ) ], newCtx )
-        )
-        ( [], ctx )
-        branches
+    let
+        ( revBranches, finalCtx ) =
+            List.foldl
+                (\( idx, body ) ( acc, accCtx ) ->
+                    let
+                        ( simplified, newCtx ) =
+                            simplifyLets accCtx body
+                    in
+                    ( ( idx, simplified ) :: acc, newCtx )
+                )
+                ( [], ctx )
+                branches
+    in
+    ( List.reverse revBranches, finalCtx )
 
 
 simplifyLetsDecider : RewriteCtx -> Mono.Decider Mono.MonoChoice -> ( Mono.Decider Mono.MonoChoice, RewriteCtx )
@@ -1759,17 +1810,20 @@ simplifyLetsDecider ctx decider =
 
         Mono.FanOut path edges fallback ->
             let
-                ( simplifiedEdges, ctx1 ) =
+                ( revEdges, ctx1 ) =
                     List.foldl
                         (\( test, d ) ( acc, accCtx ) ->
                             let
                                 ( simplified, newCtx ) =
                                     simplifyLetsDecider accCtx d
                             in
-                            ( acc ++ [ ( test, simplified ) ], newCtx )
+                            ( ( test, simplified ) :: acc, newCtx )
                         )
                         ( [], ctx )
                         edges
+
+                simplifiedEdges =
+                    List.reverse revEdges
 
                 ( simplifiedFallback, ctx2 ) =
                     simplifyLetsDecider ctx1 fallback
@@ -1779,30 +1833,38 @@ simplifyLetsDecider ctx decider =
 
 simplifyLetsNamedFields : RewriteCtx -> List ( Name, MonoExpr ) -> ( List ( Name, MonoExpr ), RewriteCtx )
 simplifyLetsNamedFields ctx fields =
-    List.foldl
-        (\( name, expr ) ( acc, accCtx ) ->
-            let
-                ( simplified, newCtx ) =
-                    simplifyLets accCtx expr
-            in
-            ( acc ++ [ ( name, simplified ) ], newCtx )
-        )
-        ( [], ctx )
-        fields
+    let
+        ( revFields, finalCtx ) =
+            List.foldl
+                (\( name, expr ) ( acc, accCtx ) ->
+                    let
+                        ( simplified, newCtx ) =
+                            simplifyLets accCtx expr
+                    in
+                    ( ( name, simplified ) :: acc, newCtx )
+                )
+                ( [], ctx )
+                fields
+    in
+    ( List.reverse revFields, finalCtx )
 
 
 simplifyLetsTailCallArgs : RewriteCtx -> List ( Name, MonoExpr ) -> ( List ( Name, MonoExpr ), RewriteCtx )
 simplifyLetsTailCallArgs ctx args =
-    List.foldl
-        (\( name, expr ) ( acc, accCtx ) ->
-            let
-                ( simplified, newCtx ) =
-                    simplifyLets accCtx expr
-            in
-            ( acc ++ [ ( name, simplified ) ], newCtx )
-        )
-        ( [], ctx )
-        args
+    let
+        ( revArgs, finalCtx ) =
+            List.foldl
+                (\( name, expr ) ( acc, accCtx ) ->
+                    let
+                        ( simplified, newCtx ) =
+                            simplifyLets accCtx expr
+                    in
+                    ( ( name, simplified ) :: acc, newCtx )
+                )
+                ( [], ctx )
+                args
+    in
+    ( List.reverse revArgs, finalCtx )
 
 
 getDefBound : Mono.MonoDef -> MonoExpr

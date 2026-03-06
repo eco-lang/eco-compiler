@@ -374,20 +374,26 @@ compileTailCallStep :
 compileTailCallStep ctx loopSpec args =
     let
         -- Evaluate each argument expression
-        ( argOps, argVars, ctx1 ) =
+        ( argOpsRev, argVarsRev, ctx1 ) =
             List.foldl
                 (\( _, argExpr ) ( opsAcc, varsAcc, ctxAcc ) ->
                     let
                         argResult =
                             Expr.generateExpr ctxAcc argExpr
                     in
-                    ( opsAcc ++ argResult.ops
-                    , varsAcc ++ [ ( argResult.resultVar, argResult.resultType ) ]
+                    ( List.reverse argResult.ops ++ opsAcc
+                    , ( argResult.resultVar, argResult.resultType ) :: varsAcc
                     , argResult.ctx
                     )
                 )
                 ( [], [], ctx )
                 args
+
+        argOps =
+            List.reverse argOpsRev
+
+        argVars =
+            List.reverse argVarsRev
 
         -- done = false (continue looping)
         ( doneVar, ctx2 ) =
@@ -722,7 +728,7 @@ compileCaseFanOutStep ctx loopSpec root path edges fallback jumpLookup =
                 ( edgeTags ++ [ fallbackTag ], Nothing )
 
         -- Compile edge regions
-        ( edgeRegions, ctx2 ) =
+        ( edgeRegionsRev, ctx2 ) =
             List.foldl
                 (\( _, subTree ) ( accRegions, accCtx ) ->
                     let
@@ -741,10 +747,13 @@ compileCaseFanOutStep ctx loopSpec root path edges fallback jumpLookup =
                         region =
                             mkSingleBlockRegion [] subStep.ops yieldOp
                     in
-                    ( accRegions ++ [ region ], yieldCtx )
+                    ( region :: accRegions, yieldCtx )
                 )
                 ( [], ctx1 )
                 edges
+
+        edgeRegions =
+            List.reverse edgeRegionsRev
 
         -- Fallback region
         fallbackStep =
@@ -1094,16 +1103,20 @@ mkSingleBlockRegion args body terminator =
 -}
 allocateFreshVars : Ctx.Context -> Int -> ( List String, Ctx.Context )
 allocateFreshVars ctx n =
-    List.foldl
-        (\_ ( vars, ctxAcc ) ->
-            let
-                ( v, ctxNew ) =
-                    Ctx.freshVar ctxAcc
-            in
-            ( vars ++ [ v ], ctxNew )
-        )
-        ( [], ctx )
-        (List.range 1 n)
+    let
+        ( varsRev, ctxFinal ) =
+            List.foldl
+                (\_ ( vars, ctxAcc ) ->
+                    let
+                        ( v, ctxNew ) =
+                            Ctx.freshVar ctxAcc
+                    in
+                    ( v :: vars, ctxNew )
+                )
+                ( [], ctx )
+                (List.range 1 n)
+    in
+    ( List.reverse varsRev, ctxFinal )
 
 
 {-| Zip two lists together.
