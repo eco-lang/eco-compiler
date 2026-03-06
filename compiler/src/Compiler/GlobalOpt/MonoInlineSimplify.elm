@@ -586,15 +586,12 @@ iterate n current ctx =
 
             ( simplified, ctx2 ) =
                 simplifyLets ctx1 rewritten
-
-            final =
-                dce simplified
         in
-        if exprEqual final current then
-            ( final, ctx2 )
+        if exprEqual simplified current then
+            ( simplified, ctx2 )
 
         else
-            iterate (n + 1) final ctx2
+            iterate (n + 1) simplified ctx2
 
 
 {-| Check if two expressions are structurally equal.
@@ -2277,74 +2274,6 @@ inlineVarInDecider name replacement decider =
                 (List.map (\( test, d ) -> ( test, inlineVarInDecider name replacement d )) edges)
                 (inlineVarInDecider name replacement fallback)
 
-
-
--- ============================================================================
--- ====== DEAD CODE ELIMINATION ======
--- ============================================================================
-
-
-dce : MonoExpr -> MonoExpr
-dce expr =
-    -- Most DCE is handled by let simplification
-    -- This pass handles any remaining cases
-    case expr of
-        MonoLet def body resultType ->
-            let
-                dcedBound =
-                    dce (getDefBound def)
-
-                dcedBody =
-                    dce body
-            in
-            MonoLet (setDefBound def dcedBound) dcedBody resultType
-
-        MonoCall region func args resultType callInfo ->
-            MonoCall region (dce func) (List.map dce args) resultType callInfo
-
-        MonoClosure info body closureType ->
-            let
-                dcedCaptures =
-                    List.map (\( n, e, isUnboxed ) -> ( n, dce e, isUnboxed )) info.captures
-            in
-            MonoClosure { info | captures = dcedCaptures } (dce body) closureType
-
-        MonoList region items itemType ->
-            MonoList region (List.map dce items) itemType
-
-        MonoIf branches final resultType ->
-            MonoIf
-                (List.map (\( c, t ) -> ( dce c, dce t )) branches)
-                (dce final)
-                resultType
-
-        MonoDestruct destructor inner resultType ->
-            MonoDestruct destructor (dce inner) resultType
-
-        MonoCase scrutName scrutType decider branches resultType ->
-            MonoCase scrutName
-                scrutType
-                decider
-                (List.map (\( idx, e ) -> ( idx, dce e )) branches)
-                resultType
-
-        MonoRecordCreate fields recordType ->
-            MonoRecordCreate (List.map (\( n, e ) -> ( n, dce e )) fields) recordType
-
-        MonoRecordAccess inner fieldName resultType ->
-            MonoRecordAccess (dce inner) fieldName resultType
-
-        MonoRecordUpdate inner updates recordType ->
-            MonoRecordUpdate (dce inner) (List.map (\( n, e ) -> ( n, dce e )) updates) recordType
-
-        MonoTupleCreate region items tupleType ->
-            MonoTupleCreate region (List.map dce items) tupleType
-
-        MonoTailCall name args resultType ->
-            MonoTailCall name (List.map (\( n, e ) -> ( n, dce e )) args) resultType
-
-        _ ->
-            expr
 
 
 

@@ -333,7 +333,21 @@ ppType ty =
 
 indentPad : Int -> String
 indentPad n =
-    String.repeat (2 * n) " "
+    case n of
+        0 ->
+            ""
+
+        1 ->
+            "  "
+
+        2 ->
+            "    "
+
+        3 ->
+            "      "
+
+        _ ->
+            String.repeat (2 * n) " "
 
 
 ppLoc : Loc -> String
@@ -400,11 +414,11 @@ MLIR accepts raw UTF-8 in string literals.
 convertUnicodeEscapesToUtf8 : String -> String
 convertUnicodeEscapesToUtf8 s =
     let
-        go : String -> String -> String
-        go acc remaining =
+        go : List Char -> String -> String
+        go revAcc remaining =
             case String.uncons remaining of
                 Nothing ->
-                    acc
+                    String.fromList (List.reverse revAcc)
 
                 Just ( '\\', rest ) ->
                     case String.uncons rest of
@@ -418,34 +432,30 @@ convertUnicodeEscapesToUtf8 s =
                                 case parseHex hex4 of
                                     Just codePoint ->
                                         let
-                                            -- Convert code point to UTF-8 character
-                                            utf8Char =
-                                                String.fromChar (Char.fromCode codePoint)
-
                                             afterHex =
                                                 String.dropLeft 4 afterU
                                         in
-                                        go (acc ++ utf8Char) afterHex
+                                        go (Char.fromCode codePoint :: revAcc) afterHex
 
                                     Nothing ->
                                         -- Not valid hex, keep as-is
-                                        go (acc ++ "\\u") afterU
+                                        go ('u' :: '\\' :: revAcc) afterU
 
                             else
                                 -- Not enough chars, keep as-is
-                                go (acc ++ "\\u") afterU
+                                go ('u' :: '\\' :: revAcc) afterU
 
                         Just ( c, afterEscape ) ->
                             -- Other escape sequence, keep as-is
-                            go (acc ++ "\\" ++ String.fromChar c) afterEscape
+                            go (c :: '\\' :: revAcc) afterEscape
 
                         Nothing ->
-                            acc ++ "\\"
+                            String.fromList (List.reverse ('\\' :: revAcc))
 
                 Just ( c, rest ) ->
-                    go (acc ++ String.fromChar c) rest
+                    go (c :: revAcc) rest
     in
-    go "" s
+    go [] s
 
 
 {-| Parse a 4-character hex string to an integer.

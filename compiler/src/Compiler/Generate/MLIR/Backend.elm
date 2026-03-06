@@ -58,17 +58,20 @@ generateMlirModule mode monoGraph0 =
         ctx =
             Ctx.initContext mode registry signatures ctorShapes
 
-        ( ops, ctxAfterNodes ) =
+        ( revOpChunks, ctxAfterNodes ) =
             EveryDict.foldl compare
-                (\specId node ( accOps, accCtx ) ->
+                (\specId node ( accChunks, accCtx ) ->
                     let
                         ( nodeOps, newCtx ) =
                             Functions.generateNode accCtx specId node
                     in
-                    ( accOps ++ nodeOps, newCtx )
+                    ( nodeOps :: accChunks, newCtx )
                 )
                 ( [], ctx )
                 nodes
+
+        ops =
+            List.concat (List.reverse revOpChunks)
 
         ( lambdaOps, finalCtx ) =
             Lambdas.processLambdas ctxAfterNodes

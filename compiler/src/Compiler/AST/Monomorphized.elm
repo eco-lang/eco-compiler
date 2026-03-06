@@ -254,8 +254,8 @@ forceCNumberToInt monoType =
         MVar _ CNumber ->
             MInt
 
-        MVar name CEcoValue ->
-            MVar name CEcoValue
+        MVar _ CEcoValue ->
+            monoType
 
         MList elemType ->
             MList (forceCNumberToInt elemType)
@@ -274,24 +274,8 @@ forceCNumberToInt monoType =
         MCustom can name args ->
             MCustom can name (List.map forceCNumberToInt args)
 
-        -- Primitives unchanged (including MFloat!)
-        MInt ->
-            MInt
-
-        MFloat ->
-            MFloat
-
-        MBool ->
-            MBool
-
-        MChar ->
-            MChar
-
-        MString ->
-            MString
-
-        MUnit ->
-            MUnit
+        _ ->
+            monoType
 
 
 {-| Identifier for lambda functions in lambda sets, distinguishing named functions from closures.

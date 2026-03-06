@@ -602,14 +602,17 @@ foldExprChildren f acc expr =
 -}
 traverseList : (ctx -> a -> ( b, ctx )) -> ctx -> List a -> ( List b, ctx )
 traverseList f ctx list =
-    List.foldl
-        (\item ( acc, c ) ->
-            let
-                ( newItem, c1 ) =
-                    f c item
-            in
-            ( newItem :: acc, c1 )
-        )
-        ( [], ctx )
-        list
-        |> Tuple.mapFirst List.reverse
+    let
+        ( revAcc, finalCtx ) =
+            List.foldl
+                (\item ( acc, c ) ->
+                    let
+                        ( newItem, c1 ) =
+                            f c item
+                    in
+                    ( newItem :: acc, c1 )
+                )
+                ( [], ctx )
+                list
+    in
+    ( List.reverse revAcc, finalCtx )

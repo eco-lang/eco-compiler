@@ -215,13 +215,8 @@ union (D leftDict) (D rightDict) =
 Preference is given to values in the first dictionary.
 -}
 intersection : (k -> k -> Order) -> Dict comparable k a -> Dict comparable k b -> Dict comparable k a
-intersection keyComparison dict1 dict2 =
-    let
-        keys2 : List k
-        keys2 =
-            keys keyComparison dict2
-    in
-    filter (\k _ -> List.member k keys2) dict1
+intersection _ (D dict1) (D dict2) =
+    D (Dict.filter (\k _ -> Dict.member k dict2) dict1)
 
 
 {-| Keep a key-value pair when its key does not appear in the second dictionary.
@@ -293,13 +288,8 @@ to least recently inserted.
 
 -}
 foldl : (k -> k -> Order) -> (k -> v -> b -> b) -> b -> Dict c k v -> b
-foldl keyComparison func initialResult dict =
-    List.foldl
-        (\( key, value ) result ->
-            func key value result
-        )
-        initialResult
-        (toList keyComparison dict)
+foldl _ func initialResult (D dict) =
+    Dict.foldl (\_ ( key, value ) result -> func key value result) initialResult dict
 
 
 {-| Fold over the key-value pairs in a dictionary from least recently inserted
@@ -317,13 +307,8 @@ to most recently insered.
 
 -}
 foldr : (k -> k -> Order) -> (k -> v -> b -> b) -> b -> Dict c k v -> b
-foldr keyComparison func initialResult dict =
-    List.foldr
-        (\( key, value ) result ->
-            func key value result
-        )
-        initialResult
-        (toList keyComparison dict)
+foldr _ func initialResult (D dict) =
+    Dict.foldr (\_ ( key, value ) result -> func key value result) initialResult dict
 
 
 {-| Keep only the key-value pairs that pass the given test.
