@@ -1,6 +1,6 @@
 module Eco.File exposing
     ( readString, writeString, readBytes, writeBytes
-    , Handle(..), IOMode(..), open, close, size
+    , Handle(..), IOMode(..), open, close, size, hWriteString
     , lock, unlock
     , fileExists, dirExists
     , findExecutable, list, modificationTime
@@ -109,6 +109,13 @@ open path mode =
 close : Handle -> Task Never ()
 close (Handle h) =
     Eco.Kernel.File.close h
+
+
+{-| Write a string to a file handle.
+-}
+hWriteString : Handle -> String -> Task Never ()
+hWriteString (Handle h) content =
+    Eco.Kernel.File.hWriteString h content
 
 
 {-| Get the size of a file in bytes via its handle.

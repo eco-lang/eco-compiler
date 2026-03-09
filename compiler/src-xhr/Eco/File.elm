@@ -1,6 +1,6 @@
 module Eco.File exposing
     ( readString, writeString, readBytes, writeBytes
-    , Handle(..), IOMode(..), open, close, size
+    , Handle(..), IOMode(..), open, close, size, hWriteString
     , lock, unlock
     , fileExists, dirExists
     , findExecutable, list, modificationTime
@@ -130,6 +130,18 @@ close : Handle -> Task Never ()
 close (Handle h) =
     Eco.XHR.unitTask "File.close"
         (Encode.object [ ( "handle", Encode.int h ) ])
+
+
+{-| Write a string to a file handle.
+-}
+hWriteString : Handle -> String -> Task Never ()
+hWriteString (Handle h) content =
+    Eco.XHR.unitTask "File.hWriteString"
+        (Encode.object
+            [ ( "handle", Encode.int h )
+            , ( "content", Encode.string content )
+            ]
+        )
 
 
 {-| Get the size of a file in bytes via its handle.

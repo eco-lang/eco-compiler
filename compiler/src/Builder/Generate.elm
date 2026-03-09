@@ -3,6 +3,7 @@ module Builder.Generate exposing
     , dev, debug, monoDev
     , prod
     , repl
+    , buildMonoGraph, MonoBuildResult, writeMonoMlirStreaming
     )
 
 {-| Code generation orchestration for the Elm compiler.
@@ -580,20 +581,28 @@ typedObjectsToGlobalTypeEnv (TypedObjects _ globalEnv locals) =
 -- ====== MONOMORPHIZED GENERATION ======
 
 
-{-| Generates monomorphized output for MLIR mono backend after specializing polymorphic functions.
--}
-monoDev : CodeGen.MonoCodeGen -> Bool -> Int -> FilePath -> Maybe String -> Maybe ( Pkg.Name, FilePath ) -> Details.Details -> Build.Artifacts -> Task Exit.Generate CodeGen.Output
-monoDev backend withSourceMaps leadingLines root maybeBuildDir maybeLocal details (Build.Artifacts artifacts) =
+type alias MonoBuildResult =
+    { monoGraph : Mono.MonoGraph
+    , mode : Mode.Mode
+    }
+
+
+buildMonoGraph :
+    FilePath
+    -> Maybe String
+    -> Maybe ( Pkg.Name, FilePath )
+    -> Details.Details
+    -> Build.Artifacts
+    -> Task Exit.Generate MonoBuildResult
+buildMonoGraph root maybeBuildDir maybeLocal details (Build.Artifacts artifacts) =
     loadTypedObjects root maybeBuildDir maybeLocal details artifacts.modules
         |> Task.andThen finalizeTypedObjects
-        |> Task.andThen (generateMonoDevOutput backend withSourceMaps leadingLines root artifacts.roots)
+        |> Task.andThen (buildMonoGraphFromObjects artifacts.roots)
 
 
-generateMonoDevOutput : CodeGen.MonoCodeGen -> Bool -> Int -> FilePath -> NE.Nonempty Build.Root -> TypedObjects -> Task Exit.Generate CodeGen.Output
-generateMonoDevOutput backend withSourceMaps leadingLines root roots objects =
+buildMonoGraphFromObjects : NE.Nonempty Build.Root -> TypedObjects -> Task Exit.Generate MonoBuildResult
+buildMonoGraphFromObjects roots objects =
     let
-        -- Build typed graph and type env from objects + roots.
-        -- After this function returns, `objects` and `roots` go out of scope.
         typedGraph : TOpt.GlobalGraph
         typedGraph =
             List.foldl addRootTypedGraph (typedObjectsToGlobalGraph objects) (NE.toList roots)
@@ -605,7 +614,6 @@ generateMonoDevOutput backend withSourceMaps leadingLines root roots objects =
     Task.succeed ( typedGraph, globalTypeEnv )
         |> Task.andThen
             (\( tGraph, typeEnv ) ->
-                -- GC boundary: `objects`, `roots` are now unreachable.
                 case Monomorphize.monomorphize "main" typeEnv tGraph of
                     Err err ->
                         Task.throw (Exit.GenerateMonomorphizationError err)
@@ -615,14 +623,48 @@ generateMonoDevOutput backend withSourceMaps leadingLines root roots objects =
             )
         |> Task.andThen
             (\monoGraph0 ->
-                -- GC boundary: `typedGraph` and `globalTypeEnv` are now unreachable.
                 let
                     monoGraph =
                         MonoGlobalOptimize.globalOptimize monoGraph0
                 in
-                -- After this callback returns, `monoGraph0` goes out of scope.
+                Task.succeed
+                    { monoGraph = monoGraph
+                    , mode = Mode.Dev Nothing
+                    }
+            )
+
+
+{-| Generates monomorphized output for MLIR mono backend after specializing polymorphic functions.
+-}
+monoDev : CodeGen.MonoCodeGen -> Bool -> Int -> FilePath -> Maybe String -> Maybe ( Pkg.Name, FilePath ) -> Details.Details -> Build.Artifacts -> Task Exit.Generate CodeGen.Output
+monoDev backend withSourceMaps leadingLines root maybeBuildDir maybeLocal details artifacts =
+    buildMonoGraph root maybeBuildDir maybeLocal details artifacts
+        |> Task.andThen
+            (\{ monoGraph, mode } ->
                 prepareSourceMaps withSourceMaps root
-                    |> Task.map (generateMonoOutput backend leadingLines (Mode.Dev Nothing) monoGraph)
+                    |> Task.map (generateMonoOutput backend leadingLines mode monoGraph)
+            )
+
+
+writeMonoMlirStreaming :
+    Bool
+    -> Int
+    -> FilePath
+    -> Maybe String
+    -> Maybe ( Pkg.Name, FilePath )
+    -> Details.Details
+    -> Build.Artifacts
+    -> FilePath
+    -> Task Exit.Generate ()
+writeMonoMlirStreaming _ _ root maybeBuildDir maybeLocal details artifacts target =
+    buildMonoGraph root maybeBuildDir maybeLocal details artifacts
+        |> Task.andThen
+            (\{ monoGraph, mode } ->
+                File.withStreamingWriter target
+                    (\writeChunk ->
+                        MLIR.streamMlirToWriter mode monoGraph writeChunk
+                    )
+                    |> Task.mapError never
             )
 
 

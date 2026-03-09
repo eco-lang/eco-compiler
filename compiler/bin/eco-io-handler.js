@@ -205,6 +205,16 @@ function handleEcoIO(parsed, respond) {
       break;
     }
 
+    case "File.hWriteString": {
+      try {
+        fs.writeSync(args.handle, args.content, null, "utf8");
+        respond(200, "");
+      } catch (e) {
+        respond(500, JSON.stringify({ error: e.message }));
+      }
+      break;
+    }
+
     case "File.size": {
       try {
         const stat = fs.fstatSync(args.handle);

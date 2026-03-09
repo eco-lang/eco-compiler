@@ -1,11 +1,11 @@
-module Mlir.Pretty exposing (ppModule)
+module Mlir.Pretty exposing (ppModule, ppModuleHeader, ppModuleFooter, ppTopLevelOp)
 
 {-| Mlir.Pretty provides a pretty printer for the Mlir.Mlir model that will output MLIR in text format
 in the standard format.
 
 This implementation does not currently allow custom formats.
 
-@docs ppModule
+@docs ppModule, ppModuleHeader, ppModuleFooter, ppTopLevelOp
 
 -}
 
@@ -89,24 +89,37 @@ walkRegion (MlirRegion r) acc =
 --==== Pretty Printer (generic MLIR form)
 
 
-{-| Pretty prints an MLIR module in the standard format.
--}
+ppModuleHeader : String
+ppModuleHeader =
+    "module {\n"
+
+
+ppModuleFooter : Loc -> String
+ppModuleFooter loc =
+    "}"
+        ++ " "
+        ++ ppLoc loc
+        ++ "\n"
+
+
+ppTopLevelOp : MlirOp -> String
+ppTopLevelOp op =
+    ppOp 1 Dict.empty op
+
+
 ppModule : MlirModule -> String
 ppModule m =
     let
         header =
-            "module {\n"
+            ppModuleHeader
 
         bodyStr =
             m.body
-                |> List.map (ppOp 1 Dict.empty)
+                |> List.map ppTopLevelOp
                 |> String.concat
 
         footer =
-            "}"
-                ++ " "
-                ++ ppLoc m.loc
-                ++ "\n"
+            ppModuleFooter m.loc
     in
     header ++ bodyStr ++ footer
 

@@ -285,12 +285,26 @@ handleMlirOutput ctx target artifacts =
             let
                 rootNames =
                     Build.getRootNames artifacts
-
-                style =
-                    ctx.style
             in
-            toMonoBuilder Generate.mlirBackend ctx.withSourceMaps 0 ctx.root ctx.maybeBuildDir ctx.localPackage ctx.details ctx.desiredMode artifacts
-                |> Task.andThen (\builder -> generate style target builder rootNames)
+            Task.io
+                (Utils.dirCreateDirectoryIfMissing True (Utils.fpTakeDirectory target))
+                |> Task.andThen
+                    (\_ ->
+                        Generate.writeMonoMlirStreaming
+                            ctx.withSourceMaps
+                            0
+                            ctx.root
+                            ctx.maybeBuildDir
+                            ctx.localPackage
+                            ctx.details
+                            artifacts
+                            target
+                            |> Task.mapError Exit.MakeBadGenerate
+                    )
+                |> Task.andThen
+                    (\_ ->
+                        Task.io (Reporting.reportGenerate ctx.style rootNames target)
+                    )
 
         name :: names ->
             Task.throw (Exit.MakeNonMainFilesIntoJavaScript name names)

@@ -4,6 +4,7 @@ module Builder.File exposing
     , readUtf8, writeUtf8, readStdin
     , writePackage
     , exists, remove
+    , withStreamingWriter
     )
 
 {-| File system operations and utilities for the Elm compiler build system.
@@ -229,6 +230,30 @@ remove path =
 
                 else
                     Task.succeed ()
+            )
+
+
+
+-- ====== STREAMING ======
+
+
+{-| Opens a file for writing, passes a write-chunk function to the callback,
+and ensures the handle is closed after.
+-}
+withStreamingWriter :
+    FilePath
+    -> ((String -> Task Never ()) -> Task Never a)
+    -> Task Never a
+withStreamingWriter path callback =
+    Eco.File.open path Eco.File.WriteMode
+        |> Task.andThen
+            (\handle ->
+                callback (Eco.File.hWriteString handle)
+                    |> Task.andThen
+                        (\result ->
+                            Eco.File.close handle
+                                |> Task.map (\_ -> result)
+                        )
             )
 
 
