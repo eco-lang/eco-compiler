@@ -16,7 +16,7 @@ const data = fs
      */
     .replace(`var _Bytes_read_string = F3(function(len, bytes, offset)
 {
-var string = '';
+\tvar string = '';
 \tvar end = offset + len;
 \tfor (; offset < end;)
 \t{
