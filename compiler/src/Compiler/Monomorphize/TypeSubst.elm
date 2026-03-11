@@ -87,15 +87,20 @@ dictMapChanged f dict =
 
 findRootVar : Name -> Substitution -> ( Name, Substitution )
 findRootVar name subst =
+    findRootVarHelp Set.empty name subst
+
+
+findRootVarHelp : Set Name -> Name -> Substitution -> ( Name, Substitution )
+findRootVarHelp visited name subst =
     case Dict.get name subst of
         Just (Mono.MVar parentName _) ->
-            if parentName == name then
+            if parentName == name || Set.member parentName visited then
                 ( name, subst )
 
             else
                 let
                     ( root, subst1 ) =
-                        findRootVar parentName subst
+                        findRootVarHelp (Set.insert name visited) parentName subst
                 in
                 if root == parentName then
                     ( root, subst1 )
