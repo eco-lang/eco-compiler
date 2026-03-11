@@ -13,6 +13,7 @@ when inside the directory containing this file.
 
 import Docs.ReviewAtDocs
 import EnforceBoundaries exposing (Layer(..), Stack(..))
+import NoInconsistentAliases
 import NoConfusingPrefixOperator
 import NoDebug.Log
 import NoDebug.TodoOrToString
@@ -61,6 +62,46 @@ config =
     , NoUnused.Parameters.rule
         |> Rule.ignoreErrorsForFiles [ "src/Utils/Crash.elm" ]
     , EnforceBoundaries.rule moduleLayerRule
+    , NoInconsistentAliases.config
+        [ ( "Builder.Deps.Diff", "Diff" )
+        , ( "Compiler.AST.DecisionTree.Path", "Path" )
+        , ( "Compiler.AST.DecisionTree.Test", "Test" )
+        , ( "Compiler.AST.DecisionTree.TypedPath", "TypedPath" )
+        , ( "Compiler.Data.Name", "Name" )
+        , ( "Compiler.Elm.Compiler.Type", "CompType" )
+        , ( "Compiler.Elm.Constraint", "Con" )
+        , ( "Compiler.Elm.Kernel", "Kernel" )
+        , ( "Compiler.Generate.JavaScript.Name", "JsName" )
+        , ( "Compiler.Generate.MLIR.Context", "Ctx" )
+        , ( "Compiler.Json.Decode", "Decode" )
+        , ( "Compiler.Json.Encode", "Encode" )
+        , ( "Compiler.Nitpick.PatternMatches", "PatMatch" )
+        , ( "Compiler.Parse.Declaration", "Decl" )
+        , ( "Compiler.Parse.Expression", "Expr" )
+        , ( "Compiler.Parse.Keyword", "Keyword" )
+        , ( "Compiler.Parse.Module", "Module" )
+        , ( "Compiler.Parse.Space", "Space" )
+        , ( "Compiler.Parse.Type", "Type" )
+        , ( "Compiler.Parse.Variable", "Var" )
+        , ( "Compiler.Reporting.Doc", "Doc" )
+        , ( "Compiler.Reporting.Error", "Error" )
+        , ( "Compiler.Reporting.Error.Canonicalize", "Canonicalize" )
+        , ( "Compiler.Reporting.Error.Docs", "ErrorDocs" )
+        , ( "Compiler.Reporting.Error.Main", "ErrorMain" )
+        , ( "Compiler.Reporting.Error.Syntax", "Syntax" )
+        , ( "Compiler.Reporting.Error.Type", "ErrorType" )
+        , ( "Compiler.Reporting.Render.Type", "RenderType" )
+        , ( "Compiler.Reporting.Render.Type.Localizer", "Localizer" )
+        , ( "Compiler.Reporting.Warning", "Warning" )
+        , ( "Compiler.Type.Error", "TypeError" )
+        , ( "Data.Map", "AnyDict" )
+        , ( "Dict", "Dict" )
+        , ( "List.Extra", "List" )
+        , ( "System.IO", "IO" )
+        , ( "System.TypeCheck.IO", "IO" )
+        , ( "Utils.Task.Extra", "Task" )
+        ]
+        |> NoInconsistentAliases.rule
     ]
 
 

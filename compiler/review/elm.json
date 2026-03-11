@@ -16,6 +16,7 @@
             "jfmengels/elm-review-documentation": "2.0.4",
             "jfmengels/elm-review-simplify": "2.1.6",
             "jfmengels/elm-review-unused": "1.2.4",
+            "sparksp/elm-review-imports": "1.0.2",
             "stil4m/elm-syntax": "7.3.8"
         },
         "indirect": {
