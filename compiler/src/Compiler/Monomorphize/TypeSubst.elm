@@ -42,6 +42,104 @@ import Set exposing (Set)
 import System.TypeCheck.IO as IO
 
 
+-- INTERNAL HELPERS: changed-flag mapping, union-find, normalized insertion
+
+
+listMapChanged :
+    (a -> ( Bool, a ))
+    -> List a
+    -> ( Bool, List a )
+listMapChanged f list =
+    let
+        step item ( anyChanged, acc ) =
+            let
+                ( itemChanged, newItem ) =
+                    f item
+            in
+            ( anyChanged || itemChanged, newItem :: acc )
+
+        ( changed, reversed ) =
+            List.foldl step ( False, [] ) list
+    in
+    if changed then
+        ( True, List.reverse reversed )
+
+    else
+        ( False, list )
+
+
+dictMapChanged :
+    (v -> ( Bool, v ))
+    -> Dict.Dict Name v
+    -> ( Bool, Dict.Dict Name v )
+dictMapChanged f dict =
+    Dict.foldl
+        (\key val ( anyChanged, acc ) ->
+            let
+                ( changed, newVal ) =
+                    f val
+            in
+            ( anyChanged || changed, Dict.insert key newVal acc )
+        )
+        ( False, dict )
+        dict
+
+
+findRootVar : Name -> Substitution -> ( Name, Substitution )
+findRootVar name subst =
+    case Dict.get name subst of
+        Just (Mono.MVar parentName _) ->
+            if parentName == name then
+                ( name, subst )
+
+            else
+                let
+                    ( root, subst1 ) =
+                        findRootVar parentName subst
+                in
+                if root == parentName then
+                    ( root, subst1 )
+
+                else
+                    -- Path compression: point name directly to root
+                    ( root
+                    , Dict.insert name
+                        (Mono.MVar root (constraintFromName root))
+                        subst1
+                    )
+
+        _ ->
+            ( name, subst )
+
+
+normalizeMonoType : Substitution -> Mono.MonoType -> ( Mono.MonoType, Substitution )
+normalizeMonoType subst ty =
+    case ty of
+        Mono.MVar varName _ ->
+            let
+                ( root, subst1 ) =
+                    findRootVar varName subst
+            in
+            if root == varName then
+                ( ty, subst1 )
+
+            else
+                ( Mono.MVar root (constraintFromName root), subst1 )
+
+        _ ->
+            ( ty, subst )
+
+
+insertBinding : Name -> Mono.MonoType -> Substitution -> Substitution
+insertBinding name ty subst =
+    let
+        ( normalizedTy, subst1 ) =
+            normalizeMonoType subst ty
+    in
+    Dict.insert name normalizedTy subst1
+
+
+
 {-| Unify a function call by matching argument types and result type.
 Returns the updated substitution and the renamed function canonical type
 (with callee type variables renamed to avoid collisions with caller vars).
@@ -125,14 +223,14 @@ unifyHelp canType monoType subst =
             else
                 case Dict.get name subst of
                     Just existingMono ->
-                        -- Already bound: insert the new binding and also propagate
-                        -- any transitive MVar connections from the old value.
-                        unifyMonoMono existingMono
-                            monoType
-                            (Dict.insert name monoType subst)
+                        let
+                            substWithTransitives =
+                                unifyMonoMono existingMono monoType subst
+                        in
+                        insertBinding name monoType substWithTransitives
 
                     Nothing ->
-                        Dict.insert name monoType subst
+                        insertBinding name monoType subst
 
         -- Handle primitive types from elm/core that map to specialized MonoTypes
         ( Can.TType (IO.Canonical ( "elm", "core" ) "Basics") "Int" [], Mono.MInt ) ->
@@ -207,7 +305,7 @@ unifyHelp canType monoType subst =
                                 (\fieldName _ -> Dict.get fieldName fields == Nothing)
                                 monoFields
                     in
-                    Dict.insert extName (Mono.MRecord remainingFields) substWithFields
+                    insertBinding extName (Mono.MRecord remainingFields) substWithFields
 
                 Nothing ->
                     substWithFields
@@ -259,14 +357,13 @@ unifyMonoMono m1 m2 subst =
                 subst
 
             else
-                -- Bind the first to the second
-                Dict.insert name1 m2 subst
+                insertBinding name1 m2 subst
 
         ( Mono.MVar name _, _ ) ->
-            Dict.insert name m2 subst
+            insertBinding name m2 subst
 
         ( _, Mono.MVar name _ ) ->
-            Dict.insert name m1 subst
+            insertBinding name m1 subst
 
         ( Mono.MFunction args1 ret1, Mono.MFunction args2 ret2 ) ->
             let
@@ -336,46 +433,94 @@ bindings during subsequent unification steps.
 -}
 resolveMonoVars : Substitution -> Mono.MonoType -> Mono.MonoType
 resolveMonoVars subst monoType =
-    resolveMonoVarsHelp Set.empty subst monoType
+    monoType
+        |> resolveMonoVarsHelp Set.empty subst
+        |> Tuple.second
 
 
 {-| Resolve MVars in a MonoType using a substitution, tracking which MVar names
 are currently being expanded to detect indirect cycles through recursive types
 (e.g. Array's Node -> Tree -> JsArray (Node a) cycle).
 -}
-resolveMonoVarsHelp : Set Name -> Substitution -> Mono.MonoType -> Mono.MonoType
+resolveMonoVarsHelp : Set Name -> Substitution -> Mono.MonoType -> ( Bool, Mono.MonoType )
 resolveMonoVarsHelp visiting subst monoType =
     case monoType of
         Mono.MVar name _ ->
             if Set.member name visiting then
-                -- Cycle detected: this MVar is already being expanded up the call stack
-                monoType
+                ( False, monoType )
 
             else
                 case Dict.get name subst of
                     Just resolved ->
-                        resolveMonoVarsHelp (Set.insert name visiting) subst resolved
+                        let
+                            ( _, newResolved ) =
+                                resolveMonoVarsHelp (Set.insert name visiting) subst resolved
+                        in
+                        ( True, newResolved )
 
                     Nothing ->
-                        monoType
+                        ( False, monoType )
 
         Mono.MFunction args ret ->
-            Mono.MFunction (List.map (resolveMonoVarsHelp visiting subst) args) (resolveMonoVarsHelp visiting subst ret)
+            let
+                ( argsChanged, newArgs ) =
+                    listMapChanged (resolveMonoVarsHelp visiting subst) args
+
+                ( retChanged, newRet ) =
+                    resolveMonoVarsHelp visiting subst ret
+            in
+            if argsChanged || retChanged then
+                ( True, Mono.MFunction newArgs newRet )
+
+            else
+                ( False, monoType )
 
         Mono.MList inner ->
-            Mono.MList (resolveMonoVarsHelp visiting subst inner)
+            let
+                ( changed, newInner ) =
+                    resolveMonoVarsHelp visiting subst inner
+            in
+            if changed then
+                ( True, Mono.MList newInner )
+
+            else
+                ( False, monoType )
 
         Mono.MTuple elems ->
-            Mono.MTuple (List.map (resolveMonoVarsHelp visiting subst) elems)
+            let
+                ( changed, newElems ) =
+                    listMapChanged (resolveMonoVarsHelp visiting subst) elems
+            in
+            if changed then
+                ( True, Mono.MTuple newElems )
+
+            else
+                ( False, monoType )
 
         Mono.MRecord fields ->
-            Mono.MRecord (Dict.map (\_ t -> resolveMonoVarsHelp visiting subst t) fields)
+            let
+                ( changed, newFields ) =
+                    dictMapChanged (resolveMonoVarsHelp visiting subst) fields
+            in
+            if changed then
+                ( True, Mono.MRecord newFields )
+
+            else
+                ( False, monoType )
 
         Mono.MCustom can name args ->
-            Mono.MCustom can name (List.map (resolveMonoVarsHelp visiting subst) args)
+            let
+                ( changed, newArgs ) =
+                    listMapChanged (resolveMonoVarsHelp visiting subst) args
+            in
+            if changed then
+                ( True, Mono.MCustom can name newArgs )
+
+            else
+                ( False, monoType )
 
         _ ->
-            monoType
+            ( False, monoType )
 
 
 {-| Extend a substitution by mapping any CEcoValue TVar in the canonical type
