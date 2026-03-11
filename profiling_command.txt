@@ -5,5 +5,6 @@ At Stage 5, run NodeJs with profiling on. Then examine the processed output of t
 Note, the first time you run Stage 5 it will spend most of its 5 minutes compiling the modules to .ecot. It is worth doing a second run which will pick up the cached .ecot files and spend more time in the global optimisation phase.
 
 IMPORTANT: Do not run more than one node process at a time - this system has only 16Gb memory, and we set the max heap size to 12Gb.
+IMPORTANT: If profiling crashes, do not chase down errors and try to fix, just report the stats your got and what the crash was.
 
 Report in detail on your findings form the profiling then STOP.

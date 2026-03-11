@@ -44,7 +44,6 @@ to maintain type safety while allowing mutation within the IO monad.
 
 import Array exposing (Array)
 import System.TypeCheck.IO as IO exposing (IO)
-import Utils.Crash exposing (crash)
 
 
 {-| Mutable reference wrapping an index into a type-specific array in the IO state.
@@ -57,108 +56,84 @@ type IORef a
 -}
 newIORefWeight : Int -> IO (IORef Int)
 newIORefWeight value =
-    \s -> ( { s | ioRefsWeight = Array.push value s.ioRefsWeight }, IORef (Array.length s.ioRefsWeight) )
+    IO.primNewWeight value |> IO.map IORef
 
 
 {-| Create a new IORef holding a PointInfo value.
 -}
 newIORefPointInfo : IO.PointInfo -> IO (IORef IO.PointInfo)
 newIORefPointInfo value =
-    \s -> ( { s | ioRefsPointInfo = Array.push value s.ioRefsPointInfo }, IORef (Array.length s.ioRefsPointInfo) )
+    IO.primNewPointInfo value |> IO.map IORef
 
 
 {-| Create a new IORef holding a Descriptor value.
 -}
 newIORefDescriptor : IO.Descriptor -> IO (IORef IO.Descriptor)
 newIORefDescriptor value =
-    \s -> ( { s | ioRefsDescriptor = Array.push value s.ioRefsDescriptor }, IORef (Array.length s.ioRefsDescriptor) )
+    IO.primNewDescriptor value |> IO.map IORef
 
 
 {-| Create a new IORef holding a mutable vector (array).
 -}
 newIORefMVector : Array (Maybe (List IO.Variable)) -> IO (IORef (Array (Maybe (List IO.Variable))))
 newIORefMVector value =
-    \s -> ( { s | ioRefsMVector = Array.push value s.ioRefsMVector }, IORef (Array.length s.ioRefsMVector) )
+    IO.primNewMVector value |> IO.map IORef
 
 
 {-| Read the Weight value from an IORef, crashing if not found.
 -}
 readIORefWeight : IORef Int -> IO Int
-readIORefWeight (IORef ref) =
-    \s ->
-        case Array.get ref s.ioRefsWeight of
-            Just value ->
-                ( s, value )
-
-            Nothing ->
-                crash "Data.IORef.readIORefWeight: could not find entry"
+readIORefWeight (IORef idx) =
+    IO.primReadWeight idx
 
 
 {-| Read the PointInfo value from an IORef, crashing if not found.
 -}
 readIORefPointInfo : IORef IO.PointInfo -> IO IO.PointInfo
-readIORefPointInfo (IORef ref) =
-    \s ->
-        case Array.get ref s.ioRefsPointInfo of
-            Just value ->
-                ( s, value )
-
-            Nothing ->
-                crash "Data.IORef.readIORefPointInfo: could not find entry"
+readIORefPointInfo (IORef idx) =
+    IO.primReadPointInfo idx
 
 
 {-| Read the Descriptor value from an IORef, crashing if not found.
 -}
 readIORefDescriptor : IORef IO.Descriptor -> IO IO.Descriptor
-readIORefDescriptor (IORef ref) =
-    \s ->
-        case Array.get ref s.ioRefsDescriptor of
-            Just value ->
-                ( s, value )
-
-            Nothing ->
-                crash "Data.IORef.readIORefDescriptor: could not find entry"
+readIORefDescriptor (IORef idx) =
+    IO.primReadDescriptor idx
 
 
 {-| Read the mutable vector (array) from an IORef, crashing if not found.
 -}
 readIORefMVector : IORef (Array (Maybe (List IO.Variable))) -> IO (Array (Maybe (List IO.Variable)))
-readIORefMVector (IORef ref) =
-    \s ->
-        case Array.get ref s.ioRefsMVector of
-            Just value ->
-                ( s, value )
-
-            Nothing ->
-                crash "Data.IORef.readIORefMVector: could not find entry"
+readIORefMVector (IORef idx) =
+    IO.primReadMVector idx
 
 
 {-| Write a Weight value to an IORef.
 -}
 writeIORefWeight : IORef Int -> Int -> IO ()
-writeIORefWeight (IORef ref) value =
-    \s -> ( { s | ioRefsWeight = Array.set ref value s.ioRefsWeight }, () )
+writeIORefWeight (IORef idx) value =
+    IO.primWriteWeight idx value
 
 
 {-| Write a PointInfo value to an IORef.
 -}
 writeIORefPointInfo : IORef IO.PointInfo -> IO.PointInfo -> IO ()
-writeIORefPointInfo (IORef ref) value =
-    \s -> ( { s | ioRefsPointInfo = Array.set ref value s.ioRefsPointInfo }, () )
+writeIORefPointInfo (IORef idx) value =
+    IO.primWritePointInfo idx value
 
 
 {-| Write a Descriptor value to an IORef.
 -}
 writeIORefDescriptor : IORef IO.Descriptor -> IO.Descriptor -> IO ()
-writeIORefDescriptor (IORef ref) value =
-    \s -> ( { s | ioRefsDescriptor = Array.set ref value s.ioRefsDescriptor }, () )
+writeIORefDescriptor (IORef idx) value =
+    IO.primWriteDescriptor idx value
 
 
 {-| Write a mutable vector (array) to an IORef.
 -}
 writeIORefMVector : IORef (Array (Maybe (List IO.Variable))) -> Array (Maybe (List IO.Variable)) -> IO ()
-writeIORefMVector (IORef ref) value =
-    \s -> ( { s | ioRefsMVector = Array.set ref value s.ioRefsMVector }, () )
+writeIORefMVector (IORef idx) value =
+    IO.primWriteMVector idx value
 
 
 {-| Modify a Descriptor value in an IORef by applying a function.
