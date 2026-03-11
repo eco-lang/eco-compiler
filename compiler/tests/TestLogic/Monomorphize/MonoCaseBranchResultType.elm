@@ -1,7 +1,4 @@
-module TestLogic.Monomorphize.MonoCaseBranchResultType exposing
-    ( expectMonoCaseBranchResultTypes
-    , Violation
-    )
+module TestLogic.Monomorphize.MonoCaseBranchResultType exposing (expectMonoCaseBranchResultTypes, Violation)
 
 {-| Test logic for MONO\_018: MonoCase branch result types match MonoCase resultType.
 
@@ -19,9 +16,9 @@ This invariant catches the "different staging boundaries across branches" bug wh
 
 -}
 
+import Array
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.Source as Src
-import Array
 import Expect exposing (Expectation)
 import TestLogic.TestPipeline as Pipeline
 

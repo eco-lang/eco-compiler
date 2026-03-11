@@ -28,7 +28,7 @@ import Compiler.Type.Constrain.Typed.Module as ConstrainTyped
 import Compiler.Type.Error as T
 import Compiler.Type.Solve as Solve
 import Data.Map
-import Dict exposing (Dict)
+import Dict
 import Expect
 import Set exposing (Set)
 import System.TypeCheck.IO as IO
@@ -164,8 +164,11 @@ expectEquivalentTypeChecking srcModule =
                             Array.foldl
                                 (\maybeType ( idx, acc ) ->
                                     case maybeType of
-                                        Just _ -> ( idx + 1, Set.insert idx acc )
-                                        Nothing -> ( idx + 1, acc )
+                                        Just _ ->
+                                            ( idx + 1, Set.insert idx acc )
+
+                                        Nothing ->
+                                            ( idx + 1, acc )
                                 )
                                 ( 0, Set.empty )
                                 nodeTypes
@@ -285,8 +288,11 @@ expectEquivalentTypeCheckingCanonical modul =
                     Array.foldl
                         (\maybeType ( idx, acc ) ->
                             case maybeType of
-                                Just _ -> ( idx + 1, Set.insert idx acc )
-                                Nothing -> ( idx + 1, acc )
+                                Just _ ->
+                                    ( idx + 1, Set.insert idx acc )
+
+                                Nothing ->
+                                    ( idx + 1, acc )
                         )
                         ( 0, Set.empty )
                         nodeTypes

@@ -16,7 +16,7 @@ The monomorphization algorithm works as follows:
 
 # Monomorphization
 
-@docs monomorphize
+@docs monomorphize, monomorphizeWithLog
 
 -}
 
@@ -25,12 +25,12 @@ import Compiler.AST.Canonical as Can
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.TypeEnv as TypeEnv
 import Compiler.AST.TypedOptimized as TOpt
+import Compiler.Data.BitSet as BitSet
 import Compiler.Data.Name exposing (Name)
-import Compiler.GlobalOpt.MonoTraverse as Traverse
+import Compiler.Monomorphize.MonoTraverse as Traverse
 import Compiler.Monomorphize.Prune as Prune
 import Compiler.Monomorphize.Registry as Registry
 import Compiler.Monomorphize.Specialize as Specialize
-import Compiler.Data.BitSet as BitSet
 import Compiler.Monomorphize.State as State exposing (WorkItem(..))
 import Compiler.Monomorphize.TypeSubst as TypeSubst
 import Data.Map as DMap
@@ -120,6 +120,7 @@ monomorphizeWithLog log entryPointName globalTypeEnv (TOpt.GlobalGraph nodes _ _
 
 {-| Phase 1: Run the specialization worklist to completion.
 -}
+runSpecialization : TOpt.Global -> Can.Type -> TypeEnv.GlobalTypeEnv -> DMap.Dict (List String) TOpt.Global TOpt.Node -> ( MonoState, Mono.SpecId )
 runSpecialization mainGlobal mainType globalTypeEnv nodes =
     let
         mainMonoType : Mono.MonoType
@@ -157,7 +158,9 @@ runSpecialization mainGlobal mainType globalTypeEnv nodes =
 {-| Phase 2: Assemble the raw MonoGraph from the final specialization state.
 
 Performs MVar erasure, registry patching, and graph construction.
+
 -}
+assembleRawGraph : MonoState -> Mono.SpecId -> Mono.MonoGraph
 assembleRawGraph finalState mainSpecIdVal =
     let
         -- Note: The callable top-level invariant is enforced by GlobalOpt via ensureCallableForNode.
@@ -272,21 +275,17 @@ assembleRawGraph finalState mainSpecIdVal =
                 (\specId edges acc -> Array.set specId (Just edges) acc)
                 base
                 finalState.callEdges
-
-        rawGraph : Mono.MonoGraph
-        rawGraph =
-            Mono.MonoGraph
-                { nodes = patchedNodes
-                , registry = patchedRegistry
-                , main = mainInfo
-                , ctorShapes = Dict.empty
-                , nextLambdaIndex = finalState.lambdaCounter
-                , callEdges = callEdgesArray
-                , specHasEffects = finalState.specHasEffects
-                , specValueUsed = valueUsedWithMain
-                }
     in
-    rawGraph
+    Mono.MonoGraph
+        { nodes = patchedNodes
+        , registry = patchedRegistry
+        , main = mainInfo
+        , ctorShapes = Dict.empty
+        , nextLambdaIndex = finalState.lambdaCounter
+        , callEdges = callEdgesArray
+        , specHasEffects = finalState.specHasEffects
+        , specValueUsed = valueUsedWithMain
+        }
 
 
 
@@ -457,6 +456,7 @@ processWorklist state =
                                                     , specHasEffects =
                                                         if effectsHere then
                                                             BitSet.insertGrowing specId stateAfter.specHasEffects
+
                                                         else
                                                             stateAfter.specHasEffects
                                                     , specValueUsed = specValueUsed1
@@ -494,13 +494,6 @@ type alias Substitution =
     State.Substitution
 
 
-{-| Apply a type substitution to a canonical type to produce a monomorphic type.
--}
-applySubst : Substitution -> Can.Type -> Mono.MonoType
-applySubst =
-    TypeSubst.applySubst
-
-
 canTypeToMonoType : Substitution -> Can.Type -> Mono.MonoType
 canTypeToMonoType =
     TypeSubst.canTypeToMonoType
@@ -534,9 +527,6 @@ monoGlobalToTOpt global =
 
 -- ========== CTOR LAYOUT COMPUTATION ==========
 -- Moved to Compiler.Monomorphize.Analysis (computeCtorShapesForGraph, buildCompleteCtorShapes, buildCtorShapeFromUnion)
-
-
-
 -- ========== CALL EDGE COLLECTION ==========
 
 
@@ -739,6 +729,7 @@ eraseParamTypes eraseHelp params =
 
 Uses MonoTraverse.mapExpr to bottom-up rewrite every expression node,
 applying the given type transformation to each type annotation.
+
 -}
 mapExprTypes : (Mono.MonoType -> Mono.MonoType) -> Mono.MonoExpr -> Mono.MonoExpr
 mapExprTypes f =
@@ -820,6 +811,7 @@ mapOneExprType f expr =
 {-| Erase all MVar type annotations inside an expression tree.
 
 Uses mapExprTypes with Mono.eraseTypeVarsToErased to replace all MVars with MErased.
+
 -}
 eraseExprTypeVars : Mono.MonoExpr -> Mono.MonoExpr
 eraseExprTypeVars =
@@ -830,6 +822,7 @@ eraseExprTypeVars =
 
 Uses mapExprTypes with Mono.eraseCEcoVarsToErased to replace only CEcoValue MVars
 with MErased, leaving CNumber MVars intact.
+
 -}
 eraseExprCEcoVars : Mono.MonoExpr -> Mono.MonoExpr
 eraseExprCEcoVars =

@@ -31,8 +31,8 @@ import Compiler.Reporting.Annotation as A
 import Compiler.Type.KernelTypes as KernelTypes
 import Compiler.TypedCanonical.Build as TCanBuild
 import Data.Map
-import Dict exposing (Dict)
 import Data.Set as EverySet exposing (EverySet)
+import Dict exposing (Dict)
 import System.TypeCheck.IO as IO
 import Utils.Crash
 import Utils.Main as Utils

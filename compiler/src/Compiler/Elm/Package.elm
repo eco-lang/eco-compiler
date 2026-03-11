@@ -2,7 +2,7 @@ module Compiler.Elm.Package exposing
     ( Name, Author, Project
     , compareName, toString, toChars, toUrl, toJsonString
     , isKernel
-    , dummyName, kernel, ecoKernel, isKernelPackage, core, browser, virtualDom, html, json, bytes, random, time, webgl, linearAlgebra, test
+    , dummyName, kernel, core, browser, virtualDom, html, json, bytes, random, time, webgl, linearAlgebra, test
     , suggestions, nearbyNames
     , encode, decoder, keyDecoder
     , nameEncoder, nameDecoder, parser
@@ -33,7 +33,7 @@ using Levenshtein distance.
 
 # Common Packages
 
-@docs dummyName, kernel, ecoKernel, isKernelPackage, core, browser, virtualDom, html, json, bytes, random, time, webgl, linearAlgebra, test
+@docs dummyName, kernel, core, browser, virtualDom, html, json, bytes, random, time, webgl, linearAlgebra, test
 
 
 # Package Suggestions
@@ -162,20 +162,6 @@ dummyName =
 kernel : Name
 kernel =
     toName elm "kernel"
-
-
-{-| The "eco/kernel" package name.
--}
-ecoKernel : Name
-ecoKernel =
-    toName eco "kernel"
-
-
-{-| Check whether a package is a kernel package (elm/kernel or eco/kernel).
--}
-isKernelPackage : Name -> Bool
-isKernelPackage pkg =
-    pkg == kernel || pkg == ecoKernel
 
 
 {-| The "elm/core" package name.

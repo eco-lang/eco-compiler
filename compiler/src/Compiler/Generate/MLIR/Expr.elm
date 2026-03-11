@@ -34,6 +34,7 @@ This module handles generation of MLIR code for all Elm expressions.
 
 -}
 
+import Array exposing (Array)
 import Bitwise
 import Compiler.AST.DecisionTree.Test as Test
 import Compiler.AST.Monomorphized as Mono
@@ -52,10 +53,8 @@ import Compiler.Monomorphize.Closure as Closure
 import Compiler.Monomorphize.Registry as Registry
 import Data.Map as EveryDict
 import Data.Set as EverySet
-import Array exposing (Array)
-import Dict exposing (Dict)
+import Dict
 import Hex
-import Set
 import List.Extra as ListX
 import Mlir.Mlir exposing (MlirAttr(..), MlirBlock, MlirOp, MlirRegion(..), MlirType(..))
 import OrderedDict
@@ -4021,7 +4020,9 @@ mkCaseRegionFromDecider exprRes resultTy =
                 -- Defensive: non-yield terminator with empty resultVar indicates
                 -- a control-flow op (e.g., eco.jump) that shouldn't be wrapped
                 crash
-                    ("mkCaseRegionFromDecider: non-yield terminator '" ++ lastOp.name ++ "' with empty resultVar; "
+                    ("mkCaseRegionFromDecider: non-yield terminator '"
+                        ++ lastOp.name
+                        ++ "' with empty resultVar; "
                         ++ "this indicates a codegen bug (e.g., eco.return or eco.jump leaked into a case alternative)"
                     )
 

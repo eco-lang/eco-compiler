@@ -93,12 +93,12 @@ import Data.Map as EveryDict
 import Data.Set as EverySet exposing (EverySet)
 import Dict exposing (Dict)
 import Result.Extra
+import System.IO exposing (FilePath, MVar)
 import System.TypeCheck.IO as TypeCheck
 import Task exposing (Task)
 import Utils.Bytes.Decode as BD
 import Utils.Bytes.Encode as BE
 import Utils.Crash exposing (crash)
-import System.IO exposing (FilePath, MVar)
 import Utils.Main as Utils
 import Utils.Task.Extra as Task
 

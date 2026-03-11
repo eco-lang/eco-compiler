@@ -67,7 +67,6 @@ import Mlir.Mlir exposing (MlirType(..))
 
 
 
-
 -- ====== ECO DIALECT TYPES ======
 
 

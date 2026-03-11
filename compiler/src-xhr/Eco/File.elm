@@ -2,10 +2,8 @@ module Eco.File exposing
     ( readString, writeString, readBytes, writeBytes
     , Handle(..), IOMode(..), open, close, size, hWriteString
     , lock, unlock
-    , fileExists, dirExists
-    , findExecutable, list, modificationTime
-    , getCwd, setCwd, canonicalize, appDataDir
-    , createDir, removeFile, removeDir
+    , fileExists, dirExists, findExecutable, list, modificationTime
+    , getCwd, setCwd, canonicalize, appDataDir, createDir, removeFile, removeDir
     )
 
 {-| File system operations via XHR: file I/O, handles, locks, and directories.
@@ -22,7 +20,7 @@ Eco.Kernel.File directly.
 
 # File Handles
 
-@docs Handle, IOMode, open, close, size
+@docs Handle, IOMode, open, close, size, hWriteString
 
 
 # File Locking

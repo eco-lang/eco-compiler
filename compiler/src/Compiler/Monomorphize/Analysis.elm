@@ -1,6 +1,5 @@
 module Compiler.Monomorphize.Analysis exposing
-    ( collectAllCustomTypes
-    , computeCtorShapesForGraph
+    ( computeCtorShapesForGraph
     , lookupUnion
     )
 
@@ -18,8 +17,6 @@ This module handles:
 
 
 # Custom Type Collection
-
-@docs collectAllCustomTypes
 
 
 # Ctor Shape Computation
@@ -43,8 +40,8 @@ import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Monomorphize.State exposing (Substitution)
 import Compiler.Monomorphize.TypeSubst as TypeSubst
 import Data.Map
-import Dict exposing (Dict)
 import Data.Set as EverySet exposing (EverySet)
+import Dict
 import System.TypeCheck.IO as IO
 import Utils.Crash
 

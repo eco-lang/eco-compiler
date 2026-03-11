@@ -53,11 +53,11 @@ state during MLIR code generation.
 import Array exposing (Array)
 import Compiler.AST.Monomorphized as Mono
 import Compiler.Data.Name as Name
+import Compiler.Generate.MLIR.Types as Types
 import Compiler.Generate.Mode as Mode
 import Dict
-import Set
-import Compiler.Generate.MLIR.Types as Types
 import Mlir.Mlir exposing (MlirOp, MlirType)
+import Set
 import Utils.Crash exposing (crash)
 
 

@@ -71,7 +71,8 @@ to Int -> Int when the field is accessed and applied to an Int.
 
     testValue =
         let
-            r = { fn = \x -> x }
+            r =
+                { fn = \x -> x }
         in
         r.fn 42
 
@@ -82,7 +83,8 @@ polyIdentityInRecordField expectFn _ =
         modul =
             makeModule "testValue"
                 (letExpr
-                    [ define "r" []
+                    [ define "r"
+                        []
                         (recordExpr
                             [ ( "fn", lambdaExpr [ pVar "x" ] (varExpr "x") ) ]
                         )
@@ -102,19 +104,27 @@ polyIdentityInRecordField expectFn _ =
 {-| A polymorphic identity lambda passed to a locally-defined Maybe.map
 must be specialized to Int -> Int when applied to Just 1.
 
-    type Maybe a = Just a | Nothing
+    type Maybe a
+        = Just a
+        | Nothing
 
     maybeMap : (a -> b) -> Maybe a -> Maybe b
     maybeMap f m =
         case m of
-            Just x -> Just (f x)
-            Nothing -> Nothing
+            Just x ->
+                Just (f x)
+
+            Nothing ->
+                Nothing
 
     testValue : Int
     testValue =
         case maybeMap (\x -> x) (Just 1) of
-            Just n -> n
-            Nothing -> 0
+            Just n ->
+                n
+
+            Nothing ->
+                0
 
 -}
 lambdaInMaybeMap : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -190,7 +200,8 @@ x is Int and y is String, so g must be specialized to String -> (Int, String).
         let
             f x =
                 let
-                    g y = ( x, y )
+                    g y =
+                        ( x, y )
                 in
                 g
         in
@@ -203,9 +214,11 @@ nestedPolymorphicClosures expectFn _ =
         modul =
             makeModule "testValue"
                 (letExpr
-                    [ define "f" [ pVar "x" ]
+                    [ define "f"
+                        [ pVar "x" ]
                         (letExpr
-                            [ define "g" [ pVar "y" ]
+                            [ define "g"
+                                [ pVar "y" ]
                                 (tupleExpr (varExpr "x") (varExpr "y"))
                             ]
                             (varExpr "g")
@@ -227,12 +240,13 @@ nestedPolymorphicClosures expectFn _ =
 
 
 {-| flip has type (a -> b -> c) -> b -> a -> c. When called with
-(\x y -> x), 1, and "a", all three type vars must specialize:
+(\\x y -> x), 1, and "a", all three type vars must specialize:
 a=String, b=Int, c=String.
 
     testValue =
         let
-            flip f a b = f b a
+            flip f a b =
+                f b a
         in
         flip (\x y -> x) 1 "a"
 
@@ -243,7 +257,8 @@ polyFlipMixedTypes expectFn _ =
         modul =
             makeModule "testValue"
                 (letExpr
-                    [ define "flip" [ pVar "f", pVar "a", pVar "b" ]
+                    [ define "flip"
+                        [ pVar "f", pVar "a", pVar "b" ]
                         (callExpr (varExpr "f") [ varExpr "b", varExpr "a" ])
                     ]
                     (callExpr (varExpr "flip")
@@ -263,14 +278,17 @@ polyFlipMixedTypes expectFn _ =
 -- ============================================================================
 
 
-{-| Record r has polymorphic field f = \x -> x. A record update replaces f
-with the concrete \y -> y + 1, forcing the polymorphic TVar to specialize
+{-| Record r has polymorphic field f = \\x -> x. A record update replaces f
+with the concrete \\y -> y + 1, forcing the polymorphic TVar to specialize
 to Int through the record update unification.
 
     testValue =
         let
-            r = { f = \x -> x, g = 0 }
-            r2 = { r | f = \y -> y + 1 }
+            r =
+                { f = \x -> x, g = 0 }
+
+            r2 =
+                { r | f = \y -> y + 1 }
         in
         r2.f 5
 
@@ -281,13 +299,15 @@ recordUpdatePolyNarrowing expectFn _ =
         modul =
             makeModule "testValue"
                 (letExpr
-                    [ define "r" []
+                    [ define "r"
+                        []
                         (recordExpr
                             [ ( "f", lambdaExpr [ pVar "x" ] (varExpr "x") )
                             , ( "g", intExpr 0 )
                             ]
                         )
-                    , define "r2" []
+                    , define "r2"
+                        []
                         (updateExpr (varExpr "r")
                             [ ( "f"
                               , lambdaExpr [ pVar "y" ]
@@ -314,8 +334,13 @@ specialize id through the tuple storage to Int -> Int.
 
     testValue =
         let
-            id x = x
-            first t = case t of ( a, b ) -> a
+            id x =
+                x
+
+            first t =
+                case t of
+                    ( a, b ) ->
+                        a
         in
         first ( id, 0 ) 42
 
@@ -327,7 +352,8 @@ polyFunctionInTuple expectFn _ =
             makeModule "testValue"
                 (letExpr
                     [ define "id" [ pVar "x" ] (varExpr "x")
-                    , define "first" [ pVar "t" ]
+                    , define "first"
+                        [ pVar "t" ]
                         (caseExpr (varExpr "t")
                             [ ( pTuple (pVar "fst") pAnything, varExpr "fst" ) ]
                         )

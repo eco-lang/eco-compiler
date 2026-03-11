@@ -34,9 +34,9 @@ import Compiler.Elm.Version as V
 import Compiler.Parse.Primitives as P
 import Compiler.Reporting.Suggest as Suggest
 import Dict
+import System.IO exposing (FilePath)
 import Task exposing (Task)
 import Terminal.Terminal.Internal exposing (Parser(..))
-import System.IO exposing (FilePath)
 import Utils.Main as Utils
 
 

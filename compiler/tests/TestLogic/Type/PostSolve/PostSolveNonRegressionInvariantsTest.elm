@@ -8,8 +8,6 @@ POST\_006: PostSolve does not introduce new free type variables
 -}
 
 import Compiler.AST.Source as Src
-import Data.Map
-import Dict
 import Expect
 import SourceIR.Suite.StandardTestSuites as StandardTestSuites
 import Test exposing (Test)

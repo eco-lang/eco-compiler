@@ -5,12 +5,11 @@ module System.IO exposing
     , writeString
     , LockSharedExclusive(..)
     , write
+    , writeLn, print, printLn, readLine, close, flush, isTerminal
     , MVar(..)
-    , Stream
-    , ChItem(..)
+    , Stream, ChItem(..)
     , ReplState(..), initialReplState
     , ReplSettings(..)
-    , writeLn, print, printLn, readLine, close, flush, isTerminal
     )
 
 {-| Centralized IO operations for the Elm compiler.
@@ -291,4 +290,3 @@ initialReplState =
 -}
 type ReplSettings
     = ReplSettings
-

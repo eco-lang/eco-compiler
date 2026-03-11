@@ -1,4 +1,4 @@
-module Compiler.Generate.MLIR.Backend exposing (backend, generateMlirModule, generateMlirModuleWithLog, streamMlirToWriter)
+module Compiler.Generate.MLIR.Backend exposing (backend, generateMlirModule, streamMlirToWriter)
 
 {-| MLIR code generation backend for the Monomorphized IR.
 
@@ -18,7 +18,6 @@ import Compiler.Generate.MLIR.Functions as Functions
 import Compiler.Generate.MLIR.Lambdas as Lambdas
 import Compiler.Generate.MLIR.TypeTable as TypeTable
 import Compiler.Generate.Mode as Mode
-import Data.Map as EveryDict
 import Dict
 import Mlir.Loc as Loc
 import Mlir.Mlir exposing (MlirModule, MlirOp)
@@ -51,7 +50,7 @@ backend =
 generateMlirModule : Mode.Mode -> Mono.MonoGraph -> MlirModule
 generateMlirModule mode monoGraph0 =
     let
-        (Mono.MonoGraph { nodes, main, registry, ctorShapes, nextLambdaIndex }) =
+        (Mono.MonoGraph { nodes, main, registry, ctorShapes }) =
             monoGraph0
 
         signatures : Dict.Dict Int Ctx.FuncSignature
@@ -123,88 +122,13 @@ generateProgram mode monoGraph =
     Pretty.ppModule (generateMlirModule mode monoGraph)
 
 
-{-| Like generateMlirModule, but logs each sub-pass via the provided logger.
--}
-generateMlirModuleWithLog : (String -> Task x ()) -> Mode.Mode -> Mono.MonoGraph -> Task x MlirModule
-generateMlirModuleWithLog log mode monoGraph0 =
-    let
-        (Mono.MonoGraph { nodes, main, registry, ctorShapes }) =
-            monoGraph0
-
-        signatures =
-            Ctx.buildSignatures nodes
-
-        ctx =
-            Ctx.initContext mode registry signatures ctorShapes
-    in
-    log "  Generate node functions..."
-        |> Task.andThen
-            (\_ ->
-                let
-                    ( revOpChunks, ctxAfterNodes, _ ) =
-                        Array.foldl
-                            (\maybeNode ( accChunks, accCtx, specId ) ->
-                                case maybeNode of
-                                    Nothing ->
-                                        ( accChunks, accCtx, specId + 1 )
-
-                                    Just node ->
-                                        let
-                                            ( nodeOps, newCtx ) =
-                                                Functions.generateNode accCtx specId node
-                                        in
-                                        ( nodeOps :: accChunks, newCtx, specId + 1 )
-                            )
-                            ( [], ctx, 0 )
-                            nodes
-
-                    ops =
-                        List.concat (List.reverse revOpChunks)
-                in
-                log "  Process lambda closures..."
-                    |> Task.andThen
-                        (\_ ->
-                            let
-                                ( lambdaOps, finalCtx ) =
-                                    Lambdas.processLambdas ctxAfterNodes
-
-                                mainOps =
-                                    case main of
-                                        Just mainInfo ->
-                                            Functions.generateMainEntry finalCtx mainInfo
-
-                                        Nothing ->
-                                            []
-
-                                ( kernelDeclOps, _ ) =
-                                    Dict.foldl
-                                        (\name sig ( accOps, accCtx ) ->
-                                            let
-                                                ( newCtx, declOp ) =
-                                                    Functions.generateKernelDecl accCtx name sig
-                                            in
-                                            ( declOp :: accOps, newCtx )
-                                        )
-                                        ( [], finalCtx )
-                                        finalCtx.kernelDecls
-
-                                typeTableOp =
-                                    TypeTable.generateTypeTable finalCtx
-                            in
-                            log "  Generate main + kernel decls + type table..."
-                                |> Task.map
-                                    (\_ ->
-                                        { body = typeTableOp :: List.reverse kernelDeclOps ++ lambdaOps ++ ops ++ mainOps
-                                        , loc = Loc.unknown
-                                        }
-                                    )
-                        )
-            )
-
 
 -- ====== STREAMING ======
 
 
+{-| Stream MLIR text output to a writer function, emitting the module header,
+each top-level operation, and footer sequentially.
+-}
 streamMlirToWriter :
     Mode.Mode
     -> Mono.MonoGraph

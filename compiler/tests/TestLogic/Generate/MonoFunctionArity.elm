@@ -11,9 +11,9 @@ This module runs after GlobalOpt since it also checks GOPT\_016 (stage arity inv
 
 -}
 
+import Array
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.Source as Src
-import Array
 import Expect
 import TestLogic.TestPipeline as Pipeline
 

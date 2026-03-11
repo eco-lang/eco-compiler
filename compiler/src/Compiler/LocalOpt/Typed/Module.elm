@@ -37,8 +37,8 @@ import Compiler.Reporting.Result as ReportingResult
 import Compiler.Reporting.Warning as W
 import Compiler.Type.KernelTypes as KernelTypes
 import Data.Map
-import Dict exposing (Dict)
 import Data.Set as EverySet exposing (EverySet)
+import Dict exposing (Dict)
 import System.TypeCheck.IO as IO
 import Utils.Crash
 
@@ -101,7 +101,6 @@ optimizeTyped annotations exprTypes kernelEnv (TCan.Module tData) =
         |> addEffects tData.name annotations tData.effects
         |> addDecls tData.name annotations exprTypes kernelEnv tData.decls
         |> ReportingResult.map LambdaNorm.normalizeLocalGraph
-
 
 
 

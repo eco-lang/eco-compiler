@@ -62,7 +62,6 @@ import Compiler.Reporting.Error.Syntax as ES
 import Compiler.Reporting.Render.Code as Code
 import Compiler.Reporting.Report as Report
 import Control.Monad.State.Strict as State
-import Data.Map as Map exposing (Dict)
 import Dict
 import List.Extra as List
 import Maybe.Extra as Maybe

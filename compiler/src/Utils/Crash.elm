@@ -4,6 +4,7 @@ module Utils.Crash exposing (crash)
 Delegates to Eco.Crash which has platform-specific implementations
 (XHR variant and kernel variant).
 
+
 # Crash Function
 
 @docs crash

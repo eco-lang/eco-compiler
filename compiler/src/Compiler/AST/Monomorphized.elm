@@ -13,15 +13,12 @@ module Compiler.AST.Monomorphized exposing
     , forceCNumberToInt
     , Segmentation, segmentLengths, stageParamTypes, stageReturnType
     , chooseCanonicalSegmentation, buildSegmentedFunctionType
-    , decomposeFunctionType, isFunctionType, countTotalArity, resultTypeOf
+    , decomposeFunctionType, isFunctionType, countTotalArity
     , CallModel(..), CallInfo, defaultCallInfo
     , ClosureKindId(..), ClosureKind(..), MaybeClosureKind
     , CaptureABI
-    , nodesToArray
-    , eraseTypeVarsToErased, eraseTypeVarsToErasedHelp
-    , containsAnyMVar
-    , containsCEcoMVar, eraseCEcoVarsToErased, eraseCEcoVarsToErasedHelp
-    , listMapChanged, dictMapChanged
+    , containsAnyMVar, containsCEcoMVar, eraseCEcoVarsToErased, eraseCEcoVarsToErasedHelp, eraseTypeVarsToErased, eraseTypeVarsToErasedHelp
+    , listMapChanged, resultTypeOf
     -- Typed closure calling (ABI cloning)
     -- Call staging metadata
     -- Staging/Segmentation helpers
@@ -138,12 +135,22 @@ This module defines the data structures for the monomorphized program
 @docs ClosureKindId, ClosureKind, MaybeClosureKind
 @docs CaptureABI
 
+
+# Type Variable Erasure
+
+@docs containsAnyMVar, containsCEcoMVar, eraseCEcoVarsToErased, eraseCEcoVarsToErasedHelp, eraseTypeVarsToErased, eraseTypeVarsToErasedHelp
+
+
+# Misc Helpers
+
+@docs listMapChanged, resultTypeOf
+
 -}
 
 import Array exposing (Array)
 import Compiler.AST.DecisionTree.Test as DT
 import Compiler.AST.DecisionTree.TypedPath as DT
-import Compiler.Data.BitSet as BitSet exposing (BitSet)
+import Compiler.Data.BitSet exposing (BitSet)
 import Compiler.Data.Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Reporting.Annotation exposing (Region)
@@ -748,11 +755,6 @@ nodeType node =
             t
 
 
-nodesToArray : MonoGraph -> Array (Maybe MonoNode)
-nodesToArray (MonoGraph record) =
-    record.nodes
-
-
 {-| A monomorphized expression with concrete types and explicit closures.
 -}
 type MonoExpr
@@ -1158,7 +1160,7 @@ toComparableLambdaId lambdaId =
 {-| Convert a specialization key to a single comparable String for use in dictionaries.
 
 Uses a compact single-String encoding to avoid List String allocation and concatenation
-overhead. Parts are separated by \u{0001}, elements within parts by \u{0000}.
+overhead. Parts are separated by \\u{0001}, elements within parts by \\u{0000}.
 
 -}
 toComparableSpecKey : SpecKey -> List String
@@ -1474,5 +1476,3 @@ type alias CaptureABI =
     , paramTypes : List MonoType
     , returnType : MonoType
     }
-
-

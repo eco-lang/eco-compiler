@@ -1,7 +1,4 @@
-module Compiler.Generate.MLIR.BytesFusion.Emit exposing
-    ( ExprCompiler, emitFusedDecoder, emitFusedEncoder
-    , CompileExprResult
-    )
+module Compiler.Generate.MLIR.BytesFusion.Emit exposing (ExprCompiler, emitFusedDecoder, emitFusedEncoder, CompileExprResult)
 
 {-| Emit MLIR operations for fused byte encoding and decoding.
 

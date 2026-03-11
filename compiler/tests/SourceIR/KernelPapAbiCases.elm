@@ -4,7 +4,7 @@ module SourceIR.KernelPapAbiCases exposing (expectSuite)
 
 These test equality and comparison operators used in various contexts
 to ensure kernel ABI types are consistent across call sites.
-Exercises CGEN_038 and KERN_006.
+Exercises CGEN\_038 and KERN\_006.
 
 -}
 
@@ -48,7 +48,7 @@ testCases expectFn =
 
 
 {-| Int equality binop in same module as string case pattern.
-Both paths register Elm_Kernel_Utils_equal — must not conflict.
+Both paths register Elm\_Kernel\_Utils\_equal — must not conflict.
 -}
 equalityOnIntWithStringCase : (Src.Module -> Expectation) -> (() -> Expectation)
 equalityOnIntWithStringCase expectFn _ =
@@ -63,7 +63,8 @@ equalityOnIntWithStringCase expectFn _ =
             makeModule "testValue"
                 (letExpr
                     [ define "classify" [ pVar "s" ] classifyBody
-                    , define "result" []
+                    , define "result"
+                        []
                         (binopsExpr [ ( intExpr 1, "==" ) ] (intExpr 2))
                     ]
                     (callExpr (varExpr "classify") [ strExpr "foo" ])

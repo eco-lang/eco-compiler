@@ -13,8 +13,8 @@ This is the XHR-based bootstrap implementation. Unlike the kernel variant
 XHR variant requires explicit Bytes encoder/decoder parameters because
 values must cross the HTTP boundary as raw bytes.
 
-Kernel API:  `read : MVar a -> Task Never a`
-XHR API:     `read : Bytes.Decode.Decoder a -> MVar a -> Task Never a`
+Kernel API: `read : MVar a -> Task Never a`
+XHR API: `read : Bytes.Decode.Decoder a -> MVar a -> Task Never a`
 
 The compiler's MVar call sites (in Utils/Main.elm) already provide
 encoder/decoder at every use, so this API divergence is transparent.

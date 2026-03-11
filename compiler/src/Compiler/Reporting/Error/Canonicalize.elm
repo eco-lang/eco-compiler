@@ -53,8 +53,8 @@ import Compiler.Reporting.Render.Code as Code
 import Compiler.Reporting.Render.Type as RT
 import Compiler.Reporting.Report as Report
 import Compiler.Reporting.Suggest as Suggest
-import Dict exposing (Dict)
 import Data.Set as EverySet exposing (EverySet)
+import Dict exposing (Dict)
 import System.TypeCheck.IO as IO
 import Utils.Bytes.Decode as BD
 import Utils.Bytes.Encode as BE

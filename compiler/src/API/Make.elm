@@ -26,8 +26,8 @@ import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Generate.CodeGen as CodeGen
 import Compiler.Generate.Html as Html
 import Maybe.Extra as Maybe
-import Task exposing (Task)
 import System.IO exposing (FilePath)
+import Task exposing (Task)
 import Utils.Crash exposing (crash)
 import Utils.Task.Extra as Task
 

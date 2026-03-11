@@ -1,8 +1,8 @@
 module Compiler.Monomorphize.State exposing
-    ( MonoState, WorkItem(..), Substitution, VarTypes
-    , VarEnv(..), emptyVarEnv, lookupVar, insertVar, pushFrame, popFrame
+    ( MonoState, WorkItem(..), Substitution
     , initState
     , LocalInstanceInfo, LocalMultiState
+    , VarEnv(..), emptyVarEnv, insertVar, lookupVar, popFrame, pushFrame
     )
 
 {-| State types and utilities for monomorphization.
@@ -13,7 +13,7 @@ the monomorphization process.
 
 # Types
 
-@docs MonoState, WorkItem, Substitution, VarTypes
+@docs MonoState, WorkItem, Substitution
 
 
 # Initialization
@@ -25,16 +25,21 @@ the monomorphization process.
 
 @docs LocalInstanceInfo, LocalMultiState
 
+
+# Variable Environment
+
+@docs VarEnv, emptyVarEnv, insertVar, lookupVar, popFrame, pushFrame
+
 -}
 
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.TypeEnv as TypeEnv
 import Compiler.AST.TypedOptimized as TOpt
+import Compiler.Data.BitSet as BitSet exposing (BitSet)
 import Compiler.Data.Name exposing (Name)
 import Compiler.Monomorphize.Registry as Registry
 import Data.Map as DataMap
 import Dict exposing (Dict)
-import Compiler.Data.BitSet as BitSet exposing (BitSet)
 import System.TypeCheck.IO as IO
 
 
@@ -71,12 +76,6 @@ type alias Substitution =
     Dict Name Mono.MonoType
 
 
-{-| Mapping of variable names to their MonoTypes, used during specialization.
--}
-type alias VarTypes =
-    Dict Name Mono.MonoType
-
-
 {-| Layered environment for variable type lookups. Uses a stack of frames
 so that inner scopes (let, lambda, case) can be cheaply pushed/popped
 without copying the entire environment.
@@ -85,11 +84,15 @@ type VarEnv
     = VarEnv (List (Dict Name Mono.MonoType))
 
 
+{-| An empty variable environment with a single empty frame.
+-}
 emptyVarEnv : VarEnv
 emptyVarEnv =
     VarEnv [ Dict.empty ]
 
 
+{-| Look up a variable's type in the environment, searching from innermost to outermost frame.
+-}
 lookupVar : Name -> VarEnv -> Maybe Mono.MonoType
 lookupVar name (VarEnv frames) =
     lookupVarHelp name frames
@@ -110,6 +113,8 @@ lookupVarHelp name frames =
                     lookupVarHelp name rest
 
 
+{-| Insert a variable binding into the current (innermost) frame.
+-}
 insertVar : Name -> Mono.MonoType -> VarEnv -> VarEnv
 insertVar name t (VarEnv frames) =
     case frames of
@@ -120,11 +125,15 @@ insertVar name t (VarEnv frames) =
             VarEnv (Dict.insert name t frame :: rest)
 
 
+{-| Push a new empty frame onto the environment stack for a nested scope.
+-}
 pushFrame : VarEnv -> VarEnv
 pushFrame (VarEnv frames) =
     VarEnv (Dict.empty :: frames)
 
 
+{-| Pop the innermost frame from the environment stack.
+-}
 popFrame : VarEnv -> VarEnv
 popFrame (VarEnv frames) =
     case frames of

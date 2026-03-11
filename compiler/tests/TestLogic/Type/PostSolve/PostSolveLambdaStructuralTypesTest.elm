@@ -11,11 +11,11 @@ non-function shapes.
 
 -}
 
+import Array
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Source as Src
 import Compiler.Reporting.Annotation as A
 import Compiler.Type.PostSolve as PostSolve
-import Array
 import Dict
 import Expect
 import SourceIR.Suite.StandardTestSuites as StandardTestSuites

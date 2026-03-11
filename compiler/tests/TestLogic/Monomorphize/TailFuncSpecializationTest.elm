@@ -15,6 +15,7 @@ not flattened. For `Int -> Int -> Int`, we get `MFunction [MInt] (MFunction [MIn
 
 -}
 
+import Array
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
@@ -29,7 +30,6 @@ import Compiler.AST.SourceBuilder
         , tType
         , varExpr
         )
-import Array
 import Expect exposing (Expectation)
 import Test exposing (Test)
 import TestLogic.TestPipeline as Pipeline

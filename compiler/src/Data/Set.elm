@@ -1,6 +1,6 @@
 module Data.Set exposing
     ( EverySet
-    , empty, insert, remove
+    , empty, insert
     , isEmpty, member, size
     , union, diff
     , toList, fromList
@@ -22,7 +22,7 @@ Initial implementation from `Gizra/elm-all-set/1.0.1`.
 
 # Build
 
-@docs empty, insert, remove
+@docs empty, insert
 
 
 # Query
@@ -68,13 +68,6 @@ empty =
 insert : (a -> comparable) -> a -> EverySet comparable a -> EverySet comparable a
 insert toComparable k (EverySet d) =
     Dict.insert toComparable k () d |> EverySet
-
-
-{-| Remove a value from a set. If the value is not found, no changes are made.
--}
-remove : (a -> comparable) -> a -> EverySet comparable a -> EverySet comparable a
-remove toComparable k (EverySet d) =
-    Dict.remove toComparable k d |> EverySet
 
 
 {-| Determine if a set is empty.

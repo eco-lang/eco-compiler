@@ -29,7 +29,7 @@ import Compiler.AST.Canonical as Can
 import Compiler.Data.Name exposing (Name)
 import Compiler.Type.Type exposing (Type(..))
 import Data.Map
-import Dict exposing (Dict)
+import Dict
 import System.TypeCheck.IO as IO exposing (IO)
 import Utils.Main as Utils
 

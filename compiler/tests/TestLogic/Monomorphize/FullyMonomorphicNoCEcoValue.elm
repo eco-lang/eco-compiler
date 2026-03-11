@@ -1,8 +1,4 @@
-module TestLogic.Monomorphize.FullyMonomorphicNoCEcoValue exposing
-    ( Violation
-    , checkFullyMonomorphicNoCEcoValue
-    , expectFullyMonomorphicNoCEcoValue
-    )
+module TestLogic.Monomorphize.FullyMonomorphicNoCEcoValue exposing (expectFullyMonomorphicNoCEcoValue, Violation)
 
 {-| Test logic for MONO\_024: Fully monomorphic specializations have no CEcoValue
 in reachable MonoTypes.
@@ -23,7 +19,7 @@ Any surviving CEcoValue in a fully monomorphic specialization indicates a
 failed substitution — the monomorphization pass did not propagate the concrete
 types from the specialization key into all expression types.
 
-@docs expectFullyMonomorphicNoCEcoValue, checkFullyMonomorphicNoCEcoValue, Violation
+@docs expectFullyMonomorphicNoCEcoValue, Violation
 
 -}
 
@@ -249,7 +245,7 @@ checkExprAllTypes ctx expr =
             checkType ctx "tailcall type" tailCallType
                 ++ List.concatMap (\( _, a ) -> checkExprAllTypes ctx a) namedArgs
 
-        Mono.MonoDestruct destructor inner destructType ->
+        Mono.MonoDestruct _ inner destructType ->
             checkType ctx "destruct type" destructType
                 ++ checkExprAllTypes ctx inner
 
@@ -401,7 +397,9 @@ collectCEcoValueVars monoType =
 -}
 formatViolations : List Violation -> String
 formatViolations violations =
-    "MONO_024 violations found (" ++ String.fromInt (List.length violations) ++ "):\n\n"
+    "MONO_024 violations found ("
+        ++ String.fromInt (List.length violations)
+        ++ "):\n\n"
         ++ (violations
                 |> List.map (\v -> v.context ++ ": " ++ v.message)
                 |> String.join "\n\n"

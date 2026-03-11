@@ -62,11 +62,11 @@ import Compiler.Elm.Package as Pkg
 import Compiler.Generate.CodeGen as CodeGen
 import Compiler.Generate.Html as Html
 import Maybe.Extra as Maybe
+import System.IO exposing (FilePath)
 import Task exposing (Task)
 import Terminal.Terminal.Internal exposing (Parser(..))
 import Utils.Bytes.Decode as BD
 import Utils.Bytes.Encode as BE
-import System.IO exposing (FilePath)
 import Utils.Main as Utils
 import Utils.Task.Extra as Task
 
@@ -487,24 +487,6 @@ toBuilder backend withSourceMaps leadingLines root maybeBuildDir details desired
 
         Prod ->
             Generate.prod backend withSourceMaps leadingLines root maybeBuildDir details artifacts
-    )
-        |> Task.map CodeGen.outputToString
-        |> Task.mapError Exit.MakeBadGenerate
-
-
-{-| Build using monomorphized code generation (for MLIR mono backend)
--}
-toMonoBuilder : CodeGen.MonoCodeGen -> Bool -> Int -> FilePath -> Maybe String -> Maybe ( Pkg.Name, FilePath ) -> Details.Details -> DesiredMode -> Build.Artifacts -> Task Exit.Make String
-toMonoBuilder backend withSourceMaps leadingLines root maybeBuildDir maybeLocal details desiredMode artifacts =
-    (case desiredMode of
-        Debug ->
-            Generate.monoDev backend withSourceMaps leadingLines root maybeBuildDir maybeLocal details artifacts
-
-        Dev ->
-            Generate.monoDev backend withSourceMaps leadingLines root maybeBuildDir maybeLocal details artifacts
-
-        Prod ->
-            Generate.monoDev backend withSourceMaps leadingLines root maybeBuildDir maybeLocal details artifacts
     )
         |> Task.map CodeGen.outputToString
         |> Task.mapError Exit.MakeBadGenerate

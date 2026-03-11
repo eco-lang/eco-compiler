@@ -25,8 +25,8 @@ import Compiler.Type.KernelTypes as KernelTypes
 import Compiler.Type.PostSolve as PostSolve
 import Compiler.Type.Solve as Solve
 import Data.Map
-import Dict
 import Data.Set as EverySet
+import Dict
 import System.TypeCheck.IO as IO
 import TestLogic.TestPipeline as Pipeline
 

@@ -18,7 +18,7 @@ invariants are satisfied.
 
 -}
 
-import Array exposing (Array)
+import Array
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.Source as Src
 import Data.Set as Set exposing (EverySet)

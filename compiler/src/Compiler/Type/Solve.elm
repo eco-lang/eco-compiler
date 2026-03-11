@@ -40,9 +40,9 @@ import Compiler.Type.Unify as Unify
 import Compiler.Type.UnionFind as UF
 import Data.IORef exposing (IORef)
 import Data.Map
-import Dict exposing (Dict)
 import Data.Vector as Vector
 import Data.Vector.Mutable as MVector
+import Dict exposing (Dict)
 import System.TypeCheck.IO as IO exposing (Content, Descriptor(..), IO, Mark, Variable)
 import Utils.Crash exposing (crash)
 import Utils.Main as Utils
@@ -126,25 +126,6 @@ runWithIds constraint nodeVars =
                                     IO.pure (Err (NE.Nonempty e es))
                         )
             )
-
-
-traverseArrayMaybe : (a -> IO b) -> Array (Maybe a) -> IO (Array (Maybe b))
-traverseArrayMaybe f arr =
-    Array.foldl
-        (\maybeVal accIO ->
-            case maybeVal of
-                Nothing ->
-                    IO.map (\acc -> Array.push Nothing acc) accIO
-
-                Just val ->
-                    IO.andThen
-                        (\acc ->
-                            IO.map (\v -> Array.push (Just v) acc) (f val)
-                        )
-                        accIO
-        )
-        (IO.pure Array.empty)
-        arr
 
 
 {-| Initialize an empty solver state with no variables, no errors, and initial mark.

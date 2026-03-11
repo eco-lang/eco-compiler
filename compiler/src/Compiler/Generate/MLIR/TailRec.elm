@@ -21,6 +21,7 @@ The key insight is that a tail-recursive function can be compiled to:
 
 -}
 
+import Array exposing (Array)
 import Compiler.AST.DecisionTree.Test as Test
 import Compiler.AST.Monomorphized as Mono
 import Compiler.Data.Name as Name
@@ -31,7 +32,6 @@ import Compiler.Generate.MLIR.Ops as Ops
 import Compiler.Generate.MLIR.Patterns as Patterns
 import Compiler.Generate.MLIR.Types as Types
 import Compiler.LocalOpt.Typed.DecisionTree as DT
-import Array exposing (Array)
 import Mlir.Mlir exposing (MlirOp, MlirRegion(..), MlirType(..))
 import OrderedDict
 import Utils.Crash exposing (crash)

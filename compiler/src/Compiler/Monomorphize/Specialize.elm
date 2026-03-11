@@ -24,12 +24,12 @@ import Compiler.Monomorphize.Analysis as Analysis
 import Compiler.Monomorphize.Closure as Closure
 import Compiler.Monomorphize.KernelAbi as KernelAbi
 import Compiler.Monomorphize.Registry as Registry
-import Compiler.Monomorphize.State as State exposing (LocalMultiState, MonoState, Substitution, VarEnv(..), VarTypes, WorkItem(..))
+import Compiler.Monomorphize.State as State exposing (LocalMultiState, MonoState, Substitution, VarEnv, WorkItem(..))
 import Compiler.Monomorphize.TypeSubst as TypeSubst
 import Compiler.Reporting.Annotation as A
 import Data.Map
-import Dict exposing (Dict)
 import Data.Set as EverySet
+import Dict exposing (Dict)
 import System.TypeCheck.IO as IO
 import Utils.Crash
 
@@ -1170,8 +1170,14 @@ specializeExpr expr subst state =
                                         else
                                             ( monoBody, stateWithVar )
                                 in
-                                ( Mono.MonoLet monoDef monoBody2
-                                    (if Mono.containsCEcoMVar monoType0 then Mono.typeOf monoBody2 else monoType0)
+                                ( Mono.MonoLet monoDef
+                                    monoBody2
+                                    (if Mono.containsCEcoMVar monoType0 then
+                                        Mono.typeOf monoBody2
+
+                                     else
+                                        monoType0
+                                    )
                                 , state2
                                 )
 
@@ -1259,8 +1265,14 @@ specializeExpr expr subst state =
                                     else
                                         ( monoBody, stateWithVar )
                             in
-                            ( Mono.MonoLet monoDef monoBody2
-                                (if Mono.containsCEcoMVar monoType0 then Mono.typeOf monoBody2 else monoType0)
+                            ( Mono.MonoLet monoDef
+                                monoBody2
+                                (if Mono.containsCEcoMVar monoType0 then
+                                    Mono.typeOf monoBody2
+
+                                 else
+                                    monoType0
+                                )
                             , state2
                             )
 
@@ -1296,8 +1308,14 @@ specializeExpr expr subst state =
                         ( monoBody, state2 ) =
                             specializeExpr body enrichedSubst stateWithVar
                     in
-                    ( Mono.MonoLet monoDef monoBody
-                        (if Mono.containsCEcoMVar monoType0 then Mono.typeOf monoBody else monoType0)
+                    ( Mono.MonoLet monoDef
+                        monoBody
+                        (if Mono.containsCEcoMVar monoType0 then
+                            Mono.typeOf monoBody
+
+                         else
+                            monoType0
+                        )
                     , state2
                     )
 
@@ -1346,7 +1364,10 @@ specializeExpr expr subst state =
                 ( monoJumps0, state2 ) =
                     specializeJumps jumps subst state1WithResetVarEnv
             in
-            ( Mono.MonoCase label root monoDecider0 monoJumps0
+            ( Mono.MonoCase label
+                root
+                monoDecider0
+                monoJumps0
                 (if Mono.containsCEcoMVar monoTypeFromCan then
                     -- Infer from first jump or decider leaf
                     inferCaseType monoDecider0 monoJumps0 monoTypeFromCan
@@ -1541,7 +1562,6 @@ specializeExpr expr subst state =
 
         TOpt.Shader _ _ _ _ ->
             ( Mono.MonoUnit, state )
-
 
 
 {-| Infer the result type of a case expression from its branches.
@@ -1819,7 +1839,10 @@ resolveProcessedArg processedArg maybeParamType subst state =
                                 let
                                     ( freshName, state1 ) =
                                         getOrCreateLocalInstance
-                                            name funcMonoType refinedSubst state
+                                            name
+                                            funcMonoType
+                                            refinedSubst
+                                            state
                                 in
                                 ( Mono.MonoVarLocal freshName funcMonoType, state1 )
 
@@ -2041,9 +2064,6 @@ specializeDestructor (TOpt.Destructor name path canType) subst varEnv globalType
 
         monoType =
             Mono.forceCNumberToInt (TypeSubst.applySubst subst canType)
-
-        pathType =
-            Mono.getMonoPathType monoPath
     in
     Mono.MonoDestructor name monoPath monoType
 
@@ -2216,11 +2236,8 @@ computeCustomFieldType globalTypeEnv ctorName index containerType =
                                         typeVarSubst =
                                             List.map2 Tuple.pair unionData.vars typeArgs
                                                 |> List.foldl (\( varName, monoArg ) acc -> Dict.insert varName monoArg acc) Dict.empty
-
-                                        result =
-                                            Mono.forceCNumberToInt (TypeSubst.applySubst typeVarSubst canArgType)
                                     in
-                                    result
+                                    Mono.forceCNumberToInt (TypeSubst.applySubst typeVarSubst canArgType)
 
                                 [] ->
                                     Utils.Crash.crash ("Specialize.computeCustomFieldType: Constructor arg index " ++ String.fromInt index ++ " out of bounds for " ++ ctorName)
@@ -2404,54 +2421,6 @@ specializeJumps jumps subst state =
         )
         ( [], state )
         jumps
-
-
-specializeRecordFields : Dict Name TOpt.Expr -> Substitution -> MonoState -> ( List ( Name, Mono.MonoExpr ), MonoState )
-specializeRecordFields fields subst state =
-    Dict.foldl
-        (\name expr ( acc, st ) ->
-            let
-                ( monoExpr, newSt ) =
-                    specializeExpr expr subst st
-            in
-            ( ( name, monoExpr ) :: acc, newSt )
-        )
-        ( [], state )
-        fields
-
-
-specializeTrackedRecordFields : Data.Map.Dict String (A.Located Name) TOpt.Expr -> Substitution -> MonoState -> ( List ( Name, Mono.MonoExpr ), MonoState )
-specializeTrackedRecordFields fields subst state =
-    Data.Map.foldl A.compareLocated
-        (\locName expr ( acc, st ) ->
-            let
-                name =
-                    A.toValue locName
-
-                ( monoExpr, newSt ) =
-                    specializeExpr expr subst st
-            in
-            ( ( name, monoExpr ) :: acc, newSt )
-        )
-        ( [], state )
-        fields
-
-
-specializeUpdates : Data.Map.Dict String (A.Located Name) TOpt.Expr -> Substitution -> MonoState -> ( List ( Name, Mono.MonoExpr ), MonoState )
-specializeUpdates updates subst state =
-    Data.Map.foldl A.compareLocated
-        (\locName expr ( acc, st ) ->
-            let
-                fieldName =
-                    A.toValue locName
-
-                ( monoExpr, newSt ) =
-                    specializeExpr expr subst st
-            in
-            ( ( fieldName, monoExpr ) :: acc, newSt )
-        )
-        ( [], state )
-        updates
 
 
 {-| Extract the expression type from a MonoDef.

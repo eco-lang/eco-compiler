@@ -23,7 +23,7 @@ The registry maintains a bidirectional mapping between specialization keys
 
 -}
 
-import Array exposing (Array)
+import Array
 import Compiler.AST.Monomorphized as Mono exposing (Global, LambdaId, MonoType, SpecId, SpecializationRegistry)
 import Dict
 

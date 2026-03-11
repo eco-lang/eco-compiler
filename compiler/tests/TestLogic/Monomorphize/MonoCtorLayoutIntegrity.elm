@@ -1,7 +1,4 @@
-module TestLogic.Monomorphize.MonoCtorLayoutIntegrity exposing
-    ( expectMonoCtorLayoutIntegrity
-    , Violation
-    )
+module TestLogic.Monomorphize.MonoCtorLayoutIntegrity exposing (expectMonoCtorLayoutIntegrity, Violation)
 
 {-| Test logic for MONO\_013: Constructor layouts define consistent custom types.
 

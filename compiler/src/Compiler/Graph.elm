@@ -1,19 +1,18 @@
 module Compiler.Graph exposing
-    ( SCC(..)
-    , IntGraph
+    ( IntGraph
+    , SCC(..)
     , stronglyConnComp
-    , stronglyConnCompR
     , stronglyConnCompInt
-    , fromAdjacency
-    , flattenSCC
-    , flattenSCCs
     )
 
 {-| Self-contained Kosaraju's SCC algorithm.
 
-Uses Array and BitSet – no external graph or tree libraries.
+Uses Array and BitSet -- no external graph or tree libraries.
 Vertices are mapped to contiguous 0..N-1 IDs via sorted key lookup.
 All traversals use explicit stacks (tail-recursive, stack-safe).
+
+@docs IntGraph, SCC, stronglyConnComp, stronglyConnCompInt
+
 -}
 
 import Array exposing (Array)
@@ -22,26 +21,15 @@ import Compiler.Data.BitSet as BitSet exposing (BitSet)
 import Dict as CoreDict
 
 
+{-| A strongly connected component: either a single acyclic node or a cycle.
+-}
 type SCC vertex
     = AcyclicSCC vertex
     | CyclicSCC (List vertex)
 
 
-flattenSCCs : List (SCC a) -> List a
-flattenSCCs =
-    List.concatMap flattenSCC
-
-
-flattenSCC : SCC vertex -> List vertex
-flattenSCC component =
-    case component of
-        AcyclicSCC v ->
-            [ v ]
-
-        CyclicSCC vs ->
-            vs
-
-
+{-| A graph with integer vertex IDs, storing forward and transposed adjacency lists.
+-}
 type alias IntGraph =
     { fwd : Array (List Int)
     , trans : Array (List Int)
@@ -50,11 +38,8 @@ type alias IntGraph =
     }
 
 
-fromAdjacency : Array (List Int) -> Array (List Int) -> BitSet -> Int -> IntGraph
-fromAdjacency fwd trans selfLoops size =
-    { fwd = fwd, trans = trans, selfLoops = selfLoops, size = size }
-
-
+{-| Compute SCCs for an IntGraph using Kosaraju's algorithm.
+-}
 stronglyConnCompInt : IntGraph -> List (SCC Int)
 stronglyConnCompInt { fwd, trans, selfLoops, size } =
     let
@@ -89,6 +74,8 @@ stronglyConnCompInt { fwd, trans, selfLoops, size } =
     List.reverse sccs
 
 
+{-| Compute SCCs from a list of (node, key, [dependency-keys]) triples.
+-}
 stronglyConnComp : List ( node, comparable, List comparable ) -> List (SCC node)
 stronglyConnComp edges0 =
     List.map
@@ -183,7 +170,7 @@ buildGraphs triples keyToId n =
                             List.filterMap keyToId deps
 
                         hasSelfLoop =
-                            List.any (\e -> e == acc.idx) edges
+                            List.member acc.idx edges
 
                         newFwd =
                             CoreDict.insert acc.idx edges acc.fwd

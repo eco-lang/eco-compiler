@@ -89,11 +89,15 @@ walkRegion (MlirRegion r) acc =
 --==== Pretty Printer (generic MLIR form)
 
 
+{-| Pretty-prints the opening line of an MLIR module.
+-}
 ppModuleHeader : String
 ppModuleHeader =
     "module {\n"
 
 
+{-| Pretty-prints the closing brace of an MLIR module with its location attribute.
+-}
 ppModuleFooter : Loc -> String
 ppModuleFooter loc =
     "}"
@@ -102,11 +106,15 @@ ppModuleFooter loc =
         ++ "\n"
 
 
+{-| Pretty-prints a single top-level MLIR operation at indent level 1.
+-}
 ppTopLevelOp : MlirOp -> String
 ppTopLevelOp op =
     ppOp 1 Dict.empty op
 
 
+{-| Pretty-prints an entire MLIR module including header, all operations, and footer.
+-}
 ppModule : MlirModule -> String
 ppModule m =
     let

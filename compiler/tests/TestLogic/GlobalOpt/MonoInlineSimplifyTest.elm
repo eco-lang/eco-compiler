@@ -27,7 +27,6 @@ import Compiler.AST.SourceBuilder
         , tType
         , varExpr
         )
-
 import Compiler.GlobalOpt.MonoInlineSimplify as MonoInlineSimplify
 import Expect
 import SourceIR.Suite.StandardTestSuites as StandardTestSuites

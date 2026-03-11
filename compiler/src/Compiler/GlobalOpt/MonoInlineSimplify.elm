@@ -20,12 +20,12 @@ Key optimizations:
 
 import Array exposing (Array)
 import Compiler.AST.Monomorphized as Mono exposing (MonoExpr(..), MonoGraph(..), MonoNode(..), SpecId)
-import Compiler.Data.BitSet as BitSet exposing (BitSet)
+import Compiler.Data.BitSet as BitSet
 import Compiler.Data.Name exposing (Name)
-import Compiler.GlobalOpt.MonoTraverse as Traverse
+import Compiler.Monomorphize.MonoTraverse as Traverse
+import Compiler.Graph as Graph
 import Compiler.Monomorphize.Closure as Closure
 import Compiler.Reporting.Annotation as A exposing (Region)
-import Compiler.Graph as Graph
 import Dict exposing (Dict)
 import System.TypeCheck.IO as IO
 
@@ -225,7 +225,7 @@ buildCallGraph nodes edges =
                                         neighborSpecIds
 
                                 hasSelfLoop =
-                                    List.any (\ni -> ni == idx) neighborIdxs
+                                    List.member idx neighborIdxs
 
                                 newFwd =
                                     if idx >= 0 then
@@ -323,8 +323,6 @@ buildCallGraph nodes edges =
     { edges = edges
     , isRecursive = isRecursive
     }
-
-
 
 
 
@@ -2324,7 +2322,6 @@ inlineVarInDecider name replacement decider =
             Mono.FanOut path
                 (List.map (\( test, d ) -> ( test, inlineVarInDecider name replacement d )) edges)
                 (inlineVarInDecider name replacement fallback)
-
 
 
 

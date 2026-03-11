@@ -60,8 +60,11 @@ expectEquivalentTypeChecking modul =
                     Array.foldl
                         (\maybeType ( idx, acc ) ->
                             case maybeType of
-                                Just _ -> ( idx + 1, Set.insert idx acc )
-                                Nothing -> ( idx + 1, acc )
+                                Just _ ->
+                                    ( idx + 1, Set.insert idx acc )
+
+                                Nothing ->
+                                    ( idx + 1, acc )
                         )
                         ( 0, Set.empty )
                         nodeTypes

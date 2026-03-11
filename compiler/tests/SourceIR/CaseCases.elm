@@ -16,7 +16,6 @@ import Compiler.AST.SourceBuilder
         , define
         , ifExpr
         , intExpr
-        , lambdaExpr
         , letExpr
         , listExpr
         , makeModule
@@ -771,11 +770,13 @@ stringChainWithStringEquality : (Src.Module -> Expectation) -> (() -> Expectatio
 stringChainWithStringEquality expectFn _ =
     let
         eqDef =
-            define "eq" []
+            define "eq"
+                []
                 (binopsExpr [ ( varExpr "x", "==" ) ] (strExpr "world"))
 
         rDef =
-            define "r" []
+            define "r"
+                []
                 (caseExpr (tupleExpr (varExpr "x") (boolExpr True))
                     [ ( pTuple (pStr "foo") (pCtor "True" []), intExpr 1 )
                     , ( pTuple (pStr "bar") (pCtor "False" []), intExpr 2 )

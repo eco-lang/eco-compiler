@@ -41,7 +41,6 @@ The algorithm uses heuristics similar to SML/NJ:
    as SML/NJ to get nice trees.
 -}
 
-import Bytes.Encode
 import Compiler.AST.Canonical as Can
 import Compiler.AST.DecisionTree.Path as Path
 import Compiler.AST.DecisionTree.Test as Test
@@ -713,11 +712,3 @@ smallBranchingFactor branches path =
 
 
 -- ====== ENCODERS and DECODERS ======
-
-
-{-| Encode a Test to bytes for serialization.
-Delegates to Compiler.AST.DecisionTree.Test.
--}
-testEncoder : Test -> Bytes.Encode.Encoder
-testEncoder =
-    Test.testEncoder

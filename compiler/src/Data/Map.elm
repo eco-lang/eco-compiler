@@ -1,10 +1,10 @@
 module Data.Map exposing
     ( Dict
-    , empty, singleton, insert, update, remove
+    , empty, singleton, insert, update
     , isEmpty, member, get, size
     , keys, values, toList, fromList
     , map, foldl, foldr, filter
-    , union, intersection, diff, merge
+    , union, diff, merge
     )
 
 {-| A dictionary implementation backed by association lists, supporting keys of any type with custom comparison functions.
@@ -23,7 +23,7 @@ All functions in this module are stack safe and won't crash from recursing over 
 
 # Build
 
-@docs empty, singleton, insert, update, remove
+@docs empty, singleton, insert, update
 
 
 # Query
@@ -43,7 +43,7 @@ All functions in this module are stack safe and won't crash from recursing over 
 
 # Combine
 
-@docs union, intersection, diff, merge
+@docs union, diff, merge
 
 -}
 
@@ -153,14 +153,6 @@ insert toComparable key value (D dict) =
     D (Dict.insert (toComparable key) ( key, value ) dict)
 
 
-{-| Remove a key-value pair from a dictionary. If the key is not found,
-no changes are made.
--}
-remove : (k -> comparable) -> k -> Dict comparable k v -> Dict comparable k v
-remove toComparable targetKey (D dict) =
-    D (Dict.remove (toComparable targetKey) dict)
-
-
 {-| Update the value of a dictionary for a specific key with a given function.
 
 If you are using this module as an ordered dictionary, please note that if you
@@ -209,14 +201,6 @@ the second dictionary (from most recently inserted to least recently inserted).
 union : Dict comparable k v -> Dict comparable k v -> Dict comparable k v
 union (D leftDict) (D rightDict) =
     D (Dict.union leftDict rightDict)
-
-
-{-| Keep a key-value pair when its key appears in the second dictionary.
-Preference is given to values in the first dictionary.
--}
-intersection : (k -> k -> Order) -> Dict comparable k a -> Dict comparable k b -> Dict comparable k a
-intersection _ (D dict1) (D dict2) =
-    D (Dict.filter (\k _ -> Dict.member k dict2) dict1)
 
 
 {-| Keep a key-value pair when its key does not appear in the second dictionary.
@@ -330,7 +314,7 @@ with the most recently inserted key at the head of the list.
 
 -}
 keys : (k -> k -> Order) -> Dict c k v -> List k
-keys keyComparison (D dict) =
+keys _ (D dict) =
     Dict.values dict
         |> List.map Tuple.first
 
@@ -343,7 +327,7 @@ with the most recently inserted value at the head of the list.
 
 -}
 values : (k -> k -> Order) -> Dict c k v -> List v
-values keyComparison (D dict) =
+values _ (D dict) =
     Dict.values dict
         |> List.map Tuple.second
 
@@ -353,7 +337,7 @@ order that they were inserted with the most recently inserted entry at the
 head of the list.
 -}
 toList : (k -> k -> Order) -> Dict c k v -> List ( k, v )
-toList keyComparison (D dict) =
+toList _ (D dict) =
     Dict.values dict
 
 

@@ -11,8 +11,8 @@ import Compiler.AST.SourceBuilder
         ( accessExpr
         , accessorExpr
         , binopsExpr
-        , callExpr
         , boolExpr
+        , callExpr
         , caseExpr
         , define
         , destruct

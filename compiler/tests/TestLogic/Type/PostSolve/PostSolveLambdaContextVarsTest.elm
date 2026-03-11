@@ -11,10 +11,10 @@ originates from the main solver.
 
 -}
 
+import Array
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Source as Src
 import Compiler.Type.PostSolve as PostSolve
-import Array
 import Data.Set as EverySet exposing (EverySet)
 import Dict
 import Expect

@@ -23,7 +23,7 @@ enable reliable deserialization of the compiler's binary cache files and inter-p
 
 # Structured Data Decoders
 
-@docs jsonPair, assocListDict, everySet
+@docs jsonPair, assocListDict, stdDict, everySet
 
 
 # Extended Mapping Functions

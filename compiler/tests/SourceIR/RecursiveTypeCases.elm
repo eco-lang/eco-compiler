@@ -14,19 +14,14 @@ These tests cover resolveMonoVars cycle detection for:
 import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
-        ( AliasDef
-        , TypedDef
+        ( TypedDef
         , UnionDef
         , callExpr
         , caseExpr
         , ctorExpr
-        , define
-        , ifExpr
         , intExpr
-        , letExpr
         , listExpr
         , makeModuleWithTypedDefsUnionsAliases
-        , pAnything
         , pVar
         , recordExpr
         , tLambda

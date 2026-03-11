@@ -31,9 +31,6 @@ import Compiler.AST.SourceBuilder
         , qualVarExpr
         , recordExpr
         , strExpr
-        , tLambda
-        , tType
-        , tVar
         , tupleExpr
         , varExpr
         )

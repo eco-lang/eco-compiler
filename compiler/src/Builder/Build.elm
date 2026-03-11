@@ -71,6 +71,7 @@ import Compiler.Elm.Interface as I
 import Compiler.Elm.Kernel as Kernel
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Elm.Package as Pkg
+import Compiler.Graph as Graph
 import Compiler.Json.Encode as E
 import Compiler.Parse.Module as Parse
 import Compiler.Reporting.Annotation as A
@@ -79,16 +80,15 @@ import Compiler.Reporting.Error.Docs as EDocs
 import Compiler.Reporting.Error.Import as Import
 import Compiler.Reporting.Error.Syntax as Syntax
 import Compiler.Reporting.Render.Type.Localizer as L
-import Compiler.Graph as Graph
 import Data.Map
-import Dict exposing (Dict)
 import Data.Set as EverySet
+import Dict exposing (Dict)
+import System.IO exposing (FilePath, MVar(..))
 import System.TypeCheck.IO as TypeCheck
 import Task exposing (Task)
 import Utils.Bytes.Decode as BD
 import Utils.Bytes.Encode as BE
 import Utils.Crash exposing (crash)
-import System.IO exposing (FilePath, MVar(..))
 import Utils.Main as Utils
 
 

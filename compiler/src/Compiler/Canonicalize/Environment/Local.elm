@@ -20,10 +20,10 @@ import Compiler.Canonicalize.Environment.Dups as Dups
 import Compiler.Canonicalize.Type as Type
 import Compiler.Data.Index as Index
 import Compiler.Data.Name as Name exposing (Name)
+import Compiler.Graph as Graph
 import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Error.Canonicalize as Error
 import Compiler.Reporting.Result as ReportingResult
-import Compiler.Graph as Graph
 import Dict exposing (Dict)
 import System.TypeCheck.IO as IO
 import Utils.Main as Utils

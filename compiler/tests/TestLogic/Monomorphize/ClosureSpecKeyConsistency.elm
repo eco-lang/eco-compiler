@@ -1,8 +1,4 @@
-module TestLogic.Monomorphize.ClosureSpecKeyConsistency exposing
-    ( Violation
-    , checkClosureSpecKeyConsistency
-    , expectClosureSpecKeyConsistency
-    )
+module TestLogic.Monomorphize.ClosureSpecKeyConsistency exposing (expectClosureSpecKeyConsistency, Violation)
 
 {-| Test logic for MONO\_025: Closure MonoType matches specialization key.
 
@@ -19,7 +15,7 @@ the result type must also match. When the closure returns a function (fewer para
 than the flattened key), the result type must be an MFunction whose flattening
 covers the remaining key parameter types and result type.
 
-@docs expectClosureSpecKeyConsistency, checkClosureSpecKeyConsistency, Violation
+@docs expectClosureSpecKeyConsistency, Violation
 
 -}
 
@@ -259,11 +255,11 @@ checkClosureParams ctx keyMonoType closureParams bodyType =
 
 {-| Flatten an MFunction type by recursively peeling MFunction layers.
 
-    flattenMFunction (MFunction [a,b] (MFunction [c] d))
-    == ([a, b, c], d)
+    flattenMFunction (MFunction [ a, b ] (MFunction [ c ] d))
+        == ( [ a, b, c ], d )
 
     flattenMFunction MInt
-    == ([], MInt)
+        == ( [], MInt )
 
 -}
 flattenMFunction : Mono.MonoType -> ( List Mono.MonoType, Mono.MonoType )
@@ -383,7 +379,9 @@ dictEq eq a b =
 -}
 formatViolations : List Violation -> String
 formatViolations violations =
-    "MONO_025 violations found (" ++ String.fromInt (List.length violations) ++ "):\n\n"
+    "MONO_025 violations found ("
+        ++ String.fromInt (List.length violations)
+        ++ "):\n\n"
         ++ (violations
                 |> List.map (\v -> v.context ++ ": " ++ v.message)
                 |> String.join "\n\n"

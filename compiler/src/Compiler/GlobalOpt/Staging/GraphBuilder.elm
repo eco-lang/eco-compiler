@@ -17,10 +17,10 @@ This module handles:
 
 -}
 
-import Compiler.AST.Monomorphized as Mono
-import Compiler.GlobalOpt.Staging.Types exposing (Node(..), ProducerInfo, ProducerId(..), SlotId(..), StagingGraph, emptyStagingGraph)
-import Compiler.GlobalOpt.Staging.UnionFind exposing (ensureNode, unionNodes)
 import Array
+import Compiler.AST.Monomorphized as Mono
+import Compiler.GlobalOpt.Staging.Types exposing (Node(..), ProducerId(..), ProducerInfo, SlotId(..), StagingGraph, emptyStagingGraph)
+import Compiler.GlobalOpt.Staging.UnionFind exposing (ensureNode, unionNodes)
 import Dict exposing (Dict)
 
 

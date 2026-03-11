@@ -32,15 +32,14 @@ import Compiler.AST.SourceBuilder
         , letExpr
         , listExpr
         , makeModuleWithTypedDefsUnionsAliases
-        , pAnything
         , pCons
         , pCtor
         , pList
         , pTuple
         , pVar
         , qualVarExpr
-        , strExpr
         , recordExpr
+        , strExpr
         , tLambda
         , tRecord
         , tTuple
@@ -1422,19 +1421,23 @@ closureDestructCaptureCases expectFn =
 {-| A closure captures a variable of a single-constructor type, and the only
 reference to that variable is as the root of a MonoDestruct path.
 
-    type Wrapper a = Wrap a
+    type Wrapper a
+        = Wrap a
 
     unwrapLater : Wrapper Int -> Int -> Int
     unwrapLater w dummy =
         case w of
-            Wrap x -> x
+            Wrap x ->
+                x
 
     testValue : Int
-    testValue = unwrapLater (Wrap 42) 0
+    testValue =
+        unwrapLater (Wrap 42) 0
 
 After monomorphization, the inner lambda body (from currying) contains:
-  MonoDestruct (MonoDestructor "x" (MonoIndex 0 ... (MonoRoot "w" ...))) bodyUsingX
+MonoDestruct (MonoDestructor "x" (MonoIndex 0 ... (MonoRoot "w" ...))) bodyUsingX
 where "w" is free but only appears as MonoRoot, not as MonoVarLocal.
+
 -}
 closureCapturesDestructRoot : (Src.Module -> Expectation) -> (() -> Expectation)
 closureCapturesDestructRoot expectFn _ =
@@ -1495,11 +1498,15 @@ The Just branch's MonoDestruct has "m" as MonoRoot in the path.
     toLabel : Maybe String -> Int -> String
     toLabel m dummy =
         case m of
-            Just s -> s
-            Nothing -> "none"
+            Just s ->
+                s
+
+            Nothing ->
+                "none"
 
     testValue : String
-    testValue = toLabel (Just "hello") 0
+    testValue =
+        toLabel (Just "hello") 0
 
 -}
 closureCaptureMaybeCaseDestruct : (Src.Module -> Expectation) -> (() -> Expectation)

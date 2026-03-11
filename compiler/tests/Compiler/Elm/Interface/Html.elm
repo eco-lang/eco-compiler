@@ -9,11 +9,10 @@ function via `Html.text`.
 -}
 
 import Compiler.AST.Canonical as Can
-import Compiler.Data.Name exposing (Name)
 import Compiler.Elm.Interface as I
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Elm.Package as Pkg
-import Dict exposing (Dict)
+import Dict
 
 
 {-| VirtualDom module interface - exports the Node type.

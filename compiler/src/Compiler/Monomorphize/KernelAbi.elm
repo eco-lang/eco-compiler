@@ -41,8 +41,8 @@ Three cases:
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Monomorphized as Mono
 import Compiler.Data.Name as Name exposing (Name)
-import Dict
 import Data.Set as EverySet exposing (EverySet)
+import Dict
 import System.TypeCheck.IO as IO
 
 

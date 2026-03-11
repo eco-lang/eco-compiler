@@ -13,12 +13,11 @@ The test:
 
 -}
 
+import Array
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Source as Src
-import Array
 import Data.Map as DataMap
 import Data.Set as EverySet exposing (EverySet)
-import Dict
 import Expect
 import SourceIR.Suite.StandardTestSuites as StandardTestSuites
 import Test exposing (Test)

@@ -4,7 +4,7 @@ module SourceIR.TailRecCaseCases exposing (expectSuite)
 
 These exercise TailRec.compileCaseStep, compileDestructStep, and
 compileCaseFanOutStep — the paths that caused the
-mkCaseRegionFromDecider crash (CGEN_028 violation).
+mkCaseRegionFromDecider crash (CGEN\_028 violation).
 
 -}
 
@@ -212,7 +212,7 @@ tailRecNestedCase expectFn _ =
     expectFn modul
 
 
-{-| Tail-rec with wildcard pattern that discards head: count acc list = case list of [] -> acc; _ :: rest -> count (acc + 1) rest
+{-| Tail-rec with wildcard pattern that discards head: count acc list = case list of [] -> acc; \_ :: rest -> count (acc + 1) rest
 -}
 tailRecWildcardDestruct : (Src.Module -> Expectation) -> (() -> Expectation)
 tailRecWildcardDestruct expectFn _ =

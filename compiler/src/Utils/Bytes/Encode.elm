@@ -21,7 +21,7 @@ data to enable reliable deserialization.
 
 # Structured Data Encoders
 
-@docs jsonPair, assocListDict, everySet
+@docs jsonPair, assocListDict, stdDict, everySet
 
 -}
 

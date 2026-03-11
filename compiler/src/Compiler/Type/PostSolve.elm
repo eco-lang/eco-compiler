@@ -22,7 +22,7 @@ import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Reporting.Annotation as A
 import Compiler.Type.KernelTypes as KernelTypes
 import Data.Map
-import Dict exposing (Dict)
+import Dict
 
 
 {-| Node types mapping expression/pattern ID to canonical type.

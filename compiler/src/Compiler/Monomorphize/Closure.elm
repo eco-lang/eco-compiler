@@ -36,8 +36,8 @@ has been moved to GlobalOpt.MonoGlobalOptimize as part of the staging consolidat
 import Compiler.AST.Monomorphized as Mono
 import Compiler.Data.Name exposing (Name)
 import Compiler.Reporting.Annotation as A
-import Dict exposing (Dict)
 import Data.Set as EverySet exposing (EverySet)
+import Dict exposing (Dict)
 import Utils.Crash
 
 

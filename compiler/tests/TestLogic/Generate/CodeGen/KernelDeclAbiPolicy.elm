@@ -77,10 +77,10 @@ parseKernelName symName =
     let
         stripped =
             if String.startsWith "eco_Elm_Kernel_" symName then
-                String.dropLeft (String.length "eco_Elm_Kernel_") symName
+                String.dropLeft 15 symName
 
             else if String.startsWith "Elm_Kernel_" symName then
-                String.dropLeft (String.length "Elm_Kernel_") symName
+                String.dropLeft 11 symName
 
             else
                 ""

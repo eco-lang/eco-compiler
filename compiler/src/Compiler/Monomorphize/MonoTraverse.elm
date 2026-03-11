@@ -1,4 +1,4 @@
-module Compiler.GlobalOpt.MonoTraverse exposing
+module Compiler.Monomorphize.MonoTraverse exposing
     ( mapExpr
     , traverseExpr
     , foldExpr
@@ -17,6 +17,8 @@ function on each node after processing children.
 
 
 # Pure Mapping
+
+@docs mapExpr
 
 
 # Context-Threaded Traversal
@@ -220,18 +222,6 @@ foldExprAccFirst f acc expr =
     f childAcc expr
 
 
-{-| Fold over definitions.
--}
-foldDef : (MonoExpr -> acc -> acc) -> acc -> MonoDef -> acc
-foldDef f acc def =
-    case def of
-        MonoDef _ bound ->
-            foldExpr f acc bound
-
-        MonoTailDef _ _ bound ->
-            foldExpr f acc bound
-
-
 {-| Acc-first fold over definitions (internal).
 -}
 foldDefAccFirst : (acc -> MonoExpr -> acc) -> acc -> MonoDef -> acc
@@ -242,29 +232,6 @@ foldDefAccFirst f acc def =
 
         MonoTailDef _ _ bound ->
             foldExprAccFirst f acc bound
-
-
-{-| Fold over deciders.
--}
-foldDecider : (MonoExpr -> acc -> acc) -> acc -> Decider MonoChoice -> acc
-foldDecider f acc decider =
-    case decider of
-        Leaf choice ->
-            foldChoice f acc choice
-
-        Chain _ success failure ->
-            let
-                acc1 =
-                    foldDecider f acc success
-            in
-            foldDecider f acc1 failure
-
-        FanOut _ edges fallback ->
-            let
-                acc1 =
-                    List.foldl (\( _, d ) a -> foldDecider f a d) acc edges
-            in
-            foldDecider f acc1 fallback
 
 
 {-| Acc-first fold over deciders (internal).
@@ -288,18 +255,6 @@ foldDeciderAccFirst f acc decider =
                     List.foldl (\( _, d ) a -> foldDeciderAccFirst f a d) acc edges
             in
             foldDeciderAccFirst f acc1 fallback
-
-
-{-| Fold over choices.
--}
-foldChoice : (MonoExpr -> acc -> acc) -> acc -> MonoChoice -> acc
-foldChoice f acc choice =
-    case choice of
-        Inline e ->
-            foldExpr f acc e
-
-        Jump _ ->
-            acc
 
 
 {-| Acc-first fold over choices (internal).

@@ -1,8 +1,4 @@
-module TestLogic.Monomorphize.NoCEcoValueInUserFunctions exposing
-    ( Violation
-    , checkNoCEcoValueInUserFunctions
-    , expectNoCEcoValueInUserFunctions
-    )
+module TestLogic.Monomorphize.NoCEcoValueInUserFunctions exposing (expectNoCEcoValueInUserFunctions, Violation)
 
 {-| Test logic for MONO\_021: No CEcoValue MVar in user-defined function types.
 
@@ -24,7 +20,7 @@ This invariant catches bugs where tail-recursive functions or local closures are
 not being fully specialized during monomorphization, leaving polymorphic type
 variables in positions that affect runtime layout and calling conventions.
 
-@docs expectNoCEcoValueInUserFunctions, checkNoCEcoValueInUserFunctions, Violation
+@docs expectNoCEcoValueInUserFunctions, Violation
 
 -}
 
@@ -405,6 +401,7 @@ checkDecider ctx decider =
 
 MErased is intentionally allowed — it marks phantom type variables that were
 never constrained by any call site, or dead-value spec erasure.
+
 -}
 collectCEcoValueVars : Mono.MonoType -> List String
 collectCEcoValueVars monoType =
@@ -442,7 +439,9 @@ collectCEcoValueVars monoType =
 -}
 formatViolations : List Violation -> String
 formatViolations violations =
-    "MONO_021 violations found (" ++ String.fromInt (List.length violations) ++ "):\n\n"
+    "MONO_021 violations found ("
+        ++ String.fromInt (List.length violations)
+        ++ "):\n\n"
         ++ (violations
                 |> List.map (\v -> v.context ++ ": " ++ v.message)
                 |> String.join "\n\n"

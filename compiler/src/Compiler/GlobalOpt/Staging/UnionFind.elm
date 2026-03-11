@@ -24,10 +24,10 @@ This module provides:
 
 -}
 
-import Array exposing (Array)
+import Array
 import Compiler.AST.Monomorphized as Mono
-import Dict
 import Compiler.GlobalOpt.Staging.Types exposing (Node(..), NodeId, ProducerId(..), SlotId(..), StagingGraph, Uf)
+import Dict
 import System.TypeCheck.IO as IO
 
 

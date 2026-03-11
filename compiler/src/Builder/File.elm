@@ -38,6 +38,11 @@ tracking, and package extraction.
 
 @docs exists, remove
 
+
+# Streaming Output
+
+@docs withStreamingWriter
+
 -}
 
 import Bytes.Decode

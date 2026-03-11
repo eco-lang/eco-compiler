@@ -35,8 +35,8 @@ import Compiler.Reporting.Doc as D
 import Compiler.Reporting.Render.Code as Code
 import Compiler.Reporting.Report as Report
 import Compiler.Reporting.Suggest as Suggest
-import Dict
 import Data.Set as EverySet exposing (EverySet)
+import Dict
 import Utils.Bytes.Decode as BD
 import Utils.Bytes.Encode as BE
 

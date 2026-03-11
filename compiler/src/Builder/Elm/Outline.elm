@@ -70,11 +70,11 @@ import Compiler.Json.Encode as E
 import Compiler.Parse.Primitives as P
 import Data.Map as DataMap
 import Dict exposing (Dict)
+import System.IO exposing (FilePath)
 import System.TypeCheck.IO as TypeCheck
 import Task exposing (Task)
 import Utils.Bytes.Decode as BD
 import Utils.Bytes.Encode as BE
-import System.IO exposing (FilePath)
 import Utils.Main as Utils
 
 

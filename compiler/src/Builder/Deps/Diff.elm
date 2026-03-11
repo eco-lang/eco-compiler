@@ -298,10 +298,18 @@ isEquivalentRenaming varPairs =
 
         insert : ( Name.Name, Name.Name ) -> Dict Name.Name (List Name.Name) -> Dict Name.Name (List Name.Name)
         insert ( old, new ) dict =
-            Dict.update old (\mv -> Just (case mv of
-                Nothing -> [ new ]
-                Just existing -> [ new ] ++ existing
-            )) dict
+            Dict.update old
+                (\mv ->
+                    Just
+                        (case mv of
+                            Nothing ->
+                                [ new ]
+
+                            Just existing ->
+                                new :: existing
+                        )
+                )
+                dict
 
         verify : ( a, List b ) -> Maybe ( a, b )
         verify ( old, news ) =

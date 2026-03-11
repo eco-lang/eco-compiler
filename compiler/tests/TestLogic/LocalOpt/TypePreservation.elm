@@ -30,8 +30,8 @@ import Compiler.Data.Name as Name
 import Compiler.Reporting.Annotation as A
 import Compiler.Type.KernelTypes as KernelTypes
 import Data.Map
-import Dict exposing (Dict)
 import Data.Set as EverySet
+import Dict exposing (Dict)
 import Expect
 import System.TypeCheck.IO as IO
 import TestLogic.LocalOpt.Typed.TypeEq as TypeEq

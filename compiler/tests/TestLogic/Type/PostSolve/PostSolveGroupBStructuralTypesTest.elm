@@ -11,13 +11,13 @@ Accessor, Let, LetRec, LetDestruct.
 
 -}
 
+import Array
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Source as Src
 import Compiler.Data.Name as Name
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Reporting.Annotation as A
 import Compiler.Type.PostSolve as PostSolve
-import Array
 import Data.Map as DataMap
 import Data.Set as EverySet
 import Dict

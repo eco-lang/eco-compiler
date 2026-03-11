@@ -46,10 +46,10 @@ import Compiler.Reporting.Error.Type as Type
 import Compiler.Reporting.Render.Code as Code
 import Compiler.Reporting.Render.Type.Localizer as L
 import Compiler.Reporting.Report as Report
+import System.IO exposing (FilePath)
 import Time
 import Utils.Bytes.Decode as BD
 import Utils.Bytes.Encode as BE
-import System.IO exposing (FilePath)
 import Utils.Main as Utils
 
 

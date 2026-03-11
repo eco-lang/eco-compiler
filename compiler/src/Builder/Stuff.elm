@@ -56,10 +56,10 @@ import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Elm.Package as Pkg
 import Compiler.Elm.Version as V
 import Prelude
+import System.IO as IO exposing (FilePath)
 import Task exposing (Task)
 import Utils.Bytes.Decode as BD
 import Utils.Bytes.Encode as BE
-import System.IO as IO exposing (FilePath)
 import Utils.Main as Utils
 
 

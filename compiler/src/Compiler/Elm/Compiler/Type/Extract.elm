@@ -43,12 +43,12 @@ import Compiler.Elm.Compiler.Type as T
 import Compiler.Elm.Interface as I
 import Compiler.Elm.ModuleName as ModuleName
 import Data.Map
-import Dict exposing (Dict)
-import Utils.Crash exposing (crash)
 import Data.Set as EverySet exposing (EverySet)
+import Dict exposing (Dict)
 import System.TypeCheck.IO as IO
 import Utils.Bytes.Decode as BD
 import Utils.Bytes.Encode as BE
+import Utils.Crash exposing (crash)
 import Utils.Main as Utils
 
 

@@ -19,14 +19,14 @@ those in the pre-PostSolve type.
 
 -}
 
-import Array exposing (Array)
+import Array
 import Compiler.AST.Canonical as Can
 import Compiler.Data.Name as Name
 import Compiler.Reporting.Annotation as A
 import Compiler.Type.PostSolve as PostSolve
 import Data.Map as Dict
-import Dict as StdDict
 import Data.Set as EverySet
+import Dict as StdDict
 
 
 {-| A violation of POST\_005 or POST\_006.

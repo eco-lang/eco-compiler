@@ -37,11 +37,11 @@ import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Elm.Interface as I
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Elm.Package as Pkg
+import Compiler.Graph as Graph
 import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Error.Canonicalize as Error
 import Compiler.Reporting.Result as ReportingResult
 import Compiler.Reporting.Warning as W
-import Compiler.Graph as Graph
 import Data.Map
 import Dict exposing (Dict)
 import System.TypeCheck.IO as IO

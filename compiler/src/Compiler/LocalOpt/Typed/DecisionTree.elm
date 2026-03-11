@@ -27,7 +27,6 @@ Heuristics Matter?" by Kevin Scott and Norman Ramsey.
 
 -}
 
-import Bytes.Encode
 import Compiler.AST.Canonical as Can
 import Compiler.AST.DecisionTree.Test as Test
 import Compiler.AST.DecisionTree.TypedPath as TypedPath
@@ -745,11 +744,3 @@ smallBranchingFactor branches path =
 
 
 -- ====== ENCODERS and DECODERS ======
-
-
-{-| Encode a Test to bytes for serialization.
-Delegates to Compiler.AST.DecisionTree.Test.
--}
-testEncoder : Test -> Bytes.Encode.Encoder
-testEncoder =
-    Test.testEncoder

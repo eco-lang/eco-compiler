@@ -27,8 +27,8 @@ import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Elm.Kernel as K
 import Compiler.Elm.Package as Pkg
 import Data.Map
-import Dict
 import Data.Set as EverySet
+import Dict
 import System.TypeCheck.IO as IO
 
 

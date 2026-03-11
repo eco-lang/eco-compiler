@@ -15,10 +15,10 @@ This module traverses the MonoGraph to identify:
 
 -}
 
+import Array
 import Compiler.AST.Monomorphized as Mono
 import Compiler.GlobalOpt.Staging.Types exposing (ProducerId(..), ProducerInfo, Segmentation, emptyProducerInfo)
 import Compiler.GlobalOpt.Staging.UnionFind exposing (producerIdToKey)
-import Array
 import Dict
 
 

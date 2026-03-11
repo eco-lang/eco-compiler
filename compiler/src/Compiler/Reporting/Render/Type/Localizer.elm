@@ -41,8 +41,8 @@ import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Doc as D
-import Dict exposing (Dict)
 import Data.Set as EverySet exposing (EverySet)
+import Dict exposing (Dict)
 import System.TypeCheck.IO as IO
 import Utils.Bytes.Decode as BD
 import Utils.Bytes.Encode as BE

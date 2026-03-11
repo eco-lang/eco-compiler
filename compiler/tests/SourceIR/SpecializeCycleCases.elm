@@ -388,10 +388,14 @@ benignCycleCases expectFn =
     process : List a -> List a
     process xs =
         case xs of
-            [] -> []
-            _ :: rest -> process rest
+            [] ->
+                []
 
-    main = process []
+            _ :: rest ->
+                process rest
+
+    main =
+        process []
 
 The type variable `a` is never unified with any concrete type.
 This is a benign polymorphic cycle: `a` never affects layout or behaviour.
@@ -423,15 +427,19 @@ recursiveListUnconstrained expectFn _ =
 
 {-| Mutually recursive functions over a phantom custom type.
 
-    type Box a = Box
+    type Box a
+        = Box
 
     f : Box a -> Box a
-    f x = g x
+    f x =
+        g x
 
     g : Box a -> Box a
-    g x = f x
+    g x =
+        f x
 
-    main = f Box
+    main =
+        f Box
 
 `Box a` is phantom: the constructor carries no payload, so `a` is never
 present at runtime. Both `f` and `g` are in a mutual recursion cycle with

@@ -14,9 +14,9 @@ polymorphism is properly resolved before code generation.
 
 -}
 
+import Array
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.Source as Src
-import Array
 import Expect
 import TestLogic.TestPipeline as Pipeline
 

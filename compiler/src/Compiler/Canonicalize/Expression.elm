@@ -42,14 +42,14 @@ import Compiler.Data.Index as Index
 import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Elm.Package as Pkg
+import Compiler.Graph as Graph
 import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Error.Canonicalize as Error
 import Compiler.Reporting.Result as ReportingResult
 import Compiler.Reporting.Warning as W
-import Compiler.Graph as Graph
 import Data.Map
-import Dict exposing (Dict)
 import Data.Set as EverySet
+import Dict exposing (Dict)
 import Prelude
 import System.TypeCheck.IO as IO
 import Utils.Main as Utils

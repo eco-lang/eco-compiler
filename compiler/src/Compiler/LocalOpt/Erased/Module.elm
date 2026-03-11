@@ -44,8 +44,8 @@ import Compiler.Reporting.Error.Main as E
 import Compiler.Reporting.Result as ReportingResult
 import Compiler.Reporting.Warning as W
 import Data.Map
-import Dict exposing (Dict)
 import Data.Set as EverySet exposing (EverySet)
+import Dict exposing (Dict)
 import System.TypeCheck.IO as IO
 import Utils.Crash exposing (crash)
 

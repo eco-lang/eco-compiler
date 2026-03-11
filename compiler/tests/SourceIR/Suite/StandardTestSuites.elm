@@ -27,11 +27,11 @@ import SourceIR.HigherOrderCases as HigherOrderCases
 import SourceIR.JoinpointABICases as JoinpointABICases
 import SourceIR.KernelPapAbiCases as KernelPapAbiCases
 import SourceIR.LetCases as LetCases
-import SourceIR.LocalTailRecCases as LocalTailRecCases
 import SourceIR.LetDestructCases as LetDestructCases
 import SourceIR.LetRecCases as LetRecCases
 import SourceIR.ListCases as ListCases
 import SourceIR.LiteralCases as LiteralCases
+import SourceIR.LocalTailRecCases as LocalTailRecCases
 import SourceIR.MultiDefCases as MultiDefCases
 import SourceIR.OperatorCases as OperatorCases
 import SourceIR.PatternArgCases as PatternArgCases
@@ -44,11 +44,11 @@ import SourceIR.RecordCases as RecordCases
 import SourceIR.RecursiveTypeCases as RecursiveTypeCases
 import SourceIR.SpecializeAccessorCases as SpecializeAccessorCases
 import SourceIR.SpecializeConstructorCases as SpecializeConstructorCases
-import SourceIR.SpecializeRecordCtorCases as SpecializeRecordCtorCases
 import SourceIR.SpecializeCycleCases as SpecializeCycleCases
 import SourceIR.SpecializeExprCases as SpecializeExprCases
 import SourceIR.SpecializePolyLetCases as SpecializePolyLetCases
 import SourceIR.SpecializePolyTopCases as SpecializePolyTopCases
+import SourceIR.SpecializeRecordCtorCases as SpecializeRecordCtorCases
 import SourceIR.TailRecCaseCases as TailRecCaseCases
 import SourceIR.TupleCases as TupleCases
 import Test exposing (Test)

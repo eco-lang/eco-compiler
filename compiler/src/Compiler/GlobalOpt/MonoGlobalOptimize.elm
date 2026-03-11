@@ -18,11 +18,11 @@ GlobalOpt owns all staging/ABI decisions and canonicalizes the types to match pa
 Note: GOPT\_001 (closure params == stage arity) is verified by TestLogic.Generate.MonoFunctionArity,
 not at runtime. The compiler trusts that canonicalizeClosureStaging produces correct output.
 
-@docs globalOptimize
+@docs globalOptimize, globalOptimizeWithLog
 
 -}
 
-import Array exposing (Array)
+import Array
 import Compiler.AST.Monomorphized as Mono
 import Compiler.Data.Name exposing (Name)
 import Compiler.GlobalOpt.AbiCloning as AbiCloning
@@ -160,8 +160,6 @@ globalOptimizeWithLog log graph0a =
                                     )
                         )
             )
-
-
 
 
 

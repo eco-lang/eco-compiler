@@ -1,9 +1,9 @@
 module Builder.Generate exposing
-    ( javascriptBackend, mlirBackend
-    , dev, debug, monoDev
+    ( javascriptBackend
+    , dev, debug
     , prod
     , repl
-    , buildMonoGraph, MonoBuildResult, writeMonoMlirStreaming
+    , MonoBuildResult, writeMonoMlirStreaming
     )
 
 {-| Code generation orchestration for the Elm compiler.
@@ -16,12 +16,12 @@ produce JavaScript, MLIR, or other target code.
 
 # Code Generation Backends
 
-@docs javascriptBackend, mlirBackend
+@docs javascriptBackend
 
 
 # Development Builds
 
-@docs dev, debug, monoDev
+@docs dev, debug
 
 
 # Production Builds
@@ -32,6 +32,11 @@ produce JavaScript, MLIR, or other target code.
 # REPL Code Generation
 
 @docs repl
+
+
+# Native MLIR Streaming
+
+@docs MonoBuildResult, writeMonoMlirStreaming
 
 -}
 
@@ -58,7 +63,6 @@ import Compiler.Generate.CodeGen as CodeGen
 import Compiler.Generate.CodeGen.JavaScript as JavaScript
 import Compiler.Generate.MLIR.Backend as MLIR
 import Compiler.Generate.Mode as Mode
-import Mlir.Pretty as Pretty
 import Compiler.GlobalOpt.MonoGlobalOptimize as MonoGlobalOptimize
 import Compiler.GlobalOpt.MonoInlineSimplify as MonoInlineSimplify
 import Compiler.Monomorphize.Monomorphize as Monomorphize
@@ -66,10 +70,10 @@ import Compiler.Nitpick.Debug as Nitpick
 import Compiler.Reporting.Render.Type.Localizer as L
 import Data.Map
 import Dict exposing (Dict)
+import System.IO as IO exposing (FilePath, MVar)
 import System.TypeCheck.IO as TypeCheck
 import Task exposing (Task)
 import Utils.Bytes.Decode as BD
-import System.IO as IO exposing (FilePath, MVar)
 import Utils.Main as Utils
 import Utils.Task.Extra as Task
 
@@ -87,13 +91,6 @@ import Utils.Task.Extra as Task
 javascriptBackend : CodeGen.CodeGen
 javascriptBackend =
     JavaScript.backend
-
-
-{-| MLIR code generation backend for monomorphized programs.
--}
-mlirBackend : CodeGen.MonoCodeGen
-mlirBackend =
-    MLIR.backend
 
 
 
@@ -584,6 +581,8 @@ typedObjectsToGlobalTypeEnv (TypedObjects _ globalEnv locals) =
 -- ====== MONOMORPHIZED GENERATION ======
 
 
+{-| Result of monomorphized code generation, containing the mono graph and compilation mode.
+-}
 type alias MonoBuildResult =
     { monoGraph : Mono.MonoGraph
     , mode : Mode.Mode
@@ -617,9 +616,8 @@ buildMonoGraphFromObjects roots objects =
         log msg =
             Task.io (IO.writeLn IO.stderr msg)
     in
-    Task.succeed ( typedGraph, globalTypeEnv )
-        |> Task.andThen
-            (\( tGraph, typeEnv ) ->
+    ( typedGraph, globalTypeEnv )
+        |> (\( tGraph, typeEnv ) ->
                 -- GC boundary: `objects`, `roots` are now unreachable.
                 log "Monomorphization started..."
                     |> Task.andThen
@@ -636,7 +634,7 @@ buildMonoGraphFromObjects roots objects =
                                                     |> Task.map (\_ -> monoGraph0)
                                     )
                         )
-            )
+           )
         |> Task.andThen
             (\monoGraph0 ->
                 -- GC boundary: `typedGraph` and `globalTypeEnv` are now unreachable.
@@ -672,31 +670,8 @@ buildMonoGraphFromObjects roots objects =
             )
 
 
-{-| Generates monomorphized output for MLIR mono backend after specializing polymorphic functions.
+{-| Stream MLIR output directly to a file, avoiding holding the full text in memory.
 -}
-monoDev : CodeGen.MonoCodeGen -> Bool -> Int -> FilePath -> Maybe String -> Maybe ( Pkg.Name, FilePath ) -> Details.Details -> Build.Artifacts -> Task Exit.Generate CodeGen.Output
-monoDev backend withSourceMaps leadingLines root maybeBuildDir maybeLocal details artifacts =
-    let
-        log msg =
-            Task.io (IO.writeLn IO.stderr msg)
-    in
-    buildMonoGraph root maybeBuildDir maybeLocal details artifacts
-        |> Task.andThen
-            (\{ monoGraph, mode } ->
-                log "MLIR codegen started..."
-                    |> Task.andThen
-                        (\_ ->
-                            MLIR.generateMlirModuleWithLog log mode monoGraph
-                                |> Task.map (\mlirModule -> CodeGen.TextOutput (Pretty.ppModule mlirModule))
-                        )
-                    |> Task.andThen
-                        (\output ->
-                            log "MLIR codegen done."
-                                |> Task.map (\_ -> output)
-                        )
-            )
-
-
 writeMonoMlirStreaming :
     Bool
     -> Int
@@ -717,16 +692,6 @@ writeMonoMlirStreaming _ _ root maybeBuildDir maybeLocal details artifacts targe
                     )
                     |> Task.mapError never
             )
-
-
-generateMonoOutput : CodeGen.MonoCodeGen -> Int -> Mode.Mode -> Mono.MonoGraph -> CodeGen.SourceMaps -> CodeGen.Output
-generateMonoOutput backend leadingLines mode monoGraph sourceMaps =
-    backend.generate
-        { sourceMaps = sourceMaps
-        , leadingLines = leadingLines
-        , mode = mode
-        , graph = monoGraph
-        }
 
 
 addRootTypedGraph : Build.Root -> TOpt.GlobalGraph -> TOpt.GlobalGraph

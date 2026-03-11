@@ -3,20 +3,25 @@ module Compiler.Data.BitSet exposing
     , empty
     , emptyWithSize
     , fromSize
-    , fromWords
-    , member
     , insert
     , insertGrowing
-    , remove
+    , member
     , removeGrowing
     , setWord
-    , orWord
     )
+
+{-| A compact bit set backed by an Array of 32-bit words.
+
+@docs BitSet, empty, emptyWithSize, fromSize, insert, insertGrowing, member, removeGrowing, setWord
+
+-}
 
 import Array exposing (Array)
 import Bitwise
 
 
+{-| A set of non-negative integers stored as an array of 32-bit words.
+-}
 type alias BitSet =
     { size : Int
     , words : Array Int
@@ -28,11 +33,15 @@ wordSize =
     32
 
 
+{-| An empty BitSet with no allocated storage.
+-}
 empty : BitSet
 empty =
     { size = 0, words = Array.empty }
 
 
+{-| Create a BitSet with all bits set up to the given size.
+-}
 fromSize : Int -> BitSet
 fromSize nBits =
     { size = nBits
@@ -40,16 +49,13 @@ fromSize nBits =
     }
 
 
+{-| Create an empty BitSet pre-allocated for the given number of bits.
+-}
 emptyWithSize : Int -> BitSet
 emptyWithSize nBits =
     { size = nBits
     , words = Array.empty
     }
-
-
-fromWords : Int -> Array Int -> BitSet
-fromWords size words =
-    { size = size, words = words }
 
 
 wordIndex : Int -> Int
@@ -62,6 +68,8 @@ bitOffset bitIndex =
     bitIndex |> modBy wordSize
 
 
+{-| Test whether a bit is set.
+-}
 member : Int -> BitSet -> Bool
 member bitIndex set =
     if bitIndex < 0 || bitIndex >= set.size then
@@ -89,6 +97,8 @@ ensureWord wIdx set =
         { set | words = Array.append set.words (Array.repeat (wIdx + 1 - len) 0) }
 
 
+{-| Set a bit. The index must be within the allocated size.
+-}
 insert : Int -> BitSet -> BitSet
 insert bitIndex set0 =
     if bitIndex < 0 || bitIndex >= set0.size then
@@ -193,6 +203,8 @@ growTo bitIndex set =
         }
 
 
+{-| Replace an entire 32-bit word at the given word index.
+-}
 setWord : Int -> Int -> BitSet -> BitSet
 setWord wIndex newWord set =
     if wIndex < 0 || wIndex >= Array.length set.words then
@@ -200,17 +212,3 @@ setWord wIndex newWord set =
 
     else
         { set | words = Array.set wIndex newWord set.words }
-
-
-orWord : Int -> Int -> BitSet -> BitSet
-orWord wIndex wordMask set =
-    if wIndex < 0 || wIndex >= Array.length set.words then
-        set
-
-    else
-        case Array.get wIndex set.words of
-            Nothing ->
-                set
-
-            Just oldWord ->
-                { set | words = Array.set wIndex (Bitwise.or oldWord wordMask) set.words }

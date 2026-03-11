@@ -24,7 +24,6 @@ import Compiler.AST.SourceBuilder
         , TypedDef
         , UnionDef
         , accessExpr
-        , binopsExpr
         , callExpr
         , caseExpr
         , ctorExpr
@@ -87,9 +86,14 @@ ctorWithRecordFieldCases expectFn =
 {-| A union constructor whose argument is a record type.
 Pattern match extracts a field from the record via access.
 
-    type Wrapper = Wrap { name : String, value : Int }
+    type Wrapper
+        = Wrap { name : String, value : Int }
+
     getValue : Wrapper -> Int
-    getValue w = case w of Wrap r -> r.value
+    getValue w =
+        case w of
+            Wrap r ->
+                r.value
 
 -}
 ctorWithRecordField : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -245,8 +249,8 @@ Record destructuring inside constructor pattern, then case on the bound variable
     getTag e = case e of Error { tag } -> case tag of A -> 0 ; B n -> n
 
 This mirrors the pattern in Import.elm:
-    toReport source (Error { region, name, unimportedModules, problem }) =
-        case problem of AmbiguousLocal path1 path2 paths -> ...
+toReport source (Error { region, name, unimportedModules, problem }) =
+case problem of AmbiguousLocal path1 path2 paths -> ...
 
 -}
 wrapperOverRecordAliasDestruct : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -335,7 +339,10 @@ multiCtorRecordCases expectFn =
 
 {-| Multiple constructors where one holds a record.
 
-    type Result = Ok { value : Int } | Err Int
+    type Result
+        = Ok { value : Int }
+        | Err Int
+
     extract : Result -> Int
 
 -}

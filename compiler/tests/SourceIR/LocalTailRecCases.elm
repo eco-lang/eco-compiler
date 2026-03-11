@@ -13,8 +13,7 @@ to concrete types like MInt.
 import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
-        ( TypedDef
-        , binopsExpr
+        ( binopsExpr
         , callExpr
         , caseExpr
         , define
@@ -55,7 +54,11 @@ testCases expectFn =
 
     let
         sumUpTo i s =
-            if i <= 0 then s else sumUpTo (i - 1) (s + i)
+            if i <= 0 then
+                s
+
+            else
+                sumUpTo (i - 1) (s + i)
     in
     sumUpTo 10 0
 
@@ -161,7 +164,11 @@ specialization propagates through the capture context.
     process x =
         let
             loop i acc =
-                if i <= 0 then acc else loop (i - 1) (acc + x)
+                if i <= 0 then
+                    acc
+
+                else
+                    loop (i - 1) (acc + x)
         in
         loop x 0
 
@@ -205,8 +212,19 @@ localTailRecPolyOuter expectFn _ =
 {-| Two local tail-rec functions in the same let block.
 
     let
-        countDown i = if i <= 0 then 0 else countDown (i - 1)
-        sumUp i acc = if i <= 0 then acc else sumUp (i - 1) (acc + i)
+        countDown i =
+            if i <= 0 then
+                0
+
+            else
+                countDown (i - 1)
+
+        sumUp i acc =
+            if i <= 0 then
+                acc
+
+            else
+                sumUp (i - 1) (acc + i)
     in
     countDown 5 + sumUp 5 0
 
@@ -254,9 +272,17 @@ a tail-rec definition.
         outer n =
             let
                 inner i acc =
-                    if i <= 0 then acc else inner (i - 1) (acc + 1)
+                    if i <= 0 then
+                        acc
+
+                    else
+                        inner (i - 1) (acc + 1)
             in
-            if n <= 0 then 0 else inner n 0 + outer (n - 1)
+            if n <= 0 then
+                0
+
+            else
+                inner n 0 + outer (n - 1)
     in
     outer 5
 

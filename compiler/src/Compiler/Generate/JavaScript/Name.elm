@@ -48,8 +48,8 @@ temporary variables used during code generation.
 
 import Compiler.Data.Index as Index
 import Compiler.Data.Name as Name
-import Dict exposing (Dict)
 import Data.Set as EverySet exposing (EverySet)
+import Dict exposing (Dict)
 import System.TypeCheck.IO as IO
 
 

@@ -17,7 +17,7 @@ This module:
 import Array
 import Compiler.AST.Monomorphized as Mono
 import Compiler.Data.Name exposing (Name)
-import Compiler.GlobalOpt.Staging.Types exposing (ProducerInfo, ProducerId(..), Segmentation, StagingSolution)
+import Compiler.GlobalOpt.Staging.Types exposing (ProducerId(..), ProducerInfo, Segmentation, StagingSolution)
 import Compiler.GlobalOpt.Staging.UnionFind exposing (producerIdToKey)
 import Compiler.Monomorphize.Closure as Closure
 import Compiler.Reporting.Annotation as A
@@ -709,5 +709,3 @@ buildSegmentedFunctionType seg args ret =
 splitAt : Int -> List a -> ( List a, List a )
 splitAt n xs =
     ( List.take n xs, List.drop n xs )
-
-

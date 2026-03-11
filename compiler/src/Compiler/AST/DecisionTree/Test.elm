@@ -1,6 +1,5 @@
 module Compiler.AST.DecisionTree.Test exposing
-    ( Test(..)
-    , testToComparable
+    ( Test(..), testToComparable
     , testEncoder, testDecoder
     )
 
@@ -10,7 +9,7 @@ This module defines the `Test` type used by both erased and typed decision trees
 It is placed in the AST layer to avoid circular dependencies between AST and
 LocalOpt layers.
 
-@docs Test
+@docs Test, testToComparable
 @docs testEncoder, testDecoder
 
 -}
@@ -49,6 +48,8 @@ type Test
     | IsBool Bool
 
 
+{-| Convert a Test to a comparable String for use as a dictionary key.
+-}
 testToComparable : Test -> String
 testToComparable test =
     case test of

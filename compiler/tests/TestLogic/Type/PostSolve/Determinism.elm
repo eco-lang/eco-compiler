@@ -11,9 +11,9 @@ produces identical results. This is important for:
 
 -}
 
+import Array
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Source as Src
-import Array
 import Dict
 import Expect
 import TestLogic.TestPipeline as Pipeline

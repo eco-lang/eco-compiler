@@ -136,10 +136,10 @@ import Compiler.Reporting.Error.Import as Import
 import Compiler.Reporting.Error.Json as Json
 import Compiler.Reporting.Render.Code as Code
 import Dict exposing (Dict)
+import System.IO exposing (FilePath)
 import Task exposing (Task)
 import Utils.Bytes.Decode as BD
 import Utils.Bytes.Encode as BE
-import System.IO exposing (FilePath)
 import Utils.Main as Utils
 
 
@@ -498,6 +498,8 @@ bumpToReport bump =
 
         BumpBadBuild problem ->
             toBuildProblemReport problem
+
+
 
 -- ====== DOCS ======
 

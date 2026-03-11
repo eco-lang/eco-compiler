@@ -46,20 +46,20 @@ reachableFromMain (Mono.MonoGraph record) =
                 |> Tuple.second
 
         Just (Mono.StaticMain mainSpecId) ->
-            markReachable record.callEdges size [ mainSpecId ] (BitSet.fromSize size)
+            markReachable record.callEdges [ mainSpecId ] (BitSet.fromSize size)
 
 
 {-| DFS over callEdges using an explicit stack. Returns BitSet of all reachable specIds.
 -}
-markReachable : Array (Maybe (List Int)) -> Int -> List Int -> BitSet -> BitSet
-markReachable callEdges size stack visited =
+markReachable : Array (Maybe (List Int)) -> List Int -> BitSet -> BitSet
+markReachable callEdges stack visited =
     case stack of
         [] ->
             visited
 
         specId :: rest ->
             if BitSet.member specId visited then
-                markReachable callEdges size rest visited
+                markReachable callEdges rest visited
 
             else
                 let
@@ -74,7 +74,7 @@ markReachable callEdges size stack visited =
                             Just edges ->
                                 edges
                 in
-                markReachable callEdges size (neighbors ++ rest) visited1
+                markReachable callEdges (neighbors ++ rest) visited1
 
 
 {-| Prune MonoGraph and SpecializationRegistry to keep only
@@ -161,8 +161,6 @@ pruneUnreachableSpecs globalTypeEnv (Mono.MonoGraph record) =
         ctorShapes1 : Dict (List String) (List Mono.CtorShape)
         ctorShapes1 =
             Dict.fromList (Data.Map.toList compare (Analysis.computeCtorShapesForGraph globalTypeEnv nodes1))
-
-
     in
     Mono.MonoGraph
         { nodes = nodes1
@@ -171,6 +169,7 @@ pruneUnreachableSpecs globalTypeEnv (Mono.MonoGraph record) =
         , ctorShapes = ctorShapes1
         , nextLambdaIndex = record.nextLambdaIndex
         , callEdges = callEdges1
+
         -- Stale bits for pruned specIds are harmless — no node exists to reference them.
         , specHasEffects = record.specHasEffects
         , specValueUsed = record.specValueUsed

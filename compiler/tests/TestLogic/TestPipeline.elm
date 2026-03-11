@@ -35,13 +35,13 @@ Pipeline stages:
 
 -}
 
+import Array exposing (Array)
 import Builder.GraphAssembly as GA
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.Source as Src
 import Compiler.AST.TypeEnv as TypeEnv
 import Compiler.AST.TypedOptimized as TOpt
-import Compiler.Reporting.Annotation as A
 import Compiler.Canonicalize.Module as Canonicalize
 import Compiler.Data.Name as Name
 import Compiler.Data.NonEmptyList as NE
@@ -54,13 +54,13 @@ import Compiler.Generate.Mode as Mode
 import Compiler.GlobalOpt.MonoGlobalOptimize as MonoGlobalOptimize
 import Compiler.LocalOpt.Typed.Module as TypedOptimize
 import Compiler.Monomorphize.Monomorphize as Monomorphize
+import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Result as RResult
 import Compiler.Type.Constrain.Typed.Module as ConstrainTyped
 import Compiler.Type.KernelTypes as KernelTypes
 import Compiler.Type.PostSolve as PostSolve
 import Compiler.Type.Solve as Solve
 import Compiler.TypedCanonical.Build as TCanBuild
-import Array exposing (Array)
 import Data.Map
 import Dict exposing (Dict)
 import Expect

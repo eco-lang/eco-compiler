@@ -7,9 +7,9 @@ have fully resolved types with no remaining unification variables.
 
 -}
 
+import Array
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Source as Src
-import Array
 import Dict
 import Expect
 import TestLogic.TestPipeline as Pipeline

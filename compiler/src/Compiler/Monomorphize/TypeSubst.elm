@@ -1,8 +1,8 @@
 module Compiler.Monomorphize.TypeSubst exposing
     ( applySubst
     , canTypeToMonoType
-    , fillUnconstrainedCEcoWithErased
     , unify, unifyExtend, unifyFuncCall, unifyArgsOnly, extractParamTypes
+    , fillUnconstrainedCEcoWithErased
     )
 
 {-| Type substitution and unification for monomorphization.
@@ -23,7 +23,12 @@ by applying type variable substitutions.
 
 # Unification
 
-@docs unify, unifyExtend, unifyFuncCall, extractParamTypes
+@docs unify, unifyExtend, unifyFuncCall, unifyArgsOnly, extractParamTypes
+
+
+# CEco Variable Filling
+
+@docs fillUnconstrainedCEcoWithErased
 
 -}
 
@@ -122,7 +127,8 @@ unifyHelp canType monoType subst =
                     Just existingMono ->
                         -- Already bound: insert the new binding and also propagate
                         -- any transitive MVar connections from the old value.
-                        unifyMonoMono existingMono monoType
+                        unifyMonoMono existingMono
+                            monoType
                             (Dict.insert name monoType subst)
 
                     Nothing ->
@@ -251,6 +257,7 @@ unifyMonoMono m1 m2 subst =
         ( Mono.MVar name1 _, Mono.MVar name2 _ ) ->
             if name1 == name2 then
                 subst
+
             else
                 -- Bind the first to the second
                 Dict.insert name1 m2 subst
@@ -373,7 +380,8 @@ resolveMonoVarsHelp visiting subst monoType =
 
 {-| Extend a substitution by mapping any CEcoValue TVar in the canonical type
 that is still unmapped to Mono.MErased. Used for functions whose some type
-parameters are genuinely phantom at a given specialization. -}
+parameters are genuinely phantom at a given specialization.
+-}
 fillUnconstrainedCEcoWithErased : Can.Type -> Substitution -> Substitution
 fillUnconstrainedCEcoWithErased canType subst =
     let
@@ -487,7 +495,8 @@ renameCanTypeVars renameMap canType =
                 (List.map (renameCanTypeVars renameMap) rest)
 
         Can.TAlias canonical name aliasArgs aliasType ->
-            Can.TAlias canonical name
+            Can.TAlias canonical
+                name
                 (List.map (\( n, t ) -> ( n, renameCanTypeVars renameMap t )) aliasArgs)
                 (case aliasType of
                     Can.Filled inner ->
