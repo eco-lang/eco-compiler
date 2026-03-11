@@ -8,6 +8,7 @@ For Canonical AST builders, use Compiler.AST.CanonicalBuilder.
 
 -}
 
+import Array
 import Compiler.AST.Canonical as Can
 import Compiler.Data.Name as Name
 import Compiler.Data.NonEmptyList as NE
@@ -56,7 +57,15 @@ expectEquivalentTypeChecking modul =
             -- Both succeeded - now check that all IDs are in nodeTypes
             let
                 nodeTypeIds =
-                    Dict.keys compare nodeTypes |> Set.fromList
+                    Array.foldl
+                        (\maybeType ( idx, acc ) ->
+                            case maybeType of
+                                Just _ -> ( idx + 1, Set.insert idx acc )
+                                Nothing -> ( idx + 1, acc )
+                        )
+                        ( 0, Set.empty )
+                        nodeTypes
+                        |> Tuple.second
 
                 missingIds =
                     Set.diff allExprIds nodeTypeIds
@@ -113,7 +122,7 @@ runStandardPath modul =
 {-| Run the WithIds constraint generation and solving path.
 Returns both annotations and the nodeTypes map.
 -}
-runWithIdsPath : Can.Module -> IO.IO (Result Int { annotations : Dict String Name.Name Can.Annotation, nodeTypes : Dict Int Int Can.Type })
+runWithIdsPath : Can.Module -> IO.IO (Result Int { annotations : Dict String Name.Name Can.Annotation, nodeTypes : Array.Array (Maybe Can.Type) })
 runWithIdsPath modul =
     ConstrainTyped.constrainWithIds modul
         |> IO.andThen

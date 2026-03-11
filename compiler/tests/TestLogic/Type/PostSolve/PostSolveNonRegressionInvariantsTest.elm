@@ -8,6 +8,8 @@ POST\_006: PostSolve does not introduce new free type variables
 -}
 
 import Compiler.AST.Source as Src
+import Data.Map
+import Dict
 import Expect
 import SourceIR.Suite.StandardTestSuites as StandardTestSuites
 import Test exposing (Test)
@@ -35,11 +37,14 @@ expectNonRegression srcModule =
                 nodeKinds =
                     Invariants.collectNodeKinds artifacts.canonical
 
+                nodeTypesPreMap =
+                    artifacts.nodeTypesPre
+
                 v5 =
-                    Invariants.checkPost005 nodeKinds artifacts.nodeTypesPre artifacts.nodeTypesPost
+                    Invariants.checkPost005 nodeKinds nodeTypesPreMap artifacts.nodeTypesPost
 
                 v6 =
-                    Invariants.checkPost006 nodeKinds artifacts.nodeTypesPre artifacts.nodeTypesPost
+                    Invariants.checkPost006 nodeKinds nodeTypesPreMap artifacts.nodeTypesPost
             in
             case v5 ++ v6 of
                 [] ->

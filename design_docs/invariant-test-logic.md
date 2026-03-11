@@ -379,6 +379,85 @@ inputs: Canonical module + nodeTypesPre + nodeTypesPost
 oracle: PostSolve cannot make a node more polymorphic than what the solver inferred.
 tests: compiler/tests/Compiler/Type/PostSolve/PostSolveNonRegressionInvariantsTest.elm
 --
+--
+name: Lambdas always get concrete structural function types
+phase: post-solve
+invariants: POST_007
+ir: PostSolve NodeTypes + Canonical AST (Lambda expressions)
+logic:
+  * Walk the canonical AST to find all Lambda expression nodes.
+  * For each Lambda node with expression ID `id`:
+      - Look up its post-PostSolve type in nodeTypesPost[id].
+      - Assert the type exists (not missing).
+      - Assert the type is a TLambda chain (not a bare TVar or non-function shape).
+      - Recompute the expected structural type:
+          * Get each pattern's type from nodeTypesPost via pattern IDs.
+          * Get the body's type from nodeTypesPost via body expression ID.
+          * Build curried function type: List.foldr TLambda bodyType argTypes.
+      - Assert the stored post type is bijectively alpha-equivalent to the recomputed
+        structural type. Bijective alpha-equivalence requires that TVars form a
+        consistent 1-to-1 mapping (forward and reverse) between the two types,
+        not just that any TVar matches any other TVar.
+inputs: Canonical module + nodeTypesPost (from PostSolve)
+oracle: Every lambda expression has a concrete TLambda chain type that matches
+  its structural composition from argument pattern types and body type. No lambda
+  remains as a bare TVar or has a non-function shape after PostSolve. TVars at
+  corresponding positions must form a consistent bijective renaming.
+tests: compiler/tests/TestLogic/Type/PostSolve/PostSolveLambdaStructuralTypesTest.elm
+--
+--
+name: Lambda free vars are a subset of surrounding context vars
+phase: post-solve
+invariants: POST_008
+ir: PostSolve NodeTypes + Canonical AST (Lambda expressions) + pre-PostSolve NodeTypes + annotations
+logic:
+  * Walk the canonical AST to find all Lambda expression nodes, tracking the
+    enclosing definition name for each node.
+  * For each Lambda node with expression ID `id`:
+      - Compute freeVars(postType) from nodeTypesPost[id].
+      - Compute contextVars: the set of type variables available in the surrounding
+        solver environment, derived from (in priority order):
+          1. freeVars(preType) from nodeTypesPre[id] if it exists.
+             If preType is a bare TVar, treat the var name itself as context.
+          2. If no preType exists (Group B lambda), use the enclosing definition's
+             annotation: extract quantified vars from `Forall freeVars _`.
+          3. If neither is available, contextVars is empty (any post var is a violation).
+      - Assert freeVars(postType) ⊆ contextVars.
+      - Any free type variable in the post type that is not in the context represents
+        an unconstrained lambda-local type variable introduced by PostSolve, which
+        violates the invariant.
+inputs: Canonical module + nodeTypesPre + nodeTypesPost + annotations
+oracle: PostSolve does not introduce new unconstrained lambda-local type variables;
+  all lambda polymorphism originates from the main solver. Any TVar in a lambda's
+  post type must trace back to the solver's pre type or enclosing annotated scheme.
+  Group B lambdas without pre-types are checked against their enclosing definition's
+  annotation scope, not given a blanket pass.
+tests: compiler/tests/TestLogic/Type/PostSolve/PostSolveLambdaContextVarsTest.elm
+--
+--
+name: PostSolve placeholder TVars do not appear in function positions
+phase: post-solve
+invariants: POST_009
+ir: PostSolve NodeTypes (all non-kernel expressions) + annotations
+logic:
+  * For every non-negative, non-kernel node ID in nodeTypesPost:
+      - Collect TVars in function positions (within TLambda components) of the post type.
+      - Compute legitimate vars for THIS node (per-node, not global):
+          1. If the node has a pre-type in nodeTypesPre, its free vars are legitimate.
+          2. If the node has no pre-type (Group B), use the enclosing definition's
+             annotation vars (quantified vars from `Forall freeVars _`).
+          3. If neither is available, legitimate set is empty.
+      - Report a violation if any function-position TVar is not in the legitimate set.
+  * "Function position" means any position within a TLambda argument or result type,
+    including nested TLambda chains. This ensures that all function types visible
+    to TypedCanonical, TypedOptimized, and monomorphization are expressed solely
+    in terms of solver- or annotation-derived type variables.
+inputs: Canonical module + nodeTypesPre + nodeTypesPost + annotations
+oracle: No PostSolve-generated placeholder TVars survive in function positions
+  of any non-kernel expression type. All function types use only solver/annotation-derived
+  type variables. The check is per-node scoped, not module-global.
+tests: compiler/tests/TestLogic/Type/PostSolve/PostSolvePlaceholderVarsTest.elm
+--
 
 ---
 
@@ -497,9 +576,10 @@ ir: SpecializationRegistry + MonoGraph
 logic: For each entry in `SpecializationRegistry` (keyed by Global + MonoType + LambdaId):
   * Assert it maps to a unique `SpecId`.
   * Assert each `SpecId` used in `MonoVarGlobal` refers to an existing `MonoNode`.
-  * Assert there are no registry entries that are never referenced.
+  * `Nothing` entries in `reverseMapping` are expected (pruned slots from MONO_022) and are not violations.
+  * Only `Just` entries must have corresponding nodes.
 inputs: Monomorphized graphs with heavy polymorphism
-oracle: 1-1 mapping between specializations and nodes; no missing or orphan specs.
+oracle: 1-1 mapping between live specializations and nodes; no missing or orphan specs among live entries.
 --
 --
 name: Record and tuple layouts capture shape completely
@@ -570,9 +650,9 @@ logic: For each local/global variable and specialization:
         nested MonoLets as a single mutually visible scope.
       - Forward references within such a MonoLet chain are allowed.
   * Check every `MonoVarGlobal` and `SpecId` refer to existing MonoNodes.
-  * Detect unreachable `SpecId`s and ensure they're either optimized away or flagged.
+  * Assert no unreachable SpecIds exist (guaranteed by MONO_022 pruning pass).
 inputs: Monomorphized graphs including randomized stress graphs
-oracle: No dangling references, no undefined globals, no unreachable specs in the registry.
+oracle: No dangling references, no undefined globals, no unreachable specs (impossible by construction after MONO_022).
 note: Typed optimization and monomorphization encode `let rec` groups as nested
   `MonoLet` expressions. At Mono level, scoping for such chains is *mutual*, not
   sequential: all definitions in a contiguous `MonoLet` chain are considered in
@@ -631,13 +711,14 @@ phase: monomorphization
 invariants: MONO_017
 ir: MonoGraph (nodes + registry)
 logic: For each entry in registry.reverseMapping:
-  * Get (specId -> (global, regMonoType, maybeLambda))
-  * Look up node at graph.nodes[specId]
-  * If node not found: violation (orphan registry entry)
-  * Otherwise: assert regMonoType == nodeType(node)
+  * Skip `Nothing` entries (pruned slots from MONO_022, not violations)
+  * For `Just (global, regMonoType, maybeLambda)`:
+    * Look up node at graph.nodes[specId]
+    * If node not found: violation (orphan registry entry)
+    * Otherwise: assert regMonoType == nodeType(node)
   * nodeType extracts the MonoType from any MonoNode variant
 inputs: Monomorphized graphs
-oracle: Every registry entry's MonoType matches the corresponding node's type.
+oracle: Every live registry entry's MonoType matches the corresponding node's type.
 tests: compiler/tests/Compiler/Generate/Monomorphize/RegistryNodeTypeConsistencyTest.elm
 --
 --
@@ -668,6 +749,143 @@ Assert the collected set has no duplicates.
 inputs: Monomorphized graphs with many closures
 oracle: Every closure/function has a unique lambdaId.
 tests: compiler/tests/TestLogic/Monomorphize/LambdaIdUniquenessTest.elm
+--
+--
+name: No CEcoValue MVar in user-defined function types
+phase: monomorphization
+invariants: MONO_021
+ir: MonoGraph (all reachable MonoDefine, MonoTailFunc, MonoClosure, MonoTailDef nodes per MONO_022)
+logic: Walk every reachable MonoNode in the MonoGraph and every sub-expression recursively:
+  * Only inspect nodes whose specId is reachable from main via callEdges (per MONO_022)
+  * For MonoDefine: check the node MonoType for CEcoValue MVar in function positions
+  * For MonoTailFunc: check the node MonoType AND each parameter's MonoType
+  * For MonoClosure (in expressions): check closureInfo.params types and the closure's expression MonoType
+  * For MonoTailDef (local tail-rec defs in let bindings): check each parameter's MonoType
+  * Recursively descend into all sub-expressions (let bodies, case branches, if branches, call args, etc.)
+  * MonoExtern and MonoManagerLeaf nodes are explicitly exempted (kernel ABI types may retain CEcoValue)
+  * collectCEcoValueVars recursively walks a MonoType and collects all MVar names with CEcoValue constraint
+  * Any CEcoValue MVar found in a reachable user-defined function parameter or result type is a violation
+inputs: Monomorphized graphs, especially programs with local tail-recursive functions (MonoTailDef),
+  nested closures, and polymorphic local definitions that should be fully specialized at call sites.
+  Includes targeted cases mirroring LocalTailRecSimpleTest and TailRecWithLocalTailDefTest E2E tests.
+oracle: No reachable user-defined function or closure MonoType contains MVar with CEcoValue constraint;
+  CEcoValue is restricted to kernel ABI types only. Unreachable template specializations are removed by MONO_022.
+tests: compiler/tests/TestLogic/Monomorphize/NoCEcoValueInUserFunctionsTest.elm
+--
+--
+name: All specializations are reachable from main
+phase: monomorphization
+invariants: MONO_022
+ir: MonoGraph (nodes, callEdges, registry, ctorShapes)
+logic: Recompute reachability from mainSpecId over callEdges (BFS/DFS):
+  * Assert every key in nodes is in the reachable set
+  * Assert every Just entry in reverseMapping has a specId in the reachable set
+  * Assert every value in registry.mapping is in the reachable set
+  * Assert every key in ctorShapes corresponds to a type referenced by a reachable node
+  * If main is Nothing (library mode), all entries are considered reachable
+inputs: Monomorphized graphs after pruning
+oracle: No unreachable specializations exist in the pruned graph. All registry, node, and
+  ctorShape entries correspond to specializations reachable from the main entry point.
+--
+--
+name: Fully monomorphic specializations have no CEcoValue in reachable MonoTypes
+phase: monomorphization
+invariants: MONO_024
+ir: MonoGraph (registry.reverseMapping, nodes, all sub-expressions)
+logic: For each SpecId in the MonoGraph:
+  * Look up the specialization key MonoType from registry.reverseMapping[specId].
+  * Skip pruned entries (Nothing in reverseMapping).
+  * Skip entries whose key MonoType is NOT fully monomorphic: if the key MonoType
+    contains any MVar with CNumber or CEcoValue constraint, or contains MErased,
+    skip this entry (the invariant only applies to fully monomorphic keys).
+  * For the remaining (fully monomorphic) specialization entries:
+      - Look up the implementing MonoNode at graph.nodes[specId].
+      - Recursively traverse ALL MonoTypes reachable from the node:
+          * The node's own MonoType (via nodeType)
+          * For MonoTailFunc: each parameter's MonoType
+          * For MonoDefine containing MonoClosure: closureInfo.params types,
+            closureInfo.captures types (if exposed), and the closure body expression
+          * Recursively descend into all sub-expressions:
+              - MonoLet: the bound expression type and body type
+              - MonoCase: the result type AND all branch expression types
+                (both jump targets and inline Leaf expressions in the decider)
+              - MonoCall: the result type and all argument expression types
+              - MonoIf: both branch types
+              - MonoClosure (nested): params, captures, body
+              - MonoTailDef: parameter types
+              - MonoDestruct: destructor types
+              - All other expression variants: via Mono.typeOf
+      - For each MonoType encountered, check for MVar with CEcoValue constraint
+        using collectCEcoValueVars (or Mono.containsCEcoMVar).
+      - Any CEcoValue MVar found is a violation: it indicates that the
+        monomorphization substitution failed to propagate the concrete type
+        from the specialization key into the implementing node's types.
+  * Distinguish from MONO_021: MONO_021 checks ALL reachable user-defined
+    functions for CEcoValue in function parameter/result positions. MONO_024
+    is stricter for fully monomorphic specialization keys but broader in
+    scope (checks ALL MonoType positions, not just function positions).
+inputs: Monomorphized graphs from StandardTestSuites, plus targeted programs with:
+  * Polymorphic functions called at multiple concrete types (e.g., identity
+    function called with Int and String at different sites)
+  * Higher-order functions where type variables flow into local definitions
+  * Nested closures where outer type variables must propagate to inner lambdas
+  * Let-bound polymorphic values used at concrete types
+oracle: For every specialization with a fully monomorphic key, the entire
+  expression tree contains no CEcoValue MVar. Any surviving CEcoValue in
+  this context is a specialization bug, not a valid polymorphic residual.
+tests: compiler/tests/TestLogic/Monomorphize/FullyMonomorphicNoCEcoValueTest.elm
+--
+--
+name: Closure MonoType matches specialization key
+phase: monomorphization
+invariants: MONO_025
+ir: MonoGraph (registry.reverseMapping, nodes with MonoClosure/MonoTailFunc)
+logic: For each SpecId in the MonoGraph:
+  * Look up the specialization key (Global, keyMonoType, maybeLambdaId) from
+    registry.reverseMapping[specId]. Skip Nothing entries.
+  * Look up the implementing MonoNode at graph.nodes[specId].
+  * Only check nodes that are user-defined functions/closures:
+      - MonoDefine whose expression is MonoClosure
+      - MonoTailFunc
+      - Skip MonoCtor, MonoEnum, MonoExtern, MonoManagerLeaf (not closures)
+  * Extract the closure's actual parameter types and result type:
+      - For MonoTailFunc params body monoType:
+          paramTypes = List.map Tuple.second params
+          resultType = Mono.typeOf body (or extract from monoType)
+      - For MonoDefine (MonoClosure closureInfo body closureMonoType):
+          paramTypes = List.map Tuple.second closureInfo.params
+          resultType = Mono.typeOf body (or extract from closureMonoType)
+  * Extract expected parameter and result types from the specialization key:
+      - Flatten the key MonoType: recursively peel MFunction layers to get
+        all parameter types and the final non-MFunction result type.
+      - The flattened parameter list may be longer than the closure's params
+        (for functions that return functions / nested lambdas). Only compare
+        the prefix matching the closure's parameter count.
+  * Assert consistency:
+      - For each i in range(0, length(closureParamTypes)):
+          closureParamTypes[i] == flattenedKeyParamTypes[i]
+      - If the closure is fully saturated (closureParamCount == flattenedKeyParamCount):
+          closureResultType == flattenedKeyResultType
+      - If the closure returns a function (closureParamCount < flattenedKeyParamCount):
+          closureResultType is MFunction whose flattening equals the remaining
+          key param types and key result type
+  * Comparison should use structural MonoType equality (not alpha-equivalence,
+    since MonoTypes are fully concrete after monomorphization for non-kernel
+    specializations). For specialization keys containing MVar/MErased, use
+    a relaxed comparison that treats MVar(CEcoValue) and MErased as equivalent.
+inputs: Monomorphized graphs from StandardTestSuites, plus targeted programs with:
+  * Simple monomorphic functions (identity at Int, at String)
+  * Multi-arity functions with currying (functions returning functions)
+  * Functions with record parameters (to test field ordering in MonoType)
+  * Polymorphic functions specialized at multiple types
+  * Local closures capturing outer variables
+  * Tail-recursive functions (MonoTailFunc nodes)
+oracle: Every closure/function node's parameter types and result type
+  are consistent with what its specialization key MonoType implies.
+  Any mismatch indicates the monomorphization produced a closure whose
+  types diverge from its registry entry, which would cause ABI mismatches
+  at call sites.
+tests: compiler/tests/TestLogic/Monomorphize/ClosureSpecKeyConsistencyTest.elm
 --
 
 ---

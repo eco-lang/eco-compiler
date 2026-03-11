@@ -80,8 +80,9 @@ import Compiler.Elm.Kernel as K
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Elm.Package as Pkg
 import Compiler.Reporting.Annotation as A
-import Data.Map as Dict exposing (Dict)
+import Data.Map
 import Data.Set exposing (EverySet)
+import Dict exposing (Dict)
 import System.TypeCheck.IO as IO
 import Utils.Bytes.Decode as BD
 import Utils.Bytes.Encode as BE
@@ -94,7 +95,7 @@ import Utils.Bytes.Encode as BE
 {-| Annotations dictionary - maps definition names to their type schemes
 -}
 type alias Annotations =
-    Dict String Name Can.Annotation
+    Dict Name Can.Annotation
 
 
 
@@ -129,9 +130,9 @@ type Expr
     | Case Name Name (Decider Choice) (List ( Int, Expr )) Can.Type
     | Accessor A.Region Name Can.Type
     | Access Expr A.Region Name Can.Type
-    | Update A.Region Expr (Dict String (A.Located Name) Expr) Can.Type
-    | Record (Dict String Name Expr) Can.Type
-    | TrackedRecord A.Region (Dict String (A.Located Name) Expr) Can.Type
+    | Update A.Region Expr (Data.Map.Dict String (A.Located Name) Expr) Can.Type
+    | Record (Dict Name Expr) Can.Type
+    | TrackedRecord A.Region (Data.Map.Dict String (A.Located Name) Expr) Can.Type
     | Unit Can.Type
     | Tuple A.Region Expr Expr (List Expr) Can.Type
     | Shader Shader.Source (EverySet String Name) (EverySet String Name) Can.Type
@@ -336,7 +337,7 @@ type Choice
 {-| A graph of all top-level definitions across multiple modules.
 -}
 type GlobalGraph
-    = GlobalGraph (Dict (List String) Global Node) (Dict String Name Int) Annotations
+    = GlobalGraph (Data.Map.Dict (List String) Global Node) (Dict Name Int) Annotations
 
 
 
@@ -347,8 +348,8 @@ type GlobalGraph
 -}
 type alias LocalGraphData =
     { main : Maybe Main
-    , nodes : Dict (List String) Global Node
-    , fields : Dict String Name Int
+    , nodes : Data.Map.Dict (List String) Global Node
+    , fields : Dict Name Int
     , annotations : Annotations
     }
 
@@ -402,7 +403,7 @@ type EffectsType
 -}
 emptyGlobalGraph : GlobalGraph
 emptyGlobalGraph =
-    GlobalGraph Dict.empty Dict.empty Dict.empty
+    GlobalGraph Data.Map.empty Dict.empty Dict.empty
 
 
 
@@ -415,8 +416,8 @@ globalGraphEncoder : GlobalGraph -> Bytes.Encode.Encoder
 globalGraphEncoder (GlobalGraph nodes fields annotations) =
     Bytes.Encode.sequence
         [ BE.assocListDict compareGlobal globalEncoder nodeEncoder nodes
-        , BE.assocListDict compare BE.string BE.int fields
-        , BE.assocListDict compare BE.string Can.annotationEncoder annotations
+        , BE.stdDict BE.string BE.int fields
+        , BE.stdDict BE.string Can.annotationEncoder annotations
         ]
 
 
@@ -426,8 +427,8 @@ globalGraphDecoder : Bytes.Decode.Decoder GlobalGraph
 globalGraphDecoder =
     Bytes.Decode.map3 GlobalGraph
         (BD.assocListDict toComparableGlobal globalDecoder nodeDecoder)
-        (BD.assocListDict identity BD.string BD.int)
-        (BD.assocListDict identity BD.string Can.annotationDecoder)
+        (BD.stdDict BD.string BD.int)
+        (BD.stdDict BD.string Can.annotationDecoder)
 
 
 {-| Encode a local graph to binary format.
@@ -437,8 +438,8 @@ localGraphEncoder (LocalGraph data) =
     Bytes.Encode.sequence
         [ BE.maybe mainEncoder data.main
         , BE.assocListDict compareGlobal globalEncoder nodeEncoder data.nodes
-        , BE.assocListDict compare BE.string BE.int data.fields
-        , BE.assocListDict compare BE.string Can.annotationEncoder data.annotations
+        , BE.stdDict BE.string BE.int data.fields
+        , BE.stdDict BE.string Can.annotationEncoder data.annotations
         ]
 
 
@@ -452,8 +453,8 @@ localGraphDecoder =
         )
         (BD.maybe mainDecoder)
         (BD.assocListDict toComparableGlobal globalDecoder nodeDecoder)
-        (BD.assocListDict identity BD.string BD.int)
-        (BD.assocListDict identity BD.string Can.annotationDecoder)
+        (BD.stdDict BD.string BD.int)
+        (BD.stdDict BD.string Can.annotationDecoder)
 
 
 mainEncoder : Main -> Bytes.Encode.Encoder
@@ -903,7 +904,7 @@ exprEncoder expr =
         Record value tipe ->
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 25
-                , BE.assocListDict compare BE.string exprEncoder value
+                , BE.stdDict BE.string exprEncoder value
                 , Can.typeEncoder tipe
                 ]
 
@@ -1108,7 +1109,7 @@ exprDecoder =
 
                     25 ->
                         Bytes.Decode.map2 Record
-                            (BD.assocListDict identity BD.string exprDecoder)
+                            (BD.stdDict BD.string exprDecoder)
                             Can.typeDecoder
 
                     26 ->

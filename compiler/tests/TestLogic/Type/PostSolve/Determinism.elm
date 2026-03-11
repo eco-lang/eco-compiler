@@ -13,7 +13,8 @@ produces identical results. This is important for:
 
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Source as Src
-import Data.Map as Dict
+import Array
+import Dict
 import Expect
 import TestLogic.TestPipeline as Pipeline
 
@@ -50,40 +51,40 @@ expectDeterministicTypes srcModule =
 
 {-| Compare two NodeTypes dictionaries for equality.
 -}
-compareNodeTypes : Dict.Dict Int Int Can.Type -> Dict.Dict Int Int Can.Type -> List String
+compareNodeTypes : Array.Array (Maybe Can.Type) -> Array.Array (Maybe Can.Type) -> List String
 compareNodeTypes types1 types2 =
     let
-        keys1 =
-            Dict.keys compare types1
-
-        keys2 =
-            Dict.keys compare types2
-
-        -- Check for missing keys
+        -- Check for different array sizes
         keyIssues =
-            if List.length keys1 /= List.length keys2 then
-                [ "Different number of nodes: " ++ String.fromInt (List.length keys1) ++ " vs " ++ String.fromInt (List.length keys2) ]
+            if Array.length types1 /= Array.length types2 then
+                [ "Different number of nodes: " ++ String.fromInt (Array.length types1) ++ " vs " ++ String.fromInt (Array.length types2) ]
 
             else
                 []
 
-        -- Compare types for each key
+        -- Compare types for each index
         typeIssues =
-            Dict.foldl compare
-                (\nodeId type1 acc ->
-                    case Dict.get identity nodeId types2 of
+            Array.foldl
+                (\maybeType1 ( nodeId, acc ) ->
+                    case maybeType1 of
                         Nothing ->
-                            ("NodeId " ++ String.fromInt nodeId ++ " missing in second run") :: acc
+                            ( nodeId + 1, acc )
 
-                        Just type2 ->
-                            if not (typesStructurallyEqual type1 type2) then
-                                ("NodeId " ++ String.fromInt nodeId ++ " has different type") :: acc
+                        Just type1 ->
+                            case Array.get nodeId types2 |> Maybe.andThen identity of
+                                Nothing ->
+                                    ( nodeId + 1, ("NodeId " ++ String.fromInt nodeId ++ " missing in second run") :: acc )
 
-                            else
-                                acc
+                                Just type2 ->
+                                    if not (typesStructurallyEqual type1 type2) then
+                                        ( nodeId + 1, ("NodeId " ++ String.fromInt nodeId ++ " has different type") :: acc )
+
+                                    else
+                                        ( nodeId + 1, acc )
                 )
-                []
+                ( 0, [] )
                 types1
+                |> Tuple.second
     in
     keyIssues ++ typeIssues
 
@@ -133,20 +134,20 @@ typesStructurallyEqual type1 type2 =
 
 {-| Check if two record field dictionaries are equal.
 -}
-recordFieldsEqual : Dict.Dict String String Can.FieldType -> Dict.Dict String String Can.FieldType -> Bool
+recordFieldsEqual : Dict.Dict String Can.FieldType -> Dict.Dict String Can.FieldType -> Bool
 recordFieldsEqual fields1 fields2 =
     let
         keys1 =
-            Dict.keys compare fields1
+            Dict.keys fields1
 
         keys2 =
-            Dict.keys compare fields2
+            Dict.keys fields2
     in
     keys1
         == keys2
         && List.all
             (\key ->
-                case ( Dict.get identity key fields1, Dict.get identity key fields2 ) of
+                case ( Dict.get key fields1, Dict.get key fields2 ) of
                     ( Just (Can.FieldType idx1 t1), Just (Can.FieldType idx2 t2) ) ->
                         idx1 == idx2 && typesStructurallyEqual t1 t2
 

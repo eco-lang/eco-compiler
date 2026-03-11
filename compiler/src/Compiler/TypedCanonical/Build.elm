@@ -20,10 +20,10 @@ annotating each expression with its inferred type from the type checker.
 
 -}
 
+import Array
 import Compiler.AST.Canonical as Can
 import Compiler.AST.TypedCanonical as TCan exposing (Decls(..), Def(..), ExprTypes, Module(..))
 import Compiler.Reporting.Annotation as A
-import Data.Map as Dict
 import Utils.Crash exposing (crash)
 
 
@@ -109,7 +109,7 @@ toTypedExpr exprTypes (A.At region info) =
     let
         tipe : Can.Type
         tipe =
-            case Dict.get identity info.id exprTypes of
+            case Array.get info.id exprTypes |> Maybe.andThen identity of
                 Just t ->
                     t
 

@@ -17,7 +17,8 @@ import Compiler.AST.Canonical as Can
 import Compiler.AST.Source as Src
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Reporting.Annotation as A
-import Data.Map as Dict
+import Data.Map
+import Dict
 import Expect
 import System.TypeCheck.IO as IO
 import TestLogic.TestPipeline as Pipeline
@@ -54,7 +55,7 @@ expectFunctionTypesEncoded srcModule =
 -}
 collectFunctionTypeChecks : TOpt.LocalGraph -> List (() -> Expect.Expectation)
 collectFunctionTypeChecks (TOpt.LocalGraph data) =
-    Dict.foldl TOpt.compareGlobal
+    Data.Map.foldl TOpt.compareGlobal
         (\global node acc ->
             let
                 context =
@@ -175,13 +176,13 @@ collectExprFunctionTypeChecks context expr =
 
         TOpt.Update _ recordExpr updates _ ->
             collectExprFunctionTypeChecks context recordExpr
-                ++ Dict.foldl A.compareLocated (\_ updateExpr acc -> collectExprFunctionTypeChecks context updateExpr ++ acc) [] updates
+                ++ Data.Map.foldl A.compareLocated (\_ updateExpr acc -> collectExprFunctionTypeChecks context updateExpr ++ acc) [] updates
 
         TOpt.Record fieldExprs _ ->
-            Dict.foldl compare (\_ fieldExpr acc -> collectExprFunctionTypeChecks context fieldExpr ++ acc) [] fieldExprs
+            Dict.foldl (\_ fieldExpr acc -> collectExprFunctionTypeChecks context fieldExpr ++ acc) [] fieldExprs
 
         TOpt.TrackedRecord _ fieldExprs _ ->
-            Dict.foldl A.compareLocated (\_ fieldExpr acc -> collectExprFunctionTypeChecks context fieldExpr ++ acc) [] fieldExprs
+            Data.Map.foldl A.compareLocated (\_ fieldExpr acc -> collectExprFunctionTypeChecks context fieldExpr ++ acc) [] fieldExprs
 
         TOpt.Tuple _ e1 e2 rest _ ->
             collectExprFunctionTypeChecks context e1

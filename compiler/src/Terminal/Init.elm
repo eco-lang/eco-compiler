@@ -36,7 +36,7 @@ import Compiler.Elm.Licenses as Licenses
 import Compiler.Elm.Package as Pkg
 import Compiler.Elm.Version as V
 import Compiler.Reporting.Doc as D
-import Data.Map as Dict exposing (Dict)
+import Dict exposing (Dict)
 import System.IO as IO
 import Task exposing (Task)
 import Utils.Main as Utils
@@ -150,8 +150,8 @@ type alias InitEnv =
 
 
 type alias InitDetails =
-    { details : Dict ( String, String ) Pkg.Name Solver.Details
-    , testDetails : Dict ( String, String ) Pkg.Name Solver.Details
+    { details : Dict Pkg.Name Solver.Details
+    , testDetails : Dict Pkg.Name Solver.Details
     }
 
 
@@ -176,34 +176,34 @@ initWithEnv package eitherEnv =
                 |> Task.andThen (verifyTestDefaults env package)
 
 
-verifyTestDefaults : InitEnv -> Bool -> Solver.SolverResult (Dict ( String, String ) Pkg.Name Solver.Details) -> Task Never (Result Exit.Init ())
+verifyTestDefaults : InitEnv -> Bool -> Solver.SolverResult (Dict Pkg.Name Solver.Details) -> Task Never (Result Exit.Init ())
 verifyTestDefaults env package result =
     case result of
         Solver.SolverErr exit ->
             Task.succeed (Err (Exit.InitSolverProblem exit))
 
         Solver.NoSolution ->
-            Task.succeed (Err (Exit.InitNoSolution (Dict.keys compare defaults)))
+            Task.succeed (Err (Exit.InitNoSolution (Dict.keys defaults)))
 
         Solver.NoOfflineSolution ->
-            Task.succeed (Err (Exit.InitNoOfflineSolution (Dict.keys compare defaults)))
+            Task.succeed (Err (Exit.InitNoOfflineSolution (Dict.keys defaults)))
 
         Solver.SolverOk details ->
             verify env.cache env.connection env.registry testDefaults
                 |> Task.andThen (createProjectFiles package details)
 
 
-createProjectFiles : Bool -> Dict ( String, String ) Pkg.Name Solver.Details -> Solver.SolverResult (Dict ( String, String ) Pkg.Name Solver.Details) -> Task Never (Result Exit.Init ())
+createProjectFiles : Bool -> Dict Pkg.Name Solver.Details -> Solver.SolverResult (Dict Pkg.Name Solver.Details) -> Task Never (Result Exit.Init ())
 createProjectFiles package details result =
     case result of
         Solver.SolverErr exit ->
             Task.succeed (Err (Exit.InitSolverProblem exit))
 
         Solver.NoSolution ->
-            Task.succeed (Err (Exit.InitNoSolution (Dict.keys compare testDefaults)))
+            Task.succeed (Err (Exit.InitNoSolution (Dict.keys testDefaults)))
 
         Solver.NoOfflineSolution ->
-            Task.succeed (Err (Exit.InitNoOfflineSolution (Dict.keys compare testDefaults)))
+            Task.succeed (Err (Exit.InitNoOfflineSolution (Dict.keys testDefaults)))
 
         Solver.SolverOk testDetails ->
             Utils.dirCreateDirectoryIfMissing True "src"
@@ -230,25 +230,25 @@ writeOutline package initDetails =
 buildPackageOutline : InitDetails -> Outline.Outline
 buildPackageOutline initDetails =
     let
-        directs : Dict ( String, String ) Pkg.Name Con.Constraint
+        directs : Dict Pkg.Name Con.Constraint
         directs =
             Dict.map
                 (\pkg _ ->
                     let
                         (Solver.Details vsn _) =
-                            Utils.find identity pkg initDetails.details
+                            Utils.dictFind pkg initDetails.details
                     in
                     Con.untilNextMajor vsn
                 )
                 packageDefaults
 
-        testDirects : Dict ( String, String ) Pkg.Name Con.Constraint
+        testDirects : Dict Pkg.Name Con.Constraint
         testDirects =
             Dict.map
                 (\pkg _ ->
                     let
                         (Solver.Details vsn _) =
-                            Utils.find identity pkg initDetails.testDetails
+                            Utils.dictFind pkg initDetails.testDetails
                     in
                     Con.untilNextMajor vsn
                 )
@@ -270,29 +270,29 @@ buildPackageOutline initDetails =
 buildAppOutline : InitDetails -> Outline.Outline
 buildAppOutline initDetails =
     let
-        solution : Dict ( String, String ) Pkg.Name V.Version
+        solution : Dict Pkg.Name V.Version
         solution =
             Dict.map (\_ (Solver.Details vsn _) -> vsn) initDetails.details
 
-        directs : Dict ( String, String ) Pkg.Name V.Version
+        directs : Dict Pkg.Name V.Version
         directs =
-            Dict.intersection compare solution defaults
+            Dict.filter (\k _ -> Dict.member k defaults) solution
 
-        indirects : Dict ( String, String ) Pkg.Name V.Version
+        indirects : Dict Pkg.Name V.Version
         indirects =
-            Dict.diff solution defaults
+            Dict.filter (\k _ -> not (Dict.member k defaults)) solution
 
-        testSolution : Dict ( String, String ) Pkg.Name V.Version
+        testSolution : Dict Pkg.Name V.Version
         testSolution =
             Dict.map (\_ (Solver.Details vsn _) -> vsn) initDetails.testDetails
 
-        testDirects : Dict ( String, String ) Pkg.Name V.Version
+        testDirects : Dict Pkg.Name V.Version
         testDirects =
-            Dict.intersection compare testSolution testDefaults
+            Dict.filter (\k _ -> Dict.member k testDefaults) testSolution
 
-        testIndirects : Dict ( String, String ) Pkg.Name V.Version
+        testIndirects : Dict Pkg.Name V.Version
         testIndirects =
-            Dict.diff testSolution testDefaults
+            Dict.filter (\k _ -> not (Dict.member k testDefaults)) testSolution
                 |> flip Dict.diff directs
                 |> flip Dict.diff indirects
     in
@@ -311,38 +311,38 @@ verify :
     Stuff.PackageCache
     -> Solver.Connection
     -> Registry.Registry
-    -> Dict ( String, String ) Pkg.Name Con.Constraint
-    -> Task Never (Solver.SolverResult (Dict ( String, String ) Pkg.Name Solver.Details))
+    -> Dict Pkg.Name Con.Constraint
+    -> Task Never (Solver.SolverResult (Dict Pkg.Name Solver.Details))
 verify cache connection registry constraints =
     Solver.verify cache connection registry constraints
 
 
-defaults : Dict ( String, String ) Pkg.Name Con.Constraint
+defaults : Dict Pkg.Name Con.Constraint
 defaults =
-    Dict.fromList identity
+    Dict.fromList
         [ ( Pkg.core, Con.anything )
         , ( Pkg.browser, Con.anything )
         , ( Pkg.html, Con.anything )
         ]
 
 
-testDefaults : Dict ( String, String ) Pkg.Name Con.Constraint
+testDefaults : Dict Pkg.Name Con.Constraint
 testDefaults =
-    Dict.fromList identity
+    Dict.fromList
         [ ( Pkg.test, Con.anything )
         ]
 
 
-packageDefaults : Dict ( String, String ) Pkg.Name Con.Constraint
+packageDefaults : Dict Pkg.Name Con.Constraint
 packageDefaults =
-    Dict.fromList identity
+    Dict.fromList
         [ ( Pkg.core, Con.anything )
         ]
 
 
-packageTestDefaults : Dict ( String, String ) Pkg.Name Con.Constraint
+packageTestDefaults : Dict Pkg.Name Con.Constraint
 packageTestDefaults =
-    Dict.fromList identity
+    Dict.fromList
         [ ( Pkg.test, Con.anything )
         ]
 

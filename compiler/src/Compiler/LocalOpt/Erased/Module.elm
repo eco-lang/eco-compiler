@@ -43,10 +43,11 @@ import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Error.Main as E
 import Compiler.Reporting.Result as ReportingResult
 import Compiler.Reporting.Warning as W
-import Data.Map as Dict exposing (Dict)
+import Data.Map
+import Dict exposing (Dict)
 import Data.Set as EverySet exposing (EverySet)
 import System.TypeCheck.IO as IO
-import Utils.Main as Utils
+import Utils.Crash exposing (crash)
 
 
 
@@ -62,7 +63,7 @@ type alias MResult i w a =
 {-| Maps definition names to their type annotations from the canonical phase.
 -}
 type alias Annotations =
-    Dict String Name.Name Can.Annotation
+    Dict Name.Name Can.Annotation
 
 
 {-| Optimize a canonical module to produce an optimized local graph.
@@ -73,7 +74,7 @@ Returns a LocalGraph containing optimized nodes and field access counts.
 -}
 optimize : Annotations -> Can.Module -> MResult i (List W.Warning) Opt.LocalGraph
 optimize annotations (Can.Module canData) =
-    Opt.LocalGraph Nothing Dict.empty Dict.empty |> addAliases canData.name canData.aliases |> addUnions canData.name canData.unions |> addEffects canData.name canData.effects |> addDecls canData.name annotations canData.decls
+    Opt.LocalGraph Nothing Data.Map.empty Dict.empty |> addAliases canData.name canData.aliases |> addUnions canData.name canData.unions |> addEffects canData.name canData.effects |> addDecls canData.name annotations canData.decls
 
 
 
@@ -81,7 +82,7 @@ optimize annotations (Can.Module canData) =
 
 
 type alias Nodes =
-    Dict (List String) Opt.Global Opt.Node
+    Data.Map.Dict (List String) Opt.Global Opt.Node
 
 
 
@@ -89,9 +90,9 @@ type alias Nodes =
 -- and adding its constructors as optimized nodes.
 
 
-addUnions : IO.Canonical -> Dict String Name.Name Can.Union -> Opt.LocalGraph -> Opt.LocalGraph
+addUnions : IO.Canonical -> Dict Name.Name Can.Union -> Opt.LocalGraph -> Opt.LocalGraph
 addUnions home unions (Opt.LocalGraph main nodes fields) =
-    Opt.LocalGraph main (Dict.foldr compare (\_ -> addUnion home) nodes unions) fields
+    Opt.LocalGraph main (Dict.foldr (\_ -> addUnion home) nodes unions) fields
 
 
 
@@ -123,7 +124,7 @@ addCtorNode home opts (Can.Ctor c) nodes =
                 Can.Enum ->
                     Opt.Enum c.index
     in
-    Dict.insert Opt.toComparableGlobal (Opt.Global home c.name) node nodes
+    Data.Map.insert Opt.toComparableGlobal (Opt.Global home c.name) node nodes
 
 
 
@@ -132,9 +133,9 @@ addCtorNode home opts (Can.Ctor c) nodes =
 -- Only record aliases generate actual code; other aliases are purely compile-time.
 
 
-addAliases : IO.Canonical -> Dict String Name.Name Can.Alias -> Opt.LocalGraph -> Opt.LocalGraph
+addAliases : IO.Canonical -> Dict Name.Name Can.Alias -> Opt.LocalGraph -> Opt.LocalGraph
 addAliases home aliases graph =
-    Dict.foldr compare (addAlias home) graph aliases
+    Dict.foldr (addAlias home) graph aliases
 
 
 
@@ -157,8 +158,8 @@ addAlias home name (Can.Alias _ tipe) ((Opt.LocalGraph main nodes fieldCounts) a
             in
             Opt.LocalGraph
                 main
-                (Dict.insert Opt.toComparableGlobal (Opt.Global home name) node nodes)
-                (Dict.foldr compare addRecordCtorField fieldCounts fields)
+                (Data.Map.insert Opt.toComparableGlobal (Opt.Global home name) node nodes)
+                (Dict.foldr addRecordCtorField fieldCounts fields)
 
         _ ->
             graph
@@ -168,9 +169,9 @@ addAlias home name (Can.Alias _ tipe) ((Opt.LocalGraph main nodes fieldCounts) a
 -- Increments the usage count for a record field accessed by a record constructor function.
 
 
-addRecordCtorField : Name.Name -> Can.FieldType -> Dict String Name.Name Int -> Dict String Name.Name Int
+addRecordCtorField : Name.Name -> Can.FieldType -> Dict Name.Name Int -> Dict Name.Name Int
 addRecordCtorField name _ fields =
-    Utils.mapInsertWith identity (+) name 1 fields
+    Dict.update name (\v -> Just (Maybe.withDefault 0 v + 1)) fields
 
 
 
@@ -186,7 +187,7 @@ addEffects home effects ((Opt.LocalGraph main nodes fields) as graph) =
             graph
 
         Can.Ports ports ->
-            Dict.foldr compare (addPort home) graph ports
+            Dict.foldr (addPort home) graph ports
 
         Can.Manager _ _ _ manager ->
             let
@@ -206,17 +207,17 @@ addEffects home effects ((Opt.LocalGraph main nodes fields) as graph) =
                 link =
                     Opt.Link fx
 
-                newNodes : Dict (List String) Opt.Global Opt.Node
+                newNodes : Data.Map.Dict (List String) Opt.Global Opt.Node
                 newNodes =
                     case manager of
                         Can.Cmd _ ->
-                            Dict.insert Opt.toComparableGlobal fx (Opt.Manager Opt.Cmd) nodes |> Dict.insert Opt.toComparableGlobal cmd link
+                            Data.Map.insert Opt.toComparableGlobal fx (Opt.Manager Opt.Cmd) nodes |> Data.Map.insert Opt.toComparableGlobal cmd link
 
                         Can.Sub _ ->
-                            Dict.insert Opt.toComparableGlobal fx (Opt.Manager Opt.Sub) nodes |> Dict.insert Opt.toComparableGlobal sub link
+                            Data.Map.insert Opt.toComparableGlobal fx (Opt.Manager Opt.Sub) nodes |> Data.Map.insert Opt.toComparableGlobal sub link
 
                         Can.Fx _ _ ->
-                            Dict.insert Opt.toComparableGlobal fx (Opt.Manager Opt.Fx) nodes |> Dict.insert Opt.toComparableGlobal sub link |> Dict.insert Opt.toComparableGlobal cmd link
+                            Data.Map.insert Opt.toComparableGlobal fx (Opt.Manager Opt.Fx) nodes |> Data.Map.insert Opt.toComparableGlobal sub link |> Data.Map.insert Opt.toComparableGlobal cmd link
             in
             Opt.LocalGraph main newNodes fields
 
@@ -257,12 +258,22 @@ addPort home name port_ graph =
 -- Inserts a node into the optimization graph and merges field access counts.
 
 
-addToGraph : Opt.Global -> Opt.Node -> Dict String Name.Name Int -> Opt.LocalGraph -> Opt.LocalGraph
+addToGraph : Opt.Global -> Opt.Node -> Data.Map.Dict String Name.Name Int -> Opt.LocalGraph -> Opt.LocalGraph
 addToGraph name node fields (Opt.LocalGraph main nodes fieldCounts) =
     Opt.LocalGraph
         main
-        (Dict.insert Opt.toComparableGlobal name node nodes)
-        (Utils.mapUnionWith identity compare (+) fields fieldCounts)
+        (Data.Map.insert Opt.toComparableGlobal name node nodes)
+        (mergeFieldCounts (dataMapToDict fields) fieldCounts)
+
+
+mergeFieldCounts : Dict Name.Name Int -> Dict Name.Name Int -> Dict Name.Name Int
+mergeFieldCounts a b =
+    Dict.foldl (\k v acc -> Dict.update k (\mv -> Just (Maybe.withDefault 0 mv + v)) acc) b a
+
+
+dataMapToDict : Data.Map.Dict String Name.Name v -> Dict Name.Name v
+dataMapToDict mapDict =
+    Dict.fromList (Data.Map.toList compare mapDict)
 
 
 
@@ -359,7 +370,7 @@ addDef home annotations def graph =
         Can.Def (A.At region name) args body ->
             let
                 (Can.Forall _ tipe) =
-                    Utils.find identity name annotations
+                    findAnnotation name annotations
             in
             ReportingResult.warn (W.MissingTypeAnnotation region name tipe)
                 |> ReportingResult.andThen (\_ -> addDefHelp region annotations home name args body graph)
@@ -381,11 +392,11 @@ addDefHelp region annotations home name args body ((Opt.LocalGraph _ nodes field
     else
         let
             (Can.Forall _ tipe) =
-                Utils.find identity name annotations
+                findAnnotation name annotations
 
-            addMain : ( EverySet (List String) Opt.Global, Dict String Name.Name Int, Opt.Main ) -> Opt.LocalGraph
+            addMain : ( EverySet (List String) Opt.Global, Data.Map.Dict String Name.Name Int, Opt.Main ) -> Opt.LocalGraph
             addMain ( deps, fields, main ) =
-                Opt.LocalGraph (Just main) nodes (Utils.mapUnionWith identity compare (+) fields fieldCounts) |> addDefNode home region name args body deps
+                Opt.LocalGraph (Just main) nodes (mergeFieldCounts (dataMapToDict fields) fieldCounts) |> addDefNode home region name args body deps
         in
         case Type.deepDealias tipe of
             Can.TType hm nm [ _ ] ->
@@ -471,9 +482,9 @@ addRecDefs home defs (Opt.LocalGraph main nodes fieldCounts) =
         cycle =
             List.foldr addValueName EverySet.empty defs
 
-        links : Dict (List String) Opt.Global Opt.Node
+        links : Data.Map.Dict (List String) Opt.Global Opt.Node
         links =
-            List.foldr (addLink home (Opt.Link cycleName)) Dict.empty defs
+            List.foldr (addLink home (Opt.Link cycleName)) Data.Map.empty defs
 
         ( deps, fields, State { values, functions } ) =
             Names.run <|
@@ -483,8 +494,8 @@ addRecDefs home defs (Opt.LocalGraph main nodes fieldCounts) =
     in
     Opt.LocalGraph
         main
-        (Dict.insert Opt.toComparableGlobal cycleName (Opt.Cycle names values functions deps) (Dict.union links nodes))
-        (Utils.mapUnionWith identity compare (+) fields fieldCounts)
+        (Data.Map.insert Opt.toComparableGlobal cycleName (Opt.Cycle names values functions deps) (Data.Map.union links nodes))
+        (mergeFieldCounts (dataMapToDict fields) fieldCounts)
 
 
 
@@ -528,14 +539,14 @@ addValueName def names =
 -- Creates a link node pointing to the shared cycle for each definition in the group.
 
 
-addLink : IO.Canonical -> Opt.Node -> Can.Def -> Dict (List String) Opt.Global Opt.Node -> Dict (List String) Opt.Global Opt.Node
+addLink : IO.Canonical -> Opt.Node -> Can.Def -> Data.Map.Dict (List String) Opt.Global Opt.Node -> Data.Map.Dict (List String) Opt.Global Opt.Node
 addLink home link def links =
     case def of
         Can.Def (A.At _ name) _ _ ->
-            Dict.insert Opt.toComparableGlobal (Opt.Global home name) link links
+            Data.Map.insert Opt.toComparableGlobal (Opt.Global home name) link links
 
         Can.TypedDef (A.At _ name) _ _ _ _ ->
-            Dict.insert Opt.toComparableGlobal (Opt.Global home name) link links
+            Data.Map.insert Opt.toComparableGlobal (Opt.Global home name) link links
 
 
 
@@ -579,3 +590,17 @@ addRecDefHelp cycle region (State { values, functions }) name args body =
                             , functions = odef :: functions
                             }
                     )
+
+
+
+-- ====== Helpers ======
+
+
+findAnnotation : Name.Name -> Annotations -> Can.Annotation
+findAnnotation name annotations =
+    case Dict.get name annotations of
+        Just ann ->
+            ann
+
+        Nothing ->
+            crash ("findAnnotation: " ++ name ++ " not found")

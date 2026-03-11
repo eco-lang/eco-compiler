@@ -42,7 +42,8 @@ import Compiler.Reporting.Error.Canonicalize as Error
 import Compiler.Reporting.Result as ReportingResult
 import Compiler.Reporting.Warning as W
 import Compiler.Graph as Graph
-import Data.Map as Dict exposing (Dict)
+import Data.Map
+import Dict exposing (Dict)
 import System.TypeCheck.IO as IO
 import Utils.Crash exposing (crash)
 
@@ -72,16 +73,16 @@ Transforms a source AST module into a canonical AST module by:
   - Canonicalizing and validating exports
 
 -}
-canonicalize : Pkg.Name -> Dict String ModuleName.Raw I.Interface -> Src.Module -> MResult i (List W.Warning) Can.Module
+canonicalize : Pkg.Name -> Data.Map.Dict String ModuleName.Raw I.Interface -> Src.Module -> MResult i (List W.Warning) Can.Module
 canonicalize pkg ifaces ((Src.Module srcData) as modul) =
     let
         home : IO.Canonical
         home =
             IO.Canonical pkg (Src.getName modul)
 
-        cbinops : Dict String Name Can.Binop
+        cbinops : Dict Name Can.Binop
         cbinops =
-            Dict.fromList identity (List.map canonicalizeBinop srcData.infixes)
+            Dict.fromList (List.map canonicalizeBinop srcData.infixes)
     in
     Foreign.createInitialEnv home ifaces srcData.imports
         |> ReportingResult.andThen (Local.add modul)
@@ -334,7 +335,7 @@ toNodeOne env idState (A.At _ (Src.Value valueData)) =
                                                 in
                                                 ( ( toNodeTwo name srcArgs def freeLocals
                                                   , name
-                                                  , Dict.keys compare freeLocals
+                                                  , Dict.keys freeLocals
                                                   )
                                                 , finalState
                                                 )
@@ -365,7 +366,7 @@ toNodeOne env idState (A.At _ (Src.Value valueData)) =
                                                             in
                                                             ( ( toNodeTwo name srcArgs def freeLocals
                                                               , name
-                                                              , Dict.keys compare freeLocals
+                                                              , Dict.keys freeLocals
                                                               )
                                                             , finalState
                                                             )
@@ -386,7 +387,7 @@ toNodeTwo : Name -> List arg -> Can.Def -> Expr.FreeLocals -> NodeTwo
 toNodeTwo name args def freeLocals =
     case args of
         [] ->
-            ( def, name, Dict.foldr compare addDirects [] freeLocals )
+            ( def, name, Dict.foldr addDirects [] freeLocals )
 
         _ ->
             ( def, name, [] )
@@ -419,9 +420,9 @@ Checks that exported values, types, operators, and ports are actually defined in
 -}
 canonicalizeExports :
     List (A.Located Src.Value)
-    -> Dict String Name union
-    -> Dict String Name alias
-    -> Dict String Name binop
+    -> Dict Name union
+    -> Dict Name alias
+    -> Dict Name binop
     -> Can.Effects
     -> A.Located Src.Exposing
     -> MResult i w Can.Exports
@@ -432,15 +433,15 @@ canonicalizeExports values unions aliases binops effects (A.At region exposing_)
 
         Src.Explicit (A.At _ exposeds) ->
             let
-                names : Dict String Name ()
+                names : Dict Name ()
                 names =
-                    Dict.fromList identity (List.map valueToName values)
+                    Dict.fromList (List.map valueToName values)
             in
             ReportingResult.traverse (checkExposed names unions aliases binops effects) (List.map Src.c2Value exposeds)
                 |> ReportingResult.andThen
                     (\infos ->
                         Dups.detect Error.ExportDuplicate (Dups.unions infos)
-                            |> ReportingResult.map Can.Export
+                            |> ReportingResult.map (\dm -> Can.Export dm)
                     )
 
 
@@ -467,17 +468,17 @@ in the module and creates the appropriate canonical export. Reports errors for:
 
 -}
 checkExposed :
-    Dict String Name value
-    -> Dict String Name union
-    -> Dict String Name alias
-    -> Dict String Name binop
+    Dict Name value
+    -> Dict Name union
+    -> Dict Name alias
+    -> Dict Name binop
     -> Can.Effects
     -> Src.Exposed
     -> MResult i w (Dups.Tracker (A.Located Can.Export))
 checkExposed values unions aliases binops effects exposed =
     case exposed of
         Src.Lower (A.At region name) ->
-            if Dict.member identity name values then
+            if Dict.member name values then
                 ok name region Can.ExportValue
 
             else
@@ -486,34 +487,34 @@ checkExposed values unions aliases binops effects exposed =
                         ok name region Can.ExportPort
 
                     Just ports ->
-                        ReportingResult.throw (Error.ExportNotFound region Error.BadVar name (ports ++ Dict.keys compare values))
+                        ReportingResult.throw (Error.ExportNotFound region Error.BadVar name (ports ++ Dict.keys values))
 
         Src.Operator region name ->
-            if Dict.member identity name binops then
+            if Dict.member name binops then
                 ok name region Can.ExportBinop
 
             else
-                ReportingResult.throw (Error.ExportNotFound region Error.BadOp name (Dict.keys compare binops))
+                ReportingResult.throw (Error.ExportNotFound region Error.BadOp name (Dict.keys binops))
 
         Src.Upper (A.At region name) ( _, Src.Public dotDotRegion ) ->
-            if Dict.member identity name unions then
+            if Dict.member name unions then
                 ok name region Can.ExportUnionOpen
 
-            else if Dict.member identity name aliases then
+            else if Dict.member name aliases then
                 ReportingResult.throw (Error.ExportOpenAlias dotDotRegion name)
 
             else
-                ReportingResult.throw (Error.ExportNotFound region Error.BadType name (Dict.keys compare unions ++ Dict.keys compare aliases))
+                ReportingResult.throw (Error.ExportNotFound region Error.BadType name (Dict.keys unions ++ Dict.keys aliases))
 
         Src.Upper (A.At region name) ( _, Src.Private ) ->
-            if Dict.member identity name unions then
+            if Dict.member name unions then
                 ok name region Can.ExportUnionClosed
 
-            else if Dict.member identity name aliases then
+            else if Dict.member name aliases then
                 ok name region Can.ExportAlias
 
             else
-                ReportingResult.throw (Error.ExportNotFound region Error.BadType name (Dict.keys compare unions ++ Dict.keys compare aliases))
+                ReportingResult.throw (Error.ExportNotFound region Error.BadType name (Dict.keys unions ++ Dict.keys aliases))
 
 
 {-| Check if a name is a port in the module's effects.
@@ -529,11 +530,11 @@ checkPorts effects name =
             Just []
 
         Can.Ports ports ->
-            if Dict.member identity name ports then
+            if Dict.member name ports then
                 Nothing
 
             else
-                Just (Dict.keys compare ports)
+                Just (Dict.keys ports)
 
         Can.Manager _ _ _ _ ->
             Just []

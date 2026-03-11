@@ -7,8 +7,10 @@ import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
         ( binopsExpr
+        , boolExpr
         , callExpr
         , caseExpr
+        , ctorExpr
         , ifExpr
         , intExpr
         , lambdaExpr
@@ -291,6 +293,15 @@ testConcatMap expectFn _ =
                   , tipe = concatMapType
                   , body = concatMapBody
                   }
+                , { name = "testValue"
+                  , args = []
+                  , tipe = tType "List" [ tType "Int" [] ]
+                  , body =
+                        callExpr (varExpr "concatMap")
+                            [ lambdaExpr [ pVar "x" ] (listExpr [ varExpr "x" ])
+                            , listExpr [ intExpr 1, intExpr 2 ]
+                            ]
+                  }
                 ]
     in
     expectFn modul
@@ -359,6 +370,15 @@ testIndexedMap expectFn _ =
                   , tipe = indexedMapType
                   , body = indexedMapBody
                   }
+                , { name = "testValue"
+                  , args = []
+                  , tipe = tType "List" [ tType "Int" [] ]
+                  , body =
+                        callExpr (varExpr "indexedMap")
+                            [ lambdaExpr [ pVar "i", pVar "x" ] (varExpr "i")
+                            , listExpr [ intExpr 1, intExpr 2 ]
+                            ]
+                  }
                 ]
     in
     expectFn modul
@@ -418,6 +438,15 @@ testFilter expectFn _ =
                   , args = [ pVar "isGood", pVar "list" ]
                   , tipe = filterType
                   , body = filterBody
+                  }
+                , { name = "testValue"
+                  , args = []
+                  , tipe = tType "List" [ tType "Int" [] ]
+                  , body =
+                        callExpr (varExpr "filter")
+                            [ lambdaExpr [ pVar "x" ] (boolExpr True)
+                            , listExpr [ intExpr 1, intExpr 2 ]
+                            ]
                   }
                 ]
     in
@@ -501,6 +530,15 @@ testFilterMap expectFn _ =
                   , args = [ pVar "f", pVar "xs" ]
                   , tipe = filterMapType
                   , body = filterMapBody
+                  }
+                , { name = "testValue"
+                  , args = []
+                  , tipe = tType "List" [ tType "Int" [] ]
+                  , body =
+                        callExpr (varExpr "filterMap")
+                            [ lambdaExpr [ pVar "x" ] (callExpr (ctorExpr "Just") [ varExpr "x" ])
+                            , listExpr [ intExpr 1, intExpr 2 ]
+                            ]
                   }
                 ]
     in

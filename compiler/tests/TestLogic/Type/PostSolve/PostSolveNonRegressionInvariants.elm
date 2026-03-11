@@ -19,11 +19,13 @@ those in the pre-PostSolve type.
 
 -}
 
+import Array exposing (Array)
 import Compiler.AST.Canonical as Can
 import Compiler.Data.Name as Name
 import Compiler.Reporting.Annotation as A
 import Compiler.Type.PostSolve as PostSolve
 import Data.Map as Dict
+import Dict as StdDict
 import Data.Set as EverySet
 
 
@@ -60,53 +62,57 @@ checkPost005 :
     -> PostSolve.NodeTypes
     -> List Violation
 checkPost005 nodeKinds nodeTypesPre nodeTypesPost =
-    Dict.foldl compare
-        (\nodeId preType acc ->
-            if nodeId < 0 then
-                -- Skip negative IDs (kernel internals)
-                acc
+    Array.foldl
+        (\maybePreType ( nodeId, acc ) ->
+            case maybePreType of
+                Nothing ->
+                    ( nodeId + 1, acc )
 
-            else
-                case Dict.get identity nodeId nodeKinds of
-                    Just KVarKernel ->
-                        -- VarKernel nodes are exempt
+                Just preType ->
+                    ( nodeId + 1
+                    , if nodeId < 0 then
                         acc
 
-                    _ ->
-                        case preType of
-                            Can.TVar _ ->
-                                -- Pre-type is a bare TVar, PostSolve may fill it
+                      else
+                        case Dict.get identity nodeId nodeKinds of
+                            Just KVarKernel ->
                                 acc
 
                             _ ->
-                                -- Pre-type is structured, PostSolve must preserve it
-                                case Dict.get identity nodeId nodeTypesPost of
-                                    Nothing ->
-                                        { invariant = "POST_005"
-                                        , nodeId = nodeId
-                                        , kind = nodeKindToString (Dict.get identity nodeId nodeKinds)
-                                        , preType = preType
-                                        , postType = Can.TUnit -- placeholder
-                                        , details = "Node disappeared from nodeTypesPost"
-                                        }
-                                            :: acc
+                                case preType of
+                                    Can.TVar _ ->
+                                        acc
 
-                                    Just postType ->
-                                        if alphaEq preType postType then
-                                            acc
+                                    _ ->
+                                        case Array.get nodeId nodeTypesPost |> Maybe.andThen identity of
+                                            Nothing ->
+                                                { invariant = "POST_005"
+                                                , nodeId = nodeId
+                                                , kind = nodeKindToString (Dict.get identity nodeId nodeKinds)
+                                                , preType = preType
+                                                , postType = Can.TUnit
+                                                , details = "Node disappeared from nodeTypesPost"
+                                                }
+                                                    :: acc
 
-                                        else
-                                            { invariant = "POST_005"
-                                            , nodeId = nodeId
-                                            , kind = nodeKindToString (Dict.get identity nodeId nodeKinds)
-                                            , preType = preType
-                                            , postType = postType
-                                            , details = "PostSolve changed structured type"
-                                            }
-                                                :: acc
+                                            Just postType ->
+                                                if alphaEq preType postType then
+                                                    acc
+
+                                                else
+                                                    { invariant = "POST_005"
+                                                    , nodeId = nodeId
+                                                    , kind = nodeKindToString (Dict.get identity nodeId nodeKinds)
+                                                    , preType = preType
+                                                    , postType = postType
+                                                    , details = "PostSolve changed structured type"
+                                                    }
+                                                        :: acc
+                    )
         )
-        []
+        ( 0, [] )
         nodeTypesPre
+        |> Tuple.second
 
 
 {-| Check POST\_006: PostSolve does not introduce new free type variables.
@@ -121,67 +127,68 @@ checkPost006 :
     -> PostSolve.NodeTypes
     -> List Violation
 checkPost006 nodeKinds nodeTypesPre nodeTypesPost =
-    Dict.foldl compare
-        (\nodeId postType acc ->
-            if nodeId < 0 then
-                -- Skip negative IDs (kernel internals)
-                acc
+    Array.foldl
+        (\maybePostType ( nodeId, acc ) ->
+            case maybePostType of
+                Nothing ->
+                    ( nodeId + 1, acc )
 
-            else
-                case Dict.get identity nodeId nodeKinds of
-                    Just KVarKernel ->
-                        -- VarKernel nodes are exempt
+                Just postType ->
+                    ( nodeId + 1
+                    , if nodeId < 0 then
                         acc
 
-                    Just KAccessor ->
-                        -- Accessor nodes are exempt (intentionally polymorphic)
-                        acc
-
-                    _ ->
-                        case Dict.get identity nodeId nodeTypesPre of
-                            Nothing ->
-                                -- No pre-type, allow any post-type (new node)
+                      else
+                        case Dict.get identity nodeId nodeKinds of
+                            Just KVarKernel ->
                                 acc
 
-                            Just preType ->
-                                case preType of
-                                    Can.TVar _ ->
-                                        -- Pre-type is a bare TVar placeholder
-                                        -- PostSolve is allowed to fill it with any type
+                            Just KAccessor ->
+                                acc
+
+                            _ ->
+                                case Array.get nodeId nodeTypesPre |> Maybe.andThen identity of
+                                    Nothing ->
                                         acc
 
-                                    _ ->
-                                        -- Pre-type is structured, check free var subset
-                                        let
-                                            postVars =
-                                                freeTypeVars postType
+                                    Just preType ->
+                                        case preType of
+                                            Can.TVar _ ->
+                                                acc
 
-                                            preVars =
-                                                freeTypeVars preType
-                                        in
-                                        if isSubset postVars preVars then
-                                            acc
+                                            _ ->
+                                                let
+                                                    postVars =
+                                                        freeTypeVars postType
 
-                                        else
-                                            let
-                                                newVars =
-                                                    EverySet.diff postVars preVars
-                                                        |> EverySet.toList compare
-                                            in
-                                            { invariant = "POST_006"
-                                            , nodeId = nodeId
-                                            , kind = nodeKindToString (Dict.get identity nodeId nodeKinds)
-                                            , preType = preType
-                                            , postType = postType
-                                            , details =
-                                                "New free vars introduced: ["
-                                                    ++ String.join ", " newVars
-                                                    ++ "]"
-                                            }
-                                                :: acc
+                                                    preVars =
+                                                        freeTypeVars preType
+                                                in
+                                                if isSubset postVars preVars then
+                                                    acc
+
+                                                else
+                                                    let
+                                                        newVars =
+                                                            EverySet.diff postVars preVars
+                                                                |> EverySet.toList compare
+                                                    in
+                                                    { invariant = "POST_006"
+                                                    , nodeId = nodeId
+                                                    , kind = nodeKindToString (Dict.get identity nodeId nodeKinds)
+                                                    , preType = preType
+                                                    , postType = postType
+                                                    , details =
+                                                        "New free vars introduced: ["
+                                                            ++ String.join ", " newVars
+                                                            ++ "]"
+                                                    }
+                                                        :: acc
+                    )
         )
-        []
+        ( 0, [] )
         nodeTypesPost
+        |> Tuple.second
 
 
 {-| Check if set A is a subset of set B.
@@ -261,16 +268,16 @@ alphaEqExt ext1 ext2 =
 
 
 alphaEqFields :
-    Dict.Dict String Name.Name Can.FieldType
-    -> Dict.Dict String Name.Name Can.FieldType
+    StdDict.Dict Name.Name Can.FieldType
+    -> StdDict.Dict Name.Name Can.FieldType
     -> Bool
 alphaEqFields fields1 fields2 =
     let
         list1 =
-            Dict.toList compare fields1
+            StdDict.toList fields1
 
         list2 =
-            Dict.toList compare fields2
+            StdDict.toList fields2
     in
     if List.length list1 /= List.length list2 then
         False
@@ -343,7 +350,7 @@ freeTypeVars tipe =
                             EverySet.empty
 
                 fieldVars =
-                    Dict.foldl compare
+                    StdDict.foldl
                         (\_ (Can.FieldType _ fieldType) acc ->
                             EverySet.union acc (freeTypeVars fieldType)
                         )

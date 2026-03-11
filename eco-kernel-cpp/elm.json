@@ -6,6 +6,7 @@
     "version": "1.0.0",
     "exposed-modules": [
         "Eco.Console",
+        "Eco.Crash",
         "Eco.Env",
         "Eco.File",
         "Eco.Http",

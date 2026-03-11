@@ -23,7 +23,7 @@ import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.LocalOpt.Typed.Names as Names
 import Compiler.Reporting.Annotation as A
-import Data.Map as Dict exposing (Dict)
+import Dict exposing (Dict)
 import Utils.Crash exposing (crash)
 
 
@@ -125,7 +125,7 @@ toEncoder tipe =
             encode "object"
                 |> Names.andThen
                     (\object ->
-                        Names.traverse encodeField (Dict.toList compare fields)
+                        Names.traverse encodeField (Dict.toList fields)
                             |> Names.andThen
                                 (\keyValuePairs ->
                                     let
@@ -135,7 +135,7 @@ toEncoder tipe =
                                         funcType =
                                             Can.TLambda tipe valueType
                                     in
-                                    Names.registerFieldDict fields
+                                    Names.registerFieldList (Dict.keys fields)
                                         (TOpt.Function [ ( Name.dollar, tipe ) ]
                                             (TOpt.Call A.zero object [ TOpt.List A.zero keyValuePairs listType ] valueType)
                                             funcType
@@ -561,7 +561,7 @@ indexAndThen i tipe decoder =
             )
 
 
-decodeRecord : Dict String Name.Name Can.FieldType -> Can.Type -> Names.Tracker TOpt.Expr
+decodeRecord : Dict Name.Name Can.FieldType -> Can.Type -> Names.Tracker TOpt.Expr
 decodeRecord fields recordType =
     let
         decoderType =
@@ -577,7 +577,7 @@ decodeRecord fields recordType =
     decode "succeed"
         |> Names.andThen
             (\succeed ->
-                Names.registerFieldDict fields (Dict.toList compare fields)
+                Names.registerFieldList (Dict.keys fields) (Dict.toList fields)
                     |> Names.andThen
                         (\fieldDecoders ->
                             List.foldl (\fieldDecoder -> Names.andThen (\optCall -> fieldAndThen optCall fieldDecoder))

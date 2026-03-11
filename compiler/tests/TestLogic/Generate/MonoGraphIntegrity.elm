@@ -18,9 +18,9 @@ invariants are satisfied.
 
 -}
 
+import Array exposing (Array)
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.Source as Src
-import Data.Map as Dict
 import Data.Set as Set exposing (EverySet)
 import Expect
 import TestLogic.TestPipeline as Pipeline
@@ -124,10 +124,18 @@ expectSpecRegistryComplete srcModule =
 -}
 collectCallabilityChecks : Mono.MonoGraph -> List (() -> Expect.Expectation)
 collectCallabilityChecks (Mono.MonoGraph data) =
-    Dict.foldl compare
-        (\specId node acc -> checkNodeCallability specId node ++ acc)
-        []
+    Array.foldl
+        (\maybeNode ( specId, acc ) ->
+            case maybeNode of
+                Nothing ->
+                    ( specId + 1, acc )
+
+                Just node ->
+                    ( specId + 1, checkNodeCallability specId node ++ acc )
+        )
+        ( 0, [] )
         data.nodes
+        |> Tuple.second
 
 
 {-| Check if a function-typed node is properly callable.
@@ -421,12 +429,30 @@ collectClosureChecks (Mono.MonoGraph data) =
     let
         -- Get all defined SpecIds
         definedSpecIds =
-            Dict.keys compare data.nodes |> Set.fromList identity
+            Array.foldl
+                (\maybeNode ( idx, acc ) ->
+                    case maybeNode of
+                        Just _ ->
+                            ( idx + 1, Set.insert identity idx acc )
+
+                        Nothing ->
+                            ( idx + 1, acc )
+                )
+                ( 0, Set.empty )
+                data.nodes
+                |> Tuple.second
 
         -- Collect all referenced SpecIds
         referencedSpecIds =
-            Dict.foldl compare
-                (\_ node acc -> Set.union acc (collectSpecIdRefsFromNode node))
+            Array.foldl
+                (\maybeNode acc ->
+                    case maybeNode of
+                        Nothing ->
+                            acc
+
+                        Just node ->
+                            Set.union acc (collectSpecIdRefsFromNode node)
+                )
                 Set.empty
                 data.nodes
 
@@ -442,10 +468,18 @@ collectClosureChecks (Mono.MonoGraph data) =
 
         -- Check MonoVarLocal scoping for all nodes
         localVarIssues =
-            Dict.foldl compare
-                (\specId node acc -> checkNodeLocalVarScoping specId node ++ acc)
-                []
+            Array.foldl
+                (\maybeNode ( specId, acc ) ->
+                    case maybeNode of
+                        Nothing ->
+                            ( specId + 1, acc )
+
+                        Just node ->
+                            ( specId + 1, checkNodeLocalVarScoping specId node ++ acc )
+                )
+                ( 0, [] )
                 data.nodes
+                |> Tuple.second
     in
     specIdIssues ++ localVarIssues
 
@@ -867,7 +901,18 @@ collectRegistryChecks (Mono.MonoGraph data) =
     let
         -- Get all defined SpecIds
         definedSpecIds =
-            Dict.keys compare data.nodes |> Set.fromList identity
+            Array.foldl
+                (\maybeNode ( idx, acc ) ->
+                    case maybeNode of
+                        Just _ ->
+                            ( idx + 1, Set.insert identity idx acc )
+
+                        Nothing ->
+                            ( idx + 1, acc )
+                )
+                ( 0, Set.empty )
+                data.nodes
+                |> Tuple.second
 
         -- Get all SpecIds from registry
         registrySpecIds =
@@ -887,7 +932,16 @@ collectRegistryChecks (Mono.MonoGraph data) =
 -}
 collectRegistrySpecIds : Mono.SpecializationRegistry -> EverySet Int Int
 collectRegistrySpecIds registry =
-    -- SpecializationRegistry has reverseMapping : Dict Int Int (Global, MonoType, Maybe LambdaId)
-    -- where the key is SpecId, so we just need the keys
-    Dict.keys compare registry.reverseMapping
+    -- SpecializationRegistry has reverseMapping : Array (Maybe (Global, MonoType, Maybe LambdaId))
+    -- where the index is SpecId, so we collect indices of non-Nothing entries
+    Array.toIndexedList registry.reverseMapping
+        |> List.filterMap
+            (\( idx, maybeEntry ) ->
+                case maybeEntry of
+                    Just _ ->
+                        Just idx
+
+                    Nothing ->
+                        Nothing
+            )
         |> Set.fromList identity

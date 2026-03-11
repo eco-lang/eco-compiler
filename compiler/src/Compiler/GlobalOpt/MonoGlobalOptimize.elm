@@ -1,13 +1,16 @@
-module Compiler.GlobalOpt.MonoGlobalOptimize exposing (globalOptimize)
+module Compiler.GlobalOpt.MonoGlobalOptimize exposing (globalOptimize, globalOptimizeWithLog)
 
-{-| Global optimization pass that runs after monomorphization but before MLIR codegen.
+{-| Global optimization pass that runs after monomorphization and inlining but before MLIR codegen.
+
+Assumes MonoInlineSimplify.optimize has already been applied.
 
 This phase:
 
 1.  Ensures top-level function-typed values (globals/ports) are represented as closures before staging
-2.  Canonicalizes closure/tail-func types by flattening to match param counts (GOPT\_001)
-3.  Normalizes ABI for case/if expressions with function-typed results (GOPT\_003)
-4.  Annotates call staging metadata (call model, stage arities, etc.)
+2.  Canonicalizes closure staging via graph-based solver + rewriting (GOPT\_001, GOPT\_003)
+3.  Validates closure staging invariants
+4.  Clones functions to ensure homogeneous closure parameter ABIs
+5.  Annotates call staging metadata (call model, stage arities, etc.)
 
 Monomorphize is staging-agnostic - it preserves curried TLambda structure from TypeSubst.
 GlobalOpt owns all staging/ABI decisions and canonicalizes the types to match param counts.
@@ -19,17 +22,17 @@ not at runtime. The compiler trusts that canonicalizeClosureStaging produces cor
 
 -}
 
+import Array exposing (Array)
 import Compiler.AST.Monomorphized as Mono
 import Compiler.Data.Name exposing (Name)
 import Compiler.GlobalOpt.AbiCloning as AbiCloning
-import Compiler.GlobalOpt.MonoInlineSimplify as MonoInlineSimplify
 import Compiler.GlobalOpt.MonoReturnArity as MonoReturnArity
-import Compiler.GlobalOpt.MonoTraverse as Traverse
 import Compiler.GlobalOpt.Staging as Staging
 import Compiler.Monomorphize.Closure as Closure
 import Compiler.Reporting.Annotation as A
-import Data.Map as Dict exposing (Dict)
+import Dict exposing (Dict)
 import System.TypeCheck.IO as IO
+import Task exposing (Task)
 
 
 
@@ -47,7 +50,7 @@ type alias GlobalCtx =
 initGlobalCtx : Mono.MonoGraph -> GlobalCtx
 initGlobalCtx (Mono.MonoGraph record) =
     { registry = record.registry
-    , lambdaCounter = maxLambdaIndexInGraph (Mono.MonoGraph record) + 1
+    , lambdaCounter = record.nextLambdaIndex
     }
 
 
@@ -66,8 +69,8 @@ freshLambdaId home ctx =
 This replaces MLIR's Ctx.lookupVarCallModel and Ctx.lookupVarArity logic.
 -}
 type alias CallEnv =
-    { varCallModel : Dict String Name Mono.CallModel
-    , varSourceArity : Dict String Name Int
+    { varCallModel : Dict Name Mono.CallModel
+    , varSourceArity : Dict Name Int
     }
 
 
@@ -84,104 +87,81 @@ emptyCallEnv =
 
 {-| Run global optimization passes on a monomorphized program graph.
 
-New structure using global staging algorithm:
+Assumes MonoInlineSimplify.optimize has already been applied externally.
 
-1.  Phase 0: Inlining and simplification
-2.  Phase 1+2: Staging analysis + graph rewrite (wrappers + types)
+1.  Phase 1: Wrap top-level callables in closures
+2.  Phase 2: Staging analysis + graph rewrite (wrappers + types)
 3.  Phase 3: Validate closure staging invariants (GOPT\_001, GOPT\_003)
-4.  Phase 4: Annotate call staging metadata using staging solution
+4.  Phase 4: ABI Cloning - ensure homogeneous closure parameters
+5.  Phase 5: Annotate call staging metadata using staging solution
 
 -}
 globalOptimize : Mono.MonoGraph -> Mono.MonoGraph
-globalOptimize graph0 =
+globalOptimize graph0a =
     let
-        -- Phase 0: Inlining and simplification (runs first so subsequent phases
-        -- can canonicalize/normalize any new closures or case/if expressions)
-        ( graph0a, _ ) =
-            MonoInlineSimplify.optimize graph0
-
-        -- Phase 0.5: Wrap top-level function-typed values in closures
+        -- Phase 1: Wrap top-level function-typed values in closures
         -- (alias wrappers for globals/kernels, general closures for other exprs).
-        graph0b =
+        graph1 =
             wrapTopLevelCallables graph0a
 
-        -- Phase 1+2: Staging analysis + graph rewrite (wrappers + types)
-        ( _, graph1 ) =
-            Staging.analyzeAndSolveStaging graph0b
+        -- Phase 2: Staging analysis + graph rewrite (wrappers + types)
+        ( _, graph2 ) =
+            Staging.analyzeAndSolveStaging graph1
 
         -- Phase 3: Validate closure staging invariants (GOPT_001, GOPT_003)
-        graph2 =
-            Staging.validateClosureStaging graph1
+        graph3 =
+            Staging.validateClosureStaging graph2
 
-        -- Phase 3.5: ABI Cloning - ensure homogeneous closure parameters
+        -- Phase 4: ABI Cloning - ensure homogeneous closure parameters
         -- Clones functions when a closure-typed parameter receives different
         -- capture ABIs at different call sites.
-        graph2a =
-            AbiCloning.abiCloningPass graph2
+        graph4 =
+            AbiCloning.abiCloningPass graph3
     in
-    annotateCallStaging graph2a
+    -- Phase 5: Annotate call staging metadata
+    annotateCallStaging graph4
 
 
-
--- LAMBDA INDEX SCANNING
-
-
-maxLambdaIndexInGraph : Mono.MonoGraph -> Int
-maxLambdaIndexInGraph (Mono.MonoGraph { nodes }) =
-    Dict.foldl compare
-        (\_ node acc -> max acc (maxLambdaIndexInNode node))
-        0
-        nodes
-
-
-maxLambdaIndexInNode : Mono.MonoNode -> Int
-maxLambdaIndexInNode node =
-    case node of
-        Mono.MonoDefine expr _ ->
-            maxLambdaIndexInExpr expr
-
-        Mono.MonoTailFunc _ expr _ ->
-            maxLambdaIndexInExpr expr
-
-        Mono.MonoPortIncoming expr _ ->
-            maxLambdaIndexInExpr expr
-
-        Mono.MonoPortOutgoing expr _ ->
-            maxLambdaIndexInExpr expr
-
-        Mono.MonoCycle defs _ ->
-            List.foldl (\( _, e ) acc -> max acc (maxLambdaIndexInExpr e)) 0 defs
-
-        Mono.MonoCtor _ _ ->
-            0
-
-        Mono.MonoEnum _ _ ->
-            0
-
-        Mono.MonoExtern _ ->
-            0
-
-        Mono.MonoManagerLeaf _ _ ->
-            0
-
-
-{-| Extract lambda index from closure, or 0 for other expressions.
+{-| Like globalOptimize, but logs each sub-pass to stderr via the provided logger.
 -}
-lambdaIndexOf : Mono.MonoExpr -> Int
-lambdaIndexOf expr =
-    case expr of
-        Mono.MonoClosure info _ _ ->
-            case info.lambdaId of
-                Mono.AnonymousLambda _ i ->
-                    i
+globalOptimizeWithLog : (String -> Task x ()) -> Mono.MonoGraph -> Task x Mono.MonoGraph
+globalOptimizeWithLog log graph0a =
+    log "  Phase 1: Wrap top-level callables..."
+        |> Task.andThen
+            (\_ ->
+                let
+                    graph1 =
+                        wrapTopLevelCallables graph0a
+                in
+                log "  Phase 2: Staging analysis + rewrite..."
+                    |> Task.andThen
+                        (\_ ->
+                            let
+                                ( _, graph2 ) =
+                                    Staging.analyzeAndSolveStaging graph1
+                            in
+                            log "  Phase 3: Validate closure staging..."
+                                |> Task.andThen
+                                    (\_ ->
+                                        let
+                                            graph3 =
+                                                Staging.validateClosureStaging graph2
+                                        in
+                                        log "  Phase 4: ABI cloning..."
+                                            |> Task.andThen
+                                                (\_ ->
+                                                    let
+                                                        graph4 =
+                                                            AbiCloning.abiCloningPass graph3
+                                                    in
+                                                    log "  Phase 5: Annotate call staging..."
+                                                        |> Task.map (\_ -> annotateCallStaging graph4)
+                                                )
+                                    )
+                        )
+            )
 
-        _ ->
-            0
 
-
-maxLambdaIndexInExpr : Mono.MonoExpr -> Int
-maxLambdaIndexInExpr =
-    Traverse.foldExpr (\e acc -> max (lambdaIndexOf e) acc) 0
 
 
 
@@ -193,7 +173,7 @@ maxLambdaIndexInExpr =
 
 specHome : Mono.SpecializationRegistry -> Int -> IO.Canonical
 specHome registry specId =
-    case Dict.get identity specId registry.reverseMapping of
+    case Array.get specId registry.reverseMapping |> Maybe.andThen identity of
         Just ( global, _, _ ) ->
             case global of
                 Mono.Global home _ ->
@@ -217,7 +197,7 @@ collectCaseLeafFunctionsGO :
 collectCaseLeafFunctionsGO monoDecider monoJumps =
     let
         jumpDict =
-            Dict.fromList identity monoJumps
+            Dict.fromList monoJumps
 
         collectFromDecider : Mono.Decider Mono.MonoChoice -> List Mono.MonoType -> List Mono.MonoType
         collectFromDecider dec acc =
@@ -233,7 +213,7 @@ collectCaseLeafFunctionsGO monoDecider monoJumps =
                                     acc
 
                         Mono.Jump idx ->
-                            case Dict.get identity idx jumpDict of
+                            case Dict.get idx jumpDict of
                                 Just jumpExpr ->
                                     case Mono.typeOf jumpExpr of
                                         Mono.MFunction _ _ ->
@@ -992,22 +972,28 @@ wrapTopLevelCallables (Mono.MonoGraph record0) =
         ctx0 =
             initGlobalCtx (Mono.MonoGraph record0)
 
-        ( newNodes, _ ) =
-            Dict.foldl compare
-                (\specId node ( accNodes, accCtx ) ->
-                    let
-                        home =
-                            specHome accCtx.registry specId
+        ( newNodes, finalCtx ) =
+            Array.foldl
+                (\maybeNode ( accNodes, specId, accCtx ) ->
+                    case maybeNode of
+                        Just node ->
+                            let
+                                home =
+                                    specHome accCtx.registry specId
 
-                        ( newNode, accCtx1 ) =
-                            wrapNodeCallables home node accCtx
-                    in
-                    ( Dict.insert identity specId newNode accNodes, accCtx1 )
+                                ( newNode, accCtx1 ) =
+                                    wrapNodeCallables home node accCtx
+                            in
+                            ( Array.push (Just newNode) accNodes, specId + 1, accCtx1 )
+
+                        Nothing ->
+                            ( Array.push Nothing accNodes, specId + 1, accCtx )
                 )
-                ( Dict.empty, ctx0 )
+                ( Array.empty, 0, ctx0 )
                 record0.nodes
+                |> (\( n, _, c ) -> ( n, c ))
     in
-    Mono.MonoGraph { record0 | nodes = newNodes }
+    Mono.MonoGraph { record0 | nodes = newNodes, nextLambdaIndex = finalCtx.lambdaCounter }
 
 
 wrapNodeCallables :
@@ -1073,7 +1059,7 @@ annotateCallStaging graph =
             graph
 
         newNodes =
-            Dict.map (\_ node -> annotateNodeCalls graph emptyCallEnv node) record.nodes
+            Array.map (Maybe.map (annotateNodeCalls graph emptyCallEnv)) record.nodes
     in
     Mono.MonoGraph { record | nodes = newNodes }
 
@@ -1259,7 +1245,7 @@ annotateDefCalls graph env def =
                         Just model ->
                             { env
                                 | varCallModel =
-                                    Dict.insert identity name model env.varCallModel
+                                    Dict.insert name model env.varCallModel
                             }
 
                         Nothing ->
@@ -1270,7 +1256,7 @@ annotateDefCalls graph env def =
                         Just arity ->
                             { env1
                                 | varSourceArity =
-                                    Dict.insert identity name arity env1.varSourceArity
+                                    Dict.insert name arity env1.varSourceArity
                             }
 
                         Nothing ->
@@ -1318,7 +1304,7 @@ callModelForExpr : Mono.MonoGraph -> CallEnv -> Mono.MonoExpr -> Maybe Mono.Call
 callModelForExpr (Mono.MonoGraph { nodes }) env expr =
     case expr of
         Mono.MonoVarGlobal _ specId _ ->
-            case Dict.get identity specId nodes of
+            case Array.get specId nodes |> Maybe.andThen identity of
                 Just (Mono.MonoExtern _) ->
                     Just Mono.FlattenedExternal
 
@@ -1338,7 +1324,7 @@ callModelForExpr (Mono.MonoGraph { nodes }) env expr =
             Just Mono.FlattenedExternal
 
         Mono.MonoVarLocal name _ ->
-            Dict.get identity name env.varCallModel
+            Dict.get name env.varCallModel
 
         Mono.MonoClosure _ _ _ ->
             Just Mono.StageCurried
@@ -1374,7 +1360,7 @@ sourceArityForExpr graph env expr =
         Mono.MonoVarGlobal _ specId _ ->
             -- Look up the node to get its closure's param count
             -- Match the exact logic of extractNodeSignature in Context.elm
-            case Dict.get identity specId nodes of
+            case Array.get specId nodes |> Maybe.andThen identity of
                 Just (Mono.MonoDefine innerExpr _) ->
                     -- For defines, check if the expression is a closure
                     case innerExpr of
@@ -1432,7 +1418,7 @@ sourceArityForExpr graph env expr =
 
         Mono.MonoVarLocal name _ ->
             -- Look up from CallEnv
-            Dict.get identity name env.varSourceArity
+            Dict.get name env.varSourceArity
 
         Mono.MonoClosure closureInfo _ _ ->
             Just (List.length closureInfo.params)
@@ -1667,7 +1653,8 @@ closureBodyStageArities graph expr =
     in
     case expr of
         Mono.MonoVarGlobal _ specId _ ->
-            Dict.get identity specId nodes
+            Array.get specId nodes
+                |> Maybe.andThen identity
                 |> Maybe.andThen getNodeBodyArities
 
         Mono.MonoClosure _ body _ ->

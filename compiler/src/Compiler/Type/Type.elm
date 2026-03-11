@@ -7,7 +7,7 @@ module Compiler.Type.Type exposing
     , mkFlexVar, mkFlexNumber, nameToFlex, nameToRigid
     , unnamedFlexVar, unnamedFlexSuper
     , noRank, outermostRank, noMark, nextMark
-    , toAnnotation, toCanType, toErrorType
+    , toAnnotation, toCanType, toCanTypeBatch, toErrorType
     )
 
 {-| Internal type representation for type inference.
@@ -63,6 +63,7 @@ Used by the solver to track generalization levels:
 
 -}
 
+import Array exposing (Array)
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Utils.Type as Type
 import Compiler.Data.Name as Name exposing (Name)
@@ -72,7 +73,8 @@ import Compiler.Reporting.Error.Type as E
 import Compiler.Type.Error as ET
 import Compiler.Type.UnionFind as UF
 import Control.Monad.State.TypeCheck.Strict as State exposing (StateT, liftIO)
-import Data.Map as Dict exposing (Dict)
+import Data.Map
+import Dict exposing (Dict)
 import Maybe.Extra as Maybe
 import System.TypeCheck.IO as IO exposing (Content(..), Descriptor(..), FlatType(..), IO, Mark(..), SuperType(..), Variable)
 import Utils.Crash exposing (crash)
@@ -97,7 +99,7 @@ type Constraint
     | CForeign A.Region Name Can.Annotation (E.Expected Type)
     | CPattern A.Region E.PCategory Type (E.PExpected Type)
     | CAnd (List Constraint)
-    | CLet (List Variable) (List Variable) (Dict String Name (A.Located Type)) Constraint Constraint
+    | CLet (List Variable) (List Variable) (Data.Map.Dict String Name (A.Located Type)) Constraint Constraint
 
 
 {-| Wraps a constraint with existentially quantified flex variables.
@@ -108,7 +110,7 @@ the given constraint, with no header bindings.
 -}
 exists : List Variable -> Constraint -> Constraint
 exists flexVars constraint =
-    CLet [] flexVars Dict.empty constraint CTrue
+    CLet [] flexVars Data.Map.empty constraint CTrue
 
 
 
@@ -128,7 +130,7 @@ type Type
     | AppN IO.Canonical Name (List Type)
     | FunN Type Type
     | EmptyRecordN
-    | RecordN (Dict String Name Type) Type
+    | RecordN (Data.Map.Dict String Name Type) Type
     | UnitN
     | TupleN Type Type (List Type)
 
@@ -451,6 +453,57 @@ toCanType variable =
             )
 
 
+{-| Convert an array of solver Variables to Can.Types using a shared NameState.
+
+This ensures that type variables across different expressions get globally
+unique names, preventing collisions where e.g. two lambda parameters
+independently both get named "a".
+
+-}
+toCanTypeBatch : Array (Maybe Variable) -> IO (Array (Maybe Can.Type))
+toCanTypeBatch nodeVars =
+    -- First pass: collect all user-provided names across all variables
+    Array.foldl
+        (\maybeVar accIO ->
+            case maybeVar of
+                Nothing ->
+                    accIO
+
+                Just var ->
+                    IO.andThen (\names -> getVarNames var names) accIO
+        )
+        (IO.pure Dict.empty)
+        nodeVars
+        |> IO.andThen
+            (\allUserNames ->
+                -- Second pass: convert all variables with a shared NameState
+                State.runStateT
+                    (arrayTraverseMaybeState variableToCanType nodeVars)
+                    (makeNameState allUserNames)
+                    |> IO.map Tuple.first
+            )
+
+
+arrayTraverseMaybeState : (a -> StateT NameState b) -> Array (Maybe a) -> StateT NameState (Array (Maybe b))
+arrayTraverseMaybeState f arr =
+    Array.foldl
+        (\maybeVal accState ->
+            accState
+                |> State.andThen
+                    (\acc ->
+                        case maybeVal of
+                            Nothing ->
+                                State.pure (Array.push Nothing acc)
+
+                            Just val ->
+                                f val
+                                    |> State.map (\result -> Array.push (Just result) acc)
+                    )
+        )
+        (State.pure Array.empty)
+        arr
+
+
 variableToCanType : Variable -> State.StateT NameState Can.Type
 variableToCanType variable =
     liftIO (UF.get variable)
@@ -535,6 +588,7 @@ termToCanType term =
 
         Record1 fields extension ->
             State.traverseMap compare identity fieldToCanType fields
+                |> State.map (Data.Map.toList compare >> Dict.fromList)
                 |> State.andThen
                     (\canFields ->
                         variableToCanType extension
@@ -714,7 +768,7 @@ termToErrorType term =
                     )
 
         EmptyRecord1 ->
-            State.pure (ET.Record Dict.empty ET.Closed)
+            State.pure (ET.Record Data.Map.empty ET.Closed)
 
         Record1 fields extension ->
             State.traverseMap compare identity variableToErrorType fields
@@ -726,7 +780,7 @@ termToErrorType term =
                                 (\errExt ->
                                     case errExt of
                                         ET.Record subFields subExt ->
-                                            ET.Record (Dict.union subFields errFields) subExt
+                                            ET.Record (Data.Map.union subFields errFields) subExt
 
                                         ET.FlexVar ext ->
                                             ET.Record errFields (ET.FlexOpen ext)
@@ -754,7 +808,7 @@ termToErrorType term =
 
 
 type alias NameStateData =
-    { taken : Dict String Name ()
+    { taken : Dict Name ()
     , normals : Int
     , numbers : Int
     , comparables : Int
@@ -767,7 +821,7 @@ type NameState
     = NameState NameStateData
 
 
-makeNameState : Dict String Name Variable -> NameState
+makeNameState : Dict Name Variable -> NameState
 makeNameState takenNames =
     NameState { taken = Dict.map (\_ _ -> ()) takenNames, normals = 0, numbers = 0, comparables = 0, appendables = 0, compAppends = 0 }
 
@@ -797,18 +851,18 @@ getFreshVarName =
             )
 
 
-getFreshVarNameHelp : Int -> Dict String Name () -> ( Name, Int, Dict String Name () )
+getFreshVarNameHelp : Int -> Dict Name () -> ( Name, Int, Dict Name () )
 getFreshVarNameHelp index taken =
     let
         name : Name
         name =
             Name.fromTypeVariableScheme index
     in
-    if Dict.member identity name taken then
+    if Dict.member name taken then
         getFreshVarNameHelp (index + 1) taken
 
     else
-        ( name, index + 1, Dict.insert identity name () taken )
+        ( name, index + 1, Dict.insert name () taken )
 
 
 
@@ -868,25 +922,25 @@ getFreshSuper prefix getter setter =
             )
 
 
-getFreshSuperHelp : Name -> Int -> Dict String Name () -> ( Name, Int, Dict String Name () )
+getFreshSuperHelp : Name -> Int -> Dict Name () -> ( Name, Int, Dict Name () )
 getFreshSuperHelp prefix index taken =
     let
         name : Name
         name =
             Name.fromTypeVariable prefix index
     in
-    if Dict.member identity name taken then
+    if Dict.member name taken then
         getFreshSuperHelp prefix (index + 1) taken
 
     else
-        ( name, index + 1, Dict.insert identity name () taken )
+        ( name, index + 1, Dict.insert name () taken )
 
 
 
 -- ====== GET ALL VARIABLE NAMES ======
 
 
-getVarNames : Variable -> Dict String Name Variable -> IO (Dict String Name Variable)
+getVarNames : Variable -> Dict Name Variable -> IO (Dict Name Variable)
 getVarNames var takenNames =
     UF.get var
         |> IO.andThen
@@ -939,7 +993,7 @@ getVarNames var takenNames =
                                                 IO.pure takenNames
 
                                             Record1 fields extension ->
-                                                Dict.values compare fields |> IO.foldrM getVarNames takenNames |> IO.andThen (getVarNames extension)
+                                                Data.Map.values compare fields |> IO.foldrM getVarNames takenNames |> IO.andThen (getVarNames extension)
 
                                             Unit1 ->
                                                 IO.pure takenNames
@@ -954,14 +1008,14 @@ getVarNames var takenNames =
 -- ====== REGISTER NAME ======
 
 
-addName : Int -> Name -> Variable -> (Name -> Content) -> Dict String Name Variable -> IO (Dict String Name Variable)
+addName : Int -> Name -> Variable -> (Name -> Content) -> Dict Name Variable -> IO (Dict Name Variable)
 addName index givenName var makeContent takenNames =
     let
         indexedName : Name
         indexedName =
             Name.fromTypeVariable givenName index
     in
-    case Dict.get identity indexedName takenNames of
+    case Dict.get indexedName takenNames of
         Nothing ->
             (if indexedName == givenName then
                 IO.pure ()
@@ -972,7 +1026,7 @@ addName index givenName var makeContent takenNames =
                         IO.makeDescriptor (makeContent indexedName) props.rank props.mark props.copy
                     )
             )
-                |> IO.map (\_ -> Dict.insert identity indexedName var takenNames)
+                |> IO.map (\_ -> Dict.insert indexedName var takenNames)
 
         Just otherVar ->
             UF.equivalent var otherVar

@@ -17,7 +17,8 @@ optimizations.
 import Compiler.AST.Optimized as Opt
 import Compiler.Data.Map.Utils as Map
 import Compiler.Reporting.Annotation as A
-import Data.Map as Dict
+import Data.Map as EveryDict
+import Dict
 
 
 
@@ -145,13 +146,13 @@ hasDebug expression =
             hasDebug r
 
         Opt.Update _ r fs ->
-            hasDebug r || List.any hasDebug (Dict.values A.compareLocated fs)
+            hasDebug r || List.any hasDebug (EveryDict.values A.compareLocated fs)
 
         Opt.Record fs ->
-            List.any hasDebug (Dict.values compare fs)
+            List.any hasDebug (Dict.values fs)
 
         Opt.TrackedRecord _ fs ->
-            List.any hasDebug (Dict.values A.compareLocated fs)
+            List.any hasDebug (EveryDict.values A.compareLocated fs)
 
         Opt.Unit ->
             False

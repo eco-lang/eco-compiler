@@ -30,6 +30,7 @@ module Compiler.AST.SourceBuilder exposing
     , makePortModule
       -- Fuzzers
     , negateExpr
+    , opExpr
     , pAlias
     , pAnything
     , pChr
@@ -238,6 +239,13 @@ recordExpr fields =
 negateExpr : Src.Expr -> Src.Expr
 negateExpr inner =
     A.At A.zero (Src.Negate inner)
+
+
+{-| Create an operator-as-function expression, e.g. (==), (+).
+-}
+opExpr : Name -> Src.Expr
+opExpr name =
+    A.At A.zero (Src.Op name)
 
 
 {-| Create a Binops expression (left-to-right chain of binary operators).

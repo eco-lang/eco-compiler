@@ -15,7 +15,7 @@ import Bitwise
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.Source as Src
 import Compiler.Generate.MLIR.Types as Types
-import Data.Map as Dict
+import Dict
 import Expect exposing (Expectation)
 import Mlir.Mlir exposing (MlirModule, MlirOp, MlirType(..))
 import TestLogic.Generate.CodeGen.Invariants
@@ -66,9 +66,9 @@ checkProjectionLayoutBitmap mlirModule monoGraph =
 
 {-| Build a map from tag -> list of CtorLayouts.
 -}
-buildTagToLayoutMap : Dict.Dict (List String) (List String) (List Mono.CtorShape) -> Dict.Dict Int Int (List Types.CtorLayout)
+buildTagToLayoutMap : Dict.Dict (List String) (List Mono.CtorShape) -> Dict.Dict Int (List Types.CtorLayout)
 buildTagToLayoutMap ctorShapes =
-    Dict.foldl compare
+    Dict.foldl
         (\_ shapes acc ->
             List.foldl addShapeToMap acc shapes
         )
@@ -76,28 +76,28 @@ buildTagToLayoutMap ctorShapes =
         ctorShapes
 
 
-addShapeToMap : Mono.CtorShape -> Dict.Dict Int Int (List Types.CtorLayout) -> Dict.Dict Int Int (List Types.CtorLayout)
+addShapeToMap : Mono.CtorShape -> Dict.Dict Int (List Types.CtorLayout) -> Dict.Dict Int (List Types.CtorLayout)
 addShapeToMap shape dict =
     let
         layout =
             Types.computeCtorLayout shape
 
         existing =
-            Dict.get identity shape.tag dict
+            Dict.get shape.tag dict
                 |> Maybe.withDefault []
     in
-    Dict.insert identity shape.tag (layout :: existing) dict
+    Dict.insert shape.tag (layout :: existing) dict
 
 
 {-| Check a single eco.project.custom op.
 -}
-checkProjectionOp : Dict.Dict Int Int (List Types.CtorLayout) -> MlirOp -> Maybe Violation
+checkProjectionOp : Dict.Dict Int (List Types.CtorLayout) -> MlirOp -> Maybe Violation
 checkProjectionOp tagToLayout op =
     case ( getIntAttr "tag" op, getIntAttr "field_index" op ) of
         ( Just tag, Just fieldIndex ) ->
             case extractResultTypes op of
                 [ resultType ] ->
-                    case Dict.get identity tag tagToLayout of
+                    case Dict.get tag tagToLayout of
                         Nothing ->
                             -- No layout found, can't verify
                             Nothing

@@ -33,7 +33,7 @@ import Compiler.Elm.Package as Pkg
 import Compiler.Elm.Version as V
 import Compiler.Parse.Primitives as P
 import Compiler.Reporting.Suggest as Suggest
-import Data.Map as Dict
+import Dict
 import Task exposing (Task)
 import Terminal.Terminal.Internal exposing (Parser(..))
 import System.IO exposing (FilePath)
@@ -227,7 +227,7 @@ suggestPackages given =
                                     []
 
                                 Just (Registry.Registry _ versions) ->
-                                    List.map Pkg.toChars (Dict.keys compare versions) |> List.filter (String.startsWith given)
+                                    List.map Pkg.toChars (Dict.keys versions) |> List.filter (String.startsWith given)
                         )
             )
 
@@ -248,6 +248,6 @@ examplePackages given =
                                     ]
 
                                 Just (Registry.Registry _ versions) ->
-                                    Suggest.sort given Pkg.toChars (Dict.keys compare versions) |> List.take 4 |> List.map Pkg.toChars
+                                    Suggest.sort given Pkg.toChars (Dict.keys versions) |> List.take 4 |> List.map Pkg.toChars
                         )
             )

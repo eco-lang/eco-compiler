@@ -14,13 +14,14 @@ This module:
 
 -}
 
+import Array
 import Compiler.AST.Monomorphized as Mono
 import Compiler.Data.Name exposing (Name)
 import Compiler.GlobalOpt.Staging.Types exposing (ProducerInfo, ProducerId(..), Segmentation, StagingSolution)
 import Compiler.GlobalOpt.Staging.UnionFind exposing (producerIdToKey)
 import Compiler.Monomorphize.Closure as Closure
 import Compiler.Reporting.Annotation as A
-import Data.Map as Dict
+import Dict
 import System.TypeCheck.IO as IO
 import Utils.Crash exposing (crash)
 
@@ -33,7 +34,7 @@ type alias RewriteCtx =
 
 initRewriteCtx : Mono.MonoGraph -> RewriteCtx
 initRewriteCtx (Mono.MonoGraph record) =
-    { lambdaCounter = maxLambdaIndexInGraph (Mono.MonoGraph record) + 1
+    { lambdaCounter = record.nextLambdaIndex
     , home = IO.Canonical ( "eco", "internal" ) "GlobalOpt"
     }
 
@@ -64,20 +65,25 @@ applyStagingSolution solution producerInfo (Mono.MonoGraph mono0) =
             initRewriteCtx (Mono.MonoGraph mono0)
 
         -- Rewrite all nodes
-        ( nodes1, _ ) =
-            Dict.foldl compare
-                (\nodeId node ( accNodes, accCtx ) ->
-                    let
-                        ( newNode, ctx1 ) =
-                            rewriteNode solution producerInfo nodeId node accCtx
-                    in
-                    ( Dict.insert identity nodeId newNode accNodes, ctx1 )
+        ( _, nodes1, finalCtx ) =
+            Array.foldl
+                (\maybeNode ( nodeId, accNodes, accCtx ) ->
+                    case maybeNode of
+                        Nothing ->
+                            ( nodeId + 1, Array.push Nothing accNodes, accCtx )
+
+                        Just node ->
+                            let
+                                ( newNode, ctx1 ) =
+                                    rewriteNode solution producerInfo nodeId node accCtx
+                            in
+                            ( nodeId + 1, Array.push (Just newNode) accNodes, ctx1 )
                 )
-                ( Dict.empty, ctx0 )
+                ( 0, Array.empty, ctx0 )
                 mono0.nodes
 
         mono1 =
-            { mono0 | nodes = nodes1 }
+            { mono0 | nodes = nodes1, nextLambdaIndex = finalCtx.lambdaCounter }
     in
     Mono.MonoGraph mono1
 
@@ -106,7 +112,7 @@ rewriteNode solution producerInfo nodeId node ctx0 =
                     producerIdToKey pid
 
                 maybeClassId =
-                    Dict.get identity key solution.producerClass
+                    Dict.get key solution.producerClass
 
                 ( newBody, ctx1 ) =
                     rewriteExpr solution producerInfo body ctx0
@@ -181,7 +187,7 @@ rewriteExpr solution producerInfo expr ctx0 =
                     producerIdToKey pid
 
                 maybeClassId =
-                    Dict.get identity key solution.producerClass
+                    Dict.get key solution.producerClass
 
                 -- First rewrite body
                 ( newBody, ctx1 ) =
@@ -202,11 +208,12 @@ rewriteExpr solution producerInfo expr ctx0 =
                 Just classId ->
                     let
                         canonicalSeg =
-                            Dict.get identity classId solution.classSeg
+                            Array.get classId solution.classSeg
+                                |> Maybe.andThen identity
                                 |> Maybe.withDefault []
 
                         naturalSeg =
-                            Dict.get identity key producerInfo.naturalSeg
+                            Dict.get key producerInfo.naturalSeg
                                 |> Maybe.withDefault []
                     in
                     if naturalSeg == canonicalSeg then
@@ -610,20 +617,30 @@ buildNestedCalls region calleeExpr params =
 
             stageArity =
                 List.length stageArgTypes
-
-            ( argsForStage, remainingParams ) =
-                splitAt stageArity params
-
-            argExprs =
-                List.map (\( name, ty ) -> Mono.MonoVarLocal name ty) argsForStage
-
-            resultType =
-                Mono.stageReturnType calleeType
-
-            callExpr =
-                Mono.MonoCall region calleeExpr argExprs resultType Mono.defaultCallInfo
         in
-        buildNestedCalls region callExpr remainingParams
+        if stageArity == 0 then
+            crash
+                ("buildNestedCalls: callee type has no function stage but "
+                    ++ String.fromInt (List.length params)
+                    ++ " params remain. calleeType="
+                    ++ String.join " " (Mono.toComparableMonoType calleeType)
+                )
+
+        else
+            let
+                ( argsForStage, remainingParams ) =
+                    splitAt stageArity params
+
+                argExprs =
+                    List.map (\( name, ty ) -> Mono.MonoVarLocal name ty) argsForStage
+
+                resultType =
+                    Mono.stageReturnType calleeType
+
+                callExpr =
+                    Mono.MonoCall region calleeExpr argExprs resultType Mono.defaultCallInfo
+            in
+            buildNestedCalls region callExpr remainingParams
 
 
 
@@ -694,100 +711,3 @@ splitAt n xs =
     ( List.take n xs, List.drop n xs )
 
 
-{-| Find the maximum lambda index in the graph for generating fresh IDs.
--}
-maxLambdaIndexInGraph : Mono.MonoGraph -> Int
-maxLambdaIndexInGraph (Mono.MonoGraph mono) =
-    Dict.foldl compare
-        (\_ node acc -> max acc (maxLambdaIndexInNode node))
-        0
-        mono.nodes
-
-
-maxLambdaIndexInNode : Mono.MonoNode -> Int
-maxLambdaIndexInNode node =
-    case node of
-        Mono.MonoDefine expr _ ->
-            maxLambdaIndexInExpr expr
-
-        Mono.MonoTailFunc _ body _ ->
-            maxLambdaIndexInExpr body
-
-        Mono.MonoCycle bindings _ ->
-            List.foldl (\( _, e ) acc -> max acc (maxLambdaIndexInExpr e)) 0 bindings
-
-        _ ->
-            0
-
-
-maxLambdaIndexInExpr : Mono.MonoExpr -> Int
-maxLambdaIndexInExpr expr =
-    case expr of
-        Mono.MonoClosure closureInfo body _ ->
-            let
-                thisIndex =
-                    case closureInfo.lambdaId of
-                        Mono.AnonymousLambda _ idx ->
-                            idx
-            in
-            max thisIndex (maxLambdaIndexInExpr body)
-
-        Mono.MonoIf branches elseExpr _ ->
-            let
-                branchMax =
-                    List.foldl
-                        (\( cond, then_ ) acc ->
-                            max acc (max (maxLambdaIndexInExpr cond) (maxLambdaIndexInExpr then_))
-                        )
-                        0
-                        branches
-            in
-            max branchMax (maxLambdaIndexInExpr elseExpr)
-
-        Mono.MonoCase _ _ _ branches _ ->
-            List.foldl (\( _, e ) acc -> max acc (maxLambdaIndexInExpr e)) 0 branches
-
-        Mono.MonoLet def body _ ->
-            max (maxLambdaIndexInDef def) (maxLambdaIndexInExpr body)
-
-        Mono.MonoCall _ callee args _ _ ->
-            let
-                calleeMax =
-                    maxLambdaIndexInExpr callee
-            in
-            List.foldl (\arg acc -> max acc (maxLambdaIndexInExpr arg)) calleeMax args
-
-        Mono.MonoRecordCreate fields _ ->
-            List.foldl (\( _, e ) acc -> max acc (maxLambdaIndexInExpr e)) 0 fields
-
-        Mono.MonoRecordUpdate base fields _ ->
-            let
-                baseMax =
-                    maxLambdaIndexInExpr base
-            in
-            List.foldl (\( _, e ) acc -> max acc (maxLambdaIndexInExpr e)) baseMax fields
-
-        Mono.MonoTupleCreate _ exprs _ ->
-            List.foldl (\e acc -> max acc (maxLambdaIndexInExpr e)) 0 exprs
-
-        Mono.MonoList _ exprs _ ->
-            List.foldl (\e acc -> max acc (maxLambdaIndexInExpr e)) 0 exprs
-
-        Mono.MonoRecordAccess inner _ _ ->
-            maxLambdaIndexInExpr inner
-
-        Mono.MonoDestruct _ inner _ ->
-            maxLambdaIndexInExpr inner
-
-        _ ->
-            0
-
-
-maxLambdaIndexInDef : Mono.MonoDef -> Int
-maxLambdaIndexInDef def =
-    case def of
-        Mono.MonoDef _ expr ->
-            maxLambdaIndexInExpr expr
-
-        Mono.MonoTailDef _ _ expr ->
-            maxLambdaIndexInExpr expr

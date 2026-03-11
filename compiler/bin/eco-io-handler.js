@@ -141,6 +141,14 @@ function handleEcoIO(parsed, respond) {
       break;
     }
 
+    // --- Crash ---
+    case "Crash.crash": {
+      Error.stackTraceLimit = Infinity;
+      console.error(new Error(args.message).stack);
+      process.exit(1);
+      break;
+    }
+
     // --- File ---
     case "File.readString": {
       try {
@@ -605,7 +613,11 @@ function handleEcoIOBinary(op, request, respond) {
     case "File.writeBytes": {
       const filePath = request.requestHeaders.getHeader("X-Eco-Path");
       try {
-        fs.writeFileSync(filePath, Buffer.from(request.body));
+        const body = request.body;
+        const buffer = ArrayBuffer.isView(body)
+          ? Buffer.from(body.buffer, body.byteOffset, body.byteLength)
+          : Buffer.from(body);
+        fs.writeFileSync(filePath, buffer);
         respond(200, "");
       } catch (e) {
         respond(500, JSON.stringify({ error: e.message }));

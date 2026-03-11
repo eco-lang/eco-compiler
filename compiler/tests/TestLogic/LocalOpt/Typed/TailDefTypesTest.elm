@@ -29,7 +29,8 @@ import Compiler.AST.SourceBuilder
         )
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.Name as Name
-import Data.Map as Dict exposing (Dict)
+import Data.Map
+import Dict exposing (Dict)
 import Expect exposing (Expectation)
 import Test exposing (Test)
 import TestLogic.TestPipeline as Pipeline
@@ -84,6 +85,11 @@ sumHelperModule =
                         ]
                     )
           }
+        , { name = "testValue"
+          , args = []
+          , tipe = intType
+          , body = callExpr (varExpr "sumHelper") [ intExpr 0, intExpr 10 ]
+          }
         ]
 
 
@@ -107,12 +113,12 @@ checkSumHelper =
 
 {-| Check TailDef types in Cycle nodes against annotation.
 -}
-checkTailDefTypes : String -> TOpt.LocalGraph -> Dict String Name.Name Can.Annotation -> Expectation
+checkTailDefTypes : String -> TOpt.LocalGraph -> Dict Name.Name Can.Annotation -> Expectation
 checkTailDefTypes funcName (TOpt.LocalGraph data) annotations =
     let
         -- Find TailDef in Cycle nodes
         maybeTailDef =
-            Dict.toList TOpt.compareGlobal data.nodes
+            Data.Map.toList TOpt.compareGlobal data.nodes
                 |> List.filterMap
                     (\( _, node ) ->
                         case node of
@@ -140,7 +146,7 @@ checkTailDefTypes funcName (TOpt.LocalGraph data) annotations =
 
         -- Get annotation
         maybeAnnotation =
-            Dict.get identity funcName annotations
+            Dict.get funcName annotations
     in
     case ( maybeTailDef, maybeAnnotation ) of
         ( Nothing, _ ) ->

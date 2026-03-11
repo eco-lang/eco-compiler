@@ -1,12 +1,13 @@
 module TestLogic.Type.PostSolve.PostSolveInvariantHelpers exposing
     ( ExprNode
     , collectKernelExprIds
+    , enclosingAnnotationVars
     , freeTypeVars
     , isGroupBExprNode
     , walkExprs
     )
 
-{-| Shared helpers for POST\_001 and POST\_003 invariant tests.
+{-| Shared helpers for PostSolve invariant tests.
 
 This module provides AST traversal utilities for classifying expressions
 and extracting type information needed by the synthetic provenance tests.
@@ -14,20 +15,24 @@ and extracting type information needed by the synthetic provenance tests.
 -}
 
 import Compiler.AST.Canonical as Can
+import Compiler.Data.Name as Name
 import Compiler.Reporting.Annotation as A
-import Data.Map as Dict
+import Data.Map
 import Data.Set as EverySet exposing (EverySet)
+import Dict
 
 
-{-| An expression node with its ID and the Expr\_ payload.
+{-| An expression node with its ID, the Expr\_ payload, and the name of the
+enclosing top-level or let-bound definition (for scope lookups).
 -}
 type alias ExprNode =
     { id : Int
     , node : Can.Expr_
+    , enclosingDef : Maybe Name.Name
     }
 
 
-{-| Walk all expressions in a module and collect (id, Expr\_) pairs.
+{-| Walk all expressions in a module and collect nodes with scope info.
 -}
 walkExprs : Can.Module -> List ExprNode
 walkExprs (Can.Module modData) =
@@ -38,15 +43,15 @@ walkDecls : Can.Decls -> List ExprNode -> List ExprNode
 walkDecls decls acc =
     case decls of
         Can.Declare def rest ->
-            walkDecls rest (walkDef def acc)
+            walkDecls rest (walkDef (defName def) def acc)
 
         Can.DeclareRec def defs rest ->
             let
                 acc1 =
-                    walkDef def acc
+                    walkDef (defName def) def acc
 
                 acc2 =
-                    List.foldl (\d a -> walkDef d a) acc1 defs
+                    List.foldl (\d a -> walkDef (defName d) d a) acc1 defs
             in
             walkDecls rest acc2
 
@@ -54,30 +59,42 @@ walkDecls decls acc =
             acc
 
 
-walkDef : Can.Def -> List ExprNode -> List ExprNode
-walkDef def acc =
+{-| Extract the name from a Def.
+-}
+defName : Can.Def -> Maybe Name.Name
+defName def =
+    case def of
+        Can.Def (A.At _ name) _ _ ->
+            Just name
+
+        Can.TypedDef (A.At _ name) _ _ _ _ ->
+            Just name
+
+
+walkDef : Maybe Name.Name -> Can.Def -> List ExprNode -> List ExprNode
+walkDef scopeName def acc =
     case def of
         Can.Def _ patterns expr ->
             let
                 acc1 =
                     List.foldl walkPattern acc patterns
             in
-            walkExpr expr acc1
+            walkExpr scopeName expr acc1
 
         Can.TypedDef _ _ patternTypes expr _ ->
             let
                 acc1 =
                     List.foldl (\( p, _ ) a -> walkPattern p a) acc patternTypes
             in
-            walkExpr expr acc1
+            walkExpr scopeName expr acc1
 
 
-walkExpr : Can.Expr -> List ExprNode -> List ExprNode
-walkExpr (A.At _ exprInfo) acc =
+walkExpr : Maybe Name.Name -> Can.Expr -> List ExprNode -> List ExprNode
+walkExpr scopeName (A.At _ exprInfo) acc =
     let
         -- Record this expression node
         thisNode =
-            { id = exprInfo.id, node = exprInfo.node }
+            { id = exprInfo.id, node = exprInfo.node, enclosingDef = scopeName }
 
         -- Walk children based on expression type
         childAcc =
@@ -116,45 +133,45 @@ walkExpr (A.At _ exprInfo) acc =
                     acc
 
                 Can.List exprs ->
-                    List.foldl walkExpr acc exprs
+                    List.foldl (walkExpr scopeName) acc exprs
 
                 Can.Negate expr ->
-                    walkExpr expr acc
+                    walkExpr scopeName expr acc
 
                 Can.Binop _ _ _ _ left right ->
-                    walkExpr right (walkExpr left acc)
+                    walkExpr scopeName right (walkExpr scopeName left acc)
 
                 Can.Lambda patterns body ->
                     let
                         pAcc =
                             List.foldl walkPattern acc patterns
                     in
-                    walkExpr body pAcc
+                    walkExpr scopeName body pAcc
 
                 Can.Call fn args ->
-                    List.foldl walkExpr (walkExpr fn acc) args
+                    List.foldl (walkExpr scopeName) (walkExpr scopeName fn acc) args
 
                 Can.If branches final ->
                     let
                         branchAcc =
                             List.foldl
                                 (\( cond, branch ) a ->
-                                    walkExpr branch (walkExpr cond a)
+                                    walkExpr scopeName branch (walkExpr scopeName cond a)
                                 )
                                 acc
                                 branches
                     in
-                    walkExpr final branchAcc
+                    walkExpr scopeName final branchAcc
 
                 Can.Let def body ->
-                    walkExpr body (walkDef def acc)
+                    walkExpr scopeName body (walkDef (defName def) def acc)
 
                 Can.LetRec defs body ->
                     let
                         defAcc =
-                            List.foldl walkDef acc defs
+                            List.foldl (\d a -> walkDef (defName d) d a) acc defs
                     in
-                    walkExpr body defAcc
+                    walkExpr scopeName body defAcc
 
                 Can.LetDestruct pattern valExpr body ->
                     let
@@ -162,36 +179,36 @@ walkExpr (A.At _ exprInfo) acc =
                             walkPattern pattern acc
 
                         vAcc =
-                            walkExpr valExpr pAcc
+                            walkExpr scopeName valExpr pAcc
                     in
-                    walkExpr body vAcc
+                    walkExpr scopeName body vAcc
 
                 Can.Case scrutinee branches ->
                     let
                         scrAcc =
-                            walkExpr scrutinee acc
+                            walkExpr scopeName scrutinee acc
                     in
-                    List.foldl walkBranch scrAcc branches
+                    List.foldl (walkBranch scopeName) scrAcc branches
 
                 Can.Accessor _ ->
                     acc
 
                 Can.Access expr _ ->
-                    walkExpr expr acc
+                    walkExpr scopeName expr acc
 
                 Can.Update expr fields ->
                     let
                         fAcc =
-                            Dict.foldl A.compareLocated
-                                (\_ (Can.FieldUpdate _ e) a -> walkExpr e a)
+                            Data.Map.foldl A.compareLocated
+                                (\_ (Can.FieldUpdate _ e) a -> walkExpr scopeName e a)
                                 acc
                                 fields
                     in
-                    walkExpr expr fAcc
+                    walkExpr scopeName expr fAcc
 
                 Can.Record fields ->
-                    Dict.foldl A.compareLocated
-                        (\_ e a -> walkExpr e a)
+                    Data.Map.foldl A.compareLocated
+                        (\_ e a -> walkExpr scopeName e a)
                         acc
                         fields
 
@@ -199,8 +216,8 @@ walkExpr (A.At _ exprInfo) acc =
                     acc
 
                 Can.Tuple a b cs ->
-                    List.foldl walkExpr
-                        (walkExpr b (walkExpr a acc))
+                    List.foldl (walkExpr scopeName)
+                        (walkExpr scopeName b (walkExpr scopeName a acc))
                         cs
 
                 Can.Shader _ _ ->
@@ -209,9 +226,9 @@ walkExpr (A.At _ exprInfo) acc =
     thisNode :: childAcc
 
 
-walkBranch : Can.CaseBranch -> List ExprNode -> List ExprNode
-walkBranch (Can.CaseBranch pattern body) acc =
-    walkExpr body (walkPattern pattern acc)
+walkBranch : Maybe Name.Name -> Can.CaseBranch -> List ExprNode -> List ExprNode
+walkBranch scopeName (Can.CaseBranch pattern body) acc =
+    walkExpr scopeName body (walkPattern pattern acc)
 
 
 walkPattern : Can.Pattern -> List ExprNode -> List ExprNode
@@ -339,6 +356,28 @@ collectKernelExprIds canModule =
         |> EverySet.fromList identity
 
 
+{-| Extract the quantified type variables from an enclosing definition's
+annotation. Returns the set of var names from `Forall freeVars _`.
+-}
+enclosingAnnotationVars :
+    Maybe Name.Name
+    -> Dict.Dict Name.Name Can.Annotation
+    -> EverySet String String
+enclosingAnnotationVars maybeName annotations =
+    case maybeName of
+        Nothing ->
+            EverySet.empty
+
+        Just name ->
+            case Dict.get name annotations of
+                Just (Can.Forall freeVars _) ->
+                    Dict.keys freeVars
+                        |> List.foldl (\v acc -> EverySet.insert identity v acc) EverySet.empty
+
+                Nothing ->
+                    EverySet.empty
+
+
 {-| Extract all free type variable names from a type.
 
 (Re-implementation to avoid circular dependencies.)
@@ -370,7 +409,7 @@ freeTypeVars tipe =
                             EverySet.empty
 
                 fieldVars =
-                    Dict.foldl compare
+                    Dict.foldl
                         (\_ (Can.FieldType _ fieldType) acc ->
                             EverySet.union acc (freeTypeVars fieldType)
                         )

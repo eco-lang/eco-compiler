@@ -9,12 +9,14 @@ import Compiler.AST.SourceBuilder
         ( accessExpr
         , accessorExpr
         , boolExpr
+        , callExpr
         , define
         , floatExpr
         , intExpr
         , letExpr
         , listExpr
         , makeModule
+        , makeModuleWithDefs
         , recordExpr
         , strExpr
         , tupleExpr
@@ -300,7 +302,10 @@ accessorFunction : (Src.Module -> Expectation) -> (() -> Expectation)
 accessorFunction expectFn _ =
     let
         modul =
-            makeModule "testValue" (accessorExpr "x")
+            makeModuleWithDefs "Test"
+                [ ( "testFn", [], accessorExpr "x" )
+                , ( "testValue", [], callExpr (varExpr "testFn") [ recordExpr [ ( "x", intExpr 1 ) ] ] )
+                ]
     in
     expectFn modul
 

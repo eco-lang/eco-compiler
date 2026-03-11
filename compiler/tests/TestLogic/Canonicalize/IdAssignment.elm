@@ -21,7 +21,8 @@ import Compiler.Elm.Interface.Basic as Basic
 import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Error.Canonicalize as CanError
 import Compiler.Reporting.Result as Result
-import Data.Map as Dict
+import Data.Map as DMap
+import Dict
 import Expect
 import Set
 
@@ -48,7 +49,7 @@ expectUniqueIds : Src.Module -> Expect.Expectation
 expectUniqueIds modul =
     let
         result =
-            Canonicalize.canonicalize ( "eco", "example" ) Basic.testIfaces modul
+            Canonicalize.canonicalize ( "eco", "example" ) (DMap.fromList identity (Dict.toList Basic.testIfaces)) modul
     in
     case Result.run result of
         ( _, Err errors ) ->
@@ -138,7 +139,7 @@ findDuplicates ids =
         countOccurrences =
             List.foldl
                 (\id acc ->
-                    Dict.update identity
+                    Dict.update
                         id
                         (\maybeCount ->
                             case maybeCount of
@@ -155,7 +156,7 @@ findDuplicates ids =
         counts =
             countOccurrences ids
     in
-    Dict.foldl compare
+    Dict.foldl
         (\id count acc ->
             if count > 1 then
                 id :: acc
@@ -365,13 +366,13 @@ collectExprNodeIdsAsList node =
 
         Can.Update record fields ->
             collectExprIdsAsList record
-                ++ Dict.foldl A.compareLocated
+                ++ DMap.foldl A.compareLocated
                     (\_ (Can.FieldUpdate _ expr) acc -> collectExprIdsAsList expr ++ acc)
                     []
                     fields
 
         Can.Record fields ->
-            Dict.foldl A.compareLocated (\_ expr acc -> collectExprIdsAsList expr ++ acc) [] fields
+            DMap.foldl A.compareLocated (\_ expr acc -> collectExprIdsAsList expr ++ acc) [] fields
 
         Can.Unit ->
             []

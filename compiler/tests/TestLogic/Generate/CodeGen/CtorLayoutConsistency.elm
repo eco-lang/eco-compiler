@@ -12,7 +12,7 @@ that match the CtorLayout computed from MonoGraph.ctorShapes.
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.Source as Src
 import Compiler.Generate.MLIR.Types as Types
-import Data.Map as Dict
+import Dict
 import Expect exposing (Expectation)
 import Mlir.Mlir exposing (MlirModule, MlirOp)
 import TestLogic.Generate.CodeGen.Invariants
@@ -64,9 +64,9 @@ Note: tags may not be globally unique across different custom types,
 so we store a list of layouts per tag and check against all of them.
 
 -}
-buildTagToLayoutMap : Dict.Dict (List String) (List String) (List Mono.CtorShape) -> Dict.Dict Int Int (List Types.CtorLayout)
+buildTagToLayoutMap : Dict.Dict (List String) (List Mono.CtorShape) -> Dict.Dict Int (List Types.CtorLayout)
 buildTagToLayoutMap ctorShapes =
-    Dict.foldl compare
+    Dict.foldl
         (\_ shapes acc ->
             List.foldl addShapeToMap acc shapes
         )
@@ -74,26 +74,26 @@ buildTagToLayoutMap ctorShapes =
         ctorShapes
 
 
-addShapeToMap : Mono.CtorShape -> Dict.Dict Int Int (List Types.CtorLayout) -> Dict.Dict Int Int (List Types.CtorLayout)
+addShapeToMap : Mono.CtorShape -> Dict.Dict Int (List Types.CtorLayout) -> Dict.Dict Int (List Types.CtorLayout)
 addShapeToMap shape dict =
     let
         layout =
             Types.computeCtorLayout shape
 
         existing =
-            Dict.get identity shape.tag dict
+            Dict.get shape.tag dict
                 |> Maybe.withDefault []
     in
-    Dict.insert identity shape.tag (layout :: existing) dict
+    Dict.insert shape.tag (layout :: existing) dict
 
 
 {-| Check a single eco.construct.custom op against known layouts.
 -}
-checkConstructOp : Dict.Dict Int Int (List Types.CtorLayout) -> MlirOp -> Maybe Violation
+checkConstructOp : Dict.Dict Int (List Types.CtorLayout) -> MlirOp -> Maybe Violation
 checkConstructOp tagToLayout op =
     case ( getIntAttr "tag" op, getIntAttr "size" op, getIntAttr "unboxed_bitmap" op ) of
         ( Just tag, Just size, Just bitmap ) ->
-            case Dict.get identity tag tagToLayout of
+            case Dict.get tag tagToLayout of
                 Nothing ->
                     -- No matching layout found - could be a violation or just
                     -- a constructor from an external module not in our graph

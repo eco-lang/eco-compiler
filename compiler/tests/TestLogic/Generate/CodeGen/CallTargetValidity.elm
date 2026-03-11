@@ -153,7 +153,7 @@ findNonStubVersion stubName funcDefs =
     Dict.toList funcDefs
         |> List.filterMap
             (\( funcName, funcOp ) ->
-                if funcName /= stubName && String.startsWith baseName funcName then
+                if funcName /= stubName && extractBaseName funcName == baseName then
                     if not (isTrivialStub funcOp) then
                         Just funcName
 

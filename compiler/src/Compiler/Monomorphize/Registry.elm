@@ -23,8 +23,9 @@ The registry maintains a bidirectional mapping between specialization keys
 
 -}
 
+import Array exposing (Array)
 import Compiler.AST.Monomorphized as Mono exposing (Global, LambdaId, MonoType, SpecId, SpecializationRegistry)
-import Data.Map as Dict
+import Dict
 
 
 
@@ -37,7 +38,7 @@ emptyRegistry : SpecializationRegistry
 emptyRegistry =
     { nextId = 0
     , mapping = Dict.empty
-    , reverseMapping = Dict.empty
+    , reverseMapping = Array.empty
     }
 
 
@@ -52,7 +53,7 @@ getOrCreateSpecId global monoType maybeLambda registry =
         key =
             Mono.toComparableSpecKey (Mono.SpecKey global monoType maybeLambda)
     in
-    case Dict.get identity key registry.mapping of
+    case Dict.get key registry.mapping of
         Just specId ->
             ( specId, registry )
 
@@ -63,8 +64,8 @@ getOrCreateSpecId global monoType maybeLambda registry =
             in
             ( specId
             , { nextId = specId + 1
-              , mapping = Dict.insert identity key specId registry.mapping
-              , reverseMapping = Dict.insert identity specId ( global, monoType, maybeLambda ) registry.reverseMapping
+              , mapping = Dict.insert key specId registry.mapping
+              , reverseMapping = Array.push (Just ( global, monoType, maybeLambda )) registry.reverseMapping
               }
             )
 
@@ -77,14 +78,14 @@ This is used when the actual type of a specialization becomes known
 -}
 updateRegistryType : SpecId -> MonoType -> SpecializationRegistry -> SpecializationRegistry
 updateRegistryType specId actualType registry =
-    case Dict.get identity specId registry.reverseMapping of
+    case Array.get specId registry.reverseMapping |> Maybe.andThen identity of
         Nothing ->
             registry
 
         Just ( global, _, maybeLambda ) ->
             { registry
                 | reverseMapping =
-                    Dict.insert identity specId ( global, actualType, maybeLambda ) registry.reverseMapping
+                    Array.set specId (Just ( global, actualType, maybeLambda )) registry.reverseMapping
             }
 
 
@@ -95,4 +96,4 @@ Returns the Global, MonoType, and optional LambdaId if found.
 -}
 lookupSpecKey : SpecId -> SpecializationRegistry -> Maybe ( Global, MonoType, Maybe LambdaId )
 lookupSpecKey specId registry =
-    Dict.get identity specId registry.reverseMapping
+    Array.get specId registry.reverseMapping |> Maybe.andThen identity

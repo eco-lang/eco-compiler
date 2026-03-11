@@ -40,7 +40,7 @@ import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.LocalOpt.Erased.Names as Names
 import Compiler.Reporting.Annotation as A
-import Data.Map as Dict exposing (Dict)
+import Dict exposing (Dict)
 import Utils.Crash exposing (crash)
 
 
@@ -130,10 +130,10 @@ toEncoder tipe =
             encode "object"
                 |> Names.andThen
                     (\object ->
-                        Names.traverse encodeField (Dict.toList compare fields)
+                        Names.traverse encodeField (Dict.toList fields)
                             |> Names.andThen
                                 (\keyValuePairs ->
-                                    Names.registerFieldDict fields
+                                    Names.registerFieldList (Dict.keys fields)
                                         (Opt.Function [ Name.dollar ] (Opt.Call A.zero object [ Opt.List A.zero keyValuePairs ]))
                                 )
                     )
@@ -461,7 +461,7 @@ indexAndThen i tipe decoder =
 -- ====== DECODE RECORDS ======
 
 
-decodeRecord : Dict String Name.Name Can.FieldType -> Names.Tracker Opt.Expr
+decodeRecord : Dict Name.Name Can.FieldType -> Names.Tracker Opt.Expr
 decodeRecord fields =
     let
         toFieldExpr : Name -> b -> Opt.Expr
@@ -475,7 +475,7 @@ decodeRecord fields =
     decode "succeed"
         |> Names.andThen
             (\succeed ->
-                Names.registerFieldDict fields (Dict.toList compare fields)
+                Names.registerFieldList (Dict.keys fields) (Dict.toList fields)
                     |> Names.andThen
                         (\fieldDecoders ->
                             List.foldl (\fieldDecoder -> Names.andThen (\optCall -> fieldAndThen optCall fieldDecoder))

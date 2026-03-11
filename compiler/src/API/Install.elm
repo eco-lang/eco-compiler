@@ -25,7 +25,7 @@ import Builder.Stuff as Stuff
 import Compiler.Elm.Constraint as C
 import Compiler.Elm.Package as Pkg
 import Compiler.Elm.Version as V
-import Data.Map as Dict exposing (Dict)
+import Dict exposing (Dict)
 import System.IO as IO exposing (FilePath)
 import Task exposing (Task)
 import Utils.Main as Utils
@@ -139,17 +139,17 @@ makeAppPlan (Solver.Env env) pkg ((Outline.AppOutline appData) as outline) =
         testIndirect =
             appData.testIndirect
     in
-    if Dict.member identity pkg direct then
+    if Dict.member pkg direct then
         Task.succeed AlreadyInstalled
 
     else
         -- is it already indirect?
-        case Dict.get identity pkg indirect of
+        case Dict.get pkg indirect of
             Just vsn ->
                 Outline.AppOutline
                     { appData
-                        | depsDirect = Dict.insert identity pkg vsn direct
-                        , depsIndirect = Dict.remove identity pkg indirect
+                        | depsDirect = Dict.insert pkg vsn direct
+                        , depsIndirect = Dict.remove pkg indirect
                     }
                     |> Outline.App
                     |> PromoteIndirect
@@ -157,12 +157,12 @@ makeAppPlan (Solver.Env env) pkg ((Outline.AppOutline appData) as outline) =
 
             Nothing ->
                 -- is it already a test dependency?
-                case Dict.get identity pkg testDirect of
+                case Dict.get pkg testDirect of
                     Just vsn ->
                         Outline.AppOutline
                             { appData
-                                | depsDirect = Dict.insert identity pkg vsn direct
-                                , testDirect = Dict.remove identity pkg testDirect
+                                | depsDirect = Dict.insert pkg vsn direct
+                                , testDirect = Dict.remove pkg testDirect
                             }
                             |> Outline.App
                             |> PromoteTest
@@ -170,12 +170,12 @@ makeAppPlan (Solver.Env env) pkg ((Outline.AppOutline appData) as outline) =
 
                     Nothing ->
                         -- is it already an indirect test dependency?
-                        case Dict.get identity pkg testIndirect of
+                        case Dict.get pkg testIndirect of
                             Just vsn ->
                                 Outline.AppOutline
                                     { appData
-                                        | depsDirect = Dict.insert identity pkg vsn direct
-                                        , testIndirect = Dict.remove identity pkg testIndirect
+                                        | depsDirect = Dict.insert pkg vsn direct
+                                        , testIndirect = Dict.remove pkg testIndirect
                                     }
                                     |> Outline.App
                                     |> PromoteTest
@@ -217,17 +217,17 @@ makeAppPlan (Solver.Env env) pkg ((Outline.AppOutline appData) as outline) =
 
 makePkgPlan : Solver.Env -> Pkg.Name -> Outline.PkgOutline -> Task Exit.Install (Changes C.Constraint)
 makePkgPlan (Solver.Env env) pkg (Outline.PkgOutline pkgData) =
-    if Dict.member identity pkg pkgData.deps then
+    if Dict.member pkg pkgData.deps then
         Task.succeed AlreadyInstalled
 
     else
         -- is already in test dependencies?
-        case Dict.get identity pkg pkgData.testDeps of
+        case Dict.get pkg pkgData.testDeps of
             Just con ->
                 Outline.PkgOutline
                     { pkgData
-                        | deps = Dict.insert identity pkg con pkgData.deps
-                        , testDeps = Dict.remove identity pkg pkgData.testDeps
+                        | deps = Dict.insert pkg con pkgData.deps
+                        , testDeps = Dict.remove pkg pkgData.testDeps
                     }
                     |> Outline.Pkg
                     |> PromoteTest
@@ -246,13 +246,13 @@ makePkgPlan (Solver.Env env) pkg (Outline.PkgOutline pkgData) =
 
                     Ok (Registry.KnownVersions _ _) ->
                         let
-                            old : Dict ( String, String ) Pkg.Name C.Constraint
+                            old : Dict Pkg.Name C.Constraint
                             old =
                                 Dict.union pkgData.deps pkgData.testDeps
 
-                            cons : Dict ( String, String ) Pkg.Name C.Constraint
+                            cons : Dict Pkg.Name C.Constraint
                             cons =
-                                Dict.insert identity pkg C.anything old
+                                Dict.insert pkg C.anything old
                         in
                         Task.io (Solver.verify env.cache env.connection env.registry cons)
                             |> Task.andThen
@@ -261,23 +261,23 @@ makePkgPlan (Solver.Env env) pkg (Outline.PkgOutline pkgData) =
                                         Solver.SolverOk solution ->
                                             let
                                                 (Solver.Details vsn _) =
-                                                    Utils.find identity pkg solution
+                                                    Utils.dictFind pkg solution
 
                                                 con : C.Constraint
                                                 con =
                                                     C.untilNextMajor vsn
 
-                                                new : Dict ( String, String ) Pkg.Name C.Constraint
+                                                new : Dict Pkg.Name C.Constraint
                                                 new =
-                                                    Dict.insert identity pkg con old
+                                                    Dict.insert pkg con old
 
-                                                changes : Dict ( String, String ) Pkg.Name (Change C.Constraint)
+                                                changes : Dict Pkg.Name (Change C.Constraint)
                                                 changes =
                                                     detectChanges old new
 
-                                                news : Dict ( String, String ) Pkg.Name C.Constraint
+                                                news : Dict Pkg.Name C.Constraint
                                                 news =
-                                                    Utils.mapMapMaybe identity Pkg.compareName keepNew changes
+                                                    Utils.dictMapMaybe keepNew changes
                                             in
                                             Outline.PkgOutline
                                                 { pkgData
@@ -299,14 +299,14 @@ makePkgPlan (Solver.Env env) pkg (Outline.PkgOutline pkgData) =
                                 )
 
 
-addNews : Maybe Pkg.Name -> Dict ( String, String ) Pkg.Name C.Constraint -> Dict ( String, String ) Pkg.Name C.Constraint -> Dict ( String, String ) Pkg.Name C.Constraint
+addNews : Maybe Pkg.Name -> Dict Pkg.Name C.Constraint -> Dict Pkg.Name C.Constraint -> Dict Pkg.Name C.Constraint
 addNews pkg new old =
-    Dict.merge compare
-        (Dict.insert identity)
-        (\k _ n -> Dict.insert identity k n)
+    Dict.merge
+        Dict.insert
+        (\k _ n -> Dict.insert k n)
         (\k c acc ->
             if Just k == pkg then
-                Dict.insert identity k c acc
+                Dict.insert k c acc
 
             else
                 acc
@@ -326,19 +326,19 @@ type Change a
     | Remove
 
 
-detectChanges : Dict ( String, String ) Pkg.Name a -> Dict ( String, String ) Pkg.Name a -> Dict ( String, String ) Pkg.Name (Change a)
+detectChanges : Dict Pkg.Name a -> Dict Pkg.Name a -> Dict Pkg.Name (Change a)
 detectChanges old new =
-    Dict.merge compare
-        (\k _ -> Dict.insert identity k Remove)
+    Dict.merge
+        (\k _ -> Dict.insert k Remove)
         (\k oldElem newElem acc ->
             case keepChange k oldElem newElem of
                 Just change ->
-                    Dict.insert identity k change acc
+                    Dict.insert k change acc
 
                 Nothing ->
                     acc
         )
-        (\k v -> Dict.insert identity k (Insert v))
+        (\k v -> Dict.insert k (Insert v))
         old
         new
         Dict.empty

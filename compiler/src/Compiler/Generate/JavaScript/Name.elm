@@ -48,7 +48,7 @@ temporary variables used during code generation.
 
 import Compiler.Data.Index as Index
 import Compiler.Data.Name as Name
-import Data.Map as Dict exposing (Dict)
+import Dict exposing (Dict)
 import Data.Set as EverySet exposing (EverySet)
 import System.TypeCheck.IO as IO
 
@@ -331,7 +331,7 @@ intToAsciiHelp width blockSize badFields n =
                     name =
                         unsafeIntToAscii width [] n
                 in
-                Dict.get identity name renamings |> Maybe.withDefault name
+                Dict.get name renamings |> Maybe.withDefault name
 
             else
                 intToAsciiHelp (width + 1) (blockSize * numInnerBytes) biggerBadFields (n - availableSize)
@@ -409,17 +409,17 @@ type BadFields
 
 
 type alias Renamings =
-    Dict String Name.Name Name.Name
+    Dict Name.Name Name.Name
 
 
 allBadFields : List BadFields
 allBadFields =
     let
-        add : String -> Dict Int Int BadFields -> Dict Int Int BadFields
+        add : String -> Dict Int BadFields -> Dict Int BadFields
         add keyword dict =
-            Dict.update identity (String.length keyword) (addRenaming keyword >> Just) dict
+            Dict.update (String.length keyword) (addRenaming keyword >> Just) dict
     in
-    Dict.values compare (EverySet.foldr compare add Dict.empty jsReservedWords)
+    Dict.values (EverySet.foldr compare add Dict.empty jsReservedWords)
 
 
 addRenaming : String -> Maybe BadFields -> BadFields
@@ -435,7 +435,7 @@ addRenaming keyword maybeBadFields =
     in
     case maybeBadFields of
         Nothing ->
-            BadFields (Dict.singleton identity keyword (unsafeIntToAscii width [] maxName))
+            BadFields (Dict.singleton keyword (unsafeIntToAscii width [] maxName))
 
         Just (BadFields renamings) ->
-            BadFields (Dict.insert identity keyword (unsafeIntToAscii width [] (maxName - Dict.size renamings)) renamings)
+            BadFields (Dict.insert keyword (unsafeIntToAscii width [] (maxName - Dict.size renamings)) renamings)

@@ -41,7 +41,7 @@ import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Doc as D
-import Data.Map as Dict exposing (Dict)
+import Dict exposing (Dict)
 import Data.Set as EverySet exposing (EverySet)
 import System.TypeCheck.IO as IO
 import Utils.Bytes.Decode as BD
@@ -56,7 +56,7 @@ import Utils.Bytes.Encode as BE
 Encapsulates information about module imports, aliases, and exposed types.
 -}
 type Localizer
-    = Localizer (Dict String Name Import)
+    = Localizer (Dict Name Import)
 
 
 type alias Import =
@@ -95,7 +95,7 @@ based on the import context (bare name, aliased name, or fully qualified).
 -}
 toChars : Localizer -> IO.Canonical -> Name -> String
 toChars (Localizer localizer) ((IO.Canonical _ home) as moduleName) name =
-    case Dict.get identity home localizer of
+    case Dict.get home localizer of
         Nothing ->
             home ++ "." ++ name
 
@@ -122,7 +122,7 @@ toChars (Localizer localizer) ((IO.Canonical _ home) as moduleName) name =
 {-| Creates a localizer from a dictionary of names, treating all as fully exposed.
 Useful when all names are in scope without qualification.
 -}
-fromNames : Dict String Name a -> Localizer
+fromNames : Dict Name a -> Localizer
 fromNames names =
     Localizer (Dict.map (\_ _ -> { alias = Nothing, exposing_ = All }) names)
 
@@ -136,7 +136,7 @@ determine how types should be displayed based on the module's import statements.
 -}
 fromModule : Src.Module -> Localizer
 fromModule ((Src.Module srcData) as modul) =
-    (( Src.getName modul, { alias = Nothing, exposing_ = All } ) :: List.map toPair srcData.imports) |> Dict.fromList identity |> Localizer
+    (( Src.getName modul, { alias = Nothing, exposing_ = All } ) :: List.map toPair srcData.imports) |> Dict.fromList |> Localizer
 
 
 toPair : Src.Import -> ( Name, Import )
@@ -177,14 +177,14 @@ addType exposed types =
 -}
 localizerEncoder : Localizer -> Bytes.Encode.Encoder
 localizerEncoder (Localizer localizer) =
-    BE.assocListDict compare BE.string importEncoder localizer
+    BE.stdDict BE.string importEncoder localizer
 
 
 {-| Decodes a Localizer from bytes for deserialization.
 -}
 localizerDecoder : Bytes.Decode.Decoder Localizer
 localizerDecoder =
-    Bytes.Decode.map Localizer (BD.assocListDict identity BD.string importDecoder)
+    Bytes.Decode.map Localizer (BD.stdDict BD.string importDecoder)
 
 
 importEncoder : Import -> Bytes.Encode.Encoder

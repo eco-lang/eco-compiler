@@ -11,6 +11,7 @@ import Compiler.AST.SourceBuilder
         ( accessExpr
         , accessorExpr
         , binopsExpr
+        , callExpr
         , boolExpr
         , caseExpr
         , define
@@ -110,7 +111,10 @@ parensAroundLambda : (Src.Module -> Expectation) -> (() -> Expectation)
 parensAroundLambda expectFn _ =
     let
         modul =
-            makeModule "testValue" (parensExpr (lambdaExpr [ pVar "x" ] (varExpr "x")))
+            makeModuleWithDefs "Test"
+                [ ( "testFn", [], parensExpr (lambdaExpr [ pVar "x" ] (varExpr "x")) )
+                , ( "testValue", [], callExpr (varExpr "testFn") [ intExpr 1 ] )
+                ]
     in
     expectFn modul
 
@@ -433,6 +437,24 @@ multipleDefinitionsWithVariousPatterns expectFn _ =
                 , ( "f3", [ pRecord [ "name" ] ], varExpr "name" )
                 , ( "f4", [ pAnything ], intExpr 0 )
                 , ( "f5", [ pVar "a", pVar "b", pVar "c" ], varExpr "b" )
+                , ( "testValue"
+                  , []
+                  , tupleExpr
+                        (tupleExpr
+                            (callExpr (varExpr "f1") [ intExpr 1 ])
+                            (callExpr (varExpr "f1") [ strExpr "hi" ])
+                        )
+                        (tupleExpr
+                            (tupleExpr
+                                (callExpr (varExpr "f2") [ tupleExpr (intExpr 2) (intExpr 3) ])
+                                (callExpr (varExpr "f3") [ recordExpr [ ( "name", strExpr "hello" ) ] ])
+                            )
+                            (tupleExpr
+                                (callExpr (varExpr "f4") [ intExpr 99 ])
+                                (callExpr (varExpr "f5") [ intExpr 10, strExpr "mid", intExpr 30 ])
+                            )
+                        )
+                  )
                 ]
     in
     expectFn modul

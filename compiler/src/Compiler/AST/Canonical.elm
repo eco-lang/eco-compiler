@@ -93,7 +93,8 @@ import Compiler.Data.Index as Index
 import Compiler.Data.Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Reporting.Annotation as A
-import Data.Map as Dict exposing (Dict)
+import Data.Map
+import Dict exposing (Dict)
 import System.TypeCheck.IO as IO
 import Utils.Bytes.Decode as BD
 import Utils.Bytes.Encode as BE
@@ -146,8 +147,8 @@ type Expr_
     | Case Expr (List CaseBranch)
     | Accessor Name
     | Access Expr (A.Located Name)
-    | Update Expr (Dict String (A.Located Name) FieldUpdate)
-    | Record (Dict String (A.Located Name) Expr)
+    | Update Expr (Data.Map.Dict String (A.Located Name) FieldUpdate)
+    | Record (Data.Map.Dict String (A.Located Name) Expr)
     | Unit
     | Tuple Expr Expr (List Expr)
     | Shader Shader.Source Shader.Types
@@ -271,7 +272,7 @@ type Annotation
 {-| Free type variables in a type annotation.
 -}
 type alias FreeVars =
-    Dict String Name ()
+    Dict Name ()
 
 
 {-| Canonical type representation.
@@ -289,7 +290,7 @@ type Type
     = TLambda Type Type
     | TVar Name
     | TType IO.Canonical Name (List Type)
-    | TRecord (Dict String Name FieldType) (Maybe Name)
+    | TRecord (Dict Name FieldType) (Maybe Name)
     | TUnit
     | TTuple Type Type (List Type)
     | TAlias IO.Canonical Name (List ( Name, Type )) AliasType
@@ -318,7 +319,7 @@ type FieldType
 
 {-| Converts record fields to an ordered list, sorted by source position.
 -}
-fieldsToList : Dict String Name FieldType -> List ( Name, Type )
+fieldsToList : Dict Name FieldType -> List ( Name, Type )
 fieldsToList fields =
     let
         getIndex : ( a, FieldType ) -> Int
@@ -329,7 +330,7 @@ fieldsToList fields =
         dropIndex ( name, FieldType _ tipe ) =
             ( name, tipe )
     in
-    Dict.toList compare fields
+    Dict.toList fields
         |> List.sortBy getIndex
         |> List.map dropIndex
 
@@ -345,9 +346,9 @@ type alias ModuleData =
     , exports : Exports
     , docs : Src.Docs
     , decls : Decls
-    , unions : Dict String Name Union
-    , aliases : Dict String Name Alias
-    , binops : Dict String Name Binop
+    , unions : Dict Name Union
+    , aliases : Dict Name Alias
+    , binops : Dict Name Binop
     , effects : Effects
     }
 
@@ -427,7 +428,7 @@ type Ctor
 -}
 type Exports
     = ExportEverything A.Region
-    | Export (Dict String Name (A.Located Export))
+    | Export (Dict Name (A.Located Export))
 
 
 {-| The kind of thing being exported.
@@ -450,7 +451,7 @@ type Export
 -}
 type Effects
     = NoEffects
-    | Ports (Dict String Name Port)
+    | Ports (Dict Name Port)
     | Manager A.Region A.Region A.Region Manager
 
 
@@ -511,13 +512,13 @@ annotationDecoder =
 
 freeVarsEncoder : FreeVars -> Bytes.Encode.Encoder
 freeVarsEncoder freeVars =
-    BE.list BE.string (Dict.keys compare freeVars)
+    BE.list BE.string (Dict.keys freeVars)
 
 
 freeVarsDecoder : Bytes.Decode.Decoder FreeVars
 freeVarsDecoder =
     BD.list BD.string
-        |> Bytes.Decode.map (List.map (\key -> ( key, () )) >> Dict.fromList identity)
+        |> Bytes.Decode.map (List.map (\key -> ( key, () )) >> Dict.fromList)
 
 
 {-| Encodes an Alias to bytes for serialization.
@@ -568,7 +569,7 @@ typeEncoder type_ =
         TRecord fields ext ->
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 3
-                , BE.assocListDict compare BE.string fieldTypeEncoder fields
+                , BE.stdDict BE.string fieldTypeEncoder fields
                 , BE.maybe BE.string ext
                 ]
 
@@ -617,7 +618,7 @@ typeDecoder =
 
                     3 ->
                         Bytes.Decode.map2 TRecord
-                            (BD.assocListDict identity BD.string fieldTypeDecoder)
+                            (BD.stdDict BD.string fieldTypeDecoder)
                             (BD.maybe BD.string)
 
                     4 ->

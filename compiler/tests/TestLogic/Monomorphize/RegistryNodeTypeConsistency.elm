@@ -18,9 +18,10 @@ This invariant catches the "two type shapes floating around" bug where:
 
 -}
 
+import Array exposing (Array)
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.Source as Src
-import Data.Map as Dict
+import Dict
 import Expect exposing (Expectation)
 import TestLogic.TestPipeline as Pipeline
 
@@ -57,40 +58,45 @@ expectRegistryNodeTypeConsistency srcModule =
 -}
 checkRegistryNodeTypeConsistency : Mono.MonoGraph -> List Violation
 checkRegistryNodeTypeConsistency (Mono.MonoGraph data) =
-    Dict.foldl compare
-        (\specId ( _, regMonoType, _ ) acc ->
-            case Dict.get identity specId data.nodes of
-                Nothing ->
-                    acc
-                        ++ [ { context = "SpecId " ++ String.fromInt specId
-                             , message =
-                                "MONO_017 violation: SpecId in registry.reverseMapping but not in graph.nodes"
-                             }
-                           ]
-
-                Just node ->
-                    let
-                        nType =
-                            nodeType node
-                    in
-                    if nType /= regMonoType then
+    Array.toIndexedList data.registry.reverseMapping
+        |> List.foldl
+            (\( specId, maybeEntry ) acc ->
+                case maybeEntry of
+                    Nothing ->
                         acc
-                            ++ [ { context = "SpecId " ++ String.fromInt specId
-                                 , message =
-                                    "MONO_017 violation: registry MonoType != node MonoType\n"
-                                        ++ "  registry: "
-                                        ++ monoTypeToString regMonoType
-                                        ++ "\n"
-                                        ++ "  node:     "
-                                        ++ monoTypeToString nType
-                                 }
-                               ]
 
-                    else
-                        acc
-        )
-        []
-        data.registry.reverseMapping
+                    Just ( _, regMonoType, _ ) ->
+                        case Array.get specId data.nodes |> Maybe.andThen identity of
+                            Nothing ->
+                                acc
+                                    ++ [ { context = "SpecId " ++ String.fromInt specId
+                                         , message =
+                                            "MONO_017 violation: SpecId in registry.reverseMapping but not in graph.nodes"
+                                         }
+                                       ]
+
+                            Just node ->
+                                let
+                                    nType =
+                                        nodeType node
+                                in
+                                if nType /= regMonoType then
+                                    acc
+                                        ++ [ { context = "SpecId " ++ String.fromInt specId
+                                             , message =
+                                                "MONO_017 violation: registry MonoType != node MonoType\n"
+                                                    ++ "  registry: "
+                                                    ++ monoTypeToString regMonoType
+                                                    ++ "\n"
+                                                    ++ "  node:     "
+                                                    ++ monoTypeToString nType
+                                             }
+                                           ]
+
+                                else
+                                    acc
+            )
+            []
 
 
 {-| Extract the MonoType from any MonoNode variant.
@@ -173,7 +179,7 @@ monoTypeToString monoType =
         Mono.MRecord fields ->
             let
                 fieldStrs =
-                    Dict.foldl compare
+                    Dict.foldl
                         (\name ty acc -> (name ++ " : " ++ monoTypeToString ty) :: acc)
                         []
                         fields
@@ -197,3 +203,6 @@ monoTypeToString monoType =
 
         Mono.MVar name _ ->
             name
+
+        Mono.MErased ->
+            "MErased"

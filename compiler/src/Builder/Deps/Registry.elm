@@ -44,7 +44,7 @@ import Compiler.Elm.Package as Pkg
 import Compiler.Elm.Version as V
 import Compiler.Json.Decode as D
 import Compiler.Parse.Primitives as P
-import Data.Map as Dict exposing (Dict)
+import Dict exposing (Dict)
 import Task exposing (Task)
 import Utils.Bytes.Decode as BD
 import Utils.Bytes.Encode as BE
@@ -58,7 +58,7 @@ import Utils.Bytes.Encode as BE
 Contains a count of entries for incremental updates and a dictionary of packages.
 -}
 type Registry
-    = Registry Int (Dict ( String, String ) Pkg.Name KnownVersions)
+    = Registry Int (Dict Pkg.Name KnownVersions)
 
 
 {-| Available versions of a package, with the latest version first followed by older versions.
@@ -92,7 +92,7 @@ fetch manager cache =
             let
                 size : Int
                 size =
-                    Dict.foldr Pkg.compareName (\_ -> addEntry) 0 versions
+                    Dict.foldr (\_ -> addEntry) 0 versions
 
                 registry : Registry
                 registry =
@@ -111,7 +111,7 @@ addEntry (KnownVersions _ vs) count =
     count + 1 + List.length vs
 
 
-allPkgsDecoder : D.Decoder () (Dict ( String, String ) Pkg.Name KnownVersions)
+allPkgsDecoder : D.Decoder () (Dict Pkg.Name KnownVersions)
 allPkgsDecoder =
     let
         keyDecoder : D.KeyDecoder () Pkg.Name
@@ -131,7 +131,7 @@ allPkgsDecoder =
                 [] ->
                     D.failure ()
     in
-    D.dict identity keyDecoder (D.andThen toKnownVersions versionsDecoder)
+    D.stdDict keyDecoder (D.andThen toKnownVersions versionsDecoder)
 
 
 
@@ -155,7 +155,7 @@ update manager cache ((Registry size packages) as oldRegistry) =
                         newSize =
                             size + List.length news
 
-                        newPkgs : Dict ( String, String ) Pkg.Name KnownVersions
+                        newPkgs : Dict Pkg.Name KnownVersions
                         newPkgs =
                             List.foldr addNew packages news
 
@@ -167,7 +167,7 @@ update manager cache ((Registry size packages) as oldRegistry) =
                         |> Task.map (\_ -> newRegistry)
 
 
-addNew : ( Pkg.Name, V.Version ) -> Dict ( String, String ) Pkg.Name KnownVersions -> Dict ( String, String ) Pkg.Name KnownVersions
+addNew : ( Pkg.Name, V.Version ) -> Dict Pkg.Name KnownVersions -> Dict Pkg.Name KnownVersions
 addNew ( name, version ) versions =
     let
         add : Maybe KnownVersions -> KnownVersions
@@ -179,7 +179,7 @@ addNew ( name, version ) versions =
                 Nothing ->
                     KnownVersions version []
     in
-    Dict.update identity name (add >> Just) versions
+    Dict.update name (add >> Just) versions
 
 
 
@@ -236,7 +236,7 @@ latest manager cache =
 -}
 getVersions : Pkg.Name -> Registry -> Maybe KnownVersions
 getVersions name (Registry _ versions) =
-    Dict.get identity name versions
+    Dict.get name versions
 
 
 {-| Look up available versions for a package name, providing suggested alternatives if not found.
@@ -244,12 +244,12 @@ Returns nearby package names (by edit distance) when the package doesn't exist.
 -}
 getVersions_ : Pkg.Name -> Registry -> Result (List Pkg.Name) KnownVersions
 getVersions_ name (Registry _ versions) =
-    case Dict.get identity name versions of
+    case Dict.get name versions of
         Just kvs ->
             Ok kvs
 
         Nothing ->
-            Err (Pkg.nearbyNames name (Dict.keys compare versions))
+            Err (Pkg.nearbyNames name (Dict.keys versions))
 
 
 
@@ -282,7 +282,7 @@ registryDecoder : Bytes.Decode.Decoder Registry
 registryDecoder =
     Bytes.Decode.map2 Registry
         BD.int
-        (BD.assocListDict identity Pkg.nameDecoder knownVersionsDecoder)
+        (BD.stdDict Pkg.nameDecoder knownVersionsDecoder)
 
 
 {-| Binary encoder for writing a registry to disk cache.
@@ -291,7 +291,7 @@ registryEncoder : Registry -> Bytes.Encode.Encoder
 registryEncoder (Registry size versions) =
     Bytes.Encode.sequence
         [ BE.int size
-        , BE.assocListDict Pkg.compareName Pkg.nameEncoder knownVersionsEncoder versions
+        , BE.stdDict Pkg.nameEncoder knownVersionsEncoder versions
         ]
 
 

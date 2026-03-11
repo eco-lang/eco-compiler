@@ -59,10 +59,11 @@ import Compiler.Parse.Variable as Var
 import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Error.Docs as E
 import Compiler.Reporting.Result as ReportingResult
-import Data.Map as Dict exposing (Dict)
+import Dict exposing (Dict)
 import System.TypeCheck.IO as IO
 import Utils.Bytes.Decode as BD
 import Utils.Bytes.Encode as BE
+import Utils.Crash exposing (crash)
 import Utils.Main as Utils
 
 
@@ -73,7 +74,7 @@ import Utils.Main as Utils
 {-| A collection of documentation for multiple modules indexed by module name.
 -}
 type alias Documentation =
-    Dict String Name Module
+    Dict Name Module
 
 
 {-| The internal data structure containing all documentation elements for a module.
@@ -81,10 +82,10 @@ type alias Documentation =
 type alias ModuleData =
     { name : Name
     , comment : Comment
-    , unions : Dict String Name Union
-    , aliases : Dict String Name Alias
-    , values : Dict String Name Value
-    , binops : Dict String Name Binop
+    , unions : Dict Name Union
+    , aliases : Dict Name Alias
+    , values : Dict Name Value
+    , binops : Dict Name Binop
     }
 
 
@@ -142,7 +143,7 @@ type Binop
 -}
 encode : Documentation -> E.Value
 encode docs =
-    E.list encodeModule (Dict.values compare docs)
+    E.list encodeModule (Dict.values docs)
 
 
 encodeModule : Module -> E.Value
@@ -150,10 +151,10 @@ encodeModule (Module moduleData) =
     E.object
         [ ( "name", ModuleName.encode moduleData.name )
         , ( "comment", E.string moduleData.comment )
-        , ( "unions", E.list encodeUnion (Dict.toList compare moduleData.unions) )
-        , ( "aliases", E.list encodeAlias (Dict.toList compare moduleData.aliases) )
-        , ( "values", E.list encodeValue (Dict.toList compare moduleData.values) )
-        , ( "binops", E.list encodeBinop (Dict.toList compare moduleData.binops) )
+        , ( "unions", E.list encodeUnion (Dict.toList moduleData.unions) )
+        , ( "aliases", E.list encodeAlias (Dict.toList moduleData.aliases) )
+        , ( "values", E.list encodeValue (Dict.toList moduleData.values) )
+        , ( "binops", E.list encodeBinop (Dict.toList moduleData.binops) )
         ]
 
 
@@ -174,7 +175,7 @@ decoder =
 
 toDict : List Module -> Documentation
 toDict modules =
-    Dict.fromList identity (List.map toDictHelp modules)
+    Dict.fromList (List.map toDictHelp modules)
 
 
 toDictHelp : Module -> ( Name.Name, Module )
@@ -192,9 +193,9 @@ moduleDecoder =
         |> D.apply (D.field "binops" (dictDecoder binop))
 
 
-dictDecoder : D.Decoder Error a -> D.Decoder Error (Dict String Name a)
+dictDecoder : D.Decoder Error a -> D.Decoder Error (Dict Name a)
 dictDecoder entryDecoder =
-    D.map (Dict.fromList identity) (D.list (named entryDecoder))
+    D.map Dict.fromList (D.list (named entryDecoder))
 
 
 named : D.Decoder Error a -> D.Decoder Error ( Name.Name, a )
@@ -395,7 +396,7 @@ fromModule ((Can.Module canData) as modul) =
                 Src.YesDocs overview comments ->
                     parseOverview overview
                         |> Result.andThen (checkNames exportDict)
-                        |> Result.andThen (\_ -> checkDefs exportDict overview (Dict.fromList identity comments) modul)
+                        |> Result.andThen (\_ -> checkDefs exportDict overview (Dict.fromList comments) modul)
 
 
 
@@ -557,7 +558,7 @@ untilDocs src pos end row col =
 -- ====== CHECK NAMES ======
 
 
-checkNames : Dict String Name (A.Located Can.Export) -> List (A.Located Name) -> Result E.Error ()
+checkNames : Dict Name (A.Located Can.Export) -> List (A.Located Name) -> Result E.Error ()
 checkNames exports names =
     let
         docs : DocNameRegions
@@ -576,7 +577,7 @@ checkNames exports names =
         loneDoc name regions _ =
             onlyInDocs name regions
     in
-    case ReportingResult.run (Dict.merge compare loneExport checkBoth loneDoc exports docs (ReportingResult.ok A.zero)) of
+    case ReportingResult.run (Dict.merge loneExport checkBoth loneDoc exports docs (ReportingResult.ok A.zero)) of
         ( _, Ok _ ) ->
             Ok ()
 
@@ -585,12 +586,21 @@ checkNames exports names =
 
 
 type alias DocNameRegions =
-    Dict String Name (OneOrMore.OneOrMore A.Region)
+    Dict Name (OneOrMore.OneOrMore A.Region)
 
 
 addName : A.Located Name -> DocNameRegions -> DocNameRegions
 addName (A.At region name) dict =
-    Utils.mapInsertWith identity OneOrMore.more name (OneOrMore.one region) dict
+    Dict.update name
+        (\existing ->
+            case existing of
+                Nothing ->
+                    Just (OneOrMore.one region)
+
+                Just old ->
+                    Just (OneOrMore.more old (OneOrMore.one region))
+        )
+        dict
 
 
 isUnique : Name -> OneOrMore.OneOrMore A.Region -> ReportingResult.RResult i w E.NameProblem A.Region
@@ -625,7 +635,7 @@ onlyInExports name (A.At region _) =
 -- ====== CHECK DEFS ======
 
 
-checkDefs : Dict String Name (A.Located Can.Export) -> Src.Comment -> Dict String Name Src.Comment -> Can.Module -> Result E.Error Module
+checkDefs : Dict Name (A.Located Can.Export) -> Src.Comment -> Dict Name Src.Comment -> Can.Module -> Result E.Error Module
 checkDefs exportDict overview comments (Can.Module canData) =
     let
         types : Types
@@ -636,12 +646,12 @@ checkDefs exportDict overview comments (Can.Module canData) =
         info =
             Info { comments = comments, types = types, unions = canData.unions, aliases = canData.aliases, binops = canData.binops, effects = canData.effects }
     in
-    case ReportingResult.run (ReportingResult.mapTraverseWithKey identity compare (checkExport info) exportDict) of
+    case ReportingResult.run (ReportingResult.traverse (\( k, v ) -> ReportingResult.map (Tuple.pair k) (checkExport info k v)) (Dict.toList exportDict)) of
         ( _, Err problems ) ->
             Err (E.DefProblems (OneOrMore.destruct NE.Nonempty problems))
 
         ( _, Ok inserters ) ->
-            Ok (Dict.foldr compare (\_ -> (<|)) (emptyModule canData.name overview) inserters)
+            Ok (List.foldr (\( _, fn ) acc -> fn acc) (emptyModule canData.name overview) inserters)
 
 
 emptyModule : IO.Canonical -> Src.Comment -> Module
@@ -650,11 +660,11 @@ emptyModule (IO.Canonical _ name) (Src.Comment overview) =
 
 
 type alias InfoData =
-    { comments : Dict String Name.Name Src.Comment
-    , types : Dict String Name.Name (Result A.Region Can.Type)
-    , unions : Dict String Name.Name Can.Union
-    , aliases : Dict String Name.Name Can.Alias
-    , binops : Dict String Name.Name Can.Binop
+    { comments : Dict Name.Name Src.Comment
+    , types : Dict Name.Name (Result A.Region Can.Type)
+    , unions : Dict Name.Name Can.Union
+    , aliases : Dict Name.Name Can.Alias
+    , binops : Dict Name.Name Can.Binop
     , effects : Can.Effects
     }
 
@@ -685,7 +695,7 @@ checkExport ((Info infoData) as info) name (A.At region export) =
                                 (\comment ->
                                     ReportingResult.ok
                                         (\(Module mData) ->
-                                            Module { mData | values = Dict.insert identity name (Value comment tipe) mData.values }
+                                            Module { mData | values = Dict.insert name (Value comment tipe) mData.values }
                                         )
                                 )
                     )
@@ -693,7 +703,7 @@ checkExport ((Info infoData) as info) name (A.At region export) =
         Can.ExportBinop ->
             let
                 (Can.Binop_ assoc prec realName) =
-                    Utils.find identity name iBinops
+                    dictFind name iBinops
             in
             getType realName info
                 |> ReportingResult.andThen
@@ -703,7 +713,7 @@ checkExport ((Info infoData) as info) name (A.At region export) =
                                 (\comment ->
                                     ReportingResult.ok
                                         (\(Module mData) ->
-                                            Module { mData | binops = Dict.insert identity name (Binop { comment = comment, tipe = tipe, associativity = assoc, precedence = prec }) mData.binops }
+                                            Module { mData | binops = Dict.insert name (Binop { comment = comment, tipe = tipe, associativity = assoc, precedence = prec }) mData.binops }
                                         )
                                 )
                     )
@@ -711,42 +721,42 @@ checkExport ((Info infoData) as info) name (A.At region export) =
         Can.ExportAlias ->
             let
                 (Can.Alias tvars tipe) =
-                    Utils.find identity name iAliases
+                    dictFind name iAliases
             in
             getComment region name info
                 |> ReportingResult.andThen
                     (\comment ->
                         ReportingResult.ok
                             (\(Module mData) ->
-                                Module { mData | aliases = Dict.insert identity name (Alias comment tvars (Extract.fromType tipe)) mData.aliases }
+                                Module { mData | aliases = Dict.insert name (Alias comment tvars (Extract.fromType tipe)) mData.aliases }
                             )
                     )
 
         Can.ExportUnionOpen ->
             let
                 (Can.Union unionData) =
-                    Utils.find identity name iUnions
+                    dictFind name iUnions
             in
             getComment region name info
                 |> ReportingResult.andThen
                     (\comment ->
                         ReportingResult.ok
                             (\(Module mData) ->
-                                Module { mData | unions = Dict.insert identity name (Union comment unionData.vars (List.map dector unionData.alts)) mData.unions }
+                                Module { mData | unions = Dict.insert name (Union comment unionData.vars (List.map dector unionData.alts)) mData.unions }
                             )
                     )
 
         Can.ExportUnionClosed ->
             let
                 (Can.Union unionData) =
-                    Utils.find identity name iUnions
+                    dictFind name iUnions
             in
             getComment region name info
                 |> ReportingResult.andThen
                     (\comment ->
                         ReportingResult.ok
                             (\(Module mData) ->
-                                Module { mData | unions = Dict.insert identity name (Union comment unionData.vars []) mData.unions }
+                                Module { mData | unions = Dict.insert name (Union comment unionData.vars []) mData.unions }
                             )
                     )
 
@@ -759,7 +769,7 @@ checkExport ((Info infoData) as info) name (A.At region export) =
                                 (\comment ->
                                     ReportingResult.ok
                                         (\(Module mData) ->
-                                            Module { mData | values = Dict.insert identity name (Value comment tipe) mData.values }
+                                            Module { mData | values = Dict.insert name (Value comment tipe) mData.values }
                                         )
                                 )
                     )
@@ -767,7 +777,7 @@ checkExport ((Info infoData) as info) name (A.At region export) =
 
 getComment : A.Region -> Name.Name -> Info -> ReportingResult.RResult i w E.DefProblem Comment
 getComment region name (Info infoData) =
-    case Dict.get identity name infoData.comments of
+    case Dict.get name infoData.comments of
         Nothing ->
             ReportingResult.throw (E.NoComment name region)
 
@@ -777,12 +787,22 @@ getComment region name (Info infoData) =
 
 getType : Name.Name -> Info -> ReportingResult.RResult i w E.DefProblem Type.Type
 getType name (Info infoData) =
-    case Utils.find identity name infoData.types of
+    case dictFind name infoData.types of
         Err region ->
             ReportingResult.throw (E.NoAnnotation name region)
 
         Ok tipe ->
             ReportingResult.ok (Extract.fromType tipe)
+
+
+dictFind : comparable -> Dict comparable v -> v
+dictFind key dict =
+    case Dict.get key dict of
+        Just v ->
+            v
+
+        Nothing ->
+            crash "Compiler.Elm.Docs: key not found in dict"
 
 
 dector : Can.Ctor -> ( Name, List Type.Type )
@@ -795,7 +815,7 @@ dector (Can.Ctor c) =
 
 
 type alias Types =
-    Dict String Name.Name (Result A.Region Can.Type)
+    Dict Name.Name (Result A.Region Can.Type)
 
 
 gatherTypes : Can.Decls -> Types -> Types
@@ -815,7 +835,7 @@ addDef : Types -> Can.Def -> Types
 addDef types def =
     case def of
         Can.Def (A.At region name) _ _ ->
-            Dict.insert identity name (Err region) types
+            Dict.insert name (Err region) types
 
         Can.TypedDef (A.At _ name) _ typedArgs _ resultType ->
             let
@@ -823,7 +843,7 @@ addDef types def =
                 tipe =
                     List.foldr Can.TLambda resultType (List.map Tuple.second typedArgs)
             in
-            Dict.insert identity name (Ok tipe) types
+            Dict.insert name (Ok tipe) types
 
 
 
@@ -835,7 +855,7 @@ addDef types def =
 -}
 bytesEncoder : Documentation -> Bytes.Encode.Encoder
 bytesEncoder docs =
-    BE.list bytesModuleEncoder (Dict.values compare docs)
+    BE.list bytesModuleEncoder (Dict.values docs)
 
 
 {-| Decodes Documentation from a binary format.
@@ -852,10 +872,10 @@ bytesModuleEncoder (Module moduleData) =
     Bytes.Encode.sequence
         [ BE.string moduleData.name
         , BE.string moduleData.comment
-        , BE.assocListDict compare BE.string bytesUnionEncoder moduleData.unions
-        , BE.assocListDict compare BE.string bytesAliasEncoder moduleData.aliases
-        , BE.assocListDict compare BE.string bytesValueEncoder moduleData.values
-        , BE.assocListDict compare BE.string bytesBinopEncoder moduleData.binops
+        , BE.stdDict BE.string bytesUnionEncoder moduleData.unions
+        , BE.stdDict BE.string bytesAliasEncoder moduleData.aliases
+        , BE.stdDict BE.string bytesValueEncoder moduleData.values
+        , BE.stdDict BE.string bytesBinopEncoder moduleData.binops
         ]
 
 
@@ -866,10 +886,10 @@ bytesModuleDecoder =
     BD.map6 (\name_ comment_ unions_ aliases_ values_ binops_ -> Module { name = name_, comment = comment_, unions = unions_, aliases = aliases_, values = values_, binops = binops_ })
         BD.string
         BD.string
-        (BD.assocListDict identity BD.string bytesUnionDecoder)
-        (BD.assocListDict identity BD.string bytesAliasDecoder)
-        (BD.assocListDict identity BD.string bytesValueDecoder)
-        (BD.assocListDict identity BD.string bytesBinopDecoder)
+        (BD.stdDict BD.string bytesUnionDecoder)
+        (BD.stdDict BD.string bytesAliasDecoder)
+        (BD.stdDict BD.string bytesValueDecoder)
+        (BD.stdDict BD.string bytesBinopDecoder)
 
 
 bytesUnionEncoder : Union -> Bytes.Encode.Encoder

@@ -16,7 +16,7 @@ debug kernel polymorphism is correctly handled.
 
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.Source as Src
-import Data.Map as Dict
+import Array
 import Expect
 import TestLogic.TestPipeline as Pipeline
 
@@ -58,10 +58,18 @@ After monomorphization, they should:
 -}
 collectDebugPolymorphismIssues : Mono.MonoGraph -> List String
 collectDebugPolymorphismIssues (Mono.MonoGraph data) =
-    Dict.foldl compare
-        (\specId node acc -> checkNodeDebugPolymorphism specId node ++ acc)
-        []
+    Array.foldl
+        (\maybeNode ( specId, acc ) ->
+            case maybeNode of
+                Nothing ->
+                    ( specId + 1, acc )
+
+                Just node ->
+                    ( specId + 1, checkNodeDebugPolymorphism specId node ++ acc )
+        )
+        ( 0, [] )
         data.nodes
+        |> Tuple.second
 
 
 {-| Check Debug polymorphism for a single node.

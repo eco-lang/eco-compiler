@@ -18,13 +18,15 @@ Key optimizations:
 
 -}
 
+import Array exposing (Array)
 import Compiler.AST.Monomorphized as Mono exposing (MonoExpr(..), MonoGraph(..), MonoNode(..), SpecId)
+import Compiler.Data.BitSet as BitSet exposing (BitSet)
 import Compiler.Data.Name exposing (Name)
 import Compiler.GlobalOpt.MonoTraverse as Traverse
 import Compiler.Monomorphize.Closure as Closure
 import Compiler.Reporting.Annotation as A exposing (Region)
 import Compiler.Graph as Graph
-import Data.Map as Dict exposing (Dict)
+import Dict exposing (Dict)
 import System.TypeCheck.IO as IO
 
 
@@ -50,28 +52,33 @@ type alias Metrics =
 optimize : MonoGraph -> ( MonoGraph, Metrics )
 optimize graph =
     let
-        (MonoGraph { nodes, main, registry, ctorShapes }) =
+        (MonoGraph { nodes, main, registry, ctorShapes, nextLambdaIndex, callEdges, specHasEffects, specValueUsed }) =
             graph
 
         closuresBefore =
             countClosuresInGraph nodes
 
         callGraph =
-            buildCallGraph nodes registry
+            buildCallGraph nodes callEdges
 
         ctx =
-            initRewriteCtx nodes registry callGraph
+            initRewriteCtx nodes registry callGraph nextLambdaIndex
 
-        ( optimizedNodes, finalCtx ) =
-            Dict.foldl compare
-                (\specId node ( accNodes, accCtx ) ->
-                    let
-                        ( optimizedNode, newCtx ) =
-                            optimizeNode accCtx specId node
-                    in
-                    ( Dict.insert identity specId optimizedNode accNodes, newCtx )
+        ( optimizedNodes, finalCtx, _ ) =
+            Array.foldl
+                (\maybeNode ( accNodes, accCtx, specId ) ->
+                    case maybeNode of
+                        Nothing ->
+                            ( Array.push Nothing accNodes, accCtx, specId + 1 )
+
+                        Just node ->
+                            let
+                                ( optimizedNode, newCtx ) =
+                                    optimizeNode accCtx specId node
+                            in
+                            ( Array.push (Just optimizedNode) accNodes, newCtx, specId + 1 )
                 )
-                ( Dict.empty, ctx )
+                ( Array.empty, ctx, 0 )
                 nodes
 
         closuresAfter =
@@ -90,6 +97,10 @@ optimize graph =
         , main = main
         , registry = registry
         , ctorShapes = ctorShapes
+        , nextLambdaIndex = finalCtx.lambdaCounter
+        , callEdges = callEdges
+        , specHasEffects = specHasEffects
+        , specValueUsed = specValueUsed
         }
     , metrics
     )
@@ -148,46 +159,125 @@ isWhitelisted whitelist global =
 {-| Call graph with SCC-based recursion detection.
 -}
 type alias CallGraph =
-    { edges : Dict Int SpecId (List SpecId)
-    , isRecursive : Dict Int SpecId Bool
+    { edges : Array (Maybe (List SpecId))
+    , isRecursive : Dict SpecId Bool
     }
 
 
-buildCallGraph : Dict Int SpecId MonoNode -> Mono.SpecializationRegistry -> CallGraph
-buildCallGraph nodes _ =
+buildCallGraph : Array (Maybe MonoNode) -> Array (Maybe (List SpecId)) -> CallGraph
+buildCallGraph nodes edges =
     let
-        -- Build edges: for each node, collect specIds it calls
-        edges =
-            Dict.foldl compare
-                (\specId node acc ->
-                    let
-                        calls =
-                            collectCallsFromNode node
-                    in
-                    Dict.insert identity specId calls acc
+        -- Step 1: Assign dense indices 0..n-1 to each live SpecId
+        specIds : List SpecId
+        specIds =
+            Array.foldl
+                (\maybeNode ( specId, acc ) ->
+                    case maybeNode of
+                        Just _ ->
+                            ( specId + 1, specId :: acc )
+
+                        Nothing ->
+                            ( specId + 1, acc )
                 )
+                ( 0, [] )
+                nodes
+                |> Tuple.second
+                |> List.reverse
+
+        n : Int
+        n =
+            List.length specIds
+
+        indexToSpecId : Array SpecId
+        indexToSpecId =
+            Array.fromList specIds
+
+        idToIndex : Dict SpecId Int
+        idToIndex =
+            List.foldl
+                (\( idx, specId ) acc -> Dict.insert specId idx acc)
                 Dict.empty
-                nodes
+                (List.indexedMap Tuple.pair specIds)
 
-        -- Build graph for SCC computation: (node, key, neighbors)
-        graphNodes =
-            Dict.foldl compare
-                (\specId _ acc ->
-                    let
-                        neighbors =
-                            Dict.get identity specId edges
-                                |> Maybe.withDefault []
-                    in
-                    ( specId, specId, neighbors ) :: acc
+        -- Step 2: Build forward and transposed adjacency + selfLoop bitset
+        -- Accumulate in Dict first, then convert to Array in one pass
+        buildResult =
+            Array.foldl
+                (\maybeNode ( specId, acc ) ->
+                    case maybeNode of
+                        Nothing ->
+                            ( specId + 1, acc )
+
+                        Just _ ->
+                            let
+                                idx =
+                                    Dict.get specId idToIndex
+                                        |> Maybe.withDefault -1
+
+                                neighborSpecIds =
+                                    Array.get specId edges
+                                        |> Maybe.andThen identity
+                                        |> Maybe.withDefault []
+
+                                neighborIdxs =
+                                    List.filterMap
+                                        (\sid -> Dict.get sid idToIndex)
+                                        neighborSpecIds
+
+                                hasSelfLoop =
+                                    List.any (\ni -> ni == idx) neighborIdxs
+
+                                newFwd =
+                                    if idx >= 0 then
+                                        Dict.insert idx neighborIdxs acc.fwd
+
+                                    else
+                                        acc.fwd
+
+                                newTrans =
+                                    List.foldl
+                                        (\target t ->
+                                            let
+                                                existing =
+                                                    Dict.get target t |> Maybe.withDefault []
+                                            in
+                                            Dict.insert target (idx :: existing) t
+                                        )
+                                        acc.trans
+                                        neighborIdxs
+
+                                newSelfLoops =
+                                    if hasSelfLoop && idx >= 0 then
+                                        BitSet.insert idx acc.selfLoops
+
+                                    else
+                                        acc.selfLoops
+                            in
+                            ( specId + 1, { fwd = newFwd, trans = newTrans, selfLoops = newSelfLoops } )
                 )
-                []
+                ( 0, { fwd = Dict.empty, trans = Dict.empty, selfLoops = BitSet.emptyWithSize n } )
                 nodes
+                |> Tuple.second
 
-        -- Compute SCCs
-        sccs =
-            Graph.stronglyConnComp graphNodes
+        fwdArray : Array (List Int)
+        fwdArray =
+            Array.initialize n (\i -> Dict.get i buildResult.fwd |> Maybe.withDefault [])
 
-        -- Mark recursive nodes (those in CyclicSCC)
+        transArray : Array (List Int)
+        transArray =
+            Array.initialize n (\i -> Dict.get i buildResult.trans |> Maybe.withDefault [])
+
+        -- Step 3: Run SCC on IntGraph
+        sccsInt : List (Graph.SCC Int)
+        sccsInt =
+            Graph.stronglyConnCompInt
+                { fwd = fwdArray
+                , trans = transArray
+                , selfLoops = buildResult.selfLoops
+                , size = n
+                }
+
+        -- Step 4: Mark recursive nodes (those in CyclicSCC)
         isRecursiveFromSCC =
             List.foldl
                 (\scc acc ->
@@ -195,16 +285,21 @@ buildCallGraph nodes _ =
                         Graph.AcyclicSCC _ ->
                             acc
 
-                        Graph.CyclicSCC specIds ->
+                        Graph.CyclicSCC idxs ->
                             List.foldl
-                                (\specId innerAcc ->
-                                    Dict.insert identity specId True innerAcc
+                                (\idx innerAcc ->
+                                    case Array.get idx indexToSpecId of
+                                        Just sid ->
+                                            Dict.insert sid True innerAcc
+
+                                        Nothing ->
+                                            innerAcc
                                 )
                                 acc
-                                specIds
+                                idxs
                 )
                 Dict.empty
-                sccs
+                sccsInt
 
         -- Mark all MonoCycle nodes as recursive.
         -- MonoCycle contains mutually recursive definitions that reference each other
@@ -212,69 +307,24 @@ buildCallGraph nodes _ =
         -- tracks MonoVarGlobal references). By marking them all as recursive, we prevent
         -- incorrect inlining of cycle-internal functions.
         isRecursive =
-            Dict.foldl compare
-                (\specId node acc ->
-                    case node of
-                        MonoCycle _ _ ->
-                            Dict.insert identity specId True acc
+            Array.foldl
+                (\maybeNode ( specId, acc ) ->
+                    case maybeNode of
+                        Just (MonoCycle _ _) ->
+                            ( specId + 1, Dict.insert specId True acc )
 
                         _ ->
-                            acc
+                            ( specId + 1, acc )
                 )
-                isRecursiveFromSCC
+                ( 0, isRecursiveFromSCC )
                 nodes
+                |> Tuple.second
     in
     { edges = edges
     , isRecursive = isRecursive
     }
 
 
-collectCallsFromNode : MonoNode -> List SpecId
-collectCallsFromNode node =
-    case node of
-        MonoDefine expr _ ->
-            collectCalls expr
-
-        MonoTailFunc _ expr _ ->
-            collectCalls expr
-
-        MonoCtor _ _ ->
-            []
-
-        MonoEnum _ _ ->
-            []
-
-        MonoExtern _ ->
-            []
-
-        MonoManagerLeaf _ _ ->
-            []
-
-        MonoPortIncoming expr _ ->
-            collectCalls expr
-
-        MonoPortOutgoing expr _ ->
-            collectCalls expr
-
-        MonoCycle defs _ ->
-            List.concatMap (\( _, expr ) -> collectCalls expr) defs
-
-
-{-| Extract SpecId from global variable references.
--}
-extractSpecId : MonoExpr -> List SpecId -> List SpecId
-extractSpecId expr acc =
-    case expr of
-        MonoVarGlobal _ specId _ ->
-            specId :: acc
-
-        _ ->
-            acc
-
-
-collectCalls : MonoExpr -> List SpecId
-collectCalls =
-    Traverse.foldExpr extractSpecId []
 
 
 
@@ -369,7 +419,7 @@ computeCostDef def =
 
 
 type alias RewriteCtx =
-    { nodes : Dict Int SpecId MonoNode
+    { nodes : Array (Maybe MonoNode)
     , registry : Mono.SpecializationRegistry
     , callGraph : CallGraph
     , whitelist : InlineWhitelist
@@ -387,15 +437,15 @@ type alias InternalMetrics =
     }
 
 
-initRewriteCtx : Dict Int SpecId MonoNode -> Mono.SpecializationRegistry -> CallGraph -> RewriteCtx
-initRewriteCtx nodes registry callGraph =
+initRewriteCtx : Array (Maybe MonoNode) -> Mono.SpecializationRegistry -> CallGraph -> Int -> RewriteCtx
+initRewriteCtx nodes registry callGraph nextLambdaIndex =
     { nodes = nodes
     , registry = registry
     , callGraph = callGraph
     , whitelist = defaultWhitelist
     , inlineCountThisFunction = 0
     , varCounter = 0
-    , lambdaCounter = 1000000
+    , lambdaCounter = nextLambdaIndex
     , metrics =
         { inlineCount = 0
         , betaReductions = 0
@@ -426,7 +476,7 @@ freshLambdaIdForSpec : RewriteCtx -> Mono.SpecId -> ( Mono.LambdaId, RewriteCtx 
 freshLambdaIdForSpec ctx specId =
     let
         home =
-            case Dict.get identity specId ctx.registry.reverseMapping of
+            case Array.get specId ctx.registry.reverseMapping |> Maybe.andThen identity of
                 Just ( Mono.Global h _, _, _ ) ->
                     h
 
@@ -1301,7 +1351,7 @@ tryInlineCall ctx specId args resultType =
 
     else
         -- Look up the callee
-        case Dict.get identity specId ctx.nodes of
+        case Array.get specId ctx.nodes |> Maybe.andThen identity of
             Nothing ->
                 ( Nothing, ctx )
 
@@ -1309,12 +1359,13 @@ tryInlineCall ctx specId args resultType =
                 -- Check if recursive
                 let
                     isRecursive =
-                        Dict.get identity specId ctx.callGraph.isRecursive
+                        Dict.get specId ctx.callGraph.isRecursive
                             |> Maybe.withDefault False
 
                     -- Look up global name for whitelist check
                     maybeGlobal =
-                        Dict.get identity specId ctx.registry.reverseMapping
+                        Array.get specId ctx.registry.reverseMapping
+                            |> Maybe.andThen identity
                             |> Maybe.map (\( g, _, _ ) -> g)
 
                     whitelisted =
@@ -2358,9 +2409,16 @@ countClosuresInNode node =
             0
 
 
-countClosuresInGraph : Dict Int SpecId MonoNode -> Int
+countClosuresInGraph : Array (Maybe MonoNode) -> Int
 countClosuresInGraph nodes =
-    Dict.foldl compare
-        (\_ node acc -> acc + countClosuresInNode node)
+    Array.foldl
+        (\maybeNode acc ->
+            case maybeNode of
+                Just node ->
+                    acc + countClosuresInNode node
+
+                Nothing ->
+                    acc
+        )
         0
         nodes

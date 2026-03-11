@@ -22,23 +22,23 @@ import Base64
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Generate.JavaScript.Builder as JS
 import Compiler.Generate.JavaScript.Name as JSName
-import Data.Map as Dict exposing (Dict)
+import Data.Map as DataMap
+import Dict exposing (Dict)
 import Json.Encode as Encode
 import System.TypeCheck.IO as IO
-import Utils.Main as Utils
 import VLQ
 
 
 {-| Generate a source map as a base64-encoded data URL that maps generated JavaScript positions back to original Elm source positions.
 -}
-generate : Int -> Int -> Dict (List String) IO.Canonical String -> List JS.Mapping -> String
+generate : Int -> Int -> DataMap.Dict (List String) IO.Canonical String -> List JS.Mapping -> String
 generate leadingLines kernelLeadingLines moduleSources mappings =
     "\n"
         ++ "//# sourceMappingURL=data:application/json;base64,"
         ++ generateHelp leadingLines kernelLeadingLines moduleSources mappings
 
 
-generateHelp : Int -> Int -> Dict (List String) IO.Canonical String -> List JS.Mapping -> String
+generateHelp : Int -> Int -> DataMap.Dict (List String) IO.Canonical String -> List JS.Mapping -> String
 generateHelp leadingLines kernelLeadingLines moduleSources mappings =
     mappings
         |> List.map
@@ -86,16 +86,16 @@ type SegmentAccounting
 parseMappings : List JS.Mapping -> Mappings
 parseMappings mappings =
     let
-        mappingMap : Dict Int Int (List JS.Mapping)
+        mappingMap : Dict Int (List JS.Mapping)
         mappingMap =
             List.foldr
                 (\((JS.Mapping m) as mapping) acc ->
-                    Dict.update identity m.genLine (mappingMapUpdater mapping) acc
+                    Dict.update m.genLine (mappingMapUpdater mapping) acc
                 )
                 Dict.empty
                 mappings
     in
-    makeMappings emptyOrderedListBuilder emptyOrderedListBuilder (SegmentAccounting { prevCol = Nothing, prevSourceIdx = Nothing, prevSourceLine = Nothing, prevSourceCol = Nothing, prevNameIdx = Nothing }) "" |> parseMappingsHelp 1 (Tuple.first (Utils.findMax compare mappingMap)) mappingMap
+    makeMappings emptyOrderedListBuilder emptyOrderedListBuilder (SegmentAccounting { prevCol = Nothing, prevSourceIdx = Nothing, prevSourceLine = Nothing, prevSourceCol = Nothing, prevNameIdx = Nothing }) "" |> parseMappingsHelp 1 (Dict.keys mappingMap |> List.maximum |> Maybe.withDefault 0) mappingMap
 
 
 mappingMapUpdater : JS.Mapping -> Maybe (List JS.Mapping) -> Maybe (List JS.Mapping)
@@ -108,13 +108,13 @@ mappingMapUpdater toInsert maybeVal =
             Just (toInsert :: existing)
 
 
-parseMappingsHelp : Int -> Int -> Dict Int Int (List JS.Mapping) -> Mappings -> Mappings
+parseMappingsHelp : Int -> Int -> Dict Int (List JS.Mapping) -> Mappings -> Mappings
 parseMappingsHelp currentLine lastLine mappingMap acc =
     if currentLine > lastLine then
         acc
 
     else
-        case Dict.get identity currentLine mappingMap of
+        case Dict.get currentLine mappingMap of
             Nothing ->
                 parseMappingsHelp (currentLine + 1)
                     lastLine
@@ -244,39 +244,39 @@ encodeSegment (JS.Mapping segmentData) (Mappings props) =
 
 
 type OrderedListBuilder c k
-    = OrderedListBuilder Int (Dict c k Int)
+    = OrderedListBuilder Int (DataMap.Dict c k Int)
 
 
 emptyOrderedListBuilder : OrderedListBuilder c k
 emptyOrderedListBuilder =
-    OrderedListBuilder 0 Dict.empty
+    OrderedListBuilder 0 DataMap.empty
 
 
 insertIntoOrderedListBuilder : (k -> comparable) -> k -> OrderedListBuilder comparable k -> OrderedListBuilder comparable k
 insertIntoOrderedListBuilder toComparable value ((OrderedListBuilder nextIndex values) as builder) =
-    case Dict.get toComparable value values of
+    case DataMap.get toComparable value values of
         Just _ ->
             builder
 
         Nothing ->
-            OrderedListBuilder (nextIndex + 1) (Dict.insert toComparable value nextIndex values)
+            OrderedListBuilder (nextIndex + 1) (DataMap.insert toComparable value nextIndex values)
 
 
 lookupIndexOrderedListBuilder : (k -> comparable) -> k -> OrderedListBuilder comparable k -> Maybe Int
 lookupIndexOrderedListBuilder toComparable value (OrderedListBuilder _ values) =
-    Dict.get toComparable value values
+    DataMap.get toComparable value values
 
 
 orderedListBuilderToList : (k -> k -> Order) -> OrderedListBuilder c k -> List k
 orderedListBuilderToList keyComparison (OrderedListBuilder _ values) =
     values
-        |> Dict.toList keyComparison
+        |> DataMap.toList keyComparison
         |> List.map (\( val, idx ) -> ( idx, val ))
-        |> Dict.fromList identity
-        |> Dict.values compare
+        |> Dict.fromList
+        |> Dict.values
 
 
-mappingsToJson : Dict (List String) IO.Canonical String -> Mappings -> Encode.Value
+mappingsToJson : DataMap.Dict (List String) IO.Canonical String -> Mappings -> Encode.Value
 mappingsToJson moduleSources (Mappings props) =
     let
         moduleNames : List IO.Canonical
@@ -289,7 +289,7 @@ mappingsToJson moduleSources (Mappings props) =
         , ( "sourcesContent"
           , Encode.list
                 (\moduleName ->
-                    Dict.get ModuleName.toComparableCanonical moduleName moduleSources
+                    DataMap.get ModuleName.toComparableCanonical moduleName moduleSources
                         |> Maybe.map Encode.string
                         |> Maybe.withDefault Encode.null
                 )

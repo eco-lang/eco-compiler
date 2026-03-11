@@ -10,7 +10,8 @@ List, etc. are correctly resolved and consistent throughout the module.
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Source as Src
 import Compiler.Type.KernelTypes as KernelTypes
-import Data.Map as Dict
+import Data.Map
+import Dict
 import Expect
 import TestLogic.TestPipeline as Pipeline
 
@@ -50,7 +51,7 @@ collectKernelTypeIssues : KernelTypes.KernelTypeEnv -> List String
 collectKernelTypeIssues kernelEnv =
     -- The KernelTypeEnv maps (module, name) pairs to their types
     -- Verify all kernel types are well-formed
-    Dict.foldl (\a b -> compare (Tuple.first a) (Tuple.first b))
+    Data.Map.foldl (\a b -> compare (Tuple.first a) (Tuple.first b))
         (\( moduleName, funcName ) canType acc ->
             let
                 context =
@@ -91,7 +92,7 @@ checkKernelTypeWellFormed context canType =
             List.concatMap (checkKernelTypeWellFormed context) args
 
         Can.TRecord fields _ ->
-            Dict.foldl compare
+            Dict.foldl
                 (\fieldName (Can.FieldType _ fieldType) acc ->
                     checkKernelTypeWellFormed (context ++ "." ++ fieldName) fieldType ++ acc
                 )

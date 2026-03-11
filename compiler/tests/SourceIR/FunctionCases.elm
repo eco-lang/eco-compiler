@@ -7,8 +7,12 @@ import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
         ( TypedDef
+        , UnionDef
         , binopsExpr
+        , boolExpr
         , callExpr
+        , chrExpr
+        , ctorExpr
         , define
         , floatExpr
         , ifExpr
@@ -18,12 +22,18 @@ import Compiler.AST.SourceBuilder
         , makeModule
         , makeModuleWithDefs
         , makeModuleWithTypedDefs
+        , makeModuleWithTypedDefsUnionsAliases
         , negateExpr
         , pAnything
         , pRecord
         , pTuple
         , pVar
         , qualVarExpr
+        , recordExpr
+        , strExpr
+        , tLambda
+        , tType
+        , tVar
         , tupleExpr
         , varExpr
         )
@@ -70,7 +80,10 @@ identityLambda : (Src.Module -> Expectation) -> (() -> Expectation)
 identityLambda expectFn _ =
     let
         modul =
-            makeModule "testValue" (lambdaExpr [ pVar "x" ] (varExpr "x"))
+            makeModuleWithDefs "Test"
+                [ ( "testFn", [], lambdaExpr [ pVar "x" ] (varExpr "x") )
+                , ( "testValue", [], callExpr (varExpr "testFn") [ intExpr 1 ] )
+                ]
     in
     expectFn modul
 
@@ -79,7 +92,10 @@ twoArgumentLambda : (Src.Module -> Expectation) -> (() -> Expectation)
 twoArgumentLambda expectFn _ =
     let
         modul =
-            makeModule "testValue" (lambdaExpr [ pVar "x", pVar "y" ] (varExpr "x"))
+            makeModuleWithDefs "Test"
+                [ ( "testFn", [], lambdaExpr [ pVar "x", pVar "y" ] (varExpr "x") )
+                , ( "testValue", [], callExpr (varExpr "testFn") [ intExpr 1, strExpr "a" ] )
+                ]
     in
     expectFn modul
 
@@ -91,7 +107,10 @@ lambdaReturningTuple expectFn _ =
             tupleExpr (varExpr "x") (varExpr "y")
 
         modul =
-            makeModule "testValue" (lambdaExpr [ pVar "x", pVar "y" ] body)
+            makeModuleWithDefs "Test"
+                [ ( "testFn", [], lambdaExpr [ pVar "x", pVar "y" ] body )
+                , ( "testValue", [], callExpr (varExpr "testFn") [ intExpr 1, strExpr "a" ] )
+                ]
     in
     expectFn modul
 
@@ -100,7 +119,10 @@ lambdaWithWildcard : (Src.Module -> Expectation) -> (() -> Expectation)
 lambdaWithWildcard expectFn _ =
     let
         modul =
-            makeModule "testValue" (lambdaExpr [ pAnything ] (intExpr 0))
+            makeModuleWithDefs "Test"
+                [ ( "testFn", [], lambdaExpr [ pAnything ] (intExpr 42) )
+                , ( "testValue", [], callExpr (varExpr "testFn") [ intExpr 1 ] )
+                ]
     in
     expectFn modul
 
@@ -180,6 +202,12 @@ partialApplicationCases : (Src.Module -> Expectation) -> List TestCase
 partialApplicationCases expectFn =
     [ { label = "Partially applied two-arg function", run = partiallyAppliedTwoArg expectFn }
     , { label = "Chained partial application", run = chainedPartialApplication expectFn }
+    , { label = "Chained partial application (Float)", run = chainedPartialApplicationFloat expectFn }
+    , { label = "Chained partial application (Char)", run = chainedPartialApplicationChar expectFn }
+    , { label = "Chained partial application (Bool)", run = chainedPartialApplicationBool expectFn }
+    , { label = "Chained partial application (String)", run = chainedPartialApplicationString expectFn }
+    , { label = "Chained partial application (Record)", run = chainedPartialApplicationRecord expectFn }
+    , { label = "Chained partial application (Custom)", run = chainedPartialApplicationCustom expectFn }
     ]
 
 
@@ -225,6 +253,166 @@ chainedPartialApplication expectFn _ =
     expectFn modul
 
 
+chainedPartialApplicationFloat : (Src.Module -> Expectation) -> (() -> Expectation)
+chainedPartialApplicationFloat expectFn _ =
+    let
+        fn =
+            lambdaExpr [ pVar "a", pVar "b", pVar "c" ] (varExpr "a")
+
+        def =
+            define "f" [] fn
+
+        partial1 =
+            callExpr (varExpr "f") [ floatExpr 1.5 ]
+
+        defP1 =
+            define "p1" [] partial1
+
+        partial2 =
+            callExpr (varExpr "p1") [ intExpr 2 ]
+
+        modul =
+            makeModule "testValue" (letExpr [ def, defP1 ] partial2)
+    in
+    expectFn modul
+
+
+chainedPartialApplicationChar : (Src.Module -> Expectation) -> (() -> Expectation)
+chainedPartialApplicationChar expectFn _ =
+    let
+        fn =
+            lambdaExpr [ pVar "a", pVar "b", pVar "c" ] (varExpr "a")
+
+        def =
+            define "f" [] fn
+
+        partial1 =
+            callExpr (varExpr "f") [ chrExpr "x" ]
+
+        defP1 =
+            define "p1" [] partial1
+
+        partial2 =
+            callExpr (varExpr "p1") [ intExpr 2 ]
+
+        modul =
+            makeModule "testValue" (letExpr [ def, defP1 ] partial2)
+    in
+    expectFn modul
+
+
+chainedPartialApplicationBool : (Src.Module -> Expectation) -> (() -> Expectation)
+chainedPartialApplicationBool expectFn _ =
+    let
+        fn =
+            lambdaExpr [ pVar "a", pVar "b", pVar "c" ] (varExpr "a")
+
+        def =
+            define "f" [] fn
+
+        partial1 =
+            callExpr (varExpr "f") [ boolExpr True ]
+
+        defP1 =
+            define "p1" [] partial1
+
+        partial2 =
+            callExpr (varExpr "p1") [ intExpr 2 ]
+
+        modul =
+            makeModule "testValue" (letExpr [ def, defP1 ] partial2)
+    in
+    expectFn modul
+
+
+chainedPartialApplicationString : (Src.Module -> Expectation) -> (() -> Expectation)
+chainedPartialApplicationString expectFn _ =
+    let
+        fn =
+            lambdaExpr [ pVar "a", pVar "b", pVar "c" ] (varExpr "a")
+
+        def =
+            define "f" [] fn
+
+        partial1 =
+            callExpr (varExpr "f") [ strExpr "hello" ]
+
+        defP1 =
+            define "p1" [] partial1
+
+        partial2 =
+            callExpr (varExpr "p1") [ intExpr 2 ]
+
+        modul =
+            makeModule "testValue" (letExpr [ def, defP1 ] partial2)
+    in
+    expectFn modul
+
+
+chainedPartialApplicationRecord : (Src.Module -> Expectation) -> (() -> Expectation)
+chainedPartialApplicationRecord expectFn _ =
+    let
+        fn =
+            lambdaExpr [ pVar "a", pVar "b", pVar "c" ] (varExpr "a")
+
+        def =
+            define "f" [] fn
+
+        partial1 =
+            callExpr (varExpr "f") [ recordExpr [ ( "x", intExpr 1 ), ( "y", intExpr 2 ) ] ]
+
+        defP1 =
+            define "p1" [] partial1
+
+        partial2 =
+            callExpr (varExpr "p1") [ intExpr 2 ]
+
+        modul =
+            makeModule "testValue" (letExpr [ def, defP1 ] partial2)
+    in
+    expectFn modul
+
+
+chainedPartialApplicationCustom : (Src.Module -> Expectation) -> (() -> Expectation)
+chainedPartialApplicationCustom expectFn _ =
+    let
+        wrapperUnion : UnionDef
+        wrapperUnion =
+            { name = "Wrapper"
+            , args = []
+            , ctors = [ { name = "Wrapper", args = [ tType "Int" [] ] } ]
+            }
+
+        fnDef : TypedDef
+        fnDef =
+            { name = "f"
+            , args = [ pVar "a", pVar "b", pVar "c" ]
+            , tipe = tLambda (tType "Wrapper" []) (tLambda (tType "Int" []) (tLambda (tType "Int" []) (tType "Wrapper" [])))
+            , body = varExpr "a"
+            }
+
+        p1Def : TypedDef
+        p1Def =
+            { name = "p1"
+            , args = []
+            , tipe = tLambda (tType "Int" []) (tLambda (tType "Int" []) (tType "Wrapper" []))
+            , body = callExpr (varExpr "f") [ callExpr (ctorExpr "Wrapper") [ intExpr 42 ] ]
+            }
+
+        testValueDef : TypedDef
+        testValueDef =
+            { name = "testValue"
+            , args = []
+            , tipe = tLambda (tType "Int" []) (tType "Wrapper" [])
+            , body = callExpr (varExpr "p1") [ intExpr 2 ]
+            }
+
+        modul =
+            makeModuleWithTypedDefsUnionsAliases "Test" [ fnDef, p1Def, testValueDef ] [ wrapperUnion ] []
+    in
+    expectFn modul
+
+
 
 -- ============================================================================
 -- NESTED FUNCTIONS
@@ -246,7 +434,10 @@ lambdaReturningLambda expectFn _ =
             lambdaExpr [ pVar "y" ] (varExpr "y")
 
         modul =
-            makeModule "testValue" (lambdaExpr [ pVar "x" ] inner)
+            makeModuleWithDefs "Test"
+                [ ( "testFn", [], lambdaExpr [ pVar "x" ] inner )
+                , ( "testValue", [], callExpr (varExpr "testFn") [ intExpr 1, strExpr "a" ] )
+                ]
     in
     expectFn modul
 
@@ -264,7 +455,10 @@ lambdaInsideLetInsideLambda expectFn _ =
             letExpr [ def ] (callExpr (varExpr "inner") [ varExpr "x" ])
 
         modul =
-            makeModule "testValue" (lambdaExpr [ pVar "x" ] body)
+            makeModuleWithDefs "Test"
+                [ ( "testFn", [], lambdaExpr [ pVar "x" ] body )
+                , ( "testValue", [], callExpr (varExpr "testFn") [ intExpr 1 ] )
+                ]
     in
     expectFn modul
 
@@ -309,7 +503,10 @@ lambdaWithTuplePattern expectFn _ =
             tupleExpr (varExpr "y") (varExpr "x")
 
         modul =
-            makeModule "testValue" (lambdaExpr [ pattern ] body)
+            makeModuleWithDefs "Test"
+                [ ( "testFn", [], lambdaExpr [ pattern ] body )
+                , ( "testValue", [], callExpr (varExpr "testFn") [ tupleExpr (intExpr 1) (strExpr "a") ] )
+                ]
     in
     expectFn modul
 
@@ -318,13 +515,16 @@ lambdaWithRecordPattern : (Src.Module -> Expectation) -> (() -> Expectation)
 lambdaWithRecordPattern expectFn _ =
     let
         pattern =
-            pRecord [ "x", "y" ]
+            pRecord [ "x" ]
 
         body =
             varExpr "x"
 
         modul =
-            makeModule "testValue" (lambdaExpr [ pattern ] body)
+            makeModuleWithDefs "Test"
+                [ ( "testFn", [], lambdaExpr [ pattern ] body )
+                , ( "testValue", [], callExpr (varExpr "testFn") [ recordExpr [ ( "x", intExpr 1 ) ] ] )
+                ]
     in
     expectFn modul
 
@@ -333,14 +533,21 @@ lambdaWithMixedPatterns : (Src.Module -> Expectation) -> (() -> Expectation)
 lambdaWithMixedPatterns expectFn _ =
     let
         modul =
-            makeModule "testValue"
-                (lambdaExpr
-                    [ pVar "a"
-                    , pTuple (pVar "b") (pVar "c")
-                    , pAnything
-                    ]
-                    (varExpr "b")
-                )
+            makeModuleWithDefs "Test"
+                [ ( "testFn"
+                  , []
+                  , lambdaExpr
+                        [ pVar "a"
+                        , pTuple (pVar "b") (pVar "c")
+                        , pAnything
+                        ]
+                        (varExpr "b")
+                  )
+                , ( "testValue"
+                  , []
+                  , callExpr (varExpr "testFn") [ intExpr 1, tupleExpr (strExpr "a") (intExpr 2), intExpr 3 ]
+                  )
+                ]
     in
     expectFn modul
 
@@ -351,6 +558,7 @@ topLevelFunctionWithPatterns expectFn _ =
         modul =
             makeModuleWithDefs "Test"
                 [ ( "swap", [ pTuple (pVar "a") (pVar "b") ], tupleExpr (varExpr "b") (varExpr "a") )
+                , ( "testValue", [], callExpr (varExpr "swap") [ tupleExpr (intExpr 1) (strExpr "a") ] )
                 ]
     in
     expectFn modul

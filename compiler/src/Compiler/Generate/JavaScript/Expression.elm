@@ -46,8 +46,9 @@ import Compiler.Generate.Mode as Mode
 import Compiler.Json.Encode as Encode
 import Compiler.LocalOpt.Erased.DecisionTree as DT
 import Compiler.Reporting.Annotation as A
-import Data.Map as Dict exposing (Dict)
+import Data.Map as EveryDict
 import Data.Set as EverySet
+import Dict exposing (Dict)
 import Prelude
 import System.TypeCheck.IO as IO
 import Utils.Crash exposing (crash)
@@ -350,24 +351,24 @@ ctorToInt home name index =
 -- ====== RECORDS ======
 
 
-generateRecord : Mode.Mode -> IO.Canonical -> Dict String Name.Name Opt.Expr -> JS.Expr
+generateRecord : Mode.Mode -> IO.Canonical -> Dict Name.Name Opt.Expr -> JS.Expr
 generateRecord mode parentModule fields =
     let
         toPair : ( Name.Name, Opt.Expr ) -> ( JsName.Name, JS.Expr )
         toPair ( field, value ) =
             ( generateField mode field, generateJsExpr mode parentModule value )
     in
-    JS.ExprObject (List.map toPair (Dict.toList compare fields))
+    JS.ExprObject (List.map toPair (Dict.toList fields))
 
 
-generateTrackedRecord : Mode.Mode -> IO.Canonical -> A.Region -> Dict String (A.Located Name.Name) Opt.Expr -> JS.Expr
+generateTrackedRecord : Mode.Mode -> IO.Canonical -> A.Region -> EveryDict.Dict String (A.Located Name.Name) Opt.Expr -> JS.Expr
 generateTrackedRecord mode parentModule region fields =
     let
         toPair : ( A.Located Name.Name, Opt.Expr ) -> ( A.Located JsName.Name, JS.Expr )
         toPair ( A.At fieldRegion field, value ) =
             ( A.At fieldRegion (generateField mode field), generateJsExpr mode parentModule value )
     in
-    JS.ExprTrackedObject parentModule region (List.map toPair (Dict.toList A.compareLocated fields))
+    JS.ExprTrackedObject parentModule region (List.map toPair (EveryDict.toList A.compareLocated fields))
 
 
 {-| Convert an Elm field name to a JavaScript property name, applying production-mode shortening if enabled.
@@ -379,7 +380,12 @@ generateField mode name =
             JsName.fromLocal name
 
         Mode.Prod fields ->
-            Utils.find identity name fields
+            case Dict.get name fields of
+                Just v ->
+                    v
+
+                Nothing ->
+                    crash "Compiler.Generate.JavaScript.Expression: field not found in ShortFieldNames"
 
 
 
@@ -429,7 +435,7 @@ positionToJsExpr (A.Position line column) =
 
 generateFunction : List JsName.Name -> Code -> Code
 generateFunction args body =
-    case Dict.get identity (List.length args) funcHelpers of
+    case Dict.get (List.length args) funcHelpers of
         Just helper ->
             JsExpr <|
                 JS.ExprCall helper
@@ -447,7 +453,7 @@ generateFunction args body =
 
 generateTrackedFunction : IO.Canonical -> List (A.Located JsName.Name) -> Code -> Code
 generateTrackedFunction parentModule args body =
-    case Dict.get identity (List.length args) funcHelpers of
+    case Dict.get (List.length args) funcHelpers of
         Just helper ->
             JsExpr <|
                 JS.ExprCall
@@ -469,9 +475,9 @@ generateTrackedFunction parentModule args body =
                     List.foldr addArg body (List.map A.toValue args)
 
 
-funcHelpers : Dict Int Int JS.Expr
+funcHelpers : Dict Int JS.Expr
 funcHelpers =
-    List.map (\n -> ( n, JS.ExprRef (JsName.makeF n) )) (List.range 2 9) |> Dict.fromList identity
+    List.map (\n -> ( n, JS.ExprRef (JsName.makeF n) )) (List.range 2 9) |> Dict.fromList
 
 
 
@@ -530,7 +536,7 @@ generateGlobalCall parentModule ((A.Position line col) as pos) home name args =
 
 generateNormalCall : IO.Canonical -> A.Position -> JS.Expr -> List JS.Expr -> JS.Expr
 generateNormalCall parentModule pos func args =
-    case Dict.get identity (List.length args) callHelpers of
+    case Dict.get (List.length args) callHelpers of
         Just helper ->
             JS.ExprTrackedNormalCall parentModule pos helper func args
 
@@ -538,9 +544,9 @@ generateNormalCall parentModule pos func args =
             List.foldl (\a f -> JS.ExprCall f [ a ]) func args
 
 
-callHelpers : Dict Int Int JS.Expr
+callHelpers : Dict Int JS.Expr
 callHelpers =
-    List.map (\n -> ( n, JS.ExprRef (JsName.makeA n) )) (List.range 2 9) |> Dict.fromList identity
+    List.map (\n -> ( n, JS.ExprRef (JsName.makeA n) )) (List.range 2 9) |> Dict.fromList
 
 
 

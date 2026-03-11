@@ -1,5 +1,6 @@
 module Compiler.GlobalOpt.MonoTraverse exposing
-    ( traverseExpr
+    ( mapExpr
+    , traverseExpr
     , foldExpr
     )
 
@@ -199,12 +200,24 @@ traverseChoice f ctx choice =
 (children are folded before the parent).
 -}
 foldExpr : (MonoExpr -> acc -> acc) -> acc -> MonoExpr -> acc
-foldExpr f acc expr =
+foldExpr f =
+    -- Flip the callback once here, then use acc-first internally
+    let
+        accFirst =
+            \a e -> f e a
+    in
+    foldExprAccFirst accFirst
+
+
+{-| Acc-first fold over expressions (internal). Avoids per-call flip overhead.
+-}
+foldExprAccFirst : (acc -> MonoExpr -> acc) -> acc -> MonoExpr -> acc
+foldExprAccFirst f acc expr =
     let
         childAcc =
-            foldExprChildren (foldExpr f) acc expr
+            foldExprChildren (foldExprAccFirst f) acc expr
     in
-    f expr childAcc
+    f childAcc expr
 
 
 {-| Fold over definitions.
@@ -217,6 +230,18 @@ foldDef f acc def =
 
         MonoTailDef _ _ bound ->
             foldExpr f acc bound
+
+
+{-| Acc-first fold over definitions (internal).
+-}
+foldDefAccFirst : (acc -> MonoExpr -> acc) -> acc -> MonoDef -> acc
+foldDefAccFirst f acc def =
+    case def of
+        MonoDef _ bound ->
+            foldExprAccFirst f acc bound
+
+        MonoTailDef _ _ bound ->
+            foldExprAccFirst f acc bound
 
 
 {-| Fold over deciders.
@@ -242,6 +267,29 @@ foldDecider f acc decider =
             foldDecider f acc1 fallback
 
 
+{-| Acc-first fold over deciders (internal).
+-}
+foldDeciderAccFirst : (acc -> MonoExpr -> acc) -> acc -> Decider MonoChoice -> acc
+foldDeciderAccFirst f acc decider =
+    case decider of
+        Leaf choice ->
+            foldChoiceAccFirst f acc choice
+
+        Chain _ success failure ->
+            let
+                acc1 =
+                    foldDeciderAccFirst f acc success
+            in
+            foldDeciderAccFirst f acc1 failure
+
+        FanOut _ edges fallback ->
+            let
+                acc1 =
+                    List.foldl (\( _, d ) a -> foldDeciderAccFirst f a d) acc edges
+            in
+            foldDeciderAccFirst f acc1 fallback
+
+
 {-| Fold over choices.
 -}
 foldChoice : (MonoExpr -> acc -> acc) -> acc -> MonoChoice -> acc
@@ -249,6 +297,18 @@ foldChoice f acc choice =
     case choice of
         Inline e ->
             foldExpr f acc e
+
+        Jump _ ->
+            acc
+
+
+{-| Acc-first fold over choices (internal).
+-}
+foldChoiceAccFirst : (acc -> MonoExpr -> acc) -> acc -> MonoChoice -> acc
+foldChoiceAccFirst f acc choice =
+    case choice of
+        Inline e ->
+            foldExprAccFirst f acc e
 
         Jump _ ->
             acc
@@ -510,16 +570,10 @@ traverseExprChildren f ctx expr =
             ( expr, ctx )
 
 
-{-| Fold over direct children of an expression.
+{-| Fold over direct children of an expression (acc-first order).
 -}
 foldExprChildren : (acc -> MonoExpr -> acc) -> acc -> MonoExpr -> acc
 foldExprChildren f acc expr =
-    -- Note: f has arguments (acc, expr) but foldDef/foldDecider expect (expr, acc)
-    -- so we flip when calling those
-    let
-        flipped =
-            \e a -> f a e
-    in
     case expr of
         MonoClosure info body _ ->
             let
@@ -548,7 +602,7 @@ foldExprChildren f acc expr =
         MonoLet def body _ ->
             let
                 defAcc =
-                    foldDef flipped acc def
+                    foldDefAccFirst f acc def
             in
             f defAcc body
 
@@ -558,7 +612,7 @@ foldExprChildren f acc expr =
         MonoCase _ _ decider jumps _ ->
             let
                 deciderAcc =
-                    foldDecider flipped acc decider
+                    foldDeciderAccFirst f acc decider
             in
             List.foldl (\( _, e ) a -> f a e) deciderAcc jumps
 

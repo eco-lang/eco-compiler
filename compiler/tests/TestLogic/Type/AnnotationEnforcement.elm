@@ -13,6 +13,7 @@ For expressions with explicit annotations:
 
 -}
 
+import Array
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Source as Src
 import Compiler.Canonicalize.Module as Canonicalize
@@ -25,7 +26,8 @@ import Compiler.Reporting.Error.Type as TypeError
 import Compiler.Reporting.Result as Result
 import Compiler.Type.Constrain.Typed.Module as ConstrainTyped
 import Compiler.Type.Solve as Solve
-import Data.Map exposing (Dict)
+import Data.Map
+import Dict
 import Expect
 import System.TypeCheck.IO as IO
 
@@ -84,7 +86,7 @@ canonicalizeModule : Src.Module -> Result String Can.Module
 canonicalizeModule srcModule =
     let
         result =
-            Canonicalize.canonicalize ( "eco", "example" ) Basic.testIfaces srcModule
+            Canonicalize.canonicalize ( "eco", "example" ) (Data.Map.fromList identity (Dict.toList Basic.testIfaces)) srcModule
     in
     case Result.run result of
         ( _, Err errors ) ->
@@ -105,7 +107,7 @@ canonicalizeModule srcModule =
 
 {-| Run type checking on a canonical module.
 -}
-runTypeCheck : Can.Module -> IO.IO (Result (NE.Nonempty TypeError.Error) { annotations : Dict String String Can.Annotation, nodeTypes : Dict Int Int Can.Type })
+runTypeCheck : Can.Module -> IO.IO (Result (NE.Nonempty TypeError.Error) { annotations : Data.Map.Dict String String Can.Annotation, nodeTypes : Array.Array (Maybe Can.Type) })
 runTypeCheck modul =
     ConstrainTyped.constrainWithIds modul
         |> IO.andThen

@@ -47,8 +47,8 @@ import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Elm.Package as Pkg
 import Compiler.Elm.Version as V exposing (Version)
 import Compiler.Json.Decode as D
-import Data.Map as Dict exposing (Dict)
 import Data.Set as EverySet
+import Dict exposing (Dict)
 import List
 import Task exposing (Task)
 import Utils.Main as Utils
@@ -58,16 +58,16 @@ import Utils.Main as Utils
 Only includes module changes that are not just patches (MAJOR or MINOR changes).
 -}
 type PackageChanges
-    = PackageChanges (List ModuleName.Raw) (Dict String ModuleName.Raw ModuleChanges) (List ModuleName.Raw)
+    = PackageChanges (List ModuleName.Raw) (Dict ModuleName.Raw ModuleChanges) (List ModuleName.Raw)
 
 
 {-| Changes within a module broken down by declaration type: unions, aliases, values, and binops.
 -}
 type alias ModuleChangesData =
-    { unions : Changes String Name.Name Docs.Union
-    , aliases : Changes String Name.Name Docs.Alias
-    , values : Changes String Name.Name Docs.Value
-    , binops : Changes String Name.Name Docs.Binop
+    { unions : Changes Name.Name Docs.Union
+    , aliases : Changes Name.Name Docs.Alias
+    , values : Changes Name.Name Docs.Value
+    , binops : Changes Name.Name Docs.Binop
     }
 
 
@@ -79,18 +79,18 @@ type ModuleChanges
 
 {-| Generic change tracking: added items, changed items (with old and new values), and removed items.
 -}
-type Changes c k v
-    = Changes (Dict c k v) (Dict c k ( v, v )) (Dict c k v)
+type Changes k v
+    = Changes (Dict k v) (Dict k ( v, v )) (Dict k v)
 
 
-getChanges : (k -> comparable) -> (k -> k -> Order) -> (v -> v -> Bool) -> Dict comparable k v -> Dict comparable k v -> Changes comparable k v
-getChanges toComparable keyComparison isEquivalent old new =
+getChanges : (v -> v -> Bool) -> Dict comparable v -> Dict comparable v -> Changes comparable v
+getChanges isEquivalent old new =
     let
-        overlap : Dict comparable k ( v, v )
+        overlap : Dict comparable ( v, v )
         overlap =
-            Utils.mapIntersectionWith toComparable keyComparison Tuple.pair old new
+            dictIntersectionWith Tuple.pair old new
 
-        changed : Dict comparable k ( v, v )
+        changed : Dict comparable ( v, v )
         changed =
             Dict.filter (\_ ( v1, v2 ) -> not (isEquivalent v1 v2)) overlap
     in
@@ -98,6 +98,11 @@ getChanges toComparable keyComparison isEquivalent old new =
         (Dict.diff new old)
         changed
         (Dict.diff old new)
+
+
+dictIntersectionWith : (a -> b -> c) -> Dict comparable a -> Dict comparable b -> Dict comparable c
+dictIntersectionWith func d1 d2 =
+    Dict.merge (\_ _ acc -> acc) (\k v1 v2 acc -> Dict.insert k (func v1 v2) acc) (\_ _ acc -> acc) d1 d2 Dict.empty
 
 
 
@@ -110,26 +115,26 @@ Filters out patch-level changes, returning only MAJOR and MINOR changes.
 diff : Docs.Documentation -> Docs.Documentation -> PackageChanges
 diff oldDocs newDocs =
     let
-        filterOutPatches : Dict comparable a ModuleChanges -> Dict comparable a ModuleChanges
+        filterOutPatches : Dict comparable ModuleChanges -> Dict comparable ModuleChanges
         filterOutPatches chngs =
             Dict.filter (\_ chng -> moduleChangeMagnitude chng /= M.PATCH) chngs
 
         (Changes added changed removed) =
-            getChanges identity compare (\_ _ -> False) oldDocs newDocs
+            getChanges (\_ _ -> False) oldDocs newDocs
     in
     PackageChanges
-        (Dict.keys compare added)
+        (Dict.keys added)
         (filterOutPatches (Dict.map (\_ -> diffModule) changed))
-        (Dict.keys compare removed)
+        (Dict.keys removed)
 
 
 diffModule : ( Docs.Module, Docs.Module ) -> ModuleChanges
 diffModule ( Docs.Module m1, Docs.Module m2 ) =
     ModuleChanges
-        { unions = getChanges identity compare isEquivalentUnion m1.unions m2.unions
-        , aliases = getChanges identity compare isEquivalentAlias m1.aliases m2.aliases
-        , values = getChanges identity compare isEquivalentValue m1.values m2.values
-        , binops = getChanges identity compare isEquivalentBinop m1.binops m2.binops
+        { unions = getChanges isEquivalentUnion m1.unions m2.unions
+        , aliases = getChanges isEquivalentAlias m1.aliases m2.aliases
+        , values = getChanges isEquivalentValue m1.values m2.values
+        , binops = getChanges isEquivalentBinop m1.binops m2.binops
         }
 
 
@@ -155,7 +160,7 @@ isEquivalentUnion (Docs.Union oldComment oldVars oldCtors) (Docs.Union newCommen
     in
     (List.length oldCtors == List.length newCtors)
         && List.all identity (List.map2 (==) (List.map Tuple.first oldCtors) (List.map Tuple.first newCtors))
-        && List.all identity (Dict.values compare (Utils.mapIntersectionWith identity compare equiv (Dict.fromList identity oldCtors) (Dict.fromList identity newCtors)))
+        && List.all identity (Dict.values (dictIntersectionWith equiv (Dict.fromList oldCtors) (Dict.fromList newCtors)))
 
 
 isEquivalentAlias : Docs.Alias -> Docs.Alias -> Bool
@@ -289,11 +294,14 @@ isEquivalentRenaming varPairs =
     let
         renamings : List ( Name.Name, List Name.Name )
         renamings =
-            Dict.toList compare (List.foldr insert Dict.empty varPairs)
+            Dict.toList (List.foldr insert Dict.empty varPairs)
 
-        insert : ( Name.Name, Name.Name ) -> Dict String Name.Name (List Name.Name) -> Dict String Name.Name (List Name.Name)
+        insert : ( Name.Name, Name.Name ) -> Dict Name.Name (List Name.Name) -> Dict Name.Name (List Name.Name)
         insert ( old, new ) dict =
-            Utils.mapInsertWith identity (++) old [ new ] dict
+            Dict.update old (\mv -> Just (case mv of
+                Nothing -> [ new ]
+                Just existing -> [ new ] ++ existing
+            )) dict
 
         verify : ( a, List b ) -> Maybe ( a, b )
         verify ( old, news ) =
@@ -415,7 +423,7 @@ toMagnitude (PackageChanges added changed removed) =
 
         changeMags : List M.Magnitude
         changeMags =
-            List.map moduleChangeMagnitude (Dict.values compare changed)
+            List.map moduleChangeMagnitude (Dict.values changed)
     in
     Utils.listMaximum M.compare (addMag :: removeMag :: changeMags)
 
@@ -433,7 +441,7 @@ moduleChangeMagnitude (ModuleChanges changes) =
         ]
 
 
-changeMagnitude : Changes comparable k v -> M.Magnitude
+changeMagnitude : Changes comparable v -> M.Magnitude
 changeMagnitude (Changes added changed removed) =
     if Dict.size removed > 0 || Dict.size changed > 0 then
         M.MAJOR

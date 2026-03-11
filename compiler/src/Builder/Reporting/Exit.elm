@@ -135,7 +135,7 @@ import Compiler.Reporting.Error as Error
 import Compiler.Reporting.Error.Import as Import
 import Compiler.Reporting.Error.Json as Json
 import Compiler.Reporting.Render.Code as Code
-import Data.Map as Dict exposing (Dict)
+import Dict exposing (Dict)
 import Task exposing (Task)
 import Utils.Bytes.Decode as BD
 import Utils.Bytes.Encode as BE
@@ -1489,7 +1489,7 @@ type Details
 -}
 type DetailsBadDep
     = BD_BadDownload Pkg.Name V.Version PackageProblem
-    | BD_BadBuild Pkg.Name V.Version (Dict ( String, String ) Pkg.Name V.Version)
+    | BD_BadBuild Pkg.Name V.Version (Dict Pkg.Name V.Version)
     | BD_LocalPackageNotFound Pkg.Name
 
 
@@ -1664,7 +1664,7 @@ toDetailsReport details =
                                 , D.toSimpleNote <|
                                     "To help with the root problem, please report this to the package author "
                                         ++ "along with the following information:"
-                                , Dict.toList compare fingerprint |> List.map (\( p, v ) -> (Pkg.toChars p ++ " " ++ V.toChars v) |> D.fromChars) |> D.vcat |> D.indent 4
+                                , Dict.toList fingerprint |> List.map (\( p, v ) -> (Pkg.toChars p ++ " " ++ V.toChars v) |> D.fromChars) |> D.vcat |> D.indent 4
                                 , D.reflow <|
                                     "If you want to help out even more, try building the package locally. "
                                         ++ "That should give you much more specific information about why this package is failing to build, "
@@ -2679,7 +2679,7 @@ detailsBadDepEncoder detailsBadDep =
                 [ Bytes.Encode.unsignedInt8 1
                 , Pkg.nameEncoder pkg
                 , V.versionEncoder vsn
-                , BE.assocListDict compare Pkg.nameEncoder V.versionEncoder fingerprint
+                , BE.stdDict Pkg.nameEncoder V.versionEncoder fingerprint
                 ]
 
         BD_LocalPackageNotFound pkg ->
@@ -2707,7 +2707,7 @@ detailsBadDepDecoder =
                         Bytes.Decode.map3 BD_BadBuild
                             Pkg.nameDecoder
                             V.versionDecoder
-                            (BD.assocListDict identity Pkg.nameDecoder V.versionDecoder)
+                            (BD.stdDict Pkg.nameDecoder V.versionDecoder)
 
                     2 ->
                         Bytes.Decode.map BD_LocalPackageNotFound

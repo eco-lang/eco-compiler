@@ -17,8 +17,10 @@ import Compiler.Data.Name as Name
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Reporting.Annotation as A
 import Compiler.Type.PostSolve as PostSolve
-import Data.Map as Dict
+import Array
+import Data.Map as DataMap
 import Data.Set as EverySet
+import Dict
 import Expect
 import SourceIR.Suite.StandardTestSuites as StandardTestSuites
 import Test exposing (Test)
@@ -59,7 +61,7 @@ expectGroupBStructuralTypes srcModule =
                 exprNodes =
                     Helpers.walkExprs artifacts.canonical
                         |> List.map (\n -> ( n.id, n ))
-                        |> Dict.fromList identity
+                        |> DataMap.fromList identity
 
                 -- Filter to only Group B expressions that were synthetic
                 syntheticGroupBIds =
@@ -67,7 +69,7 @@ expectGroupBStructuralTypes srcModule =
                         |> EverySet.toList compare
                         |> List.filter
                             (\exprId ->
-                                case Dict.get identity exprId exprNodes of
+                                case DataMap.get identity exprId exprNodes of
                                     Just exprNode ->
                                         Helpers.isGroupBExprNode exprNode.node
 
@@ -98,11 +100,11 @@ Returns a violation if:
 -}
 checkGroupBExpr :
     Int
-    -> Dict.Dict Int Int Helpers.ExprNode
+    -> DataMap.Dict Int Int Helpers.ExprNode
     -> Compile.DetailedArtifacts
     -> Maybe Violation
 checkGroupBExpr exprId exprNodes artifacts =
-    case Dict.get identity exprId exprNodes of
+    case DataMap.get identity exprId exprNodes of
         Nothing ->
             -- Expression not found (shouldn't happen)
             Just
@@ -115,7 +117,7 @@ checkGroupBExpr exprId exprNodes artifacts =
                 }
 
         Just exprNode ->
-            case Dict.get identity exprId artifacts.nodeTypesPre of
+            case Array.get exprId artifacts.nodeTypesPre |> Maybe.andThen identity of
                 Nothing ->
                     -- No pre-type (shouldn't happen for synthetic expressions)
                     Nothing
@@ -138,11 +140,11 @@ checkSyntheticPlaceholder :
     Int
     -> Helpers.ExprNode
     -> Can.Type
-    -> Dict.Dict Int Int Helpers.ExprNode
+    -> DataMap.Dict Int Int Helpers.ExprNode
     -> Compile.DetailedArtifacts
     -> Maybe Violation
 checkSyntheticPlaceholder exprId exprNode preType exprNodes artifacts =
-    case Dict.get identity exprId artifacts.nodeTypesPost of
+    case Array.get exprId artifacts.nodeTypesPost |> Maybe.andThen identity of
         Nothing ->
             Just
                 { nodeId = exprId
@@ -233,7 +235,7 @@ Based on the expression AST and children's types from nodeTypesPost.
 computeExpectedType :
     Can.Expr_
     -> PostSolve.NodeTypes
-    -> Dict.Dict Int Int Helpers.ExprNode
+    -> DataMap.Dict Int Int Helpers.ExprNode
     -> Maybe Can.Type
 computeExpectedType expr nodeTypes _ =
     case expr of
@@ -255,7 +257,7 @@ computeExpectedType expr nodeTypes _ =
 
         Can.List ((A.At _ firstInfo) :: _) ->
             -- Non-empty list: element type from first element
-            case Dict.get identity firstInfo.id nodeTypes of
+            case Array.get firstInfo.id nodeTypes |> Maybe.andThen identity of
                 Just elemType ->
                     Just (Can.TType ModuleName.list Name.list [ elemType ])
 
@@ -265,10 +267,10 @@ computeExpectedType expr nodeTypes _ =
         Can.Tuple (A.At _ aInfo) (A.At _ bInfo) cs ->
             let
                 maybeA =
-                    Dict.get identity aInfo.id nodeTypes
+                    Array.get aInfo.id nodeTypes |> Maybe.andThen identity
 
                 maybeB =
-                    Dict.get identity bInfo.id nodeTypes
+                    Array.get bInfo.id nodeTypes |> Maybe.andThen identity
 
                 maybeCs =
                     List.foldr
@@ -278,7 +280,7 @@ computeExpectedType expr nodeTypes _ =
                                     Nothing
 
                                 Just cTypes ->
-                                    case Dict.get identity cInfo.id nodeTypes of
+                                    case Array.get cInfo.id nodeTypes |> Maybe.andThen identity of
                                         Just cType ->
                                             Just (cType :: cTypes)
 
@@ -298,17 +300,17 @@ computeExpectedType expr nodeTypes _ =
         Can.Record fields ->
             let
                 maybeFieldTypes =
-                    Dict.foldl A.compareLocated
+                    DataMap.foldl A.compareLocated
                         (\(A.At _ fieldName) (A.At _ fieldExprInfo) acc ->
                             case acc of
                                 Nothing ->
                                     Nothing
 
                                 Just fieldDict ->
-                                    case Dict.get identity fieldExprInfo.id nodeTypes of
+                                    case Array.get fieldExprInfo.id nodeTypes |> Maybe.andThen identity of
                                         Just fieldType ->
                                             Just
-                                                (Dict.insert identity
+                                                (Dict.insert
                                                     fieldName
                                                     (Can.FieldType 0 fieldType)
                                                     fieldDict
@@ -330,7 +332,7 @@ computeExpectedType expr nodeTypes _ =
         Can.Lambda _ (A.At _ bodyInfo) ->
             -- Lambda: List.foldr TLambda bodyType argTypes
             -- Get body type
-            case Dict.get identity bodyInfo.id nodeTypes of
+            case Array.get bodyInfo.id nodeTypes |> Maybe.andThen identity of
                 Just _ ->
                     -- For lambda, we need the pattern types as arg types
                     -- But patterns don't always have direct types in nodeTypes
@@ -346,13 +348,13 @@ computeExpectedType expr nodeTypes _ =
             Nothing
 
         Can.Let _ (A.At _ bodyInfo) ->
-            Dict.get identity bodyInfo.id nodeTypes
+            Array.get bodyInfo.id nodeTypes |> Maybe.andThen identity
 
         Can.LetRec _ (A.At _ bodyInfo) ->
-            Dict.get identity bodyInfo.id nodeTypes
+            Array.get bodyInfo.id nodeTypes |> Maybe.andThen identity
 
         Can.LetDestruct _ _ (A.At _ bodyInfo) ->
-            Dict.get identity bodyInfo.id nodeTypes
+            Array.get bodyInfo.id nodeTypes |> Maybe.andThen identity
 
         _ ->
             -- Not a Group B expression
@@ -389,7 +391,7 @@ isAccessorType fieldName tipe =
                             False
 
                         Just _ ->
-                            case Dict.get identity fieldName fields of
+                            case Dict.get fieldName fields of
                                 Just (Can.FieldType _ fieldTipe) ->
                                     case fieldTipe of
                                         Can.TVar fieldVar ->
@@ -435,7 +437,7 @@ lookupPatternType (A.At _ patInfo) nodeTypes =
         PatternTypeNegativeId patInfo.id
 
     else
-        case Dict.get identity patInfo.id nodeTypes of
+        case Array.get patInfo.id nodeTypes |> Maybe.andThen identity of
             Just t ->
                 PatternTypeFound t
 
@@ -460,7 +462,7 @@ Fails loudly if any pattern has a negative ID or missing type.
 -}
 expectedLambdaType : Int -> List Can.Pattern -> Int -> PostSolve.NodeTypes -> LambdaTypeResult
 expectedLambdaType lambdaExprId patterns bodyId nodeTypes =
-    case Dict.get identity bodyId nodeTypes of
+    case Array.get bodyId nodeTypes |> Maybe.andThen identity of
         Nothing ->
             LambdaTypeError
                 ("Lambda " ++ String.fromInt lambdaExprId ++ ": missing body type for id " ++ String.fromInt bodyId)
@@ -583,16 +585,16 @@ alphaEqExt ext1 ext2 =
 
 
 alphaEqFields :
-    Dict.Dict String Name.Name Can.FieldType
-    -> Dict.Dict String Name.Name Can.FieldType
+    Dict.Dict Name.Name Can.FieldType
+    -> Dict.Dict Name.Name Can.FieldType
     -> Bool
 alphaEqFields fields1 fields2 =
     let
         list1 =
-            Dict.toList compare fields1
+            Dict.toList fields1
 
         list2 =
-            Dict.toList compare fields2
+            Dict.toList fields2
     in
     if List.length list1 /= List.length list2 then
         False

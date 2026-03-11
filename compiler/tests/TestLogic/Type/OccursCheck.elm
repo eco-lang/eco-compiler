@@ -16,7 +16,8 @@ This module provides tests for the occurs check invariant.
 
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Source as Src
-import Data.Map as Dict
+import Array
+import Dict
 import Data.Set as Set exposing (EverySet)
 import Expect
 import TestLogic.TestPipeline as Pipeline
@@ -73,18 +74,24 @@ An infinite type is one where a type variable appears within its own definition,
 creating an infinite structure.
 
 -}
-collectInfiniteTypeIssues : Dict.Dict Int Int Can.Type -> List String
+collectInfiniteTypeIssues : Array.Array (Maybe Can.Type) -> List String
 collectInfiniteTypeIssues nodeTypes =
-    Dict.foldl compare
-        (\nodeId canType acc ->
-            let
-                context =
-                    "NodeId " ++ String.fromInt nodeId
-            in
-            checkForInfiniteType context Set.empty canType ++ acc
+    Array.foldl
+        (\maybeType ( nodeId, acc ) ->
+            case maybeType of
+                Nothing ->
+                    ( nodeId + 1, acc )
+
+                Just canType ->
+                    let
+                        context =
+                            "NodeId " ++ String.fromInt nodeId
+                    in
+                    ( nodeId + 1, checkForInfiniteType context Set.empty canType ++ acc )
         )
-        []
+        ( 0, [] )
         nodeTypes
+        |> Tuple.second
 
 
 {-| Check a type for infinite/cyclic structure.
@@ -111,7 +118,7 @@ checkForInfiniteType context seenVars canType =
             List.concatMap (checkForInfiniteType context seenVars) args
 
         Can.TRecord fields _ ->
-            Dict.foldl compare
+            Dict.foldl
                 (\_ (Can.FieldType _ fieldType) acc ->
                     checkForInfiniteType context seenVars fieldType ++ acc
                 )

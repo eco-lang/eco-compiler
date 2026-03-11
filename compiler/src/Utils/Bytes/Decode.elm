@@ -1,7 +1,7 @@
 module Utils.Bytes.Decode exposing
     ( unit, bool, int, float, string
     , maybe, list, nonempty, result, oneOrMore
-    , jsonPair, assocListDict, everySet
+    , jsonPair, assocListDict, stdDict, everySet
     , map6, map8
     , lazy
     )
@@ -41,8 +41,9 @@ import Bytes
 import Bytes.Decode as BD
 import Compiler.Data.NonEmptyList as NE
 import Compiler.Data.OneOrMore as OneOrMore exposing (OneOrMore)
-import Data.Map as Dict exposing (Dict)
+import Data.Map as EveryDict
 import Data.Set as EverySet exposing (EverySet)
+import Dict
 
 
 endian : Bytes.Endianness
@@ -196,10 +197,18 @@ map8 func decodeA decodeB decodeC decodeD decodeE decodeF decodeG decodeH =
 
 {-| Decodes a dictionary from a list of key-value pairs.
 -}
-assocListDict : (k -> comparable) -> BD.Decoder k -> BD.Decoder v -> BD.Decoder (Dict comparable k v)
+assocListDict : (k -> comparable) -> BD.Decoder k -> BD.Decoder v -> BD.Decoder (EveryDict.Dict comparable k v)
 assocListDict toComparable keyDecoder valueDecoder =
     list (jsonPair keyDecoder valueDecoder)
-        |> BD.map (Dict.fromList toComparable)
+        |> BD.map (EveryDict.fromList toComparable)
+
+
+{-| Decodes a stdlib Dict from a list of key-value pairs.
+-}
+stdDict : BD.Decoder comparable -> BD.Decoder v -> BD.Decoder (Dict.Dict comparable v)
+stdDict keyDecoder valueDecoder =
+    list (jsonPair keyDecoder valueDecoder)
+        |> BD.map Dict.fromList
 
 
 {-| Decodes a pair of values as a tuple.

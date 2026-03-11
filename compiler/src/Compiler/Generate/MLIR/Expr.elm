@@ -52,8 +52,10 @@ import Compiler.Monomorphize.Closure as Closure
 import Compiler.Monomorphize.Registry as Registry
 import Data.Map as EveryDict
 import Data.Set as EverySet
+import Array exposing (Array)
 import Dict exposing (Dict)
 import Hex
+import Set
 import List.Extra as ListX
 import Mlir.Mlir exposing (MlirAttr(..), MlirBlock, MlirOp, MlirRegion(..), MlirType(..))
 import OrderedDict
@@ -1381,32 +1383,39 @@ generateFlattenedPartialApplication ctx func args resultType =
         ( argOps, argsWithTypes, ctx1 ) =
             generateExprListTyped funcResult.ctx args
 
-        -- 3. Box Bool for closure boundary (callee is a known external/kernel function)
-        ( boxOps, boxedArgsWithTypes, ctx1b ) =
-            boxArgsForClosureBoundary False ctx1 argsWithTypes
-
-        -- 4. Get total ABI arity from signature
-        totalArity : Int
-        totalArity =
+        -- 3. Get total ABI arity and evaluator boxing mode from signature
+        ( totalArity, evaluatorBoxesAll ) =
             case func of
                 Mono.MonoVarGlobal _ specId _ ->
                     case Dict.get specId ctx.signatures of
                         Just sig ->
-                            List.length sig.paramTypes
+                            ( List.length sig.paramTypes
+                            , hasAllBoxedEvaluatorParams sig
+                            )
 
                         Nothing ->
-                            -- Fallback (shouldn't happen)
-                            Types.countTotalArity (Mono.typeOf func)
+                            ( Types.countTotalArity (Mono.typeOf func), False )
 
                 Mono.MonoVarKernel _ _ _ kernelType ->
                     let
                         sig =
                             Ctx.kernelFuncSignatureFromType kernelType
                     in
-                    List.length sig.paramTypes
+                    ( List.length sig.paramTypes, hasAllBoxedEvaluatorParams sig )
+
+                Mono.MonoVarLocal name _ ->
+                    ( Types.countTotalArity (Mono.typeOf func)
+                    , Set.member name ctx.externBoxedVars
+                    )
 
                 _ ->
-                    Types.countTotalArity (Mono.typeOf func)
+                    ( Types.countTotalArity (Mono.typeOf func), False )
+
+        -- 4. Box args for closure boundary
+        -- Extern/kernel evaluator wrappers always have !eco.value params, so box all primitives.
+        -- User-defined closures: only box Bool (i1) per REP_CLOSURE_001.
+        ( boxOps, boxedArgsWithTypes, ctx1b ) =
+            boxArgsForClosureBoundary evaluatorBoxesAll ctx1 argsWithTypes
 
         -- 5. Build eco.papExtend with total arity
         ( resVar, ctx2 ) =
@@ -1507,9 +1516,30 @@ generateClosureApplication ctx func args resultType callInfo =
                     ( argOps, argsWithTypes, ctx1 ) =
                         generateExprListTyped funcResult.ctx args
 
-                    -- Box Bool (i1) to !eco.value at closure boundary per REP_CLOSURE_001
+                    -- Box args for closure boundary
+                    -- Extern/kernel evaluator wrappers always have !eco.value params, so box all primitives.
+                    -- User-defined closures: only box Bool (i1) per REP_CLOSURE_001.
+                    evaluatorBoxesAll =
+                        case func of
+                            Mono.MonoVarGlobal _ specId _ ->
+                                case Dict.get specId ctx.signatures of
+                                    Just sig ->
+                                        hasAllBoxedEvaluatorParams sig
+
+                                    Nothing ->
+                                        False
+
+                            Mono.MonoVarKernel _ _ _ kernelType ->
+                                hasAllBoxedEvaluatorParams (Ctx.kernelFuncSignatureFromType kernelType)
+
+                            Mono.MonoVarLocal name _ ->
+                                Set.member name ctx.externBoxedVars
+
+                            _ ->
+                                False
+
                     ( boxOps, boxedArgsWithTypes, ctx1b ) =
-                        boxArgsForClosureBoundary False ctx1 argsWithTypes
+                        boxArgsForClosureBoundary evaluatorBoxesAll ctx1 argsWithTypes
 
                     -- Use precomputed staging metadata from CallInfo (CGEN_052)
                     -- initialRemaining = stage arity at this call site (sourceRemaining for applyByStages)
@@ -1574,6 +1604,46 @@ boxArgsForClosureBoundary boxAllPrimitives ctx argsWithTypes =
                 argsWithTypes
     in
     ( List.reverse opsReversed, List.reverse argsReversed, ctxFinal )
+
+
+{-| Check if a function signature's evaluator has all !eco.value params.
+This covers MonoExtern, MonoManagerLeaf, AND polymorphic closures like (==)
+whose closureInfo.params remain as type variables after monomorphization.
+-}
+hasAllBoxedEvaluatorParams : Ctx.FuncSignature -> Bool
+hasAllBoxedEvaluatorParams sig =
+    not (List.isEmpty sig.paramTypes)
+        && List.all (Types.isEcoValueType << Types.monoTypeToAbi) sig.paramTypes
+
+
+{-| Track whether a let-bound variable aliases a function whose evaluator has
+all !eco.value params. Used by papExtend generation to decide whether to box
+all primitive args.
+-}
+trackExternBoxedVar : String -> Mono.MonoExpr -> Ctx.Context -> Ctx.Context
+trackExternBoxedVar name expr ctx =
+    let
+        isExternBoxed =
+            case expr of
+                Mono.MonoVarGlobal _ specId _ ->
+                    case Dict.get specId ctx.signatures of
+                        Just sig ->
+                            hasAllBoxedEvaluatorParams sig
+
+                        Nothing ->
+                            False
+
+                Mono.MonoVarKernel _ _ _ kernelType ->
+                    hasAllBoxedEvaluatorParams (Ctx.kernelFuncSignatureFromType kernelType)
+
+                _ ->
+                    False
+    in
+    if isExternBoxed then
+        { ctx | externBoxedVars = Set.insert name ctx.externBoxedVars }
+
+    else
+        ctx
 
 
 {-| Detect inlined Bytes.Decode.decode pattern:
@@ -3193,6 +3263,7 @@ generateLet ctx def body =
                 ctx1 =
                     Ctx.addVarMapping name effectiveVar exprResult.resultType exprResult.ctx
                         |> Ctx.addDecoderExpr name expr
+                        |> trackExternBoxedVar name expr
 
                 bodyResult : ExprResult
                 bodyResult =
@@ -3280,7 +3351,7 @@ generateLet ctx def body =
 
                 -- Generate a unique function name using the opId counter
                 tailFuncName =
-                    "$tail_" ++ name ++ "_" ++ String.fromInt ctxWithPlaceholders.nextOpId
+                    "_tail_" ++ name ++ "_" ++ String.fromInt ctxWithPlaceholders.nextOpId
 
                 -- Create the PendingLambda (isTailRecursive = True)
                 pendingLambda : Ctx.PendingLambda
@@ -3462,7 +3533,7 @@ Instead of generating eco.jump to joinpoints, this version inlines branch bodies
 directly when encountering Mono.Jump. This enables single-block alternative regions
 required for SCF lowering.
 -}
-generateDeciderWithJumps : Ctx.Context -> Name.Name -> Mono.Decider Mono.MonoChoice -> Dict Int Mono.MonoExpr -> MlirType -> ExprResult
+generateDeciderWithJumps : Ctx.Context -> Name.Name -> Mono.Decider Mono.MonoChoice -> Array (Maybe Mono.MonoExpr) -> MlirType -> ExprResult
 generateDeciderWithJumps ctx root decider jumpLookup resultTy =
     case decider of
         Mono.Leaf choice ->
@@ -3479,7 +3550,7 @@ generateDeciderWithJumps ctx root decider jumpLookup resultTy =
 Instead of emitting eco.jump to joinpoints, this looks up the branch expression
 and inlines it directly. This enables single-block alternative regions.
 -}
-generateLeafWithJumps : Ctx.Context -> Name.Name -> Mono.MonoChoice -> Dict Int Mono.MonoExpr -> MlirType -> ExprResult
+generateLeafWithJumps : Ctx.Context -> Name.Name -> Mono.MonoChoice -> Array (Maybe Mono.MonoExpr) -> MlirType -> ExprResult
 generateLeafWithJumps ctx _ choice jumpLookup resultTy =
     case choice of
         Mono.Inline branchExpr ->
@@ -3489,7 +3560,39 @@ generateLeafWithJumps ctx _ choice jumpLookup resultTy =
                     generateExpr ctx branchExpr
             in
             if branchRes.isTerminated then
-                branchRes
+                -- Only short-circuit if already terminated with eco.yield
+                case List.reverse branchRes.ops of
+                    lastOp :: _ ->
+                        if isValidCaseTerminator lastOp then
+                            branchRes
+
+                        else if branchRes.resultVar == "" then
+                            -- Non-yield terminator with no result value - deep codegen bug,
+                            -- let mkCaseRegionFromDecider crash with a good message
+                            branchRes
+
+                        else
+                            -- Non-yield terminator (e.g., eco.return) but we have a resultVar,
+                            -- wrap with eco.yield to ensure valid case alternative
+                            let
+                                actualTy =
+                                    branchRes.resultType
+
+                                ( coerceOps, finalVar, ctx1 ) =
+                                    coerceResultToType branchRes.ctx branchRes.resultVar actualTy resultTy
+
+                                ( ctx2, yieldOp ) =
+                                    Ops.ecoYield ctx1 finalVar resultTy
+                            in
+                            { ops = branchRes.ops ++ coerceOps ++ [ yieldOp ]
+                            , resultVar = finalVar
+                            , resultType = resultTy
+                            , ctx = ctx2
+                            , isTerminated = True
+                            }
+
+                    [] ->
+                        branchRes
 
             else
                 let
@@ -3511,7 +3614,7 @@ generateLeafWithJumps ctx _ choice jumpLookup resultTy =
 
         Mono.Jump index ->
             -- Yield-based mode: inline the branch body instead of jumping
-            case Dict.get index jumpLookup of
+            case Array.get index jumpLookup |> Maybe.andThen identity of
                 Just branchExpr ->
                     -- Inline the branch expression and yield
                     let
@@ -3519,7 +3622,39 @@ generateLeafWithJumps ctx _ choice jumpLookup resultTy =
                             generateExpr ctx branchExpr
                     in
                     if branchRes.isTerminated then
-                        branchRes
+                        -- Only short-circuit if already terminated with eco.yield
+                        case List.reverse branchRes.ops of
+                            lastOp :: _ ->
+                                if isValidCaseTerminator lastOp then
+                                    branchRes
+
+                                else if branchRes.resultVar == "" then
+                                    -- Non-yield terminator with no result value - deep codegen bug,
+                                    -- let mkCaseRegionFromDecider crash with a good message
+                                    branchRes
+
+                                else
+                                    -- Non-yield terminator (e.g., eco.return) but we have a resultVar,
+                                    -- wrap with eco.yield to ensure valid case alternative
+                                    let
+                                        actualTy =
+                                            branchRes.resultType
+
+                                        ( coerceOps, finalVar, ctx1 ) =
+                                            coerceResultToType branchRes.ctx branchRes.resultVar actualTy resultTy
+
+                                        ( ctx2, yieldOp ) =
+                                            Ops.ecoYield ctx1 finalVar resultTy
+                                    in
+                                    { ops = branchRes.ops ++ coerceOps ++ [ yieldOp ]
+                                    , resultVar = finalVar
+                                    , resultType = resultTy
+                                    , ctx = ctx2
+                                    , isTerminated = True
+                                    }
+
+                            [] ->
+                                branchRes
 
                     else
                         let
@@ -3546,7 +3681,7 @@ generateLeafWithJumps ctx _ choice jumpLookup resultTy =
 
 {-| Generate code for a Chain node with jump inlining (yield-based mode).
 -}
-generateChainWithJumps : Ctx.Context -> Name.Name -> List ( DT.Path, DT.Test ) -> Mono.Decider Mono.MonoChoice -> Mono.Decider Mono.MonoChoice -> Dict Int Mono.MonoExpr -> MlirType -> ExprResult
+generateChainWithJumps : Ctx.Context -> Name.Name -> List ( DT.Path, DT.Test ) -> Mono.Decider Mono.MonoChoice -> Mono.Decider Mono.MonoChoice -> Array (Maybe Mono.MonoExpr) -> MlirType -> ExprResult
 generateChainWithJumps ctx root testChain success failure jumpLookup resultTy =
     case testChain of
         [ ( path, Test.IsBool True ) ] ->
@@ -3558,7 +3693,7 @@ generateChainWithJumps ctx root testChain success failure jumpLookup resultTy =
 
 {-| Special handling for Bool ADT pattern matching with jump inlining.
 -}
-generateChainForBoolADTWithJumps : Ctx.Context -> Name.Name -> DT.Path -> Mono.Decider Mono.MonoChoice -> Mono.Decider Mono.MonoChoice -> Dict Int Mono.MonoExpr -> MlirType -> ExprResult
+generateChainForBoolADTWithJumps : Ctx.Context -> Name.Name -> DT.Path -> Mono.Decider Mono.MonoChoice -> Mono.Decider Mono.MonoChoice -> Array (Maybe Mono.MonoExpr) -> MlirType -> ExprResult
 generateChainForBoolADTWithJumps ctx root path success failure jumpLookup resultTy =
     let
         ( pathOps, boolVar, ctx1 ) =
@@ -3596,7 +3731,7 @@ generateChainForBoolADTWithJumps ctx root path success failure jumpLookup result
 
 {-| General chain case with jump inlining.
 -}
-generateChainGeneralWithJumps : Ctx.Context -> Name.Name -> List ( DT.Path, DT.Test ) -> Mono.Decider Mono.MonoChoice -> Mono.Decider Mono.MonoChoice -> Dict Int Mono.MonoExpr -> MlirType -> ExprResult
+generateChainGeneralWithJumps : Ctx.Context -> Name.Name -> List ( DT.Path, DT.Test ) -> Mono.Decider Mono.MonoChoice -> Mono.Decider Mono.MonoChoice -> Array (Maybe Mono.MonoExpr) -> MlirType -> ExprResult
 generateChainGeneralWithJumps ctx root testChain success failure jumpLookup resultTy =
     let
         ( condOps, condVar, ctx1 ) =
@@ -3687,7 +3822,7 @@ extractStringPatternStrict test =
 
 {-| Generate code for a FanOut node with jump inlining (yield-based mode).
 -}
-generateFanOutWithJumps : Ctx.Context -> Name.Name -> DT.Path -> List ( DT.Test, Mono.Decider Mono.MonoChoice ) -> Mono.Decider Mono.MonoChoice -> Dict Int Mono.MonoExpr -> MlirType -> ExprResult
+generateFanOutWithJumps : Ctx.Context -> Name.Name -> DT.Path -> List ( DT.Test, Mono.Decider Mono.MonoChoice ) -> Mono.Decider Mono.MonoChoice -> Array (Maybe Mono.MonoExpr) -> MlirType -> ExprResult
 generateFanOutWithJumps ctx root path edges fallback jumpLookup resultTy =
     if isBoolFanOut edges then
         generateBoolFanOutWithJumps ctx root path edges fallback jumpLookup resultTy
@@ -3698,7 +3833,7 @@ generateFanOutWithJumps ctx root path edges fallback jumpLookup resultTy =
 
 {-| Bool FanOut with jump inlining.
 -}
-generateBoolFanOutWithJumps : Ctx.Context -> Name.Name -> DT.Path -> List ( DT.Test, Mono.Decider Mono.MonoChoice ) -> Mono.Decider Mono.MonoChoice -> Dict Int Mono.MonoExpr -> MlirType -> ExprResult
+generateBoolFanOutWithJumps : Ctx.Context -> Name.Name -> DT.Path -> List ( DT.Test, Mono.Decider Mono.MonoChoice ) -> Mono.Decider Mono.MonoChoice -> Array (Maybe Mono.MonoExpr) -> MlirType -> ExprResult
 generateBoolFanOutWithJumps ctx root path edges fallback jumpLookup resultTy =
     let
         ( pathOps, boolVar, ctx1 ) =
@@ -3739,7 +3874,7 @@ generateBoolFanOutWithJumps ctx root path edges fallback jumpLookup resultTy =
 
 {-| General FanOut with jump inlining.
 -}
-generateFanOutGeneralWithJumps : Ctx.Context -> Name.Name -> DT.Path -> List ( DT.Test, Mono.Decider Mono.MonoChoice ) -> Mono.Decider Mono.MonoChoice -> Dict Int Mono.MonoExpr -> MlirType -> ExprResult
+generateFanOutGeneralWithJumps : Ctx.Context -> Name.Name -> DT.Path -> List ( DT.Test, Mono.Decider Mono.MonoChoice ) -> Mono.Decider Mono.MonoChoice -> Array (Maybe Mono.MonoExpr) -> MlirType -> ExprResult
 generateFanOutGeneralWithJumps ctx root path edges fallback jumpLookup resultTy =
     let
         edgeTests =
@@ -3886,8 +4021,8 @@ mkCaseRegionFromDecider exprRes resultTy =
                 -- Defensive: non-yield terminator with empty resultVar indicates
                 -- a control-flow op (e.g., eco.jump) that shouldn't be wrapped
                 crash
-                    ("mkCaseRegionFromDecider: non-yield terminator with empty resultVar "
-                        ++ "(likely eco.jump); this should not happen in yield-based case codegen"
+                    ("mkCaseRegionFromDecider: non-yield terminator '" ++ lastOp.name ++ "' with empty resultVar; "
+                        ++ "this indicates a codegen bug (e.g., eco.return or eco.jump leaked into a case alternative)"
                     )
 
             else
@@ -3926,7 +4061,7 @@ generateCase ctx _ root decider jumps resultMonoType =
         -- Build jump lookup for inlining shared branches (yield-based mode)
         -- Instead of emitting joinpoints, we inline branch bodies directly
         jumpLookup =
-            Dict.fromList jumps
+            pairsToSparseArray jumps
 
         -- eco.case is now a value-producing expression
         -- Pass jumpLookup so Mono.Jump can inline branch bodies
@@ -4108,10 +4243,10 @@ generateRecordUpdate ctx record updates layout _ =
 
     else
         let
-            -- Step 3: Build update dictionary (field index -> update expression)
-            updateDict : Dict Int Mono.MonoExpr
-            updateDict =
-                Dict.fromList updates
+            -- Step 3: Build update array (field index -> update expression)
+            updateArr : Array (Maybe Mono.MonoExpr)
+            updateArr =
+                pairsToSparseArray updates
 
             -- Step 4: Process each field in layout order
             ( fieldVarsAndTypesReversed, allOpsReversed, finalCtx ) =
@@ -4126,7 +4261,7 @@ generateRecordUpdate ctx record updates layout _ =
                                 else
                                     Types.ecoValue
                         in
-                        case Dict.get fieldInfo.index updateDict of
+                        case Array.get fieldInfo.index updateArr |> Maybe.andThen identity of
                             Just updateExpr ->
                                 -- Field is being updated: evaluate expression and coerce
                                 let
@@ -4393,7 +4528,7 @@ getRecordFields : Mono.MonoType -> EveryDict.Dict String Name.Name Mono.MonoType
 getRecordFields monoType =
     case monoType of
         Mono.MRecord fields ->
-            fields
+            EveryDict.fromList identity (Dict.toList fields)
 
         _ ->
             EveryDict.empty
@@ -4409,3 +4544,12 @@ getTupleElements monoType =
 
         _ ->
             []
+
+
+pairsToSparseArray : List ( Int, a ) -> Array (Maybe a)
+pairsToSparseArray pairs =
+    let
+        maxIdx =
+            List.foldl (\( i, _ ) acc -> max i acc) -1 pairs
+    in
+    List.foldl (\( i, v ) arr -> Array.set i (Just v) arr) (Array.repeat (maxIdx + 1) Nothing) pairs

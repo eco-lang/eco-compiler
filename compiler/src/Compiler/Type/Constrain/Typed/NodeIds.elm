@@ -30,7 +30,7 @@ the solver to later produce a mapping from node IDs to their inferred types.
 
 -}
 
-import Data.Map as Dict exposing (Dict)
+import Array exposing (Array)
 import Data.Set as EverySet exposing (EverySet)
 import System.TypeCheck.IO as IO
 
@@ -42,7 +42,7 @@ and the value is the solver variable representing its type.
 
 -}
 type alias NodeVarMap =
-    Dict Int Int IO.Variable
+    Array (Maybe IO.Variable)
 
 
 {-| State for tracking node ID to variable mappings during constraint generation.
@@ -63,7 +63,7 @@ type alias NodeIdState =
 -}
 emptyNodeIdState : NodeIdState
 emptyNodeIdState =
-    { mapping = Dict.empty
+    { mapping = Array.empty
     , syntheticExprIds = EverySet.empty
     }
 
@@ -77,7 +77,7 @@ are skipped to avoid polluting the mapping.
 recordNodeVar : Int -> IO.Variable -> NodeIdState -> NodeIdState
 recordNodeVar id var state =
     if id >= 0 then
-        { state | mapping = Dict.insert identity id var state.mapping }
+        { state | mapping = arraySetGrowing id (Just var) state.mapping }
 
     else
         -- Skip negative IDs (placeholders from makeExprPlaceholder, synthesized patterns)
@@ -96,10 +96,20 @@ recordSyntheticExprVar : Int -> IO.Variable -> NodeIdState -> NodeIdState
 recordSyntheticExprVar id var state =
     if id >= 0 then
         { state
-            | mapping = Dict.insert identity id var state.mapping
+            | mapping = arraySetGrowing id (Just var) state.mapping
             , syntheticExprIds = EverySet.insert identity id state.syntheticExprIds
         }
 
     else
         -- Skip negative IDs
         state
+
+
+arraySetGrowing : Int -> Maybe a -> Array (Maybe a) -> Array (Maybe a)
+arraySetGrowing idx val arr =
+    if idx < Array.length arr then
+        Array.set idx val arr
+
+    else
+        Array.append arr (Array.repeat (idx - Array.length arr) Nothing)
+            |> Array.push val

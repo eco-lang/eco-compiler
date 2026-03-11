@@ -53,6 +53,8 @@ testCases expectFn =
     , { label = "tail-recursive reverse at two types", run = reverseMulti expectFn }
     , { label = "twice higher-order at two types", run = twiceMulti expectFn }
     , { label = "singleton at two types", run = singletonMulti expectFn }
+    , { label = "named local as higher-order arg", run = namedLocalAsArg expectFn }
+    , { label = "named local as higher-order arg at two types", run = namedLocalAsArgMulti expectFn }
     ]
 
 
@@ -454,6 +456,61 @@ singletonMulti expectFn _ =
                     (tupleExpr
                         (callExpr (varExpr "singleton") [ intExpr 42 ])
                         (callExpr (varExpr "singleton") [ strExpr "hi" ])
+                    )
+                )
+    in
+    expectFn modul
+
+
+
+-- ============================================================================
+-- 13. named local function passed as higher-order argument
+-- ============================================================================
+
+
+namedLocalAsArg : (Src.Module -> Expectation) -> (() -> Expectation)
+namedLocalAsArg expectFn _ =
+    let
+        modul =
+            makeModule "testValue"
+                (letExpr
+                    [ define "identity" [ pVar "x" ] (varExpr "x")
+                    , define "apply"
+                        [ pVar "f", pVar "x" ]
+                        (callExpr (varExpr "f") [ varExpr "x" ])
+                    ]
+                    (callExpr (varExpr "apply")
+                        [ varExpr "identity", intExpr 42 ]
+                    )
+                )
+    in
+    expectFn modul
+
+
+
+-- ============================================================================
+-- 14. named local function passed as higher-order argument at two types
+-- ============================================================================
+
+
+namedLocalAsArgMulti : (Src.Module -> Expectation) -> (() -> Expectation)
+namedLocalAsArgMulti expectFn _ =
+    let
+        modul =
+            makeModule "testValue"
+                (letExpr
+                    [ define "identity" [ pVar "x" ] (varExpr "x")
+                    , define "apply"
+                        [ pVar "f", pVar "x" ]
+                        (callExpr (varExpr "f") [ varExpr "x" ])
+                    ]
+                    (tupleExpr
+                        (callExpr (varExpr "apply")
+                            [ varExpr "identity", intExpr 42 ]
+                        )
+                        (callExpr (varExpr "apply")
+                            [ varExpr "identity", strExpr "hello" ]
+                        )
                     )
                 )
     in

@@ -45,7 +45,8 @@ import Compiler.Data.Name as Name
 import Compiler.Data.NonEmptyList as NE
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Reporting.Annotation as A
-import Data.Map as Dict exposing (Dict)
+import Data.Map
+import Dict exposing (Dict)
 import List.Extra as List
 import Prelude
 import Utils.Bytes.Decode as BD
@@ -427,10 +428,10 @@ checkExpr (A.At region exprInfo) errors =
             checkExpr record errors
 
         Can.Update record fields ->
-            Dict.foldr A.compareLocated (\_ -> checkField) errors fields |> checkExpr record
+            Data.Map.foldr A.compareLocated (\_ -> checkField) errors fields |> checkExpr record
 
         Can.Record fields ->
-            Dict.foldr A.compareLocated (\_ -> checkExpr) errors fields
+            Data.Map.foldr A.compareLocated (\_ -> checkExpr) errors fields
 
         Can.Unit ->
             errors
@@ -523,7 +524,7 @@ isExhaustive matrix n =
 
             else
                 let
-                    ctors : Dict String Name.Name Can.Union
+                    ctors : Dict Name.Name Can.Union
                     ctors =
                         collectCtors matrix
 
@@ -558,9 +559,9 @@ isExhaustive matrix n =
                         List.concatMap isAltExhaustive altsData.alts
 
 
-isMissing : Can.Union -> Dict String Name.Name a -> Can.Ctor -> Maybe Pattern
+isMissing : Can.Union -> Dict Name.Name a -> Can.Ctor -> Maybe Pattern
 isMissing union ctors (Can.Ctor c) =
-    if Dict.member identity c.name ctors then
+    if Dict.member c.name ctors then
         Nothing
 
     else
@@ -740,7 +741,7 @@ type Complete
 isComplete : List (List Pattern) -> Complete
 isComplete matrix =
     let
-        ctors : Dict String Name.Name Can.Union
+        ctors : Dict Name.Name Can.Union
         ctors =
             collectCtors matrix
 
@@ -767,16 +768,16 @@ isComplete matrix =
 -- ====== COLLECT CTORS ======
 
 
-collectCtors : List (List Pattern) -> Dict String Name.Name Can.Union
+collectCtors : List (List Pattern) -> Dict Name.Name Can.Union
 collectCtors matrix =
     List.foldl (\row acc -> collectCtorsHelp acc row) Dict.empty matrix
 
 
-collectCtorsHelp : Dict String Name.Name Can.Union -> List Pattern -> Dict String Name.Name Can.Union
+collectCtorsHelp : Dict Name.Name Can.Union -> List Pattern -> Dict Name.Name Can.Union
 collectCtorsHelp ctors row =
     case row of
         (Ctor union name _) :: _ ->
-            Dict.insert identity name union ctors
+            Dict.insert name union ctors
 
         _ ->
             ctors

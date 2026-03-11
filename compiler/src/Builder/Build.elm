@@ -80,7 +80,8 @@ import Compiler.Reporting.Error.Import as Import
 import Compiler.Reporting.Error.Syntax as Syntax
 import Compiler.Reporting.Render.Type.Localizer as L
 import Compiler.Graph as Graph
-import Data.Map as Dict exposing (Dict)
+import Data.Map
+import Dict exposing (Dict)
 import Data.Set as EverySet
 import System.TypeCheck.IO as TypeCheck
 import Task exposing (Task)
@@ -102,8 +103,8 @@ type alias EnvData =
     , projectType : Parse.ProjectType
     , srcDirs : List AbsoluteSrcDir
     , buildID : Details.BuildID
-    , locals : Dict String ModuleName.Raw Details.Local
-    , foreigns : Dict String ModuleName.Raw Details.Foreign
+    , locals : Dict ModuleName.Raw Details.Local
+    , foreigns : Dict ModuleName.Raw Details.Foreign
     , needsTypedOpt : Bool
     }
 
@@ -201,7 +202,7 @@ fork encoder work =
             )
 
 
-forkWithKey : (k -> comparable) -> (k -> k -> Order) -> (b -> Bytes.Encode.Encoder) -> (k -> a -> Task Never b) -> Dict comparable k a -> Task Never (Dict comparable k (MVar b))
+forkWithKey : (k -> comparable) -> (k -> k -> Order) -> (b -> Bytes.Encode.Encoder) -> (k -> a -> Task Never b) -> Data.Map.Dict comparable k a -> Task Never (Data.Map.Dict comparable k (MVar b))
 forkWithKey toComparable keyComparison encoder func dict =
     Utils.mapTraverseWithKey toComparable keyComparison (\k v -> fork encoder (func k v)) dict
 
@@ -228,7 +229,7 @@ fromExposed docsDecoder docsEncoder style root maybeBuildDir maybeKernelPackage 
 
 {-| Crawl phase for exposed modules: discover all dependencies and their statuses.
 -}
-crawlExposed : FilePath -> Maybe String -> Details.Details -> DocsGoal docs -> List ModuleName.Raw -> Env -> Task Never { dmvar : MVar (Maybe Dependencies), statuses : Dict String ModuleName.Raw Status, env : Env }
+crawlExposed : FilePath -> Maybe String -> Details.Details -> DocsGoal docs -> List ModuleName.Raw -> Env -> Task Never { dmvar : MVar (Maybe Dependencies), statuses : Data.Map.Dict String ModuleName.Raw Status, env : Env }
 crawlExposed root maybeBuildDir details docsGoal modules env =
     let
         docsNeed : DocsNeed
@@ -240,20 +241,20 @@ crawlExposed root maybeBuildDir details docsGoal modules env =
         |> Task.map (buildCrawlResult env)
 
 
-crawlExposedModules : Env -> DocsNeed -> List ModuleName.Raw -> MVar (Maybe Dependencies) -> Task Never ( MVar (Maybe Dependencies), Dict String ModuleName.Raw Status )
+crawlExposedModules : Env -> DocsNeed -> List ModuleName.Raw -> MVar (Maybe Dependencies) -> Task Never ( MVar (Maybe Dependencies), Data.Map.Dict String ModuleName.Raw Status )
 crawlExposedModules env docsNeed modules dmvar =
     Utils.newEmptyMVar
         |> Task.andThen (crawlAndCollectStatuses env docsNeed modules)
         |> Task.map (\statuses -> ( dmvar, statuses ))
 
 
-crawlAndCollectStatuses : Env -> DocsNeed -> List ModuleName.Raw -> MVar StatusDict -> Task Never (Dict String ModuleName.Raw Status)
+crawlAndCollectStatuses : Env -> DocsNeed -> List ModuleName.Raw -> MVar StatusDict -> Task Never (Data.Map.Dict String ModuleName.Raw Status)
 crawlAndCollectStatuses env docsNeed modules mvar =
     Map.fromKeysA identity (fork statusEncoder << crawlModule env mvar docsNeed) modules
         |> Task.andThen (waitForCrawlResults mvar)
 
 
-waitForCrawlResults : MVar StatusDict -> StatusDict -> Task Never (Dict String ModuleName.Raw Status)
+waitForCrawlResults : MVar StatusDict -> StatusDict -> Task Never (Data.Map.Dict String ModuleName.Raw Status)
 waitForCrawlResults mvar roots =
     Utils.putMVar statusDictEncoder mvar roots
         |> Task.andThen (\_ -> Utils.dictMapM_ compare (Utils.readMVar statusDecoder) roots)
@@ -261,20 +262,20 @@ waitForCrawlResults mvar roots =
         |> Task.andThen (Utils.mapTraverse identity compare (Utils.readMVar statusDecoder))
 
 
-buildCrawlResult : Env -> ( MVar (Maybe Dependencies), Dict String ModuleName.Raw Status ) -> { dmvar : MVar (Maybe Dependencies), statuses : Dict String ModuleName.Raw Status, env : Env }
+buildCrawlResult : Env -> ( MVar (Maybe Dependencies), Data.Map.Dict String ModuleName.Raw Status ) -> { dmvar : MVar (Maybe Dependencies), statuses : Data.Map.Dict String ModuleName.Raw Status, env : Env }
 buildCrawlResult env ( dmvar, statuses ) =
     { dmvar = dmvar, statuses = statuses, env = env }
 
 
 {-| Compile phase for exposed modules: check midpoint and compile all modules.
 -}
-compileExposed : FilePath -> Maybe String -> Details.Details -> DocsGoal docs -> NE.Nonempty ModuleName.Raw -> { dmvar : MVar (Maybe Dependencies), statuses : Dict String ModuleName.Raw Status, env : Env } -> Task Never (Result Exit.BuildProblem docs)
+compileExposed : FilePath -> Maybe String -> Details.Details -> DocsGoal docs -> NE.Nonempty ModuleName.Raw -> { dmvar : MVar (Maybe Dependencies), statuses : Data.Map.Dict String ModuleName.Raw Status, env : Env } -> Task Never (Result Exit.BuildProblem docs)
 compileExposed root maybeBuildDir details docsGoal exposed { dmvar, statuses, env } =
     checkMidpoint dmvar statuses
         |> Task.andThen (handleExposedMidpoint root maybeBuildDir details docsGoal exposed statuses env)
 
 
-handleExposedMidpoint : FilePath -> Maybe String -> Details.Details -> DocsGoal docs -> NE.Nonempty ModuleName.Raw -> Dict String ModuleName.Raw Status -> Env -> Result Exit.BuildProjectProblem Dependencies -> Task Never (Result Exit.BuildProblem docs)
+handleExposedMidpoint : FilePath -> Maybe String -> Details.Details -> DocsGoal docs -> NE.Nonempty ModuleName.Raw -> Data.Map.Dict String ModuleName.Raw Status -> Env -> Result Exit.BuildProjectProblem Dependencies -> Task Never (Result Exit.BuildProblem docs)
 handleExposedMidpoint root maybeBuildDir details docsGoal exposed statuses env midpoint =
     case midpoint of
         Err problem ->
@@ -287,27 +288,27 @@ handleExposedMidpoint root maybeBuildDir details docsGoal exposed statuses env m
 
 {-| Compile all modules and write details.
 -}
-compileAndFinalize : FilePath -> Maybe String -> Details.Details -> Dependencies -> Dict String ModuleName.Raw Status -> Env -> Task Never (Dict String ModuleName.Raw BResult)
+compileAndFinalize : FilePath -> Maybe String -> Details.Details -> Dependencies -> Data.Map.Dict String ModuleName.Raw Status -> Env -> Task Never (Data.Map.Dict String ModuleName.Raw BResult)
 compileAndFinalize root maybeBuildDir details foreigns statuses env =
     Utils.newEmptyMVar
         |> Task.andThen (compileAllModules env foreigns statuses)
         |> Task.andThen (collectResultsAndWriteDetails root maybeBuildDir details)
 
 
-compileAllModules : Env -> Dependencies -> Dict String ModuleName.Raw Status -> MVar ResultDict -> Task Never ( MVar ResultDict, Dict String ModuleName.Raw (MVar BResult) )
+compileAllModules : Env -> Dependencies -> Data.Map.Dict String ModuleName.Raw Status -> MVar ResultDict -> Task Never ( MVar ResultDict, Data.Map.Dict String ModuleName.Raw (MVar BResult) )
 compileAllModules env foreigns statuses rmvar =
     forkWithKey identity compare bResultEncoder (checkModule env foreigns rmvar) statuses
         |> Task.map (\resultMVars -> ( rmvar, resultMVars ))
 
 
-collectResultsAndWriteDetails : FilePath -> Maybe String -> Details.Details -> ( MVar (Dict String ModuleName.Raw (MVar BResult)), Dict String ModuleName.Raw (MVar BResult) ) -> Task Never (Dict String ModuleName.Raw BResult)
+collectResultsAndWriteDetails : FilePath -> Maybe String -> Details.Details -> ( MVar (Data.Map.Dict String ModuleName.Raw (MVar BResult)), Data.Map.Dict String ModuleName.Raw (MVar BResult) ) -> Task Never (Data.Map.Dict String ModuleName.Raw BResult)
 collectResultsAndWriteDetails root maybeBuildDir details ( rmvar, resultMVars ) =
     Utils.putMVar dictRawMVarBResultEncoder rmvar resultMVars
         |> Task.andThen (\_ -> Utils.mapTraverse identity compare (Utils.readMVar bResultDecoder) resultMVars)
         |> Task.andThen (writeDetailsAndReturn root maybeBuildDir details)
 
 
-writeDetailsAndReturn : FilePath -> Maybe String -> Details.Details -> Dict String ModuleName.Raw BResult -> Task Never (Dict String ModuleName.Raw BResult)
+writeDetailsAndReturn : FilePath -> Maybe String -> Details.Details -> Data.Map.Dict String ModuleName.Raw BResult -> Task Never (Data.Map.Dict String ModuleName.Raw BResult)
 writeDetailsAndReturn root maybeBuildDir details results =
     writeDetails root maybeBuildDir details results
         |> Task.map (\_ -> results)
@@ -343,7 +344,7 @@ type Module
 {-| Map of dependency module interfaces needed for type checking.
 -}
 type alias Dependencies =
-    Dict (List String) TypeCheck.Canonical I.DependencyInterface
+    Data.Map.Dict (List String) TypeCheck.Canonical I.DependencyInterface
 
 
 {-| Build a project by compiling modules from specific file paths (e.g., for application builds).
@@ -381,7 +382,7 @@ handleFoundRoots root maybeBuildDir details env elroots =
 -}
 type alias PathsBuildContext =
     { dmvar : MVar (Maybe Dependencies)
-    , statuses : Dict String ModuleName.Raw Status
+    , statuses : Data.Map.Dict String ModuleName.Raw Status
     , sroots : NE.Nonempty RootStatus
     }
 
@@ -396,7 +397,7 @@ crawlPaths root maybeBuildDir details env lroots =
 
 crawlPathRoots : Env -> NE.Nonempty RootLocation -> MVar (Maybe Dependencies) -> Task Never PathsBuildContext
 crawlPathRoots env lroots dmvar =
-    Utils.newMVar statusDictEncoder Dict.empty
+    Utils.newMVar statusDictEncoder Data.Map.empty
         |> Task.andThen (crawlRootsAndCollect env lroots dmvar)
 
 
@@ -422,7 +423,7 @@ compilePaths root maybeBuildDir details env { dmvar, statuses, sroots } =
         |> Task.andThen (handlePathsMidpoint root maybeBuildDir details env statuses sroots)
 
 
-handlePathsMidpoint : FilePath -> Maybe String -> Details.Details -> Env -> Dict String ModuleName.Raw Status -> NE.Nonempty RootStatus -> Result Exit.BuildProjectProblem Dependencies -> Task Never (Result Exit.BuildProblem Artifacts)
+handlePathsMidpoint : FilePath -> Maybe String -> Details.Details -> Env -> Data.Map.Dict String ModuleName.Raw Status -> NE.Nonempty RootStatus -> Result Exit.BuildProjectProblem Dependencies -> Task Never (Result Exit.BuildProblem Artifacts)
 handlePathsMidpoint root maybeBuildDir details env statuses sroots midpoint =
     case midpoint of
         Err problem ->
@@ -434,47 +435,47 @@ handlePathsMidpoint root maybeBuildDir details env statuses sroots midpoint =
 
 {-| Compile all modules for path-based builds and produce artifacts.
 -}
-compilePathModules : FilePath -> Maybe String -> Details.Details -> Env -> Dependencies -> Dict String ModuleName.Raw Status -> NE.Nonempty RootStatus -> Task Never (Result Exit.BuildProblem Artifacts)
+compilePathModules : FilePath -> Maybe String -> Details.Details -> Env -> Dependencies -> Data.Map.Dict String ModuleName.Raw Status -> NE.Nonempty RootStatus -> Task Never (Result Exit.BuildProblem Artifacts)
 compilePathModules root maybeBuildDir details env foreigns statuses sroots =
     Utils.newEmptyMVar
         |> Task.andThen (compilePathsWithMVar env foreigns statuses sroots)
         |> Task.andThen (finalizePathBuild root maybeBuildDir details env foreigns)
 
 
-compilePathsWithMVar : Env -> Dependencies -> Dict String ModuleName.Raw Status -> NE.Nonempty RootStatus -> MVar ResultDict -> Task Never PathCompileState
+compilePathsWithMVar : Env -> Dependencies -> Data.Map.Dict String ModuleName.Raw Status -> NE.Nonempty RootStatus -> MVar ResultDict -> Task Never PathCompileState
 compilePathsWithMVar env foreigns statuses sroots rmvar =
     forkWithKey identity compare bResultEncoder (checkModule env foreigns rmvar) statuses
         |> Task.andThen (checkRootsAndCollect env sroots rmvar)
 
 
 type alias PathCompileState =
-    { resultsMVars : Dict String ModuleName.Raw (MVar BResult)
+    { resultsMVars : Data.Map.Dict String ModuleName.Raw (MVar BResult)
     , rrootMVars : NE.Nonempty (MVar RootResult)
     }
 
 
-checkRootsAndCollect : Env -> NE.Nonempty RootStatus -> MVar ResultDict -> Dict String ModuleName.Raw (MVar BResult) -> Task Never PathCompileState
+checkRootsAndCollect : Env -> NE.Nonempty RootStatus -> MVar ResultDict -> Data.Map.Dict String ModuleName.Raw (MVar BResult) -> Task Never PathCompileState
 checkRootsAndCollect env sroots rmvar resultsMVars =
     Utils.putMVar resultDictEncoder rmvar resultsMVars
         |> Task.andThen (\_ -> Utils.nonEmptyListTraverse (checkRoot env resultsMVars >> fork rootResultEncoder) sroots)
         |> Task.map (\rrootMVars -> { resultsMVars = resultsMVars, rrootMVars = rrootMVars })
 
 
-finalizePathBuild : FilePath -> Maybe String -> Details.Details -> Env -> Dependencies -> { resultsMVars : Dict String ModuleName.Raw (MVar BResult), rrootMVars : NE.Nonempty (MVar RootResult) } -> Task Never (Result Exit.BuildProblem Artifacts)
+finalizePathBuild : FilePath -> Maybe String -> Details.Details -> Env -> Dependencies -> { resultsMVars : Data.Map.Dict String ModuleName.Raw (MVar BResult), rrootMVars : NE.Nonempty (MVar RootResult) } -> Task Never (Result Exit.BuildProblem Artifacts)
 finalizePathBuild root maybeBuildDir details env foreigns { resultsMVars, rrootMVars } =
     Utils.mapTraverse identity compare (Utils.readMVar bResultDecoder) resultsMVars
         |> Task.andThen (writeDetailsAndCollectRoots root maybeBuildDir details rrootMVars)
         |> Task.map (toArtifactsFromResults env foreigns)
 
 
-writeDetailsAndCollectRoots : FilePath -> Maybe String -> Details.Details -> NE.Nonempty (MVar RootResult) -> Dict String ModuleName.Raw BResult -> Task Never ( Dict String ModuleName.Raw BResult, NE.Nonempty RootResult )
+writeDetailsAndCollectRoots : FilePath -> Maybe String -> Details.Details -> NE.Nonempty (MVar RootResult) -> Data.Map.Dict String ModuleName.Raw BResult -> Task Never ( Data.Map.Dict String ModuleName.Raw BResult, NE.Nonempty RootResult )
 writeDetailsAndCollectRoots root maybeBuildDir details rrootMVars results =
     writeDetails root maybeBuildDir details results
         |> Task.andThen (\_ -> Utils.nonEmptyListTraverse (Utils.readMVar rootResultDecoder) rrootMVars)
         |> Task.map (\rroots -> ( results, rroots ))
 
 
-toArtifactsFromResults : Env -> Dependencies -> ( Dict String ModuleName.Raw BResult, NE.Nonempty RootResult ) -> Result Exit.BuildProblem Artifacts
+toArtifactsFromResults : Env -> Dependencies -> ( Data.Map.Dict String ModuleName.Raw BResult, NE.Nonempty RootResult ) -> Result Exit.BuildProblem Artifacts
 toArtifactsFromResults env foreigns ( results, rroots ) =
     toArtifacts env foreigns results rroots
 
@@ -505,7 +506,7 @@ getRootName root =
 
 
 type alias StatusDict =
-    Dict String ModuleName.Raw (MVar Status)
+    Data.Map.Dict String ModuleName.Raw (MVar Status)
 
 
 type Status
@@ -531,13 +532,13 @@ crawlNewDeps env mvar deps statusDict =
         crawlNew name () =
             fork statusEncoder (crawlModule env mvar (DocsNeed False) name)
 
-        depsDict : Dict String ModuleName.Raw ()
+        depsDict : Data.Map.Dict String ModuleName.Raw ()
         depsDict =
             Map.fromKeys (\_ -> ()) deps
 
-        newsDict : Dict String ModuleName.Raw ()
+        newsDict : Data.Map.Dict String ModuleName.Raw ()
         newsDict =
-            Dict.diff depsDict statusDict
+            Data.Map.diff depsDict statusDict
     in
     Utils.mapTraverseWithKey identity compare crawlNew newsDict
         |> Task.andThen (updateStatusDictAndWait mvar statusDict)
@@ -545,7 +546,7 @@ crawlNewDeps env mvar deps statusDict =
 
 updateStatusDictAndWait : MVar StatusDict -> StatusDict -> StatusDict -> Task Never ()
 updateStatusDictAndWait mvar statusDict statuses =
-    Utils.putMVar statusDictEncoder mvar (Dict.union statuses statusDict)
+    Utils.putMVar statusDictEncoder mvar (Data.Map.union statuses statusDict)
         |> Task.andThen (\_ -> Utils.dictMapM_ compare (Utils.readMVar statusDecoder) statuses)
 
 
@@ -565,7 +566,7 @@ findModulePaths srcDirs elmFileName =
     Utils.filterM File.exists (List.map (flip addRelative elmFileName) srcDirs)
 
 
-crawlFoundPaths : Env -> MVar StatusDict -> DocsNeed -> ModuleName.Raw -> Bool -> FilePath -> Parse.ProjectType -> Details.BuildID -> Dict String ModuleName.Raw Details.Local -> Dict String ModuleName.Raw Details.Foreign -> List FilePath -> Task Never Status
+crawlFoundPaths : Env -> MVar StatusDict -> DocsNeed -> ModuleName.Raw -> Bool -> FilePath -> Parse.ProjectType -> Details.BuildID -> Dict ModuleName.Raw Details.Local -> Dict ModuleName.Raw Details.Foreign -> List FilePath -> Task Never Status
 crawlFoundPaths env mvar docsNeed name needsDocs root projectType buildID locals foreigns paths =
     case paths of
         [ path ] ->
@@ -582,9 +583,9 @@ crawlFoundPaths env mvar docsNeed name needsDocs root projectType buildID locals
             crawlNoLocalPath name projectType foreigns envData.srcDirs
 
 
-crawlSinglePath : Env -> MVar StatusDict -> DocsNeed -> ModuleName.Raw -> Bool -> Details.BuildID -> Dict String ModuleName.Raw Details.Local -> Dict String ModuleName.Raw Details.Foreign -> FilePath -> Task Never Status
+crawlSinglePath : Env -> MVar StatusDict -> DocsNeed -> ModuleName.Raw -> Bool -> Details.BuildID -> Dict ModuleName.Raw Details.Local -> Dict ModuleName.Raw Details.Foreign -> FilePath -> Task Never Status
 crawlSinglePath env mvar docsNeed name needsDocs buildID locals foreigns path =
-    case Dict.get identity name foreigns of
+    case Dict.get name foreigns of
         Just (Details.Foreign dep deps) ->
             Import.Ambiguous path [] dep deps |> SBadImport |> Task.succeed
 
@@ -593,9 +594,9 @@ crawlSinglePath env mvar docsNeed name needsDocs buildID locals foreigns path =
                 |> Task.andThen (crawlWithTime env mvar docsNeed name needsDocs buildID locals path)
 
 
-crawlWithTime : Env -> MVar StatusDict -> DocsNeed -> ModuleName.Raw -> Bool -> Details.BuildID -> Dict String ModuleName.Raw Details.Local -> FilePath -> File.Time -> Task Never Status
+crawlWithTime : Env -> MVar StatusDict -> DocsNeed -> ModuleName.Raw -> Bool -> Details.BuildID -> Dict ModuleName.Raw Details.Local -> FilePath -> File.Time -> Task Never Status
 crawlWithTime env mvar docsNeed name needsDocs buildID locals path newTime =
-    case Dict.get identity name locals of
+    case Dict.get name locals of
         Nothing ->
             crawlFile env mvar docsNeed name path newTime buildID
 
@@ -607,9 +608,9 @@ crawlWithTime env mvar docsNeed name needsDocs buildID locals path newTime =
                 crawlDeps env mvar localData.deps (SCached local)
 
 
-crawlNoLocalPath : ModuleName.Raw -> Parse.ProjectType -> Dict String ModuleName.Raw Details.Foreign -> List AbsoluteSrcDir -> Task Never Status
+crawlNoLocalPath : ModuleName.Raw -> Parse.ProjectType -> Dict ModuleName.Raw Details.Foreign -> List AbsoluteSrcDir -> Task Never Status
 crawlNoLocalPath name projectType foreigns srcDirs =
-    case Dict.get identity name foreigns of
+    case Dict.get name foreigns of
         Just (Details.Foreign dep deps) ->
             case deps of
                 [] ->
@@ -624,6 +625,7 @@ crawlNoLocalPath name projectType foreigns srcDirs =
                     pkg =
                         projectTypeToPkg projectType
 
+                    foreignHomes : Dict ModuleName.Raw Pkg.Name
                     foreignHomes =
                         Dict.map (\_ (Details.Foreign home _) -> home) foreigns
                 in
@@ -633,7 +635,7 @@ crawlNoLocalPath name projectType foreigns srcDirs =
                 SBadImport Import.NotFound |> Task.succeed
 
 
-checkKernelExistsInDirs : ModuleName.Raw -> Pkg.Name -> Dict String ModuleName.Raw Pkg.Name -> List AbsoluteSrcDir -> Task Never Status
+checkKernelExistsInDirs : ModuleName.Raw -> Pkg.Name -> Dict ModuleName.Raw Pkg.Name -> List AbsoluteSrcDir -> Task Never Status
 checkKernelExistsInDirs name pkg foreignHomes srcDirs =
     case srcDirs of
         [] ->
@@ -717,7 +719,7 @@ isMain (A.At _ (Src.Value v)) =
 
 
 type alias ResultDict =
-    Dict String ModuleName.Raw (MVar BResult)
+    Data.Map.Dict String ModuleName.Raw (MVar BResult)
 
 
 {-| Build result for a single module after compilation or cache lookup.
@@ -864,7 +866,7 @@ recompileIfInterfacesLoaded :
     -> FilePath
     -> File.Time
     -> List ModuleName.Raw
-    -> Maybe (Dict String ModuleName.Raw I.Interface)
+    -> Maybe (Data.Map.Dict String ModuleName.Raw I.Interface)
     -> Task Never BResult
 recompileIfInterfacesLoaded env root projectType name path time deps maybeIfaces =
     case maybeIfaces of
@@ -884,7 +886,7 @@ recompileCachedModule :
     -> FilePath
     -> File.Time
     -> List ModuleName.Raw
-    -> Dict String ModuleName.Raw I.Interface
+    -> Data.Map.Dict String ModuleName.Raw I.Interface
     -> String
     -> Task Never BResult
 recompileCachedModule env _ projectType name path time deps ifaces source =
@@ -965,7 +967,7 @@ compileIfInterfacesLoaded :
     -> String
     -> Src.Module
     -> DocsNeed
-    -> Maybe (Dict String ModuleName.Raw I.Interface)
+    -> Maybe (Data.Map.Dict String ModuleName.Raw I.Interface)
     -> Task Never BResult
 compileIfInterfacesLoaded env local source modul docsNeed maybeIfaces =
     case maybeIfaces of
@@ -995,7 +997,7 @@ makeImportError env resultDict name path time source imports problems =
 
 
 type DepsStatus
-    = DepsChange (Dict String ModuleName.Raw I.Interface)
+    = DepsChange (Data.Map.Dict String ModuleName.Raw I.Interface)
     | DepsSame (List Dep) (List CDep)
     | DepsBlock
     | DepsNotFound (NE.Nonempty ( ModuleName.Raw, Import.Problem ))
@@ -1082,7 +1084,7 @@ checkDepsHelp root results deps new same cached importProblems isBlocked lastDep
                                             DepsBlock
 
                                         Just ifaces ->
-                                            Dict.union (Dict.fromList identity new) ifaces |> DepsChange
+                                            Data.Map.union (Data.Map.fromList identity new) ifaces |> DepsChange
                                 )
 
 
@@ -1097,9 +1099,9 @@ toImportErrors (Env envData) results imports problems =
         knownModules =
             EverySet.fromList identity
                 (List.concat
-                    [ Dict.keys compare envData.foreigns
-                    , Dict.keys compare envData.locals
-                    , Dict.keys compare results
+                    [ Dict.keys envData.foreigns
+                    , Dict.keys envData.locals
+                    , Data.Map.keys compare results
                     ]
                 )
 
@@ -1107,14 +1109,14 @@ toImportErrors (Env envData) results imports problems =
         unimportedModules =
             EverySet.diff knownModules (EverySet.fromList identity (List.map Src.getImportName imports))
 
-        regionDict : Dict String Name.Name A.Region
+        regionDict : Dict Name.Name A.Region
         regionDict =
-            Dict.fromList identity (List.map (\(Src.Import ( _, A.At region name ) _ _) -> ( name, region )) imports)
+            Dict.fromList (List.map (\(Src.Import ( _, A.At region name ) _ _) -> ( name, region )) imports)
 
         toError : ( Name.Name, Import.Problem ) -> Import.Error
         toError ( name, problem ) =
             Import.Error
-                { region = Utils.find identity name regionDict
+                { region = Utils.dictFind name regionDict
                 , name = name
                 , unimportedModules = unimportedModules
                 , problem = problem
@@ -1127,7 +1129,7 @@ toImportErrors (Env envData) results imports problems =
 -- ====== LOAD CACHED INTERFACES ======
 
 
-loadInterfaces : FilePath -> List Dep -> List CDep -> Task Never (Maybe (Dict String ModuleName.Raw I.Interface))
+loadInterfaces : FilePath -> List Dep -> List CDep -> Task Never (Maybe (Data.Map.Dict String ModuleName.Raw I.Interface))
 loadInterfaces root same cached =
     Utils.listTraverse (fork maybeDepEncoder << loadInterface root) cached
         |> Task.andThen
@@ -1140,7 +1142,7 @@ loadInterfaces root same cached =
                                     Nothing
 
                                 Just loaded ->
-                                    Dict.union (Dict.fromList identity loaded) (Dict.fromList identity same) |> Just
+                                    Data.Map.union (Data.Map.fromList identity loaded) (Data.Map.fromList identity same) |> Just
                         )
             )
 
@@ -1179,7 +1181,7 @@ loadInterface root ( name, ciMvar ) =
 -- ====== CHECK PROJECT ======
 
 
-checkMidpoint : MVar (Maybe Dependencies) -> Dict String ModuleName.Raw Status -> Task Never (Result Exit.BuildProjectProblem Dependencies)
+checkMidpoint : MVar (Maybe Dependencies) -> Data.Map.Dict String ModuleName.Raw Status -> Task Never (Result Exit.BuildProjectProblem Dependencies)
 checkMidpoint dmvar statuses =
     case checkForCycles statuses of
         Nothing ->
@@ -1199,7 +1201,7 @@ checkMidpoint dmvar statuses =
                 |> Task.map (\_ -> Err (Exit.BP_Cycle name names))
 
 
-checkMidpointAndRoots : MVar (Maybe Dependencies) -> Dict String ModuleName.Raw Status -> NE.Nonempty RootStatus -> Task Never (Result Exit.BuildProjectProblem Dependencies)
+checkMidpointAndRoots : MVar (Maybe Dependencies) -> Data.Map.Dict String ModuleName.Raw Status -> NE.Nonempty RootStatus -> Task Never (Result Exit.BuildProjectProblem Dependencies)
 checkMidpointAndRoots dmvar statuses sroots =
     case checkForCycles statuses of
         Nothing ->
@@ -1229,12 +1231,12 @@ checkMidpointAndRoots dmvar statuses sroots =
 -- ====== CHECK FOR CYCLES ======
 
 
-checkForCycles : Dict String ModuleName.Raw Status -> Maybe (NE.Nonempty ModuleName.Raw)
+checkForCycles : Data.Map.Dict String ModuleName.Raw Status -> Maybe (NE.Nonempty ModuleName.Raw)
 checkForCycles modules =
     let
         graph : List Node
         graph =
-            Dict.foldr compare addToGraph [] modules
+            Data.Map.foldr compare addToGraph [] modules
 
         sccs : List (Graph.SCC ModuleName.Raw)
         sccs =
@@ -1296,10 +1298,10 @@ addToGraph name status graph =
 -- ====== CHECK UNIQUE ROOTS ======
 
 
-checkUniqueRoots : Dict String ModuleName.Raw Status -> NE.Nonempty RootStatus -> Maybe Exit.BuildProjectProblem
+checkUniqueRoots : Data.Map.Dict String ModuleName.Raw Status -> NE.Nonempty RootStatus -> Maybe Exit.BuildProjectProblem
 checkUniqueRoots insides sroots =
     let
-        outsidesDict : Dict String ModuleName.Raw (OneOrMore.OneOrMore FilePath)
+        outsidesDict : Data.Map.Dict String ModuleName.Raw (OneOrMore.OneOrMore FilePath)
         outsidesDict =
             Utils.mapFromListWith identity OneOrMore.more (List.filterMap rootStatusToNamePathPair (NE.toList sroots))
     in
@@ -1365,7 +1367,7 @@ checkInside name p1 status =
 -- ====== COMPILE MODULE ======
 
 
-compile : Env -> DocsNeed -> Details.Local -> String -> Dict String ModuleName.Raw I.Interface -> Src.Module -> Task Never BResult
+compile : Env -> DocsNeed -> Details.Local -> String -> Data.Map.Dict String ModuleName.Raw I.Interface -> Src.Module -> Task Never BResult
 compile (Env envData) docsNeed (Details.Local localData) source ifaces modul =
     let
         pkg : Pkg.Name
@@ -1411,7 +1413,7 @@ compileWithoutTypedOpt :
     -> Bool
     -> Details.BuildID
     -> String
-    -> Dict String ModuleName.Raw I.Interface
+    -> Data.Map.Dict String ModuleName.Raw I.Interface
     -> Src.Module
     -> Task Never BResult
 compileWithoutTypedOpt key root pkg buildID docsNeed path time deps main lastChange source ifaces modul =
@@ -1568,7 +1570,7 @@ compileWithTypedOpt :
     -> Bool
     -> Details.BuildID
     -> String
-    -> Dict String ModuleName.Raw I.Interface
+    -> Data.Map.Dict String ModuleName.Raw I.Interface
     -> Src.Module
     -> Task Never BResult
 compileWithTypedOpt key root pkg buildID docsNeed path time deps main lastChange source ifaces modul =
@@ -1640,19 +1642,19 @@ projectTypeToPkg projectType =
 -- ====== WRITE DETAILS ======
 
 
-writeDetails : FilePath -> Maybe String -> Details.Details -> Dict String ModuleName.Raw BResult -> Task Never ()
+writeDetails : FilePath -> Maybe String -> Details.Details -> Data.Map.Dict String ModuleName.Raw BResult -> Task Never ()
 writeDetails root maybeBuildDir (Details.Details detailsData) results =
-    Details.Details { detailsData | locals = Dict.foldr compare addNewLocal detailsData.locals results } |> File.writeBinary Details.detailsEncoder (Stuff.detailsWithBuildDir root maybeBuildDir)
+    Details.Details { detailsData | locals = Data.Map.foldr compare addNewLocal detailsData.locals results } |> File.writeBinary Details.detailsEncoder (Stuff.detailsWithBuildDir root maybeBuildDir)
 
 
-addNewLocal : ModuleName.Raw -> BResult -> Dict String ModuleName.Raw Details.Local -> Dict String ModuleName.Raw Details.Local
+addNewLocal : ModuleName.Raw -> BResult -> Dict ModuleName.Raw Details.Local -> Dict ModuleName.Raw Details.Local
 addNewLocal name result locals =
     case result of
         RNew local _ _ _ _ _ ->
-            Dict.insert identity name local locals
+            Dict.insert name local locals
 
         RSame local _ _ _ _ _ ->
-            Dict.insert identity name local locals
+            Dict.insert name local locals
 
         RCached _ _ _ ->
             locals
@@ -1680,14 +1682,14 @@ addNewLocal name result locals =
 -- ====== FINALIZE EXPOSED ======
 
 
-finalizeExposed : FilePath -> DocsGoal docs -> NE.Nonempty ModuleName.Raw -> Dict String ModuleName.Raw BResult -> Task Never (Result Exit.BuildProblem docs)
+finalizeExposed : FilePath -> DocsGoal docs -> NE.Nonempty ModuleName.Raw -> Data.Map.Dict String ModuleName.Raw BResult -> Task Never (Result Exit.BuildProblem docs)
 finalizeExposed root docsGoal exposed results =
     case List.foldr (addImportProblems results) [] (NE.toList exposed) of
         p :: ps ->
             Exit.BuildProjectProblem (Exit.BP_MissingExposed (NE.Nonempty p ps)) |> Err |> Task.succeed
 
         [] ->
-            case Dict.foldr compare (\_ -> addErrors) [] results of
+            case Data.Map.foldr compare (\_ -> addErrors) [] results of
                 [] ->
                     Task.map Ok (finalizeDocs docsGoal results)
 
@@ -1726,7 +1728,7 @@ addErrors result errors =
             errors
 
 
-addImportProblems : Dict String ModuleName.Raw BResult -> ModuleName.Raw -> List ( ModuleName.Raw, Import.Problem ) -> List ( ModuleName.Raw, Import.Problem )
+addImportProblems : Data.Map.Dict String ModuleName.Raw BResult -> ModuleName.Raw -> List ( ModuleName.Raw, Import.Problem ) -> List ( ModuleName.Raw, Import.Problem )
 addImportProblems results name problems =
     case Utils.find identity name results of
         RNew _ _ _ _ _ _ ->
@@ -1767,23 +1769,23 @@ Can keep docs in memory, write to a file, or ignore them entirely.
 
 -}
 type DocsGoal docs
-    = KeepDocs (Dict String ModuleName.Raw BResult -> docs)
-    | WriteDocs (Dict String ModuleName.Raw BResult -> Task Never docs)
+    = KeepDocs (Data.Map.Dict String ModuleName.Raw BResult -> docs)
+    | WriteDocs (Data.Map.Dict String ModuleName.Raw BResult -> Task Never docs)
     | IgnoreDocs docs
 
 
 {-| Keep generated documentation in memory as a dictionary.
 -}
-keepDocs : DocsGoal (Dict String ModuleName.Raw Docs.Module)
+keepDocs : DocsGoal (Dict ModuleName.Raw Docs.Module)
 keepDocs =
-    KeepDocs (Utils.mapMapMaybe identity compare toDocs)
+    KeepDocs (\results -> Dict.fromList (Data.Map.toList compare (Utils.mapMapMaybe identity compare toDocs results)))
 
 
 {-| Write generated documentation to a JSON file at the specified path.
 -}
 writeDocs : FilePath -> DocsGoal ()
 writeDocs path =
-    WriteDocs (E.writeUgly path << Docs.encode << Utils.mapMapMaybe identity compare toDocs)
+    WriteDocs (\results -> E.writeUgly path (Docs.encode (Dict.fromList (Data.Map.toList compare (Utils.mapMapMaybe identity compare toDocs results)))))
 
 
 {-| Ignore documentation generation during compilation.
@@ -1824,7 +1826,7 @@ makeDocs (DocsNeed isNeeded) modul =
         Ok Nothing
 
 
-finalizeDocs : DocsGoal docs -> Dict String ModuleName.Raw BResult -> Task Never docs
+finalizeDocs : DocsGoal docs -> Data.Map.Dict String ModuleName.Raw BResult -> Task Never docs
 finalizeDocs goal results =
     case goal of
         KeepDocs f ->
@@ -1881,7 +1883,7 @@ type alias ReplArtifactsData =
     { home : TypeCheck.Canonical
     , modules : List Module
     , localizer : L.Localizer
-    , annotations : Dict String Name.Name Can.Annotation
+    , annotations : Dict Name.Name Can.Annotation
     }
 
 
@@ -1921,7 +1923,7 @@ fromRepl root details source =
 -}
 type alias ReplBuildContext =
     { dmvar : MVar (Maybe Dependencies)
-    , statuses : Dict String ModuleName.Raw Status
+    , statuses : Data.Map.Dict String ModuleName.Raw Status
     }
 
 
@@ -1932,7 +1934,7 @@ crawlRepl root maybeBuildDir details env deps =
     Details.loadInterfaces root maybeBuildDir details
         |> Task.andThen
             (\dmvar ->
-                Utils.newMVar statusDictEncoder Dict.empty
+                Utils.newMVar statusDictEncoder Data.Map.empty
                     |> Task.andThen
                         (\mvar ->
                             crawlDeps env mvar deps ()
@@ -1961,7 +1963,7 @@ compileRepl root maybeBuildDir details env source modul deps { dmvar, statuses }
 
 {-| Compile REPL modules and finalize artifacts.
 -}
-compileReplModules : FilePath -> Maybe String -> Details.Details -> Env -> String -> Src.Module -> List Name.Name -> Dependencies -> Dict String ModuleName.Raw Status -> Task Never (Result Exit.Repl ReplArtifacts)
+compileReplModules : FilePath -> Maybe String -> Details.Details -> Env -> String -> Src.Module -> List Name.Name -> Dependencies -> Data.Map.Dict String ModuleName.Raw Status -> Task Never (Result Exit.Repl ReplArtifacts)
 compileReplModules root maybeBuildDir details env source modul deps foreigns statuses =
     Utils.newEmptyMVar
         |> Task.andThen
@@ -1981,14 +1983,14 @@ compileReplModules root maybeBuildDir details env source modul deps foreigns sta
             )
 
 
-finalizeReplArtifacts : Env -> String -> Src.Module -> DepsStatus -> ResultDict -> Dict String ModuleName.Raw BResult -> Task Never (Result Exit.Repl ReplArtifacts)
+finalizeReplArtifacts : Env -> String -> Src.Module -> DepsStatus -> ResultDict -> Data.Map.Dict String ModuleName.Raw BResult -> Task Never (Result Exit.Repl ReplArtifacts)
 finalizeReplArtifacts ((Env envData) as env) source ((Src.Module srcData) as modul) depsStatus resultMVars results =
     let
         pkg : Pkg.Name
         pkg =
             projectTypeToPkg envData.projectType
 
-        compileInput : Dict String ModuleName.Raw I.Interface -> Task Never (Result Exit.Repl ReplArtifacts)
+        compileInput : Data.Map.Dict String ModuleName.Raw I.Interface -> Task Never (Result Exit.Repl ReplArtifacts)
         compileInput ifaces =
             Compile.compile pkg ifaces modul
                 |> Task.map
@@ -2006,7 +2008,7 @@ finalizeReplArtifacts ((Env envData) as env) source ((Src.Module srcData) as mod
 
                                     ms : List Module
                                     ms =
-                                        Dict.foldr compare addInside [] results
+                                        Data.Map.foldr compare addInside [] results
                                 in
                                 ReplArtifacts { home = h, modules = m :: ms, localizer = L.fromModule modul, annotations = annotations } |> Ok
 
@@ -2031,7 +2033,7 @@ finalizeReplArtifacts ((Env envData) as env) source ((Src.Module srcData) as mod
                     )
 
         DepsBlock ->
-            case Dict.foldr compare (\_ -> addErrors) [] results of
+            case Data.Map.foldr compare (\_ -> addErrors) [] results of
                 [] ->
                     Exit.ReplBlocked |> Err |> Task.succeed
 
@@ -2234,7 +2236,7 @@ crawlRoot ((Env envData) as env) mvar root =
                         Utils.takeMVar statusDictDecoder mvar
                             |> Task.andThen
                                 (\statusDict ->
-                                    Utils.putMVar statusDictEncoder mvar (Dict.insert identity name statusMVar statusDict)
+                                    Utils.putMVar statusDictEncoder mvar (Data.Map.insert identity name statusMVar statusDict)
                                         |> Task.andThen
                                             (\_ ->
                                                 Task.andThen (Utils.putMVar statusEncoder statusMVar) (crawlModule env mvar (DocsNeed False) name)
@@ -2324,7 +2326,7 @@ checkRoot ((Env envData) as env) results rootStatus =
                     )
 
 
-compileOutside : Env -> Details.Local -> String -> Dict String ModuleName.Raw I.Interface -> Src.Module -> Task Never RootResult
+compileOutside : Env -> Details.Local -> String -> Data.Map.Dict String ModuleName.Raw I.Interface -> Src.Module -> Task Never RootResult
 compileOutside (Env envData) (Details.Local localData) source ifaces modul =
     let
         pkg : Pkg.Name
@@ -2376,7 +2378,7 @@ type Root
     | Outside ModuleName.Raw I.Interface Opt.LocalGraph (Maybe TOpt.LocalGraph) (Maybe TypeEnv.ModuleTypeEnv)
 
 
-toArtifacts : Env -> Dependencies -> Dict String ModuleName.Raw BResult -> NE.Nonempty RootResult -> Result Exit.BuildProblem Artifacts
+toArtifacts : Env -> Dependencies -> Data.Map.Dict String ModuleName.Raw BResult -> NE.Nonempty RootResult -> Result Exit.BuildProblem Artifacts
 toArtifacts (Env envData) foreigns results rootResults =
     case gatherProblemsOrMains results rootResults of
         Err (NE.Nonempty e es) ->
@@ -2388,11 +2390,11 @@ toArtifacts (Env envData) foreigns results rootResults =
                     { pkg = projectTypeToPkg envData.projectType
                     , deps = foreigns
                     , roots = roots
-                    , modules = Dict.foldr compare addInside (NE.foldr addOutside [] rootResults) results
+                    , modules = Data.Map.foldr compare addInside (NE.foldr addOutside [] rootResults) results
                     }
 
 
-gatherProblemsOrMains : Dict String ModuleName.Raw BResult -> NE.Nonempty RootResult -> Result (NE.Nonempty Error.Module) (NE.Nonempty Root)
+gatherProblemsOrMains : Data.Map.Dict String ModuleName.Raw BResult -> NE.Nonempty RootResult -> Result (NE.Nonempty Error.Module) (NE.Nonempty Root)
 gatherProblemsOrMains results (NE.Nonempty rootResult rootResults) =
     let
         addResult : RootResult -> ( List Error.Module, List Root ) -> ( List Error.Module, List Root )
@@ -2412,7 +2414,7 @@ gatherProblemsOrMains results (NE.Nonempty rootResult rootResults) =
 
         errors : List Error.Module
         errors =
-            Dict.foldr compare (\_ -> addErrors) [] results
+            Data.Map.foldr compare (\_ -> addErrors) [] results
     in
     case ( rootResult, List.foldr addResult ( errors, [] ) rootResults ) of
         ( RInside n, ( [], ms ) ) ->
@@ -2493,7 +2495,7 @@ addOutside root modules =
 -- ====== ENCODERS and DECODERS ======
 
 
-dictRawMVarBResultEncoder : Dict String ModuleName.Raw (MVar BResult) -> Bytes.Encode.Encoder
+dictRawMVarBResultEncoder : Data.Map.Dict String ModuleName.Raw (MVar BResult) -> Bytes.Encode.Encoder
 dictRawMVarBResultEncoder =
     BE.assocListDict compare ModuleName.rawEncoder Utils.mVarEncoder
 

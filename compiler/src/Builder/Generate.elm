@@ -58,15 +58,18 @@ import Compiler.Generate.CodeGen as CodeGen
 import Compiler.Generate.CodeGen.JavaScript as JavaScript
 import Compiler.Generate.MLIR.Backend as MLIR
 import Compiler.Generate.Mode as Mode
+import Mlir.Pretty as Pretty
 import Compiler.GlobalOpt.MonoGlobalOptimize as MonoGlobalOptimize
+import Compiler.GlobalOpt.MonoInlineSimplify as MonoInlineSimplify
 import Compiler.Monomorphize.Monomorphize as Monomorphize
 import Compiler.Nitpick.Debug as Nitpick
 import Compiler.Reporting.Render.Type.Localizer as L
-import Data.Map as Dict exposing (Dict)
+import Data.Map
+import Dict exposing (Dict)
 import System.TypeCheck.IO as TypeCheck
 import Task exposing (Task)
 import Utils.Bytes.Decode as BD
-import System.IO exposing (FilePath, MVar)
+import System.IO as IO exposing (FilePath, MVar)
 import Utils.Main as Utils
 import Utils.Task.Extra as Task
 
@@ -106,7 +109,7 @@ debug backend withSourceMaps leadingLines root maybeBuildDir details (Build.Arti
         |> Task.andThen (generateDebugOutput backend withSourceMaps leadingLines root artifacts.pkg artifacts.roots)
 
 
-loadTypesAndFinalize : FilePath -> Maybe String -> Dict (List String) TypeCheck.Canonical I.DependencyInterface -> List Build.Module -> LoadingObjects -> Task Exit.Generate ( Objects, Extract.Types )
+loadTypesAndFinalize : FilePath -> Maybe String -> Data.Map.Dict (List String) TypeCheck.Canonical I.DependencyInterface -> List Build.Module -> LoadingObjects -> Task Exit.Generate ( Objects, Extract.Types )
 loadTypesAndFinalize root maybeBuildDir ifaces modules loading =
     loadTypes root maybeBuildDir ifaces modules
         |> Task.andThen (finalizeObjectsWithTypes loading)
@@ -134,7 +137,7 @@ generateDebugOutput backend withSourceMaps leadingLines root pkg roots ( objects
         |> Task.map (generateWithBackend backend leadingLines mode graph mains)
 
 
-generateWithBackend : CodeGen.CodeGen -> Int -> Mode.Mode -> Opt.GlobalGraph -> Dict (List String) TypeCheck.Canonical Opt.Main -> CodeGen.SourceMaps -> CodeGen.Output
+generateWithBackend : CodeGen.CodeGen -> Int -> Mode.Mode -> Opt.GlobalGraph -> Data.Map.Dict (List String) TypeCheck.Canonical Opt.Main -> CodeGen.SourceMaps -> CodeGen.Output
 generateWithBackend backend leadingLines mode graph mains sourceMaps =
     backend.generate
         { sourceMaps = sourceMaps
@@ -222,7 +225,7 @@ repl backend root details ansi (Build.ReplArtifacts replArtifacts) name =
         |> Task.map (generateReplOutput backend ansi replArtifacts.localizer replArtifacts.home name replArtifacts.annotations)
 
 
-generateReplOutput : CodeGen.CodeGen -> Bool -> L.Localizer -> TypeCheck.Canonical -> N.Name -> Dict String N.Name Can.Annotation -> Objects -> CodeGen.Output
+generateReplOutput : CodeGen.CodeGen -> Bool -> L.Localizer -> TypeCheck.Canonical -> N.Name -> Dict N.Name Can.Annotation -> Objects -> CodeGen.Output
 generateReplOutput backend ansi localizer home name annotations objects =
     let
         graph : Opt.GlobalGraph
@@ -235,7 +238,7 @@ generateReplOutput backend ansi localizer home name annotations objects =
         , graph = graph
         , home = home
         , name = name
-        , annotation = Utils.find identity name annotations
+        , annotation = Utils.dictFind name annotations
         }
 
 
@@ -245,7 +248,7 @@ generateReplOutput backend ansi localizer home name annotations objects =
 
 checkForDebugUses : Objects -> Task Exit.Generate ()
 checkForDebugUses (Objects _ locals) =
-    case Dict.keys compare (Dict.filter (\_ -> Nitpick.hasDebugUses) locals) of
+    case Data.Map.keys compare (Data.Map.filter (\_ -> Nitpick.hasDebugUses) locals) of
         [] ->
             Task.succeed ()
 
@@ -257,12 +260,12 @@ checkForDebugUses (Objects _ locals) =
 -- ====== GATHER MAINS ======
 
 
-gatherMains : Pkg.Name -> Objects -> NE.Nonempty Build.Root -> Dict (List String) TypeCheck.Canonical Opt.Main
+gatherMains : Pkg.Name -> Objects -> NE.Nonempty Build.Root -> Data.Map.Dict (List String) TypeCheck.Canonical Opt.Main
 gatherMains pkg (Objects _ locals) roots =
-    Dict.fromList ModuleName.toComparableCanonical (List.filterMap (lookupMain pkg locals) (NE.toList roots))
+    Data.Map.fromList ModuleName.toComparableCanonical (List.filterMap (lookupMain pkg locals) (NE.toList roots))
 
 
-lookupMain : Pkg.Name -> Dict String ModuleName.Raw Opt.LocalGraph -> Build.Root -> Maybe ( TypeCheck.Canonical, Opt.Main )
+lookupMain : Pkg.Name -> Data.Map.Dict String ModuleName.Raw Opt.LocalGraph -> Build.Root -> Maybe ( TypeCheck.Canonical, Opt.Main )
 lookupMain pkg locals root =
     let
         toPair : N.Name -> Opt.LocalGraph -> Maybe ( TypeCheck.Canonical, Opt.Main )
@@ -271,7 +274,7 @@ lookupMain pkg locals root =
     in
     case root of
         Build.Inside name ->
-            Dict.get identity name locals |> Maybe.andThen (toPair name)
+            Data.Map.get identity name locals |> Maybe.andThen (toPair name)
 
         Build.Outside name _ g _ _ ->
             toPair name g
@@ -282,7 +285,7 @@ lookupMain pkg locals root =
 
 
 type LoadingObjects
-    = LoadingObjects (MVar (Maybe Opt.GlobalGraph)) (Dict String ModuleName.Raw (MVar (Maybe Opt.LocalGraph)))
+    = LoadingObjects (MVar (Maybe Opt.GlobalGraph)) (Data.Map.Dict String ModuleName.Raw (MVar (Maybe Opt.LocalGraph)))
 
 
 loadObjects : FilePath -> Maybe String -> Details.Details -> List Build.Module -> Task Exit.Generate LoadingObjects
@@ -296,7 +299,7 @@ loadObjects root maybeBuildDir details modules =
 loadModuleObjects : FilePath -> Maybe String -> List Build.Module -> MVar (Maybe Opt.GlobalGraph) -> Task Never LoadingObjects
 loadModuleObjects root maybeBuildDir modules mvar =
     Utils.listTraverse (loadObject root maybeBuildDir) modules
-        |> Task.map (\mvars -> LoadingObjects mvar (Dict.fromList identity mvars))
+        |> Task.map (\mvars -> LoadingObjects mvar (Data.Map.fromList identity mvars))
 
 
 loadObject : FilePath -> Maybe String -> Build.Module -> Task Never ( ModuleName.Raw, MVar (Maybe Opt.LocalGraph) )
@@ -328,7 +331,7 @@ readAndStoreCachedObject root maybeBuildDir name mvar =
 
 
 type Objects
-    = Objects Opt.GlobalGraph (Dict String ModuleName.Raw Opt.LocalGraph)
+    = Objects Opt.GlobalGraph (Data.Map.Dict String ModuleName.Raw Opt.LocalGraph)
 
 
 finalizeObjects : LoadingObjects -> Task Exit.Generate Objects
@@ -339,13 +342,13 @@ finalizeObjects (LoadingObjects mvar mvars) =
         )
 
 
-collectLocalObjects : Dict String ModuleName.Raw (MVar (Maybe Opt.LocalGraph)) -> Maybe Opt.GlobalGraph -> Task Never (Result Exit.Generate Objects)
+collectLocalObjects : Data.Map.Dict String ModuleName.Raw (MVar (Maybe Opt.LocalGraph)) -> Maybe Opt.GlobalGraph -> Task Never (Result Exit.Generate Objects)
 collectLocalObjects mvars globalResult =
     Utils.mapTraverse identity compare (Utils.readMVar (BD.maybe Opt.localGraphDecoder)) mvars
         |> Task.map (combineGlobalAndLocalObjects globalResult)
 
 
-combineGlobalAndLocalObjects : Maybe Opt.GlobalGraph -> Dict String ModuleName.Raw (Maybe Opt.LocalGraph) -> Result Exit.Generate Objects
+combineGlobalAndLocalObjects : Maybe Opt.GlobalGraph -> Data.Map.Dict String ModuleName.Raw (Maybe Opt.LocalGraph) -> Result Exit.Generate Objects
 combineGlobalAndLocalObjects globalResult results =
     case Maybe.map2 Objects globalResult (Utils.sequenceDictMaybe identity compare results) of
         Just loaded ->
@@ -357,14 +360,14 @@ combineGlobalAndLocalObjects globalResult results =
 
 objectsToGlobalGraph : Objects -> Opt.GlobalGraph
 objectsToGlobalGraph (Objects globals locals) =
-    Dict.foldr compare (\_ -> GA.addOptLocalGraph) globals locals
+    Data.Map.foldr compare (\_ -> GA.addOptLocalGraph) globals locals
 
 
 
 -- ====== LOAD TYPES ======
 
 
-loadTypes : FilePath -> Maybe String -> Dict (List String) TypeCheck.Canonical I.DependencyInterface -> List Build.Module -> Task Exit.Generate Extract.Types
+loadTypes : FilePath -> Maybe String -> Data.Map.Dict (List String) TypeCheck.Canonical I.DependencyInterface -> List Build.Module -> Task Exit.Generate Extract.Types
 loadTypes root maybeBuildDir ifaces modules =
     Task.eio identity
         (Utils.listTraverse (loadTypesHelp root maybeBuildDir) modules
@@ -372,12 +375,12 @@ loadTypes root maybeBuildDir ifaces modules =
         )
 
 
-collectAndMergeTypes : Dict (List String) TypeCheck.Canonical I.DependencyInterface -> List (MVar (Maybe Extract.Types)) -> Task Never (Result Exit.Generate Extract.Types)
+collectAndMergeTypes : Data.Map.Dict (List String) TypeCheck.Canonical I.DependencyInterface -> List (MVar (Maybe Extract.Types)) -> Task Never (Result Exit.Generate Extract.Types)
 collectAndMergeTypes ifaces mvars =
     let
         foreigns : Extract.Types
         foreigns =
-            Extract.mergeMany (Dict.values ModuleName.compareCanonical (Dict.map Extract.fromDependencyInterface ifaces))
+            Extract.mergeMany (Data.Map.values ModuleName.compareCanonical (Data.Map.map Extract.fromDependencyInterface ifaces))
     in
     Utils.listTraverse (Utils.readMVar (BD.maybe Extract.typesDecoder)) mvars
         |> Task.map (mergeLoadedTypes foreigns)
@@ -435,7 +438,7 @@ loadAndStoreInterfaceTypes root maybeBuildDir name mvar =
 
 
 type TypedLoadingObjects
-    = TypedLoadingObjects (MVar (Maybe Details.PackageTypedArtifacts)) (Dict String ModuleName.Raw (MVar (Maybe TMod.TypedModuleArtifact)))
+    = TypedLoadingObjects (MVar (Maybe Details.PackageTypedArtifacts)) (Data.Map.Dict String ModuleName.Raw (MVar (Maybe TMod.TypedModuleArtifact)))
 
 
 loadTypedObjects : FilePath -> Maybe String -> Maybe ( Pkg.Name, FilePath ) -> Details.Details -> List Build.Module -> Task Exit.Generate TypedLoadingObjects
@@ -449,7 +452,7 @@ loadTypedObjects root maybeBuildDir maybeLocal details modules =
 loadTypedModuleObjects : FilePath -> Maybe String -> List Build.Module -> MVar (Maybe Details.PackageTypedArtifacts) -> Task Never TypedLoadingObjects
 loadTypedModuleObjects root maybeBuildDir modules mvar =
     Utils.listTraverse (loadTypedObject root maybeBuildDir) modules
-        |> Task.map (\mvars -> TypedLoadingObjects mvar (Dict.fromList identity mvars))
+        |> Task.map (\mvars -> TypedLoadingObjects mvar (Data.Map.fromList identity mvars))
 
 
 loadTypedObject : FilePath -> Maybe String -> Build.Module -> Task Never ( ModuleName.Raw, MVar (Maybe TMod.TypedModuleArtifact) )
@@ -511,7 +514,7 @@ type alias ModuleTyped =
 
 
 type TypedObjects
-    = TypedObjects TOpt.GlobalGraph TypeEnv.GlobalTypeEnv (Dict String ModuleName.Raw ModuleTyped)
+    = TypedObjects TOpt.GlobalGraph TypeEnv.GlobalTypeEnv (Data.Map.Dict String ModuleName.Raw ModuleTyped)
 
 
 finalizeTypedObjects : TypedLoadingObjects -> Task Exit.Generate TypedObjects
@@ -522,13 +525,13 @@ finalizeTypedObjects (TypedLoadingObjects mvar mvars) =
         )
 
 
-collectTypedLocalArtifacts : Dict String ModuleName.Raw (MVar (Maybe TMod.TypedModuleArtifact)) -> Maybe Details.PackageTypedArtifacts -> Task Never (Result Exit.Generate TypedObjects)
+collectTypedLocalArtifacts : Data.Map.Dict String ModuleName.Raw (MVar (Maybe TMod.TypedModuleArtifact)) -> Maybe Details.PackageTypedArtifacts -> Task Never (Result Exit.Generate TypedObjects)
 collectTypedLocalArtifacts mvars globalArtifacts =
     Utils.mapTraverse identity compare (Utils.readMVar (BD.maybe TMod.typedModuleArtifactDecoder)) mvars
         |> Task.map (combineTypedGlobalAndLocalObjects globalArtifacts)
 
 
-combineTypedGlobalAndLocalObjects : Maybe Details.PackageTypedArtifacts -> Dict String ModuleName.Raw (Maybe TMod.TypedModuleArtifact) -> Result Exit.Generate TypedObjects
+combineTypedGlobalAndLocalObjects : Maybe Details.PackageTypedArtifacts -> Data.Map.Dict String ModuleName.Raw (Maybe TMod.TypedModuleArtifact) -> Result Exit.Generate TypedObjects
 combineTypedGlobalAndLocalObjects maybeGlobalArtifacts results =
     let
         -- Convert TypedModuleArtifact to ModuleTyped
@@ -539,10 +542,10 @@ combineTypedGlobalAndLocalObjects maybeGlobalArtifacts results =
             }
 
         -- Sequence the dict of Maybe values
-        maybeLocalModules : Maybe (Dict String ModuleName.Raw ModuleTyped)
+        maybeLocalModules : Maybe (Data.Map.Dict String ModuleName.Raw ModuleTyped)
         maybeLocalModules =
             Utils.sequenceDictMaybe identity compare results
-                |> Maybe.map (Dict.map (\_ -> toModuleTyped))
+                |> Maybe.map (Data.Map.map (\_ -> toModuleTyped))
     in
     case ( maybeGlobalArtifacts, maybeLocalModules ) of
         ( Just globalArtifacts, Just localModules ) ->
@@ -558,20 +561,20 @@ combineTypedGlobalAndLocalObjects maybeGlobalArtifacts results =
 
 typedObjectsToGlobalGraph : TypedObjects -> TOpt.GlobalGraph
 typedObjectsToGlobalGraph (TypedObjects globals _ locals) =
-    Dict.foldr compare (\_ modTyped acc -> GA.addTypedLocalGraph modTyped.graph acc) globals locals
+    Data.Map.foldr compare (\_ modTyped acc -> GA.addTypedLocalGraph modTyped.graph acc) globals locals
 
 
 typedObjectsToGlobalTypeEnv : TypedObjects -> TypeEnv.GlobalTypeEnv
 typedObjectsToGlobalTypeEnv (TypedObjects _ globalEnv locals) =
     -- Merge local module type envs into the global type env from packages
-    Dict.foldr compare
+    Data.Map.foldr compare
         (\_ modTyped acc ->
             let
                 modEnv : TypeEnv.ModuleTypeEnv
                 modEnv =
                     modTyped.env
             in
-            Dict.insert ModuleName.toComparableCanonical modEnv.home modEnv acc
+            Data.Map.insert ModuleName.toComparableCanonical modEnv.home modEnv acc
         )
         globalEnv
         locals
@@ -610,27 +613,62 @@ buildMonoGraphFromObjects roots objects =
         globalTypeEnv : TypeEnv.GlobalTypeEnv
         globalTypeEnv =
             List.foldl addRootTypeEnv (typedObjectsToGlobalTypeEnv objects) (NE.toList roots)
+
+        log msg =
+            Task.io (IO.writeLn IO.stderr msg)
     in
     Task.succeed ( typedGraph, globalTypeEnv )
         |> Task.andThen
             (\( tGraph, typeEnv ) ->
-                case Monomorphize.monomorphize "main" typeEnv tGraph of
-                    Err err ->
-                        Task.throw (Exit.GenerateMonomorphizationError err)
+                -- GC boundary: `objects`, `roots` are now unreachable.
+                log "Monomorphization started..."
+                    |> Task.andThen
+                        (\_ ->
+                            Monomorphize.monomorphizeWithLog log "main" typeEnv tGraph
+                                |> Task.andThen
+                                    (\result ->
+                                        case result of
+                                            Err err ->
+                                                Task.throw (Exit.GenerateMonomorphizationError err)
 
-                    Ok monoGraph0 ->
-                        Task.succeed monoGraph0
+                                            Ok monoGraph0 ->
+                                                log "Monomorphization done."
+                                                    |> Task.map (\_ -> monoGraph0)
+                                    )
+                        )
             )
         |> Task.andThen
             (\monoGraph0 ->
-                let
-                    monoGraph =
-                        MonoGlobalOptimize.globalOptimize monoGraph0
-                in
-                Task.succeed
-                    { monoGraph = monoGraph
-                    , mode = Mode.Dev Nothing
-                    }
+                -- GC boundary: `typedGraph` and `globalTypeEnv` are now unreachable.
+                log "Inline + simplify started..."
+                    |> Task.andThen
+                        (\_ ->
+                            let
+                                ( simplifiedGraph, _ ) =
+                                    MonoInlineSimplify.optimize monoGraph0
+                            in
+                            log "Inline + simplify done."
+                                |> Task.map (\_ -> simplifiedGraph)
+                        )
+            )
+        |> Task.andThen
+            (\simplifiedGraph ->
+                -- GC boundary: monomorphization state largely unreachable.
+                log "Global optimization started..."
+                    |> Task.andThen
+                        (\_ ->
+                            MonoGlobalOptimize.globalOptimizeWithLog log simplifiedGraph
+                        )
+            )
+        |> Task.andThen
+            (\monoGraph ->
+                log "Global optimization done."
+                    |> Task.map
+                        (\_ ->
+                            { monoGraph = monoGraph
+                            , mode = Mode.Dev Nothing
+                            }
+                        )
             )
 
 
@@ -638,11 +676,24 @@ buildMonoGraphFromObjects roots objects =
 -}
 monoDev : CodeGen.MonoCodeGen -> Bool -> Int -> FilePath -> Maybe String -> Maybe ( Pkg.Name, FilePath ) -> Details.Details -> Build.Artifacts -> Task Exit.Generate CodeGen.Output
 monoDev backend withSourceMaps leadingLines root maybeBuildDir maybeLocal details artifacts =
+    let
+        log msg =
+            Task.io (IO.writeLn IO.stderr msg)
+    in
     buildMonoGraph root maybeBuildDir maybeLocal details artifacts
         |> Task.andThen
             (\{ monoGraph, mode } ->
-                prepareSourceMaps withSourceMaps root
-                    |> Task.map (generateMonoOutput backend leadingLines mode monoGraph)
+                log "MLIR codegen started..."
+                    |> Task.andThen
+                        (\_ ->
+                            MLIR.generateMlirModuleWithLog log mode monoGraph
+                                |> Task.map (\mlirModule -> CodeGen.TextOutput (Pretty.ppModule mlirModule))
+                        )
+                    |> Task.andThen
+                        (\output ->
+                            log "MLIR codegen done."
+                                |> Task.map (\_ -> output)
+                        )
             )
 
 
@@ -704,7 +755,7 @@ addRootTypeEnv root globalEnv =
         Build.Outside _ _ _ _ maybeTypeEnv ->
             case maybeTypeEnv of
                 Just modEnv ->
-                    Dict.insert ModuleName.toComparableCanonical modEnv.home modEnv globalEnv
+                    Data.Map.insert ModuleName.toComparableCanonical modEnv.home modEnv globalEnv
 
                 Nothing ->
                     globalEnv

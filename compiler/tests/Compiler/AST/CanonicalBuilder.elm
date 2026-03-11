@@ -47,7 +47,7 @@ import Compiler.AST.Source as Src
 import Compiler.Data.Name as Name
 import Compiler.Elm.Package as Pkg
 import Compiler.Reporting.Annotation as A
-import Data.Map as Dict exposing (Dict)
+import Dict exposing (Dict)
 import System.TypeCheck.IO as IO
 
 
@@ -138,11 +138,11 @@ makeTypedDef name args body resultType =
 {-| Extract free type variables from a Can.Type.
 Returns a Dict mapping variable names to ().
 -}
-extractFreeTypeVars : Can.Type -> Dict String Name.Name ()
+extractFreeTypeVars : Can.Type -> Dict Name.Name ()
 extractFreeTypeVars tipe =
     case tipe of
         Can.TVar name ->
-            Dict.singleton identity name ()
+            Dict.singleton name ()
 
         Can.TLambda arg result ->
             Dict.union (extractFreeTypeVars arg) (extractFreeTypeVars result)
@@ -162,7 +162,7 @@ extractFreeTypeVars tipe =
         Can.TRecord fields maybeExt ->
             let
                 fieldVars =
-                    Dict.foldl compare
+                    Dict.foldl
                         (\_ (Can.FieldType _ fieldType) acc ->
                             Dict.union acc (extractFreeTypeVars fieldType)
                         )
@@ -172,7 +172,7 @@ extractFreeTypeVars tipe =
                 extVars =
                     case maybeExt of
                         Just extName ->
-                            Dict.singleton identity extName ()
+                            Dict.singleton extName ()
 
                         Nothing ->
                             Dict.empty
@@ -283,7 +283,7 @@ varForeignExpr id home name annotation =
 -}
 makeAnnotation : List Name.Name -> Can.Type -> Can.Annotation
 makeAnnotation freeVars tipe =
-    Can.Forall (Dict.fromList identity (List.map (\v -> ( v, () )) freeVars)) tipe
+    Can.Forall (Dict.fromList (List.map (\v -> ( v, () )) freeVars)) tipe
 
 
 

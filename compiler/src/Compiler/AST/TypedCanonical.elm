@@ -33,11 +33,12 @@ the expression types produced by the type checker.
 
 -}
 
+import Array exposing (Array)
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Source as Src
 import Compiler.Data.Name exposing (Name)
 import Compiler.Reporting.Annotation as A
-import Data.Map exposing (Dict)
+import Dict exposing (Dict)
 import System.TypeCheck.IO as IO
 
 
@@ -99,9 +100,9 @@ type alias ModuleData =
     , exports : Can.Exports
     , docs : Src.Docs
     , decls : Decls
-    , unions : Dict String Name Can.Union
-    , aliases : Dict String Name Can.Alias
-    , binops : Dict String Name Can.Binop
+    , unions : Dict Name Can.Union
+    , aliases : Dict Name Can.Alias
+    , binops : Dict Name Can.Binop
     , effects : Can.Effects
     }
 
@@ -123,7 +124,7 @@ This is an alias for `NodeTypes` to maintain backwards compatibility.
 
 -}
 type alias ExprTypes =
-    Dict Int Int Can.Type
+    Array (Maybe Can.Type)
 
 
 {-| Dictionary mapping node IDs to their canonical types.
@@ -134,7 +135,7 @@ constraint solving.
 
 -}
 type alias NodeTypes =
-    Dict Int Int Can.Type
+    Array (Maybe Can.Type)
 
 
 

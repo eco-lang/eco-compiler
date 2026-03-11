@@ -21,7 +21,7 @@ This invariant catches the "different staging boundaries across branches" bug wh
 
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.Source as Src
-import Data.Map as Dict
+import Array
 import Expect exposing (Expectation)
 import TestLogic.TestPipeline as Pipeline
 
@@ -58,12 +58,18 @@ expectMonoCaseBranchResultTypes srcModule =
 -}
 checkMonoCaseBranchResultTypes : Mono.MonoGraph -> List Violation
 checkMonoCaseBranchResultTypes (Mono.MonoGraph data) =
-    Dict.foldl compare
-        (\specId node acc ->
-            acc ++ checkNode specId node
+    Array.foldl
+        (\maybeNode ( specId, acc ) ->
+            case maybeNode of
+                Nothing ->
+                    ( specId + 1, acc )
+
+                Just node ->
+                    ( specId + 1, acc ++ checkNode specId node )
         )
-        []
+        ( 0, [] )
         data.nodes
+        |> Tuple.second
 
 
 {-| Check a single MonoNode for MonoCase violations.

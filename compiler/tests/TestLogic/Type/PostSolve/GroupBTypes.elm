@@ -9,7 +9,8 @@ have fully resolved types with no remaining unification variables.
 
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Source as Src
-import Data.Map as Dict
+import Array
+import Dict
 import Expect
 import TestLogic.TestPipeline as Pipeline
 
@@ -47,14 +48,20 @@ Group B expressions (lists, tuples, records, units, lambdas) should have
 fully structural types after PostSolve, with no unconstrained synthetic variables.
 
 -}
-collectGroupBTypeChecks : Dict.Dict Int Int Can.Type -> List (() -> Expect.Expectation)
+collectGroupBTypeChecks : Array.Array (Maybe Can.Type) -> List (() -> Expect.Expectation)
 collectGroupBTypeChecks nodeTypes =
-    Dict.foldl compare
-        (\nodeId canType acc ->
-            checkTypeForSyntheticVars ("NodeId " ++ String.fromInt nodeId) canType ++ acc
+    Array.foldl
+        (\maybeType ( nodeId, acc ) ->
+            case maybeType of
+                Nothing ->
+                    ( nodeId + 1, acc )
+
+                Just canType ->
+                    ( nodeId + 1, checkTypeForSyntheticVars ("NodeId " ++ String.fromInt nodeId) canType ++ acc )
         )
-        []
+        ( 0, [] )
         nodeTypes
+        |> Tuple.second
 
 
 {-| Check a type for unconstrained synthetic variables.
@@ -83,7 +90,7 @@ checkTypeForSyntheticVars context canType =
             List.concatMap (checkTypeForSyntheticVars context) args
 
         Can.TRecord fields _ ->
-            Dict.foldl compare
+            Dict.foldl
                 (\_ (Can.FieldType _ fieldType) acc ->
                     checkTypeForSyntheticVars context fieldType ++ acc
                 )

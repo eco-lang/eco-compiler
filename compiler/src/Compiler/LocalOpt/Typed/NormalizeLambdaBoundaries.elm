@@ -39,7 +39,8 @@ import Compiler.AST.Canonical as Can
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.Name as Name
 import Compiler.Reporting.Annotation as A
-import Data.Map as Dict exposing (Dict)
+import Data.Map
+import Dict exposing (Dict)
 
 
 
@@ -85,10 +86,9 @@ rebuildLambda kind params body funcType =
 
 
 {-| Mapping from original variable name to renamed variable name.
-Uses Data.Map with `identity` comparator since Name = String.
 -}
 type alias RenameEnv =
-    Dict String Name.Name Name.Name
+    Dict Name.Name Name.Name
 
 
 {-| Local state for alpha-renaming (unique suffix counter).
@@ -124,14 +124,14 @@ freshName base ctx =
 -}
 insertRename : Name.Name -> Name.Name -> RenameEnv -> RenameEnv
 insertRename oldName newName env =
-    Dict.insert identity oldName newName env
+    Dict.insert oldName newName env
 
 
 {-| Look up a name in the rename environment, returning original if not found.
 -}
 lookupRename : RenameEnv -> Name.Name -> Name.Name
 lookupRename env name =
-    case Dict.get identity name env of
+    case Dict.get name env of
         Just newName ->
             newName
 
@@ -258,13 +258,13 @@ renameExpr env expr =
             TOpt.Access (ren record) region fieldName tipe
 
         TOpt.Update region record fields tipe ->
-            TOpt.Update region (ren record) (Dict.map (\_ e -> ren e) fields) tipe
+            TOpt.Update region (ren record) (Data.Map.map (\_ e -> ren e) fields) tipe
 
         TOpt.Record fields tipe ->
             TOpt.Record (Dict.map (\_ e -> ren e) fields) tipe
 
         TOpt.TrackedRecord region fields tipe ->
-            TOpt.TrackedRecord region (Dict.map (\_ e -> ren e) fields) tipe
+            TOpt.TrackedRecord region (Data.Map.map (\_ e -> ren e) fields) tipe
 
         -- Other
         TOpt.Unit tipe ->
@@ -354,7 +354,7 @@ normalizeLocalGraph : TOpt.LocalGraph -> TOpt.LocalGraph
 normalizeLocalGraph (TOpt.LocalGraph data) =
     TOpt.LocalGraph
         { data
-            | nodes = Dict.map (\_ node -> normalizeNode node) data.nodes
+            | nodes = Data.Map.map (\_ node -> normalizeNode node) data.nodes
         }
 
 
@@ -468,12 +468,12 @@ normalizeExpr expr =
             TOpt.Record (Dict.map (\_ e -> normalizeExpr e) fields) recType
 
         TOpt.TrackedRecord region fields recType ->
-            TOpt.TrackedRecord region (Dict.map (\_ e -> normalizeExpr e) fields) recType
+            TOpt.TrackedRecord region (Data.Map.map (\_ e -> normalizeExpr e) fields) recType
 
         TOpt.Update region base updates updateType ->
             TOpt.Update region
                 (normalizeExpr base)
-                (Dict.map (\_ e -> normalizeExpr e) updates)
+                (Data.Map.map (\_ e -> normalizeExpr e) updates)
                 updateType
 
         TOpt.Access inner region name accessType ->

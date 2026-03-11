@@ -35,6 +35,7 @@ import Compiler.Type.Constrain.Typed.Program as Prog exposing (ProgS)
 import Compiler.Type.Instantiate as Instantiate
 import Compiler.Type.Type as Type exposing (Constraint(..), Type(..))
 import Data.Map as Dict exposing (Dict)
+import Dict as StdDict
 import System.TypeCheck.IO as IO exposing (IO)
 import Utils.Main as Utils
 
@@ -95,7 +96,7 @@ constrainDefWithIds rtv def bodyCon state =
             let
                 newNames : Dict String Name ()
                 newNames =
-                    Dict.diff freeVars rtv
+                    Dict.diff (Dict.fromList identity (StdDict.toList freeVars)) rtv
             in
             IO.traverseMapWithKey identity compare (\k _ -> Type.nameToRigid k) newNames
                 |> IO.andThen
@@ -194,7 +195,7 @@ recDefsHelpWithIds rtv defs bodyCon rigidInfo flexInfo state =
 
                         newNames : Dict String Name ()
                         newNames =
-                            Dict.diff freeVars rtv
+                            Dict.diff (Dict.fromList identity (StdDict.toList freeVars)) rtv
                     in
                     IO.traverseMapWithKey identity compare (\k _ -> Type.nameToRigid k) newNames
                         |> IO.andThen
@@ -1647,7 +1648,7 @@ constrainDefWithIdsProg rtv def bodyCon =
             let
                 newNames : Dict String Name ()
                 newNames =
-                    Dict.diff freeVars rtv
+                    Dict.diff (Dict.fromList identity (StdDict.toList freeVars)) rtv
             in
             Prog.opIOS (IO.traverseMapWithKey identity compare (\k _ -> Type.nameToRigid k) newNames)
                 |> Prog.andThenS
@@ -1757,7 +1758,7 @@ recDefsHelpWithIdsProg rtv defs bodyCon rigidInfo flexInfo =
 
                         newNames : Dict String Name ()
                         newNames =
-                            Dict.diff freeVars rtv
+                            Dict.diff (Dict.fromList identity (StdDict.toList freeVars)) rtv
                     in
                     Prog.opIOS (IO.traverseMapWithKey identity compare (\k _ -> Type.nameToRigid k) newNames)
                         |> Prog.andThenS

@@ -287,12 +287,12 @@ FUNCTION detectStaging(monoExpr):
 
 The GlobalOpt pass runs several phases:
 
-1. **Phase 0**: `MonoInlineSimplify` - Inline small functions
-2. **Phase 0.5**: `wrapTopLevelCallables` - Wrap bare kernel/global references
-3. **Phase 1**: `Staging.buildStagingGraph` - Build staging constraint graph
-4. **Phase 2**: `Staging.solveStagingGraph` - Solve for canonical segmentations
-5. **Phase 3**: `Staging.applyStagingSolution` - Rewrite closures to canonical form
-6. **Phase 4**: Annotate `CallInfo` metadata for MLIR codegen
+0. *(External)*: `MonoInlineSimplify` - Inline small functions (applied before GlobalOpt)
+1. **Phase 1**: `wrapTopLevelCallables` - Wrap bare kernel/global references in closures
+2. **Phase 2**: `Staging.analyzeAndSolveStaging` - Build staging graph, solve, and rewrite
+3. **Phase 3**: `Staging.validateClosureStaging` - Validate closure staging invariants
+4. **Phase 4**: `AbiCloning.abiCloningPass` - Clone functions for homogeneous closure ABIs
+5. **Phase 5**: `annotateCallStaging` - Annotate `CallInfo` metadata for MLIR codegen
 
 The staging subsystem in `compiler/src/Compiler/GlobalOpt/Staging/` handles the graph-based solving:
 

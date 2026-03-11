@@ -25,7 +25,9 @@ import SourceIR.FloatMathCases as FloatMathCases
 import SourceIR.FunctionCases as FunctionCases
 import SourceIR.HigherOrderCases as HigherOrderCases
 import SourceIR.JoinpointABICases as JoinpointABICases
+import SourceIR.KernelPapAbiCases as KernelPapAbiCases
 import SourceIR.LetCases as LetCases
+import SourceIR.LocalTailRecCases as LocalTailRecCases
 import SourceIR.LetDestructCases as LetDestructCases
 import SourceIR.LetRecCases as LetRecCases
 import SourceIR.ListCases as ListCases
@@ -35,9 +37,11 @@ import SourceIR.OperatorCases as OperatorCases
 import SourceIR.PatternArgCases as PatternArgCases
 import SourceIR.PatternComplexityFuzzCases as PatternComplexityFuzzCases
 import SourceIR.PatternMatchingCases as PatternMatchingCases
+import SourceIR.PolyEscapeCases as PolyEscapeCases
 import SourceIR.PortEncodingCases as PortEncodingCases
 import SourceIR.PostSolveExprCases as PostSolveExprCases
 import SourceIR.RecordCases as RecordCases
+import SourceIR.RecursiveTypeCases as RecursiveTypeCases
 import SourceIR.SpecializeAccessorCases as SpecializeAccessorCases
 import SourceIR.SpecializeConstructorCases as SpecializeConstructorCases
 import SourceIR.SpecializeRecordCtorCases as SpecializeRecordCtorCases
@@ -45,6 +49,7 @@ import SourceIR.SpecializeCycleCases as SpecializeCycleCases
 import SourceIR.SpecializeExprCases as SpecializeExprCases
 import SourceIR.SpecializePolyLetCases as SpecializePolyLetCases
 import SourceIR.SpecializePolyTopCases as SpecializePolyTopCases
+import SourceIR.TailRecCaseCases as TailRecCaseCases
 import SourceIR.TupleCases as TupleCases
 import Test exposing (Test)
 
@@ -76,9 +81,11 @@ expectSuite expectFn condStr =
         , OperatorCases.expectSuite expectFn condStr
         , PatternArgCases.expectSuite expectFn condStr
         , PatternMatchingCases.expectSuite expectFn condStr
+        , PolyEscapeCases.expectSuite expectFn condStr
         , PortEncodingCases.expectSuite expectFn condStr
         , PostSolveExprCases.expectSuite expectFn condStr
         , RecordCases.expectSuite expectFn condStr
+        , RecursiveTypeCases.expectSuite expectFn condStr
         , SpecializeAccessorCases.expectSuite expectFn condStr
         , SpecializeConstructorCases.expectSuite expectFn condStr
         , SpecializeRecordCtorCases.expectSuite expectFn condStr
@@ -86,7 +93,10 @@ expectSuite expectFn condStr =
         , SpecializeExprCases.expectSuite expectFn condStr
         , SpecializePolyLetCases.expectSuite expectFn condStr
         , SpecializePolyTopCases.expectSuite expectFn condStr
+        , LocalTailRecCases.expectSuite expectFn condStr
+        , TailRecCaseCases.expectSuite expectFn condStr
         , TupleCases.expectSuite expectFn condStr
+        , KernelPapAbiCases.expectSuite expectFn condStr
 
         -- Fuzz Tests
         , PatternComplexityFuzzCases.expectSuite expectFn condStr

@@ -36,7 +36,7 @@ has been moved to GlobalOpt.MonoGlobalOptimize as part of the staging consolidat
 import Compiler.AST.Monomorphized as Mono
 import Compiler.Data.Name exposing (Name)
 import Compiler.Reporting.Annotation as A
-import Data.Map as Dict exposing (Dict)
+import Dict exposing (Dict)
 import Data.Set as EverySet exposing (EverySet)
 import Utils.Crash
 
@@ -158,12 +158,12 @@ computeClosureCaptures params body =
         -- Collect a mapping from variable names to their actual types from the body.
         -- This allows us to use the correct type for each captured variable instead
         -- of a placeholder MUnit.
-        varTypeMap : Dict String String Mono.MonoType
+        varTypeMap : Dict String Mono.MonoType
         varTypeMap =
             collectVarTypes body
 
         captureFor name =
-            case Dict.get identity name varTypeMap of
+            case Dict.get name varTypeMap of
                 Just actualType ->
                     ( name, Mono.MonoVarLocal name actualType, False )
 
@@ -419,21 +419,21 @@ dedupeNames names =
 {-| Collect a mapping from variable names to their types from an expression.
 This walks the expression tree and records the type of each MonoVarLocal encountered.
 -}
-collectVarTypes : Mono.MonoExpr -> Dict String String Mono.MonoType
+collectVarTypes : Mono.MonoExpr -> Dict String Mono.MonoType
 collectVarTypes expr =
     collectVarTypesHelper expr Dict.empty
 
 
-collectVarTypesHelper : Mono.MonoExpr -> Dict String String Mono.MonoType -> Dict String String Mono.MonoType
+collectVarTypesHelper : Mono.MonoExpr -> Dict String Mono.MonoType -> Dict String Mono.MonoType
 collectVarTypesHelper expr acc =
     case expr of
         Mono.MonoVarLocal name monoType ->
             -- Only insert if not already present (keep first occurrence)
-            if Dict.member identity name acc then
+            if Dict.member name acc then
                 acc
 
             else
-                Dict.insert identity name monoType acc
+                Dict.insert name monoType acc
 
         Mono.MonoClosure _ body _ ->
             -- Recurse into closure body
@@ -502,15 +502,15 @@ collectVarTypesHelper expr acc =
             acc
 
 
-collectPathVarTypes : Mono.MonoPath -> Dict String String Mono.MonoType -> Dict String String Mono.MonoType
+collectPathVarTypes : Mono.MonoPath -> Dict String Mono.MonoType -> Dict String Mono.MonoType
 collectPathVarTypes path acc =
     case path of
         Mono.MonoRoot name monoType ->
-            if Dict.member identity name acc then
+            if Dict.member name acc then
                 acc
 
             else
-                Dict.insert identity name monoType acc
+                Dict.insert name monoType acc
 
         Mono.MonoIndex _ _ _ inner ->
             collectPathVarTypes inner acc
@@ -522,7 +522,7 @@ collectPathVarTypes path acc =
             collectPathVarTypes inner acc
 
 
-collectDeciderVarTypes : Mono.Decider Mono.MonoChoice -> Dict String String Mono.MonoType -> Dict String String Mono.MonoType
+collectDeciderVarTypes : Mono.Decider Mono.MonoChoice -> Dict String Mono.MonoType -> Dict String Mono.MonoType
 collectDeciderVarTypes decider acc =
     case decider of
         Mono.Leaf choice ->

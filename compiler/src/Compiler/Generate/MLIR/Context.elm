@@ -50,11 +50,12 @@ state during MLIR code generation.
 
 -}
 
+import Array exposing (Array)
 import Compiler.AST.Monomorphized as Mono
 import Compiler.Data.Name as Name
 import Compiler.Generate.Mode as Mode
-import Data.Map as EveryDict
 import Dict
+import Set
 import Compiler.Generate.MLIR.Types as Types
 import Mlir.Mlir exposing (MlirOp, MlirType)
 import Utils.Crash exposing (crash)
@@ -73,6 +74,7 @@ All staging/call-model decisions are now made in GlobalOpt and stored in Mono.Ca
 type alias FuncSignature =
     { paramTypes : List Mono.MonoType
     , returnType : Mono.MonoType
+    , evaluatorBoxesAll : Bool -- True for MonoExtern/MonoManagerLeaf: evaluator wrapper always has !eco.value params
     }
 
 
@@ -87,6 +89,7 @@ kernelFuncSignatureFromType funcType =
     in
     { paramTypes = argTypes
     , returnType = retType
+    , evaluatorBoxesAll = False
     }
 
 
@@ -221,6 +224,7 @@ type alias Context =
     , kernelDecls : Dict.Dict String ( List MlirType, MlirType ) -- Kernel function name -> (argTypes, returnType)
     , typeRegistry : TypeRegistry -- Type graph: MonoType -> TypeId for debug printing
     , decoderExprs : Dict.Dict String Mono.MonoExpr -- Cache of let-bound decoder expressions for BytesFusion
+    , externBoxedVars : Set.Set String -- Local vars that alias extern/kernel functions (evaluator has all !eco.value params)
     }
 
 
@@ -231,7 +235,7 @@ type alias TypeRegistry =
     { nextTypeId : Int
     , typeIds : Dict.Dict (List String) Int -- comparable key -> TypeId
     , typeInfos : List ( Int, Mono.MonoType ) -- List of (TypeId, MonoType) for building type table
-    , ctorShapes : EveryDict.Dict (List String) (List String) (List Mono.CtorShape) -- type key -> ctor shapes for custom types
+    , ctorShapes : Dict.Dict (List String) (List Mono.CtorShape) -- type key -> ctor shapes for custom types
     }
 
 
@@ -250,7 +254,7 @@ type alias PendingLambda =
 
 {-| Initialize a code generation context.
 -}
-initContext : Mode.Mode -> Mono.SpecializationRegistry -> Dict.Dict Int FuncSignature -> EveryDict.Dict (List String) (List String) (List Mono.CtorShape) -> Context
+initContext : Mode.Mode -> Mono.SpecializationRegistry -> Dict.Dict Int FuncSignature -> Dict.Dict (List String) (List Mono.CtorShape) -> Context
 initContext mode registry signatures initialCtorShapes =
     { nextVar = 0
     , nextOpId = 0
@@ -267,6 +271,7 @@ initContext mode registry signatures initialCtorShapes =
             | ctorShapes = initialCtorShapes
         }
     , decoderExprs = Dict.empty
+    , externBoxedVars = Set.empty
     }
 
 
@@ -277,7 +282,7 @@ emptyTypeRegistry =
     { nextTypeId = 0
     , typeIds = Dict.empty
     , typeInfos = []
-    , ctorShapes = EveryDict.empty
+    , ctorShapes = Dict.empty
     }
 
 
@@ -300,7 +305,7 @@ getOrCreateTypeIdForMonoType monoType ctx =
                     elementTypes
 
                 Mono.MRecord fields ->
-                    EveryDict.values compare fields
+                    Dict.values fields
 
                 Mono.MCustom _ _ args ->
                     -- Include type args and constructor field types
@@ -309,7 +314,7 @@ getOrCreateTypeIdForMonoType monoType ctx =
                             Mono.toComparableMonoType mt
 
                         ctorShapesForType =
-                            EveryDict.get identity customKey c.typeRegistry.ctorShapes
+                            Dict.get customKey c.typeRegistry.ctorShapes
                                 |> Maybe.withDefault []
 
                         fieldTypes =
@@ -344,6 +349,9 @@ getOrCreateTypeIdForMonoType monoType ctx =
                     []
 
                 Mono.MVar _ _ ->
+                    []
+
+                Mono.MErased ->
                     []
 
         -- Register a single type (assuming all nested types are already registered)
@@ -554,12 +562,14 @@ extractNodeSignature node =
                     Just
                         { paramTypes = List.map Tuple.second closureInfo.params
                         , returnType = extractedReturnType
+                        , evaluatorBoxesAll = False
                         }
 
                 _ ->
                     Just
                         { paramTypes = []
                         , returnType = monoType
+                        , evaluatorBoxesAll = False
                         }
 
         Mono.MonoTailFunc params _ monoType ->
@@ -575,18 +585,21 @@ extractNodeSignature node =
             Just
                 { paramTypes = List.map Tuple.second params
                 , returnType = returnType
+                , evaluatorBoxesAll = False
                 }
 
         Mono.MonoCtor ctorShape monoType ->
             Just
                 { paramTypes = ctorShape.fieldTypes
                 , returnType = monoType
+                , evaluatorBoxesAll = False
                 }
 
         Mono.MonoEnum _ monoType ->
             Just
                 { paramTypes = []
                 , returnType = monoType
+                , evaluatorBoxesAll = False
                 }
 
         Mono.MonoExtern monoType ->
@@ -599,6 +612,7 @@ extractNodeSignature node =
                     Just
                         { paramTypes = argMonoTypes
                         , returnType = resultMonoType
+                        , evaluatorBoxesAll = True
                         }
 
                 _ ->
@@ -614,6 +628,7 @@ extractNodeSignature node =
                     Just
                         { paramTypes = argMonoTypes
                         , returnType = resultMonoType
+                        , evaluatorBoxesAll = True
                         }
 
                 _ ->
@@ -634,12 +649,14 @@ extractNodeSignature node =
                     Just
                         { paramTypes = List.map Tuple.second closureInfo.params
                         , returnType = extractedReturnType
+                        , evaluatorBoxesAll = False
                         }
 
                 _ ->
                     Just
                         { paramTypes = []
                         , returnType = monoType
+                        , evaluatorBoxesAll = False
                         }
 
         Mono.MonoPortOutgoing expr monoType ->
@@ -657,34 +674,43 @@ extractNodeSignature node =
                     Just
                         { paramTypes = List.map Tuple.second closureInfo.params
                         , returnType = extractedReturnType
+                        , evaluatorBoxesAll = False
                         }
 
                 _ ->
                     Just
                         { paramTypes = []
                         , returnType = monoType
+                        , evaluatorBoxesAll = False
                         }
 
         Mono.MonoCycle _ monoType ->
             Just
                 { paramTypes = []
                 , returnType = monoType
+                , evaluatorBoxesAll = False
                 }
 
 
 {-| Build a map of SpecId -> FuncSignature from all nodes in the graph.
 Used for invariant checking at call sites.
 -}
-buildSignatures : EveryDict.Dict Int Int Mono.MonoNode -> Dict.Dict Int FuncSignature
+buildSignatures : Array (Maybe Mono.MonoNode) -> Dict.Dict Int FuncSignature
 buildSignatures nodes =
-    EveryDict.foldl compare
-        (\specId node acc ->
-            case extractNodeSignature node of
-                Just sig ->
-                    Dict.insert specId sig acc
+    Array.foldl
+        (\maybeNode ( specId, acc ) ->
+            case maybeNode of
+                Just node ->
+                    case extractNodeSignature node of
+                        Just sig ->
+                            ( specId + 1, Dict.insert specId sig acc )
+
+                        Nothing ->
+                            ( specId + 1, acc )
 
                 Nothing ->
-                    acc
+                    ( specId + 1, acc )
         )
-        Dict.empty
+        ( 0, Dict.empty )
         nodes
+        |> Tuple.second

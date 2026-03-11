@@ -15,18 +15,20 @@ plus a `kernelEnv` for typed optimization.
 
 -}
 
+import Array exposing (Array)
 import Compiler.AST.Canonical as Can
 import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Reporting.Annotation as A
 import Compiler.Type.KernelTypes as KernelTypes
-import Data.Map as Dict exposing (Dict)
+import Data.Map
+import Dict exposing (Dict)
 
 
 {-| Node types mapping expression/pattern ID to canonical type.
 -}
 type alias NodeTypes =
-    Dict Int Int Can.Type
+    Array (Maybe Can.Type)
 
 
 {-| Run the post-solve phase on a canonical module.
@@ -44,7 +46,7 @@ Returns:
 
 -}
 postSolve :
-    Dict String Name Can.Annotation
+    Data.Map.Dict String Name Can.Annotation
     -> Can.Module
     -> NodeTypes
     ->
@@ -79,15 +81,15 @@ and inserts it into the kernel environment.
 
 -}
 seedKernelAliases :
-    Dict String Name Can.Annotation
+    Data.Map.Dict String Name Can.Annotation
     -> Can.Decls
     -> KernelTypes.KernelTypeEnv
 seedKernelAliases annotations decls =
-    seedKernelAliasesHelp annotations decls Dict.empty
+    seedKernelAliasesHelp annotations decls Data.Map.empty
 
 
 seedKernelAliasesHelp :
-    Dict String Name Can.Annotation
+    Data.Map.Dict String Name Can.Annotation
     -> Can.Decls
     -> KernelTypes.KernelTypeEnv
     -> KernelTypes.KernelTypeEnv
@@ -111,7 +113,7 @@ seedKernelAliasesHelp annotations decls env =
 
 
 checkDefForAlias :
-    Dict String Name Can.Annotation
+    Data.Map.Dict String Name Can.Annotation
     -> Can.Def
     -> KernelTypes.KernelTypeEnv
     -> KernelTypes.KernelTypeEnv
@@ -145,7 +147,7 @@ checkDefForAlias annotations def env =
 
 
 checkKernelAliasBody :
-    Dict String Name Can.Annotation
+    Data.Map.Dict String Name Can.Annotation
     -> Name
     -> Can.Expr
     -> KernelTypes.KernelTypeEnv
@@ -153,7 +155,7 @@ checkKernelAliasBody :
 checkKernelAliasBody annotations defName (A.At _ exprInfo) env =
     case exprInfo.node of
         Can.VarKernel home kernelName ->
-            case Dict.get Basics.identity defName annotations of
+            case Data.Map.get Basics.identity defName annotations of
                 Just (Can.Forall _ tipe) ->
                     KernelTypes.insertFirstUsage home kernelName tipe env
 
@@ -171,7 +173,7 @@ checkKernelAliasBody annotations defName (A.At _ exprInfo) env =
 {-| Walk declarations, fixing expression types and inferring kernel types.
 -}
 postSolveDecls :
-    Dict String Name Can.Annotation
+    Data.Map.Dict String Name Can.Annotation
     -> Can.Decls
     -> NodeTypes
     -> KernelTypes.KernelTypeEnv
@@ -205,7 +207,7 @@ postSolveDecls annotations decls nodeTypes0 kernel0 =
 {-| Walk a definition, processing its body expression.
 -}
 postSolveDef :
-    Dict String Name Can.Annotation
+    Data.Map.Dict String Name Can.Annotation
     -> Can.Def
     -> NodeTypes
     -> KernelTypes.KernelTypeEnv
@@ -232,7 +234,7 @@ postSolveDef annotations def nodeTypes0 kernel0 =
                     in
                     case bodyInfo.node of
                         Can.VarKernel _ _ ->
-                            ( Dict.insert Basics.identity bodyInfo.id resultType nodeTypes0
+                            ( arraySetJust bodyInfo.id resultType nodeTypes0
                             , kernel0
                             )
 
@@ -348,7 +350,7 @@ For Call with VarKernel callee: we also infer the kernel type from usage.
 
 -}
 postSolveExpr :
-    Dict String Name Can.Annotation
+    Data.Map.Dict String Name Can.Annotation
     -> Can.Expr
     -> NodeTypes
     -> KernelTypes.KernelTypeEnv
@@ -391,7 +393,7 @@ postSolveExpr annotations (A.At _ exprInfo) nodeTypes0 kernel0 =
                     -- Type known: update nodeTypes with the kernel type
                     let
                         nodeTypes1 =
-                            Dict.insert Basics.identity exprId kernelType nodeTypes0
+                            arraySetJust exprId kernelType nodeTypes0
                     in
                     ( nodeTypes1, kernel0 )
 
@@ -408,7 +410,7 @@ postSolveExpr annotations (A.At _ exprInfo) nodeTypes0 kernel0 =
                     Can.TType ModuleName.string Name.string []
 
                 nodeTypes1 =
-                    Dict.insert Basics.identity exprId strType nodeTypes0
+                    arraySetJust exprId strType nodeTypes0
             in
             ( nodeTypes1, kernel0 )
 
@@ -418,7 +420,7 @@ postSolveExpr annotations (A.At _ exprInfo) nodeTypes0 kernel0 =
                     Can.TType ModuleName.char Name.char []
 
                 nodeTypes1 =
-                    Dict.insert Basics.identity exprId chrType nodeTypes0
+                    arraySetJust exprId chrType nodeTypes0
             in
             ( nodeTypes1, kernel0 )
 
@@ -428,14 +430,14 @@ postSolveExpr annotations (A.At _ exprInfo) nodeTypes0 kernel0 =
                     Can.TType ModuleName.basics Name.float []
 
                 nodeTypes1 =
-                    Dict.insert Basics.identity exprId floatType nodeTypes0
+                    arraySetJust exprId floatType nodeTypes0
             in
             ( nodeTypes1, kernel0 )
 
         Can.Unit ->
             let
                 nodeTypes1 =
-                    Dict.insert Basics.identity exprId Can.TUnit nodeTypes0
+                    arraySetJust exprId Can.TUnit nodeTypes0
             in
             ( nodeTypes1, kernel0 )
 
@@ -527,7 +529,7 @@ postSolveLetType :
     -> ( NodeTypes, KernelTypes.KernelTypeEnv )
 postSolveLetType exprId body nodeTypes0 kernel0 =
     -- Check if solver already resolved the type for this let expression
-    case Dict.get Basics.identity exprId nodeTypes0 of
+    case arrayGetFlat exprId nodeTypes0 of
         Just _ ->
             -- Solver already resolved the type, trust it
             ( nodeTypes0, kernel0 )
@@ -538,11 +540,11 @@ postSolveLetType exprId body nodeTypes0 kernel0 =
                 bodyType =
                     case body of
                         A.At _ info ->
-                            Dict.get Basics.identity info.id nodeTypes0
+                            arrayGetFlat info.id nodeTypes0
                                 |> Maybe.withDefault (Can.TVar "a")
 
                 nodeTypes1 =
-                    Dict.insert Basics.identity exprId bodyType nodeTypes0
+                    arraySetJust exprId bodyType nodeTypes0
             in
             ( nodeTypes1, kernel0 )
 
@@ -556,7 +558,7 @@ then update both kernelEnv and the VarKernel node's type in nodeTypes.
 
 -}
 postSolveCall :
-    Dict String Name Can.Annotation
+    Data.Map.Dict String Name Can.Annotation
     -> Int
     -> Can.Expr
     -> List Can.Expr
@@ -584,14 +586,14 @@ postSolveCall annotations exprId func args nodeTypes0 kernel0 =
                                 (\arg ->
                                     case arg of
                                         A.At _ info ->
-                                            Dict.get Basics.identity info.id nodeTypes1
+                                            arrayGetFlat info.id nodeTypes1
                                                 |> Maybe.withDefault (Can.TVar "a")
                                 )
                                 args
 
                         -- The call's result type is already in nodeTypes from solver (Group A)
                         callResultType =
-                            Dict.get Basics.identity exprId nodeTypes1
+                            arrayGetFlat exprId nodeTypes1
                                 |> Maybe.withDefault (Can.TVar "result")
 
                         -- Build the full function type for this kernel
@@ -614,7 +616,7 @@ postSolveCall annotations exprId func args nodeTypes0 kernel0 =
                                     candidateType
 
                         nodeTypes2 =
-                            Dict.insert Basics.identity funcInfo.id kernelNodeType nodeTypes1
+                            arraySetJust funcInfo.id kernelNodeType nodeTypes1
 
                         -- Propagate types to VarKernel arguments:
                         -- Peel the callee's function type to get expected arg types,
@@ -656,7 +658,7 @@ postSolveCall annotations exprId func args nodeTypes0 kernel0 =
 {-| Handle If expression (Group A - trust solver's type).
 -}
 postSolveIf :
-    Dict String Name Can.Annotation
+    Data.Map.Dict String Name Can.Annotation
     -> List ( Can.Expr, Can.Expr )
     -> Can.Expr
     -> NodeTypes
@@ -687,7 +689,7 @@ determine the expected types for left and right operands.
 
 -}
 postSolveBinop :
-    Dict String Name Can.Annotation
+    Data.Map.Dict String Name Can.Annotation
     -> Can.Annotation
     -> Can.Expr
     -> Can.Expr
@@ -774,7 +776,7 @@ inferBinopKernelType operand expectedType nodeTypes kernel =
                                 KernelTypes.insertFirstUsage home name expectedType kernel
 
                             nt2 =
-                                Dict.insert Basics.identity exprInfo.id expectedType nodeTypes
+                                arraySetJust exprInfo.id expectedType nodeTypes
                         in
                         ( nt2, ke2 )
 
@@ -790,7 +792,7 @@ case expression, a VarKernel branch body has the case's result type.
 
 -}
 postSolveCase :
-    Dict String Name Can.Annotation
+    Data.Map.Dict String Name Can.Annotation
     -> Int
     -> Can.Expr
     -> List Can.CaseBranch
@@ -804,7 +806,7 @@ postSolveCase annotations caseExprId scrutinee branches nodeTypes0 kernel0 =
 
         -- Get case result type (all branches have this type)
         caseResultType =
-            Dict.get Basics.identity caseExprId nt1
+            arrayGetFlat caseExprId nt1
                 |> Maybe.withDefault (Can.TVar "a")
 
         stepBranch (Can.CaseBranch pat branchExpr) ( nt, ke ) =
@@ -849,7 +851,7 @@ inferBranchKernelType branchExpr expectedType nodeTypes kernel =
                                 KernelTypes.insertFirstUsage home name expectedType kernel
 
                             nt2 =
-                                Dict.insert Basics.identity exprInfo.id expectedType nodeTypes
+                                arraySetJust exprInfo.id expectedType nodeTypes
                         in
                         ( nt2, ke2 )
 
@@ -860,9 +862,9 @@ inferBranchKernelType branchExpr expectedType nodeTypes kernel =
 {-| Handle Update expression (Group A - trust solver's type).
 -}
 postSolveUpdate :
-    Dict String Name Can.Annotation
+    Data.Map.Dict String Name Can.Annotation
     -> Can.Expr
-    -> Dict String (A.Located Name) Can.FieldUpdate
+    -> Data.Map.Dict String (A.Located Name) Can.FieldUpdate
     -> NodeTypes
     -> KernelTypes.KernelTypeEnv
     -> ( NodeTypes, KernelTypes.KernelTypeEnv )
@@ -872,7 +874,7 @@ postSolveUpdate annotations record fields nodeTypes0 kernel0 =
             postSolveExpr annotations record nodeTypes0 kernel0
 
         fieldList =
-            Dict.toList A.compareLocated fields
+            Data.Map.toList A.compareLocated fields
     in
     List.foldl
         (\( _, Can.FieldUpdate _ fieldExpr ) ( nt, ke ) ->
@@ -885,7 +887,7 @@ postSolveUpdate annotations record fields nodeTypes0 kernel0 =
 {-| Handle List expression (Group B).
 -}
 postSolveList :
-    Dict String Name Can.Annotation
+    Data.Map.Dict String Name Can.Annotation
     -> Int
     -> List Can.Expr
     -> NodeTypes
@@ -903,7 +905,7 @@ postSolveList annotations exprId elems nodeTypes0 kernel0 =
         -- Check if solver already resolved the type for this list expression
         -- If so, trust that type rather than computing a new one
         existingType =
-            Dict.get Basics.identity exprId nodeTypes1
+            arrayGetFlat exprId nodeTypes1
     in
     case existingType of
         Just _ ->
@@ -922,14 +924,14 @@ postSolveList annotations exprId elems nodeTypes0 kernel0 =
 
                         (A.At _ info) :: _ ->
                             -- Non-empty: use first element's type
-                            Dict.get Basics.identity info.id nodeTypes1
+                            arrayGetFlat info.id nodeTypes1
                                 |> Maybe.withDefault (Can.TVar "a")
 
                 listType =
                     Can.TType ModuleName.list Name.list [ elemType ]
 
                 nodeTypes2 =
-                    Dict.insert Basics.identity exprId listType nodeTypes1
+                    arraySetJust exprId listType nodeTypes1
             in
             ( nodeTypes2, kernel1 )
 
@@ -937,7 +939,7 @@ postSolveList annotations exprId elems nodeTypes0 kernel0 =
 {-| Handle Tuple expression (Group B).
 -}
 postSolveTuple :
-    Dict String Name Can.Annotation
+    Data.Map.Dict String Name Can.Annotation
     -> Int
     -> Can.Expr
     -> Can.Expr
@@ -961,7 +963,7 @@ postSolveTuple annotations exprId a b cs nodeTypes0 kernel0 =
                 cs
     in
     -- Check if solver already resolved the type for this tuple expression
-    case Dict.get Basics.identity exprId nt3 of
+    case arrayGetFlat exprId nt3 of
         Just _ ->
             -- Solver already resolved the type, trust it
             ( nt3, ke3 )
@@ -973,7 +975,7 @@ postSolveTuple annotations exprId a b cs nodeTypes0 kernel0 =
                 getType expr nt =
                     case expr of
                         A.At _ info ->
-                            Dict.get Basics.identity info.id nt
+                            arrayGetFlat info.id nt
                                 |> Maybe.withDefault (Can.TVar "a")
 
                 aType =
@@ -989,7 +991,7 @@ postSolveTuple annotations exprId a b cs nodeTypes0 kernel0 =
                     Can.TTuple aType bType csTypes
 
                 nodeTypes4 =
-                    Dict.insert Basics.identity exprId tupleType nt3
+                    arraySetJust exprId tupleType nt3
             in
             ( nodeTypes4, ke3 )
 
@@ -997,16 +999,16 @@ postSolveTuple annotations exprId a b cs nodeTypes0 kernel0 =
 {-| Handle Record expression (Group B).
 -}
 postSolveRecord :
-    Dict String Name Can.Annotation
+    Data.Map.Dict String Name Can.Annotation
     -> Int
-    -> Dict String (A.Located Name) Can.Expr
+    -> Data.Map.Dict String (A.Located Name) Can.Expr
     -> NodeTypes
     -> KernelTypes.KernelTypeEnv
     -> ( NodeTypes, KernelTypes.KernelTypeEnv )
 postSolveRecord annotations exprId fields nodeTypes0 kernel0 =
     let
         fieldList =
-            Dict.toList A.compareLocated fields
+            Data.Map.toList A.compareLocated fields
 
         -- Recurse into all field expressions
         ( nodeTypes1, kernel1 ) =
@@ -1018,7 +1020,7 @@ postSolveRecord annotations exprId fields nodeTypes0 kernel0 =
                 fieldList
     in
     -- Check if solver already resolved the type for this record expression
-    case Dict.get Basics.identity exprId nodeTypes1 of
+    case arrayGetFlat exprId nodeTypes1 of
         Just _ ->
             -- Solver already resolved the type, trust it
             ( nodeTypes1, kernel1 )
@@ -1037,10 +1039,10 @@ postSolveRecord annotations exprId fields nodeTypes0 kernel0 =
                                 tipe =
                                     case fieldExpr of
                                         A.At _ info ->
-                                            Dict.get Basics.identity info.id nodeTypes1
+                                            arrayGetFlat info.id nodeTypes1
                                                 |> Maybe.withDefault (Can.TVar "a")
                             in
-                            Dict.insert Basics.identity name (Can.FieldType 0 tipe) acc
+                            Dict.insert name (Can.FieldType 0 tipe) acc
                         )
                         Dict.empty
                         fieldList
@@ -1049,7 +1051,7 @@ postSolveRecord annotations exprId fields nodeTypes0 kernel0 =
                     Can.TRecord fieldTypes Nothing
 
                 nodeTypes2 =
-                    Dict.insert Basics.identity exprId recordType nodeTypes1
+                    arraySetJust exprId recordType nodeTypes1
             in
             ( nodeTypes2, kernel1 )
 
@@ -1057,7 +1059,7 @@ postSolveRecord annotations exprId fields nodeTypes0 kernel0 =
 {-| Handle Lambda expression (Group B).
 -}
 postSolveLambda :
-    Dict String Name Can.Annotation
+    Data.Map.Dict String Name Can.Annotation
     -> Int
     -> List Can.Pattern
     -> Can.Expr
@@ -1074,7 +1076,7 @@ postSolveLambda annotations exprId args body nodeTypes0 kernel0 =
             postSolveExpr annotations body nodeTypes1 kernel1
     in
     -- Check if solver already resolved the type for this lambda expression
-    case Dict.get Basics.identity exprId nodeTypes2 of
+    case arrayGetFlat exprId nodeTypes2 of
         Just _ ->
             -- Solver already resolved the type, trust it
             ( nodeTypes2, kernel2 )
@@ -1088,7 +1090,7 @@ postSolveLambda annotations exprId args body nodeTypes0 kernel0 =
                         (\pat ->
                             case pat of
                                 A.At _ info ->
-                                    Dict.get Basics.identity info.id nodeTypes2
+                                    arrayGetFlat info.id nodeTypes2
                                         |> Maybe.withDefault (Can.TVar "a")
                         )
                         args
@@ -1097,7 +1099,7 @@ postSolveLambda annotations exprId args body nodeTypes0 kernel0 =
                 bodyType =
                     case body of
                         A.At _ info ->
-                            Dict.get Basics.identity info.id nodeTypes2
+                            arrayGetFlat info.id nodeTypes2
                                 |> Maybe.withDefault (Can.TVar "b")
 
                 -- Build function type: arg1 -> arg2 -> ... -> bodyType
@@ -1105,7 +1107,7 @@ postSolveLambda annotations exprId args body nodeTypes0 kernel0 =
                     List.foldr Can.TLambda bodyType argTypes
 
                 nodeTypes3 =
-                    Dict.insert Basics.identity exprId funcType nodeTypes2
+                    arraySetJust exprId funcType nodeTypes2
             in
             ( nodeTypes3, kernel2 )
 
@@ -1116,7 +1118,7 @@ An accessor like `.field` has type `{ ext | field : a } -> a`.
 
 -}
 postSolveAccessor :
-    Dict String Name Can.Annotation
+    Data.Map.Dict String Name Can.Annotation
     -> Int
     -> Name
     -> NodeTypes
@@ -1124,7 +1126,7 @@ postSolveAccessor :
     -> ( NodeTypes, KernelTypes.KernelTypeEnv )
 postSolveAccessor _ exprId field nodeTypes0 kernel0 =
     -- Check if solver already resolved the type for this accessor expression
-    case Dict.get Basics.identity exprId nodeTypes0 of
+    case arrayGetFlat exprId nodeTypes0 of
         Just _ ->
             -- Solver already resolved the type, trust it
             ( nodeTypes0, kernel0 )
@@ -1138,14 +1140,14 @@ postSolveAccessor _ exprId field nodeTypes0 kernel0 =
 
                 recordType =
                     Can.TRecord
-                        (Dict.singleton Basics.identity field (Can.FieldType 0 fieldType))
+                        (Dict.singleton field (Can.FieldType 0 fieldType))
                         (Just "ext")
 
                 accessorType =
                     Can.TLambda recordType fieldType
 
                 nodeTypes1 =
-                    Dict.insert Basics.identity exprId accessorType nodeTypes0
+                    arraySetJust exprId accessorType nodeTypes0
             in
             ( nodeTypes1, kernel0 )
 
@@ -1212,7 +1214,7 @@ propagateKernelArgTypes args expectedTypes nodeTypes0 kernel0 =
                                         KernelTypes.insertFirstUsage argHome argName expectedType ke
 
                                     nt2 =
-                                        Dict.insert Basics.identity argInfo.id expectedType nt
+                                        arraySetJust argInfo.id expectedType nt
                                 in
                                 ( nt2, ke2 )
 
@@ -1226,7 +1228,7 @@ propagateKernelArgTypes args expectedTypes nodeTypes0 kernel0 =
 {-| Type variable substitution map.
 -}
 type alias Subst =
-    Dict String Name Can.Type
+    Data.Map.Dict String Name Can.Type
 
 
 {-| Unify a scheme type (with TVars) against a concrete type to extract substitutions.
@@ -1237,16 +1239,16 @@ parts of the concrete type. Returns Nothing if types are incompatible.
 -}
 unifySchemeToType : Can.Type -> Can.Type -> Maybe Subst
 unifySchemeToType scheme concrete =
-    unifyHelp Dict.empty scheme concrete
+    unifyHelp Data.Map.empty scheme concrete
 
 
 unifyHelp : Subst -> Can.Type -> Can.Type -> Maybe Subst
 unifyHelp subst schemeType concreteType =
     case ( schemeType, concreteType ) of
         ( Can.TVar v, t ) ->
-            case Dict.get Basics.identity v subst of
+            case Data.Map.get Basics.identity v subst of
                 Nothing ->
-                    Just (Dict.insert Basics.identity v t subst)
+                    Just (Data.Map.insert Basics.identity v t subst)
 
                 Just existing ->
                     if existing == t then
@@ -1296,10 +1298,10 @@ unifyHelp subst schemeType concreteType =
             if ext1 == ext2 then
                 let
                     fieldList1 =
-                        Dict.toList compare fields1
+                        Dict.toList fields1
 
                     fieldList2 =
-                        Dict.toList compare fields2
+                        Dict.toList fields2
                 in
                 if List.length fieldList1 == List.length fieldList2 then
                     unifyFieldList subst fieldList1 fieldList2
@@ -1371,7 +1373,7 @@ applySubst : Subst -> Can.Type -> Can.Type
 applySubst subst tipe =
     case tipe of
         Can.TVar v ->
-            Dict.get Basics.identity v subst
+            Data.Map.get Basics.identity v subst
                 |> Maybe.withDefault tipe
 
         Can.TType home name args ->
@@ -1434,7 +1436,7 @@ result type to get substitutions, then use those to infer kernel argument types.
 
 -}
 postSolveCallWithCtorKernelArgs :
-    Dict String Name Can.Annotation
+    Data.Map.Dict String Name Can.Annotation
     -> Int
     -> Can.Annotation
     -> Can.Expr
@@ -1454,7 +1456,7 @@ postSolveCallWithCtorKernelArgs annotations exprId ctorAnnotation funcExpr args 
 
         -- Get the call's result type from nodeTypes (Group A - solver computed it)
         maybeCallType =
-            Dict.get Basics.identity exprId nodeTypes0
+            arrayGetFlat exprId nodeTypes0
 
         -- Try to compute substitution from unifying ctor result with call result
         maybeSubst =
@@ -1485,7 +1487,7 @@ postSolveCallWithCtorKernelArgs annotations exprId ctorAnnotation funcExpr args 
 {-| Process constructor arguments, inferring types for any VarKernel args.
 -}
 processCtorArgs :
-    Dict String Name Can.Annotation
+    Data.Map.Dict String Name Can.Annotation
     -> Subst
     -> List Can.Type
     -> List Can.Expr
@@ -1522,7 +1524,7 @@ processCtorArgs annotations subst ctorArgTypes args funcExpr nodeTypes0 kernel0 
                                                 KernelTypes.insertFirstUsage home name kernelType ke
 
                                             nt2 =
-                                                Dict.insert Basics.identity argInfo.id kernelType nt
+                                                arraySetJust argInfo.id kernelType nt
                                         in
                                         ( nt2, ke2 )
 
@@ -1540,3 +1542,17 @@ processCtorArgs annotations subst ctorArgTypes args funcExpr nodeTypes0 kernel0 
                 ++ List.map (\arg -> ( arg, Nothing )) (List.drop (List.length ctorArgTypes) args)
     in
     List.foldl processArg ( nodeTypes1, kernel1 ) argsWithTypes
+
+
+
+-- ====== Array Helpers ======
+
+
+arraySetJust : Int -> Can.Type -> NodeTypes -> NodeTypes
+arraySetJust id tipe nodeTypes =
+    Array.set id (Just tipe) nodeTypes
+
+
+arrayGetFlat : Int -> NodeTypes -> Maybe Can.Type
+arrayGetFlat id nodeTypes =
+    Array.get id nodeTypes |> Maybe.andThen identity

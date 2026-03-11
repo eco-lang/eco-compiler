@@ -1,7 +1,8 @@
 module Compiler.Monomorphize.TypeSubst exposing
     ( applySubst
     , canTypeToMonoType
-    , unify, unifyFuncCall, extractParamTypes
+    , fillUnconstrainedCEcoWithErased
+    , unify, unifyExtend, unifyFuncCall, unifyArgsOnly, extractParamTypes
     )
 
 {-| Type substitution and unification for monomorphization.
@@ -22,7 +23,7 @@ by applying type variable substitutions.
 
 # Unification
 
-@docs unify, unifyFuncCall, extractParamTypes
+@docs unify, unifyExtend, unifyFuncCall, extractParamTypes
 
 -}
 
@@ -30,30 +31,57 @@ import Compiler.AST.Canonical as Can
 import Compiler.AST.Monomorphized as Mono
 import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Monomorphize.State exposing (Substitution)
-import Data.Map as Dict
+import Data.Map
+import Dict
+import Set exposing (Set)
 import System.TypeCheck.IO as IO
 
 
 {-| Unify a function call by matching argument types and result type.
+Returns the updated substitution and the renamed function canonical type
+(with callee type variables renamed to avoid collisions with caller vars).
 -}
 unifyFuncCall :
     Can.Type
     -> List Mono.MonoType
     -> Can.Type
     -> Substitution
-    -> Substitution
+    -> ( Substitution, Can.Type )
 unifyFuncCall funcCanType argMonoTypes resultCanType baseSubst =
     let
+        -- Vars from the caller's context (existing substitution bindings)
+        callerVarNames =
+            Dict.keys baseSubst
+
+        -- Vars appearing in the callee's canonical type
+        funcVarNames =
+            collectCanTypeVars funcCanType []
+
+        renameMap =
+            buildRenameMap callerVarNames funcVarNames Data.Map.empty 0
+
+        funcCanTypeRenamed =
+            renameCanTypeVars renameMap funcCanType
+
+        resultCanTypeRenamed =
+            renameCanTypeVars renameMap resultCanType
+
         subst1 =
-            unifyArgsOnly funcCanType argMonoTypes baseSubst
+            unifyArgsOnly funcCanTypeRenamed argMonoTypes baseSubst
 
         desiredResultMono =
-            applySubst subst1 resultCanType
+            applySubst subst1 resultCanTypeRenamed
+
+        -- Resolve MVars in arg types through subst1 to avoid re-introducing
+        -- unresolved MVars that would overwrite correct bindings during the
+        -- final unification step.
+        resolvedArgTypes =
+            List.map (resolveMonoVars subst1) argMonoTypes
 
         desiredFuncMono =
-            Mono.MFunction argMonoTypes desiredResultMono
+            Mono.MFunction resolvedArgTypes desiredResultMono
     in
-    unifyHelp funcCanType desiredFuncMono subst1
+    ( unifyHelp funcCanTypeRenamed desiredFuncMono subst1, funcCanTypeRenamed )
 
 
 {-| Unify a canonical type with a monomorphic type to produce a substitution for type variables.
@@ -63,13 +91,42 @@ unify canType monoType =
     unifyHelp canType monoType Dict.empty
 
 
+{-| Extend an existing substitution by unifying a canonical type with a monomorphic type.
+Like `unify`, but starts from `baseSubst` instead of an empty substitution.
+-}
+unifyExtend : Can.Type -> Mono.MonoType -> Substitution -> Substitution
+unifyExtend canType monoType baseSubst =
+    unifyHelp canType monoType baseSubst
+
+
 {-| Helper for unification that extends an existing substitution.
 -}
 unifyHelp : Can.Type -> Mono.MonoType -> Substitution -> Substitution
 unifyHelp canType monoType subst =
     case ( canType, monoType ) of
         ( Can.TVar name, _ ) ->
-            Dict.insert identity name monoType subst
+            let
+                isSelfRef =
+                    case monoType of
+                        Mono.MVar mName _ ->
+                            mName == name
+
+                        _ ->
+                            False
+            in
+            if isSelfRef then
+                subst
+
+            else
+                case Dict.get name subst of
+                    Just existingMono ->
+                        -- Already bound: insert the new binding and also propagate
+                        -- any transitive MVar connections from the old value.
+                        unifyMonoMono existingMono monoType
+                            (Dict.insert name monoType subst)
+
+                    Nothing ->
+                        Dict.insert name monoType subst
 
         -- Handle primitive types from elm/core that map to specialized MonoTypes
         ( Can.TType (IO.Canonical ( "elm", "core" ) "Basics") "Int" [], Mono.MInt ) ->
@@ -123,9 +180,9 @@ unifyHelp canType monoType subst =
             let
                 -- First unify matching fields
                 substWithFields =
-                    Dict.foldl compare
+                    Dict.foldl
                         (\fieldName monoFieldType s ->
-                            case Dict.get identity fieldName fields of
+                            case Dict.get fieldName fields of
                                 Just (Can.FieldType _ fieldType) ->
                                     unifyHelp fieldType monoFieldType s
 
@@ -141,10 +198,10 @@ unifyHelp canType monoType subst =
                         -- Fields in monoFields that are not in the canonical record
                         remainingFields =
                             Dict.filter
-                                (\fieldName _ -> Dict.get identity fieldName fields == Nothing)
+                                (\fieldName _ -> Dict.get fieldName fields == Nothing)
                                 monoFields
                     in
-                    Dict.insert identity extName (Mono.MRecord remainingFields) substWithFields
+                    Dict.insert extName (Mono.MRecord remainingFields) substWithFields
 
                 Nothing ->
                     substWithFields
@@ -175,6 +232,53 @@ unifyHelp canType monoType subst =
                         args
             in
             unifyHelp inner monoType argSubst
+
+        _ ->
+            subst
+
+
+{-| Propagate transitive bindings between two MonoTypes.
+
+When a type variable is re-bound from one MonoType to another,
+this function ensures that any MVar references in the old binding
+get transitively resolved. For example, if `c` was bound to `MVar "a"`
+and is now bound to `MInt`, this adds `a → MInt` to the substitution.
+
+-}
+unifyMonoMono : Mono.MonoType -> Mono.MonoType -> Substitution -> Substitution
+unifyMonoMono m1 m2 subst =
+    case ( m1, m2 ) of
+        ( Mono.MVar name1 _, Mono.MVar name2 _ ) ->
+            if name1 == name2 then
+                subst
+            else
+                -- Bind the first to the second
+                Dict.insert name1 m2 subst
+
+        ( Mono.MVar name _, _ ) ->
+            Dict.insert name m2 subst
+
+        ( _, Mono.MVar name _ ) ->
+            Dict.insert name m1 subst
+
+        ( Mono.MFunction args1 ret1, Mono.MFunction args2 ret2 ) ->
+            let
+                substWithArgs =
+                    List.foldl
+                        (\( a1, a2 ) s -> unifyMonoMono a1 a2 s)
+                        subst
+                        (List.map2 Tuple.pair args1 args2)
+            in
+            unifyMonoMono ret1 ret2 substWithArgs
+
+        ( Mono.MList inner1, Mono.MList inner2 ) ->
+            unifyMonoMono inner1 inner2 subst
+
+        ( Mono.MCustom _ _ args1, Mono.MCustom _ _ args2 ) ->
+            List.foldl
+                (\( a1, a2 ) s -> unifyMonoMono a1 a2 s)
+                subst
+                (List.map2 Tuple.pair args1 args2)
 
         _ ->
             subst
@@ -218,6 +322,185 @@ extractParamTypes monoType =
             []
 
 
+{-| Resolve MVar references in a MonoType using a substitution.
+When a MonoType contains MVar "a" CEcoValue, and the substitution maps "a" → MInt,
+replace the MVar with MInt. This prevents stale MVars from overwriting correct
+bindings during subsequent unification steps.
+-}
+resolveMonoVars : Substitution -> Mono.MonoType -> Mono.MonoType
+resolveMonoVars subst monoType =
+    resolveMonoVarsHelp Set.empty subst monoType
+
+
+{-| Resolve MVars in a MonoType using a substitution, tracking which MVar names
+are currently being expanded to detect indirect cycles through recursive types
+(e.g. Array's Node -> Tree -> JsArray (Node a) cycle).
+-}
+resolveMonoVarsHelp : Set Name -> Substitution -> Mono.MonoType -> Mono.MonoType
+resolveMonoVarsHelp visiting subst monoType =
+    case monoType of
+        Mono.MVar name _ ->
+            if Set.member name visiting then
+                -- Cycle detected: this MVar is already being expanded up the call stack
+                monoType
+
+            else
+                case Dict.get name subst of
+                    Just resolved ->
+                        resolveMonoVarsHelp (Set.insert name visiting) subst resolved
+
+                    Nothing ->
+                        monoType
+
+        Mono.MFunction args ret ->
+            Mono.MFunction (List.map (resolveMonoVarsHelp visiting subst) args) (resolveMonoVarsHelp visiting subst ret)
+
+        Mono.MList inner ->
+            Mono.MList (resolveMonoVarsHelp visiting subst inner)
+
+        Mono.MTuple elems ->
+            Mono.MTuple (List.map (resolveMonoVarsHelp visiting subst) elems)
+
+        Mono.MRecord fields ->
+            Mono.MRecord (Dict.map (\_ t -> resolveMonoVarsHelp visiting subst t) fields)
+
+        Mono.MCustom can name args ->
+            Mono.MCustom can name (List.map (resolveMonoVarsHelp visiting subst) args)
+
+        _ ->
+            monoType
+
+
+{-| Extend a substitution by mapping any CEcoValue TVar in the canonical type
+that is still unmapped to Mono.MErased. Used for functions whose some type
+parameters are genuinely phantom at a given specialization. -}
+fillUnconstrainedCEcoWithErased : Can.Type -> Substitution -> Substitution
+fillUnconstrainedCEcoWithErased canType subst =
+    let
+        vars =
+            collectCanTypeVars canType []
+    in
+    List.foldl
+        (\name acc ->
+            if Dict.member name acc then
+                acc
+
+            else
+                case constraintFromName name of
+                    Mono.CEcoValue ->
+                        Dict.insert name Mono.MErased acc
+
+                    Mono.CNumber ->
+                        acc
+        )
+        subst
+        vars
+
+
+{-| Collect all TVar names from a canonical type.
+-}
+collectCanTypeVars : Can.Type -> List Name -> List Name
+collectCanTypeVars canType acc =
+    case canType of
+        Can.TVar name ->
+            name :: acc
+
+        Can.TLambda from to ->
+            collectCanTypeVars from (collectCanTypeVars to acc)
+
+        Can.TType _ _ args ->
+            List.foldl (\a accInner -> collectCanTypeVars a accInner) acc args
+
+        Can.TRecord fields _ ->
+            Dict.foldl (\_ (Can.FieldType _ t) accInner -> collectCanTypeVars t accInner) acc fields
+
+        Can.TTuple a b rest ->
+            List.foldl (\t accInner -> collectCanTypeVars t accInner) acc (a :: b :: rest)
+
+        Can.TAlias _ _ aliasArgs (Can.Filled inner) ->
+            let
+                argsAcc =
+                    List.foldl (\( _, t ) accInner -> collectCanTypeVars t accInner) acc aliasArgs
+            in
+            collectCanTypeVars inner argsAcc
+
+        Can.TAlias _ _ aliasArgs (Can.Holey inner) ->
+            let
+                argsAcc =
+                    List.foldl (\( _, t ) accInner -> collectCanTypeVars t accInner) acc aliasArgs
+            in
+            collectCanTypeVars inner argsAcc
+
+        Can.TUnit ->
+            acc
+
+
+{-| Build a rename map for callee type variables that clash with caller variables.
+Only variables in funcVarNames that also appear in callerVarNames get renamed.
+-}
+buildRenameMap : List Name -> List Name -> Data.Map.Dict String Name Name -> Int -> Data.Map.Dict String Name Name
+buildRenameMap callerVarNames funcVarNames acc counter =
+    case funcVarNames of
+        [] ->
+            acc
+
+        name :: rest ->
+            if List.member name callerVarNames && not (Data.Map.member identity name acc) then
+                let
+                    freshName =
+                        name ++ "__callee" ++ String.fromInt counter
+                in
+                buildRenameMap callerVarNames rest (Data.Map.insert identity name freshName acc) (counter + 1)
+
+            else
+                buildRenameMap callerVarNames rest acc counter
+
+
+{-| Rename type variables in a canonical type according to a rename map.
+-}
+renameCanTypeVars : Data.Map.Dict String Name Name -> Can.Type -> Can.Type
+renameCanTypeVars renameMap canType =
+    case canType of
+        Can.TVar name ->
+            case Data.Map.get identity name renameMap of
+                Just newName ->
+                    Can.TVar newName
+
+                Nothing ->
+                    canType
+
+        Can.TLambda from to ->
+            Can.TLambda (renameCanTypeVars renameMap from) (renameCanTypeVars renameMap to)
+
+        Can.TType canonical name args ->
+            Can.TType canonical name (List.map (renameCanTypeVars renameMap) args)
+
+        Can.TRecord fields ext ->
+            Can.TRecord
+                (Dict.map (\_ (Can.FieldType idx t) -> Can.FieldType idx (renameCanTypeVars renameMap t)) fields)
+                ext
+
+        Can.TTuple a b rest ->
+            Can.TTuple
+                (renameCanTypeVars renameMap a)
+                (renameCanTypeVars renameMap b)
+                (List.map (renameCanTypeVars renameMap) rest)
+
+        Can.TAlias canonical name aliasArgs aliasType ->
+            Can.TAlias canonical name
+                (List.map (\( n, t ) -> ( n, renameCanTypeVars renameMap t )) aliasArgs)
+                (case aliasType of
+                    Can.Filled inner ->
+                        Can.Filled (renameCanTypeVars renameMap inner)
+
+                    Can.Holey inner ->
+                        Can.Holey (renameCanTypeVars renameMap inner)
+                )
+
+        Can.TUnit ->
+            canType
+
+
 {-| Apply a type substitution to a canonical type to produce a monomorphic type.
 
 INVARIANT: Preserves TLambda staging exactly.
@@ -235,9 +518,9 @@ applySubst : Substitution -> Can.Type -> Mono.MonoType
 applySubst subst canType =
     case canType of
         Can.TVar name ->
-            case Dict.get identity name subst of
+            case Dict.get name subst of
                 Just monoType ->
-                    monoType
+                    resolveMonoVars subst monoType
 
                 Nothing ->
                     let
@@ -320,7 +603,7 @@ applySubst subst canType =
                 baseFields =
                     case maybeExtension of
                         Just extName ->
-                            case Dict.get identity extName subst of
+                            case Dict.get extName subst of
                                 Just (Mono.MRecord baseFieldsDict) ->
                                     -- MRecord now directly contains the fields dict
                                     baseFieldsDict
@@ -359,7 +642,7 @@ applySubst subst canType =
                 newSubst =
                     List.foldl
                         (\( varName, t ) s ->
-                            Dict.insert identity varName (applySubst subst t) s
+                            Dict.insert varName (applySubst subst t) s
                         )
                         subst
                         args

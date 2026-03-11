@@ -24,7 +24,8 @@ import Compiler.Type.Constrain.Typed.Module as ConstrainTyped
 import Compiler.Type.KernelTypes as KernelTypes
 import Compiler.Type.PostSolve as PostSolve
 import Compiler.Type.Solve as Solve
-import Data.Map as Dict
+import Data.Map
+import Dict
 import Data.Set as EverySet
 import System.TypeCheck.IO as IO
 import TestLogic.TestPipeline as Pipeline
@@ -33,7 +34,7 @@ import TestLogic.TestPipeline as Pipeline
 {-| Artifacts from running through PostSolve, including both pre and post snapshots.
 -}
 type alias Artifacts =
-    { annotations : Dict.Dict String Name.Name Can.Annotation
+    { annotations : Dict.Dict Name.Name Can.Annotation
     , nodeTypesPre : PostSolve.NodeTypes
     , nodeTypesPost : PostSolve.NodeTypes
     , kernelEnv : KernelTypes.KernelTypeEnv
@@ -44,7 +45,7 @@ type alias Artifacts =
 {-| Detailed artifacts including synthetic expression IDs for POST\_001/POST\_003 tests.
 -}
 type alias DetailedArtifacts =
-    { annotations : Dict.Dict String Name.Name Can.Annotation
+    { annotations : Dict.Dict Name.Name Can.Annotation
     , nodeTypesPre : PostSolve.NodeTypes
     , nodeTypesPost : PostSolve.NodeTypes
     , kernelEnv : KernelTypes.KernelTypeEnv
@@ -80,7 +81,7 @@ compileToPostSolveDetailed : Src.Module -> Result String DetailedArtifacts
 compileToPostSolveDetailed srcModule =
     let
         canonResult =
-            Canonicalize.canonicalize ( "eco", "example" ) Basic.testIfaces srcModule
+            Canonicalize.canonicalize ( "eco", "example" ) (Data.Map.fromList identity (Dict.toList Basic.testIfaces)) srcModule
     in
     case RResult.run canonResult of
         ( _, Err errors ) ->
@@ -105,7 +106,7 @@ compileToPostSolveDetailed srcModule =
                             PostSolve.postSolve typedData.annotations canModule typedData.nodeTypes
                     in
                     Ok
-                        { annotations = typedData.annotations
+                        { annotations = Dict.fromList (Data.Map.toList compare typedData.annotations)
                         , nodeTypesPre = typedData.nodeTypes
                         , nodeTypesPost = postSolveResult.nodeTypes
                         , kernelEnv = postSolveResult.kernelEnv
@@ -122,7 +123,7 @@ runWithIdsTypeCheckDetailed :
         IO.IO
             (Result
                 Int
-                { annotations : Dict.Dict String Name.Name Can.Annotation
+                { annotations : Data.Map.Dict String Name.Name Can.Annotation
                 , nodeTypes : PostSolve.NodeTypes
                 , syntheticExprIds : EverySet.EverySet Int Int
                 }

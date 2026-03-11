@@ -28,7 +28,8 @@ the type structure.
 import Compiler.AST.Canonical as Can
 import Compiler.Data.Name exposing (Name)
 import Compiler.Type.Type exposing (Type(..))
-import Data.Map as Dict exposing (Dict)
+import Data.Map
+import Dict exposing (Dict)
 import System.TypeCheck.IO as IO exposing (IO)
 import Utils.Main as Utils
 
@@ -46,7 +47,7 @@ conversion process.
 
 -}
 type alias FreeVars =
-    Dict String Name Type
+    Data.Map.Dict String Name Type
 
 
 
@@ -95,7 +96,7 @@ fromSrcType freeVars sourceType =
                                     fromSrcType freeVars realType
 
                                 Can.Holey realType ->
-                                    fromSrcType (Dict.fromList identity targs) realType
+                                    fromSrcType (Data.Map.fromList identity targs) realType
                             )
                     )
 
@@ -110,7 +111,7 @@ fromSrcType freeVars sourceType =
 
         Can.TRecord fields maybeExt ->
             IO.pure RecordN
-                |> IO.apply (IO.traverseMap identity compare (fromSrcFieldType freeVars) fields)
+                |> IO.apply (IO.traverseMap identity compare (fromSrcFieldType freeVars) (Data.Map.fromList identity (Dict.toList fields)))
                 |> IO.apply
                     (case maybeExt of
                         Nothing ->
@@ -121,6 +122,6 @@ fromSrcType freeVars sourceType =
                     )
 
 
-fromSrcFieldType : Dict String Name Type -> Can.FieldType -> IO Type
+fromSrcFieldType : Data.Map.Dict String Name Type -> Can.FieldType -> IO Type
 fromSrcFieldType freeVars (Can.FieldType _ tipe) =
     fromSrcType freeVars tipe

@@ -870,16 +870,16 @@ writeTempOutline root =
         , version = V.one
         , exposed = Outline.ExposedList []
         , deps = defaultDeps
-        , testDeps = Map.empty
+        , testDeps = Dict.empty
         , elm = C.defaultElm
         }
         |> Outline.Pkg
         |> Outline.write root
 
 
-defaultDeps : Dict ( String, String ) Pkg.Name C.Constraint
+defaultDeps : Dict.Dict Pkg.Name C.Constraint
 defaultDeps =
-    Map.fromList identity
+    Dict.fromList
         [ ( Pkg.core, C.anything )
         , ( Pkg.json, C.anything )
         , ( Pkg.html, C.anything )

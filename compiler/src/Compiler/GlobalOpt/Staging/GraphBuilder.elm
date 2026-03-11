@@ -20,12 +20,13 @@ This module handles:
 import Compiler.AST.Monomorphized as Mono
 import Compiler.GlobalOpt.Staging.Types exposing (Node(..), ProducerInfo, ProducerId(..), SlotId(..), StagingGraph, emptyStagingGraph)
 import Compiler.GlobalOpt.Staging.UnionFind exposing (ensureNode, unionNodes)
-import Data.Map as Dict exposing (Dict)
+import Array
+import Dict exposing (Dict)
 
 
 type alias BuildCtx =
     { nextExprId : Int
-    , varBindings : Dict String String ProducerId
+    , varBindings : Dict String ProducerId
     }
 
 
@@ -101,10 +102,18 @@ buildStagingGraph (Mono.MonoGraph mono) _ =
                     ( sg, ctx )
 
         ( finalSg, _ ) =
-            Dict.foldl compare
-                (\nodeId node acc -> foldNode nodeId node acc)
-                ( emptyStagingGraph, emptyBuildCtx )
+            Array.foldl
+                (\maybeNode ( nodeId, acc ) ->
+                    case maybeNode of
+                        Nothing ->
+                            ( nodeId + 1, acc )
+
+                        Just node ->
+                            ( nodeId + 1, foldNode nodeId node acc )
+                )
+                ( 0, ( emptyStagingGraph, emptyBuildCtx ) )
                 mono.nodes
+                |> Tuple.second
     in
     finalSg
 
@@ -442,7 +451,7 @@ producerFromExpr expr ctx =
 
         Mono.MonoVarLocal name _ ->
             -- Look up in context if this var was bound to a producer
-            Dict.get identity name ctx.varBindings
+            Dict.get name ctx.varBindings
 
         _ ->
             Nothing
@@ -589,7 +598,7 @@ recordKeyFromType : Mono.MonoType -> String
 recordKeyFromType monoType =
     case monoType of
         Mono.MRecord fields ->
-            Dict.keys compare fields
+            Dict.keys fields
                 |> List.sort
                 |> String.join ","
 
@@ -654,10 +663,13 @@ monoTypeToKey monoType =
             "Tuple(" ++ String.join "," (List.map monoTypeToKey elems) ++ ")"
 
         Mono.MRecord fields ->
-            "Record{" ++ String.join "," (Dict.keys compare fields) ++ "}"
+            "Record{" ++ String.join "," (Dict.keys fields) ++ "}"
 
         Mono.MCustom _ name _ ->
             "Custom:" ++ name
 
         Mono.MVar name _ ->
             "Var:" ++ name
+
+        Mono.MErased ->
+            "Erased"

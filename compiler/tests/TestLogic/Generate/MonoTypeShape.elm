@@ -13,7 +13,7 @@ that monomorphization produces valid MonoTypes.
 
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.Source as Src
-import Data.Map as Dict
+import Array
 import Expect
 import TestLogic.TestPipeline as Pipeline
 
@@ -49,10 +49,18 @@ expectMonoTypesFullyElaborated srcModule =
 collectMonoTypeIssues : Mono.MonoGraph -> List String
 collectMonoTypeIssues (Mono.MonoGraph data) =
     -- Traverse all nodes and collect types from each
-    Dict.foldl compare
-        (\specId node acc -> collectNodeTypeIssues specId node ++ acc)
-        []
+    Array.foldl
+        (\maybeNode ( specId, acc ) ->
+            case maybeNode of
+                Nothing ->
+                    ( specId + 1, acc )
+
+                Just node ->
+                    ( specId + 1, collectNodeTypeIssues specId node ++ acc )
+        )
+        ( 0, [] )
         data.nodes
+        |> Tuple.second
 
 
 {-| Collect type issues from a single MonoNode.
@@ -244,3 +252,7 @@ checkMonoType context monoType =
                 Mono.CNumber ->
                     -- CNumber should be resolved to MInt or MFloat after monomorphization
                     [ context ++ ": Found unresolved numeric type variable '" ++ name ++ "' with CNumber constraint" ]
+
+        Mono.MErased ->
+            -- MErased is valid for dead-value specializations; should not reach codegen
+            []

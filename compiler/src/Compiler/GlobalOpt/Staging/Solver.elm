@@ -15,9 +15,10 @@ This module:
 
 -}
 
+import Array exposing (Array)
 import Compiler.GlobalOpt.Staging.Types exposing (ClassId, Node(..), NodeId, ProducerId(..), ProducerInfo, Segmentation, StagingGraph, StagingSolution, Uf)
 import Compiler.GlobalOpt.Staging.UnionFind exposing (producerIdToKey, slotIdToKey, ufFind)
-import Data.Map as Dict exposing (Dict)
+import Dict exposing (Dict)
 
 
 
@@ -63,15 +64,15 @@ Returns (nodeToClass, classMembers).
 -}
 type alias BuildState =
     { nextClass : Int
-    , nodeToClass : Dict Int Int ClassId
-    , classMembers : Dict Int Int (List NodeId)
+    , nodeToClass : Dict Int ClassId
+    , classMembers : Dict Int (List NodeId)
     , uf : Uf
     }
 
 
 buildClasses :
     StagingGraph
-    -> ( Dict Int Int ClassId, Dict Int Int (List NodeId) )
+    -> ( Dict Int ClassId, Dict Int (List NodeId) )
 buildClasses sg =
     let
         -- Process each node in the graph
@@ -88,7 +89,7 @@ buildClasses sg =
 
                 -- Check if root already has a class
                 maybeClassId =
-                    Dict.get identity rootId state.nodeToClass
+                    Dict.get rootId state.nodeToClass
 
                 ( classId, nextClass2, nodeToClass2 ) =
                     case maybeClassId of
@@ -99,20 +100,20 @@ buildClasses sg =
                             -- Assign new class to root
                             ( state.nextClass
                             , state.nextClass + 1
-                            , Dict.insert identity rootId state.nextClass state.nodeToClass
+                            , Dict.insert rootId state.nextClass state.nodeToClass
                             )
 
                 -- Also assign this node to the class
                 nodeToClass3 =
                     if nid /= rootId then
-                        Dict.insert identity nid classId nodeToClass2
+                        Dict.insert nid classId nodeToClass2
 
                     else
                         nodeToClass2
 
                 -- Add node to class members
                 classMembers2 =
-                    Dict.update identity
+                    Dict.update
                         classId
                         (\maybeList ->
                             Just (nid :: Maybe.withDefault [] maybeList)
@@ -133,7 +134,7 @@ buildClasses sg =
             }
 
         finalState =
-            Dict.foldl compare
+            Dict.foldl
                 assignClass
                 initialState
                 sg.nodeIndex
@@ -153,19 +154,26 @@ If a kernel is in the class, use the kernel's segmentation.
 chooseCanonicalSegs :
     ProducerInfo
     -> StagingGraph
-    -> Dict Int Int ClassId
-    -> Dict Int Int (List NodeId)
-    -> Dict Int Int Segmentation
+    -> Dict Int ClassId
+    -> Dict Int (List NodeId)
+    -> Array (Maybe Segmentation)
 chooseCanonicalSegs producerInfo sg _ classMembers =
-    Dict.foldl compare
+    let
+        maxClassId =
+            Dict.foldl (\classId _ acc -> max classId acc) -1 classMembers
+
+        base =
+            Array.repeat (maxClassId + 1) Nothing
+    in
+    Dict.foldl
         (\classId nodeIds acc ->
             let
                 canonical =
                     chooseForClass producerInfo sg nodeIds
             in
-            Dict.insert identity classId canonical acc
+            Array.set classId (Just canonical) acc
         )
-        Dict.empty
+        base
         classMembers
 
 
@@ -203,9 +211,9 @@ chooseForClass producerInfo sg nodeIds =
 -}
 stagingForNode : ProducerInfo -> StagingGraph -> NodeId -> Maybe Segmentation
 stagingForNode producerInfo sg nid =
-    case Dict.get identity nid sg.nodeById of
+    case Array.get nid sg.nodeById of
         Just (NodeProducer pid) ->
-            Dict.get identity (producerIdToKey pid) producerInfo.naturalSeg
+            Dict.get (producerIdToKey pid) producerInfo.naturalSeg
 
         Just (NodeSlot _) ->
             -- Slots don't contribute segmentations
@@ -219,13 +227,13 @@ stagingForNode producerInfo sg nid =
 -}
 kernelSegForNode : ProducerInfo -> StagingGraph -> NodeId -> Maybe Segmentation
 kernelSegForNode producerInfo sg nid =
-    case Dict.get identity nid sg.nodeById of
+    case Array.get nid sg.nodeById of
         Just (NodeProducer (ProducerKernel name)) ->
             let
                 key =
                     producerIdToKey (ProducerKernel name)
             in
-            Dict.get identity key producerInfo.naturalSeg
+            Dict.get key producerInfo.naturalSeg
 
         _ ->
             Nothing
@@ -246,23 +254,23 @@ majorityVote segmentations =
                             segToKey seg
 
                         current =
-                            Dict.get identity key acc |> Maybe.withDefault ( seg, 0 )
+                            Dict.get key acc |> Maybe.withDefault ( seg, 0 )
                     in
-                    Dict.insert identity key ( seg, Tuple.second current + 1 ) acc
+                    Dict.insert key ( seg, Tuple.second current + 1 ) acc
                 )
                 Dict.empty
                 segmentations
 
         -- Find max count
         maxCount =
-            Dict.foldl compare
+            Dict.foldl
                 (\_ ( _, count ) acc -> max count acc)
                 0
                 counts
 
         -- All segmentations with max count
         bestSegs =
-            Dict.foldl compare
+            Dict.foldl
                 (\_ ( seg, count ) acc ->
                     if count == maxCount then
                         seg :: acc
@@ -303,30 +311,30 @@ segToKey seg =
 -}
 mapProducersAndSlotsToClasses :
     StagingGraph
-    -> Dict Int Int ClassId
-    -> ( Dict String String ClassId, Dict String String ClassId )
+    -> Dict Int ClassId
+    -> ( Dict String ClassId, Dict String ClassId )
 mapProducersAndSlotsToClasses sg nodeToClass =
-    Dict.foldl compare
+    Dict.foldl
         (\_ nid ( prodMap, slotMap ) ->
-            case Dict.get identity nid nodeToClass of
+            case Dict.get nid nodeToClass of
                 Nothing ->
                     ( prodMap, slotMap )
 
                 Just classId ->
-                    case Dict.get identity nid sg.nodeById of
+                    case Array.get nid sg.nodeById of
                         Just (NodeProducer pid) ->
                             let
                                 key =
                                     producerIdToKey pid
                             in
-                            ( Dict.insert identity key classId prodMap, slotMap )
+                            ( Dict.insert key classId prodMap, slotMap )
 
                         Just (NodeSlot sid) ->
                             let
                                 key =
                                     slotIdToKey sid
                             in
-                            ( prodMap, Dict.insert identity key classId slotMap )
+                            ( prodMap, Dict.insert key classId slotMap )
 
                         Nothing ->
                             ( prodMap, slotMap )

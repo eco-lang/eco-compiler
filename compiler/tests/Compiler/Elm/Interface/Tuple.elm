@@ -7,7 +7,7 @@ import Compiler.AST.Canonical as Can
 import Compiler.Data.Name exposing (Name)
 import Compiler.Elm.Interface as I
 import Compiler.Elm.Package as Pkg
-import Data.Map as Dict exposing (Dict)
+import Dict exposing (Dict)
 
 
 
@@ -38,7 +38,7 @@ collectFreeVars tipe =
             Dict.union (collectFreeVars a) (collectFreeVars b)
 
         Can.TVar name ->
-            Dict.singleton identity name ()
+            Dict.singleton name ()
 
         Can.TType _ _ args ->
             List.foldl (\arg acc -> Dict.union (collectFreeVars arg) acc) Dict.empty args
@@ -46,12 +46,12 @@ collectFreeVars tipe =
         Can.TRecord fields maybeExt ->
             let
                 fieldVars =
-                    Dict.foldl compare (\_ (Can.FieldType _ t) acc -> Dict.union (collectFreeVars t) acc) Dict.empty fields
+                    Dict.foldl (\_ (Can.FieldType _ t) acc -> Dict.union (collectFreeVars t) acc) Dict.empty fields
 
                 extVar =
                     case maybeExt of
                         Just name ->
-                            Dict.singleton identity name ()
+                            Dict.singleton name ()
 
                         Nothing ->
                             Dict.empty
@@ -148,9 +148,9 @@ tupleXY =
 
 {-| Tuple function values.
 -}
-tupleValues : Dict String Name Can.Annotation
+tupleValues : Dict Name Can.Annotation
 tupleValues =
-    Dict.fromList identity
+    Dict.fromList
         [ -- pair : a -> b -> ( a, b )
           ( "pair"
           , mkAnnotation (Can.TLambda aVar (Can.TLambda bVar tupleAB))

@@ -18,18 +18,18 @@ import Compiler.Elm.Package as Pkg
 import Compiler.Elm.Source.Array as ArraySource
 import Compiler.Elm.Source.JsArray as JsArraySource
 import Compiler.PackageCompilation as PC
-import Data.Map as Dict exposing (Dict)
+import Dict exposing (Dict)
 import Expect
 import Test exposing (Test)
 
 
 {-| Extended test interfaces including Bitwise and Tuple for Array.elm.
 -}
-extendedTestIfaces : Dict String ModuleName.Raw I.Interface
+extendedTestIfaces : Dict ModuleName.Raw I.Interface
 extendedTestIfaces =
     Basic.testIfaces
-        |> Dict.insert identity "Bitwise" Bitwise.bitwiseInterface
-        |> Dict.insert identity "Tuple" TupleInterface.tupleInterface
+        |> Dict.insert "Bitwise" Bitwise.bitwiseInterface
+        |> Dict.insert "Tuple" TupleInterface.tupleInterface
 
 
 suite : Test
@@ -185,13 +185,13 @@ multiModuleCompilationTests =
                                 -- Verify Array exports exist by checking annotations
                                 let
                                     hasRepeat =
-                                        Dict.member identity "repeat" arrayResult.annotations
+                                        Dict.member "repeat" arrayResult.annotations
 
                                     hasPush =
-                                        Dict.member identity "push" arrayResult.annotations
+                                        Dict.member "push" arrayResult.annotations
 
                                     hasMap =
-                                        Dict.member identity "map" arrayResult.annotations
+                                        Dict.member "map" arrayResult.annotations
                                 in
                                 if hasRepeat && hasPush && hasMap then
                                     Expect.pass

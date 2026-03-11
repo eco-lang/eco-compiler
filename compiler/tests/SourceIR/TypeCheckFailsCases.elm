@@ -90,6 +90,7 @@ aliasEverywhere expectFn _ =
         modul =
             makeModuleWithDefs "Test"
                 [ ( "allAliased", [ pattern ], listExpr [ varExpr "whole", varExpr "first", varExpr "second" ] )
+                , ( "testValue", [], callExpr (varExpr "allAliased") [ tupleExpr (intExpr 1) (intExpr 2) ] )
                 ]
     in
     expectFn modul

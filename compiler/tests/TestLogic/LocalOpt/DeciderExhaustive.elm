@@ -19,7 +19,8 @@ import Compiler.AST.Source as Src
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.LocalOpt.Typed.DecisionTree as DT
 import Compiler.Reporting.Annotation as A
-import Data.Map as Dict
+import Data.Map
+import Dict
 import Expect
 import System.TypeCheck.IO as IO
 import TestLogic.TestPipeline as Pipeline
@@ -77,7 +78,7 @@ expectDeciderComplete srcModule =
 -}
 collectNestedPatternChecks : TOpt.LocalGraph -> List (() -> Expect.Expectation)
 collectNestedPatternChecks (TOpt.LocalGraph data) =
-    Dict.foldl TOpt.compareGlobal
+    Data.Map.foldl TOpt.compareGlobal
         (\global node acc ->
             let
                 context =
@@ -176,13 +177,13 @@ collectExprNestedPatternIssues context expr =
 
         TOpt.Update _ recordExpr updates _ ->
             collectExprNestedPatternIssues context recordExpr
-                ++ Dict.foldl A.compareLocated (\_ updateExpr acc -> collectExprNestedPatternIssues context updateExpr ++ acc) [] updates
+                ++ Data.Map.foldl A.compareLocated (\_ updateExpr acc -> collectExprNestedPatternIssues context updateExpr ++ acc) [] updates
 
         TOpt.Record fieldExprs _ ->
-            Dict.foldl compare (\_ fieldExpr acc -> collectExprNestedPatternIssues context fieldExpr ++ acc) [] fieldExprs
+            Dict.foldl (\_ fieldExpr acc -> collectExprNestedPatternIssues context fieldExpr ++ acc) [] fieldExprs
 
         TOpt.TrackedRecord _ fieldExprs _ ->
-            Dict.foldl A.compareLocated (\_ fieldExpr acc -> collectExprNestedPatternIssues context fieldExpr ++ acc) [] fieldExprs
+            Data.Map.foldl A.compareLocated (\_ fieldExpr acc -> collectExprNestedPatternIssues context fieldExpr ++ acc) [] fieldExprs
 
         TOpt.Tuple _ e1 e2 rest _ ->
             collectExprNestedPatternIssues context e1
@@ -249,7 +250,7 @@ checkPathForNesting _ _ =
 -}
 collectExhaustivenessChecks : TOpt.LocalGraph -> List (() -> Expect.Expectation)
 collectExhaustivenessChecks (TOpt.LocalGraph data) =
-    Dict.foldl TOpt.compareGlobal
+    Data.Map.foldl TOpt.compareGlobal
         (\global node acc ->
             let
                 context =
@@ -339,13 +340,13 @@ collectExprExhaustivenessIssues context expr =
 
         TOpt.Update _ recordExpr updates _ ->
             collectExprExhaustivenessIssues context recordExpr
-                ++ Dict.foldl A.compareLocated (\_ updateExpr acc -> collectExprExhaustivenessIssues context updateExpr ++ acc) [] updates
+                ++ Data.Map.foldl A.compareLocated (\_ updateExpr acc -> collectExprExhaustivenessIssues context updateExpr ++ acc) [] updates
 
         TOpt.Record fieldExprs _ ->
-            Dict.foldl compare (\_ fieldExpr acc -> collectExprExhaustivenessIssues context fieldExpr ++ acc) [] fieldExprs
+            Dict.foldl (\_ fieldExpr acc -> collectExprExhaustivenessIssues context fieldExpr ++ acc) [] fieldExprs
 
         TOpt.TrackedRecord _ fieldExprs _ ->
-            Dict.foldl A.compareLocated (\_ fieldExpr acc -> collectExprExhaustivenessIssues context fieldExpr ++ acc) [] fieldExprs
+            Data.Map.foldl A.compareLocated (\_ fieldExpr acc -> collectExprExhaustivenessIssues context fieldExpr ++ acc) [] fieldExprs
 
         TOpt.Tuple _ e1 e2 rest _ ->
             collectExprExhaustivenessIssues context e1

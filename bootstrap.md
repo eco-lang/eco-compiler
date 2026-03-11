@@ -4,17 +4,20 @@ The Eco compiler bootstraps through 5 stages. Stages 1–4 produce a fixed-point
 
 ## Prerequisites
 
-Node.js needs a 16 GB heap for self-compilation (stages 2+):
+Node.js needs a 12 GB heap for self-compilation (stages 2+):
 
 ```bash
-export NODE_OPTIONS="--max-old-space-size=16384"
+export NODE_OPTIONS="--max-old-space-size=12000"
 ```
 
 ## Stages
 
 ### Stage 1: Stock Elm compiler → `guida.js`
 
-The stock Elm compiler (from npm) compiles the Eco compiler source using XHR-based IO:
+The stock Elm compiler (from npm) compiles the Eco compiler source using XHR-based IO.
+This stage builds **without** `--optimize` because the XHR variant of `Eco.Crash` uses
+`Debug.todo` (which is forbidden by `--optimize`). Starting from Stage 2, the kernel
+variant of `Eco.Crash` (via `Eco.Kernel.Crash`) is used instead, enabling `--optimize`.
 
 ```bash
 cd /work/compiler
@@ -51,11 +54,19 @@ cd /work/compiler
 
 ### Stage 5: `eco-boot-2.js` → `eco-compiler.mlir`
 
-The fixed-point verified compiler compiles itself to MLIR, exercising the native code generation path:
+The fixed-point verified compiler compiles itself to MLIR, exercising the native code generation path.
+
+**Important:** Stages 2–4 (JS output) do not write or invalidate `.ecot` typed-object caches. Stale `.ecot` files from a previous MLIR build will cause crashes during monomorphization (e.g. `Union not found: SCC`). Clean these caches before running Stage 5:
+
+```bash
+# Clean stale local typed-object caches before Stage 5
+find /work/compiler/build-kernel/eco-stuff -name '*.ecot' -delete
+```
 
 ```bash
 cd /work/compiler/build-kernel
 node bin/eco-boot-2-runner.js make \
+    --optimize \
     --kernel-package eco/compiler \
     --local-package eco/kernel=/work/eco-kernel-cpp \
     --output=bin/eco-compiler.mlir \
@@ -66,14 +77,19 @@ Output: `compiler/build-kernel/bin/eco-compiler.mlir`
 
 ## All stages in sequence
 
+Stage 1 builds **without** `--optimize` (the XHR `Eco.Crash` uses `Debug.todo`). Stages 2–5 use `--optimize` (enabled by the kernel `Eco.Crash` which delegates to `Eco.Kernel.Crash` instead of `Debug.todo`).
+
 ```bash
-export NODE_OPTIONS="--max-old-space-size=16384"
+export NODE_OPTIONS="--max-old-space-size=12000"
 cd /work/compiler
-./scripts/build.sh bin          # Stage 1: stock Elm → guida.js
-./scripts/build-self.sh bin     # Stage 2: guida.js → eco-boot.js
-./scripts/build-verify.sh       # Stages 3+4: fixed-point check
+./scripts/build.sh bin          # Stage 1: stock Elm (no --optimize) → guida.js
+./scripts/build-self.sh bin     # Stage 2: guida.js --optimize → eco-boot.js
+./scripts/build-verify.sh       # Stages 3+4: --optimize fixed-point check
+# Clean stale local typed-object caches before Stage 5
+find build-kernel/eco-stuff -name '*.ecot' -delete
 cd build-kernel
 node bin/eco-boot-2-runner.js make \
+    --optimize \
     --kernel-package eco/compiler \
     --local-package eco/kernel=/work/eco-kernel-cpp \
     --output=bin/eco-compiler.mlir \

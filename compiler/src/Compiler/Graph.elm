@@ -1,20 +1,25 @@
 module Compiler.Graph exposing
     ( SCC(..)
+    , IntGraph
     , stronglyConnComp
     , stronglyConnCompR
+    , stronglyConnCompInt
+    , fromAdjacency
     , flattenSCC
     , flattenSCCs
     )
 
 {-| Self-contained Kosaraju's SCC algorithm.
 
-Uses only Array and Set from elm/core – no external graph or tree libraries.
+Uses Array and BitSet – no external graph or tree libraries.
 Vertices are mapped to contiguous 0..N-1 IDs via sorted key lookup.
 All traversals use explicit stacks (tail-recursive, stack-safe).
 -}
 
 import Array exposing (Array)
-import Set exposing (Set)
+import Bitwise
+import Compiler.Data.BitSet as BitSet exposing (BitSet)
+import Dict as CoreDict
 
 
 type SCC vertex
@@ -35,6 +40,53 @@ flattenSCC component =
 
         CyclicSCC vs ->
             vs
+
+
+type alias IntGraph =
+    { fwd : Array (List Int)
+    , trans : Array (List Int)
+    , selfLoops : BitSet
+    , size : Int
+    }
+
+
+fromAdjacency : Array (List Int) -> Array (List Int) -> BitSet -> Int -> IntGraph
+fromAdjacency fwd trans selfLoops size =
+    { fwd = fwd, trans = trans, selfLoops = selfLoops, size = size }
+
+
+stronglyConnCompInt : IntGraph -> List (SCC Int)
+stronglyConnCompInt { fwd, trans, selfLoops, size } =
+    let
+        rpo =
+            reversePostOrder trans size
+
+        ( _, sccs ) =
+            List.foldl
+                (\v ( visited, acc ) ->
+                    if BitSet.member v visited then
+                        ( visited, acc )
+
+                    else
+                        let
+                            ( newVisited, component ) =
+                                collectComponent fwd v visited
+                        in
+                        case component of
+                            [ single ] ->
+                                if BitSet.member single selfLoops then
+                                    ( newVisited, CyclicSCC [ single ] :: acc )
+
+                                else
+                                    ( newVisited, AcyclicSCC single :: acc )
+
+                            _ ->
+                                ( newVisited, CyclicSCC component :: acc )
+                )
+                ( BitSet.emptyWithSize size, [] )
+                rpo
+    in
+    List.reverse sccs
 
 
 stronglyConnComp : List ( node, comparable, List comparable ) -> List (SCC node)
@@ -119,12 +171,10 @@ buildGraphs :
     Array ( node, comparable, List comparable )
     -> (comparable -> Maybe Int)
     -> Int
-    -> ( Array (List Int), Array (List Int), Set Int )
+    -> ( Array (List Int), Array (List Int), BitSet )
 buildGraphs triples keyToId n =
     let
-        emptyAdj =
-            Array.repeat n []
-
+        -- Phase 1: Accumulate edges in Dicts (O(E log E) dict ops instead of O(E) persistent-array copies)
         result =
             Array.foldl
                 (\( _, _, deps ) acc ->
@@ -136,38 +186,57 @@ buildGraphs triples keyToId n =
                             List.any (\e -> e == acc.idx) edges
 
                         newFwd =
-                            Array.set acc.idx edges acc.fwd
+                            CoreDict.insert acc.idx edges acc.fwd
 
                         newTrans =
                             List.foldl
                                 (\target t ->
-                                    case Array.get target t of
-                                        Just existing ->
-                                            Array.set target (acc.idx :: existing) t
-
-                                        Nothing ->
-                                            t
+                                    let
+                                        existing =
+                                            CoreDict.get target t |> Maybe.withDefault []
+                                    in
+                                    CoreDict.insert target (acc.idx :: existing) t
                                 )
                                 acc.trans
                                 edges
 
-                        newLoops =
+                        bOff =
+                            modBy 32 acc.idx
+
+                        wordWithBit =
                             if hasSelfLoop then
-                                Set.insert acc.idx acc.loops
+                                Bitwise.or acc.loopWord (Bitwise.shiftLeftBy bOff 1)
 
                             else
-                                acc.loops
+                                acc.loopWord
+
+                        ( newLoops, newLoopWord ) =
+                            if bOff == 31 || acc.idx == n - 1 then
+                                ( BitSet.setWord (acc.idx // 32) wordWithBit acc.loops
+                                , 0
+                                )
+
+                            else
+                                ( acc.loops, wordWithBit )
                     in
                     { idx = acc.idx + 1
                     , fwd = newFwd
                     , trans = newTrans
                     , loops = newLoops
+                    , loopWord = newLoopWord
                     }
                 )
-                { idx = 0, fwd = emptyAdj, trans = emptyAdj, loops = Set.empty }
+                { idx = 0, fwd = CoreDict.empty, trans = CoreDict.empty, loops = BitSet.fromSize n, loopWord = 0 }
                 triples
+
+        -- Phase 2: Convert Dicts to Arrays in one pass
+        fwdArray =
+            Array.initialize n (\i -> CoreDict.get i result.fwd |> Maybe.withDefault [])
+
+        transArray =
+            Array.initialize n (\i -> CoreDict.get i result.trans |> Maybe.withDefault [])
     in
-    ( result.fwd, result.trans, result.loops )
+    ( fwdArray, transArray, result.loops )
 
 
 
@@ -177,7 +246,7 @@ buildGraphs triples keyToId n =
 kosaraju :
     Array (List Int)
     -> Array (List Int)
-    -> Set Int
+    -> BitSet
     -> Array ( node, comparable, List comparable )
     -> Int
     -> List (SCC ( node, comparable, List comparable ))
@@ -191,7 +260,7 @@ kosaraju fwd trans selfLoops triples n =
         ( _, sccs ) =
             List.foldl
                 (\v ( visited, acc ) ->
-                    if Set.member v visited then
+                    if BitSet.member v visited then
                         ( visited, acc )
 
                     else
@@ -201,7 +270,7 @@ kosaraju fwd trans selfLoops triples n =
                         in
                         case component of
                             [ single ] ->
-                                if Set.member single selfLoops then
+                                if BitSet.member single selfLoops then
                                     case Array.get single triples of
                                         Just triple ->
                                             ( newVisited, CyclicSCC [ triple ] :: acc )
@@ -222,7 +291,7 @@ kosaraju fwd trans selfLoops triples n =
                                 , CyclicSCC (List.filterMap (\i -> Array.get i triples) component) :: acc
                                 )
                 )
-                ( Set.empty, [] )
+                ( BitSet.emptyWithSize n, [] )
                 rpo
     in
     List.reverse sccs
@@ -246,19 +315,19 @@ reversePostOrder adj n =
         ( _, result ) =
             List.foldl
                 (\v ( visited, acc ) ->
-                    if Set.member v visited then
+                    if BitSet.member v visited then
                         ( visited, acc )
 
                     else
                         rpoHelp adj [ Enter v ] visited acc
                 )
-                ( Set.empty, [] )
+                ( BitSet.emptyWithSize n, [] )
                 allVertices
     in
     result
 
 
-rpoHelp : Array (List Int) -> List DfsWork -> Set Int -> List Int -> ( Set Int, List Int )
+rpoHelp : Array (List Int) -> List DfsWork -> BitSet -> List Int -> ( BitSet, List Int )
 rpoHelp adj stack visited acc =
     case stack of
         [] ->
@@ -268,7 +337,7 @@ rpoHelp adj stack visited acc =
             rpoHelp adj rest visited (v :: acc)
 
         (Enter v) :: rest ->
-            if Set.member v visited then
+            if BitSet.member v visited then
                 rpoHelp adj rest visited acc
 
             else
@@ -276,34 +345,37 @@ rpoHelp adj stack visited acc =
                     neighbors =
                         Maybe.withDefault [] (Array.get v adj)
 
-                    childWork =
-                        List.map Enter neighbors
+                    newStack =
+                        List.foldl (\n s -> Enter n :: s) (Exit v :: rest) neighbors
                 in
-                rpoHelp adj (childWork ++ (Exit v :: rest)) (Set.insert v visited) acc
+                rpoHelp adj newStack (BitSet.insert v visited) acc
 
 
 
 -- COLLECT ONE SCC COMPONENT via DFS on forward graph
 
 
-collectComponent : Array (List Int) -> Int -> Set Int -> ( Set Int, List Int )
+collectComponent : Array (List Int) -> Int -> BitSet -> ( BitSet, List Int )
 collectComponent adj start visited =
     collectHelp adj [ start ] visited []
 
 
-collectHelp : Array (List Int) -> List Int -> Set Int -> List Int -> ( Set Int, List Int )
+collectHelp : Array (List Int) -> List Int -> BitSet -> List Int -> ( BitSet, List Int )
 collectHelp adj stack visited acc =
     case stack of
         [] ->
             ( visited, acc )
 
         v :: rest ->
-            if Set.member v visited then
+            if BitSet.member v visited then
                 collectHelp adj rest visited acc
 
             else
                 let
                     neighbors =
                         Maybe.withDefault [] (Array.get v adj)
+
+                    newStack =
+                        List.foldl (\n s -> n :: s) rest neighbors
                 in
-                collectHelp adj (neighbors ++ rest) (Set.insert v visited) (v :: acc)
+                collectHelp adj newStack (BitSet.insert v visited) (v :: acc)

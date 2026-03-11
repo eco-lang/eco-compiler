@@ -8,7 +8,7 @@ import Compiler.Data.Index as Index
 import Compiler.Data.Name exposing (Name)
 import Compiler.Elm.Interface as I
 import Compiler.Elm.Package as Pkg
-import Data.Map as Dict exposing (Dict)
+import Dict exposing (Dict)
 
 
 
@@ -37,7 +37,7 @@ maybeInterface =
         | Just a
 
 -}
-maybeUnion : Dict String Name I.Union
+maybeUnion : Dict Name I.Union
 maybeUnion =
     let
         aVar =
@@ -57,4 +57,4 @@ maybeUnion =
                 , opts = Can.Normal
                 }
     in
-    Dict.singleton identity "Maybe" (I.OpenUnion union)
+    Dict.singleton "Maybe" (I.OpenUnion union)

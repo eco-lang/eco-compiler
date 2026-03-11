@@ -27,8 +27,11 @@ esac
 js="$filepath.js"
 min="$filepath.min.js"
 
+# Clean stale artifact caches from the local kernel package
+rm -f "$COMPILER_DIR/../eco-kernel-cpp/artifacts.dat" "$COMPILER_DIR/../eco-kernel-cpp/typed-artifacts.dat"
+
 cd "$BUILD_KERNEL_DIR"
-node "$COMPILER_DIR/bin/index.js" make --kernel-package eco/compiler --local-package eco/kernel="$COMPILER_DIR/../eco-kernel-cpp" --output=$js $elm_entry
+node "$COMPILER_DIR/bin/index.js" make --optimize --kernel-package eco/compiler --local-package eco/kernel="$COMPILER_DIR/../eco-kernel-cpp" --output=$js $elm_entry
 node "$COMPILER_DIR/scripts/replacements.js" $js
 
 #uglifyjs $js --compress "pure_funcs=[F2,F3,F4,F5,F6,F7,F8,F9,A2,A3,A4,A5,A6,A7,A8,A9],pure_getters,keep_fargs=false,unsafe_comps,unsafe" | uglifyjs --mangle --output $min

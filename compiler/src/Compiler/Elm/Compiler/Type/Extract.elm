@@ -42,7 +42,9 @@ import Compiler.Data.Name as Name
 import Compiler.Elm.Compiler.Type as T
 import Compiler.Elm.Interface as I
 import Compiler.Elm.ModuleName as ModuleName
-import Data.Map as Dict exposing (Dict)
+import Data.Map
+import Dict exposing (Dict)
+import Utils.Crash exposing (crash)
 import Data.Set as EverySet exposing (EverySet)
 import System.TypeCheck.IO as IO
 import Utils.Bytes.Decode as BD
@@ -118,13 +120,13 @@ type Types
     = -- PERF profile Opt.Global representation
       -- current representation needs less allocation
       -- but maybe the lookup is much worse
-      Types (Dict (List String) IO.Canonical Types_)
+      Types (Data.Map.Dict (List String) IO.Canonical Types_)
 
 
 {-| Type information for a single module, containing unions and aliases.
 -}
 type Types_
-    = Types_ (Dict String Name.Name Can.Union) (Dict String Name.Name Can.Alias)
+    = Types_ (Dict Name.Name Can.Union) (Dict Name.Name Can.Alias)
 
 
 {-| Combines multiple type collections into a single collection.
@@ -133,7 +135,7 @@ mergeMany : List Types -> Types
 mergeMany listOfTypes =
     case listOfTypes of
         [] ->
-            Types Dict.empty
+            Types Data.Map.empty
 
         t :: ts ->
             List.foldr merge t ts
@@ -143,14 +145,14 @@ mergeMany listOfTypes =
 -}
 merge : Types -> Types -> Types
 merge (Types types1) (Types types2) =
-    Types (Dict.union types1 types2)
+    Types (Data.Map.union types1 types2)
 
 
 {-| Extracts type information from a module interface for the current package.
 -}
 fromInterface : ModuleName.Raw -> I.Interface -> Types
 fromInterface name (I.Interface iface) =
-    Types_ (Dict.map (\_ -> I.extractUnion) iface.unions) (Dict.map (\_ -> I.extractAlias) iface.aliases) |> Dict.singleton ModuleName.toComparableCanonical (IO.Canonical iface.home name) |> Types
+    Types_ (Dict.map (\_ -> I.extractUnion) iface.unions) (Dict.map (\_ -> I.extractAlias) iface.aliases) |> Data.Map.singleton ModuleName.toComparableCanonical (IO.Canonical iface.home name) |> Types
 
 
 {-| Extracts type information from a dependency interface (either public or private).
@@ -158,7 +160,7 @@ fromInterface name (I.Interface iface) =
 fromDependencyInterface : IO.Canonical -> I.DependencyInterface -> Types
 fromDependencyInterface home di =
     Types
-        (Dict.singleton ModuleName.toComparableCanonical home <|
+        (Data.Map.singleton ModuleName.toComparableCanonical home <|
             case di of
                 I.Public (I.Interface iface) ->
                     Types_ (Dict.map (\_ -> I.extractUnion) iface.unions) (Dict.map (\_ -> I.extractAlias) iface.aliases)
@@ -225,7 +227,7 @@ extractAlias (Types dict) (Opt.Global home name) =
         (Can.Alias args aliasType) =
             Utils.find ModuleName.toComparableCanonical home dict
                 |> (\(Types_ _ aliasInfo) -> aliasInfo)
-                |> Utils.find identity name
+                |> stdFind name
     in
     map (T.Alias (toPublicName home name) args) (extract aliasType)
 
@@ -244,9 +246,21 @@ extractUnion (Types dict) (Opt.Global home name) =
             (Can.Union unionData) =
                 Utils.find ModuleName.toComparableCanonical home dict
                     |> (\(Types_ unionInfo _) -> unionInfo)
-                    |> Utils.find identity name
+                    |> stdFind name
         in
         map (T.Union pname unionData.vars) (traverse extractCtor unionData.alts)
+
+
+{-| Find a value in a stdlib Dict, crashing if not found.
+-}
+stdFind : comparable -> Dict comparable a -> a
+stdFind key dict =
+    case Dict.get key dict of
+        Just value ->
+            value
+
+        Nothing ->
+            crash "stdFind: key not found"
 
 
 extractCtor : Can.Ctor -> Extractor ( Name.Name, List T.Type )
@@ -368,13 +382,13 @@ typesDecoder =
 types_Encoder : Types_ -> Bytes.Encode.Encoder
 types_Encoder (Types_ unionInfo aliasInfo) =
     Bytes.Encode.sequence
-        [ BE.assocListDict compare BE.string Can.unionEncoder unionInfo
-        , BE.assocListDict compare BE.string Can.aliasEncoder aliasInfo
+        [ BE.stdDict BE.string Can.unionEncoder unionInfo
+        , BE.stdDict BE.string Can.aliasEncoder aliasInfo
         ]
 
 
 types_Decoder : Bytes.Decode.Decoder Types_
 types_Decoder =
     Bytes.Decode.map2 Types_
-        (BD.assocListDict identity BD.string Can.unionDecoder)
-        (BD.assocListDict identity BD.string Can.aliasDecoder)
+        (BD.stdDict BD.string Can.unionDecoder)
+        (BD.stdDict BD.string Can.aliasDecoder)

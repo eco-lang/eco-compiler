@@ -48,7 +48,7 @@ import Compiler.Data.OneOrMore as OneOrMore
 import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Error.Canonicalize as Error
 import Compiler.Reporting.Result as ReportingResult
-import Data.Map as Dict exposing (Dict)
+import Dict exposing (Dict)
 import Data.Set as EverySet
 import Maybe exposing (Maybe(..))
 import System.TypeCheck.IO exposing (Canonical)
@@ -73,7 +73,7 @@ It maintains both exposed (unqualified) and qualified imports, along with local 
 -}
 type alias Env =
     { home : Canonical
-    , vars : Dict String Name.Name Var
+    , vars : Dict Name.Name Var
     , types : Exposed Type
     , ctors : Exposed Ctor
     , binops : Exposed Binop
@@ -87,14 +87,14 @@ type alias Env =
 Multiple modules can expose the same name, leading to ambiguity.
 -}
 type alias Exposed a =
-    Dict String Name.Name (Info a)
+    Dict Name.Name (Info a)
 
 
 {-| A two-level map for qualified names: module prefix -> name -> definition.
 Allows referencing names via `Module.name` syntax.
 -}
 type alias Qualified a =
-    Dict String Name.Name (Dict String Name.Name (Info a))
+    Dict Name.Name (Dict Name.Name (Info a))
 
 
 
@@ -205,16 +205,16 @@ type Binop
 Returns an error if any new local shadows an existing local or top-level binding.
 Foreign bindings can be shadowed without error.
 -}
-addLocals : Dict String Name.Name A.Region -> Env -> EResult i w Env
+addLocals : Dict Name.Name A.Region -> Env -> EResult i w Env
 addLocals names env =
     ReportingResult.map (\newVars -> { env | vars = newVars })
-        (Dict.merge compare
-            (\name region -> ReportingResult.map (Dict.insert identity name (addLocalLeft name region)))
+        (Dict.merge
+            (\name region -> ReportingResult.map (Dict.insert name (addLocalLeft name region)))
             (\name region var acc ->
                 addLocalBoth name region var
-                    |> ReportingResult.andThen (\var_ -> ReportingResult.map (Dict.insert identity name var_) acc)
+                    |> ReportingResult.andThen (\var_ -> ReportingResult.map (Dict.insert name var_) acc)
             )
-            (\name var -> ReportingResult.map (Dict.insert identity name var))
+            (\name var -> ReportingResult.map (Dict.insert name var))
             names
             env.vars
             (ReportingResult.ok Dict.empty)
@@ -251,7 +251,7 @@ Returns an error if the type is not found or is ambiguous.
 -}
 findType : A.Region -> Env -> Name.Name -> EResult i w Type
 findType region { types, q_types } name =
-    case Dict.get identity name types of
+    case Dict.get name types of
         Just (Specific _ tipe) ->
             ReportingResult.ok tipe
 
@@ -267,9 +267,9 @@ Returns an error if the module or type is not found, or if the type is ambiguous
 -}
 findTypeQual : A.Region -> Env -> Name.Name -> Name.Name -> EResult i w Type
 findTypeQual region { types, q_types } prefix name =
-    case Dict.get identity prefix q_types of
+    case Dict.get prefix q_types of
         Just qualified ->
-            case Dict.get identity name qualified of
+            case Dict.get name qualified of
                 Just (Specific _ tipe) ->
                     ReportingResult.ok tipe
 
@@ -292,7 +292,7 @@ Returns an error if the constructor is not found or is ambiguous.
 -}
 findCtor : A.Region -> Env -> Name.Name -> EResult i w Ctor
 findCtor region { ctors, q_ctors } name =
-    case Dict.get identity name ctors of
+    case Dict.get name ctors of
         Just (Specific _ ctor) ->
             ReportingResult.ok ctor
 
@@ -308,9 +308,9 @@ Returns an error if the module or constructor is not found, or if the constructo
 -}
 findCtorQual : A.Region -> Env -> Name.Name -> Name.Name -> EResult i w Ctor
 findCtorQual region { ctors, q_ctors } prefix name =
-    case Dict.get identity prefix q_ctors of
+    case Dict.get prefix q_ctors of
         Just qualified ->
-            case Dict.get identity name qualified of
+            case Dict.get name qualified of
                 Just (Specific _ pattern) ->
                     ReportingResult.ok pattern
 
@@ -333,7 +333,7 @@ Returns an error if the operator is not found or is ambiguous.
 -}
 findBinop : A.Region -> Env -> Name.Name -> EResult i w Binop
 findBinop region { binops } name =
-    case Dict.get identity name binops of
+    case Dict.get name binops of
         Just (Specific _ binop) ->
             ReportingResult.ok binop
 
@@ -341,7 +341,7 @@ findBinop region { binops } name =
             ReportingResult.throw (Error.AmbiguousBinop region name h hs)
 
         Nothing ->
-            ReportingResult.throw (Error.NotFoundBinop region name (EverySet.fromList identity (Dict.keys compare binops)))
+            ReportingResult.throw (Error.NotFoundBinop region name (EverySet.fromList identity (Dict.keys binops)))
 
 
 
@@ -350,4 +350,4 @@ findBinop region { binops } name =
 
 toPossibleNames : Exposed a -> Qualified a -> Error.PossibleNames
 toPossibleNames exposed qualified =
-    Error.PossibleNames (EverySet.fromList identity (Dict.keys compare exposed)) (Dict.map (\_ -> Dict.keys compare >> EverySet.fromList identity) qualified)
+    Error.PossibleNames (EverySet.fromList identity (Dict.keys exposed)) (Dict.map (\_ -> Dict.keys >> EverySet.fromList identity) qualified)

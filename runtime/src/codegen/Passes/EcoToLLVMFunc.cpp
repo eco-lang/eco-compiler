@@ -33,6 +33,14 @@ struct KernelFuncOpLowering : public OpConversionPattern<func::FuncOp> {
         if (!funcOp->hasAttr("is_kernel"))
             return failure();  // Let the standard func-to-llvm pattern handle it
 
+        // If an LLVM func with this name already exists (e.g., created by
+        // string case lowering's getOrCreateUtilsEqual), just erase the stub.
+        auto module = funcOp->getParentOfType<ModuleOp>();
+        if (module.lookupSymbol<LLVM::LLVMFuncOp>(funcOp.getName())) {
+            rewriter.eraseOp(funcOp);
+            return success();
+        }
+
         auto loc = funcOp.getLoc();
         auto *ctx = rewriter.getContext();
 

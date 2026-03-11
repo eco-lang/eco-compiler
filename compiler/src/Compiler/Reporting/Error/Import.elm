@@ -35,7 +35,7 @@ import Compiler.Reporting.Doc as D
 import Compiler.Reporting.Render.Code as Code
 import Compiler.Reporting.Report as Report
 import Compiler.Reporting.Suggest as Suggest
-import Data.Map as Dict
+import Dict
 import Data.Set as EverySet exposing (EverySet)
 import Utils.Bytes.Decode as BD
 import Utils.Bytes.Encode as BE
@@ -91,7 +91,7 @@ toReport source (Error { region, name, unimportedModules, problem }) =
                         [ D.reflow
                             "I checked the \"dependencies\" and \"source-directories\" listed in your elm.json, but I cannot find it! Maybe it is a typo for one of these names?"
                         , List.map D.fromName (toSuggestions name unimportedModules) |> D.vcat |> D.indent 4 |> D.dullyellow
-                        , case Dict.get identity name Pkg.suggestions of
+                        , case Dict.get name Pkg.suggestions of
                             Nothing ->
                                 D.toSimpleHint
                                     "If it is not a typo, check the \"dependencies\" and \"source-directories\" of your elm.json to make sure all the packages you need are listed there!"

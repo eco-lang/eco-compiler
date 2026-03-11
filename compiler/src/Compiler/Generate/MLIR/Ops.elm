@@ -412,12 +412,15 @@ ecoProjectCustom ctx resultVar fieldIndex resultType containerVar =
                 [ ( "_operand_types", ArrayAttr Nothing [ TypeAttr Types.ecoValue ] )
                 , ( "field_index", IntAttr Nothing fieldIndex )
                 ]
+
+        ( ctx_, op ) =
+            mlirOp ctx "eco.project.custom"
+                |> opBuilder.withOperands [ containerVar ]
+                |> opBuilder.withResults [ ( resultVar, resultType ) ]
+                |> opBuilder.withAttrs attrs
+                |> opBuilder.build
     in
-    mlirOp ctx "eco.project.custom"
-        |> opBuilder.withOperands [ containerVar ]
-        |> opBuilder.withResults [ ( resultVar, resultType ) ]
-        |> opBuilder.withAttrs attrs
-        |> opBuilder.build
+    ( ctx_, op )
 
 
 

@@ -32,7 +32,7 @@ import Compiler.Elm.Constraint as C
 import Compiler.Elm.Package as Pkg
 import Compiler.Elm.Version as V
 import Compiler.Reporting.Doc as D
-import Data.Map as Dict exposing (Dict)
+import Dict exposing (Dict)
 import System.IO as IO exposing (FilePath)
 import Task exposing (Task)
 import Utils.Task.Extra as Task
@@ -125,7 +125,7 @@ uninstallWithOutline root pkg autoYes env oldOutline =
 
 type Changes vsn
     = AlreadyNotPresent
-    | Changes (Dict ( String, String ) Pkg.Name (Change vsn)) Outline.Outline
+    | Changes (Dict Pkg.Name (Change vsn)) Outline.Outline
 
 
 attemptChanges : String -> Solver.Env -> Outline.Outline -> (a -> String) -> Changes a -> Bool -> Task Exit.Uninstall ()
@@ -138,11 +138,11 @@ attemptChanges root env oldOutline toChars changes autoYes =
             let
                 widths : Widths
                 widths =
-                    Dict.foldr compare (widen toChars) (Widths 0 0 0) changeDict
+                    Dict.foldr (widen toChars) (Widths 0 0 0) changeDict
 
                 changeDocs : ChangeDocs
                 changeDocs =
-                    Dict.foldr compare (addChange toChars widths) (Docs [] [] []) changeDict
+                    Dict.foldr (addChange toChars widths) (Docs [] [] []) changeDict
             in
             attemptChangesHelp root env oldOutline newOutline autoYes <|
                 D.vcat
@@ -202,7 +202,7 @@ handleUninstallResult root oldOutline result =
 
 makeAppPlan : Solver.Env -> Pkg.Name -> Outline.AppOutline -> Task Exit.Uninstall (Changes V.Version)
 makeAppPlan (Solver.Env env) pkg ((Outline.AppOutline appData) as outline) =
-    case Dict.get identity pkg (Dict.union appData.depsDirect appData.testDirect) of
+    case Dict.get pkg (Dict.union appData.depsDirect appData.testDirect) of
         Just _ ->
             Task.io (Solver.removeFromApp env.cache env.connection env.registry pkg outline)
                 |> Task.andThen (handleAppSolverResult pkg)
@@ -234,24 +234,24 @@ handleAppSolverResult pkg result =
 makePkgPlan : Pkg.Name -> Outline.PkgOutline -> Task Exit.Uninstall (Changes C.Constraint)
 makePkgPlan pkg (Outline.PkgOutline pkgData) =
     let
-        old : Dict ( String, String ) Pkg.Name C.Constraint
+        old : Dict Pkg.Name C.Constraint
         old =
             Dict.union pkgData.deps pkgData.testDeps
     in
-    if Dict.member identity pkg old then
+    if Dict.member pkg old then
         let
-            new : Dict ( String, String ) Pkg.Name C.Constraint
+            new : Dict Pkg.Name C.Constraint
             new =
-                Dict.remove identity pkg old
+                Dict.remove pkg old
 
-            changes : Dict ( String, String ) Pkg.Name (Change C.Constraint)
+            changes : Dict Pkg.Name (Change C.Constraint)
             changes =
                 detectChanges old new
         in
         Outline.PkgOutline
             { pkgData
-                | deps = Dict.remove identity pkg pkgData.deps
-                , testDeps = Dict.remove identity pkg pkgData.testDeps
+                | deps = Dict.remove pkg pkgData.deps
+                , testDeps = Dict.remove pkg pkgData.testDeps
             }
             |> Outline.Pkg
             |> Changes changes
@@ -271,19 +271,19 @@ type Change a
     | Remove a
 
 
-detectChanges : Dict ( String, String ) Pkg.Name a -> Dict ( String, String ) Pkg.Name a -> Dict ( String, String ) Pkg.Name (Change a)
+detectChanges : Dict Pkg.Name a -> Dict Pkg.Name a -> Dict Pkg.Name (Change a)
 detectChanges old new =
-    Dict.merge compare
-        (\k v -> Dict.insert identity k (Remove v))
+    Dict.merge
+        (\k v -> Dict.insert k (Remove v))
         (\k oldElem newElem acc ->
             case keepChange k oldElem newElem of
                 Just change ->
-                    Dict.insert identity k change acc
+                    Dict.insert k change acc
 
                 Nothing ->
                     acc
         )
-        (\k v -> Dict.insert identity k (Insert v))
+        (\k v -> Dict.insert k (Insert v))
         old
         new
         Dict.empty

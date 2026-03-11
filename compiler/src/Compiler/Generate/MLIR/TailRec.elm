@@ -31,7 +31,7 @@ import Compiler.Generate.MLIR.Ops as Ops
 import Compiler.Generate.MLIR.Patterns as Patterns
 import Compiler.Generate.MLIR.Types as Types
 import Compiler.LocalOpt.Typed.DecisionTree as DT
-import Dict
+import Array exposing (Array)
 import Mlir.Mlir exposing (MlirOp, MlirRegion(..), MlirType(..))
 import OrderedDict
 import Utils.Crash exposing (crash)
@@ -495,9 +495,9 @@ compileCaseStep :
     -> StepResult
 compileCaseStep ctx loopSpec _ root decider jumps _ =
     let
-        jumpLookup : Dict.Dict Int Mono.MonoExpr
+        jumpLookup : Array (Maybe Mono.MonoExpr)
         jumpLookup =
-            Dict.fromList jumps
+            pairsToSparseArray jumps
     in
     compileCaseDeciderStep ctx loopSpec root decider jumpLookup
 
@@ -514,7 +514,7 @@ compileCaseDeciderStep :
     -> LoopSpec
     -> Name.Name
     -> Mono.Decider Mono.MonoChoice
-    -> Dict.Dict Int Mono.MonoExpr
+    -> Array (Maybe Mono.MonoExpr)
     -> StepResult
 compileCaseDeciderStep ctx loopSpec root decider jumpLookup =
     case decider of
@@ -539,7 +539,7 @@ compileCaseLeafStep :
     Ctx.Context
     -> LoopSpec
     -> Mono.MonoChoice
-    -> Dict.Dict Int Mono.MonoExpr
+    -> Array (Maybe Mono.MonoExpr)
     -> StepResult
 compileCaseLeafStep ctx loopSpec choice jumpLookup =
     case choice of
@@ -547,7 +547,7 @@ compileCaseLeafStep ctx loopSpec choice jumpLookup =
             compileStep ctx loopSpec branchExpr
 
         Mono.Jump index ->
-            case Dict.get index jumpLookup of
+            case Array.get index jumpLookup |> Maybe.andThen identity of
                 Just branchExpr ->
                     compileStep ctx loopSpec branchExpr
 
@@ -572,7 +572,7 @@ compileCaseChainStep :
     -> List ( DT.Path, DT.Test )
     -> Mono.Decider Mono.MonoChoice
     -> Mono.Decider Mono.MonoChoice
-    -> Dict.Dict Int Mono.MonoExpr
+    -> Array (Maybe Mono.MonoExpr)
     -> StepResult
 compileCaseChainStep ctx loopSpec root testChain success failure jumpLookup =
     let
@@ -676,7 +676,7 @@ compileCaseFanOutStep :
     -> DT.Path
     -> List ( DT.Test, Mono.Decider Mono.MonoChoice )
     -> Mono.Decider Mono.MonoChoice
-    -> Dict.Dict Int Mono.MonoExpr
+    -> Array (Maybe Mono.MonoExpr)
     -> StepResult
 compileCaseFanOutStep ctx loopSpec root path edges fallback jumpLookup =
     let
@@ -995,29 +995,32 @@ compileLetStep ctx loopSpec def body =
             }
 
         Mono.MonoTailDef _ _ _ ->
-            -- Local tail-recursive definitions are not yet supported in TailRec
-            -- Fall back to treating the entire let as a base return
-            -- We compile the full let expression by generating it as an expression
+            -- Compile the MonoTailDef binding (pending lambda, papCreate) using
+            -- Expr.generateExpr with a dummy body. This sets up the var mapping
+            -- for the defined name without compiling the actual body.
+            -- Then compile the actual body via compileStep to maintain the
+            -- TailRec context (so MonoTailCall for the outer function generates
+            -- correct loop continuation instead of crashing in mkCaseRegionFromDecider).
             let
-                -- Generate the full let expression (this will use the existing joinpoint path)
-                letExpr =
-                    Mono.MonoLet def body (Mono.typeOf body)
+                -- Compile just the def setup: pending lambda + papCreate + var mapping.
+                -- Use MonoUnit as a dummy body since we only need the side effects
+                -- on the context (var mappings, pending lambdas).
+                defSetupExpr =
+                    Mono.MonoLet def Mono.MonoUnit Mono.MUnit
 
-                exprResult =
-                    Expr.generateExpr ctx letExpr
+                defSetupResult =
+                    Expr.generateExpr ctx defSetupExpr
 
-                ( doneVar, ctx1 ) =
-                    Ctx.freshVar exprResult.ctx
-
-                ( ctx2, doneOp ) =
-                    Ops.arithConstantBool ctx1 doneVar True
+                -- Now compile the actual body with compileStep (maintains TailRec context)
+                bodyStep =
+                    compileStep defSetupResult.ctx loopSpec body
             in
-            { ops = exprResult.ops ++ [ doneOp ]
-            , nextParams = loopSpec.paramVars
-            , doneVar = doneVar
-            , resultVar = exprResult.resultVar
-            , resultType = exprResult.resultType
-            , ctx = ctx2
+            { ops = defSetupResult.ops ++ bodyStep.ops
+            , nextParams = bodyStep.nextParams
+            , doneVar = bodyStep.doneVar
+            , resultVar = bodyStep.resultVar
+            , resultType = bodyStep.resultType
+            , ctx = bodyStep.ctx
             }
 
 
@@ -1117,6 +1120,15 @@ allocateFreshVars ctx n =
                 (List.range 1 n)
     in
     ( List.reverse varsRev, ctxFinal )
+
+
+pairsToSparseArray : List ( Int, a ) -> Array (Maybe a)
+pairsToSparseArray pairs =
+    let
+        maxIdx =
+            List.foldl (\( i, _ ) acc -> max i acc) -1 pairs
+    in
+    List.foldl (\( i, v ) arr -> Array.set i (Just v) arr) (Array.repeat (maxIdx + 1) Nothing) pairs
 
 
 {-| Zip two lists together.

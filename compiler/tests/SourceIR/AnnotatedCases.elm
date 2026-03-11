@@ -12,10 +12,13 @@ import Compiler.AST.SourceBuilder
     exposing
         ( boolExpr
         , callExpr
+        , floatExpr
+        , intExpr
         , lambdaExpr
         , makeModuleWithTypedDefs
         , pVar
         , recordExpr
+        , strExpr
         , tLambda
         , tRecord
         , tTuple
@@ -75,6 +78,11 @@ identityAnnotated expectFn _ =
                   , tipe = tipe
                   , body = varExpr "x"
                   }
+                , { name = "testValue"
+                  , args = []
+                  , tipe = tType "Int" []
+                  , body = callExpr (varExpr "identity") [ intExpr 1 ]
+                  }
                 ]
     in
     expectFn modul
@@ -97,6 +105,11 @@ constAnnotated expectFn _ =
                   , tipe = tipe
                   , body = varExpr "x"
                   }
+                , { name = "testValue"
+                  , args = []
+                  , tipe = tType "Int" []
+                  , body = callExpr (varExpr "const") [ intExpr 42, strExpr "hello" ]
+                  }
                 ]
     in
     expectFn modul
@@ -118,6 +131,11 @@ boolIdentity expectFn _ =
                   , args = [ pVar "x" ]
                   , tipe = tipe
                   , body = varExpr "x"
+                  }
+                , { name = "testValue"
+                  , args = []
+                  , tipe = tType "Bool" []
+                  , body = callExpr (varExpr "boolIdentity") [ boolExpr True ]
                   }
                 ]
     in
@@ -171,6 +189,15 @@ applyWithUsage expectFn _ =
                             , boolExpr True
                             ]
                   }
+                , { name = "testValue"
+                  , args = []
+                  , tipe = tType "String" []
+                  , body =
+                        callExpr (varExpr "apply")
+                            [ lambdaExpr [ pVar "n" ] (varExpr "n")
+                            , strExpr "hello"
+                            ]
+                  }
                 ]
     in
     expectFn modul
@@ -194,6 +221,16 @@ flipAnnotated expectFn _ =
                   , args = [ pVar "f", pVar "y", pVar "x" ]
                   , tipe = tipe
                   , body = callExpr (varExpr "f") [ varExpr "x", varExpr "y" ]
+                  }
+                , { name = "testValue"
+                  , args = []
+                  , tipe = tType "Float" []
+                  , body =
+                        callExpr (varExpr "flip")
+                            [ lambdaExpr [ pVar "a", pVar "b" ] (floatExpr 3.14)
+                            , strExpr "world"
+                            , intExpr 7
+                            ]
                   }
                 ]
     in
@@ -250,6 +287,16 @@ composeWithUsage expectFn _ =
                             , boolExpr True
                             ]
                   }
+                , { name = "testValue"
+                  , args = []
+                  , tipe = tType "String" []
+                  , body =
+                        callExpr (varExpr "compose")
+                            [ lambdaExpr [ pVar "x" ] (strExpr "result")
+                            , lambdaExpr [ pVar "y" ] (intExpr 1)
+                            , intExpr 42
+                            ]
+                  }
                 ]
     in
     expectFn modul
@@ -277,6 +324,17 @@ onAnnotated expectFn _ =
                         callExpr (varExpr "f")
                             [ callExpr (varExpr "g") [ varExpr "x" ]
                             , callExpr (varExpr "g") [ varExpr "y" ]
+                            ]
+                  }
+                , { name = "testValue"
+                  , args = []
+                  , tipe = tType "Float" []
+                  , body =
+                        callExpr (varExpr "on")
+                            [ lambdaExpr [ pVar "a", pVar "b" ] (floatExpr 1.0)
+                            , lambdaExpr [ pVar "a" ] (strExpr "x")
+                            , intExpr 1
+                            , intExpr 2
                             ]
                   }
                 ]
@@ -316,6 +374,11 @@ pairAnnotated expectFn _ =
                   , tipe = tipe
                   , body = tupleExpr (varExpr "x") (varExpr "y")
                   }
+                , { name = "testValue"
+                  , args = []
+                  , tipe = tTuple (tType "Int" []) (tType "String" [])
+                  , body = callExpr (varExpr "pair") [ intExpr 1, strExpr "hello" ]
+                  }
                 ]
     in
     expectFn modul
@@ -338,6 +401,11 @@ wrapInTupleAnnotated expectFn _ =
                   , tipe = tipe
                   , body = tupleExpr (varExpr "x") (varExpr "x")
                   }
+                , { name = "testValue"
+                  , args = []
+                  , tipe = tTuple (tType "Float" []) (tType "Float" [])
+                  , body = callExpr (varExpr "wrapInTuple") [ floatExpr 2.5 ]
+                  }
                 ]
     in
     expectFn modul
@@ -359,6 +427,11 @@ constTupleAnnotated expectFn _ =
                   , args = [ pVar "x", pVar "y" ]
                   , tipe = tipe
                   , body = tupleExpr (varExpr "x") (varExpr "x")
+                  }
+                , { name = "testValue"
+                  , args = []
+                  , tipe = tTuple (tType "Int" []) (tType "Int" [])
+                  , body = callExpr (varExpr "constTuple") [ intExpr 5, strExpr "ignored" ]
                   }
                 ]
     in
@@ -398,6 +471,11 @@ makeRecordAnnotated expectFn _ =
                   , tipe = tipe
                   , body = recordExpr [ ( "x", varExpr "x" ), ( "y", varExpr "y" ) ]
                   }
+                , { name = "testValue"
+                  , args = []
+                  , tipe = tRecord [ ( "x", tType "Int" [] ), ( "y", tType "String" [] ) ]
+                  , body = callExpr (varExpr "makeXY") [ intExpr 10, strExpr "world" ]
+                  }
                 ]
     in
     expectFn modul
@@ -420,6 +498,11 @@ makeRecordSameTypeAnnotated expectFn _ =
                   , args = [ pVar "val" ]
                   , tipe = tipe
                   , body = recordExpr [ ( "x", varExpr "val" ), ( "y", varExpr "val" ) ]
+                  }
+                , { name = "testValue"
+                  , args = []
+                  , tipe = tRecord [ ( "x", tType "Float" [] ), ( "y", tType "Float" [] ) ]
+                  , body = callExpr (varExpr "makeSame") [ floatExpr 9.9 ]
                   }
                 ]
     in
@@ -463,6 +546,14 @@ nestTupleAnnotated expectFn _ =
                         tupleExpr
                             (tupleExpr (varExpr "x") (varExpr "y"))
                             (tupleExpr (varExpr "y") (varExpr "x"))
+                  }
+                , { name = "testValue"
+                  , args = []
+                  , tipe =
+                        tTuple
+                            (tTuple (tType "Int" []) (tType "String" []))
+                            (tTuple (tType "String" []) (tType "Int" []))
+                  , body = callExpr (varExpr "nest") [ intExpr 3, strExpr "abc" ]
                   }
                 ]
     in

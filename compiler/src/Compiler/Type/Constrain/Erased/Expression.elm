@@ -30,6 +30,7 @@ import Compiler.Type.Constrain.Erased.Program as Prog exposing (Prog)
 import Compiler.Type.Instantiate as Instantiate
 import Compiler.Type.Type as Type exposing (Constraint(..), Type(..))
 import Data.Map as Dict exposing (Dict)
+import Dict as StdDict
 import System.TypeCheck.IO as IO exposing (IO)
 import Utils.Main as Utils
 
@@ -975,7 +976,7 @@ constrainDefProg rtv def bodyCon =
             let
                 newNames : Dict String Name ()
                 newNames =
-                    Dict.diff freeVars rtv
+                    Dict.diff (Dict.fromList identity (StdDict.toList freeVars)) rtv
             in
             Prog.opIO (IO.traverseMapWithKey identity compare (\n _ -> Type.nameToRigid n) newNames)
                 |> Prog.andThen
@@ -1105,7 +1106,7 @@ recDefsHelpProg rtv defs bodyCon rigidInfo flexInfo =
                     let
                         newNames : Dict String Name ()
                         newNames =
-                            Dict.diff freeVars rtv
+                            Dict.diff (Dict.fromList identity (StdDict.toList freeVars)) rtv
                     in
                     Prog.opIO (IO.traverseMapWithKey identity compare (\n _ -> Type.nameToRigid n) newNames)
                         |> Prog.andThen

@@ -16,6 +16,7 @@ import Compiler.AST.Canonical as Can
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.TypeEnv as TypeEnv
 import Compiler.AST.TypedOptimized as TOpt
+import Compiler.Data.BitSet as BitSet
 import Compiler.Data.Index as Index
 import Compiler.Data.Name as Name exposing (Name)
 import Compiler.LocalOpt.Typed.DecisionTree as DT
@@ -23,10 +24,11 @@ import Compiler.Monomorphize.Analysis as Analysis
 import Compiler.Monomorphize.Closure as Closure
 import Compiler.Monomorphize.KernelAbi as KernelAbi
 import Compiler.Monomorphize.Registry as Registry
-import Compiler.Monomorphize.State exposing (LocalMultiState, MonoState, Substitution, VarTypes, WorkItem(..))
+import Compiler.Monomorphize.State as State exposing (LocalMultiState, MonoState, Substitution, VarEnv(..), VarTypes, WorkItem(..))
 import Compiler.Monomorphize.TypeSubst as TypeSubst
 import Compiler.Reporting.Annotation as A
-import Data.Map as Dict exposing (Dict)
+import Data.Map
+import Dict exposing (Dict)
 import Data.Set as EverySet
 import System.TypeCheck.IO as IO
 import Utils.Crash
@@ -51,6 +53,33 @@ type ProcessedArg
     = ResolvedArg Mono.MonoExpr
     | PendingAccessor A.Region Name Can.Type
     | PendingKernel A.Region String String Can.Type
+    | LocalFunArg Name Can.Type
+
+
+{-| Enqueue a specialization onto the worklist, deduplicating via the scheduled BitSet.
+-}
+enqueueSpec :
+    Mono.Global
+    -> Mono.MonoType
+    -> Maybe Mono.LambdaId
+    -> MonoState
+    -> ( Mono.SpecId, MonoState )
+enqueueSpec global monoType maybeLambda state =
+    let
+        ( specId, newRegistry ) =
+            Registry.getOrCreateSpecId global monoType maybeLambda state.registry
+    in
+    if BitSet.member specId state.scheduled then
+        ( specId, { state | registry = newRegistry } )
+
+    else
+        ( specId
+        , { state
+            | registry = newRegistry
+            , scheduled = BitSet.insertGrowing specId state.scheduled
+            , worklist = SpecializeGlobal specId :: state.worklist
+          }
+        )
 
 
 {-| Check if the given name matches any active localMulti context in the stack.
@@ -100,7 +129,7 @@ updateLocalMultiStack defName key funcMonoType callSubst stack =
 
         localState :: rest ->
             if localState.defName == defName then
-                case Dict.get identity key localState.instances of
+                case Dict.get key localState.instances of
                     Just info ->
                         ( stack, info.freshName )
 
@@ -123,7 +152,7 @@ updateLocalMultiStack defName key funcMonoType callSubst stack =
                                 }
 
                             newInstances =
-                                Dict.insert identity key newInfo localState.instances
+                                Dict.insert key newInfo localState.instances
 
                             newLocalState =
                                 { localState | instances = newInstances }
@@ -186,6 +215,14 @@ specializeLambda lambdaExpr canType subst state =
         monoType0 =
             Mono.forceCNumberToInt (TypeSubst.applySubst subst canType)
 
+        -- 1b. Feed the concrete function type back into the substitution.
+        -- This propagates constraints from the enclosing specialization context
+        -- (e.g. compose identity identity 1) into the lambda's internal type variables.
+        -- unifyExtend only adds bindings already implied by monoType0, so this is safe.
+        refinedSubst : Substitution
+        refinedSubst =
+            TypeSubst.unifyExtend canType monoType0 subst
+
         -- 2. Extract params and body directly (no peelFunctionChain).
         ( params, bodyExpr ) =
             case lambdaExpr of
@@ -200,35 +237,38 @@ specializeLambda lambdaExpr canType subst state =
                         "specializeLambda: called with non-lambda expression"
 
         -- Guard: paramCount == 0 is a bug
-        -- 3. Specialize each parameter's declared Can.Type.
+        -- 3. Specialize each parameter's declared Can.Type under refinedSubst.
         monoParams : List ( Name, Mono.MonoType )
         monoParams =
             List.map
                 (\( name, paramCanType ) ->
-                    ( name, Mono.forceCNumberToInt (TypeSubst.applySubst subst paramCanType) )
+                    ( name, Mono.forceCNumberToInt (TypeSubst.applySubst refinedSubst paramCanType) )
                 )
                 params
 
         lambdaId =
             Mono.AnonymousLambda state.currentModule state.lambdaCounter
 
-        newVarTypes =
+        newVarEnv =
             List.foldl
-                (\( name, monoParamType ) vt ->
-                    Dict.insert identity name monoParamType vt
+                (\( name, monoParamType ) ve ->
+                    State.insertVar name monoParamType ve
                 )
-                state.varTypes
+                (State.pushFrame state.varEnv)
                 monoParams
 
         stateWithLambda =
             { state
                 | lambdaCounter = state.lambdaCounter + 1
-                , varTypes = newVarTypes
+                , varEnv = newVarEnv
             }
 
-        -- 4. Specialize the body.
-        ( monoBody, stateAfter ) =
-            specializeExpr bodyExpr subst stateWithLambda
+        -- 4. Specialize the body under refinedSubst.
+        ( monoBody, stateAfter0 ) =
+            specializeExpr bodyExpr refinedSubst stateWithLambda
+
+        stateAfter =
+            { stateAfter0 | varEnv = State.popFrame stateAfter0.varEnv }
 
         -- 5. Compute captures.
         captures =
@@ -264,8 +304,21 @@ specializeNode ctorName node requestedMonoType state =
     case node of
         TOpt.Define expr _ canType ->
             let
-                subst =
+                subst0 =
                     TypeSubst.unify canType requestedMonoType
+
+                -- Also unify the body expression's canonical type with requestedMonoType.
+                -- The annotation canType may be fully resolved (no TVars) while internal
+                -- expressions retain unresolved TVars. This enriches the substitution
+                -- with bindings for those internal TVars.
+                subst1 =
+                    TypeSubst.unifyExtend (TOpt.typeOf expr) requestedMonoType subst0
+
+                -- Fill any unconstrained CEcoValue TVars with MErased.
+                -- These are genuinely phantom (e.g., unused type params like `b`
+                -- in `Either a b` when only `a` is constrained at this call site).
+                subst =
+                    TypeSubst.fillUnconstrainedCEcoWithErased canType subst1
 
                 ( monoExpr, state1 ) =
                     specializeExpr expr subst state
@@ -278,8 +331,15 @@ specializeNode ctorName node requestedMonoType state =
 
         TOpt.TrackedDefine _ expr _ canType ->
             let
-                subst =
+                subst0 =
                     TypeSubst.unify canType requestedMonoType
+
+                subst1 =
+                    TypeSubst.unifyExtend (TOpt.typeOf expr) requestedMonoType subst0
+
+                -- Fill any unconstrained CEcoValue TVars with MErased.
+                subst =
+                    TypeSubst.fillUnconstrainedCEcoWithErased canType subst1
 
                 ( monoExpr, state1 ) =
                     specializeExpr expr subst state
@@ -336,7 +396,7 @@ specializeNode ctorName node requestedMonoType state =
 
         TOpt.Link linkedGlobal ->
             -- Link to another global - follow the link
-            case Dict.get TOpt.toComparableGlobal linkedGlobal state.toptNodes of
+            case Data.Map.get TOpt.toComparableGlobal linkedGlobal state.toptNodes of
                 Nothing ->
                     ( Mono.MonoExtern requestedMonoType, state )
 
@@ -481,7 +541,7 @@ specializeFunctionCycle requestedCanonical requestedName _ funcDefs requestedMon
         ( requestedSpecId, _ ) =
             Registry.getOrCreateSpecId requestedGlobal requestedMonoType Nothing stateAfter.registry
     in
-    case Dict.get identity requestedSpecId newNodes of
+    case Dict.get requestedSpecId newNodes of
         Just requestedNode ->
             ( requestedNode, { stateAfter | nodes = newNodes } )
 
@@ -495,8 +555,8 @@ specializeFunc :
     -> Mono.MonoType
     -> Substitution
     -> TOpt.Def
-    -> ( Dict Int Int Mono.MonoNode, MonoState )
-    -> ( Dict Int Int Mono.MonoNode, MonoState )
+    -> ( Dict Int Mono.MonoNode, MonoState )
+    -> ( Dict Int Mono.MonoNode, MonoState )
 specializeFunc requestedCanonical requestedName requestedMonoType sharedSubst def ( accNodes, accState ) =
     let
         name =
@@ -527,7 +587,7 @@ specializeFunc requestedCanonical requestedName requestedMonoType sharedSubst de
         accState1 =
             { accState | registry = newRegistry }
     in
-    if Dict.member identity specId accNodes then
+    if Dict.member specId accNodes then
         ( accNodes, accState1 )
 
     else
@@ -536,7 +596,7 @@ specializeFunc requestedCanonical requestedName requestedMonoType sharedSubst de
                 specializeFuncDefInCycle sharedSubst def accState1
 
             nextNodes =
-                Dict.insert identity specId monoNode accNodes
+                Dict.insert specId monoNode accNodes
         in
         ( nextNodes, accState2 )
 
@@ -564,39 +624,41 @@ specializeFuncDefInCycle subst def state =
                 monoArgs =
                     List.map (specializeArg subst) args
 
-                newVarTypes =
+                newVarEnv =
                     List.foldl
-                        (\( name, monoParamType ) vt -> Dict.insert identity name monoParamType vt)
-                        state.varTypes
+                        (\( name, monoParamType ) ve -> State.insertVar name monoParamType ve)
+                        (State.pushFrame state.varEnv)
                         monoArgs
 
                 stateWithParams =
-                    { state | varTypes = newVarTypes }
+                    { state | varEnv = newVarEnv }
 
                 augmentedSubst =
                     List.foldl
                         (\( ( _, canParamType ), ( _, monoParamType ) ) s ->
-                            case canParamType of
-                                Can.TVar varName ->
-                                    Dict.insert identity varName monoParamType s
-
-                                _ ->
-                                    s
+                            TypeSubst.unifyExtend canParamType monoParamType s
                         )
                         subst
                         (List.map2 Tuple.pair args monoArgs)
 
-                ( monoBody, state1 ) =
-                    specializeExpr body augmentedSubst stateWithParams
+                -- Fill any unconstrained CEcoValue TVars with MErased.
+                finalSubst =
+                    TypeSubst.fillUnconstrainedCEcoWithErased returnType augmentedSubst
 
-                -- FIX: Use augmentedSubst (not subst) so the type reflects param constraints
+                ( monoBody, state1pre ) =
+                    specializeExpr body finalSubst stateWithParams
+
+                state1 =
+                    { state1pre | varEnv = State.popFrame state1pre.varEnv }
+
+                -- FIX: Use finalSubst (not subst) so the type reflects param constraints
                 -- (e.g., number constraints resolved to MInt/MFloat).
                 -- Note: `returnType` is misleadingly named - it's actually the FULL function
                 -- type of the definition (e.g., Int -> Int -> Int becomes MFunction [MInt] (MFunction [MInt] MInt)).
                 -- Context.extractNodeSignature expects this full function type and extracts
                 -- the actual return type from it.
                 monoFuncType =
-                    Mono.forceCNumberToInt (TypeSubst.applySubst augmentedSubst returnType)
+                    Mono.forceCNumberToInt (TypeSubst.applySubst finalSubst returnType)
             in
             ( Mono.MonoTailFunc monoArgs monoBody monoFuncType, state1 )
 
@@ -704,7 +766,7 @@ specializeExpr expr subst state =
                 monoType =
                     case monoType0 of
                         Mono.MVar _ _ ->
-                            case Dict.get TOpt.toComparableGlobal global state.toptNodes of
+                            case Data.Map.get TOpt.toComparableGlobal global state.toptNodes of
                                 Just (TOpt.Define _ _ defCanType) ->
                                     Mono.forceCNumberToInt (TypeSubst.applySubst subst defCanType)
 
@@ -726,14 +788,8 @@ specializeExpr expr subst state =
                 monoGlobal =
                     toptGlobalToMono global
 
-                ( specId, newRegistry ) =
-                    Registry.getOrCreateSpecId monoGlobal monoType Nothing state.registry
-
-                newState =
-                    { state
-                        | registry = newRegistry
-                        , worklist = SpecializeGlobal monoGlobal monoType Nothing :: state.worklist
-                    }
+                ( specId, newState ) =
+                    enqueueSpec monoGlobal monoType Nothing state
             in
             ( Mono.MonoVarGlobal region specId monoType, newState )
 
@@ -745,7 +801,7 @@ specializeExpr expr subst state =
                 monoType =
                     case monoType0 of
                         Mono.MVar _ _ ->
-                            case Dict.get TOpt.toComparableGlobal global state.toptNodes of
+                            case Data.Map.get TOpt.toComparableGlobal global state.toptNodes of
                                 Just (TOpt.Enum _ enumCanType) ->
                                     Mono.forceCNumberToInt (TypeSubst.applySubst subst enumCanType)
 
@@ -758,14 +814,8 @@ specializeExpr expr subst state =
                 monoGlobal =
                     toptGlobalToMono global
 
-                ( specId, newRegistry ) =
-                    Registry.getOrCreateSpecId monoGlobal monoType Nothing state.registry
-
-                newState =
-                    { state
-                        | registry = newRegistry
-                        , worklist = SpecializeGlobal monoGlobal monoType Nothing :: state.worklist
-                    }
+                ( specId, newState ) =
+                    enqueueSpec monoGlobal monoType Nothing state
             in
             ( Mono.MonoVarGlobal region specId monoType, newState )
 
@@ -777,14 +827,8 @@ specializeExpr expr subst state =
                 monoGlobal =
                     toptGlobalToMono global
 
-                ( specId, newRegistry ) =
-                    Registry.getOrCreateSpecId monoGlobal monoType Nothing state.registry
-
-                newState =
-                    { state
-                        | registry = newRegistry
-                        , worklist = SpecializeGlobal monoGlobal monoType Nothing :: state.worklist
-                    }
+                ( specId, newState ) =
+                    enqueueSpec monoGlobal monoType Nothing state
             in
             ( Mono.MonoVarGlobal region specId monoType, newState )
 
@@ -796,14 +840,8 @@ specializeExpr expr subst state =
                 monoGlobal =
                     Mono.Global canonical name
 
-                ( specId, newRegistry ) =
-                    Registry.getOrCreateSpecId monoGlobal monoType Nothing state.registry
-
-                newState =
-                    { state
-                        | registry = newRegistry
-                        , worklist = SpecializeGlobal monoGlobal monoType Nothing :: state.worklist
-                    }
+                ( specId, newState ) =
+                    enqueueSpec monoGlobal monoType Nothing state
             in
             ( Mono.MonoVarGlobal region specId monoType, newState )
 
@@ -823,11 +861,26 @@ specializeExpr expr subst state =
 
         TOpt.List region exprs canType ->
             let
-                monoType =
+                monoType0 =
                     Mono.forceCNumberToInt (TypeSubst.applySubst subst canType)
 
                 ( monoExprs, stateAfter ) =
                     specializeExprs exprs subst state
+
+                -- If the canonical element type has unresolved TVars, infer from first element.
+                monoType =
+                    if Mono.containsCEcoMVar monoType0 then
+                        case monoExprs of
+                            first :: _ ->
+                                Mono.MList (Mono.typeOf first)
+
+                            [] ->
+                                -- Empty list: element type is unconstrained and never
+                                -- affects layout. Treat as phantom (MErased).
+                                Mono.eraseCEcoVarsToErased monoType0
+
+                    else
+                        monoType0
             in
             ( Mono.MonoList region monoExprs monoType, stateAfter )
 
@@ -847,11 +900,11 @@ specializeExpr expr subst state =
             case func of
                 TOpt.VarGlobal funcRegion global funcCanType ->
                     let
-                        callSubst =
+                        ( callSubst, funcCanTypeRenamed ) =
                             TypeSubst.unifyFuncCall funcCanType argTypes canType subst
 
                         funcMonoType =
-                            Mono.forceCNumberToInt (TypeSubst.applySubst callSubst funcCanType)
+                            Mono.forceCNumberToInt (TypeSubst.applySubst callSubst funcCanTypeRenamed)
 
                         paramTypes =
                             TypeSubst.extractParamTypes funcMonoType
@@ -860,19 +913,13 @@ specializeExpr expr subst state =
                             resolveProcessedArgs processedArgs paramTypes callSubst state1
 
                         resultMonoType =
-                            Mono.forceCNumberToInt (TypeSubst.applySubst callSubst canType)
+                            callResultMonoType subst callSubst canType
 
                         monoGlobal =
                             toptGlobalToMono global
 
-                        ( specId, newRegistry ) =
-                            Registry.getOrCreateSpecId monoGlobal funcMonoType Nothing state2.registry
-
-                        newState =
-                            { state2
-                                | registry = newRegistry
-                                , worklist = SpecializeGlobal monoGlobal funcMonoType Nothing :: state2.worklist
-                            }
+                        ( specId, newState ) =
+                            enqueueSpec monoGlobal funcMonoType Nothing state2
 
                         monoFunc =
                             Mono.MonoVarGlobal funcRegion specId funcMonoType
@@ -881,11 +928,11 @@ specializeExpr expr subst state =
 
                 TOpt.VarKernel funcRegion home name funcCanType ->
                     let
-                        callSubst =
+                        ( callSubst, funcCanTypeRenamed ) =
                             TypeSubst.unifyFuncCall funcCanType argTypes canType subst
 
                         funcMonoType =
-                            deriveKernelAbiType ( home, name ) funcCanType callSubst
+                            deriveKernelAbiType ( home, name ) funcCanTypeRenamed callSubst
 
                         paramTypes =
                             TypeSubst.extractParamTypes funcMonoType
@@ -894,7 +941,7 @@ specializeExpr expr subst state =
                             resolveProcessedArgs processedArgs paramTypes callSubst state1
 
                         resultMonoType =
-                            Mono.forceCNumberToInt (TypeSubst.applySubst callSubst canType)
+                            callResultMonoType subst callSubst canType
 
                         monoFunc =
                             Mono.MonoVarKernel funcRegion home name funcMonoType
@@ -903,11 +950,11 @@ specializeExpr expr subst state =
 
                 TOpt.VarDebug funcRegion name _ _ funcCanType ->
                     let
-                        callSubst =
+                        ( callSubst, funcCanTypeRenamed ) =
                             TypeSubst.unifyFuncCall funcCanType argTypes canType subst
 
                         funcMonoType =
-                            deriveKernelAbiType ( "Debug", name ) funcCanType callSubst
+                            deriveKernelAbiType ( "Debug", name ) funcCanTypeRenamed callSubst
 
                         paramTypes =
                             TypeSubst.extractParamTypes funcMonoType
@@ -916,7 +963,7 @@ specializeExpr expr subst state =
                             resolveProcessedArgs processedArgs paramTypes callSubst state1
 
                         resultMonoType =
-                            Mono.forceCNumberToInt (TypeSubst.applySubst callSubst canType)
+                            callResultMonoType subst callSubst canType
 
                         monoFunc =
                             Mono.MonoVarKernel funcRegion "Debug" name funcMonoType
@@ -925,44 +972,21 @@ specializeExpr expr subst state =
 
                 _ ->
                     -- Fallback: locally-bound or non-global function.
-                    -- We still want accessor args to see fully-resolved record types,
-                    -- so we run unifyFuncCall on the *canonical* type of `func`.
                     let
                         funcCanType =
                             TOpt.typeOf func
 
-                        -- Unify the local function's canonical type with the actual arg types
-                        -- and the expected result type at this call site.
-                        callSubst =
-                            TypeSubst.unifyFuncCall funcCanType argTypes canType subst
-
-                        -- Monomorphized function type for this *call*, with call-site constraints.
-                        funcMonoType =
-                            Mono.forceCNumberToInt (TypeSubst.applySubst callSubst funcCanType)
-
-                        -- Parameter types derived from the unified function type.
-                        paramTypes =
-                            TypeSubst.extractParamTypes funcMonoType
-
-                        -- Resolve pending accessors using the unified substitution and param types.
-                        ( monoArgs, state2 ) =
-                            resolveProcessedArgs processedArgs paramTypes callSubst state1
-
-                        -- Call result type, also under the unified substitution.
-                        resultMonoType =
-                            Mono.forceCNumberToInt (TypeSubst.applySubst callSubst canType)
-
                         localMultiName =
                             case func of
                                 TOpt.VarLocal name _ ->
-                                    if isLocalMultiTarget name state2 then
+                                    if isLocalMultiTarget name state1 then
                                         Just name
 
                                     else
                                         Nothing
 
                                 TOpt.TrackedVarLocal _ name _ ->
-                                    if isLocalMultiTarget name state2 then
+                                    if isLocalMultiTarget name state1 then
                                         Just name
 
                                     else
@@ -973,7 +997,25 @@ specializeExpr expr subst state =
                     in
                     case localMultiName of
                         Just name ->
+                            -- Local multi target: type variables are shared with enclosing
+                            -- scope, so we must NOT rename them (no unifyFuncCall).
+                            -- Use unifyArgsOnly to extend the caller's subst with arg bindings.
                             let
+                                callSubst =
+                                    TypeSubst.unifyArgsOnly funcCanType argTypes subst
+
+                                funcMonoType =
+                                    Mono.forceCNumberToInt (TypeSubst.applySubst callSubst funcCanType)
+
+                                paramTypes =
+                                    TypeSubst.extractParamTypes funcMonoType
+
+                                ( monoArgs, state2 ) =
+                                    resolveProcessedArgs processedArgs paramTypes callSubst state1
+
+                                resultMonoType =
+                                    callResultMonoType subst callSubst canType
+
                                 ( freshName, state3 ) =
                                     getOrCreateLocalInstance name funcMonoType callSubst state2
 
@@ -985,7 +1027,24 @@ specializeExpr expr subst state =
                             )
 
                         Nothing ->
+                            -- Non-local function: use unifyFuncCall with rename to avoid
+                            -- type variable name collisions between caller and callee.
                             let
+                                ( callSubst, funcCanTypeRenamed ) =
+                                    TypeSubst.unifyFuncCall funcCanType argTypes canType subst
+
+                                funcMonoType =
+                                    Mono.forceCNumberToInt (TypeSubst.applySubst callSubst funcCanTypeRenamed)
+
+                                paramTypes =
+                                    TypeSubst.extractParamTypes funcMonoType
+
+                                ( monoArgs, state2 ) =
+                                    resolveProcessedArgs processedArgs paramTypes callSubst state1
+
+                                resultMonoType =
+                                    callResultMonoType subst callSubst canType
+
                                 ( monoFunc, state3 ) =
                                     specializeExpr func callSubst state2
                             in
@@ -995,17 +1054,31 @@ specializeExpr expr subst state =
 
         TOpt.TailCall name args canType ->
             let
-                monoType =
+                monoType0 =
                     Mono.forceCNumberToInt (TypeSubst.applySubst subst canType)
 
                 ( monoArgs, stateAfter ) =
                     specializeNamedExprs args subst state
+
+                -- If the canonical type had unresolved TVars (producing CEcoValue),
+                -- look up the result type from the tail-called function's registered type.
+                monoType =
+                    if Mono.containsCEcoMVar monoType0 then
+                        case State.lookupVar name stateAfter.varEnv of
+                            Just funcType ->
+                                Mono.resultTypeOf funcType
+
+                            Nothing ->
+                                monoType0
+
+                    else
+                        monoType0
             in
             ( Mono.MonoTailCall name monoArgs monoType, stateAfter )
 
         TOpt.If branches final canType ->
             let
-                monoType =
+                monoType0 =
                     Mono.forceCNumberToInt (TypeSubst.applySubst subst canType)
 
                 ( monoBranches, state1 ) =
@@ -1013,12 +1086,21 @@ specializeExpr expr subst state =
 
                 ( monoFinal, state2 ) =
                     specializeExpr final subst state1
+
+                -- If the canonical type had unresolved TVars (producing CEcoValue),
+                -- infer the concrete type from the specialized final branch instead.
+                monoType =
+                    if Mono.containsCEcoMVar monoType0 then
+                        Mono.typeOf monoFinal
+
+                    else
+                        monoType0
             in
             ( Mono.MonoIf monoBranches monoFinal monoType, state2 )
 
         TOpt.Let def body canType ->
             let
-                monoType =
+                monoType0 =
                     Mono.forceCNumberToInt (TypeSubst.applySubst subst canType)
 
                 defName =
@@ -1056,28 +1138,60 @@ specializeExpr expr subst state =
                                     ( monoDef, state1 ) =
                                         specializeDef def subst { stateAfterBody | localMulti = restOfStack }
 
-                                    defMonoType =
+                                    defMonoType0 =
                                         Mono.forceCNumberToInt (TypeSubst.applySubst subst defCanType)
 
+                                    defMonoType =
+                                        if Mono.containsCEcoMVar defMonoType0 then
+                                            monoDefExprType monoDef
+
+                                        else
+                                            defMonoType0
+
+                                    -- Enrich substitution with bindings discovered from
+                                    -- the concrete def type, so the body sees them.
+                                    -- This mirrors the non-function let branch below.
+                                    enrichedSubst =
+                                        if Mono.containsCEcoMVar defMonoType0 then
+                                            TypeSubst.unifyExtend defCanType defMonoType subst
+
+                                        else
+                                            subst
+
                                     stateWithVar =
-                                        { state1 | varTypes = Dict.insert identity defName defMonoType state1.varTypes }
+                                        { state1 | varEnv = State.insertVar defName defMonoType state1.varEnv }
+
+                                    -- Re-specialize body with enriched substitution
+                                    -- so downstream expressions see the concrete def type.
+                                    ( monoBody2, state2 ) =
+                                        if Mono.containsCEcoMVar defMonoType0 then
+                                            specializeExpr body enrichedSubst stateWithVar
+
+                                        else
+                                            ( monoBody, stateWithVar )
                                 in
-                                ( Mono.MonoLet monoDef monoBody monoType, stateWithVar )
+                                ( Mono.MonoLet monoDef monoBody2
+                                    (if Mono.containsCEcoMVar monoType0 then Mono.typeOf monoBody2 else monoType0)
+                                , state2
+                                )
 
                             else
                                 -- We have one or more concrete instances discovered from call sites.
                                 let
                                     instancesList =
-                                        Dict.values compare topEntry.instances
+                                        Dict.values topEntry.instances
 
-                                    -- Build MonoDefs for each instance, using the call-site substitution.
-                                    -- Keep restOfStack so outer contexts are visible.
+                                    -- Build MonoDefs for each instance, bridging call-site types
+                                    -- to the def's own type variables via unifyExtend.
+                                    -- info.subst uses renamed call-site variable names which
+                                    -- don't match the def's canonical type variables; unifyExtend
+                                    -- properly maps the def's variables to the call-site mono types.
                                     ( instanceDefs, stateWithDefs ) =
                                         List.foldl
                                             (\info ( defsAcc, stAcc ) ->
                                                 let
                                                     mergedSubst =
-                                                        Dict.union info.subst subst
+                                                        TypeSubst.unifyExtend defCanType info.monoType subst
 
                                                     ( monoDef0, st1 ) =
                                                         specializeDef def mergedSubst stAcc
@@ -1090,13 +1204,13 @@ specializeExpr expr subst state =
                                             ( [], { stateAfterBody | localMulti = restOfStack } )
                                             instancesList
 
-                                    -- Register varTypes for all instances
+                                    -- Register varEnv for all instances
                                     stateWithVars =
                                         List.foldl
                                             (\info st ->
                                                 { st
-                                                    | varTypes =
-                                                        Dict.insert identity info.freshName info.monoType st.varTypes
+                                                    | varEnv =
+                                                        State.insertVar info.freshName info.monoType st.varEnv
                                                 }
                                             )
                                             stateWithDefs
@@ -1118,13 +1232,37 @@ specializeExpr expr subst state =
                                 ( monoDef, state1 ) =
                                     specializeDef def subst stateAfterBody
 
-                                defMonoType =
+                                defMonoType0 =
                                     Mono.forceCNumberToInt (TypeSubst.applySubst subst defCanType)
 
+                                defMonoType =
+                                    if Mono.containsCEcoMVar defMonoType0 then
+                                        monoDefExprType monoDef
+
+                                    else
+                                        defMonoType0
+
+                                enrichedSubst =
+                                    if Mono.containsCEcoMVar defMonoType0 then
+                                        TypeSubst.unifyExtend defCanType defMonoType subst
+
+                                    else
+                                        subst
+
                                 stateWithVar =
-                                    { state1 | varTypes = Dict.insert identity defName defMonoType state1.varTypes }
+                                    { state1 | varEnv = State.insertVar defName defMonoType state1.varEnv }
+
+                                ( monoBody2, state2 ) =
+                                    if Mono.containsCEcoMVar defMonoType0 then
+                                        specializeExpr body enrichedSubst stateWithVar
+
+                                    else
+                                        ( monoBody, stateWithVar )
                             in
-                            ( Mono.MonoLet monoDef monoBody monoType, stateWithVar )
+                            ( Mono.MonoLet monoDef monoBody2
+                                (if Mono.containsCEcoMVar monoType0 then Mono.typeOf monoBody2 else monoType0)
+                            , state2
+                            )
 
                 _ ->
                     -- Non-function let: original behavior
@@ -1132,33 +1270,60 @@ specializeExpr expr subst state =
                         ( monoDef, state1 ) =
                             specializeDef def subst state
 
-                        defMonoType =
+                        defMonoType0 =
                             Mono.forceCNumberToInt (TypeSubst.applySubst subst defCanType)
 
+                        -- If defCanType has unresolved TVars, infer from the specialized expr.
+                        defMonoType =
+                            if Mono.containsCEcoMVar defMonoType0 then
+                                monoDefExprType monoDef
+
+                            else
+                                defMonoType0
+
+                        -- Also enrich the substitution with any bindings discovered
+                        -- from the concrete def type, so the body sees them.
+                        enrichedSubst =
+                            if Mono.containsCEcoMVar defMonoType0 then
+                                TypeSubst.unifyExtend defCanType defMonoType subst
+
+                            else
+                                subst
+
                         stateWithVar =
-                            { state1 | varTypes = Dict.insert identity defName defMonoType state1.varTypes }
+                            { state1 | varEnv = State.insertVar defName defMonoType state1.varEnv }
 
                         ( monoBody, state2 ) =
-                            specializeExpr body subst stateWithVar
+                            specializeExpr body enrichedSubst stateWithVar
                     in
-                    ( Mono.MonoLet monoDef monoBody monoType, state2 )
+                    ( Mono.MonoLet monoDef monoBody
+                        (if Mono.containsCEcoMVar monoType0 then Mono.typeOf monoBody else monoType0)
+                    , state2
+                    )
 
         TOpt.Destruct destructor body canType ->
             let
-                monoType =
+                monoType0 =
                     Mono.forceCNumberToInt (TypeSubst.applySubst subst canType)
 
                 monoDestructor =
-                    specializeDestructor destructor subst state.varTypes state.globalTypeEnv
+                    specializeDestructor destructor subst state.varEnv state.globalTypeEnv
 
                 (Mono.MonoDestructor destructorName _ destructorType) =
                     monoDestructor
 
                 stateWithVar =
-                    { state | varTypes = Dict.insert identity destructorName destructorType state.varTypes }
+                    { state | varEnv = State.insertVar destructorName destructorType state.varEnv }
 
                 ( monoBody, stateAfter ) =
                     specializeExpr body subst stateWithVar
+
+                monoType =
+                    if Mono.containsCEcoMVar monoType0 then
+                        Mono.typeOf monoBody
+
+                    else
+                        monoType0
             in
             ( Mono.MonoDestruct monoDestructor monoBody monoType, stateAfter )
 
@@ -1169,19 +1334,28 @@ specializeExpr expr subst state =
                 monoTypeFromCan =
                     Mono.forceCNumberToInt (TypeSubst.applySubst subst canType)
 
-                initialVarTypes =
-                    state.varTypes
+                savedVarEnv =
+                    state.varEnv
 
                 ( monoDecider0, state1 ) =
                     specializeDecider decider subst state
 
-                state1WithResetVarTypes =
-                    { state1 | varTypes = initialVarTypes }
+                state1WithResetVarEnv =
+                    { state1 | varEnv = savedVarEnv }
 
                 ( monoJumps0, state2 ) =
-                    specializeJumps jumps subst state1WithResetVarTypes
+                    specializeJumps jumps subst state1WithResetVarEnv
             in
-            ( Mono.MonoCase label root monoDecider0 monoJumps0 monoTypeFromCan, state2 )
+            ( Mono.MonoCase label root monoDecider0 monoJumps0
+                (if Mono.containsCEcoMVar monoTypeFromCan then
+                    -- Infer from first jump or decider leaf
+                    inferCaseType monoDecider0 monoJumps0 monoTypeFromCan
+
+                 else
+                    monoTypeFromCan
+                )
+            , state2
+            )
 
         TOpt.Accessor region fieldName canType ->
             -- NOTE: This handles standalone accessor expressions (not passed as arguments).
@@ -1203,14 +1377,8 @@ specializeExpr expr subst state =
                 accessorGlobal =
                     Mono.Accessor fieldName
 
-                ( specId, newRegistry ) =
-                    Registry.getOrCreateSpecId accessorGlobal monoType Nothing state.registry
-
-                newState =
-                    { state
-                        | registry = newRegistry
-                        , worklist = SpecializeGlobal accessorGlobal monoType Nothing :: state.worklist
-                    }
+                ( specId, newState ) =
+                    enqueueSpec accessorGlobal monoType Nothing state
             in
             ( Mono.MonoVarGlobal region specId monoType, newState )
 
@@ -1232,8 +1400,42 @@ specializeExpr expr subst state =
                 ( monoRecord, state1 ) =
                     specializeExpr record subst state
 
+                -- Use the already-specialized record's MonoType for field type lookup.
+                -- This is more concrete than re-applying subst to the canonical type,
+                -- because monoRecord already encodes constraints from its own specialization.
+                recordMonoType =
+                    Mono.typeOf monoRecord
+
+                getFieldMonoType fieldName =
+                    case recordMonoType of
+                        Mono.MRecord fieldMap ->
+                            Dict.get fieldName fieldMap
+
+                        _ ->
+                            Nothing
+
                 ( monoUpdates, state2 ) =
-                    specializeUpdates updates subst state1
+                    Data.Map.foldl A.compareLocated
+                        (\locName updateExpr ( acc, st ) ->
+                            let
+                                fieldName =
+                                    A.toValue locName
+
+                                refinedSubst =
+                                    case getFieldMonoType fieldName of
+                                        Just fieldMonoType ->
+                                            TypeSubst.unifyExtend (TOpt.typeOf updateExpr) fieldMonoType subst
+
+                                        Nothing ->
+                                            subst
+
+                                ( monoExpr, newSt ) =
+                                    specializeExpr updateExpr refinedSubst st
+                            in
+                            ( ( fieldName, monoExpr ) :: acc, newSt )
+                        )
+                        ( [], state1 )
+                        updates
             in
             ( Mono.MonoRecordUpdate monoRecord monoUpdates monoType, state2 )
 
@@ -1242,8 +1444,36 @@ specializeExpr expr subst state =
                 monoType =
                     Mono.forceCNumberToInt (TypeSubst.applySubst subst canType)
 
+                -- Extract mono field types from the record MonoType for substitution refinement.
+                monoFieldTypes =
+                    case monoType of
+                        Mono.MRecord fieldMap ->
+                            fieldMap
+
+                        _ ->
+                            Dict.empty
+
                 ( monoFields, stateAfter ) =
-                    specializeRecordFields fields subst state
+                    Dict.foldl
+                        (\fieldName fieldExpr ( acc, st ) ->
+                            let
+                                -- Refine substitution per field: unify field's canonical type with
+                                -- the expected mono type, so lambdas inside records get concrete types.
+                                refinedSubst =
+                                    case Dict.get fieldName monoFieldTypes of
+                                        Just fieldMonoType ->
+                                            TypeSubst.unifyExtend (TOpt.typeOf fieldExpr) fieldMonoType subst
+
+                                        Nothing ->
+                                            subst
+
+                                ( monoExpr, newSt ) =
+                                    specializeExpr fieldExpr refinedSubst st
+                            in
+                            ( ( fieldName, monoExpr ) :: acc, newSt )
+                        )
+                        ( [], state )
+                        fields
             in
             ( Mono.MonoRecordCreate monoFields monoType, stateAfter )
 
@@ -1252,8 +1482,38 @@ specializeExpr expr subst state =
                 monoType =
                     Mono.forceCNumberToInt (TypeSubst.applySubst subst canType)
 
+                -- Extract mono field types for substitution refinement.
+                monoFieldTypes =
+                    case monoType of
+                        Mono.MRecord fieldMap ->
+                            fieldMap
+
+                        _ ->
+                            Dict.empty
+
                 ( monoFields, stateAfter ) =
-                    specializeTrackedRecordFields fields subst state
+                    Data.Map.foldl A.compareLocated
+                        (\locName fieldExpr ( acc, st ) ->
+                            let
+                                fieldName =
+                                    A.toValue locName
+
+                                -- Refine substitution per field for lambdas in records.
+                                refinedSubst =
+                                    case Dict.get fieldName monoFieldTypes of
+                                        Just fieldMonoType ->
+                                            TypeSubst.unifyExtend (TOpt.typeOf fieldExpr) fieldMonoType subst
+
+                                        Nothing ->
+                                            subst
+
+                                ( monoExpr, newSt ) =
+                                    specializeExpr fieldExpr refinedSubst st
+                            in
+                            ( ( fieldName, monoExpr ) :: acc, newSt )
+                        )
+                        ( [], state )
+                        fields
             in
             ( Mono.MonoRecordCreate monoFields monoType, stateAfter )
 
@@ -1281,6 +1541,44 @@ specializeExpr expr subst state =
 
         TOpt.Shader _ _ _ _ ->
             ( Mono.MonoUnit, state )
+
+
+
+{-| Infer the result type of a case expression from its branches.
+When the canonical type has unresolved TVars, we look at the first
+concrete branch type instead.
+-}
+inferCaseType : Mono.Decider Mono.MonoChoice -> List ( Int, Mono.MonoExpr ) -> Mono.MonoType -> Mono.MonoType
+inferCaseType decider jumps fallback =
+    -- Try to extract type from first jump
+    case jumps of
+        ( _, expr ) :: _ ->
+            Mono.typeOf expr
+
+        [] ->
+            -- No jumps, try decider leaf
+            inferFromDecider decider fallback
+
+
+inferFromDecider : Mono.Decider Mono.MonoChoice -> Mono.MonoType -> Mono.MonoType
+inferFromDecider decider fallback =
+    case decider of
+        Mono.Leaf (Mono.Inline expr) ->
+            Mono.typeOf expr
+
+        Mono.Leaf (Mono.Jump _) ->
+            fallback
+
+        Mono.Chain _ yes _ ->
+            inferFromDecider yes fallback
+
+        Mono.FanOut _ branches def ->
+            case branches of
+                ( _, d ) :: _ ->
+                    inferFromDecider d fallback
+
+                [] ->
+                    inferFromDecider def fallback
 
 
 
@@ -1361,6 +1659,48 @@ processCallArgs args subst state =
                             , st1
                             )
 
+                TOpt.VarLocal name canType ->
+                    if isLocalMultiTarget name st then
+                        let
+                            monoType =
+                                Mono.forceCNumberToInt (TypeSubst.applySubst subst canType)
+                        in
+                        ( LocalFunArg name canType :: accArgs
+                        , monoType :: accTypes
+                        , st
+                        )
+
+                    else
+                        let
+                            ( monoExpr, st1 ) =
+                                specializeExpr arg subst st
+                        in
+                        ( ResolvedArg monoExpr :: accArgs
+                        , Mono.typeOf monoExpr :: accTypes
+                        , st1
+                        )
+
+                TOpt.TrackedVarLocal _ name canType ->
+                    if isLocalMultiTarget name st then
+                        let
+                            monoType =
+                                Mono.forceCNumberToInt (TypeSubst.applySubst subst canType)
+                        in
+                        ( LocalFunArg name canType :: accArgs
+                        , monoType :: accTypes
+                        , st
+                        )
+
+                    else
+                        let
+                            ( monoExpr, st1 ) =
+                                specializeExpr arg subst st
+                        in
+                        ( ResolvedArg monoExpr :: accArgs
+                        , Mono.typeOf monoExpr :: accTypes
+                        , st1
+                        )
+
                 _ ->
                     let
                         ( monoExpr, st1 ) =
@@ -1399,7 +1739,7 @@ resolveProcessedArg processedArg maybeParamType subst state =
                     -- Derive accessor's MonoType from the full record layout.
                     let
                         fieldType =
-                            case Dict.get identity fieldName fields of
+                            case Dict.get fieldName fields of
                                 Just ft ->
                                     ft
 
@@ -1415,14 +1755,8 @@ resolveProcessedArg processedArg maybeParamType subst state =
                         accessorGlobal =
                             Mono.Accessor fieldName
 
-                        ( specId, newRegistry ) =
-                            Registry.getOrCreateSpecId accessorGlobal accessorMonoType Nothing state.registry
-
-                        newState =
-                            { state
-                                | registry = newRegistry
-                                , worklist = SpecializeGlobal accessorGlobal accessorMonoType Nothing :: state.worklist
-                            }
+                        ( specId, newState ) =
+                            enqueueSpec accessorGlobal accessorMonoType Nothing state
                     in
                     ( Mono.MonoVarGlobal region specId accessorMonoType, newState )
 
@@ -1431,7 +1765,7 @@ resolveProcessedArg processedArg maybeParamType subst state =
                     -- This case handles when the accessor IS the function being called.
                     let
                         fieldType =
-                            case Dict.get identity fieldName fields of
+                            case Dict.get fieldName fields of
                                 Just ft ->
                                     ft
 
@@ -1447,14 +1781,8 @@ resolveProcessedArg processedArg maybeParamType subst state =
                         accessorGlobal =
                             Mono.Accessor fieldName
 
-                        ( specId, newRegistry ) =
-                            Registry.getOrCreateSpecId accessorGlobal accessorMonoType Nothing state.registry
-
-                        newState =
-                            { state
-                                | registry = newRegistry
-                                , worklist = SpecializeGlobal accessorGlobal accessorMonoType Nothing :: state.worklist
-                            }
+                        ( specId, newState ) =
+                            enqueueSpec accessorGlobal accessorMonoType Nothing state
                     in
                     ( Mono.MonoVarGlobal region specId accessorMonoType, newState )
 
@@ -1471,6 +1799,48 @@ resolveProcessedArg processedArg maybeParamType subst state =
                     deriveKernelAbiType ( home, name ) canType subst
             in
             ( Mono.MonoVarKernel region home name kernelMonoType, state )
+
+        LocalFunArg name canType ->
+            -- Let-bound function passed as argument. Use the callee's parameter type
+            -- to refine the local's type and create a monomorphic instance.
+            case maybeParamType of
+                Just paramType ->
+                    case paramType of
+                        Mono.MFunction _ _ ->
+                            let
+                                refinedSubst =
+                                    TypeSubst.unifyExtend canType paramType subst
+
+                                funcMonoType =
+                                    Mono.forceCNumberToInt
+                                        (TypeSubst.applySubst refinedSubst canType)
+                            in
+                            if isLocalMultiTarget name state then
+                                let
+                                    ( freshName, state1 ) =
+                                        getOrCreateLocalInstance
+                                            name funcMonoType refinedSubst state
+                                in
+                                ( Mono.MonoVarLocal freshName funcMonoType, state1 )
+
+                            else
+                                ( Mono.MonoVarLocal name funcMonoType, state )
+
+                        _ ->
+                            let
+                                monoType =
+                                    Mono.forceCNumberToInt
+                                        (TypeSubst.applySubst subst canType)
+                            in
+                            ( Mono.MonoVarLocal name monoType, state )
+
+                Nothing ->
+                    let
+                        monoType =
+                            Mono.forceCNumberToInt
+                                (TypeSubst.applySubst subst canType)
+                    in
+                    ( Mono.MonoVarLocal name monoType, state )
 
 
 {-| Resolve a list of processed arguments using the callee's parameter types.
@@ -1533,8 +1903,8 @@ specializeBranches :
     -> ( List ( Mono.MonoExpr, Mono.MonoExpr ), MonoState )
 specializeBranches branches subst state =
     let
-        initialVarTypes =
-            state.varTypes
+        savedVarEnv =
+            state.varEnv
     in
     List.foldr
         (\( cond, body ) ( acc, st ) ->
@@ -1543,7 +1913,7 @@ specializeBranches branches subst state =
                     specializeExpr cond subst st
 
                 st1WithResetVarTypes =
-                    { st1 | varTypes = initialVarTypes }
+                    { st1 | varEnv = savedVarEnv }
 
                 ( mBody, st2 ) =
                     specializeExpr body subst st1WithResetVarTypes
@@ -1635,44 +2005,45 @@ specializeDef def subst state =
                 monoArgs =
                     List.map (specializeArg subst) args
 
-                newVarTypes =
+                newVarEnv =
                     List.foldl
-                        (\( pname, monoParamType ) vt ->
-                            Dict.insert identity pname monoParamType vt
+                        (\( pname, monoParamType ) ve ->
+                            State.insertVar pname monoParamType ve
                         )
-                        state.varTypes
+                        (State.pushFrame state.varEnv)
                         monoArgs
 
                 stateWithParams =
-                    { state | varTypes = newVarTypes }
+                    { state | varEnv = newVarEnv }
 
                 augmentedSubst =
                     List.foldl
                         (\( ( _, canParamType ), ( _, monoParamType ) ) s ->
-                            case canParamType of
-                                Can.TVar varName ->
-                                    Dict.insert identity varName monoParamType s
-
-                                _ ->
-                                    s
+                            TypeSubst.unifyExtend canParamType monoParamType s
                         )
                         subst
                         (List.map2 Tuple.pair args monoArgs)
 
-                ( monoExpr, stateAfter ) =
+                ( monoExpr, stateAfterPre ) =
                     specializeExpr expr augmentedSubst stateWithParams
+
+                stateAfter =
+                    { stateAfterPre | varEnv = State.popFrame stateAfterPre.varEnv }
             in
             ( Mono.MonoTailDef name monoArgs monoExpr, stateAfter )
 
 
-specializeDestructor : TOpt.Destructor -> Substitution -> VarTypes -> TypeEnv.GlobalTypeEnv -> Mono.MonoDestructor
-specializeDestructor (TOpt.Destructor name path canType) subst varTypes globalTypeEnv =
+specializeDestructor : TOpt.Destructor -> Substitution -> VarEnv -> TypeEnv.GlobalTypeEnv -> Mono.MonoDestructor
+specializeDestructor (TOpt.Destructor name path canType) subst varEnv globalTypeEnv =
     let
         monoPath =
-            specializePath path varTypes globalTypeEnv
+            specializePath path varEnv globalTypeEnv
 
         monoType =
             Mono.forceCNumberToInt (TypeSubst.applySubst subst canType)
+
+        pathType =
+            Mono.getMonoPathType monoPath
     in
     Mono.MonoDestructor name monoPath monoType
 
@@ -1685,13 +2056,13 @@ The path is structured from leaf (root variable) outward, so we:
 2.  Walk back out through the path, computing types at each step
 
 -}
-specializePath : TOpt.Path -> VarTypes -> TypeEnv.GlobalTypeEnv -> Mono.MonoPath
-specializePath path varTypes globalTypeEnv =
+specializePath : TOpt.Path -> VarEnv -> TypeEnv.GlobalTypeEnv -> Mono.MonoPath
+specializePath path varEnv globalTypeEnv =
     case path of
         TOpt.Index index hint subPath ->
             let
                 monoSubPath =
-                    specializePath subPath varTypes globalTypeEnv
+                    specializePath subPath varEnv globalTypeEnv
 
                 containerType =
                     Mono.getMonoPathType monoSubPath
@@ -1704,7 +2075,7 @@ specializePath path varTypes globalTypeEnv =
         TOpt.ArrayIndex idx subPath ->
             let
                 monoSubPath =
-                    specializePath subPath varTypes globalTypeEnv
+                    specializePath subPath varEnv globalTypeEnv
 
                 containerType =
                     Mono.getMonoPathType monoSubPath
@@ -1718,7 +2089,7 @@ specializePath path varTypes globalTypeEnv =
         TOpt.Field fieldName subPath ->
             let
                 monoSubPath =
-                    specializePath subPath varTypes globalTypeEnv
+                    specializePath subPath varEnv globalTypeEnv
 
                 recordType =
                     Mono.getMonoPathType monoSubPath
@@ -1726,7 +2097,7 @@ specializePath path varTypes globalTypeEnv =
                 resultType =
                     case recordType of
                         Mono.MRecord fields ->
-                            case Dict.get identity fieldName fields of
+                            case Dict.get fieldName fields of
                                 Just fieldMonoType ->
                                     fieldMonoType
 
@@ -1748,7 +2119,7 @@ specializePath path varTypes globalTypeEnv =
         TOpt.Unbox subPath ->
             let
                 monoSubPath =
-                    specializePath subPath varTypes globalTypeEnv
+                    specializePath subPath varEnv globalTypeEnv
 
                 containerType =
                     Mono.getMonoPathType monoSubPath
@@ -1762,12 +2133,12 @@ specializePath path varTypes globalTypeEnv =
         TOpt.Root name ->
             let
                 rootType =
-                    case Dict.get identity name varTypes of
+                    case State.lookupVar name varEnv of
                         Just ty ->
                             ty
 
                         Nothing ->
-                            Utils.Crash.crash ("Specialize.specializePath: Root variable '" ++ name ++ "' not found in VarTypes. This is a compiler bug.")
+                            Utils.Crash.crash ("Specialize.specializePath: Root variable '" ++ name ++ "' not found in VarEnv. This is a compiler bug.")
             in
             Mono.MonoRoot name rootType
 
@@ -1844,9 +2215,12 @@ computeCustomFieldType globalTypeEnv ctorName index containerType =
                                     let
                                         typeVarSubst =
                                             List.map2 Tuple.pair unionData.vars typeArgs
-                                                |> List.foldl (\( varName, monoArg ) acc -> Dict.insert identity varName monoArg acc) Dict.empty
+                                                |> List.foldl (\( varName, monoArg ) acc -> Dict.insert varName monoArg acc) Dict.empty
+
+                                        result =
+                                            Mono.forceCNumberToInt (TypeSubst.applySubst typeVarSubst canArgType)
                                     in
-                                    Mono.forceCNumberToInt (TypeSubst.applySubst typeVarSubst canArgType)
+                                    result
 
                                 [] ->
                                     Utils.Crash.crash ("Specialize.computeCustomFieldType: Constructor arg index " ++ String.fromInt index ++ " out of bounds for " ++ ctorName)
@@ -1887,7 +2261,7 @@ computeUnboxResultType globalTypeEnv containerType =
                                     let
                                         typeVarSubst =
                                             List.map2 Tuple.pair unionData.vars typeArgs
-                                                |> List.foldl (\( varName, monoArg ) acc -> Dict.insert identity varName monoArg acc) Dict.empty
+                                                |> List.foldl (\( varName, monoArg ) acc -> Dict.insert varName monoArg acc) Dict.empty
                                     in
                                     Mono.forceCNumberToInt (TypeSubst.applySubst typeVarSubst canArgType)
 
@@ -1945,33 +2319,33 @@ specializeDecider decider subst state =
 
         TOpt.Chain testChain success failure ->
             let
-                initialVarTypes =
-                    state.varTypes
+                savedVarEnv =
+                    state.varEnv
 
                 ( monoSuccess, state1 ) =
                     specializeDecider success subst state
 
-                state1WithResetVarTypes =
-                    { state1 | varTypes = initialVarTypes }
+                state1WithResetVarEnv =
+                    { state1 | varEnv = savedVarEnv }
 
                 ( monoFailure, state2 ) =
-                    specializeDecider failure subst state1WithResetVarTypes
+                    specializeDecider failure subst state1WithResetVarEnv
             in
             ( Mono.Chain testChain monoSuccess monoFailure, state2 )
 
         TOpt.FanOut path edges fallback ->
             let
-                initialVarTypes =
-                    state.varTypes
+                savedVarEnv =
+                    state.varEnv
 
                 ( monoEdges, state1 ) =
                     specializeEdges edges subst state
 
-                state1WithResetVarTypes =
-                    { state1 | varTypes = initialVarTypes }
+                state1WithResetVarEnv =
+                    { state1 | varEnv = savedVarEnv }
 
                 ( monoFallback, state2 ) =
-                    specializeDecider fallback subst state1WithResetVarTypes
+                    specializeDecider fallback subst state1WithResetVarEnv
             in
             ( Mono.FanOut path monoEdges monoFallback, state2 )
 
@@ -1993,17 +2367,17 @@ specializeChoice choice subst state =
 specializeEdges : List ( DT.Test, TOpt.Decider TOpt.Choice ) -> Substitution -> MonoState -> ( List ( DT.Test, Mono.Decider Mono.MonoChoice ), MonoState )
 specializeEdges edges subst state =
     let
-        initialVarTypes =
-            state.varTypes
+        savedVarEnv =
+            state.varEnv
     in
     List.foldr
         (\( test, decider ) ( acc, st ) ->
             let
-                stWithResetVarTypes =
-                    { st | varTypes = initialVarTypes }
+                stWithResetVarEnv =
+                    { st | varEnv = savedVarEnv }
 
                 ( monoDecider, newSt ) =
-                    specializeDecider decider subst stWithResetVarTypes
+                    specializeDecider decider subst stWithResetVarEnv
             in
             ( ( test, monoDecider ) :: acc, newSt )
         )
@@ -2014,17 +2388,17 @@ specializeEdges edges subst state =
 specializeJumps : List ( Int, TOpt.Expr ) -> Substitution -> MonoState -> ( List ( Int, Mono.MonoExpr ), MonoState )
 specializeJumps jumps subst state =
     let
-        initialVarTypes =
-            state.varTypes
+        savedVarEnv =
+            state.varEnv
     in
     List.foldr
         (\( idx, expr ) ( acc, st ) ->
             let
-                stWithResetVarTypes =
-                    { st | varTypes = initialVarTypes }
+                stWithResetVarEnv =
+                    { st | varEnv = savedVarEnv }
 
                 ( monoExpr, newSt ) =
-                    specializeExpr expr subst stWithResetVarTypes
+                    specializeExpr expr subst stWithResetVarEnv
             in
             ( ( idx, monoExpr ) :: acc, newSt )
         )
@@ -2032,9 +2406,9 @@ specializeJumps jumps subst state =
         jumps
 
 
-specializeRecordFields : Dict String Name TOpt.Expr -> Substitution -> MonoState -> ( List ( Name, Mono.MonoExpr ), MonoState )
+specializeRecordFields : Dict Name TOpt.Expr -> Substitution -> MonoState -> ( List ( Name, Mono.MonoExpr ), MonoState )
 specializeRecordFields fields subst state =
-    Dict.foldl compare
+    Dict.foldl
         (\name expr ( acc, st ) ->
             let
                 ( monoExpr, newSt ) =
@@ -2046,9 +2420,9 @@ specializeRecordFields fields subst state =
         fields
 
 
-specializeTrackedRecordFields : Dict String (A.Located Name) TOpt.Expr -> Substitution -> MonoState -> ( List ( Name, Mono.MonoExpr ), MonoState )
+specializeTrackedRecordFields : Data.Map.Dict String (A.Located Name) TOpt.Expr -> Substitution -> MonoState -> ( List ( Name, Mono.MonoExpr ), MonoState )
 specializeTrackedRecordFields fields subst state =
-    Dict.foldl A.compareLocated
+    Data.Map.foldl A.compareLocated
         (\locName expr ( acc, st ) ->
             let
                 name =
@@ -2063,9 +2437,9 @@ specializeTrackedRecordFields fields subst state =
         fields
 
 
-specializeUpdates : Dict String (A.Located Name) TOpt.Expr -> Substitution -> MonoState -> ( List ( Name, Mono.MonoExpr ), MonoState )
+specializeUpdates : Data.Map.Dict String (A.Located Name) TOpt.Expr -> Substitution -> MonoState -> ( List ( Name, Mono.MonoExpr ), MonoState )
 specializeUpdates updates subst state =
-    Dict.foldl A.compareLocated
+    Data.Map.foldl A.compareLocated
         (\locName expr ( acc, st ) ->
             let
                 fieldName =
@@ -2078,6 +2452,41 @@ specializeUpdates updates subst state =
         )
         ( [], state )
         updates
+
+
+{-| Extract the expression type from a MonoDef.
+-}
+monoDefExprType : Mono.MonoDef -> Mono.MonoType
+monoDefExprType monoDef =
+    case monoDef of
+        Mono.MonoDef _ monoExpr ->
+            Mono.typeOf monoExpr
+
+        Mono.MonoTailDef _ monoArgs monoExpr ->
+            -- For TailDef, construct the function type from args and body return type.
+            List.foldr
+                (\( _, argType ) acc -> Mono.MFunction [ argType ] acc)
+                (Mono.typeOf monoExpr)
+                monoArgs
+
+
+{-| Compute the result MonoType for a Call expression.
+Prefer the caller's substitution to avoid type variable name collisions
+between the caller's scope and the callee's scope. When callee type variables
+share names with caller type variables, callSubst can contaminate the result.
+Fall back to callSubst only when the caller's subst leaves CEcoValue MVars.
+-}
+callResultMonoType : Substitution -> Substitution -> Can.Type -> Mono.MonoType
+callResultMonoType callerSubst callSubst canType =
+    let
+        fromCaller =
+            Mono.forceCNumberToInt (TypeSubst.applySubst callerSubst canType)
+    in
+    if Mono.containsCEcoMVar fromCaller then
+        Mono.forceCNumberToInt (TypeSubst.applySubst callSubst canType)
+
+    else
+        fromCaller
 
 
 {-| Specialize a function argument by applying type substitution.
@@ -2160,7 +2569,7 @@ isFullyMonomorphicType monoType =
             List.all isFullyMonomorphicType elems
 
         Mono.MRecord fields ->
-            Dict.foldl compare
+            Dict.foldl
                 (\_ fieldType acc -> acc && isFullyMonomorphicType fieldType)
                 True
                 fields
@@ -2185,6 +2594,10 @@ isFullyMonomorphicType monoType =
             True
 
         Mono.MUnit ->
+            True
+
+        -- MErased is fully resolved (erased, not a variable)
+        Mono.MErased ->
             True
 
 

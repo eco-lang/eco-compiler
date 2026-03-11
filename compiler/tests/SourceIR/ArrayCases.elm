@@ -398,8 +398,15 @@ repeatTest expectFn _ =
             , body = repeatBody
             }
 
+        testValueDef =
+            { name = "testValue"
+            , args = []
+            , tipe = tArray tInt
+            , body = callExpr (varExpr "repeat") [ intExpr 3, intExpr 42 ]
+            }
+
         modul =
-            makeModuleWithTypedDefsUnionsAliases "Array" (helperStubs ++ [ repeatDef ]) arrayUnions arrayAliases
+            makeModuleWithTypedDefsUnionsAliases "Array" (helperStubs ++ [ repeatDef, testValueDef ]) arrayUnions arrayAliases
     in
     expectFn modul
 
@@ -442,8 +449,15 @@ pushTest expectFn _ =
             , body = pushBody
             }
 
+        testValueDef =
+            { name = "testValue"
+            , args = []
+            , tipe = tArray tInt
+            , body = callExpr (varExpr "push") [ intExpr 42, varExpr "empty" ]
+            }
+
         modul =
-            makeModuleWithTypedDefsUnionsAliases "Array" (helperStubs ++ [ pushDef ]) arrayUnions arrayAliases
+            makeModuleWithTypedDefsUnionsAliases "Array" (helperStubs ++ [ pushDef, testValueDef ]) arrayUnions arrayAliases
     in
     expectFn modul
 
@@ -506,8 +520,15 @@ sliceTest expectFn _ =
             , body = sliceBody
             }
 
+        testValueDef =
+            { name = "testValue"
+            , args = []
+            , tipe = tArray tInt
+            , body = callExpr (varExpr "slice") [ intExpr 0, intExpr 1, varExpr "empty" ]
+            }
+
         modul =
-            makeModuleWithTypedDefsUnionsAliases "Array" (helperStubs ++ [ sliceDef ]) arrayUnions arrayAliases
+            makeModuleWithTypedDefsUnionsAliases "Array" (helperStubs ++ [ sliceDef, testValueDef ]) arrayUnions arrayAliases
     in
     expectFn modul
 
@@ -600,8 +621,15 @@ fromListHelpTest expectFn _ =
             , body = fromListHelpBody
             }
 
+        testValueDef =
+            { name = "testValue"
+            , args = []
+            , tipe = tArray tInt
+            , body = callExpr (varExpr "fromListHelp") [ listExpr [], listExpr [], intExpr 0 ]
+            }
+
         modul =
-            makeModuleWithTypedDefsUnionsAliases "Array" (helperStubsExcludingFromListHelp ++ [ fromListHelpDef ]) arrayUnions arrayAliases
+            makeModuleWithTypedDefsUnionsAliases "Array" (helperStubsExcludingFromListHelp ++ [ fromListHelpDef, testValueDef ]) arrayUnions arrayAliases
     in
     expectFn modul
 
@@ -739,8 +767,15 @@ appendTest expectFn _ =
             , body = appendBody
             }
 
+        testValueDef =
+            { name = "testValue"
+            , args = []
+            , tipe = tArray tInt
+            , body = callExpr (varExpr "append") [ varExpr "empty", varExpr "empty" ]
+            }
+
         modul =
-            makeModuleWithTypedDefsUnionsAliases "Array" (helperStubs ++ [ appendDef ]) arrayUnions arrayAliases
+            makeModuleWithTypedDefsUnionsAliases "Array" (helperStubs ++ [ appendDef, testValueDef ]) arrayUnions arrayAliases
     in
     expectFn modul
 
@@ -923,7 +958,14 @@ sliceLeftTest expectFn _ =
             , body = sliceLeftBody
             }
 
+        testValueDef =
+            { name = "testValue"
+            , args = []
+            , tipe = tArray tInt
+            , body = callExpr (varExpr "sliceLeft") [ intExpr 0, varExpr "empty" ]
+            }
+
         modul =
-            makeModuleWithTypedDefsUnionsAliases "Array" (helperStubsExcludingSliceLeft ++ [ sliceLeftDef ]) arrayUnions arrayAliases
+            makeModuleWithTypedDefsUnionsAliases "Array" (helperStubsExcludingSliceLeft ++ [ sliceLeftDef, testValueDef ]) arrayUnions arrayAliases
     in
     expectFn modul

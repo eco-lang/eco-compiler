@@ -18,10 +18,11 @@ they are marked as boxed (isUnboxed = False).
 
 -}
 
+import Array
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.Source as Src
 import Compiler.Generate.MLIR.Types as Types
-import Data.Map as Dict
+import Dict
 import Expect exposing (Expectation)
 import TestLogic.TestPipeline as Pipeline
 
@@ -87,9 +88,9 @@ formatViolations violations =
 
 {-| Check all CtorShapes produce valid CtorLayouts via Types.computeCtorLayout.
 -}
-checkCtorShapesAgainstLayouts : Dict.Dict (List String) (List String) (List Mono.CtorShape) -> List Violation
+checkCtorShapesAgainstLayouts : Dict.Dict (List String) (List Mono.CtorShape) -> List Violation
 checkCtorShapesAgainstLayouts ctorShapes =
-    Dict.foldl compare
+    Dict.foldl
         (\typeKey shapes acc ->
             List.concatMap (checkShapeAgainstLayout typeKey) shapes ++ acc
         )
@@ -212,6 +213,9 @@ monoTypeToString monoType =
         Mono.MVar name _ ->
             "MVar(" ++ name ++ ")"
 
+        Mono.MErased ->
+            "MErased"
+
 
 
 -- ============================================================================
@@ -222,40 +226,48 @@ monoTypeToString monoType =
 {-| Check all MonoCtor nodes reference shapes that exist in ctorShapes.
 -}
 checkCtorNodesUseKnownShapes :
-    Dict.Dict (List String) (List String) (List Mono.CtorShape)
-    -> Dict.Dict Int Int Mono.MonoNode
+    Dict.Dict (List String) (List Mono.CtorShape)
+    -> Array.Array (Maybe Mono.MonoNode)
     -> List Violation
 checkCtorNodesUseKnownShapes ctorShapes nodes =
-    Dict.foldl compare
-        (\specId node acc ->
-            case node of
-                Mono.MonoCtor shape _ ->
-                    if shapeExistsInDict shape ctorShapes then
-                        acc
+    Array.foldl
+        (\maybeNode ( specId, acc ) ->
+            case maybeNode of
+                Nothing ->
+                    ( specId + 1, acc )
 
-                    else
-                        { context = "SpecId " ++ String.fromInt specId
-                        , message =
-                            "MONO_013 violation: MonoCtor uses shape '"
-                                ++ shape.name
-                                ++ "' (tag "
-                                ++ String.fromInt shape.tag
-                                ++ ") not found in ctorShapes"
-                        }
-                            :: acc
+                Just node ->
+                    case node of
+                        Mono.MonoCtor shape _ ->
+                            if shapeExistsInDict shape ctorShapes then
+                                ( specId + 1, acc )
 
-                _ ->
-                    acc
+                            else
+                                ( specId + 1
+                                , { context = "SpecId " ++ String.fromInt specId
+                                  , message =
+                                        "MONO_013 violation: MonoCtor uses shape '"
+                                            ++ shape.name
+                                            ++ "' (tag "
+                                            ++ String.fromInt shape.tag
+                                            ++ ") not found in ctorShapes"
+                                  }
+                                    :: acc
+                                )
+
+                        _ ->
+                            ( specId + 1, acc )
         )
-        []
+        ( 0, [] )
         nodes
+        |> Tuple.second
 
 
 {-| Check if a CtorShape exists in the ctorShapes dictionary.
 -}
-shapeExistsInDict : Mono.CtorShape -> Dict.Dict (List String) (List String) (List Mono.CtorShape) -> Bool
+shapeExistsInDict : Mono.CtorShape -> Dict.Dict (List String) (List Mono.CtorShape) -> Bool
 shapeExistsInDict targetShape ctorShapes =
-    Dict.foldl compare
+    Dict.foldl
         (\_ shapes found ->
             found || List.any (\s -> s.name == targetShape.name && s.tag == targetShape.tag) shapes
         )

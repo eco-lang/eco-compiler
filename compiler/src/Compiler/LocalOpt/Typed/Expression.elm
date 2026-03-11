@@ -16,6 +16,7 @@ carries a Can.Type annotation.
 
 -}
 
+import Array
 import Compiler.AST.Canonical as Can
 import Compiler.AST.TypedCanonical as TCan exposing (ExprTypes)
 import Compiler.AST.TypedOptimized as TOpt
@@ -29,7 +30,8 @@ import Compiler.LocalOpt.Typed.Names as Names
 import Compiler.Reporting.Annotation as A
 import Compiler.Type.KernelTypes as KernelTypes
 import Compiler.TypedCanonical.Build as TCanBuild
-import Data.Map as Dict exposing (Dict)
+import Data.Map
+import Dict exposing (Dict)
 import Data.Set as EverySet exposing (EverySet)
 import System.TypeCheck.IO as IO
 import Utils.Crash
@@ -53,7 +55,7 @@ and other type-directed optimizations.
 
 -}
 type alias Annotations =
-    Dict String Name Can.Annotation
+    Dict Name Can.Annotation
 
 
 
@@ -410,7 +412,7 @@ optimizeExpr kernelEnv annotations exprTypes home cycle region tipe expr =
                         |> Names.map (\optExpr -> ( locName, optExpr ))
 
                 fieldUpdateList =
-                    Dict.toList A.compareLocated fieldUpdates
+                    Data.Map.toList A.compareLocated fieldUpdates
             in
             optimize kernelEnv annotations exprTypes home cycle (TCanBuild.toTypedExpr exprTypes recordExpr)
                 |> Names.andThen
@@ -420,7 +422,7 @@ optimizeExpr kernelEnv annotations exprTypes home cycle region tipe expr =
                                 (\optUpdates ->
                                     let
                                         optUpdatesDict =
-                                            Dict.fromList A.toValue optUpdates
+                                            Data.Map.fromList A.toValue optUpdates
                                     in
                                     Names.registerFieldDict (Utils.mapMapKeys identity A.compareLocated A.toValue fieldUpdates)
                                         (TOpt.Update region optRecord optUpdatesDict tipe)
@@ -436,14 +438,14 @@ optimizeExpr kernelEnv annotations exprTypes home cycle region tipe expr =
 
                 fieldList : List ( A.Located Name, Can.Expr )
                 fieldList =
-                    Dict.toList A.compareLocated fields
+                    Data.Map.toList A.compareLocated fields
             in
             Names.traverse optimizeField fieldList
                 |> Names.andThen
                     (\optFields ->
                         let
                             optFieldsDict =
-                                Dict.fromList A.toValue optFields
+                                Data.Map.fromList A.toValue optFields
                         in
                         Names.registerFieldDict (Utils.mapMapKeys identity A.compareLocated A.toValue fields) (TOpt.TrackedRecord region optFieldsDict tipe)
                     )
@@ -471,7 +473,7 @@ optimizeExpr kernelEnv annotations exprTypes home cycle region tipe expr =
                     )
 
         Can.Shader src (Shader.Types attributes uniforms _) ->
-            Names.pure (TOpt.Shader src (EverySet.fromList identity (Dict.keys compare attributes)) (EverySet.fromList identity (Dict.keys compare uniforms)) tipe)
+            Names.pure (TOpt.Shader src (EverySet.fromList identity (Data.Map.keys compare attributes)) (EverySet.fromList identity (Data.Map.keys compare uniforms)) tipe)
 
 
 {-| Catch a missing local type error and use a fallback.
@@ -487,7 +489,7 @@ catchMissing _ tracker =
 -}
 lookupAnnotationType : Name -> Annotations -> Can.Type
 lookupAnnotationType name annotations =
-    case Dict.get identity name annotations of
+    case Dict.get name annotations of
         Just (Can.Forall _ tipe) ->
             tipe
 
@@ -726,7 +728,7 @@ getDefNameAndType exprTypes def =
                 argTypes =
                     List.map
                         (\(A.At _ patInfo) ->
-                            case Dict.get identity patInfo.id exprTypes of
+                            case Array.get patInfo.id exprTypes |> Maybe.andThen identity of
                                 Just t ->
                                     t
 
@@ -737,7 +739,7 @@ getDefNameAndType exprTypes def =
 
                 -- Get body type
                 bodyType =
-                    case Dict.get identity bodyInfo.id exprTypes of
+                    case Array.get bodyInfo.id exprTypes |> Maybe.andThen identity of
                         Just t ->
                             t
 
@@ -993,7 +995,7 @@ lookupPatternType exprTypes patId location =
         Utils.Crash.crash (location ++ ": synthetic")
 
     else
-        case Dict.get identity patId exprTypes of
+        case Array.get patId exprTypes |> Maybe.andThen identity of
             Just t ->
                 t
 
@@ -1112,9 +1114,9 @@ destructHelpWithType exprTypes maybeParentPatId maybeType path (A.At region patt
                     -- Try to get record field type from pattern's type
                     let
                         fieldType =
-                            case Maybe.map Type.iteratedDealias (Dict.get identity effectivePatId exprTypes) of
+                            case Maybe.map Type.iteratedDealias (Array.get effectivePatId exprTypes |> Maybe.andThen identity) of
                                 Just (Can.TRecord fieldDict _) ->
-                                    case Dict.get identity name fieldDict of
+                                    case Dict.get name fieldDict of
                                         Just (Can.FieldType _ t) ->
                                             t
 
@@ -1203,7 +1205,7 @@ destructHelpWithType exprTypes maybeParentPatId maybeType path (A.At region patt
                             (A.toValue arg).id
 
                         actualType =
-                            case Dict.get identity patternId exprTypes of
+                            case Array.get patternId exprTypes |> Maybe.andThen identity of
                                 Just t ->
                                     Just t
 
@@ -1280,7 +1282,7 @@ destructCtorArg exprTypes ctorName path revDs (Can.PatternCtorArg index _ arg) =
             (A.toValue arg).id
 
         actualType =
-            case Dict.get identity patternId exprTypes of
+            case Array.get patternId exprTypes |> Maybe.andThen identity of
                 Just t ->
                     Just t
 

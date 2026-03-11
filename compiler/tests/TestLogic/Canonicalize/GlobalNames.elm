@@ -19,7 +19,8 @@ import Compiler.Elm.Interface.Basic as Basic
 import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Error.Canonicalize as CanError
 import Compiler.Reporting.Result as Result
-import Data.Map as Dict
+import Data.Map as DMap
+import Dict
 import Expect
 import System.TypeCheck.IO as IO
 
@@ -30,7 +31,7 @@ expectGlobalNamesQualified : Src.Module -> Expect.Expectation
 expectGlobalNamesQualified modul =
     let
         result =
-            Canonicalize.canonicalize ( "eco", "example" ) Basic.testIfaces modul
+            Canonicalize.canonicalize ( "eco", "example" ) (DMap.fromList identity (Dict.toList Basic.testIfaces)) modul
     in
     case Result.run result of
         ( _, Err errors ) ->
@@ -227,7 +228,7 @@ collectExprNodeIssues node =
 
         Can.Update record fields ->
             collectExprIssues record
-                ++ Dict.foldl A.compareLocated
+                ++ DMap.foldl A.compareLocated
                     (\_ (Can.FieldUpdate _ expr) acc ->
                         collectExprIssues expr ++ acc
                     )
@@ -235,7 +236,7 @@ collectExprNodeIssues node =
                     fields
 
         Can.Record fields ->
-            Dict.foldl A.compareLocated
+            DMap.foldl A.compareLocated
                 (\_ expr acc -> collectExprIssues expr ++ acc)
                 []
                 fields

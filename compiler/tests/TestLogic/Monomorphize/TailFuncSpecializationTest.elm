@@ -29,7 +29,7 @@ import Compiler.AST.SourceBuilder
         , tType
         , varExpr
         )
-import Data.Map as Dict
+import Array
 import Expect exposing (Expectation)
 import Test exposing (Test)
 import TestLogic.TestPipeline as Pipeline
@@ -148,11 +148,11 @@ checkMonoTailFuncType funcName (Mono.MonoGraph data) =
     let
         -- Find MonoTailFunc node(s)
         tailFuncNodes =
-            Dict.toList compare data.nodes
+            Array.toList data.nodes
                 |> List.filterMap
-                    (\( _, node ) ->
-                        case node of
-                            Mono.MonoTailFunc args _ monoType ->
+                    (\maybeNode ->
+                        case maybeNode of
+                            Just (Mono.MonoTailFunc args _ monoType) ->
                                 Just ( args, monoType )
 
                             _ ->
@@ -233,11 +233,11 @@ checkMonoTailFuncArgCount funcName expectedCount (Mono.MonoGraph data) =
     let
         -- Find MonoTailFunc node(s)
         tailFuncNodes =
-            Dict.toList compare data.nodes
+            Array.toList data.nodes
                 |> List.filterMap
-                    (\( _, node ) ->
-                        case node of
-                            Mono.MonoTailFunc args _ _ ->
+                    (\maybeNode ->
+                        case maybeNode of
+                            Just (Mono.MonoTailFunc args _ _) ->
                                 Just (List.length args)
 
                             _ ->
@@ -356,3 +356,6 @@ monoTypeToString monoType =
 
         Mono.MVar name _ ->
             "MVar \"" ++ name ++ "\""
+
+        Mono.MErased ->
+            "MErased"

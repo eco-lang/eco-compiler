@@ -8,7 +8,7 @@ import Compiler.Data.Name exposing (Name)
 import Compiler.Elm.Interface as I
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Elm.Package as Pkg
-import Data.Map as Dict exposing (Dict)
+import Dict exposing (Dict)
 
 
 
@@ -70,9 +70,9 @@ intUnaryType =
 
 {-| Bitwise function values.
 -}
-bitwiseValues : Dict String Name Can.Annotation
+bitwiseValues : Dict Name Can.Annotation
 bitwiseValues =
-    Dict.fromList identity
+    Dict.fromList
         [ -- and : Int -> Int -> Int
           ( "and", mkAnnotation intBinopType )
 

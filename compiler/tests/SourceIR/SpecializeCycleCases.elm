@@ -13,18 +13,27 @@ These tests cover:
 import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
-        ( binopsExpr
+        ( TypedDef
+        , UnionDef
+        , binopsExpr
         , boolExpr
         , callExpr
         , caseExpr
+        , ctorExpr
         , define
         , ifExpr
         , intExpr
         , letExpr
         , listExpr
         , makeModule
+        , makeModuleWithTypedDefsUnionsAliases
+        , pAnything
+        , pCons
         , pList
         , pVar
+        , tLambda
+        , tType
+        , tVar
         , varExpr
         )
 import Compiler.BulkCheck exposing (TestCase, bulkCheck)
@@ -54,6 +63,7 @@ testCases expectFn =
         [ mutualRecursionCases expectFn
         , cycleWithValuesCases expectFn
         , multiNodeCycleCases expectFn
+        , benignCycleCases expectFn
         ]
 
 
@@ -356,5 +366,119 @@ nestedCycles expectFn _ =
                 (letExpr [ outerFn ]
                     (callExpr (varExpr "outer") [ intExpr 5 ])
                 )
+    in
+    expectFn modul
+
+
+
+-- ============================================================================
+-- BENIGN CYCLE TESTS
+-- ============================================================================
+
+
+benignCycleCases : (Src.Module -> Expectation) -> List TestCase
+benignCycleCases expectFn =
+    [ { label = "Recursive list function with unconstrained element type", run = recursiveListUnconstrained expectFn }
+    , { label = "Mutually recursive functions over phantom custom type", run = mutualRecursionPhantomType expectFn }
+    ]
+
+
+{-| Recursive list function whose element type is never constrained.
+
+    process : List a -> List a
+    process xs =
+        case xs of
+            [] -> []
+            _ :: rest -> process rest
+
+    main = process []
+
+The type variable `a` is never unified with any concrete type.
+This is a benign polymorphic cycle: `a` never affects layout or behaviour.
+
+-}
+recursiveListUnconstrained : (Src.Module -> Expectation) -> (() -> Expectation)
+recursiveListUnconstrained expectFn _ =
+    let
+        -- process xs = case xs of [] -> []; _ :: rest -> process rest
+        processF =
+            define "process"
+                [ pVar "xs" ]
+                (caseExpr (varExpr "xs")
+                    [ ( pList [], listExpr [] )
+                    , ( pCons pAnything (pVar "rest")
+                      , callExpr (varExpr "process") [ varExpr "rest" ]
+                      )
+                    ]
+                )
+
+        modul =
+            makeModule "testValue"
+                (letExpr [ processF ]
+                    (callExpr (varExpr "process") [ listExpr [] ])
+                )
+    in
+    expectFn modul
+
+
+{-| Mutually recursive functions over a phantom custom type.
+
+    type Box a = Box
+
+    f : Box a -> Box a
+    f x = g x
+
+    g : Box a -> Box a
+    g x = f x
+
+    main = f Box
+
+`Box a` is phantom: the constructor carries no payload, so `a` is never
+present at runtime. Both `f` and `g` are in a mutual recursion cycle with
+an unconstrained type variable -- a benign polymorphic cycle.
+
+-}
+mutualRecursionPhantomType : (Src.Module -> Expectation) -> (() -> Expectation)
+mutualRecursionPhantomType expectFn _ =
+    let
+        boxType =
+            tType "Box" [ tVar "a" ]
+
+        boxUnion : UnionDef
+        boxUnion =
+            { name = "Box"
+            , args = [ "a" ]
+            , ctors = [ { name = "Box", args = [] } ]
+            }
+
+        fDef : TypedDef
+        fDef =
+            { name = "f"
+            , args = [ pVar "x" ]
+            , tipe = tLambda boxType boxType
+            , body = callExpr (varExpr "g") [ varExpr "x" ]
+            }
+
+        gDef : TypedDef
+        gDef =
+            { name = "g"
+            , args = [ pVar "x" ]
+            , tipe = tLambda boxType boxType
+            , body = callExpr (varExpr "f") [ varExpr "x" ]
+            }
+
+        mainDef : TypedDef
+        mainDef =
+            { name = "testValue"
+            , args = []
+            , tipe = boxType
+            , body = callExpr (varExpr "f") [ ctorExpr "Box" ]
+            }
+
+        modul =
+            makeModuleWithTypedDefsUnionsAliases "testValue"
+                [ fDef, gDef, mainDef ]
+                [ boxUnion ]
+                []
     in
     expectFn modul

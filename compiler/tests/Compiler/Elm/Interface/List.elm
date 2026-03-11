@@ -9,7 +9,7 @@ import Compiler.Data.Name exposing (Name)
 import Compiler.Elm.Interface as I
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Elm.Package as Pkg
-import Data.Map as Dict exposing (Dict)
+import Dict exposing (Dict)
 
 
 
@@ -33,7 +33,7 @@ listInterface =
 
 {-| List binary operators - specifically the :: (cons) operator.
 -}
-listBinops : Dict String Name I.Binop
+listBinops : Dict Name I.Binop
 listBinops =
     let
         aVar =
@@ -49,12 +49,12 @@ listBinops =
         consBinop =
             I.Binop
                 { name = "cons"
-                , annotation = Can.Forall (Dict.singleton identity "a" ()) consType
+                , annotation = Can.Forall (Dict.singleton "a" ()) consType
                 , associativity = Binop.Right
                 , precedence = 5
                 }
     in
-    Dict.fromList identity
+    Dict.fromList
         [ ( "::", consBinop )
         ]
 
@@ -68,7 +68,7 @@ collectFreeVars tipe =
             Dict.union (collectFreeVars a) (collectFreeVars b)
 
         Can.TVar name ->
-            Dict.singleton identity name ()
+            Dict.singleton name ()
 
         Can.TType _ _ args ->
             List.foldl (\arg acc -> Dict.union (collectFreeVars arg) acc) Dict.empty args
@@ -76,12 +76,12 @@ collectFreeVars tipe =
         Can.TRecord fields maybeExt ->
             let
                 fieldVars =
-                    Dict.foldl compare (\_ (Can.FieldType _ t) acc -> Dict.union (collectFreeVars t) acc) Dict.empty fields
+                    Dict.foldl (\_ (Can.FieldType _ t) acc -> Dict.union (collectFreeVars t) acc) Dict.empty fields
 
                 extVar =
                     case maybeExt of
                         Just name ->
-                            Dict.singleton identity name ()
+                            Dict.singleton name ()
 
                         Nothing ->
                             Dict.empty
@@ -118,7 +118,7 @@ mkAnnotation tipe =
 
 {-| List function values.
 -}
-listValues : Dict String Name Can.Annotation
+listValues : Dict Name Can.Annotation
 listValues =
     let
         -- Type variables
@@ -196,7 +196,7 @@ listValues =
         dropType =
             Can.TLambda intType (Can.TLambda listA listA)
     in
-    Dict.fromList identity
+    Dict.fromList
         [ ( "cons", mkAnnotation consType )
         , ( "map", mkAnnotation mapType )
         , ( "map2", mkAnnotation map2Type )

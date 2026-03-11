@@ -24,7 +24,7 @@ import Compiler.Generate.MLIR.Intrinsics as Intrinsics
 import Compiler.Generate.MLIR.Ops as Ops
 import Compiler.Generate.MLIR.Types as Types
 import Compiler.LocalOpt.Typed.DecisionTree as DT
-import Data.Map as EveryDict
+import Data.Map as DataMap
 import Dict
 import Mlir.Mlir exposing (MlirAttr(..), MlirOp, MlirType(..))
 
@@ -35,14 +35,14 @@ import Mlir.Mlir exposing (MlirAttr(..), MlirOp, MlirType(..))
 
 {-| Extract record fields from a MonoType. Returns empty dict if not a record.
 -}
-getRecordFields : Mono.MonoType -> EveryDict.Dict String Name.Name Mono.MonoType
+getRecordFields : Mono.MonoType -> Dict.Dict Name.Name Mono.MonoType
 getRecordFields monoType =
     case monoType of
         Mono.MRecord fields ->
             fields
 
         _ ->
-            EveryDict.empty
+            Dict.empty
 
 
 {-| Find a FieldInfo by name in a list of FieldInfos.
@@ -173,12 +173,43 @@ generateMonoPathHelper ctx path targetType revAcc =
 
                                 _ ->
                                     -- Field is stored boxed (as eco.value) or no layout found.
-                                    -- Project as eco.value, which is the default behavior.
+                                    -- Use the MonoPath's declared resultType to determine the
+                                    -- correct projection type (CGEN_004).
                                     let
-                                        ( ctx_, op ) =
-                                            Ops.ecoProjectCustom ctx2 resultVar index targetType subVar
+                                        fieldMlirType =
+                                            Types.monoTypeToAbi resultType
                                     in
-                                    ( [ op ], resultVar, ctx_ )
+                                    if Types.isUnboxable fieldMlirType then
+                                        -- Field has a primitive type but layout lookup failed.
+                                        -- Project as the primitive type directly so we don't
+                                        -- introduce a spurious project→unbox sequence.
+                                        let
+                                            ( primitiveVar, ctx3_ ) =
+                                                Ctx.freshVar ctx2
+
+                                            ( ctx4, projectOp ) =
+                                                Ops.ecoProjectCustom ctx3_ primitiveVar index fieldMlirType subVar
+                                        in
+                                        if Types.isEcoValueType targetType then
+                                            let
+                                                ( boxedVar, ctx5 ) =
+                                                    Ctx.freshVar ctx4
+
+                                                ( ctx6, boxOp ) =
+                                                    boxPrimitive ctx5 boxedVar primitiveVar fieldMlirType
+                                            in
+                                            ( [ projectOp, boxOp ], boxedVar, ctx6 )
+
+                                        else
+                                            ( [ projectOp ], primitiveVar, ctx4 )
+
+                                    else
+                                        -- Field is non-primitive (eco.value), project as eco.value.
+                                        let
+                                            ( ctx_, op ) =
+                                                Ops.ecoProjectCustom ctx2 resultVar index targetType subVar
+                                        in
+                                        ( [ op ], resultVar, ctx_ )
             in
             ( List.foldl (::) revAcc1 projectOps
             , projectVar
@@ -199,7 +230,7 @@ generateMonoPathHelper ctx path targetType revAcc =
                     Mono.getMonoPathType subPath
 
                 layout =
-                    Types.computeRecordLayout (getRecordFields containerType)
+                    Types.computeRecordLayout (DataMap.fromList identity (Dict.toList (getRecordFields containerType)))
 
                 fieldInfo =
                     findFieldInfoByName fieldName layout.fields
@@ -244,7 +275,7 @@ generateMonoPathHelper ctx path targetType revAcc =
                     Mono.toComparableMonoType containerType
 
                 maybeShapes =
-                    EveryDict.get identity typeKey ctx1.typeRegistry.ctorShapes
+                    Dict.get typeKey ctx1.typeRegistry.ctorShapes
             in
             case maybeShapes of
                 Just (shape :: _) ->
@@ -333,7 +364,7 @@ lookupFieldIsUnboxed ctx containerType ctorName fieldIndex =
             Mono.toComparableMonoType containerType
 
         maybeShapes =
-            EveryDict.get identity typeKey ctx.typeRegistry.ctorShapes
+            Dict.get typeKey ctx.typeRegistry.ctorShapes
     in
     case maybeShapes of
         Nothing ->
@@ -377,7 +408,7 @@ lookupFieldInfoByCtorName : Ctx.Context -> Name.Name -> Int -> Maybe ( Bool, Mon
 lookupFieldInfoByCtorName ctx ctorName fieldIndex =
     let
         allShapeLists =
-            EveryDict.values compare ctx.typeRegistry.ctorShapes
+            Dict.values ctx.typeRegistry.ctorShapes
 
         allShapes =
             List.concat allShapeLists
@@ -415,7 +446,7 @@ findSingleCtorUnboxedField : Ctx.Context -> Maybe ( Mono.MonoType, Bool )
 findSingleCtorUnboxedField ctx =
     let
         allShapeLists =
-            EveryDict.values compare ctx.typeRegistry.ctorShapes
+            Dict.values ctx.typeRegistry.ctorShapes
 
         -- Find types with exactly one constructor
         singleCtorShapes =
@@ -558,18 +589,50 @@ generateDTPathHelper ctx root dtPath targetType revAcc =
                                 ( [ op ], resultVar, ctxL )
 
                         TypedPath.HintTuple2 ->
-                            let
-                                ( ctxT, op ) =
-                                    Ops.ecoProjectTuple2 ctx2 resultVar fieldIndex targetType subVar
-                            in
-                            ( [ op ], resultVar, ctxT )
+                            if targetType == I1 then
+                                -- Bool is stored as eco.value in tuples (never unboxed).
+                                -- Project as eco.value, then unbox to i1.
+                                let
+                                    ( boxedVar, ctx2a ) =
+                                        Ctx.freshVar ctx2
+
+                                    ( ctxT, op ) =
+                                        Ops.ecoProjectTuple2 ctx2a boxedVar fieldIndex Types.ecoValue subVar
+
+                                    ( unboxOps, unboxedVar, ctxU ) =
+                                        Intrinsics.unboxToType ctxT boxedVar I1
+                                in
+                                ( op :: unboxOps, unboxedVar, ctxU )
+
+                            else
+                                let
+                                    ( ctxT, op ) =
+                                        Ops.ecoProjectTuple2 ctx2 resultVar fieldIndex targetType subVar
+                                in
+                                ( [ op ], resultVar, ctxT )
 
                         TypedPath.HintTuple3 ->
-                            let
-                                ( ctxT, op ) =
-                                    Ops.ecoProjectTuple3 ctx2 resultVar fieldIndex targetType subVar
-                            in
-                            ( [ op ], resultVar, ctxT )
+                            if targetType == I1 then
+                                -- Bool is stored as eco.value in tuples (never unboxed).
+                                -- Project as eco.value, then unbox to i1.
+                                let
+                                    ( boxedVar, ctx2a ) =
+                                        Ctx.freshVar ctx2
+
+                                    ( ctxT, op ) =
+                                        Ops.ecoProjectTuple3 ctx2a boxedVar fieldIndex Types.ecoValue subVar
+
+                                    ( unboxOps, unboxedVar, ctxU ) =
+                                        Intrinsics.unboxToType ctxT boxedVar I1
+                                in
+                                ( op :: unboxOps, unboxedVar, ctxU )
+
+                            else
+                                let
+                                    ( ctxT, op ) =
+                                        Ops.ecoProjectTuple3 ctx2 resultVar fieldIndex targetType subVar
+                                in
+                                ( [ op ], resultVar, ctxT )
 
                         TypedPath.HintCustom ctorName ->
                             -- Custom ADTs (Maybe, Result, user types, big tuples)
@@ -846,13 +909,17 @@ generateTest ctx root ( path, test ) =
                     else
                         Ops.ecoStringLiteral ctx2 strVar s
 
-                ( resVar, ctx4 ) =
+                ( eqVar, ctx4 ) =
                     Ctx.freshVar ctx3
 
                 ( ctx5, cmpOp ) =
-                    Ops.ecoCallNamed ctx4 resVar "Elm_Kernel_Utils_equal" [ ( valVar, Types.ecoValue ), ( strVar, Types.ecoValue ) ] I1
+                    Ops.ecoCallNamed ctx4 eqVar "Elm_Kernel_Utils_equal" [ ( valVar, Types.ecoValue ), ( strVar, Types.ecoValue ) ] Types.ecoValue
+
+                -- Unbox the eco.value Bool result to i1 for use in chain conditions
+                ( unboxOps, resVar, ctx6 ) =
+                    Intrinsics.unboxToType ctx5 eqVar I1
             in
-            ( pathOps ++ [ strOp, cmpOp ], resVar, ctx5 )
+            ( pathOps ++ [ strOp, cmpOp ] ++ unboxOps, resVar, ctx6 )
 
         Test.IsCons ->
             -- Test if list is non-empty (tag == 1)

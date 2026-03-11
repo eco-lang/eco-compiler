@@ -17,7 +17,7 @@ This is critical for catching MONO\_018-class bugs where:
 
 import Compiler.AST.Canonical as Can
 import Compiler.Data.Name as Name
-import Data.Map as Dict exposing (Dict)
+import Dict exposing (Dict)
 import System.TypeCheck.IO as IO
 
 
@@ -30,10 +30,10 @@ import System.TypeCheck.IO as IO
 {-| State for tracking consistent TVar and extension var mappings.
 -}
 type alias AlphaState =
-    { tvarsL2R : Dict String Name.Name Name.Name
-    , tvarsR2L : Dict String Name.Name Name.Name
-    , extL2R : Dict String Name.Name Name.Name
-    , extR2L : Dict String Name.Name Name.Name
+    { tvarsL2R : Dict Name.Name Name.Name
+    , tvarsR2L : Dict Name.Name Name.Name
+    , extL2R : Dict Name.Name Name.Name
+    , extR2L : Dict Name.Name Name.Name
     }
 
 
@@ -145,7 +145,7 @@ alphaEqStrictHelp state t1 t2 =
 -}
 matchTVars : AlphaState -> Name.Name -> Name.Name -> Maybe AlphaState
 matchTVars state a b =
-    case ( Dict.get identity a state.tvarsL2R, Dict.get identity b state.tvarsR2L ) of
+    case ( Dict.get a state.tvarsL2R, Dict.get b state.tvarsR2L ) of
         ( Just mappedB, Just mappedA ) ->
             -- Both already mapped; must be consistent
             if mappedB == b && mappedA == a then
@@ -157,7 +157,7 @@ matchTVars state a b =
         ( Just mappedB, Nothing ) ->
             -- a is mapped but b is not reverse-mapped
             if mappedB == b then
-                Just { state | tvarsR2L = Dict.insert identity b a state.tvarsR2L }
+                Just { state | tvarsR2L = Dict.insert b a state.tvarsR2L }
 
             else
                 Nothing
@@ -165,7 +165,7 @@ matchTVars state a b =
         ( Nothing, Just mappedA ) ->
             -- b is reverse-mapped but a is not mapped
             if mappedA == a then
-                Just { state | tvarsL2R = Dict.insert identity a b state.tvarsL2R }
+                Just { state | tvarsL2R = Dict.insert a b state.tvarsL2R }
 
             else
                 Nothing
@@ -174,8 +174,8 @@ matchTVars state a b =
             -- Neither mapped; create new mapping
             Just
                 { state
-                    | tvarsL2R = Dict.insert identity a b state.tvarsL2R
-                    , tvarsR2L = Dict.insert identity b a state.tvarsR2L
+                    | tvarsL2R = Dict.insert a b state.tvarsL2R
+                    , tvarsR2L = Dict.insert b a state.tvarsR2L
                 }
 
 
@@ -207,18 +207,18 @@ alphaEqStrictList state ts1 ts2 =
 
 alphaEqStrictRecord :
     AlphaState
-    -> Dict String Name.Name Can.FieldType
+    -> Dict Name.Name Can.FieldType
     -> Maybe Name.Name
-    -> Dict String Name.Name Can.FieldType
+    -> Dict Name.Name Can.FieldType
     -> Maybe Name.Name
     -> Maybe AlphaState
 alphaEqStrictRecord state fields1 ext1 fields2 ext2 =
     let
         keys1 =
-            Dict.keys compare fields1
+            Dict.keys fields1
 
         keys2 =
-            Dict.keys compare fields2
+            Dict.keys fields2
     in
     if keys1 /= keys2 then
         Nothing
@@ -237,7 +237,7 @@ matchExtVars state ext1 ext2 =
 
         ( Just a, Just b ) ->
             -- Use same logic as TVars but with ext mappings
-            case ( Dict.get identity a state.extL2R, Dict.get identity b state.extR2L ) of
+            case ( Dict.get a state.extL2R, Dict.get b state.extR2L ) of
                 ( Just mappedB, Just mappedA ) ->
                     if mappedB == b && mappedA == a then
                         Just state
@@ -247,14 +247,14 @@ matchExtVars state ext1 ext2 =
 
                 ( Just mappedB, Nothing ) ->
                     if mappedB == b then
-                        Just { state | extR2L = Dict.insert identity b a state.extR2L }
+                        Just { state | extR2L = Dict.insert b a state.extR2L }
 
                     else
                         Nothing
 
                 ( Nothing, Just mappedA ) ->
                     if mappedA == a then
-                        Just { state | extL2R = Dict.insert identity a b state.extL2R }
+                        Just { state | extL2R = Dict.insert a b state.extL2R }
 
                     else
                         Nothing
@@ -262,8 +262,8 @@ matchExtVars state ext1 ext2 =
                 ( Nothing, Nothing ) ->
                     Just
                         { state
-                            | extL2R = Dict.insert identity a b state.extL2R
-                            , extR2L = Dict.insert identity b a state.extR2L
+                            | extL2R = Dict.insert a b state.extL2R
+                            , extR2L = Dict.insert b a state.extR2L
                         }
 
         _ ->
@@ -273,8 +273,8 @@ matchExtVars state ext1 ext2 =
 alphaEqStrictFields :
     AlphaState
     -> List Name.Name
-    -> Dict String Name.Name Can.FieldType
-    -> Dict String Name.Name Can.FieldType
+    -> Dict Name.Name Can.FieldType
+    -> Dict Name.Name Can.FieldType
     -> Maybe AlphaState
 alphaEqStrictFields state keys fields1 fields2 =
     List.foldl
@@ -284,7 +284,7 @@ alphaEqStrictFields state keys fields1 fields2 =
                     Nothing
 
                 Just s ->
-                    case ( Dict.get identity k fields1, Dict.get identity k fields2 ) of
+                    case ( Dict.get k fields1, Dict.get k fields2 ) of
                         ( Just (Can.FieldType _ t1), Just (Can.FieldType _ t2) ) ->
                             alphaEqStrictHelp s t1 t2
 
@@ -311,7 +311,7 @@ unwrapAliasWithSubst : List ( Name.Name, Can.Type ) -> Can.AliasType -> Can.Type
 unwrapAliasWithSubst args aliasType =
     let
         subst =
-            Dict.fromList identity args
+            Dict.fromList args
 
         body =
             case aliasType of
@@ -324,11 +324,11 @@ unwrapAliasWithSubst args aliasType =
     applySubst subst body
 
 
-applySubst : Dict String Name.Name Can.Type -> Can.Type -> Can.Type
+applySubst : Dict Name.Name Can.Type -> Can.Type -> Can.Type
 applySubst subst tipe =
     case tipe of
         Can.TVar name ->
-            case Dict.get identity name subst of
+            case Dict.get name subst of
                 Just replacement ->
                     replacement
 

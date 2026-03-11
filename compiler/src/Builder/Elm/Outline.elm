@@ -68,7 +68,8 @@ import Compiler.Elm.Version as V
 import Compiler.Json.Decode as D
 import Compiler.Json.Encode as E
 import Compiler.Parse.Primitives as P
-import Data.Map as Dict exposing (Dict)
+import Data.Map as DataMap
+import Dict exposing (Dict)
 import System.TypeCheck.IO as TypeCheck
 import Task exposing (Task)
 import Utils.Bytes.Decode as BD
@@ -96,10 +97,10 @@ for both main dependencies and test dependencies.
 type alias AppOutlineData =
     { elm : V.Version
     , srcDirs : NE.Nonempty SrcDir
-    , depsDirect : Dict ( String, String ) Pkg.Name V.Version
-    , depsIndirect : Dict ( String, String ) Pkg.Name V.Version
-    , testDirect : Dict ( String, String ) Pkg.Name V.Version
-    , testIndirect : Dict ( String, String ) Pkg.Name V.Version
+    , depsDirect : Dict Pkg.Name V.Version
+    , depsIndirect : Dict Pkg.Name V.Version
+    , testDirect : Dict Pkg.Name V.Version
+    , testIndirect : Dict Pkg.Name V.Version
     }
 
 
@@ -119,8 +120,8 @@ type alias PkgOutlineData =
     , license : Licenses.License
     , version : V.Version
     , exposed : Exposed
-    , deps : Dict ( String, String ) Pkg.Name Con.Constraint
-    , testDeps : Dict ( String, String ) Pkg.Name Con.Constraint
+    , deps : Dict Pkg.Name Con.Constraint
+    , testDeps : Dict Pkg.Name Con.Constraint
     , elm : Con.Constraint
     }
 
@@ -241,9 +242,9 @@ encodeModule name =
     E.name name
 
 
-encodeDeps : (a -> E.Value) -> Dict ( String, String ) Pkg.Name a -> E.Value
+encodeDeps : (a -> E.Value) -> Dict Pkg.Name a -> E.Value
 encodeDeps encodeValue deps =
-    E.dict Pkg.compareName Pkg.toJsonString encodeValue deps
+    E.stdDict Pkg.toJsonString encodeValue deps
 
 
 encodeSrcDir : SrcDir -> E.Value
@@ -289,22 +290,22 @@ validateOutline root outline =
             validateAppOutline root appData.srcDirs appData.depsDirect appData.depsIndirect outline
 
 
-validatePkgOutline : Pkg.Name -> Dict ( String, String ) Pkg.Name a -> Outline -> Task Never (Result Exit.Outline Outline)
+validatePkgOutline : Pkg.Name -> Dict Pkg.Name a -> Outline -> Task Never (Result Exit.Outline Outline)
 validatePkgOutline pkg deps outline =
     Task.succeed <|
-        if not (Dict.member identity Pkg.core deps) && pkg /= Pkg.core then
+        if not (Dict.member Pkg.core deps) && pkg /= Pkg.core then
             Err Exit.OutlineNoPkgCore
 
         else
             Ok outline
 
 
-validateAppOutline : FilePath -> NE.Nonempty SrcDir -> Dict ( String, String ) Pkg.Name a -> Dict ( String, String ) Pkg.Name b -> Outline -> Task Never (Result Exit.Outline Outline)
+validateAppOutline : FilePath -> NE.Nonempty SrcDir -> Dict Pkg.Name a -> Dict Pkg.Name b -> Outline -> Task Never (Result Exit.Outline Outline)
 validateAppOutline root srcDirs direct indirect outline =
-    if not (Dict.member identity Pkg.core direct) then
+    if not (Dict.member Pkg.core direct) then
         Err Exit.OutlineNoAppCore |> Task.succeed
 
-    else if not (Dict.member identity Pkg.json direct) && not (Dict.member identity Pkg.json indirect) then
+    else if not (Dict.member Pkg.json direct) && not (Dict.member Pkg.json indirect) then
         Err Exit.OutlineNoAppJson |> Task.succeed
 
     else
@@ -363,7 +364,10 @@ detectDuplicates root srcDirs =
     Utils.listTraverse (toPair root) srcDirs
         |> Task.map
             (\pairs ->
-                Utils.mapFromListWith identity OneOrMore.more pairs |> Utils.mapMapMaybe identity compare isDup |> Utils.mapLookupMin
+                Utils.dictFromListWith OneOrMore.more pairs
+                    |> Utils.dictMapMaybe isDup
+                    |> Dict.toList
+                    |> List.head
             )
 
 
@@ -390,20 +394,20 @@ isDup paths =
 {-| Recursively discovers all module file paths in the project and its dependencies.
 Returns a dictionary mapping canonical module names to their file paths.
 -}
-getAllModulePaths : FilePath -> Task Never (Dict (List String) TypeCheck.Canonical FilePath)
+getAllModulePaths : FilePath -> Task Never (DataMap.Dict (List String) TypeCheck.Canonical FilePath)
 getAllModulePaths root =
     read root
         |> Task.andThen
             (\outlineResult ->
                 case outlineResult of
                     Err _ ->
-                        Task.succeed Dict.empty
+                        Task.succeed DataMap.empty
 
                     Ok outline ->
                         case outline of
                             App (AppOutline appData) ->
                                 let
-                                    deps : Dict ( String, String ) Pkg.Name V.Version
+                                    deps : Dict Pkg.Name V.Version
                                     deps =
                                         Dict.union appData.depsDirect appData.depsIndirect
 
@@ -415,7 +419,7 @@ getAllModulePaths root =
 
                             Pkg (PkgOutline pkgData) ->
                                 let
-                                    deps : Dict ( String, String ) Pkg.Name V.Version
+                                    deps : Dict Pkg.Name V.Version
                                     deps =
                                         Dict.map (\_ -> Con.lowerBound) pkgData.deps
                                 in
@@ -423,25 +427,25 @@ getAllModulePaths root =
             )
 
 
-getAllModulePathsHelper : Pkg.Name -> List FilePath -> Dict ( String, String ) Pkg.Name V.Version -> Task Never (Dict (List String) TypeCheck.Canonical FilePath)
+getAllModulePathsHelper : Pkg.Name -> List FilePath -> Dict Pkg.Name V.Version -> Task Never (DataMap.Dict (List String) TypeCheck.Canonical FilePath)
 getAllModulePathsHelper packageName packageSrcDirs deps =
     Utils.listTraverse recursiveFindFiles packageSrcDirs
         |> Task.andThen
             (\files ->
-                Utils.mapTraverseWithKey identity compare resolvePackagePaths deps
+                Utils.dictTraverseWithKey resolvePackagePaths deps
                     |> Task.andThen
                         (\dependencyRoots ->
-                            Utils.mapTraverse identity compare (\( pkgName, pkgRoot ) -> getAllModulePathsHelper pkgName [ pkgRoot ++ "/st.src" ] Dict.empty) dependencyRoots
+                            Utils.dictTraverse (\( pkgName, pkgRoot ) -> getAllModulePathsHelper pkgName [ pkgRoot ++ "/st.src" ] Dict.empty) dependencyRoots
                                 |> Task.map
                                     (\dependencyMaps ->
                                         let
-                                            asMap : Dict (List String) TypeCheck.Canonical FilePath
+                                            asMap : DataMap.Dict (List String) TypeCheck.Canonical FilePath
                                             asMap =
                                                 List.concat files
                                                     |> List.map (\( root, fp ) -> ( TypeCheck.Canonical packageName (moduleNameFromFilePath root fp), fp ))
-                                                    |> Dict.fromList ModuleName.toComparableCanonical
+                                                    |> DataMap.fromList ModuleName.toComparableCanonical
                                         in
-                                        Dict.foldr compare (\_ -> Dict.union) asMap dependencyMaps
+                                        Dict.foldr (\_ -> DataMap.union) asMap dependencyMaps
                                     )
                         )
             )
@@ -581,9 +585,9 @@ constraintDecoder =
     D.mapError Exit.OP_BadConstraint Con.decoder
 
 
-depsDecoder : Decoder a -> Decoder (Dict ( String, String ) Pkg.Name a)
+depsDecoder : Decoder a -> Decoder (Dict Pkg.Name a)
 depsDecoder valueDecoder =
-    D.dict identity (Pkg.keyDecoder Exit.OP_BadDependencyName) valueDecoder
+    D.stdDict (Pkg.keyDecoder Exit.OP_BadDependencyName) valueDecoder
 
 
 dirsDecoder : Decoder (NE.Nonempty SrcDir)

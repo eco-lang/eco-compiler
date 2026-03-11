@@ -39,7 +39,7 @@ import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Error.Canonicalize as Error
 import Compiler.Reporting.Result as ReportingResult
-import Data.Map exposing (Dict)
+import Dict exposing (Dict)
 
 
 
@@ -62,7 +62,7 @@ Tracks all variables bound by a pattern for use in scope analysis and error repo
 
 -}
 type alias Bindings =
-    Dict String Name.Name A.Region
+    Dict Name.Name A.Region
 
 
 

@@ -22,7 +22,8 @@ import Compiler.Type.Constrain.Erased.Expression as Expr
 import Compiler.Type.Constrain.Erased.Program as Prog exposing (Prog)
 import Compiler.Type.Instantiate as Instantiate
 import Compiler.Type.Type as Type exposing (Constraint(..), Type(..), mkFlexVar, nameToRigid)
-import Data.Map as Dict exposing (Dict)
+import Data.Map as DMap
+import Dict
 import System.TypeCheck.IO as IO exposing (IO)
 
 
@@ -44,7 +45,7 @@ constrain (Can.Module canData) =
             constrainDecls canData.decls CSaveTheEnvironment
 
         Can.Ports ports ->
-            Dict.foldr compare letPort (constrainDecls canData.decls CSaveTheEnvironment) ports
+            Dict.foldr letPort (constrainDecls canData.decls CSaveTheEnvironment) ports
 
         Can.Manager r0 r1 r2 manager ->
             case manager of
@@ -79,10 +80,10 @@ constrainDeclsHelp : Can.Decls -> Constraint -> (IO Constraint -> IO Constraint)
 constrainDeclsHelp decls finalConstraint cont =
     case decls of
         Can.Declare def otherDecls ->
-            constrainDeclsHelp otherDecls finalConstraint (IO.andThen (Expr.constrainDef Dict.empty def) >> cont)
+            constrainDeclsHelp otherDecls finalConstraint (IO.andThen (Expr.constrainDef DMap.empty def) >> cont)
 
         Can.DeclareRec def defs otherDecls ->
-            constrainDeclsHelp otherDecls finalConstraint (IO.andThen (Expr.constrainRecursiveDefs Dict.empty (def :: defs)) >> cont)
+            constrainDeclsHelp otherDecls finalConstraint (IO.andThen (Expr.constrainRecursiveDefs DMap.empty (def :: defs)) >> cont)
 
         Can.SaveTheEnvironment ->
             cont (IO.pure finalConstraint)
@@ -97,34 +98,34 @@ letPort : Name -> Can.Port -> IO Constraint -> IO Constraint
 letPort name port_ makeConstraint =
     case port_ of
         Can.Incoming { freeVars, func } ->
-            IO.traverseMapWithKey identity compare (\k _ -> nameToRigid k) freeVars
+            IO.traverseMapWithKey identity compare (\k _ -> nameToRigid k) (DMap.fromList identity (Dict.toList freeVars))
                 |> IO.andThen
                     (\vars ->
-                        Instantiate.fromSrcType (Dict.map (\_ v -> VarN v) vars) func
+                        Instantiate.fromSrcType (DMap.map (\_ v -> VarN v) vars) func
                             |> IO.andThen
                                 (\tipe ->
                                     let
-                                        header : Dict String Name (A.Located Type)
+                                        header : DMap.Dict String Name (A.Located Type)
                                         header =
-                                            Dict.singleton identity name (A.At A.zero tipe)
+                                            DMap.singleton identity name (A.At A.zero tipe)
                                     in
-                                    IO.map (CLet (Dict.values compare vars) [] header CTrue) makeConstraint
+                                    IO.map (CLet (DMap.values compare vars) [] header CTrue) makeConstraint
                                 )
                     )
 
         Can.Outgoing { freeVars, func } ->
-            IO.traverseMapWithKey identity compare (\k _ -> nameToRigid k) freeVars
+            IO.traverseMapWithKey identity compare (\k _ -> nameToRigid k) (DMap.fromList identity (Dict.toList freeVars))
                 |> IO.andThen
                     (\vars ->
-                        Instantiate.fromSrcType (Dict.map (\_ v -> VarN v) vars) func
+                        Instantiate.fromSrcType (DMap.map (\_ v -> VarN v) vars) func
                             |> IO.andThen
                                 (\tipe ->
                                     let
-                                        header : Dict String Name (A.Located Type)
+                                        header : DMap.Dict String Name (A.Located Type)
                                         header =
-                                            Dict.singleton identity name (A.At A.zero tipe)
+                                            DMap.singleton identity name (A.At A.zero tipe)
                                     in
-                                    IO.map (CLet (Dict.values compare vars) [] header CTrue) makeConstraint
+                                    IO.map (CLet (DMap.values compare vars) [] header CTrue) makeConstraint
                                 )
                     )
 
@@ -147,9 +148,9 @@ letCmd home tipe constraint =
                     cmdType =
                         FunN (AppN home tipe [ msg ]) (AppN ModuleName.cmd Name.cmd [ msg ])
 
-                    header : Dict String Name (A.Located Type)
+                    header : DMap.Dict String Name (A.Located Type)
                     header =
-                        Dict.singleton identity "command" (A.At A.zero cmdType)
+                        DMap.singleton identity "command" (A.At A.zero cmdType)
                 in
                 CLet [ msgVar ] [] header CTrue constraint
             )
@@ -169,9 +170,9 @@ letSub home tipe constraint =
                     subType =
                         FunN (AppN home tipe [ msg ]) (AppN ModuleName.sub Name.sub [ msg ])
 
-                    header : Dict String Name (A.Located Type)
+                    header : DMap.Dict String Name (A.Located Type)
                     header =
-                        Dict.singleton identity "subscription" (A.At A.zero subType)
+                        DMap.singleton identity "subscription" (A.At A.zero subType)
                 in
                 CLet [ msgVar ] [] header CTrue constraint
             )
@@ -294,16 +295,16 @@ checkMapProg manager home vars effectCons =
     case manager of
         Can.Cmd cmd ->
             checkMapProgHelper "cmdMap" home cmd CSaveTheEnvironment
-                |> Prog.map (CLet [] vars Dict.empty effectCons)
+                |> Prog.map (CLet [] vars DMap.empty effectCons)
 
         Can.Sub sub ->
             checkMapProgHelper "subMap" home sub CSaveTheEnvironment
-                |> Prog.map (CLet [] vars Dict.empty effectCons)
+                |> Prog.map (CLet [] vars DMap.empty effectCons)
 
         Can.Fx cmd sub ->
             checkMapProgHelper "subMap" home sub CSaveTheEnvironment
                 |> Prog.andThen (checkMapProgHelper "cmdMap" home cmd)
-                |> Prog.map (CLet [] vars Dict.empty effectCons)
+                |> Prog.map (CLet [] vars DMap.empty effectCons)
 
 
 {-| Stack-safe version of checkMap using the DSL.
@@ -325,7 +326,7 @@ checkMapProgHelper name home tipe constraint =
                                 mapCon =
                                     CLocal A.zero name (E.NoExpectation mapType)
                             in
-                            CLet [ a, b ] [] Dict.empty mapCon constraint
+                            CLet [ a, b ] [] DMap.empty mapCon constraint
                         )
             )
 

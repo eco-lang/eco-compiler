@@ -18,9 +18,10 @@ are properly computed and used.
 
 -}
 
+import Array
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.Source as Src
-import Data.Map as Dict
+import Dict
 import Expect
 import TestLogic.TestPipeline as Pipeline
 
@@ -122,10 +123,18 @@ collectLayoutCompletenessChecks (Mono.MonoGraph data) =
     -- Traverse all nodes and check that:
     -- 1. Record types have complete RecordLayouts
     -- 2. Tuple types have complete TupleLayouts
-    Dict.foldl compare
-        (\specId node acc -> checkNodeLayoutCompleteness specId node ++ acc)
-        []
+    Array.foldl
+        (\maybeNode ( specId, acc ) ->
+            case maybeNode of
+                Nothing ->
+                    ( specId + 1, acc )
+
+                Just node ->
+                    ( specId + 1, checkNodeLayoutCompleteness specId node ++ acc )
+        )
+        ( 0, [] )
         data.nodes
+        |> Tuple.second
 
 
 {-| Check layout completeness for a single node.
@@ -289,10 +298,18 @@ collectDefLayoutIssues context def =
 -}
 collectRecordAccessChecks : Mono.MonoGraph -> List (() -> Expect.Expectation)
 collectRecordAccessChecks (Mono.MonoGraph data) =
-    Dict.foldl compare
-        (\specId node acc -> checkNodeRecordAccess specId node ++ acc)
-        []
+    Array.foldl
+        (\maybeNode ( specId, acc ) ->
+            case maybeNode of
+                Nothing ->
+                    ( specId + 1, acc )
+
+                Just node ->
+                    ( specId + 1, checkNodeRecordAccess specId node ++ acc )
+        )
+        ( 0, [] )
         data.nodes
+        |> Tuple.second
 
 
 {-| Check record access consistency for a node.
@@ -337,7 +354,7 @@ collectExprRecordAccessIssues context expr =
                     case recordType of
                         Mono.MRecord fields ->
                             -- Verify field exists in the record
-                            case Dict.get identity fieldName fields of
+                            case Dict.get fieldName fields of
                                 Just _ ->
                                     []
 
@@ -360,7 +377,7 @@ collectExprRecordAccessIssues context expr =
                             -- Verify all update field names are valid
                             List.concatMap
                                 (\( fName, _ ) ->
-                                    case Dict.get identity fName fields of
+                                    case Dict.get fName fields of
                                         Just _ ->
                                             []
 
@@ -439,7 +456,7 @@ collectCtorLayoutChecks (Mono.MonoGraph data) =
     -- For each entry in ctorShapes, verify consistency:
     -- - Constructor tags should be sequential (0, 1, 2, ...)
     -- - Field counts should be non-negative
-    Dict.foldl compare
+    Dict.foldl
         (\_ ctors acc ->
             acc
                 ++ (List.indexedMap

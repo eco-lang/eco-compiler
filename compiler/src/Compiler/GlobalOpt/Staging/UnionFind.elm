@@ -24,9 +24,10 @@ This module provides:
 
 -}
 
+import Array exposing (Array)
 import Compiler.AST.Monomorphized as Mono
+import Dict
 import Compiler.GlobalOpt.Staging.Types exposing (Node(..), NodeId, ProducerId(..), SlotId(..), StagingGraph, Uf)
-import Data.Map as Dict
 import System.TypeCheck.IO as IO
 
 
@@ -108,9 +109,9 @@ Returns the root NodeId and updated Uf with compressed paths.
 -}
 ufFind : NodeId -> Uf -> ( NodeId, Uf )
 ufFind node uf =
-    case Dict.get identity node uf.parent of
+    case Array.get node uf.parent of
         Nothing ->
-            -- Node is its own root
+            -- Out of bounds = root
             ( node, uf )
 
         Just parent ->
@@ -125,7 +126,7 @@ ufFind node uf =
                     -- Path compression
                     uf2 =
                         if root /= parent then
-                            { uf1 | parent = Dict.insert identity node root uf1.parent }
+                            { uf1 | parent = Array.set node root uf1.parent }
 
                         else
                             uf1
@@ -149,7 +150,7 @@ ufUnion a b uf0 =
 
     else
         -- Make rootA the parent of rootB (arbitrary choice, could use rank)
-        { uf2 | parent = Dict.insert identity rootB rootA uf2.parent }
+        { uf2 | parent = Array.set rootB rootA uf2.parent }
 
 
 {-| Ensure a node exists in the staging graph.
@@ -161,7 +162,7 @@ ensureNode node sg0 =
         key =
             nodeToKey node
     in
-    case Dict.get identity key sg0.nodeIndex of
+    case Dict.get key sg0.nodeIndex of
         Just nid ->
             ( nid, sg0 )
 
@@ -173,8 +174,9 @@ ensureNode node sg0 =
                 sg1 =
                     { sg0
                         | nextNodeId = nid + 1
-                        , nodeIndex = Dict.insert identity key nid sg0.nodeIndex
-                        , nodeById = Dict.insert identity nid node sg0.nodeById
+                        , nodeIndex = Dict.insert key nid sg0.nodeIndex
+                        , nodeById = Array.push node sg0.nodeById
+                        , uf = { parent = Array.push nid sg0.uf.parent }
                     }
             in
             ( nid, sg1 )

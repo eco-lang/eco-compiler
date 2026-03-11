@@ -17,7 +17,8 @@ import Compiler.AST.Canonical as Can
 import Compiler.AST.Source as Src
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Reporting.Annotation as A
-import Data.Map as Dict
+import Data.Map
+import Dict
 import Expect
 import System.TypeCheck.IO as IO
 import TestLogic.TestPipeline as Pipeline
@@ -53,7 +54,7 @@ expectAllExprsHaveTypes srcModule =
 -}
 collectExprTypeIssues : TOpt.LocalGraph -> List String
 collectExprTypeIssues (TOpt.LocalGraph data) =
-    Dict.foldl TOpt.compareGlobal
+    Data.Map.foldl TOpt.compareGlobal
         (\global node acc ->
             let
                 context =
@@ -176,13 +177,13 @@ collectExprNestedTypeIssues context expr =
 
                 TOpt.Update _ recordExpr updates _ ->
                     collectExprNestedTypeIssues context recordExpr
-                        ++ Dict.foldl A.compareLocated (\_ updateExpr acc -> collectExprNestedTypeIssues context updateExpr ++ acc) [] updates
+                        ++ Data.Map.foldl A.compareLocated (\_ updateExpr acc -> collectExprNestedTypeIssues context updateExpr ++ acc) [] updates
 
                 TOpt.Record fieldExprs _ ->
-                    Dict.foldl compare (\_ fieldExpr acc -> collectExprNestedTypeIssues context fieldExpr ++ acc) [] fieldExprs
+                    Dict.foldl (\_ fieldExpr acc -> collectExprNestedTypeIssues context fieldExpr ++ acc) [] fieldExprs
 
                 TOpt.TrackedRecord _ fieldExprs _ ->
-                    Dict.foldl A.compareLocated (\_ fieldExpr acc -> collectExprNestedTypeIssues context fieldExpr ++ acc) [] fieldExprs
+                    Data.Map.foldl A.compareLocated (\_ fieldExpr acc -> collectExprNestedTypeIssues context fieldExpr ++ acc) [] fieldExprs
 
                 TOpt.Tuple _ e1 e2 rest _ ->
                     collectExprNestedTypeIssues context e1
@@ -279,13 +280,13 @@ collectExprTypeWellFormedness context expr =
 
                 TOpt.Update _ recordExpr updates _ ->
                     collectExprTypeWellFormedness context recordExpr
-                        ++ Dict.foldl A.compareLocated (\_ updateExpr acc -> collectExprTypeWellFormedness context updateExpr ++ acc) [] updates
+                        ++ Data.Map.foldl A.compareLocated (\_ updateExpr acc -> collectExprTypeWellFormedness context updateExpr ++ acc) [] updates
 
                 TOpt.Record fieldExprs _ ->
-                    Dict.foldl compare (\_ fieldExpr acc -> collectExprTypeWellFormedness context fieldExpr ++ acc) [] fieldExprs
+                    Dict.foldl (\_ fieldExpr acc -> collectExprTypeWellFormedness context fieldExpr ++ acc) [] fieldExprs
 
                 TOpt.TrackedRecord _ fieldExprs _ ->
-                    Dict.foldl A.compareLocated (\_ fieldExpr acc -> collectExprTypeWellFormedness context fieldExpr ++ acc) [] fieldExprs
+                    Data.Map.foldl A.compareLocated (\_ fieldExpr acc -> collectExprTypeWellFormedness context fieldExpr ++ acc) [] fieldExprs
 
                 TOpt.Tuple _ e1 e2 rest _ ->
                     collectExprTypeWellFormedness context e1
@@ -325,7 +326,7 @@ checkTypeWellFormed context canType =
 
         Can.TRecord fields _ ->
             -- Check record field types
-            Dict.foldl compare (\_ fieldType acc -> checkFieldTypeWellFormed context fieldType ++ acc) [] fields
+            Dict.foldl (\_ fieldType acc -> checkFieldTypeWellFormed context fieldType ++ acc) [] fields
 
         Can.TUnit ->
             []

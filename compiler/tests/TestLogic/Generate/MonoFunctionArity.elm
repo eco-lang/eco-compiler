@@ -13,7 +13,7 @@ This module runs after GlobalOpt since it also checks GOPT\_016 (stage arity inv
 
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.Source as Src
-import Data.Map as Dict
+import Array
 import Expect
 import TestLogic.TestPipeline as Pipeline
 
@@ -51,10 +51,18 @@ expectFunctionArityMatches srcModule =
 -}
 collectArityIssues : Mono.MonoGraph -> List String
 collectArityIssues (Mono.MonoGraph data) =
-    Dict.foldl compare
-        (\specId node acc -> checkNodeArity specId node ++ acc)
-        []
+    Array.foldl
+        (\maybeNode ( specId, acc ) ->
+            case maybeNode of
+                Nothing ->
+                    ( specId + 1, acc )
+
+                Just node ->
+                    ( specId + 1, checkNodeArity specId node ++ acc )
+        )
+        ( 0, [] )
         data.nodes
+        |> Tuple.second
 
 
 {-| Check arity for a single MonoNode.

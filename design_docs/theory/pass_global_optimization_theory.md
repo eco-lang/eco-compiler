@@ -42,27 +42,24 @@ This separation ensures that Monomorphization remains simple and focused, while 
 GlobalOpt runs several sequential phases, coordinated by a common traversal infrastructure:
 
 ```elm
-globalOptimize typeEnv graph0 =
+-- MonoInlineSimplify.optimize is applied externally before globalOptimize.
+
+globalOptimize graph0 =
     let
-        -- Phase 0: Inlining and simplification
-        (graph0a, _) = MonoInlineSimplify.optimize typeEnv graph0
+        -- Phase 1: Wrap top-level callables in closures
+        graph1 = wrapTopLevelCallables graph0
 
-        -- Phase 0.5: Wrap top-level callables in closures
-        graph0b = wrapTopLevelCallables graph0a
-
-        -- Phase 1: Staging analysis via graph-based solver
-        stagingResult = Staging.solveStaging typeEnv graph0b
-
-        -- Phase 2: Rewrite graph with staging solution
-        graph1 = Staging.rewriteWithStaging stagingResult graph0b
+        -- Phase 2: Staging analysis + graph rewrite
+        (_, graph2) = Staging.analyzeAndSolveStaging graph1
 
         -- Phase 3: Validate closure staging
-        graph2 = validateClosureStaging graph1
+        graph3 = Staging.validateClosureStaging graph2
 
-        -- Phase 4: Annotate call staging metadata
-        graph3 = annotateCallStaging graph2
+        -- Phase 4: ABI Cloning
+        graph4 = AbiCloning.abiCloningPass graph3
     in
-    graph3
+    -- Phase 5: Annotate call staging metadata
+    annotateCallStaging graph4
 ```
 
 ### MonoTraverse: Common Iteration Infrastructure
@@ -82,7 +79,7 @@ traverseExpr : (MonoExpr -> State -> State) -> State -> MonoExpr -> State
 
 This eliminates duplicate traversal code and ensures consistent handling across all transformation phases.
 
-### Phase 0.5: Wrap Top-Level Callables
+### Phase 1: Wrap Top-Level Callables
 
 **Function**: `wrapTopLevelCallables` (calls `ensureCallableForNode` per node)
 
@@ -90,35 +87,19 @@ This eliminates duplicate traversal code and ensures consistent handling across 
 
 **Why before staging**: The staging producer graph should only see closures (for user functions and alias wrappers) or tail-funcs/`MonoExtern`. Bare `MonoVarKernel`/`MonoVarGlobal` references have no segmentation info and would confuse staging analysis.
 
-### Phase 1: Canonicalize Closure Staging
+### Phase 2: Staging Analysis + Graph Rewrite
 
-**Function**: `canonicalizeClosureStaging`
+**Function**: `Staging.analyzeAndSolveStaging`
 
-**Purpose**: Flatten nested `MFunction` types to match the closure's actual param count.
+**Purpose**: Canonicalize closure staging via the graph-based constraint solver, then rewrite the graph with the solution. This phase both flattens nested `MFunction` types to match closure param counts and normalizes case/if branches to have compatible calling conventions.
 
-**Example**:
+**Type Flattening Example**:
 ```elm
 -- Before: closure with params=[x,y], type=MFunction [Int] (MFunction [Int] Int)
 -- After:  closure with params=[x,y], type=MFunction [Int, Int] Int
 ```
 
-**Algorithm**:
-1. Walk all nodes in the graph
-2. For each `MonoClosure`, use `flattenTypeToArity` to adjust its type
-3. For each `MonoTailFunc`, similarly flatten its type
-
-**Key function**: `flattenTypeToArity targetArity monoType`
-- Flattens nested `MFunction` to match `targetArity`
-- If type has more args than params, keeps the rest nested
-- If type has fewer args than params, reports GOPT_001 violation
-
-### Phase 2: ABI Normalization
-
-**Function**: `normalizeCaseIfAbi`
-
-**Purpose**: Ensure all case/if branches returning functions have compatible calling conventions.
-
-**The Problem**:
+**ABI Normalization Example**:
 ```elm
 chooser b =
     if b then
@@ -136,12 +117,12 @@ Each branch has a different staging signature. The caller cannot know how to inv
 **Algorithm** (`rewriteExprForAbi`):
 1. For case expressions: collect leaf types, pick canonical segmentation, wrap branches
 2. For if expressions: similarly normalize branch results
-3. For closures: verify they're properly formed (wrapping was done in Phase 0.5)
+3. For closures: verify they're properly formed (wrapping was done in Phase 1)
 
 **Key functions**:
 - `chooseCanonicalSegmentation`: Picks the most common staging pattern
 - `buildAbiWrapperGO`: Creates wrapper closures that adapt one staging to another
-- `ensureCallableForNode`: Wraps non-closure function values in closures (called in Phase 0.5)
+- `ensureCallableForNode`: Wraps non-closure function values in closures (called in Phase 1)
 
 ### Phase 3: Validate Closure Staging
 
@@ -151,9 +132,15 @@ Each branch has a different staging signature. The caller cannot know how to inv
 
 **Algorithm**: Walk all closures and check that `length(params) == stageParamCount(type)`.
 
-**Failure**: If validation fails after phases 1-2, it indicates a bug in the transformation logic.
+**Failure**: If validation fails after Phase 2, it indicates a bug in the transformation logic.
 
-### Phase 4: Annotate Call Staging
+### Phase 4: ABI Cloning
+
+**Function**: `AbiCloning.abiCloningPass`
+
+**Purpose**: Ensure homogeneous closure parameters. Clones functions when a closure-typed parameter receives different capture ABIs at different call sites.
+
+### Phase 5: Annotate Call Staging
 
 **Function**: `annotateCallStaging`
 
@@ -323,7 +310,7 @@ By moving all staging logic to GlobalOpt:
 
 - `MonoTraverse.elm`: Common iteration infrastructure for graph traversal
 - `MonoReturnArity.elm`: Stage arity computation utilities
-- `MonoInlineSimplify.elm`: Small function inlining pass (Phase 0)
+- `MonoInlineSimplify.elm`: Small function inlining pass (applied externally before GlobalOpt)
 - `Staging/`: Graph-based staging solver subsystem
   - `Types.elm`: Core types (ProducerId, SlotId, Node, StagingGraph)
   - `GraphBuilder.elm`: Builds staging graph from MonoGraph
@@ -338,7 +325,7 @@ By moving all staging logic to GlobalOpt:
 | Function | Module | Purpose |
 |----------|--------|---------|
 | `globalOptimize` | MonoGlobalOptimize | Main entry point |
-| `wrapTopLevelCallables` | MonoGlobalOptimize | Phase 0.5: wrap bare globals/kernels |
+| `wrapTopLevelCallables` | MonoGlobalOptimize | Phase 1: wrap bare globals/kernels |
 | `buildStagingGraph` | Staging.GraphBuilder | Build staging constraint graph |
 | `solveStagingGraph` | Staging.Solver | Solve for canonical segmentations |
 | `applyStagingSolution` | Staging.Rewriter | Rewrite closures to canonical form |
@@ -361,18 +348,10 @@ chooser b =
             -- where body2 = MonoClosure {params=[y]} ... (MFunction [Int] Int)
 ```
 
-**After Phase 1** (canonicalizeClosureStaging):
+**After Phase 2** (staging analysis + graph rewrite):
 ```elm
 -- First closure: params=[x,y], type flattened to MFunction [Int, Int] Int
--- Second closure: params=[x], type remains MFunction [Int] (MFunction [Int] Int)
---   (because it only takes 1 param, returning another closure)
-```
-
-**After Phase 2** (normalizeCaseIfAbi):
-```elm
--- Canonical staging chosen: [2] (majority wins)
--- First branch: unchanged (already [2])
--- Second branch: wrapped with buildAbiWrapperGO to become [2]
+-- Second closure: wrapped to match canonical staging [2]
 chooser b =
     if b then
         MonoClosure {params=[x,y]} body1 (MFunction [Int, Int] Int)
@@ -381,7 +360,7 @@ chooser b =
             -- where wrapperBody calls the original [1,1] closure with x, then y
 ```
 
-**After Phase 4** (annotateCallStaging):
+**After Phase 5** (annotateCallStaging):
 ```elm
 -- All MonoCall expressions now have CallInfo:
 --   callModel = StageCurried

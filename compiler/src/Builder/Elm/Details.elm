@@ -89,8 +89,9 @@ import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Doc as Doc
 import Compiler.Reporting.Error as Error
 import Compiler.Reporting.Error.Syntax as Syntax
-import Data.Map as Dict exposing (Dict)
+import Data.Map as EveryDict
 import Data.Set as EverySet exposing (EverySet)
+import Dict exposing (Dict)
 import Result.Extra
 import System.TypeCheck.IO as TypeCheck
 import Task exposing (Task)
@@ -103,6 +104,88 @@ import Utils.Task.Extra as Task
 
 
 
+-- ====== STDLIB DICT HELPERS ======
+
+
+stdUnionWith : (v -> v -> v) -> Dict comparable v -> Dict comparable v -> Dict comparable v
+stdUnionWith f d1 d2 =
+    Dict.merge Dict.insert (\k v1 v2 acc -> Dict.insert k (f v1 v2) acc) Dict.insert d1 d2 Dict.empty
+
+
+stdMapMaybe : (v -> Maybe w) -> Dict comparable v -> Dict comparable w
+stdMapMaybe f dict =
+    Dict.foldl
+        (\k v acc ->
+            case f v of
+                Just w ->
+                    Dict.insert k w acc
+
+                Nothing ->
+                    acc
+        )
+        Dict.empty
+        dict
+
+
+stdIntersection : Dict comparable a -> Dict comparable b -> Dict comparable a
+stdIntersection d1 d2 =
+    Dict.filter (\k _ -> Dict.member k d2) d1
+
+
+stdTraverseWithKey : (comparable -> a -> Task Never b) -> Dict comparable a -> Task Never (Dict comparable b)
+stdTraverseWithKey f =
+    Dict.foldl
+        (\k a -> Task.andThen (\c -> Task.map (\va -> Dict.insert k va c) (f k a)))
+        (Task.succeed Dict.empty)
+
+
+stdTraverse : (a -> Task Never b) -> Dict comparable a -> Task Never (Dict comparable b)
+stdTraverse f =
+    stdTraverseWithKey (\_ -> f)
+
+
+stdDictMapM_ : (a -> Task Never b) -> Dict comparable a -> Task Never ()
+stdDictMapM_ f =
+    Dict.foldl (\_ a acc -> Task.andThen (\_ -> Task.map (\_ -> ()) (f a)) acc) (Task.succeed ())
+
+
+stdToEveryDict : Dict comparable v -> EveryDict.Dict comparable comparable v
+stdToEveryDict =
+    Dict.foldl (\k v acc -> EveryDict.insert identity k v acc) EveryDict.empty
+
+
+stdSequenceResult : Dict comparable (Result e v) -> Result e (Dict comparable v)
+stdSequenceResult =
+    Dict.foldl
+        (\k rv acc ->
+            case ( rv, acc ) of
+                ( Ok v, Ok dict ) ->
+                    Ok (Dict.insert k v dict)
+
+                ( Err e, _ ) ->
+                    Err e
+
+                ( _, Err e ) ->
+                    Err e
+        )
+        (Ok Dict.empty)
+
+
+stdSequenceMaybe : Dict comparable (Maybe v) -> Maybe (Dict comparable v)
+stdSequenceMaybe =
+    Dict.foldl
+        (\k mv acc ->
+            case ( mv, acc ) of
+                ( Just v, Just dict ) ->
+                    Just (Dict.insert k v dict)
+
+                _ ->
+                    Nothing
+        )
+        (Just Dict.empty)
+
+
+
 -- ====== DETAILS ======
 
 
@@ -112,10 +195,11 @@ type alias DetailsData =
     { time : File.Time
     , outline : ValidOutline
     , buildID : BuildID
-    , locals : Dict String ModuleName.Raw Local
-    , foreigns : Dict String ModuleName.Raw Foreign
+    , locals : Dict ModuleName.Raw Local
+    , foreigns : Dict ModuleName.Raw Foreign
     , extras : Extras
-    , deps : Dict ( String, String ) Pkg.Name V.Version
+    , deps : Dict Pkg.Name V.Version
+    , hasTypedOpt : Bool
     }
 
 
@@ -135,7 +219,7 @@ type alias BuildID =
 -}
 type ValidOutline
     = ValidApp (NE.Nonempty Outline.SrcDir)
-    | ValidPkg Pkg.Name (List ModuleName.Raw) (Dict ( String, String ) Pkg.Name V.Version {- for docs in reactor -})
+    | ValidPkg Pkg.Name (List ModuleName.Raw) (Dict Pkg.Name V.Version {- for docs in reactor -})
 
 
 
@@ -188,7 +272,7 @@ type Extras
 {-| Type interfaces for all dependency modules, indexed by canonical module name.
 -}
 type alias Interfaces =
-    Dict (List String) TypeCheck.Canonical I.DependencyInterface
+    EveryDict.Dict (List String) TypeCheck.Canonical I.DependencyInterface
 
 
 
@@ -225,7 +309,7 @@ loadTypedObjects root maybeBuildDir maybeLocal (Details detailsData) =
 
 {-| Load typed objects from local project and all packages.
 -}
-loadAllTypedObjects : FilePath -> Maybe String -> Dict ( String, String ) Pkg.Name V.Version -> Stuff.PackageCache -> Task Never (Maybe PackageTypedArtifacts)
+loadAllTypedObjects : FilePath -> Maybe String -> Dict Pkg.Name V.Version -> Stuff.PackageCache -> Task Never (Maybe PackageTypedArtifacts)
 loadAllTypedObjects root maybeBuildDir deps cache =
     -- Load local typed objects (graph only - type envs come from Fresh modules)
     File.readBinary TOpt.globalGraphDecoder (Stuff.typedObjectsWithBuildDir root maybeBuildDir)
@@ -239,12 +323,12 @@ loadAllTypedObjects root maybeBuildDir deps cache =
 
 {-| Load typed objects from all package dependencies.
 -}
-loadPackageTypedArtifacts : Stuff.PackageCache -> Dict ( String, String ) Pkg.Name V.Version -> Task Never PackageTypedArtifacts
+loadPackageTypedArtifacts : Stuff.PackageCache -> Dict Pkg.Name V.Version -> Task Never PackageTypedArtifacts
 loadPackageTypedArtifacts cache deps =
-    Utils.mapTraverseWithKey identity Pkg.compareName (loadSinglePackageTypedArtifacts cache) deps
+    Utils.dictTraverseWithKey (loadSinglePackageTypedArtifacts cache) deps
         |> Task.map
             (\loadedArtifacts ->
-                Dict.foldl compare
+                Dict.foldl
                     (\_ arts acc ->
                         { typedGraph = GA.addTypedGlobalGraph arts.typedGraph acc.typedGraph
                         , typeEnv = TypeEnv.mergeGlobalTypeEnv arts.typeEnv acc.typeEnv
@@ -391,11 +475,14 @@ handleCachedDetails style scope root maybeBuildDir needsTypedOpt showPackageErro
             generate style scope root maybeBuildDir needsTypedOpt showPackageErrors maybeLocal newTime
 
         Just (Details detailsData) ->
-            if detailsData.time == newTime then
-                Task.succeed (Ok (Details { detailsData | buildID = detailsData.buildID + 1 }))
+            if detailsData.time /= newTime then
+                generate style scope root maybeBuildDir needsTypedOpt showPackageErrors maybeLocal newTime
+
+            else if needsTypedOpt && not detailsData.hasTypedOpt then
+                generate style scope root maybeBuildDir needsTypedOpt showPackageErrors maybeLocal newTime
 
             else
-                generate style scope root maybeBuildDir needsTypedOpt showPackageErrors maybeLocal newTime
+                Task.succeed (Ok (Details { detailsData | buildID = detailsData.buildID + 1 }))
 
 
 
@@ -488,7 +575,7 @@ combineEnvAndOutline key scope root maybeBuildDir needsTypedOpt showPackageError
 verifyPkg : Env -> File.Time -> Outline.PkgOutline -> Task Exit.Details Details
 verifyPkg env time (Outline.PkgOutline pkgData) =
     if Con.goodElm pkgData.elm then
-        union identity Pkg.compareName noDups pkgData.deps pkgData.testDeps
+        union noDups pkgData.deps pkgData.testDeps
             |> Task.andThen (verifyConstraints env)
             |> Task.andThen
                 (\solution ->
@@ -497,7 +584,7 @@ verifyPkg env time (Outline.PkgOutline pkgData) =
                         exposedList =
                             Outline.flattenExposed pkgData.exposed
 
-                        exactDeps : Dict ( String, String ) Pkg.Name V.Version
+                        exactDeps : Dict Pkg.Name V.Version
                         exactDeps =
                             Dict.map (\_ (Solver.Details v _) -> v) solution
 
@@ -531,13 +618,13 @@ verifyApp env time ((Outline.AppOutline appData) as outline) =
         Task.throw (Exit.DetailsBadElmInAppOutline appData.elm)
 
 
-checkAppDeps : Outline.AppOutline -> Task Exit.Details (Dict ( String, String ) Pkg.Name V.Version)
+checkAppDeps : Outline.AppOutline -> Task Exit.Details (Dict Pkg.Name V.Version)
 checkAppDeps (Outline.AppOutline appData) =
-    union identity Pkg.compareName allowEqualDups appData.depsIndirect appData.testDirect
+    union allowEqualDups appData.depsIndirect appData.testDirect
         |> Task.andThen
             (\x ->
-                union identity Pkg.compareName noDups appData.depsDirect appData.testIndirect
-                    |> Task.andThen (\y -> union identity Pkg.compareName noDups x y)
+                union noDups appData.depsDirect appData.testIndirect
+                    |> Task.andThen (\y -> union noDups x y)
             )
 
 
@@ -545,7 +632,7 @@ checkAppDeps (Outline.AppOutline appData) =
 -- ====== VERIFY CONSTRAINTS ======
 
 
-verifyConstraints : Env -> Dict ( String, String ) Pkg.Name Con.Constraint -> Task Exit.Details (Dict ( String, String ) Pkg.Name Solver.Details)
+verifyConstraints : Env -> Dict Pkg.Name Con.Constraint -> Task Exit.Details (Dict Pkg.Name Solver.Details)
 verifyConstraints (Env envData) constraints =
     Task.io (Solver.verify envData.cache envData.connection envData.registry constraints)
         |> Task.andThen
@@ -569,15 +656,15 @@ verifyConstraints (Env envData) constraints =
 -- ====== UNION ======
 
 
-union : (k -> comparable) -> (k -> k -> Order) -> (k -> v -> v -> Task Exit.Details v) -> Dict comparable k v -> Dict comparable k v -> Task Exit.Details (Dict comparable k v)
-union toComparable keyComparison tieBreaker deps1 deps2 =
-    Dict.merge keyComparison
-        (\k dep -> Task.map (Dict.insert toComparable k dep))
+union : (comparable -> v -> v -> Task Exit.Details v) -> Dict comparable v -> Dict comparable v -> Task Exit.Details (Dict comparable v)
+union tieBreaker deps1 deps2 =
+    Dict.merge
+        (\k dep -> Task.map (Dict.insert k dep))
         (\k dep1 dep2 acc ->
             tieBreaker k dep1 dep2
-                |> Task.andThen (\v -> Task.map (Dict.insert toComparable k v) acc)
+                |> Task.andThen (\v -> Task.map (Dict.insert k v) acc)
         )
-        (\k dep -> Task.map (Dict.insert toComparable k dep))
+        (\k dep -> Task.map (Dict.insert k dep))
         deps1
         deps2
         (Task.succeed Dict.empty)
@@ -615,10 +702,10 @@ fork encoder work =
 -- ====== VERIFY DEPENDENCIES ======
 
 
-verifyDependencies : Env -> File.Time -> ValidOutline -> Dict ( String, String ) Pkg.Name Solver.Details -> Dict ( String, String ) Pkg.Name a -> Task Exit.Details Details
+verifyDependencies : Env -> File.Time -> ValidOutline -> Dict Pkg.Name Solver.Details -> Dict Pkg.Name a -> Task Exit.Details Details
 verifyDependencies ((Env envData) as env) time outline solution directDeps =
     let
-        depVersions : Dict ( String, String ) Pkg.Name V.Version
+        depVersions : Dict Pkg.Name V.Version
         depVersions =
             Dict.map (\_ (Solver.Details v _) -> v) solution
     in
@@ -626,40 +713,40 @@ verifyDependencies ((Env envData) as env) time outline solution directDeps =
         (Reporting.report envData.key (Reporting.DStart (Dict.size solution))
             |> Task.andThen (\_ -> Utils.newEmptyMVar)
             |> Task.andThen (verifyAllDeps env solution)
-            |> Task.andThen (finalizeDependencies envData.scope envData.root envData.maybeBuildDir time outline directDeps depVersions)
+            |> Task.andThen (finalizeDependencies envData.scope envData.root envData.maybeBuildDir envData.needsTypedOpt time outline directDeps depVersions)
         )
 
 
 {-| Fork verification of all dependencies.
 -}
-verifyAllDeps : Env -> Dict ( String, String ) Pkg.Name Solver.Details -> MVar (Dict ( String, String ) Pkg.Name (MVar Dep)) -> Task Never (Dict ( String, String ) Pkg.Name Dep)
+verifyAllDeps : Env -> Dict Pkg.Name Solver.Details -> MVar (Dict Pkg.Name (MVar Dep)) -> Task Never (Dict Pkg.Name Dep)
 verifyAllDeps ((Env envData) as env) solution mvar =
     Stuff.withRegistryLock envData.cache
-        (Utils.mapTraverseWithKey identity Pkg.compareName (\k v -> fork depEncoder (verifyDep env mvar solution k v)) solution)
+        (Utils.dictTraverseWithKey (\k v -> fork depEncoder (verifyDep env mvar solution k v)) solution)
         |> Task.andThen
             (\mvars ->
                 Utils.putMVar dictNameMVarDepEncoder mvar mvars
-                    |> Task.andThen (\_ -> Utils.mapTraverse identity Pkg.compareName (Utils.readMVar depDecoder) mvars)
+                    |> Task.andThen (\_ -> Utils.dictTraverse (Utils.readMVar depDecoder) mvars)
             )
 
 
 {-| Finalize dependency verification: build artifacts or report errors.
 -}
-finalizeDependencies : BW.Scope -> FilePath -> Maybe String -> File.Time -> ValidOutline -> Dict ( String, String ) Pkg.Name a -> Dict ( String, String ) Pkg.Name V.Version -> Dict ( String, String ) Pkg.Name Dep -> Task Never (Result Exit.Details Details)
-finalizeDependencies scope root maybeBuildDir time outline directDeps depVersions deps =
-    case Utils.sequenceDictResult identity Pkg.compareName deps of
+finalizeDependencies : BW.Scope -> FilePath -> Maybe String -> Bool -> File.Time -> ValidOutline -> Dict Pkg.Name a -> Dict Pkg.Name V.Version -> Dict Pkg.Name Dep -> Task Never (Result Exit.Details Details)
+finalizeDependencies scope root maybeBuildDir needsTypedOpt time outline directDeps depVersions deps =
+    case Utils.dictSequenceResult deps of
         Err _ ->
             Stuff.getElmHome
                 |> Task.map
                     (\home ->
                         Err
                             (Exit.DetailsBadDeps home
-                                (List.filterMap identity (Utils.eitherLefts (Dict.values compare deps)))
+                                (List.filterMap identity (Utils.eitherLefts (Dict.values deps)))
                             )
                     )
 
         Ok artifacts ->
-            writeVerifiedArtifacts scope root maybeBuildDir time outline directDeps artifacts depVersions
+            writeVerifiedArtifacts scope root maybeBuildDir needsTypedOpt time outline directDeps artifacts depVersions
 
 
 {-| Write verified artifacts to disk.
@@ -668,25 +755,26 @@ writeVerifiedArtifacts :
     BW.Scope
     -> FilePath
     -> Maybe String
+    -> Bool
     -> File.Time
     -> ValidOutline
-    -> Dict ( String, String ) Pkg.Name a
-    -> Dict ( String, String ) Pkg.Name Artifacts
-    -> Dict ( String, String ) Pkg.Name V.Version
+    -> Dict Pkg.Name a
+    -> Dict Pkg.Name Artifacts
+    -> Dict Pkg.Name V.Version
     -> Task Never (Result Exit.Details Details)
-writeVerifiedArtifacts scope root maybeBuildDir time outline directDeps artifacts depVersions =
+writeVerifiedArtifacts scope root maybeBuildDir needsTypedOpt time outline directDeps artifacts depVersions =
     let
         objs : Opt.GlobalGraph
         objs =
-            Dict.foldr compare (\_ -> addObjects) Opt.empty artifacts
+            Dict.foldr (\_ -> addObjects) Opt.empty artifacts
 
         ifaces : Interfaces
         ifaces =
-            Dict.foldr compare (addInterfaces directDeps) Dict.empty artifacts
+            Dict.foldr (addInterfaces directDeps) EveryDict.empty artifacts
 
-        foreigns : Dict String ModuleName.Raw Foreign
+        foreigns : Dict ModuleName.Raw Foreign
         foreigns =
-            Dict.map (\_ -> OneOrMore.destruct Foreign) (Dict.foldr compare gatherForeigns Dict.empty (Dict.intersection compare artifacts directDeps))
+            Dict.map (\_ -> OneOrMore.destruct Foreign) (Dict.foldr gatherForeigns Dict.empty (Dict.filter (\k _ -> Dict.member k directDeps) artifacts))
 
         details : Details
         details =
@@ -698,6 +786,7 @@ writeVerifiedArtifacts scope root maybeBuildDir time outline directDeps artifact
                 , foreigns = foreigns
                 , extras = ArtifactsFresh ifaces objs
                 , deps = depVersions
+                , hasTypedOpt = needsTypedOpt
                 }
     in
     BW.writeBinary Opt.globalGraphEncoder scope (Stuff.objectsWithBuildDir root maybeBuildDir) objs
@@ -711,14 +800,14 @@ addObjects (Artifacts _ objs) graph =
     GA.addOptGlobalGraph objs graph
 
 
-addInterfaces : Dict ( String, String ) Pkg.Name a -> Pkg.Name -> Artifacts -> Interfaces -> Interfaces
+addInterfaces : Dict Pkg.Name a -> Pkg.Name -> Artifacts -> Interfaces -> Interfaces
 addInterfaces directDeps pkg (Artifacts ifaces _) dependencyInterfaces =
-    Dict.union
+    EveryDict.union
         dependencyInterfaces
-        (Dict.fromList ModuleName.toComparableCanonical
+        (EveryDict.fromList ModuleName.toComparableCanonical
             (List.map (Tuple.mapFirst (TypeCheck.Canonical pkg))
-                (Dict.toList compare
-                    (if Dict.member identity pkg directDeps then
+                (Dict.toList
+                    (if Dict.member pkg directDeps then
                         ifaces
 
                      else
@@ -729,7 +818,7 @@ addInterfaces directDeps pkg (Artifacts ifaces _) dependencyInterfaces =
         )
 
 
-gatherForeigns : Pkg.Name -> Artifacts -> Dict String ModuleName.Raw (OneOrMore.OneOrMore Pkg.Name) -> Dict String ModuleName.Raw (OneOrMore.OneOrMore Pkg.Name)
+gatherForeigns : Pkg.Name -> Artifacts -> Dict ModuleName.Raw (OneOrMore.OneOrMore Pkg.Name) -> Dict ModuleName.Raw (OneOrMore.OneOrMore Pkg.Name)
 gatherForeigns pkg (Artifacts ifaces _) foreigns =
     let
         isPublic : I.DependencyInterface -> Maybe (OneOrMore.OneOrMore Pkg.Name)
@@ -741,7 +830,7 @@ gatherForeigns pkg (Artifacts ifaces _) foreigns =
                 I.Private _ _ _ ->
                     Nothing
     in
-    Utils.mapUnionWith identity compare OneOrMore.more foreigns (Utils.mapMapMaybe identity compare isPublic ifaces)
+    stdUnionWith OneOrMore.more foreigns (stdMapMaybe isPublic ifaces)
 
 
 
@@ -749,7 +838,7 @@ gatherForeigns pkg (Artifacts ifaces _) foreigns =
 
 
 type Artifacts
-    = Artifacts (Dict String ModuleName.Raw I.DependencyInterface) Opt.GlobalGraph
+    = Artifacts (Dict ModuleName.Raw I.DependencyInterface) Opt.GlobalGraph
 
 
 type alias Dep =
@@ -762,22 +851,22 @@ type alias VerifyDepContext =
     { key : Reporting.DKey
     , cache : Stuff.PackageCache
     , manager : Http.Manager
-    , depsMVar : MVar (Dict ( String, String ) Pkg.Name (MVar Dep))
+    , depsMVar : MVar (Dict Pkg.Name (MVar Dep))
     , pkg : Pkg.Name
     , vsn : V.Version
     , details : Solver.Details
-    , fingerprint : Dict ( String, String ) Pkg.Name V.Version
+    , fingerprint : Dict Pkg.Name V.Version
     , needsTypedOpt : Bool
     , showPackageErrors : Bool
     }
 
 
-verifyDep : Env -> MVar (Dict ( String, String ) Pkg.Name (MVar Dep)) -> Dict ( String, String ) Pkg.Name Solver.Details -> Pkg.Name -> Solver.Details -> Task Never Dep
+verifyDep : Env -> MVar (Dict Pkg.Name (MVar Dep)) -> Dict Pkg.Name Solver.Details -> Pkg.Name -> Solver.Details -> Task Never Dep
 verifyDep (Env envData) depsMVar solution pkg ((Solver.Details vsn directDeps) as details) =
     let
-        fingerprint : Dict ( String, String ) Pkg.Name V.Version
+        fingerprint : Dict Pkg.Name V.Version
         fingerprint =
-            Utils.mapIntersectionWith identity Pkg.compareName (\(Solver.Details v _) _ -> v) solution directDeps
+            Utils.dictIntersectionWith (\(Solver.Details v _) _ -> v) solution directDeps
 
         ctx : VerifyDepContext
         ctx =
@@ -879,12 +968,12 @@ type ArtifactCache
 
 
 type alias Fingerprint =
-    Dict ( String, String ) Pkg.Name V.Version
+    Dict Pkg.Name V.Version
 
 
 toComparableFingerprint : Fingerprint -> List ( ( String, String ), ( Int, Int, Int ) )
 toComparableFingerprint fingerprint =
-    Dict.toList compare fingerprint
+    Dict.toList fingerprint
         |> List.map (Tuple.mapSecond V.toComparable)
 
 
@@ -909,7 +998,7 @@ type alias BuildContext =
 build :
     Reporting.DKey
     -> Stuff.PackageCache
-    -> MVar (Dict ( String, String ) Pkg.Name (MVar Dep))
+    -> MVar (Dict Pkg.Name (MVar Dep))
     -> Pkg.Name
     -> Solver.Details
     -> Fingerprint
@@ -948,21 +1037,21 @@ reportBuildBroken { key, pkg, vsn, fingerprint } =
 
 {-| Build a package after successfully reading its outline.
 -}
-buildPackage : BuildContext -> MVar (Dict ( String, String ) Pkg.Name (MVar Dep)) -> Outline.Exposed -> Dict ( String, String ) Pkg.Name Con.Constraint -> Task Never Dep
+buildPackage : BuildContext -> MVar (Dict Pkg.Name (MVar Dep)) -> Outline.Exposed -> Dict Pkg.Name Con.Constraint -> Task Never Dep
 buildPackage ctx depsMVar exposed deps =
     Utils.readMVar dictPkgNameMVarDepDecoder depsMVar
         |> Task.andThen
             (\allDeps ->
-                Utils.mapTraverse identity Pkg.compareName (Utils.readMVar depDecoder) (Dict.intersection compare allDeps deps)
+                Utils.dictTraverse (Utils.readMVar depDecoder) (Dict.filter (\k _ -> Dict.member k deps) allDeps)
                     |> Task.andThen (buildWithDirectDeps ctx exposed)
             )
 
 
 {-| Build with direct dependencies resolved.
 -}
-buildWithDirectDeps : BuildContext -> Outline.Exposed -> Dict ( String, String ) Pkg.Name Dep -> Task Never Dep
+buildWithDirectDeps : BuildContext -> Outline.Exposed -> Dict Pkg.Name Dep -> Task Never Dep
 buildWithDirectDeps ctx exposed directDeps =
-    case Utils.sequenceDictResult identity Pkg.compareName directDeps of
+    case Utils.dictSequenceResult directDeps of
         Err _ ->
             Reporting.report ctx.key Reporting.DBroken
                 |> Task.map (\_ -> Err Nothing)
@@ -973,13 +1062,13 @@ buildWithDirectDeps ctx exposed directDeps =
                 src =
                     Stuff.package ctx.cache ctx.pkg ctx.vsn ++ "/src"
 
-                foreignDeps : Dict String ModuleName.Raw ForeignInterface
+                foreignDeps : Dict ModuleName.Raw ForeignInterface
                 foreignDeps =
                     gatherForeignInterfaces directArtifacts
 
-                exposedDict : Dict String ModuleName.Raw ()
+                exposedDict : Dict ModuleName.Raw ()
                 exposedDict =
-                    Utils.mapFromKeys identity (\_ -> ()) (Outline.flattenExposed exposed)
+                    Dict.fromList (List.map (\k -> ( k, () )) (Outline.flattenExposed exposed))
             in
             getDocsStatus ctx.cache ctx.pkg ctx.vsn
                 |> Task.andThen (crawlPackageModules ctx foreignDeps src exposedDict)
@@ -990,11 +1079,11 @@ buildWithDirectDeps ctx exposed directDeps =
 -}
 crawlPackageModules :
     BuildContext
-    -> Dict String ModuleName.Raw ForeignInterface
+    -> Dict ModuleName.Raw ForeignInterface
     -> String
-    -> Dict String ModuleName.Raw ()
+    -> Dict ModuleName.Raw ()
     -> DocsStatus
-    -> Task Never (Result Dep ( DocsStatus, Dict String ModuleName.Raw Status ))
+    -> Task Never (Result Dep ( DocsStatus, Dict ModuleName.Raw Status ))
 crawlPackageModules ctx foreignDeps src exposedDict docsStatus =
     Utils.newEmptyMVar
         |> Task.andThen (forkCrawlModules ctx foreignDeps src exposedDict docsStatus)
@@ -1002,38 +1091,38 @@ crawlPackageModules ctx foreignDeps src exposedDict docsStatus =
 
 forkCrawlModules :
     BuildContext
-    -> Dict String ModuleName.Raw ForeignInterface
+    -> Dict ModuleName.Raw ForeignInterface
     -> String
-    -> Dict String ModuleName.Raw ()
+    -> Dict ModuleName.Raw ()
     -> DocsStatus
-    -> MVar (Dict String ModuleName.Raw (MVar (Maybe Status)))
-    -> Task Never (Result Dep ( DocsStatus, Dict String ModuleName.Raw Status ))
+    -> MVar (Dict ModuleName.Raw (MVar (Maybe Status)))
+    -> Task Never (Result Dep ( DocsStatus, Dict ModuleName.Raw Status ))
 forkCrawlModules ctx foreignDeps src exposedDict docsStatus mvar =
-    Utils.mapTraverseWithKey identity compare (always << fork (BE.maybe statusEncoder) << crawlModule foreignDeps mvar ctx.pkg src docsStatus) exposedDict
+    stdTraverseWithKey (always << fork (BE.maybe statusEncoder) << crawlModule foreignDeps mvar ctx.pkg src docsStatus) exposedDict
         |> Task.andThen (waitAndCollectCrawlResults ctx docsStatus mvar)
 
 
 waitAndCollectCrawlResults :
     BuildContext
     -> DocsStatus
-    -> MVar (Dict String ModuleName.Raw (MVar (Maybe Status)))
-    -> Dict String ModuleName.Raw (MVar (Maybe Status))
-    -> Task Never (Result Dep ( DocsStatus, Dict String ModuleName.Raw Status ))
+    -> MVar (Dict ModuleName.Raw (MVar (Maybe Status)))
+    -> Dict ModuleName.Raw (MVar (Maybe Status))
+    -> Task Never (Result Dep ( DocsStatus, Dict ModuleName.Raw Status ))
 waitAndCollectCrawlResults ctx docsStatus mvar mvars =
     Utils.putMVar statusDictEncoder mvar mvars
-        |> Task.andThen (\_ -> Utils.dictMapM_ compare (Utils.readMVar (BD.maybe statusDecoder)) mvars)
+        |> Task.andThen (\_ -> stdDictMapM_ (Utils.readMVar (BD.maybe statusDecoder)) mvars)
         |> Task.andThen (\_ -> Utils.readMVar statusDictDecoder mvar)
-        |> Task.andThen (Utils.mapTraverse identity compare (Utils.readMVar (BD.maybe statusDecoder)))
+        |> Task.andThen (stdTraverse (Utils.readMVar (BD.maybe statusDecoder)))
         |> Task.andThen (finalizeCrawlResults ctx docsStatus)
 
 
 finalizeCrawlResults :
     BuildContext
     -> DocsStatus
-    -> Dict String ModuleName.Raw (Maybe Status)
-    -> Task Never (Result Dep ( DocsStatus, Dict String ModuleName.Raw Status ))
+    -> Dict ModuleName.Raw (Maybe Status)
+    -> Task Never (Result Dep ( DocsStatus, Dict ModuleName.Raw Status ))
 finalizeCrawlResults ctx docsStatus maybeStatuses =
-    case Utils.sequenceDictMaybe identity compare maybeStatuses of
+    case stdSequenceMaybe maybeStatuses of
         Nothing ->
             reportBuildBroken ctx
                 |> Task.map Err
@@ -1044,7 +1133,7 @@ finalizeCrawlResults ctx docsStatus maybeStatuses =
 
 {-| Compile package modules and write artifacts.
 -}
-compilePackageModules : BuildContext -> Dict String ModuleName.Raw () -> Result Dep ( DocsStatus, Dict String ModuleName.Raw Status ) -> Task Never Dep
+compilePackageModules : BuildContext -> Dict ModuleName.Raw () -> Result Dep ( DocsStatus, Dict ModuleName.Raw Status ) -> Task Never Dep
 compilePackageModules ctx exposedDict crawlResult =
     case crawlResult of
         Err dep ->
@@ -1057,32 +1146,32 @@ compilePackageModules ctx exposedDict crawlResult =
 
 forkCompileModules :
     BuildContext
-    -> Dict String ModuleName.Raw ()
+    -> Dict ModuleName.Raw ()
     -> DocsStatus
-    -> Dict String ModuleName.Raw Status
-    -> MVar (Dict String ModuleName.Raw (MVar (Result Error.Module DResult)))
+    -> Dict ModuleName.Raw Status
+    -> MVar (Dict ModuleName.Raw (MVar (Result Error.Module DResult)))
     -> Task Never Dep
 forkCompileModules ctx exposedDict docsStatus statuses rmvar =
-    Utils.mapTraverse identity compare (fork resultErrorModuleDResultEncoder << compile ctx rmvar) statuses
+    stdTraverse (fork resultErrorModuleDResultEncoder << compile ctx rmvar) statuses
         |> Task.andThen (waitAndCollectCompileResults ctx exposedDict docsStatus rmvar)
 
 
 waitAndCollectCompileResults :
     BuildContext
-    -> Dict String ModuleName.Raw ()
+    -> Dict ModuleName.Raw ()
     -> DocsStatus
-    -> MVar (Dict String ModuleName.Raw (MVar (Result Error.Module DResult)))
-    -> Dict String ModuleName.Raw (MVar (Result Error.Module DResult))
+    -> MVar (Dict ModuleName.Raw (MVar (Result Error.Module DResult)))
+    -> Dict ModuleName.Raw (MVar (Result Error.Module DResult))
     -> Task Never Dep
 waitAndCollectCompileResults ctx exposedDict docsStatus rmvar rmvars =
     Utils.putMVar dictRawMVarResultErrorModuleDResultEncoder rmvar rmvars
-        |> Task.andThen (\_ -> Utils.mapTraverse identity compare (Utils.readMVar resultErrorModuleDResultDecoder) rmvars)
+        |> Task.andThen (\_ -> stdTraverse (Utils.readMVar resultErrorModuleDResultDecoder) rmvars)
         |> Task.andThen (writePackageArtifacts ctx exposedDict docsStatus)
 
 
 {-| Write package artifacts to disk.
 -}
-writePackageArtifacts : BuildContext -> Dict String ModuleName.Raw () -> DocsStatus -> Dict String ModuleName.Raw (Result Error.Module DResult) -> Task Never Dep
+writePackageArtifacts : BuildContext -> Dict ModuleName.Raw () -> DocsStatus -> Dict ModuleName.Raw (Result Error.Module DResult) -> Task Never Dep
 writePackageArtifacts ctx exposedDict docsStatus resultDict =
     let
         ( errors, successes ) =
@@ -1100,7 +1189,7 @@ writePackageArtifacts ctx exposedDict docsStatus resultDict =
                 typedPath =
                     Stuff.typedPackageArtifacts ctx.cache ctx.pkg ctx.vsn
 
-                ifaces : Dict String ModuleName.Raw I.DependencyInterface
+                ifaces : Dict ModuleName.Raw I.DependencyInterface
                 ifaces =
                     gatherInterfaces exposedDict successes
 
@@ -1157,9 +1246,9 @@ writePackageArtifacts ctx exposedDict docsStatus resultDict =
 {-| Partition a dict of results into a list of errors and a dict of successes.
 Filters out "blocked" errors (those with empty source) since they're not real errors.
 -}
-partitionResults : Dict String ModuleName.Raw (Result Error.Module ok) -> ( List Error.Module, Dict String ModuleName.Raw ok )
+partitionResults : Dict ModuleName.Raw (Result Error.Module ok) -> ( List Error.Module, Dict ModuleName.Raw ok )
 partitionResults dict =
-    Dict.foldl compare
+    Dict.foldl
         (\k result ( errs, oks ) ->
             case result of
                 Err e ->
@@ -1171,7 +1260,7 @@ partitionResults dict =
                         ( e :: errs, oks )
 
                 Ok v ->
-                    ( errs, Dict.insert identity k v oks )
+                    ( errs, Dict.insert k v oks )
         )
         ( [], Dict.empty )
         dict
@@ -1214,9 +1303,9 @@ printPackageCompileErrors cache pkg vsn firstErr restErrs =
 -- ====== GATHER ======
 
 
-gatherObjects : Dict String ModuleName.Raw DResult -> Opt.GlobalGraph
+gatherObjects : Dict ModuleName.Raw DResult -> Opt.GlobalGraph
 gatherObjects results =
-    Dict.foldr compare addLocalOptGraph Opt.empty results
+    Dict.foldr addLocalOptGraph Opt.empty results
 
 
 addLocalOptGraph : ModuleName.Raw -> DResult -> Opt.GlobalGraph -> Opt.GlobalGraph
@@ -1237,9 +1326,9 @@ addLocalOptGraph name status graph =
 
 {-| Gather typed objects from DResult dictionary for MLIR backend.
 -}
-gatherTypedObjects : Dict String ModuleName.Raw DResult -> TOpt.GlobalGraph
+gatherTypedObjects : Dict ModuleName.Raw DResult -> TOpt.GlobalGraph
 gatherTypedObjects results =
-    Dict.foldr compare addTypedLocalOptGraph TOpt.emptyGlobalGraph results
+    Dict.foldr addTypedLocalOptGraph TOpt.emptyGlobalGraph results
 
 
 {-| Add a typed local graph to the global graph.
@@ -1268,9 +1357,9 @@ addTypedLocalOptGraph _ status graph =
 
 {-| Gather type environments from DResult dictionary for monomorphization.
 -}
-gatherTypeEnvs : Dict String ModuleName.Raw DResult -> TypeEnv.GlobalTypeEnv
+gatherTypeEnvs : Dict ModuleName.Raw DResult -> TypeEnv.GlobalTypeEnv
 gatherTypeEnvs results =
-    Dict.foldr compare addTypeEnv TypeEnv.emptyGlobal results
+    Dict.foldr addTypeEnv TypeEnv.emptyGlobal results
 
 
 {-| Add a module type environment to the global type environment.
@@ -1281,7 +1370,7 @@ addTypeEnv _ status acc =
         RLocal _ _ _ maybeEnv _ ->
             case maybeEnv of
                 Just moduleEnv ->
-                    Dict.insert ModuleName.toComparableCanonical moduleEnv.home moduleEnv acc
+                    EveryDict.insert ModuleName.toComparableCanonical moduleEnv.home moduleEnv acc
 
                 Nothing ->
                     acc
@@ -1296,26 +1385,26 @@ addTypeEnv _ status acc =
             acc
 
 
-gatherInterfaces : Dict String ModuleName.Raw () -> Dict String ModuleName.Raw DResult -> Dict String ModuleName.Raw I.DependencyInterface
+gatherInterfaces : Dict ModuleName.Raw () -> Dict ModuleName.Raw DResult -> Dict ModuleName.Raw I.DependencyInterface
 gatherInterfaces exposed artifacts =
     let
-        onLeft : a -> b -> c -> d
+        onLeft : comparable -> b -> c -> d
         onLeft _ _ _ =
             crash "compiler bug manifesting in Elm.Details.gatherInterfaces"
 
-        onBoth : comparable -> () -> DResult -> Dict comparable comparable I.DependencyInterface -> Dict comparable comparable I.DependencyInterface
+        onBoth : comparable -> () -> DResult -> Dict comparable I.DependencyInterface -> Dict comparable I.DependencyInterface
         onBoth k () iface =
             toLocalInterface I.public iface
-                |> Maybe.map (Dict.insert identity k)
+                |> Maybe.map (Dict.insert k)
                 |> Maybe.withDefault identity
 
-        onRight : comparable -> DResult -> Dict comparable comparable I.DependencyInterface -> Dict comparable comparable I.DependencyInterface
+        onRight : comparable -> DResult -> Dict comparable I.DependencyInterface -> Dict comparable I.DependencyInterface
         onRight k iface =
             toLocalInterface I.private iface
-                |> Maybe.map (Dict.insert identity k)
+                |> Maybe.map (Dict.insert k)
                 |> Maybe.withDefault identity
     in
-    Dict.merge compare onLeft onBoth onRight exposed artifacts Dict.empty
+    Dict.merge onLeft onBoth onRight exposed artifacts Dict.empty
 
 
 toLocalInterface : (I.Interface -> a) -> DResult -> Maybe a
@@ -1343,7 +1432,7 @@ type ForeignInterface
     | ForeignSpecific I.Interface
 
 
-gatherForeignInterfaces : Dict ( String, String ) Pkg.Name Artifacts -> Dict String ModuleName.Raw ForeignInterface
+gatherForeignInterfaces : Dict Pkg.Name Artifacts -> Dict ModuleName.Raw ForeignInterface
 gatherForeignInterfaces directArtifacts =
     let
         finalize : I.Interface -> List I.Interface -> ForeignInterface
@@ -1355,9 +1444,9 @@ gatherForeignInterfaces directArtifacts =
                 _ :: _ ->
                     ForeignAmbiguous
 
-        gather : Pkg.Name -> Artifacts -> Dict String ModuleName.Raw (OneOrMore.OneOrMore I.Interface) -> Dict String ModuleName.Raw (OneOrMore.OneOrMore I.Interface)
+        gather : Pkg.Name -> Artifacts -> Dict ModuleName.Raw (OneOrMore.OneOrMore I.Interface) -> Dict ModuleName.Raw (OneOrMore.OneOrMore I.Interface)
         gather _ (Artifacts ifaces _) buckets =
-            Utils.mapUnionWith identity compare OneOrMore.more buckets (Utils.mapMapMaybe identity compare isPublic ifaces)
+            stdUnionWith OneOrMore.more buckets (stdMapMaybe isPublic ifaces)
 
         isPublic : I.DependencyInterface -> Maybe (OneOrMore.OneOrMore I.Interface)
         isPublic di =
@@ -1368,7 +1457,7 @@ gatherForeignInterfaces directArtifacts =
                 I.Private _ _ _ ->
                     Nothing
     in
-    Dict.foldr compare gather Dict.empty directArtifacts |> Dict.map (\_ -> OneOrMore.destruct finalize)
+    Dict.foldr gather Dict.empty directArtifacts |> Dict.map (\_ -> OneOrMore.destruct finalize)
 
 
 
@@ -1376,19 +1465,19 @@ gatherForeignInterfaces directArtifacts =
 
 
 type alias StatusDict =
-    Dict String ModuleName.Raw (MVar (Maybe Status))
+    Dict ModuleName.Raw (MVar (Maybe Status))
 
 
 {-| Status of a module during crawling: local source, foreign interface, or kernel code.
 -}
 type Status
-    = SLocal DocsStatus (Dict String ModuleName.Raw ()) Src.Module
+    = SLocal DocsStatus (Dict ModuleName.Raw ()) Src.Module
     | SForeign I.Interface
     | SKernelLocal (List Kernel.Chunk)
     | SKernelForeign
 
 
-crawlModule : Dict String ModuleName.Raw ForeignInterface -> MVar StatusDict -> Pkg.Name -> FilePath -> DocsStatus -> ModuleName.Raw -> Task Never (Maybe Status)
+crawlModule : Dict ModuleName.Raw ForeignInterface -> MVar StatusDict -> Pkg.Name -> FilePath -> DocsStatus -> ModuleName.Raw -> Task Never (Maybe Status)
 crawlModule foreignDeps mvar pkg src docsStatus name =
     let
         elmPath : FilePath
@@ -1399,9 +1488,9 @@ crawlModule foreignDeps mvar pkg src docsStatus name =
         |> Task.andThen (resolveCrawlAction foreignDeps mvar pkg src docsStatus name elmPath)
 
 
-resolveCrawlAction : Dict String ModuleName.Raw ForeignInterface -> MVar StatusDict -> Pkg.Name -> FilePath -> DocsStatus -> ModuleName.Raw -> FilePath -> Bool -> Task Never (Maybe Status)
+resolveCrawlAction : Dict ModuleName.Raw ForeignInterface -> MVar StatusDict -> Pkg.Name -> FilePath -> DocsStatus -> ModuleName.Raw -> FilePath -> Bool -> Task Never (Maybe Status)
 resolveCrawlAction foreignDeps mvar pkg src docsStatus name elmPath elmExists =
-    case Dict.get identity name foreignDeps of
+    case Dict.get name foreignDeps of
         Just ForeignAmbiguous ->
             Task.succeed Nothing
 
@@ -1423,13 +1512,13 @@ resolveCrawlAction foreignDeps mvar pkg src docsStatus name elmPath elmExists =
                 Task.succeed Nothing
 
 
-crawlFile : Dict String ModuleName.Raw ForeignInterface -> MVar StatusDict -> Pkg.Name -> FilePath -> DocsStatus -> ModuleName.Raw -> FilePath -> Task Never (Maybe Status)
+crawlFile : Dict ModuleName.Raw ForeignInterface -> MVar StatusDict -> Pkg.Name -> FilePath -> DocsStatus -> ModuleName.Raw -> FilePath -> Task Never (Maybe Status)
 crawlFile foreignDeps mvar pkg src docsStatus expectedName path =
     File.readUtf8 path
         |> Task.andThen (parseAndCrawlFile foreignDeps mvar pkg src docsStatus expectedName)
 
 
-parseAndCrawlFile : Dict String ModuleName.Raw ForeignInterface -> MVar StatusDict -> Pkg.Name -> FilePath -> DocsStatus -> ModuleName.Raw -> String -> Task Never (Maybe Status)
+parseAndCrawlFile : Dict ModuleName.Raw ForeignInterface -> MVar StatusDict -> Pkg.Name -> FilePath -> DocsStatus -> ModuleName.Raw -> String -> Task Never (Maybe Status)
 parseAndCrawlFile foreignDeps mvar pkg src docsStatus expectedName bytes =
     case Parse.fromByteString (Parse.Package pkg) bytes of
         Ok ((Src.Module srcData) as modul) ->
@@ -1449,35 +1538,35 @@ parseAndCrawlFile foreignDeps mvar pkg src docsStatus expectedName bytes =
             Task.succeed Nothing
 
 
-crawlImports : Dict String ModuleName.Raw ForeignInterface -> MVar StatusDict -> Pkg.Name -> FilePath -> List Src.Import -> Task Never (Dict String ModuleName.Raw ())
+crawlImports : Dict ModuleName.Raw ForeignInterface -> MVar StatusDict -> Pkg.Name -> FilePath -> List Src.Import -> Task Never (Dict ModuleName.Raw ())
 crawlImports foreignDeps mvar pkg src imports =
     Utils.takeMVar statusDictDecoder mvar
         |> Task.andThen (forkCrawlNewImports foreignDeps mvar pkg src imports)
 
 
-forkCrawlNewImports : Dict String ModuleName.Raw ForeignInterface -> MVar StatusDict -> Pkg.Name -> FilePath -> List Src.Import -> StatusDict -> Task Never (Dict String ModuleName.Raw ())
+forkCrawlNewImports : Dict ModuleName.Raw ForeignInterface -> MVar StatusDict -> Pkg.Name -> FilePath -> List Src.Import -> StatusDict -> Task Never (Dict ModuleName.Raw ())
 forkCrawlNewImports foreignDeps mvar pkg src imports statusDict =
     let
-        deps : Dict String Name.Name ()
+        deps : Dict Name.Name ()
         deps =
-            Dict.fromList identity (List.map (\i -> ( Src.getImportName i, () )) imports)
+            Dict.fromList (List.map (\i -> ( Src.getImportName i, () )) imports)
 
-        news : Dict String Name.Name ()
+        news : Dict Name.Name ()
         news =
             Dict.diff deps statusDict
     in
-    Utils.mapTraverseWithKey identity compare (always << fork (BE.maybe statusEncoder) << crawlModule foreignDeps mvar pkg src DocsNotNeeded) news
+    stdTraverseWithKey (always << fork (BE.maybe statusEncoder) << crawlModule foreignDeps mvar pkg src DocsNotNeeded) news
         |> Task.andThen (waitForCrawledImports mvar statusDict deps)
 
 
-waitForCrawledImports : MVar StatusDict -> StatusDict -> Dict String Name.Name () -> Dict String ModuleName.Raw (MVar (Maybe Status)) -> Task Never (Dict String ModuleName.Raw ())
+waitForCrawledImports : MVar StatusDict -> StatusDict -> Dict Name.Name () -> Dict ModuleName.Raw (MVar (Maybe Status)) -> Task Never (Dict ModuleName.Raw ())
 waitForCrawledImports mvar statusDict deps mvars =
     Utils.putMVar statusDictEncoder mvar (Dict.union mvars statusDict)
-        |> Task.andThen (\_ -> Utils.dictMapM_ compare (Utils.readMVar (BD.maybe statusDecoder)) mvars)
+        |> Task.andThen (\_ -> stdDictMapM_ (Utils.readMVar (BD.maybe statusDecoder)) mvars)
         |> Task.map (\_ -> deps)
 
 
-crawlKernel : Dict String ModuleName.Raw ForeignInterface -> MVar StatusDict -> Pkg.Name -> FilePath -> ModuleName.Raw -> Task Never (Maybe Status)
+crawlKernel : Dict ModuleName.Raw ForeignInterface -> MVar StatusDict -> Pkg.Name -> FilePath -> ModuleName.Raw -> Task Never (Maybe Status)
 crawlKernel foreignDeps mvar pkg src name =
     let
         path : FilePath
@@ -1488,7 +1577,7 @@ crawlKernel foreignDeps mvar pkg src name =
         |> Task.andThen (handleKernelExistence foreignDeps mvar pkg src path)
 
 
-handleKernelExistence : Dict String ModuleName.Raw ForeignInterface -> MVar StatusDict -> Pkg.Name -> FilePath -> FilePath -> Bool -> Task Never (Maybe Status)
+handleKernelExistence : Dict ModuleName.Raw ForeignInterface -> MVar StatusDict -> Pkg.Name -> FilePath -> FilePath -> Bool -> Task Never (Maybe Status)
 handleKernelExistence foreignDeps mvar pkg src path exists =
     if exists then
         File.readUtf8 path
@@ -1498,9 +1587,9 @@ handleKernelExistence foreignDeps mvar pkg src path exists =
         Task.succeed (Just SKernelForeign)
 
 
-parseAndCrawlKernel : Dict String ModuleName.Raw ForeignInterface -> MVar StatusDict -> Pkg.Name -> FilePath -> String -> Task Never (Maybe Status)
+parseAndCrawlKernel : Dict ModuleName.Raw ForeignInterface -> MVar StatusDict -> Pkg.Name -> FilePath -> String -> Task Never (Maybe Status)
 parseAndCrawlKernel foreignDeps mvar pkg src bytes =
-    case Kernel.fromByteString pkg (Utils.mapMapMaybe identity compare getDepHome foreignDeps) bytes of
+    case Kernel.fromByteString pkg (stdMapMaybe getDepHome foreignDeps) bytes of
         Nothing ->
             Task.succeed Nothing
 
@@ -1530,14 +1619,14 @@ type DResult
     | RKernelForeign
 
 
-compile : BuildContext -> MVar (Dict String ModuleName.Raw (MVar (Result Error.Module DResult))) -> Status -> Task Never (Result Error.Module DResult)
+compile : BuildContext -> MVar (Dict ModuleName.Raw (MVar (Result Error.Module DResult))) -> Status -> Task Never (Result Error.Module DResult)
 compile ctx mvar status =
     case status of
         SLocal docsStatus deps modul ->
             Utils.readMVar moduleNameRawMVarResultErrorModuleDResultDecoder mvar
                 |> Task.andThen
                     (\resultsDict ->
-                        Utils.mapTraverse identity compare (Utils.readMVar resultErrorModuleDResultDecoder) (Dict.intersection compare resultsDict deps)
+                        stdTraverse (Utils.readMVar resultErrorModuleDResultDecoder) (stdIntersection resultsDict deps)
                             |> Task.andThen
                                 (\depResults ->
                                     if hasAnyError depResults then
@@ -1546,16 +1635,16 @@ compile ctx mvar status =
                                         Task.succeed (Err { name = Src.getName modul, absolutePath = "", modificationTime = File.zeroTime, source = "", error = Error.BadSyntax (Syntax.ParseError (Syntax.ModuleBadEnd 0 0)) })
 
                                     else
-                                        case Utils.sequenceDictResult identity compare depResults of
+                                        case stdSequenceResult depResults of
                                             Err _ ->
                                                 -- Should not happen since we checked hasAnyError above
                                                 Task.succeed (Err { name = Src.getName modul, absolutePath = "", modificationTime = File.zeroTime, source = "", error = Error.BadSyntax (Syntax.ParseError (Syntax.ModuleBadEnd 0 0)) })
 
                                             Ok results ->
                                                 let
-                                                    ifaces : Dict String ModuleName.Raw I.Interface
+                                                    ifaces : EveryDict.Dict String ModuleName.Raw I.Interface
                                                     ifaces =
-                                                        Utils.mapMapMaybe identity compare getInterface results
+                                                        stdToEveryDict (stdMapMaybe getInterface results)
                                                 in
                                                 if ctx.needsTypedOpt then
                                                     Compile.compileTyped ctx.pkg ifaces modul
@@ -1579,9 +1668,9 @@ compile ctx mvar status =
 
 {-| Check if any result in the dict is an error.
 -}
-hasAnyError : Dict String ModuleName.Raw (Result e v) -> Bool
+hasAnyError : Dict ModuleName.Raw (Result e v) -> Bool
 hasAnyError dict =
-    Dict.foldl compare (\_ result acc -> acc || Result.Extra.isErr result) False dict
+    Dict.foldl (\_ result acc -> acc || Result.Extra.isErr result) False dict
 
 
 {-| Handle result of normal compilation (without typed optimization).
@@ -1721,12 +1810,12 @@ makeDocs status modul =
             Nothing
 
 
-writeDocs : Stuff.PackageCache -> Pkg.Name -> V.Version -> DocsStatus -> Dict String ModuleName.Raw DResult -> Task Never ()
+writeDocs : Stuff.PackageCache -> Pkg.Name -> V.Version -> DocsStatus -> Dict ModuleName.Raw DResult -> Task Never ()
 writeDocs cache pkg vsn status results =
     case status of
         DocsNeeded ->
             E.writeUgly (Stuff.package cache pkg vsn ++ "/docs.json")
-                (Docs.encode (Utils.mapMapMaybe identity compare toDocs results))
+                (Docs.encode (stdMapMaybe toDocs results))
 
         DocsNotNeeded ->
             Task.succeed ()
@@ -1803,10 +1892,11 @@ detailsEncoder (Details detailsData) =
         [ File.timeEncoder detailsData.time
         , validOutlineEncoder detailsData.outline
         , BE.int detailsData.buildID
-        , BE.assocListDict compare ModuleName.rawEncoder localEncoder detailsData.locals
-        , BE.assocListDict compare ModuleName.rawEncoder foreignEncoder detailsData.foreigns
+        , BE.stdDict ModuleName.rawEncoder localEncoder detailsData.locals
+        , BE.stdDict ModuleName.rawEncoder foreignEncoder detailsData.foreigns
         , extrasEncoder detailsData.extras
-        , BE.assocListDict compare Pkg.nameEncoder V.versionEncoder detailsData.deps
+        , BE.stdDict Pkg.nameEncoder V.versionEncoder detailsData.deps
+        , BE.bool detailsData.hasTypedOpt
         ]
 
 
@@ -1821,27 +1911,32 @@ detailsDecoder =
                             BD.int
                                 |> Bytes.Decode.andThen
                                     (\buildID ->
-                                        BD.assocListDict identity ModuleName.rawDecoder localDecoder
+                                        BD.stdDict ModuleName.rawDecoder localDecoder
                                             |> Bytes.Decode.andThen
                                                 (\locals ->
-                                                    BD.assocListDict identity ModuleName.rawDecoder foreignDecoder
+                                                    BD.stdDict ModuleName.rawDecoder foreignDecoder
                                                         |> Bytes.Decode.andThen
                                                             (\foreigns ->
                                                                 extrasDecoder
                                                                     |> Bytes.Decode.andThen
                                                                         (\extras ->
-                                                                            BD.assocListDict identity Pkg.nameDecoder V.versionDecoder
-                                                                                |> Bytes.Decode.map
+                                                                            BD.stdDict Pkg.nameDecoder V.versionDecoder
+                                                                                |> Bytes.Decode.andThen
                                                                                     (\deps ->
-                                                                                        Details
-                                                                                            { time = time
-                                                                                            , outline = outline
-                                                                                            , buildID = buildID
-                                                                                            , locals = locals
-                                                                                            , foreigns = foreigns
-                                                                                            , extras = extras
-                                                                                            , deps = deps
-                                                                                            }
+                                                                                        BD.bool
+                                                                                            |> Bytes.Decode.map
+                                                                                                (\hasTypedOpt ->
+                                                                                                    Details
+                                                                                                        { time = time
+                                                                                                        , outline = outline
+                                                                                                        , buildID = buildID
+                                                                                                        , locals = locals
+                                                                                                        , foreigns = foreigns
+                                                                                                        , extras = extras
+                                                                                                        , deps = deps
+                                                                                                        , hasTypedOpt = hasTypedOpt
+                                                                                                        }
+                                                                                                )
                                                                                     )
                                                                         )
                                                             )
@@ -1884,7 +1979,7 @@ depDecoder =
 artifactsEncoder : Artifacts -> Bytes.Encode.Encoder
 artifactsEncoder (Artifacts ifaces objects) =
     Bytes.Encode.sequence
-        [ BE.assocListDict compare ModuleName.rawEncoder I.dependencyInterfaceEncoder ifaces
+        [ BE.stdDict ModuleName.rawEncoder I.dependencyInterfaceEncoder ifaces
         , Opt.globalGraphEncoder objects
         ]
 
@@ -1892,13 +1987,13 @@ artifactsEncoder (Artifacts ifaces objects) =
 artifactsDecoder : Bytes.Decode.Decoder Artifacts
 artifactsDecoder =
     Bytes.Decode.map2 Artifacts
-        (BD.assocListDict identity ModuleName.rawDecoder I.dependencyInterfaceDecoder)
+        (BD.stdDict ModuleName.rawDecoder I.dependencyInterfaceDecoder)
         Opt.globalGraphDecoder
 
 
-dictNameMVarDepEncoder : Dict ( String, String ) Pkg.Name (MVar Dep) -> Bytes.Encode.Encoder
+dictNameMVarDepEncoder : Dict Pkg.Name (MVar Dep) -> Bytes.Encode.Encoder
 dictNameMVarDepEncoder =
-    BE.assocListDict compare Pkg.nameEncoder Utils.mVarEncoder
+    BE.stdDict Pkg.nameEncoder Utils.mVarEncoder
 
 
 artifactCacheEncoder : ArtifactCache -> Bytes.Encode.Encoder
@@ -1916,9 +2011,9 @@ artifactCacheDecoder =
         artifactsDecoder
 
 
-dictPkgNameMVarDepDecoder : Bytes.Decode.Decoder (Dict ( String, String ) Pkg.Name (MVar Dep))
+dictPkgNameMVarDepDecoder : Bytes.Decode.Decoder (Dict Pkg.Name (MVar Dep))
 dictPkgNameMVarDepDecoder =
-    BD.assocListDict identity Pkg.nameDecoder Utils.mVarDecoder
+    BD.stdDict Pkg.nameDecoder Utils.mVarDecoder
 
 
 statusEncoder : Status -> Bytes.Encode.Encoder
@@ -1928,7 +2023,7 @@ statusEncoder status =
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 0
                 , docsStatusEncoder docsStatus
-                , BE.list ModuleName.rawEncoder (Dict.keys compare deps)
+                , BE.list ModuleName.rawEncoder (Dict.keys deps)
                 , Src.moduleEncoder modul
                 ]
 
@@ -1958,7 +2053,7 @@ statusDecoder =
                         Bytes.Decode.map3 SLocal
                             docsStatusDecoder
                             (BD.list ModuleName.rawDecoder
-                                |> Bytes.Decode.map (Dict.fromList identity << List.map (\dep -> ( dep, () )))
+                                |> Bytes.Decode.map (Dict.fromList << List.map (\dep -> ( dep, () )))
                             )
                             Src.moduleDecoder
 
@@ -1976,14 +2071,14 @@ statusDecoder =
             )
 
 
-dictRawMVarResultErrorModuleDResultEncoder : Dict String ModuleName.Raw (MVar (Result Error.Module DResult)) -> Bytes.Encode.Encoder
+dictRawMVarResultErrorModuleDResultEncoder : Dict ModuleName.Raw (MVar (Result Error.Module DResult)) -> Bytes.Encode.Encoder
 dictRawMVarResultErrorModuleDResultEncoder =
-    BE.assocListDict compare ModuleName.rawEncoder Utils.mVarEncoder
+    BE.stdDict ModuleName.rawEncoder Utils.mVarEncoder
 
 
-moduleNameRawMVarResultErrorModuleDResultDecoder : Bytes.Decode.Decoder (Dict String ModuleName.Raw (MVar (Result Error.Module DResult)))
+moduleNameRawMVarResultErrorModuleDResultDecoder : Bytes.Decode.Decoder (Dict ModuleName.Raw (MVar (Result Error.Module DResult)))
 moduleNameRawMVarResultErrorModuleDResultDecoder =
-    BD.assocListDict identity ModuleName.rawDecoder Utils.mVarDecoder
+    BD.stdDict ModuleName.rawDecoder Utils.mVarDecoder
 
 
 resultErrorModuleDResultEncoder : Result Error.Module DResult -> Bytes.Encode.Encoder
@@ -2078,12 +2173,12 @@ dResultDecoder =
 
 statusDictEncoder : StatusDict -> Bytes.Encode.Encoder
 statusDictEncoder statusDict =
-    BE.assocListDict compare ModuleName.rawEncoder Utils.mVarEncoder statusDict
+    BE.stdDict ModuleName.rawEncoder Utils.mVarEncoder statusDict
 
 
 statusDictDecoder : Bytes.Decode.Decoder StatusDict
 statusDictDecoder =
-    BD.assocListDict identity ModuleName.rawDecoder Utils.mVarDecoder
+    BD.stdDict ModuleName.rawDecoder Utils.mVarDecoder
 
 
 {-| Binary encoder for local module status.
@@ -2127,7 +2222,7 @@ validOutlineEncoder validOutline =
                 [ Bytes.Encode.unsignedInt8 1
                 , Pkg.nameEncoder pkg
                 , BE.list ModuleName.rawEncoder exposedList
-                , BE.assocListDict compare Pkg.nameEncoder V.versionEncoder exactDeps
+                , BE.stdDict Pkg.nameEncoder V.versionEncoder exactDeps
                 ]
 
 
@@ -2144,7 +2239,7 @@ validOutlineDecoder =
                         Bytes.Decode.map3 ValidPkg
                             Pkg.nameDecoder
                             (BD.list ModuleName.rawDecoder)
-                            (BD.assocListDict identity Pkg.nameDecoder V.versionDecoder)
+                            (BD.stdDict Pkg.nameDecoder V.versionDecoder)
 
                     _ ->
                         Bytes.Decode.fail
@@ -2201,12 +2296,12 @@ extrasDecoder =
 
 fingerprintEncoder : Fingerprint -> Bytes.Encode.Encoder
 fingerprintEncoder =
-    BE.assocListDict compare Pkg.nameEncoder V.versionEncoder
+    BE.stdDict Pkg.nameEncoder V.versionEncoder
 
 
 fingerprintDecoder : Bytes.Decode.Decoder Fingerprint
 fingerprintDecoder =
-    BD.assocListDict identity Pkg.nameDecoder V.versionDecoder
+    BD.stdDict Pkg.nameDecoder V.versionDecoder
 
 
 docsStatusEncoder : DocsStatus -> Bytes.Encode.Encoder

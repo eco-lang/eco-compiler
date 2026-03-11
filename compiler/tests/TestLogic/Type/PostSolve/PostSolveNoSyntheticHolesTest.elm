@@ -15,8 +15,10 @@ The test:
 
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Source as Src
-import Data.Map as Dict
+import Array
+import Data.Map as DataMap
 import Data.Set as EverySet exposing (EverySet)
+import Dict
 import Expect
 import SourceIR.Suite.StandardTestSuites as StandardTestSuites
 import Test exposing (Test)
@@ -64,30 +66,36 @@ expectNoSyntheticHoles srcModule =
                 exprNodes =
                     Helpers.walkExprs artifacts.canonical
                         |> List.map (\n -> ( n.id, n ))
-                        |> Dict.fromList identity
+                        |> DataMap.fromList identity
 
                 -- Step 4: Check all non-kernel expressions
                 violations =
-                    Dict.foldl compare
-                        (\nodeId postType acc ->
-                            if nodeId < 0 then
-                                -- Skip negative IDs
-                                acc
+                    Array.foldl
+                        (\maybePostType ( nodeId, acc ) ->
+                            case maybePostType of
+                                Nothing ->
+                                    ( nodeId + 1, acc )
 
-                            else if EverySet.member identity nodeId kernelExprIds then
-                                -- Kernel expressions are exempt
-                                acc
+                                Just postType ->
+                                    if nodeId < 0 then
+                                        -- Skip negative IDs
+                                        ( nodeId + 1, acc )
 
-                            else
-                                case checkNoHoleVars nodeId postType holeVarNames exprNodes of
-                                    Nothing ->
-                                        acc
+                                    else if EverySet.member identity nodeId kernelExprIds then
+                                        -- Kernel expressions are exempt
+                                        ( nodeId + 1, acc )
 
-                                    Just violation ->
-                                        violation :: acc
+                                    else
+                                        case checkNoHoleVars nodeId postType holeVarNames exprNodes of
+                                            Nothing ->
+                                                ( nodeId + 1, acc )
+
+                                            Just violation ->
+                                                ( nodeId + 1, violation :: acc )
                         )
-                        []
+                        ( 0, [] )
                         artifacts.nodeTypesPost
+                        |> Tuple.second
             in
             case violations of
                 [] ->
@@ -117,7 +125,7 @@ computeHoleVarNames artifacts =
         |> EverySet.toList compare
         |> List.filterMap
             (\exprId ->
-                case Dict.get identity exprId artifacts.nodeTypesPre of
+                case Array.get exprId artifacts.nodeTypesPre |> Maybe.andThen identity of
                     Just (Can.TVar name) ->
                         -- Only consider numeric names as holes (solver-generated placeholders)
                         if isSolverGeneratedVarName name then
@@ -154,7 +162,7 @@ checkNoHoleVars :
     Int
     -> Can.Type
     -> EverySet String String
-    -> Dict.Dict Int Int Helpers.ExprNode
+    -> DataMap.Dict Int Int Helpers.ExprNode
     -> Maybe Violation
 checkNoHoleVars nodeId postType holeVarNames exprNodes =
     let
@@ -185,9 +193,9 @@ checkNoHoleVars nodeId postType holeVarNames exprNodes =
 
 {-| Get the expression kind for an ID.
 -}
-getExprKind : Int -> Dict.Dict Int Int Helpers.ExprNode -> String
+getExprKind : Int -> DataMap.Dict Int Int Helpers.ExprNode -> String
 getExprKind nodeId exprNodes =
-    case Dict.get identity nodeId exprNodes of
+    case DataMap.get identity nodeId exprNodes of
         Just node ->
             exprKindToString node.node
 

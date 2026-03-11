@@ -67,6 +67,7 @@ import Mlir.Mlir exposing (MlirType(..))
 
 
 
+
 -- ====== ECO DIALECT TYPES ======
 
 
@@ -172,7 +173,7 @@ monoTypeToAbi monoType =
             I64
 
         _ ->
-            -- Everything else is !eco.value at ABI, including Bool
+            -- Everything else is !eco.value at ABI, including Bool and MErased
             ecoValue
 
 
@@ -234,6 +235,9 @@ monoTypeToOperand monoType =
 
                 Mono.CEcoValue ->
                     ecoValue
+
+        Mono.MErased ->
+            ecoValue
 
 
 

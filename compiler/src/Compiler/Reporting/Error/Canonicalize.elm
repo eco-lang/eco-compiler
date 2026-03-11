@@ -53,7 +53,7 @@ import Compiler.Reporting.Render.Code as Code
 import Compiler.Reporting.Render.Type as RT
 import Compiler.Reporting.Report as Report
 import Compiler.Reporting.Suggest as Suggest
-import Data.Map as Dict exposing (Dict)
+import Dict exposing (Dict)
 import Data.Set as EverySet exposing (EverySet)
 import System.TypeCheck.IO as IO
 import Utils.Bytes.Decode as BD
@@ -147,7 +147,7 @@ type PortProblem
 -}
 type alias PossibleNames =
     { locals : EverySet String Name
-    , quals : Dict String Name (EverySet String Name)
+    , quals : Dict Name (EverySet String Name)
     }
 
 
@@ -1305,7 +1305,7 @@ notFound source region maybePrefix name thing { locals, quals } =
                 addQuals prefix localSet allNames =
                     EverySet.foldr compare (\x xs -> toQualString prefix x :: xs) allNames localSet
             in
-            Dict.foldr compare addQuals (EverySet.toList compare locals) quals
+            Dict.foldr addQuals (EverySet.toList compare locals) quals
 
         nearbyNames : List String
         nearbyNames =
@@ -1339,7 +1339,7 @@ notFound source region maybePrefix name thing { locals, quals } =
                         "These names seem close though:"
 
                 Just prefix ->
-                    case Dict.get identity prefix quals of
+                    case Dict.get prefix quals of
                         Nothing ->
                             toDetails
                                 ("I cannot find a `" ++ prefix ++ "` module. Is there an `import` for it?")
@@ -2115,7 +2115,7 @@ possibleNamesEncoder : PossibleNames -> Bytes.Encode.Encoder
 possibleNamesEncoder possibleNames =
     Bytes.Encode.sequence
         [ BE.everySet compare BE.string possibleNames.locals
-        , BE.assocListDict compare BE.string (BE.everySet compare BE.string) possibleNames.quals
+        , BE.stdDict BE.string (BE.everySet compare BE.string) possibleNames.quals
         ]
 
 
@@ -2123,7 +2123,7 @@ possibleNamesDecoder : Bytes.Decode.Decoder PossibleNames
 possibleNamesDecoder =
     Bytes.Decode.map2 PossibleNames
         (BD.everySet identity BD.string)
-        (BD.assocListDict identity BD.string (BD.everySet identity BD.string))
+        (BD.stdDict BD.string (BD.everySet identity BD.string))
 
 
 {-| Serialize an invalid port payload type to bytes.

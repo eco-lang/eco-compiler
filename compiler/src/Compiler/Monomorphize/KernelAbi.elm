@@ -41,7 +41,7 @@ Three cases:
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Monomorphized as Mono
 import Compiler.Data.Name as Name exposing (Name)
-import Data.Map as Dict
+import Dict
 import Data.Set as EverySet exposing (EverySet)
 import System.TypeCheck.IO as IO
 
@@ -190,7 +190,7 @@ freeVarsHelper canType acc =
             List.foldl freeVarsHelper acc args
 
         Can.TRecord fields _ ->
-            Dict.foldl compare (\_ (Can.FieldType _ t) a -> freeVarsHelper t a) acc fields
+            Dict.foldl (\_ (Can.FieldType _ t) a -> freeVarsHelper t a) acc fields
 
         Can.TTuple a b rest ->
             List.foldl freeVarsHelper acc (a :: b :: rest)

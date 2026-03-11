@@ -47,7 +47,7 @@ import Compiler.Elm.Version as V
 import Compiler.Generate.CodeGen as CodeGen
 import Compiler.Parse.Module as Parse
 import Compiler.Reporting.Annotation as A
-import Data.Map as Dict exposing (Dict)
+import Dict exposing (Dict)
 import Json.Encode as Encode
 import Maybe.Extra as Maybe
 import Regex exposing (Regex)
@@ -1069,37 +1069,37 @@ attemptChanges root env appOutline =
 
 makeAppPlan : Solver.Env -> Pkg.Name -> Outline.AppOutline -> Task Exit.Test Outline.AppOutline
 makeAppPlan (Solver.Env env) pkg ((Outline.AppOutline appData) as outline) =
-    if Dict.member identity pkg appData.depsDirect then
+    if Dict.member pkg appData.depsDirect then
         Task.succeed outline
 
     else
-        case Dict.get identity pkg appData.depsIndirect of
+        case Dict.get pkg appData.depsIndirect of
             Just vsn ->
                 Task.succeed <|
                     Outline.AppOutline
                         { appData
-                            | depsDirect = Dict.insert identity pkg vsn appData.depsDirect
-                            , depsIndirect = Dict.remove identity pkg appData.depsIndirect
+                            | depsDirect = Dict.insert pkg vsn appData.depsDirect
+                            , depsIndirect = Dict.remove pkg appData.depsIndirect
                         }
 
             Nothing ->
-                case Dict.get identity pkg appData.testDirect of
+                case Dict.get pkg appData.testDirect of
                     Just vsn ->
                         Task.succeed <|
                             Outline.AppOutline
                                 { appData
-                                    | depsDirect = Dict.insert identity pkg vsn appData.depsDirect
-                                    , testDirect = Dict.remove identity pkg appData.testDirect
+                                    | depsDirect = Dict.insert pkg vsn appData.depsDirect
+                                    , testDirect = Dict.remove pkg appData.testDirect
                                 }
 
                     Nothing ->
-                        case Dict.get identity pkg appData.testIndirect of
+                        case Dict.get pkg appData.testIndirect of
                             Just vsn ->
                                 Task.succeed <|
                                     Outline.AppOutline
                                         { appData
-                                            | depsDirect = Dict.insert identity pkg vsn appData.depsDirect
-                                            , testIndirect = Dict.remove identity pkg appData.testIndirect
+                                            | depsDirect = Dict.insert pkg vsn appData.depsDirect
+                                            , testIndirect = Dict.remove pkg appData.testIndirect
                                         }
 
                             Nothing ->
@@ -1153,9 +1153,9 @@ handleAppSolverResult pkg result =
 -- ====== MAKE PACKAGE PLAN ======
 
 
-makePkgPlan : Solver.Env -> Dict ( String, String ) Pkg.Name C.Constraint -> Outline.AppOutline -> Task Exit.Test Outline.AppOutline
+makePkgPlan : Solver.Env -> Dict Pkg.Name C.Constraint -> Outline.AppOutline -> Task Exit.Test Outline.AppOutline
 makePkgPlan env cons outline =
-    makePkgPlanHelp env (Dict.toList Pkg.compareName cons) outline
+    makePkgPlanHelp env (Dict.toList cons) outline
 
 
 makePkgPlanHelp : Solver.Env -> List ( Pkg.Name, C.Constraint ) -> Outline.AppOutline -> Task Exit.Test Outline.AppOutline

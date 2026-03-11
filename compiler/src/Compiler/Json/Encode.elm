@@ -1,7 +1,7 @@
 module Compiler.Json.Encode exposing
     ( Value(..)
     , string, name, chars, bool, int, null
-    , array, list, object, dict
+    , array, list, object, dict, stdDict
     , encodeUgly
     , write, writeUgly
     )
@@ -46,7 +46,8 @@ as well as pretty-printed and compact JSON output.
 
 -}
 
-import Data.Map as Dict exposing (Dict)
+import Data.Map as EveryDict
+import Dict
 import System.IO as IO
 import Task exposing (Task)
 
@@ -119,10 +120,20 @@ null =
 {-| Encode a dictionary as a JSON object.
 Takes a comparison function for keys, functions to encode keys and values.
 -}
-dict : (k -> k -> Order) -> (k -> String) -> (v -> Value) -> Dict c k v -> Value
+dict : (k -> k -> Order) -> (k -> String) -> (v -> Value) -> EveryDict.Dict c k v -> Value
 dict keyComparison encodeKey encodeValue pairs =
     Object
-        (Dict.toList keyComparison pairs
+        (EveryDict.toList keyComparison pairs
+            |> List.map (\( k, v ) -> ( encodeKey k, encodeValue v ))
+        )
+
+
+{-| Encode a stdlib Dict as a JSON object.
+-}
+stdDict : (comparable -> String) -> (v -> Value) -> Dict.Dict comparable v -> Value
+stdDict encodeKey encodeValue pairs =
+    Object
+        (Dict.toList pairs
             |> List.map (\( k, v ) -> ( encodeKey k, encodeValue v ))
         )
 

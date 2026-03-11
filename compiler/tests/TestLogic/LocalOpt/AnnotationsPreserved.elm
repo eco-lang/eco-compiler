@@ -16,7 +16,7 @@ annotations are preserved through optimization.
 
 import Compiler.AST.Source as Src
 import Compiler.AST.TypedOptimized as TOpt
-import Data.Map as Dict
+import Dict
 import Expect
 import TestLogic.TestPipeline as Pipeline
 
@@ -68,9 +68,9 @@ collectAnnotationIssues result =
             result.annotations
     in
     -- Check that all source annotations appear in graph annotations
-    Dict.foldl compare
+    Dict.foldl
         (\name _ acc ->
-            case Dict.get identity name graphAnnotations of
+            case Dict.get name graphAnnotations of
                 Nothing ->
                     (name ++ ": Annotation missing from LocalGraph") :: acc
 

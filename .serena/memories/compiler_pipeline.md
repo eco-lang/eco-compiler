@@ -46,14 +46,12 @@ LLVM IR → Native Code
 - File: `compiler/src/Compiler/Monomorphize/Monomorphize.elm`
 
 ### GlobalOpt
-- Phase 0: `MonoInlineSimplify` inlines small functions
-- Phase 0.5: Wraps top-level callables as closures before staging
-- Phase 1: `Staging.GraphBuilder` builds constraint graph (producers → slots)
-- Phase 2: `Staging.Solver` uses union-find with majority voting for canonical segmentations
-- Phase 3: `Staging.Rewriter` wraps closures with non-canonical staging via eta-expansion
-- Phase 4: Computes CallInfo metadata for MLIR (callModel, stageArities, etc.)
-- Canonicalizes closure staging (GOPT_001): flattens types to match param counts
-- Normalizes case/if ABI (GOPT_003): ensures compatible staging across branches
+- MonoInlineSimplify is applied externally (in Generate.elm) before globalOptimize
+- Phase 1: `wrapTopLevelCallables` wraps top-level callables as closures before staging
+- Phase 2: `Staging.analyzeAndSolveStaging` builds constraint graph, solves, and rewrites
+- Phase 3: `Staging.validateClosureStaging` validates closure staging invariants (GOPT_001, GOPT_003)
+- Phase 4: `AbiCloning.abiCloningPass` clones functions for homogeneous closure parameter ABIs
+- Phase 5: `annotateCallStaging` computes CallInfo metadata for MLIR (callModel, stageArities, etc.)
 - Staging subsystem: `compiler/src/Compiler/GlobalOpt/Staging/{Types,GraphBuilder,Solver,Rewriter,ProducerInfo,UnionFind}.elm`
 - File: `compiler/src/Compiler/GlobalOpt/MonoGlobalOptimize.elm`
 

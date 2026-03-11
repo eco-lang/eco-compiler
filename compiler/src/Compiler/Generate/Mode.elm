@@ -26,7 +26,8 @@ import Compiler.AST.Optimized as Opt
 import Compiler.Data.Name as Name
 import Compiler.Elm.Compiler.Type.Extract as Extract
 import Compiler.Generate.JavaScript.Name as JsName
-import Data.Map as Dict exposing (Dict)
+import Data.Map
+import Dict exposing (Dict)
 import Utils.Main as Utils
 
 
@@ -63,17 +64,17 @@ isDebug mode =
 {-| Map from original field names to shortened JavaScript property names for production mode size optimization.
 -}
 type alias ShortFieldNames =
-    Dict String Name.Name JsName.Name
+    Dict Name.Name JsName.Name
 
 
 {-| Analyze record field usage frequencies and assign short JavaScript names to frequently-used fields for code size reduction.
 -}
 shortenFieldNames : Opt.GlobalGraph -> ShortFieldNames
 shortenFieldNames (Opt.GlobalGraph _ frequencies) =
-    Dict.foldr compare addToBuckets Dict.empty frequencies |> Dict.foldr compare (\_ -> addToShortNames) Dict.empty
+    Dict.foldr addToBuckets Data.Map.empty frequencies |> Data.Map.foldr compare (\_ -> addToShortNames) Dict.empty
 
 
-addToBuckets : Name.Name -> Int -> Dict Int Int (List Name.Name) -> Dict Int Int (List Name.Name)
+addToBuckets : Name.Name -> Int -> Data.Map.Dict Int Int (List Name.Name) -> Data.Map.Dict Int Int (List Name.Name)
 addToBuckets field frequency buckets =
     Utils.mapInsertWith identity (++) frequency [ field ] buckets
 
@@ -90,4 +91,4 @@ addField field shortNames =
         rename =
             JsName.fromInt (Dict.size shortNames)
     in
-    Dict.insert identity field rename shortNames
+    Dict.insert field rename shortNames

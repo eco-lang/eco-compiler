@@ -63,8 +63,9 @@ import Compiler.Elm.Kernel as K
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Elm.Package as Pkg
 import Compiler.Reporting.Annotation as A
-import Data.Map as Dict exposing (Dict)
+import Data.Map
 import Data.Set exposing (EverySet)
+import Dict exposing (Dict)
 import System.TypeCheck.IO as IO
 import Utils.Bytes.Decode as BD
 import Utils.Bytes.Encode as BE
@@ -101,9 +102,9 @@ type Expr
     | Case Name Name (Decider Choice) (List ( Int, Expr ))
     | Accessor A.Region Name
     | Access Expr A.Region Name
-    | Update A.Region Expr (Dict String (A.Located Name) Expr)
-    | Record (Dict String Name Expr)
-    | TrackedRecord A.Region (Dict String (A.Located Name) Expr)
+    | Update A.Region Expr (Data.Map.Dict String (A.Located Name) Expr)
+    | Record (Dict Name Expr)
+    | TrackedRecord A.Region (Data.Map.Dict String (A.Located Name) Expr)
     | Unit
     | Tuple A.Region Expr Expr (List Expr)
     | Shader Shader.Source (EverySet String Name) (EverySet String Name)
@@ -190,7 +191,7 @@ type Choice
 {-| Graph of all global definitions in a package for dependency analysis.
 -}
 type GlobalGraph
-    = GlobalGraph (Dict (List String) Global Node) (Dict String Name Int)
+    = GlobalGraph (Data.Map.Dict (List String) Global Node) (Dict Name Int)
 
 
 {-| Graph of definitions within a single module, including optional main entry point.
@@ -199,8 +200,8 @@ type LocalGraph
     = LocalGraph
         (Maybe Main)
         -- PERF profile switching Global to Name
-        (Dict (List String) Global Node)
-        (Dict String Name Int)
+        (Data.Map.Dict (List String) Global Node)
+        (Dict Name Int)
 
 
 {-| Type of main entry point for an Elm program.
@@ -242,7 +243,7 @@ type EffectsType
 -}
 empty : GlobalGraph
 empty =
-    GlobalGraph Dict.empty Dict.empty
+    GlobalGraph Data.Map.empty Dict.empty
 
 
 {-| Convert a kernel short name to a global reference.
@@ -262,7 +263,7 @@ globalGraphEncoder : GlobalGraph -> Bytes.Encode.Encoder
 globalGraphEncoder (GlobalGraph nodes fields) =
     Bytes.Encode.sequence
         [ BE.assocListDict compareGlobal globalEncoder nodeEncoder nodes
-        , BE.assocListDict compare BE.string BE.int fields
+        , BE.stdDict BE.string BE.int fields
         ]
 
 
@@ -272,7 +273,7 @@ globalGraphDecoder : Bytes.Decode.Decoder GlobalGraph
 globalGraphDecoder =
     Bytes.Decode.map2 GlobalGraph
         (BD.assocListDict toComparableGlobal globalDecoder nodeDecoder)
-        (BD.assocListDict identity BD.string BD.int)
+        (BD.stdDict BD.string BD.int)
 
 
 {-| Encode a local graph to bytes for serialization.
@@ -282,7 +283,7 @@ localGraphEncoder (LocalGraph main nodes fields) =
     Bytes.Encode.sequence
         [ BE.maybe mainEncoder main
         , BE.assocListDict compareGlobal globalEncoder nodeEncoder nodes
-        , BE.assocListDict compare BE.string BE.int fields
+        , BE.stdDict BE.string BE.int fields
         ]
 
 
@@ -293,7 +294,7 @@ localGraphDecoder =
     Bytes.Decode.map3 LocalGraph
         (BD.maybe mainDecoder)
         (BD.assocListDict toComparableGlobal globalDecoder nodeDecoder)
-        (BD.assocListDict identity BD.string BD.int)
+        (BD.stdDict BD.string BD.int)
 
 
 mainEncoder : Main -> Bytes.Encode.Encoder
@@ -673,7 +674,7 @@ exprEncoder expr =
         Record value ->
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 25
-                , BE.assocListDict compare BE.string exprEncoder value
+                , BE.stdDict BE.string exprEncoder value
                 ]
 
         TrackedRecord region value ->
@@ -845,7 +846,7 @@ exprDecoder =
 
                     25 ->
                         Bytes.Decode.map Record
-                            (BD.assocListDict identity BD.string exprDecoder)
+                            (BD.stdDict BD.string exprDecoder)
 
                     26 ->
                         Bytes.Decode.map2 TrackedRecord

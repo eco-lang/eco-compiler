@@ -9,12 +9,18 @@ import Compiler.AST.SourceBuilder
         ( TypedDef
         , UnionDef
         , binopsExpr
+        , boolExpr
+        , callExpr
         , caseExpr
+        , ctorExpr
         , define
+        , ifExpr
         , intExpr
+        , lambdaExpr
         , letExpr
         , listExpr
         , makeModule
+        , makeModuleWithDefs
         , makeModuleWithTypedDefsUnionsAliases
         , pAlias
         , pAnything
@@ -53,6 +59,7 @@ testCases expectFn =
         ++ aliasPatternCases expectFn
         ++ nestedCaseCases expectFn
         ++ customTypePatternCases expectFn
+        ++ stringChainKernelAbiCases expectFn
 
 
 
@@ -665,8 +672,18 @@ caseOnCustomTypeMultipleConstructors expectFn _ =
                     ]
             }
 
+        -- testValue : Int
+        -- testValue = area (Circle 5)
+        testValueDef : TypedDef
+        testValueDef =
+            { name = "testValue"
+            , args = []
+            , tipe = tType "Int" []
+            , body = callExpr (varExpr "area") [ callExpr (ctorExpr "Circle") [ intExpr 5 ] ]
+            }
+
         modul =
-            makeModuleWithTypedDefsUnionsAliases "Test" [ areaFn ] [ shapeUnion ] []
+            makeModuleWithTypedDefsUnionsAliases "Test" [ areaFn, testValueDef ] [ shapeUnion ] []
     in
     expectFn modul
 
@@ -701,7 +718,84 @@ caseOnCustomTypePayloadExtraction expectFn _ =
                     ]
             }
 
+        -- testValue : Int
+        -- testValue = unwrap (Wrap 99)
+        testValueDef : TypedDef
+        testValueDef =
+            { name = "testValue"
+            , args = []
+            , tipe = tType "Int" []
+            , body = callExpr (varExpr "unwrap") [ callExpr (ctorExpr "Wrap") [ intExpr 99 ] ]
+            }
+
         modul =
-            makeModuleWithTypedDefsUnionsAliases "Test" [ unwrapFn ] [ wrapperUnion ] []
+            makeModuleWithTypedDefsUnionsAliases "Test" [ unwrapFn, testValueDef ] [ wrapperUnion ] []
+    in
+    expectFn modul
+
+
+
+-- ============================================================================
+-- STRING CHAIN + KERNEL ABI (CGEN_038 regression)
+-- ============================================================================
+
+
+stringChainKernelAbiCases : (Src.Module -> Expectation) -> List TestCase
+stringChainKernelAbiCases expectFn =
+    [ { label = "String chain in tuple case with string equality (CGEN_038)", run = stringChainWithStringEquality expectFn }
+    ]
+
+
+{-| Regression test for CGEN\_038 / KERN\_006: Kernel ABI consistency.
+
+When a case on (String, Bool) matches string+bool patterns, the decision tree
+produces a Chain with IsStr test that calls Patterns.generateTest, which
+calls Utils\_equal with i1 return. If the same module also uses (==) on
+strings/lists, that registers Utils\_equal with eco.value return via the
+AllBoxed kernel ABI path. The two registrations must not conflict.
+
+Elm equivalent:
+
+    testValue x =
+        let
+            eq = x == "world"
+            r = case ( x, True ) of
+                    ( "foo", True ) -> 1
+                    ( "bar", False ) -> 2
+                    \_ -> 0
+        in
+        if eq then r else 0
+
+-}
+stringChainWithStringEquality : (Src.Module -> Expectation) -> (() -> Expectation)
+stringChainWithStringEquality expectFn _ =
+    let
+        eqDef =
+            define "eq" []
+                (binopsExpr [ ( varExpr "x", "==" ) ] (strExpr "world"))
+
+        rDef =
+            define "r" []
+                (caseExpr (tupleExpr (varExpr "x") (boolExpr True))
+                    [ ( pTuple (pStr "foo") (pCtor "True" []), intExpr 1 )
+                    , ( pTuple (pStr "bar") (pCtor "False" []), intExpr 2 )
+                    , ( pAnything, intExpr 0 )
+                    ]
+                )
+
+        body =
+            ifExpr (varExpr "eq") (varExpr "r") (intExpr 0)
+
+        modul =
+            makeModuleWithDefs "Test"
+                [ ( "testFn"
+                  , [ pVar "x" ]
+                  , letExpr [ eqDef, rDef ] body
+                  )
+                , ( "testValue"
+                  , []
+                  , callExpr (varExpr "testFn") [ strExpr "hello" ]
+                  )
+                ]
     in
     expectFn modul

@@ -37,8 +37,9 @@ This module defines:
 
 -}
 
+import Array exposing (Array)
 import Compiler.AST.Monomorphized as Mono
-import Data.Map as Dict exposing (Dict)
+import Dict exposing (Dict)
 
 
 {-| Segmentation is already defined in Monomorphized.elm as List Int.
@@ -102,7 +103,7 @@ type Node
 {-| Union-find data structure for tracking equivalence classes.
 -}
 type alias Uf =
-    { parent : Dict Int Int NodeId
+    { parent : Array Int
     }
 
 
@@ -110,8 +111,8 @@ type alias Uf =
 -}
 type alias StagingGraph =
     { nextNodeId : NodeId
-    , nodeIndex : Dict String String NodeId
-    , nodeById : Dict Int Int Node
+    , nodeIndex : Dict String NodeId
+    , nodeById : Array Node
     , uf : Uf
     }
 
@@ -120,7 +121,7 @@ type alias StagingGraph =
 -}
 emptyUf : Uf
 emptyUf =
-    { parent = Dict.empty
+    { parent = Array.empty
     }
 
 
@@ -130,7 +131,7 @@ emptyStagingGraph : StagingGraph
 emptyStagingGraph =
     { nextNodeId = 0
     , nodeIndex = Dict.empty
-    , nodeById = Dict.empty
+    , nodeById = Array.empty
     , uf = emptyUf
     }
 
@@ -145,8 +146,8 @@ emptyStagingGraph =
 Keys are producer ID strings (from producerIdToKey).
 -}
 type alias ProducerInfo =
-    { naturalSeg : Dict String String Segmentation
-    , totalArity : Dict String String Int
+    { naturalSeg : Dict String Segmentation
+    , totalArity : Dict String Int
     }
 
 
@@ -173,7 +174,7 @@ emptyProducerInfo =
 
 -}
 type alias StagingSolution =
-    { classSeg : Dict Int Int Segmentation
-    , producerClass : Dict String String ClassId
-    , slotClass : Dict String String ClassId
+    { classSeg : Array (Maybe Segmentation)
+    , producerClass : Dict String ClassId
+    , slotClass : Dict String ClassId
     }

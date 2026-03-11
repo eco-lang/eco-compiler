@@ -16,7 +16,7 @@ polymorphism is properly resolved before code generation.
 
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.Source as Src
-import Data.Map as Dict
+import Array
 import Expect
 import TestLogic.TestPipeline as Pipeline
 
@@ -73,10 +73,18 @@ expectNumericTypesResolved srcModule =
 -}
 collectCNumberChecks : Mono.MonoGraph -> List (() -> Expect.Expectation)
 collectCNumberChecks (Mono.MonoGraph data) =
-    Dict.foldl compare
-        (\specId node acc -> collectNodeCNumberChecks specId node ++ acc)
-        []
+    Array.foldl
+        (\maybeNode ( specId, acc ) ->
+            case maybeNode of
+                Nothing ->
+                    ( specId + 1, acc )
+
+                Just node ->
+                    ( specId + 1, collectNodeCNumberChecks specId node ++ acc )
+        )
+        ( 0, [] )
         data.nodes
+        |> Tuple.second
 
 
 {-| Collect CNumber checks from a single MonoNode.
@@ -247,10 +255,18 @@ checkForCNumber context monoType =
 -}
 collectCallSiteNumericChecks : Mono.MonoGraph -> List (() -> Expect.Expectation)
 collectCallSiteNumericChecks (Mono.MonoGraph data) =
-    Dict.foldl compare
-        (\specId node acc -> collectNodeCallSiteChecks specId node ++ acc)
-        []
+    Array.foldl
+        (\maybeNode ( specId, acc ) ->
+            case maybeNode of
+                Nothing ->
+                    ( specId + 1, acc )
+
+                Just node ->
+                    ( specId + 1, collectNodeCallSiteChecks specId node ++ acc )
+        )
+        ( 0, [] )
         data.nodes
+        |> Tuple.second
 
 
 {-| Collect call site checks from a single MonoNode.

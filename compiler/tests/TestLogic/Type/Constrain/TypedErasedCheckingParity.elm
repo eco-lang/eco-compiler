@@ -11,6 +11,7 @@ For Canonical AST builders, use Compiler.AST.CanonicalBuilder.
 
 -}
 
+import Array
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Source as Src
 import Compiler.Canonicalize.Module as Canonicalize
@@ -26,7 +27,8 @@ import Compiler.Type.Constrain.Erased.Module as ConstrainErased
 import Compiler.Type.Constrain.Typed.Module as ConstrainTyped
 import Compiler.Type.Error as T
 import Compiler.Type.Solve as Solve
-import Data.Map as Dict exposing (Dict)
+import Data.Map
+import Dict exposing (Dict)
 import Expect
 import Set exposing (Set)
 import System.TypeCheck.IO as IO
@@ -119,7 +121,7 @@ expectEquivalentTypeChecking : Src.Module -> Expect.Expectation
 expectEquivalentTypeChecking srcModule =
     let
         result =
-            Canonicalize.canonicalize ( "eco", "example" ) Basic.testIfaces srcModule
+            Canonicalize.canonicalize ( "eco", "example" ) (Data.Map.fromList identity (Dict.toList Basic.testIfaces)) srcModule
     in
     case Result.run result of
         ( _, Err errors ) ->
@@ -159,7 +161,15 @@ expectEquivalentTypeChecking srcModule =
                     -- Both succeeded - now check that all IDs are in nodeTypes
                     let
                         nodeTypeIds =
-                            Dict.keys compare nodeTypes |> Set.fromList
+                            Array.foldl
+                                (\maybeType ( idx, acc ) ->
+                                    case maybeType of
+                                        Just _ -> ( idx + 1, Set.insert idx acc )
+                                        Nothing -> ( idx + 1, acc )
+                                )
+                                ( 0, Set.empty )
+                                nodeTypes
+                                |> Tuple.second
 
                         missingIds =
                             Set.diff allExprIds nodeTypeIds
@@ -272,7 +282,15 @@ expectEquivalentTypeCheckingCanonical modul =
             -- Both succeeded - now check that all IDs are in nodeTypes
             let
                 nodeTypeIds =
-                    Dict.keys compare nodeTypes |> Set.fromList
+                    Array.foldl
+                        (\maybeType ( idx, acc ) ->
+                            case maybeType of
+                                Just _ -> ( idx + 1, Set.insert idx acc )
+                                Nothing -> ( idx + 1, acc )
+                        )
+                        ( 0, Set.empty )
+                        nodeTypes
+                        |> Tuple.second
 
                 missingIds =
                     Set.diff allExprIds nodeTypeIds
@@ -434,7 +452,7 @@ tTypeToString tType =
         T.Record fields ext ->
             let
                 fieldStrs =
-                    Dict.foldr compare (\k v acc -> (k ++ ": " ++ tTypeToString v) :: acc) [] fields
+                    Data.Map.foldr compare (\k v acc -> (k ++ ": " ++ tTypeToString v) :: acc) [] fields
 
                 extStr =
                     case ext of
@@ -835,7 +853,7 @@ pCategoriesEquivalent pCat1 pCat2 =
 {-| Run the standard constraint generation and solving path.
 Returns actual errors instead of just a count.
 -}
-runStandardPath : Can.Module -> IO.IO (Result (NE.Nonempty TypeError.Error) (Dict String Name.Name Can.Annotation))
+runStandardPath : Can.Module -> IO.IO (Result (NE.Nonempty TypeError.Error) (Data.Map.Dict String Name.Name Can.Annotation))
 runStandardPath modul =
     ConstrainErased.constrain modul
         |> IO.andThen Solve.run
@@ -844,7 +862,7 @@ runStandardPath modul =
 {-| Run the WithIds constraint generation and solving path.
 Returns both annotations and the nodeTypes map, or actual errors.
 -}
-runWithIdsPath : Can.Module -> IO.IO (Result (NE.Nonempty TypeError.Error) { annotations : Dict String Name.Name Can.Annotation, nodeTypes : Dict Int Int Can.Type })
+runWithIdsPath : Can.Module -> IO.IO (Result (NE.Nonempty TypeError.Error) { annotations : Data.Map.Dict String Name.Name Can.Annotation, nodeTypes : Array.Array (Maybe Can.Type) })
 runWithIdsPath modul =
     ConstrainTyped.constrainWithIds modul
         |> IO.andThen
@@ -996,13 +1014,13 @@ extractExprNodeIds node =
             extractAllExprIds record
 
         Can.Update record fields ->
-            Dict.foldl A.compareLocated
+            Data.Map.foldl A.compareLocated
                 (\_ (Can.FieldUpdate _ expr) acc -> Set.union (extractAllExprIds expr) acc)
                 (extractAllExprIds record)
                 fields
 
         Can.Record fields ->
-            Dict.foldl A.compareLocated (\_ expr acc -> Set.union (extractAllExprIds expr) acc) Set.empty fields
+            Data.Map.foldl A.compareLocated (\_ expr acc -> Set.union (extractAllExprIds expr) acc) Set.empty fields
 
         Can.Unit ->
             Set.empty

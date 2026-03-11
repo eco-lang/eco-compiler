@@ -35,7 +35,7 @@ import Compiler.Elm.Licenses as Licenses
 import Compiler.Elm.Package as Pkg
 import Compiler.Elm.Version as V
 import Compiler.Reporting.Doc as D
-import Data.Map as Dict exposing (Dict)
+import Dict exposing (Dict)
 import System.IO as IO exposing (FilePath)
 import Task exposing (Task)
 import Utils.Main as Utils
@@ -132,7 +132,7 @@ type Changes vsn
     = AlreadyInstalled
     | PromoteTest Outline.Outline
     | PromoteIndirect Outline.Outline
-    | Changes (Dict ( String, String ) Pkg.Name (Change vsn)) Outline.Outline
+    | Changes (Dict Pkg.Name (Change vsn)) Outline.Outline
 
 
 attemptChanges : String -> Solver.Env -> Outline.Outline -> (a -> String) -> Changes a -> Bool -> Task Exit.Install ()
@@ -210,11 +210,11 @@ attemptChanges root env oldOutline toChars changes autoYes =
             let
                 widths : Widths
                 widths =
-                    Dict.foldr compare (widen toChars) (Widths 0 0 0) changeDict
+                    Dict.foldr (widen toChars) (Widths 0 0 0) changeDict
 
                 changeDocs : ChangeDocs
                 changeDocs =
-                    Dict.foldr compare (addChange toChars widths) (Docs [] [] []) changeDict
+                    Dict.foldr (addChange toChars widths) (Docs [] [] []) changeDict
             in
             attemptChangesHelp root env oldOutline newOutline autoYes <|
                 D.vcat
@@ -290,16 +290,16 @@ makeAppPlanForTest :
     -> Outline.AppOutline
     -> Task Exit.Install (Changes V.Version)
 makeAppPlanForTest cache connection registry pkg appData outline =
-    if Dict.member identity pkg appData.testDirect then
+    if Dict.member pkg appData.testDirect then
         Task.succeed AlreadyInstalled
 
     else
-        case Dict.get identity pkg appData.testIndirect of
+        case Dict.get pkg appData.testIndirect of
             Just vsn ->
                 Outline.AppOutline
                     { appData
-                        | testDirect = Dict.insert identity pkg vsn appData.testDirect
-                        , testIndirect = Dict.remove identity pkg appData.testIndirect
+                        | testDirect = Dict.insert pkg vsn appData.testDirect
+                        , testIndirect = Dict.remove pkg appData.testIndirect
                     }
                     |> Outline.App
                     |> PromoteTest
@@ -318,40 +318,40 @@ makeAppPlanForDeps :
     -> Outline.AppOutline
     -> Task Exit.Install (Changes V.Version)
 makeAppPlanForDeps cache connection registry pkg appData outline =
-    if Dict.member identity pkg appData.depsDirect then
+    if Dict.member pkg appData.depsDirect then
         Task.succeed AlreadyInstalled
 
     else
-        case Dict.get identity pkg appData.depsIndirect of
+        case Dict.get pkg appData.depsIndirect of
             Just vsn ->
                 Outline.AppOutline
                     { appData
-                        | depsDirect = Dict.insert identity pkg vsn appData.depsDirect
-                        , depsIndirect = Dict.remove identity pkg appData.depsIndirect
+                        | depsDirect = Dict.insert pkg vsn appData.depsDirect
+                        , depsIndirect = Dict.remove pkg appData.depsIndirect
                     }
                     |> Outline.App
                     |> PromoteIndirect
                     |> Task.succeed
 
             Nothing ->
-                case Dict.get identity pkg appData.testDirect of
+                case Dict.get pkg appData.testDirect of
                     Just vsn ->
                         Outline.AppOutline
                             { appData
-                                | depsDirect = Dict.insert identity pkg vsn appData.depsDirect
-                                , testDirect = Dict.remove identity pkg appData.testDirect
+                                | depsDirect = Dict.insert pkg vsn appData.depsDirect
+                                , testDirect = Dict.remove pkg appData.testDirect
                             }
                             |> Outline.App
                             |> PromoteTest
                             |> Task.succeed
 
                     Nothing ->
-                        case Dict.get identity pkg appData.testIndirect of
+                        case Dict.get pkg appData.testIndirect of
                             Just vsn ->
                                 Outline.AppOutline
                                     { appData
-                                        | depsDirect = Dict.insert identity pkg vsn appData.depsDirect
-                                        , testIndirect = Dict.remove identity pkg appData.testIndirect
+                                        | depsDirect = Dict.insert pkg vsn appData.depsDirect
+                                        , testIndirect = Dict.remove pkg appData.testIndirect
                                     }
                                     |> Outline.App
                                     |> PromoteTest
@@ -415,8 +415,8 @@ type alias PkgOutlineInfo =
     , license : Licenses.License
     , version : V.Version
     , exposed : Outline.Exposed
-    , deps : Dict ( String, String ) Pkg.Name C.Constraint
-    , test : Dict ( String, String ) Pkg.Name C.Constraint
+    , deps : Dict Pkg.Name C.Constraint
+    , test : Dict Pkg.Name C.Constraint
     , elmVersion : C.Constraint
     }
 
@@ -442,7 +442,7 @@ makePkgPlanForTest :
     -> PkgOutlineInfo
     -> Task Exit.Install (Changes C.Constraint)
 makePkgPlanForTest cache connection registry pkg info =
-    if Dict.member identity pkg info.test then
+    if Dict.member pkg info.test then
         Task.succeed AlreadyInstalled
 
     else
@@ -453,7 +453,7 @@ makePkgPlanForTest cache connection registry pkg info =
             Ok (Registry.KnownVersions _ _) ->
                 let
                     cons =
-                        Dict.insert identity pkg C.anything info.test
+                        Dict.insert pkg C.anything info.test
                 in
                 Task.io (Solver.verify cache connection registry cons)
                     |> Task.andThen (handlePkgTestSolverResult pkg info)
@@ -462,26 +462,26 @@ makePkgPlanForTest cache connection registry pkg info =
 handlePkgTestSolverResult :
     Pkg.Name
     -> PkgOutlineInfo
-    -> Solver.SolverResult (Dict ( String, String ) Pkg.Name Solver.Details)
+    -> Solver.SolverResult (Dict Pkg.Name Solver.Details)
     -> Task Exit.Install (Changes C.Constraint)
 handlePkgTestSolverResult pkg info result =
     case result of
         Solver.SolverOk solution ->
             let
                 (Solver.Details vsn _) =
-                    Utils.find identity pkg solution
+                    Utils.dictFind pkg solution
 
                 con =
                     C.untilNextMajor vsn
 
                 newTest =
-                    Dict.insert identity pkg con info.test
+                    Dict.insert pkg con info.test
 
                 changes =
                     detectChanges info.test newTest
 
                 news =
-                    Utils.mapMapMaybe identity Pkg.compareName keepNew changes
+                    Utils.dictMapMaybe keepNew changes
             in
             Outline.PkgOutline
                 { name = info.name
@@ -515,11 +515,11 @@ makePkgPlanForDeps :
     -> PkgOutlineInfo
     -> Task Exit.Install (Changes C.Constraint)
 makePkgPlanForDeps cache connection registry pkg info =
-    if Dict.member identity pkg info.deps then
+    if Dict.member pkg info.deps then
         Task.succeed AlreadyInstalled
 
     else
-        case Dict.get identity pkg info.test of
+        case Dict.get pkg info.test of
             Just con ->
                 Outline.PkgOutline
                     { name = info.name
@@ -527,8 +527,8 @@ makePkgPlanForDeps cache connection registry pkg info =
                     , license = info.license
                     , version = info.version
                     , exposed = info.exposed
-                    , deps = Dict.insert identity pkg con info.deps
-                    , testDeps = Dict.remove identity pkg info.test
+                    , deps = Dict.insert pkg con info.deps
+                    , testDeps = Dict.remove pkg info.test
                     , elm = info.elmVersion
                     }
                     |> Outline.Pkg
@@ -557,7 +557,7 @@ addPkgDependencyFromScratch cache connection registry pkg info =
                     Dict.union info.deps info.test
 
                 cons =
-                    Dict.insert identity pkg C.anything old
+                    Dict.insert pkg C.anything old
             in
             Task.io (Solver.verify cache connection registry cons)
                 |> Task.andThen (handlePkgDepsSolverResult pkg info old)
@@ -566,27 +566,27 @@ addPkgDependencyFromScratch cache connection registry pkg info =
 handlePkgDepsSolverResult :
     Pkg.Name
     -> PkgOutlineInfo
-    -> Dict ( String, String ) Pkg.Name C.Constraint
-    -> Solver.SolverResult (Dict ( String, String ) Pkg.Name Solver.Details)
+    -> Dict Pkg.Name C.Constraint
+    -> Solver.SolverResult (Dict Pkg.Name Solver.Details)
     -> Task Exit.Install (Changes C.Constraint)
 handlePkgDepsSolverResult pkg info old result =
     case result of
         Solver.SolverOk solution ->
             let
                 (Solver.Details vsn _) =
-                    Utils.find identity pkg solution
+                    Utils.dictFind pkg solution
 
                 con =
                     C.untilNextMajor vsn
 
                 new =
-                    Dict.insert identity pkg con old
+                    Dict.insert pkg con old
 
                 changes =
                     detectChanges old new
 
                 news =
-                    Utils.mapMapMaybe identity Pkg.compareName keepNew changes
+                    Utils.dictMapMaybe keepNew changes
             in
             Outline.PkgOutline
                 { name = info.name
@@ -612,14 +612,14 @@ handlePkgDepsSolverResult pkg info old result =
             Task.throw (Exit.InstallHadSolverTrouble exit)
 
 
-addNews : Maybe Pkg.Name -> Dict ( String, String ) Pkg.Name C.Constraint -> Dict ( String, String ) Pkg.Name C.Constraint -> Dict ( String, String ) Pkg.Name C.Constraint
+addNews : Maybe Pkg.Name -> Dict Pkg.Name C.Constraint -> Dict Pkg.Name C.Constraint -> Dict Pkg.Name C.Constraint
 addNews pkg new old =
-    Dict.merge compare
-        (Dict.insert identity)
-        (\k _ n -> Dict.insert identity k n)
+    Dict.merge
+        Dict.insert
+        (\k _ n -> Dict.insert k n)
         (\k c acc ->
             if Just k == pkg then
-                Dict.insert identity k c acc
+                Dict.insert k c acc
 
             else
                 acc
@@ -639,19 +639,19 @@ type Change a
     | Remove a
 
 
-detectChanges : Dict ( String, String ) Pkg.Name a -> Dict ( String, String ) Pkg.Name a -> Dict ( String, String ) Pkg.Name (Change a)
+detectChanges : Dict Pkg.Name a -> Dict Pkg.Name a -> Dict Pkg.Name (Change a)
 detectChanges old new =
-    Dict.merge compare
-        (\k v -> Dict.insert identity k (Remove v))
+    Dict.merge
+        (\k v -> Dict.insert k (Remove v))
         (\k oldElem newElem acc ->
             case keepChange k oldElem newElem of
                 Just change ->
-                    Dict.insert identity k change acc
+                    Dict.insert k change acc
 
                 Nothing ->
                     acc
         )
-        (\k v -> Dict.insert identity k (Insert v))
+        (\k v -> Dict.insert k (Insert v))
         old
         new
         Dict.empty

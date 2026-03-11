@@ -1,5 +1,6 @@
 module Compiler.Monomorphize.State exposing
     ( MonoState, WorkItem(..), Substitution, VarTypes
+    , VarEnv(..), emptyVarEnv, lookupVar, insertVar, pushFrame, popFrame
     , initState
     , LocalInstanceInfo, LocalMultiState
     )
@@ -31,8 +32,9 @@ import Compiler.AST.TypeEnv as TypeEnv
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.Name exposing (Name)
 import Compiler.Monomorphize.Registry as Registry
-import Data.Map as Dict exposing (Dict)
-import Data.Set as EverySet exposing (EverySet)
+import Data.Map as DataMap
+import Dict exposing (Dict)
+import Compiler.Data.BitSet as BitSet exposing (BitSet)
 import System.TypeCheck.IO as IO
 
 
@@ -40,35 +42,97 @@ import System.TypeCheck.IO as IO
 -}
 type alias MonoState =
     { worklist : List WorkItem
-    , nodes : Dict Int Int Mono.MonoNode
-    , inProgress : EverySet Int Int
+    , nodes : Dict Int Mono.MonoNode
+    , inProgress : BitSet
+    , scheduled : BitSet
     , registry : Mono.SpecializationRegistry
     , lambdaCounter : Int
     , currentModule : IO.Canonical
-    , toptNodes : Dict (List String) TOpt.Global TOpt.Node
+    , toptNodes : DataMap.Dict (List String) TOpt.Global TOpt.Node
     , currentGlobal : Maybe Mono.Global
     , globalTypeEnv : TypeEnv.GlobalTypeEnv
-    , varTypes : VarTypes -- Mapping of variable names to their MonoTypes
+    , varEnv : VarEnv -- Layered mapping of variable names to their MonoTypes
     , localMulti : List LocalMultiState
+    , callEdges : Dict Int (List Int)
+    , specHasEffects : BitSet -- SpecIds whose node body references Debug.* kernels
+    , specValueUsed : BitSet -- SpecIds whose value is referenced via MonoVarGlobal
     }
 
 
 {-| Work item representing a function specialization to be processed.
 -}
 type WorkItem
-    = SpecializeGlobal Mono.Global Mono.MonoType (Maybe Mono.LambdaId)
+    = SpecializeGlobal Mono.SpecId
 
 
 {-| Substitution mapping type variable names to their concrete monomorphic types.
 -}
 type alias Substitution =
-    Dict String Name Mono.MonoType
+    Dict Name Mono.MonoType
 
 
 {-| Mapping of variable names to their MonoTypes, used during specialization.
 -}
 type alias VarTypes =
-    Dict String Name Mono.MonoType
+    Dict Name Mono.MonoType
+
+
+{-| Layered environment for variable type lookups. Uses a stack of frames
+so that inner scopes (let, lambda, case) can be cheaply pushed/popped
+without copying the entire environment.
+-}
+type VarEnv
+    = VarEnv (List (Dict Name Mono.MonoType))
+
+
+emptyVarEnv : VarEnv
+emptyVarEnv =
+    VarEnv [ Dict.empty ]
+
+
+lookupVar : Name -> VarEnv -> Maybe Mono.MonoType
+lookupVar name (VarEnv frames) =
+    lookupVarHelp name frames
+
+
+lookupVarHelp : Name -> List (Dict Name Mono.MonoType) -> Maybe Mono.MonoType
+lookupVarHelp name frames =
+    case frames of
+        [] ->
+            Nothing
+
+        frame :: rest ->
+            case Dict.get name frame of
+                Just t ->
+                    Just t
+
+                Nothing ->
+                    lookupVarHelp name rest
+
+
+insertVar : Name -> Mono.MonoType -> VarEnv -> VarEnv
+insertVar name t (VarEnv frames) =
+    case frames of
+        [] ->
+            VarEnv [ Dict.singleton name t ]
+
+        frame :: rest ->
+            VarEnv (Dict.insert name t frame :: rest)
+
+
+pushFrame : VarEnv -> VarEnv
+pushFrame (VarEnv frames) =
+    VarEnv (Dict.empty :: frames)
+
+
+popFrame : VarEnv -> VarEnv
+popFrame (VarEnv frames) =
+    case frames of
+        [] ->
+            VarEnv []
+
+        _ :: rest ->
+            VarEnv rest
 
 
 {-| Information about a single local function instance discovered during
@@ -90,23 +154,27 @@ type alias LocalInstanceInfo =
 -}
 type alias LocalMultiState =
     { defName : Name
-    , instances : Dict (List String) (List String) LocalInstanceInfo
+    , instances : Dict (List String) LocalInstanceInfo
     }
 
 
 {-| Initialize the monomorphization state with empty worklist and registry.
 -}
-initState : IO.Canonical -> Dict (List String) TOpt.Global TOpt.Node -> TypeEnv.GlobalTypeEnv -> MonoState
+initState : IO.Canonical -> DataMap.Dict (List String) TOpt.Global TOpt.Node -> TypeEnv.GlobalTypeEnv -> MonoState
 initState currentModule toptNodes globalTypeEnv =
     { worklist = []
     , nodes = Dict.empty
-    , inProgress = EverySet.empty
+    , inProgress = BitSet.empty
+    , scheduled = BitSet.empty
     , registry = Registry.emptyRegistry
     , lambdaCounter = 0
     , currentModule = currentModule
     , toptNodes = toptNodes
     , currentGlobal = Nothing
     , globalTypeEnv = globalTypeEnv
-    , varTypes = Dict.empty
+    , varEnv = emptyVarEnv
     , localMulti = []
+    , callEdges = Dict.empty
+    , specHasEffects = BitSet.empty
+    , specValueUsed = BitSet.empty
     }

@@ -30,8 +30,7 @@ import Compiler.Data.Name as Name
 import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Error.Canonicalize as Error
 import Compiler.Reporting.Result as ReportingResult
-import Data.Map as Dict exposing (Dict)
-import Utils.Main as Utils
+import Dict exposing (Dict)
 
 
 
@@ -95,7 +94,7 @@ canonicalize env (A.At typeRegion tipe) =
 
         Src.TRecord fields maybeExt _ ->
             Dups.checkFields (canonicalizeFields env fields)
-                |> ReportingResult.andThen (Utils.sequenceADict identity compare)
+                |> ReportingResult.andThen sequenceAElmDict
                 |> ReportingResult.map (\cfields -> Can.TRecord cfields (Maybe.map (\( _, A.At _ ext ) -> ext) maybeExt))
 
         Src.TUnit ->
@@ -129,6 +128,20 @@ canonicalizeFields env fields =
             ( name, ReportingResult.map (Can.FieldType index) (canonicalize env srcType) )
     in
     List.indexedMap canonicalizeField fields
+
+
+sequenceAElmDict : Dict comparable (ReportingResult.RResult i w e v) -> ReportingResult.RResult i w e (Dict comparable v)
+sequenceAElmDict dict =
+    Dict.foldl
+        (\k resultV accResult ->
+            ReportingResult.andThen
+                (\acc ->
+                    ReportingResult.map (\v -> Dict.insert k v acc) resultV
+                )
+                accResult
+        )
+        (ReportingResult.ok Dict.empty)
+        dict
 
 
 
@@ -167,23 +180,23 @@ checkArity expected region name args answer =
 -- ====== ADD FREE VARS ======
 
 
-addFreeVars : Dict String Name.Name () -> Can.Type -> Dict String Name.Name ()
+addFreeVars : Dict Name.Name () -> Can.Type -> Dict Name.Name ()
 addFreeVars freeVars tipe =
     case tipe of
         Can.TLambda arg result ->
             addFreeVars (addFreeVars freeVars result) arg
 
         Can.TVar var ->
-            Dict.insert identity var () freeVars
+            Dict.insert var () freeVars
 
         Can.TType _ _ args ->
             List.foldl (\b c -> addFreeVars c b) freeVars args
 
         Can.TRecord fields Nothing ->
-            Dict.foldl compare (\_ b c -> addFieldFreeVars c b) freeVars fields
+            Dict.foldl (\_ b c -> addFieldFreeVars c b) freeVars fields
 
         Can.TRecord fields (Just ext) ->
-            Dict.foldl compare (\_ b c -> addFieldFreeVars c b) (Dict.insert identity ext () freeVars) fields
+            Dict.foldl (\_ b c -> addFieldFreeVars c b) (Dict.insert ext () freeVars) fields
 
         Can.TUnit ->
             freeVars
@@ -195,6 +208,6 @@ addFreeVars freeVars tipe =
             List.foldl (\( _, arg ) fvs -> addFreeVars fvs arg) freeVars args
 
 
-addFieldFreeVars : Dict String Name.Name () -> Can.FieldType -> Dict String Name.Name ()
+addFieldFreeVars : Dict Name.Name () -> Can.FieldType -> Dict Name.Name ()
 addFieldFreeVars freeVars (Can.FieldType _ tipe) =
     addFreeVars freeVars tipe

@@ -1,5 +1,6 @@
 module Compiler.Monomorphize.Analysis exposing
     ( collectAllCustomTypes
+    , computeCtorShapesForGraph
     , lookupUnion
     )
 
@@ -10,6 +11,7 @@ This module handles:
   - Dependency collection (finding global references)
   - Custom type collection (finding all MCustom types)
   - Union type lookup
+  - Ctor shape computation for the graph
 
 
 # Dependency Collection
@@ -20,20 +22,31 @@ This module handles:
 @docs collectAllCustomTypes
 
 
+# Ctor Shape Computation
+
+@docs computeCtorShapesForGraph
+
+
 # Union Type Lookup
 
 @docs lookupUnion
 
 -}
 
+import Array exposing (Array)
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.TypeEnv as TypeEnv
+import Compiler.Data.Index as Index
 import Compiler.Data.Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
-import Data.Map as Dict exposing (Dict)
+import Compiler.Monomorphize.State exposing (Substitution)
+import Compiler.Monomorphize.TypeSubst as TypeSubst
+import Data.Map
+import Dict exposing (Dict)
 import Data.Set as EverySet exposing (EverySet)
 import System.TypeCheck.IO as IO
+import Utils.Crash
 
 
 
@@ -58,7 +71,7 @@ collectCustomTypesFromMonoType monoType acc =
             List.foldl collectCustomTypesFromMonoType acc elementTypes
 
         Mono.MRecord fields ->
-            List.foldl collectCustomTypesFromMonoType acc (Dict.values compare fields)
+            Dict.foldl (\_ t a -> collectCustomTypesFromMonoType t a) acc fields
 
         Mono.MFunction argTypes resultType ->
             List.foldl collectCustomTypesFromMonoType
@@ -178,16 +191,13 @@ collectCustomTypesFromExpr expr acc =
 
         Mono.MonoRecordCreate fields monoType ->
             let
-                fieldTypes =
+                fieldAcc =
                     case monoType of
                         Mono.MRecord fieldDict ->
-                            Dict.values compare fieldDict
+                            Dict.foldl (\_ t a -> collectCustomTypesFromMonoType t a) accWithType fieldDict
 
                         _ ->
-                            []
-
-                fieldAcc =
-                    List.foldl collectCustomTypesFromMonoType accWithType fieldTypes
+                            accWithType
             in
             List.foldl (\( _, e ) a -> collectCustomTypesFromExpr e a) fieldAcc fields
 
@@ -196,16 +206,13 @@ collectCustomTypesFromExpr expr acc =
 
         Mono.MonoRecordUpdate record updates monoType ->
             let
-                fieldTypes =
+                fieldAcc =
                     case monoType of
                         Mono.MRecord fields ->
-                            Dict.values compare fields
+                            Dict.foldl (\_ t a -> collectCustomTypesFromMonoType t a) accWithType fields
 
                         _ ->
-                            []
-
-                fieldAcc =
-                    List.foldl collectCustomTypesFromMonoType accWithType fieldTypes
+                            accWithType
             in
             List.foldl (\( _, e ) a -> collectCustomTypesFromExpr e a)
                 (collectCustomTypesFromExpr record fieldAcc)
@@ -256,49 +263,54 @@ collectCustomTypesFromDecider decider acc =
 
 {-| Collect all MCustom types from all nodes in the graph.
 -}
-collectAllCustomTypes : Dict Int Int Mono.MonoNode -> EverySet (List String) Mono.MonoType
+collectAllCustomTypes : Array (Maybe Mono.MonoNode) -> EverySet (List String) Mono.MonoType
 collectAllCustomTypes nodes =
-    Dict.foldl compare
-        (\_ node acc ->
-            case node of
-                Mono.MonoDefine expr monoType ->
-                    collectCustomTypesFromExpr expr
-                        (collectCustomTypesFromMonoType monoType acc)
+    Array.foldl
+        (\maybeNode acc ->
+            case maybeNode of
+                Nothing ->
+                    acc
 
-                Mono.MonoTailFunc params expr monoType ->
-                    let
-                        accWithParams =
-                            List.foldl (\( _, ty ) a -> collectCustomTypesFromMonoType ty a) acc params
-                    in
-                    collectCustomTypesFromExpr expr
-                        (collectCustomTypesFromMonoType monoType accWithParams)
+                Just node ->
+                    case node of
+                        Mono.MonoDefine expr monoType ->
+                            collectCustomTypesFromExpr expr
+                                (collectCustomTypesFromMonoType monoType acc)
 
-                Mono.MonoCtor shape monoType ->
-                    List.foldl collectCustomTypesFromMonoType
-                        (collectCustomTypesFromMonoType monoType acc)
-                        shape.fieldTypes
+                        Mono.MonoTailFunc params expr monoType ->
+                            let
+                                accWithParams =
+                                    List.foldl (\( _, ty ) a -> collectCustomTypesFromMonoType ty a) acc params
+                            in
+                            collectCustomTypesFromExpr expr
+                                (collectCustomTypesFromMonoType monoType accWithParams)
 
-                Mono.MonoEnum _ monoType ->
-                    collectCustomTypesFromMonoType monoType acc
+                        Mono.MonoCtor shape monoType ->
+                            List.foldl collectCustomTypesFromMonoType
+                                (collectCustomTypesFromMonoType monoType acc)
+                                shape.fieldTypes
 
-                Mono.MonoExtern monoType ->
-                    collectCustomTypesFromMonoType monoType acc
+                        Mono.MonoEnum _ monoType ->
+                            collectCustomTypesFromMonoType monoType acc
 
-                Mono.MonoManagerLeaf _ monoType ->
-                    collectCustomTypesFromMonoType monoType acc
+                        Mono.MonoExtern monoType ->
+                            collectCustomTypesFromMonoType monoType acc
 
-                Mono.MonoPortIncoming expr monoType ->
-                    collectCustomTypesFromExpr expr
-                        (collectCustomTypesFromMonoType monoType acc)
+                        Mono.MonoManagerLeaf _ monoType ->
+                            collectCustomTypesFromMonoType monoType acc
 
-                Mono.MonoPortOutgoing expr monoType ->
-                    collectCustomTypesFromExpr expr
-                        (collectCustomTypesFromMonoType monoType acc)
+                        Mono.MonoPortIncoming expr monoType ->
+                            collectCustomTypesFromExpr expr
+                                (collectCustomTypesFromMonoType monoType acc)
 
-                Mono.MonoCycle defs monoType ->
-                    List.foldl (\( _, e ) a -> collectCustomTypesFromExpr e a)
-                        (collectCustomTypesFromMonoType monoType acc)
-                        defs
+                        Mono.MonoPortOutgoing expr monoType ->
+                            collectCustomTypesFromExpr expr
+                                (collectCustomTypesFromMonoType monoType acc)
+
+                        Mono.MonoCycle defs monoType ->
+                            List.foldl (\( _, e ) a -> collectCustomTypesFromExpr e a)
+                                (collectCustomTypesFromMonoType monoType acc)
+                                defs
         )
         EverySet.empty
         nodes
@@ -312,9 +324,88 @@ collectAllCustomTypes nodes =
 -}
 lookupUnion : TypeEnv.GlobalTypeEnv -> IO.Canonical -> Name -> Maybe Can.Union
 lookupUnion typeEnv canonical typeName =
-    case Dict.get ModuleName.toComparableCanonical canonical typeEnv of
+    case Data.Map.get ModuleName.toComparableCanonical canonical typeEnv of
         Nothing ->
             Nothing
 
         Just moduleEnv ->
-            Dict.get identity typeName moduleEnv.unions
+            Dict.get typeName moduleEnv.unions
+
+
+
+-- ========== CTOR SHAPE COMPUTATION ==========
+
+
+{-| Build complete CtorShapes for all constructors in a union.
+Uses TypeSubst.applySubst to convert Can.Type to MonoType.
+-}
+buildCompleteCtorShapes : List Name -> List Mono.MonoType -> List Can.Ctor -> List Mono.CtorShape
+buildCompleteCtorShapes vars monoArgs alts =
+    let
+        subst : Substitution
+        subst =
+            List.map2 Tuple.pair vars monoArgs
+                |> Dict.fromList
+    in
+    List.map (buildCtorShapeFromUnion subst) alts
+
+
+{-| Build a CtorShape from a Can.Ctor using the given substitution.
+-}
+buildCtorShapeFromUnion : Substitution -> Can.Ctor -> Mono.CtorShape
+buildCtorShapeFromUnion subst (Can.Ctor ctorData) =
+    let
+        monoFieldTypes : List Mono.MonoType
+        monoFieldTypes =
+            List.map (TypeSubst.applySubst subst) ctorData.args
+    in
+    { name = ctorData.name
+    , tag = Index.toMachine ctorData.index
+    , fieldTypes = monoFieldTypes
+    }
+
+
+{-| Compute complete ctor shapes for all custom types in the graph.
+For each MCustom, looks up the union definition and builds shapes for ALL constructors,
+even those not directly used in code.
+-}
+computeCtorShapesForGraph :
+    TypeEnv.GlobalTypeEnv
+    -> Array (Maybe Mono.MonoNode)
+    -> Data.Map.Dict (List String) (List String) (List Mono.CtorShape)
+computeCtorShapesForGraph globalTypeEnv nodes =
+    let
+        customTypes =
+            collectAllCustomTypes nodes
+
+        processCustomType monoType acc =
+            case monoType of
+                Mono.MCustom canonical typeName monoArgs ->
+                    let
+                        key =
+                            Mono.toComparableMonoType monoType
+                    in
+                    case lookupUnion globalTypeEnv canonical typeName of
+                        Nothing ->
+                            Utils.Crash.crash
+                                ("Missing union for ctor shape: "
+                                    ++ (ModuleName.toComparableCanonical canonical
+                                            ++ [ typeName ]
+                                            |> String.join " "
+                                       )
+                                )
+
+                        Just (Can.Union unionData) ->
+                            let
+                                completeCtors =
+                                    buildCompleteCtorShapes unionData.vars monoArgs unionData.alts
+                            in
+                            Data.Map.insert identity key completeCtors acc
+
+                _ ->
+                    acc
+
+        compareTypes a b =
+            compare (Mono.toComparableMonoType a) (Mono.toComparableMonoType b)
+    in
+    List.foldl processCustomType Data.Map.empty (EverySet.toList compareTypes customTypes)

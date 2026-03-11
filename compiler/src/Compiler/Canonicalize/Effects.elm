@@ -22,7 +22,7 @@ import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Error.Canonicalize as Error
 import Compiler.Reporting.Result as ReportingResult
-import Data.Map as Dict exposing (Dict)
+import Dict exposing (Dict)
 import Maybe exposing (Maybe(..))
 import System.TypeCheck.IO as IO
 
@@ -51,7 +51,7 @@ Validates that:
 canonicalize :
     Env.Env
     -> List (A.Located Src.Value)
-    -> Dict String Name.Name union
+    -> Dict Name.Name union
     -> Src.Effects
     -> EResult i w Can.Effects
 canonicalize env values unions effects =
@@ -61,13 +61,13 @@ canonicalize env values unions effects =
 
         Src.Ports ports ->
             ReportingResult.traverse (canonicalizePort env) ports
-                |> ReportingResult.map (Can.Ports << Dict.fromList identity)
+                |> ReportingResult.map (Can.Ports << Dict.fromList)
 
         Src.Manager region manager ->
             let
-                dict : Dict String Name.Name A.Region
+                dict : Dict Name.Name A.Region
                 dict =
-                    Dict.fromList identity (List.map toNameRegion values)
+                    Dict.fromList (List.map toNameRegion values)
             in
             ReportingResult.map Can.Manager (verifyManager region dict "init")
                 |> ReportingResult.apply (verifyManager region dict "onEffects")
@@ -186,9 +186,9 @@ canonicalizePort env (Src.Port _ ( _, A.At region portName ) tipe) =
 -- ====== VERIFY MANAGER ======
 
 
-verifyEffectType : A.Located Name.Name -> Dict String Name.Name a -> EResult i w Name.Name
+verifyEffectType : A.Located Name.Name -> Dict Name.Name a -> EResult i w Name.Name
 verifyEffectType (A.At region name) unions =
-    if Dict.member identity name unions then
+    if Dict.member name unions then
         ReportingResult.ok name
 
     else
@@ -204,9 +204,9 @@ toNameRegion (A.At _ (Src.Value v)) =
     ( name, region )
 
 
-verifyManager : A.Region -> Dict String Name.Name A.Region -> Name.Name -> EResult i w A.Region
+verifyManager : A.Region -> Dict Name.Name A.Region -> Name.Name -> EResult i w A.Region
 verifyManager tagRegion values name =
-    case Dict.get identity name values of
+    case Dict.get name values of
         Just region ->
             ReportingResult.ok region
 
@@ -274,7 +274,7 @@ checkPayload tipe =
             Err ( tipe, Error.ExtendedRecord )
 
         Can.TRecord fields Nothing ->
-            Dict.foldl compare
+            Dict.foldl
                 (\_ field acc -> Result.andThen (\_ -> checkFieldPayload field) acc)
                 (Ok ())
                 fields

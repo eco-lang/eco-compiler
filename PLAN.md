@@ -1264,9 +1264,8 @@ Keep JavaScript backend and add MLIR backend with compiler flags to switch betwe
 
 **Implementation**:
 - Backend selection via output file extension: `.js` → JavaScript, `.html` → JavaScript+HTML wrapper, `.mlir` → MLIR Mono backend
-- Three backend types implemented:
+- Two backend types implemented:
   - `javascriptBackend`: Standard JavaScript code generation (uses untyped `Opt.GlobalGraph`)
-  - `mlirTypedBackend`: MLIR with type information (uses typed `TOpt.GlobalGraph`)
   - `mlirMonoBackend`: MLIR with monomorphized code (uses monomorphized `Mono.GlobalGraph`)
 - `Terminal/Make.elm` routes to appropriate backend based on `--output` extension
 - `shouldUseTypedOpt` helper determines if typed optimization is needed based on output type

@@ -4,7 +4,7 @@ module Compiler.Json.Decode exposing
     , Error(..), Problem(..), DecodeExpectation(..), ParseError(..), StringProblem(..)
     , string, customString, int
     , list, nonEmptyList, pair
-    , field, dict, pairs, KeyDecoder(..)
+    , field, dict, stdDict, pairs, KeyDecoder(..)
     , map, pure, apply, andThen, oneOf
     , failure, mapError
     )
@@ -67,7 +67,8 @@ import Compiler.Json.String as Json
 import Compiler.Parse.Keyword as K
 import Compiler.Parse.Primitives as P exposing (Col, Row)
 import Compiler.Reporting.Annotation as A
-import Data.Map as Dict exposing (Dict)
+import Data.Map as EveryDict
+import Dict
 import Utils.Crash exposing (crash)
 
 
@@ -337,9 +338,16 @@ type KeyDecoder x a
 {-| Decode a JSON object into a dictionary.
 Takes a function to convert keys to comparable values, a key decoder, and a value decoder.
 -}
-dict : (k -> comparable) -> KeyDecoder x k -> Decoder x a -> Decoder x (Dict comparable k a)
+dict : (k -> comparable) -> KeyDecoder x k -> Decoder x a -> Decoder x (EveryDict.Dict comparable k a)
 dict toComparable keyDecoder valueDecoder =
-    map (Dict.fromList toComparable) (pairs keyDecoder valueDecoder)
+    map (EveryDict.fromList toComparable) (pairs keyDecoder valueDecoder)
+
+
+{-| Decode a JSON object into a stdlib Dict.
+-}
+stdDict : KeyDecoder x comparable -> Decoder x a -> Decoder x (Dict.Dict comparable a)
+stdDict keyDecoder valueDecoder =
+    map Dict.fromList (pairs keyDecoder valueDecoder)
 
 
 {-| Decode a JSON object into a list of key-value pairs.

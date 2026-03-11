@@ -233,11 +233,13 @@ struct ListConstructOpLowering : public OpConversionPattern<ListConstructOp> {
         uint32_t headUnboxed = op.getHeadUnboxed() ? 1 : 0;
         auto headUnboxedVal = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, headUnboxed);
 
-        // eco_alloc_cons expects i64 for head; widen narrower integer types (e.g. i16 Char)
+        // eco_alloc_cons expects i64 for head; convert unboxed types to i64
         if (auto intTy = dyn_cast<IntegerType>(headVal.getType())) {
             if (intTy.getWidth() < 64) {
                 headVal = rewriter.create<LLVM::ZExtOp>(loc, i64Ty, headVal);
             }
+        } else if (headVal.getType().isF64()) {
+            headVal = rewriter.create<LLVM::BitcastOp>(loc, i64Ty, headVal);
         }
 
         auto call = rewriter.create<LLVM::CallOp>(

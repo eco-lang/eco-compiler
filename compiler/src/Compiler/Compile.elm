@@ -51,7 +51,8 @@ import Compiler.Type.KernelTypes as KernelTypes
 import Compiler.Type.PostSolve as PostSolve
 import Compiler.Type.Solve as Type
 import Compiler.TypedCanonical.Build as TCanBuild
-import Data.Map exposing (Dict)
+import Data.Map as EveryDict
+import Dict
 import System.TypeCheck.IO as TypeCheck
 import Task exposing (Task)
 
@@ -67,7 +68,7 @@ optimized local graph suitable for JavaScript code generation.
 
 -}
 type Artifacts
-    = Artifacts Can.Module (Dict String Name Can.Annotation) Opt.LocalGraph
+    = Artifacts Can.Module (Dict.Dict Name Can.Annotation) Opt.LocalGraph
 
 
 {-| Extended compilation artifacts with typed optimization for MLIR backend.
@@ -79,7 +80,7 @@ enables type-directed optimizations and direct lowering to MLIR.
 -}
 type alias TypedArtifactsData =
     { canonical : Can.Module
-    , annotations : Dict String Name Can.Annotation
+    , annotations : Dict.Dict Name Can.Annotation
     , objects : Opt.LocalGraph
     , typedObjects : TOpt.LocalGraph
     , typeEnv : TypeEnv.ModuleTypeEnv
@@ -108,7 +109,7 @@ Executes all compilation phases in sequence:
 Returns artifacts suitable for JavaScript code generation.
 
 -}
-compile : Pkg.Name -> Dict String ModuleName.Raw I.Interface -> Src.Module -> Task Never (Result E.Error Artifacts)
+compile : Pkg.Name -> EveryDict.Dict String ModuleName.Raw I.Interface -> Src.Module -> Task Never (Result E.Error Artifacts)
 compile pkg ifaces modul =
     Task.succeed
         (canonicalize pkg ifaces modul
@@ -141,7 +142,7 @@ The typed optimization phase preserves type information needed for monomorphizat
 and direct lowering to MLIR/LLVM.
 
 -}
-compileTyped : Pkg.Name -> Dict String ModuleName.Raw I.Interface -> Src.Module -> Task Never (Result E.Error TypedArtifacts)
+compileTyped : Pkg.Name -> EveryDict.Dict String ModuleName.Raw I.Interface -> Src.Module -> Task Never (Result E.Error TypedArtifacts)
 compileTyped pkg ifaces modul =
     Task.succeed
         (canonicalize pkg ifaces modul
@@ -183,11 +184,20 @@ compileTyped pkg ifaces modul =
 
 
 
+-- ====== Helpers ======
+
+
+everyDictToDict : EveryDict.Dict comparable comparable v -> Dict.Dict comparable v
+everyDictToDict =
+    EveryDict.toList compare >> Dict.fromList
+
+
+
 -- ====== Internal Compilation Phases ======
 -- Converts source AST to canonical form, resolving all names and imports.
 
 
-canonicalize : Pkg.Name -> Dict String ModuleName.Raw I.Interface -> Src.Module -> Result E.Error Can.Module
+canonicalize : Pkg.Name -> EveryDict.Dict String ModuleName.Raw I.Interface -> Src.Module -> Result E.Error Can.Module
 canonicalize pkg ifaces modul =
     case Tuple.second (ReportingResult.run (Canonicalize.canonicalize pkg ifaces modul)) of
         Ok canonical ->
@@ -201,11 +211,11 @@ canonicalize pkg ifaces modul =
 -- Infers and verifies types for all definitions in the canonical module.
 
 
-typeCheck : Src.Module -> Can.Module -> Result E.Error (Dict String Name Can.Annotation)
+typeCheck : Src.Module -> Can.Module -> Result E.Error (Dict.Dict Name Can.Annotation)
 typeCheck modul canonical =
     case TypeErased.constrain canonical |> TypeCheck.andThen Type.run |> TypeCheck.unsafePerformIO of
         Ok annotations ->
-            Ok annotations
+            Ok (everyDictToDict annotations)
 
         Err errors ->
             Err (E.BadTypes (Localizer.fromModule modul) errors)
@@ -231,7 +241,7 @@ typeCheckTyped :
     ->
         Result
             E.Error
-            { annotations : Dict String Name Can.Annotation
+            { annotations : Dict.Dict Name Can.Annotation
             , typedCanonical : TCan.Module
             , nodeTypes : TCan.NodeTypes
             , kernelEnv : KernelTypes.KernelTypeEnv
@@ -263,7 +273,7 @@ typeCheckTyped modul canonical =
                     postSolveResult.kernelEnv
             in
             Ok
-                { annotations = annotations
+                { annotations = everyDictToDict annotations
                 , typedCanonical = TCanBuild.fromCanonical canonical fixedNodeTypes
                 , nodeTypes = fixedNodeTypes
                 , kernelEnv = kernelEnv
@@ -288,7 +298,7 @@ nitpick canonical =
 -- Optimizes the canonical module to produce efficient intermediate representation.
 
 
-optimize : Src.Module -> Dict String Name.Name Can.Annotation -> Can.Module -> Result E.Error Opt.LocalGraph
+optimize : Src.Module -> Dict.Dict Name.Name Can.Annotation -> Can.Module -> Result E.Error Opt.LocalGraph
 optimize modul annotations canonical =
     case Tuple.second (ReportingResult.run (Optimize.optimize annotations canonical)) of
         Ok localGraph ->
@@ -303,7 +313,7 @@ optimize modul annotations canonical =
 -- Performs typed optimization from a TypedCanonical module.
 
 
-typedOptimizeFromTyped : Src.Module -> Dict String Name.Name Can.Annotation -> TCan.NodeTypes -> KernelTypes.KernelTypeEnv -> TCan.Module -> Result E.Error TOpt.LocalGraph
+typedOptimizeFromTyped : Src.Module -> Dict.Dict Name.Name Can.Annotation -> TCan.NodeTypes -> KernelTypes.KernelTypeEnv -> TCan.Module -> Result E.Error TOpt.LocalGraph
 typedOptimizeFromTyped modul annotations nodeTypes kernelEnv tcanModule =
     case Tuple.second (ReportingResult.run (TypedOptimize.optimizeTyped annotations nodeTypes kernelEnv tcanModule)) of
         Ok localGraph ->

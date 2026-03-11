@@ -29,7 +29,8 @@ import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.Name as Name
 import Compiler.Reporting.Annotation as A
 import Compiler.Type.KernelTypes as KernelTypes
-import Data.Map as Dict exposing (Dict)
+import Data.Map
+import Dict exposing (Dict)
 import Data.Set as EverySet
 import Expect
 import System.TypeCheck.IO as IO
@@ -57,8 +58,8 @@ type alias Violation =
 {-| Context for type checking expressions.
 -}
 type alias TypeEnv =
-    { locals : Dict String Name.Name Can.Type
-    , annotations : Dict String Name.Name Can.Annotation
+    { locals : Dict Name.Name Can.Type
+    , annotations : Dict Name.Name Can.Annotation
     , kernelEnv : KernelTypes.KernelTypeEnv
     }
 
@@ -103,7 +104,7 @@ expectTypePreservation srcModule =
 
 checkLocalGraph : TypeEnv -> TOpt.LocalGraph -> List Violation
 checkLocalGraph env (TOpt.LocalGraph data) =
-    Dict.foldl TOpt.compareGlobal
+    Data.Map.foldl TOpt.compareGlobal
         (\global node acc ->
             let
                 context =
@@ -137,7 +138,7 @@ checkNode env context node =
                 cycleEnv =
                     List.foldl
                         (\( name, valExpr ) e ->
-                            { e | locals = Dict.insert identity name (TOpt.typeOf valExpr) e.locals }
+                            { e | locals = Dict.insert name (TOpt.typeOf valExpr) e.locals }
                         )
                         env
                         values
@@ -149,7 +150,7 @@ checkNode env context node =
                                 ( name, defType ) =
                                     getDefNameAndType def
                             in
-                            { e | locals = Dict.insert identity name defType e.locals }
+                            { e | locals = Dict.insert name defType e.locals }
                         )
                         cycleEnv
                         defs
@@ -200,7 +201,7 @@ checkExpr env context expr =
 
         -- VarLocal (STRICT: catches GOPT_003-class bugs)
         TOpt.VarLocal name tipe ->
-            case Dict.get identity name env.locals of
+            case Dict.get name env.locals of
                 Just envType ->
                     if TypeEq.alphaEqStrict tipe envType then
                         []
@@ -213,7 +214,7 @@ checkExpr env context expr =
                     []
 
         TOpt.TrackedVarLocal _ name tipe ->
-            case Dict.get identity name env.locals of
+            case Dict.get name env.locals of
                 Just envType ->
                     if TypeEq.alphaEqStrict tipe envType then
                         []
@@ -254,7 +255,7 @@ checkExpr env context expr =
                     { env
                         | locals =
                             List.foldl
-                                (\( name, paramType ) acc -> Dict.insert identity name paramType acc)
+                                (\( name, paramType ) acc -> Dict.insert name paramType acc)
                                 env.locals
                                 params
                     }
@@ -267,7 +268,7 @@ checkExpr env context expr =
                     { env
                         | locals =
                             List.foldl
-                                (\( A.At _ name, paramType ) acc -> Dict.insert identity name paramType acc)
+                                (\( A.At _ name, paramType ) acc -> Dict.insert name paramType acc)
                                 env.locals
                                 params
                     }
@@ -293,7 +294,7 @@ checkExpr env context expr =
                     getDefNameAndType def
 
                 extendedEnv =
-                    { env | locals = Dict.insert identity defName defType env.locals }
+                    { env | locals = Dict.insert defName defType env.locals }
             in
             checkDef env context def
                 ++ checkExpr extendedEnv context body
@@ -305,7 +306,7 @@ checkExpr env context expr =
                     destructor
 
                 extendedEnv =
-                    { env | locals = Dict.insert identity destructName destructType env.locals }
+                    { env | locals = Dict.insert destructName destructType env.locals }
             in
             checkExpr extendedEnv context body
 
@@ -337,14 +338,14 @@ checkExpr env context expr =
         -- Update
         TOpt.Update _ recordExpr updates _ ->
             checkExpr env context recordExpr
-                ++ Dict.foldl A.compareLocated (\_ updateExpr acc -> checkExpr env context updateExpr ++ acc) [] updates
+                ++ Data.Map.foldl A.compareLocated (\_ updateExpr acc -> checkExpr env context updateExpr ++ acc) [] updates
 
         -- Record
         TOpt.Record fields _ ->
-            Dict.foldl compare (\_ fieldExpr acc -> checkExpr env context fieldExpr ++ acc) [] fields
+            Dict.foldl (\_ fieldExpr acc -> checkExpr env context fieldExpr ++ acc) [] fields
 
         TOpt.TrackedRecord _ fields _ ->
-            Dict.foldl A.compareLocated (\_ fieldExpr acc -> checkExpr env context fieldExpr ++ acc) [] fields
+            Data.Map.foldl A.compareLocated (\_ fieldExpr acc -> checkExpr env context fieldExpr ++ acc) [] fields
 
         -- Tuple
         TOpt.Tuple _ e1 e2 rest _ ->
@@ -389,13 +390,13 @@ checkDef env context def =
             let
                 -- Add the function itself to env for recursive calls
                 envWithSelf =
-                    { env | locals = Dict.insert identity name defType env.locals }
+                    { env | locals = Dict.insert name defType env.locals }
 
                 -- Add parameters
                 extendedEnv =
                     List.foldl
                         (\( A.At _ paramName, paramType ) e ->
-                            { e | locals = Dict.insert identity paramName paramType e.locals }
+                            { e | locals = Dict.insert paramName paramType e.locals }
                         )
                         envWithSelf
                         params
@@ -599,20 +600,20 @@ alphaEqExt e1 e2 =
             False
 
 
-alphaEqFields : Dict String Name.Name Can.FieldType -> Dict String Name.Name Can.FieldType -> Bool
+alphaEqFields : Dict Name.Name Can.FieldType -> Dict Name.Name Can.FieldType -> Bool
 alphaEqFields f1 f2 =
     let
         keys1 =
-            Dict.keys compare f1
+            Dict.keys f1
 
         keys2 =
-            Dict.keys compare f2
+            Dict.keys f2
     in
     keys1
         == keys2
         && List.all
             (\k ->
-                case ( Dict.get identity k f1, Dict.get identity k f2 ) of
+                case ( Dict.get k f1, Dict.get k f2 ) of
                     ( Just (Can.FieldType _ t1), Just (Can.FieldType _ t2) ) ->
                         alphaEq t1 t2
 
@@ -654,13 +655,13 @@ alphaEqAlias at1 at2 =
 -- ============================================================================
 
 
-oneWayUnify : EverySet.EverySet String Name.Name -> Can.Type -> Can.Type -> Dict String Name.Name Can.Type -> Maybe (Dict String Name.Name Can.Type)
+oneWayUnify : EverySet.EverySet String Name.Name -> Can.Type -> Can.Type -> Dict Name.Name Can.Type -> Maybe (Dict Name.Name Can.Type)
 oneWayUnify schemeVars schemeT instanceT subst =
     case schemeT of
         Can.TVar name ->
             if EverySet.member identity name schemeVars then
                 -- Scheme var: can bind to anything
-                case Dict.get identity name subst of
+                case Dict.get name subst of
                     Just boundType ->
                         -- Already bound; must match
                         if alphaEq boundType instanceT then
@@ -670,7 +671,7 @@ oneWayUnify schemeVars schemeT instanceT subst =
                             Nothing
 
                     Nothing ->
-                        Just (Dict.insert identity name instanceT subst)
+                        Just (Dict.insert name instanceT subst)
 
             else
                 -- Not a scheme var; must match exactly
@@ -781,7 +782,7 @@ oneWayUnify schemeVars schemeT instanceT subst =
                     Nothing
 
 
-unifyLists : EverySet.EverySet String Name.Name -> List Can.Type -> List Can.Type -> Dict String Name.Name Can.Type -> Maybe (Dict String Name.Name Can.Type)
+unifyLists : EverySet.EverySet String Name.Name -> List Can.Type -> List Can.Type -> Dict Name.Name Can.Type -> Maybe (Dict Name.Name Can.Type)
 unifyLists schemeVars ts1 ts2 subst =
     case ( ts1, ts2 ) of
         ( [], [] ) ->
@@ -795,14 +796,14 @@ unifyLists schemeVars ts1 ts2 subst =
             Nothing
 
 
-unifyFields : EverySet.EverySet String Name.Name -> Dict String Name.Name Can.FieldType -> Dict String Name.Name Can.FieldType -> Dict String Name.Name Can.Type -> Maybe (Dict String Name.Name Can.Type)
+unifyFields : EverySet.EverySet String Name.Name -> Dict Name.Name Can.FieldType -> Dict Name.Name Can.FieldType -> Dict Name.Name Can.Type -> Maybe (Dict Name.Name Can.Type)
 unifyFields schemeVars fields1 fields2 subst =
     let
         keys1 =
-            Dict.keys compare fields1
+            Dict.keys fields1
 
         keys2 =
-            Dict.keys compare fields2
+            Dict.keys fields2
     in
     if keys1 /= keys2 then
         Nothing
@@ -815,7 +816,7 @@ unifyFields schemeVars fields1 fields2 subst =
                         Nothing
 
                     Just s ->
-                        case ( Dict.get identity k fields1, Dict.get identity k fields2 ) of
+                        case ( Dict.get k fields1, Dict.get k fields2 ) of
                             ( Just (Can.FieldType _ t1), Just (Can.FieldType _ t2) ) ->
                                 oneWayUnify schemeVars t1 t2 s
 
@@ -826,7 +827,7 @@ unifyFields schemeVars fields1 fields2 subst =
             keys1
 
 
-unifyArgPairs : EverySet.EverySet String Name.Name -> List ( Name.Name, Can.Type ) -> List ( Name.Name, Can.Type ) -> Dict String Name.Name Can.Type -> Maybe (Dict String Name.Name Can.Type)
+unifyArgPairs : EverySet.EverySet String Name.Name -> List ( Name.Name, Can.Type ) -> List ( Name.Name, Can.Type ) -> Dict Name.Name Can.Type -> Maybe (Dict Name.Name Can.Type)
 unifyArgPairs schemeVars args1 args2 subst =
     case ( args1, args2 ) of
         ( [], [] ) ->
@@ -840,7 +841,7 @@ unifyArgPairs schemeVars args1 args2 subst =
             Nothing
 
 
-unifyAliasTypes : EverySet.EverySet String Name.Name -> Can.AliasType -> Can.AliasType -> Dict String Name.Name Can.Type -> Maybe (Dict String Name.Name Can.Type)
+unifyAliasTypes : EverySet.EverySet String Name.Name -> Can.AliasType -> Can.AliasType -> Dict Name.Name Can.Type -> Maybe (Dict Name.Name Can.Type)
 unifyAliasTypes schemeVars at1 at2 subst =
     case ( at1, at2 ) of
         ( Can.Holey t1, Can.Holey t2 ) ->
@@ -913,7 +914,7 @@ typeToString tipe =
         Can.TRecord fields ext ->
             let
                 fieldStrs =
-                    Dict.toList compare fields
+                    Dict.toList fields
                         |> List.map (\( k, Can.FieldType _ t ) -> k ++ " : " ++ typeToString t)
                         |> String.join ", "
             in

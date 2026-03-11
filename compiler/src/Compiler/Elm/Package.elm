@@ -57,7 +57,7 @@ import Bytes.Encode
 import Compiler.Json.Decode as D
 import Compiler.Json.Encode as E
 import Compiler.Parse.Primitives as P exposing (Col, Row)
-import Data.Map as Dict exposing (Dict)
+import Dict exposing (Dict)
 import Levenshtein
 import Utils.Bytes.Decode as BD
 import Utils.Bytes.Encode as BE
@@ -287,14 +287,14 @@ eco =
 {-| A dictionary mapping common module names to the packages that contain them.
 Used to suggest which package to install when a module is missing.
 -}
-suggestions : Dict String String Name
+suggestions : Dict String Name
 suggestions =
     let
         file : Name
         file =
             toName elm "file"
     in
-    Dict.fromList identity
+    Dict.fromList
         [ ( "Browser", browser )
         , ( "File", file )
         , ( "File.Download", file )

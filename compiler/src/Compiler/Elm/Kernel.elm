@@ -45,7 +45,7 @@ import Compiler.Parse.Primitives as P exposing (Col, Row)
 import Compiler.Parse.Space as Space
 import Compiler.Parse.Variable as Var
 import Compiler.Reporting.Annotation as A
-import Data.Map as Dict exposing (Dict)
+import Dict exposing (Dict)
 import System.TypeCheck.IO as IO
 import Utils.Bytes.Decode as BD
 import Utils.Bytes.Encode as BE
@@ -91,12 +91,12 @@ Returns a dictionary mapping field names to their occurrence counts. Only ElmFie
 chunks are counted; all other chunk types are ignored.
 
 -}
-countFields : List Chunk -> Dict String Name Int
+countFields : List Chunk -> Dict Name Int
 countFields chunks =
     List.foldr addField Dict.empty chunks
 
 
-addField : Chunk -> Dict String Name Int -> Dict String Name Int
+addField : Chunk -> Dict Name Int -> Dict Name Int
 addField chunk fields =
     case chunk of
         JS _ ->
@@ -109,7 +109,7 @@ addField chunk fields =
             fields
 
         ElmField f ->
-            Dict.update identity
+            Dict.update
                 f
                 (Maybe.map ((+) 1)
                     >> Maybe.withDefault 1
@@ -151,7 +151,7 @@ processing kernel module imports.
 
 -}
 type alias Foreigns =
-    Dict String ModuleName.Raw Pkg.Name
+    Dict ModuleName.Raw Pkg.Name
 
 
 {-| Parse a kernel module file from a string.
@@ -265,11 +265,11 @@ chompChunks vs es fs src pos end row col lastPos revChunks =
 
 
 type alias Enums =
-    Dict Int Int (Dict String Name Int)
+    Dict Int (Dict Name Int)
 
 
 type alias Fields =
-    Dict String Name Int
+    Dict Name Int
 
 
 toByteString : String -> Int -> Int -> String
@@ -340,7 +340,7 @@ chompTag vs es fs src pos end row col revChunks =
             chompChunks vs es fs src newPos end row newCol newPos (Prod :: revChunks)
 
         else
-            case Dict.get identity name vs of
+            case Dict.get name vs of
                 Just chunk ->
                     chompChunks vs es fs src newPos end row newCol newPos (chunk :: revChunks)
 
@@ -350,7 +350,7 @@ chompTag vs es fs src pos end row col revChunks =
 
 lookupField : Name -> Fields -> ( Int, Fields )
 lookupField name fields =
-    case Dict.get identity name fields of
+    case Dict.get name fields of
         Just n ->
             ( n, fields )
 
@@ -360,7 +360,7 @@ lookupField name fields =
                 n =
                     Dict.size fields
             in
-            ( n, Dict.insert identity name n fields )
+            ( n, Dict.insert name n fields )
 
 
 lookupEnum : Char -> Name -> Enums -> ( Int, Enums )
@@ -370,12 +370,12 @@ lookupEnum word var allEnums =
         code =
             Char.toCode word
 
-        enums : Dict String Name Int
+        enums : Dict Name Int
         enums =
-            Dict.get identity code allEnums
+            Dict.get code allEnums
                 |> Maybe.withDefault Dict.empty
     in
-    case Dict.get identity var enums of
+    case Dict.get var enums of
         Just n ->
             ( n, allEnums )
 
@@ -385,7 +385,7 @@ lookupEnum word var allEnums =
                 n =
                     Dict.size enums
             in
-            ( n, Dict.insert identity code (Dict.insert identity var n enums) allEnums )
+            ( n, Dict.insert code (Dict.insert var n enums) allEnums )
 
 
 
@@ -393,7 +393,7 @@ lookupEnum word var allEnums =
 
 
 type alias VarTable =
-    Dict String Name Chunk
+    Dict Name Chunk
 
 
 toVarTable : Pkg.Name -> Foreigns -> List (Src.C1 Src.Import) -> VarTable
@@ -414,9 +414,9 @@ addImport pkg foreigns ( _, Src.Import ( _, A.At _ importName ) maybeAlias ( _, 
                     home =
                         Name.getKernel importName
 
-                    add : Name -> Dict String Name Chunk -> Dict String Name Chunk
+                    add : Name -> Dict Name Chunk -> Dict Name Chunk
                     add name table =
-                        Dict.insert identity (Name.sepBy '_' home name) (JsVar home name) table
+                        Dict.insert (Name.sepBy '_' home name) (JsVar home name) table
                 in
                 List.foldl add vtable (toNames exposing_)
 
@@ -424,15 +424,15 @@ addImport pkg foreigns ( _, Src.Import ( _, A.At _ importName ) maybeAlias ( _, 
         let
             home : IO.Canonical
             home =
-                IO.Canonical (Dict.get identity importName foreigns |> Maybe.withDefault pkg) importName
+                IO.Canonical (Dict.get importName foreigns |> Maybe.withDefault pkg) importName
 
             prefix : Name
             prefix =
                 toPrefix importName (Maybe.map Src.c2Value maybeAlias)
 
-            add : Name -> Dict String Name Chunk -> Dict String Name Chunk
+            add : Name -> Dict Name Chunk -> Dict Name Chunk
             add name table =
-                Dict.insert identity (Name.sepBy '_' prefix name) (ElmVar home name) table
+                Dict.insert (Name.sepBy '_' prefix name) (ElmVar home name) table
         in
         List.foldl add vtable (toNames exposing_)
 

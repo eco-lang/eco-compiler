@@ -24,6 +24,9 @@ import Compiler.AST.SourceBuilder
         , pTuple
         , pTuple3
         , pVar
+        , recordExpr
+        , strExpr
+        , tuple3Expr
         , tupleExpr
         , varExpr
         )
@@ -72,6 +75,7 @@ aliasOnVariable expectFn _ =
         modul =
             makeModuleWithDefs "Test"
                 [ ( "dup", [ pAlias (pVar "x") "y" ], tupleExpr (varExpr "x") (varExpr "y") )
+                , ( "testValue", [], callExpr (varExpr "dup") [ intExpr 1 ] )
                 ]
     in
     expectFn modul
@@ -83,6 +87,7 @@ aliasOnWildcard expectFn _ =
         modul =
             makeModuleWithDefs "Test"
                 [ ( "capture", [ pAlias pAnything "x" ], varExpr "x" )
+                , ( "testValue", [], callExpr (varExpr "capture") [ intExpr 1 ] )
                 ]
     in
     expectFn modul
@@ -97,6 +102,7 @@ multipleAliases expectFn _ =
                   , [ pAlias (pVar "a") "x", pAlias (pVar "b") "y" ]
                   , tupleExpr (varExpr "x") (varExpr "y")
                   )
+                , ( "testValue", [], callExpr (varExpr "both") [ intExpr 1, strExpr "a" ] )
                 ]
     in
     expectFn modul
@@ -109,7 +115,7 @@ aliasInLambda expectFn _ =
             lambdaExpr [ pAlias (pVar "x") "whole" ] (tupleExpr (varExpr "x") (varExpr "whole"))
 
         modul =
-            makeModule "testValue" fn
+            makeModule "testValue" (callExpr fn [ intExpr 1 ])
     in
     expectFn modul
 
@@ -138,6 +144,7 @@ aliasOn2Tuple expectFn _ =
                   , [ pAlias (pTuple (pVar "a") (pVar "b")) "pair" ]
                   , tupleExpr (varExpr "pair") (varExpr "a")
                   )
+                , ( "testValue", [], callExpr (varExpr "withPair") [ tupleExpr (intExpr 1) (strExpr "a") ] )
                 ]
     in
     expectFn modul
@@ -152,6 +159,7 @@ aliasOn3Tuple expectFn _ =
                   , [ pAlias (pTuple3 (pVar "a") (pVar "b") (pVar "c")) "triple" ]
                   , varExpr "triple"
                   )
+                , ( "testValue", [], callExpr (varExpr "withTriple") [ tuple3Expr (intExpr 1) (strExpr "a") (intExpr 2) ] )
                 ]
     in
     expectFn modul
@@ -166,6 +174,7 @@ nestedAliasInTuple expectFn _ =
         modul =
             makeModuleWithDefs "Test"
                 [ ( "parts", [ pattern ], listExpr [ varExpr "first", varExpr "second" ] )
+                , ( "testValue", [], callExpr (varExpr "parts") [ tupleExpr (intExpr 1) (intExpr 2) ] )
                 ]
     in
     expectFn modul
@@ -180,6 +189,7 @@ aliasOnNestedTuple expectFn _ =
         modul =
             makeModuleWithDefs "Test"
                 [ ( "deep", [ pattern ], varExpr "whole" )
+                , ( "testValue", [], callExpr (varExpr "deep") [ tupleExpr (tupleExpr (intExpr 1) (strExpr "a")) (intExpr 2) ] )
                 ]
     in
     expectFn modul
@@ -208,6 +218,7 @@ aliasOnRecordPattern expectFn _ =
                   , [ pAlias (pRecord [ "x", "y" ]) "point" ]
                   , tupleExpr (varExpr "point") (varExpr "x")
                   )
+                , ( "testValue", [], callExpr (varExpr "withRecord") [ recordExpr [ ( "x", intExpr 1 ), ( "y", strExpr "a" ) ] ] )
                 ]
     in
     expectFn modul
@@ -222,6 +233,7 @@ multipleRecordAliases expectFn _ =
                   , [ pAlias (pRecord [ "a" ]) "r1", pAlias (pRecord [ "b" ]) "r2" ]
                   , tupleExpr (varExpr "r1") (varExpr "r2")
                   )
+                , ( "testValue", [], callExpr (varExpr "combine") [ recordExpr [ ( "a", intExpr 1 ) ], recordExpr [ ( "b", strExpr "a" ) ] ] )
                 ]
     in
     expectFn modul
@@ -236,6 +248,7 @@ aliasOnRecordWithManyFields expectFn _ =
                   , [ pAlias (pRecord [ "a", "b", "c", "d" ]) "rec" ]
                   , varExpr "rec"
                   )
+                , ( "testValue", [], callExpr (varExpr "allFields") [ recordExpr [ ( "a", intExpr 1 ), ( "b", strExpr "a" ), ( "c", intExpr 2 ), ( "d", strExpr "b" ) ] ] )
                 ]
     in
     expectFn modul
@@ -265,6 +278,7 @@ aliasOnConsPattern expectFn _ =
                   , [ pAlias (pCons (pVar "h") (pVar "t")) "list" ]
                   , tupleExpr (varExpr "list") (varExpr "h")
                   )
+                , ( "testValue", [], callExpr (varExpr "withList") [ listExpr [ intExpr 1, intExpr 2 ] ] )
                 ]
     in
     expectFn modul
@@ -279,6 +293,7 @@ aliasOnFixedListPattern expectFn _ =
                   , [ pAlias (pList [ pVar "a", pVar "b" ]) "both" ]
                   , varExpr "both"
                   )
+                , ( "testValue", [], callExpr (varExpr "pairList") [ listExpr [ intExpr 1, intExpr 2 ] ] )
                 ]
     in
     expectFn modul
@@ -293,6 +308,7 @@ nestedAliasInList expectFn _ =
         modul =
             makeModuleWithDefs "Test"
                 [ ( "parts", [ pattern ], tupleExpr (varExpr "head") (varExpr "tail") )
+                , ( "testValue", [], callExpr (varExpr "parts") [ listExpr [ intExpr 1, intExpr 2 ] ] )
                 ]
     in
     expectFn modul
@@ -307,6 +323,7 @@ aliasOnNestedCons expectFn _ =
         modul =
             makeModuleWithDefs "Test"
                 [ ( "twoOrMore", [ pattern ], varExpr "list" )
+                , ( "testValue", [], callExpr (varExpr "twoOrMore") [ listExpr [ intExpr 1, intExpr 2, intExpr 3 ] ] )
                 ]
     in
     expectFn modul
@@ -337,6 +354,7 @@ multipleLevelsOfAlias expectFn _ =
         modul =
             makeModuleWithDefs "Test"
                 [ ( "levels", [ pattern ], listExpr [ varExpr "x", varExpr "inner", varExpr "outer" ] )
+                , ( "testValue", [], callExpr (varExpr "levels") [ intExpr 1 ] )
                 ]
     in
     expectFn modul
@@ -353,6 +371,7 @@ aliasInDeeplyNestedStructure expectFn _ =
         modul =
             makeModuleWithDefs "Test"
                 [ ( "deep", [ pattern ], tupleExpr (varExpr "inner") (varExpr "a") )
+                , ( "testValue", [], callExpr (varExpr "deep") [ tupleExpr (tupleExpr (intExpr 1) (strExpr "a")) (intExpr 2) ] )
                 ]
     in
     expectFn modul
@@ -372,6 +391,7 @@ mixedNestedAliases expectFn _ =
         modul =
             makeModuleWithDefs "Test"
                 [ ( "mixed", [ pattern ], varExpr "all" )
+                , ( "testValue", [], callExpr (varExpr "mixed") [ tupleExpr (recordExpr [ ( "x", intExpr 1 ) ]) (listExpr [ intExpr 1, intExpr 2 ]) ] )
                 ]
     in
     expectFn modul

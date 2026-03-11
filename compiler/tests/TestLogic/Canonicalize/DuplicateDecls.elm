@@ -20,6 +20,8 @@ import Compiler.Data.OneOrMore as OneOrMore
 import Compiler.Elm.Interface.Basic as Basic
 import Compiler.Reporting.Error.Canonicalize as CanError
 import Compiler.Reporting.Result as Result
+import Data.Map as DMap
+import Dict
 import Expect
 
 
@@ -97,7 +99,7 @@ expectNoDuplicateErrors : Src.Module -> Expect.Expectation
 expectNoDuplicateErrors modul =
     let
         result =
-            Canonicalize.canonicalize ( "eco", "example" ) Basic.testIfaces modul
+            Canonicalize.canonicalize ( "eco", "example" ) (DMap.fromList identity (Dict.toList Basic.testIfaces)) modul
     in
     case Result.run result of
         ( _, Err errors ) ->
@@ -167,7 +169,7 @@ expectSpecificError : (CanError.Error -> Bool) -> String -> Src.Module -> Expect
 expectSpecificError errorPredicate errorDescription modul =
     let
         result =
-            Canonicalize.canonicalize ( "eco", "example" ) Basic.testIfaces modul
+            Canonicalize.canonicalize ( "eco", "example" ) (DMap.fromList identity (Dict.toList Basic.testIfaces)) modul
     in
     case Result.run result of
         ( _, Err errors ) ->

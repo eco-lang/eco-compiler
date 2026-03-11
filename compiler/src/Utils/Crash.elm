@@ -1,9 +1,8 @@
 module Utils.Crash exposing (crash)
 
-{-| Provides an intentionally divergent crash function for unrecoverable errors in the compiler.
-This function creates an infinite recursive loop that never returns, allowing it to have any
-return type while expressing that execution cannot continue.
-
+{-| Provides a crash function for unrecoverable errors in the compiler.
+Delegates to Eco.Crash which has platform-specific implementations
+(XHR variant and kernel variant).
 
 # Crash Function
 
@@ -11,11 +10,12 @@ return type while expressing that execution cannot continue.
 
 -}
 
+import Eco.Crash
 
-{-| Creates an infinite loop that crashes the program with the given error message.
+
+{-| Crash the program with the given error message. Never returns.
 This function has a polymorphic return type, allowing it to be used anywhere a value is expected.
 -}
 crash : String -> a
 crash str =
-    --crash str
-    Debug.todo str
+    Eco.Crash.crash str

@@ -92,7 +92,7 @@ checkPapExtendOp op =
 
 
 {-| Check if the type is a valid result type for eco.papExtend.
-Valid types are: !eco.value, i1, i64, f64
+Valid types are: !eco.value, i1, i16, i64, f64
 -}
 isValidPapExtendResultType : MlirType -> Bool
 isValidPapExtendResultType t =
@@ -101,6 +101,9 @@ isValidPapExtendResultType t =
             name == "eco.value"
 
         I1 ->
+            True
+
+        I16 ->
             True
 
         I64 ->

@@ -18,7 +18,8 @@ This module traverses the MonoGraph to identify:
 import Compiler.AST.Monomorphized as Mono
 import Compiler.GlobalOpt.Staging.Types exposing (ProducerId(..), ProducerInfo, Segmentation, emptyProducerInfo)
 import Compiler.GlobalOpt.Staging.UnionFind exposing (producerIdToKey)
-import Data.Map as Dict
+import Array
+import Dict
 
 
 
@@ -31,10 +32,18 @@ import Data.Map as Dict
 -}
 computeProducerInfo : Mono.MonoGraph -> ProducerInfo
 computeProducerInfo (Mono.MonoGraph mono) =
-    Dict.foldl compare
-        (\nodeId node acc -> foldNode nodeId node acc)
-        emptyProducerInfo
+    Array.foldl
+        (\maybeNode ( nodeId, acc ) ->
+            case maybeNode of
+                Nothing ->
+                    ( nodeId + 1, acc )
+
+                Just node ->
+                    ( nodeId + 1, foldNode nodeId node acc )
+        )
+        ( 0, emptyProducerInfo )
         mono.nodes
+        |> Tuple.second
 
 
 foldNode : Int -> Mono.MonoNode -> ProducerInfo -> ProducerInfo
@@ -58,8 +67,8 @@ foldNode nodeId node acc =
                     producerIdToKey pid
             in
             { acc
-                | naturalSeg = Dict.insert identity key seg acc.naturalSeg
-                , totalArity = Dict.insert identity key arity acc.totalArity
+                | naturalSeg = Dict.insert key seg acc.naturalSeg
+                , totalArity = Dict.insert key arity acc.totalArity
             }
 
         Mono.MonoExtern monoType ->
@@ -82,8 +91,8 @@ foldNode nodeId node acc =
                     producerIdToKey pid
             in
             { acc
-                | naturalSeg = Dict.insert identity key seg acc.naturalSeg
-                , totalArity = Dict.insert identity key arity acc.totalArity
+                | naturalSeg = Dict.insert key seg acc.naturalSeg
+                , totalArity = Dict.insert key arity acc.totalArity
             }
 
         Mono.MonoManagerLeaf _ monoType ->
@@ -105,8 +114,8 @@ foldNode nodeId node acc =
                     producerIdToKey pid
             in
             { acc
-                | naturalSeg = Dict.insert identity key seg acc.naturalSeg
-                , totalArity = Dict.insert identity key arity acc.totalArity
+                | naturalSeg = Dict.insert key seg acc.naturalSeg
+                , totalArity = Dict.insert key arity acc.totalArity
             }
 
         _ ->
@@ -148,8 +157,8 @@ addProducersFromExpr expr acc =
 
                 acc1 =
                     { acc
-                        | naturalSeg = Dict.insert identity key seg acc.naturalSeg
-                        , totalArity = Dict.insert identity key arity acc.totalArity
+                        | naturalSeg = Dict.insert key seg acc.naturalSeg
+                        , totalArity = Dict.insert key arity acc.totalArity
                     }
             in
             -- Also recurse into the body

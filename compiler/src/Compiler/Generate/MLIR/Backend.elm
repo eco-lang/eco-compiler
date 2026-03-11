@@ -1,4 +1,4 @@
-module Compiler.Generate.MLIR.Backend exposing (backend, generateMlirModule, streamMlirToWriter)
+module Compiler.Generate.MLIR.Backend exposing (backend, generateMlirModule, generateMlirModuleWithLog, streamMlirToWriter)
 
 {-| MLIR code generation backend for the Monomorphized IR.
 
@@ -10,6 +10,7 @@ in the types.
 
 -}
 
+import Array exposing (Array)
 import Compiler.AST.Monomorphized as Mono
 import Compiler.Generate.CodeGen as CodeGen
 import Compiler.Generate.MLIR.Context as Ctx
@@ -22,7 +23,9 @@ import Dict
 import Mlir.Loc as Loc
 import Mlir.Mlir exposing (MlirModule, MlirOp)
 import Mlir.Pretty as Pretty
+import System.IO as SysIO
 import Task exposing (Task)
+import Utils.Task.Extra as TaskExtra
 
 
 
@@ -48,7 +51,7 @@ backend =
 generateMlirModule : Mode.Mode -> Mono.MonoGraph -> MlirModule
 generateMlirModule mode monoGraph0 =
     let
-        (Mono.MonoGraph { nodes, main, registry, ctorShapes }) =
+        (Mono.MonoGraph { nodes, main, registry, ctorShapes, nextLambdaIndex }) =
             monoGraph0
 
         signatures : Dict.Dict Int Ctx.FuncSignature
@@ -59,16 +62,21 @@ generateMlirModule mode monoGraph0 =
         ctx =
             Ctx.initContext mode registry signatures ctorShapes
 
-        ( revOpChunks, ctxAfterNodes ) =
-            EveryDict.foldl compare
-                (\specId node ( accChunks, accCtx ) ->
-                    let
-                        ( nodeOps, newCtx ) =
-                            Functions.generateNode accCtx specId node
-                    in
-                    ( nodeOps :: accChunks, newCtx )
+        ( revOpChunks, ctxAfterNodes, _ ) =
+            Array.foldl
+                (\maybeNode ( accChunks, accCtx, specId ) ->
+                    case maybeNode of
+                        Nothing ->
+                            ( accChunks, accCtx, specId + 1 )
+
+                        Just node ->
+                            let
+                                ( nodeOps, newCtx ) =
+                                    Functions.generateNode accCtx specId node
+                            in
+                            ( nodeOps :: accChunks, newCtx, specId + 1 )
                 )
-                ( [], ctx )
+                ( [], ctx, 0 )
                 nodes
 
         ops =
@@ -115,6 +123,85 @@ generateProgram mode monoGraph =
     Pretty.ppModule (generateMlirModule mode monoGraph)
 
 
+{-| Like generateMlirModule, but logs each sub-pass via the provided logger.
+-}
+generateMlirModuleWithLog : (String -> Task x ()) -> Mode.Mode -> Mono.MonoGraph -> Task x MlirModule
+generateMlirModuleWithLog log mode monoGraph0 =
+    let
+        (Mono.MonoGraph { nodes, main, registry, ctorShapes }) =
+            monoGraph0
+
+        signatures =
+            Ctx.buildSignatures nodes
+
+        ctx =
+            Ctx.initContext mode registry signatures ctorShapes
+    in
+    log "  Generate node functions..."
+        |> Task.andThen
+            (\_ ->
+                let
+                    ( revOpChunks, ctxAfterNodes, _ ) =
+                        Array.foldl
+                            (\maybeNode ( accChunks, accCtx, specId ) ->
+                                case maybeNode of
+                                    Nothing ->
+                                        ( accChunks, accCtx, specId + 1 )
+
+                                    Just node ->
+                                        let
+                                            ( nodeOps, newCtx ) =
+                                                Functions.generateNode accCtx specId node
+                                        in
+                                        ( nodeOps :: accChunks, newCtx, specId + 1 )
+                            )
+                            ( [], ctx, 0 )
+                            nodes
+
+                    ops =
+                        List.concat (List.reverse revOpChunks)
+                in
+                log "  Process lambda closures..."
+                    |> Task.andThen
+                        (\_ ->
+                            let
+                                ( lambdaOps, finalCtx ) =
+                                    Lambdas.processLambdas ctxAfterNodes
+
+                                mainOps =
+                                    case main of
+                                        Just mainInfo ->
+                                            Functions.generateMainEntry finalCtx mainInfo
+
+                                        Nothing ->
+                                            []
+
+                                ( kernelDeclOps, _ ) =
+                                    Dict.foldl
+                                        (\name sig ( accOps, accCtx ) ->
+                                            let
+                                                ( newCtx, declOp ) =
+                                                    Functions.generateKernelDecl accCtx name sig
+                                            in
+                                            ( declOp :: accOps, newCtx )
+                                        )
+                                        ( [], finalCtx )
+                                        finalCtx.kernelDecls
+
+                                typeTableOp =
+                                    TypeTable.generateTypeTable finalCtx
+                            in
+                            log "  Generate main + kernel decls + type table..."
+                                |> Task.map
+                                    (\_ ->
+                                        { body = typeTableOp :: List.reverse kernelDeclOps ++ lambdaOps ++ ops ++ mainOps
+                                        , loc = Loc.unknown
+                                        }
+                                    )
+                        )
+            )
+
+
 -- ====== STREAMING ======
 
 
@@ -133,88 +220,92 @@ streamMlirToWriter mode monoGraph0 writeChunk =
 
         ctx =
             Ctx.initContext mode registry signatures ctorShapes
+
+        stderrLog msg =
+            TaskExtra.io (SysIO.writeLn SysIO.stderr msg)
     in
     -- 1. Header
     writeChunk Pretty.ppModuleHeader
-        |> Task.andThen (\_ -> streamNodes ctx nodes writeChunk)
+        |> Task.andThen (\_ -> stderrLog "  Generate node functions (streaming)...")
+        |> Task.andThen (\_ -> streamNodesArray ctx nodes 0 writeChunk)
         |> Task.andThen
             (\ctxAfterNodes ->
                 -- 2. Lambdas
-                let
-                    ( lambdaOps, finalCtx ) =
-                        Lambdas.processLambdas ctxAfterNodes
-                in
-                writeOps lambdaOps writeChunk
+                stderrLog "  Process lambda closures (streaming)..."
                     |> Task.andThen
                         (\_ ->
-                            -- 3. Main
                             let
-                                mainOps =
-                                    case main of
-                                        Just mainInfo ->
-                                            Functions.generateMainEntry finalCtx mainInfo
-
-                                        Nothing ->
-                                            []
+                                ( lambdaOps, finalCtx ) =
+                                    Lambdas.processLambdas ctxAfterNodes
                             in
-                            writeOps mainOps writeChunk
+                            writeOps lambdaOps writeChunk
                                 |> Task.andThen
                                     (\_ ->
-                                        -- 4. Kernel decls
-                                        let
-                                            ( kernelDeclOps, _ ) =
-                                                Dict.foldl
-                                                    (\name sig ( accOps, accCtx ) ->
-                                                        let
-                                                            ( newCtx, declOp ) =
-                                                                Functions.generateKernelDecl accCtx name sig
-                                                        in
-                                                        ( declOp :: accOps, newCtx )
-                                                    )
-                                                    ( [], finalCtx )
-                                                    finalCtx.kernelDecls
-                                        in
-                                        writeOps (List.reverse kernelDeclOps) writeChunk
+                                        -- 3. Main + kernel decls + type table
+                                        stderrLog "  Generate main + kernel decls + type table (streaming)..."
                                             |> Task.andThen
                                                 (\_ ->
-                                                    -- 5. Type table
                                                     let
+                                                        mainOps =
+                                                            case main of
+                                                                Just mainInfo ->
+                                                                    Functions.generateMainEntry finalCtx mainInfo
+
+                                                                Nothing ->
+                                                                    []
+
+                                                        ( kernelDeclOps, _ ) =
+                                                            Dict.foldl
+                                                                (\name sig ( accOps, accCtx ) ->
+                                                                    let
+                                                                        ( newCtx, declOp ) =
+                                                                            Functions.generateKernelDecl accCtx name sig
+                                                                    in
+                                                                    ( declOp :: accOps, newCtx )
+                                                                )
+                                                                ( [], finalCtx )
+                                                                finalCtx.kernelDecls
+
                                                         typeTableOp =
                                                             TypeTable.generateTypeTable finalCtx
                                                     in
-                                                    writeOps [ typeTableOp ] writeChunk
+                                                    writeOps mainOps writeChunk
+                                                        |> Task.andThen (\_ -> writeOps (List.reverse kernelDeclOps) writeChunk)
+                                                        |> Task.andThen (\_ -> writeOps [ typeTableOp ] writeChunk)
                                                 )
                                     )
                         )
                     |> Task.andThen
                         (\_ ->
-                            -- 6. Footer
+                            -- 4. Footer
                             writeChunk (Pretty.ppModuleFooter Loc.unknown)
                         )
             )
 
 
-streamNodes :
+streamNodesArray :
     Ctx.Context
-    -> EveryDict.Dict Int Int Mono.MonoNode
+    -> Array (Maybe Mono.MonoNode)
+    -> Int
     -> (String -> Task Never ())
     -> Task Never Ctx.Context
-streamNodes ctx0 nodes writeChunk =
-    EveryDict.foldl compare
-        (\specId node accTask ->
-            accTask
-                |> Task.andThen
-                    (\accCtx ->
-                        let
-                            ( nodeOps, newCtx ) =
-                                Functions.generateNode accCtx specId node
-                        in
-                        writeOps nodeOps writeChunk
-                            |> Task.map (\_ -> newCtx)
-                    )
-        )
-        (Task.succeed ctx0)
-        nodes
+streamNodesArray ctx0 nodes specId writeChunk =
+    case Array.get specId nodes of
+        Nothing ->
+            -- Past end of array
+            Task.succeed ctx0
+
+        Just Nothing ->
+            -- Empty slot
+            streamNodesArray ctx0 nodes (specId + 1) writeChunk
+
+        Just (Just node) ->
+            let
+                ( nodeOps, newCtx ) =
+                    Functions.generateNode ctx0 specId node
+            in
+            writeOps nodeOps writeChunk
+                |> Task.andThen (\_ -> streamNodesArray newCtx nodes (specId + 1) writeChunk)
 
 
 writeOps : List MlirOp -> (String -> Task Never ()) -> Task Never ()

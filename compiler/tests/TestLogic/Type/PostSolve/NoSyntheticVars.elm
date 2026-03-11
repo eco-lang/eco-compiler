@@ -12,7 +12,8 @@ remain in the final types. All type variables should be either:
 
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Source as Src
-import Data.Map as Dict
+import Array
+import Dict
 import Expect
 import TestLogic.TestPipeline as Pipeline
 
@@ -45,18 +46,24 @@ expectNoSyntheticVars srcModule =
 
 {-| Collect synthetic variable issues from node types.
 -}
-collectSyntheticVarIssues : Dict.Dict Int Int Can.Type -> List String
+collectSyntheticVarIssues : Array.Array (Maybe Can.Type) -> List String
 collectSyntheticVarIssues nodeTypes =
-    Dict.foldl compare
-        (\nodeId canType acc ->
-            let
-                context =
-                    "NodeId " ++ String.fromInt nodeId
-            in
-            checkForSyntheticVars context canType ++ acc
+    Array.foldl
+        (\maybeType ( nodeId, acc ) ->
+            case maybeType of
+                Nothing ->
+                    ( nodeId + 1, acc )
+
+                Just canType ->
+                    let
+                        context =
+                            "NodeId " ++ String.fromInt nodeId
+                    in
+                    ( nodeId + 1, checkForSyntheticVars context canType ++ acc )
         )
-        []
+        ( 0, [] )
         nodeTypes
+        |> Tuple.second
 
 
 {-| Check a type for synthetic variables.
@@ -86,7 +93,7 @@ checkForSyntheticVars context canType =
             List.concatMap (checkForSyntheticVars context) args
 
         Can.TRecord fields _ ->
-            Dict.foldl compare
+            Dict.foldl
                 (\_ (Can.FieldType _ fieldType) acc ->
                     checkForSyntheticVars context fieldType ++ acc
                 )

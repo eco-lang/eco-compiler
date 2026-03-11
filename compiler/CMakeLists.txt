@@ -68,6 +68,7 @@ file(GLOB_RECURSE KERNEL_SOURCES
 add_custom_command(
     OUTPUT ${ECO_BOOT_OUTPUT}
     COMMAND ${NODE_EXECUTABLE} ${COMPILER_DIR}/bin/index.js make
+        --optimize
         --kernel-package eco/compiler
         --local-package eco/kernel=${COMPILER_DIR}/../eco-kernel-cpp
         --output=${ECO_BOOT_OUTPUT}
@@ -86,6 +87,7 @@ set(ECO_BOOT_2_OUTPUT "${BUILD_KERNEL_DIR}/bin/eco-boot-2.js")
 add_custom_command(
     OUTPUT ${ECO_BOOT_2_OUTPUT}
     COMMAND ${NODE_EXECUTABLE} bin/eco-boot-runner.js make
+        --optimize
         --kernel-package eco/compiler
         --local-package eco/kernel=${COMPILER_DIR}/../eco-kernel-cpp
         --output=bin/eco-boot-2.js

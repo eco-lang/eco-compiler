@@ -25,7 +25,7 @@ import Builder.Stuff as Stuff
 import Compiler.Elm.Constraint as C
 import Compiler.Elm.Package as Pkg
 import Compiler.Elm.Version as V
-import Data.Map as Dict exposing (Dict)
+import Dict exposing (Dict)
 import System.IO as IO exposing (FilePath)
 import Task exposing (Task)
 import Utils.Task.Extra as Task
@@ -124,7 +124,7 @@ makeAppPlan (Solver.Env env) pkg ((Outline.AppOutline appData) as outline) =
         testDirect =
             appData.testDirect
     in
-    case Dict.get identity pkg (Dict.union direct testDirect) of
+    case Dict.get pkg (Dict.union direct testDirect) of
         Just _ ->
             Task.io (Solver.removeFromApp env.cache env.connection env.registry pkg outline)
                 |> Task.andThen
@@ -154,15 +154,15 @@ makeAppPlan (Solver.Env env) pkg ((Outline.AppOutline appData) as outline) =
 makePkgPlan : Pkg.Name -> Outline.PkgOutline -> Task Exit.Uninstall (Changes C.Constraint)
 makePkgPlan pkg (Outline.PkgOutline pkgData) =
     let
-        old : Dict ( String, String ) Pkg.Name C.Constraint
+        old : Dict Pkg.Name C.Constraint
         old =
             Dict.union pkgData.deps pkgData.testDeps
     in
-    if Dict.member identity pkg old then
+    if Dict.member pkg old then
         Outline.PkgOutline
             { pkgData
-                | deps = Dict.remove identity pkg pkgData.deps
-                , testDeps = Dict.remove identity pkg pkgData.testDeps
+                | deps = Dict.remove pkg pkgData.deps
+                , testDeps = Dict.remove pkg pkgData.testDeps
             }
             |> Outline.Pkg
             |> Changes

@@ -38,7 +38,8 @@ import Compiler.AST.Canonical as Can
 import Compiler.Data.Name exposing (Name)
 import Compiler.Elm.Interface as I
 import Compiler.Elm.ModuleName as ModuleName
-import Data.Map as Dict exposing (Dict)
+import Data.Map
+import Dict exposing (Dict)
 import System.TypeCheck.IO as IO
 import Utils.Bytes.Decode as BD
 import Utils.Bytes.Encode as BE
@@ -52,8 +53,8 @@ import Utils.Bytes.Encode as BE
 -}
 type alias ModuleTypeEnv =
     { home : IO.Canonical
-    , unions : Dict String Name Can.Union
-    , aliases : Dict String Name Can.Alias
+    , unions : Dict Name Can.Union
+    , aliases : Dict Name Can.Alias
     }
 
 
@@ -61,7 +62,7 @@ type alias ModuleTypeEnv =
 Uses `List String` as the comparable key for `IO.Canonical`.
 -}
 type alias GlobalTypeEnv =
-    Dict (List String) IO.Canonical ModuleTypeEnv
+    Data.Map.Dict (List String) IO.Canonical ModuleTypeEnv
 
 
 
@@ -98,17 +99,17 @@ This is useful for test infrastructure where interfaces define the types
 available for monomorphization (e.g., JsArray, List, Maybe).
 
 -}
-fromInterfaces : Dict String ModuleName.Raw I.Interface -> GlobalTypeEnv
+fromInterfaces : Data.Map.Dict String ModuleName.Raw I.Interface -> GlobalTypeEnv
 fromInterfaces ifaces =
-    Dict.foldl compare
+    Data.Map.foldl compare
         (\moduleName iface acc ->
             let
                 moduleTypeEnv =
                     fromInterface moduleName iface
             in
-            Dict.insert ModuleName.toComparableCanonical moduleTypeEnv.home moduleTypeEnv acc
+            Data.Map.insert ModuleName.toComparableCanonical moduleTypeEnv.home moduleTypeEnv acc
         )
-        Dict.empty
+        Data.Map.empty
         ifaces
 
 
@@ -116,14 +117,14 @@ fromInterfaces ifaces =
 -}
 emptyGlobal : GlobalTypeEnv
 emptyGlobal =
-    Dict.empty
+    Data.Map.empty
 
 
 {-| Empty global type environment (alias for emptyGlobal).
 -}
 emptyGlobalTypeEnv : GlobalTypeEnv
 emptyGlobalTypeEnv =
-    Dict.empty
+    Data.Map.empty
 
 
 {-| Merge two global type environments.
@@ -133,7 +134,7 @@ Module type environments from the second argument take precedence in case of con
 -}
 mergeGlobalTypeEnv : GlobalTypeEnv -> GlobalTypeEnv -> GlobalTypeEnv
 mergeGlobalTypeEnv env1 env2 =
-    Dict.union env1 env2
+    Data.Map.union env1 env2
 
 
 
@@ -146,8 +147,8 @@ moduleTypeEnvEncoder : ModuleTypeEnv -> Bytes.Encode.Encoder
 moduleTypeEnvEncoder env =
     Bytes.Encode.sequence
         [ ModuleName.canonicalEncoder env.home
-        , BE.assocListDict compare BE.string Can.unionEncoder env.unions
-        , BE.assocListDict compare BE.string Can.aliasEncoder env.aliases
+        , BE.stdDict BE.string Can.unionEncoder env.unions
+        , BE.stdDict BE.string Can.aliasEncoder env.aliases
         ]
 
 
@@ -157,8 +158,8 @@ moduleTypeEnvDecoder : Bytes.Decode.Decoder ModuleTypeEnv
 moduleTypeEnvDecoder =
     Bytes.Decode.map3 ModuleTypeEnv
         ModuleName.canonicalDecoder
-        (BD.assocListDict identity BD.string Can.unionDecoder)
-        (BD.assocListDict identity BD.string Can.aliasDecoder)
+        (BD.stdDict BD.string Can.unionDecoder)
+        (BD.stdDict BD.string Can.aliasDecoder)
 
 
 {-| Encode a global type environment.

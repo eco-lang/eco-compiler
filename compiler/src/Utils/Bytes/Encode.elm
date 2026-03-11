@@ -1,7 +1,7 @@
 module Utils.Bytes.Encode exposing
     ( unit, bool, int, float, string
     , maybe, list, nonempty, result, oneOrMore
-    , jsonPair, assocListDict, everySet
+    , jsonPair, assocListDict, stdDict, everySet
     )
 
 {-| Binary encoding utilities for Elm values, providing consistent serialization for the compiler's
@@ -29,8 +29,9 @@ import Bytes
 import Bytes.Encode as BE
 import Compiler.Data.NonEmptyList as NE
 import Compiler.Data.OneOrMore exposing (OneOrMore(..))
-import Data.Map as Dict exposing (Dict)
+import Data.Map as EveryDict
 import Data.Set as EverySet exposing (EverySet)
+import Dict
 
 
 endian : Bytes.Endianness
@@ -134,9 +135,16 @@ result errEncoder successEncoder resultValue =
 
 {-| Encodes a dictionary as a list of key-value pairs.
 -}
-assocListDict : (k -> k -> Order) -> (k -> BE.Encoder) -> (v -> BE.Encoder) -> Dict c k v -> BE.Encoder
+assocListDict : (k -> k -> Order) -> (k -> BE.Encoder) -> (v -> BE.Encoder) -> EveryDict.Dict c k v -> BE.Encoder
 assocListDict keyComparison keyEncoder valueEncoder =
-    Dict.toList keyComparison >> List.reverse >> list (jsonPair keyEncoder valueEncoder)
+    EveryDict.toList keyComparison >> List.reverse >> list (jsonPair keyEncoder valueEncoder)
+
+
+{-| Encodes a stdlib Dict as a list of key-value pairs.
+-}
+stdDict : (comparable -> BE.Encoder) -> (v -> BE.Encoder) -> Dict.Dict comparable v -> BE.Encoder
+stdDict keyEncoder valueEncoder =
+    Dict.toList >> list (jsonPair keyEncoder valueEncoder)
 
 
 {-| Encodes a pair of values as a tuple.

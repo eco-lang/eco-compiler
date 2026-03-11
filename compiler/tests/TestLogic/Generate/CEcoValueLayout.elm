@@ -15,7 +15,7 @@ CEcoValue layout is correctly computed.
 
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.Source as Src
-import Data.Map as Dict
+import Array
 import Expect
 import TestLogic.TestPipeline as Pipeline
 
@@ -57,10 +57,18 @@ runtime layout:
 -}
 collectCEcoValueLayoutIssues : Mono.MonoGraph -> List String
 collectCEcoValueLayoutIssues (Mono.MonoGraph data) =
-    Dict.foldl compare
-        (\specId node acc -> checkNodeCEcoValueLayout specId node ++ acc)
-        []
+    Array.foldl
+        (\maybeNode ( specId, acc ) ->
+            case maybeNode of
+                Nothing ->
+                    ( specId + 1, acc )
+
+                Just node ->
+                    ( specId + 1, checkNodeCEcoValueLayout specId node ++ acc )
+        )
+        ( 0, [] )
         data.nodes
+        |> Tuple.second
 
 
 {-| Check CEcoValue layout for a single node.

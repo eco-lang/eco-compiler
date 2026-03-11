@@ -9,7 +9,7 @@ the entire module.
 -}
 
 import Compiler.AST.Source as Src
-import Compiler.AST.SourceBuilder exposing (binopsExpr, boolExpr, callExpr, caseExpr, define, ifExpr, intExpr, lambdaExpr, letExpr, listExpr, makeModuleWithDefs, pAnything, pInt, pList, pRecord, pTuple, pVar, recordExpr, strExpr, tupleExpr, varExpr)
+import Compiler.AST.SourceBuilder exposing (binopsExpr, boolExpr, callExpr, caseExpr, define, ifExpr, intExpr, lambdaExpr, letExpr, listExpr, makeModuleWithDefs, pAnything, pInt, pList, pRecord, pTuple, pVar, recordExpr, strExpr, tuple3Expr, tupleExpr, varExpr)
 import Compiler.BulkCheck exposing (TestCase, bulkCheck)
 import Expect exposing (Expectation)
 import Test exposing (Test)
@@ -63,6 +63,7 @@ twoIdenticalStructureDefinitions expectFn _ =
             makeModuleWithDefs "Test"
                 [ ( "a", [], binopsExpr [ ( intExpr 1, "+" ) ] (intExpr 2) )
                 , ( "b", [], binopsExpr [ ( intExpr 1, "+" ) ] (intExpr 2) )
+                , ( "testValue", [], tupleExpr (varExpr "a") (varExpr "b") )
                 ]
     in
     expectFn modul
@@ -79,6 +80,7 @@ threeSimpleValueDefinitions expectFn _ =
                 [ ( "a", [], intExpr 1 )
                 , ( "b", [], intExpr 2 )
                 , ( "c", [], intExpr 3 )
+                , ( "testValue", [], tuple3Expr (varExpr "a") (varExpr "b") (varExpr "c") )
                 ]
     in
     expectFn modul
@@ -93,6 +95,7 @@ multipleFunctionsSameArity expectFn _ =
             makeModuleWithDefs "Test"
                 [ ( "f", [ pVar "x" ], binopsExpr [ ( varExpr "x", "+" ) ] (intExpr 1) )
                 , ( "g", [ pVar "y" ], binopsExpr [ ( varExpr "y", "*" ) ] (intExpr 2) )
+                , ( "testValue", [], tupleExpr (callExpr (varExpr "f") [ intExpr 1 ]) (callExpr (varExpr "g") [ intExpr 2 ]) )
                 ]
     in
     expectFn modul
@@ -114,6 +117,12 @@ multipleFunctionsDifferentArities expectFn _ =
                   , [ pVar "x", pVar "y", pVar "z" ]
                   , binopsExpr [ ( varExpr "x", "+" ), ( varExpr "y", "+" ) ] (varExpr "z")
                   )
+                , ( "testValue"
+                  , []
+                  , tupleExpr
+                        (tupleExpr (varExpr "a") (callExpr (varExpr "f") [ intExpr 1 ]))
+                        (tupleExpr (callExpr (varExpr "g") [ intExpr 1, intExpr 2 ]) (callExpr (varExpr "h") [ intExpr 1, intExpr 2, intExpr 3 ]))
+                  )
                 ]
     in
     expectFn modul
@@ -128,6 +137,7 @@ functionsCallEachOther expectFn _ =
             makeModuleWithDefs "Test"
                 [ ( "f", [ pVar "x" ], callExpr (varExpr "g") [ varExpr "x" ] )
                 , ( "g", [ pVar "y" ], binopsExpr [ ( varExpr "y", "+" ) ] (intExpr 1) )
+                , ( "testValue", [], callExpr (varExpr "f") [ intExpr 1 ] )
                 ]
     in
     expectFn modul
@@ -142,6 +152,7 @@ multipleDefsWithLet expectFn _ =
             makeModuleWithDefs "Test"
                 [ ( "a", [], letExpr [ define "x" [] (intExpr 1) ] (varExpr "x") )
                 , ( "b", [], letExpr [ define "y" [] (intExpr 2) ] (varExpr "y") )
+                , ( "testValue", [], tupleExpr (varExpr "a") (varExpr "b") )
                 ]
     in
     expectFn modul
@@ -168,6 +179,7 @@ multipleDefsWithCase expectFn _ =
                         , ( pAnything, intExpr 4 )
                         ]
                   )
+                , ( "testValue", [], tupleExpr (callExpr (varExpr "f") [ intExpr 1 ]) (callExpr (varExpr "g") [ intExpr 2 ]) )
                 ]
     in
     expectFn modul
@@ -184,6 +196,7 @@ multipleDefsWithIf expectFn _ =
                 [ ( "a", [], ifExpr (boolExpr True) (intExpr 1) (intExpr 2) )
                 , ( "b", [], ifExpr (boolExpr True) (intExpr 3) (intExpr 4) )
                 , ( "c", [], ifExpr (boolExpr True) (intExpr 5) (intExpr 6) )
+                , ( "testValue", [], tuple3Expr (varExpr "a") (varExpr "b") (varExpr "c") )
                 ]
     in
     expectFn modul
@@ -200,6 +213,7 @@ multipleDefsWithLambdas expectFn _ =
                 [ ( "f", [], lambdaExpr [ pVar "x" ] (varExpr "x") )
                 , ( "g", [], lambdaExpr [ pVar "y" ] (binopsExpr [ ( varExpr "y", "+" ) ] (intExpr 1)) )
                 , ( "h", [], lambdaExpr [ pVar "a", pVar "b" ] (binopsExpr [ ( varExpr "a", "+" ) ] (varExpr "b")) )
+                , ( "testValue", [], tuple3Expr (callExpr (varExpr "f") [ intExpr 1 ]) (callExpr (varExpr "g") [ intExpr 2 ]) (callExpr (varExpr "h") [ intExpr 3, intExpr 4 ]) )
                 ]
     in
     expectFn modul
@@ -216,6 +230,7 @@ multipleDefsWithRecords expectFn _ =
                 [ ( "a", [], recordExpr [ ( "x", intExpr 1 ) ] )
                 , ( "b", [], recordExpr [ ( "y", intExpr 2 ), ( "z", intExpr 3 ) ] )
                 , ( "c", [], recordExpr [ ( "p", intExpr 4 ), ( "q", intExpr 5 ), ( "r", intExpr 6 ) ] )
+                , ( "testValue", [], tuple3Expr (varExpr "a") (varExpr "b") (varExpr "c") )
                 ]
     in
     expectFn modul
@@ -234,6 +249,7 @@ multipleDefsWithBinops expectFn _ =
                 , ( "b", [], binopsExpr [ ( intExpr 3, "*" ) ] (intExpr 4) )
                 , ( "c", [], binopsExpr [ ( intExpr 5, "-" ) ] (intExpr 6) )
                 , ( "d", [], binopsExpr [ ( intExpr 7, "/" ) ] (intExpr 8) )
+                , ( "testValue", [], tupleExpr (tupleExpr (varExpr "a") (varExpr "b")) (tupleExpr (varExpr "c") (varExpr "d")) )
                 ]
     in
     expectFn modul
@@ -260,6 +276,22 @@ largeModuleManyDefs expectFn _ =
                 , ( "def13", [], lambdaExpr [ pVar "n" ] (varExpr "n") )
                 , ( "def14", [ pVar "a", pVar "b" ], binopsExpr [ ( varExpr "a", "+" ) ] (varExpr "b") )
                 , ( "def15", [], strExpr "hello" )
+                , ( "testValue"
+                  , []
+                  , tupleExpr
+                        (tupleExpr
+                            (tuple3Expr (varExpr "def1") (varExpr "def2") (varExpr "def3"))
+                            (tuple3Expr (varExpr "def4") (varExpr "def5") (callExpr (varExpr "def6") [ intExpr 1 ]))
+                        )
+                        (tupleExpr
+                            (tuple3Expr (callExpr (varExpr "def7") [ intExpr 1 ]) (varExpr "def8") (varExpr "def9"))
+                            (tuple3Expr
+                                (tuple3Expr (varExpr "def10") (varExpr "def11") (varExpr "def12"))
+                                (tuple3Expr (callExpr (varExpr "def13") [ intExpr 1 ]) (callExpr (varExpr "def14") [ intExpr 1, intExpr 2 ]) (varExpr "def15"))
+                                (intExpr 0)
+                            )
+                        )
+                  )
                 ]
     in
     expectFn modul
@@ -282,6 +314,7 @@ nestedLetsMultipleDefs expectFn _ =
                   , letExpr [ define "p" [] (letExpr [ define "q" [] (intExpr 2) ] (varExpr "q")) ]
                         (varExpr "p")
                   )
+                , ( "testValue", [], tupleExpr (varExpr "a") (varExpr "b") )
                 ]
     in
     expectFn modul
@@ -296,6 +329,12 @@ tuplePatternMultipleDefs expectFn _ =
             makeModuleWithDefs "Test"
                 [ ( "f", [ pTuple (pVar "a") (pVar "b") ], binopsExpr [ ( varExpr "a", "+" ) ] (varExpr "b") )
                 , ( "g", [ pTuple (pVar "x") (pVar "y") ], binopsExpr [ ( varExpr "x", "*" ) ] (varExpr "y") )
+                , ( "testValue"
+                  , []
+                  , tupleExpr
+                        (callExpr (varExpr "f") [ tupleExpr (intExpr 1) (intExpr 2) ])
+                        (callExpr (varExpr "g") [ tupleExpr (intExpr 3) (intExpr 4) ])
+                  )
                 ]
     in
     expectFn modul
@@ -310,6 +349,12 @@ listPatternMultipleDefs expectFn _ =
             makeModuleWithDefs "Test"
                 [ ( "f", [ pList [ pVar "a" ] ], varExpr "a" )
                 , ( "g", [ pList [ pVar "x", pVar "y" ] ], binopsExpr [ ( varExpr "x", "+" ) ] (varExpr "y") )
+                , ( "testValue"
+                  , []
+                  , tupleExpr
+                        (callExpr (varExpr "f") [ listExpr [ intExpr 1 ] ])
+                        (callExpr (varExpr "g") [ listExpr [ intExpr 2, intExpr 3 ] ])
+                  )
                 ]
     in
     expectFn modul
@@ -324,6 +369,12 @@ recordPatternMultipleDefs expectFn _ =
             makeModuleWithDefs "Test"
                 [ ( "f", [ pRecord [ "x" ] ], varExpr "x" )
                 , ( "g", [ pRecord [ "a", "b" ] ], binopsExpr [ ( varExpr "a", "+" ) ] (varExpr "b") )
+                , ( "testValue"
+                  , []
+                  , tupleExpr
+                        (callExpr (varExpr "f") [ recordExpr [ ( "x", intExpr 1 ) ] ])
+                        (callExpr (varExpr "g") [ recordExpr [ ( "a", intExpr 2 ), ( "b", intExpr 3 ) ] ])
+                  )
                 ]
     in
     expectFn modul
@@ -363,6 +414,18 @@ mixedExpressionsAndPatterns expectFn _ =
                 , ( "withTuple"
                   , [ pTuple (pVar "a") (pVar "b") ]
                   , tupleExpr (varExpr "a") (varExpr "b")
+                  )
+                , ( "testValue"
+                  , []
+                  , tupleExpr
+                        (tupleExpr
+                            (tupleExpr (varExpr "value") (callExpr (varExpr "func") [ intExpr 1 ]))
+                            (tupleExpr (varExpr "withLet") (callExpr (varExpr "withCase") [ intExpr 0 ]))
+                        )
+                        (tupleExpr
+                            (tupleExpr (callExpr (varExpr "withIf") [ boolExpr True ]) (callExpr (varExpr "withLambda") [ intExpr 1, intExpr 2 ]))
+                            (tupleExpr (varExpr "withRecord") (callExpr (varExpr "withTuple") [ tupleExpr (intExpr 1) (intExpr 2) ]))
+                        )
                   )
                 ]
     in

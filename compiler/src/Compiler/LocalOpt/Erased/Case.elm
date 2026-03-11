@@ -20,14 +20,13 @@ when the same code would be reached through different pattern match paths.
 
 -}
 
+import Array exposing (Array)
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Optimized as Opt
 import Compiler.Data.Name as Name
 import Compiler.LocalOpt.Erased.DecisionTree as DT
-import Data.Map as Dict exposing (Dict)
 import Prelude
 import Utils.Crash exposing (crash)
-import Utils.Main as Utils
 
 
 
@@ -48,16 +47,20 @@ optimize temp root optBranches =
         decider =
             treeToDecider (DT.compile patterns)
 
-        targetCounts : Dict Int Int Int
+        numBranches : Int
+        numBranches =
+            List.length indexedBranches
+
+        targetCounts : Array Int
         targetCounts =
-            countTargets decider
+            countTargets numBranches decider
 
         ( choices, maybeJumps ) =
             List.unzip (List.map (createChoices targetCounts) indexedBranches)
     in
     Opt.Case temp
         root
-        (insertChoices (Dict.fromList identity choices) decider)
+        (insertChoices (Array.fromList (List.map Tuple.second choices)) decider)
         (List.filterMap identity maybeJumps)
 
 
@@ -155,22 +158,34 @@ toChain path test successTree failureTree =
 -- can be inlined. Whether things are inlined or jumps is called a "choice".
 
 
-countTargets : Opt.Decider Int -> Dict Int Int Int
-countTargets decisionTree =
-    case decisionTree of
+countTargets : Int -> Opt.Decider Int -> Array Int
+countTargets numBranches decider =
+    countTargetsHelp (Array.repeat numBranches 0) decider
+
+
+countTargetsHelp : Array Int -> Opt.Decider Int -> Array Int
+countTargetsHelp counts decider =
+    case decider of
         Opt.Leaf target ->
-            Dict.singleton identity target 1
+            Array.set target (arrayGetOr 0 target counts + 1) counts
 
         Opt.Chain _ success failure ->
-            Utils.mapUnionWith identity compare (+) (countTargets success) (countTargets failure)
+            countTargetsHelp (countTargetsHelp counts success) failure
 
         Opt.FanOut _ tests fallback ->
-            Utils.mapUnionsWith identity compare (+) (List.map countTargets (fallback :: List.map Tuple.second tests))
+            List.foldl (\( _, sub ) acc -> countTargetsHelp acc sub)
+                (countTargetsHelp counts fallback)
+                tests
 
 
-createChoices : Dict Int Int Int -> ( Int, Opt.Expr ) -> ( ( Int, Opt.Choice ), Maybe ( Int, Opt.Expr ) )
+arrayGetOr : a -> Int -> Array a -> a
+arrayGetOr default idx arr =
+    Array.get idx arr |> Maybe.withDefault default
+
+
+createChoices : Array Int -> ( Int, Opt.Expr ) -> ( ( Int, Opt.Choice ), Maybe ( Int, Opt.Expr ) )
 createChoices targetCounts ( target, branch ) =
-    if Dict.get identity target targetCounts == Just 1 then
+    if arrayGetOr 0 target targetCounts == 1 then
         ( ( target, Opt.Inline branch )
         , Nothing
         )
@@ -181,16 +196,21 @@ createChoices targetCounts ( target, branch ) =
         )
 
 
-insertChoices : Dict Int Int Opt.Choice -> Opt.Decider Int -> Opt.Decider Opt.Choice
-insertChoices choiceDict decider =
+insertChoices : Array Opt.Choice -> Opt.Decider Int -> Opt.Decider Opt.Choice
+insertChoices choiceArray decider =
     let
         go : Opt.Decider Int -> Opt.Decider Opt.Choice
         go =
-            insertChoices choiceDict
+            insertChoices choiceArray
     in
     case decider of
         Opt.Leaf target ->
-            Opt.Leaf (Utils.find identity target choiceDict)
+            case Array.get target choiceArray of
+                Just choice ->
+                    Opt.Leaf choice
+
+                Nothing ->
+                    crash ("insertChoices: target " ++ String.fromInt target ++ " not found in choice array")
 
         Opt.Chain testChain success failure ->
             Opt.Chain testChain (go success) (go failure)

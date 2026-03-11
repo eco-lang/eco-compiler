@@ -13,10 +13,15 @@ module Compiler.AST.Monomorphized exposing
     , forceCNumberToInt
     , Segmentation, segmentLengths, stageParamTypes, stageReturnType
     , chooseCanonicalSegmentation, buildSegmentedFunctionType
-    , decomposeFunctionType, isFunctionType, countTotalArity
+    , decomposeFunctionType, isFunctionType, countTotalArity, resultTypeOf
     , CallModel(..), CallInfo, defaultCallInfo
     , ClosureKindId(..), ClosureKind(..), MaybeClosureKind
     , CaptureABI
+    , nodesToArray
+    , eraseTypeVarsToErased, eraseTypeVarsToErasedHelp
+    , containsAnyMVar
+    , containsCEcoMVar, eraseCEcoVarsToErased, eraseCEcoVarsToErasedHelp
+    , listMapChanged, dictMapChanged
     -- Typed closure calling (ABI cloning)
     -- Call staging metadata
     -- Staging/Segmentation helpers
@@ -135,12 +140,14 @@ This module defines the data structures for the monomorphized program
 
 -}
 
+import Array exposing (Array)
 import Compiler.AST.DecisionTree.Test as DT
 import Compiler.AST.DecisionTree.TypedPath as DT
+import Compiler.Data.BitSet as BitSet exposing (BitSet)
 import Compiler.Data.Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Reporting.Annotation exposing (Region)
-import Data.Map as Dict exposing (Dict)
+import Dict exposing (Dict)
 import System.TypeCheck.IO as IO
 
 
@@ -182,6 +189,14 @@ INVARIANTS BY PHASE:
 The actual specialization to `MInt` or `MFloat` is expected tp be done at call
 sites during code generation.
 
+`MErased` is an internal monomorphization-only type that replaces `MVar` in
+two cases: (1) dead-value specializations whose value is never used (all MVars
+erased), and (2) value-used specializations whose key type is still polymorphic
+(only CEcoValue MVars erased — these are phantom type variables never constrained
+by any call site). MErased is always treated as boxed `!eco.value` for layout
+and ABI purposes and must not influence unboxing or staging decisions. In codegen,
+MErased is mapped to `!eco.value` at all boundaries (ABI, SSA operand, type table).
+
 -}
 type MonoType
     = MInt
@@ -192,10 +207,11 @@ type MonoType
     | MUnit
     | MList MonoType
     | MTuple (List MonoType) -- Element types (layout computed at codegen)
-    | MRecord (Dict String Name MonoType) -- Field name -> type (layout computed at codegen)
+    | MRecord (Dict Name MonoType) -- Field name -> type (layout computed at codegen)
     | MCustom IO.Canonical Name (List MonoType)
     | MFunction (List MonoType) MonoType
     | MVar Name Constraint
+    | MErased -- Erased type for dead-value specs and phantom type vars in polymorphic-key specs; always boxed !eco.value
 
 
 {-| Constraint on an unspecialized type variable in `MonoType`.
@@ -278,6 +294,309 @@ forceCNumberToInt monoType =
             monoType
 
 
+{-| Extract the final result type from a (possibly curried) function type.
+E.g., MFunction [MInt] (MFunction [MInt] MInt) -> MInt
+For non-function types, returns the type itself.
+-}
+resultTypeOf : MonoType -> MonoType
+resultTypeOf monoType =
+    case monoType of
+        MFunction _ result ->
+            resultTypeOf result
+
+        _ ->
+            monoType
+
+
+{-| Recursively replace all type variables (`MVar`) with `MErased`.
+
+Used to normalize the types of specializations whose value is never used,
+so that remaining polymorphic type variables don't trigger MONO\_021 violations
+for dead-value nodes.
+
+Uses a changed-flag pattern to avoid rebuilding the type tree when no MVars
+are present (the common case for fully-specialized types).
+
+-}
+eraseTypeVarsToErased : MonoType -> MonoType
+eraseTypeVarsToErased monoType =
+    Tuple.second (eraseTypeVarsToErasedHelp monoType)
+
+
+{-| Changed-flag variant: returns (True, newType) if any MVar was erased,
+or (False, originalType) if the type was unchanged.
+-}
+eraseTypeVarsToErasedHelp : MonoType -> ( Bool, MonoType )
+eraseTypeVarsToErasedHelp monoType =
+    case monoType of
+        MVar _ _ ->
+            ( True, MErased )
+
+        MList t ->
+            let
+                ( changed, newT ) =
+                    eraseTypeVarsToErasedHelp t
+            in
+            if changed then
+                ( True, MList newT )
+
+            else
+                ( False, monoType )
+
+        MFunction args result ->
+            let
+                ( argsChanged, newArgs ) =
+                    listMapChanged eraseTypeVarsToErasedHelp args
+
+                ( resultChanged, newResult ) =
+                    eraseTypeVarsToErasedHelp result
+            in
+            if argsChanged || resultChanged then
+                ( True, MFunction newArgs newResult )
+
+            else
+                ( False, monoType )
+
+        MTuple elems ->
+            let
+                ( changed, newElems ) =
+                    listMapChanged eraseTypeVarsToErasedHelp elems
+            in
+            if changed then
+                ( True, MTuple newElems )
+
+            else
+                ( False, monoType )
+
+        MRecord fields ->
+            let
+                ( changed, newFields ) =
+                    dictMapChanged eraseTypeVarsToErasedHelp fields
+            in
+            if changed then
+                ( True, MRecord newFields )
+
+            else
+                ( False, monoType )
+
+        MCustom can name args ->
+            let
+                ( changed, newArgs ) =
+                    listMapChanged eraseTypeVarsToErasedHelp args
+            in
+            if changed then
+                ( True, MCustom can name newArgs )
+
+            else
+                ( False, monoType )
+
+        _ ->
+            ( False, monoType )
+
+
+{-| Check whether a MonoType contains any `MVar` (any constraint).
+-}
+containsAnyMVar : MonoType -> Bool
+containsAnyMVar monoType =
+    case monoType of
+        MVar _ _ ->
+            True
+
+        MList t ->
+            containsAnyMVar t
+
+        MFunction args result ->
+            List.any containsAnyMVar args || containsAnyMVar result
+
+        MTuple elems ->
+            List.any containsAnyMVar elems
+
+        MRecord fields ->
+            Dict.foldl (\_ t acc -> acc || containsAnyMVar t) False fields
+
+        MCustom _ _ args ->
+            List.any containsAnyMVar args
+
+        _ ->
+            False
+
+
+{-| Check whether a MonoType contains any `MVar _ CEcoValue`.
+
+Used to determine if a specialization's key type is still polymorphic
+(has unconstrained type variables). CNumber MVars are ignored since they
+are resolved separately via `forceCNumberToInt`.
+
+-}
+containsCEcoMVar : MonoType -> Bool
+containsCEcoMVar monoType =
+    case monoType of
+        MVar _ CEcoValue ->
+            True
+
+        MVar _ CNumber ->
+            False
+
+        MList t ->
+            containsCEcoMVar t
+
+        MFunction args result ->
+            List.any containsCEcoMVar args || containsCEcoMVar result
+
+        MTuple elems ->
+            List.any containsCEcoMVar elems
+
+        MRecord fields ->
+            Dict.foldl (\_ t acc -> acc || containsCEcoMVar t) False fields
+
+        MCustom _ _ args ->
+            List.any containsCEcoMVar args
+
+        _ ->
+            False
+
+
+{-| Erase only `MVar _ CEcoValue` to `MErased`, leaving `MVar _ CNumber` intact.
+
+Used for value-used specializations whose key type is still polymorphic.
+These CEcoValue MVars are phantom type variables that were never constrained
+by any call site. CNumber MVars are preserved to avoid hiding numeric
+specialization bugs.
+
+Uses a changed-flag pattern to avoid rebuilding the type tree when no
+CEcoValue MVars are present.
+
+-}
+eraseCEcoVarsToErased : MonoType -> MonoType
+eraseCEcoVarsToErased monoType =
+    Tuple.second (eraseCEcoVarsToErasedHelp monoType)
+
+
+{-| Changed-flag variant: returns (True, newType) if any CEcoValue MVar was erased,
+or (False, originalType) if the type was unchanged.
+-}
+eraseCEcoVarsToErasedHelp : MonoType -> ( Bool, MonoType )
+eraseCEcoVarsToErasedHelp monoType =
+    case monoType of
+        MVar _ CEcoValue ->
+            ( True, MErased )
+
+        MVar _ CNumber ->
+            ( False, monoType )
+
+        MList t ->
+            let
+                ( changed, newT ) =
+                    eraseCEcoVarsToErasedHelp t
+            in
+            if changed then
+                ( True, MList newT )
+
+            else
+                ( False, monoType )
+
+        MFunction args result ->
+            let
+                ( argsChanged, newArgs ) =
+                    listMapChanged eraseCEcoVarsToErasedHelp args
+
+                ( resultChanged, newResult ) =
+                    eraseCEcoVarsToErasedHelp result
+            in
+            if argsChanged || resultChanged then
+                ( True, MFunction newArgs newResult )
+
+            else
+                ( False, monoType )
+
+        MTuple elems ->
+            let
+                ( changed, newElems ) =
+                    listMapChanged eraseCEcoVarsToErasedHelp elems
+            in
+            if changed then
+                ( True, MTuple newElems )
+
+            else
+                ( False, monoType )
+
+        MRecord fields ->
+            let
+                ( changed, newFields ) =
+                    dictMapChanged eraseCEcoVarsToErasedHelp fields
+            in
+            if changed then
+                ( True, MRecord newFields )
+
+            else
+                ( False, monoType )
+
+        MCustom can name args ->
+            let
+                ( changed, newArgs ) =
+                    listMapChanged eraseCEcoVarsToErasedHelp args
+            in
+            if changed then
+                ( True, MCustom can name newArgs )
+
+            else
+                ( False, monoType )
+
+        _ ->
+            ( False, monoType )
+
+
+{-| Map a changed-flag function over a list. Returns (True, newList) if any element
+changed, or (False, originalList) if no element changed.
+-}
+listMapChanged : (a -> ( Bool, a )) -> List a -> ( Bool, List a )
+listMapChanged f list =
+    listMapChangedHelp f list list False []
+
+
+listMapChangedHelp : (a -> ( Bool, a )) -> List a -> List a -> Bool -> List a -> ( Bool, List a )
+listMapChangedHelp f remaining original anyChanged acc =
+    case remaining of
+        [] ->
+            if anyChanged then
+                ( True, List.reverse acc )
+
+            else
+                ( False, original )
+
+        x :: xs ->
+            let
+                ( changed, newX ) =
+                    f x
+            in
+            listMapChangedHelp f xs original (anyChanged || changed) (newX :: acc)
+
+
+{-| Map a changed-flag function over Dict values. Returns (True, newDict) if any
+value changed, or (False, originalDict) if no value changed.
+-}
+dictMapChanged : (v -> ( Bool, v )) -> Dict comparable v -> ( Bool, Dict comparable v )
+dictMapChanged f dict =
+    let
+        ( changed, newDict ) =
+            Dict.foldl
+                (\key val ( ch, acc ) ->
+                    let
+                        ( valChanged, newVal ) =
+                            f val
+                    in
+                    ( ch || valChanged, Dict.insert key newVal acc )
+                )
+                ( False, Dict.empty )
+                dict
+    in
+    if changed then
+        ( True, newDict )
+
+    else
+        ( False, dict )
+
+
 {-| Identifier for lambda functions in lambda sets, distinguishing named functions from closures.
 -}
 type LambdaId
@@ -314,8 +633,8 @@ type alias SpecId =
 -}
 type alias SpecializationRegistry =
     { nextId : Int
-    , mapping : Dict (List String) (List String) SpecId
-    , reverseMapping : Dict Int Int ( Global, MonoType, Maybe LambdaId )
+    , mapping : Dict (List String) SpecId
+    , reverseMapping : Array (Maybe ( Global, MonoType, Maybe LambdaId ))
     }
 
 
@@ -349,10 +668,14 @@ type alias CtorShape =
 -}
 type MonoGraph
     = MonoGraph
-        { nodes : Dict Int Int MonoNode
+        { nodes : Array (Maybe MonoNode)
         , main : Maybe MainInfo
         , registry : SpecializationRegistry
-        , ctorShapes : Dict (List String) (List String) (List CtorShape)
+        , ctorShapes : Dict (List String) (List CtorShape)
+        , nextLambdaIndex : Int
+        , callEdges : Array (Maybe (List Int)) -- Collected during monomorphization. Reuse in downstream passes instead of re-traversing MonoExpr trees.
+        , specHasEffects : BitSet -- SpecIds whose node body references Debug.* kernels
+        , specValueUsed : BitSet -- SpecIds whose value is referenced via MonoVarGlobal
         }
 
 
@@ -423,6 +746,11 @@ nodeType node =
 
         MonoCycle _ t ->
             t
+
+
+nodesToArray : MonoGraph -> Array (Maybe MonoNode)
+nodesToArray (MonoGraph record) =
+    record.nodes
 
 
 {-| A monomorphized expression with concrete types and explicit closures.
@@ -578,6 +906,9 @@ monoTypeToDebugString monoType =
 
         MVar name _ ->
             "MVar " ++ name
+
+        MErased ->
+            "MErased"
 
 
 {-| Decision tree for pattern matching.
@@ -759,7 +1090,7 @@ toComparableMonoTypeHelper work acc =
                 MRecord fields ->
                     let
                         fieldList =
-                            Dict.toList compare fields
+                            Dict.toList fields
 
                         workWithMarker =
                             WorkMarker "}" :: rest
@@ -799,6 +1130,9 @@ toComparableMonoTypeHelper work acc =
                     in
                     toComparableMonoTypeHelper newWork ("Function{" :: acc)
 
+                MErased ->
+                    toComparableMonoTypeHelper rest ("Erased" :: acc)
+
 
 {-| Convert a constraint to a string for comparison purposes.
 -}
@@ -821,18 +1155,24 @@ toComparableLambdaId lambdaId =
             "Anon" :: ModuleName.toComparableCanonical canonical ++ [ String.fromInt uid ]
 
 
-{-| Convert a specialization key to a comparable key for use in dictionaries.
+{-| Convert a specialization key to a single comparable String for use in dictionaries.
+
+Uses a compact single-String encoding to avoid List String allocation and concatenation
+overhead. Parts are separated by \u{0001}, elements within parts by \u{0000}.
+
 -}
 toComparableSpecKey : SpecKey -> List String
 toComparableSpecKey (SpecKey global monoType maybeLambda) =
     toComparableGlobal global
+        ++ [ "\u{0001}" ]
         ++ toComparableMonoType monoType
+        ++ [ "\u{0001}" ]
         ++ (case maybeLambda of
                 Nothing ->
-                    [ "NoLambda" ]
+                    [ "N" ]
 
                 Just lambdaId ->
-                    "Lambda" :: toComparableLambdaId lambdaId
+                    "L" :: toComparableLambdaId lambdaId
            )
 
 
@@ -1010,7 +1350,7 @@ chooseCanonicalSegmentation leafTypes =
                     decomposeFunctionType firstType
 
                 -- Count how often each segmentation occurs
-                countSegmentations : List MonoType -> Dict (List Int) (List Int) Int
+                countSegmentations : List MonoType -> Dict (List Int) Int
                 countSegmentations types =
                     List.foldl
                         (\t accDict ->
@@ -1019,9 +1359,9 @@ chooseCanonicalSegmentation leafTypes =
                                     segmentLengths t
 
                                 current =
-                                    Dict.get identity seg accDict |> Maybe.withDefault 0
+                                    Dict.get seg accDict |> Maybe.withDefault 0
                             in
-                            Dict.insert identity seg (current + 1) accDict
+                            Dict.insert seg (current + 1) accDict
                         )
                         Dict.empty
                         types
@@ -1031,11 +1371,11 @@ chooseCanonicalSegmentation leafTypes =
 
                 -- Find maximum count
                 maxCount =
-                    Dict.foldl compare (\_ count acc -> max count acc) 0 freqDict
+                    Dict.foldl (\_ count acc -> max count acc) 0 freqDict
 
                 -- All segmentations that hit maxCount
                 bestSegs =
-                    Dict.foldl compare
+                    Dict.foldl
                         (\seg count acc ->
                             if count == maxCount then
                                 seg :: acc

@@ -41,6 +41,7 @@ import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.Source as Src
 import Compiler.AST.TypeEnv as TypeEnv
 import Compiler.AST.TypedOptimized as TOpt
+import Compiler.Reporting.Annotation as A
 import Compiler.Canonicalize.Module as Canonicalize
 import Compiler.Data.Name as Name
 import Compiler.Data.NonEmptyList as NE
@@ -59,7 +60,9 @@ import Compiler.Type.KernelTypes as KernelTypes
 import Compiler.Type.PostSolve as PostSolve
 import Compiler.Type.Solve as Solve
 import Compiler.TypedCanonical.Build as TCanBuild
-import Data.Map as Dict exposing (Dict)
+import Array exposing (Array)
+import Data.Map
+import Dict exposing (Dict)
 import Expect
 import Mlir.Mlir exposing (MlirModule)
 import System.TypeCheck.IO as IO
@@ -82,8 +85,8 @@ type alias CanonicalArtifacts =
 -}
 type alias TypeCheckArtifacts =
     { canonical : Can.Module
-    , annotations : Dict String Name.Name Can.Annotation
-    , nodeTypes : Dict Int Int Can.Type -- Pre-PostSolve
+    , annotations : Dict Name.Name Can.Annotation
+    , nodeTypes : Array (Maybe Can.Type) -- Pre-PostSolve
     }
 
 
@@ -91,8 +94,8 @@ type alias TypeCheckArtifacts =
 -}
 type alias PostSolveArtifacts =
     { canonical : Can.Module
-    , annotations : Dict String Name.Name Can.Annotation
-    , nodeTypesPre : Dict Int Int Can.Type -- Before PostSolve
+    , annotations : Dict Name.Name Can.Annotation
+    , nodeTypesPre : PostSolve.NodeTypes -- Before PostSolve
     , nodeTypesPost : PostSolve.NodeTypes -- After PostSolve
     , kernelEnv : KernelTypes.KernelTypeEnv
     }
@@ -102,7 +105,7 @@ type alias PostSolveArtifacts =
 -}
 type alias TypedOptArtifacts =
     { canonical : Can.Module
-    , annotations : Dict String Name.Name Can.Annotation
+    , annotations : Dict Name.Name Can.Annotation
     , nodeTypes : PostSolve.NodeTypes
     , kernelEnv : KernelTypes.KernelTypeEnv
     , localGraph : TOpt.LocalGraph
@@ -113,7 +116,7 @@ type alias TypedOptArtifacts =
 -}
 type alias MonoArtifacts =
     { canonical : Can.Module
-    , annotations : Dict String Name.Name Can.Annotation
+    , annotations : Dict Name.Name Can.Annotation
     , nodeTypes : PostSolve.NodeTypes
     , kernelEnv : KernelTypes.KernelTypeEnv
     , localGraph : TOpt.LocalGraph
@@ -132,7 +135,7 @@ and enforces GOPT\_001 (closure params == stage arity) and GOPT\_003
 -}
 type alias GlobalOptArtifacts =
     { canonical : Can.Module
-    , annotations : Dict String Name.Name Can.Annotation
+    , annotations : Dict Name.Name Can.Annotation
     , nodeTypes : PostSolve.NodeTypes
     , kernelEnv : KernelTypes.KernelTypeEnv
     , localGraph : TOpt.LocalGraph
@@ -147,7 +150,7 @@ type alias GlobalOptArtifacts =
 -}
 type alias MlirArtifacts =
     { canonical : Can.Module
-    , annotations : Dict String Name.Name Can.Annotation
+    , annotations : Dict Name.Name Can.Annotation
     , nodeTypes : PostSolve.NodeTypes
     , kernelEnv : KernelTypes.KernelTypeEnv
     , localGraph : TOpt.LocalGraph
@@ -171,7 +174,7 @@ runToCanonical : Src.Module -> Result String CanonicalArtifacts
 runToCanonical srcModule =
     let
         canonResult =
-            Canonicalize.canonicalize ( "eco", "example" ) Basic.testIfaces srcModule
+            Canonicalize.canonicalize ( "eco", "example" ) (Data.Map.fromList identity (Dict.toList Basic.testIfaces)) srcModule
     in
     case RResult.run canonResult of
         ( _, Err errors ) ->
@@ -217,7 +220,10 @@ runToPostSolve srcModule =
         Ok { canonical, annotations, nodeTypes } ->
             let
                 postSolveResult =
-                    PostSolve.postSolve annotations canonical nodeTypes
+                    PostSolve.postSolve
+                        (Data.Map.fromList identity (Dict.toList annotations))
+                        canonical
+                        nodeTypes
             in
             Ok
                 { canonical = canonical
@@ -229,10 +235,15 @@ runToPostSolve srcModule =
 
 
 {-| Run pipeline through typed optimization.
+
+Wraps the source module with a synthetic `main` entry point so the typed
+optimizer's main-type validation succeeds and downstream monomorphization
+has a concrete entry point.
+
 -}
 runToTypedOpt : Src.Module -> Result String TypedOptArtifacts
 runToTypedOpt srcModule =
-    case runToPostSolve srcModule of
+    case runToPostSolve (wrapWithMain srcModule) of
         Err e ->
             Err e
 
@@ -364,7 +375,7 @@ runToMlir srcModule =
 
 {-| Run type checking with expression ID tracking.
 -}
-runWithIdsTypeCheck : Can.Module -> IO.IO (Result Int { annotations : Dict String Name.Name Can.Annotation, nodeTypes : Dict Int Int Can.Type })
+runWithIdsTypeCheck : Can.Module -> IO.IO (Result Int { annotations : Dict Name.Name Can.Annotation, nodeTypes : Array (Maybe Can.Type) })
 runWithIdsTypeCheck modul =
     ConstrainTyped.constrainWithIds modul
         |> IO.andThen
@@ -375,7 +386,10 @@ runWithIdsTypeCheck modul =
             (\result ->
                 case result of
                     Ok data ->
-                        Ok data
+                        Ok
+                            { annotations = Dict.fromList (Data.Map.toList compare data.annotations)
+                            , nodeTypes = data.nodeTypes
+                            }
 
                     Err (NE.Nonempty _ rest) ->
                         Err (1 + List.length rest)
@@ -398,48 +412,137 @@ buildGlobalTypeEnv canModule =
             TypeEnv.fromCanonical canModule
 
         interfaceTypeEnv =
-            TypeEnv.fromInterfaces Basic.testIfaces
+            TypeEnv.fromInterfaces (Data.Map.fromList identity (Dict.toList Basic.testIfaces))
     in
     TypeEnv.mergeGlobalTypeEnv
         interfaceTypeEnv
-        (Dict.singleton ModuleName.toComparableCanonical moduleTypeEnv.home moduleTypeEnv)
+        (Data.Map.singleton ModuleName.toComparableCanonical moduleTypeEnv.home moduleTypeEnv)
 
 
-{-| Monomorphize using the first defined function as entry point.
+{-| Monomorphize using `main` as the entry point.
+
+All test modules are wrapped with a synthetic `main` by `wrapWithMain`,
+so this always succeeds.
+
 -}
 monomorphizeAny : TypeEnv.GlobalTypeEnv -> TOpt.GlobalGraph -> Result String Mono.MonoGraph
-monomorphizeAny globalTypeEnv (TOpt.GlobalGraph nodes _ _) =
-    case findAnyEntryPoint nodes of
-        Nothing ->
-            Err "No function found in graph"
-
-        Just ( TOpt.Global _ name, _ ) ->
-            Monomorphize.monomorphize name globalTypeEnv (TOpt.GlobalGraph nodes Dict.empty Dict.empty)
+monomorphizeAny globalTypeEnv globalGraph =
+    Monomorphize.monomorphize "main" globalTypeEnv globalGraph
 
 
-{-| Find any entry point in the global graph (the first defined function).
+{-| Wrap a source module with a synthetic `main` entry point.
+
+Generates:
+
+    main =
+        let
+            _tv = <entryDef>
+        in
+        Html.text "test main"
+
+where `<entryDef>` is `testValue` if it exists, otherwise the first definition.
+This ensures monomorphization starts from a concrete `Html msg` entry point
+that references the intended test definition, making it and its dependencies
+reachable.
+
 -}
-findAnyEntryPoint : Dict (List String) TOpt.Global TOpt.Node -> Maybe ( TOpt.Global, Can.Type )
-findAnyEntryPoint nodes =
-    Dict.foldl TOpt.compareGlobal
-        (\global node acc ->
-            case acc of
-                Just _ ->
-                    acc
+wrapWithMain : Src.Module -> Src.Module
+wrapWithMain (Src.Module data) =
+    let
+        -- Extract names of all existing top-level values
+        valueNames =
+            List.filterMap
+                (\(A.At _ (Src.Value vdata)) ->
+                    let
+                        ( _, A.At _ name ) =
+                            vdata.name
+                    in
+                    if name == "main" then
+                        Nothing
 
-                Nothing ->
-                    case node of
-                        TOpt.Define _ _ tipe ->
-                            Just ( global, tipe )
+                    else
+                        Just name
+                )
+                data.values
 
-                        TOpt.TrackedDefine _ _ _ tipe ->
-                            Just ( global, tipe )
+        -- testValue is required — every SourceIR test module must define it
+        defs =
+            if List.member "testValue" valueNames then
+                [ Src.Define
+                    (A.At A.zero "_tv")
+                    []
+                    ( [], varRef "testValue" )
+                    Nothing
+                ]
 
-                        _ ->
-                            Nothing
-        )
-        Nothing
-        nodes
+            else
+                Debug.todo "Test module must define 'testValue' — see SourceIR test standard"
+
+        -- Body: Html.text "test main"
+        body =
+            A.At A.zero
+                (Src.Call
+                    (A.At A.zero (Src.VarQual Src.LowVar "Html" "text"))
+                    [ ( [], A.At A.zero (Src.Str "test main" False) ) ]
+                )
+
+        -- main = let _tv = <entry> in Html.text "test main"
+        mainExpr =
+            case defs of
+                [] ->
+                    body
+
+                _ ->
+                    A.At A.zero
+                        (Src.Let
+                            (List.map (\d -> ( ( [], [] ), A.At A.zero d )) defs)
+                            []
+                            body
+                        )
+
+        mainValue =
+            Src.Value
+                { comments = []
+                , name = ( [], A.At A.zero "main" )
+                , args = []
+                , body = ( [], mainExpr )
+                , tipe = Nothing
+                }
+
+        -- Add Html import if not already present
+        hasHtmlImport =
+            List.any
+                (\(Src.Import ( _, A.At _ importName ) _ _) -> importName == "Html")
+                data.imports
+
+        htmlImport =
+            Src.Import
+                ( [], A.At A.zero "Html" )
+                Nothing
+                ( ( [], [] )
+                , Src.Explicit
+                    (A.At A.zero
+                        [ ( ( [], [] ), Src.Lower (A.At A.zero "text") ) ]
+                    )
+                )
+    in
+    Src.Module
+        { data
+            | values = data.values ++ [ A.At A.zero mainValue ]
+            , imports =
+                if hasHtmlImport then
+                    data.imports
+
+                else
+                    data.imports ++ [ htmlImport ]
+        }
+
+
+{-| Create a variable reference expression.
+-}
+varRef : Name.Name -> Src.Expr
+varRef name =
+    A.At A.zero (Src.Var Src.LowVar name)
 
 
 {-| Run MLIR code generation on a monomorphized graph.
@@ -499,7 +602,7 @@ verifyMonoGraph (Mono.MonoGraph data) =
             Expect.fail "Monomorphized graph has no main entry point"
 
         Just _ ->
-            if Dict.isEmpty data.nodes then
+            if Array.isEmpty data.nodes then
                 Expect.fail "Monomorphized graph has no nodes"
 
             else

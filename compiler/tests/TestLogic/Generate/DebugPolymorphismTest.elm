@@ -23,7 +23,9 @@ debugTests =
                 let
                     modul =
                         SB.makeModuleWithDefs "MonoInt"
-                            [ ( "x", [], SB.intExpr 42 ) ]
+                            [ ( "x", [], SB.intExpr 42 )
+                            , ( "testValue", [], SB.varExpr "x" )
+                            ]
                 in
                 expectDebugPolymorphismResolved modul
         , Test.test "monomorphic String value" <|
@@ -31,7 +33,9 @@ debugTests =
                 let
                     modul =
                         SB.makeModuleWithDefs "MonoStr"
-                            [ ( "x", [], SB.strExpr "hello" ) ]
+                            [ ( "x", [], SB.strExpr "hello" )
+                            , ( "testValue", [], SB.varExpr "x" )
+                            ]
                 in
                 expectDebugPolymorphismResolved modul
         , Test.test "monomorphic function" <|
@@ -43,6 +47,7 @@ debugTests =
                               , [ SB.pVar "x" ]
                               , SB.binopsExpr [ ( SB.varExpr "x", "+" ) ] (SB.varExpr "x")
                               )
+                            , ( "testValue", [], SB.callExpr (SB.varExpr "double") [ SB.intExpr 5 ] )
                             ]
                 in
                 expectDebugPolymorphismResolved modul
@@ -51,7 +56,9 @@ debugTests =
                 let
                     modul =
                         SB.makeModuleWithDefs "IntList"
-                            [ ( "xs", [], SB.listExpr [ SB.intExpr 1, SB.intExpr 2, SB.intExpr 3 ] ) ]
+                            [ ( "xs", [], SB.listExpr [ SB.intExpr 1, SB.intExpr 2, SB.intExpr 3 ] )
+                            , ( "testValue", [], SB.varExpr "xs" )
+                            ]
                 in
                 expectDebugPolymorphismResolved modul
         ]

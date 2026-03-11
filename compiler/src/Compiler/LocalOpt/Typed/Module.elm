@@ -36,11 +36,11 @@ import Compiler.Reporting.Error.Main as E
 import Compiler.Reporting.Result as ReportingResult
 import Compiler.Reporting.Warning as W
 import Compiler.Type.KernelTypes as KernelTypes
-import Data.Map as Dict exposing (Dict)
+import Data.Map
+import Dict exposing (Dict)
 import Data.Set as EverySet exposing (EverySet)
 import System.TypeCheck.IO as IO
 import Utils.Crash
-import Utils.Main as Utils
 
 
 
@@ -76,7 +76,7 @@ type alias MResult i w a =
 {-| Type annotations for top-level definitions, mapping names to their canonical type annotations.
 -}
 type alias Annotations =
-    Dict String Name.Name Can.Annotation
+    Dict Name.Name Can.Annotation
 
 
 {-| Optimize a TypedCanonical module to a typed optimized local graph.
@@ -92,7 +92,7 @@ optimizeTyped : Annotations -> ExprTypes -> KernelTypes.KernelTypeEnv -> TCan.Mo
 optimizeTyped annotations exprTypes kernelEnv (TCan.Module tData) =
     TOpt.LocalGraph
         { main = Nothing
-        , nodes = Dict.empty
+        , nodes = Data.Map.empty
         , fields = Dict.empty
         , annotations = annotations
         }
@@ -109,12 +109,12 @@ optimizeTyped annotations exprTypes kernelEnv (TCan.Module tData) =
 
 
 type alias TypedNodes =
-    Dict (List String) TOpt.Global TOpt.Node
+    Data.Map.Dict (List String) TOpt.Global TOpt.Node
 
 
-addUnions : IO.Canonical -> Annotations -> Dict String Name.Name Can.Union -> TOpt.LocalGraph -> TOpt.LocalGraph
+addUnions : IO.Canonical -> Annotations -> Dict Name.Name Can.Union -> TOpt.LocalGraph -> TOpt.LocalGraph
 addUnions home _ unions (TOpt.LocalGraph data) =
-    TOpt.LocalGraph { data | nodes = Dict.foldr compare (addUnion home) data.nodes unions }
+    TOpt.LocalGraph { data | nodes = Dict.foldr (addUnion home) data.nodes unions }
 
 
 addUnion : IO.Canonical -> Name.Name -> Can.Union -> TypedNodes -> TypedNodes
@@ -146,16 +146,16 @@ addCtorNode home typeName unionData (Can.Ctor c) nodes =
                 Can.Enum ->
                     TOpt.Enum c.index ctorType
     in
-    Dict.insert TOpt.toComparableGlobal (TOpt.Global home c.name) node nodes
+    Data.Map.insert TOpt.toComparableGlobal (TOpt.Global home c.name) node nodes
 
 
 
 -- ====== Type Aliases ======
 
 
-addAliases : IO.Canonical -> Annotations -> Dict String Name.Name Can.Alias -> TOpt.LocalGraph -> TOpt.LocalGraph
+addAliases : IO.Canonical -> Annotations -> Dict Name.Name Can.Alias -> TOpt.LocalGraph -> TOpt.LocalGraph
 addAliases home annotations aliases graph =
-    Dict.foldr compare (addAlias home annotations) graph aliases
+    Dict.foldr (addAlias home annotations) graph aliases
 
 
 addAlias : IO.Canonical -> Annotations -> Name.Name -> Can.Alias -> TOpt.LocalGraph -> TOpt.LocalGraph
@@ -203,18 +203,18 @@ addAlias home _ name (Can.Alias _ tipe) ((TOpt.LocalGraph data) as graph) =
             TOpt.LocalGraph
                 { data
                     | nodes =
-                        Dict.insert TOpt.toComparableGlobal (TOpt.Global home name) node data.nodes
+                        Data.Map.insert TOpt.toComparableGlobal (TOpt.Global home name) node data.nodes
                     , fields =
-                        Dict.foldr compare addRecordCtorField data.fields fields
+                        Dict.foldr addRecordCtorField data.fields fields
                 }
 
         _ ->
             graph
 
 
-addRecordCtorField : Name.Name -> Can.FieldType -> Dict String Name.Name Int -> Dict String Name.Name Int
+addRecordCtorField : Name.Name -> Can.FieldType -> Dict Name.Name Int -> Dict Name.Name Int
 addRecordCtorField name _ fields =
-    Utils.mapInsertWith identity (+) name 1 fields
+    Dict.update name (\v -> Just (Maybe.withDefault 0 v + 1)) fields
 
 
 
@@ -228,7 +228,7 @@ addEffects home annotations effects ((TOpt.LocalGraph data) as graph) =
             graph
 
         Can.Ports ports ->
-            Dict.foldr compare (addPort home annotations) graph ports
+            Dict.foldr (addPort home annotations) graph ports
 
         Can.Manager _ _ _ manager ->
             let
@@ -252,17 +252,17 @@ addEffects home annotations effects ((TOpt.LocalGraph data) as graph) =
                 newNodes =
                     case manager of
                         Can.Cmd _ ->
-                            Dict.insert TOpt.toComparableGlobal fx (TOpt.Manager TOpt.Cmd) data.nodes
-                                |> Dict.insert TOpt.toComparableGlobal cmd link
+                            Data.Map.insert TOpt.toComparableGlobal fx (TOpt.Manager TOpt.Cmd) data.nodes
+                                |> Data.Map.insert TOpt.toComparableGlobal cmd link
 
                         Can.Sub _ ->
-                            Dict.insert TOpt.toComparableGlobal fx (TOpt.Manager TOpt.Sub) data.nodes
-                                |> Dict.insert TOpt.toComparableGlobal sub link
+                            Data.Map.insert TOpt.toComparableGlobal fx (TOpt.Manager TOpt.Sub) data.nodes
+                                |> Data.Map.insert TOpt.toComparableGlobal sub link
 
                         Can.Fx _ _ ->
-                            Dict.insert TOpt.toComparableGlobal fx (TOpt.Manager TOpt.Fx) data.nodes
-                                |> Dict.insert TOpt.toComparableGlobal sub link
-                                |> Dict.insert TOpt.toComparableGlobal cmd link
+                            Data.Map.insert TOpt.toComparableGlobal fx (TOpt.Manager TOpt.Fx) data.nodes
+                                |> Data.Map.insert TOpt.toComparableGlobal sub link
+                                |> Data.Map.insert TOpt.toComparableGlobal cmd link
             in
             TOpt.LocalGraph { data | nodes = newNodes }
 
@@ -274,7 +274,7 @@ addPort home annotations name port_ graph =
             let
                 portType : Can.Type
                 portType =
-                    case Dict.get identity name annotations of
+                    case Dict.get name annotations of
                         Just (Can.Forall _ t) ->
                             t
 
@@ -294,7 +294,7 @@ addPort home annotations name port_ graph =
             let
                 portType : Can.Type
                 portType =
-                    case Dict.get identity name annotations of
+                    case Dict.get name annotations of
                         Just (Can.Forall _ t) ->
                             t
 
@@ -315,12 +315,12 @@ addPort home annotations name port_ graph =
 -- ====== Graph Helper ======
 
 
-addToGraph : TOpt.Global -> TOpt.Node -> Dict String Name.Name Int -> TOpt.LocalGraph -> TOpt.LocalGraph
+addToGraph : TOpt.Global -> TOpt.Node -> Data.Map.Dict String Name.Name Int -> TOpt.LocalGraph -> TOpt.LocalGraph
 addToGraph name node fields (TOpt.LocalGraph data) =
     TOpt.LocalGraph
         { data
-            | nodes = Dict.insert TOpt.toComparableGlobal name node data.nodes
-            , fields = Utils.mapUnionWith identity compare (+) fields data.fields
+            | nodes = Data.Map.insert TOpt.toComparableGlobal name node data.nodes
+            , fields = mergeFieldCounts (dataMapToDict fields) data.fields
         }
 
 
@@ -406,7 +406,7 @@ addDef home annotations exprTypes kernelEnv def graph =
         TCan.Def (A.At region name) args body ->
             let
                 (Can.Forall _ tipe) =
-                    Utils.find identity name annotations
+                    findAnnotation name annotations
             in
             ReportingResult.warn (W.MissingTypeAnnotation region name tipe)
                 |> ReportingResult.andThen (\_ -> addDefHelp region annotations exprTypes kernelEnv home name args body graph)
@@ -433,14 +433,14 @@ addDefHelp region annotations exprTypes kernelEnv home name args body ((TOpt.Loc
     else
         let
             (Can.Forall _ tipe) =
-                Utils.find identity name annotations
+                findAnnotation name annotations
 
-            addMain : ( EverySet (List String) TOpt.Global, Dict String Name.Name Int, TOpt.Main ) -> TOpt.LocalGraph
+            addMain : ( EverySet (List String) TOpt.Global, Data.Map.Dict String Name.Name Int, TOpt.Main ) -> TOpt.LocalGraph
             addMain ( deps, fields, main ) =
                 TOpt.LocalGraph
                     { data
                         | main = Just main
-                        , fields = Utils.mapUnionWith identity compare (+) fields data.fields
+                        , fields = mergeFieldCounts (dataMapToDict fields) data.fields
                     }
                     |> addDefNode home annotations exprTypes kernelEnv region name args body deps
         in
@@ -485,7 +485,7 @@ addDefNode home annotations exprTypes kernelEnv region name args body mainDeps g
         -- Get the def type from annotations
         defType : Can.Type
         defType =
-            case Dict.get identity name annotations of
+            case Dict.get name annotations of
                 Just (Can.Forall _ t) ->
                     t
 
@@ -569,7 +569,7 @@ addRecDefs home annotations exprTypes kernelEnv defs (TOpt.LocalGraph data) =
 
         links : TypedNodes
         links =
-            List.foldr (addLink home (TOpt.Link cycleName)) Dict.empty defs
+            List.foldr (addLink home (TOpt.Link cycleName)) Data.Map.empty defs
 
         ( deps, fields, State { values, functions } ) =
             Names.run <|
@@ -580,9 +580,9 @@ addRecDefs home annotations exprTypes kernelEnv defs (TOpt.LocalGraph data) =
     TOpt.LocalGraph
         { data
             | nodes =
-                Dict.insert TOpt.toComparableGlobal cycleName (TOpt.Cycle names values functions deps) (Dict.union links data.nodes)
+                Data.Map.insert TOpt.toComparableGlobal cycleName (TOpt.Cycle names values functions deps) (Data.Map.union links data.nodes)
             , fields =
-                Utils.mapUnionWith identity compare (+) fields data.fields
+                mergeFieldCounts (dataMapToDict fields) data.fields
         }
 
 
@@ -620,10 +620,10 @@ addLink : IO.Canonical -> TOpt.Node -> TCan.Def -> TypedNodes -> TypedNodes
 addLink home link def links =
     case def of
         TCan.Def (A.At _ name) _ _ ->
-            Dict.insert TOpt.toComparableGlobal (TOpt.Global home name) link links
+            Data.Map.insert TOpt.toComparableGlobal (TOpt.Global home name) link links
 
         TCan.TypedDef (A.At _ name) _ _ _ _ ->
-            Dict.insert TOpt.toComparableGlobal (TOpt.Global home name) link links
+            Data.Map.insert TOpt.toComparableGlobal (TOpt.Global home name) link links
 
 
 addRecDef : IO.Canonical -> Annotations -> ExprTypes -> KernelTypes.KernelTypeEnv -> EverySet String Name.Name -> State -> TCan.Def -> Names.Tracker State
@@ -633,7 +633,7 @@ addRecDef home annotations exprTypes kernelEnv cycle (State state) def =
             let
                 defType : Can.Type
                 defType =
-                    case Dict.get identity name annotations of
+                    case Dict.get name annotations of
                         Just (Can.Forall _ t) ->
                             t
 
@@ -653,7 +653,7 @@ addRecDef home annotations exprTypes kernelEnv cycle (State state) def =
             let
                 defType : Can.Type
                 defType =
-                    case Dict.get identity name annotations of
+                    case Dict.get name annotations of
                         Just (Can.Forall _ t) ->
                             t
 
@@ -668,3 +668,27 @@ addRecDef home annotations exprTypes kernelEnv cycle (State state) def =
                 _ ->
                     Expr.optimizePotentialTailCall kernelEnv annotations exprTypes home cycle region name (List.map Tuple.first typedArgs) body defType
                         |> Names.map (\odef -> State { state | functions = odef :: state.functions })
+
+
+
+-- ====== Helpers ======
+
+
+findAnnotation : Name.Name -> Annotations -> Can.Annotation
+findAnnotation name annotations =
+    case Dict.get name annotations of
+        Just ann ->
+            ann
+
+        Nothing ->
+            Utils.Crash.crash ("findAnnotation: " ++ name ++ " not found")
+
+
+mergeFieldCounts : Dict Name.Name Int -> Dict Name.Name Int -> Dict Name.Name Int
+mergeFieldCounts a b =
+    Dict.foldl (\k v acc -> Dict.update k (\mv -> Just (Maybe.withDefault 0 mv + v)) acc) b a
+
+
+dataMapToDict : Data.Map.Dict String Name.Name v -> Dict Name.Name v
+dataMapToDict mapDict =
+    Dict.fromList (Data.Map.toList compare mapDict)

@@ -15,7 +15,7 @@ rank polymorphism is correctly handled.
 
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Source as Src
-import Data.Map as Dict
+import Dict
 import Expect
 import TestLogic.TestPipeline as Pipeline
 
@@ -55,9 +55,9 @@ Let-polymorphism should only generalize type variables that:
   - Are properly quantified in the type scheme
 
 -}
-collectRankIssues : Dict.Dict String String Can.Annotation -> List String
+collectRankIssues : Dict.Dict String Can.Annotation -> List String
 collectRankIssues annotations =
-    Dict.foldl compare
+    Dict.foldl
         (\name annotation acc ->
             checkAnnotationRank name annotation ++ acc
         )
@@ -102,7 +102,7 @@ checkTypeForRankIssues context canType =
             List.concatMap (checkTypeForRankIssues context) args
 
         Can.TRecord fields _ ->
-            Dict.foldl compare
+            Dict.foldl
                 (\_ (Can.FieldType _ fieldType) acc ->
                     checkTypeForRankIssues context fieldType ++ acc
                 )

@@ -26,7 +26,8 @@ import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Elm.Kernel as K
 import Compiler.Elm.Package as Pkg
-import Data.Map as Dict
+import Data.Map
+import Dict
 import Data.Set as EverySet
 import System.TypeCheck.IO as IO
 
@@ -40,7 +41,7 @@ import System.TypeCheck.IO as IO
 addOptGlobalGraph : Opt.GlobalGraph -> Opt.GlobalGraph -> Opt.GlobalGraph
 addOptGlobalGraph (Opt.GlobalGraph nodes1 fields1) (Opt.GlobalGraph nodes2 fields2) =
     Opt.GlobalGraph
-        (Dict.union nodes1 nodes2)
+        (Data.Map.union nodes1 nodes2)
         (Dict.union fields1 fields2)
 
 
@@ -49,7 +50,7 @@ addOptGlobalGraph (Opt.GlobalGraph nodes1 fields1) (Opt.GlobalGraph nodes2 field
 addOptLocalGraph : Opt.LocalGraph -> Opt.GlobalGraph -> Opt.GlobalGraph
 addOptLocalGraph (Opt.LocalGraph _ nodes1 fields1) (Opt.GlobalGraph nodes2 fields2) =
     Opt.GlobalGraph
-        (Dict.union nodes1 nodes2)
+        (Data.Map.union nodes1 nodes2)
         (Dict.union fields1 fields2)
 
 
@@ -67,7 +68,7 @@ addOptKernel shortName chunks (Opt.GlobalGraph nodes fields) =
             Opt.Kernel chunks (List.foldr addKernelDep EverySet.empty chunks)
     in
     Opt.GlobalGraph
-        (Dict.insert Opt.toComparableGlobal global node nodes)
+        (Data.Map.insert Opt.toComparableGlobal global node nodes)
         (Dict.union (K.countFields chunks) fields)
 
 
@@ -113,7 +114,7 @@ toKernelGlobal shortName =
 addTypedGlobalGraph : TOpt.GlobalGraph -> TOpt.GlobalGraph -> TOpt.GlobalGraph
 addTypedGlobalGraph (TOpt.GlobalGraph nodes1 fields1 ann1) (TOpt.GlobalGraph nodes2 fields2 ann2) =
     TOpt.GlobalGraph
-        (Dict.union nodes1 nodes2)
+        (Data.Map.union nodes1 nodes2)
         (Dict.union fields1 fields2)
         (Dict.union ann1 ann2)
 
@@ -123,6 +124,6 @@ addTypedGlobalGraph (TOpt.GlobalGraph nodes1 fields1 ann1) (TOpt.GlobalGraph nod
 addTypedLocalGraph : TOpt.LocalGraph -> TOpt.GlobalGraph -> TOpt.GlobalGraph
 addTypedLocalGraph (TOpt.LocalGraph data) (TOpt.GlobalGraph nodes2 fields2 ann2) =
     TOpt.GlobalGraph
-        (Dict.union data.nodes nodes2)
+        (Data.Map.union data.nodes nodes2)
         (Dict.union data.fields fields2)
         (Dict.union data.annotations ann2)

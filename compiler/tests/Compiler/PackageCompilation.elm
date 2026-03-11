@@ -90,7 +90,8 @@ import Compiler.Type.KernelTypes as KernelTypes
 import Compiler.Type.PostSolve as PostSolve
 import Compiler.Type.Solve as Type
 import Compiler.TypedCanonical.Build as TCanBuild
-import Data.Map as Dict exposing (Dict)
+import Data.Map
+import Dict exposing (Dict)
 import System.TypeCheck.IO as TypeCheck
 
 
@@ -109,7 +110,7 @@ type alias CompileResult =
     { moduleName : ModuleName.Raw
     , source : Src.Module
     , canonical : Can.Module
-    , annotations : Dict String Name.Name Can.Annotation
+    , annotations : Dict Name.Name Can.Annotation
     , objects : Opt.LocalGraph
     , typedObjects : TOpt.LocalGraph
     , interface : I.Interface
@@ -132,7 +133,7 @@ type CompileError
 -}
 type PathwayDiscrepancy
     = TypeCheckMismatch
-        { erasedResult : Result (NE.Nonempty TypeError.Error) (Dict String Name.Name Can.Annotation)
+        { erasedResult : Result (NE.Nonempty TypeError.Error) (Dict Name.Name Can.Annotation)
         , typedResult : Result (NE.Nonempty TypeError.Error) TypeCheckTypedResult
         }
     | OptimizeMismatch
@@ -144,7 +145,7 @@ type PathwayDiscrepancy
 {-| Internal result from typed type checking.
 -}
 type alias TypeCheckTypedResult =
-    { annotations : Dict String Name.Name Can.Annotation
+    { annotations : Dict Name.Name Can.Annotation
     , typedCanonical : TCan.Module
     , nodeTypes : TCan.NodeTypes
     , kernelEnv : KernelTypes.KernelTypeEnv
@@ -189,7 +190,7 @@ The function reports a PathwayMismatch error if:
 -}
 compileModule :
     Pkg.Name
-    -> Dict String ModuleName.Raw I.Interface
+    -> Dict ModuleName.Raw I.Interface
     -> Src.Module
     -> Result CompileError CompileResult
 compileModule pkg ifaces srcModule =
@@ -331,7 +332,7 @@ Returns either all compiled results or the first error with its module name.
 -}
 compileModulesInOrder :
     Pkg.Name
-    -> Dict String ModuleName.Raw I.Interface
+    -> Dict ModuleName.Raw I.Interface
     -> List String
     -> Result ( CompileError, ModuleName.Raw ) (List CompileResult)
 compileModulesInOrder pkg baseIfaces sources =
@@ -340,7 +341,7 @@ compileModulesInOrder pkg baseIfaces sources =
 
 compileModulesHelper :
     Pkg.Name
-    -> Dict String ModuleName.Raw I.Interface
+    -> Dict ModuleName.Raw I.Interface
     -> List String
     -> List CompileResult
     -> Result ( CompileError, ModuleName.Raw ) (List CompileResult)
@@ -366,7 +367,7 @@ compileModulesHelper pkg ifaces sources results =
                         Ok result ->
                             let
                                 newIfaces =
-                                    Dict.insert identity result.moduleName result.interface ifaces
+                                    Dict.insert result.moduleName result.interface ifaces
                             in
                             compileModulesHelper pkg newIfaces rest (result :: results)
 
@@ -377,9 +378,9 @@ compileModulesHelper pkg ifaces sources results =
 -- ============================================================================
 
 
-canonicalize : Pkg.Name -> Dict String ModuleName.Raw I.Interface -> Src.Module -> Result CompileError Can.Module
+canonicalize : Pkg.Name -> Dict ModuleName.Raw I.Interface -> Src.Module -> Result CompileError Can.Module
 canonicalize pkg ifaces modul =
-    case Tuple.second (RResult.run (Canonicalize.canonicalize pkg ifaces modul)) of
+    case Tuple.second (RResult.run (Canonicalize.canonicalize pkg (Data.Map.fromList identity (Dict.toList ifaces)) modul)) of
         Ok canonical ->
             Ok canonical
 
@@ -392,11 +393,12 @@ canonicalize pkg ifaces modul =
 This is the JS backend pathway.
 
 -}
-typeCheckErased : Can.Module -> Result (NE.Nonempty TypeError.Error) (Dict String Name.Name Can.Annotation)
+typeCheckErased : Can.Module -> Result (NE.Nonempty TypeError.Error) (Dict Name.Name Can.Annotation)
 typeCheckErased canonical =
     TypeErased.constrain canonical
         |> TypeCheck.andThen Type.run
         |> TypeCheck.unsafePerformIO
+        |> Result.map (\dm -> Dict.fromList (Data.Map.toList compare dm))
 
 
 {-| Typed type checking using constrainWithIds + runWithIds.
@@ -423,6 +425,7 @@ typeCheckTyped canonical =
         Ok { annotations, nodeTypes } ->
             let
                 -- Run PostSolve to fix Group B types and compute kernel env
+                -- annotations and nodeTypes are Data.Map.Dict from Solve.runWithIds
                 postSolveResult =
                     PostSolve.postSolve annotations canonical nodeTypes
 
@@ -433,7 +436,7 @@ typeCheckTyped canonical =
                     postSolveResult.kernelEnv
             in
             Ok
-                { annotations = annotations
+                { annotations = Dict.fromList (Data.Map.toList compare annotations)
                 , typedCanonical = TCanBuild.fromCanonical canonical fixedNodeTypes
                 , nodeTypes = fixedNodeTypes
                 , kernelEnv = kernelEnv
@@ -452,7 +455,7 @@ nitpick canonical =
 
 {-| Standard (erased) optimization for JS backend.
 -}
-optimizeErased : Dict String Name.Name Can.Annotation -> Can.Module -> Result (OneOrMore.OneOrMore MainError.Error) Opt.LocalGraph
+optimizeErased : Dict Name.Name Can.Annotation -> Can.Module -> Result (OneOrMore.OneOrMore MainError.Error) Opt.LocalGraph
 optimizeErased annotations canonical =
     Tuple.second (RResult.run (Optimize.optimize annotations canonical))
 
@@ -463,7 +466,7 @@ Preserves full type information throughout the optimization process.
 
 -}
 optimizeTyped :
-    Dict String Name.Name Can.Annotation
+    Dict Name.Name Can.Annotation
     -> TCan.NodeTypes
     -> KernelTypes.KernelTypeEnv
     -> TCan.Module
@@ -497,7 +500,7 @@ This takes a CompileResult and interfaces, and runs the typed pathway through
 monomorphization, producing a MonoGraph that can be used for MLIR code generation.
 
 -}
-monomorphizeWithIfaces : Dict String ModuleName.Raw I.Interface -> CompileResult -> Result CompileError Mono.MonoGraph
+monomorphizeWithIfaces : Dict ModuleName.Raw I.Interface -> CompileResult -> Result CompileError Mono.MonoGraph
 monomorphizeWithIfaces ifaces result =
     let
         globalGraph =
@@ -522,19 +525,19 @@ module's type definitions, enabling monomorphization to look up constructor
 layouts for all referenced types.
 
 -}
-buildGlobalTypeEnvWithIfaces : Dict String ModuleName.Raw I.Interface -> Can.Module -> TypeEnv.GlobalTypeEnv
+buildGlobalTypeEnvWithIfaces : Dict ModuleName.Raw I.Interface -> Can.Module -> TypeEnv.GlobalTypeEnv
 buildGlobalTypeEnvWithIfaces ifaces canModule =
     let
         -- Build from interfaces first
         ifaceTypeEnv =
-            TypeEnv.fromInterfaces ifaces
+            TypeEnv.fromInterfaces (Data.Map.fromList identity (Dict.toList ifaces))
 
         -- Build from current module
         moduleTypeEnv =
             TypeEnv.fromCanonical canModule
     in
     -- Module takes precedence over interfaces
-    Dict.insert ModuleName.toComparableCanonical moduleTypeEnv.home moduleTypeEnv ifaceTypeEnv
+    Data.Map.insert ModuleName.toComparableCanonical moduleTypeEnv.home moduleTypeEnv ifaceTypeEnv
 
 
 {-| Extended test interfaces including all modules needed for package compilation tests.
@@ -542,7 +545,7 @@ buildGlobalTypeEnvWithIfaces ifaces canModule =
 This includes Basics, List, Maybe, JsArray, Bitwise, Tuple, String, and Char.
 
 -}
-extendedTestIfaces : Dict String ModuleName.Raw I.Interface
+extendedTestIfaces : Dict ModuleName.Raw I.Interface
 extendedTestIfaces =
     Basic.testIfaces
 
@@ -565,9 +568,9 @@ monomorphizeAny globalTypeEnv (TOpt.GlobalGraph nodes _ _) =
 
 {-| Find any entry point in the global graph (the first defined function).
 -}
-findAnyEntryPoint : Dict (List String) TOpt.Global TOpt.Node -> Maybe ( TOpt.Global, Can.Type )
+findAnyEntryPoint : Data.Map.Dict (List String) TOpt.Global TOpt.Node -> Maybe ( TOpt.Global, Can.Type )
 findAnyEntryPoint nodes =
-    Dict.foldl TOpt.compareGlobal
+    Data.Map.foldl TOpt.compareGlobal
         (\global node acc ->
             case acc of
                 Just _ ->

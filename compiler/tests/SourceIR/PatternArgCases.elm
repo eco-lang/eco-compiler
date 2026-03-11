@@ -8,6 +8,9 @@ import Compiler.AST.SourceBuilder
     exposing
         ( TypedDef
         , UnionDef
+        , callExpr
+        , ctorExpr
+        , floatExpr
         , intExpr
         , lambdaExpr
         , listExpr
@@ -25,10 +28,14 @@ import Compiler.AST.SourceBuilder
         , pTuple3
         , pUnit
         , pVar
+        , recordExpr
         , strExpr
         , tLambda
+        , tTuple
         , tType
+        , tuple3Expr
         , tupleExpr
+        , unitExpr
         , varExpr
         )
 import Compiler.BulkCheck exposing (TestCase, bulkCheck)
@@ -77,6 +84,7 @@ singleVariablePattern expectFn _ =
         modul =
             makeModuleWithDefs "Test"
                 [ ( "identity", [ pVar "x" ], varExpr "x" )
+                , ( "testValue", [], callExpr (varExpr "identity") [ intExpr 1 ] )
                 ]
     in
     expectFn modul
@@ -88,6 +96,7 @@ twoVariablePatterns expectFn _ =
         modul =
             makeModuleWithDefs "Test"
                 [ ( "first", [ pVar "x", pVar "y" ], varExpr "x" )
+                , ( "testValue", [], callExpr (varExpr "first") [ intExpr 1, strExpr "hello" ] )
                 ]
     in
     expectFn modul
@@ -99,6 +108,7 @@ threeVariablePatterns expectFn _ =
         modul =
             makeModuleWithDefs "Test"
                 [ ( "second", [ pVar "a", pVar "b", pVar "c" ], varExpr "b" )
+                , ( "testValue", [], callExpr (varExpr "second") [ intExpr 1, strExpr "hello", floatExpr 3.14 ] )
                 ]
     in
     expectFn modul
@@ -110,6 +120,7 @@ variablePatternReturningTuple expectFn _ =
         modul =
             makeModuleWithDefs "Test"
                 [ ( "swap", [ pVar "x", pVar "y" ], tupleExpr (varExpr "y") (varExpr "x") )
+                , ( "testValue", [], callExpr (varExpr "swap") [ intExpr 1, strExpr "hello" ] )
                 ]
     in
     expectFn modul
@@ -121,6 +132,7 @@ variablePatternReturningList expectFn _ =
         modul =
             makeModuleWithDefs "Test"
                 [ ( "toList", [ pVar "x" ], listExpr [ varExpr "x" ] )
+                , ( "testValue", [], callExpr (varExpr "toList") [ intExpr 1 ] )
                 ]
     in
     expectFn modul
@@ -147,6 +159,7 @@ singleWildcardPattern expectFn _ =
         modul =
             makeModuleWithDefs "Test"
                 [ ( "const", [ pAnything ], intExpr 42 )
+                , ( "testValue", [], callExpr (varExpr "const") [ intExpr 1 ] )
                 ]
     in
     expectFn modul
@@ -158,6 +171,7 @@ wildcardWithVariable expectFn _ =
         modul =
             makeModuleWithDefs "Test"
                 [ ( "const", [ pVar "x", pAnything ], varExpr "x" )
+                , ( "testValue", [], callExpr (varExpr "const") [ intExpr 1, strExpr "hello" ] )
                 ]
     in
     expectFn modul
@@ -169,6 +183,7 @@ multipleWildcards expectFn _ =
         modul =
             makeModuleWithDefs "Test"
                 [ ( "zero", [ pAnything, pAnything, pAnything ], intExpr 0 )
+                , ( "testValue", [], callExpr (varExpr "zero") [ intExpr 1, strExpr "hello", floatExpr 3.14 ] )
                 ]
     in
     expectFn modul
@@ -209,6 +224,7 @@ tuple2Pattern expectFn _ =
         modul =
             makeModuleWithDefs "Test"
                 [ ( "fst", [ pTuple (pVar "x") (pVar "y") ], varExpr "x" )
+                , ( "testValue", [], callExpr (varExpr "fst") [ tupleExpr (intExpr 1) (strExpr "hello") ] )
                 ]
     in
     expectFn modul
@@ -220,6 +236,7 @@ tuple3Pattern expectFn _ =
         modul =
             makeModuleWithDefs "Test"
                 [ ( "snd3", [ pTuple3 (pVar "a") (pVar "b") (pVar "c") ], varExpr "b" )
+                , ( "testValue", [], callExpr (varExpr "snd3") [ tuple3Expr (intExpr 1) (strExpr "hello") (floatExpr 3.14) ] )
                 ]
     in
     expectFn modul
@@ -231,6 +248,7 @@ tuplePatternWithWildcard expectFn _ =
         modul =
             makeModuleWithDefs "Test"
                 [ ( "snd", [ pTuple pAnything (pVar "y") ], varExpr "y" )
+                , ( "testValue", [], callExpr (varExpr "snd") [ tupleExpr (intExpr 1) (strExpr "hello") ] )
                 ]
     in
     expectFn modul
@@ -242,6 +260,7 @@ nestedTuplePattern expectFn _ =
         modul =
             makeModuleWithDefs "Test"
                 [ ( "deep", [ pTuple (pTuple (pVar "a") (pVar "b")) (pVar "c") ], varExpr "a" )
+                , ( "testValue", [], callExpr (varExpr "deep") [ tupleExpr (tupleExpr (intExpr 1) (strExpr "hello")) (floatExpr 3.14) ] )
                 ]
     in
     expectFn modul
@@ -268,6 +287,7 @@ multipleTuplePatternArgs expectFn _ =
                   , [ pTuple (pVar "a") (pVar "b"), pTuple (pVar "c") (pVar "d") ]
                   , tupleExpr (varExpr "a") (varExpr "c")
                   )
+                , ( "testValue", [], callExpr (varExpr "addPairs") [ tupleExpr (intExpr 1) (strExpr "hello"), tupleExpr (floatExpr 3.14) (intExpr 2) ] )
                 ]
     in
     expectFn modul
@@ -296,6 +316,7 @@ singleFieldRecordPattern expectFn _ =
         modul =
             makeModuleWithDefs "Test"
                 [ ( "getX", [ pRecord [ "x" ] ], varExpr "x" )
+                , ( "testValue", [], callExpr (varExpr "getX") [ recordExpr [ ( "x", intExpr 1 ) ] ] )
                 ]
     in
     expectFn modul
@@ -307,6 +328,7 @@ multiFieldRecordPattern expectFn _ =
         modul =
             makeModuleWithDefs "Test"
                 [ ( "getXY", [ pRecord [ "x", "y" ] ], tupleExpr (varExpr "x") (varExpr "y") )
+                , ( "testValue", [], callExpr (varExpr "getXY") [ recordExpr [ ( "x", intExpr 1 ), ( "y", strExpr "hello" ) ] ] )
                 ]
     in
     expectFn modul
@@ -330,6 +352,7 @@ recordPatternWithManyFields expectFn _ =
         modul =
             makeModuleWithDefs "Test"
                 [ ( "getAll", [ pRecord [ "a", "b", "c", "d", "e" ] ], varExpr "a" )
+                , ( "testValue", [], callExpr (varExpr "getAll") [ recordExpr [ ( "a", intExpr 1 ), ( "b", intExpr 2 ), ( "c", intExpr 3 ), ( "d", intExpr 4 ), ( "e", intExpr 5 ) ] ] )
                 ]
     in
     expectFn modul
@@ -344,6 +367,7 @@ multipleRecordPatternArgs expectFn _ =
                   , [ pRecord [ "x" ], pRecord [ "y" ] ]
                   , tupleExpr (varExpr "x") (varExpr "y")
                   )
+                , ( "testValue", [], callExpr (varExpr "combine") [ recordExpr [ ( "x", intExpr 1 ) ], recordExpr [ ( "y", strExpr "hello" ) ] ] )
                 ]
     in
     expectFn modul
@@ -355,6 +379,7 @@ recordPatternWithVariable expectFn _ =
         modul =
             makeModuleWithDefs "Test"
                 [ ( "extract", [ pRecord [ "value" ], pVar "default" ], varExpr "value" )
+                , ( "testValue", [], callExpr (varExpr "extract") [ recordExpr [ ( "value", intExpr 1 ) ], strExpr "default" ] )
                 ]
     in
     expectFn modul
@@ -381,6 +406,7 @@ consPattern expectFn _ =
         modul =
             makeModuleWithDefs "Test"
                 [ ( "head", [ pCons (pVar "h") (pVar "t") ], varExpr "h" )
+                , ( "testValue", [], callExpr (varExpr "head") [ listExpr [ intExpr 1, intExpr 2 ] ] )
                 ]
     in
     expectFn modul
@@ -392,6 +418,7 @@ fixedListPattern expectFn _ =
         modul =
             makeModuleWithDefs "Test"
                 [ ( "firstTwo", [ pList [ pVar "a", pVar "b" ] ], tupleExpr (varExpr "a") (varExpr "b") )
+                , ( "testValue", [], callExpr (varExpr "firstTwo") [ listExpr [ intExpr 1, intExpr 2 ] ] )
                 ]
     in
     expectFn modul
@@ -403,6 +430,7 @@ nestedConsPattern expectFn _ =
         modul =
             makeModuleWithDefs "Test"
                 [ ( "secondElem", [ pCons pAnything (pCons (pVar "x") pAnything) ], varExpr "x" )
+                , ( "testValue", [], callExpr (varExpr "secondElem") [ listExpr [ intExpr 1, intExpr 2, intExpr 3 ] ] )
                 ]
     in
     expectFn modul
@@ -441,6 +469,7 @@ intLiteralPattern expectFn _ =
         modul =
             makeModuleWithDefs "Test"
                 [ ( "isZero", [ pInt 0 ], strExpr "zero" )
+                , ( "testValue", [], callExpr (varExpr "isZero") [ intExpr 0 ] )
                 ]
     in
     expectFn modul
@@ -452,6 +481,7 @@ stringLiteralPattern expectFn _ =
         modul =
             makeModuleWithDefs "Test"
                 [ ( "greet", [ pStr "hello" ], strExpr "hi" )
+                , ( "testValue", [], callExpr (varExpr "greet") [ strExpr "hello" ] )
                 ]
     in
     expectFn modul
@@ -463,6 +493,7 @@ unitPattern expectFn _ =
         modul =
             makeModuleWithDefs "Test"
                 [ ( "unit", [ pUnit ], intExpr 0 )
+                , ( "testValue", [], callExpr (varExpr "unit") [ unitExpr ] )
                 ]
     in
     expectFn modul
@@ -474,6 +505,7 @@ multipleLiteralPatterns expectFn _ =
         modul =
             makeModuleWithDefs "Test"
                 [ ( "match", [ pInt 0, pStr "" ], intExpr 0 )
+                , ( "testValue", [], callExpr (varExpr "match") [ intExpr 0, strExpr "" ] )
                 ]
     in
     expectFn modul
@@ -505,6 +537,7 @@ deeplyNestedTuplePattern expectFn _ =
         modul =
             makeModuleWithDefs "Test"
                 [ ( "extract", [ pattern ], varExpr "a" )
+                , ( "testValue", [], callExpr (varExpr "extract") [ tupleExpr (tupleExpr (intExpr 1) (strExpr "hello")) (tupleExpr (floatExpr 3.14) (intExpr 2)) ] )
                 ]
     in
     expectFn modul
@@ -519,6 +552,7 @@ mixedNestedPatterns expectFn _ =
         modul =
             makeModuleWithDefs "Test"
                 [ ( "mixed", [ pattern ], tupleExpr (varExpr "x") (varExpr "h") )
+                , ( "testValue", [], callExpr (varExpr "mixed") [ tupleExpr (recordExpr [ ( "x", intExpr 1 ) ]) (listExpr [ strExpr "hello", strExpr "world" ]) ] )
                 ]
     in
     expectFn modul
@@ -536,6 +570,7 @@ tripleNestedPatterns expectFn _ =
         modul =
             makeModuleWithDefs "Test"
                 [ ( "complex", [ pattern ], varExpr "a" )
+                , ( "testValue", [], callExpr (varExpr "complex") [ tuple3Expr (tupleExpr (intExpr 1) (strExpr "hello")) (recordExpr [ ( "x", floatExpr 3.14 ), ( "y", intExpr 2 ) ]) (listExpr [ intExpr 3, intExpr 4 ]) ] )
                 ]
     in
     expectFn modul
@@ -552,6 +587,7 @@ nestedWithWildcards expectFn _ =
         modul =
             makeModuleWithDefs "Test"
                 [ ( "corners", [ pattern ], tupleExpr (varExpr "x") (varExpr "y") )
+                , ( "testValue", [], callExpr (varExpr "corners") [ tupleExpr (tupleExpr (intExpr 1) (strExpr "hello")) (tupleExpr (floatExpr 3.14) (intExpr 2)) ] )
                 ]
     in
     expectFn modul
@@ -580,6 +616,7 @@ fiveArgsWithMixedPatterns expectFn _ =
                   , [ pVar "a", pTuple (pVar "b") (pVar "c"), pRecord [ "d" ], pAnything, pVar "e" ]
                   , varExpr "a"
                   )
+                , ( "testValue", [], callExpr (varExpr "fiveArgs") [ intExpr 1, tupleExpr (strExpr "hello") (floatExpr 3.14), recordExpr [ ( "d", intExpr 2 ) ], intExpr 3, strExpr "world" ] )
                 ]
     in
     expectFn modul
@@ -597,6 +634,7 @@ allSamePatternType expectFn _ =
                     ]
                   , varExpr "a"
                   )
+                , ( "testValue", [], callExpr (varExpr "allTuples") [ tupleExpr (intExpr 1) (strExpr "hello"), tupleExpr (floatExpr 3.14) (intExpr 2), tupleExpr (strExpr "world") (intExpr 3) ] )
                 ]
     in
     expectFn modul
@@ -611,6 +649,7 @@ alternatingPatterns expectFn _ =
                   , [ pVar "a", pAnything, pVar "b", pAnything, pVar "c" ]
                   , listExpr [ varExpr "a", varExpr "b", varExpr "c" ]
                   )
+                , ( "testValue", [], callExpr (varExpr "alternate") [ intExpr 1, strExpr "hello", intExpr 2, floatExpr 3.14, intExpr 3 ] )
                 ]
     in
     expectFn modul
@@ -679,8 +718,19 @@ customTypePatternInFunctionArg expectFn _ =
             , body = varExpr "age"
             }
 
+        testValueFn : TypedDef
+        testValueFn =
+            { name = "testValue"
+            , args = []
+            , tipe = tTuple (tType "Int" []) (tType "Int" [])
+            , body =
+                tupleExpr
+                    (callExpr (varExpr "getId") [ callExpr (ctorExpr "Person") [ intExpr 30, intExpr 25 ] ])
+                    (callExpr (varExpr "getAge") [ callExpr (ctorExpr "Person") [ intExpr 30, intExpr 25 ] ])
+            }
+
         modul =
-            makeModuleWithTypedDefsUnionsAliases "Test" [ getIdFn, getAgeFn ] [ personUnion ] []
+            makeModuleWithTypedDefsUnionsAliases "Test" [ getIdFn, getAgeFn, testValueFn ] [ personUnion ] []
     in
     expectFn modul
 
@@ -711,7 +761,15 @@ customTypePatternMultipleExtractors expectFn _ =
             , body = varExpr "x"
             }
 
+        testValueFn : TypedDef
+        testValueFn =
+            { name = "testValue"
+            , args = []
+            , tipe = tType "Int" []
+            , body = callExpr (varExpr "unbox") [ callExpr (ctorExpr "Box") [ intExpr 42 ] ]
+            }
+
         modul =
-            makeModuleWithTypedDefsUnionsAliases "Test" [ unboxFn ] [ boxUnion ] []
+            makeModuleWithTypedDefsUnionsAliases "Test" [ unboxFn, testValueFn ] [ boxUnion ] []
     in
     expectFn modul

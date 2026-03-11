@@ -9,13 +9,14 @@ import Compiler.Data.Index as Index
 import Compiler.Data.Name exposing (Name)
 import Compiler.Elm.Interface as I
 import Compiler.Elm.Interface.Bitwise as BitwiseInterface
+import Compiler.Elm.Interface.Html as HtmlInterface
 import Compiler.Elm.Interface.JsArray as JsArrayInterface
 import Compiler.Elm.Interface.List as ListInterface
 import Compiler.Elm.Interface.Maybe as MaybeInterface
 import Compiler.Elm.Interface.Tuple as TupleInterface
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Elm.Package as Pkg
-import Data.Map as Dict exposing (Dict)
+import Dict exposing (Dict)
 
 
 
@@ -40,7 +41,7 @@ basicsInterface =
 {-| Basic unions: Bool (True/False), Int, and Float.
 String and Char are in their own modules (String.String, Char.Char).
 -}
-basicsUnions : Dict String Name I.Union
+basicsUnions : Dict Name I.Union
 basicsUnions =
     let
         -- Bool type
@@ -76,7 +77,7 @@ basicsUnions =
                 , opts = Can.Normal
                 }
     in
-    Dict.fromList identity
+    Dict.fromList
         [ ( "Bool", I.OpenUnion boolUnion )
         , ( "Int", I.ClosedUnion intUnion )
         , ( "Float", I.ClosedUnion floatUnion )
@@ -92,7 +93,7 @@ collectFreeVars tipe =
             Dict.union (collectFreeVars a) (collectFreeVars b)
 
         Can.TVar name ->
-            Dict.singleton identity name ()
+            Dict.singleton name ()
 
         Can.TType _ _ args ->
             List.foldl (\arg acc -> Dict.union (collectFreeVars arg) acc) Dict.empty args
@@ -100,12 +101,12 @@ collectFreeVars tipe =
         Can.TRecord fields maybeExt ->
             let
                 fieldVars =
-                    Dict.foldl compare (\_ (Can.FieldType _ t) acc -> Dict.union (collectFreeVars t) acc) Dict.empty fields
+                    Dict.foldl (\_ (Can.FieldType _ t) acc -> Dict.union (collectFreeVars t) acc) Dict.empty fields
 
                 extVar =
                     case maybeExt of
                         Just name ->
-                            Dict.singleton identity name ()
+                            Dict.singleton name ()
 
                         Nothing ->
                             Dict.empty
@@ -135,7 +136,7 @@ collectFreeVars tipe =
 
 {-| Standard binary operators from Basics.
 -}
-standardBinops : Dict String Name I.Binop
+standardBinops : Dict Name I.Binop
 standardBinops =
     let
         -- Type variables
@@ -197,7 +198,7 @@ standardBinops =
         pipeLType =
             Can.TLambda (Can.TLambda aVar bVar) (Can.TLambda aVar bVar)
     in
-    Dict.fromList identity
+    Dict.fromList
         [ -- Arithmetic (precedence 6-7)
           binop "+" "add" numBinType Binop.Left 6
         , binop "-" "sub" numBinType Binop.Left 6
@@ -246,7 +247,7 @@ stringInterface =
     I.Interface
         { home = Pkg.core
         , values = Dict.empty
-        , unions = Dict.singleton identity "String" (I.ClosedUnion stringUnion)
+        , unions = Dict.singleton "String" (I.ClosedUnion stringUnion)
         , aliases = Dict.empty
         , binops = Dict.empty
         }
@@ -268,7 +269,7 @@ charInterface =
     I.Interface
         { home = Pkg.core
         , values = Dict.empty
-        , unions = Dict.singleton identity "Char" (I.ClosedUnion charUnion)
+        , unions = Dict.singleton "Char" (I.ClosedUnion charUnion)
         , aliases = Dict.empty
         , binops = Dict.empty
         }
@@ -291,7 +292,7 @@ arrayInterface =
     I.Interface
         { home = Pkg.core
         , values = Dict.empty
-        , unions = Dict.singleton identity "Array" (I.ClosedUnion arrayUnion)
+        , unions = Dict.singleton "Array" (I.ClosedUnion arrayUnion)
         , aliases = Dict.empty
         , binops = Dict.empty
         }
@@ -314,7 +315,7 @@ jsonEncodeInterface =
     I.Interface
         { home = Pkg.json
         , values = Dict.empty
-        , unions = Dict.singleton identity "Value" (I.ClosedUnion valueUnion)
+        , unions = Dict.singleton "Value" (I.ClosedUnion valueUnion)
         , aliases = Dict.empty
         , binops = Dict.empty
         }
@@ -337,7 +338,7 @@ jsonDecodeInterface =
     I.Interface
         { home = Pkg.json
         , values = Dict.empty
-        , unions = Dict.singleton identity "Value" (I.ClosedUnion valueUnion)
+        , unions = Dict.singleton "Value" (I.ClosedUnion valueUnion)
         , aliases = Dict.empty
         , binops = Dict.empty
         }
@@ -360,7 +361,7 @@ platformCmdInterface =
     I.Interface
         { home = Pkg.core
         , values = Dict.empty
-        , unions = Dict.singleton identity "Cmd" (I.ClosedUnion cmdUnion)
+        , unions = Dict.singleton "Cmd" (I.ClosedUnion cmdUnion)
         , aliases = Dict.empty
         , binops = Dict.empty
         }
@@ -383,7 +384,7 @@ platformSubInterface =
     I.Interface
         { home = Pkg.core
         , values = Dict.empty
-        , unions = Dict.singleton identity "Sub" (I.ClosedUnion subUnion)
+        , unions = Dict.singleton "Sub" (I.ClosedUnion subUnion)
         , aliases = Dict.empty
         , binops = Dict.empty
         }
@@ -391,9 +392,9 @@ platformSubInterface =
 
 {-| Test environment with Basics, List, Maybe, JsArray, Bitwise, Tuple, String, Char, Platform.Cmd, and Platform.Sub module interfaces.
 -}
-testIfaces : Dict String Name I.Interface
+testIfaces : Dict Name I.Interface
 testIfaces =
-    Dict.fromList identity
+    Dict.fromList
         [ ( "Basics", basicsInterface )
         , ( "List", ListInterface.listInterface )
         , ( "Maybe", MaybeInterface.maybeInterface )
@@ -407,6 +408,8 @@ testIfaces =
         , ( "Json.Decode", jsonDecodeInterface )
         , ( "Platform.Cmd", platformCmdInterface )
         , ( "Platform.Sub", platformSubInterface )
+        , ( "VirtualDom", HtmlInterface.virtualDomInterface )
+        , ( "Html", HtmlInterface.htmlInterface )
         ]
 
 
@@ -419,7 +422,7 @@ mkAnnotation tipe =
 
 {-| Basics module function values needed by Array.elm.
 -}
-basicsValues : Dict String Name Can.Annotation
+basicsValues : Dict Name Can.Annotation
 basicsValues =
     let
         -- Type variables
@@ -442,7 +445,7 @@ basicsValues =
         boolType =
             Can.TType ModuleName.basics "Bool" []
     in
-    Dict.fromList identity
+    Dict.fromList
         [ -- remainderBy : Int -> Int -> Int
           ( "remainderBy"
           , mkAnnotation (Can.TLambda intType (Can.TLambda intType intType))

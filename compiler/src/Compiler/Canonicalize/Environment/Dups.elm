@@ -20,7 +20,8 @@ import Compiler.Data.OneOrMore as OneOrMore exposing (OneOrMore)
 import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Error.Canonicalize as Error exposing (Error)
 import Compiler.Reporting.Result as ReportingResult
-import Data.Map as Dict exposing (Dict)
+import Data.Map as DataMap
+import Dict exposing (Dict)
 import Utils.Main as Utils
 
 
@@ -31,7 +32,7 @@ import Utils.Main as Utils
 {-| Tracks potential duplicate names, storing one or more occurrences of each name.
 -}
 type alias Tracker value =
-    Dict String Name (OneOrMore (Info value))
+    Dict Name (OneOrMore (Info value))
 
 
 {-| Information about a name occurrence, including its source region and associated value.
@@ -56,13 +57,13 @@ Returns an error if any name appears more than once, otherwise returns a diction
 with one entry per unique name.
 
 -}
-detect : ToError -> Tracker a -> ReportingResult.RResult i w Error (Dict String Name a)
+detect : ToError -> Tracker a -> ReportingResult.RResult i w Error (Dict Name a)
 detect toError dict =
-    Dict.foldl compare
+    Dict.foldl
         (\name values ->
             ReportingResult.andThen
                 (\acc ->
-                    ReportingResult.map (\b -> Dict.insert identity name b acc)
+                    ReportingResult.map (\b -> Dict.insert name b acc)
                         (detectHelp toError name values)
                 )
         )
@@ -76,15 +77,16 @@ The name keys in the result include their source region, useful when the locatio
 information needs to be preserved for later processing.
 
 -}
-detectLocated : ToError -> Tracker a -> ReportingResult.RResult i w Error (Dict String (A.Located Name) a)
+detectLocated : ToError -> Tracker a -> ReportingResult.RResult i w Error (DataMap.Dict String (A.Located Name) a)
 detectLocated toError dict =
     let
-        nameLocations : Dict String Name A.Region
+        nameLocations : Dict Name A.Region
         nameLocations =
-            Utils.mapMapMaybe identity compare extractLocation dict
+            Utils.dictMapMaybe extractLocation dict
     in
     dict
-        |> Utils.mapMapKeys A.toValue compare (\k -> A.At (Dict.get identity k nameLocations |> Maybe.withDefault A.zero) k)
+        |> Dict.foldl (\k x xs -> ( A.At (Dict.get k nameLocations |> Maybe.withDefault A.zero) k, x ) :: xs) []
+        |> DataMap.fromList A.toValue
         |> ReportingResult.mapTraverseWithKey A.toValue A.compareLocated (\(A.At _ name) values -> detectHelp toError name values)
 
 
@@ -122,7 +124,7 @@ Used when processing record types and patterns where field location information
 needs to be preserved.
 
 -}
-checkLocatedFields : List ( A.Located Name, a ) -> ReportingResult.RResult i w Error (Dict String (A.Located Name) a)
+checkLocatedFields : List ( A.Located Name, a ) -> ReportingResult.RResult i w Error (DataMap.Dict String (A.Located Name) a)
 checkLocatedFields fields =
     detectLocated Error.DuplicateField (List.foldr addField none fields)
 
@@ -133,14 +135,14 @@ Returns an error if any field name appears more than once, otherwise returns
 a dictionary mapping field names to their values.
 
 -}
-checkFields : List ( A.Located Name, a ) -> ReportingResult.RResult i w Error (Dict String Name a)
+checkFields : List ( A.Located Name, a ) -> ReportingResult.RResult i w Error (Dict Name a)
 checkFields fields =
     detect Error.DuplicateField (List.foldr addField none fields)
 
 
 addField : ( A.Located Name, a ) -> Tracker a -> Tracker a
 addField ( A.At region name, value ) dups =
-    Utils.mapInsertWith identity OneOrMore.more name (OneOrMore.one (Info region value)) dups
+    Utils.dictInsertWith OneOrMore.more name (OneOrMore.one (Info region value)) dups
 
 
 
@@ -158,7 +160,7 @@ none =
 -}
 one : Name -> A.Region -> value -> Tracker value
 one name region value =
-    Dict.singleton identity name (OneOrMore.one (Info region value))
+    Dict.singleton name (OneOrMore.one (Info region value))
 
 
 {-| Insert a name occurrence into a tracker.
@@ -168,14 +170,14 @@ If the name already exists, both occurrences are tracked for duplicate detection
 -}
 insert : Name -> A.Region -> a -> Tracker a -> Tracker a
 insert name region value dict =
-    Utils.mapInsertWith identity (\new old -> OneOrMore.more old new) name (OneOrMore.one (Info region value)) dict
+    Utils.dictInsertWith (\new old -> OneOrMore.more old new) name (OneOrMore.one (Info region value)) dict
 
 
 {-| Combine two trackers, merging occurrences of the same name.
 -}
 union : Tracker a -> Tracker a -> Tracker a
 union a b =
-    Utils.mapUnionWith identity compare OneOrMore.more a b
+    Utils.dictUnionWith OneOrMore.more a b
 
 
 {-| Combine a list of trackers into a single tracker.

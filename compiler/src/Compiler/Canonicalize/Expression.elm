@@ -47,7 +47,9 @@ import Compiler.Reporting.Error.Canonicalize as Error
 import Compiler.Reporting.Result as ReportingResult
 import Compiler.Reporting.Warning as W
 import Compiler.Graph as Graph
-import Data.Map as Dict exposing (Dict)
+import Data.Map
+import Dict exposing (Dict)
+import Data.Set as EverySet
 import Prelude
 import System.TypeCheck.IO as IO
 import Utils.Main as Utils
@@ -74,7 +76,7 @@ unused bindings and recursive definitions during canonicalization.
 
 -}
 type alias FreeLocals =
-    Dict String Name.Name Uses
+    Dict Name.Name Uses
 
 
 {-| Tracks how many times a variable is used, distinguishing direct from delayed usage.
@@ -424,18 +426,18 @@ The dict is converted to a list, traversed, then converted back.
 traverseDictWithIds :
     Env.Env
     -> IdState
-    -> Dict String (A.Located Name) Src.Expr
-    -> EResult FreeLocals (List W.Warning) ( Dict String (A.Located Name) Can.Expr, IdState )
+    -> Data.Map.Dict String (A.Located Name) Src.Expr
+    -> EResult FreeLocals (List W.Warning) ( Data.Map.Dict String (A.Located Name) Can.Expr, IdState )
 traverseDictWithIds env state dict =
     let
         entries : List ( A.Located Name, Src.Expr )
         entries =
-            Dict.toList A.compareLocated dict
+            Data.Map.toList A.compareLocated dict
     in
     traverseDictEntriesWithIds env state entries []
         |> ReportingResult.map
             (\( resultEntries, finalState ) ->
-                ( Dict.fromList A.toValue resultEntries, finalState )
+                ( Data.Map.fromList A.toValue resultEntries, finalState )
             )
 
 
@@ -463,18 +465,18 @@ traverseDictEntriesWithIds env state entries acc =
 traverseUpdateFieldsWithIds :
     Env.Env
     -> IdState
-    -> Dict String (A.Located Name) Src.Expr
-    -> EResult FreeLocals (List W.Warning) ( Dict String (A.Located Name) Can.FieldUpdate, IdState )
+    -> Data.Map.Dict String (A.Located Name) Src.Expr
+    -> EResult FreeLocals (List W.Warning) ( Data.Map.Dict String (A.Located Name) Can.FieldUpdate, IdState )
 traverseUpdateFieldsWithIds env state dict =
     let
         entries : List ( A.Located Name, Src.Expr )
         entries =
-            Dict.toList A.compareLocated dict
+            Data.Map.toList A.compareLocated dict
     in
     traverseUpdateEntriesWithIds env state entries []
         |> ReportingResult.map
             (\( resultEntries, finalState ) ->
-                ( Dict.fromList A.toValue resultEntries, finalState )
+                ( Data.Map.fromList A.toValue resultEntries, finalState )
             )
 
 
@@ -940,7 +942,7 @@ addDefNodesWithIds env state nodes (A.At _ def) =
 
                                                             node : ( Binding, Name, List Name )
                                                             node =
-                                                                ( Define cdef, name, Dict.keys compare freeLocals )
+                                                                ( Define cdef, name, Dict.keys freeLocals )
                                                         in
                                                         logLetLocalsWithIds args freeLocals ( node :: nodes, stateAfterBody )
                                                     )
@@ -970,7 +972,7 @@ addDefNodesWithIds env state nodes (A.At _ def) =
 
                                                                         node : ( Binding, Name, List Name )
                                                                         node =
-                                                                            ( Define cdef, name, Dict.keys compare freeLocals )
+                                                                            ( Define cdef, name, Dict.keys freeLocals )
                                                                     in
                                                                     logLetLocalsWithIds args freeLocals ( node :: nodes, stateAfterBody )
                                                                 )
@@ -1000,15 +1002,15 @@ addDefNodesWithIds env state nodes (A.At _ def) =
 
                                                     node : ( Binding, Name, List Name )
                                                     node =
-                                                        ( Destruct cpattern cbody, name, Dict.keys compare freeLocals )
+                                                        ( Destruct cpattern cbody, name, Dict.keys freeLocals )
                                                 in
                                                 ReportingResult.ROk
-                                                    (Utils.mapUnionWith identity compare combineUses fs freeLocals)
+                                                    (Utils.dictUnionWith combineUses fs freeLocals)
                                                     warnings
                                                     ( List.foldl (addEdge [ name ]) (node :: nodes) names, stateAfterBody )
 
                                             ReportingResult.RErr freeLocals warnings errors ->
-                                                ReportingResult.RErr (Utils.mapUnionWith identity compare combineUses freeLocals fs) warnings errors
+                                                ReportingResult.RErr (Utils.dictUnionWith combineUses freeLocals fs) warnings errors
                             )
                     )
 
@@ -1020,8 +1022,7 @@ logLetLocalsWithIds args letLocals ( value, idState ) =
     ReportingResult.RResult
         (\freeLocals warnings ->
             ReportingResult.ROk
-                (Utils.mapUnionWith identity
-                    compare
+                (Utils.dictUnionWith
                     combineUses
                     freeLocals
                     (case args of
@@ -1249,7 +1250,7 @@ logVar : Name.Name -> a -> EResult FreeLocals w a
 logVar name value =
     ReportingResult.RResult <|
         \freeLocals warnings ->
-            ReportingResult.ROk (Utils.mapInsertWith identity combineUses name oneDirectUse freeLocals) warnings value
+            ReportingResult.ROk (Utils.dictInsertWith combineUses name oneDirectUse freeLocals) warnings value
 
 
 oneDirectUse : Uses
@@ -1297,7 +1298,7 @@ directUsageWithIds (ReportingResult.RResult k) =
         (\freeLocals warnings ->
             case k () warnings of
                 ReportingResult.ROk () ws ( ( value, idState ), newFreeLocals ) ->
-                    ReportingResult.ROk (Utils.mapUnionWith identity compare combineUses freeLocals newFreeLocals) ws ( value, idState )
+                    ReportingResult.ROk (Utils.dictUnionWith combineUses freeLocals newFreeLocals) ws ( value, idState )
 
                 ReportingResult.RErr () ws es ->
                     ReportingResult.RErr freeLocals ws es
@@ -1317,11 +1318,11 @@ delayedUsageWithIds (ReportingResult.RResult k) =
             case k () warnings of
                 ReportingResult.ROk () ws ( ( value, idState ), newFreeLocals ) ->
                     let
-                        delayedLocals : Dict String Name Uses
+                        delayedLocals : Dict Name Uses
                         delayedLocals =
                             Dict.map (\_ -> delayUse) newFreeLocals
                     in
-                    ReportingResult.ROk (Utils.mapUnionWith identity compare combineUses freeLocals delayedLocals) ws ( value, idState )
+                    ReportingResult.ROk (Utils.dictUnionWith combineUses freeLocals delayedLocals) ws ( value, idState )
 
                 ReportingResult.RErr () ws es ->
                     ReportingResult.RErr freeLocals ws es
@@ -1350,7 +1351,7 @@ verifyBindingsWithIds context andThenings (ReportingResult.RResult k) =
 
                 ReportingResult.ROk freeLocals warnings1 ( value, idState ) ->
                     let
-                        outerFreeLocals : Dict String Name Uses
+                        outerFreeLocals : Dict Name Uses
                         outerFreeLocals =
                             Dict.diff freeLocals andThenings
 
@@ -1360,7 +1361,7 @@ verifyBindingsWithIds context andThenings (ReportingResult.RResult k) =
                                 warnings1
 
                             else
-                                Dict.diff andThenings freeLocals |> Dict.foldl compare (addUnusedWarning context) warnings1
+                                Dict.diff andThenings freeLocals |> Dict.foldl (addUnusedWarning context) warnings1
                     in
                     ReportingResult.ROk info warnings2 ( ( value, idState ), outerFreeLocals )
 
@@ -1371,7 +1372,7 @@ verifyBindingsWithIds context andThenings (ReportingResult.RResult k) =
 
 findVar : A.Region -> Env.Env -> Name -> EResult FreeLocals w Can.Expr_
 findVar region env name =
-    case Dict.get identity name env.vars of
+    case Dict.get name env.vars of
         Just var ->
             case var of
                 Env.Local _ ->
@@ -1398,9 +1399,9 @@ findVar region env name =
 
 findVarQual : A.Region -> Env.Env -> Name -> Name -> EResult FreeLocals w Can.Expr_
 findVarQual region env prefix name =
-    case Dict.get identity prefix env.q_vars of
+    case Dict.get prefix env.q_vars of
         Just qualified ->
-            case Dict.get identity name qualified of
+            case Dict.get name qualified of
                 Just (Env.Specific home annotation) ->
                     ReportingResult.ok <|
                         if home == ModuleName.debug then
@@ -1427,9 +1428,9 @@ findVarQual region env prefix name =
                 ReportingResult.throw (Error.NotFoundVar region (Just prefix) name (toPossibleNames env.vars env.q_vars))
 
 
-toPossibleNames : Dict String Name Env.Var -> Env.Qualified Can.Annotation -> Error.PossibleNames
+toPossibleNames : Dict Name Env.Var -> Env.Qualified Can.Annotation -> Error.PossibleNames
 toPossibleNames exposed qualified =
-    Error.PossibleNames (Utils.keysSet identity compare exposed) (Dict.map (\_ -> Utils.keysSet identity compare) qualified)
+    Error.PossibleNames (EverySet.fromList identity (Dict.keys exposed)) (Dict.map (\_ -> Dict.keys >> EverySet.fromList identity) qualified)
 
 
 
@@ -1441,9 +1442,9 @@ toVarCtor name ctor =
     case ctor of
         Env.Ctor home typeName (Can.Union unionData) index args ->
             let
-                freeVars : Dict String Name ()
+                freeVars : Dict Name ()
                 freeVars =
-                    Dict.fromList identity (List.map (\v -> ( v, () )) unionData.vars)
+                    Dict.fromList (List.map (\v -> ( v, () )) unionData.vars)
 
                 result : Can.Type
                 result =
@@ -1457,8 +1458,8 @@ toVarCtor name ctor =
 
         Env.RecordCtor home vars tipe ->
             let
-                freeVars : Dict String Name ()
+                freeVars : Dict Name ()
                 freeVars =
-                    Dict.fromList identity (List.map (\v -> ( v, () )) vars)
+                    Dict.fromList (List.map (\v -> ( v, () )) vars)
             in
             Can.VarCtor Can.Normal home name Index.first (Can.Forall freeVars tipe)
