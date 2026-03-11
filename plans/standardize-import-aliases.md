@@ -48,7 +48,7 @@ config =
         , ( "Compiler.Parse.Variable", "Var" )
         , ( "Compiler.Reporting.Doc", "Doc" )
         , ( "Compiler.Reporting.Error", "Error" )
-        , ( "Compiler.Reporting.Error.Canonicalize", "Canonicalize" )
+        , ( "Compiler.Reporting.Error.Canonicalize", "ErrorCanonicalize" )
         , ( "Compiler.Reporting.Error.Docs", "ErrorDocs" )
         , ( "Compiler.Reporting.Error.Main", "ErrorMain" )
         , ( "Compiler.Reporting.Error.Syntax", "Syntax" )
@@ -62,7 +62,7 @@ config =
         , ( "List.Extra", "List" )
         , ( "System.IO", "IO" )
         , ( "System.TypeCheck.IO", "IO" )
-        , ( "Utils.Task.Extra", "Task" )
+        , ( "Utils.Task.Extra", "TaskExtra" )
         ]
         |> NoInconsistentAliases.rule
     ]
@@ -120,7 +120,7 @@ config =
 | Module | Canonical Alias | Current State | Files to Change |
 |---|---|---|---|
 | `Compiler.Reporting.Error` | `Error` | E=1, Error=5 | 1 (E→Error) |
-| `Compiler.Reporting.Error.Canonicalize` | `Canonicalize` | Canonicalize=1, E=1, Error=9 | 10 (E→Canonicalize, Error→Canonicalize) |
+| `Compiler.Reporting.Error.Canonicalize` | `ErrorCanonicalize` | Canonicalize=1, E=1, Error=9 | 11 (all→ErrorCanonicalize; `Canonicalize` conflicts with `Compiler.Canonicalize.Module`) |
 | `Compiler.Reporting.Error.Docs` | `ErrorDocs` | Docs=1, E=1, EDocs=1 | 3 (all→ErrorDocs) |
 | `Compiler.Reporting.Error.Main` | `ErrorMain` | E=2, Main=1 | 3 (all→ErrorMain) |
 | `Compiler.Reporting.Error.Syntax` | `Syntax` | E=13, ES=1, Syntax=3 | 14 (E→Syntax, ES→Syntax) |
@@ -174,7 +174,7 @@ Note: 25 files import `Data.Map` without any alias (bare `import Data.Map`). The
 
 | Module | Canonical Alias | Current State | Files to Change |
 |---|---|---|---|
-| `Utils.Task.Extra` | `Task` | Task=15, TaskExtra=1 | 1 (TaskExtra→Task) |
+| `Utils.Task.Extra` | `TaskExtra` | Task=15, TaskExtra=1 | 15 (Task→TaskExtra; `Task` conflicts with core `Task` module) |
 
 ---
 

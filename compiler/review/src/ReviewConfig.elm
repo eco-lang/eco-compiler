@@ -85,7 +85,7 @@ config =
         , ( "Compiler.Parse.Variable", "Var" )
         , ( "Compiler.Reporting.Doc", "Doc" )
         , ( "Compiler.Reporting.Error", "Error" )
-        , ( "Compiler.Reporting.Error.Canonicalize", "Canonicalize" )
+        , ( "Compiler.Reporting.Error.Canonicalize", "ErrorCanonicalize" )
         , ( "Compiler.Reporting.Error.Docs", "ErrorDocs" )
         , ( "Compiler.Reporting.Error.Main", "ErrorMain" )
         , ( "Compiler.Reporting.Error.Syntax", "Syntax" )
@@ -99,7 +99,7 @@ config =
         , ( "List.Extra", "List" )
         , ( "System.IO", "IO" )
         , ( "System.TypeCheck.IO", "IO" )
-        , ( "Utils.Task.Extra", "Task" )
+        , ( "Utils.Task.Extra", "TaskExtra" )
         ]
         |> NoInconsistentAliases.rule
     ]
