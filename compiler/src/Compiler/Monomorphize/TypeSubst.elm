@@ -3,6 +3,7 @@ module Compiler.Monomorphize.TypeSubst exposing
     , canTypeToMonoType
     , unify, unifyExtend, unifyFuncCall, unifyArgsOnly, extractParamTypes
     , fillUnconstrainedCEcoWithErased
+    , monoTypeContainsMVar
     )
 
 {-| Type substitution and unification for monomorphization.
@@ -117,6 +118,34 @@ findRootVarHelp visited name subst =
             ( name, subst )
 
 
+{-| Check if a MonoType contains an MVar with the given name.
+Used as an occurs check to detect cyclic bindings like a = (Global, a).
+-}
+monoTypeContainsMVar : Name -> Mono.MonoType -> Bool
+monoTypeContainsMVar name monoType =
+    case monoType of
+        Mono.MVar mName _ ->
+            mName == name
+
+        Mono.MFunction args ret ->
+            List.any (monoTypeContainsMVar name) args || monoTypeContainsMVar name ret
+
+        Mono.MList inner ->
+            monoTypeContainsMVar name inner
+
+        Mono.MTuple elems ->
+            List.any (monoTypeContainsMVar name) elems
+
+        Mono.MRecord fields ->
+            Dict.foldl (\_ v acc -> acc || monoTypeContainsMVar name v) False fields
+
+        Mono.MCustom _ _ args ->
+            List.any (monoTypeContainsMVar name) args
+
+        _ ->
+            False
+
+
 normalizeMonoType : Substitution -> Mono.MonoType -> ( Mono.MonoType, Substitution )
 normalizeMonoType subst ty =
     case ty of
@@ -131,8 +160,69 @@ normalizeMonoType subst ty =
             else
                 ( Mono.MVar root (constraintFromName root), subst1 )
 
+        Mono.MFunction args ret ->
+            let
+                ( argsNorm, subst1 ) =
+                    normalizeList subst args
+
+                ( retNorm, subst2 ) =
+                    normalizeMonoType subst1 ret
+            in
+            ( Mono.MFunction argsNorm retNorm, subst2 )
+
+        Mono.MList inner ->
+            let
+                ( innerNorm, subst1 ) =
+                    normalizeMonoType subst inner
+            in
+            ( Mono.MList innerNorm, subst1 )
+
+        Mono.MTuple elems ->
+            let
+                ( elemsNorm, subst1 ) =
+                    normalizeList subst elems
+            in
+            ( Mono.MTuple elemsNorm, subst1 )
+
+        Mono.MRecord fields ->
+            let
+                ( fieldsNorm, subst1 ) =
+                    Dict.foldl
+                        (\k v ( accFields, s ) ->
+                            let
+                                ( vNorm, s1 ) =
+                                    normalizeMonoType s v
+                            in
+                            ( Dict.insert k vNorm accFields, s1 )
+                        )
+                        ( Dict.empty, subst )
+                        fields
+            in
+            ( Mono.MRecord fieldsNorm, subst1 )
+
+        Mono.MCustom can name args ->
+            let
+                ( argsNorm, subst1 ) =
+                    normalizeList subst args
+            in
+            ( Mono.MCustom can name argsNorm, subst1 )
+
         _ ->
             ( ty, subst )
+
+
+normalizeList : Substitution -> List Mono.MonoType -> ( List Mono.MonoType, Substitution )
+normalizeList subst types =
+    List.foldr
+        (\t ( acc, s ) ->
+            let
+                ( tNorm, s1 ) =
+                    normalizeMonoType s t
+            in
+            ( tNorm :: acc, s1 )
+        )
+        ( [], subst )
+        types
 
 
 insertBinding : Name -> Mono.MonoType -> Substitution -> Substitution
@@ -154,8 +244,9 @@ unifyFuncCall :
     -> List Mono.MonoType
     -> Can.Type
     -> Substitution
+    -> Int
     -> ( Substitution, Can.Type )
-unifyFuncCall funcCanType argMonoTypes resultCanType baseSubst =
+unifyFuncCall funcCanType argMonoTypes resultCanType baseSubst epoch =
     let
         -- Vars from the caller's context (existing substitution bindings)
         callerVarNames =
@@ -166,7 +257,7 @@ unifyFuncCall funcCanType argMonoTypes resultCanType baseSubst =
             collectCanTypeVars funcCanType []
 
         renameMap =
-            buildRenameMap callerVarNames funcVarNames Data.Map.empty 0
+            buildRenameMap epoch callerVarNames funcVarNames Data.Map.empty 0
 
         funcCanTypeRenamed =
             renameCanTypeVars renameMap funcCanType
@@ -213,16 +304,9 @@ unifyHelp : Can.Type -> Mono.MonoType -> Substitution -> Substitution
 unifyHelp canType monoType subst =
     case ( canType, monoType ) of
         ( Can.TVar name, _ ) ->
-            let
-                isSelfRef =
-                    case monoType of
-                        Mono.MVar mName _ ->
-                            mName == name
-
-                        _ ->
-                            False
-            in
-            if isSelfRef then
+            if monoTypeContainsMVar name monoType then
+                -- Occurs check: binding name to monoType would create a cyclic type.
+                -- Skip this binding to prevent infinite loops in resolveMonoVars.
                 subst
 
             else
@@ -596,8 +680,8 @@ collectCanTypeVars canType acc =
 {-| Build a rename map for callee type variables that clash with caller variables.
 Only variables in funcVarNames that also appear in callerVarNames get renamed.
 -}
-buildRenameMap : List Name -> List Name -> Data.Map.Dict String Name Name -> Int -> Data.Map.Dict String Name Name
-buildRenameMap callerVarNames funcVarNames acc counter =
+buildRenameMap : Int -> List Name -> List Name -> Data.Map.Dict String Name Name -> Int -> Data.Map.Dict String Name Name
+buildRenameMap epoch callerVarNames funcVarNames acc counter =
     case funcVarNames of
         [] ->
             acc
@@ -606,12 +690,12 @@ buildRenameMap callerVarNames funcVarNames acc counter =
             if List.member name callerVarNames && not (Data.Map.member identity name acc) then
                 let
                     freshName =
-                        name ++ "__callee" ++ String.fromInt counter
+                        name ++ "__callee" ++ String.fromInt epoch ++ "_" ++ String.fromInt counter
                 in
-                buildRenameMap callerVarNames rest (Data.Map.insert identity name freshName acc) (counter + 1)
+                buildRenameMap epoch callerVarNames rest (Data.Map.insert identity name freshName acc) (counter + 1)
 
             else
-                buildRenameMap callerVarNames rest acc counter
+                buildRenameMap epoch callerVarNames rest acc counter
 
 
 {-| Rename type variables in a canonical type according to a rename map.

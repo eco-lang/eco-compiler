@@ -900,8 +900,14 @@ specializeExpr expr subst state =
             case func of
                 TOpt.VarGlobal funcRegion global funcCanType ->
                     let
+                        epoch =
+                            state1.renameEpoch
+
+                        state1b =
+                            { state1 | renameEpoch = epoch + 1 }
+
                         ( callSubst, funcCanTypeRenamed ) =
-                            TypeSubst.unifyFuncCall funcCanType argTypes canType subst
+                            TypeSubst.unifyFuncCall funcCanType argTypes canType subst epoch
 
                         funcMonoType =
                             Mono.forceCNumberToInt (TypeSubst.applySubst callSubst funcCanTypeRenamed)
@@ -910,7 +916,7 @@ specializeExpr expr subst state =
                             TypeSubst.extractParamTypes funcMonoType
 
                         ( monoArgs, state2 ) =
-                            resolveProcessedArgs processedArgs paramTypes callSubst state1
+                            resolveProcessedArgs processedArgs paramTypes callSubst state1b
 
                         resultMonoType =
                             callResultMonoType subst callSubst canType
@@ -928,8 +934,14 @@ specializeExpr expr subst state =
 
                 TOpt.VarKernel funcRegion home name funcCanType ->
                     let
+                        epoch =
+                            state1.renameEpoch
+
+                        state1b =
+                            { state1 | renameEpoch = epoch + 1 }
+
                         ( callSubst, funcCanTypeRenamed ) =
-                            TypeSubst.unifyFuncCall funcCanType argTypes canType subst
+                            TypeSubst.unifyFuncCall funcCanType argTypes canType subst epoch
 
                         funcMonoType =
                             deriveKernelAbiType ( home, name ) funcCanTypeRenamed callSubst
@@ -938,7 +950,7 @@ specializeExpr expr subst state =
                             TypeSubst.extractParamTypes funcMonoType
 
                         ( monoArgs, state2 ) =
-                            resolveProcessedArgs processedArgs paramTypes callSubst state1
+                            resolveProcessedArgs processedArgs paramTypes callSubst state1b
 
                         resultMonoType =
                             callResultMonoType subst callSubst canType
@@ -950,8 +962,14 @@ specializeExpr expr subst state =
 
                 TOpt.VarDebug funcRegion name _ _ funcCanType ->
                     let
+                        epoch =
+                            state1.renameEpoch
+
+                        state1b =
+                            { state1 | renameEpoch = epoch + 1 }
+
                         ( callSubst, funcCanTypeRenamed ) =
-                            TypeSubst.unifyFuncCall funcCanType argTypes canType subst
+                            TypeSubst.unifyFuncCall funcCanType argTypes canType subst epoch
 
                         funcMonoType =
                             deriveKernelAbiType ( "Debug", name ) funcCanTypeRenamed callSubst
@@ -960,7 +978,7 @@ specializeExpr expr subst state =
                             TypeSubst.extractParamTypes funcMonoType
 
                         ( monoArgs, state2 ) =
-                            resolveProcessedArgs processedArgs paramTypes callSubst state1
+                            resolveProcessedArgs processedArgs paramTypes callSubst state1b
 
                         resultMonoType =
                             callResultMonoType subst callSubst canType
@@ -1030,8 +1048,14 @@ specializeExpr expr subst state =
                             -- Non-local function: use unifyFuncCall with rename to avoid
                             -- type variable name collisions between caller and callee.
                             let
+                                epoch =
+                                    state1.renameEpoch
+
+                                state1b =
+                                    { state1 | renameEpoch = epoch + 1 }
+
                                 ( callSubst, funcCanTypeRenamed ) =
-                                    TypeSubst.unifyFuncCall funcCanType argTypes canType subst
+                                    TypeSubst.unifyFuncCall funcCanType argTypes canType subst epoch
 
                                 funcMonoType =
                                     Mono.forceCNumberToInt (TypeSubst.applySubst callSubst funcCanTypeRenamed)
@@ -1040,7 +1064,7 @@ specializeExpr expr subst state =
                                     TypeSubst.extractParamTypes funcMonoType
 
                                 ( monoArgs, state2 ) =
-                                    resolveProcessedArgs processedArgs paramTypes callSubst state1
+                                    resolveProcessedArgs processedArgs paramTypes callSubst state1b
 
                                 resultMonoType =
                                     callResultMonoType subst callSubst canType

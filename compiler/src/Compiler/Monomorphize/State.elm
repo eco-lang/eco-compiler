@@ -61,6 +61,7 @@ type alias MonoState =
     , callEdges : Dict Int (List Int)
     , specHasEffects : BitSet -- SpecIds whose node body references Debug.* kernels
     , specValueUsed : BitSet -- SpecIds whose value is referenced via MonoVarGlobal
+    , renameEpoch : Int -- Monotonically increasing counter for unique __callee names
     }
 
 
@@ -186,4 +187,5 @@ initState currentModule toptNodes globalTypeEnv =
     , callEdges = Dict.empty
     , specHasEffects = BitSet.empty
     , specValueUsed = BitSet.empty
+    , renameEpoch = 0
     }
