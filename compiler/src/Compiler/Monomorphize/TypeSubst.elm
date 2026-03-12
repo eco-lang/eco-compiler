@@ -1,6 +1,8 @@
 module Compiler.Monomorphize.TypeSubst exposing
-    ( applySubst
+    ( applyReverseRenaming
+    , applySubst
     , canTypeToMonoType
+    , constraintFromName
     , unify, unifyExtend, unifyArgsOnly, extractParamTypes
     , fillUnconstrainedCEcoWithErased, fillUnconstrainedCEcoWithErasedFromScheme
     , monoTypeContainsMVar
@@ -285,8 +287,18 @@ unifyHelp canType monoType subst =
                         substWithTransitives =
                             unifyMonoMono existingMono monoType subst
                     in
-                    -- insertBindingSafe combines occurs check + normalization in one walk
-                    insertBindingSafe name monoType substWithTransitives
+                    case ( existingMono, monoType ) of
+                        -- New type is MErased, existing is concrete: keep existing
+                        ( _, Mono.MErased ) ->
+                            substWithTransitives
+
+                        -- Existing is MErased, new is concrete: upgrade to concrete
+                        ( Mono.MErased, _ ) ->
+                            insertBindingSafe name monoType substWithTransitives
+
+                        -- Both non-erased: default behavior (overwrite with new)
+                        _ ->
+                            insertBindingSafe name monoType substWithTransitives
 
                 Nothing ->
                     insertBindingSafe name monoType subst
@@ -883,6 +895,31 @@ buildPreRenameMap prefix names seen counter acc renamedAcc =
                     (counter + 1)
                     (Data.Map.insert identity name canonicalName acc)
                     (canonicalName :: renamedAcc)
+
+
+{-| Given a substitution with renamed-keyed bindings and a rename map (original -> renamed),
+copy bindings from renamed keys to original keys so that downstream consumers using
+original Can.Type names can find the correct MonoType bindings.
+-}
+applyReverseRenaming : Dict.Dict Name Mono.MonoType -> Data.Map.Dict String Name Name -> Dict.Dict Name Mono.MonoType
+applyReverseRenaming subst renameMap =
+    Data.Map.foldl compare
+        (\orig renamed acc ->
+            case Dict.get renamed acc of
+                Just monoType ->
+                    case Dict.get orig acc of
+                        Nothing ->
+                            Dict.insert orig monoType acc
+
+                        Just _ ->
+                            -- Already bound (from caller's context) — keep existing
+                            acc
+
+                Nothing ->
+                    acc
+        )
+        subst
+        renameMap
 
 
 {-| Rename type variables in a canonical type using a rename map.

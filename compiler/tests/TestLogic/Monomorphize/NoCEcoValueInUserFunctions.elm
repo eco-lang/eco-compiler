@@ -1,16 +1,15 @@
 module TestLogic.Monomorphize.NoCEcoValueInUserFunctions exposing (expectNoCEcoValueInUserFunctions, Violation)
 
-{-| Test logic for MONO\_021: No CEcoValue MVar in user-defined function types.
+{-| Test logic for MONO\_021: No CEcoValue MVar or MErased in user-defined function types.
 
 After monomorphization, no user-defined function or closure MonoType (including
 parameters and results of MonoDefine, MonoTailFunc, and MonoClosure) may contain
-MVar with CEcoValue constraint.
+MVar with CEcoValue constraint or MErased.
 
-MErased is intentionally allowed in reachable specs. It appears in two cases:
-(1) dead-value specializations whose value is never used (all MVars erased), and
-(2) value-used specializations whose key type is still polymorphic — these are
-phantom type variables never constrained by any call site. The backend crashes
-loudly if MErased ever reaches an operational position (ABI/operand conversion).
+MErased replaces MVar in dead-value specializations (specValueUsed not set) and
+must not survive pruning into the reachable graph. Any MErased in a reachable
+user function type indicates a dead-value spec that was not properly pruned by
+MONO\_022.
 
 Remaining CEcoValue MVar is restricted to kernel ABI types (MonoExtern,
 MonoManagerLeaf, Debug kernels, and other layout-insensitive metadata) and must
@@ -152,13 +151,13 @@ checkNodeType ctx nodeKind monoType =
             else
                 [ { context = ctx ++ " " ++ nodeKind ++ " nodeType"
                   , message =
-                        "MONO_021 violation: CEcoValue MVar in "
+                        "MONO_021 violation: CEcoValue/MErased in "
                             ++ nodeKind
                             ++ " function type\n"
                             ++ "  type: "
                             ++ Debug.toString monoType
                             ++ "\n"
-                            ++ "  CEcoValue vars: "
+                            ++ "  banned vars: "
                             ++ String.join ", " cEcoVars
                   }
                 ]
@@ -190,7 +189,7 @@ checkParamTypes ctx nodeKind params =
                             ++ "  type: "
                             ++ Debug.toString paramType
                             ++ "\n"
-                            ++ "  CEcoValue vars: "
+                            ++ "  banned vars: "
                             ++ String.join ", " cEcoVars
                   }
                 ]
@@ -302,7 +301,7 @@ checkClosureInfo ctx info =
                             ++ "  type: "
                             ++ Debug.toString paramType
                             ++ "\n"
-                            ++ "  CEcoValue vars: "
+                            ++ "  banned vars: "
                             ++ String.join ", " cEcoVars
                   }
                 ]
@@ -336,7 +335,7 @@ checkTailDefParams ctx defName params =
                             ++ "  type: "
                             ++ Debug.toString paramType
                             ++ "\n"
-                            ++ "  CEcoValue vars: "
+                            ++ "  banned vars: "
                             ++ String.join ", " cEcoVars
                   }
                 ]
@@ -360,13 +359,13 @@ checkFunctionExprType ctx exprKind monoType =
             else
                 [ { context = ctx ++ " " ++ exprKind ++ " exprType"
                   , message =
-                        "MONO_021 violation: CEcoValue MVar in "
+                        "MONO_021 violation: CEcoValue/MErased in "
                             ++ exprKind
                             ++ " expression type\n"
                             ++ "  type: "
                             ++ Debug.toString monoType
                             ++ "\n"
-                            ++ "  CEcoValue vars: "
+                            ++ "  banned vars: "
                             ++ String.join ", " cEcoVars
                   }
                 ]
@@ -397,10 +396,10 @@ checkDecider ctx decider =
                 ++ checkDecider ctx fallback
 
 
-{-| Collect all CEcoValue MVar names from a MonoType recursively.
+{-| Collect all banned type markers from a MonoType recursively.
 
-MErased is intentionally allowed — it marks phantom type variables that were
-never constrained by any call site, or dead-value spec erasure.
+Flags both CEcoValue MVar (failed specialization) and MErased (dead-value spec
+that survived pruning into the reachable graph).
 
 -}
 collectCEcoValueVars : Mono.MonoType -> List String
@@ -413,7 +412,7 @@ collectCEcoValueVars monoType =
             []
 
         Mono.MErased ->
-            []
+            [ "<MErased>" ]
 
         Mono.MList inner ->
             collectCEcoValueVars inner

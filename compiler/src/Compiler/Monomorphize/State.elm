@@ -2,6 +2,7 @@ module Compiler.Monomorphize.State exposing
     ( MonoState, SpecAccum, SpecContext, WorkItem(..), Substitution, SchemeInfo, SchemeInfoCache
     , initState
     , LocalInstanceInfo, LocalMultiState
+    , ValueInstanceInfo, ValueMultiState
     , VarEnv(..), emptyVarEnv, insertVar, lookupVar, popFrame, pushFrame
     )
 
@@ -97,6 +98,7 @@ type alias SpecContext =
     , globalTypeEnv : TypeEnv.GlobalTypeEnv
     , varEnv : VarEnv -- Layered mapping of variable names to their MonoTypes
     , localMulti : List LocalMultiState
+    , valueMulti : List ValueMultiState
     , lambdaCounter : Int
     , renameEpoch : Int -- Monotonically increasing counter for unique __callee names
     }
@@ -214,6 +216,33 @@ type alias LocalMultiState =
     }
 
 
+{-| Information about a single value-multi instance discovered during
+specialization of a let-bound value whose type contains lambdas.
+-}
+type alias ValueInstanceInfo =
+    { freshName : Name
+    , monoType : Mono.MonoType
+    , subst : Substitution
+    }
+
+
+{-| Per-let state for value-level multi-specialization.
+
+    - defName    : the let-bound value we're multi-specializing
+    - defCanType : the canonical type of the value
+    - def        : the original TOpt.Def
+    - instances  : all discovered (typeKey -> instance) mappings,
+                   keyed by Mono.toComparableMonoType of the instance type.
+
+-}
+type alias ValueMultiState =
+    { defName : Name
+    , defCanType : Can.Type
+    , def : TOpt.Def
+    , instances : Dict (List String) ValueInstanceInfo
+    }
+
+
 {-| Initialize the monomorphization state with empty worklist and registry.
 -}
 initState : IO.Canonical -> DataMap.Dict (List String) TOpt.Global TOpt.Node -> TypeEnv.GlobalTypeEnv -> MonoState
@@ -236,6 +265,7 @@ initState currentModule toptNodes globalTypeEnv =
         , globalTypeEnv = globalTypeEnv
         , varEnv = emptyVarEnv
         , localMulti = []
+        , valueMulti = []
         , lambdaCounter = 0
         , renameEpoch = 0
         }

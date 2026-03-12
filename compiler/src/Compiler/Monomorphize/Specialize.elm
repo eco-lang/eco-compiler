@@ -24,7 +24,7 @@ import Compiler.Monomorphize.Analysis as Analysis
 import Compiler.Monomorphize.Closure as Closure
 import Compiler.Monomorphize.KernelAbi as KernelAbi
 import Compiler.Monomorphize.Registry as Registry
-import Compiler.Monomorphize.State as State exposing (LocalMultiState, MonoState, SchemeInfo, SpecAccum, SpecContext, Substitution, VarEnv, WorkItem(..))
+import Compiler.Monomorphize.State as State exposing (LocalMultiState, MonoState, SchemeInfo, SpecAccum, SpecContext, Substitution, ValueInstanceInfo, ValueMultiState, VarEnv, WorkItem(..))
 import Compiler.Monomorphize.TypeSubst as TypeSubst
 import Compiler.Reporting.Annotation as A
 import Data.Map
@@ -171,7 +171,7 @@ unifyCallSiteWithRenaming :
     -> Substitution
     -> Int
     -> SchemeInfo
-    -> ( Substitution, Can.Type, Mono.MonoType )
+    -> { callSubst : Substitution, callSubstAligned : Substitution, renamedFuncType : Can.Type, funcMonoType : Mono.MonoType }
 unifyCallSiteWithRenaming funcCanType argMonoTypes resultCanType baseSubst epoch info =
     let
         callerVarNames =
@@ -181,25 +181,21 @@ unifyCallSiteWithRenaming funcCanType argMonoTypes resultCanType baseSubst epoch
         hasConflict =
             List.any (\name -> List.member name callerVarNames) info.renamedVarNames
 
+        renameMapUsed =
+            if hasConflict then
+                buildRenameMap epoch callerVarNames info.varNames Data.Map.empty 0
+
+            else
+                info.preRenameMap
+
         ( renamedArgTypes, renamedResultType, renamedFuncType ) =
             if hasConflict then
-                -- Fallback: per-call renaming with fresh epoch
-                let
-                    funcVarNames =
-                        info.varNames
-
-                    renameMap =
-                        buildRenameMap epoch callerVarNames funcVarNames Data.Map.empty 0
-                in
-                ( List.map (renameCanTypeVars renameMap) info.argTypes
-                , renameCanTypeVars renameMap resultCanType
-                , renameCanTypeVars renameMap funcCanType
+                ( List.map (renameCanTypeVars renameMapUsed) info.argTypes
+                , renameCanTypeVars renameMapUsed resultCanType
+                , renameCanTypeVars renameMapUsed funcCanType
                 )
 
             else
-                -- Use pre-renamed types from SchemeInfo
-                -- Also rename resultCanType using the pre-rename map applied to its vars
-                -- (resultCanType shares vars with funcCanType)
                 ( info.renamedArgTypes
                 , renameResultCanType info resultCanType
                 , info.renamedFuncType
@@ -208,8 +204,17 @@ unifyCallSiteWithRenaming funcCanType argMonoTypes resultCanType baseSubst epoch
         -- Single-pass: unify args, resolve, build funcMonoType all at once
         ( callSubst, funcMonoType ) =
             TypeSubst.unifyCallSiteDirect renamedArgTypes renamedResultType argMonoTypes baseSubst
+
+        -- Apply reverse renaming: copy renamed-keyed bindings to original-keyed
+        -- so downstream consumers using original Can.Type names find correct bindings
+        callSubstAligned =
+            TypeSubst.applyReverseRenaming callSubst renameMapUsed
     in
-    ( callSubst, renamedFuncType, funcMonoType )
+    { callSubst = callSubst
+    , callSubstAligned = callSubstAligned
+    , renamedFuncType = renamedFuncType
+    , funcMonoType = funcMonoType
+    }
 
 
 {-| Rename type variables in the result Can.Type using the same mapping
@@ -336,6 +341,164 @@ updateLocalMultiStack defName key funcMonoType callSubst stack =
                         updateLocalMultiStack defName key funcMonoType callSubst rest
                 in
                 ( localState :: updatedRest, freshName )
+
+
+
+-- ========== VALUE-MULTI SPECIALIZATION ==========
+
+
+{-| Check if a Can.Type contains any TLambda anywhere in its structure.
+-}
+typeContainsLambda : Can.Type -> Bool
+typeContainsLambda canType =
+    case canType of
+        Can.TLambda _ _ ->
+            True
+
+        Can.TType _ _ args ->
+            List.any typeContainsLambda args
+
+        Can.TRecord fields _ ->
+            Dict.foldl (\_ (Can.FieldType _ t) acc -> acc || typeContainsLambda t) False fields
+
+        Can.TTuple a b rest ->
+            typeContainsLambda a || typeContainsLambda b || List.any typeContainsLambda rest
+
+        Can.TAlias _ _ _ (Can.Filled inner) ->
+            typeContainsLambda inner
+
+        Can.TAlias _ _ _ (Can.Holey inner) ->
+            typeContainsLambda inner
+
+        Can.TVar _ ->
+            False
+
+        Can.TUnit ->
+            False
+
+
+{-| Check if a Can.Type contains any type variable with CEcoValue constraint.
+-}
+hasCEcoTVar : Can.Type -> Bool
+hasCEcoTVar canType =
+    let
+        vars =
+            TypeSubst.collectCanTypeVars canType []
+    in
+    List.any (\name -> TypeSubst.constraintFromName name == Mono.CEcoValue) vars
+
+
+{-| Should this non-function let binding use value-multi specialization?
+True when the type contains lambdas AND unconstrained CEco type variables.
+-}
+shouldUseValueMulti : Can.Type -> Bool
+shouldUseValueMulti defCanType =
+    typeContainsLambda defCanType && hasCEcoTVar defCanType
+
+
+{-| Check if the given name matches any active valueMulti context in the stack.
+-}
+isValueMultiTarget : Name -> MonoState -> Bool
+isValueMultiTarget name state =
+    List.any (\entry -> entry.defName == name) state.ctx.valueMulti
+
+
+{-| Check if an expression is a VarLocal/TrackedVarLocal that is a value-multi target.
+Returns the variable name and its canonical type if so.
+-}
+getValueMultiVar : TOpt.Expr -> MonoState -> Maybe ( Name, Can.Type )
+getValueMultiVar expr state =
+    case expr of
+        TOpt.VarLocal name canType ->
+            if isValueMultiTarget name state then
+                Just ( name, canType )
+
+            else
+                Nothing
+
+        TOpt.TrackedVarLocal _ name canType ->
+            if isValueMultiTarget name state then
+                Just ( name, canType )
+
+            else
+                Nothing
+
+        _ ->
+            Nothing
+
+
+{-| Allocate or reuse a value instance for a let-bound value with lambdas.
+-}
+getOrCreateValueInstance :
+    Name
+    -> Mono.MonoType
+    -> Substitution
+    -> MonoState
+    -> ( Name, MonoState )
+getOrCreateValueInstance defName monoType currentSubst state =
+    let
+        key =
+            Mono.toComparableMonoType monoType
+
+        ( updatedStack, freshName_ ) =
+            updateValueMultiStack defName key monoType currentSubst state.ctx.valueMulti
+    in
+    ( freshName_, { state | ctx = let ctx = state.ctx in { ctx | valueMulti = updatedStack } } )
+
+
+{-| Walk the valueMulti stack, find the entry for defName, and update it.
+-}
+updateValueMultiStack :
+    Name
+    -> List String
+    -> Mono.MonoType
+    -> Substitution
+    -> List ValueMultiState
+    -> ( List ValueMultiState, Name )
+updateValueMultiStack defName key monoType currentSubst stack =
+    case stack of
+        [] ->
+            Utils.Crash.crash
+                ("Specialize.updateValueMultiStack: defName not found in stack: " ++ defName)
+
+        entry :: rest ->
+            if entry.defName == defName then
+                case Dict.get key entry.instances of
+                    Just info ->
+                        ( stack, info.freshName )
+
+                    Nothing ->
+                        let
+                            freshIndex =
+                                Dict.size entry.instances
+
+                            freshName_ =
+                                if freshIndex == 0 then
+                                    defName
+
+                                else
+                                    defName ++ "$v" ++ String.fromInt freshIndex
+
+                            newInfo =
+                                { freshName = freshName_
+                                , monoType = monoType
+                                , subst = currentSubst
+                                }
+
+                            newInstances =
+                                Dict.insert key newInfo entry.instances
+
+                            newEntry =
+                                { entry | instances = newInstances }
+                        in
+                        ( newEntry :: rest, freshName_ )
+
+            else
+                let
+                    ( updatedRest, freshName_ ) =
+                        updateValueMultiStack defName key monoType currentSubst rest
+                in
+                ( entry :: updatedRest, freshName_ )
 
 
 {-| Specialize a lambda expression (Function or TrackedFunction).
@@ -924,6 +1087,8 @@ specializeExpr expr subst state =
                 ( Mono.MonoVarLocal freshName monoType, state1 )
 
             else
+                -- For value-multi targets, return the var as-is. Instance recording
+                -- happens at use sites (Access, etc.) where concrete types are known.
                 ( Mono.MonoVarLocal name monoType, state )
 
         TOpt.TrackedVarLocal _ name canType ->
@@ -939,6 +1104,8 @@ specializeExpr expr subst state =
                 ( Mono.MonoVarLocal freshName monoType, state1 )
 
             else
+                -- For value-multi targets, return the var as-is. Instance recording
+                -- happens at use sites (Access, etc.) where concrete types are known.
                 ( Mono.MonoVarLocal name monoType, state )
 
         TOpt.VarGlobal region global canType ->
@@ -1092,11 +1259,14 @@ specializeExpr expr subst state =
                         state1b =
                             { state1a | ctx = let c1a = state1a.ctx in { c1a | renameEpoch = epoch + 1 } }
 
-                        ( callSubst, _, directFuncMonoType ) =
+                        unifyResult =
                             unifyCallSiteWithRenaming funcCanType argTypes canType subst epoch schemeInfo
 
+                        callSubst =
+                            unifyResult.callSubstAligned
+
                         funcMonoType =
-                            Mono.forceCNumberToInt directFuncMonoType
+                            Mono.forceCNumberToInt unifyResult.funcMonoType
 
                         paramTypes =
                             TypeSubst.extractParamTypes funcMonoType
@@ -1129,11 +1299,16 @@ specializeExpr expr subst state =
                         state1b =
                             { state1a | ctx = let c1a = state1a.ctx in { c1a | renameEpoch = epoch + 1 } }
 
-                        ( callSubst, funcCanTypeRenamed, _ ) =
+                        unifyResult =
                             unifyCallSiteWithRenaming funcCanType argTypes canType subst epoch schemeInfo
 
+                        callSubst =
+                            unifyResult.callSubstAligned
+
+                        -- deriveKernelAbiType uses renamedFuncType (renamed namespace)
+                        -- with callSubst (renamed-keyed) — both in renamed namespace
                         funcMonoType =
-                            deriveKernelAbiType ( home, name ) funcCanTypeRenamed callSubst
+                            deriveKernelAbiType ( home, name ) unifyResult.renamedFuncType unifyResult.callSubst
 
                         paramTypes =
                             TypeSubst.extractParamTypes funcMonoType
@@ -1160,11 +1335,16 @@ specializeExpr expr subst state =
                         state1b =
                             { state1a | ctx = let c1a = state1a.ctx in { c1a | renameEpoch = epoch + 1 } }
 
-                        ( callSubst, funcCanTypeRenamed, _ ) =
+                        unifyResult =
                             unifyCallSiteWithRenaming funcCanType argTypes canType subst epoch schemeInfo
 
+                        callSubst =
+                            unifyResult.callSubstAligned
+
+                        -- deriveKernelAbiType uses renamedFuncType (renamed namespace)
+                        -- with callSubst (renamed-keyed) — both in renamed namespace
                         funcMonoType =
-                            deriveKernelAbiType ( "Debug", name ) funcCanTypeRenamed callSubst
+                            deriveKernelAbiType ( "Debug", name ) unifyResult.renamedFuncType unifyResult.callSubst
 
                         paramTypes =
                             TypeSubst.extractParamTypes funcMonoType
@@ -1249,11 +1429,14 @@ specializeExpr expr subst state =
                                 state1b =
                                     { state1a | ctx = let c1a = state1a.ctx in { c1a | renameEpoch = epoch + 1 } }
 
-                                ( callSubst, _, directFuncMonoType ) =
+                                unifyResult =
                                     unifyCallSiteWithRenaming funcCanType argTypes canType subst epoch schemeInfo
 
+                                callSubst =
+                                    unifyResult.callSubstAligned
+
                                 funcMonoType =
-                                    Mono.forceCNumberToInt directFuncMonoType
+                                    Mono.forceCNumberToInt unifyResult.funcMonoType
 
                                 paramTypes =
                                     TypeSubst.extractParamTypes funcMonoType
@@ -1498,47 +1681,159 @@ specializeExpr expr subst state =
                             )
 
                 _ ->
-                    -- Non-function let: original behavior
-                    let
-                        ( monoDef, state1 ) =
-                            specializeDef def subst state
+                    if shouldUseValueMulti defCanType then
+                        -- Value-multi path: defer specialization until uses are known.
+                        let
+                            newEntry =
+                                { defName = defName
+                                , defCanType = defCanType
+                                , def = def
+                                , instances = Dict.empty
+                                }
 
-                        defMonoType0 =
-                            Mono.forceCNumberToInt (TypeSubst.applySubst subst defCanType)
+                            stateForBody =
+                                { state | ctx = let cvm = state.ctx in { cvm | valueMulti = newEntry :: cvm.valueMulti } }
 
-                        -- If defCanType has unresolved TVars, infer from the specialized expr.
-                        defMonoType =
-                            if Mono.containsCEcoMVar defMonoType0 then
-                                monoDefExprType monoDef
+                            ( monoBody, stateAfterBody ) =
+                                specializeExpr body subst stateForBody
+                        in
+                        case stateAfterBody.ctx.valueMulti of
+                            topEntry :: restOfStack ->
+                                if Dict.isEmpty topEntry.instances then
+                                    -- Value never used: fall back to eager single-instance behavior.
+                                    let
+                                        ( monoDef, state1 ) =
+                                            specializeDef def subst { stateAfterBody | ctx = let cvmf = stateAfterBody.ctx in { cvmf | valueMulti = restOfStack } }
 
-                            else
-                                defMonoType0
+                                        defMonoType0 =
+                                            Mono.forceCNumberToInt (TypeSubst.applySubst subst defCanType)
 
-                        -- Also enrich the substitution with any bindings discovered
-                        -- from the concrete def type, so the body sees them.
-                        enrichedSubst =
-                            if Mono.containsCEcoMVar defMonoType0 then
-                                TypeSubst.unifyExtend defCanType defMonoType subst
+                                        defMonoType =
+                                            if Mono.containsCEcoMVar defMonoType0 then
+                                                monoDefExprType monoDef
 
-                            else
-                                subst
+                                            else
+                                                defMonoType0
 
-                        stateWithVar =
-                            { state1 | ctx = let c1n = state1.ctx in { c1n | varEnv = State.insertVar defName defMonoType c1n.varEnv } }
+                                        enrichedSubst =
+                                            if Mono.containsCEcoMVar defMonoType0 then
+                                                TypeSubst.unifyExtend defCanType defMonoType subst
 
-                        ( monoBody, state2 ) =
-                            specializeExpr body enrichedSubst stateWithVar
-                    in
-                    ( Mono.MonoLet monoDef
-                        monoBody
-                        (if Mono.containsCEcoMVar monoType0 then
-                            Mono.typeOf monoBody
+                                            else
+                                                subst
 
-                         else
-                            monoType0
+                                        stateWithVar =
+                                            { state1 | ctx = let cvme = state1.ctx in { cvme | varEnv = State.insertVar defName defMonoType cvme.varEnv } }
+
+                                        ( monoBody2, state2 ) =
+                                            if Mono.containsCEcoMVar defMonoType0 then
+                                                specializeExpr body enrichedSubst stateWithVar
+
+                                            else
+                                                ( monoBody, stateWithVar )
+                                    in
+                                    ( Mono.MonoLet monoDef
+                                        monoBody2
+                                        (if Mono.containsCEcoMVar monoType0 then
+                                            Mono.typeOf monoBody2
+
+                                         else
+                                            monoType0
+                                        )
+                                    , state2
+                                    )
+
+                                else
+                                    -- We have instances: specialize def once per requested type.
+                                    let
+                                        instancesList =
+                                            Dict.values topEntry.instances
+
+                                        ( instanceDefs, stateWithDefs ) =
+                                            List.foldl
+                                                (\info ( defsAcc, stAcc ) ->
+                                                    let
+                                                        mergedSubst =
+                                                            TypeSubst.unifyExtend defCanType info.monoType subst
+
+                                                        ( monoDef0, st1 ) =
+                                                            specializeDef def mergedSubst stAcc
+
+                                                        monoDef =
+                                                            renameMonoDef info.freshName monoDef0
+                                                    in
+                                                    ( monoDef :: defsAcc, st1 )
+                                                )
+                                                ( [], { stateAfterBody | ctx = let cvmi = stateAfterBody.ctx in { cvmi | valueMulti = restOfStack } } )
+                                                instancesList
+
+                                        stateWithVars =
+                                            List.foldl
+                                                (\info st ->
+                                                    { st
+                                                        | ctx = let cvmv = st.ctx in
+                                                            { cvmv | varEnv =
+                                                                State.insertVar info.freshName info.monoType cvmv.varEnv
+                                                            }
+                                                    }
+                                                )
+                                                stateWithDefs
+                                                instancesList
+
+                                        finalExpr =
+                                            List.foldl
+                                                (\def_ accBody -> Mono.MonoLet def_ accBody (Mono.typeOf accBody))
+                                                monoBody
+                                                instanceDefs
+                                    in
+                                    ( finalExpr, stateWithVars )
+
+                            [] ->
+                                -- Stack underflow: should not happen.
+                                Utils.Crash.crash "Specialize: valueMulti stack underflow in Let"
+
+                    else
+                        -- Non-function let: original eager behavior
+                        let
+                            ( monoDef, state1 ) =
+                                specializeDef def subst state
+
+                            defMonoType0 =
+                                Mono.forceCNumberToInt (TypeSubst.applySubst subst defCanType)
+
+                            -- If defCanType has unresolved TVars, infer from the specialized expr.
+                            defMonoType =
+                                if Mono.containsCEcoMVar defMonoType0 then
+                                    monoDefExprType monoDef
+
+                                else
+                                    defMonoType0
+
+                            -- Also enrich the substitution with any bindings discovered
+                            -- from the concrete def type, so the body sees them.
+                            enrichedSubst =
+                                if Mono.containsCEcoMVar defMonoType0 then
+                                    TypeSubst.unifyExtend defCanType defMonoType subst
+
+                                else
+                                    subst
+
+                            stateWithVar =
+                                { state1 | ctx = let c1n = state1.ctx in { c1n | varEnv = State.insertVar defName defMonoType c1n.varEnv } }
+
+                            ( monoBody, state2 ) =
+                                specializeExpr body enrichedSubst stateWithVar
+                        in
+                        ( Mono.MonoLet monoDef
+                            monoBody
+                            (if Mono.containsCEcoMVar monoType0 then
+                                Mono.typeOf monoBody
+
+                             else
+                                monoType0
+                            )
+                        , state2
                         )
-                    , state2
-                    )
 
         TOpt.Destruct destructor body canType ->
             let
@@ -1628,11 +1923,34 @@ specializeExpr expr subst state =
             let
                 monoType =
                     Mono.forceCNumberToInt (TypeSubst.applySubst subst canType)
-
-                ( monoRecord, stateAfter ) =
-                    specializeExpr record subst state
             in
-            ( Mono.MonoRecordAccess monoRecord fieldName monoType, stateAfter )
+            case getValueMultiVar record state of
+                Just ( varName, recordCanType ) ->
+                    -- Value-multi target: derive the concrete record type from the
+                    -- access field type. The field's monoType is concrete (type inference
+                    -- resolved it), but the record's canonical type has free type vars.
+                    -- Unify to learn the concrete bindings.
+                    let
+                        partialRecordMono =
+                            Mono.MRecord (Dict.singleton fieldName monoType)
+
+                        enrichedSubst =
+                            TypeSubst.unifyExtend recordCanType partialRecordMono subst
+
+                        recordMonoType =
+                            Mono.forceCNumberToInt (TypeSubst.applySubst enrichedSubst recordCanType)
+
+                        ( freshName, state1 ) =
+                            getOrCreateValueInstance varName recordMonoType enrichedSubst state
+                    in
+                    ( Mono.MonoRecordAccess (Mono.MonoVarLocal freshName recordMonoType) fieldName monoType, state1 )
+
+                Nothing ->
+                    let
+                        ( monoRecord, stateAfter ) =
+                            specializeExpr record subst state
+                    in
+                    ( Mono.MonoRecordAccess monoRecord fieldName monoType, stateAfter )
 
         TOpt.Update _ record updates canType ->
             let
