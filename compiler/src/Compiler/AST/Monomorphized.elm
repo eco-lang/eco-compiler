@@ -156,6 +156,7 @@ import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Reporting.Annotation exposing (Region)
 import Dict exposing (Dict)
 import System.TypeCheck.IO as IO
+import Tuple
 
 
 
@@ -585,28 +586,23 @@ value changed, or (False, originalDict) if no value changed.
 dictMapChanged : (v -> ( Bool, v )) -> Dict comparable v -> ( Bool, Dict comparable v )
 dictMapChanged f dict =
     let
-        updates =
-            Dict.foldl
-                (\key val acc ->
-                    let
-                        ( changed, newVal ) =
-                            f val
-                    in
-                    if changed then
-                        ( key, newVal ) :: acc
+        fold key val accPair =
+            let
+                ( valChanged, newVal ) =
+                    f val
+            in
+            if valChanged then
+                ( True, Dict.insert key newVal (Tuple.second accPair) )
 
-                    else
-                        acc
-                )
-                []
-                dict
+            else
+                accPair
     in
-    case updates of
-        [] ->
-            ( False, dict )
+    case Dict.foldl fold ( False, dict ) dict of
+        ( True, newDict ) ->
+            ( True, newDict )
 
         _ ->
-            ( True, List.foldl (\( k, v ) d -> Dict.insert k v d) dict updates )
+            ( False, dict )
 
 
 {-| Identifier for lambda functions in lambda sets, distinguishing named functions from closures.

@@ -50,6 +50,7 @@ import Data.Map
 import Dict
 import Set exposing (Set)
 import System.TypeCheck.IO as IO
+import Tuple
 
 
 -- INTERNAL HELPERS: changed-flag mapping, union-find, normalized insertion
@@ -87,28 +88,23 @@ dictMapChanged :
     -> ( Bool, Dict.Dict Name v )
 dictMapChanged f dict =
     let
-        updates =
-            Dict.foldl
-                (\key val acc ->
-                    let
-                        ( changed, newVal ) =
-                            f val
-                    in
-                    if changed then
-                        ( key, newVal ) :: acc
+        fold key val accPair =
+            let
+                ( valChanged, newVal ) =
+                    f val
+            in
+            if valChanged then
+                ( True, Dict.insert key newVal (Tuple.second accPair) )
 
-                    else
-                        acc
-                )
-                []
-                dict
+            else
+                accPair
     in
-    case updates of
-        [] ->
-            ( False, dict )
+    case Dict.foldl fold ( False, dict ) dict of
+        ( True, newDict ) ->
+            ( True, newDict )
 
         _ ->
-            ( True, List.foldl (\( k, v ) d -> Dict.insert k v d) dict updates )
+            ( False, dict )
 
 
 findRootVar : Name -> Substitution -> ( Name, Substitution )
