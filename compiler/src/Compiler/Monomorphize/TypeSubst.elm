@@ -60,22 +60,25 @@ listMapChanged :
     -> List a
     -> ( Bool, List a )
 listMapChanged f list =
-    let
-        step item ( anyChanged, acc ) =
+    listMapChangedHelp f list list False []
+
+
+listMapChangedHelp : (a -> ( Bool, a )) -> List a -> List a -> Bool -> List a -> ( Bool, List a )
+listMapChangedHelp f remaining original anyChanged acc =
+    case remaining of
+        [] ->
+            if anyChanged then
+                ( True, List.reverse acc )
+
+            else
+                ( False, original )
+
+        x :: xs ->
             let
-                ( itemChanged, newItem ) =
-                    f item
+                ( changed, newX ) =
+                    f x
             in
-            ( anyChanged || itemChanged, newItem :: acc )
-
-        ( changed, reversed ) =
-            List.foldl step ( False, [] ) list
-    in
-    if changed then
-        ( True, List.reverse reversed )
-
-    else
-        ( False, list )
+            listMapChangedHelp f xs original (anyChanged || changed) (newX :: acc)
 
 
 dictMapChanged :
@@ -83,16 +86,29 @@ dictMapChanged :
     -> Dict.Dict Name v
     -> ( Bool, Dict.Dict Name v )
 dictMapChanged f dict =
-    Dict.foldl
-        (\key val ( anyChanged, acc ) ->
-            let
-                ( changed, newVal ) =
-                    f val
-            in
-            ( anyChanged || changed, Dict.insert key newVal acc )
-        )
-        ( False, dict )
-        dict
+    let
+        updates =
+            Dict.foldl
+                (\key val acc ->
+                    let
+                        ( changed, newVal ) =
+                            f val
+                    in
+                    if changed then
+                        ( key, newVal ) :: acc
+
+                    else
+                        acc
+                )
+                []
+                dict
+    in
+    case updates of
+        [] ->
+            ( False, dict )
+
+        _ ->
+            ( True, List.foldl (\( k, v ) d -> Dict.insert k v d) dict updates )
 
 
 findRootVar : Name -> Substitution -> ( Name, Substitution )

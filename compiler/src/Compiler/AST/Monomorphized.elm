@@ -585,23 +585,28 @@ value changed, or (False, originalDict) if no value changed.
 dictMapChanged : (v -> ( Bool, v )) -> Dict comparable v -> ( Bool, Dict comparable v )
 dictMapChanged f dict =
     let
-        ( changed, newDict ) =
+        updates =
             Dict.foldl
-                (\key val ( ch, acc ) ->
+                (\key val acc ->
                     let
-                        ( valChanged, newVal ) =
+                        ( changed, newVal ) =
                             f val
                     in
-                    ( ch || valChanged, Dict.insert key newVal acc )
+                    if changed then
+                        ( key, newVal ) :: acc
+
+                    else
+                        acc
                 )
-                ( False, Dict.empty )
+                []
                 dict
     in
-    if changed then
-        ( True, newDict )
+    case updates of
+        [] ->
+            ( False, dict )
 
-    else
-        ( False, dict )
+        _ ->
+            ( True, List.foldl (\( k, v ) d -> Dict.insert k v d) dict updates )
 
 
 {-| Identifier for lambda functions in lambda sets, distinguishing named functions from closures.
