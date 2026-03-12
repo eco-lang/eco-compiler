@@ -31,6 +31,11 @@ by applying type variable substitutions.
 
 @docs fillUnconstrainedCEcoWithErased
 
+
+# Query
+
+@docs monoTypeContainsMVar
+
 -}
 
 import Compiler.AST.Canonical as Can
