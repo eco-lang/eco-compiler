@@ -56,6 +56,112 @@ type ProcessedArg
     | LocalFunArg Name Can.Type
 
 
+-- ========== CALL-SITE TYPE RENAMING ==========
+
+
+buildRenameMap : Int -> List Name -> List Name -> Data.Map.Dict String Name Name -> Int -> Data.Map.Dict String Name Name
+buildRenameMap epoch callerVarNames funcVarNames acc counter =
+    case funcVarNames of
+        [] ->
+            acc
+
+        name :: rest ->
+            if List.member name callerVarNames && not (Data.Map.member identity name acc) then
+                let
+                    freshName =
+                        name ++ "__callee" ++ String.fromInt epoch ++ "_" ++ String.fromInt counter
+                in
+                buildRenameMap epoch callerVarNames rest (Data.Map.insert identity name freshName acc) (counter + 1)
+
+            else
+                buildRenameMap epoch callerVarNames rest acc counter
+
+
+renameCanTypeVars : Data.Map.Dict String Name Name -> Can.Type -> Can.Type
+renameCanTypeVars renameMap canType =
+    case canType of
+        Can.TVar name ->
+            case Data.Map.get identity name renameMap of
+                Just newName ->
+                    Can.TVar newName
+
+                Nothing ->
+                    canType
+
+        Can.TLambda from to ->
+            Can.TLambda (renameCanTypeVars renameMap from) (renameCanTypeVars renameMap to)
+
+        Can.TType canonical name args ->
+            Can.TType canonical name (List.map (renameCanTypeVars renameMap) args)
+
+        Can.TRecord fields ext ->
+            Can.TRecord
+                (Dict.map (\_ (Can.FieldType idx t) -> Can.FieldType idx (renameCanTypeVars renameMap t)) fields)
+                ext
+
+        Can.TTuple a b rest ->
+            Can.TTuple
+                (renameCanTypeVars renameMap a)
+                (renameCanTypeVars renameMap b)
+                (List.map (renameCanTypeVars renameMap) rest)
+
+        Can.TAlias canonical name aliasArgs aliasType ->
+            Can.TAlias canonical
+                name
+                (List.map (\( n, t ) -> ( n, renameCanTypeVars renameMap t )) aliasArgs)
+                (case aliasType of
+                    Can.Filled inner ->
+                        Can.Filled (renameCanTypeVars renameMap inner)
+
+                    Can.Holey inner ->
+                        Can.Holey (renameCanTypeVars renameMap inner)
+                )
+
+        Can.TUnit ->
+            canType
+
+
+unifyCallSiteWithRenaming :
+    Can.Type
+    -> List Mono.MonoType
+    -> Can.Type
+    -> Substitution
+    -> Int
+    -> ( Substitution, Can.Type )
+unifyCallSiteWithRenaming funcCanType argMonoTypes resultCanType baseSubst epoch =
+    let
+        callerVarNames =
+            Dict.keys baseSubst
+
+        funcVarNames =
+            TypeSubst.collectCanTypeVars funcCanType []
+
+        renameMap =
+            buildRenameMap epoch callerVarNames funcVarNames Data.Map.empty 0
+
+        funcCanTypeRenamed =
+            renameCanTypeVars renameMap funcCanType
+
+        resultCanTypeRenamed =
+            renameCanTypeVars renameMap resultCanType
+
+        subst1 =
+            TypeSubst.unifyArgsOnly funcCanTypeRenamed argMonoTypes baseSubst
+
+        desiredResultMono =
+            TypeSubst.applySubst subst1 resultCanTypeRenamed
+
+        resolvedArgTypes =
+            List.map (TypeSubst.resolveMonoVars subst1) argMonoTypes
+
+        desiredFuncMono =
+            Mono.MFunction resolvedArgTypes desiredResultMono
+    in
+    ( TypeSubst.unifyExtend funcCanTypeRenamed desiredFuncMono subst1
+    , funcCanTypeRenamed
+    )
+
+
 {-| Enqueue a specialization onto the worklist, deduplicating via the scheduled BitSet.
 -}
 enqueueSpec :
@@ -907,7 +1013,7 @@ specializeExpr expr subst state =
                             { state1 | renameEpoch = epoch + 1 }
 
                         ( callSubst, funcCanTypeRenamed ) =
-                            TypeSubst.unifyFuncCall funcCanType argTypes canType subst epoch
+                            unifyCallSiteWithRenaming funcCanType argTypes canType subst epoch
 
                         funcMonoType =
                             Mono.forceCNumberToInt (TypeSubst.applySubst callSubst funcCanTypeRenamed)
@@ -941,7 +1047,7 @@ specializeExpr expr subst state =
                             { state1 | renameEpoch = epoch + 1 }
 
                         ( callSubst, funcCanTypeRenamed ) =
-                            TypeSubst.unifyFuncCall funcCanType argTypes canType subst epoch
+                            unifyCallSiteWithRenaming funcCanType argTypes canType subst epoch
 
                         funcMonoType =
                             deriveKernelAbiType ( home, name ) funcCanTypeRenamed callSubst
@@ -969,7 +1075,7 @@ specializeExpr expr subst state =
                             { state1 | renameEpoch = epoch + 1 }
 
                         ( callSubst, funcCanTypeRenamed ) =
-                            TypeSubst.unifyFuncCall funcCanType argTypes canType subst epoch
+                            unifyCallSiteWithRenaming funcCanType argTypes canType subst epoch
 
                         funcMonoType =
                             deriveKernelAbiType ( "Debug", name ) funcCanTypeRenamed callSubst
@@ -1055,7 +1161,7 @@ specializeExpr expr subst state =
                                     { state1 | renameEpoch = epoch + 1 }
 
                                 ( callSubst, funcCanTypeRenamed ) =
-                                    TypeSubst.unifyFuncCall funcCanType argTypes canType subst epoch
+                                    unifyCallSiteWithRenaming funcCanType argTypes canType subst epoch
 
                                 funcMonoType =
                                     Mono.forceCNumberToInt (TypeSubst.applySubst callSubst funcCanTypeRenamed)

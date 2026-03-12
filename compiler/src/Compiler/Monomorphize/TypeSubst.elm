@@ -1,9 +1,11 @@
 module Compiler.Monomorphize.TypeSubst exposing
     ( applySubst
     , canTypeToMonoType
-    , unify, unifyExtend, unifyFuncCall, unifyArgsOnly, extractParamTypes
+    , unify, unifyExtend, unifyArgsOnly, extractParamTypes
     , fillUnconstrainedCEcoWithErased
     , monoTypeContainsMVar
+    , collectCanTypeVars
+    , resolveMonoVars
     )
 
 {-| Type substitution and unification for monomorphization.
@@ -24,7 +26,7 @@ by applying type variable substitutions.
 
 # Unification
 
-@docs unify, unifyExtend, unifyFuncCall, unifyArgsOnly, extractParamTypes
+@docs unify, unifyExtend, unifyArgsOnly, extractParamTypes
 
 
 # CEco Variable Filling
@@ -240,52 +242,6 @@ insertBinding name ty subst =
 
 
 
-{-| Unify a function call by matching argument types and result type.
-Returns the updated substitution and the renamed function canonical type
-(with callee type variables renamed to avoid collisions with caller vars).
--}
-unifyFuncCall :
-    Can.Type
-    -> List Mono.MonoType
-    -> Can.Type
-    -> Substitution
-    -> Int
-    -> ( Substitution, Can.Type )
-unifyFuncCall funcCanType argMonoTypes resultCanType baseSubst epoch =
-    let
-        -- Vars from the caller's context (existing substitution bindings)
-        callerVarNames =
-            Dict.keys baseSubst
-
-        -- Vars appearing in the callee's canonical type
-        funcVarNames =
-            collectCanTypeVars funcCanType []
-
-        renameMap =
-            buildRenameMap epoch callerVarNames funcVarNames Data.Map.empty 0
-
-        funcCanTypeRenamed =
-            renameCanTypeVars renameMap funcCanType
-
-        resultCanTypeRenamed =
-            renameCanTypeVars renameMap resultCanType
-
-        subst1 =
-            unifyArgsOnly funcCanTypeRenamed argMonoTypes baseSubst
-
-        desiredResultMono =
-            applySubst subst1 resultCanTypeRenamed
-
-        -- Resolve MVars in arg types through subst1 to avoid re-introducing
-        -- unresolved MVars that would overwrite correct bindings during the
-        -- final unification step.
-        resolvedArgTypes =
-            List.map (resolveMonoVars subst1) argMonoTypes
-
-        desiredFuncMono =
-            Mono.MFunction resolvedArgTypes desiredResultMono
-    in
-    ( unifyHelp funcCanTypeRenamed desiredFuncMono subst1, funcCanTypeRenamed )
 
 
 {-| Unify a canonical type with a monomorphic type to produce a substitution for type variables.
@@ -680,73 +636,6 @@ collectCanTypeVars canType acc =
 
         Can.TUnit ->
             acc
-
-
-{-| Build a rename map for callee type variables that clash with caller variables.
-Only variables in funcVarNames that also appear in callerVarNames get renamed.
--}
-buildRenameMap : Int -> List Name -> List Name -> Data.Map.Dict String Name Name -> Int -> Data.Map.Dict String Name Name
-buildRenameMap epoch callerVarNames funcVarNames acc counter =
-    case funcVarNames of
-        [] ->
-            acc
-
-        name :: rest ->
-            if List.member name callerVarNames && not (Data.Map.member identity name acc) then
-                let
-                    freshName =
-                        name ++ "__callee" ++ String.fromInt epoch ++ "_" ++ String.fromInt counter
-                in
-                buildRenameMap epoch callerVarNames rest (Data.Map.insert identity name freshName acc) (counter + 1)
-
-            else
-                buildRenameMap epoch callerVarNames rest acc counter
-
-
-{-| Rename type variables in a canonical type according to a rename map.
--}
-renameCanTypeVars : Data.Map.Dict String Name Name -> Can.Type -> Can.Type
-renameCanTypeVars renameMap canType =
-    case canType of
-        Can.TVar name ->
-            case Data.Map.get identity name renameMap of
-                Just newName ->
-                    Can.TVar newName
-
-                Nothing ->
-                    canType
-
-        Can.TLambda from to ->
-            Can.TLambda (renameCanTypeVars renameMap from) (renameCanTypeVars renameMap to)
-
-        Can.TType canonical name args ->
-            Can.TType canonical name (List.map (renameCanTypeVars renameMap) args)
-
-        Can.TRecord fields ext ->
-            Can.TRecord
-                (Dict.map (\_ (Can.FieldType idx t) -> Can.FieldType idx (renameCanTypeVars renameMap t)) fields)
-                ext
-
-        Can.TTuple a b rest ->
-            Can.TTuple
-                (renameCanTypeVars renameMap a)
-                (renameCanTypeVars renameMap b)
-                (List.map (renameCanTypeVars renameMap) rest)
-
-        Can.TAlias canonical name aliasArgs aliasType ->
-            Can.TAlias canonical
-                name
-                (List.map (\( n, t ) -> ( n, renameCanTypeVars renameMap t )) aliasArgs)
-                (case aliasType of
-                    Can.Filled inner ->
-                        Can.Filled (renameCanTypeVars renameMap inner)
-
-                    Can.Holey inner ->
-                        Can.Holey (renameCanTypeVars renameMap inner)
-                )
-
-        Can.TUnit ->
-            canType
 
 
 {-| Apply a type substitution to a canonical type to produce a monomorphic type.
