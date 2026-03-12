@@ -1,5 +1,5 @@
 module Compiler.Monomorphize.State exposing
-    ( MonoState, WorkItem(..), Substitution, SchemeInfo, SchemeInfoCache
+    ( MonoState, SpecAccum, SpecContext, WorkItem(..), Substitution, SchemeInfo, SchemeInfoCache
     , initState
     , LocalInstanceInfo, LocalMultiState
     , VarEnv(..), emptyVarEnv, insertVar, lookupVar, popFrame, pushFrame
@@ -71,26 +71,43 @@ type alias SchemeInfoCache =
     DataMap.Dict (List String) TOpt.Global SchemeInfo
 
 
-{-| State maintained during monomorphization, tracking work to be done and completed specializations.
+{-| Global accumulator fields that grow monotonically during monomorphization.
+Updated by enqueueSpec, processWorklist completion, and scheme cache lookups.
 -}
-type alias MonoState =
+type alias SpecAccum =
     { worklist : List WorkItem
     , nodes : Dict Int Mono.MonoNode
     , inProgress : BitSet
     , scheduled : BitSet
     , registry : Mono.SpecializationRegistry
-    , lambdaCounter : Int
-    , currentModule : IO.Canonical
+    , callEdges : Dict Int (List Int)
+    , specHasEffects : BitSet -- SpecIds whose node body references Debug.* kernels
+    , specValueUsed : BitSet -- SpecIds whose value is referenced via MonoVarGlobal
+    , schemeCache : SchemeInfoCache -- Cached type scheme metadata per global
+    }
+
+
+{-| Traversal context fields that change on scope entry/exit during tree traversal.
+Updated by varEnv push/pop, localMulti push/pop, renameEpoch bump, currentGlobal set.
+-}
+type alias SpecContext =
+    { currentModule : IO.Canonical
     , toptNodes : DataMap.Dict (List String) TOpt.Global TOpt.Node
     , currentGlobal : Maybe Mono.Global
     , globalTypeEnv : TypeEnv.GlobalTypeEnv
     , varEnv : VarEnv -- Layered mapping of variable names to their MonoTypes
     , localMulti : List LocalMultiState
-    , callEdges : Dict Int (List Int)
-    , specHasEffects : BitSet -- SpecIds whose node body references Debug.* kernels
-    , specValueUsed : BitSet -- SpecIds whose value is referenced via MonoVarGlobal
+    , lambdaCounter : Int
     , renameEpoch : Int -- Monotonically increasing counter for unique __callee names
-    , schemeCache : SchemeInfoCache -- Cached type scheme metadata per global
+    }
+
+
+{-| State maintained during monomorphization, split into accumulator and context
+to reduce _Utils_update overhead (each update copies ~9 fields instead of 17).
+-}
+type alias MonoState =
+    { accum : SpecAccum
+    , ctx : SpecContext
     }
 
 
@@ -201,21 +218,25 @@ type alias LocalMultiState =
 -}
 initState : IO.Canonical -> DataMap.Dict (List String) TOpt.Global TOpt.Node -> TypeEnv.GlobalTypeEnv -> MonoState
 initState currentModule toptNodes globalTypeEnv =
-    { worklist = []
-    , nodes = Dict.empty
-    , inProgress = BitSet.empty
-    , scheduled = BitSet.empty
-    , registry = Registry.emptyRegistry
-    , lambdaCounter = 0
-    , currentModule = currentModule
-    , toptNodes = toptNodes
-    , currentGlobal = Nothing
-    , globalTypeEnv = globalTypeEnv
-    , varEnv = emptyVarEnv
-    , localMulti = []
-    , callEdges = Dict.empty
-    , specHasEffects = BitSet.empty
-    , specValueUsed = BitSet.empty
-    , renameEpoch = 0
-    , schemeCache = DataMap.empty
+    { accum =
+        { worklist = []
+        , nodes = Dict.empty
+        , inProgress = BitSet.empty
+        , scheduled = BitSet.empty
+        , registry = Registry.emptyRegistry
+        , callEdges = Dict.empty
+        , specHasEffects = BitSet.empty
+        , specValueUsed = BitSet.empty
+        , schemeCache = DataMap.empty
+        }
+    , ctx =
+        { currentModule = currentModule
+        , toptNodes = toptNodes
+        , currentGlobal = Nothing
+        , globalTypeEnv = globalTypeEnv
+        , varEnv = emptyVarEnv
+        , localMulti = []
+        , lambdaCounter = 0
+        , renameEpoch = 0
+        }
     }

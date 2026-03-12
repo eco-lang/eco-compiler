@@ -81,7 +81,7 @@ monomorphizeFromEntry mainGlobal mainType globalTypeEnv nodes =
             assembleRawGraph finalState mainSpecIdVal
 
         prunedGraph =
-            Prune.pruneUnreachableSpecs finalState.globalTypeEnv rawGraph
+            Prune.pruneUnreachableSpecs finalState.ctx.globalTypeEnv rawGraph
     in
     Ok prunedGraph
 
@@ -112,7 +112,7 @@ monomorphizeWithLog log entryPointName globalTypeEnv (TOpt.GlobalGraph nodes _ _
                                     log "  Pruning unreachable specs..."
                                         |> Task.map
                                             (\_ ->
-                                                Ok (Prune.pruneUnreachableSpecs finalState.globalTypeEnv rawGraph)
+                                                Ok (Prune.pruneUnreachableSpecs finalState.ctx.globalTypeEnv rawGraph)
                                             )
                                 )
                     )
@@ -137,15 +137,21 @@ runSpecialization mainGlobal mainType globalTypeEnv nodes =
         initialState =
             initState currentModule nodes globalTypeEnv
 
+        initialAccum =
+            initialState.accum
+
         ( mainSpecIdVal, registryWithMain ) =
-            Registry.getOrCreateSpecId (toptGlobalToMono mainGlobal) mainMonoType Nothing initialState.registry
+            Registry.getOrCreateSpecId (toptGlobalToMono mainGlobal) mainMonoType Nothing initialAccum.registry
 
         stateWithMain : MonoState
         stateWithMain =
             { initialState
-                | registry = registryWithMain
-                , worklist = [ SpecializeGlobal mainSpecIdVal ]
-                , scheduled = BitSet.insertGrowing mainSpecIdVal initialState.scheduled
+                | accum =
+                    { initialAccum
+                        | registry = registryWithMain
+                        , worklist = [ SpecializeGlobal mainSpecIdVal ]
+                        , scheduled = BitSet.insertGrowing mainSpecIdVal initialAccum.scheduled
+                    }
             }
 
         finalState : MonoState
@@ -163,6 +169,9 @@ Performs MVar erasure, registry patching, and graph construction.
 assembleRawGraph : MonoState -> Mono.SpecId -> Mono.MonoGraph
 assembleRawGraph finalState mainSpecIdVal =
     let
+        finalAccum =
+            finalState.accum
+
         -- Note: The callable top-level invariant is enforced by GlobalOpt via ensureCallableForNode.
         mainInfo : Maybe Mono.MainInfo
         mainInfo =
@@ -171,7 +180,7 @@ assembleRawGraph finalState mainSpecIdVal =
         -- Mark the main entry point as value-used
         valueUsedWithMain : BitSet.BitSet
         valueUsedWithMain =
-            BitSet.insertGrowing mainSpecIdVal finalState.specValueUsed
+            BitSet.insertGrowing mainSpecIdVal finalAccum.specValueUsed
 
         -- Key-type-aware erasure of remaining MVars:
         -- 1. Dead-value specs (not value-used): erase ALL MVars to MErased
@@ -181,7 +190,7 @@ assembleRawGraph finalState mainSpecIdVal =
         --    (any remaining MVars are real specialization bugs caught by MONO_021)
         nextId : Int
         nextId =
-            finalState.registry.nextId
+            finalAccum.registry.nextId
 
         patchedNodes : Array.Array (Maybe Mono.MonoNode)
         patchedNodes =
@@ -196,7 +205,7 @@ assembleRawGraph finalState mainSpecIdVal =
                             BitSet.member specId valueUsedWithMain
 
                         keyHasCEcoMVar =
-                            case Array.get specId finalState.registry.reverseMapping of
+                            case Array.get specId finalAccum.registry.reverseMapping of
                                 Just (Just ( _, keyType, _ )) ->
                                     Mono.containsCEcoMVar keyType
 
@@ -217,14 +226,14 @@ assembleRawGraph finalState mainSpecIdVal =
                     Array.set specId (Just patched) acc
                 )
                 base
-                finalState.nodes
+                finalAccum.nodes
 
         -- Patch registry reverseMapping + rebuild mapping to maintain MONO_017
         patchedRegistry : Mono.SpecializationRegistry
         patchedRegistry =
             let
                 oldReg =
-                    finalState.registry
+                    finalAccum.registry
 
                 newReverseMapping =
                     Array.indexedMap
@@ -274,16 +283,16 @@ assembleRawGraph finalState mainSpecIdVal =
             Dict.foldl
                 (\specId edges acc -> Array.set specId (Just edges) acc)
                 base
-                finalState.callEdges
+                finalAccum.callEdges
     in
     Mono.MonoGraph
         { nodes = patchedNodes
         , registry = patchedRegistry
         , main = mainInfo
         , ctorShapes = Dict.empty
-        , nextLambdaIndex = finalState.lambdaCounter
+        , nextLambdaIndex = finalState.ctx.lambdaCounter
         , callEdges = callEdgesArray
-        , specHasEffects = finalState.specHasEffects
+        , specHasEffects = finalAccum.specHasEffects
         , specValueUsed = valueUsedWithMain
         }
 
@@ -340,34 +349,43 @@ findEntryPoint entryPointName nodes =
 -}
 processWorklist : MonoState -> MonoState
 processWorklist state =
-    case state.worklist of
+    case state.accum.worklist of
         [] ->
             state
 
         (SpecializeGlobal specId) :: rest ->
             let
-                state1 =
-                    { state | worklist = rest }
+                accum =
+                    state.accum
             in
-            if BitSet.member specId state1.inProgress then
+            if BitSet.member specId accum.inProgress then
                 -- Skip to avoid infinite recursion when specializing recursive functions.
-                processWorklist state1
+                processWorklist { state | accum = { accum | worklist = rest } }
 
             else
-                case Registry.lookupSpecKey specId state1.registry of
+                case Registry.lookupSpecKey specId accum.registry of
                     Nothing ->
                         -- Should not happen if registry/worklist invariants hold
-                        processWorklist state1
+                        processWorklist { state | accum = { accum | worklist = rest } }
 
                     Just ( global, monoType, _ ) ->
                         let
+                            ctx =
+                                state.ctx
+
                             -- Clear varEnv when starting a new function specialization
                             -- because we're entering a new scope with different local variables
                             state2 =
-                                { state1
-                                    | inProgress = BitSet.insertGrowing specId state1.inProgress
-                                    , currentGlobal = Just global
-                                    , varEnv = State.emptyVarEnv
+                                { accum =
+                                    { accum
+                                        | worklist = rest
+                                        , inProgress = BitSet.insertGrowing specId accum.inProgress
+                                    }
+                                , ctx =
+                                    { ctx
+                                        | currentGlobal = Just global
+                                        , varEnv = State.emptyVarEnv
+                                    }
                                 }
                         in
                         case global of
@@ -377,23 +395,29 @@ processWorklist state =
                                     ( monoNode, stateAfter ) =
                                         specializeAccessorGlobal fieldName monoType state2
 
+                                    stateAfterAccum =
+                                        stateAfter.accum
+
                                     neighbors =
                                         collectCallsFromNode monoNode
 
                                     specValueUsed1 =
                                         List.foldl
                                             (\calleeId acc -> BitSet.insertGrowing calleeId acc)
-                                            stateAfter.specValueUsed
+                                            stateAfterAccum.specValueUsed
                                             neighbors
 
                                     -- Accessors are always pure, no specHasEffects update needed
                                     newState =
                                         { stateAfter
-                                            | nodes = Dict.insert specId monoNode stateAfter.nodes
-                                            , inProgress = BitSet.removeGrowing specId stateAfter.inProgress
-                                            , currentGlobal = Nothing
-                                            , callEdges = Dict.insert specId neighbors stateAfter.callEdges
-                                            , specValueUsed = specValueUsed1
+                                            | accum =
+                                                { stateAfterAccum
+                                                    | nodes = Dict.insert specId monoNode stateAfterAccum.nodes
+                                                    , inProgress = BitSet.removeGrowing specId stateAfterAccum.inProgress
+                                                    , callEdges = Dict.insert specId neighbors stateAfterAccum.callEdges
+                                                    , specValueUsed = specValueUsed1
+                                                }
+                                            , ctx = let ca = stateAfter.ctx in { ca | currentGlobal = Nothing }
                                         }
                                 in
                                 processWorklist newState
@@ -404,17 +428,23 @@ processWorklist state =
                                     toptGlobal =
                                         monoGlobalToTOpt global
                                 in
-                                case DMap.get TOpt.toComparableGlobal toptGlobal state2.toptNodes of
+                                case DMap.get TOpt.toComparableGlobal toptGlobal state2.ctx.toptNodes of
                                     Nothing ->
                                         -- External or missing definition; treat as extern.
                                         -- Externs are effect-free and have no callees.
                                         let
+                                            s2accum =
+                                                state2.accum
+
                                             newState =
                                                 { state2
-                                                    | nodes = Dict.insert specId (Mono.MonoExtern monoType) state2.nodes
-                                                    , inProgress = BitSet.removeGrowing specId state2.inProgress
-                                                    , currentGlobal = Nothing
-                                                    , callEdges = Dict.insert specId [] state2.callEdges
+                                                    | accum =
+                                                        { s2accum
+                                                            | nodes = Dict.insert specId (Mono.MonoExtern monoType) s2accum.nodes
+                                                            , inProgress = BitSet.removeGrowing specId s2accum.inProgress
+                                                            , callEdges = Dict.insert specId [] s2accum.callEdges
+                                                        }
+                                                    , ctx = let c2 = state2.ctx in { c2 | currentGlobal = Nothing }
                                                 }
                                         in
                                         processWorklist newState
@@ -426,13 +456,16 @@ processWorklist state =
                                             ( monoNode, stateAfter ) =
                                                 Specialize.specializeNode name toptNode monoType state2
 
+                                            saAccum =
+                                                stateAfter.accum
+
                                             -- Update registry with actual node type (may differ from requested type
                                             -- due to closure flattening, e.g., Int -> Int -> Int vs (Int, Int) -> Int)
                                             actualType =
                                                 Mono.nodeType monoNode
 
                                             updatedRegistry =
-                                                Registry.updateRegistryType specId actualType stateAfter.registry
+                                                Registry.updateRegistryType specId actualType saAccum.registry
 
                                             neighbors =
                                                 collectCallsFromNode monoNode
@@ -443,23 +476,26 @@ processWorklist state =
                                             specValueUsed1 =
                                                 List.foldl
                                                     (\calleeId acc -> BitSet.insertGrowing calleeId acc)
-                                                    stateAfter.specValueUsed
+                                                    saAccum.specValueUsed
                                                     neighbors
 
                                             newState =
                                                 { stateAfter
-                                                    | registry = updatedRegistry
-                                                    , nodes = Dict.insert specId monoNode stateAfter.nodes
-                                                    , inProgress = BitSet.removeGrowing specId stateAfter.inProgress
-                                                    , currentGlobal = Nothing
-                                                    , callEdges = Dict.insert specId neighbors stateAfter.callEdges
-                                                    , specHasEffects =
-                                                        if effectsHere then
-                                                            BitSet.insertGrowing specId stateAfter.specHasEffects
+                                                    | accum =
+                                                        { saAccum
+                                                            | registry = updatedRegistry
+                                                            , nodes = Dict.insert specId monoNode saAccum.nodes
+                                                            , inProgress = BitSet.removeGrowing specId saAccum.inProgress
+                                                            , callEdges = Dict.insert specId neighbors saAccum.callEdges
+                                                            , specHasEffects =
+                                                                if effectsHere then
+                                                                    BitSet.insertGrowing specId saAccum.specHasEffects
 
-                                                        else
-                                                            stateAfter.specHasEffects
-                                                    , specValueUsed = specValueUsed1
+                                                                else
+                                                                    saAccum.specHasEffects
+                                                            , specValueUsed = specValueUsed1
+                                                        }
+                                                    , ctx = let ca2 = stateAfter.ctx in { ca2 | currentGlobal = Nothing }
                                                 }
                                         in
                                         processWorklist newState
