@@ -447,17 +447,17 @@ independently both get named "a".
 toCanTypeBatch : Array (Maybe Variable) -> IO (Array (Maybe Can.Type))
 toCanTypeBatch nodeVars =
     -- First pass: collect all user-provided names across all variables
-    Array.foldl
-        (\maybeVar accIO ->
+    IO.foldM
+        (\names maybeVar ->
             case maybeVar of
                 Nothing ->
-                    accIO
+                    IO.pure names
 
                 Just var ->
-                    IO.andThen (\names -> getVarNames var names) accIO
+                    getVarNames var names
         )
-        (IO.pure Dict.empty)
-        nodeVars
+        Dict.empty
+        (Array.toList nodeVars)
         |> IO.andThen
             (\allUserNames ->
                 -- Second pass: convert all variables with a shared NameState

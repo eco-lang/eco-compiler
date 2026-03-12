@@ -71,22 +71,45 @@ constrain (Can.Module canData) =
 -- Generates constraints for all module declarations.
 
 
-constrainDecls : Can.Decls -> Constraint -> IO Constraint
-constrainDecls decls finalConstraint =
-    constrainDeclsHelp decls finalConstraint identity
+type DeclItem
+    = Single Can.Def
+    | Rec Can.Def (List Can.Def)
 
 
-constrainDeclsHelp : Can.Decls -> Constraint -> (IO Constraint -> IO Constraint) -> IO Constraint
-constrainDeclsHelp decls finalConstraint cont =
+flattenDecls : Can.Decls -> List DeclItem -> List DeclItem
+flattenDecls decls acc =
     case decls of
-        Can.Declare def otherDecls ->
-            constrainDeclsHelp otherDecls finalConstraint (IO.andThen (Expr.constrainDef DMap.empty def) >> cont)
+        Can.Declare def rest ->
+            flattenDecls rest (Single def :: acc)
 
-        Can.DeclareRec def defs otherDecls ->
-            constrainDeclsHelp otherDecls finalConstraint (IO.andThen (Expr.constrainRecursiveDefs DMap.empty (def :: defs)) >> cont)
+        Can.DeclareRec def defs rest ->
+            flattenDecls rest (Rec def defs :: acc)
 
         Can.SaveTheEnvironment ->
-            cont (IO.pure finalConstraint)
+            List.reverse acc
+
+
+constrainDecls : Can.Decls -> Constraint -> IO Constraint
+constrainDecls decls finalConstraint =
+    IO.loop constrainDeclsStep
+        ( List.reverse (flattenDecls decls []), finalConstraint )
+
+
+constrainDeclsStep :
+    ( List DeclItem, Constraint )
+    -> IO (IO.Step ( List DeclItem, Constraint ) Constraint)
+constrainDeclsStep ( items, bodyCon ) =
+    case items of
+        [] ->
+            IO.pure (IO.Done bodyCon)
+
+        (Single def) :: rest ->
+            Expr.constrainDef DMap.empty def bodyCon
+                |> IO.map (\con -> IO.Loop ( rest, con ))
+
+        (Rec def defs) :: rest ->
+            Expr.constrainRecursiveDefs DMap.empty (def :: defs) bodyCon
+                |> IO.map (\con -> IO.Loop ( rest, con ))
 
 
 

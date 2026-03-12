@@ -142,9 +142,26 @@ modify f =
 {-| Applies a stateful computation to each element of a list, threading state through all computations and collecting results.
 -}
 traverseList : (a -> StateT s b) -> List a -> StateT s (List b)
-traverseList f =
-    List.foldr (\a -> andThen (\c -> map (\va -> va :: c) (f a)))
-        (pure [])
+traverseList f list =
+    StateT
+        (\s0 ->
+            IO.loop (traverseListSTHelp f) ( list, [], s0 )
+                |> IO.map (\( results, sFinal ) -> ( List.reverse results, sFinal ))
+        )
+
+
+traverseListSTHelp :
+    (a -> StateT s b)
+    -> ( List a, List b, s )
+    -> IO (IO.Step ( List a, List b, s ) ( List b, s ))
+traverseListSTHelp f ( remaining, acc, s ) =
+    case remaining of
+        [] ->
+            IO.pure (IO.Done ( acc, s ))
+
+        a :: rest ->
+            runStateT (f a) s
+                |> IO.map (\( b, s1 ) -> IO.Loop ( rest, b :: acc, s1 ))
 
 
 {-| Applies a stateful computation to the second element of a tuple, leaving the first element unchanged.
@@ -162,7 +179,24 @@ traverseMap keyComparison toComparable f =
 
 
 traverseMapWithKey : (k -> k -> Order) -> (k -> comparable) -> (k -> a -> StateT s b) -> Dict comparable k a -> StateT s (Dict comparable k b)
-traverseMapWithKey keyComparison toComparable f =
-    Dict.foldl keyComparison
-        (\k a -> andThen (\c -> map (\va -> Dict.insert toComparable k va c) (f k a)))
-        (pure Dict.empty)
+traverseMapWithKey keyComparison toComparable f dict =
+    StateT
+        (\s0 ->
+            IO.loop (traverseMapSTHelp toComparable f)
+                ( Dict.toList keyComparison dict, Dict.empty, s0 )
+        )
+
+
+traverseMapSTHelp :
+    (k -> comparable)
+    -> (k -> a -> StateT s b)
+    -> ( List ( k, a ), Dict comparable k b, s )
+    -> IO (IO.Step ( List ( k, a ), Dict comparable k b, s ) ( Dict comparable k b, s ))
+traverseMapSTHelp toComparable f ( pairs, acc, s ) =
+    case pairs of
+        [] ->
+            IO.pure (IO.Done ( acc, s ))
+
+        ( k, a ) :: rest ->
+            runStateT (f k a) s
+                |> IO.map (\( b, s1 ) -> IO.Loop ( rest, Dict.insert toComparable k b acc, s1 ))

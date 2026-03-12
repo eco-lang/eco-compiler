@@ -85,30 +85,45 @@ constrainWithIdsDetailed (Can.Module canData) =
 -- ====== Declaration Constraints with ID Tracking ======
 
 
-constrainDeclsWithVars : Can.Decls -> Constraint -> Expr.ExprIdState -> IO ( Constraint, Expr.ExprIdState )
-constrainDeclsWithVars decls finalConstraint state =
-    constrainDeclsWithVarsHelp decls finalConstraint state
+type DeclItem
+    = Single Can.Def
+    | Rec Can.Def (List Can.Def)
 
 
-constrainDeclsWithVarsHelp : Can.Decls -> Constraint -> Expr.ExprIdState -> IO ( Constraint, Expr.ExprIdState )
-constrainDeclsWithVarsHelp decls finalConstraint state =
+flattenDecls : Can.Decls -> List DeclItem -> List DeclItem
+flattenDecls decls acc =
     case decls of
-        Can.Declare def otherDecls ->
-            constrainDeclsWithVarsHelp otherDecls finalConstraint state
-                |> IO.andThen
-                    (\( bodyCon, newState ) ->
-                        Expr.constrainDefWithIds DMap.empty def bodyCon newState
-                    )
+        Can.Declare def rest ->
+            flattenDecls rest (Single def :: acc)
 
-        Can.DeclareRec def defs otherDecls ->
-            constrainDeclsWithVarsHelp otherDecls finalConstraint state
-                |> IO.andThen
-                    (\( bodyCon, newState ) ->
-                        Expr.constrainRecursiveDefsWithIds DMap.empty (def :: defs) bodyCon newState
-                    )
+        Can.DeclareRec def defs rest ->
+            flattenDecls rest (Rec def defs :: acc)
 
         Can.SaveTheEnvironment ->
-            IO.pure ( finalConstraint, state )
+            List.reverse acc
+
+
+constrainDeclsWithVars : Can.Decls -> Constraint -> Expr.ExprIdState -> IO ( Constraint, Expr.ExprIdState )
+constrainDeclsWithVars decls finalConstraint state =
+    IO.loop constrainDeclsWithVarsStep
+        ( List.reverse (flattenDecls decls []), finalConstraint, state )
+
+
+constrainDeclsWithVarsStep :
+    ( List DeclItem, Constraint, Expr.ExprIdState )
+    -> IO (IO.Step ( List DeclItem, Constraint, Expr.ExprIdState ) ( Constraint, Expr.ExprIdState ))
+constrainDeclsWithVarsStep ( items, bodyCon, state ) =
+    case items of
+        [] ->
+            IO.pure (IO.Done ( bodyCon, state ))
+
+        (Single def) :: rest ->
+            Expr.constrainDefWithIds DMap.empty def bodyCon state
+                |> IO.map (\( con, newState ) -> IO.Loop ( rest, con, newState ))
+
+        (Rec def defs) :: rest ->
+            Expr.constrainRecursiveDefsWithIds DMap.empty (def :: defs) bodyCon state
+                |> IO.map (\( con, newState ) -> IO.Loop ( rest, con, newState ))
 
 
 

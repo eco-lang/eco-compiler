@@ -53,6 +53,7 @@ import Compiler.Data.Index as Index
 import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Reporting.Annotation as A
+import Control.Loop exposing (Step(..))
 import Data.Map as Dict exposing (Dict)
 import Data.Set as EverySet exposing (EverySet)
 import System.TypeCheck.IO as IO
@@ -343,6 +344,34 @@ andThen callback (Tracker k) =
                             kb props.uid props.deps props.fields
 
 
+{-| Execute a tail-recursive loop in the Tracker monad.
+-}
+loop : (state -> Tracker (Step state a)) -> state -> Tracker a
+loop callback loopState =
+    Tracker
+        (\n d f ->
+            loopHelper callback loopState n d f
+        )
+
+
+loopHelper :
+    (state -> Tracker (Step state a))
+    -> state
+    -> Int
+    -> EverySet (List String) Opt.Global
+    -> Dict String Name Int
+    -> TResult a
+loopHelper callback loopState n d f =
+    case callback loopState of
+        Tracker k ->
+            case k n d f of
+                TResult props (Loop newState) ->
+                    loopHelper callback newState props.uid props.deps props.fields
+
+                TResult props (Done a) ->
+                    TResult props a
+
+
 {-| Apply a Tracker-producing function to each element of a list, accumulating results.
 
 Sequences the Tracker computations from left to right, threading state through each step.
@@ -350,9 +379,17 @@ Returns a Tracker containing the list of all results with all dependencies accum
 
 -}
 traverse : (a -> Tracker b) -> List a -> Tracker (List b)
-traverse func =
-    List.foldl (\a -> andThen (\acc -> map (\b -> b :: acc) (func a))) (pure [])
-        >> map List.reverse
+traverse func list =
+    loop
+        (\( remaining, acc ) ->
+            case remaining of
+                [] ->
+                    pure (Done (List.reverse acc))
+
+                a :: rest ->
+                    map (\b -> Loop ( rest, b :: acc )) (func a)
+        )
+        ( list, [] )
 
 
 {-| Apply a Tracker-producing function to each value in a dictionary, accumulating results.
@@ -363,5 +400,14 @@ transformed values and all accumulated dependencies.
 
 -}
 mapTraverse : (k -> comparable) -> (k -> k -> Order) -> (a -> Tracker b) -> Dict comparable k a -> Tracker (Dict comparable k b)
-mapTraverse toComparable keyComparison func =
-    Dict.foldl keyComparison (\k a -> andThen (\c -> map (\va -> Dict.insert toComparable k va c) (func a))) (pure Dict.empty)
+mapTraverse toComparable keyComparison func dict =
+    loop
+        (\( pairs, acc ) ->
+            case pairs of
+                [] ->
+                    pure (Done acc)
+
+                ( k, a ) :: rest ->
+                    map (\b -> Loop ( rest, Dict.insert toComparable k b acc )) (func a)
+        )
+        ( Dict.toList keyComparison dict, Dict.empty )

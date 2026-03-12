@@ -60,6 +60,7 @@ import Compiler.Data.Index as Index
 import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Reporting.Annotation as A
+import Control.Loop exposing (Step(..))
 import Data.Map as Dict exposing (Dict)
 import Data.Set as EverySet exposing (EverySet)
 import System.TypeCheck.IO as IO
@@ -401,6 +402,35 @@ andThen callback (Tracker k) =
                             kb props.uid props.deps props.fields props.locals
 
 
+{-| Execute a tail-recursive loop in the Tracker monad.
+-}
+loop : (state -> Tracker (Step state a)) -> state -> Tracker a
+loop callback loopState =
+    Tracker
+        (\n d f l ->
+            loopHelper callback loopState n d f l
+        )
+
+
+loopHelper :
+    (state -> Tracker (Step state a))
+    -> state
+    -> Int
+    -> EverySet (List String) TOpt.Global
+    -> Dict String Name Int
+    -> Dict String Name Can.Type
+    -> TResult a
+loopHelper callback loopState n d f l =
+    case callback loopState of
+        Tracker k ->
+            case k n d f l of
+                TResult props (Loop newState) ->
+                    loopHelper callback newState props.uid props.deps props.fields props.locals
+
+                TResult props (Done a) ->
+                    TResult props a
+
+
 {-| Apply a Tracker-producing function to each element of a list, accumulating results.
 
 Sequences the Tracker computations from left to right, threading state through each step.
@@ -408,6 +438,14 @@ Returns a Tracker containing the list of all results with all dependencies accum
 
 -}
 traverse : (a -> Tracker b) -> List a -> Tracker (List b)
-traverse func =
-    List.foldl (\a -> andThen (\acc -> map (\b -> b :: acc) (func a))) (pure [])
-        >> map List.reverse
+traverse func list =
+    loop
+        (\( remaining, acc ) ->
+            case remaining of
+                [] ->
+                    pure (Done (List.reverse acc))
+
+                a :: rest ->
+                    map (\b -> Loop ( rest, b :: acc )) (func a)
+        )
+        ( list, [] )

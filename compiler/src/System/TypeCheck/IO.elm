@@ -288,8 +288,18 @@ The combining function receives the accumulator and value, ignoring keys.
 
 -}
 foldMDict : (k -> k -> Order) -> (b -> a -> IO b) -> b -> Dict c k a -> IO b
-foldMDict keyComparison f b =
-    Dict.foldl keyComparison (\_ a -> andThen (\acc -> f acc a)) (pure b)
+foldMDict keyComparison f b dict =
+    loop (foldMDictHelp f) ( Dict.values keyComparison dict, b )
+
+
+foldMDictHelp : (b -> a -> IO b) -> ( List a, b ) -> IO (Step ( List a, b ) b)
+foldMDictHelp f ( remaining, acc ) =
+    case remaining of
+        [] ->
+            pure (Done acc)
+
+        a :: rest ->
+            map (\newAcc -> Loop ( rest, newAcc )) (f acc a)
 
 
 {-| Traverse a list, applying an IO-producing function to each element.
@@ -298,9 +308,19 @@ Collects results into a new list while threading state through each computation.
 
 -}
 traverseList : (a -> IO b) -> List a -> IO (List b)
-traverseList f =
-    List.foldr (\a -> andThen (\c -> map (\va -> va :: c) (f a)))
-        (pure [])
+traverseList f list =
+    loop (traverseListHelp f) ( list, [] )
+        |> map List.reverse
+
+
+traverseListHelp : (a -> IO b) -> ( List a, List b ) -> IO (Step ( List a, List b ) (List b))
+traverseListHelp f ( remaining, acc ) =
+    case remaining of
+        [] ->
+            pure (Done acc)
+
+        a :: rest ->
+            map (\b -> Loop ( rest, b :: acc )) (f a)
 
 
 {-| Traverse the second element of a tuple with an IO-producing function.
