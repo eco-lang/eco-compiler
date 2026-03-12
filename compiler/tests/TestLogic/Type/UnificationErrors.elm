@@ -136,7 +136,22 @@ canonicalizeModule srcModule =
 
 {-| Run type checking on a canonical module.
 -}
-runTypeCheck : Can.Module -> IO.IO (Result (NE.Nonempty TypeError.Error) { annotations : Data.Map.Dict String String Can.Annotation, nodeTypes : Array.Array (Maybe Can.Type) })
+runTypeCheck :
+    Can.Module
+    ->
+        IO.IO
+            (Result
+                (NE.Nonempty TypeError.Error)
+                { annotations : Data.Map.Dict String String Can.Annotation
+                , nodeTypes : Array.Array (Maybe Can.Type)
+                , nodeVars : Array.Array (Maybe IO.Variable)
+                , solverState :
+                    { descriptors : Array.Array IO.Descriptor
+                    , pointInfo : Array.Array IO.PointInfo
+                    , weights : Array.Array Int
+                    }
+                }
+            )
 runTypeCheck modul =
     ConstrainTyped.constrainWithIds modul
         |> IO.andThen

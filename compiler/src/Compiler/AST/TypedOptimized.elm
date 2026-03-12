@@ -1,12 +1,12 @@
 module Compiler.AST.TypedOptimized exposing
-    ( Expr(..), Global(..), Annotations
+    ( Expr(..), Global(..), Annotations, Meta
     , Def(..), Destructor(..), Path(..)
     , ContainerHint(..)
     , Decider(..), Choice(..)
     , GlobalGraph(..), LocalGraph(..), LocalGraphData, Node(..), Main(..), EffectsType(..)
     , emptyGlobalGraph
     , compareGlobal, toComparableGlobal, toKernelGlobal
-    , typeOf
+    , typeOf, metaOf, tvarOf
     , globalGraphEncoder, globalGraphDecoder, localGraphEncoder, localGraphDecoder
     )
 
@@ -99,139 +99,166 @@ type alias Annotations =
 
 
 
+-- ====== META ======
+
+
+{-| Metadata carried with each expression: the canonical type and an optional solver variable.
+The `tvar` field preserves the solver's union-find variable for MonoDirect monomorphization.
+-}
+type alias Meta =
+    { tipe : Can.Type
+    , tvar : Maybe IO.Variable
+    }
+
+
+
 -- ====== EXPRESSIONS ======
--- Every expression variant carries its type as the LAST argument
+-- Every expression variant carries its Meta as the LAST argument
 
 
-{-| Typed optimized expression. Each variant carries its type annotation (Can.Type) as the last argument.
+{-| Typed optimized expression. Each variant carries its Meta (type + solver var) as the last argument.
 -}
 type Expr
-    = Bool A.Region Bool Can.Type
-    | Chr A.Region String Can.Type
-    | Str A.Region String Can.Type
-    | Int A.Region Int Can.Type
-    | Float A.Region Float Can.Type
-    | VarLocal Name Can.Type
-    | TrackedVarLocal A.Region Name Can.Type
-    | VarGlobal A.Region Global Can.Type
-    | VarEnum A.Region Global Index.ZeroBased Can.Type
-    | VarBox A.Region Global Can.Type
-    | VarCycle A.Region IO.Canonical Name Can.Type
-    | VarDebug A.Region Name IO.Canonical (Maybe Name) Can.Type
-    | VarKernel A.Region Name Name Can.Type
-    | List A.Region (List Expr) Can.Type
-    | Function (List ( Name, Can.Type )) Expr Can.Type -- params with types, body, function type
-    | TrackedFunction (List ( A.Located Name, Can.Type )) Expr Can.Type
-    | Call A.Region Expr (List Expr) Can.Type
-    | TailCall Name (List ( Name, Expr )) Can.Type
-    | If (List ( Expr, Expr )) Expr Can.Type
-    | Let Def Expr Can.Type
-    | Destruct Destructor Expr Can.Type
-    | Case Name Name (Decider Choice) (List ( Int, Expr )) Can.Type
-    | Accessor A.Region Name Can.Type
-    | Access Expr A.Region Name Can.Type
-    | Update A.Region Expr (Data.Map.Dict String (A.Located Name) Expr) Can.Type
-    | Record (Dict Name Expr) Can.Type
-    | TrackedRecord A.Region (Data.Map.Dict String (A.Located Name) Expr) Can.Type
-    | Unit Can.Type
-    | Tuple A.Region Expr Expr (List Expr) Can.Type
-    | Shader Shader.Source (EverySet String Name) (EverySet String Name) Can.Type
+    = Bool A.Region Bool Meta
+    | Chr A.Region String Meta
+    | Str A.Region String Meta
+    | Int A.Region Int Meta
+    | Float A.Region Float Meta
+    | VarLocal Name Meta
+    | TrackedVarLocal A.Region Name Meta
+    | VarGlobal A.Region Global Meta
+    | VarEnum A.Region Global Index.ZeroBased Meta
+    | VarBox A.Region Global Meta
+    | VarCycle A.Region IO.Canonical Name Meta
+    | VarDebug A.Region Name IO.Canonical (Maybe Name) Meta
+    | VarKernel A.Region Name Name Meta
+    | List A.Region (List Expr) Meta
+    | Function (List ( Name, Can.Type )) Expr Meta -- params with types, body, function type
+    | TrackedFunction (List ( A.Located Name, Can.Type )) Expr Meta
+    | Call A.Region Expr (List Expr) Meta
+    | TailCall Name (List ( Name, Expr )) Meta
+    | If (List ( Expr, Expr )) Expr Meta
+    | Let Def Expr Meta
+    | Destruct Destructor Expr Meta
+    | Case Name Name (Decider Choice) (List ( Int, Expr )) Meta
+    | Accessor A.Region Name Meta
+    | Access Expr A.Region Name Meta
+    | Update A.Region Expr (Data.Map.Dict String (A.Located Name) Expr) Meta
+    | Record (Dict Name Expr) Meta
+    | TrackedRecord A.Region (Data.Map.Dict String (A.Located Name) Expr) Meta
+    | Unit Meta
+    | Tuple A.Region Expr Expr (List Expr) Meta
+    | Shader Shader.Source (EverySet String Name) (EverySet String Name) Meta
 
 
 {-| Extract the type annotation from any expression.
 -}
 typeOf : Expr -> Can.Type
 typeOf expr =
+    (metaOf expr).tipe
+
+
+{-| Extract the Meta (type + solver var) from any expression.
+-}
+metaOf : Expr -> Meta
+metaOf expr =
     case expr of
-        Bool _ _ tipe ->
-            tipe
+        Bool _ _ meta ->
+            meta
 
-        Chr _ _ tipe ->
-            tipe
+        Chr _ _ meta ->
+            meta
 
-        Str _ _ tipe ->
-            tipe
+        Str _ _ meta ->
+            meta
 
-        Int _ _ tipe ->
-            tipe
+        Int _ _ meta ->
+            meta
 
-        Float _ _ tipe ->
-            tipe
+        Float _ _ meta ->
+            meta
 
-        VarLocal _ tipe ->
-            tipe
+        VarLocal _ meta ->
+            meta
 
-        TrackedVarLocal _ _ tipe ->
-            tipe
+        TrackedVarLocal _ _ meta ->
+            meta
 
-        VarGlobal _ _ tipe ->
-            tipe
+        VarGlobal _ _ meta ->
+            meta
 
-        VarEnum _ _ _ tipe ->
-            tipe
+        VarEnum _ _ _ meta ->
+            meta
 
-        VarBox _ _ tipe ->
-            tipe
+        VarBox _ _ meta ->
+            meta
 
-        VarCycle _ _ _ tipe ->
-            tipe
+        VarCycle _ _ _ meta ->
+            meta
 
-        VarDebug _ _ _ _ tipe ->
-            tipe
+        VarDebug _ _ _ _ meta ->
+            meta
 
-        VarKernel _ _ _ tipe ->
-            tipe
+        VarKernel _ _ _ meta ->
+            meta
 
-        List _ _ tipe ->
-            tipe
+        List _ _ meta ->
+            meta
 
-        Function _ _ tipe ->
-            tipe
+        Function _ _ meta ->
+            meta
 
-        TrackedFunction _ _ tipe ->
-            tipe
+        TrackedFunction _ _ meta ->
+            meta
 
-        Call _ _ _ tipe ->
-            tipe
+        Call _ _ _ meta ->
+            meta
 
-        TailCall _ _ tipe ->
-            tipe
+        TailCall _ _ meta ->
+            meta
 
-        If _ _ tipe ->
-            tipe
+        If _ _ meta ->
+            meta
 
-        Let _ _ tipe ->
-            tipe
+        Let _ _ meta ->
+            meta
 
-        Destruct _ _ tipe ->
-            tipe
+        Destruct _ _ meta ->
+            meta
 
-        Case _ _ _ _ tipe ->
-            tipe
+        Case _ _ _ _ meta ->
+            meta
 
-        Accessor _ _ tipe ->
-            tipe
+        Accessor _ _ meta ->
+            meta
 
-        Access _ _ _ tipe ->
-            tipe
+        Access _ _ _ meta ->
+            meta
 
-        Update _ _ _ tipe ->
-            tipe
+        Update _ _ _ meta ->
+            meta
 
-        Record _ tipe ->
-            tipe
+        Record _ meta ->
+            meta
 
-        TrackedRecord _ _ tipe ->
-            tipe
+        TrackedRecord _ _ meta ->
+            meta
 
-        Unit tipe ->
-            tipe
+        Unit meta ->
+            meta
 
-        Tuple _ _ _ _ tipe ->
-            tipe
+        Tuple _ _ _ _ meta ->
+            meta
 
-        Shader _ _ _ tipe ->
-            tipe
+        Shader _ _ _ meta ->
+            meta
+
+
+{-| Extract the solver variable from any expression (if available).
+-}
+tvarOf : Expr -> Maybe IO.Variable
+tvarOf expr =
+    (metaOf expr).tvar
 
 
 {-| A reference to a top-level definition in a module.
@@ -374,8 +401,8 @@ type Main
 {-| A node in the dependency graph representing a top-level definition.
 -}
 type Node
-    = Define Expr (EverySet (List String) Global) Can.Type -- body, deps, type
-    | TrackedDefine A.Region Expr (EverySet (List String) Global) Can.Type
+    = Define Expr (EverySet (List String) Global) Meta -- body, deps, meta
+    | TrackedDefine A.Region Expr (EverySet (List String) Global) Meta
     | Ctor Index.ZeroBased Int Can.Type -- index, arity, constructor type
     | Enum Index.ZeroBased Can.Type
     | Box Can.Type
@@ -383,8 +410,8 @@ type Node
     | Cycle (List Name) (List ( Name, Expr )) (List Def) (EverySet (List String) Global)
     | Manager EffectsType
     | Kernel (List K.Chunk) (EverySet (List String) Global)
-    | PortIncoming Expr (EverySet (List String) Global) Can.Type -- decoder expr, deps, port type
-    | PortOutgoing Expr (EverySet (List String) Global) Can.Type -- encoder expr, deps, port type
+    | PortIncoming Expr (EverySet (List String) Global) Meta -- decoder expr, deps, port meta
+    | PortOutgoing Expr (EverySet (List String) Global) Meta -- encoder expr, deps, port meta
 
 
 {-| The type of effects manager (commands, subscriptions, or both).
@@ -505,24 +532,35 @@ globalDecoder =
         BD.string
 
 
+metaEncoder : Meta -> Bytes.Encode.Encoder
+metaEncoder meta =
+    Can.typeEncoder meta.tipe
+
+
+metaDecoder : Bytes.Decode.Decoder Meta
+metaDecoder =
+    Bytes.Decode.map (\t -> { tipe = t, tvar = Nothing }) Can.typeDecoder
+
+
+
 nodeEncoder : Node -> Bytes.Encode.Encoder
 nodeEncoder node =
     case node of
-        Define expr deps tipe ->
+        Define expr deps meta ->
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 0
                 , exprEncoder expr
                 , BE.everySet compareGlobal globalEncoder deps
-                , Can.typeEncoder tipe
+                , Can.typeEncoder meta.tipe
                 ]
 
-        TrackedDefine region expr deps tipe ->
+        TrackedDefine region expr deps meta ->
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 1
                 , A.regionEncoder region
                 , exprEncoder expr
                 , BE.everySet compareGlobal globalEncoder deps
-                , Can.typeEncoder tipe
+                , Can.typeEncoder meta.tipe
                 ]
 
         Ctor index arity tipe ->
@@ -574,20 +612,20 @@ nodeEncoder node =
                 , BE.everySet compareGlobal globalEncoder deps
                 ]
 
-        PortIncoming decoder deps tipe ->
+        PortIncoming decoder deps meta ->
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 10
                 , exprEncoder decoder
                 , BE.everySet compareGlobal globalEncoder deps
-                , Can.typeEncoder tipe
+                , Can.typeEncoder meta.tipe
                 ]
 
-        PortOutgoing encoder deps tipe ->
+        PortOutgoing encoder deps meta ->
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 11
                 , exprEncoder encoder
                 , BE.everySet compareGlobal globalEncoder deps
-                , Can.typeEncoder tipe
+                , Can.typeEncoder meta.tipe
                 ]
 
 
@@ -601,14 +639,14 @@ nodeDecoder =
                         Bytes.Decode.map3 Define
                             exprDecoder
                             (BD.everySet toComparableGlobal globalDecoder)
-                            Can.typeDecoder
+                            metaDecoder
 
                     1 ->
                         Bytes.Decode.map4 TrackedDefine
                             A.regionDecoder
                             exprDecoder
                             (BD.everySet toComparableGlobal globalDecoder)
-                            Can.typeDecoder
+                            metaDecoder
 
                     3 ->
                         Bytes.Decode.map3 Ctor
@@ -646,13 +684,13 @@ nodeDecoder =
                         Bytes.Decode.map3 PortIncoming
                             exprDecoder
                             (BD.everySet toComparableGlobal globalDecoder)
-                            Can.typeDecoder
+                            metaDecoder
 
                     11 ->
                         Bytes.Decode.map3 PortOutgoing
                             exprDecoder
                             (BD.everySet toComparableGlobal globalDecoder)
-                            Can.typeDecoder
+                            metaDecoder
 
                     _ ->
                         Bytes.Decode.fail
@@ -692,253 +730,253 @@ typedNameDecoder =
 exprEncoder : Expr -> Bytes.Encode.Encoder
 exprEncoder expr =
     case expr of
-        Bool region value tipe ->
+        Bool region value meta ->
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 0
                 , A.regionEncoder region
                 , BE.bool value
-                , Can.typeEncoder tipe
+                , Can.typeEncoder meta.tipe
                 ]
 
-        Chr region value tipe ->
+        Chr region value meta ->
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 1
                 , A.regionEncoder region
                 , BE.string value
-                , Can.typeEncoder tipe
+                , Can.typeEncoder meta.tipe
                 ]
 
-        Str region value tipe ->
+        Str region value meta ->
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 2
                 , A.regionEncoder region
                 , BE.string value
-                , Can.typeEncoder tipe
+                , Can.typeEncoder meta.tipe
                 ]
 
-        Int region value tipe ->
+        Int region value meta ->
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 3
                 , A.regionEncoder region
                 , BE.int value
-                , Can.typeEncoder tipe
+                , Can.typeEncoder meta.tipe
                 ]
 
-        Float region value tipe ->
+        Float region value meta ->
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 4
                 , A.regionEncoder region
                 , BE.float value
-                , Can.typeEncoder tipe
+                , Can.typeEncoder meta.tipe
                 ]
 
-        VarLocal value tipe ->
+        VarLocal value meta ->
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 5
                 , BE.string value
-                , Can.typeEncoder tipe
+                , Can.typeEncoder meta.tipe
                 ]
 
-        TrackedVarLocal region value tipe ->
+        TrackedVarLocal region value meta ->
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 6
                 , A.regionEncoder region
                 , BE.string value
-                , Can.typeEncoder tipe
+                , Can.typeEncoder meta.tipe
                 ]
 
-        VarGlobal region value tipe ->
+        VarGlobal region value meta ->
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 7
                 , A.regionEncoder region
                 , globalEncoder value
-                , Can.typeEncoder tipe
+                , Can.typeEncoder meta.tipe
                 ]
 
-        VarEnum region global index tipe ->
+        VarEnum region global index meta ->
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 8
                 , A.regionEncoder region
                 , globalEncoder global
                 , Index.zeroBasedEncoder index
-                , Can.typeEncoder tipe
+                , Can.typeEncoder meta.tipe
                 ]
 
-        VarBox region value tipe ->
+        VarBox region value meta ->
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 9
                 , A.regionEncoder region
                 , globalEncoder value
-                , Can.typeEncoder tipe
+                , Can.typeEncoder meta.tipe
                 ]
 
-        VarCycle region home name tipe ->
+        VarCycle region home name meta ->
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 10
                 , A.regionEncoder region
                 , ModuleName.canonicalEncoder home
                 , BE.string name
-                , Can.typeEncoder tipe
+                , Can.typeEncoder meta.tipe
                 ]
 
-        VarDebug region name home unhandledValueName tipe ->
+        VarDebug region name home unhandledValueName meta ->
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 11
                 , A.regionEncoder region
                 , BE.string name
                 , ModuleName.canonicalEncoder home
                 , BE.maybe BE.string unhandledValueName
-                , Can.typeEncoder tipe
+                , Can.typeEncoder meta.tipe
                 ]
 
-        VarKernel region home name tipe ->
+        VarKernel region home name meta ->
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 12
                 , A.regionEncoder region
                 , BE.string home
                 , BE.string name
-                , Can.typeEncoder tipe
+                , Can.typeEncoder meta.tipe
                 ]
 
-        List region value tipe ->
+        List region value meta ->
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 13
                 , A.regionEncoder region
                 , BE.list exprEncoder value
-                , Can.typeEncoder tipe
+                , Can.typeEncoder meta.tipe
                 ]
 
-        Function args body tipe ->
+        Function args body meta ->
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 14
                 , BE.list typedNameEncoder args
                 , exprEncoder body
-                , Can.typeEncoder tipe
+                , Can.typeEncoder meta.tipe
                 ]
 
-        TrackedFunction args body tipe ->
+        TrackedFunction args body meta ->
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 15
                 , BE.list typedLocatedNameEncoder args
                 , exprEncoder body
-                , Can.typeEncoder tipe
+                , Can.typeEncoder meta.tipe
                 ]
 
-        Call region func args tipe ->
+        Call region func args meta ->
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 16
                 , A.regionEncoder region
                 , exprEncoder func
                 , BE.list exprEncoder args
-                , Can.typeEncoder tipe
+                , Can.typeEncoder meta.tipe
                 ]
 
-        TailCall name args tipe ->
+        TailCall name args meta ->
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 17
                 , BE.string name
                 , BE.list (BE.jsonPair BE.string exprEncoder) args
-                , Can.typeEncoder tipe
+                , Can.typeEncoder meta.tipe
                 ]
 
-        If branches final tipe ->
+        If branches final meta ->
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 18
                 , BE.list (BE.jsonPair exprEncoder exprEncoder) branches
                 , exprEncoder final
-                , Can.typeEncoder tipe
+                , Can.typeEncoder meta.tipe
                 ]
 
-        Let def body tipe ->
+        Let def body meta ->
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 19
                 , defEncoder def
                 , exprEncoder body
-                , Can.typeEncoder tipe
+                , Can.typeEncoder meta.tipe
                 ]
 
-        Destruct destructor body tipe ->
+        Destruct destructor body meta ->
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 20
                 , destructorEncoder destructor
                 , exprEncoder body
-                , Can.typeEncoder tipe
+                , Can.typeEncoder meta.tipe
                 ]
 
-        Case label root decider jumps tipe ->
+        Case label root decider jumps meta ->
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 21
                 , BE.string label
                 , BE.string root
                 , deciderEncoder choiceEncoder decider
                 , BE.list (BE.jsonPair BE.int exprEncoder) jumps
-                , Can.typeEncoder tipe
+                , Can.typeEncoder meta.tipe
                 ]
 
-        Accessor region field tipe ->
+        Accessor region field meta ->
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 22
                 , A.regionEncoder region
                 , BE.string field
-                , Can.typeEncoder tipe
+                , Can.typeEncoder meta.tipe
                 ]
 
-        Access record region field tipe ->
+        Access record region field meta ->
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 23
                 , exprEncoder record
                 , A.regionEncoder region
                 , BE.string field
-                , Can.typeEncoder tipe
+                , Can.typeEncoder meta.tipe
                 ]
 
-        Update region record fields tipe ->
+        Update region record fields meta ->
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 24
                 , A.regionEncoder region
                 , exprEncoder record
                 , BE.assocListDict A.compareLocated (A.locatedEncoder BE.string) exprEncoder fields
-                , Can.typeEncoder tipe
+                , Can.typeEncoder meta.tipe
                 ]
 
-        Record value tipe ->
+        Record value meta ->
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 25
                 , BE.stdDict BE.string exprEncoder value
-                , Can.typeEncoder tipe
+                , Can.typeEncoder meta.tipe
                 ]
 
-        TrackedRecord region value tipe ->
+        TrackedRecord region value meta ->
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 26
                 , A.regionEncoder region
                 , BE.assocListDict A.compareLocated (A.locatedEncoder BE.string) exprEncoder value
-                , Can.typeEncoder tipe
+                , Can.typeEncoder meta.tipe
                 ]
 
-        Unit tipe ->
+        Unit meta ->
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 27
-                , Can.typeEncoder tipe
+                , Can.typeEncoder meta.tipe
                 ]
 
-        Tuple region a b cs tipe ->
+        Tuple region a b cs meta ->
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 28
                 , A.regionEncoder region
                 , exprEncoder a
                 , exprEncoder b
                 , BE.list exprEncoder cs
-                , Can.typeEncoder tipe
+                , Can.typeEncoder meta.tipe
                 ]
 
-        Shader src attributes uniforms tipe ->
+        Shader src attributes uniforms meta ->
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 29
                 , Shader.sourceEncoder src
                 , BE.everySet compare BE.string attributes
                 , BE.everySet compare BE.string uniforms
-                , Can.typeEncoder tipe
+                , Can.typeEncoder meta.tipe
                 ]
 
 
@@ -952,68 +990,68 @@ exprDecoder =
                         Bytes.Decode.map3 Bool
                             A.regionDecoder
                             BD.bool
-                            Can.typeDecoder
+                            metaDecoder
 
                     1 ->
                         Bytes.Decode.map3 Chr
                             A.regionDecoder
                             BD.string
-                            Can.typeDecoder
+                            metaDecoder
 
                     2 ->
                         Bytes.Decode.map3 Str
                             A.regionDecoder
                             BD.string
-                            Can.typeDecoder
+                            metaDecoder
 
                     3 ->
                         Bytes.Decode.map3 Int
                             A.regionDecoder
                             BD.int
-                            Can.typeDecoder
+                            metaDecoder
 
                     4 ->
                         Bytes.Decode.map3 Float
                             A.regionDecoder
                             BD.float
-                            Can.typeDecoder
+                            metaDecoder
 
                     5 ->
                         Bytes.Decode.map2 VarLocal
                             BD.string
-                            Can.typeDecoder
+                            metaDecoder
 
                     6 ->
                         Bytes.Decode.map3 TrackedVarLocal
                             A.regionDecoder
                             BD.string
-                            Can.typeDecoder
+                            metaDecoder
 
                     7 ->
                         Bytes.Decode.map3 VarGlobal
                             A.regionDecoder
                             globalDecoder
-                            Can.typeDecoder
+                            metaDecoder
 
                     8 ->
                         Bytes.Decode.map4 VarEnum
                             A.regionDecoder
                             globalDecoder
                             Index.zeroBasedDecoder
-                            Can.typeDecoder
+                            metaDecoder
 
                     9 ->
                         Bytes.Decode.map3 VarBox
                             A.regionDecoder
                             globalDecoder
-                            Can.typeDecoder
+                            metaDecoder
 
                     10 ->
                         Bytes.Decode.map4 VarCycle
                             A.regionDecoder
                             ModuleName.canonicalDecoder
                             BD.string
-                            Can.typeDecoder
+                            metaDecoder
 
                     11 ->
                         Bytes.Decode.map5 VarDebug
@@ -1021,63 +1059,63 @@ exprDecoder =
                             BD.string
                             ModuleName.canonicalDecoder
                             (BD.maybe BD.string)
-                            Can.typeDecoder
+                            metaDecoder
 
                     12 ->
                         Bytes.Decode.map4 VarKernel
                             A.regionDecoder
                             BD.string
                             BD.string
-                            Can.typeDecoder
+                            metaDecoder
 
                     13 ->
                         Bytes.Decode.map3 List
                             A.regionDecoder
                             (BD.list exprDecoder)
-                            Can.typeDecoder
+                            metaDecoder
 
                     14 ->
                         Bytes.Decode.map3 Function
                             (BD.list typedNameDecoder)
                             exprDecoder
-                            Can.typeDecoder
+                            metaDecoder
 
                     15 ->
                         Bytes.Decode.map3 TrackedFunction
                             (BD.list typedLocatedNameDecoder)
                             exprDecoder
-                            Can.typeDecoder
+                            metaDecoder
 
                     16 ->
                         Bytes.Decode.map4 Call
                             A.regionDecoder
                             exprDecoder
                             (BD.list exprDecoder)
-                            Can.typeDecoder
+                            metaDecoder
 
                     17 ->
                         Bytes.Decode.map3 TailCall
                             BD.string
                             (BD.list (BD.jsonPair BD.string exprDecoder))
-                            Can.typeDecoder
+                            metaDecoder
 
                     18 ->
                         Bytes.Decode.map3 If
                             (BD.list (BD.jsonPair exprDecoder exprDecoder))
                             exprDecoder
-                            Can.typeDecoder
+                            metaDecoder
 
                     19 ->
                         Bytes.Decode.map3 Let
                             defDecoder
                             exprDecoder
-                            Can.typeDecoder
+                            metaDecoder
 
                     20 ->
                         Bytes.Decode.map3 Destruct
                             destructorDecoder
                             exprDecoder
-                            Can.typeDecoder
+                            metaDecoder
 
                     21 ->
                         Bytes.Decode.map5 Case
@@ -1085,41 +1123,41 @@ exprDecoder =
                             BD.string
                             (deciderDecoder choiceDecoder)
                             (BD.list (BD.jsonPair BD.int exprDecoder))
-                            Can.typeDecoder
+                            metaDecoder
 
                     22 ->
                         Bytes.Decode.map3 Accessor
                             A.regionDecoder
                             BD.string
-                            Can.typeDecoder
+                            metaDecoder
 
                     23 ->
                         Bytes.Decode.map4 Access
                             exprDecoder
                             A.regionDecoder
                             BD.string
-                            Can.typeDecoder
+                            metaDecoder
 
                     24 ->
                         Bytes.Decode.map4 Update
                             A.regionDecoder
                             exprDecoder
                             (BD.assocListDict A.toValue (A.locatedDecoder BD.string) exprDecoder)
-                            Can.typeDecoder
+                            metaDecoder
 
                     25 ->
                         Bytes.Decode.map2 Record
                             (BD.stdDict BD.string exprDecoder)
-                            Can.typeDecoder
+                            metaDecoder
 
                     26 ->
                         Bytes.Decode.map3 TrackedRecord
                             A.regionDecoder
                             (BD.assocListDict A.toValue (A.locatedDecoder BD.string) exprDecoder)
-                            Can.typeDecoder
+                            metaDecoder
 
                     27 ->
-                        Bytes.Decode.map Unit Can.typeDecoder
+                        Bytes.Decode.map Unit metaDecoder
 
                     28 ->
                         Bytes.Decode.map5 Tuple
@@ -1127,14 +1165,14 @@ exprDecoder =
                             exprDecoder
                             exprDecoder
                             (BD.list exprDecoder)
-                            Can.typeDecoder
+                            metaDecoder
 
                     29 ->
                         Bytes.Decode.map4 Shader
                             Shader.sourceDecoder
                             (BD.everySet identity BD.string)
                             (BD.everySet identity BD.string)
-                            Can.typeDecoder
+                            metaDecoder
 
                     _ ->
                         Bytes.Decode.fail

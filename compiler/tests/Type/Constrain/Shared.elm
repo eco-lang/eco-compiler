@@ -125,7 +125,22 @@ runStandardPath modul =
 {-| Run the WithIds constraint generation and solving path.
 Returns both annotations and the nodeTypes map.
 -}
-runWithIdsPath : Can.Module -> IO.IO (Result Int { annotations : Dict String Name.Name Can.Annotation, nodeTypes : Array.Array (Maybe Can.Type) })
+runWithIdsPath :
+    Can.Module
+    ->
+        IO.IO
+            (Result
+                Int
+                { annotations : Dict String Name.Name Can.Annotation
+                , nodeTypes : Array.Array (Maybe Can.Type)
+                , nodeVars : Array.Array (Maybe IO.Variable)
+                , solverState :
+                    { descriptors : Array.Array IO.Descriptor
+                    , pointInfo : Array.Array IO.PointInfo
+                    , weights : Array.Array Int
+                    }
+                }
+            )
 runWithIdsPath modul =
     ConstrainTyped.constrainWithIds modul
         |> IO.andThen

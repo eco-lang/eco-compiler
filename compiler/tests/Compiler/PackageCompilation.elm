@@ -91,6 +91,7 @@ import Compiler.Type.PostSolve as PostSolve
 import Compiler.Type.Solve as Type
 import Compiler.TypedCanonical.Build as TCanBuild
 import Data.Map
+import Array exposing (Array)
 import Dict exposing (Dict)
 import System.TypeCheck.IO as TypeCheck
 
@@ -149,6 +150,7 @@ type alias TypeCheckTypedResult =
     , typedCanonical : TCan.Module
     , nodeTypes : TCan.NodeTypes
     , kernelEnv : KernelTypes.KernelTypeEnv
+    , nodeVars : Array (Maybe TypeCheck.Variable)
     }
 
 
@@ -220,7 +222,7 @@ compileModule pkg ifaces srcModule =
                                             optimizeErased erasedAnnotations canonical
 
                                         typedOptResult =
-                                            optimizeTyped typedResult.annotations typedResult.nodeTypes typedResult.kernelEnv typedResult.typedCanonical
+                                            optimizeTyped typedResult.annotations typedResult.nodeTypes typedResult.nodeVars typedResult.kernelEnv typedResult.typedCanonical
                                     in
                                     -- Compare optimization results
                                     case ( erasedOptResult, typedOptResult ) of
@@ -422,7 +424,7 @@ typeCheckTyped canonical =
         Err errors ->
             Err errors
 
-        Ok { annotations, nodeTypes } ->
+        Ok { annotations, nodeTypes, nodeVars, solverState } ->
             let
                 -- Run PostSolve to fix Group B types and compute kernel env
                 -- annotations and nodeTypes are Data.Map.Dict from Solve.runWithIds
@@ -437,9 +439,10 @@ typeCheckTyped canonical =
             in
             Ok
                 { annotations = Dict.fromList (Data.Map.toList compare annotations)
-                , typedCanonical = TCanBuild.fromCanonical canonical fixedNodeTypes
+                , typedCanonical = TCanBuild.fromCanonical canonical fixedNodeTypes nodeVars
                 , nodeTypes = fixedNodeTypes
                 , kernelEnv = kernelEnv
+                , nodeVars = nodeVars
                 }
 
 
@@ -465,14 +468,8 @@ optimizeErased annotations canonical =
 Preserves full type information throughout the optimization process.
 
 -}
-optimizeTyped :
-    Dict Name.Name Can.Annotation
-    -> TCan.NodeTypes
-    -> KernelTypes.KernelTypeEnv
-    -> TCan.Module
-    -> Result (OneOrMore.OneOrMore MainError.Error) TOpt.LocalGraph
-optimizeTyped annotations nodeTypes kernelEnv tcanModule =
-    Tuple.second (RResult.run (TypedOptimize.optimizeTyped annotations nodeTypes kernelEnv tcanModule))
+optimizeTyped annotations nodeTypes nodeVars kernelEnv tcanModule =
+    Tuple.second (RResult.run (TypedOptimize.optimizeTyped annotations nodeTypes nodeVars kernelEnv tcanModule))
 
 
 
@@ -578,11 +575,11 @@ findAnyEntryPoint nodes =
 
                 Nothing ->
                     case node of
-                        TOpt.Define _ _ tipe ->
-                            Just ( global, tipe )
+                        TOpt.Define _ _ meta ->
+                            Just ( global, meta.tipe )
 
-                        TOpt.TrackedDefine _ _ _ tipe ->
-                            Just ( global, tipe )
+                        TOpt.TrackedDefine _ _ _ meta ->
+                            Just ( global, meta.tipe )
 
                         _ ->
                             Nothing

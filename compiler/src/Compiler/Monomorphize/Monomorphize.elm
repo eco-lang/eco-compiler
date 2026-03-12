@@ -320,16 +320,16 @@ findEntryPoint entryPointName nodes =
 
                 Nothing ->
                     case ( global, node ) of
-                        ( TOpt.Global _ name, TOpt.Define _ _ tipe ) ->
+                        ( TOpt.Global _ name, TOpt.Define _ _ meta ) ->
                             if name == entryPointName then
-                                Just ( global, tipe )
+                                Just ( global, meta.tipe )
 
                             else
                                 Nothing
 
-                        ( TOpt.Global _ name, TOpt.TrackedDefine _ _ _ tipe ) ->
+                        ( TOpt.Global _ name, TOpt.TrackedDefine _ _ _ meta ) ->
                             if name == entryPointName then
-                                Just ( global, tipe )
+                                Just ( global, meta.tipe )
 
                             else
                                 Nothing

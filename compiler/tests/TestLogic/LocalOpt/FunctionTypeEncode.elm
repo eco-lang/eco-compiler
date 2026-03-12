@@ -117,7 +117,7 @@ checkDefFunctionTypes context def =
 collectExprFunctionTypeChecks : String -> TOpt.Expr -> List (() -> Expect.Expectation)
 collectExprFunctionTypeChecks context expr =
     case expr of
-        TOpt.Function params bodyExpr fnType ->
+        TOpt.Function params bodyExpr fnMeta ->
             -- The function's attached type should match TLambda chain of params -> body type
             let
                 paramTypes =
@@ -125,7 +125,7 @@ collectExprFunctionTypeChecks context expr =
 
                 -- Check that the attached type has the right structure
                 typeCheck =
-                    if not (functionTypeMatches paramTypes fnType) then
+                    if not (functionTypeMatches paramTypes fnMeta.tipe) then
                         [ \() -> Expect.fail (context ++ ": Function expression type does not match parameter types") ]
 
                     else
@@ -133,13 +133,13 @@ collectExprFunctionTypeChecks context expr =
             in
             typeCheck ++ collectExprFunctionTypeChecks context bodyExpr
 
-        TOpt.TrackedFunction params bodyExpr fnType ->
+        TOpt.TrackedFunction params bodyExpr fnMeta ->
             let
                 paramTypes =
                     List.map Tuple.second params
 
                 typeCheck =
-                    if not (functionTypeMatches paramTypes fnType) then
+                    if not (functionTypeMatches paramTypes fnMeta.tipe) then
                         [ \() -> Expect.fail (context ++ ": TrackedFunction expression type does not match parameter types") ]
 
                     else

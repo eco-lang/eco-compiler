@@ -63,12 +63,12 @@ rebuildLambda :
     LambdaKind
     -> List ( Name.Name, Can.Type )
     -> TOpt.Expr
-    -> Can.Type
+    -> TOpt.Meta
     -> TOpt.Expr
-rebuildLambda kind params body funcType =
+rebuildLambda kind params body funcMeta =
     case kind of
         PlainLambda ->
-            TOpt.Function params body funcType
+            TOpt.Function params body funcMeta
 
         TrackedLambda region ->
             let
@@ -78,7 +78,7 @@ rebuildLambda kind params body funcType =
                         (\( name, tipe ) -> ( A.At region name, tipe ))
                         params
             in
-            TOpt.TrackedFunction locParams body funcType
+            TOpt.TrackedFunction locParams body funcMeta
 
 
 
@@ -155,86 +155,86 @@ renameExpr env expr =
     in
     case expr of
         -- Literals: unchanged
-        TOpt.Bool region value tipe ->
-            TOpt.Bool region value tipe
+        TOpt.Bool region value meta ->
+            TOpt.Bool region value meta
 
-        TOpt.Chr region value tipe ->
-            TOpt.Chr region value tipe
+        TOpt.Chr region value meta ->
+            TOpt.Chr region value meta
 
-        TOpt.Str region value tipe ->
-            TOpt.Str region value tipe
+        TOpt.Str region value meta ->
+            TOpt.Str region value meta
 
-        TOpt.Int region value tipe ->
-            TOpt.Int region value tipe
+        TOpt.Int region value meta ->
+            TOpt.Int region value meta
 
-        TOpt.Float region value tipe ->
-            TOpt.Float region value tipe
+        TOpt.Float region value meta ->
+            TOpt.Float region value meta
 
         -- Local variables: apply rename
-        TOpt.VarLocal name tipe ->
-            TOpt.VarLocal (lookupRename env name) tipe
+        TOpt.VarLocal name meta ->
+            TOpt.VarLocal (lookupRename env name) meta
 
-        TOpt.TrackedVarLocal region name tipe ->
-            TOpt.TrackedVarLocal region (lookupRename env name) tipe
+        TOpt.TrackedVarLocal region name meta ->
+            TOpt.TrackedVarLocal region (lookupRename env name) meta
 
         -- Global/external variables: unchanged
-        TOpt.VarGlobal region global tipe ->
-            TOpt.VarGlobal region global tipe
+        TOpt.VarGlobal region global meta ->
+            TOpt.VarGlobal region global meta
 
-        TOpt.VarEnum region global index tipe ->
-            TOpt.VarEnum region global index tipe
+        TOpt.VarEnum region global index meta ->
+            TOpt.VarEnum region global index meta
 
-        TOpt.VarBox region global tipe ->
-            TOpt.VarBox region global tipe
+        TOpt.VarBox region global meta ->
+            TOpt.VarBox region global meta
 
-        TOpt.VarCycle region home name tipe ->
+        TOpt.VarCycle region home name meta ->
             -- Local name refers to a binding; apply rename
-            TOpt.VarCycle region home (lookupRename env name) tipe
+            TOpt.VarCycle region home (lookupRename env name) meta
 
-        TOpt.VarDebug region name home maybeUnhandled tipe ->
-            TOpt.VarDebug region (lookupRename env name) home maybeUnhandled tipe
+        TOpt.VarDebug region name home maybeUnhandled meta ->
+            TOpt.VarDebug region (lookupRename env name) home maybeUnhandled meta
 
-        TOpt.VarKernel region home name tipe ->
-            TOpt.VarKernel region home name tipe
+        TOpt.VarKernel region home name meta ->
+            TOpt.VarKernel region home name meta
 
         -- Collections: recurse
-        TOpt.List region entries tipe ->
-            TOpt.List region (List.map ren entries) tipe
+        TOpt.List region entries meta ->
+            TOpt.List region (List.map ren entries) meta
 
         -- Lambdas: rename body only (params not touched here;
         -- alpha-renaming of params handled by normalization code via rebuildLambda)
-        TOpt.Function args body tipe ->
-            TOpt.Function args (ren body) tipe
+        TOpt.Function args body meta ->
+            TOpt.Function args (ren body) meta
 
-        TOpt.TrackedFunction args body tipe ->
-            TOpt.TrackedFunction args (ren body) tipe
+        TOpt.TrackedFunction args body meta ->
+            TOpt.TrackedFunction args (ren body) meta
 
         -- Calls
-        TOpt.Call region func args tipe ->
-            TOpt.Call region (ren func) (List.map ren args) tipe
+        TOpt.Call region func args meta ->
+            TOpt.Call region (ren func) (List.map ren args) meta
 
-        TOpt.TailCall name namedArgs tipe ->
+        TOpt.TailCall name namedArgs meta ->
             let
                 renPair ( argName, argExpr ) =
                     ( argName, ren argExpr )
             in
-            TOpt.TailCall name (List.map renPair namedArgs) tipe
+            TOpt.TailCall name (List.map renPair namedArgs) meta
 
         -- Control flow
-        TOpt.If branches final tipe ->
+        TOpt.If branches final meta ->
             let
                 renBranch ( cond, br ) =
                     ( ren cond, ren br )
             in
-            TOpt.If (List.map renBranch branches) (ren final) tipe
+            TOpt.If (List.map renBranch branches) (ren final) meta
 
-        TOpt.Let def body tipe ->
-            TOpt.Let (renameDef env def) (ren body) tipe
+        TOpt.Let def body meta ->
+            TOpt.Let (renameDef env def) (ren body) meta
 
-        TOpt.Destruct destructor body tipe ->
-            TOpt.Destruct (renameDestructor env destructor) (ren body) tipe
+        TOpt.Destruct destructor body meta ->
+            TOpt.Destruct (renameDestructor env destructor) (ren body) meta
 
-        TOpt.Case label root decider jumps tipe ->
+        TOpt.Case label root decider jumps meta ->
             let
                 newLabel =
                     lookupRename env label
@@ -248,33 +248,33 @@ renameExpr env expr =
                 newJumps =
                     List.map (\( idx, e ) -> ( idx, ren e )) jumps
             in
-            TOpt.Case newLabel newRoot newDecider newJumps tipe
+            TOpt.Case newLabel newRoot newDecider newJumps meta
 
         -- Records
-        TOpt.Accessor region fieldName tipe ->
-            TOpt.Accessor region fieldName tipe
+        TOpt.Accessor region fieldName meta ->
+            TOpt.Accessor region fieldName meta
 
-        TOpt.Access record region fieldName tipe ->
-            TOpt.Access (ren record) region fieldName tipe
+        TOpt.Access record region fieldName meta ->
+            TOpt.Access (ren record) region fieldName meta
 
-        TOpt.Update region record fields tipe ->
-            TOpt.Update region (ren record) (Data.Map.map (\_ e -> ren e) fields) tipe
+        TOpt.Update region record fields meta ->
+            TOpt.Update region (ren record) (Data.Map.map (\_ e -> ren e) fields) meta
 
-        TOpt.Record fields tipe ->
-            TOpt.Record (Dict.map (\_ e -> ren e) fields) tipe
+        TOpt.Record fields meta ->
+            TOpt.Record (Dict.map (\_ e -> ren e) fields) meta
 
-        TOpt.TrackedRecord region fields tipe ->
-            TOpt.TrackedRecord region (Data.Map.map (\_ e -> ren e) fields) tipe
+        TOpt.TrackedRecord region fields meta ->
+            TOpt.TrackedRecord region (Data.Map.map (\_ e -> ren e) fields) meta
 
         -- Other
-        TOpt.Unit tipe ->
-            TOpt.Unit tipe
+        TOpt.Unit meta ->
+            TOpt.Unit meta
 
-        TOpt.Tuple region a b cs tipe ->
-            TOpt.Tuple region (ren a) (ren b) (List.map ren cs) tipe
+        TOpt.Tuple region a b cs meta ->
+            TOpt.Tuple region (ren a) (ren b) (List.map ren cs) meta
 
-        TOpt.Shader src attrs uniforms tipe ->
-            TOpt.Shader src attrs uniforms tipe
+        TOpt.Shader src attrs uniforms meta ->
+            TOpt.Shader src attrs uniforms meta
 
 
 renameDef : RenameEnv -> TOpt.Def -> TOpt.Def
@@ -361,11 +361,11 @@ normalizeLocalGraph (TOpt.LocalGraph data) =
 normalizeNode : TOpt.Node -> TOpt.Node
 normalizeNode node =
     case node of
-        TOpt.Define expr deps tipe ->
-            TOpt.Define (normalizeExpr expr) deps tipe
+        TOpt.Define expr deps meta ->
+            TOpt.Define (normalizeExpr expr) deps meta
 
-        TOpt.TrackedDefine region expr deps tipe ->
-            TOpt.TrackedDefine region (normalizeExpr expr) deps tipe
+        TOpt.TrackedDefine region expr deps meta ->
+            TOpt.TrackedDefine region (normalizeExpr expr) deps meta
 
         TOpt.Cycle names values functions deps ->
             TOpt.Cycle names
@@ -373,11 +373,11 @@ normalizeNode node =
                 (List.map normalizeDef functions)
                 deps
 
-        TOpt.PortIncoming expr deps tipe ->
-            TOpt.PortIncoming (normalizeExpr expr) deps tipe
+        TOpt.PortIncoming expr deps meta ->
+            TOpt.PortIncoming (normalizeExpr expr) deps meta
 
-        TOpt.PortOutgoing expr deps tipe ->
-            TOpt.PortOutgoing (normalizeExpr expr) deps tipe
+        TOpt.PortOutgoing expr deps meta ->
+            TOpt.PortOutgoing (normalizeExpr expr) deps meta
 
         -- Ctor, Enum, Box, Link, Kernel, Manager: no expressions to normalize
         _ ->
@@ -401,17 +401,17 @@ normalizeDef def =
 normalizeExpr : TOpt.Expr -> TOpt.Expr
 normalizeExpr expr =
     case expr of
-        TOpt.Function params body lambdaType ->
+        TOpt.Function params body lambdaMeta ->
             let
                 normalizedBody =
                     normalizeExpr body
 
                 ( finalParams, finalBody ) =
-                    normalizeLambdaBodyFixpoint params normalizedBody lambdaType
+                    normalizeLambdaBodyFixpoint params normalizedBody lambdaMeta
             in
-            rebuildLambda PlainLambda finalParams finalBody lambdaType
+            rebuildLambda PlainLambda finalParams finalBody lambdaMeta
 
-        TOpt.TrackedFunction params body lambdaType ->
+        TOpt.TrackedFunction params body lambdaMeta ->
             let
                 normalizedBody =
                     normalizeExpr body
@@ -430,57 +430,57 @@ normalizeExpr expr =
                     List.map (\( A.At _ n, t ) -> ( n, t )) params
 
                 ( finalParams, finalBody ) =
-                    normalizeLambdaBodyFixpoint flatParams normalizedBody lambdaType
+                    normalizeLambdaBodyFixpoint flatParams normalizedBody lambdaMeta
             in
-            rebuildLambda kind finalParams finalBody lambdaType
+            rebuildLambda kind finalParams finalBody lambdaMeta
 
         -- Other cases: recurse on children
-        TOpt.Let def body letType ->
-            TOpt.Let (normalizeDef def) (normalizeExpr body) letType
+        TOpt.Let def body letMeta ->
+            TOpt.Let (normalizeDef def) (normalizeExpr body) letMeta
 
-        TOpt.Case label root decider jumps caseType ->
+        TOpt.Case label root decider jumps caseMeta ->
             TOpt.Case label
                 root
                 (normalizeDeciderExpr decider)
                 (List.map (\( i, e ) -> ( i, normalizeExpr e )) jumps)
-                caseType
+                caseMeta
 
-        TOpt.Call region func args callType ->
-            TOpt.Call region (normalizeExpr func) (List.map normalizeExpr args) callType
+        TOpt.Call region func args callMeta ->
+            TOpt.Call region (normalizeExpr func) (List.map normalizeExpr args) callMeta
 
-        TOpt.If branches final ifType ->
+        TOpt.If branches final ifMeta ->
             TOpt.If
                 (List.map (\( c, b ) -> ( normalizeExpr c, normalizeExpr b )) branches)
                 (normalizeExpr final)
-                ifType
+                ifMeta
 
-        TOpt.List region items listType ->
-            TOpt.List region (List.map normalizeExpr items) listType
+        TOpt.List region items listMeta ->
+            TOpt.List region (List.map normalizeExpr items) listMeta
 
-        TOpt.Tuple region a b rest tupleType ->
+        TOpt.Tuple region a b rest tupleMeta ->
             TOpt.Tuple region
                 (normalizeExpr a)
                 (normalizeExpr b)
                 (List.map normalizeExpr rest)
-                tupleType
+                tupleMeta
 
-        TOpt.Record fields recType ->
-            TOpt.Record (Dict.map (\_ e -> normalizeExpr e) fields) recType
+        TOpt.Record fields recMeta ->
+            TOpt.Record (Dict.map (\_ e -> normalizeExpr e) fields) recMeta
 
-        TOpt.TrackedRecord region fields recType ->
-            TOpt.TrackedRecord region (Data.Map.map (\_ e -> normalizeExpr e) fields) recType
+        TOpt.TrackedRecord region fields recMeta ->
+            TOpt.TrackedRecord region (Data.Map.map (\_ e -> normalizeExpr e) fields) recMeta
 
-        TOpt.Update region base updates updateType ->
+        TOpt.Update region base updates updateMeta ->
             TOpt.Update region
                 (normalizeExpr base)
                 (Data.Map.map (\_ e -> normalizeExpr e) updates)
-                updateType
+                updateMeta
 
-        TOpt.Access inner region name accessType ->
-            TOpt.Access (normalizeExpr inner) region name accessType
+        TOpt.Access inner region name accessMeta ->
+            TOpt.Access (normalizeExpr inner) region name accessMeta
 
-        TOpt.Destruct destructor body destType ->
-            TOpt.Destruct destructor (normalizeExpr body) destType
+        TOpt.Destruct destructor body destMeta ->
+            TOpt.Destruct destructor (normalizeExpr body) destMeta
 
         -- Leaf expressions: no recursion needed
         _ ->
@@ -523,18 +523,18 @@ normalizeChoiceExpr choice =
 normalizeLambdaBodyFixpoint :
     List ( Name.Name, Can.Type )
     -> TOpt.Expr
-    -> Can.Type
+    -> TOpt.Meta
     -> ( List ( Name.Name, Can.Type ), TOpt.Expr )
-normalizeLambdaBodyFixpoint params body lambdaType =
+normalizeLambdaBodyFixpoint params body lambdaMeta =
     case tryNormalizeLetBoundary params body of
         Just ( newParams, newBody ) ->
             -- Keep iterating
-            normalizeLambdaBodyFixpoint newParams newBody lambdaType
+            normalizeLambdaBodyFixpoint newParams newBody lambdaMeta
 
         Nothing ->
-            case tryNormalizeCaseBoundary params body lambdaType of
+            case tryNormalizeCaseBoundary params body lambdaMeta of
                 Just ( newParams, newBody ) ->
-                    normalizeLambdaBodyFixpoint newParams newBody lambdaType
+                    normalizeLambdaBodyFixpoint newParams newBody lambdaMeta
 
                 Nothing ->
                     ( params, body )
@@ -562,7 +562,7 @@ peelLets expr acc =
 rebuildLets : List TOpt.Def -> TOpt.Expr -> TOpt.Expr
 rebuildLets defs innerBody =
     List.foldr
-        (\def body -> TOpt.Let def body (TOpt.typeOf body))
+        (\def body -> TOpt.Let def body (TOpt.metaOf body))
         innerBody
         defs
 
@@ -730,11 +730,11 @@ hasAnyInline decider =
 tryNormalizeCaseBoundary :
     List ( Name.Name, Can.Type )
     -> TOpt.Expr
-    -> Can.Type
+    -> TOpt.Meta
     -> Maybe ( List ( Name.Name, Can.Type ), TOpt.Expr )
 tryNormalizeCaseBoundary outerParams body _ =
     case body of
-        TOpt.Case label scrut decider jumps caseType ->
+        TOpt.Case label scrut decider jumps caseMeta ->
             let
                 -- Step 1: expose all lambda branches in the jump table.
                 ( deciderWithJumps, allJumps ) =
@@ -755,15 +755,15 @@ tryNormalizeCaseBoundary outerParams body _ =
 
                     Just ( canonicalParams, renamedJumps, arityPeeled ) ->
                         -- Step 2: peel arityPeeled argument types off the case result type.
-                        case peelLambdaTypes arityPeeled caseType of
-                            Just newCaseType ->
+                        case peelLambdaTypes arityPeeled caseMeta.tipe of
+                            Just newCaseTipe ->
                                 -- Step 3: extend outer params and rebuild Case with:
                                 --   - deciderWithJumps (now using Jump choices),
                                 --   - renamed jump branch bodies,
                                 --   - peeled case result type.
                                 Just
                                     ( outerParams ++ canonicalParams
-                                    , TOpt.Case label scrut deciderWithJumps renamedJumps newCaseType
+                                    , TOpt.Case label scrut deciderWithJumps renamedJumps { caseMeta | tipe = newCaseTipe }
                                     )
 
                             Nothing ->

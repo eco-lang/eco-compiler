@@ -96,6 +96,12 @@ runWithIds :
                 (NE.Nonempty Error.Error)
                 { annotations : Data.Map.Dict String Name.Name Can.Annotation
                 , nodeTypes : Array (Maybe Can.Type)
+                , nodeVars : Array (Maybe Variable)
+                , solverState :
+                    { descriptors : Array Descriptor
+                    , pointInfo : Array IO.PointInfo
+                    , weights : Array Int
+                    }
                 }
             )
 runWithIds constraint nodeVars =
@@ -113,12 +119,22 @@ runWithIds constraint nodeVars =
                                             (\annotations ->
                                                 -- Convert nodeVars to Can.Types with shared naming
                                                 Type.toCanTypeBatch nodeVars
-                                                    |> IO.map
+                                                    |> IO.andThen
                                                         (\nodeTypes ->
-                                                            Ok
-                                                                { annotations = annotations
-                                                                , nodeTypes = nodeTypes
-                                                                }
+                                                            -- Snapshot the solver state before returning
+                                                            \s ->
+                                                                ( s
+                                                                , Ok
+                                                                    { annotations = annotations
+                                                                    , nodeTypes = nodeTypes
+                                                                    , nodeVars = nodeVars
+                                                                    , solverState =
+                                                                        { descriptors = s.ioRefsDescriptor
+                                                                        , pointInfo = s.ioRefsPointInfo
+                                                                        , weights = s.ioRefsWeight
+                                                                        }
+                                                                    }
+                                                                )
                                                         )
                                             )
 

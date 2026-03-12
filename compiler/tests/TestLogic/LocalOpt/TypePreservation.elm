@@ -196,11 +196,15 @@ checkExpr env context expr =
         TOpt.Str _ _ _ ->
             []
 
-        TOpt.Unit tipe ->
-            checkLiteralType context "Unit" tipe Can.TUnit
+        TOpt.Unit meta ->
+            checkLiteralType context "Unit" meta.tipe Can.TUnit
 
         -- VarLocal (STRICT: catches GOPT_003-class bugs)
-        TOpt.VarLocal name tipe ->
+        TOpt.VarLocal name meta ->
+            let
+                tipe =
+                    meta.tipe
+            in
             case Dict.get name env.locals of
                 Just envType ->
                     if TypeEq.alphaEqStrict tipe envType then
@@ -213,7 +217,11 @@ checkExpr env context expr =
                     -- Variable not in local env - could be from outer scope
                     []
 
-        TOpt.TrackedVarLocal _ name tipe ->
+        TOpt.TrackedVarLocal _ name meta ->
+            let
+                tipe =
+                    meta.tipe
+            in
             case Dict.get name env.locals of
                 Just envType ->
                     if TypeEq.alphaEqStrict tipe envType then
@@ -226,7 +234,11 @@ checkExpr env context expr =
                     []
 
         -- VarKernel (STRICT: catches GOPT_003-class bugs)
-        TOpt.VarKernel _ home name tipe ->
+        TOpt.VarKernel _ home name meta ->
+            let
+                tipe =
+                    meta.tipe
+            in
             case KernelTypes.lookup home name env.kernelEnv of
                 Just kernelType ->
                     if TypeEq.alphaEqStrict tipe kernelType then
@@ -323,7 +335,11 @@ checkExpr env context expr =
                 ++ checkExpr env context else_
 
         -- Case (Critical for GOPT_003)
-        TOpt.Case _ _ decider jumps tipe ->
+        TOpt.Case _ _ decider jumps meta ->
+            let
+                tipe =
+                    meta.tipe
+            in
             checkDecider env context tipe decider
                 ++ checkJumps env context tipe jumps
 

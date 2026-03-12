@@ -62,7 +62,7 @@ optimize temp root optBranches resultType =
         root
         (insertChoices (Array.fromList (List.map Tuple.second choices)) decider)
         (List.filterMap identity maybeJumps)
-        resultType
+        { tipe = resultType, tvar = Nothing }
 
 
 indexify : Int -> ( a, b ) -> ( ( a, Int ), ( Int, b ) )

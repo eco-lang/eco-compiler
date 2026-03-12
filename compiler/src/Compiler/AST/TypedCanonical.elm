@@ -2,7 +2,7 @@ module Compiler.AST.TypedCanonical exposing
     ( Module(..), ModuleData
     , Expr, Expr_(..)
     , Def(..), Decls(..)
-    , ExprTypes, NodeTypes
+    , ExprTypes, ExprVars, NodeTypes
     )
 
 {-| The TypedCanonical AST pairs each canonical expression with its inferred type.
@@ -58,6 +58,7 @@ type Expr_
     = TypedExpr
         { expr : Can.Expr_
         , tipe : Can.Type
+        , tvar : Maybe IO.Variable
         }
 
 
@@ -136,6 +137,16 @@ constraint solving.
 -}
 type alias NodeTypes =
     Array (Maybe Can.Type)
+
+
+{-| Dictionary mapping node IDs to their solver type variables.
+
+This preserves the solver's union-find variables for each expression,
+enabling the MonoDirect monomorphizer to query types directly via the solver.
+
+-}
+type alias ExprVars =
+    Array (Maybe IO.Variable)
 
 
 

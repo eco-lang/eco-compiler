@@ -53,7 +53,7 @@ toEncoder tipe =
                             funcType =
                                 Can.TLambda Can.TUnit (Can.TType ModuleName.jsonEncode "Value" [])
                         in
-                        TOpt.Function [ ( Name.dollar, Can.TUnit ) ] null funcType
+                        TOpt.Function [ ( Name.dollar, Can.TUnit ) ] null { tipe = funcType, tvar = Nothing }
                     )
 
         Can.TTuple a b cs ->
@@ -117,9 +117,9 @@ toEncoder tipe =
                                         Can.TTuple (Can.TType ModuleName.basics "String" []) valueType []
 
                                     value =
-                                        TOpt.Call A.zero encoder [ TOpt.Access (TOpt.VarLocal Name.dollar tipe) A.zero name fieldType ] valueType
+                                        TOpt.Call A.zero encoder [ TOpt.Access (TOpt.VarLocal Name.dollar { tipe = tipe, tvar = Nothing }) A.zero name { tipe = fieldType, tvar = Nothing } ] { tipe = valueType, tvar = Nothing }
                                 in
-                                TOpt.Tuple A.zero (TOpt.Str A.zero (Name.toElmString name) (Can.TType ModuleName.basics "String" [])) value [] tupleType
+                                TOpt.Tuple A.zero (TOpt.Str A.zero (Name.toElmString name) { tipe = Can.TType ModuleName.basics "String" [], tvar = Nothing }) value [] { tipe = tupleType, tvar = Nothing }
                             )
             in
             encode "object"
@@ -137,8 +137,8 @@ toEncoder tipe =
                                     in
                                     Names.registerFieldList (Dict.keys fields)
                                         (TOpt.Function [ ( Name.dollar, tipe ) ]
-                                            (TOpt.Call A.zero object [ TOpt.List A.zero keyValuePairs listType ] valueType)
-                                            funcType
+                                            (TOpt.Call A.zero object [ TOpt.List A.zero keyValuePairs { tipe = listType, tvar = Nothing } ] { tipe = valueType, tvar = Nothing })
+                                            { tipe = funcType, tvar = Nothing }
                                         )
                                 )
                     )
@@ -175,11 +175,11 @@ encodeMaybe tipe =
                                                 destruct
                                                 [ null
                                                 , encoder
-                                                , TOpt.VarLocal Name.dollar maybeType
+                                                , TOpt.VarLocal Name.dollar { tipe = maybeType, tvar = Nothing }
                                                 ]
-                                                valueType
+                                                { tipe = valueType, tvar = Nothing }
                                             )
-                                            funcType
+                                            { tipe = funcType, tvar = Nothing }
                                     )
                         )
             )
@@ -197,7 +197,7 @@ encodeList tipe =
                 toEncoder tipe
                     |> Names.map
                         (\encoder ->
-                            TOpt.Call A.zero list [ encoder ] (Can.TLambda (Can.TType ModuleName.list "List" [ tipe ]) valueType)
+                            TOpt.Call A.zero list [ encoder ] { tipe = Can.TLambda (Can.TType ModuleName.list "List" [ tipe ]) valueType, tvar = Nothing }
                         )
             )
 
@@ -214,7 +214,7 @@ encodeArray tipe =
                 toEncoder tipe
                     |> Names.map
                         (\encoder ->
-                            TOpt.Call A.zero array [ encoder ] (Can.TLambda (Can.TType ModuleName.array "Array" [ tipe ]) valueType)
+                            TOpt.Call A.zero array [ encoder ] { tipe = Can.TLambda (Can.TType ModuleName.array "Array" [ tipe ]) valueType, tvar = Nothing }
                         )
             )
 
@@ -241,16 +241,16 @@ encodeTuple a b cs =
                     else
                         TOpt.HintTuple3
             in
-            TOpt.Destruct (TOpt.Destructor arg (TOpt.Index index hint (TOpt.Root Name.dollar)) argType) body (TOpt.typeOf body)
+            TOpt.Destruct (TOpt.Destructor arg (TOpt.Index index hint (TOpt.Root Name.dollar)) argType) body { tipe = TOpt.typeOf body, tvar = Nothing }
 
         letCs_ : Name -> Can.Type -> Int -> TOpt.Expr -> TOpt.Expr
         letCs_ arg argType index body =
-            TOpt.Destruct (TOpt.Destructor arg (TOpt.ArrayIndex index (TOpt.Field "cs" (TOpt.Root Name.dollar))) argType) body (TOpt.typeOf body)
+            TOpt.Destruct (TOpt.Destructor arg (TOpt.ArrayIndex index (TOpt.Field "cs" (TOpt.Root Name.dollar))) argType) body { tipe = TOpt.typeOf body, tvar = Nothing }
 
         encodeArg : Name -> Can.Type -> Names.Tracker TOpt.Expr
         encodeArg arg argType =
             toEncoder argType
-                |> Names.map (\encoder -> TOpt.Call A.zero encoder [ TOpt.VarLocal arg argType ] valueType)
+                |> Names.map (\encoder -> TOpt.Call A.zero encoder [ TOpt.VarLocal arg { tipe = argType, tvar = Nothing } ] { tipe = valueType, tvar = Nothing })
     in
     encode "list"
         |> Names.andThen
@@ -292,12 +292,12 @@ encodeTuple a b cs =
                                                                             b
                                                                             Index.second
                                                                             (List.foldr (\( i, index, argType ) -> letCs_ (IndexName.fromIndex index) argType i)
-                                                                                (TOpt.Call A.zero list [ identity, TOpt.List A.zero args listValueType ] valueType)
+                                                                                (TOpt.Call A.zero list [ identity, TOpt.List A.zero args { tipe = listValueType, tvar = Nothing } ] { tipe = valueType, tvar = Nothing })
                                                                                 indexedCs
                                                                             )
                                                                         )
                                                                     )
-                                                                    funcType
+                                                                    { tipe = funcType, tvar = Nothing }
                                                             )
                                                 )
                                     )
@@ -318,7 +318,7 @@ toFlagsDecoder tipe =
             decode "succeed"
                 |> Names.map
                     (\succeed ->
-                        TOpt.Call A.zero succeed [ TOpt.Unit Can.TUnit ] (Can.TType ModuleName.jsonDecode "Decoder" [ Can.TUnit ])
+                        TOpt.Call A.zero succeed [ TOpt.Unit { tipe = Can.TUnit, tvar = Nothing } ] { tipe = Can.TType ModuleName.jsonDecode "Decoder" [ Can.TUnit ], tvar = Nothing }
                     )
 
         _ ->
@@ -426,12 +426,12 @@ decodeMaybe tipe =
                                                                             TOpt.Call A.zero
                                                                                 oneOf
                                                                                 [ TOpt.List A.zero
-                                                                                    [ TOpt.Call A.zero null [ nothing ] decoderType
-                                                                                    , TOpt.Call A.zero map_ [ just, subDecoder ] decoderType
+                                                                                    [ TOpt.Call A.zero null [ nothing ] { tipe = decoderType, tvar = Nothing }
+                                                                                    , TOpt.Call A.zero map_ [ just, subDecoder ] { tipe = decoderType, tvar = Nothing }
                                                                                     ]
-                                                                                    listType
+                                                                                    { tipe = listType, tvar = Nothing }
                                                                                 ]
-                                                                                decoderType
+                                                                                { tipe = decoderType, tvar = Nothing }
                                                                         )
                                                             )
                                                 )
@@ -455,7 +455,7 @@ decodeList tipe =
                 toDecoder tipe
                     |> Names.map
                         (\subDecoder ->
-                            TOpt.Call A.zero list [ subDecoder ] decoderType
+                            TOpt.Call A.zero list [ subDecoder ] { tipe = decoderType, tvar = Nothing }
                         )
             )
 
@@ -475,7 +475,7 @@ decodeArray tipe =
                 toDecoder tipe
                     |> Names.map
                         (\subDecoder ->
-                            TOpt.Call A.zero array [ subDecoder ] decoderType
+                            TOpt.Call A.zero array [ subDecoder ] { tipe = decoderType, tvar = Nothing }
                         )
             )
 
@@ -489,7 +489,7 @@ decodeTuple0 =
     decode "null"
         |> Names.map
             (\null ->
-                TOpt.Call A.zero null [ TOpt.Unit Can.TUnit ] decoderType
+                TOpt.Call A.zero null [ TOpt.Unit { tipe = Can.TUnit, tvar = Nothing } ] { tipe = decoderType, tvar = Nothing }
             )
 
 
@@ -515,17 +515,17 @@ decodeTuple a b cs =
                                 ( [ a ], b )
 
                     tuple =
-                        TOpt.Tuple A.zero (toLocal 0 a) (toLocal 1 b) (List.indexedMap (\i c -> toLocal (i + 2) c) cs) tupleType
+                        TOpt.Tuple A.zero (toLocal 0 a) (toLocal 1 b) (List.indexedMap (\i c -> toLocal (i + 2) c) cs) { tipe = tupleType, tvar = Nothing }
                 in
                 List.foldr (\( i, c ) -> Names.andThen (indexAndThen i c))
-                    (indexAndThen (List.length cs + 1) lastElem (TOpt.Call A.zero succeed [ tuple ] decoderType))
+                    (indexAndThen (List.length cs + 1) lastElem (TOpt.Call A.zero succeed [ tuple ] { tipe = decoderType, tvar = Nothing }))
                     (List.indexedMap Tuple.pair allElems)
             )
 
 
 toLocal : Int -> Can.Type -> TOpt.Expr
 toLocal index tipe =
-    TOpt.VarLocal (Name.fromVarIndex index) tipe
+    TOpt.VarLocal (Name.fromVarIndex index) { tipe = tipe, tvar = Nothing }
 
 
 indexAndThen : Int -> Can.Type -> TOpt.Expr -> Names.Tracker TOpt.Expr
@@ -552,10 +552,10 @@ indexAndThen i tipe decoder =
                                         in
                                         TOpt.Call A.zero
                                             andThen
-                                            [ TOpt.Function [ ( Name.fromVarIndex i, tipe ) ] decoder funcType
-                                            , TOpt.Call A.zero index [ TOpt.Int A.zero i (Can.TType ModuleName.basics "Int" []), typeDecoder ] subDecoderType
+                                            [ TOpt.Function [ ( Name.fromVarIndex i, tipe ) ] decoder { tipe = funcType, tvar = Nothing }
+                                            , TOpt.Call A.zero index [ TOpt.Int A.zero i { tipe = Can.TType ModuleName.basics "Int" [], tvar = Nothing }, typeDecoder ] { tipe = subDecoderType, tvar = Nothing }
                                             ]
-                                            decoderResultType
+                                            { tipe = decoderResultType, tvar = Nothing }
                                     )
                         )
             )
@@ -569,10 +569,10 @@ decodeRecord fields recordType =
 
         toFieldExpr : Name -> Can.FieldType -> TOpt.Expr
         toFieldExpr name (Can.FieldType _ fieldType) =
-            TOpt.VarLocal name fieldType
+            TOpt.VarLocal name { tipe = fieldType, tvar = Nothing }
 
         record =
-            TOpt.Record (Dict.map toFieldExpr fields) recordType
+            TOpt.Record (Dict.map toFieldExpr fields) { tipe = recordType, tvar = Nothing }
     in
     decode "succeed"
         |> Names.andThen
@@ -581,7 +581,7 @@ decodeRecord fields recordType =
                     |> Names.andThen
                         (\fieldDecoders ->
                             List.foldl (\fieldDecoder -> Names.andThen (\optCall -> fieldAndThen optCall fieldDecoder))
-                                (Names.pure (TOpt.Call A.zero succeed [ record ] decoderType))
+                                (Names.pure (TOpt.Call A.zero succeed [ record ] { tipe = decoderType, tvar = Nothing }))
                                 fieldDecoders
                         )
             )
@@ -611,10 +611,10 @@ fieldAndThen decoder ( key, Can.FieldType _ tipe ) =
                                         in
                                         TOpt.Call A.zero
                                             andThen
-                                            [ TOpt.Function [ ( key, tipe ) ] decoder funcType
-                                            , TOpt.Call A.zero field [ TOpt.Str A.zero (Name.toElmString key) (Can.TType ModuleName.basics "String" []), typeDecoder ] subDecoderType
+                                            [ TOpt.Function [ ( key, tipe ) ] decoder { tipe = funcType, tvar = Nothing }
+                                            , TOpt.Call A.zero field [ TOpt.Str A.zero (Name.toElmString key) { tipe = Can.TType ModuleName.basics "String" [], tvar = Nothing }, typeDecoder ] { tipe = subDecoderType, tvar = Nothing }
                                             ]
-                                            decoderResultType
+                                            { tipe = decoderResultType, tvar = Nothing }
                                     )
                         )
             )
@@ -640,9 +640,9 @@ decode name =
 
 encodeBytes : Names.Tracker TOpt.Expr
 encodeBytes =
-    Names.registerKernel Name.json (TOpt.VarKernel A.zero Name.json "encodeBytes" (Can.TVar "encodeBytes"))
+    Names.registerKernel Name.json (TOpt.VarKernel A.zero Name.json "encodeBytes" { tipe = Can.TVar "encodeBytes", tvar = Nothing })
 
 
 decodeBytes : Names.Tracker TOpt.Expr
 decodeBytes =
-    Names.registerKernel Name.json (TOpt.VarKernel A.zero Name.json "decodeBytes" (Can.TVar "decodeBytes"))
+    Names.registerKernel Name.json (TOpt.VarKernel A.zero Name.json "decodeBytes" { tipe = Can.TVar "decodeBytes", tvar = Nothing })

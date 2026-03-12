@@ -5,6 +5,7 @@ module TestLogic.TestPipeline exposing
     , MlirArtifacts
       -- Pipeline entry points (each runs full pipeline to that stage)
     , MonoArtifacts
+    , MonoDirectArtifacts
     , PostSolveArtifacts
     , TypeCheckArtifacts
     , TypedOptArtifacts
@@ -14,6 +15,7 @@ module TestLogic.TestPipeline exposing
     , runToMlir
       -- Low-level helpers (for tests needing fine-grained control)
     , runToMono
+    , runToMonoDirect
     , runToPostSolve
     , runToTypedOpt
     )
@@ -53,10 +55,12 @@ import Compiler.Generate.MLIR.Backend as MLIR
 import Compiler.Generate.Mode as Mode
 import Compiler.GlobalOpt.MonoGlobalOptimize as MonoGlobalOptimize
 import Compiler.LocalOpt.Typed.Module as TypedOptimize
+import Compiler.MonoDirect.Monomorphize as MonoDirect
 import Compiler.Monomorphize.Monomorphize as Monomorphize
 import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Result as RResult
 import Compiler.Type.Constrain.Typed.Module as ConstrainTyped
+import Compiler.Type.SolverSnapshot as SolverSnapshot
 import Compiler.Type.KernelTypes as KernelTypes
 import Compiler.Type.PostSolve as PostSolve
 import Compiler.Type.Solve as Solve
@@ -87,6 +91,8 @@ type alias TypeCheckArtifacts =
     { canonical : Can.Module
     , annotations : Dict Name.Name Can.Annotation
     , nodeTypes : Array (Maybe Can.Type) -- Pre-PostSolve
+    , nodeVars : Array (Maybe IO.Variable)
+    , solverState : { descriptors : Array IO.Descriptor, pointInfo : Array IO.PointInfo, weights : Array Int }
     }
 
 
@@ -98,6 +104,8 @@ type alias PostSolveArtifacts =
     , nodeTypesPre : PostSolve.NodeTypes -- Before PostSolve
     , nodeTypesPost : PostSolve.NodeTypes -- After PostSolve
     , kernelEnv : KernelTypes.KernelTypeEnv
+    , nodeVars : Array (Maybe IO.Variable)
+    , solverState : { descriptors : Array IO.Descriptor, pointInfo : Array IO.PointInfo, weights : Array Int }
     }
 
 
@@ -123,6 +131,24 @@ type alias MonoArtifacts =
     , globalGraph : TOpt.GlobalGraph
     , globalTypeEnv : TypeEnv.GlobalTypeEnv
     , monoGraph : Mono.MonoGraph
+    }
+
+
+{-| Stage 5-alt: MonoDirect monomorphization artifacts (includes Stages 1-4).
+
+Uses solver-directed monomorphization via `MonoDirect.monomorphizeDirect`.
+
+-}
+type alias MonoDirectArtifacts =
+    { canonical : Can.Module
+    , annotations : Dict Name.Name Can.Annotation
+    , nodeTypes : PostSolve.NodeTypes
+    , kernelEnv : KernelTypes.KernelTypeEnv
+    , localGraph : TOpt.LocalGraph
+    , globalGraph : TOpt.GlobalGraph
+    , globalTypeEnv : TypeEnv.GlobalTypeEnv
+    , monoGraph : Mono.MonoGraph
+    , solverSnapshot : SolverSnapshot.SolverSnapshot
     }
 
 
@@ -201,11 +227,13 @@ runToTypeCheck srcModule =
                 Err errCount ->
                     Err ("Type checking failed with " ++ String.fromInt errCount ++ " error(s)")
 
-                Ok { annotations, nodeTypes } ->
+                Ok { annotations, nodeTypes, nodeVars, solverState } ->
                     Ok
                         { canonical = canonical
                         , annotations = annotations
                         , nodeTypes = nodeTypes
+                        , nodeVars = nodeVars
+                        , solverState = solverState
                         }
 
 
@@ -217,7 +245,7 @@ runToPostSolve srcModule =
         Err e ->
             Err e
 
-        Ok { canonical, annotations, nodeTypes } ->
+        Ok { canonical, annotations, nodeTypes, nodeVars, solverState } ->
             let
                 postSolveResult =
                     PostSolve.postSolve
@@ -231,6 +259,8 @@ runToPostSolve srcModule =
                 , nodeTypesPre = nodeTypes
                 , nodeTypesPost = postSolveResult.nodeTypes
                 , kernelEnv = postSolveResult.kernelEnv
+                , nodeVars = nodeVars
+                , solverState = solverState
                 }
 
 
@@ -247,12 +277,12 @@ runToTypedOpt srcModule =
         Err e ->
             Err e
 
-        Ok { canonical, annotations, nodeTypesPost, kernelEnv } ->
+        Ok { canonical, annotations, nodeTypesPost, kernelEnv, nodeVars } ->
             let
                 typedModule =
-                    TCanBuild.fromCanonical canonical nodeTypesPost
+                    TCanBuild.fromCanonical canonical nodeTypesPost nodeVars
             in
-            case RResult.run (TypedOptimize.optimizeTyped annotations nodeTypesPost kernelEnv typedModule) of
+            case RResult.run (TypedOptimize.optimizeTyped annotations nodeTypesPost nodeVars kernelEnv typedModule) of
                 ( _, Ok localGraph ) ->
                     Ok
                         { canonical = canonical
@@ -297,6 +327,52 @@ runToMono srcModule =
                         , globalTypeEnv = globalTypeEnv
                         , monoGraph = monoGraph
                         }
+
+
+{-| Run pipeline through MonoDirect (solver-directed) monomorphization.
+-}
+runToMonoDirect : Src.Module -> Result String MonoDirectArtifacts
+runToMonoDirect srcModule =
+    case runToPostSolve (wrapWithMain srcModule) of
+        Err e ->
+            Err e
+
+        Ok { canonical, annotations, nodeTypesPost, kernelEnv, nodeVars, solverState } ->
+            let
+                typedModule =
+                    TCanBuild.fromCanonical canonical nodeTypesPost nodeVars
+
+                snapshot =
+                    SolverSnapshot.fromSolveResult { nodeVars = nodeVars, solverState = solverState }
+            in
+            case RResult.run (TypedOptimize.optimizeTyped annotations nodeTypesPost nodeVars kernelEnv typedModule) of
+                ( _, Ok localGraph ) ->
+                    let
+                        globalGraph =
+                            localGraphToGlobalGraph localGraph
+
+                        globalTypeEnv =
+                            buildGlobalTypeEnv canonical
+                    in
+                    case MonoDirect.monomorphizeDirect "main" globalTypeEnv snapshot globalGraph of
+                        Err monoErr ->
+                            Err ("MonoDirect monomorphization failed: " ++ monoErr)
+
+                        Ok monoGraph ->
+                            Ok
+                                { canonical = canonical
+                                , annotations = annotations
+                                , nodeTypes = nodeTypesPost
+                                , kernelEnv = kernelEnv
+                                , localGraph = localGraph
+                                , globalGraph = globalGraph
+                                , globalTypeEnv = globalTypeEnv
+                                , monoGraph = monoGraph
+                                , solverSnapshot = snapshot
+                                }
+
+                ( _, Err _ ) ->
+                    Err "Typed optimization produced an error"
 
 
 {-| Run pipeline through global optimization.
@@ -375,7 +451,7 @@ runToMlir srcModule =
 
 {-| Run type checking with expression ID tracking.
 -}
-runWithIdsTypeCheck : Can.Module -> IO.IO (Result Int { annotations : Dict Name.Name Can.Annotation, nodeTypes : Array (Maybe Can.Type) })
+runWithIdsTypeCheck : Can.Module -> IO.IO (Result Int { annotations : Dict Name.Name Can.Annotation, nodeTypes : Array (Maybe Can.Type), nodeVars : Array (Maybe IO.Variable), solverState : { descriptors : Array IO.Descriptor, pointInfo : Array IO.PointInfo, weights : Array Int } })
 runWithIdsTypeCheck modul =
     ConstrainTyped.constrainWithIds modul
         |> IO.andThen
@@ -389,6 +465,8 @@ runWithIdsTypeCheck modul =
                         Ok
                             { annotations = Dict.fromList (Data.Map.toList compare data.annotations)
                             , nodeTypes = data.nodeTypes
+                            , nodeVars = data.nodeVars
+                            , solverState = data.solverState
                             }
 
                     Err (NE.Nonempty _ rest) ->

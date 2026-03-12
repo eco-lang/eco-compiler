@@ -180,7 +180,7 @@ registerGlobal region home name itype =
                 global =
                     TOpt.Global home name
             in
-            tResult uid (EverySet.insert TOpt.toComparableGlobal global deps) fields locals (TOpt.VarGlobal region global itype)
+            tResult uid (EverySet.insert TOpt.toComparableGlobal global deps) fields locals (TOpt.VarGlobal region global { tipe = itype, tvar = Nothing })
 
 
 {-| Register a dependency on a Debug module function and return a debug variable reference.
@@ -198,7 +198,7 @@ registerDebug name home region itype =
                 global =
                     TOpt.Global ModuleName.debug name
             in
-            tResult uid (EverySet.insert TOpt.toComparableGlobal global deps) fields locals (TOpt.VarDebug region name home Nothing itype)
+            tResult uid (EverySet.insert TOpt.toComparableGlobal global deps) fields locals (TOpt.VarDebug region name home Nothing { tipe = itype, tvar = Nothing })
 
 
 {-| Register a dependency on a type constructor and return an optimized expression.
@@ -225,34 +225,40 @@ registerCtor region home (A.At _ name) index opts itype =
             in
             case opts of
                 Can.Normal ->
-                    tResult uid newDeps fields locals (TOpt.VarGlobal region global itype)
+                    tResult uid newDeps fields locals (TOpt.VarGlobal region global { tipe = itype, tvar = Nothing })
 
                 Can.Enum ->
                     let
                         boolType =
                             Can.TType ModuleName.basics "Bool" []
+
+                        meta =
+                            { tipe = itype, tvar = Nothing }
+
+                        boolMeta =
+                            { tipe = boolType, tvar = Nothing }
                     in
                     tResult uid newDeps fields locals <|
                         case name of
                             "True" ->
                                 if home == ModuleName.basics then
-                                    TOpt.Bool region True boolType
+                                    TOpt.Bool region True boolMeta
 
                                 else
-                                    TOpt.VarEnum region global index itype
+                                    TOpt.VarEnum region global index meta
 
                             "False" ->
                                 if home == ModuleName.basics then
-                                    TOpt.Bool region False boolType
+                                    TOpt.Bool region False boolMeta
 
                                 else
-                                    TOpt.VarEnum region global index itype
+                                    TOpt.VarEnum region global index meta
 
                             _ ->
-                                TOpt.VarEnum region global index itype
+                                TOpt.VarEnum region global index meta
 
                 Can.Unbox ->
-                    tResult uid (EverySet.insert TOpt.toComparableGlobal identity newDeps) fields locals (TOpt.VarBox region global itype)
+                    tResult uid (EverySet.insert TOpt.toComparableGlobal identity newDeps) fields locals (TOpt.VarBox region global { tipe = itype, tvar = Nothing })
 
 
 identity : TOpt.Global

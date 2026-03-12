@@ -22,7 +22,7 @@ annotating each expression with its inferred type from the type checker.
 
 import Array
 import Compiler.AST.Canonical as Can
-import Compiler.AST.TypedCanonical as TCan exposing (Decls(..), Def(..), ExprTypes, Module(..))
+import Compiler.AST.TypedCanonical as TCan exposing (Decls(..), Def(..), ExprTypes, ExprVars, Module(..))
 import Compiler.Reporting.Annotation as A
 import Utils.Crash exposing (crash)
 
@@ -38,11 +38,11 @@ their inferred types (as produced by `Solve.runWithExprVars`). Returns a
 `TypedCanonical.Module` where every expression is paired with its type.
 
 -}
-fromCanonical : Can.Module -> ExprTypes -> Module
-fromCanonical (Can.Module canData) exprTypes =
+fromCanonical : Can.Module -> ExprTypes -> ExprVars -> Module
+fromCanonical (Can.Module canData) exprTypes exprVars =
     let
         typedDecls =
-            toTypedDecls exprTypes canData.decls
+            toTypedDecls exprTypes exprVars canData.decls
     in
     Module
         { name = canData.name
@@ -60,18 +60,18 @@ fromCanonical (Can.Module canData) exprTypes =
 -- ====== DECLS TRANSFORMATION ======
 
 
-toTypedDecls : ExprTypes -> Can.Decls -> Decls
-toTypedDecls exprTypes decls =
+toTypedDecls : ExprTypes -> ExprVars -> Can.Decls -> Decls
+toTypedDecls exprTypes exprVars decls =
     case decls of
         Can.Declare def rest ->
-            Declare (toTypedDef exprTypes def)
-                (toTypedDecls exprTypes rest)
+            Declare (toTypedDef exprTypes exprVars def)
+                (toTypedDecls exprTypes exprVars rest)
 
         Can.DeclareRec def defs rest ->
             DeclareRec
-                (toTypedDef exprTypes def)
-                (List.map (toTypedDef exprTypes) defs)
-                (toTypedDecls exprTypes rest)
+                (toTypedDef exprTypes exprVars def)
+                (List.map (toTypedDef exprTypes exprVars) defs)
+                (toTypedDecls exprTypes exprVars rest)
 
         Can.SaveTheEnvironment ->
             SaveTheEnvironment
@@ -81,14 +81,14 @@ toTypedDecls exprTypes decls =
 -- ====== DEF TRANSFORMATION ======
 
 
-toTypedDef : ExprTypes -> Can.Def -> Def
-toTypedDef exprTypes def =
+toTypedDef : ExprTypes -> ExprVars -> Can.Def -> Def
+toTypedDef exprTypes exprVars def =
     case def of
         Can.Def name args body ->
-            Def name args (toTypedExpr exprTypes body)
+            Def name args (toTypedExpr exprTypes exprVars body)
 
         Can.TypedDef name freeVars typedArgs body resultType ->
-            TypedDef name freeVars typedArgs (toTypedExpr exprTypes body) resultType
+            TypedDef name freeVars typedArgs (toTypedExpr exprTypes exprVars body) resultType
 
 
 
@@ -104,8 +104,8 @@ optimization. When the optimizer encounters a `Can.Expr` child (e.g., in
 Synthetic expressions (id < 0) will crash as they should not exist in valid ASTs.
 
 -}
-toTypedExpr : ExprTypes -> Can.Expr -> TCan.Expr
-toTypedExpr exprTypes (A.At region info) =
+toTypedExpr : ExprTypes -> ExprVars -> Can.Expr -> TCan.Expr
+toTypedExpr exprTypes exprVars (A.At region info) =
     let
         tipe : Can.Type
         tipe =
@@ -120,5 +120,8 @@ toTypedExpr exprTypes (A.At region info) =
 
                     else
                         crash ("Missing type for expr id " ++ String.fromInt info.id)
+
+        tvar =
+            Array.get info.id exprVars |> Maybe.andThen identity
     in
-    A.At region (TCan.TypedExpr { expr = info.node, tipe = tipe })
+    A.At region (TCan.TypedExpr { expr = info.node, tipe = tipe, tvar = tvar })
