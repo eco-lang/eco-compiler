@@ -1,8 +1,12 @@
 Rebuild the @bootstrap.md sequence to Stage 5, ensure that we have .js bootstrap compilers built with the new global optimisation efficiency work.
 
-At Stage 5, run NodeJs with profiling on. Then examine the processed output of the profiler and try to identify where it could be struggling. Set a 5 minute timeout on this step to force NodeJS to stop if the compilation does not complete in 5 minutes.
+For ALL stage 5 runs, use max heap size 12Gb and max stack size 65536.
 
-Note, the first time you run Stage 5 it will spend most of its 5 minutes compiling the modules to .ecot. It is worth doing a second run which will pick up the cached .ecot files and spend more time in the global optimisation phase.
+The first time you run Stage 5 it will spend a lot of time compiling the modules to .ecot. Set a 5 minute timeout on the first run, and also do not do any profiling on the first run.
+
+Do a second run which should pick up the cached .ecot files from the first run and get more opportunity to run the later compiler phases. Do the second run NodeJs with profiling on. Use --prof and not --cpu-prof, since the cpu sampling one will not produce output in the event of a crash.
+
+Examine the processed output of the profiler and try to identify where it could be struggling. Set a 5 minute timeout on this step to force NodeJS to stop if the compilation does not complete in 5 minutes.
 
 IMPORTANT: Do not run more than one node process at a time - this system has only 16Gb memory, and we set the max heap size to 12Gb.
 IMPORTANT: If profiling crashes, do not chase down errors and try to fix, just report the stats your got and what the crash was.
