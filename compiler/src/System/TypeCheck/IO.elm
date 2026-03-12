@@ -2,9 +2,6 @@ module System.TypeCheck.IO exposing
     ( unsafePerformIO
     , IO, State, pure, apply, map, andThen, foldrM, foldM, traverseMap, traverseMapWithKey, forM_, mapM_
     , foldMDict, mapM, traverseList, traverseTuple
-    , primNewWeight, primNewPointInfo, primNewDescriptor, primNewMVector
-    , primReadWeight, primReadPointInfo, primReadDescriptor, primReadMVector
-    , primWriteWeight, primWritePointInfo, primWriteDescriptor, primWriteMVector
     , Step(..), loop
     , Point(..), PointInfo(..)
     , Descriptor(..), Content(..), SuperType(..), Mark(..), Variable, FlatType(..)
@@ -12,12 +9,13 @@ module System.TypeCheck.IO exposing
     , DescriptorProps, makeDescriptor
     )
 
-{-| Defunctionalized IO monad for type inference.
+{-| IO monad and state threading for type inference.
 
-This module implements a stack-safe IO monad used throughout the type inference
-system. IO computations are represented as a free monad (data DSL) interpreted
-by a single tail-recursive loop, eliminating stack overflow risks from long
-andThen chains.
+This module implements a specialized IO monad used throughout the type inference
+system. It provides state threading for mutable references (Points, Descriptors,
+etc.) without actual side effects, simulating imperative union-find and type
+unification algorithms in a pure functional style. The State contains arrays that
+act as pseudo-mutable stores for type variables and descriptors.
 
 Ref.: <https://hackage.haskell.org/package/base-4.20.0.1/docs/System-IO.html>
 
@@ -28,13 +26,6 @@ Ref.: <https://hackage.haskell.org/package/base-4.20.0.1/docs/System-IO.html>
 
 @docs IO, State, pure, apply, map, andThen, foldrM, foldM, traverseMap, traverseMapWithKey, forM_, mapM_
 @docs foldMDict, mapM, traverseList, traverseTuple
-
-
-# Primitive IORef operations (Int-based, wrapped by Data.IORef)
-
-@docs primNewWeight, primNewPointInfo, primNewDescriptor, primNewMVector
-@docs primReadWeight, primReadPointInfo, primReadDescriptor, primReadMVector
-@docs primWriteWeight, primWritePointInfo, primWriteDescriptor, primWriteMVector
 
 
 # Loop
@@ -65,285 +56,6 @@ Ref.: <https://hackage.haskell.org/package/base-4.20.0.1/docs/System-IO.html>
 
 import Array exposing (Array)
 import Data.Map as Dict exposing (Dict)
-import Utils.Crash exposing (crash)
-
-
-
--- ====== THE IO MONAD ======
-
-
-{-| The IO monad for type inference computations.
-
-IO computations are represented as a free monad: either a pure value or an
-effectful instruction with a continuation. The interpreter (`run`) executes
-these in a tail-recursive loop, providing stack safety.
-
--}
-type IO a
-    = Pure a
-    | Eff (Instr a)
-
-
-{-| Instruction set for IO effects.
-
-Each constructor represents one primitive operation on the mutable state,
-with a continuation that receives the operation's result and returns the
-next IO computation to execute. Uses raw Int indices (wrapped by Data.IORef).
-
--}
-type Instr a
-    = NewWeight Int (Int -> IO a)
-    | ReadWeight Int (Int -> IO a)
-    | WriteWeight Int Int (IO a)
-    | NewPointInfo PointInfo (Int -> IO a)
-    | ReadPointInfo Int (PointInfo -> IO a)
-    | WritePointInfo Int PointInfo (IO a)
-    | NewDescriptor Descriptor (Int -> IO a)
-    | ReadDescriptor Int (Descriptor -> IO a)
-    | WriteDescriptor Int Descriptor (IO a)
-    | NewMVector (Array (Maybe (List Variable))) (Int -> IO a)
-    | ReadMVector Int (Array (Maybe (List Variable)) -> IO a)
-    | WriteMVector Int (Array (Maybe (List Variable))) (IO a)
-
-
-{-| The mutable state threaded through IO computations.
-
-Contains arrays acting as pseudo-mutable stores for:
-
-  - `ioRefsWeight`: Union-find weights for path compression
-  - `ioRefsPointInfo`: Point information (rank and parent links)
-  - `ioRefsDescriptor`: Type descriptors for type variables
-  - `ioRefsMVector`: Additional mutable vector storage
-
--}
-type alias State =
-    { ioRefsWeight : Array Int
-    , ioRefsPointInfo : Array PointInfo
-    , ioRefsDescriptor : Array Descriptor
-    , ioRefsMVector : Array (Array (Maybe (List Variable)))
-    }
-
-
-
--- ====== MONAD OPERATIONS ======
-
-
-{-| Lift a pure value into the IO monad without modifying state.
--}
-pure : a -> IO a
-pure =
-    Pure
-
-
-{-| Map a pure function over an IO computation.
--}
-map : (a -> b) -> IO a -> IO b
-map f io =
-    case io of
-        Pure a ->
-            Pure (f a)
-
-        Eff instr ->
-            Eff (mapInstr f instr)
-
-
-{-| Apply a function wrapped in IO to a value wrapped in IO.
-
-Applicative functor operation for sequencing effects.
-
--}
-apply : IO a -> IO (a -> b) -> IO b
-apply ma mf =
-    andThen (\f -> andThen (f >> pure) ma) mf
-
-
-{-| Chain IO computations sequentially, threading state through each step.
-
-The first IO action runs, then its result is passed to the continuation
-function to produce the next IO action.
-
--}
-andThen : (a -> IO b) -> IO a -> IO b
-andThen k io =
-    case io of
-        Pure a ->
-            k a
-
-        Eff instr ->
-            Eff (bindInstr k instr)
-
-
-mapInstr : (a -> b) -> Instr a -> Instr b
-mapInstr f instr =
-    case instr of
-        NewWeight n k ->
-            NewWeight n (k >> map f)
-
-        ReadWeight idx k ->
-            ReadWeight idx (k >> map f)
-
-        WriteWeight idx v next ->
-            WriteWeight idx v (map f next)
-
-        NewPointInfo pi k ->
-            NewPointInfo pi (k >> map f)
-
-        ReadPointInfo idx k ->
-            ReadPointInfo idx (k >> map f)
-
-        WritePointInfo idx v next ->
-            WritePointInfo idx v (map f next)
-
-        NewDescriptor d k ->
-            NewDescriptor d (k >> map f)
-
-        ReadDescriptor idx k ->
-            ReadDescriptor idx (k >> map f)
-
-        WriteDescriptor idx v next ->
-            WriteDescriptor idx v (map f next)
-
-        NewMVector mv k ->
-            NewMVector mv (k >> map f)
-
-        ReadMVector idx k ->
-            ReadMVector idx (k >> map f)
-
-        WriteMVector idx v next ->
-            WriteMVector idx v (map f next)
-
-
-bindInstr : (a -> IO b) -> Instr a -> Instr b
-bindInstr k instr =
-    case instr of
-        NewWeight n cont ->
-            NewWeight n (cont >> andThen k)
-
-        ReadWeight idx cont ->
-            ReadWeight idx (cont >> andThen k)
-
-        WriteWeight idx v next ->
-            WriteWeight idx v (andThen k next)
-
-        NewPointInfo pi cont ->
-            NewPointInfo pi (cont >> andThen k)
-
-        ReadPointInfo idx cont ->
-            ReadPointInfo idx (cont >> andThen k)
-
-        WritePointInfo idx v next ->
-            WritePointInfo idx v (andThen k next)
-
-        NewDescriptor d cont ->
-            NewDescriptor d (cont >> andThen k)
-
-        ReadDescriptor idx cont ->
-            ReadDescriptor idx (cont >> andThen k)
-
-        WriteDescriptor idx v next ->
-            WriteDescriptor idx v (andThen k next)
-
-        NewMVector mv cont ->
-            NewMVector mv (cont >> andThen k)
-
-        ReadMVector idx cont ->
-            ReadMVector idx (cont >> andThen k)
-
-        WriteMVector idx v next ->
-            WriteMVector idx v (andThen k next)
-
-
-
--- ====== PRIMITIVE IOREF OPERATIONS (Int-based) ======
--- These are wrapped by Data.IORef with the IORef newtype.
-
-
-{-| Allocate a new weight entry, returning its index.
--}
-primNewWeight : Int -> IO Int
-primNewWeight n =
-    Eff (NewWeight n Pure)
-
-
-{-| Read a weight value by index.
--}
-primReadWeight : Int -> IO Int
-primReadWeight idx =
-    Eff (ReadWeight idx Pure)
-
-
-{-| Write a weight value by index.
--}
-primWriteWeight : Int -> Int -> IO ()
-primWriteWeight idx value =
-    Eff (WriteWeight idx value (Pure ()))
-
-
-{-| Allocate a new PointInfo entry, returning its index.
--}
-primNewPointInfo : PointInfo -> IO Int
-primNewPointInfo value =
-    Eff (NewPointInfo value Pure)
-
-
-{-| Read a PointInfo value by index.
--}
-primReadPointInfo : Int -> IO PointInfo
-primReadPointInfo idx =
-    Eff (ReadPointInfo idx Pure)
-
-
-{-| Write a PointInfo value by index.
--}
-primWritePointInfo : Int -> PointInfo -> IO ()
-primWritePointInfo idx value =
-    Eff (WritePointInfo idx value (Pure ()))
-
-
-{-| Allocate a new Descriptor entry, returning its index.
--}
-primNewDescriptor : Descriptor -> IO Int
-primNewDescriptor value =
-    Eff (NewDescriptor value Pure)
-
-
-{-| Read a Descriptor value by index.
--}
-primReadDescriptor : Int -> IO Descriptor
-primReadDescriptor idx =
-    Eff (ReadDescriptor idx Pure)
-
-
-{-| Write a Descriptor value by index.
--}
-primWriteDescriptor : Int -> Descriptor -> IO ()
-primWriteDescriptor idx value =
-    Eff (WriteDescriptor idx value (Pure ()))
-
-
-{-| Allocate a new MVector entry, returning its index.
--}
-primNewMVector : Array (Maybe (List Variable)) -> IO Int
-primNewMVector value =
-    Eff (NewMVector value Pure)
-
-
-{-| Read an MVector value by index.
--}
-primReadMVector : Int -> IO (Array (Maybe (List Variable)))
-primReadMVector idx =
-    Eff (ReadMVector idx Pure)
-
-
-{-| Write an MVector value by index.
--}
-primWriteMVector : Int -> Array (Maybe (List Variable)) -> IO ()
-primWriteMVector idx value =
-    Eff (WriteMVector idx value (Pure ()))
-
-
-
--- ====== INTERPRETER ======
 
 
 {-| Execute an IO action and extract its result, discarding the final state.
@@ -354,107 +66,13 @@ state (with no references allocated) and returns only the computed value.
 -}
 unsafePerformIO : IO a -> a
 unsafePerformIO ioA =
-    let
-        initState =
-            { ioRefsWeight = Array.empty
-            , ioRefsPointInfo = Array.empty
-            , ioRefsDescriptor = Array.empty
-            , ioRefsMVector = Array.empty
-            }
-    in
-    run ioA initState |> Tuple.second
-
-
-{-| Execute an IO program given an initial world state.
--}
-run : IO a -> State -> ( State, a )
-run io world =
-    case io of
-        Pure v ->
-            ( world, v )
-
-        Eff instr ->
-            let
-                ( nextIO, nextWorld ) =
-                    interpretInstr instr world
-            in
-            run nextIO nextWorld
-
-
-interpretInstr : Instr a -> State -> ( IO a, State )
-interpretInstr instr world =
-    case instr of
-        NewWeight n k ->
-            ( k (Array.length world.ioRefsWeight)
-            , { world | ioRefsWeight = Array.push n world.ioRefsWeight }
-            )
-
-        ReadWeight idx k ->
-            case Array.get idx world.ioRefsWeight of
-                Just value ->
-                    ( k value, world )
-
-                Nothing ->
-                    crash "Data.IORef.readIORefWeight: could not find entry"
-
-        WriteWeight idx value next ->
-            ( next
-            , { world | ioRefsWeight = Array.set idx value world.ioRefsWeight }
-            )
-
-        NewPointInfo pi k ->
-            ( k (Array.length world.ioRefsPointInfo)
-            , { world | ioRefsPointInfo = Array.push pi world.ioRefsPointInfo }
-            )
-
-        ReadPointInfo idx k ->
-            case Array.get idx world.ioRefsPointInfo of
-                Just value ->
-                    ( k value, world )
-
-                Nothing ->
-                    crash "Data.IORef.readIORefPointInfo: could not find entry"
-
-        WritePointInfo idx value next ->
-            ( next
-            , { world | ioRefsPointInfo = Array.set idx value world.ioRefsPointInfo }
-            )
-
-        NewDescriptor d k ->
-            ( k (Array.length world.ioRefsDescriptor)
-            , { world | ioRefsDescriptor = Array.push d world.ioRefsDescriptor }
-            )
-
-        ReadDescriptor idx k ->
-            case Array.get idx world.ioRefsDescriptor of
-                Just value ->
-                    ( k value, world )
-
-                Nothing ->
-                    crash "Data.IORef.readIORefDescriptor: could not find entry"
-
-        WriteDescriptor idx value next ->
-            ( next
-            , { world | ioRefsDescriptor = Array.set idx value world.ioRefsDescriptor }
-            )
-
-        NewMVector mv k ->
-            ( k (Array.length world.ioRefsMVector)
-            , { world | ioRefsMVector = Array.push mv world.ioRefsMVector }
-            )
-
-        ReadMVector idx k ->
-            case Array.get idx world.ioRefsMVector of
-                Just value ->
-                    ( k value, world )
-
-                Nothing ->
-                    crash "Data.IORef.readIORefMVector: could not find entry"
-
-        WriteMVector idx value next ->
-            ( next
-            , { world | ioRefsMVector = Array.set idx value world.ioRefsMVector }
-            )
+    { ioRefsWeight = Array.empty
+    , ioRefsPointInfo = Array.empty
+    , ioRefsDescriptor = Array.empty
+    , ioRefsMVector = Array.empty
+    }
+        |> ioA
+        |> Tuple.second
 
 
 
@@ -479,21 +97,89 @@ to continue iterating or `Done result` to terminate.
 
 -}
 loop : (state -> IO (Step state a)) -> state -> IO a
-loop callback initState =
-    callback initState
-        |> andThen
-            (\step ->
-                case step of
-                    Done result ->
-                        pure result
+loop callback loopState ioState =
+    case callback loopState ioState of
+        ( newIOState, Loop newLoopState ) ->
+            loop callback newLoopState newIOState
 
-                    Loop s ->
-                        loop callback s
-            )
+        ( newIOState, Done a ) ->
+            ( newIOState, a )
 
 
 
--- ====== HIGHER-LEVEL COMBINATORS ======
+-- ====== THE IO MONAD ======
+
+
+{-| The IO monad for type inference computations.
+
+An IO action is a function that takes a State and returns an updated State
+along with a result value.
+
+-}
+type alias IO a =
+    State -> ( State, a )
+
+
+{-| The mutable state threaded through IO computations.
+
+Contains arrays acting as pseudo-mutable stores for:
+
+  - `ioRefsWeight`: Union-find weights for path compression
+  - `ioRefsPointInfo`: Point information (rank and parent links)
+  - `ioRefsDescriptor`: Type descriptors for type variables
+  - `ioRefsMVector`: Additional mutable vector storage
+
+-}
+type alias State =
+    { ioRefsWeight : Array Int
+    , ioRefsPointInfo : Array PointInfo
+    , ioRefsDescriptor : Array Descriptor
+    , ioRefsMVector : Array (Array (Maybe (List Variable)))
+    }
+
+
+{-| Lift a pure value into the IO monad without modifying state.
+-}
+pure : a -> IO a
+pure x =
+    \s -> ( s, x )
+
+
+{-| Apply a function wrapped in IO to a value wrapped in IO.
+
+Applicative functor operation for sequencing effects.
+
+-}
+apply : IO a -> IO (a -> b) -> IO b
+apply ma mf =
+    andThen (\f -> andThen (f >> pure) ma) mf
+
+
+{-| Map a pure function over an IO computation.
+-}
+map : (a -> b) -> IO a -> IO b
+map fn ma s0 =
+    let
+        ( s1, a ) =
+            ma s0
+    in
+    ( s1, fn a )
+
+
+{-| Chain IO computations sequentially, threading state through each step.
+
+The first IO action runs, then its result is passed to the continuation
+function to produce the next IO action.
+
+-}
+andThen : (a -> IO b) -> IO a -> IO b
+andThen f ma =
+    \s0 ->
+        let
+            ( s1, a ) =
+                ma s0
+        in
+        f a s1
 
 
 {-| Fold over a list from right to left with an IO-producing function.
@@ -573,17 +259,17 @@ Used for executing side effects in sequence without collecting return values.
 -}
 mapM_ : (a -> IO b) -> List a -> IO ()
 mapM_ f list =
-    loop (mapMHelp_ f) (List.reverse list)
+    loop (mapMHelp_ f) ( List.reverse list, pure () )
 
 
-mapMHelp_ : (a -> IO b) -> List a -> IO (Step (List a) ())
-mapMHelp_ callback list =
+mapMHelp_ : (a -> IO b) -> ( List a, IO () ) -> IO (Step ( List a, IO () ) ())
+mapMHelp_ callback ( list, result ) =
     case list of
         [] ->
-            pure (Done ())
+            map Done result
 
         a :: rest ->
-            map (\_ -> Loop rest) (callback a)
+            map (\_ -> Loop ( rest, result )) (callback a)
 
 
 {-| Flipped version of `mapM_` for convenient pipeline-style code.
