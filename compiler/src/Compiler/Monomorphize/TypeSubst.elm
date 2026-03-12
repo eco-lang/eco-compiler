@@ -2,10 +2,12 @@ module Compiler.Monomorphize.TypeSubst exposing
     ( applySubst
     , canTypeToMonoType
     , unify, unifyExtend, unifyArgsOnly, extractParamTypes
-    , fillUnconstrainedCEcoWithErased
+    , fillUnconstrainedCEcoWithErased, fillUnconstrainedCEcoWithErasedFromScheme
     , monoTypeContainsMVar
     , collectCanTypeVars
     , resolveMonoVars
+    , buildSchemeInfo
+    , unifyCallSiteDirect
     )
 
 {-| Type substitution and unification for monomorphization.
@@ -43,7 +45,7 @@ by applying type variable substitutions.
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Monomorphized as Mono
 import Compiler.Data.Name as Name exposing (Name)
-import Compiler.Monomorphize.State exposing (Substitution)
+import Compiler.Monomorphize.State exposing (SchemeInfo, Substitution)
 import Data.Map
 import Dict
 import Set exposing (Set)
@@ -265,22 +267,17 @@ unifyHelp : Can.Type -> Mono.MonoType -> Substitution -> Substitution
 unifyHelp canType monoType subst =
     case ( canType, monoType ) of
         ( Can.TVar name, _ ) ->
-            if monoTypeContainsMVar name monoType then
-                -- Occurs check: binding name to monoType would create a cyclic type.
-                -- Skip this binding to prevent infinite loops in resolveMonoVars.
-                subst
+            case Dict.get name subst of
+                Just existingMono ->
+                    let
+                        substWithTransitives =
+                            unifyMonoMono existingMono monoType subst
+                    in
+                    -- insertBindingSafe combines occurs check + normalization in one walk
+                    insertBindingSafe name monoType substWithTransitives
 
-            else
-                case Dict.get name subst of
-                    Just existingMono ->
-                        let
-                            substWithTransitives =
-                                unifyMonoMono existingMono monoType subst
-                        in
-                        insertBinding name monoType substWithTransitives
-
-                    Nothing ->
-                        insertBinding name monoType subst
+                Nothing ->
+                    insertBindingSafe name monoType subst
 
         -- Handle primitive types from elm/core that map to specialized MonoTypes
         ( Can.TType (IO.Canonical ( "elm", "core" ) "Basics") "Int" [], Mono.MInt ) ->
@@ -445,6 +442,10 @@ unifyArgsOnly canFuncType argTypes subst =
     case ( canFuncType, argTypes ) of
         ( _, [] ) ->
             subst
+
+        -- Fast path: single argument (most common for curried Elm)
+        ( Can.TLambda from _, [ singleArg ] ) ->
+            unifyHelp from singleArg subst
 
         ( Can.TLambda from to, arg0 :: rest ) ->
             let
@@ -793,6 +794,361 @@ This is an alias for applySubst.
 canTypeToMonoType : Substitution -> Can.Type -> Mono.MonoType
 canTypeToMonoType =
     applySubst
+
+
+-- ========== SCHEME INFO ==========
+
+
+{-| Build SchemeInfo from a canonical function type.
+Walks the TLambda chain once and collects type variables once.
+The prefix is used to create definition-scoped canonical names for
+pre-renamed types (e.g., "Module_funcName" -> a__def_Module_funcName_0).
+-}
+buildSchemeInfo : String -> Can.Type -> SchemeInfo
+buildSchemeInfo prefix canType =
+    let
+        ( argTypes, resultType ) =
+            flattenTLambda canType []
+
+        argCount =
+            List.length argTypes
+
+        varNames =
+            collectCanTypeVars canType []
+
+        constraints =
+            List.foldl
+                (\name acc -> Dict.insert name (constraintFromName name) acc)
+                Dict.empty
+                varNames
+
+        -- Build pre-rename map: rename ALL callee vars to definition-scoped names
+        ( renameMap, renamedVarNames ) =
+            buildPreRenameMap prefix varNames Set.empty 0 Data.Map.empty []
+
+        renamedFuncType =
+            renameCanTypeVarsInternal renameMap canType
+
+        renamedArgTypes =
+            List.map (renameCanTypeVarsInternal renameMap) argTypes
+
+        renamedResultType =
+            renameCanTypeVarsInternal renameMap resultType
+    in
+    { varNames = varNames
+    , constraints = constraints
+    , argTypes = argTypes
+    , resultType = resultType
+    , argCount = argCount
+    , renamedFuncType = renamedFuncType
+    , renamedArgTypes = renamedArgTypes
+    , renamedResultType = renamedResultType
+    , renamedVarNames = renamedVarNames
+    , preRenameMap = renameMap
+    }
+
+
+{-| Build a pre-rename map that renames all vars to definition-scoped names.
+Uses a Set to deduplicate (collectCanTypeVars can return duplicates).
+-}
+buildPreRenameMap : String -> List Name -> Set Name -> Int -> Data.Map.Dict String Name Name -> List Name -> ( Data.Map.Dict String Name Name, List Name )
+buildPreRenameMap prefix names seen counter acc renamedAcc =
+    case names of
+        [] ->
+            ( acc, List.reverse renamedAcc )
+
+        name :: rest ->
+            if Set.member name seen then
+                buildPreRenameMap prefix rest seen counter acc renamedAcc
+
+            else
+                let
+                    canonicalName =
+                        name ++ "__def_" ++ prefix ++ "_" ++ String.fromInt counter
+                in
+                buildPreRenameMap prefix rest
+                    (Set.insert name seen)
+                    (counter + 1)
+                    (Data.Map.insert identity name canonicalName acc)
+                    (canonicalName :: renamedAcc)
+
+
+{-| Rename type variables in a canonical type using a rename map.
+Internal version used for pre-renaming in SchemeInfo.
+-}
+renameCanTypeVarsInternal : Data.Map.Dict String Name Name -> Can.Type -> Can.Type
+renameCanTypeVarsInternal renameMap canType =
+    case canType of
+        Can.TVar name ->
+            case Data.Map.get identity name renameMap of
+                Just newName ->
+                    Can.TVar newName
+
+                Nothing ->
+                    canType
+
+        Can.TLambda from to ->
+            Can.TLambda (renameCanTypeVarsInternal renameMap from) (renameCanTypeVarsInternal renameMap to)
+
+        Can.TType canonical name args ->
+            Can.TType canonical name (List.map (renameCanTypeVarsInternal renameMap) args)
+
+        Can.TRecord fields ext ->
+            Can.TRecord
+                (Dict.map (\_ (Can.FieldType idx t) -> Can.FieldType idx (renameCanTypeVarsInternal renameMap t)) fields)
+                ext
+
+        Can.TTuple a b rest ->
+            Can.TTuple
+                (renameCanTypeVarsInternal renameMap a)
+                (renameCanTypeVarsInternal renameMap b)
+                (List.map (renameCanTypeVarsInternal renameMap) rest)
+
+        Can.TAlias canonical name aliasArgs aliasType ->
+            Can.TAlias canonical
+                name
+                (List.map (\( n, t ) -> ( n, renameCanTypeVarsInternal renameMap t )) aliasArgs)
+                (case aliasType of
+                    Can.Filled inner ->
+                        Can.Filled (renameCanTypeVarsInternal renameMap inner)
+
+                    Can.Holey inner ->
+                        Can.Holey (renameCanTypeVarsInternal renameMap inner)
+                )
+
+        Can.TUnit ->
+            canType
+
+
+{-| Flatten a TLambda chain into (argTypes, resultType).
+-}
+flattenTLambda : Can.Type -> List Can.Type -> ( List Can.Type, Can.Type )
+flattenTLambda canType acc =
+    case canType of
+        Can.TLambda from to ->
+            flattenTLambda to (from :: acc)
+
+        Can.TAlias _ _ _ (Can.Filled inner) ->
+            flattenTLambda inner acc
+
+        _ ->
+            ( List.reverse acc, canType )
+
+
+-- ========== SINGLE-PASS CALL-SITE UNIFIER ==========
+
+
+{-| Single-pass call-site unifier that replaces the multi-step
+unifyArgsOnly + applySubst + resolveMonoVars + unifyExtend sequence.
+
+Walks argTypes and argMonoTypes in lockstep, unifying each pair via unifyHelp.
+Then applies the resulting substitution to the result type, and constructs
+MFunction in one pass. Returns the updated substitution and the funcMonoType.
+-}
+unifyCallSiteDirect :
+    List Can.Type
+    -> Can.Type
+    -> List Mono.MonoType
+    -> Substitution
+    -> ( Substitution, Mono.MonoType )
+unifyCallSiteDirect schemeArgTypes schemeResultType argMonoTypes baseSubst =
+    let
+        -- Unify each scheme arg type with the corresponding call-site mono type
+        substAfterArgs =
+            unifyArgTypesZip schemeArgTypes argMonoTypes baseSubst
+
+        -- Resolve arg mono types through updated substitution
+        resolvedArgs =
+            List.map (resolveMonoVars substAfterArgs) argMonoTypes
+
+        -- Apply substitution to result type
+        resultMono =
+            applySubst substAfterArgs schemeResultType
+
+        -- Build the function mono type directly
+        funcMonoType =
+            buildCurriedFuncType schemeArgTypes resolvedArgs resultMono
+    in
+    ( substAfterArgs, funcMonoType )
+
+
+{-| Zip scheme arg types with mono arg types and unify pairwise.
+-}
+unifyArgTypesZip : List Can.Type -> List Mono.MonoType -> Substitution -> Substitution
+unifyArgTypesZip canArgs monoArgs subst =
+    case ( canArgs, monoArgs ) of
+        ( canArg :: canRest, monoArg :: monoRest ) ->
+            unifyArgTypesZip canRest monoRest (unifyHelp canArg monoArg subst)
+
+        _ ->
+            subst
+
+
+{-| Build a curried MFunction mirroring the TLambda structure.
+Each scheme arg corresponds to one level of currying.
+-}
+buildCurriedFuncType : List Can.Type -> List Mono.MonoType -> Mono.MonoType -> Mono.MonoType
+buildCurriedFuncType schemeArgs resolvedArgs resultMono =
+    case ( schemeArgs, resolvedArgs ) of
+        ( _ :: schemeRest, arg :: argRest ) ->
+            Mono.MFunction [ arg ] (buildCurriedFuncType schemeRest argRest resultMono)
+
+        _ ->
+            resultMono
+
+
+-- ========== MERGED OCCURS CHECK + NORMALIZATION ==========
+
+
+{-| Insert a binding with occurs check and normalization in a single pass.
+If `name` appears in `monoType`, skip the binding (cyclic type).
+Otherwise, normalize MVars via findRootVar and insert.
+-}
+insertBindingSafe : Name -> Mono.MonoType -> Substitution -> Substitution
+insertBindingSafe name monoType subst =
+    case normalizeAndOccursCheck name subst monoType of
+        Nothing ->
+            -- Occurs check failed: name appears in monoType, skip binding
+            subst
+
+        Just ( normalizedTy, subst1 ) ->
+            Dict.insert name normalizedTy subst1
+
+
+{-| Walk a MonoType, normalizing MVar references via findRootVar and
+simultaneously checking whether `targetName` appears anywhere.
+Returns Nothing if targetName is found (occurs check failure),
+or Just (normalizedType, updatedSubst) on success.
+-}
+normalizeAndOccursCheck : Name -> Substitution -> Mono.MonoType -> Maybe ( Mono.MonoType, Substitution )
+normalizeAndOccursCheck targetName subst ty =
+    case ty of
+        Mono.MVar varName _ ->
+            let
+                ( root, subst1 ) =
+                    findRootVar varName subst
+            in
+            if root == targetName then
+                Nothing
+
+            else if root == varName then
+                Just ( ty, subst1 )
+
+            else
+                Just ( Mono.MVar root (constraintFromName root), subst1 )
+
+        Mono.MFunction args ret ->
+            case normalizeAndOccursCheckList targetName subst args of
+                Nothing ->
+                    Nothing
+
+                Just ( argsNorm, subst1 ) ->
+                    case normalizeAndOccursCheck targetName subst1 ret of
+                        Nothing ->
+                            Nothing
+
+                        Just ( retNorm, subst2 ) ->
+                            Just ( Mono.MFunction argsNorm retNorm, subst2 )
+
+        Mono.MList inner ->
+            case normalizeAndOccursCheck targetName subst inner of
+                Nothing ->
+                    Nothing
+
+                Just ( innerNorm, subst1 ) ->
+                    Just ( Mono.MList innerNorm, subst1 )
+
+        Mono.MTuple elems ->
+            case normalizeAndOccursCheckList targetName subst elems of
+                Nothing ->
+                    Nothing
+
+                Just ( elemsNorm, subst1 ) ->
+                    Just ( Mono.MTuple elemsNorm, subst1 )
+
+        Mono.MRecord fields ->
+            case normalizeAndOccursCheckDict targetName subst fields of
+                Nothing ->
+                    Nothing
+
+                Just ( fieldsNorm, subst1 ) ->
+                    Just ( Mono.MRecord fieldsNorm, subst1 )
+
+        Mono.MCustom can name args ->
+            case normalizeAndOccursCheckList targetName subst args of
+                Nothing ->
+                    Nothing
+
+                Just ( argsNorm, subst1 ) ->
+                    Just ( Mono.MCustom can name argsNorm, subst1 )
+
+        _ ->
+            Just ( ty, subst )
+
+
+normalizeAndOccursCheckList : Name -> Substitution -> List Mono.MonoType -> Maybe ( List Mono.MonoType, Substitution )
+normalizeAndOccursCheckList targetName subst types =
+    normalizeAndOccursCheckListHelp targetName subst types []
+
+
+normalizeAndOccursCheckListHelp : Name -> Substitution -> List Mono.MonoType -> List Mono.MonoType -> Maybe ( List Mono.MonoType, Substitution )
+normalizeAndOccursCheckListHelp targetName subst remaining acc =
+    case remaining of
+        [] ->
+            Just ( List.reverse acc, subst )
+
+        t :: rest ->
+            case normalizeAndOccursCheck targetName subst t of
+                Nothing ->
+                    Nothing
+
+                Just ( tNorm, subst1 ) ->
+                    normalizeAndOccursCheckListHelp targetName subst1 rest (tNorm :: acc)
+
+
+normalizeAndOccursCheckDict : Name -> Substitution -> Dict.Dict Name Mono.MonoType -> Maybe ( Dict.Dict Name Mono.MonoType, Substitution )
+normalizeAndOccursCheckDict targetName subst fields =
+    Dict.foldl
+        (\k v maybeAcc ->
+            case maybeAcc of
+                Nothing ->
+                    Nothing
+
+                Just ( accFields, s ) ->
+                    case normalizeAndOccursCheck targetName s v of
+                        Nothing ->
+                            Nothing
+
+                        Just ( vNorm, s1 ) ->
+                            Just ( Dict.insert k vNorm accFields, s1 )
+        )
+        (Just ( Dict.empty, subst ))
+        fields
+
+
+-- ========== SCHEME-AWARE FILL ==========
+
+
+{-| Like fillUnconstrainedCEcoWithErased but uses precomputed SchemeInfo
+to avoid re-collecting type vars and re-computing constraints.
+-}
+fillUnconstrainedCEcoWithErasedFromScheme : SchemeInfo -> Substitution -> Substitution
+fillUnconstrainedCEcoWithErasedFromScheme info subst =
+    List.foldl
+        (\name acc ->
+            if Dict.member name acc then
+                acc
+
+            else
+                case Dict.get name info.constraints of
+                    Just Mono.CEcoValue ->
+                        Dict.insert name Mono.MErased acc
+
+                    _ ->
+                        acc
+        )
+        subst
+        info.varNames
 
 
 {-| Derive a constraint from a type variable name.

@@ -24,7 +24,7 @@ import Compiler.Monomorphize.Analysis as Analysis
 import Compiler.Monomorphize.Closure as Closure
 import Compiler.Monomorphize.KernelAbi as KernelAbi
 import Compiler.Monomorphize.Registry as Registry
-import Compiler.Monomorphize.State as State exposing (LocalMultiState, MonoState, Substitution, VarEnv, WorkItem(..))
+import Compiler.Monomorphize.State as State exposing (LocalMultiState, MonoState, SchemeInfo, Substitution, VarEnv, WorkItem(..))
 import Compiler.Monomorphize.TypeSubst as TypeSubst
 import Compiler.Reporting.Annotation as A
 import Data.Map
@@ -121,45 +121,100 @@ renameCanTypeVars renameMap canType =
             canType
 
 
+{-| Get or build SchemeInfo for a callee, using the cache in MonoState.
+For top-level globals, looks up and caches by global identity.
+For local/anonymous callees, builds on demand without caching.
+-}
+getOrBuildSchemeInfo : Can.Type -> Maybe TOpt.Global -> MonoState -> ( SchemeInfo, MonoState )
+getOrBuildSchemeInfo funcCanType maybeGlobal state =
+    case maybeGlobal of
+        Just global ->
+            case Data.Map.get TOpt.toComparableGlobal global state.schemeCache of
+                Just info ->
+                    ( info, state )
+
+                Nothing ->
+                    let
+                        prefix =
+                            String.join "_" (TOpt.toComparableGlobal global)
+
+                        info =
+                            TypeSubst.buildSchemeInfo prefix funcCanType
+
+                        newCache =
+                            Data.Map.insert TOpt.toComparableGlobal global info state.schemeCache
+                    in
+                    ( info, { state | schemeCache = newCache } )
+
+        Nothing ->
+            -- Local/anonymous callee: build on demand, don't cache
+            ( TypeSubst.buildSchemeInfo "__local" funcCanType, state )
+
+
+{-| Unify call-site types with renaming to avoid type variable collisions.
+
+Uses SchemeInfo's pre-renamed types when the callee's canonical var names
+don't conflict with the caller's substitution keys (common case).
+Falls back to per-call renaming when conflicts exist.
+
+Returns the updated substitution, the renamed funcCanType (for kernel ABI
+derivation), and the funcMonoType (computed in a single pass).
+-}
 unifyCallSiteWithRenaming :
     Can.Type
     -> List Mono.MonoType
     -> Can.Type
     -> Substitution
     -> Int
-    -> ( Substitution, Can.Type )
-unifyCallSiteWithRenaming funcCanType argMonoTypes resultCanType baseSubst epoch =
+    -> SchemeInfo
+    -> ( Substitution, Can.Type, Mono.MonoType )
+unifyCallSiteWithRenaming funcCanType argMonoTypes resultCanType baseSubst epoch info =
     let
         callerVarNames =
             Dict.keys baseSubst
 
-        funcVarNames =
-            TypeSubst.collectCanTypeVars funcCanType []
+        -- Check if pre-renamed var names conflict with caller's substitution keys
+        hasConflict =
+            List.any (\name -> List.member name callerVarNames) info.renamedVarNames
 
-        renameMap =
-            buildRenameMap epoch callerVarNames funcVarNames Data.Map.empty 0
+        ( renamedArgTypes, renamedResultType, renamedFuncType ) =
+            if hasConflict then
+                -- Fallback: per-call renaming with fresh epoch
+                let
+                    funcVarNames =
+                        info.varNames
 
-        funcCanTypeRenamed =
-            renameCanTypeVars renameMap funcCanType
+                    renameMap =
+                        buildRenameMap epoch callerVarNames funcVarNames Data.Map.empty 0
+                in
+                ( List.map (renameCanTypeVars renameMap) info.argTypes
+                , renameCanTypeVars renameMap resultCanType
+                , renameCanTypeVars renameMap funcCanType
+                )
 
-        resultCanTypeRenamed =
-            renameCanTypeVars renameMap resultCanType
+            else
+                -- Use pre-renamed types from SchemeInfo
+                -- Also rename resultCanType using the pre-rename map applied to its vars
+                -- (resultCanType shares vars with funcCanType)
+                ( info.renamedArgTypes
+                , renameResultCanType info resultCanType
+                , info.renamedFuncType
+                )
 
-        subst1 =
-            TypeSubst.unifyArgsOnly funcCanTypeRenamed argMonoTypes baseSubst
-
-        desiredResultMono =
-            TypeSubst.applySubst subst1 resultCanTypeRenamed
-
-        resolvedArgTypes =
-            List.map (TypeSubst.resolveMonoVars subst1) argMonoTypes
-
-        desiredFuncMono =
-            Mono.MFunction resolvedArgTypes desiredResultMono
+        -- Single-pass: unify args, resolve, build funcMonoType all at once
+        ( callSubst, funcMonoType ) =
+            TypeSubst.unifyCallSiteDirect renamedArgTypes renamedResultType argMonoTypes baseSubst
     in
-    ( TypeSubst.unifyExtend funcCanTypeRenamed desiredFuncMono subst1
-    , funcCanTypeRenamed
-    )
+    ( callSubst, renamedFuncType, funcMonoType )
+
+
+{-| Rename type variables in the result Can.Type using the same mapping
+as SchemeInfo's pre-rename. Since resultCanType shares type variables with
+funcCanType, we can reuse the pre-rename's variable mapping.
+-}
+renameResultCanType : SchemeInfo -> Can.Type -> Can.Type
+renameResultCanType info resultCanType =
+    renameCanTypeVars info.preRenameMap resultCanType
 
 
 {-| Enqueue a specialization onto the worklist, deduplicating via the scheduled BitSet.
@@ -1006,17 +1061,20 @@ specializeExpr expr subst state =
             case func of
                 TOpt.VarGlobal funcRegion global funcCanType ->
                     let
+                        ( schemeInfo, state1a ) =
+                            getOrBuildSchemeInfo funcCanType (Just global) state1
+
                         epoch =
-                            state1.renameEpoch
+                            state1a.renameEpoch
 
                         state1b =
-                            { state1 | renameEpoch = epoch + 1 }
+                            { state1a | renameEpoch = epoch + 1 }
 
-                        ( callSubst, funcCanTypeRenamed ) =
-                            unifyCallSiteWithRenaming funcCanType argTypes canType subst epoch
+                        ( callSubst, _, directFuncMonoType ) =
+                            unifyCallSiteWithRenaming funcCanType argTypes canType subst epoch schemeInfo
 
                         funcMonoType =
-                            Mono.forceCNumberToInt (TypeSubst.applySubst callSubst funcCanTypeRenamed)
+                            Mono.forceCNumberToInt directFuncMonoType
 
                         paramTypes =
                             TypeSubst.extractParamTypes funcMonoType
@@ -1040,14 +1098,17 @@ specializeExpr expr subst state =
 
                 TOpt.VarKernel funcRegion home name funcCanType ->
                     let
+                        ( schemeInfo, state1a ) =
+                            getOrBuildSchemeInfo funcCanType Nothing state1
+
                         epoch =
-                            state1.renameEpoch
+                            state1a.renameEpoch
 
                         state1b =
-                            { state1 | renameEpoch = epoch + 1 }
+                            { state1a | renameEpoch = epoch + 1 }
 
-                        ( callSubst, funcCanTypeRenamed ) =
-                            unifyCallSiteWithRenaming funcCanType argTypes canType subst epoch
+                        ( callSubst, funcCanTypeRenamed, _ ) =
+                            unifyCallSiteWithRenaming funcCanType argTypes canType subst epoch schemeInfo
 
                         funcMonoType =
                             deriveKernelAbiType ( home, name ) funcCanTypeRenamed callSubst
@@ -1068,14 +1129,17 @@ specializeExpr expr subst state =
 
                 TOpt.VarDebug funcRegion name _ _ funcCanType ->
                     let
+                        ( schemeInfo, state1a ) =
+                            getOrBuildSchemeInfo funcCanType Nothing state1
+
                         epoch =
-                            state1.renameEpoch
+                            state1a.renameEpoch
 
                         state1b =
-                            { state1 | renameEpoch = epoch + 1 }
+                            { state1a | renameEpoch = epoch + 1 }
 
-                        ( callSubst, funcCanTypeRenamed ) =
-                            unifyCallSiteWithRenaming funcCanType argTypes canType subst epoch
+                        ( callSubst, funcCanTypeRenamed, _ ) =
+                            unifyCallSiteWithRenaming funcCanType argTypes canType subst epoch schemeInfo
 
                         funcMonoType =
                             deriveKernelAbiType ( "Debug", name ) funcCanTypeRenamed callSubst
@@ -1154,17 +1218,20 @@ specializeExpr expr subst state =
                             -- Non-local function: use unifyFuncCall with rename to avoid
                             -- type variable name collisions between caller and callee.
                             let
+                                ( schemeInfo, state1a ) =
+                                    getOrBuildSchemeInfo funcCanType Nothing state1
+
                                 epoch =
-                                    state1.renameEpoch
+                                    state1a.renameEpoch
 
                                 state1b =
-                                    { state1 | renameEpoch = epoch + 1 }
+                                    { state1a | renameEpoch = epoch + 1 }
 
-                                ( callSubst, funcCanTypeRenamed ) =
-                                    unifyCallSiteWithRenaming funcCanType argTypes canType subst epoch
+                                ( callSubst, _, directFuncMonoType ) =
+                                    unifyCallSiteWithRenaming funcCanType argTypes canType subst epoch schemeInfo
 
                                 funcMonoType =
-                                    Mono.forceCNumberToInt (TypeSubst.applySubst callSubst funcCanTypeRenamed)
+                                    Mono.forceCNumberToInt directFuncMonoType
 
                                 paramTypes =
                                     TypeSubst.extractParamTypes funcMonoType

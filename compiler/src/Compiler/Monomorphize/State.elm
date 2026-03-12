@@ -1,5 +1,5 @@
 module Compiler.Monomorphize.State exposing
-    ( MonoState, WorkItem(..), Substitution
+    ( MonoState, WorkItem(..), Substitution, SchemeInfo, SchemeInfoCache
     , initState
     , LocalInstanceInfo, LocalMultiState
     , VarEnv(..), emptyVarEnv, insertVar, lookupVar, popFrame, pushFrame
@@ -32,6 +32,7 @@ the monomorphization process.
 
 -}
 
+import Compiler.AST.Canonical as Can
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.TypeEnv as TypeEnv
 import Compiler.AST.TypedOptimized as TOpt
@@ -41,6 +42,33 @@ import Compiler.Monomorphize.Registry as Registry
 import Data.Map as DataMap
 import Dict exposing (Dict)
 import System.TypeCheck.IO as IO
+
+
+{-| Precomputed metadata about a polymorphic function's type scheme.
+Cached per top-level callee to avoid repeated TLambda traversal and
+var collection at every call site.
+
+The pre-renamed variants have all type variables renamed to definition-scoped
+names (e.g., `a__def_Module_func_0`) to avoid per-call-site rename work.
+-}
+type alias SchemeInfo =
+    { varNames : List Name
+    , constraints : Dict Name Mono.Constraint
+    , argTypes : List Can.Type
+    , resultType : Can.Type
+    , argCount : Int
+    , renamedFuncType : Can.Type
+    , renamedArgTypes : List Can.Type
+    , renamedResultType : Can.Type
+    , renamedVarNames : List Name
+    , preRenameMap : DataMap.Dict String Name Name
+    }
+
+
+{-| Cache of SchemeInfo per top-level global, keyed by TOpt.toComparableGlobal.
+-}
+type alias SchemeInfoCache =
+    DataMap.Dict (List String) TOpt.Global SchemeInfo
 
 
 {-| State maintained during monomorphization, tracking work to be done and completed specializations.
@@ -62,6 +90,7 @@ type alias MonoState =
     , specHasEffects : BitSet -- SpecIds whose node body references Debug.* kernels
     , specValueUsed : BitSet -- SpecIds whose value is referenced via MonoVarGlobal
     , renameEpoch : Int -- Monotonically increasing counter for unique __callee names
+    , schemeCache : SchemeInfoCache -- Cached type scheme metadata per global
     }
 
 
@@ -188,4 +217,5 @@ initState currentModule toptNodes globalTypeEnv =
     , specHasEffects = BitSet.empty
     , specValueUsed = BitSet.empty
     , renameEpoch = 0
+    , schemeCache = DataMap.empty
     }
