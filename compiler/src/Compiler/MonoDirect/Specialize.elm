@@ -445,11 +445,17 @@ specializeExpr view snapshot expr state =
                 monoType =
                     resolveType view meta
 
+                savedVarEnv =
+                    state.varEnv
+
                 ( monoDecider, state1 ) =
                     specializeDecider view snapshot decider state
 
+                state1WithResetVarEnv =
+                    { state1 | varEnv = savedVarEnv }
+
                 ( monoJumps, state2 ) =
-                    specializeJumps view snapshot jumps state1
+                    specializeJumps view snapshot jumps state1WithResetVarEnv
             in
             ( Mono.MonoCase scrutName label monoDecider monoJumps monoType, state2 )
 
@@ -541,6 +547,14 @@ specializeExpr view snapshot expr state =
 -- ========== CALL SPECIALIZATION ==========
 
 
+buildCurriedFuncType : List Mono.MonoType -> Mono.MonoType -> Mono.MonoType
+buildCurriedFuncType argTypes resultType =
+    List.foldr
+        (\argTy acc -> Mono.MFunction [ argTy ] acc)
+        resultType
+        argTypes
+
+
 specializeCall : LocalView -> SolverSnapshot -> A.Region -> TOpt.Expr -> List TOpt.Expr -> TOpt.Meta -> MonoDirectState -> ( Mono.MonoExpr, MonoDirectState )
 specializeCall view snapshot region func args meta state =
     let
@@ -562,11 +576,9 @@ specializeCall view snapshot region func args meta state =
                             -- Synthesized function reference (e.g. negate, binop operator)
                             -- without a solver variable. Build the function type from
                             -- the resolved argument types and result type.
-                            let
-                                argMonoTypes =
-                                    List.map (\arg -> resolveExprType view arg) args
-                            in
-                            Mono.MFunction argMonoTypes resultType
+                            buildCurriedFuncType
+                                (List.map Mono.typeOf monoArgs)
+                                resultType
 
                 monoGlobal =
                     toptGlobalToMono global
@@ -862,43 +874,65 @@ specializeDecider view snapshot decider state =
 
         TOpt.Chain testChain success failure ->
             let
+                savedVarEnv =
+                    state.varEnv
+
                 ( monoSuccess, state1 ) =
                     specializeDecider view snapshot success state
 
+                state1WithResetVarEnv =
+                    { state1 | varEnv = savedVarEnv }
+
                 ( monoFailure, state2 ) =
-                    specializeDecider view snapshot failure state1
+                    specializeDecider view snapshot failure state1WithResetVarEnv
             in
             ( Mono.Chain testChain monoSuccess monoFailure, state2 )
 
         TOpt.FanOut path tests fallback ->
             let
+                savedVarEnv =
+                    state.varEnv
+
                 ( monoTests, state1 ) =
-                    List.foldl
+                    List.foldr
                         (\( test, subDecider ) ( acc, s ) ->
                             let
+                                sWithResetVarEnv =
+                                    { s | varEnv = savedVarEnv }
+
                                 ( monoSubDecider, s1 ) =
-                                    specializeDecider view snapshot subDecider s
+                                    specializeDecider view snapshot subDecider sWithResetVarEnv
                             in
-                            ( acc ++ [ ( test, monoSubDecider ) ], s1 )
+                            ( ( test, monoSubDecider ) :: acc, s1 )
                         )
                         ( [], state )
                         tests
 
+                state1WithResetVarEnv =
+                    { state1 | varEnv = savedVarEnv }
+
                 ( monoFallback, state2 ) =
-                    specializeDecider view snapshot fallback state1
+                    specializeDecider view snapshot fallback state1WithResetVarEnv
             in
             ( Mono.FanOut path monoTests monoFallback, state2 )
 
 
 specializeJumps : LocalView -> SolverSnapshot -> List ( Int, TOpt.Expr ) -> MonoDirectState -> ( List ( Int, Mono.MonoExpr ), MonoDirectState )
 specializeJumps view snapshot jumps state =
-    List.foldl
+    let
+        savedVarEnv =
+            state.varEnv
+    in
+    List.foldr
         (\( idx, expr ) ( acc, s ) ->
             let
+                sWithResetVarEnv =
+                    { s | varEnv = savedVarEnv }
+
                 ( monoExpr, s1 ) =
-                    specializeExpr view snapshot expr s
+                    specializeExpr view snapshot expr sWithResetVarEnv
             in
-            ( acc ++ [ ( idx, monoExpr ) ], s1 )
+            ( ( idx, monoExpr ) :: acc, s1 )
         )
         ( [], state )
         jumps
