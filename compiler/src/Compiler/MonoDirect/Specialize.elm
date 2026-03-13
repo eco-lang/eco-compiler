@@ -12,14 +12,17 @@ the solver's union-find via LocalView.monoTypeOf.
 
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Monomorphized as Mono
+import Compiler.AST.TypeEnv as TypeEnv
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.BitSet as BitSet
 import Compiler.Data.Index as Index
 import Compiler.Data.Name as Name exposing (Name)
 import Compiler.MonoDirect.State as State exposing (MonoDirectState, VarEnv(..))
+import Compiler.Monomorphize.Analysis as Analysis
 import Compiler.Monomorphize.Closure as Closure
 import Compiler.Monomorphize.KernelAbi as KernelAbi
 import Compiler.Monomorphize.Registry as Registry
+import Compiler.Monomorphize.TypeSubst as TypeSubst
 import Compiler.Reporting.Annotation as A
 import Compiler.Type.SolverSnapshot as SolverSnapshot exposing (LocalView, SolverSnapshot, TypeVar)
 import Data.Map as DMap
@@ -403,7 +406,7 @@ specializeExpr view snapshot expr state =
                     resolveType view meta
 
                 monoDestructor =
-                    specializeDestructor view destructor
+                    specializeDestructor view state.varEnv state.globalTypeEnv destructor
 
                 -- Insert destructor binding into varEnv
                 (TOpt.Destructor dName _ _) =
@@ -884,14 +887,14 @@ specializeJumps view snapshot jumps state =
         jumps
 
 
-specializeDestructor : LocalView -> TOpt.Destructor -> Mono.MonoDestructor
-specializeDestructor view (TOpt.Destructor name path meta) =
+specializeDestructor : LocalView -> VarEnv -> TypeEnv.GlobalTypeEnv -> TOpt.Destructor -> Mono.MonoDestructor
+specializeDestructor view varEnv globalTypeEnv (TOpt.Destructor name path meta) =
     let
         monoType =
             resolveDestructorType view meta
 
         monoPath =
-            specializePath view path
+            specializePath view varEnv globalTypeEnv path
     in
     Mono.MonoDestructor name monoPath monoType
 
@@ -915,42 +918,235 @@ resolveDestructorType view meta =
             Mono.forceCNumberToInt (KernelAbi.canTypeToMonoType_preserveVars meta.tipe)
 
 
-specializePath : LocalView -> TOpt.Path -> Mono.MonoPath
-specializePath view path =
+specializePath : LocalView -> VarEnv -> TypeEnv.GlobalTypeEnv -> TOpt.Path -> Mono.MonoPath
+specializePath view varEnv globalTypeEnv path =
     case path of
-        TOpt.Index idx hint inner ->
+        TOpt.Index index hint inner ->
             let
-                monoHint =
-                    case hint of
-                        TOpt.HintList ->
-                            Mono.ListContainer
+                monoSubPath =
+                    specializePath view varEnv globalTypeEnv inner
 
-                        TOpt.HintTuple2 ->
-                            Mono.Tuple2Container
+                containerType =
+                    Mono.getMonoPathType monoSubPath
 
-                        TOpt.HintTuple3 ->
-                            Mono.Tuple3Container
-
-                        TOpt.HintCustom n ->
-                            Mono.CustomContainer n
-
-                -- For index paths, type is unknown at this level; use MErased
-                innerPath =
-                    specializePath view inner
+                resultType =
+                    computeIndexProjectionType globalTypeEnv hint (Index.toMachine index) containerType
             in
-            Mono.MonoIndex (Index.toMachine idx) monoHint Mono.MErased innerPath
-
-        TOpt.Field name inner ->
-            Mono.MonoField name Mono.MErased (specializePath view inner)
-
-        TOpt.Unbox inner ->
-            Mono.MonoUnbox Mono.MErased (specializePath view inner)
-
-        TOpt.Root name ->
-            Mono.MonoRoot name Mono.MErased
+            Mono.MonoIndex (Index.toMachine index) (hintToKind hint) resultType monoSubPath
 
         TOpt.ArrayIndex idx inner ->
-            Mono.MonoIndex idx (Mono.CustomContainer "") Mono.MErased (specializePath view inner)
+            let
+                monoSubPath =
+                    specializePath view varEnv globalTypeEnv inner
+
+                containerType =
+                    Mono.getMonoPathType monoSubPath
+
+                resultType =
+                    computeArrayElementType containerType
+            in
+            Mono.MonoIndex idx (Mono.CustomContainer "") resultType monoSubPath
+
+        TOpt.Field fieldName inner ->
+            let
+                monoSubPath =
+                    specializePath view varEnv globalTypeEnv inner
+
+                recordType =
+                    Mono.getMonoPathType monoSubPath
+
+                resultType =
+                    case recordType of
+                        Mono.MRecord fields ->
+                            case Dict.get fieldName fields of
+                                Just fieldMonoType ->
+                                    fieldMonoType
+
+                                Nothing ->
+                                    Utils.Crash.crash
+                                        ("MonoDirect.specializePath: Field '"
+                                            ++ fieldName
+                                            ++ "' not found in record type."
+                                        )
+
+                        _ ->
+                            Utils.Crash.crash
+                                ("MonoDirect.specializePath: Expected MRecord for field path but got: "
+                                    ++ Mono.monoTypeToDebugString recordType
+                                )
+            in
+            Mono.MonoField fieldName resultType monoSubPath
+
+        TOpt.Unbox inner ->
+            let
+                monoSubPath =
+                    specializePath view varEnv globalTypeEnv inner
+
+                containerType =
+                    Mono.getMonoPathType monoSubPath
+
+                resultType =
+                    computeUnboxResultType globalTypeEnv containerType
+            in
+            Mono.MonoUnbox resultType monoSubPath
+
+        TOpt.Root name ->
+            let
+                rootType =
+                    case State.lookupVar name varEnv of
+                        Just ty ->
+                            ty
+
+                        Nothing ->
+                            Utils.Crash.crash ("MonoDirect.specializePath: Root variable '" ++ name ++ "' not found in VarEnv.")
+            in
+            Mono.MonoRoot name rootType
+
+
+{-| Convert ContainerHint to ContainerKind for monomorphized paths.
+-}
+hintToKind : TOpt.ContainerHint -> Mono.ContainerKind
+hintToKind hint =
+    case hint of
+        TOpt.HintList ->
+            Mono.ListContainer
+
+        TOpt.HintTuple2 ->
+            Mono.Tuple2Container
+
+        TOpt.HintTuple3 ->
+            Mono.Tuple3Container
+
+        TOpt.HintCustom ctorName ->
+            Mono.CustomContainer ctorName
+
+
+{-| Compute the result type of projecting at an index from a container.
+-}
+computeIndexProjectionType : TypeEnv.GlobalTypeEnv -> TOpt.ContainerHint -> Int -> Mono.MonoType -> Mono.MonoType
+computeIndexProjectionType globalTypeEnv hint index containerType =
+    case hint of
+        TOpt.HintList ->
+            case containerType of
+                Mono.MList elemType ->
+                    if index == 0 then
+                        elemType
+
+                    else
+                        containerType
+
+                _ ->
+                    Utils.Crash.crash ("MonoDirect.computeIndexProjectionType: HintList at index " ++ String.fromInt index ++ " - Expected MList but got: " ++ Mono.monoTypeToDebugString containerType)
+
+        TOpt.HintTuple2 ->
+            computeTupleElementType index containerType
+
+        TOpt.HintTuple3 ->
+            computeTupleElementType index containerType
+
+        TOpt.HintCustom ctorName ->
+            computeCustomFieldType globalTypeEnv ctorName index containerType
+
+
+{-| Compute element type from a tuple at the given index.
+-}
+computeTupleElementType : Int -> Mono.MonoType -> Mono.MonoType
+computeTupleElementType index containerType =
+    case containerType of
+        Mono.MTuple elementTypes ->
+            case List.drop index elementTypes of
+                elemType :: _ ->
+                    elemType
+
+                [] ->
+                    Utils.Crash.crash ("MonoDirect.computeTupleElementType: Tuple index " ++ String.fromInt index ++ " out of bounds for tuple with " ++ String.fromInt (List.length elementTypes) ++ " elements")
+
+        _ ->
+            Utils.Crash.crash ("MonoDirect.computeTupleElementType: Expected MTuple but got: " ++ Mono.monoTypeToDebugString containerType)
+
+
+{-| Compute field type from a custom type constructor at the given index.
+-}
+computeCustomFieldType : TypeEnv.GlobalTypeEnv -> Name -> Int -> Mono.MonoType -> Mono.MonoType
+computeCustomFieldType globalTypeEnv ctorName index containerType =
+    case containerType of
+        Mono.MCustom moduleName typeName typeArgs ->
+            case Analysis.lookupUnion globalTypeEnv moduleName typeName of
+                Nothing ->
+                    Utils.Crash.crash ("MonoDirect.computeCustomFieldType: Union not found: " ++ typeName)
+
+                Just (Can.Union unionData) ->
+                    case findCtorByName ctorName unionData.alts of
+                        Nothing ->
+                            Utils.Crash.crash ("MonoDirect.computeCustomFieldType: Constructor '" ++ ctorName ++ "' not found in union " ++ typeName)
+
+                        Just (Can.Ctor ctorData) ->
+                            case List.drop index ctorData.args of
+                                canArgType :: _ ->
+                                    let
+                                        typeVarSubst =
+                                            List.map2 Tuple.pair unionData.vars typeArgs
+                                                |> List.foldl (\( varName, monoArg ) acc -> Dict.insert varName monoArg acc) Dict.empty
+                                    in
+                                    Mono.forceCNumberToInt (TypeSubst.applySubst typeVarSubst canArgType)
+
+                                [] ->
+                                    Utils.Crash.crash ("MonoDirect.computeCustomFieldType: Constructor arg index " ++ String.fromInt index ++ " out of bounds for " ++ ctorName)
+
+        _ ->
+            Utils.Crash.crash ("MonoDirect.computeCustomFieldType: Expected MCustom for ctor '" ++ ctorName ++ "' index " ++ String.fromInt index ++ " but got: " ++ Mono.monoTypeToDebugString containerType)
+
+
+{-| Find a constructor by name in a list of alternatives.
+-}
+findCtorByName : Name -> List Can.Ctor -> Maybe Can.Ctor
+findCtorByName targetName alts =
+    List.filter (\(Can.Ctor ctorData) -> ctorData.name == targetName) alts
+        |> List.head
+
+
+{-| Compute the result type of unwrapping a single-constructor type.
+-}
+computeUnboxResultType : TypeEnv.GlobalTypeEnv -> Mono.MonoType -> Mono.MonoType
+computeUnboxResultType globalTypeEnv containerType =
+    case containerType of
+        Mono.MCustom moduleName typeName typeArgs ->
+            case Analysis.lookupUnion globalTypeEnv moduleName typeName of
+                Nothing ->
+                    Utils.Crash.crash ("MonoDirect.computeUnboxResultType: Union not found: " ++ typeName)
+
+                Just (Can.Union unionData) ->
+                    case unionData.alts of
+                        [ Can.Ctor ctorData ] ->
+                            case ctorData.args of
+                                [ canArgType ] ->
+                                    let
+                                        typeVarSubst =
+                                            List.map2 Tuple.pair unionData.vars typeArgs
+                                                |> List.foldl (\( varName, monoArg ) acc -> Dict.insert varName monoArg acc) Dict.empty
+                                    in
+                                    Mono.forceCNumberToInt (TypeSubst.applySubst typeVarSubst canArgType)
+
+                                _ ->
+                                    Utils.Crash.crash ("MonoDirect.computeUnboxResultType: Expected single-arg constructor but got " ++ String.fromInt (List.length ctorData.args) ++ " args for " ++ typeName)
+
+                        _ ->
+                            Utils.Crash.crash ("MonoDirect.computeUnboxResultType: Expected single-constructor type but got " ++ String.fromInt (List.length unionData.alts) ++ " constructors for " ++ typeName)
+
+        _ ->
+            Utils.Crash.crash ("MonoDirect.computeUnboxResultType: Expected MCustom but got: " ++ Mono.monoTypeToDebugString containerType)
+
+
+{-| Compute element type from an array access.
+-}
+computeArrayElementType : Mono.MonoType -> Mono.MonoType
+computeArrayElementType containerType =
+    case containerType of
+        Mono.MCustom _ "Array" [ elemType ] ->
+            elemType
+
+        _ ->
+            Utils.Crash.crash ("MonoDirect.computeArrayElementType: Expected Array type but got: " ++ Mono.monoTypeToDebugString containerType)
 
 
 
