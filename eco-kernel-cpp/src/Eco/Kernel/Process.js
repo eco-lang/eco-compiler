@@ -1,5 +1,6 @@
 /*
 import Eco.Kernel.Scheduler exposing (succeed, fail, binding)
+import Eco.Kernel.Utils exposing (Tuple2)
 import Elm.Kernel.List exposing (toArray)
 import Maybe exposing (Just, Nothing)
 */
@@ -43,10 +44,9 @@ var _Process_spawnProcess = F5(function(cmd, args, stdin, stdout, stderr) {
             } else {
                 stdinHandle = __Maybe_Nothing;
             }
-            callback(__Scheduler_succeed({
-                stdinHandle: stdinHandle,
-                processHandle: child.pid
-            }));
+            callback(__Scheduler_succeed(
+                __Utils_Tuple2(stdinHandle, child.pid)
+            ));
         } catch (e) {
             callback(__Scheduler_fail(e.message));
         }

@@ -25,13 +25,27 @@ fetch :
     -> Task Never (Result { statusCode : Int, statusText : String, url : String } String)
 fetch method url headers =
     Eco.Kernel.Http.fetch method url headers
+        |> Task.map
+            (Result.mapError
+                (\( statusCode, statusText ) ->
+                    { statusCode = statusCode, statusText = statusText, url = url }
+                )
+            )
 
 
 {-| Download and extract a ZIP archive from a URL.
-Returns the SHA1 hash and extracted file entries on success, or an error message on failure.
+Returns a record with sha and archive entries on success, or an error message on failure.
 -}
 getArchive :
     String
     -> Task Never (Result String { sha : String, archive : List { relativePath : String, data : String } })
 getArchive url =
     Eco.Kernel.Http.getArchive url
+        |> Task.map
+            (Result.map
+                (\( sha, entries ) ->
+                    { sha = sha
+                    , archive = List.map (\( relativePath, data ) -> { relativePath = relativePath, data = data }) entries
+                    }
+                )
+            )

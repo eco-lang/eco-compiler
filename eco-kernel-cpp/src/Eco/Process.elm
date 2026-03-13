@@ -61,8 +61,8 @@ spawn cmd args =
 
 
 {-| Spawn an external process with configurable stdio.
-Returns a process handle and optionally a stdin handle ID (if stdin was CreatePipe).
-The stdin handle ID can be used with Console.write and File.close.
+Returns a record with stdinHandle (optionally a stdin handle ID if stdin was CreatePipe)
+and processHandle. The stdin handle ID can be used with Console.write and File.close.
 -}
 spawnProcess :
     { cmd : String
@@ -80,9 +80,9 @@ spawnProcess config =
         (stdStreamToString config.stdout)
         (stdStreamToString config.stderr)
         |> Task.map
-            (\result ->
-                { stdinHandle = result.stdinHandle
-                , processHandle = ProcessHandle result.processHandle
+            (\( stdinHandle, processHandle ) ->
+                { stdinHandle = stdinHandle
+                , processHandle = ProcessHandle processHandle
                 }
             )
 

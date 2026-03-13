@@ -31,9 +31,9 @@ var _Http_fetch = F3(function(method, url, headers) {
                         if (encoding === 'gzip') {
                             zlib.gunzip(buffer, function(err, decoded) {
                                 if (err) {
-                                    callback(__Scheduler_succeed(__Result_Err({
-                                        statusCode: 0, statusText: err.message, url: url
-                                    })));
+                                    callback(__Scheduler_succeed(__Result_Err(
+                                        __Utils_Tuple2(0, err.message)
+                                    )));
                                     return;
                                 }
                                 decode(decoded);
@@ -41,9 +41,9 @@ var _Http_fetch = F3(function(method, url, headers) {
                         } else if (encoding === 'deflate') {
                             zlib.inflate(buffer, function(err, decoded) {
                                 if (err) {
-                                    callback(__Scheduler_succeed(__Result_Err({
-                                        statusCode: 0, statusText: err.message, url: url
-                                    })));
+                                    callback(__Scheduler_succeed(__Result_Err(
+                                        __Utils_Tuple2(0, err.message)
+                                    )));
                                     return;
                                 }
                                 decode(decoded);
@@ -55,26 +55,24 @@ var _Http_fetch = F3(function(method, url, headers) {
                 } else {
                     res.resume();
                     res.on('end', function() {
-                        callback(__Scheduler_succeed(__Result_Err({
-                            statusCode: res.statusCode,
-                            statusText: res.statusMessage || '',
-                            url: url
-                        })));
+                        callback(__Scheduler_succeed(__Result_Err(
+                            __Utils_Tuple2(res.statusCode, res.statusMessage || '')
+                        )));
                     });
                 }
             });
 
             req.on('error', function(err) {
-                callback(__Scheduler_succeed(__Result_Err({
-                    statusCode: 0, statusText: err.message, url: url
-                })));
+                callback(__Scheduler_succeed(__Result_Err(
+                    __Utils_Tuple2(0, err.message)
+                )));
             });
 
             req.end();
         } catch (e) {
-            callback(__Scheduler_succeed(__Result_Err({
-                statusCode: 0, statusText: e.message, url: url
-            })));
+            callback(__Scheduler_succeed(__Result_Err(
+                __Utils_Tuple2(0, e.message)
+            )));
         }
     });
 });
@@ -106,11 +104,13 @@ var _Http_getArchive = function(url) {
                                 var archive = __List_Nil;
                                 for (var i = entries.length - 1; i >= 0; i--) {
                                     archive = __List_Cons(
-                                        { relativePath: entries[i].entryName, data: zip.readAsText(entries[i]) },
+                                        __Utils_Tuple2(entries[i].entryName, zip.readAsText(entries[i])),
                                         archive
                                     );
                                 }
-                                callback(__Scheduler_succeed(__Result_Ok({ sha: sha, archive: archive })));
+                                callback(__Scheduler_succeed(__Result_Ok(
+                                    __Utils_Tuple2(sha, archive)
+                                )));
                             } catch (e) {
                                 callback(__Scheduler_succeed(__Result_Err(e.message)));
                             }
