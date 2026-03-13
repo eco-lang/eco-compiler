@@ -29,7 +29,7 @@ the expression types produced by the type checker.
 
 # Type Mapping
 
-@docs ExprTypes, NodeTypes
+@docs ExprTypes, ExprVars, NodeTypes
 
 -}
 

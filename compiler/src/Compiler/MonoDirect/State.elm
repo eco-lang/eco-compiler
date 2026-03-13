@@ -16,6 +16,26 @@ module Compiler.MonoDirect.State exposing
 
 Uses a flat record instead of the accum/ctx split of `Monomorphize.State.MonoState`.
 
+
+# Types
+
+@docs MonoDirectState, WorkItem
+
+
+# Initialization
+
+@docs initState
+
+
+# Variable Environment
+
+@docs VarEnv, emptyVarEnv, insertVar, lookupVar, pushFrame, popFrame
+
+
+# Local Multi-Specialization
+
+@docs LocalMultiState, LocalInstanceInfo
+
 -}
 
 import Compiler.AST.Monomorphized as Mono
@@ -30,10 +50,14 @@ import Dict exposing (Dict)
 import System.TypeCheck.IO as IO
 
 
+{-| A unit of work for the monomorphization worklist.
+-}
 type WorkItem
     = SpecializeGlobal Mono.SpecId
 
 
+{-| The full mutable state for solver-directed monomorphization.
+-}
 type alias MonoDirectState =
     { worklist : List WorkItem
     , nodes : Dict Int Mono.MonoNode
@@ -55,6 +79,8 @@ type alias MonoDirectState =
     }
 
 
+{-| Create an initial MonoDirectState from module info, nodes, type env, and solver snapshot.
+-}
 initState :
     IO.Canonical
     -> DataMap.Dict (List String) TOpt.Global TOpt.Node
@@ -86,20 +112,28 @@ initState currentModule toptNodes globalTypeEnv snapshot =
 -- ========== VARIABLE ENVIRONMENT ==========
 
 
+{-| A stack of variable-to-MonoType frames for lexical scoping during specialization.
+-}
 type VarEnv
     = VarEnv (List (Dict Name Mono.MonoType))
 
 
+{-| An empty variable environment with a single empty frame.
+-}
 emptyVarEnv : VarEnv
 emptyVarEnv =
     VarEnv [ Dict.empty ]
 
 
+{-| Push a new empty frame onto the variable environment.
+-}
 pushFrame : VarEnv -> VarEnv
 pushFrame (VarEnv frames) =
     VarEnv (Dict.empty :: frames)
 
 
+{-| Pop the top frame from the variable environment.
+-}
 popFrame : VarEnv -> VarEnv
 popFrame (VarEnv frames) =
     case frames of
@@ -110,6 +144,8 @@ popFrame (VarEnv frames) =
             VarEnv []
 
 
+{-| Insert a variable binding into the top frame of the environment.
+-}
 insertVar : Name -> Mono.MonoType -> VarEnv -> VarEnv
 insertVar name monoType (VarEnv frames) =
     case frames of
@@ -120,6 +156,8 @@ insertVar name monoType (VarEnv frames) =
             VarEnv [ Dict.singleton name monoType ]
 
 
+{-| Look up a variable in the environment, searching from top frame down.
+-}
 lookupVar : Name -> VarEnv -> Maybe Mono.MonoType
 lookupVar name (VarEnv frames) =
     lookupVarHelp name frames
@@ -144,12 +182,16 @@ lookupVarHelp name frames =
 -- ========== LOCAL MULTI-SPECIALIZATION ==========
 
 
+{-| State for tracking multi-specializations of a local let-binding.
+-}
 type alias LocalMultiState =
     { defName : Name
     , instances : Dict (List String) LocalInstanceInfo
     }
 
 
+{-| Information about a single local instance: fresh name and mono type.
+-}
 type alias LocalInstanceInfo =
     { freshName : Name
     , monoType : Mono.MonoType

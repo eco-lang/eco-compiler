@@ -14,7 +14,7 @@ the monomorphization process.
 
 # Types
 
-@docs MonoState, WorkItem, Substitution
+@docs MonoState, SpecAccum, SpecContext, WorkItem, Substitution, SchemeInfo, SchemeInfoCache
 
 
 # Initialization
@@ -25,6 +25,11 @@ the monomorphization process.
 # Local Specialization
 
 @docs LocalInstanceInfo, LocalMultiState
+
+
+# Value Specialization
+
+@docs ValueInstanceInfo, ValueMultiState
 
 
 # Variable Environment

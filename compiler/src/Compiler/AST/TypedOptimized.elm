@@ -24,7 +24,7 @@ The key difference from Optimized:
 
 # Core Types
 
-@docs Expr, Global, Annotations
+@docs Expr, Global, Annotations, Meta
 
 
 # Definitions and Destructuring
@@ -59,7 +59,7 @@ The key difference from Optimized:
 
 # Type Extraction
 
-@docs typeOf
+@docs typeOf, metaOf, tvarOf
 
 
 # Serialization

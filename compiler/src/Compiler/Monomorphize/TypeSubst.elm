@@ -20,27 +20,32 @@ by applying type variable substitutions.
 
 # Substitution
 
-@docs applySubst
+@docs applySubst, applyReverseRenaming
 
 
 # Type Conversion
 
-@docs canTypeToMonoType
+@docs canTypeToMonoType, constraintFromName, collectCanTypeVars
 
 
 # Unification
 
-@docs unify, unifyExtend, unifyArgsOnly, extractParamTypes
+@docs unify, unifyExtend, unifyArgsOnly, unifyCallSiteDirect, extractParamTypes
 
 
 # CEco Variable Filling
 
-@docs fillUnconstrainedCEcoWithErased
+@docs fillUnconstrainedCEcoWithErased, fillUnconstrainedCEcoWithErasedFromScheme
+
+
+# Scheme Construction
+
+@docs buildSchemeInfo
 
 
 # Query
 
-@docs monoTypeContainsMVar
+@docs monoTypeContainsMVar, resolveMonoVars
 
 -}
 
