@@ -31,6 +31,16 @@ import System.TypeCheck.IO as IO
 import Utils.Crash
 
 
+{-| Classifies a call argument for two-phase specialization.
+Accessors and number-boxed kernels are deferred until callee parameter types are known.
+-}
+type ProcessedArg
+    = ResolvedArg Mono.MonoExpr
+    | PendingAccessor A.Region Name Can.Type
+    | PendingKernel A.Region String String TOpt.Meta
+    | LocalFunArg Name Can.Type
+
+
 {-| Specialize a TOpt.Node into a MonoNode using solver-driven type resolution.
 -}
 specializeNode : SolverSnapshot -> Name -> TOpt.Node -> Mono.MonoType -> MonoDirectState -> ( Mono.MonoNode, MonoDirectState )
@@ -287,7 +297,15 @@ specializeExpr view snapshot expr state =
                         Nothing ->
                             resolveType view meta
             in
-            ( Mono.MonoVarLocal name monoType, state )
+            if State.isLocalMultiTarget name state then
+                let
+                    ( freshName, state1 ) =
+                        State.getOrCreateLocalInstance name monoType state
+                in
+                ( Mono.MonoVarLocal freshName monoType, state1 )
+
+            else
+                ( Mono.MonoVarLocal name monoType, state )
 
         TOpt.TrackedVarLocal _ name meta ->
             let
@@ -299,7 +317,15 @@ specializeExpr view snapshot expr state =
                         Nothing ->
                             resolveType view meta
             in
-            ( Mono.MonoVarLocal name monoType, state )
+            if State.isLocalMultiTarget name state then
+                let
+                    ( freshName, state1 ) =
+                        State.getOrCreateLocalInstance name monoType state
+                in
+                ( Mono.MonoVarLocal freshName monoType, state1 )
+
+            else
+                ( Mono.MonoVarLocal name monoType, state )
 
         -- Global references
         TOpt.VarGlobal region global meta ->
@@ -371,11 +397,22 @@ specializeExpr view snapshot expr state =
         -- Collections
         TOpt.List region items meta ->
             let
-                monoType =
+                monoType0 =
                     resolveType view meta
 
                 ( monoItems, state1 ) =
                     specializeExprs view snapshot items state
+
+                monoType =
+                    if Mono.containsCEcoMVar monoType0 then
+                        case monoItems of
+                            first :: _ ->
+                                Mono.MList (Mono.typeOf first)
+
+                            [] ->
+                                monoType0
+                    else
+                        monoType0
             in
             ( Mono.MonoList region monoItems monoType, state1 )
 
@@ -403,7 +440,7 @@ specializeExpr view snapshot expr state =
         -- Control flow
         TOpt.If branches final meta ->
             let
-                monoType =
+                monoType0 =
                     resolveType view meta
 
                 ( monoBranches, state1 ) =
@@ -411,6 +448,12 @@ specializeExpr view snapshot expr state =
 
                 ( monoFinal, state2 ) =
                     specializeExpr view snapshot final state1
+
+                monoType =
+                    if Mono.containsCEcoMVar monoType0 then
+                        Mono.typeOf monoFinal
+                    else
+                        monoType0
             in
             ( Mono.MonoIf monoBranches monoFinal monoType, state2 )
 
@@ -419,7 +462,7 @@ specializeExpr view snapshot expr state =
 
         TOpt.Destruct destructor body meta ->
             let
-                monoType =
+                monoType0 =
                     resolveType view meta
 
                 monoDestructor =
@@ -437,12 +480,18 @@ specializeExpr view snapshot expr state =
 
                 ( monoBody, state2 ) =
                     specializeExpr view snapshot body state1
+
+                monoType =
+                    if Mono.containsCEcoMVar monoType0 then
+                        Mono.typeOf monoBody
+                    else
+                        monoType0
             in
             ( Mono.MonoDestruct monoDestructor monoBody monoType, state2 )
 
         TOpt.Case scrutName label decider jumps meta ->
             let
-                monoType =
+                monoType0 =
                     resolveType view meta
 
                 savedVarEnv =
@@ -456,6 +505,12 @@ specializeExpr view snapshot expr state =
 
                 ( monoJumps, state2 ) =
                     specializeJumps view snapshot jumps state1WithResetVarEnv
+
+                monoType =
+                    if Mono.containsCEcoMVar monoType0 then
+                        inferCaseType monoJumps monoDecider monoType0
+                    else
+                        monoType0
             in
             ( Mono.MonoCase scrutName label monoDecider monoJumps monoType, state2 )
 
@@ -519,7 +574,7 @@ specializeExpr view snapshot expr state =
         -- Tuples
         TOpt.Tuple region a b rest meta ->
             let
-                monoType =
+                monoType0 =
                     resolveType view meta
 
                 ( monoA, state1 ) =
@@ -530,6 +585,12 @@ specializeExpr view snapshot expr state =
 
                 ( monoRest, state3 ) =
                     specializeExprs view snapshot rest state2
+
+                monoType =
+                    if Mono.containsCEcoMVar monoType0 then
+                        Mono.MTuple (List.map Mono.typeOf (monoA :: monoB :: monoRest))
+                    else
+                        monoType0
             in
             ( Mono.MonoTupleCreate region (monoA :: monoB :: monoRest) monoType, state3 )
 
@@ -561,8 +622,9 @@ specializeCall view snapshot region func args meta state =
         resultType =
             resolveType view meta
 
-        ( monoArgs, state1 ) =
-            specializeExprs view snapshot args state
+        -- Phase 1: classify args, deferring accessors/kernels/local-multi
+        ( processedArgs, argTypes, state1 ) =
+            processCallArgs view snapshot args state
     in
     case func of
         TOpt.VarGlobal funcRegion global funcMeta ->
@@ -573,12 +635,10 @@ specializeCall view snapshot region func args meta state =
                             resolveType view funcMeta
 
                         Nothing ->
-                            -- Synthesized function reference (e.g. negate, binop operator)
-                            -- without a solver variable. Build the function type from
-                            -- the resolved argument types and result type.
-                            buildCurriedFuncType
-                                (List.map Mono.typeOf monoArgs)
-                                resultType
+                            buildCurriedFuncType argTypes resultType
+
+                ( paramTypes, _ ) =
+                    Closure.flattenFunctionType funcMonoType
 
                 monoGlobal =
                     toptGlobalToMono global
@@ -588,35 +648,342 @@ specializeCall view snapshot region func args meta state =
 
                 monoFunc =
                     Mono.MonoVarGlobal funcRegion specId funcMonoType
+
+                -- Phase 2: resolve deferred args using callee param types
+                ( monoArgs, state3 ) =
+                    finishProcessedArgs view processedArgs paramTypes state2
             in
-            ( Mono.MonoCall region monoFunc monoArgs resultType Mono.defaultCallInfo, state2 )
+            ( Mono.MonoCall region monoFunc monoArgs resultType Mono.defaultCallInfo, state3 )
 
         TOpt.VarKernel funcRegion home name funcMeta ->
             let
                 funcMonoType =
                     deriveKernelAbiTypeDirect ( home, name ) funcMeta view
 
+                ( paramTypes, _ ) =
+                    Closure.flattenFunctionType funcMonoType
+
                 monoFunc =
                     Mono.MonoVarKernel funcRegion home name funcMonoType
+
+                ( monoArgs, state2 ) =
+                    finishProcessedArgs view processedArgs paramTypes state1
             in
-            ( Mono.MonoCall region monoFunc monoArgs resultType Mono.defaultCallInfo, state1 )
+            ( Mono.MonoCall region monoFunc monoArgs resultType Mono.defaultCallInfo, state2 )
 
         TOpt.VarDebug funcRegion name home _ funcMeta ->
             let
                 funcMonoType =
                     deriveKernelAbiTypeDirect ( "Debug", name ) funcMeta view
 
+                ( paramTypes, _ ) =
+                    Closure.flattenFunctionType funcMonoType
+
                 monoFunc =
                     Mono.MonoVarKernel funcRegion "Debug" name funcMonoType
+
+                ( monoArgs, state2 ) =
+                    finishProcessedArgs view processedArgs paramTypes state1
             in
-            ( Mono.MonoCall region monoFunc monoArgs resultType Mono.defaultCallInfo, state1 )
+            ( Mono.MonoCall region monoFunc monoArgs resultType Mono.defaultCallInfo, state2 )
+
+        TOpt.VarLocal name funcMeta ->
+            if State.isLocalMultiTarget name state1 then
+                let
+                    funcMonoType =
+                        resolveType view funcMeta
+
+                    ( paramTypes, _ ) =
+                        Closure.flattenFunctionType funcMonoType
+
+                    ( freshName, state2 ) =
+                        State.getOrCreateLocalInstance name funcMonoType state1
+
+                    monoFunc =
+                        Mono.MonoVarLocal freshName funcMonoType
+
+                    ( monoArgs, state3 ) =
+                        finishProcessedArgs view processedArgs paramTypes state2
+                in
+                ( Mono.MonoCall region monoFunc monoArgs resultType Mono.defaultCallInfo, state3 )
+
+            else
+                let
+                    ( monoFunc, state2 ) =
+                        specializeExpr view snapshot func state1
+
+                    funcMonoType =
+                        Mono.typeOf monoFunc
+
+                    ( paramTypes, _ ) =
+                        Closure.flattenFunctionType funcMonoType
+
+                    ( monoArgs, state3 ) =
+                        finishProcessedArgs view processedArgs paramTypes state2
+                in
+                ( Mono.MonoCall region monoFunc monoArgs resultType Mono.defaultCallInfo, state3 )
+
+        TOpt.TrackedVarLocal _ name funcMeta ->
+            if State.isLocalMultiTarget name state1 then
+                let
+                    funcMonoType =
+                        resolveType view funcMeta
+
+                    ( paramTypes, _ ) =
+                        Closure.flattenFunctionType funcMonoType
+
+                    ( freshName, state2 ) =
+                        State.getOrCreateLocalInstance name funcMonoType state1
+
+                    monoFunc =
+                        Mono.MonoVarLocal freshName funcMonoType
+
+                    ( monoArgs, state3 ) =
+                        finishProcessedArgs view processedArgs paramTypes state2
+                in
+                ( Mono.MonoCall region monoFunc monoArgs resultType Mono.defaultCallInfo, state3 )
+
+            else
+                let
+                    ( monoFunc, state2 ) =
+                        specializeExpr view snapshot func state1
+
+                    funcMonoType =
+                        Mono.typeOf monoFunc
+
+                    ( paramTypes, _ ) =
+                        Closure.flattenFunctionType funcMonoType
+
+                    ( monoArgs, state3 ) =
+                        finishProcessedArgs view processedArgs paramTypes state2
+                in
+                ( Mono.MonoCall region monoFunc monoArgs resultType Mono.defaultCallInfo, state3 )
 
         _ ->
             let
                 ( monoFunc, state2 ) =
                     specializeExpr view snapshot func state1
+
+                funcMonoType =
+                    Mono.typeOf monoFunc
+
+                ( paramTypes, _ ) =
+                    Closure.flattenFunctionType funcMonoType
+
+                ( monoArgs, state3 ) =
+                    finishProcessedArgs view processedArgs paramTypes state2
             in
-            ( Mono.MonoCall region monoFunc monoArgs resultType Mono.defaultCallInfo, state2 )
+            ( Mono.MonoCall region monoFunc monoArgs resultType Mono.defaultCallInfo, state3 )
+
+
+processCallArgs :
+    LocalView -> SolverSnapshot -> List TOpt.Expr -> MonoDirectState
+    -> ( List ProcessedArg, List Mono.MonoType, MonoDirectState )
+processCallArgs view snapshot args state0 =
+    List.foldr
+        (\arg ( accArgs, accTypes, st ) ->
+            case arg of
+                TOpt.Accessor accessorRegion fieldName accessorMeta ->
+                    let
+                        monoType =
+                            resolveType view accessorMeta
+                    in
+                    ( PendingAccessor accessorRegion fieldName accessorMeta.tipe :: accArgs
+                    , monoType :: accTypes
+                    , st
+                    )
+
+                TOpt.VarKernel kernelRegion home name kernelMeta ->
+                    case KernelAbi.deriveKernelAbiMode ( home, name ) kernelMeta.tipe of
+                        KernelAbi.NumberBoxed ->
+                            let
+                                monoType =
+                                    resolveType view kernelMeta
+                            in
+                            ( PendingKernel kernelRegion home name kernelMeta :: accArgs
+                            , monoType :: accTypes
+                            , st
+                            )
+
+                        _ ->
+                            let
+                                ( monoExpr, st1 ) =
+                                    specializeExpr view snapshot arg st
+                            in
+                            ( ResolvedArg monoExpr :: accArgs
+                            , Mono.typeOf monoExpr :: accTypes
+                            , st1
+                            )
+
+                TOpt.VarLocal name localMeta ->
+                    if State.isLocalMultiTarget name st then
+                        let
+                            monoType =
+                                resolveType view localMeta
+                        in
+                        ( LocalFunArg name localMeta.tipe :: accArgs
+                        , monoType :: accTypes
+                        , st
+                        )
+
+                    else
+                        let
+                            ( monoExpr, st1 ) =
+                                specializeExpr view snapshot arg st
+                        in
+                        ( ResolvedArg monoExpr :: accArgs
+                        , Mono.typeOf monoExpr :: accTypes
+                        , st1
+                        )
+
+                TOpt.TrackedVarLocal _ name trackedMeta ->
+                    if State.isLocalMultiTarget name st then
+                        let
+                            monoType =
+                                resolveType view trackedMeta
+                        in
+                        ( LocalFunArg name trackedMeta.tipe :: accArgs
+                        , monoType :: accTypes
+                        , st
+                        )
+
+                    else
+                        let
+                            ( monoExpr, st1 ) =
+                                specializeExpr view snapshot arg st
+                        in
+                        ( ResolvedArg monoExpr :: accArgs
+                        , Mono.typeOf monoExpr :: accTypes
+                        , st1
+                        )
+
+                _ ->
+                    let
+                        ( monoExpr, st1 ) =
+                            specializeExpr view snapshot arg st
+                    in
+                    ( ResolvedArg monoExpr :: accArgs
+                    , Mono.typeOf monoExpr :: accTypes
+                    , st1
+                    )
+        )
+        ( [], [], state0 )
+        args
+
+
+finishProcessedArgs :
+    LocalView -> List ProcessedArg -> List Mono.MonoType -> MonoDirectState
+    -> ( List Mono.MonoExpr, MonoDirectState )
+finishProcessedArgs view processedArgs paramTypes state0 =
+    let
+        step processedArg ( acc, st, remainingParams ) =
+            let
+                ( maybeParam, rest ) =
+                    case remainingParams of
+                        p :: ps ->
+                            ( Just p, ps )
+
+                        [] ->
+                            ( Nothing, [] )
+
+                ( monoExpr, st1 ) =
+                    finishProcessedArg view processedArg maybeParam st
+            in
+            ( monoExpr :: acc, st1, rest )
+
+        ( revArgs, finalState, _ ) =
+            List.foldl step ( [], state0, paramTypes ) processedArgs
+    in
+    ( List.reverse revArgs, finalState )
+
+
+finishProcessedArg :
+    LocalView -> ProcessedArg -> Maybe Mono.MonoType -> MonoDirectState
+    -> ( Mono.MonoExpr, MonoDirectState )
+finishProcessedArg view processedArg maybeParamType state =
+    case processedArg of
+        ResolvedArg monoExpr ->
+            ( monoExpr, state )
+
+        PendingAccessor region fieldName _ ->
+            case maybeParamType of
+                Just paramType ->
+                    resolveAccessor region fieldName paramType state
+
+                Nothing ->
+                    Utils.Crash.crash
+                        ("MonoDirect.finishProcessedArg: Accessor ."
+                            ++ fieldName
+                            ++ " did not receive parameter type"
+                        )
+
+        PendingKernel region home name kernelMeta ->
+            let
+                kernelMonoType =
+                    deriveKernelAbiTypeDirect ( home, name ) kernelMeta view
+            in
+            ( Mono.MonoVarKernel region home name kernelMonoType, state )
+
+        LocalFunArg name _ ->
+            case maybeParamType of
+                Just paramType ->
+                    ( Mono.MonoVarLocal name paramType, state )
+
+                Nothing ->
+                    Utils.Crash.crash
+                        ("MonoDirect.finishProcessedArg: LocalFunArg "
+                            ++ name
+                            ++ " with no parameter type"
+                        )
+
+
+resolveAccessor :
+    A.Region -> Name -> Mono.MonoType -> MonoDirectState
+    -> ( Mono.MonoExpr, MonoDirectState )
+resolveAccessor region fieldName paramType state =
+    let
+        recordFields =
+            extractRecordFields paramType
+
+        fieldType =
+            case Dict.get fieldName recordFields of
+                Just ft ->
+                    ft
+
+                Nothing ->
+                    Utils.Crash.crash
+                        ("MonoDirect.resolveAccessor: field '"
+                            ++ fieldName
+                            ++ "' not in record type: "
+                            ++ Mono.monoTypeToDebugString paramType
+                        )
+
+        recordType =
+            Mono.MRecord recordFields
+
+        accessorMonoType =
+            Mono.MFunction [ recordType ] fieldType
+
+        accessorGlobal =
+            Mono.Accessor fieldName
+
+        ( specId, state1 ) =
+            enqueueSpec accessorGlobal accessorMonoType Nothing state
+    in
+    ( Mono.MonoVarGlobal region specId accessorMonoType, state1 )
+
+
+extractRecordFields : Mono.MonoType -> Dict Name Mono.MonoType
+extractRecordFields monoType =
+    case monoType of
+        Mono.MFunction [ Mono.MRecord fields ] _ ->
+            fields
+
+        Mono.MRecord fields ->
+            fields
+
+        _ ->
+            Dict.empty
 
 
 
@@ -695,23 +1062,34 @@ specializeLet view snapshot def body meta state =
     in
     case def of
         TOpt.Def defRegion defName defExpr defCanType ->
-            let
-                ( monoDefExpr, state1 ) =
-                    specializeExpr view snapshot defExpr state
+            case defCanType of
+                Can.TLambda _ _ ->
+                    specializeLetFuncDef view snapshot defName defExpr body monoType state
 
-                defMonoType =
-                    Mono.typeOf monoDefExpr
+                _ ->
+                    let
+                        ( monoDefExpr, state1 ) =
+                            specializeExpr view snapshot defExpr state
 
-                state2 =
-                    { state1 | varEnv = State.insertVar defName defMonoType state1.varEnv }
+                        defMonoType =
+                            Mono.typeOf monoDefExpr
 
-                ( monoBody, state3 ) =
-                    specializeExpr view snapshot body state2
+                        state2 =
+                            { state1 | varEnv = State.insertVar defName defMonoType state1.varEnv }
 
-                monoDef =
-                    Mono.MonoDef defName monoDefExpr
-            in
-            ( Mono.MonoLet monoDef monoBody monoType, state3 )
+                        ( monoBody, state3 ) =
+                            specializeExpr view snapshot body state2
+
+                        monoDef =
+                            Mono.MonoDef defName monoDefExpr
+
+                        letResultType =
+                            if Mono.containsCEcoMVar monoType then
+                                Mono.typeOf monoBody
+                            else
+                                monoType
+                    in
+                    ( Mono.MonoLet monoDef monoBody letResultType, state3 )
 
         TOpt.TailDef defRegion defName defParams defBody defCanType defTvar ->
             let
@@ -752,8 +1130,236 @@ specializeLet view snapshot def body meta state =
 
                 monoDef =
                     Mono.MonoTailDef defName monoParams monoDefBody
+
+                letResultType =
+                    if Mono.containsCEcoMVar monoType then
+                        Mono.typeOf monoBody
+                    else
+                        monoType
             in
-            ( Mono.MonoLet monoDef monoBody monoType, state6 )
+            ( Mono.MonoLet monoDef monoBody letResultType, state6 )
+
+
+
+specializeLetFuncDef :
+    LocalView -> SolverSnapshot -> Name -> TOpt.Expr -> TOpt.Expr -> Mono.MonoType -> MonoDirectState
+    -> ( Mono.MonoExpr, MonoDirectState )
+specializeLetFuncDef view snapshot defName defExpr body monoType state =
+    let
+        -- Push a local-multi tracking entry for this def
+        newEntry =
+            { defName = defName, instances = Dict.empty }
+
+        stateForBody =
+            { state | localMulti = newEntry :: state.localMulti }
+
+        -- Specialize body first to discover call-site instances
+        ( monoBody, stateAfterBody ) =
+            specializeExpr view snapshot body stateForBody
+    in
+    case stateAfterBody.localMulti of
+        topEntry :: restOfStack ->
+            if Dict.isEmpty topEntry.instances then
+                -- No calls recorded: single-instance fallback
+                let
+                    ( monoDefExpr, state1 ) =
+                        specializeExpr view snapshot defExpr
+                            { stateAfterBody | localMulti = restOfStack }
+
+                    defMonoType =
+                        Mono.typeOf monoDefExpr
+
+                    state2 =
+                        { state1 | varEnv = State.insertVar defName defMonoType state1.varEnv }
+
+                    -- Re-specialize body with defName bound
+                    ( monoBody2, state3 ) =
+                        specializeExpr view snapshot body state2
+
+                    monoDef =
+                        Mono.MonoDef defName monoDefExpr
+
+                    letResultType =
+                        if Mono.containsCEcoMVar monoType then
+                            Mono.typeOf monoBody2
+                        else
+                            monoType
+                in
+                ( Mono.MonoLet monoDef monoBody2 letResultType, state3 )
+
+            else
+                -- Multiple instances discovered from call sites
+                let
+                    instancesList =
+                        Dict.values topEntry.instances
+
+                    statePopped =
+                        { stateAfterBody | localMulti = restOfStack }
+
+                    -- For each instance: re-specialize defExpr with param types from instance.monoType
+                    ( instanceDefs, stateWithDefs ) =
+                        List.foldl
+                            (\info ( defsAcc, stAcc ) ->
+                                let
+                                    ( monoDef, st1 ) =
+                                        specializeDefForInstance view snapshot
+                                            defName defExpr info stAcc
+                                in
+                                ( monoDef :: defsAcc, st1 )
+                            )
+                            ( [], statePopped )
+                            instancesList
+
+                    -- Register all instance names in VarEnv
+                    stateWithVars =
+                        List.foldl
+                            (\info st ->
+                                { st
+                                    | varEnv =
+                                        State.insertVar info.freshName info.monoType st.varEnv
+                                }
+                            )
+                            stateWithDefs
+                            instancesList
+
+                    -- Build nested MonoLet chain wrapping monoBody
+                    letResultType =
+                        if Mono.containsCEcoMVar monoType then
+                            Mono.typeOf monoBody
+                        else
+                            monoType
+
+                    finalExpr =
+                        List.foldl
+                            (\def_ accBody ->
+                                Mono.MonoLet def_ accBody (Mono.typeOf accBody)
+                            )
+                            (Mono.MonoLet (List.head instanceDefs |> Maybe.withDefault (Mono.MonoDef defName Mono.MonoUnit)) monoBody letResultType)
+                            (List.drop 1 instanceDefs)
+                in
+                case instanceDefs of
+                    [] ->
+                        -- Should not happen since instances is non-empty
+                        ( monoBody, stateWithVars )
+
+                    _ ->
+                        let
+                            buildLetChain defs bodyExpr =
+                                List.foldr
+                                    (\def_ accBody ->
+                                        Mono.MonoLet def_ accBody (Mono.typeOf accBody)
+                                    )
+                                    bodyExpr
+                                    defs
+                        in
+                        ( buildLetChain instanceDefs monoBody, stateWithVars )
+
+        [] ->
+            Utils.Crash.crash
+                "MonoDirect.specializeLetFuncDef: localMulti stack underflow"
+
+
+specializeDefForInstance :
+    LocalView -> SolverSnapshot -> Name -> TOpt.Expr
+    -> State.LocalInstanceInfo -> MonoDirectState
+    -> ( Mono.MonoDef, MonoDirectState )
+specializeDefForInstance view snapshot defName defExpr info state =
+    let
+        ( paramTypes, _ ) =
+            Closure.flattenFunctionType info.monoType
+    in
+    case defExpr of
+        TOpt.Function params bodyExpr funcMeta ->
+            let
+                monoParams =
+                    List.map2
+                        (\( name, _ ) pt -> ( name, pt ))
+                        params
+                        (padOrTruncate paramTypes (List.length params))
+
+                state1 =
+                    { state | varEnv = State.pushFrame state.varEnv }
+
+                state2 =
+                    List.foldl
+                        (\( n, t ) s -> { s | varEnv = State.insertVar n t s.varEnv })
+                        state1
+                        monoParams
+
+                ( monoBody, state3 ) =
+                    specializeExpr view snapshot bodyExpr state2
+
+                state4 =
+                    { state3 | varEnv = State.popFrame state3.varEnv }
+
+                captures =
+                    Closure.computeClosureCaptures monoParams monoBody
+
+                closureExpr =
+                    Mono.MonoClosure
+                        { lambdaId = Mono.AnonymousLambda state.currentModule state.lambdaCounter
+                        , captures = captures
+                        , params = monoParams
+                        , closureKind = Nothing
+                        , captureAbi = Nothing
+                        }
+                        monoBody
+                        info.monoType
+            in
+            ( Mono.MonoDef info.freshName closureExpr
+            , { state4 | lambdaCounter = state4.lambdaCounter + 1 }
+            )
+
+        TOpt.TrackedFunction params bodyExpr funcMeta ->
+            let
+                unlocatedParams =
+                    List.map (\( A.At _ name, tipe ) -> ( name, tipe )) params
+
+                monoParams =
+                    List.map2
+                        (\( name, _ ) pt -> ( name, pt ))
+                        unlocatedParams
+                        (padOrTruncate paramTypes (List.length unlocatedParams))
+
+                state1 =
+                    { state | varEnv = State.pushFrame state.varEnv }
+
+                state2 =
+                    List.foldl
+                        (\( n, t ) s -> { s | varEnv = State.insertVar n t s.varEnv })
+                        state1
+                        monoParams
+
+                ( monoBody, state3 ) =
+                    specializeExpr view snapshot bodyExpr state2
+
+                state4 =
+                    { state3 | varEnv = State.popFrame state3.varEnv }
+
+                captures =
+                    Closure.computeClosureCaptures monoParams monoBody
+
+                closureExpr =
+                    Mono.MonoClosure
+                        { lambdaId = Mono.AnonymousLambda state.currentModule state.lambdaCounter
+                        , captures = captures
+                        , params = monoParams
+                        , closureKind = Nothing
+                        , captureAbi = Nothing
+                        }
+                        monoBody
+                        info.monoType
+            in
+            ( Mono.MonoDef info.freshName closureExpr
+            , { state4 | lambdaCounter = state4.lambdaCounter + 1 }
+            )
+
+        _ ->
+            let
+                ( monoExpr, state1 ) =
+                    specializeExpr view snapshot defExpr state
+            in
+            ( Mono.MonoDef info.freshName monoExpr, state1 )
 
 
 
@@ -762,24 +1368,160 @@ specializeLet view snapshot def body meta state =
 
 specializeCycle : SolverSnapshot -> List Name -> List ( Name, TOpt.Expr ) -> List TOpt.Def -> Mono.MonoType -> MonoDirectState -> ( Mono.MonoNode, MonoDirectState )
 specializeCycle snapshot names valueDefs funcDefs requestedMonoType state =
-    -- Simple cycle handling: specialize value definitions under a shared view
-    SolverSnapshot.withLocalUnification snapshot [] []
-        (\view ->
-            let
-                ( monoValueDefs, state1 ) =
-                    List.foldl
-                        (\( name, expr ) ( acc, s ) ->
+    case funcDefs of
+        [] ->
+            -- Value-only cycle: existing behavior
+            SolverSnapshot.withLocalUnification snapshot [] []
+                (\view ->
+                    let
+                        ( monoValueDefs, state1 ) =
+                            List.foldl
+                                (\( name, expr ) ( acc, s ) ->
+                                    let
+                                        ( monoExpr, s1 ) =
+                                            specializeExpr view snapshot expr s
+                                    in
+                                    ( acc ++ [ ( name, monoExpr ) ], s1 )
+                                )
+                                ( [], state )
+                                valueDefs
+                    in
+                    ( Mono.MonoCycle monoValueDefs requestedMonoType, state1 )
+                )
+
+        _ ->
+            -- Function cycle: emit separate MonoNodes per function via registry
+            case state.currentGlobal of
+                Nothing ->
+                    ( Mono.MonoExtern requestedMonoType, state )
+
+                Just (Mono.Accessor _) ->
+                    ( Mono.MonoExtern requestedMonoType, state )
+
+                Just (Mono.Global requestedCanonical requestedName) ->
+                    SolverSnapshot.withLocalUnification snapshot [] []
+                        (\view ->
                             let
-                                ( monoExpr, s1 ) =
-                                    specializeExpr view snapshot expr s
+                                -- Pre-bind all function names in VarEnv for mutual recursion
+                                stateWithBindings =
+                                    List.foldl
+                                        (\funcDef s ->
+                                            let
+                                                ( defName, defCanType, defTvar ) =
+                                                    funcDefInfo funcDef
+
+                                                funcMonoType =
+                                                    resolveType view { tipe = defCanType, tvar = defTvar }
+                                            in
+                                            { s | varEnv = State.insertVar defName funcMonoType s.varEnv }
+                                        )
+                                        state
+                                        funcDefs
+
+                                -- Specialize each function def and insert into nodes dict
+                                ( newNodes, stateAfterFuncs ) =
+                                    List.foldl
+                                        (\funcDef ( nodesAcc, s ) ->
+                                            let
+                                                ( defName, defCanType, defTvar ) =
+                                                    funcDefInfo funcDef
+
+                                                funcMonoType =
+                                                    resolveType view { tipe = defCanType, tvar = defTvar }
+
+                                                monoTypeForSpec =
+                                                    if defName == requestedName then
+                                                        requestedMonoType
+                                                    else
+                                                        funcMonoType
+
+                                                monoGlobal =
+                                                    Mono.Global requestedCanonical defName
+
+                                                ( specId, s1 ) =
+                                                    enqueueSpec monoGlobal monoTypeForSpec Nothing s
+
+                                                ( node, s2 ) =
+                                                    specializeFuncDefInCycle view snapshot funcDef s1
+                                            in
+                                            ( Dict.insert specId node nodesAcc, s2 )
+                                        )
+                                        ( stateWithBindings.nodes, stateWithBindings )
+                                        funcDefs
+
+                                -- Look up the requested function's node
+                                ( requestedSpecId, registryAfter ) =
+                                    Registry.getOrCreateSpecId
+                                        (Mono.Global requestedCanonical requestedName)
+                                        requestedMonoType
+                                        Nothing
+                                        stateAfterFuncs.registry
                             in
-                            ( acc ++ [ ( name, monoExpr ) ], s1 )
+                            case Dict.get requestedSpecId newNodes of
+                                Just requestedNode ->
+                                    ( requestedNode
+                                    , { stateAfterFuncs | nodes = newNodes, registry = registryAfter }
+                                    )
+
+                                Nothing ->
+                                    ( Mono.MonoExtern requestedMonoType
+                                    , { stateAfterFuncs | nodes = newNodes, registry = registryAfter }
+                                    )
                         )
-                        ( [], state )
-                        valueDefs
+
+
+funcDefInfo : TOpt.Def -> ( Name, Can.Type, Maybe IO.Variable )
+funcDefInfo def =
+    case def of
+        TOpt.Def _ name _ canType ->
+            ( name, canType, Nothing )
+
+        TOpt.TailDef _ name _ _ canType tvar ->
+            ( name, canType, tvar )
+
+
+specializeFuncDefInCycle :
+    LocalView -> SolverSnapshot -> TOpt.Def -> MonoDirectState
+    -> ( Mono.MonoNode, MonoDirectState )
+specializeFuncDefInCycle view snapshot funcDef state =
+    case funcDef of
+        TOpt.TailDef _ defName defParams defBody defCanType defTvar ->
+            let
+                funcMonoType =
+                    resolveType view { tipe = defCanType, tvar = defTvar }
+
+                ( paramMonoTypes, _ ) =
+                    Closure.flattenFunctionType funcMonoType
+
+                monoParams =
+                    List.map2
+                        (\( locName, _ ) paramType -> ( A.toValue locName, paramType ))
+                        defParams
+                        (padOrTruncate paramMonoTypes (List.length defParams))
+
+                state1 =
+                    { state | varEnv = State.pushFrame state.varEnv }
+
+                state2 =
+                    List.foldl
+                        (\( name, mt ) s -> { s | varEnv = State.insertVar name mt s.varEnv })
+                        state1
+                        monoParams
+
+                ( monoBody, state3 ) =
+                    specializeExpr view snapshot defBody state2
+
+                state4 =
+                    { state3 | varEnv = State.popFrame state3.varEnv }
             in
-            ( Mono.MonoCycle monoValueDefs requestedMonoType, state1 )
-        )
+            ( Mono.MonoTailFunc monoParams monoBody funcMonoType, state4 )
+
+        TOpt.Def _ defName defExpr _ ->
+            let
+                ( monoExpr, state1 ) =
+                    specializeExpr view snapshot defExpr state
+            in
+            ( Mono.MonoDefine monoExpr (Mono.typeOf monoExpr), state1 )
 
 
 
@@ -843,19 +1585,26 @@ specializeLocatedFieldExprs view snapshot fields state =
 
 
 specializeBranches : LocalView -> SolverSnapshot -> List ( TOpt.Expr, TOpt.Expr ) -> MonoDirectState -> ( List ( Mono.MonoExpr, Mono.MonoExpr ), MonoDirectState )
-specializeBranches view snapshot branches state =
+specializeBranches view snapshot branches state0 =
+    let
+        savedVarEnv =
+            state0.varEnv
+    in
     List.foldl
         (\( cond, thenExpr ) ( acc, s ) ->
             let
+                sWithReset =
+                    { s | varEnv = savedVarEnv }
+
                 ( monoCond, s1 ) =
-                    specializeExpr view snapshot cond s
+                    specializeExpr view snapshot cond sWithReset
 
                 ( monoThen, s2 ) =
                     specializeExpr view snapshot thenExpr s1
             in
             ( acc ++ [ ( monoCond, monoThen ) ], s2 )
         )
-        ( [], state )
+        ( [], state0 )
         branches
 
 
@@ -1216,6 +1965,50 @@ computeArrayElementType containerType =
 
         _ ->
             Utils.Crash.crash ("MonoDirect.computeArrayElementType: Expected Array type but got: " ++ Mono.monoTypeToDebugString containerType)
+
+
+
+-- ========== CECO REFINEMENT HELPERS ==========
+
+
+inferCaseType :
+    List ( Int, Mono.MonoExpr )
+    -> Mono.Decider Mono.MonoChoice
+    -> Mono.MonoType
+    -> Mono.MonoType
+inferCaseType jumps decider fallback =
+    case jumps of
+        ( _, expr ) :: _ ->
+            Mono.typeOf expr
+
+        [] ->
+            case firstLeafType decider of
+                Just t ->
+                    t
+
+                Nothing ->
+                    fallback
+
+
+firstLeafType : Mono.Decider Mono.MonoChoice -> Maybe Mono.MonoType
+firstLeafType decider =
+    case decider of
+        Mono.Leaf (Mono.Inline expr) ->
+            Just (Mono.typeOf expr)
+
+        Mono.Chain _ success _ ->
+            firstLeafType success
+
+        Mono.FanOut _ tests _ ->
+            case tests of
+                ( _, sub ) :: _ ->
+                    firstLeafType sub
+
+                [] ->
+                    Nothing
+
+        _ ->
+            Nothing
 
 
 

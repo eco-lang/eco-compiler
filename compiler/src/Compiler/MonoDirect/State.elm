@@ -10,6 +10,8 @@ module Compiler.MonoDirect.State exposing
     , popFrame
     , LocalMultiState
     , LocalInstanceInfo
+    , isLocalMultiTarget
+    , getOrCreateLocalInstance
     )
 
 {-| State for solver-directed monomorphization.
@@ -196,3 +198,69 @@ type alias LocalInstanceInfo =
     { freshName : Name
     , monoType : Mono.MonoType
     }
+
+
+{-| Check if a name is a local multi-specialization target.
+-}
+isLocalMultiTarget : Name -> MonoDirectState -> Bool
+isLocalMultiTarget name state =
+    List.any (\ls -> ls.defName == name) state.localMulti
+
+
+{-| Get or create a local instance for the given def name and mono type.
+Returns the fresh name to use at the call site.
+-}
+getOrCreateLocalInstance :
+    Name -> Mono.MonoType -> MonoDirectState -> ( Name, MonoDirectState )
+getOrCreateLocalInstance defName funcMonoType state =
+    let
+        key =
+            Mono.toComparableMonoType funcMonoType
+
+        ( updatedStack, freshName ) =
+            updateLocalMultiStack defName key funcMonoType state.localMulti
+    in
+    ( freshName, { state | localMulti = updatedStack } )
+
+
+updateLocalMultiStack :
+    Name -> List String -> Mono.MonoType -> List LocalMultiState
+    -> ( List LocalMultiState, Name )
+updateLocalMultiStack defName key funcMonoType stack =
+    case stack of
+        [] ->
+            -- Not found: this shouldn't happen if isLocalMultiTarget was checked first
+            ( stack, defName )
+
+        entry :: rest ->
+            if entry.defName == defName then
+                case Dict.get key entry.instances of
+                    Just info ->
+                        ( stack, info.freshName )
+
+                    Nothing ->
+                        let
+                            freshIndex =
+                                Dict.size entry.instances
+
+                            freshName =
+                                if freshIndex == 0 then
+                                    defName
+
+                                else
+                                    defName ++ "$" ++ String.fromInt freshIndex
+
+                            newInfo =
+                                { freshName = freshName, monoType = funcMonoType }
+
+                            newEntry =
+                                { entry | instances = Dict.insert key newInfo entry.instances }
+                        in
+                        ( newEntry :: rest, freshName )
+
+            else
+                let
+                    ( updatedRest, freshName ) =
+                        updateLocalMultiStack defName key funcMonoType rest
+                in
+                ( entry :: updatedRest, freshName )
