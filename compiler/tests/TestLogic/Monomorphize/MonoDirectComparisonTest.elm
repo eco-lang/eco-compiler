@@ -595,7 +595,7 @@ compareExpr ctx path expected actual =
 
         ( Mono.MonoRecordCreate eFields eType, Mono.MonoRecordCreate aFields aType ) ->
             compareTypeAlpha (path ++ ".type") eType aType
-                ++ compareNamedExprs ctx (path ++ ".fields") eFields aFields
+                ++ compareNamedExprsSorted ctx (path ++ ".fields") eFields aFields
 
         ( Mono.MonoRecordAccess eExpr eName eType, Mono.MonoRecordAccess aExpr aName aType ) ->
             compareTypeAlpha (path ++ ".type") eType aType
@@ -610,7 +610,7 @@ compareExpr ctx path expected actual =
         ( Mono.MonoRecordUpdate eExpr eFields eType, Mono.MonoRecordUpdate aExpr aFields aType ) ->
             compareTypeAlpha (path ++ ".type") eType aType
                 ++ compareExpr ctx (path ++ ".expr") eExpr aExpr
-                ++ compareNamedExprs ctx (path ++ ".updates") eFields aFields
+                ++ compareNamedExprsSorted ctx (path ++ ".updates") eFields aFields
 
         ( Mono.MonoTupleCreate _ eElems eType, Mono.MonoTupleCreate _ aElems aType ) ->
             compareTypeAlpha (path ++ ".type") eType aType
@@ -764,6 +764,14 @@ compareNamedExprs ctx path expected actual =
                 )
                 (List.map2 Tuple.pair expected actual)
             )
+
+
+{-| Like compareNamedExprs but sorts both lists by name first,
+so field ordering differences are ignored. Used for record fields/updates.
+-}
+compareNamedExprsSorted : CompareCtx -> String -> List ( String, Mono.MonoExpr ) -> List ( String, Mono.MonoExpr ) -> List String
+compareNamedExprsSorted ctx path expected actual =
+    compareNamedExprs ctx path (List.sortBy Tuple.first expected) (List.sortBy Tuple.first actual)
 
 
 compareParamsAlpha : CompareCtx -> String -> List ( String, Mono.MonoType ) -> List ( String, Mono.MonoType ) -> List String
