@@ -1765,8 +1765,20 @@ specializeExpr expr subst state =
                                 , instances = Dict.empty
                                 }
 
+                            -- Add defName to VarEnv with a preliminary type so that
+                            -- Destruct nodes from LetDestruct can find their root variable.
+                            -- (LetDestruct compiles to Let + Destruct chain where Destructs
+                            -- reference Root defName.)
+                            prelimDefMonoType =
+                                Mono.forceCNumberToInt (TypeSubst.applySubst subst defCanType)
+
                             stateForBody =
-                                { state | ctx = let cvm = state.ctx in { cvm | valueMulti = newEntry :: cvm.valueMulti } }
+                                { state | ctx = let cvm = state.ctx in
+                                    { cvm
+                                        | valueMulti = newEntry :: cvm.valueMulti
+                                        , varEnv = State.insertVar defName prelimDefMonoType cvm.varEnv
+                                    }
+                                }
 
                             ( monoBody, stateAfterBody ) =
                                 specializeExpr body subst stateForBody
@@ -1918,7 +1930,7 @@ specializeExpr expr subst state =
                     Mono.forceCNumberToInt (TypeSubst.applySubst subst canType)
 
                 monoDestructor =
-                    specializeDestructor destructor subst state.ctx.varEnv state.ctx.globalTypeEnv
+                    specializeDestructor destructor subst state.ctx.varEnv state.ctx.globalTypeEnv state.ctx.currentGlobal
 
                 (Mono.MonoDestructor destructorName _ destructorType) =
                     monoDestructor
@@ -2711,11 +2723,11 @@ specializeDef def subst state =
             ( Mono.MonoTailDef name monoArgs monoExpr, stateAfter )
 
 
-specializeDestructor : TOpt.Destructor -> Substitution -> VarEnv -> TypeEnv.GlobalTypeEnv -> Mono.MonoDestructor
-specializeDestructor (TOpt.Destructor name path meta) subst varEnv globalTypeEnv =
+specializeDestructor : TOpt.Destructor -> Substitution -> VarEnv -> TypeEnv.GlobalTypeEnv -> Maybe Mono.Global -> Mono.MonoDestructor
+specializeDestructor (TOpt.Destructor name path meta) subst varEnv globalTypeEnv currentGlobal =
     let
         monoPath =
-            specializePath path varEnv globalTypeEnv
+            specializePath path varEnv globalTypeEnv currentGlobal name
 
         monoType =
             Mono.forceCNumberToInt (TypeSubst.applySubst subst meta.tipe)
@@ -2731,13 +2743,13 @@ The path is structured from leaf (root variable) outward, so we:
 2.  Walk back out through the path, computing types at each step
 
 -}
-specializePath : TOpt.Path -> VarEnv -> TypeEnv.GlobalTypeEnv -> Mono.MonoPath
-specializePath path varEnv globalTypeEnv =
+specializePath : TOpt.Path -> VarEnv -> TypeEnv.GlobalTypeEnv -> Maybe Mono.Global -> Name -> Mono.MonoPath
+specializePath path varEnv globalTypeEnv currentGlobal destructorName =
     case path of
         TOpt.Index index hint subPath ->
             let
                 monoSubPath =
-                    specializePath subPath varEnv globalTypeEnv
+                    specializePath subPath varEnv globalTypeEnv currentGlobal destructorName
 
                 containerType =
                     Mono.getMonoPathType monoSubPath
@@ -2750,7 +2762,7 @@ specializePath path varEnv globalTypeEnv =
         TOpt.ArrayIndex idx subPath ->
             let
                 monoSubPath =
-                    specializePath subPath varEnv globalTypeEnv
+                    specializePath subPath varEnv globalTypeEnv currentGlobal destructorName
 
                 containerType =
                     Mono.getMonoPathType monoSubPath
@@ -2764,7 +2776,7 @@ specializePath path varEnv globalTypeEnv =
         TOpt.Field fieldName subPath ->
             let
                 monoSubPath =
-                    specializePath subPath varEnv globalTypeEnv
+                    specializePath subPath varEnv globalTypeEnv currentGlobal destructorName
 
                 recordType =
                     Mono.getMonoPathType monoSubPath
@@ -2794,7 +2806,7 @@ specializePath path varEnv globalTypeEnv =
         TOpt.Unbox subPath ->
             let
                 monoSubPath =
-                    specializePath subPath varEnv globalTypeEnv
+                    specializePath subPath varEnv globalTypeEnv currentGlobal destructorName
 
                 containerType =
                     Mono.getMonoPathType monoSubPath
@@ -2813,9 +2825,37 @@ specializePath path varEnv globalTypeEnv =
                             ty
 
                         Nothing ->
-                            Utils.Crash.crash ("Specialize.specializePath: Root variable '" ++ name ++ "' not found in VarEnv. This is a compiler bug.")
+                            Utils.Crash.crash ("Specialize.specializePath: Root variable '" ++ name ++ "' not found in VarEnv. Destructor: '" ++ destructorName ++ "'. VarEnv keys: [" ++ String.join ", " (State.varEnvKeys varEnv) ++ "]. Global: " ++ debugGlobal currentGlobal)
             in
             Mono.MonoRoot name rootType
+
+
+pathRoot : TOpt.Path -> Name
+pathRoot p =
+    case p of
+        TOpt.Root n -> n
+        TOpt.Index _ _ sub -> pathRoot sub
+        TOpt.ArrayIndex _ sub -> pathRoot sub
+        TOpt.Field _ sub -> pathRoot sub
+        TOpt.Unbox sub -> pathRoot sub
+
+
+debugPath : TOpt.Path -> String
+debugPath p =
+    case p of
+        TOpt.Root n -> "Root(" ++ n ++ ")"
+        TOpt.Index idx _ sub -> "Index(" ++ String.fromInt (Index.toMachine idx) ++ ", " ++ debugPath sub ++ ")"
+        TOpt.ArrayIndex idx sub -> "ArrayIndex(" ++ String.fromInt idx ++ ", " ++ debugPath sub ++ ")"
+        TOpt.Field f sub -> "Field(" ++ f ++ ", " ++ debugPath sub ++ ")"
+        TOpt.Unbox sub -> "Unbox(" ++ debugPath sub ++ ")"
+
+
+debugGlobal : Maybe Mono.Global -> String
+debugGlobal mg =
+    case mg of
+        Nothing -> "Nothing"
+        Just (Mono.Global (IO.Canonical _ modName) name) -> Name.toElmString modName ++ "." ++ name
+        Just (Mono.Accessor name) -> "Accessor(" ++ name ++ ")"
 
 
 {-| Compute the result type of projecting at an index from a container.

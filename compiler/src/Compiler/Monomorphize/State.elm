@@ -3,7 +3,7 @@ module Compiler.Monomorphize.State exposing
     , initState
     , LocalInstanceInfo, LocalMultiState
     , ValueInstanceInfo, ValueMultiState
-    , VarEnv(..), emptyVarEnv, insertVar, lookupVar, popFrame, pushFrame
+    , VarEnv(..), emptyVarEnv, insertVar, lookupVar, popFrame, pushFrame, varEnvKeys
     )
 
 {-| State types and utilities for monomorphization.
@@ -177,6 +177,13 @@ insertVar name t (VarEnv frames) =
 
         frame :: rest ->
             VarEnv (Dict.insert name t frame :: rest)
+
+
+{-| Get all variable names in the environment (for debugging).
+-}
+varEnvKeys : VarEnv -> List Name
+varEnvKeys (VarEnv frames) =
+    List.concatMap Dict.keys frames
 
 
 {-| Push a new empty frame onto the environment stack for a nested scope.
