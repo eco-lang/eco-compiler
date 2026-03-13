@@ -206,20 +206,37 @@ specializePortNode snapshot expr meta requestedMonoType nodeConstructor state =
 -}
 resolveType : LocalView -> TOpt.Meta -> Mono.MonoType
 resolveType view meta =
-    case meta.tvar of
-        Just tvar ->
-            Mono.forceCNumberToInt (view.monoTypeOf tvar)
+    let
+        rawType =
+            case meta.tvar of
+                Just tvar ->
+                    view.monoTypeOf tvar
 
-        Nothing ->
-            if isMonomorphicCanType meta.tipe then
-                -- Synthetic expression without solver variable (e.g. Let wrapper, Destruct wrapper,
-                -- record alias constructor). Safe to fall back to direct Can.Type conversion.
-                Mono.forceCNumberToInt (KernelAbi.canTypeToMonoType_preserveVars meta.tipe)
+                Nothing ->
+                    if isMonomorphicCanType meta.tipe then
+                        KernelAbi.canTypeToMonoType_preserveVars meta.tipe
 
-            else
-                Utils.Crash.crash
-                    ("MonoDirect.resolveType: missing solver tvar for polymorphic type "
-                        ++ Debug.toString meta.tipe)
+                    else
+                        Utils.Crash.crash
+                            ("MonoDirect.resolveType: missing solver tvar for polymorphic type "
+                                ++ Debug.toString meta.tipe
+                            )
+
+        normalized =
+            Mono.forceCNumberToInt rawType
+    in
+    case normalized of
+        Mono.MErased ->
+            Utils.Crash.crash
+                ("MonoDirect.resolveType: unexpected top-level MErased from solver for "
+                    ++ Debug.toString meta.tipe
+                    ++ " (tvar="
+                    ++ Debug.toString meta.tvar
+                    ++ "). Erasure of CEcoValue vars is handled in assembleRawGraph, not here."
+                )
+
+        _ ->
+            normalized
 
 
 resolveExprType : LocalView -> TOpt.Expr -> Mono.MonoType
@@ -910,12 +927,30 @@ to direct Can.Type conversion which maps TVars to CEcoValue.
 -}
 resolveDestructorType : LocalView -> TOpt.Meta -> Mono.MonoType
 resolveDestructorType view meta =
-    case meta.tvar of
-        Just tvar ->
-            Mono.forceCNumberToInt (view.monoTypeOf tvar)
+    let
+        rawType =
+            case meta.tvar of
+                Just tvar ->
+                    view.monoTypeOf tvar
 
-        Nothing ->
-            Mono.forceCNumberToInt (KernelAbi.canTypeToMonoType_preserveVars meta.tipe)
+                Nothing ->
+                    KernelAbi.canTypeToMonoType_preserveVars meta.tipe
+
+        normalized =
+            Mono.forceCNumberToInt rawType
+    in
+    case normalized of
+        Mono.MErased ->
+            Utils.Crash.crash
+                ("MonoDirect.resolveDestructorType: unexpected top-level MErased from solver for "
+                    ++ Debug.toString meta.tipe
+                    ++ " (tvar="
+                    ++ Debug.toString meta.tvar
+                    ++ "). Erasure of CEcoValue vars is handled in assembleRawGraph, not here."
+                )
+
+        _ ->
+            normalized
 
 
 specializePath : LocalView -> VarEnv -> TypeEnv.GlobalTypeEnv -> TOpt.Path -> Mono.MonoPath
