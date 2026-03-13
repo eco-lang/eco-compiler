@@ -85,6 +85,163 @@ peelFunctionType n tipe =
                 tipe
 
 
+{-| Find the solver tvar for a local variable by scanning a Canonical
+expression for `VarLocal name` occurrences.
+
+Used to recover the *function* type variable for locally-defined functions:
+  * LetRec single-def: scan the RHS body for self-calls.
+  * Non-recursive let: scan the continuation body for uses of the bound name.
+
+Returns the tvar from the first `VarLocal name` found, which is the binder's
+solver variable for the full (possibly polymorphic) function type.
+
+Note: canonicalization forbids name shadowing, so all VarLocal occurrences
+of targetName within a scope refer to the same binding.
+-}
+findVarLocalTvar : Name -> ExprVars -> Can.Expr -> Maybe IO.Variable
+findVarLocalTvar targetName exprVars (A.At _ info) =
+    case info.node of
+        Can.VarLocal name ->
+            if name == targetName then
+                Array.get info.id exprVars |> Maybe.andThen identity
+
+            else
+                Nothing
+
+        -- Leaf nodes: no sub-expressions to search
+        Can.VarTopLevel _ _ -> Nothing
+        Can.VarKernel _ _ -> Nothing
+        Can.VarForeign _ _ _ -> Nothing
+        Can.VarCtor _ _ _ _ _ -> Nothing
+        Can.VarDebug _ _ _ -> Nothing
+        Can.VarOperator _ _ _ _ -> Nothing
+        Can.Chr _ -> Nothing
+        Can.Str _ -> Nothing
+        Can.Int _ -> Nothing
+        Can.Float _ -> Nothing
+        Can.Accessor _ -> Nothing
+        Can.Unit -> Nothing
+        Can.Shader _ _ -> Nothing
+
+        -- Single sub-expression
+        Can.Negate e ->
+            findVarLocalTvar targetName exprVars e
+
+        Can.Lambda _ body ->
+            findVarLocalTvar targetName exprVars body
+
+        Can.Access recordExpr _ ->
+            findVarLocalTvar targetName exprVars recordExpr
+
+        -- Two sub-expressions
+        Can.Binop _ _ _ _ left right ->
+            firstJust2 targetName exprVars left right
+
+        -- Function call
+        Can.Call func args ->
+            case findVarLocalTvar targetName exprVars func of
+                Just v -> Just v
+                Nothing -> firstJustList targetName exprVars args
+
+        -- Lists, tuples, records
+        Can.List entries ->
+            firstJustList targetName exprVars entries
+
+        Can.Tuple a b rest ->
+            case findVarLocalTvar targetName exprVars a of
+                Just v -> Just v
+                Nothing ->
+                    case findVarLocalTvar targetName exprVars b of
+                        Just v -> Just v
+                        Nothing -> firstJustList targetName exprVars rest
+
+        Can.Record fields ->
+            firstJustList targetName exprVars (Data.Map.values A.compareLocated fields)
+
+        Can.Update recordExpr fieldUpdates ->
+            case findVarLocalTvar targetName exprVars recordExpr of
+                Just v -> Just v
+                Nothing ->
+                    firstJustList targetName exprVars
+                        (List.map (\(Can.FieldUpdate _ e) -> e) (Data.Map.values A.compareLocated fieldUpdates))
+
+        -- Control flow
+        Can.If branches final ->
+            let
+                tryBranch ( cond, branchExpr ) =
+                    case findVarLocalTvar targetName exprVars cond of
+                        Just v -> Just v
+                        Nothing -> findVarLocalTvar targetName exprVars branchExpr
+            in
+            case firstJustMap tryBranch branches of
+                Just v -> Just v
+                Nothing -> findVarLocalTvar targetName exprVars final
+
+        Can.Case scrutinee branches ->
+            case findVarLocalTvar targetName exprVars scrutinee of
+                Just v -> Just v
+                Nothing ->
+                    firstJustMap
+                        (\(Can.CaseBranch _ branchExpr) ->
+                            findVarLocalTvar targetName exprVars branchExpr
+                        )
+                        branches
+
+        -- Let expressions (no shadow concern — canonicalization forbids shadowing)
+        Can.Let def body ->
+            case findVarLocalTvarInDef targetName exprVars def of
+                Just v -> Just v
+                Nothing -> findVarLocalTvar targetName exprVars body
+
+        Can.LetRec defs body ->
+            case firstJustMap (findVarLocalTvarInDef targetName exprVars) defs of
+                Just v -> Just v
+                Nothing -> findVarLocalTvar targetName exprVars body
+
+        Can.LetDestruct _ boundExpr body ->
+            firstJust2 targetName exprVars boundExpr body
+
+
+findVarLocalTvarInDef : Name -> ExprVars -> Can.Def -> Maybe IO.Variable
+findVarLocalTvarInDef targetName exprVars def =
+    case def of
+        Can.Def _ _ body ->
+            findVarLocalTvar targetName exprVars body
+
+        Can.TypedDef _ _ _ body _ ->
+            findVarLocalTvar targetName exprVars body
+
+
+{-| Helper: return first Just from two expressions -}
+firstJust2 : Name -> ExprVars -> Can.Expr -> Can.Expr -> Maybe IO.Variable
+firstJust2 targetName exprVars a b =
+    case findVarLocalTvar targetName exprVars a of
+        Just v -> Just v
+        Nothing -> findVarLocalTvar targetName exprVars b
+
+
+{-| Helper: return first Just from a list of expressions -}
+firstJustList : Name -> ExprVars -> List Can.Expr -> Maybe IO.Variable
+firstJustList targetName exprVars exprs =
+    case exprs of
+        [] -> Nothing
+        e :: rest ->
+            case findVarLocalTvar targetName exprVars e of
+                Just v -> Just v
+                Nothing -> firstJustList targetName exprVars rest
+
+
+{-| Helper: return first Just from mapping over a list -}
+firstJustMap : (a -> Maybe IO.Variable) -> List a -> Maybe IO.Variable
+firstJustMap f list =
+    case list of
+        [] -> Nothing
+        x :: rest ->
+            case f x of
+                Just v -> Just v
+                Nothing -> firstJustMap f rest
+
+
 
 -- ====== OPTIMIZE ======
 
@@ -280,10 +437,13 @@ optimizeExpr kernelEnv annotations exprTypes exprVars home cycle region tipe tva
             let
                 ( defName, defType ) =
                     getDefNameAndType exprTypes def
+
+                defNodeTvar =
+                    findVarLocalTvar defName exprVars body
             in
             Names.withVarTypes [ ( defName, defType ) ]
                 (optimize kernelEnv annotations exprTypes exprVars home cycle (TCanBuild.toTypedExpr exprTypes exprVars body))
-                |> Names.andThen (optimizeDef kernelEnv annotations exprTypes exprVars home cycle def tipe)
+                |> Names.andThen (optimizeDef kernelEnv annotations exprTypes exprVars home cycle def tipe defNodeTvar)
 
         Can.LetRec defs body ->
             -- For LetRec, all definitions are mutually recursive, so add all names to scope
@@ -306,7 +466,7 @@ optimizeExpr kernelEnv annotations exprTypes exprVars home cycle region tipe tva
                     Names.withVarTypes defBindings
                         (List.foldl
                             (\def bod ->
-                                Names.andThen (optimizeDef kernelEnv annotations exprTypes exprVars home cycle def tipe) bod
+                                Names.andThen (optimizeDef kernelEnv annotations exprTypes exprVars home cycle def tipe Nothing) bod
                             )
                             (optimize kernelEnv annotations exprTypes exprVars home cycle (TCanBuild.toTypedExpr exprTypes exprVars body))
                             defs
@@ -596,10 +756,13 @@ optimizeTailExpr kernelEnv annotations exprTypes exprVars home cycle rootName ar
             let
                 ( defName, defType ) =
                     getDefNameAndType exprTypes def
+
+                defNodeTvar =
+                    findVarLocalTvar defName exprVars body
             in
             Names.withVarTypes [ ( defName, defType ) ]
                 (optimizeTail kernelEnv annotations exprTypes exprVars home cycle rootName argNames resultType (TCanBuild.toTypedExpr exprTypes exprVars body))
-                |> Names.andThen (optimizeDef kernelEnv annotations exprTypes exprVars home cycle def tipe)
+                |> Names.andThen (optimizeDef kernelEnv annotations exprTypes exprVars home cycle def tipe defNodeTvar)
 
         Can.LetRec defs body ->
             -- For LetRec, all definitions are mutually recursive, so add all names to scope
@@ -622,7 +785,7 @@ optimizeTailExpr kernelEnv annotations exprTypes exprVars home cycle rootName ar
                     Names.withVarTypes defBindings
                         (List.foldl
                             (\def bod ->
-                                Names.andThen (optimizeDef kernelEnv annotations exprTypes exprVars home cycle def tipe) bod
+                                Names.andThen (optimizeDef kernelEnv annotations exprTypes exprVars home cycle def tipe Nothing) bod
                             )
                             (optimizeTail kernelEnv annotations exprTypes exprVars home cycle rootName argNames resultType (TCanBuild.toTypedExpr exprTypes exprVars body))
                             defs
@@ -770,15 +933,16 @@ optimizeDef :
     -> Cycle
     -> Can.Def
     -> Can.Type
+    -> Maybe IO.Variable
     -> TOpt.Expr
     -> Names.Tracker TOpt.Expr
-optimizeDef kernelEnv annotations exprTypes exprVars home cycle def resultType body =
+optimizeDef kernelEnv annotations exprTypes exprVars home cycle def resultType defNodeTvar body =
     case def of
         Can.Def (A.At region name) args expr ->
-            optimizeDefHelp kernelEnv annotations exprTypes exprVars home cycle region name args expr resultType body
+            optimizeDefHelp kernelEnv annotations exprTypes exprVars home cycle region name args expr resultType defNodeTvar body
 
         Can.TypedDef (A.At region name) _ typedArgs expr _ ->
-            optimizeDefHelp kernelEnv annotations exprTypes exprVars home cycle region name (List.map Tuple.first typedArgs) expr resultType body
+            optimizeDefHelp kernelEnv annotations exprTypes exprVars home cycle region name (List.map Tuple.first typedArgs) expr resultType defNodeTvar body
 
 
 optimizeDefHelp :
@@ -793,14 +957,33 @@ optimizeDefHelp :
     -> List Can.Pattern
     -> Can.Expr
     -> Can.Type
+    -> Maybe IO.Variable
     -> TOpt.Expr
     -> Names.Tracker TOpt.Expr
-optimizeDefHelp kernelEnv annotations exprTypes exprVars home cycle region name args expr resultType body =
+optimizeDefHelp kernelEnv annotations exprTypes exprVars home cycle region name args expr resultType defNodeTvar body =
     let
         -- Extract the definition body's tvar from exprVars
         defBodyTvar : Maybe IO.Variable
         defBodyTvar =
             Array.get (A.toValue expr).id exprVars |> Maybe.andThen identity
+
+        -- Resolve the function tvar with cascading fallbacks:
+        --   1. Caller-provided tvar (from continuation-body scan for non-recursive let)
+        --   2. Self-call scan of def RHS (for multi-def LetRec with direct self-recursion)
+        --   3. defBodyTvar (body/return type — last resort)
+        funcTvar : Maybe IO.Variable
+        funcTvar =
+            case defNodeTvar of
+                Just _ ->
+                    defNodeTvar
+
+                Nothing ->
+                    case findVarLocalTvar name exprVars expr of
+                        Just v ->
+                            Just v
+
+                        Nothing ->
+                            defBodyTvar
 
         -- The Let expression's tvar is the tvar of the continuation body
         letTvar : Maybe IO.Variable
@@ -856,7 +1039,7 @@ optimizeDefHelp kernelEnv annotations exprTypes exprVars home cycle region name 
                                             List.foldr (wrapDestruct bodyType) oexpr destructors
 
                                         ofunc =
-                                            TOpt.TrackedFunction argNamesWithTypes wrappedBody { tipe = funcType, tvar = defBodyTvar }
+                                            TOpt.TrackedFunction argNamesWithTypes wrappedBody { tipe = funcType, tvar = funcTvar }
                                     in
                                     TOpt.Let (TOpt.Def region name ofunc funcType) body { tipe = resultType, tvar = letTvar }
                                 )
@@ -879,15 +1062,30 @@ optimizePotentialTailCallDef kernelEnv annotations exprTypes exprVars home cycle
     case def of
         Can.Def (A.At region name) args body ->
             let
-                -- Get the def type from exprTypes (pattern and body types), not annotations
                 ( _, defType ) =
                     getDefNameAndType exprTypes def
+
+                localAnnotationVars =
+                    case findVarLocalTvar name exprVars body of
+                        Just v ->
+                            Data.Map.singleton identity name v
+
+                        Nothing ->
+                            Data.Map.empty
             in
-            -- Local LetRec defs won't be in module-level annotationVars, so pass empty
-            optimizePotentialTailCall kernelEnv annotations exprTypes exprVars home cycle region name args (TCanBuild.toTypedExpr exprTypes exprVars body) defType Data.Map.empty
+            optimizePotentialTailCall kernelEnv annotations exprTypes exprVars home cycle region name args (TCanBuild.toTypedExpr exprTypes exprVars body) defType localAnnotationVars
 
         Can.TypedDef (A.At region name) _ typedArgs body defType ->
-            optimizePotentialTailCall kernelEnv annotations exprTypes exprVars home cycle region name (List.map Tuple.first typedArgs) (TCanBuild.toTypedExpr exprTypes exprVars body) defType Data.Map.empty
+            let
+                localAnnotationVars =
+                    case findVarLocalTvar name exprVars body of
+                        Just v ->
+                            Data.Map.singleton identity name v
+
+                        Nothing ->
+                            Data.Map.empty
+            in
+            optimizePotentialTailCall kernelEnv annotations exprTypes exprVars home cycle region name (List.map Tuple.first typedArgs) (TCanBuild.toTypedExpr exprTypes exprVars body) defType localAnnotationVars
 
 
 
