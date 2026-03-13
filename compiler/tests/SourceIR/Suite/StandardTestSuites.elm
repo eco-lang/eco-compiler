@@ -28,6 +28,7 @@ import SourceIR.JoinpointABICases as JoinpointABICases
 import SourceIR.KernelPapAbiCases as KernelPapAbiCases
 import SourceIR.LetCases as LetCases
 import SourceIR.LetDestructCases as LetDestructCases
+import SourceIR.LetDestructFnCases as LetDestructFnCases
 import SourceIR.LetRecCases as LetRecCases
 import SourceIR.ListCases as ListCases
 import SourceIR.LiteralCases as LiteralCases
@@ -74,6 +75,7 @@ expectSuite expectFn condStr =
         , HigherOrderCases.expectSuite expectFn condStr
         , JoinpointABICases.expectSuite expectFn condStr
         , LetDestructCases.expectSuite expectFn condStr
+        , LetDestructFnCases.expectSuite expectFn condStr
         , LetRecCases.expectSuite expectFn condStr
         , LetCases.expectSuite expectFn condStr
         , ListCases.expectSuite expectFn condStr
