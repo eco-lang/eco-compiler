@@ -134,6 +134,7 @@ runWithIdsPath :
                 { annotations : Dict String Name.Name Can.Annotation
                 , nodeTypes : Array.Array (Maybe Can.Type)
                 , nodeVars : Array.Array (Maybe IO.Variable)
+                , annotationVars : Dict String Name.Name IO.Variable
                 , solverState :
                     { descriptors : Array.Array IO.Descriptor
                     , pointInfo : Array.Array IO.PointInfo

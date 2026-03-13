@@ -95,6 +95,7 @@ runWithIds :
             (Result
                 (NE.Nonempty Error.Error)
                 { annotations : Data.Map.Dict String Name.Name Can.Annotation
+                , annotationVars : Data.Map.Dict String Name.Name Variable
                 , nodeTypes : Array (Maybe Can.Type)
                 , nodeVars : Array (Maybe Variable)
                 , solverState :
@@ -126,6 +127,7 @@ runWithIds constraint nodeVars =
                                                                 ( s
                                                                 , Ok
                                                                     { annotations = annotations
+                                                                    , annotationVars = env
                                                                     , nodeTypes = nodeTypes
                                                                     , nodeVars = nodeVars
                                                                     , solverState =

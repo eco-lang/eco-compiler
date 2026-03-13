@@ -108,7 +108,7 @@ checkDefFunctionTypes context def =
         TOpt.Def _ name expr _ ->
             collectExprFunctionTypeChecks (context ++ " Def " ++ name) expr
 
-        TOpt.TailDef _ name _ expr _ ->
+        TOpt.TailDef _ name _ expr _ _ ->
             collectExprFunctionTypeChecks (context ++ " TailDef " ++ name) expr
 
 

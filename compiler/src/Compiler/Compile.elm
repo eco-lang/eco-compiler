@@ -155,14 +155,14 @@ compileTyped pkg ifaces modul =
                             in
                             typeCheckTyped modul canonical
                                 |> Result.andThen
-                                    (\{ annotations, typedCanonical, nodeTypes, kernelEnv, nodeVars } ->
+                                    (\{ annotations, typedCanonical, nodeTypes, kernelEnv, nodeVars, annotationVars } ->
                                         nitpick canonical
                                             |> Result.andThen
                                                 (\() ->
                                                     optimize modul annotations canonical
                                                         |> Result.andThen
                                                             (\objects ->
-                                                                typedOptimizeFromTyped modul annotations nodeTypes nodeVars kernelEnv typedCanonical
+                                                                typedOptimizeFromTyped modul annotations nodeTypes nodeVars kernelEnv annotationVars typedCanonical
                                                                     |> Result.map
                                                                         (\typedObjects ->
                                                                             TypedArtifacts
@@ -246,6 +246,7 @@ typeCheckTyped :
             , nodeTypes : TCan.ExprTypes
             , nodeVars : TCan.ExprVars
             , kernelEnv : KernelTypes.KernelTypeEnv
+            , annotationVars : EveryDict.Dict String Name TypeCheck.Variable
             }
 typeCheckTyped modul canonical =
     let
@@ -261,7 +262,7 @@ typeCheckTyped modul canonical =
         Err errors ->
             Err (E.BadTypes (Localizer.fromModule modul) errors)
 
-        Ok { annotations, nodeTypes, nodeVars, solverState } ->
+        Ok { annotations, annotationVars, nodeTypes, nodeVars, solverState } ->
             let
                 -- Run PostSolve to fix Group B types and compute kernel env
                 postSolveResult =
@@ -279,6 +280,7 @@ typeCheckTyped modul canonical =
                 , nodeTypes = fixedNodeTypes
                 , kernelEnv = kernelEnv
                 , nodeVars = nodeVars
+                , annotationVars = annotationVars
                 }
 
 
@@ -315,8 +317,8 @@ optimize modul annotations canonical =
 -- Performs typed optimization from a TypedCanonical module.
 
 
-typedOptimizeFromTyped modul annotations nodeTypes nodeVars kernelEnv tcanModule =
-    case Tuple.second (ReportingResult.run (TypedOptimize.optimizeTyped annotations nodeTypes nodeVars kernelEnv tcanModule)) of
+typedOptimizeFromTyped modul annotations nodeTypes nodeVars kernelEnv annotationVars tcanModule =
+    case Tuple.second (ReportingResult.run (TypedOptimize.optimizeTyped annotations nodeTypes nodeVars kernelEnv annotationVars tcanModule)) of
         Ok localGraph ->
             Ok localGraph
 

@@ -93,6 +93,7 @@ type alias TypeCheckArtifacts =
     , nodeTypes : Array (Maybe Can.Type) -- Pre-PostSolve
     , nodeVars : Array (Maybe IO.Variable)
     , solverState : { descriptors : Array IO.Descriptor, pointInfo : Array IO.PointInfo, weights : Array Int }
+    , annotationVars : Data.Map.Dict String Name.Name IO.Variable
     }
 
 
@@ -106,6 +107,7 @@ type alias PostSolveArtifacts =
     , kernelEnv : KernelTypes.KernelTypeEnv
     , nodeVars : Array (Maybe IO.Variable)
     , solverState : { descriptors : Array IO.Descriptor, pointInfo : Array IO.PointInfo, weights : Array Int }
+    , annotationVars : Data.Map.Dict String Name.Name IO.Variable
     }
 
 
@@ -227,13 +229,14 @@ runToTypeCheck srcModule =
                 Err errCount ->
                     Err ("Type checking failed with " ++ String.fromInt errCount ++ " error(s)")
 
-                Ok { annotations, nodeTypes, nodeVars, solverState } ->
+                Ok { annotations, nodeTypes, nodeVars, solverState, annotationVars } ->
                     Ok
                         { canonical = canonical
                         , annotations = annotations
                         , nodeTypes = nodeTypes
                         , nodeVars = nodeVars
                         , solverState = solverState
+                        , annotationVars = annotationVars
                         }
 
 
@@ -245,7 +248,7 @@ runToPostSolve srcModule =
         Err e ->
             Err e
 
-        Ok { canonical, annotations, nodeTypes, nodeVars, solverState } ->
+        Ok { canonical, annotations, nodeTypes, nodeVars, solverState, annotationVars } ->
             let
                 postSolveResult =
                     PostSolve.postSolve
@@ -261,6 +264,7 @@ runToPostSolve srcModule =
                 , kernelEnv = postSolveResult.kernelEnv
                 , nodeVars = nodeVars
                 , solverState = solverState
+                , annotationVars = annotationVars
                 }
 
 
@@ -277,12 +281,12 @@ runToTypedOpt srcModule =
         Err e ->
             Err e
 
-        Ok { canonical, annotations, nodeTypesPost, kernelEnv, nodeVars } ->
+        Ok { canonical, annotations, nodeTypesPost, kernelEnv, nodeVars, annotationVars } ->
             let
                 typedModule =
                     TCanBuild.fromCanonical canonical nodeTypesPost nodeVars
             in
-            case RResult.run (TypedOptimize.optimizeTyped annotations nodeTypesPost nodeVars kernelEnv typedModule) of
+            case RResult.run (TypedOptimize.optimizeTyped annotations nodeTypesPost nodeVars kernelEnv annotationVars typedModule) of
                 ( _, Ok localGraph ) ->
                     Ok
                         { canonical = canonical
@@ -337,15 +341,15 @@ runToMonoDirect srcModule =
         Err e ->
             Err e
 
-        Ok { canonical, annotations, nodeTypesPost, kernelEnv, nodeVars, solverState } ->
+        Ok { canonical, annotations, nodeTypesPost, kernelEnv, nodeVars, solverState, annotationVars } ->
             let
                 typedModule =
                     TCanBuild.fromCanonical canonical nodeTypesPost nodeVars
 
                 snapshot =
-                    SolverSnapshot.fromSolveResult { nodeVars = nodeVars, solverState = solverState }
+                    SolverSnapshot.fromSolveResult { nodeVars = nodeVars, solverState = solverState, annotationVars = annotationVars }
             in
-            case RResult.run (TypedOptimize.optimizeTyped annotations nodeTypesPost nodeVars kernelEnv typedModule) of
+            case RResult.run (TypedOptimize.optimizeTyped annotations nodeTypesPost nodeVars kernelEnv annotationVars typedModule) of
                 ( _, Ok localGraph ) ->
                     let
                         globalGraph =
@@ -451,7 +455,7 @@ runToMlir srcModule =
 
 {-| Run type checking with expression ID tracking.
 -}
-runWithIdsTypeCheck : Can.Module -> IO.IO (Result Int { annotations : Dict Name.Name Can.Annotation, nodeTypes : Array (Maybe Can.Type), nodeVars : Array (Maybe IO.Variable), solverState : { descriptors : Array IO.Descriptor, pointInfo : Array IO.PointInfo, weights : Array Int } })
+runWithIdsTypeCheck : Can.Module -> IO.IO (Result Int { annotations : Dict Name.Name Can.Annotation, nodeTypes : Array (Maybe Can.Type), nodeVars : Array (Maybe IO.Variable), solverState : { descriptors : Array IO.Descriptor, pointInfo : Array IO.PointInfo, weights : Array Int }, annotationVars : Data.Map.Dict String Name.Name IO.Variable })
 runWithIdsTypeCheck modul =
     ConstrainTyped.constrainWithIds modul
         |> IO.andThen
@@ -467,6 +471,7 @@ runWithIdsTypeCheck modul =
                             , nodeTypes = data.nodeTypes
                             , nodeVars = data.nodeVars
                             , solverState = data.solverState
+                            , annotationVars = data.annotationVars
                             }
 
                     Err (NE.Nonempty _ rest) ->

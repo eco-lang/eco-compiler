@@ -75,7 +75,7 @@ toEncoder tipe =
                         encode "string"
 
                     else if name == Name.value then
-                        Names.registerGlobal A.zero ModuleName.basics Name.identity_ (Can.TLambda tipe tipe)
+                        Names.registerGlobal A.zero ModuleName.basics Name.identity_ (Can.TLambda tipe tipe) Nothing
 
                     else if name == Name.bytes then
                         encodeBytes
@@ -163,7 +163,7 @@ encodeMaybe tipe =
                 toEncoder tipe
                     |> Names.andThen
                         (\encoder ->
-                            Names.registerGlobal A.zero ModuleName.maybe "destruct" (Can.TVar "destruct")
+                            Names.registerGlobal A.zero ModuleName.maybe "destruct" (Can.TVar "destruct") Nothing
                                 |> Names.map
                                     (\destruct ->
                                         let
@@ -241,11 +241,11 @@ encodeTuple a b cs =
                     else
                         TOpt.HintTuple3
             in
-            TOpt.Destruct (TOpt.Destructor arg (TOpt.Index index hint (TOpt.Root Name.dollar)) argType) body { tipe = TOpt.typeOf body, tvar = Nothing }
+            TOpt.Destruct (TOpt.Destructor arg (TOpt.Index index hint (TOpt.Root Name.dollar)) { tipe = argType, tvar = Nothing }) body { tipe = TOpt.typeOf body, tvar = Nothing }
 
         letCs_ : Name -> Can.Type -> Int -> TOpt.Expr -> TOpt.Expr
         letCs_ arg argType index body =
-            TOpt.Destruct (TOpt.Destructor arg (TOpt.ArrayIndex index (TOpt.Field "cs" (TOpt.Root Name.dollar))) argType) body { tipe = TOpt.typeOf body, tvar = Nothing }
+            TOpt.Destruct (TOpt.Destructor arg (TOpt.ArrayIndex index (TOpt.Field "cs" (TOpt.Root Name.dollar))) { tipe = argType, tvar = Nothing }) body { tipe = TOpt.typeOf body, tvar = Nothing }
 
         encodeArg : Name -> Can.Type -> Names.Tracker TOpt.Expr
         encodeArg arg argType =
@@ -255,7 +255,7 @@ encodeTuple a b cs =
     encode "list"
         |> Names.andThen
             (\list ->
-                Names.registerGlobal A.zero ModuleName.basics Name.identity_ (Can.TLambda listValueType listValueType)
+                Names.registerGlobal A.zero ModuleName.basics Name.identity_ (Can.TLambda listValueType listValueType) Nothing
                     |> Names.andThen
                         (\identity ->
                             encodeArg "a" a
@@ -401,10 +401,10 @@ decodeMaybe tipe =
         decoderType =
             Can.TType ModuleName.jsonDecode "Decoder" [ maybeType ]
     in
-    Names.registerGlobal A.zero ModuleName.maybe "Nothing" maybeType
+    Names.registerGlobal A.zero ModuleName.maybe "Nothing" maybeType Nothing
         |> Names.andThen
             (\nothing ->
-                Names.registerGlobal A.zero ModuleName.maybe "Just" (Can.TLambda tipe maybeType)
+                Names.registerGlobal A.zero ModuleName.maybe "Just" (Can.TLambda tipe maybeType) Nothing
                     |> Names.andThen
                         (\just ->
                             decode "oneOf"
@@ -626,12 +626,12 @@ fieldAndThen decoder ( key, Can.FieldType _ tipe ) =
 
 encode : Name -> Names.Tracker TOpt.Expr
 encode name =
-    Names.registerGlobal A.zero ModuleName.jsonEncode name (Can.TVar name)
+    Names.registerGlobal A.zero ModuleName.jsonEncode name (Can.TVar name) Nothing
 
 
 decode : Name -> Names.Tracker TOpt.Expr
 decode name =
-    Names.registerGlobal A.zero ModuleName.jsonDecode name (Can.TVar name)
+    Names.registerGlobal A.zero ModuleName.jsonDecode name (Can.TVar name) Nothing
 
 
 

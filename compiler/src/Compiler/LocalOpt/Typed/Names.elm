@@ -171,8 +171,8 @@ Creates a VarGlobal expression referencing the function/value and adds it to the
 dependency set so the code generator knows to import it.
 
 -}
-registerGlobal : A.Region -> IO.Canonical -> Name -> Can.Type -> Tracker TOpt.Expr
-registerGlobal region home name itype =
+registerGlobal : A.Region -> IO.Canonical -> Name -> Can.Type -> Maybe IO.Variable -> Tracker TOpt.Expr
+registerGlobal region home name itype tvar =
     Tracker <|
         \uid deps fields locals ->
             let
@@ -180,7 +180,7 @@ registerGlobal region home name itype =
                 global =
                     TOpt.Global home name
             in
-            tResult uid (EverySet.insert TOpt.toComparableGlobal global deps) fields locals (TOpt.VarGlobal region global { tipe = itype, tvar = Nothing })
+            tResult uid (EverySet.insert TOpt.toComparableGlobal global deps) fields locals (TOpt.VarGlobal region global { tipe = itype, tvar = tvar })
 
 
 {-| Register a dependency on a Debug module function and return a debug variable reference.
@@ -189,8 +189,8 @@ Debug functions are special-cased to support conditional compilation and removal
 in production builds. The home module is tracked for context.
 
 -}
-registerDebug : Name -> IO.Canonical -> A.Region -> Can.Type -> Tracker TOpt.Expr
-registerDebug name home region itype =
+registerDebug : Name -> IO.Canonical -> A.Region -> Can.Type -> Maybe IO.Variable -> Tracker TOpt.Expr
+registerDebug name home region itype tvar =
     Tracker <|
         \uid deps fields locals ->
             let
@@ -198,7 +198,7 @@ registerDebug name home region itype =
                 global =
                     TOpt.Global ModuleName.debug name
             in
-            tResult uid (EverySet.insert TOpt.toComparableGlobal global deps) fields locals (TOpt.VarDebug region name home Nothing { tipe = itype, tvar = Nothing })
+            tResult uid (EverySet.insert TOpt.toComparableGlobal global deps) fields locals (TOpt.VarDebug region name home Nothing { tipe = itype, tvar = tvar })
 
 
 {-| Register a dependency on a type constructor and return an optimized expression.
@@ -210,8 +210,8 @@ Handles three cases based on constructor options:
   - Unbox: Single-argument constructor, returns VarBox and registers identity dependency
 
 -}
-registerCtor : A.Region -> IO.Canonical -> A.Located Name -> Index.ZeroBased -> Can.CtorOpts -> Can.Type -> Tracker TOpt.Expr
-registerCtor region home (A.At _ name) index opts itype =
+registerCtor : A.Region -> IO.Canonical -> A.Located Name -> Index.ZeroBased -> Can.CtorOpts -> Can.Type -> Maybe IO.Variable -> Tracker TOpt.Expr
+registerCtor region home (A.At _ name) index opts itype tvar =
     Tracker <|
         \uid deps fields locals ->
             let
@@ -225,7 +225,7 @@ registerCtor region home (A.At _ name) index opts itype =
             in
             case opts of
                 Can.Normal ->
-                    tResult uid newDeps fields locals (TOpt.VarGlobal region global { tipe = itype, tvar = Nothing })
+                    tResult uid newDeps fields locals (TOpt.VarGlobal region global { tipe = itype, tvar = tvar })
 
                 Can.Enum ->
                     let
@@ -233,10 +233,10 @@ registerCtor region home (A.At _ name) index opts itype =
                             Can.TType ModuleName.basics "Bool" []
 
                         meta =
-                            { tipe = itype, tvar = Nothing }
+                            { tipe = itype, tvar = tvar }
 
                         boolMeta =
-                            { tipe = boolType, tvar = Nothing }
+                            { tipe = boolType, tvar = tvar }
                     in
                     tResult uid newDeps fields locals <|
                         case name of
@@ -258,7 +258,7 @@ registerCtor region home (A.At _ name) index opts itype =
                                 TOpt.VarEnum region global index meta
 
                 Can.Unbox ->
-                    tResult uid (EverySet.insert TOpt.toComparableGlobal identity newDeps) fields locals (TOpt.VarBox region global { tipe = itype, tvar = Nothing })
+                    tResult uid (EverySet.insert TOpt.toComparableGlobal identity newDeps) fields locals (TOpt.VarBox region global { tipe = itype, tvar = tvar })
 
 
 identity : TOpt.Global

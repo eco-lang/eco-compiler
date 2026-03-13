@@ -137,7 +137,7 @@ optimizeExpr kernelEnv annotations exprTypes exprVars home cycle region tipe tva
                 Names.pure (TOpt.VarCycle region varHome name { tipe = defType, tvar = tvar })
 
             else
-                Names.registerGlobal region varHome name defType
+                Names.registerGlobal region varHome name defType tvar
 
         Can.VarKernel kernelHome name ->
             -- Use the solver-inferred type (tipe) rather than the kernel env type.
@@ -147,18 +147,18 @@ optimizeExpr kernelEnv annotations exprTypes exprVars home cycle region tipe tva
             Names.registerKernel kernelHome (TOpt.VarKernel region kernelHome name { tipe = tipe, tvar = tvar })
 
         Can.VarForeign foreignHome name _ ->
-            Names.registerGlobal region foreignHome name tipe
+            Names.registerGlobal region foreignHome name tipe tvar
 
         Can.VarCtor opts ctorHome name index _ ->
-            Names.registerCtor region ctorHome (A.At region name) index opts tipe
+            Names.registerCtor region ctorHome (A.At region name) index opts tipe tvar
 
         Can.VarDebug debugHome name (Can.Forall _ debugType) ->
             -- Use the full function type from the annotation, not the instantiated type
             -- This is needed for the monomorphizer to correctly derive the kernel ABI
-            Names.registerDebug name debugHome region debugType
+            Names.registerDebug name debugHome region debugType tvar
 
         Can.VarOperator _ opHome name (Can.Forall _ funcType) ->
-            Names.registerGlobal region opHome name funcType
+            Names.registerGlobal region opHome name funcType tvar
 
         Can.Chr chr ->
             Names.registerKernel Name.utils (TOpt.Chr region chr { tipe = Can.TType ModuleName.basics "Char" [], tvar = tvar })
@@ -182,7 +182,7 @@ optimizeExpr kernelEnv annotations exprTypes exprVars home cycle region tipe tva
                 negateType =
                     buildFunctionType [ tipe ] tipe
             in
-            Names.registerGlobal region ModuleName.basics Name.negate negateType
+            Names.registerGlobal region ModuleName.basics Name.negate negateType Nothing
                 |> Names.andThen
                     (\func ->
                         optimize kernelEnv annotations exprTypes exprVars home cycle (TCanBuild.toTypedExpr exprTypes exprVars subExpr)
@@ -195,7 +195,7 @@ optimizeExpr kernelEnv annotations exprTypes exprVars home cycle region tipe tva
                 optimizeArg =
                     optimize kernelEnv annotations exprTypes exprVars home cycle << TCanBuild.toTypedExpr exprTypes exprVars
             in
-            Names.registerGlobal region binopHome name funcType
+            Names.registerGlobal region binopHome name funcType Nothing
                 |> Names.andThen
                     (\optFunc ->
                         optimizeArg left
@@ -210,7 +210,7 @@ optimizeExpr kernelEnv annotations exprTypes exprVars home cycle region tipe tva
                     )
 
         Can.Lambda args body ->
-            destructArgs exprTypes args
+            destructArgs exprTypes exprVars args
                 |> Names.andThen
                     (\( argNamesWithTypes, destructors ) ->
                         let
@@ -220,7 +220,7 @@ optimizeExpr kernelEnv annotations exprTypes exprVars home cycle region tipe tva
 
                             -- Extract bindings from destructors (e.g., "a", "b" from tuple (a, b))
                             destructorBindings =
-                                List.map (\(TOpt.Destructor n _ t) -> ( n, t )) destructors
+                                List.map (\(TOpt.Destructor n _ meta) -> ( n, meta.tipe )) destructors
 
                             -- Combine all bindings so pattern variables are in scope
                             allBindings =
@@ -313,7 +313,7 @@ optimizeExpr kernelEnv annotations exprTypes exprVars home cycle region tipe tva
                         )
 
         Can.LetDestruct pattern boundExpr body ->
-            destruct exprTypes pattern
+            destruct exprTypes exprVars pattern
                 |> Names.andThen
                     (\( ( A.At nameRegion name, patternType ), destructs ) ->
                         optimize kernelEnv annotations exprTypes exprVars home cycle (TCanBuild.toTypedExpr exprTypes exprVars boundExpr)
@@ -322,7 +322,7 @@ optimizeExpr kernelEnv annotations exprTypes exprVars home cycle region tipe tva
                                     let
                                         -- Add pattern bindings to scope
                                         destructorBindings =
-                                            List.map (\(TOpt.Destructor n _ t) -> ( n, t )) destructs
+                                            List.map (\(TOpt.Destructor n _ meta) -> ( n, meta.tipe )) destructs
 
                                         allBindings =
                                             ( name, patternType ) :: destructorBindings
@@ -347,13 +347,13 @@ optimizeExpr kernelEnv annotations exprTypes exprVars home cycle region tipe tva
             let
                 optimizeBranch : Name -> Can.CaseBranch -> Names.Tracker ( Can.Pattern, TOpt.Expr )
                 optimizeBranch root (Can.CaseBranch pattern branch) =
-                    destructCase exprTypes root pattern
+                    destructCase exprTypes exprVars root pattern
                         |> Names.andThen
                             (\destructors ->
                                 let
                                     -- Extract bindings from destructors for scope
                                     destructorBindings =
-                                        List.map (\(TOpt.Destructor n _ t) -> ( n, t )) destructors
+                                        List.map (\(TOpt.Destructor n _ meta) -> ( n, meta.tipe )) destructors
                                 in
                                 Names.withVarTypes destructorBindings
                                     (optimize kernelEnv annotations exprTypes exprVars home cycle (TCanBuild.toTypedExpr exprTypes exprVars branch))
@@ -372,11 +372,11 @@ optimizeExpr kernelEnv annotations exprTypes exprVars home cycle region tipe tva
                                     case optScrutinee of
                                         TOpt.VarLocal root _ ->
                                             Names.traverse (optimizeBranch root) branches
-                                                |> Names.map (\optBranches -> Case.optimize temp root optBranches tipe)
+                                                |> Names.map (\optBranches -> Case.optimize temp root optBranches tipe tvar)
 
                                         TOpt.TrackedVarLocal _ root _ ->
                                             Names.traverse (optimizeBranch root) branches
-                                                |> Names.map (\optBranches -> Case.optimize temp root optBranches tipe)
+                                                |> Names.map (\optBranches -> Case.optimize temp root optBranches tipe tvar)
 
                                         _ ->
                                             Names.traverse (optimizeBranch temp) branches
@@ -388,7 +388,7 @@ optimizeExpr kernelEnv annotations exprTypes exprVars home cycle region tipe tva
                                                         in
                                                         TOpt.Let
                                                             (TOpt.Def region temp optScrutinee scrutineeType)
-                                                            (Case.optimize temp temp optBranches tipe)
+                                                            (Case.optimize temp temp optBranches tipe tvar)
                                                             { tipe = tipe, tvar = tvar }
                                                     )
                                 )
@@ -629,7 +629,7 @@ optimizeTailExpr kernelEnv annotations exprTypes exprVars home cycle rootName ar
                         )
 
         Can.LetDestruct pattern boundExpr body ->
-            destruct exprTypes pattern
+            destruct exprTypes exprVars pattern
                 |> Names.andThen
                     (\( ( A.At nameRegion name, patternType ), destructs ) ->
                         optimize kernelEnv annotations exprTypes exprVars home cycle (TCanBuild.toTypedExpr exprTypes exprVars boundExpr)
@@ -637,7 +637,7 @@ optimizeTailExpr kernelEnv annotations exprTypes exprVars home cycle rootName ar
                                 (\oBoundExpr ->
                                     let
                                         destructorBindings =
-                                            List.map (\(TOpt.Destructor n _ t) -> ( n, t )) destructs
+                                            List.map (\(TOpt.Destructor n _ meta) -> ( n, meta.tipe )) destructs
 
                                         allBindings =
                                             ( name, patternType ) :: destructorBindings
@@ -661,12 +661,12 @@ optimizeTailExpr kernelEnv annotations exprTypes exprVars home cycle rootName ar
         Can.Case scrutinee branches ->
             let
                 optimizeBranch root (Can.CaseBranch pattern branch) =
-                    destructCase exprTypes root pattern
+                    destructCase exprTypes exprVars root pattern
                         |> Names.andThen
                             (\destructors ->
                                 let
                                     destructorBindings =
-                                        List.map (\(TOpt.Destructor n _ t) -> ( n, t )) destructors
+                                        List.map (\(TOpt.Destructor n _ meta) -> ( n, meta.tipe )) destructors
                                 in
                                 Names.withVarTypes destructorBindings
                                     (optimizeTail kernelEnv annotations exprTypes exprVars home cycle rootName argNames resultType (TCanBuild.toTypedExpr exprTypes exprVars branch))
@@ -685,11 +685,11 @@ optimizeTailExpr kernelEnv annotations exprTypes exprVars home cycle rootName ar
                                     case optScrutinee of
                                         TOpt.VarLocal root _ ->
                                             Names.traverse (optimizeBranch root) branches
-                                                |> Names.map (\optBranches -> Case.optimize temp root optBranches tipe)
+                                                |> Names.map (\optBranches -> Case.optimize temp root optBranches tipe tvar)
 
                                         TOpt.TrackedVarLocal _ root _ ->
                                             Names.traverse (optimizeBranch root) branches
-                                                |> Names.map (\optBranches -> Case.optimize temp root optBranches tipe)
+                                                |> Names.map (\optBranches -> Case.optimize temp root optBranches tipe tvar)
 
                                         _ ->
                                             Names.traverse (optimizeBranch temp) branches
@@ -701,7 +701,7 @@ optimizeTailExpr kernelEnv annotations exprTypes exprVars home cycle rootName ar
                                                         in
                                                         TOpt.Let
                                                             (TOpt.Def region temp optScrutinee scrutineeType)
-                                                            (Case.optimize temp temp optBranches tipe)
+                                                            (Case.optimize temp temp optBranches tipe tvar)
                                                             { tipe = tipe, tvar = tvar }
                                                     )
                                 )
@@ -796,6 +796,17 @@ optimizeDefHelp :
     -> TOpt.Expr
     -> Names.Tracker TOpt.Expr
 optimizeDefHelp kernelEnv annotations exprTypes exprVars home cycle region name args expr resultType body =
+    let
+        -- Extract the definition body's tvar from exprVars
+        defBodyTvar : Maybe IO.Variable
+        defBodyTvar =
+            Array.get (A.toValue expr).id exprVars |> Maybe.andThen identity
+
+        -- The Let expression's tvar is the tvar of the continuation body
+        letTvar : Maybe IO.Variable
+        letTvar =
+            TOpt.tvarOf body
+    in
     case args of
         [] ->
             optimize kernelEnv annotations exprTypes exprVars home cycle (TCanBuild.toTypedExpr exprTypes exprVars expr)
@@ -805,12 +816,12 @@ optimizeDefHelp kernelEnv annotations exprTypes exprVars home cycle region name 
                             exprType =
                                 TOpt.typeOf oexpr
                         in
-                        TOpt.Let (TOpt.Def region name oexpr exprType) body { tipe = resultType, tvar = Nothing }
+                        TOpt.Let (TOpt.Def region name oexpr exprType) body { tipe = resultType, tvar = letTvar }
                     )
 
         _ ->
             -- Function definition: process args first to get bindings, then optimize body with args in scope
-            destructArgs exprTypes args
+            destructArgs exprTypes exprVars args
                 |> Names.andThen
                     (\( argNamesWithTypes, destructors ) ->
                         let
@@ -820,7 +831,7 @@ optimizeDefHelp kernelEnv annotations exprTypes exprVars home cycle region name 
 
                             -- Extract bindings from destructors (e.g., "a", "b" from tuple (a, b))
                             destructorBindings =
-                                List.map (\(TOpt.Destructor n _ t) -> ( n, t )) destructors
+                                List.map (\(TOpt.Destructor n _ meta) -> ( n, meta.tipe )) destructors
 
                             -- Combine all bindings so pattern variables are in scope
                             allBindings =
@@ -845,9 +856,9 @@ optimizeDefHelp kernelEnv annotations exprTypes exprVars home cycle region name 
                                             List.foldr (wrapDestruct bodyType) oexpr destructors
 
                                         ofunc =
-                                            TOpt.TrackedFunction argNamesWithTypes wrappedBody { tipe = funcType, tvar = Nothing }
+                                            TOpt.TrackedFunction argNamesWithTypes wrappedBody { tipe = funcType, tvar = defBodyTvar }
                                     in
-                                    TOpt.Let (TOpt.Def region name ofunc funcType) body { tipe = resultType, tvar = Nothing }
+                                    TOpt.Let (TOpt.Def region name ofunc funcType) body { tipe = resultType, tvar = letTvar }
                                 )
                     )
 
@@ -872,10 +883,11 @@ optimizePotentialTailCallDef kernelEnv annotations exprTypes exprVars home cycle
                 ( _, defType ) =
                     getDefNameAndType exprTypes def
             in
-            optimizePotentialTailCall kernelEnv annotations exprTypes exprVars home cycle region name args (TCanBuild.toTypedExpr exprTypes exprVars body) defType
+            -- Local LetRec defs won't be in module-level annotationVars, so pass empty
+            optimizePotentialTailCall kernelEnv annotations exprTypes exprVars home cycle region name args (TCanBuild.toTypedExpr exprTypes exprVars body) defType Data.Map.empty
 
         Can.TypedDef (A.At region name) _ typedArgs body defType ->
-            optimizePotentialTailCall kernelEnv annotations exprTypes exprVars home cycle region name (List.map Tuple.first typedArgs) (TCanBuild.toTypedExpr exprTypes exprVars body) defType
+            optimizePotentialTailCall kernelEnv annotations exprTypes exprVars home cycle region name (List.map Tuple.first typedArgs) (TCanBuild.toTypedExpr exprTypes exprVars body) defType Data.Map.empty
 
 
 
@@ -896,9 +908,29 @@ optimizePotentialTailCall :
     -> List Can.Pattern
     -> TCan.Expr
     -> Can.Type
+    -> Data.Map.Dict String Name IO.Variable
     -> Names.Tracker TOpt.Def
-optimizePotentialTailCall kernelEnv annotations exprTypes exprVars home cycle region name args body defType =
-    destructArgs exprTypes args
+optimizePotentialTailCall kernelEnv annotations exprTypes exprVars home cycle region name args body defType annotationVars =
+    let
+        -- Extract the body's tvar from the TCan.Expr
+        bodyTvar : Maybe IO.Variable
+        bodyTvar =
+            case A.toValue body of
+                TCan.TypedExpr info ->
+                    info.tvar
+
+        -- For function definitions, look up the annotation-level solver variable
+        -- from the solver's Env to get the full function type variable.
+        nodeTvar : Maybe IO.Variable
+        nodeTvar =
+            case Data.Map.get identity name annotationVars of
+                Just var ->
+                    Just var
+
+                Nothing ->
+                    bodyTvar
+    in
+    destructArgs exprTypes exprVars args
         |> Names.andThen
             (\( argNamesWithTypes, destructors ) ->
                 let
@@ -908,7 +940,7 @@ optimizePotentialTailCall kernelEnv annotations exprTypes exprVars home cycle re
 
                     -- Extract bindings from destructors (e.g., "a", "b" from tuple (a, b))
                     destructorBindings =
-                        List.map (\(TOpt.Destructor n _ t) -> ( n, t )) destructors
+                        List.map (\(TOpt.Destructor n _ meta) -> ( n, meta.tipe )) destructors
 
                     -- Combine all bindings so pattern variables are in scope
                     allBindings =
@@ -926,10 +958,10 @@ optimizePotentialTailCall kernelEnv annotations exprTypes exprVars home cycle re
                                     List.foldr (wrapDestruct bodyType) obody destructors
                             in
                             if hasTailCall name obody then
-                                TOpt.TailDef region name argNamesWithTypes wrappedBody defType
+                                TOpt.TailDef region name argNamesWithTypes wrappedBody defType nodeTvar
 
                             else
-                                TOpt.Def region name (TOpt.TrackedFunction argNamesWithTypes wrappedBody { tipe = defType, tvar = Nothing }) defType
+                                TOpt.Def region name (TOpt.TrackedFunction argNamesWithTypes wrappedBody { tipe = defType, tvar = nodeTvar }) defType
                         )
             )
 
@@ -984,7 +1016,7 @@ decidecHasTailCall funcName decider =
 -}
 wrapDestruct : Can.Type -> TOpt.Destructor -> TOpt.Expr -> TOpt.Expr
 wrapDestruct bodyType destructor expr =
-    TOpt.Destruct destructor expr { tipe = bodyType, tvar = Nothing }
+    TOpt.Destruct destructor expr { tipe = bodyType, tvar = TOpt.tvarOf expr }
 
 
 
@@ -1010,11 +1042,30 @@ lookupPatternType exprTypes patId location =
                 Utils.Crash.crash (location ++ ": not in exprTypes")
 
 
+{-| Look up a pattern's type variable from the exprVars dictionary.
+Returns Nothing for synthetic patterns (negative IDs).
+-}
+lookupPatternVar : ExprVars -> Int -> Maybe IO.Variable
+lookupPatternVar exprVars patId =
+    if patId < 0 then
+        Nothing
+
+    else
+        Array.get patId exprVars |> Maybe.andThen identity
+
+
+{-| Build a Meta record for a destructor, combining type and optional type variable.
+-}
+makeDestructorMeta : ExprTypes -> ExprVars -> Int -> Can.Type -> TOpt.Meta
+makeDestructorMeta exprTypes exprVars patId tipe =
+    { tipe = tipe, tvar = lookupPatternVar exprVars patId }
+
+
 {-| Converts a list of function argument patterns into argument names with types and destructuring operations.
 -}
-destructArgs : ExprTypes -> List Can.Pattern -> Names.Tracker ( List ( A.Located Name, Can.Type ), List TOpt.Destructor )
-destructArgs exprTypes args =
-    Names.traverse (destruct exprTypes) args
+destructArgs : ExprTypes -> ExprVars -> List Can.Pattern -> Names.Tracker ( List ( A.Located Name, Can.Type ), List TOpt.Destructor )
+destructArgs exprTypes exprVars args =
+    Names.traverse (destruct exprTypes exprVars) args
         |> Names.map List.unzip
         |> Names.map
             (\( argNamesWithTypes, destructorLists ) ->
@@ -1022,8 +1073,8 @@ destructArgs exprTypes args =
             )
 
 
-destruct : ExprTypes -> Can.Pattern -> Names.Tracker ( ( A.Located Name, Can.Type ), List TOpt.Destructor )
-destruct exprTypes ((A.At region patternInfo) as pattern) =
+destruct : ExprTypes -> ExprVars -> Can.Pattern -> Names.Tracker ( ( A.Located Name, Can.Type ), List TOpt.Destructor )
+destruct exprTypes exprVars ((A.At region patternInfo) as pattern) =
     case patternInfo.node of
         Can.PVar name ->
             let
@@ -1037,7 +1088,7 @@ destruct exprTypes ((A.At region patternInfo) as pattern) =
                 patType =
                     lookupPatternType exprTypes patternInfo.id "Expression.destruct: PAlias"
             in
-            destructHelp exprTypes (TOpt.Root name) subPattern []
+            destructHelp exprTypes exprVars (TOpt.Root name) subPattern []
                 |> Names.map (\revDs -> ( ( A.At region name, patType ), List.reverse revDs ))
 
         _ ->
@@ -1048,7 +1099,7 @@ destruct exprTypes ((A.At region patternInfo) as pattern) =
                             patType =
                                 lookupPatternType exprTypes patternInfo.id "Expression.destruct: generated"
                         in
-                        destructHelp exprTypes (TOpt.Root name) pattern []
+                        destructHelp exprTypes exprVars (TOpt.Root name) pattern []
                             |> Names.map
                                 (\revDs ->
                                     ( ( A.At region name, patType ), List.reverse revDs )
@@ -1056,16 +1107,16 @@ destruct exprTypes ((A.At region patternInfo) as pattern) =
                     )
 
 
-destructHelp : ExprTypes -> TOpt.Path -> Can.Pattern -> List TOpt.Destructor -> Names.Tracker (List TOpt.Destructor)
-destructHelp exprTypes path pattern revDs =
-    destructHelpWithType exprTypes Nothing Nothing path pattern revDs
+destructHelp : ExprTypes -> ExprVars -> TOpt.Path -> Can.Pattern -> List TOpt.Destructor -> Names.Tracker (List TOpt.Destructor)
+destructHelp exprTypes exprVars path pattern revDs =
+    destructHelpWithType exprTypes exprVars Nothing Nothing path pattern revDs
 
 
 {-| Internal helper that also threads parent pattern ID for synthetic patterns.
 -}
-destructHelpWithParent : ExprTypes -> Int -> TOpt.Path -> Can.Pattern -> List TOpt.Destructor -> Names.Tracker (List TOpt.Destructor)
-destructHelpWithParent exprTypes parentPatId path pattern revDs =
-    destructHelpWithType exprTypes (Just parentPatId) Nothing path pattern revDs
+destructHelpWithParent : ExprTypes -> ExprVars -> Int -> TOpt.Path -> Can.Pattern -> List TOpt.Destructor -> Names.Tracker (List TOpt.Destructor)
+destructHelpWithParent exprTypes exprVars parentPatId path pattern revDs =
+    destructHelpWithType exprTypes exprVars (Just parentPatId) Nothing path pattern revDs
 
 
 {-| Destructure a pattern with optional type hint and parent pattern ID.
@@ -1084,8 +1135,8 @@ stores its Int field unboxed, the destructor needs to know the field type is Int
 so that eco.project can read the value with the correct unboxed flag.
 
 -}
-destructHelpWithType : ExprTypes -> Maybe Int -> Maybe Can.Type -> TOpt.Path -> Can.Pattern -> List TOpt.Destructor -> Names.Tracker (List TOpt.Destructor)
-destructHelpWithType exprTypes maybeParentPatId maybeType path (A.At region patternInfo) revDs =
+destructHelpWithType : ExprTypes -> ExprVars -> Maybe Int -> Maybe Can.Type -> TOpt.Path -> Can.Pattern -> List TOpt.Destructor -> Names.Tracker (List TOpt.Destructor)
+destructHelpWithType exprTypes exprVars maybeParentPatId maybeType path (A.At region patternInfo) revDs =
     let
         -- Use parent pattern ID if provided and current pattern is synthetic
         effectivePatId =
@@ -1110,7 +1161,7 @@ destructHelpWithType exprTypes maybeParentPatId maybeType path (A.At region patt
                         Nothing ->
                             lookupPatternType exprTypes effectivePatId "Expression.destructHelpWithType: PVar"
             in
-            Names.pure (TOpt.Destructor name path varType :: revDs)
+            Names.pure (TOpt.Destructor name path (makeDestructorMeta exprTypes exprVars effectivePatId varType) :: revDs)
 
         Can.PRecord fields ->
             let
@@ -1133,7 +1184,7 @@ destructHelpWithType exprTypes maybeParentPatId maybeType path (A.At region patt
                                 _ ->
                                     lookupPatternType exprTypes effectivePatId ("Expression.destructHelpWithType: PRecord " ++ name)
                     in
-                    TOpt.Destructor name (TOpt.Field name path) fieldType
+                    TOpt.Destructor name (TOpt.Field name path) { tipe = fieldType, tvar = Nothing }
             in
             Names.registerFieldList fields (List.map toDestruct fields ++ revDs)
 
@@ -1142,20 +1193,20 @@ destructHelpWithType exprTypes maybeParentPatId maybeType path (A.At region patt
                 aliasType =
                     lookupPatternType exprTypes effectivePatId "Expression.destructHelpWithType: PAlias"
             in
-            (TOpt.Destructor name path aliasType :: revDs) |> destructHelp exprTypes (TOpt.Root name) subPattern
+            (TOpt.Destructor name path (makeDestructorMeta exprTypes exprVars effectivePatId aliasType) :: revDs) |> destructHelp exprTypes exprVars (TOpt.Root name) subPattern
 
         Can.PUnit ->
             Names.pure revDs
 
         Can.PTuple a b [] ->
-            destructTwo exprTypes effectivePatId TOpt.HintTuple2 path a b revDs
+            destructTwo exprTypes exprVars effectivePatId TOpt.HintTuple2 path a b revDs
 
         Can.PTuple a b [ c ] ->
             case path of
                 TOpt.Root _ ->
-                    destructHelp exprTypes (TOpt.Index Index.first TOpt.HintTuple3 path) a revDs
-                        |> Names.andThen (destructHelp exprTypes (TOpt.Index Index.second TOpt.HintTuple3 path) b)
-                        |> Names.andThen (destructHelp exprTypes (TOpt.Index Index.third TOpt.HintTuple3 path) c)
+                    destructHelp exprTypes exprVars (TOpt.Index Index.first TOpt.HintTuple3 path) a revDs
+                        |> Names.andThen (destructHelp exprTypes exprVars (TOpt.Index Index.second TOpt.HintTuple3 path) b)
+                        |> Names.andThen (destructHelp exprTypes exprVars (TOpt.Index Index.third TOpt.HintTuple3 path) c)
 
                 _ ->
                     Names.generate
@@ -1168,9 +1219,9 @@ destructHelpWithType exprTypes maybeParentPatId maybeType path (A.At region patt
                                     genType =
                                         lookupPatternType exprTypes effectivePatId "Expression.destructHelpWithType: PTuple3 gen"
                                 in
-                                destructHelp exprTypes (TOpt.Index Index.first TOpt.HintTuple3 newRoot) a (TOpt.Destructor name path genType :: revDs)
-                                    |> Names.andThen (destructHelp exprTypes (TOpt.Index Index.second TOpt.HintTuple3 newRoot) b)
-                                    |> Names.andThen (destructHelp exprTypes (TOpt.Index Index.third TOpt.HintTuple3 newRoot) c)
+                                destructHelp exprTypes exprVars (TOpt.Index Index.first TOpt.HintTuple3 newRoot) a (TOpt.Destructor name path (makeDestructorMeta exprTypes exprVars effectivePatId genType) :: revDs)
+                                    |> Names.andThen (destructHelp exprTypes exprVars (TOpt.Index Index.second TOpt.HintTuple3 newRoot) b)
+                                    |> Names.andThen (destructHelp exprTypes exprVars (TOpt.Index Index.third TOpt.HintTuple3 newRoot) c)
                             )
 
         Can.PTuple _ _ _ ->
@@ -1183,10 +1234,10 @@ destructHelpWithType exprTypes maybeParentPatId maybeType path (A.At region patt
 
         Can.PList (hd :: tl) ->
             -- Use placeholder ID (-1) for synthesized patterns, but pass parent pattern ID (effectivePatId)
-            destructTwo exprTypes effectivePatId TOpt.HintList path hd (A.At region { id = -1, node = Can.PList tl }) revDs
+            destructTwo exprTypes exprVars effectivePatId TOpt.HintList path hd (A.At region { id = -1, node = Can.PList tl }) revDs
 
         Can.PCons hd tl ->
-            destructTwo exprTypes effectivePatId TOpt.HintList path hd tl revDs
+            destructTwo exprTypes exprVars effectivePatId TOpt.HintList path hd tl revDs
 
         Can.PChr _ ->
             Names.pure revDs
@@ -1227,18 +1278,18 @@ destructHelpWithType exprTypes maybeParentPatId maybeType path (A.At region patt
                     in
                     case unionData.opts of
                         Can.Normal ->
-                            destructHelpWithType exprTypes Nothing actualType (TOpt.Index Index.first (TOpt.HintCustom name) path) arg revDs
+                            destructHelpWithType exprTypes exprVars Nothing actualType (TOpt.Index Index.first (TOpt.HintCustom name) path) arg revDs
 
                         Can.Unbox ->
-                            destructHelpWithType exprTypes Nothing actualType (TOpt.Unbox path) arg revDs
+                            destructHelpWithType exprTypes exprVars Nothing actualType (TOpt.Unbox path) arg revDs
 
                         Can.Enum ->
-                            destructHelpWithType exprTypes Nothing actualType (TOpt.Index Index.first (TOpt.HintCustom name) path) arg revDs
+                            destructHelpWithType exprTypes exprVars Nothing actualType (TOpt.Index Index.first (TOpt.HintCustom name) path) arg revDs
 
                 _ ->
                     case path of
                         TOpt.Root _ ->
-                            List.foldl (\arg -> Names.andThen (\revDs_ -> destructCtorArg exprTypes name path revDs_ arg))
+                            List.foldl (\arg -> Names.andThen (\revDs_ -> destructCtorArg exprTypes exprVars name path revDs_ arg))
                                 (Names.pure revDs)
                                 args
 
@@ -1250,19 +1301,19 @@ destructHelpWithType exprTypes maybeParentPatId maybeType path (A.At region patt
                                             genType =
                                                 lookupPatternType exprTypes effectivePatId "Expression.destructHelpWithType: PCtor gen"
                                         in
-                                        List.foldl (\arg -> Names.andThen (\revDs_ -> destructCtorArg exprTypes name (TOpt.Root genName) revDs_ arg))
-                                            (Names.pure (TOpt.Destructor genName path genType :: revDs))
+                                        List.foldl (\arg -> Names.andThen (\revDs_ -> destructCtorArg exprTypes exprVars name (TOpt.Root genName) revDs_ arg))
+                                            (Names.pure (TOpt.Destructor genName path (makeDestructorMeta exprTypes exprVars effectivePatId genType) :: revDs))
                                             args
                                     )
 
 
-destructTwo : ExprTypes -> Int -> TOpt.ContainerHint -> TOpt.Path -> Can.Pattern -> Can.Pattern -> List TOpt.Destructor -> Names.Tracker (List TOpt.Destructor)
-destructTwo exprTypes parentPatId hint path a b revDs =
+destructTwo : ExprTypes -> ExprVars -> Int -> TOpt.ContainerHint -> TOpt.Path -> Can.Pattern -> Can.Pattern -> List TOpt.Destructor -> Names.Tracker (List TOpt.Destructor)
+destructTwo exprTypes exprVars parentPatId hint path a b revDs =
     case path of
         TOpt.Root _ ->
             -- Thread the parent pattern ID through for synthetic patterns
-            destructHelpWithParent exprTypes parentPatId (TOpt.Index Index.first hint path) a revDs
-                |> Names.andThen (destructHelpWithParent exprTypes parentPatId (TOpt.Index Index.second hint path) b)
+            destructHelpWithParent exprTypes exprVars parentPatId (TOpt.Index Index.first hint path) a revDs
+                |> Names.andThen (destructHelpWithParent exprTypes exprVars parentPatId (TOpt.Index Index.second hint path) b)
 
         _ ->
             Names.generate
@@ -1277,13 +1328,13 @@ destructTwo exprTypes parentPatId hint path a b revDs =
                             genType =
                                 lookupPatternType exprTypes parentPatId "Expression.destructTwo: generated"
                         in
-                        destructHelpWithParent exprTypes parentPatId (TOpt.Index Index.first hint newRoot) a (TOpt.Destructor name path genType :: revDs)
-                            |> Names.andThen (destructHelpWithParent exprTypes parentPatId (TOpt.Index Index.second hint newRoot) b)
+                        destructHelpWithParent exprTypes exprVars parentPatId (TOpt.Index Index.first hint newRoot) a (TOpt.Destructor name path (makeDestructorMeta exprTypes exprVars parentPatId genType) :: revDs)
+                            |> Names.andThen (destructHelpWithParent exprTypes exprVars parentPatId (TOpt.Index Index.second hint newRoot) b)
                     )
 
 
-destructCtorArg : ExprTypes -> Name -> TOpt.Path -> List TOpt.Destructor -> Can.PatternCtorArg -> Names.Tracker (List TOpt.Destructor)
-destructCtorArg exprTypes ctorName path revDs (Can.PatternCtorArg index _ arg) =
+destructCtorArg : ExprTypes -> ExprVars -> Name -> TOpt.Path -> List TOpt.Destructor -> Can.PatternCtorArg -> Names.Tracker (List TOpt.Destructor)
+destructCtorArg exprTypes exprVars ctorName path revDs (Can.PatternCtorArg index _ arg) =
     let
         patternId =
             (A.toValue arg).id
@@ -1304,13 +1355,13 @@ destructCtorArg exprTypes ctorName path revDs (Can.PatternCtorArg index _ arg) =
                             ++ ". This is a compiler bug."
                         )
     in
-    destructHelpWithType exprTypes Nothing actualType (TOpt.Index index (TOpt.HintCustom ctorName) path) arg revDs
+    destructHelpWithType exprTypes exprVars Nothing actualType (TOpt.Index index (TOpt.HintCustom ctorName) path) arg revDs
 
 
 {-| Destructure a case pattern into a list of destructors.
 This is used when processing case branches.
 -}
-destructCase : ExprTypes -> Name -> Can.Pattern -> Names.Tracker (List TOpt.Destructor)
-destructCase exprTypes rootName pattern =
-    destructHelp exprTypes (TOpt.Root rootName) pattern []
+destructCase : ExprTypes -> ExprVars -> Name -> Can.Pattern -> Names.Tracker (List TOpt.Destructor)
+destructCase exprTypes exprVars rootName pattern =
+    destructHelp exprTypes exprVars (TOpt.Root rootName) pattern []
         |> Names.map List.reverse

@@ -314,11 +314,11 @@ checkExpr env context expr =
         -- Destruct
         TOpt.Destruct destructor body _ ->
             let
-                (TOpt.Destructor destructName _ destructType) =
+                (TOpt.Destructor destructName _ destructMeta) =
                     destructor
 
                 extendedEnv =
-                    { env | locals = Dict.insert destructName destructType env.locals }
+                    { env | locals = Dict.insert destructName destructMeta.tipe env.locals }
             in
             checkExpr extendedEnv context body
 
@@ -402,7 +402,7 @@ checkDef env context def =
             -- Just recursively check the body expression
             checkExpr env (context ++ " Def " ++ name) expr
 
-        TOpt.TailDef _ name params expr defType ->
+        TOpt.TailDef _ name params expr defType _ ->
             let
                 -- Add the function itself to env for recursive calls
                 envWithSelf =
@@ -492,7 +492,7 @@ getDefNameAndType def =
         TOpt.Def _ name _ tipe ->
             ( name, tipe )
 
-        TOpt.TailDef _ name _ _ tipe ->
+        TOpt.TailDef _ name _ _ tipe _ ->
             ( name, tipe )
 
 

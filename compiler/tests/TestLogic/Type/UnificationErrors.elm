@@ -145,6 +145,7 @@ runTypeCheck :
                 { annotations : Data.Map.Dict String String Can.Annotation
                 , nodeTypes : Array.Array (Maybe Can.Type)
                 , nodeVars : Array.Array (Maybe IO.Variable)
+                , annotationVars : Data.Map.Dict String String IO.Variable
                 , solverState :
                     { descriptors : Array.Array IO.Descriptor
                     , pointInfo : Array.Array IO.PointInfo

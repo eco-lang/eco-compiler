@@ -283,15 +283,15 @@ renameDef env def =
         TOpt.Def region name bound tipe ->
             TOpt.Def region (lookupRename env name) (renameExpr env bound) tipe
 
-        TOpt.TailDef region name args body tipe ->
+        TOpt.TailDef region name args body tipe tvar ->
             -- Do not alpha-rename TailDef params here;
             -- that should be done by a higher-level transformation.
-            TOpt.TailDef region name args (renameExpr env body) tipe
+            TOpt.TailDef region name args (renameExpr env body) tipe tvar
 
 
 renameDestructor : RenameEnv -> TOpt.Destructor -> TOpt.Destructor
-renameDestructor env (TOpt.Destructor name path tipe) =
-    TOpt.Destructor (lookupRename env name) (renamePath env path) tipe
+renameDestructor env (TOpt.Destructor name path meta) =
+    TOpt.Destructor (lookupRename env name) (renamePath env path) meta
 
 
 renamePath : RenameEnv -> TOpt.Path -> TOpt.Path
@@ -390,8 +390,8 @@ normalizeDef def =
         TOpt.Def region name expr tipe ->
             TOpt.Def region name (normalizeExpr expr) tipe
 
-        TOpt.TailDef region name params expr tipe ->
-            TOpt.TailDef region name params (normalizeExpr expr) tipe
+        TOpt.TailDef region name params expr tipe tvar ->
+            TOpt.TailDef region name params (normalizeExpr expr) tipe tvar
 
 
 

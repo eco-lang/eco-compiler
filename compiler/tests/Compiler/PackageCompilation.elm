@@ -151,6 +151,7 @@ type alias TypeCheckTypedResult =
     , nodeTypes : TCan.NodeTypes
     , kernelEnv : KernelTypes.KernelTypeEnv
     , nodeVars : Array (Maybe TypeCheck.Variable)
+    , annotationVars : Data.Map.Dict String Name.Name TypeCheck.Variable
     }
 
 
@@ -222,7 +223,7 @@ compileModule pkg ifaces srcModule =
                                             optimizeErased erasedAnnotations canonical
 
                                         typedOptResult =
-                                            optimizeTyped typedResult.annotations typedResult.nodeTypes typedResult.nodeVars typedResult.kernelEnv typedResult.typedCanonical
+                                            optimizeTyped typedResult.annotations typedResult.nodeTypes typedResult.nodeVars typedResult.kernelEnv typedResult.annotationVars typedResult.typedCanonical
                                     in
                                     -- Compare optimization results
                                     case ( erasedOptResult, typedOptResult ) of
@@ -424,7 +425,7 @@ typeCheckTyped canonical =
         Err errors ->
             Err errors
 
-        Ok { annotations, nodeTypes, nodeVars, solverState } ->
+        Ok { annotations, annotationVars, nodeTypes, nodeVars, solverState } ->
             let
                 -- Run PostSolve to fix Group B types and compute kernel env
                 -- annotations and nodeTypes are Data.Map.Dict from Solve.runWithIds
@@ -443,6 +444,7 @@ typeCheckTyped canonical =
                 , nodeTypes = fixedNodeTypes
                 , kernelEnv = kernelEnv
                 , nodeVars = nodeVars
+                , annotationVars = annotationVars
                 }
 
 
@@ -468,8 +470,8 @@ optimizeErased annotations canonical =
 Preserves full type information throughout the optimization process.
 
 -}
-optimizeTyped annotations nodeTypes nodeVars kernelEnv tcanModule =
-    Tuple.second (RResult.run (TypedOptimize.optimizeTyped annotations nodeTypes nodeVars kernelEnv tcanModule))
+optimizeTyped annotations nodeTypes nodeVars kernelEnv annotationVars tcanModule =
+    Tuple.second (RResult.run (TypedOptimize.optimizeTyped annotations nodeTypes nodeVars kernelEnv annotationVars tcanModule))
 
 
 

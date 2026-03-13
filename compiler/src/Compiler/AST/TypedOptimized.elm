@@ -68,6 +68,7 @@ The key difference from Optimized:
 
 -}
 
+import Bytes
 import Bytes.Decode
 import Bytes.Encode
 import Compiler.AST.Canonical as Can
@@ -304,13 +305,13 @@ toKernelGlobal shortName =
 -}
 type Def
     = Def A.Region Name Expr Can.Type -- name, body, type of the definition
-    | TailDef A.Region Name (List ( A.Located Name, Can.Type )) Expr Can.Type -- name, typed args, body, type of the definition
+    | TailDef A.Region Name (List ( A.Located Name, Can.Type )) Expr Can.Type (Maybe IO.Variable) -- name, typed args, body, type of the definition, tvar
 
 
 {-| Destructuring pattern that extracts a value from a data structure.
 -}
 type Destructor
-    = Destructor Name Path Can.Type -- name, path, type of destructured value
+    = Destructor Name Path Meta -- name, path, meta (type + optional tvar)
 
 
 
@@ -1191,7 +1192,7 @@ defEncoder def =
                 , Can.typeEncoder tipe
                 ]
 
-        TailDef region name args expr tipe ->
+        TailDef region name args expr tipe maybeTvar ->
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 1
                 , A.regionEncoder region
@@ -1199,6 +1200,15 @@ defEncoder def =
                 , BE.list typedLocatedNameEncoder args
                 , exprEncoder expr
                 , Can.typeEncoder tipe
+                , case maybeTvar of
+                    Nothing ->
+                        Bytes.Encode.unsignedInt8 0
+
+                    Just (IO.Pt n) ->
+                        Bytes.Encode.sequence
+                            [ Bytes.Encode.unsignedInt8 1
+                            , Bytes.Encode.signedInt32 Bytes.BE n
+                            ]
                 ]
 
 
@@ -1222,6 +1232,20 @@ defDecoder =
                             (BD.list typedLocatedNameDecoder)
                             exprDecoder
                             Can.typeDecoder
+                            |> Bytes.Decode.andThen
+                                (\tailDefFn ->
+                                    Bytes.Decode.unsignedInt8
+                                        |> Bytes.Decode.andThen
+                                            (\tag ->
+                                                case tag of
+                                                    0 ->
+                                                        Bytes.Decode.succeed (tailDefFn Nothing)
+
+                                                    _ ->
+                                                        Bytes.Decode.map (\n -> tailDefFn (Just (IO.Pt n)))
+                                                            (Bytes.Decode.signedInt32 Bytes.BE)
+                                            )
+                                )
 
                     _ ->
                         Bytes.Decode.fail
@@ -1229,11 +1253,11 @@ defDecoder =
 
 
 destructorEncoder : Destructor -> Bytes.Encode.Encoder
-destructorEncoder (Destructor name path tipe) =
+destructorEncoder (Destructor name path meta) =
     Bytes.Encode.sequence
         [ BE.string name
         , pathEncoder path
-        , Can.typeEncoder tipe
+        , metaEncoder meta
         ]
 
 
@@ -1242,7 +1266,7 @@ destructorDecoder =
     Bytes.Decode.map3 Destructor
         BD.string
         pathDecoder
-        Can.typeDecoder
+        metaDecoder
 
 
 deciderEncoder : (a -> Bytes.Encode.Encoder) -> Decider a -> Bytes.Encode.Encoder

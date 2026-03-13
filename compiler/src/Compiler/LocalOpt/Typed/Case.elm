@@ -26,6 +26,7 @@ import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.Name as Name
 import Compiler.LocalOpt.Typed.DecisionTree as DT
 import Prelude
+import System.TypeCheck.IO as IO
 import Utils.Crash exposing (crash)
 
 
@@ -37,8 +38,8 @@ import Utils.Crash exposing (crash)
 Takes a temporary variable name, the root variable being matched, the pattern-matched branches,
 and the result type. Returns an optimized Case expression with decision tree and inline/jump choices.
 -}
-optimize : Name.Name -> Name.Name -> List ( Can.Pattern, TOpt.Expr ) -> Can.Type -> TOpt.Expr
-optimize temp root optBranches resultType =
+optimize : Name.Name -> Name.Name -> List ( Can.Pattern, TOpt.Expr ) -> Can.Type -> Maybe IO.Variable -> TOpt.Expr
+optimize temp root optBranches resultType tvar =
     let
         ( patterns, indexedBranches ) =
             List.unzip (List.indexedMap indexify optBranches)
@@ -62,7 +63,7 @@ optimize temp root optBranches resultType =
         root
         (insertChoices (Array.fromList (List.map Tuple.second choices)) decider)
         (List.filterMap identity maybeJumps)
-        { tipe = resultType, tvar = Nothing }
+        { tipe = resultType, tvar = tvar }
 
 
 indexify : Int -> ( a, b ) -> ( ( a, Int ), ( Int, b ) )

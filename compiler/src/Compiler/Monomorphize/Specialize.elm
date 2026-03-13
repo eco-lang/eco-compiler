@@ -974,7 +974,7 @@ specializeFuncDefInCycle subst def state =
             in
             ( Mono.MonoDefine monoExpr actualType, state1 )
 
-        TOpt.TailDef _ _ args body returnType ->
+        TOpt.TailDef _ _ args body returnType _ ->
             let
                 monoArgs =
                     List.map (specializeArg subst) args
@@ -2631,7 +2631,7 @@ defHasName targetName def =
         TOpt.Def _ name _ _ ->
             name == targetName
 
-        TOpt.TailDef _ name _ _ _ ->
+        TOpt.TailDef _ name _ _ _ _ ->
             name == targetName
 
 
@@ -2643,7 +2643,7 @@ getDefName def =
         TOpt.Def _ name _ _ ->
             name
 
-        TOpt.TailDef _ name _ _ _ ->
+        TOpt.TailDef _ name _ _ _ _ ->
             name
 
 
@@ -2655,7 +2655,7 @@ getDefCanonicalType def =
         TOpt.Def _ _ _ canType ->
             canType
 
-        TOpt.TailDef _ _ args _ returnType ->
+        TOpt.TailDef _ _ args _ returnType _ ->
             buildFuncType args returnType
 
 
@@ -2675,7 +2675,7 @@ specializeDef def subst state =
             in
             ( Mono.MonoDef name monoExpr, stateAfter )
 
-        TOpt.TailDef _ name args expr _ ->
+        TOpt.TailDef _ name args expr _ _ ->
             let
                 monoArgs =
                     List.map (specializeArg subst) args
@@ -2712,13 +2712,13 @@ specializeDef def subst state =
 
 
 specializeDestructor : TOpt.Destructor -> Substitution -> VarEnv -> TypeEnv.GlobalTypeEnv -> Mono.MonoDestructor
-specializeDestructor (TOpt.Destructor name path canType) subst varEnv globalTypeEnv =
+specializeDestructor (TOpt.Destructor name path meta) subst varEnv globalTypeEnv =
     let
         monoPath =
             specializePath path varEnv globalTypeEnv
 
         monoType =
-            Mono.forceCNumberToInt (TypeSubst.applySubst subst canType)
+            Mono.forceCNumberToInt (TypeSubst.applySubst subst meta.tipe)
     in
     Mono.MonoDestructor name monoPath monoType
 

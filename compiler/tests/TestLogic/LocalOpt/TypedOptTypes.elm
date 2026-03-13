@@ -121,7 +121,7 @@ checkDefExprsHaveTypes context def =
             checkTypeNotEmpty (context ++ " Def " ++ name) (TOpt.typeOf expr)
                 ++ collectExprNestedTypeIssues context expr
 
-        TOpt.TailDef _ name params expr _ ->
+        TOpt.TailDef _ name params expr _ _ ->
             checkTypeNotEmpty (context ++ " TailDef " ++ name) (TOpt.typeOf expr)
                 ++ List.concatMap (\( _, paramType ) -> checkTypeNotEmpty (context ++ " param") paramType) params
                 ++ collectExprNestedTypeIssues context expr
@@ -224,7 +224,7 @@ checkDefTypeWellFormedness context def =
             checkTypeWellFormed (context ++ " Def " ++ name) canType
                 ++ collectExprTypeWellFormedness context expr
 
-        TOpt.TailDef _ name params expr canType ->
+        TOpt.TailDef _ name params expr canType _ ->
             checkTypeWellFormed (context ++ " TailDef " ++ name) canType
                 ++ List.concatMap (\( _, paramType ) -> checkTypeWellFormed (context ++ " param") paramType) params
                 ++ collectExprTypeWellFormedness context expr

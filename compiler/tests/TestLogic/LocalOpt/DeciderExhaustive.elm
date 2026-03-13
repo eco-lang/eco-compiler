@@ -131,7 +131,7 @@ checkDefNestedPatterns context def =
         TOpt.Def _ name expr _ ->
             collectExprNestedPatternIssues (context ++ " Def " ++ name) expr
 
-        TOpt.TailDef _ name _ expr _ ->
+        TOpt.TailDef _ name _ expr _ _ ->
             collectExprNestedPatternIssues (context ++ " TailDef " ++ name) expr
 
 
@@ -294,7 +294,7 @@ checkDefExhaustiveness context def =
         TOpt.Def _ name expr _ ->
             collectExprExhaustivenessIssues (context ++ " Def " ++ name) expr
 
-        TOpt.TailDef _ name _ expr _ ->
+        TOpt.TailDef _ name _ expr _ _ ->
             collectExprExhaustivenessIssues (context ++ " TailDef " ++ name) expr
 
 

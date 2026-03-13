@@ -26,6 +26,7 @@ IO monad. It is used by the MonoDirect monomorphizer.
 import Array exposing (Array)
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Monomorphized as Mono
+import Compiler.Data.Name as Name
 import Compiler.Monomorphize.TypeSubst as TypeSubst
 import Compiler.Type.Type as Type
 import Compiler.Type.Unify as Unify
@@ -54,15 +55,17 @@ type alias SolverState =
 type alias SolverSnapshot =
     { state : SolverState
     , nodeVars : Array (Maybe TypeVar)
+    , annotationVars : DMap.Dict String Name.Name TypeVar
     }
 
 
 {-| Build a snapshot from the result of `Solve.runWithIds`.
 -}
-fromSolveResult : { a | nodeVars : Array (Maybe TypeVar), solverState : SolverState } -> SolverSnapshot
+fromSolveResult : { a | nodeVars : Array (Maybe TypeVar), solverState : SolverState, annotationVars : DMap.Dict String Name.Name TypeVar } -> SolverSnapshot
 fromSolveResult result =
     { state = result.solverState
     , nodeVars = result.nodeVars
+    , annotationVars = result.annotationVars
     }
 
 
@@ -303,10 +306,10 @@ walkAndUnify st var monoType =
         Just (IO.Descriptor props) ->
             case props.content of
                 IO.RigidVar _ ->
-                    unifyVarWithMono st root monoType
+                    unifyVarWithMono (relaxRigidVar root st) root monoType
 
                 IO.RigidSuper _ _ ->
-                    unifyVarWithMono st root monoType
+                    unifyVarWithMono (relaxRigidVar root st) root monoType
 
                 IO.FlexVar _ ->
                     unifyVarWithMono st root monoType

@@ -88,8 +88,8 @@ for converting subexpressions, and produces a TypedOptimized.LocalGraph.
 The kernelEnv is computed by the PostSolve phase and passed in from the caller.
 
 -}
-optimizeTyped : Annotations -> ExprTypes -> ExprVars -> KernelTypes.KernelTypeEnv -> TCan.Module -> MResult i (List W.Warning) TOpt.LocalGraph
-optimizeTyped annotations exprTypes exprVars kernelEnv (TCan.Module tData) =
+optimizeTyped : Annotations -> ExprTypes -> ExprVars -> KernelTypes.KernelTypeEnv -> Data.Map.Dict String Name.Name IO.Variable -> TCan.Module -> MResult i (List W.Warning) TOpt.LocalGraph
+optimizeTyped annotations exprTypes exprVars kernelEnv annotationVars (TCan.Module tData) =
     TOpt.LocalGraph
         { main = Nothing
         , nodes = Data.Map.empty
@@ -99,7 +99,7 @@ optimizeTyped annotations exprTypes exprVars kernelEnv (TCan.Module tData) =
         |> addAliases tData.name annotations tData.aliases
         |> addUnions tData.name annotations tData.unions
         |> addEffects tData.name annotations tData.effects
-        |> addDecls tData.name annotations exprTypes exprVars kernelEnv tData.decls
+        |> addDecls tData.name annotations exprTypes exprVars kernelEnv annotationVars tData.decls
         |> ReportingResult.map LambdaNorm.normalizeLocalGraph
 
 
@@ -327,14 +327,14 @@ addToGraph name node fields (TOpt.LocalGraph data) =
 -- ====== Value Declarations ======
 
 
-addDecls home annotations exprTypes exprVars kernelEnv decls graph =
-    ReportingResult.loop (addDeclsHelp home annotations exprTypes exprVars kernelEnv) ( decls, graph )
+addDecls home annotations exprTypes exprVars kernelEnv annotationVars decls graph =
+    ReportingResult.loop (addDeclsHelp home annotations exprTypes exprVars kernelEnv annotationVars) ( decls, graph )
 
 
-addDeclsHelp home annotations exprTypes exprVars kernelEnv ( decls, graph ) =
+addDeclsHelp home annotations exprTypes exprVars kernelEnv annotationVars ( decls, graph ) =
     case decls of
         TCan.Declare def subDecls ->
-            addDef home annotations exprTypes exprVars kernelEnv def graph
+            addDef home annotations exprTypes exprVars kernelEnv annotationVars def graph
                 |> ReportingResult.map (ReportingResult.Loop << Tuple.pair subDecls)
 
         TCan.DeclareRec d ds subDecls ->
@@ -345,7 +345,7 @@ addDeclsHelp home annotations exprTypes exprVars kernelEnv ( decls, graph ) =
             in
             case findMain defs of
                 Nothing ->
-                    ReportingResult.ok (ReportingResult.Loop ( subDecls, addRecDefs home annotations exprTypes exprVars kernelEnv defs graph ))
+                    ReportingResult.ok (ReportingResult.Loop ( subDecls, addRecDefs home annotations exprTypes exprVars kernelEnv annotationVars defs graph ))
 
                 Just region ->
                     E.BadCycle region (defToName d) (List.map defToName ds) |> ReportingResult.throw
@@ -391,7 +391,7 @@ defToName def =
 -- ====== Single Definitions ======
 
 
-addDef home annotations exprTypes exprVars kernelEnv def graph =
+addDef home annotations exprTypes exprVars kernelEnv annotationVars def graph =
     case def of
         TCan.Def (A.At region name) args body ->
             let
@@ -399,15 +399,15 @@ addDef home annotations exprTypes exprVars kernelEnv def graph =
                     findAnnotation name annotations
             in
             ReportingResult.warn (W.MissingTypeAnnotation region name tipe)
-                |> ReportingResult.andThen (\_ -> addDefHelp region annotations exprTypes exprVars kernelEnv home name args body graph)
+                |> ReportingResult.andThen (\_ -> addDefHelp region annotations exprTypes exprVars kernelEnv annotationVars home name args body graph)
 
         TCan.TypedDef (A.At region name) _ typedArgs body _ ->
-            addDefHelp region annotations exprTypes exprVars kernelEnv home name (List.map Tuple.first typedArgs) body graph
+            addDefHelp region annotations exprTypes exprVars kernelEnv annotationVars home name (List.map Tuple.first typedArgs) body graph
 
 
-addDefHelp region annotations exprTypes exprVars kernelEnv home name args body ((TOpt.LocalGraph data) as graph) =
+addDefHelp region annotations exprTypes exprVars kernelEnv annotationVars home name args body ((TOpt.LocalGraph data) as graph) =
     if name /= Name.main_ then
-        ReportingResult.ok (addDefNode home annotations exprTypes exprVars kernelEnv region name args body EverySet.empty graph)
+        ReportingResult.ok (addDefNode home annotations exprTypes exprVars kernelEnv annotationVars region name args body EverySet.empty graph)
 
     else
         let
@@ -421,7 +421,7 @@ addDefHelp region annotations exprTypes exprVars kernelEnv home name args body (
                         | main = Just main
                         , fields = mergeFieldCounts (dataMapToDict fields) data.fields
                     }
-                    |> addDefNode home annotations exprTypes exprVars kernelEnv region name args body deps
+                    |> addDefNode home annotations exprTypes exprVars kernelEnv annotationVars region name args body deps
         in
         case Type.deepDealias tipe of
             Can.TType hm nm [ _ ] ->
@@ -447,7 +447,7 @@ addDefHelp region annotations exprTypes exprVars kernelEnv home name args body (
                 ReportingResult.throw (E.BadType region tipe)
 
 
-addDefNode home annotations exprTypes exprVars kernelEnv region name args body mainDeps graph =
+addDefNode home annotations exprTypes exprVars kernelEnv annotationVars region name args body mainDeps graph =
     let
         -- Get the def type from annotations
         defType : Can.Type
@@ -459,6 +459,31 @@ addDefNode home annotations exprTypes exprVars kernelEnv region name args body m
                 Nothing ->
                     Utils.Crash.crash "Module.addDefNode: no annotation"
 
+        -- Extract tvar from the body expression (TCan.Expr = A.Located TCan.Expr_)
+        bodyTvar : Maybe IO.Variable
+        bodyTvar =
+            case A.toValue body of
+                TCan.TypedExpr info ->
+                    info.tvar
+
+        -- For value definitions (no args), bodyTvar correctly represents the definition's type.
+        -- For function definitions (with args), look up the annotation-level solver variable
+        -- from the solver's Env. This gives us the full function type variable.
+        nodeTvar : Maybe IO.Variable
+        nodeTvar =
+            case args of
+                [] ->
+                    bodyTvar
+
+                _ ->
+                    case Data.Map.get identity name annotationVars of
+                        Just var ->
+                            Just var
+
+                        Nothing ->
+                            -- Fallback to bodyTvar if not found (shouldn't happen for user defs)
+                            bodyTvar
+
         ( deps, fields, def ) =
             Names.run <|
                 case args of
@@ -466,7 +491,7 @@ addDefNode home annotations exprTypes exprVars kernelEnv region name args body m
                         Expr.optimize kernelEnv annotations exprTypes exprVars home EverySet.empty body
 
                     _ ->
-                        Expr.destructArgs exprTypes args
+                        Expr.destructArgs exprTypes exprVars args
                             |> Names.andThen
                                 (\( argNamesWithTypes, destructors ) ->
                                     let
@@ -480,7 +505,7 @@ addDefNode home annotations exprTypes exprVars kernelEnv region name args body m
 
                                         -- Extract bindings from destructors (e.g., "x", "y" from tuple (x, y))
                                         destructorBindings =
-                                            List.map (\(TOpt.Destructor n _ t) -> ( n, t )) destructors
+                                            List.map (\(TOpt.Destructor n _ meta) -> ( n, meta.tipe )) destructors
 
                                         -- Combine all bindings so pattern variables are in scope
                                         allBindings =
@@ -494,18 +519,18 @@ addDefNode home annotations exprTypes exprVars kernelEnv region name args body m
                                                     wrappedBody =
                                                         List.foldr (wrapDestruct bodyType) obody destructors
                                                 in
-                                                TOpt.TrackedFunction argNamesWithTypes wrappedBody { tipe = defType, tvar = Nothing }
+                                                TOpt.TrackedFunction argNamesWithTypes wrappedBody { tipe = defType, tvar = nodeTvar }
                                             )
                                 )
     in
-    addToGraph (TOpt.Global home name) (TOpt.TrackedDefine region def (EverySet.union deps mainDeps) { tipe = defType, tvar = Nothing }) fields graph
+    addToGraph (TOpt.Global home name) (TOpt.TrackedDefine region def (EverySet.union deps mainDeps) { tipe = defType, tvar = nodeTvar }) fields graph
 
 
 {-| Wrap an expression in a Destruct node.
 -}
 wrapDestruct : Can.Type -> TOpt.Destructor -> TOpt.Expr -> TOpt.Expr
 wrapDestruct bodyType destructor expr =
-    TOpt.Destruct destructor expr { tipe = bodyType, tvar = Nothing }
+    TOpt.Destruct destructor expr { tipe = bodyType, tvar = TOpt.tvarOf expr }
 
 
 
@@ -519,7 +544,7 @@ type State
         }
 
 
-addRecDefs home annotations exprTypes exprVars kernelEnv defs (TOpt.LocalGraph data) =
+addRecDefs home annotations exprTypes exprVars kernelEnv annotationVars defs (TOpt.LocalGraph data) =
     let
         names : List Name.Name
         names =
@@ -539,7 +564,7 @@ addRecDefs home annotations exprTypes exprVars kernelEnv defs (TOpt.LocalGraph d
 
         ( deps, fields, State { values, functions } ) =
             Names.run <|
-                List.foldl (\def -> Names.andThen (\state -> addRecDef home annotations exprTypes exprVars kernelEnv cycle state def))
+                List.foldl (\def -> Names.andThen (\state -> addRecDef home annotations exprTypes exprVars kernelEnv annotationVars cycle state def))
                     (Names.pure (State { values = [], functions = [] }))
                     defs
     in
@@ -592,7 +617,7 @@ addLink home link def links =
             Data.Map.insert TOpt.toComparableGlobal (TOpt.Global home name) link links
 
 
-addRecDef home annotations exprTypes exprVars kernelEnv cycle (State state) def =
+addRecDef home annotations exprTypes exprVars kernelEnv annotationVars cycle (State state) def =
     case def of
         TCan.Def (A.At region name) args body ->
             let
@@ -611,7 +636,7 @@ addRecDef home annotations exprTypes exprVars kernelEnv cycle (State state) def 
                         |> Names.map (\obody -> State { state | values = ( name, obody ) :: state.values })
 
                 _ ->
-                    Expr.optimizePotentialTailCall kernelEnv annotations exprTypes exprVars home cycle region name args body defType
+                    Expr.optimizePotentialTailCall kernelEnv annotations exprTypes exprVars home cycle region name args body defType annotationVars
                         |> Names.map (\odef -> State { state | functions = odef :: state.functions })
 
         TCan.TypedDef (A.At region name) _ typedArgs body _ ->
@@ -631,7 +656,7 @@ addRecDef home annotations exprTypes exprVars kernelEnv cycle (State state) def 
                         |> Names.map (\obody -> State { state | values = ( name, obody ) :: state.values })
 
                 _ ->
-                    Expr.optimizePotentialTailCall kernelEnv annotations exprTypes exprVars home cycle region name (List.map Tuple.first typedArgs) body defType
+                    Expr.optimizePotentialTailCall kernelEnv annotations exprTypes exprVars home cycle region name (List.map Tuple.first typedArgs) body defType annotationVars
                         |> Names.map (\odef -> State { state | functions = odef :: state.functions })
 
 

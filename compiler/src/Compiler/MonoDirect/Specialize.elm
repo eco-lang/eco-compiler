@@ -20,7 +20,6 @@ import Compiler.MonoDirect.State as State exposing (MonoDirectState, VarEnv(..))
 import Compiler.Monomorphize.Closure as Closure
 import Compiler.Monomorphize.KernelAbi as KernelAbi
 import Compiler.Monomorphize.Registry as Registry
-import Compiler.Monomorphize.TypeSubst as TypeSubst
 import Compiler.Reporting.Annotation as A
 import Compiler.Type.SolverSnapshot as SolverSnapshot exposing (LocalView, SolverSnapshot, TypeVar)
 import Data.Map as DMap
@@ -112,6 +111,21 @@ specializeNode snapshot ctorName node requestedMonoType state =
             specializePortNode snapshot expr meta requestedMonoType Mono.MonoPortOutgoing state
 
 
+{-| Extract the solver variable from a meta, crashing if it's missing on a polymorphic type.
+This enforces SNAP_TVAR_001: polymorphic nodes must have solver variables.
+-}
+requireTVar : String -> TOpt.Meta -> IO.Variable
+requireTVar context meta =
+    case meta.tvar of
+        Just v ->
+            v
+
+        Nothing ->
+            Utils.Crash.crash
+                ("MonoDirect." ++ context ++ ": missing solver tvar for type "
+                    ++ Debug.toString meta.tipe)
+
+
 specializeDefineNode : SolverSnapshot -> TOpt.Expr -> TOpt.Meta -> Mono.MonoType -> MonoDirectState -> ( Mono.MonoNode, MonoDirectState )
 specializeDefineNode snapshot expr meta requestedMonoType state =
     case meta.tvar of
@@ -121,41 +135,28 @@ specializeDefineNode snapshot expr meta requestedMonoType state =
                     let
                         ( monoExpr, state1 ) =
                             specializeExpr view snapshot expr state
-
-                        actualType =
-                            Mono.typeOf monoExpr
                     in
-                    ( Mono.MonoDefine monoExpr actualType, state1 )
+                    ( Mono.MonoDefine monoExpr (Mono.typeOf monoExpr), state1 )
                 )
 
         Nothing ->
-            -- Fallback for nodes without tvar (shouldn't happen after P1 for real defs)
-            specializeDefineNodeFallback expr meta requestedMonoType state
+            if isMonomorphicCanType meta.tipe then
+                -- Truly monomorphic synthetic node (e.g. record alias constructor).
+                -- Safe to use empty unification context.
+                SolverSnapshot.withLocalUnification snapshot [] []
+                    (\view ->
+                        let
+                            ( monoExpr, state1 ) =
+                                specializeExpr view snapshot expr state
+                        in
+                        ( Mono.MonoDefine monoExpr (Mono.typeOf monoExpr), state1 )
+                    )
 
+            else
+                Utils.Crash.crash
+                    ("MonoDirect.specializeDefineNode: missing solver tvar for polymorphic type "
+                        ++ Debug.toString meta.tipe)
 
-specializeDefineNodeFallback : TOpt.Expr -> TOpt.Meta -> Mono.MonoType -> MonoDirectState -> ( Mono.MonoNode, MonoDirectState )
-specializeDefineNodeFallback expr meta requestedMonoType state =
-    let
-        subst =
-            TypeSubst.unify meta.tipe requestedMonoType
-
-        subst2 =
-            TypeSubst.unifyExtend (TOpt.typeOf expr) requestedMonoType subst
-
-        subst3 =
-            TypeSubst.fillUnconstrainedCEcoWithErased meta.tipe subst2
-    in
-    SolverSnapshot.withLocalUnification state.snapshot [] []
-        (\view ->
-            let
-                ( monoExpr, state1 ) =
-                    specializeExprWithSubst view state.snapshot subst3 expr state
-
-                actualType =
-                    Mono.typeOf monoExpr
-            in
-            ( Mono.MonoDefine monoExpr actualType, state1 )
-        )
 
 
 specializePortNode :
@@ -179,7 +180,19 @@ specializePortNode snapshot expr meta requestedMonoType nodeConstructor state =
                 )
 
         Nothing ->
-            ( nodeConstructor (Mono.MonoUnit) requestedMonoType, state )
+            if isMonomorphicCanType meta.tipe then
+                SolverSnapshot.withLocalUnification snapshot [] []
+                    (\view ->
+                        let
+                            ( monoExpr, state1 ) =
+                                specializeExpr view snapshot expr state
+                        in
+                        ( nodeConstructor monoExpr requestedMonoType, state1 )
+                    )
+
+            else
+                Utils.Crash.crash
+                    "MonoDirect.specializePortNode: missing tvar for polymorphic port"
 
 
 
@@ -195,8 +208,15 @@ resolveType view meta =
             Mono.forceCNumberToInt (view.monoTypeOf tvar)
 
         Nothing ->
-            -- Synthetic expression without tvar; use Can.Type with empty subst
-            Mono.forceCNumberToInt (TypeSubst.canTypeToMonoType Dict.empty meta.tipe)
+            if isMonomorphicCanType meta.tipe then
+                -- Synthetic expression without solver variable (e.g. Let wrapper, Destruct wrapper,
+                -- record alias constructor). Safe to fall back to direct Can.Type conversion.
+                Mono.forceCNumberToInt (KernelAbi.canTypeToMonoType_preserveVars meta.tipe)
+
+            else
+                Utils.Crash.crash
+                    ("MonoDirect.resolveType: missing solver tvar for polymorphic type "
+                        ++ Debug.toString meta.tipe)
 
 
 resolveExprType : LocalView -> TOpt.Expr -> Mono.MonoType
@@ -496,14 +516,6 @@ specializeExpr view snapshot expr state =
             ( Mono.MonoUnit, state )
 
 
-{-| Specialize expression using TypeSubst fallback (for nodes without tvar).
--}
-specializeExprWithSubst : LocalView -> SolverSnapshot -> Dict Name Mono.MonoType -> TOpt.Expr -> MonoDirectState -> ( Mono.MonoExpr, MonoDirectState )
-specializeExprWithSubst view snapshot subst expr state =
-    -- For the fallback path, use solver view for tvar-backed expressions,
-    -- TypeSubst for the rest
-    specializeExpr view snapshot expr state
-
 
 
 -- ========== CALL SPECIALIZATION ==========
@@ -522,7 +534,19 @@ specializeCall view snapshot region func args meta state =
         TOpt.VarGlobal funcRegion global funcMeta ->
             let
                 funcMonoType =
-                    resolveType view funcMeta
+                    case funcMeta.tvar of
+                        Just _ ->
+                            resolveType view funcMeta
+
+                        Nothing ->
+                            -- Synthesized function reference (e.g. negate, binop operator)
+                            -- without a solver variable. Build the function type from
+                            -- the resolved argument types and result type.
+                            let
+                                argMonoTypes =
+                                    List.map (\arg -> resolveExprType view arg) args
+                            in
+                            Mono.MFunction argMonoTypes resultType
 
                 monoGlobal =
                     toptGlobalToMono global
@@ -657,10 +681,10 @@ specializeLet view snapshot def body meta state =
             in
             ( Mono.MonoLet monoDef monoBody monoType, state3 )
 
-        TOpt.TailDef defRegion defName defParams defBody defCanType ->
+        TOpt.TailDef defRegion defName defParams defBody defCanType defTvar ->
             let
                 funcMonoType =
-                    resolveType view (TOpt.metaOf (TOpt.TrackedFunction defParams defBody { tipe = defCanType, tvar = Nothing }))
+                    resolveType view { tipe = defCanType, tvar = defTvar }
 
                 ( paramMonoTypes, _ ) =
                     Closure.flattenFunctionType funcMonoType
@@ -861,10 +885,10 @@ specializeJumps view snapshot jumps state =
 
 
 specializeDestructor : LocalView -> TOpt.Destructor -> Mono.MonoDestructor
-specializeDestructor view (TOpt.Destructor name path canType) =
+specializeDestructor view (TOpt.Destructor name path meta) =
     let
         monoType =
-            Mono.forceCNumberToInt (TypeSubst.canTypeToMonoType Dict.empty canType)
+            resolveDestructorType view meta
 
         monoPath =
             specializePath view path
@@ -873,8 +897,22 @@ specializeDestructor view (TOpt.Destructor name path canType) =
 
 
 specializeDestructorPathType : LocalView -> TOpt.Destructor -> Mono.MonoType
-specializeDestructorPathType view (TOpt.Destructor _ _ canType) =
-    Mono.forceCNumberToInt (TypeSubst.canTypeToMonoType Dict.empty canType)
+specializeDestructorPathType view (TOpt.Destructor _ _ meta) =
+    resolveDestructorType view meta
+
+
+{-| Resolve destructor type via solver when tvar is available.
+For destructors without tvar (e.g. PRecord field extractions), fall back
+to direct Can.Type conversion which maps TVars to CEcoValue.
+-}
+resolveDestructorType : LocalView -> TOpt.Meta -> Mono.MonoType
+resolveDestructorType view meta =
+    case meta.tvar of
+        Just tvar ->
+            Mono.forceCNumberToInt (view.monoTypeOf tvar)
+
+        Nothing ->
+            Mono.forceCNumberToInt (KernelAbi.canTypeToMonoType_preserveVars meta.tipe)
 
 
 specializePath : LocalView -> TOpt.Path -> Mono.MonoPath
@@ -945,7 +983,8 @@ deriveKernelAbiTypeDirect ( home, name ) meta view =
                         monoType
 
                     else
-                        TypeSubst.canTypeToMonoType Dict.empty canType
+                        -- Map remaining vars (including number vars) to CEcoValue for boxed ABI
+                        KernelAbi.canTypeToMonoType_preserveVars canType
 
                 KernelAbi.PreserveVars ->
                     if isFullyMono then
@@ -955,7 +994,7 @@ deriveKernelAbiTypeDirect ( home, name ) meta view =
                         KernelAbi.canTypeToMonoType_preserveVars canType
 
         Nothing ->
-            Mono.forceCNumberToInt (TypeSubst.canTypeToMonoType Dict.empty meta.tipe)
+            Utils.Crash.crash "MonoDirect.deriveKernelAbiTypeDirect: kernel meta has no tvar"
 
 
 isFullyMonomorphicType : Mono.MonoType -> Bool
@@ -980,6 +1019,38 @@ isFullyMonomorphicType monoType =
             List.all isFullyMonomorphicType args
 
         _ ->
+            True
+
+
+{-| Check if a Can.Type contains no type variables (is fully monomorphic).
+Used to distinguish truly monomorphic synthetic nodes from polymorphic ones
+that are missing solver variables (which is a bug).
+-}
+isMonomorphicCanType : Can.Type -> Bool
+isMonomorphicCanType tipe =
+    case tipe of
+        Can.TVar _ ->
+            False
+
+        Can.TLambda a b ->
+            isMonomorphicCanType a && isMonomorphicCanType b
+
+        Can.TType _ _ args ->
+            List.all isMonomorphicCanType args
+
+        Can.TTuple a b rest ->
+            isMonomorphicCanType a
+                && isMonomorphicCanType b
+                && List.all isMonomorphicCanType rest
+
+        Can.TRecord fields ext ->
+            (ext == Nothing)
+                && Dict.foldl (\_ (Can.FieldType _ t) ok -> ok && isMonomorphicCanType t) True fields
+
+        Can.TAlias _ _ args _ ->
+            List.all (\( _, t ) -> isMonomorphicCanType t) args
+
+        Can.TUnit ->
             True
 
 

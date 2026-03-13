@@ -126,7 +126,7 @@ checkTailDefTypes funcName (TOpt.LocalGraph data) annotations =
                                 List.filterMap
                                     (\def ->
                                         case def of
-                                            TOpt.TailDef _ name args _ returnType ->
+                                            TOpt.TailDef _ name args _ returnType _ ->
                                                 if name == funcName then
                                                     Just ( args, returnType )
 

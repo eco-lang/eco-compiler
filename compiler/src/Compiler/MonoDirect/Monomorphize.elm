@@ -23,7 +23,6 @@ import Compiler.MonoDirect.State as State exposing (MonoDirectState, WorkItem(..
 import Compiler.Monomorphize.MonoTraverse as Traverse
 import Compiler.Monomorphize.Prune as Prune
 import Compiler.Monomorphize.Registry as Registry
-import Compiler.Monomorphize.TypeSubst as TypeSubst
 import Compiler.Type.SolverSnapshot as SolverSnapshot exposing (SolverSnapshot)
 import Data.Map as DMap
 import Dict
@@ -106,8 +105,7 @@ resolveMainType snapshot node =
                 (\view -> Mono.forceCNumberToInt (view.monoTypeOf tvar))
 
         Nothing ->
-            -- Fallback for main without tvar
-            Mono.forceCNumberToInt (TypeSubst.canTypeToMonoType Dict.empty (nodeCanType node))
+            Utils.Crash.crash "MonoDirect.resolveMainType: main node has no tvar"
 
 
 nodeMetaTvar : TOpt.Node -> Maybe IO.Variable

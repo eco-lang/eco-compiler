@@ -497,3 +497,6 @@ FORBID_CF_001;MLIR_Codegen;ForbiddenAssumptions;enforced;No control-flow constru
 FORBID_DBG_001;Runtime_Heap;ForbiddenAssumptions;enforced;Debug and inspection code must not assume access to raw heap layouts and must use the same tracing logic as GC;HEAP_003|HEAP_019
 
 FORBID_META_001;CrossPhase;ForbiddenAssumptions;enforced;No phase may rely on representation properties that are not explicitly stated in a REP_* invariant;REP_001
+
+SNAP_TVAR_001;Monomorphization;SolverSnapshot;enforced;If a TOpt.Meta has a polymorphic tipe (contains any Can.TVar) then meta.tvar must be Just and that variable must appear in the solver snapshot. Monomorphic synthetic nodes may have tvar=Nothing. Violations crash in MonoDirect with a clear internal error;REP_001
+SNAP_TVAR_002;Monomorphization;SolverSnapshot;enforced;All monomorphization decisions in MonoDirect are derived from the SolverSnapshot. specializeDefineNode must not have a fallback path that creates substitutions independent of the solver. Internal use of TypeSubst in SolverSnapshot.buildLocalView is acceptable as a deterministic projection of solver state;SNAP_TVAR_001
