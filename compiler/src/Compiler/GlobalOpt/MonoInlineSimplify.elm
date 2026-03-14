@@ -1561,13 +1561,13 @@ getInlinableBody node =
                     else
                         Just ( [], expr )
 
-        MonoTailFunc params expr _ ->
-            -- Don't inline tail functions with Case body
-            if isCase expr then
-                Nothing
-
-            else
-                Just ( params, expr )
+        MonoTailFunc _ _ _ ->
+            -- Never inline tail-recursive functions. Their bodies contain
+            -- MonoTailCall nodes that are only meaningful inside a MonoTailFunc
+            -- (compiled via TailRec.compileTailFuncToWhile). Inlining would
+            -- place MonoTailCall in a non-tail-recursive context, producing
+            -- orphaned eco.jump ops that crash mkCaseRegionFromDecider.
+            Nothing
 
         _ ->
             Nothing
