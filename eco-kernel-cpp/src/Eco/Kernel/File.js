@@ -84,6 +84,18 @@ var _File_close = function(handle) {
     });
 };
 
+var _File_hWriteString = F2(function(handle, content) {
+    return __Scheduler_binding(function(callback) {
+        try {
+            var fs = require('fs');
+            fs.writeSync(handle, content, null, 'utf8');
+            callback(__Scheduler_succeed(__Utils_Tuple0));
+        } catch (e) {
+            callback(__Scheduler_fail(e.message));
+        }
+    });
+});
+
 var _File_size = function(handle) {
     return __Scheduler_binding(function(callback) {
         try {
