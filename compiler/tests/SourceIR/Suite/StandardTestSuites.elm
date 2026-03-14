@@ -52,6 +52,7 @@ import SourceIR.SpecializePolyLetCases as SpecializePolyLetCases
 import SourceIR.SpecializePolyTopCases as SpecializePolyTopCases
 import SourceIR.SpecializeRecordCtorCases as SpecializeRecordCtorCases
 import SourceIR.TailRecCaseCases as TailRecCaseCases
+import SourceIR.TailRecLetRecClosureCases as TailRecLetRecClosureCases
 import SourceIR.TupleCases as TupleCases
 import Test exposing (Test)
 
@@ -99,6 +100,7 @@ expectSuite expectFn condStr =
         , SpecializePolyTopCases.expectSuite expectFn condStr
         , LocalTailRecCases.expectSuite expectFn condStr
         , TailRecCaseCases.expectSuite expectFn condStr
+        , TailRecLetRecClosureCases.expectSuite expectFn condStr
         , TupleCases.expectSuite expectFn condStr
         , KernelPapAbiCases.expectSuite expectFn condStr
 

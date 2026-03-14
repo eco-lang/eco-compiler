@@ -33,6 +33,7 @@ import Compiler.Generate.MLIR.Patterns as Patterns
 import Compiler.Generate.MLIR.Types as Types
 import Compiler.LocalOpt.Typed.DecisionTree as DT
 import Mlir.Mlir exposing (MlirOp, MlirRegion(..), MlirType(..))
+import Dict
 import OrderedDict
 import Utils.Crash exposing (crash)
 
@@ -596,9 +597,16 @@ compileCaseChainStep ctx loopSpec root testChain success failure jumpLookup =
         thenRegion =
             mkSingleBlockRegion [] thenStep.ops thenYieldOp
 
-        -- Else branch: reuse condCtx bindings but advance nextVar
+        -- Else branch: reuse condCtx bindings but propagate accumulated state
+        -- from the then branch (nextVar to avoid SSA conflicts, plus pendingLambdas,
+        -- pendingFuncOps, and kernelDecls which accumulate across branches).
         ctxForElse =
-            { condCtx | nextVar = thenYieldCtx.nextVar }
+            { condCtx
+                | nextVar = thenYieldCtx.nextVar
+                , pendingLambdas = thenYieldCtx.pendingLambdas
+                , pendingFuncOps = thenYieldCtx.pendingFuncOps
+                , kernelDecls = thenYieldCtx.kernelDecls
+            }
 
         elseStep =
             compileCaseDeciderStep ctxForElse loopSpec root failure jumpLookup
@@ -961,7 +969,17 @@ compileIfStep ctx loopSpec branches final =
 
 {-| Compile a MonoLet step.
 
-Compiles the definition, then recursively compiles the body.
+Delegates to Expr.generateLet (via a synthetic MonoLet wrapping) for each
+definition, so that the full let-chain sibling context (placeholder
+mappings, currentLetSiblings) is properly set up. This is critical for
+self-recursive closures defined in let bindings — without sibling context
+their PendingLambda gets empty siblingMappings and lookupVar fails for
+the self-reference.
+
+For MonoTailDef, we also delegate to Expr.generateExpr (which routes to
+generateLet) for the definition setup, then use compileStep for the body
+so that MonoTailCall for the outer function still generates correct loop
+continuation.
 
 -}
 compileLetStep :
@@ -971,22 +989,59 @@ compileLetStep :
     -> Mono.MonoExpr
     -> StepResult
 compileLetStep ctx loopSpec def body =
+    let
+        -- Collect ALL let-bound names from this point in the chain, including
+        -- the current def and any subsequent MonoLet nodes in body. This mirrors
+        -- Expr.collectLetBoundNames so that sibling closures can see each other.
+        boundNames =
+            Expr.collectLetBoundNames (Mono.MonoLet def body Mono.MUnit)
+
+        -- Save outer siblings for restoration on exit (lexical scoping)
+        outerSiblings =
+            ctx.currentLetSiblings
+
+        -- Build placeholder mappings for the whole let-group
+        ctxWithPlaceholders =
+            Expr.addPlaceholderMappings boundNames ctx
+
+        -- Only include the let-bound names in currentLetSiblings (not all varMappings).
+        -- This prevents outer-scope variables from leaking into lambda siblingMappings,
+        -- which would cause cross-function SSA references (CGEN_CLOSURE_003).
+        letBoundSiblings =
+            List.foldl
+                (\name acc ->
+                    case Dict.get name ctxWithPlaceholders.varMappings of
+                        Just info ->
+                            Dict.insert name info acc
+
+                        Nothing ->
+                            acc
+                )
+                Dict.empty
+                boundNames
+
+        ctxReady =
+            { ctxWithPlaceholders | currentLetSiblings = letBoundSiblings }
+    in
     case def of
-        Mono.MonoDef name defExpr ->
+        Mono.MonoDef _ _ ->
             let
-                -- Compile the definition expression
-                exprResult =
-                    Expr.generateExpr ctx defExpr
+                defSetupExpr =
+                    Mono.MonoLet def Mono.MonoUnit Mono.MUnit
 
-                -- Add the variable mapping for the defined name
-                ctx1 =
-                    Ctx.addVarMapping name exprResult.resultVar exprResult.resultType exprResult.ctx
+                defSetupResult =
+                    Expr.generateExpr ctxReady defSetupExpr
 
-                -- Recursively compile the body
+                ctxAfterDef =
+                    defSetupResult.ctx
+
+                ctxForBody =
+                    { ctxAfterDef | currentLetSiblings = outerSiblings }
+
                 bodyStep =
-                    compileStep ctx1 loopSpec body
+                    compileStep ctxForBody loopSpec body
             in
-            { ops = exprResult.ops ++ bodyStep.ops
+            { ops = defSetupResult.ops ++ bodyStep.ops
             , nextParams = bodyStep.nextParams
             , doneVar = bodyStep.doneVar
             , resultVar = bodyStep.resultVar
@@ -1009,11 +1064,18 @@ compileLetStep ctx loopSpec def body =
                     Mono.MonoLet def Mono.MonoUnit Mono.MUnit
 
                 defSetupResult =
-                    Expr.generateExpr ctx defSetupExpr
+                    Expr.generateExpr ctxReady defSetupExpr
+
+                -- Restore outer siblings before compiling the body
+                ctxAfterDef =
+                    defSetupResult.ctx
+
+                ctxForBody =
+                    { ctxAfterDef | currentLetSiblings = outerSiblings }
 
                 -- Now compile the actual body with compileStep (maintains TailRec context)
                 bodyStep =
-                    compileStep defSetupResult.ctx loopSpec body
+                    compileStep ctxForBody loopSpec body
             in
             { ops = defSetupResult.ops ++ bodyStep.ops
             , nextParams = bodyStep.nextParams

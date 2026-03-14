@@ -446,7 +446,11 @@ LogicalResult PapExtendOp::verify() {
     }
     if (auto create = dyn_cast<PapCreateOp>(currentDef)) {
       alreadyApplied += create.getNumCaptured();
-      funcSym = create.getFunctionAttr();
+      // Use fast evaluator for parameter checking if available (matches papCreate verifier).
+      // The $clo generic clone has (closure, params...) signature which doesn't include
+      // captures as explicit params, while $cap has (captures..., params...) matching arity.
+      auto fastEval = create.get_fastEvaluatorAttr();
+      funcSym = fastEval ? fastEval : create.getFunctionAttr();
       arityFromCreate = create.getArity();
       break;
     }

@@ -3,6 +3,7 @@ module Compiler.Generate.MLIR.Expr exposing
     , generateExpr
     , coerceResultToType, boxArgsWithMlirTypes
     , createDummyValue
+    , collectLetBoundNames, addPlaceholderMappings
     )
 
 {-| Expression generation for the MLIR backend.
