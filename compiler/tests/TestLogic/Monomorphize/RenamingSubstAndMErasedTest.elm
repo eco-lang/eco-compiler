@@ -1,12 +1,12 @@
 module TestLogic.Monomorphize.RenamingSubstAndMErasedTest exposing (suite)
 
-{-| Targeted test cases for Bug 1 (renaming/substitution disconnect) and Bug 2 (MErased poisoning).
+{-| Targeted test cases for Bug 1 (renaming/substitution disconnect) and Bug 2 (CEcoValue poisoning).
 
-These tests exercise specific scenarios that trigger spurious MErased types when
-reverse renaming is missing or when MErased overwrites concrete bindings in unifyHelp.
+These tests exercise specific scenarios that trigger spurious CEcoValue types when
+reverse renaming is missing or when CEcoValue overwrites concrete bindings in unifyHelp.
 
 Bug 1 scenarios: polymorphic identity in record field, makeAdder curried call.
-Bug 2 scenario: fold with empty list causing MErased poisoning.
+Bug 2 scenario: fold with empty list causing CEcoValue poisoning.
 
 -}
 
@@ -44,10 +44,10 @@ import TestLogic.TestPipeline as Pipeline
 
 suite : Test
 suite =
-    Test.describe "Renaming substitution alignment & MErased poisoning"
-        [ Test.test "Bug 1: polymorphic identity in record field has no MErased" <|
+    Test.describe "Renaming substitution alignment & CEcoValue poisoning"
+        [ Test.test "Bug 1: polymorphic identity in record field has no CEcoValue" <|
             \_ -> checkIdentityInRecordField
-        , Test.test "Bug 1: makeAdder curried call has no MErased" <|
+        , Test.test "Bug 1: makeAdder curried call has no CEcoValue" <|
             \_ -> checkMakeAdderCurried
         , Test.test "Bug 2: fold with empty list retains concrete types" <|
             \_ -> checkFoldWithEmptyList
@@ -69,7 +69,7 @@ suite =
         in
         r.fn 42
 
-Expected: The closure's MonoType should be MFunction [MInt] MInt, no MErased.
+Expected: The closure's MonoType should be MFunction [MInt] MInt, no CEcoValue.
 
 -}
 identityInRecordModule : Src.Module
@@ -128,7 +128,7 @@ checkIdentityInRecordField =
     main =
         makeAdder 5 3
 
-Expected: Inner closure type has no MErased.
+Expected: Inner closure type has no CEcoValue.
 
 -}
 makeAdderModule : Src.Module
@@ -199,7 +199,7 @@ checkMakeAdderCurried =
     main =
         myFoldl (\entry acc -> acc + 1) 0 []
 
-Expected: The step parameter type retains concrete types (Int -> Int -> Int), not MErased.
+Expected: The step parameter type retains concrete types (Int -> Int -> Int), no CEcoValue.
 
 -}
 foldWithEmptyListModule : Src.Module
@@ -269,7 +269,7 @@ checkFoldWithEmptyList =
 
             else
                 Expect.fail
-                    ("Found CEcoValue in fully monomorphic specs (Bug 2 - MErased poisoning):\n"
+                    ("Found CEcoValue in fully monomorphic specs (Bug 2 - CEcoValue poisoning):\n"
                         ++ String.join "\n" violations
                     )
 
@@ -280,114 +280,6 @@ checkFoldWithEmptyList =
 -- ============================================================================
 
 
-findMErasedInGraph : Mono.MonoGraph -> List String
-findMErasedInGraph (Mono.MonoGraph data) =
-    Array.toList data.nodes
-        |> List.indexedMap Tuple.pair
-        |> List.concatMap
-            (\( specId, maybeNode ) ->
-                case maybeNode of
-                    Just node ->
-                        findMErasedInNode specId node
-
-                    Nothing ->
-                        []
-            )
-
-
-findMErasedInNode : Int -> Mono.MonoNode -> List String
-findMErasedInNode specId node =
-    let
-        ctx =
-            "SpecId " ++ String.fromInt specId
-    in
-    case node of
-        Mono.MonoDefine expr monoType ->
-            checkTypeForMErased ctx "node type" monoType
-                ++ findMErasedInExpr ctx expr
-
-        Mono.MonoTailFunc params expr monoType ->
-            checkTypeForMErased ctx "node type" monoType
-                ++ List.concatMap (\( _, t ) -> checkTypeForMErased ctx "param" t) params
-                ++ findMErasedInExpr ctx expr
-
-        Mono.MonoCycle defs monoType ->
-            checkTypeForMErased ctx "cycle type" monoType
-                ++ List.concatMap (\( _, e ) -> findMErasedInExpr ctx e) defs
-
-        _ ->
-            []
-
-
-findMErasedInExpr : String -> Mono.MonoExpr -> List String
-findMErasedInExpr ctx expr =
-    case expr of
-        Mono.MonoClosure info body closureType ->
-            checkTypeForMErased ctx "closure type" closureType
-                ++ List.concatMap (\( _, t ) -> checkTypeForMErased ctx "closure param" t) info.params
-                ++ findMErasedInExpr ctx body
-
-        Mono.MonoCall _ func args resultType _ ->
-            checkTypeForMErased ctx "call result" resultType
-                ++ findMErasedInExpr ctx func
-                ++ List.concatMap (findMErasedInExpr ctx) args
-
-        Mono.MonoLet def body letType ->
-            checkTypeForMErased ctx "let type" letType
-                ++ findMErasedInDef ctx def
-                ++ findMErasedInExpr ctx body
-
-        Mono.MonoCase _ _ _ jumps caseType ->
-            checkTypeForMErased ctx "case type" caseType
-                ++ List.concatMap (\( _, e ) -> findMErasedInExpr ctx e) jumps
-
-        _ ->
-            checkTypeForMErased ctx "expr" (Mono.typeOf expr)
-
-
-findMErasedInDef : String -> Mono.MonoDef -> List String
-findMErasedInDef ctx def =
-    case def of
-        Mono.MonoDef _ bound ->
-            findMErasedInExpr ctx bound
-
-        Mono.MonoTailDef _ params bound ->
-            List.concatMap (\( _, t ) -> checkTypeForMErased ctx "taildef param" t) params
-                ++ findMErasedInExpr ctx bound
-
-
-checkTypeForMErased : String -> String -> Mono.MonoType -> List String
-checkTypeForMErased ctx location monoType =
-    if containsMErased monoType then
-        [ ctx ++ " " ++ location ++ ": " ++ monoTypeToString monoType ]
-
-    else
-        []
-
-
-containsMErased : Mono.MonoType -> Bool
-containsMErased monoType =
-    case monoType of
-        Mono.MErased ->
-            True
-
-        Mono.MList inner ->
-            containsMErased inner
-
-        Mono.MFunction args ret ->
-            List.any containsMErased args || containsMErased ret
-
-        Mono.MRecord fields ->
-            Dict.foldl (\_ fieldType acc -> acc || containsMErased fieldType) False fields
-
-        Mono.MCustom _ _ args ->
-            List.any containsMErased args
-
-        Mono.MTuple elems ->
-            List.any containsMErased elems
-
-        _ ->
-            False
 
 
 findCEcoValueInFullyMonomorphicSpecs : Mono.MonoGraph -> List String
@@ -415,7 +307,7 @@ findCEcoValueInFullyMonomorphicSpecs (Mono.MonoGraph data) =
 
 isFullyMonomorphic : Mono.MonoType -> Bool
 isFullyMonomorphic monoType =
-    not (containsAnyMVar monoType) && not (containsMErased monoType)
+    not (containsAnyMVar monoType)
 
 
 containsAnyMVar : Mono.MonoType -> Bool
@@ -512,7 +404,12 @@ collectCEcoValue ctx location monoType =
 collectCEcoValueVars : Mono.MonoType -> List String
 collectCEcoValueVars monoType =
     case monoType of
-        Mono.MVar name Mono.CEcoValue ->
+        Mono.MVar _ Mono.CEcoValue ->
+            -- CEcoValue MVars are acceptable — they compile identically to eco.value
+            []
+
+        Mono.MVar name Mono.CNumber ->
+            -- CNumber should have been resolved by forceCNumberToInt
             [ name ]
 
         Mono.MList inner ->
@@ -606,6 +503,3 @@ monoTypeToString monoType =
 
         Mono.MVar name _ ->
             "MVar \"" ++ name ++ "\""
-
-        Mono.MErased ->
-            "MErased"

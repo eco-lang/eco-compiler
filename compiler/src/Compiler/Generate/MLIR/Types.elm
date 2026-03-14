@@ -172,7 +172,7 @@ monoTypeToAbi monoType =
             I64
 
         _ ->
-            -- Everything else is !eco.value at ABI, including Bool and MErased
+            -- Everything else is !eco.value at ABI, including Bool and MVar
             ecoValue
 
 
@@ -235,8 +235,6 @@ monoTypeToOperand monoType =
                 Mono.CEcoValue ->
                     ecoValue
 
-        Mono.MErased ->
-            ecoValue
 
 
 

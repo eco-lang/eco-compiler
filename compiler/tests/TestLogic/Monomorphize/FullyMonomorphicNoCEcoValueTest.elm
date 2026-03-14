@@ -3,7 +3,7 @@ module TestLogic.Monomorphize.FullyMonomorphicNoCEcoValueTest exposing (suite)
 {-| Test suite for MONO\_024: Fully monomorphic specializations have no CEcoValue
 in reachable MonoTypes.
 
-For every specialization with a fully monomorphic key (no MVar, no MErased),
+For every specialization with a fully monomorphic key (no MVar),
 the entire expression tree must contain no CEcoValue MVar.
 
 -}

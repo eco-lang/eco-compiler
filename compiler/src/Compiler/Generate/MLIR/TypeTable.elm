@@ -252,9 +252,6 @@ processType typeIds ( typeId, monoType ) accum =
             -- The runtime will determine the actual type from the boxed value's tag
             addPolymorphicType typeId constraint accum
 
-        Mono.MErased ->
-            -- Erased type variables are always boxed !eco.value; treat as CEcoValue polymorphic
-            addPolymorphicType typeId Mono.CEcoValue accum
 
 
 {-| Add a primitive type descriptor.

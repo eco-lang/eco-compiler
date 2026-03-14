@@ -276,8 +276,7 @@ flattenMFunction monoType =
             ( [], monoType )
 
 
-{-| Structural equality for MonoTypes, treating MVar(CEcoValue) and MErased
-as equivalent (both represent "boxed, layout-irrelevant" types).
+{-| Structural equality for MonoTypes.
 -}
 monoTypeEq : Mono.MonoType -> Mono.MonoType -> Bool
 monoTypeEq a b =
@@ -318,16 +317,6 @@ monoTypeEq a b =
         ( Mono.MVar aName _, Mono.MVar bName _ ) ->
             -- MVar equality: same name (constraint may differ)
             aName == bName
-
-        ( Mono.MErased, Mono.MErased ) ->
-            True
-
-        -- MVar(CEcoValue) and MErased are equivalent for layout purposes
-        ( Mono.MVar _ Mono.CEcoValue, Mono.MErased ) ->
-            True
-
-        ( Mono.MErased, Mono.MVar _ Mono.CEcoValue ) ->
-            True
 
         _ ->
             False
@@ -456,6 +445,3 @@ monoTypeToString monoType =
 
         Mono.MVar name _ ->
             name
-
-        Mono.MErased ->
-            "MErased"

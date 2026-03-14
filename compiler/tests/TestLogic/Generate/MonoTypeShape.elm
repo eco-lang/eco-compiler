@@ -253,6 +253,3 @@ checkMonoType context monoType =
                     -- CNumber should be resolved to MInt or MFloat after monomorphization
                     [ context ++ ": Found unresolved numeric type variable '" ++ name ++ "' with CNumber constraint" ]
 
-        Mono.MErased ->
-            -- MErased is valid for dead-value specializations; should not reach codegen
-            []

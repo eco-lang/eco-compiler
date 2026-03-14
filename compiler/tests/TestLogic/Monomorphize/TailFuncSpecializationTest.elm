@@ -357,5 +357,3 @@ monoTypeToString monoType =
         Mono.MVar name _ ->
             "MVar \"" ++ name ++ "\""
 
-        Mono.MErased ->
-            "MErased"

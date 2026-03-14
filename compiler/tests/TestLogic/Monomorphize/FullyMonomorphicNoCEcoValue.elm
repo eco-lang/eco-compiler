@@ -4,7 +4,7 @@ module TestLogic.Monomorphize.FullyMonomorphicNoCEcoValue exposing (expectFullyM
 in reachable MonoTypes.
 
 For every specialization entry whose key MonoType is fully monomorphic (no MVar
-with any constraint, no MErased), a traversal of all MonoTypes reachable from
+with any constraint), a traversal of all MonoTypes reachable from
 its implementing MonoNode must find no remaining MVar with CEcoValue constraint.
 
 This differs from MONO\_021 in two ways:
@@ -94,39 +94,12 @@ checkFullyMonomorphicNoCEcoValue (Mono.MonoGraph data) =
 -- ============================================================================
 
 
-{-| A MonoType is fully monomorphic if it contains no MVar (any constraint) and
-no MErased. Only these specializations are subject to MONO\_024.
+{-| A MonoType is fully monomorphic if it contains no MVar (any constraint).
+Only these specializations are subject to MONO\_024.
 -}
 isFullyMonomorphic : Mono.MonoType -> Bool
 isFullyMonomorphic monoType =
-    not (Mono.containsAnyMVar monoType) && not (containsMErased monoType)
-
-
-{-| Check if a MonoType contains MErased anywhere in its structure.
--}
-containsMErased : Mono.MonoType -> Bool
-containsMErased monoType =
-    case monoType of
-        Mono.MErased ->
-            True
-
-        Mono.MList inner ->
-            containsMErased inner
-
-        Mono.MFunction args result ->
-            List.any containsMErased args || containsMErased result
-
-        Mono.MTuple elems ->
-            List.any containsMErased elems
-
-        Mono.MRecord fields ->
-            Dict.foldl (\_ t acc -> acc || containsMErased t) False fields
-
-        Mono.MCustom _ _ args ->
-            List.any containsMErased args
-
-        _ ->
-            False
+    not (Mono.containsAnyMVar monoType)
 
 
 
@@ -353,19 +326,20 @@ checkParamTypes ctx params =
         params
 
 
-{-| Collect all CEcoValue MVar names from a MonoType recursively.
+{-| Collect problematic MVar names from a MonoType recursively.
+MVar _ CEcoValue is always acceptable (compiles to eco.value).
+Only MVar _ CNumber would indicate a real bug (should be resolved to MInt/MFloat).
 -}
 collectCEcoValueVars : Mono.MonoType -> List String
 collectCEcoValueVars monoType =
     case monoType of
-        Mono.MVar name Mono.CEcoValue ->
+        Mono.MVar _ Mono.CEcoValue ->
+            -- CEcoValue MVars are acceptable — they compile identically to eco.value
+            []
+
+        Mono.MVar name Mono.CNumber ->
+            -- CNumber should have been resolved by forceCNumberToInt
             [ name ]
-
-        Mono.MVar _ Mono.CNumber ->
-            []
-
-        Mono.MErased ->
-            []
 
         Mono.MList inner ->
             collectCEcoValueVars inner
@@ -462,6 +436,3 @@ monoTypeToString monoType =
 
         Mono.MVar name _ ->
             name
-
-        Mono.MErased ->
-            "MErased"

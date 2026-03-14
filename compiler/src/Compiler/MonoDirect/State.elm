@@ -78,6 +78,7 @@ type alias MonoDirectState =
     , specValueUsed : BitSet
     , renameEpoch : Int
     , snapshot : SolverSnapshot
+    , specStack : List ( SolverSnapshot.TypeVar, Mono.MonoType )
     }
 
 
@@ -107,6 +108,7 @@ initState currentModule toptNodes globalTypeEnv snapshot =
     , specValueUsed = BitSet.empty
     , renameEpoch = 0
     , snapshot = snapshot
+    , specStack = []
     }
 
 
@@ -192,11 +194,12 @@ type alias LocalMultiState =
     }
 
 
-{-| Information about a single local instance: fresh name and mono type.
+{-| Information about a single local instance: fresh name, mono type, and call-site subst.
 -}
 type alias LocalInstanceInfo =
     { freshName : Name
     , monoType : Mono.MonoType
+    , subst : Dict String Mono.MonoType
     }
 
 
@@ -211,22 +214,22 @@ isLocalMultiTarget name state =
 Returns the fresh name to use at the call site.
 -}
 getOrCreateLocalInstance :
-    Name -> Mono.MonoType -> MonoDirectState -> ( Name, MonoDirectState )
-getOrCreateLocalInstance defName funcMonoType state =
+    Name -> Mono.MonoType -> Dict String Mono.MonoType -> MonoDirectState -> ( Name, MonoDirectState )
+getOrCreateLocalInstance defName funcMonoType callSubst state =
     let
         key =
             Mono.toComparableMonoType funcMonoType
 
         ( updatedStack, freshName ) =
-            updateLocalMultiStack defName key funcMonoType state.localMulti
+            updateLocalMultiStack defName key funcMonoType callSubst state.localMulti
     in
     ( freshName, { state | localMulti = updatedStack } )
 
 
 updateLocalMultiStack :
-    Name -> List String -> Mono.MonoType -> List LocalMultiState
+    Name -> List String -> Mono.MonoType -> Dict String Mono.MonoType -> List LocalMultiState
     -> ( List LocalMultiState, Name )
-updateLocalMultiStack defName key funcMonoType stack =
+updateLocalMultiStack defName key funcMonoType callSubst stack =
     case stack of
         [] ->
             -- Not found: this shouldn't happen if isLocalMultiTarget was checked first
@@ -251,7 +254,7 @@ updateLocalMultiStack defName key funcMonoType stack =
                                     defName ++ "$" ++ String.fromInt freshIndex
 
                             newInfo =
-                                { freshName = freshName, monoType = funcMonoType }
+                                { freshName = freshName, monoType = funcMonoType, subst = callSubst }
 
                             newEntry =
                                 { entry | instances = Dict.insert key newInfo entry.instances }
@@ -261,6 +264,6 @@ updateLocalMultiStack defName key funcMonoType stack =
             else
                 let
                     ( updatedRest, freshName ) =
-                        updateLocalMultiStack defName key funcMonoType rest
+                        updateLocalMultiStack defName key funcMonoType callSubst rest
                 in
                 ( entry :: updatedRest, freshName )

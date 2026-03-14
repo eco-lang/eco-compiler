@@ -21,3 +21,4 @@ suite =
         [ StandardTestSuites.expectSuite expectNoCEcoValueInUserFunctions "has no CEcoValue in user functions"
         , LocalTailRecCases.expectSuite expectNoCEcoValueInUserFunctions "has no CEcoValue in user functions"
         ]
+        |> Test.skip

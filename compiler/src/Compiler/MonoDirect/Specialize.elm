@@ -141,15 +141,29 @@ requireTVar context meta =
 
 specializeDefineNode : SolverSnapshot -> TOpt.Expr -> TOpt.Meta -> Mono.MonoType -> MonoDirectState -> ( Mono.MonoNode, MonoDirectState )
 specializeDefineNode snapshot expr meta requestedMonoType state =
+    let
+        -- Build substitution from the node's Can.Type and concrete MonoType.
+        -- This serves as fallback for any sub-expressions with disconnected tvars.
+        nodeSubst =
+            TypeSubst.unifyExtend meta.tipe requestedMonoType Dict.empty
+    in
     case meta.tvar of
         Just annotVar ->
-            SolverSnapshot.specializeFunction snapshot annotVar requestedMonoType
+            SolverSnapshot.specializeChainedWithSubst snapshot
+                [ ( annotVar, requestedMonoType ) ]
+                nodeSubst
                 (\view ->
                     let
+                        stateWithPush =
+                            { state | specStack = ( annotVar, requestedMonoType ) :: state.specStack }
+
                         ( monoExpr, state1 ) =
-                            specializeExpr view snapshot expr state
+                            specializeExpr view snapshot expr stateWithPush
+
+                        statePopped =
+                            { state1 | specStack = state.specStack }
                     in
-                    ( Mono.MonoDefine monoExpr (Mono.typeOf monoExpr), state1 )
+                    ( Mono.MonoDefine monoExpr (Mono.typeOf monoExpr), statePopped )
                 )
 
         Nothing ->
@@ -166,9 +180,15 @@ specializeDefineNode snapshot expr meta requestedMonoType state =
                     )
 
             else
-                Utils.Crash.crash
-                    ("MonoDirect.specializeDefineNode: missing solver tvar for polymorphic type "
-                        ++ Debug.toString meta.tipe)
+                -- Polymorphic node without solver tvar. Use substitution-based fallback.
+                SolverSnapshot.specializeChainedWithSubst snapshot [] nodeSubst
+                    (\view ->
+                        let
+                            ( monoExpr, state1 ) =
+                                specializeExpr view snapshot expr state
+                        in
+                        ( Mono.MonoDefine monoExpr (Mono.typeOf monoExpr), state1 )
+                    )
 
 
 
@@ -227,26 +247,15 @@ resolveType view meta =
                         KernelAbi.canTypeToMonoType_preserveVars meta.tipe
 
                     else
-                        Utils.Crash.crash
-                            ("MonoDirect.resolveType: missing solver tvar for polymorphic type "
-                                ++ Debug.toString meta.tipe
-                            )
+                        -- No solver tvar for polymorphic type. Use substitution-based
+                        -- resolution. Unresolved type variables become MVars (CEcoValue),
+                        -- which compile identically to eco.value in codegen.
+                        TypeSubst.canTypeToMonoType view.subst meta.tipe
 
         normalized =
             Mono.forceCNumberToInt rawType
     in
-    case normalized of
-        Mono.MErased ->
-            Utils.Crash.crash
-                ("MonoDirect.resolveType: unexpected top-level MErased from solver for "
-                    ++ Debug.toString meta.tipe
-                    ++ " (tvar="
-                    ++ Debug.toString meta.tvar
-                    ++ "). Erasure of CEcoValue vars is handled in assembleRawGraph, not here."
-                )
-
-        _ ->
-            normalized
+    normalized
 
 
 resolveExprType : LocalView -> TOpt.Expr -> Mono.MonoType
@@ -300,7 +309,7 @@ specializeExpr view snapshot expr state =
             if State.isLocalMultiTarget name state then
                 let
                     ( freshName, state1 ) =
-                        State.getOrCreateLocalInstance name monoType state
+                        State.getOrCreateLocalInstance name monoType view.subst state
                 in
                 ( Mono.MonoVarLocal freshName monoType, state1 )
 
@@ -320,7 +329,7 @@ specializeExpr view snapshot expr state =
             if State.isLocalMultiTarget name state then
                 let
                     ( freshName, state1 ) =
-                        State.getOrCreateLocalInstance name monoType state
+                        State.getOrCreateLocalInstance name monoType view.subst state
                 in
                 ( Mono.MonoVarLocal freshName monoType, state1 )
 
@@ -404,7 +413,7 @@ specializeExpr view snapshot expr state =
                     specializeExprs view snapshot items state
 
                 monoType =
-                    if Mono.containsCEcoMVar monoType0 then
+                    if Mono.containsAnyMVar monoType0 then
                         case monoItems of
                             first :: _ ->
                                 Mono.MList (Mono.typeOf first)
@@ -450,7 +459,7 @@ specializeExpr view snapshot expr state =
                     specializeExpr view snapshot final state1
 
                 monoType =
-                    if Mono.containsCEcoMVar monoType0 then
+                    if Mono.containsAnyMVar monoType0 then
                         Mono.typeOf monoFinal
                     else
                         monoType0
@@ -472,8 +481,11 @@ specializeExpr view snapshot expr state =
                 (TOpt.Destructor dName _ _) =
                     destructor
 
+                (Mono.MonoDestructor _ monoPath _) =
+                    monoDestructor
+
                 destructorType =
-                    specializeDestructorPathType view destructor
+                    Mono.getMonoPathType monoPath
 
                 state1 =
                     { state | varEnv = State.insertVar dName destructorType state.varEnv }
@@ -482,7 +494,7 @@ specializeExpr view snapshot expr state =
                     specializeExpr view snapshot body state1
 
                 monoType =
-                    if Mono.containsCEcoMVar monoType0 then
+                    if Mono.containsAnyMVar monoType0 then
                         Mono.typeOf monoBody
                     else
                         monoType0
@@ -507,7 +519,7 @@ specializeExpr view snapshot expr state =
                     specializeJumps view snapshot jumps state1WithResetVarEnv
 
                 monoType =
-                    if Mono.containsCEcoMVar monoType0 then
+                    if Mono.containsAnyMVar monoType0 then
                         inferCaseType monoJumps monoDecider monoType0
                     else
                         monoType0
@@ -587,7 +599,7 @@ specializeExpr view snapshot expr state =
                     specializeExprs view snapshot rest state2
 
                 monoType =
-                    if Mono.containsCEcoMVar monoType0 then
+                    if Mono.containsAnyMVar monoType0 then
                         Mono.MTuple (List.map Mono.typeOf (monoA :: monoB :: monoRest))
                     else
                         monoType0
@@ -690,14 +702,19 @@ specializeCall view snapshot region func args meta state =
         TOpt.VarLocal name funcMeta ->
             if State.isLocalMultiTarget name state1 then
                 let
+                    -- Use unifyArgsOnly to derive concrete funcMonoType from Can.Type + arg types,
+                    -- matching old path's approach for local multi targets
+                    callSubst =
+                        TypeSubst.unifyArgsOnly funcMeta.tipe argTypes view.subst
+
                     funcMonoType =
-                        resolveType view funcMeta
+                        Mono.forceCNumberToInt (TypeSubst.canTypeToMonoType callSubst funcMeta.tipe)
 
                     ( paramTypes, _ ) =
                         Closure.flattenFunctionType funcMonoType
 
                     ( freshName, state2 ) =
-                        State.getOrCreateLocalInstance name funcMonoType state1
+                        State.getOrCreateLocalInstance name funcMonoType callSubst state1
 
                     monoFunc =
                         Mono.MonoVarLocal freshName funcMonoType
@@ -726,14 +743,19 @@ specializeCall view snapshot region func args meta state =
         TOpt.TrackedVarLocal _ name funcMeta ->
             if State.isLocalMultiTarget name state1 then
                 let
+                    -- Use unifyArgsOnly to derive concrete funcMonoType from Can.Type + arg types,
+                    -- matching old path's approach for local multi targets
+                    callSubst =
+                        TypeSubst.unifyArgsOnly funcMeta.tipe argTypes view.subst
+
                     funcMonoType =
-                        resolveType view funcMeta
+                        Mono.forceCNumberToInt (TypeSubst.canTypeToMonoType callSubst funcMeta.tipe)
 
                     ( paramTypes, _ ) =
                         Closure.flattenFunctionType funcMonoType
 
                     ( freshName, state2 ) =
-                        State.getOrCreateLocalInstance name funcMonoType state1
+                        State.getOrCreateLocalInstance name funcMonoType callSubst state1
 
                     monoFunc =
                         Mono.MonoVarLocal freshName funcMonoType
@@ -993,8 +1015,22 @@ extractRecordFields monoType =
 specializeLambda : LocalView -> SolverSnapshot -> List ( Name, Can.Type ) -> TOpt.Expr -> TOpt.Meta -> MonoDirectState -> ( Mono.MonoExpr, MonoDirectState )
 specializeLambda view snapshot params body meta state =
     let
-        funcMonoType =
+        funcMonoType0 =
             resolveType view meta
+
+        -- If solver left MVars, try subst-based resolution as fallback
+        funcMonoType =
+            if Mono.containsAnyMVar funcMonoType0 then
+                let
+                    substResult =
+                        Mono.forceCNumberToInt (TypeSubst.canTypeToMonoType view.subst meta.tipe)
+                in
+                if Mono.containsAnyMVar substResult then
+                    funcMonoType0
+                else
+                    substResult
+            else
+                funcMonoType0
 
         ( paramMonoTypes, _ ) =
             Closure.flattenFunctionType funcMonoType
@@ -1084,7 +1120,7 @@ specializeLet view snapshot def body meta state =
                             Mono.MonoDef defName monoDefExpr
 
                         letResultType =
-                            if Mono.containsCEcoMVar monoType then
+                            if Mono.containsAnyMVar monoType then
                                 Mono.typeOf monoBody
                             else
                                 monoType
@@ -1092,53 +1128,318 @@ specializeLet view snapshot def body meta state =
                     ( Mono.MonoLet monoDef monoBody letResultType, state3 )
 
         TOpt.TailDef defRegion defName defParams defBody defCanType defTvar ->
+            specializeLetTailDef view snapshot defName defParams defBody defCanType defTvar body monoType state
+
+
+
+specializeLetTailDef :
+    LocalView -> SolverSnapshot -> Name -> List ( A.Located Name, Can.Type ) -> TOpt.Expr -> Can.Type -> Maybe SolverSnapshot.TypeVar -> TOpt.Expr -> Mono.MonoType -> MonoDirectState
+    -> ( Mono.MonoExpr, MonoDirectState )
+specializeLetTailDef view snapshot defName defParams defBody defCanType defTvar body monoType state =
+    let
+        funcMonoType0 =
+            resolveType view { tipe = defCanType, tvar = defTvar }
+    in
+    if Mono.containsAnyMVar funcMonoType0 then
+        -- Polymorphic TailDef: use call-site discovery (like specializeLetFuncDef)
+        let
+            newEntry =
+                { defName = defName, instances = Dict.empty }
+
+            stateForBody =
+                { state
+                    | localMulti = newEntry :: state.localMulti
+                    , varEnv = State.insertVar defName funcMonoType0 state.varEnv
+                }
+
+            ( monoBody, stateAfterBody ) =
+                specializeExpr view snapshot body stateForBody
+        in
+        case stateAfterBody.localMulti of
+            topEntry :: restOfStack ->
+                if Dict.isEmpty topEntry.instances then
+                    -- No calls: single instance with resolved type
+                    specializeLetTailDefSingle view snapshot defName defParams defBody defCanType defTvar funcMonoType0 body monoType
+                        { stateAfterBody | localMulti = restOfStack }
+
+                else
+                    -- Multi-instance: specialize per discovered instance
+                    let
+                        instancesList =
+                            Dict.values topEntry.instances
+
+                        statePopped =
+                            { stateAfterBody | localMulti = restOfStack }
+
+                        ( instanceDefs, stateWithDefs ) =
+                            List.foldl
+                                (\info ( defsAcc, stAcc ) ->
+                                    let
+                                        ( monoDef, st1 ) =
+                                            specializeTailDefForInstance view snapshot
+                                                defName defParams defBody defCanType defTvar info stAcc
+                                    in
+                                    ( monoDef :: defsAcc, st1 )
+                                )
+                                ( [], statePopped )
+                                instancesList
+
+                        stateWithVars =
+                            List.foldl
+                                (\info st ->
+                                    { st | varEnv = State.insertVar info.freshName info.monoType st.varEnv }
+                                )
+                                stateWithDefs
+                                instancesList
+
+                        finalExpr =
+                            List.foldl
+                                (\def_ accBody ->
+                                    Mono.MonoLet def_ accBody (Mono.typeOf accBody)
+                                )
+                                monoBody
+                                instanceDefs
+                    in
+                    ( finalExpr, stateWithVars )
+
+            [] ->
+                Utils.Crash.crash "MonoDirect.specializeLetTailDef: localMulti stack underflow"
+
+    else
+        -- Concrete type: single instance
+        specializeLetTailDefSingle view snapshot defName defParams defBody defCanType defTvar funcMonoType0 body monoType state
+
+
+specializeLetTailDefSingle :
+    LocalView -> SolverSnapshot -> Name -> List ( A.Located Name, Can.Type ) -> TOpt.Expr -> Can.Type -> Maybe SolverSnapshot.TypeVar -> Mono.MonoType -> TOpt.Expr -> Mono.MonoType -> MonoDirectState
+    -> ( Mono.MonoExpr, MonoDirectState )
+specializeLetTailDefSingle view snapshot defName defParams defBody defCanType defTvar funcMonoType body monoType state =
+    let
+        ( paramMonoTypes, _ ) =
+            Closure.flattenFunctionType funcMonoType
+
+        monoParams =
+            List.map2
+                (\( locName, _ ) paramType -> ( A.toValue locName, paramType ))
+                defParams
+                (padOrTruncate paramMonoTypes (List.length defParams))
+
+        tailDefSubst =
+            TypeSubst.unifyExtend defCanType funcMonoType Dict.empty
+
+        tailDefInnerStack =
+            case defTvar of
+                Just tv -> ( tv, funcMonoType ) :: state.specStack
+                Nothing -> state.specStack
+
+        ( monoDefBody, stateAfterDef ) =
+            SolverSnapshot.specializeChainedWithSubst snapshot tailDefInnerStack tailDefSubst
+                (\innerView ->
+                    let
+                        st1 =
+                            { state | varEnv = State.pushFrame state.varEnv
+                                    , specStack = tailDefInnerStack
+                            }
+
+                        st2 =
+                            List.foldl
+                                (\( name, mt ) s -> { s | varEnv = State.insertVar name mt s.varEnv })
+                                st1
+                                monoParams
+
+                        ( defBody_, st3 ) =
+                            specializeExpr innerView snapshot defBody st2
+
+                        st4 =
+                            { st3 | varEnv = State.popFrame st3.varEnv
+                                  , specStack = state.specStack
+                            }
+                    in
+                    ( defBody_, st4 )
+                )
+
+        stateWithVar =
+            { stateAfterDef | varEnv = State.insertVar defName funcMonoType stateAfterDef.varEnv }
+
+        ( monoBody, stateAfterAll ) =
+            specializeExpr view snapshot body stateWithVar
+
+        monoDef =
+            Mono.MonoTailDef defName monoParams monoDefBody
+
+        letResultType =
+            if Mono.containsAnyMVar monoType then
+                Mono.typeOf monoBody
+            else
+                monoType
+    in
+    ( Mono.MonoLet monoDef monoBody letResultType, stateAfterAll )
+
+
+specializeTailDefForInstance :
+    LocalView -> SolverSnapshot -> Name -> List ( A.Located Name, Can.Type ) -> TOpt.Expr -> Can.Type -> Maybe SolverSnapshot.TypeVar -> State.LocalInstanceInfo -> MonoDirectState
+    -> ( Mono.MonoDef, MonoDirectState )
+specializeTailDefForInstance view snapshot defName defParams defBody defCanType defTvar info state =
+    let
+        funcSubst =
+            TypeSubst.unifyExtend defCanType info.monoType Dict.empty
+
+        innerStack =
+            case defTvar of
+                Just tvar ->
+                    ( tvar, info.monoType ) :: state.specStack
+
+                Nothing ->
+                    state.specStack
+
+        ( paramMonoTypes, _ ) =
+            Closure.flattenFunctionType info.monoType
+
+        monoParams =
+            List.map2
+                (\( locName, _ ) paramType -> ( A.toValue locName, paramType ))
+                defParams
+                (padOrTruncate paramMonoTypes (List.length defParams))
+    in
+    SolverSnapshot.specializeChainedWithSubst snapshot innerStack funcSubst
+        (\innerView ->
             let
-                funcMonoType =
-                    resolveType view { tipe = defCanType, tvar = defTvar }
+                st1 =
+                    { state
+                        | varEnv = State.pushFrame state.varEnv
+                        , specStack = innerStack
+                    }
 
-                ( paramMonoTypes, _ ) =
-                    Closure.flattenFunctionType funcMonoType
+                -- Insert defName so recursive self-references resolve to concrete type
+                st1b =
+                    { st1 | varEnv = State.insertVar defName info.monoType st1.varEnv }
 
-                monoParams =
-                    List.map2
-                        (\( locName, _ ) paramType -> ( A.toValue locName, paramType ))
-                        defParams
-                        (padOrTruncate paramMonoTypes (List.length defParams))
-
-                -- Push frame for function params
-                state1 =
-                    { state | varEnv = State.pushFrame state.varEnv }
-
-                state2 =
+                st2 =
                     List.foldl
                         (\( name, mt ) s -> { s | varEnv = State.insertVar name mt s.varEnv })
-                        state1
+                        st1b
                         monoParams
 
-                ( monoDefBody, state3 ) =
-                    specializeExpr view snapshot defBody state2
+                ( monoDefBody, st3 ) =
+                    specializeExpr innerView snapshot defBody st2
 
-                state4 =
-                    { state3 | varEnv = State.popFrame state3.varEnv }
+                st4 =
+                    { st3
+                        | varEnv = State.popFrame st3.varEnv
+                        , specStack = state.specStack
+                    }
 
-                -- Bind the function name in the outer scope
-                state5 =
-                    { state4 | varEnv = State.insertVar defName funcMonoType state4.varEnv }
-
-                ( monoBody, state6 ) =
-                    specializeExpr view snapshot body state5
+                renamedBody =
+                    if info.freshName == defName then
+                        monoDefBody
+                    else
+                        renameTailCalls defName info.freshName monoDefBody
 
                 monoDef =
-                    Mono.MonoTailDef defName monoParams monoDefBody
-
-                letResultType =
-                    if Mono.containsCEcoMVar monoType then
-                        Mono.typeOf monoBody
-                    else
-                        monoType
+                    Mono.MonoTailDef info.freshName monoParams renamedBody
             in
-            ( Mono.MonoLet monoDef monoBody letResultType, state6 )
+            ( monoDef, st4 )
+        )
 
+
+{-| Rename tail-call targets in a MonoExpr from oldName to newName.
+Used for multi-specialized TailDef clones.
+-}
+renameTailCalls : Name -> Name -> Mono.MonoExpr -> Mono.MonoExpr
+renameTailCalls oldName newName expr =
+    case expr of
+        Mono.MonoTailCall name args resultType ->
+            Mono.MonoTailCall
+                (if name == oldName then newName else name)
+                (List.map (\( n, e ) -> ( n, renameTailCalls oldName newName e )) args)
+                resultType
+
+        Mono.MonoCall region func args resultType callInfo ->
+            Mono.MonoCall region
+                (renameTailCalls oldName newName func)
+                (List.map (renameTailCalls oldName newName) args)
+                resultType
+                callInfo
+
+        Mono.MonoIf branches final monoType ->
+            Mono.MonoIf
+                (List.map (\( c, t ) -> ( renameTailCalls oldName newName c, renameTailCalls oldName newName t )) branches)
+                (renameTailCalls oldName newName final)
+                monoType
+
+        Mono.MonoLet def body resultType ->
+            let
+                newDef =
+                    case def of
+                        Mono.MonoDef n bound ->
+                            Mono.MonoDef n (renameTailCalls oldName newName bound)
+
+                        Mono.MonoTailDef n args bound ->
+                            Mono.MonoTailDef n args
+                                (renameTailCalls oldName newName bound)
+            in
+            Mono.MonoLet newDef (renameTailCalls oldName newName body) resultType
+
+        Mono.MonoClosure info body closureType ->
+            Mono.MonoClosure info (renameTailCalls oldName newName body) closureType
+
+        Mono.MonoList region items t ->
+            Mono.MonoList region (List.map (renameTailCalls oldName newName) items) t
+
+        Mono.MonoTupleCreate region items t ->
+            Mono.MonoTupleCreate region (List.map (renameTailCalls oldName newName) items) t
+
+        Mono.MonoRecordCreate fields t ->
+            Mono.MonoRecordCreate
+                (List.map (\( n, e ) -> ( n, renameTailCalls oldName newName e )) fields)
+                t
+
+        Mono.MonoRecordUpdate record updates t ->
+            Mono.MonoRecordUpdate
+                (renameTailCalls oldName newName record)
+                (List.map (\( n, e ) -> ( n, renameTailCalls oldName newName e )) updates)
+                t
+
+        Mono.MonoRecordAccess record fieldName t ->
+            Mono.MonoRecordAccess (renameTailCalls oldName newName record) fieldName t
+
+        Mono.MonoDestruct destructor body t ->
+            Mono.MonoDestruct destructor (renameTailCalls oldName newName body) t
+
+        Mono.MonoCase scrutName typeName decider jumps monoType ->
+            Mono.MonoCase scrutName typeName
+                (renameTailCallsDecider oldName newName decider)
+                (List.map (\( i, e ) -> ( i, renameTailCalls oldName newName e )) jumps)
+                monoType
+
+        _ ->
+            expr
+
+
+renameTailCallsDecider : Name -> Name -> Mono.Decider Mono.MonoChoice -> Mono.Decider Mono.MonoChoice
+renameTailCallsDecider oldName newName decider =
+    case decider of
+        Mono.Leaf choice ->
+            Mono.Leaf (renameTailCallsChoice oldName newName choice)
+
+        Mono.Chain conditions success failure ->
+            Mono.Chain conditions
+                (renameTailCallsDecider oldName newName success)
+                (renameTailCallsDecider oldName newName failure)
+
+        Mono.FanOut path edges fallback ->
+            Mono.FanOut path
+                (List.map (\( test, d ) -> ( test, renameTailCallsDecider oldName newName d )) edges)
+                (renameTailCallsDecider oldName newName fallback)
+
+renameTailCallsChoice : Name -> Name -> Mono.MonoChoice -> Mono.MonoChoice
+renameTailCallsChoice oldName newName choice =
+    case choice of
+        Mono.Inline e ->
+            Mono.Inline (renameTailCalls oldName newName e)
+
+        Mono.Jump i ->
+            Mono.Jump i
 
 
 specializeLetFuncDef :
@@ -1180,7 +1481,7 @@ specializeLetFuncDef view snapshot defName defExpr body monoType state =
                         Mono.MonoDef defName monoDefExpr
 
                     letResultType =
-                        if Mono.containsCEcoMVar monoType then
+                        if Mono.containsAnyMVar monoType then
                             Mono.typeOf monoBody2
                         else
                             monoType
@@ -1222,37 +1523,15 @@ specializeLetFuncDef view snapshot defName defExpr body monoType state =
                             stateWithDefs
                             instancesList
 
-                    -- Build nested MonoLet chain wrapping monoBody
-                    letResultType =
-                        if Mono.containsCEcoMVar monoType then
-                            Mono.typeOf monoBody
-                        else
-                            monoType
-
                     finalExpr =
                         List.foldl
                             (\def_ accBody ->
                                 Mono.MonoLet def_ accBody (Mono.typeOf accBody)
                             )
-                            (Mono.MonoLet (List.head instanceDefs |> Maybe.withDefault (Mono.MonoDef defName Mono.MonoUnit)) monoBody letResultType)
-                            (List.drop 1 instanceDefs)
+                            monoBody
+                            instanceDefs
                 in
-                case instanceDefs of
-                    [] ->
-                        -- Should not happen since instances is non-empty
-                        ( monoBody, stateWithVars )
-
-                    _ ->
-                        let
-                            buildLetChain defs bodyExpr =
-                                List.foldr
-                                    (\def_ accBody ->
-                                        Mono.MonoLet def_ accBody (Mono.typeOf accBody)
-                                    )
-                                    bodyExpr
-                                    defs
-                        in
-                        ( buildLetChain instanceDefs monoBody, stateWithVars )
+                ( finalExpr, stateWithVars )
 
         [] ->
             Utils.Crash.crash
@@ -1270,94 +1549,202 @@ specializeDefForInstance view snapshot defName defExpr info state =
     in
     case defExpr of
         TOpt.Function params bodyExpr funcMeta ->
-            let
-                monoParams =
-                    List.map2
-                        (\( name, _ ) pt -> ( name, pt ))
-                        params
-                        (padOrTruncate paramTypes (List.length params))
+            case funcMeta.tvar of
+                Just tvar ->
+                    let
+                        innerStack =
+                            ( tvar, info.monoType ) :: state.specStack
 
-                state1 =
-                    { state | varEnv = State.pushFrame state.varEnv }
+                        funcSubstF =
+                            TypeSubst.unifyExtend funcMeta.tipe info.monoType Dict.empty
+                    in
+                    SolverSnapshot.specializeChainedWithSubst snapshot innerStack funcSubstF
+                        (\innerView ->
+                            let
+                                monoParams =
+                                    List.map2
+                                        (\( name, _ ) pt -> ( name, pt ))
+                                        params
+                                        (padOrTruncate paramTypes (List.length params))
 
-                state2 =
-                    List.foldl
-                        (\( n, t ) s -> { s | varEnv = State.insertVar n t s.varEnv })
-                        state1
-                        monoParams
+                                state1 =
+                                    { state
+                                        | varEnv = State.pushFrame state.varEnv
+                                        , specStack = innerStack
+                                    }
 
-                ( monoBody, state3 ) =
-                    specializeExpr view snapshot bodyExpr state2
+                                -- Insert defName so recursive self-references resolve to concrete type
+                                state1b =
+                                    { state1 | varEnv = State.insertVar defName info.monoType state1.varEnv }
 
-                state4 =
-                    { state3 | varEnv = State.popFrame state3.varEnv }
+                                state2 =
+                                    List.foldl
+                                        (\( n, t ) s -> { s | varEnv = State.insertVar n t s.varEnv })
+                                        state1b
+                                        monoParams
 
-                captures =
-                    Closure.computeClosureCaptures monoParams monoBody
+                                ( monoBody, state3 ) =
+                                    specializeExpr innerView snapshot bodyExpr state2
 
-                closureExpr =
-                    Mono.MonoClosure
-                        { lambdaId = Mono.AnonymousLambda state.currentModule state.lambdaCounter
-                        , captures = captures
-                        , params = monoParams
-                        , closureKind = Nothing
-                        , captureAbi = Nothing
-                        }
-                        monoBody
-                        info.monoType
-            in
-            ( Mono.MonoDef info.freshName closureExpr
-            , { state4 | lambdaCounter = state4.lambdaCounter + 1 }
-            )
+                                state4 =
+                                    { state3
+                                        | varEnv = State.popFrame state3.varEnv
+                                        , specStack = state.specStack
+                                    }
+
+                                captures =
+                                    Closure.computeClosureCaptures monoParams monoBody
+
+                                closureExpr =
+                                    Mono.MonoClosure
+                                        { lambdaId = Mono.AnonymousLambda state.currentModule state.lambdaCounter
+                                        , captures = captures
+                                        , params = monoParams
+                                        , closureKind = Nothing
+                                        , captureAbi = Nothing
+                                        }
+                                        monoBody
+                                        info.monoType
+                            in
+                            ( Mono.MonoDef info.freshName closureExpr
+                            , { state4 | lambdaCounter = state4.lambdaCounter + 1 }
+                            )
+                        )
+
+                Nothing ->
+                    let
+                        funcSubstF =
+                            TypeSubst.unifyExtend funcMeta.tipe info.monoType Dict.empty
+                    in
+                    SolverSnapshot.specializeChainedWithSubst snapshot state.specStack funcSubstF
+                        (\innerView ->
+                            let
+                                monoParams =
+                                    List.map2
+                                        (\( name, _ ) pt -> ( name, pt ))
+                                        params
+                                        (padOrTruncate paramTypes (List.length params))
+
+                                state1 =
+                                    { state | varEnv = State.pushFrame state.varEnv }
+
+                                -- Insert defName so recursive self-references resolve to concrete type
+                                state1b =
+                                    { state1 | varEnv = State.insertVar defName info.monoType state1.varEnv }
+
+                                state2 =
+                                    List.foldl
+                                        (\( n, t ) s -> { s | varEnv = State.insertVar n t s.varEnv })
+                                        state1b
+                                        monoParams
+
+                                ( monoBody, state3 ) =
+                                    specializeExpr innerView snapshot bodyExpr state2
+
+                                state4 =
+                                    { state3 | varEnv = State.popFrame state3.varEnv }
+
+                                captures =
+                                    Closure.computeClosureCaptures monoParams monoBody
+
+                                closureExpr =
+                                    Mono.MonoClosure
+                                        { lambdaId = Mono.AnonymousLambda state.currentModule state.lambdaCounter
+                                        , captures = captures
+                                        , params = monoParams
+                                        , closureKind = Nothing
+                                        , captureAbi = Nothing
+                                        }
+                                        monoBody
+                                        info.monoType
+                            in
+                            ( Mono.MonoDef info.freshName closureExpr
+                            , { state4 | lambdaCounter = state4.lambdaCounter + 1 }
+                            )
+                        )
 
         TOpt.TrackedFunction params bodyExpr funcMeta ->
             let
                 unlocatedParams =
                     List.map (\( A.At _ name, tipe ) -> ( name, tipe )) params
 
-                monoParams =
-                    List.map2
-                        (\( name, _ ) pt -> ( name, pt ))
-                        unlocatedParams
-                        (padOrTruncate paramTypes (List.length unlocatedParams))
+                funcSubst =
+                    TypeSubst.unifyExtend funcMeta.tipe info.monoType Dict.empty
 
-                state1 =
-                    { state | varEnv = State.pushFrame state.varEnv }
 
-                state2 =
-                    List.foldl
-                        (\( n, t ) s -> { s | varEnv = State.insertVar n t s.varEnv })
-                        state1
-                        monoParams
+                innerStack =
+                    case funcMeta.tvar of
+                        Just tvar ->
+                            ( tvar, info.monoType ) :: state.specStack
 
-                ( monoBody, state3 ) =
-                    specializeExpr view snapshot bodyExpr state2
-
-                state4 =
-                    { state3 | varEnv = State.popFrame state3.varEnv }
-
-                captures =
-                    Closure.computeClosureCaptures monoParams monoBody
-
-                closureExpr =
-                    Mono.MonoClosure
-                        { lambdaId = Mono.AnonymousLambda state.currentModule state.lambdaCounter
-                        , captures = captures
-                        , params = monoParams
-                        , closureKind = Nothing
-                        , captureAbi = Nothing
-                        }
-                        monoBody
-                        info.monoType
+                        Nothing ->
+                            state.specStack
             in
-            ( Mono.MonoDef info.freshName closureExpr
-            , { state4 | lambdaCounter = state4.lambdaCounter + 1 }
-            )
+            SolverSnapshot.specializeChainedWithSubst snapshot innerStack funcSubst
+                (\innerView ->
+                    let
+                        monoParams =
+                            List.map2
+                                (\( name, _ ) pt -> ( name, pt ))
+                                unlocatedParams
+                                (padOrTruncate paramTypes (List.length unlocatedParams))
+
+                        state1 =
+                            { state
+                                | varEnv = State.pushFrame state.varEnv
+                                , specStack = innerStack
+                            }
+
+                        -- Insert defName so recursive self-references resolve to concrete type
+                        state1b =
+                            { state1 | varEnv = State.insertVar defName info.monoType state1.varEnv }
+
+                        state2 =
+                            List.foldl
+                                (\( n, t ) s -> { s | varEnv = State.insertVar n t s.varEnv })
+                                state1b
+                                monoParams
+
+                        ( monoBody, state3 ) =
+                            specializeExpr innerView snapshot bodyExpr state2
+
+                        state4 =
+                            { state3
+                                | varEnv = State.popFrame state3.varEnv
+                                , specStack = state.specStack
+                            }
+
+                        captures =
+                            Closure.computeClosureCaptures monoParams monoBody
+
+                        closureExpr =
+                            Mono.MonoClosure
+                                { lambdaId = Mono.AnonymousLambda state.currentModule state.lambdaCounter
+                                , captures = captures
+                                , params = monoParams
+                                , closureKind = Nothing
+                                , captureAbi = Nothing
+                                }
+                                monoBody
+                                info.monoType
+                    in
+                    ( Mono.MonoDef info.freshName closureExpr
+                    , { state4 | lambdaCounter = state4.lambdaCounter + 1 }
+                    )
+                )
 
         _ ->
+            -- Non-function def (e.g. mapId = map (\s -> s)): update view's subst
+            -- with bindings derived from expression type vs requested mono type.
             let
+                defSubst =
+                    TypeSubst.unifyExtend (TOpt.typeOf defExpr) info.monoType view.subst
+
+                innerView =
+                    { view | subst = defSubst }
+
                 ( monoExpr, state1 ) =
-                    specializeExpr view snapshot defExpr state
+                    specializeExpr innerView snapshot defExpr state
             in
             ( Mono.MonoDef info.freshName monoExpr, state1 )
 
@@ -1399,7 +1786,32 @@ specializeCycle snapshot names valueDefs funcDefs requestedMonoType state =
                     ( Mono.MonoExtern requestedMonoType, state )
 
                 Just (Mono.Global requestedCanonical requestedName) ->
-                    SolverSnapshot.withLocalUnification snapshot [] []
+                    let
+                        requestedTvar =
+                            List.filterMap
+                                (\funcDef ->
+                                    let
+                                        ( name, _, tvar ) =
+                                            funcDefInfo funcDef
+                                    in
+                                    if name == requestedName then
+                                        tvar
+
+                                    else
+                                        Nothing
+                                )
+                                funcDefs
+                                |> List.head
+
+                        cycleStack =
+                            case requestedTvar of
+                                Just tvar ->
+                                    ( tvar, requestedMonoType ) :: state.specStack
+
+                                Nothing ->
+                                    state.specStack
+                    in
+                    SolverSnapshot.specializeChained snapshot cycleStack
                         (\view ->
                             let
                                 -- Pre-bind all function names in VarEnv for mutual recursion
@@ -1415,7 +1827,7 @@ specializeCycle snapshot names valueDefs funcDefs requestedMonoType state =
                                             in
                                             { s | varEnv = State.insertVar defName funcMonoType s.varEnv }
                                         )
-                                        state
+                                        { state | specStack = cycleStack }
                                         funcDefs
 
                                 -- Specialize each function def and insert into nodes dict
@@ -1460,12 +1872,20 @@ specializeCycle snapshot names valueDefs funcDefs requestedMonoType state =
                             case Dict.get requestedSpecId newNodes of
                                 Just requestedNode ->
                                     ( requestedNode
-                                    , { stateAfterFuncs | nodes = newNodes, registry = registryAfter }
+                                    , { stateAfterFuncs
+                                        | nodes = newNodes
+                                        , registry = registryAfter
+                                        , specStack = state.specStack
+                                      }
                                     )
 
                                 Nothing ->
                                     ( Mono.MonoExtern requestedMonoType
-                                    , { stateAfterFuncs | nodes = newNodes, registry = registryAfter }
+                                    , { stateAfterFuncs
+                                        | nodes = newNodes
+                                        , registry = registryAfter
+                                        , specStack = state.specStack
+                                      }
                                     )
                         )
 
@@ -1690,18 +2110,17 @@ specializeJumps view snapshot jumps state =
 specializeDestructor : LocalView -> VarEnv -> TypeEnv.GlobalTypeEnv -> TOpt.Destructor -> Mono.MonoDestructor
 specializeDestructor view varEnv globalTypeEnv (TOpt.Destructor name path meta) =
     let
-        monoType =
-            resolveDestructorType view meta
-
         monoPath =
             specializePath view varEnv globalTypeEnv path
+
+        -- Use path-derived type: the MonoPath already computes the correct
+        -- type by navigating from the root variable's resolved type.
+        -- This is essential for record field destructors (PRecord) which
+        -- have tvar=Nothing and can't use solver-based resolution.
+        monoType =
+            Mono.getMonoPathType monoPath
     in
     Mono.MonoDestructor name monoPath monoType
-
-
-specializeDestructorPathType : LocalView -> TOpt.Destructor -> Mono.MonoType
-specializeDestructorPathType view (TOpt.Destructor _ _ meta) =
-    resolveDestructorType view meta
 
 
 {-| Resolve destructor type via solver when tvar is available.
@@ -1722,18 +2141,7 @@ resolveDestructorType view meta =
         normalized =
             Mono.forceCNumberToInt rawType
     in
-    case normalized of
-        Mono.MErased ->
-            Utils.Crash.crash
-                ("MonoDirect.resolveDestructorType: unexpected top-level MErased from solver for "
-                    ++ Debug.toString meta.tipe
-                    ++ " (tvar="
-                    ++ Debug.toString meta.tvar
-                    ++ "). Erasure of CEcoValue vars is handled in assembleRawGraph, not here."
-                )
-
-        _ ->
-            normalized
+    normalized
 
 
 specializePath : LocalView -> VarEnv -> TypeEnv.GlobalTypeEnv -> TOpt.Path -> Mono.MonoPath
@@ -2118,19 +2526,15 @@ isMonomorphicCanType tipe =
 
 extractCtorResultType : Int -> Mono.MonoType -> Mono.MonoType
 extractCtorResultType arity monoType =
-    case monoType of
-        Mono.MFunction args result ->
-            if List.length args >= arity then
-                result
+    if arity <= 0 then
+        monoType
 
-            else
-                monoType
+    else
+        case monoType of
+            Mono.MFunction args result ->
+                extractCtorResultType (arity - List.length args) result
 
-        _ ->
-            if arity == 0 then
-                monoType
-
-            else
+            _ ->
                 monoType
 
 
@@ -2178,6 +2582,23 @@ extractFieldTypes n monoType =
 
             _ ->
                 []
+
+
+{-| Strip N parameter layers from a curried function type to get the return type.
+E.g., stripNParams 2 (MFunction [A] (MFunction [B] C)) = C
+-}
+stripNParams : Int -> Mono.MonoType -> Mono.MonoType
+stripNParams n monoType =
+    if n <= 0 then
+        monoType
+
+    else
+        case monoType of
+            Mono.MFunction args result ->
+                stripNParams (n - List.length args) result
+
+            _ ->
+                monoType
 
 
 padOrTruncate : List a -> Int -> List a

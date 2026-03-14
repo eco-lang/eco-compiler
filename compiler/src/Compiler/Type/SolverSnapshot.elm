@@ -8,6 +8,8 @@ module Compiler.Type.SolverSnapshot exposing
     , resolveVariable
     , withLocalUnification
     , specializeFunction
+    , specializeChained
+    , specializeChainedWithSubst
     , LocalView
     )
 
@@ -127,10 +129,15 @@ lookupDescriptorInState st var =
 
 
 {-| View into solver state after local unification for type queries.
+
+The `subst` field provides a fallback substitution for resolving type variable
+names that are not connected in the solver (e.g., after let-polymorphic
+instantiation disconnects original tvars from the function's type structure).
 -}
 type alias LocalView =
     { typeOf : TypeVar -> Can.Type
     , monoTypeOf : TypeVar -> Mono.MonoType
+    , subst : Dict String Mono.MonoType
     }
 
 
@@ -171,7 +178,7 @@ withLocalUnification snap rootsToRelax equalities callback =
             defaultNumericVarsToInt stateAfterUnify
 
         view =
-            buildLocalView stateAfterDefault
+            buildLocalView Dict.empty stateAfterDefault
     in
     callback view
 
@@ -198,7 +205,34 @@ specializeFunction snap funcTvar requestedMonoType callback =
             defaultNumericVarsToInt stateAfterWalk
 
         view =
-            buildLocalView stateAfterDefault
+            buildLocalView Dict.empty stateAfterDefault
+    in
+    callback view
+
+
+specializeChained : SolverSnapshot -> List ( TypeVar, Mono.MonoType ) -> (LocalView -> a) -> a
+specializeChained snap pairs callback =
+    specializeChainedWithSubst snap pairs Dict.empty callback
+
+
+specializeChainedWithSubst : SolverSnapshot -> List ( TypeVar, Mono.MonoType ) -> Dict String Mono.MonoType -> (LocalView -> a) -> a
+specializeChainedWithSubst snap pairs substDict callback =
+    let
+        localState =
+            snapshotToIoState snap.state
+
+        stateAfterAll =
+            List.foldr
+                (\( tv, mt ) st -> walkAndUnify st tv mt)
+                localState
+                pairs
+
+        stateAfterDefault =
+            defaultNumericVarsToInt stateAfterAll
+
+        view =
+            buildLocalView substDict stateAfterDefault
+
     in
     callback view
 
@@ -216,8 +250,8 @@ snapshotToIoState ss =
     }
 
 
-buildLocalView : IO.State -> LocalView
-buildLocalView st =
+buildLocalView : Dict String Mono.MonoType -> IO.State -> LocalView
+buildLocalView substDict st =
     let
         typeOfVar : TypeVar -> Can.Type
         typeOfVar var =
@@ -234,10 +268,11 @@ buildLocalView st =
 
         monoTypeOfVar : TypeVar -> Mono.MonoType
         monoTypeOfVar var =
-            TypeSubst.canTypeToMonoType Dict.empty (typeOfVar var)
+            TypeSubst.canTypeToMonoType substDict (typeOfVar var)
     in
     { typeOf = typeOfVar
     , monoTypeOf = monoTypeOfVar
+    , subst = substDict
     }
 
 
@@ -547,9 +582,6 @@ monoTypeToVar monoType st =
                     monoTypesToVars args st
             in
             freshStructureVar (IO.App1 canonical name argVars) stN
-
-        Mono.MErased ->
-            freshFlexVar st
 
         Mono.MVar _ _ ->
             freshFlexVar st

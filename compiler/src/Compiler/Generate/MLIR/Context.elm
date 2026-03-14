@@ -351,8 +351,6 @@ getOrCreateTypeIdForMonoType monoType ctx =
                 Mono.MVar _ _ ->
                     []
 
-                Mono.MErased ->
-                    []
 
         -- Register a single type (assuming all nested types are already registered)
         registerSingleType : Mono.MonoType -> Context -> Context

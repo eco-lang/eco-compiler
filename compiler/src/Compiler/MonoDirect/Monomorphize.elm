@@ -325,84 +325,17 @@ assembleRawGraph state mainSpecId =
         nextId =
             state.registry.nextId
 
-        patchedNodes =
+        -- Store nodes directly — no erasure pass needed.
+        -- Remaining MVar _ CEcoValue compile identically to eco.value in codegen.
+        nodesArray =
             let
                 base =
                     Array.repeat nextId Nothing
             in
             Dict.foldl
-                (\specId node acc ->
-                    let
-                        isValueUsed =
-                            BitSet.member specId valueUsedWithMain
-
-                        keyHasCEcoMVar =
-                            case Array.get specId state.registry.reverseMapping of
-                                Just (Just ( _, keyType, _ )) ->
-                                    Mono.containsCEcoMVar keyType
-
-                                _ ->
-                                    False
-
-                        patched =
-                            if isValueUsed then
-                                if keyHasCEcoMVar then
-                                    patchNodeTypesCEcoToErased node
-
-                                else
-                                    patchInternalExprCEcoToErased node
-
-                            else
-                                patchNodeTypesToErased node
-                    in
-                    Array.set specId (Just patched) acc
-                )
+                (\specId node acc -> Array.set specId (Just node) acc)
                 base
                 state.nodes
-
-        patchedRegistry =
-            let
-                oldReg =
-                    state.registry
-
-                newReverseMapping =
-                    Array.indexedMap
-                        (\specId entry ->
-                            case entry of
-                                Just ( global, _, maybeLambda ) ->
-                                    case Array.get specId patchedNodes |> Maybe.andThen identity of
-                                        Just patchedNode ->
-                                            Just ( global, Mono.nodeType patchedNode, maybeLambda )
-
-                                        Nothing ->
-                                            entry
-
-                                Nothing ->
-                                    Nothing
-                        )
-                        oldReg.reverseMapping
-
-                newMapping =
-                    List.foldl
-                        (\( specId, maybeEntry ) acc ->
-                            case maybeEntry of
-                                Just ( global, monoType, maybeLambda ) ->
-                                    let
-                                        key =
-                                            Mono.toComparableSpecKey (Mono.SpecKey global monoType maybeLambda)
-                                    in
-                                    Dict.insert key specId acc
-
-                                Nothing ->
-                                    acc
-                        )
-                        Dict.empty
-                        (Array.toIndexedList newReverseMapping)
-            in
-            { nextId = oldReg.nextId
-            , mapping = newMapping
-            , reverseMapping = newReverseMapping
-            }
 
         callEdgesArray =
             let
@@ -415,8 +348,8 @@ assembleRawGraph state mainSpecId =
                 state.callEdges
     in
     Mono.MonoGraph
-        { nodes = patchedNodes
-        , registry = patchedRegistry
+        { nodes = nodesArray
+        , registry = state.registry
         , main = mainInfo
         , ctorShapes = Dict.empty
         , nextLambdaIndex = state.lambdaCounter
@@ -521,150 +454,3 @@ nodeHasEffects node =
 
 
 
--- ========== TYPE ERASURE ==========
-
-
-patchNodeTypesToErased : Mono.MonoNode -> Mono.MonoNode
-patchNodeTypesToErased node =
-    case node of
-        Mono.MonoDefine expr t ->
-            Mono.MonoDefine (mapExprTypes Mono.eraseTypeVarsToErased expr) (Mono.eraseTypeVarsToErased t)
-
-        Mono.MonoTailFunc params expr t ->
-            Mono.MonoTailFunc
-                (List.map (\( n, pt ) -> ( n, Mono.eraseTypeVarsToErased pt )) params)
-                (mapExprTypes Mono.eraseTypeVarsToErased expr)
-                (Mono.eraseTypeVarsToErased t)
-
-        _ ->
-            node
-
-
-patchNodeTypesCEcoToErased : Mono.MonoNode -> Mono.MonoNode
-patchNodeTypesCEcoToErased node =
-    case node of
-        Mono.MonoDefine expr t ->
-            Mono.MonoDefine (mapExprTypes Mono.eraseCEcoVarsToErased expr) (Mono.eraseCEcoVarsToErased t)
-
-        Mono.MonoTailFunc params expr t ->
-            Mono.MonoTailFunc
-                (List.map (\( n, pt ) -> ( n, Mono.eraseCEcoVarsToErased pt )) params)
-                (mapExprTypes Mono.eraseCEcoVarsToErased expr)
-                (Mono.eraseCEcoVarsToErased t)
-
-        Mono.MonoCycle defs t ->
-            Mono.MonoCycle
-                (List.map (\( name, expr ) -> ( name, mapExprTypes Mono.eraseCEcoVarsToErased expr )) defs)
-                (Mono.eraseCEcoVarsToErased t)
-
-        _ ->
-            node
-
-
-patchInternalExprCEcoToErased : Mono.MonoNode -> Mono.MonoNode
-patchInternalExprCEcoToErased node =
-    case node of
-        Mono.MonoDefine expr t ->
-            Mono.MonoDefine (mapExprTypes Mono.eraseCEcoVarsToErased expr) t
-
-        Mono.MonoTailFunc params expr t ->
-            Mono.MonoTailFunc params (mapExprTypes Mono.eraseCEcoVarsToErased expr) t
-
-        _ ->
-            node
-
-
-mapExprTypes : (Mono.MonoType -> Mono.MonoType) -> Mono.MonoExpr -> Mono.MonoExpr
-mapExprTypes f =
-    Traverse.mapExpr (mapOneExprType f)
-
-
-mapOneExprType : (Mono.MonoType -> Mono.MonoType) -> Mono.MonoExpr -> Mono.MonoExpr
-mapOneExprType f expr =
-    case expr of
-        Mono.MonoLiteral lit t ->
-            Mono.MonoLiteral lit (f t)
-
-        Mono.MonoVarLocal name t ->
-            Mono.MonoVarLocal name (f t)
-
-        Mono.MonoVarGlobal region specId t ->
-            Mono.MonoVarGlobal region specId (f t)
-
-        Mono.MonoVarKernel region home name t ->
-            Mono.MonoVarKernel region home name (f t)
-
-        Mono.MonoList region items t ->
-            Mono.MonoList region items (f t)
-
-        Mono.MonoClosure info body t ->
-            let
-                newParams =
-                    List.map (\( n, pt ) -> ( n, f pt )) info.params
-            in
-            Mono.MonoClosure { info | params = newParams } body (f t)
-
-        Mono.MonoCall region func args t callInfo ->
-            Mono.MonoCall region func args (f t) callInfo
-
-        Mono.MonoTailCall name args t ->
-            Mono.MonoTailCall name args (f t)
-
-        Mono.MonoIf branches elseExpr t ->
-            Mono.MonoIf branches elseExpr (f t)
-
-        Mono.MonoLet def body t ->
-            let
-                newDef =
-                    case def of
-                        Mono.MonoDef n bound ->
-                            Mono.MonoDef n bound
-
-                        Mono.MonoTailDef n params bound ->
-                            Mono.MonoTailDef n
-                                (List.map (\( pn, pt ) -> ( pn, f pt )) params)
-                                bound
-            in
-            Mono.MonoLet newDef body (f t)
-
-        Mono.MonoDestruct destr inner t ->
-            Mono.MonoDestruct (mapDestructorTypes f destr) inner (f t)
-
-        Mono.MonoCase x y decider jumps t ->
-            Mono.MonoCase x y decider jumps (f t)
-
-        Mono.MonoRecordCreate fields t ->
-            Mono.MonoRecordCreate fields (f t)
-
-        Mono.MonoRecordAccess inner field t ->
-            Mono.MonoRecordAccess inner field (f t)
-
-        Mono.MonoRecordUpdate record updates t ->
-            Mono.MonoRecordUpdate record updates (f t)
-
-        Mono.MonoTupleCreate region elems t ->
-            Mono.MonoTupleCreate region elems (f t)
-
-        Mono.MonoUnit ->
-            Mono.MonoUnit
-
-
-mapDestructorTypes : (Mono.MonoType -> Mono.MonoType) -> Mono.MonoDestructor -> Mono.MonoDestructor
-mapDestructorTypes f (Mono.MonoDestructor name path pathType) =
-    Mono.MonoDestructor name (mapPathTypes f path) (f pathType)
-
-
-mapPathTypes : (Mono.MonoType -> Mono.MonoType) -> Mono.MonoPath -> Mono.MonoPath
-mapPathTypes f path =
-    case path of
-        Mono.MonoIndex idx kind t inner ->
-            Mono.MonoIndex idx kind (f t) (mapPathTypes f inner)
-
-        Mono.MonoField name t inner ->
-            Mono.MonoField name (f t) (mapPathTypes f inner)
-
-        Mono.MonoUnbox t inner ->
-            Mono.MonoUnbox (f t) (mapPathTypes f inner)
-
-        Mono.MonoRoot name t ->
-            Mono.MonoRoot name (f t)

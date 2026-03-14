@@ -4,7 +4,6 @@ module Compiler.Monomorphize.TypeSubst exposing
     , canTypeToMonoType
     , constraintFromName
     , unify, unifyExtend, unifyArgsOnly, extractParamTypes
-    , fillUnconstrainedCEcoWithErased, fillUnconstrainedCEcoWithErasedFromScheme
     , monoTypeContainsMVar
     , collectCanTypeVars
     , resolveMonoVars
@@ -31,11 +30,6 @@ by applying type variable substitutions.
 # Unification
 
 @docs unify, unifyExtend, unifyArgsOnly, unifyCallSiteDirect, extractParamTypes
-
-
-# CEco Variable Filling
-
-@docs fillUnconstrainedCEcoWithErased, fillUnconstrainedCEcoWithErasedFromScheme
 
 
 # Scheme Construction
@@ -292,18 +286,7 @@ unifyHelp canType monoType subst =
                         substWithTransitives =
                             unifyMonoMono existingMono monoType subst
                     in
-                    case ( existingMono, monoType ) of
-                        -- New type is MErased, existing is concrete: keep existing
-                        ( _, Mono.MErased ) ->
-                            substWithTransitives
-
-                        -- Existing is MErased, new is concrete: upgrade to concrete
-                        ( Mono.MErased, _ ) ->
-                            insertBindingSafe name monoType substWithTransitives
-
-                        -- Both non-erased: default behavior (overwrite with new)
-                        _ ->
-                            insertBindingSafe name monoType substWithTransitives
+                    insertBindingSafe name monoType substWithTransitives
 
                 Nothing ->
                     insertBindingSafe name monoType subst
@@ -603,31 +586,6 @@ resolveMonoVarsHelp visiting subst monoType =
             ( False, monoType )
 
 
-{-| Extend a substitution by mapping any CEcoValue TVar in the canonical type
-that is still unmapped to Mono.MErased. Used for functions whose some type
-parameters are genuinely phantom at a given specialization.
--}
-fillUnconstrainedCEcoWithErased : Can.Type -> Substitution -> Substitution
-fillUnconstrainedCEcoWithErased canType subst =
-    let
-        vars =
-            collectCanTypeVars canType []
-    in
-    List.foldl
-        (\name acc ->
-            if Dict.member name acc then
-                acc
-
-            else
-                case constraintFromName name of
-                    Mono.CEcoValue ->
-                        Dict.insert name Mono.MErased acc
-
-                    Mono.CNumber ->
-                        acc
-        )
-        subst
-        vars
 
 
 {-| Collect all TVar names from a canonical type.
@@ -1180,29 +1138,6 @@ normalizeAndOccursCheckDict targetName subst fields =
         fields
 
 
--- ========== SCHEME-AWARE FILL ==========
-
-
-{-| Like fillUnconstrainedCEcoWithErased but uses precomputed SchemeInfo
-to avoid re-collecting type vars and re-computing constraints.
--}
-fillUnconstrainedCEcoWithErasedFromScheme : SchemeInfo -> Substitution -> Substitution
-fillUnconstrainedCEcoWithErasedFromScheme info subst =
-    List.foldl
-        (\name acc ->
-            if Dict.member name acc then
-                acc
-
-            else
-                case Dict.get name info.constraints of
-                    Just Mono.CEcoValue ->
-                        Dict.insert name Mono.MErased acc
-
-                    _ ->
-                        acc
-        )
-        subst
-        info.varNames
 
 
 {-| Derive a constraint from a type variable name.

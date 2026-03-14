@@ -17,8 +17,8 @@ module Compiler.AST.Monomorphized exposing
     , CallModel(..), CallInfo, defaultCallInfo
     , ClosureKindId(..), ClosureKind(..), MaybeClosureKind
     , CaptureABI
-    , containsAnyMVar, containsCEcoMVar, eraseCEcoVarsToErased, eraseCEcoVarsToErasedHelp, eraseTypeVarsToErased, eraseTypeVarsToErasedHelp
-    , listMapChanged, resultTypeOf
+    , containsAnyMVar
+    , resultTypeOf
     -- Typed closure calling (ABI cloning)
     -- Call staging metadata
     -- Staging/Segmentation helpers
@@ -136,14 +136,9 @@ This module defines the data structures for the monomorphized program
 @docs CaptureABI
 
 
-# Type Variable Erasure
-
-@docs containsAnyMVar, containsCEcoMVar, eraseCEcoVarsToErased, eraseCEcoVarsToErasedHelp, eraseTypeVarsToErased, eraseTypeVarsToErasedHelp
-
-
 # Misc Helpers
 
-@docs listMapChanged, resultTypeOf
+@docs containsAnyMVar, resultTypeOf
 
 -}
 
@@ -197,14 +192,6 @@ INVARIANTS BY PHASE:
 The actual specialization to `MInt` or `MFloat` is expected tp be done at call
 sites during code generation.
 
-`MErased` is an internal monomorphization-only type that replaces `MVar` in
-two cases: (1) dead-value specializations whose value is never used (all MVars
-erased), and (2) value-used specializations whose key type is still polymorphic
-(only CEcoValue MVars erased — these are phantom type variables never constrained
-by any call site). MErased is always treated as boxed `!eco.value` for layout
-and ABI purposes and must not influence unboxing or staging decisions. In codegen,
-MErased is mapped to `!eco.value` at all boundaries (ABI, SSA operand, type table).
-
 -}
 type MonoType
     = MInt
@@ -219,7 +206,6 @@ type MonoType
     | MCustom IO.Canonical Name (List MonoType)
     | MFunction (List MonoType) MonoType
     | MVar Name Constraint
-    | MErased -- Erased type for dead-value specs and phantom type vars in polymorphic-key specs; always boxed !eco.value
 
 
 {-| Constraint on an unspecialized type variable in `MonoType`.
@@ -316,90 +302,6 @@ resultTypeOf monoType =
             monoType
 
 
-{-| Recursively replace all type variables (`MVar`) with `MErased`.
-
-Used to normalize the types of specializations whose value is never used,
-so that remaining polymorphic type variables don't trigger MONO\_021 violations
-for dead-value nodes.
-
-Uses a changed-flag pattern to avoid rebuilding the type tree when no MVars
-are present (the common case for fully-specialized types).
-
--}
-eraseTypeVarsToErased : MonoType -> MonoType
-eraseTypeVarsToErased monoType =
-    Tuple.second (eraseTypeVarsToErasedHelp monoType)
-
-
-{-| Changed-flag variant: returns (True, newType) if any MVar was erased,
-or (False, originalType) if the type was unchanged.
--}
-eraseTypeVarsToErasedHelp : MonoType -> ( Bool, MonoType )
-eraseTypeVarsToErasedHelp monoType =
-    case monoType of
-        MVar _ _ ->
-            ( True, MErased )
-
-        MList t ->
-            let
-                ( changed, newT ) =
-                    eraseTypeVarsToErasedHelp t
-            in
-            if changed then
-                ( True, MList newT )
-
-            else
-                ( False, monoType )
-
-        MFunction args result ->
-            let
-                ( argsChanged, newArgs ) =
-                    listMapChanged eraseTypeVarsToErasedHelp args
-
-                ( resultChanged, newResult ) =
-                    eraseTypeVarsToErasedHelp result
-            in
-            if argsChanged || resultChanged then
-                ( True, MFunction newArgs newResult )
-
-            else
-                ( False, monoType )
-
-        MTuple elems ->
-            let
-                ( changed, newElems ) =
-                    listMapChanged eraseTypeVarsToErasedHelp elems
-            in
-            if changed then
-                ( True, MTuple newElems )
-
-            else
-                ( False, monoType )
-
-        MRecord fields ->
-            let
-                ( changed, newFields ) =
-                    dictMapChanged eraseTypeVarsToErasedHelp fields
-            in
-            if changed then
-                ( True, MRecord newFields )
-
-            else
-                ( False, monoType )
-
-        MCustom can name args ->
-            let
-                ( changed, newArgs ) =
-                    listMapChanged eraseTypeVarsToErasedHelp args
-            in
-            if changed then
-                ( True, MCustom can name newArgs )
-
-            else
-                ( False, monoType )
-
-        _ ->
-            ( False, monoType )
 
 
 {-| Check whether a MonoType contains any `MVar` (any constraint).
@@ -429,180 +331,6 @@ containsAnyMVar monoType =
             False
 
 
-{-| Check whether a MonoType contains any `MVar _ CEcoValue`.
-
-Used to determine if a specialization's key type is still polymorphic
-(has unconstrained type variables). CNumber MVars are ignored since they
-are resolved separately via `forceCNumberToInt`.
-
--}
-containsCEcoMVar : MonoType -> Bool
-containsCEcoMVar monoType =
-    case monoType of
-        MVar _ CEcoValue ->
-            True
-
-        MVar _ CNumber ->
-            False
-
-        MList t ->
-            containsCEcoMVar t
-
-        MFunction args result ->
-            List.any containsCEcoMVar args || containsCEcoMVar result
-
-        MTuple elems ->
-            List.any containsCEcoMVar elems
-
-        MRecord fields ->
-            Dict.foldl (\_ t acc -> acc || containsCEcoMVar t) False fields
-
-        MCustom _ _ args ->
-            List.any containsCEcoMVar args
-
-        _ ->
-            False
-
-
-{-| Erase only `MVar _ CEcoValue` to `MErased`, leaving `MVar _ CNumber` intact.
-
-Used for value-used specializations whose key type is still polymorphic.
-These CEcoValue MVars are phantom type variables that were never constrained
-by any call site. CNumber MVars are preserved to avoid hiding numeric
-specialization bugs.
-
-Uses a changed-flag pattern to avoid rebuilding the type tree when no
-CEcoValue MVars are present.
-
--}
-eraseCEcoVarsToErased : MonoType -> MonoType
-eraseCEcoVarsToErased monoType =
-    Tuple.second (eraseCEcoVarsToErasedHelp monoType)
-
-
-{-| Changed-flag variant: returns (True, newType) if any CEcoValue MVar was erased,
-or (False, originalType) if the type was unchanged.
--}
-eraseCEcoVarsToErasedHelp : MonoType -> ( Bool, MonoType )
-eraseCEcoVarsToErasedHelp monoType =
-    case monoType of
-        MVar _ CEcoValue ->
-            ( True, MErased )
-
-        MVar _ CNumber ->
-            ( False, monoType )
-
-        MList t ->
-            let
-                ( changed, newT ) =
-                    eraseCEcoVarsToErasedHelp t
-            in
-            if changed then
-                ( True, MList newT )
-
-            else
-                ( False, monoType )
-
-        MFunction args result ->
-            let
-                ( argsChanged, newArgs ) =
-                    listMapChanged eraseCEcoVarsToErasedHelp args
-
-                ( resultChanged, newResult ) =
-                    eraseCEcoVarsToErasedHelp result
-            in
-            if argsChanged || resultChanged then
-                ( True, MFunction newArgs newResult )
-
-            else
-                ( False, monoType )
-
-        MTuple elems ->
-            let
-                ( changed, newElems ) =
-                    listMapChanged eraseCEcoVarsToErasedHelp elems
-            in
-            if changed then
-                ( True, MTuple newElems )
-
-            else
-                ( False, monoType )
-
-        MRecord fields ->
-            let
-                ( changed, newFields ) =
-                    dictMapChanged eraseCEcoVarsToErasedHelp fields
-            in
-            if changed then
-                ( True, MRecord newFields )
-
-            else
-                ( False, monoType )
-
-        MCustom can name args ->
-            let
-                ( changed, newArgs ) =
-                    listMapChanged eraseCEcoVarsToErasedHelp args
-            in
-            if changed then
-                ( True, MCustom can name newArgs )
-
-            else
-                ( False, monoType )
-
-        _ ->
-            ( False, monoType )
-
-
-{-| Map a changed-flag function over a list. Returns (True, newList) if any element
-changed, or (False, originalList) if no element changed.
--}
-listMapChanged : (a -> ( Bool, a )) -> List a -> ( Bool, List a )
-listMapChanged f list =
-    listMapChangedHelp f list list False []
-
-
-listMapChangedHelp : (a -> ( Bool, a )) -> List a -> List a -> Bool -> List a -> ( Bool, List a )
-listMapChangedHelp f remaining original anyChanged acc =
-    case remaining of
-        [] ->
-            if anyChanged then
-                ( True, List.reverse acc )
-
-            else
-                ( False, original )
-
-        x :: xs ->
-            let
-                ( changed, newX ) =
-                    f x
-            in
-            listMapChangedHelp f xs original (anyChanged || changed) (newX :: acc)
-
-
-{-| Map a changed-flag function over Dict values. Returns (True, newDict) if any
-value changed, or (False, originalDict) if no value changed.
--}
-dictMapChanged : (v -> ( Bool, v )) -> Dict comparable v -> ( Bool, Dict comparable v )
-dictMapChanged f dict =
-    let
-        fold key val accPair =
-            let
-                ( valChanged, newVal ) =
-                    f val
-            in
-            if valChanged then
-                ( True, Dict.insert key newVal (Tuple.second accPair) )
-
-            else
-                accPair
-    in
-    case Dict.foldl fold ( False, dict ) dict of
-        ( True, newDict ) ->
-            ( True, newDict )
-
-        _ ->
-            ( False, dict )
 
 
 {-| Identifier for lambda functions in lambda sets, distinguishing named functions from closures.
@@ -910,9 +638,6 @@ monoTypeToDebugString monoType =
         MVar name _ ->
             "MVar " ++ name
 
-        MErased ->
-            "MErased"
-
 
 {-| Decision tree for pattern matching.
 
@@ -1132,9 +857,6 @@ toComparableMonoTypeHelper work acc =
                             List.foldl (\t w -> WorkType t :: w) workWithRetAndMarker args
                     in
                     toComparableMonoTypeHelper newWork ("Function{" :: acc)
-
-                MErased ->
-                    toComparableMonoTypeHelper rest ("Erased" :: acc)
 
 
 {-| Convert a constraint to a string for comparison purposes.

@@ -65,7 +65,7 @@ find /work/compiler/build-kernel/eco-stuff -name '*.ecot' -delete
 
 ```bash
 cd /work/compiler/build-kernel
-node bin/eco-boot-2-runner.js make \
+node --stack-size=65536 bin/eco-boot-2-runner.js make \
     --optimize \
     --kernel-package eco/compiler \
     --local-package eco/kernel=/work/eco-kernel-cpp \
@@ -88,7 +88,7 @@ cd /work/compiler
 # Clean stale local typed-object caches before Stage 5
 find build-kernel/eco-stuff -name '*.ecot' -delete
 cd build-kernel
-node bin/eco-boot-2-runner.js make \
+node --stack-size=65536 bin/eco-boot-2-runner.js make \
     --optimize \
     --kernel-package eco/compiler \
     --local-package eco/kernel=/work/eco-kernel-cpp \

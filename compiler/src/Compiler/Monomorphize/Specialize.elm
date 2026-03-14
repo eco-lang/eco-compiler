@@ -654,14 +654,8 @@ specializeNode ctorName node requestedMonoType state =
                 -- The annotation canType may be fully resolved (no TVars) while internal
                 -- expressions retain unresolved TVars. This enriches the substitution
                 -- with bindings for those internal TVars.
-                subst1 =
-                    TypeSubst.unifyExtend (TOpt.typeOf expr) requestedMonoType subst0
-
-                -- Fill any unconstrained CEcoValue TVars with MErased.
-                -- These are genuinely phantom (e.g., unused type params like `b`
-                -- in `Either a b` when only `a` is constrained at this call site).
                 subst =
-                    TypeSubst.fillUnconstrainedCEcoWithErased canType subst1
+                    TypeSubst.unifyExtend (TOpt.typeOf expr) requestedMonoType subst0
 
                 ( monoExpr, state1 ) =
                     specializeExpr expr subst state
@@ -680,12 +674,8 @@ specializeNode ctorName node requestedMonoType state =
                 subst0 =
                     TypeSubst.unify canType requestedMonoType
 
-                subst1 =
-                    TypeSubst.unifyExtend (TOpt.typeOf expr) requestedMonoType subst0
-
-                -- Fill any unconstrained CEcoValue TVars with MErased.
                 subst =
-                    TypeSubst.fillUnconstrainedCEcoWithErased canType subst1
+                    TypeSubst.unifyExtend (TOpt.typeOf expr) requestedMonoType subst0
 
                 ( monoExpr, state1 ) =
                     specializeExpr expr subst state
@@ -999,24 +989,18 @@ specializeFuncDefInCycle subst def state =
                         subst
                         (List.map2 Tuple.pair args monoArgs)
 
-                -- Fill any unconstrained CEcoValue TVars with MErased.
-                finalSubst =
-                    TypeSubst.fillUnconstrainedCEcoWithErased returnType augmentedSubst
-
                 ( monoBody, state1pre ) =
-                    specializeExpr body finalSubst stateWithParams
+                    specializeExpr body augmentedSubst stateWithParams
 
                 state1 =
                     { state1pre | ctx = let ctx1 = state1pre.ctx in { ctx1 | varEnv = State.popFrame ctx1.varEnv } }
 
-                -- FIX: Use finalSubst (not subst) so the type reflects param constraints
-                -- (e.g., number constraints resolved to MInt/MFloat).
                 -- Note: `returnType` is misleadingly named - it's actually the FULL function
                 -- type of the definition (e.g., Int -> Int -> Int becomes MFunction [MInt] (MFunction [MInt] MInt)).
                 -- Context.extractNodeSignature expects this full function type and extracts
                 -- the actual return type from it.
                 monoFuncType =
-                    Mono.forceCNumberToInt (TypeSubst.applySubst finalSubst returnType)
+                    Mono.forceCNumberToInt (TypeSubst.applySubst augmentedSubst returnType)
             in
             ( Mono.MonoTailFunc monoArgs monoBody monoFuncType, state1 )
 
@@ -1262,17 +1246,17 @@ specializeExpr expr subst state =
                 ( monoExprs, stateAfter ) =
                     specializeExprs exprs subst state
 
-                -- If the canonical element type has unresolved TVars, infer from first element.
+                -- If the element type has unresolved TVars, infer from first element.
                 monoType =
-                    if Mono.containsCEcoMVar monoType0 then
+                    if Mono.containsAnyMVar monoType0 then
                         case monoExprs of
                             first :: _ ->
                                 Mono.MList (Mono.typeOf first)
 
                             [] ->
-                                -- Empty list: element type is unconstrained and never
-                                -- affects layout. Treat as phantom (MErased).
-                                Mono.eraseCEcoVarsToErased monoType0
+                                -- Empty list: element type is unconstrained, leave as-is.
+                                -- MVar _ CEcoValue compiles identically to eco.value.
+                                monoType0
 
                     else
                         monoType0
@@ -1533,7 +1517,7 @@ specializeExpr expr subst state =
                 -- If the canonical type had unresolved TVars (producing CEcoValue),
                 -- look up the result type from the tail-called function's registered type.
                 monoType =
-                    if Mono.containsCEcoMVar monoType0 then
+                    if Mono.containsAnyMVar monoType0 then
                         case State.lookupVar name stateAfter.ctx.varEnv of
                             Just funcType ->
                                 Mono.resultTypeOf funcType
@@ -1563,7 +1547,7 @@ specializeExpr expr subst state =
                 -- If the canonical type had unresolved TVars (producing CEcoValue),
                 -- infer the concrete type from the specialized final branch instead.
                 monoType =
-                    if Mono.containsCEcoMVar monoType0 then
+                    if Mono.containsAnyMVar monoType0 then
                         Mono.typeOf monoFinal
 
                     else
@@ -1618,7 +1602,7 @@ specializeExpr expr subst state =
                                         Mono.forceCNumberToInt (TypeSubst.applySubst subst defCanType)
 
                                     defMonoType =
-                                        if Mono.containsCEcoMVar defMonoType0 then
+                                        if Mono.containsAnyMVar defMonoType0 then
                                             monoDefExprType monoDef
 
                                         else
@@ -1628,7 +1612,7 @@ specializeExpr expr subst state =
                                     -- the concrete def type, so the body sees them.
                                     -- This mirrors the non-function let branch below.
                                     enrichedSubst =
-                                        if Mono.containsCEcoMVar defMonoType0 then
+                                        if Mono.containsAnyMVar defMonoType0 then
                                             TypeSubst.unifyExtend defCanType defMonoType subst
 
                                         else
@@ -1640,7 +1624,7 @@ specializeExpr expr subst state =
                                     -- Re-specialize body with enriched substitution
                                     -- so downstream expressions see the concrete def type.
                                     ( monoBody2, state2 ) =
-                                        if Mono.containsCEcoMVar defMonoType0 then
+                                        if Mono.containsAnyMVar defMonoType0 then
                                             specializeExpr body enrichedSubst stateWithVar
 
                                         else
@@ -1648,7 +1632,7 @@ specializeExpr expr subst state =
                                 in
                                 ( Mono.MonoLet monoDef
                                     monoBody2
-                                    (if Mono.containsCEcoMVar monoType0 then
+                                    (if Mono.containsAnyMVar monoType0 then
                                         Mono.typeOf monoBody2
 
                                      else
@@ -1720,14 +1704,14 @@ specializeExpr expr subst state =
                                     Mono.forceCNumberToInt (TypeSubst.applySubst subst defCanType)
 
                                 defMonoType =
-                                    if Mono.containsCEcoMVar defMonoType0 then
+                                    if Mono.containsAnyMVar defMonoType0 then
                                         monoDefExprType monoDef
 
                                     else
                                         defMonoType0
 
                                 enrichedSubst =
-                                    if Mono.containsCEcoMVar defMonoType0 then
+                                    if Mono.containsAnyMVar defMonoType0 then
                                         TypeSubst.unifyExtend defCanType defMonoType subst
 
                                     else
@@ -1737,7 +1721,7 @@ specializeExpr expr subst state =
                                     { state1 | ctx = let c1f = state1.ctx in { c1f | varEnv = State.insertVar defName defMonoType c1f.varEnv } }
 
                                 ( monoBody2, state2 ) =
-                                    if Mono.containsCEcoMVar defMonoType0 then
+                                    if Mono.containsAnyMVar defMonoType0 then
                                         specializeExpr body enrichedSubst stateWithVar
 
                                     else
@@ -1745,7 +1729,7 @@ specializeExpr expr subst state =
                             in
                             ( Mono.MonoLet monoDef
                                 monoBody2
-                                (if Mono.containsCEcoMVar monoType0 then
+                                (if Mono.containsAnyMVar monoType0 then
                                     Mono.typeOf monoBody2
 
                                  else
@@ -1795,14 +1779,14 @@ specializeExpr expr subst state =
                                             Mono.forceCNumberToInt (TypeSubst.applySubst subst defCanType)
 
                                         defMonoType =
-                                            if Mono.containsCEcoMVar defMonoType0 then
+                                            if Mono.containsAnyMVar defMonoType0 then
                                                 monoDefExprType monoDef
 
                                             else
                                                 defMonoType0
 
                                         enrichedSubst =
-                                            if Mono.containsCEcoMVar defMonoType0 then
+                                            if Mono.containsAnyMVar defMonoType0 then
                                                 TypeSubst.unifyExtend defCanType defMonoType subst
 
                                             else
@@ -1812,7 +1796,7 @@ specializeExpr expr subst state =
                                             { state1 | ctx = let cvme = state1.ctx in { cvme | varEnv = State.insertVar defName defMonoType cvme.varEnv } }
 
                                         ( monoBody2, state2 ) =
-                                            if Mono.containsCEcoMVar defMonoType0 then
+                                            if Mono.containsAnyMVar defMonoType0 then
                                                 specializeExpr body enrichedSubst stateWithVar
 
                                             else
@@ -1820,7 +1804,7 @@ specializeExpr expr subst state =
                                     in
                                     ( Mono.MonoLet monoDef
                                         monoBody2
-                                        (if Mono.containsCEcoMVar monoType0 then
+                                        (if Mono.containsAnyMVar monoType0 then
                                             Mono.typeOf monoBody2
 
                                          else
@@ -1889,7 +1873,7 @@ specializeExpr expr subst state =
 
                             -- If defCanType has unresolved TVars, infer from the specialized expr.
                             defMonoType =
-                                if Mono.containsCEcoMVar defMonoType0 then
+                                if Mono.containsAnyMVar defMonoType0 then
                                     monoDefExprType monoDef
 
                                 else
@@ -1898,7 +1882,7 @@ specializeExpr expr subst state =
                             -- Also enrich the substitution with any bindings discovered
                             -- from the concrete def type, so the body sees them.
                             enrichedSubst =
-                                if Mono.containsCEcoMVar defMonoType0 then
+                                if Mono.containsAnyMVar defMonoType0 then
                                     TypeSubst.unifyExtend defCanType defMonoType subst
 
                                 else
@@ -1912,7 +1896,7 @@ specializeExpr expr subst state =
                         in
                         ( Mono.MonoLet monoDef
                             monoBody
-                            (if Mono.containsCEcoMVar monoType0 then
+                            (if Mono.containsAnyMVar monoType0 then
                                 Mono.typeOf monoBody
 
                              else
@@ -1942,7 +1926,7 @@ specializeExpr expr subst state =
                     specializeExpr body subst stateWithVar
 
                 monoType =
-                    if Mono.containsCEcoMVar monoType0 then
+                    if Mono.containsAnyMVar monoType0 then
                         Mono.typeOf monoBody
 
                     else
@@ -1976,7 +1960,7 @@ specializeExpr expr subst state =
                 root
                 monoDecider0
                 monoJumps0
-                (if Mono.containsCEcoMVar monoTypeFromCan then
+                (if Mono.containsAnyMVar monoTypeFromCan then
                     -- Infer from first jump or decider leaf
                     inferCaseType monoDecider0 monoJumps0 monoTypeFromCan
 
@@ -3146,7 +3130,7 @@ callResultMonoType callerSubst callSubst canType =
         fromCaller =
             Mono.forceCNumberToInt (TypeSubst.applySubst callerSubst canType)
     in
-    if Mono.containsCEcoMVar fromCaller then
+    if Mono.containsAnyMVar fromCaller then
         Mono.forceCNumberToInt (TypeSubst.applySubst callSubst canType)
 
     else
@@ -3258,10 +3242,6 @@ isFullyMonomorphicType monoType =
             True
 
         Mono.MUnit ->
-            True
-
-        -- MErased is fully resolved (erased, not a variable)
-        Mono.MErased ->
             True
 
 

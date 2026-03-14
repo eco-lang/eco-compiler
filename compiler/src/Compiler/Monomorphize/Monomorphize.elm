@@ -182,97 +182,22 @@ assembleRawGraph finalState mainSpecIdVal =
         valueUsedWithMain =
             BitSet.insertGrowing mainSpecIdVal finalAccum.specValueUsed
 
-        -- Key-type-aware erasure of remaining MVars:
-        -- 1. Dead-value specs (not value-used): erase ALL MVars to MErased
-        -- 2. Value-used specs with polymorphic key type: erase only CEcoValue MVars
-        --    (phantom type variables never constrained by any call site)
-        -- 3. Value-used specs with monomorphic key type: leave unchanged
-        --    (any remaining MVars are real specialization bugs caught by MONO_021)
         nextId : Int
         nextId =
             finalAccum.registry.nextId
 
-        patchedNodes : Array.Array (Maybe Mono.MonoNode)
-        patchedNodes =
+        -- Store nodes directly — no erasure pass needed.
+        -- Remaining MVar _ CEcoValue compile identically to eco.value in codegen.
+        nodesArray : Array.Array (Maybe Mono.MonoNode)
+        nodesArray =
             let
                 base =
                     Array.repeat nextId Nothing
             in
             Dict.foldl
-                (\specId node acc ->
-                    let
-                        isValueUsed =
-                            BitSet.member specId valueUsedWithMain
-
-                        keyHasCEcoMVar =
-                            case Array.get specId finalAccum.registry.reverseMapping of
-                                Just (Just ( _, keyType, _ )) ->
-                                    Mono.containsCEcoMVar keyType
-
-                                _ ->
-                                    False
-
-                        patched =
-                            if isValueUsed then
-                                if keyHasCEcoMVar then
-                                    patchNodeTypesCEcoToErased node
-
-                                else
-                                    patchInternalExprCEcoToErased node
-
-                            else
-                                patchNodeTypesToErased node
-                    in
-                    Array.set specId (Just patched) acc
-                )
+                (\specId node acc -> Array.set specId (Just node) acc)
                 base
                 finalAccum.nodes
-
-        -- Patch registry reverseMapping + rebuild mapping to maintain MONO_017
-        patchedRegistry : Mono.SpecializationRegistry
-        patchedRegistry =
-            let
-                oldReg =
-                    finalAccum.registry
-
-                newReverseMapping =
-                    Array.indexedMap
-                        (\specId entry ->
-                            case entry of
-                                Just ( global, _, maybeLambda ) ->
-                                    case Array.get specId patchedNodes |> Maybe.andThen identity of
-                                        Just patchedNode ->
-                                            Just ( global, Mono.nodeType patchedNode, maybeLambda )
-
-                                        Nothing ->
-                                            entry
-
-                                Nothing ->
-                                    Nothing
-                        )
-                        oldReg.reverseMapping
-
-                newMapping =
-                    List.foldl
-                        (\( specId, maybeEntry ) acc ->
-                            case maybeEntry of
-                                Just ( global, monoType, maybeLambda ) ->
-                                    let
-                                        key =
-                                            Mono.toComparableSpecKey (Mono.SpecKey global monoType maybeLambda)
-                                    in
-                                    Dict.insert key specId acc
-
-                                Nothing ->
-                                    acc
-                        )
-                        Dict.empty
-                        (Array.toIndexedList newReverseMapping)
-            in
-            { nextId = oldReg.nextId
-            , mapping = newMapping
-            , reverseMapping = newReverseMapping
-            }
 
         callEdgesArray : Array.Array (Maybe (List Int))
         callEdgesArray =
@@ -286,8 +211,8 @@ assembleRawGraph finalState mainSpecIdVal =
                 finalAccum.callEdges
     in
     Mono.MonoGraph
-        { nodes = patchedNodes
-        , registry = patchedRegistry
+        { nodes = nodesArray
+        , registry = finalAccum.registry
         , main = mainInfo
         , ctorShapes = Dict.empty
         , nextLambdaIndex = finalState.ctx.lambdaCounter
@@ -654,237 +579,6 @@ nodeHasEffects node =
 
 
 
--- ========== DEAD-VALUE SPEC TYPE ERASURE ==========
 
 
-{-| Erase type variables in dead-value specialization nodes.
 
-For specs whose value is never used (not referenced via MonoVarGlobal),
-replace MVar with MErased in both node-level types and expression-level
-type annotations. Only patches MonoDefine and MonoTailFunc; cycles, ports,
-externs, and managers are left unchanged.
-
--}
-patchNodeTypesToErased : Mono.MonoNode -> Mono.MonoNode
-patchNodeTypesToErased node =
-    case node of
-        Mono.MonoDefine expr t ->
-            Mono.MonoDefine
-                (eraseExprTypeVars expr)
-                (Mono.eraseTypeVarsToErased t)
-
-        Mono.MonoTailFunc params expr t ->
-            Mono.MonoTailFunc
-                (eraseParamTypes Mono.eraseTypeVarsToErasedHelp params)
-                (eraseExprTypeVars expr)
-                (Mono.eraseTypeVarsToErased t)
-
-        -- Do NOT patch: cycles (preserve MONO_021 visibility), ports (ABI obligations),
-        -- externs/managers (kernel ABI), ctors/enums (no MVars in practice)
-        _ ->
-            node
-
-
-{-| Erase only CEcoValue MVar type variables in value-used specialization nodes
-whose key type is still polymorphic.
-
-These are phantom type variables that were never constrained by any call site.
-CNumber MVars are preserved to avoid hiding numeric specialization bugs.
-Patches MonoDefine, MonoTailFunc, and MonoCycle nodes.
-
--}
-patchNodeTypesCEcoToErased : Mono.MonoNode -> Mono.MonoNode
-patchNodeTypesCEcoToErased node =
-    case node of
-        Mono.MonoDefine expr t ->
-            Mono.MonoDefine
-                (eraseExprCEcoVars expr)
-                (Mono.eraseCEcoVarsToErased t)
-
-        Mono.MonoTailFunc params expr t ->
-            Mono.MonoTailFunc
-                (eraseParamTypes Mono.eraseCEcoVarsToErasedHelp params)
-                (eraseExprCEcoVars expr)
-                (Mono.eraseCEcoVarsToErased t)
-
-        Mono.MonoCycle defs t ->
-            Mono.MonoCycle
-                (List.map (\( name, expr ) -> ( name, eraseExprCEcoVars expr )) defs)
-                (Mono.eraseCEcoVarsToErased t)
-
-        -- Do NOT patch: ports (ABI obligations), externs/managers (kernel ABI),
-        -- ctors/enums (no MVars in practice). Cycles are only patched when their
-        -- key type still contains CEcoValue MVars (see key-type-aware gating in
-        -- monomorphizeFromEntry).
-        _ ->
-            node
-
-
-patchInternalExprCEcoToErased : Mono.MonoNode -> Mono.MonoNode
-patchInternalExprCEcoToErased node =
-    case node of
-        Mono.MonoDefine expr t ->
-            Mono.MonoDefine (eraseExprCEcoVars expr) t
-
-        Mono.MonoTailFunc params expr t ->
-            Mono.MonoTailFunc params (eraseExprCEcoVars expr) t
-
-        _ ->
-            node
-
-
-{-| Erase types in a parameter list using a changed-flag erasure function.
-Returns the original list when no types changed.
--}
-eraseParamTypes : (Mono.MonoType -> ( Bool, Mono.MonoType )) -> List ( Name, Mono.MonoType ) -> List ( Name, Mono.MonoType )
-eraseParamTypes eraseHelp params =
-    let
-        ( changed, newParams ) =
-            Mono.listMapChanged
-                (\( n, ty ) ->
-                    let
-                        ( c, newTy ) =
-                            eraseHelp ty
-                    in
-                    if c then
-                        ( True, ( n, newTy ) )
-
-                    else
-                        ( False, ( n, ty ) )
-                )
-                params
-    in
-    if changed then
-        newParams
-
-    else
-        params
-
-
-{-| Apply a type transformation to all type annotations in an expression tree.
-
-Uses MonoTraverse.mapExpr to bottom-up rewrite every expression node,
-applying the given type transformation to each type annotation.
-
--}
-mapExprTypes : (Mono.MonoType -> Mono.MonoType) -> Mono.MonoExpr -> Mono.MonoExpr
-mapExprTypes f =
-    Traverse.mapExpr (mapOneExprType f)
-
-
-{-| Apply a type transformation to a single expression node (children already processed).
--}
-mapOneExprType : (Mono.MonoType -> Mono.MonoType) -> Mono.MonoExpr -> Mono.MonoExpr
-mapOneExprType f expr =
-    case expr of
-        Mono.MonoLiteral lit t ->
-            Mono.MonoLiteral lit (f t)
-
-        Mono.MonoVarLocal name t ->
-            Mono.MonoVarLocal name (f t)
-
-        Mono.MonoVarGlobal region specId t ->
-            Mono.MonoVarGlobal region specId (f t)
-
-        Mono.MonoVarKernel region home name t ->
-            Mono.MonoVarKernel region home name (f t)
-
-        Mono.MonoList region items t ->
-            Mono.MonoList region items (f t)
-
-        Mono.MonoClosure info body t ->
-            let
-                newParams =
-                    List.map (\( n, pt ) -> ( n, f pt )) info.params
-            in
-            Mono.MonoClosure { info | params = newParams } body (f t)
-
-        Mono.MonoCall region func args t callInfo ->
-            Mono.MonoCall region func args (f t) callInfo
-
-        Mono.MonoTailCall name args t ->
-            Mono.MonoTailCall name args (f t)
-
-        Mono.MonoIf branches elseExpr t ->
-            Mono.MonoIf branches elseExpr (f t)
-
-        Mono.MonoLet def body t ->
-            let
-                newDef =
-                    case def of
-                        Mono.MonoDef n bound ->
-                            Mono.MonoDef n bound
-
-                        Mono.MonoTailDef n params bound ->
-                            Mono.MonoTailDef n
-                                (List.map (\( pn, pt ) -> ( pn, f pt )) params)
-                                bound
-            in
-            Mono.MonoLet newDef body (f t)
-
-        Mono.MonoDestruct destr inner t ->
-            Mono.MonoDestruct (mapDestructorTypes f destr) inner (f t)
-
-        Mono.MonoCase x y decider jumps t ->
-            Mono.MonoCase x y decider jumps (f t)
-
-        Mono.MonoRecordCreate fields t ->
-            Mono.MonoRecordCreate fields (f t)
-
-        Mono.MonoRecordAccess inner field t ->
-            Mono.MonoRecordAccess inner field (f t)
-
-        Mono.MonoRecordUpdate record updates t ->
-            Mono.MonoRecordUpdate record updates (f t)
-
-        Mono.MonoTupleCreate region elems t ->
-            Mono.MonoTupleCreate region elems (f t)
-
-        Mono.MonoUnit ->
-            Mono.MonoUnit
-
-
-{-| Erase all MVar type annotations inside an expression tree.
-
-Uses mapExprTypes with Mono.eraseTypeVarsToErased to replace all MVars with MErased.
-
--}
-eraseExprTypeVars : Mono.MonoExpr -> Mono.MonoExpr
-eraseExprTypeVars =
-    mapExprTypes Mono.eraseTypeVarsToErased
-
-
-{-| Erase only CEcoValue MVar type annotations inside an expression tree.
-
-Uses mapExprTypes with Mono.eraseCEcoVarsToErased to replace only CEcoValue MVars
-with MErased, leaving CNumber MVars intact.
-
--}
-eraseExprCEcoVars : Mono.MonoExpr -> Mono.MonoExpr
-eraseExprCEcoVars =
-    mapExprTypes Mono.eraseCEcoVarsToErased
-
-
-{-| Apply a type transformation to types inside a MonoDestructor.
--}
-mapDestructorTypes : (Mono.MonoType -> Mono.MonoType) -> Mono.MonoDestructor -> Mono.MonoDestructor
-mapDestructorTypes f (Mono.MonoDestructor name path pathType) =
-    Mono.MonoDestructor name (mapPathTypes f path) (f pathType)
-
-
-{-| Apply a type transformation to types inside a MonoPath.
--}
-mapPathTypes : (Mono.MonoType -> Mono.MonoType) -> Mono.MonoPath -> Mono.MonoPath
-mapPathTypes f path =
-    case path of
-        Mono.MonoIndex idx kind t inner ->
-            Mono.MonoIndex idx kind (f t) (mapPathTypes f inner)
-
-        Mono.MonoField name t inner ->
-            Mono.MonoField name (f t) (mapPathTypes f inner)
-
-        Mono.MonoUnbox t inner ->
-            Mono.MonoUnbox (f t) (mapPathTypes f inner)
-
-        Mono.MonoRoot name t ->
-            Mono.MonoRoot name (f t)

@@ -671,5 +671,3 @@ monoTypeToKey monoType =
         Mono.MVar name _ ->
             "Var:" ++ name
 
-        Mono.MErased ->
-            "Erased"

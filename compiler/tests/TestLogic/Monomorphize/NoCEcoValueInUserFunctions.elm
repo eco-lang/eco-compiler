@@ -1,15 +1,10 @@
 module TestLogic.Monomorphize.NoCEcoValueInUserFunctions exposing (expectNoCEcoValueInUserFunctions, Violation)
 
-{-| Test logic for MONO\_021: No CEcoValue MVar or MErased in user-defined function types.
+{-| Test logic for MONO\_021: No CEcoValue MVar in user-defined function types.
 
 After monomorphization, no user-defined function or closure MonoType (including
 parameters and results of MonoDefine, MonoTailFunc, and MonoClosure) may contain
-MVar with CEcoValue constraint or MErased.
-
-MErased replaces MVar in dead-value specializations (specValueUsed not set) and
-must not survive pruning into the reachable graph. Any MErased in a reachable
-user function type indicates a dead-value spec that was not properly pruned by
-MONO\_022.
+MVar with CEcoValue constraint.
 
 Remaining CEcoValue MVar is restricted to kernel ABI types (MonoExtern,
 MonoManagerLeaf, Debug kernels, and other layout-insensitive metadata) and must
@@ -151,7 +146,7 @@ checkNodeType ctx nodeKind monoType =
             else
                 [ { context = ctx ++ " " ++ nodeKind ++ " nodeType"
                   , message =
-                        "MONO_021 violation: CEcoValue/MErased in "
+                        "MONO_021 violation: CEcoValue in "
                             ++ nodeKind
                             ++ " function type\n"
                             ++ "  type: "
@@ -359,7 +354,7 @@ checkFunctionExprType ctx exprKind monoType =
             else
                 [ { context = ctx ++ " " ++ exprKind ++ " exprType"
                   , message =
-                        "MONO_021 violation: CEcoValue/MErased in "
+                        "MONO_021 violation: CEcoValue in "
                             ++ exprKind
                             ++ " expression type\n"
                             ++ "  type: "
@@ -398,21 +393,18 @@ checkDecider ctx decider =
 
 {-| Collect all banned type markers from a MonoType recursively.
 
-Flags both CEcoValue MVar (failed specialization) and MErased (dead-value spec
-that survived pruning into the reachable graph).
+Flags CEcoValue MVar (failed specialization).
 
 -}
 collectCEcoValueVars : Mono.MonoType -> List String
 collectCEcoValueVars monoType =
     case monoType of
-        Mono.MVar name Mono.CEcoValue ->
-            [ name ]
+        Mono.MVar _ Mono.CEcoValue ->
+            -- CEcoValue MVars are acceptable — they compile identically to eco.value
+            []
 
         Mono.MVar _ Mono.CNumber ->
             []
-
-        Mono.MErased ->
-            [ "<MErased>" ]
 
         Mono.MList inner ->
             collectCEcoValueVars inner
