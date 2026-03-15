@@ -1,6 +1,6 @@
 # Bootstrap Process
 
-The Eco compiler bootstraps through 5 stages. Stages 1–4 produce a fixed-point JS compiler; stage 5 uses it to emit MLIR for the native code path.
+The Eco compiler bootstraps through 6 stages. Stages 1–4 produce a fixed-point JS compiler; stage 5 uses it to emit MLIR for the native code path; stage 6 compiles that MLIR to a native ELF executable.
 
 ## Prerequisites
 
@@ -75,6 +75,23 @@ node --stack-size=65536 bin/eco-boot-2-runner.js make \
 
 Output: `compiler/build-kernel/bin/eco-compiler.mlir`
 
+### Stage 6: `eco-compiler.mlir` → native ELF executable
+
+The `eco-boot-native` tool (built by CMake from `runtime/src/codegen/eco-boot.cpp`) lowers the MLIR through the full pipeline — Eco dialect → LLVM dialect → LLVM IR → object file — then links with the runtime and kernel static libraries to produce a standalone x86-64 Linux ELF executable.
+
+```bash
+# Build eco-boot-native (and all runtime/kernel libraries it links against)
+cmake --preset ninja-clang-lld-linux
+cmake --build build --target eco-boot-native
+
+# Compile the MLIR to a native executable
+./build/bin/eco-boot-native \
+    compiler/build-kernel/bin/eco-compiler.mlir \
+    -o compiler/build-kernel/bin/eco-compiler
+```
+
+Output: `compiler/build-kernel/bin/eco-compiler`
+
 ## All stages in sequence
 
 Stage 1 builds **without** `--optimize` (the XHR `Eco.Crash` uses `Debug.todo`). Stages 2–5 use `--optimize` (enabled by the kernel `Eco.Crash` which delegates to `Eco.Kernel.Crash` instead of `Debug.todo`).
@@ -94,4 +111,9 @@ node --stack-size=65536 bin/eco-boot-2-runner.js make \
     --local-package eco/kernel=/work/eco-kernel-cpp \
     --output=bin/eco-compiler.mlir \
     /work/compiler/src/Terminal/Main.elm  # Stage 5: MLIR output
+cd /work
+cmake --build build --target eco-boot-native
+./build/bin/eco-boot-native \
+    compiler/build-kernel/bin/eco-compiler.mlir \
+    -o compiler/build-kernel/bin/eco-compiler  # Stage 6: native ELF
 ```
