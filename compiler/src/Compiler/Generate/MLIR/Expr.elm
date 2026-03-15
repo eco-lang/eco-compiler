@@ -3512,6 +3512,12 @@ generateDestruct ctx (Mono.MonoDestructor name path _) body _ =
         ( pathOps, pathVar, ctx1 ) =
             Patterns.generateMonoPath ctx path targetType
 
+        -- Save the previous mapping for this name (if any) so we can restore it
+        -- after the body. MonoDestruct introduces a scoped binding that should not
+        -- leak into sibling expressions.
+        previousMapping =
+            Dict.get name ctx1.varMappings
+
         -- Use mapping with the path's type
         ctx2 : Ctx.Context
         ctx2 =
@@ -3520,11 +3526,25 @@ generateDestruct ctx (Mono.MonoDestructor name path _) body _ =
         bodyResult : ExprResult
         bodyResult =
             generateExpr ctx2 body
+
+        -- Restore the previous variable mapping for 'name' so that sibling
+        -- expressions (processed after this destruct) see the outer binding,
+        -- not the destructured one.
+        bodyCtx =
+            bodyResult.ctx
+
+        restoredCtx =
+            case previousMapping of
+                Just oldInfo ->
+                    { bodyCtx | varMappings = Dict.insert name oldInfo bodyCtx.varMappings }
+
+                Nothing ->
+                    { bodyCtx | varMappings = Dict.remove name bodyCtx.varMappings }
     in
     { ops = pathOps ++ bodyResult.ops
     , resultVar = bodyResult.resultVar
     , resultType = bodyResult.resultType
-    , ctx = bodyResult.ctx
+    , ctx = restoredCtx
     , isTerminated = bodyResult.isTerminated
     }
 
