@@ -424,9 +424,43 @@ Also escapes any non-ASCII characters that may be in the string.
 -}
 escapeForMlir : String -> String
 escapeForMlir s =
-    -- Convert \uXXXX escapes to raw UTF-8 characters
-    -- MLIR accepts raw UTF-8 in string literals
+    -- Strings in the AST are pre-escaped (from Compiler.Elm.String.fromChunks):
+    -- \n, \", \\, etc. are stored as two-character escape sequences.
+    -- This matches MLIR string literal syntax. However, multi-line strings
+    -- (triple-quoted in Elm) may contain raw " characters that need escaping.
+    -- We escape unescaped " (those not preceded by \) for MLIR compatibility.
     convertUnicodeEscapesToUtf8 s
+        |> escapeUnescapedQuotes
+
+
+{-| Escape double-quote characters that are not already preceded by a backslash.
+Pre-escaped sequences like \" are left unchanged.
+-}
+escapeUnescapedQuotes : String -> String
+escapeUnescapedQuotes s =
+    let
+        go : Bool -> List Char -> List Char -> String
+        go prevWasBackslash acc chars =
+            case chars of
+                [] ->
+                    String.fromList (List.reverse acc)
+
+                '"' :: rest ->
+                    if prevWasBackslash then
+                        -- Already escaped: \", keep as-is
+                        go False ('"' :: acc) rest
+
+                    else
+                        -- Unescaped " — escape it
+                        go False ('"' :: '\\' :: acc) rest
+
+                '\\' :: rest ->
+                    go (not prevWasBackslash) ('\\' :: acc) rest
+
+                c :: rest ->
+                    go False (c :: acc) rest
+    in
+    go False [] (String.toList s)
 
 
 {-| Convert \\uXXXX escapes to raw UTF-8 characters.

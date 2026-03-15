@@ -1,7 +1,7 @@
 module Compiler.Generate.MLIR.Context exposing
     ( Context, FuncSignature, PendingLambda, TypeRegistry, VarInfo
     , initContext
-    , freshVar, freshOpId, lookupVar, addVarMapping, addDecoderExpr
+    , freshVar, freshOpId, lookupVar, addVarMapping, addDecoderExpr, ctxForSiblingRegion
     , getOrCreateTypeIdForMonoType, registerKernelCall
     , buildSignatures, kernelFuncSignatureFromType
     , isTypeVar, hasKernelImplementation
@@ -427,6 +427,25 @@ getOrCreateTypeIdForMonoType monoType ctx =
         Nothing ->
             -- This shouldn't happen, but provide a fallback
             ( 0, finalCtx )
+
+
+{-| Construct context for a sibling region in branching constructs.
+
+When generating code for alternative regions (e.g., then/else of scf.if,
+alternatives of eco.case), each sibling must forward counters and accumulations
+from the previous sibling, but must NOT carry varMappings (since SSA vars defined
+in one region are not visible in a sibling region per MLIR scoping rules).
+
+  - `base`: the context BEFORE the branching construct (has correct varMappings)
+  - `afterPrevious`: the context AFTER the previous sibling region (has updated counters)
+
+-}
+ctxForSiblingRegion : Context -> Context -> Context
+ctxForSiblingRegion base afterPrevious =
+    { afterPrevious
+        | varMappings = base.varMappings
+        , externBoxedVars = base.externBoxedVars
+    }
 
 
 {-| Generate a fresh SSA variable name.

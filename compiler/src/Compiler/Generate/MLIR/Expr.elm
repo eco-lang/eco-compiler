@@ -2968,8 +2968,12 @@ generateIf ctx branches final =
                         Ops.mkRegion [] (thenRes.ops ++ thenCoerceOps) thenYieldOp
 
                     -- Generate else branch (recursive if or final)
+                    -- Use ctxForSiblingRegion to avoid leaking varMappings from then-branch
+                    elseCtx =
+                        Ctx.ctxForSiblingRegion condCtx ctx1
+
                     elseRes =
-                        generateIf ctx1 restBranches final
+                        generateIf elseCtx restBranches final
                 in
                 if elseRes.isTerminated then
                     -- Else branch is terminated - use eco.case instead
@@ -3007,15 +3011,18 @@ generateIf ctx branches final =
 {-| Generate if-then-else using eco.case when the then branch is terminated.
 -}
 generateIfWithTerminatedBranch : Ctx.Context -> String -> ExprResult -> List ( Mono.MonoExpr, Mono.MonoExpr ) -> Mono.MonoExpr -> List MlirOp -> ExprResult
-generateIfWithTerminatedBranch _ condVar thenRes restBranches final condOps =
+generateIfWithTerminatedBranch condCtx condVar thenRes restBranches final condOps =
     let
         -- Build then region - it already has a terminator (should be eco.yield)
         thenRegion =
             mkRegionFromOps thenRes.ops
 
-        -- Generate else branch with proper context (from then result)
+        -- Generate else branch: use condCtx varMappings (not then-branch's)
+        elseCtx =
+            Ctx.ctxForSiblingRegion condCtx thenRes.ctx
+
         elseRes =
-            generateIf thenRes.ctx restBranches final
+            generateIf elseCtx restBranches final
 
         -- Determine result type from else branch (then is terminated)
         resultMlirType =
@@ -3151,17 +3158,11 @@ addPlaceholderMappings : List Name.Name -> Ctx.Context -> Ctx.Context
 addPlaceholderMappings names ctx =
     List.foldl
         (\name acc ->
-            -- Only add placeholder if not already in mappings
-            case Dict.get name acc.varMappings of
-                Just _ ->
-                    acc
-
-                Nothing ->
-                    let
-                        ( ssaVar, acc1 ) =
-                            Ctx.freshVar acc
-                    in
-                    Ctx.addVarMapping name ssaVar Types.ecoValue acc1
+            let
+                ( ssaVar, acc1 ) =
+                    Ctx.freshVar acc
+            in
+            Ctx.addVarMapping name ssaVar Types.ecoValue acc1
         )
         ctx
         names
@@ -3709,9 +3710,8 @@ generateChainForBoolADTWithJumps ctx root path success failure jumpLookup result
         ( thenRegion, ctx1a ) =
             mkCaseRegionFromDecider thenRes resultTy
 
-        -- Propagate pendingLambdas to ensure closures from the then-branch are not lost
         ctxForElse =
-            { ctx1 | nextVar = ctx1a.nextVar, pendingLambdas = ctx1a.pendingLambdas }
+            Ctx.ctxForSiblingRegion ctx1 ctx1a
 
         elseRes =
             generateDeciderWithJumps ctxForElse root failure jumpLookup resultTy
@@ -3747,9 +3747,8 @@ generateChainGeneralWithJumps ctx root testChain success failure jumpLookup resu
         ( thenRegion, ctx1a ) =
             mkCaseRegionFromDecider thenRes resultTy
 
-        -- Propagate pendingLambdas to ensure closures from the then-branch are not lost
         ctxForElse =
-            { ctx1 | nextVar = ctx1a.nextVar, pendingLambdas = ctx1a.pendingLambdas }
+            Ctx.ctxForSiblingRegion ctx1 ctx1a
 
         elseRes =
             generateDeciderWithJumps ctxForElse root failure jumpLookup resultTy
@@ -3852,9 +3851,8 @@ generateBoolFanOutWithJumps ctx root path edges fallback jumpLookup resultTy =
         ( thenRegion, ctx1a ) =
             mkCaseRegionFromDecider thenRes resultTy
 
-        -- Propagate pendingLambdas to ensure closures from the then-branch are not lost
         ctxForElse =
-            { ctx1 | nextVar = ctx1a.nextVar, pendingLambdas = ctx1a.pendingLambdas }
+            Ctx.ctxForSiblingRegion ctx1 ctx1a
 
         elseRes =
             generateDeciderWithJumps ctxForElse root falseBranch jumpLookup resultTy
@@ -3931,8 +3929,11 @@ generateFanOutGeneralWithJumps ctx root path edges fallback jumpLookup resultTy 
             List.foldl
                 (\( _, subTree ) ( accRegions, accCtx ) ->
                     let
+                        branchCtx =
+                            Ctx.ctxForSiblingRegion ctx1 accCtx
+
                         subRes =
-                            generateDeciderWithJumps accCtx root subTree jumpLookup resultTy
+                            generateDeciderWithJumps branchCtx root subTree jumpLookup resultTy
 
                         ( region, ctxAfterRegion ) =
                             mkCaseRegionFromDecider subRes resultTy
@@ -3945,8 +3946,11 @@ generateFanOutGeneralWithJumps ctx root path edges fallback jumpLookup resultTy 
         edgeRegions =
             List.reverse edgeRegionsReversed
 
+        fallbackCtx =
+            Ctx.ctxForSiblingRegion ctx1 ctx2
+
         fallbackRes =
-            generateDeciderWithJumps ctx2 root fallback jumpLookup resultTy
+            generateDeciderWithJumps fallbackCtx root fallback jumpLookup resultTy
 
         ( fallbackRegion, ctx2a ) =
             mkCaseRegionFromDecider fallbackRes resultTy
