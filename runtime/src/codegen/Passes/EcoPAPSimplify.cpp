@@ -76,6 +76,14 @@ struct SaturatedPapToCallPattern : public OpRewritePattern<PapExtendOp> {
         if (!extendOp.getClosure().hasOneUse())
             return failure();  // Closure used elsewhere
 
+        // Do NOT optimize away self-capturing closures. The papCreate stores
+        // a placeholder (Unit) for the self-reference slot, which gets
+        // backpatched at runtime with the closure's own HPointer. Inlining
+        // the captures as direct call args would pass the unpatched Unit
+        // placeholder, breaking recursion.
+        if (createOp->hasAttr("self_capture_indices"))
+            return failure();
+
         // For two-clone closures, the direct call targets $cap (whose params
         // are captures + params) rather than $clo (Closure* + params).
         auto fastEvalAttr = createOp->getAttrOfType<FlatSymbolRefAttr>("_fast_evaluator");

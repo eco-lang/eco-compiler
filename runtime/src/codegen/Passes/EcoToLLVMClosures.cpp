@@ -466,9 +466,9 @@ struct PapCreateOpLowering : public OpConversionPattern<PapCreateOp> {
         // Handle self-capturing closures: if self_capture_indices is present,
         // store the closure's own HPointer at the specified capture slots.
         // This implements recursive closure backpatching.
-        if (auto selfCaptureAttr = op->getAttrOfType<ArrayAttr>("self_capture_indices")) {
-            for (auto indexAttr : selfCaptureAttr) {
-                int64_t selfIdx = cast<IntegerAttr>(indexAttr).getInt();
+        // Note: self_capture_indices is emitted as array<i64: ...> (DenseI64ArrayAttr).
+        if (auto selfCaptureAttr = op->getAttrOfType<DenseI64ArrayAttr>("self_capture_indices")) {
+            for (int64_t selfIdx : selfCaptureAttr.asArrayRef()) {
                 int64_t valueOffset = layout::ClosureValuesOffset + selfIdx * layout::PtrSize;
                 auto offsetConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty,
                     rewriter.getI64IntegerAttr(valueOffset));

@@ -6,7 +6,7 @@ a local recursive function defined in a let block that captures
 a variable from an outer scope and is used before its definition.
 -}
 
--- CHECK: LetRecClosureTest: [1,2,3]
+-- CHECK: LetRecClosureTest: [1, 2, 3]
 
 import Html exposing (text)
 
