@@ -85,7 +85,7 @@ cmake --preset ninja-clang-lld-linux
 cmake --build build --target eco-boot-native
 
 # Compile the MLIR to a native executable
-./build/bin/eco-boot-native \
+./build/runtime/src/codegen/eco-boot-native \
     compiler/build-kernel/bin/eco-compiler.mlir \
     -o compiler/build-kernel/bin/eco-compiler
 ```
@@ -113,7 +113,7 @@ node --stack-size=65536 bin/eco-boot-2-runner.js make \
     /work/compiler/src/Terminal/Main.elm  # Stage 5: MLIR output
 cd /work
 cmake --build build --target eco-boot-native
-./build/bin/eco-boot-native \
+./build/runtime/src/codegen/eco-boot-native \
     compiler/build-kernel/bin/eco-compiler.mlir \
     -o compiler/build-kernel/bin/eco-compiler  # Stage 6: native ELF
 ```

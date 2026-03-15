@@ -467,8 +467,13 @@ convertUnicodeEscapesToUtf8 s =
                                 go ('u' :: '\\' :: revAcc) afterU
 
                         Just ( c, afterEscape ) ->
-                            -- Other escape sequence, keep as-is
-                            go (c :: '\\' :: revAcc) afterEscape
+                            -- Keep only MLIR-recognized escapes: \n \t \" \\
+                            -- For unrecognized escapes like \', drop the backslash
+                            if c == 'n' || c == 't' || c == '"' || c == '\\' then
+                                go (c :: '\\' :: revAcc) afterEscape
+
+                            else
+                                go (c :: revAcc) afterEscape
 
                         Nothing ->
                             String.fromList (List.reverse ('\\' :: revAcc))

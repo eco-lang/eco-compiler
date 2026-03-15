@@ -3157,7 +3157,11 @@ addPlaceholderMappings names ctx =
                     acc
 
                 Nothing ->
-                    Ctx.addVarMapping name ("%" ++ name) Types.ecoValue acc
+                    let
+                        ( ssaVar, acc1 ) =
+                            Ctx.freshVar acc
+                    in
+                    Ctx.addVarMapping name ssaVar Types.ecoValue acc1
         )
         ctx
         names
