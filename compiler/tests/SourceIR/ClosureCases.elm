@@ -34,6 +34,7 @@ import Compiler.AST.SourceBuilder
         , makeModuleWithTypedDefsUnionsAliases
         , pCons
         , pCtor
+        , pInt
         , pList
         , pTuple
         , pVar
@@ -78,6 +79,7 @@ testCases expectFn =
         , closureWithRecursionCases expectFn
         , heteroClosureCases expectFn
         , closureDestructCaptureCases expectFn
+        , closureCaseScrutineeCases expectFn
         ]
 
 
@@ -1561,6 +1563,321 @@ closureCaptureMaybeCaseDestruct expectFn _ =
             makeModuleWithTypedDefsUnionsAliases "Test"
                 [ toLabelDef, testValueDef ]
                 [ maybeUnion ]
+                []
+    in
+    expectFn modul
+
+
+
+-- ============================================================================
+-- CLOSURE CAPTURING CASE SCRUTINEE ROOT TESTS
+-- ============================================================================
+-- Tests for the bug where findFreeLocals ignores the root Name in MonoCase.
+-- When a closure body contains `case outerVar of ...` and `outerVar` is only
+-- referenced as the case scrutinee (not as MonoVarLocal elsewhere), it was
+-- not reported as free, never captured, and lookupVar crashed during MLIR gen.
+
+
+closureCaseScrutineeCases : (Src.Module -> Expectation) -> List TestCase
+closureCaseScrutineeCases expectFn =
+    [ { label = "Closure captures variable used only as case scrutinee (custom type)"
+      , run = closureCapturesCaseScrutineeCustom expectFn
+      }
+    , { label = "Closure captures variable used only as case scrutinee (Int)"
+      , run = closureCapturesCaseScrutineeInt expectFn
+      }
+    , { label = "Closure captures variable used only as case scrutinee (Bool)"
+      , run = closureCapturesCaseScrutineeBool expectFn
+      }
+    , { label = "Nested closure captures case scrutinee from outer scope"
+      , run = nestedClosureCapturesCaseScrutinee expectFn
+      }
+    ]
+
+
+{-| This is the core bug pattern from Compiler.Reporting.Doc.toColor:
+A lambda captures a variable from outer scope, and the ONLY reference to
+that variable inside the lambda body is as the scrutinee of a case expression.
+
+    type Intensity
+        = Dull
+        | Vivid
+
+    pickByIntensity : Intensity -> Int -> Int -> Int
+    pickByIntensity intensity dullVal vividVal =
+        let
+            pick a b =
+                case intensity of
+                    Dull -> a
+                    Vivid -> b
+        in
+        pick dullVal vividVal
+
+Here `intensity` is free in the lambda `pick`, but only used as case scrutinee.
+
+-}
+closureCapturesCaseScrutineeCustom : (Src.Module -> Expectation) -> (() -> Expectation)
+closureCapturesCaseScrutineeCustom expectFn _ =
+    let
+        intensityUnion : UnionDef
+        intensityUnion =
+            { name = "Intensity"
+            , args = []
+            , ctors =
+                [ { name = "Dull", args = [] }
+                , { name = "Vivid", args = [] }
+                ]
+            }
+
+        -- pickByIntensity : Intensity -> Int -> Int -> Int
+        -- pickByIntensity intensity dullVal vividVal =
+        --     let pick a b = case intensity of Dull -> a; Vivid -> b
+        --     in pick dullVal vividVal
+        pickByIntensityDef : TypedDef
+        pickByIntensityDef =
+            { name = "pickByIntensity"
+            , args = [ pVar "intensity", pVar "dullVal", pVar "vividVal" ]
+            , tipe =
+                tLambda (tType "Intensity" [])
+                    (tLambda (tType "Int" [])
+                        (tLambda (tType "Int" []) (tType "Int" []))
+                    )
+            , body =
+                letExpr
+                    [ define "pick"
+                        [ pVar "a", pVar "b" ]
+                        (caseExpr (varExpr "intensity")
+                            [ ( pCtor "Dull" [], varExpr "a" )
+                            , ( pCtor "Vivid" [], varExpr "b" )
+                            ]
+                        )
+                    ]
+                    (callExpr (varExpr "pick") [ varExpr "dullVal", varExpr "vividVal" ])
+            }
+
+        testValueDef : TypedDef
+        testValueDef =
+            { name = "testValue"
+            , args = []
+            , tipe = tType "Int" []
+            , body =
+                callExpr (varExpr "pickByIntensity")
+                    [ ctorExpr "Vivid", intExpr 1, intExpr 2 ]
+            }
+
+        modul =
+            makeModuleWithTypedDefsUnionsAliases "Test"
+                [ pickByIntensityDef, testValueDef ]
+                [ intensityUnion ]
+                []
+    in
+    expectFn modul
+
+
+{-| Same bug pattern but with Int scrutinee. The variable `n` is only
+referenced as case scrutinee inside the lambda.
+
+    chooseByN : Int -> Int -> Int -> Int
+    chooseByN n a b =
+        let
+            pick x y =
+                case n of
+                    0 -> x
+                    _ -> y
+        in
+        pick a b
+
+-}
+closureCapturesCaseScrutineeInt : (Src.Module -> Expectation) -> (() -> Expectation)
+closureCapturesCaseScrutineeInt expectFn _ =
+    let
+        -- chooseByN : Int -> Int -> Int -> Int
+        -- chooseByN n a b =
+        --     let pick x y = case n of 0 -> x; _ -> y
+        --     in pick a b
+        chooseByNDef : TypedDef
+        chooseByNDef =
+            { name = "chooseByN"
+            , args = [ pVar "n", pVar "a", pVar "b" ]
+            , tipe =
+                tLambda (tType "Int" [])
+                    (tLambda (tType "Int" [])
+                        (tLambda (tType "Int" []) (tType "Int" []))
+                    )
+            , body =
+                letExpr
+                    [ define "pick"
+                        [ pVar "x", pVar "y" ]
+                        (caseExpr (varExpr "n")
+                            [ ( pInt 0, varExpr "x" )
+                            , ( pVar "_", varExpr "y" )
+                            ]
+                        )
+                    ]
+                    (callExpr (varExpr "pick") [ varExpr "a", varExpr "b" ])
+            }
+
+        testValueDef : TypedDef
+        testValueDef =
+            { name = "testValue"
+            , args = []
+            , tipe = tType "Int" []
+            , body =
+                callExpr (varExpr "chooseByN")
+                    [ intExpr 0, intExpr 10, intExpr 20 ]
+            }
+
+        modul =
+            makeModuleWithTypedDefsUnionsAliases "Test"
+                [ chooseByNDef, testValueDef ]
+                []
+                []
+    in
+    expectFn modul
+
+
+{-| Same bug pattern but with Bool scrutinee.
+
+    pickByBool : Bool -> Int -> Int -> Int
+    pickByBool flag a b =
+        let
+            pick x y =
+                case flag of
+                    True -> x
+                    False -> y
+        in
+        pick a b
+
+-}
+closureCapturesCaseScrutineeBool : (Src.Module -> Expectation) -> (() -> Expectation)
+closureCapturesCaseScrutineeBool expectFn _ =
+    let
+        -- pickByBool : Bool -> Int -> Int -> Int
+        -- pickByBool flag a b =
+        --     let pick x y = case flag of True -> x; False -> y
+        --     in pick a b
+        pickByBoolDef : TypedDef
+        pickByBoolDef =
+            { name = "pickByBool"
+            , args = [ pVar "flag", pVar "a", pVar "b" ]
+            , tipe =
+                tLambda (tType "Bool" [])
+                    (tLambda (tType "Int" [])
+                        (tLambda (tType "Int" []) (tType "Int" []))
+                    )
+            , body =
+                letExpr
+                    [ define "pick"
+                        [ pVar "x", pVar "y" ]
+                        (caseExpr (varExpr "flag")
+                            [ ( pCtor "True" [], varExpr "x" )
+                            , ( pCtor "False" [], varExpr "y" )
+                            ]
+                        )
+                    ]
+                    (callExpr (varExpr "pick") [ varExpr "a", varExpr "b" ])
+            }
+
+        testValueDef : TypedDef
+        testValueDef =
+            { name = "testValue"
+            , args = []
+            , tipe = tType "Int" []
+            , body =
+                callExpr (varExpr "pickByBool")
+                    [ boolExpr True, intExpr 10, intExpr 20 ]
+            }
+
+        modul =
+            makeModuleWithTypedDefsUnionsAliases "Test"
+                [ pickByBoolDef, testValueDef ]
+                []
+                []
+    in
+    expectFn modul
+
+
+{-| Nested closure where the inner closure captures a variable from the
+outermost scope, used only as a case scrutinee.
+
+    type Dir = Left | Right
+
+    nestedPick : Dir -> Int -> Int -> Int
+    nestedPick dir a b =
+        let
+            outer x y =
+                let
+                    inner p q =
+                        case dir of
+                            Left -> p
+                            Right -> q
+                in
+                inner x y
+        in
+        outer a b
+
+-}
+nestedClosureCapturesCaseScrutinee : (Src.Module -> Expectation) -> (() -> Expectation)
+nestedClosureCapturesCaseScrutinee expectFn _ =
+    let
+        dirUnion : UnionDef
+        dirUnion =
+            { name = "Dir"
+            , args = []
+            , ctors =
+                [ { name = "Left", args = [] }
+                , { name = "Right", args = [] }
+                ]
+            }
+
+        -- nestedPick : Dir -> Int -> Int -> Int
+        -- nestedPick dir a b =
+        --     let outer x y =
+        --             let inner p q = case dir of Left -> p; Right -> q
+        --             in inner x y
+        --     in outer a b
+        nestedPickDef : TypedDef
+        nestedPickDef =
+            { name = "nestedPick"
+            , args = [ pVar "dir", pVar "a", pVar "b" ]
+            , tipe =
+                tLambda (tType "Dir" [])
+                    (tLambda (tType "Int" [])
+                        (tLambda (tType "Int" []) (tType "Int" []))
+                    )
+            , body =
+                letExpr
+                    [ define "outer"
+                        [ pVar "x", pVar "y" ]
+                        (letExpr
+                            [ define "inner"
+                                [ pVar "p", pVar "q" ]
+                                (caseExpr (varExpr "dir")
+                                    [ ( pCtor "Left" [], varExpr "p" )
+                                    , ( pCtor "Right" [], varExpr "q" )
+                                    ]
+                                )
+                            ]
+                            (callExpr (varExpr "inner") [ varExpr "x", varExpr "y" ])
+                        )
+                    ]
+                    (callExpr (varExpr "outer") [ varExpr "a", varExpr "b" ])
+            }
+
+        testValueDef : TypedDef
+        testValueDef =
+            { name = "testValue"
+            , args = []
+            , tipe = tType "Int" []
+            , body =
+                callExpr (varExpr "nestedPick")
+                    [ ctorExpr "Right", intExpr 10, intExpr 20 ]
+            }
+
+        modul =
+            makeModuleWithTypedDefsUnionsAliases "Test"
+                [ nestedPickDef, testValueDef ]
+                [ dirUnion ]
                 []
     in
     expectFn modul

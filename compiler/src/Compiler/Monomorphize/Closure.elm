@@ -33,6 +33,8 @@ has been moved to GlobalOpt.MonoGlobalOptimize as part of the staging consolidat
 
 -}
 
+import Compiler.AST.DecisionTree.Test as DT
+import Compiler.AST.DecisionTree.TypedPath as DT
 import Compiler.AST.Monomorphized as Mono
 import Compiler.Data.Name exposing (Name)
 import Compiler.Reporting.Annotation as A
@@ -162,17 +164,28 @@ computeClosureCaptures params body =
         varTypeMap =
             collectVarTypes body
 
+        -- Collect types for MonoCase root variables that don't appear as MonoVarLocal
+        -- in the body. The root variable's type is inferred from the decider tests.
+        caseRootTypeMap : Dict String Mono.MonoType
+        caseRootTypeMap =
+            collectCaseRootTypes body
+
         captureFor name =
             case Dict.get name varTypeMap of
                 Just actualType ->
                     ( name, Mono.MonoVarLocal name actualType, False )
 
                 Nothing ->
-                    Utils.Crash.crash
-                        ("computeClosureCaptures: missing type for captured var `"
-                            ++ name
-                            ++ "`; this violates Mono typing invariants"
-                        )
+                    case Dict.get name caseRootTypeMap of
+                        Just rootType ->
+                            ( name, Mono.MonoVarLocal name rootType, False )
+
+                        Nothing ->
+                            Utils.Crash.crash
+                                ("computeClosureCaptures: missing type for captured var `"
+                                    ++ name
+                                    ++ "`; this violates Mono typing invariants"
+                                )
     in
     List.map captureFor freeNames
 
@@ -272,15 +285,24 @@ findFreeLocals bound expr =
             in
             freeBranches ++ freeFinal
 
-        Mono.MonoCase _ _ decider jumps _ ->
+        Mono.MonoCase _ root decider jumps _ ->
             let
+                -- The root (second Name field) is the scrutinee variable.
+                -- It must be tracked as a free variable reference.
+                rootFree =
+                    if EverySet.member identity root bound then
+                        []
+
+                    else
+                        [ root ]
+
                 freeDecider =
                     collectDeciderFreeLocals bound decider
 
                 freeJumps =
                     List.concatMap (\( _, e ) -> findFreeLocals bound e) jumps
             in
-            freeDecider ++ freeJumps
+            rootFree ++ freeDecider ++ freeJumps
 
         Mono.MonoList _ exprs _ ->
             List.concatMap (findFreeLocals bound) exprs
@@ -542,3 +564,177 @@ collectDeciderVarTypes decider acc =
                     List.foldl (\( _, d ) a -> collectDeciderVarTypes d a) acc edges
             in
             collectDeciderVarTypes fallback accAfterEdges
+
+
+{-| Collect types for MonoCase root variables by inferring from decider tests.
+
+MonoCase stores the scrutinee variable by name but not by type. When a variable
+is only referenced as a MonoCase root (and never as a MonoVarLocal), collectVarTypes
+won't find its type. This function fills that gap by inferring the root type from
+the decision tree tests.
+-}
+collectCaseRootTypes : Mono.MonoExpr -> Dict String Mono.MonoType
+collectCaseRootTypes expr =
+    collectCaseRootTypesHelper expr Dict.empty
+
+
+collectCaseRootTypesHelper : Mono.MonoExpr -> Dict String Mono.MonoType -> Dict String Mono.MonoType
+collectCaseRootTypesHelper expr acc =
+    case expr of
+        Mono.MonoCase _ root decider jumps _ ->
+            let
+                accWithRoot =
+                    if Dict.member root acc then
+                        acc
+
+                    else
+                        case inferRootTypeFromDecider decider of
+                            Just rootType ->
+                                Dict.insert root rootType acc
+
+                            Nothing ->
+                                -- Fallback: use MUnit which maps to !eco.value at ABI.
+                                -- This is correct for all union types (the common case for MonoCase).
+                                Dict.insert root Mono.MUnit acc
+
+                accAfterDecider =
+                    collectCaseRootTypesFromDecider decider accWithRoot
+            in
+            List.foldl (\( _, e ) a -> collectCaseRootTypesHelper e a) accAfterDecider jumps
+
+        Mono.MonoClosure _ body _ ->
+            collectCaseRootTypesHelper body acc
+
+        Mono.MonoLet def body _ ->
+            let
+                accAfterDef =
+                    case def of
+                        Mono.MonoDef _ defExpr ->
+                            collectCaseRootTypesHelper defExpr acc
+
+                        Mono.MonoTailDef _ _ defExpr ->
+                            collectCaseRootTypesHelper defExpr acc
+            in
+            collectCaseRootTypesHelper body accAfterDef
+
+        Mono.MonoIf branches final _ ->
+            let
+                accAfterBranches =
+                    List.foldl
+                        (\( cond, thenExpr ) a ->
+                            collectCaseRootTypesHelper thenExpr (collectCaseRootTypesHelper cond a)
+                        )
+                        acc
+                        branches
+            in
+            collectCaseRootTypesHelper final accAfterBranches
+
+        Mono.MonoCall _ func args _ _ ->
+            List.foldl collectCaseRootTypesHelper (collectCaseRootTypesHelper func acc) args
+
+        Mono.MonoList _ exprs _ ->
+            List.foldl collectCaseRootTypesHelper acc exprs
+
+        Mono.MonoDestruct _ inner _ ->
+            collectCaseRootTypesHelper inner acc
+
+        Mono.MonoRecordCreate fields _ ->
+            List.foldl (\( _, e ) a -> collectCaseRootTypesHelper e a) acc fields
+
+        Mono.MonoRecordAccess inner _ _ ->
+            collectCaseRootTypesHelper inner acc
+
+        Mono.MonoRecordUpdate inner updates _ ->
+            List.foldl (\( _, e ) a -> collectCaseRootTypesHelper e a) (collectCaseRootTypesHelper inner acc) updates
+
+        Mono.MonoTupleCreate _ exprs _ ->
+            List.foldl collectCaseRootTypesHelper acc exprs
+
+        Mono.MonoTailCall _ args _ ->
+            List.foldl (\( _, e ) a -> collectCaseRootTypesHelper e a) acc args
+
+        _ ->
+            acc
+
+
+collectCaseRootTypesFromDecider : Mono.Decider Mono.MonoChoice -> Dict String Mono.MonoType -> Dict String Mono.MonoType
+collectCaseRootTypesFromDecider decider acc =
+    case decider of
+        Mono.Leaf choice ->
+            case choice of
+                Mono.Inline expr ->
+                    collectCaseRootTypesHelper expr acc
+
+                Mono.Jump _ ->
+                    acc
+
+        Mono.Chain _ success failure ->
+            collectCaseRootTypesFromDecider failure (collectCaseRootTypesFromDecider success acc)
+
+        Mono.FanOut _ edges fallback ->
+            let
+                accAfterEdges =
+                    List.foldl (\( _, d ) a -> collectCaseRootTypesFromDecider d a) acc edges
+            in
+            collectCaseRootTypesFromDecider fallback accAfterEdges
+
+
+{-| Infer the root variable's MonoType from the first test in a Decider.
+-}
+inferRootTypeFromDecider : Mono.Decider Mono.MonoChoice -> Maybe Mono.MonoType
+inferRootTypeFromDecider decider =
+    case decider of
+        Mono.Chain tests _ _ ->
+            case tests of
+                ( path, test ) :: _ ->
+                    if isEmptyPath path then
+                        inferTypeFromTest test
+
+                    else
+                        Nothing
+
+                [] ->
+                    Nothing
+
+        Mono.FanOut path edges _ ->
+            if isEmptyPath path then
+                case edges of
+                    ( test, _ ) :: _ ->
+                        inferTypeFromTest test
+
+                    [] ->
+                        Nothing
+
+            else
+                Nothing
+
+        Mono.Leaf _ ->
+            Nothing
+
+
+isEmptyPath : DT.Path -> Bool
+isEmptyPath path =
+    case path of
+        DT.Empty ->
+            True
+
+        _ ->
+            False
+
+
+inferTypeFromTest : DT.Test -> Maybe Mono.MonoType
+inferTypeFromTest test =
+    case test of
+        DT.IsInt _ ->
+            Just Mono.MInt
+
+        DT.IsChr _ ->
+            Just Mono.MChar
+
+        DT.IsStr _ ->
+            Just Mono.MString
+
+        _ ->
+            -- Custom types, Bool, List, Tuple all map to !eco.value at ABI,
+            -- same as MUnit. The exact type params aren't needed for capture ABI.
+            Just Mono.MUnit
