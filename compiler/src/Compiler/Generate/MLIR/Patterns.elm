@@ -96,17 +96,13 @@ generateMonoPathHelper ctx path targetType revAcc =
                     case containerKind of
                         Mono.ListContainer ->
                             if index == 0 then
-                                -- List head projection. Element may be stored unboxed (Int, Float, Char)
-                                -- or boxed (!eco.value) depending on the element type.
-                                -- The runtime helper functions (eco_cons_head_i64, etc.) handle
-                                -- both boxed and unboxed storage transparently.
+                                -- List head projection. Use targetType directly so the
+                                -- projection result matches what the caller stores in the
+                                -- context. Bool is !eco.value in heap storage (not unboxed),
+                                -- so targetType=EcoValue is correct for Bool.
                                 let
-                                    -- Determine the MLIR type to project based on the element's MonoType
-                                    elementMlirType =
-                                        Types.monoTypeToOperand resultType
-
                                     ( ctx_, op ) =
-                                        Ops.ecoProjectListHead ctx2 resultVar elementMlirType subVar
+                                        Ops.ecoProjectListHead ctx2 resultVar targetType subVar
                                 in
                                 ( [ op ], resultVar, ctx_ )
 
