@@ -120,6 +120,8 @@ TOPT_004;TypedOptimization;TypePreservation;documented;Typed optimization is des
 
 TOPT_005;TypedOptimization;FunctionTypes;enforced;Function expressions in TypedOptimized carry their full function type as a list of (Name Can.Type) parameter types plus a result Can.Type and the overall expression Can.Type is the corresponding curried TLambda chain enabling accurate arity computation and type-directed specialization in monomorphization;Compiler.AST.TypedOptimized|Compiler.Optimize.Typed.Expression|Compiler.Generate.Monomorphize
 
+TOPT_006;TypedOptimization;DecisionTrees;enforced;Every TypedPath.Unbox segment in a typed decision tree is annotated with a concrete canonical wrapper type that corresponds to a single‑constructor union marked Can.Unbox and has a single field; this concrete Can.Type must be ground (contain no free Can.TVar) so that downstream phases can resolve a unique runtime wrapper shape for each Unbox path.;Compiler.LocalOpt.Typed.DecisionTree|Compiler.AST.DecisionTree.TypedPath
+
 # =============================================================================
 # MONOMORPHIZATION PHASE - Specialize polymorphic functions to concrete types
 # =============================================================================
@@ -172,6 +174,8 @@ MONO_024;Monomorphization;Types;documented;For every specialization entry in Spe
 
 MONO_025;Monomorphization;Closures;documented;For every reachable MonoClosure or MonoTailFunc node implementing a user-defined function or lambda specialization, the closure’s stored MonoType must be consistent with its specialization key: reconstruct the canonical function type from the specialization key MonoType and the top-level type environment, apply the monomorphization substitution used for that specialization, convert the resulting canonical function type to a MonoType (preserving TLambda staging), and assert that the flattened parameter and result types match the closure’s parameter list and result type (up to currying structure) so that closure parameter types, capture layouts, and return types are guaranteed to reflect the same concrete instantiation as the specialization key.;Compiler.AST.Monomorphized|Compiler.Monomorphize.Specialize|Compiler.Generate.Monomorphize|TestLogic.Monomorphize
 
+MONO_026;Monomorphization;DecisionTrees;enforced;For every TypedPath.Unbox segment produced by typed optimization, monomorphization computes a unique Mono.MonoType for the wrapper and selects a corresponding CtorLayout entry from MonoGraph.ctorLayouts (or typeRegistry.ctorShapes keyed by that MonoType); MLIR codegen must use only this wrapper MonoType and its CtorLayout to determine field index, unboxed/boxed representation, and MLIR operand type for the unwrapped field, and may not consult global ctor shape lists or constructor names alone.;Compiler.AST.Monomorphized|Compiler.Monomorphize.Specialize|Compiler.Generate.MLIR.Patterns
+    
 # =============================================================================
 # GLOBAL OPTIMIZATION PHASE - Staging normalization and ABI consistency
 # =============================================================================

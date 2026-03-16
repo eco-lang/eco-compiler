@@ -1,21 +1,20 @@
-module Compiler.Generate.MLIR.Patterns exposing (generateMonoPath, generateDTPath, generateChainCondition, testToTagInt, caseKindFromTest, scrutineeTypeFromCaseKind, computeFallbackTag)
+module Compiler.Generate.MLIR.Patterns exposing (generateMonoPath, generateMonoDtPath, generateMonoChainCondition, generateMonoTest, testToTagInt, caseKindFromTest, scrutineeTypeFromCaseKind, computeFallbackTag)
 
 {-| Pattern matching and path generation for MLIR code generation.
 
 This module handles:
 
-  - Path navigation (MonoPath and DT.Path)
+  - Path navigation (MonoPath and MonoDtPath)
   - Test generation for pattern matching
   - Case kind determination
   - Scrutinee type determination
   - Fallback tag computation
 
-@docs generateMonoPath, generateDTPath, generateChainCondition, testToTagInt, caseKindFromTest, scrutineeTypeFromCaseKind, computeFallbackTag
+@docs generateMonoPath, generateMonoDtPath, generateMonoChainCondition, generateMonoTest, testToTagInt, caseKindFromTest, scrutineeTypeFromCaseKind, computeFallbackTag
 
 -}
 
 import Compiler.AST.DecisionTree.Test as Test
-import Compiler.AST.DecisionTree.TypedPath as TypedPath
 import Compiler.AST.Monomorphized as Mono
 import Compiler.Data.Index as Index
 import Compiler.Data.Name as Name
@@ -66,6 +65,267 @@ generateMonoPath ctx path targetType =
             generateMonoPathHelper ctx path targetType []
     in
     ( List.reverse revOps, var, ctx_ )
+
+
+{-| Generate MLIR ops to navigate a MonoDtPath and extract a value.
+
+Converts MonoDtPath to MonoPath and delegates to generateMonoPath.
+-}
+generateMonoDtPath : Ctx.Context -> Mono.MonoDtPath -> MlirType -> ( List MlirOp, String, Ctx.Context )
+generateMonoDtPath ctx dtPath targetType =
+    generateMonoPath ctx (dtPathToMonoPath dtPath) targetType
+
+
+{-| Convert MonoDtPath to MonoPath for reuse of existing generateMonoPath machinery.
+-}
+dtPathToMonoPath : Mono.MonoDtPath -> Mono.MonoPath
+dtPathToMonoPath monoDt =
+    case monoDt of
+        Mono.DtRoot name ty ->
+            Mono.MonoRoot name ty
+
+        Mono.DtIndex idx kind resultTy sub ->
+            Mono.MonoIndex idx kind resultTy (dtPathToMonoPath sub)
+
+        Mono.DtUnbox resultTy sub ->
+            Mono.MonoUnbox resultTy (dtPathToMonoPath sub)
+
+
+{-| Generate a test condition from a MonoDtPath and a DT.Test.
+-}
+generateMonoTest : Ctx.Context -> ( Mono.MonoDtPath, DT.Test ) -> ( List MlirOp, String, Ctx.Context )
+generateMonoTest ctx ( dtPath, test ) =
+    let
+        targetType =
+            case test of
+                Test.IsCtor _ _ _ _ _ ->
+                    Types.ecoValue
+
+                Test.IsBool _ ->
+                    I1
+
+                Test.IsInt _ ->
+                    I64
+
+                Test.IsChr _ ->
+                    Types.ecoChar
+
+                Test.IsStr _ ->
+                    Types.ecoValue
+
+                Test.IsCons ->
+                    Types.ecoValue
+
+                Test.IsNil ->
+                    Types.ecoValue
+
+                Test.IsTuple ->
+                    Types.ecoValue
+
+        ( pathOps, valVar, ctx1 ) =
+            generateMonoDtPath ctx dtPath targetType
+    in
+    case test of
+        Test.IsCtor _ _ index _ _ ->
+            let
+                expectedTag =
+                    Index.toMachine index
+
+                ( tagVar, ctx2 ) =
+                    Ctx.freshVar ctx1
+
+                ( ctx3, tagOp ) =
+                    Ops.ecoGetTag ctx2 tagVar valVar
+
+                ( constVar, ctx4 ) =
+                    Ctx.freshVar ctx3
+
+                ( ctx5, constOp ) =
+                    Ops.arithConstantInt32 ctx4 constVar expectedTag
+
+                ( resVar, ctx6 ) =
+                    Ctx.freshVar ctx5
+
+                ( ctx7, cmpOp ) =
+                    Ops.arithCmpI ctx6 "eq" resVar ( tagVar, I32 ) ( constVar, I32 )
+            in
+            ( pathOps ++ [ tagOp, constOp, cmpOp ], resVar, ctx7 )
+
+        Test.IsBool expected ->
+            if expected then
+                ( pathOps, valVar, ctx1 )
+
+            else
+                let
+                    ( resVar, ctx2 ) =
+                        Ctx.freshVar ctx1
+
+                    ( constVar, ctx3 ) =
+                        Ctx.freshVar ctx2
+
+                    ( ctx4, constOp ) =
+                        Ops.arithConstantBool ctx3 constVar True
+
+                    ( ctx5, xorOp ) =
+                        Ops.ecoBinaryOp ctx4 "arith.xori" resVar ( valVar, I1 ) ( constVar, I1 ) I1
+                in
+                ( pathOps ++ [ constOp, xorOp ], resVar, ctx5 )
+
+        Test.IsInt i ->
+            let
+                ( constVar, ctx2 ) =
+                    Ctx.freshVar ctx1
+
+                ( ctx3, constOp ) =
+                    Ops.arithConstantInt ctx2 constVar i
+
+                ( resVar, ctx4 ) =
+                    Ctx.freshVar ctx3
+
+                ( ctx5, cmpOp ) =
+                    Ops.ecoBinaryOp ctx4 "eco.int.eq" resVar ( valVar, I64 ) ( constVar, I64 ) I1
+            in
+            ( pathOps ++ [ constOp, cmpOp ], resVar, ctx5 )
+
+        Test.IsChr c ->
+            let
+                charCode =
+                    String.toList c |> List.head |> Maybe.map Char.toCode |> Maybe.withDefault 0
+
+                ( constVar, ctx2 ) =
+                    Ctx.freshVar ctx1
+
+                ( ctx3, constOp ) =
+                    Ops.arithConstantChar ctx2 constVar charCode
+
+                ( resVar, ctx4 ) =
+                    Ctx.freshVar ctx3
+
+                ( ctx5, cmpOp ) =
+                    Ops.ecoBinaryOp ctx4 "arith.cmpi" resVar ( valVar, Types.ecoChar ) ( constVar, Types.ecoChar ) I1
+            in
+            ( pathOps ++ [ constOp, cmpOp ], resVar, ctx5 )
+
+        Test.IsStr s ->
+            let
+                ( strVar, ctx2 ) =
+                    Ctx.freshVar ctx1
+
+                ( ctx3, strOp ) =
+                    if s == "" then
+                        Ops.ecoConstantEmptyString ctx2 strVar
+
+                    else
+                        Ops.ecoStringLiteral ctx2 strVar s
+
+                ( eqVar, ctx4 ) =
+                    Ctx.freshVar ctx3
+
+                ( ctx5, cmpOp ) =
+                    Ops.ecoCallNamed ctx4 eqVar "Elm_Kernel_Utils_equal" [ ( valVar, Types.ecoValue ), ( strVar, Types.ecoValue ) ] Types.ecoValue
+
+                ( unboxOps, resVar, ctx6 ) =
+                    Intrinsics.unboxToType ctx5 eqVar I1
+            in
+            ( pathOps ++ [ strOp, cmpOp ] ++ unboxOps, resVar, ctx6 )
+
+        Test.IsCons ->
+            let
+                ( tagVar, ctx2 ) =
+                    Ctx.freshVar ctx1
+
+                ( ctx3, tagOp ) =
+                    Ops.ecoGetTag ctx2 tagVar valVar
+
+                ( constVar, ctx4 ) =
+                    Ctx.freshVar ctx3
+
+                ( ctx5, constOp ) =
+                    Ops.arithConstantInt32 ctx4 constVar 1
+
+                ( resVar, ctx6 ) =
+                    Ctx.freshVar ctx5
+
+                ( ctx7, cmpOp ) =
+                    Ops.arithCmpI ctx6 "eq" resVar ( tagVar, I32 ) ( constVar, I32 )
+            in
+            ( pathOps ++ [ tagOp, constOp, cmpOp ], resVar, ctx7 )
+
+        Test.IsNil ->
+            let
+                ( tagVar, ctx2 ) =
+                    Ctx.freshVar ctx1
+
+                ( ctx3, tagOp ) =
+                    Ops.ecoGetTag ctx2 tagVar valVar
+
+                ( constVar, ctx4 ) =
+                    Ctx.freshVar ctx3
+
+                ( ctx5, constOp ) =
+                    Ops.arithConstantInt32 ctx4 constVar 0
+
+                ( resVar, ctx6 ) =
+                    Ctx.freshVar ctx5
+
+                ( ctx7, cmpOp ) =
+                    Ops.arithCmpI ctx6 "eq" resVar ( tagVar, I32 ) ( constVar, I32 )
+            in
+            ( pathOps ++ [ tagOp, constOp, cmpOp ], resVar, ctx7 )
+
+        Test.IsTuple ->
+            let
+                ( resVar, ctx2 ) =
+                    Ctx.freshVar ctx1
+
+                ( ctx3, constOp ) =
+                    Ops.arithConstantBool ctx2 resVar True
+            in
+            ( pathOps ++ [ constOp ], resVar, ctx3 )
+
+
+{-| Generate a chain condition from a list of MonoDtPath tests.
+-}
+generateMonoChainCondition : Ctx.Context -> List ( Mono.MonoDtPath, DT.Test ) -> ( List MlirOp, String, Ctx.Context )
+generateMonoChainCondition ctx tests =
+    case tests of
+        [] ->
+            let
+                ( resVar, ctx1 ) =
+                    Ctx.freshVar ctx
+
+                ( ctx2, constOp ) =
+                    Ops.arithConstantBool ctx1 resVar True
+            in
+            ( [ constOp ], resVar, ctx2 )
+
+        [ singleTest ] ->
+            generateMonoTest ctx singleTest
+
+        firstTest :: restTests ->
+            let
+                ( firstOps, firstVar, ctx1 ) =
+                    generateMonoTest ctx firstTest
+
+                ( revOps, finalVar, finalCtx ) =
+                    List.foldl
+                        (\test ( accRevOps, prevVar, accCtx ) ->
+                            let
+                                ( testOps, testVar, ctx2 ) =
+                                    generateMonoTest accCtx test
+
+                                ( resVar, ctx3 ) =
+                                    Ctx.freshVar ctx2
+
+                                ( ctx4, andOp ) =
+                                    Ops.ecoBinaryOp ctx3 "arith.andi" resVar ( prevVar, I1 ) ( testVar, I1 ) I1
+                            in
+                            ( andOp :: List.foldl (::) accRevOps testOps, resVar, ctx4 )
+                        )
+                        ( List.foldl (::) [] firstOps, firstVar, ctx1 )
+                        restTests
+            in
+            ( List.reverse revOps, finalVar, finalCtx )
 
 
 {-| Internal helper for generateMonoPath that accumulates ops in reverse order
@@ -395,96 +655,6 @@ lookupFieldIsUnboxed ctx containerType ctorName fieldIndex =
                     Nothing
 
 
-{-| Look up field layout info by constructor name only.
-
-This searches through all ctorShapes entries to find a constructor with the given name.
-For non-polymorphic types, this will find a unique match.
-For polymorphic types, there may be multiple instantiations with the same constructor name
-but different field layouts - in that case, we return the first match (which may not be correct).
-
-This is a pragmatic workaround for decision tree paths (DT.Path) which don't carry MonoType
-information. The proper fix would be to augment the decision tree with type information
-during monomorphization.
-
-Returns Just (isUnboxed, fieldMonoType) if found, Nothing otherwise.
-
--}
-lookupFieldInfoByCtorName : Ctx.Context -> Name.Name -> Int -> Maybe ( Bool, Mono.MonoType )
-lookupFieldInfoByCtorName ctx ctorName fieldIndex =
-    let
-        allShapeLists =
-            Dict.values ctx.typeRegistry.ctorShapes
-
-        allShapes =
-            List.concat allShapeLists
-
-        -- Flatten all shapes and find matching constructor
-        matchingShape =
-            allShapes
-                |> List.filter (\shape -> shape.name == ctorName)
-                |> List.head
-    in
-    case matchingShape of
-        Nothing ->
-            Nothing
-
-        Just shape ->
-            let
-                layout =
-                    Types.computeCtorLayout shape
-            in
-            case List.drop fieldIndex layout.fields of
-                fieldInfo :: _ ->
-                    Just ( fieldInfo.isUnboxed, fieldInfo.monoType )
-
-                [] ->
-                    Nothing
-
-
-{-| Find if there's a single-constructor single-field type with an unboxed field.
-
-This is used by TypedPath.Unbox handling to determine if the inner field is stored unboxed.
-Returns Just (fieldMonoType, isUnboxed) if found, Nothing otherwise.
-
--}
-findSingleCtorUnboxedField : Ctx.Context -> Maybe ( Mono.MonoType, Bool )
-findSingleCtorUnboxedField ctx =
-    let
-        allShapeLists =
-            Dict.values ctx.typeRegistry.ctorShapes
-
-        -- Find types with exactly one constructor
-        singleCtorShapes =
-            allShapeLists
-                |> List.filter (\shapes -> List.length shapes == 1)
-                |> List.filterMap List.head
-                |> List.filter (\shape -> List.length shape.fieldTypes == 1)
-
-        -- Check if any has an unboxed field
-        findUnboxed shapes =
-            case shapes of
-                [] ->
-                    Nothing
-
-                shape :: rest ->
-                    let
-                        layout =
-                            Types.computeCtorLayout shape
-                    in
-                    case layout.fields of
-                        fieldInfo :: _ ->
-                            if fieldInfo.isUnboxed then
-                                Just ( fieldInfo.monoType, True )
-
-                            else
-                                findUnboxed rest
-
-                        [] ->
-                            findUnboxed rest
-    in
-    findUnboxed singleCtorShapes
-
-
 {-| Box a primitive value into an eco.value.
 -}
 boxPrimitive : Ctx.Context -> String -> String -> MlirType -> ( Ctx.Context, MlirOp )
@@ -499,578 +669,6 @@ boxPrimitive ctx resultVar primitiveVar primType =
         |> Ops.opBuilder.withAttrs attrs
         |> Ops.opBuilder.build
 
-
-
--- ====== DECISION TREE PATH GENERATION ======
-
-
-{-| Generate MLIR ops to navigate a DT.Path from the root scrutinee.
-
-Returns the ops needed to project to the target, the result variable name,
-and the updated context.
-
-The targetType parameter specifies what type the final value should be:
-
-  - For primitive tests (IsBool, IsInt, IsChr), this is the primitive type
-  - For ctor tests, this is !eco.value
-
--}
-generateDTPath : Ctx.Context -> Name.Name -> DT.Path -> MlirType -> ( List MlirOp, String, Ctx.Context )
-generateDTPath ctx root dtPath targetType =
-    let
-        ( revOps, var, ctx_ ) =
-            generateDTPathHelper ctx root dtPath targetType []
-    in
-    ( List.reverse revOps, var, ctx_ )
-
-
-{-| Internal helper for generateDTPath that accumulates ops in reverse order
-to avoid quadratic ++ [ behavior.
--}
-generateDTPathHelper : Ctx.Context -> Name.Name -> DT.Path -> MlirType -> List MlirOp -> ( List MlirOp, String, Ctx.Context )
-generateDTPathHelper ctx root dtPath targetType revAcc =
-    case dtPath of
-        TypedPath.Empty ->
-            -- The root is the scrutinee variable; look it up in varMappings.
-            -- This correctly handles both boxed (!eco.value) and unboxed (i1, i64) parameters.
-            let
-                ( rootVar, rootTy ) =
-                    Ctx.lookupVar ctx root
-            in
-            if rootTy == targetType then
-                -- Already the right type (e.g. Bool param already i1)
-                ( revAcc, rootVar, ctx )
-
-            else if Types.isEcoValueType rootTy && not (Types.isEcoValueType targetType) then
-                -- Currently boxed, need primitive -> unbox and update mapping
-                let
-                    ( unboxOps, unboxedVar, ctx1 ) =
-                        Intrinsics.unboxToType ctx rootVar targetType
-
-                    -- Make future uses of root see the unboxed SSA value
-                    ctx2 =
-                        Ctx.addVarMapping root unboxedVar targetType ctx1
-                in
-                ( List.foldl (::) revAcc unboxOps, unboxedVar, ctx2 )
-
-            else
-                -- Types differ but we don't have a boxing rule here; just use rootVar.
-                ( revAcc, rootVar, ctx )
-
-        TypedPath.Index index hint subPath ->
-            let
-                -- Navigate to the container object (always !eco.value)
-                ( revAcc1, subVar, ctx1 ) =
-                    generateDTPathHelper ctx root subPath Types.ecoValue revAcc
-
-                ( resultVar, ctx2 ) =
-                    Ctx.freshVar ctx1
-
-                fieldIndex : Int
-                fieldIndex =
-                    Index.toMachine index
-
-                -- Use type-specific projection ops based on ContainerHint.
-                -- This ensures correct heap layout access for each container type.
-                ( projectOps, projectVar, ctx3 ) =
-                    case hint of
-                        TypedPath.HintList ->
-                            if fieldIndex == 0 then
-                                -- List head projection. Project with the target type directly.
-                                -- The runtime helper functions (eco_cons_head_i64, etc.) handle
-                                -- both boxed and unboxed storage transparently.
-                                let
-                                    ( ctxL, op ) =
-                                        Ops.ecoProjectListHead ctx2 resultVar targetType subVar
-                                in
-                                ( [ op ], resultVar, ctxL )
-
-                            else
-                                -- List tail (index 1)
-                                let
-                                    ( ctxL, op ) =
-                                        Ops.ecoProjectListTail ctx2 resultVar subVar
-                                in
-                                ( [ op ], resultVar, ctxL )
-
-                        TypedPath.HintTuple2 ->
-                            if targetType == I1 then
-                                -- Bool is stored as eco.value in tuples (never unboxed).
-                                -- Project as eco.value, then unbox to i1.
-                                let
-                                    ( boxedVar, ctx2a ) =
-                                        Ctx.freshVar ctx2
-
-                                    ( ctxT, op ) =
-                                        Ops.ecoProjectTuple2 ctx2a boxedVar fieldIndex Types.ecoValue subVar
-
-                                    ( unboxOps, unboxedVar, ctxU ) =
-                                        Intrinsics.unboxToType ctxT boxedVar I1
-                                in
-                                ( op :: unboxOps, unboxedVar, ctxU )
-
-                            else
-                                let
-                                    ( ctxT, op ) =
-                                        Ops.ecoProjectTuple2 ctx2 resultVar fieldIndex targetType subVar
-                                in
-                                ( [ op ], resultVar, ctxT )
-
-                        TypedPath.HintTuple3 ->
-                            if targetType == I1 then
-                                -- Bool is stored as eco.value in tuples (never unboxed).
-                                -- Project as eco.value, then unbox to i1.
-                                let
-                                    ( boxedVar, ctx2a ) =
-                                        Ctx.freshVar ctx2
-
-                                    ( ctxT, op ) =
-                                        Ops.ecoProjectTuple3 ctx2a boxedVar fieldIndex Types.ecoValue subVar
-
-                                    ( unboxOps, unboxedVar, ctxU ) =
-                                        Intrinsics.unboxToType ctxT boxedVar I1
-                                in
-                                ( op :: unboxOps, unboxedVar, ctxU )
-
-                            else
-                                let
-                                    ( ctxT, op ) =
-                                        Ops.ecoProjectTuple3 ctx2 resultVar fieldIndex targetType subVar
-                                in
-                                ( [ op ], resultVar, ctxT )
-
-                        TypedPath.HintCustom ctorName ->
-                            -- Custom ADTs (Maybe, Result, user types, big tuples)
-                            -- Look up field layout by constructor name to determine if field is unboxed.
-                            case lookupFieldInfoByCtorName ctx2 ctorName fieldIndex of
-                                Just ( True, fieldMonoType ) ->
-                                    -- Field is stored unboxed (as primitive).
-                                    -- Project as primitive type, then box if caller needs eco.value.
-                                    let
-                                        fieldMlirType =
-                                            Types.monoTypeToAbi fieldMonoType
-
-                                        ( primitiveVar, ctx3_ ) =
-                                            Ctx.freshVar ctx2
-
-                                        ( ctx4, projectOp ) =
-                                            Ops.ecoProjectCustom ctx3_ primitiveVar fieldIndex fieldMlirType subVar
-                                    in
-                                    if Types.isEcoValueType targetType then
-                                        -- Caller wants eco.value, need to box the primitive
-                                        let
-                                            ( boxedVar, ctx5 ) =
-                                                Ctx.freshVar ctx4
-
-                                            ( ctx6, boxOp ) =
-                                                boxPrimitive ctx5 boxedVar primitiveVar fieldMlirType
-                                        in
-                                        ( [ projectOp, boxOp ], boxedVar, ctx6 )
-
-                                    else
-                                        -- Caller wants primitive, return directly
-                                        ( [ projectOp ], primitiveVar, ctx4 )
-
-                                _ ->
-                                    -- Field is stored boxed (as eco.value) or no layout found.
-                                    if targetType == I1 then
-                                        -- Bool is stored as eco.value in custom types (never unboxed).
-                                        -- Project as eco.value, then unbox to i1.
-                                        let
-                                            ( boxedVar, ctx2a ) =
-                                                Ctx.freshVar ctx2
-
-                                            ( ctxC, op ) =
-                                                Ops.ecoProjectCustom ctx2a boxedVar fieldIndex Types.ecoValue subVar
-
-                                            ( unboxOps, unboxedVar, ctxU ) =
-                                                Intrinsics.unboxToType ctxC boxedVar I1
-                                        in
-                                        ( op :: unboxOps, unboxedVar, ctxU )
-
-                                    else
-                                        -- Project with the target type directly.
-                                        let
-                                            ( ctxC, op ) =
-                                                Ops.ecoProjectCustom ctx2 resultVar fieldIndex targetType subVar
-                                        in
-                                        ( [ op ], resultVar, ctxC )
-
-                        TypedPath.HintUnknown ->
-                            -- Fallback: treat like custom
-                            if targetType == I1 then
-                                -- Bool is stored as eco.value in custom types (never unboxed).
-                                -- Project as eco.value, then unbox to i1.
-                                let
-                                    ( boxedVar, ctx2a ) =
-                                        Ctx.freshVar ctx2
-
-                                    ( ctxU_, op ) =
-                                        Ops.ecoProjectCustom ctx2a boxedVar fieldIndex Types.ecoValue subVar
-
-                                    ( unboxOps, unboxedVar, ctxU ) =
-                                        Intrinsics.unboxToType ctxU_ boxedVar I1
-                                in
-                                ( op :: unboxOps, unboxedVar, ctxU )
-
-                            else
-                                let
-                                    ( ctxU, op ) =
-                                        Ops.ecoProjectCustom ctx2 resultVar fieldIndex targetType subVar
-                                in
-                                ( [ op ], resultVar, ctxU )
-            in
-            ( List.foldl (::) revAcc1 projectOps, projectVar, ctx3 )
-
-        TypedPath.Unbox subPath ->
-            -- TypedPath.Unbox represents unwrapping a single-constructor type to access its single field.
-            -- This is used for types like `Wrapper = Wrap Int` when pattern matching `Wrap x`.
-            --
-            -- We need to:
-            -- 1. Get the container (wrapper) value by navigating subPath
-            -- 2. Project field 0 to extract the inner value
-            -- 3. If the field is stored unboxed, project as primitive; box if needed
-            -- 4. If the field is stored boxed, project as eco.value; unbox if needed
-            --
-            -- The challenge is that DT.Path doesn't carry MonoType information.
-            -- We search through ctorShapes for single-constructor single-field types
-            -- that might have unboxed fields.
-            let
-                -- Navigate to the container object (always !eco.value)
-                ( revAcc1, subVar, ctx1 ) =
-                    generateDTPathHelper ctx root subPath Types.ecoValue revAcc
-
-                ( resultVar, ctx2 ) =
-                    Ctx.freshVar ctx1
-
-                -- Look for single-field single-constructor types with unboxed fields
-                maybeUnboxedFieldInfo =
-                    findSingleCtorUnboxedField ctx2
-
-                ( projectOps, projectVar, ctx3 ) =
-                    case maybeUnboxedFieldInfo of
-                        Just ( fieldMonoType, True ) ->
-                            -- Found a single-constructor type with an unboxed single field
-                            let
-                                fieldMlirType =
-                                    Types.monoTypeToAbi fieldMonoType
-
-                                ( primitiveVar, ctxP1 ) =
-                                    Ctx.freshVar ctx2
-
-                                ( ctxP2, projectOp ) =
-                                    Ops.ecoProjectCustom ctxP1 primitiveVar 0 fieldMlirType subVar
-                            in
-                            if Types.isEcoValueType targetType then
-                                -- Caller wants eco.value, need to box the primitive
-                                let
-                                    ( boxedVar, ctxP3 ) =
-                                        Ctx.freshVar ctxP2
-
-                                    ( ctxP4, boxOp ) =
-                                        boxPrimitive ctxP3 boxedVar primitiveVar fieldMlirType
-                                in
-                                ( [ projectOp, boxOp ], boxedVar, ctxP4 )
-
-                            else
-                                -- Caller wants primitive, return directly
-                                ( [ projectOp ], primitiveVar, ctxP2 )
-
-                        _ ->
-                            -- Either no single-ctor type found or field is boxed
-                            -- Project field 0 as eco.value, then unbox if needed
-                            let
-                                ( ctxP1, projectOp ) =
-                                    Ops.ecoProjectCustom ctx2 resultVar 0 Types.ecoValue subVar
-                            in
-                            if targetType == I1 then
-                                -- Bool is stored as eco.value in custom types (never unboxed).
-                                -- Project as eco.value, then unbox to i1.
-                                let
-                                    ( unboxOps, unboxedVar, ctxU ) =
-                                        Intrinsics.unboxToType ctxP1 resultVar I1
-                                in
-                                ( projectOp :: unboxOps, unboxedVar, ctxU )
-
-                            else if Types.isUnboxable targetType then
-                                -- Caller wants primitive, need to unbox
-                                let
-                                    ( unboxedVar, ctxP2 ) =
-                                        Ctx.freshVar ctxP1
-
-                                    attrs =
-                                        Dict.singleton "_operand_types" (ArrayAttr Nothing [ TypeAttr Types.ecoValue ])
-
-                                    ( ctxP3, unboxOp ) =
-                                        Ops.mlirOp ctxP2 "eco.unbox"
-                                            |> Ops.opBuilder.withOperands [ resultVar ]
-                                            |> Ops.opBuilder.withResults [ ( unboxedVar, targetType ) ]
-                                            |> Ops.opBuilder.withAttrs attrs
-                                            |> Ops.opBuilder.build
-                                in
-                                ( [ projectOp, unboxOp ], unboxedVar, ctxP3 )
-
-                            else
-                                -- Caller wants eco.value, return directly
-                                ( [ projectOp ], resultVar, ctxP1 )
-            in
-            ( List.foldl (::) revAcc1 projectOps, projectVar, ctx3 )
-
-
-{-| Generate MLIR ops to evaluate a DT.Test, returning a boolean result.
-
-For constructor tests (IsCtor), we return the value to be tested with eco.case directly.
-For other tests (IsBool, IsInt, etc.), we generate comparison ops that produce a boolean.
-
--}
-generateTest : Ctx.Context -> Name.Name -> ( DT.Path, DT.Test ) -> ( List MlirOp, String, Ctx.Context )
-generateTest ctx root ( path, test ) =
-    let
-        -- Determine target type based on the test
-        targetType =
-            case test of
-                Test.IsCtor _ _ _ _ _ ->
-                    Types.ecoValue
-
-                Test.IsBool _ ->
-                    I1
-
-                Test.IsInt _ ->
-                    I64
-
-                Test.IsChr _ ->
-                    Types.ecoChar
-
-                Test.IsStr _ ->
-                    Types.ecoValue
-
-                Test.IsCons ->
-                    Types.ecoValue
-
-                Test.IsNil ->
-                    Types.ecoValue
-
-                Test.IsTuple ->
-                    Types.ecoValue
-
-        ( pathOps, valVar, ctx1 ) =
-            generateDTPath ctx root path targetType
-    in
-    case test of
-        Test.IsCtor _ _ index _ _ ->
-            -- Produce a boolean (i1) by comparing the tag
-            let
-                expectedTag =
-                    Index.toMachine index
-
-                ( tagVar, ctx2 ) =
-                    Ctx.freshVar ctx1
-
-                ( ctx3, tagOp ) =
-                    Ops.ecoGetTag ctx2 tagVar valVar
-
-                ( constVar, ctx4 ) =
-                    Ctx.freshVar ctx3
-
-                ( ctx5, constOp ) =
-                    Ops.arithConstantInt32 ctx4 constVar expectedTag
-
-                ( resVar, ctx6 ) =
-                    Ctx.freshVar ctx5
-
-                ( ctx7, cmpOp ) =
-                    Ops.arithCmpI ctx6 "eq" resVar ( tagVar, I32 ) ( constVar, I32 )
-            in
-            ( pathOps ++ [ tagOp, constOp, cmpOp ], resVar, ctx7 )
-
-        Test.IsBool expected ->
-            -- valVar is a Bool; if expected is False, invert it
-            if expected then
-                ( pathOps, valVar, ctx1 )
-
-            else
-                let
-                    ( resVar, ctx2 ) =
-                        Ctx.freshVar ctx1
-
-                    -- Invert boolean: result = 1 - valVar (xor with 1)
-                    ( constVar, ctx3 ) =
-                        Ctx.freshVar ctx2
-
-                    ( ctx4, constOp ) =
-                        Ops.arithConstantBool ctx3 constVar True
-
-                    ( ctx5, xorOp ) =
-                        Ops.ecoBinaryOp ctx4 "arith.xori" resVar ( valVar, I1 ) ( constVar, I1 ) I1
-                in
-                ( pathOps ++ [ constOp, xorOp ], resVar, ctx5 )
-
-        Test.IsInt i ->
-            let
-                ( constVar, ctx2 ) =
-                    Ctx.freshVar ctx1
-
-                ( ctx3, constOp ) =
-                    Ops.arithConstantInt ctx2 constVar i
-
-                ( resVar, ctx4 ) =
-                    Ctx.freshVar ctx3
-
-                ( ctx5, cmpOp ) =
-                    Ops.ecoBinaryOp ctx4 "eco.int.eq" resVar ( valVar, I64 ) ( constVar, I64 ) I1
-            in
-            ( pathOps ++ [ constOp, cmpOp ], resVar, ctx5 )
-
-        Test.IsChr c ->
-            -- Compare character codes
-            let
-                charCode =
-                    String.toList c |> List.head |> Maybe.map Char.toCode |> Maybe.withDefault 0
-
-                ( constVar, ctx2 ) =
-                    Ctx.freshVar ctx1
-
-                ( ctx3, constOp ) =
-                    Ops.arithConstantChar ctx2 constVar charCode
-
-                ( resVar, ctx4 ) =
-                    Ctx.freshVar ctx3
-
-                ( ctx5, cmpOp ) =
-                    Ops.ecoBinaryOp ctx4 "arith.cmpi" resVar ( valVar, Types.ecoChar ) ( constVar, Types.ecoChar ) I1
-            in
-            ( pathOps ++ [ constOp, cmpOp ], resVar, ctx5 )
-
-        Test.IsStr s ->
-            -- String comparison - use kernel function
-            let
-                ( strVar, ctx2 ) =
-                    Ctx.freshVar ctx1
-
-                -- Empty strings must use eco.constant EmptyString (invariant: never heap-allocated)
-                ( ctx3, strOp ) =
-                    if s == "" then
-                        Ops.ecoConstantEmptyString ctx2 strVar
-
-                    else
-                        Ops.ecoStringLiteral ctx2 strVar s
-
-                ( eqVar, ctx4 ) =
-                    Ctx.freshVar ctx3
-
-                ( ctx5, cmpOp ) =
-                    Ops.ecoCallNamed ctx4 eqVar "Elm_Kernel_Utils_equal" [ ( valVar, Types.ecoValue ), ( strVar, Types.ecoValue ) ] Types.ecoValue
-
-                -- Unbox the eco.value Bool result to i1 for use in chain conditions
-                ( unboxOps, resVar, ctx6 ) =
-                    Intrinsics.unboxToType ctx5 eqVar I1
-            in
-            ( pathOps ++ [ strOp, cmpOp ] ++ unboxOps, resVar, ctx6 )
-
-        Test.IsCons ->
-            -- Test if list is non-empty (tag == 1)
-            let
-                ( tagVar, ctx2 ) =
-                    Ctx.freshVar ctx1
-
-                ( ctx3, tagOp ) =
-                    Ops.ecoGetTag ctx2 tagVar valVar
-
-                ( constVar, ctx4 ) =
-                    Ctx.freshVar ctx3
-
-                ( ctx5, constOp ) =
-                    Ops.arithConstantInt32 ctx4 constVar 1
-
-                ( resVar, ctx6 ) =
-                    Ctx.freshVar ctx5
-
-                ( ctx7, cmpOp ) =
-                    Ops.arithCmpI ctx6 "eq" resVar ( tagVar, I32 ) ( constVar, I32 )
-            in
-            ( pathOps ++ [ tagOp, constOp, cmpOp ], resVar, ctx7 )
-
-        Test.IsNil ->
-            -- Test if list is empty (tag == 0)
-            let
-                ( tagVar, ctx2 ) =
-                    Ctx.freshVar ctx1
-
-                ( ctx3, tagOp ) =
-                    Ops.ecoGetTag ctx2 tagVar valVar
-
-                ( constVar, ctx4 ) =
-                    Ctx.freshVar ctx3
-
-                ( ctx5, constOp ) =
-                    Ops.arithConstantInt32 ctx4 constVar 0
-
-                ( resVar, ctx6 ) =
-                    Ctx.freshVar ctx5
-
-                ( ctx7, cmpOp ) =
-                    Ops.arithCmpI ctx6 "eq" resVar ( tagVar, I32 ) ( constVar, I32 )
-            in
-            ( pathOps ++ [ tagOp, constOp, cmpOp ], resVar, ctx7 )
-
-        Test.IsTuple ->
-            -- Tuples always match (we just need the value)
-            let
-                ( resVar, ctx2 ) =
-                    Ctx.freshVar ctx1
-
-                ( ctx3, constOp ) =
-                    Ops.arithConstantBool ctx2 resVar True
-            in
-            ( pathOps ++ [ constOp ], resVar, ctx3 )
-
-
-{-| Generate the condition for a Chain node by ANDing all test booleans.
--}
-generateChainCondition : Ctx.Context -> Name.Name -> List ( DT.Path, DT.Test ) -> ( List MlirOp, String, Ctx.Context )
-generateChainCondition ctx root tests =
-    case tests of
-        [] ->
-            -- No tests means always true
-            let
-                ( resVar, ctx1 ) =
-                    Ctx.freshVar ctx
-
-                ( ctx2, constOp ) =
-                    Ops.arithConstantBool ctx1 resVar True
-            in
-            ( [ constOp ], resVar, ctx2 )
-
-        [ singleTest ] ->
-            generateTest ctx root singleTest
-
-        firstTest :: restTests ->
-            -- Evaluate the first test
-            let
-                ( firstOps, firstVar, ctx1 ) =
-                    generateTest ctx root firstTest
-
-                -- Fold over remaining tests, accumulating ops in reverse and
-                -- ANDing boolean results together
-                ( revOps, finalVar, finalCtx ) =
-                    List.foldl
-                        (\test ( accRevOps, prevVar, accCtx ) ->
-                            let
-                                ( testOps, testVar, ctx2 ) =
-                                    generateTest accCtx root test
-
-                                ( resVar, ctx3 ) =
-                                    Ctx.freshVar ctx2
-
-                                ( ctx4, andOp ) =
-                                    Ops.ecoBinaryOp ctx3 "arith.andi" resVar ( prevVar, I1 ) ( testVar, I1 ) I1
-                            in
-                            ( andOp :: List.foldl (::) accRevOps testOps, resVar, ctx4 )
-                        )
-                        ( List.foldl (::) [] firstOps, firstVar, ctx1 )
-                        restTests
-            in
-            ( List.reverse revOps, finalVar, finalCtx )
 
 
 {-| Get the tag from a DT.Test for use with eco.case

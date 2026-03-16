@@ -19,6 +19,7 @@ import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.BitSet as BitSet
 import Compiler.Data.Index as Index
 import Compiler.Data.Name as Name exposing (Name)
+import Compiler.AST.DecisionTree.TypedPath as TypedPath
 import Compiler.LocalOpt.Typed.DecisionTree as DT
 import Compiler.Monomorphize.Analysis as Analysis
 import Compiler.Monomorphize.Closure as Closure
@@ -1948,7 +1949,7 @@ specializeExpr expr subst state =
                     state.ctx.varEnv
 
                 ( monoDecider0, state1 ) =
-                    specializeDecider decider subst state
+                    specializeDecider root decider subst state
 
                 state1WithResetVarEnv =
                     { state1 | ctx = let cc = state1.ctx in { cc | varEnv = savedVarEnv } }
@@ -3001,10 +3002,100 @@ hintToKind hint =
             Mono.CustomContainer ctorName
 
 
+{-| Convert a TypedPath.ContainerHint to a ContainerKind for MonoDtPath.
+-}
+dtHintToKind : TypedPath.ContainerHint -> Mono.ContainerKind
+dtHintToKind hint =
+    case hint of
+        TypedPath.HintList ->
+            Mono.ListContainer
+
+        TypedPath.HintTuple2 ->
+            Mono.Tuple2Container
+
+        TypedPath.HintTuple3 ->
+            Mono.Tuple3Container
+
+        TypedPath.HintCustom ctorName ->
+            Mono.CustomContainer ctorName
+
+        TypedPath.HintUnknown ->
+            Mono.CustomContainer ""
+
+
+{-| Convert TypedPath.ContainerHint to TOpt.ContainerHint for reuse of computeIndexProjectionType.
+-}
+dtHintToTOptHint : TypedPath.ContainerHint -> TOpt.ContainerHint
+dtHintToTOptHint hint =
+    case hint of
+        TypedPath.HintList ->
+            TOpt.HintList
+
+        TypedPath.HintTuple2 ->
+            TOpt.HintTuple2
+
+        TypedPath.HintTuple3 ->
+            TOpt.HintTuple3
+
+        TypedPath.HintCustom ctorName ->
+            TOpt.HintCustom ctorName
+
+        TypedPath.HintUnknown ->
+            TOpt.HintCustom ""
+
+
+{-| Convert a DT.Path (TypedPath) to a MonoDtPath by resolving types from VarEnv.
+-}
+specializeDtPath : Name -> TypedPath.Path -> VarEnv -> TypeEnv.GlobalTypeEnv -> Mono.MonoDtPath
+specializeDtPath rootName dtPath varEnv globalTypeEnv =
+    let
+        rootType =
+            case State.lookupVar rootName varEnv of
+                Just ty ->
+                    ty
+
+                Nothing ->
+                    Utils.Crash.crash ("Specialize.specializeDtPath: Root '" ++ rootName ++ "' not in VarEnv")
+
+        go : TypedPath.Path -> Mono.MonoDtPath
+        go path =
+            case path of
+                TypedPath.Empty ->
+                    Mono.DtRoot rootName rootType
+
+                TypedPath.Index index hint subPath ->
+                    let
+                        monoSubPath =
+                            go subPath
+
+                        containerType =
+                            Mono.dtPathType monoSubPath
+
+                        resultType =
+                            computeIndexProjectionType globalTypeEnv (dtHintToTOptHint hint) (Index.toMachine index) containerType
+                    in
+                    Mono.DtIndex (Index.toMachine index) (dtHintToKind hint) resultType monoSubPath
+
+                TypedPath.Unbox subPath ->
+                    let
+                        monoSubPath =
+                            go subPath
+
+                        containerType =
+                            Mono.dtPathType monoSubPath
+
+                        resultType =
+                            computeUnboxResultType globalTypeEnv containerType
+                    in
+                    Mono.DtUnbox resultType monoSubPath
+    in
+    go dtPath
+
+
 {-| Specialize a pattern match decider tree.
 -}
-specializeDecider : TOpt.Decider TOpt.Choice -> Substitution -> MonoState -> ( Mono.Decider Mono.MonoChoice, MonoState )
-specializeDecider decider subst state =
+specializeDecider : Name -> TOpt.Decider TOpt.Choice -> Substitution -> MonoState -> ( Mono.Decider Mono.MonoChoice, MonoState )
+specializeDecider rootName decider subst state =
     case decider of
         TOpt.Leaf choice ->
             let
@@ -3018,32 +3109,42 @@ specializeDecider decider subst state =
                 savedVarEnv =
                     state.ctx.varEnv
 
+                monoTestChain =
+                    List.map
+                        (\( path, test ) ->
+                            ( specializeDtPath rootName path state.ctx.varEnv state.ctx.globalTypeEnv, test )
+                        )
+                        testChain
+
                 ( monoSuccess, state1 ) =
-                    specializeDecider success subst state
+                    specializeDecider rootName success subst state
 
                 state1WithResetVarEnv =
                     { state1 | ctx = let c = state1.ctx in { c | varEnv = savedVarEnv } }
 
                 ( monoFailure, state2 ) =
-                    specializeDecider failure subst state1WithResetVarEnv
+                    specializeDecider rootName failure subst state1WithResetVarEnv
             in
-            ( Mono.Chain testChain monoSuccess monoFailure, state2 )
+            ( Mono.Chain monoTestChain monoSuccess monoFailure, state2 )
 
         TOpt.FanOut path edges fallback ->
             let
                 savedVarEnv =
                     state.ctx.varEnv
 
+                monoPath =
+                    specializeDtPath rootName path state.ctx.varEnv state.ctx.globalTypeEnv
+
                 ( monoEdges, state1 ) =
-                    specializeEdges edges subst state
+                    specializeEdges rootName edges subst state
 
                 state1WithResetVarEnv =
                     { state1 | ctx = let c = state1.ctx in { c | varEnv = savedVarEnv } }
 
                 ( monoFallback, state2 ) =
-                    specializeDecider fallback subst state1WithResetVarEnv
+                    specializeDecider rootName fallback subst state1WithResetVarEnv
             in
-            ( Mono.FanOut path monoEdges monoFallback, state2 )
+            ( Mono.FanOut monoPath monoEdges monoFallback, state2 )
 
 
 specializeChoice : TOpt.Choice -> Substitution -> MonoState -> ( Mono.MonoChoice, MonoState )
@@ -3060,8 +3161,8 @@ specializeChoice choice subst state =
             ( Mono.Jump index, state )
 
 
-specializeEdges : List ( DT.Test, TOpt.Decider TOpt.Choice ) -> Substitution -> MonoState -> ( List ( DT.Test, Mono.Decider Mono.MonoChoice ), MonoState )
-specializeEdges edges subst state =
+specializeEdges : Name -> List ( DT.Test, TOpt.Decider TOpt.Choice ) -> Substitution -> MonoState -> ( List ( DT.Test, Mono.Decider Mono.MonoChoice ), MonoState )
+specializeEdges rootName edges subst state =
     let
         savedVarEnv =
             state.ctx.varEnv
@@ -3073,7 +3174,7 @@ specializeEdges edges subst state =
                     { st | ctx = let c = st.ctx in { c | varEnv = savedVarEnv } }
 
                 ( monoDecider, newSt ) =
-                    specializeDecider decider subst stWithResetVarEnv
+                    specializeDecider rootName decider subst stWithResetVarEnv
             in
             ( ( test, monoDecider ) :: acc, newSt )
         )

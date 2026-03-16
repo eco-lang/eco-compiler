@@ -11,6 +11,7 @@ the solver's union-find via LocalView.monoTypeOf.
 -}
 
 import Compiler.AST.Canonical as Can
+import Compiler.AST.DecisionTree.TypedPath as TypedPath
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.TypeEnv as TypeEnv
 import Compiler.AST.TypedOptimized as TOpt
@@ -510,7 +511,7 @@ specializeExpr view snapshot expr state =
                     state.varEnv
 
                 ( monoDecider, state1 ) =
-                    specializeDecider view snapshot decider state
+                    specializeDecider label view snapshot decider state
 
                 state1WithResetVarEnv =
                     { state1 | varEnv = savedVarEnv }
@@ -2028,8 +2029,98 @@ specializeBranches view snapshot branches state0 =
         branches
 
 
-specializeDecider : LocalView -> SolverSnapshot -> TOpt.Decider TOpt.Choice -> MonoDirectState -> ( Mono.Decider Mono.MonoChoice, MonoDirectState )
-specializeDecider view snapshot decider state =
+{-| Convert a TypedPath.ContainerHint to a ContainerKind for MonoDtPath.
+-}
+dtHintToKind : TypedPath.ContainerHint -> Mono.ContainerKind
+dtHintToKind hint =
+    case hint of
+        TypedPath.HintList ->
+            Mono.ListContainer
+
+        TypedPath.HintTuple2 ->
+            Mono.Tuple2Container
+
+        TypedPath.HintTuple3 ->
+            Mono.Tuple3Container
+
+        TypedPath.HintCustom ctorName ->
+            Mono.CustomContainer ctorName
+
+        TypedPath.HintUnknown ->
+            Mono.CustomContainer ""
+
+
+{-| Convert TypedPath.ContainerHint to TOpt.ContainerHint for reuse of computeIndexProjectionType.
+-}
+dtHintToTOptHint : TypedPath.ContainerHint -> TOpt.ContainerHint
+dtHintToTOptHint hint =
+    case hint of
+        TypedPath.HintList ->
+            TOpt.HintList
+
+        TypedPath.HintTuple2 ->
+            TOpt.HintTuple2
+
+        TypedPath.HintTuple3 ->
+            TOpt.HintTuple3
+
+        TypedPath.HintCustom ctorName ->
+            TOpt.HintCustom ctorName
+
+        TypedPath.HintUnknown ->
+            TOpt.HintCustom ""
+
+
+{-| Convert a DT.Path (TypedPath) to a MonoDtPath by resolving types from VarEnv.
+-}
+specializeDtPath : Name -> TypedPath.Path -> VarEnv -> TypeEnv.GlobalTypeEnv -> Mono.MonoDtPath
+specializeDtPath rootName dtPath varEnv globalTypeEnv =
+    let
+        rootType =
+            case State.lookupVar rootName varEnv of
+                Just ty ->
+                    ty
+
+                Nothing ->
+                    Utils.Crash.crash ("MonoDirect.specializeDtPath: Root '" ++ rootName ++ "' not in VarEnv")
+
+        go : TypedPath.Path -> Mono.MonoDtPath
+        go path =
+            case path of
+                TypedPath.Empty ->
+                    Mono.DtRoot rootName rootType
+
+                TypedPath.Index index hint subPath ->
+                    let
+                        monoSubPath =
+                            go subPath
+
+                        containerType =
+                            Mono.dtPathType monoSubPath
+
+                        resultType =
+                            computeIndexProjectionType globalTypeEnv (dtHintToTOptHint hint) (Index.toMachine index) containerType
+                    in
+                    Mono.DtIndex (Index.toMachine index) (dtHintToKind hint) resultType monoSubPath
+
+                TypedPath.Unbox subPath ->
+                    let
+                        monoSubPath =
+                            go subPath
+
+                        containerType =
+                            Mono.dtPathType monoSubPath
+
+                        resultType =
+                            computeUnboxResultType globalTypeEnv containerType
+                    in
+                    Mono.DtUnbox resultType monoSubPath
+    in
+    go dtPath
+
+
+specializeDecider : Name -> LocalView -> SolverSnapshot -> TOpt.Decider TOpt.Choice -> MonoDirectState -> ( Mono.Decider Mono.MonoChoice, MonoDirectState )
+specializeDecider rootName view snapshot decider state =
     case decider of
         TOpt.Leaf (TOpt.Inline expr) ->
             let
@@ -2046,21 +2137,31 @@ specializeDecider view snapshot decider state =
                 savedVarEnv =
                     state.varEnv
 
+                monoTestChain =
+                    List.map
+                        (\( path, test ) ->
+                            ( specializeDtPath rootName path state.varEnv state.globalTypeEnv, test )
+                        )
+                        testChain
+
                 ( monoSuccess, state1 ) =
-                    specializeDecider view snapshot success state
+                    specializeDecider rootName view snapshot success state
 
                 state1WithResetVarEnv =
                     { state1 | varEnv = savedVarEnv }
 
                 ( monoFailure, state2 ) =
-                    specializeDecider view snapshot failure state1WithResetVarEnv
+                    specializeDecider rootName view snapshot failure state1WithResetVarEnv
             in
-            ( Mono.Chain testChain monoSuccess monoFailure, state2 )
+            ( Mono.Chain monoTestChain monoSuccess monoFailure, state2 )
 
         TOpt.FanOut path tests fallback ->
             let
                 savedVarEnv =
                     state.varEnv
+
+                monoPath =
+                    specializeDtPath rootName path state.varEnv state.globalTypeEnv
 
                 ( monoTests, state1 ) =
                     List.foldr
@@ -2070,7 +2171,7 @@ specializeDecider view snapshot decider state =
                                     { s | varEnv = savedVarEnv }
 
                                 ( monoSubDecider, s1 ) =
-                                    specializeDecider view snapshot subDecider sWithResetVarEnv
+                                    specializeDecider rootName view snapshot subDecider sWithResetVarEnv
                             in
                             ( ( test, monoSubDecider ) :: acc, s1 )
                         )
@@ -2081,9 +2182,9 @@ specializeDecider view snapshot decider state =
                     { state1 | varEnv = savedVarEnv }
 
                 ( monoFallback, state2 ) =
-                    specializeDecider view snapshot fallback state1WithResetVarEnv
+                    specializeDecider rootName view snapshot fallback state1WithResetVarEnv
             in
-            ( Mono.FanOut path monoTests monoFallback, state2 )
+            ( Mono.FanOut monoPath monoTests monoFallback, state2 )
 
 
 specializeJumps : LocalView -> SolverSnapshot -> List ( Int, TOpt.Expr ) -> MonoDirectState -> ( List ( Int, Mono.MonoExpr ), MonoDirectState )

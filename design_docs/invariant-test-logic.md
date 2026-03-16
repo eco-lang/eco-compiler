@@ -519,6 +519,41 @@ logic: For every function expression in TypedOptimized:
 inputs: TypedOptimized modules with varied arities and partial applications
 oracle: Function types are internally consistent; arity and parameter/result types always match the TLambda-encoded type.
 --
+--
+name: Unbox path segments carry ground single-constructor wrapper type
+phase: typed optimization
+invariants: TOPT_006
+ir: TypedPath.Unbox segments in Decider trees within TypedOptimized.Case expressions
+logic: For each TypedOptimized.Case expression in the LocalGraph, walk the Decider tree
+  (Chain and FanOut nodes) and collect every TypedPath.Unbox segment from the paths.
+  For each Unbox segment:
+  * Verify the Unbox carries a concrete canonical wrapper type (once the data model is
+    updated to include it). Currently TypedPath.Unbox is `Unbox Path` with no type;
+    after the model update it should be `Unbox Can.Type Path` where the Can.Type is
+    the single-constructor union type being unwrapped.
+  * Assert the wrapper type corresponds to a single-constructor union (Can.Union with
+    numAlts == 1 and opts == Can.Unbox).
+  * Assert the single constructor has exactly one field (CtorData.numArgs == 1).
+  * Assert the wrapper type is ground: walk the Can.Type and assert no free Can.TVar
+    appears anywhere in the type (all type variables must have been instantiated by
+    the typed optimization phase).
+  * Also walk the Destructor paths in Destruct nodes for any additional Unbox segments
+    and apply the same checks.
+  The check should also confirm that paths WITHOUT Unbox do not contain Unbox segments
+  (i.e., Unbox only appears where a single-constructor single-field type is being
+  unwrapped, never for multi-constructor or multi-field types).
+inputs: TypedOptimized LocalGraph from StandardTestSuites, plus targeted programs with:
+  * `type Wrapper a = Wrapper a` used at concrete types (Wrapper Int, Wrapper String)
+  * Nested single-constructor types (Wrapper (Wrapper Int))
+  * Single-constructor types with unboxable fields (wrapper around Int, Float, Char)
+  * Single-constructor types with boxed fields (wrapper around String, List, records)
+  * Multi-constructor types to confirm Unbox is NOT emitted (Maybe, Result, custom enums)
+  * Polymorphic wrapper types that become ground after specialization at call sites
+oracle: Every TypedPath.Unbox segment carries a Can.Type that is ground, references a
+  single-constructor Can.Unbox union, and that union has exactly one field. No Unbox
+  segment exists for multi-constructor or multi-field types.
+tests: compiler/tests/TestLogic/LocalOpt/UnboxPathGroundTypeTest.elm
+--
 
 ---
 
@@ -886,6 +921,46 @@ oracle: Every closure/function node's parameter types and result type
   types diverge from its registry entry, which would cause ABI mismatches
   at call sites.
 tests: compiler/tests/TestLogic/Monomorphize/ClosureSpecKeyConsistencyTest.elm
+--
+--
+name: Unbox paths resolve to unique wrapper MonoType with matching CtorLayout
+phase: monomorphization
+invariants: MONO_026
+ir: MonoPath.MonoUnbox segments in MonoGraph decision trees and destructors
+logic: For each reachable MonoNode in the MonoGraph, walk all MonoExpr trees and collect
+  every MonoPath that contains a MonoUnbox segment. For each MonoUnbox resultType subPath:
+  * Extract the container (wrapper) MonoType via Mono.getMonoPathType subPath.
+  * Assert the container type is an MCustom (not MInt, MList, MVar, etc.).
+  * Look up the container MonoType in monoGraph.ctorShapes using
+    Mono.toComparableMonoType as the key.
+  * Assert the lookup succeeds (the wrapper type has an entry in ctorShapes).
+  * Assert the ctorShapes entry has exactly one CtorShape (single-constructor type).
+  * Assert that single CtorShape has exactly one fieldType (single-field constructor).
+  * Compute CtorLayout from the CtorShape via Types.computeCtorLayout.
+  * Assert the CtorLayout has exactly one FieldInfo entry.
+  * Assert the MonoUnbox resultType equals the CtorShape's single fieldType
+    (the monomorphization computed the correct unwrapped field type).
+  * If the field is unboxable (Int, Float, Char), assert FieldInfo.isUnboxed == True
+    and CtorLayout.unboxedBitmap == 1.
+  * If the field is NOT unboxable, assert FieldInfo.isUnboxed == False
+    and CtorLayout.unboxedBitmap == 0.
+  The check also verifies the negative case: no MonoIndex or MonoField segment
+  references a single-constructor single-field type that should have been MonoUnbox.
+inputs: Monomorphized graphs from StandardTestSuites, plus targeted programs with:
+  * `type Wrapper a = Wrapper a` instantiated at Int (unboxable field → bitmap 1)
+  * `type Wrapper a = Wrapper a` instantiated at String (boxed field → bitmap 0)
+  * `type Id = Id Int` (concrete single-constructor, single-field, unboxable)
+  * `type Name = Name String` (concrete single-constructor, single-field, boxed)
+  * Nested wrappers: `type Inner = Inner Int`, `type Outer = Outer Inner`
+  * Polymorphic wrappers specialized at multiple concrete types in the same program
+  * Multi-constructor types to confirm MonoUnbox is NOT used (Maybe, Result)
+  * Single-constructor multi-field types to confirm MonoUnbox is NOT used
+oracle: Every MonoUnbox segment's container type exists in ctorShapes with exactly one
+  single-field constructor. The MonoUnbox resultType matches the CtorShape fieldType.
+  The CtorLayout unboxed bitmap correctly reflects whether the single field is an
+  unboxable primitive. No MonoUnbox is present for multi-constructor or multi-field
+  types.
+tests: compiler/tests/TestLogic/Monomorphize/UnboxCtorLayoutConsistencyTest.elm
 --
 
 ---

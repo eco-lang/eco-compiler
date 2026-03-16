@@ -34,7 +34,6 @@ has been moved to GlobalOpt.MonoGlobalOptimize as part of the staging consolidat
 -}
 
 import Compiler.AST.DecisionTree.Test as DT
-import Compiler.AST.DecisionTree.TypedPath as DT
 import Compiler.AST.Monomorphized as Mono
 import Compiler.Data.Name exposing (Name)
 import Compiler.Reporting.Annotation as A
@@ -405,19 +404,46 @@ collectDeciderFreeLocals bound decider =
                 Mono.Jump _ ->
                     []
 
-        Mono.Chain _ success failure ->
-            collectDeciderFreeLocals bound success
+        Mono.Chain tests success failure ->
+            let
+                freePaths =
+                    List.concatMap (\( dtPath, _ ) -> findDtPathFreeLocals bound dtPath) tests
+            in
+            freePaths
+                ++ collectDeciderFreeLocals bound success
                 ++ collectDeciderFreeLocals bound failure
 
-        Mono.FanOut _ edges fallback ->
+        Mono.FanOut dtPath edges fallback ->
             let
+                freeRoot =
+                    findDtPathFreeLocals bound dtPath
+
                 freeEdges =
                     List.concatMap (\( _, d ) -> collectDeciderFreeLocals bound d) edges
 
                 freeFallback =
                     collectDeciderFreeLocals bound fallback
             in
-            freeEdges ++ freeFallback
+            freeRoot ++ freeEdges ++ freeFallback
+
+
+{-| Find free variables referenced in a MonoDtPath (decision tree path).
+-}
+findDtPathFreeLocals : EverySet String Name -> Mono.MonoDtPath -> List Name
+findDtPathFreeLocals bound dtPath =
+    case dtPath of
+        Mono.DtRoot name _ ->
+            if EverySet.member identity name bound then
+                []
+
+            else
+                [ name ]
+
+        Mono.DtIndex _ _ _ inner ->
+            findDtPathFreeLocals bound inner
+
+        Mono.DtUnbox _ inner ->
+            findDtPathFreeLocals bound inner
 
 
 {-| Remove duplicate names from a list while preserving order.
@@ -555,15 +581,41 @@ collectDeciderVarTypes decider acc =
                 Mono.Jump _ ->
                     acc
 
-        Mono.Chain _ success failure ->
-            collectDeciderVarTypes failure (collectDeciderVarTypes success acc)
-
-        Mono.FanOut _ edges fallback ->
+        Mono.Chain tests success failure ->
             let
+                accWithTests =
+                    List.foldl (\( dtPath, _ ) a -> collectDtPathVarTypes dtPath a) acc tests
+            in
+            collectDeciderVarTypes failure (collectDeciderVarTypes success accWithTests)
+
+        Mono.FanOut dtPath edges fallback ->
+            let
+                accWithPath =
+                    collectDtPathVarTypes dtPath acc
+
                 accAfterEdges =
-                    List.foldl (\( _, d ) a -> collectDeciderVarTypes d a) acc edges
+                    List.foldl (\( _, d ) a -> collectDeciderVarTypes d a) accWithPath edges
             in
             collectDeciderVarTypes fallback accAfterEdges
+
+
+{-| Collect variable-to-type mappings from a MonoDtPath (decision tree path).
+-}
+collectDtPathVarTypes : Mono.MonoDtPath -> Dict String Mono.MonoType -> Dict String Mono.MonoType
+collectDtPathVarTypes dtPath acc =
+    case dtPath of
+        Mono.DtRoot name monoType ->
+            if Dict.member name acc then
+                acc
+
+            else
+                Dict.insert name monoType acc
+
+        Mono.DtIndex _ _ _ inner ->
+            collectDtPathVarTypes inner acc
+
+        Mono.DtUnbox _ inner ->
+            collectDtPathVarTypes inner acc
 
 
 {-| Collect types for MonoCase root variables by inferring from decider tests.
@@ -668,15 +720,41 @@ collectCaseRootTypesFromDecider decider acc =
                 Mono.Jump _ ->
                     acc
 
-        Mono.Chain _ success failure ->
-            collectCaseRootTypesFromDecider failure (collectCaseRootTypesFromDecider success acc)
-
-        Mono.FanOut _ edges fallback ->
+        Mono.Chain tests success failure ->
             let
+                accWithTests =
+                    List.foldl (\( dtPath, _ ) a -> collectDtPathCaseRootTypes dtPath a) acc tests
+            in
+            collectCaseRootTypesFromDecider failure (collectCaseRootTypesFromDecider success accWithTests)
+
+        Mono.FanOut dtPath edges fallback ->
+            let
+                accWithPath =
+                    collectDtPathCaseRootTypes dtPath acc
+
                 accAfterEdges =
-                    List.foldl (\( _, d ) a -> collectCaseRootTypesFromDecider d a) acc edges
+                    List.foldl (\( _, d ) a -> collectCaseRootTypesFromDecider d a) accWithPath edges
             in
             collectCaseRootTypesFromDecider fallback accAfterEdges
+
+
+{-| Collect root variable types from a MonoDtPath (decision tree path).
+-}
+collectDtPathCaseRootTypes : Mono.MonoDtPath -> Dict String Mono.MonoType -> Dict String Mono.MonoType
+collectDtPathCaseRootTypes dtPath acc =
+    case dtPath of
+        Mono.DtRoot name monoType ->
+            if Dict.member name acc then
+                acc
+
+            else
+                Dict.insert name monoType acc
+
+        Mono.DtIndex _ _ _ inner ->
+            collectDtPathCaseRootTypes inner acc
+
+        Mono.DtUnbox _ inner ->
+            collectDtPathCaseRootTypes inner acc
 
 
 {-| Infer the root variable's MonoType from the first test in a Decider.
@@ -686,40 +764,27 @@ inferRootTypeFromDecider decider =
     case decider of
         Mono.Chain tests _ _ ->
             case tests of
-                ( path, test ) :: _ ->
-                    if isEmptyPath path then
-                        inferTypeFromTest test
+                ( Mono.DtRoot _ _, test ) :: _ ->
+                    inferTypeFromTest test
 
-                    else
-                        Nothing
-
-                [] ->
+                _ ->
                     Nothing
 
         Mono.FanOut path edges _ ->
-            if isEmptyPath path then
-                case edges of
-                    ( test, _ ) :: _ ->
-                        inferTypeFromTest test
+            case path of
+                Mono.DtRoot _ _ ->
+                    case edges of
+                        ( test, _ ) :: _ ->
+                            inferTypeFromTest test
 
-                    [] ->
-                        Nothing
+                        [] ->
+                            Nothing
 
-            else
-                Nothing
+                _ ->
+                    Nothing
 
         Mono.Leaf _ ->
             Nothing
-
-
-isEmptyPath : DT.Path -> Bool
-isEmptyPath path =
-    case path of
-        DT.Empty ->
-            True
-
-        _ ->
-            False
 
 
 inferTypeFromTest : DT.Test -> Maybe Mono.MonoType

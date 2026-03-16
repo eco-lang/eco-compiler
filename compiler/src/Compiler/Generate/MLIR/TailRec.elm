@@ -494,13 +494,13 @@ compileCaseStep :
     -> List ( Int, Mono.MonoExpr )
     -> Mono.MonoType
     -> StepResult
-compileCaseStep ctx loopSpec _ root decider jumps _ =
+compileCaseStep ctx loopSpec _ _ decider jumps _ =
     let
         jumpLookup : Array (Maybe Mono.MonoExpr)
         jumpLookup =
             pairsToSparseArray jumps
     in
-    compileCaseDeciderStep ctx loopSpec root decider jumpLookup
+    compileCaseDeciderStep ctx loopSpec decider jumpLookup
 
 
 {-| Compile a decision tree for a case expression as a single loop step.
@@ -513,20 +513,19 @@ loop state (nextParams..., done, result).
 compileCaseDeciderStep :
     Ctx.Context
     -> LoopSpec
-    -> Name.Name
     -> Mono.Decider Mono.MonoChoice
     -> Array (Maybe Mono.MonoExpr)
     -> StepResult
-compileCaseDeciderStep ctx loopSpec root decider jumpLookup =
+compileCaseDeciderStep ctx loopSpec decider jumpLookup =
     case decider of
         Mono.Leaf choice ->
             compileCaseLeafStep ctx loopSpec choice jumpLookup
 
         Mono.Chain testChain success failure ->
-            compileCaseChainStep ctx loopSpec root testChain success failure jumpLookup
+            compileCaseChainStep ctx loopSpec testChain success failure jumpLookup
 
         Mono.FanOut path edges fallback ->
-            compileCaseFanOutStep ctx loopSpec root path edges fallback jumpLookup
+            compileCaseFanOutStep ctx loopSpec path edges fallback jumpLookup
 
 
 {-| Leaf node in the decision tree.
@@ -569,21 +568,20 @@ on that condition where each alternative yields the full step tuple.
 compileCaseChainStep :
     Ctx.Context
     -> LoopSpec
-    -> Name.Name
-    -> List ( DT.Path, DT.Test )
+    -> List ( Mono.MonoDtPath, DT.Test )
     -> Mono.Decider Mono.MonoChoice
     -> Mono.Decider Mono.MonoChoice
     -> Array (Maybe Mono.MonoExpr)
     -> StepResult
-compileCaseChainStep ctx loopSpec root testChain success failure jumpLookup =
+compileCaseChainStep ctx loopSpec testChain success failure jumpLookup =
     let
         -- Compute the boolean condition (i1)
         ( condOps, condVar, condCtx ) =
-            Patterns.generateChainCondition ctx root testChain
+            Patterns.generateMonoChainCondition ctx testChain
 
         -- Then branch
         thenStep =
-            compileCaseDeciderStep condCtx loopSpec root success jumpLookup
+            compileCaseDeciderStep condCtx loopSpec success jumpLookup
 
         thenYieldOperands =
             thenStep.nextParams
@@ -609,7 +607,7 @@ compileCaseChainStep ctx loopSpec root testChain success failure jumpLookup =
             }
 
         elseStep =
-            compileCaseDeciderStep ctxForElse loopSpec root failure jumpLookup
+            compileCaseDeciderStep ctxForElse loopSpec failure jumpLookup
 
         elseYieldOperands =
             elseStep.nextParams
@@ -680,13 +678,12 @@ via eco.yieldMany.
 compileCaseFanOutStep :
     Ctx.Context
     -> LoopSpec
-    -> Name.Name
-    -> DT.Path
+    -> Mono.MonoDtPath
     -> List ( DT.Test, Mono.Decider Mono.MonoChoice )
     -> Mono.Decider Mono.MonoChoice
     -> Array (Maybe Mono.MonoExpr)
     -> StepResult
-compileCaseFanOutStep ctx loopSpec root path edges fallback jumpLookup =
+compileCaseFanOutStep ctx loopSpec path edges fallback jumpLookup =
     let
         edgeTests =
             List.map Tuple.first edges
@@ -703,7 +700,7 @@ compileCaseFanOutStep ctx loopSpec root path edges fallback jumpLookup =
             Patterns.scrutineeTypeFromCaseKind caseKind
 
         ( pathOps, scrutineeVar, ctx1 ) =
-            Patterns.generateDTPath ctx root path scrutineeType
+            Patterns.generateMonoDtPath ctx path scrutineeType
 
         -- Tags and (optional) string patterns
         ( tags, stringPatterns ) =
@@ -741,7 +738,7 @@ compileCaseFanOutStep ctx loopSpec root path edges fallback jumpLookup =
                 (\( _, subTree ) ( accRegions, accCtx ) ->
                     let
                         subStep =
-                            compileCaseDeciderStep accCtx loopSpec root subTree jumpLookup
+                            compileCaseDeciderStep accCtx loopSpec subTree jumpLookup
 
                         yieldOperands =
                             subStep.nextParams
@@ -765,7 +762,7 @@ compileCaseFanOutStep ctx loopSpec root path edges fallback jumpLookup =
 
         -- Fallback region
         fallbackStep =
-            compileCaseDeciderStep ctx2 loopSpec root fallback jumpLookup
+            compileCaseDeciderStep ctx2 loopSpec fallback jumpLookup
 
         fallbackYieldOperands =
             fallbackStep.nextParams

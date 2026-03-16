@@ -247,15 +247,39 @@ collectCustomTypesFromDecider decider acc =
                 Mono.Jump _ ->
                     acc
 
-        Mono.Chain _ success failure ->
-            collectCustomTypesFromDecider failure (collectCustomTypesFromDecider success acc)
-
-        Mono.FanOut _ edges fallback ->
+        Mono.Chain tests success failure ->
             let
+                accWithTests =
+                    List.foldl (\( dtPath, _ ) a -> collectCustomTypesFromDtPath dtPath a) acc tests
+            in
+            collectCustomTypesFromDecider failure (collectCustomTypesFromDecider success accWithTests)
+
+        Mono.FanOut dtPath edges fallback ->
+            let
+                accWithPath =
+                    collectCustomTypesFromDtPath dtPath acc
+
                 edgeAcc =
-                    List.foldl (\( _, d ) a -> collectCustomTypesFromDecider d a) acc edges
+                    List.foldl (\( _, d ) a -> collectCustomTypesFromDecider d a) accWithPath edges
             in
             collectCustomTypesFromDecider fallback edgeAcc
+
+
+{-| Collect custom types from a MonoDtPath (decision tree path).
+-}
+collectCustomTypesFromDtPath : Mono.MonoDtPath -> EverySet (List String) Mono.MonoType -> EverySet (List String) Mono.MonoType
+collectCustomTypesFromDtPath dtPath acc =
+    case dtPath of
+        Mono.DtRoot _ rootType ->
+            collectCustomTypesFromMonoType rootType acc
+
+        Mono.DtIndex _ _ resultType subPath ->
+            collectCustomTypesFromDtPath subPath
+                (collectCustomTypesFromMonoType resultType acc)
+
+        Mono.DtUnbox resultType subPath ->
+            collectCustomTypesFromDtPath subPath
+                (collectCustomTypesFromMonoType resultType acc)
 
 
 {-| Collect all MCustom types from all nodes in the graph.

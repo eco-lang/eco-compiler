@@ -5,6 +5,7 @@ module Compiler.AST.Monomorphized exposing
     , MonoGraph(..), MainInfo(..), MonoNode(..), CtorShape, nodeType
     , MonoExpr(..), ClosureInfo, MonoDef(..), MonoDestructor(..), MonoPath(..)
     , Decider(..), MonoChoice(..)
+    , MonoDtPath(..), dtPathType
     , ContainerKind(..)
     , typeOf
     , toComparableSpecKey, toComparableMonoType
@@ -144,7 +145,6 @@ This module defines the data structures for the monomorphized program
 
 import Array exposing (Array)
 import Compiler.AST.DecisionTree.Test as DT
-import Compiler.AST.DecisionTree.TypedPath as DT
 import Compiler.Data.BitSet exposing (BitSet)
 import Compiler.Data.Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
@@ -639,18 +639,45 @@ monoTypeToDebugString monoType =
             "MVar " ++ name
 
 
+{-| A typed path for decision-tree navigation.
+
+Mirrors `MonoPath` but only carries the constructors relevant to decision trees
+(Index, Unbox, Root — no Field or ArrayIndex). The root embeds the scrutinee
+variable name and its MonoType, so codegen does not need a separate `root` param.
+-}
+type MonoDtPath
+    = DtRoot Name MonoType
+    | DtIndex Int ContainerKind MonoType MonoDtPath
+    | DtUnbox MonoType MonoDtPath
+
+
+{-| Get the result type of evaluating a MonoDtPath.
+-}
+dtPathType : MonoDtPath -> MonoType
+dtPathType path =
+    case path of
+        DtRoot _ ty ->
+            ty
+
+        DtIndex _ _ ty _ ->
+            ty
+
+        DtUnbox ty _ ->
+            ty
+
+
 {-| Decision tree for pattern matching.
 
 This matches the structure of Opt.Decider from Compiler.AST.Optimized:
 
-  - Chain carries a list of (Path, Test) pairs for the condition
-  - FanOut carries the Path being tested
+  - Chain carries a list of (MonoDtPath, Test) pairs for the condition
+  - FanOut carries the MonoDtPath being tested
 
 -}
 type Decider a
     = Leaf a
-    | Chain (List ( DT.Path, DT.Test )) (Decider a) (Decider a)
-    | FanOut DT.Path (List ( DT.Test, Decider a )) (Decider a)
+    | Chain (List ( MonoDtPath, DT.Test )) (Decider a) (Decider a)
+    | FanOut MonoDtPath (List ( DT.Test, Decider a )) (Decider a)
 
 
 {-| Action to take when a pattern match succeeds.

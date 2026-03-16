@@ -3572,25 +3572,25 @@ Instead of generating eco.jump to joinpoints, this version inlines branch bodies
 directly when encountering Mono.Jump. This enables single-block alternative regions
 required for SCF lowering.
 -}
-generateDeciderWithJumps : Ctx.Context -> Name.Name -> Mono.Decider Mono.MonoChoice -> Array (Maybe Mono.MonoExpr) -> MlirType -> ExprResult
-generateDeciderWithJumps ctx root decider jumpLookup resultTy =
+generateDeciderWithJumps : Ctx.Context -> Mono.Decider Mono.MonoChoice -> Array (Maybe Mono.MonoExpr) -> MlirType -> ExprResult
+generateDeciderWithJumps ctx decider jumpLookup resultTy =
     case decider of
         Mono.Leaf choice ->
-            generateLeafWithJumps ctx root choice jumpLookup resultTy
+            generateLeafWithJumps ctx choice jumpLookup resultTy
 
         Mono.Chain testChain success failure ->
-            generateChainWithJumps ctx root testChain success failure jumpLookup resultTy
+            generateChainWithJumps ctx testChain success failure jumpLookup resultTy
 
         Mono.FanOut path edges fallback ->
-            generateFanOutWithJumps ctx root path edges fallback jumpLookup resultTy
+            generateFanOutWithJumps ctx path edges fallback jumpLookup resultTy
 
 
 {-| Generate code for a Leaf node with jump inlining (yield-based mode).
 Instead of emitting eco.jump to joinpoints, this looks up the branch expression
 and inlines it directly. This enables single-block alternative regions.
 -}
-generateLeafWithJumps : Ctx.Context -> Name.Name -> Mono.MonoChoice -> Array (Maybe Mono.MonoExpr) -> MlirType -> ExprResult
-generateLeafWithJumps ctx _ choice jumpLookup resultTy =
+generateLeafWithJumps : Ctx.Context -> Mono.MonoChoice -> Array (Maybe Mono.MonoExpr) -> MlirType -> ExprResult
+generateLeafWithJumps ctx choice jumpLookup resultTy =
     case choice of
         Mono.Inline branchExpr ->
             -- Same as generateLeaf - evaluate and yield
@@ -3720,26 +3720,26 @@ generateLeafWithJumps ctx _ choice jumpLookup resultTy =
 
 {-| Generate code for a Chain node with jump inlining (yield-based mode).
 -}
-generateChainWithJumps : Ctx.Context -> Name.Name -> List ( DT.Path, DT.Test ) -> Mono.Decider Mono.MonoChoice -> Mono.Decider Mono.MonoChoice -> Array (Maybe Mono.MonoExpr) -> MlirType -> ExprResult
-generateChainWithJumps ctx root testChain success failure jumpLookup resultTy =
+generateChainWithJumps : Ctx.Context -> List ( Mono.MonoDtPath, DT.Test ) -> Mono.Decider Mono.MonoChoice -> Mono.Decider Mono.MonoChoice -> Array (Maybe Mono.MonoExpr) -> MlirType -> ExprResult
+generateChainWithJumps ctx testChain success failure jumpLookup resultTy =
     case testChain of
         [ ( path, Test.IsBool True ) ] ->
-            generateChainForBoolADTWithJumps ctx root path success failure jumpLookup resultTy
+            generateChainForBoolADTWithJumps ctx path success failure jumpLookup resultTy
 
         _ ->
-            generateChainGeneralWithJumps ctx root testChain success failure jumpLookup resultTy
+            generateChainGeneralWithJumps ctx testChain success failure jumpLookup resultTy
 
 
 {-| Special handling for Bool ADT pattern matching with jump inlining.
 -}
-generateChainForBoolADTWithJumps : Ctx.Context -> Name.Name -> DT.Path -> Mono.Decider Mono.MonoChoice -> Mono.Decider Mono.MonoChoice -> Array (Maybe Mono.MonoExpr) -> MlirType -> ExprResult
-generateChainForBoolADTWithJumps ctx root path success failure jumpLookup resultTy =
+generateChainForBoolADTWithJumps : Ctx.Context -> Mono.MonoDtPath -> Mono.Decider Mono.MonoChoice -> Mono.Decider Mono.MonoChoice -> Array (Maybe Mono.MonoExpr) -> MlirType -> ExprResult
+generateChainForBoolADTWithJumps ctx path success failure jumpLookup resultTy =
     let
         ( pathOps, boolVar, ctx1 ) =
-            Patterns.generateDTPath ctx root path I1
+            Patterns.generateMonoDtPath ctx path I1
 
         thenRes =
-            generateDeciderWithJumps ctx1 root success jumpLookup resultTy
+            generateDeciderWithJumps ctx1 success jumpLookup resultTy
 
         ( thenRegion, ctx1a ) =
             mkCaseRegionFromDecider thenRes resultTy
@@ -3748,7 +3748,7 @@ generateChainForBoolADTWithJumps ctx root path success failure jumpLookup result
             Ctx.ctxForSiblingRegion ctx1 ctx1a
 
         elseRes =
-            generateDeciderWithJumps ctxForElse root failure jumpLookup resultTy
+            generateDeciderWithJumps ctxForElse failure jumpLookup resultTy
 
         ( elseRegion, ctx1b ) =
             mkCaseRegionFromDecider elseRes resultTy
@@ -3769,14 +3769,14 @@ generateChainForBoolADTWithJumps ctx root path success failure jumpLookup result
 
 {-| General chain case with jump inlining.
 -}
-generateChainGeneralWithJumps : Ctx.Context -> Name.Name -> List ( DT.Path, DT.Test ) -> Mono.Decider Mono.MonoChoice -> Mono.Decider Mono.MonoChoice -> Array (Maybe Mono.MonoExpr) -> MlirType -> ExprResult
-generateChainGeneralWithJumps ctx root testChain success failure jumpLookup resultTy =
+generateChainGeneralWithJumps : Ctx.Context -> List ( Mono.MonoDtPath, DT.Test ) -> Mono.Decider Mono.MonoChoice -> Mono.Decider Mono.MonoChoice -> Array (Maybe Mono.MonoExpr) -> MlirType -> ExprResult
+generateChainGeneralWithJumps ctx testChain success failure jumpLookup resultTy =
     let
         ( condOps, condVar, ctx1 ) =
-            Patterns.generateChainCondition ctx root testChain
+            Patterns.generateMonoChainCondition ctx testChain
 
         thenRes =
-            generateDeciderWithJumps ctx1 root success jumpLookup resultTy
+            generateDeciderWithJumps ctx1 success jumpLookup resultTy
 
         ( thenRegion, ctx1a ) =
             mkCaseRegionFromDecider thenRes resultTy
@@ -3785,7 +3785,7 @@ generateChainGeneralWithJumps ctx root testChain success failure jumpLookup resu
             Ctx.ctxForSiblingRegion ctx1 ctx1a
 
         elseRes =
-            generateDeciderWithJumps ctxForElse root failure jumpLookup resultTy
+            generateDeciderWithJumps ctxForElse failure jumpLookup resultTy
 
         ( elseRegion, ctx1b ) =
             mkCaseRegionFromDecider elseRes resultTy
@@ -3859,28 +3859,28 @@ extractStringPatternStrict test =
 
 {-| Generate code for a FanOut node with jump inlining (yield-based mode).
 -}
-generateFanOutWithJumps : Ctx.Context -> Name.Name -> DT.Path -> List ( DT.Test, Mono.Decider Mono.MonoChoice ) -> Mono.Decider Mono.MonoChoice -> Array (Maybe Mono.MonoExpr) -> MlirType -> ExprResult
-generateFanOutWithJumps ctx root path edges fallback jumpLookup resultTy =
+generateFanOutWithJumps : Ctx.Context -> Mono.MonoDtPath -> List ( DT.Test, Mono.Decider Mono.MonoChoice ) -> Mono.Decider Mono.MonoChoice -> Array (Maybe Mono.MonoExpr) -> MlirType -> ExprResult
+generateFanOutWithJumps ctx path edges fallback jumpLookup resultTy =
     if isBoolFanOut edges then
-        generateBoolFanOutWithJumps ctx root path edges fallback jumpLookup resultTy
+        generateBoolFanOutWithJumps ctx path edges fallback jumpLookup resultTy
 
     else
-        generateFanOutGeneralWithJumps ctx root path edges fallback jumpLookup resultTy
+        generateFanOutGeneralWithJumps ctx path edges fallback jumpLookup resultTy
 
 
 {-| Bool FanOut with jump inlining.
 -}
-generateBoolFanOutWithJumps : Ctx.Context -> Name.Name -> DT.Path -> List ( DT.Test, Mono.Decider Mono.MonoChoice ) -> Mono.Decider Mono.MonoChoice -> Array (Maybe Mono.MonoExpr) -> MlirType -> ExprResult
-generateBoolFanOutWithJumps ctx root path edges fallback jumpLookup resultTy =
+generateBoolFanOutWithJumps : Ctx.Context -> Mono.MonoDtPath -> List ( DT.Test, Mono.Decider Mono.MonoChoice ) -> Mono.Decider Mono.MonoChoice -> Array (Maybe Mono.MonoExpr) -> MlirType -> ExprResult
+generateBoolFanOutWithJumps ctx path edges fallback jumpLookup resultTy =
     let
         ( pathOps, boolVar, ctx1 ) =
-            Patterns.generateDTPath ctx root path I1
+            Patterns.generateMonoDtPath ctx path I1
 
         ( trueBranch, falseBranch ) =
             findBoolBranches edges fallback
 
         thenRes =
-            generateDeciderWithJumps ctx1 root trueBranch jumpLookup resultTy
+            generateDeciderWithJumps ctx1 trueBranch jumpLookup resultTy
 
         ( thenRegion, ctx1a ) =
             mkCaseRegionFromDecider thenRes resultTy
@@ -3889,7 +3889,7 @@ generateBoolFanOutWithJumps ctx root path edges fallback jumpLookup resultTy =
             Ctx.ctxForSiblingRegion ctx1 ctx1a
 
         elseRes =
-            generateDeciderWithJumps ctxForElse root falseBranch jumpLookup resultTy
+            generateDeciderWithJumps ctxForElse falseBranch jumpLookup resultTy
 
         ( elseRegion, ctx1b ) =
             mkCaseRegionFromDecider elseRes resultTy
@@ -3910,8 +3910,8 @@ generateBoolFanOutWithJumps ctx root path edges fallback jumpLookup resultTy =
 
 {-| General FanOut with jump inlining.
 -}
-generateFanOutGeneralWithJumps : Ctx.Context -> Name.Name -> DT.Path -> List ( DT.Test, Mono.Decider Mono.MonoChoice ) -> Mono.Decider Mono.MonoChoice -> Array (Maybe Mono.MonoExpr) -> MlirType -> ExprResult
-generateFanOutGeneralWithJumps ctx root path edges fallback jumpLookup resultTy =
+generateFanOutGeneralWithJumps : Ctx.Context -> Mono.MonoDtPath -> List ( DT.Test, Mono.Decider Mono.MonoChoice ) -> Mono.Decider Mono.MonoChoice -> Array (Maybe Mono.MonoExpr) -> MlirType -> ExprResult
+generateFanOutGeneralWithJumps ctx path edges fallback jumpLookup resultTy =
     let
         edgeTests =
             List.map Tuple.first edges
@@ -3928,7 +3928,7 @@ generateFanOutGeneralWithJumps ctx root path edges fallback jumpLookup resultTy 
             Patterns.scrutineeTypeFromCaseKind caseKind
 
         ( pathOps, scrutineeVar, ctx1 ) =
-            Patterns.generateDTPath ctx root path scrutineeType
+            Patterns.generateMonoDtPath ctx path scrutineeType
 
         ( tags, stringPatterns ) =
             if caseKind == "str" then
@@ -3967,7 +3967,7 @@ generateFanOutGeneralWithJumps ctx root path edges fallback jumpLookup resultTy 
                             Ctx.ctxForSiblingRegion ctx1 accCtx
 
                         subRes =
-                            generateDeciderWithJumps branchCtx root subTree jumpLookup resultTy
+                            generateDeciderWithJumps branchCtx subTree jumpLookup resultTy
 
                         ( region, ctxAfterRegion ) =
                             mkCaseRegionFromDecider subRes resultTy
@@ -3984,7 +3984,7 @@ generateFanOutGeneralWithJumps ctx root path edges fallback jumpLookup resultTy 
             Ctx.ctxForSiblingRegion ctx1 ctx2
 
         fallbackRes =
-            generateDeciderWithJumps fallbackCtx root fallback jumpLookup resultTy
+            generateDeciderWithJumps fallbackCtx fallback jumpLookup resultTy
 
         ( fallbackRegion, ctx2a ) =
             mkCaseRegionFromDecider fallbackRes resultTy
@@ -4110,7 +4110,7 @@ generateCase ctx _ root decider jumps resultMonoType =
         -- eco.case is now a value-producing expression
         -- Pass jumpLookup so Mono.Jump can inline branch bodies
         decisionResult =
-            generateDeciderWithJumps ctx root decider jumpLookup resultMlirType
+            generateDeciderWithJumps ctx decider jumpLookup resultMlirType
     in
     -- eco.case produces an SSA result through eco.yield in alternatives
     { ops = decisionResult.ops
