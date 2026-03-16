@@ -31,7 +31,6 @@ suite =
     Test.describe "MonoDirect vs Monomorphize comparison"
         [ StandardTestSuites.expectSuite expectGraphsMatch "produces same MonoGraph"
         ]
-        |> Test.skip
 
 
 

@@ -20,7 +20,6 @@ suite =
     Test.describe "MonoDirect monomorphization invariants"
         [ StandardTestSuites.expectSuite expectMonoDirectCompiles "compiles via MonoDirect"
         ]
-        |> Test.skip
 
 
 {-| Basic sanity check: verify MonoDirect pipeline compiles without errors.
