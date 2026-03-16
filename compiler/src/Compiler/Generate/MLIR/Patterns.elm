@@ -316,7 +316,16 @@ generateMonoPathHelper ctx path targetType revAcc =
                                     ( ctx3, projectOp ) =
                                         Ops.ecoProjectCustom ctx2 resultVar 0 Types.ecoValue subVar
                                 in
-                                if Types.isUnboxable targetType then
+                                if targetType == I1 then
+                                    -- Bool is stored as eco.value in custom types (never unboxed).
+                                    -- Project as eco.value, then unbox to i1.
+                                    let
+                                        ( unboxOps, unboxedVar, ctxU ) =
+                                            Intrinsics.unboxToType ctx3 resultVar I1
+                                    in
+                                    ( List.foldl (::) (projectOp :: revAcc1) unboxOps, unboxedVar, ctxU )
+
+                                else if Types.isUnboxable targetType then
                                     -- Caller wants primitive, need to unbox
                                     let
                                         ( unboxedVar, ctx4 ) =
@@ -664,20 +673,52 @@ generateDTPathHelper ctx root dtPath targetType revAcc =
 
                                 _ ->
                                     -- Field is stored boxed (as eco.value) or no layout found.
-                                    -- Project as eco.value, which is the default behavior.
-                                    let
-                                        ( ctxC, op ) =
-                                            Ops.ecoProjectCustom ctx2 resultVar fieldIndex targetType subVar
-                                    in
-                                    ( [ op ], resultVar, ctxC )
+                                    if targetType == I1 then
+                                        -- Bool is stored as eco.value in custom types (never unboxed).
+                                        -- Project as eco.value, then unbox to i1.
+                                        let
+                                            ( boxedVar, ctx2a ) =
+                                                Ctx.freshVar ctx2
+
+                                            ( ctxC, op ) =
+                                                Ops.ecoProjectCustom ctx2a boxedVar fieldIndex Types.ecoValue subVar
+
+                                            ( unboxOps, unboxedVar, ctxU ) =
+                                                Intrinsics.unboxToType ctxC boxedVar I1
+                                        in
+                                        ( op :: unboxOps, unboxedVar, ctxU )
+
+                                    else
+                                        -- Project with the target type directly.
+                                        let
+                                            ( ctxC, op ) =
+                                                Ops.ecoProjectCustom ctx2 resultVar fieldIndex targetType subVar
+                                        in
+                                        ( [ op ], resultVar, ctxC )
 
                         TypedPath.HintUnknown ->
                             -- Fallback: treat like custom
-                            let
-                                ( ctxU, op ) =
-                                    Ops.ecoProjectCustom ctx2 resultVar fieldIndex targetType subVar
-                            in
-                            ( [ op ], resultVar, ctxU )
+                            if targetType == I1 then
+                                -- Bool is stored as eco.value in custom types (never unboxed).
+                                -- Project as eco.value, then unbox to i1.
+                                let
+                                    ( boxedVar, ctx2a ) =
+                                        Ctx.freshVar ctx2
+
+                                    ( ctxU_, op ) =
+                                        Ops.ecoProjectCustom ctx2a boxedVar fieldIndex Types.ecoValue subVar
+
+                                    ( unboxOps, unboxedVar, ctxU ) =
+                                        Intrinsics.unboxToType ctxU_ boxedVar I1
+                                in
+                                ( op :: unboxOps, unboxedVar, ctxU )
+
+                            else
+                                let
+                                    ( ctxU, op ) =
+                                        Ops.ecoProjectCustom ctx2 resultVar fieldIndex targetType subVar
+                                in
+                                ( [ op ], resultVar, ctxU )
             in
             ( List.foldl (::) revAcc1 projectOps, projectVar, ctx3 )
 
@@ -742,7 +783,16 @@ generateDTPathHelper ctx root dtPath targetType revAcc =
                                 ( ctxP1, projectOp ) =
                                     Ops.ecoProjectCustom ctx2 resultVar 0 Types.ecoValue subVar
                             in
-                            if Types.isUnboxable targetType then
+                            if targetType == I1 then
+                                -- Bool is stored as eco.value in custom types (never unboxed).
+                                -- Project as eco.value, then unbox to i1.
+                                let
+                                    ( unboxOps, unboxedVar, ctxU ) =
+                                        Intrinsics.unboxToType ctxP1 resultVar I1
+                                in
+                                ( projectOp :: unboxOps, unboxedVar, ctxU )
+
+                            else if Types.isUnboxable targetType then
                                 -- Caller wants primitive, need to unbox
                                 let
                                     ( unboxedVar, ctxP2 ) =
