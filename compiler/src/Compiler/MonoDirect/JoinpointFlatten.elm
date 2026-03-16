@@ -1,4 +1,4 @@
-module Compiler.Monomorphize.JoinpointFlatten exposing (flattenGraphJoinpoints)
+module Compiler.MonoDirect.JoinpointFlatten exposing (flattenGraphJoinpoints)
 
 {-| Joinpoint flattening pass for MonoGraph.
 

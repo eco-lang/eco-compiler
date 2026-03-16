@@ -18,10 +18,10 @@ import Compiler.AST.TypeEnv as TypeEnv
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.BitSet as BitSet
 import Compiler.Data.Name exposing (Name)
+import Compiler.MonoDirect.JoinpointFlatten as JoinpointFlatten
 import Compiler.MonoDirect.Specialize as Specialize
 import Compiler.MonoDirect.State as State exposing (MonoDirectState, WorkItem(..))
 import Compiler.Monomorphize.MonoTraverse as Traverse
-import Compiler.Monomorphize.JoinpointFlatten as JoinpointFlatten
 import Compiler.Monomorphize.Prune as Prune
 import Compiler.Monomorphize.Registry as Registry
 import Compiler.Type.SolverSnapshot as SolverSnapshot exposing (SolverSnapshot)
@@ -105,7 +105,9 @@ resolveMainType : SolverSnapshot -> TOpt.Node -> Mono.MonoType
 resolveMainType snapshot node =
     case nodeMetaTvar node of
         Just tvar ->
-            SolverSnapshot.withLocalUnification snapshot [] []
+            SolverSnapshot.withLocalUnification snapshot
+                []
+                []
                 (\view -> Mono.forceCNumberToInt (view.monoTypeOf tvar))
 
         Nothing ->
@@ -455,6 +457,3 @@ nodeHasEffects node =
 
         _ ->
             False
-
-
-
