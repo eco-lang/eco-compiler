@@ -336,10 +336,19 @@ generateMonoPathHelper ctx path targetType revAcc =
     case path of
         Mono.MonoRoot name _ ->
             let
-                ( varName, _ ) =
+                ( varName, actualType ) =
                     Ctx.lookupVar ctx name
             in
-            ( revAcc, varName, ctx )
+            if Types.isEcoValueType actualType && targetType == I1 then
+                -- Bool variable stored as eco.value (per ABI) needs unboxing to i1
+                let
+                    ( unboxOps, unboxedVar, ctxU ) =
+                        Intrinsics.unboxToType ctx varName I1
+                in
+                ( List.foldl (::) revAcc unboxOps, unboxedVar, ctxU )
+
+            else
+                ( revAcc, varName, ctx )
 
         Mono.MonoIndex index containerKind resultType subPath ->
             let
