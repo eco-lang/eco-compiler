@@ -3153,16 +3153,30 @@ collectLetBoundNames expr =
 {-| Add placeholder mappings for a list of names.
 These placeholders allow closures to reference sibling functions
 in mutually recursive let-rec definitions.
+
+If a name already has a placeholder in currentLetSiblings (from an outer
+let-rec group that created placeholders for the full chain), reuse that
+mapping. This prevents orphaned SSA vars when nested generateLet calls
+would otherwise create new placeholders for names already allocated by
+the outer group. Only currentLetSiblings entries are reused, not
+arbitrary varMappings (which could be from unrelated scopes like
+function parameters or prior let bindings).
 -}
 addPlaceholderMappings : List Name.Name -> Ctx.Context -> Ctx.Context
 addPlaceholderMappings names ctx =
     List.foldl
         (\name acc ->
-            let
-                ( ssaVar, acc1 ) =
-                    Ctx.freshVar acc
-            in
-            Ctx.addVarMapping name ssaVar Types.ecoValue acc1
+            case Dict.get name acc.currentLetSiblings of
+                Just _ ->
+                    -- Already has a placeholder from outer let-rec group; reuse it
+                    acc
+
+                Nothing ->
+                    let
+                        ( ssaVar, acc1 ) =
+                            Ctx.freshVar acc
+                    in
+                    Ctx.addVarMapping name ssaVar Types.ecoValue acc1
         )
         ctx
         names
