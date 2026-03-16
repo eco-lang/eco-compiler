@@ -12,8 +12,10 @@ import Compiler.AST.SourceBuilder
         , boolExpr
         , callExpr
         , caseExpr
+        , chrExpr
         , ctorExpr
         , define
+        , floatExpr
         , ifExpr
         , intExpr
         , letExpr
@@ -30,12 +32,14 @@ import Compiler.AST.SourceBuilder
         , pRecord
         , pStr
         , pTuple
+        , pUnit
         , pVar
         , recordExpr
         , strExpr
         , tLambda
         , tType
         , tupleExpr
+        , unitExpr
         , varExpr
         )
 import Compiler.BulkCheck exposing (TestCase, bulkCheck)
@@ -59,6 +63,7 @@ testCases expectFn =
         ++ nestedCaseCases expectFn
         ++ customTypePatternCases expectFn
         ++ stringChainKernelAbiCases expectFn
+        ++ singleCtorPairCases expectFn
 
 
 
@@ -798,5 +803,494 @@ stringChainWithStringEquality expectFn _ =
                   , callExpr (varExpr "testFn") [ strExpr "hello" ]
                   )
                 ]
+    in
+    expectFn modul
+
+
+
+-- ============================================================================
+-- SINGLE-CONSTRUCTOR TYPE PAIR CASES
+-- Tests for findSingleCtorUnboxedField ambiguity: when two single-constructor
+-- types exist with different field types, the codegen must not mix up their
+-- layouts during TypedPath.Unbox projection.
+-- ============================================================================
+
+
+singleCtorPairCases : (Src.Module -> Expectation) -> List TestCase
+singleCtorPairCases expectFn =
+    [ { label = "Single-ctor pair: Bool/Int (Bool matched, Int pollutant)", run = singleCtorPairBoolInt expectFn }
+    , { label = "Single-ctor pair: Bool/Char (Bool matched, Char pollutant)", run = singleCtorPairBoolChar expectFn }
+    , { label = "Single-ctor pair: Bool/Float (Bool matched, Float pollutant)", run = singleCtorPairBoolFloat expectFn }
+    , { label = "Single-ctor pair: Int/Float (both unboxed, different types)", run = singleCtorPairIntFloat expectFn }
+    , { label = "Single-ctor pair: String/Int (String boxed, Int unboxed)", run = singleCtorPairStringInt expectFn }
+    , { label = "Single-ctor pair: String/Bool (both boxed)", run = singleCtorPairStringBool expectFn }
+    , { label = "Single-ctor pair: Char/Int (both unboxed, different widths)", run = singleCtorPairCharInt expectFn }
+    , { label = "Single-ctor pair: Char/Float (both unboxed, different types)", run = singleCtorPairCharFloat expectFn }
+    , { label = "Single-ctor pair: Float/Bool (Float unboxed, Bool boxed)", run = singleCtorPairFloatBool expectFn }
+    ]
+
+
+{-| WrapBool (Bool, boxed) + WrapInt (Int, i64 unboxed).
+Case-matching on WrapBool should not use WrapInt's i64 layout.
+-}
+singleCtorPairBoolInt : (Src.Module -> Expectation) -> (() -> Expectation)
+singleCtorPairBoolInt expectFn _ =
+    let
+        wrapBool =
+            { name = "WrapBool", args = [], ctors = [ { name = "WrapBool", args = [ tType "Bool" [] ] } ] }
+
+        wrapInt =
+            { name = "WrapInt", args = [], ctors = [ { name = "WrapInt", args = [ tType "Int" [] ] } ] }
+
+        matchBoolFn : TypedDef
+        matchBoolFn =
+            { name = "matchBool"
+            , args = [ pVar "b" ]
+            , tipe = tLambda (tType "Bool" []) (tType "String" [])
+            , body =
+                letExpr
+                    [ define "w" [] (callExpr (ctorExpr "WrapBool") [ varExpr "b" ]) ]
+                    (caseExpr (varExpr "w")
+                        [ ( pCtor "WrapBool" [ pCtor "True" [] ], strExpr "yes" )
+                        , ( pCtor "WrapBool" [ pCtor "False" [] ], strExpr "no" )
+                        ]
+                    )
+            }
+
+        unwrapIntFn : TypedDef
+        unwrapIntFn =
+            { name = "unwrapInt"
+            , args = [ pVar "w" ]
+            , tipe = tLambda (tType "WrapInt" []) (tType "Int" [])
+            , body =
+                caseExpr (varExpr "w")
+                    [ ( pCtor "WrapInt" [ pVar "n" ], varExpr "n" ) ]
+            }
+
+        testValueDef : TypedDef
+        testValueDef =
+            { name = "testValue"
+            , args = []
+            , tipe = tType "String" []
+            , body = callExpr (varExpr "matchBool") [ boolExpr True ]
+            }
+
+        modul =
+            makeModuleWithTypedDefsUnionsAliases "Test"
+                [ matchBoolFn, unwrapIntFn, testValueDef ]
+                [ wrapBool, wrapInt ]
+                []
+    in
+    expectFn modul
+
+
+{-| WrapBool (Bool, boxed) + WrapChar (Char, i16 unboxed).
+Case-matching on WrapBool should not use WrapChar's i16 layout.
+-}
+singleCtorPairBoolChar : (Src.Module -> Expectation) -> (() -> Expectation)
+singleCtorPairBoolChar expectFn _ =
+    let
+        wrapBool =
+            { name = "WrapBool", args = [], ctors = [ { name = "WrapBool", args = [ tType "Bool" [] ] } ] }
+
+        wrapChar =
+            { name = "WrapChar", args = [], ctors = [ { name = "WrapChar", args = [ tType "Char" [] ] } ] }
+
+        matchBoolFn : TypedDef
+        matchBoolFn =
+            { name = "matchBool"
+            , args = [ pVar "b" ]
+            , tipe = tLambda (tType "Bool" []) (tType "String" [])
+            , body =
+                letExpr
+                    [ define "w" [] (callExpr (ctorExpr "WrapBool") [ varExpr "b" ]) ]
+                    (caseExpr (varExpr "w")
+                        [ ( pCtor "WrapBool" [ pCtor "True" [] ], strExpr "yes" )
+                        , ( pCtor "WrapBool" [ pCtor "False" [] ], strExpr "no" )
+                        ]
+                    )
+            }
+
+        unwrapCharFn : TypedDef
+        unwrapCharFn =
+            { name = "unwrapChar"
+            , args = [ pVar "w" ]
+            , tipe = tLambda (tType "WrapChar" []) (tType "Char" [])
+            , body =
+                caseExpr (varExpr "w")
+                    [ ( pCtor "WrapChar" [ pVar "c" ], varExpr "c" ) ]
+            }
+
+        testValueDef : TypedDef
+        testValueDef =
+            { name = "testValue"
+            , args = []
+            , tipe = tType "String" []
+            , body = callExpr (varExpr "matchBool") [ boolExpr True ]
+            }
+
+        modul =
+            makeModuleWithTypedDefsUnionsAliases "Test"
+                [ matchBoolFn, unwrapCharFn, testValueDef ]
+                [ wrapBool, wrapChar ]
+                []
+    in
+    expectFn modul
+
+
+{-| WrapBool (Bool, boxed) + WrapFloat (Float, f64 unboxed).
+Case-matching on WrapBool should not use WrapFloat's f64 layout.
+-}
+singleCtorPairBoolFloat : (Src.Module -> Expectation) -> (() -> Expectation)
+singleCtorPairBoolFloat expectFn _ =
+    let
+        wrapBool =
+            { name = "WrapBool", args = [], ctors = [ { name = "WrapBool", args = [ tType "Bool" [] ] } ] }
+
+        wrapFloat =
+            { name = "WrapFloat", args = [], ctors = [ { name = "WrapFloat", args = [ tType "Float" [] ] } ] }
+
+        matchBoolFn : TypedDef
+        matchBoolFn =
+            { name = "matchBool"
+            , args = [ pVar "b" ]
+            , tipe = tLambda (tType "Bool" []) (tType "String" [])
+            , body =
+                letExpr
+                    [ define "w" [] (callExpr (ctorExpr "WrapBool") [ varExpr "b" ]) ]
+                    (caseExpr (varExpr "w")
+                        [ ( pCtor "WrapBool" [ pCtor "True" [] ], strExpr "yes" )
+                        , ( pCtor "WrapBool" [ pCtor "False" [] ], strExpr "no" )
+                        ]
+                    )
+            }
+
+        unwrapFloatFn : TypedDef
+        unwrapFloatFn =
+            { name = "unwrapFloat"
+            , args = [ pVar "w" ]
+            , tipe = tLambda (tType "WrapFloat" []) (tType "Float" [])
+            , body =
+                caseExpr (varExpr "w")
+                    [ ( pCtor "WrapFloat" [ pVar "f" ], varExpr "f" ) ]
+            }
+
+        testValueDef : TypedDef
+        testValueDef =
+            { name = "testValue"
+            , args = []
+            , tipe = tType "String" []
+            , body = callExpr (varExpr "matchBool") [ boolExpr True ]
+            }
+
+        modul =
+            makeModuleWithTypedDefsUnionsAliases "Test"
+                [ matchBoolFn, unwrapFloatFn, testValueDef ]
+                [ wrapBool, wrapFloat ]
+                []
+    in
+    expectFn modul
+
+
+{-| WrapInt (Int, i64 unboxed) + WrapFloat (Float, f64 unboxed).
+Both unboxed but different types. Could silently misinterpret bits.
+-}
+singleCtorPairIntFloat : (Src.Module -> Expectation) -> (() -> Expectation)
+singleCtorPairIntFloat expectFn _ =
+    let
+        wrapInt =
+            { name = "WrapInt", args = [], ctors = [ { name = "WrapInt", args = [ tType "Int" [] ] } ] }
+
+        wrapFloat =
+            { name = "WrapFloat", args = [], ctors = [ { name = "WrapFloat", args = [ tType "Float" [] ] } ] }
+
+        unwrapIntFn : TypedDef
+        unwrapIntFn =
+            { name = "unwrapInt"
+            , args = [ pVar "w" ]
+            , tipe = tLambda (tType "WrapInt" []) (tType "Int" [])
+            , body =
+                caseExpr (varExpr "w")
+                    [ ( pCtor "WrapInt" [ pVar "n" ], varExpr "n" ) ]
+            }
+
+        unwrapFloatFn : TypedDef
+        unwrapFloatFn =
+            { name = "unwrapFloat"
+            , args = [ pVar "w" ]
+            , tipe = tLambda (tType "WrapFloat" []) (tType "Float" [])
+            , body =
+                caseExpr (varExpr "w")
+                    [ ( pCtor "WrapFloat" [ pVar "f" ], varExpr "f" ) ]
+            }
+
+        testValueDef : TypedDef
+        testValueDef =
+            { name = "testValue"
+            , args = []
+            , tipe = tType "Int" []
+            , body = callExpr (varExpr "unwrapInt") [ callExpr (ctorExpr "WrapInt") [ intExpr 42 ] ]
+            }
+
+        modul =
+            makeModuleWithTypedDefsUnionsAliases "Test"
+                [ unwrapIntFn, unwrapFloatFn, testValueDef ]
+                [ wrapInt, wrapFloat ]
+                []
+    in
+    expectFn modul
+
+
+{-| WrapString (String, boxed) + WrapInt (Int, i64 unboxed).
+Case-matching on WrapString should not use WrapInt's i64 layout.
+-}
+singleCtorPairStringInt : (Src.Module -> Expectation) -> (() -> Expectation)
+singleCtorPairStringInt expectFn _ =
+    let
+        wrapString =
+            { name = "WrapString", args = [], ctors = [ { name = "WrapString", args = [ tType "String" [] ] } ] }
+
+        wrapInt =
+            { name = "WrapInt", args = [], ctors = [ { name = "WrapInt", args = [ tType "Int" [] ] } ] }
+
+        unwrapStringFn : TypedDef
+        unwrapStringFn =
+            { name = "unwrapString"
+            , args = [ pVar "w" ]
+            , tipe = tLambda (tType "WrapString" []) (tType "String" [])
+            , body =
+                caseExpr (varExpr "w")
+                    [ ( pCtor "WrapString" [ pVar "s" ], varExpr "s" ) ]
+            }
+
+        unwrapIntFn : TypedDef
+        unwrapIntFn =
+            { name = "unwrapInt"
+            , args = [ pVar "w" ]
+            , tipe = tLambda (tType "WrapInt" []) (tType "Int" [])
+            , body =
+                caseExpr (varExpr "w")
+                    [ ( pCtor "WrapInt" [ pVar "n" ], varExpr "n" ) ]
+            }
+
+        testValueDef : TypedDef
+        testValueDef =
+            { name = "testValue"
+            , args = []
+            , tipe = tType "String" []
+            , body = callExpr (varExpr "unwrapString") [ callExpr (ctorExpr "WrapString") [ strExpr "hello" ] ]
+            }
+
+        modul =
+            makeModuleWithTypedDefsUnionsAliases "Test"
+                [ unwrapStringFn, unwrapIntFn, testValueDef ]
+                [ wrapString, wrapInt ]
+                []
+    in
+    expectFn modul
+
+
+{-| WrapString (String, boxed) + WrapBool (Bool, boxed).
+Both boxed. findSingleCtorUnboxedField should return Nothing for both.
+-}
+singleCtorPairStringBool : (Src.Module -> Expectation) -> (() -> Expectation)
+singleCtorPairStringBool expectFn _ =
+    let
+        wrapString =
+            { name = "WrapString", args = [], ctors = [ { name = "WrapString", args = [ tType "String" [] ] } ] }
+
+        wrapBool =
+            { name = "WrapBool", args = [], ctors = [ { name = "WrapBool", args = [ tType "Bool" [] ] } ] }
+
+        unwrapStringFn : TypedDef
+        unwrapStringFn =
+            { name = "unwrapString"
+            , args = [ pVar "w" ]
+            , tipe = tLambda (tType "WrapString" []) (tType "String" [])
+            , body =
+                caseExpr (varExpr "w")
+                    [ ( pCtor "WrapString" [ pVar "s" ], varExpr "s" ) ]
+            }
+
+        matchBoolFn : TypedDef
+        matchBoolFn =
+            { name = "matchBool"
+            , args = [ pVar "b" ]
+            , tipe = tLambda (tType "Bool" []) (tType "String" [])
+            , body =
+                letExpr
+                    [ define "w" [] (callExpr (ctorExpr "WrapBool") [ varExpr "b" ]) ]
+                    (caseExpr (varExpr "w")
+                        [ ( pCtor "WrapBool" [ pCtor "True" [] ], strExpr "yes" )
+                        , ( pCtor "WrapBool" [ pCtor "False" [] ], strExpr "no" )
+                        ]
+                    )
+            }
+
+        testValueDef : TypedDef
+        testValueDef =
+            { name = "testValue"
+            , args = []
+            , tipe = tType "String" []
+            , body = callExpr (varExpr "matchBool") [ boolExpr True ]
+            }
+
+        modul =
+            makeModuleWithTypedDefsUnionsAliases "Test"
+                [ unwrapStringFn, matchBoolFn, testValueDef ]
+                [ wrapString, wrapBool ]
+                []
+    in
+    expectFn modul
+
+
+{-| WrapChar (Char, i16 unboxed) + WrapInt (Int, i64 unboxed).
+Both unboxed but different widths. Could cause truncation or garbage.
+-}
+singleCtorPairCharInt : (Src.Module -> Expectation) -> (() -> Expectation)
+singleCtorPairCharInt expectFn _ =
+    let
+        wrapChar =
+            { name = "WrapChar", args = [], ctors = [ { name = "WrapChar", args = [ tType "Char" [] ] } ] }
+
+        wrapInt =
+            { name = "WrapInt", args = [], ctors = [ { name = "WrapInt", args = [ tType "Int" [] ] } ] }
+
+        unwrapCharFn : TypedDef
+        unwrapCharFn =
+            { name = "unwrapChar"
+            , args = [ pVar "w" ]
+            , tipe = tLambda (tType "WrapChar" []) (tType "Char" [])
+            , body =
+                caseExpr (varExpr "w")
+                    [ ( pCtor "WrapChar" [ pVar "c" ], varExpr "c" ) ]
+            }
+
+        unwrapIntFn : TypedDef
+        unwrapIntFn =
+            { name = "unwrapInt"
+            , args = [ pVar "w" ]
+            , tipe = tLambda (tType "WrapInt" []) (tType "Int" [])
+            , body =
+                caseExpr (varExpr "w")
+                    [ ( pCtor "WrapInt" [ pVar "n" ], varExpr "n" ) ]
+            }
+
+        testValueDef : TypedDef
+        testValueDef =
+            { name = "testValue"
+            , args = []
+            , tipe = tType "Char" []
+            , body = callExpr (varExpr "unwrapChar") [ callExpr (ctorExpr "WrapChar") [ chrExpr "A" ] ]
+            }
+
+        modul =
+            makeModuleWithTypedDefsUnionsAliases "Test"
+                [ unwrapCharFn, unwrapIntFn, testValueDef ]
+                [ wrapChar, wrapInt ]
+                []
+    in
+    expectFn modul
+
+
+{-| WrapChar (Char, i16 unboxed) + WrapFloat (Float, f64 unboxed).
+Both unboxed but completely different types.
+-}
+singleCtorPairCharFloat : (Src.Module -> Expectation) -> (() -> Expectation)
+singleCtorPairCharFloat expectFn _ =
+    let
+        wrapChar =
+            { name = "WrapChar", args = [], ctors = [ { name = "WrapChar", args = [ tType "Char" [] ] } ] }
+
+        wrapFloat =
+            { name = "WrapFloat", args = [], ctors = [ { name = "WrapFloat", args = [ tType "Float" [] ] } ] }
+
+        unwrapCharFn : TypedDef
+        unwrapCharFn =
+            { name = "unwrapChar"
+            , args = [ pVar "w" ]
+            , tipe = tLambda (tType "WrapChar" []) (tType "Char" [])
+            , body =
+                caseExpr (varExpr "w")
+                    [ ( pCtor "WrapChar" [ pVar "c" ], varExpr "c" ) ]
+            }
+
+        unwrapFloatFn : TypedDef
+        unwrapFloatFn =
+            { name = "unwrapFloat"
+            , args = [ pVar "w" ]
+            , tipe = tLambda (tType "WrapFloat" []) (tType "Float" [])
+            , body =
+                caseExpr (varExpr "w")
+                    [ ( pCtor "WrapFloat" [ pVar "f" ], varExpr "f" ) ]
+            }
+
+        testValueDef : TypedDef
+        testValueDef =
+            { name = "testValue"
+            , args = []
+            , tipe = tType "Char" []
+            , body = callExpr (varExpr "unwrapChar") [ callExpr (ctorExpr "WrapChar") [ chrExpr "Z" ] ]
+            }
+
+        modul =
+            makeModuleWithTypedDefsUnionsAliases "Test"
+                [ unwrapCharFn, unwrapFloatFn, testValueDef ]
+                [ wrapChar, wrapFloat ]
+                []
+    in
+    expectFn modul
+
+
+{-| WrapFloat (Float, f64 unboxed) + WrapBool (Bool, boxed).
+Tests both directions: Float should project as f64, Bool should project as eco.value.
+-}
+singleCtorPairFloatBool : (Src.Module -> Expectation) -> (() -> Expectation)
+singleCtorPairFloatBool expectFn _ =
+    let
+        wrapFloat =
+            { name = "WrapFloat", args = [], ctors = [ { name = "WrapFloat", args = [ tType "Float" [] ] } ] }
+
+        wrapBool =
+            { name = "WrapBool", args = [], ctors = [ { name = "WrapBool", args = [ tType "Bool" [] ] } ] }
+
+        unwrapFloatFn : TypedDef
+        unwrapFloatFn =
+            { name = "unwrapFloat"
+            , args = [ pVar "w" ]
+            , tipe = tLambda (tType "WrapFloat" []) (tType "Float" [])
+            , body =
+                caseExpr (varExpr "w")
+                    [ ( pCtor "WrapFloat" [ pVar "f" ], varExpr "f" ) ]
+            }
+
+        matchBoolFn : TypedDef
+        matchBoolFn =
+            { name = "matchBool"
+            , args = [ pVar "b" ]
+            , tipe = tLambda (tType "Bool" []) (tType "String" [])
+            , body =
+                letExpr
+                    [ define "w" [] (callExpr (ctorExpr "WrapBool") [ varExpr "b" ]) ]
+                    (caseExpr (varExpr "w")
+                        [ ( pCtor "WrapBool" [ pCtor "True" [] ], strExpr "yes" )
+                        , ( pCtor "WrapBool" [ pCtor "False" [] ], strExpr "no" )
+                        ]
+                    )
+            }
+
+        testValueDef : TypedDef
+        testValueDef =
+            { name = "testValue"
+            , args = []
+            , tipe = tType "String" []
+            , body = callExpr (varExpr "matchBool") [ boolExpr False ]
+            }
+
+        modul =
+            makeModuleWithTypedDefsUnionsAliases "Test"
+                [ unwrapFloatFn, matchBoolFn, testValueDef ]
+                [ wrapFloat, wrapBool ]
+                []
     in
     expectFn modul
