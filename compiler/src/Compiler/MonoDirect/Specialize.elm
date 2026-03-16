@@ -248,9 +248,6 @@ resolveType view meta =
                         KernelAbi.canTypeToMonoType_preserveVars meta.tipe
 
                     else
-                        -- No solver tvar for polymorphic type. Use substitution-based
-                        -- resolution. Unresolved type variables become MVars (CEcoValue),
-                        -- which compile identically to eco.value in codegen.
                         TypeSubst.canTypeToMonoType view.subst meta.tipe
 
         normalized =
@@ -999,11 +996,19 @@ resolveAccessor region fieldName paramType state =
 extractRecordFields : Mono.MonoType -> Dict Name Mono.MonoType
 extractRecordFields monoType =
     case monoType of
-        Mono.MFunction [ Mono.MRecord fields ] _ ->
-            fields
-
         Mono.MRecord fields ->
             fields
+
+        Mono.MFunction args _ ->
+            args
+                |> List.filterMap
+                    (\arg ->
+                        case arg of
+                            Mono.MRecord fields -> Just fields
+                            _ -> Nothing
+                    )
+                |> List.head
+                |> Maybe.withDefault Dict.empty
 
         _ ->
             Dict.empty
@@ -1168,6 +1173,7 @@ specializeLetTailDef view snapshot defName defParams defBody defCanType defTvar 
                     let
                         instancesList =
                             Dict.values topEntry.instances
+                                |> List.sortBy (\info -> Mono.monoTypeToDebugString info.monoType)
 
                         statePopped =
                             { stateAfterBody | localMulti = restOfStack }
@@ -1494,6 +1500,7 @@ specializeLetFuncDef view snapshot defName defExpr body monoType state =
                 let
                     instancesList =
                         Dict.values topEntry.instances
+                            |> List.sortBy (\info -> Mono.monoTypeToDebugString info.monoType)
 
                     statePopped =
                         { stateAfterBody | localMulti = restOfStack }
@@ -1516,10 +1523,7 @@ specializeLetFuncDef view snapshot defName defExpr body monoType state =
                     stateWithVars =
                         List.foldl
                             (\info st ->
-                                { st
-                                    | varEnv =
-                                        State.insertVar info.freshName info.monoType st.varEnv
-                                }
+                                { st | varEnv = State.insertVar info.freshName info.monoType st.varEnv }
                             )
                             stateWithDefs
                             instancesList
@@ -2526,42 +2530,42 @@ firstLeafType decider =
 
 deriveKernelAbiTypeDirect : ( String, String ) -> TOpt.Meta -> LocalView -> Mono.MonoType
 deriveKernelAbiTypeDirect ( home, name ) meta view =
-    case meta.tvar of
-        Just tvar ->
-            let
-                canType =
-                    view.typeOf tvar
+    let
+        -- Use meta.tipe for ABI mode detection (avoids variableToCanType Error crashes)
+        canType =
+            meta.tipe
 
-                monoType =
+        monoType =
+            case meta.tvar of
+                Just tvar ->
                     Mono.forceCNumberToInt (view.monoTypeOf tvar)
 
-                mode =
-                    KernelAbi.deriveKernelAbiMode ( home, name ) canType
+                Nothing ->
+                    Mono.forceCNumberToInt (TypeSubst.applySubst view.subst canType)
 
-                isFullyMono =
-                    isFullyMonomorphicType monoType
-            in
-            case mode of
-                KernelAbi.UseSubstitution ->
-                    monoType
+        mode =
+            KernelAbi.deriveKernelAbiMode ( home, name ) canType
 
-                KernelAbi.NumberBoxed ->
-                    if isFullyMono then
-                        monoType
+        isFullyMono =
+            isFullyMonomorphicType monoType
+    in
+    case mode of
+        KernelAbi.UseSubstitution ->
+            monoType
 
-                    else
-                        -- Map remaining vars (including number vars) to CEcoValue for boxed ABI
-                        KernelAbi.canTypeToMonoType_preserveVars canType
+        KernelAbi.NumberBoxed ->
+            if isFullyMono then
+                monoType
 
-                KernelAbi.PreserveVars ->
-                    if isFullyMono then
-                        monoType
+            else
+                KernelAbi.canTypeToMonoType_preserveVars canType
 
-                    else
-                        KernelAbi.canTypeToMonoType_preserveVars canType
+        KernelAbi.PreserveVars ->
+            if isFullyMono then
+                monoType
 
-        Nothing ->
-            Utils.Crash.crash "MonoDirect.deriveKernelAbiTypeDirect: kernel meta has no tvar"
+            else
+                KernelAbi.canTypeToMonoType_preserveVars canType
 
 
 isFullyMonomorphicType : Mono.MonoType -> Bool

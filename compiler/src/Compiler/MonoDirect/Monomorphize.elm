@@ -21,6 +21,7 @@ import Compiler.Data.Name exposing (Name)
 import Compiler.MonoDirect.Specialize as Specialize
 import Compiler.MonoDirect.State as State exposing (MonoDirectState, WorkItem(..))
 import Compiler.Monomorphize.MonoTraverse as Traverse
+import Compiler.Monomorphize.JoinpointFlatten as JoinpointFlatten
 import Compiler.Monomorphize.Prune as Prune
 import Compiler.Monomorphize.Registry as Registry
 import Compiler.Type.SolverSnapshot as SolverSnapshot exposing (SolverSnapshot)
@@ -54,8 +55,11 @@ monomorphizeDirect entryPointName globalTypeEnv snapshot (TOpt.GlobalGraph nodes
                 rawGraph =
                     assembleRawGraph finalState mainSpecId
 
+                flattenedGraph =
+                    JoinpointFlatten.flattenGraphJoinpoints rawGraph
+
                 prunedGraph =
-                    Prune.pruneUnreachableSpecs globalTypeEnv rawGraph
+                    Prune.pruneUnreachableSpecs globalTypeEnv flattenedGraph
             in
             Ok prunedGraph
 

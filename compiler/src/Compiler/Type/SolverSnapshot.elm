@@ -253,22 +253,42 @@ snapshotToIoState ss =
 buildLocalView : Dict String Mono.MonoType -> IO.State -> LocalView
 buildLocalView substDict st =
     let
+        hasErrorDescriptor : TypeVar -> Bool
+        hasErrorDescriptor var =
+            case lookupDescriptorInState st (resolveInState st var) of
+                Just (IO.Descriptor props) ->
+                    case props.content of
+                        IO.Error ->
+                            True
+
+                        _ ->
+                            False
+
+                Nothing ->
+                    False
+
         typeOfVar : TypeVar -> Can.Type
         typeOfVar var =
-            let
-                ( _, result ) =
-                    Type.toCanTypeBatch (Array.fromList [ Just var ]) st
-            in
-            case Array.get 0 result of
-                Just (Just t) ->
-                    t
+            if hasErrorDescriptor var then
+                Can.TUnit
+            else
+                let
+                    ( _, result ) =
+                        Type.toCanTypeBatch (Array.fromList [ Just var ]) st
+                in
+                case Array.get 0 result of
+                    Just (Just t) ->
+                        t
 
-                _ ->
-                    Can.TUnit
+                    _ ->
+                        Can.TUnit
 
         monoTypeOfVar : TypeVar -> Mono.MonoType
         monoTypeOfVar var =
-            TypeSubst.canTypeToMonoType substDict (typeOfVar var)
+            if hasErrorDescriptor var then
+                Mono.MVar "error" Mono.CEcoValue
+            else
+                TypeSubst.canTypeToMonoType substDict (typeOfVar var)
     in
     { typeOf = typeOfVar
     , monoTypeOf = monoTypeOfVar
