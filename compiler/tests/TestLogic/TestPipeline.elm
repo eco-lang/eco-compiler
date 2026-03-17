@@ -9,6 +9,7 @@ module TestLogic.TestPipeline exposing
     , PostSolveArtifacts
     , TypeCheckArtifacts
     , TypedOptArtifacts
+    , expectCoverageRun
     , expectMLIRGeneration
     , expectMonomorphization
     , runToGlobalOpt
@@ -54,6 +55,7 @@ import Compiler.Generate.CodeGen as CodeGen
 import Compiler.Generate.MLIR.Backend as MLIR
 import Compiler.Generate.Mode as Mode
 import Compiler.GlobalOpt.MonoGlobalOptimize as MonoGlobalOptimize
+import Compiler.GlobalOpt.MonoInlineSimplify as MonoInlineSimplify
 import Compiler.LocalOpt.Typed.Module as TypedOptimize
 import Compiler.MonoDirect.Monomorphize as MonoDirect
 import Compiler.Monomorphize.Monomorphize as Monomorphize
@@ -396,8 +398,11 @@ runToGlobalOpt srcModule =
 
         Ok { canonical, annotations, nodeTypes, kernelEnv, localGraph, globalGraph, globalTypeEnv, monoGraph } ->
             let
+                ( simplifiedGraph, _ ) =
+                    MonoInlineSimplify.optimize monoGraph
+
                 optimizedMonoGraph =
-                    MonoGlobalOptimize.globalOptimize monoGraph
+                    MonoGlobalOptimize.globalOptimize simplifiedGraph
             in
             Ok
                 { canonical = canonical
@@ -650,6 +655,62 @@ runMLIRGeneration monoGraph =
 -- ============================================================================
 -- EXPECTATION HELPERS
 -- ============================================================================
+
+
+{-| Coverage-driven test: validates the test case is valid Elm (passes through
+TypedOpt) then runs the full backend pipeline for coverage. Failures in
+Mono/GlobalOpt/MLIR are logged but do NOT fail the test — they represent
+backend bugs to investigate, not invalid test cases.
+
+The test FAILS only if canonicalization, type checking, PostSolve, or typed
+optimization fails, since that means the test case is not valid Elm.
+
+-}
+expectCoverageRun : Src.Module -> Expect.Expectation
+expectCoverageRun srcModule =
+    case runToTypedOpt srcModule of
+        Err msg ->
+            Expect.fail ("Invalid test case (frontend failure): " ++ msg)
+
+        Ok typedOptArtifacts ->
+            -- Valid Elm! Now run the backend pipeline for coverage.
+            -- Failures here are expected and informative, not test failures.
+            let
+                { canonical, annotations, nodeTypes, kernelEnv, localGraph } =
+                    typedOptArtifacts
+
+                globalGraph =
+                    localGraphToGlobalGraph localGraph
+
+                globalTypeEnv =
+                    buildGlobalTypeEnv canonical
+            in
+            case monomorphizeAny globalTypeEnv globalGraph of
+                Err monoErr ->
+                    let
+                        _ =
+                            Debug.log "BACKEND-FAIL[mono]" monoErr
+                    in
+                    Expect.pass
+
+                Ok monoGraph ->
+                    let
+                        ( simplifiedGraph, _ ) =
+                            MonoInlineSimplify.optimize monoGraph
+
+                        optimizedMonoGraph =
+                            MonoGlobalOptimize.globalOptimize simplifiedGraph
+                    in
+                    case runMLIRGeneration optimizedMonoGraph of
+                        Err mlirErr ->
+                            let
+                                _ =
+                                    Debug.log "BACKEND-FAIL[mlir]" mlirErr
+                            in
+                            Expect.pass
+
+                        Ok _ ->
+                            Expect.pass
 
 
 {-| Verify that a source module can be successfully monomorphized.

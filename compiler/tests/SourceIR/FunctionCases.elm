@@ -681,6 +681,9 @@ polymorphicNumberCases : (Src.Module -> Expectation) -> List TestCase
 polymorphicNumberCases expectFn =
     [ { label = "zabs with Int (baseline)", run = zabsWithInt expectFn }
     , { label = "zabs with Float (Int literal promoted)", run = zabsWithFloat expectFn }
+    , { label = "comparable min with Int", run = comparableMinWithInt expectFn }
+    , { label = "appendable concat with String", run = appendableConcatWithString expectFn }
+    , { label = "compappend with String", run = compappendWithString expectFn }
     ]
 
 
@@ -788,6 +791,150 @@ zabsWithFloat expectFn _ =
 
         modul =
             makeModuleWithTypedDefs "Test" [ zabsDef, testValueDef ]
+    in
+    expectFn modul
+
+
+{-| Define a comparable function:
+
+    zmin : comparable -> comparable -> comparable
+    zmin a b =
+        if a < b then a else b
+
+    testValue : Int
+    testValue = zmin 3 5
+
+Exercises the `comparable` branch in `toSuper` and `getFreshSuperName`.
+
+-}
+comparableMinWithInt : (Src.Module -> Expectation) -> (() -> Expectation)
+comparableMinWithInt expectFn _ =
+    let
+        -- Type: comparable -> comparable -> comparable
+        zminType =
+            tLambda (tVar "comparable") (tLambda (tVar "comparable") (tVar "comparable"))
+
+        -- Body: if a < b then a else b
+        zminBody =
+            ifExpr
+                (binopsExpr [ ( varExpr "a", "<" ) ] (varExpr "b"))
+                (varExpr "a")
+                (varExpr "b")
+
+        zminDef : TypedDef
+        zminDef =
+            { name = "zmin"
+            , args = [ pVar "a", pVar "b" ]
+            , tipe = zminType
+            , body = zminBody
+            }
+
+        -- testValue : Int = zmin 3 5
+        testValueDef : TypedDef
+        testValueDef =
+            { name = "testValue"
+            , args = []
+            , tipe = tType "Int" []
+            , body = callExpr (varExpr "zmin") [ intExpr 3, intExpr 5 ]
+            }
+
+        modul =
+            makeModuleWithTypedDefs "Test" [ zminDef, testValueDef ]
+    in
+    expectFn modul
+
+
+{-| Define a compappend function (both comparable and appendable):
+
+    zsortConcat : compappend -> compappend -> compappend
+    zsortConcat a b =
+        if a < b then a ++ b else b ++ a
+
+    testValue : String
+    testValue = zsortConcat "hello" "world"
+
+Exercises the `compappend` branch in `toSuper`.
+
+-}
+compappendWithString : (Src.Module -> Expectation) -> (() -> Expectation)
+compappendWithString expectFn _ =
+    let
+        -- Type: compappend -> compappend -> compappend
+        zsortConcatType =
+            tLambda (tVar "compappend") (tLambda (tVar "compappend") (tVar "compappend"))
+
+        -- Body: if a < b then a ++ b else b ++ a
+        zsortConcatBody =
+            ifExpr
+                (binopsExpr [ ( varExpr "a", "<" ) ] (varExpr "b"))
+                (binopsExpr [ ( varExpr "a", "++" ) ] (varExpr "b"))
+                (binopsExpr [ ( varExpr "b", "++" ) ] (varExpr "a"))
+
+        zsortConcatDef : TypedDef
+        zsortConcatDef =
+            { name = "zsortConcat"
+            , args = [ pVar "a", pVar "b" ]
+            , tipe = zsortConcatType
+            , body = zsortConcatBody
+            }
+
+        -- testValue : String = zsortConcat "hello" "world"
+        testValueDef : TypedDef
+        testValueDef =
+            { name = "testValue"
+            , args = []
+            , tipe = tType "String" []
+            , body = callExpr (varExpr "zsortConcat") [ strExpr "hello", strExpr "world" ]
+            }
+
+        modul =
+            makeModuleWithTypedDefs "Test" [ zsortConcatDef, testValueDef ]
+    in
+    expectFn modul
+
+
+{-| Define an appendable function:
+
+    zconcat : appendable -> appendable -> appendable
+    zconcat a b =
+        a ++ b
+
+    testValue : String
+    testValue = zconcat "hello" " world"
+
+Exercises the `appendable` branch in `toSuper` and `getFreshSuperName`.
+
+-}
+appendableConcatWithString : (Src.Module -> Expectation) -> (() -> Expectation)
+appendableConcatWithString expectFn _ =
+    let
+        -- Type: appendable -> appendable -> appendable
+        zconcatType =
+            tLambda (tVar "appendable") (tLambda (tVar "appendable") (tVar "appendable"))
+
+        -- Body: a ++ b
+        zconcatBody =
+            binopsExpr [ ( varExpr "a", "++" ) ] (varExpr "b")
+
+        zconcatDef : TypedDef
+        zconcatDef =
+            { name = "zconcat"
+            , args = [ pVar "a", pVar "b" ]
+            , tipe = zconcatType
+            , body = zconcatBody
+            }
+
+        -- testValue : String = zconcat "hello" " world"
+        testValueDef : TypedDef
+        testValueDef =
+            { name = "testValue"
+            , args = []
+            , tipe = tType "String" []
+            , body = callExpr (varExpr "zconcat") [ strExpr "hello", strExpr " world" ]
+            }
+
+        modul =
+            makeModuleWithTypedDefs "Test" [ zconcatDef, testValueDef ]
     in
     expectFn modul
 

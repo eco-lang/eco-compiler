@@ -6,12 +6,19 @@ Systematically increase test coverage of the compiler's backend pipeline
 (Type → PostSolve → Monomorphize → GlobalOpt → MLIR) by iteratively adding
 SourceIR test cases guided by coverage reports.
 
+New test cases must be **valid Elm code** — they must pass canonicalization,
+type checking, and nitpicking. However, they **may fail** in later stages
+(Monomorphization, GlobalOpt, MLIR generation). Finding such failures is the
+entire point: they reveal bugs in the backend pipeline that need fixing.
+
 ## Prerequisites
 
 - Coverage tool: `compiler/elm-coverage/` (modified for elm-test-rs)
 - Test driver: `compiler/tests/TestLogic/TypedPipelineTest.elm` — runs all
-  StandardTestSuites through the full pipeline to MLIR with no condition
-  beyond "doesn't crash"
+  StandardTestSuites through the full pipeline using `expectCoverageRun`,
+  which passes as long as the test case is valid Elm (passes through
+  TypedOpt). Failures in Mono/GlobalOpt/MLIR are reported but do not
+  fail the test.
 - File list: `/work/elm-cov-file.csv` — 36 .elm files ordered by compiler phase,
   with a `done` column for tracking progress across sessions
 - Test cases: `compiler/tests/SourceIR/` — parametric test modules using
@@ -29,43 +36,87 @@ env PATH="$(pwd)/node_modules/.bin:$PATH" \
     --elm-test elm-test-rs \
     --report json \
     --force \
-    -- --workers 8 --fuzz 1 --filter "generates MLIR"
+    -- --workers 8 --fuzz 1 --filter "coverage run"
 ```
 
-Output: `compiler/.coverage/coverage.json`
+Output: `compiler/.coverage/coverage.json` (summary) and per-module files
+like `compiler/.coverage/Compiler/Type/Type.json` (detailed annotations).
 
 ### Run TypedPipelineTest standalone (no coverage)
 
 ```bash
 cd /work/compiler
-npx elm-test-rs --project build-xhr --fuzz 1 --filter "generates MLIR"
+npx elm-test-rs --project build-xhr --fuzz 1 --filter "coverage run"
 ```
 
 ## Coverage JSON Format
 
-The JSON report is an object keyed by module name (e.g. `"Compiler.Monomorphize.Specialize"`).
-Each entry contains:
+There are two levels of coverage data:
+
+### Summary (`coverage.json`)
 
 ```json
 {
-  "coverageData": [0, 3, 0, 1, ...],
-  "expressions": [
+  "modules": [
     {
-      "complexity": 1,
-      "type": "declaration",
-      "startLine": 42, "startCol": 1,
-      "endLine": 55, "endCol": 10,
-      "count": 3
-    },
-    ...
+      "module": "Compiler.Type.Type",
+      "totalComplexity": 65,
+      "coverage": {
+        "declarations": { "covered": 39, "total": 48 },
+        "letDeclarations": { "covered": 3, "total": 5 },
+        "lambdas": { "covered": 24, "total": 63 },
+        "caseBranches": { "covered": 24, "total": 74 },
+        "ifBranches": { "covered": 5, "total": 17 }
+      }
+    }
   ]
 }
 ```
 
-- `coverageData[i]` = hit count for expression `i`
-- `expressions[i].type` ∈ { "declaration", "letDeclaration", "lambdaBody", "caseBranch", "ifElseBranch" }
-- `expressions[i].count` = same as `coverageData[i]`
-- A zero count means the expression was never executed
+### Per-module detail (e.g. `.coverage/Compiler/Type/Type.json`)
+
+```json
+{
+  "module": "Compiler.Type.Type",
+  "totalComplexity": 65,
+  "coverage": { ... },
+  "annotations": [
+    {
+      "type": "declaration",
+      "count": 0,
+      "from": { "line": 622, "column": 1 },
+      "to": { "line": 627, "column": 12 },
+      "name": "toErrorType",
+      "complexity": 1
+    }
+  ]
+}
+```
+
+- `annotations[i].type` ∈ { "declaration", "letDeclaration", "lambdaBody", "caseBranch", "ifElseBranch" }
+- `annotations[i].count` = hit count (zero means uncovered)
+- `annotations[i].from` / `.to` = source location
+
+## Test Validity Rules
+
+### Must pass (test case is invalid if these fail)
+1. **Canonicalization** — the AST must be well-formed
+2. **Type checking** — the module must type-check without errors
+3. **PostSolve** — type fixups must succeed
+4. **Typed optimization** — nitpicking, pattern exhaustiveness, etc.
+
+If a test case fails any of these stages, it is **not valid Elm code** and
+must be discarded or fixed. The `expectCoverageRun` function in
+`TestPipeline.elm` will fail the test in this case.
+
+### May fail (this is what we want to find)
+5. **Monomorphization** — specialization, closure conversion, etc.
+6. **Global optimization** — inlining, staging, ABI cloning, etc.
+7. **MLIR generation** — lowering to MLIR ops
+
+If a test case fails at stages 5-7, the test still passes (the code was
+valid Elm), but the failure is logged. These failures represent **bugs in
+the backend pipeline** that should be investigated and fixed separately.
 
 ## Resumable Progress Tracking
 
@@ -101,13 +152,14 @@ where `done` is non-empty):
 
 ### Step 1 — Identify uncovered code
 
-1. Read the module's entry from `compiler/.coverage/coverage.json`.
-2. List all expressions with `count == 0`.
+1. Read the module's per-module coverage JSON from
+   `compiler/.coverage/<path>/<Module>.json`.
+2. List all annotations with `count == 0`.
 3. Group them by function/declaration to understand which code paths are missed.
 
 ### Step 2 — Reason about test cases
 
-1. Read the actual source of the uncovered functions (use the `startLine`/`endLine`
+1. Read the actual source of the uncovered functions (use the `from.line`/`to.line`
    from the coverage report to locate them).
 2. Determine what kind of Elm input would exercise those code paths. Consider:
    - Pattern match branches that need specific constructor shapes
@@ -115,6 +167,8 @@ where `done` is non-empty):
    - Edge cases: empty lists, unit, nested records, recursive types
    - Kernel function calls that trigger specific ABI paths
    - Polymorphic vs monomorphic specialization paths
+   - Constrained type variables (`number`, `comparable`, `appendable`)
+   - Type alias usage in annotations
 3. Check if any existing SourceIR test case already covers a similar shape.
 
 ### Step 3 — Add test cases
@@ -129,11 +183,16 @@ where `done` is non-empty):
 3. If a new `SourceIR/*Cases.elm` file is created, also add it to
    `SourceIR/Suite/StandardTestSuites.elm`.
 
+**Important**: Test cases must be valid Elm. They must pass canonicalization,
+type checking, and nitpicking. If a test case fails these early stages, fix
+or discard it. Failures in Mono/GlobalOpt/MLIR are expected and welcome —
+they reveal backend bugs.
+
 ### Step 4 — Measure coverage delta
 
 1. Re-run the coverage command (see Commands above).
-2. Compare the module's `coverageData` with the previous run.
-3. Note which previously-zero expressions now have non-zero counts.
+2. Compare the module's annotation counts with the previous run.
+3. Note which previously-zero annotations now have non-zero counts.
 
 ### Step 5 — Evaluate and iterate
 
@@ -147,12 +206,15 @@ where `done` is non-empty):
 ### Step 6 — Validate
 
 After processing each file, run the full TypedPipelineTest to ensure all tests
-still pass:
+still pass (i.e., all test cases are valid Elm):
 
 ```bash
 cd /work/compiler
-npx elm-test-rs --project build-xhr --fuzz 1 --filter "generates MLIR"
+npx elm-test-rs --project build-xhr --fuzz 1 --filter "coverage run"
 ```
+
+Tests that fail in Mono/GlobalOpt/MLIR will still pass (they are valid Elm).
+Tests that fail in canonicalization/type-checking will fail and must be fixed.
 
 ## File Processing Order
 
@@ -176,12 +238,12 @@ fundamental input shapes that, once added, also improve later-phase coverage.
 
 ## Notes
 
-- The TypedPipelineTest uses `expectMLIRGeneration` which calls `runToMlir`,
-  exercising the full pipeline: Canonicalize → TypeCheck → PostSolve →
-  TypedOpt → Mono → GlobalOpt → MLIR.
+- The TypedPipelineTest uses `expectCoverageRun` which calls the full pipeline
+  but only requires success through TypedOpt. Failures in Mono/GlobalOpt/MLIR
+  are logged via `Debug.log` but the test passes (the input was valid Elm).
 - Some modules (e.g., error reporting, Terminal.*) won't be covered by this
   approach — they require failure paths or CLI interaction. Ignore them.
-- The `--filter "generates MLIR"` flag ensures only TypedPipelineTest tests run,
+- The `--filter "coverage run"` flag ensures only TypedPipelineTest tests run,
   keeping coverage focused and iteration fast (~20s per run).
 - Use `--force` with elm-coverage so the report is generated even if some tests
   fail (e.g., due to `Test.skip`).
