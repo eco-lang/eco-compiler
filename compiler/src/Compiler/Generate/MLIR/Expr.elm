@@ -904,17 +904,20 @@ generateClosure ctx closureInfo body monoType =
         captureVarsWithTypes =
             List.reverse captureVarsWithTypesReversed
 
-        -- No boxing - use captures with their actual types (typed closure ABI)
+        -- Box Bool (i1) captures at closure boundary per REP_CLOSURE_001 / FORBID_CLOSURE_001
+        ( boxOps, boxedCaptureVarsWithTypes, ctx1a ) =
+            boxArgsForClosureBoundary False ctx1 captureVarsWithTypes
+
         captureVarNames : List String
         captureVarNames =
-            List.map Tuple.first captureVarsWithTypes
+            List.map Tuple.first boxedCaptureVarsWithTypes
 
         captureTypesList : List MlirType
         captureTypesList =
-            List.map Tuple.second captureVarsWithTypes
+            List.map Tuple.second boxedCaptureVarsWithTypes
 
         ( resultVar, ctx2 ) =
-            Ctx.freshVar ctx1
+            Ctx.freshVar ctx1a
 
         numCaptured : Int
         numCaptured =
@@ -940,7 +943,7 @@ generateClosure ctx closureInfo body monoType =
                     else
                         0
                 )
-                captureVarsWithTypes
+                boxedCaptureVarsWithTypes
                 |> List.foldl Bitwise.or 0
 
         -- Use currentLetSiblings only for mutually recursive let bindings.
@@ -975,7 +978,7 @@ generateClosure ctx closureInfo body monoType =
             ( ctx4, callOp ) =
                 Ops.ecoCallNamed ctx3 resultVar (lambdaIdToString closureInfo.lambdaId) [] closureResultType
         in
-        { ops = captureOps ++ [ callOp ]
+        { ops = captureOps ++ boxOps ++ [ callOp ]
         , resultVar = resultVar
         , resultType = closureResultType
         , ctx = ctx4
@@ -1050,7 +1053,7 @@ generateClosure ctx closureInfo body monoType =
             ctx4 =
                 { ctx3 | pendingLambdas = pendingLambda :: ctx3.pendingLambdas }
         in
-        { ops = captureOps ++ [ papOp ]
+        { ops = captureOps ++ boxOps ++ [ papOp ]
         , resultVar = resultVar
         , resultType = Types.ecoValue
         , ctx = ctx4
