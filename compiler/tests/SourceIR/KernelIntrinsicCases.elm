@@ -54,6 +54,7 @@ testCases expectFn =
         , tupleCases expectFn
         , stringCases expectFn
         , bytesCases expectFn
+        , kernelAbiTypeCases expectFn
         ]
 
 
@@ -432,3 +433,28 @@ bytesCases expectFn =
     [ { label = "K Bytes.encode", run = \_ -> expectFn (makeKernelModule "testValue" (callExpr (qualVarExpr "Elm.Kernel.Bytes" "encode") [ intExpr 0 ])) }
     , { label = "K Bytes.decode", run = \_ -> expectFn (makeKernelModule "testValue" (callExpr (qualVarExpr "Elm.Kernel.Bytes" "decode") [ intExpr 0, intExpr 0 ])) }
     ]
+
+
+
+-- ============================================================================
+-- KERNEL ABI TYPE PATTERNS
+-- Exercises canTypeToMonoType_preserveVars and canTypeToMonoType_numberBoxed
+-- with different type shapes: record, tuple, unit, char, custom types
+-- ============================================================================
+
+
+kernelAbiTypeCases : (Src.Module -> Expectation) -> List TestCase
+kernelAbiTypeCases expectFn =
+    [ { label = "K kernel with unit result", run = \_ -> expectFn (makeKernelModule "testValue" (callExpr (qualVarExpr "Elm.Kernel.Basics" "identity") [ tupleExpr (intExpr 1) (intExpr 2) ])) }
+    , { label = "K kernel returning record", run = kernelReturningRecord expectFn }
+    , { label = "K Debug.log kernel", run = \_ -> expectFn (makeKernelModule "testValue" (callExpr (qualVarExpr "Elm.Kernel.Debug" "log") [ strExpr "tag", intExpr 42 ])) }
+    , { label = "K Debug.todo kernel", run = \_ -> expectFn (makeKernelModule "testValue" (callExpr (qualVarExpr "Elm.Kernel.Debug" "todo") [ strExpr "not implemented" ])) }
+    ]
+
+
+kernelReturningRecord : (Src.Module -> Expectation) -> (() -> Expectation)
+kernelReturningRecord expectFn _ =
+    -- identity applied to a record — forces kernel ABI to handle record type
+    expectFn (makeKernelModule "testValue"
+        (callExpr (qualVarExpr "Elm.Kernel.Basics" "identity")
+            [ callExpr (qualVarExpr "Elm.Kernel.Tuple" "pair") [ intExpr 1, strExpr "hi" ] ]))

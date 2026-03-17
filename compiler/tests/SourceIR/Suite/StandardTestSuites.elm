@@ -15,9 +15,11 @@ import SourceIR.AnnotatedCases as AnnotatedCases
 import SourceIR.ArrayCases as ArrayCases
 import SourceIR.AsPatternCases as AsPatternCases
 import SourceIR.BinopCases as BinopCases
+import SourceIR.BoolCaseCases as BoolCaseCases
 import SourceIR.BytesFusionCases as BytesFusionCases
 import SourceIR.BitwiseCases as BitwiseCases
 import SourceIR.CaseCases as CaseCases
+import SourceIR.ClosureAbiBranchCases as ClosureAbiBranchCases
 import SourceIR.ClosureCases as ClosureCases
 import SourceIR.ControlFlowCases as ControlFlowCases
 import SourceIR.DecisionTreeAdvancedCases as DecisionTreeAdvancedCases
@@ -27,6 +29,7 @@ import SourceIR.FunctionCases as FunctionCases
 import SourceIR.HigherOrderCases as HigherOrderCases
 import SourceIR.JoinpointABICases as JoinpointABICases
 import SourceIR.KernelComparisonCases as KernelComparisonCases
+import SourceIR.KernelCtorArgCases as KernelCtorArgCases
 import SourceIR.KernelCompositionCases as KernelCompositionCases
 import SourceIR.KernelContextCases as KernelContextCases
 import SourceIR.KernelHigherOrderCases as KernelHigherOrderCases
@@ -74,7 +77,9 @@ expectSuite expectFn condStr =
         , AsPatternCases.expectSuite expectFn condStr
         , BinopCases.expectSuite expectFn condStr
         , BitwiseCases.expectSuite expectFn condStr
+        , BoolCaseCases.expectSuite expectFn condStr
         , BytesFusionCases.expectSuite expectFn condStr
+        , ClosureAbiBranchCases.expectSuite expectFn condStr
         , CaseCases.expectSuite expectFn condStr
         , ClosureCases.expectSuite expectFn condStr
         , ControlFlowCases.expectSuite expectFn condStr
@@ -119,6 +124,7 @@ expectSuite expectFn condStr =
         , KernelContextCases.expectSuite expectFn condStr
         , KernelHigherOrderCases.expectSuite expectFn condStr
         , KernelCompositionCases.expectSuite expectFn condStr
+        , KernelCtorArgCases.expectSuite expectFn condStr
 
         -- Fuzz Tests
         , PatternComplexityFuzzCases.expectSuite expectFn condStr
