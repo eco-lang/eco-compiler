@@ -385,17 +385,95 @@ generateMonoPathHelper ctx path targetType revAcc =
 
                         Mono.Tuple2Container ->
                             let
-                                ( ctx_, op ) =
-                                    Ops.ecoProjectTuple2 ctx2 resultVar index targetType subVar
+                                fieldAbiType =
+                                    Types.monoTypeToAbi resultType
                             in
-                            ( [ op ], resultVar, ctx_ )
+                            if Types.isUnboxable fieldAbiType then
+                                -- Field is stored unboxed (Int/Float/Char) in the tuple
+                                let
+                                    ( primitiveVar, ctx3_ ) =
+                                        Ctx.freshVar ctx2
+
+                                    ( ctx4, projectOp ) =
+                                        Ops.ecoProjectTuple2 ctx3_ primitiveVar index fieldAbiType subVar
+                                in
+                                if Types.isEcoValueType targetType then
+                                    let
+                                        ( boxedVar, ctx5 ) =
+                                            Ctx.freshVar ctx4
+
+                                        ( ctx6, boxOp ) =
+                                            boxPrimitive ctx5 boxedVar primitiveVar fieldAbiType
+                                    in
+                                    ( [ projectOp, boxOp ], boxedVar, ctx6 )
+
+                                else
+                                    ( [ projectOp ], primitiveVar, ctx4 )
+
+                            else
+                                -- Field is stored boxed (!eco.value) in the tuple (includes Bool)
+                                let
+                                    ( valVar, ctx3_ ) =
+                                        Ctx.freshVar ctx2
+
+                                    ( ctx4, projectOp ) =
+                                        Ops.ecoProjectTuple2 ctx3_ valVar index Types.ecoValue subVar
+                                in
+                                if targetType == I1 then
+                                    let
+                                        ( unboxOps, unboxedVar, ctxU ) =
+                                            Intrinsics.unboxToType ctx4 valVar I1
+                                    in
+                                    ( projectOp :: unboxOps, unboxedVar, ctxU )
+
+                                else
+                                    ( [ projectOp ], valVar, ctx4 )
 
                         Mono.Tuple3Container ->
                             let
-                                ( ctx_, op ) =
-                                    Ops.ecoProjectTuple3 ctx2 resultVar index targetType subVar
+                                fieldAbiType =
+                                    Types.monoTypeToAbi resultType
                             in
-                            ( [ op ], resultVar, ctx_ )
+                            if Types.isUnboxable fieldAbiType then
+                                -- Field is stored unboxed (Int/Float/Char) in the tuple
+                                let
+                                    ( primitiveVar, ctx3_ ) =
+                                        Ctx.freshVar ctx2
+
+                                    ( ctx4, projectOp ) =
+                                        Ops.ecoProjectTuple3 ctx3_ primitiveVar index fieldAbiType subVar
+                                in
+                                if Types.isEcoValueType targetType then
+                                    let
+                                        ( boxedVar, ctx5 ) =
+                                            Ctx.freshVar ctx4
+
+                                        ( ctx6, boxOp ) =
+                                            boxPrimitive ctx5 boxedVar primitiveVar fieldAbiType
+                                    in
+                                    ( [ projectOp, boxOp ], boxedVar, ctx6 )
+
+                                else
+                                    ( [ projectOp ], primitiveVar, ctx4 )
+
+                            else
+                                -- Field is stored boxed (!eco.value) in the tuple (includes Bool)
+                                let
+                                    ( valVar, ctx3_ ) =
+                                        Ctx.freshVar ctx2
+
+                                    ( ctx4, projectOp ) =
+                                        Ops.ecoProjectTuple3 ctx3_ valVar index Types.ecoValue subVar
+                                in
+                                if targetType == I1 then
+                                    let
+                                        ( unboxOps, unboxedVar, ctxU ) =
+                                            Intrinsics.unboxToType ctx4 valVar I1
+                                    in
+                                    ( projectOp :: unboxOps, unboxedVar, ctxU )
+
+                                else
+                                    ( [ projectOp ], valVar, ctx4 )
 
                         Mono.CustomContainer ctorName ->
                             -- For custom types, we need to check if the field is stored unboxed

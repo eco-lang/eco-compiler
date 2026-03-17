@@ -1303,6 +1303,23 @@ substitutePath oldName newName path =
             Mono.MonoUnbox resultType (substitutePath oldName newName innerPath)
 
 
+substituteDtPath : Name -> Name -> Mono.MonoDtPath -> Mono.MonoDtPath
+substituteDtPath oldName newName dtPath =
+    case dtPath of
+        Mono.DtRoot name ty ->
+            if name == oldName then
+                Mono.DtRoot newName ty
+
+            else
+                dtPath
+
+        Mono.DtIndex idx kind resultTy inner ->
+            Mono.DtIndex idx kind resultTy (substituteDtPath oldName newName inner)
+
+        Mono.DtUnbox resultTy inner ->
+            Mono.DtUnbox resultTy (substituteDtPath oldName newName inner)
+
+
 substituteDecider : Name -> Name -> Mono.MonoType -> Mono.Decider Mono.MonoChoice -> Mono.Decider Mono.MonoChoice
 substituteDecider oldName newName varType decider =
     case decider of
@@ -1315,12 +1332,18 @@ substituteDecider oldName newName varType decider =
                     decider
 
         Mono.Chain testChain success failure ->
-            Mono.Chain testChain
+            Mono.Chain
+                (List.map
+                    (\( dtPath, test ) ->
+                        ( substituteDtPath oldName newName dtPath, test )
+                    )
+                    testChain
+                )
                 (substituteDecider oldName newName varType success)
                 (substituteDecider oldName newName varType failure)
 
         Mono.FanOut path edges fallback ->
-            Mono.FanOut path
+            Mono.FanOut (substituteDtPath oldName newName path)
                 (List.map (\( test, d ) -> ( test, substituteDecider oldName newName varType d )) edges)
                 (substituteDecider oldName newName varType fallback)
 
@@ -2239,9 +2262,22 @@ inlineVar name replacement expr =
             in
             MonoDestruct (Mono.MonoDestructor destructName newPath destructType) newInner resultType
 
-        MonoCase scrutName scrutType decider branches resultType ->
+        MonoCase scrutName rootName decider branches resultType ->
+            let
+                newRootName =
+                    if rootName == name then
+                        case replacement of
+                            MonoVarLocal newName_ _ ->
+                                newName_
+
+                            _ ->
+                                rootName
+
+                    else
+                        rootName
+            in
             MonoCase scrutName
-                scrutType
+                newRootName
                 (inlineVarInDecider name replacement decider)
                 (List.map (\( idx, e ) -> ( idx, inlineVar name replacement e )) branches)
                 resultType
@@ -2302,6 +2338,28 @@ inlineVarInPath name replacement path =
             Mono.MonoUnbox resultType (inlineVarInPath name replacement innerPath)
 
 
+inlineVarInDtPath : Name -> MonoExpr -> Mono.MonoDtPath -> Mono.MonoDtPath
+inlineVarInDtPath name replacement dtPath =
+    case dtPath of
+        Mono.DtRoot rootName ty ->
+            if rootName == name then
+                case replacement of
+                    MonoVarLocal newName _ ->
+                        Mono.DtRoot newName ty
+
+                    _ ->
+                        dtPath
+
+            else
+                dtPath
+
+        Mono.DtIndex idx kind resultTy inner ->
+            Mono.DtIndex idx kind resultTy (inlineVarInDtPath name replacement inner)
+
+        Mono.DtUnbox resultTy inner ->
+            Mono.DtUnbox resultTy (inlineVarInDtPath name replacement inner)
+
+
 inlineVarInDecider : Name -> MonoExpr -> Mono.Decider Mono.MonoChoice -> Mono.Decider Mono.MonoChoice
 inlineVarInDecider name replacement decider =
     case decider of
@@ -2314,12 +2372,18 @@ inlineVarInDecider name replacement decider =
                     decider
 
         Mono.Chain testChain success failure ->
-            Mono.Chain testChain
+            Mono.Chain
+                (List.map
+                    (\( dtPath, test ) ->
+                        ( inlineVarInDtPath name replacement dtPath, test )
+                    )
+                    testChain
+                )
                 (inlineVarInDecider name replacement success)
                 (inlineVarInDecider name replacement failure)
 
         Mono.FanOut path edges fallback ->
-            Mono.FanOut path
+            Mono.FanOut (inlineVarInDtPath name replacement path)
                 (List.map (\( test, d ) -> ( test, inlineVarInDecider name replacement d )) edges)
                 (inlineVarInDecider name replacement fallback)
 
