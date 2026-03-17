@@ -15,6 +15,7 @@ import SourceIR.AnnotatedCases as AnnotatedCases
 import SourceIR.ArrayCases as ArrayCases
 import SourceIR.AsPatternCases as AsPatternCases
 import SourceIR.BinopCases as BinopCases
+import SourceIR.BytesFusionCases as BytesFusionCases
 import SourceIR.BitwiseCases as BitwiseCases
 import SourceIR.CaseCases as CaseCases
 import SourceIR.ClosureCases as ClosureCases
@@ -73,6 +74,7 @@ expectSuite expectFn condStr =
         , AsPatternCases.expectSuite expectFn condStr
         , BinopCases.expectSuite expectFn condStr
         , BitwiseCases.expectSuite expectFn condStr
+        , BytesFusionCases.expectSuite expectFn condStr
         , CaseCases.expectSuite expectFn condStr
         , ClosureCases.expectSuite expectFn condStr
         , ControlFlowCases.expectSuite expectFn condStr
