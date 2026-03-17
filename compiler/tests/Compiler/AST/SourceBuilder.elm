@@ -22,6 +22,7 @@ module Compiler.AST.SourceBuilder exposing
     , lambdaExpr
     , letExpr
     , listExpr
+    , makeKernelModule
     , makeModule
     , makeModuleWithDefs
     , makeModuleWithTypedDefs
@@ -509,6 +510,16 @@ bitwiseImport =
         (c2 (Src.Open noComments noComments))
 
 
+{-| Import statement for Tuple exposing everything.
+-}
+tupleImport : Src.Import
+tupleImport =
+    Src.Import
+        (c1 (A.At A.zero "Tuple"))
+        Nothing
+        (c2 (Src.Open noComments noComments))
+
+
 {-| Standard imports for test modules.
 -}
 standardImports : List Src.Import
@@ -521,6 +532,13 @@ standardImports =
 extendedImports : List Src.Import
 extendedImports =
     [ basicsImport, maybeImport, listImport, jsArrayImport, stringImport, charImport, bitwiseImport ]
+
+
+{-| Full kernel imports — all modules available in testIfaces.
+-}
+kernelImports : List Src.Import
+kernelImports =
+    [ basicsImport, maybeImport, listImport, jsArrayImport, stringImport, charImport, bitwiseImport, tupleImport ]
 
 
 {-| Create a simple module with a single top-level definition.
@@ -542,6 +560,33 @@ makeModule name expr =
         , exports = A.At A.zero (Src.Open noComments noComments)
         , docs = Src.NoDocs A.zero []
         , imports = [ basicsImport, listImport ]
+        , values = [ A.At A.zero value ]
+        , unions = []
+        , aliases = []
+        , infixes = []
+        , effects = Src.NoEffects
+        }
+
+
+{-| Create a simple module with all kernel-accessible imports (Basics, List, Tuple, Bitwise, etc.).
+-}
+makeKernelModule : Name -> Src.Expr -> Src.Module
+makeKernelModule name expr =
+    let
+        value =
+            Src.Value
+                { comments = noComments
+                , name = c1 (A.At A.zero name)
+                , args = []
+                , body = c1 expr
+                , tipe = Nothing
+                }
+    in
+    Src.Module
+        { name = Just (A.At A.zero "Test")
+        , exports = A.At A.zero (Src.Open noComments noComments)
+        , docs = Src.NoDocs A.zero []
+        , imports = kernelImports
         , values = [ A.At A.zero value ]
         , unions = []
         , aliases = []

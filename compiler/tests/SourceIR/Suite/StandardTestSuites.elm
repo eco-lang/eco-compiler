@@ -26,6 +26,7 @@ import SourceIR.FunctionCases as FunctionCases
 import SourceIR.HigherOrderCases as HigherOrderCases
 import SourceIR.JoinpointABICases as JoinpointABICases
 import SourceIR.KernelPapAbiCases as KernelPapAbiCases
+import SourceIR.KernelPipelineCases as KernelPipelineCases
 import SourceIR.LetCases as LetCases
 import SourceIR.LetDestructCases as LetDestructCases
 import SourceIR.LetDestructFnCases as LetDestructFnCases
@@ -105,6 +106,7 @@ expectSuite expectFn condStr =
         , TailRecLetRecClosureCases.expectSuite expectFn condStr
         , TupleCases.expectSuite expectFn condStr
         , KernelPapAbiCases.expectSuite expectFn condStr
+        , KernelPipelineCases.expectSuite expectFn condStr
 
         -- Fuzz Tests
         , PatternComplexityFuzzCases.expectSuite expectFn condStr
