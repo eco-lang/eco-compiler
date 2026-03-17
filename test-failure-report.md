@@ -13,8 +13,8 @@
 
 | Bug ID | Frontend Failures | E2E Failures | Root Cause |
 |--------|-------------------|--------------|------------|
-| BUG-1: PapExtend arity | CGEN_052 x2 | PapExtendArityTest | `sourceArityForCallee` returns total arity instead of first-stage arity for function parameters |
-| BUG-2: Saturated papExtend result type | CGEN_056 x1 | PapSaturatePolyPipeMinimalTest | MonoInlineSimplify over-application preserves inner `CEcoValue` result type through `apR` inlining |
+| BUG-1: PapExtend arity | CGEN_052 x2, CGEN_056 x1 | PapExtendArityTest | `sourceArityForCallee` returns total arity instead of first-stage arity for function parameters |
+| BUG-2: Saturated papExtend result type | — | PapSaturatePolyPipeMinimalTest | MonoInlineSimplify over-application preserves inner `CEcoValue` result type through `apR` inlining |
 | BUG-3: Tail-rec SSA dominance | — | TailRecDeciderSearchTest | Sibling mapping SSA var from outer scope used inside separate `func.func` via leaked `varMappings` |
 
 ### Previously Fixed (no longer failing)
@@ -32,13 +32,14 @@
 ### Errors
 - **Frontend (CGEN_052, Function expressions)**: `eco.papExtend remaining_arity=4 but source PAP has remaining=2`
 - **Frontend (CGEN_052, Partial application type)**: `eco.papExtend remaining_arity=2 but source PAP has remaining=1`
+- **Frontend (CGEN_056, Partial application type)**: `Saturated eco.papExtend result type !eco.value does not match func.func return type i64`
 - **E2E (PapExtendArityTest)**: Runtime SIGABRT — `closure->n_values + num_newargs == max_values && "eco_closure_call_saturated: argument count mismatch"`
 
 ### Affected Tests
-- **Elm-test**: CGEN_052 x2 (Function expressions, Partial application type)
+- **Elm-test**: CGEN_052 x2 (Function expressions, Partial application type), CGEN_056 x1 (Partial application type)
 - **E2E**: `PapExtendArityTest.elm`
 
-### Test Source
+### Source Example 1 — E2E test (`PapExtendArityTest.elm`)
 
 `/work/test/elm/src/PapExtendArityTest.elm`:
 ```elm
@@ -57,6 +58,44 @@ flip : (a -> b -> c) -> b -> a -> c
 flip f b a =
     f a b
 ```
+
+**Why it fails:** `curried` is defined with an explicit return lambda, so after staging it has a multi-stage type: `MFunction [Int] (MFunction [Int] Int)` — two stages of arity 1 each. When `applyPartial` calls `f a`, the parameter `f` is a `MonoVarLocal`. Function parameters are never entered into `CallEnv.varSourceArity` (only `MonoDef` let-bindings are). So `sourceArityForExpr` returns `Nothing`, and the fallback `countTotalArityFromType` fires. That function recurses through all `MFunction` layers, returning `1 + 1 = 2` (total arity) instead of `1` (first-stage arity). The generated `papExtend` then claims `remaining_arity = 2`, but the actual PAP `%f` has `arity = 2, num_captured = 1`, so its real remaining is `1`. The same pattern appears in `flip f b a = f a b` — any higher-order function that receives a multi-stage closure as a parameter and calls it.
+
+### Source Example 2 — CGEN_052 "Function expressions" (`chainedPartialApplicationCustom`)
+
+Built programmatically in `tests/SourceIR/FunctionCases.elm`:
+```elm
+type Wrapper = Wrapper Int
+
+f : Wrapper -> Int -> Int -> Wrapper
+f a b c = a
+
+p1 : Int -> Int -> Wrapper
+p1 = f (Wrapper 42)
+
+testValue : Int -> Wrapper
+testValue = p1 2
+```
+
+**Why it fails:** `f` has type `Wrapper -> Int -> Int -> Wrapper`. After staging, this is a multi-stage function: `MFunction [Wrapper] (MFunction [Int] (MFunction [Int] Wrapper))` — three stages of arity 1 each, total arity 3. When `p1` calls `f (Wrapper 42)`, `f` is a known global so the arity is resolved correctly — `p1` is a PAP with `arity = 3, num_captured = 1`, remaining = 2. When `testValue` calls `p1 2`, `sourceArityForCallee` resolves `p1`'s arity via `countTotalArityFromType` on the result type `Int -> Int -> Wrapper` (i.e., `MFunction [Int] (MFunction [Int] Wrapper)`), which returns `1 + 1 = 2`. But `p1`'s actual PAP has `remaining = 2`, and we're applying 1 arg, so `remaining_arity` should be `2 - 1 = 1`. Instead, the emitted `papExtend` claims `remaining_arity = 4` (the source arity was computed as total of the original function's type). The invariant `remaining_arity = source_remaining - num_new_args` is violated.
+
+### Source Example 3 — CGEN_052 + CGEN_056 "Partial application type" (`partialApplicationType`)
+
+Built programmatically in `tests/SourceIR/PostSolveExprCases.elm`:
+```elm
+add : Int -> Int -> Int
+add a b = a + b
+
+add5 : Int -> Int
+add5 = add 5
+
+testValue : Int
+testValue = add5 10
+```
+
+**Why it fails (CGEN_052):** `add` has type `Int -> Int -> Int`. With the explicit two-parameter definition, this is `MFunction [Int, Int] Int` — a single-stage function with arity 2. `add5 = add 5` creates a PAP: `arity = 2, num_captured = 1`, remaining = 1. When `testValue = add5 10` calls `add5`, `sourceArityForExpr` returns `Nothing` (the PAP expression isn't a simple var lookup into `CallEnv`), so it falls back to `countTotalArityFromType` on `MFunction [Int] Int` → returns 1. But `computeCallInfo` uses this as `initialRemaining = 2` because it's looking at the call model for `add5` as a local var with the full type `Int -> Int`. The emitted `papExtend` says `remaining_arity = 2` but the actual PAP only has `remaining = 1`. Invariant violated.
+
+**Why it also fails (CGEN_056):** The incorrect `remaining_arity = 2` means the codegen thinks there's 1 arg remaining after this call (unsaturated), so it gives the result type `!eco.value` (a PAP/closure). But the call is actually saturated (the real remaining was 1, and we applied 1 arg), so the result should be `i64` — the return type of `add`'s `func.func`. The CGEN_056 check catches the mismatch: saturated `papExtend` result `!eco.value` ≠ `func.func` return type `i64`. In other words, CGEN_052 (wrong arity) and CGEN_056 (wrong result type) are two symptoms of the same root cause: the arity miscalculation cascades into an incorrect saturation determination, which then produces the wrong result type.
 
 ### MLIR Evidence
 
@@ -85,15 +124,6 @@ PAP has `remaining = arity - num_captured = 2 - 1 = 1`, but papExtend says `rema
 ```mlir
 ^bb0(%f: !eco.value, %b: i64, %a: i64):
     %3 = "eco.papExtend"(%f, %a, %b) {_operand_types = [!eco.value, i64, i64],
-         newargs_unboxed_bitmap = 3,
-         remaining_arity = 2}                                        <- BUG: should be 1
-         : (!eco.value, i64, i64) -> i64
-```
-
-**Pattern 3 — `lambda_0` (applyBoth)**: Applies 2 args with remaining_arity=2 (same bug):
-```mlir
-^bb0(%f: !eco.value, %x: i64, %y: i64):
-    %9 = "eco.papExtend"(%f, %x, %y) {_operand_types = [!eco.value, i64, i64],
          newargs_unboxed_bitmap = 3,
          remaining_arity = 2}                                        <- BUG: should be 1
          : (!eco.value, i64, i64) -> i64
@@ -149,8 +179,9 @@ assert(closure->n_values + num_newargs == max_values
 5. MLIR emits `remaining_arity=2`, but the PAP's actual remaining arity is `1`
 6. Runtime assertion fails: `closure->n_values + num_newargs != max_values`
 
-### Invariant Violated
+### Invariants Violated
 - **CGEN_052**: "papExtend remaining_arity must match the source PAP's actual remaining arity"
+- **CGEN_056**: "Saturated papExtend result type must match the target function's return type" (downstream consequence of wrong arity)
 
 ---
 
@@ -162,10 +193,9 @@ assert(closure->n_values + num_newargs == max_values
 ```
 
 ### Affected Tests
-- **Elm-test**: CGEN_056 (Partial application type)
 - **E2E**: `PapSaturatePolyPipeMinimalTest.elm`
 
-### Test Source
+### Source Example — E2E test (`PapSaturatePolyPipeMinimalTest.elm`)
 
 `/work/test/elm/src/PapSaturatePolyPipeMinimalTest.elm`:
 ```elm
@@ -178,6 +208,16 @@ Trigger conditions (ALL required):
 1. Polymorphic function with type variable in result position
 2. Pipe operator `|>` (desugars to `Basics.apR` call)
 3. Right side of pipe is a partial application of a 2+ arg function
+
+**Why it fails:** Three conditions conspire:
+
+1. **Polymorphism**: `polyWithDefault` has type variable `a` in result position. When monomorphized at `a = Int`, the specialization of `apR` (which the pipe desugars to) was originally monomorphized with `b = CEcoValue` (the generic boxed type variable).
+2. **Pipe operator**: `mx |> Maybe.withDefault default` desugars to `Basics.apR mx (Maybe.withDefault default)`. `MonoInlineSimplify` inlines `apR`'s body (`\x f -> f x`) into the call site, producing a new `MonoCall` where the inner expression is `Maybe.withDefault default` applied to `mx`.
+3. **CEcoValue leak**: After inlining, the inner expression's type (from `Mono.typeOf body`) is still `MVar _ CEcoValue` — the polymorphic monomorphization never resolved `b` to `MInt` for this intermediate. The outer `MonoCall` inherits `resultType = CEcoValue` and gets `defaultCallInfo` (with `isSingleStageSaturated = False`).
+
+When MLIR codegen processes the saturated `papExtend`, it derives the result type from this leaked `CEcoValue` → `!eco.value`, but `Maybe.withDefault`'s `func.func` actually returns `i64`. The MLIR verifier rejects the mismatch: saturated `papExtend` result `!eco.value` ≠ function return type `i64`.
+
+Without the pipe (direct call `Maybe.withDefault default mx`), the inlining path is different and the type is correct. Without polymorphism (concrete `Int`), there's no `CEcoValue` to leak.
 
 ### MLIR Evidence
 
@@ -276,25 +316,54 @@ The saturated papExtend should produce `i64`, not `!eco.value`.
 ### Affected Tests
 - **E2E**: `TailRecDeciderSearchTest.elm`
 
-### Test Source
+### Source Example — E2E test (`TailRecDeciderSearchTest.elm`)
 
 `/work/test/elm/src/TailRecDeciderSearchTest.elm`:
 ```elm
+type Choice
+    = Inline Int
+    | Jump Int
+
+type Decider
+    = Leaf Choice
+    | Chain Decider Decider
+
+type Maybe_ a
+    = Just_ a
+    | Nothing_
+
 search : Decider -> Maybe_ Int
 search tree =
     let
-        firstInlineExpr decider =           -- let-bound, tail-recursive (MonoTailDef)
+        firstInlineExpr decider =
             case decider of
-                Leaf choice -> ...
+                Leaf choice ->
+                    case choice of
+                        Inline val -> Just_ val
+                        Jump _ -> Nothing_
+
                 Chain yes no ->
-                    case firstInlineExpr yes of     -- NON-tail recursive self-call
+                    case firstInlineExpr yes of   -- NON-tail self-call
                         Just_ e -> Just_ e
-                        Nothing_ -> firstInlineExpr no  -- tail call
+                        Nothing_ ->
+                            firstInlineExpr no    -- tail self-call
     in
     firstInlineExpr tree
 ```
 
-The key pattern: `firstInlineExpr` is a let-bound tail-recursive function that makes a **non-tail** recursive call to itself (`firstInlineExpr yes`) inside a case branch, then conditionally makes a **tail** call (`firstInlineExpr no`).
+**Why it fails:** `firstInlineExpr` is a let-bound function that the compiler identifies as tail-recursive (the `firstInlineExpr no` call is in tail position). It gets compiled as a `MonoTailDef`, which means it becomes a separate `func.func` with an `scf.while` loop.
+
+The critical pattern is that `firstInlineExpr` also makes a **non-tail** recursive call to itself: `case firstInlineExpr yes of ...`. This call is inside the loop body, not in tail position.
+
+Here's how the SSA dominance violation happens:
+
+1. The outer function `search_$_5` creates a closure: `%1 = eco.papCreate(... @_tail_firstInlineExpr_31 ...)`. The SSA var `%1` lives in `search_$_5`'s scope.
+2. When the compiler sets up `siblingMappings` for the let-rec group, it records `"firstInlineExpr" → {ssaVar = "%1"}` — pointing to the outer scope's `%1`.
+3. When `generateLambdaFunc` compiles `_tail_firstInlineExpr_31` as a separate `func.func`, it merges `siblingMappings` into `varMappings`. Now inside this new function, the name `firstInlineExpr` resolves to `%1`.
+4. In the `Chain` branch, the non-tail call `firstInlineExpr yes` looks up `firstInlineExpr` in `varMappings`, finds `{ssaVar = "%1"}`, and emits `eco.papExtend(%1, %30)`.
+5. But `%1` was defined in `search_$_5`, not in `_tail_firstInlineExpr_31`. It doesn't exist in this `func.func`. The MLIR verifier rejects: `'eco.papExtend' op using value defined outside the region`.
+
+The self-binding `firstInlineExpr` is explicitly excluded from the closure's captures (it's in `boundSet`), so there's no capture that would bring it into scope. The sibling mapping is the only way the name resolves, and it points to the wrong scope.
 
 ### MLIR Evidence
 
@@ -401,99 +470,3 @@ Both involve incorrect metadata surviving through optimization passes into MLIR 
 Sibling mappings carry SSA vars from the outer function scope into a separate `func.func`. This is correct for non-tail-recursive lambdas (where sibling refs are used for `eco.call` within the same function), but breaks when the lambda is compiled to its own `func.func` as a tail-recursive function.
 
 **Key difference from previously-fixed bugs**: This is NOT an SSA number collision (the `nextVar` fix addressed that). This is a **scope escape** — the SSA var `%1` physically does not exist in the target function.
- ---
-  BUG-1: PapExtendArityTest.elm
-
-  curried : Int -> Int -> Int
-  curried x =
-      \y -> x + y
-
-  applyPartial : (Int -> Int -> Int) -> Int -> (Int -> Int)
-  applyPartial f a =
-      f a
-
-  Why this triggers the bug: curried is defined with an explicit return lambda, so after staging it has a multi-stage
-   type: MFunction [Int] (MFunction [Int] Int) — two stages of arity 1 each.
-
-  When applyPartial calls f a, the parameter f is a MonoVarLocal. Function parameters are never entered into the
-  CallEnv.varSourceArity dict (only MonoDef let-bindings are). So sourceArityForExpr returns Nothing, and the
-  fallback countTotalArityFromType fires. That function recurses through all MFunction layers, returning 1 + 1 = 2
-  (total arity) instead of 1 (first-stage arity).
-
-  The generated papExtend then claims remaining_arity = 2, but the actual PAP %f (created by curried) has arity = 2,
-  num_captured = 1, so its real remaining is 2 - 1 = 1. At runtime the assertion closure->n_values + num_newargs ==
-  max_values fails because the codegen told the runtime to expect 2 remaining slots when only 1 exists.
-
-  The same pattern appears in flip f b a = f a b and applyBoth f x y = f x y — any higher-order function that
-  receives a multi-stage closure as a parameter and calls it.
-
-  ---
-  BUG-2: PapSaturatePolyPipeMinimalTest.elm
-
-  polyWithDefault : a -> Maybe a -> a
-  polyWithDefault default mx =
-      mx |> Maybe.withDefault default
-
-  Why this triggers the bug: Three conditions conspire:
-
-  1. Polymorphism: polyWithDefault has type variable a in result position. When monomorphized at a = Int, the
-  specialization of apR (which the pipe desugars to) was originally monomorphized with b = CEcoValue (the generic
-  boxed type variable).
-  2. Pipe operator: mx |> Maybe.withDefault default desugars to Basics.apR mx (Maybe.withDefault default).
-  MonoInlineSimplify inlines apR's body (\x f -> f x) into the call site, producing a new MonoCall where the inner
-  expression is Maybe.withDefault default applied to mx.
-  3. CEcoValue leak: After inlining, the inner expression's type (from Mono.typeOf body) is still MVar _ CEcoValue —
-  the polymorphic monomorphization never resolved b to MInt for this intermediate. The outer MonoCall inherits
-  resultType = CEcoValue and gets defaultCallInfo (with isSingleStageSaturated = False).
-
-  When MLIR codegen processes the saturated papExtend, it derives the result type from this leaked CEcoValue →
-  !eco.value, but Maybe.withDefault's func.func actually returns i64. The MLIR verifier rejects the mismatch:
-  saturated papExtend result !eco.value ≠ function return type i64.
-
-  Without the pipe (direct call Maybe.withDefault default mx), the inlining path is different and the type is
-  correct. Without polymorphism (concrete Int), there's no CEcoValue to leak.
-
-  ---
-  BUG-3: TailRecDeciderSearchTest.elm
-
-  search : Decider -> Maybe_ Int
-  search tree =
-      let
-          firstInlineExpr decider =
-              case decider of
-                  Leaf choice ->
-                      case choice of
-                          Inline val -> Just_ val
-                          Jump _ -> Nothing_
-
-                  Chain yes no ->
-                      case firstInlineExpr yes of   -- NON-tail self-call
-                          Just_ e -> Just_ e
-                          Nothing_ ->
-                              firstInlineExpr no    -- tail self-call
-      in
-      firstInlineExpr tree
-
-  Why this triggers the bug: firstInlineExpr is a let-bound function that the compiler identifies as tail-recursive
-  (the firstInlineExpr no call is in tail position). It gets compiled as a MonoTailDef, which means it becomes a
-  separate func.func with an scf.while loop.
-
-  The critical pattern is that firstInlineExpr also makes a non-tail recursive call to itself: case firstInlineExpr
-  yes of .... This call is inside the loop body, not in tail position.
-
-  Here's how the SSA dominance violation happens:
-
-  1. The outer function search_$_5 creates a closure: %1 = eco.papCreate(... @_tail_firstInlineExpr_31 ...). The SSA
-  var %1 lives in search_$_5's scope.
-  2. When the compiler sets up siblingMappings for the let-rec group, it records "firstInlineExpr" → {ssaVar = "%1"}
-  — pointing to the outer scope's %1.
-  3. When generateLambdaFunc compiles _tail_firstInlineExpr_31 as a separate func.func, it merges siblingMappings
-  into varMappings. Now inside this new function, the name firstInlineExpr resolves to %1.
-  4. In the Chain branch, the non-tail call firstInlineExpr yes looks up firstInlineExpr in varMappings, finds
-  {ssaVar = "%1"}, and emits eco.papExtend(%1, %30).
-  5. But %1 was defined in search_$_5, not in _tail_firstInlineExpr_31. It doesn't exist in this func.func. The MLIR
-  verifier rejects: 'eco.papExtend' op using value defined outside the region.
-
-  The self-binding firstInlineExpr is explicitly excluded from the closure's captures (it's in boundSet), so there's
-  no capture that would bring it into scope. The sibling mapping is the only way the name resolves, and it points to
-  the wrong scope.
