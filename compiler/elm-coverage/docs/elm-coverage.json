@@ -1,0 +1,185 @@
+{
+    "$schema": "http://json-schema.org/draft-06/schema#",
+    "type": "object",
+    "properties": {
+        "module": {
+            "description": "The module name",
+            "type": "string"
+        },
+        "totalComplexity": {
+            "description": "Total cyclomatic complexity of the module",
+            "type": "integer"
+        },
+        "coverage": {
+            "$ref": "#/definitions/coverageCounts"
+        },
+        "annotations": {
+            "description": "List of coverage annotations",
+            "type": "array",
+            "items": {
+                "$ref": "#/definitions/annotation"
+            }
+        }
+    },
+    "required": ["module", "totalComplexity", "coverage", "annotations"],
+    "additionalProperties": false,
+    "definitions": {
+        "coverageCounts": {
+            "type": "object",
+            "properties": {
+                "declarations": {
+                    "$ref": "#/definitions/coverageCount"
+                },
+                "letDeclarations": {
+                    "$ref": "#/definitions/coverageCount"
+                },
+                "lambdas": {
+                    "$ref": "#/definitions/coverageCount"
+                },
+                "caseBranches": {
+                    "$ref": "#/definitions/coverageCount"
+                },
+                "ifBranches": {
+                    "$ref": "#/definitions/coverageCount"
+                }
+            },
+            "required": ["declarations", "letDeclarations", "lambdas", "caseBranches", "ifBranches"],
+            "additionalProperties": false
+        },
+        "coverageCount": {
+            "type": "object",
+            "properties": {
+                "covered": {
+                    "type": "integer"
+                },
+                "total": {
+                    "type": "integer"
+                }
+            },
+            "required": ["covered", "total"],
+            "additionalProperties": false
+        },
+        "annotation": {
+            "description": "Each annotation has a region identified by the `to` and `from` properties. These regions may be contained in other regions, but can never overlap only partially.",
+            "type": "object",
+            "anyOf": [
+                {
+                    "$ref": "#/definitions/declaration"
+                },
+                {
+                    "$ref": "#/definitions/complexityAnnotation"
+                },
+                {
+                    "$ref": "#/definitions/simpleAnnotation"
+                }
+            ]
+        },
+        "declaration": {
+            "description": "A (top-level) declaration defines one (or more) values; which may be constants or functions",
+            "properties": {
+                "type": {
+                    "const": "declaration"
+                },
+                "complexity": {
+                    "type": "integer"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "count": {
+                    "type": "integer"
+                },
+                "from": {
+                    "$ref": "#/definitions/location"
+                },
+                "to": {
+                    "$ref": "#/definitions/location"
+                }
+            },
+            "required": [
+                "type",
+                "complexity",
+                "name",
+                "count",
+                "from",
+                "to"
+            ],
+            "additionalProperties": false
+        },
+        "complexityAnnotation": {
+            "description": "Lambdas and let-declarations",
+            "properties": {
+                "type": {
+                    "enum": [
+                        "letDeclaration",
+                        "lambdaBody"
+                    ]
+                },
+                "complexity": {
+                    "type": "integer"
+                },
+                "count": {
+                    "type": "integer"
+                },
+                "from": {
+                    "$ref": "#/definitions/location"
+                },
+                "to": {
+                    "$ref": "#/definitions/location"
+                }
+            },
+            "required": [
+                "type",
+                "complexity",
+                "count",
+                "from",
+                "to"
+            ],
+            "additionalProperties": false
+        },
+        "simpleAnnotation": {
+            "description": "branches",
+            "properties": {
+                "type": {
+                    "enum": [
+                        "ifElseBranch",
+                        "caseBranch"
+                    ]
+                },
+                "count": {
+                    "type": "integer"
+                },
+                "from": {
+                    "$ref": "#/definitions/location"
+                },
+                "to": {
+                    "$ref": "#/definitions/location"
+                }
+            },
+            "required": [
+                "type",
+                "count",
+                "from",
+                "to"
+            ],
+            "additionalProperties": false
+        },
+        "location": {
+            "additionalProperties": false,
+            "properties": {
+                "line": {
+                    "description": "Line number, starts at 1",
+                    "type": "integer"
+                },
+                "column": {
+                    "description": "Column, starts at 1",
+                    "type": "integer"
+                }
+            },
+            "required": [
+                "line",
+                "column"
+            ]
+        }
+    }
+}

@@ -1,0 +1,4 @@
+#!/usr/bin/env node
+
+var runner = require("../lib/runner.js");
+require("../lib/cliArgs")(runner).argv;

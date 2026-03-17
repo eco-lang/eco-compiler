@@ -1,0 +1,113 @@
+#!/usr/bin/env node
+
+var yargs = require("yargs");
+var spawn = require("child_process").spawn;
+var fs = require("fs-extra");
+var which = require("which");
+
+var elmBinary = which.sync("elm");
+
+yargs
+    .version("0.19.1")
+    .command({
+        command: "$0",
+        desc: "pass through arguments to elm",
+        handler: function(args) {
+            spawn(elmBinary, process.argv.slice(2), { stdio: "inherit" }).on(
+                "exit",
+                process.exit
+            );
+        }
+    })
+    .command({
+        command: "make",
+        desc:
+            "run elm make and then inject coverage tracking code into generated JS output",
+        builder: function(yargs) {
+            return yargs
+                .option("output", {
+                    describe: "specify the name of the resulting JS file.",
+                    type: "string"
+                })
+                .option("report", {
+                    describe: "Report in another format",
+                    type: "string"
+                });
+        },
+        handler: function(args) {
+            if (args.report == "json" || args.output == "/dev/null") {
+                spawn(elmBinary, process.argv.slice(2), {
+                    stdio: "inherit"
+                }).on("exit", process.exit);
+                return;
+            }
+
+            spawn(elmBinary, process.argv.slice(2), { stdio: "inherit" }).on(
+                "exit",
+                function() {
+                    fs.readFile(args.output, { encoding: "utf8" }, function(
+                        err,
+                        data
+                    ) {
+                        if (err) {
+                            return;
+                        }
+                        var pattern = new RegExp(
+                            "(^var\\s+\\$author\\$project\\$Coverage\\$track.*$\\s+function\\s+\\()" + // function capture
+                            "([a-zA-Z]+)" + // arg1
+                            "\\s*,\\s*" +
+                            "([a-zA-Z]+)" + // arg2
+                            "\\)\\s+{$" + // end of function call
+                                "",
+                            "gm"
+                        );
+
+                        var matches = data.match(pattern);
+                        if (!matches) {
+                            return;
+                        }
+                        matches = pattern.exec(data);
+
+                        var absoluteCoverageDir = (process.env.ELM_COVERAGE_DIR || process.cwd()).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+                        var replacement = [
+                            "// INJECTED COVERAGE FIXTURE ",
+                            'var fs = require("fs");',
+                            'var __coveragePath = require("path");',
+                            "var __coverageDir = '" + absoluteCoverageDir + "';",
+                            "var counters = {};",
+                            "var _coverageDirty = false;",
+                            "var _coverageTimer = null;",
+                            "function _coverageFlush() {",
+                            "    if (Object.keys(counters).length === 0) return;",
+                            "    var id = 0;",
+                            "    try { id = require('worker_threads').threadId; } catch(e) { id = process.pid; }",
+                            "    var outPath = __coveragePath.join(__coverageDir, 'data-' + id + '.json');",
+                            "    fs.writeFileSync(outPath, JSON.stringify(counters));",
+                            "}",
+                            "function _scheduleCoverageFlush() {",
+                            "    if (!_coverageDirty) return;",
+                            "    if (_coverageTimer) return;",
+                            "    _coverageTimer = setTimeout(function() {",
+                            "        _coverageTimer = null;",
+                            "        _coverageDirty = false;",
+                            "        _coverageFlush();",
+                            "    }, 100);",
+                            "}",
+                            "process.on('exit', _coverageFlush);",
+                            "",
+                            matches[1] + matches[2] + ", " + matches[3] + ") {",
+                            "        if (!counters[" + matches[2] + "]) counters[" + matches[2] + "] = {};",
+                            "        counters[" + matches[2] + "][" + matches[3] + "] = (counters[" + matches[2] + "][" + matches[3] + "] || 0) + 1;",
+                            "        _coverageDirty = true;",
+                            "        _scheduleCoverageFlush();",
+                            ""
+                        ].join("\n");
+
+                        var result = data.replace(pattern, replacement);
+                        fs.writeFileSync(args.output, result);
+                        process.exit();
+                    });
+                }
+            );
+        }
+    }).argv;

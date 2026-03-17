@@ -1,0 +1,21 @@
+{
+  "module": "Simple",
+  "totalComplexity": 1,
+  "coverage": {
+    "declarations": { "covered": 1, "total": 1 },
+    "letDeclarations": { "covered": 0, "total": 0 },
+    "lambdas": { "covered": 0, "total": 0 },
+    "caseBranches": { "covered": 0, "total": 0 },
+    "ifBranches": { "covered": 0, "total": 0 }
+  },
+  "annotations": [
+    {
+      "type": "declaration",
+      "name": "foo",
+      "complexity": 1,
+      "count": 8,
+      "from": { "line": 4, "column": 1 },
+      "to": { "line": 5, "column": 12 }
+    }
+  ]
+}
