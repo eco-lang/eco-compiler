@@ -9,6 +9,7 @@ import Compiler.Data.Index as Index
 import Compiler.Data.Name exposing (Name)
 import Compiler.Elm.Interface as I
 import Compiler.Elm.Interface.Bitwise as BitwiseInterface
+import Compiler.Elm.Interface.Bytes as BytesInterface
 import Compiler.Elm.Interface.Html as HtmlInterface
 import Compiler.Elm.Interface.JsArray as JsArrayInterface
 import Compiler.Elm.Interface.List as ListInterface
@@ -410,6 +411,9 @@ testIfaces =
         , ( "Platform.Sub", platformSubInterface )
         , ( "VirtualDom", HtmlInterface.virtualDomInterface )
         , ( "Html", HtmlInterface.htmlInterface )
+        , ( "Bytes", BytesInterface.bytesInterface )
+        , ( "Bytes.Encode", BytesInterface.bytesEncodeInterface )
+        , ( "Bytes.Decode", BytesInterface.bytesDecodeInterface )
         ]
 
 

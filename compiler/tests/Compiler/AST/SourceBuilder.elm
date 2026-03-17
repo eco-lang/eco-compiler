@@ -538,7 +538,37 @@ extendedImports =
 -}
 kernelImports : List Src.Import
 kernelImports =
-    [ basicsImport, maybeImport, listImport, jsArrayImport, stringImport, charImport, bitwiseImport, tupleImport ]
+    [ basicsImport, maybeImport, listImport, jsArrayImport, stringImport, charImport, bitwiseImport, tupleImport, bytesImport, bytesEncodeImport, bytesDecodeImport ]
+
+
+{-| Import statement for Bytes exposing everything.
+-}
+bytesImport : Src.Import
+bytesImport =
+    Src.Import
+        (c1 (A.At A.zero "Bytes"))
+        Nothing
+        (c2 (Src.Open noComments noComments))
+
+
+{-| Import statement for Bytes.Encode exposing everything.
+-}
+bytesEncodeImport : Src.Import
+bytesEncodeImport =
+    Src.Import
+        (c1 (A.At A.zero "Bytes.Encode"))
+        Nothing
+        (c2 (Src.Open noComments noComments))
+
+
+{-| Import statement for Bytes.Decode exposing everything.
+-}
+bytesDecodeImport : Src.Import
+bytesDecodeImport =
+    Src.Import
+        (c1 (A.At A.zero "Bytes.Decode"))
+        Nothing
+        (c2 (Src.Open noComments noComments))
 
 
 {-| Create a simple module with a single top-level definition.
