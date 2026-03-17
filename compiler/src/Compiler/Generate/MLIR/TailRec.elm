@@ -374,21 +374,50 @@ compileTailCallStep :
     -> StepResult
 compileTailCallStep ctx loopSpec args =
     let
-        -- Evaluate each argument expression
+        -- Loop parameters and their ABI MLIR types (e.g. Bool -> !eco.value)
+        paramTypes : Array MlirType
+        paramTypes =
+            loopSpec.paramVars
+                |> List.map Tuple.second
+                |> Array.fromList
+
+        -- Evaluate each argument expression and coerce to the loop's ABI param types.
         ( argOpsRev, argVarsRev, ctx1 ) =
             List.foldl
-                (\( _, argExpr ) ( opsAcc, varsAcc, ctxAcc ) ->
+                (\( index, ( _, argExpr ) ) ( opsAcc, varsAcc, ctxAcc ) ->
                     let
                         argResult =
                             Expr.generateExpr ctxAcc argExpr
+
+                        expectedTy : MlirType
+                        expectedTy =
+                            case Array.get index paramTypes of
+                                Just ty ->
+                                    ty
+
+                                Nothing ->
+                                    crash
+                                        ("TailRec.compileTailCallStep: arity mismatch for tail call in "
+                                            ++ loopSpec.funcName
+                                        )
+
+                        ( coerceOps, finalVar, ctxCoerced ) =
+                            Expr.coerceResultToType
+                                argResult.ctx
+                                argResult.resultVar
+                                argResult.resultType
+                                expectedTy
+
+                        chunkOps =
+                            argResult.ops ++ coerceOps
                     in
-                    ( List.reverse argResult.ops ++ opsAcc
-                    , ( argResult.resultVar, argResult.resultType ) :: varsAcc
-                    , argResult.ctx
+                    ( List.reverse chunkOps ++ opsAcc
+                    , ( finalVar, expectedTy ) :: varsAcc
+                    , ctxCoerced
                     )
                 )
                 ( [], [], ctx )
-                args
+                (List.indexedMap Tuple.pair args)
 
         argOps =
             List.reverse argOpsRev

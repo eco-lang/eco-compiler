@@ -120,10 +120,32 @@ generateLambdaFunc ctx lambda =
                 Dict.empty
                 (lambda.captures ++ lambda.params)
 
-        -- Initialize nextVar to account for all parameter SSA values
-        nextVarAfterParams : Int
-        nextVarAfterParams =
-            List.length allArgPairs
+        -- Extract numeric index from an SSA name like "%0", "%1", "%42".
+        -- Returns Nothing for non-numeric names (e.g. "%decider").
+        parseNumericIndex : String -> Maybe Int
+        parseNumericIndex ssaName =
+            if String.startsWith "%" ssaName then
+                String.dropLeft 1 ssaName |> String.toInt
+
+            else
+                Nothing
+
+        -- Maximum numeric SSA index used in siblingMappings (e.g. "%1", "%2", ...).
+        maxSiblingIndex : Int
+        maxSiblingIndex =
+            lambda.siblingMappings
+                |> Dict.values
+                |> List.filterMap (\info -> parseNumericIndex info.ssaVar)
+                |> List.maximum
+                |> Maybe.withDefault -1
+
+        -- Preserve global monotonic allocator across siblings:
+        --  - never move nextVar backwards relative to enclosing ctx
+        --  - ensure we are past any numeric %N appearing in siblingMappings
+        nextVarBase : Int
+        nextVarBase =
+            List.maximum [ ctx.nextVar, List.length allArgPairs, maxSiblingIndex + 1 ]
+                |> Maybe.withDefault 0
 
         -- Merge sibling mappings with captures and params (captures/params take precedence)
         varMappingsWithSiblings : Dict.Dict String Ctx.VarInfo
@@ -132,7 +154,7 @@ generateLambdaFunc ctx lambda =
 
         ctxWithArgs : Ctx.Context
         ctxWithArgs =
-            { ctx | varMappings = varMappingsWithSiblings, nextVar = nextVarAfterParams }
+            { ctx | varMappings = varMappingsWithSiblings, nextVar = nextVarBase }
 
         -- Actual return type from the lambda (typed ABI)
         actualResultType : MlirType
