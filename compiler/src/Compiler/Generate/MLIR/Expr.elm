@@ -2254,11 +2254,11 @@ generateSaturatedCall ctx func args resultType callInfo =
                         ( logBaseVar, ctx3 ) =
                             Ctx.freshVar ctx2
 
-                        ( resVar, _ ) =
+                        ( resVar, ctx4 ) =
                             Ctx.freshVar ctx3
 
                         ( ctx5, logXOp ) =
-                            Ops.ecoUnaryOp ctx2 "eco.float.log" logXVar ( unboxedXVar, F64 ) F64
+                            Ops.ecoUnaryOp ctx4 "eco.float.log" logXVar ( unboxedXVar, F64 ) F64
 
                         ( ctx6, logBaseOp ) =
                             Ops.ecoUnaryOp ctx5 "eco.float.log" logBaseVar ( unboxedBaseVar, F64 ) F64

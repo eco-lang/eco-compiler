@@ -202,7 +202,7 @@ generateMonoTest ctx ( dtPath, test ) =
                     Ctx.freshVar ctx3
 
                 ( ctx5, cmpOp ) =
-                    Ops.ecoBinaryOp ctx4 "arith.cmpi" resVar ( valVar, Types.ecoChar ) ( constVar, Types.ecoChar ) I1
+                    Ops.arithCmpI ctx4 "eq" resVar ( valVar, Types.ecoChar ) ( constVar, Types.ecoChar )
             in
             ( pathOps ++ [ constOp, cmpOp ], resVar, ctx5 )
 
