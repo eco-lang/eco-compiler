@@ -25,8 +25,13 @@ import SourceIR.FloatMathCases as FloatMathCases
 import SourceIR.FunctionCases as FunctionCases
 import SourceIR.HigherOrderCases as HigherOrderCases
 import SourceIR.JoinpointABICases as JoinpointABICases
+import SourceIR.KernelComparisonCases as KernelComparisonCases
+import SourceIR.KernelCompositionCases as KernelCompositionCases
+import SourceIR.KernelContextCases as KernelContextCases
+import SourceIR.KernelHigherOrderCases as KernelHigherOrderCases
+import SourceIR.KernelIntrinsicCases as KernelIntrinsicCases
+import SourceIR.KernelOperatorCases as KernelOperatorCases
 import SourceIR.KernelPapAbiCases as KernelPapAbiCases
-import SourceIR.KernelPipelineCases as KernelPipelineCases
 import SourceIR.LetCases as LetCases
 import SourceIR.LetDestructCases as LetDestructCases
 import SourceIR.LetDestructFnCases as LetDestructFnCases
@@ -105,8 +110,13 @@ expectSuite expectFn condStr =
         , TailRecCaseCases.expectSuite expectFn condStr
         , TailRecLetRecClosureCases.expectSuite expectFn condStr
         , TupleCases.expectSuite expectFn condStr
+        , KernelIntrinsicCases.expectSuite expectFn condStr
         , KernelPapAbiCases.expectSuite expectFn condStr
-        , KernelPipelineCases.expectSuite expectFn condStr
+        , KernelOperatorCases.expectSuite expectFn condStr
+        , KernelComparisonCases.expectSuite expectFn condStr
+        , KernelContextCases.expectSuite expectFn condStr
+        , KernelHigherOrderCases.expectSuite expectFn condStr
+        , KernelCompositionCases.expectSuite expectFn condStr
 
         -- Fuzz Tests
         , PatternComplexityFuzzCases.expectSuite expectFn condStr
