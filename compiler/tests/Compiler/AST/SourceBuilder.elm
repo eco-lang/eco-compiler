@@ -50,11 +50,13 @@ module Compiler.AST.SourceBuilder exposing
     , strExpr
       -- Type builders
     , tCmd
+    , tExtRecord
     , tLambda
     , tRecord
     , tSub
     , tTuple
     , tType
+    , tUnit
     , tVar
       -- Type aliases for module building
     , tuple3Expr
@@ -667,6 +669,24 @@ tRecord fields =
             List.map (\( name, t ) -> c2 ( c1 (A.At A.zero name), c1 t )) fields
     in
     A.At A.zero (Src.TRecord fieldList Nothing noComments)
+
+
+{-| Create an extensible record type: { a | field : Type }
+-}
+tExtRecord : Name -> List ( Name, Src.Type ) -> Src.Type
+tExtRecord extVar fields =
+    let
+        fieldList =
+            List.map (\( name, t ) -> c2 ( c1 (A.At A.zero name), c1 t )) fields
+    in
+    A.At A.zero (Src.TRecord fieldList (Just (c2 (A.At A.zero extVar))) noComments)
+
+
+{-| Create a Unit type.
+-}
+tUnit : Src.Type
+tUnit =
+    A.At A.zero Src.TUnit
 
 
 

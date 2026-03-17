@@ -3,8 +3,13 @@
 ## Goal
 
 Systematically increase test coverage of the compiler's backend pipeline
-(Type → PostSolve → Monomorphize → GlobalOpt → MLIR) by iteratively adding
-SourceIR test cases guided by coverage reports.
+(Type → PostSolve → Monomorphize → GlobalOpt → MLIR) to **>95% of reachable
+code** by iteratively adding SourceIR test cases guided by coverage reports.
+
+"Reachable code" excludes error-reporting paths (e.g., `Type.Error`,
+`SolverSnapshot`), CLI/terminal code, and dead code that cannot be triggered
+by valid Elm input through the pipeline. For unreachable modules, document
+why coverage cannot be improved and mark them done.
 
 New test cases must be **valid Elm code** — they must pass canonicalization,
 type checking, and nitpicking. However, they **may fail** in later stages
@@ -28,6 +33,9 @@ entire point: they reveal bugs in the backend pipeline that need fixing.
 
 ### Generate coverage JSON (TypedPipelineTest only, max 8 workers)
 
+**IMPORTANT**: Only `TypedPipelineTest.elm` is used for coverage measurement.
+Use the `--filter "coverage run"` flag to ensure only this test file runs.
+
 ```bash
 cd /work/compiler
 env PATH="$(pwd)/node_modules/.bin:$PATH" \
@@ -48,6 +56,10 @@ like `compiler/.coverage/Compiler/Type/Type.json` (detailed annotations).
 cd /work/compiler
 npx elm-test-rs --project build-xhr --fuzz 1 --filter "coverage run"
 ```
+
+**Note**: All coverage and validation runs use only
+`compiler/tests/TestLogic/TypedPipelineTest.elm` via `--filter "coverage run"`.
+No other test files are involved in this workflow.
 
 ## Coverage JSON Format
 
@@ -200,8 +212,11 @@ they reveal backend bugs.
   significant uncovered areas, go to Step 2 for another round on the same module.
 - **If no new coverage was gained**: The test cases don't reach the target paths.
   Discard them (revert), re-analyze, and try a different approach in Step 2.
-- **If the module has good coverage (>70% of reachable expressions)**: Mark the
+- **If the module has good coverage (>95% of reachable expressions)**: Mark the
   file `done` in the CSV and move to the next file.
+- **If the remaining uncovered code is unreachable** (error paths, dead code,
+  CLI-only paths): Document why in a comment and mark done. Unreachable code
+  does not count against the 95% target.
 
 ### Step 6 — Validate
 

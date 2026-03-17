@@ -33,6 +33,7 @@ import SourceIR.LetRecCases as LetRecCases
 import SourceIR.ListCases as ListCases
 import SourceIR.LiteralCases as LiteralCases
 import SourceIR.LocalTailRecCases as LocalTailRecCases
+import SourceIR.MonoCompoundCases as MonoCompoundCases
 import SourceIR.MultiDefCases as MultiDefCases
 import SourceIR.OperatorCases as OperatorCases
 import SourceIR.PatternArgCases as PatternArgCases
@@ -81,6 +82,7 @@ expectSuite expectFn condStr =
         , LetCases.expectSuite expectFn condStr
         , ListCases.expectSuite expectFn condStr
         , LiteralCases.expectSuite expectFn condStr
+        , MonoCompoundCases.expectSuite expectFn condStr
         , MultiDefCases.expectSuite expectFn condStr
         , OperatorCases.expectSuite expectFn condStr
         , PatternArgCases.expectSuite expectFn condStr

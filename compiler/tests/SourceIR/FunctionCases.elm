@@ -19,6 +19,7 @@ import Compiler.AST.SourceBuilder
         , intExpr
         , lambdaExpr
         , letExpr
+        , listExpr
         , makeModule
         , makeModuleWithDefs
         , makeModuleWithTypedDefs
@@ -684,6 +685,9 @@ polymorphicNumberCases expectFn =
     , { label = "comparable min with Int", run = comparableMinWithInt expectFn }
     , { label = "appendable concat with String", run = appendableConcatWithString expectFn }
     , { label = "compappend with String", run = compappendWithString expectFn }
+    , { label = "unannotated comparable", run = unannotatedComparable expectFn }
+    , { label = "unannotated appendable", run = unannotatedAppendable expectFn }
+    , { label = "unannotated compappend", run = unannotatedCompappend expectFn }
     ]
 
 
@@ -935,6 +939,71 @@ appendableConcatWithString expectFn _ =
 
         modul =
             makeModuleWithTypedDefs "Test" [ zconcatDef, testValueDef ]
+    in
+    expectFn modul
+
+
+{-| Unannotated function using `<` — comparable constraint without user-provided name.
+Forces getFreshSuperName Comparable path in Type.Type.
+-}
+unannotatedComparable : (Src.Module -> Expectation) -> (() -> Expectation)
+unannotatedComparable expectFn _ =
+    let
+        -- zmin x y = if x < y then x else y  (no type annotation, NOT called)
+        -- Unused function keeps FlexSuper Comparable unresolved in nodeVars
+        zminBody =
+            ifExpr
+                (binopsExpr [ ( varExpr "x", "<" ) ] (varExpr "y"))
+                (varExpr "x")
+                (varExpr "y")
+
+        modul =
+            makeModuleWithDefs "Test"
+                [ ( "zmin", [ pVar "x", pVar "y" ], zminBody )
+                , ( "testValue", [], intExpr 0 )
+                ]
+    in
+    expectFn modul
+
+
+{-| Unannotated function using `++` — appendable constraint without user-provided name.
+Forces getFreshSuperName Appendable path in Type.Type.
+-}
+unannotatedAppendable : (Src.Module -> Expectation) -> (() -> Expectation)
+unannotatedAppendable expectFn _ =
+    let
+        -- zappend x y = x ++ y  (no type annotation, NOT called)
+        -- Unused function keeps FlexSuper Appendable unresolved in nodeVars
+        zappendBody =
+            binopsExpr [ ( varExpr "x", "++" ) ] (varExpr "y")
+
+        modul =
+            makeModuleWithDefs "Test"
+                [ ( "zappend", [ pVar "x", pVar "y" ], zappendBody )
+                , ( "testValue", [], intExpr 0 )
+                ]
+    in
+    expectFn modul
+
+
+{-| Unannotated function using both `<` and `++` — compappend constraint.
+Forces getFreshSuperName CompAppend path in Type.Type.
+-}
+unannotatedCompappend : (Src.Module -> Expectation) -> (() -> Expectation)
+unannotatedCompappend expectFn _ =
+    let
+        -- zsortcat x y = if x < y then x ++ y else y ++ x  (no type annotation, NOT called)
+        zsortcatBody =
+            ifExpr
+                (binopsExpr [ ( varExpr "x", "<" ) ] (varExpr "y"))
+                (binopsExpr [ ( varExpr "x", "++" ) ] (varExpr "y"))
+                (binopsExpr [ ( varExpr "y", "++" ) ] (varExpr "x"))
+
+        modul =
+            makeModuleWithDefs "Test"
+                [ ( "zsortcat", [ pVar "x", pVar "y" ], zsortcatBody )
+                , ( "testValue", [], intExpr 0 )
+                ]
     in
     expectFn modul
 

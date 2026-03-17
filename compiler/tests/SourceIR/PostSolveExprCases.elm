@@ -10,7 +10,8 @@ to improve coverage of Compiler.Type.PostSolve.postSolveExpr and related functio
 import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
-        ( TypedDef
+        ( AliasDef
+        , TypedDef
         , accessExpr
         , accessorExpr
         , binopsExpr
@@ -28,6 +29,7 @@ import Compiler.AST.SourceBuilder
         , listExpr
         , makeModule
         , makeModuleWithTypedDefs
+        , makeModuleWithTypedDefsUnionsAliases
         , negateExpr
         , pAnything
         , pInt
@@ -36,10 +38,12 @@ import Compiler.AST.SourceBuilder
         , pVar
         , recordExpr
         , strExpr
+        , tExtRecord
         , tLambda
         , tRecord
         , tTuple
         , tType
+        , tUnit
         , tVar
         , tuple3Expr
         , tupleExpr
@@ -64,6 +68,7 @@ expectSuite expectFn condStr =
         , callTypeTests expectFn condStr
         , binopTypeTests expectFn condStr
         , negateTypeTests expectFn condStr
+        , instantiateEdgeCaseTests expectFn condStr
         ]
 
 
@@ -1079,5 +1084,110 @@ doubleNegateType expectFn _ =
     let
         modul =
             makeModule "testValue" (negateExpr (negateExpr (intExpr 10)))
+    in
+    expectFn modul
+
+
+
+-- ============================================================================
+-- INSTANTIATE EDGE CASE TESTS
+-- Targets: Type.Instantiate lines 96 (Filled alias), 110 (Unit), 121 (extensible record)
+-- ============================================================================
+
+
+instantiateEdgeCaseTests : (Src.Module -> Expectation) -> String -> Test
+instantiateEdgeCaseTests expectFn condStr =
+    Test.describe ("Instantiate edge cases " ++ condStr)
+        [ Test.test ("Unit in type annotation " ++ condStr) (unitAnnotationType expectFn)
+        , Test.test ("Type alias annotation " ++ condStr) (typeAliasAnnotationType expectFn)
+        , Test.test ("Extensible record annotation " ++ condStr) (extensibleRecordAnnotationType expectFn)
+        ]
+
+
+unitAnnotationType : (Src.Module -> Expectation) -> (() -> Expectation)
+unitAnnotationType expectFn _ =
+    let
+        -- f : () -> Int; f _ = 42
+        fDef : TypedDef
+        fDef =
+            { name = "f"
+            , args = [ pAnything ]
+            , tipe = tLambda tUnit (tType "Int" [])
+            , body = intExpr 42
+            }
+
+        testValueDef : TypedDef
+        testValueDef =
+            { name = "testValue"
+            , args = []
+            , tipe = tType "Int" []
+            , body = callExpr (varExpr "f") [ unitExpr ]
+            }
+
+        modul =
+            makeModuleWithTypedDefs "Test" [ fDef, testValueDef ]
+    in
+    expectFn modul
+
+
+typeAliasAnnotationType : (Src.Module -> Expectation) -> (() -> Expectation)
+typeAliasAnnotationType expectFn _ =
+    let
+        -- type alias Point = { x : Int, y : Int }
+        pointAlias : AliasDef
+        pointAlias =
+            { name = "Point"
+            , args = []
+            , tipe = tRecord [ ( "x", tType "Int" [] ), ( "y", tType "Int" [] ) ]
+            }
+
+        -- getX : Point -> Int
+        getXDef : TypedDef
+        getXDef =
+            { name = "getX"
+            , args = [ pVar "p" ]
+            , tipe = tLambda (tType "Point" []) (tType "Int" [])
+            , body = accessExpr (varExpr "p") "x"
+            }
+
+        testValueDef : TypedDef
+        testValueDef =
+            { name = "testValue"
+            , args = []
+            , tipe = tType "Int" []
+            , body = callExpr (varExpr "getX") [ recordExpr [ ( "x", intExpr 10 ), ( "y", intExpr 20 ) ] ]
+            }
+
+        modul =
+            makeModuleWithTypedDefsUnionsAliases "Test"
+                [ getXDef, testValueDef ]
+                []
+                [ pointAlias ]
+    in
+    expectFn modul
+
+
+extensibleRecordAnnotationType : (Src.Module -> Expectation) -> (() -> Expectation)
+extensibleRecordAnnotationType expectFn _ =
+    let
+        -- getX : { a | x : Int } -> Int
+        getXDef : TypedDef
+        getXDef =
+            { name = "getX"
+            , args = [ pVar "r" ]
+            , tipe = tLambda (tExtRecord "a" [ ( "x", tType "Int" [] ) ]) (tType "Int" [])
+            , body = accessExpr (varExpr "r") "x"
+            }
+
+        testValueDef : TypedDef
+        testValueDef =
+            { name = "testValue"
+            , args = []
+            , tipe = tType "Int" []
+            , body = callExpr (varExpr "getX") [ recordExpr [ ( "x", intExpr 5 ), ( "y", intExpr 10 ) ] ]
+            }
+
+        modul =
+            makeModuleWithTypedDefs "Test" [ getXDef, testValueDef ]
     in
     expectFn modul
