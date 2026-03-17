@@ -12,7 +12,8 @@ SourceIR test cases guided by coverage reports.
 - Test driver: `compiler/tests/TestLogic/TypedPipelineTest.elm` — runs all
   StandardTestSuites through the full pipeline to MLIR with no condition
   beyond "doesn't crash"
-- File list: `/work/elm-cov-file.csv` — 36 .elm files ordered by compiler phase
+- File list: `/work/elm-cov-file.csv` — 36 .elm files ordered by compiler phase,
+  with a `done` column for tracking progress across sessions
 - Test cases: `compiler/tests/SourceIR/` — parametric test modules using
   `Compiler.AST.SourceBuilder` to construct Elm AST fragments
 
@@ -66,9 +67,37 @@ Each entry contains:
 - `expressions[i].count` = same as `coverageData[i]`
 - A zero count means the expression was never executed
 
+## Resumable Progress Tracking
+
+The CSV file `/work/elm-cov-file.csv` has four columns: `file`, `module`,
+`phase`, and `done`. When a module has been fully processed (coverage improved
+or determined unreachable), mark it by writing `yes` in the `done` column.
+
+### On startup / resume
+
+1. Read `/work/elm-cov-file.csv`.
+2. Find the first row where `done` is empty — this is the current file.
+3. Generate a fresh coverage JSON report (see Commands).
+4. Continue the work loop from that file.
+
+Files already marked `done` are **never re-processed**. This allows the loop to
+be stopped at any point and resumed in a new session without losing progress.
+
+### Marking a file done
+
+After Step 5 (Evaluate), when moving on to the next file, update the CSV:
+
+```
+compiler/src/Compiler/Type/Type.elm,Compiler.Type.Type,1-type-infrastructure,yes
+```
+
+Do this before starting work on the next file so that progress is saved even if
+the session is interrupted immediately after.
+
 ## Work Loop
 
-For each file in `/work/elm-cov-file.csv` (processed in order, earlier phases first):
+For each file in `/work/elm-cov-file.csv` (processed in order, skipping rows
+where `done` is non-empty):
 
 ### Step 1 — Identify uncovered code
 
@@ -112,8 +141,8 @@ For each file in `/work/elm-cov-file.csv` (processed in order, earlier phases fi
   significant uncovered areas, go to Step 2 for another round on the same module.
 - **If no new coverage was gained**: The test cases don't reach the target paths.
   Discard them (revert), re-analyze, and try a different approach in Step 2.
-- **If the module has good coverage (>70% of reachable expressions)**: Move to
-  the next file in the CSV.
+- **If the module has good coverage (>70% of reachable expressions)**: Mark the
+  file `done` in the CSV and move to the next file.
 
 ### Step 6 — Validate
 
@@ -156,3 +185,8 @@ fundamental input shapes that, once added, also improve later-phase coverage.
   keeping coverage focused and iteration fast (~20s per run).
 - Use `--force` with elm-coverage so the report is generated even if some tests
   fail (e.g., due to `Test.skip`).
+- **Resumability**: The loop is designed to be stopped and restarted across
+  sessions. All state is in two files: the `done` column in
+  `/work/elm-cov-file.csv` (which file to process next) and the committed test
+  cases in `compiler/tests/SourceIR/` (accumulated coverage). A fresh coverage
+  report is always regenerated on resume so it reflects the current test suite.
