@@ -1280,12 +1280,22 @@ static void print_label(uint64_t value) {
     }
 }
 
+// Helper: check if a type_id refers to a String primitive in the type graph.
+static bool isStringType(uint32_t type_id) {
+    if (!g_type_graph || !g_type_graph->types || type_id >= g_type_graph->type_count) {
+        return false;
+    }
+    const Elm::EcoTypeInfo* info = &g_type_graph->types[type_id];
+    return info->kind == Elm::EcoTypeKind::Primitive &&
+           info->data.primitive.prim_kind == Elm::EcoPrimKind::String;
+}
+
 // Debug print with full type information using the global type graph.
-// When called with 2 args where type_ids[0] == -1, this is a Debug.log call
+// When called with 2 args where type_ids[0] is a String type, this is a Debug.log call
 // and we format as "label: value\n"
 extern "C" void eco_dbg_print_typed(uint64_t* values, uint32_t* type_ids, uint32_t num_args) {
-    // Special case for Debug.log: 2 args, first type_id is -1 (label)
-    if (num_args == 2 && type_ids[0] == (uint32_t)-1) {
+    // Special case for Debug.log: 2 args, first is a string label
+    if (num_args == 2 && isStringType(type_ids[0])) {
         print_label(values[0]);
         output_text(": ");
         print_typed_value(values[1], type_ids[1], 0);
@@ -1295,12 +1305,7 @@ extern "C" void eco_dbg_print_typed(uint64_t* values, uint32_t* type_ids, uint32
 
     // General case: print each value on its own line
     for (uint32_t i = 0; i < num_args; ++i) {
-        if (type_ids[i] == (uint32_t)-1) {
-            // Raw label, print without quotes
-            print_label(values[i]);
-        } else {
-            print_typed_value(values[i], type_ids[i], 0);
-        }
+        print_typed_value(values[i], type_ids[i], 0);
         output_text("\n");
     }
 }

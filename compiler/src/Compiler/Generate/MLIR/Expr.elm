@@ -2287,9 +2287,13 @@ generateSaturatedCall ctx func args resultType callInfo =
                                 _ ->
                                     Mono.MUnit
 
+                        -- Get or create a type ID for the string label
+                        ( labelTypeId, ctx1a_ ) =
+                            Ctx.getOrCreateTypeIdForMonoType Mono.MString ctx1
+
                         -- Get or create a type ID for this type
                         ( typeId, ctx1b ) =
-                            Ctx.getOrCreateTypeIdForMonoType valueMonoType ctx1
+                            Ctx.getOrCreateTypeIdForMonoType valueMonoType ctx1a_
 
                         -- Box the value if needed for eco.dbg
                         ( boxOps, boxedValueVar, ctx1c ) =
@@ -2326,7 +2330,7 @@ generateSaturatedCall ctx func args resultType callInfo =
                                           )
                                         , ( "arg_type_ids"
                                           , ArrayAttr (Just I64)
-                                                [ IntAttr Nothing -1 -- -1 for string label (to be printed as string)
+                                                [ IntAttr Nothing labelTypeId -- typeId for string label
                                                 , IntAttr Nothing typeId -- typeId for value
                                                 ]
                                           )
