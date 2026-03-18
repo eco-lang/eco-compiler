@@ -1537,6 +1537,13 @@ sourceArityForExpr graph env expr =
                     -- of the result type (consistent with stage-curried model).
                     Just (firstStageArityFromType resultType)
 
+        Mono.MonoLet def body _ ->
+            let
+                ( _, env1 ) =
+                    annotateDefCalls graph env def
+            in
+            sourceArityForExpr graph env1 body
+
         _ ->
             Nothing
 
