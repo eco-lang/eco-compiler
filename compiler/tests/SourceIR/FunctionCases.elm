@@ -571,7 +571,12 @@ topLevelFunctionWithPatterns expectFn _ =
 higherOrderCases : (Src.Module -> Expectation) -> List TestCase
 higherOrderCases expectFn =
     [ { label = "Apply function", run = applyFunction expectFn }
+    , { label = "Compose functions applied", run = composeFunctionsApplied expectFn }
     , { label = "Compose functions", run = composeFunctions expectFn }
+    , { label = "Four-arg lambda as value", run = fourArgLambdaAsValue expectFn }
+    , { label = "Two-arg lambda as value", run = twoArgLambdaAsValue expectFn }
+    , { label = "Multi-arg lambda partially applied", run = multiArgLambdaPartiallyApplied expectFn }
+    , { label = "Flip as lambda value", run = flipAsLambdaValue expectFn }
     ]
 
 
@@ -613,6 +618,110 @@ composeFunctions expectFn _ =
 
         modul =
             makeModule "testValue" (letExpr [ def ] (varExpr "compose"))
+    in
+    expectFn modul
+
+
+{-| Same compose but fully applied — tests whether the bug also manifests
+when the multi-arg lambda is used, not just returned as a value.
+-}
+composeFunctionsApplied : (Src.Module -> Expectation) -> (() -> Expectation)
+composeFunctionsApplied expectFn _ =
+    let
+        composeFn =
+            lambdaExpr
+                [ pVar "f", pVar "g", pVar "x" ]
+                (callExpr (varExpr "f") [ callExpr (varExpr "g") [ varExpr "x" ] ])
+
+        def =
+            define "compose" [] composeFn
+
+        fn1 =
+            lambdaExpr [ pVar "n" ] (varExpr "n")
+
+        modul =
+            makeModule "testValue"
+                (letExpr [ def ]
+                    (callExpr (varExpr "compose") [ fn1, fn1, intExpr 42 ])
+                )
+    in
+    expectFn modul
+
+
+{-| 4-arg lambda as a let-bound value (not applied).
+Variation on the 3-arg compose pattern.
+-}
+fourArgLambdaAsValue : (Src.Module -> Expectation) -> (() -> Expectation)
+fourArgLambdaAsValue expectFn _ =
+    let
+        fn =
+            lambdaExpr [ pVar "a", pVar "b", pVar "c", pVar "d" ]
+                (listExpr [ varExpr "a", varExpr "b", varExpr "c", varExpr "d" ])
+
+        def =
+            define "fourArgs" [] fn
+
+        modul =
+            makeModule "testValue" (letExpr [ def ] (varExpr "fourArgs"))
+    in
+    expectFn modul
+
+
+{-| 2-arg lambda as a let-bound value (not applied).
+Tests whether the CGEN_052 bug needs 3+ args to trigger.
+-}
+twoArgLambdaAsValue : (Src.Module -> Expectation) -> (() -> Expectation)
+twoArgLambdaAsValue expectFn _ =
+    let
+        fn =
+            lambdaExpr [ pVar "a", pVar "b" ]
+                (tupleExpr (varExpr "a") (varExpr "b"))
+
+        def =
+            define "twoArgs" [] fn
+
+        modul =
+            makeModule "testValue" (letExpr [ def ] (varExpr "twoArgs"))
+    in
+    expectFn modul
+
+
+{-| Multi-arg lambda partially applied (1 out of 3 args).
+-}
+multiArgLambdaPartiallyApplied : (Src.Module -> Expectation) -> (() -> Expectation)
+multiArgLambdaPartiallyApplied expectFn _ =
+    let
+        fn =
+            lambdaExpr [ pVar "a", pVar "b", pVar "c" ]
+                (listExpr [ varExpr "a", varExpr "b", varExpr "c" ])
+
+        def =
+            define "threeArgs" [] fn
+
+        modul =
+            makeModule "testValue"
+                (letExpr [ def ]
+                    (callExpr (varExpr "threeArgs") [ intExpr 1 ])
+                )
+    in
+    expectFn modul
+
+
+{-| flip as a 3-arg lambda value — similar to compose but with argument reordering.
+Mirrors E2E PapExtendArityTest.elm flip pattern.
+-}
+flipAsLambdaValue : (Src.Module -> Expectation) -> (() -> Expectation)
+flipAsLambdaValue expectFn _ =
+    let
+        flipFn =
+            lambdaExpr [ pVar "f", pVar "b", pVar "a" ]
+                (callExpr (varExpr "f") [ varExpr "a", varExpr "b" ])
+
+        def =
+            define "flip" [] flipFn
+
+        modul =
+            makeModule "testValue" (letExpr [ def ] (varExpr "flip"))
     in
     expectFn modul
 

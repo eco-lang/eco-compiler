@@ -195,6 +195,13 @@ listValues =
         -- drop : Int -> List a -> List a
         dropType =
             Can.TLambda intType (Can.TLambda listA listA)
+
+        -- filter : (a -> Bool) -> List a -> List a
+        boolType =
+            Can.TType ModuleName.basics "Bool" []
+
+        filterType =
+            Can.TLambda (Can.TLambda aVar boolType) (Can.TLambda listA listA)
     in
     Dict.fromList
         [ ( "cons", mkAnnotation consType )
@@ -202,6 +209,7 @@ listValues =
         , ( "map2", mkAnnotation map2Type )
         , ( "foldr", mkAnnotation foldrType )
         , ( "foldl", mkAnnotation foldlType )
+        , ( "filter", mkAnnotation filterType )
         , ( "reverse", mkAnnotation reverseType )
         , ( "range", mkAnnotation rangeType )
         , ( "length", mkAnnotation lengthType )
