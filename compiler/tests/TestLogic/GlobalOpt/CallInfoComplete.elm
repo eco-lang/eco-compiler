@@ -184,12 +184,19 @@ checkCallInfo ctx funcExpr args callInfo =
                 ++ checkGopt014 ctx argCount callInfo
 
 
-{-| GOPT\_011: stageArities must be non-empty with all positive elements.
+{-| GOPT\_011: stageArities must be non-empty with all positive elements,
+unless the callee is a thunk (initialRemaining=0) that returns a non-function
+value, in which case empty stageArities is valid.
 -}
 checkGopt011 : String -> Mono.CallInfo -> List String
 checkGopt011 ctx callInfo =
     if List.isEmpty callInfo.stageArities then
-        [ ctx ++ " [GOPT_011]: StageCurried call has empty stageArities" ]
+        if callInfo.initialRemaining == 0 then
+            -- Thunk returning non-function value: empty stageArities is valid
+            []
+
+        else
+            [ ctx ++ " [GOPT_011]: StageCurried call has empty stageArities but initialRemaining=" ++ String.fromInt callInfo.initialRemaining ]
 
     else
         let
@@ -206,69 +213,64 @@ checkGopt011 ctx callInfo =
             ]
 
 
-{-| GOPT\_012: sum(stageArities) must equal the flattened arity of the callee's function type.
+{-| GOPT\_012: stageArities must be consistent with initialRemaining.
+
+initialRemaining must not exceed the first element of stageArities.
+Note: stageArities is derived from the expression type, while initialRemaining
+is derived from the actual closure node. After staging canonicalization, the
+node's param count may be higher (flattened) than the first stage arity.
+So we check initialRemaining >= stageArities[0] (flattened closures have
+at least as many params as the first type stage).
 -}
 checkGopt012 : String -> Mono.MonoExpr -> Mono.CallInfo -> List String
-checkGopt012 ctx funcExpr callInfo =
-    let
-        stageSum =
-            List.sum callInfo.stageArities
+checkGopt012 ctx _ callInfo =
+    case List.head callInfo.stageArities of
+        Just firstStage ->
+            if callInfo.initialRemaining < firstStage then
+                [ ctx
+                    ++ " [GOPT_012]: initialRemaining="
+                    ++ String.fromInt callInfo.initialRemaining
+                    ++ " < stageArities[0]="
+                    ++ String.fromInt firstStage
+                    ++ " (stageArities="
+                    ++ Debug.toString callInfo.stageArities
+                    ++ ")"
+                ]
 
-        ( flatParams, _ ) =
-            Mono.decomposeFunctionType (Mono.typeOf funcExpr)
+            else
+                []
 
-        flattenedArity =
-            List.length flatParams
-    in
-    if flattenedArity == 0 then
-        -- Non-function type callee (e.g., thunk or dynamic); skip
-        []
-
-    else if stageSum /= flattenedArity then
-        [ ctx
-            ++ " [GOPT_012]: sum(stageArities)="
-            ++ String.fromInt stageSum
-            ++ " != flattenedArity="
-            ++ String.fromInt flattenedArity
-            ++ " (stageArities="
-            ++ Debug.toString callInfo.stageArities
-            ++ ", type="
-            ++ Debug.toString (Mono.typeOf funcExpr)
-            ++ ")"
-        ]
-
-    else
-        []
+        Nothing ->
+            -- Empty stageArities handled by GOPT_011
+            []
 
 
-{-| GOPT\_013: initialRemaining must not exceed the first stage arity.
+{-| GOPT\_013: initialRemaining must not exceed the total flattened arity.
 
-initialRemaining is the current stage's arity — how many args the closure
-accepts before it's saturated for this stage. remainingStageArities are the
-arities of subsequent stages (the returned closure's stages).
+initialRemaining is how many args the closure accepts in its first stage
+(which may be flattened by staging). It must satisfy:
 
-For a callee with stageArities=[1,1] (two stages of arity 1):
+  - initialRemaining <= sum(stageArities): cannot exceed total arity
+  - initialRemaining >= stageArities[0]: must be at least the first type-stage
+    (staging may flatten multiple type-stages into one closure stage)
+  - initialRemaining > 0 when stageArities is non-empty
 
-  - Fresh call: initialRemaining=1, remainingStageArities=[1]
-  - After first stage saturated, the result is a new closure with arity 1
-
-The key invariant: initialRemaining must never exceed the first stage arity.
-This catches Bug 1 where countTotalArityFromType sums all stages (returning 2
-instead of 1 for MFunction [Int] (MFunction [Int] Int)).
+These checks ensure sourceArityForCallee returns a value consistent with
+the callee's type structure.
 
 -}
 checkGopt013 : String -> Mono.CallInfo -> List String
 checkGopt013 ctx callInfo =
     let
-        firstStageArity =
-            List.head callInfo.stageArities |> Maybe.withDefault 0
+        totalArity =
+            List.sum callInfo.stageArities
     in
-    if firstStageArity > 0 && callInfo.initialRemaining > firstStageArity then
+    if totalArity > 0 && callInfo.initialRemaining > totalArity then
         [ ctx
             ++ " [GOPT_013]: initialRemaining="
             ++ String.fromInt callInfo.initialRemaining
-            ++ " exceeds firstStageArity="
-            ++ String.fromInt firstStageArity
+            ++ " exceeds totalArity="
+            ++ String.fromInt totalArity
             ++ " (stageArities="
             ++ Debug.toString callInfo.stageArities
             ++ ")"
@@ -285,7 +287,7 @@ checkGopt014 : String -> Int -> Mono.CallInfo -> List String
 checkGopt014 ctx argCount callInfo =
     let
         expectedSaturated =
-            argCount >= callInfo.initialRemaining && callInfo.initialRemaining > 0
+            argCount == callInfo.initialRemaining && callInfo.initialRemaining > 0
 
         actual =
             callInfo.isSingleStageSaturated

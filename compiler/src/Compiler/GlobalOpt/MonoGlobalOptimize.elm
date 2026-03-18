@@ -400,11 +400,15 @@ buildNestedCallsGO region calleeExpr params =
         srcSeg =
             Mono.segmentLengths calleeType
 
+        -- Total flattened arity of the callee (sum of all stages)
+        totalArity =
+            List.sum srcSeg
+
         paramExprs =
             List.map (\( name, ty ) -> Mono.MonoVarLocal name ty) params
 
-        buildCalls : Mono.MonoExpr -> List Mono.MonoExpr -> List Int -> Mono.MonoExpr
-        buildCalls currentCallee remainingArgs segLengths =
+        buildCalls : Mono.MonoExpr -> List Mono.MonoExpr -> List Int -> Int -> Mono.MonoExpr
+        buildCalls currentCallee remainingArgs segLengths remainingArity =
             case ( segLengths, remainingArgs ) of
                 ( [], _ ) ->
                     currentCallee
@@ -420,12 +424,30 @@ buildNestedCallsGO region calleeExpr params =
                         resultType =
                             Mono.stageReturnType currentCalleeType
 
+                        -- Pre-compute CallInfo for this nested call using the known
+                        -- callee segmentation. This avoids relying on sourceArityForCallee
+                        -- which may not have access to the captured callee's actual arity.
+                        -- remainingArity tracks how many args the current PAP still needs.
+                        callInfo =
+                            { callModel = Mono.StageCurried
+                            , stageArities = segLengths
+                            , isSingleStageSaturated = m == remainingArity && remainingArity > 0
+                            , initialRemaining = remainingArity
+                            , remainingStageArities = restSeg
+                            , closureKind = Nothing
+                            , captureAbi = Nothing
+                            }
+
                         callExpr =
-                            Mono.MonoCall region currentCallee nowArgs resultType Mono.defaultCallInfo
+                            Mono.MonoCall region currentCallee nowArgs resultType callInfo
+
+                        -- After applying m args, remaining arity decreases
+                        newRemainingArity =
+                            remainingArity - m
                     in
-                    buildCalls callExpr laterArgs restSeg
+                    buildCalls callExpr laterArgs restSeg newRemainingArity
     in
-    buildCalls calleeExpr paramExprs srcSeg
+    buildCalls calleeExpr paramExprs srcSeg totalArity
 
 
 
@@ -1109,8 +1131,10 @@ annotateExprCalls graph env expr =
             in
             Mono.MonoLet def1 body1 tipe
 
-        -- MonoCall: annotate with call info after recursing on children
-        Mono.MonoCall region func args resultType _ ->
+        -- MonoCall: annotate with call info after recursing on children.
+        -- If the call already has a non-default CallInfo (e.g., pre-computed by
+        -- buildNestedCallsGO for wrapper calls), keep it rather than re-deriving.
+        Mono.MonoCall region func args resultType existingCallInfo ->
             let
                 newFunc =
                     recurse func
@@ -1119,7 +1143,12 @@ annotateExprCalls graph env expr =
                     List.map recurse args
 
                 callInfo =
-                    computeCallInfo graph env newFunc newArgs resultType
+                    if not (List.isEmpty existingCallInfo.stageArities) then
+                        -- Pre-computed CallInfo (e.g., from buildNestedCalls in wrappers)
+                        existingCallInfo
+
+                    else
+                        computeCallInfo graph env newFunc newArgs resultType
             in
             Mono.MonoCall region newFunc newArgs resultType callInfo
 
@@ -1145,14 +1174,33 @@ annotateExprCalls graph env expr =
             in
             Mono.MonoIf newBranches newFinal resultType
 
-        -- MonoClosure: recurse into captures and body
+        -- MonoClosure: recurse into captures and body.
+        -- Populate varSourceArity for captured variables so that calls
+        -- to captured closures inside the body use correct arity.
         Mono.MonoClosure info body closureType ->
             let
                 newCaptures =
-                    List.map (\( n, e, t ) -> ( n, recurse e, t )) info.captures
+                    List.map (\( n, e, t ) -> ( n, annotateExprCalls graph env e, t )) info.captures
+
+                -- Add capture arities to env for the body
+                envWithCaptures =
+                    List.foldl
+                        (\( name, captureExpr, _ ) envAcc ->
+                            case sourceArityForExpr graph envAcc captureExpr of
+                                Just arity ->
+                                    { envAcc
+                                        | varSourceArity =
+                                            Dict.insert name arity envAcc.varSourceArity
+                                    }
+
+                                Nothing ->
+                                    envAcc
+                        )
+                        env
+                        newCaptures
 
                 newBody =
-                    recurse body
+                    annotateExprCalls graph envWithCaptures body
             in
             Mono.MonoClosure { info | captures = newCaptures } newBody closureType
 
@@ -1263,9 +1311,20 @@ annotateDefCalls graph env def =
             ( Mono.MonoDef name bound1, env2 )
 
         Mono.MonoTailDef name params bound ->
-            -- Tail defs are only referenced by MonoTailCall (string name),
-            -- not VarLocal, so no callModel mapping is needed.
-            ( Mono.MonoTailDef name params (annotateExprCalls graph env bound), env )
+            -- Tail defs are also referenced by MonoVarLocal for the initial
+            -- (non-tail) entry call. Track their source arity so that
+            -- sourceArityForCallee returns the correct param count.
+            let
+                tailArity =
+                    List.length params
+
+                env1 =
+                    { env
+                        | varSourceArity =
+                            Dict.insert name tailArity env.varSourceArity
+                    }
+            in
+            ( Mono.MonoTailDef name params (annotateExprCalls graph env1 bound), env1 )
 
 
 annotateDeciderCalls : Mono.MonoGraph -> CallEnv -> Mono.Decider Mono.MonoChoice -> Mono.Decider Mono.MonoChoice
@@ -1474,16 +1533,22 @@ sourceArityForExpr graph env expr =
                                         Nothing
 
                 Nothing ->
-                    -- Unknown callee (function parameter): use total arity for flattened externals
-                    Just (countTotalArityFromType resultType)
+                    -- Unknown callee (function parameter): use first-stage arity
+                    -- of the result type (consistent with stage-curried model).
+                    Just (firstStageArityFromType resultType)
 
         _ ->
             Nothing
 
 
 {-| Get source arity for a callee, with fallback for unknown callees.
-For unknown callees (like function parameters), we use total arity since
-they could be flattened externals that expect all args at once.
+For unknown callees (like function parameters), we use first-stage arity
+from the type's outermost MFunction layer. This correctly handles
+multi-stage function types like MFunction [Int] (MFunction [Int] Int)
+where the first-stage arity is 1, not the total arity of 2.
+
+Note: FlattenedExternal callees are handled separately by callModelForCallee
+and never reach this function's fallback (they use FlattenedExternal CallInfo).
 -}
 sourceArityForCallee : Mono.MonoGraph -> CallEnv -> Mono.MonoExpr -> Int
 sourceArityForCallee graph env funcExpr =
@@ -1492,9 +1557,25 @@ sourceArityForCallee graph env funcExpr =
             arity
 
         Nothing ->
-            -- Fallback: use TOTAL arity for unknown callees (function parameters)
-            -- Since they could be flattened externals, we must batch all args.
-            countTotalArityFromType (Mono.typeOf funcExpr)
+            -- Fallback: use FIRST-STAGE arity for unknown callees (function parameters)
+            -- For StageCurried calls, this must be the outermost MFunction's param count,
+            -- not the total arity across all stages. The subsequent stages are tracked
+            -- separately in remainingStageArities.
+            firstStageArityFromType (Mono.typeOf funcExpr)
+
+
+{-| Get first-stage arity from a function type.
+For MFunction [a, b] (MFunction [c] D), returns 2 (just the outermost stage).
+For non-function types, returns 0.
+-}
+firstStageArityFromType : Mono.MonoType -> Int
+firstStageArityFromType monoType =
+    case monoType of
+        Mono.MFunction argTypes _ ->
+            List.length argTypes
+
+        _ ->
+            0
 
 
 {-| Count total arity by summing all stage arities.
@@ -1702,7 +1783,9 @@ computeCallInfo graph env func args _ =
                     MonoReturnArity.collectStageArities funcType
 
                 -- Source arity: the actual closure's param count (matches papCreate arity)
-                -- This is what CGEN_052 requires for papExtend's remaining_arity
+                -- For known callees (globals, let-bindings), this is the closure's param count.
+                -- For unknown callees (function parameters), this is the first-stage arity
+                -- from the type. This is what CGEN_052 requires for papExtend's remaining_arity.
                 sourceArity : Int
                 sourceArity =
                     sourceArityForCallee graph env func
@@ -1712,7 +1795,7 @@ computeCallInfo graph env func args _ =
                     List.length args
 
                 -- Single-stage saturated: all args provided in one call, fitting the closure's params
-                -- This uses sourceArity (closure's actual param count) not type-derived arity
+                -- True when argCount exactly equals sourceArity (first-stage arity)
                 isSingleStageSaturated : Bool
                 isSingleStageSaturated =
                     argCount == sourceArity && sourceArity > 0
@@ -1740,9 +1823,9 @@ computeCallInfo graph env func args _ =
 
                         Nothing ->
                             -- Unknown callee (e.g., function parameter):
-                            -- Since we use total arity for sourceArity (treating it as flattened),
-                            -- remainingStageArities should be empty (no subsequent stages).
-                            -- This ensures isSaturatedCall is true when all args are consumed.
+                            -- No body arities available. Use empty list so that
+                            -- applyByStages correctly detects saturation when
+                            -- all args fill the first stage.
                             []
             in
             { callModel = Mono.StageCurried

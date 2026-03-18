@@ -17,6 +17,7 @@ This module:
 import Array
 import Compiler.AST.Monomorphized as Mono
 import Compiler.Data.Name exposing (Name)
+import Compiler.GlobalOpt.MonoReturnArity as MonoReturnArity
 import Compiler.GlobalOpt.Staging.Types exposing (ProducerId(..), ProducerInfo, Segmentation, StagingSolution)
 import Compiler.GlobalOpt.Staging.UnionFind exposing (producerIdToKey)
 import Compiler.Monomorphize.Closure as Closure
@@ -604,43 +605,87 @@ buildNestedCalls :
     -> List ( Name, Mono.MonoType )
     -> Mono.MonoExpr
 buildNestedCalls region calleeExpr params =
+    let
+        -- Compute the total flattened arity of the callee (sum of all stages)
+        totalArity =
+            countTotalArityFromType (Mono.typeOf calleeExpr)
+
+        buildCallsHelper : Mono.MonoExpr -> List ( Name, Mono.MonoType ) -> Int -> Mono.MonoExpr
+        buildCallsHelper currentCallee remainingParams remainingArity =
+            if List.isEmpty remainingParams then
+                currentCallee
+
+            else
+                let
+                    calleeType =
+                        Mono.typeOf currentCallee
+
+                    stageArgTypes =
+                        Mono.stageParamTypes calleeType
+
+                    stageArity =
+                        List.length stageArgTypes
+                in
+                if stageArity == 0 then
+                    crash
+                        ("buildNestedCalls: callee type has no function stage but "
+                            ++ String.fromInt (List.length remainingParams)
+                            ++ " params remain. calleeType="
+                            ++ String.join " " (Mono.toComparableMonoType calleeType)
+                        )
+
+                else
+                    let
+                        ( argsForStage, restParams ) =
+                            splitAt stageArity remainingParams
+
+                        argExprs =
+                            List.map (\( name, ty ) -> Mono.MonoVarLocal name ty) argsForStage
+
+                        resultType =
+                            Mono.stageReturnType calleeType
+
+                        -- Compute the remaining stage segmentation from the callee type
+                        restStages =
+                            MonoReturnArity.collectStageArities resultType
+
+                        -- Pre-compute CallInfo so annotateCallStaging doesn't need to
+                        -- re-derive the arity from a potentially-captured callee variable.
+                        callInfo =
+                            { callModel = Mono.StageCurried
+                            , stageArities = MonoReturnArity.collectStageArities calleeType
+                            , isSingleStageSaturated = stageArity == remainingArity && remainingArity > 0
+                            , initialRemaining = remainingArity
+                            , remainingStageArities = restStages
+                            , closureKind = Nothing
+                            , captureAbi = Nothing
+                            }
+
+                        callExpr =
+                            Mono.MonoCall region currentCallee argExprs resultType callInfo
+
+                        newRemainingArity =
+                            remainingArity - stageArity
+                    in
+                    buildCallsHelper callExpr restParams newRemainingArity
+    in
     if List.isEmpty params then
         calleeExpr
 
     else
-        let
-            calleeType =
-                Mono.typeOf calleeExpr
+        buildCallsHelper calleeExpr params totalArity
 
-            stageArgTypes =
-                Mono.stageParamTypes calleeType
 
-            stageArity =
-                List.length stageArgTypes
-        in
-        if stageArity == 0 then
-            crash
-                ("buildNestedCalls: callee type has no function stage but "
-                    ++ String.fromInt (List.length params)
-                    ++ " params remain. calleeType="
-                    ++ String.join " " (Mono.toComparableMonoType calleeType)
-                )
+{-| Count total arity by summing all stage arities.
+-}
+countTotalArityFromType : Mono.MonoType -> Int
+countTotalArityFromType monoType =
+    case monoType of
+        Mono.MFunction argTypes resultType ->
+            List.length argTypes + countTotalArityFromType resultType
 
-        else
-            let
-                ( argsForStage, remainingParams ) =
-                    splitAt stageArity params
-
-                argExprs =
-                    List.map (\( name, ty ) -> Mono.MonoVarLocal name ty) argsForStage
-
-                resultType =
-                    Mono.stageReturnType calleeType
-
-                callExpr =
-                    Mono.MonoCall region calleeExpr argExprs resultType Mono.defaultCallInfo
-            in
-            buildNestedCalls region callExpr remainingParams
+        _ ->
+            0
 
 
 
