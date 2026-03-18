@@ -1,6 +1,6 @@
 module TestLogic.GlobalOpt.CallInfoCompleteTest exposing (suite)
 
-{-| Test suite for CallInfo invariants GOPT\_011 through GOPT\_014.
+{-| Test suite for CallInfo invariants GOPT\_011 through GOPT\_015.
 
 Validates that after GlobalOpt, all MonoCall CallInfo fields are
 internally consistent: stageArities non-empty and positive,
@@ -16,6 +16,6 @@ import TestLogic.GlobalOpt.CallInfoComplete exposing (expectCallInfoComplete)
 
 suite : Test
 suite =
-    Test.describe "CallInfo completeness (GOPT_011-014)"
+    Test.describe "CallInfo completeness (GOPT_011-015)"
         [ StandardTestSuites.expectSuite expectCallInfoComplete "has valid CallInfo"
         ]

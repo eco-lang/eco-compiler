@@ -1,6 +1,6 @@
 module TestLogic.GlobalOpt.CallInfoComplete exposing (expectCallInfoComplete)
 
-{-| Test logic for CallInfo invariants GOPT\_011 through GOPT\_014.
+{-| Test logic for CallInfo invariants GOPT\_011 through GOPT\_015.
 
 After GlobalOpt, every MonoCall with StageCurried callModel must have
 a CallInfo whose fields are internally consistent:
@@ -9,6 +9,7 @@ a CallInfo whose fields are internally consistent:
   - GOPT\_012: sum(stageArities) == flattened arity of callee type
   - GOPT\_013: initialRemaining <= first stage arity
   - GOPT\_014: isSingleStageSaturated == (argCount >= initialRemaining && initialRemaining > 0)
+  - GOPT\_015: For local StageCurried callees, initialRemaining must be positive when type arity > 0
 
 -}
 
@@ -182,6 +183,7 @@ checkCallInfo ctx funcExpr args callInfo =
                 ++ checkGopt012 ctx funcExpr callInfo
                 ++ checkGopt013 ctx callInfo
                 ++ checkGopt014 ctx argCount callInfo
+                ++ checkGopt015 ctx funcExpr callInfo
 
 
 {-| GOPT\_011: stageArities must be non-empty with all positive elements,
@@ -307,3 +309,49 @@ checkGopt014 ctx argCount callInfo =
 
     else
         []
+
+
+{-| GOPT\_015: For StageCurried calls where callee is a MonoVarLocal,
+initialRemaining must be positive when the callee has a function type.
+
+This catches cases where varSourceArity was not populated for a local
+variable (e.g., a closure parameter), causing sourceArityForCallee to
+fall back to a type-based heuristic that may disagree with the canonical
+staging representation.
+-}
+checkGopt015 : String -> Mono.MonoExpr -> Mono.CallInfo -> List String
+checkGopt015 ctx funcExpr callInfo =
+    case funcExpr of
+        Mono.MonoVarLocal localName _ ->
+            let
+                typeArity =
+                    firstStageArityFromMonoType (Mono.typeOf funcExpr)
+            in
+            if callInfo.initialRemaining <= 0 && typeArity > 0 then
+                [ ctx
+                    ++ " [GOPT_015]: StageCurried call to local '"
+                    ++ localName
+                    ++ "' has initialRemaining="
+                    ++ String.fromInt callInfo.initialRemaining
+                    ++ " but type arity="
+                    ++ String.fromInt typeArity
+                ]
+
+            else
+                []
+
+        _ ->
+            []
+
+
+{-| Compute first-stage arity from a MonoType (mirrors firstStageArityFromType
+in MonoGlobalOptimize.elm).
+-}
+firstStageArityFromMonoType : Mono.MonoType -> Int
+firstStageArityFromMonoType monoType =
+    case monoType of
+        Mono.MFunction argTypes _ ->
+            List.length argTypes
+
+        _ ->
+            0

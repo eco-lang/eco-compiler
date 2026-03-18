@@ -46,6 +46,7 @@ import SourceIR.LocalTailRecCases as LocalTailRecCases
 import SourceIR.MonoCompoundCases as MonoCompoundCases
 import SourceIR.MultiDefCases as MultiDefCases
 import SourceIR.OperatorCases as OperatorCases
+import SourceIR.ParamArityCases as ParamArityCases
 import SourceIR.PatternArgCases as PatternArgCases
 import SourceIR.PatternComplexityFuzzCases as PatternComplexityFuzzCases
 import SourceIR.PatternMatchingCases as PatternMatchingCases
@@ -98,6 +99,7 @@ expectSuite expectFn condStr =
         , MonoCompoundCases.expectSuite expectFn condStr
         , MultiDefCases.expectSuite expectFn condStr
         , OperatorCases.expectSuite expectFn condStr
+        , ParamArityCases.expectSuite expectFn condStr
         , PatternArgCases.expectSuite expectFn condStr
         , PatternMatchingCases.expectSuite expectFn condStr
         , PolyChainCases.expectSuite expectFn condStr
