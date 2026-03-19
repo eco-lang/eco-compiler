@@ -846,6 +846,14 @@ struct PapExtendOpLowering : public OpConversionPattern<PapExtendOp> {
         Value argsArray = rewriter.create<LLVM::AllocaOp>(
             loc, ptrTy, i64Ty, numArgsConst);
 
+        // Get original (pre-conversion) MLIR types to distinguish !eco.value
+        // from Int. Both are i64 after LLVM type conversion, but only Int
+        // needs boxing. This mirrors emitInlineClosureCall (line ~707).
+        SmallVector<Type> origNewArgTypes;
+        for (auto arg : op.getNewargs()) {
+            origNewArgTypes.push_back(arg.getType());
+        }
+
         for (size_t i = 0; i < newargs.size(); ++i) {
             auto idxConst = rewriter.create<LLVM::ConstantOp>(
                 loc, i64Ty, rewriter.getI64IntegerAttr(i));
@@ -853,38 +861,42 @@ struct PapExtendOpLowering : public OpConversionPattern<PapExtendOp> {
                 loc, ptrTy, i64Ty, argsArray, ValueRange{idxConst});
             Value arg = newargs[i];
 
-            // Box unboxed primitives to HPointer for the args array.
-            // eco_apply_closure expects all args as HPointer-encoded i64 values.
-            // With MLIR-level primitives left unboxed, we box based on SSA type:
-            //   i64 (Int)  → eco_alloc_int → HPointer i64
-            //   f64 (Float) → eco_alloc_float → HPointer i64
-            //   i16 (Char) → eco_alloc_char → HPointer i64
-            //   ptr (!eco.value) → ptrtoint → i64 (already HPointer)
-            if (auto intTy = dyn_cast<IntegerType>(arg.getType())) {
-                if (intTy.getWidth() == 64) {
-                    // Int (i64): box via eco_alloc_int
-                    auto allocIntFunc = runtime.getOrCreateAllocInt(rewriter);
-                    auto boxCall = rewriter.create<LLVM::CallOp>(
-                        loc, allocIntFunc, ValueRange{arg});
-                    arg = boxCall.getResult();
-                } else if (intTy.getWidth() == 16) {
-                    // Char (i16): box via eco_alloc_char
-                    auto allocCharFunc = runtime.getOrCreateAllocChar(rewriter);
-                    auto boxCall = rewriter.create<LLVM::CallOp>(
-                        loc, allocCharFunc, ValueRange{arg});
-                    arg = boxCall.getResult();
-                } else {
-                    // Other integer widths: zero-extend to i64
-                    arg = rewriter.create<LLVM::ZExtOp>(loc, i64Ty, arg);
+            // Box new args to HPointer based on original (pre-conversion) types.
+            // eco_apply_closure expects all args as HPointer-encoded i64.
+            // Use original types to distinguish !eco.value (already HPointer,
+            // pass through) from Int/Float/Char (need boxing via eco_alloc_*).
+            Type origType = (i < origNewArgTypes.size()) ? origNewArgTypes[i] : Type();
+
+            if (origType && isa<eco::ValueType>(origType)) {
+                // !eco.value → already HPointer, just convert to i64
+                if (isa<LLVM::LLVMPointerType>(arg.getType())) {
+                    arg = rewriter.create<LLVM::PtrToIntOp>(loc, i64Ty, arg);
                 }
-            } else if (arg.getType().isF64()) {
-                // Float (f64): box via eco_alloc_float
+                // else already i64 after conversion, pass through
+            } else if (origType && origType.isInteger(64)) {
+                // Int (i64) → box via eco_alloc_int
+                auto allocIntFunc = runtime.getOrCreateAllocInt(rewriter);
+                auto boxCall = rewriter.create<LLVM::CallOp>(
+                    loc, allocIntFunc, ValueRange{arg});
+                arg = boxCall.getResult();
+            } else if (origType && origType.isF64()) {
+                // Float (f64) → box via eco_alloc_float
                 auto allocFloatFunc = runtime.getOrCreateAllocFloat(rewriter);
                 auto boxCall = rewriter.create<LLVM::CallOp>(
                     loc, allocFloatFunc, ValueRange{arg});
                 arg = boxCall.getResult();
-            } else if (isa<LLVM::LLVMPointerType>(arg.getType())) {
-                arg = rewriter.create<LLVM::PtrToIntOp>(loc, i64Ty, arg);
+            } else if (origType && isa<IntegerType>(origType) &&
+                       cast<IntegerType>(origType).getWidth() < 64) {
+                // Char (i16) → box via eco_alloc_char
+                auto allocCharFunc = runtime.getOrCreateAllocChar(rewriter);
+                auto boxCall = rewriter.create<LLVM::CallOp>(
+                    loc, allocCharFunc, ValueRange{arg});
+                arg = boxCall.getResult();
+            } else {
+                // Fallback: if ptr, convert to i64
+                if (isa<LLVM::LLVMPointerType>(arg.getType())) {
+                    arg = rewriter.create<LLVM::PtrToIntOp>(loc, i64Ty, arg);
+                }
             }
 
             rewriter.create<LLVM::StoreOp>(loc, arg, slotPtr);
