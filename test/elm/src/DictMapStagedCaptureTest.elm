@@ -9,7 +9,7 @@ The pattern mirrors Data.Map.map: Dict stores (k, v) tuples, and the mapping
 lambda destructures the tuple and applies the captured function to both parts.
 -}
 
--- CHECK: result: [("a",("hello",15)),("b",("world",25))]
+-- CHECK: result: [("a", ("hello", 15)), ("b", ("world", 25))]
 
 import Dict
 import Html exposing (text)
