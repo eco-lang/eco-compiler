@@ -38,7 +38,7 @@ in the eco dialect and standard dialects (arith, scf, func).
 
 # Eco Operations
 
-@docs ecoCallNamed, ecoReturn, ecoYield, ecoStringLiteral, ecoUnaryOp, ecoBinaryOp, ecoCase, ecoCaseString, ecoGetTag
+@docs ecoCallNamed, ecoCallNamedWithAttrs, ecoReturn, ecoYield, ecoStringLiteral, ecoUnaryOp, ecoBinaryOp, ecoCase, ecoCaseString, ecoGetTag
 
 
 # Eco Array Operations
@@ -459,6 +459,8 @@ ecoCallNamed ctx resultVar funcName operands returnType =
         |> opBuilder.build
 
 
+{-| Like `ecoCallNamed` but with additional MLIR attributes on the call op.
+-}
 ecoCallNamedWithAttrs : Ctx.Context -> String -> String -> List ( String, MlirType ) -> MlirType -> Dict String MlirAttr -> ( Ctx.Context, MlirOp )
 ecoCallNamedWithAttrs ctx resultVar funcName operands returnType extraAttrs =
     let
