@@ -20,6 +20,8 @@ import SourceIR.BytesFusionCases as BytesFusionCases
 import SourceIR.BitwiseCases as BitwiseCases
 import SourceIR.CaseCases as CaseCases
 import SourceIR.ClosureAbiBranchCases as ClosureAbiBranchCases
+import SourceIR.CombinatorCases as CombinatorCases
+import SourceIR.CombinatorStdlibCases as CombinatorStdlibCases
 import SourceIR.ClosureCases as ClosureCases
 import SourceIR.ControlFlowCases as ControlFlowCases
 import SourceIR.DecisionTreeAdvancedCases as DecisionTreeAdvancedCases
@@ -82,6 +84,8 @@ expectSuite expectFn condStr =
         , BytesFusionCases.expectSuite expectFn condStr
         , ClosureAbiBranchCases.expectSuite expectFn condStr
         , CaseCases.expectSuite expectFn condStr
+        , CombinatorCases.expectSuite expectFn condStr
+        , CombinatorStdlibCases.expectSuite expectFn condStr
         , ClosureCases.expectSuite expectFn condStr
         , ControlFlowCases.expectSuite expectFn condStr
         , DecisionTreeAdvancedCases.expectSuite expectFn condStr
