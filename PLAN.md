@@ -28,7 +28,7 @@
     - [x] 2.3.3 elm/bytes Kernel → [§2.3.3](#233-elmbytes-kernel) *(complete + fusion optimization)*
     - [x] 2.3.4 elm/random Kernel → [§2.3.4](#234-elmrandom-kernel) *(N/A - no kernel code)*
     - [x] 2.3.5 elm/time Kernel → [§2.3.5](#235-elmtime-kernel) *(complete - Feb 20, 2026)*
-    - [ ] 2.3.6 Additional Kernel Packages → [§2.3.6](#236-additional-kernel-packages) *(http, regex, debugger complete; file, browser, parser pending)*
+    - [ ] 2.3.6 Additional Kernel Packages → [§2.3.6](#236-additional-kernel-packages) *(http, regex, debugger complete; browser, parser, virtual-dom N/A for CLI)*
   - [ ] 2.4 I/O Kernel Package C++ Implementation → [§2.4](#24-io-kernel-package-c-implementation)
 
 - [ ] **3. MLIR/LLVM Integration** → [§3](#3-mlirllvm-integration)
@@ -50,8 +50,8 @@
     - [x] 4.1.2 Global AST Analysis & Monomorphization → [§4.1.2](#412-global-ast-analysis--monomorphization)
     - [x] 4.1.3 Dual Backend Implementation → [§4.1.3](#413-dual-backend-implementation)
     - [x] 4.1.4 Compiler Test Suite → [§4.1.4](#414-compiler-test-suite) *(all tests passing)*
-  - [x] 4.2 MLIR Code Generation → [§4.2](#42-mlir-code-generation) *(substantially complete, all tests passing)*
-  - [x] 4.3 Compiler Testing → [§4.3](#43-compiler-testing) *(substantially complete, all tests passing)*
+  - [x] 4.2 MLIR Code Generation → [§4.2](#42-mlir-code-generation) *(substantially complete, all tests passing, 21+ resolved issues)*
+  - [x] 4.3 Compiler Testing → [§4.3](#43-compiler-testing) *(120+ test files, code coverage tooling, GOPT invariants)*
 
 - [ ] **5. Integration & Self-Compilation** → [§5](#5-integration--self-compilation)
   - [ ] 5.1 End-to-End Pipeline → [§5.1](#51-end-to-end-pipeline) *(JIT pipeline working)*
@@ -60,7 +60,7 @@
     - [ ] 5.1.3 Build System & Packaging → [§5.1.3](#513-build-system--packaging)
     - [ ] 5.1.4 Linker Integration & Runtime Libraries → [§5.1.4](#514-linker-integration--runtime-libraries) *(kernel static libs complete)*
     - [ ] 5.1.5 Debugging Support → [§5.1.5](#515-debugging-support)
-  - [ ] 5.2 Bootstrap to Native x86 → [§5.2](#52-bootstrap-to-native-x86)
+  - [ ] 5.2 Bootstrap to Native x86 → [§5.2](#52-bootstrap-to-native-x86) *(bootstrap push in progress, ~20 bugs fixed)*
   - [ ] 5.3 Self-Compilation Milestone → [§5.3](#53-self-compilation-milestone)
 
 - [ ] **6. Optimization & Release** → [§6](#6-optimization--release)
@@ -811,10 +811,10 @@ Additional kernel packages identified during the audit that also need C++ implem
 - [x] Add declarations to KernelExports.h
 - [x] Add KERNEL_SYM entries for JIT symbol resolution
 - [x] Implement Url encoding/decoding (real implementations)
-- [ ] Implement Browser primitives (most are browser-specific, may be N/A for CLI)
+- [ ] Implement Browser primitives (browser-specific, N/A for CLI)
 - [x] Implement Http primitives *(Feb 20, 2026 - libcurl/openssl)*
-- [ ] Implement File primitives
-- [ ] Implement VirtualDom primitives (likely N/A for CLI)
+- [ ] Implement elm/file primitives (browser file upload/download, N/A for CLI)
+- [ ] Implement VirtualDom primitives (browser-specific, N/A for CLI)
 - [ ] Implement Parser primitives
 - [x] Implement Regex primitives *(Feb 20, 2026 - srell.hpp)*
 - [x] Implement Debugger primitives *(Feb 20, 2026)*
@@ -824,7 +824,7 @@ Additional kernel packages identified during the audit that also need C++ implem
 - [x] Full Url kernel implementation
 - [x] Http, Regex, Debugger implementations *(Feb 20, 2026)*
 - [x] E2E tests for http, regex, time, url packages *(test/elm-*/  - Feb 23, 2026)*
-- [ ] File, Browser, VirtualDom, Parser implementations
+- [ ] elm/file (browser upload/download — N/A for CLI), Browser, VirtualDom, Parser implementations
 
 ### 2.4 I/O Kernel Package C++ Implementation
 
@@ -1124,6 +1124,15 @@ Closure calling knowledge has been centralized:
 - **Centralized closure calling**: `EcoToLLVMClosures.cpp` and `EcoToLLVMInternal.h` consolidated
 - **Dead code removed**: Eliminated redundant ABI inference logic from the lowering pipeline
 
+**CallGenericApply** *(Mar 19, 2026)*:
+
+New safe fallback calling convention for closures where arity cannot be statically determined:
+
+- **CallKind type**: `CallDirectKnownSegmentation | CallDirectFlat | CallGenericApply`
+- **Runtime wrappers**: `eco_apply_*` functions in `RuntimeExports.cpp` handle dynamic arity dispatch
+- **Staging-agnostic**: Generic apply does not require staging analysis; works as safe fallback
+- **Plan**: `plans/generic-apply-staging-agnostic-closures.md`
+
 **Deliverables**:
 - [x] Lowering passes in C++ *(Passes/EcoToLLVM.cpp, Passes/RCElimination.cpp)*
 - [x] Pass pipeline configuration *(ecoc.cpp)*
@@ -1249,9 +1258,24 @@ Analyze the Guida/Elm Global AST and consider necessary changes for native compi
 - [x] Evaluate whether DynRecord is needed for native compilation or can be eliminated
 - [x] Document AST changes needed for MLIR code generation
 
+**MonoDirect Alternative Monomorphizer** *(Mar 12-16, 2026)*:
+A solver-driven alternative to the TypeSubst-based monomorphizer:
+```
+compiler/src/Compiler/MonoDirect/
+├── Monomorphize.elm      # Entry point, wires solver snapshot
+├── Specialize.elm        # Solver-driven specialization
+├── State.elm             # State with local unification, VarEnv
+└── JoinpointFlatten.elm  # Post-pass closure/case flattening
+```
+- Uses `SolverSnapshot` to query and locally unify types instead of string-based `TypeSubst`
+- Tvar fields propagated through `TypedOptimized` IR for linking back to solver state
+- Design docs: `design_docs/hm-solver-reuse.md`, `design_docs/mono-direct-for-packages.md`
+- Currently experimental; classic monomorphizer remains the production path
+
 **Deliverables**:
 - [x] Modified Optimized IR with type annotations (`Compiler/AST/TypedOptimized.elm`)
 - [x] Monomorphization pass implementation (`Compiler/Optimize/Mono.elm`)
+- [x] MonoDirect solver-driven monomorphizer (`Compiler/MonoDirect/`) *(experimental, Mar 2026)*
 - [x] Global AST analysis document
 - [x] Decision on DynRecord necessity
 - [x] AST modification plan (if needed)
@@ -1359,19 +1383,19 @@ compiler/src/Compiler/Generate/MLIR/
     └── Reify.elm   # Pattern-matches AST to reify encoder/decoder nodes
 ```
 
-**GlobalOpt Phase** *(consolidated Feb 5-7, 2026)*:
+**GlobalOpt Phase** *(consolidated Feb 5-7, 2026; calling convention fixes Mar 17-19, 2026)*:
 ```
 compiler/src/Compiler/GlobalOpt/
 ├── MonoGlobalOptimize.elm  # Main optimization pass, ABI alignment
 ├── MonoInlineSimplify.elm  # Small function inlining
-├── MonoTraverse.elm        # Common iterator for code traversal
+├── MonoTraverse.elm        # Common iterator for code traversal (moved to Monomorphize/)
 ├── MonoReturnArity.elm     # Return arity tracking
 ├── CallInfo.elm            # Call information analysis
 └── Staging/                # Staged-curried calling convention
     ├── GraphBuilder.elm    # Builds call graph for staging
     ├── Solver.elm          # Solves staging constraints
     ├── Rewriter.elm        # Rewrites calls with staging info
-    ├── Types.elm           # Staging type definitions
+    ├── Types.elm           # Staging type definitions (CallKind added Mar 19)
     ├── UnionFind.elm       # Union-find for staging
     └── ProducerInfo.elm    # Producer information tracking
 ```
@@ -1448,11 +1472,67 @@ compiler/src/Compiler/GlobalOpt/
     - All E2E tests pass with the phase enabled
     - Optimize-equivalent test removed (was artificial constraint from early development)
 
+**Resolved Issues** *(fixed Mar 11-19, 2026 — bootstrap push)*:
+
+16. **MErased Removal** - ✅ Complete (Mar 14)
+    - Dropped MErased from monomorphized IR; deriving it was too expensive
+    - Updated both monomorphizers and all downstream consumers
+
+17. **MonoDirect Solver-Driven Monomorphization** - ✅ First pass (Mar 12-16)
+    - New alternative monomorphizer (`Compiler/MonoDirect/`) using HM solver state directly
+    - SolverSnapshot captures solver state for local queries and type specialization
+    - Tvar fields propagated through TypedOptimized IR for linking back to solver
+    - JoinpointFlatten post-pass for MonoDirect closure/case flattening
+    - Multiple structural fixes: VarEnv save/restore, curried binop types, erasure removal, accessor handling
+    - Design doc: `design_docs/hm-solver-reuse.md`, `design_docs/mono-direct-for-packages.md`
+
+18. **MonoDtPath (Typed Decision Tree Paths)** - ✅ Complete (Mar 16)
+    - Decision-tree paths upgraded from untyped `DT.Path` to `MonoDtPath` carrying `MonoType` at each segment
+    - MLIR codegen switched to `generateMonoDtPath`, eliminating cross-type guessing (`findSingleCtorUnboxedField` removed)
+    - Both monomorphizers extended to specialize `DT.Path → MonoDtPath`
+
+19. **Bootstrap Bug Fixes** - ✅ Fixed (Mar 15-17)
+    - String type table ID fix (sentinel -1 → proper ID)
+    - Bool (i1) capture boxing through `boxArgsForClosureBoundary` in `generateClosure`
+    - SSA variable collision in TailRec fixed
+    - ABI boxing bug in Lambdas.elm fixed
+    - `eco.eq` for int comparison in patterns
+    - SSA placeholder freshness (always allocate fresh vars, removing Dict.get skip)
+    - Variable shadowing from function inlining resolved
+    - Orphaned SSA vars from nested `generateLet` calls fixed
+    - Recursive closure self-capture backpatching (`DenseI64ArrayAttr` vs `ArrayAttr`)
+    - `papExtend` verifier fix (check `$cap` fast evaluator, not `$clo` generic clone)
+    - Case branch context propagation in TailRec (pendingLambdas, pendingFuncOps, kernelDecls)
+    - Never inline tail-recursive functions (prevents non-tail-recursive placement)
+    - List head projection type fix for Bool containers
+    - Single-ctor unboxed field lookup fix (wrong ctor picked)
+    - Case root variable type inference from decider tests in Closure.elm
+    - DtRoot/DtPath renaming in inliner and substituteDecider
+
+20. **GlobalOpt Calling Convention Fixes** - ✅ Fixed (Mar 17-18)
+    - `sourceArityForCallee` fallback: replaced `countTotalArityFromType` with `firstStageArityFromType`
+    - TailDef arity tracking in `annotateDefCalls`
+    - Closure capture arity propagation into `env.varSourceArity`
+    - Pre-computed CallInfo for wrapper nested calls (both `buildNestedCallsGO` and `Rewriter.buildNestedCalls`)
+    - Let-bound function arity propagation fix
+    - New GOPT invariant tests (GOPT_011 through GOPT_014)
+    - New CGEN_040 violation test case (`ParamArityCases.elm`)
+
+21. **CallGenericApply** - ✅ Implemented (Mar 19)
+    - New `CallKind` type: `CallDirectKnownSegmentation | CallDirectFlat | CallGenericApply`
+    - Generic apply uses runtime wrappers to avoid over-applying closures where arity mismatch
+    - Safe fallback when compiler cannot prove flat or segmented calling is correct
+    - Runtime support in `EcoToLLVMRuntime.cpp`, `RuntimeExports.cpp/h`, `Heap.hpp`
+    - MLIR ops and lowering updated in `EcoOps.cpp`, `Ops.td`, `EcoPAPSimplify.cpp`, `EcoToLLVMClosures.cpp`
+    - Invariants updated in `design_docs/invariants.csv`
+    - Plan: `plans/generic-apply-staging-agnostic-closures.md`
+
 **Current E2E Test Status**:
 - Compilation through front-end and back-end to JIT execution working
 - All elm-test tests passing
 - All E2E tests passing (across elm-core, elm-json, elm-http, elm-regex, elm-time, elm-url packages)
 - Parallel test execution with process isolation
+- Bootstrap compilation in progress — many codegen and calling convention bugs identified and fixed
 
 **Deliverables**:
 - [x] Code generation modules (11 modules in `Compiler/Generate/MLIR/`)
@@ -1467,13 +1547,15 @@ compiler/src/Compiler/GlobalOpt/
 
 Comprehensive testing for the compiler backend.
 
-**Implementation** *(Jan 14-19, 2026; enhanced Feb 2026)*:
+**Implementation** *(Jan 14-19, 2026; enhanced Feb-Mar 2026)*:
 - 69+ test files in `compiler/tests/TestLogic/Generate/CodeGen/`
 - `Invariants.elm` provides shared verification logic for MLIR AST inspection
 - `TestPipeline.elm` consolidates common test pipeline (90+ test files)
-- Tests validate CGEN_001 through CGEN_039+ invariants
+- Tests validate CGEN_001 through CGEN_057+ invariants
 - Property-based testing with elm-test
-- GlobalOpt invariants added (Feb 8, 2026)
+- GlobalOpt invariants added (Feb 8, 2026; GOPT_011-014 added Mar 17-18, 2026)
+- Code coverage tooling: `compiler/elm-coverage/` with elm-test-rs integration (Mar 17, 2026)
+- Coverage-driven test generation plan: `plans/coverage-driven-test-generation.md`
 
 **Test Categories**:
 - [x] Unit tests for code generation (invariant tests)
@@ -1497,6 +1579,28 @@ Comprehensive testing for the compiler backend.
 | `PapExtendSaturatedResultType.elm` | CGEN_056 - papExtend return type ABI *(Feb 24)* |
 | `LetRecSsaDefinedness.elm` | SSA definedness for recursive let bindings *(Feb 23)* |
 | `KernelDeclCompleteness.elm` | CGEN_057 - kernel declaration completeness *(Feb 25)* |
+| `CmpiPredicateAttr.elm` | CMPI predicate attribute validation *(Mar 17)* |
+| `SsaUniqueness.elm` | SSA variable uniqueness across scopes *(Mar 15)* |
+| `GlobalOpt/CallInfoCompleteTest.elm` | GOPT_011-014 calling convention invariants *(Mar 17-18)* |
+
+**New SourceIR Test Suites** *(Mar 2026)*:
+| Test Module | Description |
+|-------------|-------------|
+| `BytesFusionCases.elm` | Bytes fusion coverage *(Mar 17)* |
+| `BoolCaseCases.elm` | Bool case expression edge cases *(Mar 17)* |
+| `ClosureAbiBranchCases.elm` | Closure ABI across case branches *(Mar 17)* |
+| `KernelCtorArgCases.elm` | Kernel constructor argument handling *(Mar 17)* |
+| `KernelComparisonCases.elm` | Kernel comparison operators *(Mar 17)* |
+| `KernelCompositionCases.elm` | Kernel function composition *(Mar 17)* |
+| `KernelContextCases.elm` | Kernel context handling *(Mar 17)* |
+| `KernelHigherOrderCases.elm` | Kernel higher-order functions *(Mar 17-18)* |
+| `KernelIntrinsicCases.elm` | Kernel intrinsic operations *(Mar 17)* |
+| `KernelOperatorCases.elm` | Kernel operators *(Mar 17)* |
+| `MonoCompoundCases.elm` | Compound monomorphization cases *(Mar 17)* |
+| `TailRecLetRecClosureCases.elm` | Tail-rec with let-rec closures *(Mar 14)* |
+| `LetDestructFnCases.elm` | Let-bound destructuring with functions *(Mar 13)* |
+| `PolyChainCases.elm` | Polymorphic chain cases *(Mar 11)* |
+| `ParamArityCases.elm` | Parameter arity validation *(Mar 18)* |
 
 **Removed Tests** *(Feb 26, 2026)*:
 - `OptimizeEquivalent.elm` - Removed; was only for parity during early development (typed vs untyped Optimized IR equivalence check)
@@ -1511,6 +1615,26 @@ Comprehensive testing for the compiler backend.
 | elm-time | `test/elm-time/` | POSIX time and time parts tests |
 | elm-url | `test/elm-url/` | Percent encode/decode and roundtrip tests |
 
+**Bootstrap E2E Test Cases** *(Mar 14-18, 2026)*:
+| Test | Description |
+|------|-------------|
+| `ClosureCaptureBoolTest.elm` | Bool capture boxing across closure boundary |
+| `TailRecBoolCarryTest.elm` | Bool carry through tail recursion |
+| `TailRecDeciderSearchTest.elm` | Decider search in tail-recursive context |
+| `PapExtendArityTest.elm` | PAP extend arity correctness |
+| `PapSaturatePolyPipeMinimalTest.elm` | PAP saturation with polymorphic pipes |
+| `CharCasePredicateTest.elm` | Char case with CMPI predicates |
+| `LetRecClosureTest.elm` | Recursive closure self-capture |
+| `InlineVarCollisionTest.elm` | Variable collision from inlining |
+| `CaseFanOutShadowTest.elm` | Case fan-out with shadowed vars |
+| `StringEscapeSingleQuoteTest.elm` | String escaping in MLIR |
+| `CaseNestedRecordAccessTest.elm` | Nested record access in case |
+| `ListAnyBoolTest.elm` / `ListMapBoolTest.elm` | Bool list operations |
+| `CaseSingleCtorBoolTest.elm` | Single-ctor Bool unboxing |
+| `SingleCtorPair*Test.elm` | 10+ tests for single-ctor pair type combinations |
+| `CapturedStagedFuncCallTest.elm` | Captured function with staged calling |
+| `DictMapStagedCaptureTest.elm` | Dict.map with staged capture |
+
 **Specialization Test Suites** *(Feb 25, 2026)*:
 | Suite | Description |
 |-------|-------------|
@@ -1519,8 +1643,9 @@ Comprehensive testing for the compiler backend.
 
 **Deliverables**:
 - [x] Test suite infrastructure (`Invariants.elm`, `TestPipeline.elm`)
-- [x] Elm test programs (90+ test files)
+- [x] Elm test programs (120+ test files, including 15+ new SourceIR suites and 16+ bootstrap E2E tests)
 - [x] MLIR AST validation
+- [x] Code coverage tooling (`compiler/elm-coverage/`)
 - [x] All tests passing
 - [ ] Performance baseline
 
@@ -1692,14 +1817,25 @@ Enable debugging of compiled Elm programs.
 
 ### 5.2 Bootstrap to Native x86
 
-**Status**: Not Started
+**Status**: In Progress (Bootstrap Push - Mar 11-19, 2026)
 
 Compile the Guida compiler itself using ECO to produce a native x86 version.
 
+**Current Progress** *(Mar 11-19, 2026)*:
+- Active bootstrap attempt revealed ~20 codegen and runtime bugs, now fixed (see §4.2 issues 16-21)
+- Monomorphizer performance profiling and optimization (TypeSubst UF representation, dict handling efficiency)
+- New calling convention (`CallGenericApply`) added as safe fallback for complex call patterns
+- Typed decision tree paths (`MonoDtPath`) eliminate cross-type guessing in pattern codegen
+- Kernel improvements: Http/Process return types adjusted for optimized builds
+- Kernel file write implementation added
+- Bootstrap documentation updated: `bootstrap.md`
+- Bug reports and analysis: `bootstrap-errors.md`, `capt-param-missing-report.md`, `test-failure-report.md`
+
 **Requirements**:
 - [ ] All dependencies ported (§2)
-- [ ] Compiler backend complete (§4)
-- [ ] Runtime stable (§1)
+- [x] Compiler backend substantially complete (§4)
+- [ ] Runtime stable (§1) — stack map integration still needed for large programs
+- [ ] Remaining calling convention edge cases resolved
 
 **Deliverables**:
 - [ ] Native ECO compiler binary
@@ -2126,7 +2262,7 @@ Runtime Foundation (§1)
 
 **Next Steps** *(in priority order)*:
 1. **LLVM stack map implementation (§1.2.3)** - precise GC root tracing for larger/longer-running programs
-2. **Remaining kernel implementations (§2.3)** - file, browser, parser, virtual-dom (lower priority for CLI)
+2. **Remaining kernel implementations (§2.3)** - browser, parser, virtual-dom (N/A for CLI); elm/file is browser upload/download, not system IO
 3. **AOT compilation (§5.1.1)** - produce standalone native binaries (currently JIT only)
 4. **Array optimization** - design outlined in `design_docs/array-optimisation.md`
 
