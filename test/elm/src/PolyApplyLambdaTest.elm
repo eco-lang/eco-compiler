@@ -4,7 +4,7 @@ module PolyApplyLambdaTest exposing (main)
 -}
 
 -- CHECK: applyIntId: 1
--- CHECK: applyStrId: hi
+-- CHECK: applyStrId: "hi"
 -- CHECK: applyLambda: 42
 
 import Html exposing (text)

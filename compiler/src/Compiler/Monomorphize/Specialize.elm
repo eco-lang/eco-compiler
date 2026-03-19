@@ -54,6 +54,7 @@ type ProcessedArg
     = ResolvedArg Mono.MonoExpr
     | PendingAccessor A.Region Name Can.Type
     | PendingKernel A.Region String String Can.Type
+    | PendingGlobal TOpt.Expr Substitution Can.Type
     | LocalFunArg Name Can.Type
 
 
@@ -2371,14 +2372,40 @@ processCallArgs args subst state =
                         )
 
                 _ ->
-                    let
-                        ( monoExpr, st1 ) =
-                            specializeExpr arg subst st
-                    in
-                    ( ResolvedArg monoExpr :: accArgs
-                    , Mono.typeOf monoExpr :: accTypes
-                    , st1
-                    )
+                    case arg of
+                        TOpt.VarGlobal _ _ meta ->
+                            let
+                                canType =
+                                    meta.tipe
+
+                                monoType =
+                                    Mono.forceCNumberToInt (TypeSubst.applySubst subst canType)
+                            in
+                            if Mono.containsCEcoMVar monoType then
+                                ( PendingGlobal arg subst canType :: accArgs
+                                , monoType :: accTypes
+                                , st
+                                )
+
+                            else
+                                let
+                                    ( monoExpr, st1 ) =
+                                        specializeExpr arg subst st
+                                in
+                                ( ResolvedArg monoExpr :: accArgs
+                                , Mono.typeOf monoExpr :: accTypes
+                                , st1
+                                )
+
+                        _ ->
+                            let
+                                ( monoExpr, st1 ) =
+                                    specializeExpr arg subst st
+                            in
+                            ( ResolvedArg monoExpr :: accArgs
+                            , Mono.typeOf monoExpr :: accTypes
+                            , st1
+                            )
         )
         ( [], [], state )
         args
@@ -2457,6 +2484,23 @@ resolveProcessedArg processedArg maybeParamType subst state =
 
                 _ ->
                     Utils.Crash.crash "Specialize.resolveProcessedArg: Accessor argument did not receive a record parameter type after monomorphization. This is a compiler bug."
+
+        PendingGlobal savedExpr savedSubst canType ->
+            -- Deferred VarGlobal: polymorphic global that needed call-site context.
+            -- Refine the substitution with the callee's parameter type, then specialize.
+            let
+                refinedSubst =
+                    case maybeParamType of
+                        Just paramType ->
+                            TypeSubst.unifyExtend canType paramType savedSubst
+
+                        Nothing ->
+                            savedSubst
+
+                ( monoExpr, st1 ) =
+                    specializeExpr savedExpr refinedSubst state
+            in
+            ( monoExpr, st1 )
 
         PendingKernel region home name canType ->
             -- Number-boxed kernel argument. Now that we have the call-site substitution,

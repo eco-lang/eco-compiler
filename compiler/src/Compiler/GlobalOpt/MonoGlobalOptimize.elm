@@ -73,6 +73,7 @@ Also carries dynamicSlots from the staging solver for CallKind determination.
 type alias CallEnv =
     { varCallModel : Dict Name Mono.CallModel
     , varSourceArity : Dict Name Int
+    , varBodyStageArities : Dict Name (List Int)
     , dynamicSlots : Set String
     , paramSlotKeys : Dict Name String
     }
@@ -82,6 +83,7 @@ emptyCallEnv : Set String -> CallEnv
 emptyCallEnv dynamicSlots =
     { varCallModel = Dict.empty
     , varSourceArity = Dict.empty
+    , varBodyStageArities = Dict.empty
     , dynamicSlots = dynamicSlots
     , paramSlotKeys = Dict.empty
     }
@@ -1339,8 +1341,22 @@ annotateDefCalls graph env def =
 
                         Nothing ->
                             env1
+
+                maybeBodyStageArities =
+                    closureBodyStageArities graph bound1
+
+                env3 =
+                    case maybeBodyStageArities of
+                        Just arities ->
+                            { env2
+                                | varBodyStageArities =
+                                    Dict.insert name arities env2.varBodyStageArities
+                            }
+
+                        Nothing ->
+                            env2
             in
-            ( Mono.MonoDef name bound1, env2 )
+            ( Mono.MonoDef name bound1, env3 )
 
         Mono.MonoTailDef name params bound ->
             -- Tail defs are also referenced by MonoVarLocal for the initial
@@ -1883,8 +1899,18 @@ computeCallInfo graph env func args _ =
                 -- different staging after canonicalization (e.g., [2] vs [1,1])
                 remainingStageArities : List Int
                 remainingStageArities =
-                    closureBodyStageArities graph func
-                        |> Maybe.withDefault []
+                    case closureBodyStageArities graph func of
+                        Just arities ->
+                            arities
+
+                        Nothing ->
+                            case func of
+                                Mono.MonoVarLocal name _ ->
+                                    Dict.get name env.varBodyStageArities
+                                        |> Maybe.withDefault []
+
+                                _ ->
+                                    []
 
                 -- Determine call kind: use CallGenericApply for dynamic callees
                 -- AND for type-fallback arity callees (where we can't trust the

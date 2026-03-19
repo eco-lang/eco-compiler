@@ -18,7 +18,7 @@ module Compiler.AST.Monomorphized exposing
     , CallModel(..), CallKind(..), CallInfo, defaultCallInfo
     , ClosureKindId(..), ClosureKind(..), MaybeClosureKind
     , CaptureABI
-    , containsAnyMVar
+    , containsAnyMVar, containsCEcoMVar
     , resultTypeOf
     -- Typed closure calling (ABI cloning)
     -- Call staging metadata
@@ -336,6 +336,34 @@ containsAnyMVar monoType =
             False
 
 
+{-| Check whether a MonoType contains any `MVar _ CEcoValue`.
+-}
+containsCEcoMVar : MonoType -> Bool
+containsCEcoMVar monoType =
+    case monoType of
+        MVar _ CEcoValue ->
+            True
+
+        MVar _ _ ->
+            False
+
+        MList t ->
+            containsCEcoMVar t
+
+        MFunction args result ->
+            List.any containsCEcoMVar args || containsCEcoMVar result
+
+        MTuple elems ->
+            List.any containsCEcoMVar elems
+
+        MRecord fields ->
+            Dict.foldl (\_ t acc -> acc || containsCEcoMVar t) False fields
+
+        MCustom _ _ args ->
+            List.any containsCEcoMVar args
+
+        _ ->
+            False
 
 
 {-| Identifier for lambda functions in lambda sets, distinguishing named functions from closures.
