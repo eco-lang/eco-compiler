@@ -63,14 +63,16 @@ npx elm-test-rs --project build-xhr --fuzz 1
 
 Full E2E tests including the backend and runtime:
 
-```bash
-# To check after changes to C++ backend:
-cmake --build build --target check
+**Almost always use `--target full`** to avoid consuming stale `.mlir` files. Only use `--target check` if you are certain only C++ code has changed and no `.mlir` regeneration is needed.
 
-# To check after changes to Elm frontend force a full rebuild of the compiler:
+```bash
+# Default: full rebuild of compiler + run E2E tests (preferred)
 cmake --build build --target full
 
-# To filder and just run a subset of the tests
-TEST_FILTER=elm cmake --build build --target check
-TEST_FILTER=codegen cmake --build build --target check
+# Only if exclusively C++ changes (no Elm/MLIR changes):
+cmake --build build --target check
+
+# To filter and just run a subset of the tests
+TEST_FILTER=elm cmake --build build --target full
+TEST_FILTER=codegen cmake --build build --target full
 ```

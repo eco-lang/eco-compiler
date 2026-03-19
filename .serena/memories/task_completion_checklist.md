@@ -45,3 +45,12 @@ When a task is completed, verify the following:
    ```bash
    npx elm-test --fuzz 1
    ```
+
+## E2E Tests (Always Run After Any Change)
+
+**Almost always use `--target full`** to avoid consuming stale `.mlir` files. Only use `--target check` if you are certain only C++ code has changed.
+
+```bash
+cmake --build build --target full                    # Preferred
+TEST_FILTER=elm cmake --build build --target full    # Filter subset
+```

@@ -82,6 +82,17 @@ git checkout master && git merge <branch>   # Merge when complete
 
 **Note**: Never commit without user confirmation.
 
+## E2E Tests (Backend + Runtime)
+
+**Almost always use `--target full`** to avoid consuming stale `.mlir` files. Only use `--target check` if you are certain only C++ code has changed.
+
+```bash
+cmake --build build --target full                    # Full rebuild + E2E tests (preferred)
+cmake --build build --target check                   # E2E without compiler rebuild (C++ only changes)
+TEST_FILTER=elm cmake --build build --target full    # Filter E2E tests
+TEST_FILTER=codegen cmake --build build --target full
+```
+
 ## Utilities
 
 ```bash
