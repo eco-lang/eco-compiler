@@ -21,6 +21,7 @@ import TestLogic.Generate.CodeGen.Invariants
         ( Violation
         , findOpsNamed
         , getIntAttr
+        , getStringAttr
         , violationsToExpectation
         )
 import TestLogic.TestPipeline exposing (runToMlir)
@@ -81,11 +82,17 @@ checkPapExtendOp op =
                 else
                     case maybeRemainingArity of
                         Nothing ->
-                            Just
-                                { opId = op.id
-                                , opName = op.name
-                                , message = "eco.papExtend missing remaining_arity attribute"
-                                }
+                            -- Generic apply (CallGenericApply) emits papExtend without remaining_arity;
+                            -- saturation is determined at runtime. This is valid per CGEN_052 exemption.
+                            if getStringAttr "_call_kind" op == Just "generic_apply" then
+                                Nothing
+
+                            else
+                                Just
+                                    { opId = op.id
+                                    , opName = op.name
+                                    , message = "eco.papExtend missing remaining_arity attribute"
+                                    }
 
                         Just _ ->
                             Nothing

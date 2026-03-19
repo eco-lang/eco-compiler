@@ -184,6 +184,8 @@ checkCallInfo ctx funcExpr args callInfo =
                 ++ checkGopt013 ctx callInfo
                 ++ checkGopt014 ctx argCount callInfo
                 ++ checkGopt015 ctx funcExpr callInfo
+                -- Note: GOPT_012 and GOPT_015 skip CallGenericApply internally,
+                -- since initialRemaining is intentionally 0 and unused by codegen.
 
 
 {-| GOPT\_011: stageArities must be non-empty with all positive elements,
@@ -226,25 +228,31 @@ at least as many params as the first type stage).
 -}
 checkGopt012 : String -> Mono.MonoExpr -> Mono.CallInfo -> List String
 checkGopt012 ctx _ callInfo =
-    case List.head callInfo.stageArities of
-        Just firstStage ->
-            if callInfo.initialRemaining < firstStage then
-                [ ctx
-                    ++ " [GOPT_012]: initialRemaining="
-                    ++ String.fromInt callInfo.initialRemaining
-                    ++ " < stageArities[0]="
-                    ++ String.fromInt firstStage
-                    ++ " (stageArities="
-                    ++ Debug.toString callInfo.stageArities
-                    ++ ")"
-                ]
-
-            else
-                []
-
-        Nothing ->
-            -- Empty stageArities handled by GOPT_011
+    case callInfo.callKind of
+        Mono.CallGenericApply ->
+            -- Generic apply ignores initialRemaining; skip this check
             []
+
+        _ ->
+            case List.head callInfo.stageArities of
+                Just firstStage ->
+                    if callInfo.initialRemaining < firstStage then
+                        [ ctx
+                            ++ " [GOPT_012]: initialRemaining="
+                            ++ String.fromInt callInfo.initialRemaining
+                            ++ " < stageArities[0]="
+                            ++ String.fromInt firstStage
+                            ++ " (stageArities="
+                            ++ Debug.toString callInfo.stageArities
+                            ++ ")"
+                        ]
+
+                    else
+                        []
+
+                Nothing ->
+                    -- Empty stageArities handled by GOPT_011
+                    []
 
 
 {-| GOPT\_013: initialRemaining must not exceed the total flattened arity.
@@ -321,27 +329,33 @@ staging representation.
 -}
 checkGopt015 : String -> Mono.MonoExpr -> Mono.CallInfo -> List String
 checkGopt015 ctx funcExpr callInfo =
-    case funcExpr of
-        Mono.MonoVarLocal localName _ ->
-            let
-                typeArity =
-                    firstStageArityFromMonoType (Mono.typeOf funcExpr)
-            in
-            if callInfo.initialRemaining <= 0 && typeArity > 0 then
-                [ ctx
-                    ++ " [GOPT_015]: StageCurried call to local '"
-                    ++ localName
-                    ++ "' has initialRemaining="
-                    ++ String.fromInt callInfo.initialRemaining
-                    ++ " but type arity="
-                    ++ String.fromInt typeArity
-                ]
-
-            else
-                []
+    case callInfo.callKind of
+        Mono.CallGenericApply ->
+            -- Generic apply ignores initialRemaining; skip this check
+            []
 
         _ ->
-            []
+            case funcExpr of
+                Mono.MonoVarLocal localName _ ->
+                    let
+                        typeArity =
+                            firstStageArityFromMonoType (Mono.typeOf funcExpr)
+                    in
+                    if callInfo.initialRemaining <= 0 && typeArity > 0 then
+                        [ ctx
+                            ++ " [GOPT_015]: StageCurried call to local '"
+                            ++ localName
+                            ++ "' has initialRemaining="
+                            ++ String.fromInt callInfo.initialRemaining
+                            ++ " but type arity="
+                            ++ String.fromInt typeArity
+                        ]
+
+                    else
+                        []
+
+                _ ->
+                    []
 
 
 {-| Compute first-stage arity from a MonoType (mirrors firstStageArityFromType

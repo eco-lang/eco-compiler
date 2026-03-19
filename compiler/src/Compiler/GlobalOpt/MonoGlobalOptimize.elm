@@ -1589,18 +1589,19 @@ where the first-stage arity is 1, not the total arity of 2.
 Note: FlattenedExternal callees are handled separately by callModelForCallee
 and never reach this function's fallback (they use FlattenedExternal CallInfo).
 -}
-sourceArityForCallee : Mono.MonoGraph -> CallEnv -> Mono.MonoExpr -> Int
+type SourceArity
+    = FromProducer Int
+    | FromType Int
+
+
+sourceArityForCallee : Mono.MonoGraph -> CallEnv -> Mono.MonoExpr -> SourceArity
 sourceArityForCallee graph env funcExpr =
     case sourceArityForExpr graph env funcExpr of
         Just arity ->
-            arity
+            FromProducer arity
 
         Nothing ->
-            -- Fallback: use FIRST-STAGE arity for unknown callees (function parameters)
-            -- For StageCurried calls, this must be the outermost MFunction's param count,
-            -- not the total arity across all stages. The subsequent stages are tracked
-            -- separately in remainingStageArities.
-            firstStageArityFromType (Mono.typeOf funcExpr)
+            FromType (firstStageArityFromType (Mono.typeOf funcExpr))
 
 
 {-| Get first-stage arity from a function type.
@@ -1842,13 +1843,23 @@ computeCallInfo graph env func args _ =
                 stageAritiesFull =
                     MonoReturnArity.collectStageArities funcType
 
-                -- Source arity: the actual closure's param count (matches papCreate arity)
-                -- For known callees (globals, let-bindings), this is the closure's param count.
-                -- For unknown callees (function parameters), this is the first-stage arity
-                -- from the type. This is what CGEN_052 requires for papExtend's remaining_arity.
+                -- Source arity info: tags whether arity comes from a real producer
+                -- or from a type fallback.
+                sourceArityInfo : SourceArity
+                sourceArityInfo =
+                    sourceArityForCallee graph env func
+
+                -- Derive numeric sourceArity: FromProducer uses actual arity,
+                -- FromType uses 0 (forces isSingleStageSaturated = False, correct
+                -- since type-fallback calls should not claim saturation).
                 sourceArity : Int
                 sourceArity =
-                    sourceArityForCallee graph env func
+                    case sourceArityInfo of
+                        FromProducer a ->
+                            a
+
+                        FromType _ ->
+                            0
 
                 argCount : Int
                 argCount =
@@ -1889,15 +1900,21 @@ computeCallInfo graph env func args _ =
                             []
 
                 -- Determine call kind: use CallGenericApply for dynamic callees
-                -- (function parameters whose staging slot has no producer segmentation),
-                -- otherwise use CallDirectKnownSegmentation for typed closure dispatch.
+                -- AND for type-fallback arity callees (where we can't trust the
+                -- remaining_arity). Only use CallDirectKnownSegmentation when
+                -- arity is producer-derived and the callee is not dynamic.
                 callKind : Mono.CallKind
                 callKind =
-                    if isDynamicCallee env func then
-                        Mono.CallGenericApply
+                    case sourceArityInfo of
+                        FromProducer _ ->
+                            if isDynamicCallee env func then
+                                Mono.CallGenericApply
 
-                    else
-                        Mono.CallDirectKnownSegmentation
+                            else
+                                Mono.CallDirectKnownSegmentation
+
+                        FromType _ ->
+                            Mono.CallGenericApply
             in
             { callModel = Mono.StageCurried
             , stageArities = stageAritiesFull
