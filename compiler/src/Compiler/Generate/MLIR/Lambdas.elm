@@ -9,6 +9,7 @@ with typed ABIs (parameters in their actual types, not all boxed).
 
 -}
 
+import Bitwise
 import Compiler.Generate.MLIR.Context as Ctx
 import Compiler.Generate.MLIR.Expr as Expr
 import Compiler.Generate.MLIR.Functions as Functions
@@ -16,7 +17,7 @@ import Compiler.Generate.MLIR.Ops as Ops
 import Compiler.Generate.MLIR.TailRec as TailRec
 import Compiler.Generate.MLIR.Types as Types
 import Dict
-import Mlir.Mlir exposing (MlirOp, MlirRegion, MlirType)
+import Mlir.Mlir exposing (MlirAttr(..), MlirOp, MlirRegion, MlirType)
 import Set
 
 
@@ -147,10 +148,21 @@ generateLambdaFunc ctx lambda =
             List.maximum [ ctx.nextVar, List.length allArgPairs, maxSiblingIndex + 1 ]
                 |> Maybe.withDefault 0
 
+        -- Filter out self-binding from sibling mappings for tail-rec lambdas
+        -- to prevent importing the outer function's SSA var for the self-reference
+        filteredSiblingMappings : Dict.Dict String Ctx.VarInfo
+        filteredSiblingMappings =
+            case lambda.selfBindingName of
+                Just selfName ->
+                    Dict.remove selfName lambda.siblingMappings
+
+                Nothing ->
+                    lambda.siblingMappings
+
         -- Merge sibling mappings with captures and params (captures/params take precedence)
         varMappingsWithSiblings : Dict.Dict String Ctx.VarInfo
         varMappingsWithSiblings =
-            Dict.union varMappingsWithArgs lambda.siblingMappings
+            Dict.union varMappingsWithArgs filteredSiblingMappings
 
         ctxWithArgs : Ctx.Context
         ctxWithArgs =
@@ -166,8 +178,95 @@ generateLambdaFunc ctx lambda =
         -- Only params participate in the loop state; captures are accessed from the
         -- enclosing func.func scope (scf.while is NOT IsolatedFromAbove).
         let
-            ( bodyOps, ctx1 ) =
-                TailRec.compileTailFuncToWhile ctxWithArgs lambda.name paramArgPairs lambda.body actualResultType
+            -- C3: If this is a self-recursive tail function, create a local self-closure
+            -- (eco.papCreate) before the scf.while loop so the body can reference itself
+            -- without importing the outer function's SSA var.
+            ( selfPrefixOps, ctxForTailRec ) =
+                case lambda.selfBindingName of
+                    Just selfName ->
+                        let
+                            selfFunctionName =
+                                if hasCaptures then
+                                    lambda.name ++ "$clo"
+
+                                else
+                                    lambda.name
+
+                            selfArity =
+                                List.length lambda.captures + List.length lambda.params
+
+                            selfNumCaptured =
+                                List.length lambda.captures
+
+                            captureMlirTypes =
+                                List.map (\( _, monoTy ) -> Types.monoTypeToAbi monoTy) lambda.captures
+
+                            selfUnboxedBitmap =
+                                List.indexedMap
+                                    (\i mlirTy ->
+                                        if Types.isUnboxable mlirTy then
+                                            Bitwise.shiftLeftBy i 1
+
+                                        else
+                                            0
+                                    )
+                                    captureMlirTypes
+                                    |> List.foldl Bitwise.or 0
+
+                            selfOperandTypesAttr =
+                                if List.isEmpty captureMlirTypes then
+                                    Dict.empty
+
+                                else
+                                    Dict.singleton "_operand_types"
+                                        (ArrayAttr Nothing (List.map TypeAttr captureMlirTypes))
+
+                            selfFastEvaluatorAttr =
+                                if hasCaptures then
+                                    Dict.singleton "_fast_evaluator" (SymbolRefAttr (lambda.name ++ "$cap"))
+
+                                else
+                                    Dict.empty
+
+                            selfPapAttrs =
+                                Dict.union selfFastEvaluatorAttr
+                                    (Dict.union selfOperandTypesAttr
+                                        (Dict.fromList
+                                            [ ( "function", SymbolRefAttr selfFunctionName )
+                                            , ( "arity", IntAttr Nothing selfArity )
+                                            , ( "num_captured", IntAttr Nothing selfNumCaptured )
+                                            , ( "unboxed_bitmap", IntAttr Nothing selfUnboxedBitmap )
+                                            ]
+                                        )
+                                    )
+
+                            captureVarNames =
+                                List.map (\( capName, _ ) -> "%" ++ capName) lambda.captures
+
+                            ( selfVar, ctxAfterFresh ) =
+                                Ctx.freshVar ctxWithArgs
+
+                            ( ctxAfterPap, selfPapOp ) =
+                                Ops.mlirOp ctxAfterFresh "eco.papCreate"
+                                    |> Ops.opBuilder.withOperands captureVarNames
+                                    |> Ops.opBuilder.withResults [ ( selfVar, Types.ecoValue ) ]
+                                    |> Ops.opBuilder.withAttrs selfPapAttrs
+                                    |> Ops.opBuilder.build
+
+                            ctxWithSelf =
+                                Ctx.addVarMapping selfName selfVar Types.ecoValue
+                                    ctxAfterPap
+                        in
+                        ( [ selfPapOp ], ctxWithSelf )
+
+                    Nothing ->
+                        ( [], ctxWithArgs )
+
+            ( tailRecOps, ctx1 ) =
+                TailRec.compileTailFuncToWhile ctxForTailRec lambda.name paramArgPairs lambda.body actualResultType
+
+            bodyOps =
+                selfPrefixOps ++ tailRecOps
 
             ( bodyNonTermOps, bodyTerminator ) =
                 case List.reverse bodyOps of

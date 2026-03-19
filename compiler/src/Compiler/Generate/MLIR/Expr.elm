@@ -967,6 +967,7 @@ generateClosure ctx closureInfo body monoType =
             , returnType = Mono.typeOf body
             , siblingMappings = baseSiblings
             , isTailRecursive = False
+            , selfBindingName = Nothing
             }
     in
     if arity == 0 then
@@ -3518,6 +3519,7 @@ generateLet ctx def body =
                     , returnType = Mono.typeOf tailBody
                     , siblingMappings = ctxWithPlaceholders.currentLetSiblings
                     , isTailRecursive = True
+                    , selfBindingName = Just name
                     }
 
                 ctx1 =

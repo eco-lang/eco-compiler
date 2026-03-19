@@ -192,13 +192,13 @@ unifyCallSiteWithRenaming funcCanType argMonoTypes resultCanType baseSubst epoch
         ( renamedArgTypes, renamedResultType, renamedFuncType ) =
             if hasConflict then
                 ( List.map (renameCanTypeVars renameMapUsed) info.argTypes
-                , renameCanTypeVars renameMapUsed resultCanType
+                , resultCanType
                 , renameCanTypeVars renameMapUsed funcCanType
                 )
 
             else
                 ( info.renamedArgTypes
-                , renameResultCanType info resultCanType
+                , resultCanType
                 , info.renamedFuncType
                 )
 

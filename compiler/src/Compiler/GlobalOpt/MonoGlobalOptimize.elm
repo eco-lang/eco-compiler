@@ -1883,21 +1883,8 @@ computeCallInfo graph env func args _ =
                 -- different staging after canonicalization (e.g., [2] vs [1,1])
                 remainingStageArities : List Int
                 remainingStageArities =
-                    let
-                        bodyArities =
-                            closureBodyStageArities graph func
-                    in
-                    case bodyArities of
-                        Just arities ->
-                            -- Known callee: use actual body's stage arities
-                            arities
-
-                        Nothing ->
-                            -- Unknown callee (e.g., function parameter):
-                            -- No body arities available. Use empty list so that
-                            -- applyByStages correctly detects saturation when
-                            -- all args fill the first stage.
-                            []
+                    closureBodyStageArities graph func
+                        |> Maybe.withDefault []
 
                 -- Determine call kind: use CallGenericApply for dynamic callees
                 -- AND for type-fallback arity callees (where we can't trust the

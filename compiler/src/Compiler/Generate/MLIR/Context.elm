@@ -249,6 +249,7 @@ type alias PendingLambda =
     , returnType : Mono.MonoType -- Explicit return type for typed ABI
     , siblingMappings : Dict.Dict String VarInfo -- For mutually recursive let bindings
     , isTailRecursive : Bool -- True for local tail-recursive functions (MonoTailDef)
+    , selfBindingName : Maybe String -- Elm-level binding name for tail-rec self-reference
     }
 
 

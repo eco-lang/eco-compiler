@@ -1083,7 +1083,7 @@ betaReduce ctx region info closureBody args resultType =
                 }
 
             innerExpr =
-                wrapInLets bindings substituted (Mono.typeOf closureBody)
+                wrapInLets bindings substituted resultType
         in
         ( MonoCall region innerExpr extraArgs resultType Mono.defaultCallInfo
         , { ctx1 | metrics = newMetrics }
@@ -1511,7 +1511,7 @@ tryInlineCall ctx specId args resultType =
                                         substituteAllForInline bindings remappedBody
 
                                     innerExpr =
-                                        wrapInLetsForInline bindings substituted (Mono.typeOf body)
+                                        wrapInLetsForInline bindings substituted resultType
 
                                     inlined =
                                         MonoCall A.zero innerExpr extraArgs resultType Mono.defaultCallInfo
