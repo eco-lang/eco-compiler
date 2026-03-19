@@ -81,6 +81,11 @@ This module defines the data structures for the monomorphized program
 @docs MonoExpr, ClosureInfo, MonoDef, MonoDestructor, MonoPath
 
 
+# Decision Tree Paths
+
+@docs MonoDtPath, dtPathType
+
+
 # Pattern Matching
 
 @docs Decider, MonoChoice
@@ -128,7 +133,7 @@ This module defines the data structures for the monomorphized program
 
 # Call Staging Metadata
 
-@docs CallModel, CallInfo, defaultCallInfo
+@docs CallModel, CallKind, CallInfo, defaultCallInfo
 
 
 # Typed Closure Calling (ABI Cloning)

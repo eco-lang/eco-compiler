@@ -33,6 +33,11 @@ This module handles generation of MLIR code for all Elm expressions.
 
 @docs createDummyValue
 
+
+# Let-binding Helpers
+
+@docs collectLetBoundNames, addPlaceholderMappings
+
 -}
 
 import Array exposing (Array)

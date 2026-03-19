@@ -139,6 +139,7 @@
         "Compiler.LocalOpt.Typed.Names",
         "Compiler.LocalOpt.Typed.NormalizeLambdaBoundaries",
         "Compiler.LocalOpt.Typed.Port",
+        "Compiler.MonoDirect.JoinpointFlatten",
         "Compiler.MonoDirect.Monomorphize",
         "Compiler.MonoDirect.Specialize",
         "Compiler.MonoDirect.State",

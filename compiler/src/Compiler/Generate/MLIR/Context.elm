@@ -26,7 +26,7 @@ state during MLIR code generation.
 
 # Variable Management
 
-@docs freshVar, freshOpId, lookupVar, addVarMapping, addDecoderExpr
+@docs freshVar, freshOpId, lookupVar, addVarMapping, addDecoderExpr, ctxForSiblingRegion
 
 
 # Type Registration

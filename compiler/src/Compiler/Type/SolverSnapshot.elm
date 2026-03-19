@@ -21,7 +21,7 @@ IO monad. It is used by the MonoDirect monomorphizer.
 
 @docs SolverSnapshot, SolverState, TypeVar
 @docs fromSolveResult, exprVarFromId, lookupDescriptor, resolveVariable
-@docs withLocalUnification, specializeFunction, LocalView
+@docs withLocalUnification, specializeFunction, specializeChained, specializeChainedWithSubst, LocalView
 
 -}
 
@@ -210,11 +210,15 @@ specializeFunction snap funcTvar requestedMonoType callback =
     callback view
 
 
+{-| Specialize multiple type variables in sequence within a local unification scope.
+-}
 specializeChained : SolverSnapshot -> List ( TypeVar, Mono.MonoType ) -> (LocalView -> a) -> a
 specializeChained snap pairs callback =
     specializeChainedWithSubst snap pairs Dict.empty callback
 
 
+{-| Like `specializeChained` but starts with an initial substitution dictionary.
+-}
 specializeChainedWithSubst : SolverSnapshot -> List ( TypeVar, Mono.MonoType ) -> Dict String Mono.MonoType -> (LocalView -> a) -> a
 specializeChainedWithSubst snap pairs substDict callback =
     let

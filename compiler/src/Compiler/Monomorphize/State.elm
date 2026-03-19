@@ -34,7 +34,7 @@ the monomorphization process.
 
 # Variable Environment
 
-@docs VarEnv, emptyVarEnv, insertVar, lookupVar, popFrame, pushFrame
+@docs VarEnv, emptyVarEnv, insertVar, lookupVar, popFrame, pushFrame, varEnvKeys
 
 -}
 

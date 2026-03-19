@@ -36,7 +36,7 @@ Uses a flat record instead of the accum/ctx split of `Monomorphize.State.MonoSta
 
 # Local Multi-Specialization
 
-@docs LocalMultiState, LocalInstanceInfo
+@docs LocalMultiState, LocalInstanceInfo, isLocalMultiTarget, getOrCreateLocalInstance
 
 -}
 
