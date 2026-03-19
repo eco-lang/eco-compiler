@@ -74,6 +74,7 @@ type alias CallEnv =
     { varCallModel : Dict Name Mono.CallModel
     , varSourceArity : Dict Name Int
     , dynamicSlots : Set String
+    , paramSlotKeys : Dict Name String
     }
 
 
@@ -82,6 +83,7 @@ emptyCallEnv dynamicSlots =
     { varCallModel = Dict.empty
     , varSourceArity = Dict.empty
     , dynamicSlots = dynamicSlots
+    , paramSlotKeys = Dict.empty
     }
 
 
@@ -1087,19 +1089,41 @@ annotateCallStaging dynamicSlots graph =
             emptyCallEnv dynamicSlots
 
         newNodes =
-            Array.map (Maybe.map (annotateNodeCalls graph env)) record.nodes
+            Array.indexedMap
+                (\nodeId -> Maybe.map (annotateNodeCalls graph nodeId env))
+                record.nodes
     in
     Mono.MonoGraph { record | nodes = newNodes }
 
 
-annotateNodeCalls : Mono.MonoGraph -> CallEnv -> Mono.MonoNode -> Mono.MonoNode
-annotateNodeCalls graph env node =
+annotateNodeCalls : Mono.MonoGraph -> Int -> CallEnv -> Mono.MonoNode -> Mono.MonoNode
+annotateNodeCalls graph nodeId env node =
     case node of
         Mono.MonoDefine expr tipe ->
             Mono.MonoDefine (annotateExprCalls graph env expr) tipe
 
         Mono.MonoTailFunc params body tipe ->
-            Mono.MonoTailFunc params (annotateExprCalls graph env body) tipe
+            let
+                paramSlotKeys =
+                    params
+                        |> List.indexedMap
+                            (\index ( name, ty ) ->
+                                if Mono.isFunctionType ty then
+                                    Just
+                                        ( name
+                                        , "P:" ++ String.fromInt nodeId ++ ":" ++ String.fromInt index
+                                        )
+
+                                else
+                                    Nothing
+                            )
+                        |> List.filterMap identity
+                        |> Dict.fromList
+
+                envWithParams =
+                    { env | paramSlotKeys = paramSlotKeys }
+            in
+            Mono.MonoTailFunc params (annotateExprCalls graph envWithParams body) tipe
 
         Mono.MonoPortIncoming expr tipe ->
             Mono.MonoPortIncoming (annotateExprCalls graph env expr) tipe
@@ -1758,6 +1782,26 @@ closureBodyStageArities graph expr =
             Nothing
 
 
+{-| Check if a callee expression is a dynamic staging slot (function parameter
+    whose equivalence class has no producer segmentation). Only these callees
+    should use CallGenericApply for runtime dispatch.
+-}
+isDynamicCallee : CallEnv -> Mono.MonoExpr -> Bool
+isDynamicCallee env funcExpr =
+    case funcExpr of
+        Mono.MonoVarLocal name monoType ->
+            case Dict.get name env.paramSlotKeys of
+                Just slotKey ->
+                    Set.member slotKey env.dynamicSlots
+                        && Mono.isFunctionType monoType
+
+                Nothing ->
+                    False
+
+        _ ->
+            False
+
+
 {-| Compute CallInfo for a MonoCall based on callee and arguments.
 This is the core logic that moves staging decisions into GlobalOpt.
 -}
@@ -1844,15 +1888,16 @@ computeCallInfo graph env func args _ =
                             -- all args fill the first stage.
                             []
 
-                -- Determine call kind based on call model.
-                -- For now, all StageCurried calls use the known segmentation path,
-                -- which handles both known and unknown callees correctly using
-                -- sourceArityForCallee and applyByStages. CallGenericApply will be
-                -- activated in future when closure kind analysis identifies
-                -- heterogeneous closures that cannot be handled by the typed path.
+                -- Determine call kind: use CallGenericApply for dynamic callees
+                -- (function parameters whose staging slot has no producer segmentation),
+                -- otherwise use CallDirectKnownSegmentation for typed closure dispatch.
                 callKind : Mono.CallKind
                 callKind =
-                    Mono.CallDirectKnownSegmentation
+                    if isDynamicCallee env func then
+                        Mono.CallGenericApply
+
+                    else
+                        Mono.CallDirectKnownSegmentation
             in
             { callModel = Mono.StageCurried
             , stageArities = stageAritiesFull

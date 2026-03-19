@@ -1202,7 +1202,26 @@ generateCall ctx func args resultType callInfo =
             -- Generic apply: staging unknown at compile time.
             -- Emit eco.papExtend without remaining_arity; EcoToLLVM will
             -- read the closure header at runtime to determine saturation.
-            generateGenericApply ctx func args resultType callInfo
+            -- Result is always !eco.value, so coerce back to expected ABI type.
+            let
+                genericRes =
+                    generateGenericApply ctx func args resultType callInfo
+
+                expectedType =
+                    Types.monoTypeToAbi resultType
+
+                ( coerceOps, finalVar, finalCtx ) =
+                    coerceResultToType genericRes.ctx
+                        genericRes.resultVar
+                        genericRes.resultType
+                        expectedType
+            in
+            { ops = genericRes.ops ++ coerceOps
+            , resultVar = finalVar
+            , resultType = expectedType
+            , ctx = finalCtx
+            , isTerminated = False
+            }
 
         Mono.CallDirectFlat ->
             -- Kernels / externs: use ABI-flattened model.
@@ -1233,6 +1252,19 @@ eco\_apply\_closure passes args through buildEvaluatorArgs which expects
 HPointer-encoded values.
 
 -}
+callKindToAttrString : Mono.CallKind -> String
+callKindToAttrString callKind =
+    case callKind of
+        Mono.CallGenericApply ->
+            "generic_apply"
+
+        Mono.CallDirectFlat ->
+            "direct_flat"
+
+        Mono.CallDirectKnownSegmentation ->
+            "direct_known_segmentation"
+
+
 generateGenericApply : Ctx.Context -> Mono.MonoExpr -> List Mono.MonoExpr -> Mono.MonoType -> Mono.CallInfo -> ExprResult
 generateGenericApply ctx func args _ _ =
     let
@@ -1244,20 +1276,20 @@ generateGenericApply ctx func args _ _ =
         ( argOps, argsWithTypes, ctx1 ) =
             generateExprListTyped funcResult.ctx args
 
-        -- Box ALL primitive args to !eco.value for generic apply.
-        -- The runtime helper eco_apply_closure treats all args as HPointer-encoded.
-        ( boxOps, boxedArgsWithTypes, ctx2 ) =
-            boxArgsForClosureBoundary True ctx1 argsWithTypes
+        -- Only box Bool (i1) to !eco.value; Int/Float/Char stay as primitives.
+        -- EcoToLLVM's lowerGenericApply will box primitives at the LLVM level
+        -- using SSA types to determine the correct boxing function.
+        ( boxOps, argsForClosure, ctx2 ) =
+            boxArgsForClosureBoundary False ctx1 argsWithTypes
 
         -- Build operand list: closure + all args
         allOperandNames =
-            funcResult.resultVar :: List.map Tuple.first boxedArgsWithTypes
+            funcResult.resultVar :: List.map Tuple.first argsForClosure
 
         allOperandTypes =
-            funcResult.resultType :: List.map Tuple.second boxedArgsWithTypes
+            funcResult.resultType :: List.map Tuple.second argsForClosure
 
-        -- Compute bitmap: after boxing all primitives, everything should be !eco.value
-        -- so bitmap is 0. But compute it properly from the boxed types for correctness.
+        -- Compute bitmap: marks which newargs are unboxed primitives
         newargsUnboxedBitmap =
             List.indexedMap
                 (\i ( _, mlirTy ) ->
@@ -1267,7 +1299,7 @@ generateGenericApply ctx func args _ _ =
                     else
                         0
                 )
-                boxedArgsWithTypes
+                argsForClosure
                 |> List.foldl Bitwise.or 0
 
         ( resVar, ctx3 ) =
@@ -1282,6 +1314,7 @@ generateGenericApply ctx func args _ _ =
             Dict.fromList
                 [ ( "_operand_types", ArrayAttr Nothing (List.map TypeAttr allOperandTypes) )
                 , ( "newargs_unboxed_bitmap", IntAttr Nothing newargsUnboxedBitmap )
+                , ( "_call_kind", StringAttr "generic_apply" )
                 ]
 
         ( ctx4, papExtendOp ) =
@@ -1333,10 +1366,11 @@ applyByStages :
     -> Int -- sourceRemaining: the source PAP's remaining arity (CGEN_052)
     -> List Int -- remainingStageArities: arities of subsequent stages after saturation
     -> MlirType -- saturatedReturnType: callee's ABI return type (CGEN_056: must equal func.func result type)
+    -> Maybe String -- callKindAttr: _call_kind attribute for first papExtend only
     -> List ( String, MlirType ) -- args: remaining (var, mlirType) pairs to apply
     -> List MlirOp -- accumulated ops (in reverse order)
     -> ApplyByStagesResult
-applyByStages ctx funcVar funcMlirType sourceRemaining remainingStageArities saturatedReturnType args accOps =
+applyByStages ctx funcVar funcMlirType sourceRemaining remainingStageArities saturatedReturnType callKindAttr args accOps =
     case args of
         [] ->
             -- Base case: no more args to apply
@@ -1423,12 +1457,22 @@ applyByStages ctx funcVar funcMlirType sourceRemaining remainingStageArities sat
                         else
                             funcMlirType
 
+                    baseAttrs =
+                        [ ( "_operand_types", ArrayAttr Nothing (List.map TypeAttr allOperandTypes) )
+                        , ( "remaining_arity", IntAttr Nothing remainingArity )
+                        , ( "newargs_unboxed_bitmap", IntAttr Nothing newargsUnboxedBitmap )
+                        ]
+
+                    callKindAttrs =
+                        case callKindAttr of
+                            Just ck ->
+                                [ ( "_call_kind", StringAttr ck ) ]
+
+                            Nothing ->
+                                []
+
                     papExtendAttrs =
-                        Dict.fromList
-                            [ ( "_operand_types", ArrayAttr Nothing (List.map TypeAttr allOperandTypes) )
-                            , ( "remaining_arity", IntAttr Nothing remainingArity )
-                            , ( "newargs_unboxed_bitmap", IntAttr Nothing newargsUnboxedBitmap )
-                            ]
+                        Dict.fromList (baseAttrs ++ callKindAttrs)
 
                     ( ctx2, papExtendOp ) =
                         Ops.mlirOp ctx1 "eco.papExtend"
@@ -1445,8 +1489,8 @@ applyByStages ctx funcVar funcMlirType sourceRemaining remainingStageArities sat
                     { ops = List.reverse nextOps, resultVar = resVar, resultType = resultMlirType, ctx = ctx2 }
 
                 else
-                    -- More args to apply in later batches.
-                    applyByStages ctx2 resVar resultMlirType resultRemaining nextStageArities saturatedReturnType rest nextOps
+                    -- More args to apply in later batches (no _call_kind on subsequent stages).
+                    applyByStages ctx2 resVar resultMlirType resultRemaining nextStageArities saturatedReturnType Nothing rest nextOps
 
 
 {-| Partial-apply a flattened external function (MonoExtern or kernel).
@@ -1642,7 +1686,7 @@ generateClosureApplication ctx func args resultType callInfo =
                     -- (metadata-driven: uses initialRemaining and remainingStageArities from CallInfo)
                     -- Pass expectedType as the saturated return type for when call becomes fully saturated
                     papResult =
-                        applyByStages ctx1b funcResult.resultVar funcResult.resultType initialRemaining remainingStageArities expectedType boxedArgsWithTypes []
+                        applyByStages ctx1b funcResult.resultVar funcResult.resultType initialRemaining remainingStageArities expectedType (Just (callKindToAttrString callInfo.callKind)) boxedArgsWithTypes []
                 in
                 { ops = funcResult.ops ++ argOps ++ boxOps ++ papResult.ops
                 , resultVar = papResult.resultVar
@@ -2811,7 +2855,7 @@ generateSaturatedCall ctx func args resultType callInfo =
                             -- (metadata-driven: uses initialRemaining and remainingStageArities from CallInfo)
                             -- Pass expectedType as the saturated return type
                             papResult =
-                                applyByStages ctx1b funcVarName funcVarType initialRemaining remainingStageArities expectedType boxedArgsWithTypes []
+                                applyByStages ctx1b funcVarName funcVarType initialRemaining remainingStageArities expectedType (Just (callKindToAttrString callInfo.callKind)) boxedArgsWithTypes []
                         in
                         { ops = argOps ++ boxOps ++ papResult.ops
                         , resultVar = papResult.resultVar
@@ -2869,7 +2913,7 @@ generateSaturatedCall ctx func args resultType callInfo =
                     -- (metadata-driven: uses initialRemaining and remainingStageArities from CallInfo)
                     -- Pass expectedType as the saturated return type
                     papResult =
-                        applyByStages ctx1b funcResult.resultVar funcResult.resultType initialRemaining remainingStageArities expectedType boxedArgsWithTypes []
+                        applyByStages ctx1b funcResult.resultVar funcResult.resultType initialRemaining remainingStageArities expectedType (Just (callKindToAttrString callInfo.callKind)) boxedArgsWithTypes []
                 in
                 { ops = funcResult.ops ++ argOps ++ boxOps ++ papResult.ops
                 , resultVar = papResult.resultVar

@@ -853,19 +853,27 @@ struct PapExtendOpLowering : public OpConversionPattern<PapExtendOp> {
                 loc, ptrTy, i64Ty, argsArray, ValueRange{idxConst});
             Value arg = newargs[i];
 
-            // Convert non-i64 types to i64 for the args array.
-            // Unboxed primitives must be boxed to HPointer since
-            // eco_apply_closure passes them with unboxed_bitmap=0 (all boxed).
+            // Box unboxed primitives to HPointer for the args array.
+            // eco_apply_closure expects all args as HPointer-encoded i64 values.
+            // With MLIR-level primitives left unboxed, we box based on SSA type:
+            //   i64 (Int)  → eco_alloc_int → HPointer i64
+            //   f64 (Float) → eco_alloc_float → HPointer i64
+            //   i16 (Char) → eco_alloc_char → HPointer i64
+            //   ptr (!eco.value) → ptrtoint → i64 (already HPointer)
             if (auto intTy = dyn_cast<IntegerType>(arg.getType())) {
-                if (intTy.getWidth() == 16) {
+                if (intTy.getWidth() == 64) {
+                    // Int (i64): box via eco_alloc_int
+                    auto allocIntFunc = runtime.getOrCreateAllocInt(rewriter);
+                    auto boxCall = rewriter.create<LLVM::CallOp>(
+                        loc, allocIntFunc, ValueRange{arg});
+                    arg = boxCall.getResult();
+                } else if (intTy.getWidth() == 16) {
                     // Char (i16): box via eco_alloc_char
                     auto allocCharFunc = runtime.getOrCreateAllocChar(rewriter);
                     auto boxCall = rewriter.create<LLVM::CallOp>(
                         loc, allocCharFunc, ValueRange{arg});
                     arg = boxCall.getResult();
-                } else if (intTy.getWidth() == 64) {
-                    // Already i64 — could be Int or HPointer, pass as-is
-                } else if (intTy.getWidth() != 64) {
+                } else {
                     // Other integer widths: zero-extend to i64
                     arg = rewriter.create<LLVM::ZExtOp>(loc, i64Ty, arg);
                 }

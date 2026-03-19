@@ -3,7 +3,7 @@ module Compiler.Generate.MLIR.Ops exposing
     , ecoConstantUnit, ecoConstantEmptyRec, ecoConstantTrue, ecoConstantFalse, ecoConstantNil, ecoConstantNothing, ecoConstantEmptyString
     , ecoConstructList, ecoConstructTuple2, ecoConstructTuple3, ecoConstructRecord, ecoConstructCustom
     , ecoProjectListHead, ecoProjectListTail, ecoProjectTuple2, ecoProjectTuple3, ecoProjectRecord, ecoProjectCustom
-    , ecoCallNamed, ecoReturn, ecoYield, ecoStringLiteral, ecoUnaryOp, ecoBinaryOp, ecoCase, ecoCaseString, ecoGetTag
+    , ecoCallNamed, ecoCallNamedWithAttrs, ecoReturn, ecoYield, ecoStringLiteral, ecoUnaryOp, ecoBinaryOp, ecoCase, ecoCaseString, ecoGetTag
     , ecoArrayGet, ecoArraySet, ecoArrayLength
     , arithConstantInt, arithConstantInt32, arithConstantFloat, arithConstantBool, arithConstantChar, arithCmpI
     , scfIf, scfYield, scfWhile, scfCondition
@@ -67,7 +67,7 @@ in the eco dialect and standard dialects (arith, scf, func).
 
 import Compiler.Generate.MLIR.Context as Ctx
 import Compiler.Generate.MLIR.Types as Types
-import Dict
+import Dict exposing (Dict)
 import Mlir.Mlir as Mlir
     exposing
         ( MlirAttr(..)
@@ -451,6 +451,40 @@ ecoCallNamed ctx resultVar funcName operands returnType =
         attrs =
             Dict.union operandTypesAttr
                 (Dict.singleton "callee" (SymbolRefAttr funcName))
+    in
+    mlirOp ctxWithKernel "eco.call"
+        |> opBuilder.withOperands operandNames
+        |> opBuilder.withResults [ ( resultVar, returnType ) ]
+        |> opBuilder.withAttrs attrs
+        |> opBuilder.build
+
+
+ecoCallNamedWithAttrs : Ctx.Context -> String -> String -> List ( String, MlirType ) -> MlirType -> Dict String MlirAttr -> ( Ctx.Context, MlirOp )
+ecoCallNamedWithAttrs ctx resultVar funcName operands returnType extraAttrs =
+    let
+        -- Register kernel functions for declaration generation
+        ctxWithKernel =
+            if String.startsWith "Elm_Kernel_" funcName then
+                Ctx.registerKernelCall ctx funcName (List.map Tuple.second operands) returnType
+
+            else
+                ctx
+
+        operandNames =
+            List.map Tuple.first operands
+
+        operandTypesAttr =
+            if List.isEmpty operands then
+                Dict.empty
+
+            else
+                Dict.singleton "_operand_types"
+                    (ArrayAttr Nothing (List.map (\( _, t ) -> TypeAttr t) operands))
+
+        attrs =
+            Dict.union extraAttrs
+                (Dict.union operandTypesAttr
+                    (Dict.singleton "callee" (SymbolRefAttr funcName)))
     in
     mlirOp ctxWithKernel "eco.call"
         |> opBuilder.withOperands operandNames
