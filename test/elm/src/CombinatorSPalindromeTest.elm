@@ -3,7 +3,7 @@ module CombinatorSPalindromeTest exposing (main)
 {-| S combinator with String.reverse: "straw" ++ reverse "straw" = "strawwarts"
 -}
 
--- CHECK: result: strawwarts
+-- CHECK: result: "strawwarts"
 
 import Html exposing (text)
 

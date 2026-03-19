@@ -3,7 +3,7 @@ module AccessorVariableTest exposing (main)
 {-| Test accessor function stored in a variable and used on different record types. -}
 
 -- CHECK: via_var: 42
--- CHECK: mapped: [10,20,30]
+-- CHECK: mapped: [10, 20, 30]
 -- CHECK: person_name: "Alice"
 -- CHECK: company_name: "ACME"
 

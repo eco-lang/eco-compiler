@@ -3,7 +3,7 @@ module ListCompoundElementsTest exposing (main)
 {-| Test lists containing compound elements: tuples and records. -}
 
 -- CHECK: tupleLen: 3
--- CHECK: firstTuple: (1,"a")
+-- CHECK: firstTuple: (1, "a")
 -- CHECK: recordLen: 2
 -- CHECK: firstX: 10
 -- CHECK: sumX: 30

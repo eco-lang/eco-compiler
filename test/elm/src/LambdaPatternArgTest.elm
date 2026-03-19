@@ -2,7 +2,7 @@ module LambdaPatternArgTest exposing (main)
 
 {-| Test lambda with tuple and record pattern arguments. -}
 
--- CHECK: swap: (2,1)
+-- CHECK: swap: (2, 1)
 -- CHECK: getX: 42
 -- CHECK: mixed: "b"
 

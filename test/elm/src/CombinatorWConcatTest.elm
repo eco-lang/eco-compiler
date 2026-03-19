@@ -3,7 +3,7 @@ module CombinatorWConcatTest exposing (main)
 {-| W combinator with string append: w (++) "hi" = "hihi"
 -}
 
--- CHECK: result: hihi
+-- CHECK: result: "hihi"
 
 import Html exposing (text)
 
