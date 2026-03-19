@@ -4,7 +4,7 @@ module PolyLetConstTest exposing (main)
 -}
 
 -- CHECK: r1: 1
--- CHECK: r2: hi
+-- CHECK: r2: "hi"
 
 import Html exposing (text)
 
