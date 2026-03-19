@@ -7435,3 +7435,1506 @@ main =
 
 ---
 
+## E2E Tests: New Coverage Alignment Tests
+
+### AccessorVariable
+
+**Expected:** `via_var: 42`, `mapped: [10,20,30]`, `person_name: "Alice"`, `company_name: "ACME"`
+
+```elm
+{-| Test accessor function stored in a variable and used on different record types. -}
+
+-- CHECK: via_var: 42
+-- CHECK: mapped: [10,20,30]
+-- CHECK: person_name: "Alice"
+-- CHECK: company_name: "ACME"
+
+
+main =
+    let
+        accessor = .value
+        item = { value = 42, label = "test" }
+        _ = Debug.log "via_var" (accessor item)
+        items = [ { value = 10 }, { value = 20 }, { value = 30 } ]
+        _ = Debug.log "mapped" (List.map .value items)
+        persons = [ { name = "Alice", age = 30 } ]
+        companies = [ { name = "ACME", employees = 100 } ]
+        personName =
+            case List.head (List.map .name persons) of
+                Just n ->
+                    n
+
+                Nothing ->
+                    "none"
+        companyName =
+            case List.head (List.map .name companies) of
+                Just n ->
+                    n
+
+                Nothing ->
+                    "none"
+        _ = Debug.log "person_name" personName
+        _ = Debug.log "company_name" companyName
+    in
+    text "done"
+```
+
+### AsPatternFuncArg
+
+**Expected:** `var_alias: (42, 42)`, `tuple_alias: (1, (1, 2))`, `record_alias: (1, { x = 1, y = 2 })`, `cons_alias: (1, [1, 2, 3])`
+
+```elm
+{-| Test as-patterns in function arguments. -}
+
+-- CHECK: var_alias: (42, 42)
+-- CHECK: tuple_alias: (1, (1, 2))
+-- CHECK: record_alias: (1, { x = 1, y = 2 })
+-- CHECK: cons_alias: (1, [1, 2, 3])
+
+
+withVar (x as whole) = (x, whole)
+
+
+withPair (((a, b)) as pair) = (a, pair)
+
+
+withRec (({ x, y }) as point) = (x, point)
+
+
+withList (((h :: t)) as list) = (h, list)
+
+
+main =
+    let
+        _ = Debug.log "var_alias" (withVar 42)
+        _ = Debug.log "tuple_alias" (withPair (1, 2))
+        _ = Debug.log "record_alias" (withRec { x = 1, y = 2 })
+        _ = Debug.log "cons_alias" (withList [1, 2, 3])
+    in
+    text "done"
+```
+
+### CaseCharManyBranch
+
+**Expected:** `d0: 0`, `d5: 5`, `d9: 9`, `other: -1`
+
+```elm
+{-| Test case on Char with many literal patterns (digit detection). -}
+
+-- CHECK: d0: 0
+-- CHECK: d5: 5
+-- CHECK: d9: 9
+-- CHECK: other: -1
+
+
+digitToInt c =
+    case c of
+        '0' -> 0
+        '1' -> 1
+        '2' -> 2
+        '3' -> 3
+        '4' -> 4
+        '5' -> 5
+        '6' -> 6
+        '7' -> 7
+        '8' -> 8
+        '9' -> 9
+        _ -> -1
+
+
+main =
+    let
+        _ = Debug.log "d0" (digitToInt '0')
+        _ = Debug.log "d5" (digitToInt '5')
+        _ = Debug.log "d9" (digitToInt '9')
+        _ = Debug.log "other" (digitToInt 'x')
+    in
+    text "done"
+```
+
+### CaseCtorArgPattern
+
+**Expected:** `id: 30`, `age: 25`
+
+```elm
+{-| Test constructor argument patterns in function parameters. -}
+
+-- CHECK: id: 30
+-- CHECK: age: 25
+
+
+type Person
+    = Person Int Int
+
+
+getId : Person -> Int
+getId (Person id _) =
+    id
+
+
+getAge : Person -> Int
+getAge (Person _ age) =
+    age
+
+
+main =
+    let
+        p =
+            Person 30 25
+
+        _ =
+            Debug.log "id" (getId p)
+
+        _ =
+            Debug.log "age" (getAge p)
+    in
+    text "done"
+```
+
+### CaseDeepNest
+
+**Expected:** `r1: "x=0,y=0"`, `r2: "x=0,y=other"`, `r3: "x=1,y=0"`, `r4: "x=other"`, `triple: "all zero"`, `triple2: "z=other"`
+
+```elm
+{-| Test deeply nested case expressions (case inside case branch) with int/string scrutinees. -}
+
+-- CHECK: r1: "x=0,y=0"
+-- CHECK: r2: "x=0,y=other"
+-- CHECK: r3: "x=1,y=0"
+-- CHECK: r4: "x=other"
+-- CHECK: triple: "all zero"
+-- CHECK: triple2: "z=other"
+
+
+classify x y =
+    case x of
+        0 ->
+            case y of
+                0 ->
+                    "x=0,y=0"
+
+                _ ->
+                    "x=0,y=other"
+
+        1 ->
+            case y of
+                0 ->
+                    "x=1,y=0"
+
+                _ ->
+                    "x=1,y=other"
+
+        _ ->
+            "x=other"
+
+
+classifyTriple x y z =
+    case x of
+        0 ->
+            case y of
+                0 ->
+                    case z of
+                        0 ->
+                            "all zero"
+
+                        _ ->
+                            "z=other"
+
+                _ ->
+                    "y=other"
+
+        _ ->
+            "x=other"
+
+
+main =
+    let
+        _ = Debug.log "r1" (classify 0 0)
+        _ = Debug.log "r2" (classify 0 5)
+        _ = Debug.log "r3" (classify 1 0)
+        _ = Debug.log "r4" (classify 9 0)
+        _ = Debug.log "triple" (classifyTriple 0 0 0)
+        _ = Debug.log "triple2" (classifyTriple 0 0 7)
+    in
+    text "done"
+```
+
+### CaseMaybePair
+
+**Expected:** `both: 7`, `first: 3`, `second: 4`, `neither: 0`
+
+```elm
+{-| Test overlapping Maybe pair patterns in decision tree. -}
+
+-- CHECK: both: 7
+-- CHECK: first: 3
+-- CHECK: second: 4
+-- CHECK: neither: 0
+
+
+match t =
+    case t of
+        (Just a, Just b) -> a + b
+        (Just a, Nothing) -> a
+        (Nothing, Just b) -> b
+        (Nothing, Nothing) -> 0
+
+
+main =
+    let
+        _ = Debug.log "both" (match (Just 3, Just 4))
+        _ = Debug.log "first" (match (Just 3, Nothing))
+        _ = Debug.log "second" (match (Nothing, Just 4))
+        _ = Debug.log "neither" (match (Nothing, Nothing))
+    in
+    text "done"
+```
+
+### CaseMixedPattern
+
+**Expected:** `head: 42`, `empty: 0`, `pair_head: 10`, `pair_empty: -1`, `nested: 99`
+
+```elm
+{-| Test case with mixed constructor and list patterns in a single expression. -}
+
+-- CHECK: head: 42
+-- CHECK: empty: 0
+-- CHECK: pair_head: 10
+-- CHECK: pair_empty: -1
+-- CHECK: nested: 99
+
+
+type Container
+    = Container (List Int)
+
+
+headOfContainer c =
+    case c of
+        Container (x :: _) ->
+            x
+
+        Container [] ->
+            0
+
+
+type Pair
+    = Pair Int (List Int)
+
+
+pairHead p =
+    case p of
+        Pair n (x :: _) ->
+            x
+
+        Pair n [] ->
+            -1
+
+
+type Nested
+    = Nested (Maybe (List Int))
+
+
+nestedHead n =
+    case n of
+        Nested (Just (x :: _)) ->
+            x
+
+        Nested (Just []) ->
+            0
+
+        Nested Nothing ->
+            -1
+
+
+main =
+    let
+        _ = Debug.log "head" (headOfContainer (Container [ 42, 99 ]))
+        _ = Debug.log "empty" (headOfContainer (Container []))
+        _ = Debug.log "pair_head" (pairHead (Pair 5 [ 10, 20 ]))
+        _ = Debug.log "pair_empty" (pairHead (Pair 5 []))
+        _ = Debug.log "nested" (nestedHead (Nested (Just [ 99, 88 ])))
+    in
+    text "done"
+```
+
+### CaseNegativeInt
+
+**Expected:** `neg: "minus one"`, `zero: "zero"`, `pos: "one"`, `other: "other"`
+
+```elm
+{-| Test case on negative int patterns. -}
+
+-- CHECK: neg: "minus one"
+-- CHECK: zero: "zero"
+-- CHECK: pos: "one"
+-- CHECK: other: "other"
+
+
+classify n =
+    case n of
+        -1 -> "minus one"
+        0 -> "zero"
+        1 -> "one"
+        _ -> "other"
+
+
+main =
+    let
+        _ = Debug.log "neg" (classify (-1))
+        _ = Debug.log "zero" (classify 0)
+        _ = Debug.log "pos" (classify 1)
+        _ = Debug.log "other" (classify 42)
+    in
+    text "done"
+```
+
+### CaseNestedCtor
+
+**Expected:** `single: 42`, `double: 3`
+
+```elm
+{-| Test nested constructor patterns (Container (Wrap n)). -}
+
+-- CHECK: single: 42
+-- CHECK: double: 3
+
+
+type Wrapper
+    = Wrap Int
+
+
+type Container
+    = Container Wrapper
+
+
+extract : Container -> Int
+extract c =
+    case c of
+        Container (Wrap n) ->
+            n
+
+
+type Box
+    = Box ( Int, Int )
+
+
+sumBox : Box -> Int
+sumBox b =
+    case b of
+        Box ( a, x ) ->
+            a + x
+
+
+main =
+    let
+        _ =
+            Debug.log "single" (extract (Container (Wrap 42)))
+
+        _ =
+            Debug.log "double" (sumBox (Box ( 1, 2 )))
+    in
+    text "done"
+```
+
+### CaseStringManyBranch
+
+**Expected:** `d1: "Monday"`, `d4: "Thursday"`, `d7: "Sunday"`, `other: "unknown"`
+
+```elm
+{-| Test case on String with many literal patterns (day names). -}
+
+-- CHECK: d1: "Monday"
+-- CHECK: d4: "Thursday"
+-- CHECK: d7: "Sunday"
+-- CHECK: other: "unknown"
+
+
+dayName day =
+    case day of
+        "Mon" -> "Monday"
+        "Tue" -> "Tuesday"
+        "Wed" -> "Wednesday"
+        "Thu" -> "Thursday"
+        "Fri" -> "Friday"
+        "Sat" -> "Saturday"
+        "Sun" -> "Sunday"
+        _ -> "unknown"
+
+
+main =
+    let
+        _ = Debug.log "d1" (dayName "Mon")
+        _ = Debug.log "d4" (dayName "Thu")
+        _ = Debug.log "d7" (dayName "Sun")
+        _ = Debug.log "other" (dayName "xyz")
+    in
+    text "done"
+```
+
+### CaseTupleLiteral
+
+**Expected:** `origin: "origin"`, `xaxis: "x-axis"`, `yaxis: "y-axis"`, `unit: "unit"`, `general: "general"`
+
+```elm
+{-| Test case on nested tuple with literal patterns. -}
+
+-- CHECK: origin: "origin"
+-- CHECK: xaxis: "x-axis"
+-- CHECK: yaxis: "y-axis"
+-- CHECK: unit: "unit"
+-- CHECK: general: "general"
+
+
+classify t =
+    case t of
+        (0, 0) -> "origin"
+        (0, _) -> "y-axis"
+        (_, 0) -> "x-axis"
+        (1, 1) -> "unit"
+        _ -> "general"
+
+
+main =
+    let
+        _ = Debug.log "origin" (classify (0, 0))
+        _ = Debug.log "xaxis" (classify (3, 0))
+        _ = Debug.log "yaxis" (classify (0, 5))
+        _ = Debug.log "unit" (classify (1, 1))
+        _ = Debug.log "general" (classify (2, 3))
+    in
+    text "done"
+```
+
+### ClosureCaptureRecord
+
+**Expected:** `rec: 6`, `tup: 6`
+
+```elm
+{-| Test closures capturing record fields and tuple elements. -}
+
+-- CHECK: rec: 6
+-- CHECK: tup: 6
+
+
+closureFromRecord : { x : Int, y : Int } -> Int -> Int
+closureFromRecord rec =
+    \n -> rec.x + rec.y + n
+
+
+closureFromTuple : (Int, Int) -> Int -> Int
+closureFromTuple pair =
+    case pair of
+        (a, b) -> \n -> a + b + n
+
+
+main =
+    let
+        _ = Debug.log "rec" (closureFromRecord { x = 1, y = 2 } 3)
+        _ = Debug.log "tup" (closureFromTuple (1, 2) 3)
+    in
+    text "done"
+```
+
+### ClosureCaptureTuple
+
+**Expected:** `add: 6`, `nested: 10`, `mixed: 9`
+
+```elm
+{-| Test closure capturing tuple values. -}
+
+-- CHECK: add: 6
+-- CHECK: nested: 10
+-- CHECK: mixed: 9
+
+
+addWithTuple : ( Int, Int ) -> Int -> Int
+addWithTuple pair =
+    \n ->
+        let
+            ( a, b ) =
+                pair
+        in
+        a + b + n
+
+
+nestedTuple : ( ( Int, Int ), Int ) -> Int -> Int
+nestedTuple outer =
+    \n ->
+        let
+            ( inner, c ) =
+                outer
+
+            ( a, b ) =
+                inner
+        in
+        a + b + c + n
+
+
+mixedCapture : Int -> ( Int, Int ) -> Int -> Int
+mixedCapture x pair =
+    \n ->
+        let
+            ( a, b ) =
+                pair
+        in
+        x + a + b + n
+
+
+main =
+    let
+        _ =
+            Debug.log "add" (addWithTuple ( 1, 2 ) 3)
+
+        _ =
+            Debug.log "nested" (nestedTuple ( ( 1, 2 ), 3 ) 4)
+
+        _ =
+            Debug.log "mixed" (mixedCapture 1 ( 2, 3 ) 3)
+    in
+    text "done"
+```
+
+### CustomTypeFuncField
+
+**Expected:** `op1: 11`, `op2: 20`
+
+```elm
+{-| Test custom type wrapping a function field. -}
+
+-- CHECK: op1: 11
+-- CHECK: op2: 20
+
+
+type Op
+    = Op (Int -> Int)
+
+
+runOp : Op -> Int
+runOp (Op f) =
+    f 10
+
+
+main =
+    let
+        _ =
+            Debug.log "op1" (runOp (Op (\x -> x + 1)))
+
+        _ =
+            Debug.log "op2" (runOp (Op (\x -> x * 2)))
+    in
+    text "done"
+```
+
+### DeepNestStress
+
+**Expected:** `nested_list: 1`, `nested_tuple: 1`, `nested_record: 1`, `nested_let: 10`
+
+```elm
+{-| Test deeply nested data structures: lists, tuples, records, and lets. -}
+
+-- CHECK: nested_list: 1
+-- CHECK: nested_tuple: 1
+-- CHECK: nested_record: 1
+-- CHECK: nested_let: 10
+
+
+main =
+    let
+        nl = [ [ [ [ 1 ] ] ] ]
+        nlVal =
+            case nl of
+                [ [ [ [ x ] ] ] ] ->
+                    x
+
+                _ ->
+                    0
+        _ = Debug.log "nested_list" nlVal
+        nt = ( ( ( ( 1, 2 ), 3 ), 4 ), 5 )
+        ( ( ( ( first, _ ), _ ), _ ), _ ) = nt
+        _ = Debug.log "nested_tuple" first
+        nr = { n = { n = { n = { v = 1 } } } }
+        _ = Debug.log "nested_record" nr.n.n.n.v
+        a =
+            let
+                b =
+                    let
+                        c =
+                            let
+                                d = 10
+                            in
+                            d
+                    in
+                    c
+            in
+            b
+        _ = Debug.log "nested_let" a
+    in
+    text "done"
+```
+
+### EitherType
+
+**Expected:** `left: 42`, `right: 0`, `mapLeft: 84`, `isLeft: True`
+
+```elm
+{-| Test Either-like polymorphic type with two constructors and two type parameters. -}
+
+-- CHECK: left: 42
+-- CHECK: right: 0
+-- CHECK: mapLeft: 84
+-- CHECK: isLeft: True
+
+
+type Either a b
+    = Left a
+    | Right b
+
+
+fromEither e default =
+    case e of
+        Left x ->
+            x
+
+        Right _ ->
+            default
+
+
+mapLeft f e =
+    case e of
+        Left x ->
+            Left (f x)
+
+        Right y ->
+            Right y
+
+
+isLeft e =
+    case e of
+        Left _ ->
+            True
+
+        Right _ ->
+            False
+
+
+main =
+    let
+        _ = Debug.log "left" (fromEither (Left 42) 0)
+        _ = Debug.log "right" (fromEither (Right "err") 0)
+        mapped = mapLeft (\x -> x * 2) (Left 42)
+        _ = Debug.log "mapLeft" (fromEither mapped 0)
+        _ = Debug.log "isLeft" (isLeft (Left 1))
+    in
+    text "done"
+```
+
+### LambdaPatternArg
+
+**Expected:** `swap: (2,1)`, `getX: 42`, `mixed: "b"`
+
+```elm
+{-| Test lambda with tuple and record pattern arguments. -}
+
+-- CHECK: swap: (2,1)
+-- CHECK: getX: 42
+-- CHECK: mixed: "b"
+
+
+main =
+    let
+        swap =
+            \( x, y ) -> ( y, x )
+
+        getX =
+            \{ x } -> x
+
+        mixed =
+            \a ( b, c ) _ -> b
+
+        _ =
+            Debug.log "swap" (swap ( 1, 2 ))
+
+        _ =
+            Debug.log "getX" (getX { x = 42 })
+
+        _ =
+            Debug.log "mixed" (mixed 1 ( "b", 2 ) 3)
+    in
+    text "done"
+```
+
+### LetDestructAlias
+
+**Expected:** `pair: (1, 2)`, `first: 1`
+
+```elm
+{-| Test let-destructuring with alias patterns. -}
+
+-- CHECK: pair: (1, 2)
+-- CHECK: first: 1
+
+
+main =
+    let
+        (((a, b)) as pair) = (1, 2)
+        _ = Debug.log "pair" pair
+        _ = Debug.log "first" a
+    in
+    text "done"
+```
+
+### LetDestructCons
+
+**Expected:** `head: 1`, `second: 20`
+
+```elm
+{-| Test cons/list pattern destructuring in let bindings. -}
+
+-- CHECK: head: 1
+-- CHECK: second: 20
+
+
+main =
+    let
+        h :: t = [1, 2, 3]
+        a :: b :: rest = [10, 20, 30]
+        _ = Debug.log "head" h
+        _ = Debug.log "second" b
+    in
+    text "done"
+```
+
+### LetDestructFuncTuple
+
+**Expected:** `get: 10`, `set: 99`
+
+```elm
+{-| Test let-destructuring a tuple of functions selected by case. -}
+
+-- CHECK: get: 10
+-- CHECK: set: 99
+
+
+type Loc
+    = First
+    | Second
+
+
+choose : Loc -> { a : Int, b : Int } -> ( Int, { a : Int, b : Int } )
+choose loc rec =
+    let
+        ( getter, setter ) =
+            case loc of
+                First ->
+                    ( .a, \x m -> { m | a = x } )
+
+                Second ->
+                    ( .b, \x m -> { m | b = x } )
+    in
+    ( getter rec, setter 99 rec )
+
+
+main =
+    let
+        ( v, r ) =
+            choose First { a = 10, b = 20 }
+
+        _ =
+            Debug.log "get" v
+
+        _ =
+            Debug.log "set" r.a
+    in
+    text "done"
+```
+
+### LetDestructRecord
+
+**Expected:** `single: 42`, `multi: 3`, `partial: 4`, `mixed: 3`
+
+```elm
+{-| Test record destructuring in let bindings. -}
+
+-- CHECK: single: 42
+-- CHECK: multi: 3
+-- CHECK: partial: 4
+-- CHECK: mixed: 3
+
+
+main =
+    let
+        { x } = { x = 42 }
+        { a, b } = { a = 1, b = 2 }
+        { p, r } = { p = 1, q = 2, r = 3 }
+        ({ s }, t) = ({ s = 1 }, 2)
+        _ = Debug.log "single" x
+        _ = Debug.log "multi" (a + b)
+        _ = Debug.log "partial" (p + r)
+        _ = Debug.log "mixed" (s + t)
+    in
+    text "done"
+```
+
+### LetDestructTupleNested
+
+**Expected:** `basic: 3`, `nested: 8`, `chain: 6`
+
+```elm
+{-| Test nested and chained tuple destructuring in let bindings. -}
+
+-- CHECK: basic: 3
+-- CHECK: nested: 8
+-- CHECK: chain: 6
+
+
+main =
+    let
+        (a, b) = (1, 2)
+        ((c, d), (e, f)) = ((3, 4), (5, 6))
+        (g, rest) = (1, (2, 3))
+        (h, i) = rest
+        _ = Debug.log "basic" (a + b)
+        _ = Debug.log "nested" (c + d + e - f + 2)
+        _ = Debug.log "chain" (g + h + i)
+    in
+    text "done"
+```
+
+### LetShadowing
+
+**Expected:** `outer: 1`, `inner: 2`, `afterInner: 1`, `deep: 3`, `param_shadow: 20`
+
+```elm
+{-| Test nested let bindings with variable shadowing. -}
+
+-- CHECK: outer: 1
+-- CHECK: inner: 2
+-- CHECK: afterInner: 1
+-- CHECK: deep: 3
+-- CHECK: param_shadow: 20
+
+
+useShadow x =
+    let
+        y = x * 2
+        result =
+            let
+                y = x * 4
+            in
+            y
+    in
+    result
+
+
+main =
+    let
+        x = 1
+        _ = Debug.log "outer" x
+        result =
+            let
+                x = 2
+            in
+            x
+        _ = Debug.log "inner" result
+        _ = Debug.log "afterInner" x
+        deep =
+            let
+                a = 1
+            in
+            let
+                a = 2
+            in
+            let
+                a = 3
+            in
+            a
+        _ = Debug.log "deep" deep
+        _ = Debug.log "param_shadow" (useShadow 5)
+    in
+    text "done"
+```
+
+### ListCompoundElements
+
+**Expected:** `tupleLen: 3`, `firstTuple: (1,"a")`, `recordLen: 2`, `firstX: 10`, `sumX: 30`
+
+```elm
+{-| Test lists containing compound elements: tuples and records. -}
+
+-- CHECK: tupleLen: 3
+-- CHECK: firstTuple: (1,"a")
+-- CHECK: recordLen: 2
+-- CHECK: firstX: 10
+-- CHECK: sumX: 30
+
+
+main =
+    let
+        tuples = [ ( 1, "a" ), ( 2, "b" ), ( 3, "c" ) ]
+        _ = Debug.log "tupleLen" (List.length tuples)
+        _ = Debug.log "firstTuple" (case List.head tuples of
+            Just t -> t
+            Nothing -> ( 0, "" ))
+        records = [ { x = 10, y = "hello" }, { x = 20, y = "world" } ]
+        _ = Debug.log "recordLen" (List.length records)
+        firstX =
+            case List.head records of
+                Just r ->
+                    r.x
+
+                Nothing ->
+                    0
+        _ = Debug.log "firstX" firstX
+        _ = Debug.log "sumX" (List.foldl (\r acc -> acc + r.x) 0 records)
+    in
+    text "done"
+```
+
+### MultiLocalTailRec
+
+**Expected:** `result: 15`
+
+```elm
+{-| Test multiple local tail-recursive defs in same let block. -}
+
+-- CHECK: result: 15
+
+
+main =
+    let
+        countDown i =
+            if i <= 0 then
+                0
+
+            else
+                countDown (i - 1)
+
+        sumUp i acc =
+            if i <= 0 then
+                acc
+
+            else
+                sumUp (i - 1) (acc + i)
+
+        _ =
+            Debug.log "result" (countDown 5 + sumUp 5 0)
+    in
+    text "done"
+```
+
+### MutualRecursionThreeWay
+
+**Expected:** `a10: 1`, `a9: 0`, `a3: 0`, `a0: 0`
+
+```elm
+{-| Test three-way mutual recursion: funcA calls funcB, funcB calls funcC, funcC calls funcA. -}
+
+-- CHECK: a10: 1
+-- CHECK: a9: 0
+-- CHECK: a3: 0
+-- CHECK: a0: 0
+
+
+funcA n =
+    if n <= 0 then
+        0
+    else
+        funcB (n - 1)
+
+
+funcB n =
+    if n <= 0 then
+        1
+    else
+        funcC (n - 1)
+
+
+funcC n =
+    if n <= 0 then
+        2
+    else
+        funcA (n - 1)
+
+
+main =
+    let
+        _ = Debug.log "a10" (funcA 10)
+        _ = Debug.log "a9" (funcA 9)
+        _ = Debug.log "a3" (funcA 3)
+        _ = Debug.log "a0" (funcA 0)
+    in
+    text "done"
+```
+
+### PartialAppCaptureTypes
+
+**Expected:** `float_cap: 1.5`, `char_cap: 'x'`, `bool_cap: True`, `string_cap: "hello"`, `combined: 3.5`
+
+```elm
+{-| Test partial application capturing Float, Char, Bool, and String values. -}
+
+-- CHECK: float_cap: 1.5
+-- CHECK: char_cap: 'x'
+-- CHECK: bool_cap: True
+-- CHECK: string_cap: "hello"
+-- CHECK: combined: 3.5
+
+
+first3 a b c =
+    a
+
+
+addFloat a b =
+    a + b
+
+
+main =
+    let
+        pFloat = first3 1.5
+        pChar = first3 'x'
+        pBool = first3 True
+        pStr = first3 "hello"
+        _ = Debug.log "float_cap" (pFloat 2 3)
+        _ = Debug.log "char_cap" (pChar 2 3)
+        _ = Debug.log "bool_cap" (pBool 2 3)
+        _ = Debug.log "string_cap" (pStr 2 3)
+        partialAdd = addFloat 1.5
+        _ = Debug.log "combined" (partialAdd 2.0)
+    in
+    text "done"
+```
+
+### PolyChainCall
+
+**Expected:** `size: 2`
+
+```elm
+{-| Test polymorphic chain callers: polymorphic function calling polymorphic callee multiple times. -}
+
+-- CHECK: size: 2
+
+
+type Tree a
+    = Leaf
+    | Node (Tree a) a (Tree a)
+
+
+insertTree : a -> Tree a -> Tree a
+insertTree val tree =
+    Node tree val Leaf
+
+
+buildTree : a -> a -> Tree a
+buildTree x y =
+    let
+        t1 =
+            insertTree x Leaf
+
+        t2 =
+            insertTree y t1
+    in
+    t2
+
+
+sizeTree : Tree a -> Int
+sizeTree t =
+    case t of
+        Leaf ->
+            0
+
+        Node left _ right ->
+            1 + sizeTree left + sizeTree right
+
+
+main =
+    let
+        _ =
+            Debug.log "size" (sizeTree (buildTree 1 2))
+    in
+    text "done"
+```
+
+### PolyEscapeRecord
+
+**Expected:** `result: 42`, `narrowed: 6`
+
+```elm
+{-| Test polymorphic values escaping through records. -}
+
+-- CHECK: result: 42
+-- CHECK: narrowed: 6
+
+
+main =
+    let
+        r =
+            { fn = \x -> x }
+
+        _ =
+            Debug.log "result" (r.fn 42)
+
+        r2 =
+            { r | fn = \y -> y + 1 }
+
+        _ =
+            Debug.log "narrowed" (r2.fn 5)
+    in
+    text "done"
+```
+
+### PolySpecializeRecursive
+
+**Expected:** `intLen: 3`, `strLen: 2`, `intMap: [2, 4, 6]`, `strMap: ["aa", "bb"]`
+
+```elm
+{-| Test polymorphic function specialization at multiple types. -}
+
+-- CHECK: intLen: 3
+-- CHECK: strLen: 2
+-- CHECK: intMap: [2, 4, 6]
+-- CHECK: strMap: ["aa", "bb"]
+
+
+myLength : List a -> Int
+myLength xs =
+    case xs of
+        [] -> 0
+        _ :: rest -> 1 + myLength rest
+
+
+myMap : (a -> b) -> List a -> List b
+myMap f xs =
+    case xs of
+        [] -> []
+        x :: rest -> f x :: myMap f rest
+
+
+main =
+    let
+        _ = Debug.log "intLen" (myLength [1, 2, 3])
+        _ = Debug.log "strLen" (myLength ["a", "b"])
+        _ = Debug.log "intMap" (myMap (\x -> x * 2) [1, 2, 3])
+        _ = Debug.log "strMap" (myMap (\s -> s ++ s) ["a", "b"])
+    in
+    text "done"
+```
+
+### PolyTailRecReverse
+
+**Expected:** `intRev: [3, 2, 1]`, `strRev: ["c", "b", "a"]`
+
+```elm
+{-| Test polymorphic tail-recursive reverse at multiple types. -}
+
+-- CHECK: intRev: [3, 2, 1]
+-- CHECK: strRev: ["c", "b", "a"]
+
+
+reverseHelper acc xs =
+    case xs of
+        [] -> acc
+        x :: rest -> reverseHelper (x :: acc) rest
+
+
+myReverse xs = reverseHelper [] xs
+
+
+main =
+    let
+        _ = Debug.log "intRev" (myReverse [1, 2, 3])
+        _ = Debug.log "strRev" (myReverse ["a", "b", "c"])
+    in
+    text "done"
+```
+
+### RecordChainedUpdate
+
+**Expected:** `multi: { x = 100, y = 20, z = 300 }`, `chain: { x = 10, y = 20 }`
+
+```elm
+{-| Test multi-field record update and chained updates. -}
+
+-- CHECK: multi: { x = 100, y = 20, z = 300 }
+-- CHECK: chain: { x = 10, y = 20 }
+
+
+main =
+    let
+        r =
+            { x = 1, y = 20, z = 3 }
+
+        multi =
+            { r | x = 100, z = 300 }
+
+        s =
+            { x = 1, y = 2 }
+
+        s2 =
+            { s | x = 10 }
+
+        chain =
+            { s2 | y = 20 }
+
+        _ =
+            Debug.log "multi" multi
+
+        _ =
+            Debug.log "chain" chain
+    in
+    text "done"
+```
+
+### RecordNestedAccess
+
+**Expected:** `deep: 42`, `chain: 99`
+
+```elm
+{-| Test nested record chained access. -}
+
+-- CHECK: deep: 42
+-- CHECK: chain: 99
+
+
+main =
+    let
+        r =
+            { nested = { value = 42 } }
+
+        s =
+            { a = { b = { c = 99 } } }
+
+        _ =
+            Debug.log "deep" r.nested.value
+
+        _ =
+            Debug.log "chain" s.a.b.c
+    in
+    text "done"
+```
+
+### RecordWithFunctions
+
+**Expected:** `apply1: 11`, `apply2: 20`, `composed: 22`, `updated: 7`
+
+```elm
+{-| Test records containing function values in fields. -}
+
+-- CHECK: apply1: 11
+-- CHECK: apply2: 20
+-- CHECK: composed: 22
+-- CHECK: updated: 7
+
+
+main =
+    let
+        ops = { add = \x -> x + 1, mul = \x -> x * 2 }
+        _ = Debug.log "apply1" (ops.add 10)
+        _ = Debug.log "apply2" (ops.mul 10)
+        _ = Debug.log "composed" (ops.mul (ops.add 10))
+        ops2 = { ops | add = \x -> x + 2 }
+        _ = Debug.log "updated" (ops2.add 5)
+    in
+    text "done"
+```
+
+### RecursiveMutualType
+
+**Expected:** `nodes: 4`
+
+```elm
+{-| Test mutually recursive types (Forest/RoseTree). -}
+
+-- CHECK: nodes: 4
+
+
+type Forest a
+    = Forest (List (RoseTree a))
+
+
+type RoseTree a
+    = RoseNode a (Forest a)
+
+
+countNodes : RoseTree a -> Int
+countNodes (RoseNode _ (Forest children)) =
+    1 + List.foldl (\child acc -> acc + countNodes child) 0 children
+
+
+main =
+    let
+        tree = RoseNode 1 (Forest
+            [ RoseNode 2 (Forest [])
+            , RoseNode 3 (Forest [ RoseNode 4 (Forest []) ])
+            ])
+        _ = Debug.log "nodes" (countNodes tree)
+    in
+    text "done"
+```
+
+### RecursiveTree
+
+**Expected:** `sum: 6`, `depth: 3`
+
+```elm
+{-| Test recursive binary tree type with sum and depth traversals. -}
+
+-- CHECK: sum: 6
+-- CHECK: depth: 3
+
+
+type Tree a
+    = Leaf a
+    | Branch (Tree a) (Tree a)
+
+
+sumTree tree =
+    case tree of
+        Leaf n -> n
+        Branch left right -> sumTree left + sumTree right
+
+
+depth tree =
+    case tree of
+        Leaf _ -> 1
+        Branch left right ->
+            1 + max (depth left) (depth right)
+
+
+main =
+    let
+        t = Branch (Branch (Leaf 1) (Leaf 2)) (Leaf 3)
+        _ = Debug.log "sum" (sumTree t)
+        _ = Debug.log "depth" (depth t)
+    in
+    text "done"
+```
+
+### RecursiveTypeInRecord
+
+**Expected:** `eval: 6`
+
+```elm
+{-| Test recursive type nested in record field. -}
+
+-- CHECK: eval: 6
+
+
+type Expr
+    = Lit Int
+    | Add { left : Expr, right : Expr }
+
+
+eval : Expr -> Int
+eval expr =
+    case expr of
+        Lit n ->
+            n
+
+        Add r ->
+            eval r.left + eval r.right
+
+
+main =
+    let
+        e =
+            Add { left = Lit 1, right = Add { left = Lit 2, right = Lit 3 } }
+
+        _ =
+            Debug.log "eval" (eval e)
+    in
+    text "done"
+```
+
+### TypeClassConstraint
+
+**Expected:** `absInt: 5`, `absFloat: 3.14`, `minInt: 3`, `concatStr: "hello world"`
+
+```elm
+{-| Test number, comparable, and appendable type-class constraints. -}
+
+-- CHECK: absInt: 5
+-- CHECK: absFloat: 3.14
+-- CHECK: minInt: 3
+-- CHECK: concatStr: "hello world"
+
+
+zabs : number -> number
+zabs n =
+    if n < 0 then
+        -n
+
+    else
+        n
+
+
+zmin : comparable -> comparable -> comparable
+zmin a b =
+    if a < b then
+        a
+
+    else
+        b
+
+
+zconcat : appendable -> appendable -> appendable
+zconcat a b =
+    a ++ b
+
+
+main =
+    let
+        _ =
+            Debug.log "absInt" (zabs -5)
+
+        _ =
+            Debug.log "absFloat" (zabs -3.14)
+
+        _ =
+            Debug.log "minInt" (zmin 3 5)
+
+        _ =
+            Debug.log "concatStr" (zconcat "hello " "world")
+    in
+    text "done"
+```
+
+### WrapperUnionField
+
+**Expected:** `result: 7`
+
+```elm
+{-| Test wrapper type holding a record with a union field. -}
+
+-- CHECK: result: 7
+
+
+type Kind
+    = A
+    | B Int
+
+
+type Error
+    = Error { tag : Kind, count : Int }
+
+
+getTag : Error -> Int
+getTag e =
+    case e of
+        Error props ->
+            case props.tag of
+                A ->
+                    0
+
+                B n ->
+                    n
+
+
+main =
+    let
+        _ =
+            Debug.log "result" (getTag (Error { tag = B 7, count = 1 }))
+    in
+    text "done"
+```
+
+---

@@ -20,12 +20,15 @@ import SourceIR.BytesFusionCases as BytesFusionCases
 import SourceIR.BitwiseCases as BitwiseCases
 import SourceIR.CaseCases as CaseCases
 import SourceIR.ClosureAbiBranchCases as ClosureAbiBranchCases
+import SourceIR.ClosureCaptureBoolCases as ClosureCaptureBoolCases
 import SourceIR.CombinatorCases as CombinatorCases
 import SourceIR.CombinatorStdlibCases as CombinatorStdlibCases
+import SourceIR.CompositionOpCases as CompositionOpCases
 import SourceIR.ClosureCases as ClosureCases
 import SourceIR.ControlFlowCases as ControlFlowCases
 import SourceIR.DecisionTreeAdvancedCases as DecisionTreeAdvancedCases
 import SourceIR.EdgeCaseCases as EdgeCaseCases
+import SourceIR.EqualityPapCases as EqualityPapCases
 import SourceIR.FloatMathCases as FloatMathCases
 import SourceIR.FunctionCases as FunctionCases
 import SourceIR.HigherOrderCases as HigherOrderCases
@@ -47,6 +50,8 @@ import SourceIR.LiteralCases as LiteralCases
 import SourceIR.LocalTailRecCases as LocalTailRecCases
 import SourceIR.MonoCompoundCases as MonoCompoundCases
 import SourceIR.MultiDefCases as MultiDefCases
+import SourceIR.MaybeResultCases as MaybeResultCases
+import SourceIR.MutualRecTailRecCases as MutualRecTailRecCases
 import SourceIR.OperatorCases as OperatorCases
 import SourceIR.ParamArityCases as ParamArityCases
 import SourceIR.PatternArgCases as PatternArgCases
@@ -57,6 +62,7 @@ import SourceIR.PolyEscapeCases as PolyEscapeCases
 import SourceIR.PortEncodingCases as PortEncodingCases
 import SourceIR.PostSolveExprCases as PostSolveExprCases
 import SourceIR.RecordCases as RecordCases
+import SourceIR.RecursiveTreeTraversalCases as RecursiveTreeTraversalCases
 import SourceIR.RecursiveTypeCases as RecursiveTypeCases
 import SourceIR.SpecializeAccessorCases as SpecializeAccessorCases
 import SourceIR.SpecializeConstructorCases as SpecializeConstructorCases
@@ -83,13 +89,16 @@ expectSuite expectFn condStr =
         , BoolCaseCases.expectSuite expectFn condStr
         , BytesFusionCases.expectSuite expectFn condStr
         , ClosureAbiBranchCases.expectSuite expectFn condStr
+        , ClosureCaptureBoolCases.expectSuite expectFn condStr
         , CaseCases.expectSuite expectFn condStr
         , CombinatorCases.expectSuite expectFn condStr
         , CombinatorStdlibCases.expectSuite expectFn condStr
+        , CompositionOpCases.expectSuite expectFn condStr
         , ClosureCases.expectSuite expectFn condStr
         , ControlFlowCases.expectSuite expectFn condStr
         , DecisionTreeAdvancedCases.expectSuite expectFn condStr
         , EdgeCaseCases.expectSuite expectFn condStr
+        , EqualityPapCases.expectSuite expectFn condStr
         , FloatMathCases.expectSuite expectFn condStr
         , FunctionCases.expectSuite expectFn condStr
         , HigherOrderCases.expectSuite expectFn condStr
@@ -102,6 +111,7 @@ expectSuite expectFn condStr =
         , LiteralCases.expectSuite expectFn condStr
         , MonoCompoundCases.expectSuite expectFn condStr
         , MultiDefCases.expectSuite expectFn condStr
+        , MutualRecTailRecCases.expectSuite expectFn condStr
         , OperatorCases.expectSuite expectFn condStr
         , ParamArityCases.expectSuite expectFn condStr
         , PatternArgCases.expectSuite expectFn condStr
@@ -111,6 +121,8 @@ expectSuite expectFn condStr =
         , PortEncodingCases.expectSuite expectFn condStr
         , PostSolveExprCases.expectSuite expectFn condStr
         , RecordCases.expectSuite expectFn condStr
+        , MaybeResultCases.expectSuite expectFn condStr
+        , RecursiveTreeTraversalCases.expectSuite expectFn condStr
         , RecursiveTypeCases.expectSuite expectFn condStr
         , SpecializeAccessorCases.expectSuite expectFn condStr
         , SpecializeConstructorCases.expectSuite expectFn condStr

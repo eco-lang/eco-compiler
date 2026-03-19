@@ -72,8 +72,14 @@ through the full compilation pipeline and checks various invariants.
 | 59 | [AccessorFuzzCases](#accessorfuzzcases) | Fuzz |
 | 60 | [CombinatorCases](#combinatorcases) | Combinators |
 | 61 | [CombinatorStdlibCases](#combinatorstdlibcases) | Combinators |
+| 62 | [EqualityPapCases](#equalitypapcases) | Equality/Bool |
+| 63 | [ClosureCaptureBoolCases](#closurecaptureboolcases) | Equality/Bool |
+| 64 | [CompositionOpCases](#compositionopcases) | Composition |
+| 65 | [MutualRecTailRecCases](#mutualrectailreccases) | Recursion |
+| 66 | [MaybeResultCases](#mayberesultcases) | Maybe/Compare |
+| 67 | [RecursiveTreeTraversalCases](#recursivetreetraversalcases) | Recursion |
 
-**Total: ~1053 test cases across 61 test modules**
+**Total: ~1110 test cases across 67 test modules**
 
 ---
 
@@ -11619,6 +11625,815 @@ testValue =
         cons x xs = [x] ++ xs
     in
     c cons [2, 3] 1
+```
+
+## EqualityPapCases
+
+### Equality PAP on Int: List.filter (eq 5) [1,2,5,3,5]
+```elm
+testValue =
+    let
+        eq a b = a == b
+    in
+    List.filter (eq 5) [1, 2, 5, 3, 5]
+```
+
+### Equality PAP on Float: List.filter (eq 2.5) [1.0,2.5,3.0]
+```elm
+testValue =
+    let
+        eq a b = a == b
+    in
+    List.filter (eq 2.5) [1.0, 2.5, 3.0, 2.5]
+```
+
+### Equality PAP on Char: List.filter (eq 'a') ['a','b','a']
+```elm
+testValue =
+    let
+        eq a b = a == b
+    in
+    List.filter (eq 'a') ['a', 'b', 'a', 'c']
+```
+
+### Equality PAP on String: List.filter (eq "hello") ["hi","hello"]
+```elm
+testValue =
+    let
+        eq a b = a == b
+    in
+    List.filter (eq "hello") ["hi", "hello", "world", "hello"]
+```
+
+### Equality PAP used at multiple types in same module
+```elm
+testValue =
+    let
+        eqI a b = a == b
+        eqS a b = a == b
+        ints = List.filter (eqI 5) [1, 5, 3]
+        strs = List.filter (eqS "x") ["x", "y"]
+    in
+    ints
+```
+
+### List.any identity [False, True, False]
+```elm
+testValue = List.any Basics.identity [False, True, False]
+```
+
+### List.all identity [True, True, True]
+```elm
+testValue = List.all Basics.identity [True, True, True]
+```
+
+### List.any not [True, False]
+```elm
+testValue = List.any Basics.not [True, False]
+```
+
+### List.all not [False, False]
+```elm
+testValue = List.all Basics.not [False, False]
+```
+
+### compare on Char: compare 'a' 'b'
+```elm
+testValue = Basics.compare 'a' 'b'
+```
+
+### compare on Float: compare 1.5 2.5
+```elm
+testValue = Basics.compare 1.5 2.5
+```
+
+### compare on String: compare "apple" "banana"
+```elm
+testValue = Basics.compare "apple" "banana"
+```
+
+### case on compare result (Order pattern match)
+```elm
+testValue =
+    let
+        result = Basics.compare 1 2
+    in
+    case result of
+        LT -> "less"
+        EQ -> "equal"
+        GT -> "greater"
+```
+
+### List.map not [True, False, True]
+```elm
+testValue = List.map Basics.not [True, False, True]
+```
+
+### List.map identity [True, False, True]
+```elm
+testValue = List.map Basics.identity [True, False, True]
+```
+
+### List.map with equality predicate producing Bool list
+```elm
+testValue = List.map (\x -> x == 5) [1, 5, 3, 5, 2]
+```
+
+## ClosureCaptureBoolCases
+
+### Bool as tail-rec carry: searchList toggles Bool through loop
+```elm
+testValue =
+    let
+        searchList found target list =
+            case list of
+                [] -> if found then 1 else 0
+                x :: xs ->
+                    if x == target then
+                        searchList True target xs
+                    else
+                        searchList found target xs
+    in
+    searchList False 5 [1, 5, 3]
+```
+
+### Bool as tail-rec carry: countWhile with Bool flag
+```elm
+testValue =
+    let
+        countWhile active acc list =
+            case list of
+                [] -> acc
+                x :: xs ->
+                    if active then
+                        countWhile (x > 0) (acc + x) xs
+                    else
+                        countWhile active acc xs
+    in
+    countWhile True 0 [3, -1, 5, 2]
+```
+
+### Bool captured in closure: boolToInt True partially applied
+```elm
+testValue =
+    let
+        boolToInt flag x = if flag then x else 0
+        trueF = boolToInt True
+    in
+    trueF 42
+```
+
+### Bool captured in closure: boolToInt False partially applied
+```elm
+testValue =
+    let
+        boolToInt flag x = if flag then x else 0
+        falseF = boolToInt False
+    in
+    falseF 42
+```
+
+### Bool captured alongside Int in closure
+```elm
+testValue =
+    let
+        chooseAndApply flag offset x =
+            if flag then
+                x + offset
+            else
+                x - offset
+        f = chooseAndApply True 10
+    in
+    f 5
+```
+
+### Heterogeneous closure: Int capture vs Float capture in if branches
+```elm
+testValue =
+    let
+        addN n x = n + x
+        f = if True then addN 10 else addN 20
+    in
+    f 3
+```
+
+### Heterogeneous closure: different Int captures chosen dynamically
+```elm
+testValue =
+    let
+        addN n x = n + x
+        add5 = addN 5
+        add10 = addN 10
+        cond = 1 > 0
+        g = if cond then add5 else add10
+    in
+    g 7
+```
+
+### Heterogeneous closure: Float mul vs Int add captures
+```elm
+testValue =
+    let
+        addInt n x = n + x
+        mulInt factor x = factor * x
+        useAdd = addInt 10
+        useMul = mulInt 3
+        f = if True then useAdd else useMul
+    in
+    f 4
+```
+
+## CompositionOpCases
+
+### ComposeR (>>) two functions
+```elm
+testValue =
+    let
+        addOne x = x + 1
+        double x = x * 2
+        addOneThenDouble = addOne >> double
+    in
+    addOneThenDouble 9
+```
+
+### ComposeL (<<) two functions
+```elm
+testValue =
+    let
+        addOne x = x + 1
+        double x = x * 2
+        doubleThenAddOne = addOne << double
+    in
+    doubleThenAddOne 5
+```
+
+### ComposeR applied to value
+```elm
+testValue =
+    let
+        addOne x = x + 1
+        double x = x * 2
+    in
+    (addOne >> double) 9
+```
+
+### ComposeL applied to value
+```elm
+testValue =
+    let
+        addOne x = x + 1
+        double x = x * 2
+    in
+    (addOne << double) 5
+```
+
+### ComposeR chain of three functions
+```elm
+testValue =
+    let
+        addOne x = x + 1
+        double x = x * 2
+        chain = addOne >> double >> addOne
+    in
+    chain 4
+```
+
+### Case on triple with all-zero literal pattern
+```elm
+testValue =
+    case (0, 0, 0) of
+        (0, 0, 0) -> "all zero"
+        _ -> "other"
+```
+
+### Case on triple with mixed wildcard patterns
+```elm
+testValue =
+    case (0, 1, 0) of
+        (0, 0, 0) -> "all zero"
+        (0, _, _) -> "x zero"
+        (_, _, 0) -> "z zero"
+        _ -> "none zero"
+```
+
+### Case on triple with variable extraction
+```elm
+testValue =
+    case (1, 2, 3) of
+        (a, b, c) -> a + b + c
+```
+
+### Case on Order with LT/EQ/GT patterns
+```elm
+testValue =
+    let
+        orderToStr ord =
+            case ord of
+                LT -> "less"
+                EQ -> "equal"
+                GT -> "greater"
+    in
+    orderToStr LT
+```
+
+### Case on compare result
+```elm
+testValue =
+    case Basics.compare 1 2 of
+        LT -> "less"
+        EQ -> "equal"
+        GT -> "greater"
+```
+
+### Case returns lambda, then apply
+```elm
+type Op = Add | Sub
+
+getOp : Op -> Int -> Int -> Int
+getOp op =
+    case op of
+        Add -> \a b -> a + b
+        Sub -> \a b -> a - b
+
+testValue : Int
+testValue = (getOp Add) 3 4
+```
+
+### Case returns lambda, partial application
+```elm
+type Op = Add | Sub
+
+getOp : Op -> Int -> Int -> Int
+getOp op =
+    case op of
+        Add -> \a b -> a + b
+        Sub -> \a b -> a - b
+
+testValue : Int
+testValue =
+    let
+        addFive = getOp Add 5
+    in
+    addFive 10
+```
+
+## MutualRecTailRecCases
+
+### Mutual recursion isEven/isOdd terminating
+```elm
+isEven : Int -> Bool
+isEven n =
+    if n == 0 then True else isOdd (n - 1)
+
+isOdd : Int -> Bool
+isOdd n =
+    if n == 0 then False else isEven (n - 1)
+
+testValue : Bool
+testValue = isEven 4
+```
+
+### Mutual recursion with different base cases
+```elm
+countDown : Int -> Int
+countDown n =
+    if n == 0 then 0 else countUp (n - 1)
+
+countUp : Int -> Int
+countUp n =
+    if n == 0 then 100 else countDown (n - 1)
+
+testValue : Int
+testValue = countDown 3
+```
+
+### Lambda-case boundary: case returns lambdas
+```elm
+testValue =
+    let
+        getOp op =
+            case op of
+                0 -> \a b -> a + b
+                _ -> \a b -> a - b
+    in
+    getOp 0 3 4
+```
+
+### Lambda-let boundary: let-separated staging
+```elm
+testValue =
+    let
+        f a =
+            let
+                y = a + 5
+            in
+            \z -> y + z
+    in
+    f 10 20
+```
+
+### Let-rec captures outer variable (takeItems pattern)
+```elm
+testValue =
+    let
+        processItems threshold items =
+            case items of
+                [] -> []
+                x :: rest ->
+                    let
+                        takeMore xs =
+                            case xs of
+                                [] -> []
+                                y :: ys ->
+                                    if y > threshold then
+                                        y :: takeMore ys
+                                    else
+                                        []
+                    in
+                    x :: takeMore rest
+    in
+    processItems 3 [5, 4, 2, 6]
+```
+
+### Let-rec captures outer param and recurses
+```elm
+testValue =
+    let
+        filterAbove limit xs =
+            let
+                go items =
+                    case items of
+                        [] -> []
+                        h :: t ->
+                            if h > limit then
+                                h :: go t
+                            else
+                                go t
+            in
+            go xs
+    in
+    filterAbove 2 [1, 3, 2, 4]
+```
+
+### Outer tail-rec with inner tail-rec def
+```elm
+outerLoop : Int -> Int -> Int
+outerLoop n acc =
+    let
+        sumUpTo i s = if i <= 0 then s else sumUpTo (i - 1) (s + i)
+        localResult = sumUpTo n 0
+    in
+    case localResult of
+        0 -> acc
+        _ -> outerLoop (n - 1) (acc + localResult)
+
+testValue : Int
+testValue = outerLoop 3 0
+```
+
+### Two nested tail-rec defs in sequence
+```elm
+process : Int -> Int
+process n =
+    let
+        sumTo i acc = if i <= 0 then acc else sumTo (i - 1) (acc + i)
+        mulTo j acc2 = if j <= 0 then acc2 else mulTo (j - 1) (acc2 * j)
+    in
+    sumTo n 0 + mulTo n 1
+
+testValue : Int
+testValue = process 4
+```
+
+### Inline var collision: extract called twice
+```elm
+type Wrapped = Wrapped Int
+
+extract : Wrapped -> Int
+extract (Wrapped n) = n
+
+useTwice : Wrapped -> Int
+useTwice w = extract w + extract w
+
+testValue : Int
+testValue = useTwice (Wrapped 21)
+```
+
+### Inline var collision: nested destructuring
+```elm
+type Box = Box Int
+
+getVal : Box -> Int
+getVal (Box v) = v
+
+helper : Int -> Int -> Int
+helper a b = a + b
+
+combine : Box -> Box -> Int
+combine box1 box2 = helper (getVal box1) (getVal box2)
+
+testValue : Int
+testValue = combine (Box 10) (Box 32)
+```
+
+## MaybeResultCases
+
+### Maybe map on Just (local)
+```elm
+myMap : (Int -> Int) -> Maybe Int -> Maybe Int
+myMap f mx =
+    case mx of
+        Just x -> Just (f x)
+        Nothing -> Nothing
+
+testValue : Maybe Int
+testValue = myMap (\x -> x * 2) (Just 42)
+```
+
+### Maybe map on Nothing (local)
+```elm
+myMap : (Int -> Int) -> Maybe Int -> Maybe Int
+myMap f mx =
+    case mx of
+        Just x -> Just (f x)
+        Nothing -> Nothing
+
+testValue : Maybe Int
+testValue = myMap (\x -> x * 2) Nothing
+```
+
+### Maybe withDefault on Just (local)
+```elm
+myWithDefault : Int -> Maybe Int -> Int
+myWithDefault d mx =
+    case mx of
+        Just x -> x
+        Nothing -> d
+
+testValue : Int
+testValue = myWithDefault 0 (Just 42)
+```
+
+### Maybe withDefault on Nothing (local)
+```elm
+myWithDefault : Int -> Maybe Int -> Int
+myWithDefault d mx =
+    case mx of
+        Just x -> x
+        Nothing -> d
+
+testValue : Int
+testValue = myWithDefault 0 Nothing
+```
+
+### Maybe andThen on Just (local)
+```elm
+myAndThen : (Int -> Maybe Int) -> Maybe Int -> Maybe Int
+myAndThen f mx =
+    case mx of
+        Just x -> f x
+        Nothing -> Nothing
+
+testValue : Maybe Int
+testValue = myAndThen (\x -> if x > 0 then Just x else Nothing) (Just 42)
+```
+
+### Maybe andThen on Nothing (local)
+```elm
+myAndThen : (Int -> Maybe Int) -> Maybe Int -> Maybe Int
+myAndThen f mx =
+    case mx of
+        Just x -> f x
+        Nothing -> Nothing
+
+testValue : Maybe Int
+testValue = myAndThen (\x -> Just (x * 2)) Nothing
+```
+
+### Polymorphic pipe with Maybe.withDefault
+```elm
+polyWithDefault : a -> Maybe a -> a
+polyWithDefault fallback mx =
+    case mx of
+        Just x -> x
+        Nothing -> fallback
+
+testValue : Int
+testValue = polyWithDefault 0 (Just 99)
+```
+
+### min on Int
+```elm
+testValue = Basics.min 3 7
+```
+
+### max on Int
+```elm
+testValue = Basics.max 3 7
+```
+
+### min on Float
+```elm
+testValue = Basics.min 1.5 2.5
+```
+
+### max on Float
+```elm
+testValue = Basics.max 1.5 2.5
+```
+
+### min on String
+```elm
+testValue = Basics.min "apple" "zebra"
+```
+
+### max on String
+```elm
+testValue = Basics.max "apple" "zebra"
+```
+
+### min on Char
+```elm
+testValue = Basics.min 'a' 'z'
+```
+
+### max on Char
+```elm
+testValue = Basics.max 'a' 'z'
+```
+
+### isNaN on 0/0
+```elm
+testValue = Basics.isNaN (0.0 / 0.0)
+```
+
+### isNaN on normal float
+```elm
+testValue = Basics.isNaN 3.14
+```
+
+### isInfinite on 1/0
+```elm
+testValue = Basics.isInfinite (1.0 / 0.0)
+```
+
+### isInfinite on normal float
+```elm
+testValue = Basics.isInfinite 3.14
+```
+
+### 10 // 0 returns 0
+```elm
+testValue = 10 // 0
+```
+
+### -5 // 0 returns 0
+```elm
+testValue = (0 - 5) // 0
+```
+
+### Let-rec closure capturing outer scope
+```elm
+processItems : Int -> List Int -> List Int
+processItems threshold items =
+    case items of
+        [] -> []
+        x :: rest ->
+            let
+                takeMore xs =
+                    case xs of
+                        [] -> []
+                        y :: ys ->
+                            if y > threshold then
+                                y :: takeMore ys
+                            else
+                                []
+            in
+            x :: takeMore rest
+
+testValue : List Int
+testValue = processItems 3 [1, 5, 2, 7, 4]
+```
+
+## RecursiveTreeTraversalCases
+
+### countNodes on Leaf
+```elm
+type Tree = Leaf | Node Tree Int Tree
+
+countNodes : Tree -> Int
+countNodes tree =
+    case tree of
+        Leaf -> 0
+        Node l _ r -> 1 + countNodes l + countNodes r
+
+testValue : Int
+testValue = countNodes Leaf
+```
+
+### countNodes on nested tree
+```elm
+type Tree = Leaf | Node Tree Int Tree
+
+countNodes : Tree -> Int
+countNodes tree =
+    case tree of
+        Leaf -> 0
+        Node l _ r -> 1 + countNodes l + countNodes r
+
+testValue : Int
+testValue = countNodes (Node (Node Leaf 1 Leaf) 2 (Node Leaf 3 Leaf))
+```
+
+### sumTree on Leaf
+```elm
+type Tree = Leaf | Node Tree Int Tree
+
+sumTree : Tree -> Int
+sumTree tree =
+    case tree of
+        Leaf -> 0
+        Node l val r -> sumTree l + val + sumTree r
+
+testValue : Int
+testValue = sumTree Leaf
+```
+
+### sumTree on nested tree
+```elm
+type Tree = Leaf | Node Tree Int Tree
+
+sumTree : Tree -> Int
+sumTree tree =
+    case tree of
+        Leaf -> 0
+        Node l val r -> sumTree l + val + sumTree r
+
+testValue : Int
+testValue = sumTree (Node (Node Leaf 10 Leaf) 20 (Node Leaf 30 Leaf))
+```
+
+### Tree depth with accumulation
+```elm
+type Tree = Leaf | Node Tree Int Tree
+
+maxDepth : Tree -> Int
+maxDepth tree =
+    case tree of
+        Leaf -> 0
+        Node l _ r ->
+            let
+                dl = maxDepth l
+                dr = maxDepth r
+            in
+            1 + (if dl > dr then dl else dr)
+
+testValue : Int
+testValue = maxDepth (Node (Node (Node Leaf 1 Leaf) 2 Leaf) 3 Leaf)
+```
+
+### PapExtend multi-stage via applyPartial
+```elm
+curried : Int -> Int -> Int
+curried x = \y -> x + y
+
+applyPartial : (Int -> Int -> Int) -> Int -> (Int -> Int)
+applyPartial f a = f a
+
+testValue : Int
+testValue = (applyPartial curried 3) 4
+```
+
+### PapExtend multi-stage with flip pattern
+```elm
+curried : Int -> Int -> Int
+curried x = \y -> x + y
+
+flip : (a -> b -> c) -> b -> a -> c
+flip f b a = (f a) b
+
+testValue : Int
+testValue = flip curried 10 3
+```
+
+### Single-ctor Bool wrapper with tree
+```elm
+type Tree = Leaf | Node Tree Int Tree
+
+type Tagged = Tagged Bool Tree
+
+extractBool : Tagged -> Bool
+extractBool t =
+    case t of
+        Tagged b _ -> b
+
+extractTree : Tagged -> Tree
+extractTree t =
+    case t of
+        Tagged _ tr -> tr
+
+testValue : Bool
+testValue = extractBool (Tagged True Leaf)
 ```
 
 ---

@@ -77,11 +77,30 @@ basicsUnions =
                 , numAlts = 0
                 , opts = Can.Normal
                 }
+
+        -- Order type (LT, EQ, GT)
+        ltC =
+            Can.Ctor { name = "LT", index = Index.first, numArgs = 0, args = [] }
+
+        eqC =
+            Can.Ctor { name = "EQ", index = Index.second, numArgs = 0, args = [] }
+
+        gtC =
+            Can.Ctor { name = "GT", index = Index.third, numArgs = 0, args = [] }
+
+        orderUnion =
+            Can.Union
+                { vars = []
+                , alts = [ ltC, eqC, gtC ]
+                , numAlts = 3
+                , opts = Can.Enum
+                }
     in
     Dict.fromList
         [ ( "Bool", I.OpenUnion boolUnion )
         , ( "Int", I.ClosedUnion intUnion )
         , ( "Float", I.ClosedUnion floatUnion )
+        , ( "Order", I.OpenUnion orderUnion )
         ]
 
 
@@ -198,6 +217,17 @@ standardBinops =
         -- (a -> b) -> a -> b (for <|)
         pipeLType =
             Can.TLambda (Can.TLambda aVar bVar) (Can.TLambda aVar bVar)
+
+        cVar =
+            Can.TVar "c"
+
+        -- (a -> b) -> (b -> c) -> (a -> c) (for >>)
+        composeRType =
+            Can.TLambda (Can.TLambda aVar bVar) (Can.TLambda (Can.TLambda bVar cVar) (Can.TLambda aVar cVar))
+
+        -- (b -> c) -> (a -> b) -> (a -> c) (for <<)
+        composeLType =
+            Can.TLambda (Can.TLambda bVar cVar) (Can.TLambda (Can.TLambda aVar bVar) (Can.TLambda aVar cVar))
     in
     Dict.fromList
         [ -- Arithmetic (precedence 6-7)
@@ -229,6 +259,10 @@ standardBinops =
         -- Pipe (precedence 0)
         , binop "|>" "apR" pipeRType Binop.Left 0
         , binop "<|" "apL" pipeLType Binop.Right 0
+
+        -- Composition (precedence 9)
+        , binop ">>" "composeR" composeRType Binop.Left 9
+        , binop "<<" "composeL" composeLType Binop.Right 9
         ]
 
 
@@ -592,5 +626,17 @@ basicsValues =
         -- clamp : number -> number -> number -> number
         , ( "clamp"
           , mkAnnotation (Can.TLambda numberVar (Can.TLambda numberVar (Can.TLambda numberVar numberVar)))
+          )
+
+        -- compare : comparable -> comparable -> Order
+        , ( "compare"
+          , let
+                comparableVar =
+                    Can.TVar "comparable"
+
+                orderType =
+                    Can.TType ModuleName.basics "Order" []
+            in
+            mkAnnotation (Can.TLambda comparableVar (Can.TLambda comparableVar orderType))
           )
         ]

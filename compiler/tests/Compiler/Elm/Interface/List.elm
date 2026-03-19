@@ -202,6 +202,14 @@ listValues =
 
         filterType =
             Can.TLambda (Can.TLambda aVar boolType) (Can.TLambda listA listA)
+
+        -- any : (a -> Bool) -> List a -> Bool
+        anyType =
+            Can.TLambda (Can.TLambda aVar boolType) (Can.TLambda listA boolType)
+
+        -- all : (a -> Bool) -> List a -> Bool
+        allType =
+            Can.TLambda (Can.TLambda aVar boolType) (Can.TLambda listA boolType)
     in
     Dict.fromList
         [ ( "cons", mkAnnotation consType )
@@ -210,6 +218,8 @@ listValues =
         , ( "foldr", mkAnnotation foldrType )
         , ( "foldl", mkAnnotation foldlType )
         , ( "filter", mkAnnotation filterType )
+        , ( "any", mkAnnotation anyType )
+        , ( "all", mkAnnotation allType )
         , ( "reverse", mkAnnotation reverseType )
         , ( "range", mkAnnotation rangeType )
         , ( "length", mkAnnotation lengthType )
