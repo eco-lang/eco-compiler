@@ -541,20 +541,22 @@ extern "C" uint64_t eco_apply_closure(uint64_t closure_hptr, uint64_t* args, uin
     Closure* closure = static_cast<Closure*>(closure_ptr);
     uint32_t n_values = closure->n_values;
     uint32_t max_values = closure->max_values;
-    uint32_t total = n_values + num_args;
+    uint32_t remaining = max_values - n_values;
 
-    if (total == max_values) {
-        // Saturated: delegate to single evaluator callsite (INV_1).
+    if (num_args == remaining) {
+        // Exactly saturated: call evaluator with all args (INV_1).
         return eco_closure_call_saturated(closure_hptr, args, num_args);
-    } else if (total < max_values) {
-        // Partial application: create new PAP with additional args.
+    } else if (num_args < remaining) {
+        // Under-saturated: create new PAP with additional args.
         // New args are treated as boxed (!eco.value) with unboxed_bitmap=0.
         return eco_pap_extend(closure_hptr, args, num_args, 0);
     } else {
-        // Over-saturated: staging invariants (GOPT_001, GOPT_011-014) prevent this.
-        // If we reach here, it indicates a compiler bug (RUNTIME_CLOSURE_003 / INV_6).
-        assert(false && "eco_apply_closure: over-saturated call — compiler staging invariant violated");
-        __builtin_unreachable();
+        // Over-saturated: saturate this stage, then chain to the next.
+        // The result of the evaluator call is a closure for the next stage,
+        // which has its own n_values/max_values header. We recursively apply
+        // the remaining arguments to it.
+        uint64_t intermediate = eco_closure_call_saturated(closure_hptr, args, remaining);
+        return eco_apply_closure(intermediate, args + remaining, num_args - remaining);
     }
 }
 

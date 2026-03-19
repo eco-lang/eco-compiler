@@ -659,6 +659,7 @@ buildNestedCalls region calleeExpr params =
                             , remainingStageArities = restStages
                             , closureKind = Nothing
                             , captureAbi = Nothing
+                            , callKind = Mono.CallDirectKnownSegmentation
                             }
 
                         callExpr =

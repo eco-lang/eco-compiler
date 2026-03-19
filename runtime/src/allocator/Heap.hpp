@@ -212,10 +212,21 @@ typedef struct {
 
 typedef void *(*EvalFunction)(void *[]);
 
+/// Closure / PAP (partial application) object.
+///
+/// The header fields encode per-stage arity:
+///   n_values    = number of arguments already applied to this stage (applied arity)
+///   max_values  = total number of arguments this stage's evaluator expects (stage arity)
+///   remaining   = max_values - n_values
+///
+/// Generic apply (eco_apply_closure) is staging-agnostic: it uses only these
+/// header fields to determine saturation. Over-saturated calls are handled by
+/// chaining: saturate this stage's evaluator, then recursively apply remaining
+/// args to the result closure (which has its own n_values/max_values header).
 typedef struct {
     Header header;
-    u64 n_values : 6;      // Number of captured values currently stored (0-63).
-    u64 max_values : 6;    // Maximum capacity for captured values (0-63).
+    u64 n_values : 6;      // Applied arity: args already captured for this stage (0-63).
+    u64 max_values : 6;    // Stage arity: total args this evaluator expects (0-63).
     u64 unboxed : 52;      // Bitmap: bit N set means captured value N is unboxed (max 52 with unboxing).
     EvalFunction evaluator;
     Unboxable values[];

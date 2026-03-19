@@ -15,7 +15,7 @@ module Compiler.AST.Monomorphized exposing
     , Segmentation, segmentLengths, stageParamTypes, stageReturnType
     , chooseCanonicalSegmentation, buildSegmentedFunctionType
     , decomposeFunctionType, isFunctionType, countTotalArity
-    , CallModel(..), CallInfo, defaultCallInfo
+    , CallModel(..), CallKind(..), CallInfo, defaultCallInfo
     , ClosureKindId(..), ClosureKind(..), MaybeClosureKind
     , CaptureABI
     , containsAnyMVar
@@ -1017,6 +1017,23 @@ type CallModel
     | StageCurried
 
 
+{-| Call lowering strategy, determined by GlobalOpt based on closure kind
+analysis and staging solver results. Controls how MLIR codegen lowers the call.
+
+  - CallDirectKnownSegmentation: staging is known, use typed papExtend with
+    remaining\_arity and typed closure calling dispatch.
+  - CallDirectFlat: flattened external/kernel call, no staged currying.
+  - CallGenericApply: closure kind is heterogeneous or unknown, or staging
+    slot is dynamic. Use generic-mode eco.papExtend (no remaining\_arity),
+    which determines saturation at runtime from the closure header.
+
+-}
+type CallKind
+    = CallDirectKnownSegmentation
+    | CallDirectFlat
+    | CallGenericApply
+
+
 {-| Staging / call-site metadata for MonoCall.
 
   - callModel: FlattenedExternal vs StageCurried
@@ -1042,6 +1059,7 @@ type alias CallInfo =
     , remainingStageArities : List Int
     , closureKind : MaybeClosureKind
     , captureAbi : Maybe CaptureABI
+    , callKind : CallKind
     }
 
 
@@ -1057,6 +1075,7 @@ defaultCallInfo =
     , remainingStageArities = []
     , closureKind = Nothing
     , captureAbi = Nothing
+    , callKind = CallGenericApply
     }
 
 

@@ -824,6 +824,75 @@ struct PapExtendOpLowering : public OpConversionPattern<PapExtendOp> {
     PapExtendOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx, EcoRuntime runtime) :
         OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
 
+    /// Generic apply lowering: remaining_arity is absent, so saturation is
+    /// determined at runtime. We build an args array (boxing unboxed values as
+    /// HPointers) and call eco_apply_closure, which handles under/exact/over-
+    /// saturated cases by reading the closure header.
+    LogicalResult lowerGenericApply(PapExtendOp op, OpAdaptor adaptor,
+                                    ConversionPatternRewriter &rewriter,
+                                    Location loc, Value closureI64,
+                                    ValueRange newargs) const {
+        auto *ctx = rewriter.getContext();
+        auto i32Ty = IntegerType::get(ctx, 32);
+        auto i64Ty = IntegerType::get(ctx, 64);
+        auto ptrTy = LLVM::LLVMPointerType::get(ctx);
+        int64_t numNewArgs = newargs.size();
+
+        // Build args array on stack. All args must be HPointer-encoded (i64) for
+        // the runtime helper, since it passes them through buildEvaluatorArgs
+        // which expects HPointer-encoded values in the new_args array.
+        auto numArgsConst = rewriter.create<LLVM::ConstantOp>(
+            loc, i64Ty, rewriter.getI64IntegerAttr(numNewArgs));
+        Value argsArray = rewriter.create<LLVM::AllocaOp>(
+            loc, ptrTy, i64Ty, numArgsConst);
+
+        for (size_t i = 0; i < newargs.size(); ++i) {
+            auto idxConst = rewriter.create<LLVM::ConstantOp>(
+                loc, i64Ty, rewriter.getI64IntegerAttr(i));
+            auto slotPtr = rewriter.create<LLVM::GEPOp>(
+                loc, ptrTy, i64Ty, argsArray, ValueRange{idxConst});
+            Value arg = newargs[i];
+
+            // Convert non-i64 types to i64 for the args array.
+            // Unboxed primitives must be boxed to HPointer since
+            // eco_apply_closure passes them with unboxed_bitmap=0 (all boxed).
+            if (auto intTy = dyn_cast<IntegerType>(arg.getType())) {
+                if (intTy.getWidth() == 16) {
+                    // Char (i16): box via eco_alloc_char
+                    auto allocCharFunc = runtime.getOrCreateAllocChar(rewriter);
+                    auto boxCall = rewriter.create<LLVM::CallOp>(
+                        loc, allocCharFunc, ValueRange{arg});
+                    arg = boxCall.getResult();
+                } else if (intTy.getWidth() == 64) {
+                    // Already i64 — could be Int or HPointer, pass as-is
+                } else if (intTy.getWidth() != 64) {
+                    // Other integer widths: zero-extend to i64
+                    arg = rewriter.create<LLVM::ZExtOp>(loc, i64Ty, arg);
+                }
+            } else if (arg.getType().isF64()) {
+                // Float (f64): box via eco_alloc_float
+                auto allocFloatFunc = runtime.getOrCreateAllocFloat(rewriter);
+                auto boxCall = rewriter.create<LLVM::CallOp>(
+                    loc, allocFloatFunc, ValueRange{arg});
+                arg = boxCall.getResult();
+            } else if (isa<LLVM::LLVMPointerType>(arg.getType())) {
+                arg = rewriter.create<LLVM::PtrToIntOp>(loc, i64Ty, arg);
+            }
+
+            rewriter.create<LLVM::StoreOp>(loc, arg, slotPtr);
+        }
+
+        // Call eco_apply_closure(closure, args, num_args)
+        auto applyFunc = runtime.getOrCreateApplyClosure(rewriter);
+        auto numNewArgsConst = rewriter.create<LLVM::ConstantOp>(
+            loc, i32Ty, static_cast<int32_t>(numNewArgs));
+        auto call = rewriter.create<LLVM::CallOp>(
+            loc, applyFunc, ValueRange{closureI64, argsArray, numNewArgsConst});
+
+        rewriter.replaceOp(op, call.getResult());
+        return success();
+    }
+
     LogicalResult matchAndRewrite(PapExtendOp op, OpAdaptor adaptor,
                                   ConversionPatternRewriter &rewriter) const override {
         auto loc = op.getLoc();
@@ -832,11 +901,20 @@ struct PapExtendOpLowering : public OpConversionPattern<PapExtendOp> {
         auto i64Ty = IntegerType::get(ctx, 64);
         auto ptrTy = LLVM::LLVMPointerType::get(ctx);
 
-        int64_t remainingArity = op.getRemainingArity();
+        auto remainingArityAttr = op.getRemainingArityAttr();
         auto newargs = adaptor.getNewargs();
         int64_t numNewArgs = newargs.size();
 
         Value closureI64 = adaptor.getClosure();
+
+        // Generic mode: remaining_arity absent — runtime saturation check.
+        // Delegate to eco_apply_closure which handles under/exact/over-saturated.
+        if (!remainingArityAttr) {
+            return lowerGenericApply(op, adaptor, rewriter, loc, closureI64, newargs);
+        }
+
+        // Typed mode: remaining_arity present — compile-time saturation check.
+        int64_t remainingArity = remainingArityAttr.getInt();
         bool isSaturated = (numNewArgs == remainingArity);
 
         if (isSaturated) {

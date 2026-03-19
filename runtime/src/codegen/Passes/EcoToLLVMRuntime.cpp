@@ -207,6 +207,13 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateClosureCallSaturated(OpBuilder &builder)
     return getOrCreateFunc(builder, "eco_closure_call_saturated", funcTy);
 }
 
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateApplyClosure(OpBuilder &builder) const {
+    // eco_apply_closure(closure_hptr: i64, args: ptr, num_args: i32) -> i64
+    // Generic apply: handles under/exact/over-saturated by reading closure header.
+    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {I64_TY, PTR_TY, I32_TY});
+    return getOrCreateFunc(builder, "eco_apply_closure", funcTy);
+}
+
 //===----------------------------------------------------------------------===//
 // Utility Functions
 //===----------------------------------------------------------------------===//

@@ -61,8 +61,13 @@ struct SaturatedPapToCallPattern : public OpRewritePattern<PapExtendOp> {
 
     LogicalResult matchAndRewrite(PapExtendOp extendOp,
                                   PatternRewriter &rewriter) const override {
+        // Skip generic-mode papExtend (no remaining_arity) — saturation unknown at compile time
+        auto remainingArityAttr = extendOp.getRemainingArityAttr();
+        if (!remainingArityAttr)
+            return failure();
+
         // Check saturation: remaining_arity == newargs.size()
-        int64_t remainingArity = extendOp.getRemainingArity();
+        int64_t remainingArity = remainingArityAttr.getInt();
         auto newargs = extendOp.getNewargs();
         if (static_cast<int64_t>(newargs.size()) != remainingArity)
             return failure();  // Not saturated
@@ -151,9 +156,15 @@ struct FusePapExtendChainPattern : public OpRewritePattern<PapExtendOp> {
         if (!extendOp.getClosure().hasOneUse())
             return failure();
 
+        // Skip if either extend is generic-mode (no remaining_arity)
+        auto prevRemainingAttr = prevExtend.getRemainingArityAttr();
+        auto curRemainingAttr = extendOp.getRemainingArityAttr();
+        if (!prevRemainingAttr || !curRemainingAttr)
+            return failure();
+
         // Check prev extend is NOT saturated (otherwise it would have been
         // converted to a call, or if it's saturated, P1 should handle it)
-        int64_t prevRemaining = prevExtend.getRemainingArity();
+        int64_t prevRemaining = prevRemainingAttr.getInt();
         if (static_cast<int64_t>(prevExtend.getNewargs().size()) == prevRemaining)
             return failure();
 
@@ -185,7 +196,7 @@ struct FusePapExtendChainPattern : public OpRewritePattern<PapExtendOp> {
             resultType,                             // Result type
             prevExtend.getClosure(),                // Original closure (skip intermediate)
             fusedNewargs,                           // Fused newargs
-            prevExtend.getRemainingArity(),         // Use K1 (arity before first apply)
+            prevRemainingAttr,                      // Use K1 (arity before first apply) as IntegerAttr
             fusedBitmap,                            // Computed bitmap
             prevExtend->getAttr("_closure_kind"),   // Propagate _closure_kind
             prevExtend->getAttrOfType<StringAttr>("_dispatch_mode"),    // Propagate _dispatch_mode

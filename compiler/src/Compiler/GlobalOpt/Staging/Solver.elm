@@ -19,6 +19,7 @@ import Array exposing (Array)
 import Compiler.GlobalOpt.Staging.Types exposing (ClassId, Node(..), NodeId, ProducerId(..), ProducerInfo, Segmentation, StagingGraph, StagingSolution, Uf)
 import Compiler.GlobalOpt.Staging.UnionFind exposing (producerIdToKey, slotIdToKey, ufFind)
 import Dict exposing (Dict)
+import Set exposing (Set)
 
 
 
@@ -46,10 +47,17 @@ solveStagingGraph producerInfo sg =
         -- 3) Build producerClass / slotClass maps
         ( producerClass, slotClass ) =
             mapProducersAndSlotsToClasses sg nodeToClass
+
+        -- 4) Identify dynamic slots: slots in classes with no producer
+        -- segmentation information (the solver has no basis for choosing
+        -- a canonical staging). These must use generic apply at runtime.
+        dynamicSlots =
+            identifyDynamicSlots producerInfo sg classMembers slotClass
     in
     { classSeg = classSeg
     , producerClass = producerClass
     , slotClass = slotClass
+    , dynamicSlots = dynamicSlots
     }
 
 
@@ -341,3 +349,61 @@ mapProducersAndSlotsToClasses sg nodeToClass =
         )
         ( Dict.empty, Dict.empty )
         sg.nodeIndex
+
+
+
+-- ============================================================================
+-- DYNAMIC SLOTS
+-- ============================================================================
+
+
+{-| Identify slots that must use generic apply at runtime.
+
+A slot is dynamic if its equivalence class has no producer nodes with
+segmentation information — the solver had no basis for choosing a canonical
+staging. Currently this is conservative: classes where majority voting
+succeeded are not marked dynamic even if producers disagreed, because the
+rewriter will eta-wrap non-conforming producers to match.
+
+This can be extended later to also mark slots whose classes contain producers
+with fundamentally incompatible call models (e.g. mixed kernel + user closure).
+-}
+identifyDynamicSlots :
+    ProducerInfo
+    -> StagingGraph
+    -> Dict Int (List NodeId)
+    -> Dict String ClassId
+    -> Set String
+identifyDynamicSlots producerInfo sg classMembers slotClass =
+    let
+        -- Find classes with no producer segmentations
+        classesWithNoProducers : Set Int
+        classesWithNoProducers =
+            Dict.foldl
+                (\classId nodeIds acc ->
+                    let
+                        hasProducerSeg =
+                            List.any
+                                (\nid -> stagingForNode producerInfo sg nid /= Nothing)
+                                nodeIds
+                    in
+                    if hasProducerSeg then
+                        acc
+
+                    else
+                        Set.insert classId acc
+                )
+                Set.empty
+                classMembers
+    in
+    -- Mark all slots in those classes as dynamic
+    Dict.foldl
+        (\slotKey classId acc ->
+            if Set.member classId classesWithNoProducers then
+                Set.insert slotKey acc
+
+            else
+                acc
+        )
+        Set.empty
+        slotClass

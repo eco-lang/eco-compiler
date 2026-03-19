@@ -892,45 +892,59 @@ def Eco_PapCreateOp : Eco_Op<"papCreate", [Pure]> {
 }
 
 def Eco_PapExtendOp : Eco_Op<"papExtend"> {
-  let summary = "Extend closure with more arguments";
+  let summary = "Extend closure with more arguments (typed or generic apply)";
   let description = [{
     Extend an existing partial application (closure) with more arguments.
-    This handles curried function application.
+    Operates in two modes:
 
-    If the closure becomes fully saturated (all arguments provided), this
-    triggers the actual function call and returns the result. Otherwise,
-    returns a new closure with the additional captured arguments.
+    **Typed mode** (remaining_arity present):
+    Compile-time saturation check. If remaining_arity == newargs.size(), this
+    is a saturated call that invokes the evaluator and returns the result.
+    Otherwise, returns a new closure with additional captured arguments.
+    CGEN_052 and CGEN_056 are enforced. Result type may be a typed ABI value.
+    Typed closure calling attributes (_dispatch_mode, _fast_evaluator,
+    _closure_kind) control lowering dispatch.
 
-    The remaining_arity attribute specifies the closure's remaining arity
-    before this application. This is known statically from Elm's type system.
-    If remaining_arity == newargs.size(), this is a saturated call.
+    **Generic mode** (remaining_arity absent):
+    Runtime saturation check via the closure header's n_values/max_values.
+    EcoToLLVM loads the header, computes remaining = max_values - n_values,
+    and branches at runtime:
+    - Under-saturated: returns new PAP (!eco.value)
+    - Exactly saturated: calls evaluator, returns result (!eco.value)
+    - Over-saturated: saturates, then chains to result closure (!eco.value)
+    Result type must be !eco.value. CGEN_052/CGEN_056 do not apply.
+    Typed closure calling attributes are ignored.
 
     The `newargs_unboxed_bitmap` attribute indicates which new arguments
     are unboxed primitives (bit N set = newarg N is unboxed).
     This is the source-of-truth; lowering trusts this value.
 
-    For typed closure calling:
+    For typed closure calling (typed mode only):
     - `_closure_kind`: Propagated from source closure (int or "heterogeneous")
     - `_dispatch_mode`: How to lower this call ("fast", "closure", "unknown")
     - `_fast_evaluator`: Fast clone symbol (required when _dispatch_mode="fast")
 
-    Example:
+    Examples:
     ```mlir
-    // Apply one more argument to a partially applied function (arity 1 remaining)
-    // This saturates the closure, so it becomes a direct call
+    // Typed mode: saturated call with known remaining arity
     %result = eco.papExtend %closure(%arg) {
       remaining_arity = 1 : i64,
       newargs_unboxed_bitmap = 1 : i64,
       _dispatch_mode = "fast",
       _fast_evaluator = @add$cap
     } : !eco.value, (i64) -> i64
+
+    // Generic mode: runtime saturation check, result always !eco.value
+    %result = eco.papExtend %closure(%arg0, %arg1) {
+      newargs_unboxed_bitmap = 0 : i64
+    } : !eco.value, (!eco.value, !eco.value) -> !eco.value
     ```
   }];
 
   let arguments = (ins
     Eco_Value:$closure,
     Variadic<Eco_AnyValue>:$newargs,
-    I64Attr:$remaining_arity,
+    OptionalAttr<I64Attr>:$remaining_arity,
     DefaultValuedAttr<I64Attr, "0">:$newargs_unboxed_bitmap,
     OptionalAttr<AnyAttr>:$_closure_kind,
     OptionalAttr<StrAttr>:$_dispatch_mode,

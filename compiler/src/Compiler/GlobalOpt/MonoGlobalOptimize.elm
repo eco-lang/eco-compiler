@@ -31,6 +31,7 @@ import Compiler.GlobalOpt.Staging as Staging
 import Compiler.Monomorphize.Closure as Closure
 import Compiler.Reporting.Annotation as A
 import Dict exposing (Dict)
+import Set exposing (Set)
 import System.TypeCheck.IO as IO
 import Task exposing (Task)
 
@@ -67,17 +68,20 @@ freshLambdaId home ctx =
 
 {-| Environment for tracking call models and source arities of local variables.
 This replaces MLIR's Ctx.lookupVarCallModel and Ctx.lookupVarArity logic.
+Also carries dynamicSlots from the staging solver for CallKind determination.
 -}
 type alias CallEnv =
     { varCallModel : Dict Name Mono.CallModel
     , varSourceArity : Dict Name Int
+    , dynamicSlots : Set String
     }
 
 
-emptyCallEnv : CallEnv
-emptyCallEnv =
+emptyCallEnv : Set String -> CallEnv
+emptyCallEnv dynamicSlots =
     { varCallModel = Dict.empty
     , varSourceArity = Dict.empty
+    , dynamicSlots = dynamicSlots
     }
 
 
@@ -105,7 +109,7 @@ globalOptimize graph0a =
             wrapTopLevelCallables graph0a
 
         -- Phase 2: Staging analysis + graph rewrite (wrappers + types)
-        ( _, graph2 ) =
+        ( stagingSolution, graph2 ) =
             Staging.analyzeAndSolveStaging graph1
 
         -- Phase 3: Validate closure staging invariants (GOPT_001, GOPT_003)
@@ -118,8 +122,8 @@ globalOptimize graph0a =
         graph4 =
             AbiCloning.abiCloningPass graph3
     in
-    -- Phase 5: Annotate call staging metadata
-    annotateCallStaging graph4
+    -- Phase 5: Annotate call staging metadata (with dynamic slots from solver)
+    annotateCallStaging stagingSolution.dynamicSlots graph4
 
 
 {-| Like globalOptimize, but logs each sub-pass to stderr via the provided logger.
@@ -137,7 +141,7 @@ globalOptimizeWithLog log graph0a =
                     |> Task.andThen
                         (\_ ->
                             let
-                                ( _, graph2 ) =
+                                ( stagingSolution, graph2 ) =
                                     Staging.analyzeAndSolveStaging graph1
                             in
                             log "  Phase 3: Validate closure staging..."
@@ -155,7 +159,7 @@ globalOptimizeWithLog log graph0a =
                                                             AbiCloning.abiCloningPass graph3
                                                     in
                                                     log "  Phase 5: Annotate call staging..."
-                                                        |> Task.map (\_ -> annotateCallStaging graph4)
+                                                        |> Task.map (\_ -> annotateCallStaging stagingSolution.dynamicSlots graph4)
                                                 )
                                     )
                         )
@@ -436,6 +440,7 @@ buildNestedCallsGO region calleeExpr params =
                             , remainingStageArities = restSeg
                             , closureKind = Nothing
                             , captureAbi = Nothing
+                            , callKind = Mono.CallDirectKnownSegmentation
                             }
 
                         callExpr =
@@ -1072,14 +1077,17 @@ wrapNodeCallables home node ctx =
 After this phase, MLIR codegen can use CallInfo directly without
 recomputing call models or stage arities.
 -}
-annotateCallStaging : Mono.MonoGraph -> Mono.MonoGraph
-annotateCallStaging graph =
+annotateCallStaging : Set String -> Mono.MonoGraph -> Mono.MonoGraph
+annotateCallStaging dynamicSlots graph =
     let
         (Mono.MonoGraph record) =
             graph
 
+        env =
+            emptyCallEnv dynamicSlots
+
         newNodes =
-            Array.map (Maybe.map (annotateNodeCalls graph emptyCallEnv)) record.nodes
+            Array.map (Maybe.map (annotateNodeCalls graph env)) record.nodes
     in
     Mono.MonoGraph { record | nodes = newNodes }
 
@@ -1776,6 +1784,7 @@ computeCallInfo graph env func args _ =
             , remainingStageArities = []
             , closureKind = Nothing
             , captureAbi = Nothing
+            , callKind = Mono.CallDirectFlat
             }
 
         Mono.StageCurried ->
@@ -1834,6 +1843,16 @@ computeCallInfo graph env func args _ =
                             -- applyByStages correctly detects saturation when
                             -- all args fill the first stage.
                             []
+
+                -- Determine call kind based on call model.
+                -- For now, all StageCurried calls use the known segmentation path,
+                -- which handles both known and unknown callees correctly using
+                -- sourceArityForCallee and applyByStages. CallGenericApply will be
+                -- activated in future when closure kind analysis identifies
+                -- heterogeneous closures that cannot be handled by the typed path.
+                callKind : Mono.CallKind
+                callKind =
+                    Mono.CallDirectKnownSegmentation
             in
             { callModel = Mono.StageCurried
             , stageArities = stageAritiesFull
@@ -1842,4 +1861,5 @@ computeCallInfo graph env func args _ =
             , remainingStageArities = remainingStageArities
             , closureKind = Nothing
             , captureAbi = Nothing
+            , callKind = callKind
             }

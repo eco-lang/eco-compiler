@@ -40,6 +40,7 @@ This module defines:
 import Array exposing (Array)
 import Compiler.AST.Monomorphized as Mono
 import Dict exposing (Dict)
+import Set exposing (Set)
 
 
 {-| Segmentation is already defined in Monomorphized.elm as List Int.
@@ -171,10 +172,13 @@ emptyProducerInfo =
   - `classSeg` maps each equivalence class to its canonical segmentation
   - `producerClass` maps each producer to its equivalence class
   - `slotClass` maps each slot to its equivalence class
+  - `dynamicSlots` contains slot keys that must use generic apply at runtime
+    (the solver could not assign a reliable segmentation for their class)
 
 -}
 type alias StagingSolution =
     { classSeg : Array (Maybe Segmentation)
     , producerClass : Dict String ClassId
     , slotClass : Dict String ClassId
+    , dynamicSlots : Set String
     }

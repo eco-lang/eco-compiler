@@ -401,7 +401,7 @@ LogicalResult PapExtendOp::verify() {
     }
   }
 
-  // === NEW: REP_CLOSURE_001: Bool must not be passed at closure boundary ===
+  // === REP_CLOSURE_001: Bool must not be passed at closure boundary ===
   for (size_t i = 0; i < newargs.size(); ++i) {
     Type ty = newargs[i].getType();
     if (ty.isInteger(1)) {
@@ -410,16 +410,31 @@ LogicalResult PapExtendOp::verify() {
     }
   }
 
-  // === NEW: Walk closure-def chain to find root papCreate ===
-  // This allows us to verify newargs types against the evaluator's parameter types.
-  // If we can't trace back to papCreate (e.g., block argument, external op),
-  // we skip evaluator-parameter compatibility checks and only enforce local invariants.
+  // === Generic mode: remaining_arity absent ===
+  // In generic mode, saturation is determined at runtime from the closure header.
+  // We only enforce local invariants (bitmap, REP_CLOSURE_001) — no definition-chain
+  // walk, no arity consistency, no evaluator parameter type checks.
+  // Result type must be !eco.value (since saturation outcome is unknown at compile time).
+  auto remainingArityAttr = getRemainingArityAttr();
+  if (!remainingArityAttr) {
+    // Generic mode: verify result is !eco.value
+    if (!isa<eco::ValueType>(getResult().getType())) {
+      return emitOpError("generic-mode papExtend (no remaining_arity) must have "
+                         "!eco.value result type, got ") << getResult().getType();
+    }
+    return success();
+  }
+
+  // === Typed mode: remaining_arity present ===
+  // Walk closure-def chain to find root papCreate for evaluator-parameter checks.
   //
   // IMPORTANT: We must stop walking when we cross a STAGE SATURATION BOUNDARY.
   // When a papExtend saturates its stage (remaining_arity == newargs.size()),
   // the result is a NEW closure (the function's return value), not a partial
   // application of the original function. Subsequent papExtends operate on this
   // new closure, which has its own arity from the returned function.
+
+  int64_t remainingArity = remainingArityAttr.getInt();
 
   unsigned alreadyApplied = 0;
   Operation *currentDef = getClosure().getDefiningOp();
@@ -428,15 +443,21 @@ LogicalResult PapExtendOp::verify() {
 
   while (currentDef) {
     if (auto priorExt = dyn_cast<PapExtendOp>(currentDef)) {
+      // Prior papExtend in generic mode breaks the chain — can't trace through
+      // runtime-determined saturation.
+      auto priorRemainingAttr = priorExt.getRemainingArityAttr();
+      if (!priorRemainingAttr) {
+        break;
+      }
+
       // Check if this papExtend saturated its stage (CGEN_052 stage boundary)
-      int64_t priorRemaining = priorExt.getRemainingArity();
+      int64_t priorRemaining = priorRemainingAttr.getInt();
       unsigned priorNewargs = priorExt.getNewargs().size();
 
       if (priorRemaining == static_cast<int64_t>(priorNewargs)) {
         // Stage saturation boundary - the result is a NEW closure returned by
         // calling the function, not a partial application. We cannot trace
         // further back through the original papCreate chain.
-        // Skip evaluator-parameter compatibility checks for this papExtend.
         break;
       }
 
@@ -455,7 +476,6 @@ LogicalResult PapExtendOp::verify() {
       break;
     }
     // Non-PAP closure source (block arg, external op) - can't trace further.
-    // Skip evaluator-parameter compatibility checks; only local invariants enforced.
     break;
   }
 
@@ -467,11 +487,10 @@ LogicalResult PapExtendOp::verify() {
       auto paramTypes = funcType.getInputs();
       auto resultTypes = funcType.getResults();
 
-      // Verify remaining_arity consistency
-      int64_t remainingArityAttr = getRemainingArity();
+      // Verify remaining_arity consistency (CGEN_052, typed mode only)
       int64_t computedRemaining = arityFromCreate - static_cast<int64_t>(alreadyApplied);
-      if (computedRemaining != remainingArityAttr) {
-        return emitOpError("remaining_arity = ") << remainingArityAttr
+      if (computedRemaining != remainingArity) {
+        return emitOpError("remaining_arity = ") << remainingArity
                << " but computed remaining arity from papCreate chain is "
                << computedRemaining;
       }
@@ -492,8 +511,8 @@ LogicalResult PapExtendOp::verify() {
         }
       }
 
-      // For saturated calls, verify result type
-      bool isSaturated = (remainingArityAttr == static_cast<int64_t>(newargs.size()));
+      // For saturated calls, verify result type (CGEN_056, typed mode only)
+      bool isSaturated = (remainingArity == static_cast<int64_t>(newargs.size()));
 
       if (isSaturated) {
         if (resultTypes.size() != 1) {

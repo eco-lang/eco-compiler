@@ -1192,19 +1192,22 @@ Uses precomputed CallInfo from GlobalOpt instead of re-deriving staging.
 -}
 generateCall : Ctx.Context -> Mono.MonoExpr -> List Mono.MonoExpr -> Mono.MonoType -> Mono.CallInfo -> ExprResult
 generateCall ctx func args resultType callInfo =
-    case callInfo.callModel of
-        Mono.FlattenedExternal ->
+    case callInfo.callKind of
+        Mono.CallGenericApply ->
+            -- Generic apply: staging unknown at compile time.
+            -- Emit eco.papExtend without remaining_arity; EcoToLLVM will
+            -- read the closure header at runtime to determine saturation.
+            generateGenericApply ctx func args resultType callInfo
+
+        Mono.CallDirectFlat ->
             -- Kernels / externs: use ABI-flattened model.
-            -- Here, resultType from MonoCall is the true result type.
             if Types.isFunctionType resultType then
-                -- Partial application of an extern (rare but possible):
                 generateClosureApplication ctx func args resultType callInfo
 
             else
-                -- Fully-saturated external call:
                 generateSaturatedCall ctx func args resultType callInfo
 
-        Mono.StageCurried ->
+        Mono.CallDirectKnownSegmentation ->
             if callInfo.isSingleStageSaturated then
                 -- Single-stage saturated call: use saturated path (has intrinsic logic)
                 generateSaturatedCall ctx func args resultType callInfo
@@ -1212,6 +1215,83 @@ generateCall ctx func args resultType callInfo =
             else
                 -- Multi-stage call or partial application: use closure path
                 generateClosureApplication ctx func args resultType callInfo
+
+
+{-| Generate a generic apply call: eco.papExtend without remaining_arity.
+
+Saturation is determined at runtime from the closure header. The result
+type is always !eco.value since the outcome (PAP vs saturated result)
+is unknown at compile time.
+
+All arguments are boxed to !eco.value for the runtime helpers, since
+eco\_apply\_closure passes args through buildEvaluatorArgs which expects
+HPointer-encoded values.
+
+-}
+generateGenericApply : Ctx.Context -> Mono.MonoExpr -> List Mono.MonoExpr -> Mono.MonoType -> Mono.CallInfo -> ExprResult
+generateGenericApply ctx func args _ _ =
+    let
+        funcResult : ExprResult
+        funcResult =
+            generateExpr ctx func
+
+        -- Generate all argument expressions
+        ( argOps, argsWithTypes, ctx1 ) =
+            generateExprListTyped funcResult.ctx args
+
+        -- Box ALL primitive args to !eco.value for generic apply.
+        -- The runtime helper eco_apply_closure treats all args as HPointer-encoded.
+        ( boxOps, boxedArgsWithTypes, ctx2 ) =
+            boxArgsForClosureBoundary True ctx1 argsWithTypes
+
+        -- Build operand list: closure + all args
+        allOperandNames =
+            funcResult.resultVar :: List.map Tuple.first boxedArgsWithTypes
+
+        allOperandTypes =
+            funcResult.resultType :: List.map Tuple.second boxedArgsWithTypes
+
+        -- Compute bitmap: after boxing all primitives, everything should be !eco.value
+        -- so bitmap is 0. But compute it properly from the boxed types for correctness.
+        newargsUnboxedBitmap =
+            List.indexedMap
+                (\i ( _, mlirTy ) ->
+                    if Types.isUnboxable mlirTy then
+                        Bitwise.shiftLeftBy i 1
+
+                    else
+                        0
+                )
+                boxedArgsWithTypes
+                |> List.foldl Bitwise.or 0
+
+        ( resVar, ctx3 ) =
+            Ctx.freshVar ctx2
+
+        -- Result type is always !eco.value for generic apply
+        resultMlirType =
+            Types.ecoValue
+
+        -- Build eco.papExtend WITHOUT remaining_arity (generic mode)
+        papExtendAttrs =
+            Dict.fromList
+                [ ( "_operand_types", ArrayAttr Nothing (List.map TypeAttr allOperandTypes) )
+                , ( "newargs_unboxed_bitmap", IntAttr Nothing newargsUnboxedBitmap )
+                ]
+
+        ( ctx4, papExtendOp ) =
+            Ops.mlirOp ctx3 "eco.papExtend"
+                |> Ops.opBuilder.withOperands allOperandNames
+                |> Ops.opBuilder.withResults [ ( resVar, resultMlirType ) ]
+                |> Ops.opBuilder.withAttrs papExtendAttrs
+                |> Ops.opBuilder.build
+    in
+    { ops = funcResult.ops ++ argOps ++ boxOps ++ [ papExtendOp ]
+    , resultVar = resVar
+    , resultType = resultMlirType
+    , ctx = ctx4
+    , isTerminated = False
+    }
 
 
 {-| Result of applying arguments by stages.

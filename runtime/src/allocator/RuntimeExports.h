@@ -154,11 +154,13 @@ void eco_store_field_f64(uint64_t obj, uint32_t index, double value);
 // Closure Operations
 //===----------------------------------------------------------------------===//
 
-/// Applies arguments to a closure.
-/// If the closure becomes fully saturated, calls the function and returns result.
-/// Otherwise, creates a new PAP with the additional arguments.
+/// Generic apply: applies arguments to a closure, handling all saturation cases.
+/// - Under-saturated (num_args < remaining): returns new PAP with additional captures.
+/// - Exactly saturated (num_args == remaining): calls evaluator, returns result.
+/// - Over-saturated (num_args > remaining): saturates this stage, then recursively
+///   applies remaining args to the result closure (chaining per-stage evaluators).
 /// @param closure HPointer (as uint64_t) to the Closure object
-/// @param args Array of arguments (as i64 tagged pointers)
+/// @param args Array of arguments (as i64 tagged pointers / HPointer-encoded)
 /// @param num_args Number of arguments
 /// @return Result value or new closure (as HPointer uint64_t)
 uint64_t eco_apply_closure(uint64_t closure, uint64_t* args, uint32_t num_args);
