@@ -12,7 +12,15 @@ LOOP:
    Then continue — do NOT stop or produce a report.
 
 2. Pick the next issue from @prof-hints.md that is not marked FIXED or SKIPPED.
-   If there are none, go to DONE.
+   If there are none, go to step 2b.
+
+2b. Analyse the latest profiling data. Look for new bottlenecks — functions or
+   builtins above 1% of nonlib time, or GC patterns that suggest a specific
+   allocation source. Add any new issues to @prof-hints.md ranked by impact.
+   If you found new issues, go back to step 2.
+   If no actionable bottleneck above 1% remains, or if the last 3 consecutive
+   fix attempts (across any issues) all failed to produce measurable improvement,
+   go to DONE.
 
 3. Investigate and reason about the root cause. Propose a fix.
 
