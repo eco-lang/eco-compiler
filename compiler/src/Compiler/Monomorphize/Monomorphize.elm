@@ -101,18 +101,28 @@ monomorphizeWithLog log entryPointName globalTypeEnv (TOpt.GlobalGraph nodes _ _
                         let
                             ( finalState, mainSpecIdVal ) =
                                 runSpecialization mainGlobal mainType globalTypeEnv nodes
+
+                            -- Extract what we need and release toptNodes for GC
+                            finalAccum =
+                                finalState.accum
+
+                            finalGlobalTypeEnv =
+                                finalState.ctx.globalTypeEnv
+
+                            finalLambdaCounter =
+                                finalState.ctx.lambdaCounter
                         in
                         log "  Type patching + graph assembly..."
                             |> Task.andThen
                                 (\_ ->
                                     let
                                         rawGraph =
-                                            assembleRawGraph finalState mainSpecIdVal
+                                            assembleRawGraphFrom finalAccum finalLambdaCounter mainSpecIdVal
                                     in
                                     log "  Pruning unreachable specs..."
                                         |> Task.map
                                             (\_ ->
-                                                Ok (Prune.pruneUnreachableSpecs finalState.ctx.globalTypeEnv rawGraph)
+                                                Ok (Prune.pruneUnreachableSpecs finalGlobalTypeEnv rawGraph)
                                             )
                                 )
                     )
@@ -168,10 +178,12 @@ Performs MVar erasure, registry patching, and graph construction.
 -}
 assembleRawGraph : MonoState -> Mono.SpecId -> Mono.MonoGraph
 assembleRawGraph finalState mainSpecIdVal =
-    let
-        finalAccum =
-            finalState.accum
+    assembleRawGraphFrom finalState.accum finalState.ctx.lambdaCounter mainSpecIdVal
 
+
+assembleRawGraphFrom : State.SpecAccum -> Int -> Mono.SpecId -> Mono.MonoGraph
+assembleRawGraphFrom finalAccum lambdaCounter mainSpecIdVal =
+    let
         -- Note: The callable top-level invariant is enforced by GlobalOpt via ensureCallableForNode.
         mainInfo : Maybe Mono.MainInfo
         mainInfo =
@@ -215,7 +227,7 @@ assembleRawGraph finalState mainSpecIdVal =
         , registry = finalAccum.registry
         , main = mainInfo
         , ctorShapes = Dict.empty
-        , nextLambdaIndex = finalState.ctx.lambdaCounter
+        , nextLambdaIndex = lambdaCounter
         , callEdges = callEdgesArray
         , specHasEffects = finalAccum.specHasEffects
         , specValueUsed = valueUsedWithMain

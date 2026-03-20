@@ -435,7 +435,10 @@ loadAndStoreInterfaceTypes root maybeBuildDir name mvar =
 
 
 type TypedLoadingObjects
-    = TypedLoadingObjects (MVar (Maybe Details.PackageTypedArtifacts)) (Data.Map.Dict String ModuleName.Raw (MVar (Maybe TMod.TypedModuleArtifact)))
+    = TypedLoadingObjects
+        (MVar (Maybe Details.PackageTypedArtifacts))
+        (Data.Map.Dict String ModuleName.Raw (MVar (Maybe TMod.TypedModuleArtifact)))
+        (Data.Map.Dict String ModuleName.Raw ModuleTyped)
 
 
 loadTypedObjects : FilePath -> Maybe String -> Maybe ( Pkg.Name, FilePath ) -> Details.Details -> List Build.Module -> Task Exit.Generate TypedLoadingObjects
@@ -448,31 +451,53 @@ loadTypedObjects root maybeBuildDir maybeLocal details modules =
 
 loadTypedModuleObjects : FilePath -> Maybe String -> List Build.Module -> MVar (Maybe Details.PackageTypedArtifacts) -> Task Never TypedLoadingObjects
 loadTypedModuleObjects root maybeBuildDir modules mvar =
-    Utils.listTraverse (loadTypedObject root maybeBuildDir) modules
-        |> Task.map (\mvars -> TypedLoadingObjects mvar (Data.Map.fromList identity mvars))
+    let
+        -- Partition: Fresh modules with typed data go directly, others need MVar loading
+        partition : List Build.Module -> ( List ( ModuleName.Raw, ModuleTyped ), List Build.Module ) -> ( List ( ModuleName.Raw, ModuleTyped ), List Build.Module )
+        partition mods acc =
+            case mods of
+                [] ->
+                    acc
+
+                modul :: rest ->
+                    case modul of
+                        Build.Fresh name _ _ (Just typedGraph) (Just typeEnv) ->
+                            let
+                                ( fresh, cached ) =
+                                    acc
+                            in
+                            partition rest
+                                ( ( name, { graph = typedGraph, env = typeEnv } ) :: fresh
+                                , cached
+                                )
+
+                        _ ->
+                            let
+                                ( fresh, cached ) =
+                                    acc
+                            in
+                            partition rest
+                                ( fresh
+                                , modul :: cached
+                                )
+
+        ( freshPairs, needLoading ) =
+            partition modules ( [], [] )
+
+        freshDict =
+            Data.Map.fromList identity freshPairs
+    in
+    Utils.listTraverse (loadTypedObject root maybeBuildDir) needLoading
+        |> Task.map (\mvars -> TypedLoadingObjects mvar (Data.Map.fromList identity mvars) freshDict)
 
 
 loadTypedObject : FilePath -> Maybe String -> Build.Module -> Task Never ( ModuleName.Raw, MVar (Maybe TMod.TypedModuleArtifact) )
 loadTypedObject root maybeBuildDir modul =
     case modul of
-        Build.Fresh name _ _ maybeTypedGraph maybeTypeEnv ->
-            -- Use the typed graph and type env from the build if available
-            case ( maybeTypedGraph, maybeTypeEnv ) of
-                ( Just typedGraph, Just typeEnv ) ->
-                    let
-                        artifact : TMod.TypedModuleArtifact
-                        artifact =
-                            { typedGraph = typedGraph
-                            , typeEnv = typeEnv
-                            }
-                    in
-                    Utils.newMVar (Utils.maybeEncoder TMod.typedModuleArtifactEncoder) (Just artifact)
-                        |> Task.map (\mvar -> ( name, mvar ))
-
-                _ ->
-                    -- No typed info available, create empty MVar (will fall back to cached)
-                    Utils.newEmptyMVar
-                        |> Task.andThen (forkLoadTypedCachedObject root maybeBuildDir name)
+        Build.Fresh name _ _ _ _ ->
+            -- Fresh without typed data (already filtered by partition above)
+            Utils.newEmptyMVar
+                |> Task.andThen (forkLoadTypedCachedObject root maybeBuildDir name)
 
         Build.Cached name _ _ ->
             Utils.newEmptyMVar
@@ -515,21 +540,21 @@ type TypedObjects
 
 
 finalizeTypedObjects : TypedLoadingObjects -> Task Exit.Generate TypedObjects
-finalizeTypedObjects (TypedLoadingObjects mvar mvars) =
+finalizeTypedObjects (TypedLoadingObjects mvar mvars freshModules) =
     Task.eio identity
         (Utils.readMVar (BD.maybe Details.packageTypedArtifactsDecoder) mvar
-            |> Task.andThen (collectTypedLocalArtifacts mvars)
+            |> Task.andThen (collectTypedLocalArtifacts mvars freshModules)
         )
 
 
-collectTypedLocalArtifacts : Data.Map.Dict String ModuleName.Raw (MVar (Maybe TMod.TypedModuleArtifact)) -> Maybe Details.PackageTypedArtifacts -> Task Never (Result Exit.Generate TypedObjects)
-collectTypedLocalArtifacts mvars globalArtifacts =
+collectTypedLocalArtifacts : Data.Map.Dict String ModuleName.Raw (MVar (Maybe TMod.TypedModuleArtifact)) -> Data.Map.Dict String ModuleName.Raw ModuleTyped -> Maybe Details.PackageTypedArtifacts -> Task Never (Result Exit.Generate TypedObjects)
+collectTypedLocalArtifacts mvars freshModules globalArtifacts =
     Utils.mapTraverse identity compare (Utils.readMVar (BD.maybe TMod.typedModuleArtifactDecoder)) mvars
-        |> Task.map (combineTypedGlobalAndLocalObjects globalArtifacts)
+        |> Task.map (combineTypedGlobalAndLocalObjects freshModules globalArtifacts)
 
 
-combineTypedGlobalAndLocalObjects : Maybe Details.PackageTypedArtifacts -> Data.Map.Dict String ModuleName.Raw (Maybe TMod.TypedModuleArtifact) -> Result Exit.Generate TypedObjects
-combineTypedGlobalAndLocalObjects maybeGlobalArtifacts results =
+combineTypedGlobalAndLocalObjects : Data.Map.Dict String ModuleName.Raw ModuleTyped -> Maybe Details.PackageTypedArtifacts -> Data.Map.Dict String ModuleName.Raw (Maybe TMod.TypedModuleArtifact) -> Result Exit.Generate TypedObjects
+combineTypedGlobalAndLocalObjects freshModules maybeGlobalArtifacts cachedResults =
     let
         -- Convert TypedModuleArtifact to ModuleTyped
         toModuleTyped : TMod.TypedModuleArtifact -> ModuleTyped
@@ -538,11 +563,20 @@ combineTypedGlobalAndLocalObjects maybeGlobalArtifacts results =
             , env = artifact.typeEnv
             }
 
-        -- Sequence the dict of Maybe values
+        -- Sequence the dict of Maybe values from cached/MVar-loaded modules
+        maybeCachedModules : Maybe (Data.Map.Dict String ModuleName.Raw ModuleTyped)
+        maybeCachedModules =
+            Utils.sequenceDictMaybe identity compare cachedResults
+                |> Maybe.map (Data.Map.map (\_ -> toModuleTyped))
+
+        -- Merge fresh (already ModuleTyped) with cached
         maybeLocalModules : Maybe (Data.Map.Dict String ModuleName.Raw ModuleTyped)
         maybeLocalModules =
-            Utils.sequenceDictMaybe identity compare results
-                |> Maybe.map (Data.Map.map (\_ -> toModuleTyped))
+            if Data.Map.isEmpty cachedResults then
+                Just freshModules
+
+            else
+                Maybe.map (\cached -> Data.Map.union cached freshModules) maybeCachedModules
     in
     case ( maybeGlobalArtifacts, maybeLocalModules ) of
         ( Just globalArtifacts, Just localModules ) ->
@@ -597,9 +631,16 @@ buildMonoGraph :
     -> Build.Artifacts
     -> Task Exit.Generate MonoBuildResult
 buildMonoGraph root maybeBuildDir maybeLocal details (Build.Artifacts artifacts) =
-    loadTypedObjects root maybeBuildDir maybeLocal details artifacts.modules
+    let
+        roots =
+            artifacts.roots
+
+        modules =
+            artifacts.modules
+    in
+    loadTypedObjects root maybeBuildDir maybeLocal details modules
         |> Task.andThen finalizeTypedObjects
-        |> Task.andThen (buildMonoGraphFromObjects artifacts.roots)
+        |> Task.andThen (buildMonoGraphFromObjects roots)
 
 
 buildMonoGraphFromObjects : NE.Nonempty Build.Root -> TypedObjects -> Task Exit.Generate MonoBuildResult

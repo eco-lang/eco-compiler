@@ -417,7 +417,7 @@ computeCostDef def =
 
 
 type alias RewriteCtx =
-    { nodes : Array (Maybe MonoNode)
+    { inlineCandidates : Dict Int ( List ( Name, Mono.MonoType ), MonoExpr )
     , registry : Mono.SpecializationRegistry
     , callGraph : CallGraph
     , whitelist : InlineWhitelist
@@ -437,7 +437,54 @@ type alias InternalMetrics =
 
 initRewriteCtx : Array (Maybe MonoNode) -> Mono.SpecializationRegistry -> CallGraph -> Int -> RewriteCtx
 initRewriteCtx nodes registry callGraph nextLambdaIndex =
-    { nodes = nodes
+    let
+        candidates =
+            Array.foldl
+                (\maybeNode ( accDict, specId ) ->
+                    case maybeNode of
+                        Nothing ->
+                            ( accDict, specId + 1 )
+
+                        Just node ->
+                            let
+                                isRecursive =
+                                    Dict.get specId callGraph.isRecursive
+                                        |> Maybe.withDefault False
+                            in
+                            if isRecursive then
+                                ( accDict, specId + 1 )
+
+                            else
+                                case getInlinableBody node of
+                                    Nothing ->
+                                        ( accDict, specId + 1 )
+
+                                    Just ( params, body ) ->
+                                        let
+                                            cost =
+                                                computeCost body
+
+                                            maybeGlobal =
+                                                Array.get specId registry.reverseMapping
+                                                    |> Maybe.andThen identity
+                                                    |> Maybe.map (\( g, _, _ ) -> g)
+
+                                            whitelisted =
+                                                maybeGlobal
+                                                    |> Maybe.map (isWhitelisted defaultWhitelist)
+                                                    |> Maybe.withDefault False
+                                        in
+                                        if cost > inlineThreshold && not whitelisted then
+                                            ( accDict, specId + 1 )
+
+                                        else
+                                            ( Dict.insert specId ( params, body ) accDict, specId + 1 )
+                )
+                ( Dict.empty, 0 )
+                nodes
+                |> Tuple.first
+    in
+    { inlineCandidates = candidates
     , registry = registry
     , callGraph = callGraph
     , whitelist = defaultWhitelist
@@ -1371,192 +1418,158 @@ tryInlineCall ctx specId args resultType =
         ( Nothing, ctx )
 
     else
-        -- Look up the callee
-        case Array.get specId ctx.nodes |> Maybe.andThen identity of
+        -- Look up the callee from pre-filtered inline candidates
+        case Dict.get specId ctx.inlineCandidates of
             Nothing ->
                 ( Nothing, ctx )
 
-            Just node ->
-                -- Check if recursive
+            Just ( params, body ) ->
                 let
-                    isRecursive =
-                        Dict.get specId ctx.callGraph.isRecursive
-                            |> Maybe.withDefault False
+                    numParams =
+                        List.length params
 
-                    -- Look up global name for whitelist check
-                    maybeGlobal =
-                        Array.get specId ctx.registry.reverseMapping
-                            |> Maybe.andThen identity
-                            |> Maybe.map (\( g, _, _ ) -> g)
-
-                    whitelisted =
-                        maybeGlobal
-                            |> Maybe.map (isWhitelisted ctx.whitelist)
-                            |> Maybe.withDefault False
+                    numArgs =
+                        List.length args
                 in
-                -- Never inline recursive functions (even if whitelisted)
-                if isRecursive then
-                    ( Nothing, ctx )
+                if numParams == 0 && numArgs > 0 then
+                    -- Inlining a non-closure value that's being called.
+                    -- The body is likely a function reference. Inline it and
+                    -- wrap with a call to apply the remaining arguments.
+                    let
+                        ( remappedBody, ctx1 ) =
+                            remapLambdaIds ctx body
+
+                        inlined =
+                            MonoCall A.zero remappedBody args resultType Mono.defaultCallInfo
+
+                        newMetrics =
+                            { inlineCount = ctx1.metrics.inlineCount + 1
+                            , betaReductions = ctx1.metrics.betaReductions
+                            , letEliminations = ctx1.metrics.letEliminations
+                            }
+                    in
+                    ( Just inlined
+                    , { ctx1
+                        | metrics = newMetrics
+                        , inlineCountThisFunction = ctx1.inlineCountThisFunction + 1
+                      }
+                    )
+
+                else if numArgs < numParams then
+                    -- Partial application: bind available params, return closure with remaining
+                    let
+                        ( remappedBody, ctx1 ) =
+                            remapLambdaIds ctx body
+
+                        ( usedParams, remainingParams ) =
+                            ( List.take numArgs params, List.drop numArgs params )
+
+                        ( bindings, ctx2 ) =
+                            createBindingsForInline ctx1 usedParams args
+
+                        substituted =
+                            substituteAllForInline bindings remappedBody
+
+                        -- Create a new closure with the remaining parameters
+                        ( newLambdaId, ctx3 ) =
+                            freshLambdaIdForSpec ctx2 specId
+
+                        newClosureType =
+                            Mono.MFunction (List.map Tuple.second remainingParams) resultType
+
+                        -- Compute captures for the new closure
+                        newCaptures =
+                            Closure.computeClosureCaptures remainingParams substituted
+
+                        newClosureInfo =
+                            { lambdaId = newLambdaId
+                            , params = remainingParams
+                            , captures = newCaptures
+                            , closureKind = Nothing
+                            , captureAbi = Nothing
+                            }
+
+                        newClosure =
+                            MonoClosure newClosureInfo substituted newClosureType
+
+                        inlined =
+                            wrapInLetsForInline bindings newClosure newClosureType
+
+                        newMetrics =
+                            { inlineCount = ctx3.metrics.inlineCount + 1
+                            , betaReductions = ctx3.metrics.betaReductions
+                            , letEliminations = ctx3.metrics.letEliminations
+                            }
+                    in
+                    ( Just inlined
+                    , { ctx3
+                        | metrics = newMetrics
+                        , inlineCountThisFunction = ctx3.inlineCountThisFunction + 1
+                      }
+                    )
+
+                else if numArgs > numParams then
+                    -- Over-application: apply all params, then call result with extra args
+                    let
+                        ( remappedBody, ctx1 ) =
+                            remapLambdaIds ctx body
+
+                        ( usedArgs, extraArgs ) =
+                            ( List.take numParams args, List.drop numParams args )
+
+                        ( bindings, ctx2 ) =
+                            createBindingsForInline ctx1 params usedArgs
+
+                        substituted =
+                            substituteAllForInline bindings remappedBody
+
+                        innerExpr =
+                            wrapInLetsForInline bindings substituted resultType
+
+                        inlined =
+                            MonoCall A.zero innerExpr extraArgs resultType Mono.defaultCallInfo
+
+                        newMetrics =
+                            { inlineCount = ctx2.metrics.inlineCount + 1
+                            , betaReductions = ctx2.metrics.betaReductions
+                            , letEliminations = ctx2.metrics.letEliminations
+                            }
+                    in
+                    ( Just inlined
+                    , { ctx2
+                        | metrics = newMetrics
+                        , inlineCountThisFunction = ctx2.inlineCountThisFunction + 1
+                      }
+                    )
 
                 else
-                    case getInlinableBody node of
-                        Nothing ->
-                            ( Nothing, ctx )
+                    -- Exact application: bind all params to args
+                    let
+                        -- First, remap all lambda IDs in the body to avoid duplicate names
+                        ( remappedBody, ctx1 ) =
+                            remapLambdaIds ctx body
 
-                        Just ( params, body ) ->
-                            let
-                                numParams =
-                                    List.length params
+                        ( bindings, ctx2 ) =
+                            createBindingsForInline ctx1 params args
 
-                                numArgs =
-                                    List.length args
+                        substituted =
+                            substituteAllForInline bindings remappedBody
 
-                                cost =
-                                    computeCost body
-                            in
-                            -- Check cost threshold (or whitelist)
-                            if cost > inlineThreshold && not whitelisted then
-                                ( Nothing, ctx )
+                        inlined =
+                            wrapInLetsForInline bindings substituted resultType
 
-                            else if numParams == 0 && numArgs > 0 then
-                                -- Inlining a non-closure value that's being called.
-                                -- The body is likely a function reference. Inline it and
-                                -- wrap with a call to apply the remaining arguments.
-                                let
-                                    ( remappedBody, ctx1 ) =
-                                        remapLambdaIds ctx body
-
-                                    inlined =
-                                        MonoCall A.zero remappedBody args resultType Mono.defaultCallInfo
-
-                                    newMetrics =
-                                        { inlineCount = ctx1.metrics.inlineCount + 1
-                                        , betaReductions = ctx1.metrics.betaReductions
-                                        , letEliminations = ctx1.metrics.letEliminations
-                                        }
-                                in
-                                ( Just inlined
-                                , { ctx1
-                                    | metrics = newMetrics
-                                    , inlineCountThisFunction = ctx1.inlineCountThisFunction + 1
-                                  }
-                                )
-
-                            else if numArgs < numParams then
-                                -- Partial application: bind available params, return closure with remaining
-                                let
-                                    ( remappedBody, ctx1 ) =
-                                        remapLambdaIds ctx body
-
-                                    ( usedParams, remainingParams ) =
-                                        ( List.take numArgs params, List.drop numArgs params )
-
-                                    ( bindings, ctx2 ) =
-                                        createBindingsForInline ctx1 usedParams args
-
-                                    substituted =
-                                        substituteAllForInline bindings remappedBody
-
-                                    -- Create a new closure with the remaining parameters
-                                    ( newLambdaId, ctx3 ) =
-                                        freshLambdaIdForSpec ctx2 specId
-
-                                    newClosureType =
-                                        Mono.MFunction (List.map Tuple.second remainingParams) resultType
-
-                                    -- Compute captures for the new closure
-                                    newCaptures =
-                                        Closure.computeClosureCaptures remainingParams substituted
-
-                                    newClosureInfo =
-                                        { lambdaId = newLambdaId
-                                        , params = remainingParams
-                                        , captures = newCaptures
-                                        , closureKind = Nothing
-                                        , captureAbi = Nothing
-                                        }
-
-                                    newClosure =
-                                        MonoClosure newClosureInfo substituted newClosureType
-
-                                    inlined =
-                                        wrapInLetsForInline bindings newClosure newClosureType
-
-                                    newMetrics =
-                                        { inlineCount = ctx3.metrics.inlineCount + 1
-                                        , betaReductions = ctx3.metrics.betaReductions
-                                        , letEliminations = ctx3.metrics.letEliminations
-                                        }
-                                in
-                                ( Just inlined
-                                , { ctx3
-                                    | metrics = newMetrics
-                                    , inlineCountThisFunction = ctx3.inlineCountThisFunction + 1
-                                  }
-                                )
-
-                            else if numArgs > numParams then
-                                -- Over-application: apply all params, then call result with extra args
-                                let
-                                    ( remappedBody, ctx1 ) =
-                                        remapLambdaIds ctx body
-
-                                    ( usedArgs, extraArgs ) =
-                                        ( List.take numParams args, List.drop numParams args )
-
-                                    ( bindings, ctx2 ) =
-                                        createBindingsForInline ctx1 params usedArgs
-
-                                    substituted =
-                                        substituteAllForInline bindings remappedBody
-
-                                    innerExpr =
-                                        wrapInLetsForInline bindings substituted resultType
-
-                                    inlined =
-                                        MonoCall A.zero innerExpr extraArgs resultType Mono.defaultCallInfo
-
-                                    newMetrics =
-                                        { inlineCount = ctx2.metrics.inlineCount + 1
-                                        , betaReductions = ctx2.metrics.betaReductions
-                                        , letEliminations = ctx2.metrics.letEliminations
-                                        }
-                                in
-                                ( Just inlined
-                                , { ctx2
-                                    | metrics = newMetrics
-                                    , inlineCountThisFunction = ctx2.inlineCountThisFunction + 1
-                                  }
-                                )
-
-                            else
-                                -- Exact application: bind all params to args
-                                let
-                                    -- First, remap all lambda IDs in the body to avoid duplicate names
-                                    ( remappedBody, ctx1 ) =
-                                        remapLambdaIds ctx body
-
-                                    ( bindings, ctx2 ) =
-                                        createBindingsForInline ctx1 params args
-
-                                    substituted =
-                                        substituteAllForInline bindings remappedBody
-
-                                    inlined =
-                                        wrapInLetsForInline bindings substituted resultType
-
-                                    newMetrics =
-                                        { inlineCount = ctx2.metrics.inlineCount + 1
-                                        , betaReductions = ctx2.metrics.betaReductions
-                                        , letEliminations = ctx2.metrics.letEliminations
-                                        }
-                                in
-                                ( Just inlined
-                                , { ctx2
-                                    | metrics = newMetrics
-                                    , inlineCountThisFunction = ctx2.inlineCountThisFunction + 1
-                                  }
-                                )
+                        newMetrics =
+                            { inlineCount = ctx2.metrics.inlineCount + 1
+                            , betaReductions = ctx2.metrics.betaReductions
+                            , letEliminations = ctx2.metrics.letEliminations
+                            }
+                    in
+                    ( Just inlined
+                    , { ctx2
+                        | metrics = newMetrics
+                        , inlineCountThisFunction = ctx2.inlineCountThisFunction + 1
+                      }
+                    )
 
 
 getInlinableBody : MonoNode -> Maybe ( List ( Name, Mono.MonoType ), MonoExpr )
