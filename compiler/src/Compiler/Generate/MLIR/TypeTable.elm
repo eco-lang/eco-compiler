@@ -115,7 +115,7 @@ type alias TypeTableAccum =
     , funcArgs : List Int
     , nextFuncArgIndex : Int
     , typeAttrs : List MlirAttr
-    , ctorShapes : Dict.Dict (List String) (List Mono.CtorShape) -- type key -> ctor shapes
+    , ctorShapes : Dict.Dict String (List Mono.CtorShape) -- type key -> ctor shapes
     }
 
 
@@ -210,7 +210,7 @@ getOrCreateStringIndex str accum =
 
 {-| Process a single type entry and add it to the accumulator.
 -}
-processType : Dict.Dict (List String) Int -> ( Int, Mono.MonoType ) -> TypeTableAccum -> TypeTableAccum
+processType : Dict.Dict String Int -> ( Int, Mono.MonoType ) -> TypeTableAccum -> TypeTableAccum
 processType typeIds ( typeId, monoType ) accum =
     case monoType of
         Mono.MInt ->
@@ -297,7 +297,7 @@ addPolymorphicType typeId constraint accum =
 {-| Look up a TypeId for a MonoType in the typeIds dict.
 Returns 0 if not found (should not happen for properly registered types).
 -}
-lookupTypeId : Dict.Dict (List String) Int -> Mono.MonoType -> Int
+lookupTypeId : Dict.Dict String Int -> Mono.MonoType -> Int
 lookupTypeId typeIds monoType =
     let
         key =
@@ -308,7 +308,7 @@ lookupTypeId typeIds monoType =
 
 {-| Add a list type descriptor.
 -}
-addListType : Dict.Dict (List String) Int -> Int -> Mono.MonoType -> TypeTableAccum -> TypeTableAccum
+addListType : Dict.Dict String Int -> Int -> Mono.MonoType -> TypeTableAccum -> TypeTableAccum
 addListType typeIds typeId elemType accum =
     let
         elemTypeId =
@@ -326,7 +326,7 @@ addListType typeIds typeId elemType accum =
 
 {-| Add a tuple type descriptor.
 -}
-addTupleType : Dict.Dict (List String) Int -> Int -> Types.TupleLayout -> TypeTableAccum -> TypeTableAccum
+addTupleType : Dict.Dict String Int -> Int -> Types.TupleLayout -> TypeTableAccum -> TypeTableAccum
 addTupleType typeIds typeId layout accum =
     let
         firstField =
@@ -371,7 +371,7 @@ addTupleType typeIds typeId layout accum =
 
 {-| Add a record type descriptor.
 -}
-addRecordType : Dict.Dict (List String) Int -> Int -> Types.RecordLayout -> TypeTableAccum -> TypeTableAccum
+addRecordType : Dict.Dict String Int -> Int -> Types.RecordLayout -> TypeTableAccum -> TypeTableAccum
 addRecordType typeIds typeId layout accum =
     let
         firstField =
@@ -418,7 +418,7 @@ addRecordType typeIds typeId layout accum =
 
 {-| Add a custom type descriptor with constructor information.
 -}
-addCustomType : Dict.Dict (List String) Int -> Int -> Name.Name -> Mono.MonoType -> TypeTableAccum -> TypeTableAccum
+addCustomType : Dict.Dict String Int -> Int -> Name.Name -> Mono.MonoType -> TypeTableAccum -> TypeTableAccum
 addCustomType typeIds typeId _ monoType accum =
     let
         -- Look up constructor shapes and compute layouts
@@ -453,7 +453,7 @@ addCustomType typeIds typeId _ monoType accum =
 
 {-| Add constructor info for a single constructor.
 -}
-addCtorInfo : Dict.Dict (List String) Int -> Mono.CtorShape -> TypeTableAccum -> TypeTableAccum
+addCtorInfo : Dict.Dict String Int -> Mono.CtorShape -> TypeTableAccum -> TypeTableAccum
 addCtorInfo typeIds ctorShape accum =
     let
         -- Compute layout from shape
@@ -516,7 +516,7 @@ addCtorInfo typeIds ctorShape accum =
 
 {-| Add a function type descriptor.
 -}
-addFunctionType : Dict.Dict (List String) Int -> Int -> List Mono.MonoType -> Mono.MonoType -> TypeTableAccum -> TypeTableAccum
+addFunctionType : Dict.Dict String Int -> Int -> List Mono.MonoType -> Mono.MonoType -> TypeTableAccum -> TypeTableAccum
 addFunctionType typeIds typeId argTypes resultType accum =
     let
         firstArgType =

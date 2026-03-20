@@ -132,7 +132,7 @@ pruneUnreachableSpecs globalTypeEnv (Mono.MonoGraph record) =
                 oldReg.reverseMapping
 
         -- Rebuild mapping from live reverseMapping entries
-        mapping1 : Dict (List String) Mono.SpecId
+        mapping1 : Dict String Mono.SpecId
         mapping1 =
             List.foldl
                 (\( specId, maybeEntry ) acc ->
@@ -158,7 +158,7 @@ pruneUnreachableSpecs globalTypeEnv (Mono.MonoGraph record) =
             }
 
         -- 4. Recompute ctorShapes from pruned nodes
-        ctorShapes1 : Dict (List String) (List Mono.CtorShape)
+        ctorShapes1 : Dict String (List Mono.CtorShape)
         ctorShapes1 =
             Dict.fromList (Data.Map.toList compare (Analysis.computeCtorShapesForGraph globalTypeEnv nodes1))
     in

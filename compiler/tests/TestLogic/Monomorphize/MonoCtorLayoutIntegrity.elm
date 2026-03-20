@@ -85,7 +85,7 @@ formatViolations violations =
 
 {-| Check all CtorShapes produce valid CtorLayouts via Types.computeCtorLayout.
 -}
-checkCtorShapesAgainstLayouts : Dict.Dict (List String) (List Mono.CtorShape) -> List Violation
+checkCtorShapesAgainstLayouts : Dict.Dict String (List Mono.CtorShape) -> List Violation
 checkCtorShapesAgainstLayouts ctorShapes =
     Dict.foldl
         (\typeKey shapes acc ->
@@ -97,14 +97,14 @@ checkCtorShapesAgainstLayouts ctorShapes =
 
 {-| Check a single CtorShape produces a valid CtorLayout.
 -}
-checkShapeAgainstLayout : List String -> Mono.CtorShape -> List Violation
+checkShapeAgainstLayout : String -> Mono.CtorShape -> List Violation
 checkShapeAgainstLayout typeKey shape =
     let
         layout =
             Types.computeCtorLayout shape
 
         context =
-            "CtorShape " ++ shape.name ++ " (type: " ++ String.join "." typeKey ++ ")"
+            "CtorShape " ++ shape.name ++ " (type: " ++ typeKey ++ ")"
 
         -- Check field count consistency
         fieldCountViolations =
@@ -220,7 +220,7 @@ monoTypeToString monoType =
 {-| Check all MonoCtor nodes reference shapes that exist in ctorShapes.
 -}
 checkCtorNodesUseKnownShapes :
-    Dict.Dict (List String) (List Mono.CtorShape)
+    Dict.Dict String (List Mono.CtorShape)
     -> Array.Array (Maybe Mono.MonoNode)
     -> List Violation
 checkCtorNodesUseKnownShapes ctorShapes nodes =
@@ -259,7 +259,7 @@ checkCtorNodesUseKnownShapes ctorShapes nodes =
 
 {-| Check if a CtorShape exists in the ctorShapes dictionary.
 -}
-shapeExistsInDict : Mono.CtorShape -> Dict.Dict (List String) (List Mono.CtorShape) -> Bool
+shapeExistsInDict : Mono.CtorShape -> Dict.Dict String (List Mono.CtorShape) -> Bool
 shapeExistsInDict targetShape ctorShapes =
     Dict.foldl
         (\_ shapes found ->

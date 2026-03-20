@@ -224,7 +224,7 @@ type alias LocalInstanceInfo =
 -}
 type alias LocalMultiState =
     { defName : Name
-    , instances : Dict (List String) LocalInstanceInfo
+    , instances : Dict String LocalInstanceInfo
     }
 
 
@@ -251,7 +251,7 @@ type alias ValueMultiState =
     { defName : Name
     , defCanType : Can.Type
     , def : TOpt.Def
-    , instances : Dict (List String) ValueInstanceInfo
+    , instances : Dict String ValueInstanceInfo
     }
 
 

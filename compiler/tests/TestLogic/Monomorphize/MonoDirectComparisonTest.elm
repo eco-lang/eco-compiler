@@ -164,7 +164,7 @@ normalizedSpecKeyStr global monoType maybeLambda =
         normType =
             normalizeTypeAlone monoType
     in
-    String.join "\u{0000}" (Mono.toComparableSpecKey (Mono.SpecKey global normType maybeLambda))
+    Mono.toComparableSpecKey (Mono.SpecKey global normType maybeLambda)
 
 
 
@@ -469,7 +469,7 @@ coercedSpecKeyStr global monoType maybeLambda =
         coercedType =
             coerceBoxedToCanonical (normalizeTypeAlone monoType)
     in
-    String.join "\u{0000}" (Mono.toComparableSpecKey (Mono.SpecKey global coercedType maybeLambda))
+    Mono.toComparableSpecKey (Mono.SpecKey global coercedType maybeLambda)
 
 
 {-| Build a global+lambda only key string (ignoring type info).

@@ -190,7 +190,7 @@ lookupVarHelp name frames =
 -}
 type alias LocalMultiState =
     { defName : Name
-    , instances : Dict (List String) LocalInstanceInfo
+    , instances : Dict String LocalInstanceInfo
     }
 
 
@@ -227,7 +227,7 @@ getOrCreateLocalInstance defName funcMonoType callSubst state =
 
 
 updateLocalMultiStack :
-    Name -> List String -> Mono.MonoType -> Dict String Mono.MonoType -> List LocalMultiState
+    Name -> String -> Mono.MonoType -> Dict String Mono.MonoType -> List LocalMultiState
     -> ( List LocalMultiState, Name )
 updateLocalMultiStack defName key funcMonoType callSubst stack =
     case stack of

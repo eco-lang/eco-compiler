@@ -79,16 +79,51 @@ new blocks that aren't tracked by the outer pattern.
 
 ---
 
-## Memory Bloat Ideas (from original analysis, NOT YET APPLIED)
+## Profiling Results (Stage 5 profiled run, 180k ticks)
 
-### Issue 1: MonoDtPath Intermediate Types (HIGH IMPACT)
-See detailed analysis below. Types at intermediate path nodes are redundant.
+- **48% of time in GC** — massive garbage collection pressure
+- **47.5% in node binary** (shared library overhead)
+- Top JS hotspots:
+  1. `Dict.get` — 3.7% (7.2% nonlib)
+  2. `Dict.insertHelp` — 3.6% (7.0% nonlib)
+  3. `MonoTraverse.foldExprChildren` — 2.4% (4.7% nonlib)
+  4. `CompileLazy` (V8 JIT) — 2.2%
+  5. `MonoTraverse.foldExprAccFirst` — 2.1% (4.1% nonlib)
+  6. `Dict.balance` — 1.6% (3.1% nonlib)
+  7. `List.foldl` — 1.4% (2.7% nonlib)
+  8. `ArrayPrototypeJoin` — 1.3% (2.6% nonlib)
+  9. `Array.get` — 1.3% (2.6% nonlib)
+  10. `toComparableMonoTypeHelper` — 0.5%
 
-### Issue 2: toComparableSpecKey `List String` → `String` (MEDIUM IMPACT)
-Dict key uses linked list of strings instead of single joined string.
+Key observations:
+- Dict operations total ~9% of nonlib time → reducing Dict key allocation is critical
+- 48% GC → every allocation reduction directly improves throughput
+- `toComparableSpecKey` allocates `List String` as Dict key, every lookup/insert creates fresh lists
+- `MonoDtPath` stores redundant `MonoType` at every intermediate node
 
-### Issue 3: CallKind in CallInfo (LOW IMPACT — skip)
-One extra field per call node, negligible.
+## Performance Issues (ordered by impact)
+
+### Issue 1: toComparableSpecKey `List String` → `String` — FIXED
+Changed `toComparableMonoType`, `toComparableSpecKey`, `toComparableGlobal`,
+`toComparableLambdaId` to return `String`.
+Changed all Dict keys from `Dict (List String)` to `Dict String`.
+Changed `toComparableMonoTypeHelper` to build String directly via concatenation
+instead of building `List String` and joining.
+Results (ticks, baseline → final):
+- Total: 180,319 → 173,565 (7% fewer)
+- Dict.get: 6675 → 5913 (11% fewer)
+- Dict.insertHelp: 6486 → 4513 (30% fewer)
+- List.foldl: 2496 → 1612 (35% fewer)
+- _List_Cons: 719 → 457 (36% fewer)
+- ArrayPrototypeJoin: 2427 → 2345 (3% fewer)
+
+### Issue 2: MonoDtPath Intermediate Types — SKIPPED
+MonoDtPath functions don't appear in the profiling output at all (below 0.1% of time).
+41 occurrences across 7 files to change. Risk/complexity too high for negligible impact.
+The GC pressure comes from Dict operations and traversals, not from MonoDtPath allocation.
+
+### Issue 3: CallKind in CallInfo — SKIPPED
+One extra field per call node, negligible. Not visible in profiling.
 
 ---
 

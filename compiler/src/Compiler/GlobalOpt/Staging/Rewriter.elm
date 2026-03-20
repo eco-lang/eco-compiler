@@ -631,7 +631,7 @@ buildNestedCalls region calleeExpr params =
                         ("buildNestedCalls: callee type has no function stage but "
                             ++ String.fromInt (List.length remainingParams)
                             ++ " params remain. calleeType="
-                            ++ String.join " " (Mono.toComparableMonoType calleeType)
+                            ++ Mono.toComparableMonoType calleeType
                         )
 
                 else

@@ -294,7 +294,7 @@ getOrCreateLocalInstance defName funcMonoType callSubst state =
 -}
 updateLocalMultiStack :
     Name
-    -> List String
+    -> String
     -> Mono.MonoType
     -> Substitution
     -> List LocalMultiState
@@ -452,7 +452,7 @@ getOrCreateValueInstance defName monoType currentSubst state =
 -}
 updateValueMultiStack :
     Name
-    -> List String
+    -> String
     -> Mono.MonoType
     -> Substitution
     -> List ValueMultiState

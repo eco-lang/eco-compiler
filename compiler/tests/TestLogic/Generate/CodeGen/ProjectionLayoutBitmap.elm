@@ -66,7 +66,7 @@ checkProjectionLayoutBitmap mlirModule monoGraph =
 
 {-| Build a map from tag -> list of CtorLayouts.
 -}
-buildTagToLayoutMap : Dict.Dict (List String) (List Mono.CtorShape) -> Dict.Dict Int (List Types.CtorLayout)
+buildTagToLayoutMap : Dict.Dict String (List Mono.CtorShape) -> Dict.Dict Int (List Types.CtorLayout)
 buildTagToLayoutMap ctorShapes =
     Dict.foldl
         (\_ shapes acc ->

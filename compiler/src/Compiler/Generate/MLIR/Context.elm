@@ -233,9 +233,9 @@ Used by eco.dbg with arg\_type\_ids for typed debug printing.
 -}
 type alias TypeRegistry =
     { nextTypeId : Int
-    , typeIds : Dict.Dict (List String) Int -- comparable key -> TypeId
+    , typeIds : Dict.Dict String Int -- comparable key -> TypeId
     , typeInfos : List ( Int, Mono.MonoType ) -- List of (TypeId, MonoType) for building type table
-    , ctorShapes : Dict.Dict (List String) (List Mono.CtorShape) -- type key -> ctor shapes for custom types
+    , ctorShapes : Dict.Dict String (List Mono.CtorShape) -- type key -> ctor shapes for custom types
     }
 
 
@@ -255,7 +255,7 @@ type alias PendingLambda =
 
 {-| Initialize a code generation context.
 -}
-initContext : Mode.Mode -> Mono.SpecializationRegistry -> Dict.Dict Int FuncSignature -> Dict.Dict (List String) (List Mono.CtorShape) -> Context
+initContext : Mode.Mode -> Mono.SpecializationRegistry -> Dict.Dict Int FuncSignature -> Dict.Dict String (List Mono.CtorShape) -> Context
 initContext mode registry signatures initialCtorShapes =
     { nextVar = 0
     , nextOpId = 0

@@ -52,7 +52,7 @@ import Utils.Crash
 
 {-| Collect all MCustom types from a MonoType, recursively traversing nested structures.
 -}
-collectCustomTypesFromMonoType : Mono.MonoType -> EverySet (List String) Mono.MonoType -> EverySet (List String) Mono.MonoType
+collectCustomTypesFromMonoType : Mono.MonoType -> EverySet String Mono.MonoType -> EverySet String Mono.MonoType
 collectCustomTypesFromMonoType monoType acc =
     case monoType of
         Mono.MCustom _ _ args ->
@@ -82,7 +82,7 @@ collectCustomTypesFromMonoType monoType acc =
 {-| Collect custom types from a MonoPath.
 The path contains intermediate container types that need their shapes computed.
 -}
-collectCustomTypesFromPath : Mono.MonoPath -> EverySet.EverySet (List String) Mono.MonoType -> EverySet.EverySet (List String) Mono.MonoType
+collectCustomTypesFromPath : Mono.MonoPath -> EverySet.EverySet String Mono.MonoType -> EverySet.EverySet String Mono.MonoType
 collectCustomTypesFromPath path acc =
     case path of
         Mono.MonoRoot _ rootType ->
@@ -103,7 +103,7 @@ collectCustomTypesFromPath path acc =
 
 {-| Collect all MCustom types from a MonoExpr and its sub-expressions.
 -}
-collectCustomTypesFromExpr : Mono.MonoExpr -> EverySet (List String) Mono.MonoType -> EverySet (List String) Mono.MonoType
+collectCustomTypesFromExpr : Mono.MonoExpr -> EverySet String Mono.MonoType -> EverySet String Mono.MonoType
 collectCustomTypesFromExpr expr acc =
     let
         accWithType =
@@ -236,7 +236,7 @@ collectCustomTypesFromExpr expr acc =
 
 {-| Collect custom types from a decision tree.
 -}
-collectCustomTypesFromDecider : Mono.Decider Mono.MonoChoice -> EverySet (List String) Mono.MonoType -> EverySet (List String) Mono.MonoType
+collectCustomTypesFromDecider : Mono.Decider Mono.MonoChoice -> EverySet String Mono.MonoType -> EverySet String Mono.MonoType
 collectCustomTypesFromDecider decider acc =
     case decider of
         Mono.Leaf choice ->
@@ -267,7 +267,7 @@ collectCustomTypesFromDecider decider acc =
 
 {-| Collect custom types from a MonoDtPath (decision tree path).
 -}
-collectCustomTypesFromDtPath : Mono.MonoDtPath -> EverySet (List String) Mono.MonoType -> EverySet (List String) Mono.MonoType
+collectCustomTypesFromDtPath : Mono.MonoDtPath -> EverySet String Mono.MonoType -> EverySet String Mono.MonoType
 collectCustomTypesFromDtPath dtPath acc =
     case dtPath of
         Mono.DtRoot _ rootType ->
@@ -284,7 +284,7 @@ collectCustomTypesFromDtPath dtPath acc =
 
 {-| Collect all MCustom types from all nodes in the graph.
 -}
-collectAllCustomTypes : Array (Maybe Mono.MonoNode) -> EverySet (List String) Mono.MonoType
+collectAllCustomTypes : Array (Maybe Mono.MonoNode) -> EverySet String Mono.MonoType
 collectAllCustomTypes nodes =
     Array.foldl
         (\maybeNode acc ->
@@ -393,7 +393,7 @@ even those not directly used in code.
 computeCtorShapesForGraph :
     TypeEnv.GlobalTypeEnv
     -> Array (Maybe Mono.MonoNode)
-    -> Data.Map.Dict (List String) (List String) (List Mono.CtorShape)
+    -> Data.Map.Dict String String (List Mono.CtorShape)
 computeCtorShapesForGraph globalTypeEnv nodes =
     let
         customTypes =
