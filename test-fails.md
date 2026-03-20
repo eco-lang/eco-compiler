@@ -4,9 +4,10 @@
 - **elm-test**: 11667 passed, 1 failed
 - **E2E**: 923 passed, 16 failed
 
-## Current (after fixes)
-- **elm-test**: 11667 passed, 1 failed (unchanged)
-- **E2E**: 925 passed, 10 failed (6 fixed: 4 deleted invalid tests + 2 code fixes)
+## Current (after this session)
+- **elm-test**: 11667 passed, 1 failed (unchanged — pre-existing CGEN_056 SKI combinator result type)
+- **E2E**: 925 passed, 10 failed (unchanged count but staging fix applied: 2 partial code fixes)
+- **Code changes**: Staging generic_apply fallback in Expr.elm + closureBodyStageArities fix in MonoGlobalOptimize.elm
 
 ## Fix Order (by root cause, earliest compiler phase first)
 
@@ -15,8 +16,8 @@
 | 1 | Invalid Elm: parse/canonicalize/nitpick | CaseNegativeIntTest, LetDestructConsTest, LetShadowingTest, AsPatternFuncArgTest | Tests used invalid Elm (neg patterns, cons in let, shadowing, non-exhaustive arg) | FIXED (deleted) |
 | 2 | LLVM Translation (unrealized_conversion_cast) | PartialAppCaptureTypesTest | ProjectClosureOpLowering missing i16 truncation for Char | FIXED |
 | 3 | Kernel raw-ptr vs HPointer (SIGSEGV) | PolyEscapeRecordTest | C++ kernels boxInt/boxFloat returned raw pointers, not HPointers | FIXED |
-| 4 | Closure arity mismatch (SIGABRT) | CombinatorBComposeTest, CombinatorBSumMapTest, CombinatorCConsTest, CombinatorCFlipTest, CombinatorListStringTest, CombinatorTPipeTest, CombinatorTThrushTest, CombinatorTest, CombinatorSpMulTest + elm-test SKI | remaining_arity from static type doesn't match runtime closure arity for combinator-style code | OPEN |
-| 5 | LetDestructFuncTupleTest (Missing pattern) | LetDestructFuncTupleTest | Polymorphic accessor + tuple destructuring | OPEN |
+| 4 | Closure arity mismatch (SIGABRT) | CombinatorBComposeTest, CombinatorBSumMapTest, CombinatorCConsTest, CombinatorCFlipTest, CombinatorListStringTest, CombinatorTPipeTest, CombinatorTThrushTest, CombinatorTest, CombinatorSpMulTest + elm-test SKI | TWO bugs: (1) staging uses type-derived arities that don't match runtime (FIXED via generic_apply fallback), (2) monomorphizer picks wrong k specialization for combinators | SKIPPED |
+| 5 | LetDestructFuncTupleTest (Missing pattern) | LetDestructFuncTupleTest | Standalone accessor gets generic type; record unboxed_bitmap mismatch | SKIPPED |
 
 ---
 
@@ -70,50 +71,67 @@ return fromHPointer(hp);
 
 ---
 
-## OPEN: Category 4 — Closure Arity Mismatch (HIGHEST IMPACT)
+## SKIPPED: Category 4 — Combinator Closure Bugs (TWO ROOT CAUSES)
 
 **Tests**: 9 E2E Combinator tests + 1 elm-test SKI combinator
 
-**Error**: `eco_closure_call_saturated: argument count mismatch` (SIGABRT)
+### Root Cause 1: Staging Arity Mismatch (FIXED)
 
-### Detailed Trace (CombinatorBComposeTest)
+`closureBodyStageArities` returned type-derived stage arities `[1, 1]` for closures whose body is a call (e.g., `b = s (k s) k`). At runtime, the returned closure has different staging (remaining=2 instead of [1,1]). `applyByStages` emitted papExtends with wrong `remaining_arity`, causing `eco_closure_call_saturated` assertion failures.
 
-**Elm source**:
-```elm
-k a _ = a
-s bf uf x = bf x (uf x)
-b = s (k s) k
-result = b square inc 4  -- should be 25
-```
+**Fix applied**:
+1. `MonoGlobalOptimize.elm:closureBodyStageArities`: Returns `Nothing` when closure body is an opaque call returning a function type (instead of trusting type-derived arities)
+2. `Expr.elm:applyByStages`: When `sourceRemaining <= 0` and args remain (unknown staging), emits a single generic papExtend (no `remaining_arity`) with `_call_kind = "generic_apply"`, forcing runtime `eco_apply_closure` dispatch. Adds `eco.unbox` if caller expects non-boxed result type.
 
-**Generated MLIR for main (lines 9-11)**:
-```
-%7 = "eco.papExtend"(%2, %3) {_call_kind = "direct_known_segmentation", remaining_arity = 1}
-%8 = "eco.papExtend"(%7, %4) {remaining_arity = 1}  ← WRONG: static type predicts arity 1
-%9 = "eco.papExtend"(%8, %6) {remaining_arity = 1}  ← WRONG: actual runtime arity differs
-```
+### Root Cause 2: Monomorphization Wrong Specialization (NOT FIXED)
 
-**Why it fails**: The compiler computes staging from the static type `b : (Int→Int) → (Int→Int) → Int → Int`, producing stage arities `[1, 1, 1]`. But `b` is defined as `s (k s) k`, a partial application that at runtime returns a PAP of `s_$_7` with `max_values=3, n_values=1, remaining=2`. The second `papExtend` expects `remaining=1` but gets a closure with `remaining=2`.
+The monomorphizer picks wrong specialization of `k` for combinator `b = s (k s) k`. The trailing `k` in `s (k s) k` should be specialized as `(!eco.value, i64) → !eco.value` (since k receives `Int→Int` as first arg and `Int` as second), but gets specialized as `(i64, i64) → i64`.
 
-**Runtime assertion trace**:
-1. `b_$_3(square)` calls `s_$_9(lambda_wrapping_s7, k, square)` → returns PAP of `s_$_7` with `n_values=1, max_values=3`
-2. `eco_closure_call_saturated(PAP, [inc], 1)` checks: `n_values(1) + num_newargs(1) == max_values(3)` → `2 ≠ 3` → **ABORT**
+**Type derivation**: In `b : (Int→Int) → (Int→Int) → Int → Int`, the trailing `k` used as `uf` in `s bf uf x = bf x (uf x)` has type `(Int→Int) → Int → (Int→Int)` where:
+- First param = `Int→Int` (a function type → `!eco.value`)
+- Second param = `Int` → `i64`
+- Return = `Int→Int` (a function type → `!eco.value`)
 
-### Investigation of compiler fix
+**Why monomorphization fails**: The monomorphizer resolves `k`'s canonical type `a → b → a` using the outer substitution, which maps all type variables to `Int` (from `b`'s overall result type being `Int`). It doesn't distinguish between `Int` and `Int→Int` for the first parameter.
 
-Attempted fixes in `MonoGlobalOptimize.elm` (sourceArityForExpr, computeCallInfo) and `Staging/Rewriter.elm` did not affect the generated MLIR. The root issue: the Elm canonical optimizer flattens `b square inc 4` into `Call b [square, inc, 4]`, which gets a single `MonoCall`. The call goes through `annotateCallStaging` → `computeCallInfo`, but the pipeline between monomorphization and MLIR generation creates staged calls using type-level stage arities that don't match runtime arities for combinator-composed functions.
+**Attempted fixes**:
+1. Deferred VarGlobal processing with `isFunctionType` check → PendingGlobal resolved but `paramType` from `s`'s unified type already has wrong `Int` types
+2. The `unifyCallSiteWithRenaming` for the call `s [(k s), k]` computes `s`'s second parameter type incorrectly because the type variable `b` in `s`'s type is resolved through complex combinator composition that the current unification doesn't properly handle
 
-Further investigation needed to identify exactly which pass creates the staged papExtend chain and how to make it use generic_apply for opaque returns.
+**Impact**: After staging fix, tests crash with SIGSEGV instead of SIGABRT because `k_$_8(i64, i64) → i64` evaluator wrapper tries to unbox a closure HPointer as an Int.
 
-**Attempted fix (runtime fallback)**: Changed `eco_closure_call_saturated` to fall back to `eco_apply_closure` on mismatch. This eliminated the SIGABRT but caused SIGSEGV because the typed-path args are raw unboxed values while the generic path expects HPointer-encoded values. Reverted.
+**Required fix**: Deep change to the monomorphizer's type unification for combinator-composed partial applications, ensuring intermediate types (like `k`'s first param being `Int→Int`) are correctly propagated through the unification chain.
 
 ---
 
-## OPEN: Category 5 — LetDestructFuncTupleTest
+## SKIPPED: Category 5 — LetDestructFuncTupleTest (Record Accessor Monomorphization)
 
 **Test**: LetDestructFuncTupleTest
-**Error**: `Missing pattern: get: 10` (test output doesn't match expected)
+**Error**: `Missing pattern: get: 10` / SIGSEGV (after staging fix)
 
-**Elm source**: Uses `.a`/`.b` record accessors in tuple destructuring via case branches. The polymorphic accessor returns `!eco.value` but the record has unboxed fields, causing incorrect value propagation.
+### Root Cause
 
-Needs further investigation — may be related to the accessor monomorphization or unboxed field projection.
+Two interconnected issues with standalone record accessors stored in tuples:
+
+**Issue 1: Accessor has generic type**
+The accessor `.a` in `( .a, \x m -> { m | a = x } )` is specialized as `(!eco.value) → !eco.value` instead of `(!eco.value) → i64`. This happens because:
+- The accessor's canonical type is `{ a : v | r } → v` with row variable `r` and field type `v`
+- `Specialize.elm:1975` handles standalone accessors by applying the outer substitution to the canonical type
+- The outer substitution doesn't bind the accessor's row variable `r` (it's a fresh variable from the accessor's type scheme)
+- `forceCNumberToInt` preserves `MVar _ CEcoValue` for the field type, resulting in `!eco.value` return type
+- The accessor body uses `eco.project.record → !eco.value`, which loads the raw i64 value (10) from the unboxed field and treats it as an HPointer → SIGSEGV
+
+**Issue 2: Setter creates record with wrong unboxed_bitmap**
+The setter lambda `\x m -> { m | a = x }` takes `(!eco.value, !eco.value)` params and constructs a record with `unboxed_bitmap = 0` (all boxed). But the caller projects field 0 as `i64` (expecting unboxed), getting HPointer bits instead of the raw int value.
+
+### Attempted Fixes
+
+1. **RecordProjectOpLowering bitmap check**: Added runtime `unboxed_bitmap` checking in `eco.project.record` lowering for both `!eco.value → box if unboxed` and `i64 → unbox if boxed` cases. The `!eco.value` case caused 27 regressions (unnecessary `eco_alloc_int` calls on every record projection). The `i64` case with `eco_unbox_field_i64` helper also caused regressions (LLVM function linkage issues). Reverted.
+
+### Required Fix
+
+The accessor monomorphization needs to be fixed in `Specialize.elm:1975-2001`:
+- When a standalone accessor appears in a context where its record type is known (e.g., inside a function with typed parameters), the accessor's type variables should be unified with the expected record type from the surrounding context
+- This requires propagating the enclosing function's record parameter type into the case branch where the accessor appears
+- Alternatively, the `PendingAccessor` mechanism (currently only for call arguments) should be extended to handle standalone accessors in tuple expressions
+- The setter lambdas should also inherit the correct `unboxed_bitmap` from the original record type
