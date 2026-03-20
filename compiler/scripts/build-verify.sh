@@ -22,6 +22,12 @@ node bin/eco-boot-runner.js make \
     "$COMPILER_DIR/src/Terminal/Main.elm"
 node "$COMPILER_DIR/scripts/replacements.js" bin/eco-boot-2.js
 
+# Generate minimal runner for eco-boot-2 (kernel IO is inlined, no XHR needed)
+cat > bin/eco-boot-2-runner.js <<'RUNNER'
+const { Elm } = require("./eco-boot-2.js");
+Elm.Terminal.Main.init();
+RUNNER
+
 # Stage 4: fixed-point check
 echo "Stage 4: eco-boot-2.js → eco-boot-3.js"
 node bin/eco-boot-2-runner.js make \

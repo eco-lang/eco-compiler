@@ -34,6 +34,14 @@ cd "$BUILD_KERNEL_DIR"
 node "$COMPILER_DIR/bin/index.js" make --optimize --kernel-package eco/compiler --local-package eco/kernel="$COMPILER_DIR/../eco-kernel-cpp" --output=$js $elm_entry
 node "$COMPILER_DIR/scripts/replacements.js" $js
 
+# Generate minimal runner (kernel IO is inlined, no XHR needed)
+if [ "$1" = "bin" ]; then
+    cat > "$BUILD_KERNEL_DIR/bin/eco-boot-runner.js" <<'RUNNER'
+const { Elm } = require("./eco-boot.js");
+Elm.Terminal.Main.init();
+RUNNER
+fi
+
 #uglifyjs $js --compress "pure_funcs=[F2,F3,F4,F5,F6,F7,F8,F9,A2,A3,A4,A5,A6,A7,A8,A9],pure_getters,keep_fargs=false,unsafe_comps,unsafe" | uglifyjs --mangle --output $min
 
 #echo "Initial size: $(cat $js | wc -c) bytes  ($js)"
