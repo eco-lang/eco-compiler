@@ -80,21 +80,23 @@ inline bool getNumericValue(uint64_t hptr, Elm::i64& intVal, Elm::f64& floatVal)
 }
 
 // Helper to box an integer result.
-// Returns raw pointer (not HPointer) for consistency with JIT's eco.box/unbox.
+// Returns HPointer for consistency with JIT's eco_alloc_int.
 inline uint64_t boxInt(Elm::i64 val) {
     void* obj = Elm::Allocator::instance().allocate(sizeof(Elm::ElmInt), Elm::Tag_Int);
     Elm::ElmInt* intObj = static_cast<Elm::ElmInt*>(obj);
     intObj->value = val;
-    return reinterpret_cast<uint64_t>(obj);
+    Elm::HPointer hp = Elm::Allocator::instance().wrap(obj);
+    return fromHPointer(hp);
 }
 
 // Helper to box a float result.
-// Returns raw pointer (not HPointer) for consistency with JIT's eco.box/unbox.
+// Returns HPointer for consistency with JIT's eco_alloc_float.
 inline uint64_t boxFloat(Elm::f64 val) {
     void* obj = Elm::Allocator::instance().allocate(sizeof(Elm::ElmFloat), Elm::Tag_Float);
     Elm::ElmFloat* floatObj = static_cast<Elm::ElmFloat*>(obj);
     floatObj->value = val;
-    return reinterpret_cast<uint64_t>(obj);
+    Elm::HPointer hp = Elm::Allocator::instance().wrap(obj);
+    return fromHPointer(hp);
 }
 
 } // anonymous namespace

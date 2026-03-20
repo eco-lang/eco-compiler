@@ -66,6 +66,8 @@ struct ProjectClosureOpLowering : public OpConversionPattern<ProjectClosureOp> {
                 result = rewriter.create<LLVM::BitcastOp>(loc, f64Ty, loadedValue);
             } else if (isa<LLVM::LLVMPointerType>(resultType)) {
                 result = rewriter.create<LLVM::IntToPtrOp>(loc, resultType, loadedValue);
+            } else if (auto intTy = dyn_cast<IntegerType>(resultType); intTy && intTy.getWidth() < 64) {
+                result = rewriter.create<LLVM::TruncOp>(loc, resultType, loadedValue);
             }
             // else: i64, no conversion needed
         } else {
