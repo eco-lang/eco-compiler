@@ -20,6 +20,7 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 
 #include "../EcoDialect.h"
 #include "../EcoOps.h"
@@ -96,6 +97,20 @@ bool isStringCase(CaseOp op) {
     return caseKindAttr.getValue() == "str";
 }
 
+/// Check if any nested operation within this case is a string case.
+/// String cases cannot be lowered inside SCF regions (they need CaseOpLowering
+/// in the EcoToLLVM pass, which requires CF control flow). If we convert an
+/// outer case to SCF while it contains a nested string case, the nested case
+/// becomes unreachable by CaseOpLowering due to dynamic legality constraints.
+bool containsNestedStringCase(CaseOp op) {
+    bool found = false;
+    op.walk([&](CaseOp nested) {
+        if (nested != op && isStringCase(nested))
+            found = true;
+    });
+    return found;
+}
+
 //===----------------------------------------------------------------------===//
 // Pattern: eco.case with pure yields -> scf.if (2-way case)
 //===----------------------------------------------------------------------===//
@@ -141,6 +156,11 @@ struct CaseToScfIfPattern : public OpRewritePattern<CaseOp> {
         // Skip cases inside joinpoint bodies - these may have different control
         // flow requirements and should be handled by joinpoint-specific patterns.
         if (op->getParentOfType<JoinpointOp>())
+            return failure();
+
+        // Skip cases that contain nested string cases — string cases need
+        // CaseOpLowering (CF-based), which can't run inside SCF regions.
+        if (containsNestedStringCase(op))
             return failure();
 
         // NOTE: We intentionally do NOT skip cases nested inside other eco.case
@@ -342,6 +362,11 @@ struct CaseToScfIndexSwitchPattern : public OpRewritePattern<CaseOp> {
         if (op->getParentOfType<JoinpointOp>())
             return failure();
 
+        // Skip cases that contain nested string cases — string cases need
+        // CaseOpLowering (CF-based), which can't run inside SCF regions.
+        if (containsNestedStringCase(op))
+            return failure();
+
         // NOTE: We intentionally do NOT skip cases nested inside other eco.case
         // alternatives or inside scf.if/scf.index_switch regions. Nested cases
         // should be lowered to nested SCF operations.
@@ -516,6 +541,10 @@ struct CaseToScfIfChainPattern : public OpRewritePattern<CaseOp> {
         if (op->getParentOfType<JoinpointOp>())
             return failure();
 
+        // Skip cases that contain nested string cases
+        if (containsNestedStringCase(op))
+            return failure();
+
         auto loc = op.getLoc();
         auto resultTypes = getCaseResultTypes(op);
 
@@ -613,6 +642,173 @@ private:
             rewriter.setInsertionPointToStart(elseBlock);
             Value innerResult = buildIntIfChain(rewriter, loc, unboxed, tags, alts,
                                                 resultTypes, altIdx + 1, numAlts);
+            rewriter.create<scf::YieldOp>(loc, innerResult);
+        }
+
+        return ifOp.getResult(0);
+    }
+};
+
+//===----------------------------------------------------------------------===//
+// Pattern: eco.case with case_kind="str" -> nested scf.if chain
+//===----------------------------------------------------------------------===//
+
+/// Lowers string case expressions to nested scf.if chains using
+/// Elm_Kernel_Utils_equal for string comparison. This allows string
+/// cases to be safely nested inside other SCF regions.
+struct CaseStringToScfIfChainPattern : public OpRewritePattern<CaseOp> {
+    using OpRewritePattern::OpRewritePattern;
+
+    LogicalResult matchAndRewrite(CaseOp op,
+                                  PatternRewriter &rewriter) const override {
+        if (!isStringCase(op))
+            return failure();
+
+        auto alts = op.getAlternatives();
+        if (alts.size() < 2)
+            return failure();
+
+        if (!hasPureYieldAlternatives(op))
+            return failure();
+
+        if (op->getParentOfType<JoinpointOp>())
+            return failure();
+
+        // Only convert string cases that are nested inside SCF regions.
+        // Top-level string cases are handled fine by CaseOpLowering in EcoToLLVM.
+        if (!op->getParentOfType<scf::IfOp>() &&
+            !op->getParentOfType<scf::IndexSwitchOp>())
+            return failure();
+
+        auto stringPatternsAttr = op.getStringPatternsAttr();
+        if (!stringPatternsAttr)
+            return failure();
+
+        auto loc = op.getLoc();
+        auto resultTypes = getCaseResultTypes(op);
+        Value scrutinee = op.getScrutinee();
+
+        // Ensure Elm_Kernel_Utils_equal is declared
+        auto module = op->getParentOfType<ModuleOp>();
+        ensureEqualDeclared(rewriter, module, loc);
+
+        // Build the if-chain from front to back
+        Value result = buildStringIfChain(rewriter, loc, scrutinee, alts,
+                                          stringPatternsAttr, resultTypes,
+                                          0, alts.size());
+
+        rewriter.replaceOp(op, result);
+        return success();
+    }
+
+private:
+    /// Ensure Elm_Kernel_Utils_equal is declared as func.func.
+    void ensureEqualDeclared(PatternRewriter &rewriter,
+                             ModuleOp module, Location loc) const {
+        if (module.lookupSymbol("Elm_Kernel_Utils_equal"))
+            return;
+        auto savedInsertPoint = rewriter.saveInsertionPoint();
+        rewriter.setInsertionPointToStart(module.getBody());
+        auto ecoValueTy = eco::ValueType::get(rewriter.getContext());
+        auto funcTy = rewriter.getFunctionType({ecoValueTy, ecoValueTy}, {ecoValueTy});
+        auto funcOp = rewriter.create<func::FuncOp>(loc, "Elm_Kernel_Utils_equal", funcTy);
+        funcOp.setPrivate();
+        rewriter.restoreInsertionPoint(savedInsertPoint);
+    }
+
+    Value buildStringIfChain(PatternRewriter &rewriter, Location loc,
+                             Value scrutinee, MutableArrayRef<Region> alts,
+                             ArrayAttr stringPatterns,
+                             SmallVector<Type> &resultTypes,
+                             size_t altIdx, size_t numAlts) const {
+        // Base case: this is handled inline in the else branch of the
+        // previous level — we should never reach here.
+        if (altIdx == numAlts - 1) {
+            llvm_unreachable("base case should not be reached directly");
+        }
+
+        // Single remaining comparison: last non-default alt.
+        // Create scf.if with then=alt[altIdx], else=alt[numAlts-1] (default).
+        if (altIdx == numAlts - 2) {
+            auto patternStr = cast<StringAttr>(stringPatterns[altIdx]).getValue();
+            auto strLitOp = rewriter.create<StringLiteralOp>(loc,
+                eco::ValueType::get(rewriter.getContext()), patternStr);
+            auto ecoValueTy = eco::ValueType::get(rewriter.getContext());
+            auto callOp = rewriter.create<func::CallOp>(
+                loc, "Elm_Kernel_Utils_equal",
+                TypeRange{ecoValueTy},
+                ValueRange{scrutinee, strLitOp});
+            Value cond = rewriter.create<UnboxOp>(loc, rewriter.getI1Type(), callOp.getResult(0));
+
+            auto ifOp = rewriter.create<scf::IfOp>(loc, resultTypes, cond,
+                                                    /*withElseRegion=*/true);
+            // Then: this alternative
+            {
+                Block *thenBlock = &ifOp.getThenRegion().front();
+                if (!thenBlock->empty())
+                    if (auto y = dyn_cast<scf::YieldOp>(thenBlock->getTerminator()))
+                        rewriter.eraseOp(y);
+                rewriter.setInsertionPointToStart(thenBlock);
+                IRMapping mapping;
+                cloneAlternativeWithScfYield(alts[altIdx], rewriter, loc, mapping);
+            }
+            // Else: default alternative
+            {
+                Block *elseBlock = &ifOp.getElseRegion().front();
+                if (!elseBlock->empty())
+                    if (auto y = dyn_cast<scf::YieldOp>(elseBlock->getTerminator()))
+                        rewriter.eraseOp(y);
+                rewriter.setInsertionPointToStart(elseBlock);
+                IRMapping mapping;
+                cloneAlternativeWithScfYield(alts[numAlts - 1], rewriter, loc, mapping);
+            }
+            return ifOp.getResult(0);
+        }
+
+        // Create string literal for this pattern
+        auto patternStr = cast<StringAttr>(stringPatterns[altIdx]).getValue();
+        auto strLitOp = rewriter.create<StringLiteralOp>(loc,
+            eco::ValueType::get(rewriter.getContext()), patternStr);
+
+        // Call Elm_Kernel_Utils_equal(scrutinee, pattern_string)
+        auto ecoValueTy = eco::ValueType::get(rewriter.getContext());
+        auto callOp = rewriter.create<func::CallOp>(
+            loc, "Elm_Kernel_Utils_equal",
+            TypeRange{ecoValueTy},
+            ValueRange{scrutinee, strLitOp});
+        Value eqResult = callOp.getResult(0);
+
+        // Unbox the result to i1
+        auto i1Ty = rewriter.getI1Type();
+        Value cond = rewriter.create<UnboxOp>(loc, i1Ty, eqResult);
+
+        // Create scf.if
+        auto ifOp = rewriter.create<scf::IfOp>(loc, resultTypes, cond,
+                                                /*withElseRegion=*/true);
+
+        // Then: matched this pattern
+        {
+            Block *thenBlock = &ifOp.getThenRegion().front();
+            // Remove auto-generated yield
+            if (!thenBlock->empty())
+                if (auto existingYield = dyn_cast<scf::YieldOp>(thenBlock->getTerminator()))
+                    rewriter.eraseOp(existingYield);
+            rewriter.setInsertionPointToStart(thenBlock);
+            IRMapping mapping;
+            cloneAlternativeWithScfYield(alts[altIdx], rewriter, loc, mapping);
+        }
+
+        // Else: try next pattern
+        {
+            Block *elseBlock = &ifOp.getElseRegion().front();
+            if (!elseBlock->empty()) {
+                if (auto existingYield = dyn_cast<scf::YieldOp>(elseBlock->getTerminator()))
+                    rewriter.eraseOp(existingYield);
+            }
+            rewriter.setInsertionPointToStart(elseBlock);
+            Value innerResult = buildStringIfChain(rewriter, loc, scrutinee, alts,
+                                                   stringPatterns, resultTypes,
+                                                   altIdx + 1, numAlts);
             rewriter.create<scf::YieldOp>(loc, innerResult);
         }
 
@@ -885,6 +1081,7 @@ struct EcoControlFlowToSCFPass
         // 2. Then case patterns for remaining cases
         // 3. If-chain pattern last (fallback for int cases with negative tags)
         patterns.add<JoinpointToScfWhilePattern>(ctx, /*benefit=*/10);
+        patterns.add<CaseStringToScfIfChainPattern>(ctx, /*benefit=*/6);
         patterns.add<CaseToScfIfPattern>(ctx, /*benefit=*/5);
         patterns.add<CaseToScfIndexSwitchPattern>(ctx, /*benefit=*/5);
         patterns.add<CaseToScfIfChainPattern>(ctx, /*benefit=*/4);

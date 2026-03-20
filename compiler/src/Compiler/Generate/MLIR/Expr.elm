@@ -3098,16 +3098,10 @@ generateIf ctx branches final =
                     ( thenCoerceOps, thenFinalVar, thenFinalCtx ) =
                         coerceResultToType thenRes.ctx thenRes.resultVar thenRes.resultType resultMlirType
 
-                    ( ctx1, thenYieldOp ) =
-                        Ops.scfYield thenFinalCtx thenFinalVar resultMlirType
-
-                    thenRegion =
-                        Ops.mkRegion [] (thenRes.ops ++ thenCoerceOps) thenYieldOp
-
                     -- Generate else branch (recursive if or final)
                     -- Use ctxForSiblingRegion to avoid leaking varMappings from then-branch
                     elseCtx =
-                        Ctx.ctxForSiblingRegion condCtx ctx1
+                        Ctx.ctxForSiblingRegion condCtx thenFinalCtx
 
                     elseRes =
                         generateIf elseCtx restBranches final
@@ -3117,28 +3111,38 @@ generateIf ctx branches final =
                     generateIfWithTerminatedElse condRes.ctx condVar thenRes elseRes resultMlirType condRes.ops
 
                 else
-                    -- Normal case: both branches produce values, use scf.if
+                    -- Normal case: both branches produce values, use eco.case.
+                    -- The C++ EcoControlFlowToSCF pass converts eligible eco.case
+                    -- ops to scf.if. Generating eco.case avoids issues with
+                    -- nested eco.case(str) ops inside scf.if regions.
                     let
                         -- Coerce else result to match then branch's type
                         ( elseCoerceOps, elseFinalVar, elseFinalCtx ) =
                             coerceResultToType elseRes.ctx elseRes.resultVar elseRes.resultType resultMlirType
 
                         ( ctx2, elseYieldOp ) =
-                            Ops.scfYield elseFinalCtx elseFinalVar resultMlirType
+                            Ops.ecoYield elseFinalCtx elseFinalVar resultMlirType
 
                         elseRegion =
                             Ops.mkRegion [] (elseRes.ops ++ elseCoerceOps) elseYieldOp
 
-                        -- Allocate result variable for scf.if
-                        ( ifResultVar, ctx2b ) =
+                        -- Build then region with eco.yield
+                        ( _, thenEcoYield ) =
+                            Ops.ecoYield thenFinalCtx thenFinalVar resultMlirType
+
+                        thenRegionEco =
+                            Ops.mkRegion [] (thenRes.ops ++ thenCoerceOps) thenEcoYield
+
+                        -- Allocate result variable for eco.case
+                        ( caseResultVar, ctx2b ) =
                             Ctx.freshVar ctx2
 
-                        -- scf.if with i1 condition directly (avoids eco.get_tag on embedded constants)
-                        ( ctx3, ifOp ) =
-                            Ops.scfIf ctx2b condVar ifResultVar thenRegion elseRegion resultMlirType
+                        -- eco.case on i1: tag 1 for True (then), tag 0 for False (else)
+                        ( ctx3, caseOp ) =
+                            Ops.ecoCase ctx2b caseResultVar condVar I1 "bool" [ 1, 0 ] [ thenRegionEco, elseRegion ] resultMlirType
                     in
-                    { ops = condOpsAll ++ [ ifOp ]
-                    , resultVar = ifResultVar
+                    { ops = condOpsAll ++ [ caseOp ]
+                    , resultVar = caseResultVar
                     , resultType = resultMlirType
                     , ctx = ctx3
                     , isTerminated = False

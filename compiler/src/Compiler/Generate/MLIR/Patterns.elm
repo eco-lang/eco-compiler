@@ -782,13 +782,67 @@ testToTagInt test =
             i
 
         Test.IsChr c ->
-            String.toList c |> List.head |> Maybe.map Char.toCode |> Maybe.withDefault 0
+            decodeChrPatternCode c
 
         Test.IsStr _ ->
             0
 
         Test.IsTuple ->
             0
+
+
+{-| Decode a char pattern string to its character code.
+
+Char patterns from the parser may contain raw escape sequences (e.g., the 2-char
+string backslash+n for a newline). This function decodes such escape sequences
+to the actual character code.
+
+-}
+decodeChrPatternCode : String -> Int
+decodeChrPatternCode c =
+    case String.toList c of
+        [ single ] ->
+            Char.toCode single
+
+        [ '\\', escaped ] ->
+            case escaped of
+                'n' ->
+                    0x0A
+
+                'r' ->
+                    0x0D
+
+                't' ->
+                    0x09
+
+                _ ->
+                    -- '"', '\'', '\\' — the escaped char IS the value
+                    Char.toCode escaped
+
+        '\\' :: 'u' :: hexChars ->
+            List.foldl (\ch acc -> acc * 16 + hexDigitToInt ch) 0 hexChars
+
+        _ ->
+            0
+
+
+hexDigitToInt : Char -> Int
+hexDigitToInt c =
+    let
+        code =
+            Char.toCode c
+    in
+    if code >= 0x30 && code <= 0x39 then
+        code - 0x30
+
+    else if code >= 0x61 && code <= 0x66 then
+        code - 0x61 + 10
+
+    else if code >= 0x41 && code <= 0x46 then
+        code - 0x41 + 10
+
+    else
+        0
 
 
 {-| Determine the case kind from a DT.Test for use with eco.case.

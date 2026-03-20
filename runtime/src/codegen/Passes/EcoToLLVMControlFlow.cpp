@@ -730,21 +730,37 @@ struct CaseOpLowering : public OpConversionPattern<CaseOp> {
             rewriter.inlineBlockBefore(&entryBlock, caseBlock, caseBlock->end());
         }
 
-        // Replace uses of original scrutinee
-        for (Block *caseBlock : caseBlocks) {
-            for (Operation &op : *caseBlock) {
-                op.replaceUsesOfWith(originalScrutinee, scrutinee);
+        // Replace uses of original scrutinee in all blocks between case start and merge.
+        // After nested case lowering, alternatives may span multiple blocks.
+        {
+            bool inCaseRegion = false;
+            for (Block &block : *parentRegion) {
+                if (&block == caseBlocks.front())
+                    inCaseRegion = true;
+                if (&block == mergeBlock)
+                    break;
+                if (inCaseRegion) {
+                    for (Operation &op : block) {
+                        op.replaceUsesOfWith(originalScrutinee, scrutinee);
+                    }
+                }
             }
         }
 
-        // Fix terminators: handle both eco.return and eco.yield
-        // For value-producing cases (with eco.yield), convert to branch with arguments
+        // Fix terminators: handle both eco.return and eco.yield.
+        // After nested case lowering, an alternative may span multiple blocks.
+        // Walk all blocks between case start and merge to find yield/return terminators.
         if (!isTerminalCase || isValueProducing) {
-            for (Block *caseBlock : caseBlocks) {
-                if (caseBlock->empty())
+            bool inCaseRegion = false;
+            for (Block &block : *parentRegion) {
+                if (&block == caseBlocks.front())
+                    inCaseRegion = true;
+                if (&block == mergeBlock)
+                    break;
+                if (!inCaseRegion || block.empty())
                     continue;
 
-                Operation *term = caseBlock->getTerminator();
+                Operation *term = block.getTerminator();
                 if (auto yieldOp = dyn_cast<YieldOp>(term)) {
                     // eco.yield -> cf.branch with yielded values as arguments
                     rewriter.setInsertionPoint(term);
