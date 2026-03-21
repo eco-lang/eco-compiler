@@ -72,7 +72,7 @@ optimize graph =
     in
     -- Call a separate function so `nodes` (Array) goes out of scope
     -- and becomes GC-eligible. Only `nodesList` is passed forward.
-    optimizeNodes nodesList ctx closuresBefore main registry ctorShapes callEdges specHasEffects specValueUsed
+    optimizeNodes nodesList ctx closuresBefore main registry ctorShapes
 
 
 optimizeNodes :
@@ -82,11 +82,8 @@ optimizeNodes :
     -> Maybe Mono.MainInfo
     -> Mono.SpecializationRegistry
     -> Dict String (List Mono.CtorShape)
-    -> Array (Maybe (List SpecId))
-    -> BitSet.BitSet
-    -> BitSet.BitSet
     -> ( MonoGraph, Metrics )
-optimizeNodes nodesList ctx closuresBefore main registry ctorShapes callEdges specHasEffects specValueUsed =
+optimizeNodes nodesList ctx closuresBefore main registry ctorShapes =
     let
         ( optimizedNodesList, finalCtx, _ ) =
             List.foldl
@@ -125,9 +122,9 @@ optimizeNodes nodesList ctx closuresBefore main registry ctorShapes callEdges sp
         , registry = registry
         , ctorShapes = ctorShapes
         , nextLambdaIndex = finalCtx.lambdaCounter
-        , callEdges = callEdges
-        , specHasEffects = specHasEffects
-        , specValueUsed = specValueUsed
+        , callEdges = Array.empty
+        , specHasEffects = BitSet.empty
+        , specValueUsed = BitSet.empty
         }
     , metrics
     )
@@ -446,7 +443,6 @@ computeCostDef def =
 type alias RewriteCtx =
     { inlineCandidates : Dict Int ( List ( Name, Mono.MonoType ), MonoExpr )
     , registry : Mono.SpecializationRegistry
-    , callGraph : CallGraph
     , whitelist : InlineWhitelist
     , inlineCountThisFunction : Int
     , varCounter : Int
@@ -513,7 +509,6 @@ initRewriteCtx nodes registry callGraph nextLambdaIndex =
     in
     { inlineCandidates = candidates
     , registry = registry
-    , callGraph = callGraph
     , whitelist = defaultWhitelist
     , inlineCountThisFunction = 0
     , varCounter = 0

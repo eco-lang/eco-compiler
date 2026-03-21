@@ -20,6 +20,7 @@ import Compiler.Generate.MLIR.TypeTable as TypeTable
 import Compiler.Generate.Mode as Mode
 import Dict
 import Mlir.Loc as Loc
+import Set
 import Mlir.Mlir exposing (MlirModule, MlirOp)
 import Mlir.Pretty as Pretty
 import System.IO as SysIO
@@ -227,9 +228,18 @@ streamNodesArray ctx0 nodes specId writeChunk =
             let
                 ( nodeOps, newCtx ) =
                     Functions.generateNode ctx0 specId node
+
+                -- Clear per-function fields to avoid accumulating across nodes.
+                -- decoderExprs caches let-bound decoder expressions for BytesFusion;
+                -- externBoxedVars tracks extern/kernel aliases — both are function-local.
+                cleanCtx =
+                    { newCtx
+                        | decoderExprs = Dict.empty
+                        , externBoxedVars = Set.empty
+                    }
             in
             writeOps nodeOps writeChunk
-                |> Task.andThen (\_ -> streamNodesArray newCtx nodes (specId + 1) writeChunk)
+                |> Task.andThen (\_ -> streamNodesArray cleanCtx nodes (specId + 1) writeChunk)
 
 
 writeOps : List MlirOp -> (String -> Task Never ()) -> Task Never ()
@@ -237,6 +247,9 @@ writeOps ops writeChunk =
     case ops of
         [] ->
             Task.succeed ()
+
+        [ single ] ->
+            writeChunk (Pretty.ppTopLevelOp single)
 
         _ ->
             writeChunk (ops |> List.map Pretty.ppTopLevelOp |> String.concat)

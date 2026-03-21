@@ -355,7 +355,7 @@ assembleRawGraph state mainSpecId =
     in
     Mono.MonoGraph
         { nodes = nodesArray
-        , registry = state.registry
+        , registry = { nextId = state.registry.nextId, mapping = Dict.empty, reverseMapping = state.registry.reverseMapping }
         , main = mainInfo
         , ctorShapes = Dict.empty
         , nextLambdaIndex = state.lambdaCounter

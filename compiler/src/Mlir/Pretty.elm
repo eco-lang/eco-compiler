@@ -388,28 +388,23 @@ ppLoc _ =
 ppAttrs : Dict String MlirAttr -> String
 ppAttrs attrs =
     let
-        keys =
-            Dict.keys attrs |> List.sort
+        pairs =
+            Dict.toList attrs
 
-        render k =
-            case Dict.get k attrs of
-                Just a ->
-                    k ++ " = " ++ ppAttr a
-
-                Nothing ->
-                    k ++ " = <missing>"
+        render ( k, a ) =
+            k ++ " = " ++ ppAttr a
     in
-    case keys of
+    case pairs of
         [] ->
             ""
 
         _ ->
             let
                 rendered =
-                    keys |> List.map render |> String.join ", "
+                    pairs |> List.map render |> String.join ", "
 
                 wrapper =
-                    if Dict.get "callee" attrs /= Nothing then
+                    if Dict.member "callee" attrs then
                         "<{" ++ rendered ++ "}>"
 
                     else

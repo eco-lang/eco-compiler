@@ -131,29 +131,12 @@ pruneUnreachableSpecs globalTypeEnv (Mono.MonoGraph record) =
                 )
                 oldReg.reverseMapping
 
-        -- Rebuild mapping from live reverseMapping entries
-        mapping1 : Dict String Mono.SpecId
-        mapping1 =
-            List.foldl
-                (\( specId, maybeEntry ) acc ->
-                    case maybeEntry of
-                        Just ( global, monoType, maybeLambda ) ->
-                            let
-                                key =
-                                    Mono.toComparableSpecKey (Mono.SpecKey global monoType maybeLambda)
-                            in
-                            Dict.insert key specId acc
-
-                        Nothing ->
-                            acc
-                )
-                Dict.empty
-                (Array.toIndexedList reverseMapping1)
-
+        -- mapping is not needed after monomorphization (only reverseMapping is used
+        -- downstream by InlineSimplify, GlobalOpt, and MLIR gen), so skip rebuilding it.
         registry1 : Mono.SpecializationRegistry
         registry1 =
             { nextId = oldReg.nextId
-            , mapping = mapping1
+            , mapping = Dict.empty
             , reverseMapping = reverseMapping1
             }
 

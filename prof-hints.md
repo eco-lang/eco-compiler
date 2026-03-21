@@ -148,12 +148,41 @@ dropped by 89%, cascading into improvements across all hotspots.
 
 ---
 
+### Issue 5: TypeSubst.applySubst TRecord Dict optimization — FIXED
+Eliminated unnecessary Dict.empty allocation when no extension variable present.
+Deferred baseFields merge to avoid creating empty dict.
+Impact: marginal (~10% reduction in applySubst ticks).
+
+### Issue 6: CNumber→MInt resolution in resolveMonoVars — FIXED
+Modified resolveMonoVarsHelp to automatically resolve MVar _ CNumber → MInt
+during type variable resolution. Combined with containsAnyMVar early-out in
+forceCNumberToInt to skip the full traversal when no MVars present.
+Impact: reduces redundant type tree traversals.
+
+### Issue 7: PAP elimination in containsAnyMVar/containsCEcoMVar — FIXED
+Replaced List.any containsAnyMVar (creates PAP) with direct recursive
+containsAnyMVarList helper. Same for containsCEcoMVar.
+Impact: small reduction in allocation pressure.
+
+### Issue 8: Skip registry.mapping rebuild in Prune — FIXED
+registry.mapping is only needed during monomorphization worklist. Prune.elm
+was rebuilding it unnecessarily (O(N * toComparableSpecKey) work). Skipped.
+Impact: reduces pruning phase CPU time.
+
+### Issue 9: Drop dead MonoGraph fields after InlineSimplify — FIXED
+callEdges, specHasEffects, specValueUsed set to empty after InlineSimplify.
+callGraph removed from RewriteCtx. These fields are not used by any downstream
+phase (GlobalOpt, MLIR gen).
+Impact: significant cold-run memory reduction.
+
 ### Remaining hotspots analysis (all below actionable threshold)
-After Issue 4, no JS function exceeds 3.6% nonlib. The top items are:
-- V8 builtins: ArrayPrototypeJoin 7.3%, CompileLazy 4.9%, ArrayPrototypePush 4.5%,
-  CallFunction 7.0% combined — inherent to JS runtime, not optimizable
-- Core Elm: Dict.insertHelp 2.5%, Dict.balance 2.1% — fundamental data structure ops
-- toComparableMonoTypeHelper 3.6% — already optimized (Issue 1), string building for Dict keys
+After all fixes, total warm ticks: ~36800 (down from 180319 baseline, 36855 after Issue 4).
+No JS function exceeds 3.7% nonlib. The top items are:
+- V8 builtins: ArrayPrototypeJoin 7.3%, CompileLazy 5.3%, ArrayPrototypePush 4.8%,
+  CallFunction 2.9% — inherent to JS runtime, not optimizable
+- Core Elm: Dict.insertHelp 2.6%, Dict.balance 2.2% — fundamental data structure ops
+- toComparableMonoTypeHelper 3.7% — already optimized (Issue 1), string building for Dict keys
+- _Bytes_read_string 3.5% — .ecot deserialization, inherent to warm-run loading
 - MLIR string building: 1.8% + 1.6% — rendering output, inherent to the task
 
 **No actionable bottleneck above 1% remains in user code.**

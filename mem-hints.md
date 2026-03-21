@@ -6,9 +6,14 @@
 - E2E tests: 925/935 pass (10 pre-existing failures)
 - elm-test: 11667/11668 pass (1 pre-existing failure)
 
-## After all fixes (2026-03-20)
+## After fixes round 1 (2026-03-20)
 - Cold run peak: 9305MB RSS / 8881MB heap (marginally changed, dominated by inline+simplify in cold)
 - Warm run peak: 8790MB RSS / 6994MB heap (**~2593MB heap reduction, ~1261MB RSS reduction**)
+- E2E tests: 925/935 (unchanged), elm-test: 11667/11668 (unchanged)
+
+## After fixes round 2 (2026-03-21)
+- Cold run peak: ~4615MB RSS / ~4378MB heap (**~4423MB RSS reduction from original**)
+- Warm run peak: 3843MB RSS / 3562MB heap (**~6208MB RSS reduction from original, ~6025MB heap**)
 - E2E tests: 925/935 (unchanged), elm-test: 11667/11668 (unchanged)
 
 ## Applied fixes (FIXED)
@@ -49,6 +54,45 @@
 - Impact: **~2593MB heap reduction** in warm-run peak, **~1261MB RSS reduction**
 - Status: FIXED
 
+### Fix 6: Drop dead MonoGraph fields after InlineSimplify (MonoInlineSimplify.elm)
+- callEdges, specHasEffects, specValueUsed are set to empty after InlineSimplify
+  since no downstream phase (GlobalOpt, MLIR gen) uses them
+- Also removed callGraph from RewriteCtx (only used during initRewriteCtx)
+- Impact: significant cold-run reduction (callEdges array can be large for 232 modules)
+- Status: FIXED
+
+### Fix 7: Clear per-function Context fields between MLIR nodes (Backend.elm)
+- decoderExprs and externBoxedVars cleared between nodes in streamNodesArray
+- These are function-local caches that accumulated across all ~3000 nodes
+- Impact: reduces MLIR gen phase memory footprint
+- Status: FIXED
+
+### Fix 8: Optimize TypeSubst.applySubst for TRecord (TypeSubst.elm)
+- Eliminated unnecessary Dict.empty allocation when no extension variable
+- Deferred baseFields merge: only call Dict.union when extension actually exists
+- Status: FIXED
+
+### Fix 9: Resolve CNumber→MInt in resolveMonoVars (TypeSubst.elm)
+- Modified resolveMonoVarsHelp to force MVar _ CNumber → MInt during resolution
+- This means applySubst automatically handles CNumber, making most downstream
+  forceCNumberToInt calls into no-ops
+- Combined with forceCNumberToInt early-out via containsAnyMVar check
+- Impact: eliminates redundant type tree traversals, reduces allocation pressure
+- Status: FIXED
+
+### Fix 10: Skip registry.mapping rebuild in Prune (Prune.elm)
+- registry.mapping (Dict String SpecId) is only needed during monomorphization
+  for dedup — downstream phases only use reverseMapping
+- Eliminated mapping rebuild in Prune.elm and set to Dict.empty in both monomorphizers
+- Impact: eliminates O(N * toComparableSpecKey) work during pruning
+- Status: FIXED
+
+### Fix 11: PAP elimination in containsAnyMVar/containsCEcoMVar (Monomorphized.elm)
+- Replaced List.any containsAnyMVar (PAP) with direct recursive containsAnyMVarList
+- Same for containsCEcoMVar
+- Impact: reduces allocation from PAP resolution in hot type-checking paths
+- Status: FIXED
+
 ## Remaining issues
 
 ### 1. Post-compile spike: BResult deserialization of all 232 modules
@@ -86,7 +130,7 @@
 - registry.mapping is only used during the worklist for deduplication; all downstream
   consumers only use registry.reverseMapping
 - Fix: drop mapping to Dict.empty after worklist — trivial change but negligible impact
-- Status: SKIPPED (< 3MB savings, not worth the change)
+- Status: FIXED (implemented as part of Fix 10 — mapping dropped in monomorphizers and Prune)
 
 ### 4. Replace MonoGraph.nodes Array with List to avoid Array.toList conversion
 - Phase: inline+simplify (fix #5 does Array.toList to enable incremental GC)
@@ -197,4 +241,10 @@
     fields (`varMappings`, `decoderExprs`, `currentLetSiblings`) at the start of
     each `generateNode` call in Backend.elm's streaming loop.
   - For RewriteCtx, remove consumed candidates from dict after inlining.
-- Status: OPEN (not yet attempted)
+- Status: PARTIALLY FIXED
+  - callEdges, specHasEffects, specValueUsed dropped after InlineSimplify (Fix 6)
+  - decoderExprs, externBoxedVars cleared between MLIR nodes (Fix 7)
+  - callGraph removed from RewriteCtx (Fix 6)
+  - varMappings already reset per-function in Functions.elm (verified — no fix needed)
+  - currentLetSiblings uses save/restore pattern (verified — correct as-is)
+  - Remaining: inlineCandidates dict still persists through full fold (marginal)

@@ -265,6 +265,15 @@ resolve to MFloat directly without going through CNumber.
 -}
 forceCNumberToInt : MonoType -> MonoType
 forceCNumberToInt monoType =
+    if containsAnyMVar monoType then
+        forceCNumberToIntHelp monoType
+
+    else
+        monoType
+
+
+forceCNumberToIntHelp : MonoType -> MonoType
+forceCNumberToIntHelp monoType =
     case monoType of
         MVar _ CNumber ->
             MInt
@@ -273,21 +282,21 @@ forceCNumberToInt monoType =
             monoType
 
         MList elemType ->
-            MList (forceCNumberToInt elemType)
+            MList (forceCNumberToIntHelp elemType)
 
         MFunction args result ->
             MFunction
-                (List.map forceCNumberToInt args)
-                (forceCNumberToInt result)
+                (List.map forceCNumberToIntHelp args)
+                (forceCNumberToIntHelp result)
 
         MTuple elems ->
-            MTuple (List.map forceCNumberToInt elems)
+            MTuple (List.map forceCNumberToIntHelp elems)
 
         MRecord fields ->
-            MRecord (Dict.map (\_ t -> forceCNumberToInt t) fields)
+            MRecord (Dict.map (\_ t -> forceCNumberToIntHelp t) fields)
 
         MCustom can name args ->
-            MCustom can name (List.map forceCNumberToInt args)
+            MCustom can name (List.map forceCNumberToIntHelp args)
 
         _ ->
             monoType
@@ -321,19 +330,29 @@ containsAnyMVar monoType =
             containsAnyMVar t
 
         MFunction args result ->
-            List.any containsAnyMVar args || containsAnyMVar result
+            containsAnyMVarList args || containsAnyMVar result
 
         MTuple elems ->
-            List.any containsAnyMVar elems
+            containsAnyMVarList elems
 
         MRecord fields ->
             Dict.foldl (\_ t acc -> acc || containsAnyMVar t) False fields
 
         MCustom _ _ args ->
-            List.any containsAnyMVar args
+            containsAnyMVarList args
 
         _ ->
             False
+
+
+containsAnyMVarList : List MonoType -> Bool
+containsAnyMVarList types =
+    case types of
+        [] ->
+            False
+
+        t :: rest ->
+            containsAnyMVar t || containsAnyMVarList rest
 
 
 {-| Check whether a MonoType contains any `MVar _ CEcoValue`.
@@ -351,19 +370,29 @@ containsCEcoMVar monoType =
             containsCEcoMVar t
 
         MFunction args result ->
-            List.any containsCEcoMVar args || containsCEcoMVar result
+            containsCEcoMVarList args || containsCEcoMVar result
 
         MTuple elems ->
-            List.any containsCEcoMVar elems
+            containsCEcoMVarList elems
 
         MRecord fields ->
             Dict.foldl (\_ t acc -> acc || containsCEcoMVar t) False fields
 
         MCustom _ _ args ->
-            List.any containsCEcoMVar args
+            containsCEcoMVarList args
 
         _ ->
             False
+
+
+containsCEcoMVarList : List MonoType -> Bool
+containsCEcoMVarList types =
+    case types of
+        [] ->
+            False
+
+        t :: rest ->
+            containsCEcoMVar t || containsCEcoMVarList rest
 
 
 {-| Identifier for lambda functions in lambda sets, distinguishing named functions from closures.

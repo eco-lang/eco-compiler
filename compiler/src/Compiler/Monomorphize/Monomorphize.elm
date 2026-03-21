@@ -224,7 +224,7 @@ assembleRawGraphFrom finalAccum lambdaCounter mainSpecIdVal =
     in
     Mono.MonoGraph
         { nodes = nodesArray
-        , registry = finalAccum.registry
+        , registry = { nextId = finalAccum.registry.nextId, mapping = Dict.empty, reverseMapping = finalAccum.registry.reverseMapping }
         , main = mainInfo
         , ctorShapes = Dict.empty
         , nextLambdaIndex = lambdaCounter

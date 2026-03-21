@@ -508,7 +508,7 @@ are currently being expanded to detect indirect cycles through recursive types
 resolveMonoVarsHelp : Set Name -> Substitution -> Mono.MonoType -> ( Bool, Mono.MonoType )
 resolveMonoVarsHelp visiting subst monoType =
     case monoType of
-        Mono.MVar name _ ->
+        Mono.MVar name constraint ->
             if Set.member name visiting then
                 ( False, monoType )
 
@@ -522,7 +522,12 @@ resolveMonoVarsHelp visiting subst monoType =
                         ( True, newResolved )
 
                     Nothing ->
-                        ( False, monoType )
+                        case constraint of
+                            Mono.CNumber ->
+                                ( True, Mono.MInt )
+
+                            Mono.CEcoValue ->
+                                ( False, monoType )
 
         Mono.MFunction args ret ->
             let
@@ -724,37 +729,28 @@ applySubst subst canType =
 
         Can.TRecord fields maybeExtension ->
             let
-                -- Get base fields from extension variable if present
-                baseFields =
-                    case maybeExtension of
-                        Just extName ->
-                            case Dict.get extName subst of
-                                Just (Mono.MRecord baseFieldsDict) ->
-                                    -- MRecord now directly contains the fields dict
-                                    baseFieldsDict
-
-                                _ ->
-                                    Dict.empty
-
-                        Nothing ->
-                            Dict.empty
-
                 -- Convert explicit fields to mono types
                 extensionFields =
                     Dict.map (\_ (Can.FieldType _ t) -> applySubst subst t) fields
 
-                -- Merge: extension fields override base fields
+                -- Merge with base fields from extension variable if present
                 monoFields =
-                    Dict.union extensionFields baseFields
+                    case maybeExtension of
+                        Just extName ->
+                            case Dict.get extName subst of
+                                Just (Mono.MRecord baseFieldsDict) ->
+                                    Dict.union extensionFields baseFieldsDict
+
+                                _ ->
+                                    extensionFields
+
+                        Nothing ->
+                            extensionFields
             in
             Mono.MRecord monoFields
 
         Can.TTuple a b rest ->
-            let
-                monoTypes =
-                    List.map (applySubst subst) (a :: b :: rest)
-            in
-            Mono.MTuple monoTypes
+            Mono.MTuple (applySubst subst a :: applySubst subst b :: List.map (applySubst subst) rest)
 
         Can.TUnit ->
             Mono.MUnit
