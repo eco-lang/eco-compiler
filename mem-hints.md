@@ -312,3 +312,62 @@
     behavior change from the slightly different compiled JS, not from the fixes
     themselves. The warm run (which is the normal use case with .ecot caches)
     is unaffected.
+
+### 9. Build Result MVars retain full BResult data after collection
+- Phase: compilation → code generation boundary
+- Impact: NEEDS MEASUREMENT — 232 × BResult containing Opt.LocalGraph + TOpt.LocalGraph
+- Root cause: Build.elm creates per-module `MVar BResult` via `fork` during compilation.
+  After all modules compile, `collectResultsAndWriteDetails` reads every MVar with
+  `readMVar` (not `takeMVar`), so the BResult data remains pinned in `_MVar_store`.
+  Each `RNew`/`RSame` variant carries the full `Opt.LocalGraph` and optionally
+  `TOpt.LocalGraph` and `TypeEnv.ModuleTypeEnv` — the heaviest data in the pipeline.
+  These are the same graphs that later get loaded again via `loadObjects`/`loadTypedObjects`.
+- Key code paths:
+  - Build.elm:293-306 — ResultDict MVar created and populated
+  - Build.elm:307 — `mapTraverse (readMVar bResultDecoder) resultMVars` reads without freeing
+  - Build.elm:730-732 — BResult type carries Opt.LocalGraph and Maybe TOpt.LocalGraph
+- Fix direction: Switch `readMVar` to `takeMVar` in `collectResultsAndWriteDetails` so
+  each per-module BResult MVar is freed after its value is extracted into the Module list.
+  The Module list already holds the data; the MVar copy is pure redundancy.
+- Status: OPEN
+
+### 10. Build Status MVars retain crawl state after collection
+- Phase: module crawl → compilation boundary
+- Impact: NEEDS MEASUREMENT — 232 × Status containing parsed source and dependency lists
+- Root cause: Build.elm creates per-module `MVar Status` during `crawlModule`. After
+  crawling completes, `collectPathStatuses` reads each with `readMVar`. The Status
+  variants (`SLocal`, `SForeign`, etc.) carry parsed `Src.Module` ASTs and dependency
+  lists. These remain in `_MVar_store` throughout compilation and code generation.
+- Key code paths:
+  - Build.elm:531 — per-module MVar created via `forkNew`/`crawlModule`
+  - Build.elm:413 — `readMVar statusDecoder` collects without freeing
+- Fix direction: Switch to `takeMVar` in status collection, or clear the StatusDict
+  MVar after all statuses are collected.
+- Status: OPEN
+
+### 11. Types loading creates unnecessary MVars for Fresh modules
+- Phase: compilation → JS code generation boundary
+- Impact: SMALL — 232 × MVar for Extract.Types (small data)
+- Root cause: Generate.elm `loadTypesHelp` creates `newMVar` for Fresh modules even
+  though the type data is already in memory. The typed objects path already has a
+  Fresh bypass (freshDict pattern) but the types loading path does not.
+- Key code path:
+  - Generate.elm:427 — `newMVar encoder (Just (Extract.fromInterface name iface))`
+- Fix direction: Partition Fresh/Cached in types loading (same pattern as loadObjects
+  and loadTypedModuleObjects). Pass Fresh types directly without MVar wrapping.
+- Status: OPEN
+
+### 12. Reporting channel MVars accumulate without cleanup
+- Phase: entire build session
+- Impact: SMALL — one MVar per progress message (~232 for module compilation)
+- Root cause: Channels are implemented as linked lists of MVars. Each `writeChan`
+  creates a new hole MVar. `readChan` uses `modifyMVar` (non-destructive traverse)
+  so consumed list nodes and their MVars remain in `_MVar_store`. For a 232-module
+  build this is ~232 small MVars that persist until process exit.
+- Key code paths:
+  - Utils/Main.elm:1209-1216 — writeChan creates new hole MVar per message
+  - Utils/Main.elm:1191-1205 — readChan uses modifyMVar, does not free old nodes
+- Fix direction: Low priority. The per-message MVars hold unit-sized data. Could
+  restructure channels to use takeMVar for consumed nodes, but the complexity is
+  not justified by the small memory savings.
+- Status: OPEN (low priority)

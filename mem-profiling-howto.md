@@ -41,8 +41,15 @@ var _Mem_bindCount = 0;
 var _Mem_ioCount = 0;
 var _Mem_lastLogBinds = 0;
 var _Mem_BIND_INTERVAL = 100000;
+var _Mem_lastGcTime = 0;
+var _Mem_GC_INTERVAL_MS = 5000;
 
 function _Mem_log(reason) {
+    var now = Date.now();
+    if (global.gc && (now - _Mem_lastGcTime >= _Mem_GC_INTERVAL_MS)) {
+        global.gc();
+        _Mem_lastGcTime = now;
+    }
     var mem = process.memoryUsage();
     var elapsed = ((Date.now() - _Mem_startTime) / 1000).toFixed(1);
     var rss = (mem.rss / 1048576).toFixed(0);
@@ -96,13 +103,24 @@ node inject-mem.js bin/eco-boot-2.js
 
 ## Running a profiled Stage 5
 
+Pass `--expose-gc` so that `global.gc()` is available. The instrumentation forces
+a garbage collection before measuring, ensuring the reported heap reflects the true
+live set rather than uncollected garbage. Without this flag, Node.js may defer GC
+on a large heap, causing heap measurements to overstate actual live memory by 1–4 GB.
+
+GC is throttled to run at most once every 5 seconds (`_Mem_GC_INTERVAL_MS = 5000`)
+to avoid excessive overhead. Forcing GC on every sample (~42000 IO callbacks) would
+add ~60+ minutes to a Stage 5 run. The 5-second interval adds only a few seconds
+of overhead while still giving accurate snapshots at phase boundaries. Samples
+between forced GCs still report useful data but may include uncollected garbage.
+
 ```bash
 export NODE_OPTIONS="--max-old-space-size=12000"
 cd compiler/build-kernel
 
 # Cold run (no caches — profiles compilation + codegen)
 find eco-stuff -name '*.ecot' -delete
-node --stack-size=65536 bin/eco-boot-2-runner.js make \
+node --expose-gc --stack-size=65536 bin/eco-boot-2-runner.js make \
     --optimize --kernel-package eco/compiler \
     --local-package eco/kernel=/work/eco-kernel-cpp \
     --output=bin/eco-compiler.mlir \
@@ -110,7 +128,7 @@ node --stack-size=65536 bin/eco-boot-2-runner.js make \
     > /tmp/stage5-cold-stdout.log 2> /tmp/stage5-cold-stderr.log
 
 # Warm run (caches intact — profiles codegen only)
-node --stack-size=65536 bin/eco-boot-2-runner.js make \
+node --expose-gc --stack-size=65536 bin/eco-boot-2-runner.js make \
     --optimize --kernel-package eco/compiler \
     --local-package eco/kernel=/work/eco-kernel-cpp \
     --output=bin/eco-compiler.mlir \

@@ -8,8 +8,15 @@ var _Mem_bindCount = 0;
 var _Mem_ioCount = 0;
 var _Mem_lastLogBinds = 0;
 var _Mem_BIND_INTERVAL = 100000;
+var _Mem_lastGcTime = 0;
+var _Mem_GC_INTERVAL_MS = 5000;
 
 function _Mem_log(reason) {
+    var now = Date.now();
+    if (global.gc && (now - _Mem_lastGcTime >= _Mem_GC_INTERVAL_MS)) {
+        global.gc();
+        _Mem_lastGcTime = now;
+    }
     var mem = process.memoryUsage();
     var elapsed = ((Date.now() - _Mem_startTime) / 1000).toFixed(1);
     var rss = (mem.rss / 1048576).toFixed(0);
