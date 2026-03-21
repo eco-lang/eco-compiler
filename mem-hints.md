@@ -87,3 +87,21 @@
   consumers only use registry.reverseMapping
 - Fix: drop mapping to Dict.empty after worklist — trivial change but negligible impact
 - Status: SKIPPED (< 3MB savings, not worth the change)
+
+### 4. Replace MonoGraph.nodes Array with List to avoid Array.toList conversion
+- Phase: inline+simplify (fix #5 does Array.toList to enable incremental GC)
+- Idea: if nodes were already a List, the conversion would be free
+- Investigation: NOT FEASIBLE as a simple type swap. Several critical paths
+  require O(1) random access by SpecId:
+  - Backend.elm:streamNodesArray — accesses nodes by SpecId during MLIR gen
+  - MonoGlobalOptimize.elm — three Array.get lookups for call model / closure
+    param count / body arities during staging annotation
+  - Both monomorphizers (Monomorphize.elm, MonoDirect/Monomorphize.elm) build
+    nodes via Array.set from a Dict keyed by SpecId
+  Sequential-only consumers (GraphBuilder, ProducerInfo, Rewriter, InlineSimplify,
+  Prune, Analysis, Context) only fold/map and would work fine with List.
+- Alternative idea: keep Array for random-access phases, but have the
+  monomorphizer also produce a parallel List (or convert to List once at the
+  boundary between random-access and sequential phases). The Array could then
+  be dropped before inline+simplify, avoiding the Array.toList copy.
+- Status: OPEN (not yet attempted)
