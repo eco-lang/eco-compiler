@@ -1,15 +1,14 @@
 # Memory Optimization Hints — Stage 5 Bootstrap
 
 ## Baseline (2026-03-20)
-- Cold run peak: 12.4GB RSS / 11.8GB heap (post-compile spike at 214s)
-- Warm run peak: 9.2GB RSS / 8.6GB heap (inline+simplify)
+- Cold run peak: 9038MB RSS / 8579MB heap
+- Warm run peak: 10051MB RSS / 9587MB heap (inline+simplify)
 - E2E tests: 925/935 pass (10 pre-existing failures)
 - elm-test: 11667/11668 pass (1 pre-existing failure)
 
 ## After all fixes (2026-03-20)
-- Cold run peak: 12.4GB RSS / 11.8GB heap (post-compile spike — unchanged, inherent)
-- Warm run peak: 8.4GB RSS / 7.7GB heap (inline+simplify — **~800MB reduction**)
-- Cold compilation phase: 5.0GB peak (down from 6.2GB — **~1.2GB reduction**)
+- Cold run peak: 9305MB RSS / 8881MB heap (marginally changed, dominated by inline+simplify in cold)
+- Warm run peak: 8790MB RSS / 6994MB heap (**~2593MB heap reduction, ~1261MB RSS reduction**)
 - E2E tests: 925/935 (unchanged), elm-test: 11667/11668 (unchanged)
 
 ## Applied fixes (FIXED)
@@ -36,33 +35,55 @@
 - Extract finalAccum, finalGlobalTypeEnv, finalLambdaCounter from finalState
   before entering assembleRawGraph, allowing toptNodes to be GC'd
 - New assembleRawGraphFrom takes extracted values instead of full MonoState
-- Impact: **~800MB reduction** in warm-run inline+simplify peak (8.5→7.7GB heap)
+- Impact: **~800MB reduction** in warm-run inline+simplify peak
 - Status: FIXED
 
-## Remaining issues (OPEN)
+### Fix 5: List-based fold with scope isolation in MonoInlineSimplify.optimize
+- Converted Array.foldl over `nodes` to List.foldl over `Array.toList nodes`
+- Extracted the fold into separate `optimizeNodes` function so the `nodes` Array
+  reference goes out of scope, enabling GC of the original array during processing
+- List.foldl releases consumed cons cells incrementally, allowing GC to reclaim
+  processed input nodes while building output nodes
+- Before: warm peak 10051MB RSS / 9587MB heap; inline+simplify jump +4278MB
+- After: warm peak 8790MB RSS / 6994MB heap; inline+simplify jump +2855MB
+- Impact: **~2593MB heap reduction** in warm-run peak, **~1261MB RSS reduction**
+- Status: FIXED
+
+## Remaining issues
 
 ### 1. Post-compile spike: BResult deserialization of all 232 modules
-- Phase: after "Compiled 232 modules" (at bind 29673, io 13364)
-- Impact: 12.4GB spike (cold only), GC recovers to 4GB
+- Phase: after "Compiled 232 modules"
+- Impact: cold-only spike, transient — GC recovers immediately
 - Root cause: Build.elm finalizePathBuild deserializes all 232 BResult MVars
   simultaneously. All module data coexists in memory before being processed.
 - Attempted: MVar bypass, artifacts decoupling — neither affects this spike
-  because it occurs before Generate.elm code runs.
 - Fix direction: would require restructuring Build.elm to process/discard
   modules incrementally rather than collecting all results at once.
-- Status: OPEN (cold-only, transient spike — GC recovers immediately)
+- Status: SKIPPED (cold-only transient spike; restructuring Build.elm is a
+  major effort with high risk of correctness issues for minimal benefit since
+  GC recovers immediately)
 
-### 2. Inline+simplify: inherent 2x graph from fold-and-rebuild
-- Phase: "Inline + simplify started"
-- Impact: ~7.7GB heap (warm) — still the sustained peak
-- Root cause: Array.foldl builds optimizedNodes while monomorphized graph input
-  remains live. Both ~4GB graphs coexist. Inherent to immutable fold-and-rebuild.
-- Fix direction: single-pass substituteAll, identity-preserving traversals,
-  or processing nodes in chunks. All are moderate-complexity changes.
-- Status: OPEN
+### 2. Inline+simplify: remaining output graph coexistence
+- Phase: inline+simplify
+- Impact: +2855MB jump (warm), the dominant warm-run peak contributor
+- Root cause: The output graph (~2.9GB) must exist in memory as it's being built.
+  With fix #5, input is GC'd incrementally, but output accumulation is irreducible.
+  At the end of the fold, the full output graph exists before being passed downstream.
+- Attempted: List-based fold (fix #5) reduced this from +4278MB to +2855MB.
+  Further reduction options analyzed:
+  - Identity-preserving traversals: moderate complexity, would help if many nodes
+    are unchanged by inlining, but most nodes are touched during simplification
+  - Streaming MLIR emission: would require merging inline+simplify with MLIR gen,
+    a fundamental architecture change
+  - inlineCandidates Dict: retains subset of input bodies, but subset is small
+- Status: SKIPPED (remaining +2855MB is mostly the irreducible output graph size;
+  further fixes require architectural changes to merge optimization with emission)
 
 ### 3. Monomorphization: registry.mapping strings
 - Phase: worklist
-- Impact: 5-10% of mono peak
-- Fix direction: drop mapping after worklist, use hash-based keys
-- Status: OPEN
+- Impact: analysis shows mapping Dict is only ~1-3MB for the self-compiling compiler
+  (originally estimated 5-10%, but that was incorrect)
+- registry.mapping is only used during the worklist for deduplication; all downstream
+  consumers only use registry.reverseMapping
+- Fix: drop mapping to Dict.empty after worklist — trivial change but negligible impact
+- Status: SKIPPED (< 3MB savings, not worth the change)

@@ -212,14 +212,88 @@ foldExpr f =
 
 
 {-| Acc-first fold over expressions (internal). Avoids per-call flip overhead.
+Uses direct recursion instead of passing a PAP to foldExprChildren, so each
+recursive call is a direct A3 call rather than PAP resolution.
 -}
 foldExprAccFirst : (acc -> MonoExpr -> acc) -> acc -> MonoExpr -> acc
 foldExprAccFirst f acc expr =
-    let
-        childAcc =
-            foldExprChildren (foldExprAccFirst f) acc expr
-    in
-    f childAcc expr
+    f (foldExprAccFirstChildren f acc expr) expr
+
+
+{-| Fold over direct children, recursing via foldExprAccFirst directly.
+This avoids creating a PAP (foldExprAccFirst f) that would need resolution
+on every recursive call.
+-}
+foldExprAccFirstChildren : (acc -> MonoExpr -> acc) -> acc -> MonoExpr -> acc
+foldExprAccFirstChildren f acc expr =
+    case expr of
+        MonoClosure info body _ ->
+            let
+                captureAcc =
+                    List.foldl (\( _, e, _ ) a -> foldExprAccFirst f a e) acc info.captures
+            in
+            foldExprAccFirst f captureAcc body
+
+        MonoCall _ func args _ _ ->
+            List.foldl (\e a -> foldExprAccFirst f a e) (foldExprAccFirst f acc func) args
+
+        MonoTailCall _ args _ ->
+            List.foldl (\( _, e ) a -> foldExprAccFirst f a e) acc args
+
+        MonoIf branches final _ ->
+            let
+                branchAcc =
+                    List.foldl (\( c, t ) a -> foldExprAccFirst f (foldExprAccFirst f a c) t) acc branches
+            in
+            foldExprAccFirst f branchAcc final
+
+        MonoLet def body _ ->
+            let
+                defAcc =
+                    foldDefAccFirst f acc def
+            in
+            foldExprAccFirst f defAcc body
+
+        MonoDestruct _ inner _ ->
+            foldExprAccFirst f acc inner
+
+        MonoCase _ _ decider jumps _ ->
+            let
+                deciderAcc =
+                    foldDeciderAccFirst f acc decider
+            in
+            List.foldl (\( _, e ) a -> foldExprAccFirst f a e) deciderAcc jumps
+
+        MonoList _ items _ ->
+            List.foldl (\e a -> foldExprAccFirst f a e) acc items
+
+        MonoRecordCreate fields _ ->
+            List.foldl (\( _, e ) a -> foldExprAccFirst f a e) acc fields
+
+        MonoRecordAccess inner _ _ ->
+            foldExprAccFirst f acc inner
+
+        MonoRecordUpdate record updates _ ->
+            List.foldl (\( _, e ) a -> foldExprAccFirst f a e) (foldExprAccFirst f acc record) updates
+
+        MonoTupleCreate _ elements _ ->
+            List.foldl (\e a -> foldExprAccFirst f a e) acc elements
+
+        -- Leaf expressions - no children
+        MonoLiteral _ _ ->
+            acc
+
+        MonoVarLocal _ _ ->
+            acc
+
+        MonoVarGlobal _ _ _ ->
+            acc
+
+        MonoVarKernel _ _ _ _ ->
+            acc
+
+        MonoUnit ->
+            acc
 
 
 {-| Acc-first fold over definitions (internal).
@@ -525,86 +599,6 @@ traverseExprChildren f ctx expr =
             ( expr, ctx )
 
 
-{-| Fold over direct children of an expression (acc-first order).
--}
-foldExprChildren : (acc -> MonoExpr -> acc) -> acc -> MonoExpr -> acc
-foldExprChildren f acc expr =
-    case expr of
-        MonoClosure info body _ ->
-            let
-                captureAcc =
-                    List.foldl (\( _, e, _ ) a -> f a e) acc info.captures
-            in
-            f captureAcc body
-
-        MonoCall _ func args _ _ ->
-            let
-                funcAcc =
-                    f acc func
-            in
-            List.foldl (\e a -> f a e) funcAcc args
-
-        MonoTailCall _ args _ ->
-            List.foldl (\( _, e ) a -> f a e) acc args
-
-        MonoIf branches final _ ->
-            let
-                branchAcc =
-                    List.foldl (\( c, t ) a -> f (f a c) t) acc branches
-            in
-            f branchAcc final
-
-        MonoLet def body _ ->
-            let
-                defAcc =
-                    foldDefAccFirst f acc def
-            in
-            f defAcc body
-
-        MonoDestruct _ inner _ ->
-            f acc inner
-
-        MonoCase _ _ decider jumps _ ->
-            let
-                deciderAcc =
-                    foldDeciderAccFirst f acc decider
-            in
-            List.foldl (\( _, e ) a -> f a e) deciderAcc jumps
-
-        MonoList _ items _ ->
-            List.foldl (\e a -> f a e) acc items
-
-        MonoRecordCreate fields _ ->
-            List.foldl (\( _, e ) a -> f a e) acc fields
-
-        MonoRecordAccess inner _ _ ->
-            f acc inner
-
-        MonoRecordUpdate record updates _ ->
-            let
-                recAcc =
-                    f acc record
-            in
-            List.foldl (\( _, e ) a -> f a e) recAcc updates
-
-        MonoTupleCreate _ elements _ ->
-            List.foldl (\e a -> f a e) acc elements
-
-        -- Leaf expressions - no children
-        MonoLiteral _ _ ->
-            acc
-
-        MonoVarLocal _ _ ->
-            acc
-
-        MonoVarGlobal _ _ _ ->
-            acc
-
-        MonoVarKernel _ _ _ _ ->
-            acc
-
-        MonoUnit ->
-            acc
 
 
 {-| Helper for threading context through a list.

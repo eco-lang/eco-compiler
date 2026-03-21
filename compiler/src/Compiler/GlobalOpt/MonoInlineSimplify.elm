@@ -64,22 +64,49 @@ optimize graph =
         ctx =
             initRewriteCtx nodes registry callGraph nextLambdaIndex
 
-        ( optimizedNodes, finalCtx, _ ) =
-            Array.foldl
-                (\maybeNode ( accNodes, accCtx, specId ) ->
+        -- Convert nodes to a list so the Array can be GC'd during the fold.
+        -- List.foldl releases consumed cons cells, enabling incremental GC
+        -- of the input graph while building the output graph.
+        nodesList =
+            Array.toList nodes
+    in
+    -- Call a separate function so `nodes` (Array) goes out of scope
+    -- and becomes GC-eligible. Only `nodesList` is passed forward.
+    optimizeNodes nodesList ctx closuresBefore main registry ctorShapes callEdges specHasEffects specValueUsed
+
+
+optimizeNodes :
+    List (Maybe MonoNode)
+    -> RewriteCtx
+    -> Int
+    -> Maybe Mono.MainInfo
+    -> Mono.SpecializationRegistry
+    -> Dict String (List Mono.CtorShape)
+    -> Array (Maybe (List SpecId))
+    -> BitSet.BitSet
+    -> BitSet.BitSet
+    -> ( MonoGraph, Metrics )
+optimizeNodes nodesList ctx closuresBefore main registry ctorShapes callEdges specHasEffects specValueUsed =
+    let
+        ( optimizedNodesList, finalCtx, _ ) =
+            List.foldl
+                (\maybeNode ( accList, accCtx, specId ) ->
                     case maybeNode of
                         Nothing ->
-                            ( Array.push Nothing accNodes, accCtx, specId + 1 )
+                            ( Nothing :: accList, accCtx, specId + 1 )
 
                         Just node ->
                             let
                                 ( optimizedNode, newCtx ) =
                                     optimizeNode accCtx specId node
                             in
-                            ( Array.push (Just optimizedNode) accNodes, newCtx, specId + 1 )
+                            ( Just optimizedNode :: accList, newCtx, specId + 1 )
                 )
-                ( Array.empty, ctx, 0 )
-                nodes
+                ( [], ctx, 0 )
+                nodesList
+
+        optimizedNodes =
+            Array.fromList (List.reverse optimizedNodesList)
 
         closuresAfter =
             countClosuresInGraph optimizedNodes
