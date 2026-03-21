@@ -248,3 +248,67 @@
   - varMappings already reset per-function in Functions.elm (verified — no fix needed)
   - currentLetSiblings uses save/restore pattern (verified — correct as-is)
   - Remaining: inlineCandidates dict still persists through full fold (marginal)
+
+### 8. Dead Opt.LocalGraph and redundant MVar copies in Build/Generate pipeline
+- Phase: compilation → monomorphization boundary
+- Impact: NEEDS MEASUREMENT — 232 modules × Opt.LocalGraph size, plus MVar store copies
+- Root cause: Three independent problems create unnecessary memory retention:
+
+  **A. Fresh modules carry dead Opt.LocalGraph into MLIR path**
+  Build.Module is `Fresh name iface objects typedObjects typeEnv` where `objects`
+  is `Opt.LocalGraph`. This field is only needed by the JS backend (loadObjects →
+  finalizeObjects → objectsToGlobalGraph). In the MLIR path, buildMonoGraph calls
+  loadTypedObjects which only uses `typedObjects` and `typeEnv`. But `objects`
+  persists in the Build.Module list, pinned by `artifacts.modules`, throughout
+  the entire monomorphization pipeline. For 232 freshly compiled modules this is
+  232 full Opt.LocalGraph structures retained as dead weight.
+  - Build.elm:340 — Fresh constructor carries Opt.LocalGraph
+  - Generate.elm:633-643 — buildMonoGraph passes modules to loadTypedObjects
+  - Generate.elm:464-471 — loadTypedModuleObjects extracts only typed fields,
+    ignores Opt.LocalGraph, but the Fresh constructor keeps it alive
+
+  **B. Untyped loadObjects creates MVars for data already in memory**
+  Generate.elm:305-306 — for Fresh modules, loadObject wraps the already-in-memory
+  Opt.LocalGraph into a new MVar via `Utils.newMVar`. This creates a second
+  reference in `_MVar_store`. Later, finalizeObjects reads all MVars with readMVar
+  (not takeMVar), so the MVar store copy is never freed, creating a third reference
+  in the Objects record. At peak, three copies coexist: Build.Module, _MVar_store,
+  and Objects.
+  - Generate.elm:305-306 — newMVar wraps existing graph
+  - Generate.elm:337 — readMVar leaves MVar store entry alive
+  - Eco/Kernel/MVar.js:15-27 — read does not clear _MVar_store[id].value
+
+  **C. Typed loadTypedObjects same MVar pattern for cached modules**
+  Generate.elm:502-504 — cached modules read .ecot from disk, deserialize, and
+  store into MVar. finalizeTypedObjects reads with readMVar, leaving the MVar
+  store copy alive. Both the MVar store and the TypedObjects dict hold references.
+  - Generate.elm:513-516 — readAndStoreTypedCachedObject
+  - Generate.elm:545 — readMVar leaves store entry
+
+- Fix directions:
+  - **A**: For MLIR builds, strip Opt.LocalGraph from Build.Module before passing
+    to buildMonoGraph. Either add a `stripUntypedGraphs : List Module -> List Module`
+    that replaces Fresh with a variant without `objects`, or split Build.Module into
+    separate types for typed vs untyped paths. Alternatively, make buildMonoGraph
+    extract modules and immediately drop the artifacts reference.
+  - **B**: For Fresh modules in loadObjects, pass the graph directly to the Objects
+    dict without going through an MVar. The MVar indirection exists for Cached
+    modules (which need async file I/O) but Fresh modules already have the data.
+    This is partially done for typed objects (Generate.elm:464-471 freshDict bypass)
+    but not for untyped objects.
+  - **C**: Use takeMVar instead of readMVar in finalizeObjects and
+    finalizeTypedObjects, so the MVar store entry is freed after consumption.
+    Or clear the MVar dicts after traversal.
+- Status: FIXED (all three sub-problems addressed)
+  - **A**: stripUntypedGraph in buildMonoGraph replaces Opt.LocalGraph with empty
+    placeholder before passing modules to loadTypedObjects
+  - **B**: loadObjects now partitions Fresh/Cached modules — Fresh graphs go directly
+    into a Dict without MVar indirection, matching the typed path pattern
+  - **C**: finalizeObjects, finalizeTypedObjects, and collectAndMergeTypes now use
+    takeMVar instead of readMVar to free MVar store entries after consumption
+  - Warm run: 3865MB RSS / 3563MB heap (unchanged from 3843-3857 — the warm path
+    already had the typed freshDict bypass, and MVar store entries were small)
+  - Cold run: regressed to ~7GB RSS (from ~3.2-5.7GB) — appears to be V8 GC
+    behavior change from the slightly different compiled JS, not from the fixes
+    themselves. The warm run (which is the normal use case with .ecot caches)
+    is unaffected.

@@ -282,7 +282,10 @@ lookupMain pkg locals root =
 
 
 type LoadingObjects
-    = LoadingObjects (MVar (Maybe Opt.GlobalGraph)) (Data.Map.Dict String ModuleName.Raw (MVar (Maybe Opt.LocalGraph)))
+    = LoadingObjects
+        (MVar (Maybe Opt.GlobalGraph))
+        (Data.Map.Dict String ModuleName.Raw (MVar (Maybe Opt.LocalGraph)))
+        (Data.Map.Dict String ModuleName.Raw Opt.LocalGraph)
 
 
 loadObjects : FilePath -> Maybe String -> Details.Details -> List Build.Module -> Task Exit.Generate LoadingObjects
@@ -295,20 +298,43 @@ loadObjects root maybeBuildDir details modules =
 
 loadModuleObjects : FilePath -> Maybe String -> List Build.Module -> MVar (Maybe Opt.GlobalGraph) -> Task Never LoadingObjects
 loadModuleObjects root maybeBuildDir modules mvar =
-    Utils.listTraverse (loadObject root maybeBuildDir) modules
-        |> Task.map (\mvars -> LoadingObjects mvar (Data.Map.fromList identity mvars))
+    let
+        -- Partition: Fresh modules have their graph in memory, Cached need MVar I/O
+        partitionModules : List Build.Module -> ( List ( ModuleName.Raw, Opt.LocalGraph ), List Build.Module ) -> ( List ( ModuleName.Raw, Opt.LocalGraph ), List Build.Module )
+        partitionModules mods ( freshAcc, cachedAcc ) =
+            case mods of
+                [] ->
+                    ( freshAcc, cachedAcc )
+
+                modul :: rest ->
+                    case modul of
+                        Build.Fresh name _ graph _ _ ->
+                            partitionModules rest ( ( name, graph ) :: freshAcc, cachedAcc )
+
+                        Build.Cached _ _ _ ->
+                            partitionModules rest ( freshAcc, modul :: cachedAcc )
+
+        ( freshPairs, needLoading ) =
+            partitionModules modules ( [], [] )
+
+        freshDict =
+            Data.Map.fromList identity freshPairs
+    in
+    Utils.listTraverse (loadCachedObject root maybeBuildDir) needLoading
+        |> Task.map (\mvars -> LoadingObjects mvar (Data.Map.fromList identity mvars) freshDict)
 
 
-loadObject : FilePath -> Maybe String -> Build.Module -> Task Never ( ModuleName.Raw, MVar (Maybe Opt.LocalGraph) )
-loadObject root maybeBuildDir modul =
+loadCachedObject : FilePath -> Maybe String -> Build.Module -> Task Never ( ModuleName.Raw, MVar (Maybe Opt.LocalGraph) )
+loadCachedObject root maybeBuildDir modul =
     case modul of
-        Build.Fresh name _ graph _ _ ->
-            Utils.newMVar (Utils.maybeEncoder Opt.localGraphEncoder) (Just graph)
-                |> Task.map (\mvar -> ( name, mvar ))
-
         Build.Cached name _ _ ->
             Utils.newEmptyMVar
                 |> Task.andThen (forkLoadCachedObject root maybeBuildDir name)
+
+        Build.Fresh name _ _ _ _ ->
+            -- Should not reach here after partitioning, but handle gracefully
+            Utils.newMVar (Utils.maybeEncoder Opt.localGraphEncoder) (Just (Opt.LocalGraph Nothing Data.Map.empty Dict.empty))
+                |> Task.map (\mv -> ( name, mv ))
 
 
 forkLoadCachedObject : FilePath -> Maybe String -> ModuleName.Raw -> MVar (Maybe Opt.LocalGraph) -> Task Never ( ModuleName.Raw, MVar (Maybe Opt.LocalGraph) )
@@ -332,26 +358,27 @@ type Objects
 
 
 finalizeObjects : LoadingObjects -> Task Exit.Generate Objects
-finalizeObjects (LoadingObjects mvar mvars) =
+finalizeObjects (LoadingObjects mvar mvars freshModules) =
     Task.eio identity
-        (Utils.readMVar (BD.maybe Opt.globalGraphDecoder) mvar
-            |> Task.andThen (collectLocalObjects mvars)
+        (Utils.takeMVar (BD.maybe Opt.globalGraphDecoder) mvar
+            |> Task.andThen (collectLocalObjects mvars freshModules)
         )
 
 
-collectLocalObjects : Data.Map.Dict String ModuleName.Raw (MVar (Maybe Opt.LocalGraph)) -> Maybe Opt.GlobalGraph -> Task Never (Result Exit.Generate Objects)
-collectLocalObjects mvars globalResult =
-    Utils.mapTraverse identity compare (Utils.readMVar (BD.maybe Opt.localGraphDecoder)) mvars
-        |> Task.map (combineGlobalAndLocalObjects globalResult)
+collectLocalObjects : Data.Map.Dict String ModuleName.Raw (MVar (Maybe Opt.LocalGraph)) -> Data.Map.Dict String ModuleName.Raw Opt.LocalGraph -> Maybe Opt.GlobalGraph -> Task Never (Result Exit.Generate Objects)
+collectLocalObjects mvars freshModules globalResult =
+    Utils.mapTraverse identity compare (Utils.takeMVar (BD.maybe Opt.localGraphDecoder)) mvars
+        |> Task.map (combineGlobalAndLocalObjects globalResult freshModules)
 
 
-combineGlobalAndLocalObjects : Maybe Opt.GlobalGraph -> Data.Map.Dict String ModuleName.Raw (Maybe Opt.LocalGraph) -> Result Exit.Generate Objects
-combineGlobalAndLocalObjects globalResult results =
-    case Maybe.map2 Objects globalResult (Utils.sequenceDictMaybe identity compare results) of
-        Just loaded ->
-            Ok loaded
+combineGlobalAndLocalObjects : Maybe Opt.GlobalGraph -> Data.Map.Dict String ModuleName.Raw Opt.LocalGraph -> Data.Map.Dict String ModuleName.Raw (Maybe Opt.LocalGraph) -> Result Exit.Generate Objects
+combineGlobalAndLocalObjects globalResult freshModules cachedResults =
+    case ( globalResult, Utils.sequenceDictMaybe identity compare cachedResults ) of
+        ( Just globals, Just cachedLocals ) ->
+            -- Merge fresh (already have graphs) with cached (loaded from MVars)
+            Ok (Objects globals (Data.Map.union cachedLocals freshModules))
 
-        Nothing ->
+        _ ->
             Err Exit.GenerateCannotLoadArtifacts
 
 
@@ -379,7 +406,7 @@ collectAndMergeTypes ifaces mvars =
         foreigns =
             Extract.mergeMany (Data.Map.values ModuleName.compareCanonical (Data.Map.map Extract.fromDependencyInterface ifaces))
     in
-    Utils.listTraverse (Utils.readMVar (BD.maybe Extract.typesDecoder)) mvars
+    Utils.listTraverse (Utils.takeMVar (BD.maybe Extract.typesDecoder)) mvars
         |> Task.map (mergeLoadedTypes foreigns)
 
 
@@ -542,14 +569,14 @@ type TypedObjects
 finalizeTypedObjects : TypedLoadingObjects -> Task Exit.Generate TypedObjects
 finalizeTypedObjects (TypedLoadingObjects mvar mvars freshModules) =
     Task.eio identity
-        (Utils.readMVar (BD.maybe Details.packageTypedArtifactsDecoder) mvar
+        (Utils.takeMVar (BD.maybe Details.packageTypedArtifactsDecoder) mvar
             |> Task.andThen (collectTypedLocalArtifacts mvars freshModules)
         )
 
 
 collectTypedLocalArtifacts : Data.Map.Dict String ModuleName.Raw (MVar (Maybe TMod.TypedModuleArtifact)) -> Data.Map.Dict String ModuleName.Raw ModuleTyped -> Maybe Details.PackageTypedArtifacts -> Task Never (Result Exit.Generate TypedObjects)
 collectTypedLocalArtifacts mvars freshModules globalArtifacts =
-    Utils.mapTraverse identity compare (Utils.readMVar (BD.maybe TMod.typedModuleArtifactDecoder)) mvars
+    Utils.mapTraverse identity compare (Utils.takeMVar (BD.maybe TMod.typedModuleArtifactDecoder)) mvars
         |> Task.map (combineTypedGlobalAndLocalObjects freshModules globalArtifacts)
 
 
@@ -635,12 +662,28 @@ buildMonoGraph root maybeBuildDir maybeLocal details (Build.Artifacts artifacts)
         roots =
             artifacts.roots
 
+        -- Strip Opt.LocalGraph from Fresh modules: it's only needed by the JS backend,
+        -- not the MLIR/monomorphization path. Without this, 232 Opt.LocalGraph structures
+        -- are pinned in memory as dead weight throughout the entire pipeline.
         modules =
-            artifacts.modules
+            List.map stripUntypedGraph artifacts.modules
     in
     loadTypedObjects root maybeBuildDir maybeLocal details modules
         |> Task.andThen finalizeTypedObjects
         |> Task.andThen (buildMonoGraphFromObjects roots)
+
+
+{-| Remove the untyped Opt.LocalGraph from a Fresh module.
+The MLIR/monomorphization path only needs the typed graph and type env.
+-}
+stripUntypedGraph : Build.Module -> Build.Module
+stripUntypedGraph modul =
+    case modul of
+        Build.Fresh name iface _ typedObjs typeEnv ->
+            Build.Fresh name iface (Opt.LocalGraph Nothing Data.Map.empty Dict.empty) typedObjs typeEnv
+
+        Build.Cached _ _ _ ->
+            modul
 
 
 buildMonoGraphFromObjects : NE.Nonempty Build.Root -> TypedObjects -> Task Exit.Generate MonoBuildResult
