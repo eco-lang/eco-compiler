@@ -1,13 +1,8 @@
 Run the elm-test and E2E tests, take a baseline from the first run.
 
-Run the @bootstrap.md process up to Stage 5, with the heap usage instrumentation
-injected into `_Scheduler_step` in eco-boot-2.js (see the `_Mem_log` function that
-logs at IO boundaries and every 100k andThen binds). The instrumentation writes
-lines to stderr in this format:
-
-    [mem <elapsed>s] <reason> rss=<N>MB heap=<used>/<total>MB ext=<N>MB binds=<N> ios=<N>
-
-Capture the full stderr+stdout output to /tmp/stage5-mem.log for analysis.
+Run the @bootstrap.md process up to Stage 5 with memory instrumentation.
+See @mem-profiling-howto.md for how to inject the instrumentation into
+eco-boot-2.js and how to run cold/warm Stage 5 captures.
 Run Stage 5 twice: once cold (delete .ecot caches first) and once warm (caches intact).
 
 Maintain information about memory usage in @mem-hints.md, adding new reports as
