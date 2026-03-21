@@ -149,10 +149,16 @@ streamMlirToWriter mode monoGraph0 writeChunk =
         stderrLog msg =
             TaskExtra.io (SysIO.writeLn SysIO.stderr msg)
     in
+    -- Convert nodes to indexed list so the Array can be GC'd during streaming.
+    -- List.foldl releases consumed cons cells, allowing processed nodes to be collected.
+    let
+        nodesList =
+            Array.toIndexedList nodes
+    in
     -- 1. Header
     writeChunk Pretty.ppModuleHeader
         |> Task.andThen (\_ -> stderrLog "  Generate node functions (streaming)...")
-        |> Task.andThen (\_ -> streamNodesArray ctx nodes 0 writeChunk)
+        |> Task.andThen (\_ -> streamNodesList ctx nodesList writeChunk)
         |> Task.andThen
             (\ctxAfterNodes ->
                 -- 2. Lambdas
@@ -208,23 +214,21 @@ streamMlirToWriter mode monoGraph0 writeChunk =
             )
 
 
-streamNodesArray :
+streamNodesList :
     Ctx.Context
-    -> Array (Maybe Mono.MonoNode)
-    -> Int
+    -> List ( Int, Maybe Mono.MonoNode )
     -> (String -> Task Never ())
     -> Task Never Ctx.Context
-streamNodesArray ctx0 nodes specId writeChunk =
-    case Array.get specId nodes of
-        Nothing ->
-            -- Past end of array
+streamNodesList ctx0 remaining writeChunk =
+    case remaining of
+        [] ->
             Task.succeed ctx0
 
-        Just Nothing ->
+        ( _, Nothing ) :: rest ->
             -- Empty slot
-            streamNodesArray ctx0 nodes (specId + 1) writeChunk
+            streamNodesList ctx0 rest writeChunk
 
-        Just (Just node) ->
+        ( specId, Just node ) :: rest ->
             let
                 ( nodeOps, newCtx ) =
                     Functions.generateNode ctx0 specId node
@@ -239,7 +243,7 @@ streamNodesArray ctx0 nodes specId writeChunk =
                     }
             in
             writeOps nodeOps writeChunk
-                |> Task.andThen (\_ -> streamNodesArray cleanCtx nodes (specId + 1) writeChunk)
+                |> Task.andThen (\_ -> streamNodesList cleanCtx rest writeChunk)
 
 
 writeOps : List MlirOp -> (String -> Task Never ()) -> Task Never ()

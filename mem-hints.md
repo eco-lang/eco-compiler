@@ -132,7 +132,7 @@
 - Fix: drop mapping to Dict.empty after worklist — trivial change but negligible impact
 - Status: FIXED (implemented as part of Fix 10 — mapping dropped in monomorphizers and Prune)
 
-### 4. Replace MonoGraph.nodes Array with List to avoid Array.toList conversion
+### 4. Replace MonoGraph.nodes Array with List for MLIR streaming
 - Phase: inline+simplify (fix #5 does Array.toList to enable incremental GC)
 - Idea: if nodes were already a List, the conversion would be free
 - Investigation: NOT FEASIBLE as a simple type swap. Several critical paths
@@ -148,7 +148,11 @@
   monomorphizer also produce a parallel List (or convert to List once at the
   boundary between random-access and sequential phases). The Array could then
   be dropped before inline+simplify, avoiding the Array.toList copy.
-- Status: OPEN (not yet attempted)
+- Status: PARTIALLY FIXED — streamNodesArray converted to streamNodesList which
+  takes Array.toIndexedList and processes nodes as a List, allowing consumed
+  cons cells to be GC'd. The Array is still used for InlineSimplify (fix #5
+  already converts to List there) and for buildSignatures (needs random access).
+  Full Array-to-List type change not attempted due to complexity.
 
 ### 5. MVar dict entries never cleared after consumption
 - Phase: compilation → monomorphization boundary
@@ -168,7 +172,10 @@
   - Replace `readMVar` with `takeMVar` in finalization to destructively consume
   - Clear dicts to Dict.empty after traversal in finalizeObjects/finalizeTypedObjects
   - Extract actual values from MVars before storing in Module/Artifacts types
-- Status: OPEN (not yet investigated for memory impact)
+- Status: PARTIALLY FIXED — Generate.elm finalizeObjects and finalizeTypedObjects
+  now use takeMVar (fix 8C). Fresh modules bypass MVars entirely (fix 8B, fix 11).
+  Build.elm MVars cannot be switched to takeMVar due to concurrent access (issues 9,10).
+  The CachedInterface MVars in Build.Module use take-modify-put pattern (already correct).
 
 ### 6. Long pure computations without Task.andThen GC breaks
 - Phase: monomorphization worklist, inline+simplify, global optimization
@@ -200,7 +207,12 @@
 - Complexity: MODERATE — the main challenge is threading Task through what are
   currently pure functions. The worklist loop already threads MonoState, so
   converting to Task MonoState is mechanical but touches many call sites.
-- Status: OPEN (not yet attempted)
+- Status: SKIPPED — forced GC profiling (5-second intervals) reveals the true live
+  set during pure computation phases is well-behaved. The monomorphization worklist
+  peaks at ~1400 MB live (warm), inline+simplify at ~1600 MB. The apparent large
+  heap numbers in unforced measurements (3000+ MB) were deferred garbage, not
+  stack-pinned live data. Adding Task.andThen breaks would add complexity for
+  marginal benefit since V8's incremental GC handles the allocation pressure.
 
 ### 7. Data structures carrying dead fields across phase boundaries
 - Phase: all post-monomorphization phases
@@ -326,10 +338,16 @@
   - Build.elm:293-306 — ResultDict MVar created and populated
   - Build.elm:307 — `mapTraverse (readMVar bResultDecoder) resultMVars` reads without freeing
   - Build.elm:730-732 — BResult type carries Opt.LocalGraph and Maybe TOpt.LocalGraph
-- Fix direction: Switch `readMVar` to `takeMVar` in `collectResultsAndWriteDetails` so
-  each per-module BResult MVar is freed after its value is extracted into the Module list.
-  The Module list already holds the data; the MVar copy is pure redundancy.
-- Status: OPEN
+- Fix direction: Cannot simply switch `readMVar` to `takeMVar` because `checkDepsHelp`
+  (Build.elm:1034) reads individual bResult MVars during compilation — before the
+  collection point. The MVars are used as synchronization primitives (concurrent reads
+  during parallel compilation). Fixing requires either: (a) a post-collection cleanup
+  step that iterates `_MVar_store` and deletes entries by ID, or (b) restructuring
+  the compilation to not re-read results after collection.
+- Attempted: Switched readMVar→takeMVar in collectResultsAndWriteDetails, but this
+  caused 397 E2E test failures because checkDepsHelp reads bResult MVars during
+  compilation before collection completes.
+- Status: SKIPPED (requires architectural change — concurrent MVar reads prevent takeMVar)
 
 ### 10. Build Status MVars retain crawl state after collection
 - Phase: module crawl → compilation boundary
@@ -341,9 +359,12 @@
 - Key code paths:
   - Build.elm:531 — per-module MVar created via `forkNew`/`crawlModule`
   - Build.elm:413 — `readMVar statusDecoder` collects without freeing
-- Fix direction: Switch to `takeMVar` in status collection, or clear the StatusDict
-  MVar after all statuses are collected.
-- Status: OPEN
+- Fix direction: Cannot use takeMVar because crawlDeps (Build.elm:523) uses
+  take-modify-put on the statusDict MVar concurrently during crawling. The
+  individual status MVars are also read as synchronization barriers (line 260,550).
+- Attempted: Switched readMVar→takeMVar, caused deadlocks because crawlDeps
+  takes the statusDict MVar concurrently.
+- Status: SKIPPED (same architectural constraint as issue 9)
 
 ### 11. Types loading creates unnecessary MVars for Fresh modules
 - Phase: compilation → JS code generation boundary
@@ -355,7 +376,9 @@
   - Generate.elm:427 — `newMVar encoder (Just (Extract.fromInterface name iface))`
 - Fix direction: Partition Fresh/Cached in types loading (same pattern as loadObjects
   and loadTypedModuleObjects). Pass Fresh types directly without MVar wrapping.
-- Status: OPEN
+- Status: FIXED — loadTypes now partitions Fresh/Cached modules. Fresh modules
+  extract types directly via Extract.fromInterface without MVar wrapping. Only
+  Cached modules go through the MVar loading path.
 
 ### 12. Reporting channel MVars accumulate without cleanup
 - Phase: entire build session
@@ -371,3 +394,43 @@
   restructure channels to use takeMVar for consumed nodes, but the complexity is
   not justified by the small memory savings.
 - Status: OPEN (low priority)
+
+### 13. Heap grows steadily during MLIR streaming despite output being flushed
+- Phase: MLIR generation (ios 10500 → 42500)
+- Impact: ~1.5 GB growth over the streaming phase (warm run with forced GC shows
+  heap rising from ~1600 MB to ~2500 MB then settling at ~1100 MB after completion)
+- Root cause: UNKNOWN — needs investigation. The MLIR ops are generated per-node
+  in Backend.elm's streamNodesArray loop, pretty-printed to strings, written to disk
+  via writeChunk, and should become garbage. But something accumulates steadily.
+  Candidates to investigate:
+  - **Context accumulation**: typeRegistry, kernelDecls, and signatures grow
+    monotonically as nodes are processed. typeRegistry maps every unique MonoType
+    to a TypeId; kernelDecls accumulates kernel function declarations; signatures
+    is built upfront but carried through. These are in Context.elm:214-228.
+  - **pendingLambdas**: Lambdas encountered during node generation are queued in
+    ctx.pendingLambdas and only processed after ALL nodes complete (Backend.elm:162).
+    Each PendingLambda carries name, captures, params, body (full MonoExpr), and
+    monoType. If thousands of lambdas are queued, they retain the full expression
+    trees.
+  - **Node array retention**: streamNodesArray receives the full nodes Array and
+    indexes into it. Even after a node is processed, the Array slot still holds the
+    Maybe MonoNode. The Array itself cannot be GC'd until the recursion completes.
+  - **MVar store**: The _MVar_store dict retains all values from the compilation
+    and monomorphization phases (issues 9-12). These are not freed during MLIR gen.
+- Fix directions:
+  - Measure which Context fields grow the most by logging their sizes at intervals.
+  - Process pendingLambdas incrementally (after each node or batch of nodes) rather
+    than accumulating them all until the end.
+  - Convert the nodes Array to a List before streaming (same pattern as fix #5 for
+    InlineSimplify) so processed nodes can be GC'd incrementally.
+  - Address issues 9-12 to free MVar store entries before MLIR gen begins.
+- Status: PARTIALLY FIXED
+  - Nodes Array converted to indexed List before streaming (streamNodesList)
+  - Per-node lambda processing attempted but reverted: lambdas require cross-node
+    deduplication by name (BytesFusion can generate same lambda from different nodes)
+  - Forced GC profiling reveals the true live set during MLIR streaming is only
+    ~800-885 MB. The previous unforced measurements of 2500+ MB were deferred
+    garbage. Actual growth during streaming is only ~85 MB (typeRegistry, kernelDecls).
+  - pendingLambdas still accumulate but are a smaller contributor than expected.
+  - Remaining: typeRegistry and kernelDecls grow monotonically but at ~85 MB total
+    over the full streaming phase — low priority.

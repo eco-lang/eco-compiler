@@ -393,42 +393,62 @@ objectsToGlobalGraph (Objects globals locals) =
 
 loadTypes : FilePath -> Maybe String -> Data.Map.Dict (List String) TypeCheck.Canonical I.DependencyInterface -> List Build.Module -> Task Exit.Generate Extract.Types
 loadTypes root maybeBuildDir ifaces modules =
+    let
+        -- Partition: Fresh modules already have interfaces in memory
+        partitionTypes : List Build.Module -> ( List Extract.Types, List Build.Module ) -> ( List Extract.Types, List Build.Module )
+        partitionTypes mods ( freshAcc, cachedAcc ) =
+            case mods of
+                [] ->
+                    ( freshAcc, cachedAcc )
+
+                modul :: rest ->
+                    case modul of
+                        Build.Fresh name iface _ _ _ ->
+                            partitionTypes rest ( Extract.fromInterface name iface :: freshAcc, cachedAcc )
+
+                        Build.Cached _ _ _ ->
+                            partitionTypes rest ( freshAcc, modul :: cachedAcc )
+
+        ( freshTypes, needLoading ) =
+            partitionTypes modules ( [], [] )
+    in
     Task.eio identity
-        (Utils.listTraverse (loadTypesHelp root maybeBuildDir) modules
-            |> Task.andThen (collectAndMergeTypes ifaces)
+        (Utils.listTraverse (loadTypesFromCached root maybeBuildDir) needLoading
+            |> Task.andThen (collectAndMergeTypes ifaces freshTypes)
         )
 
 
-collectAndMergeTypes : Data.Map.Dict (List String) TypeCheck.Canonical I.DependencyInterface -> List (MVar (Maybe Extract.Types)) -> Task Never (Result Exit.Generate Extract.Types)
-collectAndMergeTypes ifaces mvars =
+collectAndMergeTypes : Data.Map.Dict (List String) TypeCheck.Canonical I.DependencyInterface -> List Extract.Types -> List (MVar (Maybe Extract.Types)) -> Task Never (Result Exit.Generate Extract.Types)
+collectAndMergeTypes ifaces freshTypes mvars =
     let
         foreigns : Extract.Types
         foreigns =
             Extract.mergeMany (Data.Map.values ModuleName.compareCanonical (Data.Map.map Extract.fromDependencyInterface ifaces))
     in
     Utils.listTraverse (Utils.takeMVar (BD.maybe Extract.typesDecoder)) mvars
-        |> Task.map (mergeLoadedTypes foreigns)
+        |> Task.map (mergeLoadedTypes foreigns freshTypes)
 
 
-mergeLoadedTypes : Extract.Types -> List (Maybe Extract.Types) -> Result Exit.Generate Extract.Types
-mergeLoadedTypes foreigns results =
-    case Utils.sequenceListMaybe results of
+mergeLoadedTypes : Extract.Types -> List Extract.Types -> List (Maybe Extract.Types) -> Result Exit.Generate Extract.Types
+mergeLoadedTypes foreigns freshTypes cachedResults =
+    case Utils.sequenceListMaybe cachedResults of
         Just ts ->
-            Ok (Extract.merge foreigns (Extract.mergeMany ts))
+            Ok (Extract.merge foreigns (Extract.mergeMany (freshTypes ++ ts)))
 
         Nothing ->
             Err Exit.GenerateCannotLoadArtifacts
 
 
-loadTypesHelp : FilePath -> Maybe String -> Build.Module -> Task Never (MVar (Maybe Extract.Types))
-loadTypesHelp root maybeBuildDir modul =
+loadTypesFromCached : FilePath -> Maybe String -> Build.Module -> Task Never (MVar (Maybe Extract.Types))
+loadTypesFromCached root maybeBuildDir modul =
     case modul of
-        Build.Fresh name iface _ _ _ ->
-            Utils.newMVar (Utils.maybeEncoder Extract.typesEncoder) (Just (Extract.fromInterface name iface))
-
         Build.Cached name _ ciMVar ->
             Utils.readMVar Build.cachedInterfaceDecoder ciMVar
                 |> Task.andThen (handleCachedInterfaceForTypes root maybeBuildDir name)
+
+        Build.Fresh name iface _ _ _ ->
+            -- Should not reach here after partitioning
+            Utils.newMVar (Utils.maybeEncoder Extract.typesEncoder) (Just (Extract.fromInterface name iface))
 
 
 handleCachedInterfaceForTypes : FilePath -> Maybe String -> ModuleName.Raw -> Build.CachedInterface -> Task Never (MVar (Maybe Extract.Types))
