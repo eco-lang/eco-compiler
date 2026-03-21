@@ -85,10 +85,13 @@ fs.writeFileSync(path, code, 'utf8');
 console.log('Instrumentation injected into ' + path);
 ```
 
+A ready-to-use copy of this script lives at `compiler/build-kernel/inject-mem.js`.
+
 Usage:
 
 ```bash
-node inject-mem.js compiler/build-kernel/bin/eco-boot-2.js
+cd compiler/build-kernel
+node inject-mem.js bin/eco-boot-2.js
 ```
 
 ## Running a profiled Stage 5
@@ -117,19 +120,29 @@ node --stack-size=65536 bin/eco-boot-2-runner.js make \
 
 ## Analysing the output
 
-Peak RSS and heap:
+**Note:** The `[mem ...]` lines are written via `process.stderr.write`, but when
+the runner script captures stderr separately, the instrumented scheduler output
+may end up in stdout instead (the runner's own stderr redirection takes
+precedence). Check both files — use whichever contains the `[mem ...]` lines:
+
+```bash
+grep -l '^\[mem ' /tmp/stage5-warm-stdout.log /tmp/stage5-warm-stderr.log
+```
+
+Peak RSS and heap (adjust the filename as needed):
 
 ```bash
 python3 -c "
 import re
-for line in open('/tmp/stage5-warm-stderr.log'):
+maxrss = maxheap = 0
+for line in open('/tmp/stage5-warm-stdout.log'):
     m = re.search(r'rss=(\d+)MB heap=(\d+)/(\d+)MB', line)
     if not m: continue
     rss, heap = int(m.group(1)), int(m.group(2))
     if rss > maxrss: maxrss = rss
     if heap > maxheap: maxheap = heap
 print(f'Peak RSS: {maxrss}MB, Peak heap: {maxheap}MB')
-" maxrss=0 maxheap=0
+"
 ```
 
 Finding large jumps between consecutive samples (phase transitions):
@@ -138,7 +151,7 @@ Finding large jumps between consecutive samples (phase transitions):
 python3 -c "
 import re
 prev = 0
-for line in open('/tmp/stage5-warm-stderr.log'):
+for line in open('/tmp/stage5-warm-stdout.log'):
     m = re.search(r'\[mem ([\d.]+)s\] \w+ rss=(\d+)MB heap=(\d+)/\d+MB .* ios=(\d+)', line)
     if not m: continue
     t, rss, heap, ios = float(m.group(1)), int(m.group(2)), int(m.group(3)), int(m.group(4))

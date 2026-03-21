@@ -105,3 +105,96 @@
   boundary between random-access and sequential phases). The Array could then
   be dropped before inline+simplify, avoiding the Array.toList copy.
 - Status: OPEN (not yet attempted)
+
+### 5. MVar dict entries never cleared after consumption
+- Phase: compilation → monomorphization boundary
+- Impact: NEEDS MEASUREMENT — could be significant for 232 modules
+- Root cause: Build.elm creates MVars for each module result (both Fresh and Cached)
+  and stores them in `resultsMVars` dict. Generate.elm stores MVars in
+  `LoadingObjects` and `TypedLoadingObjects` dicts. After finalization reads all
+  MVars via `collectLocalObjects` / `collectTypedLocalArtifacts`, the dicts are
+  never cleared — all MVar references remain live, pinning their deserialized
+  values in the Node.js MVar registry.
+- Key code paths:
+  - Build.elm:819-820, 852-853 — empty MVars created for cached modules
+  - Generate.elm:285-299 — LoadingObjects dict populated with MVars
+  - Generate.elm:334-345 — `finalizeObjects` reads all MVars but dict persists
+  - Build.elm:2451-2452 — `Cached name main mvar` keeps MVar ref in Module type
+- Fix directions:
+  - Replace `readMVar` with `takeMVar` in finalization to destructively consume
+  - Clear dicts to Dict.empty after traversal in finalizeObjects/finalizeTypedObjects
+  - Extract actual values from MVars before storing in Module/Artifacts types
+- Status: OPEN (not yet investigated for memory impact)
+
+### 6. Long pure computations without Task.andThen GC breaks
+- Phase: monomorphization worklist, inline+simplify, global optimization
+- Impact: NEEDS MEASUREMENT — stack pinning prevents GC of intermediate data
+- Root cause: Elm's scheduler only runs GC at Task.andThen boundaries (which fully
+  unwind the call stack). Several phases run as single pure computations with no
+  andThen breaks, pinning all intermediate state on the stack.
+- Identified hot spots:
+  - **Monomorphization worklist** (Monomorphize.elm:287-437): `processWorklist` is
+    tail-recursive but fully pure — processes thousands of specializations without
+    yielding. Each calls `specializeExpr` (1155-line case expression with nested
+    Dict.foldl/List.foldl for records, call args, branches). All accumulated state
+    pinned for entire worklist duration.
+  - **Inline+simplify fold** (MonoInlineSimplify.elm:88-132): `List.foldl` over all
+    nodes, each calling `optimizeNode` (with fixpoint rewrite+simplify iterations).
+    No Task.andThen between nodes.
+  - **Global optimization phases** (MonoGlobalOptimize.elm:135-169): Has Task.andThen
+    between phases (good), but within each phase the computations are fully pure:
+    - Phase 2: `Staging.analyzeAndSolveStaging` — graph building + constraint solving
+    - Phase 4: `AbiCloning.abiCloningPass` — full expression tree walk
+  - **MLIR generation** already streams correctly with Task.andThen per node (good).
+- Fix directions:
+  - Batch the monomorphization worklist: yield via Task.andThen every N specs
+    (e.g., every 100-500 specializations). Requires converting `processWorklist`
+    from pure tail-recursion to Task-based batching.
+  - Batch the inline+simplify fold: yield after each node (or every N nodes) using
+    `streamNodesArray`-like Task.andThen recursion pattern from Backend.elm.
+  - Within global opt phases, insert yields for large traversals.
+- Complexity: MODERATE — the main challenge is threading Task through what are
+  currently pure functions. The worklist loop already threads MonoState, so
+  converting to Task MonoState is mechanical but touches many call sites.
+- Status: OPEN (not yet attempted)
+
+### 7. Data structures carrying dead fields across phase boundaries
+- Phase: all post-monomorphization phases
+- Impact: NEEDS MEASUREMENT — several fields persist unnecessarily
+- Root cause: Records are passed whole between phases even when downstream phases
+  only use a subset of fields. The unused fields pin their data in memory.
+- Identified dead-field carriers:
+
+  **MonoGraph** (Monomorphized.elm:437-448):
+  - `callEdges : Array (Maybe (List Int))` — built during monomorphization, used
+    once to initialize InlineSimplify's callGraph, then carried unused through
+    GlobalOpt and MLIR gen. Could be dropped after callGraph construction.
+  - `specHasEffects : BitSet`, `specValueUsed : BitSet` — accumulated during
+    monomorphization, used in early GlobalOpt phase, carried unused through
+    remaining phases and MLIR gen. Could be dropped after GlobalOpt Phase 2.
+
+  **MLIR Context** (Context.elm:213-228) — function-local fields never cleared:
+  - `varMappings : Dict String VarInfo` — accumulates let-bound variable mappings
+    across ALL functions. Should be cleared at each function boundary in
+    Backend.elm's streaming loop. Grows O(total_let_bindings_in_program).
+  - `decoderExprs : Dict String MonoExpr` — caches decoder expressions across
+    entire program. Should be function-local.
+  - `currentLetSiblings : Dict String VarInfo` — per-let-scope by name, but
+    stored in persistent Context across function boundaries.
+  - Contrast with `pendingLambdas` which IS correctly cleared after
+    processLambdas (Lambdas.elm:39-40) — same pattern should apply.
+
+  **RewriteCtx** (MonoInlineSimplify.elm:445-455):
+  - `inlineCandidates : Dict Int (List (Name, MonoType), MonoExpr)` — built
+    upfront for all specs, but only a small fraction are actually inlined.
+    Already pre-filtered by Fix 3, but entire candidate dict persists through
+    the full fold even after candidates are consumed.
+
+- Fix directions:
+  - Split MonoGraph at phase boundaries: drop `callEdges` after callGraph init,
+    drop `specHasEffects`/`specValueUsed` after GlobalOpt Phase 2.
+  - Split MLIR Context into global vs function-local parts. Clear function-local
+    fields (`varMappings`, `decoderExprs`, `currentLetSiblings`) at the start of
+    each `generateNode` call in Backend.elm's streaming loop.
+  - For RewriteCtx, remove consumed candidates from dict after inlining.
+- Status: OPEN (not yet attempted)
