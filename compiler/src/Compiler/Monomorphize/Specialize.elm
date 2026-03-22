@@ -2241,19 +2241,24 @@ inferFromDecider decider fallback =
 
 
 {-| Specialize a list of expressions.
+Uses foldl + reverse instead of foldr for stack safety (foldl is tail-call optimized).
 -}
 specializeExprs : List TOpt.Expr -> Substitution -> MonoState -> ( List Mono.MonoExpr, MonoState )
 specializeExprs exprs subst state =
-    List.foldr
-        (\e ( acc, st ) ->
-            let
-                ( me, st1 ) =
-                    specializeExpr e subst st
-            in
-            ( me :: acc, st1 )
-        )
-        ( [], state )
-        exprs
+    let
+        ( revAcc, finalState ) =
+            List.foldl
+                (\e ( acc, st ) ->
+                    let
+                        ( me, st1 ) =
+                            specializeExpr e subst st
+                    in
+                    ( me :: acc, st1 )
+                )
+                ( [], state )
+                exprs
+    in
+    ( List.reverse revAcc, finalState )
 
 
 {-| Process call arguments, deferring accessor specialization.
@@ -2271,92 +2276,117 @@ processCallArgs :
     -> MonoState
     -> ( List ProcessedArg, List Mono.MonoType, MonoState )
 processCallArgs args subst state =
-    List.foldr
-        (\arg ( accArgs, accTypes, st ) ->
-            case arg of
-                TOpt.Accessor region fieldName accessorMeta ->
-                    let
-                        accessorCanType =
-                            accessorMeta.tipe
+    let
+        ( revArgs, revTypes, finalState ) =
+            List.foldl (processCallArg subst) ( [], [], state ) args
+    in
+    ( List.reverse revArgs, List.reverse revTypes, finalState )
 
-                        -- Type for unification only; may have incomplete row.
-                        -- We will NOT use this to derive the accessor's final MonoType.
+
+processCallArg : Substitution -> TOpt.Expr -> ( List ProcessedArg, List Mono.MonoType, MonoState ) -> ( List ProcessedArg, List Mono.MonoType, MonoState )
+processCallArg subst arg ( accArgs, accTypes, st ) =
+    case arg of
+        TOpt.Accessor region fieldName accessorMeta ->
+            let
+                accessorCanType =
+                    accessorMeta.tipe
+
+                monoType =
+                    Mono.forceCNumberToInt (TypeSubst.applySubst subst accessorCanType)
+            in
+            ( PendingAccessor region fieldName accessorCanType :: accArgs
+            , monoType :: accTypes
+            , st
+            )
+
+        TOpt.VarKernel region home name kernelMeta ->
+            let
+                kernelCanType =
+                    kernelMeta.tipe
+            in
+            case KernelAbi.deriveKernelAbiMode ( home, name ) kernelCanType of
+                KernelAbi.NumberBoxed ->
+                    let
                         monoType =
-                            Mono.forceCNumberToInt (TypeSubst.applySubst subst accessorCanType)
+                            Mono.forceCNumberToInt (TypeSubst.applySubst subst kernelCanType)
                     in
-                    ( PendingAccessor region fieldName accessorCanType :: accArgs
+                    ( PendingKernel region home name kernelCanType :: accArgs
                     , monoType :: accTypes
                     , st
                     )
 
-                TOpt.VarKernel region home name kernelMeta ->
-                    -- Check if this is a number-boxed kernel that needs deferred specialization.
-                    -- Number-boxed kernels (like Basics.add) should be specialized AFTER
-                    -- call-site unification so we can determine if they can use the
-                    -- monomorphic numeric type (enabling intrinsics like eco.int.add).
+                _ ->
                     let
-                        kernelCanType =
-                            kernelMeta.tipe
+                        ( monoExpr, st1 ) =
+                            specializeExpr arg subst st
                     in
-                    case KernelAbi.deriveKernelAbiMode ( home, name ) kernelCanType of
-                        KernelAbi.NumberBoxed ->
-                            let
-                                -- Type for unification only; we'll re-derive after call-site unification.
-                                monoType =
-                                    Mono.forceCNumberToInt (TypeSubst.applySubst subst kernelCanType)
-                            in
-                            ( PendingKernel region home name kernelCanType :: accArgs
-                            , monoType :: accTypes
-                            , st
-                            )
+                    ( ResolvedArg monoExpr :: accArgs
+                    , Mono.typeOf monoExpr :: accTypes
+                    , st1
+                    )
 
-                        _ ->
-                            -- Non-number-boxed kernels can be specialized immediately.
-                            let
-                                ( monoExpr, st1 ) =
-                                    specializeExpr arg subst st
-                            in
-                            ( ResolvedArg monoExpr :: accArgs
-                            , Mono.typeOf monoExpr :: accTypes
-                            , st1
-                            )
+        TOpt.VarLocal name localMeta ->
+            let
+                localCanType =
+                    localMeta.tipe
+            in
+            if isLocalMultiTarget name st then
+                let
+                    monoType =
+                        Mono.forceCNumberToInt (TypeSubst.applySubst subst localCanType)
+                in
+                ( LocalFunArg name localCanType :: accArgs
+                , monoType :: accTypes
+                , st
+                )
 
-                TOpt.VarLocal name localMeta ->
+            else
+                let
+                    ( monoExpr, st1 ) =
+                        specializeExpr arg subst st
+                in
+                ( ResolvedArg monoExpr :: accArgs
+                , Mono.typeOf monoExpr :: accTypes
+                , st1
+                )
+
+        TOpt.TrackedVarLocal _ name trackedLocalMeta ->
+            let
+                trackedLocalCanType =
+                    trackedLocalMeta.tipe
+            in
+            if isLocalMultiTarget name st then
+                let
+                    monoType =
+                        Mono.forceCNumberToInt (TypeSubst.applySubst subst trackedLocalCanType)
+                in
+                ( LocalFunArg name trackedLocalCanType :: accArgs
+                , monoType :: accTypes
+                , st
+                )
+
+            else
+                let
+                    ( monoExpr, st1 ) =
+                        specializeExpr arg subst st
+                in
+                ( ResolvedArg monoExpr :: accArgs
+                , Mono.typeOf monoExpr :: accTypes
+                , st1
+                )
+
+        _ ->
+            case arg of
+                TOpt.VarGlobal _ _ meta ->
                     let
-                        localCanType =
-                            localMeta.tipe
-                    in
-                    if isLocalMultiTarget name st then
-                        let
-                            monoType =
-                                Mono.forceCNumberToInt (TypeSubst.applySubst subst localCanType)
-                        in
-                        ( LocalFunArg name localCanType :: accArgs
-                        , monoType :: accTypes
-                        , st
-                        )
+                        canType =
+                            meta.tipe
 
-                    else
-                        let
-                            ( monoExpr, st1 ) =
-                                specializeExpr arg subst st
-                        in
-                        ( ResolvedArg monoExpr :: accArgs
-                        , Mono.typeOf monoExpr :: accTypes
-                        , st1
-                        )
-
-                TOpt.TrackedVarLocal _ name trackedLocalMeta ->
-                    let
-                        trackedLocalCanType =
-                            trackedLocalMeta.tipe
+                        monoType =
+                            Mono.forceCNumberToInt (TypeSubst.applySubst subst canType)
                     in
-                    if isLocalMultiTarget name st then
-                        let
-                            monoType =
-                                Mono.forceCNumberToInt (TypeSubst.applySubst subst trackedLocalCanType)
-                        in
-                        ( LocalFunArg name trackedLocalCanType :: accArgs
+                    if Mono.containsCEcoMVar monoType then
+                        ( PendingGlobal arg subst canType :: accArgs
                         , monoType :: accTypes
                         , st
                         )
@@ -2372,43 +2402,14 @@ processCallArgs args subst state =
                         )
 
                 _ ->
-                    case arg of
-                        TOpt.VarGlobal _ _ meta ->
-                            let
-                                canType =
-                                    meta.tipe
-
-                                monoType =
-                                    Mono.forceCNumberToInt (TypeSubst.applySubst subst canType)
-                            in
-                            if Mono.containsCEcoMVar monoType then
-                                ( PendingGlobal arg subst canType :: accArgs
-                                , monoType :: accTypes
-                                , st
-                                )
-
-                            else
-                                let
-                                    ( monoExpr, st1 ) =
-                                        specializeExpr arg subst st
-                                in
-                                ( ResolvedArg monoExpr :: accArgs
-                                , Mono.typeOf monoExpr :: accTypes
-                                , st1
-                                )
-
-                        _ ->
-                            let
-                                ( monoExpr, st1 ) =
-                                    specializeExpr arg subst st
-                            in
-                            ( ResolvedArg monoExpr :: accArgs
-                            , Mono.typeOf monoExpr :: accTypes
-                            , st1
-                            )
-        )
-        ( [], [], state )
-        args
+                    let
+                        ( monoExpr, st1 ) =
+                            specializeExpr arg subst st
+                    in
+                    ( ResolvedArg monoExpr :: accArgs
+                    , Mono.typeOf monoExpr :: accTypes
+                    , st1
+                    )
 
 
 {-| Resolve a single processed argument.
@@ -2598,16 +2599,20 @@ specializeNamedExprs :
     -> MonoState
     -> ( List ( Name, Mono.MonoExpr ), MonoState )
 specializeNamedExprs namedExprs subst state =
-    List.foldr
-        (\( name, e ) ( acc, st ) ->
-            let
-                ( me, st1 ) =
-                    specializeExpr e subst st
-            in
-            ( ( name, me ) :: acc, st1 )
-        )
-        ( [], state )
-        namedExprs
+    let
+        ( revAcc, finalState ) =
+            List.foldl
+                (\( name, e ) ( acc, st ) ->
+                    let
+                        ( me, st1 ) =
+                            specializeExpr e subst st
+                    in
+                    ( ( name, me ) :: acc, st1 )
+                )
+                ( [], state )
+                namedExprs
+    in
+    ( List.reverse revAcc, finalState )
 
 
 {-| Specialize if-expression branches (condition-body pairs).
@@ -2621,23 +2626,26 @@ specializeBranches branches subst state =
     let
         savedVarEnv =
             state.ctx.varEnv
+
+        ( revAcc, finalState ) =
+            List.foldl
+                (\( cond, body ) ( acc, st ) ->
+                    let
+                        ( mCond, st1 ) =
+                            specializeExpr cond subst st
+
+                        st1WithResetVarTypes =
+                            { st1 | ctx = let c = st1.ctx in { c | varEnv = savedVarEnv } }
+
+                        ( mBody, st2 ) =
+                            specializeExpr body subst st1WithResetVarTypes
+                    in
+                    ( ( mCond, mBody ) :: acc, st2 )
+                )
+                ( [], state )
+                branches
     in
-    List.foldr
-        (\( cond, body ) ( acc, st ) ->
-            let
-                ( mCond, st1 ) =
-                    specializeExpr cond subst st
-
-                st1WithResetVarTypes =
-                    { st1 | ctx = let c = st1.ctx in { c | varEnv = savedVarEnv } }
-
-                ( mBody, st2 ) =
-                    specializeExpr body subst st1WithResetVarTypes
-            in
-            ( ( mCond, mBody ) :: acc, st2 )
-        )
-        ( [], state )
-        branches
+    ( List.reverse revAcc, finalState )
 
 
 
@@ -3208,20 +3216,23 @@ specializeEdges rootName edges subst state =
     let
         savedVarEnv =
             state.ctx.varEnv
-    in
-    List.foldr
-        (\( test, decider ) ( acc, st ) ->
-            let
-                stWithResetVarEnv =
-                    { st | ctx = let c = st.ctx in { c | varEnv = savedVarEnv } }
 
-                ( monoDecider, newSt ) =
-                    specializeDecider rootName decider subst stWithResetVarEnv
-            in
-            ( ( test, monoDecider ) :: acc, newSt )
-        )
-        ( [], state )
-        edges
+        ( revAcc, finalState ) =
+            List.foldl
+                (\( test, decider ) ( acc, st ) ->
+                    let
+                        stWithResetVarEnv =
+                            { st | ctx = let c = st.ctx in { c | varEnv = savedVarEnv } }
+
+                        ( monoDecider, newSt ) =
+                            specializeDecider rootName decider subst stWithResetVarEnv
+                    in
+                    ( ( test, monoDecider ) :: acc, newSt )
+                )
+                ( [], state )
+                edges
+    in
+    ( List.reverse revAcc, finalState )
 
 
 specializeJumps : List ( Int, TOpt.Expr ) -> Substitution -> MonoState -> ( List ( Int, Mono.MonoExpr ), MonoState )
@@ -3229,20 +3240,23 @@ specializeJumps jumps subst state =
     let
         savedVarEnv =
             state.ctx.varEnv
-    in
-    List.foldr
-        (\( idx, expr ) ( acc, st ) ->
-            let
-                stWithResetVarEnv =
-                    { st | ctx = let c = st.ctx in { c | varEnv = savedVarEnv } }
 
-                ( monoExpr, newSt ) =
-                    specializeExpr expr subst stWithResetVarEnv
-            in
-            ( ( idx, monoExpr ) :: acc, newSt )
-        )
-        ( [], state )
-        jumps
+        ( revAcc, finalState ) =
+            List.foldl
+                (\( idx, expr ) ( acc, st ) ->
+                    let
+                        stWithResetVarEnv =
+                            { st | ctx = let c = st.ctx in { c | varEnv = savedVarEnv } }
+
+                        ( monoExpr, newSt ) =
+                            specializeExpr expr subst stWithResetVarEnv
+                    in
+                    ( ( idx, monoExpr ) :: acc, newSt )
+                )
+                ( [], state )
+                jumps
+    in
+    ( List.reverse revAcc, finalState )
 
 
 {-| Extract the expression type from a MonoDef.
