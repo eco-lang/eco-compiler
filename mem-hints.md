@@ -355,7 +355,77 @@
 - Attempted: Switched readMVar→takeMVar in collectResultsAndWriteDetails, but this
   caused 397 E2E test failures because checkDepsHelp reads bResult MVars during
   compilation before collection completes.
-- Status: SKIPPED (requires architectural change — concurrent MVar reads prevent takeMVar)
+- Status: OPEN — post-collection cleanup is feasible (see fix direction below)
+- Measured impact: ~150–200 MB in cold runs (the warm-vs-cold post-peak difference)
+- Fix direction — post-collection bulk cleanup:
+
+  The previous attempt (switching readMVar→takeMVar at the collection point) failed
+  because `checkDepsHelp` reads bResult MVars concurrently DURING compilation. However,
+  by the time `collectResultsAndWriteDetails` returns (line 307-308) or
+  `finalizePathBuild` returns (line 466-467), **all compilation is complete** and no
+  further code ever reads these MVars again. Everything downstream operates on the
+  materialized `Dict ModuleName.Raw BResult` — never the MVars.
+
+  The fix is a two-part change:
+
+  **Part 1: Add `dropMVar` to the kernel MVar API**
+
+  In `eco-kernel-cpp/src/Eco/Kernel/MVar.js`, add:
+  ```javascript
+  var _MVar_drop = function(id) {
+      return __Scheduler_binding(function(callback) {
+          delete _MVar_store[id];
+          callback(__Scheduler_succeed(__Utils_Tuple0));
+      });
+  };
+  ```
+
+  Expose via `Eco.MVar` and `Utils.Main`:
+  ```elm
+  -- Eco/MVar.elm
+  drop : MVar a -> Task Never ()
+  drop (MVar id) = Eco.Kernel.MVar.drop id
+
+  -- Utils/Main.elm
+  dropMVar : MVar a -> Task Never ()
+  dropMVar (MVar ref) = Eco.MVar.drop (Eco.MVar.MVar ref)
+  ```
+
+  **Part 2: Insert cleanup after the final read**
+
+  In `collectResultsAndWriteDetails` (exposed build path), after line 307:
+  ```elm
+  collectResultsAndWriteDetails root maybeBuildDir details ( rmvar, resultMVars ) =
+      Utils.putMVar dictRawMVarBResultEncoder rmvar resultMVars
+          |> Task.andThen (\_ -> Utils.mapTraverse identity compare (Utils.readMVar bResultDecoder) resultMVars)
+          |> Task.andThen (\results ->
+              -- Drop all BResult MVars — they are never read again after this point
+              Utils.mapTraverse_ identity compare Utils.dropMVar resultMVars
+                  |> Task.andThen (\_ -> Utils.dropMVar rmvar)
+                  |> Task.andThen (\_ -> writeDetailsAndReturn root maybeBuildDir details results)
+          )
+  ```
+
+  In `finalizePathBuild` (paths build path), after line 466:
+  ```elm
+  finalizePathBuild root maybeBuildDir details env foreigns { resultsMVars, rrootMVars } =
+      Utils.mapTraverse identity compare (Utils.readMVar bResultDecoder) resultsMVars
+          |> Task.andThen (\results ->
+              -- Drop all BResult MVars — never read again
+              Utils.mapTraverse_ identity compare Utils.dropMVar resultsMVars
+                  |> Task.andThen (\_ -> writeDetailsAndCollectRoots root maybeBuildDir details rrootMVars results)
+          )
+          |> Task.map (toArtifactsFromResults env foreigns)
+  ```
+
+  This is safe because:
+  - `readMVar` at line 307/466 is the LAST access to these MVars (verified by code audit)
+  - `checkDepsHelp` only runs during compilation, which is complete by this point
+  - `dropMVar` removes the entry from `_MVar_store` entirely (not just clearing the value)
+  - The `rmvar` (MVar holding the ResultDict) is also dead after this point
+
+  Note: `mapTraverse_` (with underscore) discards results — if it doesn't exist, use
+  `mapTraverse` and ignore the result, or add a simple helper.
 
 ### 10. Build Status MVars retain crawl state after collection
 - Phase: module crawl → compilation boundary
