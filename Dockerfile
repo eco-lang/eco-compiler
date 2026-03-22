@@ -44,7 +44,7 @@ LABEL org.opencontainers.image.source="https://github.com/eco-runtime/eco-runtim
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates git build-essential python3 pkg-config \
     cmake ninja-build clang lld zlib1g-dev libxml2-dev \
-    gosu curl libcmark-dev ccache \
+    gosu curl libcmark-dev ccache sudo \
     less \
     # HTTP/HTTPS support for elm/http kernel
     libcurl4-openssl-dev libssl-dev \

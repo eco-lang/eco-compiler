@@ -36,6 +36,10 @@ fi
 user_name="$(getent passwd "${uid}" | cut -d: -f1)"
 home_dir="$(getent passwd "${uid}" | cut -d: -f6)"
 
+# Grant passwordless sudo (useful for perf profiling, sysctl, etc.)
+echo "${user_name} ALL=(ALL) NOPASSWD: ALL" > "/etc/sudoers.d/${user_name}"
+chmod 440 "/etc/sudoers.d/${user_name}"
+
 # 4) Ensure writable HOME and /work
 mkdir -p "${home_dir}" /work
 chown -R "${uid}:${gid}" "${home_dir}" /work || true
