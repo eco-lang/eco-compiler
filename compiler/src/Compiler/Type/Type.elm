@@ -470,22 +470,32 @@ toCanTypeBatch nodeVars =
 
 arrayTraverseMaybeState : (a -> StateT NameState b) -> Array (Maybe a) -> StateT NameState (Array (Maybe b))
 arrayTraverseMaybeState f arr =
-    Array.foldl
-        (\maybeVal accState ->
-            accState
-                |> State.andThen
-                    (\acc ->
-                        case maybeVal of
-                            Nothing ->
-                                State.pure (Array.push Nothing acc)
-
-                            Just val ->
-                                f val
-                                    |> State.map (\result -> Array.push (Just result) acc)
-                    )
+    -- Use IO.loop to avoid stack depth proportional to array length.
+    -- The old Array.foldl + State.andThen approach created N nested closures.
+    State.StateT
+        (\s0 ->
+            IO.loop
+                (arrayTraverseMaybeStateHelp f)
+                ( Array.toList arr, [], s0 )
+                |> IO.map (\( results, sFinal ) -> ( Array.fromList (List.reverse results), sFinal ))
         )
-        (State.pure Array.empty)
-        arr
+
+
+arrayTraverseMaybeStateHelp :
+    (a -> StateT NameState b)
+    -> ( List (Maybe a), List (Maybe b), NameState )
+    -> IO (IO.Step ( List (Maybe a), List (Maybe b), NameState ) ( List (Maybe b), NameState ))
+arrayTraverseMaybeStateHelp f ( remaining, acc, s ) =
+    case remaining of
+        [] ->
+            IO.pure (IO.Done ( acc, s ))
+
+        Nothing :: rest ->
+            IO.pure (IO.Loop ( rest, Nothing :: acc, s ))
+
+        (Just val) :: rest ->
+            State.runStateT (f val) s
+                |> IO.map (\( result, s1 ) -> IO.Loop ( rest, Just result :: acc, s1 ))
 
 
 variableToCanType : Variable -> State.StateT NameState Can.Type

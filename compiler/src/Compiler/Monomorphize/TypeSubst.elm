@@ -670,14 +670,9 @@ applySubst subst canType =
         Can.TLambda from to ->
             -- IMPORTANT: Preserve curried structure - each TLambda becomes a single-arg MFunction.
             -- Do NOT flatten nested TLambdas here. GlobalOpt handles flattening (GOPT_001).
-            let
-                argMono =
-                    applySubst subst from
-
-                resultMono =
-                    applySubst subst to
-            in
-            Mono.MFunction [ argMono ] resultMono
+            -- Collect the lambda chain iteratively to avoid stack depth proportional to arity,
+            -- then build MFunction chain from inside out.
+            applySubstLambdaChain subst [ from ] to
 
         Can.TType canonical name args ->
             let
@@ -727,28 +722,32 @@ applySubst subst canType =
 
         Can.TRecord fields maybeExtension ->
             let
-                -- Convert explicit fields to mono types
-                extensionFields =
-                    Dict.map (\_ (Can.FieldType _ t) -> applySubst subst t) fields
-
-                -- Merge with base fields from extension variable if present
-                monoFields =
+                -- Start with base fields from extension variable if present
+                baseFields =
                     case maybeExtension of
                         Just extName ->
                             case Dict.get extName subst of
                                 Just (Mono.MRecord baseFieldsDict) ->
-                                    Dict.union extensionFields baseFieldsDict
+                                    baseFieldsDict
 
                                 _ ->
-                                    extensionFields
+                                    Dict.empty
 
                         Nothing ->
-                            extensionFields
+                            Dict.empty
+
+                -- Convert explicit fields and merge into base using foldl
+                -- (Dict.foldl has O(log N) stack depth vs Dict.map's O(N) in worst case)
+                monoFields =
+                    Dict.foldl
+                        (\k (Can.FieldType _ t) acc -> Dict.insert k (applySubst subst t) acc)
+                        baseFields
+                        fields
             in
             Mono.MRecord monoFields
 
         Can.TTuple a b rest ->
-            Mono.MTuple (applySubst subst a :: applySubst subst b :: List.map (applySubst subst) rest)
+            Mono.MTuple (List.map (applySubst subst) (a :: b :: rest))
 
         Can.TUnit ->
             Mono.MUnit
@@ -767,6 +766,38 @@ applySubst subst canType =
                         args
             in
             applySubst newSubst inner
+
+
+{-| Collect a TLambda chain iteratively, then build the curried MFunction structure.
+argsAcc accumulates args in reverse order (innermost first), so the foldl
+builds MFunction [c'] (MFunction [b'] (MFunction [a'] result')) correctly.
+
+Wait — we want the ORIGINAL order:
+  TLambda a (TLambda b (TLambda c result))
+  → MFunction [a'] (MFunction [b'] (MFunction [c'] result'))
+
+Collecting in reverse gives argsAcc = [c, b, a].
+foldl builds: start with result', then:
+  c → MFunction [c'] result'
+  b → MFunction [b'] (MFunction [c'] result')
+  a → MFunction [a'] (MFunction [b'] (MFunction [c'] result'))
+That's correct!
+-}
+applySubstLambdaChain : Substitution -> List Can.Type -> Can.Type -> Mono.MonoType
+applySubstLambdaChain subst argsAcc to =
+    case to of
+        Can.TLambda from innerTo ->
+            applySubstLambdaChain subst (from :: argsAcc) innerTo
+
+        _ ->
+            let
+                resultMono =
+                    applySubst subst to
+            in
+            List.foldl
+                (\argType acc -> Mono.MFunction [ applySubst subst argType ] acc)
+                resultMono
+                argsAcc
 
 
 {-| Convert a canonical type to a monomorphic type using a substitution.

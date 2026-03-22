@@ -401,23 +401,24 @@ canonicalizeTupleExtrasWithIds region env state extras =
 
 
 {-| Traverse a list of expressions while threading IdState through each.
+Uses ReportingResult.loop for stack safety on long expression lists.
 -}
 traverseExprsWithIds : Env.Env -> IdState -> List Src.Expr -> EResult FreeLocals (List W.Warning) ( List Can.Expr, IdState )
-traverseExprsWithIds env state exprs =
-    case exprs of
-        [] ->
-            ReportingResult.ok ( [], state )
+traverseExprsWithIds env state0 exprs =
+    ReportingResult.loop
+        (\( remaining, acc, st ) ->
+            case remaining of
+                [] ->
+                    ReportingResult.ok (ReportingResult.Done ( List.reverse acc, st ))
 
-        expr :: rest ->
-            canonicalizeWithIds env state expr
-                |> ReportingResult.andThen
-                    (\( cexpr, stateAfter ) ->
-                        traverseExprsWithIds env stateAfter rest
-                            |> ReportingResult.map
-                                (\( crest, finalState ) ->
-                                    ( cexpr :: crest, finalState )
-                                )
-                    )
+                expr :: rest ->
+                    canonicalizeWithIds env st expr
+                        |> ReportingResult.map
+                            (\( cexpr, stateAfter ) ->
+                                ReportingResult.Loop ( rest, cexpr :: acc, stateAfter )
+                            )
+        )
+        ( exprs, [], state0 )
 
 
 {-| Traverse a dict of expressions while threading IdState through each.
@@ -447,17 +448,21 @@ traverseDictEntriesWithIds :
     -> List ( A.Located Name, Src.Expr )
     -> List ( A.Located Name, Can.Expr )
     -> EResult FreeLocals (List W.Warning) ( List ( A.Located Name, Can.Expr ), IdState )
-traverseDictEntriesWithIds env state entries acc =
-    case entries of
-        [] ->
-            ReportingResult.ok ( List.reverse acc, state )
+traverseDictEntriesWithIds env state0 entries acc0 =
+    ReportingResult.loop
+        (\( remaining, acc, st ) ->
+            case remaining of
+                [] ->
+                    ReportingResult.ok (ReportingResult.Done ( List.reverse acc, st ))
 
-        ( key, srcExpr ) :: rest ->
-            canonicalizeWithIds env state srcExpr
-                |> ReportingResult.andThen
-                    (\( canExpr, stateAfter ) ->
-                        traverseDictEntriesWithIds env stateAfter rest (( key, canExpr ) :: acc)
-                    )
+                ( key, srcExpr ) :: rest ->
+                    canonicalizeWithIds env st srcExpr
+                        |> ReportingResult.map
+                            (\( canExpr, stateAfter ) ->
+                                ReportingResult.Loop ( rest, ( key, canExpr ) :: acc, stateAfter )
+                            )
+        )
+        ( entries, acc0, state0 )
 
 
 {-| Traverse update fields while threading IdState through each, producing FieldUpdate values.
@@ -486,22 +491,21 @@ traverseUpdateEntriesWithIds :
     -> List ( A.Located Name, Src.Expr )
     -> List ( A.Located Name, Can.FieldUpdate )
     -> EResult FreeLocals (List W.Warning) ( List ( A.Located Name, Can.FieldUpdate ), IdState )
-traverseUpdateEntriesWithIds env state entries acc =
-    case entries of
-        [] ->
-            ReportingResult.ok ( List.reverse acc, state )
+traverseUpdateEntriesWithIds env state0 entries acc0 =
+    ReportingResult.loop
+        (\( remaining, acc, st ) ->
+            case remaining of
+                [] ->
+                    ReportingResult.ok (ReportingResult.Done ( List.reverse acc, st ))
 
-        ( (A.At fieldRegion _) as key, srcExpr ) :: rest ->
-            canonicalizeWithIds env state srcExpr
-                |> ReportingResult.andThen
-                    (\( canExpr, stateAfter ) ->
-                        let
-                            fieldUpdate : Can.FieldUpdate
-                            fieldUpdate =
-                                Can.FieldUpdate fieldRegion canExpr
-                        in
-                        traverseUpdateEntriesWithIds env stateAfter rest (( key, fieldUpdate ) :: acc)
-                    )
+                ( (A.At fieldRegion _) as key, srcExpr ) :: rest ->
+                    canonicalizeWithIds env st srcExpr
+                        |> ReportingResult.map
+                            (\( canExpr, stateAfter ) ->
+                                ReportingResult.Loop ( rest, ( key, Can.FieldUpdate fieldRegion canExpr ) :: acc, stateAfter )
+                            )
+        )
+        ( entries, acc0, state0 )
 
 
 
@@ -526,21 +530,21 @@ canonicalizeIfBranchWithIds env state ( condition, branch ) =
 {-| Traverse if branches while threading IdState through each.
 -}
 traverseIfBranchesWithIds : Env.Env -> IdState -> List ( Src.Expr, Src.Expr ) -> EResult FreeLocals (List W.Warning) ( List ( Can.Expr, Can.Expr ), IdState )
-traverseIfBranchesWithIds env state branches =
-    case branches of
-        [] ->
-            ReportingResult.ok ( [], state )
+traverseIfBranchesWithIds env state0 branches =
+    ReportingResult.loop
+        (\( remaining, acc, st ) ->
+            case remaining of
+                [] ->
+                    ReportingResult.ok (ReportingResult.Done ( List.reverse acc, st ))
 
-        branch :: rest ->
-            canonicalizeIfBranchWithIds env state branch
-                |> ReportingResult.andThen
-                    (\( cbranch, stateAfter ) ->
-                        traverseIfBranchesWithIds env stateAfter rest
-                            |> ReportingResult.map
-                                (\( crest, finalState ) ->
-                                    ( cbranch :: crest, finalState )
-                                )
-                    )
+                branch :: rest ->
+                    canonicalizeIfBranchWithIds env st branch
+                        |> ReportingResult.map
+                            (\( cbranch, stateAfter ) ->
+                                ReportingResult.Loop ( rest, cbranch :: acc, stateAfter )
+                            )
+        )
+        ( branches, [], state0 )
 
 
 
@@ -576,21 +580,21 @@ traverseCaseBranchesWithIds :
     -> IdState
     -> List ( Src.Pattern, Src.Expr )
     -> EResult FreeLocals (List W.Warning) ( List Can.CaseBranch, IdState )
-traverseCaseBranchesWithIds env state branches =
-    case branches of
-        [] ->
-            ReportingResult.ok ( [], state )
+traverseCaseBranchesWithIds env state0 branches =
+    ReportingResult.loop
+        (\( remaining, acc, st ) ->
+            case remaining of
+                [] ->
+                    ReportingResult.ok (ReportingResult.Done ( List.reverse acc, st ))
 
-        branch :: rest ->
-            canonicalizeCaseBranchWithIds env state branch
-                |> ReportingResult.andThen
-                    (\( canBranch, stateAfterBranch ) ->
-                        traverseCaseBranchesWithIds env stateAfterBranch rest
-                            |> ReportingResult.map
-                                (\( canRest, finalState ) ->
-                                    ( canBranch :: canRest, finalState )
-                                )
-                    )
+                branch :: rest ->
+                    canonicalizeCaseBranchWithIds env st branch
+                        |> ReportingResult.map
+                            (\( canBranch, stateAfter ) ->
+                                ReportingResult.Loop ( rest, canBranch :: acc, stateAfter )
+                            )
+        )
+        ( branches, [], state0 )
 
 
 
@@ -833,17 +837,21 @@ foldDefNodesWithIds :
     -> List Node
     -> List (A.Located Src.Def)
     -> EResult FreeLocals (List W.Warning) ( List Node, IdState )
-foldDefNodesWithIds env state acc defs =
-    case defs of
-        [] ->
-            ReportingResult.ok ( acc, state )
+foldDefNodesWithIds env state0 acc0 defs =
+    ReportingResult.loop
+        (\( remaining, acc, st ) ->
+            case remaining of
+                [] ->
+                    ReportingResult.ok (ReportingResult.Done ( acc, st ))
 
-        def :: rest ->
-            addDefNodesWithIds env state acc def
-                |> ReportingResult.andThen
-                    (\( newAcc, newState ) ->
-                        foldDefNodesWithIds env newState newAcc rest
-                    )
+                def :: rest ->
+                    addDefNodesWithIds env st acc def
+                        |> ReportingResult.map
+                            (\( newAcc, newState ) ->
+                                ReportingResult.Loop ( rest, newAcc, newState )
+                            )
+        )
+        ( defs, acc0, state0 )
 
 
 addBindings : A.Located Src.Def -> Dups.Tracker A.Region -> Dups.Tracker A.Region
