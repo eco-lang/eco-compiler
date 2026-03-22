@@ -481,11 +481,16 @@ loadAndStoreInterfaceTypes root maybeBuildDir name mvar =
 -- ====== TYPED OBJECTS LOADING ======
 
 
+{-| Typed loading state: global artifacts MVar, list of cached module names
+(for sequential .ecot loading), Fresh modules dict, and root/buildDir for file paths.
+-}
 type TypedLoadingObjects
     = TypedLoadingObjects
         (MVar (Maybe Details.PackageTypedArtifacts))
-        (Data.Map.Dict String ModuleName.Raw (MVar (Maybe TMod.TypedModuleArtifact)))
+        (List ModuleName.Raw)
         (Data.Map.Dict String ModuleName.Raw ModuleTyped)
+        FilePath
+        (Maybe String)
 
 
 loadTypedObjects : FilePath -> Maybe String -> Maybe ( Pkg.Name, FilePath ) -> Details.Details -> List Build.Module -> Task Exit.Generate TypedLoadingObjects
@@ -499,8 +504,8 @@ loadTypedObjects root maybeBuildDir maybeLocal details modules =
 loadTypedModuleObjects : FilePath -> Maybe String -> List Build.Module -> MVar (Maybe Details.PackageTypedArtifacts) -> Task Never TypedLoadingObjects
 loadTypedModuleObjects root maybeBuildDir modules mvar =
     let
-        -- Partition: Fresh modules with typed data go directly, others need MVar loading
-        partition : List Build.Module -> ( List ( ModuleName.Raw, ModuleTyped ), List Build.Module ) -> ( List ( ModuleName.Raw, ModuleTyped ), List Build.Module )
+        -- Partition: Fresh modules with typed data go directly, others need .ecot loading
+        partition : List Build.Module -> ( List ( ModuleName.Raw, ModuleTyped ), List ModuleName.Raw ) -> ( List ( ModuleName.Raw, ModuleTyped ), List ModuleName.Raw )
         partition mods acc =
             case mods of
                 [] ->
@@ -518,56 +523,36 @@ loadTypedModuleObjects root maybeBuildDir modules mvar =
                                 , cached
                                 )
 
-                        _ ->
+                        Build.Fresh name _ _ _ _ ->
                             let
                                 ( fresh, cached ) =
                                     acc
                             in
                             partition rest
                                 ( fresh
-                                , modul :: cached
+                                , name :: cached
                                 )
 
-        ( freshPairs, needLoading ) =
+                        Build.Cached name _ _ ->
+                            let
+                                ( fresh, cached ) =
+                                    acc
+                            in
+                            partition rest
+                                ( fresh
+                                , name :: cached
+                                )
+
+        ( freshPairs, cachedNames ) =
             partition modules ( [], [] )
 
         freshDict =
             Data.Map.fromList identity freshPairs
     in
-    Utils.listTraverse (loadTypedObject root maybeBuildDir) needLoading
-        |> Task.map (\mvars -> TypedLoadingObjects mvar (Data.Map.fromList identity mvars) freshDict)
+    -- No MVars needed — cached modules will be loaded sequentially during merge
+    Task.succeed (TypedLoadingObjects mvar cachedNames freshDict root maybeBuildDir)
 
 
-loadTypedObject : FilePath -> Maybe String -> Build.Module -> Task Never ( ModuleName.Raw, MVar (Maybe TMod.TypedModuleArtifact) )
-loadTypedObject root maybeBuildDir modul =
-    case modul of
-        Build.Fresh name _ _ _ _ ->
-            -- Fresh without typed data (already filtered by partition above)
-            Utils.newEmptyMVar
-                |> Task.andThen (forkLoadTypedCachedObject root maybeBuildDir name)
-
-        Build.Cached name _ _ ->
-            Utils.newEmptyMVar
-                |> Task.andThen (forkLoadTypedCachedObject root maybeBuildDir name)
-
-
-forkLoadTypedCachedObject : FilePath -> Maybe String -> ModuleName.Raw -> MVar (Maybe TMod.TypedModuleArtifact) -> Task Never ( ModuleName.Raw, MVar (Maybe TMod.TypedModuleArtifact) )
-forkLoadTypedCachedObject root maybeBuildDir name mvar =
-    Utils.forkIO (readAndStoreTypedCachedObject root maybeBuildDir name mvar)
-        |> Task.map (\_ -> ( name, mvar ))
-
-
-readAndStoreTypedCachedObject : FilePath -> Maybe String -> ModuleName.Raw -> MVar (Maybe TMod.TypedModuleArtifact) -> Task Never ()
-readAndStoreTypedCachedObject root maybeBuildDir name mvar =
-    File.readBinary TMod.typedModuleArtifactDecoder (Stuff.ecotWithBuildDir root maybeBuildDir name)
-        |> Task.andThen (storeTypedArtifactWithDefault mvar)
-
-
-storeTypedArtifactWithDefault : MVar (Maybe TMod.TypedModuleArtifact) -> Maybe TMod.TypedModuleArtifact -> Task Never ()
-storeTypedArtifactWithDefault mvar maybeArtifact =
-    -- If .ecot file doesn't exist, return Nothing to signal an error
-    -- This happens when modules were cached from a non-MLIR build
-    Utils.putMVar (Utils.maybeEncoder TMod.typedModuleArtifactEncoder) mvar maybeArtifact
 
 
 
@@ -582,80 +567,97 @@ type alias ModuleTyped =
     }
 
 
-type TypedObjects
-    = TypedObjects TOpt.GlobalGraph TypeEnv.GlobalTypeEnv (Data.Map.Dict String ModuleName.Raw ModuleTyped)
+{-| Merged typed data: GlobalGraph + GlobalTypeEnv, ready for monomorphization.
+Per-module data has been merged and discarded.
+-}
+type MergedTypedData
+    = MergedTypedData TOpt.GlobalGraph TypeEnv.GlobalTypeEnv
 
 
-finalizeTypedObjects : TypedLoadingObjects -> Task Exit.Generate TypedObjects
-finalizeTypedObjects (TypedLoadingObjects mvar mvars freshModules) =
+{-| Finalize typed objects by sequentially loading and merging per-module data
+into GlobalGraph/GlobalTypeEnv. Each .ecot file is loaded, deserialized, merged,
+and discarded before the next is loaded. Only one module's data is alive at a
+time (plus the growing merged structures), avoiding the ~1400MB peak from
+loading all 232 modules simultaneously.
+-}
+finalizeAndMergeTypedObjects : TypedLoadingObjects -> Task Exit.Generate MergedTypedData
+finalizeAndMergeTypedObjects (TypedLoadingObjects mvar cachedModulesList freshModules root maybeBuildDir) =
     Task.eio identity
         (Utils.takeMVar (BD.maybe Details.packageTypedArtifactsDecoder) mvar
-            |> Task.andThen (collectTypedLocalArtifacts mvars freshModules)
+            |> Task.andThen (streamLoadAndMerge cachedModulesList freshModules root maybeBuildDir)
         )
 
 
-collectTypedLocalArtifacts : Data.Map.Dict String ModuleName.Raw (MVar (Maybe TMod.TypedModuleArtifact)) -> Data.Map.Dict String ModuleName.Raw ModuleTyped -> Maybe Details.PackageTypedArtifacts -> Task Never (Result Exit.Generate TypedObjects)
-collectTypedLocalArtifacts mvars freshModules globalArtifacts =
-    Utils.mapTraverse identity compare (Utils.takeMVar (BD.maybe TMod.typedModuleArtifactDecoder)) mvars
-        |> Task.map (combineTypedGlobalAndLocalObjects freshModules globalArtifacts)
-
-
-combineTypedGlobalAndLocalObjects : Data.Map.Dict String ModuleName.Raw ModuleTyped -> Maybe Details.PackageTypedArtifacts -> Data.Map.Dict String ModuleName.Raw (Maybe TMod.TypedModuleArtifact) -> Result Exit.Generate TypedObjects
-combineTypedGlobalAndLocalObjects freshModules maybeGlobalArtifacts cachedResults =
+{-| Stream-load-and-merge: first merge Fresh modules (already in memory),
+then sequentially load each cached module's .ecot file, merge, and discard.
+-}
+streamLoadAndMerge :
+    List ModuleName.Raw
+    -> Data.Map.Dict String ModuleName.Raw ModuleTyped
+    -> FilePath
+    -> Maybe String
+    -> Maybe Details.PackageTypedArtifacts
+    -> Task Never (Result Exit.Generate MergedTypedData)
+streamLoadAndMerge cachedNames freshModules root maybeBuildDir maybeGlobalArtifacts =
     let
-        -- Convert TypedModuleArtifact to ModuleTyped
-        toModuleTyped : TMod.TypedModuleArtifact -> ModuleTyped
-        toModuleTyped artifact =
-            { graph = artifact.typedGraph
-            , env = artifact.typeEnv
-            }
+        ( baseGraph, baseEnv ) =
+            case maybeGlobalArtifacts of
+                Nothing ->
+                    ( TOpt.emptyGlobalGraph, TypeEnv.emptyGlobalTypeEnv )
 
-        -- Sequence the dict of Maybe values from cached/MVar-loaded modules
-        maybeCachedModules : Maybe (Data.Map.Dict String ModuleName.Raw ModuleTyped)
-        maybeCachedModules =
-            Utils.sequenceDictMaybe identity compare cachedResults
-                |> Maybe.map (Data.Map.map (\_ -> toModuleTyped))
+                Just globalArtifacts ->
+                    ( globalArtifacts.typedGraph, globalArtifacts.typeEnv )
 
-        -- Merge fresh (already ModuleTyped) with cached
-        maybeLocalModules : Maybe (Data.Map.Dict String ModuleName.Raw ModuleTyped)
-        maybeLocalModules =
-            if Data.Map.isEmpty cachedResults then
-                Just freshModules
-
-            else
-                Maybe.map (\cached -> Data.Map.union cached freshModules) maybeCachedModules
+        -- Merge Fresh modules (pure fold, no I/O needed)
+        ( mergedGraph, mergedEnv ) =
+            Data.Map.foldl compare
+                (\_ modTyped ( g, e ) ->
+                    ( GA.addTypedLocalGraph modTyped.graph g
+                    , Data.Map.insert ModuleName.toComparableCanonical modTyped.env.home modTyped.env e
+                    )
+                )
+                ( baseGraph, baseEnv )
+                freshModules
     in
-    case ( maybeGlobalArtifacts, maybeLocalModules ) of
-        ( Just globalArtifacts, Just localModules ) ->
-            Ok (TypedObjects globalArtifacts.typedGraph globalArtifacts.typeEnv localModules)
-
-        ( Nothing, Just localModules ) ->
-            -- No package artifacts, just use empty globals
-            Ok (TypedObjects TOpt.emptyGlobalGraph TypeEnv.emptyGlobalTypeEnv localModules)
-
-        _ ->
-            Err Exit.GenerateCannotLoadArtifacts
+    -- Sequentially load and merge cached modules
+    streamLoadAndMergeCached cachedNames root maybeBuildDir mergedGraph mergedEnv
 
 
-typedObjectsToGlobalGraph : TypedObjects -> TOpt.GlobalGraph
-typedObjectsToGlobalGraph (TypedObjects globals _ locals) =
-    Data.Map.foldr compare (\_ modTyped acc -> GA.addTypedLocalGraph modTyped.graph acc) globals locals
+{-| Sequentially load each cached module's .ecot file, merge into the running
+GlobalGraph/GlobalTypeEnv, then discard. The per-module data goes out of scope
+after merging, becoming GC-eligible before the next module is loaded.
+-}
+streamLoadAndMergeCached :
+    List ModuleName.Raw
+    -> FilePath
+    -> Maybe String
+    -> TOpt.GlobalGraph
+    -> TypeEnv.GlobalTypeEnv
+    -> Task Never (Result Exit.Generate MergedTypedData)
+streamLoadAndMergeCached remaining root maybeBuildDir graph env =
+    case remaining of
+        [] ->
+            Task.succeed (Ok (MergedTypedData graph env))
 
+        name :: rest ->
+            File.readBinary TMod.typedModuleArtifactDecoder (Stuff.ecotWithBuildDir root maybeBuildDir name)
+                |> Task.andThen
+                    (\maybeArtifact ->
+                        case maybeArtifact of
+                            Nothing ->
+                                Task.succeed (Err Exit.GenerateCannotLoadArtifacts)
 
-typedObjectsToGlobalTypeEnv : TypedObjects -> TypeEnv.GlobalTypeEnv
-typedObjectsToGlobalTypeEnv (TypedObjects _ globalEnv locals) =
-    -- Merge local module type envs into the global type env from packages
-    Data.Map.foldr compare
-        (\_ modTyped acc ->
-            let
-                modEnv : TypeEnv.ModuleTypeEnv
-                modEnv =
-                    modTyped.env
-            in
-            Data.Map.insert ModuleName.toComparableCanonical modEnv.home modEnv acc
-        )
-        globalEnv
-        locals
+                            Just artifact ->
+                                let
+                                    graph2 =
+                                        GA.addTypedLocalGraph artifact.typedGraph graph
+
+                                    env2 =
+                                        Data.Map.insert ModuleName.toComparableCanonical artifact.typeEnv.home artifact.typeEnv env
+                                in
+                                -- artifact goes out of scope here; GC can reclaim it
+                                streamLoadAndMergeCached rest root maybeBuildDir graph2 env2
+                    )
 
 
 
@@ -689,8 +691,8 @@ buildMonoGraph root maybeBuildDir maybeLocal details (Build.Artifacts artifacts)
             List.map stripUntypedGraph artifacts.modules
     in
     loadTypedObjects root maybeBuildDir maybeLocal details modules
-        |> Task.andThen finalizeTypedObjects
-        |> Task.andThen (buildMonoGraphFromObjects roots)
+        |> Task.andThen finalizeAndMergeTypedObjects
+        |> Task.andThen (buildMonoGraphFromMerged roots)
 
 
 {-| Remove the untyped Opt.LocalGraph from a Fresh module.
@@ -706,65 +708,78 @@ stripUntypedGraph modul =
             modul
 
 
-buildMonoGraphFromObjects : NE.Nonempty Build.Root -> TypedObjects -> Task Exit.Generate MonoBuildResult
-buildMonoGraphFromObjects roots objects =
+buildMonoGraphFromMerged : NE.Nonempty Build.Root -> MergedTypedData -> Task Exit.Generate MonoBuildResult
+buildMonoGraphFromMerged roots (MergedTypedData mergedGraph mergedEnv) =
     let
         typedGraph : TOpt.GlobalGraph
         typedGraph =
-            List.foldl addRootTypedGraph (typedObjectsToGlobalGraph objects) (NE.toList roots)
+            List.foldl addRootTypedGraph mergedGraph (NE.toList roots)
 
         globalTypeEnv : TypeEnv.GlobalTypeEnv
         globalTypeEnv =
-            List.foldl addRootTypeEnv (typedObjectsToGlobalTypeEnv objects) (NE.toList roots)
-
-        log msg =
-            Task.io (IO.writeLn IO.stderr msg)
+            List.foldl addRootTypeEnv mergedEnv (NE.toList roots)
     in
-    ( typedGraph, globalTypeEnv )
-        |> (\( tGraph, typeEnv ) ->
-                -- GC boundary: `objects`, `roots` are now unreachable.
-                log "Monomorphization started..."
-                    |> Task.andThen
-                        (\_ ->
-                            Monomorphize.monomorphizeWithLog log "main" typeEnv tGraph
-                                |> Task.andThen
-                                    (\result ->
-                                        case result of
-                                            Err err ->
-                                                Task.throw (Exit.GenerateMonomorphizationError err)
+    runMonoOptPipeline typedGraph globalTypeEnv
 
-                                            Ok monoGraph0 ->
-                                                log "Monomorphization done."
-                                                    |> Task.map (\_ -> monoGraph0)
-                                    )
-                        )
-           )
+
+{-| Run the monomorphization → inline+simplify → global optimization pipeline.
+
+Each phase is a separate top-level function to break JS closure scope capture.
+Without this separation, Elm's compiled JS closures capture the full enclosing scope,
+pinning data from earlier phases (e.g., TypedObjects, typedGraph, globalTypeEnv)
+through subsequent phases where they are no longer needed.
+-}
+runMonoOptPipeline : TOpt.GlobalGraph -> TypeEnv.GlobalTypeEnv -> Task Exit.Generate MonoBuildResult
+runMonoOptPipeline typedGraph globalTypeEnv =
+    logStderr "Monomorphization started..."
         |> Task.andThen
-            (\monoGraph0 ->
-                -- GC boundary: `typedGraph` and `globalTypeEnv` are now unreachable.
-                log "Inline + simplify started..."
+            (\_ ->
+                Monomorphize.monomorphizeWithLog logStderr "main" globalTypeEnv typedGraph
                     |> Task.andThen
-                        (\_ ->
-                            let
-                                ( simplifiedGraph, _ ) =
-                                    MonoInlineSimplify.optimize monoGraph0
-                            in
-                            log "Inline + simplify done."
-                                |> Task.map (\_ -> simplifiedGraph)
+                        (\result ->
+                            case result of
+                                Err err ->
+                                    Task.throw (Exit.GenerateMonomorphizationError err)
+
+                                Ok monoGraph0 ->
+                                    logStderr "Monomorphization done."
+                                        |> Task.map (\_ -> monoGraph0)
                         )
             )
+        -- Hand off to a separate function so typedGraph and globalTypeEnv go out of scope
+        |> Task.andThen runInlineSimplifyPhase
+
+
+{-| Inline+simplify phase in its own scope so monomorphization inputs are GC-eligible.
+-}
+runInlineSimplifyPhase : Mono.MonoGraph -> Task Exit.Generate MonoBuildResult
+runInlineSimplifyPhase monoGraph0 =
+    logStderr "Inline + simplify started..."
         |> Task.andThen
-            (\simplifiedGraph ->
-                -- GC boundary: monomorphization state largely unreachable.
-                log "Global optimization started..."
-                    |> Task.andThen
-                        (\_ ->
-                            MonoGlobalOptimize.globalOptimizeWithLog log simplifiedGraph
-                        )
+            (\_ ->
+                let
+                    ( simplifiedGraph, _ ) =
+                        MonoInlineSimplify.optimize monoGraph0
+                in
+                logStderr "Inline + simplify done."
+                    |> Task.map (\_ -> simplifiedGraph)
+            )
+        -- Hand off to a separate function so monoGraph0 goes out of scope
+        |> Task.andThen runGlobalOptPhase
+
+
+{-| Global optimization phase in its own scope so inline+simplify inputs are GC-eligible.
+-}
+runGlobalOptPhase : Mono.MonoGraph -> Task Exit.Generate MonoBuildResult
+runGlobalOptPhase simplifiedGraph =
+    logStderr "Global optimization started..."
+        |> Task.andThen
+            (\_ ->
+                MonoGlobalOptimize.globalOptimizeWithLog logStderr simplifiedGraph
             )
         |> Task.andThen
             (\monoGraph ->
-                log "Global optimization done."
+                logStderr "Global optimization done."
                     |> Task.map
                         (\_ ->
                             { monoGraph = monoGraph
@@ -772,6 +787,11 @@ buildMonoGraphFromObjects roots objects =
                             }
                         )
             )
+
+
+logStderr : String -> Task x ()
+logStderr msg =
+    Task.io (IO.writeLn IO.stderr msg)
 
 
 {-| Stream MLIR output directly to a file, avoiding holding the full text in memory.

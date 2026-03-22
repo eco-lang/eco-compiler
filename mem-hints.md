@@ -16,6 +16,14 @@
 - Warm run peak: 3843MB RSS / 3562MB heap (**~6208MB RSS reduction from original, ~6025MB heap**)
 - E2E tests: 925/935 (unchanged), elm-test: 11667/11668 (unchanged)
 
+## After fixes round 3 (2026-03-22) — Baseline for warm-cold investigation
+- Cold run peak: 2658MB RSS / 2412MB heap
+- Warm run peak: 2837MB RSS / 2382MB heap
+- Key finding: warm RSS is 179MB higher than cold; heap peaks are similar (~2400MB)
+- Warm run enters monomorphization with 1629MB heap vs cold's 537MB (1092MB difference)
+- But warm inline+simplify spike is smaller (+532MB) vs cold's (+1736MB)
+- The warm-cold RSS gap is largely from V8 committed heap not being returned to OS
+
 ## Applied fixes (FIXED)
 
 ### Fix 1: MVar bypass for Fresh modules (Generate.elm)
@@ -393,7 +401,7 @@
 - Fix direction: Low priority. The per-message MVars hold unit-sized data. Could
   restructure channels to use takeMVar for consumed nodes, but the complexity is
   not justified by the small memory savings.
-- Status: OPEN (low priority)
+- Status: SKIPPED (low priority — ~232 small MVars, negligible memory impact)
 
 ### 13. Heap grows steadily during MLIR streaming despite output being flushed
 - Phase: MLIR generation (ios 10500 → 42500)
@@ -434,3 +442,44 @@
   - pendingLambdas still accumulate but are a smaller contributor than expected.
   - Remaining: typeRegistry and kernelDecls grow monotonically but at ~85 MB total
     over the full streaming phase — low priority.
+
+### 14. Closure scope capture retains TypedObjects through entire pipeline (Generate.elm)
+- Phase: monomorphization → inline+simplify → global optimization
+- Impact: INVESTIGATED — no measurable impact
+- Root cause hypothesis: `buildMonoGraphFromObjects` captures `objects` in JS closures.
+- Attempted: Extracted pipeline into separate top-level functions (`runMonoOptPipeline`,
+  `runInlineSimplifyPhase`, `runGlobalOptPhase`) to break closure scope.
+- Result: No memory improvement. V8's JIT is smart enough to only capture variables
+  actually used by closures, not the entire scope. The `objects` reference was not
+  being retained by downstream closures.
+- Status: SKIPPED (V8 closure optimization makes this a non-issue)
+
+### 15. Sequential .ecot loading to reduce warm-run peak
+- Phase: .ecot loading (ios 9000-9800 in warm run)
+- Impact: INVESTIGATED — warm and cold peak heap are now equal
+- Investigation findings:
+  The warm-cold HEAP difference was a misreading of the profiling data. With forced GC,
+  the actual peak heap is nearly identical:
+  - Cold peak heap: 2412-2427MB (inline+simplify spike)
+  - Warm peak heap: 2379-2383MB (inline+simplify spike)
+  The warm peak is actually LOWER because the cold run's inline+simplify creates a
+  larger transient spike (+1736MB) vs warm (+532MB).
+
+  The warm-cold RSS gap (~180MB) is from V8 committed heap: warm run loads 254MB of
+  .ecot files which V8 deserializes into ~1400MB of heap objects. V8 commits this
+  memory but doesn't return pages to the OS after GC frees it. The cold run never
+  allocates as much at once (compilation is incremental), so V8 commits less.
+
+  `addTypedLocalGraph` uses Dict operations that SHARE values with the source LocalGraph
+  (not deep copy). So the GlobalGraph growth IS the per-module data, not a copy. Freeing
+  per-module data after merge only saves Dict tree nodes (~small overhead), not values.
+
+- Attempted:
+  A. Scope splitting (fix 14): No improvement — V8 optimizes closures
+  B. Streaming merge (concurrent load, sequential consume via takeMVar): 85MB RSS
+     improvement — modest, within noise
+  C. Sequential load-and-merge (no MVars, load one .ecot at a time): No improvement —
+     same peak because GlobalGraph accumulates all data regardless of loading order
+- Status: FIXED (code simplified to sequential load-and-merge, removes MVar indirection
+  for typed objects; also extracts pipeline into separate functions for code clarity;
+  the warm-cold heap gap was already resolved by prior fixes)
