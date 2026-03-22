@@ -472,6 +472,12 @@ function handleEcoIO(parsed, respond) {
       break;
     }
 
+    case "MVar.drop": {
+      delete mVars[args.id];
+      respond(200, JSON.stringify({ value: null }));
+      break;
+    }
+
     case "MVar.read": {
       const mvar = mVars[args.id];
       if (mvar.value !== undefined) {

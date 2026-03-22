@@ -1,6 +1,6 @@
 module Eco.MVar exposing
     ( MVar(..)
-    , new, read, take, put
+    , new, read, take, put, drop
     )
 
 {-| MVar concurrency primitives via XHR: create, read, take, and put.
@@ -27,7 +27,7 @@ encoder/decoder at every use, so this API divergence is transparent.
 
 # Operations
 
-@docs new, read, take, put
+@docs new, read, take, put, drop
 
 -}
 
@@ -85,3 +85,14 @@ put encoder (MVar id) value =
     Eco.XHR.sendBytesTask "MVar.put"
         [ Http.header "X-Eco-MVar-Id" (String.fromInt id) ]
         (Bytes.Encode.encode (encoder value))
+
+
+{-| Destroy an MVar, removing it from the store entirely.
+The XHR variant sends a drop request to the server.
+-}
+drop : MVar a -> Task Never ()
+drop (MVar id) =
+    Eco.XHR.jsonTask "MVar.drop"
+        (Encode.object [ ( "id", Encode.int id ) ])
+        (Decode.succeed ())
+        |> Task.map (\_ -> ())

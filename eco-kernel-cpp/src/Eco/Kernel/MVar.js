@@ -62,6 +62,13 @@ var _MVar_put = F2(function(id, value) {
     });
 });
 
+var _MVar_drop = function(id) {
+    return __Scheduler_binding(function(callback) {
+        delete _MVar_store[id];
+        callback(__Scheduler_succeed(__Utils_Tuple0));
+    });
+};
+
 function _MVar_wakeUp(mvar) {
     var i = 0;
     while (i < mvar.waiters.length) {

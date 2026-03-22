@@ -305,7 +305,12 @@ collectResultsAndWriteDetails : FilePath -> Maybe String -> Details.Details -> (
 collectResultsAndWriteDetails root maybeBuildDir details ( rmvar, resultMVars ) =
     Utils.putMVar dictRawMVarBResultEncoder rmvar resultMVars
         |> Task.andThen (\_ -> Utils.mapTraverse identity compare (Utils.readMVar bResultDecoder) resultMVars)
-        |> Task.andThen (writeDetailsAndReturn root maybeBuildDir details)
+        |> Task.andThen
+            (\results ->
+                Utils.dictMapM_ compare Utils.dropMVar resultMVars
+                    |> Task.andThen (\_ -> Utils.dropMVar rmvar)
+                    |> Task.andThen (\_ -> writeDetailsAndReturn root maybeBuildDir details results)
+            )
 
 
 writeDetailsAndReturn : FilePath -> Maybe String -> Details.Details -> Data.Map.Dict String ModuleName.Raw BResult -> Task Never (Data.Map.Dict String ModuleName.Raw BResult)
@@ -464,7 +469,11 @@ checkRootsAndCollect env sroots rmvar resultsMVars =
 finalizePathBuild : FilePath -> Maybe String -> Details.Details -> Env -> Dependencies -> { resultsMVars : Data.Map.Dict String ModuleName.Raw (MVar BResult), rrootMVars : NE.Nonempty (MVar RootResult) } -> Task Never (Result Exit.BuildProblem Artifacts)
 finalizePathBuild root maybeBuildDir details env foreigns { resultsMVars, rrootMVars } =
     Utils.mapTraverse identity compare (Utils.readMVar bResultDecoder) resultsMVars
-        |> Task.andThen (writeDetailsAndCollectRoots root maybeBuildDir details rrootMVars)
+        |> Task.andThen
+            (\results ->
+                Utils.dictMapM_ compare Utils.dropMVar resultsMVars
+                    |> Task.andThen (\_ -> writeDetailsAndCollectRoots root maybeBuildDir details rrootMVars results)
+            )
         |> Task.map (toArtifactsFromResults env foreigns)
 
 

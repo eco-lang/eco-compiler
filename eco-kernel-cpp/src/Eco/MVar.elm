@@ -1,6 +1,6 @@
 module Eco.MVar exposing
     ( MVar(..)
-    , new, read, take, put
+    , new, read, take, put, drop
     )
 
 {-| MVar concurrency primitives: create, read, take, and put.
@@ -20,7 +20,7 @@ for API compatibility with the XHR variant but are ignored at runtime.
 
 # Operations
 
-@docs new, read, take, put
+@docs new, read, take, put, drop
 
 -}
 
@@ -70,3 +70,11 @@ JS-side store without serialization.
 put : (a -> Bytes.Encode.Encoder) -> MVar a -> a -> Task Never ()
 put encoder (MVar id) value =
     Eco.Kernel.MVar.put id value
+
+
+{-| Destroy an MVar, removing it from the store entirely.
+Any pending waiters are abandoned. Use only when no further access will occur.
+-}
+drop : MVar a -> Task Never ()
+drop (MVar id) =
+    Eco.Kernel.MVar.drop id

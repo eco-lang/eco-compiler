@@ -16,6 +16,13 @@
 - Warm run peak: 3843MB RSS / 3562MB heap (**~6208MB RSS reduction from original, ~6025MB heap**)
 - E2E tests: 925/935 (unchanged), elm-test: 11667/11668 (unchanged)
 
+## After fixes round 4 (2026-03-22) — MVar cleanup + stack verification
+- Cold run peak: 2699MB RSS / 2427MB heap
+- Warm run peak: 2839MB RSS / 2379MB heap
+- Run time: ~38.3s warm (unchanged)
+- Stack: runs at default Node.js stack size (no --stack-size override needed)
+- E2E tests: 925/935 (unchanged), elm-test: 11667/11668 (unchanged)
+
 ## After fixes round 3 (2026-03-22) — Baseline for warm-cold investigation
 - Cold run peak: 2658MB RSS / 2412MB heap
 - Warm run peak: 2837MB RSS / 2382MB heap
@@ -355,8 +362,15 @@
 - Attempted: Switched readMVar→takeMVar in collectResultsAndWriteDetails, but this
   caused 397 E2E test failures because checkDepsHelp reads bResult MVars during
   compilation before collection completes.
-- Status: OPEN — post-collection cleanup is feasible (see fix direction below)
+- Status: FIXED — implemented dropMVar API and post-collection cleanup
 - Measured impact: ~150–200 MB in cold runs (the warm-vs-cold post-peak difference)
+- Fix applied: Added `Eco.MVar.drop` / `Utils.dropMVar` to delete MVar store entries.
+  Both `collectResultsAndWriteDetails` and `finalizePathBuild` now call
+  `dictMapM_ compare dropMVar resultMVars` after reading all results, plus
+  `dropMVar rmvar` for the ResultDict MVar itself. Also added `MVar.drop` handler
+  to eco-io-handler.js for XHR variant. Fixed-point verified (stages 3+4 pass).
+  Peak impact is within noise (warm: 2839→2839MB RSS, 2379→2379MB heap) because
+  peak is dominated by inline+simplify, not MVar retention.
 - Fix direction — post-collection bulk cleanup:
 
   The previous attempt (switching readMVar→takeMVar at the collection point) failed

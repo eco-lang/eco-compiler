@@ -14,7 +14,7 @@ module Utils.Main exposing
     , SomeException(..)
     , someExceptionEncoder, someExceptionDecoder
     , ThreadId, forkIO
-    , newMVar, newEmptyMVar, readMVar, takeMVar, putMVar
+    , newMVar, newEmptyMVar, readMVar, takeMVar, putMVar, dropMVar
     , mVarEncoder, mVarDecoder
     , Chan, newChan, readChan, writeChan
     , ReplInputT
@@ -1156,6 +1156,14 @@ putMVar encoder (MVar ref) value =
 newEmptyMVar : Task Never (MVar a)
 newEmptyMVar =
     Eco.MVar.new |> Task.map (\(Eco.MVar.MVar id) -> MVar id)
+
+
+{-| Destroy an MVar, removing it from the store entirely.
+Use only when no further access will occur.
+-}
+dropMVar : MVar a -> Task Never ()
+dropMVar (MVar ref) =
+    Eco.MVar.drop (Eco.MVar.MVar ref)
 
 
 
