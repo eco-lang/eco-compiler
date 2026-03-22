@@ -93,6 +93,10 @@ RUN dpkg --install ./crag_0.1.0_amd64.deb && rm ./crag_0.1.0_amd64.deb
 ENV UV_INSTALL_DIR="/usr/local/bin"
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 
+# FlameGraph tools for perf visualization
+RUN git clone --depth=1 https://github.com/brendangregg/FlameGraph.git /opt/FlameGraph
+ENV PATH="/opt/FlameGraph:${PATH}"
+
 # Workspace
 WORKDIR /work
 
