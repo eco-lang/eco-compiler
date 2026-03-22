@@ -360,9 +360,7 @@ unifyHelp canType monoType subst =
                     let
                         -- Fields in monoFields that are not in the canonical record
                         remainingFields =
-                            Dict.filter
-                                (\fieldName _ -> Dict.get fieldName fields == Nothing)
-                                monoFields
+                            Dict.diff monoFields fields
                     in
                     insertBinding extName (Mono.MRecord remainingFields) substWithFields
 

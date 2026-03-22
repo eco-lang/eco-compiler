@@ -2441,8 +2441,7 @@ computeCustomFieldType globalTypeEnv ctorName index containerType =
                                 canArgType :: _ ->
                                     let
                                         typeVarSubst =
-                                            List.map2 Tuple.pair unionData.vars typeArgs
-                                                |> List.foldl (\( varName, monoArg ) acc -> Dict.insert varName monoArg acc) Dict.empty
+                                            Dict.fromList (List.map2 Tuple.pair unionData.vars typeArgs)
                                     in
                                     Mono.forceCNumberToInt (TypeSubst.applySubst typeVarSubst canArgType)
 
@@ -2478,8 +2477,7 @@ computeUnboxResultType globalTypeEnv containerType =
                                 [ canArgType ] ->
                                     let
                                         typeVarSubst =
-                                            List.map2 Tuple.pair unionData.vars typeArgs
-                                                |> List.foldl (\( varName, monoArg ) acc -> Dict.insert varName monoArg acc) Dict.empty
+                                            Dict.fromList (List.map2 Tuple.pair unionData.vars typeArgs)
                                     in
                                     Mono.forceCNumberToInt (TypeSubst.applySubst typeVarSubst canArgType)
 

@@ -56,10 +56,15 @@ collectCustomTypesFromMonoType : Mono.MonoType -> EverySet String Mono.MonoType 
 collectCustomTypesFromMonoType monoType acc =
     case monoType of
         Mono.MCustom _ _ args ->
-            -- Add this MCustom, then recurse into type args
-            List.foldl collectCustomTypesFromMonoType
-                (EverySet.insert Mono.toComparableMonoType monoType acc)
-                args
+            -- Skip if already in set (avoids redundant toComparableMonoType calls)
+            if EverySet.member Mono.toComparableMonoType monoType acc then
+                acc
+
+            else
+                -- Add this MCustom, then recurse into type args
+                List.foldl collectCustomTypesFromMonoType
+                    (EverySet.insert Mono.toComparableMonoType monoType acc)
+                    args
 
         Mono.MList elem ->
             collectCustomTypesFromMonoType elem acc
@@ -106,8 +111,31 @@ collectCustomTypesFromPath path acc =
 collectCustomTypesFromExpr : Mono.MonoExpr -> EverySet String Mono.MonoType -> EverySet String Mono.MonoType
 collectCustomTypesFromExpr expr acc =
     let
+        exprType =
+            Mono.typeOf expr
+
         accWithType =
-            collectCustomTypesFromMonoType (Mono.typeOf expr) acc
+            case exprType of
+                Mono.MInt ->
+                    acc
+
+                Mono.MFloat ->
+                    acc
+
+                Mono.MBool ->
+                    acc
+
+                Mono.MChar ->
+                    acc
+
+                Mono.MString ->
+                    acc
+
+                Mono.MUnit ->
+                    acc
+
+                _ ->
+                    collectCustomTypesFromMonoType exprType acc
     in
     case expr of
         Mono.MonoLiteral _ _ ->
@@ -426,7 +454,7 @@ computeCtorShapesForGraph globalTypeEnv nodes =
                 _ ->
                     acc
 
-        compareTypes a b =
-            compare (Mono.toComparableMonoType a) (Mono.toComparableMonoType b)
+        dummyCompare _ _ =
+            EQ
     in
-    List.foldl processCustomType Data.Map.empty (EverySet.toList compareTypes customTypes)
+    EverySet.foldr dummyCompare processCustomType Data.Map.empty customTypes

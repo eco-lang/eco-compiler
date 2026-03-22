@@ -26,12 +26,15 @@ This module coordinates:
 
 -}
 
+import Array
 import Compiler.AST.Monomorphized as Mono
 import Compiler.GlobalOpt.Staging.GraphBuilder as GraphBuilder
 import Compiler.GlobalOpt.Staging.ProducerInfo as ProducerInfo
 import Compiler.GlobalOpt.Staging.Rewriter as Rewriter
 import Compiler.GlobalOpt.Staging.Solver as Solver
 import Compiler.GlobalOpt.Staging.Types as Types
+import Dict
+import Set
 
 
 {-| Re-export StagingSolution for external use.
@@ -64,20 +67,33 @@ analyzeAndSolveStaging graph0 =
         -- 1. Compute natural staging for all producers
         producerInfo =
             ProducerInfo.computeProducerInfo graph0
-
-        -- 2. Build staging graph with union-find edges
-        sg =
-            GraphBuilder.buildStagingGraph graph0 producerInfo
-
-        -- 3. Solve: build classes, choose canonical segmentations
-        solution =
-            Solver.solveStagingGraph producerInfo sg
-
-        -- 4. Rewrite graph: wrap producers, adjust types
-        graph1 =
-            Rewriter.applyStagingSolution solution producerInfo graph0
     in
-    ( solution, graph1 )
+    if Dict.isEmpty producerInfo.naturalSeg then
+        -- No producers (no closures, no tail-funcs, no kernels with staging).
+        -- Skip graph building, solving, and rewriting entirely.
+        ( { producerClass = Dict.empty
+          , classSeg = Array.empty
+          , slotClass = Dict.empty
+          , dynamicSlots = Set.empty
+          }
+        , graph0
+        )
+
+    else
+        let
+            -- 2. Build staging graph with union-find edges
+            sg =
+                GraphBuilder.buildStagingGraph graph0 producerInfo
+
+            -- 3. Solve: build classes, choose canonical segmentations
+            solution =
+                Solver.solveStagingGraph producerInfo sg
+
+            -- 4. Rewrite graph: wrap producers, adjust types
+            graph1 =
+                Rewriter.applyStagingSolution solution producerInfo graph0
+        in
+        ( solution, graph1 )
 
 
 

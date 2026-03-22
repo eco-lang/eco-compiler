@@ -362,6 +362,11 @@ inlineThreshold =
     10
 
 
+sumBy : (a -> Int) -> List a -> Int
+sumBy f list =
+    List.foldl (\x acc -> acc + f x) 0 list
+
+
 {-| Maximum number of inlines per function to prevent explosion.
 -}
 maxInlinesPerFunction : Int
@@ -388,19 +393,19 @@ computeCost expr =
             1
 
         MonoList _ items _ ->
-            3 + List.sum (List.map computeCost items)
+            3 + sumBy computeCost items
 
         MonoClosure _ body _ ->
             5 + computeCost body
 
         MonoCall _ func args _ _ ->
-            5 + computeCost func + List.sum (List.map computeCost args)
+            5 + computeCost func + sumBy computeCost args
 
         MonoTailCall _ args _ ->
-            5 + List.sum (List.map (\( _, e ) -> computeCost e) args)
+            5 + sumBy (\( _, e ) -> computeCost e) args
 
         MonoIf branches final _ ->
-            2 + List.sum (List.map (\( c, t ) -> computeCost c + computeCost t) branches) + computeCost final
+            2 + sumBy (\( c, t ) -> computeCost c + computeCost t) branches + computeCost final
 
         MonoLet def body _ ->
             2 + computeCostDef def + computeCost body
@@ -409,19 +414,19 @@ computeCost expr =
             2 + computeCost inner
 
         MonoCase _ _ _ branches _ ->
-            3 + List.sum (List.map (\( _, e ) -> computeCost e) branches)
+            3 + sumBy (\( _, e ) -> computeCost e) branches
 
         MonoRecordCreate fields _ ->
-            3 + List.sum (List.map (\( _, e ) -> computeCost e) fields)
+            3 + sumBy (\( _, e ) -> computeCost e) fields
 
         MonoRecordAccess inner _ _ ->
             1 + computeCost inner
 
         MonoRecordUpdate inner updates _ ->
-            3 + computeCost inner + List.sum (List.map (\( _, e ) -> computeCost e) updates)
+            3 + computeCost inner + sumBy (\( _, e ) -> computeCost e) updates
 
         MonoTupleCreate _ items _ ->
-            3 + List.sum (List.map computeCost items)
+            3 + sumBy computeCost items
 
 
 computeCostDef : Mono.MonoDef -> Int
@@ -2091,19 +2096,19 @@ countUsages name expr =
             0
 
         MonoList _ items _ ->
-            List.sum (List.map (countUsages name) items)
+            sumBy (countUsages name) items
 
         MonoClosure info body _ ->
             -- Don't count if shadowed by param
             if List.any (\( n, _ ) -> n == name) info.params then
-                List.sum (List.map (\( _, e, _ ) -> countUsages name e) info.captures)
+                sumBy (\( _, e, _ ) -> countUsages name e) info.captures
 
             else
-                List.sum (List.map (\( _, e, _ ) -> countUsages name e) info.captures)
+                sumBy (\( _, e, _ ) -> countUsages name e) info.captures
                     + countUsages name body
 
         MonoCall _ func args _ _ ->
-            countUsages name func + List.sum (List.map (countUsages name) args)
+            countUsages name func + sumBy (countUsages name) args
 
         MonoTailCall funcName args _ ->
             -- Count if this is a tail call to the variable
@@ -2113,10 +2118,10 @@ countUsages name expr =
              else
                 0
             )
-                + List.sum (List.map (\( _, e ) -> countUsages name e) args)
+                + sumBy (\( _, e ) -> countUsages name e) args
 
         MonoIf branches final _ ->
-            List.sum (List.map (\( c, t ) -> countUsages name c + countUsages name t) branches)
+            sumBy (\( c, t ) -> countUsages name c + countUsages name t) branches
                 + countUsages name final
 
         MonoLet def body _ ->
@@ -2148,19 +2153,19 @@ countUsages name expr =
                     else
                         0
             in
-            rootUsage + countUsagesInDecider name decider + List.sum (List.map (\( _, e ) -> countUsages name e) branches)
+            rootUsage + countUsagesInDecider name decider + sumBy (\( _, e ) -> countUsages name e) branches
 
         MonoRecordCreate fields _ ->
-            List.sum (List.map (\( _, e ) -> countUsages name e) fields)
+            sumBy (\( _, e ) -> countUsages name e) fields
 
         MonoRecordAccess inner _ _ ->
             countUsages name inner
 
         MonoRecordUpdate inner updates _ ->
-            countUsages name inner + List.sum (List.map (\( _, e ) -> countUsages name e) updates)
+            countUsages name inner + sumBy (\( _, e ) -> countUsages name e) updates
 
         MonoTupleCreate _ items _ ->
-            List.sum (List.map (countUsages name) items)
+            sumBy (countUsages name) items
 
 
 countUsagesInDef : Name -> Mono.MonoDef -> Int
@@ -2212,7 +2217,7 @@ countUsagesInDecider name decider =
             countUsagesInDecider name success + countUsagesInDecider name failure
 
         Mono.FanOut _ edges fallback ->
-            List.sum (List.map (\( _, d ) -> countUsagesInDecider name d) edges)
+            sumBy (\( _, d ) -> countUsagesInDecider name d) edges
                 + countUsagesInDecider name fallback
 
 
@@ -2436,38 +2441,38 @@ countClosures expr =
             1 + countClosures body
 
         MonoCall _ func args _ _ ->
-            countClosures func + List.sum (List.map countClosures args)
+            countClosures func + sumBy countClosures args
 
         MonoLet def body _ ->
             countClosuresInDef def + countClosures body
 
         MonoIf branches final _ ->
-            List.sum (List.map (\( c, t ) -> countClosures c + countClosures t) branches)
+            sumBy (\( c, t ) -> countClosures c + countClosures t) branches
                 + countClosures final
 
         MonoDestruct _ inner _ ->
             countClosures inner
 
         MonoCase _ _ _ branches _ ->
-            List.sum (List.map (\( _, e ) -> countClosures e) branches)
+            sumBy (\( _, e ) -> countClosures e) branches
 
         MonoList _ items _ ->
-            List.sum (List.map countClosures items)
+            sumBy countClosures items
 
         MonoRecordCreate fields _ ->
-            List.sum (List.map (\( _, e ) -> countClosures e) fields)
+            sumBy (\( _, e ) -> countClosures e) fields
 
         MonoRecordAccess inner _ _ ->
             countClosures inner
 
         MonoRecordUpdate inner updates _ ->
-            countClosures inner + List.sum (List.map (\( _, e ) -> countClosures e) updates)
+            countClosures inner + sumBy (\( _, e ) -> countClosures e) updates
 
         MonoTupleCreate _ items _ ->
-            List.sum (List.map countClosures items)
+            sumBy countClosures items
 
         MonoTailCall _ args _ ->
-            List.sum (List.map (\( _, e ) -> countClosures e) args)
+            sumBy (\( _, e ) -> countClosures e) args
 
         _ ->
             0
@@ -2493,7 +2498,7 @@ countClosuresInNode node =
             countClosures expr
 
         MonoCycle defs _ ->
-            List.sum (List.map (\( _, e ) -> countClosures e) defs)
+            sumBy (\( _, e ) -> countClosures e) defs
 
         MonoPortIncoming expr _ ->
             countClosures expr
