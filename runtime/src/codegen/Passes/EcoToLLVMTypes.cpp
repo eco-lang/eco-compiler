@@ -46,10 +46,10 @@ struct ConstantOpLowering : public OpConversionPattern<ConstantOp> {
 //===----------------------------------------------------------------------===//
 
 struct StringLiteralOpLowering : public OpConversionPattern<StringLiteralOp> {
-    EcoRuntime runtime;
+    const EcoRuntime &runtime;
 
     StringLiteralOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
-                            EcoRuntime runtime)
+                            const EcoRuntime &runtime)
         : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
 
     LogicalResult
@@ -133,7 +133,7 @@ struct StringLiteralOpLowering : public OpConversionPattern<StringLiteralOp> {
 void eco::detail::populateEcoTypePatterns(
     EcoTypeConverter &typeConverter,
     RewritePatternSet &patterns,
-    EcoRuntime runtime) {
+    const EcoRuntime &runtime) {
 
     auto *ctx = patterns.getContext();
     patterns.add<ConstantOpLowering>(typeConverter, ctx);

@@ -53,12 +53,15 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateFunc(
     StringRef name,
     LLVM::LLVMFunctionType funcType) const {
 
-    if (auto func = module.lookupSymbol<LLVM::LLVMFuncOp>(name))
+    if (auto func = lookupSymbol<LLVM::LLVMFuncOp>(name))
         return func;
 
     OpBuilder::InsertionGuard guard(builder);
     builder.setInsertionPointToStart(module.getBody());
-    return builder.create<LLVM::LLVMFuncOp>(module.getLoc(), name, funcType);
+    auto newFunc = builder.create<LLVM::LLVMFuncOp>(module.getLoc(), name, funcType);
+    // Register in cached symbol map so subsequent lookups find it in O(1)
+    cacheSymbol(newFunc);
+    return newFunc;
 }
 
 // Helper macros for common type patterns

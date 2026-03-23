@@ -41,10 +41,10 @@ struct ReturnOpLowering : public OpConversionPattern<ReturnOp> {
 //===----------------------------------------------------------------------===//
 
 struct GetTagOpLowering : public OpConversionPattern<GetTagOp> {
-    EcoRuntime runtime;
+    const EcoRuntime &runtime;
 
     GetTagOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
-                     EcoRuntime runtime)
+                     const EcoRuntime &runtime)
         : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
 
     LogicalResult
@@ -67,10 +67,10 @@ struct GetTagOpLowering : public OpConversionPattern<GetTagOp> {
 //===----------------------------------------------------------------------===//
 
 struct CaseOpLowering : public OpConversionPattern<CaseOp> {
-    EcoRuntime runtime;
+    const EcoRuntime &runtime;
 
     CaseOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
-                   EcoRuntime runtime)
+                   const EcoRuntime &runtime)
         : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
 
     /// Lower integer or character case expressions.
@@ -1015,7 +1015,7 @@ struct JumpOpLowering : public OpConversionPattern<JumpOp> {
 void eco::detail::populateEcoControlFlowPatterns(
     EcoTypeConverter &typeConverter,
     RewritePatternSet &patterns,
-    EcoRuntime runtime,
+    const EcoRuntime &runtime,
     EcoCFContext &cfCtx) {
 
     auto *ctx = patterns.getContext();

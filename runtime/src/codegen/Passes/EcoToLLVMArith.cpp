@@ -187,10 +187,10 @@ struct IntAbsOpLowering : public OpConversionPattern<IntAbsOp> {
 };
 
 struct IntPowOpLowering : public OpConversionPattern<IntPowOp> {
-    EcoRuntime runtime;
+    const EcoRuntime &runtime;
 
     IntPowOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
-                     EcoRuntime runtime)
+                     const EcoRuntime &runtime)
         : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
 
     LogicalResult
@@ -337,10 +337,10 @@ struct FloatTanOpLowering : public OpConversionPattern<FloatTanOp> {
 };
 
 struct FloatAsinOpLowering : public OpConversionPattern<FloatAsinOp> {
-    EcoRuntime runtime;
+    const EcoRuntime &runtime;
 
     FloatAsinOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
-                        EcoRuntime runtime)
+                        const EcoRuntime &runtime)
         : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
 
     LogicalResult
@@ -355,10 +355,10 @@ struct FloatAsinOpLowering : public OpConversionPattern<FloatAsinOp> {
 };
 
 struct FloatAcosOpLowering : public OpConversionPattern<FloatAcosOp> {
-    EcoRuntime runtime;
+    const EcoRuntime &runtime;
 
     FloatAcosOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
-                        EcoRuntime runtime)
+                        const EcoRuntime &runtime)
         : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
 
     LogicalResult
@@ -373,10 +373,10 @@ struct FloatAcosOpLowering : public OpConversionPattern<FloatAcosOp> {
 };
 
 struct FloatAtanOpLowering : public OpConversionPattern<FloatAtanOp> {
-    EcoRuntime runtime;
+    const EcoRuntime &runtime;
 
     FloatAtanOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
-                        EcoRuntime runtime)
+                        const EcoRuntime &runtime)
         : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
 
     LogicalResult
@@ -391,10 +391,10 @@ struct FloatAtanOpLowering : public OpConversionPattern<FloatAtanOp> {
 };
 
 struct FloatAtan2OpLowering : public OpConversionPattern<FloatAtan2Op> {
-    EcoRuntime runtime;
+    const EcoRuntime &runtime;
 
     FloatAtan2OpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
-                         EcoRuntime runtime)
+                         const EcoRuntime &runtime)
         : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
 
     LogicalResult
@@ -999,7 +999,7 @@ void eco::detail::populateEcoArithPatterns(
 void eco::detail::populateEcoArithPatternsWithRuntime(
     EcoTypeConverter &typeConverter,
     RewritePatternSet &patterns,
-    EcoRuntime runtime) {
+    const EcoRuntime &runtime) {
 
     auto *ctx = patterns.getContext();
     patterns.add<IntPowOpLowering>(typeConverter, ctx, runtime);

@@ -23,12 +23,16 @@ using namespace eco;
 
 namespace {
 
-/// Lookup func.func by FlatSymbolRefAttr within the surrounding module.
-static func::FuncOp lookupFunc(Operation *anchor, FlatSymbolRefAttr sym) {
-  if (!sym) return nullptr;
+/// Check if a function symbol exists anywhere in the module (func::FuncOp
+/// or any other symbol). Used only for CGEN_057 kernel existence checks.
+/// Returns true if a symbol with the given name is found.
+static bool symbolExists(Operation *anchor, FlatSymbolRefAttr sym) {
+  if (!sym) return false;
   auto module = anchor->getParentOfType<ModuleOp>();
-  if (!module) return nullptr;
-  return SymbolTable::lookupNearestSymbolFrom<func::FuncOp>(module, sym);
+  if (!module) return false;
+  // Use SymbolTable::lookupSymbolIn which is O(N) but this is only called
+  // for kernel function checks, not for all ops.
+  return SymbolTable::lookupNearestSymbolFrom(module, sym) != nullptr;
 }
 
 } // end anonymous namespace
@@ -321,37 +325,14 @@ LogicalResult PapCreateOp::verify() {
     }
   }
 
-  // Check against target function signature (when available).
-  // For two-clone closures (_fast_evaluator present), validate against the
-  // $cap function whose params are (captures..., params...). The $clo function
-  // has (Closure*, params...) which doesn't match capture operand types.
-  auto fastEvalAttr = getOperation()->getAttrOfType<FlatSymbolRefAttr>("_fast_evaluator");
-  auto targetFuncOp = lookupFunc(getOperation(), fastEvalAttr ? fastEvalAttr : getFunctionAttr());
-  if (targetFuncOp) {
-    auto funcType = targetFuncOp.getFunctionType();
-    auto paramTypes = funcType.getInputs();
-
-    // Verify arity matches function parameter count
-    if (static_cast<int64_t>(paramTypes.size()) != arity) {
-      return emitOpError("arity (") << arity
-             << ") does not match target function parameter count ("
-             << paramTypes.size() << ")";
-    }
-
-    // Verify captured operand types match the first num_captured parameters
-    for (size_t i = 0; i < captured.size(); ++i) {
-      Type actualTy = captured[i].getType();
-      Type expectedTy = paramTypes[i];
-      if (actualTy != expectedTy) {
-        return emitOpError("captured operand ") << i << " has type " << actualTy
-               << " but target function expects " << expectedTy;
-      }
-    }
-  } else {
-    // CGEN_057: Kernel functions must have func.func is_kernel declarations.
-    // A missing declaration for an Elm_Kernel_* symbol is a compiler bug.
+  // CGEN_057: Kernel functions must have func.func is_kernel declarations.
+  // Signature validation is deferred to CheckEcoClosureCapturesPass to avoid
+  // O(N) module walks on every verifier invocation during conversion.
+  {
+    auto fastEvalAttr = getOperation()->getAttrOfType<FlatSymbolRefAttr>("_fast_evaluator");
+    auto funcSym = fastEvalAttr ? fastEvalAttr : getFunctionAttr();
     auto funcName = getFunctionAttr().getValue();
-    if (funcName.starts_with("Elm_Kernel_")) {
+    if (funcName.starts_with("Elm_Kernel_") && !symbolExists(getOperation(), funcSym)) {
       return emitOpError("kernel function '") << funcName
              << "' has no func.func declaration; compiler must emit one "
              << "(CGEN_057)";
@@ -479,60 +460,15 @@ LogicalResult PapExtendOp::verify() {
     break;
   }
 
-  // If we found the root papCreate, verify type compatibility (when function is available)
+  // Signature validation is deferred to CheckEcoClosureCapturesPass to avoid
+  // O(N) module walks on every verifier invocation during conversion.
+  // Only check CGEN_057 kernel existence here.
   if (funcSym && arityFromCreate >= 0) {
-    auto funcOp = lookupFunc(getOperation(), funcSym);
-    if (funcOp) {
-      auto funcType = funcOp.getFunctionType();
-      auto paramTypes = funcType.getInputs();
-      auto resultTypes = funcType.getResults();
-
-      // Verify remaining_arity consistency (CGEN_052, typed mode only)
-      int64_t computedRemaining = arityFromCreate - static_cast<int64_t>(alreadyApplied);
-      if (computedRemaining != remainingArity) {
-        return emitOpError("remaining_arity = ") << remainingArity
-               << " but computed remaining arity from papCreate chain is "
-               << computedRemaining;
-      }
-
-      // Verify newargs types match corresponding parameters
-      unsigned firstParamIndex = alreadyApplied;
-      if (firstParamIndex + newargs.size() > paramTypes.size()) {
-        return emitOpError("papExtend would apply arguments past function parameter list");
-      }
-
-      for (size_t j = 0; j < newargs.size(); ++j) {
-        unsigned paramIndex = firstParamIndex + j;
-        Type expectedTy = paramTypes[paramIndex];
-        Type actualTy = newargs[j].getType();
-        if (actualTy != expectedTy) {
-          return emitOpError("newarg ") << j << " has type " << actualTy
-                 << " but evaluator parameter " << paramIndex << " expects " << expectedTy;
-        }
-      }
-
-      // For saturated calls, verify result type (CGEN_056, typed mode only)
-      bool isSaturated = (remainingArity == static_cast<int64_t>(newargs.size()));
-
-      if (isSaturated) {
-        if (resultTypes.size() != 1) {
-          return emitOpError("saturated papExtend requires function with single result");
-        }
-        Type expectedResultTy = resultTypes[0];
-        Type actualResultTy = getResult().getType();
-        if (actualResultTy != expectedResultTy) {
-          return emitOpError("saturated papExtend result type ") << actualResultTy
-                 << " does not match function result type " << expectedResultTy;
-        }
-      }
-    } else {
-      // CGEN_057: Kernel functions must have func.func is_kernel declarations.
-      auto funcName = funcSym.getValue();
-      if (funcName.starts_with("Elm_Kernel_")) {
-        return emitOpError("kernel function '") << funcName
-               << "' has no func.func declaration; compiler must emit one "
-               << "(CGEN_057)";
-      }
+    auto funcName = funcSym.getValue();
+    if (funcName.starts_with("Elm_Kernel_") && !symbolExists(getOperation(), funcSym)) {
+      return emitOpError("kernel function '") << funcName
+             << "' has no func.func declaration; compiler must emit one "
+             << "(CGEN_057)";
     }
   }
 
@@ -566,45 +502,8 @@ LogicalResult CallOp::verify() {
       return emitOpError("must not have both 'callee' and 'remaining_arity' attributes");
     }
 
-    auto funcOp = lookupFunc(getOperation(), calleeAttr);
-    if (funcOp) {
-      auto funcType = funcOp.getFunctionType();
-      auto paramTypes = funcType.getInputs();
-      auto resultTypes = funcType.getResults();
-
-      // Verify operand count
-      if (operands.size() != paramTypes.size()) {
-        return emitOpError("has ") << operands.size() << " operands but callee '"
-               << funcOp.getSymName() << "' expects " << paramTypes.size() << " parameters";
-      }
-
-      // Verify result count
-      if (results.size() != resultTypes.size()) {
-        return emitOpError("has ") << results.size() << " results but callee '"
-               << funcOp.getSymName() << "' returns " << resultTypes.size() << " values";
-      }
-
-      // Verify operand types
-      for (size_t i = 0; i < operands.size(); ++i) {
-        Type actualTy = operands[i].getType();
-        Type expectedTy = paramTypes[i];
-        if (actualTy != expectedTy) {
-          return emitOpError("operand ") << i << " has type " << actualTy
-                 << " but callee expects " << expectedTy;
-        }
-      }
-
-      // Verify result types
-      for (size_t i = 0; i < results.size(); ++i) {
-        Type actualTy = results[i].getType();
-        Type expectedTy = resultTypes[i];
-        if (actualTy != expectedTy) {
-          return emitOpError("result ") << i << " has type " << actualTy
-                 << " but callee returns " << expectedTy;
-        }
-      }
-    }
-
+    // Signature validation is deferred to CheckEcoClosureCapturesPass to avoid
+    // O(N) module walks on every verifier invocation during conversion.
     return success();
   }
 

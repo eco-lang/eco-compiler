@@ -4,9 +4,9 @@
 
 ## Open Issues (ranked by impact)
 
-### 1. `mlir::SymbolTable::lookupSymbolIn` — 45% of CPU
+### 1. `mlir::SymbolTable::lookupSymbolIn` — 45% → 38% of CPU
 
-**Status:** OPEN
+**Status:** FIXED (partial — verifier + EcoRuntime cache)
 
 **Evidence:** 30s perf profile of Stage 6 (eco-boot-native on eco-compiler.mlir, 75MB).
 All 12 worker threads show identical ~3.75% each, totalling ~45% of all samples.
@@ -55,13 +55,20 @@ These run on EVERY op mutation during the pass pipeline. Options:
   `CheckEcoClosureCapturesPass` which runs once instead
 - Guard expensive verifier checks with a `#ifndef NDEBUG`
 
-**Attempted fixes:** (none yet)
+**Applied fixes:**
+- (a) Added `DenseMap<StringAttr, Operation*> symCache` to `EcoRuntime` for O(1) lookups
+- (b) Changed `getOrCreateFunc` and `getOrCreateWrapper` to use cached lookups
+- (c) Removed expensive cross-reference signature validation from PapCreateOp,
+  PapExtendOp, and CallOp verifiers. Only CGEN_057 kernel existence checks remain.
+  Signature validation is done once by CheckEcoClosureCapturesPass.
+- Changed EcoRuntime to pass by `const &` instead of by value (fixes issue #10)
+- Remaining 38% is likely from MLIR framework internals + BFToLLVM/other passes
 
 ---
 
-### 2. `mlir::Attribute::getContext` — 39% of CPU
+### 2. `mlir::Attribute::getContext` — 40% → 37% of CPU
 
-**Status:** OPEN (likely secondary to #1)
+**Status:** FIXED (partial — improved proportionally with #1)
 
 **Evidence:** Same 30s perf profile. All 12 threads ~3.25% each, totalling ~39%.
 
@@ -88,7 +95,7 @@ as member fields of the pattern structs (i64Ty, f64Ty, ptrTy, i8Ty).
 
 ### 3. `EcoToLLVMClosures.cpp:getOrCreateWrapper` — cascading symbol lookups
 
-**Status:** OPEN
+**Status:** FIXED (uses cached lookups via EcoRuntime.lookupSymbol, wrapper check moved first)
 
 **Evidence:** Code review. `getOrCreateWrapper()` (lines 144–381) performs up to 6
 sequential `module.lookupSymbol()` calls per invocation: check existing LLVM func (153),
@@ -115,7 +122,7 @@ wrappers.
 
 ### 4. Verifiers re-walk closure definition chains per mutation
 
-**Status:** OPEN
+**Status:** FIXED (removed cross-ref signature validation from verifiers, kept only CGEN_057 check)
 
 **Evidence:** Code review of `PapExtendOp::verify()` (EcoOps.cpp lines 373–540).
 This verifier walks the closure definition chain (`while (currentDef)` loop at line 444)
@@ -141,7 +148,7 @@ Remove or reduce the work done in `PapExtendOp::verify()`:
 
 ### 5. BFToLLVM per-op `module.lookupSymbol` for runtime functions
 
-**Status:** OPEN
+**Status:** SKIPPED (BF ops are relatively rare; remaining lookupSymbolIn is dominated by MLIR framework internals)
 
 **Evidence:** Code review of `BFToLLVM.cpp`. Every BF lowering pattern does
 `module.lookupSymbol<LLVM::LLVMFuncOp>("elm_...")` per op. For example:
@@ -171,7 +178,7 @@ look them up once in the pass's `runOnOperation()` and pass them to patterns.
 
 ### 6. `UndefinedFunctionPass` uses `std::set<std::string>` with string copies
 
-**Status:** OPEN
+**Status:** SKIPPED (runs once, not visible in profile)
 
 **Evidence:** Code review of `UndefinedFunction.cpp` (lines 40–81). The pass collects
 all defined function names into `std::set<std::string>` (line 44) by calling
@@ -194,7 +201,7 @@ Similarly replace `reportedFunctions` set and `UndefinedCall::name`.
 
 ### 7. `containsNestedStringCase` does full walk without early exit
 
-**Status:** OPEN
+**Status:** FIXED (uses WalkResult::interrupt for early exit)
 
 **Evidence:** Code review of `EcoControlFlowToSCF.cpp` (lines 105–112).
 `containsNestedStringCase()` walks all nested ops even after finding a match.
@@ -222,7 +229,7 @@ bool containsNestedStringCase(CaseOp op) {
 
 ### 8. Repeated common type construction in pattern `matchAndRewrite`
 
-**Status:** OPEN
+**Status:** SKIPPED (not visible in profile; MLIR uniquing makes this cheap)
 
 **Evidence:** Code review of `EcoToLLVMClosures.cpp`. Every lowering pattern constructs
 `IntegerType::get(ctx, 8)`, `IntegerType::get(ctx, 64)`, `Float64Type::get(ctx)`,
@@ -239,7 +246,7 @@ initialized once in the constructor.
 
 ### 9. `SmallVector` used without `reserve()` in hot loops
 
-**Status:** OPEN
+**Status:** SKIPPED (not visible in profile; SmallVector inline buffer handles typical cases)
 
 **Evidence:** Code review. Multiple locations build `SmallVector`s in loops without
 reserving capacity:
@@ -256,7 +263,7 @@ reserving capacity:
 
 ### 10. `EcoRuntime` passed by value — deep-copies `StringMap`
 
-**Status:** OPEN
+**Status:** FIXED (changed all signatures to const &, EcoRuntime is now non-copyable)
 
 **Evidence:** Code review of `EcoToLLVMInternal.h` (line 122) and `EcoToLLVM.cpp`
 (lines 324–331). `EcoRuntime` is passed by value to 8 `populateEco*Patterns()`
@@ -276,7 +283,7 @@ Or better, make `EcoRuntime` non-copyable and use `shared_ptr<EcoRuntime>`.
 
 ### 11. String concatenation in hot path
 
-**Status:** OPEN
+**Status:** FIXED (changed to SmallString<64> with toVector)
 
 **Evidence:** Code review of `EcoToLLVMClosures.cpp:161`.
 `std::string wrapperName = ("__closure_wrapper_" + funcName).str()` creates a
@@ -295,7 +302,7 @@ SmallString<64> wrapperName;
 
 ### 12. `CheckEcoClosureCapturesPass` does two separate module walks
 
-**Status:** OPEN
+**Status:** SKIPPED (runs once, not visible in profile)
 
 **Evidence:** Code review of `CheckEcoClosureCaptures.cpp`. Phase 1 (line 47) walks
 all ops looking for `PapCreateOp`. Phase 2 (line 92) walks all ops again looking for
@@ -310,7 +317,7 @@ all ops looking for `PapCreateOp`. Phase 2 (line 92) walks all ops again looking
 
 ### 13. Redundant `module.lookupSymbol` in `getOrCreateWrapper` decision tree
 
-**Status:** OPEN
+**Status:** FIXED (consolidated to single cached lookup via EcoRuntime.lookupSymbol)
 
 **Evidence:** Code review of `EcoToLLVMClosures.cpp:193–194`. After
 `origFuncTypes.find(funcName)` succeeds (line 179), the code does two MORE
@@ -326,9 +333,32 @@ or use a cached SymbolTable (fix 1a) to make it O(1) if the check must remain.
 
 ---
 
+### 14. MLIR framework `lookupSymbolIn` dominates — architectural bottleneck
+
+**Status:** SKIPPED (requires MLIR source changes or architectural restructuring)
+
+**Evidence:** After fixing all Eco-specific symbol lookup calls (issues 1, 3, 4, 13),
+`lookupSymbolIn` still dominates at 38-42% of CPU. 5-minute profile shows the process
+never exits MLIR lowering. The remaining calls are from MLIR's own infrastructure:
+- `applyFullConversion` verifies every created op, which resolves symbol references
+- Dynamic legality checks walk parent ops repeatedly
+- SCF→CF conversion + reconcile casts do internal symbol resolution
+
+**Root causes (beyond our control):**
+- MLIR's `Operation::getInherentAttr("sym_name")` → `lookupSymbolIn` path is O(N)
+- `applyFullConversion` re-verifies ops after each rewrite
+- 75MB MLIR module with thousands of functions = very large N
+
+**Possible architectural fixes (future work):**
+- Split the MLIR module into smaller sub-modules per SCC or package
+- Use manual lowering (walk + replace) instead of `applyFullConversion`
+- Build MLIR with a patched SymbolTable that caches lookups
+
+---
+
 ## Baseline Measurements
 
-### Profile: 2026-03-22, 30s timeout, 997Hz, 275K samples
+### Profile: 2026-03-22, 30s timeout, 997Hz, 275K samples (BEFORE fixes)
 
 | Function (aggregated) | CPU % |
 |---|---|
@@ -339,3 +369,25 @@ or use a cached SymbolTable (fix 1a) to make it O(1) if the check must remain.
 | `RegisteredOperationName::...::getInherentAttr` | 1.8% |
 
 Process was killed at 30s — still in MLIR lowering phase (had not reached LLVM codegen).
+
+### Profile: 2026-03-22, 60s timeout, AFTER fixes (issues 1,3,4,7,10,11,13)
+
+| Function (aggregated) | CPU % |
+|---|---|
+| `mlir::SymbolTable::lookupSymbolIn` | 38.0% |
+| `mlir::Attribute::getContext` | 36.8% |
+| `mlir::func::FuncOp::getInherentAttr` | 4.5% |
+| `mlir::Operation::getInherentAttr` | 3.0% |
+| `RegisteredOperationName::...::getInherentAttr` | 1.3% |
+
+### Profile: 2026-03-22, 5min timeout, AFTER fixes
+
+| Function (aggregated) | CPU % |
+|---|---|
+| `mlir::SymbolTable::lookupSymbolIn` | 42.1% |
+| `mlir::Attribute::getContext` | 29.7% |
+| `mlir::LLVM::LLVMFuncOp::getInherentAttr` | 6.9% |
+| `mlir::Operation::getInherentAttr` | 3.2% |
+| `mlir::func::FuncOp::getInherentAttr` | 2.0% |
+
+Process still in MLIR lowering at 5min — remaining bottleneck is MLIR framework internals.

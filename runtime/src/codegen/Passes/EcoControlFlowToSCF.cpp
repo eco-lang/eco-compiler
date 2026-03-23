@@ -103,12 +103,12 @@ bool isStringCase(CaseOp op) {
 /// outer case to SCF while it contains a nested string case, the nested case
 /// becomes unreachable by CaseOpLowering due to dynamic legality constraints.
 bool containsNestedStringCase(CaseOp op) {
-    bool found = false;
-    op.walk([&](CaseOp nested) {
+    auto result = op.walk([&](CaseOp nested) -> WalkResult {
         if (nested != op && isStringCase(nested))
-            found = true;
+            return WalkResult::interrupt();
+        return WalkResult::advance();
     });
-    return found;
+    return result.wasInterrupted();
 }
 
 //===----------------------------------------------------------------------===//

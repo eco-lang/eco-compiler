@@ -14,6 +14,8 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Transforms/DialectConversion.h"
 
+#include "mlir/IR/SymbolTable.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/StringMap.h"
 #include <vector>
 
@@ -114,14 +116,18 @@ constexpr uint64_t ClosureValuesOffset = HeaderSize + 2 * PtrSize;
 // Runtime Function Helper
 //===----------------------------------------------------------------------===//
 
-/// Lightweight helper for declaring and caching runtime function references.
-/// Passed by value to pattern population functions (cheap to copy since it
-/// only holds a ModuleOp handle and context pointer).
-/// Note: module is mutable to allow getOrCreate methods to be const while
-/// still being able to insert function declarations.
+/// Helper for declaring and caching runtime function references.
+/// Passed by const reference to pattern population functions.
+/// Note: module and caches are mutable to allow getOrCreate methods to be
+/// const while still being able to insert function declarations and cache
+/// lookup results.
 struct EcoRuntime {
     mutable mlir::ModuleOp module;
     mlir::MLIRContext *ctx;
+
+    /// Cached symbol map for O(1) lookups instead of O(N) module walks.
+    /// Built lazily on first use from the module's top-level operations.
+    mutable llvm::DenseMap<mlir::StringAttr, mlir::Operation*> symCache;
 
     /// Pre-scanned original function types (before LLVM type conversion).
     /// Maps function name -> original FunctionType (with eco::ValueType etc.).
@@ -137,6 +143,40 @@ struct EcoRuntime {
     llvm::StringMap<mlir::FunctionType> origFuncTypes;
 
     explicit EcoRuntime(mlir::ModuleOp m) : module(m), ctx(m.getContext()) {}
+
+    /// Ensure the symbol cache is populated from the module.
+    void ensureSymCache() const {
+        if (!symCache.empty()) return;
+        for (auto &op : module.getBody()->getOperations()) {
+            if (auto nameAttr = op.getAttrOfType<mlir::StringAttr>(
+                    mlir::SymbolTable::getSymbolAttrName()))
+                symCache[nameAttr] = &op;
+        }
+    }
+
+    /// Register a newly created symbol in the cache.
+    void cacheSymbol(mlir::Operation *op) const {
+        if (auto nameAttr = op->getAttrOfType<mlir::StringAttr>(
+                mlir::SymbolTable::getSymbolAttrName()))
+            symCache[nameAttr] = op;
+    }
+
+    /// Look up a symbol in the module using the cached map (O(1)).
+    template <typename T>
+    T lookupSymbol(llvm::StringRef name) const {
+        ensureSymCache();
+        auto it = symCache.find(mlir::StringAttr::get(ctx, name));
+        if (it == symCache.end()) return nullptr;
+        return mlir::dyn_cast<T>(it->second);
+    }
+
+    /// Look up any operation by name using the cached map.
+    mlir::Operation *lookupSymbol(llvm::StringRef name) const {
+        ensureSymCache();
+        auto it = symCache.find(mlir::StringAttr::get(ctx, name));
+        if (it == symCache.end()) return nullptr;
+        return it->second;
+    }
 
     /// Get or create a runtime function declaration.
     mlir::LLVM::LLVMFuncOp getOrCreateFunc(
@@ -231,25 +271,25 @@ std::vector<uint16_t> utf8ToUtf16(llvm::StringRef utf8);
 void populateEcoTypePatterns(
     EcoTypeConverter &typeConverter,
     mlir::RewritePatternSet &patterns,
-    EcoRuntime runtime);
+    const EcoRuntime &runtime);
 
 /// Populate patterns for heap operations (box, unbox, allocate, construct, project).
 void populateEcoHeapPatterns(
     EcoTypeConverter &typeConverter,
     mlir::RewritePatternSet &patterns,
-    EcoRuntime runtime);
+    const EcoRuntime &runtime);
 
 /// Populate patterns for closure operations (papCreate, papExtend, call).
 void populateEcoClosurePatterns(
     EcoTypeConverter &typeConverter,
     mlir::RewritePatternSet &patterns,
-    EcoRuntime runtime);
+    const EcoRuntime &runtime);
 
 /// Populate patterns for control flow (case, joinpoint, jump, return, get_tag).
 void populateEcoControlFlowPatterns(
     EcoTypeConverter &typeConverter,
     mlir::RewritePatternSet &patterns,
-    EcoRuntime runtime,
+    const EcoRuntime &runtime,
     EcoCFContext &cfCtx);
 
 /// Populate patterns for arithmetic, comparisons, bitwise, and type conversions.
@@ -261,7 +301,7 @@ void populateEcoArithPatterns(
 void populateEcoArithPatternsWithRuntime(
     EcoTypeConverter &typeConverter,
     mlir::RewritePatternSet &patterns,
-    EcoRuntime runtime);
+    const EcoRuntime &runtime);
 
 /// Populate patterns for global variables.
 void populateEcoGlobalPatterns(
@@ -272,7 +312,7 @@ void populateEcoGlobalPatterns(
 void populateEcoErrorDebugPatterns(
     EcoTypeConverter &typeConverter,
     mlir::RewritePatternSet &patterns,
-    EcoRuntime runtime);
+    const EcoRuntime &runtime);
 
 /// Populate patterns for kernel function lowering.
 void populateEcoFuncPatterns(

@@ -20,10 +20,10 @@ namespace {
 //===----------------------------------------------------------------------===//
 
 struct BoxOpLowering : public OpConversionPattern<BoxOp> {
-    EcoRuntime runtime;
+    const EcoRuntime &runtime;
 
     BoxOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
-                  EcoRuntime runtime)
+                  const EcoRuntime &runtime)
         : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
 
     LogicalResult
@@ -73,10 +73,10 @@ struct BoxOpLowering : public OpConversionPattern<BoxOp> {
 //===----------------------------------------------------------------------===//
 
 struct UnboxOpLowering : public OpConversionPattern<UnboxOp> {
-    EcoRuntime runtime;
+    const EcoRuntime &runtime;
 
     UnboxOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
-                    EcoRuntime runtime)
+                    const EcoRuntime &runtime)
         : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
 
     LogicalResult
@@ -124,10 +124,10 @@ struct UnboxOpLowering : public OpConversionPattern<UnboxOp> {
 //===----------------------------------------------------------------------===//
 
 struct AllocateOpLowering : public OpConversionPattern<AllocateOp> {
-    EcoRuntime runtime;
+    const EcoRuntime &runtime;
 
     AllocateOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
-                       EcoRuntime runtime)
+                       const EcoRuntime &runtime)
         : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
 
     LogicalResult
@@ -152,10 +152,10 @@ struct AllocateOpLowering : public OpConversionPattern<AllocateOp> {
 //===----------------------------------------------------------------------===//
 
 struct AllocateCtorOpLowering : public OpConversionPattern<AllocateCtorOp> {
-    EcoRuntime runtime;
+    const EcoRuntime &runtime;
 
     AllocateCtorOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
-                           EcoRuntime runtime)
+                           const EcoRuntime &runtime)
         : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
 
     LogicalResult
@@ -185,10 +185,10 @@ struct AllocateCtorOpLowering : public OpConversionPattern<AllocateCtorOp> {
 //===----------------------------------------------------------------------===//
 
 struct AllocateStringOpLowering : public OpConversionPattern<AllocateStringOp> {
-    EcoRuntime runtime;
+    const EcoRuntime &runtime;
 
     AllocateStringOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
-                             EcoRuntime runtime)
+                             const EcoRuntime &runtime)
         : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
 
     LogicalResult
@@ -213,10 +213,10 @@ struct AllocateStringOpLowering : public OpConversionPattern<AllocateStringOp> {
 //===----------------------------------------------------------------------===//
 
 struct ListConstructOpLowering : public OpConversionPattern<ListConstructOp> {
-    EcoRuntime runtime;
+    const EcoRuntime &runtime;
 
     ListConstructOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
-                            EcoRuntime runtime)
+                            const EcoRuntime &runtime)
         : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
 
     LogicalResult
@@ -256,10 +256,10 @@ struct ListConstructOpLowering : public OpConversionPattern<ListConstructOp> {
 //===----------------------------------------------------------------------===//
 
 struct ListHeadOpLowering : public OpConversionPattern<ListHeadOp> {
-    EcoRuntime runtime;
+    const EcoRuntime &runtime;
 
     ListHeadOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
-                       EcoRuntime runtime)
+                       const EcoRuntime &runtime)
         : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
 
     LogicalResult
@@ -319,10 +319,10 @@ struct ListHeadOpLowering : public OpConversionPattern<ListHeadOp> {
 //===----------------------------------------------------------------------===//
 
 struct ListTailOpLowering : public OpConversionPattern<ListTailOp> {
-    EcoRuntime runtime;
+    const EcoRuntime &runtime;
 
     ListTailOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
-                       EcoRuntime runtime)
+                       const EcoRuntime &runtime)
         : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
 
     LogicalResult
@@ -355,10 +355,10 @@ struct ListTailOpLowering : public OpConversionPattern<ListTailOp> {
 //===----------------------------------------------------------------------===//
 
 struct Tuple2ConstructOpLowering : public OpConversionPattern<Tuple2ConstructOp> {
-    EcoRuntime runtime;
+    const EcoRuntime &runtime;
 
     Tuple2ConstructOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
-                              EcoRuntime runtime)
+                              const EcoRuntime &runtime)
         : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
 
     LogicalResult
@@ -387,10 +387,10 @@ struct Tuple2ConstructOpLowering : public OpConversionPattern<Tuple2ConstructOp>
 //===----------------------------------------------------------------------===//
 
 struct Tuple3ConstructOpLowering : public OpConversionPattern<Tuple3ConstructOp> {
-    EcoRuntime runtime;
+    const EcoRuntime &runtime;
 
     Tuple3ConstructOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
-                              EcoRuntime runtime)
+                              const EcoRuntime &runtime)
         : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
 
     LogicalResult
@@ -420,10 +420,10 @@ struct Tuple3ConstructOpLowering : public OpConversionPattern<Tuple3ConstructOp>
 //===----------------------------------------------------------------------===//
 
 struct Tuple2ProjectOpLowering : public OpConversionPattern<Tuple2ProjectOp> {
-    EcoRuntime runtime;
+    const EcoRuntime &runtime;
 
     Tuple2ProjectOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
-                            EcoRuntime runtime)
+                            const EcoRuntime &runtime)
         : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
 
     LogicalResult
@@ -460,10 +460,10 @@ struct Tuple2ProjectOpLowering : public OpConversionPattern<Tuple2ProjectOp> {
 //===----------------------------------------------------------------------===//
 
 struct Tuple3ProjectOpLowering : public OpConversionPattern<Tuple3ProjectOp> {
-    EcoRuntime runtime;
+    const EcoRuntime &runtime;
 
     Tuple3ProjectOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
-                            EcoRuntime runtime)
+                            const EcoRuntime &runtime)
         : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
 
     LogicalResult
@@ -500,10 +500,10 @@ struct Tuple3ProjectOpLowering : public OpConversionPattern<Tuple3ProjectOp> {
 //===----------------------------------------------------------------------===//
 
 struct RecordConstructOpLowering : public OpConversionPattern<RecordConstructOp> {
-    EcoRuntime runtime;
+    const EcoRuntime &runtime;
 
     RecordConstructOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
-                              EcoRuntime runtime)
+                              const EcoRuntime &runtime)
         : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
 
     LogicalResult
@@ -564,10 +564,10 @@ struct RecordConstructOpLowering : public OpConversionPattern<RecordConstructOp>
 //===----------------------------------------------------------------------===//
 
 struct RecordProjectOpLowering : public OpConversionPattern<RecordProjectOp> {
-    EcoRuntime runtime;
+    const EcoRuntime &runtime;
 
     RecordProjectOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
-                            EcoRuntime runtime)
+                            const EcoRuntime &runtime)
         : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
 
     LogicalResult
@@ -604,10 +604,10 @@ struct RecordProjectOpLowering : public OpConversionPattern<RecordProjectOp> {
 //===----------------------------------------------------------------------===//
 
 struct CustomConstructOpLowering : public OpConversionPattern<CustomConstructOp> {
-    EcoRuntime runtime;
+    const EcoRuntime &runtime;
 
     CustomConstructOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
-                              EcoRuntime runtime)
+                              const EcoRuntime &runtime)
         : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
 
     LogicalResult
@@ -674,10 +674,10 @@ struct CustomConstructOpLowering : public OpConversionPattern<CustomConstructOp>
 //===----------------------------------------------------------------------===//
 
 struct CustomProjectOpLowering : public OpConversionPattern<CustomProjectOp> {
-    EcoRuntime runtime;
+    const EcoRuntime &runtime;
 
     CustomProjectOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
-                            EcoRuntime runtime)
+                            const EcoRuntime &runtime)
         : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
 
     LogicalResult
@@ -714,10 +714,10 @@ struct CustomProjectOpLowering : public OpConversionPattern<CustomProjectOp> {
 //===----------------------------------------------------------------------===//
 
 struct ArrayLengthOpLowering : public OpConversionPattern<ArrayLengthOp> {
-    EcoRuntime runtime;
+    const EcoRuntime &runtime;
 
     ArrayLengthOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
-                          EcoRuntime runtime)
+                          const EcoRuntime &runtime)
         : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
 
     LogicalResult
@@ -759,10 +759,10 @@ struct ArrayLengthOpLowering : public OpConversionPattern<ArrayLengthOp> {
 //===----------------------------------------------------------------------===//
 
 struct ArrayGetOpLowering : public OpConversionPattern<ArrayGetOp> {
-    EcoRuntime runtime;
+    const EcoRuntime &runtime;
 
     ArrayGetOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
-                       EcoRuntime runtime)
+                       const EcoRuntime &runtime)
         : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
 
     LogicalResult
@@ -823,10 +823,10 @@ struct ArrayGetOpLowering : public OpConversionPattern<ArrayGetOp> {
 //===----------------------------------------------------------------------===//
 
 struct ArraySetOpLowering : public OpConversionPattern<ArraySetOp> {
-    EcoRuntime runtime;
+    const EcoRuntime &runtime;
 
     ArraySetOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
-                       EcoRuntime runtime)
+                       const EcoRuntime &runtime)
         : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
 
     LogicalResult
@@ -896,7 +896,7 @@ struct ArraySetOpLowering : public OpConversionPattern<ArraySetOp> {
 void eco::detail::populateEcoHeapPatterns(
     EcoTypeConverter &typeConverter,
     RewritePatternSet &patterns,
-    EcoRuntime runtime) {
+    const EcoRuntime &runtime) {
 
     auto *ctx = patterns.getContext();
     patterns.add<BoxOpLowering>(typeConverter, ctx, runtime);

@@ -39,10 +39,10 @@ struct SafepointOpLowering : public OpConversionPattern<SafepointOp> {
 //===----------------------------------------------------------------------===//
 
 struct DbgOpLowering : public OpConversionPattern<DbgOp> {
-    EcoRuntime runtime;
+    const EcoRuntime &runtime;
 
     DbgOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
-                  EcoRuntime runtime)
+                  const EcoRuntime &runtime)
         : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
 
     LogicalResult
@@ -150,10 +150,10 @@ struct DbgOpLowering : public OpConversionPattern<DbgOp> {
 //===----------------------------------------------------------------------===//
 
 struct CrashOpLowering : public OpConversionPattern<CrashOp> {
-    EcoRuntime runtime;
+    const EcoRuntime &runtime;
 
     CrashOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
-                    EcoRuntime runtime)
+                    const EcoRuntime &runtime)
         : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
 
     LogicalResult
@@ -182,10 +182,10 @@ struct CrashOpLowering : public OpConversionPattern<CrashOp> {
 //===----------------------------------------------------------------------===//
 
 struct ExpectOpLowering : public OpConversionPattern<ExpectOp> {
-    EcoRuntime runtime;
+    const EcoRuntime &runtime;
 
     ExpectOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
-                     EcoRuntime runtime)
+                     const EcoRuntime &runtime)
         : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
 
     LogicalResult
@@ -230,7 +230,7 @@ struct ExpectOpLowering : public OpConversionPattern<ExpectOp> {
 void eco::detail::populateEcoErrorDebugPatterns(
     EcoTypeConverter &typeConverter,
     RewritePatternSet &patterns,
-    EcoRuntime runtime) {
+    const EcoRuntime &runtime) {
 
     auto *ctx = patterns.getContext();
     patterns.add<SafepointOpLowering>(typeConverter, ctx);

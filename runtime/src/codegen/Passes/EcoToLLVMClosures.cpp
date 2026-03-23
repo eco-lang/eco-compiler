@@ -24,9 +24,9 @@ namespace {
 //===----------------------------------------------------------------------===//
 
 struct ProjectClosureOpLowering : public OpConversionPattern<ProjectClosureOp> {
-    EcoRuntime runtime;
+    const EcoRuntime &runtime;
 
-    ProjectClosureOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx, EcoRuntime runtime) :
+    ProjectClosureOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx, const EcoRuntime &runtime) :
         OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
 
     LogicalResult matchAndRewrite(ProjectClosureOp op, OpAdaptor adaptor,
@@ -85,9 +85,9 @@ struct ProjectClosureOpLowering : public OpConversionPattern<ProjectClosureOp> {
 //===----------------------------------------------------------------------===//
 
 struct AllocateClosureOpLowering : public OpConversionPattern<AllocateClosureOp> {
-    EcoRuntime runtime;
+    const EcoRuntime &runtime;
 
-    AllocateClosureOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx, EcoRuntime runtime) :
+    AllocateClosureOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx, const EcoRuntime &runtime) :
         OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
 
     LogicalResult matchAndRewrite(AllocateClosureOp op, OpAdaptor adaptor,
@@ -149,20 +149,20 @@ static LLVM::LLVMFuncOp getOrCreateWrapper(PatternRewriter &rewriter, ModuleOp m
     auto f64Ty = Float64Type::get(ctx);
     auto ptrTy = LLVM::LLVMPointerType::get(ctx);
 
+    // Check if wrapper already exists (check first — fast path)
+    llvm::SmallString<64> wrapperName;
+    ("__closure_wrapper_" + funcName).toVector(wrapperName);
+
+    if (auto existingWrapper = runtime.lookupSymbol<LLVM::LLVMFuncOp>(StringRef(wrapperName))) {
+        return existingWrapper;
+    }
+
     // Check if target function already uses args-array convention
-    if (auto existingFunc = module.lookupSymbol<LLVM::LLVMFuncOp>(funcName)) {
+    if (auto existingFunc = runtime.lookupSymbol<LLVM::LLVMFuncOp>(funcName)) {
         if (usesArgsArrayConvention(existingFunc)) {
             // Function already takes (ptr) -> i64/ptr, use it directly
             return existingFunc;
         }
-    }
-
-    // Wrapper function name
-    std::string wrapperName = ("__closure_wrapper_" + funcName).str();
-
-    // Check if wrapper already exists
-    if (auto existingWrapper = module.lookupSymbol<LLVM::LLVMFuncOp>(wrapperName)) {
-        return existingWrapper;
     }
 
     // Look up target function to get its actual signature.
@@ -190,15 +190,15 @@ static LLVM::LLVMFuncOp getOrCreateWrapper(PatternRewriter &rewriter, ModuleOp m
         }
         // Ensure the target function exists as an LLVM symbol (it may only be
         // in the pre-scan map from a papCreate reference with no func::FuncOp).
-        if (!module.lookupSymbol<func::FuncOp>(funcName) &&
-            !module.lookupSymbol<LLVM::LLVMFuncOp>(funcName)) {
+        if (!runtime.lookupSymbol(funcName)) {
             OpBuilder::InsertionGuard declGuard(rewriter);
             rewriter.setInsertionPointToStart(module.getBody());
             auto externFuncType = LLVM::LLVMFunctionType::get(targetResultType, targetParamTypes, false);
             auto externFunc = rewriter.create<LLVM::LLVMFuncOp>(loc, funcName, externFuncType);
             externFunc.setLinkage(LLVM::Linkage::External);
+            runtime.cacheSymbol(externFunc);
         }
-    } else if (auto funcFunc = module.lookupSymbol<func::FuncOp>(funcName)) {
+    } else if (auto funcFunc = runtime.lookupSymbol<func::FuncOp>(funcName)) {
         auto funcType = funcFunc.getFunctionType();
         for (auto paramType : funcType.getInputs()) {
             origParamTypes.push_back(paramType);
@@ -210,7 +210,7 @@ static LLVM::LLVMFuncOp getOrCreateWrapper(PatternRewriter &rewriter, ModuleOp m
             Type convertedResult = typeConverter ? typeConverter->convertType(funcType.getResult(0)) : funcType.getResult(0);
             targetResultType = convertedResult ? convertedResult : funcType.getResult(0);
         }
-    } else if (auto llvmFunc = module.lookupSymbol<LLVM::LLVMFuncOp>(funcName)) {
+    } else if (auto llvmFunc = runtime.lookupSymbol<LLVM::LLVMFuncOp>(funcName)) {
         auto funcType = llvmFunc.getFunctionType();
         for (unsigned i = 0; i < funcType.getNumParams(); ++i) {
             targetParamTypes.push_back(funcType.getParamType(i));
@@ -237,6 +237,7 @@ static LLVM::LLVMFuncOp getOrCreateWrapper(PatternRewriter &rewriter, ModuleOp m
         auto targetFuncType = LLVM::LLVMFunctionType::get(targetResultType, targetParamTypes, false);
         auto externFunc = rewriter.create<LLVM::LLVMFuncOp>(loc, funcName, targetFuncType);
         externFunc.setLinkage(LLVM::Linkage::External);
+        runtime.cacheSymbol(externFunc);
     }
 
     // Create wrapper function type: ptr (*)(ptr)
@@ -246,8 +247,9 @@ static LLVM::LLVMFuncOp getOrCreateWrapper(PatternRewriter &rewriter, ModuleOp m
     OpBuilder::InsertionGuard guard(rewriter);
     rewriter.setInsertionPointToStart(module.getBody());
 
-    auto wrapperFunc = rewriter.create<LLVM::LLVMFuncOp>(loc, wrapperName, wrapperType);
+    auto wrapperFunc = rewriter.create<LLVM::LLVMFuncOp>(loc, StringRef(wrapperName), wrapperType);
     wrapperFunc.setLinkage(LLVM::Linkage::Internal);
+    runtime.cacheSymbol(wrapperFunc);
 
     Block *entryBlock = wrapperFunc.addEntryBlock(rewriter);
     rewriter.setInsertionPointToStart(entryBlock);
@@ -381,9 +383,9 @@ static LLVM::LLVMFuncOp getOrCreateWrapper(PatternRewriter &rewriter, ModuleOp m
 }
 
 struct PapCreateOpLowering : public OpConversionPattern<PapCreateOp> {
-    EcoRuntime runtime;
+    const EcoRuntime &runtime;
 
-    PapCreateOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx, EcoRuntime runtime) :
+    PapCreateOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx, const EcoRuntime &runtime) :
         OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
 
     LogicalResult matchAndRewrite(PapCreateOp op, OpAdaptor adaptor,
@@ -821,9 +823,9 @@ static Value emitUnknownClosureCall(ConversionPatternRewriter &rewriter, Locatio
 //===----------------------------------------------------------------------===//
 
 struct PapExtendOpLowering : public OpConversionPattern<PapExtendOp> {
-    EcoRuntime runtime;
+    const EcoRuntime &runtime;
 
-    PapExtendOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx, EcoRuntime runtime) :
+    PapExtendOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx, const EcoRuntime &runtime) :
         OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
 
     /// Generic apply lowering: remaining_arity is absent, so saturation is
@@ -1015,9 +1017,9 @@ struct PapExtendOpLowering : public OpConversionPattern<PapExtendOp> {
 //===----------------------------------------------------------------------===//
 
 struct CallOpLowering : public OpConversionPattern<CallOp> {
-    EcoRuntime runtime;
+    const EcoRuntime &runtime;
 
-    CallOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx, EcoRuntime runtime) :
+    CallOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx, const EcoRuntime &runtime) :
         OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
 
     LogicalResult matchAndRewrite(CallOp op, OpAdaptor adaptor, ConversionPatternRewriter &rewriter) const override {
@@ -1088,7 +1090,7 @@ struct CallOpLowering : public OpConversionPattern<CallOp> {
 //===----------------------------------------------------------------------===//
 
 void eco::detail::populateEcoClosurePatterns(EcoTypeConverter &typeConverter, RewritePatternSet &patterns,
-                                             EcoRuntime runtime) {
+                                             const EcoRuntime &runtime) {
 
     auto *ctx = patterns.getContext();
     patterns.add<ProjectClosureOpLowering>(typeConverter, ctx, runtime);
