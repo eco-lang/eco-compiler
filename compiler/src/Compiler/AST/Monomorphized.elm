@@ -144,7 +144,7 @@ This module defines the data structures for the monomorphized program
 
 # Misc Helpers
 
-@docs containsAnyMVar, resultTypeOf
+@docs containsAnyMVar, containsCEcoMVar, resultTypeOf
 
 -}
 

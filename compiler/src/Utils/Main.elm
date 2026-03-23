@@ -90,7 +90,7 @@ defined in System.IO.
 
 # MVar Operations
 
-@docs newMVar, newEmptyMVar, readMVar, takeMVar, putMVar
+@docs newMVar, newEmptyMVar, readMVar, takeMVar, putMVar, dropMVar
 @docs mVarEncoder, mVarDecoder
 
 
