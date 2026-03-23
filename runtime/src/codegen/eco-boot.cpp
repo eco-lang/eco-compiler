@@ -257,6 +257,12 @@ static int runPipeline(ModuleOp module) {
     if (failed(applyPassManagerCLOptions(pm)))
         return 1;
 
+    // Disable inter-pass verification. The module is already verified before
+    // entering the pipeline (verify() in main). Re-verifying after every pass
+    // is extremely expensive: each verification resolves ~165K symbol refs via
+    // O(N) linear scans of ~49K ops, and with 13 passes that dominates runtime.
+    pm.enableVerifier(false);
+
     eco::buildEcoToLLVMPipeline(pm);
 
     if (failed(pm.run(module)))

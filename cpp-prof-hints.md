@@ -333,7 +333,92 @@ or use a cached SymbolTable (fix 1a) to make it O(1) if the check must remain.
 
 ---
 
-### 14. MLIR framework `lookupSymbolIn` dominates — architectural bottleneck
+### 14. Disable inter-pass verification in PassManager (Option A)
+
+**Status:** FIXED
+
+**Evidence:** MLIR's PassManager runs `verify()` after every pass by default.
+With 13 passes in the pipeline plus one explicit `verify()` call before the pipeline,
+the verifier runs 14 times. Each run resolves every `SymbolRefAttr` in the module
+(~165K symbol references) via `SymbolTable::lookupSymbolIn`, which does a linear scan
+of all ~49K top-level ops. This accounts for the bulk of the 38-42% CPU in
+`lookupSymbolIn`.
+
+**Fix:** Call `pm.enableVerifier(false)` in `runPipeline()` to disable inter-pass
+verification. Keep the single explicit `verify()` call before the pipeline to catch
+MLIR parse errors. For debug builds, verification can remain enabled.
+
+**Risk:** If a pass produces malformed IR, errors surface later (in LLVM translation
+or at runtime) instead of immediately after the offending pass. Acceptable for
+release/profile builds.
+
+---
+
+### 15. Use `SymbolTableCollection` or cached lookups in BFToLLVM and early passes (Option C)
+
+**Status:** FIXED
+
+**Evidence:** `BFToLLVM.cpp` has 14 uncached `module.lookupSymbol<>()` calls across
+its lowering patterns. `EcoPAPSimplify.cpp` (line 101), `CheckEcoClosureCaptures.cpp`
+(line 57), and `EcoToLLVMFunc.cpp` (line 39) each do uncached per-op lookups.
+These are all O(N) linear scans of the module body (N = ~49K ops).
+
+The `EcoToLLVMClosures.cpp` patterns already use `EcoRuntime::symCache` for O(1)
+lookups — the same pattern should be extended to the other passes.
+
+**Fix:** For each pass with uncached lookups:
+- Build a `DenseMap<StringAttr, Operation*>` or `mlir::SymbolTable` at pass start
+- Pass it to patterns or use it directly
+- Incrementally update when new symbols are created (as `EcoRuntime::cacheSymbol` does)
+
+For `BFToLLVM`, since `ensureRuntimeFunctions()` declares all needed functions upfront,
+look them up once into local variables after declaration and pass to patterns.
+
+---
+
+### 16. Remove `symbolExists` O(N) lookups from PapCreate/PapExtend verifiers
+
+**Status:** FIXED
+
+**Evidence:** `PapCreateOp::verify()` and `PapExtendOp::verify()` call `symbolExists()` →
+`SymbolTable::lookupNearestSymbolFrom()` → static `lookupSymbolIn()` for every kernel
+function reference. `lookupSymbolIn` does a linear scan of all ~49K top-level ops.
+With 1,333 kernel papCreate ops, that's 1,333 × 49K ≈ 65 million comparisons in the
+single `verify(*module)` call — the dominant remaining cost after Option A.
+
+**Fix:** Remove `symbolExists` calls from `verify()`. The CGEN_057 kernel existence
+check moves to the new `verifySymbolUses` (issue #17).
+
+---
+
+### 17. Implement `SymbolUserOpInterface` on all symbol-referencing Eco ops
+
+**Status:** FIXED
+
+**Evidence:** No Eco ops implement `SymbolUserOpInterface`. The MLIR `verifySymbolTable`
+framework creates a `SymbolTableCollection` (O(1) cached lookups) and calls
+`verifySymbolUses(collection)` on implementing ops. Since no Eco ops implement it,
+all symbol verification uses the static O(N) `lookupSymbolIn` instead.
+
+**Ops to implement:**
+
+| Op | Symbol Attr | Count | What to verify |
+|---|---|---|---|
+| `eco.call` | `callee` (optional) | 92K | Callee function exists |
+| `eco.papCreate` | `function`, `_fast_evaluator` (optional) | 30K | Both symbols exist (CGEN_057) |
+| `eco.papExtend` | `_fast_evaluator` (optional) | 43K | Symbol exists if present |
+| `eco.load_global` | `global` | 0 (lowering) | Global symbol exists |
+| `eco.store_global` | `global` | 0 (lowering) | Global symbol exists |
+| `eco.allocate_closure` | `function` | 0 (lowering) | Function exists |
+| `eco.global` | `initializer` (optional) | 0 (lowering) | Initializer func exists |
+
+**Fix:** Add `DeclareOpInterfaceMethods<SymbolUserOpInterface>` to each op in Ops.td,
+implement `verifySymbolUses(SymbolTableCollection &)` in EcoOps.cpp using O(1) cached
+lookups.
+
+---
+
+### 18. MLIR framework `lookupSymbolIn` dominates — architectural bottleneck
 
 **Status:** SKIPPED (requires MLIR source changes or architectural restructuring)
 
@@ -391,3 +476,73 @@ Process was killed at 30s — still in MLIR lowering phase (had not reached LLVM
 | `mlir::func::FuncOp::getInherentAttr` | 2.0% |
 
 Process still in MLIR lowering at 5min — remaining bottleneck is MLIR framework internals.
+
+### Profile: 2026-03-23, 30s timeout, AFTER Option A + C fixes
+
+| Function (aggregated) | CPU % |
+|---|---|
+| `mlir::SymbolTable::lookupSymbolIn` | 81.0% |
+| `mlir::Attribute::getContext` | 61.3% |
+| `mlir::func::FuncOp::getInherentAttr` | 10.2% |
+| `RegisteredOperationName::...FuncOp::getInherentAttr` | 5.4% |
+| `mlir::Operation::getInherentAttr` | 3.6% |
+
+30s window dominated by initial parsing + single verify() call. Profile percentages similar
+but absolute CPU time reduced by **21.5%** (47.2s → 37.1s task-clock in 5s perf stat).
+
+### Profile: 2026-03-23, 60s timeout, AFTER Option A + C fixes
+
+| Function (aggregated) | CPU % |
+|---|---|
+| `mlir::SymbolTable::lookupSymbolIn` | 73.8% |
+| `mlir::Attribute::getContext` | 55.5% |
+| `mlir::func::FuncOp::getInherentAttr` | 7.9% |
+| `mlir::LLVM::LLVMFuncOp::getInherentAttr` | 1.5% |
+| `mlir::Operation::getInherentAttr` | 3.8% |
+| `propagateLiveness` | 0.3% |
+| `mlir::simplifyRegions` | 0.2% |
+
+60s window shows pipeline phases becoming visible (LLVM lowering, liveness, simplification).
+Pipeline progresses significantly further than baseline within same wall-clock budget.
+
+### perf stat comparison: 5s runs
+
+| Metric | Before (baseline) | After (A+C) | Change |
+|---|---|---|---|
+| task-clock (ms) | 47,230 | 37,074 | **-21.5%** |
+| instructions (core) | 110.6B | 95.5B | **-13.7%** |
+| cycles (core) | 157.8B | 131.7B | **-16.5%** |
+| CPUs utilized | 9.47 | 7.46 | — |
+| IPC | 0.70 | 0.73 | +4.3% |
+| Memory Bound | 50.8% | 52.1% | — |
+
+### Profile: 2026-03-23, 30s timeout, AFTER fixes 14-17 (A+C+SymbolUserOpInterface)
+
+| Function (aggregated) | CPU % |
+|---|---|
+| `mlir::SymbolTable::lookupSymbolIn` | 34.0% |
+| `mlir::Attribute::getContext` | 24.3% |
+| `mlir::func::FuncOp::getInherentAttr` | 7.7% |
+| `RegisteredOperationName::...FuncOp::getInherentAttr` | 5.1% |
+| `mlir::Operation::getInherentAttr` | 3.1% |
+| `OperationVerifier::verifyOpAndDominance` | 2.3% |
+| `ParametricStorageUniquer::insert_as` | 1.1% |
+| `mlir::Lexer::lexToken` | 0.3% |
+
+`lookupSymbolIn` dropped from 83.6% → 34.0%. The verifier and general framework
+functions are now visible, indicating the initial verify() completes much faster
+and the pipeline progresses further in the same 30s window.
+
+### perf stat comparison: 5s runs (cumulative)
+
+| Metric | Baseline (no fixes) | After A+C | After A+C+16+17 | Total change |
+|---|---|---|---|---|
+| task-clock (ms) | 47,230 | 37,074 | **7,845** | **-83.4%** |
+| instructions (core) | 110.6B | 95.5B | **49.1B** | **-55.6%** |
+| cycles (core) | 157.8B | 131.7B | **27.4B** | **-82.7%** |
+| CPUs utilized | 9.47 | 7.46 | **1.58** | — |
+| IPC | 0.70 | 0.73 | **1.79** | **+156%** |
+| Backend Bound | 58.4% | 60.1% | **25.6%** | — |
+| Memory Bound | 50.8% | 52.1% | **18.9%** | — |
+| Frontend Bound | 17.4% | 17.4% | **35.4%** | — |
+| Retiring | 21.9% | 20.6% | **34.1%** | — |

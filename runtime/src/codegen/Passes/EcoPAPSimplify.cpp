@@ -10,6 +10,7 @@
 #include "mlir/Pass/Pass.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/PatternMatch.h"
+#include "mlir/IR/SymbolTable.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
@@ -57,7 +58,9 @@ static bool usesArgsArrayConvention(Operation *funcOp) {
 }
 
 struct SaturatedPapToCallPattern : public OpRewritePattern<PapExtendOp> {
-    using OpRewritePattern::OpRewritePattern;
+    const mlir::SymbolTable &symTable;
+    SaturatedPapToCallPattern(MLIRContext *ctx, const mlir::SymbolTable &symTable)
+        : OpRewritePattern(ctx), symTable(symTable) {}
 
     LogicalResult matchAndRewrite(PapExtendOp extendOp,
                                   PatternRewriter &rewriter) const override {
@@ -97,8 +100,7 @@ struct SaturatedPapToCallPattern : public OpRewritePattern<PapExtendOp> {
         // Look up the target function to verify it has a compatible signature.
         // Skip transformation if the function uses the args-array calling convention
         // (i.e., llvm.func with (ptr) -> i64), as those are meant for closure calls.
-        auto module = extendOp->getParentOfType<ModuleOp>();
-        auto targetFunc = module.lookupSymbol(calleeAttr.getValue());
+        auto targetFunc = symTable.lookup(calleeAttr.getValue());
         if (!targetFunc)
             return failure();  // Function not found - let later passes handle it
 
@@ -226,8 +228,11 @@ struct EcoPAPSimplifyPass
         ModuleOp module = getOperation();
         MLIRContext *ctx = &getContext();
 
+        // Build symbol table once for O(1) lookups in patterns
+        mlir::SymbolTable symTable(module);
+
         RewritePatternSet patterns(ctx);
-        patterns.add<SaturatedPapToCallPattern>(ctx);
+        patterns.add<SaturatedPapToCallPattern>(ctx, symTable);
         patterns.add<FusePapExtendChainPattern>(ctx);
 
         if (failed(applyPatternsGreedily(module, std::move(patterns))))

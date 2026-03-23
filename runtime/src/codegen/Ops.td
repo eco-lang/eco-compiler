@@ -809,7 +809,9 @@ def Eco_StringLiteralOp : Eco_Op<"string_literal", [Pure]> {
 // 4. Call and Closure Operations
 //===----------------------------------------------------------------------===//
 
-def Eco_CallOp : Eco_Op<"call"> {
+def Eco_CallOp : Eco_Op<"call", [
+    DeclareOpInterfaceMethods<SymbolUserOpInterface>
+]> {
   let summary = "Call function or closure";
   let description = [{
     Function/closure application. Used for both direct calls to known
@@ -846,7 +848,10 @@ def Eco_CallOp : Eco_Op<"call"> {
   let hasVerifier = 1;
 }
 
-def Eco_PapCreateOp : Eco_Op<"papCreate", [Pure]> {
+def Eco_PapCreateOp : Eco_Op<"papCreate", [
+    Pure,
+    DeclareOpInterfaceMethods<SymbolUserOpInterface>
+]> {
   let summary = "Create partial application closure";
   let description = [{
     Create a closure representing a partial application (PAP) of a function
@@ -891,7 +896,9 @@ def Eco_PapCreateOp : Eco_Op<"papCreate", [Pure]> {
   let hasVerifier = 1;
 }
 
-def Eco_PapExtendOp : Eco_Op<"papExtend"> {
+def Eco_PapExtendOp : Eco_Op<"papExtend", [
+    DeclareOpInterfaceMethods<SymbolUserOpInterface>
+]> {
   let summary = "Extend closure with more arguments (typed or generic apply)";
   let description = [{
     Extend an existing partial application (closure) with more arguments.
@@ -1073,7 +1080,9 @@ def Eco_AllocateStringOp : Eco_Op<"allocate_string"> {
   let assemblyFormat = "attr-dict `:` type($result)";
 }
 
-def Eco_AllocateClosureOp : Eco_Op<"allocate_closure"> {
+def Eco_AllocateClosureOp : Eco_Op<"allocate_closure", [
+    DeclareOpInterfaceMethods<SymbolUserOpInterface>
+]> {
   let summary = "Allocate closure object";
   let description = [{
     Allocate a closure object for the specified function with space for
@@ -1122,7 +1131,10 @@ def Eco_SafepointOp : Eco_Op<"safepoint"> {
 // 6. Global State Operations
 //===----------------------------------------------------------------------===//
 
-def Eco_GlobalOp : Eco_Op<"global", [Symbol]> {
+def Eco_GlobalOp : Eco_Op<"global", [
+    Symbol,
+    DeclareOpInterfaceMethods<SymbolUserOpInterface>
+]> {
   let summary = "Declare global variable";
   let description = [{
     Declare a global variable managed by the runtime/GC. Global variables
@@ -1144,7 +1156,9 @@ def Eco_GlobalOp : Eco_Op<"global", [Symbol]> {
   let assemblyFormat = "$sym_name (`=` $initializer^)? attr-dict";
 }
 
-def Eco_LoadGlobalOp : Eco_Op<"load_global"> {
+def Eco_LoadGlobalOp : Eco_Op<"load_global", [
+    DeclareOpInterfaceMethods<SymbolUserOpInterface>
+]> {
   let summary = "Load from global variable";
   let description = [{
     Load the current value from a global variable.
@@ -1161,7 +1175,9 @@ def Eco_LoadGlobalOp : Eco_Op<"load_global"> {
   let assemblyFormat = "$global attr-dict";
 }
 
-def Eco_StoreGlobalOp : Eco_Op<"store_global"> {
+def Eco_StoreGlobalOp : Eco_Op<"store_global", [
+    DeclareOpInterfaceMethods<SymbolUserOpInterface>
+]> {
   let summary = "Store to global variable";
   let description = [{
     Store a value to a global variable.

@@ -16,6 +16,7 @@
 #include "mlir/Conversion/LLVMCommon/ConversionTarget.h"
 #include "mlir/Conversion/LLVMCommon/TypeConverter.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/IR/SymbolTable.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
 
@@ -70,39 +71,58 @@ public:
 };
 
 //===----------------------------------------------------------------------===//
-// Runtime Function Declarations
+// Runtime Function Declarations & Cache
 //===----------------------------------------------------------------------===//
 
-/// Ensure runtime functions are declared in the module.
-static void ensureRuntimeFunctions(ModuleOp module, OpBuilder &builder) {
+/// Cached references to BF runtime functions, looked up once after declaration.
+struct BFRuntimeFuncs {
+    LLVM::LLVMFuncOp allocBytebuffer;
+    LLVM::LLVMFuncOp bytebufferLen;
+    LLVM::LLVMFuncOp bytebufferData;
+    LLVM::LLVMFuncOp utf8Width;
+    LLVM::LLVMFuncOp utf8Copy;
+    LLVM::LLVMFuncOp utf8Decode;
+};
+
+/// Ensure runtime functions are declared in the module, then cache them.
+static BFRuntimeFuncs ensureRuntimeFunctions(ModuleOp module, OpBuilder &builder) {
     auto loc = module.getLoc();
     auto ctx = module.getContext();
     auto i8Ptr = LLVM::LLVMPointerType::get(ctx);
     auto i32 = builder.getI32Type();
     auto i64 = builder.getI64Type();
 
+    // Build a symbol table for O(1) lookups during declaration
+    mlir::SymbolTable symTable(module);
+
     auto declareFunc = [&](StringRef name, Type resultType,
-                           ArrayRef<Type> argTypes) {
-        if (module.lookupSymbol<LLVM::LLVMFuncOp>(name))
-            return;  // Already declared
+                           ArrayRef<Type> argTypes) -> LLVM::LLVMFuncOp {
+        if (auto existing = symTable.lookup<LLVM::LLVMFuncOp>(name))
+            return existing;
         auto funcType = LLVM::LLVMFunctionType::get(resultType, argTypes);
         builder.setInsertionPointToStart(module.getBody());
-        builder.create<LLVM::LLVMFuncOp>(loc, name, funcType);
+        auto func = builder.create<LLVM::LLVMFuncOp>(loc, name, funcType);
+        symTable.insert(func);
+        return func;
     };
 
+    BFRuntimeFuncs funcs;
+
     // ByteBuffer operations
-    declareFunc("elm_alloc_bytebuffer", i64, {i32});
-    declareFunc("elm_bytebuffer_len", i32, {i64});
-    declareFunc("elm_bytebuffer_data", i8Ptr, {i64});
+    funcs.allocBytebuffer = declareFunc("elm_alloc_bytebuffer", i64, {i32});
+    funcs.bytebufferLen = declareFunc("elm_bytebuffer_len", i32, {i64});
+    funcs.bytebufferData = declareFunc("elm_bytebuffer_data", i8Ptr, {i64});
 
     // UTF-8 operations
-    declareFunc("elm_utf8_width", i32, {i64});
-    declareFunc("elm_utf8_copy", i32, {i64, i8Ptr});
-    declareFunc("elm_utf8_decode", i64, {i8Ptr, i32});
+    funcs.utf8Width = declareFunc("elm_utf8_width", i32, {i64});
+    funcs.utf8Copy = declareFunc("elm_utf8_copy", i32, {i64, i8Ptr});
+    funcs.utf8Decode = declareFunc("elm_utf8_decode", i64, {i8Ptr, i32});
 
-    // Maybe operations
+    // Maybe operations (not cached — rarely used)
     declareFunc("elm_maybe_nothing", i64, {});
     declareFunc("elm_maybe_just", i64, {i64});
+
+    return funcs;
 }
 
 //===----------------------------------------------------------------------===//
@@ -154,22 +174,17 @@ static Value advanceCursor(OpBuilder &builder, Location loc, Value cursor,
 /// Lower bf.alloc to call @elm_alloc_bytebuffer.
 /// The runtime returns i64, which we cast to eco.value (the MLIR result type).
 struct AllocOpLowering : public OpConversionPattern<bf::AllocOp> {
-    using OpConversionPattern::OpConversionPattern;
+    const BFRuntimeFuncs &rt;
+    AllocOpLowering(const TypeConverter &tc, MLIRContext *ctx, const BFRuntimeFuncs &rt)
+        : OpConversionPattern(tc, ctx), rt(rt) {}
 
     LogicalResult
     matchAndRewrite(AllocOp op, OpAdaptor adaptor,
                     ConversionPatternRewriter &rewriter) const override {
         auto loc = op.getLoc();
-        auto module = op->getParentOfType<ModuleOp>();
-        auto func = module.lookupSymbol<LLVM::LLVMFuncOp>("elm_alloc_bytebuffer");
-        if (!func)
-            return failure();
 
-        // Call the runtime function which returns i64.
-        // Since eco.value IS i64 at the LLVM level, the type converter
-        // handles the eco.value -> i64 conversion automatically.
         auto result = rewriter.create<LLVM::CallOp>(
-            loc, func, ValueRange{adaptor.getSize()});
+            loc, rt.allocBytebuffer, ValueRange{adaptor.getSize()});
 
         rewriter.replaceOp(op, result.getResult());
         return success();
@@ -178,27 +193,23 @@ struct AllocOpLowering : public OpConversionPattern<bf::AllocOp> {
 
 /// Lower bf.cursor.init to runtime calls for ptr and len.
 struct CursorInitOpLowering : public OpConversionPattern<bf::CursorInitOp> {
-    using OpConversionPattern::OpConversionPattern;
+    const BFRuntimeFuncs &rt;
+    CursorInitOpLowering(const TypeConverter &tc, MLIRContext *ctx, const BFRuntimeFuncs &rt)
+        : OpConversionPattern(tc, ctx), rt(rt) {}
 
     LogicalResult
     matchAndRewrite(CursorInitOp op, OpAdaptor adaptor,
                     ConversionPatternRewriter &rewriter) const override {
         auto loc = op.getLoc();
-        auto module = op->getParentOfType<ModuleOp>();
-
-        auto dataFunc = module.lookupSymbol<LLVM::LLVMFuncOp>("elm_bytebuffer_data");
-        auto lenFunc = module.lookupSymbol<LLVM::LLVMFuncOp>("elm_bytebuffer_len");
-        if (!dataFunc || !lenFunc)
-            return failure();
 
         // Get data pointer
         auto dataCall = rewriter.create<LLVM::CallOp>(
-            loc, dataFunc, ValueRange{adaptor.getBuffer()});
+            loc, rt.bytebufferData, ValueRange{adaptor.getBuffer()});
         Value ptr = dataCall.getResult();
 
         // Get length
         auto lenCall = rewriter.create<LLVM::CallOp>(
-            loc, lenFunc, ValueRange{adaptor.getBuffer()});
+            loc, rt.bytebufferLen, ValueRange{adaptor.getBuffer()});
         Value len = lenCall.getResult();
 
         // Compute end = ptr + len
@@ -397,30 +408,26 @@ struct WriteF64OpLowering : public OpConversionPattern<bf::WriteF64Op> {
 
 /// Lower bf.write.bytes to memcpy and cursor advance.
 struct WriteBytesOpLowering : public OpConversionPattern<bf::WriteBytesOp> {
-    using OpConversionPattern::OpConversionPattern;
+    const BFRuntimeFuncs &rt;
+    WriteBytesOpLowering(const TypeConverter &tc, MLIRContext *ctx, const BFRuntimeFuncs &rt)
+        : OpConversionPattern(tc, ctx), rt(rt) {}
 
     LogicalResult
     matchAndRewrite(WriteBytesOp op, OpAdaptor adaptor,
                     ConversionPatternRewriter &rewriter) const override {
         auto loc = op.getLoc();
-        auto module = op->getParentOfType<ModuleOp>();
         Type cursorType = getTypeConverter()->convertType(op.getType());
-
-        auto dataFunc = module.lookupSymbol<LLVM::LLVMFuncOp>("elm_bytebuffer_data");
-        auto lenFunc = module.lookupSymbol<LLVM::LLVMFuncOp>("elm_bytebuffer_len");
-        if (!dataFunc || !lenFunc)
-            return failure();
 
         Value ptr = extractPtr(rewriter, loc, adaptor.getCursor());
 
         // Get source data pointer
         auto srcDataCall = rewriter.create<LLVM::CallOp>(
-            loc, dataFunc, ValueRange{adaptor.getBytes()});
+            loc, rt.bytebufferData, ValueRange{adaptor.getBytes()});
         Value srcPtr = srcDataCall.getResult();
 
         // Get source length
         auto srcLenCall = rewriter.create<LLVM::CallOp>(
-            loc, lenFunc, ValueRange{adaptor.getBytes()});
+            loc, rt.bytebufferLen, ValueRange{adaptor.getBytes()});
         Value len = srcLenCall.getResult();
 
         // Extend len to i64 for memcpy
@@ -442,24 +449,21 @@ struct WriteBytesOpLowering : public OpConversionPattern<bf::WriteBytesOp> {
 
 /// Lower bf.write.utf8 to call @elm_utf8_copy and cursor advance.
 struct WriteUtf8OpLowering : public OpConversionPattern<bf::WriteUtf8Op> {
-    using OpConversionPattern::OpConversionPattern;
+    const BFRuntimeFuncs &rt;
+    WriteUtf8OpLowering(const TypeConverter &tc, MLIRContext *ctx, const BFRuntimeFuncs &rt)
+        : OpConversionPattern(tc, ctx), rt(rt) {}
 
     LogicalResult
     matchAndRewrite(WriteUtf8Op op, OpAdaptor adaptor,
                     ConversionPatternRewriter &rewriter) const override {
         auto loc = op.getLoc();
-        auto module = op->getParentOfType<ModuleOp>();
         Type cursorType = getTypeConverter()->convertType(op.getType());
-
-        auto copyFunc = module.lookupSymbol<LLVM::LLVMFuncOp>("elm_utf8_copy");
-        if (!copyFunc)
-            return failure();
 
         Value ptr = extractPtr(rewriter, loc, adaptor.getCursor());
 
         // Call elm_utf8_copy(string, ptr) -> bytesWritten
         auto copyCall = rewriter.create<LLVM::CallOp>(
-            loc, copyFunc, ValueRange{adaptor.getString(), ptr});
+            loc, rt.utf8Copy, ValueRange{adaptor.getString(), ptr});
         Value bytesWritten = copyCall.getResult();
 
         // Advance cursor by bytesWritten
@@ -473,20 +477,17 @@ struct WriteUtf8OpLowering : public OpConversionPattern<bf::WriteUtf8Op> {
 
 /// Lower bf.utf8_width to call @elm_utf8_width.
 struct Utf8WidthOpLowering : public OpConversionPattern<bf::Utf8WidthOp> {
-    using OpConversionPattern::OpConversionPattern;
+    const BFRuntimeFuncs &rt;
+    Utf8WidthOpLowering(const TypeConverter &tc, MLIRContext *ctx, const BFRuntimeFuncs &rt)
+        : OpConversionPattern(tc, ctx), rt(rt) {}
 
     LogicalResult
     matchAndRewrite(Utf8WidthOp op, OpAdaptor adaptor,
                     ConversionPatternRewriter &rewriter) const override {
         auto loc = op.getLoc();
-        auto module = op->getParentOfType<ModuleOp>();
-
-        auto widthFunc = module.lookupSymbol<LLVM::LLVMFuncOp>("elm_utf8_width");
-        if (!widthFunc)
-            return failure();
 
         auto result = rewriter.create<LLVM::CallOp>(
-            loc, widthFunc, ValueRange{adaptor.getString()});
+            loc, rt.utf8Width, ValueRange{adaptor.getString()});
         rewriter.replaceOp(op, result.getResult());
         return success();
     }
@@ -494,20 +495,17 @@ struct Utf8WidthOpLowering : public OpConversionPattern<bf::Utf8WidthOp> {
 
 /// Lower bf.bytes_width to call @elm_bytebuffer_len.
 struct BytesWidthOpLowering : public OpConversionPattern<bf::BytesWidthOp> {
-    using OpConversionPattern::OpConversionPattern;
+    const BFRuntimeFuncs &rt;
+    BytesWidthOpLowering(const TypeConverter &tc, MLIRContext *ctx, const BFRuntimeFuncs &rt)
+        : OpConversionPattern(tc, ctx), rt(rt) {}
 
     LogicalResult
     matchAndRewrite(BytesWidthOp op, OpAdaptor adaptor,
                     ConversionPatternRewriter &rewriter) const override {
         auto loc = op.getLoc();
-        auto module = op->getParentOfType<ModuleOp>();
-
-        auto lenFunc = module.lookupSymbol<LLVM::LLVMFuncOp>("elm_bytebuffer_len");
-        if (!lenFunc)
-            return failure();
 
         auto result = rewriter.create<LLVM::CallOp>(
-            loc, lenFunc, ValueRange{adaptor.getBuffer()});
+            loc, rt.bytebufferLen, ValueRange{adaptor.getBuffer()});
         rewriter.replaceOp(op, result.getResult());
         return success();
     }
@@ -883,33 +881,26 @@ struct ReadF64OpLowering : public OpConversionPattern<bf::ReadF64Op> {
 
 /// Lower bf.read.bytes to runtime call + cursor advance.
 struct ReadBytesOpLowering : public OpConversionPattern<bf::ReadBytesOp> {
-    using OpConversionPattern::OpConversionPattern;
+    const BFRuntimeFuncs &rt;
+    ReadBytesOpLowering(const TypeConverter &tc, MLIRContext *ctx, const BFRuntimeFuncs &rt)
+        : OpConversionPattern(tc, ctx), rt(rt) {}
 
     LogicalResult
     matchAndRewrite(ReadBytesOp op, OpAdaptor adaptor,
                     ConversionPatternRewriter &rewriter) const override {
         auto loc = op.getLoc();
-        auto module = op->getParentOfType<ModuleOp>();
         Type cursorType = getTypeConverter()->convertType(op.getNewCursor().getType());
-
-        auto allocFunc = module.lookupSymbol<LLVM::LLVMFuncOp>("elm_alloc_bytebuffer");
-        if (!allocFunc)
-            return failure();
 
         Value ptr = extractPtr(rewriter, loc, adaptor.getCursor());
 
         // Allocate new ByteBuffer
         auto allocCall = rewriter.create<LLVM::CallOp>(
-            loc, allocFunc, ValueRange{adaptor.getLen()});
+            loc, rt.allocBytebuffer, ValueRange{adaptor.getLen()});
         Value newBuffer = allocCall.getResult();
 
         // Get destination data pointer
-        auto dataFunc = module.lookupSymbol<LLVM::LLVMFuncOp>("elm_bytebuffer_data");
-        if (!dataFunc)
-            return failure();
-
         auto dataCall = rewriter.create<LLVM::CallOp>(
-            loc, dataFunc, ValueRange{newBuffer});
+            loc, rt.bytebufferData, ValueRange{newBuffer});
         Value dstPtr = dataCall.getResult();
 
         // Copy bytes: memcpy(dst, src, len)
@@ -932,24 +923,21 @@ struct ReadBytesOpLowering : public OpConversionPattern<bf::ReadBytesOp> {
 
 /// Lower bf.read.utf8 to runtime call + cursor advance.
 struct ReadUtf8OpLowering : public OpConversionPattern<bf::ReadUtf8Op> {
-    using OpConversionPattern::OpConversionPattern;
+    const BFRuntimeFuncs &rt;
+    ReadUtf8OpLowering(const TypeConverter &tc, MLIRContext *ctx, const BFRuntimeFuncs &rt)
+        : OpConversionPattern(tc, ctx), rt(rt) {}
 
     LogicalResult
     matchAndRewrite(ReadUtf8Op op, OpAdaptor adaptor,
                     ConversionPatternRewriter &rewriter) const override {
         auto loc = op.getLoc();
-        auto module = op->getParentOfType<ModuleOp>();
         Type cursorType = getTypeConverter()->convertType(op.getNewCursor().getType());
-
-        auto decodeFunc = module.lookupSymbol<LLVM::LLVMFuncOp>("elm_utf8_decode");
-        if (!decodeFunc)
-            return failure();
 
         Value ptr = extractPtr(rewriter, loc, adaptor.getCursor());
 
         // Call elm_utf8_decode(ptr, len) -> eco.value (0 on failure)
         auto decodeCall = rewriter.create<LLVM::CallOp>(
-            loc, decodeFunc, ValueRange{ptr, adaptor.getLen()});
+            loc, rt.utf8Decode, ValueRange{ptr, adaptor.getLen()});
         Value stringVal = decodeCall.getResult();
 
         // ok = (stringVal != 0)
@@ -969,27 +957,23 @@ struct ReadUtf8OpLowering : public OpConversionPattern<bf::ReadUtf8Op> {
 
 /// Lower bf.decoder.cursor.init - same as bf.cursor.init.
 struct DecoderCursorInitOpLowering : public OpConversionPattern<bf::DecoderCursorInitOp> {
-    using OpConversionPattern::OpConversionPattern;
+    const BFRuntimeFuncs &rt;
+    DecoderCursorInitOpLowering(const TypeConverter &tc, MLIRContext *ctx, const BFRuntimeFuncs &rt)
+        : OpConversionPattern(tc, ctx), rt(rt) {}
 
     LogicalResult
     matchAndRewrite(DecoderCursorInitOp op, OpAdaptor adaptor,
                     ConversionPatternRewriter &rewriter) const override {
         auto loc = op.getLoc();
-        auto module = op->getParentOfType<ModuleOp>();
-
-        auto dataFunc = module.lookupSymbol<LLVM::LLVMFuncOp>("elm_bytebuffer_data");
-        auto lenFunc = module.lookupSymbol<LLVM::LLVMFuncOp>("elm_bytebuffer_len");
-        if (!dataFunc || !lenFunc)
-            return failure();
 
         // Get data pointer
         auto dataCall = rewriter.create<LLVM::CallOp>(
-            loc, dataFunc, ValueRange{adaptor.getBytes()});
+            loc, rt.bytebufferData, ValueRange{adaptor.getBytes()});
         Value ptr = dataCall.getResult();
 
         // Get length
         auto lenCall = rewriter.create<LLVM::CallOp>(
-            loc, lenFunc, ValueRange{adaptor.getBytes()});
+            loc, rt.bytebufferLen, ValueRange{adaptor.getBytes()});
         Value len = lenCall.getResult();
 
         // Compute end = ptr + len
@@ -1043,9 +1027,9 @@ struct BFToLLVMPass : public PassWrapper<BFToLLVMPass, OperationPass<ModuleOp>> 
         ModuleOp module = getOperation();
         MLIRContext *ctx = &getContext();
 
-        // Ensure runtime functions are declared
+        // Ensure runtime functions are declared and cache their references
         OpBuilder builder(ctx);
-        ensureRuntimeFunctions(module, builder);
+        BFRuntimeFuncs rtFuncs = ensureRuntimeFunctions(module, builder);
 
         // Set up type converter
         BFTypeConverter typeConverter(ctx);
@@ -1058,29 +1042,29 @@ struct BFToLLVMPass : public PassWrapper<BFToLLVMPass, OperationPass<ModuleOp>> 
         // This includes eco dialect, func, arith, etc.
         target.markUnknownOpDynamicallyLegal([](Operation *op) { return true; });
 
-        // Populate patterns
+        // Populate patterns — patterns that need runtime functions get cached refs
         RewritePatternSet patterns(ctx);
 
+        // Patterns with cached runtime function references (no module.lookupSymbol)
+        patterns.add<AllocOpLowering>(typeConverter, ctx, rtFuncs);
+        patterns.add<CursorInitOpLowering>(typeConverter, ctx, rtFuncs);
+        patterns.add<DecoderCursorInitOpLowering>(typeConverter, ctx, rtFuncs);
+        patterns.add<WriteBytesOpLowering>(typeConverter, ctx, rtFuncs);
+        patterns.add<WriteUtf8OpLowering>(typeConverter, ctx, rtFuncs);
+        patterns.add<Utf8WidthOpLowering>(typeConverter, ctx, rtFuncs);
+        patterns.add<BytesWidthOpLowering>(typeConverter, ctx, rtFuncs);
+        patterns.add<ReadBytesOpLowering>(typeConverter, ctx, rtFuncs);
+        patterns.add<ReadUtf8OpLowering>(typeConverter, ctx, rtFuncs);
+
+        // Patterns that don't need runtime function lookups
         patterns.add<
-            // Allocation and cursor init
-            AllocOpLowering,
-            CursorInitOpLowering,
             CursorPtrOpLowering,
-            DecoderCursorInitOpLowering,
-            // Write operations (encoder)
             WriteU8OpLowering,
             WriteU16OpLowering,
             WriteU32OpLowering,
             WriteF32OpLowering,
             WriteF64OpLowering,
-            WriteBytesOpLowering,
-            WriteUtf8OpLowering,
-            // Width operations
-            Utf8WidthOpLowering,
-            BytesWidthOpLowering,
-            // Bounds check
             RequireOpLowering,
-            // Read operations (decoder)
             ReadU8OpLowering,
             ReadI8OpLowering,
             ReadU16OpLowering,
@@ -1088,9 +1072,7 @@ struct BFToLLVMPass : public PassWrapper<BFToLLVMPass, OperationPass<ModuleOp>> 
             ReadU32OpLowering,
             ReadI32OpLowering,
             ReadF32OpLowering,
-            ReadF64OpLowering,
-            ReadBytesOpLowering,
-            ReadUtf8OpLowering
+            ReadF64OpLowering
         >(typeConverter, ctx);
 
         if (failed(applyPartialConversion(module, target, std::move(patterns))))

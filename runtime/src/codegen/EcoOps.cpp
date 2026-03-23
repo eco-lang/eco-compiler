@@ -11,6 +11,7 @@
 #include "mlir/IR/OpImplementation.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/SymbolTable.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 
@@ -18,24 +19,63 @@ using namespace mlir;
 using namespace eco;
 
 //===----------------------------------------------------------------------===//
-// Helper Functions for Verifiers
+// SymbolUserOpInterface: verifySymbolUses
 //===----------------------------------------------------------------------===//
 
-namespace {
-
-/// Check if a function symbol exists anywhere in the module (func::FuncOp
-/// or any other symbol). Used only for CGEN_057 kernel existence checks.
-/// Returns true if a symbol with the given name is found.
-static bool symbolExists(Operation *anchor, FlatSymbolRefAttr sym) {
-  if (!sym) return false;
-  auto module = anchor->getParentOfType<ModuleOp>();
-  if (!module) return false;
-  // Use SymbolTable::lookupSymbolIn which is O(N) but this is only called
-  // for kernel function checks, not for all ops.
-  return SymbolTable::lookupNearestSymbolFrom(module, sym) != nullptr;
+/// Helper: verify a FlatSymbolRefAttr resolves to a symbol in the module.
+static LogicalResult verifySymRef(Operation *op, FlatSymbolRefAttr sym,
+                                  SymbolTableCollection &symbolTable,
+                                  StringRef desc) {
+  if (!sym) return success();
+  if (!symbolTable.lookupNearestSymbolFrom(op, sym))
+    return op->emitOpError("references undefined ") << desc << " '" << sym.getValue() << "'";
+  return success();
 }
 
-} // end anonymous namespace
+LogicalResult CallOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
+  if (auto callee = getCalleeAttr())
+    return verifySymRef(*this, callee, symbolTable, "function");
+  return success();
+}
+
+LogicalResult PapCreateOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
+  if (failed(verifySymRef(*this, getFunctionAttr(), symbolTable, "function")))
+    return failure();
+  // CGEN_057: kernel functions must have declarations
+  auto funcName = getFunctionAttr().getValue();
+  if (funcName.starts_with("Elm_Kernel_")) {
+    if (!symbolTable.lookupNearestSymbolFrom<func::FuncOp>(*this, getFunctionAttr()))
+      return emitOpError("kernel function '") << funcName
+             << "' has no func.func declaration; compiler must emit one (CGEN_057)";
+  }
+  if (auto fast = getOperation()->getAttrOfType<FlatSymbolRefAttr>("_fast_evaluator"))
+    return verifySymRef(*this, fast, symbolTable, "fast evaluator");
+  return success();
+}
+
+LogicalResult PapExtendOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
+  if (auto fast = getOperation()->getAttrOfType<FlatSymbolRefAttr>("_fast_evaluator"))
+    return verifySymRef(*this, fast, symbolTable, "fast evaluator");
+  return success();
+}
+
+LogicalResult AllocateClosureOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
+  return verifySymRef(*this, getFunctionAttr(), symbolTable, "function");
+}
+
+LogicalResult GlobalOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
+  if (auto init = getInitializerAttr())
+    return verifySymRef(*this, init, symbolTable, "initializer");
+  return success();
+}
+
+LogicalResult LoadGlobalOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
+  return verifySymRef(*this, getGlobalAttr(), symbolTable, "global");
+}
+
+LogicalResult StoreGlobalOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
+  return verifySymRef(*this, getGlobalAttr(), symbolTable, "global");
+}
 
 //===----------------------------------------------------------------------===//
 // Operation Verifiers
@@ -325,19 +365,7 @@ LogicalResult PapCreateOp::verify() {
     }
   }
 
-  // CGEN_057: Kernel functions must have func.func is_kernel declarations.
-  // Signature validation is deferred to CheckEcoClosureCapturesPass to avoid
-  // O(N) module walks on every verifier invocation during conversion.
-  {
-    auto fastEvalAttr = getOperation()->getAttrOfType<FlatSymbolRefAttr>("_fast_evaluator");
-    auto funcSym = fastEvalAttr ? fastEvalAttr : getFunctionAttr();
-    auto funcName = getFunctionAttr().getValue();
-    if (funcName.starts_with("Elm_Kernel_") && !symbolExists(getOperation(), funcSym)) {
-      return emitOpError("kernel function '") << funcName
-             << "' has no func.func declaration; compiler must emit one "
-             << "(CGEN_057)";
-    }
-  }
+  // CGEN_057 kernel existence check is now in verifySymbolUses (O(1) cached).
 
   // REP_CLOSURE_001: Bool (i1) must NOT be captured at closure boundary
   for (size_t i = 0; i < captured.size(); ++i) {
@@ -406,72 +434,9 @@ LogicalResult PapExtendOp::verify() {
     return success();
   }
 
-  // === Typed mode: remaining_arity present ===
-  // Walk closure-def chain to find root papCreate for evaluator-parameter checks.
-  //
-  // IMPORTANT: We must stop walking when we cross a STAGE SATURATION BOUNDARY.
-  // When a papExtend saturates its stage (remaining_arity == newargs.size()),
-  // the result is a NEW closure (the function's return value), not a partial
-  // application of the original function. Subsequent papExtends operate on this
-  // new closure, which has its own arity from the returned function.
-
-  int64_t remainingArity = remainingArityAttr.getInt();
-
-  unsigned alreadyApplied = 0;
-  Operation *currentDef = getClosure().getDefiningOp();
-  FlatSymbolRefAttr funcSym;
-  int64_t arityFromCreate = -1;
-
-  while (currentDef) {
-    if (auto priorExt = dyn_cast<PapExtendOp>(currentDef)) {
-      // Prior papExtend in generic mode breaks the chain — can't trace through
-      // runtime-determined saturation.
-      auto priorRemainingAttr = priorExt.getRemainingArityAttr();
-      if (!priorRemainingAttr) {
-        break;
-      }
-
-      // Check if this papExtend saturated its stage (CGEN_052 stage boundary)
-      int64_t priorRemaining = priorRemainingAttr.getInt();
-      unsigned priorNewargs = priorExt.getNewargs().size();
-
-      if (priorRemaining == static_cast<int64_t>(priorNewargs)) {
-        // Stage saturation boundary - the result is a NEW closure returned by
-        // calling the function, not a partial application. We cannot trace
-        // further back through the original papCreate chain.
-        break;
-      }
-
-      alreadyApplied += priorNewargs;
-      currentDef = priorExt.getClosure().getDefiningOp();
-      continue;
-    }
-    if (auto create = dyn_cast<PapCreateOp>(currentDef)) {
-      alreadyApplied += create.getNumCaptured();
-      // Use fast evaluator for parameter checking if available (matches papCreate verifier).
-      // The $clo generic clone has (closure, params...) signature which doesn't include
-      // captures as explicit params, while $cap has (captures..., params...) matching arity.
-      auto fastEval = create.get_fastEvaluatorAttr();
-      funcSym = fastEval ? fastEval : create.getFunctionAttr();
-      arityFromCreate = create.getArity();
-      break;
-    }
-    // Non-PAP closure source (block arg, external op) - can't trace further.
-    break;
-  }
-
-  // Signature validation is deferred to CheckEcoClosureCapturesPass to avoid
-  // O(N) module walks on every verifier invocation during conversion.
-  // Only check CGEN_057 kernel existence here.
-  if (funcSym && arityFromCreate >= 0) {
-    auto funcName = funcSym.getValue();
-    if (funcName.starts_with("Elm_Kernel_") && !symbolExists(getOperation(), funcSym)) {
-      return emitOpError("kernel function '") << funcName
-             << "' has no func.func declaration; compiler must emit one "
-             << "(CGEN_057)";
-    }
-  }
-
+  // Typed mode: remaining_arity present.
+  // CGEN_057 kernel existence is checked by PapCreateOp::verifySymbolUses (O(1)).
+  // Signature validation is in CheckEcoClosureCapturesPass.
   return success();
 }
 
@@ -492,7 +457,6 @@ LogicalResult ProjectClosureOp::verify() {
 
 LogicalResult CallOp::verify() {
   auto operands = getOperands();
-  auto results = getResults();
   auto calleeAttr = getCalleeAttr();
   auto remainingArityAttr = getRemainingArityAttr();
 
