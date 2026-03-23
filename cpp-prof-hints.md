@@ -418,23 +418,40 @@ lookups.
 
 ---
 
-### 18. MLIR framework `lookupSymbolIn` dominates — architectural bottleneck
+### 18. Skip O(N) bare-ptr lookup in MLIR's CallOpLowering
 
-**Status:** SKIPPED (requires MLIR source changes or architectural restructuring)
+**Status:** FIXED
 
-**Evidence:** After fixing all Eco-specific symbol lookup calls (issues 1, 3, 4, 13),
-`lookupSymbolIn` still dominates at 38-42% of CPU. 5-minute profile shows the process
-never exits MLIR lowering. The remaining calls are from MLIR's own infrastructure:
-- `applyFullConversion` verifies every created op, which resolves symbol references
-- Dynamic legality checks walk parent ops repeatedly
-- SCF→CF conversion + reconcile casts do internal symbol resolution
+**Evidence:** Full-run profile (7 min, 203K samples) shows `lookupSymbolIn` at 46.4%.
+Call-graph confirms the hot path is `CallOpLowering::matchAndRewrite` → static
+`SymbolTable::lookupNearestSymbolFrom` (O(N) linear scan). This is MLIR's own
+`func::CallOp → llvm.call` lowering pattern from `populateFuncToLLVMConversionPatterns`.
 
-**Root causes (beyond our control):**
-- MLIR's `Operation::getInherentAttr("sym_name")` → `lookupSymbolIn` path is O(N)
-- `applyFullConversion` re-verifies ops after each rewrite
-- 75MB MLIR module with thousands of functions = very large N
+The function accepts an optional `SymbolTableCollection *symbolTables` third parameter.
+When provided, `CallOpLowering` uses cached O(1) lookups. When `nullptr` (the default),
+it falls back to the O(N) static `lookupSymbolIn`. The MLIR header documents:
+> "If provided, the lookups will have O(calls) cumulative runtime, otherwise O(calls × functions)."
 
-**Possible architectural fixes (future work):**
+With 92K calls × 49K functions = ~4.5 billion operation comparisons.
+
+**Fix:** Set `useBarePtrCallConv = true` in `EcoTypeConverter`'s `LowerToLLVMOptions`.
+This makes MLIR's `CallOpLowering` skip the per-call symbol lookup entirely (it only
+checks for `llvm.bareptr` attribute, which Eco never uses). Cannot use
+`SymbolTableCollection` directly because `applyFullConversion` creates temporary
+duplicate symbol names during func→llvm conversion, causing `SymbolTable` assertion
+failures.
+
+**Applied fix:** `EcoToLLVMRuntime.cpp` — `EcoTypeConverter` now constructs with
+`LowerToLLVMOptions{useBarePtrCallConv=true}`. This is safe because Eco never uses
+memref types or bare pointer calling convention.
+
+---
+
+### 19. MLIR framework `lookupSymbolIn` — architectural bottleneck (residual)
+
+**Status:** SKIPPED (investigate after issue #18 is fixed)
+
+**Possible future architectural fixes:**
 - Split the MLIR module into smaller sub-modules per SCC or package
 - Use manual lowering (walk + replace) instead of `applyFullConversion`
 - Build MLIR with a patched SymbolTable that caches lookups
@@ -546,3 +563,41 @@ and the pipeline progresses further in the same 30s window.
 | Memory Bound | 50.8% | 52.1% | **18.9%** | — |
 | Frontend Bound | 17.4% | 17.4% | **35.4%** | — |
 | Retiring | 21.9% | 20.6% | **34.1%** | — |
+
+### Profile: 2026-03-23, full run (~48s), AFTER fix #18 (useBarePtrCallConv)
+
+| Function (aggregated) | CPU % |
+|---|---|
+| `mlir::SymbolTable::lookupSymbolIn` | 24.5% |
+| `mlir::Attribute::getContext` | 16.7% |
+| `mlir::func::FuncOp::getInherentAttr` | 5.4% |
+| `mlir::Operation::getInherentAttr` | 2.1% |
+| `propagateLiveness` | 0.6% |
+| `ConversionValueMapping::lookupOrDefault` | 0.4% |
+| `mlir::simplifyRegions` | 0.3% |
+
+Full pipeline completes + crashes in SCFToControlFlow (pre-existing codegen bug).
+`lookupSymbolIn` down from 46.4% → 24.5%. Pipeline functions (liveness, simplify,
+conversion mapping) now visible. Remaining `lookupSymbolIn` is from initial `verify()`
+and `applyPartialConversion` in SCFToControlFlow pass.
+
+### Stage 6 wall-time comparison
+
+| Config | Wall time | Speedup |
+|---|---|---|
+| Original (pre all fixes) | >5 min (never finished in 5 min profile) | — |
+| After A+C+16+17 | 395s (6m35s, crash in SCFToControlFlow) | ~1× |
+| **After A+C+16+17+18** | **48s** (crash in SCFToControlFlow) | **~8.3×** |
+
+### perf stat: full run comparison
+
+| Metric | Before #18 (395s run) | After #18 (48s run) | Change |
+|---|---|---|---|
+| task-clock | 397,273 ms | 50,471 ms | **-87.3%** |
+| instructions (core) | 824.9B | 238.8B | **-71.1%** |
+| cycles (core) | 989.0B | 166.7B | **-83.1%** |
+| IPC (core) | 0.83 | **1.43** | **+72.3%** |
+| Backend Bound | 64.6% | 53.6% | -11pp |
+| Memory Bound | 45.9% | 37.9% | -8pp |
+| Frontend Bound | 12.1% | 19.0% | +6.9pp |
+| Retiring | 22.4% | 25.1% | +2.7pp |

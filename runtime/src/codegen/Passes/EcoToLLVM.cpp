@@ -268,7 +268,12 @@ struct EcoToLLVMPass : public PassWrapper<EcoToLLVMPass, OperationPass<ModuleOp>
         // Add kernel function lowering first (higher priority)
         populateEcoFuncPatterns(typeConverter, patterns);
 
-        // Add func-to-llvm conversion patterns for non-kernel functions
+        // Add func-to-llvm conversion patterns for non-kernel functions.
+        // NOTE: MLIR's CallOpLowering does an O(N) symbol lookup per func.call
+        // to check for the llvm.bareptr attribute. Since Eco never uses bare
+        // pointer calling convention (no memref types), we can't pass a
+        // SymbolTableCollection (it asserts on duplicate names during
+        // applyFullConversion). Instead, we'll add our own call lowering below.
         populateFuncToLLVMConversionPatterns(typeConverter, patterns);
 
         // Add call op conversion patterns

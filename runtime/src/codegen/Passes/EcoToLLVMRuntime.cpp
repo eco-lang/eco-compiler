@@ -15,7 +15,18 @@ using namespace eco::detail;
 // EcoTypeConverter Implementation
 //===----------------------------------------------------------------------===//
 
-EcoTypeConverter::EcoTypeConverter(MLIRContext *ctx) : LLVMTypeConverter(ctx) {
+static LowerToLLVMOptions ecoLLVMOptions(MLIRContext *ctx) {
+    LowerToLLVMOptions opts(ctx);
+    // Eco never uses memref or bare-pointer calling convention. Setting this
+    // to true makes MLIR's CallOpLowering skip the per-call O(N) symbol table
+    // lookup that checks for the llvm.bareptr attribute on each callee.
+    // With 92K calls × 49K functions this eliminates ~4.5B comparisons.
+    opts.useBarePtrCallConv = true;
+    return opts;
+}
+
+EcoTypeConverter::EcoTypeConverter(MLIRContext *ctx)
+    : LLVMTypeConverter(ctx, ecoLLVMOptions(ctx)) {
     // Convert eco.value -> i64 (tagged pointer representation).
     // This implements CGEN_012 for the eco.value type.
     addConversion([ctx](eco::ValueType type) {
