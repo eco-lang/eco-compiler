@@ -4,10 +4,9 @@
 - **elm-test**: 11667 passed, 1 failed
 - **E2E**: 923 passed, 16 failed
 
-## Current (after this session)
-- **elm-test**: 11667 passed, 1 failed (unchanged — pre-existing CGEN_056 SKI combinator result type)
-- **E2E**: 925 passed, 10 failed (unchanged count but staging fix applied: 2 partial code fixes)
-- **Code changes**: Staging generic_apply fallback in Expr.elm + closureBodyStageArities fix in MonoGlobalOptimize.elm
+## Current (2026-03-23)
+- **elm-test**: 11667 passed, 1 failed
+- **E2E**: 927 passed, 16 failed (was 925/18 before Category 6 fix)
 
 ## Fix Order (by root cause, earliest compiler phase first)
 
@@ -16,8 +15,11 @@
 | 1 | Invalid Elm: parse/canonicalize/nitpick | CaseNegativeIntTest, LetDestructConsTest, LetShadowingTest, AsPatternFuncArgTest | Tests used invalid Elm (neg patterns, cons in let, shadowing, non-exhaustive arg) | FIXED (deleted) |
 | 2 | LLVM Translation (unrealized_conversion_cast) | PartialAppCaptureTypesTest | ProjectClosureOpLowering missing i16 truncation for Char | FIXED |
 | 3 | Kernel raw-ptr vs HPointer (SIGSEGV) | PolyEscapeRecordTest | C++ kernels boxInt/boxFloat returned raw pointers, not HPointers | FIXED |
-| 4 | Closure arity mismatch (SIGABRT) | CombinatorBComposeTest, CombinatorBSumMapTest, CombinatorCConsTest, CombinatorCFlipTest, CombinatorListStringTest, CombinatorTPipeTest, CombinatorTThrushTest, CombinatorTest, CombinatorSpMulTest + elm-test SKI | TWO bugs: (1) staging uses type-derived arities that don't match runtime (FIXED via generic_apply fallback), (2) monomorphizer picks wrong k specialization for combinators | SKIPPED |
-| 5 | LetDestructFuncTupleTest (Missing pattern) | LetDestructFuncTupleTest | Standalone accessor gets generic type; record unboxed_bitmap mismatch | SKIPPED |
+| 4 | Closure arity mismatch (SIGABRT) | CombinatorBComposeTest, CombinatorBSumMapTest, CombinatorCConsTest, CombinatorCFlipTest, CombinatorListStringTest, CombinatorTPipeTest, CombinatorTThrushTest, CombinatorTest, CombinatorSpMulTest + elm-test SKI | TWO bugs: (1) staging uses type-derived arities that don't match runtime (FIXED via generic_apply fallback), (2) monomorphizer picks wrong k specialization for combinators | SKIPPED (3 attempts — requires deep monomorphizer type unification change) |
+| 5 | LetDestructFuncTupleTest (SIGSEGV) | LetDestructFuncTupleTest | Standalone accessor gets generic type; record unboxed_bitmap mismatch | SKIPPED (3 attempts — requires Specialize.elm accessor type propagation) |
+| 6 | Branch operand mismatch in cf.SwitchOp | CaseSharedBranchTest, CaseReturningLambdaTest, LargeDispatchCaseTest, NestedCaseReturnTest | CaseOpLowering uses mergeBlock as SwitchOp default with 0 operands, but mergeBlock expects 1 | FIXED (2/4 tests pass; 2 have deeper pre-existing bugs) |
+| 7 | scf.while do-region has multiple blocks | TailRecCaseMultiBranchTypesTest, TailRecDecoderLoopTest, TailRecMultiCaseWhileTest, TailRecTypeTraversalTest | Elm compiler emits scf.while with nested string eco.case in do-region | SKIPPED (3 attempts) |
+| 8 | Unmasked: closure arity + SIGSEGV | CaseReturningLambdaTest (closure_call_saturated), LargeDispatchCaseTest (SIGSEGV) | Previously masked by Category 6 branch bug; now reveal deeper combinator/staging bugs | SKIPPED (same root causes as Cat 4/5) |
 
 ---
 
@@ -101,6 +103,45 @@ The monomorphizer picks wrong specialization of `k` for combinator `b = s (k s) 
 **Impact**: After staging fix, tests crash with SIGSEGV instead of SIGABRT because `k_$_8(i64, i64) → i64` evaluator wrapper tries to unbox a closure HPointer as an Int.
 
 **Required fix**: Deep change to the monomorphizer's type unification for combinator-composed partial applications, ensuring intermediate types (like `k`'s first param being `Int→Int`) are correctly propagated through the unification chain.
+
+---
+
+## FIXED: Category 6 — Branch operand mismatch in cf.SwitchOp default
+
+**Tests**: CaseSharedBranchTest (PASS), NestedCaseReturnTest (PASS), CaseReturningLambdaTest (now combinator bug), LargeDispatchCaseTest (now SIGSEGV)
+**Error**: `branch has 0 operands for successor #0, but target block has 1`
+
+**Fix**: In `EcoToLLVMControlFlow.cpp:694`, changed general ADT/bool `cf::SwitchOp` to use `caseBlocks.back()` as default destination instead of `mergeBlock`. This matches the pattern used by `lowerIntegerOrCharCase`. Elm cases are exhaustive, so the default is just the last alternative.
+
+**File**: `runtime/src/codegen/Passes/EcoToLLVMControlFlow.cpp`
+
+---
+
+## SKIPPED: Category 7 — scf.while do-region has multiple blocks
+
+**Tests**: TailRecCaseMultiBranchTypesTest, TailRecDecoderLoopTest, TailRecMultiCaseWhileTest, TailRecTypeTraversalTest
+**Error**: `'scf.while' op expects region #1 to have 0 or 1 blocks`
+**Attempts**: 1
+
+**Root Cause**: The **Elm compiler** (not the C++ backend) emits `scf.while` directly in its
+MLIR codegen for tail-recursive functions. When the loop body contains an `eco.case` with
+`case_kind = "str"` (string case), this case cannot be lowered to a single-block construct —
+it needs `cf.cond_br` chains with runtime string comparison calls. This creates multiple
+blocks in the scf.while do-region, violating MLIR's structural invariant.
+
+**Attempt 1**: Tried to reject in `JoinpointNormalization.cpp:hasSimpleCaseDispatch()`, but
+the `scf.while` is emitted directly by the Elm compiler — it never goes through joinpoint
+normalization or JoinpointToScfWhilePattern in the C++ pipeline.
+
+**Why it can't be fixed in C++ backend**: `applyFullConversion` requires all ops to be legal
+at the end. The `eco.case` inside `scf.while` creates a circular dependency:
+- If we lower `eco.case` first → multi-block do-region → invalid `scf.while`
+- If we defer `eco.case` → `scf.while` is lowered to CF → `eco.case` is now illegal (not inside SCF)
+
+**Required fix**: In the Elm compiler's MLIR codegen (`TailRec.elm`), when the tail-recursive
+loop body contains a string case, emit `eco.joinpoint` + `eco.jump` instead of `scf.while`.
+The C++ `EcoControlFlowToSCF` pass will then handle SCF lowering for eligible joinpoints,
+correctly excluding ones with nested string cases.
 
 ---
 

@@ -684,17 +684,24 @@ struct CaseOpLowering : public OpConversionPattern<CaseOp> {
 
         rewriter.setInsertionPointToEnd(currentBlock);
 
-        SmallVector<int32_t> caseValuesI32;
-        for (int64_t v : caseValues) {
-            caseValuesI32.push_back(static_cast<int32_t>(v));
+        // Use last case block as the default destination (same pattern as
+        // lowerIntegerOrCharCase). Elm cases are exhaustive, so the default
+        // is just the last alternative. Using mergeBlock as default would
+        // require passing block arguments that match mergeBlock's signature.
+        Block *defaultBlock = caseBlocks.back();
+        SmallVector<int32_t> switchCaseValues;
+        SmallVector<Block *> switchCaseDests;
+        for (size_t i = 0; i < caseBlocks.size() - 1; ++i) {
+            switchCaseValues.push_back(static_cast<int32_t>(caseValues[i]));
+            switchCaseDests.push_back(caseBlocks[i]);
         }
 
-        SmallVector<ValueRange> caseOperands(caseBlocks.size(), ValueRange{});
+        SmallVector<ValueRange> caseOperands(switchCaseDests.size(), ValueRange{});
 
         rewriter.create<cf::SwitchOp>(
-            loc, ctorTag, mergeBlock, ValueRange{},
-            ArrayRef<int32_t>(caseValuesI32),
-            caseBlocks, caseOperands);
+            loc, ctorTag, defaultBlock, ValueRange{},
+            ArrayRef<int32_t>(switchCaseValues),
+            switchCaseDests, caseOperands);
 
         Value originalScrutinee = op->getOperand(0);
 
