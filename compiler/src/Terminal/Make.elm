@@ -88,6 +88,7 @@ type alias FlagsData =
     , buildDir : Maybe String
     , kernelPackage : Maybe Pkg.Name
     , localPackage : Maybe ( Pkg.Name, FilePath )
+    , textMlir : Bool
     }
 
 
@@ -157,37 +158,38 @@ type alias BuildContext =
     , desiredMode : DesiredMode
     , details : Details.Details
     , localPackage : Maybe ( Pkg.Name, FilePath )
+    , textMlir : Bool
     }
 
 
 runHelp : String -> List String -> Reporting.Style -> Flags -> Task Never (Result Exit.Make ())
 runHelp root paths style (Flags flagsData) =
-    BW.withScope (runHelpWithScope root paths style flagsData.debug flagsData.optimize flagsData.withSourceMaps flagsData.output flagsData.docs flagsData.showPackageErrors flagsData.buildDir flagsData.kernelPackage flagsData.localPackage)
+    BW.withScope (runHelpWithScope root paths style flagsData.debug flagsData.optimize flagsData.withSourceMaps flagsData.output flagsData.docs flagsData.showPackageErrors flagsData.buildDir flagsData.kernelPackage flagsData.localPackage flagsData.textMlir)
 
 
-runHelpWithScope : FilePath -> List String -> Reporting.Style -> Bool -> Bool -> Bool -> Maybe Output -> Maybe FilePath -> Bool -> Maybe String -> Maybe Pkg.Name -> Maybe ( Pkg.Name, FilePath ) -> BW.Scope -> Task Never (Result Exit.Make ())
-runHelpWithScope root paths style debug optimize withSourceMaps maybeOutput maybeDocs showPackageErrors maybeBuildDir maybeKernelPackage maybeLocalPackage scope =
+runHelpWithScope : FilePath -> List String -> Reporting.Style -> Bool -> Bool -> Bool -> Maybe Output -> Maybe FilePath -> Bool -> Maybe String -> Maybe Pkg.Name -> Maybe ( Pkg.Name, FilePath ) -> Bool -> BW.Scope -> Task Never (Result Exit.Make ())
+runHelpWithScope root paths style debug optimize withSourceMaps maybeOutput maybeDocs showPackageErrors maybeBuildDir maybeKernelPackage maybeLocalPackage textMlir scope =
     Stuff.withRootLockBuildDir root
         maybeBuildDir
         (Task.run
             (getMode debug optimize
-                |> Task.andThen (loadDetailsAndBuild root paths style withSourceMaps maybeOutput maybeDocs showPackageErrors maybeBuildDir maybeKernelPackage maybeLocalPackage scope)
+                |> Task.andThen (loadDetailsAndBuild root paths style withSourceMaps maybeOutput maybeDocs showPackageErrors maybeBuildDir maybeKernelPackage maybeLocalPackage textMlir scope)
             )
         )
 
 
-loadDetailsAndBuild : FilePath -> List String -> Reporting.Style -> Bool -> Maybe Output -> Maybe FilePath -> Bool -> Maybe String -> Maybe Pkg.Name -> Maybe ( Pkg.Name, FilePath ) -> BW.Scope -> DesiredMode -> Task Exit.Make ()
-loadDetailsAndBuild root paths style withSourceMaps maybeOutput maybeDocs showPackageErrors maybeBuildDir maybeKernelPackage maybeLocalPackage scope desiredMode =
+loadDetailsAndBuild : FilePath -> List String -> Reporting.Style -> Bool -> Maybe Output -> Maybe FilePath -> Bool -> Maybe String -> Maybe Pkg.Name -> Maybe ( Pkg.Name, FilePath ) -> Bool -> BW.Scope -> DesiredMode -> Task Exit.Make ()
+loadDetailsAndBuild root paths style withSourceMaps maybeOutput maybeDocs showPackageErrors maybeBuildDir maybeKernelPackage maybeLocalPackage textMlir scope desiredMode =
     Task.eio Exit.MakeBadDetails (Details.load style scope root maybeBuildDir (shouldUseTypedOpt maybeOutput) showPackageErrors maybeLocalPackage)
-        |> Task.andThen (buildWithDetails root paths style withSourceMaps maybeOutput maybeDocs maybeBuildDir maybeKernelPackage maybeLocalPackage desiredMode)
+        |> Task.andThen (buildWithDetails root paths style withSourceMaps maybeOutput maybeDocs maybeBuildDir maybeKernelPackage maybeLocalPackage textMlir desiredMode)
 
 
-buildWithDetails : FilePath -> List String -> Reporting.Style -> Bool -> Maybe Output -> Maybe FilePath -> Maybe String -> Maybe Pkg.Name -> Maybe ( Pkg.Name, FilePath ) -> DesiredMode -> Details.Details -> Task Exit.Make ()
-buildWithDetails root paths style withSourceMaps maybeOutput maybeDocs maybeBuildDir maybeKernelPackage maybeLocalPackage desiredMode details =
+buildWithDetails : FilePath -> List String -> Reporting.Style -> Bool -> Maybe Output -> Maybe FilePath -> Maybe String -> Maybe Pkg.Name -> Maybe ( Pkg.Name, FilePath ) -> Bool -> DesiredMode -> Details.Details -> Task Exit.Make ()
+buildWithDetails root paths style withSourceMaps maybeOutput maybeDocs maybeBuildDir maybeKernelPackage maybeLocalPackage textMlir desiredMode details =
     let
         ctx : BuildContext
         ctx =
-            BuildContext root style withSourceMaps maybeOutput maybeDocs maybeBuildDir desiredMode details maybeLocalPackage
+            BuildContext root style withSourceMaps maybeOutput maybeDocs maybeBuildDir desiredMode details maybeLocalPackage textMlir
     in
     case paths of
         [] ->
@@ -285,11 +287,9 @@ handleMlirOutput ctx target artifacts =
             let
                 rootNames =
                     Build.getRootNames artifacts
-            in
-            Task.io
-                (Utils.dirCreateDirectoryIfMissing True (Utils.fpTakeDirectory target))
-                |> Task.andThen
-                    (\_ ->
+
+                writeTask =
+                    if ctx.textMlir then
                         Generate.writeMonoMlirStreaming
                             ctx.withSourceMaps
                             0
@@ -299,8 +299,21 @@ handleMlirOutput ctx target artifacts =
                             ctx.details
                             artifacts
                             target
-                            |> Task.mapError Exit.MakeBadGenerate
-                    )
+
+                    else
+                        Generate.writeMonoMlirBytecode
+                            ctx.withSourceMaps
+                            0
+                            ctx.root
+                            ctx.maybeBuildDir
+                            ctx.localPackage
+                            ctx.details
+                            artifacts
+                            target
+            in
+            Task.io
+                (Utils.dirCreateDirectoryIfMissing True (Utils.fpTakeDirectory target))
+                |> Task.andThen (\_ -> writeTask |> Task.mapError Exit.MakeBadGenerate)
                 |> Task.andThen
                     (\_ ->
                         Task.io (Reporting.reportGenerate ctx.style rootNames target)

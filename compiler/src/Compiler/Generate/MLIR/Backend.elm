@@ -1,4 +1,4 @@
-module Compiler.Generate.MLIR.Backend exposing (backend, generateMlirModule, streamMlirToWriter)
+module Compiler.Generate.MLIR.Backend exposing (backend, generateMlirModule, streamMlirToWriter, writeMlirBytecode)
 
 {-| MLIR code generation backend for the Monomorphized IR.
 
@@ -6,11 +6,12 @@ This backend generates MLIR from fully specialized, monomorphic code.
 All polymorphism has been resolved and layout information is embedded
 in the types.
 
-@docs backend, generateMlirModule, streamMlirToWriter
+@docs backend, generateMlirModule, streamMlirToWriter, writeMlirBytecode
 
 -}
 
 import Array exposing (Array)
+import Bytes exposing (Bytes)
 import Compiler.AST.Monomorphized as Mono
 import Compiler.Generate.CodeGen as CodeGen
 import Compiler.Generate.MLIR.Context as Ctx
@@ -19,12 +20,15 @@ import Compiler.Generate.MLIR.Lambdas as Lambdas
 import Compiler.Generate.MLIR.TypeTable as TypeTable
 import Compiler.Generate.Mode as Mode
 import Dict
+import Eco.File
+import Mlir.Bytecode.Encode as BytecodeEncode
 import Mlir.Loc as Loc
-import Set
 import Mlir.Mlir exposing (MlirModule, MlirOp)
 import Mlir.Pretty as Pretty
+import Set
 import System.IO as SysIO
 import Task exposing (Task)
+import Utils.Main as Utils
 import Utils.Task.Extra as TaskExtra
 
 
@@ -113,7 +117,7 @@ generateMlirModule mode monoGraph0 =
         typeTableOp =
             TypeTable.generateTypeTable finalCtx
     in
-    { body = typeTableOp :: List.reverse kernelDeclOps ++ lambdaOps ++ ops ++ mainOps
+    { body = lambdaOps ++ ops ++ mainOps ++ List.reverse kernelDeclOps ++ [ typeTableOp ]
     , loc = Loc.unknown
     }
 
@@ -257,3 +261,27 @@ writeOps ops writeChunk =
 
         _ ->
             writeChunk (ops |> List.map Pretty.ppTopLevelOp |> String.concat)
+
+
+
+-- ====== BYTECODE OUTPUT ======
+
+
+{-| Generate MLIR bytecode and write it to a file.
+Builds the full MlirModule in memory, encodes to bytecode, then writes.
+-}
+writeMlirBytecode :
+    Mode.Mode
+    -> Mono.MonoGraph
+    -> String
+    -> Task Never ()
+writeMlirBytecode mode monoGraph target =
+    let
+        mlirModule =
+            generateMlirModule mode monoGraph
+
+        bytecodeBytes =
+            BytecodeEncode.encodeModule mlirModule
+    in
+    Utils.dirCreateDirectoryIfMissing True (Utils.fpTakeDirectory target)
+        |> Task.andThen (\_ -> Eco.File.writeBytes target bytecodeBytes)

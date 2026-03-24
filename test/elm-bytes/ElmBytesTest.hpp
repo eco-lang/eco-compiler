@@ -337,7 +337,7 @@ inline CompileResult compileElmToMlir(const std::string& elmPath, const std::str
     // Compile Elm to MLIR using guida
     // Include --builddir flag when buildDir is specified for parallel compilation
     std::string compileCmd = "cd \"" + testDir + "\" && node \"" + guidaPath +
-                             "\" make \"" + elmPath + "\" --output=\"" + result.mlirPath + "\"";
+                             "\" make \"" + elmPath + "\" --output=\"" + result.mlirPath + "\"" + getTextMlirFlag();
     if (!buildDir.empty()) {
         compileCmd += " --builddir=\"" + buildDir + "\"";
     }

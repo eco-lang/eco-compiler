@@ -1,5 +1,5 @@
 module Compiler.Generate.CodeGen exposing
-    ( Output(..), outputToString
+    ( Output(..), outputToString, outputToBytes
     , SourceMaps(..)
     , Mains
     , CodeGen, MonoCodeGen, MonoCodeGenConfig
@@ -17,7 +17,7 @@ It supports three different backend types based on the level of type information
 
 # Output Types
 
-@docs Output, outputToString
+@docs Output, outputToString, outputToBytes
 
 
 # Source Maps
@@ -36,6 +36,8 @@ It supports three different backend types based on the level of type information
 
 -}
 
+import Bytes exposing (Bytes)
+import Bytes.Encode
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.Optimized as Opt
@@ -54,6 +56,7 @@ import System.TypeCheck.IO as IO
 -}
 type Output
     = TextOutput String
+    | BinaryOutput Bytes
 
 
 {-| Extract the string content from an Output value.
@@ -63,6 +66,21 @@ outputToString output =
     case output of
         TextOutput s ->
             s
+
+        BinaryOutput _ ->
+            ""
+
+
+{-| Extract binary content from an Output value.
+-}
+outputToBytes : Output -> Bytes
+outputToBytes output =
+    case output of
+        BinaryOutput b ->
+            b
+
+        TextOutput _ ->
+            Bytes.Encode.encode (Bytes.Encode.sequence [])
 
 
 {-| The CodeGen interface that standard backends must implement for full program generation, REPL evaluation, and browser REPL endpoints.

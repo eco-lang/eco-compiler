@@ -3,7 +3,7 @@ module Builder.Generate exposing
     , dev, debug
     , prod
     , repl
-    , MonoBuildResult, writeMonoMlirStreaming
+    , MonoBuildResult, writeMonoMlirStreaming, writeMonoMlirBytecode
     )
 
 {-| Code generation orchestration for the Elm compiler.
@@ -36,7 +36,7 @@ produce JavaScript, MLIR, or other target code.
 
 # Native MLIR Streaming
 
-@docs MonoBuildResult, writeMonoMlirStreaming
+@docs MonoBuildResult, writeMonoMlirStreaming, writeMonoMlirBytecode
 
 -}
 
@@ -814,6 +814,28 @@ writeMonoMlirStreaming _ _ root maybeBuildDir maybeLocal details artifacts targe
                     (\writeChunk ->
                         MLIR.streamMlirToWriter mode monoGraph writeChunk
                     )
+                    |> Task.mapError never
+            )
+
+
+{-| Generate MLIR bytecode and write it to a file.
+Uses the in-memory bytecode encoder for a more compact binary format.
+-}
+writeMonoMlirBytecode :
+    Bool
+    -> Int
+    -> FilePath
+    -> Maybe String
+    -> Maybe ( Pkg.Name, FilePath )
+    -> Details.Details
+    -> Build.Artifacts
+    -> FilePath
+    -> Task Exit.Generate ()
+writeMonoMlirBytecode _ _ root maybeBuildDir maybeLocal details artifacts target =
+    buildMonoGraph root maybeBuildDir maybeLocal details artifacts
+        |> Task.andThen
+            (\{ monoGraph, mode } ->
+                MLIR.writeMlirBytecode mode monoGraph target
                     |> Task.mapError never
             )
 

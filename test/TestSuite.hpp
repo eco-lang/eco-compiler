@@ -7,7 +7,16 @@
 #include <optional>
 #include <string>
 #include <unistd.h>
+#include <cstdlib>
 #include <vector>
+
+/// Returns " --text-mlir" if the ECO_TEXT_MLIR environment variable is set,
+/// otherwise returns "" (bytecode is the default).
+/// Use: ECO_TEXT_MLIR=1 cmake --build build --target full
+inline std::string getTextMlirFlag() {
+    const char* env = std::getenv("ECO_TEXT_MLIR");
+    return (env && std::string(env) != "0") ? " --text-mlir" : "";
+}
 
 namespace Testing {
 

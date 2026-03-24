@@ -336,8 +336,9 @@ inline CompileResult compileElmToMlir(const std::string& elmPath, const std::str
 
     // Compile Elm to MLIR using guida
     // Include --builddir flag when buildDir is specified for parallel compilation
+    // Set ECO_TEXT_MLIR=1 to use text format instead of bytecode
     std::string compileCmd = "cd \"" + elmTestDir + "\" && node \"" + guidaPath +
-                             "\" make \"" + elmPath + "\" --output=\"" + result.mlirPath + "\"";
+                             "\" make \"" + elmPath + "\" --output=\"" + result.mlirPath + "\"" + getTextMlirFlag();
     if (!buildDir.empty()) {
         compileCmd += " --builddir=\"" + buildDir + "\"";
     }
@@ -573,7 +574,7 @@ inline void runElmTest(const std::string& elmPath) {
     // Step 1: Compile Elm to MLIR using guida
     // Must run from directory containing elm.json
     std::string compileCmd = "cd \"" + elmTestDir + "\" && node \"" + guidaPath +
-                             "\" make \"" + elmPath + "\" --output=\"" + mlirPath + "\"";
+                             "\" make \"" + elmPath + "\" --output=\"" + mlirPath + "\"" + getTextMlirFlag();
 
     auto [compileExitCode, compileOutput] = executeCommand(compileCmd);
 

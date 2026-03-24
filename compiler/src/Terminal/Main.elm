@@ -293,6 +293,10 @@ make =
                         Make.localPackage
                         "Resolve a package dependency from a local filesystem path (e.g. eco/kernel=../eco-kernel-cpp)."
                     )
+                |> Terminal.more
+                    (Terminal.onOff "text-mlir"
+                        "Output MLIR in text format instead of binary bytecode (for debugging)."
+                    )
     in
     Terminal.Command
         { name = "make"
@@ -307,7 +311,7 @@ make =
                     chunks
                     [ Chomp.chompMultiple (Chomp.pure identity) Terminal.elmFile Terminal.parseElmFile
                     ]
-                    (Chomp.pure (\debug_ optimize_ withSourceMaps_ output_ report_ docs_ showPackageErrors_ buildDir_ kernelPackage_ localPackage_ -> Make.Flags { debug = debug_, optimize = optimize_, withSourceMaps = withSourceMaps_, output = output_, report = report_, docs = docs_, showPackageErrors = showPackageErrors_, buildDir = buildDir_, kernelPackage = kernelPackage_, localPackage = localPackage_ })
+                    (Chomp.pure (\debug_ optimize_ withSourceMaps_ output_ report_ docs_ showPackageErrors_ buildDir_ kernelPackage_ localPackage_ textMlir_ -> Make.Flags { debug = debug_, optimize = optimize_, withSourceMaps = withSourceMaps_, output = output_, report = report_, docs = docs_, showPackageErrors = showPackageErrors_, buildDir = buildDir_, kernelPackage = kernelPackage_, localPackage = localPackage_, textMlir = textMlir_ })
                         |> Chomp.apply (Chomp.chompOnOffFlag "debug")
                         |> Chomp.apply (Chomp.chompOnOffFlag "optimize")
                         |> Chomp.apply (Chomp.chompOnOffFlag "sourcemaps")
@@ -318,6 +322,7 @@ make =
                         |> Chomp.apply (Chomp.chompNormalFlag "builddir" Make.buildDir Make.parseBuildDir)
                         |> Chomp.apply (Chomp.chompNormalFlag "kernel-package" Make.kernelPackage Make.parseKernelPackage)
                         |> Chomp.apply (Chomp.chompNormalFlag "local-package" Make.localPackage Make.parseLocalPackage)
+                        |> Chomp.apply (Chomp.chompOnOffFlag "text-mlir")
                         |> Chomp.andThen
                             (\value ->
                                 Chomp.checkForUnknownFlags makeFlags

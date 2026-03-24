@@ -244,7 +244,7 @@ inline CompileResult compileElmToMlir(const std::string& testDir, const std::str
     std::string guidaPath = getGuidaPath();
 
     std::string compileCmd = "cd \"" + testDir + "\" && node \"" + guidaPath +
-                             "\" make \"" + elmPath + "\" --output=\"" + result.mlirPath + "\"";
+                             "\" make \"" + elmPath + "\" --output=\"" + result.mlirPath + "\"" + getTextMlirFlag();
     if (!buildDir.empty()) {
         compileCmd += " --builddir=\"" + buildDir + "\"";
     }
