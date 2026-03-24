@@ -58,11 +58,8 @@ encodeModule mod =
         dialectSectionBody =
             DialectSection.encode stringTable dialectRegistry
 
-        attrTypeSectionBody =
-            AttrType.encodeData stringTable attrTypeTable
-
-        attrTypeOffsetSectionBody =
-            AttrType.encodeOffsets stringTable dialectRegistry attrTypeTable
+        ( attrTypeSectionBody, attrTypeOffsetSectionBody ) =
+            AttrType.encodeDataAndOffsets stringTable dialectRegistry attrTypeTable
 
         irSectionBody =
             IrSection.encode dialectRegistry attrTypeTable mod

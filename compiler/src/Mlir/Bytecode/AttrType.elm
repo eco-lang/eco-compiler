@@ -5,8 +5,7 @@ module Mlir.Bytecode.AttrType exposing
     , typeIndex
     , locIndex
     , dictAttrIndex
-    , encodeData
-    , encodeOffsets
+    , encodeDataAndOffsets
     )
 
 {-| Attribute and Type section encoding for MLIR bytecode.
@@ -432,92 +431,148 @@ collectBlock blk acc =
 -- ==== Encoding ====
 
 
-{-| Compute the grouped ordering of entries: attr groups first, then type groups.
-Each dialect gets a separate group for attrs and a separate group for types.
-Both encodeData and encodeOffsets must use the same order.
+{-| A pre-encoded entry with its dialect, encoded bytes, size, and custom flag.
+Computed once and used for both data and offset sections.
 -}
-groupedEntries : AttrTypeTable -> List (List ( String, Entry ))
-groupedEntries (AttrTypeTable tbl) =
+type alias EncodedEntry =
+    { dialect : String
+    , encoded : Bytes.Bytes
+    , size : Int
+    , hasCustom : Bool
+    }
+
+
+{-| Compute grouped, pre-encoded entries. This is the single source of truth
+for both encodeData and encodeOffsets. Each entry is encoded once and its
+size cached, avoiding redundant encoding.
+-}
+computeEncodedGroups : StringTable -> AttrTypeTable -> List (List EncodedEntry)
+computeEncodedGroups st ((AttrTypeTable tbl) as table) =
     let
-        attrGroups = groupEntriesByDialect tbl.attrEntries
-        typeGroups = groupEntriesByDialect tbl.typeEntries
+        encodeOne ( dialect, entry ) =
+            let
+                enc =
+                    encodeEntry st table entry
 
-        attrGroupLists =
-            attrGroups |> List.map (\( d, entries_ ) -> List.map (\e -> ( d, e )) entries_)
+                bytes =
+                    BE.encode enc
+            in
+            { dialect = dialect
+            , encoded = bytes
+            , size = Bytes.width bytes
+            , hasCustom =
+                case entry of
+                    EAsmType _ _ ->
+                        False
 
-        typeGroupLists =
-            typeGroups |> List.map (\( d, entries_ ) -> List.map (\e -> ( d, e )) entries_)
+                    _ ->
+                        True
+            }
+
+        -- Encode all entries
+        encodedAttrs =
+            List.map encodeOne tbl.attrEntries
+
+        encodedTypes =
+            List.map encodeOne tbl.typeEntries
+
+        -- Group by dialect using Dict (O(N) instead of O(N²))
+        groupByDialect items =
+            let
+                -- Build Dict String (List EncodedEntry) — entries in reverse order
+                dict =
+                    List.foldl
+                        (\item acc ->
+                            Dict.update item.dialect
+                                (\existing ->
+                                    case existing of
+                                        Just list ->
+                                            Just (item :: list)
+
+                                        Nothing ->
+                                            Just [ item ]
+                                )
+                                acc
+                        )
+                        Dict.empty
+                        items
+
+                -- Collect dialect keys in insertion order
+                dialectOrder =
+                    List.foldl
+                        (\item acc ->
+                            if List.member item.dialect acc then
+                                acc
+
+                            else
+                                acc ++ [ item.dialect ]
+                        )
+                        []
+                        items
+            in
+            dialectOrder
+                |> List.map
+                    (\d ->
+                        Dict.get d dict
+                            |> Maybe.withDefault []
+                            |> List.reverse
+                    )
+
+        attrGroups =
+            groupByDialect encodedAttrs
+
+        typeGroups =
+            groupByDialect encodedTypes
     in
-    attrGroupLists ++ typeGroupLists
+    attrGroups ++ typeGroups
 
 
-groupEntriesByDialect : List ( String, Entry ) -> List ( String, List Entry )
-groupEntriesByDialect items =
-    List.foldl
-        (\( dialect, entry ) acc ->
-            updateOrAppendEntry dialect entry acc
-        )
-        []
-        items
-
-
-updateOrAppendEntry : String -> Entry -> List ( String, List Entry ) -> List ( String, List Entry )
-updateOrAppendEntry dialect entry groups =
-    case groups of
-        [] ->
-            [ ( dialect, [ entry ] ) ]
-
-        ( d, entries_ ) :: rest ->
-            if d == dialect then
-                ( d, entries_ ++ [ entry ] ) :: rest
-
-            else
-                ( d, entries_ ) :: updateOrAppendEntry dialect entry rest
-
-
-mergeGroupKeys : List ( String, a ) -> List ( String, b ) -> List String
-mergeGroupKeys a b =
+{-| Encode both the data and offset sections in a single pass.
+The groups are computed once and reused for both sections.
+Returns (dataSectionBody, offsetSectionBody).
+-}
+encodeDataAndOffsets : StringTable -> DialectRegistry -> AttrTypeTable -> ( BE.Encoder, BE.Encoder )
+encodeDataAndOffsets st dialectRegistry ((AttrTypeTable tbl) as table) =
     let
-        aKeys =
-            List.map Tuple.first a
+        groups =
+            computeEncodedGroups st table
 
-        bKeys =
-            List.map Tuple.first b
+        -- Data section: concatenated encoded bytes
+        dataEncoder =
+            BE.sequence
+                (groups |> List.concatMap (List.map (\e -> BE.bytes e.encoded)))
 
-        addIfMissing key acc =
-            if List.member key acc then
-                acc
-
-            else
-                acc ++ [ key ]
-    in
-    List.foldl addIfMissing [] (aKeys ++ bKeys)
-
-
-lookupGroup : String -> List ( String, List Entry ) -> List Entry
-lookupGroup dialect groups =
-    groups
-        |> List.filterMap
-            (\( d, entries_ ) ->
-                if d == dialect then
-                    Just entries_
-
-                else
-                    Nothing
-            )
-        |> List.concat
-
-
-encodeData : StringTable -> AttrTypeTable -> BE.Encoder
-encodeData st ((AttrTypeTable tbl) as table) =
-    let
-        groups = groupedEntries table
-        encoders =
+        -- Offset section: dialect groups with sizes
+        groupEncoders =
             groups
-                |> List.concatMap
-                    (List.map (\( _, entry ) -> encodeEntry st table entry))
+                |> List.filterMap
+                    (\groupEntries ->
+                        case groupEntries of
+                            [] ->
+                                Nothing
+
+                            first :: _ ->
+                                let
+                                    dialectIdx =
+                                        DialectSection.dialectIndex first.dialect dialectRegistry
+
+                                    numElements =
+                                        List.length groupEntries
+
+                                    offsetEncoders =
+                                        groupEntries
+                                            |> List.map
+                                                (\e ->
+                                                    encodeVarInt (e.size * 2 + (if e.hasCustom then 1 else 0))
+                                                )
+                                in
+                                Just (BE.sequence (encodeVarInt dialectIdx :: encodeVarInt numElements :: offsetEncoders))
+                    )
+
+        offsetEncoder =
+            BE.sequence (encodeVarInt tbl.numAttrs :: encodeVarInt tbl.numTypes :: groupEncoders)
     in
-    BE.sequence encoders
+    ( dataEncoder, offsetEncoder )
 
 
 encodeEntry : StringTable -> AttrTypeTable -> Entry -> BE.Encoder
@@ -712,42 +767,3 @@ typeWidth ty =
 -- ==== Offset section ====
 
 
-encodeOffsets : StringTable -> DialectRegistry -> AttrTypeTable -> BE.Encoder
-encodeOffsets st dialectRegistry ((AttrTypeTable tbl) as table) =
-    let
-        groups = groupedEntries table
-
-        groupEncoders =
-            groups
-                |> List.filterMap
-                    (\groupEntries ->
-                        case groupEntries of
-                            [] ->
-                                Nothing
-
-                            ( dialect, _ ) :: _ ->
-                                let
-                                    dialectIdx =
-                                        DialectSection.dialectIndex dialect dialectRegistry
-
-                                    numElements =
-                                        List.length groupEntries
-
-                                    offsetEncoders =
-                                        groupEntries
-                                            |> List.map
-                                                (\( _, entry ) ->
-                                                    let
-                                                        enc = encodeEntry st table entry
-                                                        size = Bytes.width (BE.encode enc)
-                                                        hasCustom = case entry of
-                                                            EAsmType _ _ -> False
-                                                            _ -> True
-                                                    in
-                                                    encodeVarInt (size * 2 + (if hasCustom then 1 else 0))
-                                                )
-                                in
-                                Just (BE.sequence (encodeVarInt dialectIdx :: encodeVarInt numElements :: offsetEncoders))
-                    )
-    in
-    BE.sequence (encodeVarInt tbl.numAttrs :: encodeVarInt tbl.numTypes :: groupEncoders)
