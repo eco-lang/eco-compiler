@@ -590,7 +590,14 @@ Each pass and subsystem has comprehensive documentation in [`design_docs/theory/
 |----------|-------------|
 | [heap_representation_theory.md](design_docs/theory/heap_representation_theory.md) | Four representation models, unboxing, layouts |
 | [mlir_verification_theory.md](design_docs/theory/mlir_verification_theory.md) | MLIR verifiers and invariant checking |
+| [mlir_bytecode_theory.md](design_docs/theory/mlir_bytecode_theory.md) | MLIR bytecode format, streaming encoder |
 | [platform_scheduler_theory.md](design_docs/theory/platform_scheduler_theory.md) | Platform effect dispatch, task scheduling, process model |
+
+### Experimental
+
+| Document | Description |
+|----------|-------------|
+| [monodirect_theory.md](design_docs/theory/monodirect_theory.md) | Solver-directed monomorphization (experimental, not production) |
 
 ## Invariant Testing Infrastructure
 
