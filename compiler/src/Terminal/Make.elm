@@ -301,7 +301,7 @@ handleMlirOutput ctx target artifacts =
                             target
 
                     else
-                        Generate.writeMonoMlirBytecode
+                        Generate.writeMonoMlirStreamingBytecode
                             ctx.withSourceMaps
                             0
                             ctx.root
