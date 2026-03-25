@@ -4,30 +4,23 @@ module SourceIR.KernelCtorArgCases exposing (expectSuite)
 
 Targets PostSolve.postSolveCallWithCtorKernelArgs and related type
 unification code, plus KernelAbi type conversion for complex types.
+
 -}
 
 import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
-        ( TypedDef
-        , UnionDef
-        , callExpr
-        , caseExpr
+        ( callExpr
         , ctorExpr
         , intExpr
-        , lambdaExpr
         , listExpr
         , makeKernelModule
         , makeModuleWithTypedDefsUnionsAliases
-        , pCtor
-        , pVar
         , qualVarExpr
         , strExpr
-        , tLambda
         , tType
         , tVar
         , tupleExpr
-        , varExpr
         )
 import Compiler.BulkCheck exposing (TestCase, bulkCheck)
 import Expect exposing (Expectation)
@@ -54,22 +47,26 @@ testCases expectFn =
 
 tupleWithKernel : (Src.Module -> Expectation) -> (() -> Expectation)
 tupleWithKernel expectFn _ =
-    expectFn (makeKernelModule "testValue"
-        (tupleExpr
-            (callExpr (qualVarExpr "Elm.Kernel.Basics" "add") [ intExpr 1, intExpr 2 ])
-            (callExpr (qualVarExpr "Elm.Kernel.Basics" "mul") [ intExpr 3, intExpr 4 ])
-        ))
+    expectFn
+        (makeKernelModule "testValue"
+            (tupleExpr
+                (callExpr (qualVarExpr "Elm.Kernel.Basics" "add") [ intExpr 1, intExpr 2 ])
+                (callExpr (qualVarExpr "Elm.Kernel.Basics" "mul") [ intExpr 3, intExpr 4 ])
+            )
+        )
 
 
 listOfKernelResults : (Src.Module -> Expectation) -> (() -> Expectation)
 listOfKernelResults expectFn _ =
-    expectFn (makeKernelModule "testValue"
-        (listExpr
-            [ callExpr (qualVarExpr "Elm.Kernel.Basics" "add") [ intExpr 1, intExpr 2 ]
-            , callExpr (qualVarExpr "Elm.Kernel.Basics" "sub") [ intExpr 5, intExpr 3 ]
-            , callExpr (qualVarExpr "Elm.Kernel.Basics" "mul") [ intExpr 2, intExpr 2 ]
-            ]
-        ))
+    expectFn
+        (makeKernelModule "testValue"
+            (listExpr
+                [ callExpr (qualVarExpr "Elm.Kernel.Basics" "add") [ intExpr 1, intExpr 2 ]
+                , callExpr (qualVarExpr "Elm.Kernel.Basics" "sub") [ intExpr 5, intExpr 3 ]
+                , callExpr (qualVarExpr "Elm.Kernel.Basics" "mul") [ intExpr 2, intExpr 2 ]
+                ]
+            )
+        )
 
 
 kernelInLetThenCtor : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -122,24 +119,30 @@ customCtorWithKernel expectFn _ =
 
 nestedKernelTuple : (Src.Module -> Expectation) -> (() -> Expectation)
 nestedKernelTuple expectFn _ =
-    expectFn (makeKernelModule "testValue"
-        (tupleExpr
-            (tupleExpr (callExpr (qualVarExpr "Elm.Kernel.Basics" "add") [ intExpr 1, intExpr 2 ]) (intExpr 3))
-            (callExpr (qualVarExpr "Elm.Kernel.Basics" "mul") [ intExpr 4, intExpr 5 ])
-        ))
+    expectFn
+        (makeKernelModule "testValue"
+            (tupleExpr
+                (tupleExpr (callExpr (qualVarExpr "Elm.Kernel.Basics" "add") [ intExpr 1, intExpr 2 ]) (intExpr 3))
+                (callExpr (qualVarExpr "Elm.Kernel.Basics" "mul") [ intExpr 4, intExpr 5 ])
+            )
+        )
 
 
 kernelIdentityTuple : (Src.Module -> Expectation) -> (() -> Expectation)
 kernelIdentityTuple expectFn _ =
-    expectFn (makeKernelModule "testValue"
-        (callExpr (qualVarExpr "Elm.Kernel.Basics" "identity")
-            [ tupleExpr (intExpr 1) (strExpr "hello") ]
-        ))
+    expectFn
+        (makeKernelModule "testValue"
+            (callExpr (qualVarExpr "Elm.Kernel.Basics" "identity")
+                [ tupleExpr (intExpr 1) (strExpr "hello") ]
+            )
+        )
 
 
 kernelIdentityRecordTuple : (Src.Module -> Expectation) -> (() -> Expectation)
 kernelIdentityRecordTuple expectFn _ =
-    expectFn (makeKernelModule "testValue"
-        (callExpr (qualVarExpr "Elm.Kernel.Basics" "identity")
-            [ listExpr [ tupleExpr (intExpr 1) (intExpr 2), tupleExpr (intExpr 3) (intExpr 4) ] ]
-        ))
+    expectFn
+        (makeKernelModule "testValue"
+            (callExpr (qualVarExpr "Elm.Kernel.Basics" "identity")
+                [ listExpr [ tupleExpr (intExpr 1) (intExpr 2), tupleExpr (intExpr 3) (intExpr 4) ] ]
+            )
+        )

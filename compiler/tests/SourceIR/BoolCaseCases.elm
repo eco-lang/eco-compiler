@@ -3,41 +3,34 @@ module SourceIR.BoolCaseCases exposing (expectSuite)
 {-| Test cases for boolean case expressions and if-with-terminated-branch.
 
 Targets:
-- MLIR Expr findBoolBranches/generateBoolFanOutWithJumps
-- MLIR Expr generateIfWithTerminatedBranch/Else
-- Decision tree optimization for Bool pattern matching
+
+  - MLIR Expr findBoolBranches/generateBoolFanOutWithJumps
+  - MLIR Expr generateIfWithTerminatedBranch/Else
+  - Decision tree optimization for Bool pattern matching
+
 -}
 
 import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
-        ( TypedDef
-        , UnionDef
-        , binopsExpr
+        ( binopsExpr
         , boolExpr
         , callExpr
         , caseExpr
-        , ctorExpr
-        , define
         , ifExpr
         , intExpr
-        , lambdaExpr
-        , letExpr
         , listExpr
         , makeKernelModule
         , makeModuleWithDefs
         , makeModuleWithTypedDefs
-        , makeModuleWithTypedDefsUnionsAliases
         , pAnything
         , pCtor
         , pInt
         , pVar
-        , qualVarExpr
         , recordExpr
         , strExpr
         , tLambda
         , tType
-        , tVar
         , varExpr
         )
 import Compiler.BulkCheck exposing (TestCase, bulkCheck)
@@ -79,7 +72,8 @@ caseOnBool expectFn _ =
     let
         modul =
             makeModuleWithDefs "Test"
-                [ ( "classify", [ pVar "b" ]
+                [ ( "classify"
+                  , [ pVar "b" ]
                   , caseExpr (varExpr "b")
                         [ ( pCtor "True" [], intExpr 1 )
                         , ( pCtor "False" [], intExpr 0 )
@@ -219,7 +213,8 @@ caseWithRecordResults expectFn _ =
     let
         modul =
             makeModuleWithDefs "Test"
-                [ ( "pick", [ pVar "n" ]
+                [ ( "pick"
+                  , [ pVar "n" ]
                   , caseExpr (varExpr "n")
                         [ ( pInt 0, recordExpr [ ( "x", intExpr 0 ), ( "y", intExpr 0 ) ] )
                         , ( pAnything, recordExpr [ ( "x", intExpr 1 ), ( "y", intExpr 1 ) ] )
@@ -259,4 +254,4 @@ stringEscapeQuote expectFn _ =
 
 stringUnicode : (Src.Module -> Expectation) -> (() -> Expectation)
 stringUnicode expectFn _ =
-    expectFn (makeKernelModule "testValue" (strExpr "hello \u{1F600} world"))
+    expectFn (makeKernelModule "testValue" (strExpr "hello 😀 world"))

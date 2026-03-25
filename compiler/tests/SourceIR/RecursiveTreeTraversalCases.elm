@@ -24,7 +24,6 @@ import Compiler.AST.SourceBuilder
         , intExpr
         , lambdaExpr
         , letExpr
-        , listExpr
         , makeModuleWithTypedDefsUnionsAliases
         , pAnything
         , pCtor
@@ -92,10 +91,11 @@ treeUnion =
 
 
 {-| countNodes tree = case tree of
-        Leaf -> 0
-        Node l _ r -> 1 + countNodes l + countNodes r
+Leaf -> 0
+Node l \_ r -> 1 + countNodes l + countNodes r
 
 Test with Leaf.
+
 -}
 countNodesLeaf : (Src.Module -> Expectation) -> (() -> Expectation)
 countNodesLeaf expectFn _ =
@@ -187,10 +187,11 @@ countNodesNested expectFn _ =
 
 
 {-| sumTree tree = case tree of
-        Leaf -> 0
-        Node l val r -> sumTree l + val + sumTree r
+Leaf -> 0
+Node l val r -> sumTree l + val + sumTree r
 
 Test with Leaf.
+
 -}
 sumTreeLeaf : (Src.Module -> Expectation) -> (() -> Expectation)
 sumTreeLeaf expectFn _ =
@@ -281,13 +282,14 @@ sumTreeNested expectFn _ =
 
 
 {-| maxDepth tree = case tree of
-        Leaf -> 0
-        Node l _ r ->
-            let dl = maxDepth l
-                dr = maxDepth r
-            in 1 + (if dl > dr then dl else dr)
+Leaf -> 0
+Node l \_ r ->
+let dl = maxDepth l
+dr = maxDepth r
+in 1 + (if dl > dr then dl else dr)
 
 Tests recursive traversal with let bindings and conditional accumulation.
+
 -}
 treeDepth : (Src.Module -> Expectation) -> (() -> Expectation)
 treeDepth expectFn _ =
@@ -352,13 +354,14 @@ treeDepth expectFn _ =
 
 
 {-| curried : Int -> Int -> Int
-curried x = \y -> x + y
+curried x = \\y -> x + y
 
 applyPartial : (Int -> Int -> Int) -> Int -> (Int -> Int)
 applyPartial f a = f a
 
 Test: applyPartial curried 3 returns a closure, then applied to 4 = 7.
 Tests that sourceArityForCallee uses first-stage arity, not total arity.
+
 -}
 papExtendMultiStage : (Src.Module -> Expectation) -> (() -> Expectation)
 papExtendMultiStage expectFn _ =
@@ -409,10 +412,11 @@ papExtendMultiStage expectFn _ =
 {-| flip : (a -> b -> c) -> b -> a -> c
 flip f b a = f a b
 
-curried x = \y -> x + y
-testValue = flip curried 10 3  -- curried 3 10 = 13
+curried x = \\y -> x + y
+testValue = flip curried 10 3 -- curried 3 10 = 13
 
 Tests papExtend arity through a flip combinator with a multi-stage function.
+
 -}
 papExtendFlip : (Src.Module -> Expectation) -> (() -> Expectation)
 papExtendFlip expectFn _ =
@@ -467,10 +471,11 @@ papExtendFlip expectFn _ =
 
 
 {-| type Tagged = Tagged Bool Tree
-extractBool (Tagged b _) = b
+extractBool (Tagged b \_) = b
 
 Tests single-constructor type wrapping Bool alongside Tree (another custom type),
 ensuring findSingleCtorUnboxedField distinguishes them correctly.
+
 -}
 singleCtorBoolWithTree : (Src.Module -> Expectation) -> (() -> Expectation)
 singleCtorBoolWithTree expectFn _ =

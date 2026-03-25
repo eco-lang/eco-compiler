@@ -17,7 +17,6 @@ are considered equal if they appear in the same structural position.
 import Array
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.Source as Src
-import Compiler.Data.BitSet as BitSet
 import Dict exposing (Dict)
 import Expect exposing (Expectation)
 import SourceIR.Suite.StandardTestSuites as StandardTestSuites
@@ -174,7 +173,7 @@ normalizedSpecKeyStr global monoType maybeLambda =
 expectGraphsMatch : Src.Module -> Expectation
 expectGraphsMatch srcModule =
     case ( Pipeline.runToMono srcModule, Pipeline.runToMonoDirect srcModule ) of
-        ( Err monoErr, _ ) ->
+        ( Err _, _ ) ->
             -- If Mono fails, skip comparison (not a MonoDirect issue)
             Expect.pass
 
@@ -772,37 +771,6 @@ compareTypeListAlpha path expected actual =
             )
 
 
-{-| Coerce MVar \_ CEcoValue to a canonical placeholder and recursively
-coerce nested types. Both MVar CEcoValue and non-primitive types compile
-to eco.value, so this allows comparing MonoGraphs where one path specializes
-more aggressively than the other.
--}
-coerceCEcoValue : Mono.MonoType -> Mono.MonoType
-coerceCEcoValue monoType =
-    case monoType of
-        Mono.MVar _ Mono.CEcoValue ->
-            Mono.MVar "☐" Mono.CEcoValue
-
-        Mono.MList elem ->
-            Mono.MList (coerceCEcoValue elem)
-
-        Mono.MFunction args result ->
-            Mono.MFunction (List.map coerceCEcoValue args) (coerceCEcoValue result)
-
-        Mono.MTuple elems ->
-            Mono.MTuple (List.map coerceCEcoValue elems)
-
-        Mono.MRecord fields ->
-            Mono.MRecord (Dict.map (\_ t -> coerceCEcoValue t) fields)
-
-        Mono.MCustom canonical name args ->
-            Mono.MCustom canonical name (List.map coerceCEcoValue args)
-
-        -- Primitives and leaf types pass through
-        _ ->
-            monoType
-
-
 {-| Coerce ALL leaf types to a canonical placeholder for spec key matching.
 Since MonoDirect may leave MVar CEcoValue where Monomorphize resolves to a
 concrete type (even unboxable ones like Int), we normalize all leaf types to
@@ -1057,7 +1025,7 @@ compareExpr ctx path expected actual =
                 ++ compareDestructor ctx (path ++ ".destr") eDestr aDestr
                 ++ compareExpr ctx (path ++ ".body") eBody aBody
 
-        ( Mono.MonoCase eName eLabel eDecider eJumps eType, Mono.MonoCase aName aLabel aDecider aJumps aType ) ->
+        ( Mono.MonoCase eName _ eDecider eJumps eType, Mono.MonoCase aName _ aDecider aJumps aType ) ->
             compareTypeAlpha (path ++ ".type") eType aType
                 ++ (if eName /= aName then
                         [ path ++ ".caseName: " ++ eName ++ " vs " ++ aName ]
@@ -1306,29 +1274,24 @@ compareClosureInfo ctx path eInfo aInfo =
 
 compareCallInfo : String -> Mono.CallInfo -> Mono.CallInfo -> List String
 compareCallInfo path eInfo aInfo =
-    let
-        diffs =
-            []
-                ++ (if eInfo.stageArities /= aInfo.stageArities then
-                        [ path ++ ".stageArities: " ++ listIntToString eInfo.stageArities ++ " vs " ++ listIntToString aInfo.stageArities ]
+    (if eInfo.stageArities /= aInfo.stageArities then
+        [ path ++ ".stageArities: " ++ listIntToString eInfo.stageArities ++ " vs " ++ listIntToString aInfo.stageArities ]
 
-                    else
-                        []
-                   )
-                ++ (if eInfo.isSingleStageSaturated /= aInfo.isSingleStageSaturated then
-                        [ path ++ ".isSingleStageSaturated: " ++ boolToString eInfo.isSingleStageSaturated ++ " vs " ++ boolToString aInfo.isSingleStageSaturated ]
+     else
+        []
+    )
+        ++ (if eInfo.isSingleStageSaturated /= aInfo.isSingleStageSaturated then
+                [ path ++ ".isSingleStageSaturated: " ++ boolToString eInfo.isSingleStageSaturated ++ " vs " ++ boolToString aInfo.isSingleStageSaturated ]
 
-                    else
-                        []
-                   )
-                ++ (if eInfo.initialRemaining /= aInfo.initialRemaining then
-                        [ path ++ ".initialRemaining: " ++ String.fromInt eInfo.initialRemaining ++ " vs " ++ String.fromInt aInfo.initialRemaining ]
+            else
+                []
+           )
+        ++ (if eInfo.initialRemaining /= aInfo.initialRemaining then
+                [ path ++ ".initialRemaining: " ++ String.fromInt eInfo.initialRemaining ++ " vs " ++ String.fromInt aInfo.initialRemaining ]
 
-                    else
-                        []
-                   )
-    in
-    diffs
+            else
+                []
+           )
 
 
 listIntToString : List Int -> String
@@ -1386,7 +1349,7 @@ comparePath path expected actual =
             )
                 ++ compareTypeAlpha (path ++ ".rootType") eType aType
 
-        ( Mono.MonoIndex eIdx eKind eType eInner, Mono.MonoIndex aIdx aKind aType aInner ) ->
+        ( Mono.MonoIndex eIdx _ eType eInner, Mono.MonoIndex aIdx _ aType aInner ) ->
             (if eIdx /= aIdx then
                 [ path ++ ".index: " ++ String.fromInt eIdx ++ " vs " ++ String.fromInt aIdx ]
 
@@ -1453,11 +1416,11 @@ compareDecider ctx path expected actual =
         ( Mono.Leaf eChoice, Mono.Leaf aChoice ) ->
             compareChoice ctx (path ++ ".leaf") eChoice aChoice
 
-        ( Mono.Chain eTests eSuccess eFailure, Mono.Chain aTests aSuccess aFailure ) ->
+        ( Mono.Chain _ eSuccess eFailure, Mono.Chain _ aSuccess aFailure ) ->
             compareDecider ctx (path ++ ".success") eSuccess aSuccess
                 ++ compareDecider ctx (path ++ ".failure") eFailure aFailure
 
-        ( Mono.FanOut ePath eOptions eDefault, Mono.FanOut aPath aOptions aDefault ) ->
+        ( Mono.FanOut _ eOptions eDefault, Mono.FanOut _ aOptions aDefault ) ->
             compareDecider ctx (path ++ ".default") eDefault aDefault
                 ++ compareOptions ctx (path ++ ".options") eOptions aOptions
 

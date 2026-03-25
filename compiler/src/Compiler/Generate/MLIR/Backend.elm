@@ -1,4 +1,4 @@
-module Compiler.Generate.MLIR.Backend exposing (backend, generateMlirModule, streamMlirBytecode, streamMlirToWriter, writeMlirBytecode)
+module Compiler.Generate.MLIR.Backend exposing (backend, generateMlirModule, streamMlirToWriter, streamMlirBytecode)
 
 {-| MLIR code generation backend for the Monomorphized IR.
 
@@ -6,12 +6,11 @@ This backend generates MLIR from fully specialized, monomorphic code.
 All polymorphism has been resolved and layout information is embedded
 in the types.
 
-@docs backend, generateMlirModule, streamMlirToWriter, writeMlirBytecode, streamMlirBytecode
+@docs backend, generateMlirModule, streamMlirToWriter, streamMlirBytecode
 
 -}
 
-import Array exposing (Array)
-import Bytes exposing (Bytes)
+import Array
 import Compiler.AST.Monomorphized as Mono
 import Compiler.Generate.CodeGen as CodeGen
 import Compiler.Generate.MLIR.Context as Ctx
@@ -21,7 +20,6 @@ import Compiler.Generate.MLIR.TypeTable as TypeTable
 import Compiler.Generate.Mode as Mode
 import Dict
 import Eco.File
-import Mlir.Bytecode.Encode as BytecodeEncode
 import Mlir.Bytecode.StreamEncode as StreamEncode
 import Mlir.Loc as Loc
 import Mlir.Mlir exposing (MlirModule, MlirOp)
@@ -153,10 +151,7 @@ streamMlirToWriter mode monoGraph0 writeChunk =
 
         stderrLog msg =
             TaskExtra.io (SysIO.writeLn SysIO.stderr msg)
-    in
-    -- Convert nodes to indexed list so the Array can be GC'd during streaming.
-    -- List.foldl releases consumed cons cells, allowing processed nodes to be collected.
-    let
+
         nodesList =
             Array.toIndexedList nodes
     in
@@ -266,26 +261,6 @@ writeOps ops writeChunk =
 
 
 -- ====== BYTECODE OUTPUT ======
-
-
-{-| Generate MLIR bytecode and write it to a file.
-Builds the full MlirModule in memory, encodes to bytecode, then writes.
--}
-writeMlirBytecode :
-    Mode.Mode
-    -> Mono.MonoGraph
-    -> String
-    -> Task Never ()
-writeMlirBytecode mode monoGraph target =
-    let
-        mlirModule =
-            generateMlirModule mode monoGraph
-
-        bytecodeBytes =
-            BytecodeEncode.encodeModule mlirModule
-    in
-    Utils.dirCreateDirectoryIfMissing True (Utils.fpTakeDirectory target)
-        |> Task.andThen (\_ -> Eco.File.writeBytes target bytecodeBytes)
 
 
 {-| Generate MLIR bytecode using the streaming encoder.
@@ -402,5 +377,4 @@ streamNodesCollectEncode ctx0 remaining tables =
                 newTables =
                     StreamEncode.collectAndEncodeOps nodeOps tables
             in
-            Task.succeed ()
-                |> Task.andThen (\_ -> streamNodesCollectEncode cleanCtx rest newTables)
+            streamNodesCollectEncode cleanCtx rest newTables

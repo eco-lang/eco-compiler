@@ -54,6 +54,7 @@ This ensures the standard JS pathway and the MLIR pathway behave consistently.
 
 -}
 
+import Array exposing (Array)
 import Builder.GraphAssembly as GA
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Monomorphized as Mono
@@ -91,7 +92,6 @@ import Compiler.Type.PostSolve as PostSolve
 import Compiler.Type.Solve as Type
 import Compiler.TypedCanonical.Build as TCanBuild
 import Data.Map
-import Array exposing (Array)
 import Dict exposing (Dict)
 import System.TypeCheck.IO as TypeCheck
 
@@ -425,7 +425,7 @@ typeCheckTyped canonical =
         Err errors ->
             Err errors
 
-        Ok { annotations, annotationVars, nodeTypes, nodeVars, solverState } ->
+        Ok { annotations, annotationVars, nodeTypes, nodeVars } ->
             let
                 -- Run PostSolve to fix Group B types and compute kernel env
                 -- annotations and nodeTypes are Data.Map.Dict from Solve.runWithIds

@@ -1,7 +1,4 @@
-module Mlir.Bytecode.Section exposing
-    ( encodeSection, encodeSectionAligned
-    , sectionId
-    )
+module Mlir.Bytecode.Section exposing (encodeSection, sectionId)
 
 {-| Section framing for MLIR bytecode.
 
@@ -13,7 +10,7 @@ Each section has:
   - padding: byte[] (0xCB bytes to reach alignment)
   - data: byte[]
 
-@docs encodeSection, encodeSectionAligned, sectionId
+@docs encodeSection, sectionId
 
 -}
 
@@ -65,53 +62,3 @@ encodeSection id contentEncoder =
         , encodeVarInt contentLen
         , BE.bytes contentBytes
         ]
-
-
-{-| Encode a section with alignment requirements.
-Sets the high bit on the ID byte, includes alignment varint, and pads with 0xCB.
-
-The `currentOffset` parameter is the byte offset where the section data will start
-(after magic + version + producer + prior sections). This is needed to compute
-how many padding bytes are required to reach the desired alignment.
-
--}
-encodeSectionAligned : Int -> Int -> Int -> BE.Encoder -> BE.Encoder
-encodeSectionAligned id alignment currentOffset contentEncoder =
-    let
-        contentBytes =
-            BE.encode contentEncoder
-
-        contentLen =
-            Bytes.width contentBytes
-
-        -- ID byte with high bit set for alignment
-        idByte =
-            id + 0x80
-
-        -- Padding needed after the alignment varint to reach alignment boundary
-        -- We need to account for the id byte + length varint + alignment varint
-        paddingNeeded =
-            let
-                remainder =
-                    modBy alignment currentOffset
-            in
-            if remainder == 0 then
-                0
-
-            else
-                alignment - remainder
-
-        paddingBytes =
-            List.repeat paddingNeeded (BE.unsignedInt8 0xCB)
-
-        totalLen =
-            contentLen + paddingNeeded
-    in
-    BE.sequence
-        ([ BE.unsignedInt8 idByte
-         , encodeVarInt totalLen
-         , encodeVarInt alignment
-         ]
-            ++ paddingBytes
-            ++ [ BE.bytes contentBytes ]
-        )

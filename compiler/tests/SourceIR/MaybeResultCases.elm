@@ -76,17 +76,6 @@ tMaybe a =
     tType "Maybe" [ a ]
 
 
-{-| Create a module with standard imports (Maybe, String, Char etc.) from a
-single expression using a testValue def with a given type.
--}
-stdModule : String -> Src.Type -> Src.Expr -> Src.Module
-stdModule name tipe expr =
-    makeModuleWithTypedDefsUnionsAliases "TestMod"
-        [ { name = name, args = [], tipe = tipe, body = expr } ]
-        []
-        []
-
-
 
 -- ============================================================================
 -- MAYBE PATTERN MATCHING (Gap 1 / Gap 42)
@@ -145,7 +134,7 @@ maybeMapJust expectFn _ =
         )
 
 
-{-| myMap (\x -> x * 2) Nothing -> Nothing
+{-| myMap (\\x -> x \* 2) Nothing -> Nothing
 -}
 maybeMapNothing : (Src.Module -> Expectation) -> (() -> Expectation)
 maybeMapNothing expectFn _ =
@@ -185,7 +174,7 @@ maybeMapNothing expectFn _ =
 
 
 {-| let withDefault d mx = case mx of Just x -> x; Nothing -> d
-    in withDefault 0 (Just 42) -> 42
+in withDefault 0 (Just 42) -> 42
 -}
 maybeWithDefaultJust : (Src.Module -> Expectation) -> (() -> Expectation)
 maybeWithDefaultJust expectFn _ =
@@ -260,7 +249,7 @@ maybeWithDefaultNothing expectFn _ =
 
 
 {-| let andThen f mx = case mx of Just x -> f x; Nothing -> Nothing
-    in andThen (\x -> if x > 0 then Just x else Nothing) (Just 42)
+in andThen (\\x -> if x > 0 then Just x else Nothing) (Just 42)
 -}
 maybeAndThenJust : (Src.Module -> Expectation) -> (() -> Expectation)
 maybeAndThenJust expectFn _ =
@@ -302,7 +291,7 @@ maybeAndThenJust expectFn _ =
         )
 
 
-{-| myAndThen (\x -> Just (x * 2)) Nothing -> Nothing
+{-| myAndThen (\\x -> Just (x \* 2)) Nothing -> Nothing
 -}
 maybeAndThenNothing : (Src.Module -> Expectation) -> (() -> Expectation)
 maybeAndThenNothing expectFn _ =
@@ -588,15 +577,16 @@ letRecCaptureCases expectFn =
 
 
 {-| processItems threshold items =
-    case items of
-        [] -> []
-        x :: rest ->
-            let takeMore xs = case xs of
-                    [] -> []
-                    y :: ys -> if y > threshold then y :: takeMore ys else []
-            in x :: takeMore rest
+case items of
+[] -> []
+x :: rest ->
+let takeMore xs = case xs of
+[] -> []
+y :: ys -> if y > threshold then y :: takeMore ys else []
+in x :: takeMore rest
 
 The inner `takeMore` captures `threshold` from outer scope and self-recurses.
+
 -}
 letRecCaptureOuterScope : (Src.Module -> Expectation) -> (() -> Expectation)
 letRecCaptureOuterScope expectFn _ =

@@ -5,6 +5,7 @@ capturing, nested tail-recursive definitions, and variable name collision
 after inlining.
 
 Covers gaps 8, 10, 19, 20, 11 from e2e-to-elmtest.md:
+
   - Top-level mutual recursion (non-trivial isEven/isOdd)
   - Lambda boundary normalization (case and let)
   - Let-rec closure capturing outer scope variable
@@ -30,7 +31,6 @@ import Compiler.AST.SourceBuilder
         , letExpr
         , listExpr
         , makeModule
-        , makeModuleWithDefs
         , makeModuleWithTypedDefs
         , makeModuleWithTypedDefsUnionsAliases
         , pAnything
@@ -39,7 +39,6 @@ import Compiler.AST.SourceBuilder
         , pInt
         , pList
         , pVar
-        , strExpr
         , tLambda
         , tType
         , varExpr
@@ -81,7 +80,7 @@ mutualRecursionCases expectFn =
 isEven n = isOdd (n - 1)
 isOdd 0 = False
 isOdd n = isEven (n - 1)
-testValue = isEven 4  =>  True
+testValue = isEven 4 => True
 -}
 mutualRecIsEvenOdd : (Src.Module -> Expectation) -> (() -> Expectation)
 mutualRecIsEvenOdd expectFn _ =
@@ -203,12 +202,13 @@ lambdaBoundaryCases expectFn =
 
 
 {-| getOp op = case op of
-    0 -> \a b -> a + b
-    _ -> \a b -> a - b
-testValue = getOp 0 3 4  =>  7
+0 -> \\a b -> a + b
+\_ -> \\a b -> a - b
+testValue = getOp 0 3 4 => 7
 
-Tests normalization: \op -> case op of 0 -> \a b -> a+b; _ -> \a b -> a-b
-should become \op a b -> case op of 0 -> a+b; _ -> a-b
+Tests normalization: \\op -> case op of 0 -> \\a b -> a+b; \_ -> \\a b -> a-b
+should become \\op a b -> case op of 0 -> a+b; \_ -> a-b
+
 -}
 lambdaCaseBoundary : (Src.Module -> Expectation) -> (() -> Expectation)
 lambdaCaseBoundary expectFn _ =
@@ -237,11 +237,12 @@ lambdaCaseBoundary expectFn _ =
     expectFn modul
 
 
-{-| f a = let y = a + 5 in \z -> y + z
-testValue = f 10 20  =>  35
+{-| f a = let y = a + 5 in \\z -> y + z
+testValue = f 10 20 => 35
 
-Tests normalization: \a -> let y = a+5 in \z -> y+z
-should become \a z -> let y = a+5 in y+z
+Tests normalization: \\a -> let y = a+5 in \\z -> y+z
+should become \\a z -> let y = a+5 in y+z
+
 -}
 lambdaLetBoundary : (Src.Module -> Expectation) -> (() -> Expectation)
 lambdaLetBoundary expectFn _ =
@@ -279,16 +280,17 @@ letRecClosureCaptureCases expectFn =
 
 
 {-| processItems threshold items = case items of
-    [] -> []
-    x :: rest ->
-        let
-            takeMore xs = case xs of
-                [] -> []
-                y :: ys -> if y > threshold then y :: takeMore ys else []
-        in
-        x :: takeMore rest
+[] -> []
+x :: rest ->
+let
+takeMore xs = case xs of
+[] -> []
+y :: ys -> if y > threshold then y :: takeMore ys else []
+in
+x :: takeMore rest
 
 takeMore captures `threshold` from outer scope and self-recurses.
+
 -}
 letRecCaptureOuter : (Src.Module -> Expectation) -> (() -> Expectation)
 letRecCaptureOuter expectFn _ =
@@ -333,15 +335,16 @@ letRecCaptureOuter expectFn _ =
 
 
 {-| filterAbove limit xs =
-    let
-        go items = case items of
-            [] -> []
-            h :: t -> if h > limit then h :: go t else go t
-    in
-    go xs
-testValue = filterAbove 2 [1, 3, 2, 4]  =>  [3, 4]
+let
+go items = case items of
+[] -> []
+h :: t -> if h > limit then h :: go t else go t
+in
+go xs
+testValue = filterAbove 2 [1, 3, 2, 4] => [3, 4]
 
 `go` captures `limit` from outer scope.
+
 -}
 letRecCaptureOuterParam : (Src.Module -> Expectation) -> (() -> Expectation)
 letRecCaptureOuterParam expectFn _ =
@@ -391,13 +394,13 @@ nestedTailRecCases expectFn =
 
 
 {-| outerLoop n acc =
-    let
-        sumUpTo i s = if i <= 0 then s else sumUpTo (i - 1) (s + i)
-        localResult = sumUpTo n 0
-    in
-    case localResult of
-        0 -> acc
-        _ -> outerLoop (n - 1) (acc + localResult)
+let
+sumUpTo i s = if i <= 0 then s else sumUpTo (i - 1) (s + i)
+localResult = sumUpTo n 0
+in
+case localResult of
+0 -> acc
+\_ -> outerLoop (n - 1) (acc + localResult)
 testValue = outerLoop 3 0
 Both outerLoop and sumUpTo are tail-recursive.
 -}
@@ -456,11 +459,11 @@ outerTailRecWithInner expectFn _ =
 
 
 {-| process n =
-    let
-        sumTo i acc = if i <= 0 then acc else sumTo (i - 1) (acc + i)
-        mulTo i acc = if i <= 0 then acc else mulTo (i - 1) (acc * i)
-    in
-    sumTo n 0 + mulTo n 1
+let
+sumTo i acc = if i <= 0 then acc else sumTo (i - 1) (acc + i)
+mulTo i acc = if i <= 0 then acc else mulTo (i - 1) (acc \* i)
+in
+sumTo n 0 + mulTo n 1
 testValue = process 4
 Two local tail-recursive defs in the same let block.
 -}
@@ -538,10 +541,11 @@ inlineVarCollisionCases expectFn =
 {-| type Wrapped = Wrapped Int
 extract (Wrapped n) = n
 useTwice w = extract w + extract w
-testValue = useTwice (Wrapped 21)  =>  42
+testValue = useTwice (Wrapped 21) => 42
 
 After inlining first `extract` call, the destructured "n" must not shadow
 the "n" from the second `extract` call.
+
 -}
 inlineVarCollisionExtract : (Src.Module -> Expectation) -> (() -> Expectation)
 inlineVarCollisionExtract expectFn _ =
@@ -598,10 +602,11 @@ inlineVarCollisionExtract expectFn _ =
 getVal (Box v) = v
 helper a b = a + b
 combine box1 box2 = helper (getVal box1) (getVal box2)
-testValue = combine (Box 10) (Box 32)  =>  42
+testValue = combine (Box 10) (Box 32) => 42
 
 When both getVal calls are inlined, both produce a destructured "v".
 Tests that MonoInlineSimplify renames to avoid collision.
+
 -}
 inlineVarCollisionNested : (Src.Module -> Expectation) -> (() -> Expectation)
 inlineVarCollisionNested expectFn _ =

@@ -24,9 +24,7 @@ import Compiler.AST.SourceBuilder
         , caseExpr
         , ctorExpr
         , define
-        , ifExpr
         , intExpr
-        , lambdaExpr
         , letExpr
         , listExpr
         , makeModuleWithTypedDefsUnionsAliases
@@ -37,7 +35,6 @@ import Compiler.AST.SourceBuilder
         , pVar
         , tLambda
         , tType
-        , tVar
         , varExpr
         )
 import Compiler.BulkCheck exposing (TestCase, bulkCheck)
@@ -60,21 +57,35 @@ testCases expectFn =
 
 {-| Reproduces the takeListItems pattern:
 
-    type Item = Num Int | Blank
+
+    type Item
+        = Num Int
+        | Blank
 
     processItems threshold items =
         case items of
-            [] -> []
+            [] ->
+                []
+
             (Num n) :: rest ->
                 let
                     takeMore xs =
                         case xs of
-                            (Num m) :: ys -> m :: takeMore ys
-                            _ -> []
-                    collected = takeMore rest
+                            (Num m) :: ys ->
+                                m :: takeMore ys
+
+                            _ ->
+                                []
+
+                    collected =
+                        takeMore rest
                 in
                 n :: collected
-            Blank :: rest -> processItems threshold rest  -- tail call
+
+            Blank :: rest ->
+                processItems threshold rest
+
+    -- tail call
 
 The function is tail-recursive (Blank branch), with a local recursive
 closure (takeMore) defined inside a let in the non-tail Num branch.
@@ -173,18 +184,28 @@ tailRecWithLocalRecClosure expectFn _ =
 {-| Simpler variant: the local recursive closure captures a parameter
 from the enclosing tail-recursive function.
 
+
     process threshold items =
         case items of
-            [] -> []
+            [] ->
+                []
+
             x :: rest ->
                 let
                     helper ys =
                         case ys of
-                            y :: zs -> y :: helper zs
-                            _ -> []
+                            y :: zs ->
+                                y :: helper zs
+
+                            _ ->
+                                []
                 in
                 x :: helper rest
-            _ -> process threshold []  -- tail call
+
+            _ ->
+                process threshold []
+
+    -- tail call
 
 The helper closure captures nothing extra here but is self-recursive
 inside a let within a non-tail branch of a tail-recursive function.

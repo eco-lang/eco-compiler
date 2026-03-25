@@ -3,6 +3,7 @@ module SourceIR.CompositionOpCases exposing (expectSuite)
 {-| Tests for composition operators, triple case, Order case, and case returning functions.
 
 Covers gaps 18, 22, 23, 24 from e2e-to-elmtest.md:
+
   - Function composition operators (>> and <<)
   - Case on triple (3-tuple) with literal patterns
   - Case on Order type (LT, EQ, GT)
@@ -16,18 +17,14 @@ import Compiler.AST.SourceBuilder
         ( TypedDef
         , UnionDef
         , binopsExpr
-        , boolExpr
         , callExpr
         , caseExpr
         , ctorExpr
         , define
-        , ifExpr
         , intExpr
         , lambdaExpr
         , letExpr
-        , listExpr
         , makeModule
-        , makeModuleWithDefs
         , makeModuleWithTypedDefsUnionsAliases
         , pAnything
         , pCtor
@@ -39,7 +36,6 @@ import Compiler.AST.SourceBuilder
         , tLambda
         , tType
         , tuple3Expr
-        , tupleExpr
         , varExpr
         )
 import Compiler.BulkCheck exposing (TestCase, bulkCheck)
@@ -183,7 +179,8 @@ composeRightChain expectFn _ =
 
         -- addOne >> double >> addOne
         composed =
-            define "chain" []
+            define "chain"
+                []
                 (binopsExpr [ ( varExpr "addOne", ">>" ), ( varExpr "double", ">>" ) ] (varExpr "addOne"))
 
         modul =
@@ -210,8 +207,8 @@ tripleCaseCases expectFn =
 
 
 {-| case (0, 0, 0) of
-    (0, 0, 0) -> "all zero"
-    _ -> "other"
+(0, 0, 0) -> "all zero"
+\_ -> "other"
 -}
 caseTripleAllZero : (Src.Module -> Expectation) -> (() -> Expectation)
 caseTripleAllZero expectFn _ =
@@ -231,10 +228,10 @@ caseTripleAllZero expectFn _ =
 
 
 {-| case (0, 1, 0) of
-    (0, 0, 0) -> "all zero"
-    (0, _, _) -> "x zero"
-    (_, _, 0) -> "z zero"
-    _ -> "none zero"
+(0, 0, 0) -> "all zero"
+(0, _, _) -> "x zero"
+(_, _, 0) -> "z zero"
+\_ -> "none zero"
 -}
 caseTripleMixedWildcards : (Src.Module -> Expectation) -> (() -> Expectation)
 caseTripleMixedWildcards expectFn _ =
@@ -256,7 +253,7 @@ caseTripleMixedWildcards expectFn _ =
 
 
 {-| case (1, 2, 3) of
-    (a, b, c) -> a + b + c
+(a, b, c) -> a + b + c
 -}
 caseTripleVarExtraction : (Src.Module -> Expectation) -> (() -> Expectation)
 caseTripleVarExtraction expectFn _ =
@@ -349,8 +346,8 @@ caseReturningFunctionCases expectFn =
 
 
 {-| type Op = Add | Sub
-getOp op = case op of Add -> \a b -> a + b; Sub -> \a b -> a - b
-testValue = (getOp Add) 3 4  =>  7
+getOp op = case op of Add -> \\a b -> a + b; Sub -> \\a b -> a - b
+testValue = (getOp Add) 3 4 => 7
 -}
 caseReturnsLambdaThenApply : (Src.Module -> Expectation) -> (() -> Expectation)
 caseReturnsLambdaThenApply expectFn _ =
@@ -404,9 +401,9 @@ caseReturnsLambdaThenApply expectFn _ =
 
 
 {-| Partial application of case-returned function:
-getOp Add returns \a b -> a + b
-addFive = getOp Add 5  (partial application)
-testValue = addFive 10  =>  15
+getOp Add returns \\a b -> a + b
+addFive = getOp Add 5 (partial application)
+testValue = addFive 10 => 15
 -}
 caseReturnsLambdaPartialApp : (Src.Module -> Expectation) -> (() -> Expectation)
 caseReturnsLambdaPartialApp expectFn _ =

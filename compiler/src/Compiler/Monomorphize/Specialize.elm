@@ -13,19 +13,19 @@ into monomorphized form by applying type substitutions.
 -}
 
 import Compiler.AST.Canonical as Can
+import Compiler.AST.DecisionTree.TypedPath as TypedPath
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.TypeEnv as TypeEnv
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.BitSet as BitSet
 import Compiler.Data.Index as Index
 import Compiler.Data.Name as Name exposing (Name)
-import Compiler.AST.DecisionTree.TypedPath as TypedPath
 import Compiler.LocalOpt.Typed.DecisionTree as DT
 import Compiler.Monomorphize.Analysis as Analysis
 import Compiler.Monomorphize.Closure as Closure
 import Compiler.Monomorphize.KernelAbi as KernelAbi
 import Compiler.Monomorphize.Registry as Registry
-import Compiler.Monomorphize.State as State exposing (LocalMultiState, MonoState, SchemeInfo, SpecAccum, SpecContext, Substitution, ValueInstanceInfo, ValueMultiState, VarEnv, WorkItem(..))
+import Compiler.Monomorphize.State as State exposing (LocalMultiState, MonoState, SchemeInfo, Substitution, ValueMultiState, VarEnv, WorkItem(..))
 import Compiler.Monomorphize.TypeSubst as TypeSubst
 import Compiler.Reporting.Annotation as A
 import Data.Map
@@ -56,6 +56,7 @@ type ProcessedArg
     | PendingKernel A.Region String String Can.Type
     | PendingGlobal TOpt.Expr Substitution Can.Type
     | LocalFunArg Name Can.Type
+
 
 
 -- ========== CALL-SITE TYPE RENAMING ==========
@@ -165,6 +166,7 @@ Falls back to per-call renaming when conflicts exist.
 
 Returns the updated substitution, the renamed funcCanType (for kernel ABI
 derivation), and the funcMonoType (computed in a single pass).
+
 -}
 unifyCallSiteWithRenaming :
     Can.Type
@@ -217,15 +219,6 @@ unifyCallSiteWithRenaming funcCanType argMonoTypes resultCanType baseSubst epoch
     , renamedFuncType = renamedFuncType
     , funcMonoType = funcMonoType
     }
-
-
-{-| Rename type variables in the result Can.Type using the same mapping
-as SchemeInfo's pre-rename. Since resultCanType shares type variables with
-funcCanType, we can reuse the pre-rename's variable mapping.
--}
-renameResultCanType : SchemeInfo -> Can.Type -> Can.Type
-renameResultCanType info resultCanType =
-    renameCanTypeVars info.preRenameMap resultCanType
 
 
 {-| Enqueue a specialization onto the worklist, deduplicating via the scheduled BitSet.
@@ -287,7 +280,16 @@ getOrCreateLocalInstance defName funcMonoType callSubst state =
         ( updatedStack, freshName ) =
             updateLocalMultiStack defName key funcMonoType callSubst state.ctx.localMulti
     in
-    ( freshName, { state | ctx = let ctx = state.ctx in { ctx | localMulti = updatedStack } } )
+    ( freshName
+    , { state
+        | ctx =
+            let
+                ctx =
+                    state.ctx
+            in
+            { ctx | localMulti = updatedStack }
+      }
+    )
 
 
 {-| Walk the localMulti stack, find the entry for defName, and update it.
@@ -445,7 +447,16 @@ getOrCreateValueInstance defName monoType currentSubst state =
         ( updatedStack, freshName_ ) =
             updateValueMultiStack defName key monoType currentSubst state.ctx.valueMulti
     in
-    ( freshName_, { state | ctx = let ctx = state.ctx in { ctx | valueMulti = updatedStack } } )
+    ( freshName_
+    , { state
+        | ctx =
+            let
+                ctx =
+                    state.ctx
+            in
+            { ctx | valueMulti = updatedStack }
+      }
+    )
 
 
 {-| Walk the valueMulti stack, find the entry for defName, and update it.
@@ -610,7 +621,14 @@ specializeLambda lambdaExpr canType subst state =
             specializeExpr bodyExpr refinedSubst stateWithLambda
 
         stateAfter =
-            { stateAfter0 | ctx = let ctx0 = stateAfter0.ctx in { ctx0 | varEnv = State.popFrame ctx0.varEnv } }
+            { stateAfter0
+                | ctx =
+                    let
+                        ctx0 =
+                            stateAfter0.ctx
+                    in
+                    { ctx0 | varEnv = State.popFrame ctx0.varEnv }
+            }
 
         -- 5. Compute captures.
         captures =
@@ -887,10 +905,28 @@ specializeFunctionCycle requestedCanonical requestedName _ funcDefs requestedMon
     in
     case Dict.get requestedSpecId newNodes of
         Just requestedNode ->
-            ( requestedNode, { stateAfter | accum = let a = stateAfter.accum in { a | nodes = newNodes } } )
+            ( requestedNode
+            , { stateAfter
+                | accum =
+                    let
+                        a =
+                            stateAfter.accum
+                    in
+                    { a | nodes = newNodes }
+              }
+            )
 
         Nothing ->
-            ( Mono.MonoExtern requestedMonoType, { stateAfter | accum = let a = stateAfter.accum in { a | nodes = newNodes } } )
+            ( Mono.MonoExtern requestedMonoType
+            , { stateAfter
+                | accum =
+                    let
+                        a =
+                            stateAfter.accum
+                    in
+                    { a | nodes = newNodes }
+              }
+            )
 
 
 specializeFunc :
@@ -995,7 +1031,14 @@ specializeFuncDefInCycle subst def state =
                     specializeExpr body augmentedSubst stateWithParams
 
                 state1 =
-                    { state1pre | ctx = let ctx1 = state1pre.ctx in { ctx1 | varEnv = State.popFrame ctx1.varEnv } }
+                    { state1pre
+                        | ctx =
+                            let
+                                ctx1 =
+                                    state1pre.ctx
+                            in
+                            { ctx1 | varEnv = State.popFrame ctx1.varEnv }
+                    }
 
                 -- Note: `returnType` is misleadingly named - it's actually the FULL function
                 -- type of the definition (e.g., Int -> Int -> Int becomes MFunction [MInt] (MFunction [MInt] MInt)).
@@ -1302,7 +1345,14 @@ specializeExpr expr subst state =
                             state1a.ctx.renameEpoch
 
                         state1b =
-                            { state1a | ctx = let c1a = state1a.ctx in { c1a | renameEpoch = epoch + 1 } }
+                            { state1a
+                                | ctx =
+                                    let
+                                        c1a =
+                                            state1a.ctx
+                                    in
+                                    { c1a | renameEpoch = epoch + 1 }
+                            }
 
                         unifyResult =
                             unifyCallSiteWithRenaming funcCanType argTypes canType subst epoch schemeInfo
@@ -1345,7 +1395,14 @@ specializeExpr expr subst state =
                             state1a.ctx.renameEpoch
 
                         state1b =
-                            { state1a | ctx = let c1a = state1a.ctx in { c1a | renameEpoch = epoch + 1 } }
+                            { state1a
+                                | ctx =
+                                    let
+                                        c1a =
+                                            state1a.ctx
+                                    in
+                                    { c1a | renameEpoch = epoch + 1 }
+                            }
 
                         unifyResult =
                             unifyCallSiteWithRenaming funcCanType argTypes canType subst epoch schemeInfo
@@ -1384,7 +1441,14 @@ specializeExpr expr subst state =
                             state1a.ctx.renameEpoch
 
                         state1b =
-                            { state1a | ctx = let c1a = state1a.ctx in { c1a | renameEpoch = epoch + 1 } }
+                            { state1a
+                                | ctx =
+                                    let
+                                        c1a =
+                                            state1a.ctx
+                                    in
+                                    { c1a | renameEpoch = epoch + 1 }
+                            }
 
                         unifyResult =
                             unifyCallSiteWithRenaming funcCanType argTypes canType subst epoch schemeInfo
@@ -1478,7 +1542,14 @@ specializeExpr expr subst state =
                                     state1a.ctx.renameEpoch
 
                                 state1b =
-                                    { state1a | ctx = let c1a = state1a.ctx in { c1a | renameEpoch = epoch + 1 } }
+                                    { state1a
+                                        | ctx =
+                                            let
+                                                c1a =
+                                                    state1a.ctx
+                                            in
+                                            { c1a | renameEpoch = epoch + 1 }
+                                    }
 
                                 unifyResult =
                                     unifyCallSiteWithRenaming funcCanType argTypes canType subst epoch schemeInfo
@@ -1582,7 +1653,14 @@ specializeExpr expr subst state =
                             }
 
                         stateForBody =
-                            { state | ctx = let c = state.ctx in { c | localMulti = newEntry :: c.localMulti } }
+                            { state
+                                | ctx =
+                                    let
+                                        c =
+                                            state.ctx
+                                    in
+                                    { c | localMulti = newEntry :: c.localMulti }
+                            }
 
                         -- Specialize the body under the outer substitution,
                         -- with the new localMulti stack entry for this defName.
@@ -1598,7 +1676,16 @@ specializeExpr expr subst state =
                                 let
                                     -- Keep restOfStack so outer contexts are visible during specializeDef
                                     ( monoDef, state1 ) =
-                                        specializeDef def subst { stateAfterBody | ctx = let cab = stateAfterBody.ctx in { cab | localMulti = restOfStack } }
+                                        specializeDef def
+                                            subst
+                                            { stateAfterBody
+                                                | ctx =
+                                                    let
+                                                        cab =
+                                                            stateAfterBody.ctx
+                                                    in
+                                                    { cab | localMulti = restOfStack }
+                                            }
 
                                     defMonoType0 =
                                         Mono.forceCNumberToInt (TypeSubst.applySubst subst defCanType)
@@ -1621,7 +1708,14 @@ specializeExpr expr subst state =
                                             subst
 
                                     stateWithVar =
-                                        { state1 | ctx = let c1 = state1.ctx in { c1 | varEnv = State.insertVar defName defMonoType c1.varEnv } }
+                                        { state1
+                                            | ctx =
+                                                let
+                                                    c1 =
+                                                        state1.ctx
+                                                in
+                                                { c1 | varEnv = State.insertVar defName defMonoType c1.varEnv }
+                                        }
 
                                     -- Re-specialize body with enriched substitution
                                     -- so downstream expressions see the concrete def type.
@@ -1669,7 +1763,16 @@ specializeExpr expr subst state =
                                                 in
                                                 ( monoDef :: defsAcc, st1 )
                                             )
-                                            ( [], { stateAfterBody | ctx = let cab2 = stateAfterBody.ctx in { cab2 | localMulti = restOfStack } } )
+                                            ( []
+                                            , { stateAfterBody
+                                                | ctx =
+                                                    let
+                                                        cab2 =
+                                                            stateAfterBody.ctx
+                                                    in
+                                                    { cab2 | localMulti = restOfStack }
+                                              }
+                                            )
                                             instancesList
 
                                     -- Register varEnv for all instances
@@ -1677,9 +1780,14 @@ specializeExpr expr subst state =
                                         List.foldl
                                             (\info st ->
                                                 { st
-                                                    | ctx = let cst = st.ctx in
-                                                        { cst | varEnv =
-                                                            State.insertVar info.freshName info.monoType cst.varEnv
+                                                    | ctx =
+                                                        let
+                                                            cst =
+                                                                st.ctx
+                                                        in
+                                                        { cst
+                                                            | varEnv =
+                                                                State.insertVar info.freshName info.monoType cst.varEnv
                                                         }
                                                 }
                                             )
@@ -1720,7 +1828,14 @@ specializeExpr expr subst state =
                                         subst
 
                                 stateWithVar =
-                                    { state1 | ctx = let c1f = state1.ctx in { c1f | varEnv = State.insertVar defName defMonoType c1f.varEnv } }
+                                    { state1
+                                        | ctx =
+                                            let
+                                                c1f =
+                                                    state1.ctx
+                                            in
+                                            { c1f | varEnv = State.insertVar defName defMonoType c1f.varEnv }
+                                    }
 
                                 ( monoBody2, state2 ) =
                                     if Mono.containsAnyMVar defMonoType0 then
@@ -1759,11 +1874,16 @@ specializeExpr expr subst state =
                                 Mono.forceCNumberToInt (TypeSubst.applySubst subst defCanType)
 
                             stateForBody =
-                                { state | ctx = let cvm = state.ctx in
-                                    { cvm
-                                        | valueMulti = newEntry :: cvm.valueMulti
-                                        , varEnv = State.insertVar defName prelimDefMonoType cvm.varEnv
-                                    }
+                                { state
+                                    | ctx =
+                                        let
+                                            cvm =
+                                                state.ctx
+                                        in
+                                        { cvm
+                                            | valueMulti = newEntry :: cvm.valueMulti
+                                            , varEnv = State.insertVar defName prelimDefMonoType cvm.varEnv
+                                        }
                                 }
 
                             ( monoBody, stateAfterBody ) =
@@ -1775,7 +1895,16 @@ specializeExpr expr subst state =
                                     -- Value never used: fall back to eager single-instance behavior.
                                     let
                                         ( monoDef, state1 ) =
-                                            specializeDef def subst { stateAfterBody | ctx = let cvmf = stateAfterBody.ctx in { cvmf | valueMulti = restOfStack } }
+                                            specializeDef def
+                                                subst
+                                                { stateAfterBody
+                                                    | ctx =
+                                                        let
+                                                            cvmf =
+                                                                stateAfterBody.ctx
+                                                        in
+                                                        { cvmf | valueMulti = restOfStack }
+                                                }
 
                                         defMonoType0 =
                                             Mono.forceCNumberToInt (TypeSubst.applySubst subst defCanType)
@@ -1795,7 +1924,14 @@ specializeExpr expr subst state =
                                                 subst
 
                                         stateWithVar =
-                                            { state1 | ctx = let cvme = state1.ctx in { cvme | varEnv = State.insertVar defName defMonoType cvme.varEnv } }
+                                            { state1
+                                                | ctx =
+                                                    let
+                                                        cvme =
+                                                            state1.ctx
+                                                    in
+                                                    { cvme | varEnv = State.insertVar defName defMonoType cvme.varEnv }
+                                            }
 
                                         ( monoBody2, state2 ) =
                                             if Mono.containsAnyMVar defMonoType0 then
@@ -1836,16 +1972,30 @@ specializeExpr expr subst state =
                                                     in
                                                     ( monoDef :: defsAcc, st1 )
                                                 )
-                                                ( [], { stateAfterBody | ctx = let cvmi = stateAfterBody.ctx in { cvmi | valueMulti = restOfStack } } )
+                                                ( []
+                                                , { stateAfterBody
+                                                    | ctx =
+                                                        let
+                                                            cvmi =
+                                                                stateAfterBody.ctx
+                                                        in
+                                                        { cvmi | valueMulti = restOfStack }
+                                                  }
+                                                )
                                                 instancesList
 
                                         stateWithVars =
                                             List.foldl
                                                 (\info st ->
                                                     { st
-                                                        | ctx = let cvmv = st.ctx in
-                                                            { cvmv | varEnv =
-                                                                State.insertVar info.freshName info.monoType cvmv.varEnv
+                                                        | ctx =
+                                                            let
+                                                                cvmv =
+                                                                    st.ctx
+                                                            in
+                                                            { cvmv
+                                                                | varEnv =
+                                                                    State.insertVar info.freshName info.monoType cvmv.varEnv
                                                             }
                                                     }
                                                 )
@@ -1891,7 +2041,14 @@ specializeExpr expr subst state =
                                     subst
 
                             stateWithVar =
-                                { state1 | ctx = let c1n = state1.ctx in { c1n | varEnv = State.insertVar defName defMonoType c1n.varEnv } }
+                                { state1
+                                    | ctx =
+                                        let
+                                            c1n =
+                                                state1.ctx
+                                        in
+                                        { c1n | varEnv = State.insertVar defName defMonoType c1n.varEnv }
+                                }
 
                             ( monoBody, state2 ) =
                                 specializeExpr body enrichedSubst stateWithVar
@@ -1922,7 +2079,14 @@ specializeExpr expr subst state =
                     monoDestructor
 
                 stateWithVar =
-                    { state | ctx = let cd = state.ctx in { cd | varEnv = State.insertVar destructorName destructorType cd.varEnv } }
+                    { state
+                        | ctx =
+                            let
+                                cd =
+                                    state.ctx
+                            in
+                            { cd | varEnv = State.insertVar destructorName destructorType cd.varEnv }
+                    }
 
                 ( monoBody, stateAfter ) =
                     specializeExpr body subst stateWithVar
@@ -1953,7 +2117,14 @@ specializeExpr expr subst state =
                     specializeDecider root decider subst state
 
                 state1WithResetVarEnv =
-                    { state1 | ctx = let cc = state1.ctx in { cc | varEnv = savedVarEnv } }
+                    { state1
+                        | ctx =
+                            let
+                                cc =
+                                    state1.ctx
+                            in
+                            { cc | varEnv = savedVarEnv }
+                    }
 
                 ( monoJumps0, state2 ) =
                     specializeJumps jumps subst state1WithResetVarEnv
@@ -2497,11 +2668,8 @@ resolveProcessedArg processedArg maybeParamType subst state =
 
                         Nothing ->
                             savedSubst
-
-                ( monoExpr, st1 ) =
-                    specializeExpr savedExpr refinedSubst state
             in
-            ( monoExpr, st1 )
+            specializeExpr savedExpr refinedSubst state
 
         PendingKernel region home name canType ->
             -- Number-boxed kernel argument. Now that we have the call-site substitution,
@@ -2635,7 +2803,14 @@ specializeBranches branches subst state =
                             specializeExpr cond subst st
 
                         st1WithResetVarTypes =
-                            { st1 | ctx = let c = st1.ctx in { c | varEnv = savedVarEnv } }
+                            { st1
+                                | ctx =
+                                    let
+                                        c =
+                                            st1.ctx
+                                    in
+                                    { c | varEnv = savedVarEnv }
+                            }
 
                         ( mBody, st2 ) =
                             specializeExpr body subst st1WithResetVarTypes
@@ -2755,7 +2930,14 @@ specializeDef def subst state =
                     specializeExpr expr augmentedSubst stateWithParams
 
                 stateAfter =
-                    { stateAfterPre | ctx = let c = stateAfterPre.ctx in { c | varEnv = State.popFrame c.varEnv } }
+                    { stateAfterPre
+                        | ctx =
+                            let
+                                c =
+                                    stateAfterPre.ctx
+                            in
+                            { c | varEnv = State.popFrame c.varEnv }
+                    }
             in
             ( Mono.MonoTailDef name monoArgs monoExpr, stateAfter )
 
@@ -2867,32 +3049,17 @@ specializePath path varEnv globalTypeEnv currentGlobal destructorName =
             Mono.MonoRoot name rootType
 
 
-pathRoot : TOpt.Path -> Name
-pathRoot p =
-    case p of
-        TOpt.Root n -> n
-        TOpt.Index _ _ sub -> pathRoot sub
-        TOpt.ArrayIndex _ sub -> pathRoot sub
-        TOpt.Field _ sub -> pathRoot sub
-        TOpt.Unbox sub -> pathRoot sub
-
-
-debugPath : TOpt.Path -> String
-debugPath p =
-    case p of
-        TOpt.Root n -> "Root(" ++ n ++ ")"
-        TOpt.Index idx _ sub -> "Index(" ++ String.fromInt (Index.toMachine idx) ++ ", " ++ debugPath sub ++ ")"
-        TOpt.ArrayIndex idx sub -> "ArrayIndex(" ++ String.fromInt idx ++ ", " ++ debugPath sub ++ ")"
-        TOpt.Field f sub -> "Field(" ++ f ++ ", " ++ debugPath sub ++ ")"
-        TOpt.Unbox sub -> "Unbox(" ++ debugPath sub ++ ")"
-
-
 debugGlobal : Maybe Mono.Global -> String
 debugGlobal mg =
     case mg of
-        Nothing -> "Nothing"
-        Just (Mono.Global (IO.Canonical _ modName) name) -> Name.toElmString modName ++ "." ++ name
-        Just (Mono.Accessor name) -> "Accessor(" ++ name ++ ")"
+        Nothing ->
+            "Nothing"
+
+        Just (Mono.Global (IO.Canonical _ modName) name) ->
+            Name.toElmString modName ++ "." ++ name
+
+        Just (Mono.Accessor name) ->
+            "Accessor(" ++ name ++ ")"
 
 
 {-| Compute the result type of projecting at an index from a container.
@@ -3170,7 +3337,14 @@ specializeDecider rootName decider subst state =
                     specializeDecider rootName success subst state
 
                 state1WithResetVarEnv =
-                    { state1 | ctx = let c = state1.ctx in { c | varEnv = savedVarEnv } }
+                    { state1
+                        | ctx =
+                            let
+                                c =
+                                    state1.ctx
+                            in
+                            { c | varEnv = savedVarEnv }
+                    }
 
                 ( monoFailure, state2 ) =
                     specializeDecider rootName failure subst state1WithResetVarEnv
@@ -3189,7 +3363,14 @@ specializeDecider rootName decider subst state =
                     specializeEdges rootName edges subst state
 
                 state1WithResetVarEnv =
-                    { state1 | ctx = let c = state1.ctx in { c | varEnv = savedVarEnv } }
+                    { state1
+                        | ctx =
+                            let
+                                c =
+                                    state1.ctx
+                            in
+                            { c | varEnv = savedVarEnv }
+                    }
 
                 ( monoFallback, state2 ) =
                     specializeDecider rootName fallback subst state1WithResetVarEnv
@@ -3222,7 +3403,14 @@ specializeEdges rootName edges subst state =
                 (\( test, decider ) ( acc, st ) ->
                     let
                         stWithResetVarEnv =
-                            { st | ctx = let c = st.ctx in { c | varEnv = savedVarEnv } }
+                            { st
+                                | ctx =
+                                    let
+                                        c =
+                                            st.ctx
+                                    in
+                                    { c | varEnv = savedVarEnv }
+                            }
 
                         ( monoDecider, newSt ) =
                             specializeDecider rootName decider subst stWithResetVarEnv
@@ -3246,7 +3434,14 @@ specializeJumps jumps subst state =
                 (\( idx, expr ) ( acc, st ) ->
                     let
                         stWithResetVarEnv =
-                            { st | ctx = let c = st.ctx in { c | varEnv = savedVarEnv } }
+                            { st
+                                | ctx =
+                                    let
+                                        c =
+                                            st.ctx
+                                    in
+                                    { c | varEnv = savedVarEnv }
+                            }
 
                         ( monoExpr, newSt ) =
                             specializeExpr expr subst stWithResetVarEnv

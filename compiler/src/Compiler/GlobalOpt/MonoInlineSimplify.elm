@@ -22,9 +22,9 @@ import Array exposing (Array)
 import Compiler.AST.Monomorphized as Mono exposing (MonoExpr(..), MonoGraph(..), MonoNode(..), SpecId)
 import Compiler.Data.BitSet as BitSet
 import Compiler.Data.Name exposing (Name)
-import Compiler.Monomorphize.MonoTraverse as Traverse
 import Compiler.Graph as Graph
 import Compiler.Monomorphize.Closure as Closure
+import Compiler.Monomorphize.MonoTraverse as Traverse
 import Compiler.Reporting.Annotation as A exposing (Region)
 import Dict exposing (Dict)
 import System.TypeCheck.IO as IO
@@ -52,7 +52,7 @@ type alias Metrics =
 optimize : MonoGraph -> ( MonoGraph, Metrics )
 optimize graph =
     let
-        (MonoGraph { nodes, main, registry, ctorShapes, nextLambdaIndex, callEdges, specHasEffects, specValueUsed }) =
+        (MonoGraph { nodes, main, registry, ctorShapes, nextLambdaIndex, callEdges }) =
             graph
 
         closuresBefore =

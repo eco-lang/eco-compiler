@@ -12,7 +12,6 @@ This is a test-only module — not wired into the production pipeline.
 -}
 
 import Array
-import Compiler.AST.Canonical as Can
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.TypeEnv as TypeEnv
 import Compiler.AST.TypedOptimized as TOpt
@@ -131,34 +130,6 @@ nodeMetaTvar node =
 
         _ ->
             Nothing
-
-
-nodeCanType : TOpt.Node -> Can.Type
-nodeCanType node =
-    case node of
-        TOpt.Define _ _ meta ->
-            meta.tipe
-
-        TOpt.TrackedDefine _ _ _ meta ->
-            meta.tipe
-
-        TOpt.PortIncoming _ _ meta ->
-            meta.tipe
-
-        TOpt.PortOutgoing _ _ meta ->
-            meta.tipe
-
-        TOpt.Ctor _ _ tipe ->
-            tipe
-
-        TOpt.Enum _ tipe ->
-            tipe
-
-        TOpt.Box tipe ->
-            tipe
-
-        _ ->
-            Can.TUnit
 
 
 

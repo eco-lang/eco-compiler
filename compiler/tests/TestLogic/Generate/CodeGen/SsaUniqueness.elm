@@ -14,7 +14,7 @@ func.func regions are isolated (define their own scope).
 -}
 
 import Compiler.AST.Source as Src
-import Dict exposing (Dict)
+import Dict
 import Expect exposing (Expectation)
 import Mlir.Mlir exposing (MlirBlock, MlirModule, MlirOp, MlirRegion(..))
 import OrderedDict

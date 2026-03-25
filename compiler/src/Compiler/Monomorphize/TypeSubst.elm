@@ -1,14 +1,8 @@
 module Compiler.Monomorphize.TypeSubst exposing
-    ( applyReverseRenaming
-    , applySubst
-    , canTypeToMonoType
-    , constraintFromName
-    , unify, unifyExtend, unifyArgsOnly, extractParamTypes
-    , monoTypeContainsMVar
-    , collectCanTypeVars
-    , resolveMonoVars
+    ( applySubst, applyReverseRenaming
+    , canTypeToMonoType, constraintFromName, collectCanTypeVars
+    , unify, unifyExtend, unifyArgsOnly, unifyCallSiteDirect, extractParamTypes
     , buildSchemeInfo
-    , unifyCallSiteDirect
     )
 
 {-| Type substitution and unification for monomorphization.
@@ -39,8 +33,6 @@ by applying type variable substitutions.
 
 # Query
 
-@docs monoTypeContainsMVar, resolveMonoVars
-
 -}
 
 import Compiler.AST.Canonical as Can
@@ -52,6 +44,7 @@ import Dict
 import Set exposing (Set)
 import System.TypeCheck.IO as IO
 import Tuple
+
 
 
 -- INTERNAL HELPERS: changed-flag mapping, union-find, normalized insertion
@@ -140,34 +133,6 @@ findRootVarHelp visited name subst =
             ( name, subst )
 
 
-{-| Check if a MonoType contains an MVar with the given name.
-Used as an occurs check to detect cyclic bindings like a = (Global, a).
--}
-monoTypeContainsMVar : Name -> Mono.MonoType -> Bool
-monoTypeContainsMVar name monoType =
-    case monoType of
-        Mono.MVar mName _ ->
-            mName == name
-
-        Mono.MFunction args ret ->
-            List.any (monoTypeContainsMVar name) args || monoTypeContainsMVar name ret
-
-        Mono.MList inner ->
-            monoTypeContainsMVar name inner
-
-        Mono.MTuple elems ->
-            List.any (monoTypeContainsMVar name) elems
-
-        Mono.MRecord fields ->
-            Dict.foldl (\_ v acc -> acc || monoTypeContainsMVar name v) False fields
-
-        Mono.MCustom _ _ args ->
-            List.any (monoTypeContainsMVar name) args
-
-        _ ->
-            False
-
-
 normalizeMonoType : Substitution -> Mono.MonoType -> ( Mono.MonoType, Substitution )
 normalizeMonoType subst ty =
     case ty of
@@ -254,9 +219,6 @@ insertBinding name ty subst =
             normalizeMonoType subst ty
     in
     Dict.insert name normalizedTy subst1
-
-
-
 
 
 {-| Unify a canonical type with a monomorphic type to produce a substitution for type variables.
@@ -589,8 +551,6 @@ resolveMonoVarsHelp visiting subst monoType =
             ( False, monoType )
 
 
-
-
 {-| Collect all TVar names from a canonical type.
 -}
 collectCanTypeVars : Can.Type -> List Name -> List Name
@@ -773,15 +733,16 @@ argsAcc accumulates args in reverse order (innermost first), so the foldl
 builds MFunction [c'] (MFunction [b'] (MFunction [a'] result')) correctly.
 
 Wait — we want the ORIGINAL order:
-  TLambda a (TLambda b (TLambda c result))
-  → MFunction [a'] (MFunction [b'] (MFunction [c'] result'))
+TLambda a (TLambda b (TLambda c result))
+→ MFunction [a'] (MFunction [b'] (MFunction [c'] result'))
 
 Collecting in reverse gives argsAcc = [c, b, a].
 foldl builds: start with result', then:
-  c → MFunction [c'] result'
-  b → MFunction [b'] (MFunction [c'] result')
-  a → MFunction [a'] (MFunction [b'] (MFunction [c'] result'))
+c → MFunction [c'] result'
+b → MFunction [b'] (MFunction [c'] result')
+a → MFunction [a'] (MFunction [b'] (MFunction [c'] result'))
 That's correct!
+
 -}
 applySubstLambdaChain : Substitution -> List Can.Type -> Can.Type -> Mono.MonoType
 applySubstLambdaChain subst argsAcc to =
@@ -808,13 +769,14 @@ canTypeToMonoType =
     applySubst
 
 
+
 -- ========== SCHEME INFO ==========
 
 
 {-| Build SchemeInfo from a canonical function type.
 Walks the TLambda chain once and collects type variables once.
 The prefix is used to create definition-scoped canonical names for
-pre-renamed types (e.g., "Module_funcName" -> a__def_Module_funcName_0).
+pre-renamed types (e.g., "Module\_funcName" -> a\__def_Module\_funcName\_0).
 -}
 buildSchemeInfo : String -> Can.Type -> SchemeInfo
 buildSchemeInfo prefix canType =
@@ -878,7 +840,8 @@ buildPreRenameMap prefix names seen counter acc renamedAcc =
                     canonicalName =
                         name ++ "__def_" ++ prefix ++ "_" ++ String.fromInt counter
                 in
-                buildPreRenameMap prefix rest
+                buildPreRenameMap prefix
+                    rest
                     (Set.insert name seen)
                     (counter + 1)
                     (Data.Map.insert identity name canonicalName acc)
@@ -972,6 +935,7 @@ flattenTLambda canType acc =
             ( List.reverse acc, canType )
 
 
+
 -- ========== SINGLE-PASS CALL-SITE UNIFIER ==========
 
 
@@ -981,6 +945,7 @@ unifyArgsOnly + applySubst + resolveMonoVars + unifyExtend sequence.
 Walks argTypes and argMonoTypes in lockstep, unifying each pair via unifyHelp.
 Then applies the resulting substitution to the result type, and constructs
 MFunction in one pass. Returns the updated substitution and the funcMonoType.
+
 -}
 unifyCallSiteDirect :
     List Can.Type
@@ -1032,6 +997,7 @@ buildCurriedFuncType schemeArgs resolvedArgs resultMono =
 
         _ ->
             resultMono
+
 
 
 -- ========== MERGED OCCURS CHECK + NORMALIZATION ==========
@@ -1161,8 +1127,6 @@ normalizeAndOccursCheckDict targetName subst fields =
         )
         (Just ( Dict.empty, subst ))
         fields
-
-
 
 
 {-| Derive a constraint from a type variable name.

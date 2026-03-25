@@ -1,12 +1,6 @@
 module Mlir.Bytecode.DialectSection exposing
-    ( DialectRegistry
-    , OpGroup
-    , buildRegistry
-    , collect
-    , dialectIndex
-    , encode
-    , opIndex
-    , registryFromOpMap
+    ( DialectRegistry, collect, opIndex, dialectIndex, encode
+    , OpGroup, buildRegistry, registryFromOpMap
     )
 
 {-| Dialect section encoding for MLIR bytecode.
@@ -15,9 +9,9 @@ Collects all dialects and operation names from an MlirModule, assigns indices,
 and encodes the dialect section.
 
 Format:
-    numDialects: varint
-    dialectNames: [varint(stringIdx << 1 | hasVersion)]
-    opNames: [dialect varint, numOps varint, [varint(nameIdx << 1 | isRegistered)]]
+numDialects: varint
+dialectNames: [varint(stringIdx << 1 | hasVersion)]
+opNames: [dialect varint, numOps varint, [varint(nameIdx << 1 | isRegistered)]]
 
 @docs DialectRegistry, collect, opIndex, dialectIndex, encode
 
@@ -161,19 +155,15 @@ collectOpNames mod =
         -- Collect all op names into a dict: dialect -> list of op suffixes
         allOps =
             List.foldl walkOpForNames Dict.empty mod.body
-
-        -- Convert to groups, sorted by dialect name for deterministic output
-        groups =
-            allOps
-                |> Dict.toList
-                |> List.map
-                    (\( dialect, ops ) ->
-                        { dialect = dialect
-                        , ops = List.reverse ops
-                        }
-                    )
     in
-    groups
+    allOps
+        |> Dict.toList
+        |> List.map
+            (\( dialect, ops ) ->
+                { dialect = dialect
+                , ops = List.reverse ops
+                }
+            )
 
 
 walkOpForNames : MlirOp -> Dict String (List String) -> Dict String (List String)
@@ -181,11 +171,8 @@ walkOpForNames op acc =
     let
         acc1 =
             addOpNameToDict op.name acc
-
-        acc2 =
-            List.foldl walkRegionForNames acc1 op.regions
     in
-    acc2
+    List.foldl walkRegionForNames acc1 op.regions
 
 
 walkRegionForNames : MlirRegion -> Dict String (List String) -> Dict String (List String)

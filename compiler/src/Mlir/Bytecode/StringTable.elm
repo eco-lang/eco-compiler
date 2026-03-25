@@ -1,11 +1,6 @@
 module Mlir.Bytecode.StringTable exposing
-    ( StringTable
-    , collect
+    ( StringTable, collect, indexOf, encode, addString, empty
     , collectOp
-    , indexOf
-    , encode
-    , addString
-    , empty
     )
 
 {-| String table for MLIR bytecode.
@@ -29,7 +24,6 @@ import Mlir.Mlir
         , MlirOp
         , MlirRegion(..)
         , MlirType(..)
-        , Visibility(..)
         )
 import OrderedDict
 
@@ -117,12 +111,8 @@ collectOp op st =
         -- Add location strings
         st4 =
             collectLoc op.loc st3
-
-        -- Recurse into regions
-        st5 =
-            List.foldl collectRegion st4 op.regions
     in
-    st5
+    List.foldl collectRegion st4 op.regions
 
 
 addOpName : String -> StringTable -> StringTable
@@ -235,12 +225,8 @@ collectBlock blk st =
         -- Body ops
         st2 =
             List.foldl collectOp st1 blk.body
-
-        -- Terminator
-        st3 =
-            collectOp blk.terminator st2
     in
-    st3
+    collectOp blk.terminator st2
 
 
 {-| Encode the string table as a bytecode section body.

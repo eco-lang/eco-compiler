@@ -62,10 +62,10 @@ import Compiler.Monomorphize.Monomorphize as Monomorphize
 import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Result as RResult
 import Compiler.Type.Constrain.Typed.Module as ConstrainTyped
-import Compiler.Type.SolverSnapshot as SolverSnapshot
 import Compiler.Type.KernelTypes as KernelTypes
 import Compiler.Type.PostSolve as PostSolve
 import Compiler.Type.Solve as Solve
+import Compiler.Type.SolverSnapshot as SolverSnapshot
 import Compiler.TypedCanonical.Build as TCanBuild
 import Data.Map
 import Dict exposing (Dict)
@@ -676,7 +676,7 @@ expectCoverageRun srcModule =
             -- Valid Elm! Now run the backend pipeline for coverage.
             -- Failures here are expected and informative, not test failures.
             let
-                { canonical, annotations, nodeTypes, kernelEnv, localGraph } =
+                { canonical, localGraph } =
                     typedOptArtifacts
 
                 globalGraph =
@@ -686,11 +686,7 @@ expectCoverageRun srcModule =
                     buildGlobalTypeEnv canonical
             in
             case monomorphizeAny globalTypeEnv globalGraph of
-                Err monoErr ->
-                    let
-                        _ =
-                            Debug.log "BACKEND-FAIL[mono]" monoErr
-                    in
+                Err _ ->
                     Expect.pass
 
                 Ok monoGraph ->
@@ -702,11 +698,7 @@ expectCoverageRun srcModule =
                             MonoGlobalOptimize.globalOptimize simplifiedGraph
                     in
                     case runMLIRGeneration optimizedMonoGraph of
-                        Err mlirErr ->
-                            let
-                                _ =
-                                    Debug.log "BACKEND-FAIL[mlir]" mlirErr
-                            in
+                        Err _ ->
                             Expect.pass
 
                         Ok _ ->

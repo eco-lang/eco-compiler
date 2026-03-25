@@ -6,13 +6,14 @@ contains functions (lambdas, accessors, record update closures).
 These test cases target the monomorphizer's handling of LetDestruct
 when the bound expression has a type containing TLambda. The optimizer
 compiles `let (a, b) = expr` into `Let (Def "_v0" expr) (Destruct ... (Root "_v0") ...)`,
-and the monomorphizer must have "_v0" in VarEnv when processing the
+and the monomorphizer must have "\_v0" in VarEnv when processing the
 Destruct nodes.
 
 Bug scenario: When `shouldUseValueMulti` returns True (the type contains
 lambdas AND has CEcoValue type variables), the body may be processed
 before the let-bound variable is added to VarEnv, causing a crash at
 `specializePath: Root variable '_v0' not found in VarEnv`.
+
 -}
 
 import Compiler.AST.Source as Src
@@ -21,8 +22,8 @@ import Compiler.AST.SourceBuilder
         ( TypedDef
         , UnionDef
         , accessorExpr
-        , boolExpr
         , binopsExpr
+        , boolExpr
         , callExpr
         , caseExpr
         , ctorExpr
@@ -73,15 +74,20 @@ testCases expectFn =
 
 {-| Mirrors Scene.Drawing.processGesture:
 
-    type Loc = Doc | Div
+    type Loc
+        = Doc
+        | Div
 
     processGesture : Loc -> { a : Int, b : Int } -> ( { a : Int, b : Int } -> Int, Int -> { a : Int, b : Int } -> { a : Int, b : Int } )
     processGesture loc rec =
         let
             ( get, set ) =
                 case loc of
-                    Doc -> ( .a, \x m -> { m | a = x } )
-                    Div -> ( .b, \x m -> { m | b = x } )
+                    Doc ->
+                        ( .a, \x m -> { m | a = x } )
+
+                    Div ->
+                        ( .b, \x m -> { m | b = x } )
         in
         ( get rec, set 99 rec )
 
@@ -101,12 +107,6 @@ destructTupleOfLambdasFromCase expectFn _ =
 
         recType =
             tRecord [ ( "a", tType "Int" [] ), ( "b", tType "Int" [] ) ]
-
-        getterType =
-            tLambda recType (tType "Int" [])
-
-        setterType =
-            tLambda (tType "Int" []) (tLambda recType recType)
 
         -- processGesture : Loc -> { a : Int, b : Int } -> ( Int, { a : Int, b : Int } )
         processFn : TypedDef
@@ -168,8 +168,11 @@ destructTupleOfLambdasFromCase expectFn _ =
         let
             ( fst, snd ) =
                 case loc of
-                    Doc -> ( .a, .b )
-                    Div -> ( .b, .a )
+                    Doc ->
+                        ( .a, .b )
+
+                    Div ->
+                        ( .b, .a )
         in
         ( fst rec, snd rec )
 
@@ -304,6 +307,7 @@ destructTupleOfLambdasDirect expectFn _ =
             ( getter, setter ) =
                 if flag then
                     ( .x, \v r -> { r | x = v } )
+
                 else
                     ( .x, \v r -> { r | x = v + 1 } )
         in
@@ -371,15 +375,20 @@ destructTupleOfAccessorAndLambdaFromCase expectFn _ =
 
 {-| Both destructured functions are used with multiple args:
 
-    type Dir = Left | Right
+    type Dir
+        = Left
+        | Right
 
     transform : Dir -> Int -> Int -> ( Int, Int )
     transform dir a b =
         let
             ( f, g ) =
                 case dir of
-                    Left  -> ( \x -> x + 1, \x -> x * 2 )
-                    Right -> ( \x -> x * 3, \x -> x + 4 )
+                    Left ->
+                        ( \x -> x + 1, \x -> x * 2 )
+
+                    Right ->
+                        ( \x -> x * 3, \x -> x + 4 )
         in
         ( f a, g b )
 

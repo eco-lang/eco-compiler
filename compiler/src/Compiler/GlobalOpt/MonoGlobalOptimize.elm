@@ -1604,6 +1604,7 @@ where the first-stage arity is 1, not the total arity of 2.
 
 Note: FlattenedExternal callees are handled separately by callModelForCallee
 and never reach this function's fallback (they use FlattenedExternal CallInfo).
+
 -}
 type SourceArity
     = FromProducer Int
@@ -1629,18 +1630,6 @@ firstStageArityFromType monoType =
     case monoType of
         Mono.MFunction argTypes _ ->
             List.length argTypes
-
-        _ ->
-            0
-
-
-{-| Count total arity by summing all stage arities.
--}
-countTotalArityFromType : Mono.MonoType -> Int
-countTotalArityFromType monoType =
-    case monoType of
-        Mono.MFunction argTypes resultType ->
-            List.length argTypes + countTotalArityFromType resultType
 
         _ ->
             0
@@ -1800,8 +1789,8 @@ closureBodyStageArities graph expr =
 
 
 {-| Check if a callee expression is a dynamic staging slot (function parameter
-    whose equivalence class has no producer segmentation). Only these callees
-    should use CallGenericApply for runtime dispatch.
+whose equivalence class has no producer segmentation). Only these callees
+should use CallGenericApply for runtime dispatch.
 -}
 isDynamicCallee : CallEnv -> Mono.MonoExpr -> Bool
 isDynamicCallee env funcExpr =

@@ -4,14 +4,13 @@ module SourceIR.ClosureAbiBranchCases exposing (expectSuite)
 
 Exercises higher-order functions called with different closure shapes
 at different call sites, which triggers the ABI normalization system.
+
 -}
 
 import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
-        ( TypedDef
-        , UnionDef
-        , binopsExpr
+        ( binopsExpr
         , callExpr
         , caseExpr
         , ctorExpr
@@ -20,18 +19,12 @@ import Compiler.AST.SourceBuilder
         , intExpr
         , lambdaExpr
         , letExpr
-        , listExpr
-        , makeModuleWithDefs
         , makeModuleWithTypedDefs
         , makeModuleWithTypedDefsUnionsAliases
-        , pAnything
         , pCtor
         , pVar
-        , recordExpr
-        , strExpr
         , tLambda
         , tType
-        , tVar
         , varExpr
         )
 import Compiler.BulkCheck exposing (TestCase, bulkCheck)

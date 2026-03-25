@@ -5,7 +5,7 @@ other kernels.
 -}
 
 import Compiler.AST.Source as Src
-import Compiler.AST.SourceBuilder exposing (boolExpr, binopsExpr, callExpr, define, intExpr, lambdaExpr, letExpr, listExpr, makeKernelModule, makeModule, pAnything, pVar, qualVarExpr, strExpr, tupleExpr, varExpr)
+import Compiler.AST.SourceBuilder exposing (binopsExpr, boolExpr, callExpr, define, intExpr, lambdaExpr, letExpr, listExpr, makeKernelModule, makeModule, pVar, qualVarExpr, strExpr, tupleExpr, varExpr)
 import Compiler.BulkCheck exposing (TestCase, bulkCheck)
 import Expect exposing (Expectation)
 import Test exposing (Test)
@@ -43,53 +43,69 @@ testCases expectFn =
 
 mapWithNegate : (Src.Module -> Expectation) -> (() -> Expectation)
 mapWithNegate expectFn _ =
-    expectFn (makeKernelModule "testValue"
-        (callExpr (qualVarExpr "Elm.Kernel.List" "map")
-            [ qualVarExpr "Elm.Kernel.Basics" "negate"
-            , listExpr [ intExpr 1, intExpr 2, intExpr 3 ]
-            ]))
+    expectFn
+        (makeKernelModule "testValue"
+            (callExpr (qualVarExpr "Elm.Kernel.List" "map")
+                [ qualVarExpr "Elm.Kernel.Basics" "negate"
+                , listExpr [ intExpr 1, intExpr 2, intExpr 3 ]
+                ]
+            )
+        )
 
 
 foldlSum : (Src.Module -> Expectation) -> (() -> Expectation)
 foldlSum expectFn _ =
-    expectFn (makeKernelModule "testValue"
-        (callExpr (qualVarExpr "Elm.Kernel.List" "foldl")
-            [ lambdaExpr [ pVar "x", pVar "acc" ] (binopsExpr [ ( varExpr "x", "+" ) ] (varExpr "acc"))
-            , intExpr 0
-            , callExpr (qualVarExpr "Elm.Kernel.List" "range") [ intExpr 1, intExpr 10 ]
-            ]))
+    expectFn
+        (makeKernelModule "testValue"
+            (callExpr (qualVarExpr "Elm.Kernel.List" "foldl")
+                [ lambdaExpr [ pVar "x", pVar "acc" ] (binopsExpr [ ( varExpr "x", "+" ) ] (varExpr "acc"))
+                , intExpr 0
+                , callExpr (qualVarExpr "Elm.Kernel.List" "range") [ intExpr 1, intExpr 10 ]
+                ]
+            )
+        )
 
 
 mapOnTuples : (Src.Module -> Expectation) -> (() -> Expectation)
 mapOnTuples expectFn _ =
-    expectFn (makeKernelModule "testValue"
-        (callExpr (qualVarExpr "Elm.Kernel.List" "map")
-            [ qualVarExpr "Elm.Kernel.Tuple" "first"
-            , listExpr [ tupleExpr (intExpr 1) (strExpr "a"), tupleExpr (intExpr 2) (strExpr "b") ]
-            ]))
+    expectFn
+        (makeKernelModule "testValue"
+            (callExpr (qualVarExpr "Elm.Kernel.List" "map")
+                [ qualVarExpr "Elm.Kernel.Tuple" "first"
+                , listExpr [ tupleExpr (intExpr 1) (strExpr "a"), tupleExpr (intExpr 2) (strExpr "b") ]
+                ]
+            )
+        )
 
 
 nestedMap : (Src.Module -> Expectation) -> (() -> Expectation)
 nestedMap expectFn _ =
-    expectFn (makeKernelModule "testValue"
-        (callExpr (qualVarExpr "Elm.Kernel.List" "map")
-            [ lambdaExpr [ pVar "xs" ]
-                (callExpr (qualVarExpr "Elm.Kernel.List" "map")
-                    [ lambdaExpr [ pVar "x" ] (binopsExpr [ ( varExpr "x", "+" ) ] (intExpr 1))
-                    , varExpr "xs"
-                    ])
-            , listExpr [ listExpr [ intExpr 1, intExpr 2 ], listExpr [ intExpr 3, intExpr 4 ] ]
-            ]))
+    expectFn
+        (makeKernelModule "testValue"
+            (callExpr (qualVarExpr "Elm.Kernel.List" "map")
+                [ lambdaExpr [ pVar "xs" ]
+                    (callExpr (qualVarExpr "Elm.Kernel.List" "map")
+                        [ lambdaExpr [ pVar "x" ] (binopsExpr [ ( varExpr "x", "+" ) ] (intExpr 1))
+                        , varExpr "xs"
+                        ]
+                    )
+                , listExpr [ listExpr [ intExpr 1, intExpr 2 ], listExpr [ intExpr 3, intExpr 4 ] ]
+                ]
+            )
+        )
 
 
 foldlWithKernelAdd : (Src.Module -> Expectation) -> (() -> Expectation)
 foldlWithKernelAdd expectFn _ =
-    expectFn (makeKernelModule "testValue"
-        (callExpr (qualVarExpr "Elm.Kernel.List" "foldl")
-            [ qualVarExpr "Elm.Kernel.Basics" "add"
-            , intExpr 0
-            , listExpr [ intExpr 1, intExpr 2, intExpr 3 ]
-            ]))
+    expectFn
+        (makeKernelModule "testValue"
+            (callExpr (qualVarExpr "Elm.Kernel.List" "foldl")
+                [ qualVarExpr "Elm.Kernel.Basics" "add"
+                , intExpr 0
+                , listExpr [ intExpr 1, intExpr 2, intExpr 3 ]
+                ]
+            )
+        )
 
 
 {-| List.map with a user-defined named function (not a kernel function).
@@ -165,7 +181,8 @@ filterWithUserPredicate : (Src.Module -> Expectation) -> (() -> Expectation)
 filterWithUserPredicate expectFn _ =
     let
         isPositive =
-            define "isPositive" [ pVar "x" ]
+            define "isPositive"
+                [ pVar "x" ]
                 (binopsExpr [ ( varExpr "x", ">" ) ] (intExpr 0))
 
         modul =
@@ -319,7 +336,8 @@ mapWithPartialAppMultiStage expectFn _ =
     let
         -- curried x = \y -> x + y  (multi-stage: Int -> (Int -> Int))
         curried =
-            define "curried" [ pVar "x" ]
+            define "curried"
+                [ pVar "x" ]
                 (lambdaExpr [ pVar "y" ] (binopsExpr [ ( varExpr "x", "+" ) ] (varExpr "y")))
 
         -- List.map (curried 5) [1, 2, 3]  — curried 5 returns a closure
@@ -345,7 +363,8 @@ foldlWithPartialAppAccum expectFn _ =
     let
         -- combine factor x acc = factor * x + acc
         combine =
-            define "combine" [ pVar "factor", pVar "x", pVar "acc" ]
+            define "combine"
+                [ pVar "factor", pVar "x", pVar "acc" ]
                 (binopsExpr
                     [ ( binopsExpr [ ( varExpr "factor", "*" ) ] (varExpr "x"), "+" ) ]
                     (varExpr "acc")
@@ -375,7 +394,8 @@ filterWithPartialEq expectFn _ =
     let
         -- eq a b = a == b (wrapping the operator)
         eqFn =
-            define "eq" [ pVar "a", pVar "b" ]
+            define "eq"
+                [ pVar "a", pVar "b" ]
                 (binopsExpr [ ( varExpr "a", "==" ) ] (varExpr "b"))
 
         -- List.filter (eq 5) [1, 2, 5, 3, 5]

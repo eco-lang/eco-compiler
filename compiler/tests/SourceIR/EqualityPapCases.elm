@@ -4,6 +4,7 @@ module SourceIR.EqualityPapCases exposing (expectSuite)
 with Bool elements, compare on Char/Float/String, and List.map producing Bool.
 
 Covers gaps 3, 15, 16, 26 from e2e-to-elmtest.md.
+
 -}
 
 import Compiler.AST.Source as Src
@@ -21,7 +22,6 @@ import Compiler.AST.SourceBuilder
         , letExpr
         , listExpr
         , makeModule
-        , pAnything
         , pCtor
         , pVar
         , qualVarExpr
@@ -112,7 +112,8 @@ equalityPapInt : (Src.Module -> Expectation) -> (() -> Expectation)
 equalityPapInt expectFn _ =
     let
         eqFn =
-            define "eq" [ pVar "a", pVar "b" ]
+            define "eq"
+                [ pVar "a", pVar "b" ]
                 (binopsExpr [ ( varExpr "a", "==" ) ] (varExpr "b"))
 
         modul =
@@ -135,7 +136,8 @@ equalityPapFloat : (Src.Module -> Expectation) -> (() -> Expectation)
 equalityPapFloat expectFn _ =
     let
         eqFn =
-            define "eq" [ pVar "a", pVar "b" ]
+            define "eq"
+                [ pVar "a", pVar "b" ]
                 (binopsExpr [ ( varExpr "a", "==" ) ] (varExpr "b"))
 
         modul =
@@ -158,7 +160,8 @@ equalityPapChar : (Src.Module -> Expectation) -> (() -> Expectation)
 equalityPapChar expectFn _ =
     let
         eqFn =
-            define "eq" [ pVar "a", pVar "b" ]
+            define "eq"
+                [ pVar "a", pVar "b" ]
                 (binopsExpr [ ( varExpr "a", "==" ) ] (varExpr "b"))
 
         modul =
@@ -181,7 +184,8 @@ equalityPapString : (Src.Module -> Expectation) -> (() -> Expectation)
 equalityPapString expectFn _ =
     let
         eqFn =
-            define "eq" [ pVar "a", pVar "b" ]
+            define "eq"
+                [ pVar "a", pVar "b" ]
                 (binopsExpr [ ( varExpr "a", "==" ) ] (varExpr "b"))
 
         modul =
@@ -199,24 +203,27 @@ equalityPapString expectFn _ =
 
 {-| Tests (==) PAP used at both Int and String types in the same module.
 let eqI a b = a == b
-    eqS a b = a == b
-    ints = List.filter (eqI 5) [1, 5, 3]
-    strs = List.filter (eqS "x") ["x", "y"]
+eqS a b = a == b
+ints = List.filter (eqI 5) [1, 5, 3]
+strs = List.filter (eqS "x") ["x", "y"]
 in (ints, strs)
 -}
 equalityPapMultiType : (Src.Module -> Expectation) -> (() -> Expectation)
 equalityPapMultiType expectFn _ =
     let
         eqI =
-            define "eqI" [ pVar "a", pVar "b" ]
+            define "eqI"
+                [ pVar "a", pVar "b" ]
                 (binopsExpr [ ( varExpr "a", "==" ) ] (varExpr "b"))
 
         eqS =
-            define "eqS" [ pVar "a", pVar "b" ]
+            define "eqS"
+                [ pVar "a", pVar "b" ]
                 (binopsExpr [ ( varExpr "a", "==" ) ] (varExpr "b"))
 
         ints =
-            define "ints" []
+            define "ints"
+                []
                 (callExpr (qualVarExpr "List" "filter")
                     [ callExpr (varExpr "eqI") [ intExpr 5 ]
                     , listExpr [ intExpr 1, intExpr 5, intExpr 3 ]
@@ -224,7 +231,8 @@ equalityPapMultiType expectFn _ =
                 )
 
         strs =
-            define "strs" []
+            define "strs"
+                []
                 (callExpr (qualVarExpr "List" "filter")
                     [ callExpr (varExpr "eqS") [ strExpr "x" ]
                     , listExpr [ strExpr "x", strExpr "y" ]
@@ -349,14 +357,15 @@ compareString expectFn _ =
 
 
 {-| Case on the result of compare to exercise Order pattern matching:
-    let result = compare 1 2
-    in case result of LT -> "less"; EQ -> "equal"; GT -> "greater"
+let result = compare 1 2
+in case result of LT -> "less"; EQ -> "equal"; GT -> "greater"
 -}
 caseOnCompareResult : (Src.Module -> Expectation) -> (() -> Expectation)
 caseOnCompareResult expectFn _ =
     let
         result =
-            define "result" []
+            define "result"
+                []
                 (callExpr (qualVarExpr "Basics" "compare")
                     [ intExpr 1, intExpr 2 ]
                 )
@@ -411,7 +420,7 @@ listMapIdentityBool expectFn _ =
         )
 
 
-{-| List.map (\x -> x == 5) [1, 5, 3, 5, 2] -> [False, True, False, True, False]
+{-| List.map (\\x -> x == 5) [1, 5, 3, 5, 2] -> [False, True, False, True, False]
 Exercises an equality predicate producing a Bool list from an Int list.
 -}
 listMapEqualityPredicate : (Src.Module -> Expectation) -> (() -> Expectation)

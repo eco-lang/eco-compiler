@@ -3,7 +3,8 @@ module Builder.Generate exposing
     , dev, debug
     , prod
     , repl
-    , MonoBuildResult, writeMonoMlirStreaming, writeMonoMlirBytecode, writeMonoMlirStreamingBytecode
+    , MonoBuildResult, writeMonoMlirStreaming
+    , writeMonoMlirStreamingBytecode
     )
 
 {-| Code generation orchestration for the Elm compiler.
@@ -36,7 +37,7 @@ produce JavaScript, MLIR, or other target code.
 
 # Native MLIR Streaming
 
-@docs MonoBuildResult, writeMonoMlirStreaming, writeMonoMlirBytecode
+@docs MonoBuildResult, writeMonoMlirStreaming
 
 -}
 
@@ -282,10 +283,7 @@ lookupMain pkg locals root =
 
 
 type LoadingObjects
-    = LoadingObjects
-        (MVar (Maybe Opt.GlobalGraph))
-        (Data.Map.Dict String ModuleName.Raw (MVar (Maybe Opt.LocalGraph)))
-        (Data.Map.Dict String ModuleName.Raw Opt.LocalGraph)
+    = LoadingObjects (MVar (Maybe Opt.GlobalGraph)) (Data.Map.Dict String ModuleName.Raw (MVar (Maybe Opt.LocalGraph))) (Data.Map.Dict String ModuleName.Raw Opt.LocalGraph)
 
 
 loadObjects : FilePath -> Maybe String -> Details.Details -> List Build.Module -> Task Exit.Generate LoadingObjects
@@ -485,12 +483,7 @@ loadAndStoreInterfaceTypes root maybeBuildDir name mvar =
 (for sequential .ecot loading), Fresh modules dict, and root/buildDir for file paths.
 -}
 type TypedLoadingObjects
-    = TypedLoadingObjects
-        (MVar (Maybe Details.PackageTypedArtifacts))
-        (List ModuleName.Raw)
-        (Data.Map.Dict String ModuleName.Raw ModuleTyped)
-        FilePath
-        (Maybe String)
+    = TypedLoadingObjects (MVar (Maybe Details.PackageTypedArtifacts)) (List ModuleName.Raw) (Data.Map.Dict String ModuleName.Raw ModuleTyped) FilePath (Maybe String)
 
 
 loadTypedObjects : FilePath -> Maybe String -> Maybe ( Pkg.Name, FilePath ) -> Details.Details -> List Build.Module -> Task Exit.Generate TypedLoadingObjects
@@ -551,8 +544,6 @@ loadTypedModuleObjects root maybeBuildDir modules mvar =
     in
     -- No MVars needed — cached modules will be loaded sequentially during merge
     Task.succeed (TypedLoadingObjects mvar cachedNames freshDict root maybeBuildDir)
-
-
 
 
 
@@ -728,6 +719,7 @@ Each phase is a separate top-level function to break JS closure scope capture.
 Without this separation, Elm's compiled JS closures capture the full enclosing scope,
 pinning data from earlier phases (e.g., TypedObjects, typedGraph, globalTypeEnv)
 through subsequent phases where they are no longer needed.
+
 -}
 runMonoOptPipeline : TOpt.GlobalGraph -> TypeEnv.GlobalTypeEnv -> Task Exit.Generate MonoBuildResult
 runMonoOptPipeline typedGraph globalTypeEnv =
@@ -814,28 +806,6 @@ writeMonoMlirStreaming _ _ root maybeBuildDir maybeLocal details artifacts targe
                     (\writeChunk ->
                         MLIR.streamMlirToWriter mode monoGraph writeChunk
                     )
-                    |> Task.mapError never
-            )
-
-
-{-| Generate MLIR bytecode and write it to a file.
-Uses the in-memory bytecode encoder for a more compact binary format.
--}
-writeMonoMlirBytecode :
-    Bool
-    -> Int
-    -> FilePath
-    -> Maybe String
-    -> Maybe ( Pkg.Name, FilePath )
-    -> Details.Details
-    -> Build.Artifacts
-    -> FilePath
-    -> Task Exit.Generate ()
-writeMonoMlirBytecode _ _ root maybeBuildDir maybeLocal details artifacts target =
-    buildMonoGraph root maybeBuildDir maybeLocal details artifacts
-        |> Task.andThen
-            (\{ monoGraph, mode } ->
-                MLIR.writeMlirBytecode mode monoGraph target
                     |> Task.mapError never
             )
 

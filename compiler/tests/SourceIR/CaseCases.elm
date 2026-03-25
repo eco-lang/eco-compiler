@@ -15,7 +15,6 @@ import Compiler.AST.SourceBuilder
         , chrExpr
         , ctorExpr
         , define
-        , floatExpr
         , ifExpr
         , intExpr
         , letExpr
@@ -32,14 +31,12 @@ import Compiler.AST.SourceBuilder
         , pRecord
         , pStr
         , pTuple
-        , pUnit
         , pVar
         , recordExpr
         , strExpr
         , tLambda
         , tType
         , tupleExpr
-        , unitExpr
         , varExpr
         )
 import Compiler.BulkCheck exposing (TestCase, bulkCheck)

@@ -4,8 +4,8 @@ module Compiler.AST.Monomorphized exposing
     , Global(..), SpecKey(..), SpecId, SpecializationRegistry
     , MonoGraph(..), MainInfo(..), MonoNode(..), CtorShape, nodeType
     , MonoExpr(..), ClosureInfo, MonoDef(..), MonoDestructor(..), MonoPath(..)
-    , Decider(..), MonoChoice(..)
     , MonoDtPath(..), dtPathType
+    , Decider(..), MonoChoice(..)
     , ContainerKind(..)
     , typeOf
     , toComparableSpecKey, toComparableMonoType
@@ -18,8 +18,7 @@ module Compiler.AST.Monomorphized exposing
     , CallModel(..), CallKind(..), CallInfo, defaultCallInfo
     , ClosureKindId(..), ClosureKind(..), MaybeClosureKind
     , CaptureABI
-    , containsAnyMVar, containsCEcoMVar
-    , resultTypeOf
+    , containsAnyMVar, containsCEcoMVar, resultTypeOf
     -- Typed closure calling (ABI cloning)
     -- Call staging metadata
     -- Staging/Segmentation helpers
@@ -152,11 +151,9 @@ import Array exposing (Array)
 import Compiler.AST.DecisionTree.Test as DT
 import Compiler.Data.BitSet exposing (BitSet)
 import Compiler.Data.Name exposing (Name)
-import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Reporting.Annotation exposing (Region)
 import Dict exposing (Dict)
 import System.TypeCheck.IO as IO
-import Tuple
 
 
 
@@ -314,8 +311,6 @@ resultTypeOf monoType =
 
         _ ->
             monoType
-
-
 
 
 {-| Check whether a MonoType contains any `MVar` (any constraint).
@@ -706,6 +701,7 @@ monoTypeToDebugString monoType =
 Mirrors `MonoPath` but only carries the constructors relevant to decision trees
 (Index, Unbox, Root — no Field or ArrayIndex). The root embeds the scrutinee
 variable name and its MonoType, so codegen does not need a separate `root` param.
+
 -}
 type MonoDtPath
     = DtRoot Name MonoType

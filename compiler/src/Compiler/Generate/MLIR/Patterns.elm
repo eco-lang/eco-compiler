@@ -1,4 +1,4 @@
-module Compiler.Generate.MLIR.Patterns exposing (generateMonoPath, generateMonoDtPath, generateMonoChainCondition, generateMonoTest, testToTagInt, caseKindFromTest, scrutineeTypeFromCaseKind, computeFallbackTag)
+module Compiler.Generate.MLIR.Patterns exposing (generateMonoPath, generateMonoDtPath, generateMonoChainCondition, testToTagInt, caseKindFromTest, scrutineeTypeFromCaseKind, computeFallbackTag)
 
 {-| Pattern matching and path generation for MLIR code generation.
 
@@ -10,7 +10,7 @@ This module handles:
   - Scrutinee type determination
   - Fallback tag computation
 
-@docs generateMonoPath, generateMonoDtPath, generateMonoChainCondition, generateMonoTest, testToTagInt, caseKindFromTest, scrutineeTypeFromCaseKind, computeFallbackTag
+@docs generateMonoPath, generateMonoDtPath, generateMonoChainCondition, testToTagInt, caseKindFromTest, scrutineeTypeFromCaseKind, computeFallbackTag
 
 -}
 
@@ -70,6 +70,7 @@ generateMonoPath ctx path targetType =
 {-| Generate MLIR ops to navigate a MonoDtPath and extract a value.
 
 Converts MonoDtPath to MonoPath and delegates to generateMonoPath.
+
 -}
 generateMonoDtPath : Ctx.Context -> Mono.MonoDtPath -> MlirType -> ( List MlirOp, String, Ctx.Context )
 generateMonoDtPath ctx dtPath targetType =
@@ -755,7 +756,6 @@ boxPrimitive ctx resultVar primitiveVar primType =
         |> Ops.opBuilder.withResults [ ( resultVar, Types.ecoValue ) ]
         |> Ops.opBuilder.withAttrs attrs
         |> Ops.opBuilder.build
-
 
 
 {-| Get the tag from a DT.Test for use with eco.case

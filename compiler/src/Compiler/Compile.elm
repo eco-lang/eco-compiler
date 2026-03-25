@@ -262,7 +262,7 @@ typeCheckTyped modul canonical =
         Err errors ->
             Err (E.BadTypes (Localizer.fromModule modul) errors)
 
-        Ok { annotations, annotationVars, nodeTypes, nodeVars, solverState } ->
+        Ok { annotations, annotationVars, nodeTypes, nodeVars } ->
             let
                 -- Run PostSolve to fix Group B types and compute kernel env
                 postSolveResult =

@@ -1,20 +1,22 @@
 module SourceIR.PolyChainCases exposing (expectSuite, suite)
 
 {-| Test cases for chained polymorphic function calls that trigger the
-__callee rename collision bug in monomorphization type substitution.
+\_\_callee rename collision bug in monomorphization type substitution.
 
 The bug mechanism requires three layers:
-1. A concrete entry point that specializes a polymorphic middle function
-2. A polymorphic middle function (caller) whose type vars enter the substitution
-3. A polymorphic helper (callee) with overlapping var names, called multiple times
+
+1.  A concrete entry point that specializes a polymorphic middle function
+2.  A polymorphic middle function (caller) whose type vars enter the substitution
+3.  A polymorphic helper (callee) with overlapping var names, called multiple times
 
 When the callee's type vars overlap with the caller's, buildRenameMap renames
-them with __callee suffixes. But the counter resets to 0 on each unifyFuncCall,
-so the second call reuses the same __callee names. Combined with:
-- normalizeMonoType not resolving inner MVars in complex types
-- isSelfRef only catching bare MVar self-references
+them with **callee suffixes. But the counter resets to 0 on each unifyFuncCall,
+so the second call reuses the same **callee names. Combined with:
 
-This allows circular bindings like a__callee0 = Tree (MVar "a__callee0") to form.
+  - normalizeMonoType not resolving inner MVars in complex types
+  - isSelfRef only catching bare MVar self-references
+
+This allows circular bindings like a\_\_callee0 = Tree (MVar "a\_\_callee0") to form.
 
 -}
 
@@ -33,10 +35,8 @@ import Compiler.AST.SourceBuilder
         , listExpr
         , makeModuleWithTypedDefsUnionsAliases
         , pVar
-        , recordExpr
         , strExpr
         , tLambda
-        , tRecord
         , tTuple
         , tType
         , tVar
@@ -132,20 +132,41 @@ occursCheckCases expectFn =
 
 {-| Core reproducer for the occurs check bug.
 
-    type Tree a = Leaf | Node (Tree a) a (Tree a)
 
-    insertTree : a -> Tree a -> Tree a    -- callee (polymorphic)
-    insertTree val tree = Node tree val Leaf
+    type Tree a
+        = Leaf
+        | Node (Tree a) a (Tree a)
 
-    buildTree : a -> a -> Tree a           -- caller (polymorphic, shares var `a`)
+    insertTree :
+        a
+        -> Tree a
+        -> Tree a -- callee (polymorphic)
+    insertTree val tree =
+        Node tree val Leaf
+
+    buildTree :
+        a
+        -> a
+        -> Tree a -- caller (polymorphic, shares var `a`)
     buildTree x y =
         let
-            t1 = insertTree x Leaf         -- 1st call: a → a__callee0
-            t2 = insertTree y t1           -- 2nd call: a → a__callee0 REUSED
-        in                                 -- t1's type = Tree (MVar "a__callee0")
-        t2                                 -- isSelfRef misses it → cycle!
+            t1 =
+                insertTree x Leaf
 
-    testValue = buildTree 1 2              -- concrete entry point
+            -- 1st call: a → a__callee0
+            t2 =
+                insertTree y t1
+
+            -- 2nd call: a → a__callee0 REUSED
+        in
+        -- t1's type = Tree (MVar "a__callee0")
+        t2
+
+    -- isSelfRef misses it → cycle!
+    testValue =
+        buildTree 1 2
+
+    -- concrete entry point
 
 -}
 treeInsertFromPolyCaller : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -194,11 +215,13 @@ treeInsertFromPolyCaller expectFn _ =
                     )
             , body =
                 letExpr
-                    [ define "t1" []
+                    [ define "t1"
+                        []
                         (callExpr (varExpr "insertTree")
                             [ varExpr "x", callExpr (ctorExpr "Leaf") [] ]
                         )
-                    , define "t2" []
+                    , define "t2"
+                        []
                         (callExpr (varExpr "insertTree")
                             [ varExpr "y", varExpr "t1" ]
                         )
@@ -241,16 +264,30 @@ treeInsertFromPolyCaller expectFn _ =
 
 {-| Tuple wrapping variant: the helper returns a type where `a` is inside a tuple.
 
-    tag : a -> (a, Int)
-    tag x = (x, 0)
 
-    tagBoth : a -> a -> (a, Int)    -- poly caller, shares `a`
+    tag : a -> ( a, Int )
+    tag x =
+        ( x, 0 )
+
+    tagBoth :
+        a
+        -> a
+        -> ( a, Int ) -- poly caller, shares `a`
     tagBoth x y =
         let
-            r1 = tag x              -- a__callee0 → MVar "a"
-            r2 = tag y              -- a__callee0 reused
-        in                          -- r1 type = (MVar "a__callee0", Int)
-        r2                          -- binding sees nested self-ref
+            r1 =
+                tag x
+
+            -- a__callee0 → MVar "a"
+            r2 =
+                tag y
+
+            -- a__callee0 reused
+        in
+        -- r1 type = (MVar "a__callee0", Int)
+        r2
+
+    -- binding sees nested self-ref
 
 -}
 tupleWrapFromPolyCaller : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -307,20 +344,35 @@ tupleWrapFromPolyCaller expectFn _ =
 
 {-| Two type vars both collide between caller and callee.
 
-    type Pair a b = Pair a b
+    type Pair a b
+        = Pair a b
 
-    combine : a -> b -> Pair a b     -- callee with vars a, b
-    combine x y = MkPair x y
+    combine :
+        a
+        -> b
+        -> Pair a b -- callee with vars a, b
+    combine x y =
+        MkPair x y
 
-    process : a -> b -> Pair a b     -- caller with SAME var names a, b
+    process :
+        a
+        -> b
+        -> Pair a b -- caller with SAME var names a, b
     process x y =
         let
-            r1 = combine x y          -- a→a__callee0, b→b__callee1
-            r2 = combine x y          -- reuses a__callee0, b__callee1
+            r1 =
+                combine x y
+
+            -- a→a__callee0, b→b__callee1
+            r2 =
+                combine x y
+
+            -- reuses a__callee0, b__callee1
         in
         r2
 
-    testValue = process 42 "hello"
+    testValue =
+        process 42 "hello"
 
 -}
 twoVarCollision : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -364,9 +416,11 @@ twoVarCollision expectFn _ =
                     )
             , body =
                 letExpr
-                    [ define "r1" []
+                    [ define "r1"
+                        []
                         (callExpr (varExpr "combine") [ varExpr "x", varExpr "y" ])
-                    , define "r2" []
+                    , define "r2"
+                        []
                         (callExpr (varExpr "combine") [ varExpr "x", varExpr "y" ])
                     ]
                     (varExpr "r2")
@@ -393,20 +447,36 @@ twoVarCollision expectFn _ =
 
 {-| Dict-like insert from a polymorphic caller with 3 colliding type vars.
 
-    type MyDict k v = Empty | Entry k v (MyDict k v)
+    type MyDict k v
+        = Empty
+        | Entry k v (MyDict k v)
 
     insert : k -> v -> MyDict k v -> MyDict k v
 
-    buildDict : k -> v -> v -> MyDict k v    -- poly caller, shares k, v
+    buildDict :
+        k
+        -> v
+        -> v
+        -> MyDict k v -- poly caller, shares k, v
     buildDict key v1 v2 =
         let
-            d0 = Empty
-            d1 = insert key v1 d0             -- k→k__callee0, v→v__callee1
-            d2 = insert key v2 d1             -- reuses k__callee0, v__callee1
-        in                                    -- d1 type has unresolved MVars
+            d0 =
+                Empty
+
+            d1 =
+                insert key v1 d0
+
+            -- k→k__callee0, v→v__callee1
+            d2 =
+                insert key v2 d1
+
+            -- reuses k__callee0, v__callee1
+        in
+        -- d1 type has unresolved MVars
         d2
 
-    testValue = buildDict "key" 1 2
+    testValue =
+        buildDict "key" 1 2
 
 -}
 dictInsertFromPolyCaller : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -464,11 +534,13 @@ dictInsertFromPolyCaller expectFn _ =
             , body =
                 letExpr
                     [ define "d0" [] (callExpr (ctorExpr "Empty") [])
-                    , define "d1" []
+                    , define "d1"
+                        []
                         (callExpr (varExpr "insert")
                             [ varExpr "key", varExpr "v1", varExpr "d0" ]
                         )
-                    , define "d2" []
+                    , define "d2"
+                        []
                         (callExpr (varExpr "insert")
                             [ varExpr "key", varExpr "v2", varExpr "d1" ]
                         )
@@ -514,20 +586,32 @@ dictInsertFromPolyCaller expectFn _ =
 {-| Longer chain: 4 calls to the same polymorphic helper in a polymorphic
 caller, each feeding its result to the next.
 
-    type Box a = Box a
+    type Box a
+        = Box a
 
     wrap : a -> Box a -> Box a
-    wrap x b = Box x
+    wrap x b =
+        Box x
 
     chain4 : a -> Box a -> Box a
     chain4 x b =
-        let r1 = wrap x b
-            r2 = wrap x r1
-            r3 = wrap x r2
-            r4 = wrap x r3
-        in r4
+        let
+            r1 =
+                wrap x b
 
-    testValue = chain4 42 (Box 0)
+            r2 =
+                wrap x r1
+
+            r3 =
+                wrap x r2
+
+            r4 =
+                wrap x r3
+        in
+        r4
+
+    testValue =
+        chain4 42 (Box 0)
 
 -}
 chainedFeedForward4 : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -570,13 +654,17 @@ chainedFeedForward4 expectFn _ =
                     )
             , body =
                 letExpr
-                    [ define "r1" []
+                    [ define "r1"
+                        []
                         (callExpr (varExpr "wrap") [ varExpr "x", varExpr "b" ])
-                    , define "r2" []
+                    , define "r2"
+                        []
                         (callExpr (varExpr "wrap") [ varExpr "x", varExpr "r1" ])
-                    , define "r3" []
+                    , define "r3"
+                        []
                         (callExpr (varExpr "wrap") [ varExpr "x", varExpr "r2" ])
-                    , define "r4" []
+                    , define "r4"
+                        []
                         (callExpr (varExpr "wrap") [ varExpr "x", varExpr "r3" ])
                     ]
                     (varExpr "r4")
@@ -606,19 +694,29 @@ chainedFeedForward4 expectFn _ =
 
 {-| Nested wrapper: the type var appears inside a more complex structure.
 
-    type Entry a = Entry (List a, Int) a
+    type Entry a
+        = Entry ( List a, Int ) a
 
     addEntry : a -> Entry a -> Entry a
-    addEntry x e = Entry ([], 0) x
+    addEntry x e =
+        Entry ( [], 0 ) x
 
-    collect : a -> a -> Entry a     -- poly caller
+    collect :
+        a
+        -> a
+        -> Entry a -- poly caller
     collect x y =
         let
-            e1 = addEntry x (Entry ([], 0) x)
-            e2 = addEntry y e1
-        in e2
+            e1 =
+                addEntry x (Entry ( [], 0 ) x)
 
-    testValue = collect "a" "b"
+            e2 =
+                addEntry y e1
+        in
+        e2
+
+    testValue =
+        collect "a" "b"
 
 -}
 nestedWrapperFromPolyCaller : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -670,7 +768,8 @@ nestedWrapperFromPolyCaller expectFn _ =
                     )
             , body =
                 letExpr
-                    [ define "e1" []
+                    [ define "e1"
+                        []
                         (callExpr (varExpr "addEntry")
                             [ varExpr "x"
                             , callExpr (ctorExpr "MkEntry")
@@ -679,7 +778,8 @@ nestedWrapperFromPolyCaller expectFn _ =
                                 ]
                             ]
                         )
-                    , define "e2" []
+                    , define "e2"
+                        []
                         (callExpr (varExpr "addEntry")
                             [ varExpr "y", varExpr "e1" ]
                         )
@@ -863,9 +963,6 @@ setOfPairsMultiOps expectFn _ =
         tMySet a =
             tType "MySet" [ a ]
 
-        tGlobal =
-            tType "Global" []
-
         mySetUnion : UnionDef
         mySetUnion =
             { name = "MySet"
@@ -963,9 +1060,6 @@ setOfPairsMultiOps expectFn _ =
 graphNodeComplexKey : (Src.Module -> Expectation) -> (() -> Expectation)
 graphNodeComplexKey expectFn _ =
     let
-        tGlobal =
-            tType "Global" []
-
         globalUnion : UnionDef
         globalUnion =
             { name = "Global"
@@ -1230,15 +1324,25 @@ mapFoldChain expectFn _ =
 
     myFoldl : (a -> b -> b) -> b -> List a -> b
 
-    summarize : a -> List a -> Int     -- poly caller, shares `a` and `b`
+    summarize :
+        a
+        -> List a
+        -> Int -- poly caller, shares `a` and `b`
     summarize x xs =
         let
-            r1 = myFoldl (\_ acc -> acc) 0 xs
-            r2 = myFoldl (\_ acc -> acc) r1 xs
-            r3 = myFoldl (\_ acc -> acc) r2 xs
-        in r3
+            r1 =
+                myFoldl (\_ acc -> acc) 0 xs
 
-    testValue = summarize "hello" []
+            r2 =
+                myFoldl (\_ acc -> acc) r1 xs
+
+            r3 =
+                myFoldl (\_ acc -> acc) r2 xs
+        in
+        r3
+
+    testValue =
+        summarize "hello" []
 
 -}
 foldlFromPolyCaller : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -1269,21 +1373,24 @@ foldlFromPolyCaller expectFn _ =
                     (tLambda (tList (tVar "a")) tInt)
             , body =
                 letExpr
-                    [ define "r1" []
+                    [ define "r1"
+                        []
                         (callExpr (varExpr "myFoldl")
                             [ lambdaExpr [ pVar "elem", pVar "acc1" ] (varExpr "acc1")
                             , intExpr 0
                             , varExpr "xs"
                             ]
                         )
-                    , define "r2" []
+                    , define "r2"
+                        []
                         (callExpr (varExpr "myFoldl")
                             [ lambdaExpr [ pVar "elem2", pVar "acc2" ] (varExpr "acc2")
                             , varExpr "r1"
                             , varExpr "xs"
                             ]
                         )
-                    , define "r3" []
+                    , define "r3"
+                        []
                         (callExpr (varExpr "myFoldl")
                             [ lambdaExpr [ pVar "elem3", pVar "acc3" ] (varExpr "acc3")
                             , varExpr "r2"

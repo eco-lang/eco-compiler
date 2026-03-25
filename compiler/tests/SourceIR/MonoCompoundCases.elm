@@ -3,38 +3,32 @@ module SourceIR.MonoCompoundCases exposing (expectSuite)
 {-| Test cases targeting compound type specialization in monomorphization.
 
 Exercises:
-- Polymorphic functions with record/tuple result types
-- Record update expressions through mono pipeline
-- Unused top-level definitions (for Prune coverage)
-- Nested polymorphic type instantiation
-- List operations with compound element types
+
+  - Polymorphic functions with record/tuple result types
+  - Record update expressions through mono pipeline
+  - Unused top-level definitions (for Prune coverage)
+  - Nested polymorphic type instantiation
+  - List operations with compound element types
+
 -}
 
 import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
-        ( AliasDef
-        , TypedDef
-        , UnionCtor
+        ( TypedDef
         , UnionDef
         , accessExpr
         , binopsExpr
         , callExpr
         , caseExpr
         , ctorExpr
-        , ifExpr
         , intExpr
-        , lambdaExpr
         , letExpr
         , listExpr
         , makeModuleWithTypedDefs
         , makeModuleWithTypedDefsUnionsAliases
         , pAnything
-        , pCons
         , pCtor
-        , pInt
-        , pList
-        , pRecord
         , pTuple
         , pVar
         , recordExpr
@@ -45,7 +39,6 @@ import Compiler.AST.SourceBuilder
         , tType
         , tVar
         , tupleExpr
-        , unitExpr
         , updateExpr
         , varExpr
         )

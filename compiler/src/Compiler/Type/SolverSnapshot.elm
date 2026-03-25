@@ -1,16 +1,7 @@
 module Compiler.Type.SolverSnapshot exposing
-    ( SolverSnapshot
-    , SolverState
-    , TypeVar
+    ( SolverSnapshot, SolverState, TypeVar
     , fromSolveResult
-    , exprVarFromId
-    , lookupDescriptor
-    , resolveVariable
-    , withLocalUnification
-    , specializeFunction
-    , specializeChained
-    , specializeChainedWithSubst
-    , LocalView
+    , withLocalUnification, specializeFunction, specializeChained, specializeChainedWithSubst, LocalView
     )
 
 {-| Snapshot of solver union-find state for post-inference queries.
@@ -20,7 +11,7 @@ weights) after constraint solving completes, enabling type queries outside the
 IO monad. It is used by the MonoDirect monomorphizer.
 
 @docs SolverSnapshot, SolverState, TypeVar
-@docs fromSolveResult, exprVarFromId, lookupDescriptor, resolveVariable
+@docs fromSolveResult
 @docs withLocalUnification, specializeFunction, specializeChained, specializeChainedWithSubst, LocalView
 
 -}
@@ -34,7 +25,7 @@ import Compiler.Type.Type as Type
 import Compiler.Type.Unify as Unify
 import Data.Map as DMap
 import Dict exposing (Dict)
-import System.TypeCheck.IO as IO exposing (Descriptor(..), PointInfo(..), Variable)
+import System.TypeCheck.IO as IO
 
 
 {-| A type variable from the solver's union-find.
@@ -71,21 +62,6 @@ fromSolveResult result =
     }
 
 
-{-| Look up the solver variable for a given expression ID.
-Returns Nothing if the ID is out of range or no variable was assigned.
--}
-exprVarFromId : SolverSnapshot -> Int -> Maybe TypeVar
-exprVarFromId snap id =
-    Array.get id snap.nodeVars |> Maybe.andThen identity
-
-
-{-| Follow union-find parent links to find the root representative variable.
--}
-resolveVariable : SolverSnapshot -> TypeVar -> TypeVar
-resolveVariable snap var =
-    resolveVariableHelp snap.state.pointInfo var
-
-
 resolveVariableHelp : Array IO.PointInfo -> TypeVar -> TypeVar
 resolveVariableHelp pointInfo var =
     case var of
@@ -106,17 +82,6 @@ resolveInState st var =
     resolveVariableHelp st.ioRefsPointInfo var
 
 
-{-| Look up the descriptor for a variable (after resolving to root).
--}
-lookupDescriptor : SolverSnapshot -> TypeVar -> Maybe IO.Descriptor
-lookupDescriptor snap var =
-    let
-        (IO.Pt rootIdx) =
-            resolveVariable snap var
-    in
-    Array.get rootIdx snap.state.descriptors
-
-
 {-| Look up the descriptor for a variable in a local IO.State.
 -}
 lookupDescriptorInState : IO.State -> TypeVar -> Maybe IO.Descriptor
@@ -133,6 +98,7 @@ lookupDescriptorInState st var =
 The `subst` field provides a fallback substitution for resolving type variable
 names that are not connected in the solver (e.g., after let-polymorphic
 instantiation disconnects original tvars from the function's type structure).
+
 -}
 type alias LocalView =
     { typeOf : TypeVar -> Can.Type
@@ -143,11 +109,11 @@ type alias LocalView =
 
 {-| Perform local unification and provide a view for type queries.
 
-1. Copies solver state arrays (O(1) structural sharing in Elm)
-2. For each root var: if rigid, relaxes to flex
-3. Runs unify on each (v1, v2) pair
-4. Builds LocalView with typeOf and monoTypeOf
-5. Calls callback with LocalView, discards local state
+1.  Copies solver state arrays (O(1) structural sharing in Elm)
+2.  For each root var: if rigid, relaxes to flex
+3.  Runs unify on each (v1, v2) pair
+4.  Builds LocalView with typeOf and monoTypeOf
+5.  Calls callback with LocalView, discards local state
 
 -}
 withLocalUnification :
@@ -236,7 +202,6 @@ specializeChainedWithSubst snap pairs substDict callback =
 
         view =
             buildLocalView substDict stateAfterDefault
-
     in
     callback view
 
@@ -275,6 +240,7 @@ buildLocalView substDict st =
         typeOfVar var =
             if hasErrorDescriptor var then
                 Can.TUnit
+
             else
                 let
                     ( _, result ) =
@@ -291,6 +257,7 @@ buildLocalView substDict st =
         monoTypeOfVar var =
             if hasErrorDescriptor var then
                 Mono.MVar "error" Mono.CEcoValue
+
             else
                 TypeSubst.canTypeToMonoType substDict (typeOfVar var)
     in

@@ -17,15 +17,15 @@ import Compiler.AST.TypeEnv as TypeEnv
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.BitSet as BitSet
 import Compiler.Data.Index as Index
-import Compiler.Data.Name as Name exposing (Name)
-import Compiler.MonoDirect.State as State exposing (MonoDirectState, VarEnv(..))
+import Compiler.Data.Name exposing (Name)
+import Compiler.MonoDirect.State as State exposing (MonoDirectState, VarEnv)
 import Compiler.Monomorphize.Analysis as Analysis
 import Compiler.Monomorphize.Closure as Closure
 import Compiler.Monomorphize.KernelAbi as KernelAbi
 import Compiler.Monomorphize.Registry as Registry
 import Compiler.Monomorphize.TypeSubst as TypeSubst
 import Compiler.Reporting.Annotation as A
-import Compiler.Type.SolverSnapshot as SolverSnapshot exposing (LocalView, SolverSnapshot, TypeVar)
+import Compiler.Type.SolverSnapshot as SolverSnapshot exposing (LocalView, SolverSnapshot)
 import Data.Map as DMap
 import Dict exposing (Dict)
 import System.TypeCheck.IO as IO
@@ -53,7 +53,7 @@ specializeNode snapshot ctorName node requestedMonoType state =
         TOpt.TrackedDefine _ expr _ meta ->
             specializeDefineNode snapshot expr meta requestedMonoType state
 
-        TOpt.Ctor index arity canType ->
+        TOpt.Ctor index arity _ ->
             let
                 monoType =
                     Mono.forceCNumberToInt requestedMonoType
@@ -125,21 +125,6 @@ specializeNode snapshot ctorName node requestedMonoType state =
             specializePortNode snapshot expr meta requestedMonoType Mono.MonoPortOutgoing state
 
 
-{-| Extract the solver variable from a meta, crashing if it's missing on a polymorphic type.
-This enforces SNAP_TVAR_001: polymorphic nodes must have solver variables.
--}
-requireTVar : String -> TOpt.Meta -> IO.Variable
-requireTVar context meta =
-    case meta.tvar of
-        Just v ->
-            v
-
-        Nothing ->
-            Utils.Crash.crash
-                ("MonoDirect." ++ context ++ ": missing solver tvar for type "
-                    ++ Debug.toString meta.tipe)
-
-
 specializeDefineNode : SolverSnapshot -> TOpt.Expr -> TOpt.Meta -> Mono.MonoType -> MonoDirectState -> ( Mono.MonoNode, MonoDirectState )
 specializeDefineNode snapshot expr meta requestedMonoType state =
     let
@@ -171,7 +156,9 @@ specializeDefineNode snapshot expr meta requestedMonoType state =
             if isMonomorphicCanType meta.tipe then
                 -- Truly monomorphic synthetic node (e.g. record alias constructor).
                 -- Safe to use empty unification context.
-                SolverSnapshot.withLocalUnification snapshot [] []
+                SolverSnapshot.withLocalUnification snapshot
+                    []
+                    []
                     (\view ->
                         let
                             ( monoExpr, state1 ) =
@@ -182,7 +169,9 @@ specializeDefineNode snapshot expr meta requestedMonoType state =
 
             else
                 -- Polymorphic node without solver tvar. Use substitution-based fallback.
-                SolverSnapshot.specializeChainedWithSubst snapshot [] nodeSubst
+                SolverSnapshot.specializeChainedWithSubst snapshot
+                    []
+                    nodeSubst
                     (\view ->
                         let
                             ( monoExpr, state1 ) =
@@ -190,7 +179,6 @@ specializeDefineNode snapshot expr meta requestedMonoType state =
                         in
                         ( Mono.MonoDefine monoExpr (Mono.typeOf monoExpr), state1 )
                     )
-
 
 
 specializePortNode :
@@ -204,7 +192,9 @@ specializePortNode :
 specializePortNode snapshot expr meta requestedMonoType nodeConstructor state =
     case meta.tvar of
         Just annotVar ->
-            SolverSnapshot.specializeFunction snapshot annotVar requestedMonoType
+            SolverSnapshot.specializeFunction snapshot
+                annotVar
+                requestedMonoType
                 (\view ->
                     let
                         ( monoExpr, state1 ) =
@@ -215,7 +205,9 @@ specializePortNode snapshot expr meta requestedMonoType nodeConstructor state =
 
         Nothing ->
             if isMonomorphicCanType meta.tipe then
-                SolverSnapshot.withLocalUnification snapshot [] []
+                SolverSnapshot.withLocalUnification snapshot
+                    []
+                    []
                     (\view ->
                         let
                             ( monoExpr, state1 ) =
@@ -249,16 +241,8 @@ resolveType view meta =
 
                     else
                         TypeSubst.canTypeToMonoType view.subst meta.tipe
-
-        normalized =
-            Mono.forceCNumberToInt rawType
     in
-    normalized
-
-
-resolveExprType : LocalView -> TOpt.Expr -> Mono.MonoType
-resolveExprType view expr =
-    resolveType view (TOpt.metaOf expr)
+    Mono.forceCNumberToInt rawType
 
 
 
@@ -387,7 +371,7 @@ specializeExpr view snapshot expr state =
             in
             ( Mono.MonoVarGlobal region specId monoType, state1 )
 
-        TOpt.VarDebug region name home _ meta ->
+        TOpt.VarDebug region name _ _ meta ->
             let
                 funcMonoType =
                     deriveKernelAbiTypeDirect ( "Debug", name ) meta view
@@ -418,6 +402,7 @@ specializeExpr view snapshot expr state =
 
                             [] ->
                                 monoType0
+
                     else
                         monoType0
             in
@@ -459,6 +444,7 @@ specializeExpr view snapshot expr state =
                 monoType =
                     if Mono.containsAnyMVar monoType0 then
                         Mono.typeOf monoFinal
+
                     else
                         monoType0
             in
@@ -494,6 +480,7 @@ specializeExpr view snapshot expr state =
                 monoType =
                     if Mono.containsAnyMVar monoType0 then
                         Mono.typeOf monoBody
+
                     else
                         monoType0
             in
@@ -519,6 +506,7 @@ specializeExpr view snapshot expr state =
                 monoType =
                     if Mono.containsAnyMVar monoType0 then
                         inferCaseType monoJumps monoDecider monoType0
+
                     else
                         monoType0
             in
@@ -568,7 +556,7 @@ specializeExpr view snapshot expr state =
             in
             ( Mono.MonoRecordAccess monoRecord fieldName fieldMonoType, state1 )
 
-        TOpt.Update region recordExpr updates meta ->
+        TOpt.Update _ recordExpr updates meta ->
             let
                 monoType =
                     resolveType view meta
@@ -599,6 +587,7 @@ specializeExpr view snapshot expr state =
                 monoType =
                     if Mono.containsAnyMVar monoType0 then
                         Mono.MTuple (List.map Mono.typeOf (monoA :: monoB :: monoRest))
+
                     else
                         monoType0
             in
@@ -611,7 +600,6 @@ specializeExpr view snapshot expr state =
         -- Shader
         TOpt.Shader _ _ _ _ ->
             ( Mono.MonoUnit, state )
-
 
 
 
@@ -681,7 +669,7 @@ specializeCall view snapshot region func args meta state =
             in
             ( Mono.MonoCall region monoFunc monoArgs resultType Mono.defaultCallInfo, state2 )
 
-        TOpt.VarDebug funcRegion name home _ funcMeta ->
+        TOpt.VarDebug funcRegion name _ _ funcMeta ->
             let
                 funcMonoType =
                     deriveKernelAbiTypeDirect ( "Debug", name ) funcMeta view
@@ -799,7 +787,10 @@ specializeCall view snapshot region func args meta state =
 
 
 processCallArgs :
-    LocalView -> SolverSnapshot -> List TOpt.Expr -> MonoDirectState
+    LocalView
+    -> SolverSnapshot
+    -> List TOpt.Expr
+    -> MonoDirectState
     -> ( List ProcessedArg, List Mono.MonoType, MonoDirectState )
 processCallArgs view snapshot args state0 =
     List.foldr
@@ -894,7 +885,10 @@ processCallArgs view snapshot args state0 =
 
 
 finishProcessedArgs :
-    LocalView -> List ProcessedArg -> List Mono.MonoType -> MonoDirectState
+    LocalView
+    -> List ProcessedArg
+    -> List Mono.MonoType
+    -> MonoDirectState
     -> ( List Mono.MonoExpr, MonoDirectState )
 finishProcessedArgs view processedArgs paramTypes state0 =
     let
@@ -920,7 +914,10 @@ finishProcessedArgs view processedArgs paramTypes state0 =
 
 
 finishProcessedArg :
-    LocalView -> ProcessedArg -> Maybe Mono.MonoType -> MonoDirectState
+    LocalView
+    -> ProcessedArg
+    -> Maybe Mono.MonoType
+    -> MonoDirectState
     -> ( Mono.MonoExpr, MonoDirectState )
 finishProcessedArg view processedArg maybeParamType state =
     case processedArg of
@@ -960,7 +957,10 @@ finishProcessedArg view processedArg maybeParamType state =
 
 
 resolveAccessor :
-    A.Region -> Name -> Mono.MonoType -> MonoDirectState
+    A.Region
+    -> Name
+    -> Mono.MonoType
+    -> MonoDirectState
     -> ( Mono.MonoExpr, MonoDirectState )
 resolveAccessor region fieldName paramType state =
     let
@@ -1006,8 +1006,11 @@ extractRecordFields monoType =
                 |> List.filterMap
                     (\arg ->
                         case arg of
-                            Mono.MRecord fields -> Just fields
-                            _ -> Nothing
+                            Mono.MRecord fields ->
+                                Just fields
+
+                            _ ->
+                                Nothing
                     )
                 |> List.head
                 |> Maybe.withDefault Dict.empty
@@ -1091,14 +1094,14 @@ specializeLet view snapshot def body meta state =
             resolveType view meta
     in
     case def of
-        TOpt.Def defRegion defName defExpr defCanType ->
+        TOpt.Def _ defName defExpr defCanType ->
             case defCanType of
                 Can.TLambda _ _ ->
                     specializeLetFuncDef view snapshot defName defExpr body monoType state
 
                 _ ->
                     case defExpr of
-                        TOpt.Accessor _ fieldName accessorMeta ->
+                        TOpt.Accessor _ _ accessorMeta ->
                             -- Accessor alias: compute type from solver, bind before body
                             let
                                 defMonoType =
@@ -1120,6 +1123,7 @@ specializeLet view snapshot def body meta state =
                                 letResultType =
                                     if Mono.containsAnyMVar monoType then
                                         Mono.typeOf monoBody
+
                                     else
                                         monoType
                             in
@@ -1145,18 +1149,27 @@ specializeLet view snapshot def body meta state =
                                 letResultType =
                                     if Mono.containsAnyMVar monoType then
                                         Mono.typeOf monoBody
+
                                     else
                                         monoType
                             in
                             ( Mono.MonoLet monoDef monoBody letResultType, state3 )
 
-        TOpt.TailDef defRegion defName defParams defBody defCanType defTvar ->
+        TOpt.TailDef _ defName defParams defBody defCanType defTvar ->
             specializeLetTailDef view snapshot defName defParams defBody defCanType defTvar body monoType state
 
 
-
 specializeLetTailDef :
-    LocalView -> SolverSnapshot -> Name -> List ( A.Located Name, Can.Type ) -> TOpt.Expr -> Can.Type -> Maybe SolverSnapshot.TypeVar -> TOpt.Expr -> Mono.MonoType -> MonoDirectState
+    LocalView
+    -> SolverSnapshot
+    -> Name
+    -> List ( A.Located Name, Can.Type )
+    -> TOpt.Expr
+    -> Can.Type
+    -> Maybe SolverSnapshot.TypeVar
+    -> TOpt.Expr
+    -> Mono.MonoType
+    -> MonoDirectState
     -> ( Mono.MonoExpr, MonoDirectState )
 specializeLetTailDef view snapshot defName defParams defBody defCanType defTvar body monoType state =
     let
@@ -1175,14 +1188,23 @@ specializeLetTailDef view snapshot defName defParams defBody defCanType defTvar 
                     , varEnv = State.insertVar defName funcMonoType0 state.varEnv
                 }
 
-            ( monoBody, stateAfterBody ) =
+            ( _, stateAfterBody ) =
                 specializeExpr view snapshot body stateForBody
         in
         case stateAfterBody.localMulti of
             topEntry :: restOfStack ->
                 if Dict.isEmpty topEntry.instances then
                     -- No calls: single instance with resolved type
-                    specializeLetTailDefSingle view snapshot defName defParams defBody defCanType defTvar funcMonoType0 body monoType
+                    specializeLetTailDefSingle view
+                        snapshot
+                        defName
+                        defParams
+                        defBody
+                        defCanType
+                        defTvar
+                        funcMonoType0
+                        body
+                        monoType
                         { stateAfterBody | localMulti = restOfStack }
 
                 else
@@ -1200,8 +1222,15 @@ specializeLetTailDef view snapshot defName defParams defBody defCanType defTvar 
                                 (\info ( defsAcc, stAcc ) ->
                                     let
                                         ( monoDef, st1 ) =
-                                            specializeTailDefForInstance view snapshot
-                                                defName defParams defBody defCanType defTvar info stAcc
+                                            specializeTailDefForInstance view
+                                                snapshot
+                                                defName
+                                                defParams
+                                                defBody
+                                                defCanType
+                                                defTvar
+                                                info
+                                                stAcc
                                     in
                                     ( monoDef :: defsAcc, st1 )
                                 )
@@ -1239,7 +1268,17 @@ specializeLetTailDef view snapshot defName defParams defBody defCanType defTvar 
 
 
 specializeLetTailDefSingle :
-    LocalView -> SolverSnapshot -> Name -> List ( A.Located Name, Can.Type ) -> TOpt.Expr -> Can.Type -> Maybe SolverSnapshot.TypeVar -> Mono.MonoType -> TOpt.Expr -> Mono.MonoType -> MonoDirectState
+    LocalView
+    -> SolverSnapshot
+    -> Name
+    -> List ( A.Located Name, Can.Type )
+    -> TOpt.Expr
+    -> Can.Type
+    -> Maybe SolverSnapshot.TypeVar
+    -> Mono.MonoType
+    -> TOpt.Expr
+    -> Mono.MonoType
+    -> MonoDirectState
     -> ( Mono.MonoExpr, MonoDirectState )
 specializeLetTailDefSingle view snapshot defName defParams defBody defCanType defTvar funcMonoType body monoType state =
     let
@@ -1257,16 +1296,22 @@ specializeLetTailDefSingle view snapshot defName defParams defBody defCanType de
 
         tailDefInnerStack =
             case defTvar of
-                Just tv -> ( tv, funcMonoType ) :: state.specStack
-                Nothing -> state.specStack
+                Just tv ->
+                    ( tv, funcMonoType ) :: state.specStack
+
+                Nothing ->
+                    state.specStack
 
         ( monoDefBody, stateAfterDef ) =
-            SolverSnapshot.specializeChainedWithSubst snapshot tailDefInnerStack tailDefSubst
+            SolverSnapshot.specializeChainedWithSubst snapshot
+                tailDefInnerStack
+                tailDefSubst
                 (\innerView ->
                     let
                         st1 =
-                            { state | varEnv = State.pushFrame state.varEnv
-                                    , specStack = tailDefInnerStack
+                            { state
+                                | varEnv = State.pushFrame state.varEnv
+                                , specStack = tailDefInnerStack
                             }
 
                         st2 =
@@ -1279,8 +1324,9 @@ specializeLetTailDefSingle view snapshot defName defParams defBody defCanType de
                             specializeExpr innerView snapshot defBody st2
 
                         st4 =
-                            { st3 | varEnv = State.popFrame st3.varEnv
-                                  , specStack = state.specStack
+                            { st3
+                                | varEnv = State.popFrame st3.varEnv
+                                , specStack = state.specStack
                             }
                     in
                     ( defBody_, st4 )
@@ -1298,6 +1344,7 @@ specializeLetTailDefSingle view snapshot defName defParams defBody defCanType de
         letResultType =
             if Mono.containsAnyMVar monoType then
                 Mono.typeOf monoBody
+
             else
                 monoType
     in
@@ -1305,7 +1352,15 @@ specializeLetTailDefSingle view snapshot defName defParams defBody defCanType de
 
 
 specializeTailDefForInstance :
-    LocalView -> SolverSnapshot -> Name -> List ( A.Located Name, Can.Type ) -> TOpt.Expr -> Can.Type -> Maybe SolverSnapshot.TypeVar -> State.LocalInstanceInfo -> MonoDirectState
+    LocalView
+    -> SolverSnapshot
+    -> Name
+    -> List ( A.Located Name, Can.Type )
+    -> TOpt.Expr
+    -> Can.Type
+    -> Maybe SolverSnapshot.TypeVar
+    -> State.LocalInstanceInfo
+    -> MonoDirectState
     -> ( Mono.MonoDef, MonoDirectState )
 specializeTailDefForInstance view snapshot defName defParams defBody defCanType defTvar info state =
     let
@@ -1329,7 +1384,9 @@ specializeTailDefForInstance view snapshot defName defParams defBody defCanType 
                 defParams
                 (padOrTruncate paramMonoTypes (List.length defParams))
     in
-    SolverSnapshot.specializeChainedWithSubst snapshot innerStack funcSubst
+    SolverSnapshot.specializeChainedWithSubst snapshot
+        innerStack
+        funcSubst
         (\innerView ->
             let
                 st1 =
@@ -1360,6 +1417,7 @@ specializeTailDefForInstance view snapshot defName defParams defBody defCanType 
                 renamedBody =
                     if info.freshName == defName then
                         monoDefBody
+
                     else
                         renameTailCalls defName info.freshName monoDefBody
 
@@ -1378,7 +1436,12 @@ renameTailCalls oldName newName expr =
     case expr of
         Mono.MonoTailCall name args resultType ->
             Mono.MonoTailCall
-                (if name == oldName then newName else name)
+                (if name == oldName then
+                    newName
+
+                 else
+                    name
+                )
                 (List.map (\( n, e ) -> ( n, renameTailCalls oldName newName e )) args)
                 resultType
 
@@ -1403,7 +1466,8 @@ renameTailCalls oldName newName expr =
                             Mono.MonoDef n (renameTailCalls oldName newName bound)
 
                         Mono.MonoTailDef n args bound ->
-                            Mono.MonoTailDef n args
+                            Mono.MonoTailDef n
+                                args
                                 (renameTailCalls oldName newName bound)
             in
             Mono.MonoLet newDef (renameTailCalls oldName newName body) resultType
@@ -1435,7 +1499,8 @@ renameTailCalls oldName newName expr =
             Mono.MonoDestruct destructor (renameTailCalls oldName newName body) t
 
         Mono.MonoCase scrutName typeName decider jumps monoType ->
-            Mono.MonoCase scrutName typeName
+            Mono.MonoCase scrutName
+                typeName
                 (renameTailCallsDecider oldName newName decider)
                 (List.map (\( i, e ) -> ( i, renameTailCalls oldName newName e )) jumps)
                 monoType
@@ -1460,6 +1525,7 @@ renameTailCallsDecider oldName newName decider =
                 (List.map (\( test, d ) -> ( test, renameTailCallsDecider oldName newName d )) edges)
                 (renameTailCallsDecider oldName newName fallback)
 
+
 renameTailCallsChoice : Name -> Name -> Mono.MonoChoice -> Mono.MonoChoice
 renameTailCallsChoice oldName newName choice =
     case choice of
@@ -1471,7 +1537,13 @@ renameTailCallsChoice oldName newName choice =
 
 
 specializeLetFuncDef :
-    LocalView -> SolverSnapshot -> Name -> TOpt.Expr -> TOpt.Expr -> Mono.MonoType -> MonoDirectState
+    LocalView
+    -> SolverSnapshot
+    -> Name
+    -> TOpt.Expr
+    -> TOpt.Expr
+    -> Mono.MonoType
+    -> MonoDirectState
     -> ( Mono.MonoExpr, MonoDirectState )
 specializeLetFuncDef view snapshot defName defExpr body monoType state =
     let
@@ -1483,7 +1555,7 @@ specializeLetFuncDef view snapshot defName defExpr body monoType state =
             { state | localMulti = newEntry :: state.localMulti }
 
         -- Specialize body first to discover call-site instances
-        ( monoBody, stateAfterBody ) =
+        ( _, stateAfterBody ) =
             specializeExpr view snapshot body stateForBody
     in
     case stateAfterBody.localMulti of
@@ -1492,7 +1564,9 @@ specializeLetFuncDef view snapshot defName defExpr body monoType state =
                 -- No calls recorded: single-instance fallback
                 let
                     ( monoDefExpr, state1 ) =
-                        specializeExpr view snapshot defExpr
+                        specializeExpr view
+                            snapshot
+                            defExpr
                             { stateAfterBody | localMulti = restOfStack }
 
                     defMonoType =
@@ -1511,6 +1585,7 @@ specializeLetFuncDef view snapshot defName defExpr body monoType state =
                     letResultType =
                         if Mono.containsAnyMVar monoType then
                             Mono.typeOf monoBody2
+
                         else
                             monoType
                 in
@@ -1532,8 +1607,12 @@ specializeLetFuncDef view snapshot defName defExpr body monoType state =
                             (\info ( defsAcc, stAcc ) ->
                                 let
                                     ( monoDef, st1 ) =
-                                        specializeDefForInstance view snapshot
-                                            defName defExpr info stAcc
+                                        specializeDefForInstance view
+                                            snapshot
+                                            defName
+                                            defExpr
+                                            info
+                                            stAcc
                                 in
                                 ( monoDef :: defsAcc, st1 )
                             )
@@ -1569,8 +1648,12 @@ specializeLetFuncDef view snapshot defName defExpr body monoType state =
 
 
 specializeDefForInstance :
-    LocalView -> SolverSnapshot -> Name -> TOpt.Expr
-    -> State.LocalInstanceInfo -> MonoDirectState
+    LocalView
+    -> SolverSnapshot
+    -> Name
+    -> TOpt.Expr
+    -> State.LocalInstanceInfo
+    -> MonoDirectState
     -> ( Mono.MonoDef, MonoDirectState )
 specializeDefForInstance view snapshot defName defExpr info state =
     let
@@ -1588,7 +1671,9 @@ specializeDefForInstance view snapshot defName defExpr info state =
                         funcSubstF =
                             TypeSubst.unifyExtend funcMeta.tipe info.monoType Dict.empty
                     in
-                    SolverSnapshot.specializeChainedWithSubst snapshot innerStack funcSubstF
+                    SolverSnapshot.specializeChainedWithSubst snapshot
+                        innerStack
+                        funcSubstF
                         (\innerView ->
                             let
                                 monoParams =
@@ -1646,7 +1731,9 @@ specializeDefForInstance view snapshot defName defExpr info state =
                         funcSubstF =
                             TypeSubst.unifyExtend funcMeta.tipe info.monoType Dict.empty
                     in
-                    SolverSnapshot.specializeChainedWithSubst snapshot state.specStack funcSubstF
+                    SolverSnapshot.specializeChainedWithSubst snapshot
+                        state.specStack
+                        funcSubstF
                         (\innerView ->
                             let
                                 monoParams =
@@ -1701,7 +1788,6 @@ specializeDefForInstance view snapshot defName defExpr info state =
                 funcSubst =
                     TypeSubst.unifyExtend funcMeta.tipe info.monoType Dict.empty
 
-
                 innerStack =
                     case funcMeta.tvar of
                         Just tvar ->
@@ -1710,7 +1796,9 @@ specializeDefForInstance view snapshot defName defExpr info state =
                         Nothing ->
                             state.specStack
             in
-            SolverSnapshot.specializeChainedWithSubst snapshot innerStack funcSubst
+            SolverSnapshot.specializeChainedWithSubst snapshot
+                innerStack
+                funcSubst
                 (\innerView ->
                     let
                         monoParams =
@@ -1788,7 +1876,9 @@ specializeCycle snapshot names valueDefs funcDefs requestedMonoType state =
     case funcDefs of
         [] ->
             -- Value-only cycle: existing behavior
-            SolverSnapshot.withLocalUnification snapshot [] []
+            SolverSnapshot.withLocalUnification snapshot
+                []
+                []
                 (\view ->
                     let
                         ( monoValueDefs, state1 ) =
@@ -1841,7 +1931,8 @@ specializeCycle snapshot names valueDefs funcDefs requestedMonoType state =
                                 Nothing ->
                                     state.specStack
                     in
-                    SolverSnapshot.specializeChained snapshot cycleStack
+                    SolverSnapshot.specializeChained snapshot
+                        cycleStack
                         (\view ->
                             let
                                 -- Pre-bind all function names in VarEnv for mutual recursion
@@ -1874,6 +1965,7 @@ specializeCycle snapshot names valueDefs funcDefs requestedMonoType state =
                                                 monoTypeForSpec =
                                                     if defName == requestedName then
                                                         requestedMonoType
+
                                                     else
                                                         funcMonoType
 
@@ -1931,11 +2023,14 @@ funcDefInfo def =
 
 
 specializeFuncDefInCycle :
-    LocalView -> SolverSnapshot -> TOpt.Def -> MonoDirectState
+    LocalView
+    -> SolverSnapshot
+    -> TOpt.Def
+    -> MonoDirectState
     -> ( Mono.MonoNode, MonoDirectState )
 specializeFuncDefInCycle view snapshot funcDef state =
     case funcDef of
-        TOpt.TailDef _ defName defParams defBody defCanType defTvar ->
+        TOpt.TailDef _ _ defParams defBody defCanType defTvar ->
             let
                 funcMonoType =
                     resolveType view { tipe = defCanType, tvar = defTvar }
@@ -1966,7 +2061,7 @@ specializeFuncDefInCycle view snapshot funcDef state =
             in
             ( Mono.MonoTailFunc monoParams monoBody funcMonoType, state4 )
 
-        TOpt.Def _ defName defExpr _ ->
+        TOpt.Def _ _ defExpr _ ->
             let
                 ( monoExpr, state1 ) =
                     specializeExpr view snapshot defExpr state
@@ -2251,27 +2346,6 @@ specializeDestructor view varEnv globalTypeEnv (TOpt.Destructor name path meta) 
             Mono.getMonoPathType monoPath
     in
     Mono.MonoDestructor name monoPath monoType
-
-
-{-| Resolve destructor type via solver when tvar is available.
-For destructors without tvar (e.g. PRecord field extractions), fall back
-to direct Can.Type conversion which maps TVars to CEcoValue.
--}
-resolveDestructorType : LocalView -> TOpt.Meta -> Mono.MonoType
-resolveDestructorType view meta =
-    let
-        rawType =
-            case meta.tvar of
-                Just tvar ->
-                    view.monoTypeOf tvar
-
-                Nothing ->
-                    KernelAbi.canTypeToMonoType_preserveVars meta.tipe
-
-        normalized =
-            Mono.forceCNumberToInt rawType
-    in
-    normalized
 
 
 specializePath : LocalView -> VarEnv -> TypeEnv.GlobalTypeEnv -> TOpt.Path -> Mono.MonoPath
@@ -2710,23 +2784,6 @@ extractFieldTypes n monoType =
 
             _ ->
                 []
-
-
-{-| Strip N parameter layers from a curried function type to get the return type.
-E.g., stripNParams 2 (MFunction [A] (MFunction [B] C)) = C
--}
-stripNParams : Int -> Mono.MonoType -> Mono.MonoType
-stripNParams n monoType =
-    if n <= 0 then
-        monoType
-
-    else
-        case monoType of
-            Mono.MFunction args result ->
-                stripNParams (n - List.length args) result
-
-            _ ->
-                monoType
 
 
 padOrTruncate : List a -> Int -> List a

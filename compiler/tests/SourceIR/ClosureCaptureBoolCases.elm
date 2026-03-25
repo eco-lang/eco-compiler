@@ -5,32 +5,25 @@ closures via partial application, and heterogeneous closure ABI with mixed
 capture types.
 
 Covers gaps 4, 5, 14 from e2e-to-elmtest.md.
+
 -}
 
 import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
-        ( TypedDef
-        , binopsExpr
+        ( binopsExpr
         , boolExpr
         , callExpr
         , caseExpr
         , define
-        , floatExpr
         , ifExpr
         , intExpr
-        , lambdaExpr
         , letExpr
         , listExpr
         , makeModule
-        , makeModuleWithTypedDefsUnionsAliases
-        , pAnything
         , pCons
         , pList
         , pVar
-        , qualVarExpr
-        , tLambda
-        , tType
         , varExpr
         )
 import Compiler.BulkCheck exposing (TestCase, bulkCheck)
@@ -86,20 +79,22 @@ testCases expectFn =
 
 {-| searchList : Bool -> Int -> List Int -> Int
 searchList found target list =
-    case list of
-        [] -> if found then 1 else 0
-        x :: xs -> if x == target then searchList True target xs else searchList found target xs
+case list of
+[] -> if found then 1 else 0
+x :: xs -> if x == target then searchList True target xs else searchList found target xs
 
 testValue = searchList False 5 [1, 5, 3]
 
 Bool parameter is carried through the tail-rec loop and toggled in a branch.
 Tests SSA-to-ABI conversion for Bool carry type.
+
 -}
 tailRecBoolCarry : (Src.Module -> Expectation) -> (() -> Expectation)
 tailRecBoolCarry expectFn _ =
     let
         searchList =
-            define "searchList" [ pVar "found", pVar "target", pVar "list" ]
+            define "searchList"
+                [ pVar "found", pVar "target", pVar "list" ]
                 (caseExpr (varExpr "list")
                     [ ( pList []
                       , ifExpr (varExpr "found") (intExpr 1) (intExpr 0)
@@ -133,23 +128,25 @@ tailRecBoolCarry expectFn _ =
 
 {-| countWhile : Bool -> Int -> List Int -> Int
 countWhile active acc list =
-    case list of
-        [] -> acc
-        x :: xs ->
-            if active then
-                countWhile (x > 0) (acc + x) xs
-            else
-                countWhile active acc xs
+case list of
+[] -> acc
+x :: xs ->
+if active then
+countWhile (x > 0) (acc + x) xs
+else
+countWhile active acc xs
 
 testValue = countWhile True 0 [3, -1, 5, 2]
 
 Bool flag controls accumulation and is updated based on element value.
+
 -}
 tailRecBoolFlag : (Src.Module -> Expectation) -> (() -> Expectation)
 tailRecBoolFlag expectFn _ =
     let
         countWhile =
-            define "countWhile" [ pVar "active", pVar "acc", pVar "list" ]
+            define "countWhile"
+                [ pVar "active", pVar "acc", pVar "list" ]
                 (caseExpr (varExpr "list")
                     [ ( pList [], varExpr "acc" )
                     , ( pCons (pVar "x") (pVar "xs")
@@ -196,19 +193,22 @@ boolToInt flag x = if flag then x else 0
 trueF = boolToInt True
 testValue = trueF 42
 
-Per REP_CLOSURE_001 and FORBID_CLOSURE_001, Bool in closures must be
+Per REP\_CLOSURE\_001 and FORBID\_CLOSURE\_001, Bool in closures must be
 !eco.value, not bare i1. Partially applying with True creates a closure
 capturing the Bool.
+
 -}
 closureCaptureBoolTrue : (Src.Module -> Expectation) -> (() -> Expectation)
 closureCaptureBoolTrue expectFn _ =
     let
         boolToInt =
-            define "boolToInt" [ pVar "flag", pVar "x" ]
+            define "boolToInt"
+                [ pVar "flag", pVar "x" ]
                 (ifExpr (varExpr "flag") (varExpr "x") (intExpr 0))
 
         trueF =
-            define "trueF" []
+            define "trueF"
+                []
                 (callExpr (varExpr "boolToInt") [ boolExpr True ])
 
         modul =
@@ -224,16 +224,19 @@ closureCaptureBoolTrue expectFn _ =
 
 falseF = boolToInt False
 testValue = falseF 42
+
 -}
 closureCaptureBoolFalse : (Src.Module -> Expectation) -> (() -> Expectation)
 closureCaptureBoolFalse expectFn _ =
     let
         boolToInt =
-            define "boolToInt" [ pVar "flag", pVar "x" ]
+            define "boolToInt"
+                [ pVar "flag", pVar "x" ]
                 (ifExpr (varExpr "flag") (varExpr "x") (intExpr 0))
 
         falseF =
-            define "falseF" []
+            define "falseF"
+                []
                 (callExpr (varExpr "boolToInt") [ boolExpr False ])
 
         modul =
@@ -249,23 +252,26 @@ closureCaptureBoolFalse expectFn _ =
 chooseAndApply flag offset x = if flag then x + offset else x - offset
 
 testValue =
-    let f = chooseAndApply True 10
-    in f 5
+let f = chooseAndApply True 10
+in f 5
 
 Captures both Bool and Int in the same closure.
+
 -}
 closureCaptureBoolAndInt : (Src.Module -> Expectation) -> (() -> Expectation)
 closureCaptureBoolAndInt expectFn _ =
     let
         chooseAndApply =
-            define "chooseAndApply" [ pVar "flag", pVar "offset", pVar "x" ]
+            define "chooseAndApply"
+                [ pVar "flag", pVar "offset", pVar "x" ]
                 (ifExpr (varExpr "flag")
                     (binopsExpr [ ( varExpr "x", "+" ) ] (varExpr "offset"))
                     (binopsExpr [ ( varExpr "x", "-" ) ] (varExpr "offset"))
                 )
 
         f =
-            define "f" []
+            define "f"
+                []
                 (callExpr (varExpr "chooseAndApply") [ boolExpr True, intExpr 10 ])
 
         modul =
@@ -287,27 +293,30 @@ closureCaptureBoolAndInt expectFn _ =
 addN n x = n + x
 
 mulF : Float -> Int -> Float
-mulF factor x = factor * toFloat x
+mulF factor x = factor \* toFloat x
 
 testValue =
-    let
-        f = if True then addN 10 else addN 20
-    in f 3
+let
+f = if True then addN 10 else addN 20
+in f 3
 
 Tests two closures with different Int captures at the same call site.
+
 -}
 heteroClosureIntFloat : (Src.Module -> Expectation) -> (() -> Expectation)
 heteroClosureIntFloat expectFn _ =
     let
         addN =
-            define "addN" [ pVar "n", pVar "x" ]
+            define "addN"
+                [ pVar "n", pVar "x" ]
                 (binopsExpr [ ( varExpr "n", "+" ) ] (varExpr "x"))
 
         modul =
             makeModule "testValue"
                 (letExpr [ addN ]
                     (letExpr
-                        [ define "f" []
+                        [ define "f"
+                            []
                             (ifExpr (boolExpr True)
                                 (callExpr (varExpr "addN") [ intExpr 10 ])
                                 (callExpr (varExpr "addN") [ intExpr 20 ])
@@ -325,12 +334,14 @@ heteroClosureIntFloat expectFn _ =
 add5 = addN 5
 add10 = addN 10
 let g = if cond then add5 else add10 in g 7
+
 -}
 heteroClosureDynamicInt : (Src.Module -> Expectation) -> (() -> Expectation)
 heteroClosureDynamicInt expectFn _ =
     let
         addN =
-            define "addN" [ pVar "n", pVar "x" ]
+            define "addN"
+                [ pVar "n", pVar "x" ]
                 (binopsExpr [ ( varExpr "n", "+" ) ] (varExpr "x"))
 
         add5 =
@@ -343,7 +354,8 @@ heteroClosureDynamicInt expectFn _ =
             define "cond" [] (binopsExpr [ ( intExpr 1, ">" ) ] (intExpr 0))
 
         g =
-            define "g" []
+            define "g"
+                []
                 (ifExpr (varExpr "cond")
                     (varExpr "add5")
                     (varExpr "add10")
@@ -362,31 +374,34 @@ heteroClosureDynamicInt expectFn _ =
 
 scaleFloat : Float -> Int -> Int
 scaleFloat factor x =
-    let scaled = factor * toFloat x
-    in truncate scaled
+let scaled = factor \* toFloat x
+in truncate scaled
 
 addInt : Int -> Int -> Int
 addInt n x = n + x
 
 testValue =
-    let
-        useFloat = scaleFloat 2.5
-        useInt = addInt 10
-        f = if True then useInt else useInt
-    in f 4
+let
+useFloat = scaleFloat 2.5
+useInt = addInt 10
+f = if True then useInt else useInt
+in f 4
 
 Exercises heterogeneous capture types (Float vs Int) requiring compatible
 closure calling convention.
+
 -}
 heteroClosureMixedOps : (Src.Module -> Expectation) -> (() -> Expectation)
 heteroClosureMixedOps expectFn _ =
     let
         addInt =
-            define "addInt" [ pVar "n", pVar "x" ]
+            define "addInt"
+                [ pVar "n", pVar "x" ]
                 (binopsExpr [ ( varExpr "n", "+" ) ] (varExpr "x"))
 
         mulInt =
-            define "mulInt" [ pVar "factor", pVar "x" ]
+            define "mulInt"
+                [ pVar "factor", pVar "x" ]
                 (binopsExpr [ ( varExpr "factor", "*" ) ] (varExpr "x"))
 
         modul =
@@ -395,7 +410,8 @@ heteroClosureMixedOps expectFn _ =
                     (letExpr
                         [ define "useAdd" [] (callExpr (varExpr "addInt") [ intExpr 10 ])
                         , define "useMul" [] (callExpr (varExpr "mulInt") [ intExpr 3 ])
-                        , define "f" []
+                        , define "f"
+                            []
                             (ifExpr (boolExpr True)
                                 (varExpr "useAdd")
                                 (varExpr "useMul")

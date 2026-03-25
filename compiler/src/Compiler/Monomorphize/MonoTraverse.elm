@@ -1,6 +1,5 @@
 module Compiler.Monomorphize.MonoTraverse exposing
-    ( mapExpr
-    , traverseExpr
+    ( traverseExpr
     , foldExpr
     )
 
@@ -17,8 +16,6 @@ function on each node after processing children.
 
 
 # Pure Mapping
-
-@docs mapExpr
 
 
 # Context-Threaded Traversal
@@ -597,8 +594,6 @@ traverseExprChildren f ctx expr =
 
         MonoUnit ->
             ( expr, ctx )
-
-
 
 
 {-| Helper for threading context through a list.

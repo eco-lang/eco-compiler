@@ -31,6 +31,6 @@ expectMonoDirectCompiles srcModule =
         Err msg ->
             Expect.fail ("MonoDirect compilation failed: " ++ msg)
 
-        Ok { monoGraph } ->
+        Ok _ ->
             -- Basic sanity: the graph should have at least one node
             Expect.pass

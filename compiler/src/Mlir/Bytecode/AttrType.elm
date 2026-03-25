@@ -1,16 +1,6 @@
 module Mlir.Bytecode.AttrType exposing
-    ( AttrTypeTable
-    , StreamAccum
-    , attrIndex
-    , collect
-    , dictAttrIndex
-    , encodeDataAndOffsets
-    , finalizeStreamAccum
-    , initStreamAccum
-    , locIndex
-    , streamAccumEncodingView
-    , streamCollectOp
-    , typeIndex
+    ( AttrTypeTable, collect, typeIndex, locIndex, dictAttrIndex
+    , StreamAccum, encodeDataAndOffsets, finalizeStreamAccum, initStreamAccum, streamAccumEncodingView, streamCollectOp
     )
 
 {-| Attribute and Type section encoding for MLIR bytecode.
@@ -21,7 +11,7 @@ format fallback for unregistered dialect types (e.g. !eco.value).
 All encoding is deferred to the encode phase so that cross-references
 (type indices in FunctionType, attr indices in DictionaryAttr) are resolved.
 
-@docs AttrTypeTable, collect, attrIndex, typeIndex, locIndex, dictAttrIndex
+@docs AttrTypeTable, collect, typeIndex, locIndex, dictAttrIndex
 @docs encodeData, encodeOffsets
 
 -}
@@ -125,7 +115,13 @@ attrToKey attr =
                 "s:" ++ s
 
         BoolAttr b ->
-            "i:" ++ typeToKey I1 ++ ":" ++ (if b then "1" else "0")
+            "i:" ++ typeToKey I1 ++ ":"
+                ++ (if b then
+                        "1"
+
+                    else
+                        "0"
+                   )
 
         IntAttr mt i ->
             "i:" ++ typeToKey (Maybe.withDefault I64 mt) ++ ":" ++ String.fromInt i
@@ -137,9 +133,21 @@ attrToKey attr =
             "ta:" ++ typeToKey t
 
         ArrayAttr (Just t) items ->
-            "da:" ++ typeToKey t ++ ":" ++ String.join "," (List.map (\item -> case item of
-                IntAttr _ v -> String.fromInt v
-                _ -> "?") items)
+            "da:"
+                ++ typeToKey t
+                ++ ":"
+                ++ String.join ","
+                    (List.map
+                        (\item ->
+                            case item of
+                                IntAttr _ v ->
+                                    String.fromInt v
+
+                                _ ->
+                                    "?"
+                        )
+                        items
+                    )
 
         ArrayAttr Nothing items ->
             "aa:" ++ String.join "," (List.map attrToKey items)
@@ -159,12 +167,24 @@ dictToKey d =
 typeToKey : MlirType -> String
 typeToKey ty =
     case ty of
-        I1 -> "i1"
-        I16 -> "i16"
-        I32 -> "i32"
-        I64 -> "i64"
-        F64 -> "f64"
-        NamedStruct s -> "!" ++ s
+        I1 ->
+            "i1"
+
+        I16 ->
+            "i16"
+
+        I32 ->
+            "i32"
+
+        I64 ->
+            "i64"
+
+        F64 ->
+            "f64"
+
+        NamedStruct s ->
+            "!" ++ s
+
         FunctionType sig ->
             "fn(" ++ String.join "," (List.map typeToKey sig.inputs) ++ ")->(" ++ String.join "," (List.map typeToKey sig.results) ++ ")"
 
@@ -173,6 +193,7 @@ locToAttr : Loc -> MlirAttr
 locToAttr (Loc loc) =
     if loc.name == "unknown" && loc.start.row == 0 && loc.start.col == 0 then
         StringAttr "__mlir_unknown_loc__"
+
     else
         StringAttr ("__mlir_loc__:" ++ loc.name ++ ":" ++ String.fromInt loc.start.row ++ ":" ++ String.fromInt loc.start.col)
 
@@ -193,9 +214,12 @@ type alias Accum =
 
 emptyAccum : Accum
 emptyAccum =
-    { attrKeys = Dict.empty, typeKeys = Dict.empty
-    , attrEntries = [], typeEntries = []
-    , nextAttr = 0, nextType = 0
+    { attrKeys = Dict.empty
+    , typeKeys = Dict.empty
+    , attrEntries = []
+    , typeEntries = []
+    , nextAttr = 0
+    , nextType = 0
     }
 
 
@@ -292,14 +316,20 @@ collect mod =
 addAttrEntry : MlirAttr -> Accum -> Accum
 addAttrEntry attr acc =
     let
-        key = attrToKey attr
+        key =
+            attrToKey attr
     in
     case Dict.get key acc.attrKeys of
-        Just _ -> acc
+        Just _ ->
+            acc
+
         Nothing ->
             let
-                entry = attrToEntry attr
-                dialect = entryDialect entry
+                entry =
+                    attrToEntry attr
+
+                dialect =
+                    entryDialect entry
             in
             { acc
                 | attrKeys = Dict.insert key acc.nextAttr acc.attrKeys
@@ -311,10 +341,13 @@ addAttrEntry attr acc =
 addDictAttrEntry : Dict String MlirAttr -> Accum -> Accum
 addDictAttrEntry attrs acc =
     let
-        key = dictToKey attrs
+        key =
+            dictToKey attrs
     in
     case Dict.get key acc.attrKeys of
-        Just _ -> acc
+        Just _ ->
+            acc
+
         Nothing ->
             { acc
                 | attrKeys = Dict.insert key acc.nextAttr acc.attrKeys
@@ -326,10 +359,13 @@ addDictAttrEntry attrs acc =
 addTypeEntry : MlirType -> Accum -> Accum
 addTypeEntry ty acc =
     let
-        key = typeToKey ty
+        key =
+            typeToKey ty
     in
     case Dict.get key acc.typeKeys of
-        Just _ -> acc
+        Just _ ->
+            acc
+
         Nothing ->
             let
                 -- For FunctionType, ensure sub-types are added first
@@ -338,10 +374,15 @@ addTypeEntry ty acc =
                         FunctionType sig ->
                             List.foldl addTypeEntry acc sig.inputs
                                 |> (\a -> List.foldl addTypeEntry a sig.results)
-                        _ -> acc
 
-                entry = typeToEntry ty
-                dialect = typeEntryDialect entry
+                        _ ->
+                            acc
+
+                entry =
+                    typeToEntry ty
+
+                dialect =
+                    typeEntryDialect entry
             in
             { accWithSubTypes
                 | typeKeys = Dict.insert key accWithSubTypes.nextType accWithSubTypes.typeKeys
@@ -354,100 +395,177 @@ attrToEntry : MlirAttr -> Entry
 attrToEntry attr =
     case attr of
         StringAttr s ->
-            if s == "__mlir_unknown_loc__" then EUnknownLoc
+            if s == "__mlir_unknown_loc__" then
+                EUnknownLoc
+
             else if String.startsWith "__mlir_loc__:" s then
-                let rest = String.dropLeft 13 s
-                    parts = String.split ":" rest
+                let
+                    rest =
+                        String.dropLeft 13 s
+
+                    parts =
+                        String.split ":" rest
                 in
                 case parts of
                     name :: lineStr :: colStr :: _ ->
                         EFileLineColLoc name
                             (String.toInt lineStr |> Maybe.withDefault 0)
                             (String.toInt colStr |> Maybe.withDefault 0)
-                    _ -> EUnknownLoc
-            else EStringAttr s
 
-        BoolAttr b -> EIntegerAttr I1 (if b then 1 else 0)
-        IntAttr mt i -> EIntegerAttr (Maybe.withDefault I64 mt) i
-        TypedFloatAttr f t -> EFloatAttr f t
-        TypeAttr t -> ETypeAttr t
+                    _ ->
+                        EUnknownLoc
+
+            else
+                EStringAttr s
+
+        BoolAttr b ->
+            EIntegerAttr I1
+                (if b then
+                    1
+
+                 else
+                    0
+                )
+
+        IntAttr mt i ->
+            EIntegerAttr (Maybe.withDefault I64 mt) i
+
+        TypedFloatAttr f t ->
+            EFloatAttr f t
+
+        TypeAttr t ->
+            ETypeAttr t
+
         ArrayAttr (Just t) items ->
-            EDenseArrayAttr t (List.filterMap (\item -> case item of
-                IntAttr _ v -> Just v
-                _ -> Nothing) items)
-        ArrayAttr Nothing items -> EArrayAttr items
-        SymbolRefAttr s -> ESymbolRefAttr s
-        VisibilityAttr Private -> EStringAttr "private"
+            EDenseArrayAttr t
+                (List.filterMap
+                    (\item ->
+                        case item of
+                            IntAttr _ v ->
+                                Just v
+
+                            _ ->
+                                Nothing
+                    )
+                    items
+                )
+
+        ArrayAttr Nothing items ->
+            EArrayAttr items
+
+        SymbolRefAttr s ->
+            ESymbolRefAttr s
+
+        VisibilityAttr Private ->
+            EStringAttr "private"
 
 
 typeToEntry : MlirType -> Entry
 typeToEntry ty =
     case ty of
-        I1 -> EIntegerType 1
-        I16 -> EIntegerType 16
-        I32 -> EIntegerType 32
-        I64 -> EIntegerType 64
-        F64 -> EFloat64Type
+        I1 ->
+            EIntegerType 1
+
+        I16 ->
+            EIntegerType 16
+
+        I32 ->
+            EIntegerType 32
+
+        I64 ->
+            EIntegerType 64
+
+        F64 ->
+            EFloat64Type
+
         NamedStruct s ->
-            let dialect = case String.split "." s of
-                    d :: _ -> d
-                    _ -> "builtin"
-            in EAsmType dialect ("!" ++ s)
-        FunctionType sig -> EFunctionType sig.inputs sig.results
+            let
+                dialect =
+                    case String.split "." s of
+                        d :: _ ->
+                            d
+
+                        _ ->
+                            "builtin"
+            in
+            EAsmType dialect ("!" ++ s)
+
+        FunctionType sig ->
+            EFunctionType sig.inputs sig.results
 
 
 entryDialect : Entry -> String
 entryDialect entry =
     case entry of
-        EAsmType d _ -> d
-        _ -> "builtin"
+        EAsmType d _ ->
+            d
+
+        _ ->
+            "builtin"
 
 
 typeEntryDialect : Entry -> String
 typeEntryDialect entry =
     case entry of
-        EAsmType d _ -> d
-        _ -> "builtin"
+        EAsmType d _ ->
+            d
+
+        _ ->
+            "builtin"
 
 
 typeEntryToKey : Entry -> String
 typeEntryToKey entry =
     case entry of
-        EIntegerType w -> "i" ++ String.fromInt w
-        EFloat64Type -> "f64"
-        EAsmType _ asm -> asm  -- "!eco.value" etc - matches typeToKey's "!" ++ s
+        EIntegerType w ->
+            "i" ++ String.fromInt w
+
+        EFloat64Type ->
+            "f64"
+
+        EAsmType _ asm ->
+            asm
+
+        -- "!eco.value" etc - matches typeToKey's "!" ++ s
         EFunctionType inputs results ->
             "fn(" ++ String.join "," (List.map typeToKey inputs) ++ ")->(" ++ String.join "," (List.map typeToKey results) ++ ")"
-        _ -> ""
+
+        _ ->
+            ""
 
 
 collectOp : MlirOp -> Accum -> Accum
 collectOp op acc =
     let
-        acc1 = addAttrEntry (locToAttr op.loc) acc
+        acc1 =
+            addAttrEntry (locToAttr op.loc) acc
 
         acc2 =
-            if Dict.isEmpty op.attrs then acc1
+            if Dict.isEmpty op.attrs then
+                acc1
+
             else
                 acc1
                     |> addDictAttrEntry op.attrs
                     |> collectDictContents op.attrs
 
-        acc3 = List.foldl (\( _, t ) a -> addTypeEntry t a) acc2 op.results
-
-        acc5 = List.foldl collectRegion acc3 op.regions
+        acc3 =
+            List.foldl (\( _, t ) a -> addTypeEntry t a) acc2 op.results
     in
-    acc5
+    List.foldl collectRegion acc3 op.regions
 
 
 collectDictContents : Dict String MlirAttr -> Accum -> Accum
 collectDictContents attrs acc =
-    Dict.foldl (\k v a ->
-        -- Add key as StringAttr and value as attr, plus deep collection
-        addAttrEntry (StringAttr k) a
-            |> addAttrEntry v
-            |> collectAttrDeep v
-    ) acc attrs
+    Dict.foldl
+        (\k v a ->
+            -- Add key as StringAttr and value as attr, plus deep collection
+            addAttrEntry (StringAttr k) a
+                |> addAttrEntry v
+                |> collectAttrDeep v
+        )
+        acc
+        attrs
 
 
 collectAttrDeep : MlirAttr -> Accum -> Accum
@@ -455,31 +573,53 @@ collectAttrDeep attr acc =
     case attr of
         ArrayAttr (Just t) _ ->
             addTypeEntry t acc
+
         ArrayAttr Nothing items ->
             List.foldl (\item a -> addAttrEntry item a |> collectAttrDeep item) acc items
-        TypeAttr t -> addTypeEntry t acc
-        TypedFloatAttr _ t -> addTypeEntry t acc
-        IntAttr (Just t) _ -> addTypeEntry t acc
-        IntAttr Nothing _ -> addTypeEntry I64 acc
-        BoolAttr _ -> addTypeEntry I1 acc
+
+        TypeAttr t ->
+            addTypeEntry t acc
+
+        TypedFloatAttr _ t ->
+            addTypeEntry t acc
+
+        IntAttr (Just t) _ ->
+            addTypeEntry t acc
+
+        IntAttr Nothing _ ->
+            addTypeEntry I64 acc
+
+        BoolAttr _ ->
+            addTypeEntry I1 acc
+
         SymbolRefAttr s ->
             -- FlatSymbolRefAttr references a StringAttr, ensure it's in the table
             addAttrEntry (StringAttr s) acc
-        _ -> acc
+
+        _ ->
+            acc
 
 
 collectRegion : MlirRegion -> Accum -> Accum
 collectRegion (MlirRegion r) acc =
-    let acc1 = collectBlock r.entry acc
-    in OrderedDict.foldl (\_ blk a -> collectBlock blk a) acc1 r.blocks
+    let
+        acc1 =
+            collectBlock r.entry acc
+    in
+    OrderedDict.foldl (\_ blk a -> collectBlock blk a) acc1 r.blocks
 
 
 collectBlock : MlirBlock -> Accum -> Accum
 collectBlock blk acc =
     let
-        acc1 = List.foldl (\( _, t ) a -> addTypeEntry t a) acc blk.args
-        acc2 = List.foldl (\_ a -> addAttrEntry (locToAttr Mlir.Loc.unknown) a) acc1 blk.args
-        acc3 = List.foldl collectOp acc2 blk.body
+        acc1 =
+            List.foldl (\( _, t ) a -> addTypeEntry t a) acc blk.args
+
+        acc2 =
+            List.foldl (\_ a -> addAttrEntry (locToAttr Mlir.Loc.unknown) a) acc1 blk.args
+
+        acc3 =
+            List.foldl collectOp acc2 blk.body
     in
     collectOp blk.terminator acc3
 
@@ -610,7 +750,15 @@ encodeDataAndOffsets st dialectRegistry ((AttrTypeTable tbl) as table) =
                                         groupEntries
                                             |> List.map
                                                 (\e ->
-                                                    encodeVarInt (e.size * 2 + (if e.hasCustom then 1 else 0))
+                                                    encodeVarInt
+                                                        (e.size * 2
+                                                            + (if e.hasCustom then
+                                                                1
+
+                                                               else
+                                                                0
+                                                              )
+                                                        )
                                                 )
                                 in
                                 Just (BE.sequence (encodeVarInt dialectIdx :: encodeVarInt numElements :: offsetEncoders))
@@ -629,18 +777,23 @@ encodeEntry st tbl entry =
             encodeVarInt 15
 
         EFileLineColLoc name line col ->
-            let filenameIdx = attrIndex (StringAttr name) tbl
-            in BE.sequence [ encodeVarInt 11, encodeVarInt filenameIdx, encodeVarInt line, encodeVarInt col ]
+            let
+                filenameIdx =
+                    attrIndex (StringAttr name) tbl
+            in
+            BE.sequence [ encodeVarInt 11, encodeVarInt filenameIdx, encodeVarInt line, encodeVarInt col ]
 
         EStringAttr s ->
             BE.sequence [ encodeVarInt 2, encodeOwnedString st s ]
 
-
-
         EIntegerAttr ty val ->
             let
-                tyIdx = typeIndex ty tbl
-                width = typeWidth ty
+                tyIdx =
+                    typeIndex ty tbl
+
+                width =
+                    typeWidth ty
+
                 apintEnc =
                     if width <= 8 then
                         BE.unsignedInt8 val
@@ -651,50 +804,84 @@ encodeEntry st tbl entry =
             BE.sequence [ encodeVarInt 8, encodeVarInt tyIdx, apintEnc ]
 
         EFloatAttr f ty ->
-            let tyIdx = typeIndex ty tbl
-            in BE.sequence [ encodeVarInt 9, encodeVarInt tyIdx, encodeAPFloat f ]
+            let
+                tyIdx =
+                    typeIndex ty tbl
+            in
+            BE.sequence [ encodeVarInt 9, encodeVarInt tyIdx, encodeAPFloat f ]
 
         ETypeAttr ty ->
-            let tyIdx = typeIndex ty tbl
-            in BE.sequence [ encodeVarInt 6, encodeVarInt tyIdx ]
+            let
+                tyIdx =
+                    typeIndex ty tbl
+            in
+            BE.sequence [ encodeVarInt 6, encodeVarInt tyIdx ]
 
         EArrayAttr items ->
-            let encodedItems = items |> List.map (\item -> encodeVarInt (attrIndex item tbl))
-            in BE.sequence (encodeVarInt 0 :: encodeVarInt (List.length items) :: encodedItems)
+            let
+                encodedItems =
+                    items |> List.map (\item -> encodeVarInt (attrIndex item tbl))
+            in
+            BE.sequence (encodeVarInt 0 :: encodeVarInt (List.length items) :: encodedItems)
 
         EDenseArrayAttr ty vals ->
             let
-                tyIdx = typeIndex ty tbl
-                numElements = List.length vals
-                blob = BE.encode (BE.sequence (List.map (\v ->
-                    BE.sequence
-                        [ BE.unsignedInt8 (Bitwise.and v 0xFF)
-                        , BE.unsignedInt8 (Bitwise.and (Bitwise.shiftRightZfBy 8 v) 0xFF)
-                        , BE.unsignedInt8 (Bitwise.and (Bitwise.shiftRightZfBy 16 v) 0xFF)
-                        , BE.unsignedInt8 (Bitwise.and (Bitwise.shiftRightZfBy 24 v) 0xFF)
-                        , BE.unsignedInt8 0
-                        , BE.unsignedInt8 0
-                        , BE.unsignedInt8 0
-                        , BE.unsignedInt8 0
-                        ]) vals))
+                tyIdx =
+                    typeIndex ty tbl
+
+                numElements =
+                    List.length vals
+
+                blob =
+                    BE.encode
+                        (BE.sequence
+                            (List.map
+                                (\v ->
+                                    BE.sequence
+                                        [ BE.unsignedInt8 (Bitwise.and v 0xFF)
+                                        , BE.unsignedInt8 (Bitwise.and (Bitwise.shiftRightZfBy 8 v) 0xFF)
+                                        , BE.unsignedInt8 (Bitwise.and (Bitwise.shiftRightZfBy 16 v) 0xFF)
+                                        , BE.unsignedInt8 (Bitwise.and (Bitwise.shiftRightZfBy 24 v) 0xFF)
+                                        , BE.unsignedInt8 0
+                                        , BE.unsignedInt8 0
+                                        , BE.unsignedInt8 0
+                                        , BE.unsignedInt8 0
+                                        ]
+                                )
+                                vals
+                            )
+                        )
             in
             BE.sequence
-                [ encodeVarInt 17, encodeVarInt tyIdx
-                , encodeVarInt numElements, encodeVarInt (Bytes.width blob), BE.bytes blob ]
+                [ encodeVarInt 17
+                , encodeVarInt tyIdx
+                , encodeVarInt numElements
+                , encodeVarInt (Bytes.width blob)
+                , BE.bytes blob
+                ]
 
         ESymbolRefAttr s ->
-            let strAttrIdx = attrIndex (StringAttr s) tbl
-            in BE.sequence [ encodeVarInt 4, encodeVarInt strAttrIdx ]
+            let
+                strAttrIdx =
+                    attrIndex (StringAttr s) tbl
+            in
+            BE.sequence [ encodeVarInt 4, encodeVarInt strAttrIdx ]
 
         EDictAttr attrs ->
             let
-                entries = Dict.toList attrs
-                encodedEntries = entries |> List.map (\( key, val ) ->
-                    -- NamedAttribute: attr ref for name (StringAttr), attr ref for value
-                    BE.sequence
-                        [ encodeVarInt (attrIndex (StringAttr key) tbl)
-                        , encodeVarInt (attrIndex val tbl)
-                        ])
+                entries =
+                    Dict.toList attrs
+
+                encodedEntries =
+                    entries
+                        |> List.map
+                            (\( key, val ) ->
+                                -- NamedAttribute: attr ref for name (StringAttr), attr ref for value
+                                BE.sequence
+                                    [ encodeVarInt (attrIndex (StringAttr key) tbl)
+                                    , encodeVarInt (attrIndex val tbl)
+                                    ]
+                            )
             in
             BE.sequence (encodeVarInt 1 :: encodeVarInt (List.length entries) :: encodedEntries)
 
@@ -706,13 +893,19 @@ encodeEntry st tbl entry =
 
         EFunctionType inputs results ->
             let
-                inputEncoders = inputs |> List.map (\t -> encodeVarInt (typeIndex t tbl))
-                resultEncoders = results |> List.map (\t -> encodeVarInt (typeIndex t tbl))
+                inputEncoders =
+                    inputs |> List.map (\t -> encodeVarInt (typeIndex t tbl))
+
+                resultEncoders =
+                    results |> List.map (\t -> encodeVarInt (typeIndex t tbl))
             in
             BE.sequence
                 (encodeVarInt 2
-                    :: encodeVarInt (List.length inputs) :: inputEncoders
-                    ++ encodeVarInt (List.length results) :: resultEncoders)
+                    :: encodeVarInt (List.length inputs)
+                    :: inputEncoders
+                    ++ encodeVarInt (List.length results)
+                    :: resultEncoders
+                )
 
         EAsmType _ asm ->
             BE.sequence [ BE.string asm, BE.unsignedInt8 0x00 ]
@@ -721,19 +914,6 @@ encodeEntry st tbl entry =
 encodeOwnedString : StringTable -> String -> BE.Encoder
 encodeOwnedString st s =
     encodeVarInt (StringTable.indexOf s st)
-
-
-encodeAPInt : Int -> Int -> BE.Encoder
-encodeAPInt width value =
-    -- For width <= 8, MLIR expects a single raw byte.
-    -- For 8 < width <= 64, MLIR expects a signed varint (zigzag).
-    -- For width > 64, MLIR expects numActiveWords + array of signed varints.
-    -- We always have width <= 64 in practice.
-    if width <= 8 then
-        BE.unsignedInt8 value
-
-    else
-        encodeSignedVarInt value
 
 
 encodeAPFloat : Float -> BE.Encoder
@@ -768,6 +948,7 @@ encodeAPFloat f =
         signExtend =
             if Bitwise.and hi 0x80000000 /= 0 then
                 0xFFFFFFFF
+
             else
                 0
 
@@ -802,15 +983,24 @@ encodeAPFloat f =
 typeWidth : MlirType -> Int
 typeWidth ty =
     case ty of
-        I1 -> 1
-        I16 -> 16
-        I32 -> 32
-        I64 -> 64
-        F64 -> 64
-        _ -> 64
+        I1 ->
+            1
+
+        I16 ->
+            16
+
+        I32 ->
+            32
+
+        I64 ->
+            64
+
+        F64 ->
+            64
+
+        _ ->
+            64
 
 
 
 -- ==== Offset section ====
-
-

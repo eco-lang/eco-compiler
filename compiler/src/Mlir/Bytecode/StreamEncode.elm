@@ -1,9 +1,4 @@
-module Mlir.Bytecode.StreamEncode exposing
-    ( StreamTables
-    , assembleModule
-    , collectAndEncodeOps
-    , emptyStreamTables
-    )
+module Mlir.Bytecode.StreamEncode exposing (StreamTables, emptyStreamTables, collectAndEncodeOps, assembleModule)
 
 {-| Streaming MLIR bytecode encoder.
 
@@ -29,7 +24,7 @@ import Mlir.Bytecode.IrSection as IrSection
 import Mlir.Bytecode.Section as Section
 import Mlir.Bytecode.StringTable as StringTable exposing (StringTable)
 import Mlir.Bytecode.VarInt exposing (encodeVarInt)
-import Mlir.Loc exposing (Loc(..))
+import Mlir.Loc exposing (Loc)
 import Mlir.Mlir
     exposing
         ( MlirBlock
@@ -367,11 +362,8 @@ walkOpForDialects op builder =
     let
         b1 =
             addDialectOp op.name builder
-
-        b2 =
-            List.foldl walkRegionForDialects b1 op.regions
     in
-    b2
+    List.foldl walkRegionForDialects b1 op.regions
 
 
 walkRegionForDialects : MlirRegion -> StreamDialectBuilder -> StreamDialectBuilder

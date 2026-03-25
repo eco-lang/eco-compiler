@@ -3,11 +3,12 @@ module Compiler.Generate.MLIR.Ops exposing
     , ecoConstantUnit, ecoConstantEmptyRec, ecoConstantTrue, ecoConstantFalse, ecoConstantNil, ecoConstantNothing, ecoConstantEmptyString
     , ecoConstructList, ecoConstructTuple2, ecoConstructTuple3, ecoConstructRecord, ecoConstructCustom
     , ecoProjectListHead, ecoProjectListTail, ecoProjectTuple2, ecoProjectTuple3, ecoProjectRecord, ecoProjectCustom
-    , ecoCallNamed, ecoCallNamedWithAttrs, ecoReturn, ecoYield, ecoStringLiteral, ecoUnaryOp, ecoBinaryOp, ecoCase, ecoCaseString, ecoGetTag
+    , ecoCallNamed, ecoReturn, ecoYield, ecoStringLiteral, ecoUnaryOp, ecoBinaryOp, ecoCase, ecoCaseString, ecoGetTag
     , ecoArrayGet, ecoArraySet, ecoArrayLength
     , arithConstantInt, arithConstantInt32, arithConstantFloat, arithConstantBool, arithConstantChar, arithCmpI
-    , scfIf, scfYield, scfWhile, scfCondition
-    , ecoCaseMany, ecoCaseStringMany, ecoYieldMany, scfYieldMany
+    , scfWhile, scfCondition
+    , ecoCaseMany, ecoCaseStringMany
+    , ecoYieldMany, scfYieldMany
     )
 
 {-| MLIR operation builders.
@@ -38,7 +39,7 @@ in the eco dialect and standard dialects (arith, scf, func).
 
 # Eco Operations
 
-@docs ecoCallNamed, ecoCallNamedWithAttrs, ecoReturn, ecoYield, ecoStringLiteral, ecoUnaryOp, ecoBinaryOp, ecoCase, ecoCaseString, ecoGetTag
+@docs ecoCallNamed, ecoReturn, ecoYield, ecoStringLiteral, ecoUnaryOp, ecoBinaryOp, ecoCase, ecoCaseString, ecoGetTag
 
 
 # Eco Array Operations
@@ -53,7 +54,7 @@ in the eco dialect and standard dialects (arith, scf, func).
 
 # SCF Operations
 
-@docs scfIf, scfYield, scfWhile, scfCondition
+@docs scfYield, scfWhile, scfCondition
 
 
 # CF Operations
@@ -61,13 +62,13 @@ in the eco dialect and standard dialects (arith, scf, func).
 
 # Batch Operations
 
-@docs ecoCaseMany, ecoCaseStringMany, ecoYieldMany, scfYieldMany
+@docs ecoCaseMany, ecoCaseStringMany, ecoYieldManyMany
 
 -}
 
 import Compiler.Generate.MLIR.Context as Ctx
 import Compiler.Generate.MLIR.Types as Types
-import Dict exposing (Dict)
+import Dict
 import Mlir.Mlir as Mlir
     exposing
         ( MlirAttr(..)
@@ -451,42 +452,6 @@ ecoCallNamed ctx resultVar funcName operands returnType =
         attrs =
             Dict.union operandTypesAttr
                 (Dict.singleton "callee" (SymbolRefAttr funcName))
-    in
-    mlirOp ctxWithKernel "eco.call"
-        |> opBuilder.withOperands operandNames
-        |> opBuilder.withResults [ ( resultVar, returnType ) ]
-        |> opBuilder.withAttrs attrs
-        |> opBuilder.build
-
-
-{-| Like `ecoCallNamed` but with additional MLIR attributes on the call op.
--}
-ecoCallNamedWithAttrs : Ctx.Context -> String -> String -> List ( String, MlirType ) -> MlirType -> Dict String MlirAttr -> ( Ctx.Context, MlirOp )
-ecoCallNamedWithAttrs ctx resultVar funcName operands returnType extraAttrs =
-    let
-        -- Register kernel functions for declaration generation
-        ctxWithKernel =
-            if String.startsWith "Elm_Kernel_" funcName then
-                Ctx.registerKernelCall ctx funcName (List.map Tuple.second operands) returnType
-
-            else
-                ctx
-
-        operandNames =
-            List.map Tuple.first operands
-
-        operandTypesAttr =
-            if List.isEmpty operands then
-                Dict.empty
-
-            else
-                Dict.singleton "_operand_types"
-                    (ArrayAttr Nothing (List.map (\( _, t ) -> TypeAttr t) operands))
-
-        attrs =
-            Dict.union extraAttrs
-                (Dict.union operandTypesAttr
-                    (Dict.singleton "callee" (SymbolRefAttr funcName)))
     in
     mlirOp ctxWithKernel "eco.call"
         |> opBuilder.withOperands operandNames
@@ -909,31 +874,6 @@ ecoGetTag ctx resultVar operand =
         |> opBuilder.withResults [ ( resultVar, I32 ) ]
         |> opBuilder.withAttrs attrs
         |> opBuilder.build
-
-
-{-| scf.if - direct structured control flow for i1 boolean conditions.
-Use this for Bool pattern matching instead of eco.case, since eco.case
-uses eco.get\_tag which dereferences the value as a pointer.
--}
-scfIf : Ctx.Context -> String -> String -> MlirRegion -> MlirRegion -> MlirType -> ( Ctx.Context, MlirOp )
-scfIf ctx condVar resultVar thenRegion elseRegion resultType =
-    let
-        attrs =
-            Dict.singleton "_operand_types" (ArrayAttr Nothing [ TypeAttr I1 ])
-    in
-    mlirOp ctx "scf.if"
-        |> opBuilder.withOperands [ condVar ]
-        |> opBuilder.withResults [ ( resultVar, resultType ) ]
-        |> opBuilder.withRegions [ thenRegion, elseRegion ]
-        |> opBuilder.withAttrs attrs
-        |> opBuilder.build
-
-
-{-| scf.yield - terminator for scf.if regions.
--}
-scfYield : Ctx.Context -> String -> MlirType -> ( Ctx.Context, MlirOp )
-scfYield ctx operand operandType =
-    scfYieldMany ctx [ ( operand, operandType ) ]
 
 
 {-| scf.yield with multiple operands - terminator for scf.if/scf.while regions.

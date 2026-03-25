@@ -1,4 +1,7 @@
-module Mlir.Bytecode.IrSection exposing (encode, encodeFuncOp)
+module Mlir.Bytecode.IrSection exposing
+    ( encode
+    , encodeFuncOp
+    )
 
 {-| IR section encoding for MLIR bytecode.
 
@@ -16,7 +19,6 @@ Uses a two-pass approach for SSA value numbering:
 -}
 
 import Bitwise
-import Bytes
 import Bytes.Encode as BE
 import Dict exposing (Dict)
 import Mlir.Bytecode.AttrType as AttrType exposing (AttrTypeTable)
@@ -26,12 +28,11 @@ import Mlir.Bytecode.VarInt exposing (encodeVarInt)
 import Mlir.Loc
 import Mlir.Mlir
     exposing
-        ( MlirAttr(..)
-        , MlirBlock
+        ( MlirBlock
         , MlirModule
         , MlirOp
         , MlirRegion(..)
-        , MlirType(..)
+        , MlirType
         )
 import OrderedDict
 
@@ -137,14 +138,7 @@ numberBlock env blk =
 
 numberOp : MlirOp -> ValueEnv -> ValueEnv
 numberOp op env =
-    let
-        envAfterResults =
-            registerValues op.results env
-    in
-    -- Non-isolated sub-region values are NOT included in the parent numbering.
-    -- Each sub-region gets numbered independently during encoding (via numberRegion).
-    -- The parent continues from envAfterResults.
-    envAfterResults
+    registerValues op.results env
 
 
 
@@ -609,7 +603,8 @@ countRegionValues (MlirRegion r) =
     let
         countBlock blk =
             List.length blk.args
-                + List.foldl (\op acc -> acc + List.length op.results) 0
+                + List.foldl (\op acc -> acc + List.length op.results)
+                    0
                     (List.filter (\op -> not op.isTerminator) blk.body)
                 + List.length blk.terminator.results
     in
