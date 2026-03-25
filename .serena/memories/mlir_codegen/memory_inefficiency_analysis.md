@@ -28,6 +28,7 @@ type alias Context =
     , kernelDecls : Dict.Dict String (...)        -- ACCUMULATES
     , typeRegistry : TypeRegistry                 -- GROWS FOREVER
     , decoderExprs : Dict.Dict String Mono.MonoExpr -- UNBOUNDED
+    , externBoxedVars : Set String                 -- ADDED 2026-03 (boxed var aliases)
     }
 ```
 

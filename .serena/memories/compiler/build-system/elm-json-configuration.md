@@ -25,28 +25,13 @@ The compiler build system has ONE primary `elm.json` configuration file that is 
 
 ### Elm.json Files in the Repository
 
-Three distinct elm.json files exist:
+**UPDATED 2026-03-25**: Only one elm.json file exists now. The variant files (elm-bootstrap.json, elm-kernel.json) have been removed.
 
 1. **`/work/compiler/elm.json`** (PRIMARY - used by both builds)
-   - Modified: Jan 16 14:28
    - source-directories: `["src"]`
    - Has test dependencies: `elm-explorations/test`
    - NO `eco/kernel` dependency
    - Used by: CMake `elm make` command
-
-2. **`/work/compiler/elm-bootstrap.json`** (variant)
-   - Modified: Feb 27 10:50
-   - source-directories: `["src", "src-xhr"]`
-   - NO test dependencies
-   - NO `eco/kernel` dependency
-   - Status: Not used by build system (created recently, likely experimental)
-
-3. **`/work/compiler/elm-kernel.json`** (variant)
-   - Modified: Feb 27 10:50
-   - source-directories: `["src"]`
-   - NO test dependencies
-   - INCLUDES `eco/kernel` dependency (unique difference)
-   - Status: Not used by build system (created recently, likely experimental)
 
 ### How elm.json is Selected
 
@@ -55,7 +40,7 @@ The Elm compiler (`elm make` command) automatically looks for `elm.json` in the 
 2. With: `WORKING_DIRECTORY ${COMPILER_DIR}` (i.e., `/work/compiler/`)
 3. The elm command automatically finds `/work/compiler/elm.json`
 
-There is NO special logic to select between the three elm.json files. The build system always uses the default `elm.json`.
+The build system always uses the default `elm.json` (the only one that exists).
 
 ### Additional Config Files
 
@@ -104,7 +89,4 @@ Only `elm.json` is listed (not the variant files).
 
 - **CMake uses**: `/work/compiler/elm.json` (automatically, no special selection logic)
 - **npm uses**: `/work/compiler/elm.json` (automatically)
-- **Variant files**: `elm-bootstrap.json` and `elm-kernel.json` are not currently used by the build system
-  - Likely experimental/future features for bootstrapping or kernel compilation
-  - Created recently (Feb 27) relative to elm.json (Jan 16)
-  - No references in build scripts or CMake configuration
+- **Variant files**: `elm-bootstrap.json` and `elm-kernel.json` have been removed from the repository (as of 2026-03-25)

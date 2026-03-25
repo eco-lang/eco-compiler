@@ -288,11 +288,11 @@ This pattern:
 - Delivers correct-order ops
 - O(n) total cost
 
-## Status: IMPLEMENTED
+## Status: IMPLEMENTED (verified 2026-03-25)
 
 The reversed-accumulator pattern has been applied to all fold/recursion accumulators in Expr.elm.
-Reduced `++ [` occurrences from 59 to 38. The remaining 38 are all one-time result construction
-(not in loops), which is correct to leave as-is.
+As of 2026-03-25, grep for `++ [` in Expr.elm returns 0 matches, confirming the pattern has been
+fully applied or the code has been further refactored since the initial implementation.
 
 ### Functions Fixed:
 1. `generateList` (List.foldr) - consOps accumulation

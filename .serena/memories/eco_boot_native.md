@@ -37,7 +37,8 @@ build/runtime/src/codegen/eco-boot-native input.elm --frontend=path/to/runner.js
 - Fully static linking with -static flag
 - Default optimization O0
 
-## Test Results (2026-03-05)
-194/209 codegen MLIR tests pass (identical output to JIT). Remaining:
+## Test Results (as of 2026-03-05, may be stale)
+194/209 codegen MLIR tests passed (identical output to JIT) at the time of measurement. Remaining:
 - 9 tests intentionally crash/abort (crash.mlir, expect_fail.mlir, etc.)
 - 6 tests differ only in heap pointer debug values (expected, not a bug)
+**Note**: These numbers may have changed since then. Re-run tests to get current results.

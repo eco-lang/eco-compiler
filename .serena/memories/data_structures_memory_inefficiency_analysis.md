@@ -41,21 +41,22 @@ keys keyComparison (D dict) =
 
 ---
 
-### 2. COMPILER/DATA/NONEMPTYLIST.ELM - O(N) CONS OPERATION
+### 2. COMPILER/DATA/NONEMPTYLIST.ELM - O(N) SNOC OPERATION
 
 **Location:** `/work/compiler/src/Compiler/Data/NonEmptyList.elm` lines 54-56
 
+**UPDATED 2026-03-25**: Function is named `snoc` (not `cons`). Comment explicitly says "O(n)".
+
 **Problem:**
 ```elm
-cons : a -> Nonempty a -> Nonempty a
-cons a (Nonempty b bs) =
+snoc : a -> Nonempty a -> Nonempty a
+snoc a (Nonempty b bs) =
     Nonempty b (bs ++ [ a ])  -- O(n) list concatenation!
 ```
 
 **Why it's bad:**
 - `bs ++ [ a ]` is O(n) because it must traverse all of bs to append the single element
-- For prepending, should be **O(1)** cons operation
-- Currently builds O(n²) complexity if cons is called repeatedly
+- Currently builds O(n²) complexity if snoc is called repeatedly
 
 **Impact:** Used in constraint collection and may be called during error accumulation.
 
