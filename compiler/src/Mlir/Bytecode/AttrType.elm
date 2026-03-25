@@ -12,7 +12,7 @@ All encoding is deferred to the encode phase so that cross-references
 (type indices in FunctionType, attr indices in DictionaryAttr) are resolved.
 
 @docs AttrTypeTable, collect, typeIndex, locIndex, dictAttrIndex
-@docs encodeData, encodeOffsets
+@docs StreamAccum, encodeDataAndOffsets, finalizeStreamAccum, initStreamAccum, streamAccumEncodingView, streamCollectOp
 
 -}
 

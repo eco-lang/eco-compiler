@@ -844,7 +844,7 @@ dictInsertChainListKey5 expectFn _ =
 
 
 dictInsertChainN : Int -> Src.Type -> (Src.Module -> Expectation) -> Expectation
-dictInsertChainN n keyType expectFn =
+dictInsertChainN n _ expectFn =
     let
         tMyDict k v =
             tType "MyDict" [ k, v ]

@@ -1218,7 +1218,7 @@ compareNamedExprsSorted ctx path expected actual =
 
 
 compareParamsAlpha : CompareCtx -> String -> List ( String, Mono.MonoType ) -> List ( String, Mono.MonoType ) -> List String
-compareParamsAlpha ctx path expected actual =
+compareParamsAlpha _ path expected actual =
     if List.length expected /= List.length actual then
         [ path ++ ": param count mismatch: " ++ String.fromInt (List.length expected) ++ " vs " ++ String.fromInt (List.length actual) ]
 
@@ -1326,7 +1326,7 @@ compareDef ctx path expected actual =
 
 
 compareDestructor : CompareCtx -> String -> Mono.MonoDestructor -> Mono.MonoDestructor -> List String
-compareDestructor ctx path (Mono.MonoDestructor eName ePath eType) (Mono.MonoDestructor aName aPath aType) =
+compareDestructor _ path (Mono.MonoDestructor eName ePath eType) (Mono.MonoDestructor aName aPath aType) =
     (if eName /= aName then
         [ path ++ ".name: " ++ eName ++ " vs " ++ aName ]
 

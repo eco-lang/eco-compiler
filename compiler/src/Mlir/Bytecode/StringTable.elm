@@ -8,7 +8,7 @@ module Mlir.Bytecode.StringTable exposing
 Collects all unique strings from an MlirModule and assigns sequential indices.
 Encodes as: numStrings varint, reverse string lengths as varints, concatenated data.
 
-@docs StringTable, collect, indexOf, encode, addString, empty
+@docs StringTable, collect, indexOf, encode, addString, empty, collectOp
 
 -}
 

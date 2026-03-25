@@ -37,7 +37,7 @@ produce JavaScript, MLIR, or other target code.
 
 # Native MLIR Streaming
 
-@docs MonoBuildResult, writeMonoMlirStreaming
+@docs MonoBuildResult, writeMonoMlirStreaming, writeMonoMlirStreamingBytecode
 
 -}
 

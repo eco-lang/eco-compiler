@@ -147,18 +147,18 @@ collectDefIssues ctx def =
 
 
 collectDeciderIssues : String -> Mono.Decider Mono.MonoChoice -> List String
-collectDeciderIssues ctx decider =
+collectDeciderIssues _ decider =
     case decider of
         Mono.Leaf _ ->
             []
 
         Mono.Chain _ success failure ->
-            collectDeciderIssues ctx success
-                ++ collectDeciderIssues ctx failure
+            collectDeciderIssues "" success
+                ++ collectDeciderIssues "" failure
 
         Mono.FanOut _ edges fallback ->
-            List.concatMap (\( _, d ) -> collectDeciderIssues ctx d) edges
-                ++ collectDeciderIssues ctx fallback
+            List.concatMap (\( _, d ) -> collectDeciderIssues "" d) edges
+                ++ collectDeciderIssues "" fallback
 
 
 

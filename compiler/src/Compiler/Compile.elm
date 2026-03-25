@@ -317,6 +317,7 @@ optimize modul annotations canonical =
 -- Performs typed optimization from a TypedCanonical module.
 
 
+typedOptimizeFromTyped : Src.Module -> Dict.Dict Name.Name Can.Annotation -> TCan.ExprTypes -> TCan.ExprVars -> KernelTypes.KernelTypeEnv -> EveryDict.Dict String Name.Name TypeCheck.Variable -> TCan.Module -> Result E.Error TOpt.LocalGraph
 typedOptimizeFromTyped modul annotations nodeTypes nodeVars kernelEnv annotationVars tcanModule =
     case Tuple.second (ReportingResult.run (TypedOptimize.optimizeTyped annotations nodeTypes nodeVars kernelEnv annotationVars tcanModule)) of
         Ok localGraph ->

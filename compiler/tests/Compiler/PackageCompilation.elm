@@ -470,6 +470,7 @@ optimizeErased annotations canonical =
 Preserves full type information throughout the optimization process.
 
 -}
+optimizeTyped : Dict Name.Name Can.Annotation -> TCan.ExprTypes -> TCan.ExprVars -> KernelTypes.KernelTypeEnv -> Data.Map.Dict String Name.Name TypeCheck.Variable -> TCan.Module -> Result (OneOrMore.OneOrMore MainError.Error) TOpt.LocalGraph
 optimizeTyped annotations nodeTypes nodeVars kernelEnv annotationVars tcanModule =
     Tuple.second (RResult.run (TypedOptimize.optimizeTyped annotations nodeTypes nodeVars kernelEnv annotationVars tcanModule))
 

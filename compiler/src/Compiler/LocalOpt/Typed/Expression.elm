@@ -1255,7 +1255,7 @@ lookupPatternVar exprVars patId =
 {-| Build a Meta record for a destructor, combining type and optional type variable.
 -}
 makeDestructorMeta : ExprTypes -> ExprVars -> Int -> Can.Type -> TOpt.Meta
-makeDestructorMeta exprTypes exprVars patId tipe =
+makeDestructorMeta _ exprVars patId tipe =
     { tipe = tipe, tvar = lookupPatternVar exprVars patId }
 
 

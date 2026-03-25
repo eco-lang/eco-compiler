@@ -4239,7 +4239,7 @@ into scf.if/scf.index\_switch.
 
 -}
 generateCase : Ctx.Context -> Name.Name -> Name.Name -> Mono.Decider Mono.MonoChoice -> List ( Int, Mono.MonoExpr ) -> Mono.MonoType -> ExprResult
-generateCase ctx _ root decider jumps resultMonoType =
+generateCase ctx _ _ decider jumps resultMonoType =
     let
         resultMlirType =
             Types.monoTypeToAbi resultMonoType

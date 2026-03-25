@@ -1362,7 +1362,7 @@ specializeTailDefForInstance :
     -> State.LocalInstanceInfo
     -> MonoDirectState
     -> ( Mono.MonoDef, MonoDirectState )
-specializeTailDefForInstance view snapshot defName defParams defBody defCanType defTvar info state =
+specializeTailDefForInstance _ snapshot defName defParams defBody defCanType defTvar info state =
     let
         funcSubst =
             TypeSubst.unifyExtend defCanType info.monoType Dict.empty
@@ -1872,7 +1872,7 @@ specializeDefForInstance view snapshot defName defExpr info state =
 
 
 specializeCycle : SolverSnapshot -> List Name -> List ( Name, TOpt.Expr ) -> List TOpt.Def -> Mono.MonoType -> MonoDirectState -> ( Mono.MonoNode, MonoDirectState )
-specializeCycle snapshot names valueDefs funcDefs requestedMonoType state =
+specializeCycle snapshot _ valueDefs funcDefs requestedMonoType state =
     case funcDefs of
         [] ->
             -- Value-only cycle: existing behavior
@@ -2333,10 +2333,10 @@ specializeJumps view snapshot jumps state =
 
 
 specializeDestructor : LocalView -> VarEnv -> TypeEnv.GlobalTypeEnv -> TOpt.Destructor -> Mono.MonoDestructor
-specializeDestructor view varEnv globalTypeEnv (TOpt.Destructor name path meta) =
+specializeDestructor _ varEnv globalTypeEnv (TOpt.Destructor name path _) =
     let
         monoPath =
-            specializePath view varEnv globalTypeEnv path
+            specializePath varEnv globalTypeEnv path
 
         -- Use path-derived type: the MonoPath already computes the correct
         -- type by navigating from the root variable's resolved type.
@@ -2348,13 +2348,13 @@ specializeDestructor view varEnv globalTypeEnv (TOpt.Destructor name path meta) 
     Mono.MonoDestructor name monoPath monoType
 
 
-specializePath : LocalView -> VarEnv -> TypeEnv.GlobalTypeEnv -> TOpt.Path -> Mono.MonoPath
-specializePath view varEnv globalTypeEnv path =
+specializePath : VarEnv -> TypeEnv.GlobalTypeEnv -> TOpt.Path -> Mono.MonoPath
+specializePath varEnv globalTypeEnv path =
     case path of
         TOpt.Index index hint inner ->
             let
                 monoSubPath =
-                    specializePath view varEnv globalTypeEnv inner
+                    specializePath varEnv globalTypeEnv inner
 
                 containerType =
                     Mono.getMonoPathType monoSubPath
@@ -2367,7 +2367,7 @@ specializePath view varEnv globalTypeEnv path =
         TOpt.ArrayIndex idx inner ->
             let
                 monoSubPath =
-                    specializePath view varEnv globalTypeEnv inner
+                    specializePath varEnv globalTypeEnv inner
 
                 containerType =
                     Mono.getMonoPathType monoSubPath
@@ -2380,7 +2380,7 @@ specializePath view varEnv globalTypeEnv path =
         TOpt.Field fieldName inner ->
             let
                 monoSubPath =
-                    specializePath view varEnv globalTypeEnv inner
+                    specializePath varEnv globalTypeEnv inner
 
                 recordType =
                     Mono.getMonoPathType monoSubPath
@@ -2410,7 +2410,7 @@ specializePath view varEnv globalTypeEnv path =
         TOpt.Unbox inner ->
             let
                 monoSubPath =
-                    specializePath view varEnv globalTypeEnv inner
+                    specializePath varEnv globalTypeEnv inner
 
                 containerType =
                     Mono.getMonoPathType monoSubPath

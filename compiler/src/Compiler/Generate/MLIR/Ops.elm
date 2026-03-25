@@ -54,15 +54,12 @@ in the eco dialect and standard dialects (arith, scf, func).
 
 # SCF Operations
 
-@docs scfYield, scfWhile, scfCondition
-
-
-# CF Operations
+@docs scfWhile, scfCondition
 
 
 # Batch Operations
 
-@docs ecoCaseMany, ecoCaseStringMany, ecoYieldManyMany
+@docs ecoCaseMany, ecoCaseStringMany, ecoYieldMany, scfYieldMany
 
 -}
 

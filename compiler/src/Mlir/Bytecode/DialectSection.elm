@@ -14,6 +14,7 @@ dialectNames: [varint(stringIdx << 1 | hasVersion)]
 opNames: [dialect varint, numOps varint, [varint(nameIdx << 1 | isRegistered)]]
 
 @docs DialectRegistry, collect, opIndex, dialectIndex, encode
+@docs OpGroup, buildRegistry, registryFromOpMap
 
 -}
 

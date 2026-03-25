@@ -14,7 +14,7 @@ Uses a two-pass approach for SSA value numbering:
 
   - Pass 2 (encodeRegion): Encode the IR using the pre-computed value indices.
 
-@docs encode
+@docs encode, encodeFuncOp
 
 -}
 
