@@ -1,6 +1,7 @@
 module Mlir.Bytecode.StringTable exposing
     ( StringTable
     , collect
+    , collectOp
     , indexOf
     , encode
     , addString

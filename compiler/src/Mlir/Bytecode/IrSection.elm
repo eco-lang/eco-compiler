@@ -1,4 +1,4 @@
-module Mlir.Bytecode.IrSection exposing (encode)
+module Mlir.Bytecode.IrSection exposing (encode, encodeFuncOp)
 
 {-| IR section encoding for MLIR bytecode.
 
@@ -584,6 +584,15 @@ encodeOp dialectReg attrTypeTable valueEnv blockEnv op =
             ++ successorsEncoder
             ++ regionsEncoder
         )
+
+
+{-| Encode a single top-level op (e.g. func.func) for streaming bytecode.
+Top-level module-body ops have no parent ValueEnv or BlockEnv — isolated
+regions get numbered from scratch inside encodeOp.
+-}
+encodeFuncOp : DialectRegistry -> AttrTypeTable -> MlirOp -> BE.Encoder
+encodeFuncOp dialectReg attrTypeTable op =
+    encodeOp dialectReg attrTypeTable emptyValueEnv Dict.empty op
 
 
 isIsolatedOp : String -> Bool

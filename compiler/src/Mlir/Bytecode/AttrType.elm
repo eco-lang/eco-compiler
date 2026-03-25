@@ -1,11 +1,16 @@
 module Mlir.Bytecode.AttrType exposing
     ( AttrTypeTable
-    , collect
+    , StreamAccum
     , attrIndex
-    , typeIndex
-    , locIndex
+    , collect
     , dictAttrIndex
     , encodeDataAndOffsets
+    , finalizeStreamAccum
+    , initStreamAccum
+    , locIndex
+    , streamAccumEncodingView
+    , streamCollectOp
+    , typeIndex
     )
 
 {-| Attribute and Type section encoding for MLIR bytecode.
@@ -192,6 +197,58 @@ emptyAccum =
     , attrEntries = [], typeEntries = []
     , nextAttr = 0, nextType = 0
     }
+
+
+{-| Opaque wrapper around the internal accumulator for streaming collection.
+-}
+type StreamAccum
+    = StreamAccum Accum
+
+
+{-| Create an initial streaming accumulator with unknown location pre-added.
+-}
+initStreamAccum : StreamAccum
+initStreamAccum =
+    StreamAccum (emptyAccum |> addAttrEntry (locToAttr Mlir.Loc.unknown))
+
+
+{-| Collect strings/attrs/types from a single op into the streaming accumulator.
+-}
+streamCollectOp : MlirOp -> StreamAccum -> StreamAccum
+streamCollectOp op (StreamAccum acc) =
+    StreamAccum (collectOp op acc)
+
+
+{-| Finalize a streaming accumulator into an AttrTypeTable.
+Uses insertion-order indices (no type partition) so that indices are
+stable/append-only during incremental collection.
+-}
+finalizeStreamAccum : StreamAccum -> AttrTypeTable
+finalizeStreamAccum (StreamAccum result) =
+    AttrTypeTable
+        { attrKeys = result.attrKeys
+        , typeKeys = result.typeKeys
+        , attrEntries = List.reverse result.attrEntries
+        , typeEntries = List.reverse result.typeEntries
+        , numAttrs = result.nextAttr
+        , numTypes = result.nextType
+        }
+
+
+{-| Create a lightweight AttrTypeTable for encoding individual ops during
+streaming. Only the key lookup maps are populated; entry lists are empty
+(they are only needed for the data/offset section encoding).
+-}
+streamAccumEncodingView : StreamAccum -> AttrTypeTable
+streamAccumEncodingView (StreamAccum acc) =
+    AttrTypeTable
+        { attrKeys = acc.attrKeys
+        , typeKeys = acc.typeKeys
+        , attrEntries = []
+        , typeEntries = []
+        , numAttrs = 0
+        , numTypes = 0
+        }
 
 
 collect : MlirModule -> AttrTypeTable
@@ -476,47 +533,37 @@ computeEncodedGroups st ((AttrTypeTable tbl) as table) =
         encodedTypes =
             List.map encodeOne tbl.typeEntries
 
-        -- Group by dialect using Dict (O(N) instead of O(N²))
+        -- Group consecutive entries with the same dialect (run-length grouping).
+        -- For the non-streaming path, entries are pre-sorted by dialect partition,
+        -- so this produces the same result as full dialect grouping.
+        -- For the streaming path, entries are in insertion order and indices match
+        -- their position, so run-length grouping preserves index consistency.
         groupByDialect items =
-            let
-                -- Build Dict String (List EncodedEntry) — entries in reverse order
-                dict =
-                    List.foldl
-                        (\item acc ->
-                            Dict.update item.dialect
-                                (\existing ->
-                                    case existing of
-                                        Just list ->
-                                            Just (item :: list)
+            groupSequential items
 
-                                        Nothing ->
-                                            Just [ item ]
-                                )
-                                acc
-                        )
-                        Dict.empty
-                        items
+        groupSequential entries =
+            case entries of
+                [] ->
+                    []
 
-                -- Collect dialect keys in insertion order
-                dialectOrder =
-                    List.foldl
-                        (\item acc ->
-                            if List.member item.dialect acc then
-                                acc
+                first :: rest ->
+                    let
+                        ( group, remaining ) =
+                            spanDialect first.dialect [ first ] rest
+                    in
+                    group :: groupSequential remaining
 
-                            else
-                                acc ++ [ item.dialect ]
-                        )
-                        []
-                        items
-            in
-            dialectOrder
-                |> List.map
-                    (\d ->
-                        Dict.get d dict
-                            |> Maybe.withDefault []
-                            |> List.reverse
-                    )
+        spanDialect dialect acc entries =
+            case entries of
+                [] ->
+                    ( List.reverse acc, [] )
+
+                x :: rest ->
+                    if x.dialect == dialect then
+                        spanDialect dialect (x :: acc) rest
+
+                    else
+                        ( List.reverse acc, entries )
 
         attrGroups =
             groupByDialect encodedAttrs

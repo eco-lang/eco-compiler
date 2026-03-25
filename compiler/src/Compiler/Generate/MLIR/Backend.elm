@@ -1,4 +1,4 @@
-module Compiler.Generate.MLIR.Backend exposing (backend, generateMlirModule, streamMlirToWriter, writeMlirBytecode)
+module Compiler.Generate.MLIR.Backend exposing (backend, generateMlirModule, streamMlirBytecode, streamMlirToWriter, writeMlirBytecode)
 
 {-| MLIR code generation backend for the Monomorphized IR.
 
@@ -6,7 +6,7 @@ This backend generates MLIR from fully specialized, monomorphic code.
 All polymorphism has been resolved and layout information is embedded
 in the types.
 
-@docs backend, generateMlirModule, streamMlirToWriter, writeMlirBytecode
+@docs backend, generateMlirModule, streamMlirToWriter, writeMlirBytecode, streamMlirBytecode
 
 -}
 
@@ -22,6 +22,7 @@ import Compiler.Generate.Mode as Mode
 import Dict
 import Eco.File
 import Mlir.Bytecode.Encode as BytecodeEncode
+import Mlir.Bytecode.StreamEncode as StreamEncode
 import Mlir.Loc as Loc
 import Mlir.Mlir exposing (MlirModule, MlirOp)
 import Mlir.Pretty as Pretty
@@ -285,3 +286,121 @@ writeMlirBytecode mode monoGraph target =
     in
     Utils.dirCreateDirectoryIfMissing True (Utils.fpTakeDirectory target)
         |> Task.andThen (\_ -> Eco.File.writeBytes target bytecodeBytes)
+
+
+{-| Generate MLIR bytecode using the streaming encoder.
+Processes funcs one at a time via Task chaining so the GC can reclaim
+each func's MlirOps before the next is generated. Peak memory is
+dominated by tables + the largest single func rather than all funcs.
+-}
+streamMlirBytecode :
+    Mode.Mode
+    -> Mono.MonoGraph
+    -> String
+    -> Task Never ()
+streamMlirBytecode mode monoGraph0 target =
+    let
+        (Mono.MonoGraph { nodes, main, registry, ctorShapes }) =
+            monoGraph0
+
+        signatures =
+            Ctx.buildSignatures nodes
+
+        ctx =
+            Ctx.initContext mode registry signatures ctorShapes
+
+        nodesList =
+            Array.toIndexedList nodes
+
+        initTables =
+            StreamEncode.emptyStreamTables
+    in
+    -- Phase 1: Stream node functions — collect tables + encode per func
+    streamNodesCollectEncode ctx nodesList initTables
+        |> Task.andThen
+            (\( ctxAfterNodes, tablesAfterNodes ) ->
+                let
+                    -- Process lambdas
+                    ( lambdaOps, finalCtx ) =
+                        Lambdas.processLambdas ctxAfterNodes
+
+                    tablesAfterLambdas =
+                        StreamEncode.collectAndEncodeOps lambdaOps tablesAfterNodes
+
+                    -- Main entry
+                    mainOps =
+                        case main of
+                            Just mainInfo ->
+                                Functions.generateMainEntry finalCtx mainInfo
+
+                            Nothing ->
+                                []
+
+                    tablesAfterMain =
+                        StreamEncode.collectAndEncodeOps mainOps tablesAfterLambdas
+
+                    -- Kernel declarations
+                    ( kernelDeclOps, _ ) =
+                        Dict.foldl
+                            (\name sig ( accOps, accCtx ) ->
+                                let
+                                    ( newCtx, declOp ) =
+                                        Functions.generateKernelDecl accCtx name sig
+                                in
+                                ( declOp :: accOps, newCtx )
+                            )
+                            ( [], finalCtx )
+                            finalCtx.kernelDecls
+
+                    tablesAfterKernels =
+                        StreamEncode.collectAndEncodeOps (List.reverse kernelDeclOps) tablesAfterMain
+
+                    -- Type table
+                    typeTableOp =
+                        TypeTable.generateTypeTable finalCtx
+
+                    finalTables =
+                        StreamEncode.collectAndEncodeOps [ typeTableOp ] tablesAfterKernels
+
+                    -- Assemble final bytecode
+                    bytecodeBytes =
+                        StreamEncode.assembleModule finalTables Loc.unknown
+                in
+                Utils.dirCreateDirectoryIfMissing True (Utils.fpTakeDirectory target)
+                    |> Task.andThen (\_ -> Eco.File.writeBytes target bytecodeBytes)
+            )
+
+
+{-| Stream through nodes, collecting into tables and encoding each func's ops.
+Uses Task.andThen chaining so the runtime can GC each func's MlirOps
+before processing the next.
+-}
+streamNodesCollectEncode :
+    Ctx.Context
+    -> List ( Int, Maybe Mono.MonoNode )
+    -> StreamEncode.StreamTables
+    -> Task Never ( Ctx.Context, StreamEncode.StreamTables )
+streamNodesCollectEncode ctx0 remaining tables =
+    case remaining of
+        [] ->
+            Task.succeed ( ctx0, tables )
+
+        ( _, Nothing ) :: rest ->
+            streamNodesCollectEncode ctx0 rest tables
+
+        ( specId, Just node ) :: rest ->
+            let
+                ( nodeOps, newCtx ) =
+                    Functions.generateNode ctx0 specId node
+
+                cleanCtx =
+                    { newCtx
+                        | decoderExprs = Dict.empty
+                        , externBoxedVars = Set.empty
+                    }
+
+                newTables =
+                    StreamEncode.collectAndEncodeOps nodeOps tables
+            in
+            Task.succeed ()
+                |> Task.andThen (\_ -> streamNodesCollectEncode cleanCtx rest newTables)

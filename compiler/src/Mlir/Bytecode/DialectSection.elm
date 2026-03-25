@@ -1,9 +1,12 @@
 module Mlir.Bytecode.DialectSection exposing
     ( DialectRegistry
+    , OpGroup
+    , buildRegistry
     , collect
-    , opIndex
     , dialectIndex
     , encode
+    , opIndex
+    , registryFromOpMap
     )
 
 {-| Dialect section encoding for MLIR bytecode.
@@ -315,3 +318,31 @@ encodeOpGroup stringTable group =
             :: encodeVarInt numOps
             :: opEncoders
         )
+
+
+{-| Build a DialectRegistry from pre-computed components.
+Used by the streaming encoder to construct the final registry.
+-}
+buildRegistry :
+    { dialects : List String
+    , dialectIndices : Dict String Int
+    , opGroups : List OpGroup
+    , opIndexMap : Dict String Int
+    }
+    -> DialectRegistry
+buildRegistry r =
+    DialectRegistry r
+
+
+{-| Create a lightweight DialectRegistry containing only the op index map.
+Used for encoding individual ops during streaming — only `opIndex` lookups
+are needed, not the full dialect/group structure.
+-}
+registryFromOpMap : Dict String Int -> DialectRegistry
+registryFromOpMap opMap =
+    DialectRegistry
+        { dialects = []
+        , dialectIndices = Dict.empty
+        , opGroups = []
+        , opIndexMap = opMap
+        }

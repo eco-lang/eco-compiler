@@ -840,6 +840,28 @@ writeMonoMlirBytecode _ _ root maybeBuildDir maybeLocal details artifacts target
             )
 
 
+{-| Generate MLIR bytecode using the streaming encoder.
+Processes funcs one at a time to reduce peak memory usage.
+-}
+writeMonoMlirStreamingBytecode :
+    Bool
+    -> Int
+    -> FilePath
+    -> Maybe String
+    -> Maybe ( Pkg.Name, FilePath )
+    -> Details.Details
+    -> Build.Artifacts
+    -> FilePath
+    -> Task Exit.Generate ()
+writeMonoMlirStreamingBytecode _ _ root maybeBuildDir maybeLocal details artifacts target =
+    buildMonoGraph root maybeBuildDir maybeLocal details artifacts
+        |> Task.andThen
+            (\{ monoGraph, mode } ->
+                MLIR.streamMlirBytecode mode monoGraph target
+                    |> Task.mapError never
+            )
+
+
 addRootTypedGraph : Build.Root -> TOpt.GlobalGraph -> TOpt.GlobalGraph
 addRootTypedGraph root graph =
     case root of
