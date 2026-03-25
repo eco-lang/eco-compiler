@@ -200,4 +200,3 @@ monoTypeToString monoType =
 
         Mono.MVar name _ ->
             name
-

@@ -53,8 +53,11 @@ ecoBinaryOp instead of arithCmpI, so the predicate attribute is missing.
     classify : Char -> Int
     classify c =
         case c of
-            'a' -> 1
-            _ -> 0
+            'a' ->
+                1
+
+            _ ->
+                0
 
 -}
 simpleCharCaseTest : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -94,10 +97,17 @@ simpleCharCaseTest expectFn _ =
     describeChar : Char -> String
     describeChar c =
         case c of
-            ',' -> "comma"
-            '{' -> "open brace"
-            '}' -> "close brace"
-            _ -> "other"
+            ',' ->
+                "comma"
+
+            '{' ->
+                "open brace"
+
+            '}' ->
+                "close brace"
+
+            _ ->
+                "other"
 
 -}
 multiBranchCharCaseTest : (Src.Module -> Expectation) -> (() -> Expectation)

@@ -367,6 +367,7 @@ rewriter will eta-wrap non-conforming producers to match.
 
 This can be extended later to also mark slots whose classes contain producers
 with fundamentally incompatible call models (e.g. mixed kernel + user closure).
+
 -}
 identifyDynamicSlots :
     ProducerInfo

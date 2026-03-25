@@ -254,7 +254,9 @@ generateLambdaFunc ctx lambda =
                                     |> Ops.opBuilder.build
 
                             ctxWithSelf =
-                                Ctx.addVarMapping selfName selfVar Types.ecoValue
+                                Ctx.addVarMapping selfName
+                                    selfVar
+                                    Types.ecoValue
                                     ctxAfterPap
                         in
                         ( [ selfPapOp ], ctxWithSelf )

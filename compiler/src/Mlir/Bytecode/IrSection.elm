@@ -1,7 +1,4 @@
-module Mlir.Bytecode.IrSection exposing
-    ( encode
-    , encodeFuncOp
-    )
+module Mlir.Bytecode.IrSection exposing (encode, encodeFuncOp)
 
 {-| IR section encoding for MLIR bytecode.
 

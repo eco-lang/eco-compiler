@@ -52,7 +52,7 @@ baseCombinatorCases expectFn =
     ]
 
 
-{-| k a _ = a; testValue = k 42 99
+{-| k a \_ = a; testValue = k 42 99
 -}
 kCombinator : (Src.Module -> Expectation) -> (() -> Expectation)
 kCombinator expectFn _ =
@@ -70,7 +70,7 @@ kCombinator expectFn _ =
 
 
 {-| s bf uf x = bf x (uf x)
-double x = x * 2
+double x = x \* 2
 testValue = s (+) double 5 -- 5 + 10 = 15
 -}
 sCombinator : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -148,7 +148,7 @@ iCombinator expectFn _ =
 
 
 {-| b = s (k s) k
-square x = x * x
+square x = x \* x
 inc x = x + 1
 testValue = b square inc 4 -- (4+1)^2 = 25
 -}
@@ -168,7 +168,8 @@ bCombinator expectFn _ =
                 )
 
         bDef =
-            define "b" []
+            define "b"
+                []
                 (callExpr (varExpr "s")
                     [ callExpr (varExpr "k") [ varExpr "s" ]
                     , varExpr "k"
@@ -210,7 +211,8 @@ cCombinator expectFn _ =
                 )
 
         bDef =
-            define "b" []
+            define "b"
+                []
                 (callExpr (varExpr "s")
                     [ callExpr (varExpr "k") [ varExpr "s" ]
                     , varExpr "k"
@@ -218,7 +220,8 @@ cCombinator expectFn _ =
                 )
 
         cDef =
-            define "c" []
+            define "c"
+                []
                 (callExpr (varExpr "s")
                     [ callExpr (varExpr "b") [ varExpr "b", varExpr "s" ]
                     , callExpr (varExpr "k") [ varExpr "k" ]
@@ -254,10 +257,10 @@ appliedCombinatorCases expectFn =
 
 
 {-| sp bf uf1 uf2 x = bf (uf1 x) (uf2 x)
-mul x y = x * y
+mul x y = x \* y
 inc x = x + 1
-double x = x * 2
-testValue = sp mul inc double 6 -- 7 * 12 = 84
+double x = x \* 2
+testValue = sp mul inc double 6 -- 7 \* 12 = 84
 -}
 spCombinator : (Src.Module -> Expectation) -> (() -> Expectation)
 spCombinator expectFn _ =
@@ -292,7 +295,7 @@ spCombinator expectFn _ =
 
 
 {-| t = c i (thrush / pipe-forward)
-testValue = t 7 (\x -> x * 3) -- 21
+testValue = t 7 (\\x -> x \* 3) -- 21
 -}
 tCombinator : (Src.Module -> Expectation) -> (() -> Expectation)
 tCombinator expectFn _ =
@@ -310,7 +313,8 @@ tCombinator expectFn _ =
                 )
 
         bDef =
-            define "b" []
+            define "b"
+                []
                 (callExpr (varExpr "s")
                     [ callExpr (varExpr "k") [ varExpr "s" ]
                     , varExpr "k"
@@ -318,7 +322,8 @@ tCombinator expectFn _ =
                 )
 
         cDef =
-            define "c" []
+            define "c"
+                []
                 (callExpr (varExpr "s")
                     [ callExpr (varExpr "b") [ varExpr "b", varExpr "s" ]
                     , callExpr (varExpr "k") [ varExpr "k" ]
@@ -345,7 +350,7 @@ tCombinator expectFn _ =
 
 
 {-| w bf x = bf x x
-mul x y = x * y
+mul x y = x \* y
 testValue = w mul 9 -- 81
 -}
 wCombinator : (Src.Module -> Expectation) -> (() -> Expectation)

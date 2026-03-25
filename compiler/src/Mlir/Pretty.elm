@@ -429,7 +429,7 @@ escapeForMlir s =
 
 
 {-| Escape double-quote characters that are not already preceded by a backslash.
-Pre-escaped sequences like \" are left unchanged.
+Pre-escaped sequences like " are left unchanged.
 -}
 escapeUnescapedQuotes : String -> String
 escapeUnescapedQuotes s =

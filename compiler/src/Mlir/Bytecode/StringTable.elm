@@ -1,7 +1,4 @@
-module Mlir.Bytecode.StringTable exposing
-    ( StringTable, collect, indexOf, encode, addString, empty
-    , collectOp
-    )
+module Mlir.Bytecode.StringTable exposing (StringTable, collect, indexOf, encode, addString, empty, collectOp)
 
 {-| String table for MLIR bytecode.
 

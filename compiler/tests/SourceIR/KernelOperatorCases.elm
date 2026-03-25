@@ -30,11 +30,13 @@ testCases expectFn =
 
 arithmeticOps : (Src.Module -> Expectation) -> (() -> Expectation)
 arithmeticOps expectFn _ =
-    expectFn (makeKernelModule "testValue"
-        (letExpr
-            [ define "a" [] (binopsExpr [ ( intExpr 3, "+" ) ] (intExpr 4))
-            , define "b" [] (binopsExpr [ ( intExpr 10, "-" ) ] (intExpr 3))
-            , define "c" [] (binopsExpr [ ( intExpr 6, "*" ) ] (intExpr 7))
-            ]
-            (binopsExpr [ ( varExpr "a", "+" ), ( varExpr "b", "+" ) ] (varExpr "c"))
-        ))
+    expectFn
+        (makeKernelModule "testValue"
+            (letExpr
+                [ define "a" [] (binopsExpr [ ( intExpr 3, "+" ) ] (intExpr 4))
+                , define "b" [] (binopsExpr [ ( intExpr 10, "-" ) ] (intExpr 3))
+                , define "c" [] (binopsExpr [ ( intExpr 6, "*" ) ] (intExpr 7))
+                ]
+                (binopsExpr [ ( varExpr "a", "+" ), ( varExpr "b", "+" ) ] (varExpr "c"))
+            )
+        )

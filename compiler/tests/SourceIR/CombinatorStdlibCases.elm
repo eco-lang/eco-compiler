@@ -58,7 +58,7 @@ listCombinatorCases expectFn =
 
 {-| b f g x = f (g x)
 sum xs = List.foldl (+) 0 xs
-testValue = b sum (List.map (\x -> x + 1)) [1, 2, 3]
+testValue = b sum (List.map (\\x -> x + 1)) [1, 2, 3]
 -- [1,2,3] -> [2,3,4] -> 9
 -}
 bComposeListOps : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -77,7 +77,8 @@ bComposeListOps expectFn _ =
                 )
 
         bDef =
-            define "b" []
+            define "b"
+                []
                 (callExpr (varExpr "s")
                     [ callExpr (varExpr "k") [ varExpr "s" ]
                     , varExpr "k"
@@ -120,7 +121,7 @@ bComposeListOps expectFn _ =
 {-| t x f = f x (thrush / pipe-forward)
 b f g x = f (g x)
 sum xs = List.foldl (+) 0 xs
-testValue = t [1,2,3] (b sum (List.map (\x -> x * 2)))
+testValue = t [1,2,3] (b sum (List.map (\\x -> x \* 2)))
 -- [1,2,3] -> [2,4,6] -> 12
 -}
 tPipeList : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -139,7 +140,8 @@ tPipeList expectFn _ =
                 )
 
         bDef =
-            define "b" []
+            define "b"
+                []
                 (callExpr (varExpr "s")
                     [ callExpr (varExpr "k") [ varExpr "s" ]
                     , varExpr "k"
@@ -147,7 +149,8 @@ tPipeList expectFn _ =
                 )
 
         cDef =
-            define "c" []
+            define "c"
+                []
                 (callExpr (varExpr "s")
                     [ callExpr (varExpr "b") [ varExpr "b", varExpr "s" ]
                     , callExpr (varExpr "k") [ varExpr "k" ]
@@ -180,7 +183,8 @@ tPipeList expectFn _ =
                 )
 
         composed =
-            define "composed" []
+            define "composed"
+                []
                 (callExpr (varExpr "b") [ varExpr "mySum", varExpr "mapDouble" ])
 
         modul =
@@ -198,7 +202,7 @@ tPipeList expectFn _ =
 
 {-| p bf uf x y = bf (uf x) (uf y)
 add a b = a + b
-testValue = p add List.length [1,2,3] [4,5]
+testValue = p add List.length [1,2,3][4,5]
 -- length [1,2,3] + length [4,5] = 3 + 2 = 5
 -}
 pAddLengths : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -332,10 +336,10 @@ multiArgCombinatorCases expectFn =
 
 
 {-| sp bf uf1 uf2 x = bf (uf1 x) (uf2 x)
-mul a b = a * b
+mul a b = a \* b
 inc x = x + 1
-double x = x * 2
-testValue = sp mul inc double 6 -- (6+1) * (6*2) = 7 * 12 = 84
+double x = x \* 2
+testValue = sp mul inc double 6 -- (6+1) \* (6_2) = 7 _ 12 = 84
 -}
 spWithOperators : (Src.Module -> Expectation) -> (() -> Expectation)
 spWithOperators expectFn _ =
@@ -389,7 +393,8 @@ cFlipCons expectFn _ =
                 )
 
         bDef =
-            define "b" []
+            define "b"
+                []
                 (callExpr (varExpr "s")
                     [ callExpr (varExpr "k") [ varExpr "s" ]
                     , varExpr "k"
@@ -397,7 +402,8 @@ cFlipCons expectFn _ =
                 )
 
         cDef =
-            define "c" []
+            define "c"
+                []
                 (callExpr (varExpr "s")
                     [ callExpr (varExpr "b") [ varExpr "b", varExpr "s" ]
                     , callExpr (varExpr "k") [ varExpr "k" ]

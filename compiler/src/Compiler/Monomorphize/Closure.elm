@@ -624,6 +624,7 @@ MonoCase stores the scrutinee variable by name but not by type. When a variable
 is only referenced as a MonoCase root (and never as a MonoVarLocal), collectVarTypes
 won't find its type. This function fills that gap by inferring the root type from
 the decision tree tests.
+
 -}
 collectCaseRootTypes : Mono.MonoExpr -> Dict String Mono.MonoType
 collectCaseRootTypes expr =

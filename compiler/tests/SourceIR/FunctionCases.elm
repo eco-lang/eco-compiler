@@ -668,7 +668,7 @@ fourArgLambdaAsValue expectFn _ =
 
 
 {-| 2-arg lambda as a let-bound value (not applied).
-Tests whether the CGEN_052 bug needs 3+ args to trigger.
+Tests whether the CGEN\_052 bug needs 3+ args to trigger.
 -}
 twoArgLambdaAsValue : (Src.Module -> Expectation) -> (() -> Expectation)
 twoArgLambdaAsValue expectFn _ =
@@ -912,10 +912,15 @@ zabsWithFloat expectFn _ =
 
     zmin : comparable -> comparable -> comparable
     zmin a b =
-        if a < b then a else b
+        if a < b then
+            a
+
+        else
+            b
 
     testValue : Int
-    testValue = zmin 3 5
+    testValue =
+        zmin 3 5
 
 Exercises the `comparable` branch in `toSuper` and `getFreshSuperName`.
 
@@ -961,10 +966,15 @@ comparableMinWithInt expectFn _ =
 
     zsortConcat : compappend -> compappend -> compappend
     zsortConcat a b =
-        if a < b then a ++ b else b ++ a
+        if a < b then
+            a ++ b
+
+        else
+            b ++ a
 
     testValue : String
-    testValue = zsortConcat "hello" "world"
+    testValue =
+        zsortConcat "hello" "world"
 
 Exercises the `compappend` branch in `toSuper`.
 
@@ -1013,7 +1023,8 @@ compappendWithString expectFn _ =
         a ++ b
 
     testValue : String
-    testValue = zconcat "hello" " world"
+    testValue =
+        zconcat "hello" " world"
 
 Exercises the `appendable` branch in `toSuper` and `getFreshSuperName`.
 

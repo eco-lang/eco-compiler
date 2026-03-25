@@ -72,7 +72,8 @@ flattenExpr expr =
                 t
 
         Mono.MonoCase scrutName scrutVar decider jumps t ->
-            Mono.MonoCase scrutName scrutVar
+            Mono.MonoCase scrutName
+                scrutVar
                 (flattenDecider decider)
                 (List.map (\( i, e ) -> ( i, flattenExpr e )) jumps)
                 t
@@ -145,13 +146,14 @@ flattenChoice choice =
 {-| Detect and flatten a joinpoint closure pattern.
 
 Pattern:
-    MonoClosure outerInfo (MonoCase ...) funcType
-    where all jump targets are MonoClosure with compatible params
+MonoClosure outerInfo (MonoCase ...) funcType
+where all jump targets are MonoClosure with compatible params
 
 Flattened to:
-    MonoClosure { params = outerParams ++ innerParams, ... }
-        (MonoCase ... newJumps finalResultType)
-        newFuncType
+MonoClosure { params = outerParams ++ innerParams, ... }
+(MonoCase ... newJumps finalResultType)
+newFuncType
+
 -}
 flattenJoinpointClosure : Mono.ClosureInfo -> Mono.MonoExpr -> Mono.MonoType -> Mono.MonoExpr
 flattenJoinpointClosure info body funcType =

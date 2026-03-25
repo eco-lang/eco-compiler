@@ -1608,8 +1608,11 @@ that variable inside the lambda body is as the scrutinee of a case expression.
         let
             pick a b =
                 case intensity of
-                    Dull -> a
-                    Vivid -> b
+                    Dull ->
+                        a
+
+                    Vivid ->
+                        b
         in
         pick dullVal vividVal
 
@@ -1682,8 +1685,11 @@ referenced as case scrutinee inside the lambda.
         let
             pick x y =
                 case n of
-                    0 -> x
-                    _ -> y
+                    0 ->
+                        x
+
+                    _ ->
+                        y
         in
         pick a b
 
@@ -1743,8 +1749,11 @@ closureCapturesCaseScrutineeInt expectFn _ =
         let
             pick x y =
                 case flag of
-                    True -> x
-                    False -> y
+                    True ->
+                        x
+
+                    False ->
+                        y
         in
         pick a b
 
@@ -1800,7 +1809,9 @@ closureCapturesCaseScrutineeBool expectFn _ =
 {-| Nested closure where the inner closure captures a variable from the
 outermost scope, used only as a case scrutinee.
 
-    type Dir = Left | Right
+    type Dir
+        = Left
+        | Right
 
     nestedPick : Dir -> Int -> Int -> Int
     nestedPick dir a b =
@@ -1809,8 +1820,11 @@ outermost scope, used only as a case scrutinee.
                 let
                     inner p q =
                         case dir of
-                            Left -> p
-                            Right -> q
+                            Left ->
+                                p
+
+                            Right ->
+                                q
                 in
                 inner x y
         in

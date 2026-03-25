@@ -280,8 +280,6 @@ checkFoldWithEmptyList =
 -- ============================================================================
 
 
-
-
 findCEcoValueInFullyMonomorphicSpecs : Mono.MonoGraph -> List String
 findCEcoValueInFullyMonomorphicSpecs (Mono.MonoGraph data) =
     Array.toList data.nodes

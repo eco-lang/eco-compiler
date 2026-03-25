@@ -543,7 +543,6 @@ metaDecoder =
     Bytes.Decode.map (\t -> { tipe = t, tvar = Nothing }) Can.typeDecoder
 
 
-
 nodeEncoder : Node -> Bytes.Encode.Encoder
 nodeEncoder node =
     case node of

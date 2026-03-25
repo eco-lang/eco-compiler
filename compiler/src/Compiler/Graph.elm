@@ -1,9 +1,4 @@
-module Compiler.Graph exposing
-    ( IntGraph
-    , SCC(..)
-    , stronglyConnComp
-    , stronglyConnCompInt
-    )
+module Compiler.Graph exposing (IntGraph, SCC(..), stronglyConnComp, stronglyConnCompInt)
 
 {-| Self-contained Kosaraju's SCC algorithm.
 

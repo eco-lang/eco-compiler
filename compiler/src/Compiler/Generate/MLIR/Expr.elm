@@ -1242,7 +1242,7 @@ generateCall ctx func args resultType callInfo =
                 generateClosureApplication ctx func args resultType callInfo
 
 
-{-| Generate a generic apply call: eco.papExtend without remaining_arity.
+{-| Generate a generic apply call: eco.papExtend without remaining\_arity.
 
 Saturation is determined at runtime from the closure header. The result
 type is always !eco.value since the outcome (PAP vs saturated result)
@@ -3302,6 +3302,7 @@ would otherwise create new placeholders for names already allocated by
 the outer group. Only currentLetSiblings entries are reused, not
 arbitrary varMappings (which could be from unrelated scopes like
 function parameters or prior let bindings).
+
 -}
 addPlaceholderMappings : List Name.Name -> Ctx.Context -> Ctx.Context
 addPlaceholderMappings names ctx =

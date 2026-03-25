@@ -27,34 +27,44 @@ testCases expectFn =
 
 kernelInLambda : (Src.Module -> Expectation) -> (() -> Expectation)
 kernelInLambda expectFn _ =
-    expectFn (makeKernelModule "testValue"
-        (lambdaExpr [ pVar "x" ]
-            (callExpr (qualVarExpr "Elm.Kernel.Basics" "add") [ varExpr "x", intExpr 1 ])
-        ))
+    expectFn
+        (makeKernelModule "testValue"
+            (lambdaExpr [ pVar "x" ]
+                (callExpr (qualVarExpr "Elm.Kernel.Basics" "add") [ varExpr "x", intExpr 1 ])
+            )
+        )
 
 
 kernelInLetBinding : (Src.Module -> Expectation) -> (() -> Expectation)
 kernelInLetBinding expectFn _ =
-    expectFn (makeKernelModule "testValue"
-        (letExpr
-            [ define "result" [] (callExpr (qualVarExpr "Elm.Kernel.Basics" "add") [ intExpr 3, intExpr 4 ]) ]
-            (varExpr "result")
-        ))
+    expectFn
+        (makeKernelModule "testValue"
+            (letExpr
+                [ define "result" [] (callExpr (qualVarExpr "Elm.Kernel.Basics" "add") [ intExpr 3, intExpr 4 ]) ]
+                (varExpr "result")
+            )
+        )
 
 
 kernelNestedCalls : (Src.Module -> Expectation) -> (() -> Expectation)
 kernelNestedCalls expectFn _ =
-    expectFn (makeKernelModule "testValue"
-        (callExpr (qualVarExpr "Elm.Kernel.Basics" "add")
-            [ callExpr (qualVarExpr "Elm.Kernel.Basics" "mul") [ intExpr 2, intExpr 3 ]
-            , callExpr (qualVarExpr "Elm.Kernel.Basics" "mul") [ intExpr 4, intExpr 5 ]
-            ]))
+    expectFn
+        (makeKernelModule "testValue"
+            (callExpr (qualVarExpr "Elm.Kernel.Basics" "add")
+                [ callExpr (qualVarExpr "Elm.Kernel.Basics" "mul") [ intExpr 2, intExpr 3 ]
+                , callExpr (qualVarExpr "Elm.Kernel.Basics" "mul") [ intExpr 4, intExpr 5 ]
+                ]
+            )
+        )
 
 
 kernelChainedArith : (Src.Module -> Expectation) -> (() -> Expectation)
 kernelChainedArith expectFn _ =
-    expectFn (makeKernelModule "testValue"
-        (callExpr (qualVarExpr "Elm.Kernel.Basics" "add")
-            [ callExpr (qualVarExpr "Elm.Kernel.Basics" "add") [ intExpr 1, intExpr 2 ]
-            , callExpr (qualVarExpr "Elm.Kernel.Basics" "sub") [ intExpr 10, intExpr 5 ]
-            ]))
+    expectFn
+        (makeKernelModule "testValue"
+            (callExpr (qualVarExpr "Elm.Kernel.Basics" "add")
+                [ callExpr (qualVarExpr "Elm.Kernel.Basics" "add") [ intExpr 1, intExpr 2 ]
+                , callExpr (qualVarExpr "Elm.Kernel.Basics" "sub") [ intExpr 10, intExpr 5 ]
+                ]
+            )
+        )

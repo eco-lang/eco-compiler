@@ -3,8 +3,7 @@ module Builder.Generate exposing
     , dev, debug
     , prod
     , repl
-    , MonoBuildResult, writeMonoMlirStreaming
-    , writeMonoMlirStreamingBytecode
+    , MonoBuildResult, writeMonoMlirStreaming, writeMonoMlirStreamingBytecode
     )
 
 {-| Code generation orchestration for the Elm compiler.

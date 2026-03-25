@@ -237,7 +237,6 @@ monoTypeToOperand monoType =
 
 
 
-
 -- ====== FUNCTION TYPE UTILITIES ======
 
 

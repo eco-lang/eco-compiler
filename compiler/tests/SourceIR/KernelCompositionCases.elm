@@ -24,10 +24,13 @@ testCases expectFn =
 
 chainedListOps : (Src.Module -> Expectation) -> (() -> Expectation)
 chainedListOps expectFn _ =
-    expectFn (makeKernelModule "testValue"
-        (callExpr (qualVarExpr "Elm.Kernel.List" "reverse")
-            [ callExpr (qualVarExpr "Elm.Kernel.List" "map")
-                [ lambdaExpr [ pVar "x" ] (binopsExpr [ ( varExpr "x", "*" ) ] (intExpr 2))
-                , listExpr [ intExpr 1, intExpr 2, intExpr 3 ]
+    expectFn
+        (makeKernelModule "testValue"
+            (callExpr (qualVarExpr "Elm.Kernel.List" "reverse")
+                [ callExpr (qualVarExpr "Elm.Kernel.List" "map")
+                    [ lambdaExpr [ pVar "x" ] (binopsExpr [ ( varExpr "x", "*" ) ] (intExpr 2))
+                    , listExpr [ intExpr 1, intExpr 2, intExpr 3 ]
+                    ]
                 ]
-            ]))
+            )
+        )

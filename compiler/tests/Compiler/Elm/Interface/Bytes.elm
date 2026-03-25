@@ -1,13 +1,14 @@
 module Compiler.Elm.Interface.Bytes exposing
-    ( bytesInterface
+    ( bytesDecodeInterface
     , bytesEncodeInterface
-    , bytesDecodeInterface
+    , bytesInterface
     )
 
 {-| Interfaces for elm/bytes modules used in tests.
 
 Provides Bytes, Bytes.Encode, and Bytes.Decode module interfaces
 to enable testing of bytes fusion codegen paths.
+
 -}
 
 import Compiler.AST.Canonical as Can

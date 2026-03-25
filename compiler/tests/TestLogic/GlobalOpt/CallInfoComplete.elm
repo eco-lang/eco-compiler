@@ -184,8 +184,11 @@ checkCallInfo ctx funcExpr args callInfo =
                 ++ checkGopt013 ctx callInfo
                 ++ checkGopt014 ctx argCount callInfo
                 ++ checkGopt015 ctx funcExpr callInfo
-                -- Note: GOPT_012 and GOPT_015 skip CallGenericApply internally,
-                -- since initialRemaining is intentionally 0 and unused by codegen.
+
+
+
+-- Note: GOPT_012 and GOPT_015 skip CallGenericApply internally,
+-- since initialRemaining is intentionally 0 and unused by codegen.
 
 
 {-| GOPT\_011: stageArities must be non-empty with all positive elements,
@@ -225,6 +228,7 @@ is derived from the actual closure node. After staging canonicalization, the
 node's param count may be higher (flattened) than the first stage arity.
 So we check initialRemaining >= stageArities[0] (flattened closures have
 at least as many params as the first type stage).
+
 -}
 checkGopt012 : String -> Mono.MonoExpr -> Mono.CallInfo -> List String
 checkGopt012 ctx _ callInfo =
@@ -326,6 +330,7 @@ This catches cases where varSourceArity was not populated for a local
 variable (e.g., a closure parameter), causing sourceArityForCallee to
 fall back to a type-based heuristic that may disagree with the canonical
 staging representation.
+
 -}
 checkGopt015 : String -> Mono.MonoExpr -> Mono.CallInfo -> List String
 checkGopt015 ctx funcExpr callInfo =

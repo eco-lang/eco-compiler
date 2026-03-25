@@ -327,8 +327,8 @@ checkParamTypes ctx params =
 
 
 {-| Collect problematic MVar names from a MonoType recursively.
-MVar _ CEcoValue is always acceptable (compiles to eco.value).
-Only MVar _ CNumber would indicate a real bug (should be resolved to MInt/MFloat).
+MVar \_ CEcoValue is always acceptable (compiles to eco.value).
+Only MVar \_ CNumber would indicate a real bug (should be resolved to MInt/MFloat).
 -}
 collectCEcoValueVars : Mono.MonoType -> List String
 collectCEcoValueVars monoType =

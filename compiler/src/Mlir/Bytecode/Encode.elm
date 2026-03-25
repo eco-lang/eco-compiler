@@ -3,14 +3,15 @@ module Mlir.Bytecode.Encode exposing (encodeModule)
 {-| Top-level MLIR bytecode encoder.
 
 Orchestrates the two-pass encoding:
-1. Collection pass: builds string table, dialect registry, attr/type table
-2. Encoding pass: encodes all sections and assembles the final bytecode
+
+1.  Collection pass: builds string table, dialect registry, attr/type table
+2.  Encoding pass: encodes all sections and assembles the final bytecode
 
 Output format:
-    magic: [0x4D, 0x4C, 0xEF, 0x52]
-    version: varint(6)
-    producer: null-terminated string "eco"
-    sections: section[]
+magic: [0x4D, 0x4C, 0xEF, 0x52]
+version: varint(6)
+producer: null-terminated string "eco"
+sections: section[]
 
 @docs encodeModule
 

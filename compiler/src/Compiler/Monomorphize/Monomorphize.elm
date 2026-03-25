@@ -354,7 +354,12 @@ processWorklist state =
                                                     , callEdges = Dict.insert specId neighbors stateAfterAccum.callEdges
                                                     , specValueUsed = specValueUsed1
                                                 }
-                                            , ctx = let ca = stateAfter.ctx in { ca | currentGlobal = Nothing }
+                                            , ctx =
+                                                let
+                                                    ca =
+                                                        stateAfter.ctx
+                                                in
+                                                { ca | currentGlobal = Nothing }
                                         }
                                 in
                                 processWorklist newState
@@ -381,7 +386,12 @@ processWorklist state =
                                                             , inProgress = BitSet.removeGrowing specId s2accum.inProgress
                                                             , callEdges = Dict.insert specId [] s2accum.callEdges
                                                         }
-                                                    , ctx = let c2 = state2.ctx in { c2 | currentGlobal = Nothing }
+                                                    , ctx =
+                                                        let
+                                                            c2 =
+                                                                state2.ctx
+                                                        in
+                                                        { c2 | currentGlobal = Nothing }
                                                 }
                                         in
                                         processWorklist newState
@@ -432,7 +442,12 @@ processWorklist state =
                                                                     saAccum.specHasEffects
                                                             , specValueUsed = specValueUsed1
                                                         }
-                                                    , ctx = let ca2 = stateAfter.ctx in { ca2 | currentGlobal = Nothing }
+                                                    , ctx =
+                                                        let
+                                                            ca2 =
+                                                                stateAfter.ctx
+                                                        in
+                                                        { ca2 | currentGlobal = Nothing }
                                                 }
                                         in
                                         processWorklist newState
@@ -588,9 +603,3 @@ nodeHasEffects node =
 
         _ ->
             False
-
-
-
-
-
-

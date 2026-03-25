@@ -32,10 +32,11 @@ import Compiler.Generate.MLIR.Ops as Ops
 import Compiler.Generate.MLIR.Patterns as Patterns
 import Compiler.Generate.MLIR.Types as Types
 import Compiler.LocalOpt.Typed.DecisionTree as DT
-import Mlir.Mlir exposing (MlirOp, MlirRegion(..), MlirType(..))
 import Dict
+import Mlir.Mlir exposing (MlirOp, MlirRegion(..), MlirType(..))
 import OrderedDict
 import Utils.Crash exposing (crash)
+
 
 
 -- ============================================================================

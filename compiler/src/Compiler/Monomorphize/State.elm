@@ -56,6 +56,7 @@ var collection at every call site.
 
 The pre-renamed variants have all type variables renamed to definition-scoped
 names (e.g., `a__def_Module_func_0`) to avoid per-call-site rename work.
+
 -}
 type alias SchemeInfo =
     { varNames : List Name

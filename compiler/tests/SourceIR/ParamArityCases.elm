@@ -60,6 +60,7 @@ hoParamCases expectFn =
 
 Tests that `f` as a closure parameter gets correct first-stage arity (2)
 so that `f a b` produces a single saturated call, not a PAP + extend.
+
 -}
 hoParamApplyTwo : (Src.Module -> Expectation) -> (() -> Expectation)
 hoParamApplyTwo expectFn _ =
@@ -85,6 +86,7 @@ hoParamApplyTwo expectFn _ =
 {-| flip f b a = f a b
 
 Tests that `f` as a closure parameter gets correct arity when args are reordered.
+
 -}
 hoParamFlip : (Src.Module -> Expectation) -> (() -> Expectation)
 hoParamFlip expectFn _ =
@@ -109,6 +111,7 @@ hoParamFlip expectFn _ =
 {-| applyOne f x = f x
 
 Tests single-arg function parameter.
+
 -}
 hoParamApplyOne : (Src.Module -> Expectation) -> (() -> Expectation)
 hoParamApplyOne expectFn _ =
@@ -146,6 +149,7 @@ capturedParamCases expectFn =
 {-| withF f x = let g y = f y in g x
 
 Tests that `f` is correctly captured in the inner closure `g` with proper arity.
+
 -}
 capturedParamInner : (Src.Module -> Expectation) -> (() -> Expectation)
 capturedParamInner expectFn _ =
@@ -175,6 +179,7 @@ capturedParamInner expectFn _ =
 
 Tests that captured two-arg function `f` called with both args in inner
 lambda gets correct arity so neither arg is dropped.
+
 -}
 capturedParamTwoArg : (Src.Module -> Expectation) -> (() -> Expectation)
 capturedParamTwoArg expectFn _ =
@@ -214,6 +219,7 @@ localPapCases expectFn =
 
 Tests that when a parameter `f` is partially applied to produce a local PAP `p1`,
 the PAP's remaining arity is correctly computed and stored in varSourceArity.
+
 -}
 localPapFromParam : (Src.Module -> Expectation) -> (() -> Expectation)
 localPapFromParam expectFn _ =
@@ -240,11 +246,12 @@ localPapFromParam expectFn _ =
 
 
 {-| Tests a local PAP from a known global function:
-    let add x y = x
-        add5 = add 5
-    in add5 10
+let add x y = x
+add5 = add 5
+in add5 10
 
 This verifies annotateDefCalls correctly propagates remaining arity.
+
 -}
 localPapFromGlobal : (Src.Module -> Expectation) -> (() -> Expectation)
 localPapFromGlobal expectFn _ =

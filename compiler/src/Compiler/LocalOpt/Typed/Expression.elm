@@ -88,15 +88,17 @@ peelFunctionType n tipe =
 {-| Find the solver tvar for a local variable by scanning a Canonical
 expression for `VarLocal name` occurrences.
 
-Used to recover the *function* type variable for locally-defined functions:
-  * LetRec single-def: scan the RHS body for self-calls.
-  * Non-recursive let: scan the continuation body for uses of the bound name.
+Used to recover the _function_ type variable for locally-defined functions:
+
+  - LetRec single-def: scan the RHS body for self-calls.
+  - Non-recursive let: scan the continuation body for uses of the bound name.
 
 Returns the tvar from the first `VarLocal name` found, which is the binder's
 solver variable for the full (possibly polymorphic) function type.
 
 Note: canonicalization forbids name shadowing, so all VarLocal occurrences
 of targetName within a scope refer to the same binding.
+
 -}
 findVarLocalTvar : Name -> ExprVars -> Can.Expr -> Maybe IO.Variable
 findVarLocalTvar targetName exprVars (A.At _ info) =
@@ -109,19 +111,44 @@ findVarLocalTvar targetName exprVars (A.At _ info) =
                 Nothing
 
         -- Leaf nodes: no sub-expressions to search
-        Can.VarTopLevel _ _ -> Nothing
-        Can.VarKernel _ _ -> Nothing
-        Can.VarForeign _ _ _ -> Nothing
-        Can.VarCtor _ _ _ _ _ -> Nothing
-        Can.VarDebug _ _ _ -> Nothing
-        Can.VarOperator _ _ _ _ -> Nothing
-        Can.Chr _ -> Nothing
-        Can.Str _ -> Nothing
-        Can.Int _ -> Nothing
-        Can.Float _ -> Nothing
-        Can.Accessor _ -> Nothing
-        Can.Unit -> Nothing
-        Can.Shader _ _ -> Nothing
+        Can.VarTopLevel _ _ ->
+            Nothing
+
+        Can.VarKernel _ _ ->
+            Nothing
+
+        Can.VarForeign _ _ _ ->
+            Nothing
+
+        Can.VarCtor _ _ _ _ _ ->
+            Nothing
+
+        Can.VarDebug _ _ _ ->
+            Nothing
+
+        Can.VarOperator _ _ _ _ ->
+            Nothing
+
+        Can.Chr _ ->
+            Nothing
+
+        Can.Str _ ->
+            Nothing
+
+        Can.Int _ ->
+            Nothing
+
+        Can.Float _ ->
+            Nothing
+
+        Can.Accessor _ ->
+            Nothing
+
+        Can.Unit ->
+            Nothing
+
+        Can.Shader _ _ ->
+            Nothing
 
         -- Single sub-expression
         Can.Negate e ->
@@ -140,8 +167,11 @@ findVarLocalTvar targetName exprVars (A.At _ info) =
         -- Function call
         Can.Call func args ->
             case findVarLocalTvar targetName exprVars func of
-                Just v -> Just v
-                Nothing -> firstJustList targetName exprVars args
+                Just v ->
+                    Just v
+
+                Nothing ->
+                    firstJustList targetName exprVars args
 
         -- Lists, tuples, records
         Can.List entries ->
@@ -149,20 +179,28 @@ findVarLocalTvar targetName exprVars (A.At _ info) =
 
         Can.Tuple a b rest ->
             case findVarLocalTvar targetName exprVars a of
-                Just v -> Just v
+                Just v ->
+                    Just v
+
                 Nothing ->
                     case findVarLocalTvar targetName exprVars b of
-                        Just v -> Just v
-                        Nothing -> firstJustList targetName exprVars rest
+                        Just v ->
+                            Just v
+
+                        Nothing ->
+                            firstJustList targetName exprVars rest
 
         Can.Record fields ->
             firstJustList targetName exprVars (Data.Map.values A.compareLocated fields)
 
         Can.Update recordExpr fieldUpdates ->
             case findVarLocalTvar targetName exprVars recordExpr of
-                Just v -> Just v
+                Just v ->
+                    Just v
+
                 Nothing ->
-                    firstJustList targetName exprVars
+                    firstJustList targetName
+                        exprVars
                         (List.map (\(Can.FieldUpdate _ e) -> e) (Data.Map.values A.compareLocated fieldUpdates))
 
         -- Control flow
@@ -170,16 +208,24 @@ findVarLocalTvar targetName exprVars (A.At _ info) =
             let
                 tryBranch ( cond, branchExpr ) =
                     case findVarLocalTvar targetName exprVars cond of
-                        Just v -> Just v
-                        Nothing -> findVarLocalTvar targetName exprVars branchExpr
+                        Just v ->
+                            Just v
+
+                        Nothing ->
+                            findVarLocalTvar targetName exprVars branchExpr
             in
             case firstJustMap tryBranch branches of
-                Just v -> Just v
-                Nothing -> findVarLocalTvar targetName exprVars final
+                Just v ->
+                    Just v
+
+                Nothing ->
+                    findVarLocalTvar targetName exprVars final
 
         Can.Case scrutinee branches ->
             case findVarLocalTvar targetName exprVars scrutinee of
-                Just v -> Just v
+                Just v ->
+                    Just v
+
                 Nothing ->
                     firstJustMap
                         (\(Can.CaseBranch _ branchExpr) ->
@@ -190,13 +236,19 @@ findVarLocalTvar targetName exprVars (A.At _ info) =
         -- Let expressions (no shadow concern — canonicalization forbids shadowing)
         Can.Let def body ->
             case findVarLocalTvarInDef targetName exprVars def of
-                Just v -> Just v
-                Nothing -> findVarLocalTvar targetName exprVars body
+                Just v ->
+                    Just v
+
+                Nothing ->
+                    findVarLocalTvar targetName exprVars body
 
         Can.LetRec defs body ->
             case firstJustMap (findVarLocalTvarInDef targetName exprVars) defs of
-                Just v -> Just v
-                Nothing -> findVarLocalTvar targetName exprVars body
+                Just v ->
+                    Just v
+
+                Nothing ->
+                    findVarLocalTvar targetName exprVars body
 
         Can.LetDestruct _ boundExpr body ->
             firstJust2 targetName exprVars boundExpr body
@@ -212,34 +264,50 @@ findVarLocalTvarInDef targetName exprVars def =
             findVarLocalTvar targetName exprVars body
 
 
-{-| Helper: return first Just from two expressions -}
+{-| Helper: return first Just from two expressions
+-}
 firstJust2 : Name -> ExprVars -> Can.Expr -> Can.Expr -> Maybe IO.Variable
 firstJust2 targetName exprVars a b =
     case findVarLocalTvar targetName exprVars a of
-        Just v -> Just v
-        Nothing -> findVarLocalTvar targetName exprVars b
+        Just v ->
+            Just v
+
+        Nothing ->
+            findVarLocalTvar targetName exprVars b
 
 
-{-| Helper: return first Just from a list of expressions -}
+{-| Helper: return first Just from a list of expressions
+-}
 firstJustList : Name -> ExprVars -> List Can.Expr -> Maybe IO.Variable
 firstJustList targetName exprVars exprs =
     case exprs of
-        [] -> Nothing
+        [] ->
+            Nothing
+
         e :: rest ->
             case findVarLocalTvar targetName exprVars e of
-                Just v -> Just v
-                Nothing -> firstJustList targetName exprVars rest
+                Just v ->
+                    Just v
+
+                Nothing ->
+                    firstJustList targetName exprVars rest
 
 
-{-| Helper: return first Just from mapping over a list -}
+{-| Helper: return first Just from mapping over a list
+-}
 firstJustMap : (a -> Maybe IO.Variable) -> List a -> Maybe IO.Variable
 firstJustMap f list =
     case list of
-        [] -> Nothing
+        [] ->
+            Nothing
+
         x :: rest ->
             case f x of
-                Just v -> Just v
-                Nothing -> firstJustMap f rest
+                Just v ->
+                    Just v
+
+                Nothing ->
+                    firstJustMap f rest
 
 
 

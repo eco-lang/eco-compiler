@@ -1,11 +1,12 @@
 module SourceIR.KernelIntrinsicCases exposing (expectSuite)
 
-{-| Direct Elm.Kernel.* VarKernel intrinsic tests.
+{-| Direct Elm.Kernel.\* VarKernel intrinsic tests.
 
 Each test calls a single kernel function directly via qualVarExpr "Elm.Kernel.X" "name"
 to exercise specific MLIR intrinsic code generation paths.
 
 Grouped by kernel module: Basics, Utils, Bitwise, JsArray, List, Tuple, String, Bytes.
+
 -}
 
 import Compiler.AST.Source as Src
@@ -282,40 +283,52 @@ jsArrayCases expectFn =
 
 jsArrayUnsafeGet : (Src.Module -> Expectation) -> (() -> Expectation)
 jsArrayUnsafeGet expectFn _ =
-    expectFn (makeKernelModule "testValue"
-        (callExpr (qualVarExpr "Elm.Kernel.JsArray" "unsafeGet")
-            [ intExpr 0
-            , callExpr (qualVarExpr "Elm.Kernel.JsArray" "initializeFromList") [ intExpr 3, listExpr [ intExpr 10, intExpr 20, intExpr 30 ] ]
-            ]))
+    expectFn
+        (makeKernelModule "testValue"
+            (callExpr (qualVarExpr "Elm.Kernel.JsArray" "unsafeGet")
+                [ intExpr 0
+                , callExpr (qualVarExpr "Elm.Kernel.JsArray" "initializeFromList") [ intExpr 3, listExpr [ intExpr 10, intExpr 20, intExpr 30 ] ]
+                ]
+            )
+        )
 
 
 jsArrayMap : (Src.Module -> Expectation) -> (() -> Expectation)
 jsArrayMap expectFn _ =
-    expectFn (makeKernelModule "testValue"
-        (callExpr (qualVarExpr "Elm.Kernel.JsArray" "map")
-            [ lambdaExpr [ pVar "x" ] (callExpr (qualVarExpr "Elm.Kernel.Basics" "add") [ varExpr "x", intExpr 1 ])
-            , qualVarExpr "Elm.Kernel.JsArray" "empty"
-            ]))
+    expectFn
+        (makeKernelModule "testValue"
+            (callExpr (qualVarExpr "Elm.Kernel.JsArray" "map")
+                [ lambdaExpr [ pVar "x" ] (callExpr (qualVarExpr "Elm.Kernel.Basics" "add") [ varExpr "x", intExpr 1 ])
+                , qualVarExpr "Elm.Kernel.JsArray" "empty"
+                ]
+            )
+        )
 
 
 jsArrayFoldl : (Src.Module -> Expectation) -> (() -> Expectation)
 jsArrayFoldl expectFn _ =
-    expectFn (makeKernelModule "testValue"
-        (callExpr (qualVarExpr "Elm.Kernel.JsArray" "foldl")
-            [ lambdaExpr [ pVar "x", pVar "acc" ] (callExpr (qualVarExpr "Elm.Kernel.Basics" "add") [ varExpr "x", varExpr "acc" ])
-            , intExpr 0
-            , qualVarExpr "Elm.Kernel.JsArray" "empty"
-            ]))
+    expectFn
+        (makeKernelModule "testValue"
+            (callExpr (qualVarExpr "Elm.Kernel.JsArray" "foldl")
+                [ lambdaExpr [ pVar "x", pVar "acc" ] (callExpr (qualVarExpr "Elm.Kernel.Basics" "add") [ varExpr "x", varExpr "acc" ])
+                , intExpr 0
+                , qualVarExpr "Elm.Kernel.JsArray" "empty"
+                ]
+            )
+        )
 
 
 jsArrayFoldr : (Src.Module -> Expectation) -> (() -> Expectation)
 jsArrayFoldr expectFn _ =
-    expectFn (makeKernelModule "testValue"
-        (callExpr (qualVarExpr "Elm.Kernel.JsArray" "foldr")
-            [ lambdaExpr [ pVar "x", pVar "acc" ] (callExpr (qualVarExpr "Elm.Kernel.Basics" "add") [ varExpr "x", varExpr "acc" ])
-            , intExpr 0
-            , qualVarExpr "Elm.Kernel.JsArray" "empty"
-            ]))
+    expectFn
+        (makeKernelModule "testValue"
+            (callExpr (qualVarExpr "Elm.Kernel.JsArray" "foldr")
+                [ lambdaExpr [ pVar "x", pVar "acc" ] (callExpr (qualVarExpr "Elm.Kernel.Basics" "add") [ varExpr "x", varExpr "acc" ])
+                , intExpr 0
+                , qualVarExpr "Elm.Kernel.JsArray" "empty"
+                ]
+            )
+        )
 
 
 
@@ -342,38 +355,50 @@ listCases expectFn =
 
 listMapK : (Src.Module -> Expectation) -> (() -> Expectation)
 listMapK expectFn _ =
-    expectFn (makeKernelModule "testValue"
-        (callExpr (qualVarExpr "Elm.Kernel.List" "map")
-            [ lambdaExpr [ pVar "x" ] (callExpr (qualVarExpr "Elm.Kernel.Basics" "add") [ varExpr "x", intExpr 1 ])
-            , listExpr [ intExpr 1, intExpr 2, intExpr 3 ]
-            ]))
+    expectFn
+        (makeKernelModule "testValue"
+            (callExpr (qualVarExpr "Elm.Kernel.List" "map")
+                [ lambdaExpr [ pVar "x" ] (callExpr (qualVarExpr "Elm.Kernel.Basics" "add") [ varExpr "x", intExpr 1 ])
+                , listExpr [ intExpr 1, intExpr 2, intExpr 3 ]
+                ]
+            )
+        )
 
 
 listMap2K : (Src.Module -> Expectation) -> (() -> Expectation)
 listMap2K expectFn _ =
-    expectFn (makeKernelModule "testValue"
-        (callExpr (qualVarExpr "Elm.Kernel.List" "map2")
-            [ lambdaExpr [ pVar "a", pVar "b" ] (callExpr (qualVarExpr "Elm.Kernel.Basics" "add") [ varExpr "a", varExpr "b" ])
-            , listExpr [ intExpr 1, intExpr 2 ]
-            , listExpr [ intExpr 10, intExpr 20 ]
-            ]))
+    expectFn
+        (makeKernelModule "testValue"
+            (callExpr (qualVarExpr "Elm.Kernel.List" "map2")
+                [ lambdaExpr [ pVar "a", pVar "b" ] (callExpr (qualVarExpr "Elm.Kernel.Basics" "add") [ varExpr "a", varExpr "b" ])
+                , listExpr [ intExpr 1, intExpr 2 ]
+                , listExpr [ intExpr 10, intExpr 20 ]
+                ]
+            )
+        )
 
 
 listFoldlK : (Src.Module -> Expectation) -> (() -> Expectation)
 listFoldlK expectFn _ =
-    expectFn (makeKernelModule "testValue"
-        (callExpr (qualVarExpr "Elm.Kernel.List" "foldl")
-            [ qualVarExpr "Elm.Kernel.Basics" "add", intExpr 0, listExpr [ intExpr 1, intExpr 2, intExpr 3 ] ]))
+    expectFn
+        (makeKernelModule "testValue"
+            (callExpr (qualVarExpr "Elm.Kernel.List" "foldl")
+                [ qualVarExpr "Elm.Kernel.Basics" "add", intExpr 0, listExpr [ intExpr 1, intExpr 2, intExpr 3 ] ]
+            )
+        )
 
 
 listFoldrK : (Src.Module -> Expectation) -> (() -> Expectation)
 listFoldrK expectFn _ =
-    expectFn (makeKernelModule "testValue"
-        (callExpr (qualVarExpr "Elm.Kernel.List" "foldr")
-            [ lambdaExpr [ pVar "x", pVar "acc" ] (callExpr (qualVarExpr "Elm.Kernel.Basics" "add") [ varExpr "x", varExpr "acc" ])
-            , intExpr 0
-            , listExpr [ intExpr 1, intExpr 2, intExpr 3 ]
-            ]))
+    expectFn
+        (makeKernelModule "testValue"
+            (callExpr (qualVarExpr "Elm.Kernel.List" "foldr")
+                [ lambdaExpr [ pVar "x", pVar "acc" ] (callExpr (qualVarExpr "Elm.Kernel.Basics" "add") [ varExpr "x", varExpr "acc" ])
+                , intExpr 0
+                , listExpr [ intExpr 1, intExpr 2, intExpr 3 ]
+                ]
+            )
+        )
 
 
 
@@ -394,20 +419,26 @@ tupleCases expectFn =
 
 tupleMapFirstK : (Src.Module -> Expectation) -> (() -> Expectation)
 tupleMapFirstK expectFn _ =
-    expectFn (makeKernelModule "testValue"
-        (callExpr (qualVarExpr "Elm.Kernel.Tuple" "mapFirst")
-            [ lambdaExpr [ pVar "x" ] (callExpr (qualVarExpr "Elm.Kernel.Basics" "add") [ varExpr "x", intExpr 1 ])
-            , tupleExpr (intExpr 5) (strExpr "hi")
-            ]))
+    expectFn
+        (makeKernelModule "testValue"
+            (callExpr (qualVarExpr "Elm.Kernel.Tuple" "mapFirst")
+                [ lambdaExpr [ pVar "x" ] (callExpr (qualVarExpr "Elm.Kernel.Basics" "add") [ varExpr "x", intExpr 1 ])
+                , tupleExpr (intExpr 5) (strExpr "hi")
+                ]
+            )
+        )
 
 
 tupleMapSecondK : (Src.Module -> Expectation) -> (() -> Expectation)
 tupleMapSecondK expectFn _ =
-    expectFn (makeKernelModule "testValue"
-        (callExpr (qualVarExpr "Elm.Kernel.Tuple" "mapSecond")
-            [ lambdaExpr [ pVar "x" ] (callExpr (qualVarExpr "Elm.Kernel.Basics" "add") [ varExpr "x", intExpr 1 ])
-            , tupleExpr (strExpr "hi") (intExpr 5)
-            ]))
+    expectFn
+        (makeKernelModule "testValue"
+            (callExpr (qualVarExpr "Elm.Kernel.Tuple" "mapSecond")
+                [ lambdaExpr [ pVar "x" ] (callExpr (qualVarExpr "Elm.Kernel.Basics" "add") [ varExpr "x", intExpr 1 ])
+                , tupleExpr (strExpr "hi") (intExpr 5)
+                ]
+            )
+        )
 
 
 
@@ -455,6 +486,9 @@ kernelAbiTypeCases expectFn =
 kernelReturningRecord : (Src.Module -> Expectation) -> (() -> Expectation)
 kernelReturningRecord expectFn _ =
     -- identity applied to a record — forces kernel ABI to handle record type
-    expectFn (makeKernelModule "testValue"
-        (callExpr (qualVarExpr "Elm.Kernel.Basics" "identity")
-            [ callExpr (qualVarExpr "Elm.Kernel.Tuple" "pair") [ intExpr 1, strExpr "hi" ] ]))
+    expectFn
+        (makeKernelModule "testValue"
+            (callExpr (qualVarExpr "Elm.Kernel.Basics" "identity")
+                [ callExpr (qualVarExpr "Elm.Kernel.Tuple" "pair") [ intExpr 1, strExpr "hi" ] ]
+            )
+        )

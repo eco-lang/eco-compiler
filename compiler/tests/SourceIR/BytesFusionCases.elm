@@ -7,6 +7,7 @@ the BytesFusion Reify/Emit codegen in MLIR Expr.
 
 Tests both the VarForeign path (via imported Bytes.Encode module functions)
 and the VarKernel path (via Elm.Kernel.Bytes encode/decode).
+
 -}
 
 import Compiler.AST.Source as Src
@@ -67,82 +68,109 @@ encoderCases expectFn =
 
 encodeU8 : (Src.Module -> Expectation) -> (() -> Expectation)
 encodeU8 expectFn _ =
-    expectFn (makeKernelModule "testValue"
-        (callExpr (qualVarExpr "Bytes.Encode" "unsignedInt8") [ intExpr 42 ]))
+    expectFn
+        (makeKernelModule "testValue"
+            (callExpr (qualVarExpr "Bytes.Encode" "unsignedInt8") [ intExpr 42 ])
+        )
 
 
 encodeI8 : (Src.Module -> Expectation) -> (() -> Expectation)
 encodeI8 expectFn _ =
-    expectFn (makeKernelModule "testValue"
-        (callExpr (qualVarExpr "Bytes.Encode" "signedInt8") [ intExpr -1 ]))
+    expectFn
+        (makeKernelModule "testValue"
+            (callExpr (qualVarExpr "Bytes.Encode" "signedInt8") [ intExpr -1 ])
+        )
 
 
 encodeU16BE : (Src.Module -> Expectation) -> (() -> Expectation)
 encodeU16BE expectFn _ =
-    expectFn (makeKernelModule "testValue"
-        (callExpr (qualVarExpr "Bytes.Encode" "unsignedInt16")
-            [ ctorExpr "BE", intExpr 1000 ]))
+    expectFn
+        (makeKernelModule "testValue"
+            (callExpr (qualVarExpr "Bytes.Encode" "unsignedInt16")
+                [ ctorExpr "BE", intExpr 1000 ]
+            )
+        )
 
 
 encodeU32LE : (Src.Module -> Expectation) -> (() -> Expectation)
 encodeU32LE expectFn _ =
-    expectFn (makeKernelModule "testValue"
-        (callExpr (qualVarExpr "Bytes.Encode" "unsignedInt32")
-            [ ctorExpr "LE", intExpr 100000 ]))
+    expectFn
+        (makeKernelModule "testValue"
+            (callExpr (qualVarExpr "Bytes.Encode" "unsignedInt32")
+                [ ctorExpr "LE", intExpr 100000 ]
+            )
+        )
 
 
 encodeF32BE : (Src.Module -> Expectation) -> (() -> Expectation)
 encodeF32BE expectFn _ =
-    expectFn (makeKernelModule "testValue"
-        (callExpr (qualVarExpr "Bytes.Encode" "float32")
-            [ ctorExpr "BE", floatExpr 3.14 ]))
+    expectFn
+        (makeKernelModule "testValue"
+            (callExpr (qualVarExpr "Bytes.Encode" "float32")
+                [ ctorExpr "BE", floatExpr 3.14 ]
+            )
+        )
 
 
 encodeF64LE : (Src.Module -> Expectation) -> (() -> Expectation)
 encodeF64LE expectFn _ =
-    expectFn (makeKernelModule "testValue"
-        (callExpr (qualVarExpr "Bytes.Encode" "float64")
-            [ ctorExpr "LE", floatExpr 2.718281828 ]))
+    expectFn
+        (makeKernelModule "testValue"
+            (callExpr (qualVarExpr "Bytes.Encode" "float64")
+                [ ctorExpr "LE", floatExpr 2.718281828 ]
+            )
+        )
 
 
 encodeString : (Src.Module -> Expectation) -> (() -> Expectation)
 encodeString expectFn _ =
-    expectFn (makeKernelModule "testValue"
-        (callExpr (qualVarExpr "Bytes.Encode" "string") [ strExpr "hello" ]))
+    expectFn
+        (makeKernelModule "testValue"
+            (callExpr (qualVarExpr "Bytes.Encode" "string") [ strExpr "hello" ])
+        )
 
 
 encodeSequence : (Src.Module -> Expectation) -> (() -> Expectation)
 encodeSequence expectFn _ =
-    expectFn (makeKernelModule "testValue"
-        (callExpr (qualVarExpr "Bytes.Encode" "sequence")
-            [ listExpr
-                [ callExpr (qualVarExpr "Bytes.Encode" "unsignedInt8") [ intExpr 1 ]
-                , callExpr (qualVarExpr "Bytes.Encode" "unsignedInt8") [ intExpr 2 ]
-                , callExpr (qualVarExpr "Bytes.Encode" "unsignedInt8") [ intExpr 3 ]
+    expectFn
+        (makeKernelModule "testValue"
+            (callExpr (qualVarExpr "Bytes.Encode" "sequence")
+                [ listExpr
+                    [ callExpr (qualVarExpr "Bytes.Encode" "unsignedInt8") [ intExpr 1 ]
+                    , callExpr (qualVarExpr "Bytes.Encode" "unsignedInt8") [ intExpr 2 ]
+                    , callExpr (qualVarExpr "Bytes.Encode" "unsignedInt8") [ intExpr 3 ]
+                    ]
                 ]
-            ]))
+            )
+        )
 
 
 encodeEncodeU8 : (Src.Module -> Expectation) -> (() -> Expectation)
 encodeEncodeU8 expectFn _ =
-    expectFn (makeKernelModule "testValue"
-        (callExpr (qualVarExpr "Bytes.Encode" "encode")
-            [ callExpr (qualVarExpr "Bytes.Encode" "unsignedInt8") [ intExpr 255 ]
-            ]))
+    expectFn
+        (makeKernelModule "testValue"
+            (callExpr (qualVarExpr "Bytes.Encode" "encode")
+                [ callExpr (qualVarExpr "Bytes.Encode" "unsignedInt8") [ intExpr 255 ]
+                ]
+            )
+        )
 
 
 encodeEncodeSequence : (Src.Module -> Expectation) -> (() -> Expectation)
 encodeEncodeSequence expectFn _ =
-    expectFn (makeKernelModule "testValue"
-        (callExpr (qualVarExpr "Bytes.Encode" "encode")
-            [ callExpr (qualVarExpr "Bytes.Encode" "sequence")
-                [ listExpr
-                    [ callExpr (qualVarExpr "Bytes.Encode" "unsignedInt8") [ intExpr 0 ]
-                    , callExpr (qualVarExpr "Bytes.Encode" "unsignedInt16") [ ctorExpr "BE", intExpr 256 ]
-                    , callExpr (qualVarExpr "Bytes.Encode" "float64") [ ctorExpr "LE", floatExpr 1.0 ]
+    expectFn
+        (makeKernelModule "testValue"
+            (callExpr (qualVarExpr "Bytes.Encode" "encode")
+                [ callExpr (qualVarExpr "Bytes.Encode" "sequence")
+                    [ listExpr
+                        [ callExpr (qualVarExpr "Bytes.Encode" "unsignedInt8") [ intExpr 0 ]
+                        , callExpr (qualVarExpr "Bytes.Encode" "unsignedInt16") [ ctorExpr "BE", intExpr 256 ]
+                        , callExpr (qualVarExpr "Bytes.Encode" "float64") [ ctorExpr "LE", floatExpr 1.0 ]
+                        ]
                     ]
                 ]
-            ]))
+            )
+        )
 
 
 
@@ -179,66 +207,87 @@ decodeI8 expectFn _ =
 
 decodeU16BE : (Src.Module -> Expectation) -> (() -> Expectation)
 decodeU16BE expectFn _ =
-    expectFn (makeKernelModule "testValue"
-        (callExpr (qualVarExpr "Bytes.Decode" "unsignedInt16") [ ctorExpr "BE" ]))
+    expectFn
+        (makeKernelModule "testValue"
+            (callExpr (qualVarExpr "Bytes.Decode" "unsignedInt16") [ ctorExpr "BE" ])
+        )
 
 
 decodeU32LE : (Src.Module -> Expectation) -> (() -> Expectation)
 decodeU32LE expectFn _ =
-    expectFn (makeKernelModule "testValue"
-        (callExpr (qualVarExpr "Bytes.Decode" "unsignedInt32") [ ctorExpr "LE" ]))
+    expectFn
+        (makeKernelModule "testValue"
+            (callExpr (qualVarExpr "Bytes.Decode" "unsignedInt32") [ ctorExpr "LE" ])
+        )
 
 
 decodeF32BE : (Src.Module -> Expectation) -> (() -> Expectation)
 decodeF32BE expectFn _ =
-    expectFn (makeKernelModule "testValue"
-        (callExpr (qualVarExpr "Bytes.Decode" "float32") [ ctorExpr "BE" ]))
+    expectFn
+        (makeKernelModule "testValue"
+            (callExpr (qualVarExpr "Bytes.Decode" "float32") [ ctorExpr "BE" ])
+        )
 
 
 decodeF64LE : (Src.Module -> Expectation) -> (() -> Expectation)
 decodeF64LE expectFn _ =
-    expectFn (makeKernelModule "testValue"
-        (callExpr (qualVarExpr "Bytes.Decode" "float64") [ ctorExpr "LE" ]))
+    expectFn
+        (makeKernelModule "testValue"
+            (callExpr (qualVarExpr "Bytes.Decode" "float64") [ ctorExpr "LE" ])
+        )
 
 
 decodeString : (Src.Module -> Expectation) -> (() -> Expectation)
 decodeString expectFn _ =
-    expectFn (makeKernelModule "testValue"
-        (callExpr (qualVarExpr "Bytes.Decode" "string") [ intExpr 5 ]))
+    expectFn
+        (makeKernelModule "testValue"
+            (callExpr (qualVarExpr "Bytes.Decode" "string") [ intExpr 5 ])
+        )
 
 
 decodeSucceed : (Src.Module -> Expectation) -> (() -> Expectation)
 decodeSucceed expectFn _ =
-    expectFn (makeKernelModule "testValue"
-        (callExpr (qualVarExpr "Bytes.Decode" "succeed") [ intExpr 42 ]))
+    expectFn
+        (makeKernelModule "testValue"
+            (callExpr (qualVarExpr "Bytes.Decode" "succeed") [ intExpr 42 ])
+        )
 
 
 decodeMap : (Src.Module -> Expectation) -> (() -> Expectation)
 decodeMap expectFn _ =
-    expectFn (makeKernelModule "testValue"
-        (callExpr (qualVarExpr "Bytes.Decode" "map")
-            [ lambdaExpr [ pVar "x" ] (varExpr "x")
-            , qualVarExpr "Bytes.Decode" "unsignedInt8"
-            ]))
+    expectFn
+        (makeKernelModule "testValue"
+            (callExpr (qualVarExpr "Bytes.Decode" "map")
+                [ lambdaExpr [ pVar "x" ] (varExpr "x")
+                , qualVarExpr "Bytes.Decode" "unsignedInt8"
+                ]
+            )
+        )
 
 
 decodeMap2 : (Src.Module -> Expectation) -> (() -> Expectation)
 decodeMap2 expectFn _ =
-    expectFn (makeKernelModule "testValue"
-        (callExpr (qualVarExpr "Bytes.Decode" "map2")
-            [ lambdaExpr [ pVar "a", pVar "b" ] (varExpr "a")
-            , qualVarExpr "Bytes.Decode" "unsignedInt8"
-            , qualVarExpr "Bytes.Decode" "unsignedInt8"
-            ]))
+    expectFn
+        (makeKernelModule "testValue"
+            (callExpr (qualVarExpr "Bytes.Decode" "map2")
+                [ lambdaExpr [ pVar "a", pVar "b" ] (varExpr "a")
+                , qualVarExpr "Bytes.Decode" "unsignedInt8"
+                , qualVarExpr "Bytes.Decode" "unsignedInt8"
+                ]
+            )
+        )
 
 
 decodeAndThen : (Src.Module -> Expectation) -> (() -> Expectation)
 decodeAndThen expectFn _ =
-    expectFn (makeKernelModule "testValue"
-        (callExpr (qualVarExpr "Bytes.Decode" "andThen")
-            [ lambdaExpr [ pVar "n" ] (callExpr (qualVarExpr "Bytes.Decode" "succeed") [ varExpr "n" ])
-            , qualVarExpr "Bytes.Decode" "unsignedInt8"
-            ]))
+    expectFn
+        (makeKernelModule "testValue"
+            (callExpr (qualVarExpr "Bytes.Decode" "andThen")
+                [ lambdaExpr [ pVar "n" ] (callExpr (qualVarExpr "Bytes.Decode" "succeed") [ varExpr "n" ])
+                , qualVarExpr "Bytes.Decode" "unsignedInt8"
+                ]
+            )
+        )
 
 
 
@@ -257,30 +306,39 @@ kernelBytesCases expectFn =
 
 kernelBytesEncodeU8 : (Src.Module -> Expectation) -> (() -> Expectation)
 kernelBytesEncodeU8 expectFn _ =
-    expectFn (makeKernelModule "testValue"
-        (callExpr (qualVarExpr "Elm.Kernel.Bytes" "encode")
-            [ callExpr (qualVarExpr "Bytes.Encode" "unsignedInt8") [ intExpr 42 ]
-            ]))
+    expectFn
+        (makeKernelModule "testValue"
+            (callExpr (qualVarExpr "Elm.Kernel.Bytes" "encode")
+                [ callExpr (qualVarExpr "Bytes.Encode" "unsignedInt8") [ intExpr 42 ]
+                ]
+            )
+        )
 
 
 kernelBytesEncodeSeq : (Src.Module -> Expectation) -> (() -> Expectation)
 kernelBytesEncodeSeq expectFn _ =
-    expectFn (makeKernelModule "testValue"
-        (callExpr (qualVarExpr "Elm.Kernel.Bytes" "encode")
-            [ callExpr (qualVarExpr "Bytes.Encode" "sequence")
-                [ listExpr
-                    [ callExpr (qualVarExpr "Bytes.Encode" "unsignedInt8") [ intExpr 1 ]
-                    , callExpr (qualVarExpr "Bytes.Encode" "unsignedInt8") [ intExpr 2 ]
+    expectFn
+        (makeKernelModule "testValue"
+            (callExpr (qualVarExpr "Elm.Kernel.Bytes" "encode")
+                [ callExpr (qualVarExpr "Bytes.Encode" "sequence")
+                    [ listExpr
+                        [ callExpr (qualVarExpr "Bytes.Encode" "unsignedInt8") [ intExpr 1 ]
+                        , callExpr (qualVarExpr "Bytes.Encode" "unsignedInt8") [ intExpr 2 ]
+                        ]
                     ]
                 ]
-            ]))
+            )
+        )
 
 
 kernelBytesDecodeU8 : (Src.Module -> Expectation) -> (() -> Expectation)
 kernelBytesDecodeU8 expectFn _ =
-    expectFn (makeKernelModule "testValue"
-        (callExpr (qualVarExpr "Elm.Kernel.Bytes" "decode")
-            [ qualVarExpr "Bytes.Decode" "unsignedInt8"
-            , callExpr (qualVarExpr "Elm.Kernel.Bytes" "encode")
-                [ callExpr (qualVarExpr "Bytes.Encode" "unsignedInt8") [ intExpr 99 ] ]
-            ]))
+    expectFn
+        (makeKernelModule "testValue"
+            (callExpr (qualVarExpr "Elm.Kernel.Bytes" "decode")
+                [ qualVarExpr "Bytes.Decode" "unsignedInt8"
+                , callExpr (qualVarExpr "Elm.Kernel.Bytes" "encode")
+                    [ callExpr (qualVarExpr "Bytes.Encode" "unsignedInt8") [ intExpr 99 ] ]
+                ]
+            )
+        )

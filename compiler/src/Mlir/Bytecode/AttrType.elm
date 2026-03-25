@@ -115,7 +115,9 @@ attrToKey attr =
                 "s:" ++ s
 
         BoolAttr b ->
-            "i:" ++ typeToKey I1 ++ ":"
+            "i:"
+                ++ typeToKey I1
+                ++ ":"
                 ++ (if b then
                         "1"
 
@@ -751,7 +753,8 @@ encodeDataAndOffsets st dialectRegistry ((AttrTypeTable tbl) as table) =
                                             |> List.map
                                                 (\e ->
                                                     encodeVarInt
-                                                        (e.size * 2
+                                                        (e.size
+                                                            * 2
                                                             + (if e.hasCustom then
                                                                 1
 

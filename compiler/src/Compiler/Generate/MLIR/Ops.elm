@@ -7,8 +7,7 @@ module Compiler.Generate.MLIR.Ops exposing
     , ecoArrayGet, ecoArraySet, ecoArrayLength
     , arithConstantInt, arithConstantInt32, arithConstantFloat, arithConstantBool, arithConstantChar, arithCmpI
     , scfWhile, scfCondition
-    , ecoCaseMany, ecoCaseStringMany
-    , ecoYieldMany, scfYieldMany
+    , ecoCaseMany, ecoCaseStringMany, ecoYieldMany, scfYieldMany
     )
 
 {-| MLIR operation builders.

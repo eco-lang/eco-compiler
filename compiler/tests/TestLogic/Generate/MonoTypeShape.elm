@@ -252,4 +252,3 @@ checkMonoType context monoType =
                 Mono.CNumber ->
                     -- CNumber should be resolved to MInt or MFloat after monomorphization
                     [ context ++ ": Found unresolved numeric type variable '" ++ name ++ "' with CNumber constraint" ]
-

@@ -253,7 +253,6 @@ processType typeIds ( typeId, monoType ) accum =
             addPolymorphicType typeId constraint accum
 
 
-
 {-| Add a primitive type descriptor.
 -}
 addPrimitiveType : Int -> PrimKind -> TypeTableAccum -> TypeTableAccum

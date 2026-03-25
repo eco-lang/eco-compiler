@@ -28,25 +28,29 @@ testCases expectFn =
 
 intComparisons : (Src.Module -> Expectation) -> (() -> Expectation)
 intComparisons expectFn _ =
-    expectFn (makeKernelModule "testValue"
-        (letExpr
-            [ define "lt" [] (binopsExpr [ ( intExpr 1, "<" ) ] (intExpr 2))
-            , define "gt" [] (binopsExpr [ ( intExpr 2, ">" ) ] (intExpr 1))
-            , define "le" [] (binopsExpr [ ( intExpr 1, "<=" ) ] (intExpr 1))
-            , define "ge" [] (binopsExpr [ ( intExpr 1, ">=" ) ] (intExpr 1))
-            , define "eq" [] (binopsExpr [ ( intExpr 1, "==" ) ] (intExpr 1))
-            , define "ne" [] (binopsExpr [ ( intExpr 1, "/=" ) ] (intExpr 2))
-            ]
-            (varExpr "lt")
-        ))
+    expectFn
+        (makeKernelModule "testValue"
+            (letExpr
+                [ define "lt" [] (binopsExpr [ ( intExpr 1, "<" ) ] (intExpr 2))
+                , define "gt" [] (binopsExpr [ ( intExpr 2, ">" ) ] (intExpr 1))
+                , define "le" [] (binopsExpr [ ( intExpr 1, "<=" ) ] (intExpr 1))
+                , define "ge" [] (binopsExpr [ ( intExpr 1, ">=" ) ] (intExpr 1))
+                , define "eq" [] (binopsExpr [ ( intExpr 1, "==" ) ] (intExpr 1))
+                , define "ne" [] (binopsExpr [ ( intExpr 1, "/=" ) ] (intExpr 2))
+                ]
+                (varExpr "lt")
+            )
+        )
 
 
 boolLogicalOps : (Src.Module -> Expectation) -> (() -> Expectation)
 boolLogicalOps expectFn _ =
-    expectFn (makeKernelModule "testValue"
-        (letExpr
-            [ define "a" [] (binopsExpr [ ( boolExpr True, "&&" ) ] (boolExpr False))
-            , define "b" [] (binopsExpr [ ( boolExpr True, "||" ) ] (boolExpr False))
-            ]
-            (varExpr "a")
-        ))
+    expectFn
+        (makeKernelModule "testValue"
+            (letExpr
+                [ define "a" [] (binopsExpr [ ( boolExpr True, "&&" ) ] (boolExpr False))
+                , define "b" [] (binopsExpr [ ( boolExpr True, "||" ) ] (boolExpr False))
+                ]
+                (varExpr "a")
+            )
+        )

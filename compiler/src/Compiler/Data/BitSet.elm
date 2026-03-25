@@ -1,14 +1,4 @@
-module Compiler.Data.BitSet exposing
-    ( BitSet
-    , empty
-    , emptyWithSize
-    , fromSize
-    , insert
-    , insertGrowing
-    , member
-    , removeGrowing
-    , setWord
-    )
+module Compiler.Data.BitSet exposing (BitSet, empty, emptyWithSize, fromSize, insert, insertGrowing, member, removeGrowing, setWord)
 
 {-| A compact bit set backed by an Array of 32-bit words.
 

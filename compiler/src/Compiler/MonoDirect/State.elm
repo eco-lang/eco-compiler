@@ -1,17 +1,8 @@
 module Compiler.MonoDirect.State exposing
-    ( MonoDirectState
-    , WorkItem(..)
-    , VarEnv(..)
+    ( MonoDirectState, WorkItem(..)
     , initState
-    , emptyVarEnv
-    , insertVar
-    , lookupVar
-    , pushFrame
-    , popFrame
-    , LocalMultiState
-    , LocalInstanceInfo
-    , isLocalMultiTarget
-    , getOrCreateLocalInstance
+    , VarEnv(..), emptyVarEnv, insertVar, lookupVar, pushFrame, popFrame
+    , LocalMultiState, LocalInstanceInfo, isLocalMultiTarget, getOrCreateLocalInstance
     )
 
 {-| State for solver-directed monomorphization.
@@ -44,10 +35,10 @@ import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.TypeEnv as TypeEnv
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.BitSet as BitSet exposing (BitSet)
-import Data.Map as DataMap
 import Compiler.Data.Name exposing (Name)
 import Compiler.Monomorphize.Registry as Registry
 import Compiler.Type.SolverSnapshot as SolverSnapshot exposing (SolverSnapshot)
+import Data.Map as DataMap
 import Dict exposing (Dict)
 import System.TypeCheck.IO as IO
 
@@ -213,8 +204,7 @@ isLocalMultiTarget name state =
 {-| Get or create a local instance for the given def name and mono type.
 Returns the fresh name to use at the call site.
 -}
-getOrCreateLocalInstance :
-    Name -> Mono.MonoType -> Dict String Mono.MonoType -> MonoDirectState -> ( Name, MonoDirectState )
+getOrCreateLocalInstance : Name -> Mono.MonoType -> Dict String Mono.MonoType -> MonoDirectState -> ( Name, MonoDirectState )
 getOrCreateLocalInstance defName funcMonoType callSubst state =
     let
         key =
@@ -227,7 +217,11 @@ getOrCreateLocalInstance defName funcMonoType callSubst state =
 
 
 updateLocalMultiStack :
-    Name -> String -> Mono.MonoType -> Dict String Mono.MonoType -> List LocalMultiState
+    Name
+    -> String
+    -> Mono.MonoType
+    -> Dict String Mono.MonoType
+    -> List LocalMultiState
     -> ( List LocalMultiState, Name )
 updateLocalMultiStack defName key funcMonoType callSubst stack =
     case stack of
