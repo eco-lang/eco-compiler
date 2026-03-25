@@ -1,7 +1,5 @@
 module Eco.Process exposing
-    ( ExitCode(..)
-    , ProcessHandle(..)
-    , StdStream(..)
+    ( ExitCode(..), ProcessHandle(..), StdStream(..)
     , exit, spawn, spawnProcess, wait
     )
 

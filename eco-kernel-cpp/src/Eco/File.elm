@@ -1,11 +1,10 @@
 module Eco.File exposing
     ( readString, writeString, readBytes, writeBytes
-    , Handle(..), IOMode(..), open, close, size, hWriteString
+    , Handle(..), IOMode(..), open, close, size
     , lock, unlock
-    , fileExists, dirExists
-    , findExecutable, list, modificationTime
-    , getCwd, setCwd, canonicalize, appDataDir
-    , createDir, removeFile, removeDir
+    , fileExists, dirExists, findExecutable, list, modificationTime
+    , getCwd, setCwd, canonicalize, appDataDir, createDir, removeFile, removeDir
+    , hWriteString
     )
 
 {-| File system operations: file I/O, handles, locks, and directories.

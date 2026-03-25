@@ -1,6 +1,4 @@
-module Eco.Env exposing
-    ( lookup, rawArgs
-    )
+module Eco.Env exposing (lookup, rawArgs)
 
 {-| Environment operations: look up env vars and CLI args.
 

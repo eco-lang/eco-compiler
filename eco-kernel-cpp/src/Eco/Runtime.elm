@@ -1,6 +1,4 @@
-module Eco.Runtime exposing
-    ( dirname, random, saveState, loadState
-    )
+module Eco.Runtime exposing (dirname, random, saveState, loadState)
 
 {-| Runtime-specific operations: script directory, random numbers, REPL state.
 
