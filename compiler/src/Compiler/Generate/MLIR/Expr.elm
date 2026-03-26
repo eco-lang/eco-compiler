@@ -3933,40 +3933,88 @@ generateChainForBoolADTWithJumps ctx path success failure jumpLookup resultTy =
 
 
 {-| General chain case with jump inlining.
+For multi-test chains, we use short-circuit evaluation: the first test guards
+the remaining tests. This prevents unsafe operations (e.g. eco.project.list_head
+on Nil) from executing before the prerequisite guard (e.g. IsCons) has passed.
 -}
 generateChainGeneralWithJumps : Ctx.Context -> List ( Mono.MonoDtPath, DT.Test ) -> Mono.Decider Mono.MonoChoice -> Mono.Decider Mono.MonoChoice -> Array (Maybe Mono.MonoExpr) -> MlirType -> ExprResult
 generateChainGeneralWithJumps ctx testChain success failure jumpLookup resultTy =
-    let
-        ( condOps, condVar, ctx1 ) =
-            Patterns.generateMonoChainCondition ctx testChain
+    case testChain of
+        [] ->
+            -- No tests: go directly to success
+            generateDeciderWithJumps ctx success jumpLookup resultTy
 
-        thenRes =
-            generateDeciderWithJumps ctx1 success jumpLookup resultTy
+        [ singleTest ] ->
+            -- Single test: no short-circuit needed, emit flat
+            let
+                ( condOps, condVar, ctx1 ) =
+                    Patterns.generateMonoTest ctx singleTest
 
-        ( thenRegion, ctx1a ) =
-            mkCaseRegionFromDecider thenRes resultTy
+                thenRes =
+                    generateDeciderWithJumps ctx1 success jumpLookup resultTy
 
-        ctxForElse =
-            Ctx.ctxForSiblingRegion ctx1 ctx1a
+                ( thenRegion, ctx1a ) =
+                    mkCaseRegionFromDecider thenRes resultTy
 
-        elseRes =
-            generateDeciderWithJumps ctxForElse failure jumpLookup resultTy
+                ctxForElse =
+                    Ctx.ctxForSiblingRegion ctx1 ctx1a
 
-        ( elseRegion, ctx1b ) =
-            mkCaseRegionFromDecider elseRes resultTy
+                elseRes =
+                    generateDeciderWithJumps ctxForElse failure jumpLookup resultTy
 
-        ( caseResultVar, ctxWithResult ) =
-            Ctx.freshVar ctx1b
+                ( elseRegion, ctx1b ) =
+                    mkCaseRegionFromDecider elseRes resultTy
 
-        ( ctx2, caseOp ) =
-            Ops.ecoCase ctxWithResult caseResultVar condVar I1 "bool" [ 1, 0 ] [ thenRegion, elseRegion ] resultTy
-    in
-    { ops = condOps ++ [ caseOp ]
-    , resultVar = caseResultVar
-    , resultType = resultTy
-    , ctx = ctx2
-    , isTerminated = False
-    }
+                ( caseResultVar, ctxWithResult ) =
+                    Ctx.freshVar ctx1b
+
+                ( ctx2, caseOp ) =
+                    Ops.ecoCase ctxWithResult caseResultVar condVar I1 "bool" [ 1, 0 ] [ thenRegion, elseRegion ] resultTy
+            in
+            { ops = condOps ++ [ caseOp ]
+            , resultVar = caseResultVar
+            , resultType = resultTy
+            , ctx = ctx2
+            , isTerminated = False
+            }
+
+        firstTest :: restTests ->
+            -- Multi-test chain: short-circuit by nesting remaining tests
+            -- inside the first test's "then" branch. This ensures path
+            -- navigations in later tests only execute after earlier guards pass.
+            let
+                ( firstOps, firstVar, ctx1 ) =
+                    Patterns.generateMonoTest ctx firstTest
+
+                -- "then" branch: evaluate remaining tests (recurse)
+                thenRes =
+                    generateChainGeneralWithJumps ctx1 restTests success failure jumpLookup resultTy
+
+                ( thenRegion, ctx1a ) =
+                    mkCaseRegionFromDecider thenRes resultTy
+
+                ctxForElse =
+                    Ctx.ctxForSiblingRegion ctx1 ctx1a
+
+                -- "else" branch: first test failed, go to failure
+                elseRes =
+                    generateDeciderWithJumps ctxForElse failure jumpLookup resultTy
+
+                ( elseRegion, ctx1b ) =
+                    mkCaseRegionFromDecider elseRes resultTy
+
+                ( caseResultVar, ctxWithResult ) =
+                    Ctx.freshVar ctx1b
+
+                ( ctx2, caseOp ) =
+                    Ops.ecoCase ctxWithResult caseResultVar firstVar I1 "bool" [ 1, 0 ] [ thenRegion, elseRegion ] resultTy
+            in
+            { ops = firstOps ++ [ caseOp ]
+            , resultVar = caseResultVar
+            , resultType = resultTy
+            , ctx = ctx2
+            , isTerminated = False
+            }
 
 
 {-| Check if FanOut is a Bool pattern match (has IsBool True or IsBool False tests).

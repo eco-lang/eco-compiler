@@ -211,7 +211,8 @@ struct EcoToLLVMPass : public PassWrapper<EcoToLLVMPass, OperationPass<ModuleOp>
         target.addDynamicallyLegalOp<CaseOp>([](CaseOp op) {
             // If nested under SCF, treat as temporarily legal (don't convert yet)
             if (op->getParentOfType<scf::IfOp>() ||
-                op->getParentOfType<scf::IndexSwitchOp>()) {
+                op->getParentOfType<scf::IndexSwitchOp>() ||
+                op->getParentOfType<scf::WhileOp>()) {
                 return true;
             }
             // Otherwise, require conversion (illegal)
@@ -225,7 +226,8 @@ struct EcoToLLVMPass : public PassWrapper<EcoToLLVMPass, OperationPass<ModuleOp>
             // Check if we're inside a CaseOp that's inside SCF
             if (auto caseOp = op->getParentOfType<CaseOp>()) {
                 if (caseOp->getParentOfType<scf::IfOp>() ||
-                    caseOp->getParentOfType<scf::IndexSwitchOp>()) {
+                    caseOp->getParentOfType<scf::IndexSwitchOp>() ||
+                    caseOp->getParentOfType<scf::WhileOp>()) {
                     return true;  // Legal for now
                 }
             }

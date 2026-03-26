@@ -54,6 +54,16 @@ cmake --build build --target ecor
 
 ### Running Tests
 
+Run the tests ONCE, redirecting stdout and stderr to a temporary file:
+
+```
+<test command> 2>&1 | tee /tmp/test_output.txt
+```
+
+**MANDATORY:** Do NOT run the tests more than once. Use `grep`, `head`, `tail` on
+`/tmp/test_output.txt` to extract failure information. If you need to see different
+parts of the output, read the file — do NOT re-run the tests.
+
 Compiler front-end tests with elm-test-rs:
 
 ```bash
