@@ -13,6 +13,7 @@ class ExecutionEngine;
 } // namespace mlir
 
 namespace eco {
+class EcoJIT;
 
 //===----------------------------------------------------------------------===//
 // Symbol Registration
@@ -29,6 +30,9 @@ namespace eco {
 ///   - Arithmetic helpers (eco_int_pow)
 ///   - Elm kernel function symbols
 void registerRuntimeSymbols(mlir::ExecutionEngine &engine);
+
+/// Overload for EcoJIT engine (same symbols, different engine type).
+void registerRuntimeSymbols(eco::EcoJIT &engine);
 
 } // namespace eco
 

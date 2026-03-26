@@ -9,6 +9,7 @@ add_executable(ecor
         runtime/src/allocator/Allocator.cpp
         runtime/src/allocator/ThreadLocalHeap.cpp
         runtime/src/allocator/GCStats.cpp
+        runtime/src/allocator/StackMap.cpp
         test/allocator/HeapGenerators.hpp
 )
 

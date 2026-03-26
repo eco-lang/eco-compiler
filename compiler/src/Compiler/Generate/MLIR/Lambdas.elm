@@ -164,9 +164,15 @@ generateLambdaFunc ctx lambda =
         varMappingsWithSiblings =
             Dict.union varMappingsWithArgs filteredSiblingMappings
 
+        -- SSA vars valid in this function: captures + params (NOT sibling mappings)
+        lambdaSsaVars : List String
+        lambdaSsaVars =
+            List.map Tuple.first allArgPairs
+
         ctxWithArgs : Ctx.Context
         ctxWithArgs =
             { ctx | varMappings = varMappingsWithSiblings, nextVar = nextVarBase }
+                |> Ctx.resetDefinedSsaVars lambdaSsaVars
 
         -- Actual return type from the lambda (typed ABI)
         actualResultType : MlirType

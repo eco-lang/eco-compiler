@@ -198,6 +198,8 @@ add_mlir_library(EcoPasses
     Passes/EcoToLLVMGlobals.cpp
     Passes/EcoToLLVMErrorDebug.cpp
     Passes/EcoToLLVMFunc.cpp
+    # Post-MLIR LLVM IR passes
+    Passes/StatepointConversion.cpp
     # BF (ByteFusion) dialect lowering
     Passes/BFToLLVM.cpp
 
@@ -268,6 +270,8 @@ add_llvm_executable(ecoc
     ecoc.cpp
     EcoPipeline.cpp
     RuntimeSymbols.cpp
+    ../jit/EcoJIT.cpp
+    ../allocator/StackMap.cpp
     ../allocator/RuntimeExports.cpp
     ../allocator/Allocator.cpp
     ../allocator/NurserySpace.cpp
@@ -287,6 +291,7 @@ add_llvm_executable(ecoc
 target_include_directories(ecoc PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/..
+    ${CMAKE_CURRENT_SOURCE_DIR}/../jit
     ${CMAKE_CURRENT_BINARY_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/../../../elm-kernel-cpp/src
 )
@@ -341,6 +346,8 @@ add_mlir_library(EcoRunner
     EcoRunner.cpp
     EcoPipeline.cpp
     RuntimeSymbols.cpp
+    ../jit/EcoJIT.cpp
+    ../allocator/StackMap.cpp
     ../allocator/RuntimeExports.cpp
     ../allocator/Allocator.cpp
     ../allocator/NurserySpace.cpp
@@ -397,6 +404,7 @@ add_mlir_library(EcoRunner
 
 target_include_directories(obj.EcoRunner PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../../../elm-kernel-cpp/src
+    ${CMAKE_CURRENT_SOURCE_DIR}/../jit
     ${CMAKE_CURRENT_SOURCE_DIR}/BF
 )
 
@@ -416,6 +424,7 @@ add_library(EcoRuntimeStatic STATIC
     ../allocator/RootSet.cpp
     ../allocator/ThreadLocalHeap.cpp
     ../allocator/GCStats.cpp
+    ../allocator/StackMap.cpp
     ../allocator/StringOps.cpp
     ../allocator/ListOps.cpp
     ../allocator/BytesOps.cpp

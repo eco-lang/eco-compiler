@@ -7,6 +7,7 @@
 
 #include "ThreadLocalHeap.hpp"
 #include "Allocator.hpp"
+#include "StackMap.hpp"
 #include <cassert>
 #include <cstring>
 
@@ -121,6 +122,7 @@ void* ThreadLocalHeap::allocatePermanent(size_t size, Tag tag) {
 }
 
 void ThreadLocalHeap::minorGC() {
+    collectStackRootsFromStackMap();
     nursery_.minorGC(old_gen_);
 }
 
@@ -128,6 +130,8 @@ void ThreadLocalHeap::majorGC() {
 #if ENABLE_GC_STATS
     auto gc_start = GC_STATS_TIMER_START();
 #endif
+
+    collectStackRootsFromStackMap();
 
     // Collect all roots from this thread.
     std::unordered_set<HPointer*> roots = collectRoots();
@@ -168,6 +172,69 @@ std::unordered_set<HPointer*> ThreadLocalHeap::collectRoots() {
     all_roots.insert(stack_roots.begin(), stack_roots.end());
 
     return all_roots;
+}
+
+void ThreadLocalHeap::collectStackRootsFromStackMap() {
+    auto& stackMap = globalStackMap();
+    if (!stackMap.hasRecords())
+        return;
+
+    RootSet& roots = nursery_.getRootSet();
+    // Clear previous stack roots from stack map walking
+    roots.restoreStackRootPoint(0);
+
+    // Walk the call stack using frame pointer chaining (x86-64).
+    // Each frame: [saved_rbp | return_address | ... locals ...]
+    //             ^rbp points here
+    //
+    // DWARF register 6 = RBP, register 7 = RSP on x86-64.
+
+#if defined(__x86_64__) || defined(_M_X64)
+    // Get current frame pointer
+    void* rbp;
+    __asm__ volatile ("mov %%rbp, %0" : "=r"(rbp));
+
+    // Walk up the stack frames
+    for (int depth = 0; depth < 256 && rbp != nullptr; depth++) {
+        // Return address is at rbp + 8
+        uint64_t* rbpPtr = reinterpret_cast<uint64_t*>(rbp);
+        uint64_t returnAddr = rbpPtr[1];
+
+        // Look up this return address in the stack map
+        const StackMapRecord* record = stackMap.findRecord(returnAddr);
+        if (record) {
+            // For each location in this record, extract the GC root
+            for (const auto& loc : record->locations) {
+                if (loc.kind == StackMapLocation::Indirect) {
+                    // Indirect: value at *(register + offset)
+                    // DWARF reg 6 = RBP on x86-64
+                    if (loc.dwarfRegNum == 6) {
+                        auto* slotAddr = reinterpret_cast<HPointer*>(
+                            reinterpret_cast<char*>(rbp) + loc.offset);
+                        roots.pushStackRoot(slotAddr);
+                    }
+                    // DWARF reg 7 = RSP — less common but possible
+                    // For now we only handle RBP-relative locations
+                }
+                // Direct and Register locations are less common for
+                // stack-spilled GC roots; we handle Indirect which is
+                // the typical case for stack slots.
+            }
+        }
+
+        // Follow the frame pointer chain
+        void* nextRbp = reinterpret_cast<void*>(rbpPtr[0]);
+
+        // Sanity check: frame pointer should move up the stack
+        if (nextRbp <= rbp)
+            break;
+
+        rbp = nextRbp;
+    }
+#endif
+    // On non-x86-64 platforms, stack root collection from stack maps
+    // is not yet implemented. The GC still works via explicit roots
+    // (globals, platform state).
 }
 
 } // namespace Elm

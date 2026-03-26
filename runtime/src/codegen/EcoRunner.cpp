@@ -44,6 +44,9 @@
 #include "Passes.h"
 #include "EcoPipeline.h"
 #include "RuntimeSymbols.h"
+#include "Passes/StatepointConversion.h"
+#include "EcoJIT.h"
+#include "../allocator/StackMap.hpp"
 
 #include "../allocator/RuntimeExports.h"
 #include "KernelExports.h"
@@ -173,13 +176,17 @@ private:
         registerBuiltinDialectTranslation(*module->getContext());
         registerLLVMDialectTranslation(*module->getContext());
 
-        // Set up execution engine
-        ExecutionEngineOptions engineOptions;
-        engineOptions.transformer = options.enableOpt
+        // Set up EcoJIT with statepoint conversion + optional optimization.
+        eco::EcoJITOptions jitOptions;
+        auto baseTransformer = options.enableOpt
             ? makeOptimizingTransformer(3, 0, nullptr)
             : makeOptimizingTransformer(0, 0, nullptr);
+        jitOptions.transformer = [baseTransformer](llvm::Module *m) -> llvm::Error {
+            eco::convertSafepointMarkers(*m);
+            return baseTransformer(m);
+        };
 
-        auto maybeEngine = ExecutionEngine::create(module, engineOptions);
+        auto maybeEngine = eco::EcoJIT::create(module, jitOptions);
         if (!maybeEngine) {
             result.errorMessage = "Failed to create execution engine: " +
                                   llvm::toString(maybeEngine.takeError());
@@ -206,6 +213,19 @@ private:
 
         // Register effect managers
         eco_register_all_effect_managers();
+
+        // Parse stack maps from JIT'd code for GC root discovery.
+        {
+            auto mainLookup = engine->lookup("main");
+            if (mainLookup) {
+                const auto& smData = engine->getStackMapData();
+                if (!smData.empty()) {
+                    Elm::globalStackMap().parse(smData.data(), smData.size());
+                }
+            } else {
+                llvm::consumeError(mainLookup.takeError());
+            }
+        }
 
         // Start output capture if requested
         if (options.captureOutput) {

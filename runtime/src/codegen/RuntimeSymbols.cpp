@@ -8,6 +8,7 @@
 #include "RuntimeSymbols.h"
 
 #include "mlir/ExecutionEngine/ExecutionEngine.h"
+#include "EcoJIT.h"
 
 #include "llvm/ExecutionEngine/Orc/Mangling.h"
 
@@ -24,9 +25,10 @@ using namespace mlir;
 
 namespace eco {
 
-void registerRuntimeSymbols(ExecutionEngine &engine) {
-    engine.registerSymbols([](llvm::orc::MangleAndInterner interner) {
-        llvm::orc::SymbolMap symbolMap;
+/// Build the runtime symbol map (shared between both engine types).
+static llvm::orc::SymbolMap buildRuntimeSymbolMap(
+    llvm::orc::MangleAndInterner interner) {
+    llvm::orc::SymbolMap symbolMap;
 
         // Heap allocation functions.
         symbolMap[interner("eco_alloc_custom")] =
@@ -612,7 +614,18 @@ void registerRuntimeSymbols(ExecutionEngine &engine) {
 
         #undef KERNEL_SYM
 
-        return symbolMap;
+    return symbolMap;
+}
+
+void registerRuntimeSymbols(ExecutionEngine &engine) {
+    engine.registerSymbols([](llvm::orc::MangleAndInterner interner) {
+        return buildRuntimeSymbolMap(interner);
+    });
+}
+
+void registerRuntimeSymbols(eco::EcoJIT &engine) {
+    engine.registerSymbols([](llvm::orc::MangleAndInterner interner) {
+        return buildRuntimeSymbolMap(interner);
     });
 }
 

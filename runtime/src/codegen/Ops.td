@@ -1111,20 +1111,23 @@ def Eco_SafepointOp : Eco_Op<"safepoint"> {
   let summary = "GC safepoint";
   let description = [{
     GC safepoint operation. Marks a point where garbage collection can
-    safely occur. The stack_map describes live eco.value roots at this
-    point in a serialized format.
+    safely occur. The operands are the live eco.value roots at this point.
 
-    During lowering to LLVM, this becomes an llvm.experimental.gc.statepoint
-    with gc.relocate operations for each live pointer.
+    During EcoToLLVM lowering, this becomes an llvm.experimental.gc.statepoint
+    with gc.relocate operations for each live pointer. Downstream SSA uses
+    of each operand are rewritten to use the relocated value via
+    replaceAllUsesExcept.
 
     Example:
     ```mlir
-    eco.safepoint {stack_map = "v0,v1,v2"}
+    eco.safepoint %v0, %v1, %v2 : !eco.value, !eco.value, !eco.value
     ```
   }];
 
-  let arguments = (ins StrAttr:$stack_map);
+  let arguments = (ins Variadic<Eco_Value>:$live_roots);
   let results = (outs);
+
+  let assemblyFormat = "($live_roots^ `:` type($live_roots))? attr-dict";
 }
 
 //===----------------------------------------------------------------------===//

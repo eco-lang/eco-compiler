@@ -342,6 +342,14 @@ struct EcoToLLVMPass : public PassWrapper<EcoToLLVMPass, OperationPass<ModuleOp>
         if (failed(applyFullConversion(module, target, std::move(patterns))))
             signalPassFailure();
 
+        // Set GC strategy on all non-external LLVM functions so that
+        // statepoint intrinsics are recognized by LLVM's GC infrastructure.
+        module.walk([](LLVM::LLVMFuncOp func) {
+            if (!func.isExternal() && !func.getGarbageCollector()) {
+                func.setGarbageCollector("statepoint-example");
+            }
+        });
+
         // Generate global root initialization function
         createGlobalRootInitFunction(module, runtime);
     }

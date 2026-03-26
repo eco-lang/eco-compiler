@@ -91,6 +91,15 @@ emptyResult ctx var ty =
     { ops = [], resultVar = var, resultType = ty, ctx = ctx, isTerminated = False }
 
 
+{-| Emit a GC safepoint op listing all live eco.value variables from context.
+Returns the safepoint op and the updated context. The op should be prepended
+before any allocation operation.
+-}
+emitSafepoint : Ctx.Context -> ( Ctx.Context, MlirOp )
+emitSafepoint ctx =
+    Ops.ecoSafepoint ctx (Ctx.liveEcoValueVars ctx)
+
+
 {-| Rename an SSA variable in a list of MlirOps, recursing into nested regions.
 
 Replaces all occurrences of `fromVar` with `toVar` in:
@@ -844,13 +853,16 @@ generateList ctx items listType =
                             if headUnboxed then
                                 -- Store element unboxed directly (no boxing needed)
                                 let
-                                    ( consVar, ctx3 ) =
-                                        Ctx.freshVar result.ctx
+                                    ( ctx3, spOp ) =
+                                        emitSafepoint result.ctx
 
-                                    ( ctx4, consOp ) =
-                                        Ops.ecoConstructList ctx3 consVar ( result.resultVar, result.resultType ) ( tailVar, Types.ecoValue ) True
+                                    ( consVar, ctx4 ) =
+                                        Ctx.freshVar ctx3
+
+                                    ( ctx5, consOp ) =
+                                        Ops.ecoConstructList ctx4 consVar ( result.resultVar, result.resultType ) ( tailVar, Types.ecoValue ) True
                                 in
-                                ( consOp :: List.reverse result.ops ++ accOps, consVar, ctx4 )
+                                ( consOp :: spOp :: List.reverse result.ops ++ accOps, consVar, ctx5 )
 
                             else
                                 -- Box element before storing in the list
@@ -858,13 +870,16 @@ generateList ctx items listType =
                                     ( boxOps, boxedVar, ctx3 ) =
                                         boxToEcoValue result.ctx result.resultVar result.resultType
 
-                                    ( consVar, ctx4 ) =
-                                        Ctx.freshVar ctx3
+                                    ( ctx4, spOp ) =
+                                        emitSafepoint ctx3
 
-                                    ( ctx5, consOp ) =
-                                        Ops.ecoConstructList ctx4 consVar ( boxedVar, Types.ecoValue ) ( tailVar, Types.ecoValue ) False
+                                    ( consVar, ctx5 ) =
+                                        Ctx.freshVar ctx4
+
+                                    ( ctx6, consOp ) =
+                                        Ops.ecoConstructList ctx5 consVar ( boxedVar, Types.ecoValue ) ( tailVar, Types.ecoValue ) False
                                 in
-                                ( consOp :: List.reverse boxOps ++ List.reverse result.ops ++ accOps, consVar, ctx5 )
+                                ( consOp :: spOp :: List.reverse boxOps ++ List.reverse result.ops ++ accOps, consVar, ctx6 )
                         )
                         ( [], nilVar, ctx2 )
                         items
@@ -3317,8 +3332,15 @@ addPlaceholderMappings names ctx =
                     let
                         ( ssaVar, acc1 ) =
                             Ctx.freshVar acc
+
+                        acc2 =
+                            Ctx.addVarMapping name ssaVar Types.ecoValue acc1
                     in
-                    Ctx.addVarMapping name ssaVar Types.ecoValue acc1
+                    -- Don't mark placeholder as defined for safepoint purposes.
+                    -- The placeholder SSA var has no defining op yet; it will be
+                    -- defined when forceResultVar renames the RHS result op.
+                    -- addVarMapping at line ~3440 re-adds it after the RHS is complete.
+                    { acc2 | definedSsaVars = Set.remove ssaVar acc2.definedSsaVars }
         )
         ctx
         names
@@ -4343,13 +4365,16 @@ generateRecordCreate ctx fields layout recordType =
                     layout.fields
 
             -- Use eco.construct.record for records
-            ( ctx4, constructOp ) =
-                Ops.ecoConstructRecord ctx3 resultVar fieldVarPairs layout.fieldCount layout.unboxedBitmap
+            ( ctx4, spOp ) =
+                emitSafepoint ctx3
+
+            ( ctx5, constructOp ) =
+                Ops.ecoConstructRecord ctx4 resultVar fieldVarPairs layout.fieldCount layout.unboxedBitmap
         in
-        { ops = fieldsOps ++ boxOps ++ [ constructOp ]
+        { ops = fieldsOps ++ boxOps ++ [ spOp, constructOp ]
         , resultVar = resultVar
         , resultType = Types.ecoValue
-        , ctx = ctx4
+        , ctx = ctx5
         , isTerminated = False
         }
 
@@ -4490,13 +4515,16 @@ generateRecordUpdate ctx record updates layout _ =
             ( resultVar, ctx1 ) =
                 Ctx.freshVar finalCtx
 
-            ( ctx2, constructOp ) =
-                Ops.ecoConstructRecord ctx1 resultVar fieldVarsAndTypes layout.fieldCount layout.unboxedBitmap
+            ( ctx2, spOp ) =
+                emitSafepoint ctx1
+
+            ( ctx3, constructOp ) =
+                Ops.ecoConstructRecord ctx2 resultVar fieldVarsAndTypes layout.fieldCount layout.unboxedBitmap
         in
-        { ops = allOps ++ [ constructOp ]
+        { ops = allOps ++ [ spOp, constructOp ]
         , resultVar = resultVar
         , resultType = Types.ecoValue
-        , ctx = ctx2
+        , ctx = ctx3
         , isTerminated = False
         }
 
@@ -4563,24 +4591,27 @@ generateTupleCreate ctx elements layout tupleType =
 
         -- Use type-specific tuple construction ops.
         -- Now that MonoPath carries ContainerKind, projection ops match construction layout.
-        ( ctx4, constructOp ) =
+        ( ctx4, spOp ) =
+            emitSafepoint ctx3
+
+        ( ctx5, constructOp ) =
             case elemVarPairs of
                 [ ( aVar, aType ), ( bVar, bType ) ] ->
                     -- 2-tuple: use eco.construct.tuple2
-                    Ops.ecoConstructTuple2 ctx3 resultVar ( aVar, aType ) ( bVar, bType ) layout.unboxedBitmap
+                    Ops.ecoConstructTuple2 ctx4 resultVar ( aVar, aType ) ( bVar, bType ) layout.unboxedBitmap
 
                 [ ( aVar, aType ), ( bVar, bType ), ( cVar, cType ) ] ->
                     -- 3-tuple: use eco.construct.tuple3
-                    Ops.ecoConstructTuple3 ctx3 resultVar ( aVar, aType ) ( bVar, bType ) ( cVar, cType ) layout.unboxedBitmap
+                    Ops.ecoConstructTuple3 ctx4 resultVar ( aVar, aType ) ( bVar, bType ) ( cVar, cType ) layout.unboxedBitmap
 
                 _ ->
                     -- Elm rejects tuples with >3 elements during canonicalization
                     crash "Compiler.Generate.CodeGen.MLIR" "generateTupleCreate" "unreachable: tuples >3 elements rejected by canonicalization"
     in
-    { ops = elemOps ++ boxOps ++ [ constructOp ]
+    { ops = elemOps ++ boxOps ++ [ spOp, constructOp ]
     , resultVar = resultVar
     , resultType = Types.ecoValue
-    , ctx = ctx4
+    , ctx = ctx5
     , isTerminated = False
     }
 

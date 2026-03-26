@@ -19,16 +19,82 @@ using namespace eco::detail;
 namespace {
 
 //===----------------------------------------------------------------------===//
-// eco.safepoint -> no-op (erase)
+// eco.safepoint -> gc.statepoint + gc.relocate
+//
+// Lowers safepoint ops to LLVM statepoint intrinsics for GC root tracking.
+// Each live eco.value operand (i64 HPointer) is:
+//   1. Cast to ptr addrspace(1) (GC-managed pointer)
+//   2. Passed in a "gc-live" operand bundle on the statepoint call
+//   3. Relocated via gc.relocate
+//   4. Cast back to i64
+//   5. All downstream uses of the original value are replaced
 //===----------------------------------------------------------------------===//
 
+/// Get or create the __eco_safepoint_marker function declaration.
+/// This is a vararg function that takes ptr addrspace(1) GC root pointers.
+/// After MLIR→LLVM IR translation, StatepointConversion.cpp converts these
+/// calls into proper gc.statepoint intrinsics with gc-live operand bundles.
+static LLVM::LLVMFuncOp getOrCreateSafepointMarker(
+    const EcoRuntime &runtime, OpBuilder &builder) {
+    auto name = "__eco_safepoint_marker";
+    if (auto func = runtime.lookupSymbol<LLVM::LLVMFuncOp>(name))
+        return func;
+
+    auto *ctx = builder.getContext();
+    auto voidTy = LLVM::LLVMVoidType::get(ctx);
+    // vararg: accepts any number of ptr addrspace(1) args
+    auto funcTy = LLVM::LLVMFunctionType::get(voidTy, {}, /*isVarArg=*/true);
+
+    OpBuilder::InsertionGuard guard(builder);
+    builder.setInsertionPointToStart(runtime.module.getBody());
+    auto func = builder.create<LLVM::LLVMFuncOp>(
+        runtime.module.getLoc(), name, funcTy);
+    runtime.cacheSymbol(func);
+    return func;
+}
+
 struct SafepointOpLowering : public OpConversionPattern<SafepointOp> {
-    using OpConversionPattern::OpConversionPattern;
+    const EcoRuntime &runtime;
+
+    SafepointOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
+                        const EcoRuntime &runtime)
+        : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
 
     LogicalResult
     matchAndRewrite(SafepointOp op, OpAdaptor adaptor,
                     ConversionPatternRewriter &rewriter) const override {
-        // Safepoints are not needed for tracing GC; erase them
+        auto loc = op.getLoc();
+        auto *ctx = rewriter.getContext();
+        auto liveValues = adaptor.getLiveRoots(); // Already converted to i64
+
+        if (liveValues.empty()) {
+            rewriter.eraseOp(op);
+            return success();
+        }
+
+        auto gcPtrTy = LLVM::LLVMPointerType::get(ctx, /*addressSpace=*/1);
+
+        // Convert each i64 live value to ptr addrspace(1)
+        SmallVector<Value, 4> gcPtrs;
+        for (auto val : liveValues) {
+            auto ptr = rewriter.create<LLVM::IntToPtrOp>(loc, gcPtrTy, val);
+            gcPtrs.push_back(ptr);
+        }
+
+        // Emit call to __eco_safepoint_marker with GC root pointers.
+        // StatepointConversion pass converts this to gc.statepoint after
+        // MLIR→LLVM IR translation.
+        getOrCreateSafepointMarker(runtime, rewriter);
+
+        auto voidTy = LLVM::LLVMVoidType::get(ctx);
+        auto markerFuncTy = LLVM::LLVMFunctionType::get(
+            voidTy, {}, /*isVarArg=*/true);
+
+        rewriter.create<LLVM::CallOp>(
+            loc, markerFuncTy,
+            FlatSymbolRefAttr::get(ctx, "__eco_safepoint_marker"),
+            gcPtrs);
+
         rewriter.eraseOp(op);
         return success();
     }
@@ -233,7 +299,7 @@ void eco::detail::populateEcoErrorDebugPatterns(
     const EcoRuntime &runtime) {
 
     auto *ctx = patterns.getContext();
-    patterns.add<SafepointOpLowering>(typeConverter, ctx);
+    patterns.add<SafepointOpLowering>(typeConverter, ctx, runtime);
     patterns.add<DbgOpLowering>(typeConverter, ctx, runtime);
     patterns.add<CrashOpLowering>(typeConverter, ctx, runtime);
     patterns.add<ExpectOpLowering>(typeConverter, ctx, runtime);

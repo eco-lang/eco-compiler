@@ -27,6 +27,7 @@ import Compiler.Generate.MLIR.Types as Types
 import Compiler.Monomorphize.Registry as Registry
 import Dict
 import Mlir.Mlir exposing (MlirAttr(..), MlirOp, MlirRegion, MlirType(..), Visibility(..))
+import Set
 
 
 
@@ -176,7 +177,7 @@ generateDefine ctx funcName expr monoType =
                 -- Thunks have no parameters, but still need fresh scope.
                 ctxFreshScope : Ctx.Context
                 ctxFreshScope =
-                    { ctx | nextVar = 0, varMappings = Dict.empty }
+                    { ctx | nextVar = 0, varMappings = Dict.empty, definedSsaVars = Set.empty }
 
                 exprResult : Expr.ExprResult
                 exprResult =
@@ -257,9 +258,14 @@ generateClosureFuncSingle ctx funcName closureInfo body monoType =
                 Dict.empty
                 closureInfo.params
 
+        paramSsaVars : List String
+        paramSsaVars =
+            List.map (\( name, _ ) -> "%" ++ name) closureInfo.params
+
         ctxWithArgs : Ctx.Context
         ctxWithArgs =
             { ctx | nextVar = List.length closureInfo.params, varMappings = freshVarMappings }
+                |> Ctx.resetDefinedSsaVars paramSsaVars
 
         exprResult : Expr.ExprResult
         exprResult =
@@ -382,12 +388,17 @@ generateClosureFuncWithClones ctx funcName closureInfo body monoType =
         fastCloneMappings =
             Dict.union paramMappings captureMappings
 
+        fastCloneSsaVars : List String
+        fastCloneSsaVars =
+            List.map Tuple.first fastCloneArgs
+
         ctxFastClone : Ctx.Context
         ctxFastClone =
             { ctx
                 | nextVar = List.length fastCloneArgs
                 , varMappings = fastCloneMappings
             }
+                |> Ctx.resetDefinedSsaVars fastCloneSsaVars
 
         exprResult : Expr.ExprResult
         exprResult =
@@ -540,9 +551,14 @@ generateTailFunc ctx funcName params expr monoType =
                 Dict.empty
                 params
 
+        paramSsaVarsTail : List String
+        paramSsaVarsTail =
+            List.map (\( name, _ ) -> "%" ++ name) params
+
         ctxWithArgs : Ctx.Context
         ctxWithArgs =
             { ctx | nextVar = List.length params, varMappings = freshVarMappings }
+                |> Ctx.resetDefinedSsaVars paramSsaVarsTail
 
         -- monoType is the full curried function type (e.g., MFunction [MInt] (MFunction [MInt] MInt))
         -- Use decomposeFunctionType to extract the FINAL return type after all args are consumed.
@@ -661,18 +677,26 @@ generateCtor ctx funcName ctorLayout monoType =
             argPairs =
                 List.map2 Tuple.pair argNames argTypes
 
+            ctxFreshScope : Ctx.Context
+            ctxFreshScope =
+                { ctxWithType | nextVar = arity }
+                    |> Ctx.resetDefinedSsaVars argNames
+
             ( resultVar, ctx1 ) =
-                Ctx.freshVar { ctxWithType | nextVar = arity }
+                Ctx.freshVar ctxFreshScope
 
-            ( ctx2, constructOp ) =
-                Ops.ecoConstructCustom ctx1 resultVar ctorLayout.tag arity ctorLayout.unboxedBitmap argPairs constructorName
+            ( ctx2, spOp ) =
+                Ops.ecoSafepoint ctx1 (Ctx.liveEcoValueVars ctx1)
 
-            ( ctx3, returnOp ) =
-                Ops.ecoReturn ctx2 resultVar Types.ecoValue
+            ( ctx3, constructOp ) =
+                Ops.ecoConstructCustom ctx2 resultVar ctorLayout.tag arity ctorLayout.unboxedBitmap argPairs constructorName
+
+            ( ctx4, returnOp ) =
+                Ops.ecoReturn ctx3 resultVar Types.ecoValue
 
             region : MlirRegion
             region =
-                Ops.mkRegion argPairs [ constructOp ] returnOp
+                Ops.mkRegion argPairs [ spOp, constructOp ] returnOp
         in
         Ops.funcFunc ctx3 funcName argPairs Types.ecoValue region
 

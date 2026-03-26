@@ -2,6 +2,7 @@ module Compiler.Generate.MLIR.Context exposing
     ( Context, FuncSignature, PendingLambda, TypeRegistry, VarInfo
     , initContext
     , freshVar, freshOpId, lookupVar, addVarMapping, addDecoderExpr, ctxForSiblingRegion
+    , liveEcoValueVars, trackSsaVar, resetDefinedSsaVars
     , getOrCreateTypeIdForMonoType, registerKernelCall
     , buildSignatures, kernelFuncSignatureFromType
     , isTypeVar, hasKernelImplementation
@@ -26,7 +27,7 @@ state during MLIR code generation.
 
 # Variable Management
 
-@docs freshVar, freshOpId, lookupVar, addVarMapping, addDecoderExpr, ctxForSiblingRegion
+@docs freshVar, freshOpId, lookupVar, addVarMapping, addDecoderExpr, ctxForSiblingRegion, liveEcoValueVars, trackSsaVar, resetDefinedSsaVars
 
 
 # Type Registration
@@ -56,7 +57,7 @@ import Compiler.Data.Name as Name
 import Compiler.Generate.MLIR.Types as Types
 import Compiler.Generate.Mode as Mode
 import Dict
-import Mlir.Mlir exposing (MlirOp, MlirType)
+import Mlir.Mlir exposing (MlirOp, MlirType(..))
 import Set
 import Utils.Crash exposing (crash)
 
@@ -225,6 +226,7 @@ type alias Context =
     , typeRegistry : TypeRegistry -- Type graph: MonoType -> TypeId for debug printing
     , decoderExprs : Dict.Dict String Mono.MonoExpr -- Cache of let-bound decoder expressions for BytesFusion
     , externBoxedVars : Set.Set String -- Local vars that alias extern/kernel functions (evaluator has all !eco.value params)
+    , definedSsaVars : Set.Set String -- SSA variables defined in the current function scope (for safepoint filtering)
     }
 
 
@@ -273,6 +275,7 @@ initContext mode registry signatures initialCtorShapes =
         }
     , decoderExprs = Dict.empty
     , externBoxedVars = Set.empty
+    , definedSsaVars = Set.empty
     }
 
 
@@ -452,8 +455,12 @@ ctxForSiblingRegion base afterPrevious =
 -}
 freshVar : Context -> ( String, Context )
 freshVar ctx =
-    ( "%" ++ String.fromInt ctx.nextVar
-    , { ctx | nextVar = ctx.nextVar + 1 }
+    let
+        varName =
+            "%" ++ String.fromInt ctx.nextVar
+    in
+    ( varName
+    , { ctx | nextVar = ctx.nextVar + 1, definedSsaVars = Set.insert varName ctx.definedSsaVars }
     )
 
 
@@ -492,7 +499,47 @@ addVarMapping name ssaVar mlirTy ctx =
             , mlirType = mlirTy
             }
     in
-    { ctx | varMappings = Dict.insert name info ctx.varMappings }
+    { ctx | varMappings = Dict.insert name info ctx.varMappings, definedSsaVars = Set.insert ssaVar ctx.definedSsaVars }
+
+
+{-| Track an SSA variable as defined in the current function scope.
+Used at function boundaries when parameters/captures are added to varMappings
+without going through freshVar or addVarMapping.
+-}
+trackSsaVar : String -> Context -> Context
+trackSsaVar ssaVar ctx =
+    { ctx | definedSsaVars = Set.insert ssaVar ctx.definedSsaVars }
+
+
+{-| Reset definedSsaVars for a new function scope, optionally seeding with
+initial SSA variable names (e.g. function parameters and captures).
+-}
+resetDefinedSsaVars : List String -> Context -> Context
+resetDefinedSsaVars initialVars ctx =
+    { ctx | definedSsaVars = Set.fromList initialVars }
+
+
+{-| Collect all in-scope variables with !eco.value type for GC safepoint emission.
+Returns a list of (ssaVar, mlirType) pairs for eco.value bindings in varMappings
+that are defined in the current function scope (tracked in definedSsaVars).
+-}
+liveEcoValueVars : Context -> List ( String, MlirType )
+liveEcoValueVars ctx =
+    ctx.varMappings
+        |> Dict.values
+        |> List.filterMap
+            (\info ->
+                if Set.member info.ssaVar ctx.definedSsaVars then
+                    case info.mlirType of
+                        NamedStruct "eco.value" ->
+                            Just ( info.ssaVar, info.mlirType )
+
+                        _ ->
+                            Nothing
+
+                else
+                    Nothing
+            )
 
 
 {-| Cache a let-bound expression for BytesFusion decoder resolution.

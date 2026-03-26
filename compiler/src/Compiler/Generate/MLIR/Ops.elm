@@ -5,6 +5,7 @@ module Compiler.Generate.MLIR.Ops exposing
     , ecoProjectListHead, ecoProjectListTail, ecoProjectTuple2, ecoProjectTuple3, ecoProjectRecord, ecoProjectCustom
     , ecoCallNamed, ecoReturn, ecoYield, ecoStringLiteral, ecoUnaryOp, ecoBinaryOp, ecoCase, ecoCaseString, ecoGetTag
     , ecoArrayGet, ecoArraySet, ecoArrayLength
+    , ecoSafepoint
     , arithConstantInt, arithConstantInt32, arithConstantFloat, arithConstantBool, arithConstantChar, arithCmpI
     , scfWhile, scfCondition
     , ecoCaseMany, ecoCaseStringMany, ecoYieldMany, scfYieldMany
@@ -44,6 +45,11 @@ in the eco dialect and standard dialects (arith, scf, func).
 # Eco Array Operations
 
 @docs ecoArrayGet, ecoArraySet, ecoArrayLength
+
+
+# Eco GC Operations
+
+@docs ecoSafepoint
 
 
 # Arith Operations
@@ -504,6 +510,34 @@ ecoStringLiteral ctx resultVar value =
     mlirOp ctx "eco.string_literal"
         |> opBuilder.withResults [ ( resultVar, Types.ecoValue ) ]
         |> opBuilder.withAttrs (Dict.singleton "value" (StringAttr value))
+        |> opBuilder.build
+
+
+
+-- ====== ECO GC OPERATIONS ======
+
+
+{-| eco.safepoint - GC safepoint with live eco.value roots as operands.
+Emitted before allocation ops so the GC can find all live heap pointers.
+Currently lowered to no-op; will become gc.statepoint + gc.relocate.
+-}
+ecoSafepoint : Ctx.Context -> List ( String, MlirType ) -> ( Ctx.Context, MlirOp )
+ecoSafepoint ctx liveRoots =
+    let
+        operandNames =
+            List.map Tuple.first liveRoots
+
+        attrs =
+            if List.isEmpty liveRoots then
+                Dict.empty
+
+            else
+                Dict.singleton "_operand_types"
+                    (ArrayAttr Nothing (List.map (\( _, t ) -> TypeAttr t) liveRoots))
+    in
+    mlirOp ctx "eco.safepoint"
+        |> opBuilder.withOperands operandNames
+        |> opBuilder.withAttrs attrs
         |> opBuilder.build
 
 

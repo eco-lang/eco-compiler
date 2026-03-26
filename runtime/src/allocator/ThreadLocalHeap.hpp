@@ -118,6 +118,10 @@ private:
 
     /** Collects all roots from this thread's root set. */
     std::unordered_set<HPointer*> collectRoots();
+
+    /** Populate RootSet stack roots from __LLVM_StackMaps by walking
+     *  the current thread's call stack frames. */
+    void collectStackRootsFromStackMap();
 };
 
 } // namespace Elm
