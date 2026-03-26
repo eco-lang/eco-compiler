@@ -102,12 +102,12 @@ private:
 //   uint32 instructionOffset
 //   uint16 reserved
 //   uint16 numLocations
-//   Location entries (numLocations):
-//     uint8  kind
-//     uint8  reserved
-//     uint16 dwarfRegNum
-//     int32  offset
-//   uint16 padding (align to 8)
+//   Location entries (numLocations, 12 bytes each in v3):
+//     uint16 kind (byte 0 is kind, byte 1 reserved)
+//     uint16 sizeInBytes
+//     uint32 dwarfRegNum
+//     int32  offset/smallConstant
+//   padding (align to 8)
 //   uint16 numLiveOuts
 //   LiveOut entries (numLiveOuts):
 //     uint16 dwarfRegNum
@@ -186,8 +186,8 @@ bool StackMap::parse(const uint8_t* data, size_t size) {
             loc.offset = reader.readI32();
         }
 
-        // After locations: padding to align to 4 bytes (not 8)
-        reader.alignTo(4);
+        // After locations: padding to align to 8 bytes (v3 format)
+        reader.alignTo(8);
 
         // Live-outs
         reader.skip(2); // padding
