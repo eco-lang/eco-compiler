@@ -679,7 +679,7 @@ generateCtor ctx funcName ctorLayout monoType =
 
             ctxFreshScope : Ctx.Context
             ctxFreshScope =
-                { ctxWithType | nextVar = arity }
+                { ctxWithType | nextVar = arity, varMappings = Dict.empty }
                     |> Ctx.resetDefinedSsaVars argNames
 
             ( resultVar, ctx1 ) =
