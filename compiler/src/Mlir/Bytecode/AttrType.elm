@@ -88,8 +88,8 @@ typeIndex ty (AttrTypeTable tbl) =
 
 
 locIndex : Loc -> AttrTypeTable -> Int
-locIndex loc tbl =
-    attrIndex (locToAttr loc) tbl
+locIndex loc (AttrTypeTable tbl) =
+    Dict.get (locKey loc) tbl.attrKeys |> Maybe.withDefault -1
 
 
 dictAttrIndex : Dict String MlirAttr -> AttrTypeTable -> Int
@@ -105,14 +105,7 @@ attrToKey : MlirAttr -> String
 attrToKey attr =
     case attr of
         StringAttr s ->
-            if s == "__mlir_unknown_loc__" then
-                "loc:unknown"
-
-            else if String.startsWith "__mlir_loc__:" s then
-                "loc:" ++ String.dropLeft 13 s
-
-            else
-                "s:" ++ s
+            "s:" ++ s
 
         BoolAttr b ->
             "i:"
@@ -191,13 +184,22 @@ typeToKey ty =
             "fn(" ++ String.join "," (List.map typeToKey sig.inputs) ++ ")->(" ++ String.join "," (List.map typeToKey sig.results) ++ ")"
 
 
-locToAttr : Loc -> MlirAttr
-locToAttr (Loc loc) =
+locKey : Loc -> String
+locKey (Loc loc) =
     if loc.name == "unknown" && loc.start.row == 0 && loc.start.col == 0 then
-        StringAttr "__mlir_unknown_loc__"
+        "LOC:unknown"
 
     else
-        StringAttr ("__mlir_loc__:" ++ loc.name ++ ":" ++ String.fromInt loc.start.row ++ ":" ++ String.fromInt loc.start.col)
+        "LOC:" ++ loc.name ++ ":" ++ String.fromInt loc.start.row ++ ":" ++ String.fromInt loc.start.col
+
+
+locEntry : Loc -> Entry
+locEntry (Loc loc) =
+    if loc.name == "unknown" && loc.start.row == 0 && loc.start.col == 0 then
+        EUnknownLoc
+
+    else
+        EFileLineColLoc loc.name loc.start.row loc.start.col
 
 
 
@@ -235,7 +237,7 @@ type StreamAccum
 -}
 initStreamAccum : StreamAccum
 initStreamAccum =
-    StreamAccum (emptyAccum |> addAttrEntry (locToAttr Mlir.Loc.unknown))
+    StreamAccum (emptyAccum |> addLocEntry Mlir.Loc.unknown)
 
 
 {-| Collect strings/attrs/types from a single op into the streaming accumulator.
@@ -282,7 +284,7 @@ collect mod =
     let
         result =
             emptyAccum
-                |> addAttrEntry (locToAttr Mlir.Loc.unknown)
+                |> addLocEntry Mlir.Loc.unknown
                 |> (\acc -> List.foldl collectOp acc mod.body)
 
         -- All attrs are builtin, no reordering needed
@@ -313,6 +315,28 @@ collect mod =
         , numAttrs = result.nextAttr
         , numTypes = result.nextType
         }
+
+
+addLocEntry : Loc -> Accum -> Accum
+addLocEntry loc acc =
+    let
+        key =
+            locKey loc
+    in
+    case Dict.get key acc.attrKeys of
+        Just _ ->
+            acc
+
+        Nothing ->
+            let
+                entry =
+                    locEntry loc
+            in
+            { acc
+                | attrKeys = Dict.insert key acc.nextAttr acc.attrKeys
+                , attrEntries = ( "builtin", entry ) :: acc.attrEntries
+                , nextAttr = acc.nextAttr + 1
+            }
 
 
 addAttrEntry : MlirAttr -> Accum -> Accum
@@ -397,28 +421,7 @@ attrToEntry : MlirAttr -> Entry
 attrToEntry attr =
     case attr of
         StringAttr s ->
-            if s == "__mlir_unknown_loc__" then
-                EUnknownLoc
-
-            else if String.startsWith "__mlir_loc__:" s then
-                let
-                    rest =
-                        String.dropLeft 13 s
-
-                    parts =
-                        String.split ":" rest
-                in
-                case parts of
-                    name :: lineStr :: colStr :: _ ->
-                        EFileLineColLoc name
-                            (String.toInt lineStr |> Maybe.withDefault 0)
-                            (String.toInt colStr |> Maybe.withDefault 0)
-
-                    _ ->
-                        EUnknownLoc
-
-            else
-                EStringAttr s
+            EStringAttr s
 
         BoolAttr b ->
             EIntegerAttr I1
@@ -540,7 +543,7 @@ collectOp : MlirOp -> Accum -> Accum
 collectOp op acc =
     let
         acc1 =
-            addAttrEntry (locToAttr op.loc) acc
+            addLocEntry op.loc acc
 
         acc2 =
             if Dict.isEmpty op.attrs then
@@ -618,7 +621,7 @@ collectBlock blk acc =
             List.foldl (\( _, t ) a -> addTypeEntry t a) acc blk.args
 
         acc2 =
-            List.foldl (\_ a -> addAttrEntry (locToAttr Mlir.Loc.unknown) a) acc1 blk.args
+            List.foldl (\_ a -> addLocEntry Mlir.Loc.unknown a) acc1 blk.args
 
         acc3 =
             List.foldl collectOp acc2 blk.body
