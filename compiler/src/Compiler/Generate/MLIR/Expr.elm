@@ -3159,7 +3159,7 @@ generateIf ctx branches final =
                     { ops = condOpsAll ++ [ caseOp ]
                     , resultVar = caseResultVar
                     , resultType = resultMlirType
-                    , ctx = ctx3
+                    , ctx = Ctx.ctxAfterBranchOp condCtx ctx3 [ caseResultVar ]
                     , isTerminated = False
                     }
 
@@ -3216,7 +3216,7 @@ generateIfWithTerminatedBranch condCtx condVar thenRes restBranches final condOp
     { ops = condOps ++ [ caseOp ]
     , resultVar = caseResultVar
     , resultType = resultMlirType
-    , ctx = ctxFinal
+    , ctx = Ctx.ctxAfterBranchOp condCtx ctxFinal [ caseResultVar ]
     , isTerminated = False
     }
 
@@ -3225,7 +3225,7 @@ generateIfWithTerminatedBranch condCtx condVar thenRes restBranches final condOp
 The then branch has already been processed and yields a value.
 -}
 generateIfWithTerminatedElse : Ctx.Context -> String -> ExprResult -> ExprResult -> MlirType -> List MlirOp -> ExprResult
-generateIfWithTerminatedElse _ condVar thenRes elseRes resultMlirType condOps =
+generateIfWithTerminatedElse condCtx condVar thenRes elseRes resultMlirType condOps =
     let
         -- Build then region with eco.yield (not terminated)
         ( thenCoerceOps, thenFinalVar, thenCoerceCtx ) =
@@ -3253,7 +3253,7 @@ generateIfWithTerminatedElse _ condVar thenRes elseRes resultMlirType condOps =
     { ops = condOps ++ [ caseOp ]
     , resultVar = caseResultVar
     , resultType = resultMlirType
-    , ctx = ctxFinal
+    , ctx = Ctx.ctxAfterBranchOp condCtx ctxFinal [ caseResultVar ]
     , isTerminated = False
     }
 
@@ -3927,7 +3927,7 @@ generateChainForBoolADTWithJumps ctx path success failure jumpLookup resultTy =
     { ops = pathOps ++ [ caseOp ]
     , resultVar = caseResultVar
     , resultType = resultTy
-    , ctx = ctx2
+    , ctx = Ctx.ctxAfterBranchOp ctx1 ctx2 [ caseResultVar ]
     , isTerminated = False
     }
 
@@ -3974,7 +3974,7 @@ generateChainGeneralWithJumps ctx testChain success failure jumpLookup resultTy 
             { ops = condOps ++ [ caseOp ]
             , resultVar = caseResultVar
             , resultType = resultTy
-            , ctx = ctx2
+            , ctx = Ctx.ctxAfterBranchOp ctx1 ctx2 [ caseResultVar ]
             , isTerminated = False
             }
 
@@ -4012,7 +4012,7 @@ generateChainGeneralWithJumps ctx testChain success failure jumpLookup resultTy 
             { ops = firstOps ++ [ caseOp ]
             , resultVar = caseResultVar
             , resultType = resultTy
-            , ctx = ctx2
+            , ctx = Ctx.ctxAfterBranchOp ctx1 ctx2 [ caseResultVar ]
             , isTerminated = False
             }
 
@@ -4116,7 +4116,7 @@ generateBoolFanOutWithJumps ctx path edges fallback jumpLookup resultTy =
     { ops = pathOps ++ [ caseOp ]
     , resultVar = caseResultVar
     , resultType = resultTy
-    , ctx = ctx2
+    , ctx = Ctx.ctxAfterBranchOp ctx1 ctx2 [ caseResultVar ]
     , isTerminated = False
     }
 
@@ -4219,7 +4219,7 @@ generateFanOutGeneralWithJumps ctx path edges fallback jumpLookup resultTy =
     { ops = pathOps ++ [ caseOp ]
     , resultVar = caseResultVar
     , resultType = resultTy
-    , ctx = ctx3
+    , ctx = Ctx.ctxAfterBranchOp ctx1 ctx3 [ caseResultVar ]
     , isTerminated = False
     }
 

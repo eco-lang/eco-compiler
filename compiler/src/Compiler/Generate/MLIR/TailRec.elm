@@ -693,7 +693,7 @@ compileCaseChainStep ctx loopSpec testChain success failure jumpLookup =
     , doneVar = doneResultVar
     , resultVar = resultResultVar
     , resultType = loopSpec.retType
-    , ctx = ctxAfterCase
+    , ctx = Ctx.ctxAfterBranchOp condCtx ctxAfterCase caseResultNames
     }
 
 
@@ -766,8 +766,11 @@ compileCaseFanOutStep ctx loopSpec path edges fallback jumpLookup =
             List.foldl
                 (\( _, subTree ) ( accRegions, accCtx ) ->
                     let
+                        branchCtx =
+                            Ctx.ctxForSiblingRegion ctx1 accCtx
+
                         subStep =
-                            compileCaseDeciderStep accCtx loopSpec subTree jumpLookup
+                            compileCaseDeciderStep branchCtx loopSpec subTree jumpLookup
 
                         yieldOperands =
                             subStep.nextParams
@@ -791,7 +794,7 @@ compileCaseFanOutStep ctx loopSpec path edges fallback jumpLookup =
 
         -- Fallback region
         fallbackStep =
-            compileCaseDeciderStep ctx2 loopSpec fallback jumpLookup
+            compileCaseDeciderStep (Ctx.ctxForSiblingRegion ctx1 ctx2) loopSpec fallback jumpLookup
 
         fallbackYieldOperands =
             fallbackStep.nextParams
@@ -862,7 +865,7 @@ compileCaseFanOutStep ctx loopSpec path edges fallback jumpLookup =
     , doneVar = doneResultVar
     , resultVar = resultResultVar
     , resultType = loopSpec.retType
-    , ctx = ctx3
+    , ctx = Ctx.ctxAfterBranchOp ctx1 ctx3 caseResultNames
     }
 
 
@@ -933,7 +936,7 @@ compileIfStep ctx loopSpec branches final =
 
                 -- Compile else branch recursively (handles nested if-else chains)
                 elseStep =
-                    compileIfStep thenYieldCtx loopSpec restBranches final
+                    compileIfStep (Ctx.ctxForSiblingRegion condCtx thenYieldCtx) loopSpec restBranches final
 
                 -- Build else region that yields the step tuple
                 elseYieldOperands =
@@ -983,7 +986,7 @@ compileIfStep ctx loopSpec branches final =
             , doneVar = doneResultVar
             , resultVar = resultResultVar
             , resultType = loopSpec.retType
-            , ctx = ctxAfterCase
+            , ctx = Ctx.ctxAfterBranchOp condCtx ctxAfterCase caseResultNames
             }
 
 

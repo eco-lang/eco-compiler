@@ -1,7 +1,7 @@
 module Compiler.Generate.MLIR.Context exposing
     ( Context, FuncSignature, PendingLambda, TypeRegistry, VarInfo
     , initContext
-    , freshVar, freshOpId, lookupVar, addVarMapping, addDecoderExpr, ctxForSiblingRegion
+    , freshVar, freshOpId, lookupVar, addVarMapping, addDecoderExpr, ctxForSiblingRegion, ctxAfterBranchOp
     , liveEcoValueVars, trackSsaVar, resetDefinedSsaVars
     , getOrCreateTypeIdForMonoType, registerKernelCall
     , buildSignatures, kernelFuncSignatureFromType
@@ -436,10 +436,12 @@ getOrCreateTypeIdForMonoType monoType ctx =
 
 When generating code for alternative regions (e.g., then/else of scf.if,
 alternatives of eco.case), each sibling must forward counters and accumulations
-from the previous sibling, but must NOT carry varMappings (since SSA vars defined
-in one region are not visible in a sibling region per MLIR scoping rules).
+from the previous sibling, but must NOT carry varMappings or definedSsaVars
+(since SSA vars defined in one region are not visible in a sibling region
+per MLIR scoping rules).
 
-  - `base`: the context BEFORE the branching construct (has correct varMappings)
+  - `base`: the context BEFORE the branching construct (has correct varMappings
+    and definedSsaVars)
   - `afterPrevious`: the context AFTER the previous sibling region (has updated counters)
 
 -}
@@ -448,6 +450,24 @@ ctxForSiblingRegion base afterPrevious =
     { afterPrevious
         | varMappings = base.varMappings
         , externBoxedVars = base.externBoxedVars
+        , definedSsaVars = base.definedSsaVars
+    }
+
+
+{-| Restore definedSsaVars and varMappings after a branching construct
+(eco.case, scf.if, etc.) completes. The returned context keeps counters
+and other accumulations from the post-branch context but scopes
+definedSsaVars back to the pre-branch state plus any new result variables.
+
+  - `base`: the context BEFORE the branching construct
+  - `afterBranch`: the context AFTER all branches have been generated
+  - `resultVars`: SSA variable names for the branch op's results
+-}
+ctxAfterBranchOp : Context -> Context -> List String -> Context
+ctxAfterBranchOp base afterBranch resultVars =
+    { afterBranch
+        | varMappings = base.varMappings
+        , definedSsaVars = List.foldl Set.insert base.definedSsaVars resultVars
     }
 
 

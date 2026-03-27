@@ -71,6 +71,7 @@ import SourceIR.SpecializeExprCases as SpecializeExprCases
 import SourceIR.SpecializePolyLetCases as SpecializePolyLetCases
 import SourceIR.SpecializePolyTopCases as SpecializePolyTopCases
 import SourceIR.SpecializeRecordCtorCases as SpecializeRecordCtorCases
+import SourceIR.IfLetSafepointCases as IfLetSafepointCases
 import SourceIR.TailRecCaseCases as TailRecCaseCases
 import SourceIR.TailRecLetRecClosureCases as TailRecLetRecClosureCases
 import SourceIR.TupleCases as TupleCases
@@ -131,6 +132,7 @@ expectSuite expectFn condStr =
         , SpecializeExprCases.expectSuite expectFn condStr
         , SpecializePolyLetCases.expectSuite expectFn condStr
         , SpecializePolyTopCases.expectSuite expectFn condStr
+        , IfLetSafepointCases.expectSuite expectFn condStr
         , LocalTailRecCases.expectSuite expectFn condStr
         , TailRecCaseCases.expectSuite expectFn condStr
         , TailRecLetRecClosureCases.expectSuite expectFn condStr
