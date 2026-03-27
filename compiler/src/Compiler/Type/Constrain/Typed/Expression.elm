@@ -845,18 +845,34 @@ constrainIfWithIdsProg rtv region exprId branches final expected =
                         (case tipe of
                             VarN v ->
                                 Prog.opModifyS (NodeIds.recordNodeVar exprId v)
+                                    |> Prog.mapS (\() -> Nothing)
 
                             _ ->
-                                -- Need to create a var for tracking
+                                -- Need to create a var for tracking, and constrain it to equal the annotation type
                                 Prog.opMkFlexVarS
-                                    |> Prog.andThenS (\v -> Prog.opModifyS (NodeIds.recordNodeVar exprId v))
+                                    |> Prog.andThenS
+                                        (\v ->
+                                            Prog.opModifyS (NodeIds.recordNodeVar exprId v)
+                                                |> Prog.mapS (\() -> Just v)
+                                        )
                         )
                             |> Prog.andThenS
-                                (\() ->
+                                (\maybeFlexVar ->
                                     constrainIndexedExprsWithIdsProg rtv exprs (\index -> FromAnnotation name arity (TypedIfBranch index) tipe) Index.first []
                                         |> Prog.mapS
                                             (\branchCons ->
-                                                CAnd (CAnd condCons :: branchCons)
+                                                case maybeFlexVar of
+                                                    Just flexVar ->
+                                                        Type.exists [ flexVar ]
+                                                            (CAnd
+                                                                [ CAnd condCons
+                                                                , CAnd branchCons
+                                                                , CEqual region If (VarN flexVar) (NoExpectation tipe)
+                                                                ]
+                                                            )
+
+                                                    Nothing ->
+                                                        CAnd (CAnd condCons :: branchCons)
                                             )
                                 )
 
