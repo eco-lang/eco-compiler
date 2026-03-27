@@ -677,7 +677,8 @@ struct CaseStringToScfIfChainPattern : public OpRewritePattern<CaseOp> {
         // Only convert string cases that are nested inside SCF regions.
         // Top-level string cases are handled fine by CaseOpLowering in EcoToLLVM.
         if (!op->getParentOfType<scf::IfOp>() &&
-            !op->getParentOfType<scf::IndexSwitchOp>())
+            !op->getParentOfType<scf::IndexSwitchOp>() &&
+            !op->getParentOfType<scf::WhileOp>())
             return failure();
 
         auto stringPatternsAttr = op.getStringPatternsAttr();
@@ -693,11 +694,11 @@ struct CaseStringToScfIfChainPattern : public OpRewritePattern<CaseOp> {
         ensureEqualDeclared(rewriter, module, loc);
 
         // Build the if-chain from front to back
-        Value result = buildStringIfChain(rewriter, loc, scrutinee, alts,
-                                          stringPatternsAttr, resultTypes,
-                                          0, alts.size());
+        auto ifOp = buildStringIfChain(rewriter, loc, scrutinee, alts,
+                                        stringPatternsAttr, resultTypes,
+                                        0, alts.size());
 
-        rewriter.replaceOp(op, result);
+        rewriter.replaceOp(op, ifOp->getResults());
         return success();
     }
 
@@ -716,7 +717,7 @@ private:
         rewriter.restoreInsertionPoint(savedInsertPoint);
     }
 
-    Value buildStringIfChain(PatternRewriter &rewriter, Location loc,
+    scf::IfOp buildStringIfChain(PatternRewriter &rewriter, Location loc,
                              Value scrutinee, MutableArrayRef<Region> alts,
                              ArrayAttr stringPatterns,
                              SmallVector<Type> &resultTypes,
@@ -762,7 +763,7 @@ private:
                 IRMapping mapping;
                 cloneAlternativeWithScfYield(alts[numAlts - 1], rewriter, loc, mapping);
             }
-            return ifOp.getResult(0);
+            return ifOp;
         }
 
         // Create string literal for this pattern
@@ -806,13 +807,16 @@ private:
                     rewriter.eraseOp(existingYield);
             }
             rewriter.setInsertionPointToStart(elseBlock);
-            Value innerResult = buildStringIfChain(rewriter, loc, scrutinee, alts,
+            auto innerIfOp = buildStringIfChain(rewriter, loc, scrutinee, alts,
                                                    stringPatterns, resultTypes,
                                                    altIdx + 1, numAlts);
-            rewriter.create<scf::YieldOp>(loc, innerResult);
+            // Restore insertion point to end of outer else block (recursive call
+            // may have left it inside the inner scf.if's region)
+            rewriter.setInsertionPointToEnd(elseBlock);
+            rewriter.create<scf::YieldOp>(loc, innerIfOp->getResults());
         }
 
-        return ifOp.getResult(0);
+        return ifOp;
     }
 };
 
