@@ -31,34 +31,49 @@ Group the failures by likely root cause. Order the groups by compiler phase
 - Which compiler/runtime phase it relates to
 - Which test names belong to it
 
-## Step 3: Investigate each category
+## Step 3: Investigate and trace (parallel)
 
-For each failure category, investigate the root cause:
-- Read the failing test code
-- Read the production code it exercises
-- Read generated artifacts (.mlir files, etc.) where relevant
+Launch one Agent per failure category, **all in a single message** so they run
+concurrently. Each agent's prompt MUST include:
 
-## Step 4: Trace with concrete values
+1. The category name, phase, and full list of failing test names in that category.
+2. The verbatim error output for every test in the category (copy it into the prompt).
+3. The following instructions:
 
-For each failure category, pick one concrete failing test case and trace its
-specific input values through the code step by step. At each step:
+---
+
+**Investigation:** Read the failing test code, the production code it exercises, and
+any generated artifacts (.mlir files, etc.) that are relevant.
+
+**Trace:** Pick one concrete failing test case and trace its specific input values
+through the code step by step. At each step:
 - Quote the code (file:line)
 - Show the concrete value at that point
 - Continue until you reach the point where actual behavior diverges from expected
 
-This is the most important step. Do not skip it. Do not summarize. Show the trace.
+Do not skip the trace. Do not summarize. Show every step.
 
-## Step 5: Produce the report
-
-For EACH failure category, your report MUST include all of the following:
+**Output format — return exactly this:**
 
 ### Category: [name]
 **Phase:** [compiler/runtime phase]
 **Failing tests:** [list every test name]
 **Error output:** [verbatim error messages]
 **Trace evidence:**
-[The step-by-step code trace from step 4, with file:line references and concrete values]
+[The step-by-step code trace with file:line references and concrete values]
 **Root cause:** [one-paragraph explanation supported by the trace above]
+
+---
+
+Use `subagent_type: "Explore"` for each agent. Do NOT use background agents — you
+need all results before proceeding.
+
+## Step 4: Assemble the report
+
+Collect the report section returned by each agent. Present them in phase order
+(earliest phase first) as the final report. Do not editorialize or add commentary
+beyond what the agents returned. If an agent could not complete its trace, include
+that fact verbatim.
 
 ## Rules
 
