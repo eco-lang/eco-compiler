@@ -281,6 +281,44 @@ logic: For expressions with explicit annotations:
 inputs: Annotated source IR programs
 oracle: All valid annotations succeed; all intentional mismatches are rejected with precise error location.
 --
+--
+name: Recorded node variables are constrained
+phase: type checking
+invariants: TYPE_007
+ir: Constraint tree + NodeIds mapping (from constrainWithIds)
+logic: After constraint generation via constrainWithIds, for every expression or
+  pattern ID that was registered via NodeIds.recordNodeVar:
+  * Extract the solver Variable recorded for that ID from the NodeIds mapping.
+  * Run the solver (Solve.runWithIds).
+  * Read back the variable's resolved type via toCanTypeBatch (nodeTypes[id]).
+  * Assert the resolved type is NOT an unconstrained placeholder:
+      - If the enclosing function has an annotation with type variable binders
+        {v1, v2, ...}, then nodeTypes[id] may be a TVar only if its name is
+        one of the declared binders.
+      - A TVar whose name does not appear in any enclosing annotation's binders
+        indicates a solver variable that was recorded but never unified with
+        anything — an unconstrained node variable (internal compiler error).
+  * Specifically target expression forms where this bug is known to occur:
+      - If expressions with structured annotation types (e.g., List a, Maybe a,
+        Array a — not bare type variables)
+      - Case expressions (for regression testing — already correctly constrained)
+  * For each violating ID, report:
+      - The expression kind (If, Case, Let, etc.)
+      - The resolved type (the spurious TVar)
+      - The enclosing function name and annotation binders
+inputs: StandardTestSuites source modules (especially IfNodeTypeCases, ArrayCases,
+  MaybeResultCases, ControlFlowCases), plus targeted programs with:
+  * Polymorphic functions whose body is an if expression returning parameterized types
+  * Nested if expressions inside polymorphic functions
+  * If expressions inside case branches with structured types
+  * Functions with multiple type variables where only some appear in the if result
+oracle: Every node variable recorded during constraint generation resolves to a
+  type that is structurally grounded in the enclosing context — either a concrete
+  type, a type variable from an enclosing annotation, or a structured type
+  containing only such variables. No spurious free type variables from
+  unconstrained solver variables appear in nodeTypes.
+tests: compiler/tests/TestLogic/Type/NodeVarConstrainedTest.elm
+--
 
 ---
 
