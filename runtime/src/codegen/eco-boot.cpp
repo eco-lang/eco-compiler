@@ -393,7 +393,9 @@ static int linkExecutable(const std::string &objectFile,
     // Use -Wl,--start-group / --end-group to handle circular dependencies
     // between static libraries (e.g., EffectRegistry references Time/Http
     // effect managers, which in turn reference Scheduler/Platform).
-    args.push_back("-static");
+    // Project .a libraries are passed by path (already static archives).
+    // System libraries are linked dynamically to avoid pulling in all
+    // transitive static dependencies of libcurl (nghttp2, gssapi, etc.).
     args.push_back("-Wl,--start-group");
 
     // Entry point wrapper
@@ -408,13 +410,16 @@ static int linkExecutable(const std::string &objectFile,
     for (const auto &lib : elmKernelLibs)
         args.push_back(lib);
 
-    // Eco kernel libraries (IO: File, Console, Env, Process, MVar, Runtime, Http)
+    // Eco kernel libraries (IO: File, Console, Env, Process, MVar, Runtime, Http, Crash)
     for (const auto &lib : ecoKernelLibs)
         args.push_back(lib);
 
     args.push_back("-lpthread");
     args.push_back("-lm");
     args.push_back("-lstdc++");
+    args.push_back("-lcurl");
+    args.push_back("-lssl");
+    args.push_back("-lcrypto");
     args.push_back("-Wl,--end-group");
 
     if (verbose) {

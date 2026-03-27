@@ -99,6 +99,17 @@ target_include_directories(EcoKernel_Runtime PUBLIC
 )
 target_compile_features(EcoKernel_Runtime PUBLIC cxx_std_20)
 
+# Crash module (unrecoverable error handling)
+add_library(EcoKernel_Crash STATIC
+    src/eco/Crash.cpp
+    src/eco/CrashExports.cpp
+)
+target_include_directories(EcoKernel_Crash PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${RUNTIME_INCLUDE_DIR}
+)
+target_compile_features(EcoKernel_Crash PUBLIC cxx_std_20)
+
 # Http module (HTTP requests, archive downloads)
 add_library(EcoKernel_Http STATIC
     src/eco/Http.cpp
@@ -132,13 +143,14 @@ target_link_libraries(EcoKernel INTERFACE
     EcoKernel_MVar
     EcoKernel_Runtime
     EcoKernel_Http
+    EcoKernel_Crash
 )
 
 # Keep asserts enabled even in release builds
 foreach(target
     EcoKernel_File EcoKernel_Console EcoKernel_Env
     EcoKernel_Process EcoKernel_MVar EcoKernel_Runtime
-    EcoKernel_Http
+    EcoKernel_Http EcoKernel_Crash
 )
     target_compile_options(${target} PRIVATE -UNDEBUG)
 endforeach()

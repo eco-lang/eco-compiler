@@ -26,6 +26,7 @@ uint64_t appDataDir(uint64_t name);
 uint64_t createDir(uint64_t createParents, uint64_t path);
 uint64_t removeFile(uint64_t path);
 uint64_t removeDir(uint64_t path);
+uint64_t hWriteString(uint64_t handle, uint64_t content);
 
 } // namespace Eco::Kernel::File
 

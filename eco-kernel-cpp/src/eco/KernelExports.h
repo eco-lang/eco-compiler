@@ -86,6 +86,16 @@ uint64_t Eco_Kernel_File_removeFile(uint64_t path);
 // Remove a directory tree. Returns Task Never ().
 uint64_t Eco_Kernel_File_removeDir(uint64_t path);
 
+// Write UTF-8 string to file handle. Returns Task Never ().
+uint64_t Eco_Kernel_File_hWriteString(uint64_t handle, uint64_t content);
+
+//===----------------------------------------------------------------------===//
+// Crash Module - unrecoverable errors
+//===----------------------------------------------------------------------===//
+
+// Crash the program with an error message. Never returns.
+uint64_t Eco_Kernel_Crash_crash(uint64_t message);
+
 //===----------------------------------------------------------------------===//
 // Console Module - write to handles, read from stdin
 //===----------------------------------------------------------------------===//
@@ -144,6 +154,9 @@ uint64_t Eco_Kernel_MVar_take(uint64_t typeTag, uint64_t id);
 
 // Put value into MVar (blocks until empty). Returns Task Never ().
 uint64_t Eco_Kernel_MVar_put(uint64_t typeTag, uint64_t id, uint64_t value);
+
+// Drop (destroy) an MVar. Returns Task Never ().
+uint64_t Eco_Kernel_MVar_drop(uint64_t id);
 
 //===----------------------------------------------------------------------===//
 // Runtime Module - Node.js specific and REPL state

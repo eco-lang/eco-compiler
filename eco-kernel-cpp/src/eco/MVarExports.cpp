@@ -20,3 +20,7 @@ uint64_t Eco_Kernel_MVar_take(uint64_t typeTag, uint64_t id) {
 uint64_t Eco_Kernel_MVar_put(uint64_t typeTag, uint64_t id, uint64_t value) {
     return MVar::put(typeTag, id, value);
 }
+
+uint64_t Eco_Kernel_MVar_drop(uint64_t id) {
+    return MVar::drop(id);
+}

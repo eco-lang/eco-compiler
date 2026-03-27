@@ -90,6 +90,16 @@ uint64_t close(uint64_t handle) {
     return taskSucceedUnit();
 }
 
+uint64_t hWriteString(uint64_t handle, uint64_t content) {
+    int64_t fd = static_cast<int64_t>(handle);
+    std::string data = toString(content);
+    ssize_t written = ::write(static_cast<int>(fd), data.data(), data.size());
+    if (written < 0) {
+        return taskFailString("Write to handle failed");
+    }
+    return taskSucceedUnit();
+}
+
 int64_t size(uint64_t handle) {
     int64_t fd = static_cast<int64_t>(handle);
     struct stat st;

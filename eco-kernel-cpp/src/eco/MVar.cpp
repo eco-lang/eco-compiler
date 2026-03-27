@@ -54,4 +54,10 @@ uint64_t put(uint64_t /*typeTag*/, uint64_t id, uint64_t value) {
     return taskSucceedUnit();
 }
 
+uint64_t drop(uint64_t id) {
+    int64_t mvarId = static_cast<int64_t>(id);
+    s_mvars.erase(mvarId);
+    return taskSucceedUnit();
+}
+
 } // namespace Eco::Kernel::MVar

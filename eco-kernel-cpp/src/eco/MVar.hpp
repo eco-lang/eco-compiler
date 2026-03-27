@@ -9,6 +9,7 @@ int64_t newEmpty();
 uint64_t read(uint64_t typeTag, uint64_t id);
 uint64_t take(uint64_t typeTag, uint64_t id);
 uint64_t put(uint64_t typeTag, uint64_t id, uint64_t value);
+uint64_t drop(uint64_t id);
 
 } // namespace Eco::Kernel::MVar
 
