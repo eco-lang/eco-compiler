@@ -351,6 +351,25 @@ struct ListTailOpLowering : public OpConversionPattern<ListTailOp> {
 };
 
 //===----------------------------------------------------------------------===//
+// Helper: widen an SSA field value to i64 for runtime Unboxable slots.
+// Only Int (i64), Float (f64), and Char (i16) are unboxed in heap fields.
+// i64 and ptr (eco.value → i64) pass through unchanged.
+//===----------------------------------------------------------------------===//
+
+static Value widenFieldToI64(Value val, Location loc,
+                             ConversionPatternRewriter &rewriter) {
+    auto i64Ty = IntegerType::get(rewriter.getContext(), 64);
+    Type ty = val.getType();
+    if (auto intTy = dyn_cast<IntegerType>(ty)) {
+        if (intTy.getWidth() < 64)
+            return rewriter.create<LLVM::ZExtOp>(loc, i64Ty, val);
+    } else if (ty.isF64()) {
+        return rewriter.create<LLVM::BitcastOp>(loc, i64Ty, val);
+    }
+    return val;
+}
+
+//===----------------------------------------------------------------------===//
 // eco.construct.tuple2 -> call eco_alloc_tuple2
 //===----------------------------------------------------------------------===//
 
@@ -369,8 +388,8 @@ struct Tuple2ConstructOpLowering : public OpConversionPattern<Tuple2ConstructOp>
         auto i32Ty = IntegerType::get(ctx, 32);
 
         auto func = runtime.getOrCreateAllocTuple2(rewriter);
-        auto aVal = adaptor.getA();
-        auto bVal = adaptor.getB();
+        auto aVal = widenFieldToI64(adaptor.getA(), loc, rewriter);
+        auto bVal = widenFieldToI64(adaptor.getB(), loc, rewriter);
         int64_t unboxedMask = op.getUnboxedBitmap();
         auto unboxedVal = rewriter.create<LLVM::ConstantOp>(loc, i32Ty,
             static_cast<int32_t>(unboxedMask));
@@ -401,9 +420,9 @@ struct Tuple3ConstructOpLowering : public OpConversionPattern<Tuple3ConstructOp>
         auto i32Ty = IntegerType::get(ctx, 32);
 
         auto func = runtime.getOrCreateAllocTuple3(rewriter);
-        auto aVal = adaptor.getA();
-        auto bVal = adaptor.getB();
-        auto cVal = adaptor.getC();
+        auto aVal = widenFieldToI64(adaptor.getA(), loc, rewriter);
+        auto bVal = widenFieldToI64(adaptor.getB(), loc, rewriter);
+        auto cVal = widenFieldToI64(adaptor.getC(), loc, rewriter);
         int64_t unboxedMask = op.getUnboxedBitmap();
         auto unboxedVal = rewriter.create<LLVM::ConstantOp>(loc, i32Ty,
             static_cast<int32_t>(unboxedMask));
