@@ -241,7 +241,7 @@ isCallableExpression expr =
             -- Codegen generates papCreate for function-typed globals
             isFunctionType monoType
 
-        Mono.MonoVarKernel _ _ _ monoType ->
+        Mono.MonoVarKernel _ _ _ _ monoType ->
             -- Kernel reference - callable if function-typed
             isFunctionType monoType
 
@@ -336,7 +336,7 @@ collectCustomTypeRefsFromExpr expr =
         Mono.MonoVarGlobal _ _ monoType ->
             collectCustomTypeRefsFromType monoType
 
-        Mono.MonoVarKernel _ _ _ monoType ->
+        Mono.MonoVarKernel _ _ _ _ monoType ->
             collectCustomTypeRefsFromType monoType
 
         Mono.MonoList _ exprs monoType ->

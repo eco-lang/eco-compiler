@@ -83,8 +83,8 @@ optimize cycle (A.At region exprInfo) =
             else
                 Names.registerGlobal region home name
 
-        Can.VarKernel home name ->
-            Names.registerKernel home (Opt.VarKernel region home name)
+        Can.VarKernel kernelPrefix home name ->
+            Names.registerKernel home (Opt.VarKernel region kernelPrefix home name)
 
         Can.VarForeign home name _ ->
             Names.registerGlobal region home name

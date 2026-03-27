@@ -290,7 +290,7 @@ collectExprNodeIdsAsList node =
         Can.VarTopLevel _ _ ->
             []
 
-        Can.VarKernel _ _ ->
+        Can.VarKernel _ _ _ ->
             []
 
         Can.VarForeign _ _ _ ->

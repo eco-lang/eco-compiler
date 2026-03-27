@@ -266,7 +266,7 @@ checkExpr ctx expr =
         Mono.MonoVarGlobal _ _ _ ->
             []
 
-        Mono.MonoVarKernel _ _ _ _ ->
+        Mono.MonoVarKernel _ _ _ _ _ ->
             []
 
         Mono.MonoUnit ->

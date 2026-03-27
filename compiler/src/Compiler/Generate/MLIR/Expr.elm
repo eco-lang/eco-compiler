@@ -345,8 +345,8 @@ generateExpr ctx expr =
         Mono.MonoVarGlobal _ specId monoType ->
             generateVarGlobal ctx specId monoType
 
-        Mono.MonoVarKernel _ home name monoType ->
-            generateVarKernel ctx home name monoType
+        Mono.MonoVarKernel _ kernelPrefix home name monoType ->
+            generateVarKernel ctx kernelPrefix home name monoType
 
         Mono.MonoList _ items listType ->
             generateList ctx items listType
@@ -624,15 +624,15 @@ generateVarGlobal ctx specId monoType =
                     }
 
 
-generateVarKernel : Ctx.Context -> Name.Name -> Name.Name -> Mono.MonoType -> ExprResult
-generateVarKernel ctx home name monoType =
+generateVarKernel : Ctx.Context -> Name.Name -> Name.Name -> Name.Name -> Mono.MonoType -> ExprResult
+generateVarKernel ctx kernelPrefix home name monoType =
     let
         ( var, ctx1 ) =
             Ctx.freshVar ctx
 
         kernelName : String
         kernelName =
-            "Elm_Kernel_" ++ home ++ "_" ++ name
+            kernelPrefix ++ "_Kernel_" ++ home ++ "_" ++ name
     in
     -- Check for intrinsic constants (pi, e)
     case Intrinsics.kernelIntrinsic home name [] monoType of
@@ -1544,7 +1544,7 @@ generateFlattenedPartialApplication ctx func args resultType =
                         Nothing ->
                             ( Types.countTotalArity (Mono.typeOf func), False )
 
-                Mono.MonoVarKernel _ _ _ kernelType ->
+                Mono.MonoVarKernel _ _ _ _ kernelType ->
                     let
                         sig =
                             Ctx.kernelFuncSignatureFromType kernelType
@@ -1677,7 +1677,7 @@ generateClosureApplication ctx func args resultType callInfo =
                                     Nothing ->
                                         False
 
-                            Mono.MonoVarKernel _ _ _ kernelType ->
+                            Mono.MonoVarKernel _ _ _ _ kernelType ->
                                 hasAllBoxedEvaluatorParams (Ctx.kernelFuncSignatureFromType kernelType)
 
                             Mono.MonoVarLocal name _ ->
@@ -1781,7 +1781,7 @@ trackExternBoxedVar name expr ctx =
                         Nothing ->
                             False
 
-                Mono.MonoVarKernel _ _ _ kernelType ->
+                Mono.MonoVarKernel _ _ _ _ kernelType ->
                     hasAllBoxedEvaluatorParams (Ctx.kernelFuncSignatureFromType kernelType)
 
                 _ ->
@@ -1992,7 +1992,7 @@ compileSkippedBindings ctx bindings =
 findKernelDecodeCall : Mono.MonoExpr -> Maybe Mono.MonoExpr
 findKernelDecodeCall expr =
     case expr of
-        Mono.MonoCall _ (Mono.MonoVarKernel _ "Bytes" "decode" _) args _ _ ->
+        Mono.MonoCall _ (Mono.MonoVarKernel _ _ "Bytes" "decode" _) args _ _ ->
             case args of
                 [ _, bytesExpr ] ->
                     Just bytesExpr
@@ -2367,7 +2367,7 @@ generateSaturatedCall ctx func args resultType callInfo =
                                     , isTerminated = False
                                     }
 
-        Mono.MonoVarKernel _ home name funcType ->
+        Mono.MonoVarKernel _ kernelPrefix home name funcType ->
             let
                 -- Use generateExprListTyped to get actual SSA types
                 ( argOps, argsWithTypes, ctx1 ) =
@@ -2764,7 +2764,7 @@ generateSaturatedCall ctx func args resultType callInfo =
 
                                         kernelName : String
                                         kernelName =
-                                            "Elm_Kernel_" ++ home ++ "_" ++ name
+                                            kernelPrefix ++ "_Kernel_" ++ home ++ "_" ++ name
 
                                         resultMlirType : MlirType
                                         resultMlirType =
@@ -2798,7 +2798,7 @@ generateSaturatedCall ctx func args resultType callInfo =
 
                                         kernelName : String
                                         kernelName =
-                                            "Elm_Kernel_" ++ home ++ "_" ++ name
+                                            kernelPrefix ++ "_Kernel_" ++ home ++ "_" ++ name
 
                                         resultMlirType : MlirType
                                         resultMlirType =

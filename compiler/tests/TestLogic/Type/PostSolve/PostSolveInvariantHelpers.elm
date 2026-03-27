@@ -105,7 +105,7 @@ walkExpr scopeName (A.At _ exprInfo) acc =
                 Can.VarTopLevel _ _ ->
                     acc
 
-                Can.VarKernel _ _ ->
+                Can.VarKernel _ _ _ ->
                     acc
 
                 Can.VarForeign _ _ _ ->
@@ -339,7 +339,7 @@ isGroupBExprNode node =
 isVarKernel : Can.Expr_ -> Bool
 isVarKernel node =
     case node of
-        Can.VarKernel _ _ ->
+        Can.VarKernel _ _ _ ->
             True
 
         _ ->

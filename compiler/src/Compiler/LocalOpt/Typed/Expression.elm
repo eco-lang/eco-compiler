@@ -114,7 +114,7 @@ findVarLocalTvar targetName exprVars (A.At _ info) =
         Can.VarTopLevel _ _ ->
             Nothing
 
-        Can.VarKernel _ _ ->
+        Can.VarKernel _ _ _ ->
             Nothing
 
         Can.VarForeign _ _ _ ->
@@ -364,12 +364,12 @@ optimizeExpr kernelEnv annotations exprTypes exprVars home cycle region tipe tva
             else
                 Names.registerGlobal region varHome name defType tvar
 
-        Can.VarKernel kernelHome name ->
+        Can.VarKernel kernelPrefix kernelHome name ->
             -- Use the solver-inferred type (tipe) rather than the kernel env type.
             -- The kernel env stores a single type per kernel (first-usage-wins),
             -- which is wrong for polymorphic kernels used through aliases
             -- (e.g., String.fromFloat vs String.fromInt both alias String.fromNumber).
-            Names.registerKernel kernelHome (TOpt.VarKernel region kernelHome name { tipe = tipe, tvar = tvar })
+            Names.registerKernel kernelHome (TOpt.VarKernel region kernelPrefix kernelHome name { tipe = tipe, tvar = tvar })
 
         Can.VarForeign foreignHome name _ ->
             Names.registerGlobal region foreignHome name tipe tvar

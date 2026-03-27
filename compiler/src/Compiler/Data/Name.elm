@@ -127,13 +127,17 @@ splitDots =
 -- ====== GET KERNEL ======
 
 
-{-| Strip the "Elm.Kernel." or "Eco.Kernel." prefix from a kernel module name. Crashes if the name is not a kernel module.
-Both prefixes are exactly 11 characters, so the same dropLeft works for either.
+{-| Strip the "Elm.Kernel." or "Eco.Kernel." prefix from a kernel module name
+and return the prefix kind ("Elm" or "Eco") along with the stripped module name.
+Crashes if the name is not a kernel module.
 -}
-getKernel : Name -> Name
+getKernel : Name -> ( Name, Name )
 getKernel name =
-    if isKernel name then
-        String.dropLeft (String.length prefixKernel) name
+    if String.startsWith prefixEcoKernel name then
+        ( "Eco", String.dropLeft (String.length prefixEcoKernel) name )
+
+    else if String.startsWith prefixKernel name then
+        ( "Elm", String.dropLeft (String.length prefixKernel) name )
 
     else
         crash "AssertionFailed"

@@ -952,7 +952,7 @@ extractExprNodeIds node =
         Can.VarTopLevel _ _ ->
             Set.empty
 
-        Can.VarKernel _ _ ->
+        Can.VarKernel _ _ _ ->
             Set.empty
 
         Can.VarForeign _ _ _ ->

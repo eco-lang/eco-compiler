@@ -38,7 +38,7 @@ Accessors and number-boxed kernels are deferred until callee parameter types are
 type ProcessedArg
     = ResolvedArg Mono.MonoExpr
     | PendingAccessor A.Region Name Can.Type
-    | PendingKernel A.Region String String TOpt.Meta
+    | PendingKernel A.Region String String String TOpt.Meta
     | LocalFunArg Name Can.Type
 
 
@@ -376,14 +376,14 @@ specializeExpr view snapshot expr state =
                 funcMonoType =
                     deriveKernelAbiTypeDirect ( "Debug", name ) meta view
             in
-            ( Mono.MonoVarKernel region "Debug" name funcMonoType, state )
+            ( Mono.MonoVarKernel region "Elm" "Debug" name funcMonoType, state )
 
-        TOpt.VarKernel region home name meta ->
+        TOpt.VarKernel region kernelPrefix home name meta ->
             let
                 funcMonoType =
                     deriveKernelAbiTypeDirect ( home, name ) meta view
             in
-            ( Mono.MonoVarKernel region home name funcMonoType, state )
+            ( Mono.MonoVarKernel region kernelPrefix home name funcMonoType, state )
 
         -- Collections
         TOpt.List region items meta ->
@@ -653,7 +653,7 @@ specializeCall view snapshot region func args meta state =
             in
             ( Mono.MonoCall region monoFunc monoArgs resultType Mono.defaultCallInfo, state3 )
 
-        TOpt.VarKernel funcRegion home name funcMeta ->
+        TOpt.VarKernel funcRegion kernelPrefix home name funcMeta ->
             let
                 funcMonoType =
                     deriveKernelAbiTypeDirect ( home, name ) funcMeta view
@@ -662,7 +662,7 @@ specializeCall view snapshot region func args meta state =
                     Closure.flattenFunctionType funcMonoType
 
                 monoFunc =
-                    Mono.MonoVarKernel funcRegion home name funcMonoType
+                    Mono.MonoVarKernel funcRegion kernelPrefix home name funcMonoType
 
                 ( monoArgs, state2 ) =
                     finishProcessedArgs view processedArgs paramTypes state1
@@ -678,7 +678,7 @@ specializeCall view snapshot region func args meta state =
                     Closure.flattenFunctionType funcMonoType
 
                 monoFunc =
-                    Mono.MonoVarKernel funcRegion "Debug" name funcMonoType
+                    Mono.MonoVarKernel funcRegion "Elm" "Debug" name funcMonoType
 
                 ( monoArgs, state2 ) =
                     finishProcessedArgs view processedArgs paramTypes state1
@@ -806,14 +806,14 @@ processCallArgs view snapshot args state0 =
                     , st
                     )
 
-                TOpt.VarKernel kernelRegion home name kernelMeta ->
+                TOpt.VarKernel kernelRegion kernelPrefix home name kernelMeta ->
                     case KernelAbi.deriveKernelAbiMode ( home, name ) kernelMeta.tipe of
                         KernelAbi.NumberBoxed ->
                             let
                                 monoType =
                                     resolveType view kernelMeta
                             in
-                            ( PendingKernel kernelRegion home name kernelMeta :: accArgs
+                            ( PendingKernel kernelRegion kernelPrefix home name kernelMeta :: accArgs
                             , monoType :: accTypes
                             , st
                             )
@@ -936,12 +936,12 @@ finishProcessedArg view processedArg maybeParamType state =
                             ++ " did not receive parameter type"
                         )
 
-        PendingKernel region home name kernelMeta ->
+        PendingKernel region kernelPrefix home name kernelMeta ->
             let
                 kernelMonoType =
                     deriveKernelAbiTypeDirect ( home, name ) kernelMeta view
             in
-            ( Mono.MonoVarKernel region home name kernelMonoType, state )
+            ( Mono.MonoVarKernel region kernelPrefix home name kernelMonoType, state )
 
         LocalFunArg name _ ->
             case maybeParamType of

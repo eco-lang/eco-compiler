@@ -147,7 +147,7 @@ collectCustomTypesFromExpr expr acc =
         Mono.MonoVarGlobal _ _ _ ->
             accWithType
 
-        Mono.MonoVarKernel _ _ _ _ ->
+        Mono.MonoVarKernel _ _ _ _ _ ->
             accWithType
 
         Mono.MonoList _ exprs _ ->

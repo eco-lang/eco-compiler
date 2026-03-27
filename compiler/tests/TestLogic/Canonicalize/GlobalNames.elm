@@ -144,7 +144,7 @@ collectExprNodeIssues node =
         Can.VarTopLevel home name ->
             validateHome "VarTopLevel" name home
 
-        Can.VarKernel _ _ ->
+        Can.VarKernel _ _ _ ->
             -- VarKernel uses kernel module naming, no IO.Canonical home to validate
             []
 

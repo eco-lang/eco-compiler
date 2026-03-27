@@ -90,7 +90,7 @@ type Expr
     | VarBox A.Region Global
     | VarCycle A.Region IO.Canonical Name
     | VarDebug A.Region Name IO.Canonical (Maybe Name)
-    | VarKernel A.Region Name Name
+    | VarKernel A.Region Name Name Name
     | List A.Region (List Expr)
     | Function (List Name) Expr
     | TrackedFunction (List (A.Located Name)) Expr
@@ -574,10 +574,11 @@ exprEncoder expr =
                 , BE.maybe BE.string unhandledValueName
                 ]
 
-        VarKernel region home name ->
+        VarKernel region kernelPrefix home name ->
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 12
                 , A.regionEncoder region
+                , BE.string kernelPrefix
                 , BE.string home
                 , BE.string name
                 ]
@@ -774,8 +775,9 @@ exprDecoder =
                             (BD.maybe BD.string)
 
                     12 ->
-                        Bytes.Decode.map3 VarKernel
+                        Bytes.Decode.map4 VarKernel
                             A.regionDecoder
+                            BD.string
                             BD.string
                             BD.string
 

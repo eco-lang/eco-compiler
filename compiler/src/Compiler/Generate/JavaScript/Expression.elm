@@ -125,7 +125,7 @@ generate mode parentModule expression =
         Opt.VarDebug region name home unhandledValueName ->
             generateDebug name home region unhandledValueName |> JsExpr
 
-        Opt.VarKernel (A.Region startPos _) home name ->
+        Opt.VarKernel (A.Region startPos _) _ home name ->
             JS.ExprTrackedRef parentModule startPos (JsName.fromKernel home name) (JsName.fromKernel home name) |> JsExpr
 
         Opt.List region entries ->
@@ -850,7 +850,7 @@ exprRegion expr =
         Opt.VarDebug region _ _ _ ->
             Just region
 
-        Opt.VarKernel region _ _ ->
+        Opt.VarKernel region _ _ _ ->
             Just region
 
         Opt.List region _ ->

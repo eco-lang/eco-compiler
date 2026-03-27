@@ -268,7 +268,7 @@ Used for kernel functions like Elm.Kernel.Platform.batch.
 -}
 varKernelExpr : Int -> Name.Name -> Name.Name -> Can.Expr
 varKernelExpr id home name =
-    makeExpr id (Can.VarKernel home name)
+    makeExpr id (Can.VarKernel "Elm" home name)
 
 
 {-| Create a foreign variable reference (VarForeign).

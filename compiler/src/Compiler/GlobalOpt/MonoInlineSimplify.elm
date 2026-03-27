@@ -386,7 +386,7 @@ computeCost expr =
         MonoVarGlobal _ _ _ ->
             1
 
-        MonoVarKernel _ _ _ _ ->
+        MonoVarKernel _ _ _ _ _ ->
             1
 
         MonoUnit ->
@@ -881,7 +881,7 @@ rewriteExpr ctx expr =
         MonoVarGlobal _ _ _ ->
             ( expr, ctx )
 
-        MonoVarKernel _ _ _ _ ->
+        MonoVarKernel _ _ _ _ _ ->
             ( expr, ctx )
 
         MonoUnit ->
@@ -1225,7 +1225,7 @@ substitute oldName newName varType expr =
         MonoVarGlobal _ _ _ ->
             expr
 
-        MonoVarKernel _ _ _ _ ->
+        MonoVarKernel _ _ _ _ _ ->
             expr
 
         MonoUnit ->
@@ -2024,7 +2024,7 @@ isPureExpr expr =
         MonoVarGlobal _ _ _ ->
             True
 
-        MonoVarKernel _ _ _ _ ->
+        MonoVarKernel _ _ _ _ _ ->
             -- Kernel functions could have side effects
             False
 
@@ -2089,7 +2089,7 @@ countUsages name expr =
         MonoVarGlobal _ _ _ ->
             0
 
-        MonoVarKernel _ _ _ _ ->
+        MonoVarKernel _ _ _ _ _ ->
             0
 
         MonoUnit ->
@@ -2237,7 +2237,7 @@ inlineVar name replacement expr =
         MonoVarGlobal _ _ _ ->
             expr
 
-        MonoVarKernel _ _ _ _ ->
+        MonoVarKernel _ _ _ _ _ ->
             expr
 
         MonoUnit ->

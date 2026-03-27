@@ -363,7 +363,7 @@ checkExpr (A.At region exprInfo) errors =
         Can.VarTopLevel _ _ ->
             errors
 
-        Can.VarKernel _ _ ->
+        Can.VarKernel _ _ _ ->
             errors
 
         Can.VarForeign _ _ _ ->

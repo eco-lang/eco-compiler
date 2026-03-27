@@ -134,7 +134,7 @@ reifyEncoderHelp registry exprCache expr =
                         _ ->
                             Nothing
 
-                Mono.MonoVarKernel _ "Bytes" name _ ->
+                Mono.MonoVarKernel _ _ "Bytes" name _ ->
                     -- Kernel function from Bytes module
                     reifyBytesKernelCall registry exprCache name args
 
@@ -154,7 +154,7 @@ reifyEncoderHelp registry exprCache expr =
                                 _ ->
                                     Nothing
 
-                        Mono.MonoVarKernel _ "Bytes" name2 _ ->
+                        Mono.MonoVarKernel _ _ "Bytes" name2 _ ->
                             reifyBytesKernelCall registry exprCache name2 (innerArgs ++ args)
 
                         _ ->
@@ -177,7 +177,7 @@ reifyEncoderHelp registry exprCache expr =
                                         _ ->
                                             Nothing
 
-                                Mono.MonoVarKernel _ "Bytes" name2 _ ->
+                                Mono.MonoVarKernel _ _ "Bytes" name2 _ ->
                                     reifyBytesKernelCall registry exprCache name2 (innerArgs ++ args)
 
                                 _ ->
@@ -514,7 +514,7 @@ reifyDecoder registry exprCache expr =
                         _ ->
                             Nothing
 
-                Mono.MonoVarKernel _ "Bytes" name _ ->
+                Mono.MonoVarKernel _ _ "Bytes" name _ ->
                     reifyBytesKernelDecodeCall registry exprCache name args
 
                 -- Curried call: func is itself a call (e.g. from pipe operator expansion).
@@ -533,7 +533,7 @@ reifyDecoder registry exprCache expr =
                                 _ ->
                                     Nothing
 
-                        Mono.MonoVarKernel _ "Bytes" name2 _ ->
+                        Mono.MonoVarKernel _ _ "Bytes" name2 _ ->
                             reifyBytesKernelDecodeCall registry exprCache name2 (innerArgs ++ args)
 
                         _ ->
@@ -558,7 +558,7 @@ reifyDecoder registry exprCache expr =
                                         _ ->
                                             Nothing
 
-                                Mono.MonoVarKernel _ "Bytes" name2 _ ->
+                                Mono.MonoVarKernel _ _ "Bytes" name2 _ ->
                                     reifyBytesKernelDecodeCall registry exprCache name2 (innerArgs ++ args)
 
                                 _ ->
@@ -1053,7 +1053,7 @@ extractSentinelFromCondition condExpr =
         -- Look for equality comparison: var == literal or literal == var
         Mono.MonoCall _ func [ arg1, arg2 ] _ _ ->
             case func of
-                Mono.MonoVarKernel _ _ "eq" _ ->
+                Mono.MonoVarKernel _ _ _ "eq" _ ->
                     -- Check if one arg is a literal int
                     case ( arg1, arg2 ) of
                         ( Mono.MonoLiteral (Mono.LInt n) _, _ ) ->

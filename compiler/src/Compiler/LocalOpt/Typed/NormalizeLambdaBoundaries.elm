@@ -194,8 +194,8 @@ renameExpr env expr =
         TOpt.VarDebug region name home maybeUnhandled meta ->
             TOpt.VarDebug region (lookupRename env name) home maybeUnhandled meta
 
-        TOpt.VarKernel region home name meta ->
-            TOpt.VarKernel region home name meta
+        TOpt.VarKernel region kernelPrefix home name meta ->
+            TOpt.VarKernel region kernelPrefix home name meta
 
         -- Collections: recurse
         TOpt.List region entries meta ->

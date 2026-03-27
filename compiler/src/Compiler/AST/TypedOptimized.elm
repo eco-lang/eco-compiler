@@ -132,7 +132,7 @@ type Expr
     | VarBox A.Region Global Meta
     | VarCycle A.Region IO.Canonical Name Meta
     | VarDebug A.Region Name IO.Canonical (Maybe Name) Meta
-    | VarKernel A.Region Name Name Meta
+    | VarKernel A.Region Name Name Name Meta
     | List A.Region (List Expr) Meta
     | Function (List ( Name, Can.Type )) Expr Meta -- params with types, body, function type
     | TrackedFunction (List ( A.Located Name, Can.Type )) Expr Meta
@@ -200,7 +200,7 @@ metaOf expr =
         VarDebug _ _ _ _ meta ->
             meta
 
-        VarKernel _ _ _ meta ->
+        VarKernel _ _ _ _ meta ->
             meta
 
         List _ _ meta ->
@@ -829,10 +829,11 @@ exprEncoder expr =
                 , Can.typeEncoder meta.tipe
                 ]
 
-        VarKernel region home name meta ->
+        VarKernel region kernelPrefix home name meta ->
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 12
                 , A.regionEncoder region
+                , BE.string kernelPrefix
                 , BE.string home
                 , BE.string name
                 , Can.typeEncoder meta.tipe
@@ -1062,8 +1063,9 @@ exprDecoder =
                             metaDecoder
 
                     12 ->
-                        Bytes.Decode.map4 VarKernel
+                        Bytes.Decode.map5 VarKernel
                             A.regionDecoder
+                            BD.string
                             BD.string
                             BD.string
                             metaDecoder

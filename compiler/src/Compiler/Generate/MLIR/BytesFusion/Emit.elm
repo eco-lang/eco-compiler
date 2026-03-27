@@ -1356,7 +1356,7 @@ monoExprType expr =
         Mono.MonoVarGlobal _ _ ty ->
             ty
 
-        Mono.MonoVarKernel _ _ _ ty ->
+        Mono.MonoVarKernel _ _ _ _ ty ->
             ty
 
         Mono.MonoList _ _ ty ->

@@ -976,7 +976,7 @@ compareExpr ctx path expected actual =
             specKeyDiffs
                 ++ compareTypeAlpha (path ++ ".type") eType aType
 
-        ( Mono.MonoVarKernel _ eHome eName eType, Mono.MonoVarKernel _ aHome aName aType ) ->
+        ( Mono.MonoVarKernel _ _ eHome eName eType, Mono.MonoVarKernel _ _ aHome aName aType ) ->
             (if eHome /= aHome || eName /= aName then
                 [ path ++ ".kernel: " ++ eHome ++ "." ++ eName ++ " vs " ++ aHome ++ "." ++ aName ]
 
@@ -1075,7 +1075,7 @@ exprVariantName expr =
         Mono.MonoVarGlobal _ _ _ ->
             "MonoVarGlobal"
 
-        Mono.MonoVarKernel _ _ _ _ ->
+        Mono.MonoVarKernel _ _ _ _ _ ->
             "MonoVarKernel"
 
         Mono.MonoList _ _ _ ->

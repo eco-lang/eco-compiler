@@ -1318,7 +1318,7 @@ addLocalOptGraph name status graph =
             graph
 
         RKernelLocal cs ->
-            GA.addOptKernel (Name.getKernel name) cs graph
+            GA.addOptKernel (Tuple.second (Name.getKernel name)) cs graph
 
         RKernelForeign ->
             graph

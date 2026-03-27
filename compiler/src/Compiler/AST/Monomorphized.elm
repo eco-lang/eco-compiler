@@ -547,7 +547,7 @@ type MonoExpr
     = MonoLiteral Literal MonoType
     | MonoVarLocal Name MonoType
     | MonoVarGlobal Region SpecId MonoType
-    | MonoVarKernel Region Name Name MonoType -- Mutually recursive variable reference
+    | MonoVarKernel Region Name Name Name MonoType -- kernel prefix, home, name, type
     | MonoList Region (List MonoExpr) MonoType
     | MonoClosure ClosureInfo MonoExpr MonoType
     | MonoCall Region MonoExpr (List MonoExpr) MonoType CallInfo
@@ -765,7 +765,7 @@ typeOf expr =
         MonoVarGlobal _ _ t ->
             t
 
-        MonoVarKernel _ _ _ t ->
+        MonoVarKernel _ _ _ _ t ->
             t
 
         MonoList _ _ t ->

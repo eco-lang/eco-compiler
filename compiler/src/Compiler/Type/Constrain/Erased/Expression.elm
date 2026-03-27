@@ -92,7 +92,7 @@ constrainProg rtv (A.At region exprInfo) expected =
         Can.VarTopLevel _ name ->
             Prog.pure (CLocal region name expected)
 
-        Can.VarKernel _ _ ->
+        Can.VarKernel _ _ _ ->
             Prog.pure CTrue
 
         Can.VarForeign _ name annotation ->

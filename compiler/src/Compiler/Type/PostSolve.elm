@@ -136,7 +136,7 @@ checkDefForAlias annotations def env =
                             A.toValue body
                     in
                     case node of
-                        Can.VarKernel home kernelName ->
+                        Can.VarKernel _ home kernelName ->
                             KernelTypes.insertFirstUsage home kernelName resultType env
 
                         _ ->
@@ -154,7 +154,7 @@ checkKernelAliasBody :
     -> KernelTypes.KernelTypeEnv
 checkKernelAliasBody annotations defName (A.At _ exprInfo) env =
     case exprInfo.node of
-        Can.VarKernel home kernelName ->
+        Can.VarKernel _ home kernelName ->
             case Data.Map.get Basics.identity defName annotations of
                 Just (Can.Forall _ tipe) ->
                     KernelTypes.insertFirstUsage home kernelName tipe env
@@ -233,7 +233,7 @@ postSolveDef annotations def nodeTypes0 kernel0 =
                             A.toValue body
                     in
                     case bodyInfo.node of
-                        Can.VarKernel _ _ ->
+                        Can.VarKernel _ _ _ ->
                             ( arraySetJust bodyInfo.id resultType nodeTypes0
                             , kernel0
                             )
@@ -387,7 +387,7 @@ postSolveExpr annotations (A.At _ exprInfo) nodeTypes0 kernel0 =
             postSolveUpdate annotations record fields nodeTypes0 kernel0
 
         -- ====== VARKERNEL: Look up from kernelEnv ======
-        Can.VarKernel home name ->
+        Can.VarKernel _ home name ->
             case KernelTypes.lookup home name kernel0 of
                 Just kernelType ->
                     -- Type known: update nodeTypes with the kernel type
@@ -570,7 +570,7 @@ postSolveCall annotations exprId func args nodeTypes0 kernel0 =
     case func of
         A.At _ funcInfo ->
             case funcInfo.node of
-                Can.VarKernel home name ->
+                Can.VarKernel _ home name ->
                     -- Direct kernel call: DON'T recurse into func (it's VarKernel)
                     -- Only recurse into args
                     let
@@ -764,7 +764,7 @@ inferBinopKernelType operand expectedType nodeTypes kernel =
     case operand of
         A.At _ exprInfo ->
             case exprInfo.node of
-                Can.VarKernel home name ->
+                Can.VarKernel _ home name ->
                     if KernelTypes.hasEntry home name kernel then
                         -- Already have a type for this kernel; don't override
                         ( nodeTypes, kernel )
@@ -839,7 +839,7 @@ inferBranchKernelType branchExpr expectedType nodeTypes kernel =
     case branchExpr of
         A.At _ exprInfo ->
             case exprInfo.node of
-                Can.VarKernel home name ->
+                Can.VarKernel _ home name ->
                     if KernelTypes.hasEntry home name kernel then
                         -- Already have a type for this kernel; don't override
                         ( nodeTypes, kernel )
@@ -1166,7 +1166,7 @@ hasKernelArg args =
 isKernelExpr : Can.Expr -> Bool
 isKernelExpr (A.At _ info) =
     case info.node of
-        Can.VarKernel _ _ ->
+        Can.VarKernel _ _ _ ->
             True
 
         _ ->
@@ -1202,7 +1202,7 @@ propagateKernelArgTypes args expectedTypes nodeTypes0 kernel0 =
             case arg of
                 A.At _ argInfo ->
                     case argInfo.node of
-                        Can.VarKernel argHome argName ->
+                        Can.VarKernel _ argHome argName ->
                             if KernelTypes.hasEntry argHome argName ke then
                                 -- Already have a type for this kernel; don't override
                                 ( nt, ke )
@@ -1507,7 +1507,7 @@ processCtorArgs annotations subst ctorArgTypes args funcExpr nodeTypes0 kernel0 
             case arg of
                 A.At _ argInfo ->
                     case argInfo.node of
-                        Can.VarKernel home name ->
+                        Can.VarKernel _ home name ->
                             if KernelTypes.hasEntry home name ke then
                                 -- Already have a type for this kernel; recurse normally
                                 postSolveExpr annotations arg nt ke

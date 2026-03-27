@@ -530,7 +530,7 @@ constrainNodeWithIdsProg rtv region node expected =
         Can.VarTopLevel _ name ->
             Prog.pureS (CLocal region name expected)
 
-        Can.VarKernel _ _ ->
+        Can.VarKernel _ _ _ ->
             Prog.pureS CTrue
 
         Can.VarForeign _ name annotation ->

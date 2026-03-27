@@ -53,7 +53,7 @@ back to the boxed ABI.
 type ProcessedArg
     = ResolvedArg Mono.MonoExpr
     | PendingAccessor A.Region Name Can.Type
-    | PendingKernel A.Region String String Can.Type
+    | PendingKernel A.Region String String String Can.Type
     | PendingGlobal TOpt.Expr Substitution Can.Type
     | LocalFunArg Name Can.Type
 
@@ -1268,9 +1268,9 @@ specializeExpr expr subst state =
                 funcMonoType =
                     deriveKernelAbiType ( "Debug", name ) canType subst
             in
-            ( Mono.MonoVarKernel region "Debug" name funcMonoType, state )
+            ( Mono.MonoVarKernel region "Elm" "Debug" name funcMonoType, state )
 
-        TOpt.VarKernel region home name meta ->
+        TOpt.VarKernel region kernelPrefix home name meta ->
             let
                 canType =
                     meta.tipe
@@ -1278,7 +1278,7 @@ specializeExpr expr subst state =
                 funcMonoType =
                     deriveKernelAbiType ( home, name ) canType subst
             in
-            ( Mono.MonoVarKernel region home name funcMonoType, state )
+            ( Mono.MonoVarKernel region kernelPrefix home name funcMonoType, state )
 
         TOpt.List region exprs meta ->
             let
@@ -1383,7 +1383,7 @@ specializeExpr expr subst state =
                     in
                     ( Mono.MonoCall region monoFunc monoArgs resultMonoType Mono.defaultCallInfo, newState )
 
-                TOpt.VarKernel funcRegion home name funcMeta ->
+                TOpt.VarKernel funcRegion kernelPrefix home name funcMeta ->
                     let
                         funcCanType =
                             funcMeta.tipe
@@ -1425,7 +1425,7 @@ specializeExpr expr subst state =
                             callResultMonoType subst callSubst canType
 
                         monoFunc =
-                            Mono.MonoVarKernel funcRegion home name funcMonoType
+                            Mono.MonoVarKernel funcRegion kernelPrefix home name funcMonoType
                     in
                     ( Mono.MonoCall region monoFunc monoArgs resultMonoType Mono.defaultCallInfo, state2 )
 
@@ -1471,7 +1471,7 @@ specializeExpr expr subst state =
                             callResultMonoType subst callSubst canType
 
                         monoFunc =
-                            Mono.MonoVarKernel funcRegion "Debug" name funcMonoType
+                            Mono.MonoVarKernel funcRegion "Elm" "Debug" name funcMonoType
                     in
                     ( Mono.MonoCall region monoFunc monoArgs resultMonoType Mono.defaultCallInfo, state2 )
 
@@ -2470,7 +2470,7 @@ processCallArg subst arg ( accArgs, accTypes, st ) =
             , st
             )
 
-        TOpt.VarKernel region home name kernelMeta ->
+        TOpt.VarKernel region kernelPrefix home name kernelMeta ->
             let
                 kernelCanType =
                     kernelMeta.tipe
@@ -2481,7 +2481,7 @@ processCallArg subst arg ( accArgs, accTypes, st ) =
                         monoType =
                             Mono.forceCNumberToInt (TypeSubst.applySubst subst kernelCanType)
                     in
-                    ( PendingKernel region home name kernelCanType :: accArgs
+                    ( PendingKernel region kernelPrefix home name kernelCanType :: accArgs
                     , monoType :: accTypes
                     , st
                     )
@@ -2671,7 +2671,7 @@ resolveProcessedArg processedArg maybeParamType subst state =
             in
             specializeExpr savedExpr refinedSubst state
 
-        PendingKernel region home name canType ->
+        PendingKernel region kernelPrefix home name canType ->
             -- Number-boxed kernel argument. Now that we have the call-site substitution,
             -- we can properly specialize it. If the type is fully monomorphic (e.g., Int -> Int -> Int),
             -- we'll get a specialized numeric type that enables intrinsics like eco.int.add.
@@ -2680,7 +2680,7 @@ resolveProcessedArg processedArg maybeParamType subst state =
                 kernelMonoType =
                     deriveKernelAbiType ( home, name ) canType subst
             in
-            ( Mono.MonoVarKernel region home name kernelMonoType, state )
+            ( Mono.MonoVarKernel region kernelPrefix home name kernelMonoType, state )
 
         LocalFunArg name canType ->
             -- Let-bound function passed as argument. Use the callee's parameter type
@@ -3795,7 +3795,7 @@ renameTailCalls oldName newName expr =
         Mono.MonoVarGlobal _ _ _ ->
             expr
 
-        Mono.MonoVarKernel _ _ _ _ ->
+        Mono.MonoVarKernel _ _ _ _ _ ->
             expr
 
         Mono.MonoUnit ->

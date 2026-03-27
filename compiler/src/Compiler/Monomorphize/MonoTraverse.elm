@@ -286,7 +286,7 @@ foldExprAccFirstChildren f acc expr =
         MonoVarGlobal _ _ _ ->
             acc
 
-        MonoVarKernel _ _ _ _ ->
+        MonoVarKernel _ _ _ _ _ ->
             acc
 
         MonoUnit ->
@@ -408,7 +408,7 @@ mapExprChildren f expr =
         MonoVarGlobal _ _ _ ->
             expr
 
-        MonoVarKernel _ _ _ _ ->
+        MonoVarKernel _ _ _ _ _ ->
             expr
 
         MonoUnit ->
@@ -589,7 +589,7 @@ traverseExprChildren f ctx expr =
         MonoVarGlobal _ _ _ ->
             ( expr, ctx )
 
-        MonoVarKernel _ _ _ _ ->
+        MonoVarKernel _ _ _ _ _ ->
             ( expr, ctx )
 
         MonoUnit ->

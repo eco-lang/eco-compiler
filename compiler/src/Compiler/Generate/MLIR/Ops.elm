@@ -434,7 +434,7 @@ ecoCallNamed ctx resultVar funcName operands returnType =
     let
         -- Register kernel functions for declaration generation
         ctxWithKernel =
-            if String.startsWith "Elm_Kernel_" funcName then
+            if String.startsWith "Elm_Kernel_" funcName || String.startsWith "Eco_Kernel_" funcName then
                 Ctx.registerKernelCall ctx funcName (List.map Tuple.second operands) returnType
 
             else

@@ -449,7 +449,7 @@ collectExprNodeKinds (A.At _ exprInfo) acc =
 
         ( kind, childAcc ) =
             case exprInfo.node of
-                Can.VarKernel _ _ ->
+                Can.VarKernel _ _ _ ->
                     ( KVarKernel, acc )
 
                 Can.Accessor _ ->

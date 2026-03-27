@@ -252,7 +252,7 @@ checkExprAllTypes ctx expr =
         Mono.MonoVarGlobal _ _ varType ->
             checkType ctx "global-var type" varType
 
-        Mono.MonoVarKernel _ _ _ _ ->
+        Mono.MonoVarKernel _ _ _ _ _ ->
             -- Kernel vars may legitimately have CEcoValue
             []
 

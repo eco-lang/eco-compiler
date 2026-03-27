@@ -89,7 +89,7 @@ extractRegion expr =
         Mono.MonoVarGlobal region _ _ ->
             region
 
-        Mono.MonoVarKernel region _ _ _ ->
+        Mono.MonoVarKernel region _ _ _ _ ->
             region
 
         Mono.MonoList region _ _ ->

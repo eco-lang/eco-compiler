@@ -581,7 +581,7 @@ ensureCallableForNode home expr monoType ctx =
                         monoType
                         ctx
 
-                Mono.MonoVarKernel region kernelHome name kernelAbiType ->
+                Mono.MonoVarKernel region kernelPrefix kernelHome name kernelAbiType ->
                     -- Kernels use flattened ABI (all params at once)
                     let
                         ( kernelFlatArgTypes, kernelFlatRetType ) =
@@ -591,7 +591,7 @@ ensureCallableForNode home expr monoType ctx =
                             Mono.MFunction kernelFlatArgTypes kernelFlatRetType
                     in
                     makeAliasClosureGO home
-                        (Mono.MonoVarKernel region kernelHome name kernelAbiType)
+                        (Mono.MonoVarKernel region kernelPrefix kernelHome name kernelAbiType)
                         kernelFlatArgTypes
                         kernelFlatRetType
                         flattenedFuncType
@@ -858,7 +858,7 @@ rewriteExprForAbi home expr ctx =
         Mono.MonoVarGlobal _ _ _ ->
             ( expr, ctx )
 
-        Mono.MonoVarKernel _ _ _ _ ->
+        Mono.MonoVarKernel _ _ _ _ _ ->
             ( expr, ctx )
 
         Mono.MonoUnit ->
@@ -1291,7 +1291,7 @@ annotateExprCalls graph env expr =
         Mono.MonoVarGlobal _ _ _ ->
             expr
 
-        Mono.MonoVarKernel _ _ _ _ ->
+        Mono.MonoVarKernel _ _ _ _ _ ->
             expr
 
         Mono.MonoUnit ->
@@ -1425,7 +1425,7 @@ callModelForExpr (Mono.MonoGraph { nodes }) env expr =
                 _ ->
                     Just Mono.StageCurried
 
-        Mono.MonoVarKernel _ _ _ _ ->
+        Mono.MonoVarKernel _ _ _ _ _ ->
             Just Mono.FlattenedExternal
 
         Mono.MonoVarLocal name _ ->
@@ -1517,7 +1517,7 @@ sourceArityForExpr graph env expr =
                     -- Node not found - shouldn't happen
                     Nothing
 
-        Mono.MonoVarKernel _ _ _ kernelType ->
+        Mono.MonoVarKernel _ _ _ _ kernelType ->
             -- Kernels use total ABI arity (flattened)
             Just (List.length (Tuple.first (Mono.decomposeFunctionType kernelType)))
 

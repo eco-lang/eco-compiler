@@ -1430,7 +1430,11 @@ findVarQual region env prefix name =
                     env.home
             in
             if Name.isKernel prefix && Pkg.isKernel pkg then
-                Can.VarKernel (Name.getKernel prefix) name |> ReportingResult.ok
+                let
+                    ( kernelPrefix, kernelHome ) =
+                        Name.getKernel prefix
+                in
+                Can.VarKernel kernelPrefix kernelHome name |> ReportingResult.ok
 
             else
                 ReportingResult.throw (Error.NotFoundVar region (Just prefix) name (toPossibleNames env.vars env.q_vars))

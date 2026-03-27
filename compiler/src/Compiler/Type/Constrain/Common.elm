@@ -307,7 +307,7 @@ getName (A.At _ exprInfo) =
         Can.VarOperator op _ _ _ ->
             E.OpName op
 
-        Can.VarKernel _ name ->
+        Can.VarKernel _ _ name ->
             E.FuncName name
 
         _ ->

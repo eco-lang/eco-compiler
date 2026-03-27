@@ -246,7 +246,7 @@ exprKindToString expr =
         Can.VarTopLevel _ _ ->
             "VarTopLevel"
 
-        Can.VarKernel _ _ ->
+        Can.VarKernel _ _ _ ->
             "VarKernel"
 
         Can.VarForeign _ _ _ ->

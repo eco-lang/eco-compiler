@@ -234,7 +234,7 @@ checkExpr env context expr =
                     []
 
         -- VarKernel (STRICT: catches GOPT_003-class bugs)
-        TOpt.VarKernel _ home name meta ->
+        TOpt.VarKernel _ _ home name meta ->
             let
                 tipe =
                     meta.tipe

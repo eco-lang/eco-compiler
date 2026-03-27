@@ -446,7 +446,7 @@ producerFromExpr expr ctx =
         Mono.MonoClosure closureInfo _ _ ->
             Just (ProducerClosure closureInfo.lambdaId)
 
-        Mono.MonoVarKernel _ home name _ ->
+        Mono.MonoVarKernel _ _ home name _ ->
             Just (ProducerKernel (home ++ "." ++ name))
 
         Mono.MonoVarLocal name _ ->

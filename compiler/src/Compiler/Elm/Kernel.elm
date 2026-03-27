@@ -412,7 +412,7 @@ addImport pkg foreigns ( _, Src.Import ( _, A.At _ importName ) maybeAlias ( _, 
                 let
                     home : Name
                     home =
-                        Name.getKernel importName
+                        Tuple.second (Name.getKernel importName)
 
                     add : Name -> Dict Name Chunk -> Dict Name Chunk
                     add name table =

@@ -126,7 +126,7 @@ Many variants include cached type annotations for efficient type inference.
 type Expr_
     = VarLocal Name
     | VarTopLevel IO.Canonical Name
-    | VarKernel Name Name
+    | VarKernel Name Name Name
     | VarForeign IO.Canonical Name Annotation
     | VarCtor CtorOpts IO.Canonical Name Index.ZeroBased Annotation
     | VarDebug IO.Canonical Name Annotation
@@ -831,9 +831,10 @@ expr_Encoder expr_ =
                 , BE.string name
                 ]
 
-        VarKernel home name ->
+        VarKernel kernelPrefix home name ->
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 2
+                , BE.string kernelPrefix
                 , BE.string home
                 , BE.string name
                 ]
@@ -1030,7 +1031,8 @@ expr_Decoder =
                             BD.string
 
                     2 ->
-                        Bytes.Decode.map2 VarKernel
+                        Bytes.Decode.map3 VarKernel
+                            BD.string
                             BD.string
                             BD.string
 

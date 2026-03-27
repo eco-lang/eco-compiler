@@ -144,7 +144,7 @@ collectExprCNumberChecks context expr =
         Mono.MonoVarGlobal _ _ monoType ->
             checkForCNumber context monoType
 
-        Mono.MonoVarKernel _ _ _ monoType ->
+        Mono.MonoVarKernel _ _ _ _ monoType ->
             checkForCNumber context monoType
 
         Mono.MonoList _ exprs monoType ->

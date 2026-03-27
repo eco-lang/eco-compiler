@@ -579,7 +579,7 @@ nodeHasEffects node =
 
             else
                 case expr of
-                    Mono.MonoVarKernel _ "Debug" _ _ ->
+                    Mono.MonoVarKernel _ _ "Debug" _ _ ->
                         True
 
                     _ ->

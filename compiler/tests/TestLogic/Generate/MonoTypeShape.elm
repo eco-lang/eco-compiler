@@ -120,7 +120,7 @@ collectExprTypeIssues context expr =
         Mono.MonoVarGlobal _ _ monoType ->
             checkMonoType context monoType
 
-        Mono.MonoVarKernel _ _ _ monoType ->
+        Mono.MonoVarKernel _ _ _ _ monoType ->
             checkMonoType context monoType
 
         Mono.MonoList _ exprs monoType ->

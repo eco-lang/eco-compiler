@@ -640,9 +640,9 @@ decode name =
 
 encodeBytes : Names.Tracker TOpt.Expr
 encodeBytes =
-    Names.registerKernel Name.json (TOpt.VarKernel A.zero Name.json "encodeBytes" { tipe = Can.TVar "encodeBytes", tvar = Nothing })
+    Names.registerKernel Name.json (TOpt.VarKernel A.zero "Elm" Name.json "encodeBytes" { tipe = Can.TVar "encodeBytes", tvar = Nothing })
 
 
 decodeBytes : Names.Tracker TOpt.Expr
 decodeBytes =
-    Names.registerKernel Name.json (TOpt.VarKernel A.zero Name.json "decodeBytes" { tipe = Can.TVar "decodeBytes", tvar = Nothing })
+    Names.registerKernel Name.json (TOpt.VarKernel A.zero "Elm" Name.json "decodeBytes" { tipe = Can.TVar "decodeBytes", tvar = Nothing })

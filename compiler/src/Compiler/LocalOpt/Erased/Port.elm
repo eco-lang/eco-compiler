@@ -526,9 +526,9 @@ decode name =
 
 encodeBytes : Names.Tracker Opt.Expr
 encodeBytes =
-    Names.registerKernel Name.json (Opt.VarKernel A.zero Name.json "encodeBytes")
+    Names.registerKernel Name.json (Opt.VarKernel A.zero "Elm" Name.json "encodeBytes")
 
 
 decodeBytes : Names.Tracker Opt.Expr
 decodeBytes =
-    Names.registerKernel Name.json (Opt.VarKernel A.zero Name.json "decodeBytes")
+    Names.registerKernel Name.json (Opt.VarKernel A.zero "Elm" Name.json "decodeBytes")

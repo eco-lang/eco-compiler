@@ -109,7 +109,7 @@ their polymorphic arguments are properly handled.
 collectExprDebugIssues : String -> Mono.MonoExpr -> List String
 collectExprDebugIssues context expr =
     case expr of
-        Mono.MonoVarKernel _ moduleName name monoType ->
+        Mono.MonoVarKernel _ _ moduleName name monoType ->
             -- Check Debug kernel calls for proper polymorphism handling
             if moduleName == "Debug" then
                 checkDebugKernelType context name monoType
@@ -122,7 +122,7 @@ collectExprDebugIssues context expr =
             let
                 debugCallIssues =
                     case fnExpr of
-                        Mono.MonoVarKernel _ moduleName name _ ->
+                        Mono.MonoVarKernel _ _ moduleName name _ ->
                             if moduleName == "Debug" then
                                 checkDebugCallArgs context name argExprs
 

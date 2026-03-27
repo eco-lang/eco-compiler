@@ -109,7 +109,7 @@ hasDebug expression =
         Opt.VarDebug _ _ _ _ ->
             True
 
-        Opt.VarKernel _ _ _ ->
+        Opt.VarKernel _ _ _ _ ->
             False
 
         Opt.List _ exprs ->
