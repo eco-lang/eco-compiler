@@ -391,6 +391,33 @@ constrainWithIdsProg rtv (A.At region exprInfo) expected =
         Can.Update expr fields ->
             constrainUpdateWithIdsProg rtv region exprInfo.id expr fields expected
 
+        -- Group A: treat `.field` accessor as Group A with recorded node var
+        Can.Accessor field ->
+            constrainAccessorGroupAWithIdsProg region exprInfo.id field expected
+
+        -- Group A: containers and lambdas with recorded node vars
+        Can.List elements ->
+            constrainListGroupAWithIdsProg rtv region exprInfo.id elements expected
+
+        Can.Tuple a b cs ->
+            constrainTupleGroupAWithIdsProg rtv region exprInfo.id a b cs expected
+
+        Can.Record fields ->
+            constrainRecordGroupAWithIdsProg rtv region exprInfo.id fields expected
+
+        Can.Lambda args body ->
+            constrainLambdaGroupAWithIdsProg rtv region exprInfo.id args body expected
+
+        -- Group A: let expressions with recorded node vars
+        Can.Let def body ->
+            constrainLetExprWithIdsProg rtv region exprInfo.id def body expected
+
+        Can.LetRec defs body ->
+            constrainLetRecExprWithIdsProg rtv region exprInfo.id defs body expected
+
+        Can.LetDestruct pattern expr body ->
+            constrainLetDestructExprWithIdsProg rtv region exprInfo.id pattern expr body expected
+
         -- Group B: Use generic path with synthetic exprVar
         _ ->
             constrainGenericWithIdsProg rtv region exprInfo expected
@@ -511,6 +538,300 @@ constrainAccessWithIdsProg rtv region exprId expr accessRegion field expected =
                                                         (CAnd
                                                             [ recordCon
                                                             , CEqual region (Access field) fieldType expected
+                                                            ]
+                                                        )
+                                                )
+                                    )
+                        )
+            )
+
+
+{-| Specialized Accessor handling - treat `.field` as Group A and
+record a node variable for the accessor expression's type.
+-}
+constrainAccessorGroupAWithIdsProg :
+    A.Region
+    -> Int
+    -> Name
+    -> E.Expected Type
+    -> ProgS ExprIdState Constraint
+constrainAccessorGroupAWithIdsProg region exprId field expected =
+    Prog.opMkFlexVarS
+        |> Prog.andThenS
+            (\exprVar ->
+                -- Record exprVar as the type variable for this accessor expression
+                Prog.opModifyS (NodeIds.recordNodeVar exprId exprVar)
+                    |> Prog.andThenS
+                        (\() ->
+                            let
+                                exprType : Type
+                                exprType =
+                                    VarN exprVar
+                            in
+                            -- Reuse existing accessor constraints, then tie exprVar to `expected`
+                            constrainAccessorWithIdsProg region field expected
+                                |> Prog.mapS
+                                    (\accessorCon ->
+                                        Type.exists [ exprVar ]
+                                            (CAnd
+                                                [ accessorCon
+                                                , CEqual region E.List exprType expected
+                                                ]
+                                            )
+                                    )
+                        )
+            )
+
+
+{-| Group A wrapper for List expressions.
+-}
+constrainListGroupAWithIdsProg :
+    RigidTypeVar
+    -> A.Region
+    -> Int
+    -> List Can.Expr
+    -> E.Expected Type
+    -> ProgS ExprIdState Constraint
+constrainListGroupAWithIdsProg rtv region exprId elements expected =
+    Prog.opMkFlexVarS
+        |> Prog.andThenS
+            (\exprVar ->
+                Prog.opModifyS (NodeIds.recordNodeVar exprId exprVar)
+                    |> Prog.andThenS
+                        (\() ->
+                            let
+                                exprType =
+                                    VarN exprVar
+                            in
+                            constrainListWithIdsProg rtv region elements expected
+                                |> Prog.mapS
+                                    (\listCon ->
+                                        Type.exists [ exprVar ]
+                                            (CAnd
+                                                [ listCon
+                                                , CEqual region E.List exprType expected
+                                                ]
+                                            )
+                                    )
+                        )
+            )
+
+
+{-| Group A wrapper for Tuple expressions.
+-}
+constrainTupleGroupAWithIdsProg :
+    RigidTypeVar
+    -> A.Region
+    -> Int
+    -> Can.Expr
+    -> Can.Expr
+    -> List Can.Expr
+    -> E.Expected Type
+    -> ProgS ExprIdState Constraint
+constrainTupleGroupAWithIdsProg rtv region exprId a b cs expected =
+    Prog.opMkFlexVarS
+        |> Prog.andThenS
+            (\exprVar ->
+                Prog.opModifyS (NodeIds.recordNodeVar exprId exprVar)
+                    |> Prog.andThenS
+                        (\() ->
+                            let
+                                exprType =
+                                    VarN exprVar
+                            in
+                            constrainTupleWithIdsProg rtv region a b cs expected
+                                |> Prog.mapS
+                                    (\tupleCon ->
+                                        Type.exists [ exprVar ]
+                                            (CAnd
+                                                [ tupleCon
+                                                , CEqual region Tuple exprType expected
+                                                ]
+                                            )
+                                    )
+                        )
+            )
+
+
+{-| Group A wrapper for Record literal expressions.
+-}
+constrainRecordGroupAWithIdsProg :
+    RigidTypeVar
+    -> A.Region
+    -> Int
+    -> Dict String (A.Located Name) Can.Expr
+    -> E.Expected Type
+    -> ProgS ExprIdState Constraint
+constrainRecordGroupAWithIdsProg rtv region exprId fields expected =
+    Prog.opMkFlexVarS
+        |> Prog.andThenS
+            (\exprVar ->
+                Prog.opModifyS (NodeIds.recordNodeVar exprId exprVar)
+                    |> Prog.andThenS
+                        (\() ->
+                            let
+                                exprType =
+                                    VarN exprVar
+                            in
+                            constrainRecordWithIdsProg rtv region fields expected
+                                |> Prog.mapS
+                                    (\recordCon ->
+                                        Type.exists [ exprVar ]
+                                            (CAnd
+                                                [ recordCon
+                                                , CEqual region Record exprType expected
+                                                ]
+                                            )
+                                    )
+                        )
+            )
+
+
+{-| Group A wrapper for Lambda expressions.
+-}
+constrainLambdaGroupAWithIdsProg :
+    RigidTypeVar
+    -> A.Region
+    -> Int
+    -> List Can.Pattern
+    -> Can.Expr
+    -> E.Expected Type
+    -> ProgS ExprIdState Constraint
+constrainLambdaGroupAWithIdsProg rtv region exprId args body expected =
+    Prog.opMkFlexVarS
+        |> Prog.andThenS
+            (\exprVar ->
+                Prog.opModifyS (NodeIds.recordNodeVar exprId exprVar)
+                    |> Prog.andThenS
+                        (\() ->
+                            let
+                                exprType =
+                                    VarN exprVar
+                            in
+                            constrainLambdaWithIdsProg rtv region args body expected
+                                |> Prog.mapS
+                                    (\lambdaCon ->
+                                        Type.exists [ exprVar ]
+                                            (CAnd
+                                                [ lambdaCon
+                                                , CEqual region Lambda exprType expected
+                                                ]
+                                            )
+                                    )
+                        )
+            )
+
+
+{-| Group A wrapper for Let expressions.
+-}
+constrainLetExprWithIdsProg :
+    RigidTypeVar
+    -> A.Region
+    -> Int
+    -> Can.Def
+    -> Can.Expr
+    -> E.Expected Type
+    -> ProgS ExprIdState Constraint
+constrainLetExprWithIdsProg rtv region exprId def body expected =
+    Prog.opMkFlexVarS
+        |> Prog.andThenS
+            (\exprVar ->
+                Prog.opModifyS (NodeIds.recordNodeVar exprId exprVar)
+                    |> Prog.andThenS
+                        (\() ->
+                            let
+                                exprType =
+                                    VarN exprVar
+                            in
+                            constrainWithIdsProg rtv body (NoExpectation exprType)
+                                |> Prog.andThenS
+                                    (\bodyCon ->
+                                        constrainDefWithIdsProg rtv def bodyCon
+                                            |> Prog.mapS
+                                                (\letCon ->
+                                                    Type.exists [ exprVar ]
+                                                        (CAnd
+                                                            [ letCon
+                                                            , CEqual region Lambda exprType expected
+                                                            ]
+                                                        )
+                                                )
+                                    )
+                        )
+            )
+
+
+{-| Group A wrapper for LetRec expressions.
+-}
+constrainLetRecExprWithIdsProg :
+    RigidTypeVar
+    -> A.Region
+    -> Int
+    -> List Can.Def
+    -> Can.Expr
+    -> E.Expected Type
+    -> ProgS ExprIdState Constraint
+constrainLetRecExprWithIdsProg rtv region exprId defs body expected =
+    Prog.opMkFlexVarS
+        |> Prog.andThenS
+            (\exprVar ->
+                Prog.opModifyS (NodeIds.recordNodeVar exprId exprVar)
+                    |> Prog.andThenS
+                        (\() ->
+                            let
+                                exprType =
+                                    VarN exprVar
+                            in
+                            constrainWithIdsProg rtv body (NoExpectation exprType)
+                                |> Prog.andThenS
+                                    (\bodyCon ->
+                                        constrainRecursiveDefsWithIdsProg rtv defs bodyCon
+                                            |> Prog.mapS
+                                                (\letCon ->
+                                                    Type.exists [ exprVar ]
+                                                        (CAnd
+                                                            [ letCon
+                                                            , CEqual region Lambda exprType expected
+                                                            ]
+                                                        )
+                                                )
+                                    )
+                        )
+            )
+
+
+{-| Group A wrapper for LetDestruct expressions.
+-}
+constrainLetDestructExprWithIdsProg :
+    RigidTypeVar
+    -> A.Region
+    -> Int
+    -> Can.Pattern
+    -> Can.Expr
+    -> Can.Expr
+    -> E.Expected Type
+    -> ProgS ExprIdState Constraint
+constrainLetDestructExprWithIdsProg rtv region exprId pattern expr body expected =
+    Prog.opMkFlexVarS
+        |> Prog.andThenS
+            (\exprVar ->
+                Prog.opModifyS (NodeIds.recordNodeVar exprId exprVar)
+                    |> Prog.andThenS
+                        (\() ->
+                            let
+                                exprType =
+                                    VarN exprVar
+                            in
+                            constrainWithIdsProg rtv body (NoExpectation exprType)
+                                |> Prog.andThenS
+                                    (\bodyCon ->
+                                        constrainDestructWithIdsProg rtv region pattern expr bodyCon
+                                            |> Prog.mapS
+                                                (\letCon ->
+                                                    Type.exists [ exprVar ]
+                                                        (CAnd
+                                                            [ letCon
+                                                            , CEqual region Lambda exprType expected
                                                             ]
                                                         )
                                                 )

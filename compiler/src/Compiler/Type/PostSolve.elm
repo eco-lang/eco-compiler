@@ -1,11 +1,13 @@
 module Compiler.Type.PostSolve exposing (postSolve, NodeTypes)
 
-{-| PostSolve phase for fixing Group B expression types and computing kernel types.
+{-| PostSolve phase for fixing remaining Group B expression types and computing kernel types.
 
 This phase runs after the type solver (`runWithIds`) and before `TypedCanonical.fromCanonical`.
 It walks the canonical AST to:
 
-1.  Fix "missing" types for Group B expressions (those with unconstrained synthetic vars)
+1.  Fix types for remaining Group B expressions (Str, Chr, Float, Unit) whose
+    synthetic vars are unconstrained. Most expression forms are now Group A
+    (solver-owned via recordNodeVar) and do not need structural repair.
 2.  Compute kernel function types (`KernelTypeEnv`) via alias seeding and usage inference
 
 The result is a fixed `nodeTypes` map where all expression IDs have meaningful types,
@@ -339,10 +341,12 @@ postSolvePattern (A.At _ patInfo) nodeTypes0 kernel0 =
 
 {-| Main expression traversal.
 
-For Group A expressions (Int, Negate, Binop, Call, If, Case, Access, Update):
+For Group A expressions (Int, Negate, Binop, Call, If, Case, Access, Update,
+Accessor, List, Tuple, Record, Lambda, Let, LetRec, LetDestruct):
 we trust the solver's type and just recurse into children.
 
-For Group B expressions: we compute the type structurally and write it to nodeTypes.
+For Group B expressions (Str, Chr, Float, Unit): we compute the type
+structurally and write it to nodeTypes.
 
 For VarKernel: we look up the type from kernelEnv.
 
@@ -403,7 +407,7 @@ postSolveExpr annotations (A.At _ exprInfo) nodeTypes0 kernel0 =
                     -- argument to a kernel call (propagated from callee's type).
                     ( nodeTypes0, kernel0 )
 
-        -- ====== GROUP B: Compute type structurally ======
+        -- ====== GROUP B: Compute type structurally (Str, Chr, Float, Unit) ======
         Can.Str _ ->
             let
                 strType =
@@ -441,31 +445,55 @@ postSolveExpr annotations (A.At _ exprInfo) nodeTypes0 kernel0 =
             in
             ( nodeTypes1, kernel0 )
 
+        -- ====== GROUP A: Trust solver's type, just recurse into children ======
         Can.List elems ->
-            postSolveList annotations exprId elems nodeTypes0 kernel0
+            List.foldl
+                (\e ( nt, ke ) -> postSolveExpr annotations e nt ke)
+                ( nodeTypes0, kernel0 )
+                elems
 
         Can.Tuple a b cs ->
-            postSolveTuple annotations exprId a b cs nodeTypes0 kernel0
+            let
+                ( nt1, ke1 ) =
+                    postSolveExpr annotations a nodeTypes0 kernel0
+
+                ( nt2, ke2 ) =
+                    postSolveExpr annotations b nt1 ke1
+            in
+            List.foldl
+                (\c ( nt, ke ) -> postSolveExpr annotations c nt ke)
+                ( nt2, ke2 )
+                cs
 
         Can.Record fields ->
-            postSolveRecord annotations exprId fields nodeTypes0 kernel0
+            let
+                fieldList =
+                    Data.Map.toList A.compareLocated fields
+            in
+            List.foldl
+                (\( _, fieldExpr ) ( nt, ke ) ->
+                    postSolveExpr annotations fieldExpr nt ke
+                )
+                ( nodeTypes0, kernel0 )
+                fieldList
 
         Can.Lambda args body ->
-            postSolveLambda annotations exprId args body nodeTypes0 kernel0
+            let
+                ( nt1, ke1 ) =
+                    postSolvePatterns args nodeTypes0 kernel0
+            in
+            postSolveExpr annotations body nt1 ke1
 
-        Can.Accessor field ->
-            postSolveAccessor annotations exprId field nodeTypes0 kernel0
+        Can.Accessor _ ->
+            -- Solver provides type via recordNodeVar; nothing to recurse into
+            ( nodeTypes0, kernel0 )
 
         Can.Let def body ->
             let
                 ( nt1, ke1 ) =
                     postSolveDef annotations def nodeTypes0 kernel0
-
-                ( nt2, ke2 ) =
-                    postSolveExpr annotations body nt1 ke1
             in
-            -- Let expression type is the body type
-            postSolveLetType exprId body nt2 ke2
+            postSolveExpr annotations body nt1 ke1
 
         Can.LetRec defs body ->
             let
@@ -474,12 +502,8 @@ postSolveExpr annotations (A.At _ exprInfo) nodeTypes0 kernel0 =
                         (\d ( nt, ke ) -> postSolveDef annotations d nt ke)
                         ( nodeTypes0, kernel0 )
                         defs
-
-                ( nt2, ke2 ) =
-                    postSolveExpr annotations body nt1 ke1
             in
-            -- LetRec expression type is the body type
-            postSolveLetType exprId body nt2 ke2
+            postSolveExpr annotations body nt1 ke1
 
         Can.LetDestruct pat bound body ->
             let
@@ -488,12 +512,8 @@ postSolveExpr annotations (A.At _ exprInfo) nodeTypes0 kernel0 =
 
                 ( nt2, ke2 ) =
                     postSolveExpr annotations bound nt1 ke1
-
-                ( nt3, ke3 ) =
-                    postSolveExpr annotations body nt2 ke2
             in
-            -- LetDestruct expression type is the body type
-            postSolveLetType exprId body nt3 ke3
+            postSolveExpr annotations body nt2 ke2
 
         Can.Shader _ _ ->
             -- Keep solver's type for shaders
