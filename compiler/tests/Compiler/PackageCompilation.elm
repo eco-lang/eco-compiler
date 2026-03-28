@@ -407,7 +407,7 @@ typeCheckErased canonical =
 {-| Typed type checking using constrainWithIds + runWithIds.
 
 This produces per-expression type information needed for typed optimization.
-Also runs PostSolve to fix Group B types and compute kernel type environment.
+Also runs PostSolve to fix remaining Group B types (Str, Chr, Float, Unit) and compute kernel type environment.
 
 -}
 typeCheckTyped : Can.Module -> Result (NE.Nonempty TypeError.Error) TypeCheckTypedResult
@@ -427,7 +427,7 @@ typeCheckTyped canonical =
 
         Ok { annotations, annotationVars, nodeTypes, nodeVars } ->
             let
-                -- Run PostSolve to fix Group B types and compute kernel env
+                -- Run PostSolve to fix remaining Group B types and compute kernel env
                 -- annotations and nodeTypes are Data.Map.Dict from Solve.runWithIds
                 postSolveResult =
                     PostSolve.postSolve annotations canonical nodeTypes

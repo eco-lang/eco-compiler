@@ -19,7 +19,7 @@ import Expect
 import TestLogic.TestPipeline as Pipeline
 
 
-{-| Verify that PostSolve is deterministic for Group B and kernels.
+{-| Verify that PostSolve is deterministic for remaining Group B (Str, Chr, Float, Unit) and kernels.
 -}
 expectDeterministicTypes : Src.Module -> Expect.Expectation
 expectDeterministicTypes srcModule =

@@ -1234,7 +1234,7 @@ Analyze the Guida/Elm Global AST and consider necessary changes for native compi
 - `Compiler/AST/TypedOptimized.elm`: Typed AST definitions with full type annotations (every expression carries `Can.Type`)
 - `Compiler/AST/Monomorphized.elm`: Monomorphized AST with `MonoType`, layouts, and `SpecializationRegistry`
 - `Compiler/Generate/Monomorphize.elm`: Worklist-based monomorphization algorithm (~2500 lines)
-- `Compiler/Type/PostSolve.elm`: Post-solver that fixes Group B expression types and infers kernel function types
+- `Compiler/Type/PostSolve.elm`: Post-solver that fixes remaining Group B expression types (Str, Chr, Float, Unit) and infers kernel function types
 - `Compiler/Optimize/Typed/Module.elm`: Entry point for type-preserving optimization
 - `Builder/Build.elm`: Modified to pass `needsTypedOpt` flag and handle typed compilation for root modules
 

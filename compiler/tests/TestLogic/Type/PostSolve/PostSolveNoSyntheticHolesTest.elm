@@ -107,7 +107,7 @@ expectNoSyntheticHoles srcModule =
 {-| Compute the set of "hole var names" from synthetic expression pre-types.
 
 These are TVar names that were left unresolved by the solver at synthetic
-Group B expression sites. PostSolve should fill these.
+remaining Group B expression sites (Str, Chr, Float, Unit). PostSolve should fill these.
 
 We only consider numeric TVar names as "holes" because:
 

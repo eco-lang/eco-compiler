@@ -357,16 +357,18 @@ constrainWithIds rtv expr expected state =
 
 This function dispatches to specialized helpers based on expression type:
 
-  - Group A expressions (those with natural result variables) record their
-    existing result var and avoid creating an extra exprVar + CEqual.
-  - Group B expressions (without natural result variables) use the generic
-    path that allocates a synthetic exprVar.
+  - Group A expressions record a node var via NodeIds.recordNodeVar.
+    This includes: Int, Negate, Binop, Call, If, Case, Access, Update,
+    Accessor, List, Tuple, Record, Lambda, Let, LetRec, LetDestruct.
+  - Group B expressions (Str, Chr, Float, Unit, Shader, and leaf Var* forms)
+    use the generic path that allocates a synthetic exprVar via
+    recordSyntheticExprVar, later fixed by PostSolve.
 
 -}
 constrainWithIdsProg : RigidTypeVar -> Can.Expr -> E.Expected Type -> ProgS ExprIdState Constraint
 constrainWithIdsProg rtv (A.At region exprInfo) expected =
     case exprInfo.node of
-        -- Group A: Use specialized helpers that record the natural result var
+        -- Group A: specialized helpers that record the natural result var
         Can.Int _ ->
             constrainIntWithIdsProg region exprInfo.id expected
 
@@ -391,11 +393,10 @@ constrainWithIdsProg rtv (A.At region exprInfo) expected =
         Can.Update expr fields ->
             constrainUpdateWithIdsProg rtv region exprInfo.id expr fields expected
 
-        -- Group A: treat `.field` accessor as Group A with recorded node var
+        -- Group A: accessor, containers, lambdas, and let expressions
         Can.Accessor field ->
             constrainAccessorGroupAWithIdsProg region exprInfo.id field expected
 
-        -- Group A: containers and lambdas with recorded node vars
         Can.List elements ->
             constrainListGroupAWithIdsProg rtv region exprInfo.id elements expected
 
@@ -408,7 +409,6 @@ constrainWithIdsProg rtv (A.At region exprInfo) expected =
         Can.Lambda args body ->
             constrainLambdaGroupAWithIdsProg rtv region exprInfo.id args body expected
 
-        -- Group A: let expressions with recorded node vars
         Can.Let def body ->
             constrainLetExprWithIdsProg rtv region exprInfo.id def body expected
 
@@ -418,7 +418,7 @@ constrainWithIdsProg rtv (A.At region exprInfo) expected =
         Can.LetDestruct pattern expr body ->
             constrainLetDestructExprWithIdsProg rtv region exprInfo.id pattern expr body expected
 
-        -- Group B: Use generic path with synthetic exprVar
+        -- Group B: Str, Chr, Float, Unit, Shader, Var* leaf forms
         _ ->
             constrainGenericWithIdsProg rtv region exprInfo expected
 
@@ -434,7 +434,7 @@ constrainGenericWithIdsProg rtv region info expected =
     Prog.opMkFlexVarS
         |> Prog.andThenS
             (\exprVar ->
-                -- Use recordSyntheticExprVar to mark this as a Group B synthetic placeholder
+                -- Use recordSyntheticExprVar to mark this as a remaining Group B synthetic placeholder (Str, Chr, Float, Unit, Shader)
                 Prog.opModifyS (NodeIds.recordSyntheticExprVar info.id exprVar)
                     |> Prog.andThenS
                         (\() ->

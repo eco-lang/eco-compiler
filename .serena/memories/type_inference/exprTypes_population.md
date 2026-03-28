@@ -254,7 +254,7 @@ Names come from TWO sources (in precedence order):
 
 The name prefixes ARE meaningful and are used downstream by codegen and optimization passes.
 
-**PostSolve Phase Note**: PostSolve's Group B handling recomputes types structurally for List, Tuple, Lambda, etc., but this is for expressions that don't participate in unification, so their synthetic variables never have meaningful constraint information to lose.
+**PostSolve Phase Note**: List, Tuple, Record, Lambda, Accessor, and Let forms are now Group A (solver-owned via recordNodeVar). PostSolve's remaining Group B handling only recomputes types structurally for Str, Chr, Float, Unit — scalar literals whose synthetic variables don't participate in unification.
 
 ---
 

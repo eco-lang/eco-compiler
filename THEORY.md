@@ -325,7 +325,7 @@ Elm Source
 │  ECO Backend Pipeline                               │
 │                                                     │
 │  PostSolve                                          │
-│    - Fix Group B expression types                   │
+│    - Fix remaining Group B types (Str, Chr, Float)  │
 │    - Infer kernel function types                    │
 │    ↓                                                │
 │  Typed Optimization                                 │
@@ -364,7 +364,7 @@ Elm Source
 
 After type inference, some expressions have incomplete types:
 
-- **Group B expressions**: Literals (String, Float), containers (List, Tuple, Record), and lambdas get synthetic type variables that need structural type computation.
+- **Group B expressions**: Scalar literals (String, Char, Float, Unit) get synthetic type variables that need structural type computation. Containers (List, Tuple, Record), lambdas, accessors, and let expressions are now Group A with solver-owned types.
 - **Kernel functions**: `VarKernel` references don't have annotations; their types are inferred from usage patterns.
 
 The PostSolve pass walks the AST, computing concrete types and building a `KernelTypeEnv` for typed optimization.
@@ -611,7 +611,7 @@ All compiler invariants are documented in [`design_docs/invariants.csv`](design_
 |-------|------------|----------|
 | CANON | CANON_001-006 | Name resolution, unique IDs, no duplicates |
 | TYPE | TYPE_001-006 | Constraint generation, unification, occurs check |
-| POST | POST_001-004 | Group B type fixing, kernel type inference |
+| POST | POST_001-004 | Remaining Group B type fixing, kernel type inference |
 | TOPT | TOPT_001-005 | Type carrying, decision trees, annotations preserved |
 | MONO | MONO_001-015 | MonoType completeness, layouts, specialization registry |
 | CGEN | CGEN_001-057 | Boxing rules, SSA consistency, operation attributes, kernel declarations |

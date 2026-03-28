@@ -8,7 +8,7 @@ This memory summarizes the ECO compiler backend pipeline. Read at startup.
 Elm Source
     ↓ Standard Elm Frontend (Parse, Canonicalize, Type Check)
     ↓
-PostSolve (fix Group B types, infer kernel types)
+PostSolve (fix remaining Group B types: Str/Chr/Float/Unit, infer kernel types)
     ↓
 Typed Optimization (preserve types, decision trees)
     ↓
@@ -28,7 +28,7 @@ LLVM IR → Native Code
 ## Key Passes (see design_docs/theory/ for details)
 
 ### PostSolve
-- Fixes "Group B" expression types (Str, List, Lambda, etc.)
+- Fixes remaining "Group B" expression types (Str, Chr, Float, Unit)
 - Infers kernel function types from usage
 - File: `compiler/src/Compiler/Type/PostSolve.elm`
 

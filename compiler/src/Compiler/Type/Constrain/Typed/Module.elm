@@ -49,7 +49,7 @@ constrainWithIds canonical =
 
 This is the detailed version of `constrainWithIds` that returns the full `NodeIdState`,
 including `syntheticExprIds` which tracks which expression IDs had synthetic placeholder
-variables allocated (Group B expressions). This metadata is useful for testing invariants
+variables allocated (remaining Group B expressions: Str, Chr, Float, Unit, Shader). This metadata is useful for testing invariants
 like POST\_001 and POST\_003.
 
 -}

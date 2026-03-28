@@ -231,7 +231,7 @@ This function extends the standard type checking to also build a TypedCanonical
 module where every expression is paired with its inferred type. This is useful
 for downstream phases that need access to per-expression type information.
 
-Also runs the PostSolve phase to fix Group B expression types and compute
+Also runs the PostSolve phase to fix remaining Group B expression types (Str, Chr, Float, Unit) and compute
 kernel function types for typed optimization.
 
 -}
@@ -264,7 +264,7 @@ typeCheckTyped modul canonical =
 
         Ok { annotations, annotationVars, nodeTypes, nodeVars } ->
             let
-                -- Run PostSolve to fix Group B types and compute kernel env
+                -- Run PostSolve to fix remaining Group B types and compute kernel env
                 postSolveResult =
                     PostSolve.postSolve annotations canonical nodeTypes
 

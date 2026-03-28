@@ -290,18 +290,14 @@ logic: After constraint generation via constrainWithIds, for every expression
   ID that was registered via NodeIds.recordNodeVar (Group A expressions):
   * The Group A expression kinds are exactly those dispatched to specialised
     constraint helpers that call recordNodeVar:
-      - Can.Int       → constrainIntWithIdsProg
-      - Can.Negate    → constrainNegateWithIdsProg
-      - Can.Binop     → constrainBinopWithIdsProg
-      - Can.Call      → constrainCallWithIdsProg
-      - Can.If        → constrainIfWithIdsProg
-      - Can.Case      → constrainCaseWithIdsProg
-      - Can.Access    → constrainAccessWithIdsProg
-      - Can.Update    → constrainUpdateWithIdsProg
-    Group B expressions (Str, Chr, Float, Unit, List, Tuple, Record, Lambda,
-    Accessor, Let/LetRec/LetDestruct) use constrainGenericWithIdsProg which
-    calls recordSyntheticExprVar instead. Those are handled by PostSolve and
-    are NOT in scope for TYPE_007.
+      - Can.Int, Can.Negate, Can.Binop, Can.Call, Can.If, Can.Case,
+        Can.Access, Can.Update (original Group A with natural result vars)
+      - Can.Accessor, Can.List, Can.Tuple, Can.Record, Can.Lambda,
+        Can.Let, Can.LetRec, Can.LetDestruct (moved to Group A with
+        dedicated wrappers that allocate a flex var and recordNodeVar)
+    Group B expressions (Str, Chr, Float, Unit, Shader) use
+    constrainGenericWithIdsProg which calls recordSyntheticExprVar instead.
+    Those are handled by PostSolve and are NOT in scope for TYPE_007.
   * Run the solver (Solve.runWithIds).
   * Read back the variable's resolved type via toCanTypeBatch (nodeTypes[id]).
   * Assert the resolved type is NOT an unconstrained placeholder:
@@ -373,15 +369,16 @@ oracle: Missing patterns are reported; exhaustive cases pass.
 ## Post-Solve Phase (POST_*)
 
 --
-name: Group B expressions get structural types
+name: Remaining Group B expressions (Str, Chr, Float, Unit) get structural types
 phase: post-solve
 invariants: POST_001
 ir: PostSolve NodeTypes
-logic: Identify Group B expressions (lists, tuples, records, units, lambdas) whose pre-PostSolve solver types include unconstrained synthetic variables. After PostSolve:
+logic: Identify remaining Group B expressions (Str, Chr, Float, Unit) whose pre-PostSolve solver types include unconstrained synthetic variables. After PostSolve:
   * Assert those entries are replaced with concrete `Can.Type` structures.
-  * Reconstruct the type structurally from subexpression types and compare to PostSolve's result.
+  * Most expression forms (List, Tuple, Record, Lambda, Accessor, Let/LetRec/LetDestruct)
+    are now Group A with solver-owned types and do not need structural repair.
 inputs: TypedCanonical + pre-/post-PostSolve NodeTypes snapshots + syntheticExprIds from constraint generation
-oracle: No Group B expression retains an unconstrained synthetic var; recomputed structural type matches PostSolve's.
+oracle: No remaining Group B expression retains an unconstrained synthetic var.
 tests: compiler/tests/Compiler/Type/PostSolve/PostSolveGroupBStructuralTypesTest.elm
 --
 --
@@ -409,7 +406,7 @@ oracle: NodeTypes is fully concrete for non-kernel expressions; any remaining sy
 tests: compiler/tests/Compiler/Type/PostSolve/PostSolveNoSyntheticHolesTest.elm
 --
 --
-name: PostSolve is deterministic for Group B and kernels
+name: PostSolve is deterministic for remaining Group B (Str, Chr, Float, Unit) and kernels
 phase: post-solve
 invariants: POST_004
 ir: NodeTypes + KernelTypeEnv
@@ -488,7 +485,7 @@ logic:
         solver environment, derived from (in priority order):
           1. freeVars(preType) from nodeTypesPre[id] if it exists.
              If preType is a bare TVar, treat the var name itself as context.
-          2. If no preType exists (Group B lambda), use the enclosing definition's
+          2. If no preType exists (lambda without solver type), use the enclosing definition's
              annotation: extract quantified vars from `Forall freeVars _`.
           3. If neither is available, contextVars is empty (any post var is a violation).
       - Assert freeVars(postType) ⊆ contextVars.
@@ -499,7 +496,8 @@ inputs: Canonical module + nodeTypesPre + nodeTypesPost + annotations
 oracle: PostSolve does not introduce new unconstrained lambda-local type variables;
   all lambda polymorphism originates from the main solver. Any TVar in a lambda's
   post type must trace back to the solver's pre type or enclosing annotated scheme.
-  Group B lambdas without pre-types are checked against their enclosing definition's
+  Lambdas are now Group A (solver-owned), so they should always have pre-types.
+  Any lambda without a pre-type is checked against the enclosing definition's
   annotation scope, not given a blanket pass.
 tests: compiler/tests/TestLogic/Type/PostSolve/PostSolveLambdaContextVarsTest.elm
 --
@@ -513,7 +511,7 @@ logic:
       - Collect TVars in function positions (within TLambda components) of the post type.
       - Compute legitimate vars for THIS node (per-node, not global):
           1. If the node has a pre-type in nodeTypesPre, its free vars are legitimate.
-          2. If the node has no pre-type (Group B), use the enclosing definition's
+          2. If the node has no pre-type (remaining Group B), use the enclosing definition's
              annotation vars (quantified vars from `Forall freeVars _`).
           3. If neither is available, legitimate set is empty.
       - Report a violation if any function-position TVar is not in the legitimate set.

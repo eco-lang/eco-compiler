@@ -11,14 +11,15 @@ expression must resolve (after solving) to a type that is grounded in the
 enclosing annotation's binders. Group A expressions are those dispatched to
 specialised constraint helpers that call recordNodeVar:
 
-    Int, Negate, Binop, Call, If, Case, Access, Update
+    Int, Negate, Binop, Call, If, Case, Access, Update,
+    Accessor, List, Tuple, Record, Lambda, Let, LetRec, LetDestruct
 
 A bare TVar whose name does not appear in any enclosing annotation's binders
 indicates a solver variable that was recorded but never unified with anything.
 
-Group B expressions (Str, Chr, Float, Unit, List, Tuple, Record, Lambda,
-Accessor, Let/LetRec/LetDestruct) use recordSyntheticExprVar instead and are
-handled by PostSolve — they are NOT in scope for TYPE\_007.
+Group B expressions (Str, Chr, Float, Unit, Shader) use
+recordSyntheticExprVar instead and are handled by PostSolve — they are
+NOT in scope for TYPE\_007.
 
 -}
 
@@ -238,7 +239,7 @@ checkExpr funcName binders (A.At _ exprInfo) nodeTypes =
                     checkNodeType funcName binders nodeId "Update" nodeTypes
 
                 _ ->
-                    -- Group B or leaf — not checked by TYPE_007
+                    -- Group B (Str, Chr, Float, Unit, Shader) or leaf Var* — not checked by TYPE_007
                     []
 
         -- Recurse into children

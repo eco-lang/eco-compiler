@@ -48,9 +48,9 @@ type alias NodeVarMap =
 {-| State for tracking node ID to variable mappings during constraint generation.
 
 The `syntheticExprIds` field tracks which expression IDs were recorded via
-the Group B "generic" constraint path, where a synthetic placeholder variable
-is allocated. This metadata enables tests to distinguish between legitimate
-polymorphic TVars and unfilled placeholder holes.
+the remaining Group B "generic" constraint path (Str, Chr, Float, Unit, Shader),
+where a synthetic placeholder variable is allocated. This metadata enables tests
+to distinguish between legitimate polymorphic TVars and unfilled placeholder holes.
 
 -}
 type alias NodeIdState =
@@ -86,7 +86,7 @@ recordNodeVar id var state =
 
 {-| Record a mapping from a synthetic Group B expression ID to its solver variable.
 
-This is used for Group B expressions (lists, tuples, records, lambdas, etc.)
+This is used for remaining Group B expressions (Str, Chr, Float, Unit, Shader)
 where the constraint generator allocates a synthetic placeholder variable.
 The ID is also added to `syntheticExprIds` so tests can identify which
 expression IDs had placeholder variables that PostSolve should fill.

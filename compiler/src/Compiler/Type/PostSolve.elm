@@ -39,11 +39,12 @@ Takes:
 
   - `annotations`: Top-level type annotations from type checking
   - `canonical`: The canonical module AST
-  - `nodeTypes`: Expression/pattern types from the solver (Group B entries are unconstrained)
+  - `nodeTypes`: Expression/pattern types from the solver (remaining Group B
+    entries — Str, Chr, Float, Unit — are unconstrained)
 
 Returns:
 
-  - `nodeTypes`: Fixed node types with Group B expressions properly typed
+  - `nodeTypes`: Fixed node types with all expressions properly typed
   - `kernelEnv`: Kernel function type environment for typed optimization
 
 -}
@@ -540,6 +541,7 @@ postSolveExpr annotations (A.At _ exprInfo) nodeTypes0 kernel0 =
 
 
 {-| Fix Let/LetRec/LetDestruct expression type to match body type.
+Legacy helper, now unused — Let/LetRec/LetDestruct are Group A.
 -}
 postSolveLetType :
     Int
@@ -904,7 +906,7 @@ postSolveUpdate annotations record fields nodeTypes0 kernel0 =
         fieldList
 
 
-{-| Handle List expression (Group B).
+{-| Handle List expression (legacy Group B, now unused — List is Group A).
 -}
 postSolveList :
     Data.Map.Dict String Name Can.Annotation
@@ -956,7 +958,7 @@ postSolveList annotations exprId elems nodeTypes0 kernel0 =
             ( nodeTypes2, kernel1 )
 
 
-{-| Handle Tuple expression (Group B).
+{-| Handle Tuple expression (legacy Group B, now unused — Tuple is Group A).
 -}
 postSolveTuple :
     Data.Map.Dict String Name Can.Annotation
@@ -1016,7 +1018,7 @@ postSolveTuple annotations exprId a b cs nodeTypes0 kernel0 =
             ( nodeTypes4, ke3 )
 
 
-{-| Handle Record expression (Group B).
+{-| Handle Record expression (legacy Group B, now unused — Record is Group A).
 -}
 postSolveRecord :
     Data.Map.Dict String Name Can.Annotation
@@ -1076,7 +1078,7 @@ postSolveRecord annotations exprId fields nodeTypes0 kernel0 =
             ( nodeTypes2, kernel1 )
 
 
-{-| Handle Lambda expression (Group B).
+{-| Handle Lambda expression (legacy Group B, now unused — Lambda is Group A).
 -}
 postSolveLambda :
     Data.Map.Dict String Name Can.Annotation
@@ -1132,7 +1134,7 @@ postSolveLambda annotations exprId args body nodeTypes0 kernel0 =
             ( nodeTypes3, kernel2 )
 
 
-{-| Handle Accessor expression (Group B).
+{-| Handle Accessor expression (legacy Group B, now unused — Accessor is Group A).
 
 An accessor like `.field` has type `{ ext | field : a } -> a`.
 

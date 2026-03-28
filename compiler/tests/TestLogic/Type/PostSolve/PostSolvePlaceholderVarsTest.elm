@@ -3,15 +3,17 @@ module TestLogic.Type.PostSolve.PostSolvePlaceholderVarsTest exposing (suite)
 {-| Test suite for invariant POST\_009.
 
 POST\_009: PostSolve-generated placeholder TVars used for structural repair of
-Group B expressions must not appear in function positions in the fixed NodeTypes
-map for non-kernel expressions so that all function types visible to
-TypedCanonical TypedOptimized and monomorphization are expressed solely in terms
-of solver- or annotation-derived type variables.
+remaining Group B expressions (Str, Chr, Float, Unit) must not appear in
+function positions in the fixed NodeTypes map for non-kernel expressions so
+that all function types visible to TypedCanonical TypedOptimized and
+monomorphization are expressed solely in terms of solver- or annotation-derived
+type variables. Most expressions are now Group A (solver-owned) and do not
+receive PostSolve placeholders.
 
 Detection strategy: For each non-kernel node, TVars in function positions
 (TLambda components) in the post type are checked against that node's own
-pre-type vars. For Group B nodes with no pre-type, the enclosing definition's
-annotation vars serve as the legitimate set.
+pre-type vars. For nodes with no pre-type (remaining Group B), the enclosing
+definition's annotation vars serve as the legitimate set.
 
 -}
 
@@ -115,7 +117,7 @@ enclosing definition's annotation).
 Per-node check:
 
   - If the node has a pre-type, its free vars are the legitimate set.
-  - If the node has no pre-type (Group B), use the enclosing definition's
+  - If the node has no pre-type (remaining Group B), use the enclosing definition's
     annotation vars as the legitimate set.
 
 -}
@@ -140,7 +142,7 @@ checkNoPlaceholdersInFuncPositions nodeId postType nodeTypesPre exprNodes annota
                     Helpers.freeTypeVars preType
 
                 Nothing ->
-                    -- No pre-type (Group B): use enclosing def's annotation vars
+                    -- No pre-type (remaining Group B): use enclosing def's annotation vars
                     case Data.Map.get identity nodeId exprNodes of
                         Just exprNode ->
                             Helpers.enclosingAnnotationVars

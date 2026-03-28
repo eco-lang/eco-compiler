@@ -2,8 +2,10 @@ module TestLogic.Type.PostSolve.GroupBTypes exposing (expectGroupBTypesValid)
 
 {-| Test logic for invariant POST\_001: GroupB types are fully resolved.
 
-After solving, verify that all GroupB (mutually recursive) definitions
-have fully resolved types with no remaining unification variables.
+After solving, verify that all remaining GroupB expressions (Str, Chr, Float,
+Unit) have fully resolved types with no remaining unification variables.
+List, Tuple, Record, Lambda, Accessor, and Let forms are now Group A
+(solver-owned) and do not need PostSolve structural repair.
 
 -}
 
@@ -15,7 +17,7 @@ import Expect
 import TestLogic.TestPipeline as Pipeline
 
 
-{-| Verify that Group B expressions get structural types.
+{-| Verify that remaining Group B expressions get structural types.
 -}
 expectGroupBTypesValid : Src.Module -> Expect.Expectation
 expectGroupBTypesValid srcModule =
@@ -42,9 +44,9 @@ expectGroupBTypesValid srcModule =
 -- ============================================================================
 
 
-{-| Collect checks for Group B types.
+{-| Collect checks for remaining Group B types.
 
-Group B expressions (lists, tuples, records, units, lambdas) should have
+Remaining Group B expressions (Str, Chr, Float, Unit) should have
 fully structural types after PostSolve, with no unconstrained synthetic variables.
 
 -}

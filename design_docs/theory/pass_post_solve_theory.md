@@ -2,7 +2,7 @@
 
 ## Overview
 
-The PostSolve pass is a type-fixing phase that runs after the main type solver (`runWithIds`) and before conversion to TypedCanonical IR. It addresses two key problems: fixing incomplete types for "Group B" expressions and computing kernel function types from usage patterns.
+The PostSolve pass is a type-fixing phase that runs after the main type solver (`runWithIds`) and before conversion to TypedCanonical IR. It addresses two key problems: fixing incomplete types for remaining "Group B" expressions (Str, Chr, Float, Unit) and computing kernel function types from usage patterns.
 
 **Phase**: Type Checking (Post-Solver)
 
@@ -14,8 +14,8 @@ The PostSolve pass is a type-fixing phase that runs after the main type solver (
 
 The Elm type solver uses synthetic type variables for certain expressions. These fall into two groups:
 
-- **Group A**: Expressions whose types are constrained by their context (Int literals, Negate, Binop, Call, If, Case, Access, Update). The solver computes meaningful types.
-- **Group B**: Expressions whose types are unconstrained by the solver (Str, Chr, Float, Unit, List, Tuple, Record, Lambda, Accessor, Let/LetRec/LetDestruct). These have synthetic variables that need structural computation.
+- **Group A**: Expressions whose types are solver-owned via `recordNodeVar` (Int, Negate, Binop, Call, If, Case, Access, Update, Accessor, List, Tuple, Record, Lambda, Let/LetRec/LetDestruct). The solver computes meaningful types.
+- **Group B**: Expressions whose types are unconstrained by the solver (Str, Chr, Float, Unit, Shader). These have synthetic variables that need structural computation.
 
 ### Problem 2: VarKernel Types
 
@@ -43,13 +43,14 @@ FUNCTION seedKernelAliases(annotations, decls):
 
 ### Phase 1: Expression Traversal
 
-Walks the AST, fixing Group B types and inferring kernel types from usage:
+Walks the AST, fixing remaining Group B types and inferring kernel types from usage:
 
 ```
 FUNCTION postSolveExpr(expr, nodeTypes, kernelEnv):
     CASE expr OF
         -- Group A: Trust solver's type, recurse into children
-        Int | Negate | Binop | Call | If | Case | Access | Update:
+        Int | Negate | Binop | Call | If | Case | Access | Update |
+        Accessor | List | Tuple | Record | Lambda | Let | LetRec | LetDestruct:
             recurseIntoChildren(expr, nodeTypes, kernelEnv)
 
         -- VarKernel: Look up from kernelEnv
@@ -62,18 +63,6 @@ FUNCTION postSolveExpr(expr, nodeTypes, kernelEnv):
         Chr: nodeTypes[expr.id] = Char
         Float: nodeTypes[expr.id] = Float
         Unit: nodeTypes[expr.id] = ()
-        List(elems):
-            elemType = typeOf(first elem) or TVar "a"
-            nodeTypes[expr.id] = List elemType
-        Tuple(a, b, cs):
-            nodeTypes[expr.id] = (typeOf a, typeOf b, ...)
-        Record(fields):
-            nodeTypes[expr.id] = { field: typeOf(value), ... }
-        Lambda(args, body):
-            funcType = argTypes -> bodyType
-            nodeTypes[expr.id] = funcType
-        Let/LetRec/LetDestruct:
-            nodeTypes[expr.id] = typeOf(body)
 ```
 
 ## Kernel Type Inference
@@ -204,7 +193,7 @@ Kernel function type environment (from `KernelTypes` module):
 
 ## Post-conditions
 
-1. All Group B expressions have concrete types in `nodeTypes`
+1. All expressions have concrete types in `nodeTypes` (Group A from solver, Group B from structural computation)
 2. All used kernel functions have types in `kernelEnv`
 3. `nodeTypes` is suitable for conversion to TypedCanonical IR
 

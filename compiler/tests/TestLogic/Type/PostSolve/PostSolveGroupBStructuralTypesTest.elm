@@ -2,12 +2,13 @@ module TestLogic.Type.PostSolve.PostSolveGroupBStructuralTypesTest exposing (sui
 
 {-| Test suite for invariant POST\_001.
 
-POST\_001: For Group B expressions whose solver output still contains a synthetic
-placeholder (TVar), PostSolve must replace that placeholder with the structural
-type implied by the AST + children's types.
+POST\_001: For remaining Group B expressions whose solver output still contains
+a synthetic placeholder (TVar), PostSolve must replace that placeholder with the
+structural type implied by the AST + children's types.
 
-Group B expressions are: Str, Chr, Float, Unit, List, Tuple, Record, Lambda,
-Accessor, Let, LetRec, LetDestruct.
+Remaining Group B expressions are: Str, Chr, Float, Unit, Shader.
+List, Tuple, Record, Lambda, Accessor, Let, LetRec, LetDestruct are now Group A
+(solver-owned via recordNodeVar) and do not need structural repair.
 
 -}
 
@@ -63,7 +64,7 @@ expectGroupBStructuralTypes srcModule =
                         |> List.map (\n -> ( n.id, n ))
                         |> DataMap.fromList identity
 
-                -- Filter to only Group B expressions that were synthetic
+                -- Filter to only remaining Group B expressions that were synthetic (Str, Chr, Float, Unit, Shader)
                 syntheticGroupBIds =
                     artifacts.syntheticExprIds
                         |> EverySet.toList compare
@@ -90,7 +91,7 @@ expectGroupBStructuralTypes srcModule =
                     Expect.fail (formatViolations vs)
 
 
-{-| Check a single Group B expression.
+{-| Check a single remaining Group B expression.
 
 Returns a violation if:
 

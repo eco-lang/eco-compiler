@@ -285,10 +285,11 @@ walkPattern (A.At _ patInfo) acc =
 Group B expressions are those where the constraint generator allocates
 a synthetic placeholder variable that PostSolve must fill:
 
-  - Str, Chr, Float, Unit (literals)
-  - List, Tuple, Record (structural)
-  - Lambda, Accessor (function-like)
-  - Let, LetRec, LetDestruct (binding forms)
+  - Str, Chr, Float, Unit (scalar literals)
+  - Shader
+
+List, Tuple, Record, Lambda, Accessor, Let, LetRec, LetDestruct are now
+Group A (solver-owned via recordNodeVar) and are no longer Group B.
 
 -}
 isGroupBExprNode : Can.Expr_ -> Bool

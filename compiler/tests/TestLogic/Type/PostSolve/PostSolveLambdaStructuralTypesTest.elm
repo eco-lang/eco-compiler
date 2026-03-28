@@ -6,8 +6,8 @@ POST\_007: The PostSolve phase guarantees that every lambda expression in the
 canonical module has a concrete structural function type. PostSolve computes
 a TLambda chain from argument pattern types and body type when the solver did
 not supply a non-TVar type. The stored type must be alpha-equivalent to the
-recomputed structural type. Group B lambdas never remain as bare TVars or
-non-function shapes.
+recomputed structural type. Lambdas are now Group A (solver-owned via
+recordNodeVar) and should never remain as bare TVars or non-function shapes.
 
 -}
 

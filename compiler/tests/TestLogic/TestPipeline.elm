@@ -31,7 +31,7 @@ Pipeline stages:
 
 1.  Canonicalization: Source AST -> Canonical AST
 2.  Type Checking: Canonical -> annotations + nodeTypes (pre-PostSolve)
-3.  PostSolve: Fix Group B types, compute kernel env
+3.  PostSolve: Fix remaining Group B types (Str, Chr, Float, Unit), compute kernel env
 4.  Typed Optimization: TypedCanonical -> LocalGraph
 5.  Monomorphization: LocalGraph -> GlobalGraph -> MonoGraph
 6.  MLIR Generation: MonoGraph -> MlirModule
