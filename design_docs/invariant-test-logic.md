@@ -286,37 +286,68 @@ name: Recorded node variables are constrained
 phase: type checking
 invariants: TYPE_007
 ir: Constraint tree + NodeIds mapping (from constrainWithIds)
-logic: After constraint generation via constrainWithIds, for every expression or
-  pattern ID that was registered via NodeIds.recordNodeVar:
-  * Extract the solver Variable recorded for that ID from the NodeIds mapping.
+logic: After constraint generation via constrainWithIds, for every expression
+  ID that was registered via NodeIds.recordNodeVar (Group A expressions):
+  * The Group A expression kinds are exactly those dispatched to specialised
+    constraint helpers that call recordNodeVar:
+      - Can.Int       → constrainIntWithIdsProg
+      - Can.Negate    → constrainNegateWithIdsProg
+      - Can.Binop     → constrainBinopWithIdsProg
+      - Can.Call      → constrainCallWithIdsProg
+      - Can.If        → constrainIfWithIdsProg
+      - Can.Case      → constrainCaseWithIdsProg
+      - Can.Access    → constrainAccessWithIdsProg
+      - Can.Update    → constrainUpdateWithIdsProg
+    Group B expressions (Str, Chr, Float, Unit, List, Tuple, Record, Lambda,
+    Accessor, Let/LetRec/LetDestruct) use constrainGenericWithIdsProg which
+    calls recordSyntheticExprVar instead. Those are handled by PostSolve and
+    are NOT in scope for TYPE_007.
   * Run the solver (Solve.runWithIds).
   * Read back the variable's resolved type via toCanTypeBatch (nodeTypes[id]).
   * Assert the resolved type is NOT an unconstrained placeholder:
       - If the enclosing function has an annotation with type variable binders
-        {v1, v2, ...}, then nodeTypes[id] may be a TVar only if its name is
-        one of the declared binders.
-      - A TVar whose name does not appear in any enclosing annotation's binders
-        indicates a solver variable that was recorded but never unified with
-        anything — an unconstrained node variable (internal compiler error).
-  * Specifically target expression forms where this bug is known to occur:
-      - If expressions with structured annotation types (e.g., List a, Maybe a,
-        Array a — not bare type variables)
-      - Case expressions (for regression testing — already correctly constrained)
+        {v1, v2, ...}, then nodeTypes[id] may be a bare TVar only if its name
+        is one of the declared binders.
+      - A bare TVar whose name does not appear in any enclosing annotation's
+        binders indicates a solver variable that was recorded but never unified
+        with anything — an unconstrained node variable (internal compiler error).
+  * The binder environment for a node is the union of:
+      - Annotation binders from the enclosing top-level TypedDef (FreeVars) or
+        Def (Forall binders from the annotations dict).
+      - For unannotated let-bound Defs: let-generalized TVars inferred from
+        the full inferred function type — both the body expression's pre-solve
+        type AND each argument pattern's pre-solve type in nodeTypes. This makes
+        all scheme TVars visible, including those that only appear in parameter
+        types (e.g. `a` in an inferred `compose : (a -> b) -> (c -> a) -> c -> b`
+        where the body type is just `b`).
+      - Type-class variables (number, comparable, appendable, compappend with
+        optional digit suffixes) are filtered out globally — they are internal
+        solver constraints, never unconstrained node vars.
+  * Direct kernel calls (Can.Call where callee is VarKernel) are skipped: their
+    result TVars come from kernel function schemes, not from Elm node variables.
+    Non-kernel Calls (user-defined functions, higher-order calls, combinators)
+    are still checked.
   * For each violating ID, report:
-      - The expression kind (If, Case, Let, etc.)
+      - The expression kind (Int, Negate, Binop, Call, If, Case, Access, Update)
       - The resolved type (the spurious TVar)
       - The enclosing function name and annotation binders
 inputs: StandardTestSuites source modules (especially IfNodeTypeCases, ArrayCases,
-  MaybeResultCases, ControlFlowCases), plus targeted programs with:
+  AccessorScopingCases, MaybeResultCases, ControlFlowCases), plus targeted programs
+  with:
   * Polymorphic functions whose body is an if expression returning parameterized types
   * Nested if expressions inside polymorphic functions
   * If expressions inside case branches with structured types
   * Functions with multiple type variables where only some appear in the if result
-oracle: Every node variable recorded during constraint generation resolves to a
-  type that is structurally grounded in the enclosing context — either a concrete
-  type, a type variable from an enclosing annotation, or a structured type
-  containing only such variables. No spurious free type variables from
-  unconstrained solver variables appear in nodeTypes.
+  * Binary operators, function calls, record access, and record updates in
+    polymorphic contexts
+  * Nested let-bound polymorphic definitions (combinators, foldl, etc.)
+  * Kernel function calls in kernel modules
+oracle: Every Group A node variable recorded during constraint generation resolves
+  to a type that is structurally grounded in the enclosing context — either a
+  concrete type, a type variable from an enclosing annotation or let-generalized
+  scheme, a type-class variable, or a structured type containing only such
+  variables. No spurious free type variables from unconstrained solver variables
+  appear in nodeTypes for checked Group A expression IDs.
 tests: compiler/tests/TestLogic/Type/NodeVarConstrainedTest.elm
 --
 
@@ -495,6 +526,109 @@ oracle: No PostSolve-generated placeholder TVars survive in function positions
   of any non-kernel expression type. All function types use only solver/annotation-derived
   type variables. The check is per-node scoped, not module-global.
 tests: compiler/tests/TestLogic/Type/PostSolve/PostSolvePlaceholderVarsTest.elm
+--
+--
+name: All node type TVars come from enclosing type schemes
+phase: post-solve
+invariants: POST_010
+ir: PostSolve NodeTypes (pre and post) + Canonical AST + annotations
+logic:
+  * Walk the canonical AST, tracking a set EnvTVars of legitimate type variables
+    for each expression node. EnvTVars(i) is the union of three sources:
+
+    1. **Annotation binders** — from the stack of enclosing type schemes:
+        - Top-level TypedDef: FreeVars from the definition (rigids from annotation)
+        - Top-level Def: quantified vars from annotations dict (solver-inferred scheme)
+        - Let-bound TypedDef: FreeVars from the definition
+        - Let-bound Def: quantified vars from annotations dict if present
+
+    2. **Inferred full function type for unannotated let-bound defs** — when a
+       let-bound Def has no entry in the annotations dict (the solver generalised
+       it internally via CLet but the result is not in the output annotations),
+       collect FreeTVars from BOTH the body expression's pre-PostSolve type AND
+       all argument pattern pre-PostSolve types. This reconstructs the full
+       inferred function type (arg types + body type) and captures all
+       let-generalised TVars — including those that only appear in parameter
+       positions (e.g. `a` in an inferred `foldl : (a -> b -> b) -> b -> List a -> b`
+       where the body type is just `b`). The pre-PostSolve types are the solver's
+       actual output and are the source of truth for what TVars the solver produced.
+
+    3. **Type-class variables** — Elm's solver produces constrained type
+       variables for numeric/comparison type classes. These never appear in
+       Forall binders because they are internal solver constraints, not
+       user-visible polymorphism. Recognise them by name prefix:
+         - number, number1, number2, ...
+         - comparable, comparable1, ...
+         - appendable, appendable1, ...
+         - compappend, compappend1, ...
+       These are always legitimate and must be accepted globally, not per-scope.
+
+  * For every non-negative, non-kernel expression node ID `i`:
+      - Look up nodeTypesPost[i] (the final post-PostSolve type).
+      - If missing, skip (TYPE_003 covers coverage).
+      - Compute FreeTVars(i): the set of all Can.TVar names in nodeTypesPost[i].
+      - Filter out type-class variables from FreeTVars(i).
+      - Assert the remaining FreeTVars(i) ⊆ EnvTVars(i).
+      - Any non-type-class TVar in FreeTVars(i) not in EnvTVars(i) is a violation.
+
+  * Skip nodes whose TVars legitimately come from sources other than the
+    enclosing Elm definition's type scheme. The skipped categories are:
+      - Leaf variables (VarLocal, VarTopLevel, VarForeign, VarOperator, VarDebug):
+        their types are just uses of their own or another definition's scheme.
+      - VarKernel: governed by kernel-specific invariants.
+      - Accessor: polymorphism is owned by the accessor's own scheme.
+      - VarCtor: constructors' TVars belong to the ADT's scheme, not the local def.
+      - Container literals (List, Record, Tuple): often have harmless internal
+        polymorphism (e.g. [] : List a where the element type never escapes).
+      - Lambda: lambda node types are checked by dedicated invariants POST_007,
+        POST_008, POST_009. POST_010 does not re-verify their TVars.
+      - Call nodes whose callee is a simple Var* head (VarKernel, VarTopLevel,
+        VarForeign, VarOperator, VarCtor): the result type is just an
+        instantiation of the callee's scheme; any TVars not in EnvTVars are
+        still legitimate. Calls through a VarLocal callee (e.g. higher-order
+        args, combinators) are still checked, because their result type is
+        part of the current def's behavior.
+
+    POST_010 still checks result-producing nodes: If, Case, Let, LetRec,
+    LetDestruct, Binop, Negate, Access, Update, and Calls with non-trivial
+    callees (VarLocal head, nested Call head, etc.).
+
+  * For violation reporting, include:
+      - The node ID
+      - The expression kind (If, Case, Binop, Call, etc.)
+      - The offending TVar name(s)
+      - The enclosing function name
+      - The full EnvTVars set (for debugging)
+
+  * Distinguishing from related invariants:
+      - POST_006 checks that PostSolve does not introduce NEW vars vs pre-PostSolve.
+        POST_010 checks that ALL vars in the final type are grounded in enclosing schemes,
+        catching vars that were already spurious before PostSolve.
+      - POST_007/008/009 check lambda nodes specifically with structural checks.
+        POST_010 skips lambdas (deferring to those invariants) and focuses on
+        control-flow and result-producing nodes.
+      - TYPE_007 checks pre-PostSolve bare TVars on Group A nodes. POST_010 is
+        the comprehensive post-PostSolve version covering checked nodes and all TVars.
+
+inputs: StandardTestSuites source modules, plus targeted programs with:
+  * Polymorphic functions with if/case returning parameterized types (List a, Maybe a)
+  * Nested let-bound polymorphic definitions with and without annotations
+  * Recursive and mutually recursive let bindings
+  * Closures capturing polymorphic values
+  * Functions with multiple type variables where only some appear in sub-expressions
+  * Unannotated functions using numeric literals and comparison operators
+
+oracle: Every TVar in every checked node's post-PostSolve type either (a) is a
+  type-class variable (number, comparable, appendable, compappend), (b) appears
+  in an enclosing annotation's Forall binders, or (c) appears in the full inferred
+  function type (arg pattern types + body type from pre-PostSolve nodeTypes) of an
+  enclosing unannotated let-bound definition. Nodes that are legitimately polymorphic
+  from other sources (constructors, container literals, kernel calls) are skipped.
+  Any TVar on a checked node that satisfies none of (a)-(c) indicates an
+  unconstrained node variable from constraint generation or a leaked internal
+  placeholder from PostSolve.
+
+tests: compiler/tests/TestLogic/Type/PostSolve/PostSolveNodeTypeGroundedTest.elm
 --
 
 ---

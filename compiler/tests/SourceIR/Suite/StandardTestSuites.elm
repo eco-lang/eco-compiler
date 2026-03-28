@@ -11,6 +11,7 @@ different compiler phases.
 import Compiler.AST.Source as Src
 import Expect exposing (Expectation)
 import SourceIR.AccessorFuzzCases as AccessorFuzzCases
+import SourceIR.AccessorScopingCases as AccessorScopingCases
 import SourceIR.AnnotatedCases as AnnotatedCases
 import SourceIR.ArrayCases as ArrayCases
 import SourceIR.AsPatternCases as AsPatternCases
@@ -150,5 +151,6 @@ expectSuite expectFn condStr =
 
         -- Fuzz Tests
         , PatternComplexityFuzzCases.expectSuite expectFn condStr
+        , AccessorScopingCases.expectSuite expectFn condStr
         , AccessorFuzzCases.expectSuite expectFn condStr
         ]

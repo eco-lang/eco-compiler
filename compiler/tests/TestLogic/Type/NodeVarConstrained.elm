@@ -6,11 +6,19 @@ module TestLogic.Type.NodeVarConstrained exposing
 
 {-| Test logic for invariant TYPE\_007: Recorded node variables are constrained.
 
-Every type variable registered via NodeIds.recordNodeVar for an If or Case
+Every type variable registered via NodeIds.recordNodeVar for a Group A
 expression must resolve (after solving) to a type that is grounded in the
-enclosing annotation's binders. A bare TVar whose name does not appear in
-any enclosing annotation's binders indicates a solver variable that was
-recorded but never unified with anything.
+enclosing annotation's binders. Group A expressions are those dispatched to
+specialised constraint helpers that call recordNodeVar:
+
+    Int, Negate, Binop, Call, If, Case, Access, Update
+
+A bare TVar whose name does not appear in any enclosing annotation's binders
+indicates a solver variable that was recorded but never unified with anything.
+
+Group B expressions (Str, Chr, Float, Unit, List, Tuple, Record, Lambda,
+Accessor, Let/LetRec/LetDestruct) use recordSyntheticExprVar instead and are
+handled by PostSolve — they are NOT in scope for TYPE\_007.
 
 -}
 
@@ -37,7 +45,7 @@ type alias Violation =
 {-| Check TYPE\_007 across all declarations in a module.
 
 For each annotated declaration, walk its expression tree and check that
-every If and Case expression's node type is grounded in the enclosing
+every Group A expression's node type is grounded in the enclosing
 annotation's binders.
 
 -}
@@ -104,8 +112,28 @@ annotationBinders name annotations =
             Set.empty
 
 
+{-| Get the expression ID from a canonical expression.
+-}
+getExprId : Can.Expr -> Int
+getExprId (A.At _ info) =
+    info.id
+
+
+{-| Get the pattern ID from a canonical pattern.
+-}
+getPatternId : Can.Pattern -> Int
+getPatternId (A.At _ patInfo) =
+    patInfo.id
+
+
 {-| Walk into a let-bound definition using the enclosing binders,
 or the def's own binders if it has a typed annotation.
+
+For unannotated Def, infer let-generalized binders from the full inferred
+function type: argument pattern types + body result type from nodeTypes.
+This makes all scheme TVars (a, b, c, etc.) visible when checking Group A
+nodes inside the body, including TVars that only appear in parameter types.
+
 -}
 walkDef :
     Name.Name
@@ -115,14 +143,45 @@ walkDef :
     -> List Violation
 walkDef enclosingFunc enclosingBinders def nodeTypes =
     case def of
-        Can.Def (A.At _ name) _ body ->
+        Can.Def (A.At _ _) args body ->
             let
+                bodyId =
+                    getExprId body
+
+                bodyTVars =
+                    case Array.get bodyId nodeTypes |> Maybe.andThen identity of
+                        Just bodyType ->
+                            collectFreeVars bodyType
+
+                        Nothing ->
+                            Set.empty
+
+                argTVars =
+                    args
+                        |> List.foldl
+                            (\pat acc ->
+                                let
+                                    patId =
+                                        getPatternId pat
+                                in
+                                case Array.get patId nodeTypes |> Maybe.andThen identity of
+                                    Just patType ->
+                                        Set.union acc (collectFreeVars patType)
+
+                                    Nothing ->
+                                        acc
+                            )
+                            Set.empty
+
+                localBinders =
+                    Set.union bodyTVars argTVars
+
                 defBinders =
-                    enclosingBinders
+                    Set.union enclosingBinders localBinders
             in
             checkExpr enclosingFunc defBinders body nodeTypes
 
-        Can.TypedDef (A.At _ name) freeVars _ body _ ->
+        Can.TypedDef (A.At _ _) freeVars _ body _ ->
             let
                 defBinders =
                     Dict.keys freeVars |> Set.fromList |> Set.union enclosingBinders
@@ -143,16 +202,43 @@ checkExpr funcName binders (A.At _ exprInfo) nodeTypes =
         nodeId =
             exprInfo.id
 
-        -- Check this node if it's an If or Case
+        -- Check this node if it's a Group A expression (uses recordNodeVar)
         thisViolations =
             case exprInfo.node of
+                Can.Int _ ->
+                    checkNodeType funcName binders nodeId "Int" nodeTypes
+
+                Can.Negate _ ->
+                    checkNodeType funcName binders nodeId "Negate" nodeTypes
+
+                Can.Binop _ _ _ _ _ _ ->
+                    checkNodeType funcName binders nodeId "Binop" nodeTypes
+
+                Can.Call fn _ ->
+                    -- Skip direct kernel calls: their TVars come from kernel schemes.
+                    case fn of
+                        A.At _ fnInfo ->
+                            case fnInfo.node of
+                                Can.VarKernel _ _ _ ->
+                                    []
+
+                                _ ->
+                                    checkNodeType funcName binders nodeId "Call" nodeTypes
+
                 Can.If _ _ ->
                     checkNodeType funcName binders nodeId "If" nodeTypes
 
                 Can.Case _ _ ->
                     checkNodeType funcName binders nodeId "Case" nodeTypes
 
+                Can.Access _ _ ->
+                    checkNodeType funcName binders nodeId "Access" nodeTypes
+
+                Can.Update _ _ ->
+                    checkNodeType funcName binders nodeId "Update" nodeTypes
+
                 _ ->
+                    -- Group B or leaf — not checked by TYPE_007
                     []
 
         -- Recurse into children
@@ -160,6 +246,20 @@ checkExpr funcName binders (A.At _ exprInfo) nodeTypes =
             walkChildren funcName binders exprInfo.node nodeTypes
     in
     thisViolations ++ childViolations
+
+
+{-| Is this TVar name a type-class variable?
+
+Elm's solver produces constrained type variables for numeric/comparison type
+classes. These never appear in Forall binders. Recognise by name prefix.
+
+-}
+isTypeClassVar : String -> Bool
+isTypeClassVar name =
+    String.startsWith "number" name
+        || String.startsWith "comparable" name
+        || String.startsWith "appendable" name
+        || String.startsWith "compappend" name
 
 
 {-| Check whether a node's resolved type contains spurious free variables.
@@ -188,6 +288,7 @@ checkNodeType funcName binders nodeId exprKind nodeTypes =
 
                     spurious =
                         Set.diff freeVarsInType binders
+                            |> Set.filter (\v -> not (isTypeClassVar v))
                 in
                 if Set.isEmpty spurious then
                     []

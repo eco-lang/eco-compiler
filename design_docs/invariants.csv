@@ -108,6 +108,8 @@ POST_008;PostSolve;LambdasContextVars;documented;For every lambda expression the
 
 POST_009;PostSolve;Placeholders;documented;PostSolve-generated placeholder TVars used for structural repair of Group B expressions (such as _lambda_<id>_argN and _lambda_<id>_result names introduced when no solver type exists for a lambda) must not appear in function positions in the fixed NodeTypes map for non-kernel expressions so that all function types visible to TypedCanonical TypedOptimized and monomorphization are expressed solely in terms of solver- or annotation-derived type variables and are free of PostSolve-only placeholders.;Compiler.Type.PostSolve|Compiler.AST.TypedCanonical|Compiler.Optimize.Typed|Compiler.Monomorphize.Specialize    
 
+POST_010;PostSolve;NodeTypes;documented;For every non-kernel expression or pattern node id i, let EnvTVars(i) be the set of type variables bound by all enclosing annotated or inferred type schemes (top-level and let-bound) and let FreeTVars(i) be the set of Can.TVar names appearing in the final post-PostSolve nodeTypes[i] type; the invariant is that FreeTVars(i) is a subset of EnvTVars(i), and any Can.TVar in nodeTypes[i] that does not come from an enclosing scheme binder indicates an unconstrained node variable or leaked internal placeholder and is treated as an internal compiler bug;Compiler.Type.PostSolve|Compiler.AST.TypedCanonical|Compiler.Type.Solve
+
 # =============================================================================
 # TYPED OPTIMIZATION PHASE - Preserve and exploit types in optimized IR
 # =============================================================================
