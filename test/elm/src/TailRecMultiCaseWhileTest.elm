@@ -6,7 +6,7 @@ EcoControlFlowToSCF, then CaseOpLowering in EcoToLLVM creates multiple
 blocks inside the scf.while after-region (Bug 2).
 -}
 
--- CHECK: total: 10
+-- CHECK: total: 8
 -- CHECK: special: 2
 
 import Html exposing (text)

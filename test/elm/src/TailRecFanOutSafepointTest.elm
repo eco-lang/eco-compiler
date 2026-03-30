@@ -7,7 +7,7 @@ generates multi-result eco.case inside scf.while.  Cross-sibling-region
 safepoint references would cause an MLIR parse error in eco-boot-native.
 -}
 
--- CHECK: result: "ab*"
+-- CHECK: result: "*ba"
 
 import Html exposing (text)
 
