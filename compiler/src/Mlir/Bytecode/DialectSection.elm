@@ -43,6 +43,8 @@ type DialectRegistry
         }
 
 
+{-| A group of operation names belonging to a single dialect.
+-}
 type alias OpGroup =
     { dialectIdx : Int
     , opNames : List String

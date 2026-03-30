@@ -66,6 +66,8 @@ type Entry
 -- ==== Table ====
 
 
+{-| Table mapping attributes and types to their bytecode indices.
+-}
 type AttrTypeTable
     = AttrTypeTable
         { attrKeys : Dict String Int
@@ -82,16 +84,22 @@ attrIndex attr (AttrTypeTable tbl) =
     Dict.get (attrToKey attr) tbl.attrKeys |> Maybe.withDefault -1
 
 
+{-| Look up the bytecode index for an MLIR type.
+-}
 typeIndex : MlirType -> AttrTypeTable -> Int
 typeIndex ty (AttrTypeTable tbl) =
     Dict.get (typeToKey ty) tbl.typeKeys |> Maybe.withDefault -1
 
 
+{-| Look up the bytecode index for a source location.
+-}
 locIndex : Loc -> AttrTypeTable -> Int
 locIndex loc (AttrTypeTable tbl) =
     Dict.get (locKey loc) tbl.attrKeys |> Maybe.withDefault -1
 
 
+{-| Look up the bytecode index for a dictionary attribute.
+-}
 dictAttrIndex : Dict String MlirAttr -> AttrTypeTable -> Int
 dictAttrIndex attrs (AttrTypeTable tbl) =
     Dict.get (dictToKey attrs) tbl.attrKeys |> Maybe.withDefault -1
@@ -279,6 +287,8 @@ streamAccumEncodingView (StreamAccum acc) =
         }
 
 
+{-| Collect all attributes and types from an MLIR module into a table.
+-}
 collect : MlirModule -> AttrTypeTable
 collect mod =
     let

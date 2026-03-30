@@ -90,6 +90,8 @@ collect mod =
     List.foldl collectOp st0 mod.body
 
 
+{-| Collect all strings from an MLIR operation into the string table.
+-}
 collectOp : MlirOp -> StringTable -> StringTable
 collectOp op st =
     let

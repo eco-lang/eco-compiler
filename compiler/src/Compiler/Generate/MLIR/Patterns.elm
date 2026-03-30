@@ -10,7 +10,7 @@ This module handles:
   - Scrutinee type determination
   - Fallback tag computation
 
-@docs generateMonoPath, generateMonoDtPath, generateMonoChainCondition, testToTagInt, caseKindFromTest, scrutineeTypeFromCaseKind, computeFallbackTag
+@docs generateMonoPath, generateMonoDtPath, generateMonoTest, generateMonoChainCondition, testToTagInt, caseKindFromTest, scrutineeTypeFromCaseKind, computeFallbackTag
 
 -}
 

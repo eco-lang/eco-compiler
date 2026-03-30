@@ -27,7 +27,7 @@ state during MLIR code generation.
 
 # Variable Management
 
-@docs freshVar, freshOpId, lookupVar, addVarMapping, addDecoderExpr, ctxForSiblingRegion, liveEcoValueVars, trackSsaVar, resetDefinedSsaVars
+@docs freshVar, freshOpId, lookupVar, addVarMapping, addDecoderExpr, ctxForSiblingRegion, ctxAfterBranchOp, liveEcoValueVars, trackSsaVar, resetDefinedSsaVars
 
 
 # Type Registration
