@@ -1082,6 +1082,7 @@ type CallKind
     = CallDirectKnownSegmentation
     | CallDirectFlat
     | CallGenericApply
+    | CallSegmentationUnknown
 
 
 {-| Staging / call-site metadata for MonoCall.

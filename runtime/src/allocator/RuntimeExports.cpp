@@ -560,6 +560,29 @@ extern "C" uint64_t eco_apply_closure(uint64_t closure_hptr, uint64_t* args, uin
     }
 }
 
+extern "C" uint64_t eco_apply_segmentation_unknown(uint64_t closure_hptr,
+                                                    uint64_t* typed_args,
+                                                    uint32_t num_args,
+                                                    uint64_t unboxed_bitmap,
+                                                    uint64_t* boxed_args) {
+    void* closure_ptr = hpointerToPtr(closure_hptr);
+    if (!closure_ptr) return 0;
+
+    Closure* closure = static_cast<Closure*>(closure_ptr);
+    uint32_t n_values = closure->n_values;
+    uint32_t max_values = closure->max_values;
+    uint32_t remaining = max_values - n_values;
+
+    if (num_args < remaining) {
+        // Under-saturated: use typed args with bitmap to preserve unboxed values
+        return eco_pap_extend(closure_hptr, typed_args, num_args, unboxed_bitmap);
+    } else {
+        // Exactly saturated or over-saturated: use boxed args via eco_apply_closure
+        // which handles both cases (exact call or chain of saturate + recursive apply)
+        return eco_apply_closure(closure_hptr, boxed_args, num_args);
+    }
+}
+
 extern "C" uint64_t eco_pap_extend(uint64_t closure_hptr, uint64_t* args, uint32_t num_newargs,
                                    uint64_t new_unboxed_bitmap) {
     void* closure_ptr = hpointerToPtr(closure_hptr);

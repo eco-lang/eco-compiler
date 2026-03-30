@@ -182,6 +182,20 @@ uint64_t eco_pap_extend(uint64_t closure, uint64_t* args, uint32_t num_newargs, 
 /// @return Result of the function call (as i64)
 uint64_t eco_closure_call_saturated(uint64_t closure, uint64_t* new_args, uint32_t num_newargs);
 
+/// Applies arguments to a closure with known ABI but unknown staging.
+/// Reads the closure header to determine saturation at runtime.
+/// Under-saturated: uses eco_pap_extend with typed args + bitmap (preserves unboxed).
+/// Saturated/over-saturated: uses eco_apply_closure with boxed args.
+/// @param closure HPointer (as uint64_t) to the Closure object
+/// @param typed_args Array of typed args (raw i64 values, may be unboxed per bitmap)
+/// @param num_args Number of new arguments
+/// @param unboxed_bitmap Bitmap indicating which typed_args are unboxed primitives
+/// @param boxed_args Array of same args but all HPointer-encoded
+/// @return Result of the application (as HPointer i64)
+uint64_t eco_apply_segmentation_unknown(uint64_t closure, uint64_t* typed_args,
+                                        uint32_t num_args, uint64_t unboxed_bitmap,
+                                        uint64_t* boxed_args);
+
 //===----------------------------------------------------------------------===//
 // Runtime Utilities
 //===----------------------------------------------------------------------===//

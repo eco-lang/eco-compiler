@@ -156,9 +156,9 @@ checkPapExtendOp papArityMap op =
     in
     case maybeRemainingArity of
         Nothing ->
-            -- Generic apply (CallGenericApply) emits papExtend without remaining_arity;
-            -- saturation is determined at runtime. This is valid per CGEN_052 exemption.
-            if getStringAttr "_call_kind" op == Just "generic_apply" then
+            -- Generic apply and segmentation_unknown emit papExtend without remaining_arity;
+            -- saturation is determined at runtime. This is valid per CGEN_052/CGEN_060 exemption.
+            if getStringAttr "_call_kind" op == Just "generic_apply" || getStringAttr "_call_kind" op == Just "segmentation_unknown" then
                 Nothing
 
             else

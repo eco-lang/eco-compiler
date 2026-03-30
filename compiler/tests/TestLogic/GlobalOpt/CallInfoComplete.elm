@@ -237,6 +237,10 @@ checkGopt012 ctx _ callInfo =
             -- Generic apply ignores initialRemaining; skip this check
             []
 
+        Mono.CallSegmentationUnknown ->
+            -- Segmentation unknown has untrusted staging; initialRemaining = 0 is expected
+            []
+
         _ ->
             case List.head callInfo.stageArities of
                 Just firstStage ->
@@ -337,6 +341,10 @@ checkGopt015 ctx funcExpr callInfo =
     case callInfo.callKind of
         Mono.CallGenericApply ->
             -- Generic apply ignores initialRemaining; skip this check
+            []
+
+        Mono.CallSegmentationUnknown ->
+            -- Segmentation unknown has untrusted staging; initialRemaining = 0 is expected
             []
 
         _ ->

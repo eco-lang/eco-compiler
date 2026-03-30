@@ -1994,7 +1994,11 @@ computeCallInfo graph env func args _ =
                                 Mono.CallDirectKnownSegmentation
 
                         FromType _ ->
-                            Mono.CallGenericApply
+                            if isDynamicCallee env func || calleeHasPolymorphicReturn env func then
+                                Mono.CallGenericApply
+
+                            else
+                                Mono.CallSegmentationUnknown
             in
             { callModel = Mono.StageCurried
             , stageArities = stageAritiesFull

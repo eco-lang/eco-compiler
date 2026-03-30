@@ -204,6 +204,11 @@ struct FusePapExtendChainPattern : public OpRewritePattern<PapExtendOp> {
             prevExtend->getAttrOfType<StringAttr>("_dispatch_mode"),    // Propagate _dispatch_mode
             prevExtend->getAttrOfType<FlatSymbolRefAttr>("_fast_evaluator"));  // Propagate _fast_evaluator
 
+        // Propagate _call_kind from the first extend
+        if (auto callKindAttr = prevExtend->getAttrOfType<StringAttr>("_call_kind")) {
+            fusedOp->setAttr("_call_kind", callKindAttr);
+        }
+
         rewriter.replaceOp(extendOp, fusedOp.getResult());
         // prevExtend will be DCE'd since it now has no uses
         return success();

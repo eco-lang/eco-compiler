@@ -1242,6 +1242,30 @@ generateCall ctx func args resultType callInfo =
             , isTerminated = False
             }
 
+        Mono.CallSegmentationUnknown ->
+            -- Known ABI + unknown staging: typed papExtend without remaining_arity.
+            -- Runtime reads closure header for saturation decisions.
+            -- Result is always !eco.value, so coerce back to expected ABI type.
+            let
+                unkRes =
+                    generateUnknownSegmentationCall ctx func args resultType callInfo
+
+                expectedType =
+                    Types.monoTypeToAbi resultType
+
+                ( coerceOps, finalVar, finalCtx ) =
+                    coerceResultToType unkRes.ctx
+                        unkRes.resultVar
+                        unkRes.resultType
+                        expectedType
+            in
+            { ops = unkRes.ops ++ coerceOps
+            , resultVar = finalVar
+            , resultType = expectedType
+            , ctx = finalCtx
+            , isTerminated = False
+            }
+
         Mono.CallDirectFlat ->
             -- Kernels / externs: use ABI-flattened model.
             if Types.isFunctionType resultType then
@@ -1282,6 +1306,9 @@ callKindToAttrString callKind =
 
         Mono.CallDirectKnownSegmentation ->
             "direct_known_segmentation"
+
+        Mono.CallSegmentationUnknown ->
+            "segmentation_unknown"
 
 
 generateGenericApply : Ctx.Context -> Mono.MonoExpr -> List Mono.MonoExpr -> Mono.MonoType -> Mono.CallInfo -> ExprResult
@@ -1334,6 +1361,101 @@ generateGenericApply ctx func args _ _ =
                 [ ( "_operand_types", ArrayAttr Nothing (List.map TypeAttr allOperandTypes) )
                 , ( "newargs_unboxed_bitmap", IntAttr Nothing newargsUnboxedBitmap )
                 , ( "_call_kind", StringAttr "generic_apply" )
+                ]
+
+        ( ctx4, papExtendOp ) =
+            Ops.mlirOp ctx3 "eco.papExtend"
+                |> Ops.opBuilder.withOperands allOperandNames
+                |> Ops.opBuilder.withResults [ ( resVar, resultMlirType ) ]
+                |> Ops.opBuilder.withAttrs papExtendAttrs
+                |> Ops.opBuilder.build
+    in
+    { ops = funcResult.ops ++ argOps ++ boxOps ++ [ papExtendOp ]
+    , resultVar = resVar
+    , resultType = resultMlirType
+    , ctx = ctx4
+    , isTerminated = False
+    }
+
+
+{-| Generate a segmentation-unknown call: eco.papExtend without remaining\_arity,
+but with typed boxing (respects per-callee evaluatorBoxesAll policy).
+
+This is the "known ABI + unknown staging" path. Unlike generic\_apply which
+boxes all primitives for eco\_apply\_closure, this path uses the callee's
+signature to determine boxing policy, preserving typed ABI through the
+closure boundary.
+
+Result type is always !eco.value since saturation is unknown at compile time.
+-}
+generateUnknownSegmentationCall : Ctx.Context -> Mono.MonoExpr -> List Mono.MonoExpr -> Mono.MonoType -> Mono.CallInfo -> ExprResult
+generateUnknownSegmentationCall ctx func args _ _ =
+    let
+        funcResult : ExprResult
+        funcResult =
+            generateExpr ctx func
+
+        -- Generate all argument expressions
+        ( argOps, argsWithTypes, ctx1 ) =
+            generateExprListTyped funcResult.ctx args
+
+        -- Determine evaluatorBoxesAll based on callee's signature
+        evaluatorBoxesAll =
+            case func of
+                Mono.MonoVarGlobal _ specId _ ->
+                    case Dict.get specId ctx.signatures of
+                        Just sig ->
+                            hasAllBoxedEvaluatorParams sig
+
+                        Nothing ->
+                            False
+
+                Mono.MonoVarKernel _ _ _ _ kernelType ->
+                    hasAllBoxedEvaluatorParams (Ctx.kernelFuncSignatureFromType kernelType)
+
+                Mono.MonoVarLocal name _ ->
+                    Set.member name ctx.externBoxedVars
+
+                _ ->
+                    False
+
+        -- Box args using per-callee boxing policy (typed boxing, not all-boxed)
+        ( boxOps, argsForClosure, ctx2 ) =
+            boxArgsForClosureBoundary evaluatorBoxesAll ctx1 argsWithTypes
+
+        -- Build operand list: closure + all args
+        allOperandNames =
+            funcResult.resultVar :: List.map Tuple.first argsForClosure
+
+        allOperandTypes =
+            funcResult.resultType :: List.map Tuple.second argsForClosure
+
+        -- Compute bitmap: marks which newargs are unboxed primitives
+        newargsUnboxedBitmap =
+            List.indexedMap
+                (\i ( _, mlirTy ) ->
+                    if Types.isUnboxable mlirTy then
+                        Bitwise.shiftLeftBy i 1
+
+                    else
+                        0
+                )
+                argsForClosure
+                |> List.foldl Bitwise.or 0
+
+        ( resVar, ctx3 ) =
+            Ctx.freshVar ctx2
+
+        -- Result type is always !eco.value for segmentation_unknown
+        resultMlirType =
+            Types.ecoValue
+
+        -- Build eco.papExtend WITHOUT remaining_arity, with _call_kind = "segmentation_unknown"
+        papExtendAttrs =
+            Dict.fromList
+                [ ( "_operand_types", ArrayAttr Nothing (List.map TypeAttr allOperandTypes) )
+                , ( "newargs_unboxed_bitmap", IntAttr Nothing newargsUnboxedBitmap )
+                , ( "_call_kind", StringAttr "segmentation_unknown" )
                 ]
 
         ( ctx4, papExtendOp ) =

@@ -125,6 +125,10 @@ static llvm::orc::SymbolMap buildRuntimeSymbolMap(
             llvm::orc::ExecutorSymbolDef(
                 llvm::orc::ExecutorAddr::fromPtr(&eco_closure_call_saturated),
                 llvm::JITSymbolFlags::Exported);
+        symbolMap[interner("eco_apply_segmentation_unknown")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_apply_segmentation_unknown),
+                llvm::JITSymbolFlags::Exported);
 
         // Runtime utilities.
         symbolMap[interner("eco_crash")] =
