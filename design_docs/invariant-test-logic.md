@@ -1333,6 +1333,7 @@ logic: For generateMonoPath projecting heap fields into SSA operands:
   * Otherwise -> result is !eco.value.
 inputs: MLIR with record/tuple/custom field projections
 oracle: eco.project results match heap layout bitmap; no incorrect unboxing.
+tests: DOCUMENTED BUT NOT ENFORCED — the test was removed because it cannot correlate projections to their corresponding constructions without SSA use-def chain tracking, causing false positives when multiple record types coexist in a module.
 --
 --
 name: Let bindings preserve representation
