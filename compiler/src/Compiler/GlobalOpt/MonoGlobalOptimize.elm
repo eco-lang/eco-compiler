@@ -76,6 +76,7 @@ type alias CallEnv =
     , varBodyStageArities : Dict Name (List Int)
     , dynamicSlots : Set String
     , paramSlotKeys : Dict Name String
+    , varPolymorphicReturn : Set Name -- Variables bound to partial applications of polymorphic functions (func.func returns !eco.value)
     }
 
 
@@ -86,6 +87,7 @@ emptyCallEnv dynamicSlots =
     , varBodyStageArities = Dict.empty
     , dynamicSlots = dynamicSlots
     , paramSlotKeys = Dict.empty
+    , varPolymorphicReturn = Set.empty
     }
 
 
@@ -1361,8 +1363,20 @@ annotateDefCalls graph env def =
 
                         Nothing ->
                             env2
+
+                -- Track if this variable is bound to a partial application of
+                -- a polymorphic function (whose func.func returns !eco.value).
+                env4 =
+                    if exprHasPolymorphicReturn graph env3 bound1 then
+                        { env3
+                            | varPolymorphicReturn =
+                                Set.insert name env3.varPolymorphicReturn
+                        }
+
+                    else
+                        env3
             in
-            ( Mono.MonoDef name bound1, env3 )
+            ( Mono.MonoDef name bound1, env4 )
 
         Mono.MonoTailDef name params bound ->
             -- Tail defs are also referenced by MonoVarLocal for the initial
@@ -1814,6 +1828,58 @@ isDynamicCallee env funcExpr =
             False
 
 
+{-| Check if an expression's underlying function has a polymorphic return type
+(CEcoValue), meaning its func.func will return !eco.value.
+
+This is used to detect partial applications of polymorphic functions like
+`let i = s k k` where `s` returns `MVar _ CEcoValue`. When such a variable
+is later called saturated, the papExtend must use CallGenericApply to correctly
+handle the !eco.value ↔ primitive coercion.
+
+-}
+exprHasPolymorphicReturn : Mono.MonoGraph -> CallEnv -> Mono.MonoExpr -> Bool
+exprHasPolymorphicReturn graph env expr =
+    let
+        -- Check if the final return type of a function type is CEcoValue
+        hasCEcoValueReturn : Mono.MonoType -> Bool
+        hasCEcoValueReturn monoType =
+            let
+                ( _, finalReturn ) =
+                    Mono.decomposeFunctionType monoType
+            in
+            case finalReturn of
+                Mono.MVar _ Mono.CEcoValue ->
+                    True
+
+                _ ->
+                    False
+    in
+    case expr of
+        Mono.MonoCall _ func _ _ _ ->
+            -- Partial application: check if the callee's type has a CEcoValue return
+            hasCEcoValueReturn (Mono.typeOf func)
+
+        Mono.MonoVarLocal name _ ->
+            -- Transitive: if bound to another variable with polymorphic return
+            Set.member name env.varPolymorphicReturn
+
+        _ ->
+            False
+
+
+{-| Check if a callee expression traces to a function with polymorphic return.
+Used at call sites to decide CallGenericApply vs CallDirectKnownSegmentation.
+-}
+calleeHasPolymorphicReturn : CallEnv -> Mono.MonoExpr -> Bool
+calleeHasPolymorphicReturn env funcExpr =
+    case funcExpr of
+        Mono.MonoVarLocal name _ ->
+            Set.member name env.varPolymorphicReturn
+
+        _ ->
+            False
+
+
 {-| Compute CallInfo for a MonoCall based on callee and arguments.
 This is the core logic that moves staging decisions into GlobalOpt.
 -}
@@ -1907,15 +1973,21 @@ computeCallInfo graph env func args _ =
                                 _ ->
                                     []
 
-                -- Determine call kind: use CallGenericApply for dynamic callees
-                -- AND for type-fallback arity callees (where we can't trust the
-                -- remaining_arity). Only use CallDirectKnownSegmentation when
-                -- arity is producer-derived and the callee is not dynamic.
+                -- Determine call kind: use CallGenericApply for dynamic callees,
+                -- type-fallback arity callees (where we can't trust the
+                -- remaining_arity), AND callees whose underlying function has a
+                -- polymorphic return type (CEcoValue). The latter case covers
+                -- let-bound partial application results like `let i = s k k`
+                -- where the underlying function `s` returns !eco.value but the
+                -- caller's monomorphized type says i64.
                 callKind : Mono.CallKind
                 callKind =
                     case sourceArityInfo of
                         FromProducer _ ->
                             if isDynamicCallee env func then
+                                Mono.CallGenericApply
+
+                            else if calleeHasPolymorphicReturn env func then
                                 Mono.CallGenericApply
 
                             else
