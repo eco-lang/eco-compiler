@@ -488,8 +488,21 @@ walkChildren funcName annotations nodeTypesPre nodeTypesPost env node =
                 defs
                 ++ walkExpr funcName annotations nodeTypesPre nodeTypesPost innerEnv body
 
-        Can.LetDestruct _ bindExpr body ->
-            go bindExpr ++ go body
+        Can.LetDestruct pat bindExpr body ->
+            let
+                patBinders =
+                    case Array.get (getPatternId pat) nodeTypesPre |> Maybe.andThen identity of
+                        Just patType ->
+                            collectFreeVars patType
+
+                        Nothing ->
+                            Set.empty
+
+                innerEnv =
+                    Set.union env patBinders
+            in
+            walkExpr funcName annotations nodeTypesPre nodeTypesPost innerEnv bindExpr
+                ++ walkExpr funcName annotations nodeTypesPre nodeTypesPost innerEnv body
 
         Can.Lambda _ body ->
             go body
