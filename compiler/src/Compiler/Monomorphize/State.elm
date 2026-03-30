@@ -37,6 +37,11 @@ the monomorphization process.
 
 @docs VarEnv, emptyVarEnv, insertVar, lookupVar, popFrame, pushFrame, varEnvKeys
 
+
+# Monomorphization Variable Environment
+
+@docs MVarEnv, emptyMVarEnv, allocMVar, lookupMVarName
+
 -}
 
 import Compiler.AST.Canonical as Can

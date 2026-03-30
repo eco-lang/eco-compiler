@@ -6,6 +6,12 @@ module Compiler.AST.TypeIds
         , MVarId
         )
 
+{-| Phantom-typed identifiers for type variables and monomorphization variables.
+
+@docs TVarPh, TVarId, MVarPh, MVarId
+
+-}
+
 import Compiler.Data.Id exposing (Id)
 
 

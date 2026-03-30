@@ -34,6 +34,8 @@ by applying type variable substitutions.
 
 # Query
 
+@docs lookupConstraint
+
 -}
 
 import Compiler.AST.Canonical as Can
@@ -456,6 +458,7 @@ unifyMonoMono env m1 m2 subst =
 
 {-| Unify function arguments only, ignoring the result type.
 -}
+unifyArgsOnly : MVarEnv -> Can.Type -> List Mono.MonoType -> Substitution -> ( Substitution, MVarEnv )
 unifyArgsOnly env canFuncType argTypes subst =
     case ( canFuncType, argTypes ) of
         ( _, [] ) ->

@@ -8,6 +8,12 @@ module Compiler.Data.Id
         , fromComparable
         )
 
+{-| Phantom-typed unique identifier supply.
+
+@docs Id, Supply, newSupply, next, toComparable, fromComparable
+
+-}
+
 
 {-| Phantom-typed identifier. IDs are always >= 0 and strictly increasing
 within a supply.
