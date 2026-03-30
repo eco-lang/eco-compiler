@@ -17,6 +17,7 @@ debug kernel polymorphism is correctly handled.
 import Array
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.Source as Src
+import Compiler.Data.Id as Id
 import Expect
 import TestLogic.TestPipeline as Pipeline
 
@@ -243,8 +244,8 @@ since Debug functions handle polymorphic values at runtime.
 checkNoCNumberInDebugArg : String -> Mono.MonoType -> List String
 checkNoCNumberInDebugArg context monoType =
     case monoType of
-        Mono.MVar name Mono.CNumber ->
-            [ context ++ ": Found CNumber constraint on type variable '" ++ name ++ "' in Debug call (should be CEcoValue or concrete type)" ]
+        Mono.MVar mvarId Mono.CNumber ->
+            [ context ++ ": Found CNumber constraint on type variable '" ++ String.fromInt (Id.toComparable mvarId) ++ "' in Debug call (should be CEcoValue or concrete type)" ]
 
         Mono.MVar _ Mono.CEcoValue ->
             -- CEcoValue is fine - Debug handles polymorphism at runtime

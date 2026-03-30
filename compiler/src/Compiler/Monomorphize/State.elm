@@ -1,5 +1,6 @@
 module Compiler.Monomorphize.State exposing
     ( MonoState, SpecAccum, SpecContext, WorkItem(..), Substitution, SchemeInfo, SchemeInfoCache
+    , MVarEnv, emptyMVarEnv, allocMVar, lookupMVarName
     , initState
     , LocalInstanceInfo, LocalMultiState
     , ValueInstanceInfo, ValueMultiState
@@ -40,9 +41,12 @@ the monomorphization process.
 
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Monomorphized as Mono
+import Bitwise
 import Compiler.AST.TypeEnv as TypeEnv
+import Compiler.AST.TypeIds as TypeIds exposing (MVarId)
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.BitSet as BitSet exposing (BitSet)
+import Compiler.Data.Id as Id
 import Compiler.Data.Name exposing (Name)
 import Compiler.Monomorphize.Registry as Registry
 import Data.Map as DataMap
@@ -78,6 +82,75 @@ type alias SchemeInfoCache =
     DataMap.Dict (List String) TOpt.Global SchemeInfo
 
 
+{-| Environment for tracking MVarIds during monomorphization.
+Maintains a bidirectional mapping between tvar Names and MVarIds so that
+the Name-keyed substitution can interoperate with MVarId-carrying MVars.
+
+MVarIds are derived deterministically from name hashes, so the same name
+always produces the same MVarId regardless of allocation order or which
+MVarEnv instance is used. This makes it safe to use emptyMVarEnv at any
+call site without threading — the mappings are lazily populated caches.
+-}
+type alias MVarEnv =
+    { nameToId : Dict Name MVarId -- tvar name → MVarId (cache)
+    , idToName : Dict Int Name -- Id.toComparable mvarId → tvar name (cache)
+    }
+
+
+{-| An empty MVarEnv.
+-}
+emptyMVarEnv : MVarEnv
+emptyMVarEnv =
+    { nameToId = Dict.empty
+    , idToName = Dict.empty
+    }
+
+
+{-| Deterministic hash of a string to a non-negative Int for use as MVarId.
+Uses DJB2 hash algorithm.
+-}
+hashName : Name -> Int
+hashName name =
+    let
+        step c acc =
+            -- djb2: hash * 33 + char, keep non-negative via modular arithmetic
+            Bitwise.and (acc * 33 + Char.toCode c) 0x3FFFFFFF
+    in
+    String.foldl step 5381 name
+
+
+{-| Allocate or reuse an MVarId for a given tvar name.
+The MVarId is derived deterministically from the name hash.
+Returns the MVarId and the updated env (with cached mapping).
+-}
+allocMVar : Name -> MVarEnv -> ( MVarId, MVarEnv )
+allocMVar name env =
+    case Dict.get name env.nameToId of
+        Just existingId ->
+            ( existingId, env )
+
+        Nothing ->
+            let
+                mvarId =
+                    Id.fromComparable (hashName name)
+
+                key =
+                    Id.toComparable mvarId
+            in
+            ( mvarId
+            , { nameToId = Dict.insert name mvarId env.nameToId
+              , idToName = Dict.insert key name env.idToName
+              }
+            )
+
+
+{-| Look up the tvar Name for an MVarId. Returns the name if known.
+-}
+lookupMVarName : MVarId -> MVarEnv -> Maybe Name
+lookupMVarName mvarId env =
+    Dict.get (Id.toComparable mvarId) env.idToName
+
+
 {-| Global accumulator fields that grow monotonically during monomorphization.
 Updated by enqueueSpec, processWorklist completion, and scheme cache lookups.
 -}
@@ -107,6 +180,7 @@ type alias SpecContext =
     , valueMulti : List ValueMultiState
     , lambdaCounter : Int
     , renameEpoch : Int -- Monotonically increasing counter for unique __callee names
+    , mvarEnv : MVarEnv -- Bidirectional mapping between tvar Names and MVarIds
     }
 
 
@@ -281,5 +355,6 @@ initState currentModule toptNodes globalTypeEnv =
         , valueMulti = []
         , lambdaCounter = 0
         , renameEpoch = 0
+        , mvarEnv = emptyMVarEnv
         }
     }

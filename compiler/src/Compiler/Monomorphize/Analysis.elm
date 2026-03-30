@@ -37,7 +37,7 @@ import Compiler.AST.TypeEnv as TypeEnv
 import Compiler.Data.Index as Index
 import Compiler.Data.Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
-import Compiler.Monomorphize.State exposing (Substitution)
+import Compiler.Monomorphize.State as State exposing (MVarEnv, Substitution)
 import Compiler.Monomorphize.TypeSubst as TypeSubst
 import Data.Map
 import Data.Set as EverySet exposing (EverySet)
@@ -388,30 +388,49 @@ lookupUnion typeEnv canonical typeName =
 {-| Build complete CtorShapes for all constructors in a union.
 Uses TypeSubst.applySubst to convert Can.Type to MonoType.
 -}
-buildCompleteCtorShapes : List Name -> List Mono.MonoType -> List Can.Ctor -> List Mono.CtorShape
-buildCompleteCtorShapes vars monoArgs alts =
+buildCompleteCtorShapes : MVarEnv -> List Name -> List Mono.MonoType -> List Can.Ctor -> ( List Mono.CtorShape, MVarEnv )
+buildCompleteCtorShapes env vars monoArgs alts =
     let
         subst : Substitution
         subst =
             List.map2 Tuple.pair vars monoArgs
                 |> Dict.fromList
     in
-    List.map (buildCtorShapeFromUnion subst) alts
+    List.foldl
+        (\ctor ( acc, e ) ->
+            let
+                ( shape, e1 ) =
+                    buildCtorShapeFromUnion e subst ctor
+            in
+            ( acc ++ [ shape ], e1 )
+        )
+        ( [], env )
+        alts
 
 
 {-| Build a CtorShape from a Can.Ctor using the given substitution.
 -}
-buildCtorShapeFromUnion : Substitution -> Can.Ctor -> Mono.CtorShape
-buildCtorShapeFromUnion subst (Can.Ctor ctorData) =
+buildCtorShapeFromUnion : MVarEnv -> Substitution -> Can.Ctor -> ( Mono.CtorShape, MVarEnv )
+buildCtorShapeFromUnion env subst (Can.Ctor ctorData) =
     let
-        monoFieldTypes : List Mono.MonoType
-        monoFieldTypes =
-            List.map (TypeSubst.applySubst subst) ctorData.args
+        ( monoFieldTypes, env1 ) =
+            List.foldl
+                (\t ( acc, e ) ->
+                    let
+                        ( monoT, e1 ) =
+                            TypeSubst.applySubst e subst t
+                    in
+                    ( acc ++ [ monoT ], e1 )
+                )
+                ( [], env )
+                ctorData.args
     in
-    { name = ctorData.name
-    , tag = Index.toMachine ctorData.index
-    , fieldTypes = monoFieldTypes
-    }
+    ( { name = ctorData.name
+      , tag = Index.toMachine ctorData.index
+      , fieldTypes = monoFieldTypes
+      }
+    , env1
+    )
 
 
 {-| Compute complete ctor shapes for all custom types in the graph.
@@ -446,8 +465,8 @@ computeCtorShapesForGraph globalTypeEnv nodes =
 
                         Just (Can.Union unionData) ->
                             let
-                                completeCtors =
-                                    buildCompleteCtorShapes unionData.vars monoArgs unionData.alts
+                                ( completeCtors, _ ) =
+                                    buildCompleteCtorShapes State.emptyMVarEnv unionData.vars monoArgs unionData.alts
                             in
                             Data.Map.insert identity key completeCtors acc
 

@@ -668,5 +668,5 @@ monoTypeToKey monoType =
         Mono.MCustom _ name _ ->
             "Custom:" ++ name
 
-        Mono.MVar name _ ->
-            "Var:" ++ name
+        Mono.MVar _ _ ->
+            "Var"

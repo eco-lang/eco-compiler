@@ -26,6 +26,7 @@ types from the specialization key into all expression types.
 import Array
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.Source as Src
+import Compiler.Data.Id as Id
 import Dict
 import Expect exposing (Expectation)
 import TestLogic.TestPipeline as Pipeline
@@ -337,9 +338,9 @@ collectCEcoValueVars monoType =
             -- CEcoValue MVars are acceptable — they compile identically to eco.value
             []
 
-        Mono.MVar name Mono.CNumber ->
+        Mono.MVar mvarId Mono.CNumber ->
             -- CNumber should have been resolved by forceCNumberToInt
-            [ name ]
+            [ String.fromInt (Id.toComparable mvarId) ]
 
         Mono.MList inner ->
             collectCEcoValueVars inner
@@ -434,5 +435,5 @@ monoTypeToString monoType =
             in
             paramStr ++ " -> " ++ monoTypeToString result
 
-        Mono.MVar name _ ->
-            name
+        Mono.MVar mvarId _ ->
+            String.fromInt (Id.toComparable mvarId)

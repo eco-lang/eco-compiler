@@ -41,6 +41,7 @@ Three cases:
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Monomorphized as Mono
 import Compiler.Data.Name as Name exposing (Name)
+import Compiler.Monomorphize.State as State exposing (MVarEnv)
 import Data.Set as EverySet exposing (EverySet)
 import Dict
 import System.TypeCheck.IO as IO
@@ -231,42 +232,69 @@ constraintFromName name =
 Used for polymorphic kernels where the ABI must be all-boxed.
 
 -}
-canTypeToMonoType_preserveVars : Can.Type -> Mono.MonoType
-canTypeToMonoType_preserveVars canType =
+canTypeToMonoType_preserveVars : MVarEnv -> Can.Type -> ( Mono.MonoType, MVarEnv )
+canTypeToMonoType_preserveVars env canType =
     case canType of
         Can.TVar name ->
-            Mono.MVar name Mono.CEcoValue
+            let
+                ( mvarId, env1 ) =
+                    State.allocMVar name env
+            in
+            ( Mono.MVar mvarId Mono.CEcoValue, env1 )
 
         Can.TLambda from to ->
-            Mono.MFunction
-                [ canTypeToMonoType_preserveVars from ]
-                (canTypeToMonoType_preserveVars to)
+            let
+                ( fromMono, env1 ) =
+                    canTypeToMonoType_preserveVars env from
+
+                ( toMono, env2 ) =
+                    canTypeToMonoType_preserveVars env1 to
+            in
+            ( Mono.MFunction [ fromMono ] toMono, env2 )
 
         Can.TType canonical name args ->
-            convertTType canTypeToMonoType_preserveVars canonical name args
+            convertTType canTypeToMonoType_preserveVars env canonical name args
 
         Can.TRecord fields _ ->
             let
-                monoFields =
-                    Dict.map (\_ (Can.FieldType _ t) -> canTypeToMonoType_preserveVars t) fields
+                ( monoFields, env1 ) =
+                    Dict.foldl
+                        (\k (Can.FieldType _ t) ( acc, e ) ->
+                            let
+                                ( monoT, e1 ) =
+                                    canTypeToMonoType_preserveVars e t
+                            in
+                            ( Dict.insert k monoT acc, e1 )
+                        )
+                        ( Dict.empty, env )
+                        fields
             in
-            Mono.MRecord monoFields
+            ( Mono.MRecord monoFields, env1 )
 
         Can.TTuple a b rest ->
             let
-                monoTypes =
-                    List.map canTypeToMonoType_preserveVars (a :: b :: rest)
+                ( monoTypes, env1 ) =
+                    List.foldl
+                        (\t ( acc, e ) ->
+                            let
+                                ( monoT, e1 ) =
+                                    canTypeToMonoType_preserveVars e t
+                            in
+                            ( acc ++ [ monoT ], e1 )
+                        )
+                        ( [], env )
+                        (a :: b :: rest)
             in
-            Mono.MTuple monoTypes
+            ( Mono.MTuple monoTypes, env1 )
 
         Can.TUnit ->
-            Mono.MUnit
+            ( Mono.MUnit, env )
 
         Can.TAlias _ _ _ (Can.Filled inner) ->
-            canTypeToMonoType_preserveVars inner
+            canTypeToMonoType_preserveVars env inner
 
         Can.TAlias _ _ _ (Can.Holey inner) ->
-            canTypeToMonoType_preserveVars inner
+            canTypeToMonoType_preserveVars env inner
 
 
 {-| Convert canonical type to MonoType, treating CNumber vars as CEcoValue.
@@ -275,52 +303,88 @@ Used for number-boxed kernels (add, sub, mul, pow) where the C ABI is boxed
 but the result type should still resolve to MInt or MFloat.
 
 -}
-canTypeToMonoType_numberBoxed : Can.Type -> Mono.MonoType
-canTypeToMonoType_numberBoxed canType =
+canTypeToMonoType_numberBoxed : MVarEnv -> Can.Type -> ( Mono.MonoType, MVarEnv )
+canTypeToMonoType_numberBoxed env canType =
     case canType of
         Can.TVar name ->
             -- Treat ALL vars as CEcoValue for ABI purposes
-            Mono.MVar name Mono.CEcoValue
+            let
+                ( mvarId, env1 ) =
+                    State.allocMVar name env
+            in
+            ( Mono.MVar mvarId Mono.CEcoValue, env1 )
 
         Can.TLambda from to ->
-            Mono.MFunction
-                [ canTypeToMonoType_numberBoxed from ]
-                (canTypeToMonoType_numberBoxed to)
+            let
+                ( fromMono, env1 ) =
+                    canTypeToMonoType_numberBoxed env from
+
+                ( toMono, env2 ) =
+                    canTypeToMonoType_numberBoxed env1 to
+            in
+            ( Mono.MFunction [ fromMono ] toMono, env2 )
 
         Can.TType canonical name args ->
-            convertTType canTypeToMonoType_numberBoxed canonical name args
+            convertTType canTypeToMonoType_numberBoxed env canonical name args
 
         Can.TRecord fields _ ->
             let
-                monoFields =
-                    Dict.map (\_ (Can.FieldType _ t) -> canTypeToMonoType_numberBoxed t) fields
+                ( monoFields, env1 ) =
+                    Dict.foldl
+                        (\k (Can.FieldType _ t) ( acc, e ) ->
+                            let
+                                ( monoT, e1 ) =
+                                    canTypeToMonoType_numberBoxed e t
+                            in
+                            ( Dict.insert k monoT acc, e1 )
+                        )
+                        ( Dict.empty, env )
+                        fields
             in
-            Mono.MRecord monoFields
+            ( Mono.MRecord monoFields, env1 )
 
         Can.TTuple a b rest ->
             let
-                monoTypes =
-                    List.map canTypeToMonoType_numberBoxed (a :: b :: rest)
+                ( monoTypes, env1 ) =
+                    List.foldl
+                        (\t ( acc, e ) ->
+                            let
+                                ( monoT, e1 ) =
+                                    canTypeToMonoType_numberBoxed e t
+                            in
+                            ( acc ++ [ monoT ], e1 )
+                        )
+                        ( [], env )
+                        (a :: b :: rest)
             in
-            Mono.MTuple monoTypes
+            ( Mono.MTuple monoTypes, env1 )
 
         Can.TUnit ->
-            Mono.MUnit
+            ( Mono.MUnit, env )
 
         Can.TAlias _ _ _ (Can.Filled inner) ->
-            canTypeToMonoType_numberBoxed inner
+            canTypeToMonoType_numberBoxed env inner
 
         Can.TAlias _ _ _ (Can.Holey inner) ->
-            canTypeToMonoType_numberBoxed inner
+            canTypeToMonoType_numberBoxed env inner
 
 
 {-| Helper for converting TType nodes with shared logic.
 -}
-convertTType : (Can.Type -> Mono.MonoType) -> IO.Canonical -> Name -> List Can.Type -> Mono.MonoType
-convertTType convert canonical name args =
+convertTType : (MVarEnv -> Can.Type -> ( Mono.MonoType, MVarEnv )) -> MVarEnv -> IO.Canonical -> Name -> List Can.Type -> ( Mono.MonoType, MVarEnv )
+convertTType convert env canonical name args =
     let
-        monoArgs =
-            List.map convert args
+        ( monoArgs, env1 ) =
+            List.foldl
+                (\t ( acc, e ) ->
+                    let
+                        ( monoT, e1 ) =
+                            convert e t
+                    in
+                    ( acc ++ [ monoT ], e1 )
+                )
+                ( [], env )
+                args
 
         isElmCore =
             case canonical of
@@ -333,30 +397,30 @@ convertTType convert canonical name args =
     if isElmCore then
         case name of
             "Int" ->
-                Mono.MInt
+                ( Mono.MInt, env1 )
 
             "Float" ->
-                Mono.MFloat
+                ( Mono.MFloat, env1 )
 
             "Bool" ->
-                Mono.MBool
+                ( Mono.MBool, env1 )
 
             "Char" ->
-                Mono.MChar
+                ( Mono.MChar, env1 )
 
             "String" ->
-                Mono.MString
+                ( Mono.MString, env1 )
 
             "List" ->
                 case monoArgs of
                     [ inner ] ->
-                        Mono.MList inner
+                        ( Mono.MList inner, env1 )
 
                     _ ->
-                        Mono.MList Mono.MUnit
+                        ( Mono.MList Mono.MUnit, env1 )
 
             _ ->
-                Mono.MCustom canonical name monoArgs
+                ( Mono.MCustom canonical name monoArgs, env1 )
 
     else
-        Mono.MCustom canonical name monoArgs
+        ( Mono.MCustom canonical name monoArgs, env1 )

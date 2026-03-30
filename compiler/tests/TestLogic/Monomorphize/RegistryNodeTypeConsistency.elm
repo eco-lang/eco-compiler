@@ -18,6 +18,7 @@ This invariant catches the "two type shapes floating around" bug where:
 import Array
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.Source as Src
+import Compiler.Data.Id as Id
 import Dict
 import Expect exposing (Expectation)
 import TestLogic.TestPipeline as Pipeline
@@ -198,5 +199,5 @@ monoTypeToString monoType =
             in
             paramStr ++ " -> " ++ monoTypeToString result
 
-        Mono.MVar name _ ->
-            name
+        Mono.MVar mvarId _ ->
+            String.fromInt (Id.toComparable mvarId)

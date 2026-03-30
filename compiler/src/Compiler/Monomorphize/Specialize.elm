@@ -25,7 +25,7 @@ import Compiler.Monomorphize.Analysis as Analysis
 import Compiler.Monomorphize.Closure as Closure
 import Compiler.Monomorphize.KernelAbi as KernelAbi
 import Compiler.Monomorphize.Registry as Registry
-import Compiler.Monomorphize.State as State exposing (LocalMultiState, MonoState, SchemeInfo, Substitution, ValueMultiState, VarEnv, WorkItem(..))
+import Compiler.Monomorphize.State as State exposing (LocalMultiState, MVarEnv, MonoState, SchemeInfo, Substitution, ValueMultiState, VarEnv, WorkItem(..))
 import Compiler.Monomorphize.TypeSubst as TypeSubst
 import Compiler.Reporting.Annotation as A
 import Data.Map
@@ -148,14 +148,34 @@ getOrBuildSchemeInfo funcCanType maybeGlobal state =
                         info =
                             TypeSubst.buildSchemeInfo prefix funcCanType
 
+                        -- Pre-populate MVarEnv with renamed var names from SchemeInfo
+                        envWithRenamed =
+                            List.foldl (\n e -> Tuple.second (State.allocMVar n e)) state.ctx.mvarEnv info.renamedVarNames
+
+                        ctx =
+                            state.ctx
+
+                        stateWithEnv =
+                            { state | ctx = { ctx | mvarEnv = envWithRenamed } }
+
                         newCache =
-                            Data.Map.insert TOpt.toComparableGlobal global info accum.schemeCache
+                            Data.Map.insert TOpt.toComparableGlobal global info stateWithEnv.accum.schemeCache
                     in
-                    ( info, { state | accum = { accum | schemeCache = newCache } } )
+                    ( info, { stateWithEnv | accum = { accum | schemeCache = newCache } } )
 
         Nothing ->
             -- Local/anonymous callee: build on demand, don't cache
-            ( TypeSubst.buildSchemeInfo "__local" funcCanType, state )
+            let
+                info =
+                    TypeSubst.buildSchemeInfo "__local" funcCanType
+
+                envWithRenamed =
+                    List.foldl (\n e -> Tuple.second (State.allocMVar n e)) state.ctx.mvarEnv info.renamedVarNames
+
+                ctx =
+                    state.ctx
+            in
+            ( info, { state | ctx = { ctx | mvarEnv = envWithRenamed } } )
 
 
 {-| Unify call-site types with renaming to avoid type variable collisions.
@@ -169,14 +189,15 @@ derivation), and the funcMonoType (computed in a single pass).
 
 -}
 unifyCallSiteWithRenaming :
-    Can.Type
+    MVarEnv
+    -> Can.Type
     -> List Mono.MonoType
     -> Can.Type
     -> Substitution
     -> Int
     -> SchemeInfo
     -> { callSubst : Substitution, callSubstAligned : Substitution, renamedFuncType : Can.Type, funcMonoType : Mono.MonoType }
-unifyCallSiteWithRenaming funcCanType argMonoTypes resultCanType baseSubst epoch info =
+unifyCallSiteWithRenaming mvarEnv funcCanType argMonoTypes resultCanType baseSubst epoch info =
     let
         callerVarNames =
             Dict.keys baseSubst
@@ -192,6 +213,20 @@ unifyCallSiteWithRenaming funcCanType argMonoTypes resultCanType baseSubst epoch
             else
                 info.preRenameMap
 
+        -- Register any callee-renamed names in the MVarEnv so lookupMVarName works
+        mvarEnvWithCalleeNames =
+            if hasConflict then
+                let
+                    dummyCompare _ _ =
+                        EQ
+                in
+                Data.Map.foldl dummyCompare (\_ renamedName e -> Tuple.second (State.allocMVar renamedName e))
+                    mvarEnv
+                    renameMapUsed
+
+            else
+                mvarEnv
+
         ( renamedArgTypes, renamedResultType, renamedFuncType ) =
             if hasConflict then
                 ( List.map (renameCanTypeVars renameMapUsed) info.argTypes
@@ -206,8 +241,8 @@ unifyCallSiteWithRenaming funcCanType argMonoTypes resultCanType baseSubst epoch
                 )
 
         -- Single-pass: unify args, resolve, build funcMonoType all at once
-        ( callSubst, funcMonoType ) =
-            TypeSubst.unifyCallSiteDirect renamedArgTypes renamedResultType argMonoTypes baseSubst
+        ( callSubst, funcMonoType, _ ) =
+            TypeSubst.unifyCallSiteDirect mvarEnvWithCalleeNames renamedArgTypes renamedResultType argMonoTypes baseSubst
 
         -- Apply reverse renaming: copy renamed-keyed bindings to original-keyed
         -- so downstream consumers using original Can.Type names find correct bindings
@@ -560,7 +595,7 @@ specializeLambda lambdaExpr canType subst state =
         -- GlobalOpt (GOPT_001) will flatten: MFunction [a, b] c.
         monoType0 : Mono.MonoType
         monoType0 =
-            Mono.forceCNumberToInt (TypeSubst.applySubst subst canType)
+            Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst state.ctx.mvarEnv subst canType))
 
         -- 1b. Feed the concrete function type back into the substitution.
         -- This propagates constraints from the enclosing specialization context
@@ -568,7 +603,7 @@ specializeLambda lambdaExpr canType subst state =
         -- unifyExtend only adds bindings already implied by monoType0, so this is safe.
         refinedSubst : Substitution
         refinedSubst =
-            TypeSubst.unifyExtend canType monoType0 subst
+            Tuple.first (TypeSubst.unifyExtend state.ctx.mvarEnv canType monoType0 subst)
 
         -- 2. Extract params and body directly (no peelFunctionChain).
         ( params, bodyExpr ) =
@@ -589,7 +624,7 @@ specializeLambda lambdaExpr canType subst state =
         monoParams =
             List.map
                 (\( name, paramCanType ) ->
-                    ( name, Mono.forceCNumberToInt (TypeSubst.applySubst refinedSubst paramCanType) )
+                    ( name, Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst state.ctx.mvarEnv refinedSubst paramCanType)) )
                 )
                 params
 
@@ -668,14 +703,14 @@ specializeNode ctorName node requestedMonoType state =
                     meta.tipe
 
                 subst0 =
-                    TypeSubst.unify canType requestedMonoType
+                    Tuple.first (TypeSubst.unify state.ctx.mvarEnv canType requestedMonoType)
 
                 -- Also unify the body expression's canonical type with requestedMonoType.
                 -- The annotation canType may be fully resolved (no TVars) while internal
                 -- expressions retain unresolved TVars. This enriches the substitution
                 -- with bindings for those internal TVars.
                 subst =
-                    TypeSubst.unifyExtend (TOpt.typeOf expr) requestedMonoType subst0
+                    Tuple.first (TypeSubst.unifyExtend state.ctx.mvarEnv (TOpt.typeOf expr) requestedMonoType subst0)
 
                 ( monoExpr, state1 ) =
                     specializeExpr expr subst state
@@ -692,10 +727,10 @@ specializeNode ctorName node requestedMonoType state =
                     meta.tipe
 
                 subst0 =
-                    TypeSubst.unify canType requestedMonoType
+                    Tuple.first (TypeSubst.unify state.ctx.mvarEnv canType requestedMonoType)
 
                 subst =
-                    TypeSubst.unifyExtend (TOpt.typeOf expr) requestedMonoType subst0
+                    Tuple.first (TypeSubst.unifyExtend state.ctx.mvarEnv (TOpt.typeOf expr) requestedMonoType subst0)
 
                 ( monoExpr, state1 ) =
                     specializeExpr expr subst state
@@ -709,10 +744,10 @@ specializeNode ctorName node requestedMonoType state =
         TOpt.Ctor index arity canType ->
             let
                 subst =
-                    TypeSubst.unify canType requestedMonoType
+                    Tuple.first (TypeSubst.unify state.ctx.mvarEnv canType requestedMonoType)
 
                 ctorMonoType =
-                    Mono.forceCNumberToInt (TypeSubst.applySubst subst canType)
+                    Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst state.ctx.mvarEnv subst canType))
 
                 tag =
                     Index.toMachine index
@@ -728,7 +763,7 @@ specializeNode ctorName node requestedMonoType state =
         TOpt.Enum tag canType ->
             let
                 monoType =
-                    Mono.forceCNumberToInt (TypeSubst.applySubst (TypeSubst.unify canType requestedMonoType) canType)
+                    Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst state.ctx.mvarEnv (Tuple.first (TypeSubst.unify state.ctx.mvarEnv canType requestedMonoType)) canType))
             in
             ( Mono.MonoEnum (Index.toMachine tag) monoType, state )
 
@@ -737,10 +772,10 @@ specializeNode ctorName node requestedMonoType state =
             -- Treat them as regular constructors so eco.construct.custom is emitted.
             let
                 subst =
-                    TypeSubst.unify canType requestedMonoType
+                    Tuple.first (TypeSubst.unify state.ctx.mvarEnv canType requestedMonoType)
 
                 ctorMonoType =
-                    Mono.forceCNumberToInt (TypeSubst.applySubst subst canType)
+                    Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst state.ctx.mvarEnv subst canType))
 
                 shape =
                     buildCtorShapeFromArity ctorName 0 1 ctorMonoType
@@ -791,7 +826,7 @@ specializeNode ctorName node requestedMonoType state =
                     meta.tipe
 
                 subst =
-                    TypeSubst.unify canType requestedMonoType
+                    Tuple.first (TypeSubst.unify state.ctx.mvarEnv canType requestedMonoType)
 
                 ( monoExpr, state1 ) =
                     specializeExpr expr subst state
@@ -805,7 +840,7 @@ specializeNode ctorName node requestedMonoType state =
                     meta.tipe
 
                 subst =
-                    TypeSubst.unify canType requestedMonoType
+                    Tuple.first (TypeSubst.unify state.ctx.mvarEnv canType requestedMonoType)
 
                 ( monoExpr, state1 ) =
                     specializeExpr expr subst state
@@ -886,7 +921,7 @@ specializeFunctionCycle requestedCanonical requestedName _ funcDefs requestedMon
                         canType =
                             getDefCanonicalType def
                     in
-                    TypeSubst.unify canType requestedMonoType
+                    Tuple.first (TypeSubst.unify state.ctx.mvarEnv canType requestedMonoType)
 
                 Nothing ->
                     Dict.empty
@@ -949,7 +984,7 @@ specializeFunc requestedCanonical requestedName requestedMonoType sharedSubst de
             getDefCanonicalType def
 
         monoTypeFromDef =
-            Mono.forceCNumberToInt (TypeSubst.applySubst sharedSubst canType)
+            Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst accState.ctx.mvarEnv sharedSubst canType))
 
         -- For the requested function in this cycle, use the exact MonoType
         -- from the worklist (requestedMonoType) as the specialization key.
@@ -1005,7 +1040,7 @@ specializeFuncDefInCycle subst def state =
         TOpt.TailDef _ _ args body returnType _ ->
             let
                 monoArgs =
-                    List.map (specializeArg subst) args
+                    List.map (specializeArg state.ctx.mvarEnv subst) args
 
                 ctx =
                     state.ctx
@@ -1022,7 +1057,7 @@ specializeFuncDefInCycle subst def state =
                 augmentedSubst =
                     List.foldl
                         (\( ( _, canParamType ), ( _, monoParamType ) ) s ->
-                            TypeSubst.unifyExtend canParamType monoParamType s
+                            Tuple.first (TypeSubst.unifyExtend state.ctx.mvarEnv canParamType monoParamType s)
                         )
                         subst
                         (List.map2 Tuple.pair args monoArgs)
@@ -1045,7 +1080,7 @@ specializeFuncDefInCycle subst def state =
                 -- Context.extractNodeSignature expects this full function type and extracts
                 -- the actual return type from it.
                 monoFuncType =
-                    Mono.forceCNumberToInt (TypeSubst.applySubst augmentedSubst returnType)
+                    Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst state.ctx.mvarEnv augmentedSubst returnType))
             in
             ( Mono.MonoTailFunc monoArgs monoBody monoFuncType, state1 )
 
@@ -1102,7 +1137,7 @@ specializeExpr expr subst state =
                     meta.tipe
 
                 monoType =
-                    Mono.forceCNumberToInt (TypeSubst.applySubst subst canType)
+                    Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst state.ctx.mvarEnv subst canType))
             in
             case monoType of
                 Mono.MFloat ->
@@ -1117,7 +1152,7 @@ specializeExpr expr subst state =
                     meta.tipe
 
                 monoType =
-                    Mono.forceCNumberToInt (TypeSubst.applySubst subst canType)
+                    Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst state.ctx.mvarEnv subst canType))
             in
             ( Mono.MonoLiteral (Mono.LFloat value) monoType, state )
 
@@ -1127,7 +1162,7 @@ specializeExpr expr subst state =
                     meta.tipe
 
                 monoType =
-                    Mono.forceCNumberToInt (TypeSubst.applySubst subst canType)
+                    Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst state.ctx.mvarEnv subst canType))
             in
             if isLocalMultiTarget name state then
                 let
@@ -1147,7 +1182,7 @@ specializeExpr expr subst state =
                     meta.tipe
 
                 monoType =
-                    Mono.forceCNumberToInt (TypeSubst.applySubst subst canType)
+                    Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst state.ctx.mvarEnv subst canType))
             in
             if isLocalMultiTarget name state then
                 let
@@ -1167,23 +1202,23 @@ specializeExpr expr subst state =
                     meta.tipe
 
                 monoType0 =
-                    Mono.forceCNumberToInt (TypeSubst.applySubst subst canType)
+                    Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst state.ctx.mvarEnv subst canType))
 
                 monoType =
                     case monoType0 of
                         Mono.MVar _ _ ->
                             case Data.Map.get TOpt.toComparableGlobal global state.ctx.toptNodes of
                                 Just (TOpt.Define _ _ defMeta) ->
-                                    Mono.forceCNumberToInt (TypeSubst.applySubst subst defMeta.tipe)
+                                    Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst state.ctx.mvarEnv subst defMeta.tipe))
 
                                 Just (TOpt.TrackedDefine _ _ _ defMeta) ->
-                                    Mono.forceCNumberToInt (TypeSubst.applySubst subst defMeta.tipe)
+                                    Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst state.ctx.mvarEnv subst defMeta.tipe))
 
                                 Just (TOpt.Enum _ enumCanType) ->
-                                    Mono.forceCNumberToInt (TypeSubst.applySubst subst enumCanType)
+                                    Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst state.ctx.mvarEnv subst enumCanType))
 
                                 Just (TOpt.Ctor _ _ ctorCanType) ->
-                                    Mono.forceCNumberToInt (TypeSubst.applySubst subst ctorCanType)
+                                    Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst state.ctx.mvarEnv subst ctorCanType))
 
                                 _ ->
                                     monoType0
@@ -1205,14 +1240,14 @@ specializeExpr expr subst state =
                     meta.tipe
 
                 monoType0 =
-                    Mono.forceCNumberToInt (TypeSubst.applySubst subst canType)
+                    Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst state.ctx.mvarEnv subst canType))
 
                 monoType =
                     case monoType0 of
                         Mono.MVar _ _ ->
                             case Data.Map.get TOpt.toComparableGlobal global state.ctx.toptNodes of
                                 Just (TOpt.Enum _ enumCanType) ->
-                                    Mono.forceCNumberToInt (TypeSubst.applySubst subst enumCanType)
+                                    Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst state.ctx.mvarEnv subst enumCanType))
 
                                 _ ->
                                     monoType0
@@ -1234,7 +1269,7 @@ specializeExpr expr subst state =
                     meta.tipe
 
                 monoType =
-                    Mono.forceCNumberToInt (TypeSubst.applySubst subst canType)
+                    Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst state.ctx.mvarEnv subst canType))
 
                 monoGlobal =
                     toptGlobalToMono global
@@ -1250,7 +1285,7 @@ specializeExpr expr subst state =
                     meta.tipe
 
                 monoType =
-                    Mono.forceCNumberToInt (TypeSubst.applySubst subst canType)
+                    Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst state.ctx.mvarEnv subst canType))
 
                 monoGlobal =
                     Mono.Global canonical name
@@ -1266,7 +1301,7 @@ specializeExpr expr subst state =
                     meta.tipe
 
                 funcMonoType =
-                    deriveKernelAbiType ( "Debug", name ) canType subst
+                    deriveKernelAbiType state.ctx.mvarEnv ( "Debug", name ) canType subst
             in
             ( Mono.MonoVarKernel region "Elm" "Debug" name funcMonoType, state )
 
@@ -1276,7 +1311,7 @@ specializeExpr expr subst state =
                     meta.tipe
 
                 funcMonoType =
-                    deriveKernelAbiType ( home, name ) canType subst
+                    deriveKernelAbiType state.ctx.mvarEnv ( home, name ) canType subst
             in
             ( Mono.MonoVarKernel region kernelPrefix home name funcMonoType, state )
 
@@ -1286,7 +1321,7 @@ specializeExpr expr subst state =
                     meta.tipe
 
                 monoType0 =
-                    Mono.forceCNumberToInt (TypeSubst.applySubst subst canType)
+                    Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst state.ctx.mvarEnv subst canType))
 
                 ( monoExprs, stateAfter ) =
                     specializeExprs exprs subst state
@@ -1355,7 +1390,7 @@ specializeExpr expr subst state =
                             }
 
                         unifyResult =
-                            unifyCallSiteWithRenaming funcCanType argTypes canType subst epoch schemeInfo
+                            unifyCallSiteWithRenaming state1b.ctx.mvarEnv funcCanType argTypes canType subst epoch schemeInfo
 
                         callSubst =
                             unifyResult.callSubstAligned
@@ -1370,7 +1405,7 @@ specializeExpr expr subst state =
                             resolveProcessedArgs processedArgs paramTypes callSubst state1b
 
                         resultMonoType =
-                            callResultMonoType subst callSubst canType
+                            callResultMonoType state.ctx.mvarEnv subst callSubst canType
 
                         monoGlobal =
                             toptGlobalToMono global
@@ -1405,7 +1440,7 @@ specializeExpr expr subst state =
                             }
 
                         unifyResult =
-                            unifyCallSiteWithRenaming funcCanType argTypes canType subst epoch schemeInfo
+                            unifyCallSiteWithRenaming state1b.ctx.mvarEnv funcCanType argTypes canType subst epoch schemeInfo
 
                         callSubst =
                             unifyResult.callSubstAligned
@@ -1413,7 +1448,7 @@ specializeExpr expr subst state =
                         -- deriveKernelAbiType uses renamedFuncType (renamed namespace)
                         -- with callSubst (renamed-keyed) — both in renamed namespace
                         funcMonoType =
-                            deriveKernelAbiType ( home, name ) unifyResult.renamedFuncType unifyResult.callSubst
+                            deriveKernelAbiType state.ctx.mvarEnv ( home, name ) unifyResult.renamedFuncType unifyResult.callSubst
 
                         paramTypes =
                             TypeSubst.extractParamTypes funcMonoType
@@ -1422,7 +1457,7 @@ specializeExpr expr subst state =
                             resolveProcessedArgs processedArgs paramTypes callSubst state1b
 
                         resultMonoType =
-                            callResultMonoType subst callSubst canType
+                            callResultMonoType state.ctx.mvarEnv subst callSubst canType
 
                         monoFunc =
                             Mono.MonoVarKernel funcRegion kernelPrefix home name funcMonoType
@@ -1451,7 +1486,7 @@ specializeExpr expr subst state =
                             }
 
                         unifyResult =
-                            unifyCallSiteWithRenaming funcCanType argTypes canType subst epoch schemeInfo
+                            unifyCallSiteWithRenaming state1b.ctx.mvarEnv funcCanType argTypes canType subst epoch schemeInfo
 
                         callSubst =
                             unifyResult.callSubstAligned
@@ -1459,7 +1494,7 @@ specializeExpr expr subst state =
                         -- deriveKernelAbiType uses renamedFuncType (renamed namespace)
                         -- with callSubst (renamed-keyed) — both in renamed namespace
                         funcMonoType =
-                            deriveKernelAbiType ( "Debug", name ) unifyResult.renamedFuncType unifyResult.callSubst
+                            deriveKernelAbiType state.ctx.mvarEnv ( "Debug", name ) unifyResult.renamedFuncType unifyResult.callSubst
 
                         paramTypes =
                             TypeSubst.extractParamTypes funcMonoType
@@ -1468,7 +1503,7 @@ specializeExpr expr subst state =
                             resolveProcessedArgs processedArgs paramTypes callSubst state1b
 
                         resultMonoType =
-                            callResultMonoType subst callSubst canType
+                            callResultMonoType state.ctx.mvarEnv subst callSubst canType
 
                         monoFunc =
                             Mono.MonoVarKernel funcRegion "Elm" "Debug" name funcMonoType
@@ -1507,10 +1542,10 @@ specializeExpr expr subst state =
                             -- Use unifyArgsOnly to extend the caller's subst with arg bindings.
                             let
                                 callSubst =
-                                    TypeSubst.unifyArgsOnly funcCanType argTypes subst
+                                    Tuple.first (TypeSubst.unifyArgsOnly state1.ctx.mvarEnv funcCanType argTypes subst)
 
                                 funcMonoType =
-                                    Mono.forceCNumberToInt (TypeSubst.applySubst callSubst funcCanType)
+                                    Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst state1.ctx.mvarEnv callSubst funcCanType))
 
                                 paramTypes =
                                     TypeSubst.extractParamTypes funcMonoType
@@ -1519,7 +1554,7 @@ specializeExpr expr subst state =
                                     resolveProcessedArgs processedArgs paramTypes callSubst state1
 
                                 resultMonoType =
-                                    callResultMonoType subst callSubst canType
+                                    callResultMonoType state.ctx.mvarEnv subst callSubst canType
 
                                 ( freshName, state3 ) =
                                     getOrCreateLocalInstance name funcMonoType callSubst state2
@@ -1552,7 +1587,7 @@ specializeExpr expr subst state =
                                     }
 
                                 unifyResult =
-                                    unifyCallSiteWithRenaming funcCanType argTypes canType subst epoch schemeInfo
+                                    unifyCallSiteWithRenaming state1b.ctx.mvarEnv funcCanType argTypes canType subst epoch schemeInfo
 
                                 callSubst =
                                     unifyResult.callSubstAligned
@@ -1567,7 +1602,7 @@ specializeExpr expr subst state =
                                     resolveProcessedArgs processedArgs paramTypes callSubst state1b
 
                                 resultMonoType =
-                                    callResultMonoType subst callSubst canType
+                                    callResultMonoType state.ctx.mvarEnv subst callSubst canType
 
                                 ( monoFunc, state3 ) =
                                     specializeExpr func callSubst state2
@@ -1582,7 +1617,7 @@ specializeExpr expr subst state =
                     meta.tipe
 
                 monoType0 =
-                    Mono.forceCNumberToInt (TypeSubst.applySubst subst canType)
+                    Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst state.ctx.mvarEnv subst canType))
 
                 ( monoArgs, stateAfter ) =
                     specializeNamedExprs args subst state
@@ -1609,7 +1644,7 @@ specializeExpr expr subst state =
                     meta.tipe
 
                 monoType0 =
-                    Mono.forceCNumberToInt (TypeSubst.applySubst subst canType)
+                    Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst state.ctx.mvarEnv subst canType))
 
                 ( monoBranches, state1 ) =
                     specializeBranches branches subst state
@@ -1634,7 +1669,7 @@ specializeExpr expr subst state =
                     meta.tipe
 
                 monoType0 =
-                    Mono.forceCNumberToInt (TypeSubst.applySubst subst canType)
+                    Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst state.ctx.mvarEnv subst canType))
 
                 defName =
                     getDefName def
@@ -1688,7 +1723,7 @@ specializeExpr expr subst state =
                                             }
 
                                     defMonoType0 =
-                                        Mono.forceCNumberToInt (TypeSubst.applySubst subst defCanType)
+                                        Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst state.ctx.mvarEnv subst defCanType))
 
                                     defMonoType =
                                         if Mono.containsAnyMVar defMonoType0 then
@@ -1702,7 +1737,7 @@ specializeExpr expr subst state =
                                     -- This mirrors the non-function let branch below.
                                     enrichedSubst =
                                         if Mono.containsAnyMVar defMonoType0 then
-                                            TypeSubst.unifyExtend defCanType defMonoType subst
+                                            Tuple.first (TypeSubst.unifyExtend state.ctx.mvarEnv defCanType defMonoType subst)
 
                                         else
                                             subst
@@ -1753,7 +1788,7 @@ specializeExpr expr subst state =
                                             (\info ( defsAcc, stAcc ) ->
                                                 let
                                                     mergedSubst =
-                                                        TypeSubst.unifyExtend defCanType info.monoType subst
+                                                        Tuple.first (TypeSubst.unifyExtend state.ctx.mvarEnv defCanType info.monoType subst)
 
                                                     ( monoDef0, st1 ) =
                                                         specializeDef def mergedSubst stAcc
@@ -1811,7 +1846,7 @@ specializeExpr expr subst state =
                                     specializeDef def subst stateAfterBody
 
                                 defMonoType0 =
-                                    Mono.forceCNumberToInt (TypeSubst.applySubst subst defCanType)
+                                    Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst state.ctx.mvarEnv subst defCanType))
 
                                 defMonoType =
                                     if Mono.containsAnyMVar defMonoType0 then
@@ -1822,7 +1857,7 @@ specializeExpr expr subst state =
 
                                 enrichedSubst =
                                     if Mono.containsAnyMVar defMonoType0 then
-                                        TypeSubst.unifyExtend defCanType defMonoType subst
+                                        Tuple.first (TypeSubst.unifyExtend state.ctx.mvarEnv defCanType defMonoType subst)
 
                                     else
                                         subst
@@ -1871,7 +1906,7 @@ specializeExpr expr subst state =
                             -- (LetDestruct compiles to Let + Destruct chain where Destructs
                             -- reference Root defName.)
                             prelimDefMonoType =
-                                Mono.forceCNumberToInt (TypeSubst.applySubst subst defCanType)
+                                Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst state.ctx.mvarEnv subst defCanType))
 
                             stateForBody =
                                 { state
@@ -1907,7 +1942,7 @@ specializeExpr expr subst state =
                                                 }
 
                                         defMonoType0 =
-                                            Mono.forceCNumberToInt (TypeSubst.applySubst subst defCanType)
+                                            Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst state.ctx.mvarEnv subst defCanType))
 
                                         defMonoType =
                                             if Mono.containsAnyMVar defMonoType0 then
@@ -1918,7 +1953,7 @@ specializeExpr expr subst state =
 
                                         enrichedSubst =
                                             if Mono.containsAnyMVar defMonoType0 then
-                                                TypeSubst.unifyExtend defCanType defMonoType subst
+                                                Tuple.first (TypeSubst.unifyExtend state.ctx.mvarEnv defCanType defMonoType subst)
 
                                             else
                                                 subst
@@ -1962,7 +1997,7 @@ specializeExpr expr subst state =
                                                 (\info ( defsAcc, stAcc ) ->
                                                     let
                                                         mergedSubst =
-                                                            TypeSubst.unifyExtend defCanType info.monoType subst
+                                                            Tuple.first (TypeSubst.unifyExtend state.ctx.mvarEnv defCanType info.monoType subst)
 
                                                         ( monoDef0, st1 ) =
                                                             specializeDef def mergedSubst stAcc
@@ -2021,7 +2056,7 @@ specializeExpr expr subst state =
                                 specializeDef def subst state
 
                             defMonoType0 =
-                                Mono.forceCNumberToInt (TypeSubst.applySubst subst defCanType)
+                                Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst state.ctx.mvarEnv subst defCanType))
 
                             -- If defCanType has unresolved TVars, infer from the specialized expr.
                             defMonoType =
@@ -2035,7 +2070,7 @@ specializeExpr expr subst state =
                             -- from the concrete def type, so the body sees them.
                             enrichedSubst =
                                 if Mono.containsAnyMVar defMonoType0 then
-                                    TypeSubst.unifyExtend defCanType defMonoType subst
+                                    Tuple.first (TypeSubst.unifyExtend state.ctx.mvarEnv defCanType defMonoType subst)
 
                                 else
                                     subst
@@ -2070,10 +2105,10 @@ specializeExpr expr subst state =
                     meta.tipe
 
                 monoType0 =
-                    Mono.forceCNumberToInt (TypeSubst.applySubst subst canType)
+                    Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst state.ctx.mvarEnv subst canType))
 
                 monoDestructor =
-                    specializeDestructor destructor subst state.ctx.varEnv state.ctx.globalTypeEnv state.ctx.currentGlobal
+                    specializeDestructor destructor subst state.ctx.mvarEnv state.ctx.varEnv state.ctx.globalTypeEnv state.ctx.currentGlobal
 
                 (Mono.MonoDestructor destructorName _ destructorType) =
                     monoDestructor
@@ -2108,7 +2143,7 @@ specializeExpr expr subst state =
                     meta.tipe
 
                 monoTypeFromCan =
-                    Mono.forceCNumberToInt (TypeSubst.applySubst subst canType)
+                    Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst state.ctx.mvarEnv subst canType))
 
                 savedVarEnv =
                     state.ctx.varEnv
@@ -2161,7 +2196,7 @@ specializeExpr expr subst state =
                     meta.tipe
 
                 monoType =
-                    Mono.forceCNumberToInt (TypeSubst.applySubst subst canType)
+                    Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst state.ctx.mvarEnv subst canType))
 
                 accessorGlobal =
                     Mono.Accessor fieldName
@@ -2177,7 +2212,7 @@ specializeExpr expr subst state =
                     meta.tipe
 
                 monoType =
-                    Mono.forceCNumberToInt (TypeSubst.applySubst subst canType)
+                    Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst state.ctx.mvarEnv subst canType))
             in
             case getValueMultiVar record state of
                 Just ( varName, recordCanType ) ->
@@ -2190,10 +2225,10 @@ specializeExpr expr subst state =
                             Mono.MRecord (Dict.singleton fieldName monoType)
 
                         enrichedSubst =
-                            TypeSubst.unifyExtend recordCanType partialRecordMono subst
+                            Tuple.first (TypeSubst.unifyExtend state.ctx.mvarEnv recordCanType partialRecordMono subst)
 
                         recordMonoType =
-                            Mono.forceCNumberToInt (TypeSubst.applySubst enrichedSubst recordCanType)
+                            Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst state.ctx.mvarEnv enrichedSubst recordCanType))
 
                         ( freshName, state1 ) =
                             getOrCreateValueInstance varName recordMonoType enrichedSubst state
@@ -2213,7 +2248,7 @@ specializeExpr expr subst state =
                     meta.tipe
 
                 monoType =
-                    Mono.forceCNumberToInt (TypeSubst.applySubst subst canType)
+                    Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst state.ctx.mvarEnv subst canType))
 
                 ( monoRecord, state1 ) =
                     specializeExpr record subst state
@@ -2242,7 +2277,7 @@ specializeExpr expr subst state =
                                 refinedSubst =
                                     case getFieldMonoType fieldName of
                                         Just fieldMonoType ->
-                                            TypeSubst.unifyExtend (TOpt.typeOf updateExpr) fieldMonoType subst
+                                            Tuple.first (TypeSubst.unifyExtend state.ctx.mvarEnv (TOpt.typeOf updateExpr) fieldMonoType subst)
 
                                         Nothing ->
                                             subst
@@ -2263,7 +2298,7 @@ specializeExpr expr subst state =
                     meta.tipe
 
                 monoType =
-                    Mono.forceCNumberToInt (TypeSubst.applySubst subst canType)
+                    Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst state.ctx.mvarEnv subst canType))
 
                 -- Extract mono field types from the record MonoType for substitution refinement.
                 monoFieldTypes =
@@ -2283,7 +2318,7 @@ specializeExpr expr subst state =
                                 refinedSubst =
                                     case Dict.get fieldName monoFieldTypes of
                                         Just fieldMonoType ->
-                                            TypeSubst.unifyExtend (TOpt.typeOf fieldExpr) fieldMonoType subst
+                                            Tuple.first (TypeSubst.unifyExtend state.ctx.mvarEnv (TOpt.typeOf fieldExpr) fieldMonoType subst)
 
                                         Nothing ->
                                             subst
@@ -2304,7 +2339,7 @@ specializeExpr expr subst state =
                     meta.tipe
 
                 monoType =
-                    Mono.forceCNumberToInt (TypeSubst.applySubst subst canType)
+                    Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst state.ctx.mvarEnv subst canType))
 
                 -- Extract mono field types for substitution refinement.
                 monoFieldTypes =
@@ -2326,7 +2361,7 @@ specializeExpr expr subst state =
                                 refinedSubst =
                                     case Dict.get fieldName monoFieldTypes of
                                         Just fieldMonoType ->
-                                            TypeSubst.unifyExtend (TOpt.typeOf fieldExpr) fieldMonoType subst
+                                            Tuple.first (TypeSubst.unifyExtend state.ctx.mvarEnv (TOpt.typeOf fieldExpr) fieldMonoType subst)
 
                                         Nothing ->
                                             subst
@@ -2350,7 +2385,7 @@ specializeExpr expr subst state =
                     meta.tipe
 
                 monoType =
-                    Mono.forceCNumberToInt (TypeSubst.applySubst subst canType)
+                    Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst state.ctx.mvarEnv subst canType))
 
                 ( monoA, state1 ) =
                     specializeExpr a subst state
@@ -2463,7 +2498,7 @@ processCallArg subst arg ( accArgs, accTypes, st ) =
                     accessorMeta.tipe
 
                 monoType =
-                    Mono.forceCNumberToInt (TypeSubst.applySubst subst accessorCanType)
+                    Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst st.ctx.mvarEnv subst accessorCanType))
             in
             ( PendingAccessor region fieldName accessorCanType :: accArgs
             , monoType :: accTypes
@@ -2479,7 +2514,7 @@ processCallArg subst arg ( accArgs, accTypes, st ) =
                 KernelAbi.NumberBoxed ->
                     let
                         monoType =
-                            Mono.forceCNumberToInt (TypeSubst.applySubst subst kernelCanType)
+                            Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst st.ctx.mvarEnv subst kernelCanType))
                     in
                     ( PendingKernel region kernelPrefix home name kernelCanType :: accArgs
                     , monoType :: accTypes
@@ -2504,7 +2539,7 @@ processCallArg subst arg ( accArgs, accTypes, st ) =
             if isLocalMultiTarget name st then
                 let
                     monoType =
-                        Mono.forceCNumberToInt (TypeSubst.applySubst subst localCanType)
+                        Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst st.ctx.mvarEnv subst localCanType))
                 in
                 ( LocalFunArg name localCanType :: accArgs
                 , monoType :: accTypes
@@ -2529,7 +2564,7 @@ processCallArg subst arg ( accArgs, accTypes, st ) =
             if isLocalMultiTarget name st then
                 let
                     monoType =
-                        Mono.forceCNumberToInt (TypeSubst.applySubst subst trackedLocalCanType)
+                        Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst st.ctx.mvarEnv subst trackedLocalCanType))
                 in
                 ( LocalFunArg name trackedLocalCanType :: accArgs
                 , monoType :: accTypes
@@ -2554,7 +2589,7 @@ processCallArg subst arg ( accArgs, accTypes, st ) =
                             meta.tipe
 
                         monoType =
-                            Mono.forceCNumberToInt (TypeSubst.applySubst subst canType)
+                            Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst st.ctx.mvarEnv subst canType))
                     in
                     if Mono.containsCEcoMVar monoType then
                         ( PendingGlobal arg subst canType :: accArgs
@@ -2664,7 +2699,7 @@ resolveProcessedArg processedArg maybeParamType subst state =
                 refinedSubst =
                     case maybeParamType of
                         Just paramType ->
-                            TypeSubst.unifyExtend canType paramType savedSubst
+                            Tuple.first (TypeSubst.unifyExtend state.ctx.mvarEnv canType paramType savedSubst)
 
                         Nothing ->
                             savedSubst
@@ -2678,7 +2713,7 @@ resolveProcessedArg processedArg maybeParamType subst state =
             -- Otherwise, we fall back to the boxed ABI.
             let
                 kernelMonoType =
-                    deriveKernelAbiType ( home, name ) canType subst
+                    deriveKernelAbiType state.ctx.mvarEnv ( home, name ) canType subst
             in
             ( Mono.MonoVarKernel region kernelPrefix home name kernelMonoType, state )
 
@@ -2691,11 +2726,11 @@ resolveProcessedArg processedArg maybeParamType subst state =
                         Mono.MFunction _ _ ->
                             let
                                 refinedSubst =
-                                    TypeSubst.unifyExtend canType paramType subst
+                                    Tuple.first (TypeSubst.unifyExtend state.ctx.mvarEnv canType paramType subst)
 
                                 funcMonoType =
                                     Mono.forceCNumberToInt
-                                        (TypeSubst.applySubst refinedSubst canType)
+                                        (Tuple.first (TypeSubst.applySubst state.ctx.mvarEnv refinedSubst canType))
                             in
                             if isLocalMultiTarget name state then
                                 let
@@ -2715,7 +2750,7 @@ resolveProcessedArg processedArg maybeParamType subst state =
                             let
                                 monoType =
                                     Mono.forceCNumberToInt
-                                        (TypeSubst.applySubst subst canType)
+                                        (Tuple.first (TypeSubst.applySubst state.ctx.mvarEnv subst canType))
                             in
                             ( Mono.MonoVarLocal name monoType, state )
 
@@ -2723,7 +2758,7 @@ resolveProcessedArg processedArg maybeParamType subst state =
                     let
                         monoType =
                             Mono.forceCNumberToInt
-                                (TypeSubst.applySubst subst canType)
+                                (Tuple.first (TypeSubst.applySubst state.ctx.mvarEnv subst canType))
                     in
                     ( Mono.MonoVarLocal name monoType, state )
 
@@ -2902,7 +2937,7 @@ specializeDef def subst state =
         TOpt.TailDef _ name args expr _ _ ->
             let
                 monoArgs =
-                    List.map (specializeArg subst) args
+                    List.map (specializeArg state.ctx.mvarEnv subst) args
 
                 ctx =
                     state.ctx
@@ -2921,7 +2956,7 @@ specializeDef def subst state =
                 augmentedSubst =
                     List.foldl
                         (\( ( _, canParamType ), ( _, monoParamType ) ) s ->
-                            TypeSubst.unifyExtend canParamType monoParamType s
+                            Tuple.first (TypeSubst.unifyExtend state.ctx.mvarEnv canParamType monoParamType s)
                         )
                         subst
                         (List.map2 Tuple.pair args monoArgs)
@@ -2942,14 +2977,14 @@ specializeDef def subst state =
             ( Mono.MonoTailDef name monoArgs monoExpr, stateAfter )
 
 
-specializeDestructor : TOpt.Destructor -> Substitution -> VarEnv -> TypeEnv.GlobalTypeEnv -> Maybe Mono.Global -> Mono.MonoDestructor
-specializeDestructor (TOpt.Destructor name path meta) subst varEnv globalTypeEnv currentGlobal =
+specializeDestructor : TOpt.Destructor -> Substitution -> MVarEnv -> VarEnv -> TypeEnv.GlobalTypeEnv -> Maybe Mono.Global -> Mono.MonoDestructor
+specializeDestructor (TOpt.Destructor name path meta) subst mvarEnv varEnv globalTypeEnv currentGlobal =
     let
         monoPath =
-            specializePath path varEnv globalTypeEnv currentGlobal name
+            specializePath mvarEnv path varEnv globalTypeEnv currentGlobal name
 
         monoType =
-            Mono.forceCNumberToInt (TypeSubst.applySubst subst meta.tipe)
+            Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst mvarEnv subst meta.tipe))
     in
     Mono.MonoDestructor name monoPath monoType
 
@@ -2962,26 +2997,26 @@ The path is structured from leaf (root variable) outward, so we:
 2.  Walk back out through the path, computing types at each step
 
 -}
-specializePath : TOpt.Path -> VarEnv -> TypeEnv.GlobalTypeEnv -> Maybe Mono.Global -> Name -> Mono.MonoPath
-specializePath path varEnv globalTypeEnv currentGlobal destructorName =
+specializePath : MVarEnv -> TOpt.Path -> VarEnv -> TypeEnv.GlobalTypeEnv -> Maybe Mono.Global -> Name -> Mono.MonoPath
+specializePath mvarEnv path varEnv globalTypeEnv currentGlobal destructorName =
     case path of
         TOpt.Index index hint subPath ->
             let
                 monoSubPath =
-                    specializePath subPath varEnv globalTypeEnv currentGlobal destructorName
+                    specializePath mvarEnv subPath varEnv globalTypeEnv currentGlobal destructorName
 
                 containerType =
                     Mono.getMonoPathType monoSubPath
 
                 resultType =
-                    computeIndexProjectionType globalTypeEnv hint (Index.toMachine index) containerType
+                    computeIndexProjectionType mvarEnv globalTypeEnv hint (Index.toMachine index) containerType
             in
             Mono.MonoIndex (Index.toMachine index) (hintToKind hint) resultType monoSubPath
 
         TOpt.ArrayIndex idx subPath ->
             let
                 monoSubPath =
-                    specializePath subPath varEnv globalTypeEnv currentGlobal destructorName
+                    specializePath mvarEnv subPath varEnv globalTypeEnv currentGlobal destructorName
 
                 containerType =
                     Mono.getMonoPathType monoSubPath
@@ -2995,7 +3030,7 @@ specializePath path varEnv globalTypeEnv currentGlobal destructorName =
         TOpt.Field fieldName subPath ->
             let
                 monoSubPath =
-                    specializePath subPath varEnv globalTypeEnv currentGlobal destructorName
+                    specializePath mvarEnv subPath varEnv globalTypeEnv currentGlobal destructorName
 
                 recordType =
                     Mono.getMonoPathType monoSubPath
@@ -3025,14 +3060,14 @@ specializePath path varEnv globalTypeEnv currentGlobal destructorName =
         TOpt.Unbox subPath ->
             let
                 monoSubPath =
-                    specializePath subPath varEnv globalTypeEnv currentGlobal destructorName
+                    specializePath mvarEnv subPath varEnv globalTypeEnv currentGlobal destructorName
 
                 containerType =
                     Mono.getMonoPathType monoSubPath
 
                 -- Compute the result type by looking up the single field type of the container
                 resultType =
-                    computeUnboxResultType globalTypeEnv containerType
+                    computeUnboxResultType mvarEnv globalTypeEnv containerType
             in
             Mono.MonoUnbox resultType monoSubPath
 
@@ -3064,8 +3099,8 @@ debugGlobal mg =
 
 {-| Compute the result type of projecting at an index from a container.
 -}
-computeIndexProjectionType : TypeEnv.GlobalTypeEnv -> TOpt.ContainerHint -> Int -> Mono.MonoType -> Mono.MonoType
-computeIndexProjectionType globalTypeEnv hint index containerType =
+computeIndexProjectionType : MVarEnv -> TypeEnv.GlobalTypeEnv -> TOpt.ContainerHint -> Int -> Mono.MonoType -> Mono.MonoType
+computeIndexProjectionType mvarEnv globalTypeEnv hint index containerType =
     case hint of
         TOpt.HintList ->
             case containerType of
@@ -3088,7 +3123,7 @@ computeIndexProjectionType globalTypeEnv hint index containerType =
             computeTupleElementType index containerType
 
         TOpt.HintCustom ctorName ->
-            computeCustomFieldType globalTypeEnv ctorName index containerType
+            computeCustomFieldType mvarEnv globalTypeEnv ctorName index containerType
 
 
 {-| Compute element type from a tuple at the given index.
@@ -3114,8 +3149,8 @@ This looks up the union definition to find the constructor's argument types,
 then applies the type variable substitution based on the monomorphized type arguments.
 
 -}
-computeCustomFieldType : TypeEnv.GlobalTypeEnv -> Name -> Int -> Mono.MonoType -> Mono.MonoType
-computeCustomFieldType globalTypeEnv ctorName index containerType =
+computeCustomFieldType : MVarEnv -> TypeEnv.GlobalTypeEnv -> Name -> Int -> Mono.MonoType -> Mono.MonoType
+computeCustomFieldType mvarEnv globalTypeEnv ctorName index containerType =
     case containerType of
         Mono.MCustom moduleName typeName typeArgs ->
             case Analysis.lookupUnion globalTypeEnv moduleName typeName of
@@ -3135,7 +3170,7 @@ computeCustomFieldType globalTypeEnv ctorName index containerType =
                                         typeVarSubst =
                                             Dict.fromList (List.map2 Tuple.pair unionData.vars typeArgs)
                                     in
-                                    Mono.forceCNumberToInt (TypeSubst.applySubst typeVarSubst canArgType)
+                                    Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst mvarEnv typeVarSubst canArgType))
 
                                 [] ->
                                     Utils.Crash.crash ("Specialize.computeCustomFieldType: Constructor arg index " ++ String.fromInt index ++ " out of bounds for " ++ ctorName)
@@ -3158,8 +3193,8 @@ For Unbox paths, we need to find the single field type of the container.
 The container must be a single-constructor type (Can.Unbox option).
 
 -}
-computeUnboxResultType : TypeEnv.GlobalTypeEnv -> Mono.MonoType -> Mono.MonoType
-computeUnboxResultType globalTypeEnv containerType =
+computeUnboxResultType : MVarEnv -> TypeEnv.GlobalTypeEnv -> Mono.MonoType -> Mono.MonoType
+computeUnboxResultType mvarEnv globalTypeEnv containerType =
     case containerType of
         Mono.MCustom moduleName typeName typeArgs ->
             case Analysis.lookupUnion globalTypeEnv moduleName typeName of
@@ -3177,7 +3212,7 @@ computeUnboxResultType globalTypeEnv containerType =
                                         typeVarSubst =
                                             Dict.fromList (List.map2 Tuple.pair unionData.vars typeArgs)
                                     in
-                                    Mono.forceCNumberToInt (TypeSubst.applySubst typeVarSubst canArgType)
+                                    Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst mvarEnv typeVarSubst canArgType))
 
                                 _ ->
                                     Utils.Crash.crash ("Specialize.computeUnboxResultType: Expected single-arg constructor but got " ++ String.fromInt (List.length ctorData.args) ++ " args for " ++ typeName)
@@ -3263,8 +3298,8 @@ dtHintToTOptHint hint =
 
 {-| Convert a DT.Path (TypedPath) to a MonoDtPath by resolving types from VarEnv.
 -}
-specializeDtPath : Name -> TypedPath.Path -> VarEnv -> TypeEnv.GlobalTypeEnv -> Mono.MonoDtPath
-specializeDtPath rootName dtPath varEnv globalTypeEnv =
+specializeDtPath : MVarEnv -> Name -> TypedPath.Path -> VarEnv -> TypeEnv.GlobalTypeEnv -> Mono.MonoDtPath
+specializeDtPath mvarEnv rootName dtPath varEnv globalTypeEnv =
     let
         rootType =
             case State.lookupVar rootName varEnv of
@@ -3289,7 +3324,7 @@ specializeDtPath rootName dtPath varEnv globalTypeEnv =
                             Mono.dtPathType monoSubPath
 
                         resultType =
-                            computeIndexProjectionType globalTypeEnv (dtHintToTOptHint hint) (Index.toMachine index) containerType
+                            computeIndexProjectionType mvarEnv globalTypeEnv (dtHintToTOptHint hint) (Index.toMachine index) containerType
                     in
                     Mono.DtIndex (Index.toMachine index) (dtHintToKind hint) resultType monoSubPath
 
@@ -3302,7 +3337,7 @@ specializeDtPath rootName dtPath varEnv globalTypeEnv =
                             Mono.dtPathType monoSubPath
 
                         resultType =
-                            computeUnboxResultType globalTypeEnv containerType
+                            computeUnboxResultType mvarEnv globalTypeEnv containerType
                     in
                     Mono.DtUnbox resultType monoSubPath
     in
@@ -3329,7 +3364,7 @@ specializeDecider rootName decider subst state =
                 monoTestChain =
                     List.map
                         (\( path, test ) ->
-                            ( specializeDtPath rootName path state.ctx.varEnv state.ctx.globalTypeEnv, test )
+                            ( specializeDtPath state.ctx.mvarEnv rootName path state.ctx.varEnv state.ctx.globalTypeEnv, test )
                         )
                         testChain
 
@@ -3357,7 +3392,7 @@ specializeDecider rootName decider subst state =
                     state.ctx.varEnv
 
                 monoPath =
-                    specializeDtPath rootName path state.ctx.varEnv state.ctx.globalTypeEnv
+                    specializeDtPath state.ctx.mvarEnv rootName path state.ctx.varEnv state.ctx.globalTypeEnv
 
                 ( monoEdges, state1 ) =
                     specializeEdges rootName edges subst state
@@ -3476,14 +3511,14 @@ between the caller's scope and the callee's scope. When callee type variables
 share names with caller type variables, callSubst can contaminate the result.
 Fall back to callSubst only when the caller's subst leaves CEcoValue MVars.
 -}
-callResultMonoType : Substitution -> Substitution -> Can.Type -> Mono.MonoType
-callResultMonoType callerSubst callSubst canType =
+callResultMonoType : MVarEnv -> Substitution -> Substitution -> Can.Type -> Mono.MonoType
+callResultMonoType mvarEnv callerSubst callSubst canType =
     let
         fromCaller =
-            Mono.forceCNumberToInt (TypeSubst.applySubst callerSubst canType)
+            Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst mvarEnv callerSubst canType))
     in
     if Mono.containsAnyMVar fromCaller then
-        Mono.forceCNumberToInt (TypeSubst.applySubst callSubst canType)
+        Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst mvarEnv callSubst canType))
 
     else
         fromCaller
@@ -3491,14 +3526,14 @@ callResultMonoType callerSubst callSubst canType =
 
 {-| Specialize a function argument by applying type substitution.
 -}
-specializeArg : Substitution -> ( A.Located Name, Can.Type ) -> ( Name, Mono.MonoType )
-specializeArg subst ( locName, canType ) =
+specializeArg : MVarEnv -> Substitution -> ( A.Located Name, Can.Type ) -> ( Name, Mono.MonoType )
+specializeArg mvarEnv subst ( locName, canType ) =
     let
         name =
             A.toValue locName
 
         monoType =
-            Mono.forceCNumberToInt (TypeSubst.applySubst subst canType)
+            Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst mvarEnv subst canType))
     in
     ( name, monoType )
 
@@ -3618,13 +3653,13 @@ This is _call-site aware_:
         - NumberBoxed      -> treat CNumber vars as CEcoValue (boxed)
 
 -}
-deriveKernelAbiType : ( String, String ) -> Can.Type -> Substitution -> Mono.MonoType
-deriveKernelAbiType kernelId canFuncType callSubst =
+deriveKernelAbiType : MVarEnv -> ( String, String ) -> Can.Type -> Substitution -> Mono.MonoType
+deriveKernelAbiType mvarEnv kernelId canFuncType callSubst =
     let
         -- Monomorphic function type at this use-site, after substitution.
         monoAfterSubstRaw : Mono.MonoType
         monoAfterSubstRaw =
-            TypeSubst.applySubst callSubst canFuncType
+            Tuple.first (TypeSubst.applySubst mvarEnv callSubst canFuncType)
 
         -- Backend policy: eagerly resolve any remaining CNumber vars to Int.
         -- This does NOT affect MFloat - only unresolved numeric vars.
@@ -3649,7 +3684,7 @@ deriveKernelAbiType kernelId canFuncType callSubst =
 
             else
                 -- Still genuinely number-polymorphic here: fall back to boxed ABI.
-                KernelAbi.canTypeToMonoType_numberBoxed canFuncType
+                Tuple.first (KernelAbi.canTypeToMonoType_numberBoxed mvarEnv canFuncType)
 
         KernelAbi.UseSubstitution ->
             -- Monomorphic kernel type from the outset (no type variables).
@@ -3669,7 +3704,7 @@ deriveKernelAbiType kernelId canFuncType callSubst =
 
             else
                 -- default: all vars become CEcoValue (fully boxed ABI)
-                KernelAbi.canTypeToMonoType_preserveVars canFuncType
+                Tuple.first (KernelAbi.canTypeToMonoType_preserveVars mvarEnv canFuncType)
 
 
 

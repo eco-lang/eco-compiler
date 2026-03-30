@@ -22,6 +22,7 @@ covers the remaining key parameter types and result type.
 import Array
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.Source as Src
+import Compiler.Data.Id as Id
 import Dict
 import Expect exposing (Expectation)
 import TestLogic.TestPipeline as Pipeline
@@ -314,9 +315,9 @@ monoTypeEq a b =
         ( Mono.MCustom aHome aName aArgs, Mono.MCustom bHome bName bArgs ) ->
             aHome == bHome && aName == bName && listEq monoTypeEq aArgs bArgs
 
-        ( Mono.MVar aName _, Mono.MVar bName _ ) ->
-            -- MVar equality: same name (constraint may differ)
-            aName == bName
+        ( Mono.MVar aId _, Mono.MVar bId _ ) ->
+            -- MVar equality: same id (constraint may differ)
+            Id.toComparable aId == Id.toComparable bId
 
         _ ->
             False
@@ -443,5 +444,5 @@ monoTypeToString monoType =
             in
             paramStr ++ " -> " ++ monoTypeToString result
 
-        Mono.MVar name _ ->
-            name
+        Mono.MVar mvarId _ ->
+            String.fromInt (Id.toComparable mvarId)

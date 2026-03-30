@@ -37,6 +37,7 @@ import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.BitSet as BitSet exposing (BitSet)
 import Compiler.Data.Name exposing (Name)
 import Compiler.Monomorphize.Registry as Registry
+import Compiler.Monomorphize.State as MState
 import Compiler.Type.SolverSnapshot as SolverSnapshot exposing (SolverSnapshot)
 import Data.Map as DataMap
 import Dict exposing (Dict)
@@ -70,6 +71,7 @@ type alias MonoDirectState =
     , renameEpoch : Int
     , snapshot : SolverSnapshot
     , specStack : List ( SolverSnapshot.TypeVar, Mono.MonoType )
+    , mvarEnv : MState.MVarEnv
     }
 
 
@@ -100,6 +102,7 @@ initState currentModule toptNodes globalTypeEnv snapshot =
     , renameEpoch = 0
     , snapshot = snapshot
     , specStack = []
+    , mvarEnv = MState.emptyMVarEnv
     }
 
 

@@ -20,6 +20,7 @@ import Array exposing (Array)
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Monomorphized as Mono
 import Compiler.Data.Name as Name
+import Compiler.Monomorphize.State as State
 import Compiler.Monomorphize.TypeSubst as TypeSubst
 import Compiler.Type.Type as Type
 import Compiler.Type.Unify as Unify
@@ -144,7 +145,7 @@ withLocalUnification snap rootsToRelax equalities callback =
             defaultNumericVarsToInt stateAfterUnify
 
         view =
-            buildLocalView Dict.empty stateAfterDefault
+            buildLocalView State.emptyMVarEnv Dict.empty stateAfterDefault
     in
     callback view
 
@@ -171,7 +172,7 @@ specializeFunction snap funcTvar requestedMonoType callback =
             defaultNumericVarsToInt stateAfterWalk
 
         view =
-            buildLocalView Dict.empty stateAfterDefault
+            buildLocalView State.emptyMVarEnv Dict.empty stateAfterDefault
     in
     callback view
 
@@ -201,7 +202,7 @@ specializeChainedWithSubst snap pairs substDict callback =
             defaultNumericVarsToInt stateAfterAll
 
         view =
-            buildLocalView substDict stateAfterDefault
+            buildLocalView State.emptyMVarEnv substDict stateAfterDefault
     in
     callback view
 
@@ -219,8 +220,8 @@ snapshotToIoState ss =
     }
 
 
-buildLocalView : Dict String Mono.MonoType -> IO.State -> LocalView
-buildLocalView substDict st =
+buildLocalView : State.MVarEnv -> Dict String Mono.MonoType -> IO.State -> LocalView
+buildLocalView mvarEnv substDict st =
     let
         hasErrorDescriptor : TypeVar -> Bool
         hasErrorDescriptor var =
@@ -256,10 +257,19 @@ buildLocalView substDict st =
         monoTypeOfVar : TypeVar -> Mono.MonoType
         monoTypeOfVar var =
             if hasErrorDescriptor var then
-                Mono.MVar "error" Mono.CEcoValue
+                -- Error vars get a fresh MVarId; env update is lost but acceptable for error sentinels
+                let
+                    ( errorMVarId, _ ) =
+                        State.allocMVar "error" mvarEnv
+                in
+                Mono.MVar errorMVarId Mono.CEcoValue
 
             else
-                TypeSubst.canTypeToMonoType substDict (typeOfVar var)
+                let
+                    ( monoType, _ ) =
+                        TypeSubst.canTypeToMonoType mvarEnv substDict (typeOfVar var)
+                in
+                monoType
     in
     { typeOf = typeOfVar
     , monoTypeOf = monoTypeOfVar

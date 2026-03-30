@@ -14,6 +14,7 @@ that monomorphization produces valid MonoTypes.
 import Array
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.Source as Src
+import Compiler.Data.Id as Id
 import Expect
 import TestLogic.TestPipeline as Pipeline
 
@@ -243,7 +244,7 @@ checkMonoType context monoType =
             List.concatMap (checkMonoType context) paramTypes
                 ++ checkMonoType context returnType
 
-        Mono.MVar name constraint ->
+        Mono.MVar mvarId constraint ->
             case constraint of
                 Mono.CEcoValue ->
                     -- CEcoValue is allowed - it's a polymorphic type that doesn't affect layout
@@ -251,4 +252,4 @@ checkMonoType context monoType =
 
                 Mono.CNumber ->
                     -- CNumber should be resolved to MInt or MFloat after monomorphization
-                    [ context ++ ": Found unresolved numeric type variable '" ++ name ++ "' with CNumber constraint" ]
+                    [ context ++ ": Found unresolved numeric type variable '" ++ String.fromInt (Id.toComparable mvarId) ++ "' with CNumber constraint" ]

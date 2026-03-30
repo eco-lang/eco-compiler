@@ -18,6 +18,7 @@ they are marked as boxed (isUnboxed = False).
 import Array
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.Source as Src
+import Compiler.Data.Id as Id
 import Compiler.Generate.MLIR.Types as Types
 import Dict
 import Expect exposing (Expectation)
@@ -207,8 +208,8 @@ monoTypeToString monoType =
         Mono.MFunction params result ->
             "(" ++ String.join ", " (List.map monoTypeToString params) ++ ") -> " ++ monoTypeToString result
 
-        Mono.MVar name _ ->
-            "MVar(" ++ name ++ ")"
+        Mono.MVar mvarId _ ->
+            "MVar(" ++ String.fromInt (Id.toComparable mvarId) ++ ")"
 
 
 

@@ -17,6 +17,7 @@ polymorphism is properly resolved before code generation.
 import Array
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.Source as Src
+import Compiler.Data.Id as Id
 import Expect
 import TestLogic.TestPipeline as Pipeline
 
@@ -225,8 +226,8 @@ collectDefCNumberChecks context def =
 checkForCNumber : String -> Mono.MonoType -> List (() -> Expect.Expectation)
 checkForCNumber context monoType =
     case monoType of
-        Mono.MVar name Mono.CNumber ->
-            [ \() -> Expect.fail (context ++ ": Unresolved numeric type variable '" ++ name ++ "' with CNumber constraint") ]
+        Mono.MVar mvarId Mono.CNumber ->
+            [ \() -> Expect.fail (context ++ ": Unresolved numeric type variable '" ++ String.fromInt (Id.toComparable mvarId) ++ "' with CNumber constraint") ]
 
         Mono.MVar _ Mono.CEcoValue ->
             []
@@ -406,8 +407,8 @@ not polymorphic MVar CNumber.
 checkNumericTypeResolved : String -> Mono.MonoType -> List (() -> Expect.Expectation)
 checkNumericTypeResolved context monoType =
     case monoType of
-        Mono.MVar name Mono.CNumber ->
-            [ \() -> Expect.fail (context ++ ": Numeric type variable '" ++ name ++ "' not resolved to MInt or MFloat") ]
+        Mono.MVar mvarId Mono.CNumber ->
+            [ \() -> Expect.fail (context ++ ": Numeric type variable '" ++ String.fromInt (Id.toComparable mvarId) ++ "' not resolved to MInt or MFloat") ]
 
         Mono.MVar _ Mono.CEcoValue ->
             -- CEcoValue is fine - it's not a numeric constraint

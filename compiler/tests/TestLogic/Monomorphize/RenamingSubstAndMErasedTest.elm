@@ -36,6 +36,7 @@ import Compiler.AST.SourceBuilder
         , tupleExpr
         , varExpr
         )
+import Compiler.Data.Id as Id
 import Dict
 import Expect exposing (Expectation)
 import Test exposing (Test)
@@ -406,9 +407,9 @@ collectCEcoValueVars monoType =
             -- CEcoValue MVars are acceptable — they compile identically to eco.value
             []
 
-        Mono.MVar name Mono.CNumber ->
+        Mono.MVar mvarId Mono.CNumber ->
             -- CNumber should have been resolved by forceCNumberToInt
-            [ name ]
+            [ String.fromInt (Id.toComparable mvarId) ]
 
         Mono.MList inner ->
             collectCEcoValueVars inner
@@ -499,5 +500,5 @@ monoTypeToString monoType =
         Mono.MTuple elems ->
             "MTuple [" ++ String.join ", " (List.map monoTypeToString elems) ++ "]"
 
-        Mono.MVar name _ ->
-            "MVar \"" ++ name ++ "\""
+        Mono.MVar mvarId _ ->
+            "MVar \"" ++ String.fromInt (Id.toComparable mvarId) ++ "\""

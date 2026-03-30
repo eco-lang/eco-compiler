@@ -149,7 +149,9 @@ This module defines the data structures for the monomorphized program
 
 import Array exposing (Array)
 import Compiler.AST.DecisionTree.Test as DT
+import Compiler.AST.TypeIds exposing (MVarId)
 import Compiler.Data.BitSet exposing (BitSet)
+import Compiler.Data.Id as Id
 import Compiler.Data.Name exposing (Name)
 import Compiler.Reporting.Annotation exposing (Region)
 import Dict exposing (Dict)
@@ -207,7 +209,7 @@ type MonoType
     | MRecord (Dict Name MonoType) -- Field name -> type (layout computed at codegen)
     | MCustom IO.Canonical Name (List MonoType)
     | MFunction (List MonoType) MonoType
-    | MVar Name Constraint
+    | MVar MVarId Constraint
 
 
 {-| Constraint on an unspecialized type variable in `MonoType`.
@@ -692,8 +694,8 @@ monoTypeToDebugString monoType =
         MFunction _ _ ->
             "MFunction ..."
 
-        MVar name _ ->
-            "MVar " ++ name
+        MVar mvarId _ ->
+            "MVar#" ++ String.fromInt (Id.toComparable mvarId)
 
 
 {-| A typed path for decision-tree navigation.
@@ -881,8 +883,8 @@ toComparableMonoTypeHelper work acc =
                 MUnit ->
                     toComparableMonoTypeHelper rest (acc ++ "U")
 
-                MVar name constraint ->
-                    toComparableMonoTypeHelper rest (acc ++ "V" ++ name ++ "\u{0000}" ++ constraintToString constraint)
+                MVar mvarId constraint ->
+                    toComparableMonoTypeHelper rest (acc ++ "V" ++ String.fromInt (Id.toComparable mvarId) ++ "\u{0000}" ++ constraintToString constraint)
 
                 MList inner ->
                     toComparableMonoTypeHelper

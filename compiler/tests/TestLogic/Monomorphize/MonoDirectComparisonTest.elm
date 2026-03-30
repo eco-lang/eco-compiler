@@ -17,12 +17,25 @@ are considered equal if they appear in the same structural position.
 import Array
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.Source as Src
+import Compiler.Data.Id as Id
+import Compiler.Monomorphize.State as State
 import Dict exposing (Dict)
 import Expect exposing (Expectation)
 import SourceIR.Suite.StandardTestSuites as StandardTestSuites
 import System.TypeCheck.IO as IO
 import Test exposing (Test)
 import TestLogic.TestPipeline as Pipeline
+
+
+{-| Helper to construct an MVar from a name string for test values.
+-}
+testMVar : String -> Mono.Constraint -> Mono.MonoType
+testMVar name constraint =
+    let
+        ( mvarId, _ ) =
+            State.allocMVar name State.emptyMVarEnv
+    in
+    Mono.MVar mvarId constraint
 
 
 suite : Test
@@ -75,12 +88,15 @@ Returns the normalized type and updated state (for consistent naming across a tr
 normalizeType : NormState -> Mono.MonoType -> ( Mono.MonoType, NormState )
 normalizeType state monoType =
     case monoType of
-        Mono.MVar name constraint ->
+        Mono.MVar mvarId constraint ->
             let
+                nameStr =
+                    String.fromInt (Id.toComparable mvarId)
+
                 ( canonical, newState ) =
-                    normalizeName name state
+                    normalizeName nameStr state
             in
-            ( Mono.MVar canonical constraint, newState )
+            ( testMVar canonical constraint, newState )
 
         Mono.MList elem ->
             let
@@ -798,7 +814,7 @@ coerceBoxedToCanonical monoType =
 
         -- ALL leaf types (Int, Float, Char, Bool, String, Unit, MVar) become canonical placeholder
         _ ->
-            Mono.MVar "☐" Mono.CEcoValue
+            testMVar "☐" Mono.CEcoValue
 
 
 {-| Bidirectional type coercion for expression-level comparison.
@@ -810,10 +826,10 @@ coerceTypePair : Mono.MonoType -> Mono.MonoType -> ( Mono.MonoType, Mono.MonoTyp
 coerceTypePair a b =
     case ( a, b ) of
         ( Mono.MVar _ Mono.CEcoValue, _ ) ->
-            ( Mono.MVar "☐" Mono.CEcoValue, Mono.MVar "☐" Mono.CEcoValue )
+            ( testMVar "☐" Mono.CEcoValue, testMVar "☐" Mono.CEcoValue )
 
         ( _, Mono.MVar _ Mono.CEcoValue ) ->
-            ( Mono.MVar "☐" Mono.CEcoValue, Mono.MVar "☐" Mono.CEcoValue )
+            ( testMVar "☐" Mono.CEcoValue, testMVar "☐" Mono.CEcoValue )
 
         ( Mono.MList ea, Mono.MList eb ) ->
             let

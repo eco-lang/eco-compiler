@@ -18,6 +18,7 @@ not flattened. For `Int -> Int -> Int`, we get `MFunction [MInt] (MFunction [MIn
 import Array
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.Source as Src
+import Compiler.Data.Id as Id
 import Compiler.AST.SourceBuilder
     exposing
         ( binopsExpr
@@ -354,5 +355,5 @@ monoTypeToString monoType =
         Mono.MTuple _ ->
             "MTuple (...)"
 
-        Mono.MVar name _ ->
-            "MVar \"" ++ name ++ "\""
+        Mono.MVar mvarId _ ->
+            "MVar \"" ++ String.fromInt (Id.toComparable mvarId) ++ "\""

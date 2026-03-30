@@ -143,9 +143,26 @@ runSpecialization mainGlobal mainType globalTypeEnv nodes =
                 TOpt.Global canonical _ ->
                     canonical
 
+        initialState0 : MonoState
+        initialState0 =
+            initState currentModule nodes globalTypeEnv
+
+        -- Pre-populate MVarEnv with all tvar names from the global graph
+        -- so that lookupMVarName succeeds even when env updates are discarded.
+        dummyCompare _ _ =
+            EQ
+
+        prePopulatedEnv =
+            DMap.foldl dummyCompare (\_ node env -> prePopulateNodeTVars node env)
+                initialState0.ctx.mvarEnv
+                nodes
+
+        initialCtx =
+            initialState0.ctx
+
         initialState : MonoState
         initialState =
-            initState currentModule nodes globalTypeEnv
+            { initialState0 | ctx = { initialCtx | mvarEnv = prePopulatedEnv } }
 
         initialAccum =
             initialState.accum
@@ -483,8 +500,62 @@ type alias Substitution =
 
 
 canTypeToMonoType : Substitution -> Can.Type -> Mono.MonoType
-canTypeToMonoType =
-    TypeSubst.canTypeToMonoType
+canTypeToMonoType subst canType =
+    Tuple.first (TypeSubst.canTypeToMonoType State.emptyMVarEnv subst canType)
+
+
+{-| Pre-populate an MVarEnv with all type variable names found in a TOpt node.
+This ensures lookupMVarName succeeds for all tvars in the global graph.
+-}
+prePopulateNodeTVars : TOpt.Node -> State.MVarEnv -> State.MVarEnv
+prePopulateNodeTVars node env =
+    case node of
+        TOpt.Define expr _ meta ->
+            prePopulateCanTypeTVars meta.tipe (prePopulateExprTVars expr env)
+
+        TOpt.TrackedDefine _ expr _ meta ->
+            prePopulateCanTypeTVars meta.tipe (prePopulateExprTVars expr env)
+
+        TOpt.Ctor _ _ canType ->
+            prePopulateCanTypeTVars canType env
+
+        TOpt.Enum _ canType ->
+            prePopulateCanTypeTVars canType env
+
+        TOpt.Box canType ->
+            prePopulateCanTypeTVars canType env
+
+        TOpt.Link _ ->
+            env
+
+        TOpt.Cycle _ _ _ _ ->
+            env
+
+        TOpt.Manager _ ->
+            env
+
+        TOpt.Kernel _ _ ->
+            env
+
+        TOpt.PortIncoming expr _ meta ->
+            prePopulateCanTypeTVars meta.tipe (prePopulateExprTVars expr env)
+
+        TOpt.PortOutgoing expr _ meta ->
+            prePopulateCanTypeTVars meta.tipe (prePopulateExprTVars expr env)
+
+
+prePopulateExprTVars : TOpt.Expr -> State.MVarEnv -> State.MVarEnv
+prePopulateExprTVars expr env =
+    prePopulateCanTypeTVars (TOpt.typeOf expr) env
+
+
+prePopulateCanTypeTVars : Can.Type -> State.MVarEnv -> State.MVarEnv
+prePopulateCanTypeTVars canType env =
+    let
+        names =
+            TypeSubst.collectCanTypeVars canType []
+    in
+    List.foldl (\name e -> Tuple.second (State.allocMVar name e)) env names
 
 
 
