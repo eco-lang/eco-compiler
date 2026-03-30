@@ -261,6 +261,9 @@ collectCustomTypesFromExpr expr acc =
         Mono.MonoUnit ->
             accWithType
 
+        Mono.MonoAccessorValue _ _ _ ->
+            accWithType
+
 
 {-| Collect custom types from a decision tree.
 -}

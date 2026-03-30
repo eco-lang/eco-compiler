@@ -292,6 +292,9 @@ foldExprAccFirstChildren f acc expr =
         MonoUnit ->
             acc
 
+        MonoAccessorValue _ _ _ ->
+            acc
+
 
 {-| Acc-first fold over definitions (internal).
 -}
@@ -412,6 +415,9 @@ mapExprChildren f expr =
             expr
 
         MonoUnit ->
+            expr
+
+        MonoAccessorValue _ _ _ ->
             expr
 
 
@@ -593,6 +599,9 @@ traverseExprChildren f ctx expr =
             ( expr, ctx )
 
         MonoUnit ->
+            ( expr, ctx )
+
+        MonoAccessorValue _ _ _ ->
             ( expr, ctx )
 
 

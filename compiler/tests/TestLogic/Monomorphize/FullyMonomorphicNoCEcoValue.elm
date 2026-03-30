@@ -260,6 +260,9 @@ checkExprAllTypes ctx expr =
         Mono.MonoUnit ->
             []
 
+        Mono.MonoAccessorValue _ _ _ ->
+            []
+
 
 {-| Check a decider tree for CEcoValue in MonoTypes.
 -}

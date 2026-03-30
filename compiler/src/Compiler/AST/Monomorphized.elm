@@ -563,6 +563,7 @@ type MonoExpr
     | MonoRecordUpdate MonoExpr (List ( Name, MonoExpr )) MonoType -- Field names, codegen computes indices
     | MonoTupleCreate Region (List MonoExpr) MonoType -- Layout computed at codegen
     | MonoUnit
+    | MonoAccessorValue Region Name MonoType -- Deferred accessor .field value; eliminated by ResolveAccessorValues
 
 
 {-| Literal values in monomorphized expressions.
@@ -808,6 +809,9 @@ typeOf expr =
 
         MonoUnit ->
             MUnit
+
+        MonoAccessorValue _ _ t ->
+            t
 
 
 

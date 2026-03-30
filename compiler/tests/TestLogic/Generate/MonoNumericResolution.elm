@@ -205,6 +205,9 @@ collectExprCNumberChecks context expr =
         Mono.MonoUnit ->
             []
 
+        Mono.MonoAccessorValue _ _ _ ->
+            []
+
 
 {-| Collect CNumber checks from a MonoDef.
 -}

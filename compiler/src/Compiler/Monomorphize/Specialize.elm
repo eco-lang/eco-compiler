@@ -25,6 +25,7 @@ import Compiler.Monomorphize.Analysis as Analysis
 import Compiler.Monomorphize.Closure as Closure
 import Compiler.Monomorphize.KernelAbi as KernelAbi
 import Compiler.Monomorphize.Registry as Registry
+import Compiler.Monomorphize.ResolveAccessorValues as ResolveAccessorValues
 import Compiler.Monomorphize.State as State exposing (LocalMultiState, MVarEnv, MonoState, SchemeInfo, Substitution, ValueMultiState, VarEnv, WorkItem(..))
 import Compiler.Monomorphize.TypeSubst as TypeSubst
 import Compiler.Reporting.Annotation as A
@@ -2179,32 +2180,29 @@ specializeExpr expr subst state =
             )
 
         TOpt.Accessor region fieldName meta ->
-            -- NOTE: This handles standalone accessor expressions (not passed as arguments).
-            -- The MonoType derived here may have an incomplete record layout if the
-            -- accessor's row variable is not yet bound in the substitution.
-            --
-            -- INVARIANT: Any accessor that is actually *invoked* at runtime must be
-            -- specialized via the virtual-global mechanism (Mono.Accessor + worklist),
-            -- which happens in resolveProcessedArg when the accessor is passed as an
-            -- argument to a function call. The virtual-global path derives the accessor's
-            -- MonoType from the fully-resolved parameter type, ensuring correct field indices.
-            --
-            -- A standalone accessor with incomplete type is only acceptable if it never
-            -- participates in layout-dependent operations (e.g., dead code or debug output).
+            -- Standalone accessor expression (not passed as argument to a call).
+            -- If the MonoType still has MVars (incomplete record layout from unresolved
+            -- row variables), defer to ResolveAccessorValues pass via MonoAccessorValue.
+            -- Otherwise, create the virtual global immediately.
             let
                 canType =
                     meta.tipe
 
                 monoType =
                     Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst state.ctx.mvarEnv subst canType))
-
-                accessorGlobal =
-                    Mono.Accessor fieldName
-
-                ( specId, newState ) =
-                    enqueueSpec accessorGlobal monoType Nothing state
             in
-            ( Mono.MonoVarGlobal region specId monoType, newState )
+            if ResolveAccessorValues.accessorTypeNeedsDefer monoType then
+                ( Mono.MonoAccessorValue region fieldName monoType, state )
+
+            else
+                let
+                    accessorGlobal =
+                        Mono.Accessor fieldName
+
+                    ( specId, newState ) =
+                        enqueueSpec accessorGlobal monoType Nothing state
+                in
+                ( Mono.MonoVarGlobal region specId monoType, newState )
 
         TOpt.Access record _ fieldName meta ->
             let
@@ -3834,6 +3832,9 @@ renameTailCalls oldName newName expr =
             expr
 
         Mono.MonoUnit ->
+            expr
+
+        Mono.MonoAccessorValue _ _ _ ->
             expr
 
 

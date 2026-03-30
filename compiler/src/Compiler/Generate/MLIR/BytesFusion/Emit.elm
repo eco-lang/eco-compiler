@@ -1398,6 +1398,9 @@ monoExprType expr =
         Mono.MonoUnit ->
             Mono.MUnit
 
+        Mono.MonoAccessorValue _ _ t ->
+            t
+
 
 {-| Emit PushValue with nested continuation.
 -}

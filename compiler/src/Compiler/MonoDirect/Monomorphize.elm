@@ -23,6 +23,7 @@ import Compiler.MonoDirect.State as State exposing (MonoDirectState, WorkItem(..
 import Compiler.Monomorphize.MonoTraverse as Traverse
 import Compiler.Monomorphize.Prune as Prune
 import Compiler.Monomorphize.Registry as Registry
+import Compiler.Monomorphize.ResolveAccessorValues as ResolveAccessorValues
 import Compiler.Type.SolverSnapshot as SolverSnapshot exposing (SolverSnapshot)
 import Data.Map as DMap
 import Dict
@@ -210,10 +211,19 @@ processWorklist snapshot state =
 
                                     Just toptNode ->
                                         let
-                                            ( monoNode, stateAfter ) =
+                                            ( monoNode0, stateAfter ) =
                                                 Specialize.specializeNode snapshot name toptNode monoType state2
+
+                                            ( monoNode, newLambdaCounter ) =
+                                                ResolveAccessorValues.rewriteNode
+                                                    stateAfter.currentModule
+                                                    stateAfter.lambdaCounter
+                                                    monoNode0
+
+                                            stateAfterResolve =
+                                                { stateAfter | lambdaCounter = newLambdaCounter }
                                         in
-                                        processWorklist snapshot (finalizeSpec specId monoNode stateAfter)
+                                        processWorklist snapshot (finalizeSpec specId monoNode stateAfterResolve)
 
 
 finalizeSpec : Mono.SpecId -> Mono.MonoNode -> MonoDirectState -> MonoDirectState

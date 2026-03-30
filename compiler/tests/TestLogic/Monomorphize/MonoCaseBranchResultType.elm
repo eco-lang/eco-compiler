@@ -179,6 +179,9 @@ checkExpr ctx expr =
         Mono.MonoUnit ->
             []
 
+        Mono.MonoAccessorValue _ _ _ ->
+            []
+
 
 {-| Check all jump branches have types matching resultType.
 -}

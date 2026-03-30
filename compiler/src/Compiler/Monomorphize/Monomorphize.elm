@@ -30,6 +30,7 @@ import Compiler.Data.Name exposing (Name)
 import Compiler.Monomorphize.MonoTraverse as Traverse
 import Compiler.Monomorphize.Prune as Prune
 import Compiler.Monomorphize.Registry as Registry
+import Compiler.Monomorphize.ResolveAccessorValues as ResolveAccessorValues
 import Compiler.Monomorphize.Specialize as Specialize
 import Compiler.Monomorphize.State as State exposing (WorkItem(..))
 import Compiler.Monomorphize.TypeSubst as TypeSubst
@@ -417,11 +418,23 @@ processWorklist state =
                                         -- Specialize this node to concrete types.
                                         -- Pass the global's name for constructor name population.
                                         let
-                                            ( monoNode, stateAfter ) =
+                                            ( monoNode0, stateAfter ) =
                                                 Specialize.specializeNode name toptNode monoType state2
 
+                                            ( monoNode, newLambdaCounter ) =
+                                                ResolveAccessorValues.rewriteNode
+                                                    stateAfter.ctx.currentModule
+                                                    stateAfter.ctx.lambdaCounter
+                                                    monoNode0
+
+                                            stateAfterCtx =
+                                                stateAfter.ctx
+
+                                            stateAfterResolve =
+                                                { stateAfter | ctx = { stateAfterCtx | lambdaCounter = newLambdaCounter } }
+
                                             saAccum =
-                                                stateAfter.accum
+                                                stateAfterResolve.accum
 
                                             -- Update registry with actual node type (may differ from requested type
                                             -- due to closure flattening, e.g., Int -> Int -> Int vs (Int, Int) -> Int)
@@ -444,7 +457,7 @@ processWorklist state =
                                                     neighbors
 
                                             newState =
-                                                { stateAfter
+                                                { stateAfterResolve
                                                     | accum =
                                                         { saAccum
                                                             | registry = updatedRegistry
@@ -462,7 +475,7 @@ processWorklist state =
                                                     , ctx =
                                                         let
                                                             ca2 =
-                                                                stateAfter.ctx
+                                                                stateAfterResolve.ctx
                                                         in
                                                         { ca2 | currentGlobal = Nothing }
                                                 }

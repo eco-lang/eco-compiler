@@ -181,6 +181,9 @@ collectExprTypeIssues context expr =
         Mono.MonoUnit ->
             []
 
+        Mono.MonoAccessorValue _ _ _ ->
+            []
+
 
 {-| Collect type issues from a MonoDef.
 -}

@@ -392,6 +392,9 @@ computeCost expr =
         MonoUnit ->
             1
 
+        MonoAccessorValue _ _ _ ->
+            1
+
         MonoList _ items _ ->
             3 + sumBy computeCost items
 
@@ -887,6 +890,9 @@ rewriteExpr ctx expr =
         MonoUnit ->
             ( expr, ctx )
 
+        MonoAccessorValue _ _ _ ->
+            ( expr, ctx )
+
 
 rewriteExprs : RewriteCtx -> List MonoExpr -> ( List MonoExpr, RewriteCtx )
 rewriteExprs ctx exprs =
@@ -1229,6 +1235,9 @@ substitute oldName newName varType expr =
             expr
 
         MonoUnit ->
+            expr
+
+        MonoAccessorValue _ _ _ ->
             expr
 
         MonoList region items itemType ->
@@ -2031,6 +2040,9 @@ isPureExpr expr =
         MonoUnit ->
             True
 
+        MonoAccessorValue _ _ _ ->
+            True
+
         MonoList _ items _ ->
             List.all isPureExpr items
 
@@ -2093,6 +2105,9 @@ countUsages name expr =
             0
 
         MonoUnit ->
+            0
+
+        MonoAccessorValue _ _ _ ->
             0
 
         MonoList _ items _ ->
@@ -2241,6 +2256,9 @@ inlineVar name replacement expr =
             expr
 
         MonoUnit ->
+            expr
+
+        MonoAccessorValue _ _ _ ->
             expr
 
         MonoList region items itemType ->

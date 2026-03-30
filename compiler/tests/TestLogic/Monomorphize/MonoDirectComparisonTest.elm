@@ -936,6 +936,15 @@ compareExpr ctx path expected actual =
         ( Mono.MonoUnit, Mono.MonoUnit ) ->
             []
 
+        ( Mono.MonoAccessorValue _ eName eType, Mono.MonoAccessorValue _ aName aType ) ->
+            (if eName /= aName then
+                [ path ++ ".accessorField: " ++ eName ++ " vs " ++ aName ]
+
+             else
+                []
+            )
+                ++ compareTypeAlpha (path ++ ".type") eType aType
+
         ( Mono.MonoLiteral eLit eType, Mono.MonoLiteral aLit aType ) ->
             compareLiteral (path ++ ".lit") eLit aLit
                 ++ compareTypeAlpha (path ++ ".type") eType aType
@@ -1132,6 +1141,9 @@ exprVariantName expr =
 
         Mono.MonoUnit ->
             "MonoUnit"
+
+        Mono.MonoAccessorValue _ _ _ ->
+            "MonoAccessorValue"
 
 
 

@@ -434,6 +434,9 @@ generateExpr ctx expr =
         Mono.MonoUnit ->
             generateUnit ctx
 
+        Mono.MonoAccessorValue _ fieldName _ ->
+            crash ("MonoAccessorValue ." ++ fieldName ++ " should have been eliminated by ResolveAccessorValues")
+
 
 
 -- ====== LITERAL GENERATION ======

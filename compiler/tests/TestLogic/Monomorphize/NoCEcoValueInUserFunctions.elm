@@ -272,6 +272,9 @@ checkExpr ctx expr =
         Mono.MonoUnit ->
             []
 
+        Mono.MonoAccessorValue _ _ _ ->
+            []
+
 
 {-| Check closure info for CEcoValue in parameter types.
 -}

@@ -864,6 +864,9 @@ rewriteExprForAbi home expr ctx =
         Mono.MonoUnit ->
             ( expr, ctx )
 
+        Mono.MonoAccessorValue _ _ _ ->
+            ( expr, ctx )
+
 
 rewriteDefForAbi : IO.Canonical -> Mono.MonoDef -> GlobalCtx -> ( Mono.MonoDef, GlobalCtx )
 rewriteDefForAbi home def ctx =
@@ -1295,6 +1298,9 @@ annotateExprCalls graph env expr =
             expr
 
         Mono.MonoUnit ->
+            expr
+
+        Mono.MonoAccessorValue _ _ _ ->
             expr
 
 
