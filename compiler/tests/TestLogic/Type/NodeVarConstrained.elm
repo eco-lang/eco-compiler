@@ -25,7 +25,7 @@ NOT in scope for TYPE\_007.
 
 import Array exposing (Array)
 import Compiler.AST.Canonical as Can
-import Compiler.Data.Name as Name
+import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Reporting.Annotation as A
 import Data.Map as DMap
 import Dict exposing (Dict)
@@ -52,8 +52,8 @@ annotation's binders.
 -}
 check :
     Can.Module
-    -> Dict Name.Name Can.Annotation
-    -> Array (Maybe Can.Type)
+    -> Dict Name.Name (Can.Annotation Name)
+    -> Array (Maybe (Can.Type Name))
     -> List Violation
 check (Can.Module modData) annotations nodeTypes =
     checkDecls modData.decls annotations nodeTypes
@@ -61,8 +61,8 @@ check (Can.Module modData) annotations nodeTypes =
 
 checkDecls :
     Can.Decls
-    -> Dict Name.Name Can.Annotation
-    -> Array (Maybe Can.Type)
+    -> Dict Name.Name (Can.Annotation Name)
+    -> Array (Maybe (Can.Type Name))
     -> List Violation
 checkDecls decls annotations nodeTypes =
     case decls of
@@ -81,8 +81,8 @@ checkDecls decls annotations nodeTypes =
 
 checkDef :
     Can.Def
-    -> Dict Name.Name Can.Annotation
-    -> Array (Maybe Can.Type)
+    -> Dict Name.Name (Can.Annotation Name)
+    -> Array (Maybe (Can.Type Name))
     -> List Violation
 checkDef def annotations nodeTypes =
     case def of
@@ -103,7 +103,7 @@ checkDef def annotations nodeTypes =
 
 {-| Extract binder names from an annotation, if one exists.
 -}
-annotationBinders : Name.Name -> Dict Name.Name Can.Annotation -> Set String
+annotationBinders : Name.Name -> Dict Name.Name (Can.Annotation Name) -> Set String
 annotationBinders name annotations =
     case Dict.get name annotations of
         Just (Can.Forall freeVars _) ->
@@ -140,7 +140,7 @@ walkDef :
     Name.Name
     -> Set String
     -> Can.Def
-    -> Array (Maybe Can.Type)
+    -> Array (Maybe (Can.Type Name))
     -> List Violation
 walkDef enclosingFunc enclosingBinders def nodeTypes =
     case def of
@@ -196,7 +196,7 @@ checkExpr :
     Name.Name
     -> Set String
     -> Can.Expr
-    -> Array (Maybe Can.Type)
+    -> Array (Maybe (Can.Type Name))
     -> List Violation
 checkExpr funcName binders (A.At _ exprInfo) nodeTypes =
     let
@@ -270,7 +270,7 @@ checkNodeType :
     -> Set String
     -> Int
     -> String
-    -> Array (Maybe Can.Type)
+    -> Array (Maybe (Can.Type Name))
     -> List Violation
 checkNodeType funcName binders nodeId exprKind nodeTypes =
     if nodeId < 0 then
@@ -318,7 +318,7 @@ checkNodeType funcName binders nodeId exprKind nodeTypes =
 
 {-| Collect all free TVar names from a canonical type.
 -}
-collectFreeVars : Can.Type -> Set String
+collectFreeVars : Can.Type Name -> Set String
 collectFreeVars tipe =
     case tipe of
         Can.TVar name ->
@@ -354,7 +354,7 @@ walkChildren :
     Name.Name
     -> Set String
     -> Can.Expr_
-    -> Array (Maybe Can.Type)
+    -> Array (Maybe (Can.Type Name))
     -> List Violation
 walkChildren funcName binders node nodeTypes =
     let

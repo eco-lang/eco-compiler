@@ -46,7 +46,7 @@ import Compiler.AST.Source as Src
 import Compiler.AST.TypeEnv as TypeEnv
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Canonicalize.Module as Canonicalize
-import Compiler.Data.Name as Name
+import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Data.NonEmptyList as NE
 import Compiler.Data.OneOrMore as OneOrMore
 import Compiler.Elm.Interface.Basic as Basic
@@ -91,8 +91,8 @@ type alias CanonicalArtifacts =
 -}
 type alias TypeCheckArtifacts =
     { canonical : Can.Module
-    , annotations : Dict Name.Name Can.Annotation
-    , nodeTypes : Array (Maybe Can.Type) -- Pre-PostSolve
+    , annotations : Dict Name.Name (Can.Annotation Name)
+    , nodeTypes : Array (Maybe (Can.Type Name)) -- Pre-PostSolve
     , nodeVars : Array (Maybe IO.Variable)
     , solverState : { descriptors : Array IO.Descriptor, pointInfo : Array IO.PointInfo, weights : Array Int }
     , annotationVars : Data.Map.Dict String Name.Name IO.Variable
@@ -103,7 +103,7 @@ type alias TypeCheckArtifacts =
 -}
 type alias PostSolveArtifacts =
     { canonical : Can.Module
-    , annotations : Dict Name.Name Can.Annotation
+    , annotations : Dict Name.Name (Can.Annotation Name)
     , nodeTypesPre : PostSolve.NodeTypes -- Before PostSolve
     , nodeTypesPost : PostSolve.NodeTypes -- After PostSolve
     , kernelEnv : KernelTypes.KernelTypeEnv
@@ -117,10 +117,10 @@ type alias PostSolveArtifacts =
 -}
 type alias TypedOptArtifacts =
     { canonical : Can.Module
-    , annotations : Dict Name.Name Can.Annotation
+    , annotations : Dict Name.Name (Can.Annotation Name)
     , nodeTypes : PostSolve.NodeTypes
     , kernelEnv : KernelTypes.KernelTypeEnv
-    , localGraph : TOpt.LocalGraph
+    , localGraph : TOpt.LocalGraph Name
     }
 
 
@@ -128,11 +128,11 @@ type alias TypedOptArtifacts =
 -}
 type alias MonoArtifacts =
     { canonical : Can.Module
-    , annotations : Dict Name.Name Can.Annotation
+    , annotations : Dict Name.Name (Can.Annotation Name)
     , nodeTypes : PostSolve.NodeTypes
     , kernelEnv : KernelTypes.KernelTypeEnv
-    , localGraph : TOpt.LocalGraph
-    , globalGraph : TOpt.GlobalGraph
+    , localGraph : TOpt.LocalGraph Name
+    , globalGraph : TOpt.GlobalGraph Name
     , globalTypeEnv : TypeEnv.GlobalTypeEnv
     , monoGraph : Mono.MonoGraph
     }
@@ -145,11 +145,11 @@ Uses solver-directed monomorphization via `MonoDirect.monomorphizeDirect`.
 -}
 type alias MonoDirectArtifacts =
     { canonical : Can.Module
-    , annotations : Dict Name.Name Can.Annotation
+    , annotations : Dict Name.Name (Can.Annotation Name)
     , nodeTypes : PostSolve.NodeTypes
     , kernelEnv : KernelTypes.KernelTypeEnv
-    , localGraph : TOpt.LocalGraph
-    , globalGraph : TOpt.GlobalGraph
+    , localGraph : TOpt.LocalGraph Name
+    , globalGraph : TOpt.GlobalGraph Name
     , globalTypeEnv : TypeEnv.GlobalTypeEnv
     , monoGraph : Mono.MonoGraph
     , solverSnapshot : SolverSnapshot.SolverSnapshot
@@ -165,11 +165,11 @@ and enforces GOPT\_001 (closure params == stage arity) and GOPT\_003
 -}
 type alias GlobalOptArtifacts =
     { canonical : Can.Module
-    , annotations : Dict Name.Name Can.Annotation
+    , annotations : Dict Name.Name (Can.Annotation Name)
     , nodeTypes : PostSolve.NodeTypes
     , kernelEnv : KernelTypes.KernelTypeEnv
-    , localGraph : TOpt.LocalGraph
-    , globalGraph : TOpt.GlobalGraph
+    , localGraph : TOpt.LocalGraph Name
+    , globalGraph : TOpt.GlobalGraph Name
     , globalTypeEnv : TypeEnv.GlobalTypeEnv
     , monoGraph : Mono.MonoGraph
     , optimizedMonoGraph : Mono.MonoGraph
@@ -180,11 +180,11 @@ type alias GlobalOptArtifacts =
 -}
 type alias MlirArtifacts =
     { canonical : Can.Module
-    , annotations : Dict Name.Name Can.Annotation
+    , annotations : Dict Name.Name (Can.Annotation Name)
     , nodeTypes : PostSolve.NodeTypes
     , kernelEnv : KernelTypes.KernelTypeEnv
-    , localGraph : TOpt.LocalGraph
-    , globalGraph : TOpt.GlobalGraph
+    , localGraph : TOpt.LocalGraph Name
+    , globalGraph : TOpt.GlobalGraph Name
     , globalTypeEnv : TypeEnv.GlobalTypeEnv
     , monoGraph : Mono.MonoGraph
     , mlirModule : MlirModule
@@ -460,7 +460,7 @@ runToMlir srcModule =
 
 {-| Run type checking with expression ID tracking.
 -}
-runWithIdsTypeCheck : Can.Module -> IO.IO (Result Int { annotations : Dict Name.Name Can.Annotation, nodeTypes : Array (Maybe Can.Type), nodeVars : Array (Maybe IO.Variable), solverState : { descriptors : Array IO.Descriptor, pointInfo : Array IO.PointInfo, weights : Array Int }, annotationVars : Data.Map.Dict String Name.Name IO.Variable })
+runWithIdsTypeCheck : Can.Module -> IO.IO (Result Int { annotations : Dict Name.Name (Can.Annotation Name), nodeTypes : Array (Maybe (Can.Type Name)), nodeVars : Array (Maybe IO.Variable), solverState : { descriptors : Array IO.Descriptor, pointInfo : Array IO.PointInfo, weights : Array Int }, annotationVars : Data.Map.Dict String Name.Name IO.Variable })
 runWithIdsTypeCheck modul =
     ConstrainTyped.constrainWithIds modul
         |> IO.andThen
@@ -486,7 +486,7 @@ runWithIdsTypeCheck modul =
 
 {-| Convert a LocalGraph to a GlobalGraph for monomorphization.
 -}
-localGraphToGlobalGraph : TOpt.LocalGraph -> TOpt.GlobalGraph
+localGraphToGlobalGraph : TOpt.LocalGraph Name -> TOpt.GlobalGraph Name
 localGraphToGlobalGraph localGraph =
     GA.addTypedLocalGraph localGraph TOpt.emptyGlobalGraph
 
@@ -513,7 +513,7 @@ All test modules are wrapped with a synthetic `main` by `wrapWithMain`,
 so this always succeeds.
 
 -}
-monomorphizeAny : TypeEnv.GlobalTypeEnv -> TOpt.GlobalGraph -> Result String Mono.MonoGraph
+monomorphizeAny : TypeEnv.GlobalTypeEnv -> TOpt.GlobalGraph Name -> Result String Mono.MonoGraph
 monomorphizeAny globalTypeEnv globalGraph =
     Monomorphize.monomorphize "main" globalTypeEnv globalGraph
 

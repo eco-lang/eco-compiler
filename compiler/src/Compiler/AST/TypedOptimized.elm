@@ -95,8 +95,8 @@ import Utils.Bytes.Encode as BE
 
 {-| Annotations dictionary - maps definition names to their type schemes
 -}
-type alias Annotations =
-    Dict Name Can.Annotation
+type alias Annotations id =
+    Dict Name (Can.Annotation id)
 
 
 
@@ -106,8 +106,8 @@ type alias Annotations =
 {-| Metadata carried with each expression: the canonical type and an optional solver variable.
 The `tvar` field preserves the solver's union-find variable for MonoDirect monomorphization.
 -}
-type alias Meta =
-    { tipe : Can.Type
+type alias Meta id =
+    { tipe : Can.Type id
     , tvar : Maybe IO.Variable
     }
 
@@ -119,49 +119,49 @@ type alias Meta =
 
 {-| Typed optimized expression. Each variant carries its Meta (type + solver var) as the last argument.
 -}
-type Expr
-    = Bool A.Region Bool Meta
-    | Chr A.Region String Meta
-    | Str A.Region String Meta
-    | Int A.Region Int Meta
-    | Float A.Region Float Meta
-    | VarLocal Name Meta
-    | TrackedVarLocal A.Region Name Meta
-    | VarGlobal A.Region Global Meta
-    | VarEnum A.Region Global Index.ZeroBased Meta
-    | VarBox A.Region Global Meta
-    | VarCycle A.Region IO.Canonical Name Meta
-    | VarDebug A.Region Name IO.Canonical (Maybe Name) Meta
-    | VarKernel A.Region Name Name Name Meta
-    | List A.Region (List Expr) Meta
-    | Function (List ( Name, Can.Type )) Expr Meta -- params with types, body, function type
-    | TrackedFunction (List ( A.Located Name, Can.Type )) Expr Meta
-    | Call A.Region Expr (List Expr) Meta
-    | TailCall Name (List ( Name, Expr )) Meta
-    | If (List ( Expr, Expr )) Expr Meta
-    | Let Def Expr Meta
-    | Destruct Destructor Expr Meta
-    | Case Name Name (Decider Choice) (List ( Int, Expr )) Meta
-    | Accessor A.Region Name Meta
-    | Access Expr A.Region Name Meta
-    | Update A.Region Expr (Data.Map.Dict String (A.Located Name) Expr) Meta
-    | Record (Dict Name Expr) Meta
-    | TrackedRecord A.Region (Data.Map.Dict String (A.Located Name) Expr) Meta
-    | Unit Meta
-    | Tuple A.Region Expr Expr (List Expr) Meta
-    | Shader Shader.Source (EverySet String Name) (EverySet String Name) Meta
+type Expr id
+    = Bool A.Region Bool (Meta id)
+    | Chr A.Region String (Meta id)
+    | Str A.Region String (Meta id)
+    | Int A.Region Int (Meta id)
+    | Float A.Region Float (Meta id)
+    | VarLocal Name (Meta id)
+    | TrackedVarLocal A.Region Name (Meta id)
+    | VarGlobal A.Region Global (Meta id)
+    | VarEnum A.Region Global Index.ZeroBased (Meta id)
+    | VarBox A.Region Global (Meta id)
+    | VarCycle A.Region IO.Canonical Name (Meta id)
+    | VarDebug A.Region Name IO.Canonical (Maybe Name) (Meta id)
+    | VarKernel A.Region Name Name Name (Meta id)
+    | List A.Region (List (Expr id)) (Meta id)
+    | Function (List ( Name, Can.Type id )) (Expr id) (Meta id) -- params with types, body, function type
+    | TrackedFunction (List ( A.Located Name, Can.Type id )) (Expr id) (Meta id)
+    | Call A.Region (Expr id) (List (Expr id)) (Meta id)
+    | TailCall Name (List ( Name, Expr id )) (Meta id)
+    | If (List ( Expr id, Expr id )) (Expr id) (Meta id)
+    | Let (Def id) (Expr id) (Meta id)
+    | Destruct (Destructor id) (Expr id) (Meta id)
+    | Case Name Name (Decider (Choice id)) (List ( Int, Expr id )) (Meta id)
+    | Accessor A.Region Name (Meta id)
+    | Access (Expr id) A.Region Name (Meta id)
+    | Update A.Region (Expr id) (Data.Map.Dict String (A.Located Name) (Expr id)) (Meta id)
+    | Record (Dict Name (Expr id)) (Meta id)
+    | TrackedRecord A.Region (Data.Map.Dict String (A.Located Name) (Expr id)) (Meta id)
+    | Unit (Meta id)
+    | Tuple A.Region (Expr id) (Expr id) (List (Expr id)) (Meta id)
+    | Shader Shader.Source (EverySet String Name) (EverySet String Name) (Meta id)
 
 
 {-| Extract the type annotation from any expression.
 -}
-typeOf : Expr -> Can.Type
+typeOf : Expr id -> Can.Type id
 typeOf expr =
     (metaOf expr).tipe
 
 
 {-| Extract the Meta (type + solver var) from any expression.
 -}
-metaOf : Expr -> Meta
+metaOf : Expr id -> Meta id
 metaOf expr =
     case expr of
         Bool _ _ meta ->
@@ -257,7 +257,7 @@ metaOf expr =
 
 {-| Extract the solver variable from any expression (if available).
 -}
-tvarOf : Expr -> Maybe IO.Variable
+tvarOf : Expr id -> Maybe IO.Variable
 tvarOf expr =
     (metaOf expr).tvar
 
@@ -303,15 +303,15 @@ toKernelGlobal shortName =
 
 {-| A local definition, either a simple value or a tail-recursive function.
 -}
-type Def
-    = Def A.Region Name Expr Can.Type -- name, body, type of the definition
-    | TailDef A.Region Name (List ( A.Located Name, Can.Type )) Expr Can.Type (Maybe IO.Variable) -- name, typed args, body, type of the definition, tvar
+type Def id
+    = Def A.Region Name (Expr id) (Can.Type id) -- name, body, type of the definition
+    | TailDef A.Region Name (List ( A.Located Name, Can.Type id )) (Expr id) (Can.Type id) (Maybe IO.Variable) -- name, typed args, body, type of the definition, tvar
 
 
 {-| Destructuring pattern that extracts a value from a data structure.
 -}
-type Destructor
-    = Destructor Name Path Meta -- name, path, meta (type + optional tvar)
+type Destructor id
+    = Destructor Name Path (Meta id) -- name, path, meta (type + optional tvar)
 
 
 
@@ -353,8 +353,8 @@ type Decider a
 
 {-| Represents the action taken when a pattern match succeeds.
 -}
-type Choice
-    = Inline Expr
+type Choice id
+    = Inline (Expr id)
     | Jump Int
 
 
@@ -364,8 +364,8 @@ type Choice
 
 {-| A graph of all top-level definitions across multiple modules.
 -}
-type GlobalGraph
-    = GlobalGraph (Data.Map.Dict (List String) Global Node) (Dict Name Int) Annotations
+type GlobalGraph id
+    = GlobalGraph (Data.Map.Dict (List String) Global (Node id)) (Dict Name Int) (Annotations id)
 
 
 
@@ -374,18 +374,18 @@ type GlobalGraph
 
 {-| Data structure for a single module's dependency graph.
 -}
-type alias LocalGraphData =
-    { main : Maybe Main
-    , nodes : Data.Map.Dict (List String) Global Node
+type alias LocalGraphData id =
+    { main : Maybe (Main id)
+    , nodes : Data.Map.Dict (List String) Global (Node id)
     , fields : Dict Name Int
-    , annotations : Annotations
+    , annotations : Annotations id
     }
 
 
 {-| A graph of top-level definitions for a single module.
 -}
-type LocalGraph
-    = LocalGraph LocalGraphData
+type LocalGraph id
+    = LocalGraph (LocalGraphData id)
 
 
 
@@ -394,25 +394,25 @@ type LocalGraph
 
 {-| Information about the main entry point of an Elm program.
 -}
-type Main
+type Main id
     = Static
-    | Dynamic Can.Type Expr
+    | Dynamic (Can.Type id) (Expr id)
 
 
 {-| A node in the dependency graph representing a top-level definition.
 -}
-type Node
-    = Define Expr (EverySet (List String) Global) Meta -- body, deps, meta
-    | TrackedDefine A.Region Expr (EverySet (List String) Global) Meta
-    | Ctor Index.ZeroBased Int Can.Type -- index, arity, constructor type
-    | Enum Index.ZeroBased Can.Type
-    | Box Can.Type
+type Node id
+    = Define (Expr id) (EverySet (List String) Global) (Meta id) -- body, deps, meta
+    | TrackedDefine A.Region (Expr id) (EverySet (List String) Global) (Meta id)
+    | Ctor Index.ZeroBased Int (Can.Type id) -- index, arity, constructor type
+    | Enum Index.ZeroBased (Can.Type id)
+    | Box (Can.Type id)
     | Link Global
-    | Cycle (List Name) (List ( Name, Expr )) (List Def) (EverySet (List String) Global)
+    | Cycle (List Name) (List ( Name, Expr id )) (List (Def id)) (EverySet (List String) Global)
     | Manager EffectsType
     | Kernel (List K.Chunk) (EverySet (List String) Global)
-    | PortIncoming Expr (EverySet (List String) Global) Meta -- decoder expr, deps, port meta
-    | PortOutgoing Expr (EverySet (List String) Global) Meta -- encoder expr, deps, port meta
+    | PortIncoming (Expr id) (EverySet (List String) Global) (Meta id) -- decoder expr, deps, port meta
+    | PortOutgoing (Expr id) (EverySet (List String) Global) (Meta id) -- encoder expr, deps, port meta
 
 
 {-| The type of effects manager (commands, subscriptions, or both).
@@ -429,7 +429,7 @@ type EffectsType
 
 {-| Create an empty global graph (alias for `empty`).
 -}
-emptyGlobalGraph : GlobalGraph
+emptyGlobalGraph : GlobalGraph id
 emptyGlobalGraph =
     GlobalGraph Data.Map.empty Dict.empty Dict.empty
 
@@ -440,7 +440,7 @@ emptyGlobalGraph =
 
 {-| Encode a global graph to binary format.
 -}
-globalGraphEncoder : GlobalGraph -> Bytes.Encode.Encoder
+globalGraphEncoder : GlobalGraph Name -> Bytes.Encode.Encoder
 globalGraphEncoder (GlobalGraph nodes fields annotations) =
     Bytes.Encode.sequence
         [ BE.assocListDict compareGlobal globalEncoder nodeEncoder nodes
@@ -451,7 +451,7 @@ globalGraphEncoder (GlobalGraph nodes fields annotations) =
 
 {-| Decode a global graph from binary format.
 -}
-globalGraphDecoder : Bytes.Decode.Decoder GlobalGraph
+globalGraphDecoder : Bytes.Decode.Decoder (GlobalGraph Name)
 globalGraphDecoder =
     Bytes.Decode.map3 GlobalGraph
         (BD.assocListDict toComparableGlobal globalDecoder nodeDecoder)
@@ -461,7 +461,7 @@ globalGraphDecoder =
 
 {-| Encode a local graph to binary format.
 -}
-localGraphEncoder : LocalGraph -> Bytes.Encode.Encoder
+localGraphEncoder : LocalGraph Name -> Bytes.Encode.Encoder
 localGraphEncoder (LocalGraph data) =
     Bytes.Encode.sequence
         [ BE.maybe mainEncoder data.main
@@ -473,7 +473,7 @@ localGraphEncoder (LocalGraph data) =
 
 {-| Decode a local graph from binary format.
 -}
-localGraphDecoder : Bytes.Decode.Decoder LocalGraph
+localGraphDecoder : Bytes.Decode.Decoder (LocalGraph Name)
 localGraphDecoder =
     Bytes.Decode.map4
         (\main nodes fields annotations ->
@@ -485,7 +485,7 @@ localGraphDecoder =
         (BD.stdDict BD.string Can.annotationDecoder)
 
 
-mainEncoder : Main -> Bytes.Encode.Encoder
+mainEncoder : Main Name -> Bytes.Encode.Encoder
 mainEncoder main_ =
     case main_ of
         Static ->
@@ -499,7 +499,7 @@ mainEncoder main_ =
                 ]
 
 
-mainDecoder : Bytes.Decode.Decoder Main
+mainDecoder : Bytes.Decode.Decoder (Main Name)
 mainDecoder =
     Bytes.Decode.unsignedInt8
         |> Bytes.Decode.andThen
@@ -533,17 +533,17 @@ globalDecoder =
         BD.string
 
 
-metaEncoder : Meta -> Bytes.Encode.Encoder
+metaEncoder : Meta Name -> Bytes.Encode.Encoder
 metaEncoder meta =
     Can.typeEncoder meta.tipe
 
 
-metaDecoder : Bytes.Decode.Decoder Meta
+metaDecoder : Bytes.Decode.Decoder (Meta Name)
 metaDecoder =
     Bytes.Decode.map (\t -> { tipe = t, tvar = Nothing }) Can.typeDecoder
 
 
-nodeEncoder : Node -> Bytes.Encode.Encoder
+nodeEncoder : Node Name -> Bytes.Encode.Encoder
 nodeEncoder node =
     case node of
         Define expr deps meta ->
@@ -629,7 +629,7 @@ nodeEncoder node =
                 ]
 
 
-nodeDecoder : Bytes.Decode.Decoder Node
+nodeDecoder : Bytes.Decode.Decoder (Node Name)
 nodeDecoder =
     Bytes.Decode.unsignedInt8
         |> Bytes.Decode.andThen
@@ -697,7 +697,7 @@ nodeDecoder =
             )
 
 
-typedLocatedNameEncoder : ( A.Located Name, Can.Type ) -> Bytes.Encode.Encoder
+typedLocatedNameEncoder : ( A.Located Name, Can.Type Name ) -> Bytes.Encode.Encoder
 typedLocatedNameEncoder ( locName, tipe ) =
     Bytes.Encode.sequence
         [ A.locatedEncoder BE.string locName
@@ -705,14 +705,14 @@ typedLocatedNameEncoder ( locName, tipe ) =
         ]
 
 
-typedLocatedNameDecoder : Bytes.Decode.Decoder ( A.Located Name, Can.Type )
+typedLocatedNameDecoder : Bytes.Decode.Decoder ( A.Located Name, Can.Type Name )
 typedLocatedNameDecoder =
     Bytes.Decode.map2 Tuple.pair
         (A.locatedDecoder BD.string)
         Can.typeDecoder
 
 
-typedNameEncoder : ( Name, Can.Type ) -> Bytes.Encode.Encoder
+typedNameEncoder : ( Name, Can.Type Name ) -> Bytes.Encode.Encoder
 typedNameEncoder ( name, tipe ) =
     Bytes.Encode.sequence
         [ BE.string name
@@ -720,14 +720,14 @@ typedNameEncoder ( name, tipe ) =
         ]
 
 
-typedNameDecoder : Bytes.Decode.Decoder ( Name, Can.Type )
+typedNameDecoder : Bytes.Decode.Decoder ( Name, Can.Type Name )
 typedNameDecoder =
     Bytes.Decode.map2 Tuple.pair
         BD.string
         Can.typeDecoder
 
 
-exprEncoder : Expr -> Bytes.Encode.Encoder
+exprEncoder : Expr Name -> Bytes.Encode.Encoder
 exprEncoder expr =
     case expr of
         Bool region value meta ->
@@ -981,7 +981,7 @@ exprEncoder expr =
                 ]
 
 
-exprDecoder : Bytes.Decode.Decoder Expr
+exprDecoder : Bytes.Decode.Decoder (Expr Name)
 exprDecoder =
     Bytes.Decode.unsignedInt8
         |> Bytes.Decode.andThen
@@ -1181,7 +1181,7 @@ exprDecoder =
             )
 
 
-defEncoder : Def -> Bytes.Encode.Encoder
+defEncoder : Def Name -> Bytes.Encode.Encoder
 defEncoder def =
     case def of
         Def region name expr tipe ->
@@ -1213,7 +1213,7 @@ defEncoder def =
                 ]
 
 
-defDecoder : Bytes.Decode.Decoder Def
+defDecoder : Bytes.Decode.Decoder (Def Name)
 defDecoder =
     Bytes.Decode.unsignedInt8
         |> Bytes.Decode.andThen
@@ -1253,7 +1253,7 @@ defDecoder =
             )
 
 
-destructorEncoder : Destructor -> Bytes.Encode.Encoder
+destructorEncoder : Destructor Name -> Bytes.Encode.Encoder
 destructorEncoder (Destructor name path meta) =
     Bytes.Encode.sequence
         [ BE.string name
@@ -1262,7 +1262,7 @@ destructorEncoder (Destructor name path meta) =
         ]
 
 
-destructorDecoder : Bytes.Decode.Decoder Destructor
+destructorDecoder : Bytes.Decode.Decoder (Destructor Name)
 destructorDecoder =
     Bytes.Decode.map3 Destructor
         BD.string
@@ -1322,7 +1322,7 @@ deciderDecoder decoder =
             )
 
 
-choiceEncoder : Choice -> Bytes.Encode.Encoder
+choiceEncoder : Choice Name -> Bytes.Encode.Encoder
 choiceEncoder choice =
     case choice of
         Inline value ->
@@ -1338,7 +1338,7 @@ choiceEncoder choice =
                 ]
 
 
-choiceDecoder : Bytes.Decode.Decoder Choice
+choiceDecoder : Bytes.Decode.Decoder (Choice Name)
 choiceDecoder =
     Bytes.Decode.unsignedInt8
         |> Bytes.Decode.andThen

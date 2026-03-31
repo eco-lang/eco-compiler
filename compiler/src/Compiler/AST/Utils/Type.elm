@@ -33,7 +33,7 @@ import Dict exposing (Dict)
 {-| Flatten a function type into a list of its argument types followed by the return type.
 For example, `(a -> b -> c)` becomes `[a, b, c]`.
 -}
-delambda : Type -> List Type
+delambda : Type Name -> List (Type Name)
 delambda tipe =
     case tipe of
         TLambda arg result ->
@@ -50,7 +50,7 @@ delambda tipe =
 {-| Expand a type alias by substituting its type parameters with concrete types.
 Takes a list of (parameter name, concrete type) pairs and the alias definition to expand.
 -}
-dealias : List ( Name, Type ) -> AliasType -> Type
+dealias : List ( Name, Type Name ) -> AliasType Name -> Type Name
 dealias args aliasType =
     case aliasType of
         Holey tipe ->
@@ -60,7 +60,7 @@ dealias args aliasType =
             tipe
 
 
-dealiasHelp : Dict Name Type -> Type -> Type
+dealiasHelp : Dict Name (Type Name) -> Type Name -> Type Name
 dealiasHelp typeTable tipe =
     case tipe of
         TLambda a b ->
@@ -91,7 +91,7 @@ dealiasHelp typeTable tipe =
                 (List.map (dealiasHelp typeTable) cs)
 
 
-dealiasField : Dict Name Type -> FieldType -> FieldType
+dealiasField : Dict Name (Type Name) -> FieldType Name -> FieldType Name
 dealiasField typeTable (FieldType index tipe) =
     FieldType index (dealiasHelp typeTable tipe)
 
@@ -102,7 +102,7 @@ dealiasField typeTable (FieldType index tipe) =
 
 {-| Recursively expand all type aliases in a type, replacing them with their concrete definitions.
 -}
-deepDealias : Type -> Type
+deepDealias : Type Name -> Type Name
 deepDealias tipe =
     case tipe of
         TLambda a b ->
@@ -127,7 +127,7 @@ deepDealias tipe =
             TTuple (deepDealias a) (deepDealias b) (List.map deepDealias cs)
 
 
-deepDealiasField : FieldType -> FieldType
+deepDealiasField : FieldType Name -> FieldType Name
 deepDealiasField (FieldType index tipe) =
     FieldType index (deepDealias tipe)
 
@@ -139,7 +139,7 @@ deepDealiasField (FieldType index tipe) =
 {-| Expand type aliases at the top level only, iterating until no more aliases remain.
 Does not recurse into nested types.
 -}
-iteratedDealias : Type -> Type
+iteratedDealias : Type Name -> Type Name
 iteratedDealias tipe =
     case tipe of
         TAlias _ _ args realType ->

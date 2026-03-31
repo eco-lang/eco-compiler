@@ -25,6 +25,7 @@ import Bytes.Decode
 import Bytes.Encode
 import Compiler.AST.TypeEnv as TypeEnv
 import Compiler.AST.TypedOptimized as TOpt
+import Compiler.Data.Name exposing (Name)
 
 
 
@@ -34,7 +35,7 @@ import Compiler.AST.TypedOptimized as TOpt
 {-| Combined artifact for a single module containing typed IR and type definitions.
 -}
 type alias TypedModuleArtifact =
-    { typedGraph : TOpt.LocalGraph
+    { typedGraph : TOpt.LocalGraph Name
     , typeEnv : TypeEnv.ModuleTypeEnv
     }
 

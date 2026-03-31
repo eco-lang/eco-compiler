@@ -41,7 +41,7 @@ jsArrayInterface =
 
 {-| Collect all free type variables from a canonical type.
 -}
-collectFreeVars : Can.Type -> Can.FreeVars
+collectFreeVars : Can.Type Name -> Can.FreeVars
 collectFreeVars tipe =
     case tipe of
         Can.TLambda a b ->
@@ -91,7 +91,7 @@ collectFreeVars tipe =
 
 {-| Helper to create a value annotation.
 -}
-mkAnnotation : Can.Type -> Can.Annotation
+mkAnnotation : Can.Type Name -> Can.Annotation Name
 mkAnnotation tipe =
     Can.Forall (collectFreeVars tipe) tipe
 
@@ -102,34 +102,34 @@ mkAnnotation tipe =
 -- ============================================================================
 
 
-aVar : Can.Type
+aVar : Can.Type Name
 aVar =
     Can.TVar "a"
 
 
-bVar : Can.Type
+bVar : Can.Type Name
 bVar =
     Can.TVar "b"
 
 
-intType : Can.Type
+intType : Can.Type Name
 intType =
     Can.TType ModuleName.basics "Int" []
 
 
 {-| JsArray a
 -}
-jsArrayA : Can.Type
+jsArrayA : Can.Type Name
 jsArrayA =
     Can.TType jsArrayModuleName "JsArray" [ aVar ]
 
 
-jsArrayB : Can.Type
+jsArrayB : Can.Type Name
 jsArrayB =
     Can.TType jsArrayModuleName "JsArray" [ bVar ]
 
 
-listA : Can.Type
+listA : Can.Type Name
 listA =
     Can.TType ModuleName.list "List" [ aVar ]
 
@@ -177,7 +177,7 @@ jsArrayUnions =
 
 {-| JsArray function values.
 -}
-jsArrayValues : Dict Name Can.Annotation
+jsArrayValues : Dict Name (Can.Annotation Name)
 jsArrayValues =
     Dict.fromList
         [ -- empty : JsArray a

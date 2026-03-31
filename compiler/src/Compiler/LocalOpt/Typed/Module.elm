@@ -25,7 +25,7 @@ import Compiler.AST.TypedCanonical as TCan exposing (ExprTypes, ExprVars)
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.AST.Utils.Type as Type
 import Compiler.Canonicalize.Effects as Effects
-import Compiler.Data.Name as Name
+import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.LocalOpt.Typed.Expression as Expr
 import Compiler.LocalOpt.Typed.Names as Names
@@ -49,7 +49,7 @@ import Utils.Crash
 
 {-| Peel n argument types from a function type to get the result type.
 -}
-peelFunctionType : Int -> Can.Type -> Can.Type
+peelFunctionType : Int -> Can.Type Name -> Can.Type Name
 peelFunctionType n tipe =
     if n <= 0 then
         tipe
@@ -76,7 +76,7 @@ type alias MResult i w a =
 {-| Type annotations for top-level definitions, mapping names to their canonical type annotations.
 -}
 type alias Annotations =
-    Dict Name.Name Can.Annotation
+    Dict Name.Name (Can.Annotation Name)
 
 
 {-| Optimize a TypedCanonical module to a typed optimized local graph.
@@ -88,7 +88,7 @@ for converting subexpressions, and produces a TypedOptimized.LocalGraph.
 The kernelEnv is computed by the PostSolve phase and passed in from the caller.
 
 -}
-optimizeTyped : Annotations -> ExprTypes -> ExprVars -> KernelTypes.KernelTypeEnv -> Data.Map.Dict String Name.Name IO.Variable -> TCan.Module -> MResult i (List W.Warning) TOpt.LocalGraph
+optimizeTyped : Annotations -> ExprTypes -> ExprVars -> KernelTypes.KernelTypeEnv -> Data.Map.Dict String Name.Name IO.Variable -> TCan.Module -> MResult i (List W.Warning) (TOpt.LocalGraph Name)
 optimizeTyped annotations exprTypes exprVars kernelEnv annotationVars (TCan.Module tData) =
     TOpt.LocalGraph
         { main = Nothing
@@ -108,10 +108,10 @@ optimizeTyped annotations exprTypes exprVars kernelEnv annotationVars (TCan.Modu
 
 
 type alias TypedNodes =
-    Data.Map.Dict (List String) TOpt.Global TOpt.Node
+    Data.Map.Dict (List String) TOpt.Global (TOpt.Node Name)
 
 
-addUnions : IO.Canonical -> Annotations -> Dict Name.Name Can.Union -> TOpt.LocalGraph -> TOpt.LocalGraph
+addUnions : IO.Canonical -> Annotations -> Dict Name.Name Can.Union -> TOpt.LocalGraph Name -> TOpt.LocalGraph Name
 addUnions home _ unions (TOpt.LocalGraph data) =
     TOpt.LocalGraph { data | nodes = Dict.foldr (addUnion home) data.nodes unions }
 
@@ -125,15 +125,15 @@ addCtorNode : IO.Canonical -> Name.Name -> Can.UnionData -> Can.Ctor -> TypedNod
 addCtorNode home typeName unionData (Can.Ctor c) nodes =
     let
         -- Build the constructor type: arg1 -> arg2 -> ... -> UnionType
-        resultType : Can.Type
+        resultType : Can.Type Name
         resultType =
             Can.TType home typeName (List.map Can.TVar unionData.vars)
 
-        ctorType : Can.Type
+        ctorType : Can.Type Name
         ctorType =
             List.foldr Can.TLambda resultType c.args
 
-        node : TOpt.Node
+        node : TOpt.Node Name
         node =
             case unionData.opts of
                 Can.Normal ->
@@ -152,22 +152,22 @@ addCtorNode home typeName unionData (Can.Ctor c) nodes =
 -- ====== Type Aliases ======
 
 
-addAliases : IO.Canonical -> Annotations -> Dict Name.Name Can.Alias -> TOpt.LocalGraph -> TOpt.LocalGraph
+addAliases : IO.Canonical -> Annotations -> Dict Name.Name Can.Alias -> TOpt.LocalGraph Name -> TOpt.LocalGraph Name
 addAliases home annotations aliases graph =
     Dict.foldr (addAlias home annotations) graph aliases
 
 
-addAlias : IO.Canonical -> Annotations -> Name.Name -> Can.Alias -> TOpt.LocalGraph -> TOpt.LocalGraph
+addAlias : IO.Canonical -> Annotations -> Name.Name -> Can.Alias -> TOpt.LocalGraph Name -> TOpt.LocalGraph Name
 addAlias home _ name (Can.Alias _ tipe) ((TOpt.LocalGraph data) as graph) =
     case tipe of
         Can.TRecord fields Nothing ->
             let
                 -- Build the constructor function type: field1Type -> field2Type -> ... -> recordType
-                fieldList : List ( Name.Name, Can.Type )
+                fieldList : List ( Name.Name, Can.Type Name )
                 fieldList =
                     Can.fieldsToList fields
 
-                funcType : Can.Type
+                funcType : Can.Type Name
                 funcType =
                     List.foldr
                         (\( _, fieldType ) acc -> Can.TLambda fieldType acc)
@@ -175,12 +175,12 @@ addAlias home _ name (Can.Alias _ tipe) ((TOpt.LocalGraph data) as graph) =
                         fieldList
 
                 -- Build argument names with types (without A.Located wrapper for Function)
-                argNamesWithTypes : List ( Name.Name, Can.Type )
+                argNamesWithTypes : List ( Name.Name, Can.Type Name )
                 argNamesWithTypes =
                     fieldList
 
                 -- Build record body: { field1 = field1, field2 = field2, ... }
-                bodyRecord : TOpt.Expr
+                bodyRecord : TOpt.Expr Name
                 bodyRecord =
                     TOpt.Record
                         (Dict.map
@@ -191,11 +191,11 @@ addAlias home _ name (Can.Alias _ tipe) ((TOpt.LocalGraph data) as graph) =
                         )
                         { tipe = tipe, tvar = Nothing }
 
-                function : TOpt.Expr
+                function : TOpt.Expr Name
                 function =
                     TOpt.Function argNamesWithTypes bodyRecord { tipe = funcType, tvar = Nothing }
 
-                node : TOpt.Node
+                node : TOpt.Node Name
                 node =
                     TOpt.Define function EverySet.empty { tipe = funcType, tvar = Nothing }
             in
@@ -211,7 +211,7 @@ addAlias home _ name (Can.Alias _ tipe) ((TOpt.LocalGraph data) as graph) =
             graph
 
 
-addRecordCtorField : Name.Name -> Can.FieldType -> Dict Name.Name Int -> Dict Name.Name Int
+addRecordCtorField : Name.Name -> Can.FieldType Name -> Dict Name.Name Int -> Dict Name.Name Int
 addRecordCtorField name _ fields =
     Dict.update name (\v -> Just (Maybe.withDefault 0 v + 1)) fields
 
@@ -220,7 +220,7 @@ addRecordCtorField name _ fields =
 -- ====== Effects ======
 
 
-addEffects : IO.Canonical -> Annotations -> Can.Effects -> TOpt.LocalGraph -> TOpt.LocalGraph
+addEffects : IO.Canonical -> Annotations -> Can.Effects -> TOpt.LocalGraph Name -> TOpt.LocalGraph Name
 addEffects home annotations effects ((TOpt.LocalGraph data) as graph) =
     case effects of
         Can.NoEffects ->
@@ -243,7 +243,7 @@ addEffects home annotations effects ((TOpt.LocalGraph data) as graph) =
                 sub =
                     TOpt.Global home "subscription"
 
-                link : TOpt.Node
+                link : TOpt.Node Name
                 link =
                     TOpt.Link fx
 
@@ -266,12 +266,12 @@ addEffects home annotations effects ((TOpt.LocalGraph data) as graph) =
             TOpt.LocalGraph { data | nodes = newNodes }
 
 
-addPort : IO.Canonical -> Annotations -> Name.Name -> Can.Port -> TOpt.LocalGraph -> TOpt.LocalGraph
+addPort : IO.Canonical -> Annotations -> Name.Name -> Can.Port -> TOpt.LocalGraph Name -> TOpt.LocalGraph Name
 addPort home annotations name port_ graph =
     case port_ of
         Can.Incoming { payload } ->
             let
-                portType : Can.Type
+                portType : Can.Type Name
                 portType =
                     case Dict.get name annotations of
                         Just (Can.Forall _ t) ->
@@ -283,7 +283,7 @@ addPort home annotations name port_ graph =
                 ( deps, fields, decoder ) =
                     Names.run (Port.toDecoder payload)
 
-                node : TOpt.Node
+                node : TOpt.Node Name
                 node =
                     TOpt.PortIncoming decoder deps { tipe = portType, tvar = Nothing }
             in
@@ -291,7 +291,7 @@ addPort home annotations name port_ graph =
 
         Can.Outgoing { payload } ->
             let
-                portType : Can.Type
+                portType : Can.Type Name
                 portType =
                     case Dict.get name annotations of
                         Just (Can.Forall _ t) ->
@@ -303,7 +303,7 @@ addPort home annotations name port_ graph =
                 ( deps, fields, encoder ) =
                     Names.run (Port.toEncoder payload)
 
-                node : TOpt.Node
+                node : TOpt.Node Name
                 node =
                     TOpt.PortOutgoing encoder deps { tipe = portType, tvar = Nothing }
             in
@@ -314,7 +314,7 @@ addPort home annotations name port_ graph =
 -- ====== Graph Helper ======
 
 
-addToGraph : TOpt.Global -> TOpt.Node -> Data.Map.Dict String Name.Name Int -> TOpt.LocalGraph -> TOpt.LocalGraph
+addToGraph : TOpt.Global -> TOpt.Node Name -> Data.Map.Dict String Name.Name Int -> TOpt.LocalGraph Name -> TOpt.LocalGraph Name
 addToGraph name node fields (TOpt.LocalGraph data) =
     TOpt.LocalGraph
         { data
@@ -327,12 +327,12 @@ addToGraph name node fields (TOpt.LocalGraph data) =
 -- ====== Value Declarations ======
 
 
-addDecls : IO.Canonical -> Annotations -> ExprTypes -> ExprVars -> KernelTypes.KernelTypeEnv -> Data.Map.Dict String Name.Name IO.Variable -> TCan.Decls -> TOpt.LocalGraph -> MResult i (List W.Warning) TOpt.LocalGraph
+addDecls : IO.Canonical -> Annotations -> ExprTypes -> ExprVars -> KernelTypes.KernelTypeEnv -> Data.Map.Dict String Name.Name IO.Variable -> TCan.Decls -> TOpt.LocalGraph Name -> MResult i (List W.Warning) (TOpt.LocalGraph Name)
 addDecls home annotations exprTypes exprVars kernelEnv annotationVars decls graph =
     ReportingResult.loop (addDeclsHelp home annotations exprTypes exprVars kernelEnv annotationVars) ( decls, graph )
 
 
-addDeclsHelp : IO.Canonical -> Annotations -> ExprTypes -> ExprVars -> KernelTypes.KernelTypeEnv -> Data.Map.Dict String Name.Name IO.Variable -> ( TCan.Decls, TOpt.LocalGraph ) -> MResult i (List W.Warning) (ReportingResult.Step ( TCan.Decls, TOpt.LocalGraph ) TOpt.LocalGraph)
+addDeclsHelp : IO.Canonical -> Annotations -> ExprTypes -> ExprVars -> KernelTypes.KernelTypeEnv -> Data.Map.Dict String Name.Name IO.Variable -> ( TCan.Decls, TOpt.LocalGraph Name ) -> MResult i (List W.Warning) (ReportingResult.Step ( TCan.Decls, TOpt.LocalGraph Name ) (TOpt.LocalGraph Name))
 addDeclsHelp home annotations exprTypes exprVars kernelEnv annotationVars ( decls, graph ) =
     case decls of
         TCan.Declare def subDecls ->
@@ -393,7 +393,7 @@ defToName def =
 -- ====== Single Definitions ======
 
 
-addDef : IO.Canonical -> Annotations -> ExprTypes -> ExprVars -> KernelTypes.KernelTypeEnv -> Data.Map.Dict String Name.Name IO.Variable -> TCan.Def -> TOpt.LocalGraph -> MResult i (List W.Warning) TOpt.LocalGraph
+addDef : IO.Canonical -> Annotations -> ExprTypes -> ExprVars -> KernelTypes.KernelTypeEnv -> Data.Map.Dict String Name.Name IO.Variable -> TCan.Def -> TOpt.LocalGraph Name -> MResult i (List W.Warning) (TOpt.LocalGraph Name)
 addDef home annotations exprTypes exprVars kernelEnv annotationVars def graph =
     case def of
         TCan.Def (A.At region name) args body ->
@@ -408,7 +408,7 @@ addDef home annotations exprTypes exprVars kernelEnv annotationVars def graph =
             addDefHelp region annotations exprTypes exprVars kernelEnv annotationVars home name (List.map Tuple.first typedArgs) body graph
 
 
-addDefHelp : A.Region -> Annotations -> ExprTypes -> ExprVars -> KernelTypes.KernelTypeEnv -> Data.Map.Dict String Name.Name IO.Variable -> IO.Canonical -> Name.Name -> List Can.Pattern -> TCan.Expr -> TOpt.LocalGraph -> MResult i (List W.Warning) TOpt.LocalGraph
+addDefHelp : A.Region -> Annotations -> ExprTypes -> ExprVars -> KernelTypes.KernelTypeEnv -> Data.Map.Dict String Name.Name IO.Variable -> IO.Canonical -> Name.Name -> List Can.Pattern -> TCan.Expr -> TOpt.LocalGraph Name -> MResult i (List W.Warning) (TOpt.LocalGraph Name)
 addDefHelp region annotations exprTypes exprVars kernelEnv annotationVars home name args body ((TOpt.LocalGraph data) as graph) =
     if name /= Name.main_ then
         ReportingResult.ok (addDefNode home annotations exprTypes exprVars kernelEnv annotationVars region name args body EverySet.empty graph)
@@ -418,7 +418,7 @@ addDefHelp region annotations exprTypes exprVars kernelEnv annotationVars home n
             (Can.Forall _ tipe) =
                 findAnnotation name annotations
 
-            addMain : ( EverySet (List String) TOpt.Global, Data.Map.Dict String Name.Name Int, TOpt.Main ) -> TOpt.LocalGraph
+            addMain : ( EverySet (List String) TOpt.Global, Data.Map.Dict String Name.Name Int, TOpt.Main Name ) -> TOpt.LocalGraph Name
             addMain ( deps, fields, main ) =
                 TOpt.LocalGraph
                     { data
@@ -451,11 +451,11 @@ addDefHelp region annotations exprTypes exprVars kernelEnv annotationVars home n
                 ReportingResult.throw (E.BadType region tipe)
 
 
-addDefNode : IO.Canonical -> Annotations -> ExprTypes -> ExprVars -> KernelTypes.KernelTypeEnv -> Data.Map.Dict String Name.Name IO.Variable -> A.Region -> Name.Name -> List Can.Pattern -> TCan.Expr -> EverySet (List String) TOpt.Global -> TOpt.LocalGraph -> TOpt.LocalGraph
+addDefNode : IO.Canonical -> Annotations -> ExprTypes -> ExprVars -> KernelTypes.KernelTypeEnv -> Data.Map.Dict String Name.Name IO.Variable -> A.Region -> Name.Name -> List Can.Pattern -> TCan.Expr -> EverySet (List String) TOpt.Global -> TOpt.LocalGraph Name -> TOpt.LocalGraph Name
 addDefNode home annotations exprTypes exprVars kernelEnv annotationVars region name args body mainDeps graph =
     let
         -- Get the def type from annotations
-        defType : Can.Type
+        defType : Can.Type Name
         defType =
             case Dict.get name annotations of
                 Just (Can.Forall _ t) ->
@@ -533,7 +533,7 @@ addDefNode home annotations exprTypes exprVars kernelEnv annotationVars region n
 
 {-| Wrap an expression in a Destruct node.
 -}
-wrapDestruct : Can.Type -> TOpt.Destructor -> TOpt.Expr -> TOpt.Expr
+wrapDestruct : Can.Type Name -> TOpt.Destructor Name -> TOpt.Expr Name -> TOpt.Expr Name
 wrapDestruct bodyType destructor expr =
     TOpt.Destruct destructor expr { tipe = bodyType, tvar = TOpt.tvarOf expr }
 
@@ -544,12 +544,12 @@ wrapDestruct bodyType destructor expr =
 
 type State
     = State
-        { values : List ( Name.Name, TOpt.Expr )
-        , functions : List TOpt.Def
+        { values : List ( Name.Name, TOpt.Expr Name )
+        , functions : List (TOpt.Def Name)
         }
 
 
-addRecDefs : IO.Canonical -> Annotations -> ExprTypes -> ExprVars -> KernelTypes.KernelTypeEnv -> Data.Map.Dict String Name.Name IO.Variable -> List TCan.Def -> TOpt.LocalGraph -> TOpt.LocalGraph
+addRecDefs : IO.Canonical -> Annotations -> ExprTypes -> ExprVars -> KernelTypes.KernelTypeEnv -> Data.Map.Dict String Name.Name IO.Variable -> List TCan.Def -> TOpt.LocalGraph Name -> TOpt.LocalGraph Name
 addRecDefs home annotations exprTypes exprVars kernelEnv annotationVars defs (TOpt.LocalGraph data) =
     let
         names : List Name.Name
@@ -613,7 +613,7 @@ addCycleName def names =
                 names
 
 
-addLink : IO.Canonical -> TOpt.Node -> TCan.Def -> TypedNodes -> TypedNodes
+addLink : IO.Canonical -> TOpt.Node Name -> TCan.Def -> TypedNodes -> TypedNodes
 addLink home link def links =
     case def of
         TCan.Def (A.At _ name) _ _ ->
@@ -628,7 +628,7 @@ addRecDef home annotations exprTypes exprVars kernelEnv annotationVars cycle (St
     case def of
         TCan.Def (A.At region name) args body ->
             let
-                defType : Can.Type
+                defType : Can.Type Name
                 defType =
                     case Dict.get name annotations of
                         Just (Can.Forall _ t) ->
@@ -648,7 +648,7 @@ addRecDef home annotations exprTypes exprVars kernelEnv annotationVars cycle (St
 
         TCan.TypedDef (A.At region name) _ typedArgs body _ ->
             let
-                defType : Can.Type
+                defType : Can.Type Name
                 defType =
                     case Dict.get name annotations of
                         Just (Can.Forall _ t) ->
@@ -671,7 +671,7 @@ addRecDef home annotations exprTypes exprVars kernelEnv annotationVars cycle (St
 -- ====== Helpers ======
 
 
-findAnnotation : Name.Name -> Annotations -> Can.Annotation
+findAnnotation : Name.Name -> Annotations -> Can.Annotation Name
 findAnnotation name annotations =
     case Dict.get name annotations of
         Just ann ->

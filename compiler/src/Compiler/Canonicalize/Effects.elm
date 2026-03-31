@@ -17,7 +17,7 @@ import Compiler.AST.Source as Src
 import Compiler.AST.Utils.Type as Type
 import Compiler.Canonicalize.Environment as Env
 import Compiler.Canonicalize.Type as Type
-import Compiler.Data.Name as Name
+import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Error.Canonicalize as Error
@@ -231,7 +231,7 @@ Valid port payloads include:
 Invalid payloads include functions, type variables, and extensible records.
 
 -}
-checkPayload : Can.Type -> Result ( Can.Type, Error.InvalidPayload ) ()
+checkPayload : Can.Type Name -> Result ( Can.Type Name, Error.InvalidPayload ) ()
 checkPayload tipe =
     case tipe of
         Can.TAlias _ _ args aliasedType ->
@@ -280,7 +280,7 @@ checkPayload tipe =
                 fields
 
 
-checkPayloadTupleCs : List Can.Type -> Result ( Can.Type, Error.InvalidPayload ) ()
+checkPayloadTupleCs : List (Can.Type Name) -> Result ( Can.Type Name, Error.InvalidPayload ) ()
 checkPayloadTupleCs types =
     case types of
         [] ->
@@ -291,7 +291,7 @@ checkPayloadTupleCs types =
                 |> Result.andThen (\_ -> checkPayloadTupleCs rest)
 
 
-checkFieldPayload : Can.FieldType -> Result ( Can.Type, Error.InvalidPayload ) ()
+checkFieldPayload : Can.FieldType Name -> Result ( Can.Type Name, Error.InvalidPayload ) ()
 checkFieldPayload (Can.FieldType _ tipe) =
     checkPayload tipe
 

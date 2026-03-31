@@ -23,6 +23,7 @@ import SourceIR.Suite.StandardTestSuites as StandardTestSuites
 import Test exposing (Test)
 import TestLogic.Type.PostSolve.CompileThroughPostSolve as Compile
 import TestLogic.Type.PostSolve.PostSolveInvariantHelpers as Helpers
+import Compiler.Data.Name exposing (Name)
 
 
 {-| A violation of POST\_003.
@@ -30,7 +31,7 @@ import TestLogic.Type.PostSolve.PostSolveInvariantHelpers as Helpers
 type alias Violation =
     { nodeId : Int
     , exprKind : String
-    , postType : Can.Type
+    , postType : Can.Type Name
     , holeVarsFound : List String
     , details : String
     }
@@ -159,7 +160,7 @@ isSolverGeneratedVarName name =
 -}
 checkNoHoleVars :
     Int
-    -> Can.Type
+    -> Can.Type Name
     -> EverySet String String
     -> DataMap.Dict Int Int Helpers.ExprNode
     -> Maybe Violation
@@ -321,7 +322,7 @@ formatViolation v =
         ++ v.details
 
 
-typeToString : Can.Type -> String
+typeToString : Can.Type Name -> String
 typeToString tipe =
     case tipe of
         Can.TVar name ->

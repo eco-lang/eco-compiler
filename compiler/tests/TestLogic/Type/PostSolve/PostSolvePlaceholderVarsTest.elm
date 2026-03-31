@@ -30,6 +30,7 @@ import Test exposing (Test)
 import TestLogic.Type.PostSolve.CompileThroughPostSolve as Compile
 import TestLogic.Type.PostSolve.PostSolveInvariantHelpers as Helpers
 import TestLogic.Type.PostSolve.PostSolveNonRegressionInvariants as Invariants
+import Compiler.Data.Name exposing (Name)
 
 
 {-| A violation of POST\_009.
@@ -37,7 +38,7 @@ import TestLogic.Type.PostSolve.PostSolveNonRegressionInvariants as Invariants
 type alias Violation =
     { nodeId : Int
     , kind : String
-    , postType : Can.Type
+    , postType : Can.Type Name
     , placeholderVars : List String
     , details : String
     }
@@ -123,10 +124,10 @@ Per-node check:
 -}
 checkNoPlaceholdersInFuncPositions :
     Int
-    -> Can.Type
+    -> Can.Type Name
     -> PostSolve.NodeTypes
     -> Data.Map.Dict Int Int Helpers.ExprNode
-    -> Dict.Dict String Can.Annotation
+    -> Dict.Dict String (Can.Annotation Name)
     -> Maybe Violation
 checkNoPlaceholdersInFuncPositions nodeId postType nodeTypesPre exprNodes annotations =
     let
@@ -180,7 +181,7 @@ checkNoPlaceholdersInFuncPositions nodeId postType nodeTypesPre exprNodes annota
 including nested TLambdas.
 
 -}
-collectFuncPositionVars : Can.Type -> EverySet String String
+collectFuncPositionVars : Can.Type Name -> EverySet String String
 collectFuncPositionVars tipe =
     case tipe of
         Can.TLambda arg result ->
@@ -358,7 +359,7 @@ formatViolation v =
         ++ v.details
 
 
-typeToString : Can.Type -> String
+typeToString : Can.Type Name -> String
 typeToString tipe =
     case tipe of
         Can.TVar name ->

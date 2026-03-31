@@ -21,6 +21,7 @@ import Data.Set as Set exposing (EverySet)
 import Dict
 import Expect
 import TestLogic.TestPipeline as Pipeline
+import Compiler.Data.Name exposing (Name)
 
 
 {-| Expect type checking to detect an infinite type and report an error.
@@ -74,7 +75,7 @@ An infinite type is one where a type variable appears within its own definition,
 creating an infinite structure.
 
 -}
-collectInfiniteTypeIssues : Array.Array (Maybe Can.Type) -> List String
+collectInfiniteTypeIssues : Array.Array (Maybe (Can.Type Name)) -> List String
 collectInfiniteTypeIssues nodeTypes =
     Array.foldl
         (\maybeType ( nodeId, acc ) ->
@@ -99,7 +100,7 @@ collectInfiniteTypeIssues nodeTypes =
 We track type variables seen in the current path to detect cycles.
 
 -}
-checkForInfiniteType : String -> EverySet String String -> Can.Type -> List String
+checkForInfiniteType : String -> EverySet String String -> Can.Type Name -> List String
 checkForInfiniteType context seenVars canType =
     case canType of
         Can.TVar name ->

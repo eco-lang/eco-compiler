@@ -38,7 +38,7 @@ import Bytes.Encode
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Optimized as Opt
 import Compiler.AST.Utils.Type as Type
-import Compiler.Data.Name as Name
+import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Elm.Compiler.Type as T
 import Compiler.Elm.Interface as I
 import Compiler.Elm.ModuleName as ModuleName
@@ -58,12 +58,12 @@ import Utils.Main as Utils
 
 {-| Converts a canonical type to a simplified documentation type.
 -}
-fromType : Can.Type -> T.Type
+fromType : Can.Type Name -> T.Type
 fromType astType =
     Tuple.second (run (extract astType))
 
 
-extract : Can.Type -> Extractor T.Type
+extract : Can.Type Name -> Extractor T.Type
 extract astType =
     case astType of
         Can.TLambda arg result ->
@@ -176,7 +176,7 @@ fromDependencyInterface home di =
 
 {-| Extracts debug metadata from a message type, including all transitively referenced types.
 -}
-fromMsg : Types -> Can.Type -> T.DebugMetadata
+fromMsg : Types -> Can.Type Name -> T.DebugMetadata
 fromMsg types message =
     let
         ( msgDeps, msgType ) =

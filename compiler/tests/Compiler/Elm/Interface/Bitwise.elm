@@ -32,7 +32,7 @@ bitwiseInterface =
 
 {-| Helper to create a value annotation with no free vars.
 -}
-mkAnnotation : Can.Type -> Can.Annotation
+mkAnnotation : Can.Type Name -> Can.Annotation Name
 mkAnnotation tipe =
     Can.Forall Dict.empty tipe
 
@@ -43,21 +43,21 @@ mkAnnotation tipe =
 -- ============================================================================
 
 
-intType : Can.Type
+intType : Can.Type Name
 intType =
     Can.TType ModuleName.basics "Int" []
 
 
 {-| Int -> Int -> Int
 -}
-intBinopType : Can.Type
+intBinopType : Can.Type Name
 intBinopType =
     Can.TLambda intType (Can.TLambda intType intType)
 
 
 {-| Int -> Int
 -}
-intUnaryType : Can.Type
+intUnaryType : Can.Type Name
 intUnaryType =
     Can.TLambda intType intType
 
@@ -70,7 +70,7 @@ intUnaryType =
 
 {-| Bitwise function values.
 -}
-bitwiseValues : Dict Name Can.Annotation
+bitwiseValues : Dict Name (Can.Annotation Name)
 bitwiseValues =
     Dict.fromList
         [ -- and : Int -> Int -> Int

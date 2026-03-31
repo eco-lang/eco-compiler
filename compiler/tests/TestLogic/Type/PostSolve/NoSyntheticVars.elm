@@ -16,6 +16,7 @@ import Compiler.AST.Source as Src
 import Dict
 import Expect
 import TestLogic.TestPipeline as Pipeline
+import Compiler.Data.Name exposing (Name)
 
 
 {-| Verify that no unconstrained synthetic variables remain after PostSolve.
@@ -46,7 +47,7 @@ expectNoSyntheticVars srcModule =
 
 {-| Collect synthetic variable issues from node types.
 -}
-collectSyntheticVarIssues : Array.Array (Maybe Can.Type) -> List String
+collectSyntheticVarIssues : Array.Array (Maybe (Can.Type Name)) -> List String
 collectSyntheticVarIssues nodeTypes =
     Array.foldl
         (\maybeType ( nodeId, acc ) ->
@@ -75,7 +76,7 @@ by PostSolve. They typically have:
   - Special prefixes from the solver
 
 -}
-checkForSyntheticVars : String -> Can.Type -> List String
+checkForSyntheticVars : String -> Can.Type Name -> List String
 checkForSyntheticVars context canType =
     case canType of
         Can.TVar name ->

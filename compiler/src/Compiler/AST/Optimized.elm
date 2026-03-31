@@ -208,7 +208,7 @@ type LocalGraph
 -}
 type Main
     = Static
-    | Dynamic Can.Type Expr
+    | Dynamic (Can.Type Name) Expr
 
 
 {-| A node in the dependency graph representing a definition and its dependencies.

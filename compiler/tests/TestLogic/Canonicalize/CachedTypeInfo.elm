@@ -19,6 +19,7 @@ import Compiler.Reporting.Annotation as A
 import Dict
 import Expect
 import TestLogic.TestPipeline as Pipeline
+import Compiler.Data.Name exposing (Name)
 
 
 {-| Verify that cached type info is consistent.
@@ -53,7 +54,7 @@ Verifies that cached type annotations in the canonical AST are consistent
 with the computed annotations from type inference.
 
 -}
-collectCachedTypeIssues : Can.Module -> Dict.Dict String Can.Annotation -> List String
+collectCachedTypeIssues : Can.Module -> Dict.Dict String (Can.Annotation Name) -> List String
 collectCachedTypeIssues canonical annotations =
     -- Verify that every top-level definition has a corresponding annotation
     let
@@ -65,7 +66,7 @@ collectCachedTypeIssues canonical annotations =
 
 {-| Check that all definitions have corresponding annotations.
 -}
-checkDefsHaveAnnotations : Can.Decls -> Dict.Dict String Can.Annotation -> List String
+checkDefsHaveAnnotations : Can.Decls -> Dict.Dict String (Can.Annotation Name) -> List String
 checkDefsHaveAnnotations decls annotations =
     case decls of
         Can.Declare def rest ->
@@ -83,7 +84,7 @@ checkDefsHaveAnnotations decls annotations =
 
 {-| Check that a single definition has a corresponding annotation.
 -}
-checkDefHasAnnotation : Can.Def -> Dict.Dict String Can.Annotation -> List String
+checkDefHasAnnotation : Can.Def -> Dict.Dict String (Can.Annotation Name) -> List String
 checkDefHasAnnotation def annotations =
     case def of
         Can.Def (A.At _ name) _ _ ->

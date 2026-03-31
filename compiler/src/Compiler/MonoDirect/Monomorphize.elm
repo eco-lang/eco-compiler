@@ -37,7 +37,7 @@ monomorphizeDirect :
     Name
     -> TypeEnv.GlobalTypeEnv
     -> SolverSnapshot
-    -> TOpt.GlobalGraph
+    -> TOpt.GlobalGraph Name
     -> Result String Mono.MonoGraph
 monomorphizeDirect entryPointName globalTypeEnv snapshot (TOpt.GlobalGraph nodes _ _) =
     case findEntryPoint entryPointName nodes of
@@ -68,7 +68,7 @@ monomorphizeDirect entryPointName globalTypeEnv snapshot (TOpt.GlobalGraph nodes
 -- ========== ENTRY POINT FINDING ==========
 
 
-findEntryPoint : Name -> DMap.Dict (List String) TOpt.Global TOpt.Node -> Maybe ( TOpt.Global, TOpt.Node )
+findEntryPoint : Name -> DMap.Dict (List String) TOpt.Global (TOpt.Node Name) -> Maybe ( TOpt.Global, TOpt.Node Name )
 findEntryPoint entryPointName nodes =
     DMap.foldl TOpt.compareGlobal
         (\global node acc ->
@@ -101,7 +101,7 @@ findEntryPoint entryPointName nodes =
 
 {-| Resolve the main function's MonoType from solver state.
 -}
-resolveMainType : SolverSnapshot -> TOpt.Node -> Mono.MonoType
+resolveMainType : SolverSnapshot -> TOpt.Node Name -> Mono.MonoType
 resolveMainType snapshot node =
     case nodeMetaTvar node of
         Just tvar ->
@@ -114,7 +114,7 @@ resolveMainType snapshot node =
             Utils.Crash.crash "MonoDirect.resolveMainType: main node has no tvar"
 
 
-nodeMetaTvar : TOpt.Node -> Maybe IO.Variable
+nodeMetaTvar : TOpt.Node Name -> Maybe IO.Variable
 nodeMetaTvar node =
     case node of
         TOpt.Define _ _ meta ->
@@ -142,7 +142,7 @@ runSpecialization :
     -> Mono.MonoType
     -> TypeEnv.GlobalTypeEnv
     -> SolverSnapshot
-    -> DMap.Dict (List String) TOpt.Global TOpt.Node
+    -> DMap.Dict (List String) TOpt.Global (TOpt.Node Name)
     -> ( MonoDirectState, Mono.SpecId )
 runSpecialization mainGlobal mainMonoType globalTypeEnv snapshot nodes =
     let

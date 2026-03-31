@@ -48,9 +48,9 @@ import Utils.Bytes.Encode as BE
 {-| Represents errors that can occur with the main entry point of an Elm program.
 -}
 type Error
-    = BadType A.Region Can.Type
+    = BadType A.Region (Can.Type Name)
     | BadCycle A.Region Name (List Name)
-    | BadFlags A.Region Can.Type E.InvalidPayload
+    | BadFlags A.Region (Can.Type Name) E.InvalidPayload
 
 
 

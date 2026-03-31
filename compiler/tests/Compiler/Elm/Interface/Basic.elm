@@ -106,7 +106,7 @@ basicsUnions =
 
 {-| Collect all free type variables from a canonical type.
 -}
-collectFreeVars : Can.Type -> Can.FreeVars
+collectFreeVars : Can.Type Name -> Can.FreeVars
 collectFreeVars tipe =
     case tipe of
         Can.TLambda a b ->
@@ -453,14 +453,14 @@ testIfaces =
 
 {-| Helper to create a value annotation with collected free vars.
 -}
-mkAnnotation : Can.Type -> Can.Annotation
+mkAnnotation : Can.Type Name -> Can.Annotation Name
 mkAnnotation tipe =
     Can.Forall (collectFreeVars tipe) tipe
 
 
 {-| Basics module function values needed by Array.elm.
 -}
-basicsValues : Dict Name Can.Annotation
+basicsValues : Dict Name (Can.Annotation Name)
 basicsValues =
     let
         -- Type variables

@@ -15,6 +15,7 @@ import Compiler.AST.Source as Src
 import Dict
 import Expect
 import TestLogic.TestPipeline as Pipeline
+import Compiler.Data.Name exposing (Name)
 
 
 {-| Verify that remaining Group B expressions get structural types.
@@ -50,7 +51,7 @@ Remaining Group B expressions (Str, Chr, Float, Unit) should have
 fully structural types after PostSolve, with no unconstrained synthetic variables.
 
 -}
-collectGroupBTypeChecks : Array.Array (Maybe Can.Type) -> List (() -> Expect.Expectation)
+collectGroupBTypeChecks : Array.Array (Maybe (Can.Type Name)) -> List (() -> Expect.Expectation)
 collectGroupBTypeChecks nodeTypes =
     Array.foldl
         (\maybeType ( nodeId, acc ) ->
@@ -72,7 +73,7 @@ After PostSolve, types should be fully concrete with no synthetic variables
 (represented as TVar with specific naming patterns).
 
 -}
-checkTypeForSyntheticVars : String -> Can.Type -> List (() -> Expect.Expectation)
+checkTypeForSyntheticVars : String -> Can.Type Name -> List (() -> Expect.Expectation)
 checkTypeForSyntheticVars context canType =
     case canType of
         Can.TVar name ->
@@ -114,7 +115,7 @@ checkTypeForSyntheticVars context canType =
 
 {-| Check aliased type for synthetic variables.
 -}
-checkAliasedTypeForSyntheticVars : String -> Can.AliasType -> List (() -> Expect.Expectation)
+checkAliasedTypeForSyntheticVars : String -> Can.AliasType Name -> List (() -> Expect.Expectation)
 checkAliasedTypeForSyntheticVars context aliasType =
     case aliasType of
         Can.Holey canType ->

@@ -18,6 +18,7 @@ import Compiler.AST.Source as Src
 import Dict
 import Expect
 import TestLogic.TestPipeline as Pipeline
+import Compiler.Data.Name exposing (Name)
 
 
 {-| Verify that rank-based let-polymorphism is enforced.
@@ -55,7 +56,7 @@ Let-polymorphism should only generalize type variables that:
   - Are properly quantified in the type scheme
 
 -}
-collectRankIssues : Dict.Dict String Can.Annotation -> List String
+collectRankIssues : Dict.Dict String (Can.Annotation Name) -> List String
 collectRankIssues annotations =
     Dict.foldl
         (\name annotation acc ->
@@ -74,7 +75,7 @@ Valid annotations should have:
   - Consistent polymorphism
 
 -}
-checkAnnotationRank : String -> Can.Annotation -> List String
+checkAnnotationRank : String -> Can.Annotation Name -> List String
 checkAnnotationRank name annotation =
     case annotation of
         Can.Forall _ canType ->
@@ -84,7 +85,7 @@ checkAnnotationRank name annotation =
 
 {-| Check a type for rank-related issues given the free variables.
 -}
-checkTypeForRankIssues : String -> Can.Type -> List String
+checkTypeForRankIssues : String -> Can.Type Name -> List String
 checkTypeForRankIssues context canType =
     case canType of
         Can.TVar _ ->
@@ -134,7 +135,7 @@ Higher-rank polymorphism would be a forall inside a function argument type.
 Elm uses rank-1 polymorphism, so all quantifiers should be at the outermost level.
 
 -}
-checkForHigherRank : String -> Can.Type -> List String
+checkForHigherRank : String -> Can.Type Name -> List String
 checkForHigherRank _ canType =
     -- Elm uses rank-1 polymorphism, so we don't need to check for higher ranks
     -- in the sense of explicit foralls inside types (Elm doesn't have those).

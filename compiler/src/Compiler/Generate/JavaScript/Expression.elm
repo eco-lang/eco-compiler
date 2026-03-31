@@ -34,7 +34,7 @@ import Compiler.AST.DecisionTree.Test as Test
 import Compiler.AST.Optimized as Opt
 import Compiler.AST.Utils.Shader as Shader
 import Compiler.Data.Index as Index
-import Compiler.Data.Name as Name
+import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Elm.Compiler.Type as Type
 import Compiler.Elm.Compiler.Type.Extract as Extract
 import Compiler.Elm.ModuleName as ModuleName
@@ -1461,7 +1461,7 @@ call arg func =
     JS.ExprCall func [ arg ]
 
 
-toDebugMetadata : Mode.Mode -> Can.Type -> JS.Expr
+toDebugMetadata : Mode.Mode -> Can.Type Name -> JS.Expr
 toDebugMetadata mode msgType =
     case mode of
         Mode.Prod _ ->

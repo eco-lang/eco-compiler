@@ -21,7 +21,7 @@ import Basics.Extra exposing (flip)
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Optimized as Opt
 import Compiler.Data.Index as Index
-import Compiler.Data.Name as Name
+import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Elm.Kernel as K
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Generate.CodeGen as CodeGen
@@ -166,7 +166,7 @@ Produces code that evaluates an expression and prints its value and type
 to the console, formatted for terminal display with optional ANSI colors.
 
 -}
-generateForRepl : Bool -> L.Localizer -> Opt.GlobalGraph -> IO.Canonical -> Name.Name -> Can.Annotation -> String
+generateForRepl : Bool -> L.Localizer -> Opt.GlobalGraph -> IO.Canonical -> Name.Name -> Can.Annotation Name -> String
 generateForRepl ansi localizer (Opt.GlobalGraph graph _) home name (Can.Forall _ tipe) =
     let
         mode : Mode.Mode
@@ -189,7 +189,7 @@ generateForRepl ansi localizer (Opt.GlobalGraph graph _) home name (Can.Forall _
 
 {-| Generate code to print a REPL value with its type annotation to the console.
 -}
-print : Bool -> L.Localizer -> IO.Canonical -> Name.Name -> Can.Type -> String
+print : Bool -> L.Localizer -> IO.Canonical -> Name.Name -> Can.Type Name -> String
 print ansi localizer home name tipe =
     let
         value : JsName.Name
@@ -240,7 +240,7 @@ Similar to generateForRepl but outputs via postMessage for use in browser
 environments. Returns a message object with name, value, and type fields.
 
 -}
-generateForReplEndpoint : L.Localizer -> Opt.GlobalGraph -> IO.Canonical -> Maybe Name.Name -> Can.Annotation -> String
+generateForReplEndpoint : L.Localizer -> Opt.GlobalGraph -> IO.Canonical -> Maybe Name.Name -> Can.Annotation Name -> String
 generateForReplEndpoint localizer (Opt.GlobalGraph graph _) home maybeName (Can.Forall _ tipe) =
     let
         name : Name.Name
@@ -266,7 +266,7 @@ generateForReplEndpoint localizer (Opt.GlobalGraph graph _) home maybeName (Can.
 
 {-| Generate code to send a REPL value and type via postMessage for web workers.
 -}
-postMessage : L.Localizer -> IO.Canonical -> Maybe Name.Name -> Can.Type -> String
+postMessage : L.Localizer -> IO.Canonical -> Maybe Name.Name -> Can.Type Name -> String
 postMessage localizer home maybeName tipe =
     let
         name : Name.Name

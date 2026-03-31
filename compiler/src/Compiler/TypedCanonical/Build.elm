@@ -23,6 +23,7 @@ annotating each expression with its inferred type from the type checker.
 import Array
 import Compiler.AST.Canonical as Can
 import Compiler.AST.TypedCanonical as TCan exposing (Decls(..), Def(..), ExprTypes, ExprVars, Module(..))
+import Compiler.Data.Name exposing (Name)
 import Compiler.Reporting.Annotation as A
 import Utils.Crash exposing (crash)
 
@@ -107,7 +108,7 @@ Synthetic expressions (id < 0) will crash as they should not exist in valid ASTs
 toTypedExpr : ExprTypes -> ExprVars -> Can.Expr -> TCan.Expr
 toTypedExpr exprTypes exprVars (A.At region info) =
     let
-        tipe : Can.Type
+        tipe : Can.Type Name
         tipe =
             case Array.get info.id exprTypes |> Maybe.andThen identity of
                 Just t ->

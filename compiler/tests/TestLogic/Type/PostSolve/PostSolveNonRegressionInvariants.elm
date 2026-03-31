@@ -21,7 +21,7 @@ those in the pre-PostSolve type.
 
 import Array
 import Compiler.AST.Canonical as Can
-import Compiler.Data.Name as Name
+import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Reporting.Annotation as A
 import Compiler.Type.PostSolve as PostSolve
 import Data.Map as Dict
@@ -35,8 +35,8 @@ type alias Violation =
     { invariant : String
     , nodeId : Int
     , kind : String
-    , preType : Can.Type
-    , postType : Can.Type
+    , preType : Can.Type Name
+    , postType : Can.Type Name
     , details : String
     }
 
@@ -211,7 +211,7 @@ Two types are alpha-equivalent if they are structurally identical up to
 renaming of type variable names.
 
 -}
-alphaEq : Can.Type -> Can.Type -> Bool
+alphaEq : Can.Type Name -> Can.Type Name -> Bool
 alphaEq a b =
     case ( a, b ) of
         ( Can.TVar _, Can.TVar _ ) ->
@@ -240,7 +240,7 @@ alphaEq a b =
             False
 
 
-alphaEqList : List Can.Type -> List Can.Type -> Bool
+alphaEqList : List (Can.Type Name) -> List (Can.Type Name) -> Bool
 alphaEqList xs ys =
     case ( xs, ys ) of
         ( [], [] ) ->
@@ -268,8 +268,8 @@ alphaEqExt ext1 ext2 =
 
 
 alphaEqFields :
-    StdDict.Dict Name.Name Can.FieldType
-    -> StdDict.Dict Name.Name Can.FieldType
+    StdDict.Dict Name.Name (Can.FieldType Name)
+    -> StdDict.Dict Name.Name (Can.FieldType Name)
     -> Bool
 alphaEqFields fields1 fields2 =
     let
@@ -290,7 +290,7 @@ alphaEqFields fields1 fields2 =
             (List.map2 Tuple.pair list1 list2)
 
 
-alphaEqArgs : List ( Name.Name, Can.Type ) -> List ( Name.Name, Can.Type ) -> Bool
+alphaEqArgs : List ( Name.Name, Can.Type Name ) -> List ( Name.Name, Can.Type Name ) -> Bool
 alphaEqArgs args1 args2 =
     case ( args1, args2 ) of
         ( [], [] ) ->
@@ -303,7 +303,7 @@ alphaEqArgs args1 args2 =
             False
 
 
-alphaEqAlias : Can.AliasType -> Can.AliasType -> Bool
+alphaEqAlias : Can.AliasType Name -> Can.AliasType Name -> Bool
 alphaEqAlias at1 at2 =
     case ( at1, at2 ) of
         ( Can.Holey t1, Can.Holey t2 ) ->
@@ -324,7 +324,7 @@ alphaEqAlias at1 at2 =
 
 {-| Extract all free type variable names from a type.
 -}
-freeTypeVars : Can.Type -> EverySet.EverySet String String
+freeTypeVars : Can.Type Name -> EverySet.EverySet String String
 freeTypeVars tipe =
     case tipe of
         Can.TVar name ->
@@ -680,7 +680,7 @@ formatViolation v =
         ++ v.details
 
 
-typeToString : Can.Type -> String
+typeToString : Can.Type Name -> String
 typeToString tipe =
     case tipe of
         Can.TVar name ->

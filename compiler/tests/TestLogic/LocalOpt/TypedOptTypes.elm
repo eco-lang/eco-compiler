@@ -4,7 +4,7 @@ module TestLogic.LocalOpt.TypedOptTypes exposing (expectAllExprsHaveTypes)
 
 For each TypedOptimized.Expr variant:
 
-  - Assert the last constructor argument is a Can.Type.
+  - Assert the last constructor argument is a Can.Type Name.
   - Verify that typeOf returns that last field for all expressions.
   - Ensure no expression has a malformed or missing type.
 
@@ -22,6 +22,7 @@ import Dict
 import Expect
 import System.TypeCheck.IO as IO
 import TestLogic.TestPipeline as Pipeline
+import Compiler.Data.Name exposing (Name)
 
 
 {-| TOPT\_001: Verify all expressions have types.
@@ -52,7 +53,7 @@ expectAllExprsHaveTypes srcModule =
 
 {-| Collect issues where expressions don't have types or typeOf fails.
 -}
-collectExprTypeIssues : TOpt.LocalGraph -> List String
+collectExprTypeIssues : TOpt.LocalGraph Name -> List String
 collectExprTypeIssues (TOpt.LocalGraph data) =
     Data.Map.foldl TOpt.compareGlobal
         (\global node acc ->
@@ -77,7 +78,7 @@ globalToString (TOpt.Global home name) =
 
 {-| Check that all expressions in a node have types.
 -}
-checkNodeExprsHaveTypes : String -> TOpt.Node -> List String
+checkNodeExprsHaveTypes : String -> TOpt.Node Name -> List String
 checkNodeExprsHaveTypes context node =
     case node of
         TOpt.Define expr _ _ ->
@@ -114,7 +115,7 @@ checkNodeExprsHaveTypes context node =
 
 {-| Check that a Def has types on all expressions.
 -}
-checkDefExprsHaveTypes : String -> TOpt.Def -> List String
+checkDefExprsHaveTypes : String -> TOpt.Def Name -> List String
 checkDefExprsHaveTypes context def =
     case def of
         TOpt.Def _ name expr _ ->
@@ -129,7 +130,7 @@ checkDefExprsHaveTypes context def =
 
 {-| Collect type issues from nested expressions.
 -}
-collectExprNestedTypeIssues : String -> TOpt.Expr -> List String
+collectExprNestedTypeIssues : String -> TOpt.Expr Name -> List String
 collectExprNestedTypeIssues context expr =
     let
         exprType =
@@ -201,9 +202,9 @@ For now, we just verify the type exists. More sophisticated checks could
 verify no dangling type variables, etc.
 
 -}
-checkTypeNotEmpty : String -> Can.Type -> List String
+checkTypeNotEmpty : String -> Can.Type Name -> List String
 checkTypeNotEmpty _ _ =
-    -- All TypedOptimized expressions carry a Can.Type by construction.
+    -- All TypedOptimized expressions carry a Can.Type Name by construction.
     -- If the expression type-checks and we can call typeOf, it has a type.
     -- More sophisticated checks would verify the type is well-formed.
     []
@@ -217,7 +218,7 @@ checkTypeNotEmpty _ _ =
 
 {-| Check Def type well-formedness.
 -}
-checkDefTypeWellFormedness : String -> TOpt.Def -> List String
+checkDefTypeWellFormedness : String -> TOpt.Def Name -> List String
 checkDefTypeWellFormedness context def =
     case def of
         TOpt.Def _ name expr canType ->
@@ -232,7 +233,7 @@ checkDefTypeWellFormedness context def =
 
 {-| Collect type well-formedness issues from expressions.
 -}
-collectExprTypeWellFormedness : String -> TOpt.Expr -> List String
+collectExprTypeWellFormedness : String -> TOpt.Expr Name -> List String
 collectExprTypeWellFormedness context expr =
     let
         exprType =
@@ -298,7 +299,7 @@ collectExprTypeWellFormedness context expr =
            )
 
 
-{-| Check if a Can.Type is well-formed.
+{-| Check if a Can.Type Name is well-formed.
 
 Well-formed types:
 
@@ -309,7 +310,7 @@ Well-formed types:
 For now, we perform basic structural checks.
 
 -}
-checkTypeWellFormed : String -> Can.Type -> List String
+checkTypeWellFormed : String -> Can.Type Name -> List String
 checkTypeWellFormed context canType =
     case canType of
         Can.TLambda argType resultType ->
@@ -343,7 +344,7 @@ checkTypeWellFormed context canType =
 
 {-| Check aliased type well-formedness.
 -}
-checkAliasedTypeWellFormed : String -> Can.AliasType -> List String
+checkAliasedTypeWellFormed : String -> Can.AliasType Name -> List String
 checkAliasedTypeWellFormed context aliasType =
     case aliasType of
         Can.Holey canType ->
@@ -355,6 +356,6 @@ checkAliasedTypeWellFormed context aliasType =
 
 {-| Check field type well-formedness.
 -}
-checkFieldTypeWellFormed : String -> Can.FieldType -> List String
+checkFieldTypeWellFormed : String -> Can.FieldType Name -> List String
 checkFieldTypeWellFormed context (Can.FieldType _ canType) =
     checkTypeWellFormed context canType

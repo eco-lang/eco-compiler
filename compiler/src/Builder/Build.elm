@@ -63,7 +63,7 @@ import Compiler.AST.TypedModuleArtifact as TMod
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Compile as Compile
 import Compiler.Data.Map.Utils as Map
-import Compiler.Data.Name as Name
+import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Data.NonEmptyList as NE
 import Compiler.Data.OneOrMore as OneOrMore
 import Compiler.Elm.Docs as Docs
@@ -342,7 +342,7 @@ type Artifacts
 {-| Represents a compiled module, either freshly compiled or loaded from cache.
 -}
 type Module
-    = Fresh ModuleName.Raw I.Interface Opt.LocalGraph (Maybe TOpt.LocalGraph) (Maybe TypeEnv.ModuleTypeEnv)
+    = Fresh ModuleName.Raw I.Interface Opt.LocalGraph (Maybe (TOpt.LocalGraph Name)) (Maybe TypeEnv.ModuleTypeEnv)
     | Cached ModuleName.Raw Bool (MVar CachedInterface)
 
 
@@ -737,8 +737,8 @@ Tracks whether the module was freshly compiled, unchanged from cache, or encount
 
 -}
 type BResult
-    = RNew Details.Local I.Interface Opt.LocalGraph (Maybe TOpt.LocalGraph) (Maybe TypeEnv.ModuleTypeEnv) (Maybe Docs.Module)
-    | RSame Details.Local I.Interface Opt.LocalGraph (Maybe TOpt.LocalGraph) (Maybe TypeEnv.ModuleTypeEnv) (Maybe Docs.Module)
+    = RNew Details.Local I.Interface Opt.LocalGraph (Maybe (TOpt.LocalGraph Name)) (Maybe TypeEnv.ModuleTypeEnv) (Maybe Docs.Module)
+    | RSame Details.Local I.Interface Opt.LocalGraph (Maybe (TOpt.LocalGraph Name)) (Maybe TypeEnv.ModuleTypeEnv) (Maybe Docs.Module)
     | RCached Bool Details.BuildID (MVar CachedInterface)
     | RNotFound Import.Problem
     | RProblem Error.Module
@@ -1404,7 +1404,7 @@ type alias CompileResultContext =
     , name : ModuleName.Raw
     , iface : I.Interface
     , objects : Opt.LocalGraph
-    , typedObjects : Maybe TOpt.LocalGraph
+    , typedObjects : Maybe (TOpt.LocalGraph Name)
     , typeEnv : Maybe TypeEnv.ModuleTypeEnv
     , docs : Maybe Docs.Module
     }
@@ -1443,7 +1443,7 @@ handleCompileResult :
     -> Details.BuildID
     -> String
     -> Src.Module
-    -> Maybe TOpt.LocalGraph
+    -> Maybe (TOpt.LocalGraph Name)
     -> Result Error.Error Compile.Artifacts
     -> Task Never BResult
 handleCompileResult key root pkg buildID docsNeed path time deps main lastChange source modul maybeTypedObjects result =
@@ -1892,7 +1892,7 @@ type alias ReplArtifactsData =
     { home : TypeCheck.Canonical
     , modules : List Module
     , localizer : L.Localizer
-    , annotations : Dict Name.Name Can.Annotation
+    , annotations : Dict Name.Name (Can.Annotation Name)
     }
 
 
@@ -2293,7 +2293,7 @@ crawlRoot ((Env envData) as env) mvar root =
 
 type RootResult
     = RInside ModuleName.Raw
-    | ROutsideOk ModuleName.Raw I.Interface Opt.LocalGraph (Maybe TOpt.LocalGraph) (Maybe TypeEnv.ModuleTypeEnv)
+    | ROutsideOk ModuleName.Raw I.Interface Opt.LocalGraph (Maybe (TOpt.LocalGraph Name)) (Maybe TypeEnv.ModuleTypeEnv)
     | ROutsideErr Error.Module
     | ROutsideBlocked
 
@@ -2384,7 +2384,7 @@ compileOutside (Env envData) (Details.Local localData) source ifaces modul =
 -}
 type Root
     = Inside ModuleName.Raw
-    | Outside ModuleName.Raw I.Interface Opt.LocalGraph (Maybe TOpt.LocalGraph) (Maybe TypeEnv.ModuleTypeEnv)
+    | Outside ModuleName.Raw I.Interface Opt.LocalGraph (Maybe (TOpt.LocalGraph Name)) (Maybe TypeEnv.ModuleTypeEnv)
 
 
 toArtifacts : Env -> Dependencies -> Data.Map.Dict String ModuleName.Raw BResult -> NE.Nonempty RootResult -> Result Exit.BuildProblem Artifacts

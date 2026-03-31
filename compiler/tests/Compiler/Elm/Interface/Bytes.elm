@@ -27,7 +27,7 @@ import System.TypeCheck.IO as IO
 -- ============================================================================
 
 
-collectFreeVars : Can.Type -> Can.FreeVars
+collectFreeVars : Can.Type Name -> Can.FreeVars
 collectFreeVars tipe =
     case tipe of
         Can.TLambda a b ->
@@ -72,7 +72,7 @@ collectFreeVars tipe =
                     Dict.union argVars (collectFreeVars t)
 
 
-mkAnnotation : Can.Type -> Can.Annotation
+mkAnnotation : Can.Type Name -> Can.Annotation Name
 mkAnnotation tipe =
     Can.Forall (collectFreeVars tipe) tipe
 
@@ -98,37 +98,37 @@ bytesDecodeHome =
 -- ============================================================================
 
 
-bytesType : Can.Type
+bytesType : Can.Type Name
 bytesType =
     Can.TType bytesHome "Bytes" []
 
 
-encoderType : Can.Type
+encoderType : Can.Type Name
 encoderType =
     Can.TType bytesEncodeHome "Encoder" []
 
 
-decoderType : Can.Type -> Can.Type
+decoderType : Can.Type Name -> Can.Type Name
 decoderType a =
     Can.TType bytesDecodeHome "Decoder" [ a ]
 
 
-endiannessType : Can.Type
+endiannessType : Can.Type Name
 endiannessType =
     Can.TType bytesHome "Endianness" []
 
 
-intType : Can.Type
+intType : Can.Type Name
 intType =
     Can.TType ModuleName.basics "Int" []
 
 
-floatType : Can.Type
+floatType : Can.Type Name
 floatType =
     Can.TType ModuleName.basics "Float" []
 
 
-stringType : Can.Type
+stringType : Can.Type Name
 stringType =
     Can.TType ModuleName.string "String" []
 
@@ -219,7 +219,7 @@ bytesEncodeUnions =
     Dict.singleton "Encoder" (I.ClosedUnion encoderUnion)
 
 
-bytesEncodeValues : Dict Name Can.Annotation
+bytesEncodeValues : Dict Name (Can.Annotation Name)
 bytesEncodeValues =
     let
         -- encode : Encoder -> Bytes
@@ -347,7 +347,7 @@ bytesDecodeUnions =
         ]
 
 
-bytesDecodeValues : Dict Name Can.Annotation
+bytesDecodeValues : Dict Name (Can.Annotation Name)
 bytesDecodeValues =
     let
         aVar =

@@ -79,7 +79,7 @@ Threads through four pieces of state:
   - A unique ID counter for generating fresh variable names
   - A set of global dependencies (functions, constructors, kernels)
   - A dictionary tracking field name usage counts
-  - A dictionary of local variable types (Name -> Can.Type)
+  - A dictionary of local variable types (Name -> Can.Type Name)
 
 -}
 type Tracker a
@@ -87,7 +87,7 @@ type Tracker a
         (Int
          -> EverySet (List String) TOpt.Global
          -> Dict String Name Int
-         -> Dict String Name Can.Type
+         -> Dict String Name (Can.Type Name)
          -> TResult a
         )
 
@@ -100,13 +100,13 @@ type alias TResultProps =
     { uid : Int
     , deps : EverySet (List String) TOpt.Global
     , fields : Dict String Name Int
-    , locals : Dict String Name Can.Type
+    , locals : Dict String Name (Can.Type Name)
     }
 
 
 {-| Helper to construct TResult with positional args
 -}
-tResult : Int -> EverySet (List String) TOpt.Global -> Dict String Name Int -> Dict String Name Can.Type -> a -> TResult a
+tResult : Int -> EverySet (List String) TOpt.Global -> Dict String Name Int -> Dict String Name (Can.Type Name) -> a -> TResult a
 tResult uid deps fields locals value =
     TResult { uid = uid, deps = deps, fields = fields, locals = locals } value
 
@@ -171,7 +171,7 @@ Creates a VarGlobal expression referencing the function/value and adds it to the
 dependency set so the code generator knows to import it.
 
 -}
-registerGlobal : A.Region -> IO.Canonical -> Name -> Can.Type -> Maybe IO.Variable -> Tracker TOpt.Expr
+registerGlobal : A.Region -> IO.Canonical -> Name -> Can.Type Name -> Maybe IO.Variable -> Tracker (TOpt.Expr Name)
 registerGlobal region home name itype tvar =
     Tracker <|
         \uid deps fields locals ->
@@ -189,7 +189,7 @@ Debug functions are special-cased to support conditional compilation and removal
 in production builds. The home module is tracked for context.
 
 -}
-registerDebug : Name -> IO.Canonical -> A.Region -> Can.Type -> Maybe IO.Variable -> Tracker TOpt.Expr
+registerDebug : Name -> IO.Canonical -> A.Region -> Can.Type Name -> Maybe IO.Variable -> Tracker (TOpt.Expr Name)
 registerDebug name home region itype tvar =
     Tracker <|
         \uid deps fields locals ->
@@ -210,7 +210,7 @@ Handles three cases based on constructor options:
   - Unbox: Single-argument constructor, returns VarBox and registers identity dependency
 
 -}
-registerCtor : A.Region -> IO.Canonical -> A.Located Name -> Index.ZeroBased -> Can.CtorOpts -> Can.Type -> Maybe IO.Variable -> Tracker TOpt.Expr
+registerCtor : A.Region -> IO.Canonical -> A.Located Name -> Index.ZeroBased -> Can.CtorOpts -> Can.Type Name -> Maybe IO.Variable -> Tracker (TOpt.Expr Name)
 registerCtor region home (A.At _ name) index opts itype tvar =
     Tracker <|
         \uid deps fields locals ->
@@ -329,7 +329,7 @@ All bindings are visible within the provided Tracker computation and are automat
 removed when that computation completes.
 
 -}
-withVarTypes : List ( Name, Can.Type ) -> Tracker a -> Tracker a
+withVarTypes : List ( Name, Can.Type Name ) -> Tracker a -> Tracker a
 withVarTypes bindings (Tracker inner) =
     Tracker <|
         \uid deps fields locals ->
@@ -349,7 +349,7 @@ Returns the type if the variable is in scope, or crashes with an error message
 if the variable is not found. This should not happen in well-typed code.
 
 -}
-lookupLocalType : Name -> Tracker Can.Type
+lookupLocalType : Name -> Tracker (Can.Type Name)
 lookupLocalType name =
     Tracker <|
         \uid deps fields locals ->
@@ -424,7 +424,7 @@ loopHelper :
     -> Int
     -> EverySet (List String) TOpt.Global
     -> Dict String Name Int
-    -> Dict String Name Can.Type
+    -> Dict String Name (Can.Type Name)
     -> TResult a
 loopHelper callback loopState n d f l =
     case callback loopState of

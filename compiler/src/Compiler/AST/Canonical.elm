@@ -127,17 +127,17 @@ type Expr_
     = VarLocal Name
     | VarTopLevel IO.Canonical Name
     | VarKernel Name Name Name
-    | VarForeign IO.Canonical Name Annotation
-    | VarCtor CtorOpts IO.Canonical Name Index.ZeroBased Annotation
-    | VarDebug IO.Canonical Name Annotation
-    | VarOperator Name IO.Canonical Name Annotation -- CACHE real name for optimization
+    | VarForeign IO.Canonical Name (Annotation Name)
+    | VarCtor CtorOpts IO.Canonical Name Index.ZeroBased (Annotation Name)
+    | VarDebug IO.Canonical Name (Annotation Name)
+    | VarOperator Name IO.Canonical Name (Annotation Name) -- CACHE real name for optimization
     | Chr String
     | Str String
     | Int Int
     | Float Float
     | List (List Expr)
     | Negate Expr
-    | Binop Name IO.Canonical Name Annotation Expr Expr -- CACHE real name for optimization
+    | Binop Name IO.Canonical Name (Annotation Name) Expr Expr -- CACHE real name for optimization
     | Lambda (List Pattern) Expr
     | Call Expr (List Expr)
     | If (List ( Expr, Expr )) Expr
@@ -178,7 +178,7 @@ type FieldUpdate
 -}
 type Def
     = Def (A.Located Name) (List Pattern) Expr
-    | TypedDef (A.Located Name) FreeVars (List ( Pattern, Type )) Expr Type
+    | TypedDef (A.Located Name) FreeVars (List ( Pattern, Type Name )) Expr (Type Name)
 
 
 {-| A linked list of top-level declarations in a module.
@@ -251,7 +251,7 @@ type PatternCtorArg
     = PatternCtorArg
         Index.ZeroBased
         -- CACHE for destructors/errors
-        Type
+        (Type Name)
         -- CACHE for type inference
         Pattern
 
@@ -265,8 +265,8 @@ type PatternCtorArg
 The `FreeVars` contains the names of type variables that are polymorphic.
 
 -}
-type Annotation
-    = Forall FreeVars Type
+type Annotation id
+    = Forall FreeVars (Type id)
 
 
 {-| Free type variables in a type annotation.
@@ -286,14 +286,14 @@ type alias FreeVars =
   - `TAlias` - Type alias application
 
 -}
-type Type
-    = TLambda Type Type
-    | TVar Name
-    | TType IO.Canonical Name (List Type)
-    | TRecord (Dict Name FieldType) (Maybe Name)
+type Type id
+    = TLambda (Type id) (Type id)
+    | TVar id
+    | TType IO.Canonical Name (List (Type id))
+    | TRecord (Dict Name (FieldType id)) (Maybe Name)
     | TUnit
-    | TTuple Type Type (List Type)
-    | TAlias IO.Canonical Name (List ( Name, Type )) AliasType
+    | TTuple (Type id) (Type id) (List (Type id))
+    | TAlias IO.Canonical Name (List ( Name, Type id )) (AliasType id)
 
 
 {-| Tracks whether a type alias has been fully expanded.
@@ -302,9 +302,9 @@ type Type
   - `Filled` - Alias has been fully expanded with concrete types
 
 -}
-type AliasType
-    = Holey Type
-    | Filled Type
+type AliasType id
+    = Holey (Type id)
+    | Filled (Type id)
 
 
 {-| A record field with its source order index and type.
@@ -313,20 +313,20 @@ The index preserves source order for canonical types from annotations.
 Inferred types may have all zeros for the index.
 
 -}
-type FieldType
-    = FieldType Int Type
+type FieldType id
+    = FieldType Int (Type id)
 
 
 {-| Converts record fields to an ordered list, sorted by source position.
 -}
-fieldsToList : Dict Name FieldType -> List ( Name, Type )
+fieldsToList : Dict Name (FieldType id) -> List ( Name, Type id )
 fieldsToList fields =
     let
-        getIndex : ( a, FieldType ) -> Int
+        getIndex : ( a, FieldType id ) -> Int
         getIndex ( _, FieldType index _ ) =
             index
 
-        dropIndex : ( a, FieldType ) -> ( a, Type )
+        dropIndex : ( a, FieldType id ) -> ( a, Type id )
         dropIndex ( name, FieldType _ tipe ) =
             ( name, tipe )
     in
@@ -362,7 +362,7 @@ type Module
 {-| A type alias definition with its type parameters and body.
 -}
 type Alias
-    = Alias (List Name) Type
+    = Alias (List Name) (Type Name)
 
 
 {-| An infix operator definition with associativity, precedence, and function name.
@@ -406,7 +406,7 @@ type alias CtorData =
     { name : Name
     , index : Index.ZeroBased
     , numArgs : Int -- CACHE length args
-    , args : List Type
+    , args : List (Type Name)
     }
 
 
@@ -464,13 +464,13 @@ type Effects
 type Port
     = Incoming
         { freeVars : FreeVars
-        , payload : Type
-        , func : Type
+        , payload : Type Name
+        , func : Type Name
         }
     | Outgoing
         { freeVars : FreeVars
-        , payload : Type
-        , func : Type
+        , payload : Type Name
+        , func : Type Name
         }
 
 
@@ -493,7 +493,7 @@ type Manager
 
 {-| Encodes an Annotation to bytes for serialization.
 -}
-annotationEncoder : Annotation -> Bytes.Encode.Encoder
+annotationEncoder : Annotation Name -> Bytes.Encode.Encoder
 annotationEncoder (Forall freeVars tipe) =
     Bytes.Encode.sequence
         [ freeVarsEncoder freeVars
@@ -503,7 +503,7 @@ annotationEncoder (Forall freeVars tipe) =
 
 {-| Decodes an Annotation from bytes.
 -}
-annotationDecoder : Bytes.Decode.Decoder Annotation
+annotationDecoder : Bytes.Decode.Decoder (Annotation Name)
 annotationDecoder =
     Bytes.Decode.map2 Forall
         freeVarsDecoder
@@ -542,7 +542,7 @@ aliasDecoder =
 
 {-| Encodes a Type to bytes for serialization.
 -}
-typeEncoder : Type -> Bytes.Encode.Encoder
+typeEncoder : Type Name -> Bytes.Encode.Encoder
 typeEncoder type_ =
     case type_ of
         TLambda a b ->
@@ -596,7 +596,7 @@ typeEncoder type_ =
 
 {-| Decodes a Type from bytes.
 -}
-typeDecoder : Bytes.Decode.Decoder Type
+typeDecoder : Bytes.Decode.Decoder (Type Name)
 typeDecoder =
     Bytes.Decode.unsignedInt8
         |> Bytes.Decode.andThen
@@ -642,7 +642,7 @@ typeDecoder =
             )
 
 
-fieldTypeEncoder : FieldType -> Bytes.Encode.Encoder
+fieldTypeEncoder : FieldType Name -> Bytes.Encode.Encoder
 fieldTypeEncoder (FieldType index tipe) =
     Bytes.Encode.sequence
         [ BE.int index
@@ -650,7 +650,7 @@ fieldTypeEncoder (FieldType index tipe) =
         ]
 
 
-aliasTypeEncoder : AliasType -> Bytes.Encode.Encoder
+aliasTypeEncoder : AliasType Name -> Bytes.Encode.Encoder
 aliasTypeEncoder aliasType =
     case aliasType of
         Holey tipe ->
@@ -666,14 +666,14 @@ aliasTypeEncoder aliasType =
                 ]
 
 
-fieldTypeDecoder : Bytes.Decode.Decoder FieldType
+fieldTypeDecoder : Bytes.Decode.Decoder (FieldType Name)
 fieldTypeDecoder =
     Bytes.Decode.map2 FieldType
         BD.int
         typeDecoder
 
 
-aliasTypeDecoder : Bytes.Decode.Decoder AliasType
+aliasTypeDecoder : Bytes.Decode.Decoder (AliasType Name)
 aliasTypeDecoder =
     Bytes.Decode.unsignedInt8
         |> Bytes.Decode.andThen

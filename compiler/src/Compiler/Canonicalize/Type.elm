@@ -26,7 +26,7 @@ import Compiler.AST.Canonical as Can
 import Compiler.AST.Source as Src
 import Compiler.Canonicalize.Environment as Env
 import Compiler.Canonicalize.Environment.Dups as Dups
-import Compiler.Data.Name as Name
+import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Error.Canonicalize as Error
 import Compiler.Reporting.Result as ReportingResult
@@ -57,7 +57,7 @@ free type variables collected. This creates a polymorphic type scheme suitable
 for top-level type annotations.
 
 -}
-toAnnotation : Env.Env -> Src.Type -> CResult i w Can.Annotation
+toAnnotation : Env.Env -> Src.Type -> CResult i w (Can.Annotation Name)
 toAnnotation env srcType =
     canonicalize env srcType
         |> ReportingResult.andThen (\tipe -> ReportingResult.ok (Can.Forall (addFreeVars Dict.empty tipe) tipe))
@@ -74,7 +74,7 @@ and units from source AST to canonical AST. Validates type constructor existence
 checks arity of type applications, and resolves qualified type names.
 
 -}
-canonicalize : Env.Env -> Src.Type -> CResult i w Can.Type
+canonicalize : Env.Env -> Src.Type -> CResult i w (Can.Type Name)
 canonicalize env (A.At typeRegion tipe) =
     case tipe of
         Src.TVar x ->
@@ -120,10 +120,10 @@ canonicalize env (A.At typeRegion tipe) =
             canonicalize env tipe_
 
 
-canonicalizeFields : Env.Env -> List (Src.C2 ( Src.C1 (A.Located Name.Name), Src.C1 Src.Type )) -> List ( A.Located Name.Name, CResult i w Can.FieldType )
+canonicalizeFields : Env.Env -> List (Src.C2 ( Src.C1 (A.Located Name.Name), Src.C1 Src.Type )) -> List ( A.Located Name.Name, CResult i w (Can.FieldType Name) )
 canonicalizeFields env fields =
     let
-        canonicalizeField : Int -> Src.C2 ( Src.C1 a, Src.C1 Src.Type ) -> ( a, ReportingResult.RResult i w Error.Error Can.FieldType )
+        canonicalizeField : Int -> Src.C2 ( Src.C1 a, Src.C1 Src.Type ) -> ( a, ReportingResult.RResult i w Error.Error (Can.FieldType Name) )
         canonicalizeField index ( _, ( ( _, name ), ( _, srcType ) ) ) =
             ( name, ReportingResult.map (Can.FieldType index) (canonicalize env srcType) )
     in
@@ -148,7 +148,7 @@ sequenceAElmDict dict =
 -- ====== CANONICALIZE TYPE ======
 
 
-canonicalizeType : Env.Env -> A.Region -> Name.Name -> List Src.Type -> Env.Type -> CResult i w Can.Type
+canonicalizeType : Env.Env -> A.Region -> Name.Name -> List Src.Type -> Env.Type -> CResult i w (Can.Type Name)
 canonicalizeType env region name args info =
     ReportingResult.traverse (canonicalize env) args
         |> ReportingResult.andThen
@@ -180,7 +180,7 @@ checkArity expected region name args answer =
 -- ====== ADD FREE VARS ======
 
 
-addFreeVars : Dict Name.Name () -> Can.Type -> Dict Name.Name ()
+addFreeVars : Dict Name.Name () -> Can.Type Name -> Dict Name.Name ()
 addFreeVars freeVars tipe =
     case tipe of
         Can.TLambda arg result ->
@@ -208,6 +208,6 @@ addFreeVars freeVars tipe =
             List.foldl (\( _, arg ) fvs -> addFreeVars fvs arg) freeVars args
 
 
-addFieldFreeVars : Dict Name.Name () -> Can.FieldType -> Dict Name.Name ()
+addFieldFreeVars : Dict Name.Name () -> Can.FieldType Name -> Dict Name.Name ()
 addFieldFreeVars freeVars (Can.FieldType _ tipe) =
     addFreeVars freeVars tipe

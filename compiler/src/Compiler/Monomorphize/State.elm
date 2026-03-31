@@ -70,12 +70,12 @@ names (e.g., `a__def_Module_func_0`) to avoid per-call-site rename work.
 type alias SchemeInfo =
     { varNames : List Name
     , constraints : Dict Name Mono.Constraint
-    , argTypes : List Can.Type
-    , resultType : Can.Type
+    , argTypes : List (Can.Type Name)
+    , resultType : Can.Type Name
     , argCount : Int
-    , renamedFuncType : Can.Type
-    , renamedArgTypes : List Can.Type
-    , renamedResultType : Can.Type
+    , renamedFuncType : Can.Type Name
+    , renamedArgTypes : List (Can.Type Name)
+    , renamedResultType : Can.Type Name
     , renamedVarNames : List Name
     , preRenameMap : DataMap.Dict String Name Name
     }
@@ -177,7 +177,7 @@ Updated by varEnv push/pop, localMulti push/pop, renameEpoch bump, currentGlobal
 -}
 type alias SpecContext =
     { currentModule : IO.Canonical
-    , toptNodes : DataMap.Dict (List String) TOpt.Global TOpt.Node
+    , toptNodes : DataMap.Dict (List String) TOpt.Global (TOpt.Node Name)
     , currentGlobal : Maybe Mono.Global
     , globalTypeEnv : TypeEnv.GlobalTypeEnv
     , varEnv : VarEnv -- Layered mapping of variable names to their MonoTypes
@@ -322,22 +322,22 @@ type alias ValueInstanceInfo =
 
     - defName    : the let-bound value we're multi-specializing
     - defCanType : the canonical type of the value
-    - def        : the original TOpt.Def
+    - def        : the original TOpt.Def Name
     - instances  : all discovered (typeKey -> instance) mappings,
                    keyed by Mono.toComparableMonoType of the instance type.
 
 -}
 type alias ValueMultiState =
     { defName : Name
-    , defCanType : Can.Type
-    , def : TOpt.Def
+    , defCanType : Can.Type Name
+    , def : TOpt.Def Name
     , instances : Dict String ValueInstanceInfo
     }
 
 
 {-| Initialize the monomorphization state with empty worklist and registry.
 -}
-initState : IO.Canonical -> DataMap.Dict (List String) TOpt.Global TOpt.Node -> TypeEnv.GlobalTypeEnv -> MonoState
+initState : IO.Canonical -> DataMap.Dict (List String) TOpt.Global (TOpt.Node Name) -> TypeEnv.GlobalTypeEnv -> MonoState
 initState currentModule toptNodes globalTypeEnv =
     { accum =
         { worklist = []

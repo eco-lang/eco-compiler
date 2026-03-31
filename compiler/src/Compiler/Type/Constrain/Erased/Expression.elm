@@ -185,7 +185,7 @@ constrainProg rtv (A.At region exprInfo) expected =
 
 {-| DSL builder for binary operator expressions.
 -}
-constrainBinopProg : RigidTypeVar -> A.Region -> Name -> Can.Annotation -> Can.Expr -> Can.Expr -> E.Expected Type -> Prog Constraint
+constrainBinopProg : RigidTypeVar -> A.Region -> Name -> Can.Annotation Name -> Can.Expr -> Can.Expr -> E.Expected Type -> Prog Constraint
 constrainBinopProg rtv region op annotation leftExpr rightExpr expected =
     Prog.opMkFlexVar
         |> Prog.andThen
@@ -1012,12 +1012,12 @@ constrainDefProg rtv def bodyCon =
                     )
 
 
-constrainTypedArgsProg : Dict String Name Type -> Name -> List ( Can.Pattern, Can.Type ) -> Can.Type -> Prog TypedArgs
+constrainTypedArgsProg : Dict String Name Type -> Name -> List ( Can.Pattern, Can.Type Name ) -> Can.Type Name -> Prog TypedArgs
 constrainTypedArgsProg rtv name args srcResultType =
     typedArgsHelpProg rtv name Index.first args srcResultType Common.emptyState
 
 
-typedArgsHelpProg : Dict String Name Type -> Name -> Index.ZeroBased -> List ( Can.Pattern, Can.Type ) -> Can.Type -> State -> Prog TypedArgs
+typedArgsHelpProg : Dict String Name Type -> Name -> Index.ZeroBased -> List ( Can.Pattern, Can.Type Name ) -> Can.Type Name -> State -> Prog TypedArgs
 typedArgsHelpProg rtv name index args srcResultType state =
     case args of
         [] ->

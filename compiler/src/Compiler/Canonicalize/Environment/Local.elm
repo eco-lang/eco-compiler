@@ -472,14 +472,14 @@ canonicalizeAlias ({ home } as env) (A.At _ (Src.Alias aliasData)) =
             )
 
 
-toRecordCtor : IO.Canonical -> Name.Name -> List Name.Name -> Dict Name.Name Can.FieldType -> Env.Ctor
+toRecordCtor : IO.Canonical -> Name.Name -> List Name.Name -> Dict Name.Name (Can.FieldType Name) -> Env.Ctor
 toRecordCtor home name vars fields =
     let
-        avars : List ( Name, Can.Type )
+        avars : List ( Name, Can.Type Name )
         avars =
             List.map (\var -> ( var, Can.TVar var )) vars
 
-        alias : Can.Type
+        alias : Can.Type Name
         alias =
             List.foldr
                 (\( _, t1 ) t2 -> Can.TLambda t1 t2)

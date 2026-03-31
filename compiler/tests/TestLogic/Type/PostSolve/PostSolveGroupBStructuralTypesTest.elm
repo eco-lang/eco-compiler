@@ -15,7 +15,7 @@ List, Tuple, Record, Lambda, Accessor, Let, LetRec, LetDestruct are now Group A
 import Array
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Source as Src
-import Compiler.Data.Name as Name
+import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Reporting.Annotation as A
 import Compiler.Type.PostSolve as PostSolve
@@ -34,9 +34,9 @@ import TestLogic.Type.PostSolve.PostSolveInvariantHelpers as Helpers
 type alias Violation =
     { nodeId : Int
     , exprKind : String
-    , preType : Can.Type
-    , postType : Can.Type
-    , expectedType : Maybe Can.Type
+    , preType : Can.Type Name
+    , postType : Can.Type Name
+    , expectedType : Maybe (Can.Type Name)
     , details : String
     }
 
@@ -140,7 +140,7 @@ checkGroupBExpr exprId exprNodes artifacts =
 checkSyntheticPlaceholder :
     Int
     -> Helpers.ExprNode
-    -> Can.Type
+    -> Can.Type Name
     -> DataMap.Dict Int Int Helpers.ExprNode
     -> Compile.DetailedArtifacts
     -> Maybe Violation
@@ -237,7 +237,7 @@ computeExpectedType :
     Can.Expr_
     -> PostSolve.NodeTypes
     -> DataMap.Dict Int Int Helpers.ExprNode
-    -> Maybe Can.Type
+    -> Maybe (Can.Type Name)
 computeExpectedType expr nodeTypes _ =
     case expr of
         Can.Str _ ->
@@ -380,7 +380,7 @@ This is stricter than generic alpha-equivalence because we enforce
 that the field type and return type are the same variable.
 
 -}
-isAccessorType : Name.Name -> Can.Type -> Bool
+isAccessorType : Name.Name -> Can.Type Name -> Bool
 isAccessorType fieldName tipe =
     case tipe of
         Can.TLambda recordType retType ->
@@ -421,7 +421,7 @@ isAccessorType fieldName tipe =
 {-| Result of looking up a pattern type, with explicit failure modes.
 -}
 type PatternTypeLookup
-    = PatternTypeFound Can.Type
+    = PatternTypeFound (Can.Type Name)
     | PatternTypeNegativeId Int
     | PatternTypeMissing Int
 
@@ -449,7 +449,7 @@ lookupPatternType (A.At _ patInfo) nodeTypes =
 {-| Result of computing expected lambda type.
 -}
 type LambdaTypeResult
-    = LambdaTypeOk Can.Type
+    = LambdaTypeOk (Can.Type Name)
     | LambdaTypeError String
 
 
@@ -479,7 +479,7 @@ expectedLambdaType lambdaExprId patterns bodyId nodeTypes =
 
 {-| Collect all pattern types, failing on first error.
 -}
-collectPatternTypes : Int -> List Can.Pattern -> PostSolve.NodeTypes -> Result String (List Can.Type)
+collectPatternTypes : Int -> List Can.Pattern -> PostSolve.NodeTypes -> Result String (List (Can.Type Name))
 collectPatternTypes lambdaExprId patterns nodeTypes =
     patterns
         |> List.foldr
@@ -518,7 +518,7 @@ collectPatternTypes lambdaExprId patterns nodeTypes =
     buildCurriedFunctionType [a, b, c] ret = a -> b -> c -> ret
 
 -}
-buildCurriedFunctionType : List Can.Type -> Can.Type -> Can.Type
+buildCurriedFunctionType : List (Can.Type Name) -> Can.Type Name -> Can.Type Name
 buildCurriedFunctionType argTypes bodyType =
     List.foldr Can.TLambda bodyType argTypes
 
@@ -531,7 +531,7 @@ buildCurriedFunctionType argTypes bodyType =
 
 {-| Check if two types are alpha-equivalent.
 -}
-alphaEq : Can.Type -> Can.Type -> Bool
+alphaEq : Can.Type Name -> Can.Type Name -> Bool
 alphaEq a b =
     case ( a, b ) of
         ( Can.TVar _, Can.TVar _ ) ->
@@ -559,7 +559,7 @@ alphaEq a b =
             False
 
 
-alphaEqList : List Can.Type -> List Can.Type -> Bool
+alphaEqList : List (Can.Type Name) -> List (Can.Type Name) -> Bool
 alphaEqList xs ys =
     case ( xs, ys ) of
         ( [], [] ) ->
@@ -586,8 +586,8 @@ alphaEqExt ext1 ext2 =
 
 
 alphaEqFields :
-    Dict.Dict Name.Name Can.FieldType
-    -> Dict.Dict Name.Name Can.FieldType
+    Dict.Dict Name.Name (Can.FieldType Name)
+    -> Dict.Dict Name.Name (Can.FieldType Name)
     -> Bool
 alphaEqFields fields1 fields2 =
     let
@@ -608,7 +608,7 @@ alphaEqFields fields1 fields2 =
             (List.map2 Tuple.pair list1 list2)
 
 
-alphaEqArgs : List ( Name.Name, Can.Type ) -> List ( Name.Name, Can.Type ) -> Bool
+alphaEqArgs : List ( Name.Name, Can.Type Name ) -> List ( Name.Name, Can.Type Name ) -> Bool
 alphaEqArgs args1 args2 =
     case ( args1, args2 ) of
         ( [], [] ) ->
@@ -621,7 +621,7 @@ alphaEqArgs args1 args2 =
             False
 
 
-alphaEqAlias : Can.AliasType -> Can.AliasType -> Bool
+alphaEqAlias : Can.AliasType Name -> Can.AliasType Name -> Bool
 alphaEqAlias at1 at2 =
     case ( at1, at2 ) of
         ( Can.Holey t1, Can.Holey t2 ) ->
@@ -672,7 +672,7 @@ formatViolation v =
         ++ v.details
 
 
-typeToString : Can.Type -> String
+typeToString : Can.Type Name -> String
 typeToString tipe =
     case tipe of
         Can.TVar name ->

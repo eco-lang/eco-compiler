@@ -2,7 +2,7 @@ module TestLogic.LocalOpt.TypedOptimizedTypePreservationTest exposing (suite)
 
 {-| Test suite for invariant TOPT\_004: Typed optimization is type preserving.
 
-TOPT\_004: The Can.Type attached to each TOpt.Expr must match the expected type
+TOPT\_004: The (Can.Type Name) attached to each TOpt.Expr must match the expected type
 derived via local typing rules.
 
 Key checks:

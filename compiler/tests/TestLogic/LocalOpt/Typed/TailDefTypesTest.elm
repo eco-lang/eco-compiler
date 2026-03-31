@@ -4,7 +4,7 @@ module TestLogic.LocalOpt.Typed.TailDefTypesTest exposing (suite)
 
 This test verifies that for tail-recursive functions with type annotations:
 
-1.  Each argument's `Can.Type` in `TailDef` equals the corresponding
+1.  Each argument's `Can.Type Name` in `TailDef` equals the corresponding
     parameter type from the annotation.
 2.  The "return type" field is the **result type** of the annotation, not the whole function type.
 
@@ -28,7 +28,7 @@ import Compiler.AST.SourceBuilder
         , varExpr
         )
 import Compiler.AST.TypedOptimized as TOpt
-import Compiler.Data.Name as Name
+import Compiler.Data.Name as Name exposing (Name)
 import Data.Map
 import Dict exposing (Dict)
 import Expect exposing (Expectation)
@@ -113,7 +113,7 @@ checkSumHelper =
 
 {-| Check TailDef types in Cycle nodes against annotation.
 -}
-checkTailDefTypes : String -> TOpt.LocalGraph -> Dict Name.Name Can.Annotation -> Expectation
+checkTailDefTypes : String -> TOpt.LocalGraph Name -> Dict Name.Name (Can.Annotation Name) -> Expectation
 checkTailDefTypes funcName (TOpt.LocalGraph data) annotations =
     let
         -- Find TailDef in Cycle nodes
@@ -228,7 +228,7 @@ checkTailDefTypes funcName (TOpt.LocalGraph data) annotations =
 
 {-| Split a function type into parameter types and result type.
 -}
-splitFunctionType : Can.Type -> ( List Can.Type, Can.Type )
+splitFunctionType : Can.Type Name -> ( List (Can.Type Name), Can.Type Name )
 splitFunctionType tipe =
     case tipe of
         Can.TLambda arg res ->
@@ -248,7 +248,7 @@ For this test, we're checking concrete types like Int, so we do a simple
 structural comparison. TVar indicates Bug 1 (unconstrained pattern types).
 
 -}
-typesMatch : Can.Type -> Can.Type -> Bool
+typesMatch : Can.Type Name -> Can.Type Name -> Bool
 typesMatch actual expected =
     case ( actual, expected ) of
         ( Can.TType home1 name1 args1, Can.TType home2 name2 args2 ) ->
@@ -276,7 +276,7 @@ typesMatch actual expected =
 
 {-| Convert a type to a debug string.
 -}
-typeToString : Can.Type -> String
+typeToString : Can.Type Name -> String
 typeToString tipe =
     case tipe of
         Can.TVar name ->

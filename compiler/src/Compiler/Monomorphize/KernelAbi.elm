@@ -76,7 +76,7 @@ Arguments:
 Returns the appropriate `KernelAbiMode`.
 
 -}
-deriveKernelAbiMode : ( String, String ) -> Can.Type -> KernelAbiMode
+deriveKernelAbiMode : ( String, String ) -> Can.Type Name -> KernelAbiMode
 deriveKernelAbiMode ( home, name ) canFuncType =
     -- Debug kernels are always polymorphic
     if EverySet.member List.singleton home alwaysPolymorphicModules then
@@ -168,13 +168,13 @@ comparePair ( a, b ) =
 
 {-| Extract free type variables with their constraints from a canonical type.
 -}
-freeTypeVariablesWithConstraints : Can.Type -> List ( Name, Mono.Constraint )
+freeTypeVariablesWithConstraints : Can.Type Name -> List ( Name, Mono.Constraint )
 freeTypeVariablesWithConstraints canType =
     freeVarsHelper canType []
         |> List.map (\name -> ( name, constraintFromName name ))
 
 
-freeVarsHelper : Can.Type -> List Name -> List Name
+freeVarsHelper : Can.Type Name -> List Name -> List Name
 freeVarsHelper canType acc =
     case canType of
         Can.TVar name ->
@@ -232,7 +232,7 @@ constraintFromName name =
 Used for polymorphic kernels where the ABI must be all-boxed.
 
 -}
-canTypeToMonoType_preserveVars : MVarEnv -> Can.Type -> ( Mono.MonoType, MVarEnv )
+canTypeToMonoType_preserveVars : MVarEnv -> Can.Type Name -> ( Mono.MonoType, MVarEnv )
 canTypeToMonoType_preserveVars env canType =
     case canType of
         Can.TVar name ->
@@ -303,7 +303,7 @@ Used for number-boxed kernels (add, sub, mul, pow) where the C ABI is boxed
 but the result type should still resolve to MInt or MFloat.
 
 -}
-canTypeToMonoType_numberBoxed : MVarEnv -> Can.Type -> ( Mono.MonoType, MVarEnv )
+canTypeToMonoType_numberBoxed : MVarEnv -> Can.Type Name -> ( Mono.MonoType, MVarEnv )
 canTypeToMonoType_numberBoxed env canType =
     case canType of
         Can.TVar name ->
@@ -371,7 +371,7 @@ canTypeToMonoType_numberBoxed env canType =
 
 {-| Helper for converting TType nodes with shared logic.
 -}
-convertTType : (MVarEnv -> Can.Type -> ( Mono.MonoType, MVarEnv )) -> MVarEnv -> IO.Canonical -> Name -> List Can.Type -> ( Mono.MonoType, MVarEnv )
+convertTType : (MVarEnv -> Can.Type Name -> ( Mono.MonoType, MVarEnv )) -> MVarEnv -> IO.Canonical -> Name -> List (Can.Type Name) -> ( Mono.MonoType, MVarEnv )
 convertTType convert env canonical name args =
     let
         ( monoArgs, env1 ) =

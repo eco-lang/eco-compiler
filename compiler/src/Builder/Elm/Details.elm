@@ -72,7 +72,7 @@ import Compiler.AST.Source as Src
 import Compiler.AST.TypeEnv as TypeEnv
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Compile as Compile
-import Compiler.Data.Name as Name
+import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Data.NonEmptyList as NE
 import Compiler.Data.OneOrMore as OneOrMore
 import Compiler.Elm.Constraint as Con
@@ -354,7 +354,7 @@ loadSinglePackageTypedArtifacts cache pkg vsn =
 
 {-| Combine local and package typed artifacts.
 -}
-combineTypedArtifacts : Maybe TOpt.GlobalGraph -> PackageTypedArtifacts -> Maybe PackageTypedArtifacts
+combineTypedArtifacts : Maybe (TOpt.GlobalGraph Name) -> PackageTypedArtifacts -> Maybe PackageTypedArtifacts
 combineTypedArtifacts maybeLocal packageArtifacts =
     case maybeLocal of
         Just local ->
@@ -376,7 +376,7 @@ combineTypedArtifacts maybeLocal packageArtifacts =
 and the global type environment.
 -}
 type alias PackageTypedArtifacts =
-    { typedGraph : TOpt.GlobalGraph
+    { typedGraph : TOpt.GlobalGraph Name
     , typeEnv : TypeEnv.GlobalTypeEnv
     }
 
@@ -1211,7 +1211,7 @@ writePackageArtifacts ctx exposedDict docsStatus resultDict =
                     (\_ ->
                         if ctx.needsTypedOpt then
                             let
-                                typedGraph : TOpt.GlobalGraph
+                                typedGraph : TOpt.GlobalGraph Name
                                 typedGraph =
                                     gatherTypedObjects successes
 
@@ -1326,14 +1326,14 @@ addLocalOptGraph name status graph =
 
 {-| Gather typed objects from DResult dictionary for MLIR backend.
 -}
-gatherTypedObjects : Dict ModuleName.Raw DResult -> TOpt.GlobalGraph
+gatherTypedObjects : Dict ModuleName.Raw DResult -> TOpt.GlobalGraph Name
 gatherTypedObjects results =
     Dict.foldr addTypedLocalOptGraph TOpt.emptyGlobalGraph results
 
 
 {-| Add a typed local graph to the global graph.
 -}
-addTypedLocalOptGraph : ModuleName.Raw -> DResult -> TOpt.GlobalGraph -> TOpt.GlobalGraph
+addTypedLocalOptGraph : ModuleName.Raw -> DResult -> TOpt.GlobalGraph Name -> TOpt.GlobalGraph Name
 addTypedLocalOptGraph _ status graph =
     case status of
         RLocal _ _ maybeTypedObjs _ _ ->
@@ -1613,7 +1613,7 @@ getDepHome fi =
 
 
 type DResult
-    = RLocal I.Interface Opt.LocalGraph (Maybe TOpt.LocalGraph) (Maybe TypeEnv.ModuleTypeEnv) (Maybe Docs.Module)
+    = RLocal I.Interface Opt.LocalGraph (Maybe (TOpt.LocalGraph Name)) (Maybe TypeEnv.ModuleTypeEnv) (Maybe Docs.Module)
     | RForeign I.Interface
     | RKernelLocal (List Kernel.Chunk)
     | RKernelForeign

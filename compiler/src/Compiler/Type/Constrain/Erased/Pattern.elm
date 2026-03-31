@@ -19,7 +19,7 @@ preventing stack overflow on deeply nested patterns.
 
 import Compiler.AST.Canonical as Can
 import Compiler.Data.Index as Index
-import Compiler.Data.Name as Name
+import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Error.Type as E
@@ -42,7 +42,7 @@ import System.TypeCheck.IO as IO exposing (IO)
 type PatternProg a
     = PDone a
     | PMkFlexVar (IO.Variable -> PatternProg a)
-    | PFromSrcType (Dict String Name.Name Type) Can.Type (Type -> PatternProg a)
+    | PFromSrcType (Dict String Name.Name Type) (Can.Type Name) (Type -> PatternProg a)
     | PAddPattern Can.Pattern (E.PExpected Type) State (State -> PatternProg a)
     | PTraverseList (List Name.Name) (List ( Name.Name, IO.Variable ) -> PatternProg a)
 
@@ -105,7 +105,7 @@ pMkFlexVar =
 
 {-| Instantiate a source type.
 -}
-pFromSrcType : Dict String Name.Name Type -> Can.Type -> PatternProg Type
+pFromSrcType : Dict String Name.Name Type -> Can.Type Name -> PatternProg Type
 pFromSrcType dict srcType =
     PFromSrcType dict srcType PDone
 

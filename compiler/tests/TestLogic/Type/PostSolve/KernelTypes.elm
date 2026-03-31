@@ -14,6 +14,7 @@ import Data.Map
 import Dict
 import Expect
 import TestLogic.TestPipeline as Pipeline
+import Compiler.Data.Name exposing (Name)
 
 
 {-| Verify that kernel function types are inferred from usage.
@@ -72,7 +73,7 @@ Kernel types should be:
   - Have consistent function signatures
 
 -}
-checkKernelTypeWellFormed : String -> Can.Type -> List String
+checkKernelTypeWellFormed : String -> Can.Type Name -> List String
 checkKernelTypeWellFormed context canType =
     case canType of
         Can.TVar name ->

@@ -61,7 +61,7 @@ listBinops =
 
 {-| Collect all free type variables from a canonical type.
 -}
-collectFreeVars : Can.Type -> Can.FreeVars
+collectFreeVars : Can.Type Name -> Can.FreeVars
 collectFreeVars tipe =
     case tipe of
         Can.TLambda a b ->
@@ -111,14 +111,14 @@ collectFreeVars tipe =
 
 {-| Helper to create a value annotation.
 -}
-mkAnnotation : Can.Type -> Can.Annotation
+mkAnnotation : Can.Type Name -> Can.Annotation Name
 mkAnnotation tipe =
     Can.Forall (collectFreeVars tipe) tipe
 
 
 {-| List function values.
 -}
-listValues : Dict Name Can.Annotation
+listValues : Dict Name (Can.Annotation Name)
 listValues =
     let
         -- Type variables

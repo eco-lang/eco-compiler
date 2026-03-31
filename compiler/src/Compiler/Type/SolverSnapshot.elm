@@ -19,7 +19,7 @@ IO monad. It is used by the MonoDirect monomorphizer.
 import Array exposing (Array)
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Monomorphized as Mono
-import Compiler.Data.Name as Name
+import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Monomorphize.State as State
 import Compiler.Monomorphize.TypeSubst as TypeSubst
 import Compiler.Type.Type as Type
@@ -102,7 +102,7 @@ instantiation disconnects original tvars from the function's type structure).
 
 -}
 type alias LocalView =
-    { typeOf : TypeVar -> Can.Type
+    { typeOf : TypeVar -> Can.Type Name
     , monoTypeOf : TypeVar -> Mono.MonoType
     , subst : Dict String Mono.MonoType
     }
@@ -237,7 +237,7 @@ buildLocalView mvarEnv substDict st =
                 Nothing ->
                     False
 
-        typeOfVar : TypeVar -> Can.Type
+        typeOfVar : TypeVar -> Can.Type Name
         typeOfVar var =
             if hasErrorDescriptor var then
                 Can.TUnit

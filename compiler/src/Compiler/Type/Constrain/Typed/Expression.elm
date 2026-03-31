@@ -292,8 +292,8 @@ also tracking pattern IDs in the NodeIdState.
 constrainTypedArgsWithIds :
     Dict String Name Type
     -> Name
-    -> List ( Can.Pattern, Can.Type )
-    -> Can.Type
+    -> List ( Can.Pattern, Can.Type Name )
+    -> Can.Type Name
     -> NodeIds.NodeIdState
     -> IO ( TypedArgs, NodeIds.NodeIdState )
 constrainTypedArgsWithIds rtv name args srcResultType nodeState =
@@ -307,8 +307,8 @@ typedArgsHelpWithIds :
     Dict String Name Type
     -> Name
     -> Index.ZeroBased
-    -> List ( Can.Pattern, Can.Type )
-    -> Can.Type
+    -> List ( Can.Pattern, Can.Type Name )
+    -> Can.Type Name
     -> State
     -> NodeIds.NodeIdState
     -> IO ( TypedArgs, NodeIds.NodeIdState )
@@ -991,7 +991,7 @@ constrainShaderWithIdsProg region (Shader.Types attributes uniforms varyings) ex
             )
 
 
-constrainBinopWithIdsProg : RigidTypeVar -> A.Region -> Int -> Name -> Can.Annotation -> Can.Expr -> Can.Expr -> E.Expected Type -> ProgS ExprIdState Constraint
+constrainBinopWithIdsProg : RigidTypeVar -> A.Region -> Int -> Name -> Can.Annotation Name -> Can.Expr -> Can.Expr -> E.Expected Type -> ProgS ExprIdState Constraint
 constrainBinopWithIdsProg rtv region exprId op annotation leftExpr rightExpr expected =
     Prog.opMkFlexVarS
         |> Prog.andThenS
@@ -1049,7 +1049,7 @@ constrainBinopWithIdsProg rtv region exprId op annotation leftExpr rightExpr exp
             )
 
 
-constrainBinopNodeWithIdsProg : RigidTypeVar -> A.Region -> Name -> Can.Annotation -> Can.Expr -> Can.Expr -> E.Expected Type -> ProgS ExprIdState Constraint
+constrainBinopNodeWithIdsProg : RigidTypeVar -> A.Region -> Name -> Can.Annotation Name -> Can.Expr -> Can.Expr -> E.Expected Type -> ProgS ExprIdState Constraint
 constrainBinopNodeWithIdsProg rtv region op annotation leftExpr rightExpr expected =
     Prog.opMkFlexVarS
         |> Prog.andThenS

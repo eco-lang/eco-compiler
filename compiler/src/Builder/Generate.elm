@@ -53,7 +53,7 @@ import Compiler.AST.Optimized as Opt
 import Compiler.AST.TypeEnv as TypeEnv
 import Compiler.AST.TypedModuleArtifact as TMod
 import Compiler.AST.TypedOptimized as TOpt
-import Compiler.Data.Name as N
+import Compiler.Data.Name as N exposing (Name)
 import Compiler.Data.NonEmptyList as NE
 import Compiler.Elm.Compiler.Type.Extract as Extract
 import Compiler.Elm.Interface as I
@@ -222,7 +222,7 @@ repl backend root details ansi (Build.ReplArtifacts replArtifacts) name =
         |> Task.map (generateReplOutput backend ansi replArtifacts.localizer replArtifacts.home name replArtifacts.annotations)
 
 
-generateReplOutput : CodeGen.CodeGen -> Bool -> L.Localizer -> TypeCheck.Canonical -> N.Name -> Dict N.Name Can.Annotation -> Objects -> CodeGen.Output
+generateReplOutput : CodeGen.CodeGen -> Bool -> L.Localizer -> TypeCheck.Canonical -> N.Name -> Dict N.Name (Can.Annotation Name) -> Objects -> CodeGen.Output
 generateReplOutput backend ansi localizer home name annotations objects =
     let
         graph : Opt.GlobalGraph
@@ -552,7 +552,7 @@ loadTypedModuleObjects root maybeBuildDir modules mvar =
 {-| Combined typed data for a module.
 -}
 type alias ModuleTyped =
-    { graph : TOpt.LocalGraph
+    { graph : TOpt.LocalGraph Name
     , env : TypeEnv.ModuleTypeEnv
     }
 
@@ -561,7 +561,7 @@ type alias ModuleTyped =
 Per-module data has been merged and discarded.
 -}
 type MergedTypedData
-    = MergedTypedData TOpt.GlobalGraph TypeEnv.GlobalTypeEnv
+    = MergedTypedData (TOpt.GlobalGraph Name) TypeEnv.GlobalTypeEnv
 
 
 {-| Finalize typed objects by sequentially loading and merging per-module data
@@ -621,7 +621,7 @@ streamLoadAndMergeCached :
     List ModuleName.Raw
     -> FilePath
     -> Maybe String
-    -> TOpt.GlobalGraph
+    -> TOpt.GlobalGraph Name
     -> TypeEnv.GlobalTypeEnv
     -> Task Never (Result Exit.Generate MergedTypedData)
 streamLoadAndMergeCached remaining root maybeBuildDir graph env =
@@ -701,7 +701,7 @@ stripUntypedGraph modul =
 buildMonoGraphFromMerged : NE.Nonempty Build.Root -> MergedTypedData -> Task Exit.Generate MonoBuildResult
 buildMonoGraphFromMerged roots (MergedTypedData mergedGraph mergedEnv) =
     let
-        typedGraph : TOpt.GlobalGraph
+        typedGraph : TOpt.GlobalGraph Name
         typedGraph =
             List.foldl addRootTypedGraph mergedGraph (NE.toList roots)
 
@@ -720,7 +720,7 @@ pinning data from earlier phases (e.g., TypedObjects, typedGraph, globalTypeEnv)
 through subsequent phases where they are no longer needed.
 
 -}
-runMonoOptPipeline : TOpt.GlobalGraph -> TypeEnv.GlobalTypeEnv -> Task Exit.Generate MonoBuildResult
+runMonoOptPipeline : TOpt.GlobalGraph Name -> TypeEnv.GlobalTypeEnv -> Task Exit.Generate MonoBuildResult
 runMonoOptPipeline typedGraph globalTypeEnv =
     logStderr "Monomorphization started..."
         |> Task.andThen
@@ -831,7 +831,7 @@ writeMonoMlirStreamingBytecode _ _ root maybeBuildDir maybeLocal details artifac
             )
 
 
-addRootTypedGraph : Build.Root -> TOpt.GlobalGraph -> TOpt.GlobalGraph
+addRootTypedGraph : Build.Root -> TOpt.GlobalGraph Name -> TOpt.GlobalGraph Name
 addRootTypedGraph root graph =
     case root of
         Build.Inside _ ->

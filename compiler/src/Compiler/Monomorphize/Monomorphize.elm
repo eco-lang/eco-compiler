@@ -7,7 +7,7 @@ The monomorphization algorithm works as follows:
 
 1.  Find the entry point (main function).
 2.  Use a worklist to process each (Global, MonoType, Maybe LambdaId) specialization.
-3.  For each work item, specialize the TOpt.Node into a MonoNode by:
+3.  For each work item, specialize the TOpt.Node Name into a MonoNode by:
     a. Unifying the polymorphic type with the concrete type to get a substitution.
     b. Applying the substitution to all types in the expression.
     c. Discovering new specializations needed and adding them to the worklist.
@@ -60,7 +60,7 @@ type alias MonoState =
 This is useful for testing when the entry point is not named "main".
 
 -}
-monomorphize : Name -> TypeEnv.GlobalTypeEnv -> TOpt.GlobalGraph -> Result String Mono.MonoGraph
+monomorphize : Name -> TypeEnv.GlobalTypeEnv -> TOpt.GlobalGraph Name -> Result String Mono.MonoGraph
 monomorphize entryPointName globalTypeEnv (TOpt.GlobalGraph nodes _ _) =
     case findEntryPoint entryPointName nodes of
         Nothing ->
@@ -72,7 +72,7 @@ monomorphize entryPointName globalTypeEnv (TOpt.GlobalGraph nodes _ _) =
 
 {-| Perform monomorphization from a given entry point.
 -}
-monomorphizeFromEntry : TOpt.Global -> Can.Type -> TypeEnv.GlobalTypeEnv -> DMap.Dict (List String) TOpt.Global TOpt.Node -> Result String Mono.MonoGraph
+monomorphizeFromEntry : TOpt.Global -> Can.Type Name -> TypeEnv.GlobalTypeEnv -> DMap.Dict (List String) TOpt.Global (TOpt.Node Name) -> Result String Mono.MonoGraph
 monomorphizeFromEntry mainGlobal mainType globalTypeEnv nodes =
     let
         ( finalState, mainSpecIdVal ) =
@@ -89,7 +89,7 @@ monomorphizeFromEntry mainGlobal mainType globalTypeEnv nodes =
 
 {-| Like monomorphize, but logs each sub-pass via the provided logger.
 -}
-monomorphizeWithLog : (String -> Task x ()) -> Name -> TypeEnv.GlobalTypeEnv -> TOpt.GlobalGraph -> Task x (Result String Mono.MonoGraph)
+monomorphizeWithLog : (String -> Task x ()) -> Name -> TypeEnv.GlobalTypeEnv -> TOpt.GlobalGraph Name -> Task x (Result String Mono.MonoGraph)
 monomorphizeWithLog log entryPointName globalTypeEnv (TOpt.GlobalGraph nodes _ _) =
     case findEntryPoint entryPointName nodes of
         Nothing ->
@@ -131,7 +131,7 @@ monomorphizeWithLog log entryPointName globalTypeEnv (TOpt.GlobalGraph nodes _ _
 
 {-| Phase 1: Run the specialization worklist to completion.
 -}
-runSpecialization : TOpt.Global -> Can.Type -> TypeEnv.GlobalTypeEnv -> DMap.Dict (List String) TOpt.Global TOpt.Node -> ( MonoState, Mono.SpecId )
+runSpecialization : TOpt.Global -> Can.Type Name -> TypeEnv.GlobalTypeEnv -> DMap.Dict (List String) TOpt.Global (TOpt.Node Name) -> ( MonoState, Mono.SpecId )
 runSpecialization mainGlobal mainType globalTypeEnv nodes =
     let
         mainMonoType : Mono.MonoType
@@ -258,14 +258,14 @@ assembleRawGraphFrom finalAccum lambdaCounter mainSpecIdVal =
 
 {-| Initialize the monomorphization state with empty worklist and registry.
 -}
-initState : IO.Canonical -> DMap.Dict (List String) TOpt.Global TOpt.Node -> TypeEnv.GlobalTypeEnv -> MonoState
+initState : IO.Canonical -> DMap.Dict (List String) TOpt.Global (TOpt.Node Name) -> TypeEnv.GlobalTypeEnv -> MonoState
 initState =
     State.initState
 
 
 {-| Find an entry point by name in the global graph.
 -}
-findEntryPoint : Name -> DMap.Dict (List String) TOpt.Global TOpt.Node -> Maybe ( TOpt.Global, Can.Type )
+findEntryPoint : Name -> DMap.Dict (List String) TOpt.Global (TOpt.Node Name) -> Maybe ( TOpt.Global, Can.Type Name )
 findEntryPoint entryPointName nodes =
     DMap.foldl TOpt.compareGlobal
         (\global node acc ->
@@ -512,7 +512,7 @@ type alias Substitution =
     State.Substitution
 
 
-canTypeToMonoType : Substitution -> Can.Type -> Mono.MonoType
+canTypeToMonoType : Substitution -> Can.Type Name -> Mono.MonoType
 canTypeToMonoType subst canType =
     Tuple.first (TypeSubst.canTypeToMonoType State.emptyMVarEnv subst canType)
 
@@ -520,7 +520,7 @@ canTypeToMonoType subst canType =
 {-| Pre-populate an MVarEnv with all type variable names found in a TOpt node.
 This ensures lookupMVarName succeeds for all tvars in the global graph.
 -}
-prePopulateNodeTVars : TOpt.Node -> State.MVarEnv -> State.MVarEnv
+prePopulateNodeTVars : TOpt.Node Name -> State.MVarEnv -> State.MVarEnv
 prePopulateNodeTVars node env =
     case node of
         TOpt.Define expr _ meta ->
@@ -557,12 +557,12 @@ prePopulateNodeTVars node env =
             prePopulateCanTypeTVars meta.tipe (prePopulateExprTVars expr env)
 
 
-prePopulateExprTVars : TOpt.Expr -> State.MVarEnv -> State.MVarEnv
+prePopulateExprTVars : TOpt.Expr Name -> State.MVarEnv -> State.MVarEnv
 prePopulateExprTVars expr env =
     prePopulateCanTypeTVars (TOpt.typeOf expr) env
 
 
-prePopulateCanTypeTVars : Can.Type -> State.MVarEnv -> State.MVarEnv
+prePopulateCanTypeTVars : Can.Type Name -> State.MVarEnv -> State.MVarEnv
 prePopulateCanTypeTVars canType env =
     let
         names =

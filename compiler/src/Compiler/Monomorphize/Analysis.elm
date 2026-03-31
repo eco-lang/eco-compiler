@@ -389,7 +389,7 @@ lookupUnion typeEnv canonical typeName =
 
 
 {-| Build complete CtorShapes for all constructors in a union.
-Uses TypeSubst.applySubst to convert Can.Type to MonoType.
+Uses TypeSubst.applySubst to convert Can.Type Name to MonoType.
 -}
 buildCompleteCtorShapes : MVarEnv -> List Name -> List Mono.MonoType -> List Can.Ctor -> ( List Mono.CtorShape, MVarEnv )
 buildCompleteCtorShapes env vars monoArgs alts =

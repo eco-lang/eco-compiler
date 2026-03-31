@@ -44,7 +44,7 @@ For Source AST builders, use Compiler.AST.SourceBuilder.
 
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Source as Src
-import Compiler.Data.Name as Name
+import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Elm.Package as Pkg
 import Compiler.Reporting.Annotation as A
 import Dict exposing (Dict)
@@ -116,7 +116,7 @@ makeDef name args body =
 {-| Create a typed definition.
 Automatically extracts free type variables from the argument and result types.
 -}
-makeTypedDef : Name.Name -> List ( Can.Pattern, Can.Type ) -> Can.Expr -> Can.Type -> Can.Def
+makeTypedDef : Name.Name -> List ( Can.Pattern, Can.Type Name ) -> Can.Expr -> Can.Type Name -> Can.Def
 makeTypedDef name args body resultType =
     let
         -- Extract all free type variables from arg types and result type
@@ -135,10 +135,10 @@ makeTypedDef name args body resultType =
     Can.TypedDef (A.At A.zero name) freeVars args body resultType
 
 
-{-| Extract free type variables from a Can.Type.
+{-| Extract free type variables from a Can.Type Name.
 Returns a Dict mapping variable names to ().
 -}
-extractFreeTypeVars : Can.Type -> Dict Name.Name ()
+extractFreeTypeVars : Can.Type Name -> Dict Name.Name ()
 extractFreeTypeVars tipe =
     case tipe of
         Can.TVar name ->
@@ -274,14 +274,14 @@ varKernelExpr id home name =
 {-| Create a foreign variable reference (VarForeign).
 Used for references to functions from other modules with type annotations.
 -}
-varForeignExpr : Int -> IO.Canonical -> Name.Name -> Can.Annotation -> Can.Expr
+varForeignExpr : Int -> IO.Canonical -> Name.Name -> Can.Annotation Name -> Can.Expr
 varForeignExpr id home name annotation =
     makeExpr id (Can.VarForeign home name annotation)
 
 
 {-| Create an annotation from free variables and a type.
 -}
-makeAnnotation : List Name.Name -> Can.Type -> Can.Annotation
+makeAnnotation : List Name.Name -> Can.Type Name -> Can.Annotation Name
 makeAnnotation freeVars tipe =
     Can.Forall (Dict.fromList (List.map (\v -> ( v, () )) freeVars)) tipe
 
@@ -320,63 +320,63 @@ pVar id name =
 
 {-| Int type.
 -}
-intType : Can.Type
+intType : Can.Type Name
 intType =
     Can.TType (IO.Canonical Pkg.core "Basics") "Int" []
 
 
 {-| List type.
 -}
-listType : Can.Type -> Can.Type
+listType : Can.Type Name -> Can.Type Name
 listType elemType =
     Can.TType (IO.Canonical Pkg.core "List") "List" [ elemType ]
 
 
 {-| Tuple type.
 -}
-tupleType : Can.Type -> Can.Type -> List Can.Type -> Can.Type
+tupleType : Can.Type Name -> Can.Type Name -> List (Can.Type Name) -> Can.Type Name
 tupleType a b rest =
     Can.TTuple a b rest
 
 
 {-| Function type.
 -}
-funType : Can.Type -> Can.Type -> Can.Type
+funType : Can.Type Name -> Can.Type Name -> Can.Type Name
 funType from to =
     Can.TLambda from to
 
 
 {-| Type variable.
 -}
-varType : Name.Name -> Can.Type
+varType : Name.Name -> Can.Type Name
 varType name =
     Can.TVar name
 
 
 {-| Float type.
 -}
-floatType : Can.Type
+floatType : Can.Type Name
 floatType =
     Can.TType (IO.Canonical Pkg.core "Basics") "Float" []
 
 
 {-| Bool type.
 -}
-boolType : Can.Type
+boolType : Can.Type Name
 boolType =
     Can.TType (IO.Canonical Pkg.core "Basics") "Bool" []
 
 
 {-| Char type.
 -}
-charType : Can.Type
+charType : Can.Type Name
 charType =
     Can.TType (IO.Canonical Pkg.core "Char") "Char" []
 
 
 {-| String type.
 -}
-stringType : Can.Type
+stringType : Can.Type Name
 stringType =
     Can.TType (IO.Canonical Pkg.core "String") "String" []
 
@@ -387,6 +387,6 @@ stringType =
     -- equivalent to: Int -> Int -> Int
 
 -}
-tFunc : List Can.Type -> Can.Type -> Can.Type
+tFunc : List (Can.Type Name) -> Can.Type Name -> Can.Type Name
 tFunc args result =
     List.foldr Can.TLambda result args

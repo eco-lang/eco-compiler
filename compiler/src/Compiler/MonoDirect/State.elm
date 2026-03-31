@@ -60,7 +60,7 @@ type alias MonoDirectState =
     , registry : Mono.SpecializationRegistry
     , lambdaCounter : Int
     , currentModule : IO.Canonical
-    , toptNodes : DataMap.Dict (List String) TOpt.Global TOpt.Node
+    , toptNodes : DataMap.Dict (List String) TOpt.Global (TOpt.Node Name)
     , currentGlobal : Maybe Mono.Global
     , globalTypeEnv : TypeEnv.GlobalTypeEnv
     , varEnv : VarEnv
@@ -79,7 +79,7 @@ type alias MonoDirectState =
 -}
 initState :
     IO.Canonical
-    -> DataMap.Dict (List String) TOpt.Global TOpt.Node
+    -> DataMap.Dict (List String) TOpt.Global (TOpt.Node Name)
     -> TypeEnv.GlobalTypeEnv
     -> SolverSnapshot
     -> MonoDirectState

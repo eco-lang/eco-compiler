@@ -6,7 +6,7 @@ module Compiler.LocalOpt.Typed.Port exposing
 {-| Generates typed JSON encoders and decoders for port types.
 
 This is the typed version of Compiler.LocalOpt.Erased.Port. It produces
-TOpt.Expr values with Can.Type annotations instead of Opt.Expr.
+TOpt.Expr Name values with Can.Type Name annotations instead of Opt.Expr.
 
 @docs toEncoder
 @docs toDecoder, toFlagsDecoder
@@ -33,7 +33,7 @@ import Utils.Crash exposing (crash)
 
 {-| Generate a typed JSON encoder function for the given Elm type.
 -}
-toEncoder : Can.Type -> Names.Tracker TOpt.Expr
+toEncoder : Can.Type Name -> Names.Tracker (TOpt.Expr Name)
 toEncoder tipe =
     case tipe of
         Can.TAlias _ _ args alias ->
@@ -107,7 +107,7 @@ toEncoder tipe =
                 valueType =
                     Can.TType ModuleName.jsonEncode "Value" []
 
-                encodeField : ( Name, Can.FieldType ) -> Names.Tracker TOpt.Expr
+                encodeField : ( Name, Can.FieldType Name ) -> Names.Tracker (TOpt.Expr Name)
                 encodeField ( name, Can.FieldType _ fieldType ) =
                     toEncoder fieldType
                         |> Names.map
@@ -148,7 +148,7 @@ toEncoder tipe =
 -- ====== ENCODE HELPERS ======
 
 
-encodeMaybe : Can.Type -> Names.Tracker TOpt.Expr
+encodeMaybe : Can.Type Name -> Names.Tracker (TOpt.Expr Name)
 encodeMaybe tipe =
     let
         maybeType =
@@ -185,7 +185,7 @@ encodeMaybe tipe =
             )
 
 
-encodeList : Can.Type -> Names.Tracker TOpt.Expr
+encodeList : Can.Type Name -> Names.Tracker (TOpt.Expr Name)
 encodeList tipe =
     let
         valueType =
@@ -202,7 +202,7 @@ encodeList tipe =
             )
 
 
-encodeArray : Can.Type -> Names.Tracker TOpt.Expr
+encodeArray : Can.Type Name -> Names.Tracker (TOpt.Expr Name)
 encodeArray tipe =
     let
         valueType =
@@ -219,7 +219,7 @@ encodeArray tipe =
             )
 
 
-encodeTuple : Can.Type -> Can.Type -> List Can.Type -> Names.Tracker TOpt.Expr
+encodeTuple : Can.Type Name -> Can.Type Name -> List (Can.Type Name) -> Names.Tracker (TOpt.Expr Name)
 encodeTuple a b cs =
     let
         tupleType =
@@ -231,7 +231,7 @@ encodeTuple a b cs =
         listValueType =
             Can.TType ModuleName.list "List" [ valueType ]
 
-        let_ : Name -> Can.Type -> Index.ZeroBased -> TOpt.Expr -> TOpt.Expr
+        let_ : Name -> Can.Type Name -> Index.ZeroBased -> TOpt.Expr Name -> TOpt.Expr Name
         let_ arg argType index body =
             let
                 hint =
@@ -243,11 +243,11 @@ encodeTuple a b cs =
             in
             TOpt.Destruct (TOpt.Destructor arg (TOpt.Index index hint (TOpt.Root Name.dollar)) { tipe = argType, tvar = Nothing }) body { tipe = TOpt.typeOf body, tvar = Nothing }
 
-        letCs_ : Name -> Can.Type -> Int -> TOpt.Expr -> TOpt.Expr
+        letCs_ : Name -> Can.Type Name -> Int -> TOpt.Expr Name -> TOpt.Expr Name
         letCs_ arg argType index body =
             TOpt.Destruct (TOpt.Destructor arg (TOpt.ArrayIndex index (TOpt.Field "cs" (TOpt.Root Name.dollar))) { tipe = argType, tvar = Nothing }) body { tipe = TOpt.typeOf body, tvar = Nothing }
 
-        encodeArg : Name -> Can.Type -> Names.Tracker TOpt.Expr
+        encodeArg : Name -> Can.Type Name -> Names.Tracker (TOpt.Expr Name)
         encodeArg arg argType =
             toEncoder argType
                 |> Names.map (\encoder -> TOpt.Call A.zero encoder [ TOpt.VarLocal arg { tipe = argType, tvar = Nothing } ] { tipe = valueType, tvar = Nothing })
@@ -311,7 +311,7 @@ encodeTuple a b cs =
 
 {-| Generate a typed JSON decoder for program flags.
 -}
-toFlagsDecoder : Can.Type -> Names.Tracker TOpt.Expr
+toFlagsDecoder : Can.Type Name -> Names.Tracker (TOpt.Expr Name)
 toFlagsDecoder tipe =
     case tipe of
         Can.TUnit ->
@@ -331,7 +331,7 @@ toFlagsDecoder tipe =
 
 {-| Generate a typed JSON decoder for the given Elm type.
 -}
-toDecoder : Can.Type -> Names.Tracker TOpt.Expr
+toDecoder : Can.Type Name -> Names.Tracker (TOpt.Expr Name)
 toDecoder tipe =
     case tipe of
         Can.TLambda _ _ ->
@@ -392,7 +392,7 @@ toDecoder tipe =
 -- ====== DECODE HELPERS ======
 
 
-decodeMaybe : Can.Type -> Names.Tracker TOpt.Expr
+decodeMaybe : Can.Type Name -> Names.Tracker (TOpt.Expr Name)
 decodeMaybe tipe =
     let
         maybeType =
@@ -440,7 +440,7 @@ decodeMaybe tipe =
             )
 
 
-decodeList : Can.Type -> Names.Tracker TOpt.Expr
+decodeList : Can.Type Name -> Names.Tracker (TOpt.Expr Name)
 decodeList tipe =
     let
         listType =
@@ -460,7 +460,7 @@ decodeList tipe =
             )
 
 
-decodeArray : Can.Type -> Names.Tracker TOpt.Expr
+decodeArray : Can.Type Name -> Names.Tracker (TOpt.Expr Name)
 decodeArray tipe =
     let
         arrayType =
@@ -480,7 +480,7 @@ decodeArray tipe =
             )
 
 
-decodeTuple0 : Names.Tracker TOpt.Expr
+decodeTuple0 : Names.Tracker (TOpt.Expr Name)
 decodeTuple0 =
     let
         decoderType =
@@ -493,7 +493,7 @@ decodeTuple0 =
             )
 
 
-decodeTuple : Can.Type -> Can.Type -> List Can.Type -> Names.Tracker TOpt.Expr
+decodeTuple : Can.Type Name -> Can.Type Name -> List (Can.Type Name) -> Names.Tracker (TOpt.Expr Name)
 decodeTuple a b cs =
     let
         tupleType =
@@ -523,12 +523,12 @@ decodeTuple a b cs =
             )
 
 
-toLocal : Int -> Can.Type -> TOpt.Expr
+toLocal : Int -> Can.Type Name -> TOpt.Expr Name
 toLocal index tipe =
     TOpt.VarLocal (Name.fromVarIndex index) { tipe = tipe, tvar = Nothing }
 
 
-indexAndThen : Int -> Can.Type -> TOpt.Expr -> Names.Tracker TOpt.Expr
+indexAndThen : Int -> Can.Type Name -> TOpt.Expr Name -> Names.Tracker (TOpt.Expr Name)
 indexAndThen i tipe decoder =
     let
         decoderResultType =
@@ -561,13 +561,13 @@ indexAndThen i tipe decoder =
             )
 
 
-decodeRecord : Dict Name.Name Can.FieldType -> Can.Type -> Names.Tracker TOpt.Expr
+decodeRecord : Dict Name.Name (Can.FieldType Name) -> Can.Type Name -> Names.Tracker (TOpt.Expr Name)
 decodeRecord fields recordType =
     let
         decoderType =
             Can.TType ModuleName.jsonDecode "Decoder" [ recordType ]
 
-        toFieldExpr : Name -> Can.FieldType -> TOpt.Expr
+        toFieldExpr : Name -> Can.FieldType Name -> TOpt.Expr Name
         toFieldExpr name (Can.FieldType _ fieldType) =
             TOpt.VarLocal name { tipe = fieldType, tvar = Nothing }
 
@@ -587,7 +587,7 @@ decodeRecord fields recordType =
             )
 
 
-fieldAndThen : TOpt.Expr -> ( Name.Name, Can.FieldType ) -> Names.Tracker TOpt.Expr
+fieldAndThen : TOpt.Expr Name -> ( Name.Name, Can.FieldType Name ) -> Names.Tracker (TOpt.Expr Name)
 fieldAndThen decoder ( key, Can.FieldType _ tipe ) =
     let
         decoderResultType =
@@ -624,12 +624,12 @@ fieldAndThen decoder ( key, Can.FieldType _ tipe ) =
 -- ====== GLOBALS HELPERS ======
 
 
-encode : Name -> Names.Tracker TOpt.Expr
+encode : Name -> Names.Tracker (TOpt.Expr Name)
 encode name =
     Names.registerGlobal A.zero ModuleName.jsonEncode name (Can.TVar name) Nothing
 
 
-decode : Name -> Names.Tracker TOpt.Expr
+decode : Name -> Names.Tracker (TOpt.Expr Name)
 decode name =
     Names.registerGlobal A.zero ModuleName.jsonDecode name (Can.TVar name) Nothing
 
@@ -638,11 +638,11 @@ decode name =
 -- ====== BYTES HELPERS ======
 
 
-encodeBytes : Names.Tracker TOpt.Expr
+encodeBytes : Names.Tracker (TOpt.Expr Name)
 encodeBytes =
     Names.registerKernel Name.json (TOpt.VarKernel A.zero "Elm" Name.json "encodeBytes" { tipe = Can.TVar "encodeBytes", tvar = Nothing })
 
 
-decodeBytes : Names.Tracker TOpt.Expr
+decodeBytes : Names.Tracker (TOpt.Expr Name)
 decodeBytes =
     Names.registerKernel Name.json (TOpt.VarKernel A.zero "Elm" Name.json "decodeBytes" { tipe = Can.TVar "decodeBytes", tvar = Nothing })

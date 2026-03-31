@@ -22,14 +22,15 @@ import SourceIR.Suite.StandardTestSuites as StandardTestSuites
 import Test exposing (Test)
 import TestLogic.Type.PostSolve.CompileThroughPostSolve as Compile
 import TestLogic.Type.PostSolve.PostSolveInvariantHelpers as Helpers
+import Compiler.Data.Name exposing (Name)
 
 
 {-| A violation of POST\_008.
 -}
 type alias Violation =
     { nodeId : Int
-    , preType : Maybe Can.Type
-    , postType : Can.Type
+    , preType : Maybe (Can.Type Name)
+    , postType : Can.Type Name
     , newVars : List String
     , details : String
     }
@@ -106,7 +107,7 @@ checkLambdaContextVars :
     Helpers.ExprNode
     -> PostSolve.NodeTypes
     -> PostSolve.NodeTypes
-    -> Dict.Dict String Can.Annotation
+    -> Dict.Dict String (Can.Annotation Name)
     -> Maybe Violation
 checkLambdaContextVars exprNode nodeTypesPre nodeTypesPost annotations =
     case Array.get exprNode.id nodeTypesPost |> Maybe.andThen identity of
@@ -169,7 +170,7 @@ solver context for a given pre-PostSolve type.
   - If the pre type is structured, compute all free type vars from it.
 
 -}
-computeContextVars : Can.Type -> EverySet String String
+computeContextVars : Can.Type Name -> EverySet String String
 computeContextVars preType =
     case preType of
         Can.TVar name ->
@@ -212,7 +213,7 @@ formatViolation v =
         ++ v.details
 
 
-maybeTypeToString : Maybe Can.Type -> String
+maybeTypeToString : Maybe (Can.Type Name) -> String
 maybeTypeToString mt =
     case mt of
         Just t ->
@@ -222,7 +223,7 @@ maybeTypeToString mt =
             "(none)"
 
 
-typeToString : Can.Type -> String
+typeToString : Can.Type Name -> String
 typeToString tipe =
     case tipe of
         Can.TVar name ->

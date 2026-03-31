@@ -41,7 +41,7 @@ import Data.Map as Dict exposing (Dict)
 {-| Environment mapping kernel function (home, name) pairs to their types.
 -}
 type alias KernelTypeEnv =
-    Dict ( String, String ) ( Name, Name ) Can.Type
+    Dict ( String, String ) ( Name, Name ) (Can.Type Name)
 
 
 toComparable : ( Name, Name ) -> ( String, String )
@@ -55,7 +55,7 @@ toComparable ( a, b ) =
 
 {-| Look up a kernel type by (home, name).
 -}
-lookup : Name -> Name -> KernelTypeEnv -> Maybe Can.Type
+lookup : Name -> Name -> KernelTypeEnv -> Maybe (Can.Type Name)
 lookup home name env =
     Dict.get toComparable ( home, name ) env
 
@@ -78,7 +78,7 @@ hasEntry home name env =
 
 {-| Insert a kernel type only if no entry exists (first-usage-wins).
 -}
-insertFirstUsage : Name -> Name -> Can.Type -> KernelTypeEnv -> KernelTypeEnv
+insertFirstUsage : Name -> Name -> Can.Type Name -> KernelTypeEnv -> KernelTypeEnv
 insertFirstUsage home name tipe env =
     if hasEntry home name env then
         env
@@ -89,6 +89,6 @@ insertFirstUsage home name tipe env =
 
 {-| Build a function type from argument types and result type.
 -}
-buildFunctionType : List Can.Type -> Can.Type -> Can.Type
+buildFunctionType : List (Can.Type Name) -> Can.Type Name -> Can.Type Name
 buildFunctionType argTypes resultType =
     List.foldr Can.TLambda resultType argTypes

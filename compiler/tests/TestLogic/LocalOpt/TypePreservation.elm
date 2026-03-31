@@ -6,7 +6,7 @@ module TestLogic.LocalOpt.TypePreservation exposing
 {-| Test logic for invariant TOPT\_004: Typed optimization is type preserving.
 
 For each TypedOptimized expression, derive its expected type via local typing
-rules and verify that the stored Can.Type matches via alpha-equivalence.
+rules and verify that the stored Can.Type Name matches via alpha-equivalence.
 
 Key checks:
 
@@ -26,7 +26,7 @@ Key checks:
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Source as Src
 import Compiler.AST.TypedOptimized as TOpt
-import Compiler.Data.Name as Name
+import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Reporting.Annotation as A
 import Compiler.Type.KernelTypes as KernelTypes
 import Data.Map
@@ -48,8 +48,8 @@ import TestLogic.TestPipeline as Pipeline
 -}
 type alias Violation =
     { exprKind : String
-    , storedType : Can.Type
-    , expectedType : Maybe Can.Type
+    , storedType : Can.Type Name
+    , expectedType : Maybe (Can.Type Name)
     , details : String
     , context : String
     }
@@ -58,8 +58,8 @@ type alias Violation =
 {-| Context for type checking expressions.
 -}
 type alias TypeEnv =
-    { locals : Dict Name.Name Can.Type
-    , annotations : Dict Name.Name Can.Annotation
+    { locals : Dict Name.Name (Can.Type Name)
+    , annotations : Dict Name.Name (Can.Annotation Name)
     , kernelEnv : KernelTypes.KernelTypeEnv
     }
 
@@ -102,7 +102,7 @@ expectTypePreservation srcModule =
 -- ============================================================================
 
 
-checkLocalGraph : TypeEnv -> TOpt.LocalGraph -> List Violation
+checkLocalGraph : TypeEnv -> TOpt.LocalGraph Name -> List Violation
 checkLocalGraph env (TOpt.LocalGraph data) =
     Data.Map.foldl TOpt.compareGlobal
         (\global node acc ->
@@ -123,7 +123,7 @@ globalToString (TOpt.Global home name) =
             moduleName ++ "." ++ name
 
 
-checkNode : TypeEnv -> String -> TOpt.Node -> List Violation
+checkNode : TypeEnv -> String -> TOpt.Node Name -> List Violation
 checkNode env context node =
     case node of
         TOpt.Define expr _ _ ->
@@ -174,7 +174,7 @@ checkNode env context node =
 -- ============================================================================
 
 
-checkExpr : TypeEnv -> String -> TOpt.Expr -> List Violation
+checkExpr : TypeEnv -> String -> TOpt.Expr Name -> List Violation
 checkExpr env context expr =
     case expr of
         -- Literals
@@ -395,7 +395,7 @@ checkExpr env context expr =
 -- ============================================================================
 
 
-checkDef : TypeEnv -> String -> TOpt.Def -> List Violation
+checkDef : TypeEnv -> String -> TOpt.Def Name -> List Violation
 checkDef env context def =
     case def of
         TOpt.Def _ name expr _ ->
@@ -427,7 +427,7 @@ checkDef env context def =
 -- ============================================================================
 
 
-checkDecider : TypeEnv -> String -> Can.Type -> TOpt.Decider TOpt.Choice -> List Violation
+checkDecider : TypeEnv -> String -> Can.Type Name -> TOpt.Decider (TOpt.Choice Name) -> List Violation
 checkDecider env context expectedType decider =
     case decider of
         TOpt.Leaf choice ->
@@ -442,7 +442,7 @@ checkDecider env context expectedType decider =
                 ++ checkDecider env context expectedType fallback
 
 
-checkChoice : TypeEnv -> String -> Can.Type -> TOpt.Choice -> List Violation
+checkChoice : TypeEnv -> String -> Can.Type Name -> TOpt.Choice Name -> List Violation
 checkChoice env context expectedType choice =
     case choice of
         TOpt.Inline expr ->
@@ -462,7 +462,7 @@ checkChoice env context expectedType choice =
             []
 
 
-checkJumps : TypeEnv -> String -> Can.Type -> List ( Int, TOpt.Expr ) -> List Violation
+checkJumps : TypeEnv -> String -> Can.Type Name -> List ( Int, TOpt.Expr Name ) -> List Violation
 checkJumps env context expectedType jumps =
     List.concatMap
         (\( idx, expr ) ->
@@ -486,7 +486,7 @@ checkJumps env context expectedType jumps =
 -- ============================================================================
 
 
-getDefNameAndType : TOpt.Def -> ( Name.Name, Can.Type )
+getDefNameAndType : TOpt.Def Name -> ( Name.Name, Can.Type Name )
 getDefNameAndType def =
     case def of
         TOpt.Def _ name _ tipe ->
@@ -496,7 +496,7 @@ getDefNameAndType def =
             ( name, tipe )
 
 
-checkLiteralType : String -> String -> Can.Type -> Can.Type -> List Violation
+checkLiteralType : String -> String -> Can.Type Name -> Can.Type Name -> List Violation
 checkLiteralType context kind actual expected =
     if alphaEq actual expected then
         []
@@ -505,7 +505,7 @@ checkLiteralType context kind actual expected =
         [ violation context kind actual (Just expected) "Literal type mismatch" ]
 
 
-violation : String -> String -> Can.Type -> Maybe Can.Type -> String -> Violation
+violation : String -> String -> Can.Type Name -> Maybe (Can.Type Name) -> String -> Violation
 violation context kind stored expected details =
     { exprKind = kind
     , storedType = stored
@@ -521,7 +521,7 @@ violation context kind stored expected details =
 -- ============================================================================
 
 
-alphaEq : Can.Type -> Can.Type -> Bool
+alphaEq : Can.Type Name -> Can.Type Name -> Bool
 alphaEq a b =
     case ( a, b ) of
         ( Can.TVar _, Can.TVar _ ) ->
@@ -590,7 +590,7 @@ canonicalTypesEqual (IO.Canonical pkg1 _) name1 (IO.Canonical pkg2 _) name2 =
     pkg1 == pkg2 && name1 == name2
 
 
-alphaEqList : List Can.Type -> List Can.Type -> Bool
+alphaEqList : List (Can.Type Name) -> List (Can.Type Name) -> Bool
 alphaEqList xs ys =
     case ( xs, ys ) of
         ( [], [] ) ->
@@ -616,7 +616,7 @@ alphaEqExt e1 e2 =
             False
 
 
-alphaEqFields : Dict Name.Name Can.FieldType -> Dict Name.Name Can.FieldType -> Bool
+alphaEqFields : Dict Name.Name (Can.FieldType Name) -> Dict Name.Name (Can.FieldType Name) -> Bool
 alphaEqFields f1 f2 =
     let
         keys1 =
@@ -639,7 +639,7 @@ alphaEqFields f1 f2 =
             keys1
 
 
-alphaEqArgs : List ( Name.Name, Can.Type ) -> List ( Name.Name, Can.Type ) -> Bool
+alphaEqArgs : List ( Name.Name, Can.Type Name ) -> List ( Name.Name, Can.Type Name ) -> Bool
 alphaEqArgs args1 args2 =
     case ( args1, args2 ) of
         ( [], [] ) ->
@@ -652,7 +652,7 @@ alphaEqArgs args1 args2 =
             False
 
 
-alphaEqAlias : Can.AliasType -> Can.AliasType -> Bool
+alphaEqAlias : Can.AliasType Name -> Can.AliasType Name -> Bool
 alphaEqAlias at1 at2 =
     case ( at1, at2 ) of
         ( Can.Holey t1, Can.Holey t2 ) ->
@@ -671,7 +671,7 @@ alphaEqAlias at1 at2 =
 -- ============================================================================
 
 
-oneWayUnify : EverySet.EverySet String Name.Name -> Can.Type -> Can.Type -> Dict Name.Name Can.Type -> Maybe (Dict Name.Name Can.Type)
+oneWayUnify : EverySet.EverySet String Name.Name -> Can.Type Name -> Can.Type Name -> Dict Name.Name (Can.Type Name) -> Maybe (Dict Name.Name (Can.Type Name))
 oneWayUnify schemeVars schemeT instanceT subst =
     case schemeT of
         Can.TVar name ->
@@ -798,7 +798,7 @@ oneWayUnify schemeVars schemeT instanceT subst =
                     Nothing
 
 
-unifyLists : EverySet.EverySet String Name.Name -> List Can.Type -> List Can.Type -> Dict Name.Name Can.Type -> Maybe (Dict Name.Name Can.Type)
+unifyLists : EverySet.EverySet String Name.Name -> List (Can.Type Name) -> List (Can.Type Name) -> Dict Name.Name (Can.Type Name) -> Maybe (Dict Name.Name (Can.Type Name))
 unifyLists schemeVars ts1 ts2 subst =
     case ( ts1, ts2 ) of
         ( [], [] ) ->
@@ -812,7 +812,7 @@ unifyLists schemeVars ts1 ts2 subst =
             Nothing
 
 
-unifyFields : EverySet.EverySet String Name.Name -> Dict Name.Name Can.FieldType -> Dict Name.Name Can.FieldType -> Dict Name.Name Can.Type -> Maybe (Dict Name.Name Can.Type)
+unifyFields : EverySet.EverySet String Name.Name -> Dict Name.Name (Can.FieldType Name) -> Dict Name.Name (Can.FieldType Name) -> Dict Name.Name (Can.Type Name) -> Maybe (Dict Name.Name (Can.Type Name))
 unifyFields schemeVars fields1 fields2 subst =
     let
         keys1 =
@@ -843,7 +843,7 @@ unifyFields schemeVars fields1 fields2 subst =
             keys1
 
 
-unifyArgPairs : EverySet.EverySet String Name.Name -> List ( Name.Name, Can.Type ) -> List ( Name.Name, Can.Type ) -> Dict Name.Name Can.Type -> Maybe (Dict Name.Name Can.Type)
+unifyArgPairs : EverySet.EverySet String Name.Name -> List ( Name.Name, Can.Type Name ) -> List ( Name.Name, Can.Type Name ) -> Dict Name.Name (Can.Type Name) -> Maybe (Dict Name.Name (Can.Type Name))
 unifyArgPairs schemeVars args1 args2 subst =
     case ( args1, args2 ) of
         ( [], [] ) ->
@@ -857,7 +857,7 @@ unifyArgPairs schemeVars args1 args2 subst =
             Nothing
 
 
-unifyAliasTypes : EverySet.EverySet String Name.Name -> Can.AliasType -> Can.AliasType -> Dict Name.Name Can.Type -> Maybe (Dict Name.Name Can.Type)
+unifyAliasTypes : EverySet.EverySet String Name.Name -> Can.AliasType Name -> Can.AliasType Name -> Dict Name.Name (Can.Type Name) -> Maybe (Dict Name.Name (Can.Type Name))
 unifyAliasTypes schemeVars at1 at2 subst =
     case ( at1, at2 ) of
         ( Can.Holey t1, Can.Holey t2 ) ->
@@ -907,7 +907,7 @@ formatViolation v =
         ++ v.details
 
 
-typeToString : Can.Type -> String
+typeToString : Can.Type Name -> String
 typeToString tipe =
     case tipe of
         Can.TVar name ->
@@ -951,7 +951,7 @@ typeToString tipe =
             Tuple.first pkg ++ "/" ++ Tuple.second pkg ++ ":" ++ mod ++ "." ++ name ++ " (alias)"
 
 
-typeToStringParens : Can.Type -> String
+typeToStringParens : Can.Type Name -> String
 typeToStringParens tipe =
     case tipe of
         Can.TLambda _ _ ->

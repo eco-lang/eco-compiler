@@ -1,6 +1,6 @@
 module TestLogic.LocalOpt.Typed.TypeEq exposing (alphaEqStrict)
 
-{-| Strict alpha-equivalence for Can.Type values.
+{-| Strict alpha-equivalence for Can.Type Name values.
 
 This module provides a type comparator that enforces consistent TVar renaming,
 unlike the permissive alphaEq in TypePreservation.elm which treats TVar as wildcard.
@@ -16,7 +16,7 @@ This is critical for catching MONO\_018-class bugs where:
 -}
 
 import Compiler.AST.Canonical as Can
-import Compiler.Data.Name as Name
+import Compiler.Data.Name as Name exposing (Name)
 import Dict exposing (Dict)
 import System.TypeCheck.IO as IO
 
@@ -58,7 +58,7 @@ TVar only matches TVar via a consistent bidirectional mapping.
 TVar does NOT match a concrete type.
 
 -}
-alphaEqStrict : Can.Type -> Can.Type -> Bool
+alphaEqStrict : Can.Type Name -> Can.Type Name -> Bool
 alphaEqStrict t1 t2 =
     case alphaEqStrictHelp emptyState t1 t2 of
         Just _ ->
@@ -74,7 +74,7 @@ alphaEqStrict t1 t2 =
 -- ============================================================================
 
 
-alphaEqStrictHelp : AlphaState -> Can.Type -> Can.Type -> Maybe AlphaState
+alphaEqStrictHelp : AlphaState -> Can.Type Name -> Can.Type Name -> Maybe AlphaState
 alphaEqStrictHelp state t1 t2 =
     case ( t1, t2 ) of
         ( Can.TVar a, Can.TVar b ) ->
@@ -185,7 +185,7 @@ matchTVars state a b =
 -- ============================================================================
 
 
-alphaEqStrictList : AlphaState -> List Can.Type -> List Can.Type -> Maybe AlphaState
+alphaEqStrictList : AlphaState -> List (Can.Type Name) -> List (Can.Type Name) -> Maybe AlphaState
 alphaEqStrictList state ts1 ts2 =
     case ( ts1, ts2 ) of
         ( [], [] ) ->
@@ -207,9 +207,9 @@ alphaEqStrictList state ts1 ts2 =
 
 alphaEqStrictRecord :
     AlphaState
-    -> Dict Name.Name Can.FieldType
+    -> Dict Name.Name (Can.FieldType Name)
     -> Maybe Name.Name
-    -> Dict Name.Name Can.FieldType
+    -> Dict Name.Name (Can.FieldType Name)
     -> Maybe Name.Name
     -> Maybe AlphaState
 alphaEqStrictRecord state fields1 ext1 fields2 ext2 =
@@ -273,8 +273,8 @@ matchExtVars state ext1 ext2 =
 alphaEqStrictFields :
     AlphaState
     -> List Name.Name
-    -> Dict Name.Name Can.FieldType
-    -> Dict Name.Name Can.FieldType
+    -> Dict Name.Name (Can.FieldType Name)
+    -> Dict Name.Name (Can.FieldType Name)
     -> Maybe AlphaState
 alphaEqStrictFields state keys fields1 fields2 =
     List.foldl
@@ -307,7 +307,7 @@ Critical: Canonical aliases have argument bindings that must be substituted
 into the alias body before comparison.
 
 -}
-unwrapAliasWithSubst : List ( Name.Name, Can.Type ) -> Can.AliasType -> Can.Type
+unwrapAliasWithSubst : List ( Name.Name, Can.Type Name ) -> Can.AliasType Name -> Can.Type Name
 unwrapAliasWithSubst args aliasType =
     let
         subst =
@@ -324,7 +324,7 @@ unwrapAliasWithSubst args aliasType =
     applySubst subst body
 
 
-applySubst : Dict Name.Name Can.Type -> Can.Type -> Can.Type
+applySubst : Dict Name.Name (Can.Type Name) -> Can.Type Name -> Can.Type Name
 applySubst subst tipe =
     case tipe of
         Can.TVar name ->

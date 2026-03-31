@@ -34,7 +34,7 @@ import Compiler.Canonicalize.Environment as Env
 import Compiler.Canonicalize.Environment.Dups as Dups
 import Compiler.Canonicalize.Ids as Ids
 import Compiler.Data.Index as Index
-import Compiler.Data.Name as Name
+import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Error.Canonicalize as Error
@@ -272,12 +272,12 @@ canonicalizeCtorWithIds env state0 region name patterns ctor =
             ReportingResult.throw (Error.PatternHasRecordCtor region name)
 
 
-canonicalizeCtorArgsWithIds : Env.Env -> Ids.IdState -> List Src.Pattern -> List Can.Type -> PResult DupsDict w ( Index.VerifiedList Can.PatternCtorArg, Ids.IdState )
+canonicalizeCtorArgsWithIds : Env.Env -> Ids.IdState -> List Src.Pattern -> List (Can.Type Name) -> PResult DupsDict w ( Index.VerifiedList Can.PatternCtorArg, Ids.IdState )
 canonicalizeCtorArgsWithIds env state0 patterns args =
     canonicalizeCtorArgsWithIdsHelp env state0 Index.first patterns args []
 
 
-canonicalizeCtorArgsWithIdsHelp : Env.Env -> Ids.IdState -> Index.ZeroBased -> List Src.Pattern -> List Can.Type -> List Can.PatternCtorArg -> PResult DupsDict w ( Index.VerifiedList Can.PatternCtorArg, Ids.IdState )
+canonicalizeCtorArgsWithIdsHelp : Env.Env -> Ids.IdState -> Index.ZeroBased -> List Src.Pattern -> List (Can.Type Name) -> List Can.PatternCtorArg -> PResult DupsDict w ( Index.VerifiedList Can.PatternCtorArg, Ids.IdState )
 canonicalizeCtorArgsWithIdsHelp env state0 index patterns args acc =
     case ( patterns, args ) of
         ( [], [] ) ->

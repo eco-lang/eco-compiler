@@ -68,7 +68,7 @@ optimized local graph suitable for JavaScript code generation.
 
 -}
 type Artifacts
-    = Artifacts Can.Module (Dict.Dict Name Can.Annotation) Opt.LocalGraph
+    = Artifacts Can.Module (Dict.Dict Name (Can.Annotation Name)) Opt.LocalGraph
 
 
 {-| Extended compilation artifacts with typed optimization for MLIR backend.
@@ -80,9 +80,9 @@ enables type-directed optimizations and direct lowering to MLIR.
 -}
 type alias TypedArtifactsData =
     { canonical : Can.Module
-    , annotations : Dict.Dict Name Can.Annotation
+    , annotations : Dict.Dict Name (Can.Annotation Name)
     , objects : Opt.LocalGraph
-    , typedObjects : TOpt.LocalGraph
+    , typedObjects : TOpt.LocalGraph Name
     , typeEnv : TypeEnv.ModuleTypeEnv
     }
 
@@ -136,7 +136,7 @@ compile pkg ifaces modul =
 Performs all standard compilation phases plus typed optimization, producing:
 
   - `Opt.LocalGraph` - Standard optimized IR for JavaScript backend
-  - `TOpt.LocalGraph` - Typed optimized IR with preserved type information
+  - `TOpt.LocalGraph Name` - Typed optimized IR with preserved type information
 
 The typed optimization phase preserves type information needed for monomorphization
 and direct lowering to MLIR/LLVM.
@@ -211,7 +211,7 @@ canonicalize pkg ifaces modul =
 -- Infers and verifies types for all definitions in the canonical module.
 
 
-typeCheck : Src.Module -> Can.Module -> Result E.Error (Dict.Dict Name Can.Annotation)
+typeCheck : Src.Module -> Can.Module -> Result E.Error (Dict.Dict Name (Can.Annotation Name))
 typeCheck modul canonical =
     case TypeErased.constrain canonical |> TypeCheck.andThen Type.run |> TypeCheck.unsafePerformIO of
         Ok annotations ->
@@ -241,7 +241,7 @@ typeCheckTyped :
     ->
         Result
             E.Error
-            { annotations : Dict.Dict Name Can.Annotation
+            { annotations : Dict.Dict Name (Can.Annotation Name)
             , typedCanonical : TCan.Module
             , nodeTypes : TCan.ExprTypes
             , nodeVars : TCan.ExprVars
@@ -302,7 +302,7 @@ nitpick canonical =
 -- Optimizes the canonical module to produce efficient intermediate representation.
 
 
-optimize : Src.Module -> Dict.Dict Name.Name Can.Annotation -> Can.Module -> Result E.Error Opt.LocalGraph
+optimize : Src.Module -> Dict.Dict Name.Name (Can.Annotation Name) -> Can.Module -> Result E.Error Opt.LocalGraph
 optimize modul annotations canonical =
     case Tuple.second (ReportingResult.run (Optimize.optimize annotations canonical)) of
         Ok localGraph ->
@@ -317,7 +317,7 @@ optimize modul annotations canonical =
 -- Performs typed optimization from a TypedCanonical module.
 
 
-typedOptimizeFromTyped : Src.Module -> Dict.Dict Name.Name Can.Annotation -> TCan.ExprTypes -> TCan.ExprVars -> KernelTypes.KernelTypeEnv -> EveryDict.Dict String Name.Name TypeCheck.Variable -> TCan.Module -> Result E.Error TOpt.LocalGraph
+typedOptimizeFromTyped : Src.Module -> Dict.Dict Name.Name (Can.Annotation Name) -> TCan.ExprTypes -> TCan.ExprVars -> KernelTypes.KernelTypeEnv -> EveryDict.Dict String Name.Name TypeCheck.Variable -> TCan.Module -> Result E.Error (TOpt.LocalGraph Name)
 typedOptimizeFromTyped modul annotations nodeTypes nodeVars kernelEnv annotationVars tcanModule =
     case Tuple.second (ReportingResult.run (TypedOptimize.optimizeTyped annotations nodeTypes nodeVars kernelEnv annotationVars tcanModule)) of
         Ok localGraph ->

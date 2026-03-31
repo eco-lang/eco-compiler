@@ -15,7 +15,7 @@ and extracting type information needed by the synthetic provenance tests.
 -}
 
 import Compiler.AST.Canonical as Can
-import Compiler.Data.Name as Name
+import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Reporting.Annotation as A
 import Data.Map
 import Data.Set as EverySet exposing (EverySet)
@@ -362,7 +362,7 @@ annotation. Returns the set of var names from `Forall freeVars _`.
 -}
 enclosingAnnotationVars :
     Maybe Name.Name
-    -> Dict.Dict Name.Name Can.Annotation
+    -> Dict.Dict Name.Name (Can.Annotation Name)
     -> EverySet String String
 enclosingAnnotationVars maybeName annotations =
     case maybeName of
@@ -384,7 +384,7 @@ enclosingAnnotationVars maybeName annotations =
 (Re-implementation to avoid circular dependencies.)
 
 -}
-freeTypeVars : Can.Type -> EverySet String String
+freeTypeVars : Can.Type Name -> EverySet String String
 freeTypeVars tipe =
     case tipe of
         Can.TVar name ->

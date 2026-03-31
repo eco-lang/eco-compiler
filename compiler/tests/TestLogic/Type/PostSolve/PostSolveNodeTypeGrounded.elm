@@ -20,7 +20,7 @@ type must be traceable to one of three legitimate sources:
 
 import Array exposing (Array)
 import Compiler.AST.Canonical as Can
-import Compiler.Data.Name as Name
+import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Reporting.Annotation as A
 import Data.Map as DMap
 import Dict exposing (Dict)
@@ -40,9 +40,9 @@ type alias Violation =
 -}
 check :
     Can.Module
-    -> Dict Name.Name Can.Annotation
-    -> Array (Maybe Can.Type)
-    -> Array (Maybe Can.Type)
+    -> Dict Name.Name (Can.Annotation Name)
+    -> Array (Maybe (Can.Type Name))
+    -> Array (Maybe (Can.Type Name))
     -> List Violation
 check (Can.Module modData) annotations nodeTypesPre nodeTypesPost =
     checkDecls modData.decls annotations nodeTypesPre nodeTypesPost Set.empty
@@ -50,9 +50,9 @@ check (Can.Module modData) annotations nodeTypesPre nodeTypesPost =
 
 checkDecls :
     Can.Decls
-    -> Dict Name.Name Can.Annotation
-    -> Array (Maybe Can.Type)
-    -> Array (Maybe Can.Type)
+    -> Dict Name.Name (Can.Annotation Name)
+    -> Array (Maybe (Can.Type Name))
+    -> Array (Maybe (Can.Type Name))
     -> Set String
     -> List Violation
 checkDecls decls annotations nodeTypesPre nodeTypesPost outerEnv =
@@ -98,7 +98,7 @@ function type — argument pattern types + body result type from pre-PostSolve
 nodeTypes. This captures solver let-generalization including parameter TVars.
 
 -}
-getBinders : Can.Def -> Dict Name.Name Can.Annotation -> Array (Maybe Can.Type) -> Set String
+getBinders : Can.Def -> Dict Name.Name (Can.Annotation Name) -> Array (Maybe (Can.Type Name)) -> Set String
 getBinders def annotations nodeTypesPre =
     case def of
         Can.TypedDef _ freeVars _ _ _ ->
@@ -175,9 +175,9 @@ defName def =
 checkDefBody :
     Name.Name
     -> Can.Def
-    -> Dict Name.Name Can.Annotation
-    -> Array (Maybe Can.Type)
-    -> Array (Maybe Can.Type)
+    -> Dict Name.Name (Can.Annotation Name)
+    -> Array (Maybe (Can.Type Name))
+    -> Array (Maybe (Can.Type Name))
     -> Set String
     -> List Violation
 checkDefBody funcName def annotations nodeTypesPre nodeTypesPost env =
@@ -207,9 +207,9 @@ isTypeClassVar name =
 -}
 walkExpr :
     Name.Name
-    -> Dict Name.Name Can.Annotation
-    -> Array (Maybe Can.Type)
-    -> Array (Maybe Can.Type)
+    -> Dict Name.Name (Can.Annotation Name)
+    -> Array (Maybe (Can.Type Name))
+    -> Array (Maybe (Can.Type Name))
     -> Set String
     -> Can.Expr
     -> List Violation
@@ -444,9 +444,9 @@ exprKindName node =
 -}
 walkChildren :
     Name.Name
-    -> Dict Name.Name Can.Annotation
-    -> Array (Maybe Can.Type)
-    -> Array (Maybe Can.Type)
+    -> Dict Name.Name (Can.Annotation Name)
+    -> Array (Maybe (Can.Type Name))
+    -> Array (Maybe (Can.Type Name))
     -> Set String
     -> Can.Expr_
     -> List Violation
@@ -581,7 +581,7 @@ walkChildren funcName annotations nodeTypesPre nodeTypesPost env node =
 
 {-| Collect all free TVar names from a canonical type.
 -}
-collectFreeVars : Can.Type -> Set String
+collectFreeVars : Can.Type Name -> Set String
 collectFreeVars tipe =
     case tipe of
         Can.TVar name ->

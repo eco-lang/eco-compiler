@@ -23,7 +23,7 @@ when the same code would be reached through different pattern match paths.
 import Array exposing (Array)
 import Compiler.AST.Canonical as Can
 import Compiler.AST.TypedOptimized as TOpt
-import Compiler.Data.Name as Name
+import Compiler.Data.Name as Name exposing (Name)
 import Compiler.LocalOpt.Typed.DecisionTree as DT
 import Prelude
 import System.TypeCheck.IO as IO
@@ -38,7 +38,7 @@ import Utils.Crash exposing (crash)
 Takes a temporary variable name, the root variable being matched, the pattern-matched branches,
 and the result type. Returns an optimized Case expression with decision tree and inline/jump choices.
 -}
-optimize : Name.Name -> Name.Name -> List ( Can.Pattern, TOpt.Expr ) -> Can.Type -> Maybe IO.Variable -> TOpt.Expr
+optimize : Name.Name -> Name.Name -> List ( Can.Pattern, TOpt.Expr Name ) -> Can.Type Name -> Maybe IO.Variable -> TOpt.Expr Name
 optimize temp root optBranches resultType tvar =
     let
         ( patterns, indexedBranches ) =
@@ -170,7 +170,7 @@ arrayGetOr default idx arr =
     Array.get idx arr |> Maybe.withDefault default
 
 
-createChoices : Array Int -> ( Int, TOpt.Expr ) -> ( ( Int, TOpt.Choice ), Maybe ( Int, TOpt.Expr ) )
+createChoices : Array Int -> ( Int, TOpt.Expr Name ) -> ( ( Int, TOpt.Choice Name ), Maybe ( Int, TOpt.Expr Name ) )
 createChoices targetCounts ( target, branch ) =
     if arrayGetOr 0 target targetCounts == 1 then
         ( ( target, TOpt.Inline branch )
@@ -183,10 +183,10 @@ createChoices targetCounts ( target, branch ) =
         )
 
 
-insertChoices : Array TOpt.Choice -> TOpt.Decider Int -> TOpt.Decider TOpt.Choice
+insertChoices : Array (TOpt.Choice Name) -> TOpt.Decider Int -> TOpt.Decider (TOpt.Choice Name)
 insertChoices choiceArray decider =
     let
-        go : TOpt.Decider Int -> TOpt.Decider TOpt.Choice
+        go : TOpt.Decider Int -> TOpt.Decider (TOpt.Choice Name)
         go =
             insertChoices choiceArray
     in

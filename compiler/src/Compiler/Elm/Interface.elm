@@ -68,7 +68,7 @@ import Bytes.Decode
 import Bytes.Encode
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Utils.Binop as Binop
-import Compiler.Data.Name as Name
+import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Elm.Package as Pkg
 import Compiler.Reporting.Annotation as A
 import Dict exposing (Dict)
@@ -86,7 +86,7 @@ home, exported values with their type annotations, union types, type aliases, an
 -}
 type alias InterfaceData =
     { home : Pkg.Name
-    , values : Dict Name.Name Can.Annotation
+    , values : Dict Name.Name (Can.Annotation Name)
     , unions : Dict Name.Name Union
     , aliases : Dict Name.Name Alias
     , binops : Dict Name.Name Binop
@@ -122,7 +122,7 @@ type annotation, associativity (left/right), and precedence level.
 -}
 type alias BinopData =
     { name : Name.Name
-    , annotation : Can.Annotation
+    , annotation : Can.Annotation Name
     , associativity : Binop.Associativity
     , precedence : Binop.Precedence
     }
@@ -141,7 +141,7 @@ type Binop
 {-| Constructs an interface from a canonical module, extracting only the exported values,
 types, aliases, and operators based on the module's export list.
 -}
-fromModule : Pkg.Name -> Can.Module -> Dict Name.Name Can.Annotation -> Interface
+fromModule : Pkg.Name -> Can.Module -> Dict Name.Name (Can.Annotation Name) -> Interface
 fromModule home (Can.Module canData) annotations =
     Interface
         { home = home
@@ -162,7 +162,7 @@ restrict exports dict =
             Dict.filter (\k _ -> Dict.member k explicitExports) dict
 
 
-toOp : Dict Name.Name Can.Annotation -> Can.Binop -> Binop
+toOp : Dict Name.Name (Can.Annotation Name) -> Can.Binop -> Binop
 toOp types (Can.Binop_ associativity precedence name) =
     Binop
         { name = name

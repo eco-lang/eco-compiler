@@ -71,7 +71,7 @@ The conversion may perform IO operations such as creating fresh type variables
 for unbound names.
 
 -}
-fromSrcType : FreeVars -> Can.Type -> IO Type
+fromSrcType : FreeVars -> Can.Type Name -> IO Type
 fromSrcType freeVars sourceType =
     case sourceType of
         Can.TLambda arg result ->
@@ -122,6 +122,6 @@ fromSrcType freeVars sourceType =
                     )
 
 
-fromSrcFieldType : Data.Map.Dict String Name Type -> Can.FieldType -> IO Type
+fromSrcFieldType : Data.Map.Dict String Name Type -> Can.FieldType Name -> IO Type
 fromSrcFieldType freeVars (Can.FieldType _ tipe) =
     fromSrcType freeVars tipe

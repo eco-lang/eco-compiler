@@ -15,7 +15,7 @@ import Array
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Source as Src
 import Compiler.Canonicalize.Module as Canonicalize
-import Compiler.Data.Name as Name
+import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Data.NonEmptyList as NE
 import Compiler.Data.OneOrMore as OneOrMore
 import Compiler.Elm.Interface.Basic as Basic
@@ -859,7 +859,7 @@ pCategoriesEquivalent pCat1 pCat2 =
 {-| Run the standard constraint generation and solving path.
 Returns actual errors instead of just a count.
 -}
-runStandardPath : Can.Module -> IO.IO (Result (NE.Nonempty TypeError.Error) (Data.Map.Dict String Name.Name Can.Annotation))
+runStandardPath : Can.Module -> IO.IO (Result (NE.Nonempty TypeError.Error) (Data.Map.Dict String Name.Name (Can.Annotation Name)))
 runStandardPath modul =
     ConstrainErased.constrain modul
         |> IO.andThen Solve.run
@@ -874,8 +874,8 @@ runWithIdsPath :
         IO.IO
             (Result
                 (NE.Nonempty TypeError.Error)
-                { annotations : Data.Map.Dict String Name.Name Can.Annotation
-                , nodeTypes : Array.Array (Maybe Can.Type)
+                { annotations : Data.Map.Dict String Name.Name (Can.Annotation Name)
+                , nodeTypes : Array.Array (Maybe (Can.Type Name))
                 , nodeVars : Array.Array (Maybe IO.Variable)
                 , annotationVars : Data.Map.Dict String Name.Name IO.Variable
                 , solverState :

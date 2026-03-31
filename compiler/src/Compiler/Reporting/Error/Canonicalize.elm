@@ -96,7 +96,7 @@ type Error
     | NotFoundVariant A.Region (Maybe Name) Name PossibleNames
     | NotFoundBinop A.Region Name (EverySet String Name)
     | PatternHasRecordCtor A.Region Name
-    | PortPayloadInvalid A.Region Name Can.Type InvalidPayload
+    | PortPayloadInvalid A.Region Name (Can.Type Name) InvalidPayload
     | PortTypeInvalid A.Region Name PortProblem
     | RecursiveAlias A.Region Name (List Name) Src.Type (List Name)
     | RecursiveDecl A.Region Name (List Name)

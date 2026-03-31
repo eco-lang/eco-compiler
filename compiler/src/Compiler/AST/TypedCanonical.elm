@@ -8,7 +8,7 @@ module Compiler.AST.TypedCanonical exposing
 {-| The TypedCanonical AST pairs each canonical expression with its inferred type.
 
 This module provides a typed view of the canonical AST where every expression
-carries a `Can.Type` annotation. It is built by zipping the canonical AST with
+carries a `Can.Type Name` annotation. It is built by zipping the canonical AST with
 the expression types produced by the type checker.
 
 
@@ -57,7 +57,7 @@ type alias Expr =
 type Expr_
     = TypedExpr
         { expr : Can.Expr_
-        , tipe : Can.Type
+        , tipe : Can.Type Name
         , tvar : Maybe IO.Variable
         }
 
@@ -74,7 +74,7 @@ type Expr_
 -}
 type Def
     = Def (A.Located Name) (List Can.Pattern) Expr
-    | TypedDef (A.Located Name) Can.FreeVars (List ( Can.Pattern, Can.Type )) Expr Can.Type
+    | TypedDef (A.Located Name) Can.FreeVars (List ( Can.Pattern, Can.Type Name )) Expr (Can.Type Name)
 
 
 {-| A linked list of typed top-level declarations in a module.
@@ -125,7 +125,7 @@ This is an alias for `NodeTypes` to maintain backwards compatibility.
 
 -}
 type alias ExprTypes =
-    Array (Maybe Can.Type)
+    Array (Maybe (Can.Type Name))
 
 
 {-| Dictionary mapping node IDs to their canonical types.
@@ -136,7 +136,7 @@ constraint solving.
 
 -}
 type alias NodeTypes =
-    Array (Maybe Can.Type)
+    Array (Maybe (Can.Type Name))
 
 
 {-| Dictionary mapping node IDs to their solver type variables.

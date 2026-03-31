@@ -17,6 +17,7 @@ import Compiler.AST.Source as Src
 import Dict
 import Expect
 import TestLogic.TestPipeline as Pipeline
+import Compiler.Data.Name exposing (Name)
 
 
 {-| Verify that PostSolve is deterministic for remaining Group B (Str, Chr, Float, Unit) and kernels.
@@ -51,7 +52,7 @@ expectDeterministicTypes srcModule =
 
 {-| Compare two NodeTypes dictionaries for equality.
 -}
-compareNodeTypes : Array.Array (Maybe Can.Type) -> Array.Array (Maybe Can.Type) -> List String
+compareNodeTypes : Array.Array (Maybe (Can.Type Name)) -> Array.Array (Maybe (Can.Type Name)) -> List String
 compareNodeTypes types1 types2 =
     let
         -- Check for different array sizes
@@ -94,7 +95,7 @@ compareNodeTypes types1 types2 =
 This is a deep equality check that compares the structure of types.
 
 -}
-typesStructurallyEqual : Can.Type -> Can.Type -> Bool
+typesStructurallyEqual : Can.Type Name -> Can.Type Name -> Bool
 typesStructurallyEqual type1 type2 =
     case ( type1, type2 ) of
         ( Can.TVar name1, Can.TVar name2 ) ->
@@ -134,7 +135,7 @@ typesStructurallyEqual type1 type2 =
 
 {-| Check if two record field dictionaries are equal.
 -}
-recordFieldsEqual : Dict.Dict String Can.FieldType -> Dict.Dict String Can.FieldType -> Bool
+recordFieldsEqual : Dict.Dict String (Can.FieldType Name) -> Dict.Dict String (Can.FieldType Name) -> Bool
 recordFieldsEqual fields1 fields2 =
     let
         keys1 =
@@ -159,7 +160,7 @@ recordFieldsEqual fields1 fields2 =
 
 {-| Check if two aliased types are equal.
 -}
-aliasedTypesEqual : Can.AliasType -> Can.AliasType -> Bool
+aliasedTypesEqual : Can.AliasType Name -> Can.AliasType Name -> Bool
 aliasedTypesEqual alias1 alias2 =
     case ( alias1, alias2 ) of
         ( Can.Holey t1, Can.Holey t2 ) ->

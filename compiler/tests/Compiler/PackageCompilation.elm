@@ -64,7 +64,7 @@ import Compiler.AST.TypeEnv as TypeEnv
 import Compiler.AST.TypedCanonical as TCan
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Canonicalize.Module as Canonicalize
-import Compiler.Data.Name as Name
+import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Data.NonEmptyList as NE
 import Compiler.Data.OneOrMore as OneOrMore
 import Compiler.Elm.Interface as I
@@ -111,9 +111,9 @@ type alias CompileResult =
     { moduleName : ModuleName.Raw
     , source : Src.Module
     , canonical : Can.Module
-    , annotations : Dict Name.Name Can.Annotation
+    , annotations : Dict Name.Name (Can.Annotation Name)
     , objects : Opt.LocalGraph
-    , typedObjects : TOpt.LocalGraph
+    , typedObjects : TOpt.LocalGraph Name
     , interface : I.Interface
     }
 
@@ -134,19 +134,19 @@ type CompileError
 -}
 type PathwayDiscrepancy
     = TypeCheckMismatch
-        { erasedResult : Result (NE.Nonempty TypeError.Error) (Dict Name.Name Can.Annotation)
+        { erasedResult : Result (NE.Nonempty TypeError.Error) (Dict Name.Name (Can.Annotation Name))
         , typedResult : Result (NE.Nonempty TypeError.Error) TypeCheckTypedResult
         }
     | OptimizeMismatch
         { erasedResult : Result (OneOrMore.OneOrMore MainError.Error) Opt.LocalGraph
-        , typedResult : Result (OneOrMore.OneOrMore MainError.Error) TOpt.LocalGraph
+        , typedResult : Result (OneOrMore.OneOrMore MainError.Error) (TOpt.LocalGraph Name)
         }
 
 
 {-| Internal result from typed type checking.
 -}
 type alias TypeCheckTypedResult =
-    { annotations : Dict Name.Name Can.Annotation
+    { annotations : Dict Name.Name (Can.Annotation Name)
     , typedCanonical : TCan.Module
     , nodeTypes : TCan.NodeTypes
     , kernelEnv : KernelTypes.KernelTypeEnv
@@ -396,7 +396,7 @@ canonicalize pkg ifaces modul =
 This is the JS backend pathway.
 
 -}
-typeCheckErased : Can.Module -> Result (NE.Nonempty TypeError.Error) (Dict Name.Name Can.Annotation)
+typeCheckErased : Can.Module -> Result (NE.Nonempty TypeError.Error) (Dict Name.Name (Can.Annotation Name))
 typeCheckErased canonical =
     TypeErased.constrain canonical
         |> TypeCheck.andThen Type.run
@@ -460,7 +460,7 @@ nitpick canonical =
 
 {-| Standard (erased) optimization for JS backend.
 -}
-optimizeErased : Dict Name.Name Can.Annotation -> Can.Module -> Result (OneOrMore.OneOrMore MainError.Error) Opt.LocalGraph
+optimizeErased : Dict Name.Name (Can.Annotation Name) -> Can.Module -> Result (OneOrMore.OneOrMore MainError.Error) Opt.LocalGraph
 optimizeErased annotations canonical =
     Tuple.second (RResult.run (Optimize.optimize annotations canonical))
 
@@ -470,7 +470,7 @@ optimizeErased annotations canonical =
 Preserves full type information throughout the optimization process.
 
 -}
-optimizeTyped : Dict Name.Name Can.Annotation -> TCan.ExprTypes -> TCan.ExprVars -> KernelTypes.KernelTypeEnv -> Data.Map.Dict String Name.Name TypeCheck.Variable -> TCan.Module -> Result (OneOrMore.OneOrMore MainError.Error) TOpt.LocalGraph
+optimizeTyped : Dict Name.Name (Can.Annotation Name) -> TCan.ExprTypes -> TCan.ExprVars -> KernelTypes.KernelTypeEnv -> Data.Map.Dict String Name.Name TypeCheck.Variable -> TCan.Module -> Result (OneOrMore.OneOrMore MainError.Error) (TOpt.LocalGraph Name)
 optimizeTyped annotations nodeTypes nodeVars kernelEnv annotationVars tcanModule =
     Tuple.second (RResult.run (TypedOptimize.optimizeTyped annotations nodeTypes nodeVars kernelEnv annotationVars tcanModule))
 
@@ -556,7 +556,7 @@ This is useful for testing when the entry point name is not known in advance.
 Test modules use various names like "testValue", etc.
 
 -}
-monomorphizeAny : TypeEnv.GlobalTypeEnv -> TOpt.GlobalGraph -> Result String Mono.MonoGraph
+monomorphizeAny : TypeEnv.GlobalTypeEnv -> TOpt.GlobalGraph Name -> Result String Mono.MonoGraph
 monomorphizeAny globalTypeEnv (TOpt.GlobalGraph nodes _ _) =
     case findAnyEntryPoint nodes of
         Nothing ->
@@ -568,7 +568,7 @@ monomorphizeAny globalTypeEnv (TOpt.GlobalGraph nodes _ _) =
 
 {-| Find any entry point in the global graph (the first defined function).
 -}
-findAnyEntryPoint : Data.Map.Dict (List String) TOpt.Global TOpt.Node -> Maybe ( TOpt.Global, Can.Type )
+findAnyEntryPoint : Data.Map.Dict (List String) TOpt.Global (TOpt.Node Name) -> Maybe ( TOpt.Global, Can.Type Name )
 findAnyEntryPoint nodes =
     Data.Map.foldl TOpt.compareGlobal
         (\global node acc ->

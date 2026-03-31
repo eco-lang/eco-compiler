@@ -26,7 +26,7 @@ to older pools or generalized to `noRank` (making them polymorphic).
 
 import Array exposing (Array)
 import Compiler.AST.Canonical as Can
-import Compiler.Data.Name as Name
+import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Data.NonEmptyList as NE
 import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Doc as Doc
@@ -59,7 +59,7 @@ unifying types. Returns either a non-empty list of type errors or a
 dictionary mapping names to their inferred type annotations.
 
 -}
-run : Constraint -> IO (Result (NE.Nonempty Error.Error) (Data.Map.Dict String Name.Name Can.Annotation))
+run : Constraint -> IO (Result (NE.Nonempty Error.Error) (Data.Map.Dict String Name.Name (Can.Annotation Name)))
 run constraint =
     MVector.replicate 8 []
         |> IO.andThen
@@ -94,9 +94,9 @@ runWithIds :
         IO
             (Result
                 (NE.Nonempty Error.Error)
-                { annotations : Data.Map.Dict String Name.Name Can.Annotation
+                { annotations : Data.Map.Dict String Name.Name (Can.Annotation Name)
                 , annotationVars : Data.Map.Dict String Name.Name Variable
-                , nodeTypes : Array (Maybe Can.Type)
+                , nodeTypes : Array (Maybe (Can.Type Name))
                 , nodeVars : Array (Maybe Variable)
                 , solverState :
                     { descriptors : Array Descriptor
@@ -896,7 +896,7 @@ unit1 =
 {-| Convert a canonical source type to a unification variable.
 Creates fresh variables for all free type variables based on their constraints.
 -}
-srcTypeToVariable : Int -> Pools -> Dict Name.Name () -> Can.Type -> IO Variable
+srcTypeToVariable : Int -> Pools -> Dict Name.Name () -> Can.Type Name -> IO Variable
 srcTypeToVariable rank pools freeVars srcType =
     let
         nameToContent : Name.Name -> Content
@@ -931,10 +931,10 @@ srcTypeToVariable rank pools freeVars srcType =
 {-| Convert a canonical source type to a variable, with flexVars mapping free variable names.
 Recursively converts all contained types to variables.
 -}
-srcTypeToVar : Int -> Pools -> Data.Map.Dict String Name.Name Variable -> Can.Type -> IO Variable
+srcTypeToVar : Int -> Pools -> Data.Map.Dict String Name.Name Variable -> Can.Type Name -> IO Variable
 srcTypeToVar rank pools flexVars srcType =
     let
-        go : Can.Type -> IO Variable
+        go : Can.Type Name -> IO Variable
         go =
             srcTypeToVar rank pools flexVars
     in
@@ -1016,7 +1016,7 @@ srcTypeToVar rank pools flexVars srcType =
 {-| Convert a canonical field type to a variable.
 Unwraps the FieldType wrapper and converts the inner type.
 -}
-srcFieldTypeToVar : Int -> Pools -> Data.Map.Dict String Name.Name Variable -> Can.FieldType -> IO Variable
+srcFieldTypeToVar : Int -> Pools -> Data.Map.Dict String Name.Name Variable -> Can.FieldType Name -> IO Variable
 srcFieldTypeToVar rank pools flexVars (Can.FieldType _ srcTipe) =
     srcTypeToVar rank pools flexVars srcTipe
 

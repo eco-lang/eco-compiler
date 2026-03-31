@@ -1116,10 +1116,10 @@ gatherTypedArgsWithIds :
     -> Name.Name
     -> IdState
     -> List Src.Pattern
-    -> Can.Type
+    -> Can.Type Name
     -> Index.ZeroBased
-    -> List ( Can.Pattern, Can.Type )
-    -> EResult Pattern.DupsDict w ( ( List ( Can.Pattern, Can.Type ), Can.Type ), IdState )
+    -> List ( Can.Pattern, Can.Type Name )
+    -> EResult Pattern.DupsDict w ( ( List ( Can.Pattern, Can.Type Name ), Can.Type Name ), IdState )
 gatherTypedArgsWithIds env name state srcArgs tipe index revTypedArgs =
     case srcArgs of
         [] ->
@@ -1440,7 +1440,7 @@ findVarQual region env prefix name =
                 ReportingResult.throw (Error.NotFoundVar region (Just prefix) name (toPossibleNames env.vars env.q_vars))
 
 
-toPossibleNames : Dict Name Env.Var -> Env.Qualified Can.Annotation -> Error.PossibleNames
+toPossibleNames : Dict Name Env.Var -> Env.Qualified (Can.Annotation Name) -> Error.PossibleNames
 toPossibleNames exposed qualified =
     Error.PossibleNames (EverySet.fromList identity (Dict.keys exposed)) (Dict.map (\_ -> Dict.keys >> EverySet.fromList identity) qualified)
 
@@ -1458,11 +1458,11 @@ toVarCtor name ctor =
                 freeVars =
                     Dict.fromList (List.map (\v -> ( v, () )) unionData.vars)
 
-                result : Can.Type
+                result : Can.Type Name
                 result =
                     Can.TType home typeName (List.map Can.TVar unionData.vars)
 
-                tipe : Can.Type
+                tipe : Can.Type Name
                 tipe =
                     List.foldr Can.TLambda result args
             in

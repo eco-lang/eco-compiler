@@ -31,7 +31,7 @@ tupleInterface =
 
 {-| Collect all free type variables from a canonical type.
 -}
-collectFreeVars : Can.Type -> Can.FreeVars
+collectFreeVars : Can.Type Name -> Can.FreeVars
 collectFreeVars tipe =
     case tipe of
         Can.TLambda a b ->
@@ -81,7 +81,7 @@ collectFreeVars tipe =
 
 {-| Helper to create a value annotation.
 -}
-mkAnnotation : Can.Type -> Can.Annotation
+mkAnnotation : Can.Type Name -> Can.Annotation Name
 mkAnnotation tipe =
     Can.Forall (collectFreeVars tipe) tipe
 
@@ -92,50 +92,50 @@ mkAnnotation tipe =
 -- ============================================================================
 
 
-aVar : Can.Type
+aVar : Can.Type Name
 aVar =
     Can.TVar "a"
 
 
-bVar : Can.Type
+bVar : Can.Type Name
 bVar =
     Can.TVar "b"
 
 
-xVar : Can.Type
+xVar : Can.Type Name
 xVar =
     Can.TVar "x"
 
 
-yVar : Can.Type
+yVar : Can.Type Name
 yVar =
     Can.TVar "y"
 
 
 {-| ( a, b )
 -}
-tupleAB : Can.Type
+tupleAB : Can.Type Name
 tupleAB =
     Can.TTuple aVar bVar []
 
 
 {-| ( x, b )
 -}
-tupleXB : Can.Type
+tupleXB : Can.Type Name
 tupleXB =
     Can.TTuple xVar bVar []
 
 
 {-| ( a, y )
 -}
-tupleAY : Can.Type
+tupleAY : Can.Type Name
 tupleAY =
     Can.TTuple aVar yVar []
 
 
 {-| ( x, y )
 -}
-tupleXY : Can.Type
+tupleXY : Can.Type Name
 tupleXY =
     Can.TTuple xVar yVar []
 
@@ -148,7 +148,7 @@ tupleXY =
 
 {-| Tuple function values.
 -}
-tupleValues : Dict Name Can.Annotation
+tupleValues : Dict Name (Can.Annotation Name)
 tupleValues =
     Dict.fromList
         [ -- pair : a -> b -> ( a, b )

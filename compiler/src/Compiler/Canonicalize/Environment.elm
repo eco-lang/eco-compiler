@@ -43,7 +43,7 @@ local variable scoping with shadowing checks.
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Utils.Binop as Binop
 import Compiler.Data.Index as Index
-import Compiler.Data.Name as Name
+import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Data.OneOrMore as OneOrMore
 import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Error.Canonicalize as Error
@@ -77,7 +77,7 @@ type alias Env =
     , types : Exposed Type
     , ctors : Exposed Ctor
     , binops : Exposed Binop
-    , q_vars : Qualified Can.Annotation
+    , q_vars : Qualified (Can.Annotation Name)
     , q_types : Qualified Type
     , q_ctors : Qualified Ctor
     }
@@ -146,7 +146,7 @@ Foreigns tracks when multiple modules expose the same variable name (ambiguous i
 type Var
     = Local A.Region
     | TopLevel A.Region
-    | Foreign Canonical Can.Annotation
+    | Foreign Canonical (Can.Annotation Name)
     | Foreigns Canonical (OneOrMore.OneOrMore Canonical)
 
 
@@ -158,7 +158,7 @@ type Var
 The Int tracks the number of type parameters.
 -}
 type Type
-    = Alias Int Canonical (List Name.Name) Can.Type
+    = Alias Int Canonical (List Name.Name) (Can.Type Name)
     | Union Int Canonical
 
 
@@ -170,8 +170,8 @@ type Type
 Record constructors are special constructors for extensible records.
 -}
 type Ctor
-    = RecordCtor Canonical (List Name.Name) Can.Type
-    | Ctor Canonical Name.Name Can.Union Index.ZeroBased (List Can.Type)
+    = RecordCtor Canonical (List Name.Name) (Can.Type Name)
+    | Ctor Canonical Name.Name Can.Union Index.ZeroBased (List (Can.Type Name))
 
 
 
@@ -185,7 +185,7 @@ type alias BinopData =
     { op : Name.Name
     , home : Canonical
     , name : Name.Name
-    , annotation : Can.Annotation
+    , annotation : Can.Annotation Name
     , associativity : Binop.Associativity
     , precedence : Binop.Precedence
     }

@@ -29,6 +29,7 @@ import Data.Map
 import Dict
 import Expect
 import System.TypeCheck.IO as IO
+import Compiler.Data.Name exposing (Name)
 
 
 {-| Expect a type mismatch error (BadExpr or BadPattern).
@@ -142,8 +143,8 @@ runTypeCheck :
         IO.IO
             (Result
                 (NE.Nonempty TypeError.Error)
-                { annotations : Data.Map.Dict String String Can.Annotation
-                , nodeTypes : Array.Array (Maybe Can.Type)
+                { annotations : Data.Map.Dict String String (Can.Annotation Name)
+                , nodeTypes : Array.Array (Maybe (Can.Type Name))
                 , nodeVars : Array.Array (Maybe IO.Variable)
                 , annotationVars : Data.Map.Dict String String IO.Variable
                 , solverState :

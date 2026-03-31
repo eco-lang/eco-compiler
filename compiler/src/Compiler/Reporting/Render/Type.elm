@@ -35,7 +35,7 @@ with proper parenthesization and layout.
 
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Source as Src
-import Compiler.Data.Name as Name
+import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Doc as D
 import Compiler.Reporting.Render.Type.Localizer as L
@@ -266,7 +266,7 @@ collectSrcArgs tipe =
 formatted Doc for display, using the localizer to determine the best way to
 display qualified type names.
 -}
-canToDoc : L.Localizer -> Context -> Can.Type -> D.Doc
+canToDoc : L.Localizer -> Context -> Can.Type Name -> D.Doc
 canToDoc localizer context tipe =
     case tipe of
         Can.TLambda arg1 result ->
@@ -295,12 +295,12 @@ canToDoc localizer context tipe =
             apply context (L.toDoc localizer home name) (List.map (canToDoc localizer App << Tuple.second) args)
 
 
-canFieldToDoc : L.Localizer -> ( Name.Name, Can.Type ) -> ( D.Doc, D.Doc )
+canFieldToDoc : L.Localizer -> ( Name.Name, Can.Type Name ) -> ( D.Doc, D.Doc )
 canFieldToDoc localizer ( name, tipe ) =
     ( D.fromName name, canToDoc localizer None tipe )
 
 
-collectArgs : Can.Type -> ( Can.Type, List Can.Type )
+collectArgs : Can.Type Name -> ( Can.Type Name, List (Can.Type Name) )
 collectArgs tipe =
     case tipe of
         Can.TLambda a rest ->

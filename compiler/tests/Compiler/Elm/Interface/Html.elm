@@ -9,6 +9,7 @@ function via `Html.text`.
 -}
 
 import Compiler.AST.Canonical as Can
+import Compiler.Data.Name exposing (Name)
 import Compiler.Elm.Interface as I
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Elm.Package as Pkg
@@ -68,7 +69,7 @@ htmlInterface =
 
 {-| text : String -> Html msg
 -}
-textAnnotation : Can.Annotation
+textAnnotation : Can.Annotation Name
 textAnnotation =
     let
         stringType =

@@ -30,7 +30,7 @@ import Dict
 {-| Node types mapping expression/pattern ID to canonical type.
 -}
 type alias NodeTypes =
-    Array (Maybe Can.Type)
+    Array (Maybe (Can.Type Name))
 
 
 {-| Run the post-solve phase on a canonical module.
@@ -49,7 +49,7 @@ Returns:
 
 -}
 postSolve :
-    Data.Map.Dict String Name Can.Annotation
+    Data.Map.Dict String Name (Can.Annotation Name)
     -> Can.Module
     -> NodeTypes
     ->
@@ -84,7 +84,7 @@ and inserts it into the kernel environment.
 
 -}
 seedKernelAliases :
-    Data.Map.Dict String Name Can.Annotation
+    Data.Map.Dict String Name (Can.Annotation Name)
     -> Can.Decls
     -> KernelTypes.KernelTypeEnv
 seedKernelAliases annotations decls =
@@ -92,7 +92,7 @@ seedKernelAliases annotations decls =
 
 
 seedKernelAliasesHelp :
-    Data.Map.Dict String Name Can.Annotation
+    Data.Map.Dict String Name (Can.Annotation Name)
     -> Can.Decls
     -> KernelTypes.KernelTypeEnv
     -> KernelTypes.KernelTypeEnv
@@ -116,7 +116,7 @@ seedKernelAliasesHelp annotations decls env =
 
 
 checkDefForAlias :
-    Data.Map.Dict String Name Can.Annotation
+    Data.Map.Dict String Name (Can.Annotation Name)
     -> Can.Def
     -> KernelTypes.KernelTypeEnv
     -> KernelTypes.KernelTypeEnv
@@ -150,7 +150,7 @@ checkDefForAlias annotations def env =
 
 
 checkKernelAliasBody :
-    Data.Map.Dict String Name Can.Annotation
+    Data.Map.Dict String Name (Can.Annotation Name)
     -> Name
     -> Can.Expr
     -> KernelTypes.KernelTypeEnv
@@ -176,7 +176,7 @@ checkKernelAliasBody annotations defName (A.At _ exprInfo) env =
 {-| Walk declarations, fixing expression types and inferring kernel types.
 -}
 postSolveDecls :
-    Data.Map.Dict String Name Can.Annotation
+    Data.Map.Dict String Name (Can.Annotation Name)
     -> Can.Decls
     -> NodeTypes
     -> KernelTypes.KernelTypeEnv
@@ -210,7 +210,7 @@ postSolveDecls annotations decls nodeTypes0 kernel0 =
 {-| Walk a definition, processing its body expression.
 -}
 postSolveDef :
-    Data.Map.Dict String Name Can.Annotation
+    Data.Map.Dict String Name (Can.Annotation Name)
     -> Can.Def
     -> NodeTypes
     -> KernelTypes.KernelTypeEnv
@@ -355,7 +355,7 @@ For Call with VarKernel callee: we also infer the kernel type from usage.
 
 -}
 postSolveExpr :
-    Data.Map.Dict String Name Can.Annotation
+    Data.Map.Dict String Name (Can.Annotation Name)
     -> Can.Expr
     -> NodeTypes
     -> KernelTypes.KernelTypeEnv
@@ -580,7 +580,7 @@ then update both kernelEnv and the VarKernel node's type in nodeTypes.
 
 -}
 postSolveCall :
-    Data.Map.Dict String Name Can.Annotation
+    Data.Map.Dict String Name (Can.Annotation Name)
     -> Int
     -> Can.Expr
     -> List Can.Expr
@@ -680,7 +680,7 @@ postSolveCall annotations exprId func args nodeTypes0 kernel0 =
 {-| Handle If expression (Group A - trust solver's type).
 -}
 postSolveIf :
-    Data.Map.Dict String Name Can.Annotation
+    Data.Map.Dict String Name (Can.Annotation Name)
     -> List ( Can.Expr, Can.Expr )
     -> Can.Expr
     -> NodeTypes
@@ -711,8 +711,8 @@ determine the expected types for left and right operands.
 
 -}
 postSolveBinop :
-    Data.Map.Dict String Name Can.Annotation
-    -> Can.Annotation
+    Data.Map.Dict String Name (Can.Annotation Name)
+    -> Can.Annotation Name
     -> Can.Expr
     -> Can.Expr
     -> NodeTypes
@@ -778,7 +778,7 @@ use the expected type (from the operator's annotation) to infer its type.
 -}
 inferBinopKernelType :
     Can.Expr
-    -> Can.Type
+    -> Can.Type Name
     -> NodeTypes
     -> KernelTypes.KernelTypeEnv
     -> ( NodeTypes, KernelTypes.KernelTypeEnv )
@@ -814,7 +814,7 @@ case expression, a VarKernel branch body has the case's result type.
 
 -}
 postSolveCase :
-    Data.Map.Dict String Name Can.Annotation
+    Data.Map.Dict String Name (Can.Annotation Name)
     -> Int
     -> Can.Expr
     -> List Can.CaseBranch
@@ -853,7 +853,7 @@ use the expected type (from the case expression) to infer its type.
 -}
 inferBranchKernelType :
     Can.Expr
-    -> Can.Type
+    -> Can.Type Name
     -> NodeTypes
     -> KernelTypes.KernelTypeEnv
     -> ( NodeTypes, KernelTypes.KernelTypeEnv )
@@ -884,7 +884,7 @@ inferBranchKernelType branchExpr expectedType nodeTypes kernel =
 {-| Handle Update expression (Group A - trust solver's type).
 -}
 postSolveUpdate :
-    Data.Map.Dict String Name Can.Annotation
+    Data.Map.Dict String Name (Can.Annotation Name)
     -> Can.Expr
     -> Data.Map.Dict String (A.Located Name) Can.FieldUpdate
     -> NodeTypes
@@ -909,7 +909,7 @@ postSolveUpdate annotations record fields nodeTypes0 kernel0 =
 {-| Handle List expression (legacy Group B, now unused — List is Group A).
 -}
 postSolveList :
-    Data.Map.Dict String Name Can.Annotation
+    Data.Map.Dict String Name (Can.Annotation Name)
     -> Int
     -> List Can.Expr
     -> NodeTypes
@@ -961,7 +961,7 @@ postSolveList annotations exprId elems nodeTypes0 kernel0 =
 {-| Handle Tuple expression (legacy Group B, now unused — Tuple is Group A).
 -}
 postSolveTuple :
-    Data.Map.Dict String Name Can.Annotation
+    Data.Map.Dict String Name (Can.Annotation Name)
     -> Int
     -> Can.Expr
     -> Can.Expr
@@ -1021,7 +1021,7 @@ postSolveTuple annotations exprId a b cs nodeTypes0 kernel0 =
 {-| Handle Record expression (legacy Group B, now unused — Record is Group A).
 -}
 postSolveRecord :
-    Data.Map.Dict String Name Can.Annotation
+    Data.Map.Dict String Name (Can.Annotation Name)
     -> Int
     -> Data.Map.Dict String (A.Located Name) Can.Expr
     -> NodeTypes
@@ -1081,7 +1081,7 @@ postSolveRecord annotations exprId fields nodeTypes0 kernel0 =
 {-| Handle Lambda expression (legacy Group B, now unused — Lambda is Group A).
 -}
 postSolveLambda :
-    Data.Map.Dict String Name Can.Annotation
+    Data.Map.Dict String Name (Can.Annotation Name)
     -> Int
     -> List Can.Pattern
     -> Can.Expr
@@ -1140,7 +1140,7 @@ An accessor like `.field` has type `{ ext | field : a } -> a`.
 
 -}
 postSolveAccessor :
-    Data.Map.Dict String Name Can.Annotation
+    Data.Map.Dict String Name (Can.Annotation Name)
     -> Int
     -> Name
     -> NodeTypes
@@ -1209,7 +1209,7 @@ to another kernel call.
 -}
 propagateKernelArgTypes :
     List Can.Expr
-    -> List Can.Type
+    -> List (Can.Type Name)
     -> NodeTypes
     -> KernelTypes.KernelTypeEnv
     -> ( NodeTypes, KernelTypes.KernelTypeEnv )
@@ -1250,7 +1250,7 @@ propagateKernelArgTypes args expectedTypes nodeTypes0 kernel0 =
 {-| Type variable substitution map.
 -}
 type alias Subst =
-    Data.Map.Dict String Name Can.Type
+    Data.Map.Dict String Name (Can.Type Name)
 
 
 {-| Unify a scheme type (with TVars) against a concrete type to extract substitutions.
@@ -1259,12 +1259,12 @@ This is a one-way unifier: TVars in the scheme get bound to corresponding
 parts of the concrete type. Returns Nothing if types are incompatible.
 
 -}
-unifySchemeToType : Can.Type -> Can.Type -> Maybe Subst
+unifySchemeToType : Can.Type Name -> Can.Type Name -> Maybe Subst
 unifySchemeToType scheme concrete =
     unifyHelp Data.Map.empty scheme concrete
 
 
-unifyHelp : Subst -> Can.Type -> Can.Type -> Maybe Subst
+unifyHelp : Subst -> Can.Type Name -> Can.Type Name -> Maybe Subst
 unifyHelp subst schemeType concreteType =
     case ( schemeType, concreteType ) of
         ( Can.TVar v, t ) ->
@@ -1349,7 +1349,7 @@ unifyHelp subst schemeType concreteType =
                 Nothing
 
 
-unifyList : Subst -> List Can.Type -> List Can.Type -> Maybe Subst
+unifyList : Subst -> List (Can.Type Name) -> List (Can.Type Name) -> Maybe Subst
 unifyList subst list1 list2 =
     case ( list1, list2 ) of
         ( [], [] ) ->
@@ -1367,7 +1367,7 @@ unifyList subst list1 list2 =
             Nothing
 
 
-unifyFieldList : Subst -> List ( Name, Can.FieldType ) -> List ( Name, Can.FieldType ) -> Maybe Subst
+unifyFieldList : Subst -> List ( Name, Can.FieldType Name ) -> List ( Name, Can.FieldType Name ) -> Maybe Subst
 unifyFieldList subst list1 list2 =
     case ( list1, list2 ) of
         ( [], [] ) ->
@@ -1391,7 +1391,7 @@ unifyFieldList subst list1 list2 =
 
 {-| Apply a substitution to a type, replacing TVars with their bound types.
 -}
-applySubst : Subst -> Can.Type -> Can.Type
+applySubst : Subst -> Can.Type Name -> Can.Type Name
 applySubst subst tipe =
     case tipe of
         Can.TVar v ->
@@ -1437,7 +1437,7 @@ and the final result type.
     peelFunctionType (A -> B -> C) == ( [A, B], C )
 
 -}
-peelFunctionType : Can.Type -> ( List Can.Type, Can.Type )
+peelFunctionType : Can.Type Name -> ( List (Can.Type Name), Can.Type Name )
 peelFunctionType tipe =
     case tipe of
         Can.TLambda arg res ->
@@ -1458,9 +1458,9 @@ result type to get substitutions, then use those to infer kernel argument types.
 
 -}
 postSolveCallWithCtorKernelArgs :
-    Data.Map.Dict String Name Can.Annotation
+    Data.Map.Dict String Name (Can.Annotation Name)
     -> Int
-    -> Can.Annotation
+    -> Can.Annotation Name
     -> Can.Expr
     -> List Can.Expr
     -> NodeTypes
@@ -1509,9 +1509,9 @@ postSolveCallWithCtorKernelArgs annotations exprId ctorAnnotation funcExpr args 
 {-| Process constructor arguments, inferring types for any VarKernel args.
 -}
 processCtorArgs :
-    Data.Map.Dict String Name Can.Annotation
+    Data.Map.Dict String Name (Can.Annotation Name)
     -> Subst
-    -> List Can.Type
+    -> List (Can.Type Name)
     -> List Can.Expr
     -> Can.Expr
     -> NodeTypes
@@ -1524,7 +1524,7 @@ processCtorArgs annotations subst ctorArgTypes args funcExpr nodeTypes0 kernel0 
             postSolveExpr annotations funcExpr nodeTypes0 kernel0
 
         -- Now process each argument, pairing with expected types
-        processArg : ( Can.Expr, Maybe Can.Type ) -> ( NodeTypes, KernelTypes.KernelTypeEnv ) -> ( NodeTypes, KernelTypes.KernelTypeEnv )
+        processArg : ( Can.Expr, Maybe (Can.Type Name) ) -> ( NodeTypes, KernelTypes.KernelTypeEnv ) -> ( NodeTypes, KernelTypes.KernelTypeEnv )
         processArg ( arg, maybeExpectedType ) ( nt, ke ) =
             case arg of
                 A.At _ argInfo ->
@@ -1570,11 +1570,11 @@ processCtorArgs annotations subst ctorArgTypes args funcExpr nodeTypes0 kernel0 
 -- ====== Array Helpers ======
 
 
-arraySetJust : Int -> Can.Type -> NodeTypes -> NodeTypes
+arraySetJust : Int -> Can.Type Name -> NodeTypes -> NodeTypes
 arraySetJust id tipe nodeTypes =
     Array.set id (Just tipe) nodeTypes
 
 
-arrayGetFlat : Int -> NodeTypes -> Maybe Can.Type
+arrayGetFlat : Int -> NodeTypes -> Maybe (Can.Type Name)
 arrayGetFlat id nodeTypes =
     Array.get id nodeTypes |> Maybe.andThen identity

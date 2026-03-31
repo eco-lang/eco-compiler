@@ -22,6 +22,7 @@ import SourceIR.Suite.StandardTestSuites as StandardTestSuites
 import Test exposing (Test)
 import TestLogic.Type.PostSolve.CompileThroughPostSolve as Compile
 import TestLogic.Type.PostSolve.PostSolveInvariantHelpers as Helpers
+import Compiler.Data.Name exposing (Name)
 
 
 {-| A violation of POST\_007.
@@ -29,8 +30,8 @@ import TestLogic.Type.PostSolve.PostSolveInvariantHelpers as Helpers
 type alias Violation =
     { nodeId : Int
     , details : String
-    , postType : Maybe Can.Type
-    , expectedType : Maybe Can.Type
+    , postType : Maybe (Can.Type Name)
+    , expectedType : Maybe (Can.Type Name)
     }
 
 
@@ -145,7 +146,7 @@ checkLambdaStructuralType exprNode nodeTypes =
 
 {-| Check if a type is a TLambda chain.
 -}
-isTLambda : Can.Type -> Bool
+isTLambda : Can.Type Name -> Bool
 isTLambda tipe =
     case tipe of
         Can.TLambda _ _ ->
@@ -158,7 +159,7 @@ isTLambda tipe =
 {-| Result of computing expected lambda type.
 -}
 type LambdaTypeResult
-    = LambdaTypeOk Can.Type
+    = LambdaTypeOk (Can.Type Name)
     | LambdaTypeError String
 
 
@@ -189,7 +190,7 @@ computeExpectedLambdaType lambdaId patterns bodyId nodeTypes =
 
 {-| Collect all pattern types, failing on first error.
 -}
-collectPatternTypes : Int -> List Can.Pattern -> PostSolve.NodeTypes -> Result String (List Can.Type)
+collectPatternTypes : Int -> List Can.Pattern -> PostSolve.NodeTypes -> Result String (List (Can.Type Name))
 collectPatternTypes lambdaId patterns nodeTypes =
     patterns
         |> List.foldr
@@ -247,12 +248,12 @@ emptyRenaming =
 mapping between the two types. Returns Ok with the final renaming on success,
 or Err with a description of the inconsistency.
 -}
-bijectiveAlphaEq : Can.Type -> Can.Type -> Result String Renaming
+bijectiveAlphaEq : Can.Type Name -> Can.Type Name -> Result String Renaming
 bijectiveAlphaEq a b =
     bijectiveAlphaEqHelp emptyRenaming a b
 
 
-bijectiveAlphaEqHelp : Renaming -> Can.Type -> Can.Type -> Result String Renaming
+bijectiveAlphaEqHelp : Renaming -> Can.Type Name -> Can.Type Name -> Result String Renaming
 bijectiveAlphaEqHelp renaming a b =
     case ( a, b ) of
         ( Can.TVar nameA, Can.TVar nameB ) ->
@@ -348,7 +349,7 @@ bijectiveAlphaEqHelp renaming a b =
             Err "Type constructor mismatch"
 
 
-bijectiveAlphaEqList : Renaming -> List Can.Type -> List Can.Type -> Result String Renaming
+bijectiveAlphaEqList : Renaming -> List (Can.Type Name) -> List (Can.Type Name) -> Result String Renaming
 bijectiveAlphaEqList renaming xs ys =
     case ( xs, ys ) of
         ( [], [] ) ->
@@ -382,8 +383,8 @@ bijectiveAlphaEqExt renaming ext1 ext2 =
 
 bijectiveAlphaEqFields :
     Renaming
-    -> Dict.Dict String Can.FieldType
-    -> Dict.Dict String Can.FieldType
+    -> Dict.Dict String (Can.FieldType Name)
+    -> Dict.Dict String (Can.FieldType Name)
     -> Result String Renaming
 bijectiveAlphaEqFields renaming fields1 fields2 =
     let
@@ -414,7 +415,7 @@ bijectiveAlphaEqFields renaming fields1 fields2 =
             (List.map2 Tuple.pair list1 list2)
 
 
-bijectiveAlphaEqArgs : Renaming -> List ( String, Can.Type ) -> List ( String, Can.Type ) -> Result String Renaming
+bijectiveAlphaEqArgs : Renaming -> List ( String, Can.Type Name ) -> List ( String, Can.Type Name ) -> Result String Renaming
 bijectiveAlphaEqArgs renaming args1 args2 =
     case ( args1, args2 ) of
         ( [], [] ) ->
@@ -432,7 +433,7 @@ bijectiveAlphaEqArgs renaming args1 args2 =
             Err "Alias argument list length mismatch"
 
 
-bijectiveAlphaEqAlias : Renaming -> Can.AliasType -> Can.AliasType -> Result String Renaming
+bijectiveAlphaEqAlias : Renaming -> Can.AliasType Name -> Can.AliasType Name -> Result String Renaming
 bijectiveAlphaEqAlias renaming at1 at2 =
     case ( at1, at2 ) of
         ( Can.Holey t1, Can.Holey t2 ) ->
@@ -474,7 +475,7 @@ formatViolation v =
         ++ v.details
 
 
-maybeTypeToString : Maybe Can.Type -> String
+maybeTypeToString : Maybe (Can.Type Name) -> String
 maybeTypeToString mt =
     case mt of
         Just t ->
@@ -484,7 +485,7 @@ maybeTypeToString mt =
             "(none)"
 
 
-typeToString : Can.Type -> String
+typeToString : Can.Type Name -> String
 typeToString tipe =
     case tipe of
         Can.TVar name ->

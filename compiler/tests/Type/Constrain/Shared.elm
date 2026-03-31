@@ -10,7 +10,7 @@ For Canonical AST builders, use Compiler.AST.CanonicalBuilder.
 
 import Array
 import Compiler.AST.Canonical as Can
-import Compiler.Data.Name as Name
+import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Data.NonEmptyList as NE
 import Compiler.Reporting.Annotation as A
 import Compiler.Type.Constrain.Erased.Module as ConstrainErased
@@ -107,7 +107,7 @@ expectEquivalentTypeChecking modul =
 
 {-| Run the standard constraint generation and solving path.
 -}
-runStandardPath : Can.Module -> IO.IO (Result Int (Dict String Name.Name Can.Annotation))
+runStandardPath : Can.Module -> IO.IO (Result Int (Dict String Name.Name (Can.Annotation Name)))
 runStandardPath modul =
     ConstrainErased.constrain modul
         |> IO.andThen Solve.run
@@ -131,8 +131,8 @@ runWithIdsPath :
         IO.IO
             (Result
                 Int
-                { annotations : Dict String Name.Name Can.Annotation
-                , nodeTypes : Array.Array (Maybe Can.Type)
+                { annotations : Dict String Name.Name (Can.Annotation Name)
+                , nodeTypes : Array.Array (Maybe (Can.Type Name))
                 , nodeVars : Array.Array (Maybe IO.Variable)
                 , annotationVars : Dict String Name.Name IO.Variable
                 , solverState :

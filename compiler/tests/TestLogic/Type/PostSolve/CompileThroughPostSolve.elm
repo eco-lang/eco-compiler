@@ -15,7 +15,7 @@ and post-PostSolve NodeTypes snapshots for non-regression testing.
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Source as Src
 import Compiler.Canonicalize.Module as Canonicalize
-import Compiler.Data.Name as Name
+import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Data.NonEmptyList as NE
 import Compiler.Data.OneOrMore as OneOrMore
 import Compiler.Elm.Interface.Basic as Basic
@@ -34,7 +34,7 @@ import TestLogic.TestPipeline as Pipeline
 {-| Artifacts from running through PostSolve, including both pre and post snapshots.
 -}
 type alias Artifacts =
-    { annotations : Dict.Dict Name.Name Can.Annotation
+    { annotations : Dict.Dict Name.Name (Can.Annotation Name)
     , nodeTypesPre : PostSolve.NodeTypes
     , nodeTypesPost : PostSolve.NodeTypes
     , kernelEnv : KernelTypes.KernelTypeEnv
@@ -45,7 +45,7 @@ type alias Artifacts =
 {-| Detailed artifacts including synthetic expression IDs for POST\_001/POST\_003 tests.
 -}
 type alias DetailedArtifacts =
-    { annotations : Dict.Dict Name.Name Can.Annotation
+    { annotations : Dict.Dict Name.Name (Can.Annotation Name)
     , nodeTypesPre : PostSolve.NodeTypes
     , nodeTypesPost : PostSolve.NodeTypes
     , kernelEnv : KernelTypes.KernelTypeEnv
@@ -123,7 +123,7 @@ runWithIdsTypeCheckDetailed :
         IO.IO
             (Result
                 Int
-                { annotations : Data.Map.Dict String Name.Name Can.Annotation
+                { annotations : Data.Map.Dict String Name.Name (Can.Annotation Name)
                 , nodeTypes : PostSolve.NodeTypes
                 , syntheticExprIds : EverySet.EverySet Int Int
                 }

@@ -35,7 +35,7 @@ compilation.
 -}
 type Warning
     = UnusedVariable A.Region Context Name
-    | MissingTypeAnnotation A.Region Name Can.Type
+    | MissingTypeAnnotation A.Region Name (Can.Type Name)
 
 
 {-| Describes the context where an unused variable was found.

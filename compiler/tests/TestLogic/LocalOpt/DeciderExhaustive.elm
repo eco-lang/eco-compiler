@@ -24,6 +24,7 @@ import Dict
 import Expect
 import System.TypeCheck.IO as IO
 import TestLogic.TestPipeline as Pipeline
+import Compiler.Data.Name exposing (Name)
 
 
 {-| TOPT\_002: Verify decision trees have no nested patterns.
@@ -76,7 +77,7 @@ expectDeciderComplete srcModule =
 
 {-| Collect nested pattern checks in decision trees.
 -}
-collectNestedPatternChecks : TOpt.LocalGraph -> List (() -> Expect.Expectation)
+collectNestedPatternChecks : TOpt.LocalGraph Name -> List (() -> Expect.Expectation)
 collectNestedPatternChecks (TOpt.LocalGraph data) =
     Data.Map.foldl TOpt.compareGlobal
         (\global node acc ->
@@ -101,7 +102,7 @@ globalToString (TOpt.Global home name) =
 
 {-| Check for nested patterns in a node.
 -}
-checkNodeNestedPatterns : String -> TOpt.Node -> List (() -> Expect.Expectation)
+checkNodeNestedPatterns : String -> TOpt.Node Name -> List (() -> Expect.Expectation)
 checkNodeNestedPatterns context node =
     case node of
         TOpt.Define expr _ _ ->
@@ -125,7 +126,7 @@ checkNodeNestedPatterns context node =
 
 {-| Check Def for nested patterns.
 -}
-checkDefNestedPatterns : String -> TOpt.Def -> List (() -> Expect.Expectation)
+checkDefNestedPatterns : String -> TOpt.Def Name -> List (() -> Expect.Expectation)
 checkDefNestedPatterns context def =
     case def of
         TOpt.Def _ name expr _ ->
@@ -137,7 +138,7 @@ checkDefNestedPatterns context def =
 
 {-| Collect nested pattern checks from expressions.
 -}
-collectExprNestedPatternIssues : String -> TOpt.Expr -> List (() -> Expect.Expectation)
+collectExprNestedPatternIssues : String -> TOpt.Expr Name -> List (() -> Expect.Expectation)
 collectExprNestedPatternIssues context expr =
     case expr of
         TOpt.Case _ _ decider branches _ ->
@@ -200,7 +201,7 @@ Nested patterns would be indicated by Path values that descend into
 constructor arguments or list elements in a way that requires nested matching.
 
 -}
-checkDeciderNestedPatterns : String -> TOpt.Decider TOpt.Choice -> List (() -> Expect.Expectation)
+checkDeciderNestedPatterns : String -> TOpt.Decider (TOpt.Choice Name) -> List (() -> Expect.Expectation)
 checkDeciderNestedPatterns context decider =
     case decider of
         TOpt.Leaf _ ->
@@ -248,7 +249,7 @@ checkPathForNesting _ _ =
 
 {-| Collect exhaustiveness checks from the local graph.
 -}
-collectExhaustivenessChecks : TOpt.LocalGraph -> List (() -> Expect.Expectation)
+collectExhaustivenessChecks : TOpt.LocalGraph Name -> List (() -> Expect.Expectation)
 collectExhaustivenessChecks (TOpt.LocalGraph data) =
     Data.Map.foldl TOpt.compareGlobal
         (\global node acc ->
@@ -264,7 +265,7 @@ collectExhaustivenessChecks (TOpt.LocalGraph data) =
 
 {-| Check exhaustiveness for a node.
 -}
-checkNodeExhaustiveness : String -> TOpt.Node -> List (() -> Expect.Expectation)
+checkNodeExhaustiveness : String -> TOpt.Node Name -> List (() -> Expect.Expectation)
 checkNodeExhaustiveness context node =
     case node of
         TOpt.Define expr _ _ ->
@@ -288,7 +289,7 @@ checkNodeExhaustiveness context node =
 
 {-| Check Def for exhaustiveness.
 -}
-checkDefExhaustiveness : String -> TOpt.Def -> List (() -> Expect.Expectation)
+checkDefExhaustiveness : String -> TOpt.Def Name -> List (() -> Expect.Expectation)
 checkDefExhaustiveness context def =
     case def of
         TOpt.Def _ name expr _ ->
@@ -300,7 +301,7 @@ checkDefExhaustiveness context def =
 
 {-| Collect exhaustiveness checks from expressions.
 -}
-collectExprExhaustivenessIssues : String -> TOpt.Expr -> List (() -> Expect.Expectation)
+collectExprExhaustivenessIssues : String -> TOpt.Expr Name -> List (() -> Expect.Expectation)
 collectExprExhaustivenessIssues context expr =
     case expr of
         TOpt.Case _ _ decider branches _ ->
@@ -365,7 +366,7 @@ A decision tree is exhaustive if:
   - All paths through the tree lead to a Leaf
 
 -}
-checkDeciderExhaustiveness : TOpt.Decider TOpt.Choice -> List (() -> Expect.Expectation)
+checkDeciderExhaustiveness : TOpt.Decider (TOpt.Choice Name) -> List (() -> Expect.Expectation)
 checkDeciderExhaustiveness decider =
     case decider of
         TOpt.Leaf _ ->

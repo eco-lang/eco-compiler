@@ -39,7 +39,7 @@ It supports three different backend types based on the level of type information
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.Optimized as Opt
-import Compiler.Data.Name as Name
+import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Generate.Mode as Mode
 import Compiler.Reporting.Render.Type.Localizer as L
 import Data.Map exposing (Dict)
@@ -85,7 +85,7 @@ type alias CodeGen =
         , graph : Opt.GlobalGraph
         , home : IO.Canonical
         , name : Name.Name
-        , annotation : Can.Annotation
+        , annotation : Can.Annotation Name
         }
         -> Output
 
@@ -95,7 +95,7 @@ type alias CodeGen =
         , graph : Opt.GlobalGraph
         , home : IO.Canonical
         , maybeName : Maybe Name.Name
-        , annotation : Can.Annotation
+        , annotation : Can.Annotation Name
         }
         -> Output
     }

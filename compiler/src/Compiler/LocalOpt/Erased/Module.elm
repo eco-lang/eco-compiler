@@ -34,7 +34,7 @@ import Compiler.AST.Canonical as Can
 import Compiler.AST.Optimized as Opt
 import Compiler.AST.Utils.Type as Type
 import Compiler.Canonicalize.Effects as Effects
-import Compiler.Data.Name as Name
+import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.LocalOpt.Erased.Expression as Expr
 import Compiler.LocalOpt.Erased.Names as Names
@@ -63,7 +63,7 @@ type alias MResult i w a =
 {-| Maps definition names to their type annotations from the canonical phase.
 -}
 type alias Annotations =
-    Dict Name.Name Can.Annotation
+    Dict Name.Name (Can.Annotation Name)
 
 
 {-| Optimize a canonical module to produce an optimized local graph.
@@ -169,7 +169,7 @@ addAlias home name (Can.Alias _ tipe) ((Opt.LocalGraph main nodes fieldCounts) a
 -- Increments the usage count for a record field accessed by a record constructor function.
 
 
-addRecordCtorField : Name.Name -> Can.FieldType -> Dict Name.Name Int -> Dict Name.Name Int
+addRecordCtorField : Name.Name -> Can.FieldType Name -> Dict Name.Name Int -> Dict Name.Name Int
 addRecordCtorField name _ fields =
     Dict.update name (\v -> Just (Maybe.withDefault 0 v + 1)) fields
 
@@ -596,7 +596,7 @@ addRecDefHelp cycle region (State { values, functions }) name args body =
 -- ====== Helpers ======
 
 
-findAnnotation : Name.Name -> Annotations -> Can.Annotation
+findAnnotation : Name.Name -> Annotations -> Can.Annotation Name
 findAnnotation name annotations =
     case Dict.get name annotations of
         Just ann ->

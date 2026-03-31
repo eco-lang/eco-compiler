@@ -13,7 +13,7 @@ module Compiler.Type.Type exposing
 {-| Internal type representation for type inference.
 
 This module defines the runtime type representation used during type checking.
-Unlike `Can.Type` which represents user-written types, these types use union-find
+Unlike `Can.Type Name` which represents user-written types, these types use union-find
 variables for efficient unification.
 
 
@@ -96,7 +96,7 @@ type Constraint
     | CSaveTheEnvironment
     | CEqual A.Region E.Category Type (E.Expected Type)
     | CLocal A.Region Name (E.Expected Type)
-    | CForeign A.Region Name Can.Annotation (E.Expected Type)
+    | CForeign A.Region Name (Can.Annotation Name) (E.Expected Type)
     | CPattern A.Region E.PCategory Type (E.PExpected Type)
     | CAnd (List Constraint)
     | CLet (List Variable) (List Variable) (Data.Map.Dict String Name (A.Located Type)) Constraint Constraint
@@ -424,7 +424,7 @@ named type variables. Generates fresh names for unnamed variables and returns
 a Forall quantifier listing all type variables found.
 
 -}
-toAnnotation : Variable -> IO Can.Annotation
+toAnnotation : Variable -> IO (Can.Annotation Name)
 toAnnotation variable =
     getVarNames variable Dict.empty
         |> IO.andThen
@@ -444,7 +444,7 @@ unique names, preventing collisions where e.g. two lambda parameters
 independently both get named "a".
 
 -}
-toCanTypeBatch : Array (Maybe Variable) -> IO (Array (Maybe Can.Type))
+toCanTypeBatch : Array (Maybe Variable) -> IO (Array (Maybe (Can.Type Name)))
 toCanTypeBatch nodeVars =
     -- First pass: collect all user-provided names across all variables
     IO.foldM
@@ -498,7 +498,7 @@ arrayTraverseMaybeStateHelp f ( remaining, acc, s ) =
                 |> IO.map (\( result, s1 ) -> IO.Loop ( rest, Just result :: acc, s1 ))
 
 
-variableToCanType : Variable -> State.StateT NameState Can.Type
+variableToCanType : Variable -> State.StateT NameState (Can.Type Name)
 variableToCanType variable =
     liftIO (UF.get variable)
         |> State.andThen
@@ -565,7 +565,7 @@ variableToCanType variable =
             )
 
 
-termToCanType : FlatType -> StateT NameState Can.Type
+termToCanType : FlatType -> StateT NameState (Can.Type Name)
 termToCanType term =
     case term of
         App1 home name args ->
@@ -611,7 +611,7 @@ termToCanType term =
                 |> State.apply (State.traverseList variableToCanType cs)
 
 
-fieldToCanType : Variable -> StateT NameState Can.FieldType
+fieldToCanType : Variable -> StateT NameState (Can.FieldType Name)
 fieldToCanType variable =
     variableToCanType variable
         |> State.map (\tipe -> Can.FieldType 0 tipe)

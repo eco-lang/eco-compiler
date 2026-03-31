@@ -4,9 +4,9 @@ module TestLogic.LocalOpt.FunctionTypeEncode exposing (expectFunctionTypesEncode
 
 For every function expression in TypedOptimized:
 
-  - Extract its parameter (Name, Can.Type) list and result Can.Type.
+  - Extract its parameter (Name, Can.Type Name) list and result Can.Type Name.
   - Compute the corresponding curried TLambda chain.
-  - Assert that the expression's own attached Can.Type equals that TLambda type.
+  - Assert that the expression's own attached Can.Type Name equals that TLambda type.
 
 This module reuses the existing typed optimization pipeline to verify
 function types are properly encoded.
@@ -22,6 +22,7 @@ import Dict
 import Expect
 import System.TypeCheck.IO as IO
 import TestLogic.TestPipeline as Pipeline
+import Compiler.Data.Name exposing (Name)
 
 
 {-| Verify that all function expressions have correctly encoded function types.
@@ -53,7 +54,7 @@ expectFunctionTypesEncoded srcModule =
 
 {-| Collect function type checks from the local graph.
 -}
-collectFunctionTypeChecks : TOpt.LocalGraph -> List (() -> Expect.Expectation)
+collectFunctionTypeChecks : TOpt.LocalGraph Name -> List (() -> Expect.Expectation)
 collectFunctionTypeChecks (TOpt.LocalGraph data) =
     Data.Map.foldl TOpt.compareGlobal
         (\global node acc ->
@@ -78,7 +79,7 @@ globalToString (TOpt.Global home name) =
 
 {-| Check function type encoding for a node.
 -}
-checkNodeFunctionTypes : String -> TOpt.Node -> List (() -> Expect.Expectation)
+checkNodeFunctionTypes : String -> TOpt.Node Name -> List (() -> Expect.Expectation)
 checkNodeFunctionTypes context node =
     case node of
         TOpt.Define expr _ _ ->
@@ -102,7 +103,7 @@ checkNodeFunctionTypes context node =
 
 {-| Check Def function types.
 -}
-checkDefFunctionTypes : String -> TOpt.Def -> List (() -> Expect.Expectation)
+checkDefFunctionTypes : String -> TOpt.Def Name -> List (() -> Expect.Expectation)
 checkDefFunctionTypes context def =
     case def of
         TOpt.Def _ name expr _ ->
@@ -114,7 +115,7 @@ checkDefFunctionTypes context def =
 
 {-| Collect function type checks from expressions.
 -}
-collectExprFunctionTypeChecks : String -> TOpt.Expr -> List (() -> Expect.Expectation)
+collectExprFunctionTypeChecks : String -> TOpt.Expr Name -> List (() -> Expect.Expectation)
 collectExprFunctionTypeChecks context expr =
     case expr of
         TOpt.Function params bodyExpr fnMeta ->
@@ -199,7 +200,7 @@ The type should be a TLambda chain where each left side matches
 the corresponding parameter type.
 
 -}
-functionTypeMatches : List Can.Type -> Can.Type -> Bool
+functionTypeMatches : List (Can.Type Name) -> Can.Type Name -> Bool
 functionTypeMatches paramTypes fnType =
     case ( paramTypes, fnType ) of
         ( [], _ ) ->

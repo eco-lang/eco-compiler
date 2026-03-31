@@ -53,10 +53,10 @@ back to the boxed ABI.
 -}
 type ProcessedArg
     = ResolvedArg Mono.MonoExpr
-    | PendingAccessor A.Region Name Can.Type
-    | PendingKernel A.Region String String String Can.Type
-    | PendingGlobal TOpt.Expr Substitution Can.Type
-    | LocalFunArg Name Can.Type
+    | PendingAccessor A.Region Name (Can.Type Name)
+    | PendingKernel A.Region String String String (Can.Type Name)
+    | PendingGlobal (TOpt.Expr Name) Substitution (Can.Type Name)
+    | LocalFunArg Name (Can.Type Name)
 
 
 
@@ -81,7 +81,7 @@ buildRenameMap epoch callerVarNames funcVarNames acc counter =
                 buildRenameMap epoch callerVarNames rest acc counter
 
 
-renameCanTypeVars : Data.Map.Dict String Name Name -> Can.Type -> Can.Type
+renameCanTypeVars : Data.Map.Dict String Name Name -> Can.Type Name -> Can.Type Name
 renameCanTypeVars renameMap canType =
     case canType of
         Can.TVar name ->
@@ -129,7 +129,7 @@ renameCanTypeVars renameMap canType =
 For top-level globals, looks up and caches by global identity.
 For local/anonymous callees, builds on demand without caching.
 -}
-getOrBuildSchemeInfo : Can.Type -> Maybe TOpt.Global -> MonoState -> ( SchemeInfo, MonoState )
+getOrBuildSchemeInfo : Can.Type Name -> Maybe TOpt.Global -> MonoState -> ( SchemeInfo, MonoState )
 getOrBuildSchemeInfo funcCanType maybeGlobal state =
     case maybeGlobal of
         Just global ->
@@ -191,13 +191,13 @@ derivation), and the funcMonoType (computed in a single pass).
 -}
 unifyCallSiteWithRenaming :
     MVarEnv
-    -> Can.Type
+    -> Can.Type Name
     -> List Mono.MonoType
-    -> Can.Type
+    -> Can.Type Name
     -> Substitution
     -> Int
     -> SchemeInfo
-    -> { callSubst : Substitution, callSubstAligned : Substitution, renamedFuncType : Can.Type, funcMonoType : Mono.MonoType }
+    -> { callSubst : Substitution, callSubstAligned : Substitution, renamedFuncType : Can.Type Name, funcMonoType : Mono.MonoType }
 unifyCallSiteWithRenaming mvarEnv funcCanType argMonoTypes resultCanType baseSubst epoch info =
     let
         callerVarNames =
@@ -246,7 +246,7 @@ unifyCallSiteWithRenaming mvarEnv funcCanType argMonoTypes resultCanType baseSub
             TypeSubst.unifyCallSiteDirect mvarEnvWithCalleeNames renamedArgTypes renamedResultType argMonoTypes baseSubst
 
         -- Apply reverse renaming: copy renamed-keyed bindings to original-keyed
-        -- so downstream consumers using original Can.Type names find correct bindings
+        -- so downstream consumers using original Can.Type Name names find correct bindings
         callSubstAligned =
             TypeSubst.applyReverseRenaming callSubst renameMapUsed
     in
@@ -387,9 +387,9 @@ updateLocalMultiStack defName key funcMonoType callSubst stack =
 -- ========== VALUE-MULTI SPECIALIZATION ==========
 
 
-{-| Check if a Can.Type contains any TLambda anywhere in its structure.
+{-| Check if a Can.Type Name contains any TLambda anywhere in its structure.
 -}
-typeContainsLambda : Can.Type -> Bool
+typeContainsLambda : Can.Type Name -> Bool
 typeContainsLambda canType =
     case canType of
         Can.TLambda _ _ ->
@@ -417,9 +417,9 @@ typeContainsLambda canType =
             False
 
 
-{-| Check if a Can.Type contains any type variable with CEcoValue constraint.
+{-| Check if a Can.Type Name contains any type variable with CEcoValue constraint.
 -}
-hasCEcoTVar : Can.Type -> Bool
+hasCEcoTVar : Can.Type Name -> Bool
 hasCEcoTVar canType =
     let
         vars =
@@ -431,7 +431,7 @@ hasCEcoTVar canType =
 {-| Should this non-function let binding use value-multi specialization?
 True when the type contains lambdas AND unconstrained CEco type variables.
 -}
-shouldUseValueMulti : Can.Type -> Bool
+shouldUseValueMulti : Can.Type Name -> Bool
 shouldUseValueMulti defCanType =
     typeContainsLambda defCanType && hasCEcoTVar defCanType
 
@@ -446,7 +446,7 @@ isValueMultiTarget name state =
 {-| Check if an expression is a VarLocal/TrackedVarLocal that is a value-multi target.
 Returns the variable name and its canonical type if so.
 -}
-getValueMultiVar : TOpt.Expr -> MonoState -> Maybe ( Name, Can.Type )
+getValueMultiVar : TOpt.Expr Name -> MonoState -> Maybe ( Name, Can.Type Name )
 getValueMultiVar expr state =
     case expr of
         TOpt.VarLocal name meta ->
@@ -576,13 +576,13 @@ The curried type comes from TypeSubst.applySubst preserving TLambda structure.
 GlobalOpt (GOPT\_016) will canonicalize by flattening the type:
 MFunction [Int] (MFunction [Int] Int) → MFunction [Int, Int] Int
 
-Invariant relied upon: TOPT\_005 - the Can.Type on the TOpt node is the
+Invariant relied upon: TOPT\_005 - the Can.Type Name on the TOpt node is the
 authoritative TLambda encoding of this function's params and result.
 
 -}
 specializeLambda :
-    TOpt.Expr
-    -> Can.Type
+    TOpt.Expr Name
+    -> Can.Type Name
     -> Substitution
     -> MonoState
     -> ( Mono.MonoExpr, MonoState )
@@ -620,7 +620,7 @@ specializeLambda lambdaExpr canType subst state =
                         "specializeLambda: called with non-lambda expression"
 
         -- Guard: paramCount == 0 is a bug
-        -- 3. Specialize each parameter's declared Can.Type under refinedSubst.
+        -- 3. Specialize each parameter's declared Can.Type Name under refinedSubst.
         monoParams : List ( Name, Mono.MonoType )
         monoParams =
             List.map
@@ -695,7 +695,7 @@ specializeLambda lambdaExpr canType subst state =
 {-| Specialize a typed optimized node to a monomorphized node at the requested concrete type.
 The ctorName parameter is used to populate CtorLayout.name for constructor nodes.
 -}
-specializeNode : Name.Name -> TOpt.Node -> Mono.MonoType -> MonoState -> ( Mono.MonoNode, MonoState )
+specializeNode : Name.Name -> TOpt.Node Name -> Mono.MonoType -> MonoState -> ( Mono.MonoNode, MonoState )
 specializeNode ctorName node requestedMonoType state =
     case node of
         TOpt.Define expr _ meta ->
@@ -854,8 +854,8 @@ specializeNode ctorName node requestedMonoType state =
 -}
 specializeCycle :
     List Name
-    -> List ( Name, TOpt.Expr )
-    -> List TOpt.Def
+    -> List ( Name, TOpt.Expr Name )
+    -> List (TOpt.Def Name)
     -> Mono.MonoType
     -> MonoState
     -> ( Mono.MonoNode, MonoState )
@@ -884,7 +884,7 @@ specializeCycle _ valueDefs funcDefs requestedMonoType state =
 {-| Specialize a cycle containing only value definitions.
 -}
 specializeValueOnlyCycle :
-    List ( Name, TOpt.Expr )
+    List ( Name, TOpt.Expr Name )
     -> Mono.MonoType
     -> MonoState
     -> ( Mono.MonoNode, MonoState )
@@ -904,8 +904,8 @@ specializeValueOnlyCycle valueDefs requestedMonoType state =
 specializeFunctionCycle :
     IO.Canonical
     -> Name
-    -> List ( Name, TOpt.Expr )
-    -> List TOpt.Def
+    -> List ( Name, TOpt.Expr Name )
+    -> List (TOpt.Def Name)
     -> Mono.MonoType
     -> MonoState
     -> ( Mono.MonoNode, MonoState )
@@ -970,7 +970,7 @@ specializeFunc :
     -> Name
     -> Mono.MonoType
     -> Substitution
-    -> TOpt.Def
+    -> TOpt.Def Name
     -> ( Dict Int Mono.MonoNode, MonoState )
     -> ( Dict Int Mono.MonoNode, MonoState )
 specializeFunc requestedCanonical requestedName requestedMonoType sharedSubst def ( accNodes, accState ) =
@@ -1022,7 +1022,7 @@ specializeFunc requestedCanonical requestedName requestedMonoType sharedSubst de
 
 specializeFuncDefInCycle :
     Substitution
-    -> TOpt.Def
+    -> TOpt.Def Name
     -> MonoState
     -> ( Mono.MonoNode, MonoState )
 specializeFuncDefInCycle subst def state =
@@ -1093,7 +1093,7 @@ specializeFuncDefInCycle subst def state =
 {-| Specialize a list of value definitions in a cycle.
 -}
 specializeValueDefs :
-    List ( Name, TOpt.Expr )
+    List ( Name, TOpt.Expr Name )
     -> Substitution
     -> MonoState
     -> ( List ( Name, Mono.MonoExpr ), MonoState )
@@ -1120,7 +1120,7 @@ specializeValueDefs values subst state =
 
 {-| Specialize a typed optimized expression to a monomorphized expression by applying type substitutions.
 -}
-specializeExpr : TOpt.Expr -> Substitution -> MonoState -> ( Mono.MonoExpr, MonoState )
+specializeExpr : TOpt.Expr Name -> Substitution -> MonoState -> ( Mono.MonoExpr, MonoState )
 specializeExpr expr subst state =
     case expr of
         TOpt.Bool _ value _ ->
@@ -2447,7 +2447,7 @@ inferFromDecider decider fallback =
 {-| Specialize a list of expressions.
 Uses foldl + reverse instead of foldr for stack safety (foldl is tail-call optimized).
 -}
-specializeExprs : List TOpt.Expr -> Substitution -> MonoState -> ( List Mono.MonoExpr, MonoState )
+specializeExprs : List (TOpt.Expr Name) -> Substitution -> MonoState -> ( List Mono.MonoExpr, MonoState )
 specializeExprs exprs subst state =
     let
         ( revAcc, finalState ) =
@@ -2475,7 +2475,7 @@ Returns:
 
 -}
 processCallArgs :
-    List TOpt.Expr
+    List (TOpt.Expr Name)
     -> Substitution
     -> MonoState
     -> ( List ProcessedArg, List Mono.MonoType, MonoState )
@@ -2487,7 +2487,7 @@ processCallArgs args subst state =
     ( List.reverse revArgs, List.reverse revTypes, finalState )
 
 
-processCallArg : Substitution -> TOpt.Expr -> ( List ProcessedArg, List Mono.MonoType, MonoState ) -> ( List ProcessedArg, List Mono.MonoType, MonoState )
+processCallArg : Substitution -> TOpt.Expr Name -> ( List ProcessedArg, List Mono.MonoType, MonoState ) -> ( List ProcessedArg, List Mono.MonoType, MonoState )
 processCallArg subst arg ( accArgs, accTypes, st ) =
     case arg of
         TOpt.Accessor region fieldName accessorMeta ->
@@ -2795,7 +2795,7 @@ resolveProcessedArgs processedArgs paramTypes subst state =
 {-| Specialize a list of named expressions.
 -}
 specializeNamedExprs :
-    List ( Name, TOpt.Expr )
+    List ( Name, TOpt.Expr Name )
     -> Substitution
     -> MonoState
     -> ( List ( Name, Mono.MonoExpr ), MonoState )
@@ -2819,7 +2819,7 @@ specializeNamedExprs namedExprs subst state =
 {-| Specialize if-expression branches (condition-body pairs).
 -}
 specializeBranches :
-    List ( TOpt.Expr, TOpt.Expr )
+    List ( TOpt.Expr Name, TOpt.Expr Name )
     -> Substitution
     -> MonoState
     -> ( List ( Mono.MonoExpr, Mono.MonoExpr ), MonoState )
@@ -2882,7 +2882,7 @@ extractCtorResultType n monoType =
 
 {-| Check if a definition has the given name.
 -}
-defHasName : Name -> TOpt.Def -> Bool
+defHasName : Name -> TOpt.Def Name -> Bool
 defHasName targetName def =
     case def of
         TOpt.Def _ name _ _ ->
@@ -2894,7 +2894,7 @@ defHasName targetName def =
 
 {-| Get the name from a definition.
 -}
-getDefName : TOpt.Def -> Name
+getDefName : TOpt.Def Name -> Name
 getDefName def =
     case def of
         TOpt.Def _ name _ _ ->
@@ -2906,7 +2906,7 @@ getDefName def =
 
 {-| Get the canonical type from a definition.
 -}
-getDefCanonicalType : TOpt.Def -> Can.Type
+getDefCanonicalType : TOpt.Def Name -> Can.Type Name
 getDefCanonicalType def =
     case def of
         TOpt.Def _ _ _ canType ->
@@ -2922,7 +2922,7 @@ getDefCanonicalType def =
 
 {-| Specialize a local definition.
 -}
-specializeDef : TOpt.Def -> Substitution -> MonoState -> ( Mono.MonoDef, MonoState )
+specializeDef : TOpt.Def Name -> Substitution -> MonoState -> ( Mono.MonoDef, MonoState )
 specializeDef def subst state =
     case def of
         TOpt.Def _ name expr _ ->
@@ -2975,7 +2975,7 @@ specializeDef def subst state =
             ( Mono.MonoTailDef name monoArgs monoExpr, stateAfter )
 
 
-specializeDestructor : TOpt.Destructor -> Substitution -> MVarEnv -> VarEnv -> TypeEnv.GlobalTypeEnv -> Maybe Mono.Global -> Mono.MonoDestructor
+specializeDestructor : TOpt.Destructor Name -> Substitution -> MVarEnv -> VarEnv -> TypeEnv.GlobalTypeEnv -> Maybe Mono.Global -> Mono.MonoDestructor
 specializeDestructor (TOpt.Destructor name path meta) subst mvarEnv varEnv globalTypeEnv currentGlobal =
     let
         monoPath =
@@ -3344,7 +3344,7 @@ specializeDtPath mvarEnv rootName dtPath varEnv globalTypeEnv =
 
 {-| Specialize a pattern match decider tree.
 -}
-specializeDecider : Name -> TOpt.Decider TOpt.Choice -> Substitution -> MonoState -> ( Mono.Decider Mono.MonoChoice, MonoState )
+specializeDecider : Name -> TOpt.Decider (TOpt.Choice Name) -> Substitution -> MonoState -> ( Mono.Decider Mono.MonoChoice, MonoState )
 specializeDecider rootName decider subst state =
     case decider of
         TOpt.Leaf choice ->
@@ -3411,7 +3411,7 @@ specializeDecider rootName decider subst state =
             ( Mono.FanOut monoPath monoEdges monoFallback, state2 )
 
 
-specializeChoice : TOpt.Choice -> Substitution -> MonoState -> ( Mono.MonoChoice, MonoState )
+specializeChoice : TOpt.Choice Name -> Substitution -> MonoState -> ( Mono.MonoChoice, MonoState )
 specializeChoice choice subst state =
     case choice of
         TOpt.Inline expr ->
@@ -3425,7 +3425,7 @@ specializeChoice choice subst state =
             ( Mono.Jump index, state )
 
 
-specializeEdges : Name -> List ( DT.Test, TOpt.Decider TOpt.Choice ) -> Substitution -> MonoState -> ( List ( DT.Test, Mono.Decider Mono.MonoChoice ), MonoState )
+specializeEdges : Name -> List ( DT.Test, TOpt.Decider (TOpt.Choice Name) ) -> Substitution -> MonoState -> ( List ( DT.Test, Mono.Decider Mono.MonoChoice ), MonoState )
 specializeEdges rootName edges subst state =
     let
         savedVarEnv =
@@ -3456,7 +3456,7 @@ specializeEdges rootName edges subst state =
     ( List.reverse revAcc, finalState )
 
 
-specializeJumps : List ( Int, TOpt.Expr ) -> Substitution -> MonoState -> ( List ( Int, Mono.MonoExpr ), MonoState )
+specializeJumps : List ( Int, TOpt.Expr Name ) -> Substitution -> MonoState -> ( List ( Int, Mono.MonoExpr ), MonoState )
 specializeJumps jumps subst state =
     let
         savedVarEnv =
@@ -3509,7 +3509,7 @@ between the caller's scope and the callee's scope. When callee type variables
 share names with caller type variables, callSubst can contaminate the result.
 Fall back to callSubst only when the caller's subst leaves CEcoValue MVars.
 -}
-callResultMonoType : MVarEnv -> Substitution -> Substitution -> Can.Type -> Mono.MonoType
+callResultMonoType : MVarEnv -> Substitution -> Substitution -> Can.Type Name -> Mono.MonoType
 callResultMonoType mvarEnv callerSubst callSubst canType =
     let
         fromCaller =
@@ -3524,7 +3524,7 @@ callResultMonoType mvarEnv callerSubst callSubst canType =
 
 {-| Specialize a function argument by applying type substitution.
 -}
-specializeArg : MVarEnv -> Substitution -> ( A.Located Name, Can.Type ) -> ( Name, Mono.MonoType )
+specializeArg : MVarEnv -> Substitution -> ( A.Located Name, Can.Type Name ) -> ( Name, Mono.MonoType )
 specializeArg mvarEnv subst ( locName, canType ) =
     let
         name =
@@ -3538,7 +3538,7 @@ specializeArg mvarEnv subst ( locName, canType ) =
 
 {-| Build a function type from a list of arguments and a return type.
 -}
-buildFuncType : List ( A.Located Name, Can.Type ) -> Can.Type -> Can.Type
+buildFuncType : List ( A.Located Name, Can.Type Name ) -> Can.Type Name -> Can.Type Name
 buildFuncType args returnType =
     List.foldr
         (\( _, argType ) acc ->
@@ -3651,7 +3651,7 @@ This is _call-site aware_:
         - NumberBoxed      -> treat CNumber vars as CEcoValue (boxed)
 
 -}
-deriveKernelAbiType : MVarEnv -> ( String, String ) -> Can.Type -> Substitution -> Mono.MonoType
+deriveKernelAbiType : MVarEnv -> ( String, String ) -> Can.Type Name -> Substitution -> Mono.MonoType
 deriveKernelAbiType mvarEnv kernelId canFuncType callSubst =
     let
         -- Monomorphic function type at this use-site, after substitution.

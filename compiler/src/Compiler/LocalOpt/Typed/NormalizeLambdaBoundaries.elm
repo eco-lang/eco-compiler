@@ -37,7 +37,7 @@ Transformations:
 
 import Compiler.AST.Canonical as Can
 import Compiler.AST.TypedOptimized as TOpt
-import Compiler.Data.Name as Name
+import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Reporting.Annotation as A
 import Data.Map
 import Dict exposing (Dict)
@@ -56,15 +56,15 @@ type LambdaKind
     | TrackedLambda A.Region
 
 
-{-| Rebuild a lambda from flat (Name, Can.Type) params using the outer kind.
+{-| Rebuild a lambda from flat (Name, Can.Type Name) params using the outer kind.
 This ensures we always preserve the outer lambda's variant.
 -}
 rebuildLambda :
     LambdaKind
-    -> List ( Name.Name, Can.Type )
-    -> TOpt.Expr
-    -> TOpt.Meta
-    -> TOpt.Expr
+    -> List ( Name.Name, Can.Type Name )
+    -> TOpt.Expr Name
+    -> TOpt.Meta Name
+    -> TOpt.Expr Name
 rebuildLambda kind params body funcMeta =
     case kind of
         PlainLambda ->
@@ -72,7 +72,7 @@ rebuildLambda kind params body funcMeta =
 
         TrackedLambda region ->
             let
-                locParams : List ( A.Located Name.Name, Can.Type )
+                locParams : List ( A.Located Name.Name, Can.Type Name )
                 locParams =
                     List.map
                         (\( name, tipe ) -> ( A.At region name, tipe ))
@@ -147,7 +147,7 @@ lookupRename env name =
 This function applies a closed rename environment: it renames occurrences of
 variables but does NOT introduce new bindings or generate fresh names.
 -}
-renameExpr : RenameEnv -> TOpt.Expr -> TOpt.Expr
+renameExpr : RenameEnv -> TOpt.Expr Name -> TOpt.Expr Name
 renameExpr env expr =
     let
         ren =
@@ -277,7 +277,7 @@ renameExpr env expr =
             TOpt.Shader src attrs uniforms meta
 
 
-renameDef : RenameEnv -> TOpt.Def -> TOpt.Def
+renameDef : RenameEnv -> TOpt.Def Name -> TOpt.Def Name
 renameDef env def =
     case def of
         TOpt.Def region name bound tipe ->
@@ -289,7 +289,7 @@ renameDef env def =
             TOpt.TailDef region name args (renameExpr env body) tipe tvar
 
 
-renameDestructor : RenameEnv -> TOpt.Destructor -> TOpt.Destructor
+renameDestructor : RenameEnv -> TOpt.Destructor Name -> TOpt.Destructor Name
 renameDestructor env (TOpt.Destructor name path meta) =
     TOpt.Destructor (lookupRename env name) (renamePath env path) meta
 
@@ -315,7 +315,7 @@ renamePath env path =
 
 {-| Apply renaming to a pattern match decider tree.
 -}
-renameDecider : RenameEnv -> TOpt.Decider TOpt.Choice -> TOpt.Decider TOpt.Choice
+renameDecider : RenameEnv -> TOpt.Decider (TOpt.Choice Name) -> TOpt.Decider (TOpt.Choice Name)
 renameDecider env decider =
     case decider of
         TOpt.Leaf choice ->
@@ -334,7 +334,7 @@ renameDecider env decider =
             TOpt.FanOut path (List.map renEdge edges) (renameDecider env fallback)
 
 
-renameChoice : RenameEnv -> TOpt.Choice -> TOpt.Choice
+renameChoice : RenameEnv -> TOpt.Choice Name -> TOpt.Choice Name
 renameChoice env choice =
     case choice of
         TOpt.Inline expr ->
@@ -350,7 +350,7 @@ renameChoice env choice =
 
 {-| Normalize a LocalGraph by applying lambda boundary normalization to all nodes.
 -}
-normalizeLocalGraph : TOpt.LocalGraph -> TOpt.LocalGraph
+normalizeLocalGraph : TOpt.LocalGraph Name -> TOpt.LocalGraph Name
 normalizeLocalGraph (TOpt.LocalGraph data) =
     TOpt.LocalGraph
         { data
@@ -358,7 +358,7 @@ normalizeLocalGraph (TOpt.LocalGraph data) =
         }
 
 
-normalizeNode : TOpt.Node -> TOpt.Node
+normalizeNode : TOpt.Node Name -> TOpt.Node Name
 normalizeNode node =
     case node of
         TOpt.Define expr deps meta ->
@@ -384,7 +384,7 @@ normalizeNode node =
             node
 
 
-normalizeDef : TOpt.Def -> TOpt.Def
+normalizeDef : TOpt.Def Name -> TOpt.Def Name
 normalizeDef def =
     case def of
         TOpt.Def region name expr tipe ->
@@ -398,7 +398,7 @@ normalizeDef def =
 -- NORMALIZE EXPR
 
 
-normalizeExpr : TOpt.Expr -> TOpt.Expr
+normalizeExpr : TOpt.Expr Name -> TOpt.Expr Name
 normalizeExpr expr =
     case expr of
         TOpt.Function params body lambdaMeta ->
@@ -487,7 +487,7 @@ normalizeExpr expr =
             expr
 
 
-normalizeDeciderExpr : TOpt.Decider TOpt.Choice -> TOpt.Decider TOpt.Choice
+normalizeDeciderExpr : TOpt.Decider (TOpt.Choice Name) -> TOpt.Decider (TOpt.Choice Name)
 normalizeDeciderExpr decider =
     case decider of
         TOpt.Leaf choice ->
@@ -504,7 +504,7 @@ normalizeDeciderExpr decider =
                 (normalizeDeciderExpr fallback)
 
 
-normalizeChoiceExpr : TOpt.Choice -> TOpt.Choice
+normalizeChoiceExpr : TOpt.Choice Name -> TOpt.Choice Name
 normalizeChoiceExpr choice =
     case choice of
         TOpt.Inline expr ->
@@ -521,10 +521,10 @@ normalizeChoiceExpr choice =
 {-| Iterate let/case boundary lifting until no more changes.
 -}
 normalizeLambdaBodyFixpoint :
-    List ( Name.Name, Can.Type )
-    -> TOpt.Expr
-    -> TOpt.Meta
-    -> ( List ( Name.Name, Can.Type ), TOpt.Expr )
+    List ( Name.Name, Can.Type Name )
+    -> TOpt.Expr Name
+    -> TOpt.Meta Name
+    -> ( List ( Name.Name, Can.Type Name ), TOpt.Expr Name )
 normalizeLambdaBodyFixpoint params body lambdaMeta =
     case tryNormalizeLetBoundary params body of
         Just ( newParams, newBody ) ->
@@ -547,7 +547,7 @@ normalizeLambdaBodyFixpoint params body lambdaMeta =
 {-| Peel off nested Lets, collecting their defs in order.
 Returns (defs in order, innermost non-Let body).
 -}
-peelLets : TOpt.Expr -> List TOpt.Def -> ( List TOpt.Def, TOpt.Expr )
+peelLets : TOpt.Expr Name -> List (TOpt.Def Name) -> ( List (TOpt.Def Name), TOpt.Expr Name )
 peelLets expr acc =
     case expr of
         TOpt.Let def inner _ ->
@@ -559,7 +559,7 @@ peelLets expr acc =
 
 {-| Rebuild nested Lets from a list of defs around a body.
 -}
-rebuildLets : List TOpt.Def -> TOpt.Expr -> TOpt.Expr
+rebuildLets : List (TOpt.Def Name) -> TOpt.Expr Name -> TOpt.Expr Name
 rebuildLets defs innerBody =
     List.foldr
         (\def body -> TOpt.Let def body (TOpt.metaOf body))
@@ -568,9 +568,9 @@ rebuildLets defs innerBody =
 
 
 tryNormalizeLetBoundary :
-    List ( Name.Name, Can.Type )
-    -> TOpt.Expr
-    -> Maybe ( List ( Name.Name, Can.Type ), TOpt.Expr )
+    List ( Name.Name, Can.Type Name )
+    -> TOpt.Expr Name
+    -> Maybe ( List ( Name.Name, Can.Type Name ), TOpt.Expr Name )
 tryNormalizeLetBoundary outerParams body =
     -- Handle nested Lets: collect defs, find innermost lambda, rebuild
     case peelLets body [] of
@@ -624,9 +624,9 @@ considered for case-boundary normalization.
 
 -}
 hoistInlineLambdaChoicesToJumps :
-    TOpt.Decider TOpt.Choice
-    -> List ( Int, TOpt.Expr )
-    -> ( TOpt.Decider TOpt.Choice, List ( Int, TOpt.Expr ) )
+    TOpt.Decider (TOpt.Choice Name)
+    -> List ( Int, TOpt.Expr Name )
+    -> ( TOpt.Decider (TOpt.Choice Name), List ( Int, TOpt.Expr Name ) )
 hoistInlineLambdaChoicesToJumps decider jumps0 =
     let
         -- Determine the starting index for new jumps.
@@ -643,10 +643,10 @@ hoistInlineLambdaChoicesToJumps decider jumps0 =
 
         -- Walk the Decider, hoisting lambda Inlines.
         step :
-            TOpt.Decider TOpt.Choice
+            TOpt.Decider (TOpt.Choice Name)
             -> Int
-            -> List ( Int, TOpt.Expr )
-            -> ( TOpt.Decider TOpt.Choice, Int, List ( Int, TOpt.Expr ) )
+            -> List ( Int, TOpt.Expr Name )
+            -> ( TOpt.Decider (TOpt.Choice Name), Int, List ( Int, TOpt.Expr Name ) )
         step dec nextIdx accJumps =
             case dec of
                 TOpt.Leaf choice ->
@@ -709,7 +709,7 @@ hoistInlineLambdaChoicesToJumps decider jumps0 =
 {-| Check if a decider contains any Inline choices.
 If true, the decider has non-lambda branches that weren't hoisted.
 -}
-hasAnyInline : TOpt.Decider TOpt.Choice -> Bool
+hasAnyInline : TOpt.Decider (TOpt.Choice Name) -> Bool
 hasAnyInline decider =
     case decider of
         TOpt.Leaf choice ->
@@ -728,10 +728,10 @@ hasAnyInline decider =
 
 
 tryNormalizeCaseBoundary :
-    List ( Name.Name, Can.Type )
-    -> TOpt.Expr
-    -> TOpt.Meta
-    -> Maybe ( List ( Name.Name, Can.Type ), TOpt.Expr )
+    List ( Name.Name, Can.Type Name )
+    -> TOpt.Expr Name
+    -> TOpt.Meta Name
+    -> Maybe ( List ( Name.Name, Can.Type Name ), TOpt.Expr Name )
 tryNormalizeCaseBoundary outerParams body _ =
     case body of
         TOpt.Case label scrut decider jumps caseMeta ->
@@ -775,8 +775,8 @@ tryNormalizeCaseBoundary outerParams body _ =
 
 
 extractAndUnifyBranchParams :
-    List ( Int, TOpt.Expr )
-    -> Maybe ( List ( Name.Name, Can.Type ), List ( Int, TOpt.Expr ), Int )
+    List ( Int, TOpt.Expr Name )
+    -> Maybe ( List ( Name.Name, Can.Type Name ), List ( Int, TOpt.Expr Name ), Int )
 extractAndUnifyBranchParams jumps =
     let
         extractBranch ( idx, expr ) =
@@ -864,7 +864,7 @@ extractAndUnifyBranchParams jumps =
                     Just ( canonicalParams, renamedJumps, arity )
 
 
-peelLambdaTypes : Int -> Can.Type -> Maybe Can.Type
+peelLambdaTypes : Int -> Can.Type Name -> Maybe (Can.Type Name)
 peelLambdaTypes count tipe =
     if count <= 0 then
         Just tipe

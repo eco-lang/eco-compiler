@@ -61,7 +61,7 @@ createInitialEnv home ifaces imports =
             )
 
 
-infoToVar : Env.Info Can.Annotation -> Env.Var
+infoToVar : Env.Info (Can.Annotation Name) -> Env.Var
 infoToVar info =
     case info of
         Env.Specific home tipe ->
@@ -76,11 +76,11 @@ infoToVar info =
 
 
 type alias State =
-    { vars : Env.Exposed Can.Annotation
+    { vars : Env.Exposed (Can.Annotation Name)
     , types : Env.Exposed Env.Type
     , ctors : Env.Exposed Env.Ctor
     , binops : Env.Exposed Env.Binop
-    , q_vars : Env.Qualified Can.Annotation
+    , q_vars : Env.Qualified (Can.Annotation Name)
     , q_types : Env.Qualified Env.Type
     , q_ctors : Env.Qualified Env.Ctor
     }
@@ -153,7 +153,7 @@ addImport ifaces state (Src.Import ( _, A.At _ name ) maybeAlias ( _, exposing_ 
                     |> Dict.fromList
                 )
 
-        vars : Dict Name (Env.Info Can.Annotation)
+        vars : Dict Name (Env.Info (Can.Annotation Name))
         vars =
             Dict.toList iface.values
                 |> List.map (\( k, v ) -> ( k, Env.Specific home v ))
@@ -167,7 +167,7 @@ addImport ifaces state (Src.Import ( _, A.At _ name ) maybeAlias ( _, exposing_ 
         ctors =
             Dict.foldr (\_ -> Tuple.second >> addExposed) Dict.empty rawTypeInfo
 
-        qvs2 : Env.Qualified Can.Annotation
+        qvs2 : Env.Qualified (Can.Annotation Name)
         qvs2 =
             addQualified prefix vars state.q_vars
 
@@ -182,7 +182,7 @@ addImport ifaces state (Src.Import ( _, A.At _ name ) maybeAlias ( _, exposing_ 
     case exposing_ of
         Src.Open _ _ ->
             let
-                vs2 : Env.Exposed Can.Annotation
+                vs2 : Env.Exposed (Can.Annotation Name)
                 vs2 =
                     addExposed state.vars vars
 
@@ -253,11 +253,11 @@ aliasToTypeHelp home name (Can.Alias vars tipe) =
     , case tipe of
         Can.TRecord fields Nothing ->
             let
-                avars : List ( Name, Can.Type )
+                avars : List ( Name, Can.Type Name )
                 avars =
                     List.map (\var -> ( var, Can.TVar var )) vars
 
-                alias_ : Can.Type
+                alias_ : Can.Type Name
                 alias_ =
                     List.foldr
                         (\( _, t1 ) t2 -> Can.TLambda t1 t2)
@@ -286,7 +286,7 @@ binopToBinop home op (I.Binop data) =
 
 addExposedValue :
     IO.Canonical
-    -> Env.Exposed Can.Annotation
+    -> Env.Exposed (Can.Annotation Name)
     -> Dict Name ( Env.Type, Env.Exposed Env.Ctor )
     -> Dict Name I.Binop
     -> State

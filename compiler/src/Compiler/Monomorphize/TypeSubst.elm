@@ -253,7 +253,7 @@ insertBinding env name ty subst =
 
 {-| Unify a canonical type with a monomorphic type to produce a substitution for type variables.
 -}
-unify : MVarEnv -> Can.Type -> Mono.MonoType -> ( Substitution, MVarEnv )
+unify : MVarEnv -> Can.Type Name -> Mono.MonoType -> ( Substitution, MVarEnv )
 unify env canType monoType =
     unifyHelp env canType monoType Dict.empty
 
@@ -261,14 +261,14 @@ unify env canType monoType =
 {-| Extend an existing substitution by unifying a canonical type with a monomorphic type.
 Like `unify`, but starts from `baseSubst` instead of an empty substitution.
 -}
-unifyExtend : MVarEnv -> Can.Type -> Mono.MonoType -> Substitution -> ( Substitution, MVarEnv )
+unifyExtend : MVarEnv -> Can.Type Name -> Mono.MonoType -> Substitution -> ( Substitution, MVarEnv )
 unifyExtend env canType monoType baseSubst =
     unifyHelp env canType monoType baseSubst
 
 
 {-| Helper for unification that extends an existing substitution.
 -}
-unifyHelp : MVarEnv -> Can.Type -> Mono.MonoType -> Substitution -> ( Substitution, MVarEnv )
+unifyHelp : MVarEnv -> Can.Type Name -> Mono.MonoType -> Substitution -> ( Substitution, MVarEnv )
 unifyHelp env canType monoType subst =
     case ( canType, monoType ) of
         ( Can.TVar name, _ ) ->
@@ -458,7 +458,7 @@ unifyMonoMono env m1 m2 subst =
 
 {-| Unify function arguments only, ignoring the result type.
 -}
-unifyArgsOnly : MVarEnv -> Can.Type -> List Mono.MonoType -> Substitution -> ( Substitution, MVarEnv )
+unifyArgsOnly : MVarEnv -> Can.Type Name -> List Mono.MonoType -> Substitution -> ( Substitution, MVarEnv )
 unifyArgsOnly env canFuncType argTypes subst =
     case ( canFuncType, argTypes ) of
         ( _, [] ) ->
@@ -606,7 +606,7 @@ resolveMonoVarsHelp env visiting subst monoType =
 
 {-| Collect all TVar names from a canonical type.
 -}
-collectCanTypeVars : Can.Type -> List Name -> List Name
+collectCanTypeVars : Can.Type Name -> List Name -> List Name
 collectCanTypeVars canType acc =
     case canType of
         Can.TVar name ->
@@ -648,14 +648,14 @@ INVARIANT: Preserves TLambda staging exactly.
 
     a -> b -> c becomes MFunction [a] (MFunction [b] c), NOT MFunction [a, b] c.
 
-Each TLambda in the Can.Type produces a single-arg MFunction. This preserves
+Each TLambda in the Can.Type Name produces a single-arg MFunction. This preserves
 Elm's curried semantics faithfully.
 
 GlobalOpt will flatten these types to match closure param counts (GOPT\_016).
 The flattening happens there, not here, because Monomorphize is staging-agnostic.
 
 -}
-applySubst : MVarEnv -> Substitution -> Can.Type -> ( Mono.MonoType, MVarEnv )
+applySubst : MVarEnv -> Substitution -> Can.Type Name -> ( Mono.MonoType, MVarEnv )
 applySubst env subst canType =
     case canType of
         Can.TVar name ->
@@ -800,7 +800,7 @@ applySubst env subst canType =
 
 {-| Apply applySubst to a list of canonical types, threading MVarEnv.
 -}
-applySubstList : MVarEnv -> Substitution -> List Can.Type -> ( List Mono.MonoType, MVarEnv )
+applySubstList : MVarEnv -> Substitution -> List (Can.Type Name) -> ( List Mono.MonoType, MVarEnv )
 applySubstList env subst types =
     List.foldl
         (\t ( acc, e ) ->
@@ -830,7 +830,7 @@ a → MFunction [a'] (MFunction [b'] (MFunction [c'] result'))
 That's correct!
 
 -}
-applySubstLambdaChain : MVarEnv -> Substitution -> List Can.Type -> Can.Type -> ( Mono.MonoType, MVarEnv )
+applySubstLambdaChain : MVarEnv -> Substitution -> List (Can.Type Name) -> Can.Type Name -> ( Mono.MonoType, MVarEnv )
 applySubstLambdaChain env subst argsAcc to =
     case to of
         Can.TLambda from innerTo ->
@@ -856,7 +856,7 @@ applySubstLambdaChain env subst argsAcc to =
 {-| Convert a canonical type to a monomorphic type using a substitution.
 This is an alias for applySubst.
 -}
-canTypeToMonoType : MVarEnv -> Substitution -> Can.Type -> ( Mono.MonoType, MVarEnv )
+canTypeToMonoType : MVarEnv -> Substitution -> Can.Type Name -> ( Mono.MonoType, MVarEnv )
 canTypeToMonoType =
     applySubst
 
@@ -870,7 +870,7 @@ Walks the TLambda chain once and collects type variables once.
 The prefix is used to create definition-scoped canonical names for
 pre-renamed types (e.g., "Module\_funcName" -> a\__def_Module\_funcName\_0).
 -}
-buildSchemeInfo : String -> Can.Type -> SchemeInfo
+buildSchemeInfo : String -> Can.Type Name -> SchemeInfo
 buildSchemeInfo prefix canType =
     let
         ( argTypes, resultType ) =
@@ -942,7 +942,7 @@ buildPreRenameMap prefix names seen counter acc renamedAcc =
 
 {-| Given a substitution with renamed-keyed bindings and a rename map (original -> renamed),
 copy bindings from renamed keys to original keys so that downstream consumers using
-original Can.Type names can find the correct MonoType bindings.
+original Can.Type Name names can find the correct MonoType bindings.
 -}
 applyReverseRenaming : Dict.Dict Name Mono.MonoType -> Data.Map.Dict String Name Name -> Dict.Dict Name Mono.MonoType
 applyReverseRenaming subst renameMap =
@@ -968,7 +968,7 @@ applyReverseRenaming subst renameMap =
 {-| Rename type variables in a canonical type using a rename map.
 Internal version used for pre-renaming in SchemeInfo.
 -}
-renameCanTypeVarsInternal : Data.Map.Dict String Name Name -> Can.Type -> Can.Type
+renameCanTypeVarsInternal : Data.Map.Dict String Name Name -> Can.Type Name -> Can.Type Name
 renameCanTypeVarsInternal renameMap canType =
     case canType of
         Can.TVar name ->
@@ -1014,7 +1014,7 @@ renameCanTypeVarsInternal renameMap canType =
 
 {-| Flatten a TLambda chain into (argTypes, resultType).
 -}
-flattenTLambda : Can.Type -> List Can.Type -> ( List Can.Type, Can.Type )
+flattenTLambda : Can.Type Name -> List (Can.Type Name) -> ( List (Can.Type Name), Can.Type Name )
 flattenTLambda canType acc =
     case canType of
         Can.TLambda from to ->
@@ -1041,8 +1041,8 @@ MFunction in one pass. Returns the updated substitution and the funcMonoType.
 -}
 unifyCallSiteDirect :
     MVarEnv
-    -> List Can.Type
-    -> Can.Type
+    -> List (Can.Type Name)
+    -> Can.Type Name
     -> List Mono.MonoType
     -> Substitution
     -> ( Substitution, Mono.MonoType, MVarEnv )
@@ -1069,7 +1069,7 @@ unifyCallSiteDirect env schemeArgTypes schemeResultType argMonoTypes baseSubst =
 
 {-| Zip scheme arg types with mono arg types and unify pairwise.
 -}
-unifyArgTypesZip : MVarEnv -> List Can.Type -> List Mono.MonoType -> Substitution -> ( Substitution, MVarEnv )
+unifyArgTypesZip : MVarEnv -> List (Can.Type Name) -> List Mono.MonoType -> Substitution -> ( Substitution, MVarEnv )
 unifyArgTypesZip env canArgs monoArgs subst =
     case ( canArgs, monoArgs ) of
         ( canArg :: canRest, monoArg :: monoRest ) ->
@@ -1086,7 +1086,7 @@ unifyArgTypesZip env canArgs monoArgs subst =
 {-| Build a curried MFunction mirroring the TLambda structure.
 Each scheme arg corresponds to one level of currying.
 -}
-buildCurriedFuncType : List Can.Type -> List Mono.MonoType -> Mono.MonoType -> Mono.MonoType
+buildCurriedFuncType : List (Can.Type Name) -> List Mono.MonoType -> Mono.MonoType -> Mono.MonoType
 buildCurriedFuncType schemeArgs resolvedArgs resultMono =
     case ( schemeArgs, resolvedArgs ) of
         ( _ :: schemeRest, arg :: argRest ) ->

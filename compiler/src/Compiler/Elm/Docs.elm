@@ -660,7 +660,7 @@ emptyModule (IO.Canonical _ name) (Src.Comment overview) =
 
 type alias InfoData =
     { comments : Dict Name.Name Src.Comment
-    , types : Dict Name.Name (Result A.Region Can.Type)
+    , types : Dict Name.Name (Result A.Region (Can.Type Name))
     , unions : Dict Name.Name Can.Union
     , aliases : Dict Name.Name Can.Alias
     , binops : Dict Name.Name Can.Binop
@@ -814,7 +814,7 @@ dector (Can.Ctor c) =
 
 
 type alias Types =
-    Dict Name.Name (Result A.Region Can.Type)
+    Dict Name.Name (Result A.Region (Can.Type Name))
 
 
 gatherTypes : Can.Decls -> Types -> Types
@@ -838,7 +838,7 @@ addDef types def =
 
         Can.TypedDef (A.At _ name) _ typedArgs _ resultType ->
             let
-                tipe : Can.Type
+                tipe : Can.Type Name
                 tipe =
                     List.foldr Can.TLambda resultType (List.map Tuple.second typedArgs)
             in
