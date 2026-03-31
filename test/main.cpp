@@ -864,8 +864,8 @@ int main(int argc, char* argv[]) {
     GCStats combined_stats = alloc.getCombinedStats();
 
     // Add accumulated stats from forked Elm test processes.
-    combined_stats.combine(ElmTest::getAccumulatedStats());
-    combined_stats.combine(ElmBytesTest::getAccumulatedStats());
+    // All Elm E2E suites share ElmE2EBase::getAccumulatedStats().
+    combined_stats.combine(ElmE2EBase::getAccumulatedStats());
 
     combined_stats.print();
 #endif

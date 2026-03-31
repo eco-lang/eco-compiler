@@ -140,6 +140,16 @@ inline std::string readFile(const std::string& path) {
     return buffer.str();
 }
 
+inline void printCompilerDiagnostics(const std::string& output) {
+    std::istringstream stream(output);
+    std::string line;
+    while (std::getline(stream, line)) {
+        if (line.rfind("Registry:", 0) == 0) {
+            std::cout << "  " << line << std::endl;
+        }
+    }
+}
+
 inline std::string getGuidaPath() {
     std::vector<std::string> candidates = {
         "compiler/bin/index.js",
@@ -250,6 +260,7 @@ inline CompileResult compileElmToMlir(const std::string& testDir, const std::str
     }
 
     auto [exitCode, output] = executeCommand(compileCmd);
+    printCompilerDiagnostics(output);
 
     if (exitCode != 0) {
         std::filesystem::remove(result.mlirPath);
