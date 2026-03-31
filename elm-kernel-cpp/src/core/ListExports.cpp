@@ -116,16 +116,6 @@ std::vector<void*> listToVector(HPointer list) {
     return result;
 }
 
-// Legacy helper - convert vector of raw pointers to list
-HPointer vectorToList(const std::vector<void*>& vec) {
-    HPointer result = alloc::listNil();
-    for (auto it = vec.rbegin(); it != vec.rend(); ++it) {
-        Unboxable head;
-        head.i = reinterpret_cast<int64_t>(*it);
-        result = List::cons(head, result, true);
-    }
-    return result;
-}
 
 // Get element from Cons as uint64_t, always HPointer-encoded.
 // For unboxed ints, boxes via allocInt so the wrapper can unbox.

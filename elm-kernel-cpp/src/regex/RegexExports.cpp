@@ -15,6 +15,7 @@
 extern "C" uint64_t eco_apply_closure(uint64_t closure, uint64_t* args, uint32_t num_args);
 #include <cmath>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 using namespace Elm;
@@ -24,8 +25,24 @@ using namespace Elm::alloc;
 namespace {
 
 // Custom type ctor for storing compiled regex
-// We store: srell::regex* pointer, caseInsensitive flag, multiline flag
+// We store: regexId (integer), caseInsensitive flag, multiline flag
+// The compiled srell::regex lives in a static side table, NOT on the Elm heap.
 static constexpr u16 CTOR_REGEX = 0xFF00;
+
+// Side table mapping integer IDs to compiled regex objects.
+// Regex objects live here for their entire lifetime (never freed, matching
+// the JS runtime behavior where compiled regexes are never collected).
+static int64_t s_nextRegexId = 1;
+static std::unordered_map<int64_t, srell::regex*>& regexTable() {
+    static std::unordered_map<int64_t, srell::regex*> table;
+    return table;
+}
+
+static int64_t registerRegex(srell::regex* re) {
+    int64_t id = s_nextRegexId++;
+    regexTable()[id] = re;
+    return id;
+}
 
 // Helper: Convert Elm UTF-16 string to std::string (UTF-8) for SRELL
 std::string elmStringToUTF8(uint64_t strEnc) {
@@ -93,8 +110,12 @@ srell::regex* getCompiledRegex(uint64_t regexEnc) {
     Custom* c = static_cast<Custom*>(ptr);
     if (c->ctor != CTOR_REGEX) return nullptr;
 
-    // values[0] stores the raw pointer to srell::regex
-    return reinterpret_cast<srell::regex*>(c->values[0].i);
+    // values[0] stores an integer ID into the regex side table
+    int64_t id = c->values[0].i;
+    auto& table = regexTable();
+    auto it = table.find(id);
+    if (it == table.end()) return nullptr;
+    return it->second;
 }
 
 // Helper: Create a Match record
@@ -161,21 +182,19 @@ extern "C" {
 
 uint64_t Elm_Kernel_Regex_never() {
     // Return a regex that never matches anything.
-    // Create a compiled regex for a pattern that can't match (negative lookahead of empty)
     try {
         srell::regex* re = new srell::regex("(?!)", srell::regex::ECMAScript);
+        int64_t id = registerRegex(re);
 
         std::vector<Unboxable> values(3);
-        values[0].i = reinterpret_cast<int64_t>(re);  // Store raw pointer
-        values[1].i = 0;  // caseInsensitive = false
-        values[2].i = 0;  // multiline = false
+        values[0].i = id;  // Integer ID into side table
+        values[1].i = 0;   // caseInsensitive = false
+        values[2].i = 0;   // multiline = false
 
-        // All fields are "unboxed" (raw values, not heap pointers)
+        // All fields are unboxed (plain integers, not heap pointers)
         HPointer regex = custom(CTOR_REGEX, values, 0b111);
         return Export::encode(regex);
     } catch (...) {
-        // If regex construction fails, return Nothing pattern
-        // This shouldn't happen for the "never" pattern
         return Export::encode(nothing());
     }
 }
@@ -212,9 +231,10 @@ uint64_t Elm_Kernel_Regex_fromStringWith(uint64_t optionsEnc, uint64_t patternEn
         }
 
         srell::regex* re = new srell::regex(pattern, flags);
+        int64_t id = registerRegex(re);
 
         std::vector<Unboxable> values(3);
-        values[0].i = reinterpret_cast<int64_t>(re);
+        values[0].i = id;  // Integer ID into side table
         values[1].i = caseInsensitive ? 1 : 0;
         values[2].i = multiline ? 1 : 0;
 

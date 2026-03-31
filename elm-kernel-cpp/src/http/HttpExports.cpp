@@ -15,6 +15,7 @@
 #include <curl/curl.h>
 #endif
 #include <string>
+#include <unordered_map>
 #include <vector>
 #include <thread>
 #include <cstring>
@@ -483,6 +484,19 @@ uint64_t Elm_Kernel_Http_pair(uint64_t keyEnc, uint64_t valueEnc) {
     return Export::encode(header);
 }
 
+// Side table for HTTP binding capture data. Maps integer IDs to capture
+// objects so we never store raw C++ pointers on the Elm heap.
+struct BindingCaptureData {
+    HttpContext ctx;
+    uint64_t expectHandler;
+};
+
+static int64_t s_nextCaptureId = 1;
+static std::unordered_map<int64_t, BindingCaptureData*>& captureTable() {
+    static std::unordered_map<int64_t, BindingCaptureData*> table;
+    return table;
+}
+
 uint64_t Elm_Kernel_Http_toTask(uint64_t requestEnc) {
 #ifdef HTTP_CURL_AVAILABLE
     // Create a Task that performs the HTTP request
@@ -497,23 +511,26 @@ uint64_t Elm_Kernel_Http_toTask(uint64_t requestEnc) {
         return Export::encode(failTask);
     }
 
-    // Store request info in closure
-    struct BindingCaptureData {
-        HttpContext ctx;
-        uint64_t expectHandler;
-    };
-
-    // Allocate capture data (will leak - proper impl would use GC or cleanup)
+    // Store request info in a side table, keyed by integer ID.
     auto* capture = new BindingCaptureData{std::move(ctx), expectHandler};
+    int64_t captureId = s_nextCaptureId++;
+    captureTable()[captureId] = capture;
 
     // Create binding callback closure
     auto bindingEval = [](void* args[]) -> void* {
-        // args[0] = captured BindingCaptureData*
+        // args[0] = capture ID (integer, not a pointer)
         // args[1] = resume closure (passed by scheduler)
-        uint64_t captureEnc = reinterpret_cast<uint64_t>(args[0]);
+        int64_t id = static_cast<int64_t>(reinterpret_cast<uint64_t>(args[0]));
         uint64_t resumeEnc = reinterpret_cast<uint64_t>(args[1]);
 
-        auto* cap = reinterpret_cast<BindingCaptureData*>(captureEnc);
+        // Look up and remove from side table
+        auto& table = captureTable();
+        auto it = table.find(id);
+        if (it == table.end()) {
+            return reinterpret_cast<void*>(encodeHP(unit()));
+        }
+        auto* cap = it->second;
+        table.erase(it);
 
         // Set resume closure in context and spawn thread
         cap->ctx.resumeClosureEnc = resumeEnc;
@@ -535,8 +552,8 @@ uint64_t Elm_Kernel_Http_toTask(uint64_t requestEnc) {
     HPointer bindingCallback = allocClosure(bindingFn, 2);
     void* clPtr = Allocator::instance().resolve(bindingCallback);
     if (clPtr) {
-        // Capture the data pointer
-        closureCapture(clPtr, Unboxable{.i = reinterpret_cast<int64_t>(capture)}, false);
+        // Capture the integer ID (plain integer, not a pointer)
+        closureCapture(clPtr, Unboxable{.i = captureId}, false);
     }
 
     // Create the binding task
