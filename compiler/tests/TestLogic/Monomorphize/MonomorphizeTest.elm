@@ -30,7 +30,9 @@ import Compiler.AST.CanonicalBuilder
         , tFunc
         , varType
         )
+import Compiler.AST.Canonical as Can
 import Compiler.AST.Monomorphized as Mono
+import Compiler.Data.Name exposing (Name)
 import Compiler.Monomorphize.KernelAbi as KernelAbi
 import Compiler.Monomorphize.State as State
 import Expect
@@ -52,6 +54,7 @@ testMVar name constraint =
 {-| Helper to call canTypeToMonoType\_preserveVars with an empty MVarEnv,
 discarding the returned env.
 -}
+preserveVars : Can.Type Name -> Mono.MonoType
 preserveVars canType =
     let
         ( result, _ ) =
@@ -63,6 +66,7 @@ preserveVars canType =
 {-| Helper to call canTypeToMonoType\_numberBoxed with an empty MVarEnv,
 discarding the returned env.
 -}
+numberBoxed : Can.Type Name -> Mono.MonoType
 numberBoxed canType =
     let
         ( result, _ ) =

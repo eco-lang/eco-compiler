@@ -16,7 +16,6 @@ import Compiler.AST.SourceBuilder
     exposing
         ( AliasDef
         , TypedDef
-        , UnionCtor
         , UnionDef
         , accessExpr
         , accessorExpr

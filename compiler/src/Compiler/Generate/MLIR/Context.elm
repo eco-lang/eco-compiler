@@ -1,7 +1,7 @@
 module Compiler.Generate.MLIR.Context exposing
     ( Context, FuncSignature, PendingLambda, TypeRegistry, VarInfo
     , initContext
-    , freshVar, freshOpId, lookupVar, addVarMapping, addDecoderExpr, ctxForSiblingRegion, ctxAfterBranchOp, liveEcoValueVars, trackSsaVar, resetDefinedSsaVars
+    , freshVar, freshOpId, lookupVar, addVarMapping, addDecoderExpr, ctxForSiblingRegion, ctxAfterBranchOp, liveEcoValueVars, resetDefinedSsaVars
     , getOrCreateTypeIdForMonoType, registerKernelCall
     , buildSignatures, kernelFuncSignatureFromType
     , isTypeVar, hasKernelImplementation
@@ -26,7 +26,7 @@ state during MLIR code generation.
 
 # Variable Management
 
-@docs freshVar, freshOpId, lookupVar, addVarMapping, addDecoderExpr, ctxForSiblingRegion, ctxAfterBranchOp, liveEcoValueVars, trackSsaVar, resetDefinedSsaVars
+@docs freshVar, freshOpId, lookupVar, addVarMapping, addDecoderExpr, ctxForSiblingRegion, ctxAfterBranchOp, liveEcoValueVars, resetDefinedSsaVars
 
 
 # Type Registration
@@ -520,15 +520,6 @@ addVarMapping name ssaVar mlirTy ctx =
             }
     in
     { ctx | varMappings = Dict.insert name info ctx.varMappings, definedSsaVars = Set.insert ssaVar ctx.definedSsaVars }
-
-
-{-| Track an SSA variable as defined in the current function scope.
-Used at function boundaries when parameters/captures are added to varMappings
-without going through freshVar or addVarMapping.
--}
-trackSsaVar : String -> Context -> Context
-trackSsaVar ssaVar ctx =
-    { ctx | definedSsaVars = Set.insert ssaVar ctx.definedSsaVars }
 
 
 {-| Reset definedSsaVars for a new function scope, optionally seeding with

@@ -34,7 +34,6 @@ import Compiler.AST.SourceBuilder
         , strExpr
         , tLambda
         , tType
-        , tVar
         , varExpr
         )
 import Compiler.BulkCheck exposing (TestCase, bulkCheck)

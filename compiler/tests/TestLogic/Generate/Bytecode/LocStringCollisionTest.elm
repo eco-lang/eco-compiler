@@ -22,8 +22,7 @@ import Dict
 import Expect
 import Mlir.Bytecode.AttrType as AttrType
 import Mlir.Loc
-import Mlir.Mlir exposing (MlirAttr(..), MlirOp, MlirRegion(..), MlirType(..))
-import OrderedDict
+import Mlir.Mlir exposing (MlirAttr(..), MlirOp, MlirType(..))
 import Test exposing (Test)
 
 

@@ -48,7 +48,7 @@ import Bitwise
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.TypeEnv as TypeEnv
-import Compiler.AST.TypeIds as TypeIds exposing (MVarId)
+import Compiler.AST.TypeIds exposing (MVarId)
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.BitSet as BitSet exposing (BitSet)
 import Compiler.Data.Id as Id

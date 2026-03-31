@@ -691,7 +691,7 @@ generateCtor ctx funcName ctorLayout monoType =
             ( ctx3, constructOp ) =
                 Ops.ecoConstructCustom ctx2 resultVar ctorLayout.tag arity ctorLayout.unboxedBitmap argPairs constructorName
 
-            ( ctx4, returnOp ) =
+            ( _, returnOp ) =
                 Ops.ecoReturn ctx3 resultVar Types.ecoValue
 
             region : MlirRegion

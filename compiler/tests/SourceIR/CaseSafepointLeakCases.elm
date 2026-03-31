@@ -27,11 +27,9 @@ import Compiler.AST.SourceBuilder
         , caseExpr
         , ctorExpr
         , define
-        , intExpr
         , letExpr
         , listExpr
         , makeModuleWithTypedDefsUnionsAliases
-        , pAnything
         , pCtor
         , pVar
         , strExpr

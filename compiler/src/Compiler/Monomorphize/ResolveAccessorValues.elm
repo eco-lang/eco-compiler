@@ -1,4 +1,4 @@
-module Compiler.Monomorphize.ResolveAccessorValues exposing (accessorTypeNeedsDefer, rewriteExprBody, rewriteNode)
+module Compiler.Monomorphize.ResolveAccessorValues exposing (accessorTypeNeedsDefer, rewriteNode)
 
 {-| Eliminates MonoAccessorValue nodes from monomorphized expressions.
 
@@ -25,7 +25,6 @@ import Compiler.AST.Monomorphized as Mono
         )
 import Dict exposing (Dict)
 import System.TypeCheck.IO as IO
-import Utils.Crash exposing (crash)
 
 
 

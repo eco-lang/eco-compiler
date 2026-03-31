@@ -3,7 +3,6 @@ module Compiler.Monomorphize.TypeSubst exposing
     , canTypeToMonoType, constraintFromName, collectCanTypeVars
     , unify, unifyExtend, unifyArgsOnly, unifyCallSiteDirect, extractParamTypes
     , buildSchemeInfo
-    , lookupConstraint
     )
 
 {-| Type substitution and unification for monomorphization.
@@ -34,8 +33,6 @@ by applying type variable substitutions.
 
 # Query
 
-@docs lookupConstraint
-
 -}
 
 import Compiler.AST.Canonical as Can
@@ -48,14 +45,6 @@ import Dict
 import Set exposing (Set)
 import System.TypeCheck.IO as IO
 import Tuple
-
-
-{-| Look up the constraint for a tvar name via the MVarEnv.
-Falls back to constraintFromName if the name is not registered.
--}
-lookupConstraint : MVarEnv -> Name -> Mono.Constraint
-lookupConstraint env name =
-    constraintFromName name
 
 
 

@@ -1367,7 +1367,7 @@ annotateDefCalls graph env def =
                 -- Track if this variable is bound to a partial application of
                 -- a polymorphic function (whose func.func returns !eco.value).
                 env4 =
-                    if exprHasPolymorphicReturn graph env3 bound1 then
+                    if exprHasPolymorphicReturn env3 bound1 then
                         { env3
                             | varPolymorphicReturn =
                                 Set.insert name env3.varPolymorphicReturn
@@ -1549,7 +1549,7 @@ sourceArityForExpr graph env expr =
         Mono.MonoClosure closureInfo _ _ ->
             Just (List.length closureInfo.params)
 
-        Mono.MonoCall _ func args resultType _ ->
+        Mono.MonoCall _ func args _ _ ->
             -- For partial applications, compute the result PAP's remaining arity
             -- Result arity = source arity - args applied
             case sourceArityForExpr graph env func of
@@ -1831,8 +1831,8 @@ is later called saturated, the papExtend must use CallGenericApply to correctly
 handle the !eco.value ↔ primitive coercion.
 
 -}
-exprHasPolymorphicReturn : Mono.MonoGraph -> CallEnv -> Mono.MonoExpr -> Bool
-exprHasPolymorphicReturn graph env expr =
+exprHasPolymorphicReturn : CallEnv -> Mono.MonoExpr -> Bool
+exprHasPolymorphicReturn env expr =
     let
         -- Check if the final return type of a function type is CEcoValue
         hasCEcoValueReturn : Mono.MonoType -> Bool

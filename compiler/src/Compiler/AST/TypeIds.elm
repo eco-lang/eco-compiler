@@ -1,24 +1,12 @@
-module Compiler.AST.TypeIds exposing (TVarPh, TVarId, MVarPh, MVarId)
+module Compiler.AST.TypeIds exposing (MVarPh, MVarId)
 
 {-| Phantom-typed identifiers for type variables and monomorphization variables.
 
-@docs TVarPh, TVarId, MVarPh, MVarId
+@docs MVarPh, MVarId
 
 -}
 
 import Compiler.Data.Id exposing (Id)
-
-
-{-| Phantom marker for type variable IDs in the TypedOptimized / Canonical layer.
--}
-type TVarPh
-    = TVarPh
-
-
-{-| A globally unique type variable identifier.
--}
-type alias TVarId =
-    Id TVarPh
 
 
 {-| Phantom marker for monomorphization variable IDs.
