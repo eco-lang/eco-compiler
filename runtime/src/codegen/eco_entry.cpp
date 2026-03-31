@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "../allocator/Allocator.hpp"
+#include "../../eco-kernel-cpp/src/eco/Env.hpp"
 
 extern "C" {
 
@@ -31,6 +32,9 @@ int main(int argc, char **argv) {
     // Register global variables as GC roots (if the module has any).
     if (__eco_init_globals)
         __eco_init_globals();
+
+    // Store argc/argv so Eco.Kernel.Env.rawArgs can return them.
+    Eco::Kernel::Env::init(argc, argv);
 
     // Register effect managers (Time, Http, etc.) with the scheduler.
     eco_register_all_effect_managers();

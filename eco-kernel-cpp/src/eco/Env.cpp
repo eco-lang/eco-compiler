@@ -24,7 +24,9 @@ uint64_t lookup(uint64_t name) {
 
 uint64_t rawArgs() {
     std::vector<std::string> args;
-    for (int i = 0; i < s_argc; ++i) {
+    // Skip argv[0] (program name) to match the JS convention
+    // where process.argv.slice(2) strips both 'node' and the script path.
+    for (int i = 1; i < s_argc; ++i) {
         args.push_back(s_argv[i]);
     }
     return taskSucceedStringList(args);

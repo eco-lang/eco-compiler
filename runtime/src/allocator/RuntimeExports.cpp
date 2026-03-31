@@ -1872,11 +1872,6 @@ extern "C" uint32_t eco_get_tag(uint64_t val) {
 
     // Check if this is an embedded constant (constant field != 0).
     if (hp.constant != 0) {
-        // Map constant kind to ctor tag.
-        // HPointer::ConstantKind values (from Heap.hpp):
-        //   Nothing = 6 -> ctor tag 1
-        //   Nil = 5 -> ctor tag 0
-        //   Others -> ctor tag 0
         if (hp.constant == 6) {  // Nothing
             return 1;
         }
@@ -1893,14 +1888,10 @@ extern "C" uint32_t eco_get_tag(uint64_t val) {
     // Handle based on heap object type.
     switch (header->tag) {
         case Tag_Cons:
-            // Cons cells represent non-empty lists (constructor index 1).
-            // Nil (empty list) is embedded constant, so any heap Cons is non-empty.
             return 1;
         case Tag_Custom:
-            // Custom ADT: read the ctor field.
             return static_cast<Custom*>(obj)->ctor;
         default:
-            // Other heap objects don't have constructor tags.
             return 0;
     }
 }

@@ -152,12 +152,28 @@ uint64_t Elm_Kernel_List_cons(uint64_t head, uint64_t tail) {
 }
 
 uint64_t Elm_Kernel_List_fromArray(uint64_t array) {
+    // Check for embedded constants first (e.g., Nil).
+    HPointer hp = Export::decode(array);
+    if (hp.constant != 0) {
+        // Already a constant (Nil, etc.) — pass through unchanged.
+        return array;
+    }
+
     void* arr_ptr = Export::toPtr(array);
     if (!arr_ptr) {
         return Export::encode(alloc::listNil());
     }
 
     Header* hdr = static_cast<Header*>(arr_ptr);
+
+    // If already a Cons list, pass through unchanged. This happens when
+    // C++ kernel functions (e.g., Elm_Kernel_String_split) return proper
+    // Cons lists, but the Elm source wraps with Elm.Kernel.List.fromArray
+    // (which in JS converts a JS Array to a Cons list).
+    if (hdr->tag == Tag_Cons) {
+        return array;
+    }
+
     if (hdr->tag != Tag_Array) {
         return Export::encode(alloc::listNil());
     }
