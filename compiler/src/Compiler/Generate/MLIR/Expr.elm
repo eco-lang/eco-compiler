@@ -1387,6 +1387,7 @@ signature to determine boxing policy, preserving typed ABI through the
 closure boundary.
 
 Result type is always !eco.value since saturation is unknown at compile time.
+
 -}
 generateUnknownSegmentationCall : Ctx.Context -> Mono.MonoExpr -> List Mono.MonoExpr -> Mono.MonoType -> Mono.CallInfo -> ExprResult
 generateUnknownSegmentationCall ctx func args _ _ =
@@ -4059,7 +4060,7 @@ generateChainForBoolADTWithJumps ctx path success failure jumpLookup resultTy =
 
 {-| General chain case with jump inlining.
 For multi-test chains, we use short-circuit evaluation: the first test guards
-the remaining tests. This prevents unsafe operations (e.g. eco.project.list_head
+the remaining tests. This prevents unsafe operations (e.g. eco.project.list\_head
 on Nil) from executing before the prerequisite guard (e.g. IsCons) has passed.
 -}
 generateChainGeneralWithJumps : Ctx.Context -> List ( Mono.MonoDtPath, DT.Test ) -> Mono.Decider Mono.MonoChoice -> Mono.Decider Mono.MonoChoice -> Array (Maybe Mono.MonoExpr) -> MlirType -> ExprResult

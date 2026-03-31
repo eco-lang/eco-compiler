@@ -1,10 +1,4 @@
-module Compiler.AST.TypeIds
-    exposing
-        ( TVarPh
-        , TVarId
-        , MVarPh
-        , MVarId
-        )
+module Compiler.AST.TypeIds exposing (TVarPh, TVarId, MVarPh, MVarId)
 
 {-| Phantom-typed identifiers for type variables and monomorphization variables.
 

@@ -339,7 +339,7 @@ multiArgCombinatorCases expectFn =
 mul a b = a \* b
 inc x = x + 1
 double x = x \* 2
-testValue = sp mul inc double 6 -- (6+1) \* (6_2) = 7 _ 12 = 84
+testValue = sp mul inc double 6 -- (6+1) \* (6\_2) = 7 \_ 12 = 84
 -}
 spWithOperators : (Src.Module -> Expectation) -> (() -> Expectation)
 spWithOperators expectFn _ =

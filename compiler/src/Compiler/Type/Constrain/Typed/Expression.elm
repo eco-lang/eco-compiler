@@ -360,7 +360,7 @@ This function dispatches to specialized helpers based on expression type:
   - Group A expressions record a node var via NodeIds.recordNodeVar.
     This includes: Int, Negate, Binop, Call, If, Case, Access, Update,
     Accessor, List, Tuple, Record, Lambda, Let, LetRec, LetDestruct.
-  - Group B expressions (Str, Chr, Float, Unit, Shader, and leaf Var* forms)
+  - Group B expressions (Str, Chr, Float, Unit, Shader, and leaf Var\* forms)
     use the generic path that allocates a synthetic exprVar via
     recordSyntheticExprVar, later fixed by PostSolve.
 

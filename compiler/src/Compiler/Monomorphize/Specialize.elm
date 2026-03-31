@@ -221,7 +221,8 @@ unifyCallSiteWithRenaming mvarEnv funcCanType argMonoTypes resultCanType baseSub
                     dummyCompare _ _ =
                         EQ
                 in
-                Data.Map.foldl dummyCompare (\_ renamedName e -> Tuple.second (State.allocMVar renamedName e))
+                Data.Map.foldl dummyCompare
+                    (\_ renamedName e -> Tuple.second (State.allocMVar renamedName e))
                     mvarEnv
                     renameMapUsed
 

@@ -1,8 +1,7 @@
 module Compiler.Generate.MLIR.Context exposing
     ( Context, FuncSignature, PendingLambda, TypeRegistry, VarInfo
     , initContext
-    , freshVar, freshOpId, lookupVar, addVarMapping, addDecoderExpr, ctxForSiblingRegion, ctxAfterBranchOp
-    , liveEcoValueVars, trackSsaVar, resetDefinedSsaVars
+    , freshVar, freshOpId, lookupVar, addVarMapping, addDecoderExpr, ctxForSiblingRegion, ctxAfterBranchOp, liveEcoValueVars, trackSsaVar, resetDefinedSsaVars
     , getOrCreateTypeIdForMonoType, registerKernelCall
     , buildSignatures, kernelFuncSignatureFromType
     , isTypeVar, hasKernelImplementation
@@ -462,6 +461,7 @@ definedSsaVars back to the pre-branch state plus any new result variables.
   - `base`: the context BEFORE the branching construct
   - `afterBranch`: the context AFTER all branches have been generated
   - `resultVars`: SSA variable names for the branch op's results
+
 -}
 ctxAfterBranchOp : Context -> Context -> List String -> Context
 ctxAfterBranchOp base afterBranch resultVars =

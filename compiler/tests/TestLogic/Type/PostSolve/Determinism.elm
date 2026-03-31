@@ -14,10 +14,10 @@ produces identical results. This is important for:
 import Array
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Source as Src
+import Compiler.Data.Name exposing (Name)
 import Dict
 import Expect
 import TestLogic.TestPipeline as Pipeline
-import Compiler.Data.Name exposing (Name)
 
 
 {-| Verify that PostSolve is deterministic for remaining Group B (Str, Chr, Float, Unit) and kernels.

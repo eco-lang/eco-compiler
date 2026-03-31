@@ -2,9 +2,9 @@ module Compiler.Data.NameKernelTest exposing (suite)
 
 {-| Tests for kernel name prefix detection and stripping.
 
-Verifies that getKernel correctly distinguishes Elm.Kernel.* from
-Eco.Kernel.* prefixes, which is critical for MLIR codegen to emit
-the correct C function name prefix (Elm_Kernel_ vs Eco_Kernel_).
+Verifies that getKernel correctly distinguishes Elm.Kernel.\* from
+Eco.Kernel.\* prefixes, which is critical for MLIR codegen to emit
+the correct C function name prefix (Elm\_Kernel\_ vs Eco\_Kernel\_).
 
 -}
 

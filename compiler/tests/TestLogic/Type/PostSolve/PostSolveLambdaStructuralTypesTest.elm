@@ -14,6 +14,7 @@ recordNodeVar) and should never remain as bare TVars or non-function shapes.
 import Array
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Source as Src
+import Compiler.Data.Name exposing (Name)
 import Compiler.Reporting.Annotation as A
 import Compiler.Type.PostSolve as PostSolve
 import Dict
@@ -22,7 +23,6 @@ import SourceIR.Suite.StandardTestSuites as StandardTestSuites
 import Test exposing (Test)
 import TestLogic.Type.PostSolve.CompileThroughPostSolve as Compile
 import TestLogic.Type.PostSolve.PostSolveInvariantHelpers as Helpers
-import Compiler.Data.Name exposing (Name)
 
 
 {-| A violation of POST\_007.

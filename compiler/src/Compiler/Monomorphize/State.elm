@@ -1,10 +1,10 @@
 module Compiler.Monomorphize.State exposing
     ( MonoState, SpecAccum, SpecContext, WorkItem(..), Substitution, SchemeInfo, SchemeInfoCache
-    , MVarEnv, emptyMVarEnv, allocMVar, lookupMVarName
     , initState
     , LocalInstanceInfo, LocalMultiState
     , ValueInstanceInfo, ValueMultiState
     , VarEnv(..), emptyVarEnv, insertVar, lookupVar, popFrame, pushFrame, varEnvKeys
+    , MVarEnv, emptyMVarEnv, allocMVar, lookupMVarName
     )
 
 {-| State types and utilities for monomorphization.
@@ -44,9 +44,9 @@ the monomorphization process.
 
 -}
 
+import Bitwise
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Monomorphized as Mono
-import Bitwise
 import Compiler.AST.TypeEnv as TypeEnv
 import Compiler.AST.TypeIds as TypeIds exposing (MVarId)
 import Compiler.AST.TypedOptimized as TOpt
@@ -95,6 +95,7 @@ MVarIds are derived deterministically from name hashes, so the same name
 always produces the same MVarId regardless of allocation order or which
 MVarEnv instance is used. This makes it safe to use emptyMVarEnv at any
 call site without threading — the mappings are lazily populated caches.
+
 -}
 type alias MVarEnv =
     { nameToId : Dict Name MVarId -- tvar name → MVarId (cache)

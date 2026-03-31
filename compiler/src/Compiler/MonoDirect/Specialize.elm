@@ -20,11 +20,11 @@ import Compiler.Data.Index as Index
 import Compiler.Data.Name exposing (Name)
 import Compiler.MonoDirect.State as State exposing (MonoDirectState, VarEnv)
 import Compiler.Monomorphize.Analysis as Analysis
-import Compiler.Monomorphize.State as MState
 import Compiler.Monomorphize.Closure as Closure
 import Compiler.Monomorphize.KernelAbi as KernelAbi
 import Compiler.Monomorphize.Registry as Registry
 import Compiler.Monomorphize.ResolveAccessorValues as ResolveAccessorValues
+import Compiler.Monomorphize.State as MState
 import Compiler.Monomorphize.TypeSubst as TypeSubst
 import Compiler.Reporting.Annotation as A
 import Compiler.Type.SolverSnapshot as SolverSnapshot exposing (LocalView, SolverSnapshot)
@@ -66,7 +66,7 @@ unifyExtendS state canType monoType baseSubst =
     ( result, { state | mvarEnv = env1 } )
 
 
-{-| Apply canTypeToMonoType_preserveVars and write updated MVarEnv back to state.
+{-| Apply canTypeToMonoType\_preserveVars and write updated MVarEnv back to state.
 -}
 preserveVarsS : MonoDirectState -> Can.Type Name -> ( Mono.MonoType, MonoDirectState )
 preserveVarsS state canType =

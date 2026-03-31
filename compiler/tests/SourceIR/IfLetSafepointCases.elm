@@ -1,14 +1,15 @@
 module SourceIR.IfLetSafepointCases exposing (expectSuite)
 
 {-| Tests for sequential let bindings with if-then-else expressions followed
-by allocation.  These exercise the generateIf code path where varMappings
+by allocation. These exercise the generateIf code path where varMappings
 from inside if-branch regions can leak into the parent scope, causing
 safepoints to reference cross-region SSA values.
 
 The key pattern: the else branch must contain a pattern match that binds
 an Elm variable to an !eco.value-typed value (String, List, custom type).
-That binding leaks via varMappings into the parent scope.  A subsequent
+That binding leaks via varMappings into the parent scope. A subsequent
 allocation triggers a safepoint that picks up the leaked binding.
+
 -}
 
 import Compiler.AST.Source as Src
@@ -56,17 +57,29 @@ testCases expectFn =
 
 
 {-| If-else where the else branch destructures a list, binding the head
-(a String = !eco.value).  Followed by list cons allocation.
+(a String = !eco.value). Followed by list cons allocation.
+
 
     f : Bool -> List String -> String -> List String
     f flag items fallback =
         let
-            val = if flag then fallback else
+            val =
+                if flag then
+                    fallback
+
+                else
                     case items of
-                        x :: _ -> x      -- x is String = !eco.value
-                        [] -> fallback
+                        x :: _ ->
+                            x
+
+                        -- x is String = !eco.value
+                        [] ->
+                            fallback
         in
-        val :: []    -- safepoint before cons; leaked x would appear here
+        val :: []
+
+    -- safepoint before cons; leaked x would appear here
+
 -}
 ifElseListDestructure : (Src.Module -> Expectation) -> (() -> Expectation)
 ifElseListDestructure expectFn _ =
@@ -87,13 +100,13 @@ ifElseListDestructure expectFn _ =
                     [ define "val"
                         []
                         (ifExpr
-                                (varExpr "flag")
-                                (varExpr "fallback")
-                                (caseExpr (varExpr "items")
-                                    [ ( pCons (pVar "x") pAnything, varExpr "x" )
-                                    , ( pList [], varExpr "fallback" )
-                                    ]
-                                )
+                            (varExpr "flag")
+                            (varExpr "fallback")
+                            (caseExpr (varExpr "items")
+                                [ ( pCons (pVar "x") pAnything, varExpr "x" )
+                                , ( pList [], varExpr "fallback" )
+                                ]
+                            )
                         )
                     ]
                     (binopsExpr [ ( varExpr "val", "::" ) ] (listExpr []))
@@ -121,18 +134,27 @@ ifElseListDestructure expectFn _ =
 
 
 {-| If-else where the else branch destructures a custom type with String
-fields.  The destructured field (name : String = !eco.value) leaks.
+fields. The destructured field (name : String = !eco.value) leaks.
 
-    type Pair = MkPair String String
+    type Pair
+        = MkPair String String
 
     g : Bool -> Pair -> String -> List String
     g flag pair fallback =
         let
-            val = if flag then fallback else
+            val =
+                if flag then
+                    fallback
+
+                else
                     case pair of
-                        MkPair name _ -> name    -- name is String = !eco.value
+                        MkPair name _ ->
+                            name
+
+            -- name is String = !eco.value
         in
         val :: []
+
 -}
 ifElseCustomDestructure : (Src.Module -> Expectation) -> (() -> Expectation)
 ifElseCustomDestructure expectFn _ =
@@ -163,12 +185,12 @@ ifElseCustomDestructure expectFn _ =
                     [ define "val"
                         []
                         (ifExpr
-                                (varExpr "flag")
-                                (varExpr "fallback")
-                                (caseExpr (varExpr "pair")
-                                    [ ( pCtor "MkPair" [ pVar "name", pAnything ], varExpr "name" )
-                                    ]
-                                )
+                            (varExpr "flag")
+                            (varExpr "fallback")
+                            (caseExpr (varExpr "pair")
+                                [ ( pCtor "MkPair" [ pVar "name", pAnything ], varExpr "name" )
+                                ]
+                            )
                         )
                     ]
                     (binopsExpr [ ( varExpr "val", "::" ) ] (listExpr []))
@@ -196,17 +218,34 @@ ifElseCustomDestructure expectFn _ =
 
 
 {-| Two sequential if-let bindings where BOTH else branches destructure
-!eco.value fields.  The second safepoint sees leaked bindings from both.
+!eco.value fields. The second safepoint sees leaked bindings from both.
 
-    type Box = Box String
+    type Box
+        = Box String
 
     h : Bool -> Box -> Box -> List String
     h flag b1 b2 =
         let
-            x = if flag then "a" else case b1 of Box s1 -> s1
-            y = if flag then "b" else case b2 of Box s2 -> s2
+            x =
+                if flag then
+                    "a"
+
+                else
+                    case b1 of
+                        Box s1 ->
+                            s1
+
+            y =
+                if flag then
+                    "b"
+
+                else
+                    case b2 of
+                        Box s2 ->
+                            s2
         in
         x :: y :: []
+
 -}
 twoSequentialIfLet : (Src.Module -> Expectation) -> (() -> Expectation)
 twoSequentialIfLet expectFn _ =

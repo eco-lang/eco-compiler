@@ -18,7 +18,6 @@ not flattened. For `Int -> Int -> Int`, we get `MFunction [MInt] (MFunction [MIn
 import Array
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.Source as Src
-import Compiler.Data.Id as Id
 import Compiler.AST.SourceBuilder
     exposing
         ( binopsExpr
@@ -31,6 +30,7 @@ import Compiler.AST.SourceBuilder
         , tType
         , varExpr
         )
+import Compiler.Data.Id as Id
 import Expect exposing (Expectation)
 import Test exposing (Test)
 import TestLogic.TestPipeline as Pipeline

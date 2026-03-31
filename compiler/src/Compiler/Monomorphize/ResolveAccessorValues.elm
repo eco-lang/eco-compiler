@@ -4,14 +4,14 @@ module Compiler.Monomorphize.ResolveAccessorValues exposing (accessorTypeNeedsDe
 
 Two tiers of elimination are applied sequentially:
 
-1. **Data-flow analysis** — forward intraprocedural analysis that tracks which locals
-   are definitely accessor values, enabling call-site elimination.
+1.  **Data-flow analysis** — forward intraprocedural analysis that tracks which locals
+    are definitely accessor values, enabling call-site elimination.
 
-2. **Closure fallback** — any surviving MonoAccessorValue is replaced with a closure
-   `\record -> record.field`, guaranteeing all accessor values have concrete
-   implementations.
+2.  **Closure fallback** — any surviving MonoAccessorValue is replaced with a closure
+    `\record -> record.field`, guaranteeing all accessor values have concrete
+    implementations.
 
-After both tiers, no MonoAccessorValue remains (MONO_027).
+After both tiers, no MonoAccessorValue remains (MONO\_027).
 
 -}
 
@@ -48,7 +48,7 @@ Defer when:
 accessorTypeNeedsDefer : MonoType -> Bool
 accessorTypeNeedsDefer monoType =
     case monoType of
-        MFunction (MRecord _ :: _) resultType ->
+        MFunction ((MRecord _) :: _) resultType ->
             case resultType of
                 MFunction _ _ ->
                     True
@@ -138,9 +138,6 @@ rewriteNode home lambdaCounter node =
                         bindings
             in
             ( Mono.MonoCycle (List.reverse newBindings) monoType, c1 )
-
-
-
 
 
 

@@ -3,14 +3,14 @@ module TestLogic.Generate.CodeGen.SafepointRegionScoping exposing (expectSafepoi
 {-| Test logic for safepoint region scoping invariant.
 
 Every eco.safepoint operand must reference an SSA value that is defined in the
-CURRENT region or an ANCESTOR scope — never in a sibling region.  Sibling
+CURRENT region or an ANCESTOR scope — never in a sibling region. Sibling
 regions of eco.case (and scf.while, scf.if, etc.) have independent scopes in
 MLIR; referencing a value from a sibling region is illegal and causes parse
 failures in eco-boot-native.
 
 The bug pattern: TailRec.compileCaseFanOutStep threads the full accumulated
 context (including varMappings from previous sibling regions) into subsequent
-alternatives.  Safepoint emission then picks up SSA names from the leaked
+alternatives. Safepoint emission then picks up SSA names from the leaked
 varMappings, producing cross-sibling references.
 
 @docs expectSafepointRegionScoping
@@ -49,7 +49,7 @@ checkAllFunctions mlirModule =
     List.concatMap checkFunction (findFuncOps mlirModule)
 
 
-{-| Check one function.  func.func is IsolatedFromAbove, so each function
+{-| Check one function. func.func is IsolatedFromAbove, so each function
 starts with an empty set of defined SSA values (plus its block args).
 -}
 checkFunction : MlirOp -> List Violation
@@ -108,8 +108,8 @@ checkBlock funcName ancestorDefs block =
     bodyViolations ++ termV
 
 
-{-| Check a single op.  For eco.safepoint, verify that every operand is in
-the visible-defs set.  For ops with non-isolated regions (eco.case, scf.while,
+{-| Check a single op. For eco.safepoint, verify that every operand is in
+the visible-defs set. For ops with non-isolated regions (eco.case, scf.while,
 etc.), recurse into each region with the defs visible at THIS point — NOT
 the defs from a sibling region.
 -}

@@ -17,6 +17,7 @@ decision trees are properly compiled.
 
 import Compiler.AST.Source as Src
 import Compiler.AST.TypedOptimized as TOpt
+import Compiler.Data.Name exposing (Name)
 import Compiler.LocalOpt.Typed.DecisionTree as DT
 import Compiler.Reporting.Annotation as A
 import Data.Map
@@ -24,7 +25,6 @@ import Dict
 import Expect
 import System.TypeCheck.IO as IO
 import TestLogic.TestPipeline as Pipeline
-import Compiler.Data.Name exposing (Name)
 
 
 {-| TOPT\_002: Verify decision trees have no nested patterns.

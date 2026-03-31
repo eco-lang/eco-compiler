@@ -20,6 +20,7 @@ definition's annotation vars serve as the legitimate set.
 import Array
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Source as Src
+import Compiler.Data.Name exposing (Name)
 import Compiler.Type.PostSolve as PostSolve
 import Data.Map
 import Data.Set as EverySet exposing (EverySet)
@@ -30,7 +31,6 @@ import Test exposing (Test)
 import TestLogic.Type.PostSolve.CompileThroughPostSolve as Compile
 import TestLogic.Type.PostSolve.PostSolveInvariantHelpers as Helpers
 import TestLogic.Type.PostSolve.PostSolveNonRegressionInvariants as Invariants
-import Compiler.Data.Name exposing (Name)
 
 
 {-| A violation of POST\_009.

@@ -10,11 +10,11 @@ type schemes.
 For every non-kernel expression node, every Can.TVar in its post-PostSolve
 type must be traceable to one of three legitimate sources:
 
-1. Annotation binders (Forall freeVars from TypedDef or annotations dict)
-2. Inferred body TVars from unannotated let-bound defs (FreeTVars of their
-   pre-PostSolve body type, representing solver let-generalization)
-3. Type-class variables (number, comparable, appendable, compappend with
-   optional digit suffixes) which are internal solver constraints
+1.  Annotation binders (Forall freeVars from TypedDef or annotations dict)
+2.  Inferred body TVars from unannotated let-bound defs (FreeTVars of their
+    pre-PostSolve body type, representing solver let-generalization)
+3.  Type-class variables (number, comparable, appendable, compappend with
+    optional digit suffixes) which are internal solver constraints
 
 -}
 
@@ -264,7 +264,7 @@ We skip:
   - Container literals (List/Record/Tuple) whose internal polymorphism is harmless.
   - Lambdas whose types are entirely determined by surrounding schemes
     (dedicated lambda invariants POST\_007/008/009 check them).
-  - Calls whose callee is a simple Var* head (polymorphic scheme instantiation).
+  - Calls whose callee is a simple Var\* head (polymorphic scheme instantiation).
 
 POST\_010 still checks result-producing nodes like If/Case/Let/LetRec/LetDestruct,
 Binop, Negate, Access, Update, and Calls with non-trivial callees.

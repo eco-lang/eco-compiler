@@ -33,6 +33,8 @@ import SourceIR.EqualityPapCases as EqualityPapCases
 import SourceIR.FloatMathCases as FloatMathCases
 import SourceIR.FunctionCases as FunctionCases
 import SourceIR.HigherOrderCases as HigherOrderCases
+import SourceIR.IfLetSafepointCases as IfLetSafepointCases
+import SourceIR.IfNodeTypeCases as IfNodeTypeCases
 import SourceIR.JoinpointABICases as JoinpointABICases
 import SourceIR.KernelComparisonCases as KernelComparisonCases
 import SourceIR.KernelCompositionCases as KernelCompositionCases
@@ -72,8 +74,6 @@ import SourceIR.SpecializeExprCases as SpecializeExprCases
 import SourceIR.SpecializePolyLetCases as SpecializePolyLetCases
 import SourceIR.SpecializePolyTopCases as SpecializePolyTopCases
 import SourceIR.SpecializeRecordCtorCases as SpecializeRecordCtorCases
-import SourceIR.IfLetSafepointCases as IfLetSafepointCases
-import SourceIR.IfNodeTypeCases as IfNodeTypeCases
 import SourceIR.TailRecCaseCases as TailRecCaseCases
 import SourceIR.TailRecLetRecClosureCases as TailRecLetRecClosureCases
 import SourceIR.TupleCases as TupleCases

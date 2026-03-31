@@ -866,7 +866,8 @@ accessorInRecordField expectFn _ =
             , tipe = tType "Int" []
             , body =
                 letExpr
-                    [ define "ops" []
+                    [ define "ops"
+                        []
                         (recordExpr
                             [ ( "getter", accessorExpr "a" )
                             ]

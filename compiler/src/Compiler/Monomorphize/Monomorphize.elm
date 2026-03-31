@@ -154,7 +154,8 @@ runSpecialization mainGlobal mainType globalTypeEnv nodes =
             EQ
 
         prePopulatedEnv =
-            DMap.foldl dummyCompare (\_ node env -> prePopulateNodeTVars node env)
+            DMap.foldl dummyCompare
+                (\_ node env -> prePopulateNodeTVars node env)
                 initialState0.ctx.mvarEnv
                 nodes
 

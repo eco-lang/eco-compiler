@@ -9,10 +9,12 @@ followed by a heap allocation that triggers a safepoint.
 
 Unlike IfLetSafepointCases (which targets if-then-else wrapping case),
 these target the direct case expression code paths:
+
   - generateChainForBoolADTWithJumps
   - generateChainGeneralWithJumps
   - generateBoolFanOutWithJumps
   - generateFanOutGeneralWithJumps
+
 -}
 
 import Compiler.AST.Source as Src
@@ -60,16 +62,22 @@ testCases expectFn =
 {-| Bool case (2-way) where both branches create a temporary, followed
 by a list allocation.
 
-    type Wrapper = Wrap String
+    type Wrapper
+        = Wrap String
 
     f : Bool -> String -> String -> List String
     f flag a b =
         let
-            val = case flag of
-                    True -> a
-                    False -> b
+            val =
+                case flag of
+                    True ->
+                        a
+
+                    False ->
+                        b
         in
         val :: []
+
 -}
 boolCaseWithAlloc : (Src.Module -> Expectation) -> (() -> Expectation)
 boolCaseWithAlloc expectFn _ =
@@ -117,17 +125,27 @@ boolCaseWithAlloc expectFn _ =
 {-| Multi-constructor case (3+ ctors) where alternatives call functions
 that create !eco.value temporaries, followed by allocation.
 
-    type Color = Red | Green | Blue
+    type Color
+        = Red
+        | Green
+        | Blue
 
     colorName : Color -> List String
     colorName c =
         let
-            name = case c of
-                        Red -> "red"
-                        Green -> "green"
-                        Blue -> "blue"
+            name =
+                case c of
+                    Red ->
+                        "red"
+
+                    Green ->
+                        "green"
+
+                    Blue ->
+                        "blue"
         in
         name :: []
+
 -}
 multiCtorCaseWithAlloc : (Src.Module -> Expectation) -> (() -> Expectation)
 multiCtorCaseWithAlloc expectFn _ =
@@ -184,19 +202,28 @@ multiCtorCaseWithAlloc expectFn _ =
 {-| Nested case: outer case selects a value, inner case destructures it.
 Both create temporaries. Followed by allocation.
 
-    type Maybe a = Just a | Nothing
+    type Maybe a
+        = Just a
+        | Nothing
 
     extract : Maybe (Maybe String) -> String -> List String
     extract outer fallback =
         let
-            val = case outer of
+            val =
+                case outer of
                     Just inner ->
                         case inner of
-                            Just s -> s
-                            Nothing -> fallback
-                    Nothing -> fallback
+                            Just s ->
+                                s
+
+                            Nothing ->
+                                fallback
+
+                    Nothing ->
+                        fallback
         in
         val :: []
+
 -}
 nestedCaseWithAlloc : (Src.Module -> Expectation) -> (() -> Expectation)
 nestedCaseWithAlloc expectFn _ =
@@ -251,16 +278,23 @@ nestedCaseWithAlloc expectFn _ =
 {-| Case with function calls in alternatives (creating !eco.value temporaries),
 followed by record construction (allocation).
 
-    type Action = Greet String | Farewell String
+    type Action
+        = Greet String
+        | Farewell String
 
     describe : Action -> List String
     describe action =
         let
-            msg = case action of
-                    Greet name -> String.append "Hello, " name
-                    Farewell name -> String.append "Goodbye, " name
+            msg =
+                case action of
+                    Greet name ->
+                        String.append "Hello, " name
+
+                    Farewell name ->
+                        String.append "Goodbye, " name
         in
         msg :: []
+
 -}
 caseWithCallThenAlloc : (Src.Module -> Expectation) -> (() -> Expectation)
 caseWithCallThenAlloc expectFn _ =

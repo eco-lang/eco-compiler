@@ -187,7 +187,7 @@ ifAccessorTuple expectFn _ =
         )
 
 
-{-| A2: processGesture flag rec = let (get, set) = if flag then (.a, \x m -> {m|a=x}) else (.b, \x m -> {m|b=x}) in (get rec, set 99 rec)
+{-| A2: processGesture flag rec = let (get, set) = if flag then (.a, \\x m -> {m|a=x}) else (.b, \\x m -> {m|b=x}) in (get rec, set 99 rec)
 -}
 ifAccessorLambdaTuple : (Src.Module -> Expectation) -> (() -> Expectation)
 ifAccessorLambdaTuple expectFn _ =
@@ -364,7 +364,8 @@ caseAccessorRecordDeferred expectFn _ =
                     (tLambda recAB (tTuple tInt tInt))
             , body =
                 letExpr
-                    [ define "ops" []
+                    [ define "ops"
+                        []
                         (caseExpr (varExpr "loc")
                             [ ( pCtor "First" []
                               , recordExpr [ ( "getter", accessorExpr "a" ), ( "setter", accessorExpr "b" ) ]
@@ -446,7 +447,7 @@ caseAccessorCustomType expectFn _ =
         )
 
 
-{-| B5: chooseFromList loc rec = let accessors = case loc of ... -> [.a, .b] ... in case accessors of f :: _ -> f rec; [] -> 0
+{-| B5: chooseFromList loc rec = let accessors = case loc of ... -> [.a, .b] ... in case accessors of f :: \_ -> f rec; [] -> 0
 Stores accessors in a list.
 -}
 caseAccessorList : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -461,7 +462,8 @@ caseAccessorList expectFn _ =
                     (tLambda recAB tInt)
             , body =
                 letExpr
-                    [ define "accessors" []
+                    [ define "accessors"
+                        []
                         (caseExpr (varExpr "loc")
                             [ ( pCtor "First" [], listExpr [ accessorExpr "a", accessorExpr "b" ] )
                             , ( pCtor "Second" [], listExpr [ accessorExpr "b", accessorExpr "a" ] )
@@ -562,7 +564,7 @@ ifAccessorTuple3 expectFn _ =
         )
 
 
-{-| C2: chooseListIf flag rec = let accessors = if flag then [.a, .b] else [.b, .a] in case accessors of f :: _ -> f rec; [] -> 0
+{-| C2: chooseListIf flag rec = let accessors = if flag then [.a, .b] else [.b, .a] in case accessors of f :: \_ -> f rec; [] -> 0
 If-selection + list container.
 -}
 ifAccessorList : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -575,7 +577,8 @@ ifAccessorList expectFn _ =
             , tipe = tLambda tBool (tLambda recAB tInt)
             , body =
                 letExpr
-                    [ define "accessors" []
+                    [ define "accessors"
+                        []
                         (ifExpr
                             (varExpr "flag")
                             (listExpr [ accessorExpr "a", accessorExpr "b" ])

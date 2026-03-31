@@ -1,12 +1,4 @@
-module Compiler.Data.Id
-    exposing
-        ( Id
-        , Supply
-        , newSupply
-        , next
-        , toComparable
-        , fromComparable
-        )
+module Compiler.Data.Id exposing (Id, Supply, newSupply, next, toComparable, fromComparable)
 
 {-| Phantom-typed unique identifier supply.
 
@@ -28,7 +20,8 @@ type Supply a
     = Supply Int
 
 
-{-| Create a fresh supply starting at 0. -}
+{-| Create a fresh supply starting at 0.
+-}
 newSupply : Supply a
 newSupply =
     Supply 0
@@ -45,6 +38,7 @@ next (Supply n) =
 
 Callers must NOT assign semantic meaning to specific ranges; use
 side tables keyed by Id instead.
+
 -}
 toComparable : Id a -> Int
 toComparable (Id n) =

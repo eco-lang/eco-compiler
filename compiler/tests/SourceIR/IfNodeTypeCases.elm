@@ -14,7 +14,7 @@ Tests cover:
   - Nested if expressions with parameterized types
   - If in a let binding with structured type annotation
   - If returning function types (closure-producing branches)
-  - Polymorphic function with if body, specialized at concrete type (MONO_025 trigger)
+  - Polymorphic function with if body, specialized at concrete type (MONO\_025 trigger)
 
 -}
 
@@ -269,7 +269,8 @@ ifInLetStructuredAnnotation expectFn _ =
             , tipe = tLambda tBool (tList tInt)
             , body =
                 letExpr
-                    [ define "result" []
+                    [ define "result"
+                        []
                         (ifExpr
                             (varExpr "flag")
                             (listExpr [ intExpr 1, intExpr 2 ])

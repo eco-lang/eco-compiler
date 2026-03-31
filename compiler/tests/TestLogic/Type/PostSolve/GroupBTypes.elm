@@ -12,10 +12,10 @@ List, Tuple, Record, Lambda, Accessor, and Let forms are now Group A
 import Array
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Source as Src
+import Compiler.Data.Name exposing (Name)
 import Dict
 import Expect
 import TestLogic.TestPipeline as Pipeline
-import Compiler.Data.Name exposing (Name)
 
 
 {-| Verify that remaining Group B expressions get structural types.

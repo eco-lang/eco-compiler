@@ -266,7 +266,10 @@ post manager path decoder callback =
                 Time.now
                     |> Task.andThen
                         (\before ->
-                            Http.post manager url [] Exit.RP_Http
+                            Http.post manager
+                                url
+                                []
+                                Exit.RP_Http
                                 (\body ->
                                     case D.fromByteString decoder body of
                                         Ok a ->

@@ -3,7 +3,7 @@ module TestLogic.Generate.CodeGen.SafepointRegionScopingTest exposing (suite)
 {-| Test suite for safepoint region scoping invariant.
 
 Verifies that eco.safepoint operands never reference SSA values from sibling
-regions of eco.case or other branching constructs.  Cross-sibling references
+regions of eco.case or other branching constructs. Cross-sibling references
 are a codegen bug that causes MLIR parse failures.
 
 -}
@@ -47,7 +47,7 @@ suite =
 
 
 {-| Focused test: tail-recursive function with 3+ constructor case where
-multiple branches allocate.  This specifically targets the
+multiple branches allocate. This specifically targets the
 compileCaseFanOutStep code path.
 -}
 tailRecFanOutWithAllocationSuite : Test
@@ -62,14 +62,22 @@ tailRecFanOutWithAllocationSuite =
 {-| Source module: a tail-recursive function matching on a 3-constructor type
 where every branch allocates (producing safepoints in each eco.case region).
 
-    type Doc = Empty | Text String Doc | Line Int Doc
+    type Doc
+        = Empty
+        | Text String Doc
+        | Line Int Doc
 
     flatten : Doc -> List String -> List String
     flatten doc acc =
         case doc of
-            Empty -> acc
-            Text s rest -> flatten rest (s :: acc)
-            Line _ rest -> flatten rest ("*" :: acc)
+            Empty ->
+                acc
+
+            Text s rest ->
+                flatten rest (s :: acc)
+
+            Line _ rest ->
+                flatten rest ("*" :: acc)
 
 -}
 tailRecFanOutAllocModule : Src.Module
