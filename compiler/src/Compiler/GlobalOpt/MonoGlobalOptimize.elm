@@ -1493,8 +1493,9 @@ sourceArityForExpr graph env expr =
                             Just (List.length closureInfo.params)
 
                         _ ->
-                            -- Thunk (nullary function) - return 0, codegen calls directly
-                            Just 0
+                            -- Thunk: inner expression is a call or other non-closure.
+                            -- Arity of the resulting closure is unknown at compile time.
+                            Nothing
 
                 Just (Mono.MonoTailFunc params _ _) ->
                     Just (List.length params)
@@ -1591,19 +1592,14 @@ sourceArityForExpr graph env expr =
                                 consumeFromStages excessArgs stages
 
                             Nothing ->
-                                -- Nested call or unknown callee.
-                                -- Use first-stage arity of result type (stage-curried assumption).
-                                case MonoReturnArity.collectStageArities resultType of
-                                    firstStage :: _ ->
-                                        Just firstStage
-
-                                    [] ->
-                                        Nothing
+                                -- Body stages unknown: don't guess from type.
+                                -- Return Nothing so callee gets FromType → CallSegmentationUnknown.
+                                Nothing
 
                 Nothing ->
-                    -- Unknown callee (function parameter): use first-stage arity
-                    -- of the result type (consistent with stage-curried model).
-                    Just (firstStageArityFromType resultType)
+                    -- Unknown callee: staging is unknown.
+                    -- Return Nothing so callee gets FromType → CallSegmentationUnknown.
+                    Nothing
 
         Mono.MonoLet def body _ ->
             let
@@ -1746,12 +1742,9 @@ closureBodyStageArities graph expr =
                     -- rather than using the type, which may have a different staging.
                     case body of
                         Mono.MonoCase _ _ decider jumps _ ->
-                            case getClosureArityFromCase decider jumps of
-                                Just arities ->
-                                    Just arities
-
-                                Nothing ->
-                                    Just (MonoReturnArity.collectStageArities (Mono.typeOf body))
+                            -- Only trust actual closure structure, not type-based guesses.
+                            -- Type staging (e.g. [1,1]) may disagree with actual closures (e.g. [2]).
+                            getClosureArityFromCase decider jumps
 
                         Mono.MonoIf branches _ _ ->
                             case branches of
@@ -1759,11 +1752,12 @@ closureBodyStageArities graph expr =
                                     getClosureArityFromExpr thenExpr
 
                                 [] ->
-                                    Just (MonoReturnArity.collectStageArities (Mono.typeOf body))
+                                    Nothing
 
                         _ ->
-                            -- For regular closures, use the body's type
-                            Just (MonoReturnArity.collectStageArities (Mono.typeOf body))
+                            -- Body is not a case/if returning closures.
+                            -- Don't guess staging from type — return Nothing.
+                            Nothing
 
                 Mono.MonoCase _ _ decider jumps _ ->
                     -- After canonicalization, all branches have the same staging.
@@ -1980,6 +1974,13 @@ computeCallInfo graph env func args _ =
                 -- let-bound partial application results like `let i = s k k`
                 -- where the underlying function `s` returns !eco.value but the
                 -- caller's monomorphized type says i64.
+                -- Over-applies with unknown remaining stages: the first stage
+                -- is known but subsequent stages are not. Must use segmentation_unknown
+                -- for the runtime to handle the excess args via closure header inspection.
+                hasUnknownExcessArgs : Bool
+                hasUnknownExcessArgs =
+                    argCount > sourceArity && List.isEmpty remainingStageArities && sourceArity > 0
+
                 callKind : Mono.CallKind
                 callKind =
                     case sourceArityInfo of
@@ -1989,6 +1990,9 @@ computeCallInfo graph env func args _ =
 
                             else if calleeHasPolymorphicReturn env func then
                                 Mono.CallGenericApply
+
+                            else if hasUnknownExcessArgs then
+                                Mono.CallSegmentationUnknown
 
                             else
                                 Mono.CallDirectKnownSegmentation
