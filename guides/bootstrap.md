@@ -1,6 +1,6 @@
 # Bootstrap Process
 
-The Eco compiler bootstraps through 6 stages. Stages 1–4 produce a fixed-point JS compiler; stage 5 uses it to emit MLIR for the native code path; stage 6 compiles that MLIR to a native ELF executable.
+The Eco compiler bootstraps through 8 stages. Stages 1–4 produce a fixed-point JS compiler; stage 5 uses it to emit MLIR for the native code path; stage 6 compiles that MLIR to a native ELF executable; stages 7–8 use the native compiler to self-compile and verify a native fixed point.
 
 ## Prerequisites
 
@@ -92,9 +92,55 @@ cmake --build build --target eco-boot-native
 
 Output: `compiler/build-kernel/bin/eco-compiler`
 
+### Stage 7: Native compiler self-compiles → `eco-compiler-boot`
+
+The native ELF compiler from Stage 6 compiles itself to MLIR, then `eco-boot-native` lowers that MLIR to a fully bootstrapped native executable.
+
+```bash
+cd /work/compiler/build-kernel
+../build-kernel/bin/eco-compiler make \
+    --optimize \
+    --kernel-package eco/compiler \
+    --local-package eco/kernel=/work/eco-kernel-cpp \
+    --output=bin/eco-compiler-boot.mlir \
+    /work/compiler/src/Terminal/Main.elm
+
+cd /work
+./build/runtime/src/codegen/eco-boot-native \
+    compiler/build-kernel/bin/eco-compiler-boot.mlir \
+    -o compiler/build-kernel/bin/eco-compiler-boot
+```
+
+Output: `compiler/build-kernel/bin/eco-compiler-boot`
+
+### Stage 8: Native fixed-point verification
+
+A second self-compilation round verifies the bootstrapped compiler reproduces itself identically:
+
+```bash
+cd /work/compiler/build-kernel
+bin/eco-compiler-boot make \
+    --optimize \
+    --kernel-package eco/compiler \
+    --local-package eco/kernel=/work/eco-kernel-cpp \
+    --output=bin/eco-compiler-boot-2.mlir \
+    /work/compiler/src/Terminal/Main.elm
+
+cd /work
+./build/runtime/src/codegen/eco-boot-native \
+    compiler/build-kernel/bin/eco-compiler-boot-2.mlir \
+    -o compiler/build-kernel/bin/eco-compiler-boot-2
+
+# Binary compare — must be identical (fixed point reached)
+cmp compiler/build-kernel/bin/eco-compiler-boot \
+    compiler/build-kernel/bin/eco-compiler-boot-2
+```
+
+Output: `compiler/build-kernel/bin/eco-compiler-boot-2` (identical to `eco-compiler-boot`)
+
 ## All stages in sequence
 
-Stage 1 builds **without** `--optimize` (the XHR `Eco.Crash` uses `Debug.todo`). Stages 2–5 use `--optimize` (enabled by the kernel `Eco.Crash` which delegates to `Eco.Kernel.Crash` instead of `Debug.todo`).
+Stage 1 builds **without** `--optimize` (the XHR `Eco.Crash` uses `Debug.todo`). Stages 2–5 use `--optimize` (enabled by the kernel `Eco.Crash` which delegates to `Eco.Kernel.Crash` instead of `Debug.todo`). Stages 6–8 produce and verify a fully bootstrapped native compiler.
 
 ```bash
 export NODE_OPTIONS="--max-old-space-size=12000"
@@ -116,4 +162,28 @@ cmake --build build --target eco-boot-native
 ./build/runtime/src/codegen/eco-boot-native \
     compiler/build-kernel/bin/eco-compiler.mlir \
     -o compiler/build-kernel/bin/eco-compiler  # Stage 6: native ELF
+cd compiler/build-kernel
+bin/eco-compiler make \
+    --optimize \
+    --kernel-package eco/compiler \
+    --local-package eco/kernel=/work/eco-kernel-cpp \
+    --output=bin/eco-compiler-boot.mlir \
+    /work/compiler/src/Terminal/Main.elm       # Stage 7: native self-compile
+cd /work
+./build/runtime/src/codegen/eco-boot-native \
+    compiler/build-kernel/bin/eco-compiler-boot.mlir \
+    -o compiler/build-kernel/bin/eco-compiler-boot
+cd compiler/build-kernel
+bin/eco-compiler-boot make \
+    --optimize \
+    --kernel-package eco/compiler \
+    --local-package eco/kernel=/work/eco-kernel-cpp \
+    --output=bin/eco-compiler-boot-2.mlir \
+    /work/compiler/src/Terminal/Main.elm       # Stage 8: fixed-point verify
+cd /work
+./build/runtime/src/codegen/eco-boot-native \
+    compiler/build-kernel/bin/eco-compiler-boot-2.mlir \
+    -o compiler/build-kernel/bin/eco-compiler-boot-2
+cmp compiler/build-kernel/bin/eco-compiler-boot \
+    compiler/build-kernel/bin/eco-compiler-boot-2   # Must match
 ```
