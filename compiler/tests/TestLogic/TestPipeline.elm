@@ -5,7 +5,6 @@ module TestLogic.TestPipeline exposing
     , MlirArtifacts
       -- Pipeline entry points (each runs full pipeline to that stage)
     , MonoArtifacts
-    , MonoDirectArtifacts
     , PostSolveArtifacts
     , TypeCheckArtifacts
     , TypedOptArtifacts
@@ -16,7 +15,6 @@ module TestLogic.TestPipeline exposing
     , runToMlir
       -- Low-level helpers (for tests needing fine-grained control)
     , runToMono
-    , runToMonoDirect
     , runToPostSolve
     , runToTypedOpt
     )
@@ -57,7 +55,6 @@ import Compiler.Generate.Mode as Mode
 import Compiler.GlobalOpt.MonoGlobalOptimize as MonoGlobalOptimize
 import Compiler.GlobalOpt.MonoInlineSimplify as MonoInlineSimplify
 import Compiler.LocalOpt.Typed.Module as TypedOptimize
-import Compiler.MonoDirect.Monomorphize as MonoDirect
 import Compiler.Monomorphize.Monomorphize as Monomorphize
 import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Result as RResult
@@ -65,7 +62,6 @@ import Compiler.Type.Constrain.Typed.Module as ConstrainTyped
 import Compiler.Type.KernelTypes as KernelTypes
 import Compiler.Type.PostSolve as PostSolve
 import Compiler.Type.Solve as Solve
-import Compiler.Type.SolverSnapshot as SolverSnapshot
 import Compiler.TypedCanonical.Build as TCanBuild
 import Data.Map
 import Dict exposing (Dict)
@@ -137,23 +133,6 @@ type alias MonoArtifacts =
     , monoGraph : Mono.MonoGraph
     }
 
-
-{-| Stage 5-alt: MonoDirect monomorphization artifacts (includes Stages 1-4).
-
-Uses solver-directed monomorphization via `MonoDirect.monomorphizeDirect`.
-
--}
-type alias MonoDirectArtifacts =
-    { canonical : Can.Module
-    , annotations : Dict Name.Name (Can.Annotation Name)
-    , nodeTypes : PostSolve.NodeTypes
-    , kernelEnv : KernelTypes.KernelTypeEnv
-    , localGraph : TOpt.LocalGraph Name
-    , globalGraph : TOpt.GlobalGraph Name
-    , globalTypeEnv : TypeEnv.GlobalTypeEnv
-    , monoGraph : Mono.MonoGraph
-    , solverSnapshot : SolverSnapshot.SolverSnapshot
-    }
 
 
 {-| Stage 5.5: Global optimization artifacts (includes Stages 1-5).
@@ -334,51 +313,6 @@ runToMono srcModule =
                         , monoGraph = monoGraph
                         }
 
-
-{-| Run pipeline through MonoDirect (solver-directed) monomorphization.
--}
-runToMonoDirect : Src.Module -> Result String MonoDirectArtifacts
-runToMonoDirect srcModule =
-    case runToPostSolve (wrapWithMain srcModule) of
-        Err e ->
-            Err e
-
-        Ok { canonical, annotations, nodeTypesPost, kernelEnv, nodeVars, solverState, annotationVars } ->
-            let
-                typedModule =
-                    TCanBuild.fromCanonical canonical nodeTypesPost nodeVars
-
-                snapshot =
-                    SolverSnapshot.fromSolveResult { nodeVars = nodeVars, solverState = solverState, annotationVars = annotationVars }
-            in
-            case RResult.run (TypedOptimize.optimizeTyped annotations nodeTypesPost nodeVars kernelEnv annotationVars typedModule) of
-                ( _, Ok localGraph ) ->
-                    let
-                        globalGraph =
-                            localGraphToGlobalGraph localGraph
-
-                        globalTypeEnv =
-                            buildGlobalTypeEnv canonical
-                    in
-                    case MonoDirect.monomorphizeDirect "main" globalTypeEnv snapshot globalGraph of
-                        Err monoErr ->
-                            Err ("MonoDirect monomorphization failed: " ++ monoErr)
-
-                        Ok monoGraph ->
-                            Ok
-                                { canonical = canonical
-                                , annotations = annotations
-                                , nodeTypes = nodeTypesPost
-                                , kernelEnv = kernelEnv
-                                , localGraph = localGraph
-                                , globalGraph = globalGraph
-                                , globalTypeEnv = globalTypeEnv
-                                , monoGraph = monoGraph
-                                , solverSnapshot = snapshot
-                                }
-
-                ( _, Err _ ) ->
-                    Err "Typed optimization produced an error"
 
 
 {-| Run pipeline through global optimization.
