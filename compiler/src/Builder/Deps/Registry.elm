@@ -45,7 +45,9 @@ import Compiler.Elm.Version as V
 import Compiler.Json.Decode as D
 import Compiler.Parse.Primitives as P
 import Dict exposing (Dict)
+import Eco.Console
 import Task exposing (Task)
+import Time
 import Utils.Bytes.Decode as BD
 import Utils.Bytes.Encode as BE
 
@@ -261,14 +263,33 @@ post manager path decoder callback =
     Website.route path []
         |> Task.andThen
             (\url ->
-                Http.post manager url [] Exit.RP_Http <|
-                    \body ->
-                        case D.fromByteString decoder body of
-                            Ok a ->
-                                Task.map Ok (callback a)
+                Time.now
+                    |> Task.andThen
+                        (\before ->
+                            Http.post manager url [] Exit.RP_Http
+                                (\body ->
+                                    case D.fromByteString decoder body of
+                                        Ok a ->
+                                            Task.map Ok (callback a)
 
-                            Err _ ->
-                                Exit.RP_Data url body |> Err |> Task.succeed
+                                        Err _ ->
+                                            Exit.RP_Data url body |> Err |> Task.succeed
+                                )
+                                |> Task.andThen
+                                    (\result ->
+                                        Time.now
+                                            |> Task.andThen
+                                                (\after ->
+                                                    let
+                                                        ms =
+                                                            Time.posixToMillis after - Time.posixToMillis before
+                                                    in
+                                                    Eco.Console.write Eco.Console.stdout
+                                                        ("Registry: POST " ++ url ++ " completed in " ++ String.fromInt ms ++ "ms\n")
+                                                        |> Task.map (\_ -> result)
+                                                )
+                                    )
+                        )
             )
 
 
