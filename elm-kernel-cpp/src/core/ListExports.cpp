@@ -182,6 +182,25 @@ uint64_t Elm_Kernel_List_fromArray(uint64_t array) {
 }
 
 uint64_t Elm_Kernel_List_toArray(uint64_t list) {
+    // In the C++ backend, kernel functions already work with Cons lists.
+    // The Elm source wraps some kernel calls with toArray (because the JS
+    // kernel expects JS Arrays), but in C++ this conversion is unnecessary.
+    // Pass through Cons lists and Nil unchanged.
+    HPointer hp = Export::decode(list);
+    if (hp.constant != 0) {
+        // Embedded constant (e.g., Nil) — pass through.
+        return list;
+    }
+    void* ptr = Export::toPtr(list);
+    if (ptr) {
+        Header* hdr = static_cast<Header*>(ptr);
+        if (hdr->tag == Tag_Cons) {
+            // Already a Cons list — pass through unchanged.
+            return list;
+        }
+    }
+
+    // Genuine Array-to-List conversion (fallback for other callers).
     std::vector<uint64_t> vec = listToVectorU64(Export::decode(list));
 
     HPointer arr = alloc::allocArray(static_cast<u32>(vec.size()));
