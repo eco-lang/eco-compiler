@@ -171,3 +171,147 @@ main =
 | **Are these new failures?** | No. All 9 tests fail on unmodified code (verified by reverting the `FromType` change). |
 | **What changed?** | The symptom changed from SIGABRT (wrong remaining_arity assertion) to SIGSEGV (correct dispatch, but wrong evaluator types). Previously the staging mismatch crashed first; now the staging is correct but the deeper monomorphization bug is exposed. |
 | **Fix location** | Monomorphizer specialization selection — not in `CallSegmentationUnknown` or GlobalOpt. |
+
+---
+
+## Deep Trace: Type Variable Capture in the Monomorphizer
+
+### Test Case
+
+```elm
+module CombinatorBComposeTest exposing (main)
+
+k a _ = a                         -- type: a → b → a
+s bf uf x = bf x (uf x)          -- type: (a → b → c) → (a → b) → a → c
+b = s (k s) k                    -- type: (a → b) → (c → a) → c → b
+--      ↑       ↑
+--      arg1    arg2 (the second k — the one that gets wrong specialization)
+
+inc x = x + 1                    -- type: Int → Int
+square x = x * x                 -- type: Int → Int
+
+main =
+    let
+        _ = Debug.log "result" (b square inc 4)
+        --                      ↑
+        --  b : (Int→Int) → (Int→Int) → Int → Int
+        --  This concrete type drives the specialization of b's body
+    in
+    text "done"
+```
+
+### Root Cause: Type Variable Capture in `processCallArgs`
+
+The monomorphizer has a **type variable capture bug**: when specializing the body of a polymorphic function, the caller's type substitution leaks into argument specializations, incorrectly resolving the arguments' own type variables.
+
+### Trace Evidence
+
+**Step 1: Building the substitution for `b`'s body**
+
+`specializeNode` (Specialize.elm:700-717) processes `b`'s `Define` node. It unifies `b`'s canonical type with the requested concrete type:
+
+```
+b's canonical type:  (a → b) → (c → a) → c → b
+requested type:      (Int→Int) → (Int→Int) → Int → Int
+```
+
+This produces substitution `subst = { "a" → MInt, "b" → MInt, "c" → MInt }`.
+
+**Step 2: Processing call arguments with the caller's substitution**
+
+`specializeExpr` processes `b`'s body expression `s (k s) k` as a `TOpt.Call` (Specialize.elm:1361). The FIRST thing it does is:
+
+```elm
+( processedArgs, argTypes, state1 ) =
+    processCallArgs args subst state          -- line 1368-1369
+```
+
+This processes `[(k s), k]` using `subst = { "a" → MInt, "b" → MInt, "c" → MInt }`.
+
+**Step 3: The second `k` is specialized with the WRONG substitution**
+
+For the second argument `k` (a `VarGlobal`), `processCallArg` (Specialize.elm:2582-2606) does:
+
+```elm
+canType = meta.tipe                    -- k's canonical type: a → b → a
+monoType = applySubst mvarEnv subst canType   -- line 2590
+```
+
+`applySubst` (TypeSubst.elm:661-664) looks up each `TVar` by **string name** in `subst`:
+
+```elm
+Can.TVar name ->
+    case Dict.get name subst of       -- line 662
+        Just monoType -> ( resolveMonoVars env subst monoType, env )
+```
+
+- `k`'s type variable `"a"` → `Dict.get "a" subst` → `Just MInt` ← **CAPTURED!**
+- `k`'s type variable `"b"` → `Dict.get "b" subst` → `Just MInt` ← **CAPTURED!**
+
+Result: `k`'s type resolves to `MInt → MInt → MInt`.
+
+Since `containsCEcoMVar(MInt → MInt → MInt)` = False (line 2592), the argument is immediately specialized:
+
+```elm
+( monoExpr, st1 ) = specializeExpr arg subst st   -- line 2600-2601
+```
+
+This calls `enqueueSpec k (MInt → MInt → MInt)` → creates specialization `k_$_8(i64, i64) → i64`.
+
+**Step 4: Callee renaming happens TOO LATE**
+
+Only AFTER `processCallArgs` returns does the code rename `s`'s type variables (line 1394):
+
+```elm
+unifyResult = unifyCallSiteWithRenaming ... funcCanType argTypes canType subst epoch schemeInfo
+```
+
+This renaming avoids collision between `s`'s own type variables and `b`'s substitution keys. But by this point, the arguments have already been specialized with the wrong types.
+
+### What Should Happen
+
+In the expression `s (k s) k`:
+- `s` has type `(a → b → c) → (a → b) → a → c`
+- The second `k` is `s`'s second parameter `uf : (a → b)`, where `a` and `b` are `s`'s type variables
+- When `b` is specialized for `(Int→Int) → (Int→Int) → Int → Int`:
+  - `s`'s `a` should resolve to something like `Int→Int` (the type of `square`)
+  - `s`'s `b` should resolve to something like `Int→Int`
+  - So `uf = k` should have type `(Int→Int) → (Int→Int)` i.e. `k_$_7(!eco.value, !eco.value) → !eco.value`
+- But the variable capture resolves `k`'s own `a, b` to `MInt` instead
+
+### Impact
+
+| What happens | Expected | Actual |
+|---|---|---|
+| Second `k` in `s (k s) k` | `k_$_7(!eco.value, !eco.value) → !eco.value` | `k_$_8(i64, i64) → i64` |
+| `s_$_9` calls `k(square)` | Stores closure as `!eco.value` | Stores closure as `!eco.value` but evaluator expects `i64` |
+| Evaluator unboxes captured value | Reads `!eco.value` (passthrough) | Reads offset 8 of closure object as raw `i64` → **SIGSEGV** |
+
+### Why This Affects All 7 Combinator Tests
+
+Every combinator definition uses the pattern `s <arg1> <arg2>` (or nested compositions thereof). When the combinator's outer type variables happen to share names with the arguments' type variables (which is the default in Elm since `a, b, c, ...` are reused), the caller's substitution captures the arguments' variables.
+
+| Test | Combinator | Captured variable |
+|---|---|---|
+| CombinatorBComposeTest | `b = s (k s) k` | `k`'s `a,b` captured by `b`'s `a,b` |
+| CombinatorCFlipTest | `c = s (b b s) (k k)` | `k`'s variables captured |
+| CombinatorCConsTest | Same `c` | Same capture |
+| CombinatorTThrushTest | `t = c i`, `i = s k k` | `k`'s variables captured in `i`'s context |
+| CombinatorTPipeTest | Same `t` | Same |
+| CombinatorTest | All combinators | Multiple captures |
+| CombinatorListStringTest | Same combinators | Same captures |
+
+### The Variable Capture Mechanism in Detail
+
+In Elm's canonical AST, type variables are identified by **string names**. The function `k a _ = a` has canonical type using variables literally named `"a"` and `"b"`. The combinator `b` has type `(a → b) → (c → a) → c → b` using variables `"a"`, `"b"`, `"c"`.
+
+The substitution built when specializing `b`'s body maps `{"a" → MInt, "b" → MInt, "c" → MInt}`. When this substitution is applied to `k`'s canonical type `a → b → a`, the shared names `"a"` and `"b"` cause `k` to be resolved as `MInt → MInt → MInt` — even though `k`'s `a` and `b` are independent type variables that should be resolved by `s`'s call-site unification, not by `b`'s outer context.
+
+The `unifyCallSiteWithRenaming` function (Specialize.elm:192-257) exists specifically to α-rename the callee's type variables and avoid this collision. But it runs AFTER `processCallArgs` has already specialized the arguments. The renaming protects `s`'s own type resolution but does NOT protect the arguments passed to `s`.
+
+### Fix Location
+
+The bug is in `processCallArgs` (Specialize.elm:2582-2606). The fix needs to either:
+1. **Defer argument specialization** until after `unifyCallSiteWithRenaming` determines the correct types for each parameter position
+2. **α-rename** argument canonical types before applying the caller's substitution (removing shared variable names)
+3. **Filter the substitution** when specializing arguments, excluding variables that belong to the caller's scope but not the argument's scope
