@@ -20,10 +20,12 @@ HPointer concat(HPointer stringList) {
         if (!cell) break;
 
         Cons* c = static_cast<Cons*>(cell);
-        void* strObj = allocator.resolve(c->head.p);
-        if (strObj) {
-            ElmString* s = static_cast<ElmString*>(strObj);
-            total_len += s->header.size;
+        if (!alloc::isEmptyString(c->head.p)) {
+            void* strObj = allocator.resolve(c->head.p);
+            if (strObj) {
+                ElmString* s = static_cast<ElmString*>(strObj);
+                total_len += s->header.size;
+            }
         }
         current = c->tail;
     }
@@ -47,11 +49,13 @@ HPointer concat(HPointer stringList) {
         if (!cell) break;
 
         Cons* c = static_cast<Cons*>(cell);
-        void* strObj = allocator.resolve(c->head.p);
-        if (strObj) {
-            ElmString* s = static_cast<ElmString*>(strObj);
-            std::memcpy(result->chars + offset, s->chars, s->header.size * sizeof(u16));
-            offset += s->header.size;
+        if (!alloc::isEmptyString(c->head.p)) {
+            void* strObj = allocator.resolve(c->head.p);
+            if (strObj) {
+                ElmString* s = static_cast<ElmString*>(strObj);
+                std::memcpy(result->chars + offset, s->chars, s->header.size * sizeof(u16));
+                offset += s->header.size;
+            }
         }
         current = c->tail;
     }
@@ -74,12 +78,15 @@ HPointer join(void* sep, HPointer stringList) {
         if (!cell) break;
 
         Cons* c = static_cast<Cons*>(cell);
-        void* strObj = allocator.resolve(c->head.p);
-        if (strObj) {
-            ElmString* s = static_cast<ElmString*>(strObj);
-            total_len += s->header.size;
-            ++count;
+        // EmptyString is an embedded constant — skip resolve but still count it.
+        if (!alloc::isEmptyString(c->head.p)) {
+            void* strObj = allocator.resolve(c->head.p);
+            if (strObj) {
+                ElmString* s = static_cast<ElmString*>(strObj);
+                total_len += s->header.size;
+            }
         }
+        ++count;
         current = c->tail;
     }
 
@@ -106,18 +113,21 @@ HPointer join(void* sep, HPointer stringList) {
         if (!cell) break;
 
         Cons* c = static_cast<Cons*>(cell);
-        void* strObj = allocator.resolve(c->head.p);
-        if (strObj) {
-            ElmString* s = static_cast<ElmString*>(strObj);
 
-            if (!first && sep_len > 0) {
-                std::memcpy(result->chars + offset, separator->chars, sep_len * sizeof(u16));
-                offset += sep_len;
+        if (!first && sep_len > 0) {
+            std::memcpy(result->chars + offset, separator->chars, sep_len * sizeof(u16));
+            offset += sep_len;
+        }
+        first = false;
+
+        // EmptyString is an embedded constant — contributes 0 chars.
+        if (!alloc::isEmptyString(c->head.p)) {
+            void* strObj = allocator.resolve(c->head.p);
+            if (strObj) {
+                ElmString* s = static_cast<ElmString*>(strObj);
+                std::memcpy(result->chars + offset, s->chars, s->header.size * sizeof(u16));
+                offset += s->header.size;
             }
-            first = false;
-
-            std::memcpy(result->chars + offset, s->chars, s->header.size * sizeof(u16));
-            offset += s->header.size;
         }
         current = c->tail;
     }

@@ -127,6 +127,15 @@ inline bool isNil(HPointer ptr) {
     return ptr.constant == Const_Nil + 1;
 }
 
+inline bool isEmptyString(HPointer ptr) {
+    return ptr.constant == Const_EmptyString + 1;
+}
+
+/// Returns true if the HPointer is any embedded constant (constant field 1-7).
+inline bool isEmbeddedConstant(HPointer ptr) {
+    return ptr.constant != 0;
+}
+
 // ============================================================================
 // Primitive Allocation
 // ============================================================================
