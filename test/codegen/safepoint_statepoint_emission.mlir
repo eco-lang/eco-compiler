@@ -1,11 +1,14 @@
 // RUN: %ecoc %s -emit=llvm 2>&1 | %FileCheck %s
 //
 // Test that eco.safepoint ops are lowered to gc.statepoint intrinsics
-// with gc-live operand bundles and GC strategy on functions.
+// with gc-live operand bundles, gc.relocate intrinsics, and GC strategy
+// on functions.
 //
 // CHECK: gc "statepoint-example"
 // CHECK: @llvm.experimental.gc.statepoint.p0
 // CHECK: "gc-live"
+// CHECK: @llvm.experimental.gc.relocate
+// CHECK: ptrtoint
 
 module {
   func.func @main() -> i64 {

@@ -1,6 +1,7 @@
 module Compiler.Generate.MLIR.Expr exposing
     ( ExprResult
     , generateExpr
+    , emitSafepoint
     , coerceResultToType, boxArgsWithMlirTypes
     , createDummyValue
     , collectLetBoundNames, addPlaceholderMappings
@@ -515,14 +516,26 @@ generateLiteral ctx lit =
                     Ctx.freshVar ctx
 
                 -- Empty strings must use eco.constant EmptyString (invariant: never heap-allocated)
-                ( ctx2, op ) =
+                -- Non-empty string literals allocate on the heap, so emit a safepoint first.
+                ( safepointOps, ctx2, op ) =
                     if value == "" then
-                        Ops.ecoConstantEmptyString ctx1 var
+                        let
+                            ( ctxE, emptyOp ) =
+                                Ops.ecoConstantEmptyString ctx1 var
+                        in
+                        ( [], ctxE, emptyOp )
 
                     else
-                        Ops.ecoStringLiteral ctx1 var value
+                        let
+                            ( ctxSp, spOp ) =
+                                emitSafepoint ctx1
+
+                            ( ctxStr, strOp ) =
+                                Ops.ecoStringLiteral ctxSp var value
+                        in
+                        ( [ spOp ], ctxStr, strOp )
             in
-            { ops = [ op ]
+            { ops = safepointOps ++ [ op ]
             , resultVar = var
             , resultType = Types.ecoValue
             , ctx = ctx2
@@ -565,10 +578,13 @@ generateVarGlobal ctx specId monoType =
                     resultMlirType =
                         Types.monoTypeToAbi sig.returnType
 
+                    ( ctxSp, spOp ) =
+                        emitSafepoint ctx1
+
                     ( ctx2, callOp ) =
-                        Ops.ecoCallNamed ctx1 var funcName [] resultMlirType
+                        Ops.ecoCallNamed ctxSp var funcName [] resultMlirType
                 in
-                { ops = [ callOp ]
+                { ops = [ spOp, callOp ]
                 , resultVar = var
                 , resultType = resultMlirType
                 , ctx = ctx2
@@ -616,10 +632,13 @@ generateVarGlobal ctx specId monoType =
                         resultMlirType =
                             Types.monoTypeToAbi monoType
 
+                        ( ctxSp, spOp ) =
+                            emitSafepoint ctx1
+
                         ( ctx2, callOp ) =
-                            Ops.ecoCallNamed ctx1 var funcName [] resultMlirType
+                            Ops.ecoCallNamed ctxSp var funcName [] resultMlirType
                     in
-                    { ops = [ callOp ]
+                    { ops = [ spOp, callOp ]
                     , resultVar = var
                     , resultType = resultMlirType
                     , ctx = ctx2
@@ -667,10 +686,13 @@ generateVarKernel ctx kernelPrefix home name monoType =
                             resultMlirType =
                                 Types.monoTypeToAbi monoType
 
+                            ( ctxSp, spOp ) =
+                                emitSafepoint ctx1
+
                             ( ctx2, callOp ) =
-                                Ops.ecoCallNamed ctx1 var kernelName [] resultMlirType
+                                Ops.ecoCallNamed ctxSp var kernelName [] resultMlirType
                         in
-                        { ops = [ callOp ]
+                        { ops = [ spOp, callOp ]
                         , resultVar = var
                         , resultType = resultMlirType
                         , ctx = ctx2
@@ -714,10 +736,13 @@ generateVarKernel ctx kernelPrefix home name monoType =
                         resultMlirType =
                             Types.monoTypeToAbi monoType
 
+                        ( ctxSp, spOp ) =
+                            emitSafepoint ctx1
+
                         ( ctx2, callOp ) =
-                            Ops.ecoCallNamed ctx1 var kernelName [] resultMlirType
+                            Ops.ecoCallNamed ctxSp var kernelName [] resultMlirType
                     in
-                    { ops = [ callOp ]
+                    { ops = [ spOp, callOp ]
                     , resultVar = var
                     , resultType = resultMlirType
                     , ctx = ctx2
@@ -740,10 +765,13 @@ generateVarKernel ctx kernelPrefix home name monoType =
                             resultMlirType =
                                 Types.monoTypeToAbi monoType
 
+                            ( ctxSp, spOp ) =
+                                emitSafepoint ctx1
+
                             ( ctx2, callOp ) =
-                                Ops.ecoCallNamed ctx1 var kernelName [] resultMlirType
+                                Ops.ecoCallNamed ctxSp var kernelName [] resultMlirType
                         in
-                        { ops = [ callOp ]
+                        { ops = [ spOp, callOp ]
                         , resultVar = var
                         , resultType = resultMlirType
                         , ctx = ctx2
@@ -787,10 +815,13 @@ generateVarKernel ctx kernelPrefix home name monoType =
                         resultMlirType =
                             Types.monoTypeToAbi monoType
 
+                        ( ctxSp, spOp ) =
+                            emitSafepoint ctx1
+
                         ( ctx2, callOp ) =
-                            Ops.ecoCallNamed ctx1 var kernelName [] resultMlirType
+                            Ops.ecoCallNamed ctxSp var kernelName [] resultMlirType
                     in
-                    { ops = [ callOp ]
+                    { ops = [ spOp, callOp ]
                     , resultVar = var
                     , resultType = resultMlirType
                     , ctx = ctx2
@@ -999,10 +1030,13 @@ generateClosure ctx closureInfo body monoType =
             closureResultType =
                 Types.monoTypeToAbi monoType
 
+            ( ctxSp, spOp ) =
+                emitSafepoint ctx3
+
             ( ctx4, callOp ) =
-                Ops.ecoCallNamed ctx3 resultVar (lambdaIdToString closureInfo.lambdaId) [] closureResultType
+                Ops.ecoCallNamed ctxSp resultVar (lambdaIdToString closureInfo.lambdaId) [] closureResultType
         in
-        { ops = captureOps ++ boxOps ++ [ callOp ]
+        { ops = captureOps ++ boxOps ++ [ spOp, callOp ]
         , resultVar = resultVar
         , resultType = closureResultType
         , ctx = ctx4
@@ -1363,14 +1397,17 @@ generateGenericApply ctx func args _ _ =
                 , ( "_call_kind", StringAttr "generic_apply" )
                 ]
 
+        ( ctxSp1, spOp1 ) =
+            emitSafepoint ctx3
+
         ( ctx4, papExtendOp ) =
-            Ops.mlirOp ctx3 "eco.papExtend"
+            Ops.mlirOp ctxSp1 "eco.papExtend"
                 |> Ops.opBuilder.withOperands allOperandNames
                 |> Ops.opBuilder.withResults [ ( resVar, resultMlirType ) ]
                 |> Ops.opBuilder.withAttrs papExtendAttrs
                 |> Ops.opBuilder.build
     in
-    { ops = funcResult.ops ++ argOps ++ boxOps ++ [ papExtendOp ]
+    { ops = funcResult.ops ++ argOps ++ boxOps ++ [ spOp1, papExtendOp ]
     , resultVar = resVar
     , resultType = resultMlirType
     , ctx = ctx4
@@ -1459,14 +1496,17 @@ generateUnknownSegmentationCall ctx func args _ _ =
                 , ( "_call_kind", StringAttr "segmentation_unknown" )
                 ]
 
+        ( ctxSp2, spOp2 ) =
+            emitSafepoint ctx3
+
         ( ctx4, papExtendOp ) =
-            Ops.mlirOp ctx3 "eco.papExtend"
+            Ops.mlirOp ctxSp2 "eco.papExtend"
                 |> Ops.opBuilder.withOperands allOperandNames
                 |> Ops.opBuilder.withResults [ ( resVar, resultMlirType ) ]
                 |> Ops.opBuilder.withAttrs papExtendAttrs
                 |> Ops.opBuilder.build
     in
-    { ops = funcResult.ops ++ argOps ++ boxOps ++ [ papExtendOp ]
+    { ops = funcResult.ops ++ argOps ++ boxOps ++ [ spOp2, papExtendOp ]
     , resultVar = resVar
     , resultType = resultMlirType
     , ctx = ctx4
@@ -1616,15 +1656,18 @@ applyByStages ctx funcVar funcMlirType sourceRemaining remainingStageArities sat
                     papExtendAttrs =
                         Dict.fromList (baseAttrs ++ callKindAttrs)
 
+                    ( ctxSp3, spOp3 ) =
+                        emitSafepoint ctx1
+
                     ( ctx2, papExtendOp ) =
-                        Ops.mlirOp ctx1 "eco.papExtend"
+                        Ops.mlirOp ctxSp3 "eco.papExtend"
                             |> Ops.opBuilder.withOperands allOperandNames
                             |> Ops.opBuilder.withResults [ ( resVar, resultMlirType ) ]
                             |> Ops.opBuilder.withAttrs papExtendAttrs
                             |> Ops.opBuilder.build
 
                     nextOps =
-                        papExtendOp :: accOps
+                        papExtendOp :: spOp3 :: accOps
                 in
                 if List.isEmpty rest then
                     -- No more args to apply after this batch.
@@ -1727,14 +1770,17 @@ generateFlattenedPartialApplication ctx func args resultType =
         resultMlirType =
             Types.monoTypeToAbi resultType
 
+        ( ctxSp4, spOp4 ) =
+            emitSafepoint ctx2
+
         ( ctx3, papExtendOp ) =
-            Ops.mlirOp ctx2 "eco.papExtend"
+            Ops.mlirOp ctxSp4 "eco.papExtend"
                 |> Ops.opBuilder.withOperands allOperandNames
                 |> Ops.opBuilder.withResults [ ( resVar, resultMlirType ) ]
                 |> Ops.opBuilder.withAttrs papExtendAttrs
                 |> Ops.opBuilder.build
     in
-    { ops = funcResult.ops ++ argOps ++ boxOps ++ [ papExtendOp ]
+    { ops = funcResult.ops ++ argOps ++ boxOps ++ [ spOp4, papExtendOp ]
     , resultVar = resVar
     , resultType = resultMlirType
     , ctx = ctx3
@@ -2259,10 +2305,13 @@ generateSaturatedCall ctx func args resultType callInfo =
                                 callResultType =
                                     Types.monoTypeToAbi sig.returnType
 
+                                ( ctxSp, spOp ) =
+                                    emitSafepoint ctx2
+
                                 ( ctx3, callOp ) =
-                                    Ops.ecoCallNamed ctx2 resVar kernelName argVarPairs callResultType
+                                    Ops.ecoCallNamed ctxSp resVar kernelName argVarPairs callResultType
                             in
-                            { ops = argOps ++ boxOps ++ [ callOp ]
+                            { ops = argOps ++ boxOps ++ [ spOp, callOp ]
                             , resultVar = resVar
                             , resultType = callResultType
                             , ctx = ctx3
@@ -2336,10 +2385,13 @@ generateSaturatedCall ctx func args resultType callInfo =
                                         callResultType =
                                             Types.ecoValue
 
+                                        ( ctxSp, spOp ) =
+                                            emitSafepoint ctx2
+
                                         ( ctx3, callOp ) =
-                                            Ops.ecoCallNamed ctx2 resVar kernelName argVarPairs callResultType
+                                            Ops.ecoCallNamed ctxSp resVar kernelName argVarPairs callResultType
                                     in
-                                    { ops = argOps ++ boxOps ++ [ callOp ]
+                                    { ops = argOps ++ boxOps ++ [ spOp, callOp ]
                                     , resultVar = resVar
                                     , resultType = callResultType
                                     , ctx = ctx3
@@ -2398,10 +2450,13 @@ generateSaturatedCall ctx func args resultType callInfo =
                                                     callResultType =
                                                         Types.monoTypeToAbi sig.returnType
 
+                                                    ( ctxSp, spOp ) =
+                                                        emitSafepoint ctx2
+
                                                     ( ctx3, callOp ) =
-                                                        Ops.ecoCallNamed ctx2 resVar kernelName argVarPairs callResultType
+                                                        Ops.ecoCallNamed ctxSp resVar kernelName argVarPairs callResultType
                                                 in
-                                                { ops = argOps ++ boxOps ++ [ callOp ]
+                                                { ops = argOps ++ boxOps ++ [ spOp, callOp ]
                                                 , resultVar = resVar
                                                 , resultType = callResultType
                                                 , ctx = ctx3
@@ -2440,10 +2495,13 @@ generateSaturatedCall ctx func args resultType callInfo =
                                                             Nothing ->
                                                                 Types.monoTypeToAbi resultType
 
+                                                    ( ctxSp, spOp ) =
+                                                        emitSafepoint ctx2
+
                                                     ( ctx3, callOp ) =
-                                                        Ops.ecoCallNamed ctx2 resultVar funcName argVarPairs resultMlirType
+                                                        Ops.ecoCallNamed ctxSp resultVar funcName argVarPairs resultMlirType
                                                 in
-                                                { ops = argOps ++ boxOps ++ [ callOp ]
+                                                { ops = argOps ++ boxOps ++ [ spOp, callOp ]
                                                 , resultVar = resultVar
                                                 , resultType = resultMlirType
                                                 , ctx = ctx3
@@ -2483,10 +2541,13 @@ generateSaturatedCall ctx func args resultType callInfo =
                                                 Nothing ->
                                                     Types.monoTypeToAbi resultType
 
+                                        ( ctxSp, spOp ) =
+                                            emitSafepoint ctx2
+
                                         ( ctx3, callOp ) =
-                                            Ops.ecoCallNamed ctx2 resultVar funcName argVarPairs resultMlirType
+                                            Ops.ecoCallNamed ctxSp resultVar funcName argVarPairs resultMlirType
                                     in
-                                    { ops = argOps ++ boxOps ++ [ callOp ]
+                                    { ops = argOps ++ boxOps ++ [ spOp, callOp ]
                                     , resultVar = resultVar
                                     , resultType = resultMlirType
                                     , ctx = ctx3
@@ -2666,8 +2727,11 @@ generateSaturatedCall ctx func args resultType callInfo =
                         ( resultVar, ctx2c ) =
                             Ctx.freshVar ctx2b
 
+                        ( ctxSp, spOp ) =
+                            emitSafepoint ctx2c
+
                         ( ctx2d, callOp ) =
-                            Ops.ecoCallNamed ctx2c
+                            Ops.ecoCallNamed ctxSp
                                 resultVar
                                 "Elm_Kernel_Debug_toString"
                                 [ ( boxedValueVar, Types.ecoValue )
@@ -2675,7 +2739,7 @@ generateSaturatedCall ctx func args resultType callInfo =
                                 ]
                                 Types.ecoValue
                     in
-                    { ops = argOps ++ boxOps ++ [ typeIdOp, callOp ]
+                    { ops = argOps ++ boxOps ++ [ typeIdOp, spOp, callOp ]
                     , resultVar = resultVar
                     , resultType = Types.ecoValue
                     , ctx = ctx2d
@@ -2724,10 +2788,13 @@ generateSaturatedCall ctx func args resultType callInfo =
                                         ( resVar, ctx2 ) =
                                             Ctx.freshVar ctx1b
 
+                                        ( ctxSp, spOp ) =
+                                            emitSafepoint ctx2
+
                                         ( ctx3, callOp ) =
-                                            Ops.ecoCallNamed ctx2 resVar "Elm_Kernel_Bytes_encode" argVarPairs Types.ecoValue
+                                            Ops.ecoCallNamed ctxSp resVar "Elm_Kernel_Bytes_encode" argVarPairs Types.ecoValue
                                     in
-                                    { ops = argOps ++ boxOps ++ [ callOp ]
+                                    { ops = argOps ++ boxOps ++ [ spOp, callOp ]
                                     , resultVar = resVar
                                     , resultType = Types.ecoValue
                                     , ctx = ctx3
@@ -2743,10 +2810,13 @@ generateSaturatedCall ctx func args resultType callInfo =
                                 ( resVar, ctx2 ) =
                                     Ctx.freshVar ctx1b
 
+                                ( ctxSp, spOp ) =
+                                    emitSafepoint ctx2
+
                                 ( ctx3, callOp ) =
-                                    Ops.ecoCallNamed ctx2 resVar "Elm_Kernel_Bytes_encode" argVarPairs Types.ecoValue
+                                    Ops.ecoCallNamed ctxSp resVar "Elm_Kernel_Bytes_encode" argVarPairs Types.ecoValue
                             in
-                            { ops = argOps ++ boxOps ++ [ callOp ]
+                            { ops = argOps ++ boxOps ++ [ spOp, callOp ]
                             , resultVar = resVar
                             , resultType = Types.ecoValue
                             , ctx = ctx3
@@ -2804,10 +2874,13 @@ generateSaturatedCall ctx func args resultType callInfo =
                                         ( resVar, ctx2 ) =
                                             Ctx.freshVar ctx1b
 
+                                        ( ctxSp, spOp ) =
+                                            emitSafepoint ctx2
+
                                         ( ctx3, callOp ) =
-                                            Ops.ecoCallNamed ctx2 resVar "Elm_Kernel_Bytes_decode" argVarPairs Types.ecoValue
+                                            Ops.ecoCallNamed ctxSp resVar "Elm_Kernel_Bytes_decode" argVarPairs Types.ecoValue
                                     in
-                                    { ops = argOps ++ boxOps ++ [ callOp ]
+                                    { ops = argOps ++ boxOps ++ [ spOp, callOp ]
                                     , resultVar = resVar
                                     , resultType = Types.ecoValue
                                     , ctx = ctx3
@@ -2823,10 +2896,13 @@ generateSaturatedCall ctx func args resultType callInfo =
                                 ( resVar, ctx2 ) =
                                     Ctx.freshVar ctx1b
 
+                                ( ctxSp, spOp ) =
+                                    emitSafepoint ctx2
+
                                 ( ctx3, callOp ) =
-                                    Ops.ecoCallNamed ctx2 resVar "Elm_Kernel_Bytes_decode" argVarPairs Types.ecoValue
+                                    Ops.ecoCallNamed ctxSp resVar "Elm_Kernel_Bytes_decode" argVarPairs Types.ecoValue
                             in
-                            { ops = argOps ++ boxOps ++ [ callOp ]
+                            { ops = argOps ++ boxOps ++ [ spOp, callOp ]
                             , resultVar = resVar
                             , resultType = Types.ecoValue
                             , ctx = ctx3
@@ -2896,10 +2972,13 @@ generateSaturatedCall ctx func args resultType callInfo =
                                         resultMlirType =
                                             Types.ecoValue
 
+                                        ( ctxSp, spOp ) =
+                                            emitSafepoint ctx2
+
                                         ( ctx3, callOp ) =
-                                            Ops.ecoCallNamed ctx2 resVar kernelName argVarPairs resultMlirType
+                                            Ops.ecoCallNamed ctxSp resVar kernelName argVarPairs resultMlirType
                                     in
-                                    { ops = argOps ++ boxOps ++ [ callOp ]
+                                    { ops = argOps ++ boxOps ++ [ spOp, callOp ]
                                     , resultVar = resVar
                                     , resultType = resultMlirType
                                     , ctx = ctx3
@@ -2930,10 +3009,13 @@ generateSaturatedCall ctx func args resultType callInfo =
                                         resultMlirType =
                                             Types.monoTypeToAbi elmSig.returnType
 
+                                        ( ctxSp, spOp ) =
+                                            emitSafepoint ctx2
+
                                         ( ctx3, callOp ) =
-                                            Ops.ecoCallNamed ctx2 resVar kernelName argVarPairs resultMlirType
+                                            Ops.ecoCallNamed ctxSp resVar kernelName argVarPairs resultMlirType
                                     in
-                                    { ops = argOps ++ boxOps ++ [ callOp ]
+                                    { ops = argOps ++ boxOps ++ [ spOp, callOp ]
                                     , resultVar = resVar
                                     , resultType = resultMlirType
                                     , ctx = ctx3

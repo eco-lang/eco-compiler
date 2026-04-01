@@ -333,6 +333,9 @@ target_compile_options(ecoc PRIVATE -Wno-ambiguous-reversed-operator)
 # The runtime code uses exceptions, so we need to enable them
 # (LLVM/MLIR disables exceptions by default)
 target_compile_options(ecoc PRIVATE -fexceptions)
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    target_compile_definitions(ecoc PRIVATE ECO_DEBUG_STACKMAP=1)
+endif()
 
 # Need pthreads for the runtime
 find_package(Threads REQUIRED)
@@ -410,6 +413,9 @@ target_include_directories(obj.EcoRunner PRIVATE
 
 target_compile_features(obj.EcoRunner PRIVATE cxx_std_20)
 target_compile_options(obj.EcoRunner PRIVATE -Wno-ambiguous-reversed-operator -fexceptions)
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    target_compile_definitions(obj.EcoRunner PRIVATE ECO_DEBUG_STACKMAP=1)
+endif()
 target_link_libraries(obj.EcoRunner PRIVATE Threads::Threads)
 
 #------------------------------------------------------------------------------
@@ -440,6 +446,11 @@ target_include_directories(EcoRuntimeStatic PRIVATE
 
 target_compile_features(EcoRuntimeStatic PRIVATE cxx_std_20)
 target_compile_options(EcoRuntimeStatic PRIVATE -fexceptions -UNDEBUG)
+
+# Enable stackmap debug warnings in debug builds
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    target_compile_definitions(EcoRuntimeStatic PRIVATE ECO_DEBUG_STACKMAP=1)
+endif()
 
 #------------------------------------------------------------------------------
 # Build the EcoEntryStatic library (main() wrapper for AOT-compiled binaries)

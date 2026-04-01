@@ -41,22 +41,29 @@ generateMainEntry ctx mainInfo =
     case mainInfo of
         Mono.StaticMain mainSpecId ->
             let
+                -- main has no block args, so reset scope completely
+                ctxMain =
+                    { ctx | nextVar = 0, varMappings = Dict.empty, definedSsaVars = Set.empty }
+
                 ( callVar, ctx1 ) =
-                    Ctx.freshVar ctx
+                    Ctx.freshVar ctxMain
 
                 mainFuncName : String
                 mainFuncName =
                     specIdToFuncName ctx.registry mainSpecId
 
+                ( ctxSp, spOp ) =
+                    Expr.emitSafepoint ctx1
+
                 ( ctx2, callOp ) =
-                    Ops.ecoCallNamed ctx1 callVar mainFuncName [] Types.ecoValue
+                    Ops.ecoCallNamed ctxSp callVar mainFuncName [] Types.ecoValue
 
                 ( ctx3, returnOp ) =
                     Ops.ecoReturn ctx2 callVar Types.ecoValue
 
                 region : MlirRegion
                 region =
-                    Ops.mkRegion [] [ callOp ] returnOp
+                    Ops.mkRegion [] [ spOp, callOp ] returnOp
 
                 ( _, mainOp ) =
                     Ops.funcFunc ctx3 "main" [] Types.ecoValue region
@@ -452,11 +459,32 @@ generateGenericCloneFunc ctx genericCloneName fastCloneName captureSpecs paramPa
         genericCloneArgs =
             ( "%closure", Types.ecoValue ) :: paramPairs
 
-        -- Reset nextVar for the generic clone's own SSA scope.
-        -- Entry block args are %0 (%closure), %1..%N (params), so
+        -- Reset scope for the generic clone's own SSA context.
+        -- Entry block args are %closure, %param1..%paramN, so
         -- body SSA values start after those.
+        genericCloneArgSsaVars =
+            List.map Tuple.first genericCloneArgs
+
+        genericCloneVarMappings =
+            List.foldl
+                (\( ssaVar, mlirType ) acc ->
+                    let
+                        -- Strip the leading % from SSA var name for the mapping key
+                        name =
+                            String.dropLeft 1 ssaVar
+                    in
+                    Dict.insert name
+                        { ssaVar = ssaVar
+                        , mlirType = mlirType
+                        }
+                        acc
+                )
+                Dict.empty
+                genericCloneArgs
+
         ctxFreshScope =
-            { ctx | nextVar = List.length genericCloneArgs }
+            { ctx | nextVar = List.length genericCloneArgs, varMappings = genericCloneVarMappings }
+                |> Ctx.resetDefinedSsaVars genericCloneArgSsaVars
 
         ( genericCloneOps, genericCloneResult, ctx1 ) =
             generateGenericCloneBodyFromSpecs ctxFreshScope captureSpecs fastCloneName paramPairs returnType
@@ -516,10 +544,13 @@ generateGenericCloneBodyFromSpecs ctx captureSpecs fastCloneName paramPairs retu
         ( resultVar, ctxAfterFresh ) =
             Ctx.freshVar ctxAfterProject
 
+        ( ctxSpClone, spOpClone ) =
+            Expr.emitSafepoint ctxAfterFresh
+
         ( ctxFinal, callOp ) =
-            Ops.ecoCallNamed ctxAfterFresh resultVar fastCloneName callArgs returnType
+            Ops.ecoCallNamed ctxSpClone resultVar fastCloneName callArgs returnType
     in
-    ( List.reverse projectOps ++ [ callOp ], resultVar, ctxFinal )
+    ( List.reverse projectOps ++ [ spOpClone, callOp ], resultVar, ctxFinal )
 
 
 
@@ -840,24 +871,44 @@ generateManagerLeaf ctx funcName homeModuleName monoType =
         argPairs =
             List.indexedMap (\i ty -> ( "%arg" ++ String.fromInt i, ty )) argMlirTypes
 
-        -- Start fresh var counter after block args
+        -- Reset scope for this function's block args
+        argSsaVars =
+            List.map Tuple.first argPairs
+
+        argVarMappings =
+            List.foldl
+                (\( ssaVar, mlirType ) acc ->
+                    Dict.insert (String.dropLeft 1 ssaVar)
+                        { ssaVar = ssaVar, mlirType = mlirType }
+                        acc
+                )
+                Dict.empty
+                argPairs
+
         ctxWithArgs : Ctx.Context
         ctxWithArgs =
-            { ctx | nextVar = List.length argPairs }
+            { ctx | nextVar = List.length argPairs, varMappings = argVarMappings }
+                |> Ctx.resetDefinedSsaVars argSsaVars
 
-        -- Create string constant for home module name
+        -- Create string constant for home module name (allocates, so safepoint first)
         ( homeVar, ctx1 ) =
             Ctx.freshVar ctxWithArgs
 
-        ( ctx2, homeOp ) =
-            Ops.ecoStringLiteral ctx1 homeVar homeModuleName
+        ( ctxSp, spOp ) =
+            Expr.emitSafepoint ctx1
 
-        -- Call Elm_Kernel_Platform_leaf(home, arg0)
+        ( ctx2, homeOp ) =
+            Ops.ecoStringLiteral ctxSp homeVar homeModuleName
+
+        -- Call Elm_Kernel_Platform_leaf(home, arg0) - safepoint before call too
         ( resultVar, ctx3 ) =
             Ctx.freshVar ctx2
 
+        ( ctxSp2, spOp2 ) =
+            Expr.emitSafepoint ctx3
+
         ( ctx4, callOp ) =
-            Ops.ecoCallNamed ctx3
+            Ops.ecoCallNamed ctxSp2
                 resultVar
                 "Elm_Kernel_Platform_leaf"
                 [ ( homeVar, Types.ecoValue ), ( "%arg0", Types.ecoValue ) ]
@@ -868,7 +919,7 @@ generateManagerLeaf ctx funcName homeModuleName monoType =
 
         region : MlirRegion
         region =
-            Ops.mkRegion argPairs [ homeOp, callOp ] returnOp
+            Ops.mkRegion argPairs [ spOp, homeOp, spOp2, callOp ] returnOp
 
         attrs =
             Dict.fromList

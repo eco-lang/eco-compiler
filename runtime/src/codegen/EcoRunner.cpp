@@ -7,6 +7,8 @@
 
 #include "EcoRunner.hpp"
 
+#include <cassert>
+
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlow.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -183,6 +185,8 @@ private:
             : makeOptimizingTransformer(0, 0, nullptr);
         jitOptions.transformer = [baseTransformer](llvm::Module *m) -> llvm::Error {
             eco::convertSafepointMarkers(*m);
+            assert(!m->getFunction("__eco_safepoint_marker") &&
+                   "All safepoint markers must be converted to statepoints");
             return baseTransformer(m);
         };
 

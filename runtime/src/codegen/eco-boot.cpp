@@ -12,6 +12,8 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include <cassert>
+
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlow.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -579,8 +581,10 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    // Convert safepoint markers to gc.statepoint intrinsics.
+    // Convert safepoint markers to gc.statepoint intrinsics with gc.relocate.
     eco::convertSafepointMarkers(*llvmModule);
+    assert(!llvmModule->getFunction("__eco_safepoint_marker") &&
+           "All safepoint markers must be converted to statepoints");
 
     // Clean up temp MLIR file now that we're done with it
     if (!tempMlirFile.empty())

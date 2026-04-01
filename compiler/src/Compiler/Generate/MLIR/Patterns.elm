@@ -212,23 +212,37 @@ generateMonoTest ctx ( dtPath, test ) =
                 ( strVar, ctx2 ) =
                     Ctx.freshVar ctx1
 
-                ( ctx3, strOp ) =
+                ( safepointOps, ctx3, strOp ) =
                     if s == "" then
-                        Ops.ecoConstantEmptyString ctx2 strVar
+                        let
+                            ( ctxE, emptyOp ) =
+                                Ops.ecoConstantEmptyString ctx2 strVar
+                        in
+                        ( [], ctxE, emptyOp )
 
                     else
-                        Ops.ecoStringLiteral ctx2 strVar s
+                        let
+                            ( ctxSp, spOp ) =
+                                Ops.ecoSafepoint ctx2 (Ctx.liveEcoValueVars ctx2)
+
+                            ( ctxStr, sOp ) =
+                                Ops.ecoStringLiteral ctxSp strVar s
+                        in
+                        ( [ spOp ], ctxStr, sOp )
 
                 ( eqVar, ctx4 ) =
                     Ctx.freshVar ctx3
 
+                ( ctxSpCmp, spOpCmp ) =
+                    Ops.ecoSafepoint ctx4 (Ctx.liveEcoValueVars ctx4)
+
                 ( ctx5, cmpOp ) =
-                    Ops.ecoCallNamed ctx4 eqVar "Elm_Kernel_Utils_equal" [ ( valVar, Types.ecoValue ), ( strVar, Types.ecoValue ) ] Types.ecoValue
+                    Ops.ecoCallNamed ctxSpCmp eqVar "Elm_Kernel_Utils_equal" [ ( valVar, Types.ecoValue ), ( strVar, Types.ecoValue ) ] Types.ecoValue
 
                 ( unboxOps, resVar, ctx6 ) =
                     Intrinsics.unboxToType ctx5 eqVar I1
             in
-            ( pathOps ++ [ strOp, cmpOp ] ++ unboxOps, resVar, ctx6 )
+            ( pathOps ++ safepointOps ++ [ strOp, spOpCmp, cmpOp ] ++ unboxOps, resVar, ctx6 )
 
         Test.IsCons ->
             let

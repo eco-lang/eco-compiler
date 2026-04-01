@@ -216,9 +216,16 @@ void ThreadLocalHeap::collectStackRootsFromStackMap() {
                     // DWARF reg 7 = RSP — less common but possible
                     // For now we only handle RBP-relative locations
                 }
-                // Direct and Register locations are less common for
-                // stack-spilled GC roots; we handle Indirect which is
-                // the typical case for stack slots.
+                // Other location kinds (Register, Direct, Constant, ConstantIndex)
+                // are not expected for stack-spilled GC roots with gc.relocate.
+#if ECO_DEBUG_STACKMAP
+                if (loc.kind != StackMapLocation::Indirect) {
+                    fprintf(stderr, "[eco-gc] WARNING: unsupported stackmap location kind=%u "
+                        "reg=%u offset=%d at returnAddress=%p\n",
+                        (unsigned)loc.kind, loc.dwarfRegNum, loc.offset,
+                        (void*)returnAddress);
+                }
+#endif
             }
         }
 

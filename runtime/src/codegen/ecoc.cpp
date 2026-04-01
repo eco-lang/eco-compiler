@@ -16,6 +16,8 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include <cassert>
+
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlow.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -181,8 +183,10 @@ static int dumpLLVMIR(ModuleOp module) {
         return 1;
     }
 
-    // Convert safepoint markers to gc.statepoint intrinsics.
+    // Convert safepoint markers to gc.statepoint intrinsics with gc.relocate.
     eco::convertSafepointMarkers(*llvmModule);
+    assert(!llvmModule->getFunction("__eco_safepoint_marker") &&
+           "All safepoint markers must be converted to statepoints");
 
     // Initialize LLVM targets for the host platform.
     llvm::InitializeNativeTarget();
@@ -237,6 +241,8 @@ static int runJIT(ModuleOp module) {
         : makeOptimizingTransformer(0, 0, nullptr);
     options.transformer = [baseTransformer](llvm::Module *m) -> llvm::Error {
         eco::convertSafepointMarkers(*m);
+        assert(!m->getFunction("__eco_safepoint_marker") &&
+               "All safepoint markers must be converted to statepoints");
         return baseTransformer(m);
     };
 
