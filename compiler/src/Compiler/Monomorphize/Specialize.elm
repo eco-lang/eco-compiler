@@ -66,7 +66,9 @@ type ProcessedArg
 
 
 {-| Get or build SchemeInfo for a callee, using the cache in MonoState.
-With global MVarIds, no renaming is needed — just cache and return.
+
+buildSchemeInfo freshens the callee's MVarIds using the global MVarEnv,
+so cached schemes never share MVarIds with callers and can be reused safely.
 -}
 getOrBuildSchemeInfo : Can.Type MVarId -> Maybe TOpt.Global -> MonoState -> ( SchemeInfo, MonoState )
 getOrBuildSchemeInfo funcCanType maybeGlobal state =
@@ -82,17 +84,35 @@ getOrBuildSchemeInfo funcCanType maybeGlobal state =
 
                 Nothing ->
                     let
-                        info =
+                        ( info, mvarEnv1 ) =
                             TypeSubst.buildSchemeInfo state.ctx.mvarEnv funcCanType
 
                         newCache =
                             Data.Map.insert TOpt.toComparableGlobal global info accum.schemeCache
+
+                        ctx1 =
+                            let
+                                ctx =
+                                    state.ctx
+                            in
+                            { ctx | mvarEnv = mvarEnv1 }
                     in
-                    ( info, { state | accum = { accum | schemeCache = newCache } } )
+                    ( info, { state | accum = { accum | schemeCache = newCache }, ctx = ctx1 } )
 
         Nothing ->
             -- Local/anonymous callee: build on demand, don't cache
-            ( TypeSubst.buildSchemeInfo state.ctx.mvarEnv funcCanType, state )
+            let
+                ( info, mvarEnv1 ) =
+                    TypeSubst.buildSchemeInfo state.ctx.mvarEnv funcCanType
+
+                ctx1 =
+                    let
+                        ctx =
+                            state.ctx
+                    in
+                    { ctx | mvarEnv = mvarEnv1 }
+            in
+            ( info, { state | ctx = ctx1 } )
 
 
 {-| Enqueue a specialization onto the worklist, deduplicating via the scheduled BitSet.
@@ -1219,7 +1239,8 @@ specializeExpr expr subst state =
                         ( schemeInfo, state1a ) =
                             getOrBuildSchemeInfo funcCanType (Just global) state1
 
-                        -- Direct unification: no renaming needed with global MVarIds
+                        -- Direct unification: scheme MVarIds are freshened, so they never
+                        -- collide with caller substitutions.
                         ( callSubst, funcMonoTypeRaw, _ ) =
                             TypeSubst.unifyCallSiteDirect state1a.ctx.mvarEnv schemeInfo.argTypes schemeInfo.resultType argTypes subst
 
@@ -1254,7 +1275,7 @@ specializeExpr expr subst state =
                         ( schemeInfo, state1a ) =
                             getOrBuildSchemeInfo funcCanType Nothing state1
 
-                        -- Direct unification: no renaming needed
+                        -- Direct unification: scheme MVarIds are freshened by buildSchemeInfo
                         ( callSubst, _, _ ) =
                             TypeSubst.unifyCallSiteDirect state1a.ctx.mvarEnv schemeInfo.argTypes schemeInfo.resultType argTypes subst
 
@@ -1284,7 +1305,7 @@ specializeExpr expr subst state =
                         ( schemeInfo, state1a ) =
                             getOrBuildSchemeInfo funcCanType Nothing state1
 
-                        -- Direct unification: no renaming needed
+                        -- Direct unification: scheme MVarIds are freshened by buildSchemeInfo
                         ( callSubst, _, _ ) =
                             TypeSubst.unifyCallSiteDirect state1a.ctx.mvarEnv schemeInfo.argTypes schemeInfo.resultType argTypes subst
 

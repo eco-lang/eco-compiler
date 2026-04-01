@@ -778,43 +778,177 @@ canTypeToMonoType =
 
 
 {-| Build SchemeInfo from a canonical function type.
-Walks the TLambda chain once and collects type variable MVarIds.
+Freshens all MVarIds using the global MVarEnv id supply so that scheme
+ids never collide with caller substitutions.
 -}
-buildSchemeInfo : MVarEnv -> Can.Type MVarId -> SchemeInfo
+buildSchemeInfo : MVarEnv -> Can.Type MVarId -> ( SchemeInfo, MVarEnv )
 buildSchemeInfo env canType =
     let
+        origVarIds =
+            collectMVarIds canType []
+
+        renaming =
+            buildSchemeRenaming env origVarIds
+
+        freshVarIds =
+            List.reverse renaming.freshIds
+
+        renamedSchemeType =
+            renameMVarIdsInCanType renaming.renameMap canType
+
         ( argTypes, resultType ) =
-            flattenTLambda canType []
+            flattenTLambda renamedSchemeType []
 
         argCount =
             List.length argTypes
-
-        varIds =
-            collectMVarIds canType []
-
-        constraints =
-            List.foldl
-                (\mvarId acc ->
-                    let
-                        key =
-                            Id.toComparable mvarId
-
-                        constraint =
-                            State.lookupConstraint mvarId env
-                                |> Maybe.withDefault Mono.CEcoValue
-                    in
-                    Dict.insert key constraint acc
-                )
-                Dict.empty
-                varIds
     in
-    { varIds = varIds
-    , constraints = constraints
-    , argTypes = argTypes
-    , resultType = resultType
-    , argCount = argCount
-    , schemeType = canType
+    ( { varIds = freshVarIds
+      , constraints = renaming.constraints
+      , argTypes = argTypes
+      , resultType = resultType
+      , argCount = argCount
+      , schemeType = renamedSchemeType
+      }
+    , renaming.env
+    )
+
+
+{-| Accumulator for buildSchemeRenaming.
+-}
+type alias SchemeRenamingAcc =
+    { renameMap : Dict.Dict Int MVarId
+    , freshIds : List MVarId
+    , constraints : Dict.Dict Int Mono.Constraint
+    , env : MVarEnv
     }
+
+
+{-| Build a renaming for all MVarIds in a scheme:
+allocates fresh ids from the global MVarEnv, preserves constraints.
+-}
+buildSchemeRenaming :
+    MVarEnv
+    -> List MVarId
+    -> SchemeRenamingAcc
+buildSchemeRenaming env varIds =
+    List.foldl
+        (\oldId acc ->
+            let
+                origConstraint =
+                    State.lookupConstraint oldId acc.env
+                        |> Maybe.withDefault Mono.CEcoValue
+
+                ( freshId, e1 ) =
+                    State.freshMVar origConstraint acc.env
+
+                oldKey =
+                    Id.toComparable oldId
+
+                freshKey =
+                    Id.toComparable freshId
+            in
+            { renameMap = Dict.insert oldKey freshId acc.renameMap
+            , freshIds = freshId :: acc.freshIds
+            , constraints = Dict.insert freshKey origConstraint acc.constraints
+            , env = e1
+            }
+        )
+        { renameMap = Dict.empty
+        , freshIds = []
+        , constraints = Dict.empty
+        , env = env
+        }
+        varIds
+
+
+{-| Rename all MVarIds in a canonical type using an Int-keyed map
+from original Id.toComparable to fresh MVarId.
+-}
+renameMVarIdsInCanType :
+    Dict.Dict Int MVarId
+    -> Can.Type MVarId
+    -> Can.Type MVarId
+renameMVarIdsInCanType renameMap canType =
+    case canType of
+        Can.TVar mvarId ->
+            let
+                key =
+                    Id.toComparable mvarId
+            in
+            case Dict.get key renameMap of
+                Just freshId ->
+                    Can.TVar freshId
+
+                Nothing ->
+                    canType
+
+        Can.TLambda from to ->
+            Can.TLambda
+                (renameMVarIdsInCanType renameMap from)
+                (renameMVarIdsInCanType renameMap to)
+
+        Can.TType canonical name args ->
+            Can.TType
+                canonical
+                name
+                (List.map (renameMVarIdsInCanType renameMap) args)
+
+        Can.TRecord fields maybeExt ->
+            let
+                newFields =
+                    Dict.map
+                        (\_ (Can.FieldType idx t) ->
+                            Can.FieldType idx (renameMVarIdsInCanType renameMap t)
+                        )
+                        fields
+
+                newExt =
+                    maybeExt
+                        |> Maybe.map
+                            (\extId ->
+                                let
+                                    key =
+                                        Id.toComparable extId
+                                in
+                                Maybe.withDefault extId (Dict.get key renameMap)
+                            )
+            in
+            Can.TRecord newFields newExt
+
+        Can.TTuple a b rest ->
+            Can.TTuple
+                (renameMVarIdsInCanType renameMap a)
+                (renameMVarIdsInCanType renameMap b)
+                (List.map (renameMVarIdsInCanType renameMap) rest)
+
+        Can.TAlias canonical name args aliasType ->
+            let
+                newArgs =
+                    List.map
+                        (\( paramId, t ) ->
+                            let
+                                key =
+                                    Id.toComparable paramId
+
+                                newParamId =
+                                    Maybe.withDefault paramId (Dict.get key renameMap)
+                            in
+                            ( newParamId, renameMVarIdsInCanType renameMap t )
+                        )
+                        args
+
+                newAliasType =
+                    case aliasType of
+                        Can.Filled inner ->
+                            Can.Filled (renameMVarIdsInCanType renameMap inner)
+
+                        Can.Holey inner ->
+                            Can.Holey (renameMVarIdsInCanType renameMap inner)
+            in
+            Can.TAlias canonical name newArgs newAliasType
+
+        Can.TUnit ->
+            canType
 
 
 {-| Collect all TVar MVarIds from a canonical type.
