@@ -119,26 +119,16 @@ HPointer Scheduler::callClosure4(HPointer closurePtr, HPointer arg1, HPointer ar
 
 // Push message to back of mailbox (append to end of list)
 // Mailbox is stored as a reversed list for O(1) push
-void Scheduler::mailboxPushBack(Process* proc, HPointer msg) {
-    // Simple: prepend to the mailbox list (acts as a stack)
-    // We reverse on pop to get FIFO order
-    // Actually, for simplicity use cons to prepend (LIFO).
-    // The JS scheduler uses Array.push + Array.shift which is FIFO.
-    // We'll use the simpler approach: mailbox is a list, push prepends,
-    // but we need FIFO. So we'll just cons and reverse when needed.
-    // Actually, let's just use cons for append (messages arrive in order of cons).
-    // Pop from front = pop newest. That's wrong for FIFO.
-    //
-    // Correct approach: mailbox is an Elm list. Push appends to the END.
-    // For an Elm list this is O(n). But in practice mailboxes are small.
-    // Alternative: store mailbox reversed and reverse on read.
-    //
-    // Simplest correct approach: cons to front for push, but track that
-    // mailbox is in reverse order. When we pop, we reverse first.
-    // This gives amortized O(1) for both push and pop.
-    //
-    // For now, just cons to front. popFront will need to reverse.
-    HPointer newCell = cons(boxed(msg), proc->mailbox, true);
+void Scheduler::mailboxPushBack(HPointer procHP, HPointer msg) {
+    // Cons to front of mailbox. popFront reverses to get FIFO order.
+    // Re-resolve procHP after cons() allocation which may trigger GC.
+    Process* proc = static_cast<Process*>(resolveHP(procHP));
+    if (!proc) return;
+    HPointer oldMailbox = proc->mailbox;
+    HPointer newCell = cons(boxed(msg), oldMailbox, true);
+    // Re-resolve: cons() may have triggered GC, moving the Process.
+    proc = static_cast<Process*>(resolveHP(procHP));
+    if (!proc) return;
     proc->mailbox = newCell;
 }
 
@@ -183,8 +173,16 @@ bool Scheduler::mailboxPopFront(Process* proc, HPointer& outMsg) {
 // Stack Helpers (Elm List of StackFrame Custom objects)
 // ============================================================================
 
-void Scheduler::pushStack(Process* proc, u64 expectedTag, HPointer callback) {
-    HPointer frame = stackFrame(expectedTag, callback, proc->stack);
+void Scheduler::pushStack(HPointer procHP, u64 expectedTag, HPointer callback) {
+    // stackFrame() allocates and may trigger GC, which can move the Process.
+    // Re-resolve procHP after allocation to write to the correct location.
+    Process* proc = static_cast<Process*>(resolveHP(procHP));
+    if (!proc) return;
+    HPointer oldStack = proc->stack;
+    HPointer frame = stackFrame(expectedTag, callback, oldStack);
+    // Re-resolve: stackFrame() may have triggered GC.
+    proc = static_cast<Process*>(resolveHP(procHP));
+    if (!proc) return;
     proc->stack = frame;
 }
 
@@ -264,8 +262,7 @@ HPointer Scheduler::spawnTask(HPointer rootTask) {
 void Scheduler::rawSend(HPointer procHP, HPointer msg) {
     void* ptr = resolveHP(procHP);
     if (!ptr) return;
-    Process* proc = static_cast<Process*>(ptr);
-    mailboxPushBack(proc, msg);
+    mailboxPushBack(procHP, msg);
     enqueue(procHP);
 }
 
@@ -401,8 +398,6 @@ void Scheduler::stepProcess(uint64_t procEncoded) {
                 continue;
             } else {
                 // Process finished - no matching handler
-                // Leave proc->root as the final Task_Succeed/Task_Fail
-                // so callers can inspect the result value
                 return;
             }
         }
@@ -410,8 +405,9 @@ void Scheduler::stepProcess(uint64_t procEncoded) {
             HPointer callback = task->callback;
             HPointer innerTask = task->task;
 
-            // Push stack frame: looking for Succeed
-            pushStack(proc, Task_Succeed, callback);
+            // Push stack frame: looking for Succeed.
+            // pushStack allocates and re-resolves procHP internally.
+            pushStack(procHP, Task_Succeed, callback);
 
             // Re-resolve proc after pushStack allocation
             procPtr = resolveHP(procHP);
@@ -424,8 +420,9 @@ void Scheduler::stepProcess(uint64_t procEncoded) {
             HPointer callback = task->callback;
             HPointer innerTask = task->task;
 
-            // Push stack frame: looking for Fail
-            pushStack(proc, Task_Fail, callback);
+            // Push stack frame: looking for Fail.
+            // pushStack allocates and re-resolves procHP internally.
+            pushStack(procHP, Task_Fail, callback);
 
             // Re-resolve proc
             procPtr = resolveHP(procHP);

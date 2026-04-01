@@ -55,11 +55,11 @@ private:
     void stepProcess(uint64_t procEncoded);
 
     // Mailbox helpers (Elm List as queue)
-    static void mailboxPushBack(Process* proc, HPointer msg);
+    static void mailboxPushBack(HPointer procHP, HPointer msg);
     static bool mailboxPopFront(Process* proc, HPointer& outMsg);
 
     // Stack helpers (Elm List of StackFrame Custom objects)
-    static void pushStack(Process* proc, u64 expectedTag, HPointer callback);
+    static void pushStack(HPointer procHP, u64 expectedTag, HPointer callback);
     static bool popStackMatching(Process* proc, u64 tag, HPointer& outCallback);
 
     struct RootedProc {
