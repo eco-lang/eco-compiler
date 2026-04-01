@@ -363,102 +363,130 @@ void Scheduler::decrementPendingAsync() {
 // ============================================================================
 
 void Scheduler::stepProcess(uint64_t procEncoded) {
-    HPointer procHP = decodeHP(procEncoded);
-    void* procPtr = resolveHP(procHP);
-    if (!procPtr) return;
+    // Register procEncoded as a GC stack root so the GC updates it in-place
+    // when the Process is evacuated. This is critical because the process was
+    // popped from the runQueue_ and is no longer covered by the external root
+    // scanner. Without this, procEncoded becomes dangling after two+ GC cycles.
+    auto& rootSet = Allocator::instance().getRootSet();
+    rootSet.addJitRoot(&procEncoded);
 
-    Process* proc = static_cast<Process*>(procPtr);
+    // Helper lambdas to re-resolve proc from the GC-rooted procEncoded.
+    // After any GC point (allocation, closure call), all raw pointers and
+    // HPointers read from heap objects are potentially stale. Re-read
+    // everything from the rooted procEncoded.
+    auto resolveProc = [&]() -> Process* {
+        HPointer hp = decodeHP(procEncoded);
+        void* ptr = resolveHP(hp);
+        return ptr ? static_cast<Process*>(ptr) : nullptr;
+    };
+    auto resolveRoot = [&](Process* proc) -> Task* {
+        if (!proc) return nullptr;
+        HPointer rootHP = proc->root;
+        if (alloc::isNil(rootHP) || isConstant(rootHP)) return nullptr;
+        void* ptr = resolveHP(rootHP);
+        return ptr ? static_cast<Task*>(ptr) : nullptr;
+    };
+
+    Process* proc = resolveProc();
+    if (!proc) { rootSet.removeJitRoot(&procEncoded); return; }
 
     while (true) {
-        // Re-resolve proc after any closure call (GC may have moved it)
-        procPtr = resolveHP(procHP);
-        if (!procPtr) return;
-        proc = static_cast<Process*>(procPtr);
+        proc = resolveProc();
+        if (!proc) break;
 
-        HPointer rootHP = proc->root;
-        if (alloc::isNil(rootHP) || isConstant(rootHP)) return;
-
-        void* rootPtr = resolveHP(rootHP);
-        if (!rootPtr) return;
-
-        Task* task = static_cast<Task*>(rootPtr);
+        Task* task = resolveRoot(proc);
+        if (!task) break;
         u16 ctor = task->ctor;
 
+
         if (ctor == Task_Succeed || ctor == Task_Fail) {
-            HPointer taskValue = task->value;
             u64 searchTag = (ctor == Task_Succeed) ? Task_Succeed : Task_Fail;
 
-            HPointer callback;
-            // Re-resolve proc
-            procPtr = resolveHP(procHP);
-            if (!procPtr) return;
-            proc = static_cast<Process*>(procPtr);
+            // Re-resolve proc for popStackMatching (no GC, safe to use proc)
+            proc = resolveProc();
+            if (!proc) break;
 
+            HPointer callback;
             if (popStackMatching(proc, searchTag, callback)) {
-                // Call the callback with the task value
+                // Re-read taskValue from proc->root right before the call.
+                // callback was just extracted from the stack (no GC between
+                // popStackMatching and here). Both are passed directly to
+                // callClosure1 which encodes them before any allocation.
+                proc = resolveProc();
+                if (!proc) break;
+                task = resolveRoot(proc);
+                if (!task) break;
+                HPointer taskValue = task->value;
+
                 HPointer newTask = callClosure1(callback, taskValue);
 
-                // Re-resolve proc after closure call (GC!)
-                procPtr = resolveHP(procHP);
-                if (!procPtr) return;
-                proc = static_cast<Process*>(procPtr);
+                // After callClosure1: re-resolve from rooted procEncoded
+                proc = resolveProc();
+                if (!proc) break;
                 proc->root = newTask;
                 continue;
             } else {
                 // Process finished - no matching handler
-                return;
+                break;
             }
         }
         else if (ctor == Task_AndThen) {
+            // Read callback from the task.
+            // pushStack is the only GC point; it re-resolves procHP internally.
             HPointer callback = task->callback;
-            HPointer innerTask = task->task;
 
-            // Push stack frame: looking for Succeed.
-            // pushStack allocates and re-resolves procHP internally.
+            HPointer procHP = decodeHP(procEncoded);
             pushStack(procHP, Task_Succeed, callback);
 
-            // Re-resolve proc after pushStack allocation
-            procPtr = resolveHP(procHP);
-            if (!procPtr) return;
-            proc = static_cast<Process*>(procPtr);
-            proc->root = innerTask;
+            // Re-resolve after pushStack (allocation may have triggered GC)
+            proc = resolveProc();
+            if (!proc) break;
+            // Re-read innerTask from the (now potentially moved) task,
+            // since the stack-local copy may be stale after GC.
+            task = resolveRoot(proc);
+            if (task) {
+                proc->root = task->task;
+            }
             continue;
         }
         else if (ctor == Task_OnError) {
             HPointer callback = task->callback;
-            HPointer innerTask = task->task;
 
-            // Push stack frame: looking for Fail.
-            // pushStack allocates and re-resolves procHP internally.
+            HPointer procHP = decodeHP(procEncoded);
             pushStack(procHP, Task_Fail, callback);
 
-            // Re-resolve proc
-            procPtr = resolveHP(procHP);
-            if (!procPtr) return;
-            proc = static_cast<Process*>(procPtr);
-            proc->root = innerTask;
+            proc = resolveProc();
+            if (!proc) break;
+            task = resolveRoot(proc);
+            if (task) {
+                proc->root = task->task;
+            }
             continue;
         }
         else if (ctor == Task_Binding) {
-            HPointer bindCallback = task->callback;
+            HPointer procHP = decodeHP(procEncoded);
 
-            // Create a "resume" closure that captures this process
+            // allocClosure can trigger GC — re-read bindCallback after.
             HPointer resumeClosure = allocClosure(
                 reinterpret_cast<EvalFunction>(resumeEvaluator), 2);
             void* clPtr = resolveHP(resumeClosure);
             if (clPtr) {
+                procHP = decodeHP(procEncoded);  // re-read after allocClosure
                 closureCapture(clPtr, boxed(procHP), true);
             }
 
-            // Call the binding callback with the resume closure
-            // The binding callback returns a kill handle (or Unit)
+            // Re-read bindCallback from proc->root right before the call.
+            proc = resolveProc();
+            if (!proc) break;
+            task = resolveRoot(proc);
+            if (!task) break;
+            HPointer bindCallback = task->callback;
+
             HPointer killHandle = callClosure1(bindCallback, resumeClosure);
 
-            // Store the kill handle on the task
-            // Re-resolve everything after closure call
-            procPtr = resolveHP(procHP);
-            if (!procPtr) return;
-            proc = static_cast<Process*>(procPtr);
+            // Re-resolve after closure call
+            proc = resolveProc();
+            if (!proc) break;
 
             void* newRootPtr = resolveHP(proc->root);
             if (newRootPtr) {
@@ -468,36 +496,40 @@ void Scheduler::stepProcess(uint64_t procEncoded) {
                 }
             }
 
-            // Process suspends - binding callback will resume it via the resume closure
-            return;
+            // Process suspends
+            break;
         }
         else if (ctor == Task_Receive) {
-            HPointer recvCallback = task->callback;
+            proc = resolveProc();
+            if (!proc) break;
 
             HPointer msg;
-            // Re-resolve
-            procPtr = resolveHP(procHP);
-            if (!procPtr) return;
-            proc = static_cast<Process*>(procPtr);
-
             if (mailboxPopFront(proc, msg)) {
+                // Re-read recvCallback from proc->root right before the call.
+                proc = resolveProc();
+                if (!proc) break;
+                task = resolveRoot(proc);
+                if (!task) break;
+                HPointer recvCallback = task->callback;
+
                 HPointer newTask = callClosure1(recvCallback, msg);
 
-                procPtr = resolveHP(procHP);
-                if (!procPtr) return;
-                proc = static_cast<Process*>(procPtr);
+                proc = resolveProc();
+                if (!proc) break;
                 proc->root = newTask;
                 continue;
             } else {
                 // No messages - block
-                return;
+                break;
             }
         }
         else {
             // Unknown task ctor
-            return;
+            break;
         }
     }
+
+    rootSet.removeJitRoot(&procEncoded);
 }
 
 } // namespace Elm::Platform
