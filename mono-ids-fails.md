@@ -19,7 +19,129 @@ testValue =
     composed 9
 ```
 
-**Why it fails**: The `>>` operator (`Basics_composeR`) has return type `i64` in MLIR, but when the two PAP args are supplied via a saturated `eco.papExtend`, the result type is `!eco.value`. The invariant requires the saturated papExtend result type to match the target function's return type. Here, `Basics_composeR_$_3` returns `i64` but the papExtend produces `!eco.value`. The composeR function returns a *function* (the composed pipeline), which at the ABI level is `!eco.value`, but the stub's `function_type` says `i64` — a mismatch between the staged return type and the ABI representation.
+### MLIR Evidence
+
+The test failure message:
+```
+ComposeR (>>) two functions: Saturated eco.papExtend result type !eco.value
+does not match func.func @Basics_composeR_$_3 return type i64
+```
+
+Generated MLIR for `testValue`:
+```mlir
+-- composeR stub: only 2 params, returns i64
+"func.func"() ({
+    ^bb0(%arg0: !eco.value, %arg1: !eco.value):
+      %2 = "arith.constant"() {value = 0 : i64} : () -> i64
+      "eco.return"(%2) : (i64) -> ()
+}) {function_type = (!eco.value, !eco.value) -> (i64), sym_name = "Basics_composeR_$_3"}
+
+-- testValue body:
+%0 = "eco.papCreate"() {arity = 1, function = @Test_lambda_1, ...}           -- \x -> x*2
+%1 = "eco.papCreate"() {arity = 1, function = @Test_lambda_0, ...}           -- \x -> x+1
+%5 = "eco.papCreate"() {arity = 2, function = @Basics_composeR_$_3, ...}     -- composeR, arity=2
+%2 = "eco.papExtend"(%5, %1, %0) {remaining_arity = 2} : (...) -> !eco.value -- SATURATED: 2 args, arity 2
+%7 = "arith.constant"() {value = 9 : i64} : () -> i64
+%8 = "eco.papExtend"(%2, %7) {_call_kind = "segmentation_unknown"} : (...) -> !eco.value
+%9 = "eco.unbox"(%8) : (!eco.value) -> i64
+```
+
+**Key observations:**
+1. `@Basics_composeR_$_3` has signature `(!eco.value, !eco.value) -> i64` — **only 2 params**, returns `i64`
+2. `papCreate` for composeR has `arity = 2` (not 3)
+3. `papExtend(%5, %1, %0)` applies 2 args to arity-2 PAP → **falsely detected as saturated** (remaining = 0)
+4. But its result type is `!eco.value` (a function/closure), not `i64`
+5. **CGEN_056 violation**: saturated papExtend result `!eco.value` ≠ func.func return `i64`
+
+### What the MLIR Should Look Like
+
+`composeR` is defined as `composeR f g x = g (f x)` with type `(a→b) → (b→c) → a → c` — a **3-argument** function. Specialized with `a=Int, b=Int, c=Int`, the full ABI signature should be `(!eco.value, !eco.value, i64) → i64`:
+
+```mlir
+-- CORRECT: 3-param signature
+{function_type = (!eco.value, !eco.value, i64) -> (i64), sym_name = "Basics_composeR_$_3"}
+
+%5 = "eco.papCreate"() {arity = 3, function = @Basics_composeR_$_3, ...}     -- arity=3
+%2 = "eco.papExtend"(%5, %1, %0) {remaining_arity = 3} : (...) -> !eco.value -- NOT saturated: 3-2=1 remaining
+%8 = "eco.papExtend"(%2, %7) {remaining_arity = 1} : (...) -> i64            -- SATURATED: 1-1=0, result=i64 ✓
+```
+
+### Root Cause: Same `buildCurriedFuncType` Truncation as Group 3
+
+The `>>` binop desugars to `Call (VarGlobal composeR) [f, g]` with 2 args (`LocalOpt/Typed/Expression.elm:432`). The monomorphizer processes this via the `VarGlobal` case (`Specialize.elm:1214-1247`):
+
+```elm
+( schemeInfo, state1a ) =
+    getOrBuildSchemeInfo funcCanType (Just global) state1          -- schemeArgTypes = [(a→b), (b→c), a] (3 params)
+( callSubst, funcMonoTypeRaw, _ ) =
+    TypeSubst.unifyCallSiteDirect ... schemeInfo.argTypes ... argTypes subst  -- argTypes = [f, g] (2 supplied)
+```
+
+Then `unifyCallSiteDirect` calls `buildCurriedFuncType` (`TypeSubst.elm:949-956`):
+
+```elm
+buildCurriedFuncType schemeArgs resolvedArgs resultMono =
+    case ( schemeArgs, resolvedArgs ) of
+        ( _ :: schemeRest, arg :: argRest ) ->
+            Mono.MFunction [ arg ] (buildCurriedFuncType schemeRest argRest resultMono)
+        _ ->
+            resultMono   -- ← resolvedArgs exhausted after 2 iterations, returns MInt
+```
+
+**Trace for `composeR f g`:**
+- `schemeArgs = [(a→b), (b→c), a]`, `resolvedArgs = [!eco.value, !eco.value]`, `resultMono = MInt`
+- iter 1: `MFunction [!eco.value] (…)`
+- iter 2: `MFunction [!eco.value] (…)` — `resolvedArgs` now empty
+- iter 3: catch-all → returns `MInt`
+- **Result: `MFunction [!eco.value] (MFunction [!eco.value] MInt)`** — only 2 params, **missing the 3rd param `a` (Int)**
+
+This truncated type is stored in the `MonoVarGlobal` and used to enqueue the specialization:
+```elm
+( specId, newState ) = enqueueSpec monoGlobal funcMonoType Nothing state2  -- truncated!
+monoFunc = Mono.MonoVarGlobal funcRegion specId funcMonoType               -- truncated!
+```
+
+### How the Truncated Type Cascades to CGEN_056
+
+1. **Node creation**: The monomorphizer creates a `MonoExtern` node for `composeR` at specId=3 with the truncated 2-param type.
+
+2. **Kernel stub in MLIR** (`Expr.elm:680-709`): `generateVarKernel` derives the func.func signature from the mono type:
+   ```elm
+   arity = Types.countTotalArity monoType          -- = 2 (from truncated type)
+   ( paramTypes, resultType ) = Types.flattenFunctionType monoType  -- = ([!eco.value, !eco.value], i64)
+   ```
+   Creates `func.func @Basics_composeR_$_3(!eco.value, !eco.value) → i64`
+
+3. **papCreate**: `arity = 2` (from the 2-param type)
+
+4. **papExtend with 2 args**: remaining\_arity = 2, applying 2 args → remaining = 0 → **falsely detected as saturated**
+
+5. **Mismatch**: The call `composeR f g` semantically returns `Int → Int` (a function = `!eco.value` at ABI level). But func.func says the return type is `i64`. The test catches this: `!eco.value ≠ i64`.
+
+### Why This Doesn't Trigger GOPT_013
+
+`composeR` resolves to a `MonoExtern` node. `callModelForExpr` (`MonoGlobalOptimize.elm:1433-1434`) returns `FlattenedExternal` for `MonoExtern` nodes. The GOPT_013 check skips `FlattenedExternal` calls entirely (`CallInfoComplete.elm:173-175`). The CGEN_056 check operates at the MLIR level and catches the mismatch that GOPT_013 cannot see.
+
+### Relationship to Group 3
+
+**This is the same root cause as Group 3.** Both failures stem from `buildCurriedFuncType` (`TypeSubst.elm:949-956`) truncating the function type to only include stages for supplied arguments. The manifestation differs:
+
+| | Group 3 (GOPT_013) | Group 1 (CGEN_056) |
+|---|---|---|
+| **Affected functions** | User-defined (MonoDefine) | Kernel (MonoExtern) |
+| **Call model** | StageCurried | FlattenedExternal |
+| **Detection level** | GlobalOpt pass | MLIR generation |
+| **Symptom** | `initialRemaining > totalArity` | papExtend result type ≠ func.func return type |
+| **Root cause** | `buildCurriedFuncType` truncation | Same |
+
+### Proposed Fix
+
+The same fix proposed for Group 3 — modifying `unifyCallSiteDirect` (`TypeSubst.elm:909-927`) to resolve ALL scheme arg types through the substitution, not just the supplied ones — would fix Group 1 as well. With the correct full type `MFunction [!eco.value, !eco.value, i64] MInt`:
+
+1. `func.func @Basics_composeR_$_3(!eco.value, !eco.value, i64) → i64` — correct 3-param signature
+2. `papCreate(arity=3)` — correct arity
+3. `papExtend` with 2 args: remaining = 3−2 = 1 → **not saturated** → result = `!eco.value` ✓
+4. `papExtend` with 1 arg (9): remaining = 1−1 = 0 → **saturated** → result = `i64` → matches func.func ✓
 
 ---
 
@@ -302,4 +424,137 @@ testValue = let mapAddOne = map addOne
 ```
 **Violation**: `initialRemaining=2 exceeds totalArity=1 (stageArities=[1])`
 
-**Why they all fail**: The GlobalOpt pass computes `initialRemaining` from the function's *logical* arity (total number of parameters in the Elm type signature), but `totalArity` is computed from `stageArities` which reflects the *staged/segmented* ABI (how the function is actually chunked into stages after currying analysis). When a function like `getOp` has 3 logical params but stage segmentation is `[1]` (only the first stage with 1 param, returning a closure for the rest), `initialRemaining=3` exceeds `totalArity=1`. The GOPT_013 invariant requires `initialRemaining ≤ totalArity`, meaning `initialRemaining` should be capped at or computed from the staged arity, not the full logical arity.
+### Debug Evidence
+
+Instrumented `checkGopt013` to print the `funcExpr` at each violating call site:
+
+| Test | func type in MonoVarGlobal | nargs | initialRemaining | stageArities | totalArity |
+|------|---------------------------|-------|-----------------|-------------|-----------|
+| Case returns lambda | `MFunction [Op] MInt` | 1 | 3 | [1] | 1 |
+| identicalCurried11 | `MFunction [MInt] (MFunction [MInt] MInt)` | 2 | 3 | [1,1] | 2 |
+| Hetero closure | `MFunction [Shape] MInt` | 1 | 2 | [1] | 1 |
+| filterMap | `MFunction [(Int→Maybe Int)] (MList MInt)` | 1 | 3 | [1] | 1 |
+| partial app of map | `MFunction [(Int→Int)] (MList MInt)` | 1 | 2 | [1] | 1 |
+
+**Key observation**: In every case, the `MonoVarGlobal` type only contains stages for the args **supplied at the call site**, not the full function type. The remaining stages are truncated, and `resultMono` is the **final** result type (after all params), not the intermediate result.
+
+### Pipeline Context
+
+The test goes through the full compiler pipeline: Source AST → Canonicalization → Type Checking → PostSolve → TypedOptimize → MonoInlineSimplify → Monomorphization → GlobalOptimize.
+
+Nested calls are NOT flattened at any stage. `callExpr (callExpr (varExpr "getOp") [ctorExpr "Add"]) [intExpr 3, intExpr 4]` remains as nested `MonoCall` nodes through the entire pipeline.
+
+### Root Cause: `buildCurriedFuncType` produces truncated function types
+
+**File**: `compiler/src/Compiler/Monomorphize/TypeSubst.elm:909-927`
+
+`unifyCallSiteDirect` computes `funcMonoType` (the type stored in `MonoVarGlobal`) via `buildCurriedFuncType`:
+
+```elm
+-- Line 916-917: resolvedArgs only contains SUPPLIED args
+resolvedArgs =
+    List.map (resolveMonoVars env1 substAfterArgs) argMonoTypes
+
+-- Line 920-921: resultMono is the FINAL result type (after ALL params)
+( resultMono, env2 ) =
+    applySubst env1 substAfterArgs schemeResultType
+
+-- Line 924-925: funcMonoType is TRUNCATED
+funcMonoType =
+    buildCurriedFuncType schemeArgTypes resolvedArgs resultMono
+```
+
+**File**: `TypeSubst.elm:949-956`
+
+```elm
+buildCurriedFuncType schemeArgs resolvedArgs resultMono =
+    case ( schemeArgs, resolvedArgs ) of
+        ( _ :: schemeRest, arg :: argRest ) ->
+            Mono.MFunction [ arg ] (buildCurriedFuncType schemeRest argRest resultMono)
+        _ ->
+            resultMono    -- ← when resolvedArgs runs out, returns FINAL result, losing remaining stages
+```
+
+**What happens**: `resolvedArgs` is built from `argMonoTypes` (the actual args at the call site). When a function with N total params is called with M < N args, `resolvedArgs` has M elements. `buildCurriedFuncType` zips `schemeArgs` (N elements) with `resolvedArgs` (M elements). After M iterations, `resolvedArgs` is exhausted, and the catch-all returns `resultMono` — the **final** result type (e.g., `MInt`), not the intermediate type that should include the remaining N−M function stages.
+
+### Concrete Trace: `getOp Add`
+
+`getOp : Op -> Int -> Int -> Int`, called with 1 arg (`Add`):
+
+1. `buildSchemeInfo(Op -> Int -> Int -> Int)` → `schemeArgTypes = [Op, Int, Int]`, `schemeResultType = Int`
+2. `argMonoTypes = [Op_mono]` (just 1 arg)
+3. `unifyArgTypesZip([Op, Int, Int], [Op_mono], subst)` → unifies only first pair, stops
+4. `resolvedArgs = [Op_mono]` (1 element)
+5. `resultMono = applySubst(Int) = MInt`
+6. `buildCurriedFuncType([Op, Int, Int], [Op_mono], MInt)`:
+   - iter 1: `MFunction [Op_mono] (buildCurriedFuncType([Int, Int], [], MInt))`
+   - iter 2: `resolvedArgs=[]` → returns `MInt`
+   - **Result**: `MFunction [Op] MInt` — **WRONG**, should be `MFunction [Op] (MFunction [Int] (MFunction [Int] MInt))`
+7. `MonoVarGlobal specId=4 (MFunction [Op] MInt)` — truncated type stored
+
+### How the truncated type creates the GOPT_013 violation
+
+After the staging rewriter (Phase 2 of GlobalOpt), `getOp`'s **node** is modified:
+- The Rewriter's `wrapClosureToCanonical` flattens the closure: `params = [(op, Op), (a, Int), (b, Int)]` (3 params)
+- The node type is updated via `Mono.typeOf newExpr` at `Rewriter.elm:143` → becomes `MFunction [Op, Int, Int] MInt`
+
+But the `MonoVarGlobal` at the **call site** still carries the original truncated type `MFunction [Op] MInt` — the rewriter's catch-all at `Rewriter.elm:411` (`_ -> (expr, ctx0)`) passes `MonoVarGlobal` through unchanged.
+
+Then `annotateCallStaging` (Phase 5, `MonoGlobalOptimize.elm:1887-2015`) computes:
+- `stageArities = collectStageArities(MFunction [Op] MInt) = [1]` → `totalArity = 1` (from the stale VarGlobal type)
+- `sourceArityForExpr(VarGlobal specId=4)` → looks up **node** specId=4 → closure has 3 params → `Just 3` (from the actual rewritten node)
+- `initialRemaining = sourceArity = 3`
+- **GOPT_013 VIOLATION**: `3 > 1`
+
+### Why all 5 tests fail the same way
+
+Every failing test has the same pattern: a **partial call** (fewer args than total params) to a multi-param function. `buildCurriedFuncType` truncates the type to only cover supplied args, and the staging rewriter later expands the closure to the full arity without updating the stale `MonoVarGlobal` types at call sites.
+
+| Test | Function | Total params | Args supplied | Type stages produced | Correct stages |
+|------|----------|-------------|---------------|---------------------|----------------|
+| 3a | getOp | 3 | 1 | [1] | [1,1,1] |
+| 3b | caseFunc | 3 | 2 | [1,1] | [1,1,1] |
+| 3c | shapeBonus | 2 | 1 | [1] | [1,1] |
+| 3d | foldr/maybeCons | 3 | 1 | [1] | [1,1,1] |
+| 3e | map | 2 | 1 | [1] | [1,1] |
+
+### Proposed Fix
+
+Fix `unifyCallSiteDirect` (`TypeSubst.elm:909-927`) to resolve ALL scheme arg types through the substitution, not just the supplied ones:
+
+```elm
+unifyCallSiteDirect env schemeArgTypes schemeResultType argMonoTypes baseSubst =
+    let
+        ( substAfterArgs, env1 ) =
+            unifyArgTypesZip env schemeArgTypes argMonoTypes baseSubst
+
+        -- Resolve supplied arg types through substitution
+        resolvedSuppliedArgs =
+            List.map (resolveMonoVars env1 substAfterArgs) argMonoTypes
+
+        -- Resolve REMAINING scheme arg types through substitution
+        remainingSchemeArgs =
+            List.drop (List.length argMonoTypes) schemeArgTypes
+
+        ( resolvedRemainingArgs, env2 ) =
+            List.foldl
+                (\canArg ( accArgs, accEnv ) ->
+                    let ( monoArg, envN ) = applySubst accEnv substAfterArgs canArg
+                    in ( accArgs ++ [ monoArg ], envN )
+                )
+                ( [], env1 )
+                remainingSchemeArgs
+
+        resolvedAllArgs =
+            resolvedSuppliedArgs ++ resolvedRemainingArgs
+
+        ( resultMono, env3 ) =
+            applySubst env2 substAfterArgs schemeResultType
+
+        funcMonoType =
+            buildCurriedFuncType schemeArgTypes resolvedAllArgs resultMono
+    in
+    ( substAfterArgs, funcMonoType, env3 )
+```
+
+This ensures the `MonoVarGlobal` carries the **full** function type (`MFunction [Op] (MFunction [Int] (MFunction [Int] MInt))`) regardless of how many args are supplied at any particular call site. The staging rewriter's type changes then stay consistent with the call site types.
