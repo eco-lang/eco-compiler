@@ -40,7 +40,15 @@ Scheduler& Scheduler::instance() {
     return sched;
 }
 
-Scheduler::Scheduler() {}
+Scheduler::Scheduler() {
+    // Register external root scanner so the GC can trace processes in the run queue.
+    Allocator::instance().getRootSet().addExternalRootScanner(
+        [this](RootSet::EvacuateFn evacuate) {
+            for (auto& rp : runQueue_) {
+                evacuate(rp.encoded);
+            }
+        });
+}
 
 // ============================================================================
 // Task Constructors

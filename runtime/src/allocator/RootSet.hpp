@@ -3,6 +3,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <unordered_set>
 #include <vector>
 #include "Heap.hpp"
@@ -65,6 +66,20 @@ public:
     // Returns the list of stack root pointers.
     const std::vector<HPointer *> &getStackRoots() const { return stack_roots; }
 
+    // ===== External root scanners =====
+    // Callbacks invoked during GC to discover additional roots held in
+    // C++ data structures (e.g., Scheduler run queue, PlatformRuntime state).
+    // The callback receives a function it must call for each uint64_t* that
+    // holds an encoded HPointer needing evacuation.
+    using EvacuateFn = std::function<void(uint64_t&)>;
+    using ExternalRootScanner = std::function<void(EvacuateFn)>;
+
+    void addExternalRootScanner(ExternalRootScanner scanner);
+
+    const std::vector<ExternalRootScanner>& getExternalRootScanners() const {
+        return external_scanners;
+    }
+
     // ===== Utility =====
 
     // Resets to initial empty state. Used for testing.
@@ -74,6 +89,7 @@ private:
     std::unordered_set<HPointer *> roots;     // Long-lived roots (O(1) add/remove).
     std::unordered_set<uint64_t *> jit_roots; // JIT roots storing raw 64-bit pointers.
     std::vector<HPointer *> stack_roots;      // Temporary stack roots.
+    std::vector<ExternalRootScanner> external_scanners; // External root callbacks.
 };
 
 } // namespace Elm

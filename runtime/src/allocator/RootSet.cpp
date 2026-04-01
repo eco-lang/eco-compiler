@@ -31,11 +31,17 @@ void RootSet::removeJitRoot(uint64_t *root) {
     jit_roots.erase(root);
 }
 
+// Registers an external root scanner callback.
+void RootSet::addExternalRootScanner(ExternalRootScanner scanner) {
+    external_scanners.push_back(std::move(scanner));
+}
+
 // Clears all roots. Used for testing.
 void RootSet::reset() {
     roots.clear();
     jit_roots.clear();
     stack_roots.clear();
+    external_scanners.clear();
 }
 
 } // namespace Elm

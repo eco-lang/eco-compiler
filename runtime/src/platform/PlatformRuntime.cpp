@@ -64,7 +64,32 @@ PlatformRuntime& PlatformRuntime::instance() {
     return runtime;
 }
 
-PlatformRuntime::PlatformRuntime() {}
+PlatformRuntime::PlatformRuntime() {
+    // Register external root scanner so the GC can trace our state.
+    Allocator::instance().getRootSet().addExternalRootScanner(
+        [this](RootSet::EvacuateFn evacuate) {
+            // sendToApp closure
+            if (sendToAppClosure_ != 0)
+                evacuate(sendToAppClosure_);
+
+            // Model storage (also registered as JIT root, but double-evacuating is safe)
+            if (modelStorage_ != 0)
+                evacuate(modelStorage_);
+
+            // Per-manager state: selfProcess, router, and current state
+            for (auto& [home, ms] : managerStates_) {
+                evacuate(ms.selfProcess);
+                evacuate(ms.router);
+                evacuate(ms.state);
+            }
+
+            // Effects queue
+            for (auto& batch : effectsQueue_) {
+                evacuate(batch.cmdBag);
+                evacuate(batch.subBag);
+            }
+        });
+}
 
 // ============================================================================
 // Manager Registry

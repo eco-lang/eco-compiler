@@ -422,6 +422,13 @@ void NurserySpace::minorGC(OldGenSpace &oldgen) {
         evacuateJitPtr(*root, oldgen, &promoted_objects);
     }
 
+    // Phase 1d: External root scanners (Scheduler run queue, PlatformRuntime state, etc.).
+    for (auto& scanner : root_set.getExternalRootScanners()) {
+        scanner([this, &oldgen, &promoted_objects](uint64_t& ref) {
+            evacuateJitPtr(ref, oldgen, &promoted_objects);
+        });
+    }
+
     // Phase 2: Cheney's algorithm - scan to-space objects breadth-first.
     // When use_hybrid_dfs is enabled, list spine copying provides locality optimization
     // within scanObject() without requiring a separate DFS stack.
