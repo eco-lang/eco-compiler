@@ -290,10 +290,10 @@ type Type id
     = TLambda (Type id) (Type id)
     | TVar id
     | TType IO.Canonical Name (List (Type id))
-    | TRecord (Dict Name (FieldType id)) (Maybe Name)
+    | TRecord (Dict Name (FieldType id)) (Maybe id)
     | TUnit
     | TTuple (Type id) (Type id) (List (Type id))
-    | TAlias IO.Canonical Name (List ( Name, Type id )) (AliasType id)
+    | TAlias IO.Canonical Name (List ( id, Type id )) (AliasType id)
 
 
 {-| Tracks whether a type alias has been fully expanded.

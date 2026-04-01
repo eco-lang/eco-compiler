@@ -32,47 +32,127 @@ import Compiler.AST.CanonicalBuilder
         )
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Monomorphized as Mono
+import Compiler.AST.TypeIds as TypeIds
+import Compiler.Data.Id as Id
 import Compiler.Data.Name exposing (Name)
+import Compiler.Monomorphize.AssignMVarIds as AssignMVarIds
 import Compiler.Monomorphize.KernelAbi as KernelAbi
 import Compiler.Monomorphize.State as State
+import Dict
 import Expect
 import Test exposing (Test)
 
 
-{-| Helper to construct an MVar from a name string for test expected values.
-Since MVar now takes an opaque MVarId instead of a String, we allocate one.
+{-| Build the nth sequential MVarId (0-indexed).
 -}
-testMVar : String -> Mono.Constraint -> Mono.MonoType
-testMVar name constraint =
+nthMVarId : Int -> TypeIds.MVarId
+nthMVarId n =
+    nthMVarIdHelp n Id.first
+
+
+nthMVarIdHelp : Int -> TypeIds.MVarId -> TypeIds.MVarId
+nthMVarIdHelp remaining current =
+    if remaining <= 0 then
+        current
+
+    else
+        nthMVarIdHelp (remaining - 1) (Id.succ current)
+
+
+{-| Helper to construct an MVar with a specific sequential ID.
+Use id=0 for the first type variable, id=1 for the second, etc.
+-}
+testMVarN : Int -> Mono.Constraint -> Mono.MonoType
+testMVarN n constraint =
+    Mono.MVar (nthMVarId n) constraint
+
+
+{-| Convert a Can.Type Name to Can.Type MVarId for testing.
+Returns the converted type and an MVarEnv initialized with the constraints.
+-}
+convertForTest : Can.Type Name -> ( Can.Type TypeIds.MVarId, State.MVarEnv )
+convertForTest canType =
     let
-        ( mvarId, _ ) =
-            State.allocMVar name State.emptyMVarEnv
+        ( converted, finalState ) =
+            AssignMVarIds.assignIdsToType canType
     in
-    Mono.MVar mvarId constraint
+    ( converted, State.initMVarEnv finalState.nextId finalState.constraints )
 
 
-{-| Helper to call canTypeToMonoType\_preserveVars with an empty MVarEnv,
-discarding the returned env.
+{-| Look up the constraint recorded in the side table for the nth MVarId.
+-}
+constraintOf : Int -> State.MVarEnv -> Maybe Mono.Constraint
+constraintOf n env =
+    State.lookupConstraint (nthMVarId n) env
+
+
+{-| Helper to call canTypeToMonoType\_preserveVars, converting from Can.Type Name.
 -}
 preserveVars : Can.Type Name -> Mono.MonoType
 preserveVars canType =
     let
+        ( converted, env ) =
+            convertForTest canType
+
         ( result, _ ) =
-            KernelAbi.canTypeToMonoType_preserveVars State.emptyMVarEnv canType
+            KernelAbi.canTypeToMonoType_preserveVars env converted
     in
     result
 
 
-{-| Helper to call canTypeToMonoType\_numberBoxed with an empty MVarEnv,
-discarding the returned env.
+{-| Like preserveVars but also returns the MVarEnv so tests can inspect the
+constraint side table.
+-}
+preserveVarsWithEnv : Can.Type Name -> ( Mono.MonoType, State.MVarEnv )
+preserveVarsWithEnv canType =
+    let
+        ( converted, env ) =
+            convertForTest canType
+
+        ( result, _ ) =
+            KernelAbi.canTypeToMonoType_preserveVars env converted
+    in
+    ( result, env )
+
+
+{-| Helper to call canTypeToMonoType\_numberBoxed, converting from Can.Type Name.
 -}
 numberBoxed : Can.Type Name -> Mono.MonoType
 numberBoxed canType =
     let
+        ( converted, env ) =
+            convertForTest canType
+
         ( result, _ ) =
-            KernelAbi.canTypeToMonoType_numberBoxed State.emptyMVarEnv canType
+            KernelAbi.canTypeToMonoType_numberBoxed env converted
     in
     result
+
+
+{-| Like numberBoxed but also returns the MVarEnv so tests can inspect the
+constraint side table.
+-}
+numberBoxedWithEnv : Can.Type Name -> ( Mono.MonoType, State.MVarEnv )
+numberBoxedWithEnv canType =
+    let
+        ( converted, env ) =
+            convertForTest canType
+
+        ( result, _ ) =
+            KernelAbi.canTypeToMonoType_numberBoxed env converted
+    in
+    ( result, env )
+
+
+{-| Helper to derive kernel ABI mode, converting from Can.Type Name.
+-}
+testDeriveAbiMode : ( String, String ) -> Can.Type Name -> KernelAbi.KernelAbiMode
+testDeriveAbiMode kernelId canType =
+    let
+        ( converted, env ) =
+            convertForTest canType
+    in
+    KernelAbi.deriveKernelAbiMode kernelId converted env
 
 
 suite : Test
@@ -104,7 +184,7 @@ abiModeTests =
                         tFunc [ intType, intType ] intType
 
                     result =
-                        KernelAbi.deriveKernelAbiMode ( "Basics", "modBy" ) canType
+                        testDeriveAbiMode ( "Basics", "modBy" ) canType
                 in
                 Expect.equal result KernelAbi.UseSubstitution
         , Test.test "Polymorphic kernel returns PreserveVars" <|
@@ -114,7 +194,7 @@ abiModeTests =
                         tFunc [ varType "a", listType (varType "a") ] (listType (varType "a"))
 
                     result =
-                        KernelAbi.deriveKernelAbiMode ( "List", "cons" ) canType
+                        testDeriveAbiMode ( "List", "cons" ) canType
                 in
                 Expect.equal result KernelAbi.PreserveVars
         , Test.test "Number-boxed kernel in whitelist returns NumberBoxed" <|
@@ -124,7 +204,7 @@ abiModeTests =
                         tFunc [ varType "number", varType "number" ] (varType "number")
 
                     result =
-                        KernelAbi.deriveKernelAbiMode ( "Basics", "add" ) canType
+                        testDeriveAbiMode ( "Basics", "add" ) canType
                 in
                 Expect.equal result KernelAbi.NumberBoxed
         , Test.test "Debug kernel returns PreserveVars" <|
@@ -134,7 +214,7 @@ abiModeTests =
                         tFunc [ stringType, varType "a" ] (varType "a")
 
                     result =
-                        KernelAbi.deriveKernelAbiMode ( "Debug", "log" ) canType
+                        testDeriveAbiMode ( "Debug", "log" ) canType
                 in
                 Expect.equal result KernelAbi.PreserveVars
         ]
@@ -205,10 +285,10 @@ polymorphicKernelTests =
                 in
                 Expect.equal result
                     (Mono.MFunction
-                        [ testMVar "a" Mono.CEcoValue ]
+                        [ testMVarN 0 Mono.CEcoValue ]
                         (Mono.MFunction
-                            [ Mono.MList (testMVar "a" Mono.CEcoValue) ]
-                            (Mono.MList (testMVar "a" Mono.CEcoValue))
+                            [ Mono.MList (testMVarN 0 Mono.CEcoValue) ]
+                            (Mono.MList (testMVarN 0 Mono.CEcoValue))
                         )
                     )
         , Test.test "Utils.equal : a -> a -> Bool (preserves vars)" <|
@@ -222,9 +302,9 @@ polymorphicKernelTests =
                 in
                 Expect.equal result
                     (Mono.MFunction
-                        [ testMVar "a" Mono.CEcoValue ]
+                        [ testMVarN 0 Mono.CEcoValue ]
                         (Mono.MFunction
-                            [ testMVar "a" Mono.CEcoValue ]
+                            [ testMVarN 0 Mono.CEcoValue ]
                             Mono.MBool
                         )
                     )
@@ -258,34 +338,48 @@ numberBoxedKernelTests =
                     canType =
                         tFunc [ varType "number", varType "number" ] (varType "number")
 
-                    result =
-                        numberBoxed canType
+                    ( result, env ) =
+                        numberBoxedWithEnv canType
                 in
-                Expect.equal result
-                    (Mono.MFunction
-                        [ testMVar "number" Mono.CEcoValue ]
-                        (Mono.MFunction
-                            [ testMVar "number" Mono.CEcoValue ]
-                            (testMVar "number" Mono.CEcoValue)
-                        )
-                    )
+                Expect.all
+                    [ \_ ->
+                        Expect.equal result
+                            (Mono.MFunction
+                                [ testMVarN 0 Mono.CEcoValue ]
+                                (Mono.MFunction
+                                    [ testMVarN 0 Mono.CEcoValue ]
+                                    (testMVarN 0 Mono.CEcoValue)
+                                )
+                            )
+                    , \_ ->
+                        -- Side table must record the original CNumber constraint
+                        Expect.equal (constraintOf 0 env) (Just Mono.CNumber)
+                    ]
+                    ()
         , Test.test "Basics.sub : number -> number -> number (in whitelist)" <|
             \_ ->
                 let
                     canType =
                         tFunc [ varType "number", varType "number" ] (varType "number")
 
-                    result =
-                        numberBoxed canType
+                    ( result, env ) =
+                        numberBoxedWithEnv canType
                 in
-                Expect.equal result
-                    (Mono.MFunction
-                        [ testMVar "number" Mono.CEcoValue ]
-                        (Mono.MFunction
-                            [ testMVar "number" Mono.CEcoValue ]
-                            (testMVar "number" Mono.CEcoValue)
-                        )
-                    )
+                Expect.all
+                    [ \_ ->
+                        Expect.equal result
+                            (Mono.MFunction
+                                [ testMVarN 0 Mono.CEcoValue ]
+                                (Mono.MFunction
+                                    [ testMVarN 0 Mono.CEcoValue ]
+                                    (testMVarN 0 Mono.CEcoValue)
+                                )
+                            )
+                    , \_ ->
+                        -- Side table must record the original CNumber constraint
+                        Expect.equal (constraintOf 0 env) (Just Mono.CNumber)
+                    ]
+                    ()
         , Test.test "numberBoxed converts concrete Int to MInt" <|
             \_ ->
                 let
@@ -323,8 +417,8 @@ debugKernelTests =
                     (Mono.MFunction
                         [ Mono.MString ]
                         (Mono.MFunction
-                            [ testMVar "a" Mono.CEcoValue ]
-                            (testMVar "a" Mono.CEcoValue)
+                            [ testMVarN 0 Mono.CEcoValue ]
+                            (testMVarN 0 Mono.CEcoValue)
                         )
                     )
         , Test.test "Debug.todo : String -> a" <|
@@ -339,7 +433,7 @@ debugKernelTests =
                 Expect.equal result
                     (Mono.MFunction
                         [ Mono.MString ]
-                        (testMVar "a" Mono.CEcoValue)
+                        (testMVarN 0 Mono.CEcoValue)
                     )
         ]
 
@@ -383,7 +477,7 @@ basicsModuleTests =
                         tFunc [ intType, intType ] intType
 
                     mode =
-                        KernelAbi.deriveKernelAbiMode ( "Basics", "modBy" ) canType
+                        testDeriveAbiMode ( "Basics", "modBy" ) canType
                 in
                 Expect.equal mode KernelAbi.UseSubstitution
         , Test.test "floor: Float -> Int (monomorphic)" <|
@@ -393,7 +487,7 @@ basicsModuleTests =
                         tFunc [ floatType ] intType
 
                     mode =
-                        KernelAbi.deriveKernelAbiMode ( "Basics", "floor" ) canType
+                        testDeriveAbiMode ( "Basics", "floor" ) canType
                 in
                 Expect.equal mode KernelAbi.UseSubstitution
         , Test.test "toFloat: Int -> Float (monomorphic)" <|
@@ -403,7 +497,7 @@ basicsModuleTests =
                         tFunc [ intType ] floatType
 
                     mode =
-                        KernelAbi.deriveKernelAbiMode ( "Basics", "toFloat" ) canType
+                        testDeriveAbiMode ( "Basics", "toFloat" ) canType
                 in
                 Expect.equal mode KernelAbi.UseSubstitution
         , Test.test "isNaN: Float -> Bool (monomorphic)" <|
@@ -413,7 +507,7 @@ basicsModuleTests =
                         tFunc [ floatType ] boolType
 
                     mode =
-                        KernelAbi.deriveKernelAbiMode ( "Basics", "isNaN" ) canType
+                        testDeriveAbiMode ( "Basics", "isNaN" ) canType
                 in
                 Expect.equal mode KernelAbi.UseSubstitution
         , Test.test "add: number -> number -> number (number-boxed)" <|
@@ -423,7 +517,7 @@ basicsModuleTests =
                         tFunc [ varType "number", varType "number" ] (varType "number")
 
                     mode =
-                        KernelAbi.deriveKernelAbiMode ( "Basics", "add" ) canType
+                        testDeriveAbiMode ( "Basics", "add" ) canType
                 in
                 Expect.equal mode KernelAbi.NumberBoxed
         , Test.test "mul: number -> number -> number (number-boxed)" <|
@@ -433,7 +527,7 @@ basicsModuleTests =
                         tFunc [ varType "number", varType "number" ] (varType "number")
 
                     mode =
-                        KernelAbi.deriveKernelAbiMode ( "Basics", "mul" ) canType
+                        testDeriveAbiMode ( "Basics", "mul" ) canType
                 in
                 Expect.equal mode KernelAbi.NumberBoxed
         , Test.test "pow: number -> number -> number (number-boxed)" <|
@@ -443,7 +537,7 @@ basicsModuleTests =
                         tFunc [ varType "number", varType "number" ] (varType "number")
 
                     mode =
-                        KernelAbi.deriveKernelAbiMode ( "Basics", "pow" ) canType
+                        testDeriveAbiMode ( "Basics", "pow" ) canType
                 in
                 Expect.equal mode KernelAbi.NumberBoxed
         ]
@@ -467,7 +561,7 @@ listModuleTests =
                         tFunc [ varType "a", listType (varType "a") ] (listType (varType "a"))
 
                     mode =
-                        KernelAbi.deriveKernelAbiMode ( "List", "cons" ) canType
+                        testDeriveAbiMode ( "List", "cons" ) canType
                 in
                 Expect.equal mode KernelAbi.PreserveVars
         , Test.test "cons ABI type has all eco.value args" <|
@@ -483,10 +577,10 @@ listModuleTests =
                 -- All args should be eco.value (MVar with CEcoValue)
                 Expect.equal result
                     (Mono.MFunction
-                        [ testMVar "a" Mono.CEcoValue ]
+                        [ testMVarN 0 Mono.CEcoValue ]
                         (Mono.MFunction
-                            [ Mono.MList (testMVar "a" Mono.CEcoValue) ]
-                            (Mono.MList (testMVar "a" Mono.CEcoValue))
+                            [ Mono.MList (testMVarN 0 Mono.CEcoValue) ]
+                            (Mono.MList (testMVarN 0 Mono.CEcoValue))
                         )
                     )
         ]
@@ -514,7 +608,7 @@ utilsModuleTests =
                         tFunc [ varType "a", varType "a" ] boolType
 
                     mode =
-                        KernelAbi.deriveKernelAbiMode ( "Utils", "equal" ) canType
+                        testDeriveAbiMode ( "Utils", "equal" ) canType
                 in
                 Expect.equal mode KernelAbi.PreserveVars
         , Test.test "equal ABI type has eco.value args" <|
@@ -529,9 +623,9 @@ utilsModuleTests =
                 -- Expected C ABI: bool equal(uint64_t a, uint64_t b)
                 Expect.equal result
                     (Mono.MFunction
-                        [ testMVar "a" Mono.CEcoValue ]
+                        [ testMVarN 0 Mono.CEcoValue ]
                         (Mono.MFunction
-                            [ testMVar "a" Mono.CEcoValue ]
+                            [ testMVarN 0 Mono.CEcoValue ]
                             Mono.MBool
                         )
                     )
@@ -542,7 +636,7 @@ utilsModuleTests =
                         tFunc [ varType "comparable", varType "comparable" ] boolType
 
                     mode =
-                        KernelAbi.deriveKernelAbiMode ( "Utils", "lt" ) canType
+                        testDeriveAbiMode ( "Utils", "lt" ) canType
                 in
                 Expect.equal mode KernelAbi.PreserveVars
         , Test.test "compare: comparable -> comparable -> Order (polymorphic)" <|
@@ -556,7 +650,7 @@ utilsModuleTests =
                         tFunc [ varType "comparable", varType "comparable" ] orderType
 
                     mode =
-                        KernelAbi.deriveKernelAbiMode ( "Utils", "compare" ) canType
+                        testDeriveAbiMode ( "Utils", "compare" ) canType
                 in
                 Expect.equal mode KernelAbi.PreserveVars
         , Test.test "append: appendable -> appendable -> appendable (polymorphic)" <|
@@ -566,7 +660,7 @@ utilsModuleTests =
                         tFunc [ varType "appendable", varType "appendable" ] (varType "appendable")
 
                     mode =
-                        KernelAbi.deriveKernelAbiMode ( "Utils", "append" ) canType
+                        testDeriveAbiMode ( "Utils", "append" ) canType
                 in
                 Expect.equal mode KernelAbi.PreserveVars
         ]
@@ -592,7 +686,7 @@ stringModuleTests =
                         tFunc [ stringType ] intType
 
                     mode =
-                        KernelAbi.deriveKernelAbiMode ( "String", "length" ) canType
+                        testDeriveAbiMode ( "String", "length" ) canType
                 in
                 Expect.equal mode KernelAbi.UseSubstitution
         , Test.test "append: String -> String -> String (monomorphic)" <|
@@ -602,7 +696,7 @@ stringModuleTests =
                         tFunc [ stringType, stringType ] stringType
 
                     mode =
-                        KernelAbi.deriveKernelAbiMode ( "String", "append" ) canType
+                        testDeriveAbiMode ( "String", "append" ) canType
                 in
                 Expect.equal mode KernelAbi.UseSubstitution
         , Test.test "lines: String -> List String (monomorphic)" <|
@@ -612,7 +706,7 @@ stringModuleTests =
                         tFunc [ stringType ] (listType stringType)
 
                     mode =
-                        KernelAbi.deriveKernelAbiMode ( "String", "lines" ) canType
+                        testDeriveAbiMode ( "String", "lines" ) canType
                 in
                 Expect.equal mode KernelAbi.UseSubstitution
         ]
@@ -636,7 +730,7 @@ charModuleTests =
                         tFunc [ intType ] charType
 
                     mode =
-                        KernelAbi.deriveKernelAbiMode ( "Char", "fromCode" ) canType
+                        testDeriveAbiMode ( "Char", "fromCode" ) canType
                 in
                 Expect.equal mode KernelAbi.UseSubstitution
         , Test.test "toCode: Char -> Int (monomorphic)" <|
@@ -646,7 +740,7 @@ charModuleTests =
                         tFunc [ charType ] intType
 
                     mode =
-                        KernelAbi.deriveKernelAbiMode ( "Char", "toCode" ) canType
+                        testDeriveAbiMode ( "Char", "toCode" ) canType
                 in
                 Expect.equal mode KernelAbi.UseSubstitution
         ]
@@ -684,10 +778,10 @@ kernelAbiPreservationTests =
                 -- The ABI type should have MVar with CEcoValue, NOT MInt or MString
                 Expect.equal abiType
                     (Mono.MFunction
-                        [ testMVar "a" Mono.CEcoValue ]
+                        [ testMVarN 0 Mono.CEcoValue ]
                         (Mono.MFunction
-                            [ Mono.MList (testMVar "a" Mono.CEcoValue) ]
-                            (Mono.MList (testMVar "a" Mono.CEcoValue))
+                            [ Mono.MList (testMVarN 0 Mono.CEcoValue) ]
+                            (Mono.MList (testMVarN 0 Mono.CEcoValue))
                         )
                     )
         , Test.test "Utils.equal ABI is same whether called with Int or custom type" <|
@@ -702,9 +796,9 @@ kernelAbiPreservationTests =
                 -- Should NOT have MInt even if called at Int type
                 Expect.equal abiType
                     (Mono.MFunction
-                        [ testMVar "a" Mono.CEcoValue ]
+                        [ testMVarN 0 Mono.CEcoValue ]
                         (Mono.MFunction
-                            [ testMVar "a" Mono.CEcoValue ]
+                            [ testMVarN 0 Mono.CEcoValue ]
                             Mono.MBool
                         )
                     )
@@ -715,21 +809,30 @@ kernelAbiPreservationTests =
                     canType =
                         varType "a"
 
-                    result =
-                        preserveVars canType
+                    ( result, env ) =
+                        preserveVarsWithEnv canType
                 in
-                Expect.equal result (testMVar "a" Mono.CEcoValue)
+                Expect.all
+                    [ \_ -> Expect.equal result (testMVarN 0 Mono.CEcoValue)
+                    , \_ -> Expect.equal (constraintOf 0 env) (Just Mono.CEcoValue)
+                    ]
+                    ()
         , Test.test "PreserveVars mode produces CEcoValue even for 'number' var" <|
             \_ ->
                 let
                     -- In preserveVars mode, even 'number' becomes CEcoValue (not CNumber)
+                    -- but the side table should record it as CNumber
                     canType =
                         varType "number"
 
-                    result =
-                        preserveVars canType
+                    ( result, env ) =
+                        preserveVarsWithEnv canType
                 in
-                Expect.equal result (testMVar "number" Mono.CEcoValue)
+                Expect.all
+                    [ \_ -> Expect.equal result (testMVarN 0 Mono.CEcoValue)
+                    , \_ -> Expect.equal (constraintOf 0 env) (Just Mono.CNumber)
+                    ]
+                    ()
         , Test.test "Polymorphic kernel ABI must NOT contain MInt even when used at Int type" <|
             \_ ->
                 let
@@ -741,7 +844,7 @@ kernelAbiPreservationTests =
                         tFunc [ varType "a", listType (varType "a") ] (listType (varType "a"))
 
                     mode =
-                        KernelAbi.deriveKernelAbiMode ( "List", "cons" ) canType
+                        testDeriveAbiMode ( "List", "cons" ) canType
 
                     abiType =
                         preserveVars canType

@@ -24,9 +24,11 @@ import Array
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.TypeEnv as TypeEnv
+import Compiler.AST.TypeIds as TypeIds
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.BitSet as BitSet
 import Compiler.Data.Name exposing (Name)
+import Compiler.Monomorphize.AssignMVarIds as AssignMVarIds
 import Compiler.Monomorphize.MonoTraverse as Traverse
 import Compiler.Monomorphize.Prune as Prune
 import Compiler.Monomorphize.Registry as Registry
@@ -61,22 +63,30 @@ This is useful for testing when the entry point is not named "main".
 
 -}
 monomorphize : Name -> TypeEnv.GlobalTypeEnv -> TOpt.GlobalGraph Name -> Result String Mono.MonoGraph
-monomorphize entryPointName globalTypeEnv (TOpt.GlobalGraph nodes _ _) =
-    case findEntryPoint entryPointName nodes of
+monomorphize entryPointName globalTypeEnv globalGraph =
+    let
+        -- Phase 0: Assign globally unique MVarIds to all type variables
+        ( TOpt.GlobalGraph nodesWithIds _ _, mvarState ) =
+            AssignMVarIds.assignIds globalGraph
+
+        mvarEnv =
+            State.initMVarEnv mvarState.nextId mvarState.constraints
+    in
+    case findEntryPointId entryPointName nodesWithIds of
         Nothing ->
             Err ("No " ++ entryPointName ++ " function found")
 
         Just ( mainGlobal, mainType ) ->
-            monomorphizeFromEntry mainGlobal mainType globalTypeEnv nodes
+            monomorphizeFromEntry mainGlobal mainType globalTypeEnv nodesWithIds mvarEnv
 
 
 {-| Perform monomorphization from a given entry point.
 -}
-monomorphizeFromEntry : TOpt.Global -> Can.Type Name -> TypeEnv.GlobalTypeEnv -> DMap.Dict (List String) TOpt.Global (TOpt.Node Name) -> Result String Mono.MonoGraph
-monomorphizeFromEntry mainGlobal mainType globalTypeEnv nodes =
+monomorphizeFromEntry : TOpt.Global -> Can.Type TypeIds.MVarId -> TypeEnv.GlobalTypeEnv -> DMap.Dict (List String) TOpt.Global (TOpt.Node TypeIds.MVarId) -> State.MVarEnv -> Result String Mono.MonoGraph
+monomorphizeFromEntry mainGlobal mainType globalTypeEnv nodes mvarEnv =
     let
         ( finalState, mainSpecIdVal ) =
-            runSpecialization mainGlobal mainType globalTypeEnv nodes
+            runSpecialization mainGlobal mainType globalTypeEnv nodes mvarEnv
 
         rawGraph =
             assembleRawGraph finalState mainSpecIdVal
@@ -90,8 +100,16 @@ monomorphizeFromEntry mainGlobal mainType globalTypeEnv nodes =
 {-| Like monomorphize, but logs each sub-pass via the provided logger.
 -}
 monomorphizeWithLog : (String -> Task x ()) -> Name -> TypeEnv.GlobalTypeEnv -> TOpt.GlobalGraph Name -> Task x (Result String Mono.MonoGraph)
-monomorphizeWithLog log entryPointName globalTypeEnv (TOpt.GlobalGraph nodes _ _) =
-    case findEntryPoint entryPointName nodes of
+monomorphizeWithLog log entryPointName globalTypeEnv globalGraph =
+    let
+        -- Phase 0: Assign globally unique MVarIds to all type variables
+        ( TOpt.GlobalGraph nodesWithIds _ _, mvarState ) =
+            AssignMVarIds.assignIds globalGraph
+
+        mvarEnv =
+            State.initMVarEnv mvarState.nextId mvarState.constraints
+    in
+    case findEntryPointId entryPointName nodesWithIds of
         Nothing ->
             Task.succeed (Err ("No " ++ entryPointName ++ " function found"))
 
@@ -101,7 +119,7 @@ monomorphizeWithLog log entryPointName globalTypeEnv (TOpt.GlobalGraph nodes _ _
                     (\_ ->
                         let
                             ( finalState, mainSpecIdVal ) =
-                                runSpecialization mainGlobal mainType globalTypeEnv nodes
+                                runSpecialization mainGlobal mainType globalTypeEnv nodesWithIds mvarEnv
 
                             -- Extract what we need and release toptNodes for GC
                             finalAccum =
@@ -131,8 +149,8 @@ monomorphizeWithLog log entryPointName globalTypeEnv (TOpt.GlobalGraph nodes _ _
 
 {-| Phase 1: Run the specialization worklist to completion.
 -}
-runSpecialization : TOpt.Global -> Can.Type Name -> TypeEnv.GlobalTypeEnv -> DMap.Dict (List String) TOpt.Global (TOpt.Node Name) -> ( MonoState, Mono.SpecId )
-runSpecialization mainGlobal mainType globalTypeEnv nodes =
+runSpecialization : TOpt.Global -> Can.Type TypeIds.MVarId -> TypeEnv.GlobalTypeEnv -> DMap.Dict (List String) TOpt.Global (TOpt.Node TypeIds.MVarId) -> State.MVarEnv -> ( MonoState, Mono.SpecId )
+runSpecialization mainGlobal mainType globalTypeEnv nodes mvarEnv =
     let
         mainMonoType : Mono.MonoType
         mainMonoType =
@@ -144,27 +162,9 @@ runSpecialization mainGlobal mainType globalTypeEnv nodes =
                 TOpt.Global canonical _ ->
                     canonical
 
-        initialState0 : MonoState
-        initialState0 =
-            initState currentModule nodes globalTypeEnv
-
-        -- Pre-populate MVarEnv with all tvar names from the global graph
-        -- so that lookupMVarName succeeds even when env updates are discarded.
-        dummyCompare _ _ =
-            EQ
-
-        prePopulatedEnv =
-            DMap.foldl dummyCompare
-                (\_ node env -> prePopulateNodeTVars node env)
-                initialState0.ctx.mvarEnv
-                nodes
-
-        initialCtx =
-            initialState0.ctx
-
         initialState : MonoState
         initialState =
-            { initialState0 | ctx = { initialCtx | mvarEnv = prePopulatedEnv } }
+            initState currentModule nodes globalTypeEnv mvarEnv
 
         initialAccum =
             initialState.accum
@@ -257,17 +257,17 @@ assembleRawGraphFrom finalAccum lambdaCounter mainSpecIdVal =
 -- ========== INITIALIZATION ==========
 
 
-{-| Initialize the monomorphization state with empty worklist and registry.
+{-| Initialize the monomorphization state.
 -}
-initState : IO.Canonical -> DMap.Dict (List String) TOpt.Global (TOpt.Node Name) -> TypeEnv.GlobalTypeEnv -> MonoState
+initState : IO.Canonical -> DMap.Dict (List String) TOpt.Global (TOpt.Node TypeIds.MVarId) -> TypeEnv.GlobalTypeEnv -> State.MVarEnv -> MonoState
 initState =
     State.initState
 
 
-{-| Find an entry point by name in the global graph.
+{-| Find an entry point by name in the ID-rewritten global graph.
 -}
-findEntryPoint : Name -> DMap.Dict (List String) TOpt.Global (TOpt.Node Name) -> Maybe ( TOpt.Global, Can.Type Name )
-findEntryPoint entryPointName nodes =
+findEntryPointId : Name -> DMap.Dict (List String) TOpt.Global (TOpt.Node TypeIds.MVarId) -> Maybe ( TOpt.Global, Can.Type TypeIds.MVarId )
+findEntryPointId entryPointName nodes =
     DMap.foldl TOpt.compareGlobal
         (\global node acc ->
             case acc of
@@ -507,69 +507,16 @@ specializeAccessorGlobal fieldName monoType state =
             Utils.Crash.crash "Monomorphize" "specializeAccessorGlobal" "Expected MFunction [MRecord ...] fieldType"
 
 
-{-| Substitution mapping type variable names to their concrete monomorphic types.
+{-| Substitution mapping MVarIds to their concrete monomorphic types.
 -}
 type alias Substitution =
     State.Substitution
 
 
-canTypeToMonoType : Substitution -> Can.Type Name -> Mono.MonoType
+canTypeToMonoType : Substitution -> Can.Type TypeIds.MVarId -> Mono.MonoType
 canTypeToMonoType subst canType =
-    Tuple.first (TypeSubst.canTypeToMonoType State.emptyMVarEnv subst canType)
-
-
-{-| Pre-populate an MVarEnv with all type variable names found in a TOpt node.
-This ensures lookupMVarName succeeds for all tvars in the global graph.
--}
-prePopulateNodeTVars : TOpt.Node Name -> State.MVarEnv -> State.MVarEnv
-prePopulateNodeTVars node env =
-    case node of
-        TOpt.Define expr _ meta ->
-            prePopulateCanTypeTVars meta.tipe (prePopulateExprTVars expr env)
-
-        TOpt.TrackedDefine _ expr _ meta ->
-            prePopulateCanTypeTVars meta.tipe (prePopulateExprTVars expr env)
-
-        TOpt.Ctor _ _ canType ->
-            prePopulateCanTypeTVars canType env
-
-        TOpt.Enum _ canType ->
-            prePopulateCanTypeTVars canType env
-
-        TOpt.Box canType ->
-            prePopulateCanTypeTVars canType env
-
-        TOpt.Link _ ->
-            env
-
-        TOpt.Cycle _ _ _ _ ->
-            env
-
-        TOpt.Manager _ ->
-            env
-
-        TOpt.Kernel _ _ ->
-            env
-
-        TOpt.PortIncoming expr _ meta ->
-            prePopulateCanTypeTVars meta.tipe (prePopulateExprTVars expr env)
-
-        TOpt.PortOutgoing expr _ meta ->
-            prePopulateCanTypeTVars meta.tipe (prePopulateExprTVars expr env)
-
-
-prePopulateExprTVars : TOpt.Expr Name -> State.MVarEnv -> State.MVarEnv
-prePopulateExprTVars expr env =
-    prePopulateCanTypeTVars (TOpt.typeOf expr) env
-
-
-prePopulateCanTypeTVars : Can.Type Name -> State.MVarEnv -> State.MVarEnv
-prePopulateCanTypeTVars canType env =
-    let
-        names =
-            TypeSubst.collectCanTypeVars canType []
-    in
-    List.foldl (\name e -> Tuple.second (State.allocMVar name e)) env names
+    -- Use a dummy MVarEnv for the entry point type conversion (no fresh allocations needed)
+    Tuple.first (TypeSubst.canTypeToMonoType (State.initMVarEnv TypeIds.firstMVarId Dict.empty) subst canType)
 
 
 

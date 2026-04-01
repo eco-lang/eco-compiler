@@ -1,6 +1,7 @@
 module Compiler.Monomorphize.Analysis exposing
     ( computeCtorShapesForGraph
     , lookupUnion
+    , convertCanTypeNameToMVarId
     )
 
 {-| Analysis passes for monomorphization.
@@ -34,6 +35,8 @@ import Array exposing (Array)
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.TypeEnv as TypeEnv
+import Compiler.AST.TypeIds as TypeIds
+import Compiler.Data.Id as Id
 import Compiler.Data.Index as Index
 import Compiler.Data.Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
@@ -394,34 +397,77 @@ Uses TypeSubst.applySubst to convert Can.Type Name to MonoType.
 buildCompleteCtorShapes : MVarEnv -> List Name -> List Mono.MonoType -> List Can.Ctor -> ( List Mono.CtorShape, MVarEnv )
 buildCompleteCtorShapes env vars monoArgs alts =
     let
-        subst : Substitution
-        subst =
-            List.map2 Tuple.pair vars monoArgs
-                |> Dict.fromList
+        -- Allocate fresh MVarIds for each type parameter name and build the substitution
+        ( subst, env1 ) =
+            List.foldl
+                (\( varName, monoType ) ( s, e ) ->
+                    let
+                        ( mvarId, e1 ) =
+                            State.freshMVar Mono.CEcoValue e
+                    in
+                    ( Dict.insert (Id.toComparable mvarId) monoType s
+                    , e1
+                    )
+                )
+                ( Dict.empty, env )
+                (List.map2 Tuple.pair vars monoArgs)
+
+        -- Build a name-to-MVarId mapping for converting Can.Type Name to Can.Type MVarId
+        ( nameToId, env2 ) =
+            List.foldl
+                (\varName ( acc, e ) ->
+                    let
+                        ( mvarId, e1 ) =
+                            State.freshMVar Mono.CEcoValue e
+                    in
+                    ( Dict.insert varName mvarId acc, e1 )
+                )
+                ( Dict.empty, env )
+                vars
+
+        -- Build Int-keyed substitution using the name-to-MVarId mapping
+        substById : Substitution
+        substById =
+            List.foldl
+                (\( varName, monoType ) s ->
+                    case Dict.get varName nameToId of
+                        Just mvarId ->
+                            Dict.insert (Id.toComparable mvarId) monoType s
+
+                        Nothing ->
+                            s
+                )
+                Dict.empty
+                (List.map2 Tuple.pair vars monoArgs)
     in
     List.foldl
         (\ctor ( acc, e ) ->
             let
                 ( shape, e1 ) =
-                    buildCtorShapeFromUnion e subst ctor
+                    buildCtorShapeFromUnion e substById nameToId ctor
             in
             ( acc ++ [ shape ], e1 )
         )
-        ( [], env )
+        ( [], env2 )
         alts
 
 
 {-| Build a CtorShape from a Can.Ctor using the given substitution.
+Converts Can.Type Name field types to Can.Type MVarId using nameToId mapping,
+then applies the Int-keyed substitution.
 -}
-buildCtorShapeFromUnion : MVarEnv -> Substitution -> Can.Ctor -> ( Mono.CtorShape, MVarEnv )
-buildCtorShapeFromUnion env subst (Can.Ctor ctorData) =
+buildCtorShapeFromUnion : MVarEnv -> Substitution -> Dict.Dict Name TypeIds.MVarId -> Can.Ctor -> ( Mono.CtorShape, MVarEnv )
+buildCtorShapeFromUnion env subst nameToId (Can.Ctor ctorData) =
     let
         ( monoFieldTypes, env1 ) =
             List.foldl
                 (\t ( acc, e ) ->
                     let
+                        tWithIds =
+                            convertCanTypeNameToMVarId nameToId t
+
                         ( monoT, e1 ) =
-                            TypeSubst.applySubst e subst t
+                            TypeSubst.applySubst e subst tWithIds
                     in
                     ( acc ++ [ monoT ], e1 )
                 )
@@ -434,6 +480,64 @@ buildCtorShapeFromUnion env subst (Can.Ctor ctorData) =
       }
     , env1
     )
+
+
+{-| Convert a Can.Type Name to Can.Type MVarId using a name-to-id mapping.
+Names not in the mapping are given a dummy MVarId (they'll be treated as
+unconstrained type variables by applySubst).
+-}
+convertCanTypeNameToMVarId : Dict.Dict Name TypeIds.MVarId -> Can.Type Name -> Can.Type TypeIds.MVarId
+convertCanTypeNameToMVarId nameToId canType =
+    case canType of
+        Can.TVar name ->
+            case Dict.get name nameToId of
+                Just mvarId ->
+                    Can.TVar mvarId
+
+                Nothing ->
+                    Utils.Crash.crash "Analysis" "convertCanTypeNameToMVarId" ("Unbound type variable: " ++ name)
+
+        Can.TLambda from to ->
+            Can.TLambda (convertCanTypeNameToMVarId nameToId from) (convertCanTypeNameToMVarId nameToId to)
+
+        Can.TType canonical name args ->
+            Can.TType canonical name (List.map (convertCanTypeNameToMVarId nameToId) args)
+
+        Can.TRecord fields ext ->
+            Can.TRecord
+                (Dict.map (\_ (Can.FieldType idx t) -> Can.FieldType idx (convertCanTypeNameToMVarId nameToId t)) fields)
+                (Maybe.andThen (\n -> Dict.get n nameToId) ext)
+
+        Can.TUnit ->
+            Can.TUnit
+
+        Can.TTuple a b rest ->
+            Can.TTuple
+                (convertCanTypeNameToMVarId nameToId a)
+                (convertCanTypeNameToMVarId nameToId b)
+                (List.map (convertCanTypeNameToMVarId nameToId) rest)
+
+        Can.TAlias canonical name args aliasType ->
+            Can.TAlias canonical
+                name
+                (List.map
+                    (\( n, t ) ->
+                        case Dict.get n nameToId of
+                            Just mvarId ->
+                                ( mvarId, convertCanTypeNameToMVarId nameToId t )
+
+                            Nothing ->
+                                Utils.Crash.crash "Analysis" "convertCanTypeNameToMVarId" ("Unbound alias parameter: " ++ n)
+                    )
+                    args
+                )
+                (case aliasType of
+                    Can.Holey inner ->
+                        Can.Holey (convertCanTypeNameToMVarId nameToId inner)
+
+                    Can.Filled inner ->
+                        Can.Filled (convertCanTypeNameToMVarId nameToId inner)
+                )
 
 
 {-| Compute complete ctor shapes for all custom types in the graph.
@@ -469,7 +573,7 @@ computeCtorShapesForGraph globalTypeEnv nodes =
                         Just (Can.Union unionData) ->
                             let
                                 ( completeCtors, _ ) =
-                                    buildCompleteCtorShapes State.emptyMVarEnv unionData.vars monoArgs unionData.alts
+                                    buildCompleteCtorShapes (State.initMVarEnv TypeIds.firstMVarId Dict.empty) unionData.vars monoArgs unionData.alts
                             in
                             Data.Map.insert identity key completeCtors acc
 

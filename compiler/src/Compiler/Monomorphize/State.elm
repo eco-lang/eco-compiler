@@ -4,7 +4,7 @@ module Compiler.Monomorphize.State exposing
     , LocalInstanceInfo, LocalMultiState
     , ValueInstanceInfo, ValueMultiState
     , VarEnv(..), emptyVarEnv, insertVar, lookupVar, popFrame, pushFrame, varEnvKeys
-    , MVarEnv, emptyMVarEnv, allocMVar, lookupMVarName
+    , MVarEnv, initMVarEnv, freshMVar, lookupConstraint
     )
 
 {-| State types and utilities for monomorphization.
@@ -40,15 +40,14 @@ the monomorphization process.
 
 # Monomorphization Variable Environment
 
-@docs MVarEnv, emptyMVarEnv, allocMVar, lookupMVarName
+@docs MVarEnv, initMVarEnv, freshMVar, lookupConstraint
 
 -}
 
-import Bitwise
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.TypeEnv as TypeEnv
-import Compiler.AST.TypeIds exposing (MVarId)
+import Compiler.AST.TypeIds as TypeIds exposing (MVarId)
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.BitSet as BitSet exposing (BitSet)
 import Compiler.Data.Id as Id
@@ -62,22 +61,14 @@ import System.TypeCheck.IO as IO
 {-| Precomputed metadata about a polymorphic function's type scheme.
 Cached per top-level callee to avoid repeated TLambda traversal and
 var collection at every call site.
-
-The pre-renamed variants have all type variables renamed to definition-scoped
-names (e.g., `a__def_Module_func_0`) to avoid per-call-site rename work.
-
 -}
 type alias SchemeInfo =
-    { varNames : List Name
-    , constraints : Dict Name Mono.Constraint
-    , argTypes : List (Can.Type Name)
-    , resultType : Can.Type Name
+    { varIds : List MVarId
+    , constraints : Dict Int Mono.Constraint
+    , argTypes : List (Can.Type MVarId)
+    , resultType : Can.Type MVarId
     , argCount : Int
-    , renamedFuncType : Can.Type Name
-    , renamedArgTypes : List (Can.Type Name)
-    , renamedResultType : Can.Type Name
-    , renamedVarNames : List Name
-    , preRenameMap : DataMap.Dict String Name Name
+    , schemeType : Can.Type MVarId
     }
 
 
@@ -88,73 +79,45 @@ type alias SchemeInfoCache =
 
 
 {-| Environment for tracking MVarIds during monomorphization.
-Maintains a bidirectional mapping between tvar Names and MVarIds so that
-the Name-keyed substitution can interoperate with MVarId-carrying MVars.
-
-MVarIds are derived deterministically from name hashes, so the same name
-always produces the same MVarId regardless of allocation order or which
-MVarEnv instance is used. This makes it safe to use emptyMVarEnv at any
-call site without threading — the mappings are lazily populated caches.
-
+Uses a sequential allocator with a constraint side table.
+All MVarIds are globally unique sequential Ints from a single supplier.
 -}
 type alias MVarEnv =
-    { nameToId : Dict Name MVarId -- tvar name → MVarId (cache)
-    , idToName : Dict Int Name -- Id.toComparable mvarId → tvar name (cache)
+    { nextId : MVarId
+    , constraints : Dict Int Mono.Constraint -- keyed by Id.toComparable
     }
 
 
-{-| An empty MVarEnv.
+{-| Create an MVarEnv from an initial state (produced by AssignMVarIds).
 -}
-emptyMVarEnv : MVarEnv
-emptyMVarEnv =
-    { nameToId = Dict.empty
-    , idToName = Dict.empty
+initMVarEnv : MVarId -> Dict Int Mono.Constraint -> MVarEnv
+initMVarEnv nextId constraints =
+    { nextId = nextId
+    , constraints = constraints
     }
 
 
-{-| Deterministic hash of a string to a non-negative Int for use as MVarId.
-Uses DJB2 hash algorithm.
+{-| Allocate a fresh MVarId with the given constraint.
+Returns the new id and updated environment.
 -}
-hashName : Name -> Int
-hashName name =
+freshMVar : Mono.Constraint -> MVarEnv -> ( MVarId, MVarEnv )
+freshMVar constraint env =
     let
-        step c acc =
-            -- djb2: hash * 33 + char, keep non-negative via modular arithmetic
-            Bitwise.and (acc * 33 + Char.toCode c) 0x3FFFFFFF
+        currentId =
+            env.nextId
     in
-    String.foldl step 5381 name
+    ( currentId
+    , { nextId = Id.succ currentId
+      , constraints = Dict.insert (Id.toComparable currentId) constraint env.constraints
+      }
+    )
 
 
-{-| Allocate or reuse an MVarId for a given tvar name.
-The MVarId is derived deterministically from the name hash.
-Returns the MVarId and the updated env (with cached mapping).
+{-| Look up the constraint for an MVarId. Returns Nothing if not recorded.
 -}
-allocMVar : Name -> MVarEnv -> ( MVarId, MVarEnv )
-allocMVar name env =
-    case Dict.get name env.nameToId of
-        Just existingId ->
-            ( existingId, env )
-
-        Nothing ->
-            let
-                mvarId =
-                    Id.fromComparable (hashName name)
-
-                key =
-                    Id.toComparable mvarId
-            in
-            ( mvarId
-            , { nameToId = Dict.insert name mvarId env.nameToId
-              , idToName = Dict.insert key name env.idToName
-              }
-            )
-
-
-{-| Look up the tvar Name for an MVarId. Returns the name if known.
--}
-lookupMVarName : MVarId -> MVarEnv -> Maybe Name
-lookupMVarName mvarId env =
-    Dict.get (Id.toComparable mvarId) env.idToName
+lookupConstraint : MVarId -> MVarEnv -> Maybe Mono.Constraint
+lookupConstraint mvarId env =
+    Dict.get (Id.toComparable mvarId) env.constraints
 
 
 {-| Global accumulator fields that grow monotonically during monomorphization.
@@ -174,19 +137,18 @@ type alias SpecAccum =
 
 
 {-| Traversal context fields that change on scope entry/exit during tree traversal.
-Updated by varEnv push/pop, localMulti push/pop, renameEpoch bump, currentGlobal set.
+Updated by varEnv push/pop, localMulti push/pop, currentGlobal set.
 -}
 type alias SpecContext =
     { currentModule : IO.Canonical
-    , toptNodes : DataMap.Dict (List String) TOpt.Global (TOpt.Node Name)
+    , toptNodes : DataMap.Dict (List String) TOpt.Global (TOpt.Node MVarId)
     , currentGlobal : Maybe Mono.Global
     , globalTypeEnv : TypeEnv.GlobalTypeEnv
-    , varEnv : VarEnv -- Layered mapping of variable names to their MonoTypes
+    , varEnv : VarEnv
     , localMulti : List LocalMultiState
     , valueMulti : List ValueMultiState
     , lambdaCounter : Int
-    , renameEpoch : Int -- Monotonically increasing counter for unique __callee names
-    , mvarEnv : MVarEnv -- Bidirectional mapping between tvar Names and MVarIds
+    , mvarEnv : MVarEnv
     }
 
 
@@ -205,10 +167,10 @@ type WorkItem
     = SpecializeGlobal Mono.SpecId
 
 
-{-| Substitution mapping type variable names to their concrete monomorphic types.
+{-| Substitution mapping MVarIds (as Int keys) to their concrete monomorphic types.
 -}
 type alias Substitution =
-    Dict Name Mono.MonoType
+    Dict Int Mono.MonoType
 
 
 {-| Layered environment for variable type lookups. Uses a stack of frames
@@ -323,23 +285,23 @@ type alias ValueInstanceInfo =
 
     - defName    : the let-bound value we're multi-specializing
     - defCanType : the canonical type of the value
-    - def        : the original TOpt.Def Name
+    - def        : the original TOpt.Def MVarId
     - instances  : all discovered (typeKey -> instance) mappings,
                    keyed by Mono.toComparableMonoType of the instance type.
 
 -}
 type alias ValueMultiState =
     { defName : Name
-    , defCanType : Can.Type Name
-    , def : TOpt.Def Name
+    , defCanType : Can.Type MVarId
+    , def : TOpt.Def MVarId
     , instances : Dict String ValueInstanceInfo
     }
 
 
-{-| Initialize the monomorphization state with empty worklist and registry.
+{-| Initialize the monomorphization state.
 -}
-initState : IO.Canonical -> DataMap.Dict (List String) TOpt.Global (TOpt.Node Name) -> TypeEnv.GlobalTypeEnv -> MonoState
-initState currentModule toptNodes globalTypeEnv =
+initState : IO.Canonical -> DataMap.Dict (List String) TOpt.Global (TOpt.Node MVarId) -> TypeEnv.GlobalTypeEnv -> MVarEnv -> MonoState
+initState currentModule toptNodes globalTypeEnv mvarEnv =
     { accum =
         { worklist = []
         , nodes = Dict.empty
@@ -360,7 +322,6 @@ initState currentModule toptNodes globalTypeEnv =
         , localMulti = []
         , valueMulti = []
         , lambdaCounter = 0
-        , renameEpoch = 0
-        , mvarEnv = emptyMVarEnv
+        , mvarEnv = mvarEnv
         }
     }

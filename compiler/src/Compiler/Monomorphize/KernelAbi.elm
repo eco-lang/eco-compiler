@@ -2,6 +2,8 @@ module Compiler.Monomorphize.KernelAbi exposing
     ( KernelAbiMode(..), deriveKernelAbiMode
     , canTypeToMonoType_preserveVars, canTypeToMonoType_numberBoxed
     , containerSpecializedKernels, comparePair
+    , freeTypeVariablesWithConstraints, constraintFromName
+    , freeVarIds
     )
 
 {-| Kernel ABI type derivation for monomorphization.
@@ -36,10 +38,17 @@ Three cases:
 
 @docs containerSpecializedKernels, comparePair
 
+
+# Free Variable Extraction (for AssignMVarIds, operates on Can.Type Name)
+
+@docs freeTypeVariablesWithConstraints, constraintFromName
+
 -}
 
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Monomorphized as Mono
+import Compiler.AST.TypeIds as TypeIds exposing (MVarId)
+import Compiler.Data.Id as Id
 import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Monomorphize.State as State exposing (MVarEnv)
 import Data.Set as EverySet exposing (EverySet)
@@ -71,26 +80,31 @@ type KernelAbiMode
 Arguments:
 
   - `(home, name)`: Kernel identifier (e.g., `("List", "cons")`)
-  - `canFuncType`: Canonical function type from `TOpt.VarKernel`
+  - `canFuncType`: Canonical function type (Can.Type MVarId)
+  - `mvarEnv`: MVarEnv for constraint lookups
 
 Returns the appropriate `KernelAbiMode`.
 
 -}
-deriveKernelAbiMode : ( String, String ) -> Can.Type Name -> KernelAbiMode
-deriveKernelAbiMode ( home, name ) canFuncType =
+deriveKernelAbiMode : ( String, String ) -> Can.Type MVarId -> MVarEnv -> KernelAbiMode
+deriveKernelAbiMode ( home, name ) canFuncType mvarEnv =
     -- Debug kernels are always polymorphic
     if EverySet.member List.singleton home alwaysPolymorphicModules then
         PreserveVars
 
     else
         let
-            vars =
-                freeTypeVariablesWithConstraints canFuncType
+            varIds =
+                freeVarIds canFuncType []
 
             hasNumberVars =
-                List.any (\( _, c ) -> c == Mono.CNumber) vars
+                List.any
+                    (\mvarId ->
+                        State.lookupConstraint mvarId mvarEnv == Just Mono.CNumber
+                    )
+                    varIds
         in
-        if List.isEmpty vars then
+        if List.isEmpty varIds then
             -- Case A: Monomorphic kernel - use substitution
             UseSubstitution
 
@@ -162,11 +176,13 @@ comparePair ( a, b ) =
 
 
 -- ============================================================================
--- TYPE VARIABLE EXTRACTION
+-- FREE VARIABLE EXTRACTION (Name-based, for AssignMVarIds)
 -- ============================================================================
 
 
 {-| Extract free type variables with their constraints from a canonical type.
+This operates on Can.Type Name and is used during AssignMVarIds
+(before the rewrite to MVarId).
 -}
 freeTypeVariablesWithConstraints : Can.Type Name -> List ( Name, Mono.Constraint )
 freeTypeVariablesWithConstraints canType =
@@ -190,8 +206,21 @@ freeVarsHelper canType acc =
         Can.TType _ _ args ->
             List.foldl freeVarsHelper acc args
 
-        Can.TRecord fields _ ->
-            Dict.foldl (\_ (Can.FieldType _ t) a -> freeVarsHelper t a) acc fields
+        Can.TRecord fields maybeExt ->
+            let
+                fieldAcc =
+                    Dict.foldl (\_ (Can.FieldType _ t) a -> freeVarsHelper t a) acc fields
+            in
+            case maybeExt of
+                Just extName ->
+                    if List.member extName fieldAcc then
+                        fieldAcc
+
+                    else
+                        extName :: fieldAcc
+
+                Nothing ->
+                    fieldAcc
 
         Can.TTuple a b rest ->
             List.foldl freeVarsHelper acc (a :: b :: rest)
@@ -211,6 +240,7 @@ freeVarsHelper canType acc =
 
 
 {-| Determine constraint from type variable name.
+Used during AssignMVarIds (before the rewrite to MVarId).
 -}
 constraintFromName : Name -> Mono.Constraint
 constraintFromName name =
@@ -223,7 +253,64 @@ constraintFromName name =
 
 
 -- ============================================================================
--- TYPE CONVERTERS
+-- FREE VARIABLE EXTRACTION (MVarId-based, for post-rewrite)
+-- ============================================================================
+
+
+{-| Collect all free type variable MVarIds from a canonical type.
+-}
+freeVarIds : Can.Type MVarId -> List MVarId -> List MVarId
+freeVarIds canType acc =
+    case canType of
+        Can.TVar mvarId ->
+            if List.any (\id -> Id.toComparable id == Id.toComparable mvarId) acc then
+                acc
+
+            else
+                mvarId :: acc
+
+        Can.TLambda from to ->
+            freeVarIds to (freeVarIds from acc)
+
+        Can.TType _ _ args ->
+            List.foldl freeVarIds acc args
+
+        Can.TRecord fields maybeExt ->
+            let
+                fieldAcc =
+                    Dict.foldl (\_ (Can.FieldType _ t) a -> freeVarIds t a) acc fields
+            in
+            case maybeExt of
+                Just extId ->
+                    if List.any (\id -> Id.toComparable id == Id.toComparable extId) fieldAcc then
+                        fieldAcc
+
+                    else
+                        extId :: fieldAcc
+
+                Nothing ->
+                    fieldAcc
+
+        Can.TTuple a b rest ->
+            List.foldl freeVarIds acc (a :: b :: rest)
+
+        Can.TUnit ->
+            acc
+
+        Can.TAlias _ _ _ (Can.Filled inner) ->
+            freeVarIds inner acc
+
+        Can.TAlias _ _ args (Can.Holey inner) ->
+            let
+                argVars =
+                    List.foldl (\( _, t ) a -> freeVarIds t a) acc args
+            in
+            freeVarIds inner argVars
+
+
+
+-- ============================================================================
+-- TYPE CONVERTERS (MVarId-based, for post-rewrite)
 -- ============================================================================
 
 
@@ -232,15 +319,12 @@ constraintFromName name =
 Used for polymorphic kernels where the ABI must be all-boxed.
 
 -}
-canTypeToMonoType_preserveVars : MVarEnv -> Can.Type Name -> ( Mono.MonoType, MVarEnv )
+canTypeToMonoType_preserveVars : MVarEnv -> Can.Type MVarId -> ( Mono.MonoType, MVarEnv )
 canTypeToMonoType_preserveVars env canType =
     case canType of
-        Can.TVar name ->
-            let
-                ( mvarId, env1 ) =
-                    State.allocMVar name env
-            in
-            ( Mono.MVar mvarId Mono.CEcoValue, env1 )
+        Can.TVar mvarId ->
+            -- Directly reuse the MVarId, force CEcoValue constraint for ABI
+            ( Mono.MVar mvarId Mono.CEcoValue, env )
 
         Can.TLambda from to ->
             let
@@ -303,16 +387,12 @@ Used for number-boxed kernels (add, sub, mul, pow) where the C ABI is boxed
 but the result type should still resolve to MInt or MFloat.
 
 -}
-canTypeToMonoType_numberBoxed : MVarEnv -> Can.Type Name -> ( Mono.MonoType, MVarEnv )
+canTypeToMonoType_numberBoxed : MVarEnv -> Can.Type MVarId -> ( Mono.MonoType, MVarEnv )
 canTypeToMonoType_numberBoxed env canType =
     case canType of
-        Can.TVar name ->
+        Can.TVar mvarId ->
             -- Treat ALL vars as CEcoValue for ABI purposes
-            let
-                ( mvarId, env1 ) =
-                    State.allocMVar name env
-            in
-            ( Mono.MVar mvarId Mono.CEcoValue, env1 )
+            ( Mono.MVar mvarId Mono.CEcoValue, env )
 
         Can.TLambda from to ->
             let
@@ -371,7 +451,7 @@ canTypeToMonoType_numberBoxed env canType =
 
 {-| Helper for converting TType nodes with shared logic.
 -}
-convertTType : (MVarEnv -> Can.Type Name -> ( Mono.MonoType, MVarEnv )) -> MVarEnv -> IO.Canonical -> Name -> List (Can.Type Name) -> ( Mono.MonoType, MVarEnv )
+convertTType : (MVarEnv -> Can.Type MVarId -> ( Mono.MonoType, MVarEnv )) -> MVarEnv -> IO.Canonical -> Name -> List (Can.Type MVarId) -> ( Mono.MonoType, MVarEnv )
 convertTType convert env canonical name args =
     let
         ( monoArgs, env1 ) =

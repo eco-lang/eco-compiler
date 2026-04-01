@@ -1,8 +1,12 @@
-module Compiler.Data.Id exposing (Id, toComparable, fromComparable)
+module Compiler.Data.Id exposing (Id, toComparable, first, succ)
 
 {-| Phantom-typed unique identifier supply.
 
-@docs Id, toComparable, fromComparable
+IDs are opaque and can only be created sequentially via `first` and `succ`.
+This ensures all IDs are non-negative and globally unique when allocated
+from a single supply.
+
+@docs Id, toComparable, first, succ
 
 -}
 
@@ -25,9 +29,15 @@ toComparable (Id n) =
     n
 
 
-{-| Reconstruct an Id from a comparable Int.
-Used internally for deterministic hash-based Id allocation.
+{-| The first Id in a sequential supply (value 0).
 -}
-fromComparable : Int -> Id a
-fromComparable n =
-    Id n
+first : Id a
+first =
+    Id 0
+
+
+{-| The next Id after the given one.
+-}
+succ : Id a -> Id a
+succ (Id n) =
+    Id (n + 1)

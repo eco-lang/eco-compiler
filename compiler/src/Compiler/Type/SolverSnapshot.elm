@@ -260,7 +260,7 @@ buildLocalView mvarEnv substDict st =
                 -- Error vars get a fresh MVarId; env update is lost but acceptable for error sentinels
                 let
                     ( errorMVarId, _ ) =
-                        State.allocMVar "error" mvarEnv
+                        State.freshMVar Mono.CEcoValue mvarEnv
                 in
                 Mono.MVar errorMVarId Mono.CEcoValue
 
