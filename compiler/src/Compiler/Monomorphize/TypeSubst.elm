@@ -912,19 +912,38 @@ unifyCallSiteDirect env schemeArgTypes schemeResultType argMonoTypes baseSubst =
         ( substAfterArgs, env1 ) =
             unifyArgTypesZip env schemeArgTypes argMonoTypes baseSubst
 
-        -- Resolve arg mono types through updated substitution
-        resolvedArgs =
+        -- Resolve supplied arg mono types through updated substitution
+        resolvedSuppliedArgs =
             List.map (resolveMonoVars env1 substAfterArgs) argMonoTypes
 
+        -- Resolve REMAINING scheme arg types through substitution
+        remainingSchemeArgs =
+            List.drop (List.length argMonoTypes) schemeArgTypes
+
+        ( resolvedRemainingArgs, env2 ) =
+            List.foldl
+                (\canArg ( accArgs, accEnv ) ->
+                    let
+                        ( monoArg, envN ) =
+                            applySubst accEnv substAfterArgs canArg
+                    in
+                    ( accArgs ++ [ monoArg ], envN )
+                )
+                ( [], env1 )
+                remainingSchemeArgs
+
+        resolvedAllArgs =
+            resolvedSuppliedArgs ++ resolvedRemainingArgs
+
         -- Apply substitution to result type
-        ( resultMono, env2 ) =
-            applySubst env1 substAfterArgs schemeResultType
+        ( resultMono, env3 ) =
+            applySubst env2 substAfterArgs schemeResultType
 
         -- Build the function mono type directly
         funcMonoType =
-            buildCurriedFuncType schemeArgTypes resolvedArgs resultMono
+            buildCurriedFuncType schemeArgTypes resolvedAllArgs resultMono
     in
-    ( substAfterArgs, funcMonoType, env2 )
+    ( substAfterArgs, funcMonoType, env3 )
 
 
 {-| Zip scheme arg types with mono arg types and unify pairwise.
