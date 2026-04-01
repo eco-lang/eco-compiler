@@ -1132,6 +1132,34 @@ oracle: Every MonoUnbox segment's container type exists in ctorShapes with exact
   types.
 tests: compiler/tests/TestLogic/Monomorphize/UnboxCtorLayoutConsistencyTest.elm
 --
+--
+name: MonoVarGlobal type arity matches referenced node arity
+phase: monomorphization (checked after GlobalOpt)
+invariants: MONO_027
+ir: MonoVarGlobal references in MonoGraph after GlobalOpt
+logic: For each reachable MonoNode in the optimized MonoGraph, walk all MonoExpr trees and
+  collect every MonoVarGlobal(region, specId, monoType). For each such reference:
+  * Look up graph.nodes[specId] to get the actual MonoNode.
+  * Skip if the node is Nothing (pruned) or a non-function node (MonoCtor, MonoEnum,
+    MonoExtern, MonoManagerLeaf) — these do not have closure-level arity.
+  * Compute the flattened function arity of the MonoVarGlobal's carried monoType
+    (recursively peel MFunction layers and count all parameter slots).
+  * Compute the flattened function arity of the node's monoType (via Mono.nodeType).
+  * Assert the two arities are equal.
+  * A mismatch indicates that buildCurriedFuncType (or similar) produced a truncated
+    function type for a partial application, losing unsupplied parameter stages.
+  The check runs after GlobalOpt because staging canonicalization (GOPT_001) may adjust
+  node arities by flattening closure parameter lists. After GlobalOpt, the node arity is
+  the definitive source of truth.
+inputs: Monomorphized + GlobalOpt graphs from StandardTestSuites, plus targeted programs with:
+  * SKI-style combinators built from partial application: b = s (k s) k, c = s (b b s) (k k)
+  * Functions where partial application returns a function: getOp op = case op of ...
+  * Partial application of multi-param functions in let bindings: let mapF = map f in ...
+  * Higher-order functions applied with fewer args than total params
+oracle: Every MonoVarGlobal's carried type has the same flattened arity as the node it
+  references. Any arity mismatch is a monomorphization type-truncation bug.
+tests: compiler/tests/TestLogic/Monomorphize/MonoVarGlobalArityConsistencyTest.elm
+--
 
 ---
 
