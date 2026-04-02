@@ -170,8 +170,21 @@ enqueueSpec :
     -> Maybe Mono.LambdaId
     -> MonoState
     -> ( Mono.SpecId, MonoState )
-enqueueSpec global monoType maybeLambda state =
+enqueueSpec global rawMonoType maybeLambda state =
     let
+        monoType =
+            Mono.forceCNumberToInt rawMonoType
+
+        _ =
+            if Mono.containsAnyMVar monoType && not (Mono.containsCEcoMVar monoType) then
+                Utils.Crash.crash
+                    ("enqueueSpec: residual CNumber MVar in monoType: "
+                        ++ Mono.monoTypeToDebugString monoType
+                    )
+
+            else
+                ()
+
         accum =
             state.accum
 
@@ -1276,6 +1289,20 @@ specializeExpr expr subst state =
 
                 ( processedArgs, argTypes, state1 ) =
                     processCallArgs args subst state
+
+                -- Refine caller substitution with container element types from arg exprs.
+                -- This pushes bindings like a=MInt from List Int args back into subst,
+                -- so helpers like foldrHelper get distinct specializations per element type.
+                -- Skipped for local multi-target calls (they share MVarIds, no freshening).
+                ( substForCall, mvarEnv1 ) =
+                    refineSubstFromArgExprs state1.ctx.mvarEnv args argTypes subst
+
+                state1r =
+                    let
+                        ctx =
+                            state1.ctx
+                    in
+                    { state1 | ctx = { ctx | mvarEnv = mvarEnv1 } }
             in
             case func of
                 TOpt.VarGlobal funcRegion global funcMeta ->
@@ -1284,12 +1311,12 @@ specializeExpr expr subst state =
                             funcMeta.tipe
 
                         ( schemeInfo, state1a ) =
-                            getOrBuildSchemeInfo funcCanType (Just global) state1
+                            getOrBuildSchemeInfo funcCanType (Just global) state1r
 
                         -- Direct unification: scheme MVarIds are freshened, so they never
                         -- collide with caller substitutions.
                         ( callSubst, funcMonoTypeRaw, _ ) =
-                            TypeSubst.unifyCallSiteDirect state1a.ctx.mvarEnv schemeInfo.argTypes schemeInfo.resultType argTypes subst
+                            TypeSubst.unifyCallSiteDirect state1a.ctx.mvarEnv schemeInfo.argTypes schemeInfo.resultType argTypes substForCall
 
                         funcMonoType =
                             Mono.forceCNumberToInt funcMonoTypeRaw
@@ -1320,11 +1347,11 @@ specializeExpr expr subst state =
                             funcMeta.tipe
 
                         ( schemeInfo, state1a ) =
-                            getOrBuildSchemeInfo funcCanType Nothing state1
+                            getOrBuildSchemeInfo funcCanType Nothing state1r
 
                         -- Direct unification: scheme MVarIds are freshened by buildSchemeInfo
                         ( callSubst, _, _ ) =
-                            TypeSubst.unifyCallSiteDirect state1a.ctx.mvarEnv schemeInfo.argTypes schemeInfo.resultType argTypes subst
+                            TypeSubst.unifyCallSiteDirect state1a.ctx.mvarEnv schemeInfo.argTypes schemeInfo.resultType argTypes substForCall
 
                         -- Kernel ABI derivation uses funcCanType directly (no renaming)
                         funcMonoType =
@@ -1350,11 +1377,11 @@ specializeExpr expr subst state =
                             funcMeta.tipe
 
                         ( schemeInfo, state1a ) =
-                            getOrBuildSchemeInfo funcCanType Nothing state1
+                            getOrBuildSchemeInfo funcCanType Nothing state1r
 
                         -- Direct unification: scheme MVarIds are freshened by buildSchemeInfo
                         ( callSubst, _, _ ) =
-                            TypeSubst.unifyCallSiteDirect state1a.ctx.mvarEnv schemeInfo.argTypes schemeInfo.resultType argTypes subst
+                            TypeSubst.unifyCallSiteDirect state1a.ctx.mvarEnv schemeInfo.argTypes schemeInfo.resultType argTypes substForCall
 
                         -- Kernel ABI derivation uses funcCanType directly (no renaming)
                         funcMonoType =
@@ -1434,10 +1461,10 @@ specializeExpr expr subst state =
                             -- Non-local function: direct unification (no renaming needed with global MVarIds)
                             let
                                 ( schemeInfo, state1a ) =
-                                    getOrBuildSchemeInfo funcCanType Nothing state1
+                                    getOrBuildSchemeInfo funcCanType Nothing state1r
 
                                 ( callSubst, funcMonoTypeRaw, _ ) =
-                                    TypeSubst.unifyCallSiteDirect state1a.ctx.mvarEnv schemeInfo.argTypes schemeInfo.resultType argTypes subst
+                                    TypeSubst.unifyCallSiteDirect state1a.ctx.mvarEnv schemeInfo.argTypes schemeInfo.resultType argTypes substForCall
 
                                 funcMonoType =
                                     Mono.forceCNumberToInt funcMonoTypeRaw
@@ -2309,6 +2336,29 @@ specializeExprs exprs subst state =
                 exprs
     in
     ( List.reverse revAcc, finalState )
+
+
+{-| Refine a substitution using the canonical types of call-site arguments.
+
+For each arg expression, unify its canonical type (TOpt.typeOf) with its
+computed MonoType via unifyExtend. This pushes container element bindings
+(e.g. a = MInt from List Int) back into the substitution, even when the
+callee's callback types are too generic to provide them.
+
+-}
+refineSubstFromArgExprs :
+    MVarEnv
+    -> List (TOpt.Expr MVarId)
+    -> List Mono.MonoType
+    -> Substitution
+    -> ( Substitution, MVarEnv )
+refineSubstFromArgExprs mvarEnv args argTypes subst =
+    List.foldl
+        (\( expr, argMono ) ( s, env ) ->
+            TypeSubst.unifyExtend env (TOpt.typeOf expr) argMono s
+        )
+        ( subst, mvarEnv )
+        (List.map2 Tuple.pair args argTypes)
 
 
 {-| Process call arguments, deferring accessor specialization.
