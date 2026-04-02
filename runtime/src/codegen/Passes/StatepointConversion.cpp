@@ -127,7 +127,6 @@ bool eco::convertSafepointMarkers(Module &module) {
             // Build statepoint wrapping the target call.
             // Format: gc.statepoint(id, patchBytes, callee, numCallArgs, flags, <callArgs...>)
             //         [ "gc-live"(<gc roots...>) ]
-            Function *targetCallee = targetCall->getCalledFunction();
             FunctionType *targetFnTy = targetCall->getFunctionType();
 
             SmallVector<Value*, 16> statepointArgs;
@@ -241,7 +240,7 @@ bool eco::convertSafepointMarkers(Module &module) {
 }
 
 void eco::removeDeadGCRelocates(Module &module) {
-    auto *relocateDecl = Intrinsic::getDeclaration(
+    auto *relocateDecl = Intrinsic::getOrInsertDeclaration(
         &module, Intrinsic::experimental_gc_relocate,
         {PointerType::get(module.getContext(), 1)});
     if (!relocateDecl)
@@ -280,7 +279,7 @@ void eco::removeDeadGCRelocates(Module &module) {
 
     // Reorder gc.relocate instructions so they immediately follow their
     // statepoint, before any subsequent statepoint in the same block.
-    auto *statepointDecl = Intrinsic::getDeclaration(
+    auto *statepointDecl = Intrinsic::getOrInsertDeclaration(
         &module, Intrinsic::experimental_gc_statepoint,
         {PointerType::get(module.getContext(), 0)});
     if (!statepointDecl)
@@ -323,7 +322,7 @@ void eco::removeDeadGCRelocates(Module &module) {
                 if (!misplacedRelocates.empty()) {
                     Instruction *insertPt = sp->getNextNode();
                     for (auto *reloc : misplacedRelocates)
-                        reloc->moveBefore(insertPt);
+                        reloc->moveBefore(insertPt->getIterator());
                 }
             }
         }
