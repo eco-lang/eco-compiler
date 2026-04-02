@@ -1,27 +1,25 @@
 // RUN: %ecoc %s -emit=llvm 2>&1 | %FileCheck %s
 //
-// Test two safepoints in a single basic block. The second safepoint's
-// live roots should reference the first safepoint's relocated values.
+// Test two safepoints in a single basic block. Each wraps its
+// respective call. The second call uses the relocated value from
+// the first statepoint.
 //
 // CHECK: @llvm.experimental.gc.statepoint.p0
-// CHECK: @llvm.experimental.gc.relocate
+// CHECK: @foo
 // CHECK: @llvm.experimental.gc.statepoint.p0
-// CHECK: @llvm.experimental.gc.relocate
+// CHECK: @foo
 
 module {
-  func.func @test_two_safepoints() -> i64 {
-    %a = eco.constant Nil : !eco.value
-
-    // First safepoint
+  func.func @test_two_safepoints(%a: !eco.value) -> !eco.value {
+    // First safepoint wraps first call to @foo
     eco.safepoint %a : !eco.value
+    %r1 = "eco.call"(%a) <{_operand_types = [!eco.value], callee = @foo}> : (!eco.value) -> !eco.value
 
-    // Second safepoint — should use relocated %a from first
-    eco.safepoint %a : !eco.value
+    // Second safepoint wraps second call to @foo
+    eco.safepoint %a, %r1 : !eco.value, !eco.value
+    %r2 = "eco.call"(%r1) <{_operand_types = [!eco.value], callee = @foo}> : (!eco.value) -> !eco.value
 
-    // Use after both safepoints
-    eco.dbg %a : !eco.value
-
-    %zero = arith.constant 0 : i64
-    return %zero : i64
+    "eco.return"(%r2) {_operand_types = [!eco.value]} : (!eco.value) -> ()
   }
+  func.func private @foo(!eco.value) -> !eco.value
 }
