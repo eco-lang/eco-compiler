@@ -44,6 +44,22 @@ type alias Ctx =
 
 
 
+{-| Run a function with a fresh binding-local SchemeEnv, then discard the
+binding-local env and restore the outer env, keeping only the evolved global state.
+-}
+withFreshBinding : Ctx -> (Ctx -> ( a, Ctx )) -> ( a, Ctx )
+withFreshBinding outerCtx work =
+    let
+        bindingCtx =
+            { env = Dict.empty, state = outerCtx.state }
+
+        ( result, bindingCtx1 ) =
+            work bindingCtx
+    in
+    ( result, { env = outerCtx.env, state = bindingCtx1.state } )
+
+
+
 -- ============================================================================
 -- ENTRY POINT
 -- ============================================================================
@@ -225,6 +241,7 @@ rewriteNodes cmp nodes state =
         )
         ( DMap.empty, state )
         nodes
+
 
 
 rewriteNode : Ctx -> TOpt.Node Name -> ( TOpt.Node TypeIds.MVarId, Ctx )
@@ -738,8 +755,18 @@ rewriteDataMapExprs ctx dmap =
 
 
 rewriteValueDefs : Ctx -> List ( Name, TOpt.Expr Name ) -> ( List ( Name, TOpt.Expr TypeIds.MVarId ), Ctx )
-rewriteValueDefs =
-    rewriteNamedExprList
+rewriteValueDefs ctx defs =
+    List.foldl
+        (\( name, expr ) ( acc, outerCtx ) ->
+            let
+                ( newExpr, outerCtx1 ) =
+                    withFreshBinding outerCtx (\bindingCtx -> rewriteExpr bindingCtx expr)
+            in
+            ( ( name, newExpr ) :: acc, outerCtx1 )
+        )
+        ( [], ctx )
+        defs
+        |> Tuple.mapFirst List.reverse
 
 
 rewriteDefs : Ctx -> List (TOpt.Def Name) -> ( List (TOpt.Def TypeIds.MVarId), Ctx )
@@ -758,30 +785,37 @@ rewriteDefs ctx defs =
 
 
 rewriteDef : Ctx -> TOpt.Def Name -> ( TOpt.Def TypeIds.MVarId, Ctx )
-rewriteDef ctx def =
+rewriteDef outerCtx def =
     case def of
         TOpt.Def region name body canType ->
-            let
-                ( newType, ctx1 ) =
-                    rewriteCanType ctx canType
+            withFreshBinding outerCtx
+                (\bindingCtx ->
+                    let
+                        ( newType, bindingCtx1 ) =
+                            rewriteCanType bindingCtx canType
 
-                ( newBody, ctx2 ) =
-                    rewriteExpr ctx1 body
-            in
-            ( TOpt.Def region name newBody newType, ctx2 )
+                        ( newBody, bindingCtx2 ) =
+                            rewriteExpr bindingCtx1 body
+                    in
+                    ( TOpt.Def region name newBody newType, bindingCtx2 )
+                )
 
         TOpt.TailDef region name args body canType maybeTvar ->
-            let
-                ( newType, ctx1 ) =
-                    rewriteCanType ctx canType
+            withFreshBinding outerCtx
+                (\bindingCtx ->
+                    let
+                        ( newType, bindingCtx1 ) =
+                            rewriteCanType bindingCtx canType
 
-                ( newArgs, ctx2 ) =
-                    rewriteTrackedArgs ctx1 args
+                        ( newArgs, bindingCtx2 ) =
+                            rewriteTrackedArgs bindingCtx1 args
 
-                ( newBody, ctx3 ) =
-                    rewriteExpr ctx2 body
-            in
-            ( TOpt.TailDef region name newArgs newBody newType maybeTvar, ctx3 )
+                        ( newBody, bindingCtx3 ) =
+                            rewriteExpr bindingCtx2 body
+                    in
+                    ( TOpt.TailDef region name newArgs newBody newType maybeTvar, bindingCtx3 )
+                )
+
 
 
 rewriteDestructor : Ctx -> TOpt.Destructor Name -> ( TOpt.Destructor TypeIds.MVarId, Ctx )
