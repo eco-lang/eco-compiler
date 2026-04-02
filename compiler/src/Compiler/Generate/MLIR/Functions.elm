@@ -84,7 +84,22 @@ generateNode ctx specId node =
         funcName : String
         funcName =
             specIdToFuncName ctx.registry specId
+
+        ( ops, dirtyCtx ) =
+            generateNodeInner ctx funcName specId node
+
+        -- Reset varMappings and definedSsaVars after each node.
+        -- Each node generates one or more top-level func.func ops, each with
+        -- their own SSA scope. The dirty context carries stale var entries
+        -- from the node's body compilation that must not leak to the next node.
+        cleanCtx =
+            { dirtyCtx | varMappings = Dict.empty, definedSsaVars = Set.empty }
     in
+    ( ops, cleanCtx )
+
+
+generateNodeInner : Ctx.Context -> String -> Mono.SpecId -> Mono.MonoNode -> ( List MlirOp, Ctx.Context )
+generateNodeInner ctx funcName specId node =
     case node of
         Mono.MonoDefine expr monoType ->
             generateDefine ctx funcName expr monoType

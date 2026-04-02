@@ -68,8 +68,13 @@ processLambdas ctx =
                             let
                                 ( ops, newCtx ) =
                                     generateLambdaFunc accCtx lambda
+
+                                -- Reset varMappings/definedSsaVars after each lambda func
+                                -- to prevent stale entries leaking to the next lambda.
+                                cleanCtx =
+                                    { newCtx | varMappings = Dict.empty, definedSsaVars = Set.empty }
                             in
-                            ( List.reverse ops ++ accOps, newCtx )
+                            ( List.reverse ops ++ accOps, cleanCtx )
                         )
                         ( [], ctxCleared )
                         dedupedLambdas
