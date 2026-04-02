@@ -137,11 +137,40 @@ bool eco::convertSafepointMarkers(Module &module) {
             statepoint->addParamAttr(2,
                 Attribute::get(ctx, Attribute::ElementType, calleeFnTy));
 
-            // Step 1.4: Emit gc.relocate + ptrtoint after the statepoint
+            // Step 1.4: Determine which gc-live values have post-statepoint uses,
+            // then emit gc.relocate + ptrtoint ONLY for those values.
+            // Emitting dead gc.relocate causes LLVM SelectionDAG assertion failures:
+            // - At -O0: FastISel marks dead relocates as foldable and never visits them
+            // - At -O2: optimizer can reorder a live relocate past a later statepoint,
+            //   but dead relocates compound the problem by cluttering PendingGCRelocateCalls
+            //
+            // First pass: find which original i64 values have dominated uses to rewrite.
+            SmallVector<SmallVector<Use*, 8>, 8> allUsesToRewrite(originalInts.size());
+            for (unsigned i = 0; i < originalInts.size(); i++) {
+                Value *origInt = originalInts[i];
+                if (!origInt)
+                    continue;
+
+                for (auto &U : origInt->uses()) {
+                    auto *userInst = dyn_cast<Instruction>(U.getUser());
+                    if (!userInst)
+                        continue;
+                    if (userInst == statepoint)
+                        continue;
+                    if (userInst == gcLiveArgs[i])
+                        continue;
+                    if (DT.dominates(statepoint, userInst))
+                        allUsesToRewrite[i].push_back(&U);
+                }
+            }
+
+            // Second pass: emit gc.relocate only for values with uses to rewrite.
             builder.SetInsertPoint(statepoint->getNextNode());
 
-            SmallVector<Value*, 8> relocatedInts;
             for (unsigned i = 0; i < originalInts.size(); i++) {
+                if (allUsesToRewrite[i].empty())
+                    continue;  // No post-statepoint uses — skip relocate entirely
+
                 auto *idx = ConstantInt::get(Type::getInt32Ty(ctx), i);
 
                 // gc.relocate(token, baseIdx, derivedIdx) -> ptr addrspace(1)
@@ -150,61 +179,10 @@ bool eco::convertSafepointMarkers(Module &module) {
 
                 // ptrtoint ptr addrspace(1) -> i64
                 auto *relocated = builder.CreatePtrToInt(relocate, i64Ty);
-                relocatedInts.push_back(relocated);
-            }
 
-            // Step 1.5: Rewrite post-safepoint SSA uses
-            for (unsigned i = 0; i < originalInts.size(); i++) {
-                Value *origInt = originalInts[i];
-                if (!origInt)
-                    continue;  // pattern didn't match, skip
-
-                Value *newInt = relocatedInts[i];
-
-                // Collect uses to rewrite (can't modify use list while iterating)
-                SmallVector<Use*, 16> usesToRewrite;
-                for (auto &U : origInt->uses()) {
-                    auto *userInst = dyn_cast<Instruction>(U.getUser());
-                    if (!userInst)
-                        continue;
-                    // Skip the statepoint itself
-                    if (userInst == statepoint)
-                        continue;
-                    // Skip the inttoptr that feeds into gc-live
-                    if (userInst == gcLiveArgs[i])
-                        continue;
-                    // Skip relocate/ptrtoint instructions we just created
-                    if (userInst == newInt ||
-                        (isa<CallInst>(userInst) && cast<CallInst>(userInst)->getCalledFunction() == relocateDecl &&
-                         cast<CallInst>(userInst)->getArgOperand(0) == statepoint))
-                        continue;
-                    // Only rewrite uses dominated by this statepoint
-                    if (DT.dominates(statepoint, userInst))
-                        usesToRewrite.push_back(&U);
-                }
-
-                for (auto *U : usesToRewrite)
-                    U->set(newInt);
-            }
-
-            // Step 1.6: Remove dead gc.relocate + ptrtoint pairs.
-            // LLVM's SelectionDAG asserts that every gc.relocate in the same
-            // block as its statepoint is visited during instruction selection.
-            // Dead relocates (no uses after SSA rewriting) trigger this assert
-            // at both -O0 (FastISel issue #56158) and -O2 (startNewStatepoint
-            // sees pending relocates from a prior statepoint in the same block).
-            for (unsigned i = 0; i < relocatedInts.size(); i++) {
-                auto *ptrToInt = cast<Instruction>(relocatedInts[i]);
-                // The ptrtoint's only operand is the gc.relocate call
-                auto *relocate = cast<Instruction>(ptrToInt->getOperand(0));
-
-                if (ptrToInt->use_empty()) {
-                    ptrToInt->eraseFromParent();
-                    // The gc.relocate may still be used if the ptrtoint was
-                    // the only user. Check before erasing.
-                    if (relocate->use_empty())
-                        relocate->eraseFromParent();
-                }
+                // Rewrite post-statepoint uses to the relocated value
+                for (auto *U : allUsesToRewrite[i])
+                    U->set(relocated);
             }
 
             // Remove the marker call
@@ -261,6 +239,70 @@ void eco::removeDeadGCRelocates(Module &module) {
             }
             relocCall->eraseFromParent();
             changed = true;
+        }
+    }
+
+    // Reorder gc.relocate instructions so they immediately follow their
+    // statepoint, before any subsequent statepoint in the same block.
+    // LLVM's optimizer can reorder gc.relocates past other statepoints
+    // (no data dependency), but SelectionDAG's startNewStatepoint asserts
+    // that all relocates from the prior statepoint have been visited.
+    auto *statepointDecl = Intrinsic::getDeclaration(
+        &module, Intrinsic::experimental_gc_statepoint,
+        {PointerType::get(module.getContext(), 0)});
+    if (!statepointDecl)
+        return;
+
+    for (auto &F : module) {
+        for (auto &BB : F) {
+            // Collect statepoints in this block in order
+            SmallVector<CallInst*, 4> statepoints;
+            for (auto &I : BB) {
+                if (auto *CI = dyn_cast<CallInst>(&I)) {
+                    if (CI->getCalledFunction() == statepointDecl)
+                        statepoints.push_back(CI);
+                }
+            }
+
+            if (statepoints.size() < 2)
+                continue;  // No reordering needed with 0 or 1 statepoints
+
+            // For each statepoint, ensure all its gc.relocates are positioned
+            // immediately after it (before the next statepoint).
+            for (unsigned si = 0; si < statepoints.size(); si++) {
+                auto *sp = statepoints[si];
+                // Find the next statepoint (or end of block) as the boundary
+                Instruction *boundary = (si + 1 < statepoints.size())
+                    ? cast<Instruction>(statepoints[si + 1])
+                    : nullptr;
+
+                // Collect gc.relocates that reference this statepoint but
+                // appear after the boundary (misplaced by optimizer)
+                SmallVector<CallInst*, 8> misplacedRelocates;
+                bool pastBoundary = (boundary == nullptr);
+                for (auto it = sp->getIterator(); it != BB.end(); ++it) {
+                    if (&*it == boundary)
+                        pastBoundary = true;
+                    if (!pastBoundary)
+                        continue;
+
+                    if (auto *CI = dyn_cast<CallInst>(&*it)) {
+                        if (CI->getCalledFunction() == relocateDecl &&
+                            CI->getArgOperand(0) == sp) {
+                            misplacedRelocates.push_back(CI);
+                        }
+                    }
+                }
+
+                // Move misplaced relocates to just after the statepoint
+                // (before any other statepoint in the block)
+                if (!misplacedRelocates.empty()) {
+                    Instruction *insertPt = sp->getNextNode();
+                    for (auto *reloc : misplacedRelocates) {
+                        reloc->moveBefore(insertPt);
+                    }
+                }
+            }
         }
     }
 }
