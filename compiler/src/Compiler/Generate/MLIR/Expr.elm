@@ -3648,11 +3648,58 @@ generateLet ctx def body =
                     else
                         ( forceResultVar placeholderVar fixedResult, placeholderVar )
 
+                -- Scope varMappings back to the outer let group's keys.
+                -- Inner let-bindings from inlined functions (e.g., identity x => let _v0 = x in _v0)
+                -- add entries to varMappings that must not leak into the outer scope.
+                -- We also clean definedSsaVars of any SSA vars that only the inner entries referenced.
+                scopedCtx : Ctx.Context
+                scopedCtx =
+                    let
+                        exprCtx =
+                            exprResult.ctx
+
+                        outerKeys =
+                            Dict.keys ctxWithPlaceholders.varMappings
+
+                        innerOnlyVars =
+                            Dict.foldl
+                                (\k v acc ->
+                                    if Dict.member k ctxWithPlaceholders.varMappings then
+                                        acc
+                                    else
+                                        Set.insert v.ssaVar acc
+                                )
+                                Set.empty
+                                exprCtx.varMappings
+
+                        restoredMappings =
+                            List.foldl
+                                (\k acc ->
+                                    case Dict.get k exprCtx.varMappings of
+                                        Just v ->
+                                            Dict.insert k v acc
+
+                                        Nothing ->
+                                            case Dict.get k ctxWithPlaceholders.varMappings of
+                                                Just v ->
+                                                    Dict.insert k v acc
+
+                                                Nothing ->
+                                                    acc
+                                )
+                                Dict.empty
+                                outerKeys
+
+                        cleanedDefinedVars =
+                            Set.diff exprCtx.definedSsaVars innerOnlyVars
+                    in
+                    { exprCtx | varMappings = restoredMappings, definedSsaVars = cleanedDefinedVars }
+
                 -- Update varMappings for this name to use the effective SSA var,
                 -- with the actual result type.
                 ctx1 : Ctx.Context
                 ctx1 =
-                    Ctx.addVarMapping name effectiveVar exprResult.resultType exprResult.ctx
+                    Ctx.addVarMapping name effectiveVar exprResult.resultType scopedCtx
                         |> Ctx.addDecoderExpr name expr
                         |> trackExternBoxedVar name expr
 
