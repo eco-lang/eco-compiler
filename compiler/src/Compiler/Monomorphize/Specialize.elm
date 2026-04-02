@@ -115,6 +115,53 @@ getOrBuildSchemeInfo funcCanType maybeGlobal state =
             ( info, { state | ctx = ctx1 } )
 
 
+-- ========== FREEVARS HELPERS ==========
+
+
+{-| Look up FreeVars for a global from annotations.
+Returns the FreeVars from the annotation if found, otherwise empty.
+-}
+lookupFreeVars : Maybe TOpt.Global -> TOpt.Annotations MVarId -> Can.FreeVars
+lookupFreeVars maybeGlobal annotations =
+    case maybeGlobal of
+        Just (TOpt.Global _ name) ->
+            case Dict.get name annotations of
+                Just (Can.Forall freeVars _) ->
+                    freeVars
+
+                Nothing ->
+                    Dict.empty
+
+        Nothing ->
+            Dict.empty
+
+
+{-| Look up FreeVars for the current global from state context.
+-}
+lookupFreeVarsFromCtx : MonoState -> Can.FreeVars
+lookupFreeVarsFromCtx state =
+    case state.ctx.currentGlobal of
+        Just (Mono.Global _ name) ->
+            case Dict.get name state.ctx.annotations of
+                Just (Can.Forall freeVars _) ->
+                    freeVars
+
+                Nothing ->
+                    Dict.empty
+
+        _ ->
+            Dict.empty
+
+
+{-| Apply substitution with FreeVars scoping from the current global's annotation.
+Only substitutes MVarIds that actually appear in canType, preventing cross-scheme
+contamination.
+-}
+applySubstFV : MonoState -> Substitution -> Can.Type MVarId -> Mono.MonoType
+applySubstFV state subst canType =
+    TypeSubst.applySubstWithFreeVars state.ctx.mvarEnv (lookupFreeVarsFromCtx state) subst canType
+
+
 {-| Enqueue a specialization onto the worklist, deduplicating via the scheduled BitSet.
 -}
 enqueueSpec :
@@ -458,7 +505,7 @@ specializeLambda lambdaExpr canType subst state =
         -- GlobalOpt (GOPT_001) will flatten: MFunction [a, b] c.
         monoType0 : Mono.MonoType
         monoType0 =
-            Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst state.ctx.mvarEnv subst canType))
+            Mono.forceCNumberToInt (applySubstFV state subst canType)
 
         -- 1b. Feed the concrete function type back into the substitution.
         -- This propagates constraints from the enclosing specialization context
@@ -487,7 +534,7 @@ specializeLambda lambdaExpr canType subst state =
         monoParams =
             List.map
                 (\( name, paramCanType ) ->
-                    ( name, Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst state.ctx.mvarEnv refinedSubst paramCanType)) )
+                    ( name, Mono.forceCNumberToInt (applySubstFV state refinedSubst paramCanType) )
                 )
                 params
 
@@ -610,7 +657,7 @@ specializeNode ctorName node requestedMonoType state =
                     Tuple.first (TypeSubst.unify state.ctx.mvarEnv canType requestedMonoType)
 
                 ctorMonoType =
-                    Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst state.ctx.mvarEnv subst canType))
+                    Mono.forceCNumberToInt (applySubstFV state subst canType)
 
                 tag =
                     Index.toMachine index
@@ -638,7 +685,7 @@ specializeNode ctorName node requestedMonoType state =
                     Tuple.first (TypeSubst.unify state.ctx.mvarEnv canType requestedMonoType)
 
                 ctorMonoType =
-                    Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst state.ctx.mvarEnv subst canType))
+                    Mono.forceCNumberToInt (applySubstFV state subst canType)
 
                 shape =
                     buildCtorShapeFromArity ctorName 0 1 ctorMonoType
@@ -943,7 +990,7 @@ specializeFuncDefInCycle subst def state =
                 -- Context.extractNodeSignature expects this full function type and extracts
                 -- the actual return type from it.
                 monoFuncType =
-                    Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst state.ctx.mvarEnv augmentedSubst returnType))
+                    Mono.forceCNumberToInt (applySubstFV state augmentedSubst returnType)
             in
             ( Mono.MonoTailFunc monoArgs monoBody monoFuncType, state1 )
 
@@ -1000,7 +1047,7 @@ specializeExpr expr subst state =
                     meta.tipe
 
                 monoType =
-                    Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst state.ctx.mvarEnv subst canType))
+                    Mono.forceCNumberToInt (applySubstFV state subst canType)
             in
             case monoType of
                 Mono.MFloat ->
@@ -1015,7 +1062,7 @@ specializeExpr expr subst state =
                     meta.tipe
 
                 monoType =
-                    Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst state.ctx.mvarEnv subst canType))
+                    Mono.forceCNumberToInt (applySubstFV state subst canType)
             in
             ( Mono.MonoLiteral (Mono.LFloat value) monoType, state )
 
@@ -1025,7 +1072,7 @@ specializeExpr expr subst state =
                     meta.tipe
 
                 monoType =
-                    Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst state.ctx.mvarEnv subst canType))
+                    Mono.forceCNumberToInt (applySubstFV state subst canType)
             in
             if isLocalMultiTarget name state then
                 let
@@ -1045,7 +1092,7 @@ specializeExpr expr subst state =
                     meta.tipe
 
                 monoType =
-                    Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst state.ctx.mvarEnv subst canType))
+                    Mono.forceCNumberToInt (applySubstFV state subst canType)
             in
             if isLocalMultiTarget name state then
                 let
@@ -1065,23 +1112,23 @@ specializeExpr expr subst state =
                     meta.tipe
 
                 monoType0 =
-                    Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst state.ctx.mvarEnv subst canType))
+                    Mono.forceCNumberToInt (applySubstFV state subst canType)
 
                 monoType =
                     case monoType0 of
                         Mono.MVar _ _ ->
                             case Data.Map.get TOpt.toComparableGlobal global state.ctx.toptNodes of
                                 Just (TOpt.Define _ _ defMeta) ->
-                                    Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst state.ctx.mvarEnv subst defMeta.tipe))
+                                    Mono.forceCNumberToInt (applySubstFV state subst defMeta.tipe)
 
                                 Just (TOpt.TrackedDefine _ _ _ defMeta) ->
-                                    Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst state.ctx.mvarEnv subst defMeta.tipe))
+                                    Mono.forceCNumberToInt (applySubstFV state subst defMeta.tipe)
 
                                 Just (TOpt.Enum _ enumCanType) ->
-                                    Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst state.ctx.mvarEnv subst enumCanType))
+                                    Mono.forceCNumberToInt (applySubstFV state subst enumCanType)
 
                                 Just (TOpt.Ctor _ _ ctorCanType) ->
-                                    Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst state.ctx.mvarEnv subst ctorCanType))
+                                    Mono.forceCNumberToInt (applySubstFV state subst ctorCanType)
 
                                 _ ->
                                     monoType0
@@ -1103,14 +1150,14 @@ specializeExpr expr subst state =
                     meta.tipe
 
                 monoType0 =
-                    Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst state.ctx.mvarEnv subst canType))
+                    Mono.forceCNumberToInt (applySubstFV state subst canType)
 
                 monoType =
                     case monoType0 of
                         Mono.MVar _ _ ->
                             case Data.Map.get TOpt.toComparableGlobal global state.ctx.toptNodes of
                                 Just (TOpt.Enum _ enumCanType) ->
-                                    Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst state.ctx.mvarEnv subst enumCanType))
+                                    Mono.forceCNumberToInt (applySubstFV state subst enumCanType)
 
                                 _ ->
                                     monoType0
@@ -1132,7 +1179,7 @@ specializeExpr expr subst state =
                     meta.tipe
 
                 monoType =
-                    Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst state.ctx.mvarEnv subst canType))
+                    Mono.forceCNumberToInt (applySubstFV state subst canType)
 
                 monoGlobal =
                     toptGlobalToMono global
@@ -1148,7 +1195,7 @@ specializeExpr expr subst state =
                     meta.tipe
 
                 monoType =
-                    Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst state.ctx.mvarEnv subst canType))
+                    Mono.forceCNumberToInt (applySubstFV state subst canType)
 
                 monoGlobal =
                     Mono.Global canonical name
@@ -1184,7 +1231,7 @@ specializeExpr expr subst state =
                     meta.tipe
 
                 monoType0 =
-                    Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst state.ctx.mvarEnv subst canType))
+                    Mono.forceCNumberToInt (applySubstFV state subst canType)
 
                 ( monoExprs, stateAfter ) =
                     specializeExprs exprs subst state
@@ -1254,7 +1301,7 @@ specializeExpr expr subst state =
                             resolveProcessedArgs processedArgs paramTypes callSubst state1a
 
                         resultMonoType =
-                            callResultMonoType state.ctx.mvarEnv subst callSubst canType
+                            callResultMonoType state1a.ctx.mvarEnv (lookupFreeVarsFromCtx state1a) callSubst canType
 
                         monoGlobal =
                             toptGlobalToMono global
@@ -1290,7 +1337,7 @@ specializeExpr expr subst state =
                             resolveProcessedArgs processedArgs paramTypes callSubst state1a
 
                         resultMonoType =
-                            callResultMonoType state.ctx.mvarEnv subst callSubst canType
+                            callResultMonoType state1a.ctx.mvarEnv (lookupFreeVarsFromCtx state1a) callSubst canType
 
                         monoFunc =
                             Mono.MonoVarKernel funcRegion kernelPrefix home name funcMonoType
@@ -1320,7 +1367,7 @@ specializeExpr expr subst state =
                             resolveProcessedArgs processedArgs paramTypes callSubst state1a
 
                         resultMonoType =
-                            callResultMonoType state.ctx.mvarEnv subst callSubst canType
+                            callResultMonoType state1a.ctx.mvarEnv (lookupFreeVarsFromCtx state1a) callSubst canType
 
                         monoFunc =
                             Mono.MonoVarKernel funcRegion "Elm" "Debug" name funcMonoType
@@ -1362,7 +1409,7 @@ specializeExpr expr subst state =
                                     Tuple.first (TypeSubst.unifyArgsOnly state1.ctx.mvarEnv funcCanType argTypes subst)
 
                                 funcMonoType =
-                                    Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst state1.ctx.mvarEnv callSubst funcCanType))
+                                    Mono.forceCNumberToInt (applySubstFV state1 callSubst funcCanType)
 
                                 paramTypes =
                                     TypeSubst.extractParamTypes funcMonoType
@@ -1371,7 +1418,7 @@ specializeExpr expr subst state =
                                     resolveProcessedArgs processedArgs paramTypes callSubst state1
 
                                 resultMonoType =
-                                    callResultMonoType state.ctx.mvarEnv subst callSubst canType
+                                    callResultMonoType state1.ctx.mvarEnv (lookupFreeVarsFromCtx state1) callSubst canType
 
                                 ( freshName, state3 ) =
                                     getOrCreateLocalInstance name funcMonoType callSubst state2
@@ -1402,7 +1449,7 @@ specializeExpr expr subst state =
                                     resolveProcessedArgs processedArgs paramTypes callSubst state1a
 
                                 resultMonoType =
-                                    callResultMonoType state.ctx.mvarEnv subst callSubst canType
+                                    callResultMonoType state1a.ctx.mvarEnv (lookupFreeVarsFromCtx state1a) callSubst canType
 
                                 ( monoFunc, state3 ) =
                                     specializeExpr func callSubst state2
@@ -1417,7 +1464,7 @@ specializeExpr expr subst state =
                     meta.tipe
 
                 monoType0 =
-                    Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst state.ctx.mvarEnv subst canType))
+                    Mono.forceCNumberToInt (applySubstFV state subst canType)
 
                 ( monoArgs, stateAfter ) =
                     specializeNamedExprs args subst state
@@ -1444,7 +1491,7 @@ specializeExpr expr subst state =
                     meta.tipe
 
                 monoType0 =
-                    Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst state.ctx.mvarEnv subst canType))
+                    Mono.forceCNumberToInt (applySubstFV state subst canType)
 
                 ( monoBranches, state1 ) =
                     specializeBranches branches subst state
@@ -1469,7 +1516,7 @@ specializeExpr expr subst state =
                     meta.tipe
 
                 monoType0 =
-                    Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst state.ctx.mvarEnv subst canType))
+                    Mono.forceCNumberToInt (applySubstFV state subst canType)
 
                 defName =
                     getDefName def
@@ -1523,7 +1570,7 @@ specializeExpr expr subst state =
                                             }
 
                                     defMonoType0 =
-                                        Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst state.ctx.mvarEnv subst defCanType))
+                                        Mono.forceCNumberToInt (applySubstFV state subst defCanType)
 
                                     defMonoType =
                                         if Mono.containsAnyMVar defMonoType0 then
@@ -1646,7 +1693,7 @@ specializeExpr expr subst state =
                                     specializeDef def subst stateAfterBody
 
                                 defMonoType0 =
-                                    Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst state.ctx.mvarEnv subst defCanType))
+                                    Mono.forceCNumberToInt (applySubstFV state subst defCanType)
 
                                 defMonoType =
                                     if Mono.containsAnyMVar defMonoType0 then
@@ -1706,7 +1753,7 @@ specializeExpr expr subst state =
                             -- (LetDestruct compiles to Let + Destruct chain where Destructs
                             -- reference Root defName.)
                             prelimDefMonoType =
-                                Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst state.ctx.mvarEnv subst defCanType))
+                                Mono.forceCNumberToInt (applySubstFV state subst defCanType)
 
                             stateForBody =
                                 { state
@@ -1742,7 +1789,7 @@ specializeExpr expr subst state =
                                                 }
 
                                         defMonoType0 =
-                                            Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst state.ctx.mvarEnv subst defCanType))
+                                            Mono.forceCNumberToInt (applySubstFV state subst defCanType)
 
                                         defMonoType =
                                             if Mono.containsAnyMVar defMonoType0 then
@@ -1856,7 +1903,7 @@ specializeExpr expr subst state =
                                 specializeDef def subst state
 
                             defMonoType0 =
-                                Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst state.ctx.mvarEnv subst defCanType))
+                                Mono.forceCNumberToInt (applySubstFV state subst defCanType)
 
                             -- If defCanType has unresolved TVars, infer from the specialized expr.
                             defMonoType =
@@ -1905,7 +1952,7 @@ specializeExpr expr subst state =
                     meta.tipe
 
                 monoType0 =
-                    Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst state.ctx.mvarEnv subst canType))
+                    Mono.forceCNumberToInt (applySubstFV state subst canType)
 
                 monoDestructor =
                     specializeDestructor destructor subst state.ctx.mvarEnv state.ctx.varEnv state.ctx.globalTypeEnv state.ctx.currentGlobal
@@ -1943,7 +1990,7 @@ specializeExpr expr subst state =
                     meta.tipe
 
                 monoTypeFromCan =
-                    Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst state.ctx.mvarEnv subst canType))
+                    Mono.forceCNumberToInt (applySubstFV state subst canType)
 
                 savedVarEnv =
                     state.ctx.varEnv
@@ -1988,7 +2035,7 @@ specializeExpr expr subst state =
                     meta.tipe
 
                 monoType =
-                    Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst state.ctx.mvarEnv subst canType))
+                    Mono.forceCNumberToInt (applySubstFV state subst canType)
             in
             if ResolveAccessorValues.accessorTypeNeedsDefer monoType then
                 ( Mono.MonoAccessorValue region fieldName monoType, state )
@@ -2009,7 +2056,7 @@ specializeExpr expr subst state =
                     meta.tipe
 
                 monoType =
-                    Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst state.ctx.mvarEnv subst canType))
+                    Mono.forceCNumberToInt (applySubstFV state subst canType)
             in
             case getValueMultiVar record state of
                 Just ( varName, recordCanType ) ->
@@ -2025,7 +2072,7 @@ specializeExpr expr subst state =
                             Tuple.first (TypeSubst.unifyExtend state.ctx.mvarEnv recordCanType partialRecordMono subst)
 
                         recordMonoType =
-                            Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst state.ctx.mvarEnv enrichedSubst recordCanType))
+                            Mono.forceCNumberToInt (applySubstFV state enrichedSubst recordCanType)
 
                         ( freshName, state1 ) =
                             getOrCreateValueInstance varName recordMonoType enrichedSubst state
@@ -2045,7 +2092,7 @@ specializeExpr expr subst state =
                     meta.tipe
 
                 monoType =
-                    Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst state.ctx.mvarEnv subst canType))
+                    Mono.forceCNumberToInt (applySubstFV state subst canType)
 
                 ( monoRecord, state1 ) =
                     specializeExpr record subst state
@@ -2095,7 +2142,7 @@ specializeExpr expr subst state =
                     meta.tipe
 
                 monoType =
-                    Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst state.ctx.mvarEnv subst canType))
+                    Mono.forceCNumberToInt (applySubstFV state subst canType)
 
                 -- Extract mono field types from the record MonoType for substitution refinement.
                 monoFieldTypes =
@@ -2136,7 +2183,7 @@ specializeExpr expr subst state =
                     meta.tipe
 
                 monoType =
-                    Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst state.ctx.mvarEnv subst canType))
+                    Mono.forceCNumberToInt (applySubstFV state subst canType)
 
                 -- Extract mono field types for substitution refinement.
                 monoFieldTypes =
@@ -2182,7 +2229,7 @@ specializeExpr expr subst state =
                     meta.tipe
 
                 monoType =
-                    Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst state.ctx.mvarEnv subst canType))
+                    Mono.forceCNumberToInt (applySubstFV state subst canType)
 
                 ( monoA, state1 ) =
                     specializeExpr a subst state
@@ -2336,7 +2383,7 @@ processCallArg subst arg ( accArgs, accTypes, st ) =
             if isLocalMultiTarget name st then
                 let
                     monoType =
-                        Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst st.ctx.mvarEnv subst localCanType))
+                        Mono.forceCNumberToInt (applySubstFV st subst localCanType)
                 in
                 ( LocalFunArg name localCanType :: accArgs
                 , monoType :: accTypes
@@ -2361,7 +2408,7 @@ processCallArg subst arg ( accArgs, accTypes, st ) =
             if isLocalMultiTarget name st then
                 let
                     monoType =
-                        Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst st.ctx.mvarEnv subst trackedLocalCanType))
+                        Mono.forceCNumberToInt (applySubstFV st subst trackedLocalCanType)
                 in
                 ( LocalFunArg name trackedLocalCanType :: accArgs
                 , monoType :: accTypes
@@ -2386,7 +2433,7 @@ processCallArg subst arg ( accArgs, accTypes, st ) =
                             meta.tipe
 
                         monoType =
-                            Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst st.ctx.mvarEnv subst canType))
+                            Mono.forceCNumberToInt (applySubstFV st subst canType)
                     in
                     if Mono.containsCEcoMVar monoType then
                         ( PendingGlobal arg subst canType :: accArgs
@@ -2527,7 +2574,7 @@ resolveProcessedArg processedArg maybeParamType subst state =
 
                                 funcMonoType =
                                     Mono.forceCNumberToInt
-                                        (Tuple.first (TypeSubst.applySubst state.ctx.mvarEnv refinedSubst canType))
+                                        (applySubstFV state refinedSubst canType)
                             in
                             if isLocalMultiTarget name state then
                                 let
@@ -2547,7 +2594,7 @@ resolveProcessedArg processedArg maybeParamType subst state =
                             let
                                 monoType =
                                     Mono.forceCNumberToInt
-                                        (Tuple.first (TypeSubst.applySubst state.ctx.mvarEnv subst canType))
+                                        (applySubstFV state subst canType)
                             in
                             ( Mono.MonoVarLocal name monoType, state )
 
@@ -2555,7 +2602,7 @@ resolveProcessedArg processedArg maybeParamType subst state =
                     let
                         monoType =
                             Mono.forceCNumberToInt
-                                (Tuple.first (TypeSubst.applySubst state.ctx.mvarEnv subst canType))
+                                (applySubstFV state subst canType)
                     in
                     ( Mono.MonoVarLocal name monoType, state )
 
@@ -3353,22 +3400,15 @@ monoDefExprType monoDef =
 
 
 {-| Compute the result MonoType for a Call expression.
-Prefer the caller's substitution to avoid type variable name collisions
-between the caller's scope and the callee's scope. When callee type variables
-share names with caller type variables, callSubst can contaminate the result.
-Fall back to callSubst only when the caller's subst leaves CEcoValue MVars.
--}
-callResultMonoType : MVarEnv -> Substitution -> Substitution -> Can.Type MVarId -> Mono.MonoType
-callResultMonoType mvarEnv callerSubst callSubst canType =
-    let
-        fromCaller =
-            Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst mvarEnv callerSubst canType))
-    in
-    if Mono.containsAnyMVar fromCaller then
-        Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst mvarEnv callSubst canType))
 
-    else
-        fromCaller
+Interpret the call expression's canonical result type using only the callee's
+call-site substitution from unifyCallSiteDirect. The caller's substitution is
+not applied here — with globally unique MVarIds per scheme, the old
+caller-first heuristic is no longer needed and can produce wrong results.
+-}
+callResultMonoType : MVarEnv -> Can.FreeVars -> Substitution -> Can.Type MVarId -> Mono.MonoType
+callResultMonoType mvarEnv freeVars callSubst canType =
+    Mono.forceCNumberToInt (TypeSubst.applySubstWithFreeVars mvarEnv freeVars callSubst canType)
 
 
 {-| Specialize a function argument by applying type substitution.

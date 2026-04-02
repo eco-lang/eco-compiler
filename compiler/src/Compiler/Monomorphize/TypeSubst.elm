@@ -1,5 +1,5 @@
 module Compiler.Monomorphize.TypeSubst exposing
-    ( applySubst
+    ( applySubst, applySubstWithFreeVars
     , canTypeToMonoType, extractParamTypes
     , unify, unifyExtend, unifyArgsOnly, unifyCallSiteDirect
     , buildSchemeInfo
@@ -738,6 +738,115 @@ applySubstList env subst types =
         )
         ( [], env )
         types
+
+
+{-| Apply a substitution to a canonical type, but only for MVarIds that
+actually appear in the type. This prevents cross-scheme contamination
+when a substitution carries bindings from multiple schemes.
+
+The FreeVars parameter documents which annotation scheme this type belongs to
+but the actual filtering is by MVarIds present in canType (sufficient because
+MVarIds are globally unique post-AssignMVarIds).
+-}
+applySubstWithFreeVars :
+    MVarEnv
+    -> Can.FreeVars
+    -> Substitution
+    -> Can.Type MVarId
+    -> Mono.MonoType
+applySubstWithFreeVars mvarEnv _ subst canType =
+    let
+        rootIds =
+            collectMVarIds canType []
+
+        rootKeys =
+            List.map Id.toComparable rootIds
+
+        -- Compute transitive closure: include all MVarIds reachable
+        -- through substitution bindings. This ensures chains like
+        -- Id_x -> MVar 10, 10 -> MInt keep both entries so that
+        -- applySubst + resolveMonoVars can fully resolve.
+        reachableKeys =
+            closureOverSubst rootKeys subst
+
+        filteredSubst =
+            Dict.filter
+                (\key _ -> Set.member key reachableKeys)
+                subst
+    in
+    Tuple.first (applySubst mvarEnv filteredSubst canType)
+
+
+{-| Compute the transitive closure of substitution keys reachable from
+the given initial keys. Starting from the root keys, follow each binding's
+MonoType to discover further MVarId dependencies, and include those keys too.
+-}
+closureOverSubst : List Int -> Substitution -> Set Int
+closureOverSubst initialKeys subst =
+    closureOverSubstHelp initialKeys Set.empty subst
+
+
+closureOverSubstHelp : List Int -> Set Int -> Substitution -> Set Int
+closureOverSubstHelp pending visited subst =
+    case pending of
+        [] ->
+            visited
+
+        key :: rest ->
+            if Set.member key visited then
+                closureOverSubstHelp rest visited subst
+
+            else
+                let
+                    newVisited =
+                        Set.insert key visited
+                in
+                case Dict.get key subst of
+                    Nothing ->
+                        closureOverSubstHelp rest newVisited subst
+
+                    Just monoType ->
+                        let
+                            depKeys =
+                                collectMVarIdsFromMono monoType []
+                                    |> List.map Id.toComparable
+                        in
+                        closureOverSubstHelp (depKeys ++ rest) newVisited subst
+
+
+{-| Collect all MVarIds from a MonoType, mirroring collectMVarIds for Can.Type.
+-}
+collectMVarIdsFromMono : Mono.MonoType -> List MVarId -> List MVarId
+collectMVarIdsFromMono monoType acc =
+    case monoType of
+        Mono.MVar mvarId _ ->
+            if List.any (\id -> Id.toComparable id == Id.toComparable mvarId) acc then
+                acc
+
+            else
+                mvarId :: acc
+
+        Mono.MFunction args result ->
+            let
+                argsAcc =
+                    List.foldl (\a accInner -> collectMVarIdsFromMono a accInner) acc args
+            in
+            collectMVarIdsFromMono result argsAcc
+
+        Mono.MList inner ->
+            collectMVarIdsFromMono inner acc
+
+        Mono.MTuple elements ->
+            List.foldl (\e accInner -> collectMVarIdsFromMono e accInner) acc elements
+
+        Mono.MRecord fields ->
+            Dict.foldl (\_ t accInner -> collectMVarIdsFromMono t accInner) acc fields
+
+        Mono.MCustom _ _ args ->
+            List.foldl (\a accInner -> collectMVarIdsFromMono a accInner) acc args
+
+        _ ->
+            acc
 
 
 {-| Collect a TLambda chain iteratively, then build the curried MFunction structure.

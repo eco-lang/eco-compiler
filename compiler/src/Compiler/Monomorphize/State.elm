@@ -144,6 +144,7 @@ type alias SpecContext =
     , toptNodes : DataMap.Dict (List String) TOpt.Global (TOpt.Node MVarId)
     , currentGlobal : Maybe Mono.Global
     , globalTypeEnv : TypeEnv.GlobalTypeEnv
+    , annotations : TOpt.Annotations MVarId
     , varEnv : VarEnv
     , localMulti : List LocalMultiState
     , valueMulti : List ValueMultiState
@@ -300,8 +301,8 @@ type alias ValueMultiState =
 
 {-| Initialize the monomorphization state.
 -}
-initState : IO.Canonical -> DataMap.Dict (List String) TOpt.Global (TOpt.Node MVarId) -> TypeEnv.GlobalTypeEnv -> MVarEnv -> MonoState
-initState currentModule toptNodes globalTypeEnv mvarEnv =
+initState : IO.Canonical -> DataMap.Dict (List String) TOpt.Global (TOpt.Node MVarId) -> TOpt.Annotations MVarId -> TypeEnv.GlobalTypeEnv -> MVarEnv -> MonoState
+initState currentModule toptNodes annotations globalTypeEnv mvarEnv =
     { accum =
         { worklist = []
         , nodes = Dict.empty
@@ -318,6 +319,7 @@ initState currentModule toptNodes globalTypeEnv mvarEnv =
         , toptNodes = toptNodes
         , currentGlobal = Nothing
         , globalTypeEnv = globalTypeEnv
+        , annotations = annotations
         , varEnv = emptyVarEnv
         , localMulti = []
         , valueMulti = []

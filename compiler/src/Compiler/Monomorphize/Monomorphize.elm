@@ -66,7 +66,7 @@ monomorphize : Name -> TypeEnv.GlobalTypeEnv -> TOpt.GlobalGraph Name -> Result 
 monomorphize entryPointName globalTypeEnv globalGraph =
     let
         -- Phase 0: Assign globally unique MVarIds to all type variables
-        ( TOpt.GlobalGraph nodesWithIds _ _, mvarState ) =
+        ( TOpt.GlobalGraph nodesWithIds _ annotationsWithIds, mvarState ) =
             AssignMVarIds.assignIds globalGraph
 
         mvarEnv =
@@ -77,16 +77,16 @@ monomorphize entryPointName globalTypeEnv globalGraph =
             Err ("No " ++ entryPointName ++ " function found")
 
         Just ( mainGlobal, mainType ) ->
-            monomorphizeFromEntry mainGlobal mainType globalTypeEnv nodesWithIds mvarEnv
+            monomorphizeFromEntry mainGlobal mainType globalTypeEnv nodesWithIds annotationsWithIds mvarEnv
 
 
 {-| Perform monomorphization from a given entry point.
 -}
-monomorphizeFromEntry : TOpt.Global -> Can.Type TypeIds.MVarId -> TypeEnv.GlobalTypeEnv -> DMap.Dict (List String) TOpt.Global (TOpt.Node TypeIds.MVarId) -> State.MVarEnv -> Result String Mono.MonoGraph
-monomorphizeFromEntry mainGlobal mainType globalTypeEnv nodes mvarEnv =
+monomorphizeFromEntry : TOpt.Global -> Can.Type TypeIds.MVarId -> TypeEnv.GlobalTypeEnv -> DMap.Dict (List String) TOpt.Global (TOpt.Node TypeIds.MVarId) -> TOpt.Annotations TypeIds.MVarId -> State.MVarEnv -> Result String Mono.MonoGraph
+monomorphizeFromEntry mainGlobal mainType globalTypeEnv nodes annotations mvarEnv =
     let
         ( finalState, mainSpecIdVal ) =
-            runSpecialization mainGlobal mainType globalTypeEnv nodes mvarEnv
+            runSpecialization mainGlobal mainType globalTypeEnv nodes annotations mvarEnv
 
         rawGraph =
             assembleRawGraph finalState mainSpecIdVal
@@ -103,7 +103,7 @@ monomorphizeWithLog : (String -> Task x ()) -> Name -> TypeEnv.GlobalTypeEnv -> 
 monomorphizeWithLog log entryPointName globalTypeEnv globalGraph =
     let
         -- Phase 0: Assign globally unique MVarIds to all type variables
-        ( TOpt.GlobalGraph nodesWithIds _ _, mvarState ) =
+        ( TOpt.GlobalGraph nodesWithIds _ annotationsWithIds, mvarState ) =
             AssignMVarIds.assignIds globalGraph
 
         mvarEnv =
@@ -119,7 +119,7 @@ monomorphizeWithLog log entryPointName globalTypeEnv globalGraph =
                     (\_ ->
                         let
                             ( finalState, mainSpecIdVal ) =
-                                runSpecialization mainGlobal mainType globalTypeEnv nodesWithIds mvarEnv
+                                runSpecialization mainGlobal mainType globalTypeEnv nodesWithIds annotationsWithIds mvarEnv
 
                             -- Extract what we need and release toptNodes for GC
                             finalAccum =
@@ -149,8 +149,8 @@ monomorphizeWithLog log entryPointName globalTypeEnv globalGraph =
 
 {-| Phase 1: Run the specialization worklist to completion.
 -}
-runSpecialization : TOpt.Global -> Can.Type TypeIds.MVarId -> TypeEnv.GlobalTypeEnv -> DMap.Dict (List String) TOpt.Global (TOpt.Node TypeIds.MVarId) -> State.MVarEnv -> ( MonoState, Mono.SpecId )
-runSpecialization mainGlobal mainType globalTypeEnv nodes mvarEnv =
+runSpecialization : TOpt.Global -> Can.Type TypeIds.MVarId -> TypeEnv.GlobalTypeEnv -> DMap.Dict (List String) TOpt.Global (TOpt.Node TypeIds.MVarId) -> TOpt.Annotations TypeIds.MVarId -> State.MVarEnv -> ( MonoState, Mono.SpecId )
+runSpecialization mainGlobal mainType globalTypeEnv nodes annotations mvarEnv =
     let
         mainMonoType : Mono.MonoType
         mainMonoType =
@@ -164,7 +164,7 @@ runSpecialization mainGlobal mainType globalTypeEnv nodes mvarEnv =
 
         initialState : MonoState
         initialState =
-            initState currentModule nodes globalTypeEnv mvarEnv
+            initState currentModule nodes annotations globalTypeEnv mvarEnv
 
         initialAccum =
             initialState.accum
@@ -259,7 +259,7 @@ assembleRawGraphFrom finalAccum lambdaCounter mainSpecIdVal =
 
 {-| Initialize the monomorphization state.
 -}
-initState : IO.Canonical -> DMap.Dict (List String) TOpt.Global (TOpt.Node TypeIds.MVarId) -> TypeEnv.GlobalTypeEnv -> State.MVarEnv -> MonoState
+initState : IO.Canonical -> DMap.Dict (List String) TOpt.Global (TOpt.Node TypeIds.MVarId) -> TOpt.Annotations TypeIds.MVarId -> TypeEnv.GlobalTypeEnv -> State.MVarEnv -> MonoState
 initState =
     State.initState
 
