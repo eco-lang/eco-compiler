@@ -22,6 +22,13 @@ namespace eco {
 /// Returns true if any conversions were made.
 bool convertSafepointMarkers(llvm::Module &module);
 
+/// Remove dead gc.relocate + ptrtoint pairs from the module.
+/// LLVM's SelectionDAG asserts that every gc.relocate in the same block as
+/// its statepoint is visited. Dead relocates (created by our SSA rewriting
+/// or by LLVM optimization passes like inlining) trigger this assertion.
+/// Should be run after optimization and before codegen.
+void removeDeadGCRelocates(llvm::Module &module);
+
 } // namespace eco
 
 #endif // ECO_STATEPOINT_CONVERSION_H

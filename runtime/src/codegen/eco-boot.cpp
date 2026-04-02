@@ -605,6 +605,11 @@ int main(int argc, char **argv) {
         }
     }
 
+    // Remove dead gc.relocate instructions that may have been created by
+    // optimization passes (e.g., inlining merges statepoints from different
+    // functions into one block, creating dead relocate chains).
+    eco::removeDeadGCRelocates(*llvmModule);
+
     // Handle LLVM IR output mode
     if (emitAction == EmitLLVM) {
         if (output == "-") {

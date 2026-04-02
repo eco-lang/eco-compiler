@@ -187,6 +187,26 @@ bool eco::convertSafepointMarkers(Module &module) {
                     U->set(newInt);
             }
 
+            // Step 1.6: Remove dead gc.relocate + ptrtoint pairs.
+            // LLVM's SelectionDAG asserts that every gc.relocate in the same
+            // block as its statepoint is visited during instruction selection.
+            // Dead relocates (no uses after SSA rewriting) trigger this assert
+            // at both -O0 (FastISel issue #56158) and -O2 (startNewStatepoint
+            // sees pending relocates from a prior statepoint in the same block).
+            for (unsigned i = 0; i < relocatedInts.size(); i++) {
+                auto *ptrToInt = cast<Instruction>(relocatedInts[i]);
+                // The ptrtoint's only operand is the gc.relocate call
+                auto *relocate = cast<Instruction>(ptrToInt->getOperand(0));
+
+                if (ptrToInt->use_empty()) {
+                    ptrToInt->eraseFromParent();
+                    // The gc.relocate may still be used if the ptrtoint was
+                    // the only user. Check before erasing.
+                    if (relocate->use_empty())
+                        relocate->eraseFromParent();
+                }
+            }
+
             // Remove the marker call
             call->eraseFromParent();
         }
@@ -199,4 +219,48 @@ bool eco::convertSafepointMarkers(Module &module) {
            "All safepoint markers must be converted to statepoints");
 
     return true;
+}
+
+void eco::removeDeadGCRelocates(Module &module) {
+    auto *relocateDecl = Intrinsic::getDeclaration(
+        &module, Intrinsic::experimental_gc_relocate,
+        {PointerType::get(module.getContext(), 1)});
+    if (!relocateDecl)
+        return;
+
+    // Iterate until no more dead relocates are found (removing one
+    // can make others dead due to ptrtoint → inttoptr chains).
+    bool changed = true;
+    while (changed) {
+        changed = false;
+        SmallVector<CallInst*, 16> toRemove;
+        for (auto *user : relocateDecl->users()) {
+            auto *relocCall = dyn_cast<CallInst>(user);
+            if (!relocCall)
+                continue;
+
+            // Check if the gc.relocate has only one user: a ptrtoint
+            // whose result is also dead.
+            if (relocCall->hasOneUse()) {
+                auto *singleUser = relocCall->user_back();
+                if (auto *p2i = dyn_cast<PtrToIntInst>(singleUser)) {
+                    if (p2i->use_empty()) {
+                        toRemove.push_back(relocCall);
+                    }
+                }
+            } else if (relocCall->use_empty()) {
+                toRemove.push_back(relocCall);
+            }
+        }
+
+        for (auto *relocCall : toRemove) {
+            // Remove the ptrtoint user first if it exists
+            if (relocCall->hasOneUse()) {
+                auto *p2i = cast<Instruction>(relocCall->user_back());
+                p2i->eraseFromParent();
+            }
+            relocCall->eraseFromParent();
+            changed = true;
+        }
+    }
 }
