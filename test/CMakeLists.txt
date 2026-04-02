@@ -30,6 +30,7 @@ add_executable(test
         allocator/ListOpsTest.cpp
         allocator/BytesOpsTest.cpp
         allocator/RuntimeExportsTest.cpp
+        allocator/GenericApplyBoxingTest.cpp
 )
 
 target_compile_features(test PRIVATE cxx_std_20)

@@ -22,6 +22,7 @@
 #include "allocator/ListOpsTest.hpp"
 #include "allocator/BytesOpsTest.hpp"
 #include "allocator/RuntimeExportsTest.hpp"
+#include "allocator/GenericApplyBoxingTest.hpp"
 #include "codegen/CodegenIsolatedTest.hpp"
 #include "bf-codegen/BFCodegenTest.hpp"
 #include "elm/ElmTest.hpp"
@@ -647,6 +648,10 @@ int main(int argc, char* argv[]) {
     Testing::TestSuite runtimeExportsTests("RuntimeExports");
     registerRuntimeExportsTests(runtimeExportsTests);
 
+    // Generic apply boxing tests
+    Testing::TestSuite genericApplyBoxingTests("GenericApplyBoxing");
+    registerGenericApplyBoxingTests(genericApplyBoxingTests);
+
     // Codegen tests (MLIR lowering and JIT execution) - parallel isolated execution
     auto codegenTests = CodegenIsolatedTest::buildCodegenTestSuite();
 
@@ -680,6 +685,7 @@ int main(int argc, char* argv[]) {
     suite.add(std::move(listOpsTests));
     suite.add(std::move(bytesOpsTests));
     suite.add(std::move(runtimeExportsTests));
+    suite.add(std::move(genericApplyBoxingTests));
     suite.add(std::move(codegenTests));
     suite.add(std::move(bfCodegenTests));
     suite.add(std::move(elmE2ETests));

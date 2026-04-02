@@ -99,6 +99,71 @@ inputs: MLIR construct ops and runtime layouts
 oracle: Bitmap matches SSA operand types; runtime layout is consistent.
 --
 --
+name: Projection result types match heap field layout metadata
+phase: cross-phase
+invariants: REP_BOUNDARY_003
+ir: eco.project ops (eco.project.list_head, eco.project.tuple2, eco.project.record, eco.project.custom)
+logic: For every eco.project operation that reads a heap field, the MLIR result type must
+  match the field's heap layout as determined by layout metadata. This is a cross-phase
+  invariant (similar to XPHASE_010/XPHASE_011) that checks consistency between
+  MonoGraph layout decisions and generated MLIR.
+
+  Inputs:
+  * MonoGraph after GlobalOpt — provides layout metadata (RecordLayout, TupleLayout,
+    CtorLayout, list element layout) including unboxed bitmaps for fields.
+  * Generated MLIR for the same program — provides eco.project ops with result types.
+
+  Steps:
+  1. Collect layout metadata from MonoGraph.
+     Build maps:
+       FieldLayout = { monoType : MonoType, isUnboxed : Bool }
+       RecordLayouts = Dict String (List FieldLayout)   -- keyed by record name or canonical type
+       CtorLayouts = Dict String (List FieldLayout)     -- keyed by ctor (module+name+arity) or custom type+tag
+     For list element layout:
+       Derive "element is unboxed" (MInt/MFloat specializations) vs "boxed" from the
+       specialized MonoType of monomorphized List helpers (List.foldl, List.foldr, List.map, etc.)
+       and the flag used to decide head_unboxed in MLIR generation.
+
+  2. Parse/inspect MLIR.
+     Use existing MLIR AST inspection utilities (same as CGEN_037, CGEN_040, etc.) to
+     traverse all func.func ops. For each function, walk all ops in its body. When a
+     projection op is found (eco.project.list_head, eco.project.tuple2, eco.project.record,
+     eco.project.custom), record:
+       { opKind : ProjectKind
+       , resultType : MlirType
+       , fieldIndex : Maybe Int
+       , contextFuncName : String
+       }
+
+  3. For each recorded projection, compute expected layout.
+     List head:
+       Identify the element type for this list helper by mapping the func.func name back
+       to a Mono SpecId and reading its result/parameter MonoType, or using a simpler
+       heuristic: only enforce inside known library helpers (List_foldl_*, List_foldr_*, etc.)
+       where the element type is known from the specialization key.
+       From that element type and the list-specialization policy, compute:
+         elemLayout = { monoType : MonoType, isUnboxed : Bool }
+         expectedType =
+           if elemLayout.isUnboxed then monoPrimitiveToMlir elemLayout.monoType  -- i64/f64/etc.
+           else Types.ecoValue                                                   -- !eco.value
+     Tuple / record / custom field:
+       Use fieldIndex and the base type (known from the enclosing function's MonoType or
+       from the constructor/record name) to look up FieldLayout in the layout maps.
+       Compute expectedType:
+         isUnboxed == True → primitive MLIR type from monoType
+         otherwise → !eco.value
+
+  4. Check result type matches expectation.
+     For each projection, compare resultType (as seen in MLIR) to expectedType. If they
+     differ, emit a test failure:
+       "eco.project.list_head in function List_foldl_$_11 returns !eco.value,
+        but element layout is unboxed MInt → expected i64."
+inputs: MonoGraph after GlobalOpt + generated MLIR for the same program
+oracle: Every eco.project result type matches the field's heap layout metadata —
+  unboxed primitives (MInt, MFloat, MChar) yield immediate MLIR types (i64, f64, i16),
+  boxed fields yield !eco.value. Any mismatch is an internal compiler bug.
+--
+--
 name: Closure capture follows SSA rules with Bool normalization
 phase: cross-phase
 invariants: REP_CLOSURE_001
