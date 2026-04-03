@@ -106,7 +106,7 @@ addHttpManager ( root, cache ) =
 
 addRegistry : EnvSetup -> Task Exit.Bump ( EnvSetup, Registry.Registry )
 addRegistry setup =
-    Task.eio Exit.BumpMustHaveLatestRegistry (Registry.latest setup.manager setup.cache)
+    Task.eio Exit.BumpMustHaveLatestRegistry (Registry.latest setup.manager setup.cache Registry.ForceRefresh)
         |> Task.map (\registry -> ( setup, registry ))
 
 
@@ -258,7 +258,7 @@ promptVersionChange ( suggestion, newDocs ) =
 
 generateDocs : FilePath -> Outline.PkgOutline -> Task Exit.Bump Docs.Documentation
 generateDocs root (Outline.PkgOutline pkgData) =
-    Task.eio Exit.BumpBadDetails (BW.withScope (\scope -> Details.load Reporting.silent scope root Nothing False False Nothing))
+    Task.eio Exit.BumpBadDetails (BW.withScope (\scope -> Details.load Reporting.silent scope root Nothing False False Nothing Registry.Normal))
         |> Task.andThen (buildDocsFromExposed root pkgData.exposed)
 
 

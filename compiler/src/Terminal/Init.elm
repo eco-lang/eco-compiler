@@ -157,7 +157,7 @@ type alias InitDetails =
 
 init : Bool -> Task Never (Result Exit.Init ())
 init package =
-    Solver.initEnv Nothing
+    Solver.initEnv Registry.Normal Nothing
         |> Task.andThen (initWithEnv package)
 
 

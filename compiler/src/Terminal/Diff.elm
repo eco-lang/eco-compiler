@@ -133,7 +133,7 @@ addHttpManager ( maybeRoot, cache ) =
 
 addRegistry : EnvSetup -> Task Exit.Diff Env
 addRegistry setup =
-    Task.eio Exit.DiffMustHaveLatestRegistry (Registry.latest setup.manager setup.cache)
+    Task.eio Exit.DiffMustHaveLatestRegistry (Registry.latest setup.manager setup.cache Registry.ForceRefresh)
         |> Task.map (\registry -> makeEnv setup.maybeRoot setup.cache setup.manager registry)
 
 
@@ -285,7 +285,7 @@ generateDocs (Env props) =
             Task.throw Exit.DiffNoOutline
 
         Just root ->
-            Task.eio Exit.DiffBadDetails (BW.withScope (\scope -> Details.load Reporting.silent scope root Nothing False False Nothing))
+            Task.eio Exit.DiffBadDetails (BW.withScope (\scope -> Details.load Reporting.silent scope root Nothing False False Nothing Registry.Normal))
                 |> Task.andThen (buildDocsFromDetails root)
 
 

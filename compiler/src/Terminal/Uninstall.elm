@@ -22,6 +22,7 @@ remains in a valid state after package removal.
 -}
 
 import Builder.BackgroundWriter as BW
+import Builder.Deps.Registry as Registry
 import Builder.Deps.Solver as Solver
 import Builder.Elm.Details as Details
 import Builder.Elm.Outline as Outline
@@ -97,7 +98,7 @@ handleArgs root args autoYes =
 
 uninstallPackage : FilePath -> Pkg.Name -> Bool -> Task Exit.Uninstall ()
 uninstallPackage root pkg autoYes =
-    Task.eio Exit.UninstallBadRegistry (Solver.initEnv Nothing)
+    Task.eio Exit.UninstallBadRegistry (Solver.initEnv Registry.Normal Nothing)
         |> Task.andThen (uninstallWithEnv root pkg autoYes)
 
 

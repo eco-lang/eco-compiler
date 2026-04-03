@@ -195,6 +195,25 @@ var _File_modificationTime = function(path) {
     });
 };
 
+var _File_touch = function(path) {
+    return __Scheduler_binding(function(callback) {
+        try {
+            var fs = require('fs');
+            var now = new Date();
+            try {
+                fs.utimesSync(path, now, now);
+            } catch (e) {
+                // File doesn't exist — create it, then set times
+                fs.closeSync(fs.openSync(path, 'a'));
+                fs.utimesSync(path, now, now);
+            }
+            callback(__Scheduler_succeed(__Utils_Tuple0));
+        } catch (e) {
+            callback(__Scheduler_fail(e.message));
+        }
+    });
+};
+
 var _File_getCwd = __Scheduler_binding(function(callback) {
     callback(__Scheduler_succeed(process.cwd()));
 });

@@ -49,6 +49,7 @@ source maps, and documentation generation.
 
 import Builder.BackgroundWriter as BW
 import Builder.Build as Build
+import Builder.Deps.Registry as Registry
 import Builder.Elm.Details as Details
 import Builder.File as File
 import Builder.Generate as Generate
@@ -89,6 +90,7 @@ type alias FlagsData =
     , kernelPackage : Maybe Pkg.Name
     , localPackage : Maybe ( Pkg.Name, FilePath )
     , textMlir : Bool
+    , refreshRegistry : Bool
     }
 
 
@@ -164,23 +166,31 @@ type alias BuildContext =
 
 runHelp : String -> List String -> Reporting.Style -> Flags -> Task Never (Result Exit.Make ())
 runHelp root paths style (Flags flagsData) =
-    BW.withScope (runHelpWithScope root paths style flagsData.debug flagsData.optimize flagsData.withSourceMaps flagsData.output flagsData.docs flagsData.showPackageErrors flagsData.buildDir flagsData.kernelPackage flagsData.localPackage flagsData.textMlir)
+    let
+        registryPolicy =
+            if flagsData.refreshRegistry then
+                Registry.ForceRefresh
+
+            else
+                Registry.Normal
+    in
+    BW.withScope (runHelpWithScope root paths style flagsData.debug flagsData.optimize flagsData.withSourceMaps flagsData.output flagsData.docs flagsData.showPackageErrors flagsData.buildDir flagsData.kernelPackage flagsData.localPackage flagsData.textMlir registryPolicy)
 
 
-runHelpWithScope : FilePath -> List String -> Reporting.Style -> Bool -> Bool -> Bool -> Maybe Output -> Maybe FilePath -> Bool -> Maybe String -> Maybe Pkg.Name -> Maybe ( Pkg.Name, FilePath ) -> Bool -> BW.Scope -> Task Never (Result Exit.Make ())
-runHelpWithScope root paths style debug optimize withSourceMaps maybeOutput maybeDocs showPackageErrors maybeBuildDir maybeKernelPackage maybeLocalPackage textMlir scope =
+runHelpWithScope : FilePath -> List String -> Reporting.Style -> Bool -> Bool -> Bool -> Maybe Output -> Maybe FilePath -> Bool -> Maybe String -> Maybe Pkg.Name -> Maybe ( Pkg.Name, FilePath ) -> Bool -> Registry.RegistryPolicy -> BW.Scope -> Task Never (Result Exit.Make ())
+runHelpWithScope root paths style debug optimize withSourceMaps maybeOutput maybeDocs showPackageErrors maybeBuildDir maybeKernelPackage maybeLocalPackage textMlir registryPolicy scope =
     Stuff.withRootLockBuildDir root
         maybeBuildDir
         (Task.run
             (getMode debug optimize
-                |> Task.andThen (loadDetailsAndBuild root paths style withSourceMaps maybeOutput maybeDocs showPackageErrors maybeBuildDir maybeKernelPackage maybeLocalPackage textMlir scope)
+                |> Task.andThen (loadDetailsAndBuild root paths style withSourceMaps maybeOutput maybeDocs showPackageErrors maybeBuildDir maybeKernelPackage maybeLocalPackage textMlir registryPolicy scope)
             )
         )
 
 
-loadDetailsAndBuild : FilePath -> List String -> Reporting.Style -> Bool -> Maybe Output -> Maybe FilePath -> Bool -> Maybe String -> Maybe Pkg.Name -> Maybe ( Pkg.Name, FilePath ) -> Bool -> BW.Scope -> DesiredMode -> Task Exit.Make ()
-loadDetailsAndBuild root paths style withSourceMaps maybeOutput maybeDocs showPackageErrors maybeBuildDir maybeKernelPackage maybeLocalPackage textMlir scope desiredMode =
-    Task.eio Exit.MakeBadDetails (Details.load style scope root maybeBuildDir (shouldUseTypedOpt maybeOutput) showPackageErrors maybeLocalPackage)
+loadDetailsAndBuild : FilePath -> List String -> Reporting.Style -> Bool -> Maybe Output -> Maybe FilePath -> Bool -> Maybe String -> Maybe Pkg.Name -> Maybe ( Pkg.Name, FilePath ) -> Bool -> Registry.RegistryPolicy -> BW.Scope -> DesiredMode -> Task Exit.Make ()
+loadDetailsAndBuild root paths style withSourceMaps maybeOutput maybeDocs showPackageErrors maybeBuildDir maybeKernelPackage maybeLocalPackage textMlir registryPolicy scope desiredMode =
+    Task.eio Exit.MakeBadDetails (Details.load style scope root maybeBuildDir (shouldUseTypedOpt maybeOutput) showPackageErrors maybeLocalPackage registryPolicy)
         |> Task.andThen (buildWithDetails root paths style withSourceMaps maybeOutput maybeDocs maybeBuildDir maybeKernelPackage maybeLocalPackage textMlir desiredMode)
 
 

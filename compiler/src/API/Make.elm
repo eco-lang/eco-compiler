@@ -15,6 +15,7 @@ and optional source map generation.
 
 import Builder.BackgroundWriter as BW
 import Builder.Build as Build
+import Builder.Deps.Registry as Registry
 import Builder.Elm.Details as Details
 import Builder.Generate as Generate
 import Builder.Reporting as Reporting
@@ -77,7 +78,7 @@ runHelp root path (Flags debug optimize withSourceMaps) =
                                     style =
                                         Reporting.json
                                 in
-                                Task.eio Exit.MakeBadDetails (Details.load style scope root Nothing False False Nothing)
+                                Task.eio Exit.MakeBadDetails (Details.load style scope root Nothing False False Nothing Registry.Normal)
                                     |> Task.andThen
                                         (\details ->
                                             buildPaths style root details (NE.Nonempty path [])

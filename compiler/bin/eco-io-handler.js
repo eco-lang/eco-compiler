@@ -291,6 +291,23 @@ function handleEcoIO(parsed, respond) {
       break;
     }
 
+    case "File.touch": {
+      try {
+        const now = new Date();
+        try {
+          fs.utimesSync(args.path, now, now);
+        } catch (e) {
+          // File doesn't exist — create it, then set times
+          fs.closeSync(fs.openSync(args.path, 'a'));
+          fs.utimesSync(args.path, now, now);
+        }
+        respond(200, "");
+      } catch (e) {
+        respond(500, JSON.stringify({ error: e.message }));
+      }
+      break;
+    }
+
     case "File.getCwd": {
       respond(200, JSON.stringify({ value: process.cwd() }));
       break;

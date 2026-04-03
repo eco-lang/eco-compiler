@@ -1,5 +1,6 @@
 module Builder.Deps.Registry exposing
     ( Registry(..), KnownVersions(..)
+    , RegistryPolicy(..)
     , read, fetch, update, latest
     , getVersions, getVersions_
     , registryDecoder, registryEncoder
@@ -46,6 +47,7 @@ import Compiler.Json.Decode as D
 import Compiler.Parse.Primitives as P
 import Dict exposing (Dict)
 import Eco.Console
+import Eco.File
 import Task exposing (Task)
 import Time
 import Utils.Bytes.Decode as BD
@@ -67,6 +69,24 @@ type Registry
 -}
 type KnownVersions
     = KnownVersions V.Version (List V.Version)
+
+
+{-| Controls whether the registry update checks the 30-minute TTL on registry.dat.
+
+Normal: skip the network call if registry.dat was checked less than 30 minutes ago.
+ForceRefresh: always check the endpoint regardless of the file timestamp.
+
+-}
+type RegistryPolicy
+    = Normal
+    | ForceRefresh
+
+
+{-| TTL in milliseconds (30 minutes).
+-}
+registryTtlMs : Int
+registryTtlMs =
+    30 * 60 * 1000
 
 
 
@@ -142,31 +162,58 @@ allPkgsDecoder =
 
 {-| Update an existing registry by fetching only new package versions since the last sync.
 Returns the updated registry, or the original if no updates are available.
+Respects the RegistryPolicy TTL: under Normal policy, skips the network call if
+registry.dat was checked less than 30 minutes ago.
 -}
-update : Http.Manager -> Stuff.PackageCache -> Registry -> Task Never (Result Exit.RegistryProblem Registry)
-update manager cache ((Registry size packages) as oldRegistry) =
-    post manager ("/all-packages/since/" ++ String.fromInt size) (D.list newPkgDecoder) <|
-        \news ->
-            case news of
-                [] ->
-                    Task.succeed oldRegistry
+update : Http.Manager -> Stuff.PackageCache -> RegistryPolicy -> Registry -> Task Never (Result Exit.RegistryProblem Registry)
+update manager cache policy ((Registry size packages) as oldRegistry) =
+    let
+        registryPath =
+            Stuff.registry cache
 
-                _ :: _ ->
-                    let
-                        newSize : Int
-                        newSize =
-                            size + List.length news
+        doFetch =
+            post manager ("/all-packages/since/" ++ String.fromInt size) (D.list newPkgDecoder) <|
+                \news ->
+                    case news of
+                        [] ->
+                            Eco.File.touch registryPath
+                                |> Task.map (\_ -> oldRegistry)
 
-                        newPkgs : Dict Pkg.Name KnownVersions
-                        newPkgs =
-                            List.foldr addNew packages news
+                        _ :: _ ->
+                            let
+                                newSize : Int
+                                newSize =
+                                    size + List.length news
 
-                        newRegistry : Registry
-                        newRegistry =
-                            Registry newSize newPkgs
-                    in
-                    File.writeBinary registryEncoder (Stuff.registry cache) newRegistry
-                        |> Task.map (\_ -> newRegistry)
+                                newPkgs : Dict Pkg.Name KnownVersions
+                                newPkgs =
+                                    List.foldr addNew packages news
+
+                                newRegistry : Registry
+                                newRegistry =
+                                    Registry newSize newPkgs
+                            in
+                            File.writeBinary registryEncoder registryPath newRegistry
+                                |> Task.map (\_ -> newRegistry)
+    in
+    case policy of
+        ForceRefresh ->
+            doFetch
+
+        Normal ->
+            Eco.File.modificationTime registryPath
+                |> Task.andThen
+                    (\mtime ->
+                        Time.now
+                            |> Task.andThen
+                                (\now ->
+                                    if Time.posixToMillis now - Time.posixToMillis mtime < registryTtlMs then
+                                        Task.succeed (Ok oldRegistry)
+
+                                    else
+                                        doFetch
+                                )
+                    )
 
 
 addNew : ( Pkg.Name, V.Version ) -> Dict Pkg.Name KnownVersions -> Dict Pkg.Name KnownVersions
@@ -216,14 +263,14 @@ bail _ _ =
 {-| Get the latest registry, either by reading the cache and updating it, or fetching it fresh.
 This is the primary entry point for obtaining an up-to-date registry.
 -}
-latest : Http.Manager -> Stuff.PackageCache -> Task Never (Result Exit.RegistryProblem Registry)
-latest manager cache =
+latest : Http.Manager -> Stuff.PackageCache -> RegistryPolicy -> Task Never (Result Exit.RegistryProblem Registry)
+latest manager cache policy =
     read cache
         |> Task.andThen
             (\maybeOldRegistry ->
                 case maybeOldRegistry of
                     Just oldRegistry ->
-                        update manager cache oldRegistry
+                        update manager cache policy oldRegistry
 
                     Nothing ->
                         fetch manager cache

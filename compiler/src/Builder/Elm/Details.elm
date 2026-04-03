@@ -456,30 +456,30 @@ runVerifyInstall scope root cache manager connection registry outline time =
 {-| Load project details, verifying dependencies and building them if necessary.
 Checks if elm.json has changed and regenerates details if needed. Used by build commands.
 -}
-load : Reporting.Style -> BW.Scope -> FilePath -> Maybe String -> Bool -> Bool -> Maybe ( Pkg.Name, FilePath ) -> Task Never (Result Exit.Details Details)
-load style scope root maybeBuildDir needsTypedOpt showPackageErrors maybeLocal =
+load : Reporting.Style -> BW.Scope -> FilePath -> Maybe String -> Bool -> Bool -> Maybe ( Pkg.Name, FilePath ) -> Registry.RegistryPolicy -> Task Never (Result Exit.Details Details)
+load style scope root maybeBuildDir needsTypedOpt showPackageErrors maybeLocal registryPolicy =
     File.getTime (root ++ "/elm.json")
-        |> Task.andThen (loadWithTime style scope root maybeBuildDir needsTypedOpt showPackageErrors maybeLocal)
+        |> Task.andThen (loadWithTime style scope root maybeBuildDir needsTypedOpt showPackageErrors maybeLocal registryPolicy)
 
 
-loadWithTime : Reporting.Style -> BW.Scope -> FilePath -> Maybe String -> Bool -> Bool -> Maybe ( Pkg.Name, FilePath ) -> File.Time -> Task Never (Result Exit.Details Details)
-loadWithTime style scope root maybeBuildDir needsTypedOpt showPackageErrors maybeLocal newTime =
+loadWithTime : Reporting.Style -> BW.Scope -> FilePath -> Maybe String -> Bool -> Bool -> Maybe ( Pkg.Name, FilePath ) -> Registry.RegistryPolicy -> File.Time -> Task Never (Result Exit.Details Details)
+loadWithTime style scope root maybeBuildDir needsTypedOpt showPackageErrors maybeLocal registryPolicy newTime =
     File.readBinary detailsDecoder (Stuff.detailsWithBuildDir root maybeBuildDir)
-        |> Task.andThen (handleCachedDetails style scope root maybeBuildDir needsTypedOpt showPackageErrors maybeLocal newTime)
+        |> Task.andThen (handleCachedDetails style scope root maybeBuildDir needsTypedOpt showPackageErrors maybeLocal registryPolicy newTime)
 
 
-handleCachedDetails : Reporting.Style -> BW.Scope -> FilePath -> Maybe String -> Bool -> Bool -> Maybe ( Pkg.Name, FilePath ) -> File.Time -> Maybe Details -> Task Never (Result Exit.Details Details)
-handleCachedDetails style scope root maybeBuildDir needsTypedOpt showPackageErrors maybeLocal newTime maybeDetails =
+handleCachedDetails : Reporting.Style -> BW.Scope -> FilePath -> Maybe String -> Bool -> Bool -> Maybe ( Pkg.Name, FilePath ) -> Registry.RegistryPolicy -> File.Time -> Maybe Details -> Task Never (Result Exit.Details Details)
+handleCachedDetails style scope root maybeBuildDir needsTypedOpt showPackageErrors maybeLocal registryPolicy newTime maybeDetails =
     case maybeDetails of
         Nothing ->
-            generate style scope root maybeBuildDir needsTypedOpt showPackageErrors maybeLocal newTime
+            generate style scope root maybeBuildDir needsTypedOpt showPackageErrors maybeLocal registryPolicy newTime
 
         Just (Details detailsData) ->
             if detailsData.time /= newTime then
-                generate style scope root maybeBuildDir needsTypedOpt showPackageErrors maybeLocal newTime
+                generate style scope root maybeBuildDir needsTypedOpt showPackageErrors maybeLocal registryPolicy newTime
 
             else if needsTypedOpt && not detailsData.hasTypedOpt then
-                generate style scope root maybeBuildDir needsTypedOpt showPackageErrors maybeLocal newTime
+                generate style scope root maybeBuildDir needsTypedOpt showPackageErrors maybeLocal registryPolicy newTime
 
             else
                 Task.succeed (Ok (Details { detailsData | buildID = detailsData.buildID + 1 }))
@@ -489,11 +489,11 @@ handleCachedDetails style scope root maybeBuildDir needsTypedOpt showPackageErro
 -- ====== GENERATE ======
 
 
-generate : Reporting.Style -> BW.Scope -> FilePath -> Maybe String -> Bool -> Bool -> Maybe ( Pkg.Name, FilePath ) -> File.Time -> Task Never (Result Exit.Details Details)
-generate style scope root maybeBuildDir needsTypedOpt showPackageErrors maybeLocal time =
+generate : Reporting.Style -> BW.Scope -> FilePath -> Maybe String -> Bool -> Bool -> Maybe ( Pkg.Name, FilePath ) -> Registry.RegistryPolicy -> File.Time -> Task Never (Result Exit.Details Details)
+generate style scope root maybeBuildDir needsTypedOpt showPackageErrors maybeLocal registryPolicy time =
     Reporting.trackDetails style
         (\key ->
-            initEnv key scope root maybeBuildDir needsTypedOpt showPackageErrors maybeLocal
+            initEnv key scope root maybeBuildDir needsTypedOpt showPackageErrors maybeLocal registryPolicy
                 |> Task.andThen (verifyOutline time)
         )
 
@@ -535,9 +535,9 @@ type Env
     = Env EnvData
 
 
-initEnv : Reporting.DKey -> BW.Scope -> FilePath -> Maybe String -> Bool -> Bool -> Maybe ( Pkg.Name, FilePath ) -> Task Never (Result Exit.Details ( Env, Outline.Outline ))
-initEnv key scope root maybeBuildDir needsTypedOpt showPackageErrors maybeLocal =
-    fork resultRegistryProblemEnvEncoder (Solver.initEnv maybeLocal)
+initEnv : Reporting.DKey -> BW.Scope -> FilePath -> Maybe String -> Bool -> Bool -> Maybe ( Pkg.Name, FilePath ) -> Registry.RegistryPolicy -> Task Never (Result Exit.Details ( Env, Outline.Outline ))
+initEnv key scope root maybeBuildDir needsTypedOpt showPackageErrors maybeLocal registryPolicy =
+    fork resultRegistryProblemEnvEncoder (Solver.initEnv registryPolicy maybeLocal)
         |> Task.andThen (initEnvWithMVar key scope root maybeBuildDir needsTypedOpt showPackageErrors)
 
 

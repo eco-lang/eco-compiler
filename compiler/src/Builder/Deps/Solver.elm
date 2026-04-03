@@ -781,33 +781,33 @@ package registry. Falls back to offline mode if registry update fails but a
 cached registry exists.
 
 -}
-initEnv : Maybe ( Pkg.Name, IO.FilePath ) -> Task Never (Result Exit.RegistryProblem Env)
-initEnv maybeLocal =
+initEnv : Registry.RegistryPolicy -> Maybe ( Pkg.Name, IO.FilePath ) -> Task Never (Result Exit.RegistryProblem Env)
+initEnv policy maybeLocal =
     Utils.newEmptyMVar
-        |> Task.andThen (forkHttpManagerAndInitCache maybeLocal)
+        |> Task.andThen (forkHttpManagerAndInitCache policy maybeLocal)
 
 
-forkHttpManagerAndInitCache : Maybe ( Pkg.Name, IO.FilePath ) -> IO.MVar Http.Manager -> Task Never (Result Exit.RegistryProblem Env)
-forkHttpManagerAndInitCache maybeLocal mvar =
+forkHttpManagerAndInitCache : Registry.RegistryPolicy -> Maybe ( Pkg.Name, IO.FilePath ) -> IO.MVar Http.Manager -> Task Never (Result Exit.RegistryProblem Env)
+forkHttpManagerAndInitCache policy maybeLocal mvar =
     Utils.forkIO (Http.getManager |> Task.andThen (Utils.putMVar Http.managerEncoder mvar))
         |> Task.andThen (\_ -> Stuff.getPackageCache maybeLocal)
-        |> Task.andThen (\cache -> initEnvWithCache cache mvar)
+        |> Task.andThen (\cache -> initEnvWithCache policy cache mvar)
 
 
 {-| Initialize environment with a package cache.
 -}
-initEnvWithCache : Stuff.PackageCache -> IO.MVar Http.Manager -> Task Never (Result Exit.RegistryProblem Env)
-initEnvWithCache cache mvar =
+initEnvWithCache : Registry.RegistryPolicy -> Stuff.PackageCache -> IO.MVar Http.Manager -> Task Never (Result Exit.RegistryProblem Env)
+initEnvWithCache policy cache mvar =
     Stuff.withRegistryLock cache
         (Registry.read cache
-            |> Task.andThen (loadRegistry cache mvar)
+            |> Task.andThen (loadRegistry policy cache mvar)
         )
 
 
 {-| Load or fetch the registry.
 -}
-loadRegistry : Stuff.PackageCache -> IO.MVar Http.Manager -> Maybe Registry.Registry -> Task Never (Result Exit.RegistryProblem Env)
-loadRegistry cache mvar maybeRegistry =
+loadRegistry : Registry.RegistryPolicy -> Stuff.PackageCache -> IO.MVar Http.Manager -> Maybe Registry.Registry -> Task Never (Result Exit.RegistryProblem Env)
+loadRegistry policy cache mvar maybeRegistry =
     Utils.readMVar Http.managerDecoder mvar
         |> Task.andThen
             (\manager ->
@@ -816,7 +816,7 @@ loadRegistry cache mvar maybeRegistry =
                         fetchNewRegistry cache manager
 
                     Just cachedRegistry ->
-                        updateCachedRegistry cache manager cachedRegistry
+                        updateCachedRegistry policy cache manager cachedRegistry
             )
 
 
@@ -838,9 +838,9 @@ fetchNewRegistry cache manager =
 
 {-| Update a cached registry, falling back to offline mode on failure.
 -}
-updateCachedRegistry : Stuff.PackageCache -> Http.Manager -> Registry.Registry -> Task Never (Result Exit.RegistryProblem Env)
-updateCachedRegistry cache manager cachedRegistry =
-    Registry.update manager cache cachedRegistry
+updateCachedRegistry : Registry.RegistryPolicy -> Stuff.PackageCache -> Http.Manager -> Registry.Registry -> Task Never (Result Exit.RegistryProblem Env)
+updateCachedRegistry policy cache manager cachedRegistry =
+    Registry.update manager cache policy cachedRegistry
         |> Task.map
             (\eitherRegistry ->
                 case eitherRegistry of

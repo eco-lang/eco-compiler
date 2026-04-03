@@ -92,3 +92,7 @@ uint64_t Eco_Kernel_File_removeDir(uint64_t path) {
 uint64_t Eco_Kernel_File_hWriteString(uint64_t handle, uint64_t content) {
     return File::hWriteString(handle, content);
 }
+
+uint64_t Eco_Kernel_File_touch(uint64_t path) {
+    return File::touch(path);
+}

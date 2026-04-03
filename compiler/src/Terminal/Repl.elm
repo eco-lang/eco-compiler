@@ -35,6 +35,7 @@ immediately. It provides a learning environment and quick experimentation tool.
 
 import Builder.BackgroundWriter as BW
 import Builder.Build as Build
+import Builder.Deps.Registry as Registry
 import Builder.Elm.Details as Details
 import Builder.Elm.Outline as Outline
 import Builder.Generate as Generate
@@ -681,7 +682,7 @@ buildAndGenerate : FilePath -> Bool -> IO.ReplState -> Output -> BW.Scope -> Tas
 buildAndGenerate root ansi newState output scope =
     Stuff.withRootLock root
         (Task.run
-            (Task.eio Exit.ReplBadDetails (Details.load Reporting.silent scope root Nothing False False Nothing)
+            (Task.eio Exit.ReplBadDetails (Details.load Reporting.silent scope root Nothing False False Nothing Registry.Normal)
                 |> Task.andThen (buildAndGenerateWithDetails root ansi newState output)
             )
         )

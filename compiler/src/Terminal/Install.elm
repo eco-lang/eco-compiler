@@ -58,11 +58,12 @@ type Args
 
 {-| Configuration flags for the install command.
 
-Contains flags for test dependencies and auto-yes to skip confirmation prompts.
+Contains flags for test dependencies, auto-yes to skip confirmation prompts,
+and refresh-registry to force a registry re-check.
 
 -}
 type Flags
-    = Flags Bool Bool
+    = Flags Bool Bool Bool
 
 
 {-| Add a package to the project's dependencies.
@@ -72,37 +73,45 @@ updates elm.json, and verifies the project builds with the new dependency.
 
 -}
 run : Args -> Flags -> Task Never ()
-run args (Flags forTest autoYes) =
+run args (Flags forTest autoYes refreshRegistry) =
+    let
+        registryPolicy =
+            if refreshRegistry then
+                Registry.ForceRefresh
+
+            else
+                Registry.Normal
+    in
     Reporting.attempt Exit.installToReport
         (Stuff.findRoot
-            |> Task.andThen (handleRoot args forTest autoYes)
+            |> Task.andThen (handleRoot args forTest autoYes registryPolicy)
         )
 
 
-handleRoot : Args -> Bool -> Bool -> Maybe FilePath -> Task Never (Result Exit.Install ())
-handleRoot args forTest autoYes maybeRoot =
+handleRoot : Args -> Bool -> Bool -> Registry.RegistryPolicy -> Maybe FilePath -> Task Never (Result Exit.Install ())
+handleRoot args forTest autoYes registryPolicy maybeRoot =
     case maybeRoot of
         Nothing ->
             Task.succeed (Err Exit.InstallNoOutline)
 
         Just root ->
-            handleArgs root args forTest autoYes
+            handleArgs root args forTest autoYes registryPolicy
 
 
-handleArgs : FilePath -> Args -> Bool -> Bool -> Task Never (Result Exit.Install ())
-handleArgs root args forTest autoYes =
+handleArgs : FilePath -> Args -> Bool -> Bool -> Registry.RegistryPolicy -> Task Never (Result Exit.Install ())
+handleArgs root args forTest autoYes registryPolicy =
     case args of
         NoArgs ->
             Stuff.getElmHome
                 |> Task.map (\elmHome -> Err (Exit.InstallNoArgs elmHome))
 
         Install pkg ->
-            Task.run (installPackage root pkg forTest autoYes)
+            Task.run (installPackage root pkg forTest autoYes registryPolicy)
 
 
-installPackage : FilePath -> Pkg.Name -> Bool -> Bool -> Task Exit.Install ()
-installPackage root pkg forTest autoYes =
-    Task.eio Exit.InstallBadRegistry (Solver.initEnv Nothing)
+installPackage : FilePath -> Pkg.Name -> Bool -> Bool -> Registry.RegistryPolicy -> Task Exit.Install ()
+installPackage root pkg forTest autoYes registryPolicy =
+    Task.eio Exit.InstallBadRegistry (Solver.initEnv registryPolicy Nothing)
         |> Task.andThen (installWithEnv root pkg forTest autoYes)
 
 

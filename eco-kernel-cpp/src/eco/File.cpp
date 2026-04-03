@@ -261,4 +261,18 @@ uint64_t removeDir(uint64_t path) {
     return taskSucceedUnit();
 }
 
+uint64_t touch(uint64_t path) {
+    std::string pathStr = toString(path);
+    // Create the file if it doesn't exist
+    int fd = ::open(pathStr.c_str(), O_WRONLY | O_CREAT, 0644);
+    if (fd >= 0) {
+        ::close(fd);
+    }
+    // Update access and modification times to now
+    if (utimensat(AT_FDCWD, pathStr.c_str(), nullptr, 0) != 0) {
+        return taskFailString("Cannot touch file: " + pathStr);
+    }
+    return taskSucceedUnit();
+}
+
 } // namespace Eco::Kernel::File

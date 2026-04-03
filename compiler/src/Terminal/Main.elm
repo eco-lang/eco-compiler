@@ -297,6 +297,10 @@ make =
                     (Terminal.onOff "text-mlir"
                         "Output MLIR in text format instead of binary bytecode (for debugging)."
                     )
+                |> Terminal.more
+                    (Terminal.onOff "refresh-registry"
+                        "Force re-check of the package registry, ignoring the 30-minute cache."
+                    )
     in
     Terminal.Command
         { name = "make"
@@ -311,7 +315,7 @@ make =
                     chunks
                     [ Chomp.chompMultiple (Chomp.pure identity) Terminal.elmFile Terminal.parseElmFile
                     ]
-                    (Chomp.pure (\debug_ optimize_ withSourceMaps_ output_ report_ docs_ showPackageErrors_ buildDir_ kernelPackage_ localPackage_ textMlir_ -> Make.Flags { debug = debug_, optimize = optimize_, withSourceMaps = withSourceMaps_, output = output_, report = report_, docs = docs_, showPackageErrors = showPackageErrors_, buildDir = buildDir_, kernelPackage = kernelPackage_, localPackage = localPackage_, textMlir = textMlir_ })
+                    (Chomp.pure (\debug_ optimize_ withSourceMaps_ output_ report_ docs_ showPackageErrors_ buildDir_ kernelPackage_ localPackage_ textMlir_ refreshRegistry_ -> Make.Flags { debug = debug_, optimize = optimize_, withSourceMaps = withSourceMaps_, output = output_, report = report_, docs = docs_, showPackageErrors = showPackageErrors_, buildDir = buildDir_, kernelPackage = kernelPackage_, localPackage = localPackage_, textMlir = textMlir_, refreshRegistry = refreshRegistry_ })
                         |> Chomp.apply (Chomp.chompOnOffFlag "debug")
                         |> Chomp.apply (Chomp.chompOnOffFlag "optimize")
                         |> Chomp.apply (Chomp.chompOnOffFlag "sourcemaps")
@@ -323,6 +327,7 @@ make =
                         |> Chomp.apply (Chomp.chompNormalFlag "kernel-package" Make.kernelPackage Make.parseKernelPackage)
                         |> Chomp.apply (Chomp.chompNormalFlag "local-package" Make.localPackage Make.parseLocalPackage)
                         |> Chomp.apply (Chomp.chompOnOffFlag "text-mlir")
+                        |> Chomp.apply (Chomp.chompOnOffFlag "refresh-registry")
                         |> Chomp.andThen
                             (\value ->
                                 Chomp.checkForUnknownFlags makeFlags
@@ -374,6 +379,7 @@ install =
             Terminal.flags
                 |> Terminal.more (Terminal.onOff "test" "Install as a test-dependency.")
                 |> Terminal.more (Terminal.onOff "yes" "Reply 'yes' to all automated prompts.")
+                |> Terminal.more (Terminal.onOff "refresh-registry" "Force re-check of the package registry, ignoring the 30-minute cache.")
     in
     Terminal.Command
         { name = "install"
@@ -399,6 +405,7 @@ install =
                     (Chomp.pure Install.Flags
                         |> Chomp.apply (Chomp.chompOnOffFlag "test")
                         |> Chomp.apply (Chomp.chompOnOffFlag "yes")
+                        |> Chomp.apply (Chomp.chompOnOffFlag "refresh-registry")
                         |> Chomp.andThen
                             (\value ->
                                 Chomp.checkForUnknownFlags installFlags

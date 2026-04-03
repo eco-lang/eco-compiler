@@ -2,7 +2,7 @@ module Eco.File exposing
     ( readString, writeString, readBytes, writeBytes
     , Handle(..), IOMode(..), open, close, size
     , lock, unlock
-    , fileExists, dirExists, findExecutable, list, modificationTime
+    , fileExists, dirExists, findExecutable, list, modificationTime, touch
     , getCwd, setCwd, canonicalize, appDataDir, createDir, removeFile, removeDir
     , hWriteString
     )
@@ -29,7 +29,7 @@ All operations are atomic IO primitives backed by kernel implementations.
 
 # File and Directory Queries
 
-@docs fileExists, dirExists, findExecutable, list, modificationTime
+@docs fileExists, dirExists, findExecutable, list, modificationTime, touch
 
 
 # Directory Operations
@@ -180,6 +180,14 @@ modificationTime : String -> Task Never Time.Posix
 modificationTime path =
     Eco.Kernel.File.modificationTime path
         |> Task.map Time.millisToPosix
+
+
+{-| Update the modification time of a file to the current time.
+Creates the file if it does not exist.
+-}
+touch : String -> Task Never ()
+touch path =
+    Eco.Kernel.File.touch path
 
 
 

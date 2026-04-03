@@ -16,6 +16,7 @@ rather than exact versions.
 -}
 
 import Builder.BackgroundWriter as BW
+import Builder.Deps.Registry as Registry
 import Builder.Deps.Solver as Solver
 import Builder.Elm.Details as Details
 import Builder.Elm.Outline as Outline
@@ -50,7 +51,7 @@ run pkg =
 
                         Just root ->
                             Task.run
-                                (Task.eio Exit.UninstallBadRegistry (Solver.initEnv Nothing)
+                                (Task.eio Exit.UninstallBadRegistry (Solver.initEnv Registry.Normal Nothing)
                                     |> Task.andThen
                                         (\env ->
                                             Task.eio Exit.UninstallBadOutline (Outline.read root)
