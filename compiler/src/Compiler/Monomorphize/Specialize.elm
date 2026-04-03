@@ -69,6 +69,7 @@ type ProcessedArg
 
 buildSchemeInfo freshens the callee's MVarIds using the global MVarEnv,
 so cached schemes never share MVarIds with callers and can be reused safely.
+
 -}
 getOrBuildSchemeInfo : Can.Type MVarId -> Maybe TOpt.Global -> MonoState -> ( SchemeInfo, MonoState )
 getOrBuildSchemeInfo funcCanType maybeGlobal state =
@@ -113,6 +114,7 @@ getOrBuildSchemeInfo funcCanType maybeGlobal state =
                     { ctx | mvarEnv = mvarEnv1 }
             in
             ( info, { state | ctx = ctx1 } )
+
 
 
 -- ========== FREEVARS HELPERS ==========
@@ -1217,11 +1219,38 @@ specializeExpr expr subst state =
 
         TOpt.VarCycle region canonical name meta ->
             let
-                canType =
-                    meta.tipe
+                -- Prefer the canonical scheme type from the TypedOptimized graph
+                -- so we do not depend on the potentially fragmented meta.tipe TVars.
+                schemeType =
+                    case Data.Map.get TOpt.toComparableGlobal (TOpt.Global canonical name) state.ctx.toptNodes of
+                        Just (TOpt.Define _ _ defMeta) ->
+                            defMeta.tipe
+
+                        Just (TOpt.TrackedDefine _ _ _ defMeta) ->
+                            defMeta.tipe
+
+                        Just (TOpt.Cycle _ _ funcDefs _) ->
+                            -- For functions in a recursive cycle, find the matching Def/TailDef
+                            -- and use its canonical function type.
+                            let
+                                maybeDef =
+                                    List.filter (\d -> getDefName d == name) funcDefs |> List.head
+                            in
+                            case maybeDef of
+                                Just def ->
+                                    getDefCanonicalType def
+
+                                Nothing ->
+                                    meta.tipe
+
+                        _ ->
+                            -- Fallback: use the VarCycle's own meta.tipe if we cannot
+                            -- find a node or matching def. This should not normally happen.
+                            meta.tipe
 
                 monoType =
-                    Mono.forceCNumberToInt (applySubstFV state subst canType)
+                    Mono.forceCNumberToInt
+                        (Tuple.first (TypeSubst.applySubst state.ctx.mvarEnv subst schemeType))
 
                 monoGlobal =
                     Mono.Global canonical name
@@ -2869,6 +2898,7 @@ computeDefAliasMap def =
 
     Only used for Defs in cycles; local let-bound Defs use their existing
     specialization path.
+
 -}
 computeCycleDefAliasMap : TOpt.Def MVarId -> TypeSubst.MVarAliasMap
 computeCycleDefAliasMap def =
@@ -3529,6 +3559,7 @@ Interpret the call expression's canonical result type using only the callee's
 call-site substitution from unifyCallSiteDirect. The caller's substitution is
 not applied here — with globally unique MVarIds per scheme, the old
 caller-first heuristic is no longer needed and can produce wrong results.
+
 -}
 callResultMonoType : MVarEnv -> Can.FreeVars -> Substitution -> Can.Type MVarId -> Mono.MonoType
 callResultMonoType mvarEnv freeVars callSubst canType =
