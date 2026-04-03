@@ -1,429 +1,191 @@
-Here’s a concrete plan to enforce the invariant at the monomorphization stage:
+# Plan: MVarId Alias Map for TailDef Specialization
 
-> For any `MonoDefine` whose `monoType` is `MFunction`, its body must be *callable* (i.e. a `MonoClosure` or equivalent), so backends never need to special‑case `MonoVarGlobal` of function type.
+## Problem
 
-I’ll focus on changes in `Compiler.Generate.Monomorphize` and the Mono AST, and point out the interactions with MLIRMono.
+When monomorphizing cycle TailDefs (e.g. `List.foldrHelper`), the canonical type from `getDefCanonicalType` uses one set of MVarIds (e.g. 943, 944), but the arg types use different MVarIds (941, 942) and the body's `meta.tipe` uses yet another set (947, 945). The `sharedSubst` only binds scheme MVarIds (943→MInt, 944→MList MInt), so when we apply it to arg or body types, the unrelated MVarIds fall through as `MVar CEcoValue`, producing broken specializations.
+
+## Solution
+
+Explicitly link all MVarId families (scheme, args, body) back to the canonical scheme via structural type matching, then extend the substitution with those aliases before applying it.
 
 ---
 
-## 1. Understand the current shape
+## Step-by-Step Implementation
 
-Today, `specializeNode` just pipes whatever `MonoExpr` it gets into `MonoDefine`:
+### Step 1: Add `MVarAliasMap` type alias to TypeSubst.elm
 
+**File:** `compiler/src/Compiler/Monomorphize/TypeSubst.elm`
+
+Add a type alias:
 ```elm
-specializeNode node monoType maybeLambda state =
-    case node of
-        TOpt.Define expr _ canType ->
-            let
-                subst =
-                    unify canType monoType
-
-                ( monoExpr, stateAfter ) =
-                    specializeExpr expr subst state
-
-                depIds =
-                    collectDependencies monoExpr
-            in
-            ( Mono.MonoDefine monoExpr depIds monoType, stateAfter )
-
-        TOpt.TrackedDefine _ expr _ canType ->
-            ...
-            ( Mono.MonoDefine monoExpr depIds monoType, stateAfter )
-        ...
+type alias MVarAliasMap = Dict Int Int
 ```
 
+Keys are `Id.toComparable localMVarId`, values are `Id.toComparable schemeMVarId`. Export it from the module.
 
+### Step 2: Add `linkSchemeToLocalType` to TypeSubst.elm
 
-If `expr` was a `TOpt.Function`/`TOpt.TrackedFunction`, `specializeExpr` already returns a `Mono.MonoClosure` with params and body, so this is fine. 
+**File:** `compiler/src/Compiler/Monomorphize/TypeSubst.elm`
 
-But when `expr` is something else (e.g. `VarGlobal VirtualDom.text`), and the annotated type `canType` is a function type, `monoExpr` becomes `Mono.MonoVarGlobal … (MFunction …)` and `Mono.MonoDefine` ends up with a non‑callable body of function type. That’s the problematic case.
+Structurally walk two `Can.Type MVarId` trees in lockstep. When both sides are `TVar`, record `Id.toComparable localId → Id.toComparable schemeId` in the alias map. Recurse into all constructors:
 
-Downstream, MLIRMono codegen assumes:
+- `TLambda`: recurse on arg and result
+- `TType`: recurse on type args (zip the two lists)
+- `TRecord`: recurse on matching field types by name; handle extension var (both `Just` → alias; otherwise skip)
+- `TTuple`: recurse on elements
+- `TAlias`: recurse on the `Filled`/`Holey` inner type and alias args
+- `TUnit`: no-op
+- Mismatched shapes: no-op (precondition violation, but safe to skip)
 
-- `MonoDefine expr _ monoType` → `generateDefine ctx funcName expr monoType`   
-- `generateDefine` only treats `MonoClosure` specially; everything else is treated as a nullary thunk. 
-
-So your plan is to *normalize* such top‑level function defs during monomorphization.
-
----
-
-## 2. High‑level design of the fix
-
-Add a helper in `Monomorphize` that:
-
-- Looks at `(monoExpr, monoType)`.
-- If `monoType` is **not** `MFunction`, do nothing.
-- If `monoType` is `MFunction args ret`:
-  - If `monoExpr` is already `MonoClosure`, keep as is.
-  - Else, **eta‑expand** by synthesizing:
-
-    ```elm
-    Mono.MonoClosure closureInfo body monoType
-    ```
-
-  where `closureInfo.params` is a fresh parameter list matching `args`, and `body` is a `MonoCall` that calls the original `monoExpr` with those parameters.
-
-Then use this helper in:
-
-- `specializeNode` for `TOpt.Define` and `TOpt.TrackedDefine`.
-- Also for `TOpt.PortIncoming`/`TOpt.PortOutgoing`, since those nodes are fed to `generateDefine` as well. 
-
-This enforces:
-
-> “Every `MonoDefine` whose `monoType` is `MFunction` has a `MonoClosure` body.”
-
-and similarly for `MonoPortIncoming`/`MonoPortOutgoing` with function type.
-
----
-
-## 3. New helper: `ensureCallableTopLevel`
-
-### 3.1 Signature and placement
-
-In `Compiler.Generate.Monomorphize` (same module as `specializeNode`), define:
-
+**Signature:**
 ```elm
-ensureCallableTopLevel :
-    Mono.MonoExpr
-    -> Mono.MonoType
-    -> MonoState
-    -> ( Mono.MonoExpr, MonoState )
+linkSchemeToLocalType : Can.Type MVarId -> Can.Type MVarId -> MVarAliasMap -> MVarAliasMap
 ```
 
-Place it below `specializeExpr` / helper section so it can see `MonoState` and `Mono.MonoType`.
+No MVarEnv threading needed — this is a pure structural match, no fresh vars or constraints.
 
-### 3.2 Behavior
+### Step 3: Add `extendSubstWithAliases` to TypeSubst.elm
 
-Pseudo‑logic (Elm‑ish):
+**File:** `compiler/src/Compiler/Monomorphize/TypeSubst.elm`
 
-```elm
-ensureCallableTopLevel expr monoType state =
-    case monoType of
-        Mono.MFunction argTypes retType ->
-            case expr of
-                Mono.MonoClosure _ _ _ ->
-                    -- Already callable
-                    ( expr, state )
-
-                Mono.MonoVarGlobal region specId _ ->
-                    makeAliasClosure
-                        (\params -> Mono.MonoVarGlobal region specId monoType)
-                        region argTypes retType monoType state
-
-                Mono.MonoVarKernel region home name _ ->
-                    makeAliasClosure
-                        (\params -> Mono.MonoVarKernel region home name monoType)
-                        region argTypes retType monoType state
-
-                Mono.MonoVarCycle region home name _ ->
-                    makeAliasClosure
-                        (\params -> Mono.MonoVarCycle region home name monoType)
-                        region argTypes retType monoType state
-
-                -- Other weird cases (should be rare for top-level defs)
-                _ ->
-                    -- Option 1: assert / error
-                    -- Option 2: fall back to general wrapper
-                    makeGeneralClosure expr argTypes retType monoType state
-
-        _ ->
-            -- Not a function type, leave unchanged
-            ( expr, state )
-```
-
-For your Html/Vdom alias case, only the `MonoVarGlobal` branch is taken.
-
----
-
-## 4. Helper: `makeAliasClosure`
-
-This encapsulates the eta‑expansion for the VarGlobal / kernel / cycle alias pattern.
-
-### 4.1 Generate parameter list
-
-Given `argTypes : List Mono.MonoType`, create synthetic parameter names:
-
-- You already use real names when specializing lambdas (`monoParams = List.map (\(name,t) -> ...)` from `TOpt.Function`). 
-- For aliases there are no original args, so just use fresh synthetic names, e.g. `"arg0"`, `"arg1"`, etc.
-
-Sketch:
+Given an `MVarAliasMap` and a `Substitution`, produce a new `Substitution`. **Skip-if-exists policy:** only add `localId → monoType` if `localId` is not already bound. This ensures `unify`/`unifyExtend` bindings always win over alias-derived ones.
 
 ```elm
-freshParams : List Mono.MonoType -> List ( Name, Mono.MonoType )
-freshParams argTypes =
-    List.indexedMap
-        (\i ty ->
-            ( "arg" ++ String.fromInt i, ty )
+extendSubstWithAliases : MVarAliasMap -> Substitution -> Substitution
+extendSubstWithAliases aliasMap subst =
+    Dict.foldl
+        (\localId schemeId acc ->
+            if Dict.member localId acc then
+                acc
+            else
+                case Dict.get schemeId subst of
+                    Just monoT -> Dict.insert localId monoT acc
+                    Nothing -> acc
         )
-        argTypes
+        subst
+        aliasMap
 ```
 
-(You can refine the naming using whatever `Name` helpers exist; these names are only used locally in this `MonoExpr`.)
+### Step 4: Add `computeDefAliasMap` to Specialize.elm
 
-### 4.2 Allocate a lambda id
+**File:** `compiler/src/Compiler/Monomorphize/Specialize.elm`
 
-Mimic what you already do for `TOpt.Function` and `TOpt.TrackedFunction` in `specializeExpr`:
+For a TailDef, compute the alias map by linking:
+1. `getDefCanonicalType def` (the scheme = full function type) against `returnType` (also the full function type). This captures all MVarId correspondences for args AND result in one structural walk.
+2. Each individual arg's `Can.Type` against the corresponding flattened scheme arg type. This is cheap insurance for edge cases where arg types introduce extra variables not in the overall function type.
+3. The scheme's result type against `TOpt.typeOf body`. This captures body MVarIds.
+
+**Note on arg linking:** Under normal circumstances, arg types and the def-level type share the same MVarId family (both rewritten through the same `bindingCtx` in `AssignMVarIds`). So scheme↔returnType linking usually covers arg MVarIds too. Per-arg linking is low-cost insurance.
 
 ```elm
-lambdaId =
-    Mono.AnonymousLambda state.currentModule state.lambdaCounter []
-
-stateWithLambda =
-    { state | lambdaCounter = state.lambdaCounter + 1 }
+computeDefAliasMap : TOpt.Def MVarId -> TypeSubst.MVarAliasMap
+computeDefAliasMap def =
+    case def of
+        TOpt.TailDef _ _ args body returnType _ ->
+            let
+                schemeType = getDefCanonicalType def
+                -- flattenTLambda or manual chain walk to get (schemeArgTypes, schemeResultType)
+                (schemeArgTypes, schemeResultType) = flattenSchemeType schemeType
+                bodyType = TOpt.typeOf body
+            in
+            Dict.empty
+                -- Link full function type: scheme ↔ returnType
+                |> TypeSubst.linkSchemeToLocalType schemeType returnType
+                -- Link individual args (cheap insurance)
+                |> (\acc -> List.foldl (\(sArg, (_, lArg)) a -> TypeSubst.linkSchemeToLocalType sArg lArg a) acc (List.map2 Tuple.pair schemeArgTypes (List.map Tuple.second (List.map (\(loc, ct) -> (loc, ct)) args))))
+                -- Link body type
+                |> TypeSubst.linkSchemeToLocalType schemeResultType bodyType
+        _ ->
+            Dict.empty
 ```
 
+The per-arg linking zip is a bit awkward in pseudocode; the actual implementation will use `List.map2 Tuple.pair` on `schemeArgTypes` and the arg `Can.Type` list extracted from `args`.
 
+For the scheme flattening, either:
+- Use `TypeSubst.flattenTLambda` if exported, or
+- Write a local helper that walks the TLambda chain (trivial 5-line function, same as `buildFuncType` in reverse)
 
-Use the *same* pattern here; `captures` is an empty list because this alias wrapper has no free variables.
+### Step 5: Wire alias map into `specializeFuncDefInCycle`
 
-### 4.3 Build body: `MonoCall` to the aliased value
+**File:** `compiler/src/Compiler/Monomorphize/Specialize.elm`
 
-Construct argument expressions from the params:
-
-```elm
-paramExprs : List Mono.MonoExpr
-paramExprs =
-    List.map
-        (\( name, ty ) -> Mono.MonoVarLocal name ty)
-        params
-```
-
-Then build the call:
-
-```elm
-callExpr : Mono.MonoExpr
-callExpr =
-    Mono.MonoCall region
-        (targetExpr params)  -- e.g. MonoVarGlobal/Kernel/Cycle with monoType
-        paramExprs
-        retType
-```
-
-Where `targetExpr` is the function passed into `makeAliasClosure` (so you can share the logic for VarGlobal/VarKernel/VarCycle).
-
-### 4.4 Assemble the closure
-
-Finally:
-
-```elm
-closureInfo : Mono.ClosureInfo
-closureInfo =
-    { lambdaId = lambdaId
-    , captures = []
-    , params = params
-    }
-
-closureExpr : Mono.MonoExpr
-closureExpr =
-    Mono.MonoClosure closureInfo callExpr monoType
-```
-
-Return `(closureExpr, stateWithLambda)`.
-
-Note: `Mono.ClosureInfo` already exists and is used in `Mono.MonoClosure` and closure codegen; you just reuse it. 
-
----
-
-## 5. (Optional) `makeGeneralClosure` for non‑alias cases
-
-If you want to *fully* enforce the invariant, you can also handle the generic case where `expr` is some arbitrary function‑typed computation (not just a var). For now, you could:
-
-- Start by just hitting the known alias shapes (`MonoVarGlobal`, `MonoVarKernel`, `MonoVarCycle`).
-- In `makeGeneralClosure`:
-  - Either `Debug.crash` with a clear “unexpected function‑typed top-level expr” message (to catch bugs early).
-  - Or:
-
-    ```elm
-    -- \args -> (expr args)
-    let
-        params = freshParams argTypes
-        paramExprs = ...
-        callExpr = Mono.MonoCall region expr paramExprs retType
-    in
-    Mono.MonoClosure closureInfo callExpr monoType
-    ```
-
-This would evaluate `expr` on every call; but for top‑level defs this is usually fine, and in practice, all genuine function defs are already `MonoClosure` coming from `TOpt.Function`/`TrackedFunction` anyway. 
-
----
-
-## 6. Wire it into `specializeNode`
-
-Update `specializeNode` for the affected node kinds.
-
-### 6.1 `TOpt.Define` and `TOpt.TrackedDefine`
-
-Replace:
-
-```elm
-TOpt.Define expr _ canType ->
-    let
-        subst =
-            unify canType monoType
-
-        ( monoExpr, stateAfter ) =
-            specializeExpr expr subst state
-
-        depIds =
-            collectDependencies monoExpr
-    in
-    ( Mono.MonoDefine monoExpr depIds monoType, stateAfter )
-```
-
-with:
-
-```elm
-TOpt.Define expr _ canType ->
-    let
-        subst =
-            unify canType monoType
-
-        ( monoExpr0, state1 ) =
-            specializeExpr expr subst state
-
-        ( monoExpr, state2 ) =
-            ensureCallableTopLevel monoExpr0 monoType state1
-
-        depIds =
-            collectDependencies monoExpr
-    in
-    ( Mono.MonoDefine monoExpr depIds monoType, state2 )
-```
-
-And analogously for `TOpt.TrackedDefine`. 
-
-### 6.2 `TOpt.PortIncoming` and `TOpt.PortOutgoing`
-
-These nodes are also lowered via `generateDefine` in MLIRMono, so they should share the invariant:
-
-Current code:
-
-```elm
-TOpt.PortIncoming expr _ canType ->
-    let
-        subst = unify canType monoType
-        ( monoExpr, stateAfter ) = specializeExpr expr subst state
-        depIds = collectDependencies monoExpr
-    in
-    ( Mono.MonoPortIncoming monoExpr depIds monoType, stateAfter )
-```
-
-Change to:
-
-```elm
-TOpt.PortIncoming expr _ canType ->
-    let
-        subst = unify canType monoType
-
-        ( monoExpr0, state1 ) =
-            specializeExpr expr subst state
-
-        ( monoExpr, state2 ) =
-            ensureCallableTopLevel monoExpr0 monoType state1
-
-        depIds =
-            collectDependencies monoExpr
-    in
-    ( Mono.MonoPortIncoming monoExpr depIds monoType, state2 )
-```
-
-Same pattern for `TOpt.PortOutgoing`. 
-
-This guarantees that any port encoder/decoder definition of function type also has a callable body.
-
----
-
-## 7. No changes needed in Mono AST
-
-The existing AST is already expressive enough:
-
-- `MonoNode.MonoDefine` holds a `MonoExpr` and a `MonoType`.   
-- `MonoExpr` includes `MonoClosure ClosureInfo MonoExpr MonoType`.   
-
-You’re just changing which `MonoExpr` you put into `MonoDefine`.
-
-You *might* update comments/docs in `Monomorphized.elm` to state the new invariant:
-
-> For any `MonoDefine` with `MonoType = MFunction`, the `MonoExpr` is always a `MonoClosure`.
-
-This is for human readers and future passes; no type changes needed.
-
----
-
-## 8. Interaction with MLIRMono backend
-
-After this change:
-
-- `generateNode` for a `MonoDefine` calls `generateDefine` just as before.   
-- But now, whenever `monoType` is `MFunction`, the `expr` it sees is always a `MonoClosure`.
-- So it always takes the first branch:
-
-  ```elm
-  generateDefine ctx funcName expr monoType =
-      case expr of
-          Mono.MonoClosure closureInfo body _ ->
-              generateClosureFunc ctx funcName closureInfo body monoType
-          _ ->
-              -- only for non-function/thunk globals
-              ...
-  ```
-
-  
-
-You no longer rely on codegen to “guess” based on type; it simply pattern‑matches `MonoClosure` and gets arg list & body.
-
----
-
-## 9. Testing & validation
-
-1. **Unit test on Html.text–style alias**
-
-   Tiny Elm module:
-
+In `specializeFuncDefInCycle` (line 950), TailDef branch (line 963):
+1. Compute `aliasMap = computeDefAliasMap def`
+2. After computing `augmentedSubst` (line 980-986), extend it:
    ```elm
-   module A exposing (text)
-   import Html
-   import Html as H
-
-   text : String -> Html.Html msg
-   text = H.text
+   augmentedSubstFull = TypeSubst.extendSubstWithAliases aliasMap augmentedSubst
    ```
+3. Use `augmentedSubstFull` for:
+   - `specializeExpr body augmentedSubstFull stateWithParams` (line 988-989)
+   - **Replace `applySubstFV` with plain `TypeSubst.applySubst`** for returnType (line 1005-1006):
+     ```elm
+     monoFuncType =
+         Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst state.ctx.mvarEnv augmentedSubstFull returnType))
+     ```
 
-   - Run monomorphization and inspect the `MonoGraph` for the specialization of `A.text`:
-     - Before: `MonoDefine (MonoVarGlobal _ specId (MFunction [MString] MHtml)) deps (MFunction ...)`
-     - After: `MonoDefine (MonoClosure {params = [...]} (MonoCall ... MonoVarGlobal ... [...]) (MFunction ...)) deps (MFunction ...)`.
+**Rationale for switching to `applySubst`:** `applySubstFV` deliberately drops bindings for MVarIds not in the annotation's FreeVars. Alias-injected keys for body/returnType vars won't be in FreeVars, so they'd be filtered out. Since we're applying the substitution to the def's own canonical type (not an arbitrary cross-scheme expression), FreeVars filtering is not needed here and would actively break the fix.
 
-2. **Smoke test with MLIRMono backend**
+**Keep `applySubstFV` unchanged** for expression types inside `specializeExpr` — that's where cross-scheme isolation matters.
 
-   - Compile a program that uses `Html.text` (like the “Hello” example mentioned in `Exit.elm` messages) through the `.mlir` backend.   
-   - Confirm MLIR has a function for the specialization that takes one `eco.value` argument and calls the underlying `VirtualDom` function with that argument, no arity mismatch.
+No signature change needed for `specializeFuncDefInCycle`.
 
-3. **Regression tests**
+### Step 6: Wire alias map into `specializeDef` (local TailDefs)
 
-   - Functions with *real* bodies should still produce `MonoClosure` via the `TOpt.Function`/`TrackedFunction` path; your helper should see `MonoClosure` and be a no‑op.
-   - Port encoders/decoders should generate callable bodies as well, if their types are functions.
+**File:** `compiler/src/Compiler/Monomorphize/Specialize.elm`
+
+In `specializeDef` (line 2821), TailDef branch (line 2831):
+1. Compute `aliasMap = computeDefAliasMap def`
+2. After computing `augmentedSubst` (line 2850-2856), extend it:
+   ```elm
+   augmentedSubstFull = TypeSubst.extendSubstWithAliases aliasMap augmentedSubst
+   ```
+3. Use `augmentedSubstFull` for `specializeExpr expr augmentedSubstFull stateWithParams`
+
+**Note:** `specializeDef` for TailDef does not currently apply the subst to returnType (it doesn't produce `monoFuncType`), so there's no `applySubstFV` call to change here. The alias extension only affects body expression specialization.
+
+### Step 7: Export new functions from TypeSubst module
+
+**File:** `compiler/src/Compiler/Monomorphize/TypeSubst.elm` (line 1-5)
+
+Add to the exposing list:
+- `MVarAliasMap`
+- `linkSchemeToLocalType`
+- `extendSubstWithAliases`
+
+`flattenTLambda` export is optional — a local helper in Specialize.elm that walks the TLambda chain is trivial and avoids coupling.
+
+### Step 8: Test
+
+1. Run frontend tests: `cd compiler && npx elm-test-rs --project build-xhr --fuzz 1`
+2. Run E2E tests: `cmake --build build --target full`
+3. Specifically check that `EqualityIntPapWithStringChain` passes (the motivating test)
+4. Check MONO_021/MONO_024 invariants pass — no residual `MVar CEcoValue` in fully monomorphic TailFunc specializations
 
 ---
 
-## 10. Summary of code changes
+## Resolved Questions
 
-Concisely:
+### Q1: `flattenTLambda` export
+**Resolution:** Not required. Linking scheme↔returnType covers args transitively. For the body type linkage, we need the scheme's result type — implement a trivial local helper in Specialize.elm that walks the TLambda chain, or reuse `flattenTLambda` if already convenient. No coupling concern either way.
 
-1. **Add helper(s) to `Compiler.Generate.Monomorphize`**:
+### Q2: Per-arg linking redundancy
+**Resolution:** Keep per-arg linking as cheap insurance. Under normal circumstances, arg types and the def-level type share the same MVarId family (both from the same `bindingCtx` in `AssignMVarIds`), so scheme↔returnType linking covers them. But per-arg linking handles edge cases where args introduce extra type variables and costs nothing.
 
-   - `ensureCallableTopLevel : MonoExpr -> MonoType -> MonoState -> (MonoExpr, MonoState)`
-   - `freshParams`, `makeAliasClosure`, and optionally `makeGeneralClosure`.
+### Q3: `applySubstFV` filtering (was CRITICAL)
+**Resolution:** Switch the specific TailDef `returnType` substitution call (line 1006 in `specializeFuncDefInCycle`) from `applySubstFV` to plain `TypeSubst.applySubst`. Rationale:
+- `applySubstFV` deliberately drops bindings for MVarIds not in the annotation's FreeVars
+- Alias-injected keys for body/returnType vars would be filtered out
+- For the def's own canonical type, FreeVars filtering provides no safety benefit
+- Keep `applySubstFV` unchanged for expression-level types in `specializeExpr` where cross-scheme isolation matters
 
-2. **Modify `specializeNode`** for:
+### Q4: Are args already handled by `unifyExtend`?
+**Resolution:** Yes. The `unifyExtend` loop at line 980-986 directly unifies each arg's `Can.Type` with its `MonoType`, populating the substitution for arg MVarIds. The real gap is body/returnType MVarIds only. The alias fix primarily addresses those.
 
-   - `TOpt.Define` / `TOpt.TrackedDefine`:
-     - Call `ensureCallableTopLevel` on `monoExpr` when building `Mono.MonoDefine`.
-   - `TOpt.PortIncoming` / `TOpt.PortOutgoing`:
-     - Same pattern for `Mono.MonoPortIncoming` / `Mono.MonoPortOutgoing`.
+### Q5: Non-TailDef `Def` in cycles
+**Resolution:** Not needed. The `Def` constructor stores its canonical type directly (not reconstructed), so it uses the same MVarIds as the scheme. No aliasing required.
 
-3. **Re-run `collectDependencies` after eta‑expansion**, using the final `monoExpr`.
+### Q6: Overwrite safety in `extendSubstWithAliases`
+**Resolution:** Skip-if-exists policy. Aliases are secondary sources of truth; `unify`/`unifyExtend` bindings always win. Implementation uses `Dict.member` check before insertion.
 
-4. **(Optional) Update comments in `Compiler.AST.Monomorphized`** to document the new invariant for `MonoDefine` nodes.
-
-With this, the invariant you want is enforced at the Mono IR level, and all backends built on Mono—including MLIRMono—can safely assume that function‑typed top‑level defs have callable bodies without special‑casing `MonoVarGlobal`.
-
+### Q7: Record extension variables
+**Resolution:** Handle in `linkSchemeToLocalType`: if both sides have `Just extId`, record the alias. If one is `Nothing` and the other `Just`, skip (shape mismatch — safe no-op).

@@ -951,8 +951,14 @@ specializeFuncDefInCycle subst def state =
     case def of
         TOpt.Def _ _ expr _ ->
             let
+                aliasMap =
+                    computeCycleDefAliasMap def
+
+                enrichedSubst =
+                    TypeSubst.extendSubstWithAliases aliasMap subst
+
                 ( monoExpr, state1 ) =
-                    specializeExpr expr subst state
+                    specializeExpr expr enrichedSubst state
 
                 -- GlobalOpt will wrap bare expressions in closures via ensureCallableForNode
                 actualType =
@@ -977,13 +983,19 @@ specializeFuncDefInCycle subst def state =
                 stateWithParams =
                     { state | ctx = { ctx | varEnv = newVarEnv } }
 
-                augmentedSubst =
+                augmentedSubstRaw =
                     List.foldl
                         (\( ( _, canParamType ), ( _, monoParamType ) ) s ->
                             Tuple.first (TypeSubst.unifyExtend state.ctx.mvarEnv canParamType monoParamType s)
                         )
                         subst
                         (List.map2 Tuple.pair args monoArgs)
+
+                aliasMap =
+                    computeDefAliasMap def
+
+                augmentedSubst =
+                    TypeSubst.extendSubstWithAliases aliasMap augmentedSubstRaw
 
                 ( monoBody, state1pre ) =
                     specializeExpr body augmentedSubst stateWithParams
@@ -1002,8 +1014,9 @@ specializeFuncDefInCycle subst def state =
                 -- type of the definition (e.g., Int -> Int -> Int becomes MFunction [MInt] (MFunction [MInt] MInt)).
                 -- Context.extractNodeSignature expects this full function type and extracts
                 -- the actual return type from it.
+                -- Use applySubst (not applySubstFV) so alias-extended bindings are honored.
                 monoFuncType =
-                    Mono.forceCNumberToInt (applySubstFV state augmentedSubst returnType)
+                    Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst state.ctx.mvarEnv augmentedSubst returnType))
             in
             ( Mono.MonoTailFunc monoArgs monoBody monoFuncType, state1 )
 
@@ -2812,6 +2825,61 @@ getDefCanonicalType def =
             buildFuncType args returnType
 
 
+{-| Compute an alias map for a TailDef that links the canonical scheme type
+to the returnType, individual arg types, and body type. This ensures all
+MVarId families see the same substitution bindings.
+-}
+computeDefAliasMap : TOpt.Def MVarId -> TypeSubst.MVarAliasMap
+computeDefAliasMap def =
+    case def of
+        TOpt.TailDef _ _ args body returnType _ ->
+            let
+                schemeType =
+                    getDefCanonicalType def
+
+                ( schemeArgTypes, schemeResultType ) =
+                    TypeSubst.flattenTLambda schemeType []
+
+                bodyType =
+                    TOpt.typeOf body
+
+                argCanTypes =
+                    List.map (\( _, canType ) -> canType) args
+            in
+            Dict.empty
+                |> TypeSubst.linkSchemeToLocalType schemeType returnType
+                |> (\acc ->
+                        List.foldl
+                            (\( sArg, lArg ) a -> TypeSubst.linkSchemeToLocalType sArg lArg a)
+                            acc
+                            (List.map2 Tuple.pair schemeArgTypes argCanTypes)
+                   )
+                |> TypeSubst.linkSchemeToLocalType schemeResultType bodyType
+
+        _ ->
+            Dict.empty
+
+
+{-| Compute an alias map for a Def that appears in a Cycle.
+
+    Links the canonical scheme type (4th field of TOpt.Def) to the body type
+    (TOpt.typeOf expr). These are alpha-equivalent function types with
+    potentially different MVarId families. The alias map ensures sharedSubst
+    bindings propagate to the body TVars.
+
+    Only used for Defs in cycles; local let-bound Defs use their existing
+    specialization path.
+-}
+computeCycleDefAliasMap : TOpt.Def MVarId -> TypeSubst.MVarAliasMap
+computeCycleDefAliasMap def =
+    case def of
+        TOpt.Def _ _ expr canType ->
+            TypeSubst.linkSchemeToLocalType canType (TOpt.typeOf expr) Dict.empty
+
+        _ ->
+            Dict.empty
+
+
 
 -- ========== DEFINITION SPECIALIZATION HELPERS ==========
 
@@ -2847,13 +2915,19 @@ specializeDef def subst state =
                 stateWithParams =
                     { state | ctx = { ctx | varEnv = newVarEnv } }
 
-                augmentedSubst =
+                augmentedSubstRaw =
                     List.foldl
                         (\( ( _, canParamType ), ( _, monoParamType ) ) s ->
                             Tuple.first (TypeSubst.unifyExtend state.ctx.mvarEnv canParamType monoParamType s)
                         )
                         subst
                         (List.map2 Tuple.pair args monoArgs)
+
+                aliasMap =
+                    computeDefAliasMap def
+
+                augmentedSubst =
+                    TypeSubst.extendSubstWithAliases aliasMap augmentedSubstRaw
 
                 ( monoExpr, stateAfterPre ) =
                     specializeExpr expr augmentedSubst stateWithParams
