@@ -2001,28 +2001,32 @@ constrainDefWithIdsProg rtv def bodyCon =
                             newRtv =
                                 Dict.union rtv (Dict.map (\_ -> VarN) newRigids)
                         in
-                        Prog.opGetS
+                        Prog.opModifyS (\s -> NodeIds.recordSchemeBinders name newRigids s)
                             |> Prog.andThenS
-                                (\state ->
-                                    Prog.opIOS (constrainTypedArgsWithIds newRtv name typedArgs srcResultType state)
+                                (\() ->
+                                    Prog.opGetS
                                         |> Prog.andThenS
-                                            (\( TypedArgs tipe resultType (State headers pvars revCons), newState ) ->
-                                                Prog.opModifyS (\_ -> newState)
+                                            (\state ->
+                                                Prog.opIOS (constrainTypedArgsWithIds newRtv name typedArgs srcResultType state)
                                                     |> Prog.andThenS
-                                                        (\() ->
-                                                            constrainWithIdsProg newRtv expr (FromAnnotation name (List.length typedArgs) TypedBody resultType)
-                                                                |> Prog.mapS
-                                                                    (\exprCon ->
-                                                                        CLet (Dict.values compare newRigids)
-                                                                            []
-                                                                            (Dict.singleton identity name (A.At region tipe))
-                                                                            (CLet []
-                                                                                pvars
-                                                                                headers
-                                                                                (CAnd (List.reverse revCons))
-                                                                                exprCon
-                                                                            )
-                                                                            bodyCon
+                                                        (\( TypedArgs tipe resultType (State headers pvars revCons), newState ) ->
+                                                            Prog.opModifyS (\_ -> newState)
+                                                                |> Prog.andThenS
+                                                                    (\() ->
+                                                                        constrainWithIdsProg newRtv expr (FromAnnotation name (List.length typedArgs) TypedBody resultType)
+                                                                            |> Prog.mapS
+                                                                                (\exprCon ->
+                                                                                    CLet (Dict.values compare newRigids)
+                                                                                        []
+                                                                                        (Dict.singleton identity name (A.At region tipe))
+                                                                                        (CLet []
+                                                                                            pvars
+                                                                                            headers
+                                                                                            (CAnd (List.reverse revCons))
+                                                                                            exprCon
+                                                                                        )
+                                                                                        bodyCon
+                                                                                )
                                                                     )
                                                         )
                                             )
@@ -2111,36 +2115,40 @@ recDefsHelpWithIdsProg rtv defs bodyCon rigidInfo flexInfo =
                                     newRtv =
                                         Dict.union rtv (Dict.map (\_ -> VarN) newRigids)
                                 in
-                                Prog.opGetS
+                                Prog.opModifyS (\s -> NodeIds.recordSchemeBinders name newRigids s)
                                     |> Prog.andThenS
-                                        (\state ->
-                                            Prog.opIOS (constrainTypedArgsWithIds newRtv name typedArgs srcResultType state)
+                                        (\() ->
+                                            Prog.opGetS
                                                 |> Prog.andThenS
-                                                    (\( TypedArgs tipe resultType (State headers pvars revCons), newState ) ->
-                                                        Prog.opModifyS (\_ -> newState)
+                                                    (\state ->
+                                                        Prog.opIOS (constrainTypedArgsWithIds newRtv name typedArgs srcResultType state)
                                                             |> Prog.andThenS
-                                                                (\() ->
-                                                                    constrainWithIdsProg newRtv expr (FromAnnotation name (List.length typedArgs) TypedBody resultType)
+                                                                (\( TypedArgs tipe resultType (State headers pvars revCons), newState ) ->
+                                                                    Prog.opModifyS (\_ -> newState)
                                                                         |> Prog.andThenS
-                                                                            (\exprCon ->
-                                                                                let
-                                                                                    defCon : Constraint
-                                                                                    defCon =
-                                                                                        CLet []
-                                                                                            pvars
-                                                                                            headers
-                                                                                            (CAnd (List.reverse revCons))
-                                                                                            exprCon
+                                                                            (\() ->
+                                                                                constrainWithIdsProg newRtv expr (FromAnnotation name (List.length typedArgs) TypedBody resultType)
+                                                                                    |> Prog.andThenS
+                                                                                        (\exprCon ->
+                                                                                            let
+                                                                                                defCon : Constraint
+                                                                                                defCon =
+                                                                                                    CLet []
+                                                                                                        pvars
+                                                                                                        headers
+                                                                                                        (CAnd (List.reverse revCons))
+                                                                                                        exprCon
 
-                                                                                    wrappedDefCon : Constraint
-                                                                                    wrappedDefCon =
-                                                                                        CLet (Dict.values compare newRigids) [] Dict.empty defCon CTrue
+                                                                                                wrappedDefCon : Constraint
+                                                                                                wrappedDefCon =
+                                                                                                    CLet (Dict.values compare newRigids) [] Dict.empty defCon CTrue
 
-                                                                                    newRigidInfo : Info
-                                                                                    newRigidInfo =
-                                                                                        Info (Dict.foldr compare (\_ -> (::)) rigidVars newRigids) (wrappedDefCon :: rigidCons) (Dict.insert identity name (A.At region tipe) rigidHeaders)
-                                                                                in
-                                                                                recDefsHelpWithIdsProg rtv otherDefs bodyCon newRigidInfo flexInfo
+                                                                                                newRigidInfo : Info
+                                                                                                newRigidInfo =
+                                                                                                    Info (Dict.foldr compare (\_ -> (::)) rigidVars newRigids) (wrappedDefCon :: rigidCons) (Dict.insert identity name (A.At region tipe) rigidHeaders)
+                                                                                            in
+                                                                                            recDefsHelpWithIdsProg rtv otherDefs bodyCon newRigidInfo flexInfo
+                                                                                        )
                                                                             )
                                                                 )
                                                     )

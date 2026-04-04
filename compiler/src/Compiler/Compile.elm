@@ -274,9 +274,46 @@ typeCheckTyped modul canonical =
                 rootedAnnotationVars =
                     SolverRoots.normalizeAnnotationVars solverState annotationVars
 
-                -- Normalize scheme binder vars to roots
-                normalizedSchemeRoots =
+                -- Normalize scheme binder vars to roots (from annotated Can.TypedDef defs)
+                annotatedSchemeRoots =
                     SolverRoots.normalizeAllSchemeRoots solverState schemeBinderVars
+
+                -- Extract binder roots for unannotated Can.Def defs (Step 2.4)
+                inferredSchemeRoots =
+                    EveryDict.foldl compare
+                        (\defName annotation acc ->
+                            if Dict.member defName annotatedSchemeRoots then
+                                -- Already has roots from Can.TypedDef path
+                                acc
+
+                            else
+                                case EveryDict.get identity defName annotationVars of
+                                    Just annotVar ->
+                                        let
+                                            roots =
+                                                SolverRoots.extractBinderRootsFromInferred
+                                                    solverState
+                                                    annotation
+                                                    annotVar
+                                        in
+                                        if Dict.isEmpty roots then
+                                            acc
+
+                                        else
+                                            Dict.insert defName roots acc
+
+                                    Nothing ->
+                                        acc
+                        )
+                        Dict.empty
+                        annotations
+
+                -- Merge annotated + inferred roots
+                normalizedSchemeRoots =
+                    Dict.foldl
+                        (\defName roots acc -> Dict.insert defName roots acc)
+                        annotatedSchemeRoots
+                        inferredSchemeRoots
 
                 -- Run PostSolve to fix remaining Group B types and compute kernel env
                 postSolveResult =
