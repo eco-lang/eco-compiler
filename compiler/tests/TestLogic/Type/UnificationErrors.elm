@@ -157,7 +157,7 @@ runTypeCheck :
 runTypeCheck modul =
     ConstrainTyped.constrainWithIds modul
         |> IO.andThen
-            (\( constraint, nodeVars ) ->
+            (\( constraint, nodeVars, _ ) ->
                 Solve.runWithIds constraint nodeVars
             )
 

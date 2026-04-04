@@ -365,7 +365,7 @@ type Choice id
 {-| A graph of all top-level definitions across multiple modules.
 -}
 type GlobalGraph id
-    = GlobalGraph (Data.Map.Dict (List String) Global (Node id)) (Dict Name Int) (Annotations id)
+    = GlobalGraph (Data.Map.Dict (List String) Global (Node id)) (Dict Name Int) (Annotations id) (Dict Name (Dict Name IO.Variable))
 
 
 
@@ -379,6 +379,7 @@ type alias LocalGraphData id =
     , nodes : Data.Map.Dict (List String) Global (Node id)
     , fields : Dict Name Int
     , annotations : Annotations id
+    , schemeRoots : Dict Name (Dict Name IO.Variable)
     }
 
 
@@ -431,7 +432,7 @@ type EffectsType
 -}
 emptyGlobalGraph : GlobalGraph id
 emptyGlobalGraph =
-    GlobalGraph Data.Map.empty Dict.empty Dict.empty
+    GlobalGraph Data.Map.empty Dict.empty Dict.empty Dict.empty
 
 
 
@@ -441,11 +442,12 @@ emptyGlobalGraph =
 {-| Encode a global graph to binary format.
 -}
 globalGraphEncoder : GlobalGraph Name -> Bytes.Encode.Encoder
-globalGraphEncoder (GlobalGraph nodes fields annotations) =
+globalGraphEncoder (GlobalGraph nodes fields annotations allSchemeRoots) =
     Bytes.Encode.sequence
         [ BE.assocListDict compareGlobal globalEncoder nodeEncoder nodes
         , BE.stdDict BE.string BE.int fields
         , BE.stdDict BE.string Can.annotationEncoder annotations
+        , schemeRootsEncoder allSchemeRoots
         ]
 
 
@@ -453,10 +455,11 @@ globalGraphEncoder (GlobalGraph nodes fields annotations) =
 -}
 globalGraphDecoder : Bytes.Decode.Decoder (GlobalGraph Name)
 globalGraphDecoder =
-    Bytes.Decode.map3 GlobalGraph
+    Bytes.Decode.map4 GlobalGraph
         (BD.assocListDict toComparableGlobal globalDecoder nodeDecoder)
         (BD.stdDict BD.string BD.int)
         (BD.stdDict BD.string Can.annotationDecoder)
+        schemeRootsDecoder
 
 
 {-| Encode a local graph to binary format.
@@ -468,6 +471,7 @@ localGraphEncoder (LocalGraph data) =
         , BE.assocListDict compareGlobal globalEncoder nodeEncoder data.nodes
         , BE.stdDict BE.string BE.int data.fields
         , BE.stdDict BE.string Can.annotationEncoder data.annotations
+        , schemeRootsEncoder data.schemeRoots
         ]
 
 
@@ -475,14 +479,15 @@ localGraphEncoder (LocalGraph data) =
 -}
 localGraphDecoder : Bytes.Decode.Decoder (LocalGraph Name)
 localGraphDecoder =
-    Bytes.Decode.map4
-        (\main nodes fields annotations ->
-            LocalGraph { main = main, nodes = nodes, fields = fields, annotations = annotations }
+    Bytes.Decode.map5
+        (\main nodes fields annotations schemeRoots ->
+            LocalGraph { main = main, nodes = nodes, fields = fields, annotations = annotations, schemeRoots = schemeRoots }
         )
         (BD.maybe mainDecoder)
         (BD.assocListDict toComparableGlobal globalDecoder nodeDecoder)
         (BD.stdDict BD.string BD.int)
         (BD.stdDict BD.string Can.annotationDecoder)
+        schemeRootsDecoder
 
 
 mainEncoder : Main Name -> Bytes.Encode.Encoder
@@ -1499,3 +1504,37 @@ effectsTypeDecoder =
                     _ ->
                         Bytes.Decode.fail
             )
+
+
+
+-- ====== SCHEME ROOTS ENCODERS/DECODERS ======
+
+
+variableEncoder : IO.Variable -> Bytes.Encode.Encoder
+variableEncoder (IO.Pt idx) =
+    Bytes.Encode.signedInt32 Bytes.BE idx
+
+
+variableDecoder : Bytes.Decode.Decoder IO.Variable
+variableDecoder =
+    Bytes.Decode.map IO.Pt (Bytes.Decode.signedInt32 Bytes.BE)
+
+
+schemeRootsForDefEncoder : Dict Name IO.Variable -> Bytes.Encode.Encoder
+schemeRootsForDefEncoder roots =
+    BE.stdDict BE.string variableEncoder roots
+
+
+schemeRootsForDefDecoder : Bytes.Decode.Decoder (Dict Name IO.Variable)
+schemeRootsForDefDecoder =
+    BD.stdDict BD.string variableDecoder
+
+
+schemeRootsEncoder : Dict Name (Dict Name IO.Variable) -> Bytes.Encode.Encoder
+schemeRootsEncoder allRoots =
+    BE.stdDict BE.string schemeRootsForDefEncoder allRoots
+
+
+schemeRootsDecoder : Bytes.Decode.Decoder (Dict Name (Dict Name IO.Variable))
+schemeRootsDecoder =
+    BD.stdDict BD.string schemeRootsForDefDecoder

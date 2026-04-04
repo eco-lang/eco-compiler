@@ -1,6 +1,7 @@
 module Compiler.Type.SolverSnapshot exposing
     ( SolverSnapshot, SolverState, TypeVar
     , fromSolveResult
+    , resolveVariable
     , withLocalUnification, specializeFunction, specializeChained, specializeChainedWithSubst, LocalView
     )
 
@@ -19,7 +20,9 @@ IO monad. It is used by the MonoDirect monomorphizer.
 import Array exposing (Array)
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Monomorphized as Mono
+import Compiler.AST.TypeIds as TypeIds
 import Compiler.Data.Name as Name exposing (Name)
+import Compiler.Data.Id as Id
 import Compiler.Monomorphize.State as State
 import Compiler.Monomorphize.TypeSubst as TypeSubst
 import Compiler.Type.Type as Type
@@ -74,6 +77,13 @@ resolveVariableHelp pointInfo var =
                 _ ->
                     -- Info or out of bounds: this is the root
                     var
+
+
+{-| Resolve a variable to its union-find root using a SolverState snapshot.
+-}
+resolveVariable : SolverState -> TypeVar -> TypeVar
+resolveVariable state var =
+    resolveVariableHelp state.pointInfo var
 
 
 {-| Resolve a variable in a local IO.State (using its pointInfo array).
@@ -145,7 +155,7 @@ withLocalUnification snap rootsToRelax equalities callback =
             defaultNumericVarsToInt stateAfterUnify
 
         view =
-            buildLocalView State.emptyMVarEnv Dict.empty stateAfterDefault
+            buildLocalView (State.initMVarEnv TypeIds.firstMVarId Dict.empty) Dict.empty stateAfterDefault
     in
     callback view
 
@@ -172,7 +182,7 @@ specializeFunction snap funcTvar requestedMonoType callback =
             defaultNumericVarsToInt stateAfterWalk
 
         view =
-            buildLocalView State.emptyMVarEnv Dict.empty stateAfterDefault
+            buildLocalView (State.initMVarEnv TypeIds.firstMVarId Dict.empty) Dict.empty stateAfterDefault
     in
     callback view
 
@@ -202,7 +212,7 @@ specializeChainedWithSubst snap pairs substDict callback =
             defaultNumericVarsToInt stateAfterAll
 
         view =
-            buildLocalView State.emptyMVarEnv substDict stateAfterDefault
+            buildLocalView (State.initMVarEnv TypeIds.firstMVarId Dict.empty) substDict stateAfterDefault
     in
     callback view
 
@@ -266,8 +276,17 @@ buildLocalView mvarEnv substDict st =
 
             else
                 let
+                    canType =
+                        typeOfVar var
+
+                    ( canTypeWithIds, nextId, constraints ) =
+                        assignIdsToCanType canType TypeIds.firstMVarId Dict.empty Dict.empty
+
+                    mvarEnvForConversion =
+                        State.initMVarEnv nextId constraints
+
                     ( monoType, _ ) =
-                        TypeSubst.canTypeToMonoType mvarEnv substDict (typeOfVar var)
+                        TypeSubst.canTypeToMonoType mvarEnvForConversion Dict.empty canTypeWithIds
                 in
                 monoType
     in
@@ -702,3 +721,159 @@ relaxRigidVar var st =
 
         Nothing ->
             st
+
+
+
+-- ====== INLINE MVAR ID ASSIGNMENT ======
+-- Minimal inline MVarId assignment for monoTypeOfVar (avoids import cycle with AssignMVarIds)
+
+
+assignIdsToCanType :
+    Can.Type Name
+    -> TypeIds.MVarId
+    -> Dict String TypeIds.MVarId
+    -> Dict Int Mono.Constraint
+    -> ( Can.Type TypeIds.MVarId, TypeIds.MVarId, Dict Int Mono.Constraint )
+assignIdsToCanType canType nextId env constraints =
+    case canType of
+        Can.TVar name ->
+            case Dict.get name env of
+                Just mvarId ->
+                    ( Can.TVar mvarId, nextId, constraints )
+
+                Nothing ->
+                    let
+                        constraint =
+                            if Name.isNumberType name then
+                                Mono.CNumber
+
+                            else
+                                Mono.CEcoValue
+                    in
+                    ( Can.TVar nextId
+                    , Id.succ nextId
+                    , Dict.insert (Id.toComparable nextId) constraint constraints
+                    )
+
+        Can.TLambda from to ->
+            let
+                ( newFrom, nextId1, constraints1 ) =
+                    assignIdsToCanType from nextId env constraints
+
+                ( newTo, nextId2, constraints2 ) =
+                    assignIdsToCanType to nextId1 env constraints1
+            in
+            ( Can.TLambda newFrom newTo, nextId2, constraints2 )
+
+        Can.TType canonical name args ->
+            let
+                ( newArgs, nextIdN, constraintsN ) =
+                    assignIdsToCanTypeList args nextId env constraints
+            in
+            ( Can.TType canonical name newArgs, nextIdN, constraintsN )
+
+        Can.TRecord fields maybeExt ->
+            let
+                ( newFields, nextId1, constraints1 ) =
+                    Dict.foldl
+                        (\fieldName (Can.FieldType idx t) ( acc, nid, cons ) ->
+                            let
+                                ( newT, nid1, cons1 ) =
+                                    assignIdsToCanType t nid env cons
+                            in
+                            ( Dict.insert fieldName (Can.FieldType idx newT) acc, nid1, cons1 )
+                        )
+                        ( Dict.empty, nextId, constraints )
+                        fields
+
+                ( newExt, nextId2, constraints2 ) =
+                    case maybeExt of
+                        Just extName ->
+                            case Dict.get extName env of
+                                Just mvarId ->
+                                    ( Just mvarId, nextId1, constraints1 )
+
+                                Nothing ->
+                                    ( Just nextId1, Id.succ nextId1, Dict.insert (Id.toComparable nextId1) Mono.CEcoValue constraints1 )
+
+                        Nothing ->
+                            ( Nothing, nextId1, constraints1 )
+            in
+            ( Can.TRecord newFields newExt, nextId2, constraints2 )
+
+        Can.TUnit ->
+            ( Can.TUnit, nextId, constraints )
+
+        Can.TTuple a b rest ->
+            let
+                ( newA, nextId1, constraints1 ) =
+                    assignIdsToCanType a nextId env constraints
+
+                ( newB, nextId2, constraints2 ) =
+                    assignIdsToCanType b nextId1 env constraints1
+
+                ( newRest, nextId3, constraints3 ) =
+                    assignIdsToCanTypeList rest nextId2 env constraints2
+            in
+            ( Can.TTuple newA newB newRest, nextId3, constraints3 )
+
+        Can.TAlias canonical name args aliasType ->
+            let
+                ( newArgs, nextId1, constraints1 ) =
+                    List.foldl
+                        (\( argName, t ) ( acc, nid, cons ) ->
+                            let
+                                ( paramId, nid0, cons0 ) =
+                                    case Dict.get argName env of
+                                        Just mvarId ->
+                                            ( mvarId, nid, cons )
+
+                                        Nothing ->
+                                            ( nid, Id.succ nid, Dict.insert (Id.toComparable nid) Mono.CEcoValue cons )
+
+                                ( newT, nid1, cons1 ) =
+                                    assignIdsToCanType t nid0 env cons0
+                            in
+                            ( ( paramId, newT ) :: acc, nid1, cons1 )
+                        )
+                        ( [], nextId, constraints )
+                        args
+                        |> (\( acc, nid, cons ) -> ( List.reverse acc, nid, cons ))
+
+                ( newAliasType, nextId2, constraints2 ) =
+                    case aliasType of
+                        Can.Holey t ->
+                            let
+                                ( newT, nid, cons ) =
+                                    assignIdsToCanType t nextId1 env constraints1
+                            in
+                            ( Can.Holey newT, nid, cons )
+
+                        Can.Filled t ->
+                            let
+                                ( newT, nid, cons ) =
+                                    assignIdsToCanType t nextId1 env constraints1
+                            in
+                            ( Can.Filled newT, nid, cons )
+            in
+            ( Can.TAlias canonical name newArgs newAliasType, nextId2, constraints2 )
+
+
+assignIdsToCanTypeList :
+    List (Can.Type Name)
+    -> TypeIds.MVarId
+    -> Dict String TypeIds.MVarId
+    -> Dict Int Mono.Constraint
+    -> ( List (Can.Type TypeIds.MVarId), TypeIds.MVarId, Dict Int Mono.Constraint )
+assignIdsToCanTypeList types nextId env constraints =
+    List.foldl
+        (\t ( acc, nid, cons ) ->
+            let
+                ( newT, nid1, cons1 ) =
+                    assignIdsToCanType t nid env cons
+            in
+            ( newT :: acc, nid1, cons1 )
+        )
+        ( [], nextId, constraints )
+        types
+        |> (\( acc, nid, cons ) -> ( List.reverse acc, nid, cons ))

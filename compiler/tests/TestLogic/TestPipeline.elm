@@ -267,7 +267,7 @@ runToTypedOpt srcModule =
                 typedModule =
                     TCanBuild.fromCanonical canonical nodeTypesPost nodeVars
             in
-            case RResult.run (TypedOptimize.optimizeTyped annotations nodeTypesPost nodeVars kernelEnv annotationVars typedModule) of
+            case RResult.run (TypedOptimize.optimizeTyped annotations nodeTypesPost nodeVars kernelEnv annotationVars Dict.empty typedModule) of
                 ( _, Ok localGraph ) ->
                     Ok
                         { canonical = canonical
@@ -398,7 +398,7 @@ runWithIdsTypeCheck : Can.Module -> IO.IO (Result Int { annotations : Dict Name.
 runWithIdsTypeCheck modul =
     ConstrainTyped.constrainWithIds modul
         |> IO.andThen
-            (\( constraint, nodeVars ) ->
+            (\( constraint, nodeVars, _ ) ->
                 Solve.runWithIds constraint nodeVars
             )
         |> IO.map

@@ -45,11 +45,12 @@ import Compiler.Nitpick.PatternMatches as PatternMatches
 import Compiler.Reporting.Error as E
 import Compiler.Reporting.Render.Type.Localizer as Localizer
 import Compiler.Reporting.Result as ReportingResult
-import Compiler.Type.Constrain.Erased.Module as TypeErased
 import Compiler.Type.Constrain.Typed.Module as TypeTyped
+import Compiler.Type.Constrain.Erased.Module as TypeErased
 import Compiler.Type.KernelTypes as KernelTypes
 import Compiler.Type.PostSolve as PostSolve
 import Compiler.Type.Solve as Type
+import Compiler.Type.SolverRoots as SolverRoots
 import Compiler.TypedCanonical.Build as TCanBuild
 import Data.Map as EveryDict
 import Dict
@@ -155,14 +156,14 @@ compileTyped pkg ifaces modul =
                             in
                             typeCheckTyped modul canonical
                                 |> Result.andThen
-                                    (\{ annotations, typedCanonical, nodeTypes, kernelEnv, nodeVars, annotationVars } ->
+                                    (\{ annotations, typedCanonical, nodeTypes, kernelEnv, nodeVars, annotationVars, allSchemeRoots } ->
                                         nitpick canonical
                                             |> Result.andThen
                                                 (\() ->
                                                     optimize modul annotations canonical
                                                         |> Result.andThen
                                                             (\objects ->
-                                                                typedOptimizeFromTyped modul annotations nodeTypes nodeVars kernelEnv annotationVars typedCanonical
+                                                                typedOptimizeFromTyped modul annotations nodeTypes nodeVars kernelEnv annotationVars allSchemeRoots typedCanonical
                                                                     |> Result.map
                                                                         (\typedObjects ->
                                                                             TypedArtifacts
@@ -247,23 +248,36 @@ typeCheckTyped :
             , nodeVars : TCan.ExprVars
             , kernelEnv : KernelTypes.KernelTypeEnv
             , annotationVars : EveryDict.Dict String Name TypeCheck.Variable
+            , allSchemeRoots : SolverRoots.AllSchemeRoots
             }
 typeCheckTyped modul canonical =
     let
         ioResult =
             TypeTyped.constrainWithIds canonical
                 |> TypeCheck.andThen
-                    (\( constraint, nodeVars ) ->
+                    (\( constraint, nodeVars, schemeBinderVars ) ->
                         Type.runWithIds constraint nodeVars
+                            |> TypeCheck.map (\result -> ( result, schemeBinderVars ))
                     )
                 |> TypeCheck.unsafePerformIO
     in
     case ioResult of
-        Err errors ->
+        ( Err errors, _ ) ->
             Err (E.BadTypes (Localizer.fromModule modul) errors)
 
-        Ok { annotations, annotationVars, nodeTypes, nodeVars } ->
+        ( Ok { annotations, annotationVars, nodeTypes, nodeVars, solverState }, schemeBinderVars ) ->
             let
+                -- Normalize solver vars to union-find roots
+                rootedNodeVars =
+                    SolverRoots.normalizeNodeVars solverState nodeVars
+
+                rootedAnnotationVars =
+                    SolverRoots.normalizeAnnotationVars solverState annotationVars
+
+                -- Normalize scheme binder vars to roots
+                normalizedSchemeRoots =
+                    SolverRoots.normalizeAllSchemeRoots solverState schemeBinderVars
+
                 -- Run PostSolve to fix remaining Group B types and compute kernel env
                 postSolveResult =
                     PostSolve.postSolve annotations canonical nodeTypes
@@ -276,11 +290,12 @@ typeCheckTyped modul canonical =
             in
             Ok
                 { annotations = everyDictToDict annotations
-                , typedCanonical = TCanBuild.fromCanonical canonical fixedNodeTypes nodeVars
+                , typedCanonical = TCanBuild.fromCanonical canonical fixedNodeTypes rootedNodeVars
                 , nodeTypes = fixedNodeTypes
                 , kernelEnv = kernelEnv
-                , nodeVars = nodeVars
-                , annotationVars = annotationVars
+                , nodeVars = rootedNodeVars
+                , annotationVars = rootedAnnotationVars
+                , allSchemeRoots = normalizedSchemeRoots
                 }
 
 
@@ -317,9 +332,9 @@ optimize modul annotations canonical =
 -- Performs typed optimization from a TypedCanonical module.
 
 
-typedOptimizeFromTyped : Src.Module -> Dict.Dict Name.Name (Can.Annotation Name) -> TCan.ExprTypes -> TCan.ExprVars -> KernelTypes.KernelTypeEnv -> EveryDict.Dict String Name.Name TypeCheck.Variable -> TCan.Module -> Result E.Error (TOpt.LocalGraph Name)
-typedOptimizeFromTyped modul annotations nodeTypes nodeVars kernelEnv annotationVars tcanModule =
-    case Tuple.second (ReportingResult.run (TypedOptimize.optimizeTyped annotations nodeTypes nodeVars kernelEnv annotationVars tcanModule)) of
+typedOptimizeFromTyped : Src.Module -> Dict.Dict Name.Name (Can.Annotation Name) -> TCan.ExprTypes -> TCan.ExprVars -> KernelTypes.KernelTypeEnv -> EveryDict.Dict String Name.Name TypeCheck.Variable -> SolverRoots.AllSchemeRoots -> TCan.Module -> Result E.Error (TOpt.LocalGraph Name)
+typedOptimizeFromTyped modul annotations nodeTypes nodeVars kernelEnv annotationVars allSchemeRoots tcanModule =
+    case Tuple.second (ReportingResult.run (TypedOptimize.optimizeTyped annotations nodeTypes nodeVars kernelEnv annotationVars allSchemeRoots tcanModule)) of
         Ok localGraph ->
             Ok localGraph
 

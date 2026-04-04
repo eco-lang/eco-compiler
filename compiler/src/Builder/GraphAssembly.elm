@@ -112,18 +112,20 @@ toKernelGlobal shortName =
 {-| Merge two typed global graphs by unioning their nodes, fields, and annotations.
 -}
 addTypedGlobalGraph : TOpt.GlobalGraph Name -> TOpt.GlobalGraph Name -> TOpt.GlobalGraph Name
-addTypedGlobalGraph (TOpt.GlobalGraph nodes1 fields1 ann1) (TOpt.GlobalGraph nodes2 fields2 ann2) =
+addTypedGlobalGraph (TOpt.GlobalGraph nodes1 fields1 ann1 roots1) (TOpt.GlobalGraph nodes2 fields2 ann2 roots2) =
     TOpt.GlobalGraph
         (Data.Map.union nodes1 nodes2)
         (Dict.union fields1 fields2)
         (Dict.union ann1 ann2)
+        (Dict.union roots1 roots2)
 
 
 {-| Add a typed local graph's definitions to a typed global graph.
 -}
 addTypedLocalGraph : TOpt.LocalGraph Name -> TOpt.GlobalGraph Name -> TOpt.GlobalGraph Name
-addTypedLocalGraph (TOpt.LocalGraph data) (TOpt.GlobalGraph nodes2 fields2 ann2) =
+addTypedLocalGraph (TOpt.LocalGraph data) (TOpt.GlobalGraph nodes2 fields2 ann2 roots2) =
     TOpt.GlobalGraph
         (Data.Map.union data.nodes nodes2)
         (Dict.union data.fields fields2)
         (Dict.union data.annotations ann2)
+        (Dict.union data.schemeRoots roots2)

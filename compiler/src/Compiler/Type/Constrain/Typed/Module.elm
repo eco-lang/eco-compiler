@@ -39,10 +39,10 @@ module's structure and producing a constraint tree. Also builds a mapping
 from expression/pattern IDs to solver variables for later type retrieval.
 
 -}
-constrainWithIds : Can.Module -> IO ( Constraint, NodeIds.NodeVarMap )
+constrainWithIds : Can.Module -> IO ( Constraint, NodeIds.NodeVarMap, NodeIds.SchemeBinderVars )
 constrainWithIds canonical =
     constrainWithIdsDetailed canonical
-        |> IO.map (\( con, state ) -> ( con, state.mapping ))
+        |> IO.map (\( con, state ) -> ( con, state.mapping, state.schemeBinderVars ))
 
 
 {-| Generate type constraints with full node ID state including synthetic expr tracking.

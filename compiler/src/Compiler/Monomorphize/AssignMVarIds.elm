@@ -16,8 +16,10 @@ import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.Id as Id
 import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Reporting.Annotation as A
+import Compiler.Type.SolverRoots as SolverRoots
 import Data.Map as DMap
 import Dict exposing (Dict)
+import System.TypeCheck.IO as IO
 
 
 {-| Global state threaded through the entire ID assignment pass.
@@ -25,6 +27,7 @@ import Dict exposing (Dict)
 type alias GlobalMVarState =
     { nextId : TypeIds.MVarId
     , constraints : Dict Int Mono.Constraint
+    , rootEnv : Dict Int TypeIds.MVarId
     }
 
 
@@ -40,6 +43,7 @@ type alias SchemeEnv =
 type alias Ctx =
     { env : SchemeEnv
     , state : GlobalMVarState
+    , schemeRootsForDef : SolverRoots.SchemeRootsForDef
     }
 
 
@@ -51,12 +55,12 @@ withFreshBinding : Ctx -> (Ctx -> ( a, Ctx )) -> ( a, Ctx )
 withFreshBinding outerCtx work =
     let
         bindingCtx =
-            { env = Dict.empty, state = outerCtx.state }
+            { env = Dict.empty, state = outerCtx.state, schemeRootsForDef = outerCtx.schemeRootsForDef }
 
         ( result, bindingCtx1 ) =
             work bindingCtx
     in
-    ( result, { env = outerCtx.env, state = bindingCtx1.state } )
+    ( result, { env = outerCtx.env, state = bindingCtx1.state, schemeRootsForDef = outerCtx.schemeRootsForDef } )
 
 
 
@@ -69,23 +73,24 @@ withFreshBinding outerCtx work =
 Returns the rewritten graph and the final allocator state (for initializing MVarEnv).
 -}
 assignIds : TOpt.GlobalGraph Name -> ( TOpt.GlobalGraph TypeIds.MVarId, GlobalMVarState )
-assignIds (TOpt.GlobalGraph nodes fields annotations) =
+assignIds (TOpt.GlobalGraph nodes fields annotations allSchemeRoots) =
     let
         state0 =
             { nextId = TypeIds.firstMVarId
             , constraints = Dict.empty
+            , rootEnv = Dict.empty
             }
 
         dummyCompare _ _ =
             EQ
 
         ( newAnnotations, state1 ) =
-            rewriteAnnotations annotations state0
+            rewriteAnnotations allSchemeRoots annotations state0
 
         ( newNodes, state2 ) =
-            rewriteNodes dummyCompare nodes state1
+            rewriteNodes dummyCompare allSchemeRoots nodes state1
     in
-    ( TOpt.GlobalGraph newNodes fields newAnnotations, state2 )
+    ( TOpt.GlobalGraph newNodes fields newAnnotations allSchemeRoots, state2 )
 
 
 
@@ -97,7 +102,8 @@ assignIdsToType canType =
     let
         ctx =
             { env = Dict.empty
-            , state = { nextId = TypeIds.firstMVarId, constraints = Dict.empty }
+            , state = { nextId = TypeIds.firstMVarId, constraints = Dict.empty, rootEnv = Dict.empty }
+            , schemeRootsForDef = Dict.empty
             }
 
         ( newType, ctx1 ) =
@@ -123,6 +129,7 @@ freshMVarId constraint state =
     ( currentId
     , { nextId = Id.succ currentId
       , constraints = Dict.insert (Id.toComparable currentId) constraint state.constraints
+      , rootEnv = state.rootEnv
       }
     )
 
@@ -157,6 +164,38 @@ ensureMVarId name ctx =
             ( mvarId
             , { env = Dict.insert name mvarId ctx.env
               , state = newState
+              , schemeRootsForDef = ctx.schemeRootsForDef
+              }
+            )
+
+
+{-| Look up or allocate an MVarId for a solver-root-backed type variable.
+Two different type variable names backed by the same solver root get the same MVarId.
+-}
+ensureMVarIdForRoot : IO.Variable -> Name -> Ctx -> ( TypeIds.MVarId, Ctx )
+ensureMVarIdForRoot root name ctx =
+    let
+        rootIdx =
+            case root of
+                IO.Pt idx ->
+                    idx
+    in
+    case Dict.get rootIdx ctx.state.rootEnv of
+        Just mvarId ->
+            ( mvarId, ctx )
+
+        Nothing ->
+            let
+                ( mvarId, newState ) =
+                    freshMVarId (constraintFromName name) ctx.state
+
+                rootEnv1 =
+                    Dict.insert rootIdx mvarId newState.rootEnv
+            in
+            ( mvarId
+            , { env = ctx.env
+              , state = { newState | rootEnv = rootEnv1 }
+              , schemeRootsForDef = ctx.schemeRootsForDef
               }
             )
 
@@ -168,15 +207,20 @@ ensureMVarId name ctx =
 
 
 rewriteAnnotations :
-    Dict Name (Can.Annotation Name)
+    SolverRoots.AllSchemeRoots
+    -> Dict Name (Can.Annotation Name)
     -> GlobalMVarState
     -> ( Dict Name (Can.Annotation TypeIds.MVarId), GlobalMVarState )
-rewriteAnnotations annotations state =
+rewriteAnnotations allSchemeRoots annotations state =
     Dict.foldl
         (\name ann ( acc, st ) ->
             let
+                schemeRootsForDef =
+                    Dict.get name allSchemeRoots
+                        |> Maybe.withDefault Dict.empty
+
                 ( newAnn, st1 ) =
-                    rewriteAnnotation ann st
+                    rewriteAnnotation schemeRootsForDef ann st
             in
             ( Dict.insert name newAnn acc, st1 )
         )
@@ -185,29 +229,50 @@ rewriteAnnotations annotations state =
 
 
 rewriteAnnotation :
-    Can.Annotation Name
+    SolverRoots.SchemeRootsForDef
+    -> Can.Annotation Name
     -> GlobalMVarState
     -> ( Can.Annotation TypeIds.MVarId, GlobalMVarState )
-rewriteAnnotation (Can.Forall freeVars tipe) state =
+rewriteAnnotation schemeRootsForDef (Can.Forall freeVars tipe) state =
     let
-        -- Build SchemeEnv from FreeVars, allocating IDs for each
+        -- Build SchemeEnv from FreeVars, using root-backed allocation when available
         ( env, state1 ) =
             Dict.foldl
                 (\name _ ( envAcc, st ) ->
-                    let
-                        constraint =
-                            constraintFromName name
+                    case Dict.get name schemeRootsForDef of
+                        Just root ->
+                            let
+                                rootIdx =
+                                    case root of
+                                        IO.Pt idx ->
+                                            idx
+                            in
+                            case Dict.get rootIdx st.rootEnv of
+                                Just mvarId ->
+                                    ( Dict.insert name mvarId envAcc, st )
 
-                        ( mvarId, st1 ) =
-                            freshMVarId constraint st
-                    in
-                    ( Dict.insert name mvarId envAcc, st1 )
+                                Nothing ->
+                                    let
+                                        ( mvarId, st1 ) =
+                                            freshMVarId (constraintFromName name) st
+
+                                        rootEnv1 =
+                                            Dict.insert rootIdx mvarId st1.rootEnv
+                                    in
+                                    ( Dict.insert name mvarId envAcc, { st1 | rootEnv = rootEnv1 } )
+
+                        Nothing ->
+                            let
+                                ( mvarId, st1 ) =
+                                    freshMVarId (constraintFromName name) st
+                            in
+                            ( Dict.insert name mvarId envAcc, st1 )
                 )
                 ( Dict.empty, state )
                 freeVars
 
         ctx =
-            { env = env, state = state1 }
+            { env = env, state = state1, schemeRootsForDef = schemeRootsForDef }
 
         ( newType, ctx1 ) =
             rewriteCanType ctx tipe
@@ -223,16 +288,27 @@ rewriteAnnotation (Can.Forall freeVars tipe) state =
 
 rewriteNodes :
     (TOpt.Global -> TOpt.Global -> Order)
+    -> SolverRoots.AllSchemeRoots
     -> DMap.Dict (List String) TOpt.Global (TOpt.Node Name)
     -> GlobalMVarState
     -> ( DMap.Dict (List String) TOpt.Global (TOpt.Node TypeIds.MVarId), GlobalMVarState )
-rewriteNodes cmp nodes state =
+rewriteNodes cmp allSchemeRoots nodes state =
     DMap.foldl cmp
         (\global node ( acc, st ) ->
             let
-                -- Fresh SchemeEnv per node
+                -- Look up scheme roots for this definition
+                defName =
+                    case global of
+                        TOpt.Global _ name ->
+                            name
+
+                schemeRootsForDef =
+                    Dict.get defName allSchemeRoots
+                        |> Maybe.withDefault Dict.empty
+
+                -- Fresh SchemeEnv per node, with solver roots
                 ctx =
-                    { env = Dict.empty, state = st }
+                    { env = Dict.empty, state = st, schemeRootsForDef = schemeRootsForDef }
 
                 ( newNode, ctx1 ) =
                     rewriteNode ctx node
@@ -909,7 +985,12 @@ rewriteCanType ctx canType =
         Can.TVar name ->
             let
                 ( mvarId, ctx1 ) =
-                    ensureMVarId name ctx
+                    case Dict.get name ctx.schemeRootsForDef of
+                        Just root ->
+                            ensureMVarIdForRoot root name ctx
+
+                        Nothing ->
+                            ensureMVarId name ctx
             in
             ( Can.TVar mvarId, ctx1 )
 
@@ -940,7 +1021,12 @@ rewriteCanType ctx canType =
                         Just extName ->
                             let
                                 ( mvarId, c ) =
-                                    ensureMVarId extName ctx1
+                                    case Dict.get extName ctx1.schemeRootsForDef of
+                                        Just root ->
+                                            ensureMVarIdForRoot root extName ctx1
+
+                                        Nothing ->
+                                            ensureMVarId extName ctx1
                             in
                             ( Just mvarId, c )
 
@@ -971,9 +1057,14 @@ rewriteCanType ctx canType =
                     List.foldl
                         (\( argName, t ) ( acc, c ) ->
                             let
-                                -- Convert alias parameter name to MVarId
+                                -- Convert alias parameter name to MVarId, using root if available
                                 ( paramId, c0 ) =
-                                    ensureMVarId argName c
+                                    case Dict.get argName c.schemeRootsForDef of
+                                        Just root ->
+                                            ensureMVarIdForRoot root argName c
+
+                                        Nothing ->
+                                            ensureMVarId argName c
 
                                 ( newT, c1 ) =
                                     rewriteCanType c0 t

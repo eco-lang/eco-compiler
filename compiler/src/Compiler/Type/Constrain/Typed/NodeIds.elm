@@ -1,7 +1,8 @@
 module Compiler.Type.Constrain.Typed.NodeIds exposing
-    ( NodeVarMap, NodeIdState
+    ( NodeVarMap, NodeIdState, SchemeBinderVars
     , emptyNodeIdState
     , recordNodeVar, recordSyntheticExprVar
+    , recordSchemeBinders
     )
 
 {-| Unified node ID tracking for type constraint generation (Typed pathway).
@@ -31,8 +32,17 @@ the solver to later produce a mapping from node IDs to their inferred types.
 -}
 
 import Array exposing (Array)
+import Compiler.Data.Name as Name
+import Data.Map as DMap
 import Data.Set as EverySet exposing (EverySet)
+import Dict exposing (Dict)
 import System.TypeCheck.IO as IO
+
+
+{-| Mapping from definition names to their forall binder → solver variable mappings.
+-}
+type alias SchemeBinderVars =
+    Dict Name.Name (Dict Name.Name IO.Variable)
 
 
 {-| Mapping from node IDs to solver variables.
@@ -56,6 +66,7 @@ to distinguish between legitimate polymorphic TVars and unfilled placeholder hol
 type alias NodeIdState =
     { mapping : NodeVarMap
     , syntheticExprIds : EverySet Int Int
+    , schemeBinderVars : Dict Name.Name (Dict Name.Name IO.Variable)
     }
 
 
@@ -65,6 +76,7 @@ emptyNodeIdState : NodeIdState
 emptyNodeIdState =
     { mapping = Array.empty
     , syntheticExprIds = EverySet.empty
+    , schemeBinderVars = Dict.empty
     }
 
 
@@ -103,6 +115,17 @@ recordSyntheticExprVar id var state =
     else
         -- Skip negative IDs
         state
+
+
+{-| Record the forall binder → solver variable mapping for a definition.
+-}
+recordSchemeBinders : Name.Name -> DMap.Dict String Name.Name IO.Variable -> NodeIdState -> NodeIdState
+recordSchemeBinders defName binders state =
+    let
+        binderDict =
+            Dict.fromList (DMap.toList compare binders)
+    in
+    { state | schemeBinderVars = Dict.insert defName binderDict state.schemeBinderVars }
 
 
 arraySetGrowing : Int -> Maybe a -> Array (Maybe a) -> Array (Maybe a)

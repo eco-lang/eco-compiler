@@ -66,7 +66,7 @@ monomorphize : Name -> TypeEnv.GlobalTypeEnv -> TOpt.GlobalGraph Name -> Result 
 monomorphize entryPointName globalTypeEnv globalGraph =
     let
         -- Phase 0: Assign globally unique MVarIds to all type variables
-        ( TOpt.GlobalGraph nodesWithIds _ annotationsWithIds, mvarState ) =
+        ( TOpt.GlobalGraph nodesWithIds _ annotationsWithIds _, mvarState ) =
             AssignMVarIds.assignIds globalGraph
 
         mvarEnv =
@@ -103,7 +103,7 @@ monomorphizeWithLog : (String -> Task x ()) -> Name -> TypeEnv.GlobalTypeEnv -> 
 monomorphizeWithLog log entryPointName globalTypeEnv globalGraph =
     let
         -- Phase 0: Assign globally unique MVarIds to all type variables
-        ( TOpt.GlobalGraph nodesWithIds _ annotationsWithIds, mvarState ) =
+        ( TOpt.GlobalGraph nodesWithIds _ annotationsWithIds _, mvarState ) =
             AssignMVarIds.assignIds globalGraph
 
         mvarEnv =

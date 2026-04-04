@@ -36,6 +36,7 @@ import Compiler.Reporting.Error.Main as E
 import Compiler.Reporting.Result as ReportingResult
 import Compiler.Reporting.Warning as W
 import Compiler.Type.KernelTypes as KernelTypes
+import Compiler.Type.SolverRoots as SolverRoots
 import Data.Map
 import Data.Set as EverySet exposing (EverySet)
 import Dict exposing (Dict)
@@ -88,13 +89,14 @@ for converting subexpressions, and produces a TypedOptimized.LocalGraph.
 The kernelEnv is computed by the PostSolve phase and passed in from the caller.
 
 -}
-optimizeTyped : Annotations -> ExprTypes -> ExprVars -> KernelTypes.KernelTypeEnv -> Data.Map.Dict String Name.Name IO.Variable -> TCan.Module -> MResult i (List W.Warning) (TOpt.LocalGraph Name)
-optimizeTyped annotations exprTypes exprVars kernelEnv annotationVars (TCan.Module tData) =
+optimizeTyped : Annotations -> ExprTypes -> ExprVars -> KernelTypes.KernelTypeEnv -> Data.Map.Dict String Name.Name IO.Variable -> SolverRoots.AllSchemeRoots -> TCan.Module -> MResult i (List W.Warning) (TOpt.LocalGraph Name)
+optimizeTyped annotations exprTypes exprVars kernelEnv annotationVars allSchemeRoots (TCan.Module tData) =
     TOpt.LocalGraph
         { main = Nothing
         , nodes = Data.Map.empty
         , fields = Dict.empty
         , annotations = annotations
+        , schemeRoots = allSchemeRoots
         }
         |> addAliases tData.name annotations tData.aliases
         |> addUnions tData.name annotations tData.unions

@@ -416,7 +416,7 @@ typeCheckTyped canonical =
         ioResult =
             TypeTyped.constrainWithIds canonical
                 |> TypeCheck.andThen
-                    (\( constraint, nodeVars ) ->
+                    (\( constraint, nodeVars, _ ) ->
                         Type.runWithIds constraint nodeVars
                     )
                 |> TypeCheck.unsafePerformIO
@@ -472,7 +472,7 @@ Preserves full type information throughout the optimization process.
 -}
 optimizeTyped : Dict Name.Name (Can.Annotation Name) -> TCan.ExprTypes -> TCan.ExprVars -> KernelTypes.KernelTypeEnv -> Data.Map.Dict String Name.Name TypeCheck.Variable -> TCan.Module -> Result (OneOrMore.OneOrMore MainError.Error) (TOpt.LocalGraph Name)
 optimizeTyped annotations nodeTypes nodeVars kernelEnv annotationVars tcanModule =
-    Tuple.second (RResult.run (TypedOptimize.optimizeTyped annotations nodeTypes nodeVars kernelEnv annotationVars tcanModule))
+    Tuple.second (RResult.run (TypedOptimize.optimizeTyped annotations nodeTypes nodeVars kernelEnv annotationVars Dict.empty tcanModule))
 
 
 
@@ -557,13 +557,13 @@ Test modules use various names like "testValue", etc.
 
 -}
 monomorphizeAny : TypeEnv.GlobalTypeEnv -> TOpt.GlobalGraph Name -> Result String Mono.MonoGraph
-monomorphizeAny globalTypeEnv (TOpt.GlobalGraph nodes _ _) =
+monomorphizeAny globalTypeEnv (TOpt.GlobalGraph nodes _ _ schemeRoots) =
     case findAnyEntryPoint nodes of
         Nothing ->
             Err "No function found in graph"
 
         Just ( TOpt.Global _ name, _ ) ->
-            Monomorphize.monomorphize name globalTypeEnv (TOpt.GlobalGraph nodes Dict.empty Dict.empty)
+            Monomorphize.monomorphize name globalTypeEnv (TOpt.GlobalGraph nodes Dict.empty Dict.empty schemeRoots)
 
 
 {-| Find any entry point in the global graph (the first defined function).

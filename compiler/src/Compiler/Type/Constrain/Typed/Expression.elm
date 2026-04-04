@@ -105,8 +105,11 @@ constrainDefWithIds rtv def bodyCon state =
                             newRtv : RigidTypeVar
                             newRtv =
                                 Dict.union rtv (Dict.map (\_ -> VarN) newRigids)
+
+                            stateWithBinders =
+                                NodeIds.recordSchemeBinders name newRigids state
                         in
-                        constrainTypedArgsWithIds newRtv name typedArgs srcResultType state
+                        constrainTypedArgsWithIds newRtv name typedArgs srcResultType stateWithBinders
                             |> IO.andThen
                                 (\( TypedArgs tipe resultType (State headers pvars revCons), stateAfterArgs ) ->
                                     constrainWithIds newRtv expr (FromAnnotation name (List.length typedArgs) TypedBody resultType) stateAfterArgs
@@ -204,8 +207,11 @@ recDefsHelpWithIds rtv defs bodyCon rigidInfo flexInfo state =
                                     newRtv : RigidTypeVar
                                     newRtv =
                                         Dict.union rtv (Dict.map (\_ -> VarN) newRigids)
+
+                                    stateWithBinders =
+                                        NodeIds.recordSchemeBinders name newRigids state
                                 in
-                                constrainTypedArgsWithIds newRtv name typedArgs srcResultType state
+                                constrainTypedArgsWithIds newRtv name typedArgs srcResultType stateWithBinders
                                     |> IO.andThen
                                         (\( TypedArgs tipe resultType (State headers pvars revCons), stateAfterArgs ) ->
                                             constrainWithIds newRtv expr (FromAnnotation name (List.length typedArgs) TypedBody resultType) stateAfterArgs
