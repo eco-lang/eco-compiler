@@ -171,6 +171,21 @@ kernelBackendAbiPolicy home name =
         -- Also ElmDerived (all uint64_t in C++ but no mismatch bug today):
         -- Debug, Scheduler, VirtualDom, Url, Http
         --
+        -- Basics.add/sub/mul/pow: number-boxed polymorphic kernels.
+        -- C++ inspects the HPointer tag to dispatch Int vs Float at runtime.
+        -- Must be AllBoxed to avoid wrapper unboxing HPointers as raw i64.
+        ( "Basics", "add" ) ->
+            AllBoxed
+
+        ( "Basics", "sub" ) ->
+            AllBoxed
+
+        ( "Basics", "mul" ) ->
+            AllBoxed
+
+        ( "Basics", "pow" ) ->
+            AllBoxed
+
         _ ->
             ElmDerived
 

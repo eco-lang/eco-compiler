@@ -682,6 +682,9 @@ generateVarKernel ctx kernelPrefix home name monoType =
                     in
                     if arity == 0 then
                         -- Zero-arity function (thunk): call directly
+                        -- NOTE: No AllBoxed kernels with arity 0 exist today. If one is added,
+                        -- this path must consult kernelBackendAbiPolicy and force
+                        -- resultMlirType = Types.ecoValue.
                         let
                             resultMlirType =
                                 Types.monoTypeToAbi monoType
@@ -704,11 +707,20 @@ generateVarKernel ctx kernelPrefix home name monoType =
                         -- Register kernel call so func.func declaration is emitted,
                         -- enabling the closure wrapper to know parameter types.
                         let
-                            ( paramTypes, resultType ) =
-                                Types.flattenFunctionType monoType
+                            policy : Ctx.KernelBackendAbiPolicy
+                            policy =
+                                Ctx.kernelBackendAbiPolicy home name
+
+                            ( paramMlirTypes, resultMlirType ) =
+                                case policy of
+                                    Ctx.AllBoxed ->
+                                        ( List.repeat arity Types.ecoValue, Types.ecoValue )
+
+                                    Ctx.ElmDerived ->
+                                        Types.flattenFunctionType monoType
 
                             ctxWithKernel =
-                                Ctx.registerKernelCall ctx1 kernelName paramTypes resultType
+                                Ctx.registerKernelCall ctx1 kernelName paramMlirTypes resultMlirType
 
                             attrs =
                                 Dict.fromList
@@ -761,6 +773,9 @@ generateVarKernel ctx kernelPrefix home name monoType =
                     in
                     if arity == 0 then
                         -- Zero-arity function (thunk): call directly
+                        -- NOTE: No AllBoxed kernels with arity 0 exist today. If one is added,
+                        -- this path must consult kernelBackendAbiPolicy and force
+                        -- resultMlirType = Types.ecoValue.
                         let
                             resultMlirType =
                                 Types.monoTypeToAbi monoType
@@ -783,11 +798,20 @@ generateVarKernel ctx kernelPrefix home name monoType =
                         -- Register kernel call so func.func declaration is emitted,
                         -- enabling the closure wrapper to know parameter types.
                         let
-                            ( paramTypes, resultType ) =
-                                Types.flattenFunctionType monoType
+                            policy : Ctx.KernelBackendAbiPolicy
+                            policy =
+                                Ctx.kernelBackendAbiPolicy home name
+
+                            ( paramMlirTypes, resultMlirType ) =
+                                case policy of
+                                    Ctx.AllBoxed ->
+                                        ( List.repeat arity Types.ecoValue, Types.ecoValue )
+
+                                    Ctx.ElmDerived ->
+                                        Types.flattenFunctionType monoType
 
                             ctxWithKernel =
-                                Ctx.registerKernelCall ctx1 kernelName paramTypes resultType
+                                Ctx.registerKernelCall ctx1 kernelName paramMlirTypes resultMlirType
 
                             attrs =
                                 Dict.fromList
