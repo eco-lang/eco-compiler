@@ -357,12 +357,13 @@ optimizeExpr kernelEnv annotations exprTypes exprVars home cycle region tipe tva
             let
                 defType =
                     lookupAnnotationType name annotations
+
             in
             if EverySet.member identity name cycle then
                 Names.pure (TOpt.VarCycle region varHome name { tipe = defType, tvar = tvar })
 
             else
-                Names.registerGlobal region varHome name defType tvar
+                Names.registerGlobal region varHome name tipe tvar
 
         Can.VarKernel kernelPrefix kernelHome name ->
             -- Use the solver-inferred type (tipe) rather than the kernel env type.

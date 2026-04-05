@@ -1350,16 +1350,32 @@ specializeExpr expr subst state =
             case func of
                 TOpt.VarGlobal funcRegion global funcMeta ->
                     let
-                        funcCanType =
-                            funcMeta.tipe
+                        -- Use the annotation scheme (if present) as the canonical
+                        -- type for building SchemeInfo. This keeps the scheme cache
+                        -- polymorphic and independent of first usage.
+                        funcCanTypeForScheme : Can.Type MVarId
+                        funcCanTypeForScheme =
+                            case global of
+                                TOpt.Global _ name ->
+                                    case Dict.get name state1r.ctx.annotations of
+                                        Just (Can.Forall _ annType) ->
+                                            annType
+
+                                        Nothing ->
+                                            funcMeta.tipe
 
                         ( schemeInfo, state1a ) =
-                            getOrBuildSchemeInfo funcCanType (Just global) state1r
+                            getOrBuildSchemeInfo funcCanTypeForScheme (Just global) state1r
 
                         -- Direct unification: scheme MVarIds are freshened, so they never
                         -- collide with caller substitutions.
                         ( callSubst, funcMonoTypeRaw, _ ) =
-                            TypeSubst.unifyCallSiteDirect state1a.ctx.mvarEnv schemeInfo.argTypes schemeInfo.resultType argTypes substForCall
+                            TypeSubst.unifyCallSiteDirect
+                                state1a.ctx.mvarEnv
+                                schemeInfo.argTypes
+                                schemeInfo.resultType
+                                argTypes
+                                substForCall
 
                         funcMonoType =
                             Mono.forceCNumberToInt funcMonoTypeRaw
