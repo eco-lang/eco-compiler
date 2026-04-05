@@ -3,7 +3,7 @@ module CombinatorCConsTest exposing (main)
 {-| C combinator with cons: c (::) [2,3] 1 = [1,2,3]
 -}
 
--- CHECK: result: [1,2,3]
+-- CHECK: result: [1, 2, 3]
 
 import Html exposing (text)
 

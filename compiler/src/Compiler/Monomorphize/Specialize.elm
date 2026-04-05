@@ -82,12 +82,28 @@ getOrBuildSchemeInfo funcCanType maybeGlobal state =
             in
             case Data.Map.get TOpt.toComparableGlobal global accum.schemeCache of
                 Just info ->
+                    -- Reuse cached SchemeInfo for this global.
                     ( info, state )
 
                 Nothing ->
+                    -- Build SchemeInfo from the global's canonical annotation type if available.
                     let
+                        canonicalCanTypeForScheme : Can.Type MVarId
+                        canonicalCanTypeForScheme =
+                            case global of
+                                -- Real top-level function: prefer its annotated scheme type.
+                                TOpt.Global _ name ->
+                                    case Dict.get name state.ctx.annotations of
+                                        Just (Can.Forall _ annType) ->
+                                            annType
+
+                                        -- No annotation entry (unlikely for user code):
+                                        -- fall back to whatever the caller passed in.
+                                        Nothing ->
+                                            funcCanType
+
                         ( info, mvarEnv1 ) =
-                            TypeSubst.buildSchemeInfo state.ctx.mvarEnv funcCanType
+                            TypeSubst.buildSchemeInfo state.ctx.mvarEnv canonicalCanTypeForScheme
 
                         newCache =
                             Data.Map.insert TOpt.toComparableGlobal global info accum.schemeCache
