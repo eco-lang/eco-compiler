@@ -116,16 +116,61 @@ addTypedGlobalGraph (TOpt.GlobalGraph nodes1 fields1 ann1 roots1) (TOpt.GlobalGr
     TOpt.GlobalGraph
         (Data.Map.union nodes1 nodes2)
         (Dict.union fields1 fields2)
-        (Dict.union ann1 ann2)
-        (Dict.union roots1 roots2)
+        (Data.Map.union ann1 ann2)
+        (Data.Map.union roots1 roots2)
 
 
 {-| Add a typed local graph's definitions to a typed global graph.
+
+Annotations and scheme roots in the LocalGraph are keyed by bare Name (per-module).
+We re-key them by Global using the nodes map to find the full identity for each name.
+
 -}
 addTypedLocalGraph : TOpt.LocalGraph Name -> TOpt.GlobalGraph Name -> TOpt.GlobalGraph Name
 addTypedLocalGraph (TOpt.LocalGraph data) (TOpt.GlobalGraph nodes2 fields2 ann2 roots2) =
+    let
+        -- Re-key annotations from bare Name to Global by iterating through nodes
+        globalAnnotations =
+            Data.Map.foldl TOpt.compareGlobal
+                (\global _ acc ->
+                    let
+                        name =
+                            case global of
+                                TOpt.Global _ n ->
+                                    n
+                    in
+                    case Dict.get name data.annotations of
+                        Just ann ->
+                            Data.Map.insert TOpt.toComparableGlobal global ann acc
+
+                        Nothing ->
+                            acc
+                )
+                Data.Map.empty
+                data.nodes
+
+        -- Re-key scheme roots from bare Name to Global similarly
+        globalSchemeRoots =
+            Data.Map.foldl TOpt.compareGlobal
+                (\global _ acc ->
+                    let
+                        name =
+                            case global of
+                                TOpt.Global _ n ->
+                                    n
+                    in
+                    case Dict.get name data.schemeRoots of
+                        Just roots ->
+                            Data.Map.insert TOpt.toComparableGlobal global roots acc
+
+                        Nothing ->
+                            acc
+                )
+                Data.Map.empty
+                data.nodes
+    in
     TOpt.GlobalGraph
         (Data.Map.union data.nodes nodes2)
         (Dict.union data.fields fields2)
-        (Dict.union data.annotations ann2)
-        (Dict.union data.schemeRoots roots2)
+        (Data.Map.union globalAnnotations ann2)
+        (Data.Map.union globalSchemeRoots roots2)

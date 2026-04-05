@@ -90,17 +90,14 @@ getOrBuildSchemeInfo funcCanType maybeGlobal state =
                     let
                         canonicalCanTypeForScheme : Can.Type MVarId
                         canonicalCanTypeForScheme =
-                            case global of
-                                -- Real top-level function: prefer its annotated scheme type.
-                                TOpt.Global _ name ->
-                                    case Dict.get name state.ctx.annotations of
-                                        Just (Can.Forall _ annType) ->
-                                            annType
+                            case Data.Map.get TOpt.toComparableGlobal global state.ctx.annotations of
+                                Just (Can.Forall _ annType) ->
+                                    annType
 
-                                        -- No annotation entry (unlikely for user code):
-                                        -- fall back to whatever the caller passed in.
-                                        Nothing ->
-                                            funcCanType
+                                -- No annotation entry (unlikely for user code):
+                                -- fall back to whatever the caller passed in.
+                                Nothing ->
+                                    funcCanType
 
                         ( info, mvarEnv1 ) =
                             TypeSubst.buildSchemeInfo state.ctx.mvarEnv canonicalCanTypeForScheme
@@ -140,11 +137,11 @@ getOrBuildSchemeInfo funcCanType maybeGlobal state =
 {-| Look up FreeVars for a global from annotations.
 Returns the FreeVars from the annotation if found, otherwise empty.
 -}
-lookupFreeVars : Maybe TOpt.Global -> TOpt.Annotations MVarId -> Can.FreeVars
+lookupFreeVars : Maybe TOpt.Global -> TOpt.AnnotationsByGlobal MVarId -> Can.FreeVars
 lookupFreeVars maybeGlobal annotations =
     case maybeGlobal of
-        Just (TOpt.Global _ name) ->
-            case Dict.get name annotations of
+        Just global ->
+            case Data.Map.get TOpt.toComparableGlobal global annotations of
                 Just (Can.Forall freeVars _) ->
                     freeVars
 
@@ -160,8 +157,8 @@ lookupFreeVars maybeGlobal annotations =
 lookupFreeVarsFromCtx : MonoState -> Can.FreeVars
 lookupFreeVarsFromCtx state =
     case state.ctx.currentGlobal of
-        Just (Mono.Global _ name) ->
-            case Dict.get name state.ctx.annotations of
+        Just (Mono.Global canonical name) ->
+            case Data.Map.get TOpt.toComparableGlobal (TOpt.Global canonical name) state.ctx.annotations of
                 Just (Can.Forall freeVars _) ->
                     freeVars
 
@@ -1371,14 +1368,12 @@ specializeExpr expr subst state =
                         -- polymorphic and independent of first usage.
                         funcCanTypeForScheme : Can.Type MVarId
                         funcCanTypeForScheme =
-                            case global of
-                                TOpt.Global _ name ->
-                                    case Dict.get name state1r.ctx.annotations of
-                                        Just (Can.Forall _ annType) ->
-                                            annType
+                            case Data.Map.get TOpt.toComparableGlobal global state1r.ctx.annotations of
+                                Just (Can.Forall _ annType) ->
+                                    annType
 
-                                        Nothing ->
-                                            funcMeta.tipe
+                                Nothing ->
+                                    funcMeta.tipe
 
                         ( schemeInfo, state1a ) =
                             getOrBuildSchemeInfo funcCanTypeForScheme (Just global) state1r

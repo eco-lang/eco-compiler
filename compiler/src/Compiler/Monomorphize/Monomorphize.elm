@@ -82,7 +82,7 @@ monomorphize entryPointName globalTypeEnv globalGraph =
 
 {-| Perform monomorphization from a given entry point.
 -}
-monomorphizeFromEntry : TOpt.Global -> Can.Type TypeIds.MVarId -> TypeEnv.GlobalTypeEnv -> DMap.Dict (List String) TOpt.Global (TOpt.Node TypeIds.MVarId) -> TOpt.Annotations TypeIds.MVarId -> State.MVarEnv -> Result String Mono.MonoGraph
+monomorphizeFromEntry : TOpt.Global -> Can.Type TypeIds.MVarId -> TypeEnv.GlobalTypeEnv -> DMap.Dict (List String) TOpt.Global (TOpt.Node TypeIds.MVarId) -> TOpt.AnnotationsByGlobal TypeIds.MVarId -> State.MVarEnv -> Result String Mono.MonoGraph
 monomorphizeFromEntry mainGlobal mainType globalTypeEnv nodes annotations mvarEnv =
     let
         ( finalState, mainSpecIdVal ) =
@@ -149,7 +149,7 @@ monomorphizeWithLog log entryPointName globalTypeEnv globalGraph =
 
 {-| Phase 1: Run the specialization worklist to completion.
 -}
-runSpecialization : TOpt.Global -> Can.Type TypeIds.MVarId -> TypeEnv.GlobalTypeEnv -> DMap.Dict (List String) TOpt.Global (TOpt.Node TypeIds.MVarId) -> TOpt.Annotations TypeIds.MVarId -> State.MVarEnv -> ( MonoState, Mono.SpecId )
+runSpecialization : TOpt.Global -> Can.Type TypeIds.MVarId -> TypeEnv.GlobalTypeEnv -> DMap.Dict (List String) TOpt.Global (TOpt.Node TypeIds.MVarId) -> TOpt.AnnotationsByGlobal TypeIds.MVarId -> State.MVarEnv -> ( MonoState, Mono.SpecId )
 runSpecialization mainGlobal mainType globalTypeEnv nodes annotations mvarEnv =
     let
         mainMonoType : Mono.MonoType
@@ -259,7 +259,7 @@ assembleRawGraphFrom finalAccum lambdaCounter mainSpecIdVal =
 
 {-| Initialize the monomorphization state.
 -}
-initState : IO.Canonical -> DMap.Dict (List String) TOpt.Global (TOpt.Node TypeIds.MVarId) -> TOpt.Annotations TypeIds.MVarId -> TypeEnv.GlobalTypeEnv -> State.MVarEnv -> MonoState
+initState : IO.Canonical -> DMap.Dict (List String) TOpt.Global (TOpt.Node TypeIds.MVarId) -> TOpt.AnnotationsByGlobal TypeIds.MVarId -> TypeEnv.GlobalTypeEnv -> State.MVarEnv -> MonoState
 initState =
     State.initState
 

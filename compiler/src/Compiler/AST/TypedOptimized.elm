@@ -1,5 +1,5 @@
 module Compiler.AST.TypedOptimized exposing
-    ( Expr(..), Global(..), Annotations, Meta
+    ( Expr(..), Global(..), Annotations, AnnotationsByGlobal, SchemeRootsByGlobal, Meta
     , Def(..), Destructor(..), Path(..)
     , ContainerHint(..)
     , Decider(..), Choice(..)
@@ -24,7 +24,7 @@ The key difference from Optimized:
 
 # Core Types
 
-@docs Expr, Global, Annotations, Meta
+@docs Expr, Global, Annotations, AnnotationsByGlobal, SchemeRootsByGlobal, Meta
 
 
 # Definitions and Destructuring
@@ -93,10 +93,25 @@ import Utils.Bytes.Encode as BE
 -- ====== TYPE ALIASES ======
 
 
-{-| Annotations dictionary - maps definition names to their type schemes
+{-| Annotations dictionary - maps definition names to their type schemes.
+Used in LocalGraph where bare names are unique (per-module).
 -}
 type alias Annotations id =
     Dict Name (Can.Annotation id)
+
+
+{-| Annotations keyed by fully-qualified Global identity.
+Used in GlobalGraph to avoid cross-module name collisions.
+-}
+type alias AnnotationsByGlobal id =
+    Data.Map.Dict (List String) Global (Can.Annotation id)
+
+
+{-| Scheme roots keyed by fully-qualified Global identity.
+Used in GlobalGraph to avoid cross-module name collisions.
+-}
+type alias SchemeRootsByGlobal =
+    Data.Map.Dict (List String) Global (Dict Name IO.Variable)
 
 
 
@@ -365,7 +380,7 @@ type Choice id
 {-| A graph of all top-level definitions across multiple modules.
 -}
 type GlobalGraph id
-    = GlobalGraph (Data.Map.Dict (List String) Global (Node id)) (Dict Name Int) (Annotations id) (Dict Name (Dict Name IO.Variable))
+    = GlobalGraph (Data.Map.Dict (List String) Global (Node id)) (Dict Name Int) (AnnotationsByGlobal id) SchemeRootsByGlobal
 
 
 
@@ -432,7 +447,7 @@ type EffectsType
 -}
 emptyGlobalGraph : GlobalGraph id
 emptyGlobalGraph =
-    GlobalGraph Data.Map.empty Dict.empty Dict.empty Dict.empty
+    GlobalGraph Data.Map.empty Dict.empty Data.Map.empty Data.Map.empty
 
 
 
@@ -446,8 +461,8 @@ globalGraphEncoder (GlobalGraph nodes fields annotations allSchemeRoots) =
     Bytes.Encode.sequence
         [ BE.assocListDict compareGlobal globalEncoder nodeEncoder nodes
         , BE.stdDict BE.string BE.int fields
-        , BE.stdDict BE.string Can.annotationEncoder annotations
-        , schemeRootsEncoder allSchemeRoots
+        , BE.assocListDict compareGlobal globalEncoder Can.annotationEncoder annotations
+        , globalSchemeRootsEncoder allSchemeRoots
         ]
 
 
@@ -458,8 +473,8 @@ globalGraphDecoder =
     Bytes.Decode.map4 GlobalGraph
         (BD.assocListDict toComparableGlobal globalDecoder nodeDecoder)
         (BD.stdDict BD.string BD.int)
-        (BD.stdDict BD.string Can.annotationDecoder)
-        schemeRootsDecoder
+        (BD.assocListDict toComparableGlobal globalDecoder Can.annotationDecoder)
+        globalSchemeRootsDecoder
 
 
 {-| Encode a local graph to binary format.
@@ -1538,3 +1553,13 @@ schemeRootsEncoder allRoots =
 schemeRootsDecoder : Bytes.Decode.Decoder (Dict Name (Dict Name IO.Variable))
 schemeRootsDecoder =
     BD.stdDict BD.string schemeRootsForDefDecoder
+
+
+globalSchemeRootsEncoder : SchemeRootsByGlobal -> Bytes.Encode.Encoder
+globalSchemeRootsEncoder allRoots =
+    BE.assocListDict compareGlobal globalEncoder schemeRootsForDefEncoder allRoots
+
+
+globalSchemeRootsDecoder : Bytes.Decode.Decoder SchemeRootsByGlobal
+globalSchemeRootsDecoder =
+    BD.assocListDict toComparableGlobal globalDecoder schemeRootsForDefDecoder

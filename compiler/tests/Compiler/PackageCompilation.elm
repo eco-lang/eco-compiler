@@ -563,7 +563,7 @@ monomorphizeAny globalTypeEnv (TOpt.GlobalGraph nodes _ _ schemeRoots) =
             Err "No function found in graph"
 
         Just ( TOpt.Global _ name, _ ) ->
-            Monomorphize.monomorphize name globalTypeEnv (TOpt.GlobalGraph nodes Dict.empty Dict.empty schemeRoots)
+            Monomorphize.monomorphize name globalTypeEnv (TOpt.GlobalGraph nodes Dict.empty Data.Map.empty schemeRoots)
 
 
 {-| Find any entry point in the global graph (the first defined function).

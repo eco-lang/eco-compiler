@@ -85,7 +85,7 @@ assignIds (TOpt.GlobalGraph nodes fields annotations allSchemeRoots) =
             EQ
 
         ( newAnnotations, state1 ) =
-            rewriteAnnotations allSchemeRoots annotations state0
+            rewriteAnnotationsByGlobal allSchemeRoots annotations state0
 
         ( newNodes, state2 ) =
             rewriteNodes dummyCompare allSchemeRoots nodes state1
@@ -228,6 +228,34 @@ rewriteAnnotations allSchemeRoots annotations state =
         annotations
 
 
+{-| Rewrite annotations keyed by Global (for GlobalGraph).
+-}
+rewriteAnnotationsByGlobal :
+    TOpt.SchemeRootsByGlobal
+    -> TOpt.AnnotationsByGlobal Name
+    -> GlobalMVarState
+    -> ( TOpt.AnnotationsByGlobal TypeIds.MVarId, GlobalMVarState )
+rewriteAnnotationsByGlobal allSchemeRoots annotations state =
+    let
+        dummyCompare _ _ =
+            EQ
+    in
+    DMap.foldl dummyCompare
+        (\global ann ( acc, st ) ->
+            let
+                schemeRootsForDef =
+                    DMap.get TOpt.toComparableGlobal global allSchemeRoots
+                        |> Maybe.withDefault Dict.empty
+
+                ( newAnn, st1 ) =
+                    rewriteAnnotation schemeRootsForDef ann st
+            in
+            ( DMap.insert TOpt.toComparableGlobal global newAnn acc, st1 )
+        )
+        ( DMap.empty, state )
+        annotations
+
+
 rewriteAnnotation :
     SolverRoots.SchemeRootsForDef
     -> Can.Annotation Name
@@ -288,7 +316,7 @@ rewriteAnnotation schemeRootsForDef (Can.Forall freeVars tipe) state =
 
 rewriteNodes :
     (TOpt.Global -> TOpt.Global -> Order)
-    -> SolverRoots.AllSchemeRoots
+    -> TOpt.SchemeRootsByGlobal
     -> DMap.Dict (List String) TOpt.Global (TOpt.Node Name)
     -> GlobalMVarState
     -> ( DMap.Dict (List String) TOpt.Global (TOpt.Node TypeIds.MVarId), GlobalMVarState )
@@ -296,14 +324,9 @@ rewriteNodes cmp allSchemeRoots nodes state =
     DMap.foldl cmp
         (\global node ( acc, st ) ->
             let
-                -- Look up scheme roots for this definition
-                defName =
-                    case global of
-                        TOpt.Global _ name ->
-                            name
-
+                -- Look up scheme roots for this definition by Global key
                 schemeRootsForDef =
-                    Dict.get defName allSchemeRoots
+                    DMap.get TOpt.toComparableGlobal global allSchemeRoots
                         |> Maybe.withDefault Dict.empty
 
                 -- Fresh SchemeEnv per node, with solver roots
