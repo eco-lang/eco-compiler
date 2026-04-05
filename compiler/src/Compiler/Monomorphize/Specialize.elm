@@ -1113,40 +1113,46 @@ specializeExpr expr subst state =
                 canType =
                     meta.tipe
 
-                monoType =
+                monoTypeFromMeta =
                     Mono.forceCNumberToInt (applySubstFV state subst canType)
             in
             if isLocalMultiTarget name state then
                 let
                     ( freshName, state1 ) =
-                        getOrCreateLocalInstance name monoType subst state
+                        getOrCreateLocalInstance name monoTypeFromMeta subst state
                 in
-                ( Mono.MonoVarLocal freshName monoType, state1 )
+                ( Mono.MonoVarLocal freshName monoTypeFromMeta, state1 )
 
             else
-                -- For value-multi targets, return the var as-is. Instance recording
-                -- happens at use sites (Access, etc.) where concrete types are known.
-                ( Mono.MonoVarLocal name monoType, state )
+                case State.lookupVar name state.ctx.varEnv of
+                    Just envType ->
+                        ( Mono.MonoVarLocal name envType, state )
+
+                    Nothing ->
+                        ( Mono.MonoVarLocal name monoTypeFromMeta, state )
 
         TOpt.TrackedVarLocal _ name meta ->
             let
                 canType =
                     meta.tipe
 
-                monoType =
+                monoTypeFromMeta =
                     Mono.forceCNumberToInt (applySubstFV state subst canType)
             in
             if isLocalMultiTarget name state then
                 let
                     ( freshName, state1 ) =
-                        getOrCreateLocalInstance name monoType subst state
+                        getOrCreateLocalInstance name monoTypeFromMeta subst state
                 in
-                ( Mono.MonoVarLocal freshName monoType, state1 )
+                ( Mono.MonoVarLocal freshName monoTypeFromMeta, state1 )
 
             else
-                -- For value-multi targets, return the var as-is. Instance recording
-                -- happens at use sites (Access, etc.) where concrete types are known.
-                ( Mono.MonoVarLocal name monoType, state )
+                case State.lookupVar name state.ctx.varEnv of
+                    Just envType ->
+                        ( Mono.MonoVarLocal name envType, state )
+
+                    Nothing ->
+                        ( Mono.MonoVarLocal name monoTypeFromMeta, state )
 
         TOpt.VarGlobal region global meta ->
             let
