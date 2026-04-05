@@ -58,6 +58,7 @@ type ProcessedArg
     | PendingAccessor A.Region Name (Can.Type MVarId)
     | PendingKernel A.Region String String String (Can.Type MVarId)
     | PendingGlobal (TOpt.Expr MVarId) Substitution (Can.Type MVarId)
+    | PendingCall (TOpt.Expr MVarId) Substitution (Can.Type MVarId)
     | LocalFunArg Name (Can.Type MVarId)
 
 
@@ -2517,6 +2518,33 @@ processCallArg subst arg ( accArgs, accTypes, st ) =
                 , st1
                 )
 
+        TOpt.Call _ _ _ meta ->
+            let
+                canType =
+                    meta.tipe
+
+                monoType =
+                    Mono.forceCNumberToInt (applySubstFV st subst canType)
+            in
+            if Mono.containsCEcoMVar monoType then
+                -- Inner call result is still polymorphic. Defer specialization
+                -- until we know the outer callee's expected parameter type.
+                ( PendingCall arg subst canType :: accArgs
+                , monoType :: accTypes
+                , st
+                )
+
+            else
+                -- Fully monomorphic result — specialize immediately.
+                let
+                    ( monoExpr, st1 ) =
+                        specializeExpr arg subst st
+                in
+                ( ResolvedArg monoExpr :: accArgs
+                , Mono.typeOf monoExpr :: accTypes
+                , st1
+                )
+
         _ ->
             case arg of
                 TOpt.VarGlobal _ _ meta ->
@@ -2631,6 +2659,20 @@ resolveProcessedArg processedArg maybeParamType subst state =
         PendingGlobal savedExpr savedSubst canType ->
             -- Deferred VarGlobal: polymorphic global that needed call-site context.
             -- Refine the substitution with the callee's parameter type, then specialize.
+            let
+                refinedSubst =
+                    case maybeParamType of
+                        Just paramType ->
+                            Tuple.first (TypeSubst.unifyExtend state.ctx.mvarEnv canType paramType savedSubst)
+
+                        Nothing ->
+                            savedSubst
+            in
+            specializeExpr savedExpr refinedSubst state
+
+        PendingCall savedExpr savedSubst canType ->
+            -- Nested call used as argument. Now that we know the callee's
+            -- expected parameter type, refine the substitution and specialize.
             let
                 refinedSubst =
                     case maybeParamType of
