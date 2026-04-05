@@ -5,9 +5,9 @@ module CombinatorListStringTest exposing (main)
 
 -- CHECK: b_sum_map: 9
 -- CHECK: sp_mul: 84
--- CHECK: w_concat: hihi
--- CHECK: c_cons: [1,2,3]
--- CHECK: s_palindrome: strawwarts
+-- CHECK: w_concat: "hihi"
+-- CHECK: c_cons: [1, 2, 3]
+-- CHECK: s_palindrome: "strawwarts"
 -- CHECK: t_pipe: 12
 -- CHECK: p_lengths: 5
 
