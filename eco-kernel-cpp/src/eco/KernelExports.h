@@ -89,6 +89,9 @@ uint64_t Eco_Kernel_File_removeDir(uint64_t path);
 // Write UTF-8 string to file handle. Returns Task Never ().
 uint64_t Eco_Kernel_File_hWriteString(uint64_t handle, uint64_t content);
 
+// Touch a file (create if absent, update mtime). Returns Task Never ().
+uint64_t Eco_Kernel_File_touch(uint64_t path);
+
 //===----------------------------------------------------------------------===//
 // Crash Module - unrecoverable errors
 //===----------------------------------------------------------------------===//
