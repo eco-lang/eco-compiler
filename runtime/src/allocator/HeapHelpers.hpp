@@ -24,12 +24,76 @@
 #include "Allocator.hpp"
 #include "AllocatorCommon.hpp"
 #include "Heap.hpp"
+#include "RootSet.hpp"
 #include <cstring>
 #include <string>
 #include <vector>
 #include <initializer_list>
 
 namespace Elm {
+
+// ============================================================================
+// GC Stack Root Guard (RAII)
+// ============================================================================
+//
+// Roots one or more HPointer locals on the C++ stack so that they survive any
+// allocation that triggers a minor GC. The GC walks `getStackRoots()` and
+// updates the pointed-to HPointer values in place to their post-evacuation
+// locations. The destructor restores the prior stack-root point.
+//
+// Use this around any code path that:
+//   1) holds an HPointer in a C++ local that refers to a heap object, AND
+//   2) calls into the allocator (or any helper that may transitively allocate),
+// then reads/uses that local after the call.
+//
+// Example:
+//   HPointer cb = ...;
+//   HPointer t  = ...;
+//   {
+//       StackRootGuard guard(&cb, &t);
+//       Task* obj = allocator.allocate(...);  // GC may run; cb/t are updated.
+//       obj->callback = cb;
+//       obj->task     = t;
+//   }
+class StackRootGuard {
+public:
+    StackRootGuard(HPointer* a) {
+        auto& rs = Allocator::instance().getRootSet();
+        savedPoint_ = rs.stackRootPoint();
+        rs.pushStackRoot(a);
+    }
+    StackRootGuard(HPointer* a, HPointer* b) {
+        auto& rs = Allocator::instance().getRootSet();
+        savedPoint_ = rs.stackRootPoint();
+        rs.pushStackRoot(a);
+        rs.pushStackRoot(b);
+    }
+    StackRootGuard(HPointer* a, HPointer* b, HPointer* c) {
+        auto& rs = Allocator::instance().getRootSet();
+        savedPoint_ = rs.stackRootPoint();
+        rs.pushStackRoot(a);
+        rs.pushStackRoot(b);
+        rs.pushStackRoot(c);
+    }
+    StackRootGuard(HPointer* a, HPointer* b, HPointer* c, HPointer* d) {
+        auto& rs = Allocator::instance().getRootSet();
+        savedPoint_ = rs.stackRootPoint();
+        rs.pushStackRoot(a);
+        rs.pushStackRoot(b);
+        rs.pushStackRoot(c);
+        rs.pushStackRoot(d);
+    }
+    ~StackRootGuard() {
+        Allocator::instance().getRootSet().restoreStackRootPoint(savedPoint_);
+    }
+
+    StackRootGuard(const StackRootGuard&) = delete;
+    StackRootGuard& operator=(const StackRootGuard&) = delete;
+
+private:
+    size_t savedPoint_;
+};
+
 namespace alloc {
 
 // ============================================================================
@@ -354,11 +418,17 @@ inline const u16* stringData(void* str) {
  */
 inline HPointer cons(Unboxable head, HPointer tail, bool head_is_boxed) {
     auto& allocator = Allocator::instance();
+    // Root tail (always a heap pointer) and head (if boxed) across allocate().
+    auto& rs = Allocator::instance().getRootSet();
+    size_t saved = rs.stackRootPoint();
+    rs.pushStackRoot(&tail);
+    if (head_is_boxed) rs.pushStackRoot(&head.p);
     Cons* cell = static_cast<Cons*>(allocator.allocate(sizeof(Cons), Tag_Cons));
     cell->header.size = 0;
     cell->header.unboxed = head_is_boxed ? 0 : 1;  // unboxed=1 means head is primitive
     cell->head = head;
     cell->tail = tail;
+    rs.restoreStackRootPoint(saved);
     return allocator.wrap(cell);
 }
 
@@ -370,10 +440,18 @@ inline HPointer cons(Unboxable head, HPointer tail, bool head_is_boxed) {
  * @return HPointer to the list head (or Nil if empty).
  */
 inline HPointer listFromPointers(const std::vector<HPointer>& elements) {
+    // Copy elements into a local buffer and root them all (and the result
+    // accumulator) across the cons() calls, since each cons may GC.
+    std::vector<HPointer> rooted = elements;
     HPointer result = listNil();
-    for (auto it = elements.rbegin(); it != elements.rend(); ++it) {
+    auto& rs = Allocator::instance().getRootSet();
+    size_t saved = rs.stackRootPoint();
+    rs.pushStackRoot(&result);
+    for (auto& hp : rooted) rs.pushStackRoot(&hp);
+    for (auto it = rooted.rbegin(); it != rooted.rend(); ++it) {
         result = cons(boxed(*it), result, true);
     }
+    rs.restoreStackRootPoint(saved);
     return result;
 }
 
@@ -419,11 +497,17 @@ inline HPointer listFromFloats(const std::vector<f64>& elements) {
  */
 inline HPointer tuple2(Unboxable a, Unboxable b, u32 unboxed_mask) {
     auto& allocator = Allocator::instance();
+    // Root pointer-typed entries across allocate().
+    auto& rs = Allocator::instance().getRootSet();
+    size_t saved = rs.stackRootPoint();
+    if (!(unboxed_mask & 0x1)) rs.pushStackRoot(&a.p);
+    if (!(unboxed_mask & 0x2)) rs.pushStackRoot(&b.p);
     Tuple2* tuple = static_cast<Tuple2*>(allocator.allocate(sizeof(Tuple2), Tag_Tuple2));
     tuple->header.size = 0;
     tuple->header.unboxed = unboxed_mask & 0x3;  // Only 2 bits used for Tuple2
     tuple->a = a;
     tuple->b = b;
+    rs.restoreStackRootPoint(saved);
     return allocator.wrap(tuple);
 }
 
@@ -438,12 +522,18 @@ inline HPointer tuple2(Unboxable a, Unboxable b, u32 unboxed_mask) {
  */
 inline HPointer tuple3(Unboxable a, Unboxable b, Unboxable c, u32 unboxed_mask) {
     auto& allocator = Allocator::instance();
+    auto& rs = Allocator::instance().getRootSet();
+    size_t saved = rs.stackRootPoint();
+    if (!(unboxed_mask & 0x1)) rs.pushStackRoot(&a.p);
+    if (!(unboxed_mask & 0x2)) rs.pushStackRoot(&b.p);
+    if (!(unboxed_mask & 0x4)) rs.pushStackRoot(&c.p);
     Tuple3* tuple = static_cast<Tuple3*>(allocator.allocate(sizeof(Tuple3), Tag_Tuple3));
     tuple->header.size = 0;
     tuple->header.unboxed = unboxed_mask & 0x7;  // Only 3 bits used for Tuple3
     tuple->a = a;
     tuple->b = b;
     tuple->c = c;
+    rs.restoreStackRootPoint(saved);
     return allocator.wrap(tuple);
 }
 
@@ -464,13 +554,28 @@ inline HPointer custom(u16 ctor, const std::vector<Unboxable>& values, u64 unbox
     size_t total_size = sizeof(Custom) + values.size() * sizeof(Unboxable);
     total_size = (total_size + 7) & ~7;
 
+    // Copy values into a mutable buffer and root the pointer-typed entries
+    // (those with bit clear in unboxed_mask) across the allocation, so a
+    // minor GC inside allocate() updates them in place. Without this we'd
+    // copy stale from-space HPointers into the new Custom object.
+    std::vector<Unboxable> rooted_values = values;
+    auto& rs = Allocator::instance().getRootSet();
+    size_t saved = rs.stackRootPoint();
+    for (size_t i = 0; i < rooted_values.size(); ++i) {
+        bool is_unboxed = (unboxed_mask >> i) & 0x1;
+        if (!is_unboxed) {
+            rs.pushStackRoot(&rooted_values[i].p);
+        }
+    }
+
     Custom* obj = static_cast<Custom*>(allocator.allocate(total_size, Tag_Custom));
-    obj->header.size = static_cast<u32>(values.size());
+    obj->header.size = static_cast<u32>(rooted_values.size());
     obj->ctor = ctor;
     obj->unboxed = unboxed_mask;
-    for (size_t i = 0; i < values.size(); ++i) {
-        obj->values[i] = values[i];
+    for (size_t i = 0; i < rooted_values.size(); ++i) {
+        obj->values[i] = rooted_values[i];
     }
+    rs.restoreStackRootPoint(saved);
     return allocator.wrap(obj);
 }
 
@@ -533,12 +638,24 @@ inline HPointer record(const std::vector<Unboxable>& values, u64 unboxed_mask) {
     size_t total_size = sizeof(Record) + values.size() * sizeof(Unboxable);
     total_size = (total_size + 7) & ~7;
 
-    Record* obj = static_cast<Record*>(allocator.allocate(total_size, Tag_Record));
-    obj->header.size = static_cast<u32>(values.size());
-    obj->unboxed = unboxed_mask;
-    for (size_t i = 0; i < values.size(); ++i) {
-        obj->values[i] = values[i];
+    // See custom() — same rooting strategy for pointer-typed fields.
+    std::vector<Unboxable> rooted_values = values;
+    auto& rs = Allocator::instance().getRootSet();
+    size_t saved = rs.stackRootPoint();
+    for (size_t i = 0; i < rooted_values.size(); ++i) {
+        bool is_unboxed = (unboxed_mask >> i) & 0x1;
+        if (!is_unboxed) {
+            rs.pushStackRoot(&rooted_values[i].p);
+        }
     }
+
+    Record* obj = static_cast<Record*>(allocator.allocate(total_size, Tag_Record));
+    obj->header.size = static_cast<u32>(rooted_values.size());
+    obj->unboxed = unboxed_mask;
+    for (size_t i = 0; i < rooted_values.size(); ++i) {
+        obj->values[i] = rooted_values[i];
+    }
+    rs.restoreStackRootPoint(saved);
     return allocator.wrap(obj);
 }
 
@@ -636,15 +753,22 @@ inline HPointer arrayFromPointers(const std::vector<HPointer>& elements) {
     size_t total_size = sizeof(ElmArray) + capacity * sizeof(Unboxable);
     total_size = (total_size + 7) & ~7;
 
+    // Root every element pointer across allocate().
+    std::vector<HPointer> rooted = elements;
+    auto& rs = Allocator::instance().getRootSet();
+    size_t saved = rs.stackRootPoint();
+    for (auto& hp : rooted) rs.pushStackRoot(&hp);
+
     ElmArray* arr = static_cast<ElmArray*>(allocator.allocate(total_size, Tag_Array));
     arr->header.size = static_cast<u32>(capacity);
-    arr->length = static_cast<u32>(elements.size());
+    arr->length = static_cast<u32>(rooted.size());
     arr->padding = 0;
     arr->header.unboxed = 0;  // All elements are boxed pointers
 
-    for (size_t i = 0; i < elements.size(); ++i) {
-        arr->elements[i].p = elements[i];
+    for (size_t i = 0; i < rooted.size(); ++i) {
+        arr->elements[i].p = rooted[i];
     }
+    rs.restoreStackRootPoint(saved);
     return allocator.wrap(arr);
 }
 
@@ -820,6 +944,12 @@ inline HPointer allocTask(u16 ctor, HPointer value, HPointer callback,
                           HPointer kill, HPointer innerTask) {
     auto& allocator = Allocator::instance();
     size_t total_size = (sizeof(Task) + 7) & ~7;
+    // Root incoming HPointers across the allocation so a minor GC inside
+    // allocate() updates them to post-evacuation locations before we store
+    // them into the new Task. Without this, the field stores below would
+    // write stale from-space pointers and corrupt the heap (manifests as
+    // garbage Task ctors when the scheduler later follows the chain).
+    Elm::StackRootGuard guard(&value, &callback, &kill, &innerTask);
     Task* t = static_cast<Task*>(allocator.allocate(total_size, Tag_Task));
     t->ctor = ctor;
     t->id = 0;
@@ -834,6 +964,8 @@ inline HPointer allocTask(u16 ctor, HPointer value, HPointer callback,
 inline HPointer allocProcess(u16 id, HPointer root, HPointer stack, HPointer mailbox) {
     auto& allocator = Allocator::instance();
     size_t total_size = (sizeof(Process) + 7) & ~7;
+    // Root incoming HPointers across allocate(); see allocTask for rationale.
+    Elm::StackRootGuard guard(&root, &stack, &mailbox);
     Process* p = static_cast<Process*>(allocator.allocate(total_size, Tag_Process));
     p->id = id;
     p->padding = 0;

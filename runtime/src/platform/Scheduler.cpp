@@ -3,6 +3,19 @@
 #include "allocator/HeapHelpers.hpp"
 #include "allocator/RuntimeExports.h"
 #include <cstring>
+#include <cstdio>
+#include <cstdlib>
+
+// Scheduler trace gated by ECO_SCHED_TRACE env var (set to 1 to enable).
+static bool ecoSchedTraceEnabled() {
+    static int cached = -1;
+    if (cached == -1) {
+        const char* v = std::getenv("ECO_SCHED_TRACE");
+        cached = (v && v[0] && v[0] != '0') ? 1 : 0;
+    }
+    return cached == 1;
+}
+#define ECO_SCHED_TRACE(...) do { if (ecoSchedTraceEnabled()) { std::fprintf(stderr, "[sched] " __VA_ARGS__); std::fprintf(stderr, "\n"); std::fflush(stderr); } } while (0)
 
 using namespace Elm;
 using namespace Elm::alloc;
@@ -197,12 +210,15 @@ void Scheduler::pushStack(HPointer procHP, u64 expectedTag, HPointer callback) {
 bool Scheduler::popStackMatching(Process* proc, u64 tag, HPointer& outCallback) {
     // Walk the stack looking for a frame whose expectedTag matches
     // Pop non-matching frames as we go (like the JS version)
+    int depth = 0;
     while (!alloc::isNil(proc->stack)) {
         void* ptr = resolveHP(proc->stack);
         if (!ptr) {
+            ECO_SCHED_TRACE("popStackMatching: resolveHP(stack)==null at depth=%d, searchTag=%llu -> FALSE", depth, (unsigned long long)tag);
             proc->stack = listNil();
             return false;
         }
+        depth++;
         // Stack is a linked list of StackFrame Custom objects
         // StackFrame: Custom with ctor=CTOR_StackFrame
         //   values[0] = expectedTag (unboxed i64)
@@ -216,11 +232,14 @@ bool Scheduler::popStackMatching(Process* proc, u64 tag, HPointer& outCallback) 
         proc->stack = rest;
 
         if (frameTag == tag) {
+            ECO_SCHED_TRACE("popStackMatching: matched at depth=%d, searchTag=%llu", depth, (unsigned long long)tag);
             outCallback = frameCallback;
             return true;
         }
+        ECO_SCHED_TRACE("popStackMatching: skip frame tag=%llu at depth=%d, searchTag=%llu", (unsigned long long)frameTag, depth, (unsigned long long)tag);
         // Non-matching frame: skip it (popped already)
     }
+    ECO_SCHED_TRACE("popStackMatching: stack exhausted after depth=%d searchTag=%llu -> FALSE", depth, (unsigned long long)tag);
     return false;
 }
 
@@ -388,15 +407,36 @@ void Scheduler::stepProcess(uint64_t procEncoded) {
     };
 
     Process* proc = resolveProc();
-    if (!proc) { rootSet.removeJitRoot(&procEncoded); return; }
+    if (!proc) { ECO_SCHED_TRACE("stepProcess: initial resolveProc null"); rootSet.removeJitRoot(&procEncoded); return; }
+    ECO_SCHED_TRACE("stepProcess: enter proc=%p", (void*)proc);
 
+    int iter = 0;
     while (true) {
+        iter++;
         proc = resolveProc();
-        if (!proc) break;
+        if (!proc) { ECO_SCHED_TRACE("stepProcess[iter=%d]: resolveProc null -> break", iter); break; }
 
         Task* task = resolveRoot(proc);
-        if (!task) break;
+        if (!task) { ECO_SCHED_TRACE("stepProcess[iter=%d]: resolveRoot null (root nil?) -> break", iter); break; }
+        // Inspect the actual heap tag of the object — if it isn't Tag_Task,
+        // proc->root has been corrupted and we're about to misinterpret a
+        // different object as a Task.
+        Header* hdr = reinterpret_cast<Header*>(reinterpret_cast<char*>(task) - 0);
+        // Header is the first field of every heap object; *task starts with it.
+        u32 actualTag = static_cast<Header*>((void*)task)->tag;
         u16 ctor = task->ctor;
+        ECO_SCHED_TRACE("stepProcess[iter=%d]: heap_tag=%u task_ctor=%u root_hp.ptr=0x%llx",
+                        iter, (unsigned)actualTag, (unsigned)ctor,
+                        (unsigned long long)proc->root.ptr);
+        if (actualTag != Tag_Task) {
+            std::fprintf(stderr,
+                "[eco-runtime] stepProcess[iter=%d]: proc->root points at heap_tag=%u "
+                "(expected Tag_Task=%u). Custom_ctor=%u. Heap is corrupted upstream of "
+                "the scheduler.\n",
+                iter, (unsigned)actualTag, (unsigned)Tag_Task, (unsigned)ctor);
+            std::fflush(stderr);
+            break;
+        }
 
 
         if (ctor == Task_Succeed || ctor == Task_Fail) {
@@ -426,7 +466,17 @@ void Scheduler::stepProcess(uint64_t procEncoded) {
                 proc->root = newTask;
                 continue;
             } else {
-                // Process finished - no matching handler
+                // Process finished - no matching handler.
+                // For Task_Succeed this is normal completion (e.g. spawned
+                // worker that returned a value with nothing to consume it).
+                // For Task_Fail this is an unhandled top-level task failure
+                // and must NOT be silent — log it loudly.
+                if (ctor == Task_Fail) {
+                    std::fprintf(stderr,
+                        "[eco-runtime] unhandled top-level Task.fail "
+                        "(no surrounding Task.onError) — failure value dropped\n");
+                    std::fflush(stderr);
+                }
                 break;
             }
         }
@@ -525,10 +575,13 @@ void Scheduler::stepProcess(uint64_t procEncoded) {
         }
         else {
             // Unknown task ctor
+            std::fprintf(stderr, "[eco-runtime] stepProcess: UNKNOWN task ctor=%u — breaking\n", (unsigned)ctor);
+            std::fflush(stderr);
             break;
         }
     }
 
+    ECO_SCHED_TRACE("stepProcess: exit after iter=%d", iter);
     rootSet.removeJitRoot(&procEncoded);
 }
 
