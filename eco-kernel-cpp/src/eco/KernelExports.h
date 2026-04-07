@@ -41,7 +41,7 @@ uint64_t Eco_Kernel_File_open(uint64_t path, uint64_t mode);
 uint64_t Eco_Kernel_File_close(uint64_t handle);
 
 // Get file size via handle. Returns Int (unboxed).
-int64_t Eco_Kernel_File_size(uint64_t handle);
+uint64_t Eco_Kernel_File_size(uint64_t handle);
 
 // Acquire file lock (blocks). Returns Task Never ().
 uint64_t Eco_Kernel_File_lock(uint64_t path);
@@ -62,7 +62,7 @@ uint64_t Eco_Kernel_File_findExecutable(uint64_t name);
 uint64_t Eco_Kernel_File_list(uint64_t path);
 
 // Get file modification time. Returns Int (milliseconds since epoch, unboxed).
-int64_t Eco_Kernel_File_modificationTime(uint64_t path);
+uint64_t Eco_Kernel_File_modificationTime(uint64_t path);
 
 // Get current working directory. Returns String (boxed).
 uint64_t Eco_Kernel_File_getCwd();
@@ -146,7 +146,10 @@ uint64_t Eco_Kernel_Process_wait(uint64_t handle);
 //===----------------------------------------------------------------------===//
 
 // Create new empty MVar. Returns Int (MVar id, unboxed).
-int64_t Eco_Kernel_MVar_new();
+// Returns a Task that succeeds with a freshly-allocated MVar id (boxed Int).
+// (Elm side: `Eco.Kernel.MVar.new : Task Never Int`, then `Task.map MVar` in
+// Eco.MVar wraps the Int in the MVar constructor.)
+uint64_t Eco_Kernel_MVar_new();
 
 // Read MVar (blocks until full). Returns value (boxed).
 // typeTag is unused at runtime but required by Elm type system.
@@ -169,7 +172,7 @@ uint64_t Eco_Kernel_MVar_drop(uint64_t id);
 uint64_t Eco_Kernel_Runtime_dirname();
 
 // Get random Float. Returns Float (unboxed).
-double Eco_Kernel_Runtime_random();
+uint64_t Eco_Kernel_Runtime_random();
 
 // Persist REPL state to runtime storage. Returns Task Never ().
 uint64_t Eco_Kernel_Runtime_saveState(uint64_t state);

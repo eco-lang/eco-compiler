@@ -9,7 +9,7 @@ uint64_t Eco_Kernel_Runtime_dirname() {
     return Runtime::dirname();
 }
 
-double Eco_Kernel_Runtime_random() {
+uint64_t Eco_Kernel_Runtime_random() {
     return Runtime::random();
 }
 

@@ -1,12 +1,17 @@
 //===- MVarExports.cpp - C-linkage exports for MVar module ----------------===//
 
 #include "KernelExports.h"
+#include "KernelHelpers.hpp"
 #include "MVar.hpp"
+#include "allocator/HeapHelpers.hpp"
 
 using namespace Eco::Kernel;
 
-int64_t Eco_Kernel_MVar_new() {
-    return MVar::newEmpty();
+uint64_t Eco_Kernel_MVar_new() {
+    int64_t id = MVar::newEmpty();
+    // Wrap as Task Never Int: taskSucceed(boxed Int).
+    Elm::HPointer boxedId = Elm::alloc::allocInt(id);
+    return taskSucceed(boxedId);
 }
 
 uint64_t Eco_Kernel_MVar_read(uint64_t typeTag, uint64_t id) {

@@ -29,7 +29,7 @@ uint64_t Eco_Kernel_File_close(uint64_t handle) {
     return File::close(handle);
 }
 
-int64_t Eco_Kernel_File_size(uint64_t handle) {
+uint64_t Eco_Kernel_File_size(uint64_t handle) {
     return File::size(handle);
 }
 
@@ -57,7 +57,7 @@ uint64_t Eco_Kernel_File_list(uint64_t path) {
     return File::list(path);
 }
 
-int64_t Eco_Kernel_File_modificationTime(uint64_t path) {
+uint64_t Eco_Kernel_File_modificationTime(uint64_t path) {
     return File::modificationTime(path);
 }
 

@@ -28,10 +28,10 @@ uint64_t dirname() {
     return taskSucceedString(path);
 }
 
-double random() {
+uint64_t random() {
     static std::mt19937_64 gen(std::random_device{}());
     static std::uniform_real_distribution<double> dist(0.0, 1.0);
-    return dist(gen);
+    return taskSucceedFloat(dist(gen));
 }
 
 uint64_t saveState(uint64_t state) {

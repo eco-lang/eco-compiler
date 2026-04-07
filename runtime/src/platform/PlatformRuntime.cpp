@@ -122,9 +122,25 @@ HPointer PlatformRuntime::setupEffects(HPointer sendToAppClosure) {
         routerFields[1].p = selfProc;
         HPointer router = custom(CTOR_Router, routerFields, 0);
 
-        // Run the init task to get initial manager state
+        // Run the init task to get initial manager state.
+        //
+        // Effect-manager kernels (e.g. eco_register_task_effect_manager in
+        // elm-kernel-cpp/src/core/TaskEffectManager.cpp) register `init` as a
+        // 0-arg closure that *produces* the init Task when applied — not as
+        // an already-evaluated Task value. Detect that case and apply the
+        // closure first to obtain the actual Task; otherwise we'd hand a
+        // Closure to rawSpawn and the scheduler would treat its bytes as a
+        // Task header, silently dropping the init effect.
         HPointer initTask = info.init;
         HPointer initialState = listNil();  // fallback
+        if (!alloc::isNil(initTask) && !hpIsConstant(initTask)) {
+            void* initPtr = resolveHP(initTask);
+            if (initPtr && static_cast<Header*>(initPtr)->tag == Tag_Closure) {
+                uint64_t closureEnc = encodeHP(initTask);
+                uint64_t result = eco_apply_closure(closureEnc, nullptr, 0);
+                initTask = decodeHP(result);
+            }
+        }
 
         if (!alloc::isNil(initTask) && !hpIsConstant(initTask)) {
             // Spawn a process to run the init task

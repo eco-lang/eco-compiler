@@ -100,13 +100,13 @@ uint64_t hWriteString(uint64_t handle, uint64_t content) {
     return taskSucceedUnit();
 }
 
-int64_t size(uint64_t handle) {
+uint64_t size(uint64_t handle) {
     int64_t fd = static_cast<int64_t>(handle);
     struct stat st;
     if (fstat(static_cast<int>(fd), &st) != 0) {
-        return 0;
+        return taskFailString("fstat failed");
     }
-    return static_cast<int64_t>(st.st_size);
+    return taskSucceedInt(static_cast<int64_t>(st.st_size));
 }
 
 uint64_t lock(uint64_t /*path*/) {
@@ -175,15 +175,16 @@ uint64_t list(uint64_t path) {
     return taskSucceedStringList(entries);
 }
 
-int64_t modificationTime(uint64_t path) {
+uint64_t modificationTime(uint64_t path) {
     std::string pathStr = toString(path);
     struct stat st;
     if (stat(pathStr.c_str(), &st) != 0) {
-        return 0;
+        return taskFailString("stat failed: " + pathStr);
     }
     // Convert to milliseconds since epoch.
-    return static_cast<int64_t>(st.st_mtim.tv_sec) * 1000 +
-           static_cast<int64_t>(st.st_mtim.tv_nsec) / 1000000;
+    int64_t millis = static_cast<int64_t>(st.st_mtim.tv_sec) * 1000 +
+                     static_cast<int64_t>(st.st_mtim.tv_nsec) / 1000000;
+    return taskSucceedInt(millis);
 }
 
 uint64_t getCwd() {
