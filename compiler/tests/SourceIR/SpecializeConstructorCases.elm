@@ -15,7 +15,8 @@ These tests cover:
 import Compiler.AST.Source as Src
 import Compiler.AST.SourceBuilder
     exposing
-        ( TypedDef
+        ( AliasDef
+        , TypedDef
         , UnionDef
         , binopsExpr
         , boolExpr
@@ -25,10 +26,13 @@ import Compiler.AST.SourceBuilder
         , intExpr
         , makeModuleWithTypedDefsUnionsAliases
         , pCtor
+        , pTuple
         , pVar
         , tLambda
+        , tTuple
         , tType
         , tVar
+        , tupleExpr
         , varExpr
         )
 import Compiler.BulkCheck exposing (TestCase, bulkCheck)
@@ -463,7 +467,187 @@ polymorphicCtorCases : (Src.Module -> Expectation) -> List TestCase
 polymorphicCtorCases expectFn =
     [ { label = "Polymorphic wrapper type", run = polymorphicWrapper expectFn }
     , { label = "Either-like polymorphic type", run = eitherLikeType expectFn }
+    , { label = "Ctor field referencing parameterized alias (Pair)", run = ctorFieldReferencingPairAlias expectFn }
+    , { label = "Ctor field referencing identity alias", run = ctorFieldReferencingIdAlias expectFn }
+    , { label = "Ctor field referencing phantom alias (body ignores param)", run = ctorFieldReferencingPhantomAlias expectFn }
     ]
+
+
+{-| Probe for the args-branch fix in `convertCanTypeNameToMVarId`:
+the alias body does NOT reference the formal parameter, so this test
+exercises only the args-branch lookup of the formal-param name. With
+the buggy code it crashes with "Unbound alias parameter: a"; with the
+fix it passes.
+
+    type alias Phantom a = Int
+    type Marker b = Marker (Phantom b)
+
+-}
+ctorFieldReferencingPhantomAlias : (Src.Module -> Expectation) -> (() -> Expectation)
+ctorFieldReferencingPhantomAlias expectFn _ =
+    let
+        phantomAlias : AliasDef
+        phantomAlias =
+            { name = "Phantom"
+            , args = [ "a" ]
+            , tipe = tType "Maybe" [ tVar "a" ]
+            }
+
+        markerUnion : UnionDef
+        markerUnion =
+            { name = "Marker"
+            , args = [ "b" ]
+            , ctors =
+                [ { name = "Marker", args = [ tType "Phantom" [ tVar "b" ] ] } ]
+            }
+
+        -- unmark : Marker Int -> Int
+        unmarkDef : TypedDef
+        unmarkDef =
+            { name = "unmark"
+            , args = [ pVar "m" ]
+            , tipe = tLambda (tType "Marker" [ tType "Int" [] ]) (tType "Int" [])
+            , body =
+                caseExpr (varExpr "m")
+                    [ ( pCtor "Marker" [ pCtor "Just" [ pVar "n" ] ], varExpr "n" )
+                    , ( pCtor "Marker" [ pCtor "Nothing" [] ], intExpr 0 )
+                    ]
+            }
+
+        testValueDef : TypedDef
+        testValueDef =
+            { name = "testValue"
+            , args = []
+            , tipe = tType "Int" []
+            , body =
+                callExpr (varExpr "unmark")
+                    [ callExpr (ctorExpr "Marker") [ callExpr (ctorExpr "Just") [ intExpr 5 ] ] ]
+            }
+
+        modul =
+            makeModuleWithTypedDefsUnionsAliases "Test"
+                [ unmarkDef, testValueDef ]
+                [ markerUnion ]
+                [ phantomAlias ]
+    in
+    expectFn modul
+
+
+{-| Regression: a union constructor whose field type is a reference to a
+parameterized type alias whose formal parameter name differs from the
+union's own type variable. Triggers
+`convertCanTypeNameToMVarId` "Unbound alias parameter: a" in
+Compiler.Monomorphize.Analysis (the TAlias branch incorrectly looks up
+the alias's formal parameter name in the enclosing union's nameToId).
+
+    type alias Pair a = ( a, a )
+    type Box b = Box (Pair b)
+
+-}
+ctorFieldReferencingPairAlias : (Src.Module -> Expectation) -> (() -> Expectation)
+ctorFieldReferencingPairAlias expectFn _ =
+    let
+        pairAlias : AliasDef
+        pairAlias =
+            { name = "Pair"
+            , args = [ "a" ]
+            , tipe = tTuple (tVar "a") (tVar "a")
+            }
+
+        boxUnion : UnionDef
+        boxUnion =
+            { name = "Box"
+            , args = [ "b" ]
+            , ctors =
+                [ { name = "Box", args = [ tType "Pair" [ tVar "b" ] ] } ]
+            }
+
+        -- firstOfBox : Box Int -> Int
+        firstOfBoxDef : TypedDef
+        firstOfBoxDef =
+            { name = "firstOfBox"
+            , args = [ pVar "box" ]
+            , tipe = tLambda (tType "Box" [ tType "Int" [] ]) (tType "Int" [])
+            , body =
+                caseExpr (varExpr "box")
+                    [ ( pCtor "Box" [ pTuple (pVar "x") (pVar "y") ]
+                      , varExpr "x"
+                      )
+                    ]
+            }
+
+        testValueDef : TypedDef
+        testValueDef =
+            { name = "testValue"
+            , args = []
+            , tipe = tType "Int" []
+            , body =
+                callExpr (varExpr "firstOfBox")
+                    [ callExpr (ctorExpr "Box") [ tupleExpr (intExpr 1) (intExpr 2) ] ]
+            }
+
+        modul =
+            makeModuleWithTypedDefsUnionsAliases "Test"
+                [ firstOfBoxDef, testValueDef ]
+                [ boxUnion ]
+                [ pairAlias ]
+    in
+    expectFn modul
+
+
+{-| Regression: simpler variant of the alias-in-ctor-field bug, using a
+single-parameter identity alias.
+
+    type alias Id a = a
+    type Wrap x = Wrap (Id x)
+
+-}
+ctorFieldReferencingIdAlias : (Src.Module -> Expectation) -> (() -> Expectation)
+ctorFieldReferencingIdAlias expectFn _ =
+    let
+        idAlias : AliasDef
+        idAlias =
+            { name = "Id"
+            , args = [ "a" ]
+            , tipe = tVar "a"
+            }
+
+        wrapUnion : UnionDef
+        wrapUnion =
+            { name = "Wrap"
+            , args = [ "x" ]
+            , ctors =
+                [ { name = "Wrap", args = [ tType "Id" [ tVar "x" ] ] } ]
+            }
+
+        -- unwrap : Wrap Int -> Int
+        unwrapDef : TypedDef
+        unwrapDef =
+            { name = "unwrap"
+            , args = [ pVar "w" ]
+            , tipe = tLambda (tType "Wrap" [ tType "Int" [] ]) (tType "Int" [])
+            , body =
+                caseExpr (varExpr "w")
+                    [ ( pCtor "Wrap" [ pVar "n" ], varExpr "n" ) ]
+            }
+
+        testValueDef : TypedDef
+        testValueDef =
+            { name = "testValue"
+            , args = []
+            , tipe = tType "Int" []
+            , body =
+                callExpr (varExpr "unwrap")
+                    [ callExpr (ctorExpr "Wrap") [ intExpr 7 ] ]
+            }
+
+        modul =
+            makeModuleWithTypedDefsUnionsAliases "Test"
+                [ unwrapDef, testValueDef ]
+                [ wrapUnion ]
+                [ idAlias ]
+    in
+    expectFn modul
 
 
 {-| Polymorphic wrapper type (like Identity).

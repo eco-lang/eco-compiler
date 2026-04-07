@@ -518,25 +518,36 @@ convertCanTypeNameToMVarId nameToId canType =
                 (List.map (convertCanTypeNameToMVarId nameToId) rest)
 
         Can.TAlias canonical name args aliasType ->
+            let
+                -- The first element of each pair is the alias's *formal*
+                -- parameter name (e.g. "a" in `type alias Pair a = ...`),
+                -- which is bound by the alias declaration itself and is
+                -- not in the surrounding union's nameToId. Extend nameToId
+                -- with dummy bindings for those formal-param names so the
+                -- body recursion (Holey/Filled) can resolve TVar references
+                -- to them. Downstream consumers (applySubst) key on the
+                -- converted argument types, not on these dummy ids.
+                innerNameToId : Dict.Dict Name TypeIds.MVarId
+                innerNameToId =
+                    List.foldl
+                        (\( n, _ ) acc -> Dict.insert n TypeIds.firstMVarId acc)
+                        nameToId
+                        args
+            in
             Can.TAlias canonical
                 name
                 (List.map
-                    (\( n, t ) ->
-                        case Dict.get n nameToId of
-                            Just mvarId ->
-                                ( mvarId, convertCanTypeNameToMVarId nameToId t )
-
-                            Nothing ->
-                                Utils.Crash.crash "Analysis" "convertCanTypeNameToMVarId" ("Unbound alias parameter: " ++ n)
+                    (\( _, t ) ->
+                        ( TypeIds.firstMVarId, convertCanTypeNameToMVarId nameToId t )
                     )
                     args
                 )
                 (case aliasType of
                     Can.Holey inner ->
-                        Can.Holey (convertCanTypeNameToMVarId nameToId inner)
+                        Can.Holey (convertCanTypeNameToMVarId innerNameToId inner)
 
                     Can.Filled inner ->
-                        Can.Filled (convertCanTypeNameToMVarId nameToId inner)
+                        Can.Filled (convertCanTypeNameToMVarId innerNameToId inner)
                 )
 
 
