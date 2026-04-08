@@ -152,14 +152,13 @@ uint64_t Eco_Kernel_Process_wait(uint64_t handle);
 uint64_t Eco_Kernel_MVar_new();
 
 // Read MVar (blocks until full). Returns value (boxed).
-// typeTag is unused at runtime but required by Elm type system.
-uint64_t Eco_Kernel_MVar_read(uint64_t typeTag, uint64_t id);
+uint64_t Eco_Kernel_MVar_read(uint64_t id);
 
 // Take MVar (blocks until full, empties). Returns value (boxed).
-uint64_t Eco_Kernel_MVar_take(uint64_t typeTag, uint64_t id);
+uint64_t Eco_Kernel_MVar_take(uint64_t id);
 
 // Put value into MVar (blocks until empty). Returns Task Never ().
-uint64_t Eco_Kernel_MVar_put(uint64_t typeTag, uint64_t id, uint64_t value);
+uint64_t Eco_Kernel_MVar_put(uint64_t id, uint64_t value);
 
 // Drop (destroy) an MVar. Returns Task Never ().
 uint64_t Eco_Kernel_MVar_drop(uint64_t id);

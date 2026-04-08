@@ -24,10 +24,12 @@ static int64_t s_nextId = 1;
 int64_t newEmpty() {
     int64_t id = s_nextId++;
     s_mvars[id] = MVarSlot{};
+    std::fprintf(stderr, "[mvar] newEmpty -> id=%lld\n", (long long)id);
+    std::fflush(stderr);
     return id;
 }
 
-uint64_t read(uint64_t /*typeTag*/, uint64_t id) {
+uint64_t read(uint64_t id) {
     int64_t mvarId = static_cast<int64_t>(id);
     auto it = s_mvars.find(mvarId);
     assert(it != s_mvars.end() && "MVar not found");
@@ -35,7 +37,7 @@ uint64_t read(uint64_t /*typeTag*/, uint64_t id) {
     return taskSucceed(it->second.value.value());
 }
 
-uint64_t take(uint64_t /*typeTag*/, uint64_t id) {
+uint64_t take(uint64_t id) {
     int64_t mvarId = static_cast<int64_t>(id);
     auto it = s_mvars.find(mvarId);
     assert(it != s_mvars.end() && "MVar not found");
@@ -45,8 +47,11 @@ uint64_t take(uint64_t /*typeTag*/, uint64_t id) {
     return taskSucceed(val);
 }
 
-uint64_t put(uint64_t /*typeTag*/, uint64_t id, uint64_t value) {
+uint64_t put(uint64_t id, uint64_t value) {
     int64_t mvarId = static_cast<int64_t>(id);
+    std::fprintf(stderr, "[mvar] put id=0x%llx (%lld) (s_mvars.size=%zu)\n",
+                 (unsigned long long)id, (long long)mvarId, s_mvars.size());
+    std::fflush(stderr);
     auto it = s_mvars.find(mvarId);
     assert(it != s_mvars.end() && "MVar not found");
     assert(!it->second.value.has_value() && "MVar.put: MVar is full (blocking not implemented)");
