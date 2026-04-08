@@ -586,6 +586,14 @@ int main(int argc, char* argv[]) {
     allocatorTests.add(testObjectGraphSpanningPromotions);
     allocatorTests.add(testMultipleMajorGCCycles);
     allocatorTests.add(testStressTestBothGenerations);
+    allocatorTests.add(testSmallByteBufferSurvivesMajorGCWhenRooted);
+    allocatorTests.add(testSmallByteBufferReclaimedWhenUnreachable);
+    allocatorTests.add(testSmallElmArraySurvivesMajorGCWhenRooted);
+    allocatorTests.add(testSmallElmArrayReclaimedWhenUnreachable);
+    allocatorTests.add(testLargeByteBufferSurvivesMajorGCWhenRooted);
+    allocatorTests.add(testLargeByteBufferReclaimedWhenUnreachable);
+    allocatorTests.add(testLargeElmArraySurvivesMajorGCWhenRooted);
+    allocatorTests.add(testLargeElmArrayReclaimedWhenUnreachable);
 
     Testing::TestSuite elmTests("Elm");
     elmTests.add(testElmNilConstant);
@@ -620,6 +628,10 @@ int main(int argc, char* argv[]) {
     allocatorCommonTests.add(testGetObjectSizeDynRecordEdgeCases);
     allocatorCommonTests.add(testGetObjectSizeFieldGroup);
     allocatorCommonTests.add(testGetObjectSizeFieldGroupEdgeCases);
+    allocatorCommonTests.add(testGetObjectSizeByteBuffer);
+    allocatorCommonTests.add(testGetObjectSizeByteBufferEdgeCases);
+    allocatorCommonTests.add(testGetObjectSizeArray);
+    allocatorCommonTests.add(testGetObjectSizeArrayEdgeCases);
     // Closure tests
     allocatorCommonTests.add(testGetObjectSizeClosure);
     allocatorCommonTests.add(testGetObjectSizeClosureEdgeCases);

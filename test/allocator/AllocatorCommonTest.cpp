@@ -353,6 +353,123 @@ Testing::TestCase testGetObjectSizeFieldGroupEdgeCases("getObjectSize handles Fi
 });
 
 // ============================================================================
+// ByteBuffer Tests (variable-size, hdr->size = byte count)
+// ============================================================================
+
+Testing::TestCase testGetObjectSizeByteBuffer("getObjectSize returns correct size for ByteBuffer with varying byte counts", []() {
+    rc::check([](u32 num_bytes) {
+        // Limit to reasonable size to avoid buffer overflow in test
+        num_bytes = num_bytes % 500;
+
+        void* obj = getTestObject();
+        Header* hdr = getHeader(obj);
+        hdr->tag = Tag_ByteBuffer;
+        hdr->size = num_bytes;
+
+        size_t base_size = sizeof(ByteBuffer);  // Just the header (flexible array)
+        size_t expected = (base_size + num_bytes * sizeof(u8) + 7) & ~7;
+        RC_ASSERT(getObjectSize(obj) == expected);
+    });
+});
+
+Testing::TestCase testGetObjectSizeByteBufferEdgeCases("getObjectSize handles ByteBuffer edge cases", []() {
+    rc::check([]() {
+        void* obj = getTestObject();
+        Header* hdr = getHeader(obj);
+        hdr->tag = Tag_ByteBuffer;
+
+        // Zero bytes
+        hdr->size = 0;
+        RC_ASSERT(getObjectSize(obj) == ((sizeof(ByteBuffer) + 7) & ~7));
+        RC_ASSERT(getObjectSize(obj) == 8);  // Just aligned header
+
+        // One byte
+        hdr->size = 1;
+        RC_ASSERT(getObjectSize(obj) == ((sizeof(ByteBuffer) + 1 + 7) & ~7));
+        RC_ASSERT(getObjectSize(obj) == 16);  // 8 + 1 = 9, rounded to 16
+
+        // Eight bytes (exactly fills second word)
+        hdr->size = 8;
+        RC_ASSERT(getObjectSize(obj) == 16);  // 8 + 8 = 16
+
+        // Nine bytes (crosses boundary)
+        hdr->size = 9;
+        RC_ASSERT(getObjectSize(obj) == 24);  // 8 + 9 = 17, rounded to 24
+
+        // Large size: 256 KiB. Tests that arithmetic does not overflow and
+        // the result remains 8-byte aligned. getObjectSize only inspects the
+        // header, so no payload is required in the test buffer.
+        hdr->size = 256 * 1024;
+        size_t expected_large = (sizeof(ByteBuffer) + 256 * 1024 + 7) & ~7;
+        RC_ASSERT(getObjectSize(obj) == expected_large);
+        RC_ASSERT(getObjectSize(obj) % 8 == 0);
+    });
+});
+
+// ============================================================================
+// ElmArray Tests (variable-size, arr->length determines size; capacity ignored)
+// ============================================================================
+
+Testing::TestCase testGetObjectSizeArray("getObjectSize returns correct size for ElmArray with varying lengths", []() {
+    rc::check([](u32 length) {
+        // Limit to reasonable size
+        length = length % 50;
+
+        void* obj = getTestObject();
+        Header* hdr = getHeader(obj);
+        hdr->tag = Tag_Array;
+        // Capacity (header.size) is intentionally larger than length, to lock
+        // in the contract that getObjectSize uses arr->length, not capacity.
+        hdr->size = length + 7;
+
+        ElmArray* arr = static_cast<ElmArray*>(obj);
+        arr->length = length;
+
+        size_t base_size = sizeof(ElmArray);  // Header + length + padding
+        size_t expected = (base_size + length * sizeof(Unboxable) + 7) & ~7;
+        RC_ASSERT(getObjectSize(obj) == expected);
+    });
+});
+
+Testing::TestCase testGetObjectSizeArrayEdgeCases("getObjectSize handles ElmArray edge cases", []() {
+    rc::check([]() {
+        void* obj = getTestObject();
+        Header* hdr = getHeader(obj);
+        hdr->tag = Tag_Array;
+        ElmArray* arr = static_cast<ElmArray*>(obj);
+
+        // Zero-length array (capacity may still be > 0)
+        hdr->size = 4;  // capacity
+        arr->length = 0;
+        RC_ASSERT(getObjectSize(obj) == ((sizeof(ElmArray) + 7) & ~7));
+        RC_ASSERT(getObjectSize(obj) == 16);  // Header(8) + length+padding(8) = 16
+
+        // One element
+        arr->length = 1;
+        RC_ASSERT(getObjectSize(obj) == ((sizeof(ElmArray) + 1 * sizeof(Unboxable) + 7) & ~7));
+        RC_ASSERT(getObjectSize(obj) == 24);  // 16 + 8 = 24
+
+        // Three elements
+        arr->length = 3;
+        RC_ASSERT(getObjectSize(obj) == ((sizeof(ElmArray) + 3 * sizeof(Unboxable) + 7) & ~7));
+        RC_ASSERT(getObjectSize(obj) == 40);  // 16 + 24 = 40
+
+        // Length-vs-capacity contract: capacity is huge, length is small.
+        hdr->size = 1000;
+        arr->length = 2;
+        RC_ASSERT(getObjectSize(obj) == ((sizeof(ElmArray) + 2 * sizeof(Unboxable) + 7) & ~7));
+        RC_ASSERT(getObjectSize(obj) == 32);
+
+        // Large length (~256 KiB worth of Unboxable elements). Verifies the
+        // arithmetic does not overflow and the result remains aligned.
+        arr->length = 32 * 1024;  // 32K elements * 8 bytes = 256 KiB payload
+        size_t expected_large = (sizeof(ElmArray) + (size_t)(32 * 1024) * sizeof(Unboxable) + 7) & ~7;
+        RC_ASSERT(getObjectSize(obj) == expected_large);
+        RC_ASSERT(getObjectSize(obj) % 8 == 0);
+    });
+});
+
+// ============================================================================
 // Closure Tests (uses n_values field instead of hdr->size)
 // ============================================================================
 

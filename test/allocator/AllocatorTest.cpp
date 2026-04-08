@@ -5,6 +5,7 @@
 #include "Allocator.hpp"
 #include "Heap.hpp"
 #include "HeapGenerators.hpp"
+#include "HeapHelpers.hpp"
 #include "HeapSnapshot.hpp"
 #include "OldGenSpace.hpp"
 #include "TestHelpers.hpp"
@@ -408,4 +409,204 @@ Testing::TestCase testStressTestBothGenerations("High allocation rate with both 
         bool valid = snapshot.verify(roots.ptrs);
         RC_ASSERT(valid);
     });
+});
+
+// ============================================================================
+// ByteBuffer / ElmArray survival across major GC.
+//
+// These mirror testLongLivedObjectsSurviveMajorGC and
+// testMajorGCReclaimsOldGenGarbage but exercise the variable-size
+// ByteBuffer and ElmArray heap kinds at both small and large sizes.
+//
+// The "Large" variants intentionally exceed 256 KiB. There is currently no
+// dedicated large-object path in the allocator, so these tests are expected
+// to fail until one is implemented.
+// ============================================================================
+
+namespace {
+
+constexpr size_t SMALL_BYTEBUFFER_BYTES = 64;
+constexpr size_t SMALL_ARRAY_LENGTH = 16;
+constexpr size_t LARGE_BYTEBUFFER_BYTES = 320 * 1024;     // > 256 KiB
+constexpr size_t LARGE_ARRAY_LENGTH = 33 * 1024;          // 33K * 8B = 264 KiB > 256 KiB
+
+u8 patternByte(size_t i) { return static_cast<u8>(i % 251); }
+
+HPointer allocPatternedByteBuffer(size_t length) {
+    std::vector<u8> data(length);
+    for (size_t i = 0; i < length; i++) data[i] = patternByte(i);
+    return Elm::alloc::allocByteBuffer(data.data(), length);
+}
+
+bool verifyPatternedByteBuffer(HPointer& root, size_t expected_length) {
+    void* obj = readBarrier(root);
+    if (!obj) return false;
+    Header* hdr = getHeader(obj);
+    if (hdr->tag != Tag_ByteBuffer) return false;
+    if (hdr->size != expected_length) return false;
+    ByteBuffer* buf = static_cast<ByteBuffer*>(obj);
+    for (size_t i = 0; i < expected_length; i++) {
+        if (buf->bytes[i] != patternByte(i)) return false;
+    }
+    return true;
+}
+
+HPointer allocPatternedArray(size_t length) {
+    std::vector<i64> values(length);
+    for (size_t i = 0; i < length; i++) values[i] = static_cast<i64>(i * 3 + 1);
+    return Elm::alloc::arrayFromInts(values);
+}
+
+bool verifyPatternedArray(HPointer& root, size_t expected_length) {
+    void* obj = readBarrier(root);
+    if (!obj) return false;
+    Header* hdr = getHeader(obj);
+    if (hdr->tag != Tag_Array) return false;
+    ElmArray* arr = static_cast<ElmArray*>(obj);
+    if (arr->length != expected_length) return false;
+    for (size_t i = 0; i < expected_length; i++) {
+        if (arr->elements[i].i != static_cast<i64>(i * 3 + 1)) return false;
+    }
+    return true;
+}
+
+void runFullGCCycle(Allocator& alloc) {
+    for (u32 i = 0; i <= PROMOTION_AGE; i++) {
+        alloc.minorGC();
+    }
+    alloc.majorGC();
+}
+
+}  // namespace
+
+// ----- Small ByteBuffer ----------------------------------------------------
+
+Testing::TestCase testSmallByteBufferSurvivesMajorGCWhenRooted(
+    "Small ByteBuffer (rooted) survives major GC with bytes intact", []() {
+    auto& alloc = initAllocator();
+
+    HPointer buf = allocPatternedByteBuffer(SMALL_BYTEBUFFER_BYTES);
+    alloc.getRootSet().addRoot(&buf);
+
+    runFullGCCycle(alloc);
+
+    TEST_ASSERT(verifyPatternedByteBuffer(buf, SMALL_BYTEBUFFER_BYTES));
+    TEST_ASSERT(alloc.isInOldGen(readBarrier(buf)));
+
+    alloc.getRootSet().removeRoot(&buf);
+});
+
+Testing::TestCase testSmallByteBufferReclaimedWhenUnreachable(
+    "Small ByteBuffer (unrooted) is reclaimed by major GC; rooted control survives", []() {
+    auto& alloc = initAllocator();
+
+    HPointer control = allocPatternedByteBuffer(SMALL_BYTEBUFFER_BYTES);
+    alloc.getRootSet().addRoot(&control);
+
+    (void)allocPatternedByteBuffer(SMALL_BYTEBUFFER_BYTES);
+
+    runFullGCCycle(alloc);
+
+    TEST_ASSERT(verifyPatternedByteBuffer(control, SMALL_BYTEBUFFER_BYTES));
+
+    alloc.getRootSet().removeRoot(&control);
+});
+
+// ----- Small ElmArray ------------------------------------------------------
+
+Testing::TestCase testSmallElmArraySurvivesMajorGCWhenRooted(
+    "Small ElmArray (rooted) survives major GC with elements intact", []() {
+    auto& alloc = initAllocator();
+
+    HPointer arr = allocPatternedArray(SMALL_ARRAY_LENGTH);
+    alloc.getRootSet().addRoot(&arr);
+
+    runFullGCCycle(alloc);
+
+    TEST_ASSERT(verifyPatternedArray(arr, SMALL_ARRAY_LENGTH));
+    TEST_ASSERT(alloc.isInOldGen(readBarrier(arr)));
+
+    alloc.getRootSet().removeRoot(&arr);
+});
+
+Testing::TestCase testSmallElmArrayReclaimedWhenUnreachable(
+    "Small ElmArray (unrooted) is reclaimed by major GC; rooted control survives", []() {
+    auto& alloc = initAllocator();
+
+    HPointer control = allocPatternedArray(SMALL_ARRAY_LENGTH);
+    alloc.getRootSet().addRoot(&control);
+
+    (void)allocPatternedArray(SMALL_ARRAY_LENGTH);
+
+    runFullGCCycle(alloc);
+
+    TEST_ASSERT(verifyPatternedArray(control, SMALL_ARRAY_LENGTH));
+
+    alloc.getRootSet().removeRoot(&control);
+});
+
+// ----- Large ByteBuffer (>256 KiB) -----------------------------------------
+// Expected to fail until a large-object path exists.
+
+Testing::TestCase testLargeByteBufferSurvivesMajorGCWhenRooted(
+    "Large (>256KiB) ByteBuffer (rooted) survives major GC with bytes intact", []() {
+    auto& alloc = initAllocatorScaled(1000);
+
+    HPointer buf = allocPatternedByteBuffer(LARGE_BYTEBUFFER_BYTES);
+    alloc.getRootSet().addRoot(&buf);
+
+    runFullGCCycle(alloc);
+
+    TEST_ASSERT(verifyPatternedByteBuffer(buf, LARGE_BYTEBUFFER_BYTES));
+
+    alloc.getRootSet().removeRoot(&buf);
+});
+
+Testing::TestCase testLargeByteBufferReclaimedWhenUnreachable(
+    "Large (>256KiB) ByteBuffer (unrooted) is reclaimed; rooted control survives", []() {
+    auto& alloc = initAllocatorScaled(1000);
+
+    HPointer control = allocPatternedByteBuffer(LARGE_BYTEBUFFER_BYTES);
+    alloc.getRootSet().addRoot(&control);
+
+    (void)allocPatternedByteBuffer(LARGE_BYTEBUFFER_BYTES);
+
+    runFullGCCycle(alloc);
+
+    TEST_ASSERT(verifyPatternedByteBuffer(control, LARGE_BYTEBUFFER_BYTES));
+
+    alloc.getRootSet().removeRoot(&control);
+});
+
+// ----- Large ElmArray (>256 KiB) -------------------------------------------
+// Expected to fail until a large-object path exists.
+
+Testing::TestCase testLargeElmArraySurvivesMajorGCWhenRooted(
+    "Large (>256KiB) ElmArray (rooted) survives major GC with elements intact", []() {
+    auto& alloc = initAllocatorScaled(1000);
+
+    HPointer arr = allocPatternedArray(LARGE_ARRAY_LENGTH);
+    alloc.getRootSet().addRoot(&arr);
+
+    runFullGCCycle(alloc);
+
+    TEST_ASSERT(verifyPatternedArray(arr, LARGE_ARRAY_LENGTH));
+
+    alloc.getRootSet().removeRoot(&arr);
+});
+
+Testing::TestCase testLargeElmArrayReclaimedWhenUnreachable(
+    "Large (>256KiB) ElmArray (unrooted) is reclaimed; rooted control survives", []() {
+    auto& alloc = initAllocatorScaled(1000);
+
+    HPointer control = allocPatternedArray(LARGE_ARRAY_LENGTH);
+    alloc.getRootSet().addRoot(&control);
+
+    (void)allocPatternedArray(LARGE_ARRAY_LENGTH);
+
+    runFullGCCycle(alloc);
+
+    TEST_ASSERT(verifyPatternedArray(control, LARGE_ARRAY_LENGTH));
+
+    alloc.getRootSet().removeRoot(&control);
 });

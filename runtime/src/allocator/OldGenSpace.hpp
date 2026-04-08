@@ -307,6 +307,12 @@ private:
     // Helper for bump allocation (used when free list is empty).
     void* bumpAllocate(size_t size);
 
+    // Allocates a single object that exceeds alloc_buffer_size by acquiring
+    // a dedicated old-gen block sized exactly to fit it. The caller is
+    // expected to mark the resulting object's header with pin = 1 so it is
+    // excluded from compaction.
+    void* allocateLargeBlock(size_t size);
+
     friend class Allocator;
     friend class NurserySpace;
     friend class ThreadLocalHeap;

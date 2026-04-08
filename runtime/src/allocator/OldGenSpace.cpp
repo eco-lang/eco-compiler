@@ -200,8 +200,81 @@ void *OldGenSpace::allocate(size_t size) {
         }
     }
 
+    // Large objects (bigger than a normal alloc buffer) get a dedicated
+    // block sized exactly for them. They never become the bump-allocation
+    // target and are pinned by the caller (ThreadLocalHeap::allocateLargePinned)
+    // so the compactor will leave them in place.
+    if (size > config_->alloc_buffer_size) {
+        return allocateLargeBlock(size);
+    }
+
     // Fall back to bump allocation.
     return bumpAllocate(size);
+}
+
+/**
+ * Allocates a single object that exceeds the normal alloc-buffer size by
+ * acquiring a dedicated old-gen block sized to fit it. The object fully
+ * consumes the block; current_block_index_ is intentionally NOT updated so
+ * subsequent small allocations continue to use the regular bump block.
+ */
+void* OldGenSpace::allocateLargeBlock(size_t size) {
+    assert(allocator_ && "OldGenSpace not initialized with Allocator");
+    assert(size > config_->alloc_buffer_size && "allocateLargeBlock used for small size");
+
+    // mmap requires page-aligned offsets, and acquireOldGenBlock advances a
+    // bump cursor by the requested size. If we hand it a size that is not a
+    // multiple of the page size, the next allocation lands on a non-page-
+    // aligned address and mmap fails with EINVAL. Round up here so the
+    // bump cursor stays page-aligned.
+    constexpr size_t PAGE_SIZE = 4096;
+    size_t block_size = (size + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
+
+    char* block_base = allocator_->acquireOldGenBlock(block_size);
+    if (block_base == nullptr) {
+        return nullptr;
+    }
+
+    // Construct a single-object block. alloc_ptr is set to the end of the
+    // logical object (not the page-rounded end) so usedBytes() reflects the
+    // object's true size. Any tail padding within the page is wasted, which
+    // is acceptable for what is by definition a large object.
+    BlockInfo new_block;
+    new_block.start = block_base;
+    new_block.end = block_base + block_size;
+    new_block.alloc_ptr = block_base + size;
+
+    blocks_.push_back(new_block);
+    size_t new_index = blocks_.size() - 1;
+
+    // Track this block in buffer_meta_ with the entire object counted as
+    // live; sweep will adjust live/garbage as usual.
+    buffer_meta_.push_back({new_index, size, 0, false});
+
+    // Maintain the cached contains() bounds. Old-gen blocks are carved from
+    // a single contiguous reservation per thread, so it is sufficient to
+    // expand the bounds to enclose the new block.
+    if (region_base_ == nullptr || block_base < region_base_) {
+        region_base_ = block_base;
+    }
+    if (block_base + block_size > region_end_) {
+        region_end_ = block_base + block_size;
+    }
+
+    allocated_bytes += size;
+
+    // Initialize header. Color follows the same rule as bumpAllocate so
+    // objects allocated mid-cycle are not swept.
+    Header* hdr = reinterpret_cast<Header*>(block_base);
+    std::memset(hdr, 0, sizeof(Header));
+    if (marking_active || gc_phase_ == GCPhase::Sweeping) {
+        hdr->color = static_cast<u32>(Color::Black);
+        hdr->epoch = current_epoch & 3;
+    } else {
+        hdr->color = static_cast<u32>(Color::White);
+    }
+
+    return static_cast<void*>(block_base);
 }
 
 /**
@@ -765,6 +838,20 @@ std::vector<size_t> OldGenSpace::selectEvacuationSet(size_t max_live_to_move) {
             continue;
         }
 
+        // Skip blocks whose first object is pinned. Large-object blocks
+        // (allocated via allocateLargeBlock) contain exactly one pinned
+        // object that must not be moved by compaction. A more general
+        // "block contains any pinned object" check would require sweep-time
+        // tracking; for now this catches the only producer of pinned
+        // objects (allocateLargeBlock).
+        if (blocks_[i].usedBytes() >= sizeof(Header)) {
+            const Header* first_hdr =
+                reinterpret_cast<const Header*>(blocks_[i].start);
+            if (first_hdr->pin) {
+                continue;
+            }
+        }
+
         // Compute liveness for this block.
         size_t total = blocks_[i].usedBytes();
         float liveness = total > 0 ? static_cast<float>(meta.live_bytes) / total : 0.0f;
@@ -849,6 +936,16 @@ size_t OldGenSpace::evacuateSlice(size_t work_budget) {
         while (evac_cursor_ < end && work_done < work_budget) {
             Header* hdr = reinterpret_cast<Header*>(evac_cursor_);
             size_t obj_size = getObjectSize(evac_cursor_);
+
+            // Pinned objects must not be moved. Install a self-forwarding
+            // pointer so the fixup phase resolves references through
+            // getForwardingAddress without any other code changes, then
+            // skip the copy.
+            if (hdr->tag != Tag_Forward && hdr->pin) {
+                installForwardingPointer(evac_cursor_, evac_cursor_);
+                evac_cursor_ += obj_size;
+                continue;
+            }
 
             // Only move live objects (tag != Forward).
             if (hdr->tag != Tag_Forward) {

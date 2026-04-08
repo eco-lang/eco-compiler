@@ -26,6 +26,10 @@ extern Testing::TestCase testGetObjectSizeDynRecord;
 extern Testing::TestCase testGetObjectSizeDynRecordEdgeCases;
 extern Testing::TestCase testGetObjectSizeFieldGroup;
 extern Testing::TestCase testGetObjectSizeFieldGroupEdgeCases;
+extern Testing::TestCase testGetObjectSizeByteBuffer;
+extern Testing::TestCase testGetObjectSizeByteBufferEdgeCases;
+extern Testing::TestCase testGetObjectSizeArray;
+extern Testing::TestCase testGetObjectSizeArrayEdgeCases;
 
 // Closure tests (uses n_values field)
 extern Testing::TestCase testGetObjectSizeClosure;

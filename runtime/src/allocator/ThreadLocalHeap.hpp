@@ -61,6 +61,17 @@ public:
      */
     void* allocatePermanent(size_t size, Tag tag);
 
+private:
+    /**
+     * Allocates an object directly in old gen, bypassing the nursery, and
+     * marks its header pinned (Header.pin = 1) so the old-gen compactor
+     * leaves it in place. Used for objects whose aligned size meets or
+     * exceeds config_->large_object_threshold.
+     */
+    void* allocateLargePinned(size_t size, Tag tag);
+
+public:
+
     // ========== Garbage Collection ==========
 
     /** Triggers a minor GC on the nursery. */

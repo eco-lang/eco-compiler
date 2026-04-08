@@ -13,6 +13,42 @@
 
 namespace Elm {
 
+// Initializes a freshly-allocated object header for the given tag.
+// `size` is the total aligned byte size returned by the allocator. For
+// variable-size types, hdr->size is overwritten with the per-type element
+// count; for fixed-size types it stores the byte size.
+//
+// The header is zeroed first; callers may set additional fields (e.g. pin,
+// color) after this returns.
+static void initHeaderForTag(Header* hdr, Tag tag, size_t size) {
+    std::memset(hdr, 0, sizeof(Header));
+    hdr->tag = tag;
+
+    switch (tag) {
+        case Tag_String:
+            hdr->size = (size - sizeof(ElmString)) / sizeof(u16);
+            break;
+        case Tag_Custom:
+            hdr->size = (size - sizeof(Custom)) / sizeof(Unboxable);
+            break;
+        case Tag_Record:
+            hdr->size = (size - sizeof(Record)) / sizeof(Unboxable);
+            break;
+        case Tag_DynRecord:
+            hdr->size = (size - sizeof(DynRecord)) / sizeof(HPointer);
+            break;
+        case Tag_FieldGroup:
+            hdr->size = (size - sizeof(FieldGroup)) / sizeof(u32);
+            break;
+        case Tag_Closure:
+            hdr->size = (size - sizeof(Closure)) / sizeof(Unboxable);
+            break;
+        default:
+            hdr->size = static_cast<u32>(size);
+            break;
+    }
+}
+
 ThreadLocalHeap::ThreadLocalHeap(Allocator* parent,
                                  char* nursery_base, size_t nursery_size,
                                  char* old_gen_base, size_t old_gen_initial_size,
@@ -36,6 +72,16 @@ ThreadLocalHeap::ThreadLocalHeap(Allocator* parent,
 }
 
 void* ThreadLocalHeap::allocate(size_t size, Tag tag) {
+    // Align to 8 bytes up front so the threshold comparison is meaningful
+    // (matches the alignment performed inside nursery/oldgen allocators).
+    size = (size + 7) & ~static_cast<size_t>(7);
+
+    // Large-object path: bypass the nursery and allocate directly in old
+    // gen, marking the object pinned so the compactor will not move it.
+    if (size >= config_->large_object_threshold) {
+        return allocateLargePinned(size, tag);
+    }
+
     // Check if allocation would exceed threshold - trigger GC proactively.
     if (nursery_.wouldExceedThreshold(size, config_->nursery_gc_threshold)) {
         minorGC();
@@ -43,35 +89,7 @@ void* ThreadLocalHeap::allocate(size_t size, Tag tag) {
 
     void* obj = nursery_.allocate(size);
     if (obj) {
-        Header* hdr = getHeader(obj);
-        std::memset(hdr, 0, sizeof(Header));
-        hdr->tag = tag;
-
-        // For variable-sized types, hdr->size stores element count.
-        // For fixed-size types, hdr->size stores total byte size.
-        switch (tag) {
-            case Tag_String:
-                hdr->size = (size - sizeof(ElmString)) / sizeof(u16);
-                break;
-            case Tag_Custom:
-                hdr->size = (size - sizeof(Custom)) / sizeof(Unboxable);
-                break;
-            case Tag_Record:
-                hdr->size = (size - sizeof(Record)) / sizeof(Unboxable);
-                break;
-            case Tag_DynRecord:
-                hdr->size = (size - sizeof(DynRecord)) / sizeof(HPointer);
-                break;
-            case Tag_FieldGroup:
-                hdr->size = (size - sizeof(FieldGroup)) / sizeof(u32);
-                break;
-            case Tag_Closure:
-                hdr->size = (size - sizeof(Closure)) / sizeof(Unboxable);
-                break;
-            default:
-                hdr->size = size;
-                break;
-        }
+        initHeaderForTag(getHeader(obj), tag, size);
         return obj;
     }
 
@@ -82,38 +100,44 @@ void* ThreadLocalHeap::allocate(size_t size, Tag tag) {
     return nullptr;
 }
 
+void* ThreadLocalHeap::allocateLargePinned(size_t size, Tag tag) {
+    // size is already 8-byte aligned by the caller.
+    void* obj = old_gen_.allocate(size);
+    if (!obj) {
+        // Try once after a major GC to reclaim space.
+        majorGC();
+        obj = old_gen_.allocate(size);
+    }
+    if (!obj) {
+        assert(false && "Failed to allocate large pinned object in old gen.");
+        return nullptr;
+    }
+
+    Header* hdr = getHeader(obj);
+    // OldGenSpace::allocate already memset/colored the header. Re-init for
+    // tag (this preserves the zero color and overwrites tag/size fields),
+    // then set pin LAST so it survives any prior writes. Color was set by
+    // OldGenSpace::allocate based on GC phase; preserve it.
+    u32 saved_color = hdr->color;
+    u32 saved_epoch = hdr->epoch;
+    initHeaderForTag(hdr, tag, size);
+    hdr->color = saved_color;
+    hdr->epoch = saved_epoch;
+    hdr->pin = 1;
+    return obj;
+}
+
 void* ThreadLocalHeap::allocatePermanent(size_t size, Tag tag) {
     // Allocate directly in old generation - for permanent objects like string literals.
+    size = (size + 7) & ~static_cast<size_t>(7);
     void* obj = old_gen_.allocate(size);
     if (obj) {
         Header* hdr = getHeader(obj);
-        std::memset(hdr, 0, sizeof(Header));
-        hdr->tag = tag;
-
-        // For variable-sized types, hdr->size stores element count.
-        switch (tag) {
-            case Tag_String:
-                hdr->size = (size - sizeof(ElmString)) / sizeof(u16);
-                break;
-            case Tag_Custom:
-                hdr->size = (size - sizeof(Custom)) / sizeof(Unboxable);
-                break;
-            case Tag_Record:
-                hdr->size = (size - sizeof(Record)) / sizeof(Unboxable);
-                break;
-            case Tag_DynRecord:
-                hdr->size = (size - sizeof(DynRecord)) / sizeof(HPointer);
-                break;
-            case Tag_FieldGroup:
-                hdr->size = (size - sizeof(FieldGroup)) / sizeof(u32);
-                break;
-            case Tag_Closure:
-                hdr->size = (size - sizeof(Closure)) / sizeof(Unboxable);
-                break;
-            default:
-                hdr->size = size;
-                break;
-        }
+        u32 saved_color = hdr->color;
+        u32 saved_epoch = hdr->epoch;
+        initHeaderForTag(hdr, tag, size);
+        hdr->color = saved_color;
+        hdr->epoch = saved_epoch;
         return obj;
     }
 

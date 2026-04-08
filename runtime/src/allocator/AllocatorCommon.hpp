@@ -156,6 +156,14 @@ struct HeapConfig {
     // All other types use standard Cheney's BFS evacuation.
     bool use_hybrid_dfs = true;
 
+    // Large-object threshold (bytes). Allocations of this size or larger
+    // bypass the nursery and are placed directly in old gen as pinned
+    // objects (Header.pin = 1) so the compactor leaves them in place.
+    // Default: max(8 KiB, alloc_buffer_size / 4). With the default
+    // alloc_buffer_size of 128 KiB this resolves to 32 KiB.
+    size_t large_object_threshold =
+        (ALLOC_BUFFER_SIZE / 4 > 8 * 1024) ? (ALLOC_BUFFER_SIZE / 4) : (8 * 1024);
+
     // Derived value: total nursery size in bytes.
     size_t nurserySize() const { return nursery_block_count * alloc_buffer_size; }
 
@@ -225,6 +233,18 @@ struct HeapConfig {
         if (alloc_buffer_size > old_gen_space) {
             throw std::invalid_argument(
                 "alloc_buffer_size must be <= max_heap_size / 2 "
+                "(can't exceed old gen space)");
+        }
+
+        // ========== 4b. Large-Object Threshold Constraints ==========
+
+        if (large_object_threshold < sizeof(Header)) {
+            throw std::invalid_argument(
+                "large_object_threshold must be >= sizeof(Header)");
+        }
+        if (large_object_threshold > old_gen_space) {
+            throw std::invalid_argument(
+                "large_object_threshold must be <= max_heap_size / 2 "
                 "(can't exceed old gen space)");
         }
 
