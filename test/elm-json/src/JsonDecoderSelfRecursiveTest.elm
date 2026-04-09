@@ -11,7 +11,7 @@ module JsonDecoderSelfRecursiveTest exposing (main)
     Expected: prints the decoded tree without crashing.
 -}
 
--- CHECK: decoded:
+-- CHECK: decoded: Ok (Node [Node []])
 
 import Html exposing (text)
 import Json.Decode as D

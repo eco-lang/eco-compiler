@@ -11,7 +11,7 @@ module JsonDecoderSelfRecursiveNoLazyTest exposing (main)
     Expected: prints the decoded tree without crashing.
 -}
 
--- CHECK: decoded:
+-- CHECK: decoded: Ok (TNode [TLeaf])
 
 import Html exposing (text)
 import Json.Decode as D
