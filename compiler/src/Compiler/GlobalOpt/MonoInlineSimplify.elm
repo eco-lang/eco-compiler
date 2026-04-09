@@ -2037,15 +2037,14 @@ isPureExpr expr =
             List.all (\( c, t ) -> isPureExpr c && isPureExpr t) branches
                 && isPureExpr final
 
-        MonoLet _ body _ ->
-            -- Conservatively, check the body
-            isPureExpr body
+        MonoLet def body _ ->
+            isPureExprDef def && isPureExpr body
 
         MonoDestruct _ inner _ ->
             isPureExpr inner
 
-        MonoCase _ _ _ branches _ ->
-            List.all (\( _, e ) -> isPureExpr e) branches
+        MonoCase _ _ decider branches _ ->
+            isPureDecider decider && List.all (\( _, e ) -> isPureExpr e) branches
 
         MonoRecordCreate fields _ ->
             List.all (\( _, e ) -> isPureExpr e) fields
@@ -2058,6 +2057,34 @@ isPureExpr expr =
 
         MonoTupleCreate _ items _ ->
             List.all isPureExpr items
+
+
+isPureExprDef : Mono.MonoDef -> Bool
+isPureExprDef def =
+    case def of
+        Mono.MonoDef _ bound ->
+            isPureExpr bound
+
+        Mono.MonoTailDef _ _ bound ->
+            isPureExpr bound
+
+
+isPureDecider : Mono.Decider Mono.MonoChoice -> Bool
+isPureDecider decider =
+    case decider of
+        Mono.Leaf choice ->
+            case choice of
+                Mono.Inline expr ->
+                    isPureExpr expr
+
+                Mono.Jump _ ->
+                    True
+
+        Mono.Chain _ success failure ->
+            isPureDecider success && isPureDecider failure
+
+        Mono.FanOut _ tests fallback ->
+            List.all (\( _, d ) -> isPureDecider d) tests && isPureDecider fallback
 
 
 countUsages : Name -> MonoExpr -> Int
