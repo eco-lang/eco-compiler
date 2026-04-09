@@ -207,10 +207,6 @@ checkNodeCallability specId node =
             -- Ports are callable
             []
 
-        Mono.MonoCycle _ _ ->
-            -- Cycle nodes are internal
-            []
-
 
 {-| Check if an expression is callable (can produce a function value).
 
@@ -513,15 +509,6 @@ checkNodeLocalVarScoping specId node =
         Mono.MonoPortOutgoing expr _ ->
             checkExprLocalVarScoping context Set.empty expr
 
-        Mono.MonoCycle defs _ ->
-            let
-                -- All cycle names are in scope for each definition
-                cycleNames =
-                    List.map (\( name, _ ) -> name) defs
-                        |> Set.fromList identity
-            in
-            List.concatMap (\( _, e ) -> checkExprLocalVarScoping context cycleNames e) defs
-
         _ ->
             []
 
@@ -791,12 +778,6 @@ collectSpecIdRefsFromNode node =
 
         Mono.MonoPortOutgoing expr _ ->
             collectSpecIdRefsFromExpr expr
-
-        Mono.MonoCycle defs _ ->
-            List.foldl
-                (\( _, expr ) acc -> Set.union acc (collectSpecIdRefsFromExpr expr))
-                Set.empty
-                defs
 
 
 {-| Collect SpecId references from a MonoExpr.

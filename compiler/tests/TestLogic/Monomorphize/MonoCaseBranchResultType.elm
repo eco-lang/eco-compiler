@@ -90,9 +90,6 @@ checkNode specId node =
         Mono.MonoPortOutgoing expr _ ->
             checkExpr ctx expr
 
-        Mono.MonoCycle defs _ ->
-            List.concatMap (\( name, expr ) -> checkExpr (ctx ++ " cycle=" ++ name) expr) defs
-
         Mono.MonoCtor _ _ ->
             []
 

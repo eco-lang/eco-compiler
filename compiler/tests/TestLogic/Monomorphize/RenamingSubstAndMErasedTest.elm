@@ -457,9 +457,6 @@ nodeType node =
         Mono.MonoPortOutgoing _ t ->
             t
 
-        Mono.MonoCycle _ t ->
-            t
-
 
 monoTypeToString : Mono.MonoType -> String
 monoTypeToString monoType =

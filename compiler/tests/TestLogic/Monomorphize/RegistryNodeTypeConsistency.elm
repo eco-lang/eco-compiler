@@ -126,9 +126,6 @@ nodeType node =
         Mono.MonoPortOutgoing _ t ->
             t
 
-        Mono.MonoCycle _ t ->
-            t
-
 
 {-| Format violations as a readable string.
 -}

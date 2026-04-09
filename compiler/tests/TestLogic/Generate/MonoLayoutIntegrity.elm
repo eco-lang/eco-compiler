@@ -175,10 +175,6 @@ checkNodeLayoutCompleteness specId node =
             checkTypeLayoutComplete context monoType
                 ++ collectExprLayoutIssues context expr
 
-        Mono.MonoCycle defs monoType ->
-            checkTypeLayoutComplete context monoType
-                ++ List.concatMap (\( _, e ) -> collectExprLayoutIssues context e) defs
-
 
 {-| Check if a type has complete layout information.
 -}
@@ -332,9 +328,6 @@ checkNodeRecordAccess specId node =
 
         Mono.MonoPortOutgoing expr _ ->
             collectExprRecordAccessIssues context expr
-
-        Mono.MonoCycle defs _ ->
-            List.concatMap (\( _, e ) -> collectExprRecordAccessIssues context e) defs
 
         _ ->
             []

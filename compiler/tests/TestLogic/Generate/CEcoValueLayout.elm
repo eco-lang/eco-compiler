@@ -111,10 +111,6 @@ checkNodeCEcoValueLayout specId node =
             checkCEcoValueInLayoutPosition context monoType
                 ++ collectExprCEcoValueIssues context expr
 
-        Mono.MonoCycle defs monoType ->
-            checkCEcoValueInLayoutPosition context monoType
-                ++ List.concatMap (\( _, e ) -> collectExprCEcoValueIssues context e) defs
-
 
 {-| Check if CEcoValue appears in a layout-affecting position.
 

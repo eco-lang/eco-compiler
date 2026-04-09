@@ -580,9 +580,6 @@ collectCallsFromNode node =
         Mono.MonoPortOutgoing expr _ ->
             collectCalls expr
 
-        Mono.MonoCycle defs _ ->
-            List.concatMap (\( _, expr ) -> collectCalls expr) defs
-
         Mono.MonoCtor _ _ ->
             []
 
@@ -629,9 +626,6 @@ nodeHasEffects node =
 
         Mono.MonoPortOutgoing expr _ ->
             Traverse.foldExpr checkExpr False expr
-
-        Mono.MonoCycle defs _ ->
-            List.any (\( _, expr ) -> Traverse.foldExpr checkExpr False expr) defs
 
         _ ->
             False

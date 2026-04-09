@@ -501,7 +501,6 @@ type MonoNode
     | MonoManagerLeaf String MonoType -- Effect manager leaf: home module name, type
     | MonoPortIncoming MonoExpr MonoType
     | MonoPortOutgoing MonoExpr MonoType
-    | MonoCycle (List ( Name, MonoExpr )) MonoType
 
 
 
@@ -537,9 +536,6 @@ nodeType node =
             t
 
         MonoPortOutgoing _ t ->
-            t
-
-        MonoCycle _ t ->
             t
 
 

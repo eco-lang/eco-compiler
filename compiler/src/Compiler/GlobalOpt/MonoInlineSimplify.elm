@@ -325,27 +325,9 @@ buildCallGraph nodes edges =
                 Dict.empty
                 sccsInt
 
-        -- Mark all MonoCycle nodes as recursive.
-        -- MonoCycle contains mutually recursive definitions that reference each other
-        -- via MonoVarLocal, which aren't tracked by the SCC analysis above (it only
-        -- tracks MonoVarGlobal references). By marking them all as recursive, we prevent
-        -- incorrect inlining of cycle-internal functions.
-        isRecursive =
-            Array.foldl
-                (\maybeNode ( specId, acc ) ->
-                    case maybeNode of
-                        Just (MonoCycle _ _) ->
-                            ( specId + 1, Dict.insert specId True acc )
-
-                        _ ->
-                            ( specId + 1, acc )
-                )
-                ( 0, isRecursiveFromSCC )
-                nodes
-                |> Tuple.second
     in
     { edges = edges
-    , isRecursive = isRecursive
+    , isRecursive = isRecursiveFromSCC
     }
 
 
@@ -636,13 +618,6 @@ optimizeNode ctx _ node =
                     fixpoint ctxForNode expr
             in
             ( MonoTailFunc params optimized tipe, newCtx )
-
-        MonoCycle defs tipe ->
-            let
-                ( optimizedDefs, newCtx ) =
-                    optimizeCycleDefs ctxForNode defs
-            in
-            ( MonoCycle optimizedDefs tipe, newCtx )
 
         MonoPortIncoming expr tipe ->
             let
@@ -2514,9 +2489,6 @@ countClosuresInNode node =
 
         MonoTailFunc _ expr _ ->
             countClosures expr
-
-        MonoCycle defs _ ->
-            sumBy (\( _, e ) -> countClosures e) defs
 
         MonoPortIncoming expr _ ->
             countClosures expr

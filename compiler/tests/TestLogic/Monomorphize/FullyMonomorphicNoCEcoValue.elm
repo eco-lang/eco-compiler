@@ -135,10 +135,6 @@ checkNodeAllTypes specId keyType node =
             checkType ctx "node type" monoType
                 ++ checkExprAllTypes ctx expr
 
-        Mono.MonoCycle defs monoType ->
-            checkType ctx "node type" monoType
-                ++ List.concatMap (\( name, expr ) -> checkExprAllTypes (ctx ++ " cycle=" ++ name) expr) defs
-
         -- Kernel nodes: CEcoValue is allowed
         Mono.MonoExtern _ ->
             []

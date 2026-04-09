@@ -103,9 +103,6 @@ checkNodeArity specId node =
         Mono.MonoPortOutgoing expr _ ->
             collectExprArityIssues context expr
 
-        Mono.MonoCycle defs _ ->
-            List.concatMap (\( _, e ) -> collectExprArityIssues context e) defs
-
         _ ->
             []
 

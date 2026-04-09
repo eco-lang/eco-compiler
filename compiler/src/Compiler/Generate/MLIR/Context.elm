@@ -774,12 +774,6 @@ extractNodeSignature node =
                         , evaluatorBoxesAll = False
                         }
 
-        Mono.MonoCycle _ monoType ->
-            Just
-                { paramTypes = []
-                , returnType = monoType
-                , evaluatorBoxesAll = False
-                }
 
 
 {-| Build a map of SpecId -> FuncSignature from all nodes in the graph.

@@ -92,12 +92,6 @@ buildStagingGraph (Mono.MonoGraph mono) _ =
                     in
                     buildStagingGraphExpr body sg1 ctx1
 
-                Mono.MonoCycle bindings _ ->
-                    List.foldl
-                        (\( _, expr ) ( accSg, accCtx ) -> buildStagingGraphExpr expr accSg accCtx)
-                        ( sg, ctx )
-                        bindings
-
                 _ ->
                     ( sg, ctx )
 

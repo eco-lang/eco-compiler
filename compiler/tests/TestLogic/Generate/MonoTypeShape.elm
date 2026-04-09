@@ -102,10 +102,6 @@ collectNodeTypeIssues specId node =
             checkMonoType context monoType
                 ++ collectExprTypeIssues context expr
 
-        Mono.MonoCycle defs monoType ->
-            checkMonoType context monoType
-                ++ List.concatMap (\( _, expr ) -> collectExprTypeIssues context expr) defs
-
 
 {-| Collect type issues from a MonoExpr.
 -}

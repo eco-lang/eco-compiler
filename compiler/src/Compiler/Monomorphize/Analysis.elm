@@ -361,11 +361,6 @@ collectAllCustomTypes nodes =
                         Mono.MonoPortOutgoing expr monoType ->
                             collectCustomTypesFromExpr expr
                                 (collectCustomTypesFromMonoType monoType acc)
-
-                        Mono.MonoCycle defs monoType ->
-                            List.foldl (\( _, e ) a -> collectCustomTypesFromExpr e a)
-                                (collectCustomTypesFromMonoType monoType acc)
-                                defs
         )
         EverySet.empty
         nodes

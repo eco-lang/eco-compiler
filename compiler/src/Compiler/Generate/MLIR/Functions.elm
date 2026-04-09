@@ -162,13 +162,6 @@ generateNodeInner ctx funcName specId node =
         Mono.MonoPortOutgoing expr monoType ->
             generateDefine ctx funcName expr monoType
 
-        Mono.MonoCycle definitions monoType ->
-            let
-                ( op, ctx1 ) =
-                    generateCycle ctx funcName definitions monoType
-            in
-            ( [ op ], ctx1 )
-
 
 specIdToFuncName : Mono.SpecializationRegistry -> Mono.SpecId -> String
 specIdToFuncName registry specId =
@@ -1058,57 +1051,3 @@ generateStubValueFromMlirType ctx resultVar mlirType =
 
 
 
--- ====== GENERATE CYCLE ======
-
-
-generateCycle : Ctx.Context -> String -> List ( Name.Name, Mono.MonoExpr ) -> Mono.MonoType -> ( MlirOp, Ctx.Context )
-generateCycle ctx funcName definitions monoType =
-    -- Generate mutually recursive definitions
-    -- For now, generate a thunk that creates a record of all the cycle definitions
-    let
-        -- Generate expressions and collect results with their ACTUAL SSA types
-        ( defOps, defVarsWithTypes, finalCtx ) =
-            List.foldl
-                (\( _, expr ) ( accOps, accVars, accCtx ) ->
-                    let
-                        result : Expr.ExprResult
-                        result =
-                            Expr.generateExpr accCtx expr
-                    in
-                    ( List.reverse result.ops ++ accOps
-                    , ( result.resultVar, result.resultType ) :: accVars
-                    , result.ctx
-                    )
-                )
-                ( [], [], ctx )
-                definitions
-
-        -- Box any primitive values before storing in the cycle using actual SSA types
-        ( boxOps, boxedVars, ctxAfterBox ) =
-            Expr.boxArgsWithMlirTypes finalCtx (List.reverse defVarsWithTypes)
-
-        ( resultVar, ctx1 ) =
-            Ctx.freshVar ctxAfterBox
-
-        arity : Int
-        arity =
-            List.length definitions
-
-        defVarPairs : List ( String, MlirType )
-        defVarPairs =
-            List.map (\v -> ( v, Types.ecoValue )) boxedVars
-
-        ( ctx2, cycleOp ) =
-            Ops.ecoConstructRecord ctx1 resultVar defVarPairs arity 0
-
-        ( ctx3, returnOp ) =
-            Ops.ecoReturn ctx2 resultVar Types.ecoValue
-
-        region : MlirRegion
-        region =
-            Ops.mkRegion [] (List.reverse defOps ++ boxOps ++ [ cycleOp ]) returnOp
-
-        ( ctx4, funcOp ) =
-            Ops.funcFunc ctx3 funcName [] (Types.monoTypeToAbi monoType) region
-    in
-    ( funcOp, ctx4 )

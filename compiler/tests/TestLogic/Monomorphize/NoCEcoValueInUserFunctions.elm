@@ -63,8 +63,6 @@ Walks every MonoNode and every sub-expression, checking:
   - MonoClosure: closure params, captures, and body expression types
   - MonoTailDef (local tail-recursive defs): parameter types and body types
   - MonoPortIncoming/MonoPortOutgoing: body expression types
-  - MonoCycle: all definition body types
-
 Kernel nodes (MonoExtern, MonoManagerLeaf) are explicitly exempted.
 
 -}
@@ -107,9 +105,6 @@ checkNode specId node =
 
         Mono.MonoPortOutgoing expr _ ->
             checkExpr ctx expr
-
-        Mono.MonoCycle defs _ ->
-            List.concatMap (\( name, expr ) -> checkExpr (ctx ++ " cycle=" ++ name) expr) defs
 
         -- Kernel nodes: CEcoValue is allowed (MONO_021 exemption)
         Mono.MonoExtern _ ->

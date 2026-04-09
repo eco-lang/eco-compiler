@@ -144,23 +144,6 @@ rewriteNode solution producerInfo nodeId node ctx0 =
             in
             ( Mono.MonoDefine newExpr newType, ctx1 )
 
-        Mono.MonoCycle bindings monoType ->
-            let
-                ( newBindings, ctx1 ) =
-                    List.foldl
-                        (\( name, expr ) ( accBindings, accCtx ) ->
-                            let
-                                ( newExpr, ctxN ) =
-                                    rewriteExpr solution producerInfo expr accCtx
-                            in
-                            ( ( name, newExpr ) :: accBindings, ctxN )
-                        )
-                        ( [], ctx0 )
-                        bindings
-                        |> Tuple.mapFirst List.reverse
-            in
-            ( Mono.MonoCycle newBindings monoType, ctx1 )
-
         _ ->
             ( node, ctx0 )
 

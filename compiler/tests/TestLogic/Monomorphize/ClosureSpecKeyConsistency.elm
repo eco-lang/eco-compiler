@@ -120,9 +120,6 @@ checkNodeAgainstKey specId global keyMonoType node =
         Mono.MonoPortOutgoing _ _ ->
             []
 
-        Mono.MonoCycle _ _ ->
-            []
-
 
 {-| Compare closure parameter types against the flattened specialization key.
 -}

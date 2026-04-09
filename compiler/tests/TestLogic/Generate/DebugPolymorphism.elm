@@ -94,9 +94,6 @@ checkNodeDebugPolymorphism specId node =
         Mono.MonoPortOutgoing expr _ ->
             collectExprDebugIssues context expr
 
-        Mono.MonoCycle defs _ ->
-            List.concatMap (\( _, e ) -> collectExprDebugIssues context e) defs
-
         _ ->
             []
 

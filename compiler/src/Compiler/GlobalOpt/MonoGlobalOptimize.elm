@@ -1061,9 +1061,6 @@ wrapNodeCallables home node ctx =
         Mono.MonoTailFunc params body tipe ->
             ( Mono.MonoTailFunc params body tipe, ctx )
 
-        Mono.MonoCycle defs tipe ->
-            ( Mono.MonoCycle defs tipe, ctx )
-
         Mono.MonoCtor shape tipe ->
             ( Mono.MonoCtor shape tipe, ctx )
 
@@ -1137,15 +1134,6 @@ annotateNodeCalls graph nodeId env node =
 
         Mono.MonoPortOutgoing expr tipe ->
             Mono.MonoPortOutgoing (annotateExprCalls graph env expr) tipe
-
-        Mono.MonoCycle defs tipe ->
-            let
-                newDefs =
-                    List.map
-                        (\( name, e ) -> ( name, annotateExprCalls graph env e ))
-                        defs
-            in
-            Mono.MonoCycle newDefs tipe
 
         -- Constructors, enums, externs contain no expressions
         _ ->
@@ -1530,9 +1518,6 @@ sourceArityForExpr graph env expr =
 
                         _ ->
                             Just 0
-
-                Just (Mono.MonoCycle _ _) ->
-                    Just 0
 
                 Nothing ->
                     -- Node not found - shouldn't happen

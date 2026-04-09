@@ -98,9 +98,6 @@ checkNode specId registry node =
         Mono.MonoPortOutgoing expr _ ->
             collectCallIssues ctx registry expr
 
-        Mono.MonoCycle defs _ ->
-            List.concatMap (\( _, e ) -> collectCallIssues ctx registry e) defs
-
         _ ->
             []
 

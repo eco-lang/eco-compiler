@@ -79,9 +79,6 @@ checkNode specId node =
         Mono.MonoPortOutgoing expr _ ->
             collectExprIssues ctx expr
 
-        Mono.MonoCycle defs _ ->
-            List.concatMap (\( _, e ) -> collectExprIssues ctx e) defs
-
         _ ->
             []
 

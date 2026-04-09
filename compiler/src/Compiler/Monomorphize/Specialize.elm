@@ -799,8 +799,16 @@ specializeCycle :
     -> ( Mono.MonoNode, MonoState )
 specializeCycle _ valueDefs funcDefs requestedMonoType state =
     case ( List.isEmpty funcDefs, state.ctx.currentGlobal ) of
-        ( True, _ ) ->
-            specializeValueOnlyCycle valueDefs requestedMonoType state
+        ( True, Just (Mono.Global requestedCanonical requestedName) ) ->
+            specializeValueCycle
+                requestedCanonical
+                requestedName
+                valueDefs
+                requestedMonoType
+                state
+
+        ( True, Nothing ) ->
+            ( Mono.MonoExtern requestedMonoType, state )
 
         ( False, Nothing ) ->
             ( Mono.MonoExtern requestedMonoType, state )
@@ -814,27 +822,131 @@ specializeCycle _ valueDefs funcDefs requestedMonoType state =
                 requestedMonoType
                 state
 
-        ( False, Just (Mono.Accessor _) ) ->
+        ( _, Just (Mono.Accessor _) ) ->
             -- Accessors are virtual globals and don't participate in cycles
             Utils.Crash.crash "Specialize.specializeCycle: Accessor should not appear in cycles"
 
 
-{-| Specialize a cycle containing only value definitions.
+{-| Specialize a value-only recursive cycle by creating separate MonoDefine nodes
+for each zero-arg binding, mirroring specializeFunctionCycle.
 -}
-specializeValueOnlyCycle :
-    List ( Name, TOpt.Expr MVarId )
+specializeValueCycle :
+    IO.Canonical
+    -> Name
+    -> List ( Name, TOpt.Expr MVarId )
     -> Mono.MonoType
     -> MonoState
     -> ( Mono.MonoNode, MonoState )
-specializeValueOnlyCycle valueDefs requestedMonoType state =
+specializeValueCycle requestedCanonical requestedName valueDefs requestedMonoType state =
     let
-        subst =
-            Dict.empty
+        maybeRequestedExpr =
+            List.filter (\( n, _ ) -> n == requestedName) valueDefs
+                |> List.head
 
-        ( monoDefs, state1 ) =
-            specializeValueDefs valueDefs subst state
+        sharedSubst : Substitution
+        sharedSubst =
+            case maybeRequestedExpr of
+                Just ( _, expr ) ->
+                    let
+                        canType =
+                            TOpt.typeOf expr
+                    in
+                    Tuple.first (TypeSubst.unify state.ctx.mvarEnv canType requestedMonoType)
+
+                Nothing ->
+                    Dict.empty
+
+        ( newNodes, stateAfter ) =
+            List.foldl
+                (specializeValueInCycle requestedCanonical requestedName requestedMonoType sharedSubst)
+                ( state.accum.nodes, state )
+                valueDefs
+
+        requestedGlobal =
+            Mono.Global requestedCanonical requestedName
+
+        ( requestedSpecId, _ ) =
+            Registry.getOrCreateSpecId requestedGlobal requestedMonoType Nothing stateAfter.accum.registry
     in
-    ( Mono.MonoCycle monoDefs requestedMonoType, state1 )
+    case Dict.get requestedSpecId newNodes of
+        Just requestedNode ->
+            ( requestedNode
+            , { stateAfter
+                | accum =
+                    let
+                        a =
+                            stateAfter.accum
+                    in
+                    { a | nodes = newNodes }
+              }
+            )
+
+        Nothing ->
+            ( Mono.MonoExtern requestedMonoType
+            , { stateAfter
+                | accum =
+                    let
+                        a =
+                            stateAfter.accum
+                    in
+                    { a | nodes = newNodes }
+              }
+            )
+
+
+{-| Specialize a single (Name, Expr) pair inside a value-only cycle.
+-}
+specializeValueInCycle :
+    IO.Canonical
+    -> Name
+    -> Mono.MonoType
+    -> Substitution
+    -> ( Name, TOpt.Expr MVarId )
+    -> ( Dict Int Mono.MonoNode, MonoState )
+    -> ( Dict Int Mono.MonoNode, MonoState )
+specializeValueInCycle requestedCanonical requestedName requestedMonoType sharedSubst ( name, expr ) ( accNodes, accState ) =
+    let
+        globalVal =
+            Mono.Global requestedCanonical name
+
+        canType =
+            TOpt.typeOf expr
+
+        monoTypeFromExpr =
+            Mono.forceCNumberToInt
+                (Tuple.first (TypeSubst.applySubst accState.ctx.mvarEnv sharedSubst canType))
+
+        monoTypeForSpecId =
+            if name == requestedName then
+                requestedMonoType
+
+            else
+                monoTypeFromExpr
+
+        accum =
+            accState.accum
+
+        ( specId, newRegistry ) =
+            Registry.getOrCreateSpecId globalVal monoTypeForSpecId Nothing accum.registry
+
+        accState1 =
+            { accState | accum = { accum | registry = newRegistry } }
+    in
+    if Dict.member specId accNodes then
+        ( accNodes, accState1 )
+
+    else
+        let
+            ( monoExpr, accState2 ) =
+                specializeExpr expr sharedSubst accState1
+
+            monoNode =
+                Mono.MonoDefine monoExpr (Mono.typeOf monoExpr)
+
+            nextNodes =
+                Dict.insert specId monoNode accNodes
+        in
+        ( nextNodes, accState2 )
 
 
 {-| Specialize a cycle containing function definitions by creating separate nodes for each function.

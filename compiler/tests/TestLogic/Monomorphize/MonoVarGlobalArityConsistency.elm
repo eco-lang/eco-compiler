@@ -94,9 +94,6 @@ checkNode graph specId node =
         Mono.MonoPortOutgoing expr _ ->
             collectExprIssues graph ctx expr
 
-        Mono.MonoCycle defs _ ->
-            List.concatMap (\( _, e ) -> collectExprIssues graph ctx e) defs
-
         _ ->
             []
 
@@ -285,9 +282,6 @@ checkNodeCallChains graph ctx node =
         Mono.MonoPortOutgoing expr _ ->
             collectCallChainExprIssues graph ctx expr
 
-        Mono.MonoCycle defs _ ->
-            List.concatMap (\( _, e ) -> collectCallChainExprIssues graph ctx e) defs
-
         _ ->
             []
 
@@ -475,9 +469,6 @@ checkNodeCallArgs graph ctx node =
         Mono.MonoPortOutgoing expr _ ->
             collectCallArgExprIssues graph ctx expr
 
-        Mono.MonoCycle defs _ ->
-            List.concatMap (\( _, e ) -> collectCallArgExprIssues graph ctx e) defs
-
         _ ->
             []
 
@@ -662,9 +653,6 @@ nodeKindName node =
 
         Mono.MonoPortOutgoing _ _ ->
             "MonoPortOutgoing"
-
-        Mono.MonoCycle _ _ ->
-            "MonoCycle"
 
 
 {-| Flatten a curried function type into total parameter count.

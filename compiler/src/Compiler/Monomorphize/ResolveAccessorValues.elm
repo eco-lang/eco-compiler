@@ -122,21 +122,6 @@ rewriteNode home lambdaCounter node =
             in
             ( Mono.MonoPortOutgoing expr1 monoType, c1 )
 
-        Mono.MonoCycle bindings monoType ->
-            let
-                ( newBindings, c1 ) =
-                    List.foldl
-                        (\( n, e ) ( acc, c ) ->
-                            let
-                                ( e1, c2 ) =
-                                    rewriteExprBody home c Nothing e
-                            in
-                            ( ( n, e1 ) :: acc, c2 )
-                        )
-                        ( [], lambdaCounter )
-                        bindings
-            in
-            ( Mono.MonoCycle (List.reverse newBindings) monoType, c1 )
 
 
 

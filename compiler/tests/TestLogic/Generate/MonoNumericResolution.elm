@@ -126,10 +126,6 @@ collectNodeCNumberChecks specId node =
             checkForCNumber context monoType
                 ++ collectExprCNumberChecks context expr
 
-        Mono.MonoCycle defs monoType ->
-            checkForCNumber context monoType
-                ++ List.concatMap (\( _, expr ) -> collectExprCNumberChecks context expr) defs
-
 
 {-| Collect CNumber checks from a MonoExpr.
 -}
@@ -305,9 +301,6 @@ collectNodeCallSiteChecks specId node =
 
         Mono.MonoPortOutgoing expr _ ->
             collectExprCallSiteChecks context expr
-
-        Mono.MonoCycle defs _ ->
-            List.concatMap (\( _, expr ) -> collectExprCallSiteChecks context expr) defs
 
 
 {-| Collect call site checks from a MonoExpr, focusing on MonoCall and MonoTailCall.
