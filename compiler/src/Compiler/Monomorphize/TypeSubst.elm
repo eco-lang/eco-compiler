@@ -3,7 +3,7 @@ module Compiler.Monomorphize.TypeSubst exposing
     , applySubst, applySubstWithFreeVars
     , canTypeToMonoType, extractParamTypes
     , unify, unifyExtend, unifyArgsOnly, unifyCallSiteDirect
-    , buildSchemeInfo
+    , buildSchemeInfo, refreshSchemeInfo
     , linkSchemeToLocalType, extendSubstWithAliases
     , flattenTLambda
     )
@@ -923,6 +923,54 @@ buildSchemeInfo env canType =
       }
     , renaming.env
     )
+
+
+{-| Re-freshen a cached SchemeInfo by replacing all its MVarIds with new ones.
+This prevents stale MVar bindings from a previous unification from leaking
+into a new call site that reuses the cached scheme.
+-}
+refreshSchemeInfo : MVarEnv -> SchemeInfo -> ( SchemeInfo, MVarEnv )
+refreshSchemeInfo env cached =
+    let
+        renaming =
+            buildSchemeRenaming env cached.varIds
+
+        freshVarIds =
+            List.reverse renaming.freshIds
+
+        renameMap =
+            renaming.renameMap
+
+        refreshedArgTypes =
+            List.map (renameMVarIdsInCanType renameMap) cached.argTypes
+
+        refreshedResultType =
+            renameMVarIdsInCanType renameMap cached.resultType
+
+        refreshedSchemeType =
+            renameMVarIdsInCanType renameMap cached.schemeType
+    in
+    ( { varIds = freshVarIds
+      , constraints = Dict.foldl (\k v acc -> Dict.insert (applyRenameToId renameMap k) v acc) Dict.empty cached.constraints
+      , argTypes = refreshedArgTypes
+      , resultType = refreshedResultType
+      , argCount = cached.argCount
+      , schemeType = refreshedSchemeType
+      }
+    , renaming.env
+    )
+
+
+{-| Apply renaming to a single MVarId key, returning the renamed key or the original if not in the map.
+-}
+applyRenameToId : Dict.Dict Int MVarId -> Int -> Int
+applyRenameToId renameMap id =
+    case Dict.get id renameMap of
+        Just newId ->
+            Id.toComparable newId
+
+        Nothing ->
+            id
 
 
 {-| Accumulator for buildSchemeRenaming.

@@ -81,9 +81,23 @@ getOrBuildSchemeInfo funcCanType maybeGlobal state =
                     state.accum
             in
             case Data.Map.get TOpt.toComparableGlobal global accum.schemeCache of
-                Just info ->
-                    -- Reuse cached SchemeInfo for this global.
-                    ( info, state )
+                Just cachedInfo ->
+                    -- Cached scheme exists. Re-freshen its MVarIds to avoid stale
+                    -- bindings from previous unifications leaking into this call.
+                    -- Without this, e.g. Just(Float) from one call site would leak
+                    -- into Just(Bool) inside Maybe.map.
+                    let
+                        ( info, mvarEnv1 ) =
+                            TypeSubst.refreshSchemeInfo state.ctx.mvarEnv cachedInfo
+
+                        ctx1 =
+                            let
+                                ctx =
+                                    state.ctx
+                            in
+                            { ctx | mvarEnv = mvarEnv1 }
+                    in
+                    ( info, { state | ctx = ctx1 } )
 
                 Nothing ->
                     -- Build SchemeInfo from the global's canonical annotation type if available.
