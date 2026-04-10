@@ -2020,7 +2020,9 @@ extern "C" int64_t eco_int_pow(int64_t base, int64_t exp) {
 //===----------------------------------------------------------------------===//
 
 extern "C" void* eco_resolve_hptr(uint64_t hptr) {
-    return hpointerToPtr(hptr);
+    void* ptr = hpointerToPtr(hptr);
+    assert(ptr && "eco_resolve_hptr: received an embedded constant (not a heap pointer)");
+    return ptr;
 }
 
 extern "C" uint64_t eco_clone_array(uint64_t array_hptr) {
