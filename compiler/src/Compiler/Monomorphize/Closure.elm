@@ -199,13 +199,22 @@ findFreeLocals :
     -> Mono.MonoExpr
     -> List Name
 findFreeLocals bound expr =
+    findFreeLocalsAcc bound expr []
+
+
+findFreeLocalsAcc :
+    EverySet String Name
+    -> Mono.MonoExpr
+    -> List Name
+    -> List Name
+findFreeLocalsAcc bound expr acc =
     case expr of
         Mono.MonoVarLocal name _ ->
             if EverySet.member identity name bound then
-                []
+                acc
 
             else
-                [ name ]
+                name :: acc
 
         Mono.MonoClosure closureInfo body _ ->
             -- Descend into nested closures with their params added to bound.
@@ -215,9 +224,9 @@ findFreeLocals bound expr =
                     List.map Tuple.first closureInfo.params
 
                 newBound =
-                    List.foldl (\name acc -> EverySet.insert identity name acc) bound closureParams
+                    List.foldl (\name a -> EverySet.insert identity name a) bound closureParams
             in
-            findFreeLocals newBound body
+            findFreeLocalsAcc newBound body acc
 
         Mono.MonoLet _ _ _ ->
             -- For mutually recursive let-bindings, we need to collect ALL names
@@ -242,13 +251,13 @@ findFreeLocals bound expr =
                     List.map defName allDefs
 
                 boundWithAllNames =
-                    List.foldl (\name acc -> EverySet.insert identity name acc) bound allNames
+                    List.foldl (\name a -> EverySet.insert identity name a) bound allNames
 
                 -- Analyze a definition's expression, adding MonoTailDef params to bound
-                analyzeDef def =
+                analyzeDefAcc def a =
                     case def of
                         Mono.MonoDef _ defExpr ->
-                            findFreeLocals boundWithAllNames defExpr
+                            findFreeLocalsAcc boundWithAllNames defExpr a
 
                         Mono.MonoTailDef _ params defExpr ->
                             -- For tail-recursive functions, add the function's params to bound
@@ -259,110 +268,112 @@ findFreeLocals bound expr =
                                     List.map Tuple.first params
 
                                 boundWithParams =
-                                    List.foldl (\name acc -> EverySet.insert identity name acc) boundWithAllNames paramNames
+                                    List.foldl (\name a2 -> EverySet.insert identity name a2) boundWithAllNames paramNames
                             in
-                            findFreeLocals boundWithParams defExpr
+                            findFreeLocalsAcc boundWithParams defExpr a
 
-                -- Now analyze each definition with all sibling names in scope
-                freeInDefs =
-                    List.concatMap analyzeDef allDefs
-
-                freeInBody =
-                    findFreeLocals boundWithAllNames finalBody
+                -- Thread accumulator through body, then through each def
+                accWithBody =
+                    findFreeLocalsAcc boundWithAllNames finalBody acc
             in
-            freeInDefs ++ freeInBody
+            List.foldl (\def a -> analyzeDefAcc def a) accWithBody allDefs
 
         Mono.MonoIf branches final _ ->
             let
-                freeBranches =
-                    List.concatMap
-                        (\( cond, thenExpr ) ->
-                            findFreeLocals bound cond
-                                ++ findFreeLocals bound thenExpr
-                        )
-                        branches
-
-                freeFinal =
-                    findFreeLocals bound final
+                accWithFinal =
+                    findFreeLocalsAcc bound final acc
             in
-            freeBranches ++ freeFinal
+            List.foldl
+                (\( cond, thenExpr ) a ->
+                    findFreeLocalsAcc bound thenExpr (findFreeLocalsAcc bound cond a)
+                )
+                accWithFinal
+                branches
 
         Mono.MonoCase _ root decider jumps _ ->
             let
                 -- The root (second Name field) is the scrutinee variable.
                 -- It must be tracked as a free variable reference.
-                rootFree =
+                accWithRoot =
                     if EverySet.member identity root bound then
-                        []
+                        acc
 
                     else
-                        [ root ]
+                        root :: acc
 
-                freeDecider =
-                    collectDeciderFreeLocals bound decider
-
-                freeJumps =
-                    List.concatMap (\( _, e ) -> findFreeLocals bound e) jumps
+                accWithDecider =
+                    collectDeciderFreeLocalsAcc bound decider accWithRoot
             in
-            rootFree ++ freeDecider ++ freeJumps
+            List.foldl (\( _, e ) a -> findFreeLocalsAcc bound e a) accWithDecider jumps
 
         Mono.MonoList _ exprs _ ->
-            List.concatMap (findFreeLocals bound) exprs
+            List.foldl (\e a -> findFreeLocalsAcc bound e a) acc exprs
 
         Mono.MonoCall _ func args _ _ ->
-            findFreeLocals bound func
-                ++ List.concatMap (findFreeLocals bound) args
+            let
+                accWithFunc =
+                    findFreeLocalsAcc bound func acc
+            in
+            List.foldl (\e a -> findFreeLocalsAcc bound e a) accWithFunc args
 
         Mono.MonoTailCall _ namedExprs _ ->
-            List.concatMap (\( _, e ) -> findFreeLocals bound e) namedExprs
+            List.foldl (\( _, e ) a -> findFreeLocalsAcc bound e a) acc namedExprs
 
         Mono.MonoRecordCreate fields _ ->
-            List.concatMap (\( _, e ) -> findFreeLocals bound e) fields
+            List.foldl (\( _, e ) a -> findFreeLocalsAcc bound e a) acc fields
 
         Mono.MonoRecordAccess record _ _ ->
-            findFreeLocals bound record
+            findFreeLocalsAcc bound record acc
 
         Mono.MonoRecordUpdate record updates _ ->
-            findFreeLocals bound record
-                ++ List.concatMap (\( _, e ) -> findFreeLocals bound e) updates
+            let
+                accWithRecord =
+                    findFreeLocalsAcc bound record acc
+            in
+            List.foldl (\( _, e ) a -> findFreeLocalsAcc bound e a) accWithRecord updates
 
         Mono.MonoTupleCreate _ exprs _ ->
-            List.concatMap (findFreeLocals bound) exprs
+            List.foldl (\e a -> findFreeLocalsAcc bound e a) acc exprs
 
         Mono.MonoDestruct (Mono.MonoDestructor name path _) body _ ->
             let
-                pathFree =
-                    findPathFreeLocals bound path
+                accWithPath =
+                    findPathFreeLocalsAcc bound path acc
 
                 newBound =
                     EverySet.insert identity name bound
             in
-            pathFree ++ findFreeLocals newBound body
+            findFreeLocalsAcc newBound body accWithPath
 
         _ ->
-            []
+            acc
 
 
 {-| Find free variables referenced in a MonoPath (via MonoRoot).
 -}
 findPathFreeLocals : EverySet String Name -> Mono.MonoPath -> List Name
 findPathFreeLocals bound path =
+    findPathFreeLocalsAcc bound path []
+
+
+findPathFreeLocalsAcc : EverySet String Name -> Mono.MonoPath -> List Name -> List Name
+findPathFreeLocalsAcc bound path acc =
     case path of
         Mono.MonoRoot name _ ->
             if EverySet.member identity name bound then
-                []
+                acc
 
             else
-                [ name ]
+                name :: acc
 
         Mono.MonoIndex _ _ _ inner ->
-            findPathFreeLocals bound inner
+            findPathFreeLocalsAcc bound inner acc
 
         Mono.MonoField _ _ inner ->
-            findPathFreeLocals bound inner
+            findPathFreeLocalsAcc bound inner acc
 
         Mono.MonoUnbox _ inner ->
-            findPathFreeLocals bound inner
+            findPathFreeLocalsAcc bound inner acc
 
 
 {-| Collect all definitions from a let-chain, returning them along with the final body.
@@ -398,55 +409,67 @@ collectDeciderFreeLocals :
     -> Mono.Decider Mono.MonoChoice
     -> List Name
 collectDeciderFreeLocals bound decider =
+    collectDeciderFreeLocalsAcc bound decider []
+
+
+collectDeciderFreeLocalsAcc :
+    EverySet String Name
+    -> Mono.Decider Mono.MonoChoice
+    -> List Name
+    -> List Name
+collectDeciderFreeLocalsAcc bound decider acc =
     case decider of
         Mono.Leaf choice ->
             case choice of
                 Mono.Inline expr ->
-                    findFreeLocals bound expr
+                    findFreeLocalsAcc bound expr acc
 
                 Mono.Jump _ ->
-                    []
+                    acc
 
         Mono.Chain tests success failure ->
             let
-                freePaths =
-                    List.concatMap (\( dtPath, _ ) -> findDtPathFreeLocals bound dtPath) tests
+                accWithPaths =
+                    List.foldl (\( dtPath, _ ) a -> findDtPathFreeLocalsAcc bound dtPath a) acc tests
+
+                accWithSuccess =
+                    collectDeciderFreeLocalsAcc bound success accWithPaths
             in
-            freePaths
-                ++ collectDeciderFreeLocals bound success
-                ++ collectDeciderFreeLocals bound failure
+            collectDeciderFreeLocalsAcc bound failure accWithSuccess
 
         Mono.FanOut dtPath edges fallback ->
             let
-                freeRoot =
-                    findDtPathFreeLocals bound dtPath
+                accWithRoot =
+                    findDtPathFreeLocalsAcc bound dtPath acc
 
-                freeEdges =
-                    List.concatMap (\( _, d ) -> collectDeciderFreeLocals bound d) edges
-
-                freeFallback =
-                    collectDeciderFreeLocals bound fallback
+                accWithEdges =
+                    List.foldl (\( _, d ) a -> collectDeciderFreeLocalsAcc bound d a) accWithRoot edges
             in
-            freeRoot ++ freeEdges ++ freeFallback
+            collectDeciderFreeLocalsAcc bound fallback accWithEdges
 
 
 {-| Find free variables referenced in a MonoDtPath (decision tree path).
 -}
 findDtPathFreeLocals : EverySet String Name -> Mono.MonoDtPath -> List Name
 findDtPathFreeLocals bound dtPath =
+    findDtPathFreeLocalsAcc bound dtPath []
+
+
+findDtPathFreeLocalsAcc : EverySet String Name -> Mono.MonoDtPath -> List Name -> List Name
+findDtPathFreeLocalsAcc bound dtPath acc =
     case dtPath of
         Mono.DtRoot name _ ->
             if EverySet.member identity name bound then
-                []
+                acc
 
             else
-                [ name ]
+                name :: acc
 
         Mono.DtIndex _ _ _ inner ->
-            findDtPathFreeLocals bound inner
+            findDtPathFreeLocalsAcc bound inner acc
 
         Mono.DtUnbox _ inner ->
-            findDtPathFreeLocals bound inner
+            findDtPathFreeLocalsAcc bound inner acc
 
 
 {-| Remove duplicate names from a list while preserving order.

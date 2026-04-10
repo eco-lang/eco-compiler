@@ -436,16 +436,20 @@ buildCompleteCtorShapes env vars monoArgs alts =
                 Dict.empty
                 (List.map2 Tuple.pair vars monoArgs)
     in
-    List.foldl
-        (\ctor ( acc, e ) ->
-            let
-                ( shape, e1 ) =
-                    buildCtorShapeFromUnion e substById nameToId ctor
-            in
-            ( acc ++ [ shape ], e1 )
-        )
-        ( [], env2 )
-        alts
+    let
+        ( revShapes, finalEnv ) =
+            List.foldl
+                (\ctor ( acc, e ) ->
+                    let
+                        ( shape, e1 ) =
+                            buildCtorShapeFromUnion e substById nameToId ctor
+                    in
+                    ( shape :: acc, e1 )
+                )
+                ( [], env2 )
+                alts
+    in
+    ( List.reverse revShapes, finalEnv )
 
 
 {-| Build a CtorShape from a Can.Ctor using the given substitution.
@@ -455,7 +459,7 @@ then applies the Int-keyed substitution.
 buildCtorShapeFromUnion : MVarEnv -> Substitution -> Dict.Dict Name TypeIds.MVarId -> Can.Ctor -> ( Mono.CtorShape, MVarEnv )
 buildCtorShapeFromUnion env subst nameToId (Can.Ctor ctorData) =
     let
-        ( monoFieldTypes, env1 ) =
+        ( revMonoFieldTypes, env1 ) =
             List.foldl
                 (\t ( acc, e ) ->
                     let
@@ -465,10 +469,13 @@ buildCtorShapeFromUnion env subst nameToId (Can.Ctor ctorData) =
                         ( monoT, e1 ) =
                             TypeSubst.applySubst e subst tWithIds
                     in
-                    ( acc ++ [ monoT ], e1 )
+                    ( monoT :: acc, e1 )
                 )
                 ( [], env )
                 ctorData.args
+
+        monoFieldTypes =
+            List.reverse revMonoFieldTypes
     in
     ( { name = ctorData.name
       , tag = Index.toMachine ctorData.index

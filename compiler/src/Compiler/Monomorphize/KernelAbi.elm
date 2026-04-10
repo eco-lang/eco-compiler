@@ -51,6 +51,7 @@ import Compiler.AST.TypeIds as TypeIds exposing (MVarId)
 import Compiler.Data.Id as Id
 import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Monomorphize.State as State exposing (MVarEnv)
+import Set exposing (Set)
 import Data.Set as EverySet exposing (EverySet)
 import Dict
 import System.TypeCheck.IO as IO
@@ -192,51 +193,64 @@ freeTypeVariablesWithConstraints canType =
 
 freeVarsHelper : Can.Type Name -> List Name -> List Name
 freeVarsHelper canType acc =
+    let
+        seen =
+            Set.fromList acc
+    in
+    Tuple.first (freeVarsHelperWith canType ( acc, seen ))
+
+
+freeVarsHelperWith : Can.Type Name -> ( List Name, Set String ) -> ( List Name, Set String )
+freeVarsHelperWith canType (( acc, seen ) as pair) =
     case canType of
         Can.TVar name ->
-            if List.member name acc then
-                acc
+            if Set.member name seen then
+                pair
 
             else
-                name :: acc
+                ( name :: acc, Set.insert name seen )
 
         Can.TLambda from to ->
-            freeVarsHelper to (freeVarsHelper from acc)
+            freeVarsHelperWith to (freeVarsHelperWith from pair)
 
         Can.TType _ _ args ->
-            List.foldl freeVarsHelper acc args
+            List.foldl (\a accPair -> freeVarsHelperWith a accPair) pair args
 
         Can.TRecord fields maybeExt ->
             let
-                fieldAcc =
-                    Dict.foldl (\_ (Can.FieldType _ t) a -> freeVarsHelper t a) acc fields
+                fieldPair =
+                    Dict.foldl (\_ (Can.FieldType _ t) accPair -> freeVarsHelperWith t accPair) pair fields
             in
             case maybeExt of
                 Just extName ->
-                    if List.member extName fieldAcc then
-                        fieldAcc
+                    let
+                        ( fieldAcc, fieldSeen ) =
+                            fieldPair
+                    in
+                    if Set.member extName fieldSeen then
+                        fieldPair
 
                     else
-                        extName :: fieldAcc
+                        ( extName :: fieldAcc, Set.insert extName fieldSeen )
 
                 Nothing ->
-                    fieldAcc
+                    fieldPair
 
         Can.TTuple a b rest ->
-            List.foldl freeVarsHelper acc (a :: b :: rest)
+            List.foldl (\t accPair -> freeVarsHelperWith t accPair) pair (a :: b :: rest)
 
         Can.TUnit ->
-            acc
+            pair
 
         Can.TAlias _ _ _ (Can.Filled inner) ->
-            freeVarsHelper inner acc
+            freeVarsHelperWith inner pair
 
         Can.TAlias _ _ args (Can.Holey inner) ->
             let
-                argVars =
-                    List.foldl (\( _, t ) a -> freeVarsHelper t a) acc args
+                argPair =
+                    List.foldl (\( _, t ) accPair -> freeVarsHelperWith t accPair) pair args
             in
-            freeVarsHelper inner argVars
+            freeVarsHelperWith inner argPair
 
 
 {-| Determine constraint from type variable name.
@@ -261,51 +275,71 @@ constraintFromName name =
 -}
 freeVarIds : Can.Type MVarId -> List MVarId -> List MVarId
 freeVarIds canType acc =
+    let
+        seen =
+            List.foldl (\id s -> Set.insert (Id.toComparable id) s) Set.empty acc
+    in
+    Tuple.first (freeVarIdsHelp canType ( acc, seen ))
+
+
+freeVarIdsHelp : Can.Type MVarId -> ( List MVarId, Set Int ) -> ( List MVarId, Set Int )
+freeVarIdsHelp canType (( acc, seen ) as pair) =
     case canType of
         Can.TVar mvarId ->
-            if List.any (\id -> Id.toComparable id == Id.toComparable mvarId) acc then
-                acc
+            let
+                key =
+                    Id.toComparable mvarId
+            in
+            if Set.member key seen then
+                pair
 
             else
-                mvarId :: acc
+                ( mvarId :: acc, Set.insert key seen )
 
         Can.TLambda from to ->
-            freeVarIds to (freeVarIds from acc)
+            freeVarIdsHelp to (freeVarIdsHelp from pair)
 
         Can.TType _ _ args ->
-            List.foldl freeVarIds acc args
+            List.foldl (\a accPair -> freeVarIdsHelp a accPair) pair args
 
         Can.TRecord fields maybeExt ->
             let
-                fieldAcc =
-                    Dict.foldl (\_ (Can.FieldType _ t) a -> freeVarIds t a) acc fields
+                fieldPair =
+                    Dict.foldl (\_ (Can.FieldType _ t) accPair -> freeVarIdsHelp t accPair) pair fields
             in
             case maybeExt of
                 Just extId ->
-                    if List.any (\id -> Id.toComparable id == Id.toComparable extId) fieldAcc then
-                        fieldAcc
+                    let
+                        extKey =
+                            Id.toComparable extId
+
+                        ( fieldAcc, fieldSeen ) =
+                            fieldPair
+                    in
+                    if Set.member extKey fieldSeen then
+                        fieldPair
 
                     else
-                        extId :: fieldAcc
+                        ( extId :: fieldAcc, Set.insert extKey fieldSeen )
 
                 Nothing ->
-                    fieldAcc
+                    fieldPair
 
         Can.TTuple a b rest ->
-            List.foldl freeVarIds acc (a :: b :: rest)
+            List.foldl (\t accPair -> freeVarIdsHelp t accPair) pair (a :: b :: rest)
 
         Can.TUnit ->
-            acc
+            pair
 
         Can.TAlias _ _ _ (Can.Filled inner) ->
-            freeVarIds inner acc
+            freeVarIdsHelp inner pair
 
         Can.TAlias _ _ args (Can.Holey inner) ->
             let
-                argVars =
-                    List.foldl (\( _, t ) a -> freeVarIds t a) acc args
+                argPair =
+                    List.foldl (\( _, t ) accPair -> freeVarIdsHelp t accPair) pair args
             in
-            freeVarIds inner argVars
+            freeVarIdsHelp inner argPair
 
 
 
@@ -357,19 +391,19 @@ canTypeToMonoType_preserveVars env canType =
 
         Can.TTuple a b rest ->
             let
-                ( monoTypes, env1 ) =
+                ( revMonoTypes, env1 ) =
                     List.foldl
                         (\t ( acc, e ) ->
                             let
                                 ( monoT, e1 ) =
                                     canTypeToMonoType_preserveVars e t
                             in
-                            ( acc ++ [ monoT ], e1 )
+                            ( monoT :: acc, e1 )
                         )
                         ( [], env )
                         (a :: b :: rest)
             in
-            ( Mono.MTuple monoTypes, env1 )
+            ( Mono.MTuple (List.reverse revMonoTypes), env1 )
 
         Can.TUnit ->
             ( Mono.MUnit, env )
@@ -425,19 +459,19 @@ canTypeToMonoType_numberBoxed env canType =
 
         Can.TTuple a b rest ->
             let
-                ( monoTypes, env1 ) =
+                ( revMonoTypes, env1 ) =
                     List.foldl
                         (\t ( acc, e ) ->
                             let
                                 ( monoT, e1 ) =
                                     canTypeToMonoType_numberBoxed e t
                             in
-                            ( acc ++ [ monoT ], e1 )
+                            ( monoT :: acc, e1 )
                         )
                         ( [], env )
                         (a :: b :: rest)
             in
-            ( Mono.MTuple monoTypes, env1 )
+            ( Mono.MTuple (List.reverse revMonoTypes), env1 )
 
         Can.TUnit ->
             ( Mono.MUnit, env )
@@ -454,17 +488,20 @@ canTypeToMonoType_numberBoxed env canType =
 convertTType : (MVarEnv -> Can.Type MVarId -> ( Mono.MonoType, MVarEnv )) -> MVarEnv -> IO.Canonical -> Name -> List (Can.Type MVarId) -> ( Mono.MonoType, MVarEnv )
 convertTType convert env canonical name args =
     let
-        ( monoArgs, env1 ) =
+        ( revMonoArgs, env1 ) =
             List.foldl
                 (\t ( acc, e ) ->
                     let
                         ( monoT, e1 ) =
                             convert e t
                     in
-                    ( acc ++ [ monoT ], e1 )
+                    ( monoT :: acc, e1 )
                 )
                 ( [], env )
                 args
+
+        monoArgs =
+            List.reverse revMonoArgs
 
         isElmCore =
             case canonical of

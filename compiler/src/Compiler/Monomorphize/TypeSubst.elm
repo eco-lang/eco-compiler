@@ -205,19 +205,25 @@ normalizeMonoType env subst ty =
 
         Mono.MRecord fields ->
             let
-                ( fieldsNorm, subst1, env1 ) =
-                    Dict.foldl
-                        (\k v ( accFields, s, e ) ->
-                            let
-                                ( vNorm, s1, e1 ) =
-                                    normalizeMonoType e s v
-                            in
-                            ( Dict.insert k vNorm accFields, s1, e1 )
-                        )
-                        ( Dict.empty, subst, env )
-                        fields
+                step k v ( accPair, s, e ) =
+                    let
+                        ( vNorm, s1, e1 ) =
+                            normalizeMonoType e s v
+                    in
+                    if vNorm == v then
+                        ( accPair, s1, e1 )
+
+                    else
+                        ( ( True, Dict.insert k vNorm (Tuple.second accPair) ), s1, e1 )
+
+                ( ( changed, fieldsNorm ), subst1, env1 ) =
+                    Dict.foldl step ( ( False, fields ), subst, env ) fields
             in
-            ( Mono.MRecord fieldsNorm, subst1, env1 )
+            if changed then
+                ( Mono.MRecord fieldsNorm, subst1, env1 )
+
+            else
+                ( ty, subst1, env1 )
 
         Mono.MCustom can name args ->
             let
@@ -735,16 +741,20 @@ applySubst env subst canType =
 -}
 applySubstList : MVarEnv -> Substitution -> List (Can.Type MVarId) -> ( List Mono.MonoType, MVarEnv )
 applySubstList env subst types =
-    List.foldl
-        (\t ( acc, e ) ->
-            let
-                ( monoT, e1 ) =
-                    applySubst e subst t
-            in
-            ( acc ++ [ monoT ], e1 )
-        )
-        ( [], env )
-        types
+    let
+        ( revAcc, finalEnv ) =
+            List.foldl
+                (\t ( acc, e ) ->
+                    let
+                        ( monoT, e1 ) =
+                            applySubst e subst t
+                    in
+                    ( monoT :: acc, e1 )
+                )
+                ( [], env )
+                types
+    in
+    ( List.reverse revAcc, finalEnv )
 
 
 {-| Apply a substitution to a canonical type, but only for MVarIds that
@@ -825,35 +835,48 @@ closureOverSubstHelp pending visited subst =
 -}
 collectMVarIdsFromMono : Mono.MonoType -> List MVarId -> List MVarId
 collectMVarIdsFromMono monoType acc =
+    let
+        seen =
+            List.foldl (\id s -> Set.insert (Id.toComparable id) s) Set.empty acc
+    in
+    Tuple.first (collectMVarIdsFromMonoHelp monoType ( acc, seen ))
+
+
+collectMVarIdsFromMonoHelp : Mono.MonoType -> ( List MVarId, Set Int ) -> ( List MVarId, Set Int )
+collectMVarIdsFromMonoHelp monoType (( acc, seen ) as pair) =
     case monoType of
         Mono.MVar mvarId _ ->
-            if List.any (\id -> Id.toComparable id == Id.toComparable mvarId) acc then
-                acc
+            let
+                key =
+                    Id.toComparable mvarId
+            in
+            if Set.member key seen then
+                pair
 
             else
-                mvarId :: acc
+                ( mvarId :: acc, Set.insert key seen )
 
         Mono.MFunction args result ->
             let
-                argsAcc =
-                    List.foldl (\a accInner -> collectMVarIdsFromMono a accInner) acc args
+                argsPair =
+                    List.foldl (\a accPair -> collectMVarIdsFromMonoHelp a accPair) pair args
             in
-            collectMVarIdsFromMono result argsAcc
+            collectMVarIdsFromMonoHelp result argsPair
 
         Mono.MList inner ->
-            collectMVarIdsFromMono inner acc
+            collectMVarIdsFromMonoHelp inner pair
 
         Mono.MTuple elements ->
-            List.foldl (\e accInner -> collectMVarIdsFromMono e accInner) acc elements
+            List.foldl (\e accPair -> collectMVarIdsFromMonoHelp e accPair) pair elements
 
         Mono.MRecord fields ->
-            Dict.foldl (\_ t accInner -> collectMVarIdsFromMono t accInner) acc fields
+            Dict.foldl (\_ t accPair -> collectMVarIdsFromMonoHelp t accPair) pair fields
 
         Mono.MCustom _ _ args ->
-            List.foldl (\a accInner -> collectMVarIdsFromMono a accInner) acc args
+            List.foldl (\a accPair -> collectMVarIdsFromMonoHelp a accPair) pair args
 
         _ ->
-            acc
+            pair
 
 
 {-| Collect a TLambda chain iteratively, then build the curried MFunction structure.
@@ -1126,55 +1149,75 @@ renameMVarIdsInCanType renameMap canType =
 -}
 collectMVarIds : Can.Type MVarId -> List MVarId -> List MVarId
 collectMVarIds canType acc =
+    let
+        seen =
+            List.foldl (\id s -> Set.insert (Id.toComparable id) s) Set.empty acc
+    in
+    Tuple.first (collectMVarIdsHelp canType ( acc, seen ))
+
+
+collectMVarIdsHelp : Can.Type MVarId -> ( List MVarId, Set Int ) -> ( List MVarId, Set Int )
+collectMVarIdsHelp canType (( acc, seen ) as pair) =
     case canType of
         Can.TVar mvarId ->
-            if List.any (\id -> Id.toComparable id == Id.toComparable mvarId) acc then
-                acc
+            let
+                key =
+                    Id.toComparable mvarId
+            in
+            if Set.member key seen then
+                pair
 
             else
-                mvarId :: acc
+                ( mvarId :: acc, Set.insert key seen )
 
         Can.TLambda from to ->
-            collectMVarIds from (collectMVarIds to acc)
+            collectMVarIdsHelp from (collectMVarIdsHelp to pair)
 
         Can.TType _ _ args ->
-            List.foldl (\a accInner -> collectMVarIds a accInner) acc args
+            List.foldl (\a accPair -> collectMVarIdsHelp a accPair) pair args
 
         Can.TRecord fields maybeExt ->
             let
-                fieldAcc =
-                    Dict.foldl (\_ (Can.FieldType _ t) accInner -> collectMVarIds t accInner) acc fields
+                fieldPair =
+                    Dict.foldl (\_ (Can.FieldType _ t) accPair -> collectMVarIdsHelp t accPair) pair fields
             in
             case maybeExt of
                 Just extId ->
-                    if List.any (\id -> Id.toComparable id == Id.toComparable extId) fieldAcc then
-                        fieldAcc
+                    let
+                        extKey =
+                            Id.toComparable extId
+
+                        ( fieldAcc, fieldSeen ) =
+                            fieldPair
+                    in
+                    if Set.member extKey fieldSeen then
+                        fieldPair
 
                     else
-                        extId :: fieldAcc
+                        ( extId :: fieldAcc, Set.insert extKey fieldSeen )
 
                 Nothing ->
-                    fieldAcc
+                    fieldPair
 
         Can.TTuple a b rest ->
-            List.foldl (\t accInner -> collectMVarIds t accInner) acc (a :: b :: rest)
+            List.foldl (\t accPair -> collectMVarIdsHelp t accPair) pair (a :: b :: rest)
 
         Can.TAlias _ _ aliasArgs (Can.Filled inner) ->
             let
-                argsAcc =
-                    List.foldl (\( _, t ) accInner -> collectMVarIds t accInner) acc aliasArgs
+                argsPair =
+                    List.foldl (\( _, t ) accPair -> collectMVarIdsHelp t accPair) pair aliasArgs
             in
-            collectMVarIds inner argsAcc
+            collectMVarIdsHelp inner argsPair
 
         Can.TAlias _ _ aliasArgs (Can.Holey inner) ->
             let
-                argsAcc =
-                    List.foldl (\( _, t ) accInner -> collectMVarIds t accInner) acc aliasArgs
+                argsPair =
+                    List.foldl (\( _, t ) accPair -> collectMVarIdsHelp t accPair) pair aliasArgs
             in
-            collectMVarIds inner argsAcc
+            collectMVarIdsHelp inner argsPair
 
         Can.TUnit ->
-            acc
+            pair
 
 
 {-| Flatten a TLambda chain into (argTypes, resultType).
@@ -1225,20 +1268,20 @@ unifyCallSiteDirect env schemeArgTypes schemeResultType argMonoTypes baseSubst =
         remainingSchemeArgs =
             List.drop (List.length argMonoTypes) schemeArgTypes
 
-        ( resolvedRemainingArgs, env2 ) =
+        ( revResolvedRemainingArgs, env2 ) =
             List.foldl
                 (\canArg ( accArgs, accEnv ) ->
                     let
                         ( monoArg, envN ) =
                             applySubst accEnv substAfterArgs canArg
                     in
-                    ( accArgs ++ [ monoArg ], envN )
+                    ( monoArg :: accArgs, envN )
                 )
                 ( [], env1 )
                 remainingSchemeArgs
 
         resolvedAllArgs =
-            resolvedSuppliedArgs ++ resolvedRemainingArgs
+            resolvedSuppliedArgs ++ List.reverse revResolvedRemainingArgs
 
         -- Apply substitution to result type
         ( resultMono, env3 ) =
@@ -1402,16 +1445,21 @@ normalizeAndOccursCheckDict env targetId subst fields =
                 Nothing ->
                     Nothing
 
-                Just ( accFields, s, e ) ->
+                Just ( accPair, s, e ) ->
                     case normalizeAndOccursCheck e targetId s v of
                         Nothing ->
                             Nothing
 
                         Just ( vNorm, s1, e1 ) ->
-                            Just ( Dict.insert k vNorm accFields, s1, e1 )
+                            if vNorm == v then
+                                Just ( accPair, s1, e1 )
+
+                            else
+                                Just ( ( True, Dict.insert k vNorm (Tuple.second accPair) ), s1, e1 )
         )
-        (Just ( Dict.empty, subst, env ))
+        (Just ( ( False, fields ), subst, env ))
         fields
+        |> Maybe.map (\( ( _, f ), s, e ) -> ( f, s, e ))
 
 
 
