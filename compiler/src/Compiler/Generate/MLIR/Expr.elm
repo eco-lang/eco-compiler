@@ -59,7 +59,6 @@ import Compiler.LocalOpt.Typed.DecisionTree as DT
 import Compiler.Monomorphize.Closure as Closure
 import Compiler.Monomorphize.Registry as Registry
 import Data.Map as EveryDict
-import Data.Set as EverySet
 import Dict
 import Hex
 import List.Extra as ListX
@@ -3773,7 +3772,7 @@ generateLet ctx def body =
                     List.map Tuple.first params
 
                 boundSet =
-                    EverySet.fromList identity (name :: paramNames)
+                    Set.fromList (name :: paramNames)
 
                 freeVarNames =
                     Closure.findFreeLocals boundSet tailBody

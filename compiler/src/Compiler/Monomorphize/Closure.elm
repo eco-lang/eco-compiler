@@ -37,8 +37,8 @@ import Compiler.AST.DecisionTree.Test as DT
 import Compiler.AST.Monomorphized as Mono
 import Compiler.Data.Name exposing (Name)
 import Compiler.Reporting.Annotation as A
-import Data.Set as EverySet exposing (EverySet)
 import Dict exposing (Dict)
+import Set exposing (Set)
 import Utils.Crash
 
 
@@ -147,11 +147,11 @@ computeClosureCaptures :
     -> List ( Name, Mono.MonoExpr, Bool )
 computeClosureCaptures params body =
     let
-        boundInitial : EverySet String Name
+        boundInitial : Set String
         boundInitial =
             List.foldl
-                (\( name, _ ) acc -> EverySet.insert identity name acc)
-                EverySet.empty
+                (\( name, _ ) acc -> Set.insert name acc)
+                Set.empty
                 params
 
         freeNames : List Name
@@ -195,7 +195,7 @@ computeClosureCaptures params body =
 {-| Find free local variable names in an expression.
 -}
 findFreeLocals :
-    EverySet String Name
+    Set String
     -> Mono.MonoExpr
     -> List Name
 findFreeLocals bound expr =
@@ -203,14 +203,14 @@ findFreeLocals bound expr =
 
 
 findFreeLocalsAcc :
-    EverySet String Name
+    Set String
     -> Mono.MonoExpr
     -> List Name
     -> List Name
 findFreeLocalsAcc bound expr acc =
     case expr of
         Mono.MonoVarLocal name _ ->
-            if EverySet.member identity name bound then
+            if Set.member name bound then
                 acc
 
             else
@@ -224,7 +224,7 @@ findFreeLocalsAcc bound expr acc =
                     List.map Tuple.first closureInfo.params
 
                 newBound =
-                    List.foldl (\name a -> EverySet.insert identity name a) bound closureParams
+                    List.foldl (\name a -> Set.insert name a) bound closureParams
             in
             findFreeLocalsAcc newBound body acc
 
@@ -251,7 +251,7 @@ findFreeLocalsAcc bound expr acc =
                     List.map defName allDefs
 
                 boundWithAllNames =
-                    List.foldl (\name a -> EverySet.insert identity name a) bound allNames
+                    List.foldl (\name a -> Set.insert name a) bound allNames
 
                 -- Analyze a definition's expression, adding MonoTailDef params to bound
                 analyzeDefAcc def a =
@@ -268,7 +268,7 @@ findFreeLocalsAcc bound expr acc =
                                     List.map Tuple.first params
 
                                 boundWithParams =
-                                    List.foldl (\name a2 -> EverySet.insert identity name a2) boundWithAllNames paramNames
+                                    List.foldl (\name a2 -> Set.insert name a2) boundWithAllNames paramNames
                             in
                             findFreeLocalsAcc boundWithParams defExpr a
 
@@ -295,7 +295,7 @@ findFreeLocalsAcc bound expr acc =
                 -- The root (second Name field) is the scrutinee variable.
                 -- It must be tracked as a free variable reference.
                 accWithRoot =
-                    if EverySet.member identity root bound then
+                    if Set.member root bound then
                         acc
 
                     else
@@ -341,7 +341,7 @@ findFreeLocalsAcc bound expr acc =
                     findPathFreeLocalsAcc bound path acc
 
                 newBound =
-                    EverySet.insert identity name bound
+                    Set.insert name bound
             in
             findFreeLocalsAcc newBound body accWithPath
 
@@ -351,16 +351,16 @@ findFreeLocalsAcc bound expr acc =
 
 {-| Find free variables referenced in a MonoPath (via MonoRoot).
 -}
-findPathFreeLocals : EverySet String Name -> Mono.MonoPath -> List Name
+findPathFreeLocals : Set String -> Mono.MonoPath -> List Name
 findPathFreeLocals bound path =
     findPathFreeLocalsAcc bound path []
 
 
-findPathFreeLocalsAcc : EverySet String Name -> Mono.MonoPath -> List Name -> List Name
+findPathFreeLocalsAcc : Set String -> Mono.MonoPath -> List Name -> List Name
 findPathFreeLocalsAcc bound path acc =
     case path of
         Mono.MonoRoot name _ ->
-            if EverySet.member identity name bound then
+            if Set.member name bound then
                 acc
 
             else
@@ -405,7 +405,7 @@ collectLetChain expr =
 {-| Collect free local variables from a pattern match decider tree.
 -}
 collectDeciderFreeLocals :
-    EverySet String Name
+    Set String
     -> Mono.Decider Mono.MonoChoice
     -> List Name
 collectDeciderFreeLocals bound decider =
@@ -413,7 +413,7 @@ collectDeciderFreeLocals bound decider =
 
 
 collectDeciderFreeLocalsAcc :
-    EverySet String Name
+    Set String
     -> Mono.Decider Mono.MonoChoice
     -> List Name
     -> List Name
@@ -450,16 +450,16 @@ collectDeciderFreeLocalsAcc bound decider acc =
 
 {-| Find free variables referenced in a MonoDtPath (decision tree path).
 -}
-findDtPathFreeLocals : EverySet String Name -> Mono.MonoDtPath -> List Name
+findDtPathFreeLocals : Set String -> Mono.MonoDtPath -> List Name
 findDtPathFreeLocals bound dtPath =
     findDtPathFreeLocalsAcc bound dtPath []
 
 
-findDtPathFreeLocalsAcc : EverySet String Name -> Mono.MonoDtPath -> List Name -> List Name
+findDtPathFreeLocalsAcc : Set String -> Mono.MonoDtPath -> List Name -> List Name
 findDtPathFreeLocalsAcc bound dtPath acc =
     case dtPath of
         Mono.DtRoot name _ ->
-            if EverySet.member identity name bound then
+            if Set.member name bound then
                 acc
 
             else
@@ -478,14 +478,14 @@ dedupeNames : List Name -> List Name
 dedupeNames names =
     let
         step name ( seen, acc ) =
-            if EverySet.member identity name seen then
+            if Set.member name seen then
                 ( seen, acc )
 
             else
-                ( EverySet.insert identity name seen, name :: acc )
+                ( Set.insert name seen, name :: acc )
     in
     names
-        |> List.foldl step ( EverySet.empty, [] )
+        |> List.foldl step ( Set.empty, [] )
         |> Tuple.second
         |> List.reverse
 
@@ -510,7 +510,6 @@ collectVarTypesHelper expr acc =
                 Dict.insert name monoType acc
 
         Mono.MonoClosure _ body _ ->
-            -- Recurse into closure body
             collectVarTypesHelper body acc
 
         Mono.MonoLet def body _ ->
@@ -681,8 +680,9 @@ collectCaseRootTypesHelper expr acc =
             in
             List.foldl (\( _, e ) a -> collectCaseRootTypesHelper e a) accAfterDecider jumps
 
-        Mono.MonoClosure _ body _ ->
-            collectCaseRootTypesHelper body acc
+        Mono.MonoClosure _ _ _ ->
+            -- Don't recurse into closure bodies — independent scope
+            acc
 
         Mono.MonoLet def body _ ->
             let

@@ -150,6 +150,7 @@ type alias SpecContext =
     { currentModule : IO.Canonical
     , toptNodes : DataMap.Dict String TOpt.Global (TOpt.Node MVarId)
     , currentGlobal : Maybe Mono.Global
+    , currentFreeVars : Can.FreeVars
     , globalTypeEnv : TypeEnv.GlobalTypeEnv
     , annotations : TOpt.AnnotationsByGlobal MVarId
     , varEnv : VarEnv
@@ -322,6 +323,7 @@ initState currentModule toptNodes annotations globalTypeEnv mvarEnv =
         { currentModule = currentModule
         , toptNodes = toptNodes
         , currentGlobal = Nothing
+        , currentFreeVars = Dict.empty
         , globalTypeEnv = globalTypeEnv
         , annotations = annotations
         , varEnv = emptyVarEnv

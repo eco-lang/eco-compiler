@@ -264,11 +264,10 @@ resolve to MFloat directly without going through CNumber.
 -}
 forceCNumberToInt : MonoType -> MonoType
 forceCNumberToInt monoType =
-    if containsAnyMVar monoType then
-        forceCNumberToIntHelp monoType
-
-    else
-        monoType
+    -- Since Fix 9, resolveMonoVars (called inside applySubst) already forces
+    -- CNumber→MInt for all unresolved MVars. This function is kept as identity
+    -- to avoid churn at 57 call sites but no longer traverses the type.
+    monoType
 
 
 forceCNumberToIntHelp : MonoType -> MonoType
@@ -826,18 +825,20 @@ toComparableGlobal global =
                 (IO.Canonical ( author, project ) modName) =
                     home
             in
-            "G" ++ author ++ "\u{0000}" ++ project ++ "\u{0000}" ++ modName ++ "\u{0000}" ++ name
+            String.concat [ "G", author, "\u{0000}", project, "\u{0000}", modName, "\u{0000}", name ]
 
         Accessor fieldName ->
-            "A" ++ fieldName
+            String.concat [ "A", fieldName ]
 
 
 {-| Convert a monomorphic type to a comparable String key for use in dictionaries.
-Builds the String directly to avoid intermediate List allocation and GC pressure.
+Uses a List String accumulator joined at the end for O(n) instead of O(n²) from repeated ++.
 -}
 toComparableMonoType : MonoType -> String
 toComparableMonoType monoType =
-    toComparableMonoTypeHelper [ WorkType monoType ] ""
+    toComparableMonoTypeHelper [ WorkType monoType ] []
+        |> List.reverse
+        |> String.concat
 
 
 {-| Work item for the tail-recursive type comparison helper.
@@ -847,56 +848,57 @@ type WorkItem
     | WorkMarker String
 
 
-{-| Tail-recursive helper using explicit work stack, accumulating a String directly.
+{-| Tail-recursive helper using explicit work stack, accumulating string fragments in reverse.
 
 The work list contains either MonoTypes to process or string markers.
-We process each item, appending to the string accumulator and pushing
-any nested types onto the work stack for later processing.
+We process each item, prepending fragments to the accumulator list and pushing
+any nested types onto the work stack for later processing. The caller reverses
+and concatenates the list once at the end.
 
 -}
-toComparableMonoTypeHelper : List WorkItem -> String -> String
+toComparableMonoTypeHelper : List WorkItem -> List String -> List String
 toComparableMonoTypeHelper work acc =
     case work of
         [] ->
             acc
 
         (WorkMarker s) :: rest ->
-            toComparableMonoTypeHelper rest (acc ++ s)
+            toComparableMonoTypeHelper rest (s :: acc)
 
         (WorkType mt) :: rest ->
             case mt of
                 MInt ->
-                    toComparableMonoTypeHelper rest (acc ++ "I")
+                    toComparableMonoTypeHelper rest ("I" :: acc)
 
                 MFloat ->
-                    toComparableMonoTypeHelper rest (acc ++ "F")
+                    toComparableMonoTypeHelper rest ("F" :: acc)
 
                 MBool ->
-                    toComparableMonoTypeHelper rest (acc ++ "B")
+                    toComparableMonoTypeHelper rest ("B" :: acc)
 
                 MChar ->
-                    toComparableMonoTypeHelper rest (acc ++ "C")
+                    toComparableMonoTypeHelper rest ("C" :: acc)
 
                 MString ->
-                    toComparableMonoTypeHelper rest (acc ++ "S")
+                    toComparableMonoTypeHelper rest ("S" :: acc)
 
                 MUnit ->
-                    toComparableMonoTypeHelper rest (acc ++ "U")
+                    toComparableMonoTypeHelper rest ("U" :: acc)
 
                 MVar mvarId constraint ->
-                    toComparableMonoTypeHelper rest (acc ++ "V" ++ String.fromInt (Id.toComparable mvarId) ++ "\u{0000}" ++ constraintToString constraint)
+                    toComparableMonoTypeHelper rest (constraintToString constraint :: "\u{0000}" :: String.fromInt (Id.toComparable mvarId) :: "V" :: acc)
 
                 MList inner ->
                     toComparableMonoTypeHelper
                         (WorkType inner :: WorkMarker ")" :: rest)
-                        (acc ++ "L(")
+                        ("L(" :: acc)
 
                 MTuple elementTypes ->
                     let
                         newWork =
                             List.foldl (\t w -> WorkType t :: w) (WorkMarker ")" :: rest) elementTypes
                     in
-                    toComparableMonoTypeHelper newWork (acc ++ "T" ++ String.fromInt (List.length elementTypes) ++ "(")
+                    toComparableMonoTypeHelper newWork ("(" :: String.fromInt (List.length elementTypes) :: "T" :: acc)
 
                 MRecord fields ->
                     let
@@ -906,7 +908,7 @@ toComparableMonoTypeHelper work acc =
                                 (WorkMarker ")" :: rest)
                                 (Dict.toList fields)
                     in
-                    toComparableMonoTypeHelper newWork (acc ++ "R(")
+                    toComparableMonoTypeHelper newWork ("R(" :: acc)
 
                 MCustom canonical name args ->
                     let
@@ -916,7 +918,7 @@ toComparableMonoTypeHelper work acc =
                         newWork =
                             List.foldl (\t w -> WorkType t :: w) (WorkMarker ")" :: rest) args
                     in
-                    toComparableMonoTypeHelper newWork (acc ++ "X" ++ author ++ "\u{0000}" ++ project ++ "\u{0000}" ++ modName ++ "\u{0000}" ++ name ++ "(")
+                    toComparableMonoTypeHelper newWork ("(" :: name :: "\u{0000}" :: modName :: "\u{0000}" :: project :: "\u{0000}" :: author :: "X" :: acc)
 
                 MFunction args ret ->
                     let
@@ -925,7 +927,7 @@ toComparableMonoTypeHelper work acc =
                                 (WorkMarker "->" :: WorkType ret :: WorkMarker ")" :: rest)
                                 args
                     in
-                    toComparableMonoTypeHelper newWork (acc ++ "A(")
+                    toComparableMonoTypeHelper newWork ("A(" :: acc)
 
 
 {-| Convert a constraint to a string for comparison purposes.
@@ -950,7 +952,7 @@ toComparableLambdaId lambdaId =
                 (IO.Canonical ( author, project ) modName) =
                     canonical
             in
-            author ++ "\u{0000}" ++ project ++ "\u{0000}" ++ modName ++ "\u{0000}" ++ String.fromInt uid
+            String.concat [ author, "\u{0000}", project, "\u{0000}", modName, "\u{0000}", String.fromInt uid ]
 
 
 {-| Convert a specialization key to a single comparable String for use in dictionaries.
@@ -961,17 +963,18 @@ Parts are separated by \\u{0001}.
 -}
 toComparableSpecKey : SpecKey -> String
 toComparableSpecKey (SpecKey global monoType maybeLambda) =
-    toComparableGlobal global
-        ++ "\u{0001}"
-        ++ toComparableMonoType monoType
-        ++ "\u{0001}"
-        ++ (case maybeLambda of
-                Nothing ->
-                    "N"
+    String.concat
+        [ toComparableGlobal global
+        , "\u{0001}"
+        , toComparableMonoType monoType
+        , "\u{0001}"
+        , case maybeLambda of
+            Nothing ->
+                "N"
 
-                Just lambdaId ->
-                    "L" ++ toComparableLambdaId lambdaId
-           )
+            Just lambdaId ->
+                String.concat [ "L", toComparableLambdaId lambdaId ]
+        ]
 
 
 

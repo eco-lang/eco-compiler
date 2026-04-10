@@ -118,10 +118,11 @@ monomorphizeWithLog log entryPointName globalTypeEnv globalGraph =
             log "  Specialization (worklist)..."
                 |> Task.andThen
                     (\_ ->
+                        runSpecializationTask mainGlobal mainType globalTypeEnv nodesWithIds annotationsWithIds mvarEnv
+                    )
+                |> Task.andThen
+                    (\( finalState, mainSpecIdVal ) ->
                         let
-                            ( finalState, mainSpecIdVal ) =
-                                runSpecialization mainGlobal mainType globalTypeEnv nodesWithIds annotationsWithIds mvarEnv
-
                             -- Extract what we need and release toptNodes for GC
                             finalAccum =
                                 finalState.accum
@@ -148,10 +149,37 @@ monomorphizeWithLog log entryPointName globalTypeEnv globalGraph =
                     )
 
 
-{-| Phase 1: Run the specialization worklist to completion.
+{-| Phase 1: Run the specialization worklist to completion (pure).
 -}
 runSpecialization : TOpt.Global -> Can.Type TypeIds.MVarId -> TypeEnv.GlobalTypeEnv -> DMap.Dict String TOpt.Global (TOpt.Node TypeIds.MVarId) -> TOpt.AnnotationsByGlobal TypeIds.MVarId -> State.MVarEnv -> ( MonoState, Mono.SpecId )
 runSpecialization mainGlobal mainType globalTypeEnv nodes annotations mvarEnv =
+    let
+        ( stateWithMain, mainSpecIdVal ) =
+            initSpecialization mainGlobal mainType globalTypeEnv nodes annotations mvarEnv
+
+        finalState =
+            processWorklistPure stateWithMain
+    in
+    ( finalState, mainSpecIdVal )
+
+
+{-| Phase 1 (Task): Run the specialization worklist to completion via Task.andThen,
+allowing memory monitoring hooks to run between specializations.
+-}
+runSpecializationTask : TOpt.Global -> Can.Type TypeIds.MVarId -> TypeEnv.GlobalTypeEnv -> DMap.Dict String TOpt.Global (TOpt.Node TypeIds.MVarId) -> TOpt.AnnotationsByGlobal TypeIds.MVarId -> State.MVarEnv -> Task x ( MonoState, Mono.SpecId )
+runSpecializationTask mainGlobal mainType globalTypeEnv nodes annotations mvarEnv =
+    let
+        ( stateWithMain, mainSpecIdVal ) =
+            initSpecialization mainGlobal mainType globalTypeEnv nodes annotations mvarEnv
+    in
+    processWorklist stateWithMain
+        |> Task.map (\finalState -> ( finalState, mainSpecIdVal ))
+
+
+{-| Shared initialization for both pure and Task-based specialization.
+-}
+initSpecialization : TOpt.Global -> Can.Type TypeIds.MVarId -> TypeEnv.GlobalTypeEnv -> DMap.Dict String TOpt.Global (TOpt.Node TypeIds.MVarId) -> TOpt.AnnotationsByGlobal TypeIds.MVarId -> State.MVarEnv -> ( MonoState, Mono.SpecId )
+initSpecialization mainGlobal mainType globalTypeEnv nodes annotations mvarEnv =
     let
         mainMonoType : Mono.MonoType
         mainMonoType =
@@ -183,12 +211,8 @@ runSpecialization mainGlobal mainType globalTypeEnv nodes annotations mvarEnv =
                         , scheduled = BitSet.insertGrowing mainSpecIdVal initialAccum.scheduled
                     }
             }
-
-        finalState : MonoState
-        finalState =
-            processWorklist stateWithMain
     in
-    ( finalState, mainSpecIdVal )
+    ( stateWithMain, mainSpecIdVal )
 
 
 {-| Phase 2: Assemble the raw MonoGraph from the final specialization state.
@@ -332,16 +356,33 @@ findEntryPointId entryPointName nodes =
 -- ========== WORKLIST PROCESSING ==========
 
 
-{-| Process all pending specializations until the worklist is empty.
+{-| Process all pending specializations until the worklist is empty (pure).
 -}
-processWorklist : MonoState -> MonoState
-processWorklist state =
+processWorklistPure : MonoState -> MonoState
+processWorklistPure state =
     case state.accum.worklist of
         [] ->
             state
 
         (SpecializeGlobal specId) :: rest ->
-            processWorklist (processOneWorkItem specId rest state)
+            processWorklistPure (processOneWorkItem specId rest state)
+
+
+{-| Process all pending specializations until the worklist is empty.
+
+Each iteration flows through Task.andThen so that memory monitoring
+hooks can run between specializations.
+
+-}
+processWorklist : MonoState -> Task x MonoState
+processWorklist state =
+    case state.accum.worklist of
+        [] ->
+            Task.succeed state
+
+        (SpecializeGlobal specId) :: rest ->
+            Task.succeed (processOneWorkItem specId rest state)
+                |> Task.andThen processWorklist
 
 
 
@@ -368,6 +409,19 @@ processOneWorkItem specId rest state =
                     ctx =
                         state.ctx
 
+                    freeVars =
+                        case global of
+                            Mono.Global canonical name ->
+                                case DMap.get TOpt.toComparableGlobal (TOpt.Global canonical name) ctx.annotations of
+                                    Just (Can.Forall fv _) ->
+                                        fv
+
+                                    Nothing ->
+                                        Dict.empty
+
+                            Mono.Accessor _ ->
+                                Dict.empty
+
                     -- Clear varEnv when starting a new function specialization
                     -- because we're entering a new scope with different local variables
                     state2 =
@@ -379,6 +433,7 @@ processOneWorkItem specId rest state =
                         , ctx =
                             { ctx
                                 | currentGlobal = Just global
+                                , currentFreeVars = freeVars
                                 , varEnv = State.emptyVarEnv
                             }
                         }

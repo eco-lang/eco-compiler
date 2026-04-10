@@ -772,26 +772,33 @@ applySubstWithFreeVars :
     -> Can.Type MVarId
     -> Mono.MonoType
 applySubstWithFreeVars mvarEnv _ subst canType =
-    let
-        rootIds =
-            collectMVarIds canType []
+    if Dict.size subst <= 8 then
+        -- For small substitutions, filtering costs more than just applying
+        -- the full subst directly (the overhead of building Set + Dict.filter
+        -- exceeds any savings from a slightly smaller dict).
+        Tuple.first (applySubst mvarEnv subst canType)
 
-        rootKeys =
-            List.map Id.toComparable rootIds
+    else
+        let
+            rootIds =
+                collectMVarIds canType []
 
-        -- Compute transitive closure: include all MVarIds reachable
-        -- through substitution bindings. This ensures chains like
-        -- Id_x -> MVar 10, 10 -> MInt keep both entries so that
-        -- applySubst + resolveMonoVars can fully resolve.
-        reachableKeys =
-            closureOverSubst rootKeys subst
+            rootKeys =
+                List.map Id.toComparable rootIds
 
-        filteredSubst =
-            Dict.filter
-                (\key _ -> Set.member key reachableKeys)
-                subst
-    in
-    Tuple.first (applySubst mvarEnv filteredSubst canType)
+            -- Compute transitive closure: include all MVarIds reachable
+            -- through substitution bindings. This ensures chains like
+            -- Id_x -> MVar 10, 10 -> MInt keep both entries so that
+            -- applySubst + resolveMonoVars can fully resolve.
+            reachableKeys =
+                closureOverSubst rootKeys subst
+
+            filteredSubst =
+                Dict.filter
+                    (\key _ -> Set.member key reachableKeys)
+                    subst
+        in
+        Tuple.first (applySubst mvarEnv filteredSubst canType)
 
 
 {-| Compute the transitive closure of substitution keys reachable from
@@ -978,7 +985,7 @@ refreshSchemeInfo env cached =
             renameMVarIdsInCanType renameMap cached.schemeType
     in
     ( { varIds = freshVarIds
-      , numberVarKeys = Set.foldl (\k acc -> Set.insert (applyRenameToId renameMap k) acc) Set.empty cached.numberVarKeys
+      , numberVarKeys = Set.map (applyRenameToId renameMap) cached.numberVarKeys
       , argTypes = refreshedArgTypes
       , resultType = refreshedResultType
       , argCount = cached.argCount

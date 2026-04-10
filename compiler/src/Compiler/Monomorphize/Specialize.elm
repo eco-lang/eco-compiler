@@ -167,30 +167,13 @@ lookupFreeVars maybeGlobal annotations =
             Dict.empty
 
 
-{-| Look up FreeVars for the current global from state context.
--}
-lookupFreeVarsFromCtx : MonoState -> Can.FreeVars
-lookupFreeVarsFromCtx state =
-    case state.ctx.currentGlobal of
-        Just (Mono.Global canonical name) ->
-            case Data.Map.get TOpt.toComparableGlobal (TOpt.Global canonical name) state.ctx.annotations of
-                Just (Can.Forall freeVars _) ->
-                    freeVars
-
-                Nothing ->
-                    Dict.empty
-
-        _ ->
-            Dict.empty
-
-
 {-| Apply substitution with FreeVars scoping from the current global's annotation.
 Only substitutes MVarIds that actually appear in canType, preventing cross-scheme
-contamination.
+contamination. Uses cached currentFreeVars from SpecContext (set in processOneWorkItem).
 -}
 applySubstFV : MonoState -> Substitution -> Can.Type MVarId -> Mono.MonoType
 applySubstFV state subst canType =
-    TypeSubst.applySubstWithFreeVars state.ctx.mvarEnv (lookupFreeVarsFromCtx state) subst canType
+    TypeSubst.applySubstWithFreeVars state.ctx.mvarEnv state.ctx.currentFreeVars subst canType
 
 
 {-| Enqueue a specialization onto the worklist, deduplicating via the scheduled BitSet.
@@ -205,16 +188,6 @@ enqueueSpec global rawMonoType maybeLambda state =
     let
         monoType =
             Mono.forceCNumberToInt rawMonoType
-
-        _ =
-            if Mono.containsAnyMVar monoType && not (Mono.containsCEcoMVar monoType) then
-                Utils.Crash.crash
-                    ("enqueueSpec: residual CNumber MVar in monoType: "
-                        ++ Mono.monoTypeToDebugString monoType
-                    )
-
-            else
-                ()
 
         accum =
             state.accum
@@ -1236,15 +1209,11 @@ specializeExpr expr subst state =
             ( Mono.MonoLiteral (Mono.LFloat value) monoType, state )
 
         TOpt.VarLocal name meta ->
-            let
-                canType =
-                    meta.tipe
-
-                monoTypeFromMeta =
-                    Mono.forceCNumberToInt (applySubstFV state subst canType)
-            in
             if isLocalMultiTarget name state then
                 let
+                    monoTypeFromMeta =
+                        Mono.forceCNumberToInt (applySubstFV state subst meta.tipe)
+
                     ( freshName, state1 ) =
                         getOrCreateLocalInstance name monoTypeFromMeta subst state
                 in
@@ -1256,18 +1225,18 @@ specializeExpr expr subst state =
                         ( Mono.MonoVarLocal name envType, state )
 
                     Nothing ->
+                        let
+                            monoTypeFromMeta =
+                                Mono.forceCNumberToInt (applySubstFV state subst meta.tipe)
+                        in
                         ( Mono.MonoVarLocal name monoTypeFromMeta, state )
 
         TOpt.TrackedVarLocal _ name meta ->
-            let
-                canType =
-                    meta.tipe
-
-                monoTypeFromMeta =
-                    Mono.forceCNumberToInt (applySubstFV state subst canType)
-            in
             if isLocalMultiTarget name state then
                 let
+                    monoTypeFromMeta =
+                        Mono.forceCNumberToInt (applySubstFV state subst meta.tipe)
+
                     ( freshName, state1 ) =
                         getOrCreateLocalInstance name monoTypeFromMeta subst state
                 in
@@ -1279,6 +1248,10 @@ specializeExpr expr subst state =
                         ( Mono.MonoVarLocal name envType, state )
 
                     Nothing ->
+                        let
+                            monoTypeFromMeta =
+                                Mono.forceCNumberToInt (applySubstFV state subst meta.tipe)
+                        in
                         ( Mono.MonoVarLocal name monoTypeFromMeta, state )
 
         TOpt.VarGlobal region global meta ->
@@ -1531,7 +1504,7 @@ specializeExpr expr subst state =
                             resolveProcessedArgs processedArgs paramTypes callSubst state1a
 
                         resultMonoType =
-                            callResultMonoType state1a.ctx.mvarEnv (lookupFreeVarsFromCtx state1a) callSubst canType
+                            callResultMonoType state1a.ctx.mvarEnv (state1a.ctx.currentFreeVars) callSubst canType
 
                         monoGlobal =
                             toptGlobalToMono global
@@ -1567,7 +1540,7 @@ specializeExpr expr subst state =
                             resolveProcessedArgs processedArgs paramTypes callSubst state1a
 
                         resultMonoType =
-                            callResultMonoType state1a.ctx.mvarEnv (lookupFreeVarsFromCtx state1a) callSubst canType
+                            callResultMonoType state1a.ctx.mvarEnv (state1a.ctx.currentFreeVars) callSubst canType
 
                         monoFunc =
                             Mono.MonoVarKernel funcRegion kernelPrefix home name funcMonoType
@@ -1597,7 +1570,7 @@ specializeExpr expr subst state =
                             resolveProcessedArgs processedArgs paramTypes callSubst state1a
 
                         resultMonoType =
-                            callResultMonoType state1a.ctx.mvarEnv (lookupFreeVarsFromCtx state1a) callSubst canType
+                            callResultMonoType state1a.ctx.mvarEnv (state1a.ctx.currentFreeVars) callSubst canType
 
                         monoFunc =
                             Mono.MonoVarKernel funcRegion "Elm" "Debug" name funcMonoType
@@ -1648,7 +1621,7 @@ specializeExpr expr subst state =
                                     resolveProcessedArgs processedArgs paramTypes callSubst state1
 
                                 resultMonoType =
-                                    callResultMonoType state1.ctx.mvarEnv (lookupFreeVarsFromCtx state1) callSubst canType
+                                    callResultMonoType state1.ctx.mvarEnv (state1.ctx.currentFreeVars) callSubst canType
 
                                 ( freshName, state3 ) =
                                     getOrCreateLocalInstance name funcMonoType callSubst state2
@@ -1679,7 +1652,7 @@ specializeExpr expr subst state =
                                     resolveProcessedArgs processedArgs paramTypes callSubst state1a
 
                                 resultMonoType =
-                                    callResultMonoType state1a.ctx.mvarEnv (lookupFreeVarsFromCtx state1a) callSubst canType
+                                    callResultMonoType state1a.ctx.mvarEnv (state1a.ctx.currentFreeVars) callSubst canType
 
                                 ( monoFunc, state3 ) =
                                     specializeExpr func callSubst state2
