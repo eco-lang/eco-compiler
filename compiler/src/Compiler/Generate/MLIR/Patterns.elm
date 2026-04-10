@@ -588,7 +588,7 @@ generateMonoPathHelper ctx path targetType revAcc =
                     Mono.getMonoPathType subPath
 
                 layout =
-                    Types.computeRecordLayout (DataMap.fromList identity (Dict.toList (getRecordFields containerType)))
+                    Types.computeRecordLayout (getRecordFields containerType)
 
                 fieldInfo =
                     findFieldInfoByName fieldName layout.fields

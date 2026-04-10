@@ -35,7 +35,8 @@ import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Doc as D
 import Compiler.Reporting.Render.Type as RT
 import Compiler.Reporting.Render.Type.Localizer as L
-import Data.Map as Dict exposing (Dict)
+import Data.Map as DataMap
+import Dict exposing (Dict)
 import Data.Set as EverySet exposing (EverySet)
 import Json.Encode as Encode
 import Maybe.Extra as Maybe
@@ -51,7 +52,7 @@ import Utils.Main as Utils
 {-| Map from module names to their optimized nodes in the global dependency graph.
 -}
 type alias Graph =
-    Dict String Opt.Global Opt.Node
+    DataMap.Dict String Opt.Global Opt.Node
 
 
 {-| Calculate the line number where generated JavaScript code begins after prelude.
@@ -81,7 +82,7 @@ generate sourceMaps leadingLines mode (Opt.GlobalGraph graph _) mains =
     let
         state : State
         state =
-            Dict.foldr ModuleName.compareCanonical (addMain mode graph) (emptyState (firstGeneratedLineNumber mode)) mains
+            DataMap.foldr ModuleName.compareCanonical (addMain mode graph) (emptyState (firstGeneratedLineNumber mode)) mains
     in
     prelude mode
         ++ stateToBuilder state
@@ -763,7 +764,7 @@ toMainExports mode mains =
 
         exports : String
         exports =
-            generateExports mode (Dict.foldr ModuleName.compareCanonical addToTrie emptyTrie mains)
+            generateExports mode (DataMap.foldr ModuleName.compareCanonical addToTrie emptyTrie mains)
     in
     export ++ "(" ++ exports ++ ");"
 
@@ -788,7 +789,7 @@ generateExports mode (Trie maybeMain subs) =
                         ++ builderData.revBuilders
                         ++ end
     in
-    case Dict.toList compare subs of
+    case Dict.toList subs of
         [] ->
             starter "" ++ "}"
 
@@ -815,7 +816,7 @@ addSubTrie mode end ( name, trie ) =
 {-| A trie structure for organizing modules by their dotted name segments.
 -}
 type Trie
-    = Trie (Maybe ( IO.Canonical, Opt.Main )) (Dict String Name.Name Trie)
+    = Trie (Maybe ( IO.Canonical, Opt.Main )) (Dict Name.Name Trie)
 
 
 {-| Create an empty trie with no modules.
@@ -841,7 +842,7 @@ segmentsToTrie home segments main =
             Trie (Just ( home, main )) Dict.empty
 
         segment :: otherSegments ->
-            Trie Nothing (Dict.singleton identity segment (segmentsToTrie home otherSegments main))
+            Trie Nothing (Dict.singleton segment (segmentsToTrie home otherSegments main))
 
 
 {-| Merge two tries together, combining their module structures.
@@ -850,7 +851,7 @@ merge : Trie -> Trie -> Trie
 merge (Trie main1 subs1) (Trie main2 subs2) =
     Trie
         (checkedMerge main1 main2)
-        (Utils.mapUnionWith identity compare merge subs1 subs2)
+        (Dict.merge Dict.insert (\k v1 v2 acc -> Dict.insert k (merge v1 v2) acc) Dict.insert subs1 subs2 Dict.empty)
 
 
 {-| Merge two Maybe values, ensuring no conflicts (two modules with same name).

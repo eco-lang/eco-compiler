@@ -33,7 +33,7 @@ import Common.Format.KnownContents exposing (KnownContents)
 import Compiler.AST.Source as Src
 import Compiler.Parse.Module as M
 import Compiler.Reporting.Annotation as A
-import Data.Map as Dict exposing (Dict)
+import Dict exposing (Dict)
 
 
 {-| Complete import information for a module, tracking all symbols and their sources.
@@ -56,14 +56,14 @@ fromModule knownContents modu =
 
 {-| Convert a list of imports to a dictionary keyed by module name.
 -}
-importsToDict : List Src.Import -> Dict String String Src.Import
+importsToDict : List Src.Import -> Dict String Src.Import
 importsToDict =
     List.map (\((Src.Import ( _, A.At _ name ) _ _) as import_) -> ( name, import_ ))
-        >> Dict.fromList identity
+        >> Dict.fromList
 
 
 {-| Build import information from a dictionary of imports, resolving symbols to their source modules.
 -}
-fromImports : KnownContents -> Dict String String Src.Import -> ImportInfo
+fromImports : KnownContents -> Dict String Src.Import -> ImportInfo
 fromImports _ _ =
     ImportInfo

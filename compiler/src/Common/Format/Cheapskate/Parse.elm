@@ -83,7 +83,7 @@ import Common.Format.Cheapskate.Util
         , upToCountChars
         )
 import Common.Format.RWS as RWS exposing (RWS)
-import Data.Map as Dict
+import Dict
 import List.Extra as List
 import Set exposing (Set)
 import Utils.Crash exposing (crash)
@@ -291,7 +291,7 @@ closeContainer =
                     Container Reference cs__ ->
                         case parse pReference (String.trim <| joinLines <| List.map extractText cs__) of
                             Ok ( lab, lnk, tit ) ->
-                                RWS.tell (Dict.singleton identity (normalizeReference lab) ( lnk, tit ))
+                                RWS.tell (Dict.singleton (normalizeReference lab) ( lnk, tit ))
                                     |> RWS.andThen
                                         (\_ ->
                                             case rest of
@@ -756,7 +756,7 @@ processLine ( _, txt ) =
                                         False
                                )
 
-                    addNew : ( List ContainerType, Leaf ) -> () -> ContainerStack -> ( (), ContainerStack, Dict.Dict String String ( String, String ) )
+                    addNew : ( List ContainerType, Leaf ) -> () -> ContainerStack -> ( (), ContainerStack, Dict.Dict String ( String, String ) )
                     addNew ( ns, lf ) =
                         RWS.mapM_ addContainer ns
                             |> RWS.andThen

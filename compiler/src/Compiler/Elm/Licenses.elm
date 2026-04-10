@@ -29,7 +29,7 @@ and provides suggestions for invalid license strings. Used in elm.json validatio
 import Compiler.Json.Decode as D
 import Compiler.Json.Encode as E
 import Compiler.Reporting.Suggest as Suggest
-import Data.Map as Dict exposing (Dict)
+import Dict exposing (Dict)
 
 
 
@@ -79,15 +79,15 @@ decoder toError =
 
 check : String -> Result (List String) License
 check givenCode =
-    if Dict.member identity givenCode osiApprovedSpdxLicenses then
+    if Dict.member givenCode osiApprovedSpdxLicenses then
         Ok (License givenCode)
 
     else
         let
             pairs : List ( String, String )
             pairs =
-                List.map (\code -> ( code, code )) (Dict.keys compare osiApprovedSpdxLicenses)
-                    ++ Dict.toList compare osiApprovedSpdxLicenses
+                List.map (\code -> ( code, code )) (Dict.keys osiApprovedSpdxLicenses)
+                    ++ Dict.toList osiApprovedSpdxLicenses
         in
         Err
             (List.map Tuple.first
@@ -101,9 +101,9 @@ check givenCode =
 -- ====== LIST OF LICENSES ======
 
 
-osiApprovedSpdxLicenses : Dict String String String
+osiApprovedSpdxLicenses : Dict String String
 osiApprovedSpdxLicenses =
-    Dict.fromList identity
+    Dict.fromList
         [ ( "0BSD", "BSD Zero Clause License" )
         , ( "AAL", "Attribution Assurance License" )
         , ( "AFL-1.1", "Academic Free License v1.1" )

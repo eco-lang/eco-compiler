@@ -12,6 +12,7 @@ into monomorphized form by applying type substitutions.
 
 -}
 
+import Array
 import Compiler.AST.Canonical as Can
 import Compiler.AST.DecisionTree.TypedPath as TypedPath
 import Compiler.AST.Monomorphized as Mono
@@ -895,7 +896,7 @@ specializeValueCycle requestedCanonical requestedName valueDefs requestedMonoTyp
         ( requestedSpecId, _ ) =
             Registry.getOrCreateSpecId requestedGlobal requestedMonoType Nothing stateAfter.accum.registry
     in
-    case Dict.get requestedSpecId newNodes of
+    case Array.get requestedSpecId newNodes |> Maybe.andThen identity of
         Just requestedNode ->
             ( requestedNode
             , { stateAfter
@@ -929,8 +930,8 @@ specializeValueInCycle :
     -> Mono.MonoType
     -> Substitution
     -> ( Name, TOpt.Expr MVarId )
-    -> ( Dict Int Mono.MonoNode, MonoState )
-    -> ( Dict Int Mono.MonoNode, MonoState )
+    -> ( Array.Array (Maybe Mono.MonoNode), MonoState )
+    -> ( Array.Array (Maybe Mono.MonoNode), MonoState )
 specializeValueInCycle requestedCanonical requestedName requestedMonoType sharedSubst ( name, expr ) ( accNodes, accState ) =
     let
         globalVal =
@@ -959,7 +960,7 @@ specializeValueInCycle requestedCanonical requestedName requestedMonoType shared
         accState1 =
             { accState | accum = { accum | registry = newRegistry } }
     in
-    if Dict.member specId accNodes then
+    if arrayHasNode specId accNodes then
         ( accNodes, accState1 )
 
     else
@@ -971,7 +972,7 @@ specializeValueInCycle requestedCanonical requestedName requestedMonoType shared
                 Mono.MonoDefine monoExpr (Mono.typeOf monoExpr)
 
             nextNodes =
-                Dict.insert specId monoNode accNodes
+                arraySetGrowing specId (Just monoNode) accNodes
         in
         ( nextNodes, accState2 )
 
@@ -1016,7 +1017,7 @@ specializeFunctionCycle requestedCanonical requestedName _ funcDefs requestedMon
         ( requestedSpecId, _ ) =
             Registry.getOrCreateSpecId requestedGlobal requestedMonoType Nothing stateAfter.accum.registry
     in
-    case Dict.get requestedSpecId newNodes of
+    case Array.get requestedSpecId newNodes |> Maybe.andThen identity of
         Just requestedNode ->
             ( requestedNode
             , { stateAfter
@@ -1048,8 +1049,8 @@ specializeFunc :
     -> Mono.MonoType
     -> Substitution
     -> TOpt.Def MVarId
-    -> ( Dict Int Mono.MonoNode, MonoState )
-    -> ( Dict Int Mono.MonoNode, MonoState )
+    -> ( Array.Array (Maybe Mono.MonoNode), MonoState )
+    -> ( Array.Array (Maybe Mono.MonoNode), MonoState )
 specializeFunc requestedCanonical requestedName requestedMonoType sharedSubst def ( accNodes, accState ) =
     let
         name =
@@ -1083,7 +1084,7 @@ specializeFunc requestedCanonical requestedName requestedMonoType sharedSubst de
         accState1 =
             { accState | accum = { accum | registry = newRegistry } }
     in
-    if Dict.member specId accNodes then
+    if arrayHasNode specId accNodes then
         ( accNodes, accState1 )
 
     else
@@ -1092,7 +1093,7 @@ specializeFunc requestedCanonical requestedName requestedMonoType sharedSubst de
                 specializeFuncDefInCycle sharedSubst def accState1
 
             nextNodes =
-                Dict.insert specId monoNode accNodes
+                arraySetGrowing specId (Just monoNode) accNodes
         in
         ( nextNodes, accState2 )
 
@@ -4045,3 +4046,34 @@ renameTailCallsChoice oldName newName choice =
 
         Mono.Jump i ->
             Mono.Jump i
+
+
+
+-- ========== ARRAY HELPERS ==========
+
+
+{-| Check if the array has a non-Nothing node at the given index.
+-}
+arrayHasNode : Int -> Array.Array (Maybe a) -> Bool
+arrayHasNode index arr =
+    case Array.get index arr of
+        Just (Just _) ->
+            True
+
+        _ ->
+            False
+
+
+{-| Set an element in an array, growing it with Nothing values if necessary.
+-}
+arraySetGrowing : Int -> Maybe a -> Array.Array (Maybe a) -> Array.Array (Maybe a)
+arraySetGrowing index value arr =
+    let
+        len =
+            Array.length arr
+    in
+    if index < len then
+        Array.set index value arr
+
+    else
+        Array.set index value (Array.append arr (Array.repeat (index - len + 1) Nothing))

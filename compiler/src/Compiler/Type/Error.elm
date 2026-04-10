@@ -42,7 +42,7 @@ import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Reporting.Doc as D
 import Compiler.Reporting.Render.Type as RT
 import Compiler.Reporting.Render.Type.Localizer as L
-import Data.Map as Dict exposing (Dict)
+import Dict exposing (Dict)
 import Prelude
 import System.TypeCheck.IO as IO
 import Utils.Bytes.Decode as BD
@@ -69,7 +69,7 @@ type Type
     | RigidVar Name
     | RigidSuper Super Name
     | Type IO.Canonical Name (List Type)
-    | Record (Dict String Name Type) Extension
+    | Record (Dict Name Type) Extension
     | Unit
     | Tuple Type Type (List Type)
     | Alias IO.Canonical Name (List ( Name, Type )) Type
@@ -165,9 +165,9 @@ aliasToDoc localizer ctx home name args =
         (List.map (toDoc localizer RT.App << Tuple.second) args)
 
 
-fieldsToDocs : L.Localizer -> Dict String Name Type -> List ( D.Doc, D.Doc )
+fieldsToDocs : L.Localizer -> Dict Name Type -> List ( D.Doc, D.Doc )
 fieldsToDocs localizer fields =
-    Dict.foldr compare (addField localizer) [] fields
+    Dict.foldr (addField localizer) [] fields
 
 
 addField : L.Localizer -> Name -> Type -> List ( D.Doc, D.Doc ) -> List ( D.Doc, D.Doc )
@@ -708,7 +708,7 @@ diffAliasedRecord localizer t1 t2 =
 -- ====== RECORD DIFFS ======
 
 
-diffRecord : L.Localizer -> Dict String Name Type -> Extension -> Dict String Name Type -> Extension -> Diff D.Doc
+diffRecord : L.Localizer -> Dict Name Type -> Extension -> Dict Name Type -> Extension -> Diff D.Doc
 diffRecord localizer fields1 ext1 fields2 ext2 =
     let
         toUnknownDocs : Name -> Type -> ( D.Doc, D.Doc )
@@ -719,33 +719,33 @@ diffRecord localizer fields1 ext1 fields2 ext2 =
         toOverlapDocs field t1 t2 =
             toDiff localizer RT.None t1 t2 |> mapDiff (Tuple.pair (D.fromName field))
 
-        left : Dict String Name ( D.Doc, D.Doc )
+        left : Dict Name ( D.Doc, D.Doc )
         left =
             Dict.map toUnknownDocs (Dict.diff fields1 fields2)
 
-        right : Dict String Name ( D.Doc, D.Doc )
+        right : Dict Name ( D.Doc, D.Doc )
         right =
             Dict.map toUnknownDocs (Dict.diff fields2 fields1)
 
         fieldsDiff : Diff (List ( D.Doc, D.Doc ))
         fieldsDiff =
             let
-                fieldsDiffDict : Diff (Dict String Name ( D.Doc, D.Doc ))
+                fieldsDiffDict : Diff (Dict Name ( D.Doc, D.Doc ))
                 fieldsDiffDict =
                     let
-                        both : Dict String Name (Diff ( D.Doc, D.Doc ))
+                        both : Dict Name (Diff ( D.Doc, D.Doc ))
                         both =
-                            Dict.merge compare
+                            Dict.merge
                                 (\_ _ acc -> acc)
-                                (\field t1 t2 acc -> Dict.insert identity field (toOverlapDocs field t1 t2) acc)
+                                (\field t1 t2 acc -> Dict.insert field (toOverlapDocs field t1 t2) acc)
                                 (\_ _ acc -> acc)
                                 fields1
                                 fields2
                                 Dict.empty
 
-                        sequenceA : Dict String Name (Diff ( D.Doc, D.Doc )) -> Diff (Dict String Name ( D.Doc, D.Doc ))
+                        sequenceA : Dict Name (Diff ( D.Doc, D.Doc )) -> Diff (Dict Name ( D.Doc, D.Doc ))
                         sequenceA =
-                            Dict.foldr compare (\k x acc -> applyDiff acc (mapDiff (Dict.insert identity k) x)) (pureDiff Dict.empty)
+                            Dict.foldr (\k x acc -> applyDiff acc (mapDiff (Dict.insert k) x)) (pureDiff Dict.empty)
                     in
                     if Dict.isEmpty left && Dict.isEmpty right then
                         sequenceA both
@@ -755,7 +755,7 @@ diffRecord localizer fields1 ext1 fields2 ext2 =
                             (sequenceA both)
                             (Diff left right (Different Bag.empty))
             in
-            mapDiff (Dict.values compare) fieldsDiffDict
+            mapDiff Dict.values fieldsDiffDict
 
         (Diff doc1 doc2 status) =
             fieldsDiff
@@ -767,32 +767,32 @@ diffRecord localizer fields1 ext1 fields2 ext2 =
             let
                 minView : Maybe ( Name, ( D.Doc, D.Doc ) )
                 minView =
-                    Dict.toList compare left
+                    Dict.toList left
                         |> List.sortBy Tuple.first
                         |> List.head
             in
             case minView of
                 Just ( f, _ ) ->
-                    Different (Bag.one (FieldTypo f (Dict.keys compare fields2)))
+                    Different (Bag.one (FieldTypo f (Dict.keys fields2)))
 
                 Nothing ->
                     if Dict.isEmpty right then
                         Similar
 
                     else
-                        Different (Bag.one (FieldsMissing (Dict.keys compare right)))
+                        Different (Bag.one (FieldsMissing (Dict.keys right)))
 
         ( False, True ) ->
             let
                 minView : Maybe ( Name, ( D.Doc, D.Doc ) )
                 minView =
-                    Dict.toList compare left
+                    Dict.toList left
                         |> List.sortBy Tuple.first
                         |> List.head
             in
             case minView of
                 Just ( f, _ ) ->
-                    Different (Bag.one (FieldTypo f (Dict.keys compare fields2)))
+                    Different (Bag.one (FieldTypo f (Dict.keys fields2)))
 
                 Nothing ->
                     Similar
@@ -801,13 +801,13 @@ diffRecord localizer fields1 ext1 fields2 ext2 =
             let
                 minView : Maybe ( Name, ( D.Doc, D.Doc ) )
                 minView =
-                    Dict.toList compare right
+                    Dict.toList right
                         |> List.sortBy Tuple.first
                         |> List.head
             in
             case minView of
                 Just ( f, _ ) ->
-                    Different (Bag.one (FieldTypo f (Dict.keys compare fields1)))
+                    Different (Bag.one (FieldTypo f (Dict.keys fields1)))
 
                 Nothing ->
                     Similar
@@ -952,7 +952,7 @@ typeEncoder type_ =
         Record msgType decoder ->
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 8
-                , BE.assocListDict compare BE.string typeEncoder msgType
+                , BE.stdDict BE.string typeEncoder msgType
                 , extensionEncoder decoder
                 ]
 
@@ -1021,7 +1021,7 @@ typeDecoder =
 
                     8 ->
                         Bytes.Decode.map2 Record
-                            (BD.assocListDict identity BD.string typeDecoder)
+                            (BD.stdDict BD.string typeDecoder)
                             extensionDecoder
 
                     9 ->

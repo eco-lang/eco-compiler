@@ -151,7 +151,7 @@ type alias TypeCheckTypedResult =
     , nodeTypes : TCan.NodeTypes
     , kernelEnv : KernelTypes.KernelTypeEnv
     , nodeVars : Array (Maybe TypeCheck.Variable)
-    , annotationVars : Data.Map.Dict String Name.Name TypeCheck.Variable
+    , annotationVars : Dict Name.Name TypeCheck.Variable
     }
 
 
@@ -383,7 +383,7 @@ compileModulesHelper pkg ifaces sources results =
 
 canonicalize : Pkg.Name -> Dict ModuleName.Raw I.Interface -> Src.Module -> Result CompileError Can.Module
 canonicalize pkg ifaces modul =
-    case Tuple.second (RResult.run (Canonicalize.canonicalize pkg (Data.Map.fromList identity (Dict.toList ifaces)) modul)) of
+    case Tuple.second (RResult.run (Canonicalize.canonicalize pkg ifaces modul)) of
         Ok canonical ->
             Ok canonical
 
@@ -401,7 +401,7 @@ typeCheckErased canonical =
     TypeErased.constrain canonical
         |> TypeCheck.andThen Type.run
         |> TypeCheck.unsafePerformIO
-        |> Result.map (\dm -> Dict.fromList (Data.Map.toList compare dm))
+        |> Result.map identity
 
 
 {-| Typed type checking using constrainWithIds + runWithIds.
@@ -428,7 +428,7 @@ typeCheckTyped canonical =
         Ok { annotations, annotationVars, nodeTypes, nodeVars } ->
             let
                 -- Run PostSolve to fix remaining Group B types and compute kernel env
-                -- annotations and nodeTypes are Data.Map.Dict from Solve.runWithIds
+                -- annotations and nodeTypes are core Dict from Solve.runWithIds
                 postSolveResult =
                     PostSolve.postSolve annotations canonical nodeTypes
 
@@ -439,7 +439,7 @@ typeCheckTyped canonical =
                     postSolveResult.kernelEnv
             in
             Ok
-                { annotations = Dict.fromList (Data.Map.toList compare annotations)
+                { annotations = annotations
                 , typedCanonical = TCanBuild.fromCanonical canonical fixedNodeTypes nodeVars
                 , nodeTypes = fixedNodeTypes
                 , kernelEnv = kernelEnv
@@ -470,7 +470,7 @@ optimizeErased annotations canonical =
 Preserves full type information throughout the optimization process.
 
 -}
-optimizeTyped : Dict Name.Name (Can.Annotation Name) -> TCan.ExprTypes -> TCan.ExprVars -> KernelTypes.KernelTypeEnv -> Data.Map.Dict String Name.Name TypeCheck.Variable -> TCan.Module -> Result (OneOrMore.OneOrMore MainError.Error) (TOpt.LocalGraph Name)
+optimizeTyped : Dict Name.Name (Can.Annotation Name) -> TCan.ExprTypes -> TCan.ExprVars -> KernelTypes.KernelTypeEnv -> Dict Name.Name TypeCheck.Variable -> TCan.Module -> Result (OneOrMore.OneOrMore MainError.Error) (TOpt.LocalGraph Name)
 optimizeTyped annotations nodeTypes nodeVars kernelEnv annotationVars tcanModule =
     Tuple.second (RResult.run (TypedOptimize.optimizeTyped annotations nodeTypes nodeVars kernelEnv annotationVars Dict.empty tcanModule))
 
@@ -530,7 +530,7 @@ buildGlobalTypeEnvWithIfaces ifaces canModule =
     let
         -- Build from interfaces first
         ifaceTypeEnv =
-            TypeEnv.fromInterfaces (Data.Map.fromList identity (Dict.toList ifaces))
+            TypeEnv.fromInterfaces ifaces
 
         -- Build from current module
         moduleTypeEnv =

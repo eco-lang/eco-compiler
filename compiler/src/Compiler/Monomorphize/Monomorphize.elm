@@ -212,17 +212,19 @@ assembleRawGraphFrom finalAccum lambdaCounter mainSpecIdVal =
         nextId =
             finalAccum.registry.nextId
 
-        -- Store nodes directly — no erasure pass needed.
+        -- Store nodes directly — already an Array (Maybe MonoNode).
+        -- Pad to nextId length if needed so downstream consumers see a full-size array.
         nodesArray : Array.Array (Maybe Mono.MonoNode)
         nodesArray =
             let
-                base =
-                    Array.repeat nextId Nothing
+                currentLen =
+                    Array.length finalAccum.nodes
             in
-            Dict.foldl
-                (\specId node acc -> Array.set specId (Just node) acc)
-                base
+            if currentLen >= nextId then
                 finalAccum.nodes
+
+            else
+                Array.append finalAccum.nodes (Array.repeat (nextId - currentLen) Nothing)
 
         -- Compute callEdges, specHasEffects, specValueUsed from the nodes dict.
         -- These were previously accumulated during the worklist but are deferred
@@ -232,32 +234,38 @@ assembleRawGraphFrom finalAccum lambdaCounter mainSpecIdVal =
                 baseEdges =
                     Array.repeat nextId Nothing
             in
-            Dict.foldl
-                (\specId node ( edgesAcc, effectsAcc, valueUsedAcc ) ->
-                    let
-                        neighbors =
-                            collectCallsFromNode node
+            Array.foldl
+                (\maybeNode ( specId, ( edgesAcc, effectsAcc, valueUsedAcc ) ) ->
+                    case maybeNode of
+                        Nothing ->
+                            ( specId + 1, ( edgesAcc, effectsAcc, valueUsedAcc ) )
 
-                        newEdges =
-                            Array.set specId (Just neighbors) edgesAcc
+                        Just node ->
+                            let
+                                neighbors =
+                                    collectCallsFromNode node
 
-                        newEffects =
-                            if nodeHasEffects node then
-                                BitSet.insertGrowing specId effectsAcc
+                                newEdges =
+                                    Array.set specId (Just neighbors) edgesAcc
 
-                            else
-                                effectsAcc
+                                newEffects =
+                                    if nodeHasEffects node then
+                                        BitSet.insertGrowing specId effectsAcc
 
-                        newValueUsed =
-                            List.foldl
-                                (\calleeId acc -> BitSet.insertGrowing calleeId acc)
-                                valueUsedAcc
-                                neighbors
-                    in
-                    ( newEdges, newEffects, newValueUsed )
+                                    else
+                                        effectsAcc
+
+                                newValueUsed =
+                                    List.foldl
+                                        (\calleeId acc -> BitSet.insertGrowing calleeId acc)
+                                        valueUsedAcc
+                                        neighbors
+                            in
+                            ( specId + 1, ( newEdges, newEffects, newValueUsed ) )
                 )
-                ( baseEdges, BitSet.empty, BitSet.empty )
-                finalAccum.nodes
+                ( 0, ( baseEdges, BitSet.empty, BitSet.empty ) )
+                nodesArray
+                |> Tuple.second
 
         -- Mark the main entry point as value-used
         valueUsedWithMain : BitSet.BitSet
@@ -388,7 +396,7 @@ processOneWorkItem specId rest state =
                         { stateAfter
                             | accum =
                                 { stateAfterAccum
-                                    | nodes = Dict.insert specId monoNode stateAfterAccum.nodes
+                                    | nodes = arraySetGrowing specId (Just monoNode) stateAfterAccum.nodes
                                     , inProgress = BitSet.removeGrowing specId stateAfterAccum.inProgress
                                 }
                             , ctx =
@@ -415,7 +423,7 @@ processOneWorkItem specId rest state =
                                 { state2
                                     | accum =
                                         { s2accum
-                                            | nodes = Dict.insert specId (Mono.MonoExtern monoType) s2accum.nodes
+                                            | nodes = arraySetGrowing specId (Just (Mono.MonoExtern monoType)) s2accum.nodes
                                             , inProgress = BitSet.removeGrowing specId s2accum.inProgress
                                         }
                                     , ctx =
@@ -457,7 +465,7 @@ processOneWorkItem specId rest state =
                                     | accum =
                                         { saAccum
                                             | registry = updatedRegistry
-                                            , nodes = Dict.insert specId monoNode saAccum.nodes
+                                            , nodes = arraySetGrowing specId (Just monoNode) saAccum.nodes
                                             , inProgress = BitSet.removeGrowing specId saAccum.inProgress
                                         }
                                     , ctx =
@@ -502,6 +510,26 @@ canTypeToMonoType : Substitution -> Can.Type TypeIds.MVarId -> Mono.MonoType
 canTypeToMonoType subst canType =
     -- Use a dummy MVarEnv for the entry point type conversion (no fresh allocations needed)
     Tuple.first (TypeSubst.canTypeToMonoType (State.initMVarEnv TypeIds.firstMVarId Set.empty) subst canType)
+
+
+
+-- ========== ARRAY HELPERS ==========
+
+
+{-| Set an element in an array, growing it with Nothing values if necessary.
+-}
+arraySetGrowing : Int -> Maybe a -> Array.Array (Maybe a) -> Array.Array (Maybe a)
+arraySetGrowing index value arr =
+    let
+        len =
+            Array.length arr
+    in
+    if index < len then
+        Array.set index value arr
+
+    else
+        -- Grow array to accommodate index, then set
+        Array.set index value (Array.append arr (Array.repeat (index - len + 1) Nothing))
 
 
 

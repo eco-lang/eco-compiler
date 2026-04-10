@@ -58,9 +58,9 @@ normalizeNodeVars state nodeVars =
 
 {-| Resolve each annotation variable to its union-find root.
 -}
-normalizeAnnotationVars : SolverState -> DMap.Dict String Name.Name IO.Variable -> DMap.Dict String Name.Name IO.Variable
+normalizeAnnotationVars : SolverState -> Dict Name.Name IO.Variable -> Dict Name.Name IO.Variable
 normalizeAnnotationVars state annotationVars =
-    DMap.map (\_ var -> SolverSnapshot.resolveVariable state var) annotationVars
+    Dict.map (\_ var -> SolverSnapshot.resolveVariable state var) annotationVars
 
 
 {-| Normalize all binder variables in AllSchemeRoots to their union-find roots.

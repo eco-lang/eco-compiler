@@ -37,7 +37,7 @@ references.
 
 -}
 
-import Data.Map exposing (Dict)
+import Dict exposing (Dict)
 
 
 
@@ -136,7 +136,7 @@ type alias Inlines =
 {-| A mapping from link reference labels to their URLs and titles.
 -}
 type alias ReferenceMap =
-    Dict String String ( String, String )
+    Dict String ( String, String )
 
 
 {-| Options controlling document rendering and parsing behavior.

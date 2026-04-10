@@ -52,7 +52,7 @@ collectKernelTypeIssues : KernelTypes.KernelTypeEnv -> List String
 collectKernelTypeIssues kernelEnv =
     -- The KernelTypeEnv maps (module, name) pairs to their types
     -- Verify all kernel types are well-formed
-    Data.Map.foldl (\a b -> compare (Tuple.first a) (Tuple.first b))
+    Dict.foldl
         (\( moduleName, funcName ) canType acc ->
             let
                 context =

@@ -16,7 +16,8 @@ import Compiler.Reporting.Annotation as A
 import Compiler.Type.Constrain.Erased.Module as ConstrainErased
 import Compiler.Type.Constrain.Typed.Module as ConstrainTyped
 import Compiler.Type.Solve as Solve
-import Data.Map as Dict exposing (Dict)
+import Data.Map
+import Dict exposing (Dict)
 import Expect
 import Set exposing (Set)
 import System.TypeCheck.IO as IO
@@ -107,7 +108,7 @@ expectEquivalentTypeChecking modul =
 
 {-| Run the standard constraint generation and solving path.
 -}
-runStandardPath : Can.Module -> IO.IO (Result Int (Dict String Name.Name (Can.Annotation Name)))
+runStandardPath : Can.Module -> IO.IO (Result Int (Dict Name.Name (Can.Annotation Name)))
 runStandardPath modul =
     ConstrainErased.constrain modul
         |> IO.andThen Solve.run
@@ -131,10 +132,10 @@ runWithIdsPath :
         IO.IO
             (Result
                 Int
-                { annotations : Dict String Name.Name (Can.Annotation Name)
+                { annotations : Dict Name.Name (Can.Annotation Name)
                 , nodeTypes : Array.Array (Maybe (Can.Type Name))
                 , nodeVars : Array.Array (Maybe IO.Variable)
-                , annotationVars : Dict String Name.Name IO.Variable
+                , annotationVars : Dict Name.Name IO.Variable
                 , solverState :
                     { descriptors : Array.Array IO.Descriptor
                     , pointInfo : Array.Array IO.PointInfo
@@ -302,13 +303,13 @@ extractExprNodeIds node =
             extractAllExprIds record
 
         Can.Update record fields ->
-            Dict.foldl A.compareLocated
+            Data.Map.foldl A.compareLocated
                 (\_ (Can.FieldUpdate _ expr) acc -> Set.union (extractAllExprIds expr) acc)
                 (extractAllExprIds record)
                 fields
 
         Can.Record fields ->
-            Dict.foldl A.compareLocated (\_ expr acc -> Set.union (extractAllExprIds expr) acc) Set.empty fields
+            Data.Map.foldl A.compareLocated (\_ expr acc -> Set.union (extractAllExprIds expr) acc) Set.empty fields
 
         Can.Unit ->
             Set.empty

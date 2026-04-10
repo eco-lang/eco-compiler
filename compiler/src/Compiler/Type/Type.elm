@@ -99,7 +99,7 @@ type Constraint
     | CForeign A.Region Name (Can.Annotation Name) (E.Expected Type)
     | CPattern A.Region E.PCategory Type (E.PExpected Type)
     | CAnd (List Constraint)
-    | CLet (List Variable) (List Variable) (Data.Map.Dict String Name (A.Located Type)) Constraint Constraint
+    | CLet (List Variable) (List Variable) (Dict Name (A.Located Type)) Constraint Constraint
 
 
 {-| Wraps a constraint with existentially quantified flex variables.
@@ -110,7 +110,7 @@ the given constraint, with no header bindings.
 -}
 exists : List Variable -> Constraint -> Constraint
 exists flexVars constraint =
-    CLet [] flexVars Data.Map.empty constraint CTrue
+    CLet [] flexVars Dict.empty constraint CTrue
 
 
 
@@ -130,7 +130,7 @@ type Type
     | AppN IO.Canonical Name (List Type)
     | FunN Type Type
     | EmptyRecordN
-    | RecordN (Data.Map.Dict String Name Type) Type
+    | RecordN (Dict Name Type) Type
     | UnitN
     | TupleN Type Type (List Type)
 
@@ -762,10 +762,11 @@ termToErrorType term =
                     )
 
         EmptyRecord1 ->
-            State.pure (ET.Record Data.Map.empty ET.Closed)
+            State.pure (ET.Record Dict.empty ET.Closed)
 
         Record1 fields extension ->
             State.traverseMap compare identity variableToErrorType fields
+                |> State.map (\dmFields -> Dict.fromList (Data.Map.toList compare dmFields))
                 |> State.andThen
                     (\errFields ->
                         variableToErrorType extension
@@ -774,7 +775,7 @@ termToErrorType term =
                                 (\errExt ->
                                     case errExt of
                                         ET.Record subFields subExt ->
-                                            ET.Record (Data.Map.union subFields errFields) subExt
+                                            ET.Record (Dict.union subFields errFields) subExt
 
                                         ET.FlexVar ext ->
                                             ET.Record errFields (ET.FlexOpen ext)

@@ -23,7 +23,7 @@ module Utils.Main exposing
     , nodeGetDirname, nodeMathRandom
     , mapFromListWith, mapInsertWith, mapIntersectionWith, mapIntersectionWithKey
     , mapUnionWith, mapFindMin
-    , mapMapKeys, mapMapMaybe, find, dictFind
+    , mapMapKeys, dictMapKeys, mapMapMaybe, find, dictFind
     , mapTraverse, mapTraverseWithKey, mapTraverseResult, mapTraverseWithKeyResult, dictMapM_
     , eitherLefts, filterM, listGroupBy, listLookup, listMaximum, foldl1_, foldr1
     , listTraverse, listTraverse_, lines, unlines, zipWithM, mapM_
@@ -32,7 +32,7 @@ module Utils.Main exposing
     , sequenceDictMaybe, sequenceDictResult_
     , sequenceListMaybe, sequenceNonemptyListResult
     , foldM
-    , dictFromListWith, dictInsertWith, dictIntersectionWith, dictMapMaybe, dictSequenceResult, dictTraverse, dictTraverseWithKey, dictUnionWith
+    , dictFromListWith, dictInsertWith, dictIntersectionWith, dictIntersectionWithKey, dictMapMaybe, dictSequenceResult, dictSequenceMaybe, dictTraverse, dictTraverseWithKey, dictTraverseResult, dictTraverseWithKeyResult, dictUnionWith, dictMapM__, dictFromKeysA
     )
 
 {-| Utility module providing data structure utilities, HTTP types, and pure helper functions.
@@ -115,7 +115,7 @@ defined in System.IO.
 
 @docs mapFromListWith, mapInsertWith, mapIntersectionWith, mapIntersectionWithKey
 @docs mapUnionWith, mapFindMin
-@docs mapMapKeys, mapMapMaybe, find, dictFind
+@docs mapMapKeys, dictMapKeys, mapMapMaybe, find, dictFind
 
 
 # Dictionary Traversal
@@ -435,6 +435,13 @@ mapMapKeys toComparable keyComparison f =
     Map.foldl keyComparison (\k x xs -> ( f k, x ) :: xs) [] >> Map.fromList toComparable
 
 
+{-| Like mapMapKeys but returns a core Dict when the output key is already comparable.
+-}
+dictMapKeys : (k1 -> k1 -> Order) -> (k1 -> comparable) -> Map.Dict c k1 a -> Dict.Dict comparable a
+dictMapKeys keyComparison f =
+    Map.foldl keyComparison (\k x xs -> ( f k, x ) :: xs) [] >> Dict.fromList
+
+
 {-| Map a Maybe-producing function over dictionary values, keeping only the Just results.
 -}
 mapMapMaybe : (k -> comparable) -> (k -> k -> Order) -> (a -> Maybe b) -> Map.Dict comparable k a -> Map.Dict comparable k b
@@ -538,6 +545,49 @@ dictIntersectionWith f a b =
 dictSequenceResult : Dict comparable (Result e a) -> Result e (Dict comparable a)
 dictSequenceResult =
     Dict.foldl (\k v acc -> Result.map2 (Dict.insert k) v acc) (Ok Dict.empty)
+
+
+{-| Sequence a Dict of Maybes into a Maybe of Dict, returning Nothing if any value is Nothing.
+-}
+dictSequenceMaybe : Dict comparable (Maybe a) -> Maybe (Dict comparable a)
+dictSequenceMaybe =
+    Dict.foldl (\k v acc -> Maybe.map2 (Dict.insert k) v acc) (Just Dict.empty)
+
+
+{-| Traverse a standard Dict with a Result-producing function.
+-}
+dictTraverseResult : (a -> Result e b) -> Dict comparable a -> Result e (Dict comparable b)
+dictTraverseResult f =
+    dictTraverseWithKeyResult (\_ -> f)
+
+
+{-| Traverse a standard Dict with a Result-producing function that has access to the key.
+-}
+dictTraverseWithKeyResult : (comparable -> a -> Result e b) -> Dict comparable a -> Result e (Dict comparable b)
+dictTraverseWithKeyResult f =
+    Dict.foldl (\k a acc -> Result.map2 (Dict.insert k) (f k a) acc) (Ok Dict.empty)
+
+
+{-| Intersection of two standard Dicts with key access, combining values with the provided function.
+-}
+dictIntersectionWithKey : (comparable -> a -> b -> c) -> Dict comparable a -> Dict comparable b -> Dict comparable c
+dictIntersectionWithKey f a b =
+    Dict.merge (\_ _ acc -> acc) (\k va vb acc -> Dict.insert k (f k va vb) acc) (\_ _ acc -> acc) a b Dict.empty
+
+
+{-| Map a monadic function over standard Dict values, discarding the results.
+-}
+dictMapM__ : (a -> Task Never b) -> Dict comparable a -> Task Never ()
+dictMapM__ f =
+    Dict.foldl (\_ x k -> f x |> Task.andThen (\_ -> k)) (Task.succeed ())
+
+
+{-| Build a standard Dict from keys by applying a Task-producing function.
+-}
+dictFromKeysA : (comparable -> Task Never v) -> List comparable -> Task Never (Dict comparable v)
+dictFromKeysA toValue keys =
+    listTraverse (\k -> Task.map (Tuple.pair k) (toValue k)) keys
+        |> Task.map Dict.fromList
 
 
 {-| Traverse a list with a Task-producing function, collecting results into a new list.

@@ -61,11 +61,11 @@ import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Reporting.Annotation as A
 import Control.Loop exposing (Step(..))
-import Data.Map as Dict exposing (Dict)
+import Dict exposing (Dict)
 import Data.Set as EverySet exposing (EverySet)
 import System.TypeCheck.IO as IO
 import Utils.Crash exposing (crash)
-import Utils.Main as Utils
+
 
 
 
@@ -86,8 +86,8 @@ type Tracker a
     = Tracker
         (Int
          -> EverySet String TOpt.Global
-         -> Dict String Name Int
-         -> Dict String Name (Can.Type Name)
+         -> Dict Name Int
+         -> Dict Name (Can.Type Name)
          -> TResult a
         )
 
@@ -99,14 +99,14 @@ type TResult a
 type alias TResultProps =
     { uid : Int
     , deps : EverySet String TOpt.Global
-    , fields : Dict String Name Int
-    , locals : Dict String Name (Can.Type Name)
+    , fields : Dict Name Int
+    , locals : Dict Name (Can.Type Name)
     }
 
 
 {-| Helper to construct TResult with positional args
 -}
-tResult : Int -> EverySet String TOpt.Global -> Dict String Name Int -> Dict String Name (Can.Type Name) -> a -> TResult a
+tResult : Int -> EverySet String TOpt.Global -> Dict Name Int -> Dict Name (Can.Type Name) -> a -> TResult a
 tResult uid deps fields locals value =
     TResult { uid = uid, deps = deps, fields = fields, locals = locals } value
 
@@ -124,7 +124,7 @@ Returns a tuple of:
   - The computed result value
 
 -}
-run : Tracker a -> ( EverySet String TOpt.Global, Dict String Name Int, a )
+run : Tracker a -> ( EverySet String TOpt.Global, Dict Name Int, a )
 run (Tracker k) =
     case k 0 EverySet.empty Dict.empty Dict.empty of
         TResult props value ->
@@ -276,7 +276,7 @@ registerField : Name -> a -> Tracker a
 registerField name value =
     Tracker <|
         \uid d fields locals ->
-            tResult uid d (Utils.mapInsertWith Basics.identity (+) name 1 fields) locals value
+            tResult uid d (insertWith (+) name 1 fields) locals value
 
 
 {-| Register usage of multiple record fields from a dictionary and return the given value.
@@ -285,20 +285,25 @@ Takes a dictionary where keys are field names and increments the usage count for
 The dictionary values are ignored - only the keys (field names) matter.
 
 -}
-registerFieldDict : Dict String Name v -> a -> Tracker a
+registerFieldDict : Dict Name v -> a -> Tracker a
 registerFieldDict newFields value =
     Tracker <|
         \uid d fields locals ->
             tResult uid
                 d
-                (Utils.mapUnionWith Basics.identity compare (+) fields (Dict.map (\_ -> toOne) newFields))
+                (unionWith (+) fields (Dict.map (\_ _ -> 1) newFields))
                 locals
                 value
 
 
-toOne : a -> Int
-toOne _ =
-    1
+insertWith : (a -> a -> a) -> comparable -> a -> Dict comparable a -> Dict comparable a
+insertWith f k v =
+    Dict.update k (Maybe.map (f v) >> Maybe.withDefault v >> Just)
+
+
+unionWith : (a -> a -> a) -> Dict comparable a -> Dict comparable a -> Dict comparable a
+unionWith f a b =
+    Dict.merge Dict.insert (\k va vb acc -> Dict.insert k (f va vb) acc) Dict.insert a b Dict.empty
 
 
 {-| Register usage of multiple record fields from a list and return the given value.
@@ -314,9 +319,9 @@ registerFieldList names value =
             tResult uid deps (List.foldr addOne fields names) locals value
 
 
-addOne : Name -> Dict String Name Int -> Dict String Name Int
+addOne : Name -> Dict Name Int -> Dict Name Int
 addOne name fields =
-    Utils.mapInsertWith Basics.identity (+) name 1 fields
+    insertWith (+) name 1 fields
 
 
 
@@ -335,7 +340,7 @@ withVarTypes bindings (Tracker inner) =
         \uid deps fields locals ->
             let
                 extendedLocals =
-                    List.foldl (\( name, itype ) acc -> Dict.insert Basics.identity name itype acc) locals bindings
+                    List.foldl (\( name, itype ) acc -> Dict.insert name itype acc) locals bindings
             in
             case inner uid deps fields extendedLocals of
                 TResult props value ->
@@ -353,7 +358,7 @@ lookupLocalType : Name -> Tracker (Can.Type Name)
 lookupLocalType name =
     Tracker <|
         \uid deps fields locals ->
-            case Dict.get Basics.identity name locals of
+            case Dict.get name locals of
                 Just itype ->
                     tResult uid deps fields locals itype
 
@@ -423,8 +428,8 @@ loopHelper :
     -> state
     -> Int
     -> EverySet String TOpt.Global
-    -> Dict String Name Int
-    -> Dict String Name (Can.Type Name)
+    -> Dict Name Int
+    -> Dict Name (Can.Type Name)
     -> TResult a
 loopHelper callback loopState n d f l =
     case callback loopState of

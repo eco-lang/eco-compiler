@@ -1642,9 +1642,9 @@ compile ctx mvar status =
 
                                             Ok results ->
                                                 let
-                                                    ifaces : EveryDict.Dict String ModuleName.Raw I.Interface
+                                                    ifaces : Dict ModuleName.Raw I.Interface
                                                     ifaces =
-                                                        stdToEveryDict (stdMapMaybe getInterface results)
+                                                        stdMapMaybe getInterface results
                                                 in
                                                 if ctx.needsTypedOpt then
                                                     Compile.compileTyped ctx.pkg ifaces modul

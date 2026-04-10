@@ -28,7 +28,6 @@ the type structure.
 import Compiler.AST.Canonical as Can
 import Compiler.Data.Name exposing (Name)
 import Compiler.Type.Type exposing (Type(..))
-import Data.Map
 import Dict
 import System.TypeCheck.IO as IO exposing (IO)
 import Utils.Main as Utils
@@ -47,7 +46,7 @@ conversion process.
 
 -}
 type alias FreeVars =
-    Data.Map.Dict String Name Type
+    Dict.Dict Name Type
 
 
 
@@ -80,7 +79,7 @@ fromSrcType freeVars sourceType =
                 |> IO.apply (fromSrcType freeVars result)
 
         Can.TVar name ->
-            IO.pure (Utils.find identity name freeVars)
+            IO.pure (Utils.dictFind name freeVars)
 
         Can.TType home name args ->
             IO.map (AppN home name)
@@ -96,7 +95,7 @@ fromSrcType freeVars sourceType =
                                     fromSrcType freeVars realType
 
                                 Can.Holey realType ->
-                                    fromSrcType (Data.Map.fromList identity targs) realType
+                                    fromSrcType (Dict.fromList targs) realType
                             )
                     )
 
@@ -111,17 +110,21 @@ fromSrcType freeVars sourceType =
 
         Can.TRecord fields maybeExt ->
             IO.pure RecordN
-                |> IO.apply (IO.traverseMap identity compare (fromSrcFieldType freeVars) (Data.Map.fromList identity (Dict.toList fields)))
+                |> IO.apply
+                    (Dict.toList fields
+                        |> IO.traverseList (\( k, ft ) -> fromSrcFieldType freeVars ft |> IO.map (\t -> ( k, t )))
+                        |> IO.map Dict.fromList
+                    )
                 |> IO.apply
                     (case maybeExt of
                         Nothing ->
                             IO.pure EmptyRecordN
 
                         Just ext ->
-                            IO.pure (Utils.find identity ext freeVars)
+                            IO.pure (Utils.dictFind ext freeVars)
                     )
 
 
-fromSrcFieldType : Data.Map.Dict String Name Type -> Can.FieldType Name -> IO Type
+fromSrcFieldType : Dict.Dict Name Type -> Can.FieldType Name -> IO Type
 fromSrcFieldType freeVars (Can.FieldType _ tipe) =
     fromSrcType freeVars tipe

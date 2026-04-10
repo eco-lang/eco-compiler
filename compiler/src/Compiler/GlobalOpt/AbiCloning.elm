@@ -21,7 +21,7 @@ Algorithm:
 -}
 
 import Compiler.AST.Monomorphized as Mono
-import Data.Map as Dict exposing (Dict)
+import Dict exposing (Dict)
 
 
 
@@ -75,7 +75,7 @@ computeCaptureAbi expr =
 
 {-| Collect parameter ABIs from an expression.
 -}
-collectFromExpr : Mono.MonoExpr -> Dict Int Int (Dict Int Int (List Mono.CaptureABI)) -> Dict Int Int (Dict Int Int (List Mono.CaptureABI))
+collectFromExpr : Mono.MonoExpr -> Dict Int (Dict Int (List Mono.CaptureABI)) -> Dict Int (Dict Int (List Mono.CaptureABI))
 collectFromExpr expr acc =
     case expr of
         -- Direct call to a global function - this is where we record ABIs
@@ -153,7 +153,7 @@ collectFromExpr expr acc =
 
 {-| Collect from a definition.
 -}
-collectFromDef : Mono.MonoDef -> Dict Int Int (Dict Int Int (List Mono.CaptureABI)) -> Dict Int Int (Dict Int Int (List Mono.CaptureABI))
+collectFromDef : Mono.MonoDef -> Dict Int (Dict Int (List Mono.CaptureABI)) -> Dict Int (Dict Int (List Mono.CaptureABI))
 collectFromDef def acc =
     case def of
         Mono.MonoDef _ bound ->
@@ -168,8 +168,8 @@ collectFromDef def acc =
 recordCallAbis :
     Mono.SpecId
     -> List Mono.MonoExpr
-    -> Dict Int Int (Dict Int Int (List Mono.CaptureABI))
-    -> Dict Int Int (Dict Int Int (List Mono.CaptureABI))
+    -> Dict Int (Dict Int (List Mono.CaptureABI))
+    -> Dict Int (Dict Int (List Mono.CaptureABI))
 recordCallAbis specId args acc =
     let
         argAbis : List ( Int, Maybe Mono.CaptureABI )
@@ -178,13 +178,13 @@ recordCallAbis specId args acc =
                 (\idx arg -> ( idx, computeCaptureAbi arg ))
                 args
 
-        updateParamAbis : Dict Int Int (List Mono.CaptureABI) -> Dict Int Int (List Mono.CaptureABI)
+        updateParamAbis : Dict Int (List Mono.CaptureABI) -> Dict Int (List Mono.CaptureABI)
         updateParamAbis paramDict =
             List.foldl
                 (\( idx, maybeAbi ) d ->
                     case maybeAbi of
                         Just abi ->
-                            Dict.update identity
+                            Dict.update
                                 idx
                                 (\existing ->
                                     Just (abi :: Maybe.withDefault [] existing)
@@ -197,7 +197,7 @@ recordCallAbis specId args acc =
                 paramDict
                 argAbis
     in
-    Dict.update identity
+    Dict.update
         specId
         (\existing ->
             Just (updateParamAbis (Maybe.withDefault Dict.empty existing))

@@ -26,7 +26,6 @@ import Compiler.AST.Optimized as Opt
 import Compiler.Data.Name as Name
 import Compiler.Elm.Compiler.Type.Extract as Extract
 import Compiler.Generate.JavaScript.Name as JsName
-import Data.Map
 import Dict exposing (Dict)
 import Utils.Main as Utils
 
@@ -71,12 +70,12 @@ type alias ShortFieldNames =
 -}
 shortenFieldNames : Opt.GlobalGraph -> ShortFieldNames
 shortenFieldNames (Opt.GlobalGraph _ frequencies) =
-    Dict.foldr addToBuckets Data.Map.empty frequencies |> Data.Map.foldr compare (\_ -> addToShortNames) Dict.empty
+    Dict.foldr addToBuckets Dict.empty frequencies |> Dict.foldr (\_ -> addToShortNames) Dict.empty
 
 
-addToBuckets : Name.Name -> Int -> Data.Map.Dict Int Int (List Name.Name) -> Data.Map.Dict Int Int (List Name.Name)
+addToBuckets : Name.Name -> Int -> Dict Int (List Name.Name) -> Dict Int (List Name.Name)
 addToBuckets field frequency buckets =
-    Utils.mapInsertWith identity (++) frequency [ field ] buckets
+    Utils.dictInsertWith (++) frequency [ field ] buckets
 
 
 addToShortNames : List Name.Name -> ShortFieldNames -> ShortFieldNames

@@ -42,7 +42,7 @@ throughout the compilation pipeline.
 import Compiler.Data.Index as Index
 import Compiler.Data.OneOrMore as OneOrMore
 import Compiler.Reporting.Warning as Warning
-import Data.Map as Dict exposing (Dict)
+import Data.Map as DataMap
 
 
 
@@ -280,23 +280,23 @@ Applies the function to each key-value pair in the dictionary, threading RResult
 state through each application. Uses loop for tail-recursive efficiency.
 
 -}
-mapTraverseWithKey : (k -> comparable) -> (k -> k -> Order) -> (k -> a -> RResult i w x b) -> Dict comparable k a -> RResult i w x (Dict comparable k b)
+mapTraverseWithKey : (k -> comparable) -> (k -> k -> Order) -> (k -> a -> RResult i w x b) -> DataMap.Dict comparable k a -> RResult i w x (DataMap.Dict comparable k b)
 mapTraverseWithKey toComparable keyComparison f dict =
-    loop (mapTraverseWithKeyHelp toComparable f) ( Dict.toList keyComparison dict, Dict.empty )
+    loop (mapTraverseWithKeyHelp toComparable f) ( DataMap.toList keyComparison dict, DataMap.empty )
 
 
 mapTraverseWithKeyHelp :
     (k -> comparable)
     -> (k -> a -> RResult i w x b)
-    -> ( List ( k, a ), Dict comparable k b )
-    -> RResult i w x (Step ( List ( k, a ), Dict comparable k b ) (Dict comparable k b))
+    -> ( List ( k, a ), DataMap.Dict comparable k b )
+    -> RResult i w x (Step ( List ( k, a ), DataMap.Dict comparable k b ) (DataMap.Dict comparable k b))
 mapTraverseWithKeyHelp toComparable f ( pairs, result ) =
     case pairs of
         [] ->
             ok (Done result)
 
         ( k, a ) :: rest ->
-            map (\b -> Loop ( rest, Dict.insert toComparable k b result )) (f k a)
+            map (\b -> Loop ( rest, DataMap.insert toComparable k b result )) (f k a)
 
 
 {-| Traverse a list with an index-aware function.

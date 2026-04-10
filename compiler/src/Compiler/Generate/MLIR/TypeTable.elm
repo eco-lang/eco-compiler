@@ -239,7 +239,7 @@ processType typeIds ( typeId, monoType ) accum =
             addTupleType typeIds typeId (Types.computeTupleLayout elementTypes) accum
 
         Mono.MRecord fields ->
-            addRecordType typeIds typeId (Types.computeRecordLayout (DataMap.fromList identity (Dict.toList fields))) accum
+            addRecordType typeIds typeId (Types.computeRecordLayout fields) accum
 
         Mono.MCustom _ typeName _ ->
             addCustomType typeIds typeId typeName monoType accum

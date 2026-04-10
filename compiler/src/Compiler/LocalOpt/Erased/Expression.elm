@@ -40,8 +40,9 @@ import Compiler.Elm.ModuleName as ModuleName
 import Compiler.LocalOpt.Erased.Case as Case
 import Compiler.LocalOpt.Erased.Names as Names
 import Compiler.Reporting.Annotation as A
-import Data.Map as Dict
+import Data.Map
 import Data.Set as EverySet exposing (EverySet)
+import Dict
 import Utils.Main as Utils
 
 
@@ -269,7 +270,7 @@ optimize cycle (A.At region exprInfo) =
                         optimize cycle record
                             |> Names.andThen
                                 (\optRecord ->
-                                    Names.registerFieldDict (Utils.mapMapKeys identity A.compareLocated A.toValue updates) (Opt.Update region optRecord optUpdates)
+                                    Names.registerFieldDict (Utils.dictMapKeys A.compareLocated A.toValue updates) (Opt.Update region optRecord optUpdates)
                                 )
                     )
 
@@ -277,7 +278,7 @@ optimize cycle (A.At region exprInfo) =
             Names.mapTraverse A.toValue A.compareLocated (optimize cycle) fields
                 |> Names.andThen
                     (\optFields ->
-                        Names.registerFieldDict (Utils.mapMapKeys identity A.compareLocated A.toValue fields) (Opt.TrackedRecord region optFields)
+                        Names.registerFieldDict (Utils.dictMapKeys A.compareLocated A.toValue fields) (Opt.TrackedRecord region optFields)
                     )
 
         Can.Unit ->
@@ -296,7 +297,7 @@ optimize cycle (A.At region exprInfo) =
                     )
 
         Can.Shader src (Shader.Types attributes uniforms _) ->
-            Names.pure (Opt.Shader src (EverySet.fromList identity (Dict.keys compare attributes)) (EverySet.fromList identity (Dict.keys compare uniforms)))
+            Names.pure (Opt.Shader src (EverySet.fromList identity (Data.Map.keys compare attributes)) (EverySet.fromList identity (Data.Map.keys compare uniforms)))
 
 
 

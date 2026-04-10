@@ -7,7 +7,7 @@ Combines read-only environment (r), write-only log (Dict), and mutable state (s)
 
 -}
 
-import Data.Map as Dict exposing (Dict)
+import Dict exposing (Dict)
 import Utils.Crash exposing (crash)
 
 
@@ -17,13 +17,13 @@ Takes an environment (r) and state (s), returns a result (a), updated state, and
 type alias RWS r s a =
     -- type alias RWS r w s a =
     -- r: (), w: ReferenceMap, s: ContainerStack, a: Container
-    r -> s -> ( a, s, Dict String String ( String, String ) )
+    r -> s -> ( a, s, Dict String ( String, String ) )
 
 
 {-| Evaluate the RWS computation, returning the result and accumulated log.
 Discards the final state.
 -}
-evalRWS : RWS r s a -> r -> s -> ( a, Dict String String ( String, String ) )
+evalRWS : RWS r s a -> r -> s -> ( a, Dict String ( String, String ) )
 evalRWS rws r s =
     let
         ( a, _, w ) =
@@ -34,7 +34,7 @@ evalRWS rws r s =
 
 {-| Run the RWS computation, returning the result, final state, and accumulated log.
 -}
-runRWS : RWS r s a -> r -> s -> ( a, s, Dict String String ( String, String ) )
+runRWS : RWS r s a -> r -> s -> ( a, s, Dict String ( String, String ) )
 runRWS rws r s =
     rws r s
 
@@ -103,7 +103,7 @@ return a =
 
 {-| Append to the log (writer component).
 -}
-tell : Dict String String ( String, String ) -> RWS r s ()
+tell : Dict String ( String, String ) -> RWS r s ()
 tell log =
     \_ s -> ( (), s, log )
 

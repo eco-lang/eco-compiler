@@ -99,9 +99,9 @@ This is useful for test infrastructure where interfaces define the types
 available for monomorphization (e.g., JsArray, List, Maybe).
 
 -}
-fromInterfaces : Data.Map.Dict String ModuleName.Raw I.Interface -> GlobalTypeEnv
+fromInterfaces : Dict ModuleName.Raw I.Interface -> GlobalTypeEnv
 fromInterfaces ifaces =
-    Data.Map.foldl compare
+    Dict.foldl
         (\moduleName iface acc ->
             let
                 moduleTypeEnv =

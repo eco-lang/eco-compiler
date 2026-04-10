@@ -22,7 +22,6 @@ import Compiler.Elm.Package as Pkg
 import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Error.Canonicalize as Error
 import Compiler.Reporting.Result as ReportingResult
-import Data.Map
 import Dict exposing (Dict)
 import System.TypeCheck.IO as IO
 import Utils.Crash exposing (crash)
@@ -45,7 +44,7 @@ Processes each import declaration to build the environment with:
   - Special handling for kernel imports in kernel packages
 
 -}
-createInitialEnv : IO.Canonical -> Data.Map.Dict String ModuleName.Raw I.Interface -> List Src.Import -> FResult i w Env.Env
+createInitialEnv : IO.Canonical -> Dict ModuleName.Raw I.Interface -> List Src.Import -> FResult i w Env.Env
 createInitialEnv home ifaces imports =
     Utils.foldM (addImport ifaces) emptyState (toSafeImports home imports)
         |> ReportingResult.map
@@ -127,11 +126,11 @@ isNormal (Src.Import ( _, A.At _ name ) maybeAlias _) =
 -- ====== ADD IMPORTS ======
 
 
-addImport : Data.Map.Dict String ModuleName.Raw I.Interface -> State -> Src.Import -> FResult i w State
+addImport : Dict ModuleName.Raw I.Interface -> State -> Src.Import -> FResult i w State
 addImport ifaces state (Src.Import ( _, A.At _ name ) maybeAlias ( _, exposing_ )) =
     let
         (I.Interface iface) =
-            Utils.find identity name ifaces
+            Utils.dictFind name ifaces
 
         prefix : Name
         prefix =

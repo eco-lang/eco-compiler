@@ -10,7 +10,7 @@ in the types.
 
 -}
 
-import Array
+import Array exposing (Array)
 import Compiler.AST.Monomorphized as Mono
 import Compiler.Generate.CodeGen as CodeGen
 import Compiler.Generate.MLIR.Context as Ctx
@@ -57,7 +57,7 @@ generateMlirModule mode monoGraph0 =
         (Mono.MonoGraph { nodes, main, registry, ctorShapes }) =
             monoGraph0
 
-        signatures : Dict.Dict Int Ctx.FuncSignature
+        signatures : Array (Maybe Ctx.FuncSignature)
         signatures =
             Ctx.buildSignatures nodes
 

@@ -81,7 +81,7 @@ compileToPostSolveDetailed : Src.Module -> Result String DetailedArtifacts
 compileToPostSolveDetailed srcModule =
     let
         canonResult =
-            Canonicalize.canonicalize ( "eco", "example" ) (Data.Map.fromList identity (Dict.toList Basic.testIfaces)) srcModule
+            Canonicalize.canonicalize ( "eco", "example" ) Basic.testIfaces srcModule
     in
     case RResult.run canonResult of
         ( _, Err errors ) ->
@@ -106,7 +106,7 @@ compileToPostSolveDetailed srcModule =
                             PostSolve.postSolve typedData.annotations canModule typedData.nodeTypes
                     in
                     Ok
-                        { annotations = Dict.fromList (Data.Map.toList compare typedData.annotations)
+                        { annotations = typedData.annotations
                         , nodeTypesPre = typedData.nodeTypes
                         , nodeTypesPost = postSolveResult.nodeTypes
                         , kernelEnv = postSolveResult.kernelEnv
@@ -123,7 +123,7 @@ runWithIdsTypeCheckDetailed :
         IO.IO
             (Result
                 Int
-                { annotations : Data.Map.Dict String Name.Name (Can.Annotation Name)
+                { annotations : Dict.Dict Name.Name (Can.Annotation Name)
                 , nodeTypes : PostSolve.NodeTypes
                 , syntheticExprIds : EverySet.EverySet Int Int
                 }

@@ -91,7 +91,7 @@ type alias TypeCheckArtifacts =
     , nodeTypes : Array (Maybe (Can.Type Name)) -- Pre-PostSolve
     , nodeVars : Array (Maybe IO.Variable)
     , solverState : { descriptors : Array IO.Descriptor, pointInfo : Array IO.PointInfo, weights : Array Int }
-    , annotationVars : Data.Map.Dict String Name.Name IO.Variable
+    , annotationVars : Dict Name.Name IO.Variable
     }
 
 
@@ -105,7 +105,7 @@ type alias PostSolveArtifacts =
     , kernelEnv : KernelTypes.KernelTypeEnv
     , nodeVars : Array (Maybe IO.Variable)
     , solverState : { descriptors : Array IO.Descriptor, pointInfo : Array IO.PointInfo, weights : Array Int }
-    , annotationVars : Data.Map.Dict String Name.Name IO.Variable
+    , annotationVars : Dict Name.Name IO.Variable
     }
 
 
@@ -183,7 +183,7 @@ runToCanonical : Src.Module -> Result String CanonicalArtifacts
 runToCanonical srcModule =
     let
         canonResult =
-            Canonicalize.canonicalize ( "eco", "example" ) (Data.Map.fromList identity (Dict.toList Basic.testIfaces)) srcModule
+            Canonicalize.canonicalize ( "eco", "example" ) Basic.testIfaces srcModule
     in
     case RResult.run canonResult of
         ( _, Err errors ) ->
@@ -233,7 +233,7 @@ runToPostSolve srcModule =
             let
                 postSolveResult =
                     PostSolve.postSolve
-                        (Data.Map.fromList identity (Dict.toList annotations))
+                        annotations
                         canonical
                         nodeTypes
             in
@@ -394,7 +394,7 @@ runToMlir srcModule =
 
 {-| Run type checking with expression ID tracking.
 -}
-runWithIdsTypeCheck : Can.Module -> IO.IO (Result Int { annotations : Dict Name.Name (Can.Annotation Name), nodeTypes : Array (Maybe (Can.Type Name)), nodeVars : Array (Maybe IO.Variable), solverState : { descriptors : Array IO.Descriptor, pointInfo : Array IO.PointInfo, weights : Array Int }, annotationVars : Data.Map.Dict String Name.Name IO.Variable })
+runWithIdsTypeCheck : Can.Module -> IO.IO (Result Int { annotations : Dict Name.Name (Can.Annotation Name), nodeTypes : Array (Maybe (Can.Type Name)), nodeVars : Array (Maybe IO.Variable), solverState : { descriptors : Array IO.Descriptor, pointInfo : Array IO.PointInfo, weights : Array Int }, annotationVars : Dict Name.Name IO.Variable })
 runWithIdsTypeCheck modul =
     ConstrainTyped.constrainWithIds modul
         |> IO.andThen
@@ -406,7 +406,7 @@ runWithIdsTypeCheck modul =
                 case result of
                     Ok data ->
                         Ok
-                            { annotations = Dict.fromList (Data.Map.toList compare data.annotations)
+                            { annotations = data.annotations
                             , nodeTypes = data.nodeTypes
                             , nodeVars = data.nodeVars
                             , solverState = data.solverState
@@ -434,7 +434,7 @@ buildGlobalTypeEnv canModule =
             TypeEnv.fromCanonical canModule
 
         interfaceTypeEnv =
-            TypeEnv.fromInterfaces (Data.Map.fromList identity (Dict.toList Basic.testIfaces))
+            TypeEnv.fromInterfaces Basic.testIfaces
     in
     TypeEnv.mergeGlobalTypeEnv
         interfaceTypeEnv

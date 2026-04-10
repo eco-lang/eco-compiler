@@ -245,7 +245,7 @@ generateReplOutput backend ansi localizer home name annotations objects =
 
 checkForDebugUses : Objects -> Task Exit.Generate ()
 checkForDebugUses (Objects _ locals) =
-    case Data.Map.keys compare (Data.Map.filter (\_ -> Nitpick.hasDebugUses) locals) of
+    case Dict.keys (Dict.filter (\_ -> Nitpick.hasDebugUses) locals) of
         [] ->
             Task.succeed ()
 
@@ -262,7 +262,7 @@ gatherMains pkg (Objects _ locals) roots =
     Data.Map.fromList ModuleName.toComparableCanonical (List.filterMap (lookupMain pkg locals) (NE.toList roots))
 
 
-lookupMain : Pkg.Name -> Data.Map.Dict String ModuleName.Raw Opt.LocalGraph -> Build.Root -> Maybe ( TypeCheck.Canonical, Opt.Main )
+lookupMain : Pkg.Name -> Dict ModuleName.Raw Opt.LocalGraph -> Build.Root -> Maybe ( TypeCheck.Canonical, Opt.Main )
 lookupMain pkg locals root =
     let
         toPair : N.Name -> Opt.LocalGraph -> Maybe ( TypeCheck.Canonical, Opt.Main )
@@ -271,7 +271,7 @@ lookupMain pkg locals root =
     in
     case root of
         Build.Inside name ->
-            Data.Map.get identity name locals |> Maybe.andThen (toPair name)
+            Dict.get name locals |> Maybe.andThen (toPair name)
 
         Build.Outside name _ g _ _ ->
             toPair name g
@@ -282,7 +282,7 @@ lookupMain pkg locals root =
 
 
 type LoadingObjects
-    = LoadingObjects (MVar (Maybe Opt.GlobalGraph)) (Data.Map.Dict String ModuleName.Raw (MVar (Maybe Opt.LocalGraph))) (Data.Map.Dict String ModuleName.Raw Opt.LocalGraph)
+    = LoadingObjects (MVar (Maybe Opt.GlobalGraph)) (Dict ModuleName.Raw (MVar (Maybe Opt.LocalGraph))) (Dict ModuleName.Raw Opt.LocalGraph)
 
 
 loadObjects : FilePath -> Maybe String -> Details.Details -> List Build.Module -> Task Exit.Generate LoadingObjects
@@ -315,10 +315,10 @@ loadModuleObjects root maybeBuildDir modules mvar =
             partitionModules modules ( [], [] )
 
         freshDict =
-            Data.Map.fromList identity freshPairs
+            Dict.fromList freshPairs
     in
     Utils.listTraverse (loadCachedObject root maybeBuildDir) needLoading
-        |> Task.map (\mvars -> LoadingObjects mvar (Data.Map.fromList identity mvars) freshDict)
+        |> Task.map (\mvars -> LoadingObjects mvar (Dict.fromList mvars) freshDict)
 
 
 loadCachedObject : FilePath -> Maybe String -> Build.Module -> Task Never ( ModuleName.Raw, MVar (Maybe Opt.LocalGraph) )
@@ -351,7 +351,7 @@ readAndStoreCachedObject root maybeBuildDir name mvar =
 
 
 type Objects
-    = Objects Opt.GlobalGraph (Data.Map.Dict String ModuleName.Raw Opt.LocalGraph)
+    = Objects Opt.GlobalGraph (Dict ModuleName.Raw Opt.LocalGraph)
 
 
 finalizeObjects : LoadingObjects -> Task Exit.Generate Objects
@@ -362,18 +362,18 @@ finalizeObjects (LoadingObjects mvar mvars freshModules) =
         )
 
 
-collectLocalObjects : Data.Map.Dict String ModuleName.Raw (MVar (Maybe Opt.LocalGraph)) -> Data.Map.Dict String ModuleName.Raw Opt.LocalGraph -> Maybe Opt.GlobalGraph -> Task Never (Result Exit.Generate Objects)
+collectLocalObjects : Dict ModuleName.Raw (MVar (Maybe Opt.LocalGraph)) -> Dict ModuleName.Raw Opt.LocalGraph -> Maybe Opt.GlobalGraph -> Task Never (Result Exit.Generate Objects)
 collectLocalObjects mvars freshModules globalResult =
-    Utils.mapTraverse identity compare (Utils.takeMVar (BD.maybe Opt.localGraphDecoder)) mvars
+    Utils.dictTraverse (Utils.takeMVar (BD.maybe Opt.localGraphDecoder)) mvars
         |> Task.map (combineGlobalAndLocalObjects globalResult freshModules)
 
 
-combineGlobalAndLocalObjects : Maybe Opt.GlobalGraph -> Data.Map.Dict String ModuleName.Raw Opt.LocalGraph -> Data.Map.Dict String ModuleName.Raw (Maybe Opt.LocalGraph) -> Result Exit.Generate Objects
+combineGlobalAndLocalObjects : Maybe Opt.GlobalGraph -> Dict ModuleName.Raw Opt.LocalGraph -> Dict ModuleName.Raw (Maybe Opt.LocalGraph) -> Result Exit.Generate Objects
 combineGlobalAndLocalObjects globalResult freshModules cachedResults =
-    case ( globalResult, Utils.sequenceDictMaybe identity compare cachedResults ) of
+    case ( globalResult, Utils.dictSequenceMaybe cachedResults ) of
         ( Just globals, Just cachedLocals ) ->
             -- Merge fresh (already have graphs) with cached (loaded from MVars)
-            Ok (Objects globals (Data.Map.union cachedLocals freshModules))
+            Ok (Objects globals (Dict.union cachedLocals freshModules))
 
         _ ->
             Err Exit.GenerateCannotLoadArtifacts
@@ -381,7 +381,7 @@ combineGlobalAndLocalObjects globalResult freshModules cachedResults =
 
 objectsToGlobalGraph : Objects -> Opt.GlobalGraph
 objectsToGlobalGraph (Objects globals locals) =
-    Data.Map.foldr compare (\_ -> GA.addOptLocalGraph) globals locals
+    Dict.foldr (\_ -> GA.addOptLocalGraph) globals locals
 
 
 
@@ -482,7 +482,7 @@ loadAndStoreInterfaceTypes root maybeBuildDir name mvar =
 (for sequential .ecot loading), Fresh modules dict, and root/buildDir for file paths.
 -}
 type TypedLoadingObjects
-    = TypedLoadingObjects (MVar (Maybe Details.PackageTypedArtifacts)) (List ModuleName.Raw) (Data.Map.Dict String ModuleName.Raw ModuleTyped) FilePath (Maybe String)
+    = TypedLoadingObjects (MVar (Maybe Details.PackageTypedArtifacts)) (List ModuleName.Raw) (Dict ModuleName.Raw ModuleTyped) FilePath (Maybe String)
 
 
 loadTypedObjects : FilePath -> Maybe String -> Maybe ( Pkg.Name, FilePath ) -> Details.Details -> List Build.Module -> Task Exit.Generate TypedLoadingObjects
@@ -539,7 +539,7 @@ loadTypedModuleObjects root maybeBuildDir modules mvar =
             partition modules ( [], [] )
 
         freshDict =
-            Data.Map.fromList identity freshPairs
+            Dict.fromList freshPairs
     in
     -- No MVars needed — cached modules will be loaded sequentially during merge
     Task.succeed (TypedLoadingObjects mvar cachedNames freshDict root maybeBuildDir)
@@ -583,7 +583,7 @@ then sequentially load each cached module's .ecot file, merge, and discard.
 -}
 streamLoadAndMerge :
     List ModuleName.Raw
-    -> Data.Map.Dict String ModuleName.Raw ModuleTyped
+    -> Dict ModuleName.Raw ModuleTyped
     -> FilePath
     -> Maybe String
     -> Maybe Details.PackageTypedArtifacts
@@ -600,7 +600,7 @@ streamLoadAndMerge cachedNames freshModules root maybeBuildDir maybeGlobalArtifa
 
         -- Merge Fresh modules (pure fold, no I/O needed)
         ( mergedGraph, mergedEnv ) =
-            Data.Map.foldl compare
+            Dict.foldl
                 (\_ modTyped ( g, e ) ->
                     ( GA.addTypedLocalGraph modTyped.graph g
                     , Data.Map.insert ModuleName.toComparableCanonical modTyped.env.home modTyped.env e

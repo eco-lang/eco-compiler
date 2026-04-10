@@ -31,7 +31,7 @@ which uses alias seeding and usage-based inference over the canonical AST.
 
 import Compiler.AST.Canonical as Can
 import Compiler.Data.Name exposing (Name)
-import Data.Map as Dict exposing (Dict)
+import Dict exposing (Dict)
 
 
 
@@ -41,12 +41,7 @@ import Data.Map as Dict exposing (Dict)
 {-| Environment mapping kernel function (home, name) pairs to their types.
 -}
 type alias KernelTypeEnv =
-    Dict ( String, String ) ( Name, Name ) (Can.Type Name)
-
-
-toComparable : ( Name, Name ) -> ( String, String )
-toComparable ( a, b ) =
-    ( a, b )
+    Dict ( Name, Name ) (Can.Type Name)
 
 
 
@@ -57,14 +52,14 @@ toComparable ( a, b ) =
 -}
 lookup : Name -> Name -> KernelTypeEnv -> Maybe (Can.Type Name)
 lookup home name env =
-    Dict.get toComparable ( home, name ) env
+    Dict.get ( home, name ) env
 
 
 {-| Check if an entry exists for a kernel.
 -}
 hasEntry : Name -> Name -> KernelTypeEnv -> Bool
 hasEntry home name env =
-    case Dict.get toComparable ( home, name ) env of
+    case Dict.get ( home, name ) env of
         Just _ ->
             True
 
@@ -84,7 +79,7 @@ insertFirstUsage home name tipe env =
         env
 
     else
-        Dict.insert toComparable ( home, name ) tipe env
+        Dict.insert ( home, name ) tipe env
 
 
 {-| Build a function type from argument types and result type.

@@ -25,7 +25,7 @@ import Compiler.Type.Constrain.Common as Common exposing (State(..), extractVarF
 import Compiler.Type.Constrain.Typed.NodeIds as NodeIds
 import Compiler.Type.Instantiate as Instantiate
 import Compiler.Type.Type as Type exposing (Type)
-import Data.Map as Dict exposing (Dict)
+import Dict exposing (Dict)
 import System.TypeCheck.IO as IO exposing (IO)
 
 
@@ -40,7 +40,7 @@ import System.TypeCheck.IO as IO exposing (IO)
 type PatternProg a
     = PDone a
     | PMkFlexVar (IO.Variable -> PatternProg a)
-    | PFromSrcType (Dict String Name.Name Type) (Can.Type Name) (Type -> PatternProg a)
+    | PFromSrcType (Dict Name.Name Type) (Can.Type Name) (Type -> PatternProg a)
     | PAddPatternWithIds Can.Pattern (E.PExpected Type) State NodeIds.NodeIdState (( State, NodeIds.NodeIdState ) -> PatternProg a)
     | PTraverseList (List Name.Name) (List ( Name.Name, IO.Variable ) -> PatternProg a)
 
@@ -103,7 +103,7 @@ pMkFlexVar =
 
 {-| Instantiate a source type.
 -}
-pFromSrcType : Dict String Name.Name Type -> Can.Type Name -> PatternProg Type
+pFromSrcType : Dict Name.Name Type -> Can.Type Name -> PatternProg Type
 pFromSrcType dict srcType =
     PFromSrcType dict srcType PDone
 
@@ -465,9 +465,9 @@ addHelpWithIdsProg region patternNode expectation state nodeState =
                             |> pMap
                                 (\fieldVars ->
                                     let
-                                        fieldTypes : Dict String Name.Name Type
+                                        fieldTypes : Dict Name.Name Type
                                         fieldTypes =
-                                            Dict.fromList identity (List.map (Tuple.mapSecond Type.VarN) fieldVars)
+                                            Dict.fromList (List.map (Tuple.mapSecond Type.VarN) fieldVars)
 
                                         recordType : Type
                                         recordType =
@@ -625,9 +625,9 @@ addCtorWithIdsProg region home typeName typeVarNames ctorName args expectation s
                     typePairs =
                         List.map (Tuple.mapSecond Type.VarN) varPairs
 
-                    freeVarDict : Dict String Name.Name Type
+                    freeVarDict : Dict Name.Name Type
                     freeVarDict =
-                        Dict.fromList identity typePairs
+                        Dict.fromList typePairs
                 in
                 addCtorArgsWithIdsProg region ctorName freeVarDict state nodeState0 args
                     |> pMap
@@ -650,7 +650,7 @@ addCtorWithIdsProg region home typeName typeVarNames ctorName args expectation s
             )
 
 
-addCtorArgsWithIdsProg : A.Region -> Name.Name -> Dict String Name.Name Type -> State -> NodeIds.NodeIdState -> List Can.PatternCtorArg -> PatternProg ( State, NodeIds.NodeIdState )
+addCtorArgsWithIdsProg : A.Region -> Name.Name -> Dict Name.Name Type -> State -> NodeIds.NodeIdState -> List Can.PatternCtorArg -> PatternProg ( State, NodeIds.NodeIdState )
 addCtorArgsWithIdsProg region ctorName freeVarDict state nodeState args =
     case args of
         [] ->

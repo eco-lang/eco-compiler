@@ -24,7 +24,7 @@ import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Reporting.Annotation as A
 import Compiler.Type.KernelTypes as KernelTypes
 import Data.Map
-import Dict
+import Dict exposing (Dict)
 
 
 {-| Node types mapping expression/pattern ID to canonical type.
@@ -49,7 +49,7 @@ Returns:
 
 -}
 postSolve :
-    Data.Map.Dict String Name (Can.Annotation Name)
+    Dict Name (Can.Annotation Name)
     -> Can.Module
     -> NodeTypes
     ->
@@ -84,15 +84,15 @@ and inserts it into the kernel environment.
 
 -}
 seedKernelAliases :
-    Data.Map.Dict String Name (Can.Annotation Name)
+    Dict Name (Can.Annotation Name)
     -> Can.Decls
     -> KernelTypes.KernelTypeEnv
 seedKernelAliases annotations decls =
-    seedKernelAliasesHelp annotations decls Data.Map.empty
+    seedKernelAliasesHelp annotations decls Dict.empty
 
 
 seedKernelAliasesHelp :
-    Data.Map.Dict String Name (Can.Annotation Name)
+    Dict Name (Can.Annotation Name)
     -> Can.Decls
     -> KernelTypes.KernelTypeEnv
     -> KernelTypes.KernelTypeEnv
@@ -116,7 +116,7 @@ seedKernelAliasesHelp annotations decls env =
 
 
 checkDefForAlias :
-    Data.Map.Dict String Name (Can.Annotation Name)
+    Dict Name (Can.Annotation Name)
     -> Can.Def
     -> KernelTypes.KernelTypeEnv
     -> KernelTypes.KernelTypeEnv
@@ -150,7 +150,7 @@ checkDefForAlias annotations def env =
 
 
 checkKernelAliasBody :
-    Data.Map.Dict String Name (Can.Annotation Name)
+    Dict Name (Can.Annotation Name)
     -> Name
     -> Can.Expr
     -> KernelTypes.KernelTypeEnv
@@ -158,7 +158,7 @@ checkKernelAliasBody :
 checkKernelAliasBody annotations defName (A.At _ exprInfo) env =
     case exprInfo.node of
         Can.VarKernel _ home kernelName ->
-            case Data.Map.get Basics.identity defName annotations of
+            case Dict.get defName annotations of
                 Just (Can.Forall _ tipe) ->
                     KernelTypes.insertFirstUsage home kernelName tipe env
 
@@ -176,7 +176,7 @@ checkKernelAliasBody annotations defName (A.At _ exprInfo) env =
 {-| Walk declarations, fixing expression types and inferring kernel types.
 -}
 postSolveDecls :
-    Data.Map.Dict String Name (Can.Annotation Name)
+    Dict Name (Can.Annotation Name)
     -> Can.Decls
     -> NodeTypes
     -> KernelTypes.KernelTypeEnv
@@ -210,7 +210,7 @@ postSolveDecls annotations decls nodeTypes0 kernel0 =
 {-| Walk a definition, processing its body expression.
 -}
 postSolveDef :
-    Data.Map.Dict String Name (Can.Annotation Name)
+    Dict Name (Can.Annotation Name)
     -> Can.Def
     -> NodeTypes
     -> KernelTypes.KernelTypeEnv
@@ -355,7 +355,7 @@ For Call with VarKernel callee: we also infer the kernel type from usage.
 
 -}
 postSolveExpr :
-    Data.Map.Dict String Name (Can.Annotation Name)
+    Dict Name (Can.Annotation Name)
     -> Can.Expr
     -> NodeTypes
     -> KernelTypes.KernelTypeEnv
@@ -549,7 +549,7 @@ then update both kernelEnv and the VarKernel node's type in nodeTypes.
 
 -}
 postSolveCall :
-    Data.Map.Dict String Name (Can.Annotation Name)
+    Dict Name (Can.Annotation Name)
     -> Int
     -> Can.Expr
     -> List Can.Expr
@@ -649,7 +649,7 @@ postSolveCall annotations exprId func args nodeTypes0 kernel0 =
 {-| Handle If expression (Group A - trust solver's type).
 -}
 postSolveIf :
-    Data.Map.Dict String Name (Can.Annotation Name)
+    Dict Name (Can.Annotation Name)
     -> List ( Can.Expr, Can.Expr )
     -> Can.Expr
     -> NodeTypes
@@ -680,7 +680,7 @@ determine the expected types for left and right operands.
 
 -}
 postSolveBinop :
-    Data.Map.Dict String Name (Can.Annotation Name)
+    Dict Name (Can.Annotation Name)
     -> Can.Annotation Name
     -> Can.Expr
     -> Can.Expr
@@ -783,7 +783,7 @@ case expression, a VarKernel branch body has the case's result type.
 
 -}
 postSolveCase :
-    Data.Map.Dict String Name (Can.Annotation Name)
+    Dict Name (Can.Annotation Name)
     -> Int
     -> Can.Expr
     -> List Can.CaseBranch
@@ -853,7 +853,7 @@ inferBranchKernelType branchExpr expectedType nodeTypes kernel =
 {-| Handle Update expression (Group A - trust solver's type).
 -}
 postSolveUpdate :
-    Data.Map.Dict String Name (Can.Annotation Name)
+    Dict Name (Can.Annotation Name)
     -> Can.Expr
     -> Data.Map.Dict String (A.Located Name) Can.FieldUpdate
     -> NodeTypes
@@ -951,7 +951,7 @@ propagateKernelArgTypes args expectedTypes nodeTypes0 kernel0 =
 {-| Type variable substitution map.
 -}
 type alias Subst =
-    Data.Map.Dict String Name (Can.Type Name)
+    Dict Name (Can.Type Name)
 
 
 {-| Unify a scheme type (with TVars) against a concrete type to extract substitutions.
@@ -962,16 +962,16 @@ parts of the concrete type. Returns Nothing if types are incompatible.
 -}
 unifySchemeToType : Can.Type Name -> Can.Type Name -> Maybe Subst
 unifySchemeToType scheme concrete =
-    unifyHelp Data.Map.empty scheme concrete
+    unifyHelp Dict.empty scheme concrete
 
 
 unifyHelp : Subst -> Can.Type Name -> Can.Type Name -> Maybe Subst
 unifyHelp subst schemeType concreteType =
     case ( schemeType, concreteType ) of
         ( Can.TVar v, t ) ->
-            case Data.Map.get Basics.identity v subst of
+            case Dict.get v subst of
                 Nothing ->
-                    Just (Data.Map.insert Basics.identity v t subst)
+                    Just (Dict.insert v t subst)
 
                 Just existing ->
                     if existing == t then
@@ -1096,7 +1096,7 @@ applySubst : Subst -> Can.Type Name -> Can.Type Name
 applySubst subst tipe =
     case tipe of
         Can.TVar v ->
-            Data.Map.get Basics.identity v subst
+            Dict.get v subst
                 |> Maybe.withDefault tipe
 
         Can.TType home name args ->
@@ -1159,7 +1159,7 @@ result type to get substitutions, then use those to infer kernel argument types.
 
 -}
 postSolveCallWithCtorKernelArgs :
-    Data.Map.Dict String Name (Can.Annotation Name)
+    Dict Name (Can.Annotation Name)
     -> Int
     -> Can.Annotation Name
     -> Can.Expr
@@ -1210,7 +1210,7 @@ postSolveCallWithCtorKernelArgs annotations exprId ctorAnnotation funcExpr args 
 {-| Process constructor arguments, inferring types for any VarKernel args.
 -}
 processCtorArgs :
-    Data.Map.Dict String Name (Can.Annotation Name)
+    Dict Name (Can.Annotation Name)
     -> Subst
     -> List (Can.Type Name)
     -> List Can.Expr

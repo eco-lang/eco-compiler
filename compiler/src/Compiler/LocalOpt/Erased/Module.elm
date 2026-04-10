@@ -258,22 +258,17 @@ addPort home name port_ graph =
 -- Inserts a node into the optimization graph and merges field access counts.
 
 
-addToGraph : Opt.Global -> Opt.Node -> Data.Map.Dict String Name.Name Int -> Opt.LocalGraph -> Opt.LocalGraph
+addToGraph : Opt.Global -> Opt.Node -> Dict Name.Name Int -> Opt.LocalGraph -> Opt.LocalGraph
 addToGraph name node fields (Opt.LocalGraph main nodes fieldCounts) =
     Opt.LocalGraph
         main
         (Data.Map.insert Opt.toComparableGlobal name node nodes)
-        (mergeFieldCounts (dataMapToDict fields) fieldCounts)
+        (mergeFieldCounts fields fieldCounts)
 
 
 mergeFieldCounts : Dict Name.Name Int -> Dict Name.Name Int -> Dict Name.Name Int
 mergeFieldCounts a b =
     Dict.foldl (\k v acc -> Dict.update k (\mv -> Just (Maybe.withDefault 0 mv + v)) acc) b a
-
-
-dataMapToDict : Data.Map.Dict String Name.Name v -> Dict Name.Name v
-dataMapToDict mapDict =
-    Dict.fromList (Data.Map.toList compare mapDict)
 
 
 
@@ -394,9 +389,9 @@ addDefHelp region annotations home name args body ((Opt.LocalGraph _ nodes field
             (Can.Forall _ tipe) =
                 findAnnotation name annotations
 
-            addMain : ( EverySet String Opt.Global, Data.Map.Dict String Name.Name Int, Opt.Main ) -> Opt.LocalGraph
+            addMain : ( EverySet String Opt.Global, Dict Name.Name Int, Opt.Main ) -> Opt.LocalGraph
             addMain ( deps, fields, main ) =
-                Opt.LocalGraph (Just main) nodes (mergeFieldCounts (dataMapToDict fields) fieldCounts) |> addDefNode home region name args body deps
+                Opt.LocalGraph (Just main) nodes (mergeFieldCounts fields fieldCounts) |> addDefNode home region name args body deps
         in
         case Type.deepDealias tipe of
             Can.TType hm nm [ _ ] ->
@@ -495,7 +490,7 @@ addRecDefs home defs (Opt.LocalGraph main nodes fieldCounts) =
     Opt.LocalGraph
         main
         (Data.Map.insert Opt.toComparableGlobal cycleName (Opt.Cycle names values functions deps) (Data.Map.union links nodes))
-        (mergeFieldCounts (dataMapToDict fields) fieldCounts)
+        (mergeFieldCounts fields fieldCounts)
 
 
 

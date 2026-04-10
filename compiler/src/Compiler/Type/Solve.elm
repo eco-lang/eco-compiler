@@ -59,17 +59,17 @@ unifying types. Returns either a non-empty list of type errors or a
 dictionary mapping names to their inferred type annotations.
 
 -}
-run : Constraint -> IO (Result (NE.Nonempty Error.Error) (Data.Map.Dict String Name.Name (Can.Annotation Name)))
+run : Constraint -> IO (Result (NE.Nonempty Error.Error) (Dict Name.Name (Can.Annotation Name)))
 run constraint =
     MVector.replicate 8 []
         |> IO.andThen
             (\pools ->
-                solve Data.Map.empty Type.outermostRank pools emptyState constraint
+                solve Dict.empty Type.outermostRank pools emptyState constraint
                     |> IO.andThen
                         (\(State env _ errors) ->
                             case errors of
                                 [] ->
-                                    IO.traverseMap identity compare Type.toAnnotation env
+                                    traverseDictIO Type.toAnnotation env
                                         |> IO.map Ok
 
                                 e :: es ->
@@ -94,8 +94,8 @@ runWithIds :
         IO
             (Result
                 (NE.Nonempty Error.Error)
-                { annotations : Data.Map.Dict String Name.Name (Can.Annotation Name)
-                , annotationVars : Data.Map.Dict String Name.Name Variable
+                { annotations : Dict Name.Name (Can.Annotation Name)
+                , annotationVars : Dict Name.Name Variable
                 , nodeTypes : Array (Maybe (Can.Type Name))
                 , nodeVars : Array (Maybe Variable)
                 , solverState :
@@ -109,13 +109,13 @@ runWithIds constraint nodeVars =
     MVector.replicate 8 []
         |> IO.andThen
             (\pools ->
-                solve Data.Map.empty Type.outermostRank pools emptyState constraint
+                solve Dict.empty Type.outermostRank pools emptyState constraint
                     |> IO.andThen
                         (\(State env _ errors) ->
                             case errors of
                                 [] ->
                                     -- Convert env to annotations
-                                    IO.traverseMap identity compare Type.toAnnotation env
+                                    traverseDictIO Type.toAnnotation env
                                         |> IO.andThen
                                             (\annotations ->
                                                 -- Convert nodeVars to Can.Types with shared naming
@@ -150,7 +150,7 @@ runWithIds constraint nodeVars =
 -}
 emptyState : State
 emptyState =
-    State Data.Map.empty (Type.nextMark Type.noMark) []
+    State Dict.empty (Type.nextMark Type.noMark) []
 
 
 
@@ -160,7 +160,7 @@ emptyState =
 {-| Maps variable names to their unification variables.
 -}
 type alias Env =
-    Data.Map.Dict String Name.Name Variable
+    Dict Name.Name Variable
 
 
 {-| Mutable array of variable pools indexed by rank.
@@ -226,7 +226,7 @@ solveHelp ( ( env, rank ), ( pools, (State _ sMark sErrors) as state ), ( constr
                     )
 
         CLocal region name expectation ->
-            makeCopy rank pools (Utils.find identity name env)
+            makeCopy rank pools (Utils.dictFind name env)
                 |> IO.andThen
                     (\actual ->
                         expectedToVariable rank pools expectation
@@ -318,13 +318,13 @@ solveHelp ( ( env, rank ), ( pools, (State _ sMark sErrors) as state ), ( constr
             solve env rank pools state headerCon
                 |> IO.andThen
                     (\state1 ->
-                        IO.traverseMap identity compare (A.traverse (typeToVariable rank pools)) header
+                        traverseDictIO (A.traverse (typeToVariable rank pools)) header
                             |> IO.map
                                 (\locals ->
                                     let
                                         newEnv : Env
                                         newEnv =
-                                            Data.Map.union env (Data.Map.map (\_ -> A.toValue) locals)
+                                            Dict.union env (Dict.map (\_ -> A.toValue) locals)
                                     in
                                     IO.Loop
                                         ( ( newEnv, rank )
@@ -332,7 +332,7 @@ solveHelp ( ( env, rank ), ( pools, (State _ sMark sErrors) as state ), ( constr
                                         , ( subCon
                                           , IO.andThen
                                                 (\state2 ->
-                                                    IO.foldM occurs state2 (Data.Map.toList compare locals)
+                                                    IO.foldM occurs state2 (Dict.toList locals)
                                                 )
                                                 >> cont
                                           )
@@ -376,7 +376,7 @@ solveHelp ( ( env, rank ), ( pools, (State _ sMark sErrors) as state ), ( constr
                                                     |> IO.andThen
                                                         (\_ ->
                                                             -- run solver in next pool
-                                                            IO.traverseMap identity compare (A.traverse (typeToVariable nextRank nextPools)) header
+                                                            traverseDictIO (A.traverse (typeToVariable nextRank nextPools)) header
                                                                 |> IO.andThen
                                                                     (\locals ->
                                                                         solve env nextRank nextPools state headerCon
@@ -409,7 +409,7 @@ solveHelp ( ( env, rank ), ( pools, (State _ sMark sErrors) as state ), ( constr
                                                                                                                         let
                                                                                                                             newEnv : Env
                                                                                                                             newEnv =
-                                                                                                                                Data.Map.union env (Data.Map.map (\_ -> A.toValue) locals)
+                                                                                                                                Dict.union env (Dict.map (\_ -> A.toValue) locals)
 
                                                                                                                             tempState : State
                                                                                                                             tempState =
@@ -421,7 +421,7 @@ solveHelp ( ( env, rank ), ( pools, (State _ sMark sErrors) as state ), ( constr
                                                                                                                             , ( subCon
                                                                                                                               , IO.andThen
                                                                                                                                     (\newState ->
-                                                                                                                                        IO.foldM occurs newState (Data.Map.toList compare locals)
+                                                                                                                                        IO.foldM occurs newState (Dict.toList locals)
                                                                                                                                     )
                                                                                                                                     >> cont
                                                                                                                               )
@@ -783,18 +783,18 @@ introduce rank pools variables =
 -}
 typeToVariable : Int -> Pools -> Type -> IO Variable
 typeToVariable rank pools tipe =
-    typeToVar rank pools Data.Map.empty tipe
+    typeToVar rank pools Dict.empty tipe
 
 
 {-| Convert a Type to a Variable, tracking alias placeholders in aliasDict.
 Recursively converts all contained types to variables and registers them in pools.
 -}
-typeToVar : Int -> Pools -> Data.Map.Dict String Name.Name Variable -> Type -> IO Variable
+typeToVar : Int -> Pools -> Dict Name.Name Variable -> Type -> IO Variable
 typeToVar rank pools _ tipe =
     let
         go : Type -> IO Variable
         go =
-            typeToVar rank pools Data.Map.empty
+            typeToVar rank pools Dict.empty
     in
     case tipe of
         Type.VarN v ->
@@ -822,7 +822,7 @@ typeToVar rank pools _ tipe =
             IO.traverseList (IO.traverseTuple go) args
                 |> IO.andThen
                     (\argVars ->
-                        typeToVar rank pools (Data.Map.fromList identity argVars) aliasType
+                        typeToVar rank pools (Dict.fromList argVars) aliasType
                             |> IO.andThen
                                 (\aliasVar ->
                                     register rank pools (IO.Alias home name argVars aliasVar)
@@ -830,13 +830,13 @@ typeToVar rank pools _ tipe =
                     )
 
         Type.RecordN fields ext ->
-            IO.traverseMap identity compare go fields
+            traverseDictIO go fields
                 |> IO.andThen
                     (\fieldVars ->
                         go ext
                             |> IO.andThen
                                 (\extVar ->
-                                    register rank pools (IO.Structure (IO.Record1 fieldVars extVar))
+                                    register rank pools (IO.Structure (IO.Record1 (Data.Map.fromList identity (Dict.toList fieldVars)) extVar))
                                 )
                     )
 
@@ -920,10 +920,10 @@ srcTypeToVariable rank pools freeVars srcType =
         makeVar name _ =
             UF.fresh (IO.makeDescriptor (nameToContent name) rank Type.noMark Nothing)
     in
-    IO.traverseMapWithKey identity compare makeVar (Data.Map.fromList identity (Dict.toList freeVars))
+    traverseDictIOWithKey makeVar freeVars
         |> IO.andThen
             (\flexVars ->
-                MVector.modify pools (\a -> Data.Map.values compare flexVars ++ a) rank
+                MVector.modify pools (\a -> Dict.values flexVars ++ a) rank
                     |> IO.andThen (\_ -> srcTypeToVar rank pools flexVars srcType)
             )
 
@@ -931,7 +931,7 @@ srcTypeToVariable rank pools freeVars srcType =
 {-| Convert a canonical source type to a variable, with flexVars mapping free variable names.
 Recursively converts all contained types to variables.
 -}
-srcTypeToVar : Int -> Pools -> Data.Map.Dict String Name.Name Variable -> Can.Type Name -> IO Variable
+srcTypeToVar : Int -> Pools -> Dict Name.Name Variable -> Can.Type Name -> IO Variable
 srcTypeToVar rank pools flexVars srcType =
     let
         go : Can.Type Name -> IO Variable
@@ -951,7 +951,7 @@ srcTypeToVar rank pools flexVars srcType =
                     )
 
         Can.TVar name ->
-            IO.pure (Utils.find identity name flexVars)
+            IO.pure (Utils.dictFind name flexVars)
 
         Can.TType home name args ->
             IO.traverseList go args
@@ -969,7 +969,7 @@ srcTypeToVar rank pools flexVars srcType =
                                 register rank pools emptyRecord1
 
                             Just ext ->
-                                IO.pure (Utils.find identity ext flexVars)
+                                IO.pure (Utils.dictFind ext flexVars)
                         )
                             |> IO.andThen
                                 (\extVar ->
@@ -1001,7 +1001,7 @@ srcTypeToVar rank pools flexVars srcType =
                     (\argVars ->
                         (case aliasType of
                             Can.Holey tipe ->
-                                srcTypeToVar rank pools (Data.Map.fromList identity argVars) tipe
+                                srcTypeToVar rank pools (Dict.fromList argVars) tipe
 
                             Can.Filled tipe ->
                                 go tipe
@@ -1016,7 +1016,7 @@ srcTypeToVar rank pools flexVars srcType =
 {-| Convert a canonical field type to a variable.
 Unwraps the FieldType wrapper and converts the inner type.
 -}
-srcFieldTypeToVar : Int -> Pools -> Data.Map.Dict String Name.Name Variable -> Can.FieldType Name -> IO Variable
+srcFieldTypeToVar : Int -> Pools -> Dict Name.Name Variable -> Can.FieldType Name -> IO Variable
 srcFieldTypeToVar rank pools flexVars (Can.FieldType _ srcTipe) =
     srcTypeToVar rank pools flexVars srcTipe
 
@@ -1223,3 +1223,25 @@ traverseFlatType f flatType =
                 |> IO.apply (f a)
                 |> IO.apply (f b)
                 |> IO.apply (IO.traverseList f cs)
+
+
+
+-- ====== Dict Traversal Helpers ======
+
+
+{-| Traverse a core Dict, applying an IO-producing function to each value.
+-}
+traverseDictIO : (a -> IO b) -> Dict comparable a -> IO (Dict comparable b)
+traverseDictIO f dict =
+    Dict.toList dict
+        |> IO.traverseList (\( k, v ) -> f v |> IO.map (\b -> ( k, b )))
+        |> IO.map Dict.fromList
+
+
+{-| Traverse a core Dict, applying an IO-producing function to each key-value pair.
+-}
+traverseDictIOWithKey : (comparable -> a -> IO b) -> Dict comparable a -> IO (Dict comparable b)
+traverseDictIOWithKey f dict =
+    Dict.toList dict
+        |> IO.traverseList (\( k, v ) -> f k v |> IO.map (\b -> ( k, b )))
+        |> IO.map Dict.fromList

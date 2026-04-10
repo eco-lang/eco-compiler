@@ -44,6 +44,7 @@ the monomorphization process.
 
 -}
 
+import Array exposing (Array)
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.TypeEnv as TypeEnv
@@ -134,7 +135,7 @@ Updated by enqueueSpec, processWorklist completion, and scheme cache lookups.
 -}
 type alias SpecAccum =
     { worklist : List WorkItem
-    , nodes : Dict Int Mono.MonoNode
+    , nodes : Array (Maybe Mono.MonoNode)
     , inProgress : BitSet
     , scheduled : BitSet
     , registry : Mono.SpecializationRegistry
@@ -311,7 +312,7 @@ initState : IO.Canonical -> DataMap.Dict String TOpt.Global (TOpt.Node MVarId) -
 initState currentModule toptNodes annotations globalTypeEnv mvarEnv =
     { accum =
         { worklist = []
-        , nodes = Dict.empty
+        , nodes = Array.empty
         , inProgress = BitSet.empty
         , scheduled = BitSet.empty
         , registry = Registry.emptyRegistry

@@ -562,7 +562,7 @@ generateVarGlobal ctx specId monoType =
         -- even though the underlying function has parameters.
         maybeSig : Maybe Ctx.FuncSignature
         maybeSig =
-            Dict.get specId ctx.signatures
+            Array.get specId ctx.signatures |> Maybe.andThen identity
     in
     case maybeSig of
         Just sig ->
@@ -1465,7 +1465,7 @@ generateUnknownSegmentationCall ctx func args _ _ =
         evaluatorBoxesAll =
             case func of
                 Mono.MonoVarGlobal _ specId _ ->
-                    case Dict.get specId ctx.signatures of
+                    case Array.get specId ctx.signatures |> Maybe.andThen identity of
                         Just sig ->
                             hasAllBoxedEvaluatorParams sig
 
@@ -1728,7 +1728,7 @@ generateFlattenedPartialApplication ctx func args resultType =
         ( totalArity, evaluatorBoxesAll ) =
             case func of
                 Mono.MonoVarGlobal _ specId _ ->
-                    case Dict.get specId ctx.signatures of
+                    case Array.get specId ctx.signatures |> Maybe.andThen identity of
                         Just sig ->
                             ( List.length sig.paramTypes
                             , hasAllBoxedEvaluatorParams sig
@@ -1866,7 +1866,7 @@ generateClosureApplication ctx func args resultType callInfo =
                     evaluatorBoxesAll =
                         case func of
                             Mono.MonoVarGlobal _ specId _ ->
-                                case Dict.get specId ctx.signatures of
+                                case Array.get specId ctx.signatures |> Maybe.andThen identity of
                                     Just sig ->
                                         hasAllBoxedEvaluatorParams sig
 
@@ -1970,7 +1970,7 @@ trackExternBoxedVar name expr ctx =
         isExternBoxed =
             case expr of
                 Mono.MonoVarGlobal _ specId _ ->
-                    case Dict.get specId ctx.signatures of
+                    case Array.get specId ctx.signatures |> Maybe.andThen identity of
                         Just sig ->
                             hasAllBoxedEvaluatorParams sig
 
@@ -2496,7 +2496,7 @@ generateSaturatedCall ctx func args resultType callInfo =
 
                                                     maybeSig : Maybe Ctx.FuncSignature
                                                     maybeSig =
-                                                        Dict.get specId ctx.signatures
+                                                        Array.get specId ctx.signatures |> Maybe.andThen identity
 
                                                     ( boxOps, argVarPairs, ctx1b ) =
                                                         case maybeSig of
@@ -2542,7 +2542,7 @@ generateSaturatedCall ctx func args resultType callInfo =
                                         -- Look up the function signature to determine expected parameter types
                                         maybeSig : Maybe Ctx.FuncSignature
                                         maybeSig =
-                                            Dict.get specId ctx.signatures
+                                            Array.get specId ctx.signatures |> Maybe.andThen identity
 
                                         -- Use boxToMatchSignatureTyped with actual SSA types
                                         ( boxOps, argVarPairs, ctx1b ) =
@@ -5069,14 +5069,14 @@ decodeSurrogatePair hi rest =
 
 {-| Extract record fields Dict from a MonoType.
 -}
-getRecordFields : Mono.MonoType -> EveryDict.Dict String Name.Name Mono.MonoType
+getRecordFields : Mono.MonoType -> Dict.Dict Name.Name Mono.MonoType
 getRecordFields monoType =
     case monoType of
         Mono.MRecord fields ->
-            EveryDict.fromList identity (Dict.toList fields)
+            fields
 
         _ ->
-            EveryDict.empty
+            Dict.empty
 
 
 {-| Extract tuple element types from a MonoType.

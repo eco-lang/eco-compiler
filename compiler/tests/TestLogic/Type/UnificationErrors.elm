@@ -116,7 +116,7 @@ canonicalizeModule : Src.Module -> Result String Can.Module
 canonicalizeModule srcModule =
     let
         result =
-            Canonicalize.canonicalize ( "eco", "example" ) (Data.Map.fromList identity (Dict.toList Basic.testIfaces)) srcModule
+            Canonicalize.canonicalize ( "eco", "example" ) Basic.testIfaces srcModule
     in
     case Result.run result of
         ( _, Err errors ) ->
@@ -143,10 +143,10 @@ runTypeCheck :
         IO.IO
             (Result
                 (NE.Nonempty TypeError.Error)
-                { annotations : Data.Map.Dict String String (Can.Annotation Name)
+                { annotations : Dict.Dict String (Can.Annotation Name)
                 , nodeTypes : Array.Array (Maybe (Can.Type Name))
                 , nodeVars : Array.Array (Maybe IO.Variable)
-                , annotationVars : Data.Map.Dict String String IO.Variable
+                , annotationVars : Dict.Dict String IO.Variable
                 , solverState :
                     { descriptors : Array.Array IO.Descriptor
                     , pointInfo : Array.Array IO.PointInfo

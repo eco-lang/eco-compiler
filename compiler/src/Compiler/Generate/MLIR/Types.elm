@@ -62,7 +62,7 @@ These are computed from MonoType shapes during code generation.
 
 import Compiler.AST.Monomorphized as Mono
 import Compiler.Data.Name exposing (Name)
-import Data.Map as Dict exposing (Dict)
+import Dict exposing (Dict)
 import Mlir.Mlir exposing (MlirType(..))
 
 
@@ -420,11 +420,11 @@ This is called during code generation to compute the layout from a record's
 field dictionary (stored in MRecord MonoType).
 
 -}
-computeRecordLayout : Dict String Name Mono.MonoType -> RecordLayout
+computeRecordLayout : Dict Name Mono.MonoType -> RecordLayout
 computeRecordLayout fields =
     let
         allFields =
-            Dict.toList compare fields
+            Dict.toList fields
 
         ( unboxedFields, boxedFields ) =
             List.partition (\( _, ty ) -> canUnbox ty) allFields

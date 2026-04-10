@@ -49,7 +49,7 @@ expectUniqueIds : Src.Module -> Expect.Expectation
 expectUniqueIds modul =
     let
         result =
-            Canonicalize.canonicalize ( "eco", "example" ) (DMap.fromList identity (Dict.toList Basic.testIfaces)) modul
+            Canonicalize.canonicalize ( "eco", "example" ) Basic.testIfaces modul
     in
     case Result.run result of
         ( _, Err errors ) ->

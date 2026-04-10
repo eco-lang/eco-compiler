@@ -49,7 +49,8 @@ import Compiler.Data.Name exposing (Name)
 import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Error.Type as E
 import Compiler.Type.Type as Type exposing (Constraint, Type(..))
-import Data.Map as Dict exposing (Dict)
+import Data.Map as DataMap
+import Dict exposing (Dict)
 import System.TypeCheck.IO as IO
 
 
@@ -75,7 +76,7 @@ with its inferred type and the region where it was bound.
 
 -}
 type alias Header =
-    Dict String Name (A.Located Type)
+    Dict Name (A.Located Type)
 
 
 {-| Initial empty state for pattern constraint generation.
@@ -97,9 +98,9 @@ addToHeaders region name expectation (State headers vars revCons) =
         tipe =
             getType expectation
 
-        newHeaders : Dict String Name (A.Located Type)
+        newHeaders : Dict Name (A.Located Type)
         newHeaders =
-            Dict.insert identity name (A.At region tipe) headers
+            Dict.insert name (A.At region tipe) headers
     in
     State newHeaders vars revCons
 
@@ -264,7 +265,7 @@ dictionary will hold variables for `a` and `b`
 
 -}
 type alias RigidTypeVar =
-    Dict String Name Type
+    Dict Name Type
 
 
 {-| Internal type for accumulating information about recursive definitions.
@@ -272,7 +273,7 @@ Tracks type variables, constraints, and type headers for both rigid (typed)
 and flexible (untyped) definitions.
 -}
 type Info
-    = Info (List IO.Variable) (List Constraint) (Dict String Name (A.Located Type))
+    = Info (List IO.Variable) (List Constraint) (Dict Name (A.Located Type))
 
 
 {-| Empty Info structure with no variables, constraints, or headers.
@@ -337,13 +338,13 @@ getAccessName (A.At _ exprInfo) =
 is empty, returns the base record type; otherwise constructs a record with
 the shader types mapped to Elm types.
 -}
-toShaderRecord : Dict String Name Shader.Type -> Type -> Type
+toShaderRecord : DataMap.Dict String Name Shader.Type -> Type -> Type
 toShaderRecord types baseRecType =
-    if Dict.isEmpty types then
+    if DataMap.isEmpty types then
         baseRecType
 
     else
-        RecordN (Dict.map (\_ -> glToType) types) baseRecType
+        RecordN (Dict.fromList (DataMap.toList compare (DataMap.map (\_ -> glToType) types))) baseRecType
 
 
 {-| Convert a GLSL/WebGL type to the corresponding Elm type (e.g., V2 becomes

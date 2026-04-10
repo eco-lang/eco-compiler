@@ -119,13 +119,9 @@ recordSyntheticExprVar id var state =
 
 {-| Record the forall binder → solver variable mapping for a definition.
 -}
-recordSchemeBinders : Name.Name -> DMap.Dict String Name.Name IO.Variable -> NodeIdState -> NodeIdState
+recordSchemeBinders : Name.Name -> Dict.Dict Name.Name IO.Variable -> NodeIdState -> NodeIdState
 recordSchemeBinders defName binders state =
-    let
-        binderDict =
-            Dict.fromList (DMap.toList compare binders)
-    in
-    { state | schemeBinderVars = Dict.insert defName binderDict state.schemeBinderVars }
+    { state | schemeBinderVars = Dict.insert defName binders state.schemeBinderVars }
 
 
 arraySetGrowing : Int -> Maybe a -> Array (Maybe a) -> Array (Maybe a)

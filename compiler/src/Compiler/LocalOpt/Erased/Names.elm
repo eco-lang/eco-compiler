@@ -54,10 +54,11 @@ import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Reporting.Annotation as A
 import Control.Loop exposing (Step(..))
-import Data.Map as Dict exposing (Dict)
+import Data.Map as DataMap
+import Dict exposing (Dict)
 import Data.Set as EverySet exposing (EverySet)
 import System.TypeCheck.IO as IO
-import Utils.Main as Utils
+
 
 
 
@@ -77,7 +78,7 @@ type Tracker a
     = Tracker
         (Int
          -> EverySet String Opt.Global
-         -> Dict String Name Int
+         -> Dict Name Int
          -> TResult a
         )
 
@@ -89,13 +90,13 @@ type TResult a
 type alias TResultProps =
     { uid : Int
     , deps : EverySet String Opt.Global
-    , fields : Dict String Name Int
+    , fields : Dict Name Int
     }
 
 
 {-| Helper to construct TResult with positional args
 -}
-tResult : Int -> EverySet String Opt.Global -> Dict String Name Int -> a -> TResult a
+tResult : Int -> EverySet String Opt.Global -> Dict Name Int -> a -> TResult a
 tResult uid deps fields value =
     TResult { uid = uid, deps = deps, fields = fields } value
 
@@ -113,7 +114,7 @@ Returns a tuple of:
   - The computed result value
 
 -}
-run : Tracker a -> ( EverySet String Opt.Global, Dict String Name Int, a )
+run : Tracker a -> ( EverySet String Opt.Global, Dict Name Int, a )
 run (Tracker k) =
     case k 0 EverySet.empty Dict.empty of
         TResult props value ->
@@ -255,7 +256,7 @@ registerField : Name -> a -> Tracker a
 registerField name value =
     Tracker <|
         \uid d fields ->
-            tResult uid d (Utils.mapInsertWith Basics.identity (+) name 1 fields) value
+            tResult uid d (insertWith (+) name 1 fields) value
 
 
 {-| Register usage of multiple record fields from a dictionary and return the given value.
@@ -264,19 +265,14 @@ Takes a dictionary where keys are field names and increments the usage count for
 The dictionary values are ignored - only the keys (field names) matter.
 
 -}
-registerFieldDict : Dict String Name v -> a -> Tracker a
+registerFieldDict : Dict Name v -> a -> Tracker a
 registerFieldDict newFields value =
     Tracker <|
         \uid d fields ->
             tResult uid
                 d
-                (Utils.mapUnionWith Basics.identity compare (+) fields (Dict.map (\_ -> toOne) newFields))
+                (unionWith (+) fields (Dict.map (\_ _ -> 1) newFields))
                 value
-
-
-toOne : a -> Int
-toOne _ =
-    1
 
 
 {-| Register usage of multiple record fields from a list and return the given value.
@@ -292,9 +288,19 @@ registerFieldList names value =
             tResult uid deps (List.foldr addOne fields names) value
 
 
-addOne : Name -> Dict String Name Int -> Dict String Name Int
+addOne : Name -> Dict Name Int -> Dict Name Int
 addOne name fields =
-    Utils.mapInsertWith Basics.identity (+) name 1 fields
+    insertWith (+) name 1 fields
+
+
+insertWith : (a -> a -> a) -> comparable -> a -> Dict comparable a -> Dict comparable a
+insertWith f k v =
+    Dict.update k (Maybe.map (f v) >> Maybe.withDefault v >> Just)
+
+
+unionWith : (a -> a -> a) -> Dict comparable a -> Dict comparable a -> Dict comparable a
+unionWith f a b =
+    Dict.merge Dict.insert (\k va vb acc -> Dict.insert k (f va vb) acc) Dict.insert a b Dict.empty
 
 
 
@@ -359,7 +365,7 @@ loopHelper :
     -> state
     -> Int
     -> EverySet String Opt.Global
-    -> Dict String Name Int
+    -> Dict Name Int
     -> TResult a
 loopHelper callback loopState n d f =
     case callback loopState of
@@ -399,7 +405,7 @@ threading state through each step. Returns a Tracker containing a dictionary wit
 transformed values and all accumulated dependencies.
 
 -}
-mapTraverse : (k -> comparable) -> (k -> k -> Order) -> (a -> Tracker b) -> Dict comparable k a -> Tracker (Dict comparable k b)
+mapTraverse : (k -> comparable) -> (k -> k -> Order) -> (a -> Tracker b) -> DataMap.Dict comparable k a -> Tracker (DataMap.Dict comparable k b)
 mapTraverse toComparable keyComparison func dict =
     loop
         (\( pairs, acc ) ->
@@ -408,6 +414,6 @@ mapTraverse toComparable keyComparison func dict =
                     pure (Done acc)
 
                 ( k, a ) :: rest ->
-                    map (\b -> Loop ( rest, Dict.insert toComparable k b acc )) (func a)
+                    map (\b -> Loop ( rest, DataMap.insert toComparable k b acc )) (func a)
         )
-        ( Dict.toList keyComparison dict, Dict.empty )
+        ( DataMap.toList keyComparison dict, DataMap.empty )

@@ -233,7 +233,7 @@ type alias Context =
     , registry : Mono.SpecializationRegistry
     , pendingLambdas : List PendingLambda
     , pendingFuncOps : List MlirOp -- Pre-generated func.func ops (e.g. from local tail-rec functions)
-    , signatures : Dict.Dict Int FuncSignature -- SpecId -> signature for invariant checking
+    , signatures : Array (Maybe FuncSignature) -- SpecId -> signature for invariant checking
     , varMappings : Dict.Dict String VarInfo -- Let-bound name -> variable info with call model
     , currentLetSiblings : Dict.Dict String VarInfo -- Sibling mappings for current let-rec group
     , kernelDecls : Dict.Dict String ( List MlirType, MlirType ) -- Kernel function name -> (argTypes, returnType)
@@ -271,7 +271,7 @@ type alias PendingLambda =
 
 {-| Initialize a code generation context.
 -}
-initContext : Mode.Mode -> Mono.SpecializationRegistry -> Dict.Dict Int FuncSignature -> Dict.Dict String (List Mono.CtorShape) -> Context
+initContext : Mode.Mode -> Mono.SpecializationRegistry -> Array (Maybe FuncSignature) -> Dict.Dict String (List Mono.CtorShape) -> Context
 initContext mode registry signatures initialCtorShapes =
     { nextVar = 0
     , nextOpId = 0
@@ -779,22 +779,10 @@ extractNodeSignature node =
 {-| Build a map of SpecId -> FuncSignature from all nodes in the graph.
 Used for invariant checking at call sites.
 -}
-buildSignatures : Array (Maybe Mono.MonoNode) -> Dict.Dict Int FuncSignature
+buildSignatures : Array (Maybe Mono.MonoNode) -> Array (Maybe FuncSignature)
 buildSignatures nodes =
-    Array.foldl
-        (\maybeNode ( specId, acc ) ->
-            case maybeNode of
-                Just node ->
-                    case extractNodeSignature node of
-                        Just sig ->
-                            ( specId + 1, Dict.insert specId sig acc )
-
-                        Nothing ->
-                            ( specId + 1, acc )
-
-                Nothing ->
-                    ( specId + 1, acc )
+    Array.map
+        (\maybeNode ->
+            maybeNode |> Maybe.andThen extractNodeSignature
         )
-        ( 0, Dict.empty )
         nodes
-        |> Tuple.second

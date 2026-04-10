@@ -561,7 +561,7 @@ even those not directly used in code.
 computeCtorShapesForGraph :
     TypeEnv.GlobalTypeEnv
     -> Array (Maybe Mono.MonoNode)
-    -> Data.Map.Dict String String (List Mono.CtorShape)
+    -> Dict.Dict String (List Mono.CtorShape)
 computeCtorShapesForGraph globalTypeEnv nodes =
     let
         customTypes =
@@ -587,7 +587,7 @@ computeCtorShapesForGraph globalTypeEnv nodes =
                                 ( completeCtors, _ ) =
                                     buildCompleteCtorShapes (State.initMVarEnv TypeIds.firstMVarId Set.empty) unionData.vars monoArgs unionData.alts
                             in
-                            Data.Map.insert identity key completeCtors acc
+                            Dict.insert key completeCtors acc
 
                 _ ->
                     acc
@@ -595,4 +595,4 @@ computeCtorShapesForGraph globalTypeEnv nodes =
         dummyCompare _ _ =
             EQ
     in
-    EverySet.foldr dummyCompare processCustomType Data.Map.empty customTypes
+    EverySet.foldr dummyCompare processCustomType Dict.empty customTypes

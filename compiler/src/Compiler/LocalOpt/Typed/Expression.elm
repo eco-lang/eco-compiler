@@ -653,7 +653,7 @@ optimizeExpr kernelEnv annotations exprTypes exprVars home cycle region tipe tva
                                         optUpdatesDict =
                                             Data.Map.fromList A.toValue optUpdates
                                     in
-                                    Names.registerFieldDict (Utils.mapMapKeys identity A.compareLocated A.toValue fieldUpdates)
+                                    Names.registerFieldDict (Utils.dictMapKeys A.compareLocated A.toValue fieldUpdates)
                                         (TOpt.Update region optRecord optUpdatesDict { tipe = tipe, tvar = tvar })
                                 )
                     )
@@ -676,7 +676,7 @@ optimizeExpr kernelEnv annotations exprTypes exprVars home cycle region tipe tva
                             optFieldsDict =
                                 Data.Map.fromList A.toValue optFields
                         in
-                        Names.registerFieldDict (Utils.mapMapKeys identity A.compareLocated A.toValue fields) (TOpt.TrackedRecord region optFieldsDict { tipe = tipe, tvar = tvar })
+                        Names.registerFieldDict (Utils.dictMapKeys A.compareLocated A.toValue fields) (TOpt.TrackedRecord region optFieldsDict { tipe = tipe, tvar = tvar })
                     )
 
         Can.Unit ->
@@ -1137,10 +1137,10 @@ optimizePotentialTailCallDef kernelEnv annotations exprTypes exprVars home cycle
                 localAnnotationVars =
                     case findVarLocalTvar name exprVars body of
                         Just v ->
-                            Data.Map.singleton identity name v
+                            Dict.singleton name v
 
                         Nothing ->
-                            Data.Map.empty
+                            Dict.empty
             in
             optimizePotentialTailCall kernelEnv annotations exprTypes exprVars home cycle region name args (TCanBuild.toTypedExpr exprTypes exprVars body) defType localAnnotationVars
 
@@ -1149,10 +1149,10 @@ optimizePotentialTailCallDef kernelEnv annotations exprTypes exprVars home cycle
                 localAnnotationVars =
                     case findVarLocalTvar name exprVars body of
                         Just v ->
-                            Data.Map.singleton identity name v
+                            Dict.singleton name v
 
                         Nothing ->
-                            Data.Map.empty
+                            Dict.empty
             in
             optimizePotentialTailCall kernelEnv annotations exprTypes exprVars home cycle region name (List.map Tuple.first typedArgs) (TCanBuild.toTypedExpr exprTypes exprVars body) defType localAnnotationVars
 
@@ -1175,7 +1175,7 @@ optimizePotentialTailCall :
     -> List Can.Pattern
     -> TCan.Expr
     -> Can.Type Name
-    -> Data.Map.Dict String Name IO.Variable
+    -> Dict Name IO.Variable
     -> Names.Tracker (TOpt.Def Name)
 optimizePotentialTailCall kernelEnv annotations exprTypes exprVars home cycle region name args body defType annotationVars =
     let
@@ -1190,7 +1190,7 @@ optimizePotentialTailCall kernelEnv annotations exprTypes exprVars home cycle re
         -- from the solver's Env to get the full function type variable.
         nodeTvar : Maybe IO.Variable
         nodeTvar =
-            case Data.Map.get identity name annotationVars of
+            case Dict.get name annotationVars of
                 Just var ->
                     Just var
 

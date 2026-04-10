@@ -72,17 +72,20 @@ Returns (nodeToClass, classMembers).
 -}
 type alias BuildState =
     { nextClass : Int
-    , nodeToClass : Dict Int ClassId
-    , classMembers : Dict Int (List NodeId)
+    , nodeToClass : Array Int
+    , classMembers : Array (List NodeId)
     , uf : Uf
     }
 
 
 buildClasses :
     StagingGraph
-    -> ( Dict Int ClassId, Dict Int (List NodeId) )
+    -> ( Array Int, Array (List NodeId) )
 buildClasses sg =
     let
+        numNodes =
+            Array.length sg.nodeById
+
         -- Process each node in the graph
         assignClass :
             String
@@ -95,38 +98,46 @@ buildClasses sg =
                 ( rootId, uf1 ) =
                     ufFind nid state.uf
 
-                -- Check if root already has a class
-                maybeClassId =
-                    Dict.get rootId state.nodeToClass
+                -- Check if root already has a class (-1 means unassigned)
+                rootClassId =
+                    Array.get rootId state.nodeToClass
+                        |> Maybe.withDefault -1
 
                 ( classId, nextClass2, nodeToClass2 ) =
-                    case maybeClassId of
-                        Just cid ->
-                            ( cid, state.nextClass, state.nodeToClass )
+                    if rootClassId >= 0 then
+                        ( rootClassId, state.nextClass, state.nodeToClass )
 
-                        Nothing ->
-                            -- Assign new class to root
-                            ( state.nextClass
-                            , state.nextClass + 1
-                            , Dict.insert rootId state.nextClass state.nodeToClass
-                            )
+                    else
+                        -- Assign new class to root
+                        ( state.nextClass
+                        , state.nextClass + 1
+                        , Array.set rootId state.nextClass state.nodeToClass
+                        )
 
                 -- Also assign this node to the class
                 nodeToClass3 =
                     if nid /= rootId then
-                        Dict.insert nid classId nodeToClass2
+                        Array.set nid classId nodeToClass2
 
                     else
                         nodeToClass2
 
-                -- Add node to class members
+                -- Add node to class members (grow array if needed)
                 classMembers2 =
-                    Dict.update
-                        classId
-                        (\maybeList ->
-                            Just (nid :: Maybe.withDefault [] maybeList)
-                        )
-                        state.classMembers
+                    let
+                        cm =
+                            if classId >= Array.length state.classMembers then
+                                -- Grow to accommodate new classId
+                                Array.append state.classMembers
+                                    (Array.repeat (classId - Array.length state.classMembers + 1) [])
+
+                            else
+                                state.classMembers
+
+                        existing =
+                            Array.get classId cm |> Maybe.withDefault []
+                    in
+                    Array.set classId (nid :: existing) cm
             in
             { nextClass = nextClass2
             , nodeToClass = nodeToClass3
@@ -136,8 +147,8 @@ buildClasses sg =
 
         initialState =
             { nextClass = 0
-            , nodeToClass = Dict.empty
-            , classMembers = Dict.empty
+            , nodeToClass = Array.repeat numNodes -1
+            , classMembers = Array.empty
             , uf = sg.uf
             }
 
@@ -162,26 +173,14 @@ If a kernel is in the class, use the kernel's segmentation.
 chooseCanonicalSegs :
     ProducerInfo
     -> StagingGraph
-    -> Dict Int ClassId
-    -> Dict Int (List NodeId)
+    -> Array Int
+    -> Array (List NodeId)
     -> Array (Maybe Segmentation)
 chooseCanonicalSegs producerInfo sg _ classMembers =
-    let
-        maxClassId =
-            Dict.foldl (\classId _ acc -> max classId acc) -1 classMembers
-
-        base =
-            Array.repeat (maxClassId + 1) Nothing
-    in
-    Dict.foldl
-        (\classId nodeIds acc ->
-            let
-                canonical =
-                    chooseForClass producerInfo sg nodeIds
-            in
-            Array.set classId (Just canonical) acc
+    Array.indexedMap
+        (\_ nodeIds ->
+            Just (chooseForClass producerInfo sg nodeIds)
         )
-        base
         classMembers
 
 
@@ -319,33 +318,37 @@ segToKey seg =
 -}
 mapProducersAndSlotsToClasses :
     StagingGraph
-    -> Dict Int ClassId
+    -> Array Int
     -> ( Dict String ClassId, Dict String ClassId )
 mapProducersAndSlotsToClasses sg nodeToClass =
     Dict.foldl
         (\_ nid ( prodMap, slotMap ) ->
-            case Dict.get nid nodeToClass of
-                Nothing ->
-                    ( prodMap, slotMap )
+            let
+                classId =
+                    Array.get nid nodeToClass
+                        |> Maybe.withDefault -1
+            in
+            if classId < 0 then
+                ( prodMap, slotMap )
 
-                Just classId ->
-                    case Array.get nid sg.nodeById of
-                        Just (NodeProducer pid) ->
-                            let
-                                key =
-                                    producerIdToKey pid
-                            in
-                            ( Dict.insert key classId prodMap, slotMap )
+            else
+                case Array.get nid sg.nodeById of
+                    Just (NodeProducer pid) ->
+                        let
+                            key =
+                                producerIdToKey pid
+                        in
+                        ( Dict.insert key classId prodMap, slotMap )
 
-                        Just (NodeSlot sid) ->
-                            let
-                                key =
-                                    slotIdToKey sid
-                            in
-                            ( prodMap, Dict.insert key classId slotMap )
+                    Just (NodeSlot sid) ->
+                        let
+                            key =
+                                slotIdToKey sid
+                        in
+                        ( prodMap, Dict.insert key classId slotMap )
 
-                        Nothing ->
-                            ( prodMap, slotMap )
+                    Nothing ->
+                        ( prodMap, slotMap )
         )
         ( Dict.empty, Dict.empty )
         sg.nodeIndex
@@ -372,7 +375,7 @@ with fundamentally incompatible call models (e.g. mixed kernel + user closure).
 identifyDynamicSlots :
     ProducerInfo
     -> StagingGraph
-    -> Dict Int (List NodeId)
+    -> Array (List NodeId)
     -> Dict String ClassId
     -> Set String
 identifyDynamicSlots producerInfo sg classMembers slotClass =
@@ -380,8 +383,8 @@ identifyDynamicSlots producerInfo sg classMembers slotClass =
         -- Find classes with no producer segmentations
         classesWithNoProducers : Set Int
         classesWithNoProducers =
-            Dict.foldl
-                (\classId nodeIds acc ->
+            Array.foldl
+                (\( classId, nodeIds ) acc ->
                     let
                         hasProducerSeg =
                             List.any
@@ -395,7 +398,7 @@ identifyDynamicSlots producerInfo sg classMembers slotClass =
                         Set.insert classId acc
                 )
                 Set.empty
-                classMembers
+                (Array.indexedMap (\i ns -> ( i, ns )) classMembers)
     in
     -- Mark all slots in those classes as dynamic
     Dict.foldl

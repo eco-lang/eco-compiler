@@ -104,11 +104,11 @@ constrainDeclsStep ( items, bodyCon ) =
             IO.pure (IO.Done bodyCon)
 
         (Single def) :: rest ->
-            Expr.constrainDef DMap.empty def bodyCon
+            Expr.constrainDef Dict.empty def bodyCon
                 |> IO.map (\con -> IO.Loop ( rest, con ))
 
         (Rec def defs) :: rest ->
-            Expr.constrainRecursiveDefs DMap.empty (def :: defs) bodyCon
+            Expr.constrainRecursiveDefs Dict.empty (def :: defs) bodyCon
                 |> IO.map (\con -> IO.Loop ( rest, con ))
 
 
@@ -124,13 +124,13 @@ letPort name port_ makeConstraint =
             IO.traverseMapWithKey identity compare (\k _ -> nameToRigid k) (DMap.fromList identity (Dict.toList freeVars))
                 |> IO.andThen
                     (\vars ->
-                        Instantiate.fromSrcType (DMap.map (\_ v -> VarN v) vars) func
+                        Instantiate.fromSrcType (Dict.fromList (List.map (\( k, v ) -> ( k, VarN v )) (DMap.toList compare vars))) func
                             |> IO.andThen
                                 (\tipe ->
                                     let
-                                        header : DMap.Dict String Name (A.Located Type)
+                                        header : Dict.Dict Name (A.Located Type)
                                         header =
-                                            DMap.singleton identity name (A.At A.zero tipe)
+                                            Dict.singleton name (A.At A.zero tipe)
                                     in
                                     IO.map (CLet (DMap.values compare vars) [] header CTrue) makeConstraint
                                 )
@@ -140,13 +140,13 @@ letPort name port_ makeConstraint =
             IO.traverseMapWithKey identity compare (\k _ -> nameToRigid k) (DMap.fromList identity (Dict.toList freeVars))
                 |> IO.andThen
                     (\vars ->
-                        Instantiate.fromSrcType (DMap.map (\_ v -> VarN v) vars) func
+                        Instantiate.fromSrcType (Dict.fromList (List.map (\( k, v ) -> ( k, VarN v )) (DMap.toList compare vars))) func
                             |> IO.andThen
                                 (\tipe ->
                                     let
-                                        header : DMap.Dict String Name (A.Located Type)
+                                        header : Dict.Dict Name (A.Located Type)
                                         header =
-                                            DMap.singleton identity name (A.At A.zero tipe)
+                                            Dict.singleton name (A.At A.zero tipe)
                                     in
                                     IO.map (CLet (DMap.values compare vars) [] header CTrue) makeConstraint
                                 )
@@ -171,9 +171,9 @@ letCmd home tipe constraint =
                     cmdType =
                         FunN (AppN home tipe [ msg ]) (AppN ModuleName.cmd Name.cmd [ msg ])
 
-                    header : DMap.Dict String Name (A.Located Type)
+                    header : Dict.Dict Name (A.Located Type)
                     header =
-                        DMap.singleton identity "command" (A.At A.zero cmdType)
+                        Dict.singleton "command" (A.At A.zero cmdType)
                 in
                 CLet [ msgVar ] [] header CTrue constraint
             )
@@ -193,9 +193,9 @@ letSub home tipe constraint =
                     subType =
                         FunN (AppN home tipe [ msg ]) (AppN ModuleName.sub Name.sub [ msg ])
 
-                    header : DMap.Dict String Name (A.Located Type)
+                    header : Dict.Dict Name (A.Located Type)
                     header =
-                        DMap.singleton identity "subscription" (A.At A.zero subType)
+                        Dict.singleton "subscription" (A.At A.zero subType)
                 in
                 CLet [ msgVar ] [] header CTrue constraint
             )
@@ -318,16 +318,16 @@ checkMapProg manager home vars effectCons =
     case manager of
         Can.Cmd cmd ->
             checkMapProgHelper "cmdMap" home cmd CSaveTheEnvironment
-                |> Prog.map (CLet [] vars DMap.empty effectCons)
+                |> Prog.map (CLet [] vars Dict.empty effectCons)
 
         Can.Sub sub ->
             checkMapProgHelper "subMap" home sub CSaveTheEnvironment
-                |> Prog.map (CLet [] vars DMap.empty effectCons)
+                |> Prog.map (CLet [] vars Dict.empty effectCons)
 
         Can.Fx cmd sub ->
             checkMapProgHelper "subMap" home sub CSaveTheEnvironment
                 |> Prog.andThen (checkMapProgHelper "cmdMap" home cmd)
-                |> Prog.map (CLet [] vars DMap.empty effectCons)
+                |> Prog.map (CLet [] vars Dict.empty effectCons)
 
 
 {-| Stack-safe version of checkMap using the DSL.
@@ -349,7 +349,7 @@ checkMapProgHelper name home tipe constraint =
                                 mapCon =
                                     CLocal A.zero name (E.NoExpectation mapType)
                             in
-                            CLet [ a, b ] [] DMap.empty mapCon constraint
+                            CLet [ a, b ] [] Dict.empty mapCon constraint
                         )
             )
 

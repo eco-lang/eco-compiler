@@ -59,7 +59,7 @@ import Compiler.Reporting.Render.Type.Localizer as L
 import Compiler.Reporting.Report as Report
 import Compiler.Reporting.Suggest as Suggest
 import Compiler.Type.Error as T
-import Data.Map as Dict exposing (Dict)
+import Dict exposing (Dict)
 import Utils.Bytes.Decode as BD
 import Utils.Bytes.Encode as BE
 
@@ -101,7 +101,7 @@ type Context
     | CallArity MaybeName Int
     | CallArg MaybeName Index.ZeroBased
     | RecordAccess A.Region (Maybe Name) A.Region Name
-    | RecordUpdateKeys (Dict String Name Can.FieldUpdate)
+    | RecordUpdateKeys (Dict Name Can.FieldUpdate)
     | RecordUpdateValue Name
     | Destructure
 
@@ -1309,7 +1309,7 @@ toExprReport source localizer exprRegion category tipe expected =
                                         ++ " record does not have a `"
                                         ++ field
                                         ++ "` field:"
-                                , case Suggest.sort field Tuple.first (Dict.toList compare fields) of
+                                , case Suggest.sort field Tuple.first (Dict.toList fields) of
                                     [] ->
                                         D.reflow "In fact, it is a record with NO fields!"
 
@@ -1356,7 +1356,7 @@ toExprReport source localizer exprRegion category tipe expected =
                 RecordUpdateKeys expectedFields ->
                     case T.iteratedDealias tipe of
                         T.Record actualFields ext ->
-                            case Dict.diff expectedFields actualFields |> Dict.toList compare |> List.sortBy Tuple.first of
+                            case Dict.diff expectedFields actualFields |> Dict.toList |> List.sortBy Tuple.first of
                                 [] ->
                                     mismatch
                                         ( ( Nothing
@@ -1382,7 +1382,7 @@ toExprReport source localizer exprRegion category tipe expected =
                                             "The record does not have a "
                                                 ++ fStr
                                                 ++ " field:"
-                                        , case Suggest.sort field Tuple.first (Dict.toList compare actualFields) of
+                                        , case Suggest.sort field Tuple.first (Dict.toList actualFields) of
                                             [] ->
                                                 "In fact, it is a record with NO fields!" |> D.reflow
 
@@ -2886,7 +2886,7 @@ contextEncoder context =
         RecordUpdateKeys expectedFields ->
             Bytes.Encode.sequence
                 [ Bytes.Encode.unsignedInt8 10
-                , BE.assocListDict compare BE.string Can.fieldUpdateEncoder expectedFields
+                , BE.stdDict BE.string Can.fieldUpdateEncoder expectedFields
                 ]
 
         RecordUpdateValue field ->
@@ -2945,7 +2945,7 @@ contextDecoder =
 
                     10 ->
                         Bytes.Decode.map RecordUpdateKeys
-                            (BD.assocListDict identity BD.string Can.fieldUpdateDecoder)
+                            (BD.stdDict BD.string Can.fieldUpdateDecoder)
 
                     11 ->
                         Bytes.Decode.map RecordUpdateValue BD.string

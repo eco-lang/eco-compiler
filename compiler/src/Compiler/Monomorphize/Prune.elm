@@ -16,7 +16,6 @@ import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.TypeEnv as TypeEnv
 import Compiler.Data.BitSet as BitSet exposing (BitSet)
 import Compiler.Monomorphize.Analysis as Analysis
-import Data.Map
 import Dict exposing (Dict)
 
 
@@ -143,7 +142,7 @@ pruneUnreachableSpecs globalTypeEnv (Mono.MonoGraph record) =
         -- 4. Recompute ctorShapes from pruned nodes
         ctorShapes1 : Dict String (List Mono.CtorShape)
         ctorShapes1 =
-            Dict.fromList (Data.Map.toList compare (Analysis.computeCtorShapesForGraph globalTypeEnv nodes1))
+            Analysis.computeCtorShapesForGraph globalTypeEnv nodes1
     in
     Mono.MonoGraph
         { nodes = nodes1
