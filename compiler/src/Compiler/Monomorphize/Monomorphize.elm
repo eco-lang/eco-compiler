@@ -82,7 +82,7 @@ monomorphize entryPointName globalTypeEnv globalGraph =
 
 {-| Perform monomorphization from a given entry point.
 -}
-monomorphizeFromEntry : TOpt.Global -> Can.Type TypeIds.MVarId -> TypeEnv.GlobalTypeEnv -> DMap.Dict (List String) TOpt.Global (TOpt.Node TypeIds.MVarId) -> TOpt.AnnotationsByGlobal TypeIds.MVarId -> State.MVarEnv -> Result String Mono.MonoGraph
+monomorphizeFromEntry : TOpt.Global -> Can.Type TypeIds.MVarId -> TypeEnv.GlobalTypeEnv -> DMap.Dict String TOpt.Global (TOpt.Node TypeIds.MVarId) -> TOpt.AnnotationsByGlobal TypeIds.MVarId -> State.MVarEnv -> Result String Mono.MonoGraph
 monomorphizeFromEntry mainGlobal mainType globalTypeEnv nodes annotations mvarEnv =
     let
         ( finalState, mainSpecIdVal ) =
@@ -149,7 +149,7 @@ monomorphizeWithLog log entryPointName globalTypeEnv globalGraph =
 
 {-| Phase 1: Run the specialization worklist to completion.
 -}
-runSpecialization : TOpt.Global -> Can.Type TypeIds.MVarId -> TypeEnv.GlobalTypeEnv -> DMap.Dict (List String) TOpt.Global (TOpt.Node TypeIds.MVarId) -> TOpt.AnnotationsByGlobal TypeIds.MVarId -> State.MVarEnv -> ( MonoState, Mono.SpecId )
+runSpecialization : TOpt.Global -> Can.Type TypeIds.MVarId -> TypeEnv.GlobalTypeEnv -> DMap.Dict String TOpt.Global (TOpt.Node TypeIds.MVarId) -> TOpt.AnnotationsByGlobal TypeIds.MVarId -> State.MVarEnv -> ( MonoState, Mono.SpecId )
 runSpecialization mainGlobal mainType globalTypeEnv nodes annotations mvarEnv =
     let
         mainMonoType : Mono.MonoType
@@ -259,14 +259,14 @@ assembleRawGraphFrom finalAccum lambdaCounter mainSpecIdVal =
 
 {-| Initialize the monomorphization state.
 -}
-initState : IO.Canonical -> DMap.Dict (List String) TOpt.Global (TOpt.Node TypeIds.MVarId) -> TOpt.AnnotationsByGlobal TypeIds.MVarId -> TypeEnv.GlobalTypeEnv -> State.MVarEnv -> MonoState
+initState : IO.Canonical -> DMap.Dict String TOpt.Global (TOpt.Node TypeIds.MVarId) -> TOpt.AnnotationsByGlobal TypeIds.MVarId -> TypeEnv.GlobalTypeEnv -> State.MVarEnv -> MonoState
 initState =
     State.initState
 
 
 {-| Find an entry point by name in the ID-rewritten global graph.
 -}
-findEntryPointId : Name -> DMap.Dict (List String) TOpt.Global (TOpt.Node TypeIds.MVarId) -> Maybe ( TOpt.Global, Can.Type TypeIds.MVarId )
+findEntryPointId : Name -> DMap.Dict String TOpt.Global (TOpt.Node TypeIds.MVarId) -> Maybe ( TOpt.Global, Can.Type TypeIds.MVarId )
 findEntryPointId entryPointName nodes =
     DMap.foldl TOpt.compareGlobal
         (\global node acc ->
@@ -516,7 +516,7 @@ type alias Substitution =
 canTypeToMonoType : Substitution -> Can.Type TypeIds.MVarId -> Mono.MonoType
 canTypeToMonoType subst canType =
     -- Use a dummy MVarEnv for the entry point type conversion (no fresh allocations needed)
-    Tuple.first (TypeSubst.canTypeToMonoType (State.initMVarEnv TypeIds.firstMVarId Dict.empty) subst canType)
+    Tuple.first (TypeSubst.canTypeToMonoType (State.initMVarEnv TypeIds.firstMVarId Array.empty) subst canType)
 
 
 

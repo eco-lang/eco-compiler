@@ -62,7 +62,7 @@ type alias ModuleTypeEnv =
 Uses `List String` as the comparable key for `IO.Canonical`.
 -}
 type alias GlobalTypeEnv =
-    Data.Map.Dict (List String) IO.Canonical ModuleTypeEnv
+    Data.Map.Dict String IO.Canonical ModuleTypeEnv
 
 
 

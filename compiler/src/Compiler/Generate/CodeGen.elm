@@ -108,7 +108,7 @@ type alias CodeGen =
 {-| Map from module names to their main entry points for standard optimized AST.
 -}
 type alias Mains =
-    Dict (List String) IO.Canonical Opt.Main
+    Dict String IO.Canonical Opt.Main
 
 
 
@@ -119,7 +119,7 @@ type alias Mains =
 -}
 type SourceMaps
     = NoSourceMaps
-    | SourceMaps (Dict (List String) IO.Canonical String)
+    | SourceMaps (Dict String IO.Canonical String)
 
 
 

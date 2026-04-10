@@ -349,7 +349,7 @@ type Module
 {-| Map of dependency module interfaces needed for type checking.
 -}
 type alias Dependencies =
-    Data.Map.Dict (List String) TypeCheck.Canonical I.DependencyInterface
+    Data.Map.Dict String TypeCheck.Canonical I.DependencyInterface
 
 
 {-| Build a project by compiling modules from specific file paths (e.g., for application builds).

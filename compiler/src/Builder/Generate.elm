@@ -106,7 +106,7 @@ debug backend withSourceMaps leadingLines root maybeBuildDir details (Build.Arti
         |> Task.andThen (generateDebugOutput backend withSourceMaps leadingLines root artifacts.pkg artifacts.roots)
 
 
-loadTypesAndFinalize : FilePath -> Maybe String -> Data.Map.Dict (List String) TypeCheck.Canonical I.DependencyInterface -> List Build.Module -> LoadingObjects -> Task Exit.Generate ( Objects, Extract.Types )
+loadTypesAndFinalize : FilePath -> Maybe String -> Data.Map.Dict String TypeCheck.Canonical I.DependencyInterface -> List Build.Module -> LoadingObjects -> Task Exit.Generate ( Objects, Extract.Types )
 loadTypesAndFinalize root maybeBuildDir ifaces modules loading =
     loadTypes root maybeBuildDir ifaces modules
         |> Task.andThen (finalizeObjectsWithTypes loading)
@@ -134,7 +134,7 @@ generateDebugOutput backend withSourceMaps leadingLines root pkg roots ( objects
         |> Task.map (generateWithBackend backend leadingLines mode graph mains)
 
 
-generateWithBackend : CodeGen.CodeGen -> Int -> Mode.Mode -> Opt.GlobalGraph -> Data.Map.Dict (List String) TypeCheck.Canonical Opt.Main -> CodeGen.SourceMaps -> CodeGen.Output
+generateWithBackend : CodeGen.CodeGen -> Int -> Mode.Mode -> Opt.GlobalGraph -> Data.Map.Dict String TypeCheck.Canonical Opt.Main -> CodeGen.SourceMaps -> CodeGen.Output
 generateWithBackend backend leadingLines mode graph mains sourceMaps =
     backend.generate
         { sourceMaps = sourceMaps
@@ -257,7 +257,7 @@ checkForDebugUses (Objects _ locals) =
 -- ====== GATHER MAINS ======
 
 
-gatherMains : Pkg.Name -> Objects -> NE.Nonempty Build.Root -> Data.Map.Dict (List String) TypeCheck.Canonical Opt.Main
+gatherMains : Pkg.Name -> Objects -> NE.Nonempty Build.Root -> Data.Map.Dict String TypeCheck.Canonical Opt.Main
 gatherMains pkg (Objects _ locals) roots =
     Data.Map.fromList ModuleName.toComparableCanonical (List.filterMap (lookupMain pkg locals) (NE.toList roots))
 
@@ -388,7 +388,7 @@ objectsToGlobalGraph (Objects globals locals) =
 -- ====== LOAD TYPES ======
 
 
-loadTypes : FilePath -> Maybe String -> Data.Map.Dict (List String) TypeCheck.Canonical I.DependencyInterface -> List Build.Module -> Task Exit.Generate Extract.Types
+loadTypes : FilePath -> Maybe String -> Data.Map.Dict String TypeCheck.Canonical I.DependencyInterface -> List Build.Module -> Task Exit.Generate Extract.Types
 loadTypes root maybeBuildDir ifaces modules =
     let
         -- Partition: Fresh modules already have interfaces in memory
@@ -415,7 +415,7 @@ loadTypes root maybeBuildDir ifaces modules =
         )
 
 
-collectAndMergeTypes : Data.Map.Dict (List String) TypeCheck.Canonical I.DependencyInterface -> List Extract.Types -> List (MVar (Maybe Extract.Types)) -> Task Never (Result Exit.Generate Extract.Types)
+collectAndMergeTypes : Data.Map.Dict String TypeCheck.Canonical I.DependencyInterface -> List Extract.Types -> List (MVar (Maybe Extract.Types)) -> Task Never (Result Exit.Generate Extract.Types)
 collectAndMergeTypes ifaces freshTypes mvars =
     let
         foreigns : Extract.Types

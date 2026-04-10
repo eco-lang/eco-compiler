@@ -9,6 +9,7 @@ constraint information is recorded in a side table.
 
 -}
 
+import Array exposing (Array)
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.TypeIds as TypeIds
@@ -26,7 +27,7 @@ import System.TypeCheck.IO as IO
 -}
 type alias GlobalMVarState =
     { nextId : TypeIds.MVarId
-    , constraints : Dict Int Mono.Constraint
+    , constraints : Array Mono.Constraint
     , rootEnv : Dict Int TypeIds.MVarId
     }
 
@@ -77,7 +78,7 @@ assignIds (TOpt.GlobalGraph nodes fields annotations allSchemeRoots) =
     let
         state0 =
             { nextId = TypeIds.firstMVarId
-            , constraints = Dict.empty
+            , constraints = Array.empty
             , rootEnv = Dict.empty
             }
 
@@ -102,7 +103,7 @@ assignIdsToType canType =
     let
         ctx =
             { env = Dict.empty
-            , state = { nextId = TypeIds.firstMVarId, constraints = Dict.empty, rootEnv = Dict.empty }
+            , state = { nextId = TypeIds.firstMVarId, constraints = Array.empty, rootEnv = Dict.empty }
             , schemeRootsForDef = Dict.empty
             }
 
@@ -128,7 +129,7 @@ freshMVarId constraint state =
     in
     ( currentId
     , { nextId = Id.succ currentId
-      , constraints = Dict.insert (Id.toComparable currentId) constraint state.constraints
+      , constraints = Array.push constraint state.constraints
       , rootEnv = state.rootEnv
       }
     )
@@ -317,9 +318,9 @@ rewriteAnnotation schemeRootsForDef (Can.Forall freeVars tipe) state =
 rewriteNodes :
     (TOpt.Global -> TOpt.Global -> Order)
     -> TOpt.SchemeRootsByGlobal
-    -> DMap.Dict (List String) TOpt.Global (TOpt.Node Name)
+    -> DMap.Dict String TOpt.Global (TOpt.Node Name)
     -> GlobalMVarState
-    -> ( DMap.Dict (List String) TOpt.Global (TOpt.Node TypeIds.MVarId), GlobalMVarState )
+    -> ( DMap.Dict String TOpt.Global (TOpt.Node TypeIds.MVarId), GlobalMVarState )
 rewriteNodes cmp allSchemeRoots nodes state =
     DMap.foldl cmp
         (\global node ( acc, st ) ->

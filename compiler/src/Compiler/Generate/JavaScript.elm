@@ -51,7 +51,7 @@ import Utils.Main as Utils
 {-| Map from module names to their optimized nodes in the global dependency graph.
 -}
 type alias Graph =
-    Dict (List String) Opt.Global Opt.Node
+    Dict String Opt.Global Opt.Node
 
 
 {-| Calculate the line number where generated JavaScript code begins after prelude.
@@ -303,7 +303,7 @@ postMessage localizer home maybeName tipe =
 {-| Code generation state tracking generated JavaScript and visited globals.
 -}
 type State
-    = State JS.Builder (EverySet (List String) Opt.Global)
+    = State JS.Builder (EverySet String Opt.Global)
 
 
 {-| Create an empty code generation state at the given starting line number.
@@ -382,7 +382,7 @@ addGlobal mode graph ((State builder seen) as state) global =
 addGlobalHelp : Mode.Mode -> Graph -> Opt.Global -> State -> State
 addGlobalHelp mode graph ((Opt.Global home _) as global) state =
     let
-        addDeps : EverySet (List String) Opt.Global -> State -> State
+        addDeps : EverySet String Opt.Global -> State -> State
         addDeps deps someState =
             let
                 sortedDeps : List Opt.Global

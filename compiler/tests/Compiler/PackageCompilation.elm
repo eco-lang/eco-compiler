@@ -568,7 +568,7 @@ monomorphizeAny globalTypeEnv (TOpt.GlobalGraph nodes _ _ schemeRoots) =
 
 {-| Find any entry point in the global graph (the first defined function).
 -}
-findAnyEntryPoint : Data.Map.Dict (List String) TOpt.Global (TOpt.Node Name) -> Maybe ( TOpt.Global, Can.Type Name )
+findAnyEntryPoint : Data.Map.Dict String TOpt.Global (TOpt.Node Name) -> Maybe ( TOpt.Global, Can.Type Name )
 findAnyEntryPoint nodes =
     Data.Map.foldl TOpt.compareGlobal
         (\global node acc ->

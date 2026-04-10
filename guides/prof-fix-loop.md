@@ -1,6 +1,6 @@
 Run the elm-test and E2E tests, take a baseline from the first run.
 
-Run the @bootstrap.md process up to Stage 5, but with @profiling_command.txt instructions
+Run the @bootstrap.md process up to Stage 5, but with @profiling_command.md instructions
 applied to profile the run under NodeJS.
 
 Maintain information about performance and memory in @prof-hints.md, adding new reports as

@@ -82,7 +82,7 @@ optimize annotations (Can.Module canData) =
 
 
 type alias Nodes =
-    Data.Map.Dict (List String) Opt.Global Opt.Node
+    Data.Map.Dict String Opt.Global Opt.Node
 
 
 
@@ -207,7 +207,7 @@ addEffects home effects ((Opt.LocalGraph main nodes fields) as graph) =
                 link =
                     Opt.Link fx
 
-                newNodes : Data.Map.Dict (List String) Opt.Global Opt.Node
+                newNodes : Data.Map.Dict String Opt.Global Opt.Node
                 newNodes =
                     case manager of
                         Can.Cmd _ ->
@@ -394,7 +394,7 @@ addDefHelp region annotations home name args body ((Opt.LocalGraph _ nodes field
             (Can.Forall _ tipe) =
                 findAnnotation name annotations
 
-            addMain : ( EverySet (List String) Opt.Global, Data.Map.Dict String Name.Name Int, Opt.Main ) -> Opt.LocalGraph
+            addMain : ( EverySet String Opt.Global, Data.Map.Dict String Name.Name Int, Opt.Main ) -> Opt.LocalGraph
             addMain ( deps, fields, main ) =
                 Opt.LocalGraph (Just main) nodes (mergeFieldCounts (dataMapToDict fields) fieldCounts) |> addDefNode home region name args body deps
         in
@@ -427,7 +427,7 @@ addDefHelp region annotations home name args body ((Opt.LocalGraph _ nodes field
 -- Functions with arguments get pattern destructuring; zero-arg definitions are plain values.
 
 
-addDefNode : IO.Canonical -> A.Region -> Name.Name -> List Can.Pattern -> Can.Expr -> EverySet (List String) Opt.Global -> Opt.LocalGraph -> Opt.LocalGraph
+addDefNode : IO.Canonical -> A.Region -> Name.Name -> List Can.Pattern -> Can.Expr -> EverySet String Opt.Global -> Opt.LocalGraph -> Opt.LocalGraph
 addDefNode home region name args body mainDeps graph =
     let
         ( deps, fields, def ) =
@@ -482,7 +482,7 @@ addRecDefs home defs (Opt.LocalGraph main nodes fieldCounts) =
         cycle =
             List.foldr addValueName EverySet.empty defs
 
-        links : Data.Map.Dict (List String) Opt.Global Opt.Node
+        links : Data.Map.Dict String Opt.Global Opt.Node
         links =
             List.foldr (addLink home (Opt.Link cycleName)) Data.Map.empty defs
 
@@ -539,7 +539,7 @@ addValueName def names =
 -- Creates a link node pointing to the shared cycle for each definition in the group.
 
 
-addLink : IO.Canonical -> Opt.Node -> Can.Def -> Data.Map.Dict (List String) Opt.Global Opt.Node -> Data.Map.Dict (List String) Opt.Global Opt.Node
+addLink : IO.Canonical -> Opt.Node -> Can.Def -> Data.Map.Dict String Opt.Global Opt.Node -> Data.Map.Dict String Opt.Global Opt.Node
 addLink home link def links =
     case def of
         Can.Def (A.At _ name) _ _ ->

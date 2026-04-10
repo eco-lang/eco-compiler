@@ -44,6 +44,7 @@ the monomorphization process.
 
 -}
 
+import Array exposing (Array)
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.TypeEnv as TypeEnv
@@ -75,7 +76,7 @@ type alias SchemeInfo =
 {-| Cache of SchemeInfo per top-level global, keyed by TOpt.toComparableGlobal.
 -}
 type alias SchemeInfoCache =
-    DataMap.Dict (List String) TOpt.Global SchemeInfo
+    DataMap.Dict String TOpt.Global SchemeInfo
 
 
 {-| Environment for tracking MVarIds during monomorphization.
@@ -84,13 +85,13 @@ All MVarIds are globally unique sequential Ints from a single supplier.
 -}
 type alias MVarEnv =
     { nextId : MVarId
-    , constraints : Dict Int Mono.Constraint -- keyed by Id.toComparable
+    , constraints : Array Mono.Constraint -- indexed by Id.toComparable
     }
 
 
 {-| Create an MVarEnv from an initial state (produced by AssignMVarIds).
 -}
-initMVarEnv : MVarId -> Dict Int Mono.Constraint -> MVarEnv
+initMVarEnv : MVarId -> Array Mono.Constraint -> MVarEnv
 initMVarEnv nextId constraints =
     { nextId = nextId
     , constraints = constraints
@@ -108,7 +109,7 @@ freshMVar constraint env =
     in
     ( currentId
     , { nextId = Id.succ currentId
-      , constraints = Dict.insert (Id.toComparable currentId) constraint env.constraints
+      , constraints = Array.push constraint env.constraints
       }
     )
 
@@ -117,7 +118,7 @@ freshMVar constraint env =
 -}
 lookupConstraint : MVarId -> MVarEnv -> Maybe Mono.Constraint
 lookupConstraint mvarId env =
-    Dict.get (Id.toComparable mvarId) env.constraints
+    Array.get (Id.toComparable mvarId) env.constraints
 
 
 {-| Global accumulator fields that grow monotonically during monomorphization.
@@ -141,7 +142,7 @@ Updated by varEnv push/pop, localMulti push/pop, currentGlobal set.
 -}
 type alias SpecContext =
     { currentModule : IO.Canonical
-    , toptNodes : DataMap.Dict (List String) TOpt.Global (TOpt.Node MVarId)
+    , toptNodes : DataMap.Dict String TOpt.Global (TOpt.Node MVarId)
     , currentGlobal : Maybe Mono.Global
     , globalTypeEnv : TypeEnv.GlobalTypeEnv
     , annotations : TOpt.AnnotationsByGlobal MVarId
@@ -301,7 +302,7 @@ type alias ValueMultiState =
 
 {-| Initialize the monomorphization state.
 -}
-initState : IO.Canonical -> DataMap.Dict (List String) TOpt.Global (TOpt.Node MVarId) -> TOpt.AnnotationsByGlobal MVarId -> TypeEnv.GlobalTypeEnv -> MVarEnv -> MonoState
+initState : IO.Canonical -> DataMap.Dict String TOpt.Global (TOpt.Node MVarId) -> TOpt.AnnotationsByGlobal MVarId -> TypeEnv.GlobalTypeEnv -> MVarEnv -> MonoState
 initState currentModule toptNodes annotations globalTypeEnv mvarEnv =
     { accum =
         { worklist = []

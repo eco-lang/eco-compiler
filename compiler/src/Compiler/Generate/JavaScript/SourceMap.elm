@@ -31,14 +31,14 @@ import VLQ
 
 {-| Generate a source map as a base64-encoded data URL that maps generated JavaScript positions back to original Elm source positions.
 -}
-generate : Int -> Int -> DataMap.Dict (List String) IO.Canonical String -> List JS.Mapping -> String
+generate : Int -> Int -> DataMap.Dict String IO.Canonical String -> List JS.Mapping -> String
 generate leadingLines kernelLeadingLines moduleSources mappings =
     "\n"
         ++ "//# sourceMappingURL=data:application/json;base64,"
         ++ generateHelp leadingLines kernelLeadingLines moduleSources mappings
 
 
-generateHelp : Int -> Int -> DataMap.Dict (List String) IO.Canonical String -> List JS.Mapping -> String
+generateHelp : Int -> Int -> DataMap.Dict String IO.Canonical String -> List JS.Mapping -> String
 generateHelp leadingLines kernelLeadingLines moduleSources mappings =
     mappings
         |> List.map
@@ -56,7 +56,7 @@ type Mappings
 
 
 type alias MappingsProps =
-    { sources : OrderedListBuilder (List String) IO.Canonical
+    { sources : OrderedListBuilder String IO.Canonical
     , names : OrderedListBuilder String JSName.Name
     , segmentAccounting : SegmentAccounting
     , vlqs : String
@@ -65,7 +65,7 @@ type alias MappingsProps =
 
 {-| Helper to construct Mappings with positional args
 -}
-makeMappings : OrderedListBuilder (List String) IO.Canonical -> OrderedListBuilder String JSName.Name -> SegmentAccounting -> String -> Mappings
+makeMappings : OrderedListBuilder String IO.Canonical -> OrderedListBuilder String JSName.Name -> SegmentAccounting -> String -> Mappings
 makeMappings sources names segmentAccounting vlqs =
     Mappings { sources = sources, names = names, segmentAccounting = segmentAccounting, vlqs = vlqs }
 
@@ -152,7 +152,7 @@ encodeSegment (JS.Mapping segmentData) (Mappings props) =
         (SegmentAccounting sa) =
             props.segmentAccounting
 
-        newSources : OrderedListBuilder (List String) IO.Canonical
+        newSources : OrderedListBuilder String IO.Canonical
         newSources =
             insertIntoOrderedListBuilder ModuleName.toComparableCanonical segmentData.srcModule props.sources
 
@@ -276,7 +276,7 @@ orderedListBuilderToList keyComparison (OrderedListBuilder _ values) =
         |> Dict.values
 
 
-mappingsToJson : DataMap.Dict (List String) IO.Canonical String -> Mappings -> Encode.Value
+mappingsToJson : DataMap.Dict String IO.Canonical String -> Mappings -> Encode.Value
 mappingsToJson moduleSources (Mappings props) =
     let
         moduleNames : List IO.Canonical

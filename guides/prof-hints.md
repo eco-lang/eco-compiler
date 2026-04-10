@@ -101,6 +101,54 @@ new blocks that aren't tracked by the outer pattern.
   5. Dict.insertHelp: 2.5%
   6. Dict.balance: 2.1%
 
+### After all previous fixes (281k ticks — 5min timeout during monomorphization)
+- **61.4% in shared libs** (GC + V8 runtime) — very high memory pressure
+- Stage 5 still OOMs / times out during Specialization worklist
+- Top JS hotspots (nonlib%):
+  1. **Data.Map.get: 7.1%** (wrapper over Dict.get with toComparable + Maybe.map Tuple.second)
+  2. StrictEqual: 5.2% (V8 builtin — from Dict key comparison)
+  3. CompileLazy: 3.9%
+  4. CallFunction: 3.7%
+  5. TypeSubst.applySubst: 3.3%
+  6. Dict.balance: 3.2%
+  7. Dict.insertHelp: 3.0%
+  8. StringLessThan: 2.6% (V8 builtin — from List String comparison in Dict)
+  9. State.lookupConstraint: 2.4%
+  10. Dict.get: 2.1%
+  11. TypeSubst.unifyHelp: 1.7%
+  12. toComparableMonoTypeHelper: 1.6%
+  13. TypeSubst.collectMVarIds: 1.5%
+  14. TypeSubst.renameMVarIds: 1.3%
+  15. List.foldrHelper: 1.4%
+  16. forceCNumberToIntHelp: 1.1%
+
+### After Issues 36+37 (281k ticks — 5min timeout during monomorphization)
+- **64.4% in shared libs** (GC + V8 runtime)
+- Stage 5 still times out during Specialization worklist
+- Top JS hotspots (nonlib%):
+  1. StrictEqual: 4.9%
+  2. CompileLazy: 4.4%
+  3. TypeSubst.applySubst: 4.1%
+  4. CallFunction: 3.9%
+  5. StringLessThan: 3.3%
+  6. Call_ReceiverIsNotNull: 3.2%
+  7. KeyedStoreIC: 2.2%
+  8. TypeSubst.unifyHelp: 2.1%
+  9. Dict.get: 2.0%
+  10. toComparableMonoTypeHelper: 1.9%
+  11. Dict.balance: 1.9%
+  12. TypeSubst.renameMVarIds: 1.8%
+  13. List.foldrHelper: 1.8%
+  14. Dict.insertHelp: 1.7%
+  15. A2: 1.7%
+  16. TypeSubst.collectMVarIds: 1.6%
+  17. forceCNumberToIntHelp: 1.4%
+  18. lookupFreeVarsFromCtx: 1.2%
+  19. Array.get: 1.2%
+- **Eliminated:** Data.Map.get (7.1% → <0.1%), State.lookupConstraint (2.6% → <0.1%)
+- **Reduced:** Dict.balance (3.4% → 1.9%), Dict.insertHelp (3.0% → 1.7%)
+- **No remaining user-code function above 4.1%** — all top items are V8 builtins, Elm core, or previously-SKIPPED functions
+
 ## Performance Issues (ordered by impact)
 
 ### Issue 1: toComparableSpecKey `List String` → `String` — FIXED
@@ -966,7 +1014,45 @@ inlining.
 
 ---
 
-**No actionable bottleneck above 1% remains in user code.**
+### Issue 36: toComparableGlobal returns List String instead of String — FIXED
+
+**Files:** `compiler/src/Compiler/AST/TypedOptimized.elm`, `compiler/src/Compiler/Elm/ModuleName.elm`, + 15 more
+
+**Problem:** `toComparableGlobal` returned `List String` (4 elements), `toComparableCanonical`
+returned `List String` (3 elements). Used as Dict keys in monomorphization hot path.
+
+**Fix:** Changed both to return single `String` with delimiters (`author/project:module.name`).
+Updated all `Dict (List String)`, `EverySet (List String)`, `Data.Map.Dict (List String)` types
+across 18 files to use `String` comparable.
+
+**Results:**
+- Data.Map.get: 7.1% → <0.1% nonlib (**eliminated from profile**)
+- StrictEqual: 5.2% → 4.7% (string equality is cheaper than list comparison)
+- New: StringAdd_CheckNone at 1.2% (string concat cost of building comparable key)
+- Net improvement: ~6% nonlib time eliminated
+
+---
+
+### Issue 37: MVarEnv constraints Dict Int → Array — FIXED
+
+**Files:** `compiler/src/Compiler/Monomorphize/State.elm`, `compiler/src/Compiler/Monomorphize/AssignMVarIds.elm`, `compiler/src/Compiler/Type/SolverSnapshot.elm`
+
+**Problem:** `MVarEnv.constraints` used `Dict Int Mono.Constraint` keyed by sequential integer IDs.
+Each `lookupConstraint` did `Dict.get (Id.toComparable mvarId)` — O(log n) tree traversal.
+Each `freshMVar` did `Dict.insert` — O(log n) with tree balancing.
+
+**Fix:** Changed to `Array Mono.Constraint`. `lookupConstraint` uses `Array.get` (O(1)),
+`freshMVar` uses `Array.push` (O(1) amortized). Changed `GlobalMVarState` too.
+
+**Results:**
+- State.lookupConstraint: 2.6% → <0.1% nonlib (**eliminated**)
+- Dict.balance: 3.4% → 1.9% (44% fewer ticks — fewer Dict ops)
+- Dict.insertHelp: 3.0% → 1.7% (43% fewer ticks)
+- Combined improvement: ~5.4% nonlib eliminated
+
+---
+
+**No actionable bottleneck above 1% remains in user code (after Issues 36-37).**
 
 Current type stores MonoType at every node:
 ```elm

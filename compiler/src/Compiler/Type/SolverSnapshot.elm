@@ -155,7 +155,7 @@ withLocalUnification snap rootsToRelax equalities callback =
             defaultNumericVarsToInt stateAfterUnify
 
         view =
-            buildLocalView (State.initMVarEnv TypeIds.firstMVarId Dict.empty) Dict.empty stateAfterDefault
+            buildLocalView (State.initMVarEnv TypeIds.firstMVarId Array.empty) Dict.empty stateAfterDefault
     in
     callback view
 
@@ -182,7 +182,7 @@ specializeFunction snap funcTvar requestedMonoType callback =
             defaultNumericVarsToInt stateAfterWalk
 
         view =
-            buildLocalView (State.initMVarEnv TypeIds.firstMVarId Dict.empty) Dict.empty stateAfterDefault
+            buildLocalView (State.initMVarEnv TypeIds.firstMVarId Array.empty) Dict.empty stateAfterDefault
     in
     callback view
 
@@ -212,7 +212,7 @@ specializeChainedWithSubst snap pairs substDict callback =
             defaultNumericVarsToInt stateAfterAll
 
         view =
-            buildLocalView (State.initMVarEnv TypeIds.firstMVarId Dict.empty) substDict stateAfterDefault
+            buildLocalView (State.initMVarEnv TypeIds.firstMVarId Array.empty) substDict stateAfterDefault
     in
     callback view
 
@@ -279,11 +279,16 @@ buildLocalView mvarEnv substDict st =
                     canType =
                         typeOfVar var
 
-                    ( canTypeWithIds, nextId, constraints ) =
+                    ( canTypeWithIds, nextId, constraintsDict ) =
                         assignIdsToCanType canType TypeIds.firstMVarId Dict.empty Dict.empty
 
+                    constraintsArray =
+                        List.range 0 (Id.toComparable nextId - 1)
+                            |> List.filterMap (\i -> Dict.get i constraintsDict)
+                            |> Array.fromList
+
                     mvarEnvForConversion =
-                        State.initMVarEnv nextId constraints
+                        State.initMVarEnv nextId constraintsArray
 
                     ( monoType, _ ) =
                         TypeSubst.canTypeToMonoType mvarEnvForConversion Dict.empty canTypeWithIds

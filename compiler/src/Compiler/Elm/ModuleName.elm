@@ -234,9 +234,9 @@ compareCanonical (Canonical pkg1 name1) (Canonical pkg2 name2) =
 {-| Convert a canonical module name to a comparable list of strings [author, project, name].
 Useful for sorting and comparison in data structures.
 -}
-toComparableCanonical : Canonical -> List String
+toComparableCanonical : Canonical -> String
 toComparableCanonical (Canonical ( author, project ) name) =
-    [ author, project, name ]
+    author ++ "/" ++ project ++ ":" ++ name
 
 
 

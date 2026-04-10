@@ -85,7 +85,7 @@ Threads through four pieces of state:
 type Tracker a
     = Tracker
         (Int
-         -> EverySet (List String) TOpt.Global
+         -> EverySet String TOpt.Global
          -> Dict String Name Int
          -> Dict String Name (Can.Type Name)
          -> TResult a
@@ -98,7 +98,7 @@ type TResult a
 
 type alias TResultProps =
     { uid : Int
-    , deps : EverySet (List String) TOpt.Global
+    , deps : EverySet String TOpt.Global
     , fields : Dict String Name Int
     , locals : Dict String Name (Can.Type Name)
     }
@@ -106,7 +106,7 @@ type alias TResultProps =
 
 {-| Helper to construct TResult with positional args
 -}
-tResult : Int -> EverySet (List String) TOpt.Global -> Dict String Name Int -> Dict String Name (Can.Type Name) -> a -> TResult a
+tResult : Int -> EverySet String TOpt.Global -> Dict String Name Int -> Dict String Name (Can.Type Name) -> a -> TResult a
 tResult uid deps fields locals value =
     TResult { uid = uid, deps = deps, fields = fields, locals = locals } value
 
@@ -124,7 +124,7 @@ Returns a tuple of:
   - The computed result value
 
 -}
-run : Tracker a -> ( EverySet (List String) TOpt.Global, Dict String Name Int, a )
+run : Tracker a -> ( EverySet String TOpt.Global, Dict String Name Int, a )
 run (Tracker k) =
     case k 0 EverySet.empty Dict.empty Dict.empty of
         TResult props value ->
@@ -219,7 +219,7 @@ registerCtor region home (A.At _ name) index opts itype tvar =
                 global =
                     TOpt.Global home name
 
-                newDeps : EverySet (List String) TOpt.Global
+                newDeps : EverySet String TOpt.Global
                 newDeps =
                     EverySet.insert TOpt.toComparableGlobal global deps
             in
@@ -422,7 +422,7 @@ loopHelper :
     (state -> Tracker (Step state a))
     -> state
     -> Int
-    -> EverySet (List String) TOpt.Global
+    -> EverySet String TOpt.Global
     -> Dict String Name Int
     -> Dict String Name (Can.Type Name)
     -> TResult a

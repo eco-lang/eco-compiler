@@ -120,7 +120,7 @@ type Types
     = -- PERF profile Opt.Global representation
       -- current representation needs less allocation
       -- but maybe the lookup is much worse
-      Types (Data.Map.Dict (List String) IO.Canonical Types_)
+      Types (Data.Map.Dict String IO.Canonical Types_)
 
 
 {-| Type information for a single module, containing unions and aliases.
@@ -191,11 +191,11 @@ fromMsg types message =
 extractTransitive : Types -> Deps -> Deps -> ( List T.Alias, List T.Union )
 extractTransitive types (Deps seenAliases seenUnions) (Deps nextAliases nextUnions) =
     let
-        aliases : EverySet (List String) Opt.Global
+        aliases : EverySet String Opt.Global
         aliases =
             EverySet.diff nextAliases seenAliases
 
-        unions : EverySet (List String) Opt.Global
+        unions : EverySet String Opt.Global
         unions =
             EverySet.diff nextUnions seenUnions
     in
@@ -273,7 +273,7 @@ extractCtor (Can.Ctor c) =
 
 
 type Deps
-    = Deps (EverySet (List String) Opt.Global) (EverySet (List String) Opt.Global)
+    = Deps (EverySet String Opt.Global) (EverySet String Opt.Global)
 
 
 noDeps : Deps
@@ -286,11 +286,11 @@ noDeps =
 
 
 type Extractor a
-    = Extractor (EverySet (List String) Opt.Global -> EverySet (List String) Opt.Global -> EResult a)
+    = Extractor (EverySet String Opt.Global -> EverySet String Opt.Global -> EResult a)
 
 
 type EResult a
-    = EResult (EverySet (List String) Opt.Global) (EverySet (List String) Opt.Global) a
+    = EResult (EverySet String Opt.Global) (EverySet String Opt.Global) a
 
 
 run : Extractor a -> ( Deps, a )

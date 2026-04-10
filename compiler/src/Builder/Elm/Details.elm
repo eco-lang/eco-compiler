@@ -272,7 +272,7 @@ type Extras
 {-| Type interfaces for all dependency modules, indexed by canonical module name.
 -}
 type alias Interfaces =
-    EveryDict.Dict (List String) TypeCheck.Canonical I.DependencyInterface
+    EveryDict.Dict String TypeCheck.Canonical I.DependencyInterface
 
 
 

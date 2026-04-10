@@ -570,16 +570,14 @@ computeCtorShapesForGraph globalTypeEnv nodes =
                         Nothing ->
                             Utils.Crash.crash
                                 ("Missing union for ctor shape: "
-                                    ++ (ModuleName.toComparableCanonical canonical
-                                            ++ [ typeName ]
-                                            |> String.join " "
-                                       )
+                                    ++ ModuleName.toComparableCanonical canonical
+                                    ++ "." ++ typeName
                                 )
 
                         Just (Can.Union unionData) ->
                             let
                                 ( completeCtors, _ ) =
-                                    buildCompleteCtorShapes (State.initMVarEnv TypeIds.firstMVarId Dict.empty) unionData.vars monoArgs unionData.alts
+                                    buildCompleteCtorShapes (State.initMVarEnv TypeIds.firstMVarId Array.empty) unionData.vars monoArgs unionData.alts
                             in
                             Data.Map.insert identity key completeCtors acc
 

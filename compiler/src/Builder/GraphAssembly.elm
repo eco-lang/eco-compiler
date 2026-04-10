@@ -72,7 +72,7 @@ addOptKernel shortName chunks (Opt.GlobalGraph nodes fields) =
         (Dict.union (K.countFields chunks) fields)
 
 
-addKernelDep : K.Chunk -> EverySet.EverySet (List String) Opt.Global -> EverySet.EverySet (List String) Opt.Global
+addKernelDep : K.Chunk -> EverySet.EverySet String Opt.Global -> EverySet.EverySet String Opt.Global
 addKernelDep chunk deps =
     case chunk of
         K.JS _ ->

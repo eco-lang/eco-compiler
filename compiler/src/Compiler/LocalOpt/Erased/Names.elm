@@ -76,7 +76,7 @@ Threads through three pieces of state:
 type Tracker a
     = Tracker
         (Int
-         -> EverySet (List String) Opt.Global
+         -> EverySet String Opt.Global
          -> Dict String Name Int
          -> TResult a
         )
@@ -88,14 +88,14 @@ type TResult a
 
 type alias TResultProps =
     { uid : Int
-    , deps : EverySet (List String) Opt.Global
+    , deps : EverySet String Opt.Global
     , fields : Dict String Name Int
     }
 
 
 {-| Helper to construct TResult with positional args
 -}
-tResult : Int -> EverySet (List String) Opt.Global -> Dict String Name Int -> a -> TResult a
+tResult : Int -> EverySet String Opt.Global -> Dict String Name Int -> a -> TResult a
 tResult uid deps fields value =
     TResult { uid = uid, deps = deps, fields = fields } value
 
@@ -113,7 +113,7 @@ Returns a tuple of:
   - The computed result value
 
 -}
-run : Tracker a -> ( EverySet (List String) Opt.Global, Dict String Name Int, a )
+run : Tracker a -> ( EverySet String Opt.Global, Dict String Name Int, a )
 run (Tracker k) =
     case k 0 EverySet.empty Dict.empty of
         TResult props value ->
@@ -208,7 +208,7 @@ registerCtor region home (A.At _ name) index opts =
                 global =
                     Opt.Global home name
 
-                newDeps : EverySet (List String) Opt.Global
+                newDeps : EverySet String Opt.Global
                 newDeps =
                     EverySet.insert Opt.toComparableGlobal global deps
             in
@@ -358,7 +358,7 @@ loopHelper :
     (state -> Tracker (Step state a))
     -> state
     -> Int
-    -> EverySet (List String) Opt.Global
+    -> EverySet String Opt.Global
     -> Dict String Name Int
     -> TResult a
 loopHelper callback loopState n d f =

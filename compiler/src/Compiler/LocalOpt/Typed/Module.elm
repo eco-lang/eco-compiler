@@ -110,7 +110,7 @@ optimizeTyped annotations exprTypes exprVars kernelEnv annotationVars allSchemeR
 
 
 type alias TypedNodes =
-    Data.Map.Dict (List String) TOpt.Global (TOpt.Node Name)
+    Data.Map.Dict String TOpt.Global (TOpt.Node Name)
 
 
 addUnions : IO.Canonical -> Annotations -> Dict Name.Name Can.Union -> TOpt.LocalGraph Name -> TOpt.LocalGraph Name
@@ -438,7 +438,7 @@ addDefHelp region annotations exprTypes exprVars kernelEnv annotationVars home n
             (Can.Forall _ tipe) =
                 findAnnotation name annotations
 
-            addMain : ( EverySet (List String) TOpt.Global, Data.Map.Dict String Name.Name Int, TOpt.Main Name ) -> TOpt.LocalGraph Name
+            addMain : ( EverySet String TOpt.Global, Data.Map.Dict String Name.Name Int, TOpt.Main Name ) -> TOpt.LocalGraph Name
             addMain ( deps, fields, main ) =
                 TOpt.LocalGraph
                     { data
@@ -471,7 +471,7 @@ addDefHelp region annotations exprTypes exprVars kernelEnv annotationVars home n
                 ReportingResult.throw (E.BadType region tipe)
 
 
-addDefNode : IO.Canonical -> Annotations -> ExprTypes -> ExprVars -> KernelTypes.KernelTypeEnv -> Data.Map.Dict String Name.Name IO.Variable -> A.Region -> Name.Name -> List Can.Pattern -> TCan.Expr -> EverySet (List String) TOpt.Global -> TOpt.LocalGraph Name -> TOpt.LocalGraph Name
+addDefNode : IO.Canonical -> Annotations -> ExprTypes -> ExprVars -> KernelTypes.KernelTypeEnv -> Data.Map.Dict String Name.Name IO.Variable -> A.Region -> Name.Name -> List Can.Pattern -> TCan.Expr -> EverySet String TOpt.Global -> TOpt.LocalGraph Name -> TOpt.LocalGraph Name
 addDefNode home annotations exprTypes exprVars kernelEnv annotationVars region name args body mainDeps graph =
     let
         -- Get the def type from annotations

@@ -133,9 +133,9 @@ compareGlobal (Global home1 name1) (Global home2 name2) =
 
 {-| Convert a global to a comparable key for use in dictionaries.
 -}
-toComparableGlobal : Global -> List String
+toComparableGlobal : Global -> String
 toComparableGlobal (Global home name) =
-    ModuleName.toComparableCanonical home ++ [ name ]
+    ModuleName.toComparableCanonical home ++ "." ++ name
 
 
 
@@ -191,7 +191,7 @@ type Choice
 {-| Graph of all global definitions in a package for dependency analysis.
 -}
 type GlobalGraph
-    = GlobalGraph (Data.Map.Dict (List String) Global Node) (Dict Name Int)
+    = GlobalGraph (Data.Map.Dict String Global Node) (Dict Name Int)
 
 
 {-| Graph of definitions within a single module, including optional main entry point.
@@ -200,7 +200,7 @@ type LocalGraph
     = LocalGraph
         (Maybe Main)
         -- PERF profile switching Global to Name
-        (Data.Map.Dict (List String) Global Node)
+        (Data.Map.Dict String Global Node)
         (Dict Name Int)
 
 
@@ -214,17 +214,17 @@ type Main
 {-| A node in the dependency graph representing a definition and its dependencies.
 -}
 type Node
-    = Define Expr (EverySet (List String) Global)
-    | TrackedDefine A.Region Expr (EverySet (List String) Global)
+    = Define Expr (EverySet String Global)
+    | TrackedDefine A.Region Expr (EverySet String Global)
     | Ctor Index.ZeroBased Int
     | Enum Index.ZeroBased
     | Box
     | Link Global
-    | Cycle (List Name) (List ( Name, Expr )) (List Def) (EverySet (List String) Global)
+    | Cycle (List Name) (List ( Name, Expr )) (List Def) (EverySet String Global)
     | Manager EffectsType
-    | Kernel (List K.Chunk) (EverySet (List String) Global)
-    | PortIncoming Expr (EverySet (List String) Global)
-    | PortOutgoing Expr (EverySet (List String) Global)
+    | Kernel (List K.Chunk) (EverySet String Global)
+    | PortIncoming Expr (EverySet String Global)
+    | PortOutgoing Expr (EverySet String Global)
 
 
 {-| Type of effects managed by an effect manager.

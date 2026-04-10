@@ -394,7 +394,7 @@ isDup paths =
 {-| Recursively discovers all module file paths in the project and its dependencies.
 Returns a dictionary mapping canonical module names to their file paths.
 -}
-getAllModulePaths : FilePath -> Task Never (DataMap.Dict (List String) TypeCheck.Canonical FilePath)
+getAllModulePaths : FilePath -> Task Never (DataMap.Dict String TypeCheck.Canonical FilePath)
 getAllModulePaths root =
     read root
         |> Task.andThen
@@ -427,7 +427,7 @@ getAllModulePaths root =
             )
 
 
-getAllModulePathsHelper : Pkg.Name -> List FilePath -> Dict Pkg.Name V.Version -> Task Never (DataMap.Dict (List String) TypeCheck.Canonical FilePath)
+getAllModulePathsHelper : Pkg.Name -> List FilePath -> Dict Pkg.Name V.Version -> Task Never (DataMap.Dict String TypeCheck.Canonical FilePath)
 getAllModulePathsHelper packageName packageSrcDirs deps =
     Utils.listTraverse recursiveFindFiles packageSrcDirs
         |> Task.andThen
@@ -439,7 +439,7 @@ getAllModulePathsHelper packageName packageSrcDirs deps =
                                 |> Task.map
                                     (\dependencyMaps ->
                                         let
-                                            asMap : DataMap.Dict (List String) TypeCheck.Canonical FilePath
+                                            asMap : DataMap.Dict String TypeCheck.Canonical FilePath
                                             asMap =
                                                 List.concat files
                                                     |> List.map (\( root, fp ) -> ( TypeCheck.Canonical packageName (moduleNameFromFilePath root fp), fp ))

@@ -104,14 +104,14 @@ type alias Annotations id =
 Used in GlobalGraph to avoid cross-module name collisions.
 -}
 type alias AnnotationsByGlobal id =
-    Data.Map.Dict (List String) Global (Can.Annotation id)
+    Data.Map.Dict String Global (Can.Annotation id)
 
 
 {-| Scheme roots keyed by fully-qualified Global identity.
 Used in GlobalGraph to avoid cross-module name collisions.
 -}
 type alias SchemeRootsByGlobal =
-    Data.Map.Dict (List String) Global (Dict Name IO.Variable)
+    Data.Map.Dict String Global (Dict Name IO.Variable)
 
 
 
@@ -300,9 +300,9 @@ compareGlobal (Global home1 name1) (Global home2 name2) =
 
 {-| Convert a global reference to a comparable key for use in dictionaries.
 -}
-toComparableGlobal : Global -> List String
+toComparableGlobal : Global -> String
 toComparableGlobal (Global home name) =
-    ModuleName.toComparableCanonical home ++ [ name ]
+    ModuleName.toComparableCanonical home ++ "." ++ name
 
 
 {-| Create a global reference to a kernel function.
@@ -380,7 +380,7 @@ type Choice id
 {-| A graph of all top-level definitions across multiple modules.
 -}
 type GlobalGraph id
-    = GlobalGraph (Data.Map.Dict (List String) Global (Node id)) (Dict Name Int) (AnnotationsByGlobal id) SchemeRootsByGlobal
+    = GlobalGraph (Data.Map.Dict String Global (Node id)) (Dict Name Int) (AnnotationsByGlobal id) SchemeRootsByGlobal
 
 
 
@@ -391,7 +391,7 @@ type GlobalGraph id
 -}
 type alias LocalGraphData id =
     { main : Maybe (Main id)
-    , nodes : Data.Map.Dict (List String) Global (Node id)
+    , nodes : Data.Map.Dict String Global (Node id)
     , fields : Dict Name Int
     , annotations : Annotations id
     , schemeRoots : Dict Name (Dict Name IO.Variable)
@@ -418,17 +418,17 @@ type Main id
 {-| A node in the dependency graph representing a top-level definition.
 -}
 type Node id
-    = Define (Expr id) (EverySet (List String) Global) (Meta id) -- body, deps, meta
-    | TrackedDefine A.Region (Expr id) (EverySet (List String) Global) (Meta id)
+    = Define (Expr id) (EverySet String Global) (Meta id) -- body, deps, meta
+    | TrackedDefine A.Region (Expr id) (EverySet String Global) (Meta id)
     | Ctor Index.ZeroBased Int (Can.Type id) -- index, arity, constructor type
     | Enum Index.ZeroBased (Can.Type id)
     | Box (Can.Type id)
     | Link Global
-    | Cycle (List Name) (List ( Name, Expr id )) (List (Def id)) (EverySet (List String) Global)
+    | Cycle (List Name) (List ( Name, Expr id )) (List (Def id)) (EverySet String Global)
     | Manager EffectsType
-    | Kernel (List K.Chunk) (EverySet (List String) Global)
-    | PortIncoming (Expr id) (EverySet (List String) Global) (Meta id) -- decoder expr, deps, port meta
-    | PortOutgoing (Expr id) (EverySet (List String) Global) (Meta id) -- encoder expr, deps, port meta
+    | Kernel (List K.Chunk) (EverySet String Global)
+    | PortIncoming (Expr id) (EverySet String Global) (Meta id) -- decoder expr, deps, port meta
+    | PortOutgoing (Expr id) (EverySet String Global) (Meta id) -- encoder expr, deps, port meta
 
 
 {-| The type of effects manager (commands, subscriptions, or both).
