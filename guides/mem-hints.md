@@ -108,6 +108,51 @@
 - Impact: reduces allocation from PAP resolution in hot type-checking paths
 - Status: FIXED
 
+## After Fix 16: Defer callEdges/effects/valueUsed to post-worklist (2026-04-10)
+- Removed callEdges, specHasEffects, specValueUsed from SpecAccum
+- Recomputed in assembleRawGraphFrom from the nodes Dict
+- Marginal impact: ~84MB reduction at 400k binds (7085→7001MB heap)
+- Growth rate: ~1486MB/100k binds (was ~1506MB)
+
+## Current Baseline (2026-04-10)
+- Task-based worklist instrumentation shows monomorphization heap growth:
+  - 100k binds: 2567MB heap / 3703MB RSS
+  - 200k binds: 4073MB heap / 5715MB RSS  
+  - 300k binds: 5579MB heap / 7275MB RSS
+  - 400k binds: 7085MB heap / 8843MB RSS (4 min timeout)
+  - Linear growth: ~1506MB per 100k work items (~15KB per specialization)
+  - Process enters monomorphization at ~1507MB heap (after GC)
+- E2E tests: 1013/1015 (2 pre-existing failures)
+- elm-test: 12477/12477
+
+### Fix 16: Defer callEdges/effects/valueUsed to post-worklist (Monomorphize.elm)
+- Removed callEdges (Dict Int (List Int)), specHasEffects (BitSet), specValueUsed (BitSet)
+  from SpecAccum — these were accumulated per work item during the worklist
+- Now computed in a single pass over the nodes Dict in assembleRawGraphFrom
+- Impact: ~84MB reduction at 400k binds (marginal — nodes Dict dominates)
+- Also converted processWorklist to Task-based processWorklistTask for memory
+  instrumentation visibility during the worklist phase
+- Status: FIXED
+
+### Issue 16: Monomorphization specialization count explosion
+- Phase: worklist
+- Impact: **DOMINANT** — the root cause of Stage 5 OOM
+- Root cause: The self-compiling compiler generates 376k+ specializations in 4 minutes
+  and is still growing when killed at 400k binds. Each specialization adds ~19KB to the
+  nodes Dict. At 400k items the live set is 7GB, with linear growth at ~1.5GB/100k items.
+- The nodes Dict (Dict Int MonoNode) is the dominant memory consumer. Each MonoNode
+  contains the full specialized expression tree (MonoExpr) plus the MonoType.
+- This is NOT a memory leak — the data is genuinely live. The monomorphization algorithm
+  needs this many specializations for the self-compiling compiler.
+- Fix directions:
+  - **Reduce specialization count**: Investigate if the algorithm is creating redundant
+    specializations. Check if type normalization or deduplication is missing.
+  - **Stream output**: Instead of accumulating all nodes in a Dict, stream them to disk
+    (serialize to .ecot-like format) and load on demand for downstream phases.
+  - **Compress MonoExpr**: Share common sub-expressions across specializations.
+  - **Limit monomorphization depth**: Cap specialization depth for deeply nested types.
+- Status: OPEN — requires algorithmic investigation
+
 ## Remaining issues
 
 ### 1. Post-compile spike: BResult deserialization of all 232 modules

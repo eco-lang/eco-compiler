@@ -130,9 +130,6 @@ type alias SpecAccum =
     , inProgress : BitSet
     , scheduled : BitSet
     , registry : Mono.SpecializationRegistry
-    , callEdges : Dict Int (List Int)
-    , specHasEffects : BitSet -- SpecIds whose node body references Debug.* kernels
-    , specValueUsed : BitSet -- SpecIds whose value is referenced via MonoVarGlobal
     , schemeCache : SchemeInfoCache -- Cached type scheme metadata per global
     }
 
@@ -310,9 +307,6 @@ initState currentModule toptNodes annotations globalTypeEnv mvarEnv =
         , inProgress = BitSet.empty
         , scheduled = BitSet.empty
         , registry = Registry.emptyRegistry
-        , callEdges = Dict.empty
-        , specHasEffects = BitSet.empty
-        , specValueUsed = BitSet.empty
         , schemeCache = DataMap.empty
         }
     , ctx =
