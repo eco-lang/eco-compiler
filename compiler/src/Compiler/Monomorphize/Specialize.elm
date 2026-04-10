@@ -644,6 +644,48 @@ specializeLambda lambdaExpr canType subst state =
 -- ========== NODE SPECIALIZATION ==========
 
 
+{-| Specialize a constructor via getOrBuildSchemeInfo so that MVarIds are freshened
+per specialization, preventing stale bindings from leaking across call sites.
+-}
+specializeCtorViaScheme : Name.Name -> Int -> Int -> Can.Type MVarId -> Mono.MonoType -> MonoState -> ( Mono.MonoNode, MonoState )
+specializeCtorViaScheme ctorName tag arity canType requestedMonoType state =
+    let
+        ctorGlobal =
+            case state.ctx.currentGlobal of
+                Just (Mono.Global canonical name) ->
+                    TOpt.Global canonical name
+
+                _ ->
+                    Utils.Crash.crash "specializeCtorViaScheme: currentGlobal is not a Global — ctors must always have a currentGlobal"
+
+        ( schemeInfo, state1 ) =
+            getOrBuildSchemeInfo canType (Just ctorGlobal) state
+
+        ( subst, mvarEnv1 ) =
+            TypeSubst.unify state1.ctx.mvarEnv schemeInfo.schemeType requestedMonoType
+
+        ( ctorMonoTypeRaw, mvarEnv2 ) =
+            TypeSubst.applySubst mvarEnv1 subst schemeInfo.schemeType
+
+        ctorMonoType =
+            Mono.forceCNumberToInt ctorMonoTypeRaw
+
+        shape =
+            buildCtorShapeFromArity ctorName tag arity ctorMonoType
+
+        ctorResultType =
+            extractCtorResultType arity requestedMonoType
+
+        ctx2 =
+            let
+                ctx =
+                    state1.ctx
+            in
+            { ctx | mvarEnv = mvarEnv2 }
+    in
+    ( Mono.MonoCtor shape ctorResultType, { state1 | ctx = ctx2 } )
+
+
 {-| Specialize a typed optimized node to a monomorphized node at the requested concrete type.
 The ctorName parameter is used to populate CtorLayout.name for constructor nodes.
 -}
@@ -695,23 +737,7 @@ specializeNode ctorName node requestedMonoType state =
             ( Mono.MonoDefine monoExpr actualType, state1 )
 
         TOpt.Ctor index arity canType ->
-            let
-                subst =
-                    Tuple.first (TypeSubst.unify state.ctx.mvarEnv canType requestedMonoType)
-
-                ctorMonoType =
-                    Mono.forceCNumberToInt (applySubstFV state subst canType)
-
-                tag =
-                    Index.toMachine index
-
-                shape =
-                    buildCtorShapeFromArity ctorName tag arity ctorMonoType
-
-                ctorResultType =
-                    extractCtorResultType arity requestedMonoType
-            in
-            ( Mono.MonoCtor shape ctorResultType, state )
+            specializeCtorViaScheme ctorName (Index.toMachine index) arity canType requestedMonoType state
 
         TOpt.Enum tag canType ->
             let
@@ -723,20 +749,7 @@ specializeNode ctorName node requestedMonoType state =
         TOpt.Box canType ->
             -- @unbox types have a single constructor (tag=0) with one field (arity=1).
             -- Treat them as regular constructors so eco.construct.custom is emitted.
-            let
-                subst =
-                    Tuple.first (TypeSubst.unify state.ctx.mvarEnv canType requestedMonoType)
-
-                ctorMonoType =
-                    Mono.forceCNumberToInt (applySubstFV state subst canType)
-
-                shape =
-                    buildCtorShapeFromArity ctorName 0 1 ctorMonoType
-
-                ctorResultType =
-                    extractCtorResultType 1 requestedMonoType
-            in
-            ( Mono.MonoCtor shape ctorResultType, state )
+            specializeCtorViaScheme ctorName 0 1 canType requestedMonoType state
 
         TOpt.Link linkedGlobal ->
             -- Link to another global - follow the link

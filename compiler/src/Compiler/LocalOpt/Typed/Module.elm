@@ -115,16 +115,20 @@ type alias TypedNodes =
 
 addUnions : IO.Canonical -> Annotations -> Dict Name.Name Can.Union -> TOpt.LocalGraph Name -> TOpt.LocalGraph Name
 addUnions home _ unions (TOpt.LocalGraph data) =
-    TOpt.LocalGraph { data | nodes = Dict.foldr (addUnion home) data.nodes unions }
+    let
+        ( nodes1, ann1 ) =
+            Dict.foldr (addUnion home) ( data.nodes, data.annotations ) unions
+    in
+    TOpt.LocalGraph { data | nodes = nodes1, annotations = ann1 }
 
 
-addUnion : IO.Canonical -> Name.Name -> Can.Union -> TypedNodes -> TypedNodes
-addUnion home typeName (Can.Union unionData) nodes =
-    List.foldl (addCtorNode home typeName unionData) nodes unionData.alts
+addUnion : IO.Canonical -> Name.Name -> Can.Union -> ( TypedNodes, TOpt.Annotations Name ) -> ( TypedNodes, TOpt.Annotations Name )
+addUnion home typeName (Can.Union unionData) nodesAndAnn =
+    List.foldl (addCtorNode home typeName unionData) nodesAndAnn unionData.alts
 
 
-addCtorNode : IO.Canonical -> Name.Name -> Can.UnionData -> Can.Ctor -> TypedNodes -> TypedNodes
-addCtorNode home typeName unionData (Can.Ctor c) nodes =
+addCtorNode : IO.Canonical -> Name.Name -> Can.UnionData -> Can.Ctor -> ( TypedNodes, TOpt.Annotations Name ) -> ( TypedNodes, TOpt.Annotations Name )
+addCtorNode home typeName unionData (Can.Ctor c) ( nodes, ann ) =
     let
         -- Build the constructor type: arg1 -> arg2 -> ... -> UnionType
         resultType : Can.Type Name
@@ -146,8 +150,22 @@ addCtorNode home typeName unionData (Can.Ctor c) nodes =
 
                 Can.Enum ->
                     TOpt.Enum c.index ctorType
+
+        freeVars : Can.FreeVars
+        freeVars =
+            List.foldl (\v dict -> Dict.insert v () dict) Dict.empty unionData.vars
+
+        ctorAnn : Can.Annotation Name
+        ctorAnn =
+            Can.Forall freeVars ctorType
+
+        nodes1 =
+            Data.Map.insert TOpt.toComparableGlobal (TOpt.Global home c.name) node nodes
+
+        ann1 =
+            Dict.insert c.name ctorAnn ann
     in
-    Data.Map.insert TOpt.toComparableGlobal (TOpt.Global home c.name) node nodes
+    ( nodes1, ann1 )
 
 
 
