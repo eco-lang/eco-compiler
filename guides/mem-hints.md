@@ -612,3 +612,369 @@
 - Status: FIXED (code simplified to sequential load-and-merge, removes MVar indirection
   for typed objects; also extracts pipeline into separate functions for code clarity;
   the warm-cold heap gap was already resolved by prior fixes)
+
+### 17. applySubstWithFreeVars creates throwaway filtered Dict on every call
+- Phase: monomorphization worklist (specializeExpr)
+- Impact: HIGH — called ~40 times per specialization, hottest path in monomorphizer
+- Root cause: Every call to `applySubstFV` → `applySubstWithFreeVars` does:
+  1. `collectMVarIds canType []` — walks the canonical type to get root MVarIds
+  2. `List.map Id.toComparable rootIds` — allocates a new list
+  3. `closureOverSubst rootKeys subst` — DFS building a `Set Int`
+  4. `Dict.filter` — allocates an entirely new Dict that is a subset of `subst`
+  5. Calls `applySubst` on the filtered dict (then discards it)
+  The `filteredSubst` is created and immediately thrown away. For small types with
+  0-2 variables (the common case), the filtering overhead (building a Set, rebuilding
+  a Dict) likely exceeds the cost of just applying the full substitution directly.
+- Key code path: TypeSubst.elm:768-794
+- Fix directions:
+  - Fast-path: if `rootKeys` covers all keys in `subst` (common for small substs),
+    skip the filtering entirely and pass `subst` directly to `applySubst`.
+  - Alternative: skip filtering when `Dict.size subst` is small (e.g., ≤ 8 entries),
+    since the cost of filtering exceeds any savings from a smaller dict at that size.
+  - Deeper fix: integrate the reachability check into `applySubst` itself, so it only
+    follows bindings reachable from the type being processed, without pre-filtering.
+- Status: OPEN
+
+### 18. forceCNumberToInt double-traverses types redundantly
+- Phase: monomorphization worklist (specializeExpr)
+- Impact: HIGH — 37 call sites in Specialize.elm, each traverses the type tree
+- Root cause: `forceCNumberToInt` first calls `containsAnyMVar` (full tree walk returning
+  Bool), then if true, calls `forceCNumberToIntHelp` (another full tree walk that rebuilds
+  the type). The pattern `Mono.forceCNumberToInt (applySubstFV state subst canType)` appears
+  ~37 times. Each call re-traverses the type even though `applySubst` already resolves
+  unbound CNumber vars to MInt (TypeSubst.elm:621-626). The `forceCNumberToInt` pass is
+  only needed for CNumber vars that were bound to other MVars during unification — a rare
+  case after substitution.
+- Key code path: Monomorphized.elm:265-301, Specialize.elm (37 call sites)
+- Fix directions:
+  - Make `resolveMonoVars` (called inside `applySubst`) also force CNumber→MInt, so
+    `forceCNumberToInt` becomes a no-op in the common case. (Note: Fix 9 in this file
+    partially did this, but `forceCNumberToInt` calls still remain at 37 sites.)
+  - Alternatively, fuse `forceCNumberToInt` into `applySubst` as a flag parameter, so
+    the type is only traversed once.
+  - At minimum, defer `forceCNumberToInt` calls to only happen when `containsAnyMVar`
+    returns true (many call sites don't check this).
+- Status: OPEN
+
+### 19. toComparableMonoType/SpecKey builds strings with O(n²) left-append
+- Phase: monomorphization worklist (Registry.getOrCreateSpecId)
+- Impact: MEDIUM-HIGH — called every time a specialization is enqueued
+- Root cause: `toComparableMonoTypeHelper` builds the comparable key string by repeatedly
+  doing `acc ++ "I"`, `acc ++ "F"`, etc. Each `++` copies the entire accumulated string.
+  For a type like `MFunction [MInt, MInt] MInt`, the accumulator is copied 5+ times.
+  `toComparableSpecKey` also chains multiple `++` calls creating intermediate strings:
+  `toComparableGlobal global ++ "\u{0001}" ++ toComparableMonoType monoType ++ ...`
+  `toComparableGlobal` itself uses `++` chains internally.
+- Key code paths:
+  - Monomorphized.elm:857-928 (toComparableMonoTypeHelper)
+  - Monomorphized.elm:962-973 (toComparableSpecKey)
+  - Monomorphized.elm:821-832 (toComparableGlobal)
+- Fix directions:
+  - Use a `List String` accumulator and `String.concat` or `String.join ""` at the end,
+    turning O(n²) into O(n).
+  - The WorkItem/WorkMarker worklist pattern is already designed for this — just change
+    the accumulator from String to List String, collect all fragments, then join once.
+- Status: OPEN
+
+### 20. lookupFreeVarsFromCtx reconstructs TOpt.Global on every call
+- Phase: monomorphization worklist (specializeExpr)
+- Impact: LOW — allocates one small value per expression specialization
+- Root cause: Every call to `applySubstFV` calls `lookupFreeVarsFromCtx`, which
+  pattern-matches `state.ctx.currentGlobal` (a `Mono.Global canonical name`) and
+  reconstructs a `TOpt.Global canonical name` just to look up the annotations Dict.
+  This allocates a new `TOpt.Global` on every expression specialization.
+- Key code path: Specialize.elm:171-183
+- Fix directions:
+  - Cache the FreeVars lookup result in SpecContext (set once when entering a new
+    global specialization in processOneWorkItem, cleared on exit). Then
+    `applySubstFV` reads the cached value instead of doing a Dict lookup + allocation
+    on every call.
+  - Alternative: store the TOpt.Global form alongside Mono.Global in currentGlobal.
+- Status: OPEN
+
+### 21. computeClosureCaptures does 3 full tree walks of the body
+- Phase: monomorphization worklist (specializeLambda)
+- Impact: MEDIUM — called for every lambda/closure specialization
+- Root cause: `computeClosureCaptures` calls three separate full walks of the same
+  MonoExpr tree:
+  1. `findFreeLocals` — finds free variable names
+  2. `collectVarTypes` — builds Dict of variable name → MonoType
+  3. `collectCaseRootTypes` — builds Dict of case root name → MonoType
+  All three traverse the same tree. They could be fused into a single pass that
+  collects all three results simultaneously.
+- Key code path: Closure.elm:148-192
+- Fix directions:
+  - Fuse all three into a single recursive traversal that threads
+    `(List Name, Dict String MonoType, Dict String MonoType)` as accumulator.
+  - The `findFreeLocals` logic needs `EverySet` for bound variables which the other
+    two don't use, but the tree walk structure is identical.
+- Status: OPEN
+
+### 22. enqueueSpec debug assertion traverses types in production
+- Phase: monomorphization worklist
+- Impact: LOW — two type traversals per enqueue (fast short-circuit in common case)
+- Root cause: `enqueueSpec` contains a debug assertion:
+  ```elm
+  _ =
+      if Mono.containsAnyMVar monoType && not (Mono.containsCEcoMVar monoType) then
+          Utils.Crash.crash ...
+      else ()
+  ```
+  This traverses the type twice (`containsAnyMVar` + `containsCEcoMVar`) on every
+  enqueue, purely for a debug assertion. In the common case (no MVars), `containsAnyMVar`
+  returns False quickly, but when MVars are present, both are traversed.
+- Key code path: Specialize.elm:208-216
+- Fix directions:
+  - Guard with a compile-time debug flag, or remove entirely since the invariant is
+    well-established.
+  - If kept, combine into a single traversal: `containsNonCEcoMVar` that returns True
+    only for `MVar _ CNumber`.
+- Status: OPEN
+
+### 23. VarLocal/TrackedVarLocal compute monoType even when varEnv has the answer
+- Phase: monomorphization worklist (specializeExpr)
+- Impact: MEDIUM — every local variable reference does unnecessary substitution+traversal
+- Root cause: In `specializeExpr` for `VarLocal` and `TrackedVarLocal`, the code
+  unconditionally computes:
+  ```elm
+  monoTypeFromMeta = Mono.forceCNumberToInt (applySubstFV state subst canType)
+  ```
+  Then checks `State.lookupVar name state.ctx.varEnv` — if found, `monoTypeFromMeta`
+  is thrown away. The expensive substitution+traversal could be deferred behind the
+  varEnv miss.
+- Key code path: Specialize.elm:1237-1258, Specialize.elm:1260-1281
+- Fix directions:
+  - Check `State.lookupVar` first. Only compute `monoTypeFromMeta` in the `Nothing`
+    branch and in the `isLocalMultiTarget` branch.
+  - The `isLocalMultiTarget` check also uses `monoTypeFromMeta`, so the reordering
+    needs to handle both cases.
+- Status: OPEN
+
+### 24. VarGlobal computes monoType0 then potentially recomputes from definition
+- Phase: monomorphization worklist (specializeExpr)
+- Impact: LOW-MEDIUM — every global variable reference; wasted when type is MVar
+- Root cause: `specializeExpr` for `VarGlobal` computes `monoType0` via
+  `Mono.forceCNumberToInt (applySubstFV state subst canType)`, then checks if it's
+  an `MVar`. If so, it looks up the definition in `toptNodes` and recomputes the type
+  from the definition's meta. The initial `applySubstFV` computation was wasted.
+- Key code path: Specialize.elm:1283-1319
+- Fix directions:
+  - Only do the full `applySubstFV` when the quick check (`Dict.get key subst`) shows
+    the type variable is resolved. Otherwise go straight to the toptNodes fallback.
+  - Alternative: compute a cheap "is this type a bare TVar?" check before doing the
+    full substitution.
+- Status: OPEN
+
+### 25. Registry forward mapping Dict maintained but discarded
+- Phase: monomorphization worklist
+- Impact: LOW — the mapping Dict is rebuilt on every getOrCreateSpecId call
+- Root cause: `SpecializationRegistry.mapping` (Dict String SpecId) is maintained
+  throughout the entire worklist processing via `Dict.insert` on every new spec.
+  In `assembleRawGraphFrom`, it is replaced with `Dict.empty` because no downstream
+  phase uses it. The forward mapping is needed for dedup during the worklist, but the
+  string keys (from `toComparableSpecKey`) are expensive to build and the Dict itself
+  consumes memory proportional to the number of specializations.
+- Key code paths:
+  - Registry.elm:56-68 (getOrCreateSpecId builds string key and inserts)
+  - Monomorphize.elm:269 (discarded: `mapping = Dict.empty`)
+- Fix directions:
+  - The mapping is necessary for dedup, so it can't be eliminated during the worklist.
+    However, it could be dropped earlier (as soon as the worklist completes, before
+    assembleRawGraphFrom) to free memory before downstream phases.
+  - Alternative: use a more compact dedup structure (e.g., hash the spec key to Int
+    and use an IntDict or Array-based hash set) instead of building full String keys.
+- Status: OPEN
+
+### 26. Prune rebuilds 3 Arrays by indexedMap even when most entries survive
+- Phase: post-monomorphization (pruneUnreachableSpecs)
+- Impact: LOW — one-time cost, proportional to registry size
+- Root cause: `Prune.pruneUnreachableSpecs` does `Array.indexedMap` over `nodes`,
+  `callEdges`, and `reverseMapping`, creating 3 new arrays even if only a few entries
+  are pruned. For mostly-reachable graphs, this copies almost everything.
+- Key code path: Prune.elm:91-141
+- Fix directions:
+  - Count dead entries first; if below a threshold (e.g., < 5% dead), skip pruning
+    and return the original graph.
+  - Alternative: use in-place mutation (not possible in Elm) or only null out dead
+    entries without creating new arrays (already the current behavior — it's the
+    `Array.indexedMap` that creates the copy).
+- Status: OPEN
+
+### 27. Nested record updates copy 10-16 fields repeatedly
+- Phase: monomorphization worklist (all state threading)
+- Impact: HIGH — hundreds of shallow record copies per function specialization
+- Root cause: Elm record updates (`{ state | accum = ... }`) copy all fields. MonoState
+  has 2 top-level fields, but SpecAccum has 6 fields and SpecContext has 10 fields.
+  Every record update of `state.ctx` copies all 10 fields. The code does this extremely
+  frequently — often multiple times per expression specialization (e.g., updating
+  `varEnv`, then `mvarEnv`, then `lambdaCounter` in separate updates). Nested updates
+  like `{ state | ctx = { ctx | varEnv = ... } }` copy both the outer and inner record.
+- Key code paths: Throughout Specialize.elm and Monomorphize.elm
+- Fix directions:
+  - Batch multiple field updates into a single record construction instead of chaining
+    multiple record updates. E.g., instead of:
+    ```elm
+    state1 = { state | ctx = { ctx | varEnv = newVarEnv } }
+    state2 = { state1 | ctx = { state1.ctx | mvarEnv = newMvarEnv } }
+    ```
+    Do:
+    ```elm
+    state1 = { state | ctx = { ctx | varEnv = newVarEnv, mvarEnv = newMvarEnv } }
+    ```
+  - Consider splitting SpecContext into smaller records (e.g., separate the rarely-changed
+    fields like `currentModule`, `toptNodes`, `globalTypeEnv`, `annotations` from the
+    frequently-changed ones like `varEnv`, `mvarEnv`, `lambdaCounter`).
+  - In generated JS, Elm record updates compile to `_Utils_update` which shallow-copies
+    the entire record. Reducing field count in frequently-updated records directly
+    reduces per-update allocation.
+- Status: OPEN
+
+### 28. refreshSchemeInfo rebuilds numberVarKeys Set from scratch
+- Phase: monomorphization worklist (getOrBuildSchemeInfo cache hit path)
+- Impact: LOW — called per cached call site, Set is typically small
+- Root cause: `refreshSchemeInfo` rebuilds the entire `numberVarKeys` Set:
+  ```elm
+  numberVarKeys = Set.foldl (\k acc -> Set.insert (applyRenameToId renameMap k) acc)
+                    Set.empty cached.numberVarKeys
+  ```
+  This creates a brand new Set even though it's just remapping keys.
+- Key code path: TypeSubst.elm:958
+- Fix directions:
+  - Use `Set.map` if available, or accept this as a minor cost since the Set is
+    typically very small (0-3 entries for most functions).
+- Status: OPEN
+
+### 29. renameTailCalls rebuilds entire AST even when no tail calls exist
+- Phase: monomorphization worklist (local multi-specialization)
+- Impact: MEDIUM — called for every multi-specialized MonoTailDef
+- Root cause: `renameMonoDef` for `MonoTailDef` calls `renameTailCalls` which walks and
+  rebuilds the *entire* expression tree, allocating new nodes at every level, even for
+  sub-trees that contain no `MonoTailCall` nodes. A changed-flag pattern (like
+  `resolveMonoVarsHelp` in TypeSubst.elm) could avoid rebuilding unchanged sub-trees.
+- Key code path: Specialize.elm:3907-4048
+- Fix directions:
+  - Use a changed-flag pattern: return the original node when no renaming occurred in
+    any sub-tree. This avoids allocating new `MonoCall`, `MonoIf`, `MonoLet`, etc.
+    wrappers for unchanged sub-expressions.
+  - For `MonoDef` (non-tail-recursive), `renameMonoDef` already avoids the traversal
+    (just replaces the name). The optimization is only needed for `MonoTailDef`.
+- Status: OPEN
+
+### 30. EverySet (sorted list) used for bound-variable membership in Closure.elm
+- Phase: monomorphization worklist (closure capture analysis)
+- Impact: MEDIUM — O(n) membership checks for every variable reference in free-var analysis
+- Root cause: `findFreeLocalsAcc` uses `EverySet String Name` for the bound-variable set.
+  `EverySet` is backed by a sorted list, giving O(n) membership checks via
+  `EverySet.member`. For functions with many bound variables (deeply nested lets,
+  many parameters), each `member` check is linear in the number of bound names.
+  A `Set String` from elm/core would give O(log n) lookups.
+- Key code path: Closure.elm:150-155 and throughout findFreeLocalsAcc
+- Fix directions:
+  - Replace `EverySet String Name` with `Set String` (from elm/core). Since `Name`
+    is an alias for `String`, this is a straightforward swap.
+  - Update `EverySet.member identity name bound` → `Set.member name bound` and
+    `EverySet.insert identity name bound` → `Set.insert name bound`.
+- Status: OPEN
+
+### 31. collectVarTypes walks into nested closure bodies unnecessarily
+- Phase: monomorphization worklist (closure capture analysis)
+- Impact: LOW-MEDIUM — adds unnecessary Dict entries and traversal time for nested closures
+- Root cause: `collectVarTypesHelper` descends into `MonoClosure` bodies (line 512-514).
+  But closure bodies are independent scopes — their free variables are captured explicitly
+  in `closureInfo.captures`. Walking into them finds variable types that are irrelevant
+  to the outer closure's captures. This adds unnecessary work and Dict entries for
+  variables that are only referenced inside the inner closure.
+- Key code path: Closure.elm:512-514
+- Fix directions:
+  - Skip recursion into `MonoClosure` bodies in `collectVarTypesHelper`. The captures
+    list already provides the types for variables captured by the inner closure.
+  - Same fix should apply to `collectCaseRootTypesHelper` (Closure.elm:661-662).
+- Status: OPEN
+
+### 32. findEntryPointId does full DMap.foldl over all nodes
+- Phase: monomorphization initialization
+- Impact: LOW — one-time cost at startup, but scans all nodes linearly
+- Root cause: `findEntryPointId` searches for the entry point (`main`) by linearly scanning
+  all nodes via `DMap.foldl`. If there are 1000 nodes, this examines all 1000 even though
+  `main` is typically present and could be looked up directly.
+- Key code path: Monomorphize.elm:292-320
+- Fix directions:
+  - Construct the expected key directly (`TOpt.Global currentModule entryPointName`) and
+    use `DMap.get` for O(log n) lookup instead of O(n) scan.
+  - Fall back to `DMap.foldl` only if the direct lookup fails (shouldn't normally happen).
+- Status: OPEN
+
+### 33. List.map2 Tuple.pair creates throwaway pair lists
+- Phase: monomorphization worklist (various)
+- Impact: LOW — allocates intermediate list of tuples that is immediately folded over
+- Root cause: The pattern `List.map2 Tuple.pair args monoArgs` appears in several places,
+  creating an intermediate list of tuples just to immediately fold over them. A direct
+  zip-fold would avoid the intermediate list allocation.
+- Key code paths:
+  - Specialize.elm:1141 (specializeFuncDefInCycle)
+  - Specialize.elm:2563 (refineSubstFromArgExprs)
+  - Specialize.elm:3098 (specializeDef)
+  - TypeSubst.elm:328 (unifyHelp TType/MCustom)
+  - TypeSubst.elm:376 (unifyHelp TTuple/MTuple)
+  - Analysis.elm:409 (buildCompleteCtorShapes)
+- Fix directions:
+  - Replace with a direct `foldl2` helper that zips and folds in one pass:
+    ```elm
+    foldl2 : (a -> b -> c -> c) -> c -> List a -> List b -> c
+    ```
+  - Or use `List.foldl` on one list with the other as a shrinking argument.
+- Status: OPEN
+
+### 34. processOneWorkItem constructs state2 record unconditionally
+- Phase: monomorphization worklist
+- Impact: LOW — one record copy per work item (unavoidable for the common case)
+- Root cause: `processOneWorkItem` always constructs `state2` with record updates
+  (copying accum and ctx) before checking the `global` variant (Accessor vs Global).
+  The construction is the same for both branches, so this is technically not wasteful —
+  but if the `BitSet.member specId accum.inProgress` early-exit path were more common,
+  the construction would be wasted in those cases. Currently the early-exit is rare
+  (only for recursive functions), so this is a minor concern.
+- Key code path: Monomorphize.elm:359-376
+- Fix directions:
+  - Move the state2 construction inside the `case global of` branches only if profiling
+    shows the early-exit path is hit frequently. Currently low priority.
+- Status: OPEN
+
+### 35. renameTailCalls is not tail-recursive
+- Phase: monomorphization worklist (local multi-specialization)
+- Impact: LOW-MEDIUM — stack depth proportional to AST nesting depth
+- Root cause: `renameTailCalls` recurses into every sub-expression without tail-call
+  optimization. For deeply nested let-chains or if-chains, this consumes stack
+  proportional to AST depth. Other non-tail-recursive AST traversals include
+  `collectLetChain`, `resolveMonoVars`/`resolveMonoVarsHelp`, `renameMVarIdsInCanType`,
+  `collectVarTypesHelper`, `collectCaseRootTypesHelper`, and `typeContainsLambda`.
+- Key code paths:
+  - Specialize.elm:3923-4048 (renameTailCalls)
+  - Closure.elm:380-391 (collectLetChain)
+  - TypeSubst.elm:489-586 (resolveMonoVarsHelp)
+  - TypeSubst.elm:1038-1119 (renameMVarIdsInCanType)
+  - Closure.elm:501-553 (collectVarTypesHelper)
+  - Closure.elm:638-713 (collectCaseRootTypesHelper)
+  - Specialize.elm:340-365 (typeContainsLambda)
+- Fix directions:
+  - Convert to explicit worklist/stack-based traversal for functions that touch deeply
+    nested ASTs.
+  - For `collectLetChain`, convert to accumulator-passing tail recursion.
+  - Risk is low for types (typically shallow) but higher for expression trees which
+    can be deeply nested in real programs.
+- Status: OPEN
+
+### 36. closureOverSubst collects MVarIds as List then converts to Int keys
+- Phase: monomorphization worklist (applySubstWithFreeVars)
+- Impact: LOW — creates intermediate List MVarId then maps to List Int
+- Root cause: `closureOverSubst` calls `collectMVarIdsFromMono monoType []` which
+  returns `List MVarId`, then maps it to `List Int` via `List.map Id.toComparable`.
+  The `collectMVarIdsFromMono` function could directly produce `List Int` keys,
+  avoiding the intermediate `List MVarId` and the `List.map` allocation.
+- Key code path: TypeSubst.elm:825-831
+- Fix directions:
+  - Add a variant `collectMVarKeysFromMono : MonoType -> List Int -> List Int` that
+    collects `Id.toComparable` directly, skipping the MVarId intermediate.
+  - Or modify `closureOverSubst` to accept MVarIds and do the conversion internally
+    during the DFS, avoiding the intermediate list entirely.
+- Status: OPEN
