@@ -1,10 +1,8 @@
 module Compiler.Monomorphize.TypeSubst exposing
-    ( MVarAliasMap
-    , applySubst, applySubstWithFreeVars
+    ( applySubst, applySubstWithFreeVars
     , canTypeToMonoType, extractParamTypes
     , unify, unifyExtend, unifyArgsOnly, unifyCallSiteDirect
     , buildSchemeInfo, refreshSchemeInfo
-    , linkSchemeToLocalType, extendSubstWithAliases
     , flattenTLambda
     )
 
@@ -1405,102 +1403,3 @@ normalizeAndOccursCheckDict env targetId subst fields =
 
 
 
--- ========== MVAR ALIAS MAP ==========
-
-
-{-| Maps local MVarId (Int key) to scheme MVarId (Int key).
-Used to link different MVarId families (def, args, body) back to a single canonical scheme.
--}
-type alias MVarAliasMap =
-    Dict.Dict Int Int
-
-
-{-| Structurally match two Can.Type MVarId trees and record TVar equivalences.
-The first argument is the "scheme" type (canonical MVarIds), the second is the
-"local" type (e.g. from args or body). When both sides are TVar, we record
-localId -> schemeId in the alias map.
-
-Precondition: the two types are alpha-equivalent (same shape).
--}
-linkSchemeToLocalType : Can.Type MVarId -> Can.Type MVarId -> MVarAliasMap -> MVarAliasMap
-linkSchemeToLocalType schemeType localType aliasMap =
-    case ( schemeType, localType ) of
-        ( Can.TVar schemeId, Can.TVar localId ) ->
-            Dict.insert (Id.toComparable localId) (Id.toComparable schemeId) aliasMap
-
-        ( Can.TLambda sArg sRes, Can.TLambda lArg lRes ) ->
-            aliasMap
-                |> linkSchemeToLocalType sArg lArg
-                |> linkSchemeToLocalType sRes lRes
-
-        ( Can.TType _ _ sArgs, Can.TType _ _ lArgs ) ->
-            List.foldl
-                (\( sa, la ) acc -> linkSchemeToLocalType sa la acc)
-                aliasMap
-                (List.map2 Tuple.pair sArgs lArgs)
-
-        ( Can.TRecord sFields sMaybeExt, Can.TRecord lFields lMaybeExt ) ->
-            let
-                fieldAliased =
-                    Dict.foldl
-                        (\name (Can.FieldType _ sType) acc ->
-                            case Dict.get name lFields of
-                                Just (Can.FieldType _ lType) ->
-                                    linkSchemeToLocalType sType lType acc
-
-                                Nothing ->
-                                    acc
-                        )
-                        aliasMap
-                        sFields
-            in
-            case ( sMaybeExt, lMaybeExt ) of
-                ( Just sExtId, Just lExtId ) ->
-                    Dict.insert (Id.toComparable lExtId) (Id.toComparable sExtId) fieldAliased
-
-                _ ->
-                    fieldAliased
-
-        ( Can.TTuple sa sb sRest, Can.TTuple la lb lRest ) ->
-            aliasMap
-                |> linkSchemeToLocalType sa la
-                |> linkSchemeToLocalType sb lb
-                |> (\acc ->
-                        List.foldl
-                            (\( s, l ) a -> linkSchemeToLocalType s l a)
-                            acc
-                            (List.map2 Tuple.pair sRest lRest)
-                   )
-
-        ( Can.TAlias _ _ _ (Can.Filled sInner), Can.TAlias _ _ _ (Can.Filled lInner) ) ->
-            linkSchemeToLocalType sInner lInner aliasMap
-
-        ( Can.TAlias _ _ _ (Can.Holey sInner), Can.TAlias _ _ _ (Can.Holey lInner) ) ->
-            linkSchemeToLocalType sInner lInner aliasMap
-
-        _ ->
-            aliasMap
-
-
-{-| Extend a substitution with alias-derived bindings.
-For each (localId -> schemeId) in the alias map, if schemeId has a binding
-in the substitution and localId does NOT already have one, add localId -> same MonoType.
-Skip-if-exists policy: unify/unifyExtend bindings always win.
--}
-extendSubstWithAliases : MVarAliasMap -> Substitution -> Substitution
-extendSubstWithAliases aliasMap subst =
-    Dict.foldl
-        (\localId schemeId acc ->
-            if Dict.member localId acc then
-                acc
-
-            else
-                case Dict.get schemeId subst of
-                    Just monoT ->
-                        Dict.insert localId monoT acc
-
-                    Nothing ->
-                        acc
-        )
-        subst
-        aliasMap
