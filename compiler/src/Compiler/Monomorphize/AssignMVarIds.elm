@@ -9,7 +9,6 @@ constraint information is recorded in a side table.
 
 -}
 
-import Array exposing (Array)
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.TypeIds as TypeIds
@@ -20,6 +19,7 @@ import Compiler.Reporting.Annotation as A
 import Compiler.Type.SolverRoots as SolverRoots
 import Data.Map as DMap
 import Dict exposing (Dict)
+import Set
 import System.TypeCheck.IO as IO
 
 
@@ -27,7 +27,7 @@ import System.TypeCheck.IO as IO
 -}
 type alias GlobalMVarState =
     { nextId : TypeIds.MVarId
-    , constraints : Array Mono.Constraint
+    , numberVars : Set.Set Int
     , rootEnv : Dict Int TypeIds.MVarId
     }
 
@@ -78,7 +78,7 @@ assignIds (TOpt.GlobalGraph nodes fields annotations allSchemeRoots) =
     let
         state0 =
             { nextId = TypeIds.firstMVarId
-            , constraints = Array.empty
+            , numberVars = Set.empty
             , rootEnv = Dict.empty
             }
 
@@ -103,7 +103,7 @@ assignIdsToType canType =
     let
         ctx =
             { env = Dict.empty
-            , state = { nextId = TypeIds.firstMVarId, constraints = Array.empty, rootEnv = Dict.empty }
+            , state = { nextId = TypeIds.firstMVarId, numberVars = Set.empty, rootEnv = Dict.empty }
             , schemeRootsForDef = Dict.empty
             }
 
@@ -126,10 +126,18 @@ freshMVarId constraint state =
     let
         currentId =
             state.nextId
+
+        newNumberVars =
+            case constraint of
+                Mono.CNumber ->
+                    Set.insert (Id.toComparable currentId) state.numberVars
+
+                Mono.CEcoValue ->
+                    state.numberVars
     in
     ( currentId
     , { nextId = Id.succ currentId
-      , constraints = Array.push constraint state.constraints
+      , numberVars = newNumberVars
       , rootEnv = state.rootEnv
       }
     )

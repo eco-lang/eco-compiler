@@ -375,7 +375,7 @@ hasCEcoTVar mvarEnv canType =
     in
     List.any
         (\mvarId ->
-            State.lookupConstraint mvarId mvarEnv /= Just Mono.CNumber
+            not (State.isNumberVar mvarId mvarEnv)
         )
         varIds
 

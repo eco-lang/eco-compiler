@@ -45,6 +45,7 @@ import Compiler.Monomorphize.TypeSubst as TypeSubst
 import Data.Map
 import Data.Set as EverySet exposing (EverySet)
 import Dict
+import Set
 import System.TypeCheck.IO as IO
 import Utils.Crash
 
@@ -577,7 +578,7 @@ computeCtorShapesForGraph globalTypeEnv nodes =
                         Just (Can.Union unionData) ->
                             let
                                 ( completeCtors, _ ) =
-                                    buildCompleteCtorShapes (State.initMVarEnv TypeIds.firstMVarId Array.empty) unionData.vars monoArgs unionData.alts
+                                    buildCompleteCtorShapes (State.initMVarEnv TypeIds.firstMVarId Set.empty) unionData.vars monoArgs unionData.alts
                             in
                             Data.Map.insert identity key completeCtors acc
 

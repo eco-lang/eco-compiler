@@ -100,7 +100,7 @@ deriveKernelAbiMode ( home, name ) canFuncType mvarEnv =
             hasNumberVars =
                 List.any
                     (\mvarId ->
-                        State.lookupConstraint mvarId mvarEnv == Just Mono.CNumber
+                        State.isNumberVar mvarId mvarEnv
                     )
                     varIds
         in

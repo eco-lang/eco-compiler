@@ -4,7 +4,7 @@ module Compiler.Monomorphize.State exposing
     , LocalInstanceInfo, LocalMultiState
     , ValueInstanceInfo, ValueMultiState
     , VarEnv(..), emptyVarEnv, insertVar, lookupVar, popFrame, pushFrame, varEnvKeys
-    , MVarEnv, initMVarEnv, freshMVar, lookupConstraint
+    , MVarEnv, initMVarEnv, freshMVar, isNumberVar
     )
 
 {-| State types and utilities for monomorphization.
@@ -40,11 +40,10 @@ the monomorphization process.
 
 # Monomorphization Variable Environment
 
-@docs MVarEnv, initMVarEnv, freshMVar, lookupConstraint
+@docs MVarEnv, initMVarEnv, freshMVar, isNumberVar
 
 -}
 
-import Array exposing (Array)
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.TypeEnv as TypeEnv
@@ -56,6 +55,7 @@ import Compiler.Data.Name exposing (Name)
 import Compiler.Monomorphize.Registry as Registry
 import Data.Map as DataMap
 import Dict exposing (Dict)
+import Set
 import System.TypeCheck.IO as IO
 
 
@@ -65,7 +65,7 @@ var collection at every call site.
 -}
 type alias SchemeInfo =
     { varIds : List MVarId
-    , constraints : Dict Int Mono.Constraint
+    , numberVarKeys : Set.Set Int
     , argTypes : List (Can.Type MVarId)
     , resultType : Can.Type MVarId
     , argCount : Int
@@ -80,21 +80,21 @@ type alias SchemeInfoCache =
 
 
 {-| Environment for tracking MVarIds during monomorphization.
-Uses a sequential allocator with a constraint side table.
+Uses a sequential allocator with a sparse set of CNumber-constrained vars.
 All MVarIds are globally unique sequential Ints from a single supplier.
 -}
 type alias MVarEnv =
     { nextId : MVarId
-    , constraints : Array Mono.Constraint -- indexed by Id.toComparable
+    , numberVars : Set.Set Int -- MVarIds with CNumber constraint
     }
 
 
 {-| Create an MVarEnv from an initial state (produced by AssignMVarIds).
 -}
-initMVarEnv : MVarId -> Array Mono.Constraint -> MVarEnv
-initMVarEnv nextId constraints =
+initMVarEnv : MVarId -> Set.Set Int -> MVarEnv
+initMVarEnv nextId numberVars =
     { nextId = nextId
-    , constraints = constraints
+    , numberVars = numberVars
     }
 
 
@@ -106,19 +106,27 @@ freshMVar constraint env =
     let
         currentId =
             env.nextId
+
+        newNumberVars =
+            case constraint of
+                Mono.CNumber ->
+                    Set.insert (Id.toComparable currentId) env.numberVars
+
+                Mono.CEcoValue ->
+                    env.numberVars
     in
     ( currentId
     , { nextId = Id.succ currentId
-      , constraints = Array.push constraint env.constraints
+      , numberVars = newNumberVars
       }
     )
 
 
-{-| Look up the constraint for an MVarId. Returns Nothing if not recorded.
+{-| Check whether an MVarId has the CNumber constraint.
 -}
-lookupConstraint : MVarId -> MVarEnv -> Maybe Mono.Constraint
-lookupConstraint mvarId env =
-    Array.get (Id.toComparable mvarId) env.constraints
+isNumberVar : MVarId -> MVarEnv -> Bool
+isNumberVar mvarId env =
+    Set.member (Id.toComparable mvarId) env.numberVars
 
 
 {-| Global accumulator fields that grow monotonically during monomorphization.

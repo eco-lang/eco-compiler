@@ -76,14 +76,14 @@ convertForTest canType =
         ( converted, finalState ) =
             AssignMVarIds.assignIdsToType canType
     in
-    ( converted, State.initMVarEnv finalState.nextId finalState.constraints )
+    ( converted, State.initMVarEnv finalState.nextId finalState.numberVars )
 
 
-{-| Look up the constraint recorded in the side table for the nth MVarId.
+{-| Check if the nth MVarId has the CNumber constraint.
 -}
-constraintOf : Int -> State.MVarEnv -> Maybe Mono.Constraint
-constraintOf n env =
-    State.lookupConstraint (nthMVarId n) env
+isNumberVar : Int -> State.MVarEnv -> Bool
+isNumberVar n env =
+    State.isNumberVar (nthMVarId n) env
 
 
 {-| Helper to call canTypeToMonoType\_preserveVars, converting from Can.Type Name.
@@ -353,7 +353,7 @@ numberBoxedKernelTests =
                             )
                     , \_ ->
                         -- Side table must record the original CNumber constraint
-                        Expect.equal (constraintOf 0 env) (Just Mono.CNumber)
+                        Expect.equal (isNumberVar 0 env) True
                     ]
                     ()
         , Test.test "Basics.sub : number -> number -> number (in whitelist)" <|
@@ -377,7 +377,7 @@ numberBoxedKernelTests =
                             )
                     , \_ ->
                         -- Side table must record the original CNumber constraint
-                        Expect.equal (constraintOf 0 env) (Just Mono.CNumber)
+                        Expect.equal (isNumberVar 0 env) True
                     ]
                     ()
         , Test.test "numberBoxed converts concrete Int to MInt" <|
@@ -814,7 +814,7 @@ kernelAbiPreservationTests =
                 in
                 Expect.all
                     [ \_ -> Expect.equal result (testMVarN 0 Mono.CEcoValue)
-                    , \_ -> Expect.equal (constraintOf 0 env) (Just Mono.CEcoValue)
+                    , \_ -> Expect.equal (isNumberVar 0 env) False
                     ]
                     ()
         , Test.test "PreserveVars mode produces CEcoValue even for 'number' var" <|
@@ -830,7 +830,7 @@ kernelAbiPreservationTests =
                 in
                 Expect.all
                     [ \_ -> Expect.equal result (testMVarN 0 Mono.CEcoValue)
-                    , \_ -> Expect.equal (constraintOf 0 env) (Just Mono.CNumber)
+                    , \_ -> Expect.equal (isNumberVar 0 env) True
                     ]
                     ()
         , Test.test "Polymorphic kernel ABI must NOT contain MInt even when used at Int type" <|

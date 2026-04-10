@@ -38,6 +38,7 @@ import Compiler.Monomorphize.State as State exposing (WorkItem(..))
 import Compiler.Monomorphize.TypeSubst as TypeSubst
 import Data.Map as DMap
 import Dict
+import Set
 import System.TypeCheck.IO as IO
 import Task exposing (Task)
 import Utils.Crash
@@ -70,7 +71,7 @@ monomorphize entryPointName globalTypeEnv globalGraph =
             AssignMVarIds.assignIds globalGraph
 
         mvarEnv =
-            State.initMVarEnv mvarState.nextId mvarState.constraints
+            State.initMVarEnv mvarState.nextId mvarState.numberVars
     in
     case findEntryPointId entryPointName nodesWithIds of
         Nothing ->
@@ -107,7 +108,7 @@ monomorphizeWithLog log entryPointName globalTypeEnv globalGraph =
             AssignMVarIds.assignIds globalGraph
 
         mvarEnv =
-            State.initMVarEnv mvarState.nextId mvarState.constraints
+            State.initMVarEnv mvarState.nextId mvarState.numberVars
     in
     case findEntryPointId entryPointName nodesWithIds of
         Nothing ->
@@ -500,7 +501,7 @@ type alias Substitution =
 canTypeToMonoType : Substitution -> Can.Type TypeIds.MVarId -> Mono.MonoType
 canTypeToMonoType subst canType =
     -- Use a dummy MVarEnv for the entry point type conversion (no fresh allocations needed)
-    Tuple.first (TypeSubst.canTypeToMonoType (State.initMVarEnv TypeIds.firstMVarId Array.empty) subst canType)
+    Tuple.first (TypeSubst.canTypeToMonoType (State.initMVarEnv TypeIds.firstMVarId Set.empty) subst canType)
 
 
 

@@ -29,6 +29,7 @@ import Compiler.Type.Type as Type
 import Compiler.Type.Unify as Unify
 import Data.Map as DMap
 import Dict exposing (Dict)
+import Set
 import System.TypeCheck.IO as IO
 
 
@@ -155,7 +156,7 @@ withLocalUnification snap rootsToRelax equalities callback =
             defaultNumericVarsToInt stateAfterUnify
 
         view =
-            buildLocalView (State.initMVarEnv TypeIds.firstMVarId Array.empty) Dict.empty stateAfterDefault
+            buildLocalView (State.initMVarEnv TypeIds.firstMVarId Set.empty) Dict.empty stateAfterDefault
     in
     callback view
 
@@ -182,7 +183,7 @@ specializeFunction snap funcTvar requestedMonoType callback =
             defaultNumericVarsToInt stateAfterWalk
 
         view =
-            buildLocalView (State.initMVarEnv TypeIds.firstMVarId Array.empty) Dict.empty stateAfterDefault
+            buildLocalView (State.initMVarEnv TypeIds.firstMVarId Set.empty) Dict.empty stateAfterDefault
     in
     callback view
 
@@ -212,7 +213,7 @@ specializeChainedWithSubst snap pairs substDict callback =
             defaultNumericVarsToInt stateAfterAll
 
         view =
-            buildLocalView (State.initMVarEnv TypeIds.firstMVarId Array.empty) substDict stateAfterDefault
+            buildLocalView (State.initMVarEnv TypeIds.firstMVarId Set.empty) substDict stateAfterDefault
     in
     callback view
 
@@ -282,13 +283,20 @@ buildLocalView mvarEnv substDict st =
                     ( canTypeWithIds, nextId, constraintsDict ) =
                         assignIdsToCanType canType TypeIds.firstMVarId Dict.empty Dict.empty
 
-                    constraintsArray =
-                        List.range 0 (Id.toComparable nextId - 1)
-                            |> List.filterMap (\i -> Dict.get i constraintsDict)
-                            |> Array.fromList
+                    numberVarsSet =
+                        Dict.foldl
+                            (\k v acc ->
+                                if v == Mono.CNumber then
+                                    Set.insert k acc
+
+                                else
+                                    acc
+                            )
+                            Set.empty
+                            constraintsDict
 
                     mvarEnvForConversion =
-                        State.initMVarEnv nextId constraintsArray
+                        State.initMVarEnv nextId numberVarsSet
 
                     ( monoType, _ ) =
                         TypeSubst.canTypeToMonoType mvarEnvForConversion Dict.empty canTypeWithIds

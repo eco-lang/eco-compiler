@@ -47,6 +47,15 @@ import Tuple
 
 
 
+constraintOf : MVarId -> MVarEnv -> Mono.Constraint
+constraintOf mvarId env =
+    if State.isNumberVar mvarId env then
+        Mono.CNumber
+
+    else
+        Mono.CEcoValue
+
+
 -- INTERNAL HELPERS: changed-flag mapping, union-find, normalized insertion
 
 
@@ -139,8 +148,7 @@ findRootVarHelp env visited mvarId subst =
                     -- Path compression: point this entry directly to root
                     let
                         rootConstraint =
-                            State.lookupConstraint root env1
-                                |> Maybe.withDefault Mono.CEcoValue
+                            constraintOf root env1
                     in
                     ( root
                     , Dict.insert key (Mono.MVar root rootConstraint) subst1
@@ -167,8 +175,7 @@ normalizeMonoType env subst ty =
             else
                 let
                     rootConstraint =
-                        State.lookupConstraint root env1
-                            |> Maybe.withDefault Mono.CEcoValue
+                        constraintOf root env1
                 in
                 ( Mono.MVar root rootConstraint, subst1, env1 )
 
@@ -607,8 +614,7 @@ applySubst env subst canType =
                 Nothing ->
                     let
                         constraint =
-                            State.lookupConstraint mvarId env
-                                |> Maybe.withDefault Mono.CEcoValue
+                            constraintOf mvarId env
                     in
                     case constraint of
                         Mono.CNumber ->
@@ -913,7 +919,7 @@ buildSchemeInfo env canType =
             List.length argTypes
     in
     ( { varIds = freshVarIds
-      , constraints = renaming.constraints
+      , numberVarKeys = renaming.numberVarKeys
       , argTypes = argTypes
       , resultType = resultType
       , argCount = argCount
@@ -949,7 +955,7 @@ refreshSchemeInfo env cached =
             renameMVarIdsInCanType renameMap cached.schemeType
     in
     ( { varIds = freshVarIds
-      , constraints = Dict.foldl (\k v acc -> Dict.insert (applyRenameToId renameMap k) v acc) Dict.empty cached.constraints
+      , numberVarKeys = Set.foldl (\k acc -> Set.insert (applyRenameToId renameMap k) acc) Set.empty cached.numberVarKeys
       , argTypes = refreshedArgTypes
       , resultType = refreshedResultType
       , argCount = cached.argCount
@@ -976,7 +982,7 @@ applyRenameToId renameMap id =
 type alias SchemeRenamingAcc =
     { renameMap : Dict.Dict Int MVarId
     , freshIds : List MVarId
-    , constraints : Dict.Dict Int Mono.Constraint
+    , numberVarKeys : Set Int
     , env : MVarEnv
     }
 
@@ -993,8 +999,7 @@ buildSchemeRenaming env varIds =
         (\oldId acc ->
             let
                 origConstraint =
-                    State.lookupConstraint oldId acc.env
-                        |> Maybe.withDefault Mono.CEcoValue
+                    constraintOf oldId acc.env
 
                 ( freshId, e1 ) =
                     State.freshMVar origConstraint acc.env
@@ -1004,16 +1009,24 @@ buildSchemeRenaming env varIds =
 
                 freshKey =
                     Id.toComparable freshId
+
+                newNumberVarKeys =
+                    case origConstraint of
+                        Mono.CNumber ->
+                            Set.insert freshKey acc.numberVarKeys
+
+                        Mono.CEcoValue ->
+                            acc.numberVarKeys
             in
             { renameMap = Dict.insert oldKey freshId acc.renameMap
             , freshIds = freshId :: acc.freshIds
-            , constraints = Dict.insert freshKey origConstraint acc.constraints
+            , numberVarKeys = newNumberVarKeys
             , env = e1
             }
         )
         { renameMap = Dict.empty
         , freshIds = []
-        , constraints = Dict.empty
+        , numberVarKeys = Set.empty
         , env = env
         }
         varIds
@@ -1308,8 +1321,7 @@ normalizeAndOccursCheck env targetId subst ty =
             else
                 let
                     rootConstraint =
-                        State.lookupConstraint root env1
-                            |> Maybe.withDefault Mono.CEcoValue
+                        constraintOf root env1
                 in
                 Just ( Mono.MVar root rootConstraint, subst1, env1 )
 
