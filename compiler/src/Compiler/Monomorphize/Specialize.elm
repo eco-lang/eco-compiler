@@ -165,6 +165,23 @@ lookupFreeVars maybeGlobal annotations =
             Dict.empty
 
 
+{-| Return True if a top-level global function has an explicit annotation with
+no generalized type variables (i.e. freeVars = {} in Can.Forall freeVars annType).
+
+Only returns True when we have a confirmed Can.Forall entry with empty freeVars.
+Returns False for globals with no annotation entry (Nothing case) — those must
+go through the SchemeInfo path since funcMeta.tipe may contain unresolved TVars.
+-}
+isMonomorphicGlobal : TOpt.Global -> MonoState -> Bool
+isMonomorphicGlobal global state =
+    case Data.Map.get TOpt.toComparableGlobal global state.ctx.annotations of
+        Just (Can.Forall freeVars _) ->
+            Dict.isEmpty freeVars
+
+        Nothing ->
+            False
+
+
 {-| Apply substitution with FreeVars scoping from the current global's annotation.
 Only substitutes MVarIds that actually appear in canType, preventing cross-scheme
 contamination. Uses cached currentFreeVars from SpecContext (set in processOneWorkItem).
@@ -1467,53 +1484,98 @@ specializeExpr expr subst state =
             case func of
                 TOpt.VarGlobal funcRegion global funcMeta ->
                     let
-                        -- Use the annotation scheme (if present) as the canonical
-                        -- type for building SchemeInfo. This keeps the scheme cache
-                        -- polymorphic and independent of first usage.
-                        funcCanTypeForScheme : Can.Type MVarId
-                        funcCanTypeForScheme =
+                        isMonoGlobal =
+                            isMonomorphicGlobal global state1r
+
+                        funcCanType : Can.Type MVarId
+                        funcCanType =
                             case Data.Map.get TOpt.toComparableGlobal global state1r.ctx.annotations of
                                 Just (Can.Forall _ annType) ->
                                     annType
 
                                 Nothing ->
                                     funcMeta.tipe
-
-                        ( schemeInfo, state1a ) =
-                            getOrBuildSchemeInfo funcCanTypeForScheme (Just global) state1r
-
-                        -- Direct unification: scheme MVarIds are freshened, so they never
-                        -- collide with caller substitutions.
-                        ( callSubst, funcMonoTypeRaw, _ ) =
-                            TypeSubst.unifyCallSiteDirect
-                                state1a.ctx.mvarEnv
-                                schemeInfo.argTypes
-                                schemeInfo.resultType
-                                argTypes
-                                substForCall
-
-                        funcMonoType =
-                            Mono.forceCNumberToInt funcMonoTypeRaw
-
-                        paramTypes =
-                            TypeSubst.extractParamTypes funcMonoType
-
-                        ( monoArgs, state2 ) =
-                            resolveProcessedArgs processedArgs paramTypes callSubst state1a
-
-                        resultMonoType =
-                            callResultMonoType state1a.ctx.mvarEnv (state1a.ctx.currentFreeVars) callSubst canType
-
-                        monoGlobal =
-                            toptGlobalToMono global
-
-                        ( specId, newState ) =
-                            enqueueSpec monoGlobal funcMonoType Nothing state2
-
-                        monoFunc =
-                            Mono.MonoVarGlobal funcRegion specId funcMonoType
                     in
-                    ( Mono.MonoCall region monoFunc monoArgs resultMonoType Mono.defaultCallInfo, newState )
+                    if isMonoGlobal then
+                        -- MONOMORPHIC FAST PATH: no SchemeInfo, no unifyCallSiteDirect.
+                        -- The annotation has zero generalized vars, so canTypeToMonoType with
+                        -- substForCall is sufficient to derive the single funcMonoType.
+                        let
+                            ( funcMonoTypeRaw, mvarEnv2 ) =
+                                TypeSubst.canTypeToMonoType state1r.ctx.mvarEnv substForCall funcCanType
+
+                            funcMonoType =
+                                Mono.forceCNumberToInt funcMonoTypeRaw
+
+                            state1m =
+                                let
+                                    ctx =
+                                        state1r.ctx
+                                in
+                                { state1r | ctx = { ctx | mvarEnv = mvarEnv2 } }
+
+                            paramTypes =
+                                TypeSubst.extractParamTypes funcMonoType
+
+                            ( monoArgs, state2 ) =
+                                resolveProcessedArgs processedArgs paramTypes substForCall state1m
+
+                            resultMonoType =
+                                callResultMonoType
+                                    state2.ctx.mvarEnv
+                                    state2.ctx.currentFreeVars
+                                    substForCall
+                                    canType
+
+                            monoGlobal =
+                                toptGlobalToMono global
+
+                            ( specId, newState ) =
+                                enqueueSpec monoGlobal funcMonoType Nothing state2
+
+                            monoFunc =
+                                Mono.MonoVarGlobal funcRegion specId funcMonoType
+                        in
+                        ( Mono.MonoCall region monoFunc monoArgs resultMonoType Mono.defaultCallInfo
+                        , newState
+                        )
+
+                    else
+                        -- EXISTING POLYMORPHIC PATH (unchanged)
+                        let
+                            ( schemeInfo, state1a ) =
+                                getOrBuildSchemeInfo funcCanType (Just global) state1r
+
+                            ( callSubst, funcMonoTypeRaw, _ ) =
+                                TypeSubst.unifyCallSiteDirect
+                                    state1a.ctx.mvarEnv
+                                    schemeInfo.argTypes
+                                    schemeInfo.resultType
+                                    argTypes
+                                    substForCall
+
+                            funcMonoType =
+                                Mono.forceCNumberToInt funcMonoTypeRaw
+
+                            paramTypes =
+                                TypeSubst.extractParamTypes funcMonoType
+
+                            ( monoArgs, state2 ) =
+                                resolveProcessedArgs processedArgs paramTypes callSubst state1a
+
+                            resultMonoType =
+                                callResultMonoType state1a.ctx.mvarEnv state1a.ctx.currentFreeVars callSubst canType
+
+                            monoGlobal =
+                                toptGlobalToMono global
+
+                            ( specId, newState ) =
+                                enqueueSpec monoGlobal funcMonoType Nothing state2
+
+                            monoFunc =
+                                Mono.MonoVarGlobal funcRegion specId funcMonoType
+                        in
+                        ( Mono.MonoCall region monoFunc monoArgs resultMonoType Mono.defaultCallInfo, newState )
 
                 TOpt.VarKernel funcRegion kernelPrefix home name funcMeta ->
                     let
