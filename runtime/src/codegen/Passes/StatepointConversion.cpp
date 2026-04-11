@@ -1,25 +1,26 @@
 //===- StatepointConversion.cpp - Convert marker calls to gc.statepoint ---===//
 //
-// Converts __eco_safepoint_marker(ptr addrspace(1), ...) calls into
-// llvm.experimental.gc.statepoint calls that wrap the ACTUAL allocating or
-// calling function that follows the marker.
+// Two-phase conversion of __eco_safepoint_marker calls:
 //
-// Pattern in LLVM IR (before this pass):
-//   call void @__eco_safepoint_marker(ptr addrspace(1) %root1, ...)
-//   %result = call i64 @eco_alloc_custom(i32 4, i32 2, i32 0)
+// Phase 1 (convertMarkersToStatepoints):
+//   Replaces each marker + target call pair with gc.statepoint + gc.result.
+//   Records SafepointInfo for Phase 2. No gc.relocate emission here.
 //
-// Pattern after this pass:
-//   %tok = gc.statepoint(@eco_alloc_custom, 4, 2, 0) [ "gc-live"(%root1, ...) ]
-//   %result = gc.result(token %tok)
-//   %root1.relocated = gc.relocate(token %tok, ...)
-//
-// This ensures the stack map entry is recorded at the return address of the
-// actual allocating call (where GC can trigger), not at a separate nop call.
+// Phase 2 (rewriteGCRootsWithAllocas):
+//   For each function with statepoints:
+//   - Creates one alloca per unique GC root in the entry block.
+//   - Stores the initial value into the alloca after its definition.
+//   - For each statepoint, emits gc.relocate + ptrtoint and stores the
+//     relocated value into the alloca.
+//   - Rewrites ALL uses of each root (including gc-live operands) to loads
+//     from the alloca.
+//   - Runs PromoteMemToReg to convert allocas back to SSA with correct phis.
 //
 //===----------------------------------------------------------------------===//
 
 #include "StatepointConversion.h"
 
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/IR/Dominators.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/IRBuilder.h"
@@ -28,10 +29,22 @@
 #include "llvm/IR/Intrinsics.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Statepoint.h"
+#include "llvm/Transforms/Utils/PromoteMemToReg.h"
 
 using namespace llvm;
 
 static constexpr const char *MARKER_NAME = "__eco_safepoint_marker";
+
+namespace {
+
+struct SafepointInfo {
+    CallBase *Statepoint;
+    SmallVector<Value *, 8> LiveRoots;      // original i64 values (stripped from inttoptr)
+    SmallVector<unsigned, 8> LiveIndices;    // index of each root in the gc-live bundle
+    SmallVector<Value *, 8> GCLivePtrArgs;  // the ptr addrspace(1) values in the gc-live bundle
+};
+
+} // anonymous namespace
 
 /// If value is an IntToPtrInst(i64 -> ptr addrspace(1)), return the i64
 /// operand. SafepointOpLowering always emits this pattern for live roots.
@@ -62,15 +75,27 @@ static CallInst *findTargetCall(Instruction *after) {
     return nullptr;
 }
 
-bool eco::convertSafepointMarkers(Module &module) {
-    auto *markerFn = module.getFunction(MARKER_NAME);
+/// Returns true if the type is a GC-managed type (i64 = HPointer representation).
+static bool isGCManagedType(Type *T) {
+    return T->isIntegerTy(64);
+}
+
+//===----------------------------------------------------------------------===//
+// Phase 1: Convert markers to statepoints (no gc.relocate)
+//===----------------------------------------------------------------------===//
+
+static bool convertMarkersToStatepoints(
+    Module &M,
+    DenseMap<Function *, SmallVector<SafepointInfo, 4>> &OutMap) {
+
+    auto *markerFn = M.getFunction(MARKER_NAME);
     if (!markerFn)
         return false;
 
-    auto &ctx = module.getContext();
+    auto &ctx = M.getContext();
 
-    // Group marker calls by function, preserving order within each function.
-    DenseMap<Function*, SmallVector<CallInst*, 8>> callsByFunction;
+    // Group marker calls by function
+    DenseMap<Function *, SmallVector<CallInst *, 8>> callsByFunction;
     for (auto *user : markerFn->users()) {
         if (auto *call = dyn_cast<CallInst>(user))
             callsByFunction[call->getFunction()].push_back(call);
@@ -81,86 +106,81 @@ bool eco::convertSafepointMarkers(Module &module) {
         return false;
     }
 
-    // Get the statepoint intrinsic declaration
     auto *statepointDecl = Intrinsic::getOrInsertDeclaration(
-        &module, Intrinsic::experimental_gc_statepoint,
+        &M, Intrinsic::experimental_gc_statepoint,
         {PointerType::get(ctx, 0)});
-
-    // Get the gc.relocate intrinsic declaration
-    auto *relocateDecl = Intrinsic::getOrInsertDeclaration(
-        &module, Intrinsic::experimental_gc_relocate,
-        {PointerType::get(ctx, 1)});
 
     auto *i64Zero = ConstantInt::get(Type::getInt64Ty(ctx), 0);
     auto *i32Zero = ConstantInt::get(Type::getInt32Ty(ctx), 0);
-    auto *i64Ty = Type::getInt64Ty(ctx);
 
     for (auto &[F, calls] : callsByFunction) {
-        DominatorTree DT(*F);
-
-        // Sort calls in forward program order.
-        std::sort(calls.begin(), calls.end(), [&DT](CallInst *A, CallInst *B) {
-            if (A->getParent() != B->getParent())
-                return DT.dominates(A->getParent(), B->getParent());
+        // Sort calls in forward program order within each function.
+        // Use block ordering + comesBefore within blocks.
+        std::sort(calls.begin(), calls.end(), [](CallInst *A, CallInst *B) {
+            if (A->getParent() != B->getParent()) {
+                // Use block order in the function's block list
+                for (auto &BB : *A->getFunction()) {
+                    if (&BB == A->getParent()) return true;
+                    if (&BB == B->getParent()) return false;
+                }
+                return false;
+            }
             return A->comesBefore(B);
         });
 
+        auto &spInfos = OutMap[F];
+
         for (auto *markerCall : calls) {
             // Collect gc-live args and original i64 values from the marker
-            SmallVector<Value*, 8> gcLiveArgs;
-            SmallVector<Value*, 8> originalInts;
+            SmallVector<Value *, 8> gcLiveArgs;
+            SmallVector<Value *, 8> originalInts;
+            SmallVector<unsigned, 8> liveIndices;
+            unsigned idx = 0;
             for (unsigned i = 0; i < markerCall->arg_size(); i++) {
                 Value *arg = markerCall->getArgOperand(i);
-                gcLiveArgs.push_back(arg);
                 Value *origInt = stripIntToPtr(arg);
+                gcLiveArgs.push_back(arg);
                 originalInts.push_back(origInt);
+                liveIndices.push_back(idx);
+                idx++;
             }
 
             // Find the target call to wrap
             CallInst *targetCall = findTargetCall(markerCall);
             if (!targetCall) {
-                // No target call found — just remove the marker
                 markerCall->eraseFromParent();
                 continue;
             }
 
-            // Build statepoint wrapping the target call.
-            // Format: gc.statepoint(id, patchBytes, callee, numCallArgs, flags, <callArgs...>)
-            //         [ "gc-live"(<gc roots...>) ]
+            // Build statepoint wrapping the target call
             FunctionType *targetFnTy = targetCall->getFunctionType();
 
-            SmallVector<Value*, 16> statepointArgs;
+            SmallVector<Value *, 16> statepointArgs;
             statepointArgs.push_back(i64Zero);  // statepoint ID
             statepointArgs.push_back(i32Zero);  // num patch bytes
             statepointArgs.push_back(targetCall->getCalledOperand());  // callee
             statepointArgs.push_back(
-                ConstantInt::get(Type::getInt32Ty(ctx), targetCall->arg_size()));  // num call args
+                ConstantInt::get(Type::getInt32Ty(ctx), targetCall->arg_size()));
             statepointArgs.push_back(i32Zero);  // flags
 
-            // Append the target call's arguments
             for (unsigned i = 0; i < targetCall->arg_size(); i++)
                 statepointArgs.push_back(targetCall->getArgOperand(i));
 
-            // Create gc-live operand bundle
             OperandBundleDef gcLiveBundle("gc-live", gcLiveArgs);
 
-            // Insert statepoint before the target call
             IRBuilder<> builder(targetCall);
             auto *statepoint = builder.CreateCall(
                 statepointDecl, statepointArgs, {gcLiveBundle});
             statepoint->setDebugLoc(targetCall->getDebugLoc());
 
-            // Add elementtype attribute on the callee argument (arg index 2)
             statepoint->addParamAttr(2,
                 Attribute::get(ctx, Attribute::ElementType, targetFnTy));
-
-            // Copy calling convention from target
             statepoint->setCallingConv(targetCall->getCallingConv());
 
             // Extract the call result via gc.result if non-void
             if (!targetCall->getType()->isVoidTy()) {
                 auto *gcResultDecl = Intrinsic::getOrInsertDeclaration(
-                    &module, Intrinsic::experimental_gc_result,
+                    &M, Intrinsic::experimental_gc_result,
                     {targetCall->getType()});
                 builder.SetInsertPoint(statepoint->getNextNode()
                     ? statepoint->getNextNode()
@@ -169,72 +189,210 @@ bool eco::convertSafepointMarkers(Module &module) {
                 targetCall->replaceAllUsesWith(gcResult);
             }
 
-            // Emit gc.relocate for gc-live values with post-statepoint uses (Option B).
-            // First pass: find which original i64 values have dominated uses to rewrite.
-            SmallVector<SmallVector<Use*, 8>, 8> allUsesToRewrite(originalInts.size());
+            // Record SafepointInfo for Phase 2
+            SafepointInfo info;
+            info.Statepoint = statepoint;
+            info.GCLivePtrArgs = gcLiveArgs;
             for (unsigned i = 0; i < originalInts.size(); i++) {
-                Value *origInt = originalInts[i];
-                if (!origInt)
-                    continue;
-
-                for (auto &U : origInt->uses()) {
-                    auto *userInst = dyn_cast<Instruction>(U.getUser());
-                    if (!userInst)
-                        continue;
-                    // Skip the statepoint itself
-                    if (userInst == statepoint)
-                        continue;
-                    // Skip the inttoptr that feeds into gc-live
-                    if (userInst == gcLiveArgs[i])
-                        continue;
-                    // Only rewrite uses dominated by this statepoint
-                    if (DT.dominates(statepoint, userInst))
-                        allUsesToRewrite[i].push_back(&U);
+                if (originalInts[i] && isGCManagedType(originalInts[i]->getType())) {
+                    info.LiveRoots.push_back(originalInts[i]);
+                    info.LiveIndices.push_back(liveIndices[i]);
                 }
             }
+            spInfos.push_back(std::move(info));
 
-            // Second pass: emit gc.relocate only for values with uses to rewrite.
-            // Insert after the gc.result (if any) or after the statepoint.
-            Instruction *insertAfter = statepoint;
-            for (auto it = statepoint->getIterator();
-                 it != statepoint->getParent()->end(); ++it) {
-                if (auto *CI = dyn_cast<CallInst>(&*it)) {
-                    if (CI->getIntrinsicID() == Intrinsic::experimental_gc_result) {
-                        insertAfter = CI;
-                        break;
-                    }
-                }
-                if (&*it != statepoint)
-                    break;
-            }
-            builder.SetInsertPoint(insertAfter->getNextNode());
-
-            for (unsigned i = 0; i < originalInts.size(); i++) {
-                if (allUsesToRewrite[i].empty())
-                    continue;
-
-                auto *idx = ConstantInt::get(Type::getInt32Ty(ctx), i);
-                auto *relocate = builder.CreateCall(
-                    relocateDecl, {statepoint, idx, idx});
-                auto *relocated = builder.CreatePtrToInt(relocate, i64Ty);
-
-                for (auto *U : allUsesToRewrite[i])
-                    U->set(relocated);
-            }
-
-            // Remove the target call (replaced by statepoint + gc.result)
             targetCall->eraseFromParent();
-
-            // Remove the marker call
             markerCall->eraseFromParent();
         }
     }
 
-    // Remove the marker function declaration
     markerFn->eraseFromParent();
 
-    assert(module.getFunction(MARKER_NAME) == nullptr &&
+    assert(M.getFunction(MARKER_NAME) == nullptr &&
            "All safepoint markers must be converted to statepoints");
+
+    return true;
+}
+
+//===----------------------------------------------------------------------===//
+// Phase 2: gc.relocate + alloca/mem2reg rewrite
+//===----------------------------------------------------------------------===//
+
+static bool rewriteGCRootsWithAllocas(
+    Function &F,
+    ArrayRef<SafepointInfo> Safepoints) {
+
+    auto &ctx = F.getContext();
+    auto *i64Ty = Type::getInt64Ty(ctx);
+
+    auto *relocateDecl = Intrinsic::getOrInsertDeclaration(
+        F.getParent(), Intrinsic::experimental_gc_relocate,
+        {PointerType::get(ctx, 1)});
+
+    // 4a. Collect all unique GC root values
+    DenseSet<Value *> rootSet;
+    SmallVector<Value *, 16> roots;
+    for (auto &sp : Safepoints) {
+        for (auto *root : sp.LiveRoots) {
+            if (rootSet.insert(root).second)
+                roots.push_back(root);
+        }
+    }
+
+    if (roots.empty())
+        return false;
+
+    // 4b. Create one alloca per GC root in the entry block
+    DenseMap<Value *, AllocaInst *> Allocas;
+    SmallVector<AllocaInst *, 16> AllocaVec;
+    IRBuilder<> entryBuilder(&F.getEntryBlock(), F.getEntryBlock().getFirstInsertionPt());
+
+    for (auto *root : roots) {
+        auto *alloca = entryBuilder.CreateAlloca(i64Ty, nullptr,
+            root->getName() + ".gcroot");
+        Allocas[root] = alloca;
+        AllocaVec.push_back(alloca);
+    }
+
+    // 4c. Insert initial store for each root
+    // Track which stores are "initial stores" so we skip them during use-rewriting
+    DenseSet<StoreInst *> initialStores;
+    for (auto *root : roots) {
+        AllocaInst *alloca = Allocas[root];
+        Instruction *insertPt = nullptr;
+
+        if (isa<Argument>(root)) {
+            // Store after all allocas in entry block
+            insertPt = &*F.getEntryBlock().getFirstInsertionPt();
+            // Skip past all allocas and dbg intrinsics
+            while (insertPt && (isa<AllocaInst>(insertPt) || isa<DbgInfoIntrinsic>(insertPt)))
+                insertPt = insertPt->getNextNode();
+        } else if (auto *PHI = dyn_cast<PHINode>(root)) {
+            insertPt = &*PHI->getParent()->getFirstNonPHIIt();
+        } else if (auto *I = dyn_cast<Instruction>(root)) {
+            insertPt = I->getNextNode();
+            while (insertPt && isa<DbgInfoIntrinsic>(insertPt))
+                insertPt = insertPt->getNextNode();
+        }
+
+        if (insertPt) {
+            IRBuilder<> b(insertPt);
+            auto *store = b.CreateStore(root, alloca);
+            initialStores.insert(store);
+        }
+    }
+
+    // 4d. For each statepoint: emit gc.relocate, then store into alloca
+    for (auto &sp : Safepoints) {
+        // Find insertion point after the statepoint (after gc.result if present)
+        Instruction *insertAfter = cast<Instruction>(sp.Statepoint);
+        for (auto it = insertAfter->getIterator();
+             it != insertAfter->getParent()->end(); ++it) {
+            if (auto *CI = dyn_cast<CallInst>(&*it)) {
+                if (CI->getIntrinsicID() == Intrinsic::experimental_gc_result) {
+                    insertAfter = CI;
+                    break;
+                }
+            }
+            if (&*it != insertAfter)
+                break;
+        }
+
+        IRBuilder<> builder(insertAfter->getNextNode());
+
+        for (unsigned i = 0; i < sp.LiveRoots.size(); i++) {
+            auto *idx = ConstantInt::get(Type::getInt32Ty(ctx), sp.LiveIndices[i]);
+            auto *relocate = builder.CreateCall(
+                relocateDecl, {sp.Statepoint, idx, idx});
+            auto *relocated = builder.CreatePtrToInt(relocate, i64Ty);
+            builder.CreateStore(relocated, Allocas[sp.LiveRoots[i]]);
+        }
+    }
+
+    // 4e. Rewrite ALL uses of each root V to loads from its alloca
+    for (auto *root : roots) {
+        AllocaInst *alloca = Allocas[root];
+
+        // Collect uses first (modifying uses while iterating is unsafe)
+        SmallVector<Use *, 32> usesToRewrite;
+        for (auto &U : root->uses()) {
+            auto *userInst = dyn_cast<Instruction>(U.getUser());
+            if (!userInst)
+                continue;
+
+            // Skip the initial store we created in 4c
+            if (auto *SI = dyn_cast<StoreInst>(userInst)) {
+                if (SI->getValueOperand() == root &&
+                    SI->getPointerOperand() == alloca &&
+                    initialStores.count(SI))
+                    continue;
+            }
+
+            usesToRewrite.push_back(&U);
+        }
+
+        for (auto *U : usesToRewrite) {
+            auto *userInst = cast<Instruction>(U->getUser());
+
+            // Insert load before the user instruction
+            // For PHI nodes, insert at the end of the incoming block
+            IRBuilder<> loadBuilder(userInst);
+            if (auto *PHI = dyn_cast<PHINode>(userInst)) {
+                unsigned opNo = U->getOperandNo();
+                auto *incomingBB = PHI->getIncomingBlock(opNo);
+                loadBuilder.SetInsertPoint(incomingBB->getTerminator());
+            }
+
+            auto *load = loadBuilder.CreateLoad(i64Ty, alloca, root->getName() + ".reload");
+
+            // Check if this use is a gc-live bundle operand (expects ptr addrspace(1))
+            // If so, we need inttoptr
+            bool isGCLiveUse = false;
+            if (auto *CB = dyn_cast<CallBase>(userInst)) {
+                // Check if this use index falls within an operand bundle
+                for (unsigned b = 0; b < CB->getNumOperandBundles(); b++) {
+                    auto bundle = CB->getOperandBundleAt(b);
+                    if (bundle.getTagName() == "gc-live") {
+                        unsigned bundleStart = bundle.Inputs.data() - CB->op_begin();
+                        unsigned bundleEnd = bundleStart + bundle.Inputs.size();
+                        unsigned useIdx = U->getOperandNo();
+                        if (useIdx >= bundleStart && useIdx < bundleEnd) {
+                            isGCLiveUse = true;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if (isGCLiveUse) {
+                auto *ptrVal = loadBuilder.CreateIntToPtr(load,
+                    PointerType::get(ctx, 1));
+                U->set(ptrVal);
+            } else {
+                U->set(load);
+            }
+        }
+    }
+
+    // 4f. Promote allocas back to SSA
+    DominatorTree DT(F);
+    PromoteMemToReg(AllocaVec, DT);
+
+    return true;
+}
+
+//===----------------------------------------------------------------------===//
+// Top-level entry point
+//===----------------------------------------------------------------------===//
+
+bool eco::convertSafepointMarkers(Module &module) {
+    DenseMap<Function *, SmallVector<SafepointInfo, 4>> SPMap;
+    bool Changed = convertMarkersToStatepoints(module, SPMap);
+    if (!Changed)
+        return false;
+
+    for (auto &[F, SPs] : SPMap)
+        rewriteGCRootsWithAllocas(*F, SPs);
 
     return true;
 }
