@@ -109,10 +109,8 @@ getOrBuildSchemeInfo funcCanType maybeGlobal state =
                                 Just (Can.Forall _ annType) ->
                                     annType
 
-                                -- No annotation entry (unlikely for user code):
-                                -- fall back to whatever the caller passed in.
                                 Nothing ->
-                                    funcCanType
+                                    Utils.Crash.crash ("getOrBuildSchemeInfo: no annotation entry for global " ++ TOpt.toComparableGlobal global)
 
                         ( info, mvarEnv1 ) =
                             TypeSubst.buildSchemeInfo state.ctx.mvarEnv canonicalCanTypeForScheme

@@ -47,8 +47,11 @@ import Compiler.Canonicalize.Module as Canonicalize
 import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Data.NonEmptyList as NE
 import Compiler.Data.OneOrMore as OneOrMore
+import Compiler.Data.Index as Index
+import Compiler.Elm.Interface as I
 import Compiler.Elm.Interface.Basic as Basic
 import Compiler.Elm.ModuleName as ModuleName
+import Compiler.Elm.Package as Pkg
 import Compiler.Generate.CodeGen as CodeGen
 import Compiler.Generate.MLIR.Backend as MLIR
 import Compiler.Generate.Mode as Mode
@@ -419,10 +422,134 @@ runWithIdsTypeCheck modul =
 
 
 {-| Convert a LocalGraph to a GlobalGraph for monomorphization.
+
+Mirrors the production build by also assembling annotations from cross-module
+dependencies (test interfaces). In production, each dependency module's
+LocalGraph is merged via addTypedLocalGraph, bringing its function annotations
+and constructor annotations into the GlobalGraph. Here we synthesize equivalent
+annotations directly from the mock interfaces.
+
 -}
 localGraphToGlobalGraph : TOpt.LocalGraph Name -> TOpt.GlobalGraph Name
 localGraphToGlobalGraph localGraph =
-    GA.addTypedLocalGraph localGraph TOpt.emptyGlobalGraph
+    let
+        (TOpt.GlobalGraph nodes fields annotations roots) =
+            GA.addTypedLocalGraph localGraph TOpt.emptyGlobalGraph
+
+        crossModuleAnnotations =
+            interfaceAnnotations Basic.testIfaces
+    in
+    TOpt.GlobalGraph nodes fields (Data.Map.union crossModuleAnnotations annotations) roots
+
+
+{-| Build AnnotationsByGlobal from test interfaces.
+
+For each interface module, extracts annotations for:
+
+  - Function values (from interface.values)
+  - Union constructors (synthesized from interface.unions, matching
+    the logic in LocalOpt.Typed.Module.addCtorNode)
+
+This mirrors what the production build does when each dependency module's
+LocalGraph is assembled via addTypedLocalGraph.
+
+-}
+interfaceAnnotations : Dict Name I.Interface -> Data.Map.Dict String TOpt.Global (Can.Annotation Name)
+interfaceAnnotations ifaces =
+    Dict.foldl
+        (\moduleName (I.Interface idata) acc ->
+            let
+                home =
+                    IO.Canonical idata.home moduleName
+            in
+            acc
+                |> addValueAnnotations home idata.values
+                |> addUnionAnnotations home idata.unions
+                |> addBinopAnnotations home idata.binops
+        )
+        Data.Map.empty
+        ifaces
+
+
+{-| Add annotations for interface function values.
+-}
+addValueAnnotations : IO.Canonical -> Dict Name (Can.Annotation Name) -> Data.Map.Dict String TOpt.Global (Can.Annotation Name) -> Data.Map.Dict String TOpt.Global (Can.Annotation Name)
+addValueAnnotations home values acc =
+    Dict.foldl
+        (\name ann a ->
+            Data.Map.insert TOpt.toComparableGlobal (TOpt.Global home name) ann a
+        )
+        acc
+        values
+
+
+{-| Add annotations for binary operators.
+
+Binops have a function name (e.g. "add" for +) and an annotation.
+
+-}
+addBinopAnnotations : IO.Canonical -> Dict Name I.Binop -> Data.Map.Dict String TOpt.Global (Can.Annotation Name) -> Data.Map.Dict String TOpt.Global (Can.Annotation Name)
+addBinopAnnotations home binops acc =
+    Dict.foldl
+        (\_ (I.Binop bdata) a ->
+            Data.Map.insert TOpt.toComparableGlobal (TOpt.Global home bdata.name) bdata.annotation a
+        )
+        acc
+        binops
+
+
+{-| Add annotations for union constructors.
+
+Mirrors LocalOpt.Typed.Module.addCtorNode: builds the constructor's function
+type from its args and the result type, then wraps it in Can.Forall with the
+union's type variables as free vars.
+
+-}
+addUnionAnnotations : IO.Canonical -> Dict Name I.Union -> Data.Map.Dict String TOpt.Global (Can.Annotation Name) -> Data.Map.Dict String TOpt.Global (Can.Annotation Name)
+addUnionAnnotations home unions acc =
+    Dict.foldl
+        (\typeName iUnion a ->
+            let
+                union =
+                    case iUnion of
+                        I.OpenUnion u ->
+                            u
+
+                        I.ClosedUnion u ->
+                            u
+
+                        I.PrivateUnion u ->
+                            u
+            in
+            addCtorAnnotations home typeName union a
+        )
+        acc
+        unions
+
+
+{-| Add annotations for each constructor in a union type.
+-}
+addCtorAnnotations : IO.Canonical -> Name -> Can.Union -> Data.Map.Dict String TOpt.Global (Can.Annotation Name) -> Data.Map.Dict String TOpt.Global (Can.Annotation Name)
+addCtorAnnotations home typeName (Can.Union unionData) acc =
+    List.foldl
+        (\(Can.Ctor c) a ->
+            let
+                resultType =
+                    Can.TType home typeName (List.map Can.TVar unionData.vars)
+
+                ctorType =
+                    List.foldr Can.TLambda resultType c.args
+
+                freeVars =
+                    List.foldl (\v dict -> Dict.insert v () dict) Dict.empty unionData.vars
+
+                ctorAnn =
+                    Can.Forall freeVars ctorType
+            in
+            Data.Map.insert TOpt.toComparableGlobal (TOpt.Global home c.name) ctorAnn a
+        )
+        acc
+        unionData.alts
 
 
 {-| Build a GlobalTypeEnv from a canonical module and test interfaces.
