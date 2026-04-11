@@ -884,7 +884,7 @@ inline HPointer allocClosure(EvalFunction evaluator, u32 max_values) {
     total_size = (total_size + 7) & ~7;
 
     Closure* cl = static_cast<Closure*>(allocator.allocate(total_size, Tag_Closure));
-    cl->header.size = 0;
+    cl->header.size = max_values;
     cl->n_values = 0;
     cl->max_values = max_values;
     cl->unboxed = 0;

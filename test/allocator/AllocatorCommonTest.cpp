@@ -470,23 +470,27 @@ Testing::TestCase testGetObjectSizeArrayEdgeCases("getObjectSize handles ElmArra
 });
 
 // ============================================================================
-// Closure Tests (uses n_values field instead of hdr->size)
+// Closure Tests (uses hdr->size = allocated capacity, NOT n_values)
 // ============================================================================
 
-Testing::TestCase testGetObjectSizeClosure("getObjectSize returns correct size for Closure with varying value counts", []() {
-    rc::check([](u32 num_values) {
+Testing::TestCase testGetObjectSizeClosure("getObjectSize returns correct size for Closure based on hdr->size (allocated capacity)", []() {
+    rc::check([](u32 max_values) {
         // Limit to 63 (max for 6-bit field)
-        num_values = num_values % 64;
+        max_values = max_values % 64;
 
         void* obj = getTestObject();
         Header* hdr = getHeader(obj);
         hdr->tag = Tag_Closure;
+        hdr->size = max_values;
 
+        // n_values may be less than max_values (partially applied closure).
+        // getObjectSize must use hdr->size (allocated capacity), not n_values.
         Closure* cl = static_cast<Closure*>(obj);
-        cl->n_values = num_values;
+        cl->n_values = 0;
+        cl->max_values = max_values;
 
         size_t base_size = sizeof(Closure);  // Header + n_values/max_values/unboxed + evaluator
-        size_t expected = (base_size + num_values * sizeof(Unboxable) + 7) & ~7;
+        size_t expected = (base_size + max_values * sizeof(Unboxable) + 7) & ~7;
         RC_ASSERT(getObjectSize(obj) == expected);
     });
 });
@@ -499,20 +503,49 @@ Testing::TestCase testGetObjectSizeClosureEdgeCases("getObjectSize handles Closu
 
         Closure* cl = static_cast<Closure*>(obj);
 
-        // Zero captured values
+        // Zero allocated capacity
+        hdr->size = 0;
         cl->n_values = 0;
+        cl->max_values = 0;
         RC_ASSERT(getObjectSize(obj) == ((sizeof(Closure) + 7) & ~7));
         RC_ASSERT(getObjectSize(obj) == 24);  // Header(8) + bitfields(8) + evaluator(8) = 24
 
-        // One captured value
+        // One slot allocated
+        hdr->size = 1;
         cl->n_values = 1;
+        cl->max_values = 1;
         RC_ASSERT(getObjectSize(obj) == ((sizeof(Closure) + 1 * sizeof(Unboxable) + 7) & ~7));
         RC_ASSERT(getObjectSize(obj) == 32);  // 24 + 8 = 32
 
-        // Maximum values (63)
+        // Maximum slots (63)
+        hdr->size = 63;
         cl->n_values = 63;
+        cl->max_values = 63;
         RC_ASSERT(getObjectSize(obj) == ((sizeof(Closure) + 63 * sizeof(Unboxable) + 7) & ~7));
         RC_ASSERT(getObjectSize(obj) == 528);  // 24 + 504 = 528
+    });
+});
+
+Testing::TestCase testGetObjectSizeClosurePartialApplication("getObjectSize uses allocated capacity for partially-applied closures", []() {
+    rc::check([](u32 max_values, u32 n_values) {
+        // max_values in [1..63], n_values in [0..max_values-1]
+        max_values = (max_values % 63) + 1;
+        n_values = n_values % max_values;  // strictly less than max_values
+
+        void* obj = getTestObject();
+        Header* hdr = getHeader(obj);
+        hdr->tag = Tag_Closure;
+        hdr->size = max_values;  // allocated capacity
+
+        Closure* cl = static_cast<Closure*>(obj);
+        cl->n_values = n_values;      // fewer values applied
+        cl->max_values = max_values;
+
+        // Must use hdr->size (allocated capacity), not n_values (current fill).
+        // A partially-applied closure has allocated room for max_values slots;
+        // the GC must copy all of them to avoid truncating the object.
+        size_t expected = (sizeof(Closure) + max_values * sizeof(Unboxable) + 7) & ~7;
+        RC_ASSERT(getObjectSize(obj) == expected);
     });
 });
 
@@ -532,10 +565,12 @@ Testing::TestCase testGetObjectSizeAlwaysAligned("getObjectSize always returns 8
         hdr->tag = tag_val;
         hdr->size = size_val;
 
-        // For Closure, also set n_values
+        // For Closure, hdr->size is the allocated capacity (set above).
+        // n_values can be anything <= max_values; getObjectSize must use hdr->size.
         if (tag_val == Tag_Closure) {
             Closure* cl = static_cast<Closure*>(obj);
-            cl->n_values = size_val % 64;
+            cl->n_values = 0;  // partially applied — should not affect size
+            cl->max_values = size_val % 64;
         }
 
         size_t result = getObjectSize(obj);
@@ -621,9 +656,12 @@ Testing::TestCase testGetObjectSizeAllTagsExhaustive("getObjectSize handles all 
         RC_ASSERT(getObjectSize(obj) == 32);
 
         // Closure: sizeof(Closure) + 5 * sizeof(Unboxable) = 24 + 40 = 64
+        // Size comes from hdr->size (allocated capacity), not n_values.
         hdr->tag = Tag_Closure;
+        hdr->size = 5;
         Closure* cl = static_cast<Closure*>(obj);
-        cl->n_values = 5;
+        cl->n_values = 2;       // partially applied — must not affect size
+        cl->max_values = 5;
         RC_ASSERT(getObjectSize(obj) == 64);
     });
 });

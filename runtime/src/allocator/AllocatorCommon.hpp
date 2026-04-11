@@ -90,11 +90,9 @@ inline size_t getObjectSize(void *obj) {
         case Tag_FieldGroup:
             size = sizeof(FieldGroup) + hdr->size * sizeof(u32);
             break;
-        case Tag_Closure: {
-            Closure *cl = static_cast<Closure *>(obj);
-            size = sizeof(Closure) + cl->n_values * sizeof(Unboxable);
+        case Tag_Closure:
+            size = sizeof(Closure) + hdr->size * sizeof(Unboxable);
             break;
-        }
         case Tag_Process:
             size = sizeof(Process);
             break;
