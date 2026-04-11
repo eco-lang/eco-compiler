@@ -2,7 +2,7 @@ module Compiler.Generate.MLIR.Expr exposing
     ( ExprResult
     , generateExpr
     , emitSafepoint
-    , coerceResultToType, boxArgsWithMlirTypes
+    , coerceResultToType
     , createDummyValue
     , collectLetBoundNames, addPlaceholderMappings
     )
@@ -3194,32 +3194,6 @@ generateExprListTyped ctx exprs =
                 exprs
     in
     ( List.reverse opsReversed, List.reverse varsReversed, ctxFinal )
-
-
-{-| Box arguments to !eco.value using their ACTUAL MLIR types.
-This is safer than boxArgsIfNeeded because it uses the real SSA types
-instead of relying on potentially incorrect Mono types.
--}
-boxArgsWithMlirTypes :
-    Ctx.Context
-    -> List ( String, MlirType )
-    -> ( List MlirOp, List String, Ctx.Context )
-boxArgsWithMlirTypes ctx args =
-    let
-        ( opsReversed, varsReversed, ctxFinal ) =
-            List.foldl
-                (\( var, mlirTy ) ( opsAcc, varsAcc, ctxAcc ) ->
-                    let
-                        ( moreOps, boxedVar, ctx1 ) =
-                            boxToEcoValue ctxAcc var mlirTy
-                    in
-                    ( List.reverse moreOps ++ opsAcc, boxedVar :: varsAcc, ctx1 )
-                )
-                ( [], [], ctx )
-                args
-    in
-    ( List.reverse opsReversed, List.reverse varsReversed, ctxFinal )
-
 
 
 -- ====== TAIL CALL GENERATION ======

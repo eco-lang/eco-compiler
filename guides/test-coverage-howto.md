@@ -10,6 +10,30 @@ This guide explains how to run the Eco compiler's Elm test suite under
 - `elm` and `elm-test-rs` available on PATH (both are installed in
   `compiler/node_modules/.bin/`)
 
+## First-Time Setup
+
+The elm-coverage tool requires three one-time setup steps before it can run.
+From the `compiler/` directory:
+
+```bash
+# 1. Install npm dependencies
+(cd elm-coverage && npm install)
+
+# 2. Compile the Analyzer Elm app to JS
+env PATH="$(pwd)/node_modules/.bin:$PATH" \
+  elm make elm-coverage/src/Analyzer.elm --output elm-coverage/lib/analyzer.js
+
+# 3. Symlink the elm-instrument binary into bin/
+ln -sf ../unpacked_bin/elm-instrument elm-coverage/bin/elm-instrument
+```
+
+Step 1 installs runtime dependencies (bluebird, fs-extra, etc.). Step 2
+compiles the Elm report-generation app that `analyze.js` loads via
+`require("./analyzer")`. Step 3 makes the instrumentation binary available
+where `runner.js` expects it (`bin/elm-instrument`); the `npm install`
+binwrap step places it in `unpacked_bin/` but does not create the `bin/`
+entry.
+
 ## Quick Start
 
 From the `compiler/` directory:
@@ -139,6 +163,16 @@ elm-test-rs:
    `elm-test-rs`.
 
 ## Troubleshooting
+
+**`Cannot find module 'bluebird'`** (or other npm modules) -- Dependencies
+have not been installed. Run `(cd elm-coverage && npm install)`.
+
+**`Cannot find module './analyzer'`** -- The Analyzer Elm app has not been
+compiled to JS. Run the `elm make` step from First-Time Setup above.
+
+**`Something went wrong:` with no further detail after "Instrumenting
+sources..."** -- The `elm-instrument` binary is missing from `bin/`. Create
+the symlink as shown in First-Time Setup.
 
 **`Error: not found: elm`** -- `elm` is not on PATH. Prepend
 `node_modules/.bin` as shown above.

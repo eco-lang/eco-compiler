@@ -5,17 +5,13 @@ module Compiler.Monomorphize.MonoTraverse exposing
 
 {-| Generic AST traversal abstractions for MonoExpr.
 
-This module provides three core traversal patterns:
+This module provides two core traversal patterns:
 
-  - **mapExpr** - Pure transformation (bottom-up)
   - **traverseExpr** - Context-threaded transformation (bottom-up)
   - **foldExpr** - Pure fold/analysis (bottom-up)
 
 Each function handles structural recursion, calling the user-provided
 function on each node after processing children.
-
-
-# Pure Mapping
 
 
 # Context-Threaded Traversal
@@ -30,63 +26,6 @@ function on each node after processing children.
 -}
 
 import Compiler.AST.Monomorphized exposing (Decider(..), MonoChoice(..), MonoDef(..), MonoExpr(..))
-
-
-
--- ============================================================================
--- ====== PURE MAPPING (BOTTOM-UP) ======
--- ============================================================================
-
-
-{-| Pure transformation over expressions. Applies the function bottom-up
-(children are transformed before the parent).
--}
-mapExpr : (MonoExpr -> MonoExpr) -> MonoExpr -> MonoExpr
-mapExpr f expr =
-    f (mapExprChildren (mapExpr f) expr)
-
-
-{-| Map over definitions.
--}
-mapDef : (MonoExpr -> MonoExpr) -> MonoDef -> MonoDef
-mapDef f def =
-    case def of
-        MonoDef name bound ->
-            MonoDef name (mapExpr f bound)
-
-        MonoTailDef name params bound ->
-            MonoTailDef name params (mapExpr f bound)
-
-
-{-| Map over deciders.
--}
-mapDecider : (MonoExpr -> MonoExpr) -> Decider MonoChoice -> Decider MonoChoice
-mapDecider f decider =
-    case decider of
-        Leaf choice ->
-            Leaf (mapChoice f choice)
-
-        Chain test success failure ->
-            Chain test
-                (mapDecider f success)
-                (mapDecider f failure)
-
-        FanOut path edges fallback ->
-            FanOut path
-                (List.map (\( test, d ) -> ( test, mapDecider f d )) edges)
-                (mapDecider f fallback)
-
-
-{-| Map over choices.
--}
-mapChoice : (MonoExpr -> MonoExpr) -> MonoChoice -> MonoChoice
-mapChoice f choice =
-    case choice of
-        Inline e ->
-            Inline (mapExpr f e)
-
-        Jump i ->
-            Jump i
 
 
 
@@ -347,78 +286,6 @@ foldChoiceAccFirst f acc choice =
 -- ============================================================================
 -- ====== INTERNAL HELPERS ======
 -- ============================================================================
-
-
-{-| Map over direct children of an expression (one level only).
--}
-mapExprChildren : (MonoExpr -> MonoExpr) -> MonoExpr -> MonoExpr
-mapExprChildren f expr =
-    case expr of
-        MonoClosure info body closureType ->
-            let
-                newCaptures =
-                    List.map (\( n, e, t ) -> ( n, f e, t )) info.captures
-            in
-            MonoClosure { info | captures = newCaptures } (f body) closureType
-
-        MonoCall region func args resultType callInfo ->
-            MonoCall region (f func) (List.map f args) resultType callInfo
-
-        MonoTailCall name args resultType ->
-            MonoTailCall name (List.map (\( n, e ) -> ( n, f e )) args) resultType
-
-        MonoIf branches final resultType ->
-            MonoIf
-                (List.map (\( c, t ) -> ( f c, f t )) branches)
-                (f final)
-                resultType
-
-        MonoLet def body resultType ->
-            MonoLet (mapDef f def) (f body) resultType
-
-        MonoDestruct path inner resultType ->
-            MonoDestruct path (f inner) resultType
-
-        MonoCase label scrutinee decider jumps resultType ->
-            MonoCase label
-                scrutinee
-                (mapDecider f decider)
-                (List.map (\( i, e ) -> ( i, f e )) jumps)
-                resultType
-
-        MonoList region items resultType ->
-            MonoList region (List.map f items) resultType
-
-        MonoRecordCreate fields resultType ->
-            MonoRecordCreate (List.map (\( n, e ) -> ( n, f e )) fields) resultType
-
-        MonoRecordAccess inner field resultType ->
-            MonoRecordAccess (f inner) field resultType
-
-        MonoRecordUpdate record updates resultType ->
-            MonoRecordUpdate (f record) (List.map (\( n, e ) -> ( n, f e )) updates) resultType
-
-        MonoTupleCreate region elements resultType ->
-            MonoTupleCreate region (List.map f elements) resultType
-
-        -- Leaf expressions - no children
-        MonoLiteral _ _ ->
-            expr
-
-        MonoVarLocal _ _ ->
-            expr
-
-        MonoVarGlobal _ _ _ ->
-            expr
-
-        MonoVarKernel _ _ _ _ _ ->
-            expr
-
-        MonoUnit ->
-            expr
-
-        MonoAccessorValue _ _ _ ->
-            expr
 
 
 {-| Traverse direct children with context threading.

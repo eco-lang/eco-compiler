@@ -504,11 +504,8 @@ processOneWorkItem specId rest state =
                                     stateAfterCtx =
                                         stateAfter.ctx
 
-                                    stateAfterResolve =
-                                        { stateAfter | ctx = { stateAfterCtx | lambdaCounter = newLambdaCounter } }
-
                                     saAccum =
-                                        stateAfterResolve.accum
+                                        stateAfter.accum
 
                                     actualType =
                                         Mono.nodeType monoNode
@@ -516,7 +513,7 @@ processOneWorkItem specId rest state =
                                     updatedRegistry =
                                         Registry.updateRegistryType specId actualType saAccum.registry
                                 in
-                                { stateAfterResolve
+                                { stateAfter
                                     | accum =
                                         { saAccum
                                             | registry = updatedRegistry
@@ -524,11 +521,10 @@ processOneWorkItem specId rest state =
                                             , inProgress = BitSet.removeGrowing specId saAccum.inProgress
                                         }
                                     , ctx =
-                                        let
-                                            ca2 =
-                                                stateAfterResolve.ctx
-                                        in
-                                        { ca2 | currentGlobal = Nothing }
+                                        { stateAfterCtx
+                                            | lambdaCounter = newLambdaCounter
+                                            , currentGlobal = Nothing
+                                        }
                                 }
 
 

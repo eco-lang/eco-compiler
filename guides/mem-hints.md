@@ -114,7 +114,22 @@
 - Marginal impact: ~84MB reduction at 400k binds (7085→7001MB heap)
 - Growth rate: ~1486MB/100k binds (was ~1506MB)
 
-## Current Baseline (2026-04-10)
+## After Fixes Round 5 (2026-04-10) — Allocation reduction in monomorphization
+- Cold run monomorphization heap growth (with forced GC):
+  - 100k binds: 2261MB heap / 3079MB RSS
+  - 200k binds: 3268MB heap / 4600MB RSS
+  - 300k binds: 4276MB heap / 5650MB RSS
+  - 400k binds: 5283MB heap / 6703MB RSS
+  - 500k binds: 6290MB heap / 7739MB RSS (reaches 500k in 4 min, was only 400k before)
+  - Growth rate: ~1007MB per 100k work items (~10KB per specialization)
+  - **33% reduction** in per-specialization memory growth (was ~1506MB/100k)
+  - At 400k binds: 1802MB heap reduction, 2140MB RSS reduction vs previous baseline
+- Warm run growth rate: ~1007MB per 100k (consistent with cold)
+- Fixes applied: Issues 17-23, 28, 30 (see below)
+- E2E tests: 1009/1015 (6 pre-existing failures)
+- elm-test: 12477/12477
+
+## Previous Baseline (2026-04-10, pre-round-5)
 - Task-based worklist instrumentation shows monomorphization heap growth:
   - 100k binds: 2567MB heap / 3703MB RSS
   - 200k binds: 4073MB heap / 5715MB RSS  
@@ -134,12 +149,27 @@
   instrumentation visibility during the worklist phase
 - Status: FIXED
 
+### Round 5 Fixes (2026-04-10) — Allocation reduction in monomorphization
+- **Fix 17 (Issue 17)**: Skip applySubstWithFreeVars filtering for small substs (≤8)
+- **Fix 18 (Issue 18)**: Make forceCNumberToInt identity (resolveMonoVars already handles CNumber)
+- **Fix 19 (Issue 19)**: O(n) string building in toComparableMonoType via List String accumulator
+- **Fix 20 (Issue 20)**: Cache currentFreeVars in SpecContext (avoid per-call Dict lookup)
+- **Fix 21 (Issue 22)**: Remove debug assertion type traversals in enqueueSpec
+- **Fix 22 (Issue 23)**: Defer monoType computation in VarLocal/TrackedVarLocal behind varEnv miss
+- **Fix 23 (Issue 28)**: Use Set.map instead of foldl+insert in refreshSchemeInfo
+- **Fix 24 (Issue 30)**: Replace EverySet (O(n) sorted list) with Set (O(log n)) in Closure.elm
+- **Fix 25 (Issue 31)**: Skip closure body recursion in collectCaseRootTypes
+- Combined impact: **33% reduction** in per-specialization memory growth
+  (~1506→1007 MB per 100k specializations, ~15→10 KB per specialization)
+- Status: FIXED
+
 ### Issue 16: Monomorphization specialization count explosion
 - Phase: worklist
 - Impact: **DOMINANT** — the root cause of Stage 5 OOM
-- Root cause: The self-compiling compiler generates 376k+ specializations in 4 minutes
-  and is still growing when killed at 400k binds. Each specialization adds ~19KB to the
-  nodes Dict. At 400k items the live set is 7GB, with linear growth at ~1.5GB/100k items.
+- Root cause: The self-compiling compiler generates 376k+ specializations in 4 minutes.
+  After Round 5 fixes, each specialization adds ~10KB to the nodes Dict (was ~15KB).
+  At 500k items the live set is 6.3GB, with linear growth at ~1.0GB/100k items
+  (was ~1.5GB/100k before Round 5).
 - The nodes Dict (Dict Int MonoNode) is the dominant memory consumer. Each MonoNode
   contains the full specialized expression tree (MonoExpr) plus the MonoType.
 - This is NOT a memory leak — the data is genuinely live. The monomorphization algorithm
@@ -163,7 +193,7 @@
 - Attempted: MVar bypass, artifacts decoupling — neither affects this spike
 - Fix direction: would require restructuring Build.elm to process/discard
   modules incrementally rather than collecting all results at once.
-- Status: SKIPPED (cold-only transient spike; restructuring Build.elm is a
+- Status: OPEN (cold-only transient spike; restructuring Build.elm is a
   major effort with high risk of correctness issues for minimal benefit since
   GC recovers immediately)
 
@@ -180,7 +210,7 @@
   - Streaming MLIR emission: would require merging inline+simplify with MLIR gen,
     a fundamental architecture change
   - inlineCandidates Dict: retains subset of input bodies, but subset is small
-- Status: SKIPPED (remaining +2855MB is mostly the irreducible output graph size;
+- Status: OPEN (remaining +2855MB is mostly the irreducible output graph size;
   further fixes require architectural changes to merge optimization with emission)
 
 ### 3. Monomorphization: registry.mapping strings
@@ -267,7 +297,7 @@
 - Complexity: MODERATE — the main challenge is threading Task through what are
   currently pure functions. The worklist loop already threads MonoState, so
   converting to Task MonoState is mechanical but touches many call sites.
-- Status: SKIPPED — forced GC profiling (5-second intervals) reveals the true live
+- Status: OPEN — forced GC profiling (5-second intervals) reveals the true live
   set during pure computation phases is well-behaved. The monomorphization worklist
   peaks at ~1400 MB live (warm), inline+simplify at ~1600 MB. The apparent large
   heap numbers in unforced measurements (3000+ MB) were deferred garbage, not
@@ -501,7 +531,7 @@
   individual status MVars are also read as synchronization barriers (line 260,550).
 - Attempted: Switched readMVar→takeMVar, caused deadlocks because crawlDeps
   takes the statusDict MVar concurrently.
-- Status: SKIPPED (same architectural constraint as issue 9)
+- Status: OPEN (same architectural constraint as issue 9)
 
 ### 11. Types loading creates unnecessary MVars for Fresh modules
 - Phase: compilation → JS code generation boundary
@@ -530,7 +560,7 @@
 - Fix direction: Low priority. The per-message MVars hold unit-sized data. Could
   restructure channels to use takeMVar for consumed nodes, but the complexity is
   not justified by the small memory savings.
-- Status: SKIPPED (low priority — ~232 small MVars, negligible memory impact)
+- Status: OPEN (low priority — ~232 small MVars, negligible memory impact)
 
 ### 13. Heap grows steadily during MLIR streaming despite output being flushed
 - Phase: MLIR generation (ios 10500 → 42500)
@@ -581,7 +611,7 @@
 - Result: No memory improvement. V8's JIT is smart enough to only capture variables
   actually used by closures, not the entire scope. The `objects` reference was not
   being retained by downstream closures.
-- Status: SKIPPED (V8 closure optimization makes this a non-issue)
+- Status: OPEN (V8 closure optimization makes this a non-issue)
 
 ### 15. Sequential .ecot loading to reduce warm-run peak
 - Phase: .ecot loading (ios 9000-9800 in warm run)
@@ -633,7 +663,7 @@
     since the cost of filtering exceeds any savings from a smaller dict at that size.
   - Deeper fix: integrate the reachability check into `applySubst` itself, so it only
     follows bindings reachable from the type being processed, without pre-filtering.
-- Status: OPEN
+- Status: FIXED — added fast-path that skips filtering when Dict.size subst ≤ 8
 
 ### 18. forceCNumberToInt double-traverses types redundantly
 - Phase: monomorphization worklist (specializeExpr)
@@ -654,7 +684,8 @@
     the type is only traversed once.
   - At minimum, defer `forceCNumberToInt` calls to only happen when `containsAnyMVar`
     returns true (many call sites don't check this).
-- Status: OPEN
+- Status: FIXED — made forceCNumberToInt an identity function since resolveMonoVars
+  (Fix 9) already forces CNumber→MInt during applySubst. All 57 call sites become no-ops.
 
 ### 19. toComparableMonoType/SpecKey builds strings with O(n²) left-append
 - Phase: monomorphization worklist (Registry.getOrCreateSpecId)
@@ -674,7 +705,8 @@
     turning O(n²) into O(n).
   - The WorkItem/WorkMarker worklist pattern is already designed for this — just change
     the accumulator from String to List String, collect all fragments, then join once.
-- Status: OPEN
+- Status: FIXED — changed accumulator to List String with String.concat at end.
+  Also applied String.concat to toComparableGlobal, toComparableSpecKey, toComparableLambdaId.
 
 ### 20. lookupFreeVarsFromCtx reconstructs TOpt.Global on every call
 - Phase: monomorphization worklist (specializeExpr)
@@ -690,7 +722,8 @@
     `applySubstFV` reads the cached value instead of doing a Dict lookup + allocation
     on every call.
   - Alternative: store the TOpt.Global form alongside Mono.Global in currentGlobal.
-- Status: OPEN
+- Status: FIXED — added currentFreeVars field to SpecContext, set once in
+  processOneWorkItem when entering a new global. applySubstFV reads cached value.
 
 ### 21. computeClosureCaptures does 3 full tree walks of the body
 - Phase: monomorphization worklist (specializeLambda)
@@ -708,7 +741,8 @@
     `(List Name, Dict String MonoType, Dict String MonoType)` as accumulator.
   - The `findFreeLocals` logic needs `EverySet` for bound variables which the other
     two don't use, but the tree walk structure is identical.
-- Status: OPEN
+- Status: OPEN (MEDIUM; fusing requires substantially rewriting findFreeLocals
+  to track types alongside names; high complexity for medium impact)
 
 ### 22. enqueueSpec debug assertion traverses types in production
 - Phase: monomorphization worklist
@@ -729,7 +763,8 @@
     well-established.
   - If kept, combine into a single traversal: `containsNonCEcoMVar` that returns True
     only for `MVar _ CNumber`.
-- Status: OPEN
+- Status: FIXED — removed the debug assertion entirely since the invariant is
+  guaranteed by resolveMonoVars (Fix 9)
 
 ### 23. VarLocal/TrackedVarLocal compute monoType even when varEnv has the answer
 - Phase: monomorphization worklist (specializeExpr)
@@ -748,7 +783,8 @@
     branch and in the `isLocalMultiTarget` branch.
   - The `isLocalMultiTarget` check also uses `monoTypeFromMeta`, so the reordering
     needs to handle both cases.
-- Status: OPEN
+- Status: FIXED — restructured VarLocal and TrackedVarLocal to check isLocalMultiTarget
+  and lookupVar first, only computing applySubstFV when needed
 
 ### 24. VarGlobal computes monoType0 then potentially recomputes from definition
 - Phase: monomorphization worklist (specializeExpr)
@@ -763,7 +799,8 @@
     the type variable is resolved. Otherwise go straight to the toptNodes fallback.
   - Alternative: compute a cheap "is this type a bare TVar?" check before doing the
     full substitution.
-- Status: OPEN
+- Status: OPEN (LOW-MEDIUM; MVar fallback is rare; with forceCNumberToInt now a no-op,
+  the wasted computation is just one applySubstFV call per global reference)
 
 ### 25. Registry forward mapping Dict maintained but discarded
 - Phase: monomorphization worklist
@@ -783,7 +820,8 @@
     assembleRawGraphFrom) to free memory before downstream phases.
   - Alternative: use a more compact dedup structure (e.g., hash the spec key to Int
     and use an IntDict or Array-based hash set) instead of building full String keys.
-- Status: OPEN
+- Status: OPEN (LOW; mapping is needed for dedup during worklist; Issue 19 fix
+  already reduced string building cost with O(n) accumulation)
 
 ### 26. Prune rebuilds 3 Arrays by indexedMap even when most entries survive
 - Phase: post-monomorphization (pruneUnreachableSpecs)
@@ -798,7 +836,7 @@
   - Alternative: use in-place mutation (not possible in Elm) or only null out dead
     entries without creating new arrays (already the current behavior — it's the
     `Array.indexedMap` that creates the copy).
-- Status: OPEN
+- Status: OPEN (LOW; one-time cost at end of monomorphization)
 
 ### 27. Nested record updates copy 10-16 fields repeatedly
 - Phase: monomorphization worklist (all state threading)
@@ -827,7 +865,10 @@
   - In generated JS, Elm record updates compile to `_Utils_update` which shallow-copies
     the entire record. Reducing field count in frequently-updated records directly
     reduces per-update allocation.
-- Status: OPEN
+- Status: PARTIALLY FIXED — batched ctx.lambdaCounter + ctx.currentGlobal into single
+  record update in Monomorphize.elm:processOneWorkItem (saves one intermediate record copy
+  per work item). Full SpecContext split deferred — remaining sequential updates in
+  Specialize.elm have data dependencies (push/pop varEnv) preventing batching.
 
 ### 28. refreshSchemeInfo rebuilds numberVarKeys Set from scratch
 - Phase: monomorphization worklist (getOrBuildSchemeInfo cache hit path)
@@ -842,7 +883,7 @@
 - Fix directions:
   - Use `Set.map` if available, or accept this as a minor cost since the Set is
     typically very small (0-3 entries for most functions).
-- Status: OPEN
+- Status: FIXED — replaced Set.foldl+insert with Set.map
 
 ### 29. renameTailCalls rebuilds entire AST even when no tail calls exist
 - Phase: monomorphization worklist (local multi-specialization)
@@ -858,7 +899,8 @@
     wrappers for unchanged sub-expressions.
   - For `MonoDef` (non-tail-recursive), `renameMonoDef` already avoids the traversal
     (just replaces the name). The optimization is only needed for `MonoTailDef`.
-- Status: OPEN
+- Status: OPEN (MEDIUM; changed-flag pattern requires substantial rewrite of
+  renameTailCalls + renameTailCallsDecider; high complexity for a rarely-executed path)
 
 ### 30. EverySet (sorted list) used for bound-variable membership in Closure.elm
 - Phase: monomorphization worklist (closure capture analysis)
@@ -874,7 +916,7 @@
     is an alias for `String`, this is a straightforward swap.
   - Update `EverySet.member identity name bound` → `Set.member name bound` and
     `EverySet.insert identity name bound` → `Set.insert name bound`.
-- Status: OPEN
+- Status: FIXED — replaced all EverySet usage with Set in Closure.elm and Expr.elm
 
 ### 31. collectVarTypes walks into nested closure bodies unnecessarily
 - Phase: monomorphization worklist (closure capture analysis)
@@ -889,7 +931,9 @@
   - Skip recursion into `MonoClosure` bodies in `collectVarTypesHelper`. The captures
     list already provides the types for variables captured by the inner closure.
   - Same fix should apply to `collectCaseRootTypesHelper` (Closure.elm:661-662).
-- Status: OPEN
+- Status: PARTIALLY FIXED — collectCaseRootTypesHelper skips closure bodies (safe).
+  collectVarTypesHelper cannot skip closures (caused 227 test failures because
+  inner closures reference outer variables whose types must be visible).
 
 ### 32. findEntryPointId does full DMap.foldl over all nodes
 - Phase: monomorphization initialization
@@ -902,7 +946,8 @@
   - Construct the expected key directly (`TOpt.Global currentModule entryPointName`) and
     use `DMap.get` for O(log n) lookup instead of O(n) scan.
   - Fall back to `DMap.foldl` only if the direct lookup fails (shouldn't normally happen).
-- Status: OPEN
+- Status: OPEN (LOW; one-time cost at startup, requires knowing the module name
+  to construct the key which is not available)
 
 ### 33. List.map2 Tuple.pair creates throwaway pair lists
 - Phase: monomorphization worklist (various)
@@ -923,7 +968,7 @@
     foldl2 : (a -> b -> c -> c) -> c -> List a -> List b -> c
     ```
   - Or use `List.foldl` on one list with the other as a shrinking argument.
-- Status: OPEN
+- Status: OPEN (LOW; intermediate tuple list is small per call site)
 
 ### 34. processOneWorkItem constructs state2 record unconditionally
 - Phase: monomorphization worklist
@@ -938,7 +983,7 @@
 - Fix directions:
   - Move the state2 construction inside the `case global of` branches only if profiling
     shows the early-exit path is hit frequently. Currently low priority.
-- Status: OPEN
+- Status: OPEN (LOW; early-exit path is rare, construction is shared by both branches)
 
 ### 35. renameTailCalls is not tail-recursive
 - Phase: monomorphization worklist (local multi-specialization)
@@ -962,7 +1007,8 @@
   - For `collectLetChain`, convert to accumulator-passing tail recursion.
   - Risk is low for types (typically shallow) but higher for expression trees which
     can be deeply nested in real programs.
-- Status: OPEN
+- Status: OPEN (LOW-MEDIUM; stack depth concern, but the compiler already runs
+  with --stack-size=65536; converting to explicit stack is invasive)
 
 ### 36. closureOverSubst collects MVarIds as List then converts to Int keys
 - Phase: monomorphization worklist (applySubstWithFreeVars)
@@ -977,4 +1023,5 @@
     collects `Id.toComparable` directly, skipping the MVarId intermediate.
   - Or modify `closureOverSubst` to accept MVarIds and do the conversion internally
     during the DFS, avoiding the intermediate list entirely.
-- Status: OPEN
+- Status: OPEN (LOW; with Issue 17 fix, closureOverSubst is only called when
+  Dict.size subst > 8, so this path is infrequent)
