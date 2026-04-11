@@ -178,7 +178,7 @@ addAliases home annotations aliases graph =
 
 
 addAlias : IO.Canonical -> Annotations -> Name.Name -> Can.Alias -> TOpt.LocalGraph Name -> TOpt.LocalGraph Name
-addAlias home _ name (Can.Alias _ tipe) ((TOpt.LocalGraph data) as graph) =
+addAlias home _ name (Can.Alias vars tipe) ((TOpt.LocalGraph data) as graph) =
     case tipe of
         Can.TRecord fields Nothing ->
             let
@@ -218,6 +218,14 @@ addAlias home _ name (Can.Alias _ tipe) ((TOpt.LocalGraph data) as graph) =
                 node : TOpt.Node Name
                 node =
                     TOpt.Define function EverySet.empty { tipe = funcType, tvar = Nothing }
+
+                freeVars : Can.FreeVars
+                freeVars =
+                    List.foldl (\v dict -> Dict.insert v () dict) Dict.empty vars
+
+                aliasAnn : Can.Annotation Name
+                aliasAnn =
+                    Can.Forall freeVars funcType
             in
             TOpt.LocalGraph
                 { data
@@ -225,6 +233,8 @@ addAlias home _ name (Can.Alias _ tipe) ((TOpt.LocalGraph data) as graph) =
                         Data.Map.insert TOpt.toComparableGlobal (TOpt.Global home name) node data.nodes
                     , fields =
                         Dict.foldr addRecordCtorField data.fields fields
+                    , annotations =
+                        Dict.insert name aliasAnn data.annotations
                 }
 
         _ ->

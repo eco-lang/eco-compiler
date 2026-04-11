@@ -77,6 +77,7 @@ import SourceIR.SpecializeRecordCtorCases as SpecializeRecordCtorCases
 import SourceIR.TailRecCaseCases as TailRecCaseCases
 import SourceIR.TailRecLetRecClosureCases as TailRecLetRecClosureCases
 import SourceIR.TupleCases as TupleCases
+import SourceIR.TypeAliasCtorCases as TypeAliasCtorCases
 import Test exposing (Test)
 
 
@@ -140,6 +141,7 @@ expectSuite expectFn condStr =
         , TailRecCaseCases.expectSuite expectFn condStr
         , TailRecLetRecClosureCases.expectSuite expectFn condStr
         , TupleCases.expectSuite expectFn condStr
+        , TypeAliasCtorCases.expectSuite expectFn condStr
         , KernelIntrinsicCases.expectSuite expectFn condStr
         , KernelPapAbiCases.expectSuite expectFn condStr
         , KernelOperatorCases.expectSuite expectFn condStr
