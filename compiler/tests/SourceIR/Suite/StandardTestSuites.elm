@@ -60,6 +60,7 @@ import SourceIR.ParamArityCases as ParamArityCases
 import SourceIR.PatternArgCases as PatternArgCases
 import SourceIR.PatternComplexityFuzzCases as PatternComplexityFuzzCases
 import SourceIR.PatternMatchingCases as PatternMatchingCases
+import SourceIR.PhantomTypeVarCases as PhantomTypeVarCases
 import SourceIR.PolyChainCases as PolyChainCases
 import SourceIR.PolyEscapeCases as PolyEscapeCases
 import SourceIR.PortEncodingCases as PortEncodingCases
@@ -120,6 +121,7 @@ expectSuite expectFn condStr =
         , ParamArityCases.expectSuite expectFn condStr
         , PatternArgCases.expectSuite expectFn condStr
         , PatternMatchingCases.expectSuite expectFn condStr
+        , PhantomTypeVarCases.expectSuite expectFn condStr
         , PolyChainCases.expectSuite expectFn condStr
         , PolyEscapeCases.expectSuite expectFn condStr
         , PortEncodingCases.expectSuite expectFn condStr

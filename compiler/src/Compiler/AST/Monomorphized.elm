@@ -832,7 +832,20 @@ toComparableGlobal global =
 
 
 {-| Convert a monomorphic type to a comparable String key for use in dictionaries.
-Uses a List String accumulator joined at the end for O(n) instead of O(n²) from repeated ++.
+
+This is used for:
+
+  * Specialization keys in the monomorphization registry
+  * Let-bound multi-specialization (localMulti / valueMulti)
+  * Type table keys in MLIR codegen
+
+IMPORTANT: `MVar _ CEcoValue` is layout-erased (MONO_003). All such variables
+are normalized to a canonical placeholder ID when building this comparable key,
+so fresh MVarIds do not produce distinct keys. `MVar _ CNumber` retains its
+numeric ID to preserve distinct numeric specializations.
+
+Uses a List String accumulator joined at the end for O(n) instead of O(n²)
+from repeated ++.
 -}
 toComparableMonoType : MonoType -> String
 toComparableMonoType monoType =
@@ -886,7 +899,26 @@ toComparableMonoTypeHelper work acc =
                     toComparableMonoTypeHelper rest ("U" :: acc)
 
                 MVar mvarId constraint ->
-                    toComparableMonoTypeHelper rest (constraintToString constraint :: "\u{0000}" :: String.fromInt (Id.toComparable mvarId) :: "V" :: acc)
+                    case constraint of
+                        CEcoValue ->
+                            -- Layout-erased: ignore numeric ID (MONO_003). All CEcoValue MVars
+                            -- produce the same key fragment so fresh IDs don't split specializations.
+                            toComparableMonoTypeHelper
+                                rest
+                                ( "ecovalue" :: "\u{0000}" :: "0" :: "V" :: acc )
+
+                        CNumber ->
+                            -- Keep real ID. CNumber should be resolved by forceCNumberToInt before
+                            -- reaching SpecKey construction, but if it leaks, distinct IDs prevent
+                            -- incorrect merging of Int vs Float specializations.
+                            toComparableMonoTypeHelper
+                                rest
+                                ( constraintToString constraint
+                                    :: "\u{0000}"
+                                    :: String.fromInt (Id.toComparable mvarId)
+                                    :: "V"
+                                    :: acc
+                                )
 
                 MList inner ->
                     toComparableMonoTypeHelper
