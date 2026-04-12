@@ -471,11 +471,12 @@ def Eco_ListConstructOp : Eco_Op<"construct.list", [Pure]> {
   let arguments = (ins
     Eco_AnyValue:$head,
     Eco_Value:$tail,
+    Variadic<Eco_Value>:$live_roots,
     DefaultValuedAttr<BoolAttr, "false">:$head_unboxed
   );
   let results = (outs Eco_Value:$result);
 
-  let assemblyFormat = "$head `,` $tail attr-dict `:` type($head) `,` type($tail) `->` type($result)";
+  let assemblyFormat = "$head `,` $tail (`(` $live_roots^ `:` type($live_roots) `)`)? attr-dict `:` type($head) `,` type($tail) `->` type($result)";
 }
 
 def Eco_ListHeadOp : Eco_Op<"project.list_head", [Pure]> {
@@ -535,11 +536,12 @@ def Eco_Tuple2ConstructOp : Eco_Op<"construct.tuple2", [Pure]> {
   let arguments = (ins
     Eco_AnyValue:$a,
     Eco_AnyValue:$b,
+    Variadic<Eco_Value>:$live_roots,
     DefaultValuedAttr<I64Attr, "0">:$unboxed_bitmap
   );
   let results = (outs Eco_Value:$result);
 
-  let assemblyFormat = "$a `,` $b attr-dict `:` type($a) `,` type($b) `->` type($result)";
+  let assemblyFormat = "$a `,` $b (`(` $live_roots^ `:` type($live_roots) `)`)? attr-dict `:` type($a) `,` type($b) `->` type($result)";
 }
 
 def Eco_Tuple3ConstructOp : Eco_Op<"construct.tuple3", [Pure]> {
@@ -559,11 +561,12 @@ def Eco_Tuple3ConstructOp : Eco_Op<"construct.tuple3", [Pure]> {
     Eco_AnyValue:$a,
     Eco_AnyValue:$b,
     Eco_AnyValue:$c,
+    Variadic<Eco_Value>:$live_roots,
     DefaultValuedAttr<I64Attr, "0">:$unboxed_bitmap
   );
   let results = (outs Eco_Value:$result);
 
-  let assemblyFormat = "$a `,` $b `,` $c attr-dict `:` type($a) `,` type($b) `,` type($c) `->` type($result)";
+  let assemblyFormat = "$a `,` $b `,` $c (`(` $live_roots^ `:` type($live_roots) `)`)? attr-dict `:` type($a) `,` type($b) `,` type($c) `->` type($result)";
 }
 
 def Eco_Tuple2ProjectOp : Eco_Op<"project.tuple2", [Pure]> {
@@ -611,6 +614,10 @@ def Eco_RecordConstructOp : Eco_Op<"construct.record", [Pure]> {
     Construct a record with a fixed set of fields. The `field_count` and
     `unboxed_bitmap` attributes describe layout. Fields may be boxed or
     unboxed primitives.
+
+    GC live roots may be appended after the fields by EcoGCPrepare.
+    The first `field_count` operands are fields; any beyond that are
+    live GC roots tracked across this allocation.
 
     Example:
     ```mlir
@@ -666,6 +673,10 @@ def Eco_CustomConstructOp : Eco_Op<"construct.custom", [Pure]> {
 
     The optional constructor attribute is for MLIR readability only and is
     not stored at runtime. Debug printing uses generic Ctor1, Ctor2, etc.
+
+    GC live roots may be appended after the fields by EcoGCPrepare.
+    The first `size` operands are fields; any beyond that are live GC
+    roots tracked across this allocation.
 
     Example:
     ```mlir
@@ -1013,9 +1024,12 @@ def Eco_AllocateOp : Eco_Op<"allocate"> {
     If needs_root is true, the allocation is registered as a GC root
     during construction (for multi-field objects being initialized).
 
+    The optional live_roots operands are GC roots that must be tracked
+    across this allocation (populated by EcoGCPrepare).
+
     Example:
     ```mlir
-    %obj = eco.allocate %size {
+    %obj = eco.allocate %size (%r0 : !eco.value) {
       type = @"Custom.MyType",
       needs_root = true
     } : (i64) -> !eco.value
@@ -1024,12 +1038,13 @@ def Eco_AllocateOp : Eco_Op<"allocate"> {
 
   let arguments = (ins
     Eco_Int:$size,
+    Variadic<Eco_Value>:$live_roots,
     FlatSymbolRefAttr:$type,
     BoolAttr:$needs_root
   );
   let results = (outs Eco_Value:$result);
 
-  let assemblyFormat = "$size attr-dict `:` type($size) `->` type($result)";
+  let assemblyFormat = "$size (`(` $live_roots^ `:` type($live_roots) `)`)? attr-dict `:` type($size) `->` type($result)";
 }
 
 def Eco_AllocateCtorOp : Eco_Op<"allocate_ctor"> {
@@ -1042,24 +1057,28 @@ def Eco_AllocateCtorOp : Eco_Op<"allocate_ctor"> {
     - size: number of pointer-sized fields
     - scalar_bytes: additional bytes for unboxed scalar fields
 
+    The optional live_roots operands are GC roots that must be tracked
+    across this allocation (populated by EcoGCPrepare).
+
     Example:
     ```mlir
-    %obj = eco.allocate_ctor {
-      tag = 1 : i32,
-      size = 2 : i32,
-      scalar_bytes = 0 : i32
+    %obj = eco.allocate_ctor(%r0 : !eco.value) {
+      tag = 1 : i64,
+      size = 2 : i64,
+      scalar_bytes = 0 : i64
     } : !eco.value
     ```
   }];
 
   let arguments = (ins
+    Variadic<Eco_Value>:$live_roots,
     I64Attr:$tag,
     I64Attr:$size,
     I64Attr:$scalar_bytes
   );
   let results = (outs Eco_Value:$result);
 
-  let assemblyFormat = "attr-dict `:` type($result)";
+  let assemblyFormat = "(`(` $live_roots^ `:` type($live_roots) `)`)? attr-dict `:` type($result)";
 }
 
 def Eco_AllocateStringOp : Eco_Op<"allocate_string"> {
@@ -1068,16 +1087,22 @@ def Eco_AllocateStringOp : Eco_Op<"allocate_string"> {
     Allocate storage for a string of the specified length (in UTF-16 code
     units). The string content must be written separately after allocation.
 
+    The optional live_roots operands are GC roots that must be tracked
+    across this allocation (populated by EcoGCPrepare).
+
     Example:
     ```mlir
-    %str = eco.allocate_string {length = 100 : i32} : !eco.value
+    %str = eco.allocate_string(%r0 : !eco.value) {length = 100 : i64} : !eco.value
     ```
   }];
 
-  let arguments = (ins I64Attr:$length);
+  let arguments = (ins
+    Variadic<Eco_Value>:$live_roots,
+    I64Attr:$length
+  );
   let results = (outs Eco_Value:$result);
 
-  let assemblyFormat = "attr-dict `:` type($result)";
+  let assemblyFormat = "(`(` $live_roots^ `:` type($live_roots) `)`)? attr-dict `:` type($result)";
 }
 
 def Eco_AllocateClosureOp : Eco_Op<"allocate_closure", [
@@ -1089,9 +1114,12 @@ def Eco_AllocateClosureOp : Eco_Op<"allocate_closure", [
     values. The `arity` specifies the total number of value slots (max_values),
     which should equal num_captured + num_remaining_args.
 
+    The optional live_roots operands are GC roots that must be tracked
+    across this allocation (populated by EcoGCPrepare).
+
     Example:
     ```mlir
-    %closure = eco.allocate_closure {
+    %closure = eco.allocate_closure(%r0, %r1 : !eco.value, !eco.value) {
       function = @my_func,
       arity = 3 : i64
     } : !eco.value
@@ -1099,12 +1127,13 @@ def Eco_AllocateClosureOp : Eco_Op<"allocate_closure", [
   }];
 
   let arguments = (ins
+    Variadic<Eco_Value>:$live_roots,
     FlatSymbolRefAttr:$function,
     I64Attr:$arity
   );
   let results = (outs Eco_Value:$result);
 
-  let assemblyFormat = "attr-dict `:` type($result)";
+  let assemblyFormat = "(`(` $live_roots^ `:` type($live_roots) `)`)? attr-dict `:` type($result)";
 }
 
 def Eco_SafepointOp : Eco_Op<"safepoint"> {
@@ -1210,17 +1239,21 @@ def Eco_BoxOp : Eco_Op<"box", [Pure]> {
     Box an unboxed primitive value (i64, f64, i32, i1) into a heap-allocated
     eco.value. This allocates an ElmInt, ElmFloat, ElmChar, or Bool object.
 
+    The optional live_roots operands are GC roots that must be tracked
+    across this allocation (populated by EcoGCPrepare). For Bool boxing
+    (i1), no allocation occurs and roots are unused.
+
     Example:
     ```mlir
-    %boxed = eco.box %int_val : i64 -> !eco.value
+    %boxed = eco.box %int_val (%r0 : !eco.value) : i64 -> !eco.value
     %boxed_float = eco.box %float_val : f64 -> !eco.value
     ```
   }];
 
-  let arguments = (ins Eco_AnyValue:$value);
+  let arguments = (ins Eco_AnyValue:$value, Variadic<Eco_Value>:$live_roots);
   let results = (outs Eco_Value:$result);
 
-  let assemblyFormat = "$value attr-dict `:` type($value) `->` type($result)";
+  let assemblyFormat = "$value (`(` $live_roots^ `:` type($live_roots) `)`)? attr-dict `:` type($value) `->` type($result)";
 }
 
 def Eco_UnboxOp : Eco_Op<"unbox", [Pure]> {

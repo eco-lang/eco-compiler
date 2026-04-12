@@ -97,13 +97,16 @@ struct AllocateClosureOpLowering : public OpConversionPattern<AllocateClosureOp>
         auto i32Ty = IntegerType::get(ctx, 32);
         auto ptrTy = LLVM::LLVMPointerType::get(ctx);
 
-        auto func = runtime.getOrCreateAllocClosure(rewriter);
         auto funcSymbol = op.getFunction();
         Value funcPtr = rewriter.create<LLVM::AddressOfOp>(loc, ptrTy, funcSymbol);
         auto arityConst = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, static_cast<int32_t>(op.getArity()));
 
-        auto call = rewriter.create<LLVM::CallOp>(loc, func, ValueRange{funcPtr, arityConst});
-        rewriter.replaceOp(op, call.getResult());
+        Value result = emitAllocWithSafepoint(
+            op, rewriter, runtime,
+            runtime.getOrCreateAllocClosure(rewriter),
+            ValueRange{funcPtr, arityConst},
+            adaptor.getLiveRoots());
+        rewriter.replaceOp(op, result);
         return success();
     }
 };

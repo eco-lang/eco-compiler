@@ -97,6 +97,12 @@ public:
 
     // ========== Diagnostics ==========
 
+    // Fast-path check: should GC run at this safepoint?
+    bool shouldCollectAtSafepoint();
+
+    // Slow-path: perform collection at safepoint.
+    void collectAtSafepoint();
+
     // Returns true if the thread-local nursery is over the threshold.
     bool isNurseryNearFull(float threshold);
 

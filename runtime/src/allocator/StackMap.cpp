@@ -116,7 +116,7 @@ private:
 //   uint32 padding (align to 8)
 //===----------------------------------------------------------------------===//
 
-bool StackMap::parse(const uint8_t* data, size_t size) {
+bool StackMap::parse(const uint8_t* data, size_t size, uint64_t loadBase) {
     records_.clear();
     functions_.clear();
     constants_.clear();
@@ -141,7 +141,7 @@ bool StackMap::parse(const uint8_t* data, size_t size) {
     // Function entries
     functions_.resize(numFunctions);
     for (uint32_t i = 0; i < numFunctions; i++) {
-        functions_[i].address = reader.readU64();
+        functions_[i].address = reader.readU64() + loadBase;
         functions_[i].stackSize = reader.readU64();
         functions_[i].recordCount = reader.readU64();
     }

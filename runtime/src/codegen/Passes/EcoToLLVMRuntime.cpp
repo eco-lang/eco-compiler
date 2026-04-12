@@ -509,6 +509,70 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateAtan2(OpBuilder &builder) const {
 #undef VOID_TY
 
 //===----------------------------------------------------------------------===//
+// Safepoint Marker
+//===----------------------------------------------------------------------===//
+
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateSafepointMarker(OpBuilder &builder) const {
+    auto name = "__eco_safepoint_marker";
+    if (auto func = lookupSymbol<LLVM::LLVMFuncOp>(name))
+        return func;
+
+    auto voidTy = LLVM::LLVMVoidType::get(ctx);
+    auto funcTy = LLVM::LLVMFunctionType::get(voidTy, {}, /*isVarArg=*/true);
+
+    OpBuilder::InsertionGuard guard(builder);
+    builder.setInsertionPointToStart(module.getBody());
+    auto func = builder.create<LLVM::LLVMFuncOp>(module.getLoc(), name, funcTy);
+    cacheSymbol(func);
+    return func;
+}
+
+//===----------------------------------------------------------------------===//
+// Allocation with Safepoint Marker
+//===----------------------------------------------------------------------===//
+
+Value eco::detail::emitAllocWithSafepoint(
+    Operation *op,
+    ConversionPatternRewriter &rewriter,
+    const EcoRuntime &runtime,
+    LLVM::LLVMFuncOp allocFunc,
+    ValueRange args,
+    ValueRange liveRoots) {
+
+    auto loc = op->getLoc();
+    auto *ctx = rewriter.getContext();
+
+    // liveRoots are pre-converted i64 values from the op adaptor.
+    // They were computed by EcoGCPrepare at the Eco IR level and carried
+    // as explicit operands through type conversion — no recomputation needed.
+    if (!liveRoots.empty()) {
+        auto gcPtrTy = LLVM::LLVMPointerType::get(ctx, /*addressSpace=*/1);
+
+        SmallVector<Value, 4> gcPtrs;
+        for (auto val : liveRoots) {
+            auto ptr = rewriter.create<LLVM::IntToPtrOp>(loc, gcPtrTy, val);
+            gcPtrs.push_back(ptr);
+        }
+
+        runtime.getOrCreateSafepointMarker(rewriter);
+
+        auto voidTy = LLVM::LLVMVoidType::get(ctx);
+        auto markerFuncTy = LLVM::LLVMFunctionType::get(
+            voidTy, {}, /*isVarArg=*/true);
+
+        rewriter.create<LLVM::CallOp>(
+            loc, markerFuncTy,
+            FlatSymbolRefAttr::get(ctx, "__eco_safepoint_marker"),
+            gcPtrs);
+    }
+
+    // Call the allocation function. The runtime handles fast/slow internally.
+    // StatepointConversion wraps this call in gc.statepoint for GC root tracking.
+    auto allocCall = rewriter.create<LLVM::CallOp>(loc, allocFunc, args);
+    return allocCall.getResult();
+}
+
+//===----------------------------------------------------------------------===//
 // String Conversion Utilities
 //===----------------------------------------------------------------------===//
 

@@ -7,15 +7,88 @@
 //===----------------------------------------------------------------------===//
 
 #include "../allocator/Allocator.hpp"
+#include "../allocator/StackMap.hpp"
 #include "../../eco-kernel-cpp/src/eco/Env.hpp"
 
 #include <pthread.h>
 #include <cstdlib>
+#include <cstdio>
+#include <cstring>
+#include <elf.h>
+#include <link.h>
 
 // Default stack size for AOT-compiled Eco binaries (64 MB).
 // The Elm compiler's recursive type decoders can exhaust the default 8 MB
 // Linux stack when self-compiling, mirroring the Node.js --stack-size=65536.
 static constexpr size_t ECO_DEFAULT_STACK_SIZE = 64ULL * 1024 * 1024;
+
+// Parse the .llvm_stackmaps section from the running executable so the GC
+// can discover stack roots at safepoints.  Uses dl_iterate_phdr to walk the
+// ELF program headers and find the section in the main executable.
+static void initStackMapFromSelf() {
+    struct CallbackData { const uint8_t *data; size_t size; uint64_t loadBase; };
+    CallbackData cbd{nullptr, 0, 0};
+
+    dl_iterate_phdr([](struct dl_phdr_info *info, size_t /*size*/, void *ctx) -> int {
+        // The main executable has an empty name.
+        if (info->dlpi_name && info->dlpi_name[0] != '\0')
+            return 0;
+
+        // Walk the program headers to find PT_LOAD segments, then scan
+        // the ELF section headers (accessible via /proc/self/exe) for
+        // the .llvm_stackmaps section.  A simpler approach: look for the
+        // section by opening our own binary via /proc/self/exe.
+        // (dl_iterate_phdr only gives us program headers, not sections.)
+        auto *out = static_cast<CallbackData *>(ctx);
+
+        FILE *f = fopen("/proc/self/exe", "rb");
+        if (!f) return 0;
+
+        Elf64_Ehdr ehdr;
+        if (fread(&ehdr, sizeof(ehdr), 1, f) != 1) { fclose(f); return 0; }
+
+        // Read section header string table.
+        Elf64_Shdr shstrtab_hdr;
+        if (fseek(f, ehdr.e_shoff + ehdr.e_shstrndx * ehdr.e_shentsize, SEEK_SET) != 0 ||
+            fread(&shstrtab_hdr, sizeof(shstrtab_hdr), 1, f) != 1) {
+            fclose(f); return 0;
+        }
+        std::vector<char> shstrtab(shstrtab_hdr.sh_size);
+        if (fseek(f, shstrtab_hdr.sh_offset, SEEK_SET) != 0 ||
+            fread(shstrtab.data(), shstrtab_hdr.sh_size, 1, f) != 1) {
+            fclose(f); return 0;
+        }
+
+        // Scan section headers for .llvm_stackmaps.
+        for (uint16_t i = 0; i < ehdr.e_shnum; i++) {
+            Elf64_Shdr shdr;
+            if (fseek(f, ehdr.e_shoff + i * ehdr.e_shentsize, SEEK_SET) != 0 ||
+                fread(&shdr, sizeof(shdr), 1, f) != 1)
+                continue;
+            if (shdr.sh_name >= shstrtab_hdr.sh_size) continue;
+            const char *name = shstrtab.data() + shdr.sh_name;
+            if (strcmp(name, ".llvm_stackmaps") == 0) {
+                // Found it — the section's sh_addr is the virtual address
+                // (relocated by the loader).  For a PIE, add the load base.
+                out->data = reinterpret_cast<const uint8_t *>(
+                    info->dlpi_addr + shdr.sh_addr);
+                out->size = shdr.sh_size;
+                out->loadBase = info->dlpi_addr;
+                fclose(f);
+                return 1; // stop iteration
+            }
+        }
+        fclose(f);
+        return 0;
+    }, &cbd);
+
+    if (cbd.data && cbd.size > 0) {
+        // The .llvm_stackmaps section has relocations that are resolved by
+        // the dynamic linker, so function addresses are already absolute.
+        // Pass loadBase=0 (no additional relocation needed).
+        Elm::globalStackMap().parse(cbd.data, cbd.size, /*loadBase=*/0);
+    }
+}
 
 extern "C" {
 
@@ -44,6 +117,9 @@ static void *eco_main_thread(void *arg) {
     // Initialize the generational GC and thread-local heap.
     Elm::Allocator::instance().initialize();
     Elm::Allocator::instance().initThread();
+
+    // Parse the .llvm_stackmaps section so the GC can find stack roots.
+    initStackMapFromSelf();
 
     // Register global variables as GC roots (if the module has any).
     if (__eco_init_globals)

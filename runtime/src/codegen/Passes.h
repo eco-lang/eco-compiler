@@ -78,9 +78,6 @@ std::unique_ptr<mlir::Pass> createConstantToLLVMPass();
 // Lowers eco.call and closure operations to LLVM.
 std::unique_ptr<mlir::Pass> createCallLoweringPass();
 
-// Lowers eco.safepoint (currently no-op).
-std::unique_ptr<mlir::Pass> createSafepointLoweringPass();
-
 // Lowers eco.string_literal to LLVM global constants (UTF-8 -> UTF-16).
 std::unique_ptr<mlir::Pass> createStringLiteralLoweringPass();
 

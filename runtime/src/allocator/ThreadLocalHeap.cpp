@@ -136,6 +136,16 @@ void* ThreadLocalHeap::allocateRegionSlow(size_t total) {
         // Large regions go to old gen directly.
         void* obj = old_gen_.allocate(total);
         if (!obj) {
+            assert(false && "Failed to allocate large region in old gen.");
+            return nullptr;
+        }
+        return obj;
+    }
+
+    if (total >= config_->large_object_threshold) {
+        // Large regions go to old gen directly.
+        void* obj = old_gen_.allocate(total);
+        if (!obj) {
             majorGC();
             obj = old_gen_.allocate(total);
         }
@@ -198,6 +208,17 @@ void* ThreadLocalHeap::allocatePermanent(size_t size, Tag tag) {
 
     assert(false && "Failed to allocate in old gen.");
     return nullptr;
+}
+
+bool ThreadLocalHeap::shouldCollectAtSafepoint() const {
+    if (force_gc_)
+        return true;
+    return isNurseryNearFull(config_->nursery_gc_threshold);
+}
+
+void ThreadLocalHeap::collectAtSafepoint() {
+    force_gc_ = false;
+    minorGC();
 }
 
 void ThreadLocalHeap::minorGC() {
@@ -279,7 +300,7 @@ void ThreadLocalHeap::collectStackRootsFromStackMap() {
         uint64_t* rbpPtr = reinterpret_cast<uint64_t*>(rbp);
         uint64_t returnAddr = rbpPtr[1];
 
-        // Look up this return address in the stack map
+        // Look up this return address in the stack map.
         const StackMapRecord* record = stackMap.findRecord(returnAddr);
         if (record) {
             // For each location in this record, extract the GC root
@@ -292,8 +313,15 @@ void ThreadLocalHeap::collectStackRootsFromStackMap() {
                             reinterpret_cast<char*>(rbp) + loc.offset);
                         roots.pushStackRoot(slotAddr);
                     }
-                    // DWARF reg 7 = RSP — less common but possible
-                    // For now we only handle RBP-relative locations
+                    // DWARF reg 7 = RSP on x86-64
+                    // At a call site, the caller's RSP = callee's RBP + 16
+                    // (return address + saved RBP pushed by callee prologue).
+                    else if (loc.dwarfRegNum == 7) {
+                        char* callerRSP = reinterpret_cast<char*>(rbp) + 16;
+                        auto* slotAddr = reinterpret_cast<HPointer*>(
+                            callerRSP + loc.offset);
+                        roots.pushStackRoot(slotAddr);
+                    }
                 }
                 // Other location kinds (Register, Direct, Constant, ConstantIndex)
                 // are not expected for stack-spilled GC roots with gc.relocate.

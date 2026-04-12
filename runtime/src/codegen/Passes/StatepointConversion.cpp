@@ -145,12 +145,23 @@ static bool convertMarkersToStatepoints(
                 idx++;
             }
 
-            // Find the target call to wrap
+            // Find the target call to wrap (safepoint poll or allocation slow path)
             CallInst *targetCall = findTargetCall(markerCall);
             if (!targetCall) {
                 markerCall->eraseFromParent();
                 continue;
             }
+
+            // Accept __eco_safepoint_poll and any eco_alloc_* / eco_allocate allocation function
+            auto *targetFn = targetCall->getCalledFunction();
+            assert(targetFn && "Statepoint target must be a direct call");
+            StringRef targetName = targetFn->getName();
+            assert((targetName == "__eco_safepoint_poll" ||
+                    targetName.starts_with("eco_alloc_") ||
+                    targetName == "eco_allocate" ||
+                    targetName == "eco_gc_alloc_region_fast" ||
+                    targetName == "eco_gc_alloc_region_slow")
+                   && "Statepoint target must be __eco_safepoint_poll or an allocation function");
 
             // Build statepoint wrapping the target call
             FunctionType *targetFnTy = targetCall->getFunctionType();

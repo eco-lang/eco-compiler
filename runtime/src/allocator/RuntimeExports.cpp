@@ -310,7 +310,30 @@ extern "C" uint64_t eco_alloc_closure(void* func_ptr, uint32_t num_captures) {
     closure->unboxed = 0;
     closure->evaluator = reinterpret_cast<EvalFunction>(func_ptr);
 
-    return ptrToHPointer(obj);
+    uint64_t hptr_val = ptrToHPointer(obj);
+    // DIAG: Verify closure integrity after allocation — check preceding object
+    if (hptr_val == 0x4005883) {
+        void* ret_addr = __builtin_return_address(0);
+        fprintf(stderr, "DIAG: eco_alloc_closure hptr=0x4005883 ptr=%p num_captures=%u max_values=%u eval=%p caller=%p\n",
+                obj, num_captures, (unsigned)closure->max_values, func_ptr, ret_addr);
+        // Dump preceding objects to find what was allocated just before
+        char* p = static_cast<char*>(obj);
+        for (int off = -128; off < 0; off += 8) {
+            uint64_t val;
+            memcpy(&val, p + off, sizeof(val));
+            // Check if this looks like a header (tag in low 5 bits, 0-15)
+            uint32_t maybe_tag = val & 0x1F;
+            uint32_t maybe_size = (val >> 32) & 0xFFFFFFFF;
+            if (maybe_tag <= 15 && maybe_size < 10000 && (val & 0xFFFF0000) == 0) {
+                fprintf(stderr, "  [%+d] HEADER? tag=%u size=%u raw=0x%016lx\n", off, maybe_tag, maybe_size, val);
+            } else {
+                fprintf(stderr, "  [%+d] 0x%016lx\n", off, val);
+            }
+        }
+        fflush(stderr);
+    }
+
+    return hptr_val;
 }
 
 extern "C" uint64_t eco_alloc_int(int64_t value) {
@@ -868,6 +891,22 @@ extern "C" uint64_t eco_apply_segmentation_unknown(uint64_t closure_hptr,
     Closure* closure = static_cast<Closure*>(closure_ptr);
     uint32_t n_values = closure->n_values;
     uint32_t max_values = closure->max_values;
+
+    // DIAG: Check for corrupted closure header
+    if (max_values == 0 || max_values > 63) {
+        uint64_t packed;
+        memcpy(&packed, reinterpret_cast<char*>(closure_ptr) + 8, sizeof(packed));
+        // Check if the closure has been forwarded (GC moved it)
+        fprintf(stderr, "DIAG: eco_apply_segmentation_unknown bad closure: hptr=0x%lx ptr=%p tag=%u n_values=%u max_values=%u num_args=%u packed=0x%lx\n",
+                closure_hptr, closure_ptr, closure->header.tag, n_values, max_values, num_args, packed);
+        fprintf(stderr, "  header: color=%u pin=%u epoch=%u age=%u unboxed=%u size=%u\n",
+                closure->header.color, closure->header.pin, closure->header.epoch,
+                closure->header.age, closure->header.unboxed, closure->header.size);
+        fprintf(stderr, "  evaluator=%p\n", (void*)closure->evaluator);
+        fflush(stderr);
+        // Abort early so we get the full output before the assertion
+        abort();
+    }
     uint32_t remaining = max_values - n_values;
 
     if (num_args < remaining) {
@@ -2115,6 +2154,13 @@ extern "C" uint64_t eco_value_to_string_typed(uint64_t value, int64_t type_id) {
 extern "C" void eco_safepoint() {
     // No-op for now
     // In the future, this will check if GC needs to run
+}
+
+extern "C" void __eco_safepoint_poll() {
+    auto& alloc = Elm::Allocator::instance();
+    if (!alloc.shouldCollectAtSafepoint())
+        return;
+    alloc.collectAtSafepoint();
 }
 
 extern "C" void eco_minor_gc() {

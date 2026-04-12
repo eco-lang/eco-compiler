@@ -187,7 +187,10 @@ private:
             eco::convertSafepointMarkers(*m);
             assert(!m->getFunction("__eco_safepoint_marker") &&
                    "All safepoint markers must be converted to statepoints");
-            return baseTransformer(m);
+            auto err = baseTransformer(m);
+            if (err) return err;
+            eco::removeDeadGCRelocates(*m);
+            return llvm::Error::success();
         };
 
         auto maybeEngine = eco::EcoJIT::create(module, jitOptions);

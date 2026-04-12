@@ -45,7 +45,10 @@ class StackMap {
 public:
     /// Parse a raw __LLVM_StackMaps section.
     /// Returns true on success.
-    bool parse(const uint8_t* data, size_t size);
+    /// @param loadBase  Base address to add to all function addresses (for
+    ///                  PIE/ASLR relocation). Pass 0 for JIT-compiled code
+    ///                  where function addresses are already absolute.
+    bool parse(const uint8_t* data, size_t size, uint64_t loadBase = 0);
 
     /// Look up stack root locations for a given return address.
     /// Returns nullptr if no record exists for this address.

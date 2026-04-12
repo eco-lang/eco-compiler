@@ -1,12 +1,11 @@
 // RUN: %ecoc %s -emit=llvm 2>&1 | %FileCheck %s
 //
-// Test that gc.statepoint wraps the actual call and gc.relocate is
+// Test that gc.statepoint wraps __eco_safepoint_poll and gc.relocate is
 // emitted for values that have post-statepoint uses.
 //
 // CHECK: @llvm.experimental.gc.statepoint.p0
-// CHECK: @foo
+// CHECK: __eco_safepoint_poll
 // CHECK: "gc-live"
-// CHECK: @llvm.experimental.gc.result
 // CHECK: @llvm.experimental.gc.relocate
 
 module {

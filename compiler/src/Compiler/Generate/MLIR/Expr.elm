@@ -3244,8 +3244,13 @@ generateTailCall ctx _ args =
                 , ( "target", IntAttr Nothing 0 )
                 ]
 
+        -- Emit a safepoint before the back-edge jump so that loops
+        -- which don't allocate still reach a GC safepoint.
+        ( ctx1b, safepointOp ) =
+            emitSafepoint ctx1
+
         ( ctx2, jumpOp ) =
-            Ops.mlirOp ctx1 "eco.jump"
+            Ops.mlirOp ctx1b "eco.jump"
                 |> Ops.opBuilder.withOperands argVarNames
                 |> Ops.opBuilder.withAttrs jumpAttrs
                 |> Ops.opBuilder.isTerminator True
@@ -3253,7 +3258,7 @@ generateTailCall ctx _ args =
     in
     -- eco.jump is a terminator - it does not produce a result value.
     -- INVARIANT: resultVar is meaningless when isTerminated=True, must not be used.
-    { ops = argsOps ++ [ jumpOp ]
+    { ops = argsOps ++ [ safepointOp, jumpOp ]
     , resultVar = "" -- INVARIANT: meaningless when isTerminated=True
     , resultType = Types.ecoValue
     , ctx = ctx2

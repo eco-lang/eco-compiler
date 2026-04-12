@@ -16,6 +16,7 @@
 
 #include "mlir/IR/SymbolTable.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/StringMap.h"
 #include <vector>
 
@@ -256,6 +257,9 @@ struct EcoRuntime {
     // Array functions
     mlir::LLVM::LLVMFuncOp getOrCreateCloneArray(mlir::OpBuilder &builder) const;
 
+    // Safepoint marker function
+    mlir::LLVM::LLVMFuncOp getOrCreateSafepointMarker(mlir::OpBuilder &builder) const;
+
     // Debug functions
     mlir::LLVM::LLVMFuncOp getOrCreateDbgPrint(mlir::OpBuilder &builder) const;
     mlir::LLVM::LLVMFuncOp getOrCreateDbgPrintInt(mlir::OpBuilder &builder) const;
@@ -291,6 +295,23 @@ struct EcoCFContext {
 
 /// Convert UTF-8 string to UTF-16 (used for string literals).
 std::vector<uint16_t> utf8ToUtf16(llvm::StringRef utf8);
+
+//===----------------------------------------------------------------------===//
+// Allocation with Safepoint Marker
+//===----------------------------------------------------------------------===//
+
+/// Emit a safepoint marker + allocation call. The liveRoots parameter
+/// contains pre-converted (i64) GC roots from the op adaptor — these were
+/// computed by EcoGCPrepare at the Eco IR level and carried as explicit
+/// operands through type conversion. Lowering must NOT recompute liveness.
+/// No block splitting — safe to use inside structured regions (scf.if etc).
+mlir::Value emitAllocWithSafepoint(
+    mlir::Operation *op,
+    mlir::ConversionPatternRewriter &rewriter,
+    const EcoRuntime &runtime,
+    mlir::LLVM::LLVMFuncOp allocFunc,
+    mlir::ValueRange args,
+    mlir::ValueRange liveRoots);
 
 //===----------------------------------------------------------------------===//
 // Pattern Population Functions (Internal)

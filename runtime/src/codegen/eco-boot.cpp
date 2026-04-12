@@ -610,6 +610,13 @@ int main(int argc, char **argv) {
     // functions into one block, creating dead relocate chains).
     eco::removeDeadGCRelocates(*llvmModule);
 
+    // Force frame pointers on all functions so the GC's RBP-based stack
+    // walker can discover roots via __LLVM_StackMaps at collection time.
+    for (auto &F : *llvmModule) {
+        if (!F.isDeclaration())
+            F.addFnAttr("frame-pointer", "all");
+    }
+
     // Handle LLVM IR output mode
     if (emitAction == EmitLLVM) {
         if (output == "-") {

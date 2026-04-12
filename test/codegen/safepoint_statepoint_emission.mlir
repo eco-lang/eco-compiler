@@ -1,12 +1,12 @@
 // RUN: %ecoc %s -emit=llvm 2>&1 | %FileCheck %s
 //
 // Test that eco.safepoint ops are lowered to gc.statepoint intrinsics
-// that wrap the actual call following the safepoint, with gc-live
-// operand bundles and GC strategy on functions.
+// that wrap __eco_safepoint_poll, with gc-live operand bundles and
+// GC strategy on functions.
 //
 // CHECK: gc "statepoint-example"
 // CHECK: @llvm.experimental.gc.statepoint.p0
-// CHECK: @eco_dbg_print
+// CHECK: __eco_safepoint_poll
 // CHECK: "gc-live"
 
 module {

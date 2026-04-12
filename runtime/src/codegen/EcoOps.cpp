@@ -271,19 +271,21 @@ LogicalResult JoinpointOp::verify() {
 }
 
 LogicalResult CustomConstructOp::verify() {
-  // Verify that the number of field operands matches the size attribute.
+  // The fields operand list may contain GC live roots appended after the
+  // actual fields by EcoGCPrepare. The first `size` entries are fields;
+  // any beyond that are live roots (always !eco.value).
   int64_t size = getSize();
-  if (static_cast<int64_t>(getFields().size()) != size) {
-    return emitOpError("number of fields (")
+  if (static_cast<int64_t>(getFields().size()) < size) {
+    return emitOpError("number of operands (")
            << getFields().size()
-           << ") must match size attribute ("
+           << ") must be at least size attribute ("
            << size << ")";
   }
 
-  // Verify that unboxed_bitmap only has bits set for unboxed fields.
+  // Verify unboxed_bitmap only for the actual fields (first `size` entries).
   int64_t unboxedBits = getUnboxedBitmap();
   auto fields = getFields();
-  for (size_t i = 0; i < fields.size(); i++) {
+  for (int64_t i = 0; i < size; i++) {
     bool bitmapSaysUnboxed = (unboxedBits & (1LL << i)) != 0;
     Type fieldType = fields[i].getType();
 

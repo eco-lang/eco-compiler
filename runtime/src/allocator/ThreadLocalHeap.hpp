@@ -119,6 +119,12 @@ public:
 
     // ========== Diagnostics ==========
 
+    /** Fast-path check: should GC run at this safepoint? */
+    bool shouldCollectAtSafepoint() const;
+
+    /** Slow-path: perform collection at safepoint. */
+    void collectAtSafepoint();
+
     /** Returns true if the nursery is over the given threshold. */
     bool isNurseryNearFull(float threshold) const;
 
@@ -142,6 +148,7 @@ private:
     const HeapConfig* config_;    // Heap configuration
     NurserySpace nursery_;        // Thread-local nursery
     OldGenSpace old_gen_;         // Thread-local old generation
+    bool force_gc_ = false;       // Force GC at next safepoint (for test harness/debugger)
 
 #if ENABLE_GC_STATS
     GCStats stats_;               // Thread-local GC statistics

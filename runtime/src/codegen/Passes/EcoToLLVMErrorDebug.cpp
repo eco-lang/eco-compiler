@@ -30,20 +30,18 @@ namespace {
 //   5. All downstream uses of the original value are replaced
 //===----------------------------------------------------------------------===//
 
-/// Get or create the __eco_safepoint_marker function declaration.
-/// This is a vararg function that takes ptr addrspace(1) GC root pointers.
-/// After MLIR→LLVM IR translation, StatepointConversion.cpp converts these
-/// calls into proper gc.statepoint intrinsics with gc-live operand bundles.
-static LLVM::LLVMFuncOp getOrCreateSafepointMarker(
+/// Get or create the __eco_safepoint_poll function declaration.
+/// This is the statepoint target: StatepointConversion wraps this call
+/// in gc.statepoint with the gc-live bundle from the preceding marker.
+static LLVM::LLVMFuncOp getOrCreateSafepointPoll(
     const EcoRuntime &runtime, OpBuilder &builder) {
-    auto name = "__eco_safepoint_marker";
+    auto name = "__eco_safepoint_poll";
     if (auto func = runtime.lookupSymbol<LLVM::LLVMFuncOp>(name))
         return func;
 
     auto *ctx = builder.getContext();
     auto voidTy = LLVM::LLVMVoidType::get(ctx);
-    // vararg: accepts any number of ptr addrspace(1) args
-    auto funcTy = LLVM::LLVMFunctionType::get(voidTy, {}, /*isVarArg=*/true);
+    auto funcTy = LLVM::LLVMFunctionType::get(voidTy, {}, /*isVarArg=*/false);
 
     OpBuilder::InsertionGuard guard(builder);
     builder.setInsertionPointToStart(runtime.module.getBody());
@@ -84,7 +82,7 @@ struct SafepointOpLowering : public OpConversionPattern<SafepointOp> {
         // Emit call to __eco_safepoint_marker with GC root pointers.
         // StatepointConversion pass converts this to gc.statepoint after
         // MLIR→LLVM IR translation.
-        getOrCreateSafepointMarker(runtime, rewriter);
+        runtime.getOrCreateSafepointMarker(rewriter);
 
         auto voidTy = LLVM::LLVMVoidType::get(ctx);
         auto markerFuncTy = LLVM::LLVMFunctionType::get(
@@ -94,6 +92,19 @@ struct SafepointOpLowering : public OpConversionPattern<SafepointOp> {
             loc, markerFuncTy,
             FlatSymbolRefAttr::get(ctx, "__eco_safepoint_marker"),
             gcPtrs);
+
+        // Emit call to __eco_safepoint_poll immediately after the marker.
+        // This is the statepoint target: StatepointConversion wraps this
+        // call in gc.statepoint with the gc-live bundle.
+        getOrCreateSafepointPoll(runtime, rewriter);
+
+        auto pollFuncTy = LLVM::LLVMFunctionType::get(
+            voidTy, {}, /*isVarArg=*/false);
+
+        rewriter.create<LLVM::CallOp>(
+            loc, pollFuncTy,
+            FlatSymbolRefAttr::get(ctx, "__eco_safepoint_poll"),
+            ValueRange{});
 
         rewriter.eraseOp(op);
         return success();

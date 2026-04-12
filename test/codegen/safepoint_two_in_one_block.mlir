@@ -1,13 +1,13 @@
 // RUN: %ecoc %s -emit=llvm 2>&1 | %FileCheck %s
 //
-// Test two safepoints in a single basic block. Each wraps its
-// respective call. The second call uses the relocated value from
-// the first statepoint.
+// Test two safepoints in a single basic block. Each wraps
+// __eco_safepoint_poll. The second statepoint uses the relocated
+// value from the first statepoint.
 //
 // CHECK: @llvm.experimental.gc.statepoint.p0
-// CHECK: @foo
+// CHECK: __eco_safepoint_poll
 // CHECK: @llvm.experimental.gc.statepoint.p0
-// CHECK: @foo
+// CHECK: __eco_safepoint_poll
 
 module {
   func.func @test_two_safepoints(%a: !eco.value) -> !eco.value {

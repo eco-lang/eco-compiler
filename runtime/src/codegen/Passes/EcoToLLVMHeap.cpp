@@ -95,23 +95,28 @@ struct BoxOpLowering : public OpConversionPattern<BoxOp> {
         Type inputType = input.getType();
         Value result;
 
+        auto liveRoots = adaptor.getLiveRoots();
+
         if (inputType.isInteger(64)) {
-            // Box i64 -> eco_alloc_int
-            auto func = runtime.getOrCreateAllocInt(rewriter);
-            auto call = rewriter.create<LLVM::CallOp>(loc, func, ValueRange{input});
-            result = call.getResult();
+            // Box i64 -> eco_alloc_int with safepoint marker
+            result = emitAllocWithSafepoint(
+                op, rewriter, runtime,
+                runtime.getOrCreateAllocInt(rewriter),
+                ValueRange{input}, liveRoots);
         } else if (inputType.isF64()) {
-            // Box f64 -> eco_alloc_float
-            auto func = runtime.getOrCreateAllocFloat(rewriter);
-            auto call = rewriter.create<LLVM::CallOp>(loc, func, ValueRange{input});
-            result = call.getResult();
+            // Box f64 -> eco_alloc_float with safepoint marker
+            result = emitAllocWithSafepoint(
+                op, rewriter, runtime,
+                runtime.getOrCreateAllocFloat(rewriter),
+                ValueRange{input}, liveRoots);
         } else if (inputType.isInteger(16)) {
-            // Box i16 (char) -> eco_alloc_char
-            auto func = runtime.getOrCreateAllocChar(rewriter);
-            auto call = rewriter.create<LLVM::CallOp>(loc, func, ValueRange{input});
-            result = call.getResult();
+            // Box i16 (char) -> eco_alloc_char with safepoint marker
+            result = emitAllocWithSafepoint(
+                op, rewriter, runtime,
+                runtime.getOrCreateAllocChar(rewriter),
+                ValueRange{input}, liveRoots);
         } else if (inputType.isInteger(1)) {
-            // Box i1 (bool) -> use embedded constant True/False
+            // Box i1 (bool) -> use embedded constant True/False (no allocation)
             auto trueCst = rewriter.create<LLVM::ConstantOp>(
                 loc, i64Ty, value_enc::encodeConstant(value_enc::True));
             auto falseCst = rewriter.create<LLVM::ConstantOp>(
@@ -195,12 +200,15 @@ struct AllocateOpLowering : public OpConversionPattern<AllocateOp> {
         auto *ctx = rewriter.getContext();
         auto i32Ty = IntegerType::get(ctx, 32);
 
-        auto func = runtime.getOrCreateAllocate(rewriter);
         auto size = adaptor.getSize();
         auto tag = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, 7);  // Tag_Custom
 
-        auto call = rewriter.create<LLVM::CallOp>(loc, func, ValueRange{size, tag});
-        rewriter.replaceOp(op, call.getResult());
+        Value result = emitAllocWithSafepoint(
+            op, rewriter, runtime,
+            runtime.getOrCreateAllocate(rewriter),
+            ValueRange{size, tag},
+            adaptor.getLiveRoots());
+        rewriter.replaceOp(op, result);
         return success();
     }
 };
@@ -223,7 +231,6 @@ struct AllocateCtorOpLowering : public OpConversionPattern<AllocateCtorOp> {
         auto *ctx = rewriter.getContext();
         auto i32Ty = IntegerType::get(ctx, 32);
 
-        auto func = runtime.getOrCreateAllocCustom(rewriter);
         auto tag = rewriter.create<LLVM::ConstantOp>(
             loc, i32Ty, static_cast<int32_t>(op.getTag()));
         auto size = rewriter.create<LLVM::ConstantOp>(
@@ -231,9 +238,12 @@ struct AllocateCtorOpLowering : public OpConversionPattern<AllocateCtorOp> {
         auto scalarBytes = rewriter.create<LLVM::ConstantOp>(
             loc, i32Ty, static_cast<int32_t>(op.getScalarBytes()));
 
-        auto call = rewriter.create<LLVM::CallOp>(
-            loc, func, ValueRange{tag, size, scalarBytes});
-        rewriter.replaceOp(op, call.getResult());
+        Value result = emitAllocWithSafepoint(
+            op, rewriter, runtime,
+            runtime.getOrCreateAllocCustom(rewriter),
+            ValueRange{tag, size, scalarBytes},
+            adaptor.getLiveRoots());
+        rewriter.replaceOp(op, result);
         return success();
     }
 };
@@ -256,12 +266,15 @@ struct AllocateStringOpLowering : public OpConversionPattern<AllocateStringOp> {
         auto *ctx = rewriter.getContext();
         auto i32Ty = IntegerType::get(ctx, 32);
 
-        auto func = runtime.getOrCreateAllocString(rewriter);
         auto length = rewriter.create<LLVM::ConstantOp>(
             loc, i32Ty, static_cast<int32_t>(op.getLength()));
 
-        auto call = rewriter.create<LLVM::CallOp>(loc, func, ValueRange{length});
-        rewriter.replaceOp(op, call.getResult());
+        Value result = emitAllocWithSafepoint(
+            op, rewriter, runtime,
+            runtime.getOrCreateAllocString(rewriter),
+            ValueRange{length},
+            adaptor.getLiveRoots());
+        rewriter.replaceOp(op, result);
         return success();
     }
 };
@@ -285,7 +298,6 @@ struct ListConstructOpLowering : public OpConversionPattern<ListConstructOp> {
         auto i32Ty = IntegerType::get(ctx, 32);
         auto i64Ty = IntegerType::get(ctx, 64);
 
-        auto func = runtime.getOrCreateAllocCons(rewriter);
         auto headVal = adaptor.getHead();
         auto tailVal = adaptor.getTail();
         uint32_t headUnboxed = op.getHeadUnboxed() ? 1 : 0;
@@ -300,9 +312,12 @@ struct ListConstructOpLowering : public OpConversionPattern<ListConstructOp> {
             headVal = rewriter.create<LLVM::BitcastOp>(loc, i64Ty, headVal);
         }
 
-        auto call = rewriter.create<LLVM::CallOp>(
-            loc, func, ValueRange{headVal, tailVal, headUnboxedVal});
-        rewriter.replaceOp(op, call.getResult());
+        Value result = emitAllocWithSafepoint(
+            op, rewriter, runtime,
+            runtime.getOrCreateAllocCons(rewriter),
+            ValueRange{headVal, tailVal, headUnboxedVal},
+            adaptor.getLiveRoots());
+        rewriter.replaceOp(op, result);
         return success();
     }
 };
@@ -445,16 +460,18 @@ struct Tuple2ConstructOpLowering : public OpConversionPattern<Tuple2ConstructOp>
         auto *ctx = rewriter.getContext();
         auto i32Ty = IntegerType::get(ctx, 32);
 
-        auto func = runtime.getOrCreateAllocTuple2(rewriter);
         auto aVal = widenFieldToI64(adaptor.getA(), loc, rewriter);
         auto bVal = widenFieldToI64(adaptor.getB(), loc, rewriter);
         int64_t unboxedMask = op.getUnboxedBitmap();
         auto unboxedVal = rewriter.create<LLVM::ConstantOp>(loc, i32Ty,
             static_cast<int32_t>(unboxedMask));
 
-        auto call = rewriter.create<LLVM::CallOp>(
-            loc, func, ValueRange{aVal, bVal, unboxedVal});
-        rewriter.replaceOp(op, call.getResult());
+        Value result = emitAllocWithSafepoint(
+            op, rewriter, runtime,
+            runtime.getOrCreateAllocTuple2(rewriter),
+            ValueRange{aVal, bVal, unboxedVal},
+            adaptor.getLiveRoots());
+        rewriter.replaceOp(op, result);
         return success();
     }
 };
@@ -477,7 +494,6 @@ struct Tuple3ConstructOpLowering : public OpConversionPattern<Tuple3ConstructOp>
         auto *ctx = rewriter.getContext();
         auto i32Ty = IntegerType::get(ctx, 32);
 
-        auto func = runtime.getOrCreateAllocTuple3(rewriter);
         auto aVal = widenFieldToI64(adaptor.getA(), loc, rewriter);
         auto bVal = widenFieldToI64(adaptor.getB(), loc, rewriter);
         auto cVal = widenFieldToI64(adaptor.getC(), loc, rewriter);
@@ -485,9 +501,12 @@ struct Tuple3ConstructOpLowering : public OpConversionPattern<Tuple3ConstructOp>
         auto unboxedVal = rewriter.create<LLVM::ConstantOp>(loc, i32Ty,
             static_cast<int32_t>(unboxedMask));
 
-        auto call = rewriter.create<LLVM::CallOp>(
-            loc, func, ValueRange{aVal, bVal, cVal, unboxedVal});
-        rewriter.replaceOp(op, call.getResult());
+        Value result = emitAllocWithSafepoint(
+            op, rewriter, runtime,
+            runtime.getOrCreateAllocTuple3(rewriter),
+            ValueRange{aVal, bVal, cVal, unboxedVal},
+            adaptor.getLiveRoots());
+        rewriter.replaceOp(op, result);
         return success();
     }
 };
@@ -591,7 +610,6 @@ struct RecordConstructOpLowering : public OpConversionPattern<RecordConstructOp>
         auto i32Ty = IntegerType::get(ctx, 32);
         auto i64Ty = IntegerType::get(ctx, 64);
 
-        auto allocFunc = runtime.getOrCreateAllocRecord(rewriter);
         auto storeFunc = runtime.getOrCreateStoreRecordField(rewriter);
         auto storeI64Func = runtime.getOrCreateStoreRecordFieldI64(rewriter);
         auto storeF64Func = runtime.getOrCreateStoreRecordFieldF64(rewriter);
@@ -599,18 +617,25 @@ struct RecordConstructOpLowering : public OpConversionPattern<RecordConstructOp>
         int64_t fieldCount = op.getFieldCount();
         int64_t unboxedBitmap = op.getUnboxedBitmap();
 
+        // The fields operand list may contain GC roots appended after
+        // the actual fields by EcoGCPrepare. Split them using fieldCount.
+        auto allOperands = adaptor.getFields();
+        auto fields = allOperands.take_front(fieldCount);
+        auto liveRoots = allOperands.drop_front(fieldCount);
+
         auto fieldCountVal = rewriter.create<LLVM::ConstantOp>(loc, i32Ty,
             static_cast<int32_t>(fieldCount));
         auto unboxedBitmapVal = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, unboxedBitmap);
 
-        auto allocCall = rewriter.create<LLVM::CallOp>(
-            loc, allocFunc, ValueRange{fieldCountVal, unboxedBitmapVal});
-        Value objHPtr = allocCall.getResult();
+        Value objHPtr = emitAllocWithSafepoint(
+            op, rewriter, runtime,
+            runtime.getOrCreateAllocRecord(rewriter),
+            ValueRange{fieldCountVal, unboxedBitmapVal},
+            liveRoots);
 
-        // Store each field
+        // Store each field (rewriter is now in contBlock)
         auto origFields = op.getFields();
-        auto fields = adaptor.getFields();
-        for (size_t i = 0; i < fields.size(); i++) {
+        for (int64_t i = 0; i < fieldCount; i++) {
             auto idx = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, static_cast<int32_t>(i));
             Type origType = origFields[i].getType();
             Value fieldVal = fields[i];
@@ -695,24 +720,31 @@ struct CustomConstructOpLowering : public OpConversionPattern<CustomConstructOp>
         auto i32Ty = IntegerType::get(ctx, 32);
         auto i64Ty = IntegerType::get(ctx, 64);
 
-        auto allocFunc = runtime.getOrCreateAllocCustom(rewriter);
         auto storeFunc = runtime.getOrCreateStoreField(rewriter);
         auto storeI64Func = runtime.getOrCreateStoreFieldI64(rewriter);
         auto storeF64Func = runtime.getOrCreateStoreFieldF64(rewriter);
         auto setUnboxedFunc = runtime.getOrCreateSetUnboxed(rewriter);
 
+        int64_t opSize = op.getSize();
         auto tag = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, static_cast<int32_t>(op.getTag()));
-        auto size = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, static_cast<int32_t>(op.getSize()));
+        auto size = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, static_cast<int32_t>(opSize));
         auto scalarBytes = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, 0);
 
-        auto allocCall = rewriter.create<LLVM::CallOp>(
-            loc, allocFunc, ValueRange{tag, size, scalarBytes});
-        Value objHPtr = allocCall.getResult();
+        // The fields operand list may contain GC roots appended after
+        // the actual fields by EcoGCPrepare. Split them using the size attr.
+        auto allOperands = adaptor.getFields();
+        auto fields = allOperands.take_front(opSize);
+        auto liveRoots = allOperands.drop_front(opSize);
 
-        // Store each field
+        Value objHPtr = emitAllocWithSafepoint(
+            op, rewriter, runtime,
+            runtime.getOrCreateAllocCustom(rewriter),
+            ValueRange{tag, size, scalarBytes},
+            liveRoots);
+
+        // Store each field (rewriter is now in contBlock)
         auto origFields = op.getFields();
-        auto fields = adaptor.getFields();
-        for (size_t i = 0; i < fields.size(); i++) {
+        for (int64_t i = 0; i < opSize; i++) {
             auto idx = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, static_cast<int32_t>(i));
             Type origType = origFields[i].getType();
             Value fieldVal = fields[i];

@@ -3,12 +3,13 @@
 // This pass runs before EcoToLLVM lowering and performs:
 // 1. Groups adjacent allocation ops (stops at calls, terminators, safepoints).
 // 2. Computes precise backward liveness of !eco.value SSA values at each group.
-// 3. Attaches eco.gc_roots attribute on the first op of each group.
+// 3. Attaches live roots as explicit operands on the first op of each group.
 // 4. Marks subsequent ops in a group with eco.gc_group_member = true.
 // 5. Recomputes live !eco.value sets at each eco.safepoint and replaces operands.
 //
 //===----------------------------------------------------------------------===//
 
+#include "EcoToLLVMInternal.h"
 #include "../EcoDialect.h"
 #include "../EcoOps.h"
 #include "../EcoTypes.h"
@@ -22,6 +23,50 @@
 using namespace mlir;
 
 namespace {
+
+//===----------------------------------------------------------------------===//
+// GC Liveness Helpers (authoritative — lowering must NOT recompute)
+//===----------------------------------------------------------------------===//
+
+static bool isEcoValue(Value v) {
+    return isa<eco::ValueType>(v.getType());
+}
+
+static SmallVector<Value, 8> computeLiveEcoValues(Operation *targetOp) {
+    SmallVector<Value, 8> liveValues;
+    llvm::DenseSet<Value> seen;
+
+    Block *block = targetOp->getBlock();
+    if (!block) return liveValues;
+
+    auto checkAndAdd = [&](Value v) {
+        if (!isEcoValue(v)) return;
+        if (!seen.insert(v).second) return;
+
+        for (auto &use : v.getUses()) {
+            Operation *user = use.getOwner();
+            if (user->getBlock() != block) {
+                liveValues.push_back(v);
+                return;
+            }
+            if (user == targetOp || targetOp->isBeforeInBlock(user)) {
+                liveValues.push_back(v);
+                return;
+            }
+        }
+    };
+
+    for (auto arg : block->getArguments())
+        checkAndAdd(arg);
+
+    for (auto &op : block->getOperations()) {
+        if (&op == targetOp) break;
+        for (auto result : op.getResults())
+            checkAndAdd(result);
+    }
+
+    return liveValues;
+}
 
 /// Returns true if the operation may allocate heap memory.
 static bool isMayAllocOp(Operation *op) {
@@ -54,53 +99,34 @@ static bool isGroupBarrier(Operation *op) {
     return false;
 }
 
-/// Returns true if the value is an !eco.value type.
-static bool isEcoValue(Value v) {
-    return isa<eco::ValueType>(v.getType());
-}
-
-/// Compute the set of !eco.value SSA values that are live at the point
-/// just before `targetOp` within its block. A value is live if it has
-/// at least one use at or after `targetOp`.
-static SmallVector<Value, 8> computeLiveEcoValues(Operation *targetOp) {
-    SmallVector<Value, 8> liveValues;
-    llvm::DenseSet<Value> seen;
-
-    Block *block = targetOp->getBlock();
-    if (!block) return liveValues;
-
-    auto checkAndAdd = [&](Value v) {
-        if (!isEcoValue(v)) return;
-        if (!seen.insert(v).second) return;
-
-        // Check if v has any use at or after targetOp
-        for (auto &use : v.getUses()) {
-            Operation *user = use.getOwner();
-            // Use in a different block counts as live
-            if (user->getBlock() != block) {
-                liveValues.push_back(v);
-                return;
-            }
-            // Use at or after targetOp in the same block
-            if (user == targetOp || targetOp->isBeforeInBlock(user)) {
-                liveValues.push_back(v);
-                return;
-            }
-        }
-    };
-
-    // Check block arguments
-    for (auto arg : block->getArguments())
-        checkAndAdd(arg);
-
-    // Check results of operations before targetOp
-    for (auto &op : block->getOperations()) {
-        if (&op == targetOp) break;
-        for (auto result : op.getResults())
-            checkAndAdd(result);
-    }
-
-    return liveValues;
+/// Set the live_roots operands on an allocation op via per-op dispatch.
+/// Most ops have a dedicated $live_roots variadic. RecordConstructOp and
+/// CustomConstructOp piggyback roots onto the $fields variadic (appended
+/// after the actual fields) to avoid AttrSizedOperandSegments, which would
+/// break Elm compiler bytecode that predates the new operand layout.
+static void setLiveRoots(Operation *op, ArrayRef<Value> roots) {
+    if (auto x = dyn_cast<eco::AllocateCtorOp>(op))
+        { x.getLiveRootsMutable().clear(); x.getLiveRootsMutable().append(roots); }
+    else if (auto x = dyn_cast<eco::AllocateStringOp>(op))
+        { x.getLiveRootsMutable().clear(); x.getLiveRootsMutable().append(roots); }
+    else if (auto x = dyn_cast<eco::AllocateClosureOp>(op))
+        { x.getLiveRootsMutable().clear(); x.getLiveRootsMutable().append(roots); }
+    else if (auto x = dyn_cast<eco::AllocateOp>(op))
+        { x.getLiveRootsMutable().clear(); x.getLiveRootsMutable().append(roots); }
+    else if (auto x = dyn_cast<eco::BoxOp>(op))
+        { x.getLiveRootsMutable().clear(); x.getLiveRootsMutable().append(roots); }
+    else if (auto x = dyn_cast<eco::ListConstructOp>(op))
+        { x.getLiveRootsMutable().clear(); x.getLiveRootsMutable().append(roots); }
+    else if (auto x = dyn_cast<eco::Tuple2ConstructOp>(op))
+        { x.getLiveRootsMutable().clear(); x.getLiveRootsMutable().append(roots); }
+    else if (auto x = dyn_cast<eco::Tuple3ConstructOp>(op))
+        { x.getLiveRootsMutable().clear(); x.getLiveRootsMutable().append(roots); }
+    else if (auto x = dyn_cast<eco::RecordConstructOp>(op))
+        // Append roots after fields in the single variadic operand list.
+        { x.getFieldsMutable().append(roots); }
+    else if (auto x = dyn_cast<eco::CustomConstructOp>(op))
+        // Append roots after fields in the single variadic operand list.
+        { x.getFieldsMutable().append(roots); }
 }
 
 //===----------------------------------------------------------------------===//
@@ -155,7 +181,7 @@ private:
         if (!currentGroup.empty())
             groups.push_back(std::move(currentGroup));
 
-        // Step 2: For each group, compute liveness and attach attributes.
+        // Step 2: For each group, compute liveness and attach as explicit operands.
         auto *ctx = block.getParentOp()->getContext();
         for (auto &group : groups) {
             if (group.empty()) continue;
@@ -163,10 +189,10 @@ private:
             // Compute live !eco.value values at group entry (before first op)
             SmallVector<Value, 8> liveRoots = computeLiveEcoValues(group.front());
 
-            // Encode root set as an array of integers (SSA value indices within block)
-            // For now, just store the count as an attribute — the actual root computation
-            // is done inline during EcoToLLVM lowering using the same liveness analysis.
-            // The attribute serves as metadata for the lowering pass.
+            // Attach roots as explicit operands on the group leader.
+            setLiveRoots(group.front(), liveRoots);
+
+            // Keep count attribute as a debug sanity check.
             group.front()->setAttr("eco.gc_roots_count",
                 IntegerAttr::get(IntegerType::get(ctx, 64), liveRoots.size()));
             group.front()->setAttr("eco.gc_group_size",

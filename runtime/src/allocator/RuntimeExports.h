@@ -8,6 +8,7 @@
 #ifndef ECO_RUNTIME_EXPORTS_H
 #define ECO_RUNTIME_EXPORTS_H
 
+#include <cstddef>
 #include <cstdint>
 
 extern "C" {
@@ -127,6 +128,43 @@ uint64_t eco_allocate(uint64_t size, uint32_t tag);
 /// @param obj HPointer (as uint64_t) to the heap object
 /// @param bitmap Bitmap indicating which fields are unboxed
 void eco_set_unboxed(uint64_t obj, uint64_t bitmap);
+
+//===----------------------------------------------------------------------===//
+// Fast Allocation Functions (bump-pointer only, no GC, return 0 on failure)
+//===----------------------------------------------------------------------===//
+
+uint64_t eco_alloc_custom_fast(uint32_t ctor_id, uint32_t field_count, uint32_t scalar_bytes);
+uint64_t eco_alloc_cons_fast(uint64_t head, uint64_t tail, uint32_t head_unboxed);
+uint64_t eco_alloc_tuple2_fast(uint64_t a, uint64_t b, uint32_t unboxed_mask);
+uint64_t eco_alloc_tuple3_fast(uint64_t a, uint64_t b, uint64_t c, uint32_t unboxed_mask);
+uint64_t eco_alloc_record_fast(uint32_t field_count, uint64_t unboxed_bitmap);
+uint64_t eco_alloc_string_fast(uint32_t length);
+uint64_t eco_alloc_closure_fast(void* func_ptr, uint32_t num_captures);
+uint64_t eco_alloc_int_fast(int64_t value);
+uint64_t eco_alloc_float_fast(double value);
+uint64_t eco_alloc_char_fast(uint32_t value);
+
+//===----------------------------------------------------------------------===//
+// Slow Allocation Functions (may GC, always succeed — used behind statepoint)
+//===----------------------------------------------------------------------===//
+
+uint64_t eco_alloc_custom_slow(uint32_t ctor_id, uint32_t field_count, uint32_t scalar_bytes);
+uint64_t eco_alloc_cons_slow(uint64_t head, uint64_t tail, uint32_t head_unboxed);
+uint64_t eco_alloc_tuple2_slow(uint64_t a, uint64_t b, uint32_t unboxed_mask);
+uint64_t eco_alloc_tuple3_slow(uint64_t a, uint64_t b, uint64_t c, uint32_t unboxed_mask);
+uint64_t eco_alloc_record_slow(uint32_t field_count, uint64_t unboxed_bitmap);
+uint64_t eco_alloc_string_slow(uint32_t length);
+uint64_t eco_alloc_closure_slow(void* func_ptr, uint32_t num_captures);
+uint64_t eco_alloc_int_slow(int64_t value);
+uint64_t eco_alloc_float_slow(double value);
+uint64_t eco_alloc_char_slow(uint32_t value);
+
+//===----------------------------------------------------------------------===//
+// Region Allocation (fast returns nullptr, slow may GC)
+//===----------------------------------------------------------------------===//
+
+void* eco_gc_alloc_region_fast(size_t total);
+void* eco_gc_alloc_region_slow(size_t total);
 
 //===----------------------------------------------------------------------===//
 // Field Store Functions
@@ -268,6 +306,10 @@ uint64_t eco_value_to_string_typed(uint64_t value, int64_t type_id);
 /// GC safepoint check (currently no-op).
 /// In the future, this will check if GC needs to run.
 void eco_safepoint();
+
+/// GC safepoint poll — statepoint target call.
+/// Checks nursery threshold + force flag; triggers collection if needed.
+void __eco_safepoint_poll();
 
 /// Triggers a minor GC.
 void eco_minor_gc();

@@ -76,6 +76,100 @@ static llvm::orc::SymbolMap buildRuntimeSymbolMap(
                 llvm::orc::ExecutorAddr::fromPtr(&eco_allocate),
                 llvm::JITSymbolFlags::Exported);
 
+        // Fast allocation functions (bump-pointer only, no GC, return 0 on failure).
+        symbolMap[interner("eco_alloc_custom_fast")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_alloc_custom_fast),
+                llvm::JITSymbolFlags::Exported);
+        symbolMap[interner("eco_alloc_cons_fast")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_alloc_cons_fast),
+                llvm::JITSymbolFlags::Exported);
+        symbolMap[interner("eco_alloc_tuple2_fast")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_alloc_tuple2_fast),
+                llvm::JITSymbolFlags::Exported);
+        symbolMap[interner("eco_alloc_tuple3_fast")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_alloc_tuple3_fast),
+                llvm::JITSymbolFlags::Exported);
+        symbolMap[interner("eco_alloc_record_fast")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_alloc_record_fast),
+                llvm::JITSymbolFlags::Exported);
+        symbolMap[interner("eco_alloc_string_fast")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_alloc_string_fast),
+                llvm::JITSymbolFlags::Exported);
+        symbolMap[interner("eco_alloc_closure_fast")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_alloc_closure_fast),
+                llvm::JITSymbolFlags::Exported);
+        symbolMap[interner("eco_alloc_int_fast")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_alloc_int_fast),
+                llvm::JITSymbolFlags::Exported);
+        symbolMap[interner("eco_alloc_float_fast")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_alloc_float_fast),
+                llvm::JITSymbolFlags::Exported);
+        symbolMap[interner("eco_alloc_char_fast")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_alloc_char_fast),
+                llvm::JITSymbolFlags::Exported);
+
+        // Slow allocation functions (may GC — used behind statepoint).
+        symbolMap[interner("eco_alloc_custom_slow")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_alloc_custom_slow),
+                llvm::JITSymbolFlags::Exported);
+        symbolMap[interner("eco_alloc_cons_slow")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_alloc_cons_slow),
+                llvm::JITSymbolFlags::Exported);
+        symbolMap[interner("eco_alloc_tuple2_slow")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_alloc_tuple2_slow),
+                llvm::JITSymbolFlags::Exported);
+        symbolMap[interner("eco_alloc_tuple3_slow")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_alloc_tuple3_slow),
+                llvm::JITSymbolFlags::Exported);
+        symbolMap[interner("eco_alloc_record_slow")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_alloc_record_slow),
+                llvm::JITSymbolFlags::Exported);
+        symbolMap[interner("eco_alloc_string_slow")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_alloc_string_slow),
+                llvm::JITSymbolFlags::Exported);
+        symbolMap[interner("eco_alloc_closure_slow")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_alloc_closure_slow),
+                llvm::JITSymbolFlags::Exported);
+        symbolMap[interner("eco_alloc_int_slow")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_alloc_int_slow),
+                llvm::JITSymbolFlags::Exported);
+        symbolMap[interner("eco_alloc_float_slow")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_alloc_float_slow),
+                llvm::JITSymbolFlags::Exported);
+        symbolMap[interner("eco_alloc_char_slow")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_alloc_char_slow),
+                llvm::JITSymbolFlags::Exported);
+
+        // Region allocation (fast returns nullptr, slow may GC).
+        symbolMap[interner("eco_gc_alloc_region_fast")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_gc_alloc_region_fast),
+                llvm::JITSymbolFlags::Exported);
+        symbolMap[interner("eco_gc_alloc_region_slow")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_gc_alloc_region_slow),
+                llvm::JITSymbolFlags::Exported);
+
         // Field store functions.
         symbolMap[interner("eco_store_field")] =
             llvm::orc::ExecutorSymbolDef(
@@ -164,6 +258,10 @@ static llvm::orc::SymbolMap buildRuntimeSymbolMap(
         symbolMap[interner("eco_safepoint")] =
             llvm::orc::ExecutorSymbolDef(
                 llvm::orc::ExecutorAddr::fromPtr(&eco_safepoint),
+                llvm::JITSymbolFlags::Exported);
+        symbolMap[interner("__eco_safepoint_poll")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&__eco_safepoint_poll),
                 llvm::JITSymbolFlags::Exported);
         symbolMap[interner("eco_minor_gc")] =
             llvm::orc::ExecutorSymbolDef(
