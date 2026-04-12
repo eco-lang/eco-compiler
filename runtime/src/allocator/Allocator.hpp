@@ -68,6 +68,16 @@ public:
     // Delegates to the calling thread's ThreadLocalHeap.
     void *allocate(size_t size, Tag tag);
 
+    // Fast-path allocation: bump-pointer only, no GC, no header init.
+    // Returns nullptr if nursery has insufficient space.
+    void *allocateFast(size_t size);
+
+    // Slow-path allocation: may trigger GC, always succeeds or aborts.
+    void *allocateSlow(size_t size, Tag tag);
+
+    // Slow-path region allocation: contiguous region, may GC.
+    void *allocateRegionSlow(size_t total);
+
     // Allocates an object directly in old generation (bypasses nursery).
     // Use for permanent objects like string literals that should never be collected.
     void *allocatePermanent(size_t size, Tag tag);

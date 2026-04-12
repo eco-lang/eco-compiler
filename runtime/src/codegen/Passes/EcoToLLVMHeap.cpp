@@ -3,17 +3,75 @@
 // This file implements lowering patterns for ECO heap operations:
 // box, unbox, allocate, construct, and project operations.
 //
+// Allocation ops are lowered to calls to runtime C ABI functions (eco_alloc_*).
+// These functions may trigger GC. The GC root tracking is handled by:
+// 1. EcoGCPrepare pass computes live !eco.value sets at each eco.safepoint.
+// 2. SafepointOpLowering emits __eco_safepoint_marker with gc roots.
+// 3. StatepointConversion (post-LLVM lowering) wraps calls in gc.statepoint.
+//
+// Fast/slow allocation splitting is available in the runtime (eco_alloc_*_fast/slow)
+// but is not yet used in codegen — allocation calls use the unified functions
+// that handle GC internally. The fast/slow split will be enabled once the
+// statepoint-based approach is validated.
+//
 //===----------------------------------------------------------------------===//
 
 #include "EcoToLLVMInternal.h"
 #include "../EcoDialect.h"
 #include "../EcoOps.h"
+#include "../EcoTypes.h"
 
 using namespace mlir;
 using namespace eco;
 using namespace eco::detail;
 
 namespace {
+
+//===----------------------------------------------------------------------===//
+// Allocation coalescing helpers (Phase 4 infrastructure)
+//===----------------------------------------------------------------------===//
+
+/// Check if an operation is a group member (not the leader) — if so, it was
+/// already lowered as part of the group leader. Returns true if the op should
+/// be skipped because it's a group member whose allocation was coalesced.
+static bool isCoalescedGroupMember(Operation *op) {
+    return op->hasAttr("eco.gc_group_member");
+}
+
+/// Compute the aligned allocation size for a given Eco allocation op.
+/// Returns 0 if the size cannot be statically determined.
+static int64_t computeAllocSize(Operation *op) {
+    constexpr int64_t HeaderSize = 8;
+    constexpr int64_t UnboxableSize = 8;
+
+    if (auto allocCtor = dyn_cast<eco::AllocateCtorOp>(op)) {
+        int64_t size = HeaderSize + 8 + allocCtor.getSize() * UnboxableSize +
+                       allocCtor.getScalarBytes();
+        return (size + 7) & ~7;
+    }
+    if (auto allocStr = dyn_cast<eco::AllocateStringOp>(op)) {
+        int64_t size = HeaderSize + allocStr.getLength() * 2;
+        return (size + 7) & ~7;
+    }
+    if (isa<eco::ListConstructOp>(op)) return 24;
+    if (isa<eco::Tuple2ConstructOp>(op)) return 24;
+    if (isa<eco::Tuple3ConstructOp>(op)) return 32;
+    if (auto recOp = dyn_cast<eco::RecordConstructOp>(op)) {
+        int64_t size = HeaderSize + 8 + recOp.getFieldCount() * UnboxableSize;
+        return (size + 7) & ~7;
+    }
+    if (auto customOp = dyn_cast<eco::CustomConstructOp>(op)) {
+        int64_t size = HeaderSize + 8 + customOp.getSize() * UnboxableSize;
+        return (size + 7) & ~7;
+    }
+    if (auto boxOp = dyn_cast<eco::BoxOp>(op)) {
+        Type inputType = boxOp.getValue().getType();
+        if (inputType.isInteger(64) || inputType.isF64() || inputType.isInteger(16))
+            return 16;
+        return 0;
+    }
+    return 0;
+}
 
 //===----------------------------------------------------------------------===//
 // eco.box -> call eco_alloc_* + ptrtoint

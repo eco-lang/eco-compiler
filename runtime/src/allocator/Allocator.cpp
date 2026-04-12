@@ -163,6 +163,24 @@ void *Allocator::allocate(size_t size, Tag tag) {
     return tl_heap_->allocate(size, tag);
 }
 
+// Fast-path: bump-pointer only, no GC.
+void *Allocator::allocateFast(size_t size) {
+    assert(tl_heap_ && "Thread not initialized - call initThread() first");
+    return tl_heap_->allocateFast(size);
+}
+
+// Slow-path: may GC, always succeeds or aborts.
+void *Allocator::allocateSlow(size_t size, Tag tag) {
+    assert(tl_heap_ && "Thread not initialized - call initThread() first");
+    return tl_heap_->allocateSlow(size, tag);
+}
+
+// Slow-path region: contiguous allocation, may GC.
+void *Allocator::allocateRegionSlow(size_t total) {
+    assert(tl_heap_ && "Thread not initialized - call initThread() first");
+    return tl_heap_->allocateRegionSlow(total);
+}
+
 // Allocates directly in old generation (bypasses nursery).
 void *Allocator::allocatePermanent(size_t size, Tag tag) {
     assert(tl_heap_ && "Thread not initialized - call initThread() first");

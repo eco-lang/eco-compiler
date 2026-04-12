@@ -160,6 +160,130 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocate(OpBuilder &builder) const {
 }
 
 //===----------------------------------------------------------------------===//
+// Fast Allocation Functions (bump-pointer only, no GC, return 0 on failure)
+//===----------------------------------------------------------------------===//
+
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocIntFast(OpBuilder &builder) const {
+    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {I64_TY});
+    return getOrCreateFunc(builder, "eco_alloc_int_fast", funcTy);
+}
+
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocFloatFast(OpBuilder &builder) const {
+    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {F64_TY});
+    return getOrCreateFunc(builder, "eco_alloc_float_fast", funcTy);
+}
+
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocCharFast(OpBuilder &builder) const {
+    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {I16_TY});
+    return getOrCreateFunc(builder, "eco_alloc_char_fast", funcTy);
+}
+
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocConsFast(OpBuilder &builder) const {
+    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {I64_TY, I64_TY, I32_TY});
+    return getOrCreateFunc(builder, "eco_alloc_cons_fast", funcTy);
+}
+
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocTuple2Fast(OpBuilder &builder) const {
+    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {I64_TY, I64_TY, I32_TY});
+    return getOrCreateFunc(builder, "eco_alloc_tuple2_fast", funcTy);
+}
+
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocTuple3Fast(OpBuilder &builder) const {
+    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {I64_TY, I64_TY, I64_TY, I32_TY});
+    return getOrCreateFunc(builder, "eco_alloc_tuple3_fast", funcTy);
+}
+
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocRecordFast(OpBuilder &builder) const {
+    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {I32_TY, I64_TY});
+    return getOrCreateFunc(builder, "eco_alloc_record_fast", funcTy);
+}
+
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocCustomFast(OpBuilder &builder) const {
+    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {I32_TY, I32_TY, I32_TY});
+    return getOrCreateFunc(builder, "eco_alloc_custom_fast", funcTy);
+}
+
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocStringFast(OpBuilder &builder) const {
+    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {I32_TY});
+    return getOrCreateFunc(builder, "eco_alloc_string_fast", funcTy);
+}
+
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocClosureFast(OpBuilder &builder) const {
+    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {PTR_TY, I32_TY});
+    return getOrCreateFunc(builder, "eco_alloc_closure_fast", funcTy);
+}
+
+//===----------------------------------------------------------------------===//
+// Slow Allocation Functions (may GC — used behind statepoint)
+//===----------------------------------------------------------------------===//
+
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocIntSlow(OpBuilder &builder) const {
+    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {I64_TY});
+    return getOrCreateFunc(builder, "eco_alloc_int_slow", funcTy);
+}
+
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocFloatSlow(OpBuilder &builder) const {
+    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {F64_TY});
+    return getOrCreateFunc(builder, "eco_alloc_float_slow", funcTy);
+}
+
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocCharSlow(OpBuilder &builder) const {
+    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {I16_TY});
+    return getOrCreateFunc(builder, "eco_alloc_char_slow", funcTy);
+}
+
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocConsSlow(OpBuilder &builder) const {
+    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {I64_TY, I64_TY, I32_TY});
+    return getOrCreateFunc(builder, "eco_alloc_cons_slow", funcTy);
+}
+
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocTuple2Slow(OpBuilder &builder) const {
+    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {I64_TY, I64_TY, I32_TY});
+    return getOrCreateFunc(builder, "eco_alloc_tuple2_slow", funcTy);
+}
+
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocTuple3Slow(OpBuilder &builder) const {
+    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {I64_TY, I64_TY, I64_TY, I32_TY});
+    return getOrCreateFunc(builder, "eco_alloc_tuple3_slow", funcTy);
+}
+
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocRecordSlow(OpBuilder &builder) const {
+    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {I32_TY, I64_TY});
+    return getOrCreateFunc(builder, "eco_alloc_record_slow", funcTy);
+}
+
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocCustomSlow(OpBuilder &builder) const {
+    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {I32_TY, I32_TY, I32_TY});
+    return getOrCreateFunc(builder, "eco_alloc_custom_slow", funcTy);
+}
+
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocStringSlow(OpBuilder &builder) const {
+    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {I32_TY});
+    return getOrCreateFunc(builder, "eco_alloc_string_slow", funcTy);
+}
+
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocClosureSlow(OpBuilder &builder) const {
+    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {PTR_TY, I32_TY});
+    return getOrCreateFunc(builder, "eco_alloc_closure_slow", funcTy);
+}
+
+//===----------------------------------------------------------------------===//
+// Region Allocation Functions
+//===----------------------------------------------------------------------===//
+
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocRegionFast(OpBuilder &builder) const {
+    // eco_gc_alloc_region_fast(total: i64) -> ptr (nullptr on failure)
+    auto funcTy = LLVM::LLVMFunctionType::get(PTR_TY, {I64_TY});
+    return getOrCreateFunc(builder, "eco_gc_alloc_region_fast", funcTy);
+}
+
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocRegionSlow(OpBuilder &builder) const {
+    // eco_gc_alloc_region_slow(total: i64) -> ptr
+    auto funcTy = LLVM::LLVMFunctionType::get(PTR_TY, {I64_TY});
+    return getOrCreateFunc(builder, "eco_gc_alloc_region_slow", funcTy);
+}
+
+//===----------------------------------------------------------------------===//
 // Field Storage Functions
 //===----------------------------------------------------------------------===//
 

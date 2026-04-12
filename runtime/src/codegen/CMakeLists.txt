@@ -187,6 +187,8 @@ add_mlir_library(EcoPasses
     Passes/EcoControlFlowToSCF.cpp
     Passes/UndefinedFunction.cpp
     Passes/CheckEcoClosureCaptures.cpp
+    # GC preparation pass (root sets, allocation grouping)
+    Passes/EcoGCPrepare.cpp
     # EcoToLLVM modular pass files
     Passes/EcoToLLVM.cpp
     Passes/EcoToLLVMRuntime.cpp

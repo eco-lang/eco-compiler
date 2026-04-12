@@ -73,6 +73,9 @@ void buildEcoToLLVMPipeline(PassManager &pm) {
     pm.addPass(eco::createEcoControlFlowToSCFPass());
     pm.addNestedPass<func::FuncOp>(createCanonicalizerPass());
 
+    // Stage 2.5: GC preparation (root sets, allocation grouping, safepoint rewrite).
+    pm.addPass(eco::createEcoGCPreparePass());
+
     // Stage 3: Eco -> LLVM Dialect.
     pm.addPass(eco::createBFToLLVMPass());
     pm.addPass(eco::createEcoToLLVMPass());

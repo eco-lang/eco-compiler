@@ -100,6 +100,61 @@ void* ThreadLocalHeap::allocate(size_t size, Tag tag) {
     return nullptr;
 }
 
+void* ThreadLocalHeap::allocateFast(size_t size) {
+    // Pure bump-pointer: no GC, no threshold check, no header init.
+    // Returns nullptr when nursery has insufficient space.
+    size = (size + 7) & ~static_cast<size_t>(7);
+    return nursery_.allocate(size);
+}
+
+void* ThreadLocalHeap::allocateSlow(size_t size, Tag tag) {
+    // Slow path: GC then allocate. Called after allocateFast returns nullptr.
+    size = (size + 7) & ~static_cast<size_t>(7);
+
+    if (size >= config_->large_object_threshold) {
+        return allocateLargePinned(size, tag);
+    }
+
+    minorGC();
+
+    void* obj = nursery_.allocate(size);
+    if (obj) {
+        initHeaderForTag(getHeader(obj), tag, size);
+        return obj;
+    }
+
+    assert(false && "Failed to allocate after GC in slow path.");
+    return nullptr;
+}
+
+void* ThreadLocalHeap::allocateRegionSlow(size_t total) {
+    // Slow path for contiguous region allocation. May GC.
+    // Caller handles header init for each sub-object.
+    total = (total + 7) & ~static_cast<size_t>(7);
+
+    if (total >= config_->large_object_threshold) {
+        // Large regions go to old gen directly.
+        void* obj = old_gen_.allocate(total);
+        if (!obj) {
+            majorGC();
+            obj = old_gen_.allocate(total);
+        }
+        if (!obj) {
+            assert(false && "Failed to allocate large region in old gen.");
+            return nullptr;
+        }
+        return obj;
+    }
+
+    minorGC();
+
+    void* obj = nursery_.allocate(total);
+    if (obj) return obj;
+
+    assert(false && "Failed to allocate region after GC.");
+    return nullptr;
+}
+
 void* ThreadLocalHeap::allocateLargePinned(size_t size, Tag tag) {
     // size is already 8-byte aligned by the caller.
     void* obj = old_gen_.allocate(size);

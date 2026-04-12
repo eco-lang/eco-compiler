@@ -56,6 +56,26 @@ public:
     void* allocate(size_t size, Tag tag);
 
     /**
+     * Fast-path allocation: bump-pointer only, no GC.
+     * Returns nullptr if nursery has insufficient space.
+     * Caller is responsible for header initialization.
+     */
+    void* allocateFast(size_t size);
+
+    /**
+     * Slow-path allocation: may trigger GC, always succeeds or aborts.
+     * Called when allocateFast returns nullptr.
+     */
+    void* allocateSlow(size_t size, Tag tag);
+
+    /**
+     * Slow-path region allocation: allocates a contiguous region of total bytes.
+     * May trigger GC. Returns raw pointer to start of region.
+     * Caller slices into per-object chunks and initializes headers inline.
+     */
+    void* allocateRegionSlow(size_t total);
+
+    /**
      * Allocates an object directly in old generation (bypasses nursery).
      * Use for permanent objects like string literals.
      */

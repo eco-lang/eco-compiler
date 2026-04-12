@@ -60,6 +60,13 @@ std::unique_ptr<mlir::Pass> createEcoControlFlowToSCFPass();
 // Lowers eco control flow ops (case, joinpoint, jump, return) to cf dialect.
 std::unique_ptr<mlir::Pass> createControlFlowLoweringPass();
 
+// ========== Stage 2.5: GC Preparation (before LLVM lowering) ==========
+
+// Computes GC root sets, groups adjacent allocations, and recomputes
+// safepoint operands via liveness analysis. Must run after all Eco->Eco
+// transformations and control flow lowering, before EcoToLLVM.
+std::unique_ptr<mlir::Pass> createEcoGCPreparePass();
+
 // ========== Stage 3: Eco -> LLVM Dialect ==========
 
 // Lowers eco heap operations (allocate_*, project, box, unbox) to LLVM.

@@ -351,6 +351,303 @@ extern "C" uint64_t eco_allocate(uint64_t size, uint32_t tag) {
 }
 
 //===----------------------------------------------------------------------===//
+// Fast/Slow Allocation Split
+//
+// Fast variants: bump-pointer only, no GC trigger, return 0/nullptr on failure.
+// Slow variants: may trigger GC, always succeed or abort.
+//===----------------------------------------------------------------------===//
+
+extern "C" uint64_t eco_alloc_custom_fast(uint32_t ctor_id, uint32_t field_count, uint32_t scalar_bytes) {
+    size_t size = sizeof(Header) + 8 + field_count * sizeof(Unboxable) + scalar_bytes;
+    void* obj = Allocator::instance().allocateFast(size);
+    if (!obj) return 0;
+
+    // Init header + ctor
+    Header* hdr = getHeader(obj);
+    std::memset(hdr, 0, sizeof(Header));
+    hdr->tag = Tag_Custom;
+    hdr->size = (size - sizeof(Custom)) / sizeof(Unboxable);
+    Custom* custom = static_cast<Custom*>(obj);
+    custom->ctor = ctor_id;
+    custom->unboxed = 0;
+
+    return ptrToHPointer(obj);
+}
+
+extern "C" uint64_t eco_alloc_custom_slow(uint32_t ctor_id, uint32_t field_count, uint32_t scalar_bytes) {
+    size_t size = sizeof(Header) + 8 + field_count * sizeof(Unboxable) + scalar_bytes;
+    void* obj = Allocator::instance().allocateSlow(size, Tag_Custom);
+    if (!obj) return 0;
+
+    Custom* custom = static_cast<Custom*>(obj);
+    custom->ctor = ctor_id;
+    custom->unboxed = 0;
+
+    return ptrToHPointer(obj);
+}
+
+extern "C" uint64_t eco_alloc_cons_fast(uint64_t head, uint64_t tail, uint32_t head_unboxed) {
+    size_t size = sizeof(Cons);
+    void* obj = Allocator::instance().allocateFast(size);
+    if (!obj) return 0;
+
+    Header* hdr = getHeader(obj);
+    std::memset(hdr, 0, sizeof(Header));
+    hdr->tag = Tag_Cons;
+    hdr->size = static_cast<u32>(size);
+    Cons* cons = static_cast<Cons*>(obj);
+    cons->header.unboxed = static_cast<u8>(head_unboxed);
+    cons->head.i = static_cast<i64>(head);
+    HPointer tail_hp;
+    memcpy(&tail_hp, &tail, sizeof(tail_hp));
+    cons->tail = tail_hp;
+
+    return ptrToHPointer(obj);
+}
+
+extern "C" uint64_t eco_alloc_cons_slow(uint64_t head, uint64_t tail, uint32_t head_unboxed) {
+    size_t size = sizeof(Cons);
+    void* obj = Allocator::instance().allocateSlow(size, Tag_Cons);
+    if (!obj) return 0;
+
+    Cons* cons = static_cast<Cons*>(obj);
+    cons->header.unboxed = static_cast<u8>(head_unboxed);
+    cons->head.i = static_cast<i64>(head);
+    HPointer tail_hp;
+    memcpy(&tail_hp, &tail, sizeof(tail_hp));
+    cons->tail = tail_hp;
+
+    return ptrToHPointer(obj);
+}
+
+extern "C" uint64_t eco_alloc_tuple2_fast(uint64_t a, uint64_t b, uint32_t unboxed_mask) {
+    size_t size = sizeof(Tuple2);
+    void* obj = Allocator::instance().allocateFast(size);
+    if (!obj) return 0;
+
+    Header* hdr = getHeader(obj);
+    std::memset(hdr, 0, sizeof(Header));
+    hdr->tag = Tag_Tuple2;
+    hdr->size = static_cast<u32>(size);
+    Tuple2* tup = static_cast<Tuple2*>(obj);
+    tup->header.unboxed = static_cast<u8>(unboxed_mask);
+    tup->a.i = static_cast<i64>(a);
+    tup->b.i = static_cast<i64>(b);
+
+    return ptrToHPointer(obj);
+}
+
+extern "C" uint64_t eco_alloc_tuple2_slow(uint64_t a, uint64_t b, uint32_t unboxed_mask) {
+    size_t size = sizeof(Tuple2);
+    void* obj = Allocator::instance().allocateSlow(size, Tag_Tuple2);
+    if (!obj) return 0;
+
+    Tuple2* tup = static_cast<Tuple2*>(obj);
+    tup->header.unboxed = static_cast<u8>(unboxed_mask);
+    tup->a.i = static_cast<i64>(a);
+    tup->b.i = static_cast<i64>(b);
+
+    return ptrToHPointer(obj);
+}
+
+extern "C" uint64_t eco_alloc_tuple3_fast(uint64_t a, uint64_t b, uint64_t c, uint32_t unboxed_mask) {
+    size_t size = sizeof(Tuple3);
+    void* obj = Allocator::instance().allocateFast(size);
+    if (!obj) return 0;
+
+    Header* hdr = getHeader(obj);
+    std::memset(hdr, 0, sizeof(Header));
+    hdr->tag = Tag_Tuple3;
+    hdr->size = static_cast<u32>(size);
+    Tuple3* tup = static_cast<Tuple3*>(obj);
+    tup->header.unboxed = static_cast<u8>(unboxed_mask);
+    tup->a.i = static_cast<i64>(a);
+    tup->b.i = static_cast<i64>(b);
+    tup->c.i = static_cast<i64>(c);
+
+    return ptrToHPointer(obj);
+}
+
+extern "C" uint64_t eco_alloc_tuple3_slow(uint64_t a, uint64_t b, uint64_t c, uint32_t unboxed_mask) {
+    size_t size = sizeof(Tuple3);
+    void* obj = Allocator::instance().allocateSlow(size, Tag_Tuple3);
+    if (!obj) return 0;
+
+    Tuple3* tup = static_cast<Tuple3*>(obj);
+    tup->header.unboxed = static_cast<u8>(unboxed_mask);
+    tup->a.i = static_cast<i64>(a);
+    tup->b.i = static_cast<i64>(b);
+    tup->c.i = static_cast<i64>(c);
+
+    return ptrToHPointer(obj);
+}
+
+extern "C" uint64_t eco_alloc_record_fast(uint32_t field_count, uint64_t unboxed_bitmap) {
+    size_t size = sizeof(Header) + 8 + field_count * sizeof(Unboxable);
+    void* obj = Allocator::instance().allocateFast(size);
+    if (!obj) return 0;
+
+    Header* hdr = getHeader(obj);
+    std::memset(hdr, 0, sizeof(Header));
+    hdr->tag = Tag_Record;
+    hdr->size = field_count;
+    Record* rec = static_cast<Record*>(obj);
+    rec->unboxed = unboxed_bitmap;
+
+    return ptrToHPointer(obj);
+}
+
+extern "C" uint64_t eco_alloc_record_slow(uint32_t field_count, uint64_t unboxed_bitmap) {
+    size_t size = sizeof(Header) + 8 + field_count * sizeof(Unboxable);
+    void* obj = Allocator::instance().allocateSlow(size, Tag_Record);
+    if (!obj) return 0;
+
+    Record* rec = static_cast<Record*>(obj);
+    rec->header.size = field_count;
+    rec->unboxed = unboxed_bitmap;
+
+    return ptrToHPointer(obj);
+}
+
+extern "C" uint64_t eco_alloc_string_fast(uint32_t length) {
+    size_t size = sizeof(Header) + length * sizeof(u16);
+    size = (size + 7) & ~7;
+    void* obj = Allocator::instance().allocateFast(size);
+    if (!obj) return 0;
+
+    Header* hdr = getHeader(obj);
+    std::memset(hdr, 0, sizeof(Header));
+    hdr->tag = Tag_String;
+    hdr->size = length;
+
+    return ptrToHPointer(obj);
+}
+
+extern "C" uint64_t eco_alloc_string_slow(uint32_t length) {
+    size_t size = sizeof(Header) + length * sizeof(u16);
+    size = (size + 7) & ~7;
+    void* obj = Allocator::instance().allocateSlow(size, Tag_String);
+    if (!obj) return 0;
+
+    ElmString* str = static_cast<ElmString*>(obj);
+    str->header.size = length;
+
+    return ptrToHPointer(obj);
+}
+
+extern "C" uint64_t eco_alloc_closure_fast(void* func_ptr, uint32_t num_captures) {
+    size_t size = sizeof(Header) + 8 + sizeof(EvalFunction) + num_captures * sizeof(Unboxable);
+    void* obj = Allocator::instance().allocateFast(size);
+    if (!obj) return 0;
+
+    Header* hdr = getHeader(obj);
+    std::memset(hdr, 0, sizeof(Header));
+    hdr->tag = Tag_Closure;
+    hdr->size = (size - sizeof(Closure)) / sizeof(Unboxable);
+    Closure* closure = static_cast<Closure*>(obj);
+    closure->n_values = 0;
+    closure->max_values = num_captures;
+    closure->unboxed = 0;
+    closure->evaluator = reinterpret_cast<EvalFunction>(func_ptr);
+
+    return ptrToHPointer(obj);
+}
+
+extern "C" uint64_t eco_alloc_closure_slow(void* func_ptr, uint32_t num_captures) {
+    size_t size = sizeof(Header) + 8 + sizeof(EvalFunction) + num_captures * sizeof(Unboxable);
+    void* obj = Allocator::instance().allocateSlow(size, Tag_Closure);
+    if (!obj) return 0;
+
+    Closure* closure = static_cast<Closure*>(obj);
+    closure->n_values = 0;
+    closure->max_values = num_captures;
+    closure->unboxed = 0;
+    closure->evaluator = reinterpret_cast<EvalFunction>(func_ptr);
+
+    return ptrToHPointer(obj);
+}
+
+extern "C" uint64_t eco_alloc_int_fast(int64_t value) {
+    void* obj = Allocator::instance().allocateFast(sizeof(ElmInt));
+    if (!obj) return 0;
+
+    Header* hdr = getHeader(obj);
+    std::memset(hdr, 0, sizeof(Header));
+    hdr->tag = Tag_Int;
+    hdr->size = static_cast<u32>(sizeof(ElmInt));
+    ElmInt* elmInt = static_cast<ElmInt*>(obj);
+    elmInt->value = value;
+
+    return ptrToHPointer(obj);
+}
+
+extern "C" uint64_t eco_alloc_int_slow(int64_t value) {
+    void* obj = Allocator::instance().allocateSlow(sizeof(ElmInt), Tag_Int);
+    if (!obj) return 0;
+
+    ElmInt* elmInt = static_cast<ElmInt*>(obj);
+    elmInt->value = value;
+
+    return ptrToHPointer(obj);
+}
+
+extern "C" uint64_t eco_alloc_float_fast(double value) {
+    void* obj = Allocator::instance().allocateFast(sizeof(ElmFloat));
+    if (!obj) return 0;
+
+    Header* hdr = getHeader(obj);
+    std::memset(hdr, 0, sizeof(Header));
+    hdr->tag = Tag_Float;
+    hdr->size = static_cast<u32>(sizeof(ElmFloat));
+    ElmFloat* elmFloat = static_cast<ElmFloat*>(obj);
+    elmFloat->value = value;
+
+    return ptrToHPointer(obj);
+}
+
+extern "C" uint64_t eco_alloc_float_slow(double value) {
+    void* obj = Allocator::instance().allocateSlow(sizeof(ElmFloat), Tag_Float);
+    if (!obj) return 0;
+
+    ElmFloat* elmFloat = static_cast<ElmFloat*>(obj);
+    elmFloat->value = value;
+
+    return ptrToHPointer(obj);
+}
+
+extern "C" uint64_t eco_alloc_char_fast(uint32_t value) {
+    void* obj = Allocator::instance().allocateFast(sizeof(ElmChar));
+    if (!obj) return 0;
+
+    Header* hdr = getHeader(obj);
+    std::memset(hdr, 0, sizeof(Header));
+    hdr->tag = Tag_Char;
+    hdr->size = static_cast<u32>(sizeof(ElmChar));
+    ElmChar* elmChar = static_cast<ElmChar*>(obj);
+    elmChar->value = static_cast<u16>(value);
+
+    return ptrToHPointer(obj);
+}
+
+extern "C" uint64_t eco_alloc_char_slow(uint32_t value) {
+    void* obj = Allocator::instance().allocateSlow(sizeof(ElmChar), Tag_Char);
+    if (!obj) return 0;
+
+    ElmChar* elmChar = static_cast<ElmChar*>(obj);
+    elmChar->value = static_cast<u16>(value);
+
+    return ptrToHPointer(obj);
+}
+
+extern "C" void* eco_gc_alloc_region_fast(size_t total) {
+    return Allocator::instance().allocateFast(total);
+}
+
+extern "C" void* eco_gc_alloc_region_slow(size_t total) {
+    return Allocator::instance().allocateRegionSlow(total);
+}
+
+//===----------------------------------------------------------------------===//
 // Field Store Functions
 //===----------------------------------------------------------------------===//
 
