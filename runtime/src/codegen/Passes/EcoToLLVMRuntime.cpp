@@ -411,6 +411,21 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateGcAddRoot(OpBuilder &builder) const {
     return getOrCreateFunc(builder, "eco_gc_add_root", funcTy);
 }
 
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateGcStackRangePoint(OpBuilder &builder) const {
+    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {});
+    return getOrCreateFunc(builder, "eco_gc_stack_range_point", funcTy);
+}
+
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateGcPushStackRange(OpBuilder &builder) const {
+    auto funcTy = LLVM::LLVMFunctionType::get(VOID_TY, {PTR_TY, I64_TY, I64_TY});
+    return getOrCreateFunc(builder, "eco_gc_push_stack_range", funcTy);
+}
+
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateGcRestoreStackRangePoint(OpBuilder &builder) const {
+    auto funcTy = LLVM::LLVMFunctionType::get(VOID_TY, {I64_TY});
+    return getOrCreateFunc(builder, "eco_gc_restore_stack_range_point", funcTy);
+}
+
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateRegisterTypeGraph(OpBuilder &builder) const {
     // eco_register_type_graph(graph: ptr) -> void
     auto funcTy = LLVM::LLVMFunctionType::get(VOID_TY, {PTR_TY});

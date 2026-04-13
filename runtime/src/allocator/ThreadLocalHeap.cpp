@@ -271,6 +271,17 @@ std::unordered_set<HPointer*> ThreadLocalHeap::collectRoots() {
     const auto& stack_roots = nursery_.getRootSet().getStackRoots();
     all_roots.insert(stack_roots.begin(), stack_roots.end());
 
+    // Stack root ranges (alloca-backed args arrays).
+    for (const auto &range : nursery_.getRootSet().getStackRootRanges()) {
+        HPointer *base = range.base;
+        uint64_t mask  = range.hpointer_mask;
+        for (size_t i = 0; i < range.count; ++i) {
+            if (mask & (1ULL << i)) {
+                all_roots.insert(&base[i]);
+            }
+        }
+    }
+
     return all_roots;
 }
 

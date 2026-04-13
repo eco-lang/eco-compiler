@@ -422,6 +422,17 @@ void NurserySpace::minorGC(OldGenSpace &oldgen) {
         evacuateJitPtr(*root, oldgen, &promoted_objects);
     }
 
+    // Phase 1e: Stack root ranges (alloca-backed args arrays from compiled code).
+    for (const auto &range : root_set.getStackRootRanges()) {
+        HPointer *base = range.base;
+        uint64_t mask  = range.hpointer_mask;
+        for (size_t i = 0; i < range.count; ++i) {
+            if (mask & (1ULL << i)) {
+                evacuate(base[i], oldgen, &promoted_objects);
+            }
+        }
+    }
+
     // Phase 1d: External root scanners (Scheduler run queue, PlatformRuntime state, etc.).
     for (auto& scanner : root_set.getExternalRootScanners()) {
         scanner([this, &oldgen, &promoted_objects](uint64_t& ref) {

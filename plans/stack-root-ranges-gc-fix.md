@@ -15,19 +15,28 @@ bogus `new_n_values`, and `obj < heap_end` assertion failures.
 
 Add a "root range" concept to `RootSet` so the GC can scan contiguous arrays of
 `i64` values stored in stack allocas. Zero-initialize arrays before registration
-so uninitialized or unboxed slots are harmless (the GC's existing
-`isInNursery`/`isInHeap` bounds checks skip non-heap values). Expose a small C
-ABI for compiled code and instrument every args-array call site in
-`EcoToLLVMClosures.cpp`.
+so uninitialized slots are harmless (the GC's existing `isInNursery`/`isInHeap`
+bounds checks skip non-heap values). Expose a small C ABI for compiled code and
+instrument every args-array call site in `EcoToLLVMClosures.cpp`.
 
 ### Design Decisions (resolved)
 
 **Bitmap vs scan-all:** The `StackRootRange` struct retains an `hpointer_mask`
-field for documentation and future-proofing, but the GC scanner treats every slot
-as "maybe a pointer" and relies on `isInNursery`/`isInHeap` guards to skip
-non-heap values. Raw `i64` Ints will never fall inside the nursery's address
-range and are harmlessly skipped. Zero-valued (uninitialized) slots are likewise
-skipped.
+field and this mask is **mandatory for correctness** on mixed arrays. A random
+`i64` can fall inside the heap / nursery address range, so we cannot safely
+"scan all" and rely purely on address-range checks.
+
+- For **mixed arrays**, `hpointer_mask` encodes exactly which slots are boxed
+  HPointers. Only slots with bit `i` set are treated as roots.
+- For **all-boxed arrays**, `hpointer_mask` is computed as
+  `(1ULL << count) - 1`, so every slot is treated as a root, equivalent to
+  scanning all slots.
+- The GC still applies `isInNursery` / `isInHeap` checks before following or
+  copying a root; the mask just prevents raw `i64`s from ever being presented
+  as candidate pointers.
+
+Zero-initialization remains required so that masked-in slots that have not yet
+been populated contain `0`, which safely fails the heap/nursery checks.
 
 **Early registration:** The range is registered BEFORE the population loop, not
 just before the final runtime call. Boxing calls (`eco_alloc_*`) during
@@ -63,10 +72,11 @@ There are **4 distinct runtime call patterns** that use args arrays, across
 
 **Mixed-type arrays** (sites 1-typed, 4): contain raw i64 Ints alongside
 HPointers, distinguished by `newargsUnboxedBitmap`. The `hpointer_mask` records
-which slots are HPointers (inverted unboxed bitmap), but the GC scanner scans
-all slots and relies on bounds checks — the mask is advisory.
+which slots are HPointers (inverted unboxed bitmap) and is **mandatory for
+correctness** — the GC only scans masked slots.
 
 **Boxed arrays** (sites 1-boxed, 2, 3): all values are HPointer-encoded i64.
+The mask is `(1ULL << count) - 1` (all bits set).
 
 ---
 
@@ -79,12 +89,15 @@ all slots and relies on bounds checks — the mask is advisory.
 Add to class (public):
 ```cpp
 /// A contiguous range of stack-allocated i64 values that may contain HPointers.
-/// The GC scans all slots, relying on isInNursery/isInHeap to skip non-pointers.
-/// hpointer_mask is advisory (records which slots are known HPointers).
+/// hpointer_mask is MANDATORY for correctness on mixed arrays:
+///   - Bit i set → base[i] is treated as HPointer root.
+///   - Bit i clear → base[i] is ignored by the GC, even if it happens to be
+///     numerically inside the heap / nursery address ranges.
+/// For all-boxed arrays, hpointer_mask is simply ((1ULL << count) - 1).
 struct StackRootRange {
     HPointer* base;
     size_t    count;
-    uint64_t  hpointer_mask; // Bit i set → base[i] is known HPointer. Advisory only.
+    uint64_t  hpointer_mask;
 };
 ```
 
@@ -128,18 +141,26 @@ Insert Phase 1e between JIT roots (Phase 1c) and external scanners (Phase 1d):
 
 ```cpp
 // Phase 1e: Stack root ranges (alloca-backed args arrays from compiled code).
-// Scan every slot; evacuate() skips non-nursery values (zeros, raw ints,
-// embedded constants, old-gen pointers).
-for (const auto& range : root_set.getStackRootRanges()) {
-    HPointer* base = range.base;
+// Only slots with hpointer_mask bit set are treated as roots. This is
+// REQUIRED for correctness on mixed arrays: raw i64 values can fall into
+// heap/nursery ranges by chance and must not be misinterpreted as pointers.
+for (const auto &range : root_set.getStackRootRanges()) {
+    HPointer *base = range.base;
+    uint64_t mask  = range.hpointer_mask;
+
     for (size_t i = 0; i < range.count; ++i) {
-        evacuate(base[i], oldgen, &promoted_objects);
+        if (mask & (1ULL << i)) {
+            evacuate(base[i], oldgen, &promoted_objects);
+        }
     }
 }
 ```
 
-No bitmap check — `evacuate()` already guards with `isInNursery(*root)` before
-copying. Non-pointer i64 values are harmlessly skipped.
+Notes:
+- For all-boxed arrays, `mask` is all 1s up to `count`, so this is equivalent
+  to scanning every slot.
+- `evacuate`'s own `isInNursery` checks remain intact; they now only see
+  bona-fide candidate pointer slots.
 
 ### Step 3: Include `StackRootRanges` in Major GC Root Collection
 
@@ -148,17 +169,23 @@ copying. Non-pointer i64 values are harmlessly skipped.
 After inserting `stack_roots`, expand ranges:
 ```cpp
 // Stack root ranges (alloca-backed args arrays).
-for (const auto& range : nursery_.getRootSet().getStackRootRanges()) {
-    HPointer* base = range.base;
+// Only slots whose hpointer_mask bit is set are added as roots. This avoids
+// ever treating arbitrary i64 values as candidate pointers.
+for (const auto &range : nursery_.getRootSet().getStackRootRanges()) {
+    HPointer *base = range.base;
+    uint64_t mask  = range.hpointer_mask;
+
     for (size_t i = 0; i < range.count; ++i) {
-        all_roots.insert(&base[i]);
+        if (mask & (1ULL << i)) {
+            all_roots.insert(&base[i]);
+        }
     }
 }
 ```
 
-All slots are inserted. `OldGenSpace::startMark` already does
-`alloc.isInHeap(obj)` before pushing onto the mark stack, so non-pointer values
-are skipped there too.
+`OldGenSpace::startMark()` remains unchanged; it still checks `isInHeap(obj)`
+before pushing onto the mark stack. The mask ensures that raw `i64`s from
+unboxed slots are never inserted into `all_roots` in the first place.
 
 ### Step 4: Add C ABI Functions
 
@@ -174,7 +201,14 @@ Declare under the "GC Interface" section (after `eco_gc_jit_root_count`):
 ///   ... populate array, call runtime functions ...
 ///   call void @eco_gc_restore_stack_range_point(i64 %saved)
 size_t   eco_gc_stack_range_point();
+
+/// eco_gc_push_stack_range:
+///   - base: pointer to an array of i64 slots on the stack
+///   - count: number of slots
+///   - hpointer_mask: bit i set → base[i] is a GC-managed HPointer root.
+///     Bits MUST be accurate for mixed arrays; the GC only scans masked slots.
 void     eco_gc_push_stack_range(uint64_t* base, size_t count, uint64_t hpointer_mask);
+
 void     eco_gc_restore_stack_range_point(size_t point);
 ```
 
@@ -257,13 +291,17 @@ For each call site, apply this sequence around the existing code:
 
 **Mask values per site:**
 
+For mixed arrays (sites 1-typed and 4), `hpointer_mask` must be computed
+correctly; the GC will only treat masked slots as roots. For all-boxed arrays,
+the mask is all 1s up to `count`.
+
 | Site | Mask | Rationale |
 |------|------|-----------|
-| 1: `typedArgsArray` | `~adjustedBitmap & ((1ULL << count) - 1)` | Advisory; GC scans all slots anyway |
-| 1: `boxedArgsArray` | `(1ULL << count) - 1` | All HPointers |
+| 1: `typedArgsArray` | `~adjustedBitmap & ((1ULL << count) - 1)` | Mixed: only these slots are GC roots |
+| 1: `boxedArgsArray` | `(1ULL << count) - 1` | All slots are HPointer roots |
 | 2: `argsArray` | `(1ULL << count) - 1` | All boxed |
 | 3: `newArgsArray` | `(1ULL << count) - 1` | All boxed |
-| 4: `argsArray` | `~newargsBitmap & ((1ULL << count) - 1)` | Advisory |
+| 4: `argsArray` | `~newargsBitmap & ((1ULL << count) - 1)` | Mixed: only these slots are GC roots |
 
 **Segmentation-unknown (site 1) has TWO arrays** — both need registration.
 Push both ranges before the first population loop; restore after the runtime call.

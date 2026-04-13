@@ -2183,6 +2183,21 @@ extern "C" uint64_t eco_gc_jit_root_count() {
     return Allocator::instance().getRootSet().getJitRoots().size();
 }
 
+extern "C" size_t eco_gc_stack_range_point() {
+    return Allocator::instance().getRootSet().stackRangePoint();
+}
+
+extern "C" void eco_gc_push_stack_range(uint64_t* base, size_t count, uint64_t hpointer_mask) {
+    if (!base || count == 0) return;
+    assert(count <= 64 && "stack root range exceeds 64-slot limit");
+    Allocator::instance().getRootSet().pushStackRootRange(
+        reinterpret_cast<HPointer*>(base), count, hpointer_mask);
+}
+
+extern "C" void eco_gc_restore_stack_range_point(size_t point) {
+    Allocator::instance().getRootSet().restoreStackRangePoint(point);
+}
+
 //===----------------------------------------------------------------------===//
 // Tag Extraction
 //===----------------------------------------------------------------------===//

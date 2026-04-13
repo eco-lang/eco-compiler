@@ -41,6 +41,7 @@ void RootSet::reset() {
     roots.clear();
     jit_roots.clear();
     stack_roots.clear();
+    stack_root_ranges.clear();
     external_scanners.clear();
 }
 

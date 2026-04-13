@@ -283,6 +283,18 @@ static llvm::orc::SymbolMap buildRuntimeSymbolMap(
             llvm::orc::ExecutorSymbolDef(
                 llvm::orc::ExecutorAddr::fromPtr(&eco_gc_jit_root_count),
                 llvm::JITSymbolFlags::Exported);
+        symbolMap[interner("eco_gc_stack_range_point")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_gc_stack_range_point),
+                llvm::JITSymbolFlags::Exported);
+        symbolMap[interner("eco_gc_push_stack_range")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_gc_push_stack_range),
+                llvm::JITSymbolFlags::Exported);
+        symbolMap[interner("eco_gc_restore_stack_range_point")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_gc_restore_stack_range_point),
+                llvm::JITSymbolFlags::Exported);
 
         // Tag extraction.
         symbolMap[interner("eco_get_header_tag")] =

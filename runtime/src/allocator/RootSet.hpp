@@ -66,6 +66,36 @@ public:
     // Returns the list of stack root pointers.
     const std::vector<HPointer *> &getStackRoots() const { return stack_roots; }
 
+    // ===== Stack root ranges (temporary, frame-based) =====
+    // A contiguous range of stack-allocated i64 values that may contain HPointers.
+    // hpointer_mask is MANDATORY for correctness on mixed arrays:
+    //   - Bit i set → base[i] is treated as HPointer root.
+    //   - Bit i clear → base[i] is ignored by the GC.
+    // For all-boxed arrays, hpointer_mask is simply ((1ULL << count) - 1).
+    struct StackRootRange {
+        HPointer* base;
+        size_t    count;
+        uint64_t  hpointer_mask;
+    };
+
+    size_t stackRangePoint() const { return stack_root_ranges.size(); }
+
+    void pushStackRootRange(HPointer* base, size_t count, uint64_t hpointer_mask) {
+        if (base && count > 0) {
+            stack_root_ranges.push_back(StackRootRange{base, count, hpointer_mask});
+        }
+    }
+
+    void restoreStackRangePoint(size_t point) {
+        if (point <= stack_root_ranges.size()) {
+            stack_root_ranges.resize(point);
+        }
+    }
+
+    const std::vector<StackRootRange>& getStackRootRanges() const {
+        return stack_root_ranges;
+    }
+
     // ===== External root scanners =====
     // Callbacks invoked during GC to discover additional roots held in
     // C++ data structures (e.g., Scheduler run queue, PlatformRuntime state).
@@ -90,6 +120,7 @@ private:
     std::unordered_set<uint64_t *> jit_roots; // JIT roots storing raw 64-bit pointers.
     std::vector<HPointer *> stack_roots;      // Temporary stack roots.
     std::vector<ExternalRootScanner> external_scanners; // External root callbacks.
+    std::vector<StackRootRange> stack_root_ranges;     // Temporary stack root ranges.
 };
 
 } // namespace Elm
