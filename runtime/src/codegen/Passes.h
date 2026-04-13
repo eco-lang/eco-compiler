@@ -62,9 +62,10 @@ std::unique_ptr<mlir::Pass> createControlFlowLoweringPass();
 
 // ========== Stage 2.5: GC Preparation (before LLVM lowering) ==========
 
-// Computes GC root sets, groups adjacent allocations, and recomputes
-// safepoint operands via liveness analysis. Must run after all Eco->Eco
-// transformations and control flow lowering, before EcoToLLVM.
+// Computes GC root sets for all GCRootCarrier ops (allocations, calls,
+// safepoints, PAP ops, construct ops) via SSA liveness analysis.
+// Groups adjacent allocations. Must run after all Eco->Eco transformations
+// and control flow lowering, before EcoToLLVM.
 std::unique_ptr<mlir::Pass> createEcoGCPreparePass();
 
 // ========== Stage 3: Eco -> LLVM Dialect ==========

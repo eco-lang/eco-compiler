@@ -225,6 +225,7 @@ add_mlir_library(EcoPasses
     EcoDialect
     BFDialect
     MLIRIR
+    MLIRAnalysis
     MLIRSupport
     MLIRPass
     MLIRTransforms

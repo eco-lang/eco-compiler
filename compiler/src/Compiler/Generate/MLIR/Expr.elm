@@ -91,9 +91,12 @@ emptyResult ctx var ty =
     { ops = [], resultVar = var, resultType = ty, ctx = ctx, isTerminated = False }
 
 
-{-| Emit a GC safepoint op listing all live eco.value variables from context.
-Returns the safepoint op and the updated context. The op should be prepended
-before any allocation operation.
+{-| Emit a GC safepoint op at this point in the IR.
+
+The operands are a conservative set of live eco.value variables from
+the front-end context (Ctx.liveEcoValueVars). EcoGCPrepare will later
+recompute the final GC root set via SSA liveness analysis, so
+correctness does not depend on this list being complete.
 -}
 emitSafepoint : Ctx.Context -> ( Ctx.Context, MlirOp )
 emitSafepoint ctx =

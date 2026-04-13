@@ -2,7 +2,8 @@
 //
 // This pass runs before EcoToLLVM lowering and performs:
 // 1. Groups adjacent allocation ops (stops at calls, terminators, safepoints).
-// 2. Computes precise backward liveness of !eco.value SSA values at each group.
+// 2. Computes precise SSA liveness of !eco.value values at each GCRootCarrier
+//    op using MLIR's Liveness analysis (inter-block dataflow).
 // 3. Attaches live roots as explicit operands on the first op of each group.
 // 4. Marks subsequent ops in a group with eco.gc_group_member = true.
 // 5. Recomputes live !eco.value sets at each eco.safepoint and replaces operands.
@@ -17,10 +18,15 @@
 #include "../EcoTypes.h"
 #include "../Passes.h"
 
+#include "mlir/Analysis/Liveness.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Pass/Pass.h"
+
+#include "llvm/Support/Debug.h"
+
+#define DEBUG_TYPE "eco-gc-prepare"
 
 using namespace mlir;
 
@@ -34,40 +40,43 @@ static bool isEcoValue(Value v) {
     return isa<eco::ValueType>(v.getType());
 }
 
-static SmallVector<Value, 8> computeLiveEcoValues(Operation *targetOp) {
-    SmallVector<Value, 8> liveValues;
+/// Compute the set of live !eco.value SSA values after `targetOp` using
+/// MLIR's Liveness analysis. The candidate set is:
+///   - values live-in to the block (cross-block liveness),
+///   - block arguments of the current block,
+///   - results of ops defined before targetOp in the block.
+/// Filtered by: isEcoValue(v) && !liveness.isDeadAfter(v, targetOp).
+static SmallVector<Value, 8> computeLiveRoots(Liveness &liveness,
+                                               Operation *targetOp) {
+    SmallVector<Value, 8> roots;
     llvm::DenseSet<Value> seen;
-
     Block *block = targetOp->getBlock();
-    if (!block) return liveValues;
+    if (!block) return roots;
 
-    auto checkAndAdd = [&](Value v) {
+    auto consider = [&](Value v) {
         if (!isEcoValue(v)) return;
         if (!seen.insert(v).second) return;
-
-        for (auto &use : v.getUses()) {
-            Operation *user = use.getOwner();
-            if (user->getBlock() != block) {
-                liveValues.push_back(v);
-                return;
-            }
-            if (user == targetOp || targetOp->isBeforeInBlock(user)) {
-                liveValues.push_back(v);
-                return;
-            }
-        }
+        if (!liveness.isDeadAfter(v, targetOp))
+            roots.push_back(v);
     };
 
-    for (auto arg : block->getArguments())
-        checkAndAdd(arg);
+    // Candidate set 1: values live-in to this block (cross-block liveness).
+    const auto &liveIn = liveness.getLiveIn(block);
+    for (Value v : liveIn)
+        consider(v);
 
+    // Candidate set 2: block arguments of the current block.
+    for (auto arg : block->getArguments())
+        consider(arg);
+
+    // Candidate set 3: results of ops defined before targetOp in this block.
     for (auto &op : block->getOperations()) {
         if (&op == targetOp) break;
         for (auto result : op.getResults())
-            checkAndAdd(result);
+            consider(result);
     }
 
-    return liveValues;
+    return roots;
 }
 
 /// Returns true if the operation may allocate heap memory.
@@ -129,7 +138,7 @@ struct EcoGCPreparePass
 
     StringRef getArgument() const override { return "eco-gc-prepare"; }
     StringRef getDescription() const override {
-        return "Compute GC root sets and group adjacent allocations";
+        return "Compute GC root sets via SSA liveness and group adjacent allocations";
     }
 
     void runOnOperation() override {
@@ -144,12 +153,18 @@ private:
     void processFunction(func::FuncOp func) {
         if (func.isExternal()) return;
 
+        // Build liveness analysis once per function.
+        Liveness liveness(func);
+
+        LLVM_DEBUG(llvm::dbgs() << "EcoGCPrepare: processing function "
+                                << func.getName() << "\n");
+
         for (Block &block : func.getBody()) {
-            processBlock(block);
+            processBlock(block, liveness);
         }
     }
 
-    void processBlock(Block &block) {
+    void processBlock(Block &block, Liveness &liveness) {
         // Step 1: Identify groups of adjacent allocation ops.
         SmallVector<SmallVector<Operation*, 4>> groups;
         SmallVector<Operation*, 4> currentGroup;
@@ -175,7 +190,14 @@ private:
         for (auto &group : groups) {
             if (group.empty()) continue;
 
-            SmallVector<Value, 8> liveRoots = computeLiveEcoValues(group.front());
+            SmallVector<Value, 8> liveRoots = computeLiveRoots(liveness, group.front());
+
+            LLVM_DEBUG({
+                llvm::dbgs() << "EcoGCPrepare: alloc group leader "
+                             << group.front()->getName()
+                             << " at " << group.front()->getLoc()
+                             << " — " << liveRoots.size() << " roots\n";
+            });
 
             // Use GCRootCarrier interface to set roots on the group leader.
             if (auto carrier = dyn_cast<eco::GCRootCarrier>(group.front()))
@@ -193,12 +215,22 @@ private:
             }
         }
 
-        // Step 3: Recompute roots for explicit eco.safepoint ops (D9).
+        // Step 3: Recompute roots for explicit eco.safepoint ops.
         for (auto &op : block) {
             auto safepointOp = dyn_cast<eco::SafepointOp>(&op);
             if (!safepointOp) continue;
 
-            SmallVector<Value, 8> liveRoots = computeLiveEcoValues(safepointOp);
+            SmallVector<Value, 8> liveRoots = computeLiveRoots(liveness, safepointOp);
+
+            LLVM_DEBUG({
+                llvm::dbgs() << "EcoGCPrepare: safepoint at "
+                             << safepointOp->getLoc()
+                             << " — " << liveRoots.size() << " roots: [";
+                for (auto v : liveRoots)
+                    llvm::dbgs() << " " << v;
+                llvm::dbgs() << " ]\n";
+            });
+
             safepointOp.setGCRoots(liveRoots);
         }
 
@@ -207,7 +239,15 @@ private:
         for (auto &op : block) {
             if (!isCallSafepoint(&op)) continue;
 
-            SmallVector<Value, 8> liveRoots = computeLiveEcoValues(&op);
+            SmallVector<Value, 8> liveRoots = computeLiveRoots(liveness, &op);
+
+            LLVM_DEBUG({
+                llvm::dbgs() << "EcoGCPrepare: call safepoint "
+                             << op.getName()
+                             << " at " << op.getLoc()
+                             << " — " << liveRoots.size() << " roots\n";
+            });
+
             if (auto carrier = dyn_cast<eco::GCRootCarrier>(&op))
                 carrier.setGCRoots(liveRoots);
         }

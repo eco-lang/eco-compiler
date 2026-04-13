@@ -1194,7 +1194,12 @@ def Eco_SafepointOp : Eco_Op<"safepoint", [
   let summary = "GC safepoint";
   let description = [{
     GC safepoint operation. Marks a point where garbage collection can
-    safely occur. The operands are the live eco.value roots at this point.
+    safely occur.
+
+    The operands are eco.value roots that must be tracked across this
+    safepoint. They are initially populated by the front-end
+    (emitSafepoint in Expr.elm), then recomputed by EcoGCPrepare via
+    SSA liveness analysis.
 
     During EcoToLLVM lowering, this becomes an llvm.experimental.gc.statepoint
     with gc.relocate operations for each live pointer. Downstream SSA uses
