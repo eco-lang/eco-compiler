@@ -200,6 +200,20 @@ FUNCTION matchAndRewrite(joinpointOp):
 3. Nested structure is preserved (nested if, not flattened CFG)
 4. Non-eligible operations remain for CFG lowering pass
 
+## Key Fixes
+
+### scf::WhileOp Deferral *(Mar 26, 2026)*
+
+`eco.case` ops nested inside `scf.while` regions must not be prematurely lowered to multi-block CF control flow. Both `CaseOp` and `ReturnOp` deferral checks now include `scf::WhileOp` as a parent to defer.
+
+### String Case in scf.while *(Mar 27, 2026)*
+
+`CaseStringToScfIfChainPattern` now recognizes `scf::WhileOp` as a valid SCF parent, so string case expressions inside tail-recursive loop bodies can be lowered to SCF if-chains. `buildStringIfChain` returns multi-result `scf::IfOp` and restores the rewriter insertion point correctly after recursive calls.
+
+### General Case Default Destination *(Mar 24, 2026)*
+
+The general ADT/bool case lowering created a `cf::SwitchOp` using `mergeBlock` as the default destination with zero operands, but `mergeBlock` had one block argument. Since Elm cases are exhaustive, the fix uses `caseBlocks.back()` as the default destination (last alternative doubles as default), matching the pattern already used by `lowerIntegerOrCharCase`.
+
 ## Example: Expression-Valued Transformation
 
 **Elm source:**

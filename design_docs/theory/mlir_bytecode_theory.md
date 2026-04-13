@@ -188,6 +188,10 @@ Rather than implementing custom binary encoders for ECO dialect types (`!eco.val
 
 The text MLIR printer does not emit source locations. The bytecode encoder matches this by using `UnknownLoc` for all operations. Real source locations could be added in the future for improved debugging.
 
+### Location/String Attribute Separation *(Mar 27, 2026)*
+
+Location attributes and string attributes are separated in the bytecode encoder's attribute table by giving locations their own key prefix (`LOC:`) and dedicated `addLocEntry` path. Without this, string literals like `"__mlir_unknown_loc__"` could be misidentified as location entries, causing bytecode corruption.
+
 ### Same File Extension
 
 Both text and bytecode use `.mlir`. MLIR tools detect the format from magic bytes. This avoids downstream build script changes and keeps the pipeline simple.

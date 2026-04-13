@@ -195,10 +195,38 @@ There is no separate collector thread. Each mutator thread runs its own GC on it
 Each thread's GC is stop-the-world *for that thread only*. Other threads continue executing. This avoids global synchronization while keeping the GC simple.
 
 The `ThreadLocalHeap` coordinates its nursery and old gen:
-1. `allocate()` bumps pointer in nursery
-2. When threshold exceeded, `minorGC()` evacuates survivors
-3. Promoted objects go to thread-local old gen
-4. When old gen grows large, `majorGC()` marks and sweeps
+1. `allocate()` bumps pointer in nursery (fast path)
+2. When nursery is exhausted, slow path runs allocation inside a GC safepoint
+3. When threshold exceeded, `minorGC()` evacuates survivors
+4. Promoted objects go to thread-local old gen
+5. When old gen grows large, `majorGC()` marks and sweeps
+
+### Fast and Slow Allocation Paths
+
+*(Apr 2026)* Allocation is split into two paths:
+
+- **Fast path**: Simple nursery bump-pointer increment. No GC interaction. O(1).
+- **Slow path**: When nursery space is insufficient, the allocation runs inside a GC safepoint. This allows the GC to collect before retrying.
+
+The `EcoGCPrepare` MLIR pass detects all potentially allocating operations and attaches live GC roots as explicit operands. This ensures the runtime has accurate root information when the slow path triggers GC.
+
+**Allocation coalescing**: Nearby allocations within the same basic block may be conservatively coalesced into a single size check, reducing the number of slow-path transitions.
+
+### Stack Root Tracing
+
+*(Mar-Apr 2026)* Precise GC stack root tracing is implemented via LLVM statepoints:
+
+1. **Compiler emits `eco.safepoint`**: Each safepoint carries live `!eco.value` variables as operands
+2. **EcoGCPrepare**: Attaches GC roots to allocation ops, call ops, and papExtend ops
+3. **StatepointConversion**: Converts safepoint markers to LLVM `gc.statepoint` intrinsics wrapping the actual allocating/calling function
+4. **Alloca+mem2reg rewriting**: Two-phase approach creates an alloca per GC root, emits `gc.relocate` + store after each statepoint, then `PromoteMemToReg` converts back to SSA with correct phi nodes at loop headers
+5. **Runtime stack map parsing**: `StackMap.cpp` parses LLVM v3 stack map format; `collectStackRootsFromStackMap()` walks x86-64 frame pointer chain
+
+**StackRootGuard**: RAII helper in `HeapHelpers.hpp` that pushes HPointers onto `RootSet::stack_roots` and restores on destruction. Used by kernel helpers (`allocTask`, `allocProcess`, `cons`, `tuple2`, etc.) to root captured HPointers across allocations that may trigger GC.
+
+### Large Object Allocation
+
+*(Apr 2026)* Objects larger than a nursery block are allocated in a dedicated pinned large-object space within the old generation. Large objects are never copied — they are pinned in place and managed by mark-sweep.
 
 For Elm's typical use case (short-lived web applications with message-passing concurrency), thread-local heaps match the programming model naturally.
 
@@ -214,7 +242,7 @@ For Elm's typical use case (short-lived web applications with message-passing co
 
 5. **Constants are never heap-allocated**: Nil, True, False, Unit, Nothing, EmptyString, and EmptyRec are embedded in the pointer representation.
 
-6. **Allocation may trigger GC**: Callers must assume any allocation could move all live objects.
+6. **Allocation may trigger GC**: Callers must assume any allocation could move all live objects. Use `StackRootGuard` to root HPointers across allocation calls.
 
 7. **Space membership is O(1)**: Checking if a pointer is in from-space or to-space uses cached bounds (`low_base_`, `low_end_`, etc.) for simple range comparison.
 
@@ -350,9 +378,14 @@ Elm Source
 │    - JoinPoint normalization                        │
 │    - Control flow to SCF                            │
 │    - RC elimination                                 │
+│    - EcoGCPrepare (attach GC roots to alloc ops)    │
 │    ↓                                                │
 │  LLVM Dialect (Stage 3)                             │
 │    - EcoToLLVM lowering                             │
+│    ↓                                                │
+│  Statepoint Conversion                              │
+│    - LLVM gc.statepoint intrinsics                  │
+│    - Alloca+mem2reg for GC root relocation          │
 │    ↓                                                │
 │  LLVM IR → Native Code                              │
 └─────────────────────────────────────────────────────┘
@@ -364,7 +397,8 @@ Elm Source
 
 After type inference, some expressions have incomplete types:
 
-- **Group B expressions**: Scalar literals (String, Char, Float, Unit) get synthetic type variables that need structural type computation. Containers (List, Tuple, Record), lambdas, accessors, and let expressions are now Group A with solver-owned types.
+- **Group A expressions**: Most expressions now have solver-owned types, including containers (List, Tuple, Record), lambdas, accessors, let expressions, and all structural expressions *(expanded from Group B to Group A, Mar 28, 2026)*.
+- **Group B expressions**: Only scalar literals (String, Char, Float, Unit) remain in Group B — these get synthetic type variables that need structural type computation.
 - **Kernel functions**: `VarKernel` references don't have annotations; their types are inferred from usage patterns.
 
 The PostSolve pass walks the AST, computing concrete types and building a `KernelTypeEnv` for typed optimization.
@@ -411,6 +445,12 @@ Each specialization gets a unique `SpecId`. The pass also computes concrete layo
 - `SpecializationRegistry`: Maps SpecKey ↔ SpecId
 - `forceCNumberToInt`: Aggressively resolves unresolved `CNumber` type variables to `MInt`, ensuring no `CNumber` survives to codegen
 - **Let-bound multi-specialization**: When a polymorphic let-bound function is used at multiple distinct types, the monomorphizer creates separate specialized instances with fresh names (e.g., `identity_0 : Int -> Int`, `identity_1 : String -> String`)
+- **Int MVarIds** *(Mar 30 – Apr 1, 2026)*: Type variable names are now Int IDs (not Strings) from monomorphization onward. The `AssignMVarIds` module assigns globally unique Int IDs to all type variables in the TypedOptimized IR at the start of monomorphization.
+- **Solver root-backed MVarIds** *(Apr 4, 2026)*: The `SolverRoots` module normalizes solver variables to their union-find roots after constraint solving. `ensureMVarIdForRoot` guarantees that two type variables sharing the same solver root always receive the same MVarId, eliminating spurious specialization divergence caused by aliased type variables.
+- **Scheme freshening** *(Apr 1, 2026)*: Every time a callee's type scheme is instantiated, globally unique MVarIds are allocated. This prevents collision between scheme variables and the caller's existing substitution entries.
+- **Free-vars-aware substitution** *(Apr 2, 2026)*: `applySubstWithFreeVars` filters substitution to only MVarIds appearing in the canonical type being resolved (plus transitive closure), preventing cross-scheme contamination.
+- **PendingCall** *(Apr 5, 2026)*: When a nested Call has a still-polymorphic result type, specialization is deferred by wrapping it in `PendingCall`. The outer callee's expected parameter type is used to refine the substitution before specializing the inner call.
+- **Phantom type var normalization** *(Apr 11, 2026)*: Surviving `MVar _ CEcoValue` in specialization keys maps to sentinel values, ensuring fresh MVars from scheme bindings do not create different spec keys for identical specializations.
 
 **Important**: Monomorphization is staging-agnostic. It preserves curried type structure from Elm semantics (e.g., `MFunction [Int] (MFunction [Int] Int)`). All staging and calling-convention decisions are deferred to GlobalOpt.
 
@@ -439,7 +479,11 @@ After monomorphization, function types are still curried and may have incompatib
 - `Segmentation`: List of stage arities (e.g., `[2,1]` = take 2 args, return closure taking 1)
 - `CallModel`: `FlattenedExternal` (kernels) or `StageCurried` (user-defined)
 - `CallInfo`: Pre-computed metadata for each call site
-- `MonoTraverse`: Common iteration infrastructure for graph traversal
+- `CallKind`: `CallDirectKnownSegmentation | CallDirectFlat | CallGenericApply` — determines calling convention
+- `segmentation_unknown` *(Mar 30, 2026)*: When compiler cannot statically determine arity, it uses `CallGenericApply` with runtime `eco_apply_*` wrappers for dynamic arity dispatch
+- `MonoTraverse`: Common iteration infrastructure for graph traversal (moved to `Monomorphize/`)
+- **isPureExpr** *(Apr 9, 2026)*: Fixed to check both body and bound expression in `MonoLet`, and Inline expressions inside Decider trees in `MonoCase`
+- **Value-only cycles** *(Apr 9, 2026)*: Zero-arg recursive bindings are now compiled as individual `MonoDefine` nodes instead of a single `MonoCycle` wrapping them in a spurious record
 
 This separation ensures Monomorphization stays simple while GlobalOpt handles all ABI complexity.
 
@@ -475,6 +519,7 @@ Converts MonoGraph to MLIR using the ECO dialect.
 
 Stage 2 passes transform ECO dialect toward LLVM:
 
+- **EcoGCPrepare** *(Apr 2026)*: Detects all potentially allocating ops and attaches live GC roots as explicit operands. Roots are pre-converted by the type-converter adaptor, eliminating races where `!eco.value` types were already erased to `i64` before liveness analysis.
 - **JoinPoint Normalization**: Ensures joinpoints have single entry
 - **ECO Control Flow to SCF**: Converts eco.case to scf.if/switch
 - **RC Elimination**: Removes reference counting ops (unused in tracing GC)
@@ -488,10 +533,13 @@ Stage 2 passes transform ECO dialect toward LLVM:
 Final lowering from ECO dialect to LLVM dialect. As of Feb 2026, the pass underwent significant simplification: all closure calling logic is centralized in `EcoToLLVMClosures.cpp`, and the pass no longer reverse-engineers kernel ABI types (the compiler is the sole ABI arbiter).
 
 - Type conversion: `!eco.value` → `i64` (tagged pointers)
-- Heap allocation via runtime calls
+- Heap allocation via runtime calls (fast path: nursery bump; slow path: GC safepoint)
+- GC roots attached to allocation ops by EcoGCPrepare, passed through to `emitAllocWithSafepoint`
 - Closure creation and invocation (centralized in `EcoToLLVMClosures.cpp`)
 - Tagged pointer encoding for embedded constants
 - Kernel calls reflect compiler-declared types without repair
+- Safepoint lowering: `eco.safepoint` operands converted to `ptr addrspace(1)` via inttoptr, emitted as `__eco_safepoint_marker` calls, then post-processed by `StatepointConversion` into `gc.statepoint` intrinsics wrapping the actual allocating/calling function
+- All non-external functions carry `gc "statepoint-example"` attribute
 
 **PAP Wrapper Elimination (Typed Closure Calling)**: The compiler generates direct function calls even when partial application and closures are involved:
 
@@ -506,6 +554,8 @@ Final lowering from ECO dialect to LLVM dialect. As of Feb 2026, the pass underw
 ### Runtime: Platform & Scheduler
 
 At execution time, the Platform and Scheduler subsystem implements Elm's effect manager architecture. Commands and subscriptions produced by the Elm update cycle are collected into effect bag trees (`Fx_Leaf`/`Fx_Node`/`Fx_Map`), gathered per manager, and dispatched via `onEffects` callbacks. The Scheduler drives a cooperative task-based concurrency model: each process has a root task, a continuation stack, and a mailbox. The `stepProcess` loop interprets the Task ADT (Succeed/Fail/AndThen/OnError/Binding/Receive) to advance processes through their task chains.
+
+**GC safety** *(Apr 2026)*: `pushStack` and `mailboxPushBack` now take `HPointer` (not raw `Process*`) and re-resolve the process pointer after allocation calls that may trigger GC. The currently running Process is registered as a stack root while off the run queue. External GC root scanning is supported in `RootSet`. `StackRootGuard` RAII helper roots captured HPointers across allocations in kernel helpers.
 
 **See**: [Platform & Scheduler Theory](design_docs/theory/platform_scheduler_theory.md)
 
@@ -597,7 +647,7 @@ Each pass and subsystem has comprehensive documentation in [`design_docs/theory/
 
 | Document | Description |
 |----------|-------------|
-| [monodirect_theory.md](design_docs/theory/monodirect_theory.md) | Solver-directed monomorphization (experimental, not production) |
+| [monodirect_theory.md](notes/monodirect_theory.md) | Solver-directed monomorphization (removed Mar 31, 2026; kept for reference) |
 
 ## Invariant Testing Infrastructure
 
@@ -610,11 +660,12 @@ All compiler invariants are documented in [`design_docs/invariants.csv`](design_
 | Phase | Invariants | Examples |
 |-------|------------|----------|
 | CANON | CANON_001-006 | Name resolution, unique IDs, no duplicates |
-| TYPE | TYPE_001-006 | Constraint generation, unification, occurs check |
-| POST | POST_001-004 | Remaining Group B type fixing, kernel type inference |
+| TYPE | TYPE_001-007 | Constraint generation, unification, occurs check, node variable constraints |
+| POST | POST_001-010 | Remaining Group B type fixing, kernel type inference, node type grounding |
 | TOPT | TOPT_001-005 | Type carrying, decision trees, annotations preserved |
-| MONO | MONO_001-015 | MonoType completeness, layouts, specialization registry |
-| CGEN | CGEN_001-057 | Boxing rules, SSA consistency, operation attributes, kernel declarations |
+| MONO | MONO_001-027 | MonoType completeness, layouts, specialization registry, arity consistency |
+| GOPT | GOPT_001-014 | Staging canonicalization, call information, closure arity |
+| CGEN | CGEN_001-057+ | Boxing rules, SSA consistency, operation attributes, kernel declarations, projection layout consistency |
 
 ### MLIR AST Inspection
 

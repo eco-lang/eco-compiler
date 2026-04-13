@@ -12,6 +12,7 @@ The Global Optimization (GlobalOpt) pass transforms the monomorphized IR to prep
 - **GOPT_001** — Closure types match param counts
 - **GOPT_002** — Returned closure param counts are tracked
 - **GOPT_003** — Case/if branches have compatible staging
+- **GOPT_011-014** — Calling convention invariants (source arity, TailDef arity, closure capture arity, let-bound function arity) *(Mar 2026)*
 
 ## Purpose
 
@@ -271,6 +272,31 @@ type CallModel
     = FlattenedExternal  -- Kernel/extern: all args at once
     | StageCurried       -- User-defined: respect staging
 ```
+
+### CallKind *(Mar 2026)*
+
+Determines the calling convention for each call site:
+
+```elm
+type CallKind
+    = CallDirectKnownSegmentation  -- Arity statically known, staged call
+    | CallDirectFlat               -- Flat external call (kernels)
+    | CallGenericApply             -- Safe fallback: runtime arity dispatch
+```
+
+**`CallGenericApply` / `segmentation_unknown`**: When the compiler cannot statically determine a closure's arity (e.g., closures flowing through case branches with different staging, higher-order callbacks from polymorphic combinators), it falls back to `CallGenericApply`. The runtime `eco_apply_*` wrappers handle dynamic arity dispatch, avoiding over-application crashes.
+
+### isPureExpr Fix *(Apr 2026)*
+
+`isPureExpr` in `MonoInlineSimplify` had two bugs:
+- `MonoLet` only checked the body for purity (ignoring the bound expression)
+- `MonoCase` only checked the branch jump-target list (ignoring Inline expressions inside the Decider tree)
+
+This caused effectful code (e.g., `Debug.log` inside a single-constructor case) to be incorrectly eliminated as dead code.
+
+### Value-Only Recursive Cycles *(Apr 2026)*
+
+Value-only recursive cycles (zero-arg bindings referencing each other) were previously compiled as a single `MonoCycle` node wrapping all bindings in an `eco.construct.record`, producing a spurious `Record(Custom(PAP))` at runtime. The fix compiles each zero-arg binding as its own `MonoDefine` node (mirroring how function cycles already work). The `MonoCycle` constructor was deleted as dead code.
 
 ### GlobalCtx
 

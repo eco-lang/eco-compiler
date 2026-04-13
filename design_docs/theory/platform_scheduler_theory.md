@@ -297,7 +297,14 @@ The current Elm model is stored as `uint64_t modelStorage_` in `PlatformRuntime`
 
 ### RootedProc in Run Queue
 
-Processes in the run queue are stored as encoded `HPointer` values (`RootedProc.encoded`). While the current implementation does not individually register each process as a GC root, the scheduler's drain loop re-resolves process pointers after every closure call to handle GC relocation.
+Processes in the run queue are stored as encoded `HPointer` values (`RootedProc.encoded`). The scheduler's drain loop re-resolves process pointers after every closure call to handle GC relocation.
+
+*(Apr 2026 — GC Safety Fixes)*:
+- **`pushStack` / `mailboxPushBack`**: Now take `HPointer procHP` (not raw `Process*`) and re-resolve the process pointer after allocation calls that may trigger GC, preventing writes to stale addresses.
+- **Current process rooting**: The currently running Process is registered as a stack root while off the run queue, ensuring it is not collected during GC.
+- **External GC root scanning**: `RootSet` supports external root providers (e.g., `modelStorage_` in PlatformRuntime).
+- **StackRootGuard**: RAII helper in `HeapHelpers.hpp` roots captured HPointers across allocations in kernel helpers (`allocTask`, `allocProcess`, `cons`, etc.), preventing use-after-move when GC relocates objects.
+- **stepProcess**: "No matching handler" branch now only logs for `Task_Fail` (unhandled failure) and stays quiet for `Task_Succeed` (normal process completion). Added heap-tag sanity check for early corruption detection.
 
 ## Key Constants
 

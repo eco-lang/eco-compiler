@@ -217,6 +217,10 @@ kernelBackendAbiPolicy home name =
 
 This ensures the MLIR codegen emits correct boxing/unboxing when calling C++ kernels.
 
+### Closure/PAP Path ABI Consistency *(Apr 5, 2026)*
+
+The `generateVarKernel` closure/PAP path now consults `kernelBackendAbiPolicy` (like the direct-call path already did), so AllBoxed kernels get `!eco.value` param/result types instead of incorrectly typed MLIR ABI in their `func.func` declarations. Four new AllBoxed policy entries were added for `Basics.add/sub/mul/pow`, which are number-polymorphic C++ kernels that inspect HPointer tags at runtime and must not have their arguments unboxed by closure wrappers.
+
 ## Kernel Type Inference (PostSolve)
 
 Kernel function types are inferred during PostSolve:

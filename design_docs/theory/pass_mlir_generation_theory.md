@@ -81,7 +81,7 @@ The ECO dialect defines operations for Elm runtime semantics:
 | `eco.global` | Declare global variable |
 | `eco.load_global` | Load global |
 | `eco.store_global` | Store global |
-| `eco.safepoint` | GC safepoint |
+| `eco.safepoint` | GC safepoint (variadic `!eco.value` live root operands) |
 | `eco.dbg` | Debug print |
 | `eco.crash` | Runtime error |
 | `eco.expect` | Assertion |
@@ -442,6 +442,9 @@ type alias MlirOp =
 3. All lambdas are hoisted to top-level
 4. Type table includes all used types
 5. Kernel declarations for all external calls
+6. GC safepoints emitted before all allocation sites with live `!eco.value` variables as operands *(Mar 2026)*
+7. SSA variable scoping correct across case/if branches (`ctxAfterBranchOp` restores pre-branch state) *(Mar 2026)*
+8. `definedSsaVars` reset at function scope boundaries (no cross-function leakage) *(Apr 2026)*
 
 ## Example
 

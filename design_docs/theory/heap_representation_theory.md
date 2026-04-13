@@ -405,6 +405,28 @@ Common issues and how to identify them:
 3. **Check construction ops**: Does bitmap match operand types?
 4. **Check ABI boundaries**: Are boxable values properly boxed/unboxed?
 
+## Large Object Allocation
+
+*(Apr 2026)*: Objects larger than a nursery block are allocated in a dedicated pinned large-object space within the old generation. Large objects:
+
+- Are never copied by the nursery's Cheney algorithm
+- Are pinned in place and managed by mark-sweep
+- Have their size tracked in the old generation's allocation metadata
+
+This prevents excessively large objects from fragmenting the nursery's semi-space copying collector.
+
+## GC Root Safety for Heap Construction
+
+*(Apr 2026)*: When constructing heap objects, any HPointers captured into a buffer before calling `allocator.allocate()` must be rooted. The `StackRootGuard` RAII helper pushes HPointers onto `RootSet::stack_roots` and restores on destruction:
+
+```cpp
+StackRootGuard guard(rootSet, value, callback, innerTask);
+auto result = allocator.allocate(sizeof(Task));
+// guard destructor restores stack root point
+```
+
+This applies to `allocTask`, `allocProcess`, `cons`, `tuple2`, `tuple3`, `arrayFromPointers`, `listFromPointers`, and all helpers that capture HPointers across allocation.
+
 ## Relationship to Other Documents
 
 - [Monomorphization Theory](pass_monomorphization_theory.md) — Layout computation

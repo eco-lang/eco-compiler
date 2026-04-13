@@ -28,7 +28,10 @@ runtime/src/codegen/Passes/
 ├── EcoToLLVMArith.cpp         # Arithmetic, comparisons, conversions
 ├── EcoToLLVMGlobals.cpp       # Globals, GC root initialization
 ├── EcoToLLVMErrorDebug.cpp    # Crash, expect, dbg, safepoint
-└── EcoToLLVMFunc.cpp          # func.func lowering (kernel declarations reflected from compiler-declared types)
+├── EcoToLLVMFunc.cpp          # func.func lowering (kernel declarations reflected from compiler-declared types)
+├── EcoGCPrepare.cpp           # GC root attachment on allocating ops (Stage 2, runs before EcoToLLVM)
+├── StatepointConversion.cpp   # Post-MLIR pass: safepoint markers → gc.statepoint intrinsics
+└── StatepointConversion.h     # Header for statepoint conversion
 ```
 
 ### Shared Infrastructure
@@ -512,9 +515,21 @@ eco.expect %cond, %msg, %passthrough
 ### 17. Debug and Safepoints
 
 ```
-eco.safepoint -> erased (no-op for tracing GC)
+eco.safepoint %root1, %root2 : !eco.value, !eco.value
+    -> inttoptr each operand to ptr addrspace(1)
+    -> call @__eco_safepoint_marker(%root1_ptr, %root2_ptr)
+    (StatepointConversion post-pass converts these to gc.statepoint intrinsics)
+
 eco.dbg %args -> call eco_dbg_print[_int|_float|_char] per arg type
 ```
+
+*(Mar-Apr 2026)*: Safepoints are no longer erased. The full GC integration pipeline:
+
+1. **EcoGCPrepare** (Stage 2): Attaches live GC roots as explicit operands on allocation ops (`eco.allocate_*`), `eco.call`, and `eco.papExtend`. Roots are pre-converted by the type-converter adaptor.
+2. **SafepointOpLowering** (this pass): Converts each `!eco.value` operand to `ptr addrspace(1)` via inttoptr, declares `@__eco_safepoint_marker` as a vararg function, emits call with GC root pointers.
+3. **Allocation lowering**: `emitAllocWithSafepoint` receives pre-converted roots from the adaptor and emits fast/slow allocation paths. Fast path: nursery bump. Slow path: allocation inside GC safepoint.
+4. **StatepointConversion** (post-MLIR LLVM IR pass): Finds all `@__eco_safepoint_marker` calls, wraps the next CallInst (the actual allocating/calling function) in `gc.statepoint` with `gc-live` operand bundles. Two-phase alloca+mem2reg approach for GC root relocation.
+5. All non-external functions carry `gc "statepoint-example"` attribute.
 
 ## Global Root Initialization
 
@@ -546,6 +561,9 @@ This registers global variables as GC roots.
 3. `!eco.value` types are converted to `i64`
 4. Global root initialization function is generated
 5. Module is valid LLVM dialect IR
+6. All non-external functions carry `gc "statepoint-example"` attribute *(Mar 2026)*
+7. Safepoint markers emitted for StatepointConversion post-pass *(Mar 2026)*
+8. Allocation ops carry pre-converted GC root operands from EcoGCPrepare *(Apr 2026)*
 
 ## Pass Behavior Guarantees
 

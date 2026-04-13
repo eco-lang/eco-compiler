@@ -36,7 +36,6 @@
     - [x] 3.1.1 Research & Reference Implementation → [§3.1.1](#311-research--reference-implementation)
     - [x] 3.1.2 Dialect Definition → [§3.1.2](#312-dialect-definition)
     - [x] 3.1.3 Operations → [§3.1.3](#313-operations) *(59+ ops, 53+ lowered, 46+ tests)*
-    - [ ] 3.1.4 Type System → [§3.1.4](#314-type-system)
     - [x] 3.1.5 GC Integration Hooks → [§3.1.5](#315-gc-integration-hooks)
     - [ ] 3.1.6 Process Primitives → [§3.1.6](#316-process-primitives)
     - [x] 3.1.7 Test Programs → [§3.1.7](#317-test-programs) *(46+ codegen tests)*
@@ -168,6 +167,8 @@ Choose and implement an appropriate algorithm for old generation garbage collect
 - [x] Ensure it is well tested
 - [ ] Enable automatic compaction triggering (currently manual only)
 - [x] Expand stress test coverage to exercise all heap object types under GC *(Feb 22, 2026)*
+- [x] Large object allocation and GC *(Apr 8, 2026)*
+- [x] Fixed `getObjectSize()` for Closure *(Apr 11, 2026)*
 - [ ] Verify correctness under extended load testing
 
 **Deliverables**:
@@ -189,24 +190,43 @@ Research LLVM's stack map facilities for precise stack root tracing.
 
 #### 1.2.3 LLVM Stack Map Implementation
 
-**Status**: In Progress (Current Priority)
+**Status**: Substantially Complete (Apr 2026)
 
 Implement LLVM stack map integration for precise stack root tracing. This is required for larger, longer-running programs where GC cycles occur with deep call stacks containing heap pointers.
 
 **Background**: Without stack maps, the GC cannot precisely identify heap pointers on the stack, limiting the complexity of programs that can run reliably. Research completed in §1.2.2 documented the integration approach.
 
+**Implementation** *(Mar 26 – Apr 13, 2026)*:
+
+The full GC stack root pipeline is now implemented across compiler, MLIR lowering, and runtime:
+
+- **Phase 1 — Dialect & Compiler**: `eco.safepoint` op redesigned from string attribute to variadic `!eco.value` operands. Compiler tracks live SSA variables (`definedSsaVars`) and emits safepoints before all allocation sites (list, record, tuple, custom type construction).
+- **Phase 2 — Statepoint Lowering**: `StatepointConversion.cpp` converts `__eco_safepoint_marker` calls to LLVM `gc.statepoint` intrinsics wrapping the actual allocating/calling function (not a separate nop). Two-phase alloca+mem2reg approach synthesizes correct phi nodes at loop headers for relocated GC roots.
+- **Phase 3 — Runtime Integration**: Custom `EcoJIT` engine captures `.llvm_stackmaps` section. `StackMap.cpp` parses LLVM stack map v3 binary format. `ThreadLocalHeap::collectStackRootsFromStackMap()` walks x86-64 frame pointer chain, extracting roots from stack map indirect locations.
+- **Phase 4 — EcoGCPrepare Pass** *(Apr 12)*: New lowering pass detects all potentially allocating ops. Attaches live GC roots as explicit operands on allocation ops (matching `eco.safepoint` approach). `emitAllocWithSafepoint` receives pre-converted roots from the type-converter adaptor, eliminating races where `!eco.value` types were already erased to `i64` before liveness analysis.
+- **Phase 5 — Fast/Slow Alloc Paths** *(Apr 12)*: Fast path is simple nursery bump allocation. Slow path runs allocation inside a GC safepoint. Allocation coalescing combines nearby allocations conservatively.
+- **Phase 6 — GC Root Carrier Interface** *(Apr 13)*: `eco.call` and `eco.papExtend` also supply GC roots. Safepoint marker emission moved from top of call/PAP lowering to immediately before each final GC-triggering call inside closure dispatch helpers.
+
 **Tasks**:
-- [ ] Build a small example program in LLVM using recursion to create stack frames with heap pointers
-- [ ] Generate LLVM statepoints at GC safepoints in eco.safepoint lowering
-- [ ] Parse LLVM stack map section in runtime
-- [ ] Integrate stack map data into the runtime's root scanning during GC
+- [x] Build a small example program in LLVM using recursion to create stack frames with heap pointers
+- [x] Generate LLVM statepoints at GC safepoints in eco.safepoint lowering
+- [x] Parse LLVM stack map section in runtime
+- [x] Integrate stack map data into the runtime's root scanning during GC
+- [x] EcoGCPrepare pass to detect allocating ops and attach GC roots *(Apr 12)*
+- [x] Fast/slow allocation paths with allocation coalescing *(Apr 12)*
+- [x] GC roots on call/papExtend ops *(Apr 13)*
+- [x] Safepoint marker positioning fix (before actual GC-triggering call) *(Apr 13)*
 - [ ] Stress test to verify stack roots are preserved correctly across major GC cycles
+- [ ] Alloca+mem2reg approach validation under extended load
 
 **Deliverables**:
-- [ ] LLVM stack map example/prototype
-- [ ] Modified eco.safepoint lowering to emit statepoints
-- [ ] Runtime stack map parser
-- [ ] Integration tests for stack root preservation
+- [x] LLVM stack map example/prototype *(safepoint_explicit.mlir)*
+- [x] Modified eco.safepoint lowering to emit statepoints *(StatepointConversion.cpp)*
+- [x] Runtime stack map parser *(StackMap.cpp/hpp)*
+- [x] Integration tests for stack root preservation *(4 safepoint codegen tests)*
+- [x] EcoGCPrepare pass *(EcoGCPrepare.cpp)*
+- [x] Fast/slow allocation path infrastructure
+- [ ] Extended stress tests under concurrent load
 
 ### 1.3 Process & Thread Model
 
@@ -483,6 +503,7 @@ eco-kernel-cpp/
 - Build configs: `elm-bootstrap.json` (XHR), `elm-kernel.json` (kernel)
 - All compiler IO operations migrated to `Eco.*` interface (no `Utils.Impure` imports remain)
 - All IO operations now flowing through the new XHR-based `Eco.*` layer
+- Registry update caching *(Apr 3, 2026)*: 30-minute check interval for `registry.dat`, `--refresh-registry` flag on `eco make` and `eco install`
 
 **Compiler Migration Status**: Complete — no `Utils.Impure` imports remain in `compiler/src/`. All IO operations route through `Eco.*` modules.
 
@@ -887,7 +908,6 @@ Design and implement a custom MLIR dialect called "eco" for Elm compilation.
 - [x] LLVM lowering pass (EcoToLLVM.cpp - 57 patterns)
 - [x] JIT execution engine (EcoRunner)
 - [x] Test programs (46 codegen tests)
-- [ ] Type system implementation (eco.value used as opaque pointer)
 - [ ] Process primitives (§3.1.6)
 
 #### 3.1.1 Research & Reference Implementation
@@ -988,23 +1008,6 @@ Define custom operations representing Elm semantics.
 - [x] Complete operation semantics and verification
 - [x] Test suite *(test/codegen/ - 46 tests)*
 
-#### 3.1.4 Type System
-
-**Status**: Not Started
-
-Implement MLIR types matching Elm's type system.
-
-**Tasks**:
-- [ ] Primitive types (Int, Float, Char, String, Bool)
-- [ ] Function types
-- [ ] Algebraic data types (custom types, Maybe, Result, List)
-- [ ] Record types
-- [ ] Type variables and polymorphism representation
-
-**Deliverables**:
-- [ ] Type definitions in TableGen
-- [ ] Type implementation files
-
 #### 3.1.5 GC Integration Hooks
 
 **Status**: Complete
@@ -1012,15 +1015,22 @@ Implement MLIR types matching Elm's type system.
 Define operations for garbage collection integration.
 
 **Current Implementation**:
-- Allocation ops: `eco.allocate`, `eco.allocate_ctor`, `eco.allocate_string`, `eco.allocate_closure` - all lowered to runtime calls
-- GC safepoint: `eco.safepoint` - lowered (currently no-op, ready for stack map integration)
+- Allocation ops: `eco.allocate`, `eco.allocate_ctor`, `eco.allocate_string`, `eco.allocate_closure` - all lowered to runtime calls, now carry explicit GC root operands *(Apr 2026)*
+- GC safepoint: `eco.safepoint` - fully implemented with LLVM statepoint conversion *(Mar-Apr 2026)*
+- GC root operands on `eco.call` and `eco.papExtend` *(Apr 2026)*
+- EcoGCPrepare pass: Detects allocating ops and attaches live GC roots as explicit operands *(Apr 2026)*
+- Fast/slow allocation paths: Fast bump-pointer, slow path via GC safepoint *(Apr 2026)*
 - Global root registration: `eco.global` lowering generates `__eco_init_globals` constructor that calls `eco_gc_add_root` for each global
 - Reference counting placeholders: `eco.incref`, `eco.decref`, etc. - defined but not lowered (for future Perceus)
 
 **Tasks**:
 - [x] Allocation operations (nursery via runtime allocator)
-- [x] GC safepoint operations (placeholder for stack maps)
+- [x] GC safepoint operations (fully implemented with statepoint conversion)
 - [x] Root registration operations (global root auto-registration)
+- [x] Explicit GC root operands on allocation ops *(Apr 2026)*
+- [x] GC root operands on call/papExtend ops *(Apr 2026)*
+- [x] EcoGCPrepare pass for automatic root attachment *(Apr 2026)*
+- [x] Fast/slow allocation path splitting *(Apr 2026)*
 - [ ] Write barrier operations (not needed - Elm's immutability guarantees no old→young pointers)
 - [x] Reference counting operations (Perceus-style reuse) - placeholder definitions
 
@@ -1028,6 +1038,7 @@ Define operations for garbage collection integration.
 - [x] Reference counting operation definitions *(in Ops.td - placeholders)*
 - [x] Allocation operation definitions and lowerings *(EcoToLLVM.cpp)*
 - [x] Global root registration code generation
+- [x] EcoGCPrepare pass *(EcoGCPrepare.cpp)*
 - [x] Documentation on GC integration points *(design_docs/eco-lowering.md)*
 
 #### 3.1.6 Process Primitives
@@ -1092,7 +1103,8 @@ Implement a lowering pipeline that transforms eco dialect to LLVM IR.
 - `CheckEcoClosureCaptures.cpp`: Closure capture verification
 - `ecoc.cpp`: Driver supporting `-emit=jit`, `-emit=llvm`, `-emit=mlir-llvm`, `-emit=mlir`
 - `EcoRunner.cpp/hpp`: In-process JIT execution engine for tests
-- Pass pipeline: eco → (verification passes) → EcoToLLVM → LLVM dialect → LLVM IR → JIT/native
+- `EcoGCPrepare.cpp`: GC root attachment on allocating ops *(Apr 2026)*
+- Pass pipeline: eco → EcoGCPrepare → (verification passes) → EcoToLLVM → LLVM dialect → LLVM IR → StatepointConversion → JIT/native
 
 **Transformations**:
 - [x] Pattern matching to control flow (eco.case → switch on tag)
@@ -1142,22 +1154,36 @@ New safe fallback calling convention for closures where arity cannot be statical
 
 ### 3.3 GC Stack Root Tracing
 
-**Status**: In Progress (Current Priority)
+**Status**: Substantially Complete (Apr 2026)
 
 Integration between LLVM and the garbage collector for precise stack scanning. This work is tracked jointly with §1.2.3 (LLVM Stack Map Implementation).
 
+**Implementation** *(Mar 26 – Apr 13, 2026)*:
+- LLVM statepoint generation wrapping actual allocating/calling functions
+- Two-phase alloca+mem2reg statepoint rewriting for correct loop header phi nodes
+- EcoGCPrepare pass attaches live GC roots on all potentially allocating ops
+- Fast/slow allocation paths (bump pointer vs GC safepoint)
+- GC root carrier interface on `eco.call` and `eco.papExtend`
+- StackRootGuard RAII helper roots captured HPointers across allocations
+- Runtime stack map v3 parser with x86-64 frame pointer walking
+- External GC root scanning support in RootSet
+
 **Requirements**:
-- [ ] LLVM stack map generation via statepoints
-- [ ] Runtime stack root registration
-- [ ] Safepoint insertion in generated code (eco.safepoint → LLVM statepoint)
-- [ ] Thread-safe root set management
+- [x] LLVM stack map generation via statepoints *(Mar 26)*
+- [x] Runtime stack root registration *(Mar 26)*
+- [x] Safepoint insertion in generated code (eco.safepoint → LLVM statepoint) *(Mar 26)*
+- [x] EcoGCPrepare automatic root attachment *(Apr 12)*
+- [x] Fast/slow allocation paths *(Apr 12)*
+- [x] GC roots on call/papExtend operations *(Apr 13)*
+- [ ] Thread-safe root set management (multi-thread stress testing)
 
 **Deliverables**:
-- [ ] LLVM stackmap integration
-- [ ] Runtime root scanning infrastructure
-- [ ] Documentation on GC integration
+- [x] LLVM stackmap integration *(EcoJIT, StackMap.cpp, StatepointConversion.cpp)*
+- [x] Runtime root scanning infrastructure *(ThreadLocalHeap, RootSet, HeapHelpers)*
+- [x] EcoGCPrepare pass *(EcoGCPrepare.cpp)*
+- [ ] Documentation on GC integration (to be updated)
 
-**See Also**: §1.2.3 for implementation details and research in `design_docs/llvm_stackmap_integration.md`
+**See Also**: §1.2.3 for full implementation details and research in `design_docs/llvm_stackmap_integration.md`
 
 ### 3.4 Multi-target Support
 
@@ -1258,19 +1284,13 @@ Analyze the Guida/Elm Global AST and consider necessary changes for native compi
 - [x] Evaluate whether DynRecord is needed for native compilation or can be eliminated
 - [x] Document AST changes needed for MLIR code generation
 
-**MonoDirect Alternative Monomorphizer** *(Mar 12-16, 2026)*:
-A solver-driven alternative to the TypeSubst-based monomorphizer:
-```
-compiler/src/Compiler/MonoDirect/
-├── Monomorphize.elm      # Entry point, wires solver snapshot
-├── Specialize.elm        # Solver-driven specialization
-├── State.elm             # State with local unification, VarEnv
-└── JoinpointFlatten.elm  # Post-pass closure/case flattening
-```
-- Uses `SolverSnapshot` to query and locally unify types instead of string-based `TypeSubst`
+**MonoDirect Alternative Monomorphizer** *(Mar 12-16, 2026; removed Mar 31)*:
+A solver-driven alternative was explored but removed:
+- Used `SolverSnapshot` to query and locally unify types instead of string-based `TypeSubst`
 - Tvar fields propagated through `TypedOptimized` IR for linking back to solver state
-- Design docs: `design_docs/hm-solver-reuse.md`, `design_docs/mono-direct-for-packages.md`
-- Currently experimental; classic monomorphizer remains the production path
+- **Removed** on Mar 31, 2026 as it was incomplete and blocking refactoring of the production monomorphizer
+- Design docs moved to `notes/` for reference: `notes/monodirect_theory.md`, `notes/mono-direct-for-packages.md`
+- Classic monomorphizer is the sole production path
 
 **Deliverables**:
 - [x] Modified Optimized IR with type annotations (`Compiler/AST/TypedOptimized.elm`)
@@ -1527,12 +1547,68 @@ compiler/src/Compiler/GlobalOpt/
     - Invariants updated in `design_docs/invariants.csv`
     - Plan: `plans/generic-apply-staging-agnostic-closures.md`
 
+**Resolved Issues** *(fixed Mar 27 – Apr 13, 2026 — bootstrap push continued)*:
+
+22. **SSA Variable Leak from Case/If Regions** - ✅ Fixed (Mar 27)
+    - `ctxForSiblingRegion` now resets `definedSsaVars` to base context
+    - `ctxAfterBranchOp` restores pre-branch state, keeping only case result variables
+    - New tests: `CaseSafepointLeakTest.elm`, `IfLetSafepointTest.elm`
+
+23. **GC Safepoint Full Implementation** - ✅ Complete (Mar 26-27)
+    - eco.safepoint redesigned from string attribute to variadic `!eco.value` operands
+    - Compiler tracks live SSA variables and emits safepoints before allocations
+    - StatepointConversion wraps actual allocating calls in `gc.statepoint`
+    - Custom EcoJIT captures `.llvm_stackmaps` section, runtime parses v3 format
+
+24. **MLIR Bytecode Format** - ✅ Complete (Mar 24-25)
+    - Binary bytecode MLIR format with streaming encoder
+    - O(N) Dict-based grouping replacing O(N²) linked-list scan
+    - Location/string attribute collision fix (LOC: prefix)
+
+25. **MonoDirect Removal & Int MVarIds** - ✅ Complete (Mar 30-31)
+    - MonoDirect experimental monomorphizer removed
+    - Type variable String names replaced with Int IDs from monomorphization onward
+    - `AssignMVarIds` module for globally unique ID assignment
+
+26. **Solver Root-Backed MVarIds** - ✅ Complete (Apr 4)
+    - `SolverRoots` module normalizes solver variables to union-find roots
+    - Ensures two type variables sharing the same solver root get the same MVarId
+    - schemeRoots field threaded through LocalGraphData and GlobalGraph
+
+27. **Monomorphization Correctness** - ✅ Fixed (Apr 1-11)
+    - Scheme freshening with globally unique MVarIds
+    - `applySubstWithFreeVars` transitive closure prevents cross-scheme contamination
+    - `PendingCall` for deferred nested polymorphic call specialization
+    - Per-binding MVarId isolation for cycle members
+    - Constructor annotations in scheme cache
+    - VarLocal/TrackedVarLocal prefer VarEnv monomorphic type
+    - Type alias analysis fixes in `convertCanTypeNameToMVarId`
+    - Phantom type var normalization in spec keys
+    - Fast path for non-polymorphic functions
+
+28. **Value-Only Recursive Cycles** - ✅ Fixed (Apr 9)
+    - Value-only recursive cycles compiled as individual `MonoDefine` nodes instead of single `MonoCycle`
+    - `MonoCycle` constructor deleted as dead code
+
+29. **isPureExpr Bugs** - ✅ Fixed (Apr 9)
+    - `MonoLet` now checks both body and bound expression for purity
+    - `MonoCase` checks Inline expressions inside Decider tree, not just jump-target list
+
+30. **GC Root Safety** - ✅ Fixed (Apr 7-13)
+    - `StackRootGuard` RAII helper roots HPointers across allocations
+    - Scheduler `pushStack`/`mailboxPushBack` take `HPointer` not `Process*`
+    - External GC root scanning support added to RootSet
+    - EcoGCPrepare attaches live GC roots on allocation ops
+    - Fast/slow allocation paths with allocation coalescing
+    - eco.call and eco.papExtend supply GC roots
+
 **Current E2E Test Status**:
 - Compilation through front-end and back-end to JIT execution working
 - All elm-test tests passing
 - All E2E tests passing (across elm-core, elm-json, elm-http, elm-regex, elm-time, elm-url packages)
 - Parallel test execution with process isolation
-- Bootstrap compilation in progress — many codegen and calling convention bugs identified and fixed
+- Bootstrap compilation in progress — GC stack root tracing now complete, monomorphization substantially hardened
+- ~50+ new E2E test cases added (Apr 2026) covering embedded constants, Maybe/List/Result type mismatches, recursive values
 
 **Deliverables**:
 - [x] Code generation modules (11 modules in `Compiler/Generate/MLIR/`)
@@ -1601,6 +1677,22 @@ Comprehensive testing for the compiler backend.
 | `LetDestructFnCases.elm` | Let-bound destructuring with functions *(Mar 13)* |
 | `PolyChainCases.elm` | Polymorphic chain cases *(Mar 11)* |
 | `ParamArityCases.elm` | Parameter arity validation *(Mar 18)* |
+| `AccessorScopingCases.elm` | Accessor type-variable scoping *(Mar 28)* |
+| `IfNodeTypeCases.elm` | If-expression node type cases *(Mar 27)* |
+| `CaseSafepointLeakCases.elm` | Case branch SSA variable leak detection *(Mar 27)* |
+| `IfLetSafepointCases.elm` | If/let safepoint variable leak detection *(Mar 27)* |
+| `SpecializeAccessorCases.elm` | Record accessor specialization *(Mar 26)* |
+| `SpecializeConstructorCases.elm` | Constructor specialization *(Apr 7)* |
+| `TypeAliasCtorCases.elm` | Type alias record constructor annotations *(Apr 11)* |
+| `PhantomTypeVarCases.elm` | Phantom type var normalization *(Apr 11)* |
+
+**New Invariant Tests** *(Mar 27 – Apr 2026)*:
+| Test Module | Description |
+|-------------|-------------|
+| `NodeVarConstrained.elm` | TYPE_007: unconstrained node variables detection *(Mar 27)* |
+| `PostSolveNodeTypeGrounded.elm` | POST_010: post-PostSolve type grounding *(Mar 28)* |
+| `ProjectionHeapLayoutConsistency.elm` | Projection heap layout consistency *(Apr 3)* |
+| `MonoVarGlobalArityConsistency.elm` | MONO_027: function/type arity match *(Apr 1)* |
 
 **Removed Tests** *(Feb 26, 2026)*:
 - `OptimizeEquivalent.elm` - Removed; was only for parity during early development (typed vs untyped Optimized IR equivalence check)
@@ -1615,7 +1707,7 @@ Comprehensive testing for the compiler backend.
 | elm-time | `test/elm-time/` | POSIX time and time parts tests |
 | elm-url | `test/elm-url/` | Percent encode/decode and roundtrip tests |
 
-**Bootstrap E2E Test Cases** *(Mar 14-18, 2026)*:
+**Bootstrap E2E Test Cases** *(Mar 14-18, 2026; Apr 2026)*:
 | Test | Description |
 |------|-------------|
 | `ClosureCaptureBoolTest.elm` | Bool capture boxing across closure boundary |
@@ -1634,6 +1726,18 @@ Comprehensive testing for the compiler backend.
 | `SingleCtorPair*Test.elm` | 10+ tests for single-ctor pair type combinations |
 | `CapturedStagedFuncCallTest.elm` | Captured function with staged calling |
 | `DictMapStagedCaptureTest.elm` | Dict.map with staged capture |
+| `TypeAliasCtorTest.elm` | Type alias record constructor annotations *(Apr 11)* |
+| `PhantomTypeVarTest.elm` | Phantom type var spec key normalization *(Apr 11)* |
+| `PureRecursiveValueThunkTest.elm` | Recursive zero-arity value thunks *(Apr 9)* |
+| `PureMutualRecursiveValueTest.elm` | Mutual recursive zero-arity values *(Apr 9)* |
+| `MaybeMap*Test.elm` | 7 tests for Maybe.map type mismatch scenarios *(Apr 10)* |
+| `ListMapTypeMismatchTest.elm` | List.map type mismatch *(Apr 10)* |
+| `ResultMapTypeMismatchTest.elm` | Result.map type mismatch *(Apr 10)* |
+| `Embedded*Test.elm` | ~27 tests for embedded constant handling (Nil, Nothing, True/False, Unit, EmptyString) *(Apr 9)* |
+| `Unbox*Test.elm` | 7 tests for unboxing wrappers around embedded constants *(Apr 9)* |
+| `CombinatorListStringTest.elm` | Combinator list string operations *(Apr 5)* |
+| `BytesDecoderMutualRecursiveTest.elm` | Mutual recursive bytes decoders *(Apr 9)* |
+| `JsonDecoderSelfRecursiveTest.elm` | Self-recursive JSON decoders *(Apr 9)* |
 
 **Specialization Test Suites** *(Feb 25, 2026)*:
 | Suite | Description |
@@ -1817,25 +1921,43 @@ Enable debugging of compiled Elm programs.
 
 ### 5.2 Bootstrap to Native x86
 
-**Status**: In Progress (Bootstrap Push - Mar 11-19, 2026)
+**Status**: In Progress (Bootstrap Push - Mar 11 – Apr 13, 2026)
 
 Compile the Guida compiler itself using ECO to produce a native x86 version.
 
-**Current Progress** *(Mar 11-19, 2026)*:
-- Active bootstrap attempt revealed ~20 codegen and runtime bugs, now fixed (see §4.2 issues 16-21)
+**Current Progress** *(Mar 11 – Apr 13, 2026)*:
+- Active bootstrap attempt revealed ~20+ codegen and runtime bugs, now fixed (see §4.2 issues 16-30)
 - Monomorphizer performance profiling and optimization (TypeSubst UF representation, dict handling efficiency)
 - New calling convention (`CallGenericApply`) added as safe fallback for complex call patterns
 - Typed decision tree paths (`MonoDtPath`) eliminate cross-type guessing in pattern codegen
-- Kernel improvements: Http/Process return types adjusted for optimized builds
-- Kernel file write implementation added
-- Bootstrap documentation updated: `bootstrap.md`
-- Bug reports and analysis: `bootstrap-errors.md`, `capt-param-missing-report.md`, `test-failure-report.md`
+- Kernel improvements: Http/Process return types adjusted, MVar parameter fix, List fromArray/toArray identity fix
+- Bootstrap documentation updated: `guides/bootstrap.md` (extended to Stage 8)
+- **MonoDirect removed** *(Mar 31)*: Incomplete alternative monomorphizer removed to unblock refactoring
+- **Int MVarIds** *(Mar 30 – Apr 1)*: Replaced String-based type variable names with Int IDs from monomorphization onward, with `AssignMVarIds` module for global unique ID assignment
+- **Solver root-backed MVarIds** *(Apr 4)*: `SolverRoots` module normalizes solver variables to union-find roots after constraint solving; ensures same solver root → same MVarId
+- **Monomorphization correctness fixes** *(Apr 1-11)*:
+  - Scheme freshening with globally unique MVarIds (no collision with caller substitution)
+  - `applySubstWithFreeVars` prevents cross-scheme contamination
+  - `PendingCall` variant for deferred specialization of nested polymorphic calls
+  - Per-binding MVarId isolation in cycle members
+  - Constructor type annotations added to scheme cache
+  - VarLocal/TrackedVarLocal prefer VarEnv monomorphic type over re-derivation
+  - Type alias analysis fixes (TAlias args/body branch)
+  - Phantom type var normalization (surviving MVar → sentinel values in spec keys)
+  - Fast path for non-polymorphic functions (skip scheme creation)
+- **Memory performance** *(Apr 10-11)*: Deferred callEdges/specHasEffects to post-worklist pass, Dict→Array/BitSet conversions, String→Int ID comparison keys, batched record updates
+- **GC stack root tracing complete** *(Apr 11-13)*: See §1.2.3 and §3.3
+- **Large object allocation** *(Apr 8)*: First pass at pinned large object allocation and GC
+- **Registry caching** *(Apr 3)*: 30-minute check interval for registry.dat, `--refresh-registry` flag
+- **Kernel safety fixes** *(Apr 7)*: StackRootGuard RAII helper roots HPointers across allocations, kernel functions fixed to return valid Tasks
+- **Runtime fixes**: 64MB default stack size, Env::init for native binary, regex/http pointer safety via side tables
 
 **Requirements**:
 - [ ] All dependencies ported (§2)
 - [x] Compiler backend substantially complete (§4)
-- [ ] Runtime stable (§1) — stack map integration still needed for large programs
+- [x] Runtime GC stack root tracing implemented (§1.2.3, §3.3)
 - [ ] Remaining calling convention edge cases resolved
+- [ ] Extended stress testing under GC pressure
 
 **Deliverables**:
 - [ ] Native ECO compiler binary

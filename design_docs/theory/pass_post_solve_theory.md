@@ -14,8 +14,10 @@ The PostSolve pass is a type-fixing phase that runs after the main type solver (
 
 The Elm type solver uses synthetic type variables for certain expressions. These fall into two groups:
 
-- **Group A**: Expressions whose types are solver-owned via `recordNodeVar` (Int, Negate, Binop, Call, If, Case, Access, Update, Accessor, List, Tuple, Record, Lambda, Let/LetRec/LetDestruct). The solver computes meaningful types.
-- **Group B**: Expressions whose types are unconstrained by the solver (Str, Chr, Float, Unit, Shader). These have synthetic variables that need structural computation.
+- **Group A**: Expressions whose types are solver-owned via `recordNodeVar`. As of Mar 28, 2026, this includes almost all expressions: Int, Negate, Binop, Call, If, Case, Access, Update, Accessor, List, Tuple, Record, Lambda, Let/LetRec/LetDestruct, and all structural expressions (containers, lambdas, accessors, lets). The solver computes meaningful types for all of these.
+- **Group B**: Only scalar literals whose types are unconstrained by the solver (Str, Chr, Float, Unit, Shader). These have synthetic variables that need structural computation.
+
+*(Mar 28, 2026)*: All structural expression types (List, Tuple, Record, Lambda, Accessor, Let) were moved from Group B to Group A, deriving their types directly from the solver. PostSolve was cleaned up to remove unnecessary work recovering these structural types.
 
 ### Problem 2: VarKernel Types
 

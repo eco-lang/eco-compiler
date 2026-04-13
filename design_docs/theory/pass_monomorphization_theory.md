@@ -85,11 +85,42 @@ type LambdaId = AnonymousLambda IO.Canonical Int  -- module + unique index
 
 ### Substitution
 
-Maps type variables to concrete MonoTypes:
+Maps type variable IDs to concrete MonoTypes:
 
 ```elm
-type alias Substitution = Dict String Name MonoType
+type alias Substitution = Dict MVarId MonoType
 ```
+
+*(Mar 30 – Apr 1, 2026)*: Type variable names were changed from `String` to `Int` (`MVarId`) throughout monomorphization. The `AssignMVarIds` module assigns globally unique Int IDs to all type variables in the TypedOptimized IR at the start of monomorphization.
+
+### Solver Root-Backed MVarIds
+
+*(Apr 4, 2026)*: The `SolverRoots` module normalizes solver variables to their union-find roots after constraint solving completes. This is critical for correctness:
+
+- Two type variables that were unified during solving share the same root
+- `ensureMVarIdForRoot` guarantees they receive the same MVarId
+- Without this, aliased type variables could receive different MVarIds, causing spurious specialization divergence
+
+The `schemeRoots` field (mapping definition names to root variable sets) is threaded through `LocalGraphData` and `GlobalGraph` with binary encoders/decoders.
+
+### Scheme Freshening
+
+*(Apr 1, 2026)*: Every time a callee's type scheme is instantiated for specialization, globally unique MVarIds are allocated for its type variables. This prevents:
+
+- Collision between scheme variables and the caller's existing substitution entries
+- Cross-specialization contamination when the same scheme is reused at different call sites
+
+### Free-Vars-Aware Substitution
+
+*(Apr 2, 2026)*: `applySubstWithFreeVars` filters the substitution to only the MVarIds that appear in the canonical type being resolved (plus their transitive closure through MVar references in bound MonoTypes). This prevents bindings from unrelated specializations from leaking through and producing incorrect monomorphized types.
+
+### PendingCall Deferral
+
+*(Apr 5, 2026)*: When a nested Call expression is used as an argument and its result type is still polymorphic (contains unresolved type variables), specialization is deferred by wrapping it in a `PendingCall` variant. Later, once the outer callee's expected parameter type is known, it unifies that type against the saved canonical type to refine the substitution before specializing the inner call.
+
+### Phantom Type Var Normalization
+
+*(Apr 11, 2026)*: Surviving `MVar _ CEcoValue` in specialization keys (from scheme bindings where the type variable is not constrained by usage) are mapped to sentinel values. This ensures that fresh MVars from different scheme instantiations do not create different spec keys for otherwise identical specializations.
 
 ## Algorithm: Worklist-Based Specialization
 
@@ -519,8 +550,21 @@ type alias WorkItem =
 
 ### File Locations
 
-- `compiler/src/Compiler/Generate/Monomorphize.elm`: Main algorithm (~2500 lines)
-- `compiler/src/Compiler/AST/Monomorphized.elm`: AST definitions (~750 lines)
+- `compiler/src/Compiler/Monomorphize/Monomorphize.elm`: Main algorithm
+- `compiler/src/Compiler/Monomorphize/Specialize.elm`: Expression specialization
+- `compiler/src/Compiler/Monomorphize/TypeSubst.elm`: Type substitution and unification
+- `compiler/src/Compiler/Monomorphize/State.elm`: Monomorphization state
+- `compiler/src/Compiler/Monomorphize/AssignMVarIds.elm`: Int MVarId assignment *(Apr 2026)*
+- `compiler/src/Compiler/Monomorphize/Analysis.elm`: Type analysis
+- `compiler/src/Compiler/Monomorphize/Closure.elm`: Closure specialization
+- `compiler/src/Compiler/Monomorphize/KernelAbi.elm`: Kernel ABI handling
+- `compiler/src/Compiler/Monomorphize/ResolveAccessorValues.elm`: Record accessor resolution *(Mar 2026)*
+- `compiler/src/Compiler/Monomorphize/Registry.elm`: Specialization registry
+- `compiler/src/Compiler/Monomorphize/MonoTraverse.elm`: Common traversal infrastructure
+- `compiler/src/Compiler/Monomorphize/Prune.elm`: Dead specialization pruning
+- `compiler/src/Compiler/Type/SolverRoots.elm`: Solver root normalization *(Apr 2026)*
+- `compiler/src/Compiler/AST/Monomorphized.elm`: AST definitions
+- `compiler/src/Compiler/AST/TypeIds.elm`: Int type variable IDs *(Mar 2026)*
 
 ### Entry Point
 
@@ -545,6 +589,9 @@ monomorphize :
 3. All layouts are computed
 4. SpecializationRegistry has unique IDs for all specializations
 5. Let-bound polymorphic functions used at multiple distinct types are multi-specialized into separate definitions with fresh names (Feb 2026)
+6. Type variables use Int MVarIds (not Strings), with solver root-backed allocation ensuring unified type variables share IDs (Apr 2026)
+7. Surviving `MVar _ CEcoValue` in spec keys are normalized to sentinel values to prevent phantom type var divergence (Apr 2026)
+8. `MonoCycle` constructor is removed; value-only recursive cycles are individual `MonoDefine` nodes (Apr 2026)
 
 ## Example
 
