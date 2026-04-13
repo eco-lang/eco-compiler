@@ -518,7 +518,8 @@ struct PapCreateOpLowering : public OpConversionPattern<PapCreateOp> {
 /// This is used when _dispatch_mode="fast".
 static Value emitFastClosureCall(ConversionPatternRewriter &rewriter, Location loc, const EcoRuntime &runtime,
                                  Value closureI64, ValueRange newArgs, SymbolRefAttr fastEvaluator,
-                                 ArrayAttr captureAbiTypes, Type resultType) {
+                                 ArrayAttr captureAbiTypes, Type resultType,
+                                 Operation *safeOp = nullptr, ValueRange liveRoots = {}) {
     auto *ctx = rewriter.getContext();
     auto i8Ty = IntegerType::get(ctx, 8);
     auto i64Ty = IntegerType::get(ctx, 64);
@@ -576,6 +577,8 @@ static Value emitFastClosureCall(ConversionPatternRewriter &rewriter, Location l
     SmallVector<Value> callOperands;
     callOperands.push_back(funcPtr);
     callOperands.append(callArgs.begin(), callArgs.end());
+    if (safeOp)
+        emitSafepointMarker(safeOp, rewriter, runtime, liveRoots);
     auto callOp = rewriter.create<LLVM::CallOp>(loc, funcType, callOperands);
 
     return callOp.getResult();
@@ -585,7 +588,8 @@ static Value emitFastClosureCall(ConversionPatternRewriter &rewriter, Location l
 /// Calls the generic clone stored in closure.evaluator with (Closure*, args...).
 /// This is used when _dispatch_mode="closure".
 static Value emitClosureCall(ConversionPatternRewriter &rewriter, Location loc, const EcoRuntime &runtime,
-                             Value closureI64, ValueRange newArgs, Type resultType) {
+                             Value closureI64, ValueRange newArgs, Type resultType,
+                             Operation *safeOp = nullptr, ValueRange liveRoots = {}) {
     auto *ctx = rewriter.getContext();
     auto i8Ty = IntegerType::get(ctx, 8);
     auto i64Ty = IntegerType::get(ctx, 64);
@@ -622,6 +626,8 @@ static Value emitClosureCall(ConversionPatternRewriter &rewriter, Location loc, 
     SmallVector<Value> callOperands;
     callOperands.push_back(evaluator);
     callOperands.append(callArgs.begin(), callArgs.end());
+    if (safeOp)
+        emitSafepointMarker(safeOp, rewriter, runtime, liveRoots);
     auto callOp = rewriter.create<LLVM::CallOp>(loc, funcType, callOperands);
 
     return callOp.getResult();
@@ -633,14 +639,16 @@ static Value emitClosureCall(ConversionPatternRewriter &rewriter, Location loc, 
 static Value emitUnknownClosureCall(ConversionPatternRewriter &rewriter, Location loc, const EcoRuntime &runtime,
                                     Value closureI64, ValueRange newArgs, Type resultType,
                                     ArrayRef<Type> origNewArgTypes = {},
-                                    Type origResultType = {});  // Forward declaration
+                                    Type origResultType = {},
+                                    Operation *safeOp = nullptr, ValueRange liveRoots = {});  // Forward declaration
 
 /// Dispatch a closure call based on the _dispatch_mode attribute.
 /// Returns Value() and emits error if dispatch mode is invalid or missing required attributes.
 static Value emitDispatchedClosureCall(ConversionPatternRewriter &rewriter, Location loc, const EcoRuntime &runtime,
                                        Operation *op, Value closureI64, ValueRange newArgs, Type resultType,
                                        ArrayRef<Type> origNewArgTypes = {},
-                                       Type origResultType = {}) {
+                                       Type origResultType = {},
+                                       ValueRange liveRoots = {}) {
     auto dispatchMode = op->getAttrOfType<StringAttr>("_dispatch_mode");
 
     // Missing _dispatch_mode on a closure call = pipeline bug
@@ -658,16 +666,19 @@ static Value emitDispatchedClosureCall(ConversionPatternRewriter &rewriter, Loca
             op->emitError("_dispatch_mode='fast' requires _fast_evaluator and _capture_abi attributes");
             return Value();
         }
-        return emitFastClosureCall(rewriter, loc, runtime, closureI64, newArgs, fastEval, captureAbi, resultType);
+        return emitFastClosureCall(rewriter, loc, runtime, closureI64, newArgs, fastEval, captureAbi, resultType,
+                                   op, liveRoots);
     }
 
     if (mode == "closure") {
-        return emitClosureCall(rewriter, loc, runtime, closureI64, newArgs, resultType);
+        return emitClosureCall(rewriter, loc, runtime, closureI64, newArgs, resultType,
+                               op, liveRoots);
     }
 
     if (mode == "unknown") {
         return emitUnknownClosureCall(rewriter, loc, runtime, closureI64, newArgs, resultType,
-                                      origNewArgTypes, origResultType);
+                                      origNewArgTypes, origResultType,
+                                      op, liveRoots);
     }
 
     op->emitError("unrecognized _dispatch_mode: ") << mode;
@@ -701,7 +712,8 @@ static Value emitDispatchedClosureCall(ConversionPatternRewriter &rewriter, Loca
 static Value emitInlineClosureCall(ConversionPatternRewriter &rewriter, Location loc, const EcoRuntime &runtime,
                                    Value closureI64, ValueRange newArgs, Type resultType,
                                    ArrayRef<Type> origNewArgTypes = {},
-                                   Type origResultType = {}) {
+                                   Type origResultType = {},
+                                   Operation *safeOp = nullptr, ValueRange liveRoots = {}) {
     auto *ctx = rewriter.getContext();
     auto i8Ty = IntegerType::get(ctx, 8);
     auto i64Ty = IntegerType::get(ctx, 64);
@@ -737,21 +749,25 @@ static Value emitInlineClosureCall(ConversionPatternRewriter &rewriter, Location
             // !eco.value → already HPointer i64, pass through
         } else if (origArgType && origArgType.isInteger(64)) {
             // Int → box via eco_alloc_int
+            if (safeOp) emitSafepointMarker(safeOp, rewriter, runtime, liveRoots);
             auto boxCall = rewriter.create<LLVM::CallOp>(loc, allocIntFunc, ValueRange{arg});
             arg = boxCall.getResult();
         } else if (origArgType && origArgType.isF64()) {
             // Float → box via eco_alloc_float
+            if (safeOp) emitSafepointMarker(safeOp, rewriter, runtime, liveRoots);
             auto boxCall = rewriter.create<LLVM::CallOp>(loc, allocFloatFunc, ValueRange{arg});
             arg = boxCall.getResult();
         } else if (origArgType && isa<IntegerType>(origArgType) &&
                    cast<IntegerType>(origArgType).getWidth() < 64) {
             // Char → box via eco_alloc_char
+            if (safeOp) emitSafepointMarker(safeOp, rewriter, runtime, liveRoots);
             auto boxCall = rewriter.create<LLVM::CallOp>(loc, allocCharFunc, ValueRange{arg});
             arg = boxCall.getResult();
         } else {
             // No orig type → fallback heuristics
             if (auto intTy = dyn_cast<IntegerType>(arg.getType())) {
                 if (intTy.getWidth() == 16) {
+                    if (safeOp) emitSafepointMarker(safeOp, rewriter, runtime, liveRoots);
                     auto boxCall = rewriter.create<LLVM::CallOp>(loc, allocCharFunc, ValueRange{arg});
                     arg = boxCall.getResult();
                 }
@@ -767,6 +783,8 @@ static Value emitInlineClosureCall(ConversionPatternRewriter &rewriter, Location
     // === Call eco_closure_call_saturated(closure_hptr, new_args, num_newargs) ===
     auto closureCallFunc = runtime.getOrCreateClosureCallSaturated(rewriter);
     auto numNewArgsI32 = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, static_cast<int64_t>(numNewArgs));
+    if (safeOp)
+        emitSafepointMarker(safeOp, rewriter, runtime, liveRoots);
     auto runtimeCall = rewriter.create<LLVM::CallOp>(
         loc, closureCallFunc, ValueRange{closureI64, newArgsArray, numNewArgsI32});
     Value resultI64 = runtimeCall.getResult();
@@ -831,13 +849,14 @@ static Value emitInlineClosureCall(ConversionPatternRewriter &rewriter, Location
 static Value emitUnknownClosureCall(ConversionPatternRewriter &rewriter, Location loc, const EcoRuntime &runtime,
                                     Value closureI64, ValueRange newArgs, Type resultType,
                                     ArrayRef<Type> origNewArgTypes,
-                                    Type origResultType) {
+                                    Type origResultType,
+                                    Operation *safeOp, ValueRange liveRoots) {
     emitWarning(loc) << "closure call with _dispatch_mode='unknown' - "
                      << "closure kind metadata was not propagated; "
                      << "using generic dispatch";
     // Fall back to legacy inline closure call (args-array convention)
     return emitInlineClosureCall(rewriter, loc, runtime, closureI64, newArgs, resultType,
-                                 origNewArgTypes, origResultType);
+                                 origNewArgTypes, origResultType, safeOp, liveRoots);
 }
 
 //===----------------------------------------------------------------------===//
@@ -858,7 +877,8 @@ struct PapExtendOpLowering : public OpConversionPattern<PapExtendOp> {
     LogicalResult lowerSegmentationUnknown(PapExtendOp op, OpAdaptor adaptor,
                                            ConversionPatternRewriter &rewriter,
                                            Location loc, Value closureI64,
-                                           ValueRange newargs) const {
+                                           ValueRange newargs,
+                                           ValueRange liveRoots) const {
         auto *ctx = rewriter.getContext();
         auto i32Ty = IntegerType::get(ctx, 32);
         auto i64Ty = IntegerType::get(ctx, 64);
@@ -891,6 +911,7 @@ struct PapExtendOpLowering : public OpConversionPattern<PapExtendOp> {
                     // Box i16 (Char) so the wrapper can unbox it later.
                     // Clear the unboxed bit so the GC traces it as an HPointer.
                     auto allocCharFunc = runtime.getOrCreateAllocChar(rewriter);
+                    emitSafepointMarker(op, rewriter, runtime, liveRoots);
                     arg = rewriter.create<LLVM::CallOp>(loc, allocCharFunc, ValueRange{arg}).getResult();
                     adjustedBitmap &= ~(1ULL << i);
                 }
@@ -917,15 +938,18 @@ struct PapExtendOpLowering : public OpConversionPattern<PapExtendOp> {
             } else if (origType && origType.isInteger(64)) {
                 // Int (i64) → box via eco_alloc_int
                 auto allocIntFunc = runtime.getOrCreateAllocInt(rewriter);
+                emitSafepointMarker(op, rewriter, runtime, liveRoots);
                 arg = rewriter.create<LLVM::CallOp>(loc, allocIntFunc, ValueRange{arg}).getResult();
             } else if (origType && origType.isF64()) {
                 // Float (f64) → box via eco_alloc_float
                 auto allocFloatFunc = runtime.getOrCreateAllocFloat(rewriter);
+                emitSafepointMarker(op, rewriter, runtime, liveRoots);
                 arg = rewriter.create<LLVM::CallOp>(loc, allocFloatFunc, ValueRange{arg}).getResult();
             } else if (origType && isa<IntegerType>(origType) &&
                        cast<IntegerType>(origType).getWidth() < 64) {
                 // Char (i16) → box via eco_alloc_char
                 auto allocCharFunc = runtime.getOrCreateAllocChar(rewriter);
+                emitSafepointMarker(op, rewriter, runtime, liveRoots);
                 arg = rewriter.create<LLVM::CallOp>(loc, allocCharFunc, ValueRange{arg}).getResult();
             } else {
                 // Fallback: if ptr, convert to i64
@@ -940,6 +964,7 @@ struct PapExtendOpLowering : public OpConversionPattern<PapExtendOp> {
         auto helperFunc = runtime.getOrCreateApplySegmentationUnknown(rewriter);
         auto numNewArgsI32 = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, static_cast<int32_t>(numNewArgs));
         auto bitmapConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, rewriter.getI64IntegerAttr(adjustedBitmap));
+        emitSafepointMarker(op, rewriter, runtime, liveRoots);
         auto call = rewriter.create<LLVM::CallOp>(
             loc, helperFunc, ValueRange{closureI64, typedArgsArray, numNewArgsI32, bitmapConst, boxedArgsArray});
 
@@ -954,7 +979,8 @@ struct PapExtendOpLowering : public OpConversionPattern<PapExtendOp> {
     LogicalResult lowerGenericApply(PapExtendOp op, OpAdaptor adaptor,
                                     ConversionPatternRewriter &rewriter,
                                     Location loc, Value closureI64,
-                                    ValueRange newargs) const {
+                                    ValueRange newargs,
+                                    ValueRange liveRoots) const {
         auto *ctx = rewriter.getContext();
         auto i32Ty = IntegerType::get(ctx, 32);
         auto i64Ty = IntegerType::get(ctx, 64);
@@ -1000,12 +1026,14 @@ struct PapExtendOpLowering : public OpConversionPattern<PapExtendOp> {
             } else if (origType && origType.isInteger(64)) {
                 // Int (i64) → box via eco_alloc_int
                 auto allocIntFunc = runtime.getOrCreateAllocInt(rewriter);
+                emitSafepointMarker(op, rewriter, runtime, liveRoots);
                 auto boxCall = rewriter.create<LLVM::CallOp>(
                     loc, allocIntFunc, ValueRange{arg});
                 arg = boxCall.getResult();
             } else if (origType && origType.isF64()) {
                 // Float (f64) → box via eco_alloc_float
                 auto allocFloatFunc = runtime.getOrCreateAllocFloat(rewriter);
+                emitSafepointMarker(op, rewriter, runtime, liveRoots);
                 auto boxCall = rewriter.create<LLVM::CallOp>(
                     loc, allocFloatFunc, ValueRange{arg});
                 arg = boxCall.getResult();
@@ -1013,6 +1041,7 @@ struct PapExtendOpLowering : public OpConversionPattern<PapExtendOp> {
                        cast<IntegerType>(origType).getWidth() < 64) {
                 // Char (i16) → box via eco_alloc_char
                 auto allocCharFunc = runtime.getOrCreateAllocChar(rewriter);
+                emitSafepointMarker(op, rewriter, runtime, liveRoots);
                 auto boxCall = rewriter.create<LLVM::CallOp>(
                     loc, allocCharFunc, ValueRange{arg});
                 arg = boxCall.getResult();
@@ -1028,6 +1057,7 @@ struct PapExtendOpLowering : public OpConversionPattern<PapExtendOp> {
 
         // Call eco_apply_closure(closure, args, num_args)
         auto applyFunc = runtime.getOrCreateApplyClosure(rewriter);
+        emitSafepointMarker(op, rewriter, runtime, liveRoots);
         auto numNewArgsConst = rewriter.create<LLVM::ConstantOp>(
             loc, i32Ty, static_cast<int32_t>(numNewArgs));
         auto call = rewriter.create<LLVM::CallOp>(
@@ -1054,8 +1084,10 @@ struct PapExtendOpLowering : public OpConversionPattern<PapExtendOp> {
 
         auto remainingArityAttr = op.getRemainingArityAttr();
 
-        // Emit safepoint marker before all papExtend calls
-        emitSafepointMarker(op, rewriter, runtime, liveRoots);
+        // NOTE: safepoint marker is emitted by each sub-path right before
+        // the final GC-triggering call, NOT here at the top. This ensures
+        // findTargetCall in StatepointConversion latches onto the correct
+        // target, not an intermediate boxing or setup call.
 
         // Generic mode: remaining_arity absent — runtime saturation check.
         // Delegate to eco_apply_closure which handles under/exact/over-saturated.
@@ -1063,9 +1095,9 @@ struct PapExtendOpLowering : public OpConversionPattern<PapExtendOp> {
             // Check _call_kind to distinguish generic_apply from segmentation_unknown
             auto callKindAttr = op->getAttrOfType<StringAttr>("_call_kind");
             if (callKindAttr && callKindAttr.getValue() == "segmentation_unknown") {
-                return lowerSegmentationUnknown(op, adaptor, rewriter, loc, closureI64, newargs);
+                return lowerSegmentationUnknown(op, adaptor, rewriter, loc, closureI64, newargs, liveRoots);
             }
-            return lowerGenericApply(op, adaptor, rewriter, loc, closureI64, newargs);
+            return lowerGenericApply(op, adaptor, rewriter, loc, closureI64, newargs, liveRoots);
         }
 
         // Typed mode: remaining_arity present — compile-time saturation check.
@@ -1093,14 +1125,16 @@ struct PapExtendOpLowering : public OpConversionPattern<PapExtendOp> {
 
             if (fastEval && captureAbi) {
                 // Fast path: known homogeneous closure, call fast clone directly
-                result = emitFastClosureCall(rewriter, loc, runtime, closureI64, newargs, fastEval, captureAbi, convertedResultTy);
+                result = emitFastClosureCall(rewriter, loc, runtime, closureI64, newargs, fastEval, captureAbi, convertedResultTy,
+                                             op, liveRoots);
             } else if (closureKind) {
                 // Has closure kind but not fast path -> heterogeneous, use closure call
-                result = emitClosureCall(rewriter, loc, runtime, closureI64, newargs, convertedResultTy);
+                result = emitClosureCall(rewriter, loc, runtime, closureI64, newargs, convertedResultTy,
+                                         op, liveRoots);
             } else {
                 // No typed closure info -> use legacy inline closure call.
                 result = emitInlineClosureCall(rewriter, loc, runtime, closureI64, newargs, convertedResultTy,
-                                               origNewArgTypes, origResultType);
+                                               origNewArgTypes, origResultType, op, liveRoots);
             }
             rewriter.replaceOp(op, result);
         } else {
@@ -1125,6 +1159,7 @@ struct PapExtendOpLowering : public OpConversionPattern<PapExtendOp> {
                         // Box i16 (Char) so the wrapper can unbox it later.
                         // Clear the unboxed bit so the GC traces it as an HPointer.
                         auto allocCharFunc = runtime.getOrCreateAllocChar(rewriter);
+                        emitSafepointMarker(op, rewriter, runtime, liveRoots);
                         auto boxCall = rewriter.create<LLVM::CallOp>(loc, allocCharFunc, ValueRange{arg});
                         arg = boxCall.getResult();
                         newargsBitmap &= ~(1ULL << i);
@@ -1135,7 +1170,7 @@ struct PapExtendOpLowering : public OpConversionPattern<PapExtendOp> {
 
             auto numNewArgsConst = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, static_cast<int32_t>(numNewArgs));
             auto bitmapConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, rewriter.getI64IntegerAttr(newargsBitmap));
-
+            emitSafepointMarker(op, rewriter, runtime, liveRoots);
             auto call = rewriter.create<LLVM::CallOp>(
                 loc, helperFunc, ValueRange{closureI64, argsArray, numNewArgsConst, bitmapConst});
             rewriter.replaceOp(op, call.getResult());
@@ -1205,21 +1240,22 @@ struct CallOpLowering : public OpConversionPattern<CallOp> {
             }
             Type origResultType = op.getResultTypes()[0];
 
-            // Emit safepoint marker before closure calls
-            if (!isMusttail)
-                emitSafepointMarker(op, rewriter, runtime, liveRoots);
+            // Safepoint marker is emitted inside each helper, right before
+            // the final GC-triggering call (not here, to avoid latching onto
+            // intermediate resolveHPtr/boxing calls).
+            ValueRange callRoots = isMusttail ? ValueRange{} : liveRoots;
 
             // Check for typed closure calling attributes.
             auto dispatchMode = op->getAttrOfType<StringAttr>("_dispatch_mode");
             if (dispatchMode) {
                 result = emitDispatchedClosureCall(rewriter, loc, runtime, op, closureI64, newArgs, convertedResultTy,
-                                                   origNewArgTypes, origResultType);
+                                                   origNewArgTypes, origResultType, callRoots);
                 if (!result) {
                     return failure();
                 }
             } else {
                 result = emitInlineClosureCall(rewriter, loc, runtime, closureI64, newArgs, convertedResultTy,
-                                               origNewArgTypes, origResultType);
+                                               origNewArgTypes, origResultType, op, callRoots);
             }
             rewriter.replaceOp(op, result);
         }
