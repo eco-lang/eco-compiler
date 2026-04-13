@@ -947,6 +947,9 @@ extern "C" uint64_t eco_pap_extend(uint64_t closure_hptr, uint64_t* args, uint32
     void* obj = Allocator::instance().allocate(size, Tag_Closure);
     if (!obj) return 0;
 
+    // Re-resolve old_closure: allocate() may have triggered GC and moved it.
+    old_closure = static_cast<Closure*>(hpointerToPtr(closure_hptr));
+
     Closure* new_closure = static_cast<Closure*>(obj);
 
     // Copy metadata from old closure.
@@ -983,6 +986,7 @@ extern "C" uint64_t eco_closure_call_saturated(uint64_t closure_hptr, uint64_t* 
     // Sanity check: n_values + num_newargs should equal max_values for a saturated call.
     assert(closure->n_values + num_newargs == max_values &&
            "eco_closure_call_saturated: argument count mismatch");
+    assert(max_values <= 63 && "max_values exceeds 6-bit field cap");
 
     // Build the combined argument array.
     // Stack-allocate for small arities, alloca for large.
@@ -990,10 +994,25 @@ extern "C" uint64_t eco_closure_call_saturated(uint64_t closure_hptr, uint64_t* 
     void** combined_args = (max_values <= 16) ? stack_args :
                            static_cast<void**>(alloca(max_values * sizeof(void*)));
 
+    // Zero-init so GC sees valid values for not-yet-populated slots.
+    memset(combined_args, 0, max_values * sizeof(void*));
+
+    // Root combined_args as a stack root range during buildEvaluatorArgs + evaluator call.
+    size_t saved_range = eco_gc_stack_range_point();
+    if (max_values > 0) {
+        uint64_t mask = (uint64_t{1} << max_values) - 1;
+        eco_gc_push_stack_range(
+            reinterpret_cast<uint64_t*>(combined_args),
+            max_values,
+            mask);
+    }
+
     // Single implementation of bitmap interpretation + boxing (INV_1).
     buildEvaluatorArgs(closure, new_args, num_newargs, combined_args);
 
     void* result = closure->evaluator(combined_args);
+
+    eco_gc_restore_stack_range_point(saved_range);
     return reinterpret_cast<uint64_t>(result);
 }
 

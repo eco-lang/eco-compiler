@@ -330,9 +330,10 @@ void eco_gc_remove_root(uint64_t* root_ptr);
 /// Returns the number of registered JIT roots (for testing).
 uint64_t eco_gc_jit_root_count();
 
-/// Stack root range management for compiled code.
+/// Stack root range management for compiled code and C++ runtime.
 /// Registers contiguous stack arrays as GC root ranges so the collector
-/// can trace HPointers stored in alloca-backed args arrays.
+/// can trace HPointers stored in alloca- or stack-backed args arrays
+/// (e.g., LLVM alloca args, C++ combined_args for closure evaluators).
 size_t   eco_gc_stack_range_point();
 void     eco_gc_push_stack_range(uint64_t* base, size_t count, uint64_t hpointer_mask);
 void     eco_gc_restore_stack_range_point(size_t point);
