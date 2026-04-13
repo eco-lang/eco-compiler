@@ -404,9 +404,15 @@ int64_t eco_int_pow(int64_t base, int64_t exp);
 // HPointer Conversion
 //===----------------------------------------------------------------------===//
 
-/// Converts an HPointer (as uint64_t) to a raw pointer.
+/// Convert an HPointer-encoded uint64_t to a raw heap pointer.
 /// Uses Allocator::resolve() to handle forwarding pointers during GC.
 /// Returns nullptr for embedded constants (Nil, True, False, etc.).
+///
+/// GC INVARIANT: This function MUST NOT allocate or trigger GC.
+/// Closure wrappers call eco_resolve_hptr without safepoint markers,
+/// relying on it being non-allocating. Any allocation here would
+/// require adding safepoints around all wrapper resolve calls.
+///
 /// @param hptr HPointer value (as uint64_t)
 /// @return Raw pointer to the heap object, or nullptr
 void* eco_resolve_hptr(uint64_t hptr);

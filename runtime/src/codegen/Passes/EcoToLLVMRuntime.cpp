@@ -622,6 +622,38 @@ void eco::detail::emitSafepointMarker(
 }
 
 //===----------------------------------------------------------------------===//
+// Wrapper Safepoint Marker (for closure wrapper bodies)
+//===----------------------------------------------------------------------===//
+
+void eco::detail::emitWrapperSafepointMarker(
+    OpBuilder &builder,
+    const EcoRuntime &runtime,
+    Location loc,
+    ValueRange liveRoots) {
+
+    if (liveRoots.empty()) return;
+
+    auto *ctx = builder.getContext();
+    auto gcPtrTy = LLVM::LLVMPointerType::get(ctx, /*addressSpace=*/1);
+
+    SmallVector<Value, 4> gcPtrs;
+    for (auto val : liveRoots) {
+        auto ptr = builder.create<LLVM::IntToPtrOp>(loc, gcPtrTy, val);
+        gcPtrs.push_back(ptr);
+    }
+
+    runtime.getOrCreateSafepointMarker(builder);
+
+    auto voidTy = LLVM::LLVMVoidType::get(ctx);
+    auto markerFuncTy = LLVM::LLVMFunctionType::get(voidTy, {}, /*isVarArg=*/true);
+
+    builder.create<LLVM::CallOp>(
+        loc, markerFuncTy,
+        FlatSymbolRefAttr::get(ctx, "__eco_safepoint_marker"),
+        gcPtrs);
+}
+
+//===----------------------------------------------------------------------===//
 // String Conversion Utilities
 //===----------------------------------------------------------------------===//
 

@@ -329,11 +329,17 @@ static LLVM::LLVMFuncOp getOrCreateWrapper(PatternRewriter &rewriter, ModuleOp m
     auto resolveFunc = runtime.getOrCreateResolveHPtr(rewriter);
     bool hasOrigTypes = !origParamTypes.empty();
 
+    SmallVector<Value, 8> liveRoots;
     SmallVector<Value> callArgs;
     for (int64_t i = 0; i < arity; ++i) {
         auto idxConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, i);
         auto argPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i64Ty, argsArray, ValueRange{idxConst});
         Value argI64 = rewriter.create<LLVM::LoadOp>(loc, i64Ty, argPtr);
+
+        // Track all loaded HPointers as live roots for GC safety.
+        // Conservative: includes primitive-arg HPointers too (slightly larger
+        // stackmaps but simpler and avoids subtle bugs).
+        liveRoots.push_back(argI64);
 
         Type targetType = (i < (int64_t)targetParamTypes.size()) ? targetParamTypes[i] : i64Ty;
         Type origType = (hasOrigTypes && i < (int64_t)origParamTypes.size())
@@ -382,6 +388,10 @@ static LLVM::LLVMFuncOp getOrCreateWrapper(PatternRewriter &rewriter, ModuleOp m
         callArgs.push_back(convertedArg);
     }
 
+    // Emit safepoint marker before the target call so StatepointConversion
+    // wraps it in gc.statepoint, keeping loaded HPointers visible to GC.
+    emitWrapperSafepointMarker(rewriter, runtime, loc, liveRoots);
+
     // Call the target function
     auto targetFuncType = LLVM::LLVMFunctionType::get(targetResultType, targetParamTypes, false);
     auto funcSymbolRef = FlatSymbolRefAttr::get(ctx, funcName);
@@ -399,17 +409,20 @@ static LLVM::LLVMFuncOp getOrCreateWrapper(PatternRewriter &rewriter, ModuleOp m
         resultPtr = rewriter.create<LLVM::IntToPtrOp>(loc, ptrTy, ValueRange{resultValue});
     } else if (origResultType && origResultType.isInteger(64)) {
         // Int result: inner function returns raw i64 → box via eco_alloc_int
+        emitWrapperSafepointMarker(rewriter, runtime, loc, liveRoots);
         auto allocIntFunc = runtime.getOrCreateAllocInt(rewriter);
         auto boxCall = rewriter.create<LLVM::CallOp>(loc, allocIntFunc, ValueRange{resultValue});
         resultPtr = rewriter.create<LLVM::IntToPtrOp>(loc, ptrTy, ValueRange{boxCall.getResult()});
     } else if (origResultType && origResultType.isF64()) {
         // Float result: inner function returns f64 → box via eco_alloc_float
+        emitWrapperSafepointMarker(rewriter, runtime, loc, liveRoots);
         auto allocFloatFunc = runtime.getOrCreateAllocFloat(rewriter);
         auto boxCall = rewriter.create<LLVM::CallOp>(loc, allocFloatFunc, ValueRange{resultValue});
         resultPtr = rewriter.create<LLVM::IntToPtrOp>(loc, ptrTy, ValueRange{boxCall.getResult()});
     } else if (origResultType && isa<IntegerType>(origResultType) &&
                cast<IntegerType>(origResultType).getWidth() < 64) {
         // Char result: inner function returns i16 → box via eco_alloc_char
+        emitWrapperSafepointMarker(rewriter, runtime, loc, liveRoots);
         auto allocCharFunc = runtime.getOrCreateAllocChar(rewriter);
         auto boxCall = rewriter.create<LLVM::CallOp>(loc, allocCharFunc, ValueRange{resultValue});
         resultPtr = rewriter.create<LLVM::IntToPtrOp>(loc, ptrTy, ValueRange{boxCall.getResult()});
@@ -418,6 +431,7 @@ static LLVM::LLVMFuncOp getOrCreateWrapper(PatternRewriter &rewriter, ModuleOp m
         resultPtr = resultValue;
     } else if (targetResultType == f64Ty && !origResultType) {
         // Fallback: no orig types, target returns f64 → box
+        emitWrapperSafepointMarker(rewriter, runtime, loc, liveRoots);
         auto allocFloatFunc = runtime.getOrCreateAllocFloat(rewriter);
         auto boxCall = rewriter.create<LLVM::CallOp>(loc, allocFloatFunc, ValueRange{resultValue});
         resultPtr = rewriter.create<LLVM::IntToPtrOp>(loc, ptrTy, ValueRange{boxCall.getResult()});
@@ -425,6 +439,7 @@ static LLVM::LLVMFuncOp getOrCreateWrapper(PatternRewriter &rewriter, ModuleOp m
         // Fallback: no orig types, target returns integer
         if (intTy.getWidth() < 64) {
             // Char: box via eco_alloc_char
+            emitWrapperSafepointMarker(rewriter, runtime, loc, liveRoots);
             auto allocCharFunc = runtime.getOrCreateAllocChar(rewriter);
             auto boxCall = rewriter.create<LLVM::CallOp>(loc, allocCharFunc, ValueRange{resultValue});
             resultPtr = rewriter.create<LLVM::IntToPtrOp>(loc, ptrTy, ValueRange{boxCall.getResult()});

@@ -326,6 +326,17 @@ void emitSafepointMarker(
     const EcoRuntime &runtime,
     mlir::ValueRange liveRoots);
 
+/// Emit __eco_safepoint_marker in a wrapper function body.
+/// Unlike emitSafepointMarker, this takes OpBuilder & and Location directly
+/// (no source Operation* needed), making it suitable for use inside
+/// getOrCreateWrapper where we build a new function body.
+/// liveRoots: i64 SSA values representing HPointers that must survive GC.
+void emitWrapperSafepointMarker(
+    mlir::OpBuilder &builder,
+    const EcoRuntime &runtime,
+    mlir::Location loc,
+    mlir::ValueRange liveRoots);
+
 //===----------------------------------------------------------------------===//
 // Pattern Population Functions (Internal)
 //===----------------------------------------------------------------------===//
