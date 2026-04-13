@@ -23,6 +23,9 @@
 // Include enum declarations (must be before op classes).
 #include "eco/EcoEnums.h.inc"
 
+// Include generated OpInterface declarations (must be before op classes).
+#include "eco/EcoOpInterfaces.h.inc"
+
 #define GET_OP_CLASSES
 #include "eco/EcoOps.h.inc"
 

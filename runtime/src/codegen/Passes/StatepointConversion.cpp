@@ -152,16 +152,10 @@ static bool convertMarkersToStatepoints(
                 continue;
             }
 
-            // Accept __eco_safepoint_poll and any eco_alloc_* / eco_allocate allocation function
-            auto *targetFn = targetCall->getCalledFunction();
-            assert(targetFn && "Statepoint target must be a direct call");
-            StringRef targetName = targetFn->getName();
-            assert((targetName == "__eco_safepoint_poll" ||
-                    targetName.starts_with("eco_alloc_") ||
-                    targetName == "eco_allocate" ||
-                    targetName == "eco_gc_alloc_region_fast" ||
-                    targetName == "eco_gc_alloc_region_slow")
-                   && "Statepoint target must be __eco_safepoint_poll or an allocation function");
+            // Any call immediately after a safepoint marker is a valid
+            // statepoint target: allocation functions, safepoint polls,
+            // eco.call callees, eco.papExtend evaluators, etc.
+            // Both direct and indirect calls are supported.
 
             // Build statepoint wrapping the target call
             FunctionType *targetFnTy = targetCall->getFunctionType();

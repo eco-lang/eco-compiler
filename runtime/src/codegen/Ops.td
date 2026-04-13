@@ -16,6 +16,38 @@ include "mlir/Interfaces/SideEffectInterfaces.td"
 include "mlir/Interfaces/ControlFlowInterfaces.td"
 
 //===----------------------------------------------------------------------===//
+// GCRootCarrier OpInterface
+//===----------------------------------------------------------------------===//
+
+def Eco_GCRootCarrierOpInterface : OpInterface<"GCRootCarrier"> {
+  let cppNamespace = "::eco";
+
+  let description = [{
+    Operations that explicitly carry the set of Eco GC roots live across
+    a safepoint. EcoGCPrepare computes liveness on Eco IR and populates
+    these roots; lowering and statepoint conversion consume them.
+
+    The interface abstracts over different operand layouts:
+    - Dedicated `live_roots` segments (most allocation ops)
+    - Roots appended after fields (construct.record, construct.custom)
+    - Roots appended after call operands (call, papExtend, papCreate)
+  }];
+
+  let methods = [
+    InterfaceMethod<
+      "Return the eco.value roots carried by this operation.",
+      "mlir::ValueRange", "getGCRoots", (ins)>,
+
+    InterfaceMethod<
+      "Replace the GC root operands carried by this operation. "
+      "The op is responsible for preserving non-root operands "
+      "and maintaining any operand layout invariants.",
+      "void", "setGCRoots",
+      (ins "mlir::ValueRange":$newRoots)>
+  ];
+}
+
+//===----------------------------------------------------------------------===//
 // Dialect Definition
 //===----------------------------------------------------------------------===//
 
@@ -450,7 +482,9 @@ def Eco_GetTagOp : Eco_Op<"get_tag", [Pure]> {
 // List Operations (Cons / Nil)
 //===----------------------------------------------------------------------===//
 
-def Eco_ListConstructOp : Eco_Op<"construct.list", [Pure]> {
+def Eco_ListConstructOp : Eco_Op<"construct.list", [Pure,
+    DeclareOpInterfaceMethods<Eco_GCRootCarrierOpInterface>
+]> {
   let summary = "Construct a list Cons cell";
   let description = [{
     Allocate a list cons cell: head :: tail.
@@ -519,7 +553,9 @@ def Eco_ListTailOp : Eco_Op<"project.list_tail", [Pure]> {
 // Tuple Operations
 //===----------------------------------------------------------------------===//
 
-def Eco_Tuple2ConstructOp : Eco_Op<"construct.tuple2", [Pure]> {
+def Eco_Tuple2ConstructOp : Eco_Op<"construct.tuple2", [Pure,
+    DeclareOpInterfaceMethods<Eco_GCRootCarrierOpInterface>
+]> {
   let summary = "Construct a 2-tuple";
   let description = [{
     Construct a 2-tuple value. Elements may be boxed (!eco.value) or
@@ -544,7 +580,9 @@ def Eco_Tuple2ConstructOp : Eco_Op<"construct.tuple2", [Pure]> {
   let assemblyFormat = "$a `,` $b (`(` $live_roots^ `:` type($live_roots) `)`)? attr-dict `:` type($a) `,` type($b) `->` type($result)";
 }
 
-def Eco_Tuple3ConstructOp : Eco_Op<"construct.tuple3", [Pure]> {
+def Eco_Tuple3ConstructOp : Eco_Op<"construct.tuple3", [Pure,
+    DeclareOpInterfaceMethods<Eco_GCRootCarrierOpInterface>
+]> {
   let summary = "Construct a 3-tuple";
   let description = [{
     Construct a 3-tuple value. The `unboxed_bitmap` attribute indicates
@@ -608,7 +646,9 @@ def Eco_Tuple3ProjectOp : Eco_Op<"project.tuple3", [Pure]> {
 // Record Operations
 //===----------------------------------------------------------------------===//
 
-def Eco_RecordConstructOp : Eco_Op<"construct.record", [Pure]> {
+def Eco_RecordConstructOp : Eco_Op<"construct.record", [Pure,
+    DeclareOpInterfaceMethods<Eco_GCRootCarrierOpInterface>
+]> {
   let summary = "Construct an Elm record";
   let description = [{
     Construct a record with a fixed set of fields. The `field_count` and
@@ -658,7 +698,9 @@ def Eco_RecordProjectOp : Eco_Op<"project.record", [Pure]> {
 // Custom ADT Operations
 //===----------------------------------------------------------------------===//
 
-def Eco_CustomConstructOp : Eco_Op<"construct.custom", [Pure]> {
+def Eco_CustomConstructOp : Eco_Op<"construct.custom", [Pure,
+    DeclareOpInterfaceMethods<Eco_GCRootCarrierOpInterface>
+]> {
   let summary = "Construct a custom ADT value";
   let description = [{
     Create a custom algebraic data type (ADT) value for a user-defined type.
@@ -821,7 +863,8 @@ def Eco_StringLiteralOp : Eco_Op<"string_literal", [Pure]> {
 //===----------------------------------------------------------------------===//
 
 def Eco_CallOp : Eco_Op<"call", [
-    DeclareOpInterfaceMethods<SymbolUserOpInterface>
+    DeclareOpInterfaceMethods<SymbolUserOpInterface>,
+    DeclareOpInterfaceMethods<Eco_GCRootCarrierOpInterface>
 ]> {
   let summary = "Call function or closure";
   let description = [{
@@ -861,7 +904,8 @@ def Eco_CallOp : Eco_Op<"call", [
 
 def Eco_PapCreateOp : Eco_Op<"papCreate", [
     Pure,
-    DeclareOpInterfaceMethods<SymbolUserOpInterface>
+    DeclareOpInterfaceMethods<SymbolUserOpInterface>,
+    DeclareOpInterfaceMethods<Eco_GCRootCarrierOpInterface>
 ]> {
   let summary = "Create partial application closure";
   let description = [{
@@ -908,7 +952,8 @@ def Eco_PapCreateOp : Eco_Op<"papCreate", [
 }
 
 def Eco_PapExtendOp : Eco_Op<"papExtend", [
-    DeclareOpInterfaceMethods<SymbolUserOpInterface>
+    DeclareOpInterfaceMethods<SymbolUserOpInterface>,
+    DeclareOpInterfaceMethods<Eco_GCRootCarrierOpInterface>
 ]> {
   let summary = "Extend closure with more arguments (typed or generic apply)";
   let description = [{
@@ -1014,7 +1059,9 @@ def Eco_ProjectClosureOp : Eco_Op<"project.closure", [Pure]> {
 // 5. Allocation and GC Operations
 //===----------------------------------------------------------------------===//
 
-def Eco_AllocateOp : Eco_Op<"allocate"> {
+def Eco_AllocateOp : Eco_Op<"allocate", [
+    DeclareOpInterfaceMethods<Eco_GCRootCarrierOpInterface>
+]> {
   let summary = "Generic heap allocation";
   let description = [{
     Allocate a heap object of the specified size. This is a low-level
@@ -1047,7 +1094,9 @@ def Eco_AllocateOp : Eco_Op<"allocate"> {
   let assemblyFormat = "$size (`(` $live_roots^ `:` type($live_roots) `)`)? attr-dict `:` type($size) `->` type($result)";
 }
 
-def Eco_AllocateCtorOp : Eco_Op<"allocate_ctor"> {
+def Eco_AllocateCtorOp : Eco_Op<"allocate_ctor", [
+    DeclareOpInterfaceMethods<Eco_GCRootCarrierOpInterface>
+]> {
   let summary = "Allocate constructor object";
   let description = [{
     Allocate space for a constructor object with the specified tag and
@@ -1081,7 +1130,9 @@ def Eco_AllocateCtorOp : Eco_Op<"allocate_ctor"> {
   let assemblyFormat = "(`(` $live_roots^ `:` type($live_roots) `)`)? attr-dict `:` type($result)";
 }
 
-def Eco_AllocateStringOp : Eco_Op<"allocate_string"> {
+def Eco_AllocateStringOp : Eco_Op<"allocate_string", [
+    DeclareOpInterfaceMethods<Eco_GCRootCarrierOpInterface>
+]> {
   let summary = "Allocate string storage";
   let description = [{
     Allocate storage for a string of the specified length (in UTF-16 code
@@ -1106,7 +1157,8 @@ def Eco_AllocateStringOp : Eco_Op<"allocate_string"> {
 }
 
 def Eco_AllocateClosureOp : Eco_Op<"allocate_closure", [
-    DeclareOpInterfaceMethods<SymbolUserOpInterface>
+    DeclareOpInterfaceMethods<SymbolUserOpInterface>,
+    DeclareOpInterfaceMethods<Eco_GCRootCarrierOpInterface>
 ]> {
   let summary = "Allocate closure object";
   let description = [{
@@ -1136,7 +1188,9 @@ def Eco_AllocateClosureOp : Eco_Op<"allocate_closure", [
   let assemblyFormat = "(`(` $live_roots^ `:` type($live_roots) `)`)? attr-dict `:` type($result)";
 }
 
-def Eco_SafepointOp : Eco_Op<"safepoint"> {
+def Eco_SafepointOp : Eco_Op<"safepoint", [
+    DeclareOpInterfaceMethods<Eco_GCRootCarrierOpInterface>
+]> {
   let summary = "GC safepoint";
   let description = [{
     GC safepoint operation. Marks a point where garbage collection can
@@ -1233,7 +1287,9 @@ def Eco_StoreGlobalOp : Eco_Op<"store_global", [
 // 7. Type Conversion Operations
 //===----------------------------------------------------------------------===//
 
-def Eco_BoxOp : Eco_Op<"box", [Pure]> {
+def Eco_BoxOp : Eco_Op<"box", [Pure,
+    DeclareOpInterfaceMethods<Eco_GCRootCarrierOpInterface>
+]> {
   let summary = "Box primitive value to eco.value";
   let description = [{
     Box an unboxed primitive value (i64, f64, i32, i1) into a heap-allocated

@@ -313,6 +313,16 @@ mlir::Value emitAllocWithSafepoint(
     mlir::ValueRange args,
     mlir::ValueRange liveRoots);
 
+/// Emit a safepoint marker before a call. Like emitAllocWithSafepoint but
+/// does NOT emit the call itself — the caller is responsible for creating
+/// the actual LLVM call after this returns. This allows the marker to be
+/// placed before direct calls, indirect calls, or func::CallOps.
+void emitSafepointMarker(
+    mlir::Operation *op,
+    mlir::ConversionPatternRewriter &rewriter,
+    const EcoRuntime &runtime,
+    mlir::ValueRange liveRoots);
+
 //===----------------------------------------------------------------------===//
 // Pattern Population Functions (Internal)
 //===----------------------------------------------------------------------===//

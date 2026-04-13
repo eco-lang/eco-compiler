@@ -60,6 +60,12 @@ mlir_tablegen(${MLIR_TABLEGEN_OUTPUT_DIR}/EcoOps.h.inc -gen-op-decls)
 # Generate Op class definitions (implementation file)
 mlir_tablegen(${MLIR_TABLEGEN_OUTPUT_DIR}/EcoOps.cpp.inc -gen-op-defs)
 
+# Generate OpInterface declarations (header file)
+mlir_tablegen(${MLIR_TABLEGEN_OUTPUT_DIR}/EcoOpInterfaces.h.inc -gen-op-interface-decls)
+
+# Generate OpInterface definitions (implementation file)
+mlir_tablegen(${MLIR_TABLEGEN_OUTPUT_DIR}/EcoOpInterfaces.cpp.inc -gen-op-interface-defs)
+
 # Generate dialect declarations
 mlir_tablegen(${MLIR_TABLEGEN_OUTPUT_DIR}/EcoDialect.h.inc -gen-dialect-decls)
 

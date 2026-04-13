@@ -573,6 +573,40 @@ Value eco::detail::emitAllocWithSafepoint(
 }
 
 //===----------------------------------------------------------------------===//
+// Safepoint Marker (for call-like safepoints)
+//===----------------------------------------------------------------------===//
+
+void eco::detail::emitSafepointMarker(
+    Operation *op,
+    ConversionPatternRewriter &rewriter,
+    const EcoRuntime &runtime,
+    ValueRange liveRoots) {
+
+    if (liveRoots.empty()) return;
+
+    auto loc = op->getLoc();
+    auto *ctx = rewriter.getContext();
+    auto gcPtrTy = LLVM::LLVMPointerType::get(ctx, /*addressSpace=*/1);
+
+    SmallVector<Value, 4> gcPtrs;
+    for (auto val : liveRoots) {
+        auto ptr = rewriter.create<LLVM::IntToPtrOp>(loc, gcPtrTy, val);
+        gcPtrs.push_back(ptr);
+    }
+
+    runtime.getOrCreateSafepointMarker(rewriter);
+
+    auto voidTy = LLVM::LLVMVoidType::get(ctx);
+    auto markerFuncTy = LLVM::LLVMFunctionType::get(
+        voidTy, {}, /*isVarArg=*/true);
+
+    rewriter.create<LLVM::CallOp>(
+        loc, markerFuncTy,
+        FlatSymbolRefAttr::get(ctx, "__eco_safepoint_marker"),
+        gcPtrs);
+}
+
+//===----------------------------------------------------------------------===//
 // String Conversion Utilities
 //===----------------------------------------------------------------------===//
 

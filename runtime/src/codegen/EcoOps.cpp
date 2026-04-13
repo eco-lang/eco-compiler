@@ -18,6 +18,12 @@
 using namespace mlir;
 using namespace eco;
 
+/// Helper to read the eco.gc_roots_count attribute from an operation.
+static unsigned getGCRootsCountAttr(Operation *op) {
+    auto attr = op->getAttrOfType<IntegerAttr>("eco.gc_roots_count");
+    return attr ? attr.getValue().getZExtValue() : 0;
+}
+
 //===----------------------------------------------------------------------===//
 // SymbolUserOpInterface: verifySymbolUses
 //===----------------------------------------------------------------------===//
@@ -307,10 +313,13 @@ LogicalResult CustomConstructOp::verify() {
 
 LogicalResult PapCreateOp::verify() {
   // Verify that num_captured matches the number of captured operands.
+  // Subtract appended GC roots from operand count.
   int64_t numCaptured = getNumCaptured();
-  if (static_cast<int64_t>(getCaptured().size()) != numCaptured) {
+  unsigned rootCount = getGCRootsCountAttr(getOperation());
+  int64_t realCapturedCount = static_cast<int64_t>(getCaptured().size()) - rootCount;
+  if (realCapturedCount != numCaptured) {
     return emitOpError("number of captured operands (")
-           << getCaptured().size()
+           << realCapturedCount
            << ") must match num_captured attribute ("
            << numCaptured << ")";
   }
@@ -383,7 +392,13 @@ LogicalResult PapCreateOp::verify() {
 
 LogicalResult PapExtendOp::verify() {
   uint64_t bitmap = getNewargsUnboxedBitmap();
-  auto newargs = getNewargs();
+  auto allNewargs = getNewargs();
+
+  // Subtract appended GC roots from newargs count.
+  unsigned rootCount = getGCRootsCountAttr(getOperation());
+  // Roots are appended to the full operand list (closure + newargs + roots),
+  // so the real newargs count is allNewargs.size() - rootCount.
+  size_t realNewargsCount = allNewargs.size() - rootCount;
 
   // Bitmap must fit in 52 bits (runtime Closure struct constraint).
   if (bitmap >= (1ULL << 52)) {
@@ -391,8 +406,8 @@ LogicalResult PapExtendOp::verify() {
   }
 
   // No bits should be set beyond newargs size.
-  if (!newargs.empty()) {
-    uint64_t validMask = (1ULL << newargs.size()) - 1;
+  if (realNewargsCount > 0) {
+    uint64_t validMask = (1ULL << realNewargsCount) - 1;
     if (bitmap & ~validMask) {
       return emitOpError("newargs_unboxed_bitmap has bits set beyond newargs count");
     }
@@ -400,21 +415,21 @@ LogicalResult PapExtendOp::verify() {
     return emitOpError("newargs_unboxed_bitmap must be 0 when there are no newargs");
   }
 
-  // Verify bitmap matches operand types.
-  for (size_t i = 0; i < newargs.size(); ++i) {
+  // Verify bitmap matches operand types (only real newargs, not roots).
+  for (size_t i = 0; i < realNewargsCount; ++i) {
     bool isBitSet = (bitmap >> i) & 1;
-    bool isUnboxedType = !isa<eco::ValueType>(newargs[i].getType());
+    bool isUnboxedType = !isa<eco::ValueType>(allNewargs[i].getType());
     if (isBitSet != isUnboxedType) {
       return emitOpError("newargs_unboxed_bitmap bit ")
              << i << " doesn't match operand type: bit is "
              << (isBitSet ? "set" : "unset") << " but operand type is "
-             << newargs[i].getType();
+             << allNewargs[i].getType();
     }
   }
 
   // === REP_CLOSURE_001: Bool must not be passed at closure boundary ===
-  for (size_t i = 0; i < newargs.size(); ++i) {
-    Type ty = newargs[i].getType();
+  for (size_t i = 0; i < realNewargsCount; ++i) {
+    Type ty = allNewargs[i].getType();
     if (ty.isInteger(1)) {
       return emitOpError("newarg Bool (i1) at index ") << i
              << " violates REP_CLOSURE_001: Bool must be boxed to !eco.value at closure boundary";
@@ -462,6 +477,10 @@ LogicalResult CallOp::verify() {
   auto calleeAttr = getCalleeAttr();
   auto remainingArityAttr = getRemainingArityAttr();
 
+  // Subtract appended GC roots from operand count for verification.
+  unsigned rootCount = getGCRootsCountAttr(getOperation());
+  unsigned realOperandCount = operands.size() - rootCount;
+
   // Case 1: Direct call (callee present)
   if (calleeAttr) {
     if (remainingArityAttr) {
@@ -474,7 +493,7 @@ LogicalResult CallOp::verify() {
   }
 
   // Case 2: Indirect call (closure application)
-  if (operands.empty()) {
+  if (realOperandCount == 0) {
     return emitOpError("indirect call must have at least one operand (closure)");
   }
 
@@ -488,7 +507,7 @@ LogicalResult CallOp::verify() {
   }
 
   int64_t remainingArity = remainingArityAttr.getValue().getSExtValue();
-  unsigned numNewArgs = operands.size() - 1;
+  unsigned numNewArgs = realOperandCount - 1;
 
   if (remainingArity <= 0) {
     return emitOpError("remaining_arity must be > 0, got ") << remainingArity;
@@ -500,6 +519,143 @@ LogicalResult CallOp::verify() {
   }
 
   return success();
+}
+
+//===----------------------------------------------------------------------===//
+// GCRootCarrier Interface Implementations
+//===----------------------------------------------------------------------===//
+
+// --- Pattern 1: Ops with dedicated $live_roots segment ---
+
+ValueRange AllocateOp::getGCRoots() { return getLiveRoots(); }
+void AllocateOp::setGCRoots(ValueRange newRoots) {
+    getLiveRootsMutable().clear(); getLiveRootsMutable().append(newRoots);
+}
+
+ValueRange AllocateCtorOp::getGCRoots() { return getLiveRoots(); }
+void AllocateCtorOp::setGCRoots(ValueRange newRoots) {
+    getLiveRootsMutable().clear(); getLiveRootsMutable().append(newRoots);
+}
+
+ValueRange AllocateStringOp::getGCRoots() { return getLiveRoots(); }
+void AllocateStringOp::setGCRoots(ValueRange newRoots) {
+    getLiveRootsMutable().clear(); getLiveRootsMutable().append(newRoots);
+}
+
+ValueRange AllocateClosureOp::getGCRoots() { return getLiveRoots(); }
+void AllocateClosureOp::setGCRoots(ValueRange newRoots) {
+    getLiveRootsMutable().clear(); getLiveRootsMutable().append(newRoots);
+}
+
+ValueRange BoxOp::getGCRoots() { return getLiveRoots(); }
+void BoxOp::setGCRoots(ValueRange newRoots) {
+    getLiveRootsMutable().clear(); getLiveRootsMutable().append(newRoots);
+}
+
+ValueRange ListConstructOp::getGCRoots() { return getLiveRoots(); }
+void ListConstructOp::setGCRoots(ValueRange newRoots) {
+    getLiveRootsMutable().clear(); getLiveRootsMutable().append(newRoots);
+}
+
+ValueRange Tuple2ConstructOp::getGCRoots() { return getLiveRoots(); }
+void Tuple2ConstructOp::setGCRoots(ValueRange newRoots) {
+    getLiveRootsMutable().clear(); getLiveRootsMutable().append(newRoots);
+}
+
+ValueRange Tuple3ConstructOp::getGCRoots() { return getLiveRoots(); }
+void Tuple3ConstructOp::setGCRoots(ValueRange newRoots) {
+    getLiveRootsMutable().clear(); getLiveRootsMutable().append(newRoots);
+}
+
+ValueRange SafepointOp::getGCRoots() { return getLiveRoots(); }
+void SafepointOp::setGCRoots(ValueRange newRoots) {
+    getLiveRootsMutable().clear(); getLiveRootsMutable().append(newRoots);
+}
+
+// --- Pattern 2: Ops with roots appended after fields ---
+
+ValueRange RecordConstructOp::getGCRoots() {
+    int64_t fieldCount = getFieldCount();
+    auto all = getFields();
+    if (static_cast<int64_t>(all.size()) <= fieldCount) return {};
+    return all.drop_front(fieldCount);
+}
+void RecordConstructOp::setGCRoots(ValueRange newRoots) {
+    int64_t fieldCount = getFieldCount();
+    auto all = getFields();
+    SmallVector<Value, 8> ops(all.begin(), all.begin() + fieldCount);
+    ops.append(newRoots.begin(), newRoots.end());
+    getFieldsMutable().clear(); getFieldsMutable().append(ops);
+}
+
+ValueRange CustomConstructOp::getGCRoots() {
+    int64_t sz = getSize();
+    auto all = getFields();
+    if (static_cast<int64_t>(all.size()) <= sz) return {};
+    return all.drop_front(sz);
+}
+void CustomConstructOp::setGCRoots(ValueRange newRoots) {
+    int64_t sz = getSize();
+    auto all = getFields();
+    SmallVector<Value, 8> ops(all.begin(), all.begin() + sz);
+    ops.append(newRoots.begin(), newRoots.end());
+    getFieldsMutable().clear(); getFieldsMutable().append(ops);
+}
+
+// --- Pattern 3: Append-pattern ops (Call, PapExtend, PapCreate) ---
+
+ValueRange CallOp::getGCRoots() {
+    unsigned rootCount = getGCRootsCountAttr(getOperation());
+    if (rootCount == 0) return {};
+    auto all = getOperands();
+    return all.drop_front(all.size() - rootCount);
+}
+void CallOp::setGCRoots(ValueRange newRoots) {
+    unsigned oldRootCount = getGCRootsCountAttr(getOperation());
+    auto all = getOperands();
+    unsigned nonRootCount = all.size() - oldRootCount;
+    SmallVector<Value, 8> ops(all.begin(), all.begin() + nonRootCount);
+    ops.append(newRoots.begin(), newRoots.end());
+    getOperation()->setOperands(ops);
+    OpBuilder b(getOperation());
+    getOperation()->setAttr("eco.gc_roots_count",
+        b.getI64IntegerAttr(newRoots.size()));
+}
+
+ValueRange PapExtendOp::getGCRoots() {
+    unsigned rootCount = getGCRootsCountAttr(getOperation());
+    if (rootCount == 0) return {};
+    auto all = getOperation()->getOperands();
+    return all.drop_front(all.size() - rootCount);
+}
+void PapExtendOp::setGCRoots(ValueRange newRoots) {
+    unsigned oldRootCount = getGCRootsCountAttr(getOperation());
+    auto all = getOperation()->getOperands();
+    unsigned nonRootCount = all.size() - oldRootCount;
+    SmallVector<Value, 8> ops(all.begin(), all.begin() + nonRootCount);
+    ops.append(newRoots.begin(), newRoots.end());
+    getOperation()->setOperands(ops);
+    OpBuilder b(getOperation());
+    getOperation()->setAttr("eco.gc_roots_count",
+        b.getI64IntegerAttr(newRoots.size()));
+}
+
+ValueRange PapCreateOp::getGCRoots() {
+    unsigned rootCount = getGCRootsCountAttr(getOperation());
+    if (rootCount == 0) return {};
+    auto all = getOperation()->getOperands();
+    return all.drop_front(all.size() - rootCount);
+}
+void PapCreateOp::setGCRoots(ValueRange newRoots) {
+    unsigned oldRootCount = getGCRootsCountAttr(getOperation());
+    auto all = getOperation()->getOperands();
+    unsigned nonRootCount = all.size() - oldRootCount;
+    SmallVector<Value, 8> ops(all.begin(), all.begin() + nonRootCount);
+    ops.append(newRoots.begin(), newRoots.end());
+    getOperation()->setOperands(ops);
+    OpBuilder b(getOperation());
+    getOperation()->setAttr("eco.gc_roots_count",
+        b.getI64IntegerAttr(newRoots.size()));
 }
 
 //===----------------------------------------------------------------------===//
@@ -719,6 +875,9 @@ ParseResult JoinpointOp::parse(OpAsmParser &parser, OperationState &result) {
 
 // Include enum definitions.
 #include "eco/EcoEnums.cpp.inc"
+
+// Include generated OpInterface definitions.
+#include "eco/EcoOpInterfaces.cpp.inc"
 
 #define GET_OP_CLASSES
 #include "eco/EcoOps.cpp.inc"

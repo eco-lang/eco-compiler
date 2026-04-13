@@ -6,6 +6,8 @@
 // 3. Attaches live roots as explicit operands on the first op of each group.
 // 4. Marks subsequent ops in a group with eco.gc_group_member = true.
 // 5. Recomputes live !eco.value sets at each eco.safepoint and replaces operands.
+// 6. Computes and attaches live roots on call-like safepoints (eco.call,
+//    eco.papExtend, eco.papCreate) via the GCRootCarrier interface.
 //
 //===----------------------------------------------------------------------===//
 
@@ -99,34 +101,21 @@ static bool isGroupBarrier(Operation *op) {
     return false;
 }
 
-/// Set the live_roots operands on an allocation op via per-op dispatch.
-/// Most ops have a dedicated $live_roots variadic. RecordConstructOp and
-/// CustomConstructOp piggyback roots onto the $fields variadic (appended
-/// after the actual fields) to avoid AttrSizedOperandSegments, which would
-/// break Elm compiler bytecode that predates the new operand layout.
-static void setLiveRoots(Operation *op, ArrayRef<Value> roots) {
-    if (auto x = dyn_cast<eco::AllocateCtorOp>(op))
-        { x.getLiveRootsMutable().clear(); x.getLiveRootsMutable().append(roots); }
-    else if (auto x = dyn_cast<eco::AllocateStringOp>(op))
-        { x.getLiveRootsMutable().clear(); x.getLiveRootsMutable().append(roots); }
-    else if (auto x = dyn_cast<eco::AllocateClosureOp>(op))
-        { x.getLiveRootsMutable().clear(); x.getLiveRootsMutable().append(roots); }
-    else if (auto x = dyn_cast<eco::AllocateOp>(op))
-        { x.getLiveRootsMutable().clear(); x.getLiveRootsMutable().append(roots); }
-    else if (auto x = dyn_cast<eco::BoxOp>(op))
-        { x.getLiveRootsMutable().clear(); x.getLiveRootsMutable().append(roots); }
-    else if (auto x = dyn_cast<eco::ListConstructOp>(op))
-        { x.getLiveRootsMutable().clear(); x.getLiveRootsMutable().append(roots); }
-    else if (auto x = dyn_cast<eco::Tuple2ConstructOp>(op))
-        { x.getLiveRootsMutable().clear(); x.getLiveRootsMutable().append(roots); }
-    else if (auto x = dyn_cast<eco::Tuple3ConstructOp>(op))
-        { x.getLiveRootsMutable().clear(); x.getLiveRootsMutable().append(roots); }
-    else if (auto x = dyn_cast<eco::RecordConstructOp>(op))
-        // Append roots after fields in the single variadic operand list.
-        { x.getFieldsMutable().append(roots); }
-    else if (auto x = dyn_cast<eco::CustomConstructOp>(op))
-        // Append roots after fields in the single variadic operand list.
-        { x.getFieldsMutable().append(roots); }
+/// Returns true if this is a call-like safepoint that needs independent roots.
+/// musttail calls are excluded — they are non-safepoints per design.
+static bool isCallSafepoint(Operation *op) {
+    if (auto callOp = dyn_cast<eco::CallOp>(op)) {
+        // musttail calls are non-safepoints
+        auto musttail = callOp.getMusttail();
+        if (musttail && *musttail)
+            return false;
+        return true;
+    }
+    if (isa<eco::PapExtendOp>(op))
+        return true;
+    if (isa<eco::PapCreateOp>(op))
+        return true;
+    return false;
 }
 
 //===----------------------------------------------------------------------===//
@@ -181,18 +170,17 @@ private:
         if (!currentGroup.empty())
             groups.push_back(std::move(currentGroup));
 
-        // Step 2: For each group, compute liveness and attach as explicit operands.
+        // Step 2: For each alloc group, compute liveness and attach via interface.
         auto *ctx = block.getParentOp()->getContext();
         for (auto &group : groups) {
             if (group.empty()) continue;
 
-            // Compute live !eco.value values at group entry (before first op)
             SmallVector<Value, 8> liveRoots = computeLiveEcoValues(group.front());
 
-            // Attach roots as explicit operands on the group leader.
-            setLiveRoots(group.front(), liveRoots);
+            // Use GCRootCarrier interface to set roots on the group leader.
+            if (auto carrier = dyn_cast<eco::GCRootCarrier>(group.front()))
+                carrier.setGCRoots(liveRoots);
 
-            // Keep count attribute as a debug sanity check.
             group.front()->setAttr("eco.gc_roots_count",
                 IntegerAttr::get(IntegerType::get(ctx, 64), liveRoots.size()));
             group.front()->setAttr("eco.gc_group_size",
@@ -211,11 +199,17 @@ private:
             if (!safepointOp) continue;
 
             SmallVector<Value, 8> liveRoots = computeLiveEcoValues(safepointOp);
+            safepointOp.setGCRoots(liveRoots);
+        }
 
-            // Replace the safepoint's operand list with the computed set.
-            // The SafepointOp takes variadic !eco.value operands as live_roots.
-            safepointOp.getLiveRootsMutable().clear();
-            safepointOp.getLiveRootsMutable().append(liveRoots);
+        // Step 4: Compute and attach roots on call-like safepoints.
+        // Each call/papExtend/papCreate gets independent roots.
+        for (auto &op : block) {
+            if (!isCallSafepoint(&op)) continue;
+
+            SmallVector<Value, 8> liveRoots = computeLiveEcoValues(&op);
+            if (auto carrier = dyn_cast<eco::GCRootCarrier>(&op))
+                carrier.setGCRoots(liveRoots);
         }
     }
 };
