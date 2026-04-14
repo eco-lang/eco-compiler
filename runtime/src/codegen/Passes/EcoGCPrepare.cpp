@@ -159,9 +159,14 @@ private:
         LLVM_DEBUG(llvm::dbgs() << "EcoGCPrepare: processing function "
                                 << func.getName() << "\n");
 
-        for (Block &block : func.getBody()) {
-            processBlock(block, liveness);
-        }
+        // Walk ALL blocks in the function, including those nested inside
+        // regions of ops like scf.while/scf.if. Previously only top-level
+        // blocks were visited, which caused papExtend/eco.call ops inside
+        // loops to have no GC roots attached — leading to missing
+        // statepoints, stale HPointer captures after GC, and crashes.
+        func.walk([&](Block *block) {
+            processBlock(*block, liveness);
+        });
     }
 
     void processBlock(Block &block, Liveness &liveness) {
@@ -216,11 +221,27 @@ private:
         }
 
         // Step 3: Recompute roots for explicit eco.safepoint ops.
+        // UNION with the front-end's original operands — do not shrink.
+        // MLIR's per-block Liveness is blind to cross-iteration uses of
+        // values captured into nested regions (e.g. scf.while body). If
+        // we replace operands with only the liveness-computed set, values
+        // like a `callback` function arg that is referenced once per
+        // iteration end up stripped. Worse: Step 4 then runs its own
+        // liveness query, which now sees a reduced use-def graph and
+        // misses those values as call-safepoint roots. The front-end's
+        // explicit operand list is authoritative for cross-region
+        // liveness; we only grow the set.
         for (auto &op : block) {
             auto safepointOp = dyn_cast<eco::SafepointOp>(&op);
             if (!safepointOp) continue;
 
             SmallVector<Value, 8> liveRoots = computeLiveRoots(liveness, safepointOp);
+
+            llvm::DenseSet<Value> already(liveRoots.begin(), liveRoots.end());
+            for (Value v : safepointOp.getLiveRoots()) {
+                if (isEcoValue(v) && already.insert(v).second)
+                    liveRoots.push_back(v);
+            }
 
             LLVM_DEBUG({
                 llvm::dbgs() << "EcoGCPrepare: safepoint at "
