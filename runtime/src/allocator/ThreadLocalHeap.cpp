@@ -330,6 +330,11 @@ void ThreadLocalHeap::collectStackRootsFromStackMap() {
 
                 Allocator& alloc = Allocator::instance();
                 HPointer potential = *slot;
+                // Embedded-constant HPointers (Unit/True/False/Nil/etc.) are not
+                // heap-allocated and do not need GC. Skip them before calling
+                // resolve(), which asserts constant == 0.
+                if (potential.constant != 0)
+                    continue;
                 void* phys = alloc.resolve(potential);
                 if (phys != nullptr && alloc.isInHeap(phys)) {
                     roots.pushStackRoot(slot);
