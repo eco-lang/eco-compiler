@@ -8,6 +8,7 @@
 #include "ThreadLocalHeap.hpp"
 #include "Allocator.hpp"
 #include "StackMap.hpp"
+#include "StackUnwind.hpp"
 #include <cassert>
 #include <cstring>
 
@@ -286,80 +287,62 @@ std::unordered_set<HPointer*> ThreadLocalHeap::collectRoots() {
 }
 
 void ThreadLocalHeap::collectStackRootsFromStackMap() {
-    auto& stackMap = globalStackMap();
-    if (!stackMap.hasRecords())
+    StackMap& sm = globalStackMap();
+    if (!sm.hasRecords())
         return;
 
     RootSet& roots = nursery_.getRootSet();
     // Clear previous stack roots from stack map walking
     roots.restoreStackRootPoint(0);
 
-    // Walk the call stack using frame pointer chaining (x86-64).
-    // Each frame: [saved_rbp | return_address | ... locals ...]
-    //             ^rbp points here
+    // Walk the call stack using libunwind.
+    // For each frame, look up the IP in the stack map and process
+    // Indirect locations (GC roots spilled to the stack).
     //
-    // DWARF register 6 = RBP, register 7 = RSP on x86-64.
+    // The unwinder's IP for a non-top frame is the return address,
+    // which matches the key used by StackMap::findRecord().
+    // Bias is 0 on x86-64 Linux (verified empirically).
+    static constexpr int kIpToReturnAddressBias = 0;
 
-#if defined(__x86_64__) || defined(_M_X64)
-    // Get current frame pointer
-    void* rbp;
-    __asm__ volatile ("mov %%rbp, %0" : "=r"(rbp));
+    using namespace StackUnwind;
+    Context ctx;
+    Cursor cur(ctx);
 
-    // Walk up the stack frames
-    for (int depth = 0; depth < 256 && rbp != nullptr; depth++) {
-        // Return address is at rbp + 8
-        uint64_t* rbpPtr = reinterpret_cast<uint64_t*>(rbp);
-        uint64_t returnAddr = rbpPtr[1];
+    do {
+        uintptr_t ip = cur.ip();
+        const StackMapRecord* rec = sm.findRecord(ip + kIpToReturnAddressBias);
+        if (!rec)
+            continue;
 
-        // Look up this return address in the stack map.
-        const StackMapRecord* record = stackMap.findRecord(returnAddr);
-        if (record) {
-            // For each location in this record, extract the GC root
-            for (const auto& loc : record->locations) {
-                if (loc.kind == StackMapLocation::Indirect) {
-                    // Indirect: value at *(register + offset)
-                    // DWARF reg 6 = RBP on x86-64
-                    if (loc.dwarfRegNum == 6) {
-                        auto* slotAddr = reinterpret_cast<HPointer*>(
-                            reinterpret_cast<char*>(rbp) + loc.offset);
-                        roots.pushStackRoot(slotAddr);
-                    }
-                    // DWARF reg 7 = RSP on x86-64
-                    // At a call site, the caller's RSP = callee's RBP + 16
-                    // (return address + saved RBP pushed by callee prologue).
-                    else if (loc.dwarfRegNum == 7) {
-                        char* callerRSP = reinterpret_cast<char*>(rbp) + 16;
-                        auto* slotAddr = reinterpret_cast<HPointer*>(
-                            callerRSP + loc.offset);
-                        roots.pushStackRoot(slotAddr);
-                    }
-                }
-                // Other location kinds (Register, Direct, Constant, ConstantIndex)
-                // are not expected for stack-spilled GC roots with gc.relocate.
+        for (const StackMapLocation& loc : rec->locations) {
+            if (loc.kind == StackMapLocation::Indirect) {
+                uintptr_t base = 0;
+                if (!cur.getRegister(loc.dwarfRegNum, base)) {
 #if ECO_DEBUG_STACKMAP
-                if (loc.kind != StackMapLocation::Indirect) {
-                    fprintf(stderr, "[eco-gc] WARNING: unsupported stackmap location kind=%u "
-                        "reg=%u offset=%d at returnAddress=%p\n",
-                        (unsigned)loc.kind, loc.dwarfRegNum, loc.offset,
-                        (void*)returnAddress);
+                    fprintf(stderr,
+                        "[ECO_DEBUG_STACKMAP] Failed to read reg %u for IP=%p\n",
+                        loc.dwarfRegNum, (void*)ip);
+#endif
+                    continue;
                 }
+                uintptr_t addr = base + static_cast<int32_t>(loc.offset);
+                auto* slot = reinterpret_cast<HPointer*>(addr);
+
+                Allocator& alloc = Allocator::instance();
+                HPointer potential = *slot;
+                void* phys = alloc.resolve(potential);
+                if (phys != nullptr && alloc.isInHeap(phys)) {
+                    roots.pushStackRoot(slot);
+                }
+            } else {
+#if ECO_DEBUG_STACKMAP
+                fprintf(stderr,
+                    "[ECO_DEBUG_STACKMAP] Non-Indirect location kind=%u at IP=%p\n",
+                    loc.kind, (void*)ip);
 #endif
             }
         }
-
-        // Follow the frame pointer chain
-        void* nextRbp = reinterpret_cast<void*>(rbpPtr[0]);
-
-        // Sanity check: frame pointer should move up the stack
-        if (nextRbp <= rbp)
-            break;
-
-        rbp = nextRbp;
-    }
-#endif
-    // On non-x86-64 platforms, stack root collection from stack maps
-    // is not yet implemented. The GC still works via explicit roots
-    // (globals, platform state).
+    } while (cur.step());
 }
 
 } // namespace Elm

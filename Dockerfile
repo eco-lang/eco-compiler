@@ -48,6 +48,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     less \
     # HTTP/HTTPS support for elm/http kernel
     libcurl4-openssl-dev libssl-dev \
+    # Stack unwinding (required for GC stack root scanning via stackmaps)
+    libunwind-dev \
     # Debugging and profiling tools (essential for GC development)
     gdb lldb linux-perf strace \
     # Code quality tools

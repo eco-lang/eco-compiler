@@ -281,6 +281,7 @@ add_llvm_executable(ecoc
     RuntimeSymbols.cpp
     ../jit/EcoJIT.cpp
     ../allocator/StackMap.cpp
+    ../allocator/StackUnwind.cpp
     ../allocator/RuntimeExports.cpp
     ../allocator/Allocator.cpp
     ../allocator/NurserySpace.cpp
@@ -350,6 +351,10 @@ endif()
 find_package(Threads REQUIRED)
 target_link_libraries(ecoc PRIVATE Threads::Threads)
 
+# libunwind for stack unwinding in GC root scanning
+find_library(LIBUNWIND_LIB unwind REQUIRED)
+target_link_libraries(ecoc PRIVATE ${LIBUNWIND_LIB})
+
 #------------------------------------------------------------------------------
 # Build the EcoRunner library (for in-process test execution)
 #------------------------------------------------------------------------------
@@ -360,6 +365,7 @@ add_mlir_library(EcoRunner
     RuntimeSymbols.cpp
     ../jit/EcoJIT.cpp
     ../allocator/StackMap.cpp
+    ../allocator/StackUnwind.cpp
     ../allocator/RuntimeExports.cpp
     ../allocator/Allocator.cpp
     ../allocator/NurserySpace.cpp
@@ -426,6 +432,7 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     target_compile_definitions(obj.EcoRunner PRIVATE ECO_DEBUG_STACKMAP=1)
 endif()
 target_link_libraries(obj.EcoRunner PRIVATE Threads::Threads)
+target_link_libraries(EcoRunner PUBLIC ${LIBUNWIND_LIB})
 
 #------------------------------------------------------------------------------
 # Build the EcoRuntimeStatic library (for linking into AOT-compiled binaries)
@@ -440,6 +447,7 @@ add_library(EcoRuntimeStatic STATIC
     ../allocator/ThreadLocalHeap.cpp
     ../allocator/GCStats.cpp
     ../allocator/StackMap.cpp
+    ../allocator/StackUnwind.cpp
     ../allocator/StringOps.cpp
     ../allocator/ListOps.cpp
     ../allocator/BytesOps.cpp
@@ -455,6 +463,9 @@ target_include_directories(EcoRuntimeStatic PRIVATE
 
 target_compile_features(EcoRuntimeStatic PRIVATE cxx_std_20)
 target_compile_options(EcoRuntimeStatic PRIVATE -fexceptions -UNDEBUG)
+
+# libunwind for stack unwinding in GC root scanning (PUBLIC so AOT consumers get -lunwind)
+target_link_libraries(EcoRuntimeStatic PUBLIC ${LIBUNWIND_LIB})
 
 # Enable stackmap debug warnings in debug builds
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")

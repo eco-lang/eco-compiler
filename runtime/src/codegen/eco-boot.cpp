@@ -422,6 +422,7 @@ static int linkExecutable(const std::string &objectFile,
     args.push_back("-lcurl");
     args.push_back("-lssl");
     args.push_back("-lcrypto");
+    args.push_back("-lunwind");
     args.push_back("-Wl,--end-group");
 
     if (verbose) {

@@ -10,6 +10,7 @@ add_executable(ecor
         runtime/src/allocator/ThreadLocalHeap.cpp
         runtime/src/allocator/GCStats.cpp
         runtime/src/allocator/StackMap.cpp
+        runtime/src/allocator/StackUnwind.cpp
         test/allocator/HeapGenerators.hpp
 )
 
@@ -29,6 +30,10 @@ target_link_libraries(ecor PRIVATE rapidcheck)
 # Add pthread for threading support
 find_package(Threads REQUIRED)
 target_link_libraries(ecor PRIVATE Threads::Threads)
+
+# libunwind for stack unwinding in GC root scanning
+find_library(LIBUNWIND_LIB unwind REQUIRED)
+target_link_libraries(ecor PRIVATE ${LIBUNWIND_LIB})
 
 # Export symbols for stack traces (enables function names in backtrace)
 target_link_options(ecor PRIVATE -rdynamic)

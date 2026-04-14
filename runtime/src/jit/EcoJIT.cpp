@@ -35,9 +35,41 @@ namespace eco {
 // StackMapListener - extracts __LLVM_StackMaps from loaded objects
 //===----------------------------------------------------------------------===//
 
+// Provided by libgcc / compiler-rt — registers .eh_frame with the platform unwinder.
+extern "C" void __register_frame(const void *);
+extern "C" void __deregister_frame(const void *);
+
+// Reads the post-relocation bytes of a section out of its loaded memory,
+// preferring them over the file-contents view returned by
+// SectionRef::getContents(). RuntimeDyld applies relocations to loaded
+// memory, not to the file bytes — critically for .llvm_stackmaps, which
+// contains 64-bit function_address fields that are unrelocated (zero) in
+// the file but correct at the load address after linking.
+static std::vector<uint8_t>
+readLoadedSectionBytes(const object::SectionRef &Section,
+                       const RuntimeDyld::LoadedObjectInfo &L) {
+    std::vector<uint8_t> out;
+    uint64_t loadAddr = L.getSectionLoadAddress(Section);
+    if (loadAddr != 0) {
+        const uint8_t *ptr = reinterpret_cast<const uint8_t *>(loadAddr);
+        out.assign(ptr, ptr + Section.getSize());
+        return out;
+    }
+    // Fallback: use the file bytes.
+    auto contentsOrErr = Section.getContents();
+    if (contentsOrErr) {
+        StringRef c = *contentsOrErr;
+        out.assign(c.begin(), c.end());
+    } else {
+        consumeError(contentsOrErr.takeError());
+    }
+    return out;
+}
+
 class EcoJIT::StackMapListener : public JITEventListener {
 public:
-    explicit StackMapListener(StackMapData &data) : data_(data) {}
+    explicit StackMapListener(StackMapData &smData, EhFrameData &ehData)
+        : smData_(smData), ehData_(ehData) {}
 
     void notifyObjectLoaded(ObjectKey K, const object::ObjectFile &Obj,
                             const RuntimeDyld::LoadedObjectInfo &L) override {
@@ -46,21 +78,40 @@ public:
             if (!nameOrErr)
                 continue;
 
-            // ELF uses ".llvm_stackmaps", MachO uses "__llvm_stackmaps"
             StringRef name = *nameOrErr;
+
+            // ELF uses ".llvm_stackmaps", MachO uses "__llvm_stackmaps".
+            // We read from the loaded section memory so that the 64-bit
+            // function_address fields (emitted as relocations against each
+            // JIT'd function) are their post-relocation absolute addresses.
             if (name == ".llvm_stackmaps" || name == "__llvm_stackmaps") {
+                smData_.bytes = readLoadedSectionBytes(Section, L);
+            }
+
+            // Capture .eh_frame for libunwind JIT frame walking
+            if (name == ".eh_frame") {
                 auto contentsOrErr = Section.getContents();
                 if (!contentsOrErr)
                     continue;
 
                 StringRef contents = *contentsOrErr;
-                data_.bytes.assign(contents.begin(), contents.end());
+                // Deregister previous .eh_frame if any
+                if (ehData_.registered) {
+                    __deregister_frame(ehData_.data());
+                    ehData_.registered = false;
+                }
+                ehData_.bytes.assign(contents.begin(), contents.end());
+                if (!ehData_.empty()) {
+                    __register_frame(ehData_.data());
+                    ehData_.registered = true;
+                }
             }
         }
     }
 
 private:
-    StackMapData &data_;
+    StackMapData &smData_;
+    EhFrameData &ehData_;
 };
 
 //===----------------------------------------------------------------------===//
@@ -140,6 +191,11 @@ EcoJIT::~EcoJIT() {
         // Destroy JIT before the listener to avoid dangling references
         jit_.reset();
     }
+    // Deregister .eh_frame before tearing down
+    if (ehFrameData_.registered) {
+        __deregister_frame(ehFrameData_.data());
+        ehFrameData_.registered = false;
+    }
     stackMapListener_.reset();
 }
 
@@ -147,9 +203,10 @@ Expected<std::unique_ptr<EcoJIT>>
 EcoJIT::create(mlir::Operation *m, const EcoJITOptions &options) {
     auto engine = std::unique_ptr<EcoJIT>(new EcoJIT());
 
-    // Create stack map listener
+    // Create stack map and .eh_frame listener
     engine->stackMapListener_ =
-        std::make_unique<StackMapListener>(engine->stackMapData_);
+        std::make_unique<StackMapListener>(engine->stackMapData_,
+                                           engine->ehFrameData_);
 
     // Translate MLIR to LLVM IR
     std::unique_ptr<LLVMContext> ctx(new LLVMContext);
