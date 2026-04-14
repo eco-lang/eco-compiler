@@ -331,15 +331,24 @@ static LLVM::LLVMFuncOp getOrCreateWrapper(PatternRewriter &rewriter, ModuleOp m
 
     SmallVector<Value, 8> liveRoots;
     SmallVector<Value> callArgs;
+    // Single constant reused for all gc-live allocas below.
+    auto oneConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty,
+        rewriter.getI64IntegerAttr(1));
     for (int64_t i = 0; i < arity; ++i) {
         auto idxConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, i);
         auto argPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i64Ty, argsArray, ValueRange{idxConst});
         Value argI64 = rewriter.create<LLVM::LoadOp>(loc, i64Ty, argPtr);
 
-        // Track all loaded HPointers as live roots for GC safety.
-        // Conservative: includes primitive-arg HPointers too (slightly larger
-        // stackmaps but simpler and avoids subtle bugs).
-        liveRoots.push_back(argI64);
+        // Force each gc-live value through a wrapper-local stack alloca so it
+        // has a distinct SSA identity from the call argument. This prevents
+        // the register allocator from keeping gc-live roots in argument
+        // registers (which would produce 0 GC-live stack locations in the
+        // stackmap, causing stale pointers after GC relocation).
+        auto rootAlloca = rewriter.create<LLVM::AllocaOp>(
+            loc, ptrTy, i64Ty, oneConst);
+        rewriter.create<LLVM::StoreOp>(loc, argI64, rootAlloca);
+        auto gcLiveVal = rewriter.create<LLVM::LoadOp>(loc, i64Ty, rootAlloca);
+        liveRoots.push_back(gcLiveVal);
 
         Type targetType = (i < (int64_t)targetParamTypes.size()) ? targetParamTypes[i] : i64Ty;
         Type origType = (hasOrigTypes && i < (int64_t)origParamTypes.size())
