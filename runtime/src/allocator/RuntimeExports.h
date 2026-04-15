@@ -11,6 +11,8 @@
 #include <cstddef>
 #include <cstdint>
 
+namespace Elm { struct EvalParamLayout; }
+
 extern "C" {
 
 //===----------------------------------------------------------------------===//
@@ -218,7 +220,7 @@ uint64_t eco_pap_extend(uint64_t closure, uint64_t* args, uint32_t num_newargs, 
 /// @param new_args Array of new arguments
 /// @param num_newargs Number of new arguments (n_values + num_newargs must equal max_values)
 /// @return Result of the function call (as i64)
-uint64_t eco_closure_call_saturated(uint64_t closure, uint64_t* new_args, uint32_t num_newargs);
+uint64_t eco_closure_call_saturated(uint64_t closure, uint64_t* new_args, uint32_t num_newargs, const Elm::EvalParamLayout* layout);
 
 /// Applies arguments to a closure with known ABI but unknown staging.
 /// Reads the closure header to determine saturation at runtime.

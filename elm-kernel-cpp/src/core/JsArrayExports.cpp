@@ -39,28 +39,28 @@ static int64_t unboxInt(uint64_t val) {
 // index is boxed via eco_alloc_int so the wrapper can unbox it.
 static uint64_t callUnaryInitClosure(uint64_t closure_hptr, int64_t index) {
     uint64_t args[1] = { eco_alloc_int(index) };
-    return eco_closure_call_saturated(closure_hptr, args, 1);
+    return eco_closure_call_saturated(closure_hptr, args, 1, /*layout=*/nullptr);
 }
 
 // Call a closure with one argument (element for map).
 // Element is already HPointer-encoded (!eco.value).
 static uint64_t callUnaryMapClosure(uint64_t closure_hptr, uint64_t elem) {
     uint64_t args[1] = { elem };
-    return eco_closure_call_saturated(closure_hptr, args, 1);
+    return eco_closure_call_saturated(closure_hptr, args, 1, /*layout=*/nullptr);
 }
 
 // Call a closure with two arguments (index, element for indexedMap).
 // index is boxed, element is HPointer-encoded.
 static uint64_t callBinaryIndexMapClosure(uint64_t closure_hptr, int64_t index, uint64_t elem) {
     uint64_t args[2] = { eco_alloc_int(index), elem };
-    return eco_closure_call_saturated(closure_hptr, args, 2);
+    return eco_closure_call_saturated(closure_hptr, args, 2, /*layout=*/nullptr);
 }
 
 // Call a closure with two arguments (element, acc for foldl/foldr).
 // Both are HPointer-encoded (!eco.value).
 static uint64_t callBinaryFoldClosure(uint64_t closure_hptr, uint64_t elem, uint64_t acc) {
     uint64_t args[2] = { elem, acc };
-    return eco_closure_call_saturated(closure_hptr, args, 2);
+    return eco_closure_call_saturated(closure_hptr, args, 2, /*layout=*/nullptr);
 }
 
 } // anonymous namespace

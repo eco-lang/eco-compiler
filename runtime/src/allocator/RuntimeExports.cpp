@@ -817,29 +817,52 @@ namespace {
 /// captures, then appends the new arguments (which are already HPointer-encoded).
 ///
 /// INVARIANT (RUNTIME_CLOSURE_002 / INV_5): Unboxed captures are always boxed
-/// via eco_alloc_int() regardless of their logical type (Int, Float, or Char).
-/// This is intentional bit-pattern boxing — the bitmap has only a 1-bit-per-slot
-/// presence flag with no type information. The evaluator (wrapper function) knows
-/// the original types from its compiled signature and reinterprets the raw i64
-/// bits accordingly (identity for Int, bitcast for Float, truncate for Char).
-/// The heap tag on the boxing object is NOT trusted by the evaluator.
+/// Re-boxes unboxed captured values and assembles the full evaluator argument array.
+///
+/// When `layout` is non-null, uses per-slot type information to call the correct
+/// allocator (eco_alloc_int, eco_alloc_float, eco_alloc_char) for each unboxed capture.
+/// When `layout` is null, falls back to eco_alloc_int for all unboxed slots (legacy).
 ///
 /// This function is the SINGLE implementation of closure bitmap interpretation
 /// and evaluator argument construction (RUNTIME_CLOSURE_001 / INV_1).
 size_t buildEvaluatorArgs(
     Closure* closure,
     const uint64_t* new_args, uint32_t num_newargs,
-    void** out_args
+    void** out_args,
+    const EvalParamLayout* layout
 ) {
     const uint32_t nCaptured = closure->n_values;
     const uint64_t bitmap    = closure->unboxed;
     size_t idx = 0;
 
-    // 1. Captured values: box unboxed ones via bit-pattern boxing.
+    assert(!layout || layout->num_params == nCaptured + num_newargs);
+
+    // 1. Captured values: box unboxed ones using type-aware allocation.
     for (uint32_t i = 0; i < nCaptured; ++i) {
         uint64_t val = closure->values[i].i;
         if ((bitmap >> i) & 1) {
-            val = eco_alloc_int(static_cast<int64_t>(val));
+            if (!layout) {
+                // Legacy fallback: all unboxed captures treated as Int.
+                val = eco_alloc_int(static_cast<int64_t>(val));
+            } else {
+                switch (static_cast<ParamKind>(layout->kinds[i])) {
+                    case PK_Int:
+                        val = eco_alloc_int(static_cast<int64_t>(val));
+                        break;
+                    case PK_Float: {
+                        double f;
+                        memcpy(&f, &val, sizeof(double));
+                        val = eco_alloc_float(f);
+                        break;
+                    }
+                    case PK_Char:
+                        val = eco_alloc_char(static_cast<uint32_t>(val & 0xFFFF));
+                        break;
+                    case PK_Boxed:
+                        assert(false && "bitmap says unboxed but layout says PK_Boxed");
+                        __builtin_unreachable();
+                }
+            }
         }
         out_args[idx++] = reinterpret_cast<void*>(val);
     }
@@ -865,7 +888,7 @@ extern "C" uint64_t eco_apply_closure(uint64_t closure_hptr, uint64_t* args, uin
 
     if (num_args == remaining) {
         // Exactly saturated: call evaluator with all args (INV_1).
-        return eco_closure_call_saturated(closure_hptr, args, num_args);
+        return eco_closure_call_saturated(closure_hptr, args, num_args, /*layout=*/nullptr);
     } else if (num_args < remaining) {
         // Under-saturated: create new PAP with additional args.
         // New args are treated as boxed (!eco.value) with unboxed_bitmap=0.
@@ -875,7 +898,7 @@ extern "C" uint64_t eco_apply_closure(uint64_t closure_hptr, uint64_t* args, uin
         // The result of the evaluator call is a closure for the next stage,
         // which has its own n_values/max_values header. We recursively apply
         // the remaining arguments to it.
-        uint64_t intermediate = eco_closure_call_saturated(closure_hptr, args, remaining);
+        uint64_t intermediate = eco_closure_call_saturated(closure_hptr, args, remaining, /*layout=*/nullptr);
         return eco_apply_closure(intermediate, args + remaining, num_args - remaining);
     }
 }
@@ -976,7 +999,7 @@ extern "C" uint64_t eco_pap_extend(uint64_t closure_hptr, uint64_t* args, uint32
     return ptrToHPointer(obj);
 }
 
-extern "C" uint64_t eco_closure_call_saturated(uint64_t closure_hptr, uint64_t* new_args, uint32_t num_newargs) {
+extern "C" uint64_t eco_closure_call_saturated(uint64_t closure_hptr, uint64_t* new_args, uint32_t num_newargs, const EvalParamLayout* layout) {
     void* closure_ptr = hpointerToPtr(closure_hptr);
     if (!closure_ptr) return 0;
 
@@ -1008,7 +1031,7 @@ extern "C" uint64_t eco_closure_call_saturated(uint64_t closure_hptr, uint64_t* 
     }
 
     // Single implementation of bitmap interpretation + boxing (INV_1).
-    buildEvaluatorArgs(closure, new_args, num_newargs, combined_args);
+    buildEvaluatorArgs(closure, new_args, num_newargs, combined_args, layout);
 
     void* result = closure->evaluator(combined_args);
 

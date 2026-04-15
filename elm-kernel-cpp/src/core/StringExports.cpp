@@ -146,7 +146,7 @@ uint64_t Elm_Kernel_String_fromNumber(uint64_t n) {
 // Char arg is boxed via eco_alloc_char. Result is unboxed from ElmChar.
 static uint16_t callCharToCharClosure(uint64_t closure_hptr, uint16_t c) {
     uint64_t boxed_char = eco_alloc_char(static_cast<uint32_t>(c));
-    uint64_t result_hptr = eco_closure_call_saturated(closure_hptr, &boxed_char, 1);
+    uint64_t result_hptr = eco_closure_call_saturated(closure_hptr, &boxed_char, 1, /*layout=*/nullptr);
     // Unbox: resolve HPointer, read Char value
     void* charObj = reinterpret_cast<void*>(eco_resolve_hptr(result_hptr));
     ElmChar* ec = static_cast<ElmChar*>(charObj);
@@ -157,7 +157,7 @@ static uint16_t callCharToCharClosure(uint64_t closure_hptr, uint16_t c) {
 // Bool is !eco.value (True/False embedded constants), not a primitive.
 static bool callCharToBoolClosure(uint64_t closure_hptr, uint16_t c) {
     uint64_t boxed_char = eco_alloc_char(static_cast<uint32_t>(c));
-    uint64_t result_hptr = eco_closure_call_saturated(closure_hptr, &boxed_char, 1);
+    uint64_t result_hptr = eco_closure_call_saturated(closure_hptr, &boxed_char, 1, /*layout=*/nullptr);
     return Export::decodeBoxedBool(result_hptr);
 }
 
@@ -165,7 +165,7 @@ static bool callCharToBoolClosure(uint64_t closure_hptr, uint16_t c) {
 // Char is boxed via eco_alloc_char, acc flows through as HPointer-encoded.
 static uint64_t callFoldClosure(uint64_t closure_hptr, uint16_t c, uint64_t acc) {
     uint64_t args[2] = { eco_alloc_char(static_cast<uint32_t>(c)), acc };
-    return eco_closure_call_saturated(closure_hptr, args, 2);
+    return eco_closure_call_saturated(closure_hptr, args, 2, /*layout=*/nullptr);
 }
 
 uint64_t Elm_Kernel_String_map(uint64_t closure, uint64_t str) {

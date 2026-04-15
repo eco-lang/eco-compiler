@@ -15,7 +15,8 @@
 extern "C" uint32_t elm_bytebuffer_len(uint64_t bb);
 
 // Declare the closure call function from RuntimeExports
-extern "C" uint64_t eco_closure_call_saturated(uint64_t closure_hptr, uint64_t* new_args, uint32_t num_newargs);
+namespace Elm { struct EvalParamLayout; }
+extern "C" uint64_t eco_closure_call_saturated(uint64_t closure_hptr, uint64_t* new_args, uint32_t num_newargs, const Elm::EvalParamLayout* layout);
 extern "C" uint64_t eco_alloc_int(int64_t value);
 
 using namespace Elm;
@@ -359,7 +360,7 @@ uint64_t Elm_Kernel_Bytes_decode(uint64_t decoder, uint64_t bytes) {
     // The decoder is a function: (eco.value, i64) -> eco.value (Tuple2)
     // The offset (Int) must be boxed as HPointer for the wrapper.
     uint64_t args[2] = { bytes, eco_alloc_int(0) };
-    uint64_t result = eco_closure_call_saturated(decoder, args, 2);
+    uint64_t result = eco_closure_call_saturated(decoder, args, 2, /*layout=*/nullptr);
 
     // Result is a Tuple2(new_offset: i64, decoded_value).
     HPointer resultHP = Export::decode(result);

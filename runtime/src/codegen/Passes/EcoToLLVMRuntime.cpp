@@ -340,8 +340,8 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreatePapExtend(OpBuilder &builder) const {
 }
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateClosureCallSaturated(OpBuilder &builder) const {
-    // eco_closure_call_saturated(closure_hptr: i64, new_args: ptr, num_newargs: i32) -> i64
-    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {I64_TY, PTR_TY, I32_TY});
+    // eco_closure_call_saturated(closure_hptr: i64, new_args: ptr, num_newargs: i32, layout: ptr) -> i64
+    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {I64_TY, PTR_TY, I32_TY, PTR_TY});
     return getOrCreateFunc(builder, "eco_closure_call_saturated", funcTy);
 }
 

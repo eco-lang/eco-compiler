@@ -1577,8 +1577,9 @@ applyByStages :
     -> Maybe String -- callKindAttr: _call_kind attribute for first papExtend only
     -> List ( String, MlirType ) -- args: remaining (var, mlirType) pairs to apply
     -> List MlirOp -- accumulated ops (in reverse order)
+    -> List MlirType -- accCaptureTypes: accumulated arg types from previous stages (captures of current callee)
     -> ApplyByStagesResult
-applyByStages ctx funcVar funcMlirType sourceRemaining remainingStageArities saturatedReturnType callKindAttr args accOps =
+applyByStages ctx funcVar funcMlirType sourceRemaining remainingStageArities saturatedReturnType callKindAttr args accOps accCaptureTypes =
     case args of
         [] ->
             -- Base case: no more args to apply
@@ -1679,8 +1680,18 @@ applyByStages ctx funcVar funcMlirType sourceRemaining remainingStageArities sat
                             Nothing ->
                                 []
 
+                    -- Emit _capture_abi for stages after the first. The accumulated
+                    -- capture types are the arg types from all previous stages, which
+                    -- match the captures of the current callee's staged wrapper closure.
+                    captureAbiAttrs =
+                        if List.isEmpty accCaptureTypes then
+                            []
+
+                        else
+                            [ ( "_capture_abi", ArrayAttr Nothing (List.map TypeAttr accCaptureTypes) ) ]
+
                     papExtendAttrs =
-                        Dict.fromList (baseAttrs ++ callKindAttrs)
+                        Dict.fromList (baseAttrs ++ callKindAttrs ++ captureAbiAttrs)
 
                     ( ctxSp3, spOp3 ) =
                         emitSafepoint ctx1
@@ -1694,6 +1705,10 @@ applyByStages ctx funcVar funcMlirType sourceRemaining remainingStageArities sat
 
                     nextOps =
                         papExtendOp :: spOp3 :: accOps
+
+                    -- Accumulate this batch's arg types as captures for the next stage's callee.
+                    nextCaptureTypes =
+                        accCaptureTypes ++ List.map Tuple.second batch
                 in
                 if List.isEmpty rest then
                     -- No more args to apply after this batch.
@@ -1701,7 +1716,7 @@ applyByStages ctx funcVar funcMlirType sourceRemaining remainingStageArities sat
 
                 else
                     -- More args to apply in later batches (no _call_kind on subsequent stages).
-                    applyByStages ctx2 resVar resultMlirType resultRemaining nextStageArities saturatedReturnType Nothing rest nextOps
+                    applyByStages ctx2 resVar resultMlirType resultRemaining nextStageArities saturatedReturnType Nothing rest nextOps nextCaptureTypes
 
 
 {-| Partial-apply a flattened external function (MonoExtern or kernel).
@@ -1900,7 +1915,7 @@ generateClosureApplication ctx func args resultType callInfo =
                     -- (metadata-driven: uses initialRemaining and remainingStageArities from CallInfo)
                     -- Pass expectedType as the saturated return type for when call becomes fully saturated
                     papResult =
-                        applyByStages ctx1b funcResult.resultVar funcResult.resultType initialRemaining remainingStageArities expectedType (Just (callKindToAttrString callInfo.callKind)) boxedArgsWithTypes []
+                        applyByStages ctx1b funcResult.resultVar funcResult.resultType initialRemaining remainingStageArities expectedType (Just (callKindToAttrString callInfo.callKind)) boxedArgsWithTypes [] []
                 in
                 { ops = funcResult.ops ++ argOps ++ boxOps ++ papResult.ops
                 , resultVar = papResult.resultVar
@@ -3105,7 +3120,7 @@ generateSaturatedCall ctx func args resultType callInfo =
                             -- (metadata-driven: uses initialRemaining and remainingStageArities from CallInfo)
                             -- Pass expectedType as the saturated return type
                             papResult =
-                                applyByStages ctx1b funcVarName funcVarType initialRemaining remainingStageArities expectedType (Just (callKindToAttrString callInfo.callKind)) boxedArgsWithTypes []
+                                applyByStages ctx1b funcVarName funcVarType initialRemaining remainingStageArities expectedType (Just (callKindToAttrString callInfo.callKind)) boxedArgsWithTypes [] []
                         in
                         { ops = argOps ++ boxOps ++ papResult.ops
                         , resultVar = papResult.resultVar
@@ -3163,7 +3178,7 @@ generateSaturatedCall ctx func args resultType callInfo =
                     -- (metadata-driven: uses initialRemaining and remainingStageArities from CallInfo)
                     -- Pass expectedType as the saturated return type
                     papResult =
-                        applyByStages ctx1b funcResult.resultVar funcResult.resultType initialRemaining remainingStageArities expectedType (Just (callKindToAttrString callInfo.callKind)) boxedArgsWithTypes []
+                        applyByStages ctx1b funcResult.resultVar funcResult.resultType initialRemaining remainingStageArities expectedType (Just (callKindToAttrString callInfo.callKind)) boxedArgsWithTypes [] []
                 in
                 { ops = funcResult.ops ++ argOps ++ boxOps ++ papResult.ops
                 , resultVar = papResult.resultVar

@@ -753,6 +753,73 @@ static Value emitDispatchedClosureCall(ConversionPatternRewriter &rewriter, Loca
 }
 
 //===----------------------------------------------------------------------===//
+// Layout global emission for type-aware buildEvaluatorArgs
+//===----------------------------------------------------------------------===//
+
+/// Map an MLIR type to a ParamKind value for the EvalParamLayout.
+/// i64 -> PK_Int(1), f64 -> PK_Float(2), i16 -> PK_Char(3), else -> PK_Boxed(0)
+static uint8_t mlirTypeToParamKind(Type ty) {
+    if (ty.isInteger(64)) return 1;  // PK_Int
+    if (ty.isF64()) return 2;        // PK_Float
+    if (ty.isInteger(16)) return 3;  // PK_Char
+    return 0;                        // PK_Boxed
+}
+
+/// Emit (or reuse) an LLVM global constant for an EvalParamLayout with the given
+/// kind sequence. Layout is: { i8 num_params, [N x i8] kinds }.
+/// Deduplicates by encoding the kinds into the global's name.
+static Value getOrCreateEvalLayout(ConversionPatternRewriter &rewriter, Location loc,
+                                   ModuleOp module, ArrayRef<uint8_t> kinds) {
+    auto *ctx = rewriter.getContext();
+    auto i8Ty = IntegerType::get(ctx, 8);
+    auto ptrTy = LLVM::LLVMPointerType::get(ctx);
+    uint32_t n = kinds.size();
+
+    // Build a deterministic name from the kind bytes.
+    std::string name = "__eco_eval_layout_";
+    for (uint8_t k : kinds) name += std::to_string(k) + "_";
+    name += std::to_string(n);
+
+    // Check if the global already exists.
+    if (module.lookupSymbol<LLVM::GlobalOp>(name)) {
+        return rewriter.create<LLVM::AddressOfOp>(loc, ptrTy, name);
+    }
+
+    // Build the struct type: { i8, [N x i8] }
+    auto arrayTy = LLVM::LLVMArrayType::get(i8Ty, n);
+    auto structTy = LLVM::LLVMStructType::getLiteral(ctx, {i8Ty, arrayTy});
+
+    // Insert global at module scope with initializer region.
+    {
+        OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPointToStart(module.getBody());
+        auto globalOp = rewriter.create<LLVM::GlobalOp>(
+            loc, structTy, /*isConstant=*/true, LLVM::Linkage::Private,
+            name, Attribute{});
+
+        Block *initBlock = rewriter.createBlock(&globalOp.getInitializerRegion());
+        rewriter.setInsertionPointToStart(initBlock);
+
+        // Build { num_params, [kinds...] } value
+        Value structVal = rewriter.create<LLVM::UndefOp>(loc, structTy);
+        auto numParamsConst = rewriter.create<LLVM::ConstantOp>(loc, i8Ty, static_cast<int64_t>(n));
+        structVal = rewriter.create<LLVM::InsertValueOp>(loc, structTy, structVal, numParamsConst,
+                                                          ArrayRef<int64_t>{0});
+        Value arrayVal = rewriter.create<LLVM::UndefOp>(loc, arrayTy);
+        for (uint32_t i = 0; i < n; ++i) {
+            auto kindConst = rewriter.create<LLVM::ConstantOp>(loc, i8Ty, static_cast<int64_t>(kinds[i]));
+            arrayVal = rewriter.create<LLVM::InsertValueOp>(loc, arrayTy, arrayVal, kindConst,
+                                                             ArrayRef<int64_t>{static_cast<int64_t>(i)});
+        }
+        structVal = rewriter.create<LLVM::InsertValueOp>(loc, structTy, structVal, arrayVal,
+                                                          ArrayRef<int64_t>{1});
+        rewriter.create<LLVM::ReturnOp>(loc, structVal);
+    }
+
+    return rewriter.create<LLVM::AddressOfOp>(loc, ptrTy, name);
+}
+
+//===----------------------------------------------------------------------===//
 // Shared helper: inline closure call (legacy path)
 //===----------------------------------------------------------------------===//
 
@@ -765,6 +832,7 @@ static Value emitDispatchedClosureCall(ConversionPatternRewriter &rewriter, Loca
 /// resultType:      the expected LLVM result type (i64, f64, or ptr)
 /// origNewArgTypes: pre-conversion types for new args (to distinguish Int from !eco.value)
 /// origResultType:  pre-conversion result type (to distinguish Int from !eco.value)
+/// layoutPtr:       optional layout pointer for type-aware re-boxing (nullptr = legacy)
 ///
 /// Convention: the evaluator wrapper (getOrCreateWrapper) expects arguments
 /// as HPointer-encoded i64. This function:
@@ -780,7 +848,8 @@ static Value emitInlineClosureCall(ConversionPatternRewriter &rewriter, Location
                                    Value closureI64, ValueRange newArgs, Type resultType,
                                    ArrayRef<Type> origNewArgTypes = {},
                                    Type origResultType = {},
-                                   Operation *safeOp = nullptr, ValueRange liveRoots = {}) {
+                                   Operation *safeOp = nullptr, ValueRange liveRoots = {},
+                                   Value layoutPtr = {}) {
     auto *ctx = rewriter.getContext();
     auto i8Ty = IntegerType::get(ctx, 8);
     auto i64Ty = IntegerType::get(ctx, 64);
@@ -851,13 +920,14 @@ static Value emitInlineClosureCall(ConversionPatternRewriter &rewriter, Location
         rewriter.create<LLVM::StoreOp>(loc, arg, argDstPtr);
     }
 
-    // === Call eco_closure_call_saturated(closure_hptr, new_args, num_newargs) ===
+    // === Call eco_closure_call_saturated(closure_hptr, new_args, num_newargs, layout) ===
     auto closureCallFunc = runtime.getOrCreateClosureCallSaturated(rewriter);
     auto numNewArgsI32 = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, static_cast<int64_t>(numNewArgs));
+    Value layoutArg = layoutPtr ? layoutPtr : rewriter.create<LLVM::ZeroOp>(loc, ptrTy).getResult();
     if (safeOp)
         emitSafepointMarker(safeOp, rewriter, runtime, liveRoots);
     auto runtimeCall = rewriter.create<LLVM::CallOp>(
-        loc, closureCallFunc, ValueRange{closureI64, newArgsArray, numNewArgsI32});
+        loc, closureCallFunc, ValueRange{closureI64, newArgsArray, numNewArgsI32, layoutArg});
     Value resultI64 = runtimeCall.getResult();
 
     // Restore GC root range stack.
@@ -1002,13 +1072,9 @@ struct PapExtendOpLowering : public OpConversionPattern<PapExtendOp> {
             if (arg.getType() != i64Ty && isa<LLVM::LLVMPointerType>(arg.getType())) {
                 arg = rewriter.create<LLVM::PtrToIntOp>(loc, i64Ty, arg);
             } else if (auto intTy = dyn_cast<IntegerType>(arg.getType())) {
-                if (intTy.getWidth() == 16) {
-                    // Box i16 (Char) so the wrapper can unbox it later.
-                    // Clear the unboxed bit so the GC traces it as an HPointer.
-                    auto allocCharFunc = runtime.getOrCreateAllocChar(rewriter);
-                    emitSafepointMarker(op, rewriter, runtime, liveRoots);
-                    arg = rewriter.create<LLVM::CallOp>(loc, allocCharFunc, ValueRange{arg}).getResult();
-                    adjustedBitmap &= ~(1ULL << i);
+                if (intTy.getWidth() < 64) {
+                    // Char (i16): zero-extend to i64 and keep unboxed, same as Int/Float.
+                    arg = rewriter.create<LLVM::ZExtOp>(loc, i64Ty, arg);
                 }
             }
             rewriter.create<LLVM::StoreOp>(loc, arg, slotPtr);
@@ -1258,8 +1324,24 @@ struct PapExtendOpLowering : public OpConversionPattern<PapExtendOp> {
                                          op, liveRoots);
             } else {
                 // No typed closure info -> use legacy inline closure call.
+                // If _capture_abi is present (without _fast_evaluator), compute a
+                // layout for type-aware re-boxing of captured values.
+                Value layoutPtr;
+                if (captureAbi) {
+                    SmallVector<uint8_t> kinds;
+                    // Capture kinds from _capture_abi
+                    for (auto attr : captureAbi) {
+                        auto typeAttr = mlir::dyn_cast<TypeAttr>(attr);
+                        kinds.push_back(typeAttr ? mlirTypeToParamKind(typeAttr.getValue()) : 0);
+                    }
+                    // New args are all PK_Boxed in phase 1
+                    for (int64_t i = 0; i < numNewArgs; ++i)
+                        kinds.push_back(0); // PK_Boxed
+                    auto module = op->getParentOfType<ModuleOp>();
+                    layoutPtr = getOrCreateEvalLayout(rewriter, loc, module, kinds);
+                }
                 result = emitInlineClosureCall(rewriter, loc, runtime, closureI64, newargs, convertedResultTy,
-                                               origNewArgTypes, origResultType, op, liveRoots);
+                                               origNewArgTypes, origResultType, op, liveRoots, layoutPtr);
             }
             rewriter.replaceOp(op, result);
         } else {
@@ -1292,14 +1374,9 @@ struct PapExtendOpLowering : public OpConversionPattern<PapExtendOp> {
                 if (arg.getType() != i64Ty && isa<LLVM::LLVMPointerType>(arg.getType())) {
                     arg = rewriter.create<LLVM::PtrToIntOp>(loc, i64Ty, arg);
                 } else if (auto intTy = dyn_cast<IntegerType>(arg.getType())) {
-                    if (intTy.getWidth() == 16) {
-                        // Box i16 (Char) so the wrapper can unbox it later.
-                        // Clear the unboxed bit so the GC traces it as an HPointer.
-                        auto allocCharFunc = runtime.getOrCreateAllocChar(rewriter);
-                        emitSafepointMarker(op, rewriter, runtime, liveRoots);
-                        auto boxCall = rewriter.create<LLVM::CallOp>(loc, allocCharFunc, ValueRange{arg});
-                        arg = boxCall.getResult();
-                        newargsBitmap &= ~(1ULL << i);
+                    if (intTy.getWidth() < 64) {
+                        // Char (i16): zero-extend to i64 and keep unboxed, same as Int/Float.
+                        arg = rewriter.create<LLVM::ZExtOp>(loc, i64Ty, arg);
                     }
                 }
                 rewriter.create<LLVM::StoreOp>(loc, arg, slotPtr);

@@ -232,6 +232,23 @@ typedef struct {
     Unboxable values[];
 } Closure;
 
+/// Type tag for each evaluator parameter slot, used by buildEvaluatorArgs
+/// to re-box unboxed captured values with the correct heap allocator.
+enum ParamKind : unsigned char {
+    PK_Boxed  = 0,
+    PK_Int    = 1,
+    PK_Float  = 2,
+    PK_Char   = 3,
+};
+
+/// Layout descriptor for evaluator parameters. Emitted as an LLVM global
+/// constant by the compiler when capture type info is available.
+/// Memory layout: { num_params: u8, kinds[num_params]: u8[] }
+struct EvalParamLayout {
+    unsigned char num_params;
+    unsigned char kinds[];  // flexible array member, length = num_params
+};
+
 typedef struct {
     Header header;
     u64 id : ID_BITS;

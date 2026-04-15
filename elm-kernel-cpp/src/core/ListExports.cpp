@@ -23,29 +23,29 @@ namespace {
 
 inline uint64_t callUnaryClosure(uint64_t closure_hptr, uint64_t arg) {
     uint64_t args[1] = { arg };
-    return eco_closure_call_saturated(closure_hptr, args, 1);
+    return eco_closure_call_saturated(closure_hptr, args, 1, /*layout=*/nullptr);
 }
 
 inline uint64_t callBinaryClosure(uint64_t closure_hptr, uint64_t arg1, uint64_t arg2) {
     uint64_t args[2] = { arg1, arg2 };
-    return eco_closure_call_saturated(closure_hptr, args, 2);
+    return eco_closure_call_saturated(closure_hptr, args, 2, /*layout=*/nullptr);
 }
 
 inline uint64_t callTernaryClosure(uint64_t closure_hptr, uint64_t arg1, uint64_t arg2, uint64_t arg3) {
     uint64_t args[3] = { arg1, arg2, arg3 };
-    return eco_closure_call_saturated(closure_hptr, args, 3);
+    return eco_closure_call_saturated(closure_hptr, args, 3, /*layout=*/nullptr);
 }
 
 inline uint64_t callQuaternaryClosure(uint64_t closure_hptr, uint64_t arg1, uint64_t arg2,
                                        uint64_t arg3, uint64_t arg4) {
     uint64_t args[4] = { arg1, arg2, arg3, arg4 };
-    return eco_closure_call_saturated(closure_hptr, args, 4);
+    return eco_closure_call_saturated(closure_hptr, args, 4, /*layout=*/nullptr);
 }
 
 inline uint64_t callQuinaryClosure(uint64_t closure_hptr, uint64_t arg1, uint64_t arg2,
                                     uint64_t arg3, uint64_t arg4, uint64_t arg5) {
     uint64_t args[5] = { arg1, arg2, arg3, arg4, arg5 };
-    return eco_closure_call_saturated(closure_hptr, args, 5);
+    return eco_closure_call_saturated(closure_hptr, args, 5, /*layout=*/nullptr);
 }
 
 //===----------------------------------------------------------------------===//
