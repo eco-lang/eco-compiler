@@ -766,7 +766,7 @@ void NurserySpace::scanObject(void *obj, OldGenSpace &oldgen, std::vector<void*>
         }
         case Tag_Closure: {
             Closure *cl = static_cast<Closure *>(obj);
-            for (u32 i = 0; i < cl->n_values; i++) {
+            for (u32 i = 0; i < hdr->size; i++) {
                 evacuateUnboxable(cl->values[i], !(cl->unboxed & (1ULL << i)), oldgen, promoted_objects);
             }
             break;
