@@ -826,11 +826,18 @@ namespace {
 /// This function is the SINGLE implementation of closure bitmap interpretation
 /// and evaluator argument construction (RUNTIME_CLOSURE_001 / INV_1).
 size_t buildEvaluatorArgs(
-    Closure* closure,
+    uint64_t closure_hptr,
     const uint64_t* new_args, uint32_t num_newargs,
     void** out_args,
     const EvalParamLayout* layout
 ) {
+    // Resolve closure to read metadata. We capture nCaptured and bitmap
+    // upfront — they won't change — but re-resolve before each values[]
+    // read because boxing allocations below can trigger GC, which moves
+    // the closure object. Reading from a stale raw pointer would return
+    // un-relocated HPointers for boxed captured values, leading to stale
+    // pointers that corrupt heap objects downstream.
+    Closure* closure = static_cast<Closure*>(hpointerToPtr(closure_hptr));
     const uint32_t nCaptured = closure->n_values;
     const uint64_t bitmap    = closure->unboxed;
     size_t idx = 0;
@@ -839,6 +846,8 @@ size_t buildEvaluatorArgs(
 
     // 1. Captured values: box unboxed ones using type-aware allocation.
     for (uint32_t i = 0; i < nCaptured; ++i) {
+        // Re-resolve: a prior iteration's alloc may have triggered GC.
+        closure = static_cast<Closure*>(hpointerToPtr(closure_hptr));
         uint64_t val = closure->values[i].i;
         if ((bitmap >> i) & 1) {
             if (!layout) {
@@ -1031,8 +1040,11 @@ extern "C" uint64_t eco_closure_call_saturated(uint64_t closure_hptr, uint64_t* 
     }
 
     // Single implementation of bitmap interpretation + boxing (INV_1).
-    buildEvaluatorArgs(closure, new_args, num_newargs, combined_args, layout);
+    buildEvaluatorArgs(closure_hptr, new_args, num_newargs, combined_args, layout);
 
+    // Re-resolve closure after buildEvaluatorArgs: boxing allocs inside
+    // may have triggered GC and moved the closure.
+    closure = static_cast<Closure*>(hpointerToPtr(closure_hptr));
     void* result = closure->evaluator(combined_args);
 
     eco_gc_restore_stack_range_point(saved_range);

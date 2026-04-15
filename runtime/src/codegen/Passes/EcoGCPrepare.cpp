@@ -257,10 +257,28 @@ private:
 
         // Step 4: Compute and attach roots on call-like safepoints.
         // Each call/papExtend/papCreate gets independent roots.
+        //
+        // UNION with the op's own !eco.value operands — do not shrink.
+        // computeLiveRoots() filters by !isDeadAfter(v, op), which
+        // excludes operands whose only use IS this op. But during
+        // lowering, the op expands to multiple LLVM IR operations
+        // with internal GC points (boxing calls in emitRootedBoxedArgsArray,
+        // emitInlineClosureCall, etc.). Values like closureI64 that are
+        // operands of the op are needed AFTER those internal GC points
+        // but BEFORE the final runtime call. Without the union, GC at
+        // an internal statepoint doesn't update these values, producing
+        // stale HPointers that corrupt heap objects.
         for (auto &op : block) {
             if (!isCallSafepoint(&op)) continue;
 
             SmallVector<Value, 8> liveRoots = computeLiveRoots(liveness, &op);
+
+            // Union with the op's own !eco.value operands.
+            llvm::DenseSet<Value> already(liveRoots.begin(), liveRoots.end());
+            for (Value v : op.getOperands()) {
+                if (isEcoValue(v) && already.insert(v).second)
+                    liveRoots.push_back(v);
+            }
 
             LLVM_DEBUG({
                 llvm::dbgs() << "EcoGCPrepare: call safepoint "
