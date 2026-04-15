@@ -387,6 +387,10 @@ void NurserySpace::checkAndGrow() {
  * so no remembered set or write barriers are needed.
  */
 void NurserySpace::minorGC(OldGenSpace &oldgen) {
+#if ECO_GC_DEBUG
+    in_minor_gc_ = true;
+#endif
+
 #if ENABLE_GC_STATS
     // Capture state before GC.
     size_t from_space_used = bytesAllocated();
@@ -459,6 +463,14 @@ void NurserySpace::minorGC(OldGenSpace &oldgen) {
     // Phase 4: Check occupancy and grow if needed.
     checkAndGrow();
 
+    // Safety net: zero free to-space region to prevent ghost headers.
+    // Called after checkAndGrow() so newly added blocks are also zeroed.
+    clearToSpaceFreeRegion();
+
+#if ECO_GC_DEBUG
+    in_minor_gc_ = false;
+#endif
+
     // Phase 5: Swap spaces by flipping which is from/to.
     from_is_low_ = !from_is_low_;
 
@@ -510,6 +522,12 @@ void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void
     void *obj = Allocator::fromPointerRaw(ptr);
     if (!obj)
         return;
+
+#if ECO_GC_DEBUG
+    if (contains(obj)) {
+        debugAssertValidNurseryPointer(obj);
+    }
+#endif
 
     // Use cached allocator reference instead of repeated singleton lookup.
     char *heap_base = allocator_->getHeapBase();
@@ -616,6 +634,12 @@ void NurserySpace::evacuateJitPtr(uint64_t &ptr, OldGenSpace &oldgen, std::vecto
     void *obj = reinterpret_cast<void*>(ptr);
     if (!obj)
         return;
+
+#if ECO_GC_DEBUG
+    if (contains(obj)) {
+        debugAssertValidNurseryPointer(obj);
+    }
+#endif
 
     char *heap_base = allocator_->getHeapBase();
 
@@ -1009,5 +1033,101 @@ void NurserySpace::evacuateListHeads(void* first_cons, OldGenSpace &oldgen,
         current = next;
     }
 }
+
+// ============================================================================
+// Ghost-data safety net: clear free to-space after minor GC
+// ============================================================================
+
+void NurserySpace::clearToSpaceFreeRegion() {
+    std::vector<char*>& to_blocks = from_is_low_ ? high_blocks_ : low_blocks_;
+    if (to_blocks.empty() || current_to_idx_ >= to_blocks.size())
+        return;
+
+    for (size_t i = current_to_idx_; i < to_blocks.size(); ++i) {
+        char* block_start = to_blocks[i];
+        char* block_end   = block_start + block_size_;
+        char* start       = (i == current_to_idx_) ? copy_ptr_ : block_start;
+        if (start < block_end) {
+            std::memset(start, 0, static_cast<size_t>(block_end - start));
+        }
+    }
+}
+
+// ============================================================================
+// Debug-only: stale nursery pointer detection
+// ============================================================================
+
+#if ECO_GC_DEBUG
+
+bool NurserySpace::isInFromSpaceAllocatedRegion(void* ptr) const {
+    char* p = static_cast<char*>(ptr);
+
+    const std::vector<char*>& from_blocks = from_is_low_ ? low_blocks_ : high_blocks_;
+    if (from_blocks.empty()) return false;
+
+    for (size_t i = 0; i < from_blocks.size(); ++i) {
+        char* block_start = from_blocks[i];
+        char* block_end   = block_start + block_size_;
+
+        if (p < block_start || p >= block_end)
+            continue;
+
+        if (i < current_from_idx_)
+            return true;  // Fully filled earlier block.
+
+        if (i > current_from_idx_)
+            return false; // Block beyond the current allocation block.
+
+        // Current block: only [block_start, alloc_ptr_) is allocated.
+        return p < alloc_ptr_;
+    }
+
+    return false;
+}
+
+bool NurserySpace::isInToSpaceAllocatedRegion(void* ptr) const {
+    char* p = static_cast<char*>(ptr);
+
+    const std::vector<char*>& to_blocks = from_is_low_ ? high_blocks_ : low_blocks_;
+    if (to_blocks.empty()) return false;
+
+    for (size_t i = 0; i < to_blocks.size(); ++i) {
+        char* block_start = to_blocks[i];
+        char* block_end   = block_start + block_size_;
+
+        if (p < block_start || p >= block_end)
+            continue;
+
+        if (i < current_to_idx_)
+            return true;  // Fully filled earlier block.
+
+        if (i > current_to_idx_)
+            return false; // Block beyond the current copy block.
+
+        // Current block: only [block_start, copy_ptr_) is used.
+        return p < copy_ptr_;
+    }
+
+    return false;
+}
+
+void NurserySpace::debugAssertValidNurseryPointer(void* ptr) const {
+    assert(contains(ptr) && "debugAssertValidNurseryPointer called on non-nursery pointer");
+
+    bool ok = false;
+    if (!in_minor_gc_) {
+        // Mutator phase: all live nursery objects must be in the allocated
+        // prefix of from-space.
+        ok = isInFromSpaceAllocatedRegion(ptr);
+    } else {
+        // GC phase: pointers may refer to from-space (not yet evacuated)
+        // or to-space (already evacuated), but never to free regions.
+        ok = isInFromSpaceAllocatedRegion(ptr) || isInToSpaceAllocatedRegion(ptr);
+    }
+
+    assert(ok && "HPointer into nursery free region (stale pointer into unallocated space)");
+}
+
+#endif // ECO_GC_DEBUG
 
 } // namespace Elm

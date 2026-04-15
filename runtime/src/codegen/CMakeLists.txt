@@ -15,6 +15,13 @@ find_package(MLIR REQUIRED CONFIG)
 # Note: elm-kernel-cpp is included from the top-level CMakeLists.txt
 # The ElmKernel target is available for linking.
 
+# GC debug assertions: default ON for Debug builds, OFF for Release.
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    option(ECO_GC_DEBUG "Enable extra GC debug checks (nursery stale-pointer detection)" ON)
+else()
+    option(ECO_GC_DEBUG "Enable extra GC debug checks (nursery stale-pointer detection)" OFF)
+endif()
+
 message(STATUS "Using MLIRConfig.cmake in: ${MLIR_DIR}")
 message(STATUS "Using LLVMConfig.cmake in: ${LLVM_DIR}")
 
@@ -346,6 +353,9 @@ target_compile_options(ecoc PRIVATE -fexceptions)
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     target_compile_definitions(ecoc PRIVATE ECO_DEBUG_STACKMAP=1)
 endif()
+if(ECO_GC_DEBUG)
+    target_compile_definitions(ecoc PRIVATE ECO_GC_DEBUG=1)
+endif()
 
 # Need pthreads for the runtime
 find_package(Threads REQUIRED)
@@ -431,6 +441,9 @@ target_compile_options(obj.EcoRunner PRIVATE -Wno-ambiguous-reversed-operator -f
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     target_compile_definitions(obj.EcoRunner PRIVATE ECO_DEBUG_STACKMAP=1)
 endif()
+if(ECO_GC_DEBUG)
+    target_compile_definitions(obj.EcoRunner PRIVATE ECO_GC_DEBUG=1)
+endif()
 target_link_libraries(obj.EcoRunner PRIVATE Threads::Threads)
 target_link_libraries(EcoRunner PUBLIC ${LIBUNWIND_LIB})
 
@@ -470,6 +483,9 @@ target_link_libraries(EcoRuntimeStatic PUBLIC ${LIBUNWIND_LIB})
 # Enable stackmap debug warnings in debug builds
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     target_compile_definitions(EcoRuntimeStatic PRIVATE ECO_DEBUG_STACKMAP=1)
+endif()
+if(ECO_GC_DEBUG)
+    target_compile_definitions(EcoRuntimeStatic PRIVATE ECO_GC_DEBUG=1)
 endif()
 
 #------------------------------------------------------------------------------

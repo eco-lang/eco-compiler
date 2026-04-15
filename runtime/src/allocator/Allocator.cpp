@@ -394,6 +394,15 @@ void* Allocator::resolve(HPointer ptr) {
     void* obj = fromPointerRaw(ptr);
     assert(obj && "Null pointer from valid HPointer");
 
+#if ECO_GC_DEBUG
+    {
+        ThreadLocalHeap* heap = getThreadHeap();
+        if (heap != nullptr && heap->isInNursery(obj)) {
+            heap->debugAssertValidNurseryPointer(obj);
+        }
+    }
+#endif
+
     // Validate pointer is within the reserved heap address space.
     assert(static_cast<char*>(obj) >= heap_base && "Pointer below heap base");
     if (static_cast<char*>(obj) >= heap_base + heap_reserved) {

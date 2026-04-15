@@ -85,6 +85,10 @@ private:
 
     ThreadLocalHeap* thread_heap_;    // Owner ThreadLocalHeap (for multi-threaded mode).
 
+#if ECO_GC_DEBUG
+    bool in_minor_gc_ = false;        // True only during minorGC execution.
+#endif
+
     // ========== Internal Methods ==========
 
     // Initializes this nursery by requesting blocks from the Allocator.
@@ -96,6 +100,18 @@ private:
 
     // Performs minor GC, evacuating live objects to to_space or promoting to old gen.
     void minorGC(OldGenSpace &oldgen);
+
+    // Zeros the free region of to-space after evacuation completes.
+    // Prevents ghost headers from surviving into the next GC cycle.
+    // Unconditional (not debug-gated) — this is a safety net.
+    void clearToSpaceFreeRegion();
+
+#if ECO_GC_DEBUG
+    // Debug helpers: validate that a nursery pointer is in an allocated region.
+    bool isInFromSpaceAllocatedRegion(void* ptr) const;
+    bool isInToSpaceAllocatedRegion(void* ptr) const;
+    void debugAssertValidNurseryPointer(void* ptr) const;
+#endif
 
     // Returns true if the pointer is within this nursery's address ranges.
     // O(1) check using cached bounds (may include small gaps between blocks).
@@ -236,6 +252,10 @@ public:
 
     static size_t highBlockCount(const NurserySpace& nursery) {
         return nursery.high_blocks_.size();
+    }
+
+    static void clearToSpaceFreeRegion(NurserySpace& nursery) {
+        nursery.clearToSpaceFreeRegion();
     }
 };
 

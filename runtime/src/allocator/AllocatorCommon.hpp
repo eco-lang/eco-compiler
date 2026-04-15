@@ -18,6 +18,12 @@
 #include <stdexcept>
 #include "Heap.hpp"
 
+// Enable extra GC assertions and nursery invariants in debug builds.
+// Normally set via CMake (-DECO_GC_DEBUG=1); this provides a safe fallback.
+#ifndef ECO_GC_DEBUG
+#define ECO_GC_DEBUG 0
+#endif
+
 namespace Elm {
 
 class Allocator;

@@ -137,6 +137,13 @@ public:
     /** Returns current bytes allocated in old gen. */
     size_t getOldGenAllocatedBytes() const { return old_gen_.getAllocatedBytes(); }
 
+#if ECO_GC_DEBUG
+    /** Debug-only: asserts that a nursery pointer is in an allocated region. */
+    void debugAssertValidNurseryPointer(void* ptr) {
+        nursery_.debugAssertValidNurseryPointer(ptr);
+    }
+#endif
+
 #if ENABLE_GC_STATS
     /** Returns GC statistics for this thread. */
     GCStats& getStats() { return stats_; }
