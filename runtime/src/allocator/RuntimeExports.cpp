@@ -884,6 +884,16 @@ size_t buildEvaluatorArgs(
     return idx;
 }
 
+// Build (1<<count)-1, safely handling count==64 (avoids UB).
+static inline uint64_t hptr_mask_all(size_t count) {
+    return (count >= 64) ? ~uint64_t{0} : ((uint64_t{1} << count) - 1);
+}
+
+// Clamp `raw` to the low `count` bits, safely handling count==64.
+static inline uint64_t hptr_mask_clamp(uint64_t raw, size_t count) {
+    return raw & hptr_mask_all(count);
+}
+
 } // anonymous namespace
 
 extern "C" uint64_t eco_apply_closure(uint64_t closure_hptr, uint64_t* args, uint32_t num_args) {
@@ -893,23 +903,37 @@ extern "C" uint64_t eco_apply_closure(uint64_t closure_hptr, uint64_t* args, uin
     Closure* closure = static_cast<Closure*>(closure_ptr);
     uint32_t n_values = closure->n_values;
     uint32_t max_values = closure->max_values;
+    assert(max_values <= 63 && "max_values exceeds 6-bit field cap");
     uint32_t remaining = max_values - n_values;
 
+    // Root `args` for the duration of this call. All entries here are
+    // HPointer-encoded `!eco.value` (callers boxed unboxed primitives upstream).
+    // The over-saturated recursive call will push its own range covering
+    // `args + remaining`; that overlap is harmless (idempotent forwarding).
+    size_t saved_range = eco_gc_stack_range_point();
+    if (num_args > 0) {
+        eco_gc_push_stack_range(args, num_args, hptr_mask_all(num_args));
+    }
+
+    uint64_t result;
     if (num_args == remaining) {
         // Exactly saturated: call evaluator with all args (INV_1).
-        return eco_closure_call_saturated(closure_hptr, args, num_args, /*layout=*/nullptr);
+        result = eco_closure_call_saturated(closure_hptr, args, num_args, /*layout=*/nullptr);
     } else if (num_args < remaining) {
         // Under-saturated: create new PAP with additional args.
         // New args are treated as boxed (!eco.value) with unboxed_bitmap=0.
-        return eco_pap_extend(closure_hptr, args, num_args, 0);
+        result = eco_pap_extend(closure_hptr, args, num_args, 0);
     } else {
         // Over-saturated: saturate this stage, then chain to the next.
         // The result of the evaluator call is a closure for the next stage,
         // which has its own n_values/max_values header. We recursively apply
         // the remaining arguments to it.
         uint64_t intermediate = eco_closure_call_saturated(closure_hptr, args, remaining, /*layout=*/nullptr);
-        return eco_apply_closure(intermediate, args + remaining, num_args - remaining);
+        result = eco_apply_closure(intermediate, args + remaining, num_args - remaining);
     }
+
+    eco_gc_restore_stack_range_point(saved_range);
+    return result;
 }
 
 extern "C" uint64_t eco_apply_segmentation_unknown(uint64_t closure_hptr,
@@ -941,14 +965,35 @@ extern "C" uint64_t eco_apply_segmentation_unknown(uint64_t closure_hptr,
     }
     uint32_t remaining = max_values - n_values;
 
+    // Root the appropriate arg array across the inner call. Without this, a GC
+    // triggered inside eco_pap_extend / eco_apply_closure would leave stale
+    // HPointers in the alloca-backed arrays.
+    size_t saved_range = eco_gc_stack_range_point();
+    uint64_t result;
+
     if (num_args < remaining) {
-        // Under-saturated: use typed args with bitmap to preserve unboxed values
-        return eco_pap_extend(closure_hptr, typed_args, num_args, unboxed_bitmap);
+        // Under-saturated: use typed args with bitmap to preserve unboxed values.
+        // typed_args is mixed unboxed/boxed; bit i==1 means slot i is an unboxed
+        // primitive (Int/Float/Char) and must NOT be treated as an HPointer.
+        if (num_args > 0) {
+            uint64_t mask = hptr_mask_clamp(~unboxed_bitmap, num_args);
+            if (mask != 0) {
+                eco_gc_push_stack_range(typed_args, num_args, mask);
+            }
+        }
+        result = eco_pap_extend(closure_hptr, typed_args, num_args, unboxed_bitmap);
     } else {
         // Exactly saturated or over-saturated: use boxed args via eco_apply_closure
-        // which handles both cases (exact call or chain of saturate + recursive apply)
-        return eco_apply_closure(closure_hptr, boxed_args, num_args);
+        // which handles both cases (exact call or chain of saturate + recursive apply).
+        // boxed_args entries are all HPointer-encoded `!eco.value`.
+        if (num_args > 0) {
+            eco_gc_push_stack_range(boxed_args, num_args, hptr_mask_all(num_args));
+        }
+        result = eco_apply_closure(closure_hptr, boxed_args, num_args);
     }
+
+    eco_gc_restore_stack_range_point(saved_range);
+    return result;
 }
 
 extern "C" uint64_t eco_pap_extend(uint64_t closure_hptr, uint64_t* args, uint32_t num_newargs,
@@ -974,10 +1019,26 @@ extern "C" uint64_t eco_pap_extend(uint64_t closure_hptr, uint64_t* args, uint32
         return 0;
     }
 
+    // Root `args` across the allocate() call below. allocate() may trigger GC,
+    // and the copy loop further down still reads HPointer entries from `args`.
+    // Without rooting, those HPointers would be stale post-GC. Use the inverse
+    // of new_unboxed_bitmap: bit i==1 in new_unboxed_bitmap means args[i] is an
+    // unboxed primitive (Int/Float/Char) and must NOT be evacuated.
+    size_t saved_range = eco_gc_stack_range_point();
+    if (num_newargs > 0) {
+        uint64_t mask = hptr_mask_clamp(~new_unboxed_bitmap, num_newargs);
+        if (mask != 0) {
+            eco_gc_push_stack_range(args, num_newargs, mask);
+        }
+    }
+
     // Allocate a new closure with room for all captured values.
     size_t size = sizeof(Header) + 8 + sizeof(EvalFunction) + new_n_values * sizeof(Unboxable);
     void* obj = Allocator::instance().allocate(size, Tag_Closure);
-    if (!obj) return 0;
+    if (!obj) {
+        eco_gc_restore_stack_range_point(saved_range);
+        return 0;
+    }
 
     // Re-resolve old_closure: allocate() may have triggered GC and moved it.
     old_closure = static_cast<Closure*>(hpointerToPtr(closure_hptr));
@@ -1005,6 +1066,7 @@ extern "C" uint64_t eco_pap_extend(uint64_t closure_hptr, uint64_t* args, uint32
         new_closure->values[old_n_values + i].i = static_cast<i64>(args[i]);
     }
 
+    eco_gc_restore_stack_range_point(saved_range);
     return ptrToHPointer(obj);
 }
 

@@ -34,6 +34,7 @@
 
 namespace Elm {
 
+
 NurserySpace::NurserySpace() :
     config_(nullptr), allocator_(nullptr), block_size_(0), from_is_low_(true),
     low_base_(nullptr), low_end_(nullptr), high_base_(nullptr), high_end_(nullptr),
