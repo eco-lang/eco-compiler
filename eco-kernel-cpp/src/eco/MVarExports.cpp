@@ -29,3 +29,7 @@ uint64_t Eco_Kernel_MVar_put(uint64_t id, uint64_t value) {
 uint64_t Eco_Kernel_MVar_drop(uint64_t id) {
     return MVar::drop(id);
 }
+
+extern "C" void Eco_Kernel_MVar_register_gc_roots() {
+    MVar::registerGcRootScanner();
+}

@@ -11,6 +11,8 @@ uint64_t take(uint64_t id);
 uint64_t put(uint64_t id, uint64_t value);
 uint64_t drop(uint64_t id);
 
+void registerGcRootScanner();
+
 } // namespace Eco::Kernel::MVar
 
 #endif // ECO_MVAR_HPP

@@ -10,6 +10,8 @@ uint64_t random();
 uint64_t saveState(uint64_t state);
 uint64_t loadState();
 
+void registerGcRootScanner();
+
 } // namespace Eco::Kernel::Runtime
 
 #endif // ECO_RUNTIME_HPP

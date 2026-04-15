@@ -1,7 +1,10 @@
 //===- Runtime.cpp - Runtime kernel module implementation -----------------===//
 
 #include "Runtime.hpp"
+#include "ExportHelpers.hpp"
 #include "KernelHelpers.hpp"
+#include "allocator/Allocator.hpp"
+#include "allocator/RootSet.hpp"
 #include <random>
 #include <string>
 #include <unistd.h>
@@ -45,6 +48,16 @@ uint64_t loadState() {
         return taskSucceed(s_savedState);
     }
     return taskSucceed(Elm::alloc::nothing());
+}
+
+void registerGcRootScanner() {
+    Elm::Allocator::instance().getRootSet().addExternalRootScanner(
+        [](Elm::RootSet::EvacuateFn evacuate) {
+            if (!s_hasState) return;
+            uint64_t encoded = Export::encode(s_savedState);
+            evacuate(encoded);
+            s_savedState = Export::decode(encoded);
+        });
 }
 
 } // namespace Eco::Kernel::Runtime

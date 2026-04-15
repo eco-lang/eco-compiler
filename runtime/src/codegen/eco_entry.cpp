@@ -103,6 +103,9 @@ int64_t eco_main();
 // Effect manager registration (from ElmKernel_EffectRegistry).
 void eco_register_all_effect_managers();
 
+// Eco kernel GC root registration (MVar + Runtime saved-state).
+void Eco_Kernel_register_all_gc_roots();
+
 } // extern "C"
 
 struct MainArgs {
@@ -117,6 +120,10 @@ static void *eco_main_thread(void *arg) {
     // Initialize the generational GC and thread-local heap.
     Elm::Allocator::instance().initialize();
     Elm::Allocator::instance().initThread();
+
+    // Register Eco kernel GC roots (MVar table, Runtime saved state) before
+    // any Elm code runs so an early GC sees them.
+    Eco_Kernel_register_all_gc_roots();
 
     // Parse the .llvm_stackmaps section so the GC can find stack roots.
     initStackMapFromSelf();

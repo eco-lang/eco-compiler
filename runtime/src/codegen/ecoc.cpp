@@ -76,6 +76,8 @@
 #include "../allocator/Allocator.hpp"
 #include "KernelExports.h"
 
+extern "C" __attribute__((weak)) void Eco_Kernel_register_all_gc_roots();
+
 using namespace mlir;
 
 namespace cl = llvm::cl;
@@ -265,6 +267,11 @@ static int runJIT(ModuleOp module) {
     // Initialize the runtime GC and thread-local allocator.
     Elm::Allocator::instance().initialize();
     Elm::Allocator::instance().initThread();
+
+    // Register Eco kernel GC roots (MVar, Runtime saved-state).
+    // Weak symbol: only present when the Eco kernel is linked in.
+    if (Eco_Kernel_register_all_gc_roots)
+        Eco_Kernel_register_all_gc_roots();
 
     // Call __eco_init_globals if it exists to register globals as GC roots.
     auto initGlobalsSymbol = engine->lookup("__eco_init_globals");

@@ -42,6 +42,8 @@
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/MemoryBuffer.h"
 
+extern "C" __attribute__((weak)) void Eco_Kernel_register_all_gc_roots();
+
 #include "EcoDialect.h"
 #include "Passes.h"
 #include "EcoPipeline.h"
@@ -208,6 +210,11 @@ private:
         // Initialize runtime
         Elm::Allocator::instance().initialize();
         Elm::Allocator::instance().initThread();
+
+        // Register Eco kernel GC roots (MVar, Runtime saved-state).
+        // Weak symbol: only present when the Eco kernel is linked in.
+        if (Eco_Kernel_register_all_gc_roots)
+            Eco_Kernel_register_all_gc_roots();
 
         // Initialize globals if present
         auto initGlobalsSymbol = engine->lookup("__eco_init_globals");

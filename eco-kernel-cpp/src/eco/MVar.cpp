@@ -7,7 +7,10 @@
 //===----------------------------------------------------------------------===//
 
 #include "MVar.hpp"
+#include "ExportHelpers.hpp"
 #include "KernelHelpers.hpp"
+#include "allocator/Allocator.hpp"
+#include "allocator/RootSet.hpp"
 #include <cassert>
 #include <optional>
 #include <unordered_map>
@@ -63,6 +66,18 @@ uint64_t drop(uint64_t id) {
     int64_t mvarId = static_cast<int64_t>(id);
     s_mvars.erase(mvarId);
     return taskSucceedUnit();
+}
+
+void registerGcRootScanner() {
+    Elm::Allocator::instance().getRootSet().addExternalRootScanner(
+        [](Elm::RootSet::EvacuateFn evacuate) {
+            for (auto& [id, slot] : s_mvars) {
+                if (!slot.value.has_value()) continue;
+                uint64_t encoded = Export::encode(slot.value.value());
+                evacuate(encoded);
+                slot.value = Export::decode(encoded);
+            }
+        });
 }
 
 } // namespace Eco::Kernel::MVar

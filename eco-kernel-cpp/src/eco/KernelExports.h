@@ -180,6 +180,15 @@ uint64_t Eco_Kernel_Runtime_saveState(uint64_t state);
 uint64_t Eco_Kernel_Runtime_loadState();
 
 //===----------------------------------------------------------------------===//
+// GC root registration hooks. Must be called once per Elm thread, after
+// Allocator::initThread() and before any Elm code runs.
+//===----------------------------------------------------------------------===//
+
+void Eco_Kernel_MVar_register_gc_roots();
+void Eco_Kernel_Runtime_register_gc_roots();
+void Eco_Kernel_register_all_gc_roots();
+
+//===----------------------------------------------------------------------===//
 // Http Module - HTTP requests and archive downloads
 //===----------------------------------------------------------------------===//
 

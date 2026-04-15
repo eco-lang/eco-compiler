@@ -11,6 +11,7 @@
 #include "allocator/Heap.hpp"
 #include "allocator/Allocator.hpp"
 #include "allocator/HeapHelpers.hpp"
+#include <cassert>
 #include <cstdint>
 
 namespace Eco::Kernel::Export {
@@ -35,19 +36,8 @@ inline HPointer decode(uint64_t val) {
 // Decode uint64_t to raw pointer (for accessing heap objects).
 inline void* toPtr(uint64_t val) {
     HPointer h = decode(val);
-
-    if (h.constant >= 1 && h.constant <= 7) {
-        return nullptr;
-    }
-
-    if (h.constant != 0) {
-        return reinterpret_cast<void*>(val);
-    }
-
-    if (h.padding != 0) {
-        return reinterpret_cast<void*>(val);
-    }
-
+    if (h.constant != 0) return nullptr;
+    assert(h.padding == 0 && "Export::toPtr: invalid eco.value (padding bits set)");
     return Allocator::instance().resolve(h);
 }
 
