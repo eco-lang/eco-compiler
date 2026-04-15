@@ -76,6 +76,81 @@ static void emitRestoreArgsRootRange(
 }
 
 //===----------------------------------------------------------------------===//
+// Shared rooted boxed-args array builder
+//===----------------------------------------------------------------------===//
+
+struct BoxedArgsResult {
+    Value array;       // i64* alloca
+    Value numArgsVal;  // i64 constant (numNewArgs)
+    Value savedDepth;  // saved GC range point — caller MUST restore
+};
+
+/// Allocates an args array on the stack, registers it as an all-HPointer GC
+/// root range (zero-initialized), then populates it by boxing each arg based
+/// on its original MLIR type. Returns the array, count, and saved GC depth.
+static BoxedArgsResult emitRootedBoxedArgsArray(
+    ConversionPatternRewriter &rewriter, Location loc,
+    const EcoRuntime &runtime,
+    ValueRange newargs,
+    ArrayRef<Type> origNewArgTypes,
+    ValueRange liveRoots,
+    Operation *safeOp) {
+    auto *ctx = rewriter.getContext();
+    auto i64Ty = IntegerType::get(ctx, 64);
+    auto ptrTy = LLVM::LLVMPointerType::get(ctx);
+    int64_t numNewArgs = newargs.size();
+
+    // Alloca for the boxed args array.
+    auto numArgsConst = rewriter.create<LLVM::ConstantOp>(
+        loc, i64Ty, rewriter.getI64IntegerAttr(numNewArgs));
+    Value argsArray = rewriter.create<LLVM::AllocaOp>(
+        loc, ptrTy, i64Ty, numArgsConst);
+
+    // Zero-init + register as all-HPointer root range before population.
+    uint64_t allBoxedMask = (numNewArgs >= 64) ? ~0ULL : ((1ULL << numNewArgs) - 1);
+    Value savedDepth = emitPushArgsRootRange(
+        rewriter, loc, runtime, argsArray, numNewArgs, allBoxedMask);
+
+    // Populate: box each arg based on original type.
+    for (size_t i = 0; i < newargs.size(); ++i) {
+        auto idxConst = rewriter.create<LLVM::ConstantOp>(
+            loc, i64Ty, rewriter.getI64IntegerAttr(i));
+        auto slotPtr = rewriter.create<LLVM::GEPOp>(
+            loc, ptrTy, i64Ty, argsArray, ValueRange{idxConst});
+        Value arg = newargs[i];
+
+        Type origType = (i < origNewArgTypes.size()) ? origNewArgTypes[i] : Type();
+
+        if (origType && isa<eco::ValueType>(origType)) {
+            if (isa<LLVM::LLVMPointerType>(arg.getType())) {
+                arg = rewriter.create<LLVM::PtrToIntOp>(loc, i64Ty, arg);
+            }
+        } else if (origType && origType.isInteger(64)) {
+            auto allocIntFunc = runtime.getOrCreateAllocInt(rewriter);
+            emitSafepointMarker(safeOp, rewriter, runtime, liveRoots);
+            arg = rewriter.create<LLVM::CallOp>(loc, allocIntFunc, ValueRange{arg}).getResult();
+        } else if (origType && origType.isF64()) {
+            auto allocFloatFunc = runtime.getOrCreateAllocFloat(rewriter);
+            emitSafepointMarker(safeOp, rewriter, runtime, liveRoots);
+            arg = rewriter.create<LLVM::CallOp>(loc, allocFloatFunc, ValueRange{arg}).getResult();
+        } else if (origType && isa<IntegerType>(origType) &&
+                   cast<IntegerType>(origType).getWidth() < 64) {
+            auto allocCharFunc = runtime.getOrCreateAllocChar(rewriter);
+            emitSafepointMarker(safeOp, rewriter, runtime, liveRoots);
+            arg = rewriter.create<LLVM::CallOp>(loc, allocCharFunc, ValueRange{arg}).getResult();
+        } else {
+            if (isa<LLVM::LLVMPointerType>(arg.getType())) {
+                arg = rewriter.create<LLVM::PtrToIntOp>(loc, i64Ty, arg);
+            }
+        }
+
+        rewriter.create<LLVM::StoreOp>(loc, arg, slotPtr);
+    }
+
+    return {argsArray, numArgsConst, savedDepth};
+}
+
+//===----------------------------------------------------------------------===//
 // eco.project.closure -> load capture from closure values array
 //===----------------------------------------------------------------------===//
 
@@ -1030,7 +1105,6 @@ struct PapExtendOpLowering : public OpConversionPattern<PapExtendOp> {
         int64_t numNewArgs = newargs.size();
 
         // Get original (pre-conversion) MLIR types for boxing decisions.
-        // Only take real newargs, not appended GC roots.
         SmallVector<Type> origNewArgTypes;
         auto origNewargs = op.getNewargs();
         for (size_t i = 0; i < static_cast<size_t>(numNewArgs); ++i) {
@@ -1039,32 +1113,17 @@ struct PapExtendOpLowering : public OpConversionPattern<PapExtendOp> {
 
         uint64_t newargsBitmap = op.getNewargsUnboxedBitmap();
 
-        // === Allocate both args arrays ===
+        // === 1. Alloca + zero-init typed args array ===
         auto numArgsI64 = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, numNewArgs);
         Value typedArgsArray = rewriter.create<LLVM::AllocaOp>(loc, ptrTy, i64Ty, numArgsI64);
-        Value boxedArgsArray = rewriter.create<LLVM::AllocaOp>(loc, ptrTy, i64Ty, numArgsI64);
-
-        // Zero-init both arrays so uninitialized slots are safe for GC.
         {
             auto i8Ty = IntegerType::get(ctx, 8);
             auto zeroVal = rewriter.create<LLVM::ConstantOp>(loc, i8Ty, 0);
             auto bytesLen = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, numNewArgs * 8);
             rewriter.create<LLVM::MemsetOp>(loc, typedArgsArray, zeroVal, bytesLen, /*isVolatile=*/false);
-            rewriter.create<LLVM::MemsetOp>(loc, boxedArgsArray, zeroVal, bytesLen, /*isVolatile=*/false);
         }
 
-        // Save GC range point. We'll push ranges incrementally as bitmaps become known.
-        auto rangePointFunc = runtime.getOrCreateGcStackRangePoint(rewriter);
-        Value savedRangePoint = rewriter.create<LLVM::CallOp>(loc, rangePointFunc, ValueRange{}).getResult();
-
-        // === Populate typed args array (for eco_pap_extend in under-saturated case) ===
-        // During this loop, GC-triggering eco_alloc_char calls can occur. The SSA
-        // values are tracked by statepoint liveRoots, and the typed array slots
-        // populated so far contain either zero (safe) or raw i64/HPointer values
-        // that were just stored. We register the typed array AFTER this loop once
-        // adjustedBitmap is final — any HPointers stored before then are also held
-        // as SSA values in liveRoots and thus safe.
-        uint64_t adjustedBitmap = newargsBitmap;
+        // === 2. Populate typed args (no allocs, no safepoints) ===
         for (size_t i = 0; i < newargs.size(); ++i) {
             auto idxConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, static_cast<int64_t>(i));
             auto slotPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i64Ty, typedArgsArray, ValueRange{idxConst});
@@ -1073,17 +1132,19 @@ struct PapExtendOpLowering : public OpConversionPattern<PapExtendOp> {
                 arg = rewriter.create<LLVM::PtrToIntOp>(loc, i64Ty, arg);
             } else if (auto intTy = dyn_cast<IntegerType>(arg.getType())) {
                 if (intTy.getWidth() < 64) {
-                    // Char (i16): zero-extend to i64 and keep unboxed, same as Int/Float.
                     arg = rewriter.create<LLVM::ZExtOp>(loc, i64Ty, arg);
                 }
             }
             rewriter.create<LLVM::StoreOp>(loc, arg, slotPtr);
         }
 
-        // Register typed array with correct mask: ~adjustedBitmap marks HPointer slots.
+        // === 3. Root typed array BEFORE boxing calls can trigger GC ===
         uint64_t countMask = (numNewArgs >= 64) ? ~0ULL : ((1ULL << numNewArgs) - 1);
-        uint64_t typedMask = ~adjustedBitmap & countMask;
+        uint64_t typedMask = ~newargsBitmap & countMask;
+        Value typedSavedDepth;
         {
+            auto rangePointFunc = runtime.getOrCreateGcStackRangePoint(rewriter);
+            typedSavedDepth = rewriter.create<LLVM::CallOp>(loc, rangePointFunc, ValueRange{}).getResult();
             auto pushFunc = runtime.getOrCreateGcPushStackRange(rewriter);
             auto countConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, numNewArgs);
             auto maskConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty,
@@ -1092,65 +1153,21 @@ struct PapExtendOpLowering : public OpConversionPattern<PapExtendOp> {
                 ValueRange{typedArgsArray, countConst, maskConst});
         }
 
-        // Register boxed array (all-boxed) BEFORE its population loop.
-        {
-            auto pushFunc = runtime.getOrCreateGcPushStackRange(rewriter);
-            auto countConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, numNewArgs);
-            auto maskConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty,
-                rewriter.getI64IntegerAttr(static_cast<int64_t>(countMask)));
-            rewriter.create<LLVM::CallOp>(loc, pushFunc,
-                ValueRange{boxedArgsArray, countConst, maskConst});
-        }
+        // === 4. Build boxed args via shared helper (alloca + zero-init + root + populate) ===
+        auto boxed = emitRootedBoxedArgsArray(
+            rewriter, loc, runtime, newargs, origNewArgTypes, liveRoots, op);
 
-        // === Populate boxed args array ===
-        for (size_t i = 0; i < newargs.size(); ++i) {
-            auto idxConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, static_cast<int64_t>(i));
-            auto slotPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i64Ty, boxedArgsArray, ValueRange{idxConst});
-            Value arg = newargs[i];
-
-            // Box new args to HPointer based on original (pre-conversion) types.
-            Type origType = (i < origNewArgTypes.size()) ? origNewArgTypes[i] : Type();
-
-            if (origType && isa<eco::ValueType>(origType)) {
-                // !eco.value → already HPointer, just convert to i64
-                if (isa<LLVM::LLVMPointerType>(arg.getType())) {
-                    arg = rewriter.create<LLVM::PtrToIntOp>(loc, i64Ty, arg);
-                }
-            } else if (origType && origType.isInteger(64)) {
-                // Int (i64) → box via eco_alloc_int
-                auto allocIntFunc = runtime.getOrCreateAllocInt(rewriter);
-                emitSafepointMarker(op, rewriter, runtime, liveRoots);
-                arg = rewriter.create<LLVM::CallOp>(loc, allocIntFunc, ValueRange{arg}).getResult();
-            } else if (origType && origType.isF64()) {
-                // Float (f64) → box via eco_alloc_float
-                auto allocFloatFunc = runtime.getOrCreateAllocFloat(rewriter);
-                emitSafepointMarker(op, rewriter, runtime, liveRoots);
-                arg = rewriter.create<LLVM::CallOp>(loc, allocFloatFunc, ValueRange{arg}).getResult();
-            } else if (origType && isa<IntegerType>(origType) &&
-                       cast<IntegerType>(origType).getWidth() < 64) {
-                // Char (i16) → box via eco_alloc_char
-                auto allocCharFunc = runtime.getOrCreateAllocChar(rewriter);
-                emitSafepointMarker(op, rewriter, runtime, liveRoots);
-                arg = rewriter.create<LLVM::CallOp>(loc, allocCharFunc, ValueRange{arg}).getResult();
-            } else {
-                // Fallback: if ptr, convert to i64
-                if (isa<LLVM::LLVMPointerType>(arg.getType())) {
-                    arg = rewriter.create<LLVM::PtrToIntOp>(loc, i64Ty, arg);
-                }
-            }
-            rewriter.create<LLVM::StoreOp>(loc, arg, slotPtr);
-        }
-
-        // === Call runtime helper that reads closure header and dispatches ===
+        // === 5. Call runtime dispatcher ===
         auto helperFunc = runtime.getOrCreateApplySegmentationUnknown(rewriter);
         auto numNewArgsI32 = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, static_cast<int32_t>(numNewArgs));
-        auto bitmapConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, rewriter.getI64IntegerAttr(adjustedBitmap));
+        auto bitmapConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, rewriter.getI64IntegerAttr(newargsBitmap));
         emitSafepointMarker(op, rewriter, runtime, liveRoots);
         auto call = rewriter.create<LLVM::CallOp>(
-            loc, helperFunc, ValueRange{closureI64, typedArgsArray, numNewArgsI32, bitmapConst, boxedArgsArray});
+            loc, helperFunc, ValueRange{closureI64, typedArgsArray, numNewArgsI32, bitmapConst, boxed.array});
 
-        // Restore GC root ranges.
-        emitRestoreArgsRootRange(rewriter, loc, runtime, savedRangePoint);
+        // === 6. Restore GC root ranges in reverse push order ===
+        emitRestoreArgsRootRange(rewriter, loc, runtime, boxed.savedDepth);
+        emitRestoreArgsRootRange(rewriter, loc, runtime, typedSavedDepth);
 
         rewriter.replaceOp(op, call.getResult());
         return success();
@@ -1167,81 +1184,17 @@ struct PapExtendOpLowering : public OpConversionPattern<PapExtendOp> {
                                     ValueRange liveRoots) const {
         auto *ctx = rewriter.getContext();
         auto i32Ty = IntegerType::get(ctx, 32);
-        auto i64Ty = IntegerType::get(ctx, 64);
-        auto ptrTy = LLVM::LLVMPointerType::get(ctx);
         int64_t numNewArgs = newargs.size();
 
-        // Build args array on stack. All args must be HPointer-encoded (i64) for
-        // the runtime helper, since it passes them through buildEvaluatorArgs
-        // which expects HPointer-encoded values in the new_args array.
-        auto numArgsConst = rewriter.create<LLVM::ConstantOp>(
-            loc, i64Ty, rewriter.getI64IntegerAttr(numNewArgs));
-        Value argsArray = rewriter.create<LLVM::AllocaOp>(
-            loc, ptrTy, i64Ty, numArgsConst);
-
-        // All-boxed array: register as GC root range before population.
-        uint64_t allBoxedMask = (numNewArgs >= 64) ? ~0ULL : ((1ULL << numNewArgs) - 1);
-        Value savedRange = emitPushArgsRootRange(rewriter, loc, runtime, argsArray, numNewArgs, allBoxedMask);
-
-        // Get original (pre-conversion) MLIR types to distinguish !eco.value
-        // from Int. Both are i64 after LLVM type conversion, but only Int
-        // needs boxing. Only take real newargs, not appended GC roots.
+        // Collect original (pre-conversion) MLIR types for boxing decisions.
         SmallVector<Type> origNewArgTypes;
         auto origNewargs = op.getNewargs();
-        for (size_t i = 0; i < newargs.size(); ++i) {
+        for (size_t i = 0; i < newargs.size(); ++i)
             origNewArgTypes.push_back(origNewargs[i].getType());
-        }
 
-        for (size_t i = 0; i < newargs.size(); ++i) {
-            auto idxConst = rewriter.create<LLVM::ConstantOp>(
-                loc, i64Ty, rewriter.getI64IntegerAttr(i));
-            auto slotPtr = rewriter.create<LLVM::GEPOp>(
-                loc, ptrTy, i64Ty, argsArray, ValueRange{idxConst});
-            Value arg = newargs[i];
-
-            // Box new args to HPointer based on original (pre-conversion) types.
-            // eco_apply_closure expects all args as HPointer-encoded i64.
-            // Use original types to distinguish !eco.value (already HPointer,
-            // pass through) from Int/Float/Char (need boxing via eco_alloc_*).
-            Type origType = (i < origNewArgTypes.size()) ? origNewArgTypes[i] : Type();
-
-            if (origType && isa<eco::ValueType>(origType)) {
-                // !eco.value → already HPointer, just convert to i64
-                if (isa<LLVM::LLVMPointerType>(arg.getType())) {
-                    arg = rewriter.create<LLVM::PtrToIntOp>(loc, i64Ty, arg);
-                }
-                // else already i64 after conversion, pass through
-            } else if (origType && origType.isInteger(64)) {
-                // Int (i64) → box via eco_alloc_int
-                auto allocIntFunc = runtime.getOrCreateAllocInt(rewriter);
-                emitSafepointMarker(op, rewriter, runtime, liveRoots);
-                auto boxCall = rewriter.create<LLVM::CallOp>(
-                    loc, allocIntFunc, ValueRange{arg});
-                arg = boxCall.getResult();
-            } else if (origType && origType.isF64()) {
-                // Float (f64) → box via eco_alloc_float
-                auto allocFloatFunc = runtime.getOrCreateAllocFloat(rewriter);
-                emitSafepointMarker(op, rewriter, runtime, liveRoots);
-                auto boxCall = rewriter.create<LLVM::CallOp>(
-                    loc, allocFloatFunc, ValueRange{arg});
-                arg = boxCall.getResult();
-            } else if (origType && isa<IntegerType>(origType) &&
-                       cast<IntegerType>(origType).getWidth() < 64) {
-                // Char (i16) → box via eco_alloc_char
-                auto allocCharFunc = runtime.getOrCreateAllocChar(rewriter);
-                emitSafepointMarker(op, rewriter, runtime, liveRoots);
-                auto boxCall = rewriter.create<LLVM::CallOp>(
-                    loc, allocCharFunc, ValueRange{arg});
-                arg = boxCall.getResult();
-            } else {
-                // Fallback: if ptr, convert to i64
-                if (isa<LLVM::LLVMPointerType>(arg.getType())) {
-                    arg = rewriter.create<LLVM::PtrToIntOp>(loc, i64Ty, arg);
-                }
-            }
-
-            rewriter.create<LLVM::StoreOp>(loc, arg, slotPtr);
-        }
+        // Build all-boxed args array: alloca + zero-init + root + populate.
+        auto boxed = emitRootedBoxedArgsArray(
+            rewriter, loc, runtime, newargs, origNewArgTypes, liveRoots, op);
 
         // Call eco_apply_closure(closure, args, num_args)
         auto applyFunc = runtime.getOrCreateApplyClosure(rewriter);
@@ -1249,10 +1202,10 @@ struct PapExtendOpLowering : public OpConversionPattern<PapExtendOp> {
         auto numNewArgsConst = rewriter.create<LLVM::ConstantOp>(
             loc, i32Ty, static_cast<int32_t>(numNewArgs));
         auto call = rewriter.create<LLVM::CallOp>(
-            loc, applyFunc, ValueRange{closureI64, argsArray, numNewArgsConst});
+            loc, applyFunc, ValueRange{closureI64, boxed.array, numNewArgsConst});
 
         // Restore GC root range stack.
-        emitRestoreArgsRootRange(rewriter, loc, runtime, savedRange);
+        emitRestoreArgsRootRange(rewriter, loc, runtime, boxed.savedDepth);
 
         rewriter.replaceOp(op, call.getResult());
         return success();
