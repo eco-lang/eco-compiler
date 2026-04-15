@@ -16,6 +16,7 @@ that the solver proved equivalent always map to the same root index.
 
 @docs AllSchemeRoots, SchemeRootsForDef
 @docs normalizeNodeVars, normalizeAnnotationVars, normalizeAllSchemeRoots
+@docs extractBinderRootsFromInferred
 
 -}
 

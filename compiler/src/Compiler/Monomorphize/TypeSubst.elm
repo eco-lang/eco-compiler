@@ -30,7 +30,17 @@ by MVarId (as Int via Id.toComparable), not by Name.
 
 # Scheme Construction
 
-@docs buildSchemeInfo
+@docs buildSchemeInfo, refreshSchemeInfo
+
+
+# Substitution with Free Variables
+
+@docs applySubstWithFreeVars
+
+
+# Type Flattening
+
+@docs flattenTLambda
 
 -}
 

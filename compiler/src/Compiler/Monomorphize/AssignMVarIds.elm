@@ -7,6 +7,8 @@ This pass runs once at the start of monomorphization, converting
 variables carry sequential Int-based IDs instead of string names, and
 constraint information is recorded in a side table.
 
+@docs GlobalMVarState, assignIds, assignIdsToType
+
 -}
 
 import Compiler.AST.Canonical as Can

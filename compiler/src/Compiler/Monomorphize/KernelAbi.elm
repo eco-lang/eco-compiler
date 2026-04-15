@@ -43,6 +43,11 @@ Three cases:
 
 @docs freeTypeVariablesWithConstraints, constraintFromName
 
+
+# Free Variable Ids
+
+@docs freeVarIds
+
 -}
 
 import Compiler.AST.Canonical as Can

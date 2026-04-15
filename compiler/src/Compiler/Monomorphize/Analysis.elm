@@ -29,6 +29,11 @@ This module handles:
 
 @docs lookupUnion
 
+
+# Type Conversion
+
+@docs convertCanTypeNameToMVarId
+
 -}
 
 import Array exposing (Array)

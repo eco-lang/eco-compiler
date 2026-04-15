@@ -31,6 +31,11 @@ This module handles fetching, updating, and querying the registry for dependency
 
 @docs registryDecoder, registryEncoder
 
+
+# Policy
+
+@docs RegistryPolicy
+
 -}
 
 import Basics.Extra exposing (flip)

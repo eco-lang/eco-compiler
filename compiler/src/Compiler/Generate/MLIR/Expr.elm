@@ -27,7 +27,12 @@ This module handles generation of MLIR code for all Elm expressions.
 
 # Boxing and Coercion
 
-@docs coerceResultToType, boxArgsWithMlirTypes
+@docs coerceResultToType
+
+
+# Safepoint Emission
+
+@docs emitSafepoint
 
 
 # Utilities

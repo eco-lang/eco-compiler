@@ -152,7 +152,7 @@ defined in System.IO.
 
 # Stdlib Dict Utilities
 
-@docs dictFromListWith, dictInsertWith, dictIntersectionWith, dictMapMaybe, dictSequenceResult, dictTraverse, dictTraverseWithKey, dictUnionWith
+@docs dictFromListWith, dictInsertWith, dictIntersectionWith, dictIntersectionWithKey, dictMapMaybe, dictSequenceResult, dictSequenceMaybe, dictTraverse, dictTraverseWithKey, dictTraverseResult, dictTraverseWithKeyResult, dictUnionWith, dictMapM__, dictFromKeysA
 
 -}
 

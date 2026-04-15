@@ -29,6 +29,11 @@ the solver to later produce a mapping from node IDs to their inferred types.
 
 @docs recordNodeVar, recordSyntheticExprVar
 
+
+# Scheme Binder Recording
+
+@docs SchemeBinderVars, recordSchemeBinders
+
 -}
 
 import Array exposing (Array)

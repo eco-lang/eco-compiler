@@ -13,6 +13,8 @@ Two tiers of elimination are applied sequentially:
 
 After both tiers, no MonoAccessorValue remains (MONO\_027).
 
+@docs accessorTypeNeedsDefer, rewriteNode
+
 -}
 
 import Compiler.AST.Monomorphized as Mono
