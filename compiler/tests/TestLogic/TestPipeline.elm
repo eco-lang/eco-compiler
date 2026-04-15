@@ -47,11 +47,9 @@ import Compiler.Canonicalize.Module as Canonicalize
 import Compiler.Data.Name as Name exposing (Name)
 import Compiler.Data.NonEmptyList as NE
 import Compiler.Data.OneOrMore as OneOrMore
-import Compiler.Data.Index as Index
 import Compiler.Elm.Interface as I
 import Compiler.Elm.Interface.Basic as Basic
 import Compiler.Elm.ModuleName as ModuleName
-import Compiler.Elm.Package as Pkg
 import Compiler.Generate.CodeGen as CodeGen
 import Compiler.Generate.MLIR.Backend as MLIR
 import Compiler.Generate.Mode as Mode
@@ -135,7 +133,6 @@ type alias MonoArtifacts =
     , globalTypeEnv : TypeEnv.GlobalTypeEnv
     , monoGraph : Mono.MonoGraph
     }
-
 
 
 {-| Stage 5.5: Global optimization artifacts (includes Stages 1-5).
@@ -315,7 +312,6 @@ runToMono srcModule =
                         , globalTypeEnv = globalTypeEnv
                         , monoGraph = monoGraph
                         }
-
 
 
 {-| Run pipeline through global optimization.

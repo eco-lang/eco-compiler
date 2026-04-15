@@ -26,7 +26,6 @@ The registry maintains a bidirectional mapping between specialization keys
 import Array
 import Compiler.AST.Monomorphized as Mono exposing (Global, LambdaId, MonoType, SpecId, SpecializationRegistry)
 import Dict
-import Utils.Crash
 
 
 
@@ -51,13 +50,6 @@ Returns the SpecId and the (possibly updated) registry.
 getOrCreateSpecId : Global -> MonoType -> Maybe LambdaId -> SpecializationRegistry -> ( SpecId, SpecializationRegistry )
 getOrCreateSpecId global monoType maybeLambda registry =
     let
-        _ =
-            if Mono.containsAnyMVar monoType && not (Mono.containsCEcoMVar monoType) then
-                Utils.Crash.crash
-                    "Registry.getOrCreateSpecId: CNumber MVar in SpecKey MonoType (expected to be resolved to MInt/MFloat)"
-            else
-                ()
-
         key =
             Mono.toComparableSpecKey (Mono.SpecKey global monoType maybeLambda)
     in

@@ -2,7 +2,6 @@ module Compiler.Monomorphize.KernelAbi exposing
     ( KernelAbiMode(..), deriveKernelAbiMode
     , canTypeToMonoType_preserveVars, canTypeToMonoType_numberBoxed
     , containerSpecializedKernels, comparePair
-    , freeTypeVariablesWithConstraints, constraintFromName
     , freeVarIds
     )
 
@@ -41,8 +40,6 @@ Three cases:
 
 # Free Variable Extraction (for AssignMVarIds, operates on Can.Type Name)
 
-@docs freeTypeVariablesWithConstraints, constraintFromName
-
 
 # Free Variable Ids
 
@@ -52,13 +49,13 @@ Three cases:
 
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Monomorphized as Mono
-import Compiler.AST.TypeIds as TypeIds exposing (MVarId)
+import Compiler.AST.TypeIds exposing (MVarId)
 import Compiler.Data.Id as Id
-import Compiler.Data.Name as Name exposing (Name)
+import Compiler.Data.Name exposing (Name)
 import Compiler.Monomorphize.State as State exposing (MVarEnv)
-import Set exposing (Set)
 import Data.Set as EverySet exposing (EverySet)
 import Dict
+import Set exposing (Set)
 import System.TypeCheck.IO as IO
 
 
@@ -184,93 +181,6 @@ comparePair ( a, b ) =
 -- ============================================================================
 -- FREE VARIABLE EXTRACTION (Name-based, for AssignMVarIds)
 -- ============================================================================
-
-
-{-| Extract free type variables with their constraints from a canonical type.
-This operates on Can.Type Name and is used during AssignMVarIds
-(before the rewrite to MVarId).
--}
-freeTypeVariablesWithConstraints : Can.Type Name -> List ( Name, Mono.Constraint )
-freeTypeVariablesWithConstraints canType =
-    freeVarsHelper canType []
-        |> List.map (\name -> ( name, constraintFromName name ))
-
-
-freeVarsHelper : Can.Type Name -> List Name -> List Name
-freeVarsHelper canType acc =
-    let
-        seen =
-            Set.fromList acc
-    in
-    Tuple.first (freeVarsHelperWith canType ( acc, seen ))
-
-
-freeVarsHelperWith : Can.Type Name -> ( List Name, Set String ) -> ( List Name, Set String )
-freeVarsHelperWith canType (( acc, seen ) as pair) =
-    case canType of
-        Can.TVar name ->
-            if Set.member name seen then
-                pair
-
-            else
-                ( name :: acc, Set.insert name seen )
-
-        Can.TLambda from to ->
-            freeVarsHelperWith to (freeVarsHelperWith from pair)
-
-        Can.TType _ _ args ->
-            List.foldl (\a accPair -> freeVarsHelperWith a accPair) pair args
-
-        Can.TRecord fields maybeExt ->
-            let
-                fieldPair =
-                    Dict.foldl (\_ (Can.FieldType _ t) accPair -> freeVarsHelperWith t accPair) pair fields
-            in
-            case maybeExt of
-                Just extName ->
-                    let
-                        ( fieldAcc, fieldSeen ) =
-                            fieldPair
-                    in
-                    if Set.member extName fieldSeen then
-                        fieldPair
-
-                    else
-                        ( extName :: fieldAcc, Set.insert extName fieldSeen )
-
-                Nothing ->
-                    fieldPair
-
-        Can.TTuple a b rest ->
-            List.foldl (\t accPair -> freeVarsHelperWith t accPair) pair (a :: b :: rest)
-
-        Can.TUnit ->
-            pair
-
-        Can.TAlias _ _ _ (Can.Filled inner) ->
-            freeVarsHelperWith inner pair
-
-        Can.TAlias _ _ args (Can.Holey inner) ->
-            let
-                argPair =
-                    List.foldl (\( _, t ) accPair -> freeVarsHelperWith t accPair) pair args
-            in
-            freeVarsHelperWith inner argPair
-
-
-{-| Determine constraint from type variable name.
-Used during AssignMVarIds (before the rewrite to MVarId).
--}
-constraintFromName : Name -> Mono.Constraint
-constraintFromName name =
-    if Name.isNumberType name then
-        Mono.CNumber
-
-    else
-        Mono.CEcoValue
-
-
-
 -- ============================================================================
 -- FREE VARIABLE EXTRACTION (MVarId-based, for post-rewrite)
 -- ============================================================================

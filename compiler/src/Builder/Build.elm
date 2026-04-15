@@ -201,11 +201,6 @@ fork encoder work =
             )
 
 
-forkWithKey : (k -> comparable) -> (k -> k -> Order) -> (b -> Bytes.Encode.Encoder) -> (k -> a -> Task Never b) -> Data.Map.Dict comparable k a -> Task Never (Data.Map.Dict comparable k (MVar b))
-forkWithKey toComparable keyComparison encoder func dict =
-    Utils.mapTraverseWithKey toComparable keyComparison (\k v -> fork encoder (func k v)) dict
-
-
 dictForkWithKey : (b -> Bytes.Encode.Encoder) -> (comparable -> a -> Task Never b) -> Dict comparable a -> Task Never (Dict comparable (MVar b))
 dictForkWithKey encoder func dict =
     Utils.dictTraverseWithKey (\k v -> fork encoder (func k v)) dict
@@ -1791,14 +1786,14 @@ type DocsGoal docs
 -}
 keepDocs : DocsGoal (Dict ModuleName.Raw Docs.Module)
 keepDocs =
-    KeepDocs (\results -> Dict.fromList (Dict.toList (Utils.dictMapMaybe toDocs results)))
+    KeepDocs (\results -> Utils.dictMapMaybe toDocs results)
 
 
 {-| Write generated documentation to a JSON file at the specified path.
 -}
 writeDocs : FilePath -> DocsGoal ()
 writeDocs path =
-    WriteDocs (\results -> E.writeUgly path (Docs.encode (Dict.fromList (Dict.toList (Utils.dictMapMaybe toDocs results)))))
+    WriteDocs (\results -> E.writeUgly path (Docs.encode (Utils.dictMapMaybe toDocs results)))
 
 
 {-| Ignore documentation generation during compilation.

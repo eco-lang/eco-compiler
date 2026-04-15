@@ -17,7 +17,7 @@ import Compiler.AST.Canonical as Can
 import Compiler.AST.DecisionTree.TypedPath as TypedPath
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.TypeEnv as TypeEnv
-import Compiler.AST.TypeIds as TypeIds exposing (MVarId)
+import Compiler.AST.TypeIds exposing (MVarId)
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.BitSet as BitSet
 import Compiler.Data.Id as Id
@@ -34,7 +34,7 @@ import Compiler.Monomorphize.TypeSubst as TypeSubst
 import Compiler.Reporting.Annotation as A
 import Data.Map
 import Data.Set as EverySet
-import Dict exposing (Dict)
+import Dict
 import System.TypeCheck.IO as IO
 import Utils.Crash
 
@@ -147,30 +147,13 @@ getOrBuildSchemeInfo funcCanType maybeGlobal state =
 -- ========== FREEVARS HELPERS ==========
 
 
-{-| Look up FreeVars for a global from annotations.
-Returns the FreeVars from the annotation if found, otherwise empty.
--}
-lookupFreeVars : Maybe TOpt.Global -> TOpt.AnnotationsByGlobal MVarId -> Can.FreeVars
-lookupFreeVars maybeGlobal annotations =
-    case maybeGlobal of
-        Just global ->
-            case Data.Map.get TOpt.toComparableGlobal global annotations of
-                Just (Can.Forall freeVars _) ->
-                    freeVars
-
-                Nothing ->
-                    Dict.empty
-
-        Nothing ->
-            Dict.empty
-
-
 {-| Return True if a top-level global function has an explicit annotation with
 no generalized type variables (i.e. freeVars = {} in Can.Forall freeVars annType).
 
 Only returns True when we have a confirmed Can.Forall entry with empty freeVars.
 Returns False for globals with no annotation entry (Nothing case) — those must
 go through the SchemeInfo path since funcMeta.tipe may contain unresolved TVars.
+
 -}
 isMonomorphicGlobal : TOpt.Global -> MonoState -> Bool
 isMonomorphicGlobal global state =
@@ -1154,33 +1137,6 @@ specializeFuncDefInCycle subst def state =
 
 
 -- ========== VALUE DEFINITIONS ==========
-
-
-{-| Specialize a list of value definitions in a cycle.
--}
-specializeValueDefs :
-    List ( Name, TOpt.Expr MVarId )
-    -> Substitution
-    -> MonoState
-    -> ( List ( Name, Mono.MonoExpr ), MonoState )
-specializeValueDefs values subst state =
-    let
-        ( revDefs, finalState ) =
-            List.foldl
-                (\( name, expr ) ( accDefs, accState ) ->
-                    let
-                        ( monoExpr, newState ) =
-                            specializeExpr expr subst accState
-                    in
-                    ( ( name, monoExpr ) :: accDefs, newState )
-                )
-                ( [], state )
-                values
-    in
-    ( List.reverse revDefs, finalState )
-
-
-
 -- ========== EXPRESSION SPECIALIZATION ==========
 
 
@@ -1600,7 +1556,7 @@ specializeExpr expr subst state =
                             resolveProcessedArgs processedArgs paramTypes callSubst state1a
 
                         resultMonoType =
-                            callResultMonoType state1a.ctx.mvarEnv (state1a.ctx.currentFreeVars) callSubst canType
+                            callResultMonoType state1a.ctx.mvarEnv state1a.ctx.currentFreeVars callSubst canType
 
                         monoFunc =
                             Mono.MonoVarKernel funcRegion kernelPrefix home name funcMonoType
@@ -1630,7 +1586,7 @@ specializeExpr expr subst state =
                             resolveProcessedArgs processedArgs paramTypes callSubst state1a
 
                         resultMonoType =
-                            callResultMonoType state1a.ctx.mvarEnv (state1a.ctx.currentFreeVars) callSubst canType
+                            callResultMonoType state1a.ctx.mvarEnv state1a.ctx.currentFreeVars callSubst canType
 
                         monoFunc =
                             Mono.MonoVarKernel funcRegion "Elm" "Debug" name funcMonoType
@@ -1681,7 +1637,7 @@ specializeExpr expr subst state =
                                     resolveProcessedArgs processedArgs paramTypes callSubst state1
 
                                 resultMonoType =
-                                    callResultMonoType state1.ctx.mvarEnv (state1.ctx.currentFreeVars) callSubst canType
+                                    callResultMonoType state1.ctx.mvarEnv state1.ctx.currentFreeVars callSubst canType
 
                                 ( freshName, state3 ) =
                                     getOrCreateLocalInstance name funcMonoType callSubst state2
@@ -1712,7 +1668,7 @@ specializeExpr expr subst state =
                                     resolveProcessedArgs processedArgs paramTypes callSubst state1a
 
                                 resultMonoType =
-                                    callResultMonoType state1a.ctx.mvarEnv (state1a.ctx.currentFreeVars) callSubst canType
+                                    callResultMonoType state1a.ctx.mvarEnv state1a.ctx.currentFreeVars callSubst canType
 
                                 ( monoFunc, state3 ) =
                                     specializeExpr func callSubst state2
@@ -3087,6 +3043,7 @@ getDefCanonicalType def =
 
         TOpt.TailDef _ _ args _ returnType _ ->
             buildFuncType args returnType
+
 
 
 -- ========== DEFINITION SPECIALIZATION HELPERS ==========

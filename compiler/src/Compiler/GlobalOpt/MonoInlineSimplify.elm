@@ -324,7 +324,6 @@ buildCallGraph nodes edges =
                 )
                 Dict.empty
                 sccsInt
-
     in
     { edges = edges
     , isRecursive = isRecursiveFromSCC
@@ -636,24 +635,6 @@ optimizeNode ctx _ node =
         -- MonoCtor, MonoEnum, MonoExtern, MonoManagerLeaf pass through unchanged
         _ ->
             ( node, ctx )
-
-
-optimizeCycleDefs : RewriteCtx -> List ( Name, MonoExpr ) -> ( List ( Name, MonoExpr ), RewriteCtx )
-optimizeCycleDefs ctx defs =
-    let
-        ( revDefs, finalCtx ) =
-            List.foldl
-                (\( name, expr ) ( accDefs, accCtx ) ->
-                    let
-                        ( optimized, newCtx ) =
-                            fixpoint accCtx expr
-                    in
-                    ( ( name, optimized ) :: accDefs, newCtx )
-                )
-                ( [], ctx )
-                defs
-    in
-    ( List.reverse revDefs, finalCtx )
 
 
 

@@ -169,18 +169,23 @@ collectDefIssues ctx registry def =
 
 
 collectDeciderIssues : String -> Mono.SpecializationRegistry -> Mono.Decider Mono.MonoChoice -> List String
-collectDeciderIssues ctx registry decider =
+collectDeciderIssues _ _ decider =
+    collectDeciderIssuesHelp decider
+
+
+collectDeciderIssuesHelp : Mono.Decider Mono.MonoChoice -> List String
+collectDeciderIssuesHelp decider =
     case decider of
         Mono.Leaf _ ->
             []
 
         Mono.Chain _ success failure ->
-            collectDeciderIssues ctx registry success
-                ++ collectDeciderIssues ctx registry failure
+            collectDeciderIssuesHelp success
+                ++ collectDeciderIssuesHelp failure
 
         Mono.FanOut _ edges fallback ->
-            List.concatMap (\( _, d ) -> collectDeciderIssues ctx registry d) edges
-                ++ collectDeciderIssues ctx registry fallback
+            List.concatMap (\( _, d ) -> collectDeciderIssuesHelp d) edges
+                ++ collectDeciderIssuesHelp fallback
 
 
 

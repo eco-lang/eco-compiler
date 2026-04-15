@@ -177,8 +177,8 @@ chooseCanonicalSegs :
     -> Array (List NodeId)
     -> Array (Maybe Segmentation)
 chooseCanonicalSegs producerInfo sg _ classMembers =
-    Array.indexedMap
-        (\_ nodeIds ->
+    Array.map
+        (\nodeIds ->
             Just (chooseForClass producerInfo sg nodeIds)
         )
         classMembers

@@ -26,7 +26,6 @@ import Compiler.Reporting.Result as Result
 import Compiler.Type.Constrain.Typed.Module as ConstrainTyped
 import Compiler.Type.Error as T
 import Compiler.Type.Solve as Solve
-import Data.Map
 import Dict
 import Expect
 import System.TypeCheck.IO as IO

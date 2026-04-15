@@ -401,7 +401,6 @@ typeCheckErased canonical =
     TypeErased.constrain canonical
         |> TypeCheck.andThen Type.run
         |> TypeCheck.unsafePerformIO
-        |> Result.map identity
 
 
 {-| Typed type checking using constrainWithIds + runWithIds.

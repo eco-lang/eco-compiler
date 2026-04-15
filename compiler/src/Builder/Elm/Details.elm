@@ -149,11 +149,6 @@ stdDictMapM_ f =
     Dict.foldl (\_ a acc -> Task.andThen (\_ -> Task.map (\_ -> ()) (f a)) acc) (Task.succeed ())
 
 
-stdToEveryDict : Dict comparable v -> EveryDict.Dict comparable comparable v
-stdToEveryDict =
-    Dict.foldl (\k v acc -> EveryDict.insert identity k v acc) EveryDict.empty
-
-
 stdSequenceResult : Dict comparable (Result e v) -> Result e (Dict comparable v)
 stdSequenceResult =
     Dict.foldl

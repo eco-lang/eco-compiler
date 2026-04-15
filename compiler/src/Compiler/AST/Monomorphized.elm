@@ -270,36 +270,6 @@ forceCNumberToInt monoType =
     monoType
 
 
-forceCNumberToIntHelp : MonoType -> MonoType
-forceCNumberToIntHelp monoType =
-    case monoType of
-        MVar _ CNumber ->
-            MInt
-
-        MVar _ CEcoValue ->
-            monoType
-
-        MList elemType ->
-            MList (forceCNumberToIntHelp elemType)
-
-        MFunction args result ->
-            MFunction
-                (List.map forceCNumberToIntHelp args)
-                (forceCNumberToIntHelp result)
-
-        MTuple elems ->
-            MTuple (List.map forceCNumberToIntHelp elems)
-
-        MRecord fields ->
-            MRecord (Dict.map (\_ t -> forceCNumberToIntHelp t) fields)
-
-        MCustom can name args ->
-            MCustom can name (List.map forceCNumberToIntHelp args)
-
-        _ ->
-            monoType
-
-
 {-| Extract the final result type from a (possibly curried) function type.
 E.g., MFunction [MInt] (MFunction [MInt] MInt) -> MInt
 For non-function types, returns the type itself.
@@ -835,17 +805,18 @@ toComparableGlobal global =
 
 This is used for:
 
-  * Specialization keys in the monomorphization registry
-  * Let-bound multi-specialization (localMulti / valueMulti)
-  * Type table keys in MLIR codegen
+  - Specialization keys in the monomorphization registry
+  - Let-bound multi-specialization (localMulti / valueMulti)
+  - Type table keys in MLIR codegen
 
-IMPORTANT: `MVar _ CEcoValue` is layout-erased (MONO_003). All such variables
+IMPORTANT: `MVar _ CEcoValue` is layout-erased (MONO\_003). All such variables
 are normalized to a canonical placeholder ID when building this comparable key,
 so fresh MVarIds do not produce distinct keys. `MVar _ CNumber` retains its
 numeric ID to preserve distinct numeric specializations.
 
 Uses a List String accumulator joined at the end for O(n) instead of O(n²)
 from repeated ++.
+
 -}
 toComparableMonoType : MonoType -> String
 toComparableMonoType monoType =
@@ -905,7 +876,7 @@ toComparableMonoTypeHelper work acc =
                             -- produce the same key fragment so fresh IDs don't split specializations.
                             toComparableMonoTypeHelper
                                 rest
-                                ( "ecovalue" :: "\u{0000}" :: "0" :: "V" :: acc )
+                                ("ecovalue" :: "\u{0000}" :: "0" :: "V" :: acc)
 
                         CNumber ->
                             -- Keep real ID. CNumber should be resolved by forceCNumberToInt before
@@ -913,7 +884,7 @@ toComparableMonoTypeHelper work acc =
                             -- incorrect merging of Int vs Float specializations.
                             toComparableMonoTypeHelper
                                 rest
-                                ( constraintToString constraint
+                                (constraintToString constraint
                                     :: "\u{0000}"
                                     :: String.fromInt (Id.toComparable mvarId)
                                     :: "V"

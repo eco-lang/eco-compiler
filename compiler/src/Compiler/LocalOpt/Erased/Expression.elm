@@ -42,7 +42,6 @@ import Compiler.LocalOpt.Erased.Names as Names
 import Compiler.Reporting.Annotation as A
 import Data.Map
 import Data.Set as EverySet exposing (EverySet)
-import Dict
 import Utils.Main as Utils
 
 

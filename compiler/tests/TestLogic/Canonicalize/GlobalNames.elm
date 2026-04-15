@@ -20,7 +20,6 @@ import Compiler.Reporting.Annotation as A
 import Compiler.Reporting.Error.Canonicalize as CanError
 import Compiler.Reporting.Result as Result
 import Data.Map as DMap
-import Dict
 import Expect
 import System.TypeCheck.IO as IO
 

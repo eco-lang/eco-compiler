@@ -20,7 +20,6 @@ import Compiler.Data.OneOrMore as OneOrMore
 import Compiler.Elm.Interface.Basic as Basic
 import Compiler.Reporting.Error.Canonicalize as CanError
 import Compiler.Reporting.Result as Result
-import Dict
 import Expect
 
 

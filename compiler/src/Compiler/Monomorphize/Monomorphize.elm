@@ -381,9 +381,8 @@ processWorklist state =
             Task.succeed state
 
         (SpecializeGlobal specId) :: rest ->
-            Task.succeed (processOneWorkItem specId rest state)
-                |> Task.andThen processWorklist
-
+            processOneWorkItem specId rest state
+                |> processWorklist
 
 
 {-| Process a single work item from the worklist.

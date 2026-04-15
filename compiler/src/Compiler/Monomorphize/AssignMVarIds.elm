@@ -1,4 +1,4 @@
-module Compiler.Monomorphize.AssignMVarIds exposing (assignIds, assignIdsToType, GlobalMVarState)
+module Compiler.Monomorphize.AssignMVarIds exposing (GlobalMVarState, assignIds, assignIdsToType)
 
 {-| Assign globally unique MVarIds to all type variables in a TypedOptimized GlobalGraph.
 
@@ -50,7 +50,6 @@ type alias Ctx =
     }
 
 
-
 {-| Run a function with a fresh binding-local SchemeEnv, then discard the
 binding-local env and restore the outer env, keeping only the evolved global state.
 -}
@@ -94,7 +93,6 @@ assignIds (TOpt.GlobalGraph nodes fields annotations allSchemeRoots) =
             rewriteNodes dummyCompare allSchemeRoots nodes state1
     in
     ( TOpt.GlobalGraph newNodes fields newAnnotations allSchemeRoots, state2 )
-
 
 
 {-| Assign MVarIds to a single canonical type. Useful for testing.
@@ -217,28 +215,6 @@ ensureMVarIdForRoot root name ctx =
 -- ============================================================================
 
 
-rewriteAnnotations :
-    SolverRoots.AllSchemeRoots
-    -> Dict Name (Can.Annotation Name)
-    -> GlobalMVarState
-    -> ( Dict Name (Can.Annotation TypeIds.MVarId), GlobalMVarState )
-rewriteAnnotations allSchemeRoots annotations state =
-    Dict.foldl
-        (\name ann ( acc, st ) ->
-            let
-                schemeRootsForDef =
-                    Dict.get name allSchemeRoots
-                        |> Maybe.withDefault Dict.empty
-
-                ( newAnn, st1 ) =
-                    rewriteAnnotation schemeRootsForDef ann st
-            in
-            ( Dict.insert name newAnn acc, st1 )
-        )
-        ( Dict.empty, state )
-        annotations
-
-
 {-| Rewrite annotations keyed by Global (for GlobalGraph).
 -}
 rewriteAnnotationsByGlobal :
@@ -351,7 +327,6 @@ rewriteNodes cmp allSchemeRoots nodes state =
         )
         ( DMap.empty, state )
         nodes
-
 
 
 rewriteNode : Ctx -> TOpt.Node Name -> ( TOpt.Node TypeIds.MVarId, Ctx )
@@ -925,7 +900,6 @@ rewriteDef outerCtx def =
                     in
                     ( TOpt.TailDef region name newArgs newBody newType maybeTvar, bindingCtx3 )
                 )
-
 
 
 rewriteDestructor : Ctx -> TOpt.Destructor Name -> ( TOpt.Destructor TypeIds.MVarId, Ctx )

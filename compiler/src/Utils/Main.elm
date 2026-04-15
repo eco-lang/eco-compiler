@@ -21,18 +21,18 @@ module Utils.Main exposing
     , replRunInputT, replWithInterrupt, replGetInputLine
     , replGetInputLineWithInitial, liftInputT, liftIOInputT
     , nodeGetDirname, nodeMathRandom
-    , mapFromListWith, mapInsertWith, mapIntersectionWith, mapIntersectionWithKey
-    , mapUnionWith, mapFindMin
-    , mapMapKeys, dictMapKeys, mapMapMaybe, find, dictFind
-    , mapTraverse, mapTraverseWithKey, mapTraverseResult, mapTraverseWithKeyResult, dictMapM_
+    , mapIntersectionWith
+    , mapFindMin
+    , dictMapKeys, find, dictFind
+    , mapTraverse
     , eitherLefts, filterM, listGroupBy, listLookup, listMaximum, foldl1_, foldr1
     , listTraverse, listTraverse_, lines, unlines, zipWithM, mapM_
     , maybeEncoder, maybeMapM, maybeTraverseTask
     , nonEmptyListTraverse
-    , sequenceDictMaybe, sequenceDictResult_
     , sequenceListMaybe, sequenceNonemptyListResult
     , foldM
-    , dictFromListWith, dictInsertWith, dictIntersectionWith, dictIntersectionWithKey, dictMapMaybe, dictSequenceResult, dictSequenceMaybe, dictTraverse, dictTraverseWithKey, dictTraverseResult, dictTraverseWithKeyResult, dictUnionWith, dictMapM__, dictFromKeysA
+    , dictFromListWith, dictInsertWith, dictIntersectionWith, dictIntersectionWithKey, dictMapMaybe, dictSequenceResult, dictSequenceMaybe, dictTraverse, dictTraverseWithKey, dictTraverseResult, dictTraverseWithKeyResult, dictFromKeysA
+    , dictMapM__, dictUnionWith
     )
 
 {-| Utility module providing data structure utilities, HTTP types, and pure helper functions.
@@ -113,14 +113,14 @@ defined in System.IO.
 
 # Dictionary Utilities
 
-@docs mapFromListWith, mapInsertWith, mapIntersectionWith, mapIntersectionWithKey
-@docs mapUnionWith, mapFindMin
-@docs mapMapKeys, dictMapKeys, mapMapMaybe, find, dictFind
+@docs mapIntersectionWith
+@docs mapFindMin
+@docs dictMapKeys, find, dictFind
 
 
 # Dictionary Traversal
 
-@docs mapTraverse, mapTraverseWithKey, mapTraverseResult, mapTraverseWithKeyResult, dictMapM_
+@docs mapTraverse
 
 
 # List Utilities
@@ -141,7 +141,6 @@ defined in System.IO.
 
 # Sequence Operations
 
-@docs sequenceDictMaybe, sequenceDictResult_
 @docs sequenceListMaybe, sequenceNonemptyListResult
 
 
@@ -237,17 +236,6 @@ fpAddExtension path extension =
         path ++ "." ++ extension
 
 
-{-| Build a dictionary from a list of key-value pairs, combining values with the same key using the provided function.
--}
-mapFromListWith : (k -> comparable) -> (a -> a -> a) -> List ( k, a ) -> Map.Dict comparable k a
-mapFromListWith toComparable f =
-    List.foldl
-        (\( k, a ) ->
-            Map.update toComparable k (Maybe.map (flip f a))
-        )
-        Map.empty
-
-
 {-| Encode a Maybe value to bytes using the provided encoder for the inner value.
 -}
 maybeEncoder : (a -> Bytes.Encode.Encoder) -> Maybe a -> Bytes.Encode.Encoder
@@ -327,13 +315,6 @@ mapFindMin dict =
             crash "Error: empty map has no minimal element"
 
 
-{-| Insert a key-value pair into a dictionary, combining with existing value using the provided function if the key already exists.
--}
-mapInsertWith : (k -> comparable) -> (a -> a -> a) -> k -> a -> Map.Dict comparable k a -> Map.Dict comparable k a
-mapInsertWith toComparable f k a =
-    Map.update toComparable k (Maybe.map (f a) >> Maybe.withDefault a >> Just)
-
-
 {-| Compute the intersection of two dictionaries, combining values from both using the provided function.
 -}
 mapIntersectionWith : (k -> comparable) -> (k -> k -> Order) -> (a -> b -> c) -> Map.Dict comparable k a -> Map.Dict comparable k b -> Map.Dict comparable k c
@@ -348,39 +329,11 @@ mapIntersectionWithKey toComparable keyComparison func dict1 dict2 =
     Map.merge keyComparison (\_ _ -> identity) (\k v1 v2 -> Map.insert toComparable k (func k v1 v2)) (\_ _ -> identity) dict1 dict2 Map.empty
 
 
-{-| Compute the union of two dictionaries, combining values with the same key using the provided function.
--}
-mapUnionWith : (k -> comparable) -> (k -> k -> Order) -> (a -> a -> a) -> Map.Dict comparable k a -> Map.Dict comparable k a -> Map.Dict comparable k a
-mapUnionWith toComparable keyComparison f a b =
-    Map.merge keyComparison (Map.insert toComparable) (\k va vb -> Map.insert toComparable k (f va vb)) (Map.insert toComparable) a b Map.empty
-
-
 {-| Fold a list from the left using a monadic function, accumulating results in the RResult monad.
 -}
 foldM : (b -> a -> ReportingResult.RResult info warnings error b) -> b -> List a -> ReportingResult.RResult info warnings error b
 foldM f b =
     List.foldl (\a -> ReportingResult.andThen (\acc -> f acc a)) (ReportingResult.ok b)
-
-
-{-| Sequence a dictionary of Maybes into a Maybe dictionary, returning Nothing if any value is Nothing.
--}
-sequenceDictMaybe : (k -> comparable) -> (k -> k -> Order) -> Map.Dict comparable k (Maybe a) -> Maybe (Map.Dict comparable k a)
-sequenceDictMaybe toComparable keyComparison =
-    Map.foldr keyComparison (\k -> Maybe.map2 (Map.insert toComparable k)) (Just Map.empty)
-
-
-{-| Sequence a dictionary of Results into a Result of a dictionary, failing at the first error.
--}
-sequenceDictResult : (k -> comparable) -> (k -> k -> Order) -> Map.Dict comparable k (Result e v) -> Result e (Map.Dict comparable k v)
-sequenceDictResult toComparable keyComparison =
-    Map.foldr keyComparison (\k -> Result.map2 (Map.insert toComparable k)) (Ok Map.empty)
-
-
-{-| Sequence a dictionary of Results, discarding the values and returning () on success.
--}
-sequenceDictResult_ : (k -> comparable) -> (k -> k -> Order) -> Map.Dict comparable k (Result e a) -> Result e ()
-sequenceDictResult_ toComparable keyComparison =
-    sequenceDictResult toComparable keyComparison >> Result.map (\_ -> ())
 
 
 {-| Sequence a list of Maybes into a Maybe list, returning Nothing if any value is Nothing.
@@ -409,18 +362,6 @@ mapM_ f =
     List.foldr c (Task.succeed ())
 
 
-{-| Map a monadic function over dictionary values, discarding the results and returning ().
--}
-dictMapM_ : (k -> k -> Order) -> (a -> Task Never b) -> Map.Dict c k a -> Task Never ()
-dictMapM_ keyComparison f =
-    let
-        c : k -> a -> Task Never () -> Task Never ()
-        c _ x k =
-            f x |> Task.andThen (\_ -> k)
-    in
-    Map.foldl keyComparison c (Task.succeed ())
-
-
 {-| Map a Maybe-producing function over a list, returning Nothing if any application returns Nothing.
 -}
 maybeMapM : (a -> Maybe b) -> List a -> Maybe (List b)
@@ -428,27 +369,11 @@ maybeMapM =
     listMaybeTraverse
 
 
-{-| Transform all keys in a dictionary using the provided function.
--}
-mapMapKeys : (k2 -> comparable) -> (k1 -> k1 -> Order) -> (k1 -> k2) -> Map.Dict comparable k1 a -> Map.Dict comparable k2 a
-mapMapKeys toComparable keyComparison f =
-    Map.foldl keyComparison (\k x xs -> ( f k, x ) :: xs) [] >> Map.fromList toComparable
-
-
 {-| Like mapMapKeys but returns a core Dict when the output key is already comparable.
 -}
 dictMapKeys : (k1 -> k1 -> Order) -> (k1 -> comparable) -> Map.Dict c k1 a -> Dict.Dict comparable a
 dictMapKeys keyComparison f =
     Map.foldl keyComparison (\k x xs -> ( f k, x ) :: xs) [] >> Dict.fromList
-
-
-{-| Map a Maybe-producing function over dictionary values, keeping only the Just results.
--}
-mapMapMaybe : (k -> comparable) -> (k -> k -> Order) -> (a -> Maybe b) -> Map.Dict comparable k a -> Map.Dict comparable k b
-mapMapMaybe toComparable keyComparison func =
-    Map.toList keyComparison
-        >> List.filterMap (\( k, a ) -> Maybe.map (Tuple.pair k) (func a))
-        >> Map.fromList toComparable
 
 
 {-| Traverse a dictionary with a Task-producing function, collecting results into a new dictionary.
@@ -465,22 +390,6 @@ mapTraverseWithKey toComparable keyComparison f =
     Map.foldl keyComparison
         (\k a -> Task.andThen (\c -> Task.map (\va -> Map.insert toComparable k va c) (f k a)))
         (Task.succeed Map.empty)
-
-
-{-| Traverse a dictionary with a Result-producing function, failing at the first error.
--}
-mapTraverseResult : (k -> comparable) -> (k -> k -> Order) -> (a -> Result e b) -> Map.Dict comparable k a -> Result e (Map.Dict comparable k b)
-mapTraverseResult toComparable keyComparison f =
-    mapTraverseWithKeyResult toComparable keyComparison (\_ -> f)
-
-
-{-| Traverse a dictionary with a Result-producing function that has access to the key.
--}
-mapTraverseWithKeyResult : (k -> comparable) -> (k -> k -> Order) -> (k -> a -> Result e b) -> Map.Dict comparable k a -> Result e (Map.Dict comparable k b)
-mapTraverseWithKeyResult toComparable keyComparison f =
-    Map.foldl keyComparison
-        (\k a -> Result.map2 (Map.insert toComparable k) (f k a))
-        (Ok Map.empty)
 
 
 {-| Build a standard Dict from a list of pairs, combining values with the same key.

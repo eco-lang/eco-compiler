@@ -39,8 +39,7 @@ expectVarGlobalArityConsistency srcModule =
 
                 callArgExceedsTypeIssues =
                     collectCallArgExceedsNodeArity optimizedMonoGraph
-            in
-            let
+
                 allIssues =
                     issues ++ callChainIssues ++ callArgExceedsTypeIssues
             in
@@ -205,31 +204,31 @@ checkVarGlobalArity (Mono.MonoGraph data) ctx refSpecId varType =
 
             else
                 let
-                        varArity =
-                            getFlattenedArity varType
+                    varArity =
+                        getFlattenedArity varType
 
-                        nodeArity =
-                            getFlattenedArity (Mono.nodeType node)
-                    in
-                    if varArity /= nodeArity then
-                        [ ctx
-                            ++ " [MONO_027]: MonoVarGlobal referencing SpecId "
-                            ++ String.fromInt refSpecId
-                            ++ " has flattened arity "
-                            ++ String.fromInt varArity
-                            ++ " (type: "
-                            ++ Debug.toString varType
-                            ++ ") but node has flattened arity "
-                            ++ String.fromInt nodeArity
-                            ++ " (type: "
-                            ++ Debug.toString (Mono.nodeType node)
-                            ++ ") nodeKind="
-                            ++ nodeKindName node
-                            ++ ")"
-                        ]
+                    nodeArity =
+                        getFlattenedArity (Mono.nodeType node)
+                in
+                if varArity /= nodeArity then
+                    [ ctx
+                        ++ " [MONO_027]: MonoVarGlobal referencing SpecId "
+                        ++ String.fromInt refSpecId
+                        ++ " has flattened arity "
+                        ++ String.fromInt varArity
+                        ++ " (type: "
+                        ++ Debug.toString varType
+                        ++ ") but node has flattened arity "
+                        ++ String.fromInt nodeArity
+                        ++ " (type: "
+                        ++ Debug.toString (Mono.nodeType node)
+                        ++ ") nodeKind="
+                        ++ nodeKindName node
+                        ++ ")"
+                    ]
 
-                    else
-                        []
+                else
+                    []
 
 
 
@@ -401,15 +400,15 @@ checkCallChain (Mono.MonoGraph data) ctx funcExpr outerArgCount =
                                         ++ String.fromInt totalArgs
                                         ++ " total args but node has flattened arity "
                                         ++ String.fromInt nodeArity
-                                    ++ " (nodeType: "
-                                    ++ Debug.toString (Mono.nodeType node)
-                                    ++ " nodeKind="
-                                    ++ nodeKindName node
-                                    ++ ")"
-                                ]
+                                        ++ " (nodeType: "
+                                        ++ Debug.toString (Mono.nodeType node)
+                                        ++ " nodeKind="
+                                        ++ nodeKindName node
+                                        ++ ")"
+                                    ]
 
-                            else
-                                []
+                                else
+                                    []
 
                         _ ->
                             []
@@ -434,7 +433,7 @@ checkCallChain (Mono.MonoGraph data) ctx funcExpr outerArgCount =
 {-| For every MonoCall whose callee is a MonoVarGlobal, verify the arg count
 does not exceed the referenced node's flattened arity.
 
-Unlike the MONO_012 check which compares against the VarGlobal's carried type
+Unlike the MONO\_012 check which compares against the VarGlobal's carried type
 (which may be truncated), this compares against the actual node type in the graph.
 
 -}
@@ -573,33 +572,30 @@ checkDirectCallArgs (Mono.MonoGraph data) ctx funcExpr args =
                                 getFlattenedArity varType
                         in
                         if nodeArity > 0 && argCount > nodeArity then
-                        [ ctx
-                            ++ " [MONO_027]: MonoCall to SpecId "
-                            ++ String.fromInt refSpecId
-                            ++ " has "
-                            ++ String.fromInt argCount
-                            ++ " args but node has flattened arity "
-                            ++ String.fromInt nodeArity
-                            ++ " (varType arity="
-                            ++ String.fromInt varArity
-                            ++ ", nodeType: "
-                            ++ Debug.toString (Mono.nodeType node)
-                            ++ " nodeKind="
-                            ++ nodeKindName node
-                            ++ ")"
-                        ]
+                            [ ctx
+                                ++ " [MONO_027]: MonoCall to SpecId "
+                                ++ String.fromInt refSpecId
+                                ++ " has "
+                                ++ String.fromInt argCount
+                                ++ " args but node has flattened arity "
+                                ++ String.fromInt nodeArity
+                                ++ " (varType arity="
+                                ++ String.fromInt varArity
+                                ++ ", nodeType: "
+                                ++ Debug.toString (Mono.nodeType node)
+                                ++ " nodeKind="
+                                ++ nodeKindName node
+                                ++ ")"
+                            ]
 
-                    else
-                        []
+                        else
+                            []
 
                 _ ->
                     []
 
         _ ->
             []
-
-
-
 
 
 {-| Is this a node kind where VarGlobal type arity comparison is meaningful?

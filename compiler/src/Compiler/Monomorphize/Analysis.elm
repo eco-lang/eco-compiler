@@ -399,20 +399,6 @@ buildCompleteCtorShapes : MVarEnv -> List Name -> List Mono.MonoType -> List Can
 buildCompleteCtorShapes env vars monoArgs alts =
     let
         -- Allocate fresh MVarIds for each type parameter name and build the substitution
-        ( subst, env1 ) =
-            List.foldl
-                (\( varName, monoType ) ( s, e ) ->
-                    let
-                        ( mvarId, e1 ) =
-                            State.freshMVar Mono.CEcoValue e
-                    in
-                    ( Dict.insert (Id.toComparable mvarId) monoType s
-                    , e1
-                    )
-                )
-                ( Dict.empty, env )
-                (List.map2 Tuple.pair vars monoArgs)
-
         -- Build a name-to-MVarId mapping for converting Can.Type Name to Can.Type MVarId
         ( nameToId, env2 ) =
             List.foldl
@@ -440,8 +426,7 @@ buildCompleteCtorShapes env vars monoArgs alts =
                 )
                 Dict.empty
                 (List.map2 Tuple.pair vars monoArgs)
-    in
-    let
+
         ( revShapes, finalEnv ) =
             List.foldl
                 (\ctor ( acc, e ) ->
@@ -584,7 +569,8 @@ computeCtorShapesForGraph globalTypeEnv nodes =
                             Utils.Crash.crash
                                 ("Missing union for ctor shape: "
                                     ++ ModuleName.toComparableCanonical canonical
-                                    ++ "." ++ typeName
+                                    ++ "."
+                                    ++ typeName
                                 )
 
                         Just (Can.Union unionData) ->

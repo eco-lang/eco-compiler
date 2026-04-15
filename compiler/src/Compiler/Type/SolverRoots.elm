@@ -1,10 +1,7 @@
 module Compiler.Type.SolverRoots exposing
-    ( AllSchemeRoots
-    , SchemeRootsForDef
+    ( AllSchemeRoots, SchemeRootsForDef
+    , normalizeNodeVars, normalizeAnnotationVars, normalizeAllSchemeRoots
     , extractBinderRootsFromInferred
-    , normalizeAnnotationVars
-    , normalizeNodeVars
-    , normalizeAllSchemeRoots
     )
 
 {-| Normalize solver variables to their union-find roots after solving.
@@ -186,7 +183,7 @@ walkTypeForBinders state canType var acc =
         Can.TAlias _ _ args (Can.Holey _) ->
             -- For holey aliases, walk the alias args against the solver's alias args
             case lookupContent state rootIdx of
-                Just (IO.Alias _ _ solverAliasArgs aliasVar) ->
+                Just (IO.Alias _ _ solverAliasArgs _) ->
                     List.foldl
                         (\( ( _, canArg ), ( _, solverVar ) ) a ->
                             walkTypeForBinders state canArg solverVar a

@@ -13,7 +13,6 @@ import Compiler.AST.Monomorphized as Mono
 import Compiler.Data.Name as Name
 import Compiler.Generate.MLIR.Context as Ctx
 import Compiler.Generate.MLIR.Types as Types
-import Data.Map as DataMap
 import Dict
 import Mlir.Loc as Loc
 import Mlir.Mlir exposing (MlirAttr(..), MlirOp)

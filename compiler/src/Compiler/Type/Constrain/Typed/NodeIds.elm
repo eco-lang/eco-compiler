@@ -1,8 +1,8 @@
 module Compiler.Type.Constrain.Typed.NodeIds exposing
-    ( NodeVarMap, NodeIdState, SchemeBinderVars
+    ( NodeVarMap, NodeIdState
     , emptyNodeIdState
     , recordNodeVar, recordSyntheticExprVar
-    , recordSchemeBinders
+    , SchemeBinderVars, recordSchemeBinders
     )
 
 {-| Unified node ID tracking for type constraint generation (Typed pathway).
@@ -38,7 +38,6 @@ the solver to later produce a mapping from node IDs to their inferred types.
 
 import Array exposing (Array)
 import Compiler.Data.Name as Name
-import Data.Map as DMap
 import Data.Set as EverySet exposing (EverySet)
 import Dict exposing (Dict)
 import System.TypeCheck.IO as IO

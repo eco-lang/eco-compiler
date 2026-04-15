@@ -1,5 +1,5 @@
 module Compiler.Type.SolverSnapshot exposing
-    ( SolverSnapshot, SolverState, TypeVar
+    ( SolverState, TypeVar
     , resolveVariable
     )
 
@@ -9,14 +9,12 @@ This module captures the HM solver's union-find state (descriptors, point info,
 weights) after constraint solving completes, enabling type queries outside the
 IO monad.
 
-@docs SolverSnapshot, SolverState, TypeVar
+@docs SolverState, TypeVar
 @docs resolveVariable
 
 -}
 
 import Array exposing (Array)
-import Compiler.Data.Name as Name
-import Data.Map as DMap
 import System.TypeCheck.IO as IO
 
 
@@ -32,15 +30,6 @@ type alias SolverState =
     { descriptors : Array IO.Descriptor
     , pointInfo : Array IO.PointInfo
     , weights : Array Int
-    }
-
-
-{-| Complete snapshot: solver state + mapping from expression IDs to solver vars.
--}
-type alias SolverSnapshot =
-    { state : SolverState
-    , nodeVars : Array (Maybe TypeVar)
-    , annotationVars : DMap.Dict String Name.Name TypeVar
     }
 
 

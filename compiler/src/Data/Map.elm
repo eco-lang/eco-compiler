@@ -1,6 +1,6 @@
 module Data.Map exposing
     ( Dict
-    , empty, singleton, insert, update
+    , empty, singleton, insert
     , isEmpty, member, get, size
     , keys, values, toList, fromList
     , map, foldl, foldr, filter
@@ -23,7 +23,7 @@ All functions in this module are stack safe and won't crash from recursing over 
 
 # Build
 
-@docs empty, singleton, insert, update
+@docs empty, singleton, insert
 
 
 # Query
@@ -151,26 +151,6 @@ a collision.
 insert : (k -> comparable) -> k -> v -> Dict comparable k v -> Dict comparable k v
 insert toComparable key value (D dict) =
     D (Dict.insert (toComparable key) ( key, value ) dict)
-
-
-{-| Update the value of a dictionary for a specific key with a given function.
-
-If you are using this module as an ordered dictionary, please note that if you
-are replacing the value of an existing entry, the entry will remain where it
-is in the insertion order. (If you do want to change the insertion order,
-consider using `get` in conjunction with `insert` instead.)
-
--}
-update : (k -> comparable) -> k -> (Maybe v -> Maybe v) -> Dict comparable k v -> Dict comparable k v
-update toComparable targetKey alter (D dict) =
-    D
-        (Dict.update (toComparable targetKey)
-            (Maybe.map Tuple.second
-                >> alter
-                >> Maybe.map (Tuple.pair targetKey)
-            )
-            dict
-        )
 
 
 {-| Create a dictionary with one key-value pair.

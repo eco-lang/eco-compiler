@@ -349,13 +349,6 @@ findFreeLocalsAcc bound expr acc =
             acc
 
 
-{-| Find free variables referenced in a MonoPath (via MonoRoot).
--}
-findPathFreeLocals : Set String -> Mono.MonoPath -> List Name
-findPathFreeLocals bound path =
-    findPathFreeLocalsAcc bound path []
-
-
 findPathFreeLocalsAcc : Set String -> Mono.MonoPath -> List Name -> List Name
 findPathFreeLocalsAcc bound path acc =
     case path of
@@ -402,16 +395,6 @@ collectLetChain expr =
             ( [], expr )
 
 
-{-| Collect free local variables from a pattern match decider tree.
--}
-collectDeciderFreeLocals :
-    Set String
-    -> Mono.Decider Mono.MonoChoice
-    -> List Name
-collectDeciderFreeLocals bound decider =
-    collectDeciderFreeLocalsAcc bound decider []
-
-
 collectDeciderFreeLocalsAcc :
     Set String
     -> Mono.Decider Mono.MonoChoice
@@ -446,13 +429,6 @@ collectDeciderFreeLocalsAcc bound decider acc =
                     List.foldl (\( _, d ) a -> collectDeciderFreeLocalsAcc bound d a) accWithRoot edges
             in
             collectDeciderFreeLocalsAcc bound fallback accWithEdges
-
-
-{-| Find free variables referenced in a MonoDtPath (decision tree path).
--}
-findDtPathFreeLocals : Set String -> Mono.MonoDtPath -> List Name
-findDtPathFreeLocals bound dtPath =
-    findDtPathFreeLocalsAcc bound dtPath []
 
 
 findDtPathFreeLocalsAcc : Set String -> Mono.MonoDtPath -> List Name -> List Name

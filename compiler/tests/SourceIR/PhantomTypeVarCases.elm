@@ -23,10 +23,8 @@ import Compiler.AST.SourceBuilder
         , callExpr
         , caseExpr
         , ctorExpr
-        , define
         , intExpr
         , lambdaExpr
-        , letExpr
         , makeModuleWithTypedDefsUnionsAliases
         , pCtor
         , pVar

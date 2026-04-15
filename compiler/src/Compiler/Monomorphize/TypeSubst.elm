@@ -1,9 +1,9 @@
 module Compiler.Monomorphize.TypeSubst exposing
-    ( applySubst, applySubstWithFreeVars
+    ( applySubst
     , canTypeToMonoType, extractParamTypes
     , unify, unifyExtend, unifyArgsOnly, unifyCallSiteDirect
     , buildSchemeInfo, refreshSchemeInfo
-    , flattenTLambda
+    , applySubstWithFreeVars
     )
 
 {-| Type substitution and unification for monomorphization.
@@ -40,13 +40,11 @@ by MVarId (as Int via Id.toComparable), not by Name.
 
 # Type Flattening
 
-@docs flattenTLambda
-
 -}
 
 import Compiler.AST.Canonical as Can
 import Compiler.AST.Monomorphized as Mono
-import Compiler.AST.TypeIds as TypeIds exposing (MVarId)
+import Compiler.AST.TypeIds exposing (MVarId)
 import Compiler.Data.Id as Id
 import Compiler.Data.Name exposing (Name)
 import Compiler.Monomorphize.State as State exposing (MVarEnv, SchemeInfo, Substitution)
@@ -56,7 +54,6 @@ import System.TypeCheck.IO as IO
 import Tuple
 
 
-
 constraintOf : MVarId -> MVarEnv -> Mono.Constraint
 constraintOf mvarId env =
     if State.isNumberVar mvarId env then
@@ -64,6 +61,7 @@ constraintOf mvarId env =
 
     else
         Mono.CEcoValue
+
 
 
 -- INTERNAL HELPERS: changed-flag mapping, union-find, normalized insertion
@@ -502,18 +500,18 @@ extractParamTypes monoType =
 {-| Resolve MVar references in a MonoType using a substitution.
 Uses Int keys (Id.toComparable) for substitution lookups.
 -}
-resolveMonoVars : MVarEnv -> Substitution -> Mono.MonoType -> Mono.MonoType
-resolveMonoVars env subst monoType =
+resolveMonoVars : Substitution -> Mono.MonoType -> Mono.MonoType
+resolveMonoVars subst monoType =
     monoType
-        |> resolveMonoVarsHelp env Set.empty subst
+        |> resolveMonoVarsHelp Set.empty subst
         |> Tuple.second
 
 
 {-| Resolve MVars in a MonoType using a substitution, tracking which MVarId keys
 are currently being expanded to detect indirect cycles.
 -}
-resolveMonoVarsHelp : MVarEnv -> Set Int -> Substitution -> Mono.MonoType -> ( Bool, Mono.MonoType )
-resolveMonoVarsHelp env visiting subst monoType =
+resolveMonoVarsHelp : Set Int -> Substitution -> Mono.MonoType -> ( Bool, Mono.MonoType )
+resolveMonoVarsHelp visiting subst monoType =
     case monoType of
         Mono.MVar mvarId constraint ->
             let
@@ -528,7 +526,7 @@ resolveMonoVarsHelp env visiting subst monoType =
                     Just resolved ->
                         let
                             ( _, newResolved ) =
-                                resolveMonoVarsHelp env (Set.insert key visiting) subst resolved
+                                resolveMonoVarsHelp (Set.insert key visiting) subst resolved
                         in
                         ( True, newResolved )
 
@@ -543,10 +541,10 @@ resolveMonoVarsHelp env visiting subst monoType =
         Mono.MFunction args ret ->
             let
                 ( argsChanged, newArgs ) =
-                    listMapChanged (resolveMonoVarsHelp env visiting subst) args
+                    listMapChanged (resolveMonoVarsHelp visiting subst) args
 
                 ( retChanged, newRet ) =
-                    resolveMonoVarsHelp env visiting subst ret
+                    resolveMonoVarsHelp visiting subst ret
             in
             if argsChanged || retChanged then
                 ( True, Mono.MFunction newArgs newRet )
@@ -557,7 +555,7 @@ resolveMonoVarsHelp env visiting subst monoType =
         Mono.MList inner ->
             let
                 ( changed, newInner ) =
-                    resolveMonoVarsHelp env visiting subst inner
+                    resolveMonoVarsHelp visiting subst inner
             in
             if changed then
                 ( True, Mono.MList newInner )
@@ -568,7 +566,7 @@ resolveMonoVarsHelp env visiting subst monoType =
         Mono.MTuple elems ->
             let
                 ( changed, newElems ) =
-                    listMapChanged (resolveMonoVarsHelp env visiting subst) elems
+                    listMapChanged (resolveMonoVarsHelp visiting subst) elems
             in
             if changed then
                 ( True, Mono.MTuple newElems )
@@ -579,7 +577,7 @@ resolveMonoVarsHelp env visiting subst monoType =
         Mono.MRecord fields ->
             let
                 ( changed, newFields ) =
-                    dictMapChanged (resolveMonoVarsHelp env visiting subst) fields
+                    dictMapChanged (resolveMonoVarsHelp visiting subst) fields
             in
             if changed then
                 ( True, Mono.MRecord newFields )
@@ -590,7 +588,7 @@ resolveMonoVarsHelp env visiting subst monoType =
         Mono.MCustom can name args ->
             let
                 ( changed, newArgs ) =
-                    listMapChanged (resolveMonoVarsHelp env visiting subst) args
+                    listMapChanged (resolveMonoVarsHelp visiting subst) args
             in
             if changed then
                 ( True, Mono.MCustom can name newArgs )
@@ -625,7 +623,7 @@ applySubst env subst canType =
             in
             case Dict.get key subst of
                 Just monoType ->
-                    ( resolveMonoVars env subst monoType, env )
+                    ( resolveMonoVars subst monoType, env )
 
                 Nothing ->
                     let
@@ -774,6 +772,7 @@ when a substitution carries bindings from multiple schemes.
 The FreeVars parameter documents which annotation scheme this type belongs to
 but the actual filtering is by MVarIds present in canType (sufficient because
 MVarIds are globally unique post-AssignMVarIds).
+
 -}
 applySubstWithFreeVars :
     MVarEnv
@@ -1279,7 +1278,7 @@ unifyCallSiteDirect env schemeArgTypes schemeResultType argMonoTypes baseSubst =
 
         -- Resolve supplied arg mono types through updated substitution
         resolvedSuppliedArgs =
-            List.map (resolveMonoVars env1 substAfterArgs) argMonoTypes
+            List.map (resolveMonoVars substAfterArgs) argMonoTypes
 
         -- Resolve REMAINING scheme arg types through substitution
         remainingSchemeArgs =
@@ -1477,6 +1476,3 @@ normalizeAndOccursCheckDict env targetId subst fields =
         (Just ( ( False, fields ), subst, env ))
         fields
         |> Maybe.map (\( ( _, f ), s, e ) -> ( f, s, e ))
-
-
-

@@ -1,8 +1,8 @@
 module Compiler.Generate.MLIR.Expr exposing
     ( ExprResult
     , generateExpr
-    , emitSafepoint
     , coerceResultToType
+    , emitSafepoint
     , createDummyValue
     , collectLetBoundNames, addPlaceholderMappings
     )
@@ -63,7 +63,6 @@ import Compiler.Generate.MLIR.Types as Types
 import Compiler.LocalOpt.Typed.DecisionTree as DT
 import Compiler.Monomorphize.Closure as Closure
 import Compiler.Monomorphize.Registry as Registry
-import Data.Map as EveryDict
 import Dict
 import Hex
 import List.Extra as ListX
@@ -102,6 +101,7 @@ The operands are a conservative set of live eco.value variables from
 the front-end context (Ctx.liveEcoValueVars). EcoGCPrepare will later
 recompute the final GC root set via SSA liveness analysis, so
 correctness does not depend on this list being complete.
+
 -}
 emitSafepoint : Ctx.Context -> ( Ctx.Context, MlirOp )
 emitSafepoint ctx =
@@ -3219,6 +3219,7 @@ generateExprListTyped ctx exprs =
     ( List.reverse opsReversed, List.reverse varsReversed, ctxFinal )
 
 
+
 -- ====== TAIL CALL GENERATION ======
 
 
@@ -3691,6 +3692,7 @@ generateLet ctx def body =
                                 (\k v acc ->
                                     if Dict.member k ctxWithPlaceholders.varMappings then
                                         acc
+
                                     else
                                         Set.insert v.ssaVar acc
                                 )

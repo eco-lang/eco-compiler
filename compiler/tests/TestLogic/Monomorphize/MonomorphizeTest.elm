@@ -19,6 +19,7 @@ Key mapping from C types to MLIR/MonoType:
 
 -}
 
+import Compiler.AST.Canonical as Can
 import Compiler.AST.CanonicalBuilder
     exposing
         ( boolType
@@ -30,7 +31,6 @@ import Compiler.AST.CanonicalBuilder
         , tFunc
         , varType
         )
-import Compiler.AST.Canonical as Can
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.TypeIds as TypeIds
 import Compiler.Data.Id as Id
@@ -38,7 +38,6 @@ import Compiler.Data.Name exposing (Name)
 import Compiler.Monomorphize.AssignMVarIds as AssignMVarIds
 import Compiler.Monomorphize.KernelAbi as KernelAbi
 import Compiler.Monomorphize.State as State
-import Dict
 import Expect
 import Test exposing (Test)
 
