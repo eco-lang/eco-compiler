@@ -189,6 +189,26 @@ static bool convertMarkersToStatepoints(
                 targetCall->replaceAllUsesWith(gcResult);
             }
 
+#if ECO_GC_DEBUG
+            {
+                llvm::errs() << "[gc-statepoint] func=" << F->getName()
+                             << " target=";
+                if (auto *calledFn = targetCall->getCalledFunction())
+                    llvm::errs() << calledFn->getName();
+                else
+                    llvm::errs() << "(indirect)";
+                llvm::errs() << " marker_args=" << markerCall->arg_size()
+                             << " gc-live=" << gcLiveArgs.size() << "\n";
+                for (unsigned i = 0; i < originalInts.size(); ++i) {
+                    llvm::errs() << "  gc-live[" << i << "] = ";
+                    if (originalInts[i])
+                        llvm::errs() << *originalInts[i];
+                    else
+                        llvm::errs() << "(no-strip)";
+                    llvm::errs() << "\n";
+                }
+            }
+#endif
             // Record SafepointInfo for Phase 2
             SafepointInfo info;
             info.Statepoint = statepoint;

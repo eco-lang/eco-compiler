@@ -2,8 +2,29 @@
 
 Instrumentation recipes for debugging stale HPointer and GC root coverage
 issues. Sections 1–6 are manual code patches (apply/strip as needed). Sections
-7–10 are **currently live in the codebase** behind `#if ECO_GC_DEBUG` (on by
-default in Debug builds).
+7–12 are **currently live in the codebase** behind compile-time flags (see
+flag reference below).
+
+---
+
+## Compile-time flag
+
+All GC diagnostics are behind a single flag: **`ECO_GC_DEBUG`**.
+
+| Flag | Defined by CMake? | Default | Targets |
+|------|------------------|---------|---------|
+| `ECO_GC_DEBUG` | Yes — CMake option | ON for Debug, OFF for Release | `EcoPasses`, `ecoc`, `EcoRunner`, `EcoRuntimeStatic`, `EcoEntryStatic` |
+
+The flag controls both compile-time instrumentation (sections 7–9, which fire
+during MLIR→LLVM lowering inside the compiler) and runtime instrumentation
+(sections 10–12, which fire during program execution). All output goes to
+stderr.
+
+To force-enable in a Release build: `cmake -DECO_GC_DEBUG=ON ...`
+
+**Warning:** The compile-time instrumentation (sections 7–9) produces enormous
+output — one log line per GCRootCarrier op per function. Redirect stderr to a
+file and use grep to find the relevant entries.
 
 ---
 
@@ -20,14 +41,18 @@ A stale HPointer can originate at four points in the pipeline:
 
 ---
 
-## Currently live instrumentation (ECO_GC_DEBUG)
+## Currently live instrumentation
 
-These are compiled in when `ECO_GC_DEBUG=1` (Debug preset default). No manual
-patching needed.
+### Compile-time instrumentation (fires during compilation)
 
-### 7. EcoGCPrepare — per-carrier root dump + strict self-check
+These fire during MLIR→LLVM lowering inside `eco-compiler` / `eco-boot`.
+Output goes to stderr of the compiler process and is enormous; redirect to a
+file.
 
-**File:** `EcoGCPrepare.cpp`
+#### 7. EcoGCPrepare — per-carrier root dump + strict self-check
+
+**File:** `EcoGCPrepare.cpp`  
+**Flag:** `ECO_GC_DEBUG`
 
 At the end of `processBlock()`, every `GCRootCarrier` op in the block is
 dumped with its `!eco.value` operands and attached roots:
@@ -48,9 +73,10 @@ that should be rooted but isn't:
   attached roots (3): ...
 ```
 
-### 8. Eco→LLVM lowering — safepoint marker root dump
+#### 8. Eco→LLVM lowering — safepoint marker root dump
 
-**File:** `EcoToLLVMRuntime.cpp`
+**File:** `EcoToLLVMRuntime.cpp`  
+**Flag:** `ECO_GC_DEBUG`
 
 `emitAllocWithSafepoint` and `emitSafepointMarker` log the function, op, and
 every LLVM i64 value passed as a live root:
@@ -62,9 +88,10 @@ every LLVM i64 value passed as a live root:
   ...
 ```
 
-### 9. StatepointConversion — gc-live bundle dump
+#### 9. StatepointConversion — gc-live bundle dump
 
-**File:** `StatepointConversion.cpp`
+**File:** `StatepointConversion.cpp`  
+**Flag:** `ECO_GC_DEBUG`
 
 After building each `gc.statepoint`, the function name, target call, marker
 arg count, and every gc-live value (stripped back to i64) are logged:
@@ -76,9 +103,15 @@ arg count, and every gc-live value (stripped back to i64) are logged:
   ...
 ```
 
-### 10. Runtime stackmap scanning — per-frame root dump
+### Runtime instrumentation (ECO_GC_DEBUG)
 
-**File:** `ThreadLocalHeap.cpp`
+These fire at runtime during program execution. Enabled by default in Debug
+builds via the `ECO_GC_DEBUG` CMake option.
+
+#### 10. Runtime stackmap scanning — per-frame root dump
+
+**File:** `ThreadLocalHeap.cpp`  
+**Flag:** `ECO_GC_DEBUG`
 
 During `collectStackRootsFromStackMap()`, each frame's IP and root count are
 logged, and every Indirect root location is decoded with its raw HPointer
@@ -89,6 +122,45 @@ value, resolved physical address, and object tag:
   root[0] kind=Indirect reg=7 off=-48 -> raw=0x0000000004002f3c phys=0x7f21dffb3960 tag=7
   root[1] kind=Indirect reg=7 off=-56 -> constant (raw=0x0000050000000000)
   root[2] kind=Indirect reg=7 off=-64 -> raw=0x0000000004003a7d phys=0x7f21dffc53e8 tag=11
+```
+
+Also logs warnings when no stackmap records are found (`[gc-stackmap] WARNING`),
+missed frame IPs (`[gc-stackmap] MISS`), and non-Indirect location kinds that
+are skipped.
+
+#### 11. StackMap parse — record dump
+
+**File:** `StackMap.cpp`  
+**Flag:** `ECO_GC_DEBUG`
+
+During `StackMap::parse()`, the first 20 stackmap records are logged with
+their function address, instruction offset, computed return address key, and
+location count:
+
+```
+[stackmap-parse] record 0: func=0x55a14bf6f000 instOff=123 -> key=0x55a14bf6f07b numLocs=3
+[stackmap-parse] record 1: func=0x55a14bf6f000 instOff=456 -> key=0x55a14bf6f1c8 numLocs=2
+```
+
+This helps verify that the stackmap section was found and parsed correctly,
+and that function addresses align with expected code layout.
+
+#### 12. Startup stackmap init — parse status
+
+**File:** `eco_entry.cpp`  
+**Flag:** `ECO_GC_DEBUG`
+
+During AOT binary startup, `initStackMapFromSelf()` prints the result of
+parsing the `.llvm_stackmaps` ELF section:
+
+```
+[init] stackmap: data=0x55a14c000000 size=1234 parsed=1 hasRecords=1
+```
+
+Or, if the section is not found:
+
+```
+[init] stackmap: NOT FOUND (data=(nil) size=0)
 ```
 
 ---

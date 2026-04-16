@@ -86,7 +86,18 @@ static void initStackMapFromSelf() {
         // The .llvm_stackmaps section has relocations that are resolved by
         // the dynamic linker, so function addresses are already absolute.
         // Pass loadBase=0 (no additional relocation needed).
-        Elm::globalStackMap().parse(cbd.data, cbd.size, /*loadBase=*/0);
+        bool ok = Elm::globalStackMap().parse(cbd.data, cbd.size, /*loadBase=*/0);
+#if ECO_GC_DEBUG
+        fprintf(stderr, "[init] stackmap: data=%p size=%zu parsed=%d hasRecords=%d\n",
+                (void*)cbd.data, cbd.size, (int)ok,
+                (int)Elm::globalStackMap().hasRecords());
+#endif
+        (void)ok;
+    } else {
+#if ECO_GC_DEBUG
+        fprintf(stderr, "[init] stackmap: NOT FOUND (data=%p size=%zu)\n",
+                (void*)cbd.data, cbd.size);
+#endif
     }
 }
 

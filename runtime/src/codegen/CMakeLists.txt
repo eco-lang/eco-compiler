@@ -251,6 +251,9 @@ add_mlir_library(EcoPasses
 
 target_compile_features(obj.EcoPasses PRIVATE cxx_std_17)
 target_compile_options(obj.EcoPasses PRIVATE -Wno-ambiguous-reversed-operator)
+if(ECO_GC_DEBUG)
+    target_compile_definitions(obj.EcoPasses PRIVATE ECO_GC_DEBUG=1)
+endif()
 
 #------------------------------------------------------------------------------
 # Build the ecogen executable (legacy, for parsing only)
@@ -350,9 +353,6 @@ target_compile_options(ecoc PRIVATE -Wno-ambiguous-reversed-operator)
 # The runtime code uses exceptions, so we need to enable them
 # (LLVM/MLIR disables exceptions by default)
 target_compile_options(ecoc PRIVATE -fexceptions)
-if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-    target_compile_definitions(ecoc PRIVATE ECO_DEBUG_STACKMAP=1)
-endif()
 if(ECO_GC_DEBUG)
     target_compile_definitions(ecoc PRIVATE ECO_GC_DEBUG=1)
 endif()
@@ -438,9 +438,6 @@ target_include_directories(obj.EcoRunner PRIVATE
 
 target_compile_features(obj.EcoRunner PRIVATE cxx_std_20)
 target_compile_options(obj.EcoRunner PRIVATE -Wno-ambiguous-reversed-operator -fexceptions)
-if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-    target_compile_definitions(obj.EcoRunner PRIVATE ECO_DEBUG_STACKMAP=1)
-endif()
 if(ECO_GC_DEBUG)
     target_compile_definitions(obj.EcoRunner PRIVATE ECO_GC_DEBUG=1)
 endif()
@@ -480,10 +477,6 @@ target_compile_options(EcoRuntimeStatic PRIVATE -fexceptions -UNDEBUG)
 # libunwind for stack unwinding in GC root scanning (PUBLIC so AOT consumers get -lunwind)
 target_link_libraries(EcoRuntimeStatic PUBLIC ${LIBUNWIND_LIB})
 
-# Enable stackmap debug warnings in debug builds
-if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-    target_compile_definitions(EcoRuntimeStatic PRIVATE ECO_DEBUG_STACKMAP=1)
-endif()
 if(ECO_GC_DEBUG)
     target_compile_definitions(EcoRuntimeStatic PRIVATE ECO_GC_DEBUG=1)
 endif()
@@ -502,6 +495,9 @@ target_include_directories(EcoEntryStatic PRIVATE
 
 target_compile_features(EcoEntryStatic PRIVATE cxx_std_20)
 target_compile_options(EcoEntryStatic PRIVATE -fexceptions -UNDEBUG)
+if(ECO_GC_DEBUG)
+    target_compile_definitions(EcoEntryStatic PRIVATE ECO_GC_DEBUG=1)
+endif()
 
 #------------------------------------------------------------------------------
 # Build the eco-boot executable (AOT native compiler)

@@ -1,5 +1,6 @@
 #include "StackMap.hpp"
 #include <cassert>
+#include <cstdio>
 #include <cstring>
 
 namespace Elm {
@@ -207,6 +208,16 @@ bool StackMap::parse(const uint8_t* data, size_t size, uint64_t loadBase) {
                 functions_[funcIdx].address + record.instructionOffset;
             records_[returnAddr] = std::move(record);
         }
+#if ECO_GC_DEBUG
+        static size_t debugCount = 0;
+        if (debugCount < 20 && funcIdx < numFunctions) {
+            uint64_t addr = functions_[funcIdx].address + record.instructionOffset;
+            fprintf(stderr, "[stackmap-parse] record %u: func=0x%lx instOff=%u -> key=0x%lx numLocs=%u\n",
+                    i, functions_[funcIdx].address, record.instructionOffset,
+                    addr, (unsigned)record.locations.size());
+            debugCount++;
+        }
+#endif
 
         recordsForFunc++;
     }

@@ -288,8 +288,16 @@ std::unordered_set<HPointer*> ThreadLocalHeap::collectRoots() {
 
 void ThreadLocalHeap::collectStackRootsFromStackMap() {
     StackMap& sm = globalStackMap();
-    if (!sm.hasRecords())
+    if (!sm.hasRecords()) {
+#if ECO_GC_DEBUG
+        static bool warned = false;
+        if (!warned) {
+            fprintf(stderr, "[gc-stackmap] WARNING: no stack map records found! Stack roots will NOT be tracked.\n");
+            warned = true;
+        }
+#endif
         return;
+    }
 
     RootSet& roots = nursery_.getRootSet();
     // Clear previous stack roots from stack map walking
@@ -311,16 +319,37 @@ void ThreadLocalHeap::collectStackRootsFromStackMap() {
     do {
         uintptr_t ip = cur.ip();
         const StackMapRecord* rec = sm.findRecord(ip + kIpToReturnAddressBias);
-        if (!rec)
+        if (!rec) {
+#if ECO_GC_DEBUG
+            static size_t missCount = 0;
+            if (missCount < 5) {
+                fprintf(stderr, "[gc-stackmap] MISS: frame IP=%p (no record found)\n", (void*)ip);
+                missCount++;
+            }
+#endif
             continue;
+        }
 
-        for (const StackMapLocation& loc : rec->locations) {
+#if ECO_GC_DEBUG
+        fprintf(stderr, "[gc-stackmap] frame IP=%p numLocs=%zu\n",
+                (void*)ip, rec->locations.size());
+#endif
+
+        for (size_t locIdx = 0; locIdx < rec->locations.size(); ++locIdx) {
+            const StackMapLocation& loc = rec->locations[locIdx];
+#if ECO_GC_DEBUG
+            if (loc.kind != StackMapLocation::Indirect) {
+                fprintf(stderr, "[gc-stackmap]   loc[%zu] kind=%u reg=%u off=%d size=%u (NOT Indirect — SKIPPED)\n",
+                        locIdx, (unsigned)loc.kind, (unsigned)loc.dwarfRegNum,
+                        (int)loc.offset, (unsigned)loc.sizeInBytes);
+            }
+#endif
             if (loc.kind == StackMapLocation::Indirect) {
                 uintptr_t base = 0;
                 if (!cur.getRegister(loc.dwarfRegNum, base)) {
-#if ECO_DEBUG_STACKMAP
+#if ECO_GC_DEBUG
                     fprintf(stderr,
-                        "[ECO_DEBUG_STACKMAP] Failed to read reg %u for IP=%p\n",
+                        "[ECO_GC_DEBUG] Failed to read reg %u for IP=%p\n",
                         loc.dwarfRegNum, (void*)ip);
 #endif
                     continue;
@@ -333,16 +362,33 @@ void ThreadLocalHeap::collectStackRootsFromStackMap() {
                 // Embedded-constant HPointers (Unit/True/False/Nil/etc.) are not
                 // heap-allocated and do not need GC. Skip them before calling
                 // resolve(), which asserts constant == 0.
-                if (potential.constant != 0)
+                if (potential.constant != 0) {
+#if ECO_GC_DEBUG
+                    uint64_t raw = 0;
+                    memcpy(&raw, &potential, sizeof(raw));
+                    fprintf(stderr, "[gc-stackmap]   root[%zu] kind=Indirect reg=%u off=%d -> constant (raw=0x%lx)\n",
+                            locIdx, loc.dwarfRegNum, (int)loc.offset, raw);
+#endif
                     continue;
+                }
                 void* phys = alloc.resolve(potential);
+#if ECO_GC_DEBUG
+                {
+                    uint64_t raw = 0;
+                    memcpy(&raw, &potential, sizeof(raw));
+                    Header* hdr = phys ? static_cast<Header*>(phys) : nullptr;
+                    fprintf(stderr, "[gc-stackmap]   root[%zu] kind=Indirect reg=%u off=%d -> raw=0x%lx phys=%p tag=%u\n",
+                            locIdx, loc.dwarfRegNum, (int)loc.offset, raw, phys,
+                            hdr ? (unsigned)hdr->tag : 99);
+                }
+#endif
                 if (phys != nullptr && alloc.isInHeap(phys)) {
                     roots.pushStackRoot(slot);
                 }
             } else {
-#if ECO_DEBUG_STACKMAP
+#if ECO_GC_DEBUG
                 fprintf(stderr,
-                    "[ECO_DEBUG_STACKMAP] Non-Indirect location kind=%u at IP=%p\n",
+                    "[ECO_GC_DEBUG] Non-Indirect location kind=%u at IP=%p\n",
                     loc.kind, (void*)ip);
 #endif
             }

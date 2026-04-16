@@ -47,8 +47,8 @@ Cursor::~Cursor() = default;
 bool Cursor::step() {
     int rc = unw_step(&impl_->cursor);
     if (rc < 0) {
-#if ECO_DEBUG_STACKMAP
-        fprintf(stderr, "[ECO_DEBUG_STACKMAP] unw_step failed: %d\n", rc);
+#if ECO_GC_DEBUG
+        fprintf(stderr, "[ECO_GC_DEBUG] unw_step failed: %d\n", rc);
 #endif
         return false;
     }
@@ -59,8 +59,8 @@ uintptr_t Cursor::ip() const {
     unw_word_t val;
     int rc = unw_get_reg(&impl_->cursor, UNW_REG_IP, &val);
     if (rc != 0) {
-#if ECO_DEBUG_STACKMAP
-        fprintf(stderr, "[ECO_DEBUG_STACKMAP] unw_get_reg(IP) failed: %d\n", rc);
+#if ECO_GC_DEBUG
+        fprintf(stderr, "[ECO_GC_DEBUG] unw_get_reg(IP) failed: %d\n", rc);
 #endif
         return 0;
     }
@@ -72,8 +72,8 @@ bool Cursor::getRegister(uint16_t dwarfRegNum, uintptr_t& outValue) const {
     unw_word_t val;
     int rc = unw_get_reg(&impl_->cursor, unwReg, &val);
     if (rc != 0) {
-#if ECO_DEBUG_STACKMAP
-        fprintf(stderr, "[ECO_DEBUG_STACKMAP] unw_get_reg(dwarf=%u, unw=%d) failed: %d\n",
+#if ECO_GC_DEBUG
+        fprintf(stderr, "[ECO_GC_DEBUG] unw_get_reg(dwarf=%u, unw=%d) failed: %d\n",
                 dwarfRegNum, unwReg, rc);
 #endif
         return false;

@@ -147,6 +147,47 @@ struct EcoGCPreparePass
         module.walk([&](func::FuncOp func) {
             processFunction(func);
         });
+
+#if ECO_GC_DEBUG
+        // Strict liveness self-check: after all roots are set, verify that
+        // every GCRootCarrier's attached roots are a SUPERSET of the
+        // !eco.value SSA values live at that op.
+        module.walk([&](func::FuncOp func) {
+            if (func.isExternal()) return;
+            Liveness liveness(func);
+            func.walk([&](Operation *op) {
+                auto carrier = dyn_cast<eco::GCRootCarrier>(op);
+                if (!carrier) return;
+                auto attachedRoots = carrier.getGCRoots();
+                llvm::DenseSet<Value> rootSet(attachedRoots.begin(), attachedRoots.end());
+
+                // Recompute what SHOULD be live
+                auto shouldBeLive = computeLiveRoots(liveness, op);
+                // Also include the op's own !eco.value operands (they are
+                // used inside the lowered expansion of this op)
+                for (Value v : op->getOperands()) {
+                    if (isEcoValue(v)) shouldBeLive.push_back(v);
+                }
+
+                for (Value v : shouldBeLive) {
+                    if (!rootSet.count(v)) {
+                        llvm::errs() << "[gc-liveness-CHECK] MISSING ROOT in func="
+                                     << func.getName()
+                                     << " op=" << op->getName()
+                                     << " at " << op->getLoc() << "\n"
+                                     << "  missing value: " << v << "\n"
+                                     << "  attached roots (" << attachedRoots.size() << "):\n";
+                        for (Value r : attachedRoots)
+                            llvm::errs() << "    " << r << "\n";
+                        llvm::errs() << "  all !eco.value operands:\n";
+                        for (Value ov : op->getOperands())
+                            if (isEcoValue(ov))
+                                llvm::errs() << "    " << ov << "\n";
+                    }
+                }
+            });
+        });
+#endif
     }
 
 private:
@@ -308,6 +349,28 @@ private:
             if (auto carrier = dyn_cast<eco::GCRootCarrier>(&op))
                 carrier.setGCRoots(liveRoots);
         }
+
+#if ECO_GC_DEBUG
+        // Dump all GCRootCarrier ops in this block with their final roots.
+        for (auto &op : block) {
+            auto carrier = dyn_cast<eco::GCRootCarrier>(&op);
+            if (!carrier) continue;
+            auto funcOp = op.getParentOfType<func::FuncOp>();
+            auto roots = carrier.getGCRoots();
+            llvm::errs() << "[gc-liveness] func="
+                         << (funcOp ? funcOp.getName() : StringRef("?"))
+                         << " op=" << op.getName()
+                         << " loc=" << op.getLoc() << "\n";
+            llvm::errs() << "  eco.value operands:";
+            for (Value v : op.getOperands())
+                if (isEcoValue(v))
+                    llvm::errs() << " " << v;
+            llvm::errs() << "\n  attached roots (" << roots.size() << "):";
+            for (Value r : roots)
+                llvm::errs() << " " << r;
+            llvm::errs() << "\n";
+        }
+#endif
     }
 };
 

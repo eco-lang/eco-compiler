@@ -557,6 +557,21 @@ Value eco::detail::emitAllocWithSafepoint(
     auto loc = op->getLoc();
     auto *ctx = rewriter.getContext();
 
+#if ECO_GC_DEBUG
+    {
+        StringRef funcName = "?";
+        if (auto symOp = op->getParentOfType<mlir::SymbolOpInterface>())
+            funcName = symOp.getName();
+        llvm::errs() << "[gc-lowering] emitAllocWithSafepoint"
+                     << " func=" << funcName
+                     << " op=" << op->getName()
+                     << " loc=" << op->getLoc()
+                     << " alloc=" << allocFunc.getName()
+                     << " liveRoots=" << liveRoots.size() << "\n";
+        for (size_t i = 0; i < liveRoots.size(); ++i)
+            llvm::errs() << "  root[" << i << "] = " << liveRoots[i] << "\n";
+    }
+#endif
     // liveRoots are pre-converted i64 values from the op adaptor.
     // They were computed by EcoGCPrepare at the Eco IR level and carried
     // as explicit operands through type conversion — no recomputation needed.
@@ -597,6 +612,20 @@ void eco::detail::emitSafepointMarker(
     const EcoRuntime &runtime,
     ValueRange liveRoots) {
 
+#if ECO_GC_DEBUG
+    {
+        StringRef funcName = "?";
+        if (auto symOp = op->getParentOfType<mlir::SymbolOpInterface>())
+            funcName = symOp.getName();
+        llvm::errs() << "[gc-lowering] emitSafepointMarker"
+                     << " func=" << funcName
+                     << " op=" << op->getName()
+                     << " loc=" << op->getLoc()
+                     << " liveRoots=" << liveRoots.size() << "\n";
+        for (size_t i = 0; i < liveRoots.size(); ++i)
+            llvm::errs() << "  root[" << i << "] = " << liveRoots[i] << "\n";
+    }
+#endif
     if (liveRoots.empty()) return;
 
     auto loc = op->getLoc();
