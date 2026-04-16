@@ -1,10 +1,105 @@
 # GC Diagnostics Guide
 
-Instrumentation recipes for debugging stale HPointer and GC root coverage issues. All changes are temporary — strip them once the bug is resolved.
+Instrumentation recipes for debugging stale HPointer and GC root coverage
+issues. Sections 1–6 are manual code patches (apply/strip as needed). Sections
+7–10 are **currently live in the codebase** behind `#if ECO_GC_DEBUG` (on by
+default in Debug builds).
 
-## 1. Enhanced stale-pointer diagnostic dump
+---
 
-In `NurserySpace.cpp`, replace the bare assert in `debugAssertValidNurseryPointer` with a detailed dump that prints the full nursery layout, the pointed-at memory, and a C++ backtrace before aborting.
+## Pipeline overview
+
+A stale HPointer can originate at four points in the pipeline:
+
+| # | Layer | File(s) | What to check |
+|---|-------|---------|---------------|
+| 1 | Eco IR liveness | `EcoGCPrepare.cpp` | Are all live `!eco.value` included in GCRootCarrier roots? |
+| 2 | MLIR→LLVM lowering | `EcoToLLVMRuntime.cpp`, `EcoToLLVMHeap.cpp`, `EcoToLLVMClosures.cpp` | Do liveRoots survive into `__eco_safepoint_marker` args? |
+| 3 | LLVM statepoints | `StatepointConversion.cpp` | Do marker args appear in `gc.statepoint` gc-live bundles? |
+| 4 | Runtime stackmap | `ThreadLocalHeap.cpp`, `StackMap.cpp` | Does the GC actually read & evacuate these roots at runtime? |
+
+---
+
+## Currently live instrumentation (ECO_GC_DEBUG)
+
+These are compiled in when `ECO_GC_DEBUG=1` (Debug preset default). No manual
+patching needed.
+
+### 7. EcoGCPrepare — per-carrier root dump + strict self-check
+
+**File:** `EcoGCPrepare.cpp`
+
+At the end of `processBlock()`, every `GCRootCarrier` op in the block is
+dumped with its `!eco.value` operands and attached roots:
+
+```
+[gc-liveness] func=Dict_insertHelp_$_5182 op=eco.construct.custom loc=...
+  eco.value operands: %arg0 %arg1 %arg2 %arg3 %arg4
+  attached roots (5): %arg0 %arg1 %arg2 %arg3 %arg4
+```
+
+After all functions are processed, a **strict self-check** re-runs
+`computeLiveRoots` + operand union for every carrier and reports any value
+that should be rooted but isn't:
+
+```
+[gc-liveness-CHECK] MISSING ROOT in func=... op=eco.papExtend at ...
+  missing value: %42
+  attached roots (3): ...
+```
+
+### 8. Eco→LLVM lowering — safepoint marker root dump
+
+**File:** `EcoToLLVMRuntime.cpp`
+
+`emitAllocWithSafepoint` and `emitSafepointMarker` log the function, op, and
+every LLVM i64 value passed as a live root:
+
+```
+[gc-lowering] emitAllocWithSafepoint func=Dict_RBNode_elm_builtin_$_5183 op=eco.construct.custom alloc=eco_alloc_custom liveRoots=5
+  root[0] = %arg0
+  root[1] = %arg1
+  ...
+```
+
+### 9. StatepointConversion — gc-live bundle dump
+
+**File:** `StatepointConversion.cpp`
+
+After building each `gc.statepoint`, the function name, target call, marker
+arg count, and every gc-live value (stripped back to i64) are logged:
+
+```
+[gc-statepoint] func=Dict_RBNode_elm_builtin_$_5183 target=eco_alloc_custom marker_args=5 gc-live=5
+  gc-live[0] = %arg0
+  gc-live[1] = %arg1
+  ...
+```
+
+### 10. Runtime stackmap scanning — per-frame root dump
+
+**File:** `ThreadLocalHeap.cpp`
+
+During `collectStackRootsFromStackMap()`, each frame's IP and root count are
+logged, and every Indirect root location is decoded with its raw HPointer
+value, resolved physical address, and object tag:
+
+```
+[gc-stackmap] frame IP=0x55a14bf6f811 numLocs=3
+  root[0] kind=Indirect reg=7 off=-48 -> raw=0x0000000004002f3c phys=0x7f21dffb3960 tag=7
+  root[1] kind=Indirect reg=7 off=-56 -> constant (raw=0x0000050000000000)
+  root[2] kind=Indirect reg=7 off=-64 -> raw=0x0000000004003a7d phys=0x7f21dffc53e8 tag=11
+```
+
+---
+
+## Manual instrumentation recipes (apply as needed)
+
+### 1. Enhanced stale-pointer diagnostic dump
+
+In `NurserySpace.cpp`, replace the bare assert in
+`debugAssertValidNurseryPointer` with a detailed dump that prints the full
+nursery layout, the pointed-at memory, and a C++ backtrace before aborting.
 
 **Requires:** `#include <execinfo.h>` at the top of NurserySpace.cpp.
 
@@ -54,9 +149,11 @@ In `NurserySpace.cpp`, replace the bare assert in `debugAssertValidNurseryPointe
     assert(ok && "HPointer into nursery free region (stale pointer into unallocated space)");
 ```
 
-## 2. Scan parent tracking
+### 2. Scan parent tracking
 
-Track which heap object is currently being scanned during Cheney scan, so that when a stale child pointer is found, the parent's tag, size, and fields are printed.
+Track which heap object is currently being scanned during Cheney scan, so
+that when a stale child pointer is found, the parent's tag, size, and fields
+are printed.
 
 Add file-scope globals in `NurserySpace.cpp` (before `namespace Elm {`):
 
@@ -87,27 +184,28 @@ if (g_scan_parent) {
 }
 ```
 
-## 3. GC phase tracing
+### 3. GC phase tracing
 
-Add phase-entry logging in `minorGC()` to identify which GC phase contains the stale pointer. Insert before each phase's loop:
+Add phase-entry logging in `minorGC()` to identify which GC phase contains
+the stale pointer. Insert before each phase's loop:
 
 ```cpp
 std::fprintf(stderr, "[gc] minorGC start from_is_low=%d\n", (int)from_is_low_);
-// Phase 1a:
+// Before Phase 1a:
 std::fprintf(stderr, "[gc] phase 1a: %zu long-lived roots\n", root_set.getRoots().size());
-// Phase 1b:
+// Before Phase 1b:
 std::fprintf(stderr, "[gc] phase 1b: %zu stack roots\n", root_set.getStackRoots().size());
-// Phase 1c:
+// Before Phase 1c:
 std::fprintf(stderr, "[gc] phase 1c: %zu jit roots\n", root_set.getJitRoots().size());
-// Phase 1e:
+// Before Phase 1e:
 std::fprintf(stderr, "[gc] phase 1e: %zu stack root ranges\n", root_set.getStackRootRanges().size());
-// Phase 1d:
+// Before Phase 1d:
 std::fprintf(stderr, "[gc] phase 1d: %zu external scanners\n", root_set.getExternalRootScanners().size());
-// Phase 2:
+// Before Phase 2:
 std::fprintf(stderr, "[gc] phase 2: Cheney scan starts\n");
 ```
 
-## 4. Per-object scan tracing (Custom)
+### 4. Per-object scan tracing (Custom)
 
 Add detailed field-by-field dump inside `scanObject()` for `Tag_Custom`:
 
@@ -127,9 +225,10 @@ case Tag_Custom: {
 }
 ```
 
-## 5. eco_pap_extend tracing
+### 5. eco_pap_extend tracing
 
-In `RuntimeExports.cpp`, add before the `hpointerToPtr` call in `eco_pap_extend`:
+In `RuntimeExports.cpp`, add before the `hpointerToPtr` call in
+`eco_pap_extend`:
 
 ```cpp
 std::fprintf(stderr, "[pap_extend] closure_hptr=0x%016lx num_newargs=%u new_unboxed_bitmap=0x%lx\n",
@@ -141,11 +240,13 @@ for (uint32_t i = 0; i < num_newargs; ++i) {
 std::fflush(stderr);
 ```
 
-**Warning:** This is extremely high-volume. Redirect stderr to a file and use grep/tail to find the relevant entries.
+**Warning:** This is extremely high-volume. Redirect stderr to a file and use
+grep/tail to find the relevant entries.
 
-## 6. Catch stale writes at store time
+### 6. Catch stale writes at store time
 
-In `RuntimeExports.cpp eco_store_field()`, add before the `hpointerToPtr(obj_hptr)` call:
+In `RuntimeExports.cpp eco_store_field()`, add before the
+`hpointerToPtr(obj_hptr)` call:
 
 ```cpp
 #if ECO_GC_DEBUG
@@ -153,27 +254,61 @@ In `RuntimeExports.cpp eco_store_field()`, add before the `hpointerToPtr(obj_hpt
 #endif
 ```
 
-This catches stale HPointers at the moment they're written to a heap field, producing a backtrace that shows which compiled function wrote the stale value. Requires `ThreadLocalHeap.hpp` and `NurserySpace.hpp` includes.
+This catches stale HPointers at the moment they're written to a heap field,
+producing a crash + backtrace that shows which compiled function wrote the
+stale value. Requires `ThreadLocalHeap.hpp` and `NurserySpace.hpp` includes.
 
-## 7. EcoGCPrepare root logging
+---
 
-In `EcoGCPrepare.cpp`, add after computing liveRoots for alloc group leaders:
+## Investigation workflow
 
-```cpp
-if (liveRoots.size() > before) {
-    llvm::errs() << "[EcoGCPrepare-FIX] Added " << (liveRoots.size() - before)
-                 << " operand roots to " << group.front()->getName()
-                 << " at " << group.front()->getLoc() << "\n";
-}
-```
-
-This verifies that the operand-union fix is actually adding roots.
-
-## Typical investigation workflow
+### Heap-side (where the stale pointer is found)
 
 1. Run Stage 7 with `ECO_GC_DEBUG=1` (default in Debug builds).
-2. If the assert fires, add section 1 (diagnostic dump) to see WHERE the stale pointer is.
-3. Add section 2 (scan parent) to identify WHICH heap object contains it.
-4. Add section 6 (store field validation) to catch the write at the moment it happens — if it fires with `in_minor_gc=0`, the stale write is from mutator code and the backtrace shows the exact compiled function.
-5. If the stale write isn't caught by section 6, the value was stored inside a C++ runtime function (eco_alloc_cons, eco_pap_extend, etc.) — add section 5 to trace the specific call.
-6. Use `grep` on the stale HPointer value to find its last valid use in the log, counting GC cycles between valid use and stale detection.
+2. If the assert fires, apply section 1 (diagnostic dump) to see WHERE the
+   stale pointer is.
+3. Apply section 2 (scan parent) to identify WHICH heap object contains it.
+4. Apply section 6 (store field validation) to catch the write at the moment
+   it happens — if it fires with `in_minor_gc=0`, the stale write is from
+   mutator code and the backtrace shows the exact compiled function.
+5. If the stale write isn't caught by section 6, the value was stored inside a
+   C++ runtime function (eco_alloc_cons, eco_pap_extend, etc.) — apply
+   section 5 to trace the specific call.
+6. Use `grep` on the stale HPointer value to find its last valid use in the
+   log, counting GC cycles between valid use and stale detection.
+
+### Pipeline-side (why the root was missed)
+
+To trace exactly where a live `!eco.value` fell out of the root set, use the
+**live instrumentation** (sections 7–10) which is already compiled in:
+
+1. **Redirect stderr** to a file (output is enormous):
+   ```bash
+   bin/eco-compiler make ... 2>/tmp/gc-trace.log
+   ```
+
+2. **Find the crashing function** from the gdb backtrace (e.g.
+   `Dict_RBNode_elm_builtin_$_5183`).
+
+3. **Check section 7** (`[gc-liveness]`): grep for the function name. Verify
+   all `!eco.value` operands appear in the attached roots. If any are missing,
+   the bug is in EcoGCPrepare.
+
+4. **Check section 8** (`[gc-lowering]`): grep for `emitAllocWithSafepoint`
+   or `emitSafepointMarker` for the same function. Verify liveRoots count
+   matches. If roots were present in step 3 but absent here, the bug is in
+   how the lowering splits operands from roots (e.g. `splitAdaptedRoots`,
+   `adaptor.getLiveRoots()`).
+
+5. **Check section 9** (`[gc-statepoint]`): grep for the function. Verify
+   gc-live count matches the marker arg count. If roots were present in step 4
+   but absent here, the bug is in `StatepointConversion` (e.g.
+   `findTargetCall` latching onto the wrong call).
+
+6. **Check section 10** (`[gc-stackmap]`): grep for the frame IP of the
+   crashing function. Verify all gc-live values appear as Indirect roots with
+   valid register/offset. If roots were present in step 5 but absent here,
+   the bug is in LLVM stackmap emission or `StackMap` parsing.
+
+The **first point in the chain** where a value is missing is where the
+Layer-2 bug is.
