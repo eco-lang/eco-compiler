@@ -170,6 +170,44 @@ static llvm::orc::SymbolMap buildRuntimeSymbolMap(
                 llvm::orc::ExecutorAddr::fromPtr(&eco_gc_alloc_region_slow),
                 llvm::JITSymbolFlags::Exported);
 
+        // Init-at-pointer functions (for group allocation).
+        symbolMap[interner("eco_init_int_at")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_init_int_at),
+                llvm::JITSymbolFlags::Exported);
+        symbolMap[interner("eco_init_float_at")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_init_float_at),
+                llvm::JITSymbolFlags::Exported);
+        symbolMap[interner("eco_init_char_at")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_init_char_at),
+                llvm::JITSymbolFlags::Exported);
+        symbolMap[interner("eco_init_cons_at")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_init_cons_at),
+                llvm::JITSymbolFlags::Exported);
+        symbolMap[interner("eco_init_tuple2_at")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_init_tuple2_at),
+                llvm::JITSymbolFlags::Exported);
+        symbolMap[interner("eco_init_tuple3_at")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_init_tuple3_at),
+                llvm::JITSymbolFlags::Exported);
+        symbolMap[interner("eco_init_record_at")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_init_record_at),
+                llvm::JITSymbolFlags::Exported);
+        symbolMap[interner("eco_init_custom_at")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_init_custom_at),
+                llvm::JITSymbolFlags::Exported);
+        symbolMap[interner("eco_init_string_at")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_init_string_at),
+                llvm::JITSymbolFlags::Exported);
+
         // Field store functions.
         symbolMap[interner("eco_store_field")] =
             llvm::orc::ExecutorSymbolDef(

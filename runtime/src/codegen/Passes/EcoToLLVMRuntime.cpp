@@ -284,6 +284,64 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocRegionSlow(OpBuilder &builder) cons
 }
 
 //===----------------------------------------------------------------------===//
+// Init-at-pointer Functions (for group allocation)
+//===----------------------------------------------------------------------===//
+
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateInitIntAt(OpBuilder &builder) const {
+    // eco_init_int_at(ptr, value: i64) -> i64
+    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {PTR_TY, I64_TY});
+    return getOrCreateFunc(builder, "eco_init_int_at", funcTy);
+}
+
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateInitFloatAt(OpBuilder &builder) const {
+    // eco_init_float_at(ptr, value: f64) -> i64
+    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {PTR_TY, F64_TY});
+    return getOrCreateFunc(builder, "eco_init_float_at", funcTy);
+}
+
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateInitCharAt(OpBuilder &builder) const {
+    // eco_init_char_at(ptr, value: i32) -> i64
+    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {PTR_TY, I32_TY});
+    return getOrCreateFunc(builder, "eco_init_char_at", funcTy);
+}
+
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateInitConsAt(OpBuilder &builder) const {
+    // eco_init_cons_at(ptr, head: i64, tail: i64, head_unboxed: i32) -> i64
+    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {PTR_TY, I64_TY, I64_TY, I32_TY});
+    return getOrCreateFunc(builder, "eco_init_cons_at", funcTy);
+}
+
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateInitTuple2At(OpBuilder &builder) const {
+    // eco_init_tuple2_at(ptr, a: i64, b: i64, unboxed: i32) -> i64
+    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {PTR_TY, I64_TY, I64_TY, I32_TY});
+    return getOrCreateFunc(builder, "eco_init_tuple2_at", funcTy);
+}
+
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateInitTuple3At(OpBuilder &builder) const {
+    // eco_init_tuple3_at(ptr, a: i64, b: i64, c: i64, unboxed: i32) -> i64
+    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {PTR_TY, I64_TY, I64_TY, I64_TY, I32_TY});
+    return getOrCreateFunc(builder, "eco_init_tuple3_at", funcTy);
+}
+
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateInitRecordAt(OpBuilder &builder) const {
+    // eco_init_record_at(ptr, field_count: i32, unboxed_bitmap: i64) -> i64
+    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {PTR_TY, I32_TY, I64_TY});
+    return getOrCreateFunc(builder, "eco_init_record_at", funcTy);
+}
+
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateInitCustomAt(OpBuilder &builder) const {
+    // eco_init_custom_at(ptr, ctor_id: i32, field_count: i32, scalar_bytes: i32) -> i64
+    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {PTR_TY, I32_TY, I32_TY, I32_TY});
+    return getOrCreateFunc(builder, "eco_init_custom_at", funcTy);
+}
+
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateInitStringAt(OpBuilder &builder) const {
+    // eco_init_string_at(ptr, length: i32) -> i64
+    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {PTR_TY, I32_TY});
+    return getOrCreateFunc(builder, "eco_init_string_at", funcTy);
+}
+
+//===----------------------------------------------------------------------===//
 // Field Storage Functions
 //===----------------------------------------------------------------------===//
 

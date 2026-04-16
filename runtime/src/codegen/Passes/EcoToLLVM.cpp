@@ -337,6 +337,11 @@ struct EcoToLLVMPass : public PassWrapper<EcoToLLVMPass, OperationPass<ModuleOp>
         populateEcoGlobalPatterns(typeConverter, patterns);
         populateEcoErrorDebugPatterns(typeConverter, patterns, runtime);
 
+        // Lower allocation groups (eco.gc_group_size > 1) into fast/slow/merge
+        // CFG before the per-op conversion patterns run. Group member ops are
+        // erased; remaining singleton alloc ops are lowered by patterns below.
+        lowerAllocGroups(module, runtime);
+
         // Apply the conversion patterns to the module
         // Use applyFullConversion to ensure all operations are legalized.
         // This is important because dynamic legality for CaseOp depends on

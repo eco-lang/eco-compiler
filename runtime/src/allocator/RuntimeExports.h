@@ -169,6 +169,21 @@ void* eco_gc_alloc_region_fast(size_t total);
 void* eco_gc_alloc_region_slow(size_t total);
 
 //===----------------------------------------------------------------------===//
+// Init-at-pointer Functions (for group allocation)
+// Initialize an object at a pre-allocated pointer and return HPointer.
+//===----------------------------------------------------------------------===//
+
+uint64_t eco_init_int_at(void* ptr, int64_t value);
+uint64_t eco_init_float_at(void* ptr, double value);
+uint64_t eco_init_char_at(void* ptr, uint32_t value);
+uint64_t eco_init_cons_at(void* ptr, uint64_t head, uint64_t tail, uint32_t head_unboxed);
+uint64_t eco_init_tuple2_at(void* ptr, uint64_t a, uint64_t b, uint32_t unboxed_mask);
+uint64_t eco_init_tuple3_at(void* ptr, uint64_t a, uint64_t b, uint64_t c, uint32_t unboxed_mask);
+uint64_t eco_init_record_at(void* ptr, uint32_t field_count, uint64_t unboxed_bitmap);
+uint64_t eco_init_custom_at(void* ptr, uint32_t ctor_id, uint32_t field_count, uint32_t scalar_bytes);
+uint64_t eco_init_string_at(void* ptr, uint32_t length);
+
+//===----------------------------------------------------------------------===//
 // Field Store Functions
 //===----------------------------------------------------------------------===//
 

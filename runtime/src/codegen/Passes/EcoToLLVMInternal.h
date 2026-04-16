@@ -227,6 +227,17 @@ struct EcoRuntime {
     mlir::LLVM::LLVMFuncOp getOrCreateAllocRegionFast(mlir::OpBuilder &builder) const;
     mlir::LLVM::LLVMFuncOp getOrCreateAllocRegionSlow(mlir::OpBuilder &builder) const;
 
+    // Init-at-pointer functions (for group allocation)
+    mlir::LLVM::LLVMFuncOp getOrCreateInitIntAt(mlir::OpBuilder &builder) const;
+    mlir::LLVM::LLVMFuncOp getOrCreateInitFloatAt(mlir::OpBuilder &builder) const;
+    mlir::LLVM::LLVMFuncOp getOrCreateInitCharAt(mlir::OpBuilder &builder) const;
+    mlir::LLVM::LLVMFuncOp getOrCreateInitConsAt(mlir::OpBuilder &builder) const;
+    mlir::LLVM::LLVMFuncOp getOrCreateInitTuple2At(mlir::OpBuilder &builder) const;
+    mlir::LLVM::LLVMFuncOp getOrCreateInitTuple3At(mlir::OpBuilder &builder) const;
+    mlir::LLVM::LLVMFuncOp getOrCreateInitRecordAt(mlir::OpBuilder &builder) const;
+    mlir::LLVM::LLVMFuncOp getOrCreateInitCustomAt(mlir::OpBuilder &builder) const;
+    mlir::LLVM::LLVMFuncOp getOrCreateInitStringAt(mlir::OpBuilder &builder) const;
+
     // Field storage functions
     mlir::LLVM::LLVMFuncOp getOrCreateStoreField(mlir::OpBuilder &builder) const;
     mlir::LLVM::LLVMFuncOp getOrCreateStoreFieldI64(mlir::OpBuilder &builder) const;
@@ -346,6 +357,11 @@ void populateEcoTypePatterns(
     EcoTypeConverter &typeConverter,
     mlir::RewritePatternSet &patterns,
     const EcoRuntime &runtime);
+
+/// Lower allocation groups with eco.gc_group_size > 1 into fast/slow/merge CFG.
+/// Must run before applyFullConversion — operates on Eco+LLVM mixed IR.
+/// Groups are erased; remaining singleton allocs are lowered by per-op patterns.
+void lowerAllocGroups(mlir::ModuleOp module, const EcoRuntime &runtime);
 
 /// Populate patterns for heap operations (box, unbox, allocate, construct, project).
 void populateEcoHeapPatterns(

@@ -52,6 +52,14 @@ struct EcoGCLivenessAuditPass
             auto carrier = dyn_cast<eco::GCRootCarrier>(op);
             if (!carrier) return;
 
+            // Skip group members — their liveness is covered transitively
+            // by the leader's root set. The slow path is emitted only at
+            // the leader, and no member's SSA result is live at the
+            // leader-slow statepoint (the region is reserved before any
+            // member init runs).
+            if (op->hasAttr("eco.gc_group_member"))
+                return;
+
             // Skip ops inside nested regions (scf.while/scf.if bodies).
             // EcoGCPrepare's per-block Liveness is blind to cross-iteration
             // uses of values captured into nested regions, and it works

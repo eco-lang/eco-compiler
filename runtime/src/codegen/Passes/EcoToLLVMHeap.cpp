@@ -21,6 +21,9 @@
 #include "../EcoOps.h"
 #include "../EcoTypes.h"
 
+#include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+
 using namespace mlir;
 using namespace eco;
 using namespace eco::detail;
@@ -997,6 +1000,440 @@ struct ArraySetOpLowering : public OpConversionPattern<ArraySetOp> {
 };
 
 } // namespace
+
+//===----------------------------------------------------------------------===//
+// Allocation Group Lowering
+//===----------------------------------------------------------------------===//
+
+/// Convert an !eco.value SSA value to i64 by inserting an
+/// UnrealizedConversionCastOp. Returns the value as-is if already i64.
+static Value castToI64(OpBuilder &builder, Location loc, Value v) {
+    if (v.getType().isInteger(64))
+        return v;
+    auto i64Ty = IntegerType::get(builder.getContext(), 64);
+    return builder.create<UnrealizedConversionCastOp>(loc, i64Ty, v)
+        .getResult(0);
+}
+
+/// Widen a primitive SSA value to i64 for Unboxable slot storage.
+/// i64 passes through. f64 → bitcast. i16/i1 → zext.
+static Value widenToI64ForInit(OpBuilder &builder, Location loc, Value v) {
+    auto i64Ty = IntegerType::get(builder.getContext(), 64);
+    Type ty = v.getType();
+    if (ty.isInteger(64)) return v;
+    if (isa<eco::ValueType>(ty))
+        return castToI64(builder, loc, v);
+    if (auto intTy = dyn_cast<IntegerType>(ty)) {
+        if (intTy.getWidth() < 64)
+            return builder.create<LLVM::ZExtOp>(loc, i64Ty, v);
+    }
+    if (ty.isF64())
+        return builder.create<LLVM::BitcastOp>(loc, i64Ty, v);
+    return castToI64(builder, loc, v);
+}
+
+/// Emit the init-at-pointer call for one group member at the given raw pointer.
+/// Returns the HPointer (i64) result.
+/// Field stores for record/custom ops are NOT emitted here — they go in the
+/// merge block so they don't need to be duplicated across fast/slow paths.
+static Value emitInitAtPtr(
+    OpBuilder &builder, Location loc,
+    Operation *op, Value objPtr,
+    const EcoRuntime &runtime) {
+
+    auto *ctx = builder.getContext();
+    auto i32Ty = IntegerType::get(ctx, 32);
+    auto i64Ty = IntegerType::get(ctx, 64);
+
+    if (auto boxOp = dyn_cast<BoxOp>(op)) {
+        Type inputType = boxOp.getValue().getType();
+        Value input = boxOp.getValue();
+        if (inputType.isInteger(64)) {
+            return builder.create<LLVM::CallOp>(
+                loc, runtime.getOrCreateInitIntAt(builder),
+                ValueRange{objPtr, input}).getResult();
+        }
+        if (inputType.isF64()) {
+            return builder.create<LLVM::CallOp>(
+                loc, runtime.getOrCreateInitFloatAt(builder),
+                ValueRange{objPtr, input}).getResult();
+        }
+        if (inputType.isInteger(16)) {
+            auto widened = builder.create<LLVM::ZExtOp>(loc, i32Ty, input);
+            return builder.create<LLVM::CallOp>(
+                loc, runtime.getOrCreateInitCharAt(builder),
+                ValueRange{objPtr, widened}).getResult();
+        }
+        llvm_unreachable("unsupported BoxOp input type in group");
+    }
+
+    if (auto allocCtor = dyn_cast<AllocateCtorOp>(op)) {
+        auto tag = builder.create<LLVM::ConstantOp>(
+            loc, i32Ty, static_cast<int32_t>(allocCtor.getTag()));
+        auto size = builder.create<LLVM::ConstantOp>(
+            loc, i32Ty, static_cast<int32_t>(allocCtor.getSize()));
+        auto scalarBytes = builder.create<LLVM::ConstantOp>(
+            loc, i32Ty, static_cast<int32_t>(allocCtor.getScalarBytes()));
+        return builder.create<LLVM::CallOp>(
+            loc, runtime.getOrCreateInitCustomAt(builder),
+            ValueRange{objPtr, tag, size, scalarBytes}).getResult();
+    }
+
+    if (auto allocStr = dyn_cast<AllocateStringOp>(op)) {
+        auto length = builder.create<LLVM::ConstantOp>(
+            loc, i32Ty, static_cast<int32_t>(allocStr.getLength()));
+        return builder.create<LLVM::CallOp>(
+            loc, runtime.getOrCreateInitStringAt(builder),
+            ValueRange{objPtr, length}).getResult();
+    }
+
+    if (auto listOp = dyn_cast<ListConstructOp>(op)) {
+        Value head = widenToI64ForInit(builder, loc, listOp.getHead());
+        Value tail = castToI64(builder, loc, listOp.getTail());
+        uint32_t headUnboxed = listOp.getHeadUnboxed() ? 1 : 0;
+        auto headUnboxedVal = builder.create<LLVM::ConstantOp>(loc, i32Ty, headUnboxed);
+        return builder.create<LLVM::CallOp>(
+            loc, runtime.getOrCreateInitConsAt(builder),
+            ValueRange{objPtr, head, tail, headUnboxedVal}).getResult();
+    }
+
+    if (auto tuple2Op = dyn_cast<Tuple2ConstructOp>(op)) {
+        Value a = widenToI64ForInit(builder, loc, tuple2Op.getA());
+        Value b = widenToI64ForInit(builder, loc, tuple2Op.getB());
+        auto unboxed = builder.create<LLVM::ConstantOp>(
+            loc, i32Ty, static_cast<int32_t>(tuple2Op.getUnboxedBitmap()));
+        return builder.create<LLVM::CallOp>(
+            loc, runtime.getOrCreateInitTuple2At(builder),
+            ValueRange{objPtr, a, b, unboxed}).getResult();
+    }
+
+    if (auto tuple3Op = dyn_cast<Tuple3ConstructOp>(op)) {
+        Value a = widenToI64ForInit(builder, loc, tuple3Op.getA());
+        Value b = widenToI64ForInit(builder, loc, tuple3Op.getB());
+        Value c = widenToI64ForInit(builder, loc, tuple3Op.getC());
+        auto unboxed = builder.create<LLVM::ConstantOp>(
+            loc, i32Ty, static_cast<int32_t>(tuple3Op.getUnboxedBitmap()));
+        return builder.create<LLVM::CallOp>(
+            loc, runtime.getOrCreateInitTuple3At(builder),
+            ValueRange{objPtr, a, b, c, unboxed}).getResult();
+    }
+
+    if (auto recOp = dyn_cast<RecordConstructOp>(op)) {
+        auto fieldCount = builder.create<LLVM::ConstantOp>(
+            loc, i32Ty, static_cast<int32_t>(recOp.getFieldCount()));
+        auto unboxedBitmap = builder.create<LLVM::ConstantOp>(
+            loc, i64Ty, recOp.getUnboxedBitmap());
+        return builder.create<LLVM::CallOp>(
+            loc, runtime.getOrCreateInitRecordAt(builder),
+            ValueRange{objPtr, fieldCount, unboxedBitmap}).getResult();
+    }
+
+    if (auto customOp = dyn_cast<CustomConstructOp>(op)) {
+        auto tag = builder.create<LLVM::ConstantOp>(
+            loc, i32Ty, static_cast<int32_t>(customOp.getTag()));
+        auto size = builder.create<LLVM::ConstantOp>(
+            loc, i32Ty, static_cast<int32_t>(customOp.getSize()));
+        auto scalarBytes = builder.create<LLVM::ConstantOp>(loc, i32Ty, 0);
+        return builder.create<LLVM::CallOp>(
+            loc, runtime.getOrCreateInitCustomAt(builder),
+            ValueRange{objPtr, tag, size, scalarBytes}).getResult();
+    }
+
+    llvm_unreachable("unsupported op kind in emitInitAtPtr");
+}
+
+/// Emit field stores for a record or custom op in the merge block.
+/// hptr is the HPointer (i64) from the merge block arg.
+/// memberResultMap maps original op results to their i64 merge-block values.
+static void emitFieldStoresForOp(
+    OpBuilder &builder, Location loc,
+    Operation *op, Value hptr,
+    const llvm::DenseMap<Value, Value> &memberResultMap,
+    const EcoRuntime &runtime) {
+
+    auto *ctx = builder.getContext();
+    auto i32Ty = IntegerType::get(ctx, 32);
+    auto i64Ty = IntegerType::get(ctx, 64);
+
+    if (auto recOp = dyn_cast<RecordConstructOp>(op)) {
+        auto storeFunc = runtime.getOrCreateStoreRecordField(builder);
+        auto storeI64Func = runtime.getOrCreateStoreRecordFieldI64(builder);
+        auto storeF64Func = runtime.getOrCreateStoreRecordFieldF64(builder);
+        int64_t fieldCount = recOp.getFieldCount();
+        auto fields = recOp.getFields();
+
+        for (int64_t i = 0; i < fieldCount; i++) {
+            auto idx = builder.create<LLVM::ConstantOp>(loc, i32Ty, static_cast<int32_t>(i));
+            Value fieldVal = fields[i];
+            Type origType = fieldVal.getType();
+
+            // Check if this field is another group member's result
+            auto it = memberResultMap.find(fieldVal);
+            if (it != memberResultMap.end()) {
+                // Use the i64 merge-block value directly for store
+                builder.create<LLVM::CallOp>(loc, storeFunc,
+                    ValueRange{hptr, idx, it->second});
+                continue;
+            }
+
+            if (origType.isF64()) {
+                builder.create<LLVM::CallOp>(loc, storeF64Func,
+                    ValueRange{hptr, idx, fieldVal});
+            } else if (origType.isInteger(1) || origType.isInteger(16)) {
+                auto extended = builder.create<LLVM::ZExtOp>(loc, i64Ty, fieldVal);
+                builder.create<LLVM::CallOp>(loc, storeI64Func,
+                    ValueRange{hptr, idx, extended});
+            } else if (origType.isInteger(64)) {
+                builder.create<LLVM::CallOp>(loc, storeI64Func,
+                    ValueRange{hptr, idx, fieldVal});
+            } else {
+                // eco.value — cast to i64
+                Value valI64 = castToI64(builder, loc, fieldVal);
+                builder.create<LLVM::CallOp>(loc, storeFunc,
+                    ValueRange{hptr, idx, valI64});
+            }
+        }
+        return;
+    }
+
+    if (auto customOp = dyn_cast<CustomConstructOp>(op)) {
+        auto storeFunc = runtime.getOrCreateStoreField(builder);
+        auto storeI64Func = runtime.getOrCreateStoreFieldI64(builder);
+        auto storeF64Func = runtime.getOrCreateStoreFieldF64(builder);
+        auto setUnboxedFunc = runtime.getOrCreateSetUnboxed(builder);
+        int64_t opSize = customOp.getSize();
+        auto fields = customOp.getFields();
+
+        for (int64_t i = 0; i < opSize; i++) {
+            auto idx = builder.create<LLVM::ConstantOp>(loc, i32Ty, static_cast<int32_t>(i));
+            Value fieldVal = fields[i];
+            Type origType = fieldVal.getType();
+
+            auto it = memberResultMap.find(fieldVal);
+            if (it != memberResultMap.end()) {
+                builder.create<LLVM::CallOp>(loc, storeFunc,
+                    ValueRange{hptr, idx, it->second});
+                continue;
+            }
+
+            if (origType.isF64()) {
+                builder.create<LLVM::CallOp>(loc, storeF64Func,
+                    ValueRange{hptr, idx, fieldVal});
+            } else if (origType.isInteger(1) || origType.isInteger(16)) {
+                auto extended = builder.create<LLVM::ZExtOp>(loc, i64Ty, fieldVal);
+                builder.create<LLVM::CallOp>(loc, storeI64Func,
+                    ValueRange{hptr, idx, extended});
+            } else if (origType.isInteger(64)) {
+                builder.create<LLVM::CallOp>(loc, storeI64Func,
+                    ValueRange{hptr, idx, fieldVal});
+            } else {
+                Value valI64 = castToI64(builder, loc, fieldVal);
+                builder.create<LLVM::CallOp>(loc, storeFunc,
+                    ValueRange{hptr, idx, valI64});
+            }
+        }
+
+        int64_t bitmap = customOp.getUnboxedBitmap();
+        if (bitmap != 0) {
+            auto bitmapVal = builder.create<LLVM::ConstantOp>(loc, i64Ty, bitmap);
+            builder.create<LLVM::CallOp>(loc, setUnboxedFunc,
+                ValueRange{hptr, bitmapVal});
+        }
+        return;
+    }
+}
+
+/// Lower a single allocation group into fast/slow/merge CFG.
+static void lowerOneAllocGroup(
+    SmallVectorImpl<Operation*> &group,
+    const EcoRuntime &runtime) {
+
+    Operation *leader = group.front();
+    auto loc = leader->getLoc();
+    auto *ctx = leader->getContext();
+    auto i64Ty = IntegerType::get(ctx, 64);
+    auto i8Ty = IntegerType::get(ctx, 8);
+    auto ptrTy = LLVM::LLVMPointerType::get(ctx);
+    size_t groupSize = group.size();
+
+    // Compute totalBytes and offset prefix sums.
+    int64_t totalBytes = 0;
+    SmallVector<int64_t, 8> offsets;
+    for (auto *op : group) {
+        offsets.push_back(totalBytes);
+        totalBytes += computeAllocSize(op);
+    }
+
+    // Get the leader's GC roots for the safepoint marker.
+    SmallVector<Value, 4> liveRoots;
+    if (auto carrier = dyn_cast<eco::GCRootCarrier>(leader)) {
+        for (Value r : carrier.getGCRoots())
+            liveRoots.push_back(r);
+    }
+
+    // --- CFG surgery ---
+    Block *origBlock = leader->getBlock();
+    Region *parentRegion = origBlock->getParent();
+
+    // Split just before the leader. Everything from leader onward goes to afterBlock.
+    Block *afterBlock = origBlock->splitBlock(leader);
+
+    // Create fast, slow, merge blocks in the same region.
+    Block *fastBlock = new Block();
+    Block *slowBlock = new Block();
+    Block *mergeBlock = new Block();
+    parentRegion->getBlocks().insertAfter(Region::iterator(origBlock), fastBlock);
+    parentRegion->getBlocks().insertAfter(Region::iterator(fastBlock), slowBlock);
+    parentRegion->getBlocks().insertAfter(Region::iterator(slowBlock), mergeBlock);
+
+    // Add merge block args: one i64 per group member (HPointers).
+    for (size_t i = 0; i < groupSize; i++)
+        mergeBlock->addArgument(i64Ty, loc);
+
+    // Move afterBlock's ops into mergeBlock (merge block IS the continuation).
+    mergeBlock->getOperations().splice(
+        mergeBlock->end(), afterBlock->getOperations());
+    afterBlock->erase();
+
+    OpBuilder builder(ctx);
+
+    // --- Entry block: region fast alloc + null check ---
+    builder.setInsertionPointToEnd(origBlock);
+
+    auto totalBytesVal = builder.create<LLVM::ConstantOp>(loc, i64Ty, totalBytes);
+    auto baseFastCall = builder.create<LLVM::CallOp>(
+        loc, runtime.getOrCreateAllocRegionFast(builder),
+        ValueRange{totalBytesVal});
+    Value baseFastPtr = baseFastCall.getResult();
+
+    auto nullPtr = builder.create<LLVM::ZeroOp>(loc, ptrTy);
+    auto isNull = builder.create<LLVM::ICmpOp>(
+        loc, LLVM::ICmpPredicate::eq, baseFastPtr, nullPtr);
+
+    builder.create<cf::CondBranchOp>(
+        loc, isNull, slowBlock, ValueRange{},
+        fastBlock, ValueRange{});
+
+    // --- Fast block: init each member at offset ---
+    builder.setInsertionPointToEnd(fastBlock);
+    SmallVector<Value, 8> fastHPtrs;
+    for (size_t i = 0; i < groupSize; i++) {
+        Value offsetVal = builder.create<LLVM::ConstantOp>(loc, i64Ty, offsets[i]);
+        Value objPtr = builder.create<LLVM::GEPOp>(
+            loc, ptrTy, i8Ty, baseFastPtr, ValueRange{offsetVal});
+        Value hptr = emitInitAtPtr(builder, loc, group[i], objPtr, runtime);
+        fastHPtrs.push_back(hptr);
+    }
+    builder.create<cf::BranchOp>(loc, mergeBlock, fastHPtrs);
+
+    // --- Slow block: safepoint marker + region slow alloc + init ---
+    builder.setInsertionPointToEnd(slowBlock);
+
+    if (!liveRoots.empty()) {
+        auto gcPtrTy = LLVM::LLVMPointerType::get(ctx, /*addressSpace=*/1);
+        SmallVector<Value, 4> gcPtrs;
+        for (auto val : liveRoots) {
+            Value valI64 = castToI64(builder, loc, val);
+            auto ptr = builder.create<LLVM::IntToPtrOp>(loc, gcPtrTy, valI64);
+            gcPtrs.push_back(ptr);
+        }
+        runtime.getOrCreateSafepointMarker(builder);
+        auto voidTy = LLVM::LLVMVoidType::get(ctx);
+        auto markerFuncTy = LLVM::LLVMFunctionType::get(
+            voidTy, {}, /*isVarArg=*/true);
+        builder.create<LLVM::CallOp>(
+            loc, markerFuncTy,
+            FlatSymbolRefAttr::get(ctx, "__eco_safepoint_marker"),
+            gcPtrs);
+    }
+
+    auto totalBytesValSlow = builder.create<LLVM::ConstantOp>(loc, i64Ty, totalBytes);
+    auto baseSlowCall = builder.create<LLVM::CallOp>(
+        loc, runtime.getOrCreateAllocRegionSlow(builder),
+        ValueRange{totalBytesValSlow});
+    Value baseSlowPtr = baseSlowCall.getResult();
+
+    SmallVector<Value, 8> slowHPtrs;
+    for (size_t i = 0; i < groupSize; i++) {
+        Value offsetVal = builder.create<LLVM::ConstantOp>(loc, i64Ty, offsets[i]);
+        Value objPtr = builder.create<LLVM::GEPOp>(
+            loc, ptrTy, i8Ty, baseSlowPtr, ValueRange{offsetVal});
+        Value hptr = emitInitAtPtr(builder, loc, group[i], objPtr, runtime);
+        slowHPtrs.push_back(hptr);
+    }
+    builder.create<cf::BranchOp>(loc, mergeBlock, slowHPtrs);
+
+    // --- Merge block: field stores + result replacement ---
+    builder.setInsertionPointToStart(mergeBlock);
+
+    llvm::DenseMap<Value, Value> memberResultMap;
+    auto ecoValueTy = eco::ValueType::get(ctx);
+    SmallVector<Value, 8> ecoResults;
+
+    for (size_t i = 0; i < groupSize; i++) {
+        Value mergeArg = mergeBlock->getArgument(i);
+        memberResultMap[group[i]->getResult(0)] = mergeArg;
+
+        // Unrealized cast from i64 to !eco.value for external uses.
+        Value ecoVal = builder.create<UnrealizedConversionCastOp>(
+            loc, ecoValueTy, mergeArg).getResult(0);
+        ecoResults.push_back(ecoVal);
+    }
+
+    // Emit field stores for record/custom members.
+    for (size_t i = 0; i < groupSize; i++) {
+        Value hptr = mergeBlock->getArgument(i);
+        emitFieldStoresForOp(builder, loc, group[i], hptr,
+                             memberResultMap, runtime);
+    }
+
+    // Replace original op results with the eco.value casts.
+    for (size_t i = 0; i < groupSize; i++)
+        group[i]->getResult(0).replaceAllUsesWith(ecoResults[i]);
+
+    // Erase all group ops (now in mergeBlock after the splice).
+    for (auto it = group.rbegin(); it != group.rend(); ++it)
+        (*it)->erase();
+}
+
+/// Lower all allocation groups in the module.
+void eco::detail::lowerAllocGroups(ModuleOp module, const EcoRuntime &runtime) {
+    // Collect all groups across all functions first, then lower.
+    SmallVector<SmallVector<Operation*, 4>> allGroups;
+
+    for (auto funcOp : module.getOps<func::FuncOp>()) {
+        if (funcOp.isExternal()) continue;
+
+        for (auto &region : funcOp->getRegions()) {
+            for (auto &block : region) {
+                for (auto &op : block) {
+                    auto groupSizeAttr = op.getAttrOfType<IntegerAttr>("eco.gc_group_size");
+                    if (!groupSizeAttr || op.hasAttr("eco.gc_group_member"))
+                        continue;
+                    int64_t groupSize = groupSizeAttr.getInt();
+                    if (groupSize <= 1) continue;
+
+                    SmallVector<Operation*, 4> group;
+                    group.push_back(&op);
+                    Operation *next = op.getNextNode();
+                    for (int64_t i = 1; i < groupSize && next; i++) {
+                        assert(next->hasAttr("eco.gc_group_member") &&
+                               "expected group member after leader");
+                        group.push_back(next);
+                        next = next->getNextNode();
+                    }
+                    assert(static_cast<int64_t>(group.size()) == groupSize &&
+                           "group size mismatch");
+                    allGroups.push_back(std::move(group));
+                }
+            }
+        }
+    }
+
+    for (auto &group : allGroups) {
+        lowerOneAllocGroup(group, runtime);
+    }
+}
 
 //===----------------------------------------------------------------------===//
 // Pattern Population

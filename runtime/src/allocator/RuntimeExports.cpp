@@ -700,6 +700,111 @@ extern "C" void* eco_gc_alloc_region_slow(size_t total) {
 }
 
 //===----------------------------------------------------------------------===//
+// Init-at-pointer Functions (for group allocation)
+//===----------------------------------------------------------------------===//
+
+extern "C" uint64_t eco_init_int_at(void* obj, int64_t value) {
+    Header* hdr = getHeader(obj);
+    std::memset(hdr, 0, sizeof(Header));
+    hdr->tag = Tag_Int;
+    hdr->size = static_cast<u32>(sizeof(ElmInt));
+    ElmInt* elmInt = static_cast<ElmInt*>(obj);
+    elmInt->value = value;
+    return ptrToHPointer(obj);
+}
+
+extern "C" uint64_t eco_init_float_at(void* obj, double value) {
+    Header* hdr = getHeader(obj);
+    std::memset(hdr, 0, sizeof(Header));
+    hdr->tag = Tag_Float;
+    hdr->size = static_cast<u32>(sizeof(ElmFloat));
+    ElmFloat* elmFloat = static_cast<ElmFloat*>(obj);
+    elmFloat->value = value;
+    return ptrToHPointer(obj);
+}
+
+extern "C" uint64_t eco_init_char_at(void* obj, uint32_t value) {
+    Header* hdr = getHeader(obj);
+    std::memset(hdr, 0, sizeof(Header));
+    hdr->tag = Tag_Char;
+    hdr->size = static_cast<u32>(sizeof(ElmChar));
+    ElmChar* elmChar = static_cast<ElmChar*>(obj);
+    elmChar->value = static_cast<u16>(value);
+    return ptrToHPointer(obj);
+}
+
+extern "C" uint64_t eco_init_cons_at(void* obj, uint64_t head, uint64_t tail, uint32_t head_unboxed) {
+    Header* hdr = getHeader(obj);
+    std::memset(hdr, 0, sizeof(Header));
+    hdr->tag = Tag_Cons;
+    hdr->size = static_cast<u32>(sizeof(Cons));
+    Cons* cons = static_cast<Cons*>(obj);
+    cons->header.unboxed = static_cast<u8>(head_unboxed);
+    cons->head.i = static_cast<i64>(head);
+    HPointer tail_hp;
+    memcpy(&tail_hp, &tail, sizeof(tail_hp));
+    cons->tail = tail_hp;
+    return ptrToHPointer(obj);
+}
+
+extern "C" uint64_t eco_init_tuple2_at(void* obj, uint64_t a, uint64_t b, uint32_t unboxed_mask) {
+    Header* hdr = getHeader(obj);
+    std::memset(hdr, 0, sizeof(Header));
+    hdr->tag = Tag_Tuple2;
+    hdr->size = static_cast<u32>(sizeof(Tuple2));
+    Tuple2* tup = static_cast<Tuple2*>(obj);
+    tup->header.unboxed = static_cast<u8>(unboxed_mask);
+    tup->a.i = static_cast<i64>(a);
+    tup->b.i = static_cast<i64>(b);
+    return ptrToHPointer(obj);
+}
+
+extern "C" uint64_t eco_init_tuple3_at(void* obj, uint64_t a, uint64_t b, uint64_t c, uint32_t unboxed_mask) {
+    Header* hdr = getHeader(obj);
+    std::memset(hdr, 0, sizeof(Header));
+    hdr->tag = Tag_Tuple3;
+    hdr->size = static_cast<u32>(sizeof(Tuple3));
+    Tuple3* tup = static_cast<Tuple3*>(obj);
+    tup->header.unboxed = static_cast<u8>(unboxed_mask);
+    tup->a.i = static_cast<i64>(a);
+    tup->b.i = static_cast<i64>(b);
+    tup->c.i = static_cast<i64>(c);
+    return ptrToHPointer(obj);
+}
+
+extern "C" uint64_t eco_init_record_at(void* obj, uint32_t field_count, uint64_t unboxed_bitmap) {
+    size_t size = sizeof(Header) + 8 + field_count * sizeof(Unboxable);
+    Header* hdr = getHeader(obj);
+    std::memset(hdr, 0, sizeof(Header));
+    hdr->tag = Tag_Record;
+    hdr->size = field_count;
+    Record* rec = static_cast<Record*>(obj);
+    rec->unboxed = unboxed_bitmap;
+    return ptrToHPointer(obj);
+}
+
+extern "C" uint64_t eco_init_custom_at(void* obj, uint32_t ctor_id, uint32_t field_count, uint32_t scalar_bytes) {
+    Header* hdr = getHeader(obj);
+    std::memset(hdr, 0, sizeof(Header));
+    hdr->tag = Tag_Custom;
+    hdr->size = (sizeof(Header) + 8 + field_count * sizeof(Unboxable) + scalar_bytes - sizeof(Custom)) / sizeof(Unboxable);
+    Custom* custom = static_cast<Custom*>(obj);
+    custom->ctor = ctor_id;
+    custom->unboxed = 0;
+    return ptrToHPointer(obj);
+}
+
+extern "C" uint64_t eco_init_string_at(void* obj, uint32_t length) {
+    size_t size = sizeof(Header) + length * sizeof(u16);
+    size = (size + 7) & ~7;
+    Header* hdr = getHeader(obj);
+    std::memset(hdr, 0, sizeof(Header));
+    hdr->tag = Tag_String;
+    hdr->size = length;
+    return ptrToHPointer(obj);
+}
+
+//===----------------------------------------------------------------------===//
 // Field Store Functions
 //===----------------------------------------------------------------------===//
 

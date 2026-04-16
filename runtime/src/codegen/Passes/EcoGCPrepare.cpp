@@ -51,6 +51,61 @@ static bool isMayAllocOp(Operation *op) {
            isa<eco::AllocateOp>(op);
 }
 
+/// Returns true if the operation has a statically known fixed allocation size.
+/// Only ops that return true here can be grouped for coalesced allocation.
+/// AllocateClosureOp, AllocateOp, and non-scalar BoxOp are excluded (V1 scope).
+static bool hasFixedAllocSize(Operation *op) {
+    if (auto boxOp = dyn_cast<eco::BoxOp>(op)) {
+        Type inputType = boxOp.getValue().getType();
+        return inputType.isInteger(64) || inputType.isF64() || inputType.isInteger(16);
+    }
+    return isa<eco::AllocateCtorOp>(op) ||
+           isa<eco::AllocateStringOp>(op) ||
+           isa<eco::ListConstructOp>(op) ||
+           isa<eco::Tuple2ConstructOp>(op) ||
+           isa<eco::Tuple3ConstructOp>(op) ||
+           isa<eco::RecordConstructOp>(op) ||
+           isa<eco::CustomConstructOp>(op);
+}
+
+/// Compute the aligned allocation size for a given Eco allocation op.
+/// Must agree with computeAllocSize in EcoToLLVMHeap.cpp.
+static int64_t getFixedAllocSizeForGrouping(Operation *op) {
+    constexpr int64_t HeaderSize = 8;
+    constexpr int64_t UnboxableSize = 8;
+
+    if (auto allocCtor = dyn_cast<eco::AllocateCtorOp>(op)) {
+        int64_t size = HeaderSize + 8 + allocCtor.getSize() * UnboxableSize +
+                       allocCtor.getScalarBytes();
+        return (size + 7) & ~7;
+    }
+    if (auto allocStr = dyn_cast<eco::AllocateStringOp>(op)) {
+        int64_t size = HeaderSize + allocStr.getLength() * 2;
+        return (size + 7) & ~7;
+    }
+    if (isa<eco::ListConstructOp>(op)) return 24;
+    if (isa<eco::Tuple2ConstructOp>(op)) return 24;
+    if (isa<eco::Tuple3ConstructOp>(op)) return 32;
+    if (auto recOp = dyn_cast<eco::RecordConstructOp>(op)) {
+        int64_t size = HeaderSize + 8 + recOp.getFieldCount() * UnboxableSize;
+        return (size + 7) & ~7;
+    }
+    if (auto customOp = dyn_cast<eco::CustomConstructOp>(op)) {
+        int64_t size = HeaderSize + 8 + customOp.getSize() * UnboxableSize;
+        return (size + 7) & ~7;
+    }
+    if (auto boxOp = dyn_cast<eco::BoxOp>(op)) {
+        Type inputType = boxOp.getValue().getType();
+        if (inputType.isInteger(64) || inputType.isF64() || inputType.isInteger(16))
+            return 16;
+    }
+    return 0;
+}
+
+/// Large-object threshold for group formation (must match runtime default).
+/// Groups whose combined size would reach or exceed this are split.
+static constexpr int64_t GroupLargeObjectThreshold = 32 * 1024; // 32 KiB
+
 /// Returns true if the operation is a barrier for allocation grouping.
 /// Barriers include calls, terminators, explicit safepoints, and PAP ops.
 static bool isGroupBarrier(Operation *op) {
@@ -130,16 +185,40 @@ private:
 
     void processBlock(Block &block, Liveness &liveness) {
         // Step 1: Identify groups of adjacent allocation ops.
+        // Only ops with statically known sizes can be grouped.
+        // Groups are capped at the large-object threshold to avoid
+        // pushing a pile of small allocs into old-gen.
         SmallVector<SmallVector<Operation*, 4>> groups;
         SmallVector<Operation*, 4> currentGroup;
+        int64_t runningSize = 0;
 
         for (auto &op : block) {
             if (isMayAllocOp(&op)) {
+                if (!hasFixedAllocSize(&op)) {
+                    // Non-fixed-size op: close current group, add as singleton
+                    if (!currentGroup.empty()) {
+                        groups.push_back(std::move(currentGroup));
+                        currentGroup = {};
+                        runningSize = 0;
+                    }
+                    groups.push_back(SmallVector<Operation*, 4>{&op});
+                    continue;
+                }
+                int64_t opSize = getFixedAllocSizeForGrouping(&op);
+                if (!currentGroup.empty() &&
+                    runningSize + opSize >= GroupLargeObjectThreshold) {
+                    // Adding this op would exceed threshold: close group first
+                    groups.push_back(std::move(currentGroup));
+                    currentGroup = {};
+                    runningSize = 0;
+                }
                 currentGroup.push_back(&op);
+                runningSize += opSize;
             } else {
                 if (!currentGroup.empty()) {
                     groups.push_back(std::move(currentGroup));
                     currentGroup = {};
+                    runningSize = 0;
                 }
                 if (isGroupBarrier(&op)) {
                     // Barrier - any pending group already flushed above
@@ -189,6 +268,15 @@ private:
                 IntegerAttr::get(IntegerType::get(ctx, 64), liveRoots.size()));
             group.front()->setAttr("eco.gc_group_size",
                 IntegerAttr::get(IntegerType::get(ctx, 64), group.size()));
+
+            // Emit eco.alloc_size_bytes on every grouped op (leader + members)
+            for (auto *memberOp : group) {
+                int64_t sz = getFixedAllocSizeForGrouping(memberOp);
+                if (sz > 0) {
+                    memberOp->setAttr("eco.alloc_size_bytes",
+                        IntegerAttr::get(IntegerType::get(ctx, 64), sz));
+                }
+            }
 
             // Mark subsequent ops in the group
             for (size_t i = 1; i < group.size(); i++) {
