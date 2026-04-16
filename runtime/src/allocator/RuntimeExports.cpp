@@ -184,16 +184,30 @@ extern "C" void eco_set_unboxed(uint64_t obj_hptr, uint64_t bitmap) {
 
 extern "C" uint64_t eco_alloc_cons(uint64_t head, uint64_t tail, uint32_t head_unboxed) {
     size_t size = sizeof(Cons);
+
+    // Root head and tail across allocate() which may trigger GC.
+    // Build a 2-element array: [head, tail]. Mask: bit 0 = head (boxed unless
+    // head_unboxed), bit 1 = tail (always boxed).
+    uint64_t roots[2] = { head, tail };
+    uint64_t mask = head_unboxed ? 0x2 : 0x3;
+    size_t saved = eco_gc_stack_range_point();
+    eco_gc_push_stack_range(roots, 2, mask);
+
     void* obj = Allocator::instance().allocate(size, Tag_Cons);
-    if (!obj) return 0;
+    if (!obj) {
+        eco_gc_restore_stack_range_point(saved);
+        return 0;
+    }
+
+    // Re-read from rooted array (may have been updated by GC).
+    head = roots[0];
+    tail = roots[1];
+
+    eco_gc_restore_stack_range_point(saved);
 
     Cons* cons = static_cast<Cons*>(obj);
     cons->header.unboxed = static_cast<u8>(head_unboxed);
-
-    // Store head as raw 64-bit value (handles both ptr and primitive).
     cons->head.i = static_cast<i64>(head);
-
-    // Tail is always a boxed list pointer - store the HPointer directly.
     HPointer tail_hp;
     memcpy(&tail_hp, &tail, sizeof(tail_hp));
     cons->tail = tail_hp;
@@ -203,13 +217,21 @@ extern "C" uint64_t eco_alloc_cons(uint64_t head, uint64_t tail, uint32_t head_u
 
 extern "C" uint64_t eco_alloc_tuple2(uint64_t a, uint64_t b, uint32_t unboxed_mask) {
     size_t size = sizeof(Tuple2);
+
+    // Root a and b across allocate().
+    uint64_t roots[2] = { a, b };
+    uint64_t mask = ~static_cast<uint64_t>(unboxed_mask) & 0x3;
+    size_t saved = eco_gc_stack_range_point();
+    if (mask) eco_gc_push_stack_range(roots, 2, mask);
+
     void* obj = Allocator::instance().allocate(size, Tag_Tuple2);
-    if (!obj) return 0;
+    if (!obj) { eco_gc_restore_stack_range_point(saved); return 0; }
+
+    a = roots[0]; b = roots[1];
+    eco_gc_restore_stack_range_point(saved);
 
     Tuple2* tup = static_cast<Tuple2*>(obj);
     tup->header.unboxed = static_cast<u8>(unboxed_mask);
-
-    // Store as raw 64-bit values (HPointers or unboxed primitives).
     tup->a.i = static_cast<i64>(a);
     tup->b.i = static_cast<i64>(b);
 
@@ -218,13 +240,20 @@ extern "C" uint64_t eco_alloc_tuple2(uint64_t a, uint64_t b, uint32_t unboxed_ma
 
 extern "C" uint64_t eco_alloc_tuple3(uint64_t a, uint64_t b, uint64_t c, uint32_t unboxed_mask) {
     size_t size = sizeof(Tuple3);
+
+    uint64_t roots[3] = { a, b, c };
+    uint64_t mask = ~static_cast<uint64_t>(unboxed_mask) & 0x7;
+    size_t saved = eco_gc_stack_range_point();
+    if (mask) eco_gc_push_stack_range(roots, 3, mask);
+
     void* obj = Allocator::instance().allocate(size, Tag_Tuple3);
-    if (!obj) return 0;
+    if (!obj) { eco_gc_restore_stack_range_point(saved); return 0; }
+
+    a = roots[0]; b = roots[1]; c = roots[2];
+    eco_gc_restore_stack_range_point(saved);
 
     Tuple3* tup = static_cast<Tuple3*>(obj);
     tup->header.unboxed = static_cast<u8>(unboxed_mask);
-
-    // Store as raw 64-bit values (HPointers or unboxed primitives).
     tup->a.i = static_cast<i64>(a);
     tup->b.i = static_cast<i64>(b);
     tup->c.i = static_cast<i64>(c);
@@ -906,11 +935,9 @@ extern "C" uint64_t eco_apply_closure(uint64_t closure_hptr, uint64_t* args, uin
     assert(max_values <= 63 && "max_values exceeds 6-bit field cap");
     uint32_t remaining = max_values - n_values;
 
-    // Root `args` for the duration of this call. All entries here are
-    // HPointer-encoded `!eco.value` (callers boxed unboxed primitives upstream).
-    // The over-saturated recursive call will push its own range covering
-    // `args + remaining`; that overlap is harmless (idempotent forwarding).
+    // Root `closure_hptr` and `args` for the duration of this call.
     size_t saved_range = eco_gc_stack_range_point();
+    eco_gc_push_stack_range(&closure_hptr, 1, 1);
     if (num_args > 0) {
         eco_gc_push_stack_range(args, num_args, hptr_mask_all(num_args));
     }
@@ -965,10 +992,9 @@ extern "C" uint64_t eco_apply_segmentation_unknown(uint64_t closure_hptr,
     }
     uint32_t remaining = max_values - n_values;
 
-    // Root the appropriate arg array across the inner call. Without this, a GC
-    // triggered inside eco_pap_extend / eco_apply_closure would leave stale
-    // HPointers in the alloca-backed arrays.
+    // Root closure_hptr and the appropriate arg array across the inner call.
     size_t saved_range = eco_gc_stack_range_point();
+    eco_gc_push_stack_range(&closure_hptr, 1, 1);
     uint64_t result;
 
     if (num_args < remaining) {
@@ -1019,12 +1045,11 @@ extern "C" uint64_t eco_pap_extend(uint64_t closure_hptr, uint64_t* args, uint32
         return 0;
     }
 
-    // Root `args` across the allocate() call below. allocate() may trigger GC,
-    // and the copy loop further down still reads HPointer entries from `args`.
-    // Without rooting, those HPointers would be stale post-GC. Use the inverse
-    // of new_unboxed_bitmap: bit i==1 in new_unboxed_bitmap means args[i] is an
-    // unboxed primitive (Int/Float/Char) and must NOT be evacuated.
+    // Root `closure_hptr` and `args` across the allocate() call below.
+    // allocate() may trigger GC. Without rooting, closure_hptr and the
+    // HPointer entries in `args` would be stale post-GC.
     size_t saved_range = eco_gc_stack_range_point();
+    eco_gc_push_stack_range(&closure_hptr, 1, 1);
     if (num_newargs > 0) {
         uint64_t mask = hptr_mask_clamp(~new_unboxed_bitmap, num_newargs);
         if (mask != 0) {
@@ -1091,8 +1116,9 @@ extern "C" uint64_t eco_closure_call_saturated(uint64_t closure_hptr, uint64_t* 
     // Zero-init so GC sees valid values for not-yet-populated slots.
     memset(combined_args, 0, max_values * sizeof(void*));
 
-    // Root combined_args as a stack root range during buildEvaluatorArgs + evaluator call.
+    // Root closure_hptr and combined_args across buildEvaluatorArgs + evaluator call.
     size_t saved_range = eco_gc_stack_range_point();
+    eco_gc_push_stack_range(&closure_hptr, 1, 1);
     if (max_values > 0) {
         uint64_t mask = (uint64_t{1} << max_values) - 1;
         eco_gc_push_stack_range(

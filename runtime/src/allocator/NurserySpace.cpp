@@ -724,7 +724,6 @@ void NurserySpace::evacuateJitPtr(uint64_t &ptr, OldGenSpace &oldgen, std::vecto
  */
 void NurserySpace::scanObject(void *obj, OldGenSpace &oldgen, std::vector<void*> *promoted_objects) {
     Header *hdr = getHeader(obj);
-
     // Process children based on tag.
     switch (hdr->tag) {
         // ====== Wide structures: BFS (inline evacuation) ======

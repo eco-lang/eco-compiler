@@ -152,11 +152,6 @@ static bool convertMarkersToStatepoints(
                 continue;
             }
 
-            // Any call immediately after a safepoint marker is a valid
-            // statepoint target: allocation functions, safepoint polls,
-            // eco.call callees, eco.papExtend evaluators, etc.
-            // Both direct and indirect calls are supported.
-
             // Build statepoint wrapping the target call
             FunctionType *targetFnTy = targetCall->getFunctionType();
 

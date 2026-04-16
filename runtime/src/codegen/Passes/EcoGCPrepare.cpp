@@ -197,6 +197,24 @@ private:
 
             SmallVector<Value, 8> liveRoots = computeLiveRoots(liveness, group.front());
 
+            // Union with the group leader's own !eco.value operands.
+            // computeLiveRoots() filters by !isDeadAfter(v, op), which
+            // excludes operands whose only use IS this op. But construct
+            // ops (eco.construct.custom, eco.construct.record, etc.)
+            // expand during lowering into an allocation call followed by
+            // separate field stores. The field operands must survive across
+            // the allocation's GC safepoint even though they appear "dead
+            // after" the single Eco-level op. Without this union, GC at
+            // the allocation statepoint doesn't relocate these values,
+            // producing stale HPointers that corrupt heap fields.
+            {
+                llvm::DenseSet<Value> already(liveRoots.begin(), liveRoots.end());
+                for (Value v : group.front()->getOperands()) {
+                    if (isEcoValue(v) && already.insert(v).second)
+                        liveRoots.push_back(v);
+                }
+            }
+
             LLVM_DEBUG({
                 llvm::dbgs() << "EcoGCPrepare: alloc group leader "
                              << group.front()->getName()
