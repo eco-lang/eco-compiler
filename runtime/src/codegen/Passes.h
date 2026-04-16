@@ -68,6 +68,12 @@ std::unique_ptr<mlir::Pass> createControlFlowLoweringPass();
 // and control flow lowering, before EcoToLLVM.
 std::unique_ptr<mlir::Pass> createEcoGCPreparePass();
 
+// Audits GC root sets attached by EcoGCPrepare against SSA liveness of
+// !eco.value values. Emits diagnostics and fails the pipeline if any
+// GCRootCarrier op is missing a root that is semantically live across it.
+// No-op in non-debug builds (gated on ECO_GC_DEBUG).
+std::unique_ptr<mlir::Pass> createEcoGCLivenessAuditPass();
+
 // ========== Stage 3: Eco -> LLVM Dialect ==========
 
 // Lowers eco heap operations (allocate_*, project, box, unbox) to LLVM.

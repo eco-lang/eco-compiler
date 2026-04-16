@@ -12,6 +12,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "EcoGCLiveness.h"
 #include "EcoToLLVMInternal.h"
 #include "../EcoDialect.h"
 #include "../EcoOps.h"
@@ -32,52 +33,9 @@ using namespace mlir;
 
 namespace {
 
-//===----------------------------------------------------------------------===//
-// GC Liveness Helpers (authoritative — lowering must NOT recompute)
-//===----------------------------------------------------------------------===//
-
-static bool isEcoValue(Value v) {
-    return isa<eco::ValueType>(v.getType());
-}
-
-/// Compute the set of live !eco.value SSA values after `targetOp` using
-/// MLIR's Liveness analysis. The candidate set is:
-///   - values live-in to the block (cross-block liveness),
-///   - block arguments of the current block,
-///   - results of ops defined before targetOp in the block.
-/// Filtered by: isEcoValue(v) && !liveness.isDeadAfter(v, targetOp).
-static SmallVector<Value, 8> computeLiveRoots(Liveness &liveness,
-                                               Operation *targetOp) {
-    SmallVector<Value, 8> roots;
-    llvm::DenseSet<Value> seen;
-    Block *block = targetOp->getBlock();
-    if (!block) return roots;
-
-    auto consider = [&](Value v) {
-        if (!isEcoValue(v)) return;
-        if (!seen.insert(v).second) return;
-        if (!liveness.isDeadAfter(v, targetOp))
-            roots.push_back(v);
-    };
-
-    // Candidate set 1: values live-in to this block (cross-block liveness).
-    const auto &liveIn = liveness.getLiveIn(block);
-    for (Value v : liveIn)
-        consider(v);
-
-    // Candidate set 2: block arguments of the current block.
-    for (auto arg : block->getArguments())
-        consider(arg);
-
-    // Candidate set 3: results of ops defined before targetOp in this block.
-    for (auto &op : block->getOperations()) {
-        if (&op == targetOp) break;
-        for (auto result : op.getResults())
-            consider(result);
-    }
-
-    return roots;
-}
+// GC Liveness helpers are in EcoGCLiveness.h (shared with EcoGCLivenessAudit).
+using eco::isEcoValue;
+using eco::computeLiveRoots;
 
 /// Returns true if the operation may allocate heap memory.
 static bool isMayAllocOp(Operation *op) {
@@ -148,46 +106,6 @@ struct EcoGCPreparePass
             processFunction(func);
         });
 
-#if ECO_GC_DEBUG
-        // Strict liveness self-check: after all roots are set, verify that
-        // every GCRootCarrier's attached roots are a SUPERSET of the
-        // !eco.value SSA values live at that op.
-        module.walk([&](func::FuncOp func) {
-            if (func.isExternal()) return;
-            Liveness liveness(func);
-            func.walk([&](Operation *op) {
-                auto carrier = dyn_cast<eco::GCRootCarrier>(op);
-                if (!carrier) return;
-                auto attachedRoots = carrier.getGCRoots();
-                llvm::DenseSet<Value> rootSet(attachedRoots.begin(), attachedRoots.end());
-
-                // Recompute what SHOULD be live
-                auto shouldBeLive = computeLiveRoots(liveness, op);
-                // Also include the op's own !eco.value operands (they are
-                // used inside the lowered expansion of this op)
-                for (Value v : op->getOperands()) {
-                    if (isEcoValue(v)) shouldBeLive.push_back(v);
-                }
-
-                for (Value v : shouldBeLive) {
-                    if (!rootSet.count(v)) {
-                        llvm::errs() << "[gc-liveness-CHECK] MISSING ROOT in func="
-                                     << func.getName()
-                                     << " op=" << op->getName()
-                                     << " at " << op->getLoc() << "\n"
-                                     << "  missing value: " << v << "\n"
-                                     << "  attached roots (" << attachedRoots.size() << "):\n";
-                        for (Value r : attachedRoots)
-                            llvm::errs() << "    " << r << "\n";
-                        llvm::errs() << "  all !eco.value operands:\n";
-                        for (Value ov : op->getOperands())
-                            if (isEcoValue(ov))
-                                llvm::errs() << "    " << ov << "\n";
-                    }
-                }
-            });
-        });
-#endif
     }
 
 private:

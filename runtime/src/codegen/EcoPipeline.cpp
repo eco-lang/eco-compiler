@@ -75,6 +75,9 @@ void buildEcoToLLVMPipeline(PassManager &pm) {
 
     // Stage 2.5: GC preparation (root sets, allocation grouping, safepoint rewrite).
     pm.addPass(eco::createEcoGCPreparePass());
+#ifdef ECO_GC_DEBUG_LIVENESS
+    pm.addNestedPass<func::FuncOp>(eco::createEcoGCLivenessAuditPass());
+#endif
 
     // Stage 3: Eco -> LLVM Dialect.
     pm.addPass(eco::createBFToLLVMPass());
