@@ -360,7 +360,7 @@ private:
                 carrier.setGCRoots(liveRoots);
         }
 
-#if ECO_GC_DEBUG
+#if ECO_GC_DEBUG_COMP
         // Dump all GCRootCarrier ops in this block with their final roots.
         for (auto &op : block) {
             auto carrier = dyn_cast<eco::GCRootCarrier>(&op);

@@ -7,37 +7,53 @@ flag reference below).
 
 ---
 
-## Compile-time flag
+## Compile-time flags
 
-All GC diagnostics are behind a single flag: **`ECO_GC_DEBUG`**.
+GC diagnostics are split into two independent flags:
 
-| Flag | Defined by CMake? | Default | Targets |
-|------|------------------|---------|---------|
-| `ECO_GC_DEBUG` | Yes — CMake option | ON for Debug, OFF for Release | `EcoPasses`, `ecoc`, `EcoRunner`, `EcoRuntimeStatic`, `EcoEntryStatic` |
+| Flag | Default | Targets | What it controls |
+|------|---------|---------|-----------------|
+| `ECO_GC_DEBUG` | ON for Debug, OFF for Release | `ecor`, `EcoRunner`, `EcoRuntimeStatic`, `EcoEntryStatic` (+ top-level `add_compile_definitions`) | Runtime instrumentation: stale-pointer checks, GC phase tracing, stackmap scanning, store-time validation |
+| `ECO_GC_DEBUG_COMP` | OFF | `obj.EcoPasses` | Compile-time instrumentation: GCRootCarrier root dumps during MLIR lowering |
 
-The flag controls both compile-time instrumentation (sections 7–9, which fire
-during MLIR→LLVM lowering inside the compiler) and runtime instrumentation
-(sections 10–12, which fire during program execution). All output goes to
-stderr.
+The flags are independent. Enable only `ECO_GC_DEBUG` for runtime-only
+investigation (the common case). Enable `ECO_GC_DEBUG_COMP` when you need to
+trace root sets through the MLIR compilation pipeline.
 
-To force-enable in a Release build: `cmake -DECO_GC_DEBUG=ON ...`
+```bash
+# Runtime diagnostics only (recommended for Stage 7 investigation)
+cmake --preset ninja-clang-lld-linux -DECO_GC_DEBUG=ON
 
-**Warning:** The compile-time instrumentation (sections 7–9) produces enormous
-output — one log line per GCRootCarrier op per function. Redirect stderr to a
-file and use grep to find the relevant entries.
+# Compile-time diagnostics only (produces enormous output)
+cmake --preset ninja-clang-lld-linux -DECO_GC_DEBUG_COMP=ON
+
+# Both
+cmake --preset ninja-clang-lld-linux -DECO_GC_DEBUG=ON -DECO_GC_DEBUG_COMP=ON
+```
+
+**Warning:** `ECO_GC_DEBUG_COMP` produces enormous output — one log line per
+GCRootCarrier op per function. Redirect stderr to a file and use grep.
 
 ---
 
-## Pipeline overview
+## Pipeline overview (RS4GC)
 
-A stale HPointer can originate at four points in the pipeline:
+With the RS4GC migration, GC root tracking is handled by LLVM's
+`RewriteStatepointsForGC` pass. A stale HPointer can originate at these
+points:
 
 | # | Layer | File(s) | What to check |
 |---|-------|---------|---------------|
-| 1 | Eco IR liveness | `EcoGCPrepare.cpp` | Are all live `!eco.value` included in GCRootCarrier roots? |
-| 2 | MLIR→LLVM lowering | `EcoToLLVMRuntime.cpp`, `EcoToLLVMHeap.cpp`, `EcoToLLVMClosures.cpp` | Do liveRoots survive into `__eco_safepoint_marker` args? |
-| 3 | LLVM statepoints | `StatepointConversion.cpp` | Do marker args appear in `gc.statepoint` gc-live bundles? |
+| 1 | Eco IR liveness | `EcoGCPrepare.cpp` | Are all live `!eco.value` included in GCRootCarrier roots? (Note: RS4GC computes its own liveness, so EcoGCPrepare roots are informational only) |
+| 2 | gc-leaf-function attrs | `EcoToLLVMRuntime.cpp` | Is a may-GC function incorrectly marked `gc-leaf-function`? RS4GC skips gc-leaf calls. |
+| 3 | RS4GC liveness | Post-RS4GC LLVM IR | Does RS4GC insert `gc.statepoint` around the right calls? Are all live `ptr addrspace(1)` values in `gc-live` bundles? Use `--dump-rs4gc-ir <file>` on eco-boot-native/ecoc. |
 | 4 | Runtime stackmap | `ThreadLocalHeap.cpp`, `StackMap.cpp` | Does the GC actually read & evacuate these roots at runtime? |
+
+**Key difference from old pipeline:** Layers 2-3 used to be `__eco_safepoint_marker` emission
+and `StatepointConversion`. Now RS4GC handles both automatically. The main new failure modes are:
+- A non-leaf function marked `gc-leaf-function` (RS4GC skips it entirely)
+- RS4GC's liveness analysis misses a live root due to complex control flow
+- A `ptr addrspace(1)` value is cast to/from a non-GC type, hiding it from RS4GC
 
 ---
 
@@ -52,7 +68,7 @@ file.
 #### 7. EcoGCPrepare — per-carrier root dump + strict self-check
 
 **File:** `EcoGCPrepare.cpp`  
-**Flag:** `ECO_GC_DEBUG`
+**Flag:** `ECO_GC_DEBUG_COMP`
 
 At the end of `processBlock()`, every `GCRootCarrier` op in the block is
 dumped with its `!eco.value` operands and attached roots:
@@ -73,35 +89,19 @@ that should be rooted but isn't:
   attached roots (3): ...
 ```
 
-#### 8. Eco→LLVM lowering — safepoint marker root dump
+#### 8. ~~Eco→LLVM lowering — safepoint marker root dump~~ (REMOVED — RS4GC migration)
 
-**File:** `EcoToLLVMRuntime.cpp`  
-**Flag:** `ECO_GC_DEBUG`
+No longer applicable. `emitAllocWithSafepoint` and `emitSafepointMarker` are
+now no-ops; RS4GC computes liveness automatically from `ptr addrspace(1)` types.
 
-`emitAllocWithSafepoint` and `emitSafepointMarker` log the function, op, and
-every LLVM i64 value passed as a live root:
+#### 9. ~~StatepointConversion — gc-live bundle dump~~ (REMOVED — RS4GC migration)
 
-```
-[gc-lowering] emitAllocWithSafepoint func=Dict_RBNode_elm_builtin_$_5183 op=eco.construct.custom alloc=eco_alloc_custom liveRoots=5
-  root[0] = %arg0
-  root[1] = %arg1
-  ...
-```
+No longer applicable. `StatepointConversion.cpp` has been deleted. RS4GC
+handles gc.statepoint/gc.relocate insertion automatically.
 
-#### 9. StatepointConversion — gc-live bundle dump
-
-**File:** `StatepointConversion.cpp`  
-**Flag:** `ECO_GC_DEBUG`
-
-After building each `gc.statepoint`, the function name, target call, marker
-arg count, and every gc-live value (stripped back to i64) are logged:
-
-```
-[gc-statepoint] func=Dict_RBNode_elm_builtin_$_5183 target=eco_alloc_custom marker_args=5 gc-live=5
-  gc-live[0] = %arg0
-  gc-live[1] = %arg1
-  ...
-```
+**Replacement:** Use `--dump-rs4gc-ir <file>` on `eco-boot-native` or `ecoc`
+to dump LLVM IR after RS4GC runs, then grep for `gc.statepoint` and `gc-live`
+bundles for the function of interest.
 
 ### Runtime instrumentation (ECO_GC_DEBUG)
 
@@ -165,13 +165,17 @@ Or, if the section is not found:
 
 ---
 
-## Manual instrumentation recipes (apply as needed)
+## Manual instrumentation recipes
 
-### 1. Enhanced stale-pointer diagnostic dump
+Recipes 1–3 and 6 are now **live behind `ECO_GC_DEBUG`** (applied during
+the RS4GC migration). Recipes 4–5 remain manual-apply due to high output
+volume.
 
-In `NurserySpace.cpp`, replace the bare assert in
-`debugAssertValidNurseryPointer` with a detailed dump that prints the full
-nursery layout, the pointed-at memory, and a C++ backtrace before aborting.
+### 1. Enhanced stale-pointer diagnostic dump (LIVE — ECO_GC_DEBUG)
+
+In `NurserySpace.cpp`, `debugAssertValidNurseryPointer` prints the full
+nursery layout, pointed-at memory, C++ backtrace, and scan parent info
+before the assert fires. Also applied to the `evacuate` tag assertion.
 
 **Requires:** `#include <execinfo.h>` at the top of NurserySpace.cpp.
 
@@ -221,13 +225,11 @@ nursery layout, the pointed-at memory, and a C++ backtrace before aborting.
     assert(ok && "HPointer into nursery free region (stale pointer into unallocated space)");
 ```
 
-### 2. Scan parent tracking
+### 2. Scan parent tracking (LIVE — ECO_GC_DEBUG)
 
-Track which heap object is currently being scanned during Cheney scan, so
-that when a stale child pointer is found, the parent's tag, size, and fields
-are printed.
-
-Add file-scope globals in `NurserySpace.cpp` (before `namespace Elm {`):
+Tracks which heap object is currently being scanned during Cheney scan.
+When a stale child pointer is found, the parent's tag, size, and fields
+are printed. Implemented via thread-local globals in `NurserySpace.cpp`.
 
 ```cpp
 thread_local void* g_scan_parent = nullptr;
@@ -256,10 +258,10 @@ if (g_scan_parent) {
 }
 ```
 
-### 3. GC phase tracing
+### 3. GC phase tracing (LIVE — ECO_GC_DEBUG)
 
-Add phase-entry logging in `minorGC()` to identify which GC phase contains
-the stale pointer. Insert before each phase's loop:
+Phase-entry logging in `minorGC()` identifies which GC phase contains the
+stale pointer. Logs root counts for each phase:
 
 ```cpp
 std::fprintf(stderr, "[gc] minorGC start from_is_low=%d\n", (int)from_is_low_);
@@ -315,10 +317,10 @@ std::fflush(stderr);
 **Warning:** This is extremely high-volume. Redirect stderr to a file and use
 grep/tail to find the relevant entries.
 
-### 6. Catch stale writes at store time
+### 6. Catch stale writes at store time (LIVE — ECO_GC_DEBUG)
 
-In `RuntimeExports.cpp eco_store_field()`, add before the
-`hpointerToPtr(obj_hptr)` call:
+In `RuntimeExports.cpp eco_store_field()`, the value pointer is validated
+early to catch stale writes at the moment they happen:
 
 ```cpp
 #if ECO_GC_DEBUG
@@ -332,55 +334,125 @@ stale value. Requires `ThreadLocalHeap.hpp` and `NurserySpace.hpp` includes.
 
 ---
 
+## How to enable diagnostics for Stage 7
+
+Build everything with `ECO_GC_DEBUG=ON` so the debug runtime is linked into
+the native `eco-compiler` binary. Then recompile `eco-compiler` from its MLIR
+with the debug-enabled `eco-boot-native`, and run Stage 7 with stderr captured.
+
+```bash
+# 1. Configure and build with runtime GC debug ON (compile-time OFF to avoid noise)
+cd /work
+cmake --preset ninja-clang-lld-linux -DECO_GC_DEBUG=ON -DECO_GC_DEBUG_COMP=OFF
+cmake --build build
+
+# 2. Rebuild eco-compiler with debug runtime (Stage 6)
+#    Also dump the post-RS4GC IR for pipeline-side investigation.
+./build/runtime/src/codegen/eco-boot-native \
+    --dump-rs4gc-ir /tmp/rs4gc-compiler.ll \
+    compiler/build-kernel/bin/eco-compiler.mlir \
+    -o compiler/build-kernel/bin/eco-compiler
+
+# 3. Run Stage 7 with stderr captured
+cd compiler/build-kernel
+bin/eco-compiler make \
+    --optimize \
+    --kernel-package eco/compiler \
+    --local-package eco/kernel=/work/eco-kernel-cpp \
+    --output=bin/eco-compiler-boot.mlir \
+    /work/compiler/src/Terminal/Main.elm \
+    2>/tmp/stage7-gc.log
+
+# 4. Investigate the crash
+grep '\[gc-debug\]' /tmp/stage7-gc.log         # stale pointer / invalid tag details
+grep '\[gc\] phase' /tmp/stage7-gc.log          # which GC phase crashed
+grep 'SCAN PARENT' /tmp/stage7-gc.log           # parent object being scanned at crash
+grep 'INVALID TAG' /tmp/stage7-gc.log           # invalid tag in evacuate
+tail -100 /tmp/stage7-gc.log                    # last output before crash
+
+# 5. Inspect post-RS4GC IR for the crashing function
+#    (get function name from backtrace in step 4)
+grep -A30 'define.*@FunctionName' /tmp/rs4gc-compiler.ll \
+    | grep -E 'gc.statepoint|gc-live|gc.relocate'
+```
+
+**Note:** Steps 1-4 assume Stages 1-5 have already been run (MLIR exists at
+`compiler/build-kernel/bin/eco-compiler.mlir`). If not, run the bootstrap
+stages 1-5 first per `guides/bootstrap.md`.
+
+---
+
 ## Investigation workflow
 
 ### Heap-side (where the stale pointer is found)
 
-1. Run Stage 7 with `ECO_GC_DEBUG=1` (default in Debug builds).
-2. If the assert fires, apply section 1 (diagnostic dump) to see WHERE the
-   stale pointer is.
-3. Apply section 2 (scan parent) to identify WHICH heap object contains it.
-4. Apply section 6 (store field validation) to catch the write at the moment
-   it happens — if it fires with `in_minor_gc=0`, the stale write is from
-   mutator code and the backtrace shows the exact compiled function.
-5. If the stale write isn't caught by section 6, the value was stored inside a
+1. Build with `ECO_GC_DEBUG=ON`: `cmake -DECO_GC_DEBUG=ON -DECO_GC_DEBUG_COMP=OFF ...`
+   Recipes 1–3 and 6 are now live — no manual patching needed.
+2. Run Stage 7. The enhanced assert will print:
+   - Nursery layout (from/to blocks with PTR marker)
+   - Raw memory at the stale pointer
+   - C++ backtrace
+   - Scan parent (which heap object was being scanned)
+3. If recipe 6 (store field validation) fires with `in_minor_gc=0`, the
+   stale write is from mutator code — the backtrace shows the compiled function.
+4. If the stale write isn't caught by recipe 6, the value was stored inside a
    C++ runtime function (eco_alloc_cons, eco_pap_extend, etc.) — apply
-   section 5 to trace the specific call.
-6. Use `grep` on the stale HPointer value to find its last valid use in the
+   recipe 5 manually to trace the specific call.
+5. Use `grep` on the stale HPointer value to find its last valid use in the
    log, counting GC cycles between valid use and stale detection.
 
-### Pipeline-side (why the root was missed)
+### Pipeline-side (why the root was missed — RS4GC)
 
-To trace exactly where a live `!eco.value` fell out of the root set, use the
-**live instrumentation** (sections 7–10) which is already compiled in:
+With RS4GC, root tracking is automatic. The main failure modes are:
+
+1. **Wrong gc-leaf-function:** A function that can trigger GC is marked
+   `gc-leaf-function` → RS4GC skips it → roots not tracked across the call.
+   - **Check:** Dump post-RS4GC IR (`--dump-rs4gc-ir`), find the call to the
+     suspect function, verify it has a `gc.statepoint` wrapper.
+
+2. **RS4GC liveness miss:** A live `ptr addrspace(1)` value isn't in the
+   `gc-live` bundle of a statepoint.
+   - **Check:** In the post-RS4GC IR, find the `gc.statepoint` at the crash
+     site, verify the value appears in its `gc-live` operand bundle, and
+     verify there's a corresponding `gc.relocate`.
+
+3. **Type escape:** A `ptr addrspace(1)` value is cast to `i64` or `ptr`
+   (addrspace 0) before a GC-triggering call, hiding it from RS4GC.
+   - **Check:** In the pre-RS4GC IR (dump MLIR→LLVM translation output via
+     `-emit=llvm`), look for `ptrtoint` or `addrspacecast` on the value.
+
+**Diagnostic commands:**
+
+```bash
+# Dump post-RS4GC IR for a specific compilation
+./build/runtime/src/codegen/eco-boot-native \
+    --dump-rs4gc-ir /tmp/rs4gc.ll \
+    compiler/build-kernel/bin/eco-compiler.mlir \
+    -o /dev/null
+
+# Find statepoints for a specific function
+grep -A20 'define.*@FunctionName' /tmp/rs4gc.ll | grep -E 'gc.statepoint|gc-live|gc.relocate'
+
+# Check gc-leaf-function attributes
+grep 'gc-leaf-function' /tmp/rs4gc.ll
+```
+
+### Runtime stackmap investigation
+
+Use the **live instrumentation** (sections 10–12) which is compiled in
+behind `ECO_GC_DEBUG`:
 
 1. **Redirect stderr** to a file (output is enormous):
    ```bash
    bin/eco-compiler make ... 2>/tmp/gc-trace.log
    ```
 
-2. **Find the crashing function** from the gdb backtrace (e.g.
-   `Dict_RBNode_elm_builtin_$_5183`).
-
-3. **Check section 7** (`[gc-liveness]`): grep for the function name. Verify
-   all `!eco.value` operands appear in the attached roots. If any are missing,
-   the bug is in EcoGCPrepare.
-
-4. **Check section 8** (`[gc-lowering]`): grep for `emitAllocWithSafepoint`
-   or `emitSafepointMarker` for the same function. Verify liveRoots count
-   matches. If roots were present in step 3 but absent here, the bug is in
-   how the lowering splits operands from roots (e.g. `splitAdaptedRoots`,
-   `adaptor.getLiveRoots()`).
-
-5. **Check section 9** (`[gc-statepoint]`): grep for the function. Verify
-   gc-live count matches the marker arg count. If roots were present in step 4
-   but absent here, the bug is in `StatepointConversion` (e.g.
-   `findTargetCall` latching onto the wrong call).
-
-6. **Check section 10** (`[gc-stackmap]`): grep for the frame IP of the
+2. **Check section 10** (`[gc-stackmap]`): grep for the frame IP of the
    crashing function. Verify all gc-live values appear as Indirect roots with
-   valid register/offset. If roots were present in step 5 but absent here,
-   the bug is in LLVM stackmap emission or `StackMap` parsing.
+   valid register/offset.
 
-The **first point in the chain** where a value is missing is where the
-Layer-2 bug is.
+3. **Check section 11** (`[stackmap-parse]`): verify the stackmap section
+   was parsed correctly and function addresses align.
+
+4. **Check section 12** (`[init]`): verify the `.llvm_stackmaps` ELF section
+   was found and parsed at startup.

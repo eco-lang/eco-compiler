@@ -1,20 +1,25 @@
 cmake_minimum_required(VERSION 3.20)
 project(EcoRuntime LANGUAGES C CXX)
 
-# GC debug assertions: default ON for Debug builds, OFF for Release.
+# Runtime GC debug assertions: default ON for Debug builds, OFF for Release.
 # Declared at top level so EVERY target that includes the allocator headers
 # (NurserySpace, ThreadLocalHeap, Allocator) sees the same value of
 # ECO_GC_DEBUG. The headers conditionally add a member (`in_minor_gc_`) under
 # this macro, so any inconsistency causes an ODR/ABI mismatch between
 # libraries and the test binary.
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-    option(ECO_GC_DEBUG "Enable extra GC debug checks (nursery stale-pointer detection)" ON)
+    option(ECO_GC_DEBUG "Enable runtime GC debug checks (nursery stale-pointer detection)" ON)
 else()
-    option(ECO_GC_DEBUG "Enable extra GC debug checks (nursery stale-pointer detection)" OFF)
+    option(ECO_GC_DEBUG "Enable runtime GC debug checks (nursery stale-pointer detection)" OFF)
 endif()
 if(ECO_GC_DEBUG)
     add_compile_definitions(ECO_GC_DEBUG=1)
 endif()
+
+# Compile-time GC diagnostics: dumps GCRootCarrier root info during MLIR
+# lowering. Independent of ECO_GC_DEBUG so runtime checks can run without
+# the enormous compile-time output.
+option(ECO_GC_DEBUG_COMP "Enable compile-time GC diagnostics (root dump during MLIR lowering)" OFF)
 
 add_executable(ecor
         runtime/src/main.cpp

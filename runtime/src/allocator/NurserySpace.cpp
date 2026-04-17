@@ -31,6 +31,18 @@
 #include "ThreadLocalHeap.hpp"
 #include <cassert>
 #include <cstring>
+#if ECO_GC_DEBUG
+#include <cstdio>
+#include <execinfo.h>
+#endif
+
+#if ECO_GC_DEBUG
+// Track which heap object is currently being scanned during Cheney scan,
+// so stale-pointer diagnostics can identify the parent object.
+thread_local void* g_scan_parent = nullptr;
+thread_local int g_scan_tag = -1;
+thread_local Elm::u32 g_scan_size = 0;
+#endif
 
 namespace Elm {
 
@@ -390,6 +402,7 @@ void NurserySpace::checkAndGrow() {
 void NurserySpace::minorGC(OldGenSpace &oldgen) {
 #if ECO_GC_DEBUG
     in_minor_gc_ = true;
+    std::fprintf(stderr, "[gc] minorGC start from_is_low=%d\n", (int)from_is_low_);
 #endif
 
 #if ENABLE_GC_STATS
@@ -413,21 +426,33 @@ void NurserySpace::minorGC(OldGenSpace &oldgen) {
     std::vector<void*> promoted_objects;
 
     // Phase 1a: Evacuate long-lived roots (may add to promoted_objects).
+#if ECO_GC_DEBUG
+    std::fprintf(stderr, "[gc] phase 1a: %zu long-lived roots\n", root_set.getRoots().size());
+#endif
     for (HPointer *root: root_set.getRoots()) {
         evacuate(*root, oldgen, &promoted_objects);
     }
 
     // Phase 1b: Evacuate stack roots (temporary roots from current call stack).
+#if ECO_GC_DEBUG
+    std::fprintf(stderr, "[gc] phase 1b: %zu stack roots\n", root_set.getStackRoots().size());
+#endif
     for (HPointer *root: root_set.getStackRoots()) {
         evacuate(*root, oldgen, &promoted_objects);
     }
 
     // Phase 1c: Evacuate JIT roots (raw 64-bit pointers from JIT-compiled globals).
+#if ECO_GC_DEBUG
+    std::fprintf(stderr, "[gc] phase 1c: %zu jit roots\n", root_set.getJitRoots().size());
+#endif
     for (uint64_t *root: root_set.getJitRoots()) {
         evacuateJitPtr(*root, oldgen, &promoted_objects);
     }
 
     // Phase 1e: Stack root ranges (alloca-backed args arrays from compiled code).
+#if ECO_GC_DEBUG
+    std::fprintf(stderr, "[gc] phase 1e: %zu stack root ranges\n", root_set.getStackRootRanges().size());
+#endif
     for (const auto &range : root_set.getStackRootRanges()) {
         HPointer *base = range.base;
         uint64_t mask  = range.hpointer_mask;
@@ -439,12 +464,18 @@ void NurserySpace::minorGC(OldGenSpace &oldgen) {
     }
 
     // Phase 1d: External root scanners (Scheduler run queue, PlatformRuntime state, etc.).
+#if ECO_GC_DEBUG
+    std::fprintf(stderr, "[gc] phase 1d: %zu external scanners\n", root_set.getExternalRootScanners().size());
+#endif
     for (auto& scanner : root_set.getExternalRootScanners()) {
         scanner([this, &oldgen, &promoted_objects](uint64_t& ref) {
             evacuateJitPtr(ref, oldgen, &promoted_objects);
         });
     }
 
+#if ECO_GC_DEBUG
+    std::fprintf(stderr, "[gc] phase 2: Cheney scan starts\n");
+#endif
     // Phase 2: Cheney's algorithm - scan to-space objects breadth-first.
     // When use_hybrid_dfs is enabled, list spine copying provides locality optimization
     // within scanObject() without requiring a separate DFS stack.
@@ -541,6 +572,37 @@ void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void
     Header *hdr = getHeader(obj);
 
     // Assert tag is valid.
+#if ECO_GC_DEBUG
+    if (hdr->tag > Tag_Forward) {
+        uint64_t raw_hptr;
+        memcpy(&raw_hptr, &ptr, sizeof(raw_hptr));
+        std::fprintf(stderr,
+            "[gc-debug] INVALID TAG in evacuate: obj=%p tag=%u (max=%u)\n"
+            "  hptr raw=0x%016lx constant=%u\n"
+            "  header raw=0x%016lx\n"
+            "  obj in from-space=%d obj in nursery=%d\n",
+            obj, (unsigned)hdr->tag, (unsigned)Tag_Forward,
+            (unsigned long)raw_hptr, (unsigned)ptr.constant,
+            (unsigned long)*(uint64_t*)((char*)obj - 8),
+            (int)isInFromSpace(obj), (int)contains(obj));
+        uint64_t* w = reinterpret_cast<uint64_t*>(obj);
+        for (int i = -2; i < 6; i++) {
+            std::fprintf(stderr, "  obj[%d] = 0x%016lx\n", i, w[i]);
+        }
+        std::fflush(stderr);
+        void* bt[40];
+        int n = backtrace(bt, 40);
+        backtrace_symbols_fd(bt, n, fileno(stderr));
+        if (g_scan_parent) {
+            std::fprintf(stderr, "  SCAN PARENT: obj=%p tag=%d size=%u\n",
+                         g_scan_parent, g_scan_tag, (unsigned)g_scan_size);
+            uint64_t* pw = reinterpret_cast<uint64_t*>(g_scan_parent);
+            for (int x = 0; x < (int)g_scan_size + 3 && x < 12; x++) {
+                std::fprintf(stderr, "  parent[%d] = 0x%016lx\n", x, pw[x]);
+            }
+        }
+    }
+#endif
     assert(hdr->tag <= Tag_Forward && "Invalid tag value!");
     if (hdr->tag == Tag_Forward) {
         // Follow forward pointer and update ptr.
@@ -724,6 +786,11 @@ void NurserySpace::evacuateJitPtr(uint64_t &ptr, OldGenSpace &oldgen, std::vecto
  */
 void NurserySpace::scanObject(void *obj, OldGenSpace &oldgen, std::vector<void*> *promoted_objects) {
     Header *hdr = getHeader(obj);
+#if ECO_GC_DEBUG
+    g_scan_parent = obj;
+    g_scan_tag = hdr->tag;
+    g_scan_size = hdr->size;
+#endif
     // Process children based on tag.
     switch (hdr->tag) {
         // ====== Wide structures: BFS (inline evacuation) ======
@@ -1125,6 +1192,55 @@ void NurserySpace::debugAssertValidNurseryPointer(void* ptr) const {
         ok = isInFromSpaceAllocatedRegion(ptr) || isInToSpaceAllocatedRegion(ptr);
     }
 
+    if (!ok) {
+        const std::vector<char*>& from_blocks = from_is_low_ ? low_blocks_ : high_blocks_;
+        const std::vector<char*>& to_blocks   = from_is_low_ ? high_blocks_ : low_blocks_;
+        std::fprintf(stderr,
+            "[gc-debug] STALE nursery pointer: ptr=%p in_minor_gc=%d from_is_low=%d\n"
+            "  from_space: current_from_idx=%zu alloc_ptr=%p (%zu blocks)\n"
+            "  to_space:   current_to_idx=%zu   copy_ptr=%p  (%zu blocks)\n",
+            ptr, (int)in_minor_gc_, (int)from_is_low_,
+            current_from_idx_, (void*)alloc_ptr_, from_blocks.size(),
+            current_to_idx_,   (void*)copy_ptr_,  to_blocks.size());
+        for (size_t i = 0; i < from_blocks.size(); ++i) {
+            char* bs = from_blocks[i];
+            char* be = bs + block_size_;
+            const char* role = (i < current_from_idx_) ? "full"
+                             : (i == current_from_idx_ ? "cur" : "free");
+            std::fprintf(stderr, "  from[%zu]=%p..%p (%s)%s\n",
+                         i, (void*)bs, (void*)be, role,
+                         ((char*)ptr >= bs && (char*)ptr < be) ? " <-- PTR" : "");
+        }
+        for (size_t i = 0; i < to_blocks.size(); ++i) {
+            char* bs = to_blocks[i];
+            char* be = bs + block_size_;
+            const char* role = (i < current_to_idx_) ? "full"
+                             : (i == current_to_idx_ ? "cur" : "free");
+            std::fprintf(stderr, "  to  [%zu]=%p..%p (%s)%s\n",
+                         i, (void*)bs, (void*)be, role,
+                         ((char*)ptr >= bs && (char*)ptr < be) ? " <-- PTR" : "");
+        }
+        uint64_t* w = reinterpret_cast<uint64_t*>(ptr);
+        std::fprintf(stderr, "  *ptr   = 0x%016lx\n", w[0]);
+        std::fprintf(stderr, "  ptr[1] = 0x%016lx\n", w[1]);
+        std::fprintf(stderr, "  ptr[2] = 0x%016lx\n", w[2]);
+        std::fprintf(stderr, "  ptr[3] = 0x%016lx\n", w[3]);
+        std::fflush(stderr);
+        void* bt[40];
+        int n = backtrace(bt, 40);
+        backtrace_symbols_fd(bt, n, fileno(stderr));
+
+        // Scan parent tracking: if we crashed during scanObject, show
+        // which heap object was being scanned.
+        if (g_scan_parent) {
+            std::fprintf(stderr, "  SCAN PARENT: obj=%p tag=%d size=%u\n",
+                         g_scan_parent, g_scan_tag, (unsigned)g_scan_size);
+            uint64_t* pw = reinterpret_cast<uint64_t*>(g_scan_parent);
+            for (int x = 0; x < (int)g_scan_size + 3 && x < 12; x++) {
+                std::fprintf(stderr, "  parent[%d] = 0x%016lx\n", x, pw[x]);
+            }
+        }
+    }
     assert(ok && "HPointer into nursery free region (stale pointer into unallocated space)");
 }
 

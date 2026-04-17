@@ -145,6 +145,12 @@ static cl::opt<bool> verbose(
     cl::desc("Print subcommands being executed"),
     cl::init(false));
 
+static cl::opt<std::string> dumpRS4GCIR(
+    "dump-rs4gc-ir",
+    cl::desc("Dump LLVM IR to file after RS4GC pass (for GC diagnostics)"),
+    cl::value_desc("filename"),
+    cl::init(""));
+
 //===----------------------------------------------------------------------===//
 // Frontend Invocation
 //===----------------------------------------------------------------------===//
@@ -606,6 +612,19 @@ int main(int argc, char **argv) {
         llvm::ModulePassManager MPM;
         MPM.addPass(llvm::RewriteStatepointsForGC());
         MPM.run(*llvmModule, MAM);
+    }
+
+    // Optionally dump LLVM IR after RS4GC for GC diagnostics.
+    if (!dumpRS4GCIR.empty()) {
+        std::error_code ec;
+        llvm::raw_fd_ostream out(dumpRS4GCIR, ec);
+        if (!ec) {
+            out << *llvmModule;
+            llvm::errs() << "[rs4gc] Dumped post-RS4GC IR to " << dumpRS4GCIR << "\n";
+        } else {
+            llvm::errs() << "[rs4gc] Error: could not open " << dumpRS4GCIR
+                         << ": " << ec.message() << "\n";
+        }
     }
 
     // Clean up temp MLIR file now that we're done with it

@@ -811,6 +811,11 @@ extern "C" HPtr eco_init_string_at(void* obj, uint32_t length) {
 //===----------------------------------------------------------------------===//
 
 extern "C" void eco_store_field(HPtr obj_hptr, uint32_t index, HPtr value) {
+#if ECO_GC_DEBUG
+    // Validate the value pointer early to catch stale writes at the moment
+    // they happen, producing a backtrace showing the compiled function.
+    hpointerToPtr(value.toBits());
+#endif
     void* obj = hpointerToPtr(obj_hptr.toBits());
     if (!obj) return;
 

@@ -17,11 +17,12 @@ find_package(MLIR REQUIRED CONFIG)
 
 # GC debug assertions: default ON for Debug builds, OFF for Release.
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-    option(ECO_GC_DEBUG "Enable extra GC debug checks (nursery stale-pointer detection)" ON)
+    option(ECO_GC_DEBUG "Enable runtime GC debug checks (nursery stale-pointer detection)" ON)
 else()
-    option(ECO_GC_DEBUG "Enable extra GC debug checks (nursery stale-pointer detection)" OFF)
+    option(ECO_GC_DEBUG "Enable runtime GC debug checks (nursery stale-pointer detection)" OFF)
 endif()
 
+option(ECO_GC_DEBUG_COMP "Enable compile-time GC diagnostics (root dump during MLIR lowering)" OFF)
 option(ECO_GC_DEBUG_LIVENESS "Enable GC liveness audit pass (slow, independent of ECO_GC_DEBUG)" OFF)
 
 message(STATUS "Using MLIRConfig.cmake in: ${MLIR_DIR}")
@@ -255,8 +256,8 @@ add_mlir_library(EcoPasses
 
 target_compile_features(obj.EcoPasses PRIVATE cxx_std_17)
 target_compile_options(obj.EcoPasses PRIVATE -Wno-ambiguous-reversed-operator)
-if(ECO_GC_DEBUG)
-    target_compile_definitions(obj.EcoPasses PRIVATE ECO_GC_DEBUG=1)
+if(ECO_GC_DEBUG_COMP)
+    target_compile_definitions(obj.EcoPasses PRIVATE ECO_GC_DEBUG_COMP=1)
 endif()
 if(ECO_GC_DEBUG_LIVENESS)
     target_compile_definitions(obj.EcoPasses PRIVATE ECO_GC_DEBUG_LIVENESS=1)
@@ -360,9 +361,6 @@ target_compile_options(ecoc PRIVATE -Wno-ambiguous-reversed-operator)
 # The runtime code uses exceptions, so we need to enable them
 # (LLVM/MLIR disables exceptions by default)
 target_compile_options(ecoc PRIVATE -fexceptions)
-if(ECO_GC_DEBUG)
-    target_compile_definitions(ecoc PRIVATE ECO_GC_DEBUG=1)
-endif()
 if(ECO_GC_DEBUG_LIVENESS)
     target_compile_definitions(ecoc PRIVATE ECO_GC_DEBUG_LIVENESS=1)
 endif()
