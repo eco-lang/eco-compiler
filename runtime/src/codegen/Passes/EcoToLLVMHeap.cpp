@@ -1094,14 +1094,21 @@ static Value castToHPtr(OpBuilder &builder, Location loc, Value v) {
 
 /// Widen a primitive SSA value to i64 for Unboxable slot storage.
 /// i64 passes through. ptr<1> → ptrtoint. f64 → bitcast. i16/i1 → zext.
+/// For eco.value: cast to ptr<1> first (via castToHPtr which looks through
+/// materialization casts or creates an unrealized cast), then ptrtoint.
 static Value widenToI64ForInit(OpBuilder &builder, Location loc, Value v) {
     auto i64Ty = IntegerType::get(builder.getContext(), 64);
     Type ty = v.getType();
     if (ty.isInteger(64)) return v;
     if (isHPtrLLVMType(ty))
         return builder.create<LLVM::PtrToIntOp>(loc, i64Ty, v);
-    if (isa<eco::ValueType>(ty))
-        return castToI64(builder, loc, v);
+    if (isa<eco::ValueType>(ty)) {
+        // Go through ptr<1> first, then to i64. This avoids creating
+        // eco.value→i64 unrealized casts that become unresolvable when
+        // the eco.value is later replaced by a ptr<1> materialization.
+        Value hptr = castToHPtr(builder, loc, v);
+        return builder.create<LLVM::PtrToIntOp>(loc, i64Ty, hptr);
+    }
     if (auto intTy = dyn_cast<IntegerType>(ty)) {
         if (intTy.getWidth() < 64)
             return builder.create<LLVM::ZExtOp>(loc, i64Ty, v);
