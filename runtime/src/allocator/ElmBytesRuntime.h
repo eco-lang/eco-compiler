@@ -12,6 +12,7 @@
 
 #pragma once
 #include <stdint.h>
+#include "Heap.hpp"
 
 #ifdef __cplusplus
 extern "C" {
@@ -19,7 +20,7 @@ extern "C" {
 
 typedef uint8_t  u8;
 typedef uint32_t u32;
-typedef uint64_t u64;  // eco.value representation
+using Elm::HPtr;
 
 // ============================================================================
 // ByteBuffer operations (heap values are u64)
@@ -29,20 +30,20 @@ typedef uint64_t u64;  // eco.value representation
  * Allocate ByteBuffer with byteCount bytes.
  * Returns eco.value (u64) representing the allocated ByteBuffer.
  */
-u64 elm_alloc_bytebuffer(u32 byteCount);
+HPtr elm_alloc_bytebuffer(u32 byteCount);
 
 /**
  * Return ByteBuffer byte length.
  * Takes eco.value (u64) representing a ByteBuffer.
  */
-u32 elm_bytebuffer_len(u64 bb);
+u32 elm_bytebuffer_len(HPtr bb);
 
 /**
  * Return pointer to first payload byte.
  * Takes eco.value (u64) representing a ByteBuffer.
  * Returns raw pointer (for cursor setup only - not an eco.value).
  */
-u8* elm_bytebuffer_data(u64 bb);
+u8* elm_bytebuffer_data(HPtr bb);
 
 // ============================================================================
 // String operations (heap values are u64)
@@ -53,7 +54,7 @@ u8* elm_bytebuffer_data(u64 bb);
  * Takes eco.value (u64) representing an ElmString.
  * Returns the number of bytes needed to represent the string in UTF-8.
  */
-u32 elm_utf8_width(u64 elmString);
+u32 elm_utf8_width(HPtr elmString);
 
 /**
  * Copy ElmString as UTF-8 bytes to dst buffer.
@@ -62,7 +63,7 @@ u32 elm_utf8_width(u64 elmString);
  *
  * IMPORTANT: Caller must ensure dst has at least elm_utf8_width(elmString) bytes.
  */
-u32 elm_utf8_copy(u64 elmString, u8* dst);
+u32 elm_utf8_copy(HPtr elmString, u8* dst);
 
 /**
  * Decode UTF-8 bytes into an ElmString.
@@ -72,7 +73,7 @@ u32 elm_utf8_copy(u64 elmString, u8* dst);
  * eco.value == 0 is guaranteed to never represent a valid Elm heap value
  * (null pointer is invalid in the Elm runtime).
  */
-u64 elm_utf8_decode(const u8* src, u32 len);
+HPtr elm_utf8_decode(const u8* src, u32 len);
 
 // ============================================================================
 // Maybe operations (heap values are u64)
@@ -82,13 +83,13 @@ u64 elm_utf8_decode(const u8* src, u32 len);
  * Return Nothing as eco.value (u64).
  * Returns the embedded constant for Nothing.
  */
-u64 elm_maybe_nothing(void);
+HPtr elm_maybe_nothing(void);
 
 /**
  * Return Just(value) as eco.value (u64).
  * Takes the value to wrap and returns Just containing that value.
  */
-u64 elm_maybe_just(u64 value);
+HPtr elm_maybe_just(HPtr value);
 
 // ============================================================================
 // List operations (heap values are u64)
@@ -101,7 +102,7 @@ u64 elm_maybe_just(u64 value);
  *
  * Used by fused byte decoders to reverse the accumulator after loop decode.
  */
-u64 elm_list_reverse(u64 list);
+HPtr elm_list_reverse(HPtr list);
 
 #ifdef __cplusplus
 }

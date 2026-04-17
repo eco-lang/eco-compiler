@@ -594,9 +594,12 @@ struct CaseOpLowering : public OpConversionPattern<CaseOp> {
         if (isI1Scrutinee) {
             ctorTag = rewriter.create<LLVM::ZExtOp>(loc, i32Ty, scrutinee);
         } else {
+            // Convert ptr<1> scrutinee to i64 for bit manipulation
+            Value scrutineeI64 = valueToI64(rewriter, loc, scrutinee);
+
             // Check for embedded constant
             auto shift40 = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, value_enc::ConstFieldShift);
-            auto shifted = rewriter.create<LLVM::LShrOp>(loc, scrutinee, shift40);
+            auto shifted = rewriter.create<LLVM::LShrOp>(loc, scrutineeI64, shift40);
             auto maskF = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, value_enc::ConstFieldMask);
             auto constField = rewriter.create<LLVM::AndOp>(loc, shifted, maskF);
             auto zero64 = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, 0);

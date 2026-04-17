@@ -70,29 +70,28 @@ inline uint64_t ptrToU64(void* obj) {
 
 extern "C" {
 
-u64 elm_alloc_bytebuffer(u32 byteCount) {
-    // Use existing allocator infrastructure
+HPtr elm_alloc_bytebuffer(u32 byteCount) {
     auto& allocator = Elm::Allocator::instance();
     size_t total_size = sizeof(Elm::ByteBuffer) + byteCount;
-    total_size = (total_size + 7) & ~7;  // 8-byte alignment
+    total_size = (total_size + 7) & ~7;
 
     Elm::ByteBuffer* bb = static_cast<Elm::ByteBuffer*>(
         allocator.allocate(total_size, Elm::Tag_ByteBuffer));
     bb->header.size = byteCount;
 
-    return ptrToU64(bb);
+    return Elm::HPtr::fromBits(ptrToU64(bb));
 }
 
-u32 elm_bytebuffer_len(u64 bbVal) {
-    void* ptr = u64ToPtr(bbVal);
-    if (!ptr) return 0;  // Embedded constant (shouldn't happen for Elm::ByteBuffer)
+u32 elm_bytebuffer_len(HPtr bbVal) {
+    void* ptr = u64ToPtr(bbVal.toBits());
+    if (!ptr) return 0;
     Elm::ByteBuffer* bb = static_cast<Elm::ByteBuffer*>(ptr);
     return bb->header.size;
 }
 
-u8* elm_bytebuffer_data(u64 bbVal) {
-    void* ptr = u64ToPtr(bbVal);
-    if (!ptr) return nullptr;  // Embedded constant (shouldn't happen)
+u8* elm_bytebuffer_data(HPtr bbVal) {
+    void* ptr = u64ToPtr(bbVal.toBits());
+    if (!ptr) return nullptr;
     Elm::ByteBuffer* bb = static_cast<Elm::ByteBuffer*>(ptr);
     return bb->bytes;
 }
@@ -101,14 +100,14 @@ u8* elm_bytebuffer_data(u64 bbVal) {
 // String Operations (UTF-8 encoding/decoding)
 // ============================================================================
 
-u32 elm_utf8_width(u64 strVal) {
+u32 elm_utf8_width(HPtr strVal) {
     // Check for empty string constant
-    Elm::HPointer hp = u64ToHPointer(strVal);
+    Elm::HPointer hp = u64ToHPointer(strVal.toBits());
     if (hp.constant == Elm::Const_EmptyString + 1) {
         return 0;  // Empty string has 0 UTF-8 bytes
     }
 
-    void* ptr = u64ToPtr(strVal);
+    void* ptr = u64ToPtr(strVal.toBits());
     if (!ptr) return 0;  // Other embedded constant (shouldn't happen)
 
     Elm::ElmString* s = static_cast<Elm::ElmString*>(ptr);
@@ -151,14 +150,14 @@ u32 elm_utf8_width(u64 strVal) {
     return utf8_len;
 }
 
-u32 elm_utf8_copy(u64 strVal, u8* dst) {
+u32 elm_utf8_copy(HPtr strVal, u8* dst) {
     // Check for empty string constant
-    Elm::HPointer hp = u64ToHPointer(strVal);
+    Elm::HPointer hp = u64ToHPointer(strVal.toBits());
     if (hp.constant == Elm::Const_EmptyString + 1) {
         return 0;  // Empty string - nothing to copy
     }
 
-    void* ptr = u64ToPtr(strVal);
+    void* ptr = u64ToPtr(strVal.toBits());
     if (!ptr) return 0;  // Other embedded constant (shouldn't happen)
 
     Elm::ElmString* s = static_cast<Elm::ElmString*>(ptr);
@@ -206,11 +205,11 @@ u32 elm_utf8_copy(u64 strVal, u8* dst) {
     return static_cast<u32>(dst - start);
 }
 
-u64 elm_utf8_decode(const u8* src, u32 len) {
+HPtr elm_utf8_decode(const u8* src, u32 len) {
     if (len == 0) {
         // Return empty string constant
         Elm::HPointer empty = Elm::alloc::emptyString();
-        return hpointerToU64(empty);
+        return Elm::HPtr::fromBits(hpointerToU64(empty));
     }
 
     // Decode UTF-8 to UTF-16
@@ -228,39 +227,39 @@ u64 elm_utf8_decode(const u8* src, u32 len) {
             i += 1;
         } else if ((c & 0xE0) == 0xC0) {
             // 2-byte sequence
-            if (i + 1 >= len) return 0;  // Invalid - incomplete sequence
+            if (i + 1 >= len) return Elm::HPtr::fromBits(0);  // Invalid - incomplete sequence
             u8 c2 = src[i + 1];
-            if ((c2 & 0xC0) != 0x80) return 0;  // Invalid continuation byte
+            if ((c2 & 0xC0) != 0x80) return Elm::HPtr::fromBits(0);  // Invalid continuation byte
             codepoint = ((c & 0x1F) << 6) | (c2 & 0x3F);
             // Reject overlong encoding
-            if (codepoint < 0x80) return 0;
+            if (codepoint < 0x80) return Elm::HPtr::fromBits(0);
             i += 2;
         } else if ((c & 0xF0) == 0xE0) {
             // 3-byte sequence
-            if (i + 2 >= len) return 0;  // Invalid - incomplete sequence
+            if (i + 2 >= len) return Elm::HPtr::fromBits(0);  // Invalid - incomplete sequence
             u8 c2 = src[i + 1];
             u8 c3 = src[i + 2];
-            if ((c2 & 0xC0) != 0x80 || (c3 & 0xC0) != 0x80) return 0;
+            if ((c2 & 0xC0) != 0x80 || (c3 & 0xC0) != 0x80) return Elm::HPtr::fromBits(0);
             codepoint = ((c & 0x0F) << 12) | ((c2 & 0x3F) << 6) | (c3 & 0x3F);
             // Reject overlong encoding and surrogates
-            if (codepoint < 0x800) return 0;
-            if (codepoint >= 0xD800 && codepoint <= 0xDFFF) return 0;
+            if (codepoint < 0x800) return Elm::HPtr::fromBits(0);
+            if (codepoint >= 0xD800 && codepoint <= 0xDFFF) return Elm::HPtr::fromBits(0);
             i += 3;
         } else if ((c & 0xF8) == 0xF0) {
             // 4-byte sequence
-            if (i + 3 >= len) return 0;  // Invalid - incomplete sequence
+            if (i + 3 >= len) return Elm::HPtr::fromBits(0);  // Invalid - incomplete sequence
             u8 c2 = src[i + 1];
             u8 c3 = src[i + 2];
             u8 c4 = src[i + 3];
             if ((c2 & 0xC0) != 0x80 || (c3 & 0xC0) != 0x80 || (c4 & 0xC0) != 0x80)
-                return 0;
+                return Elm::HPtr::fromBits(0);
             codepoint = ((c & 0x07) << 18) | ((c2 & 0x3F) << 12) |
                         ((c3 & 0x3F) << 6) | (c4 & 0x3F);
             // Reject overlong encoding and out-of-range
-            if (codepoint < 0x10000 || codepoint > 0x10FFFF) return 0;
+            if (codepoint < 0x10000 || codepoint > 0x10FFFF) return Elm::HPtr::fromBits(0);
             i += 4;
         } else {
-            return 0;  // Invalid UTF-8 lead byte
+            return Elm::HPtr::fromBits(0);  // Invalid UTF-8 lead byte
         }
 
         // Convert codepoint to UTF-16
@@ -276,25 +275,25 @@ u64 elm_utf8_decode(const u8* src, u32 len) {
 
     // Allocate Elm::ElmString with UTF-16 content
     Elm::HPointer result = Elm::alloc::allocString(utf16);
-    return hpointerToU64(result);
+    return Elm::HPtr::fromBits(hpointerToU64(result));
 }
 
 // ============================================================================
 // Maybe Operations
 // ============================================================================
 
-u64 elm_maybe_nothing() {
+HPtr elm_maybe_nothing() {
     Elm::HPointer nothing = Elm::alloc::nothing();
-    return hpointerToU64(nothing);
+    return Elm::HPtr::fromBits(hpointerToU64(nothing));
 }
 
-u64 elm_maybe_just(u64 value) {
-    // The value is already an eco.value (u64)
+HPtr elm_maybe_just(HPtr value) {
+    // The value is already an eco.value (HPtr)
     // We need to wrap it in a Just
     // Elm::alloc::just expects an Elm::Unboxable and a boolean indicating if it's boxed
 
-    // Convert u64 back to Elm::HPointer representation for storage in the Custom type
-    Elm::HPointer hp = u64ToHPointer(value);
+    // Convert HPtr back to Elm::HPointer representation for storage in the Custom type
+    Elm::HPointer hp = u64ToHPointer(value.toBits());
 
     // For embedded constants, we store the constant directly
     // For real pointers, we store the Elm::HPointer
@@ -302,20 +301,20 @@ u64 elm_maybe_just(u64 value) {
     wrapped.p = hp;
 
     Elm::HPointer justVal = Elm::alloc::just(wrapped, true);  // true = value is boxed (heap ptr)
-    return hpointerToU64(justVal);
+    return Elm::HPtr::fromBits(hpointerToU64(justVal));
 }
 
 // ============================================================================
 // List Operations
 // ============================================================================
 
-u64 elm_list_reverse(u64 listVal) {
-    Elm::HPointer list = u64ToHPointer(listVal);
+HPtr elm_list_reverse(HPtr listVal) {
+    Elm::HPointer list = u64ToHPointer(listVal.toBits());
 
     // Delegate to ListOps::reverse
     Elm::HPointer reversed = Elm::ListOps::reverse(list);
 
-    return hpointerToU64(reversed);
+    return Elm::HPtr::fromBits(hpointerToU64(reversed));
 }
 
 } // extern "C"

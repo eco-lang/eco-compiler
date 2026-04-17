@@ -25,7 +25,7 @@
 | 10 | ptr<1>: Closure wrapper returns `<fn>` | pap_basic +14 others | Codegen .mlir tests had hardcoded `i64` runtime function declarations instead of `ptr<1>` | FIXED |
 | 11 | ptr<1>: Closure numeric wrong output | allocate_closure_funcptr +9 others | Same as Cat 10 — hardcoded i64 signatures in test MLIR | FIXED |
 | 12 | ptr<1>: Statepoint CHECK pattern | safepoint_loop_gc_relocate | Test expected `ptrtoint` which is no longer emitted with ptr<1> roots | FIXED (removed CHECK: ptrtoint) |
-| 13 | BF bf_alloc_large pre-existing | bf_alloc_large | Pre-existing baseline failure — 64KB allocation returns 0; not caused by ptr<1> migration | PRE-EXISTING |
+| 13 | BF bf_alloc_large pre-existing | bf_alloc_large | Pre-existing baseline failure — 64KB allocation returns 0; not caused by ptr<1> migration. BF dialect not yet migrated to ptr<1> (88 test files need !eco.value conversion); C++ BF runtime uses HPtr but BF LLVM declarations still use i64 (ABI-compatible) | PRE-EXISTING |
 | 14 | ptr<1>: C++ HPtr conversion regressions | ~31 E2E tests (elm-bytes/DecodeMap*, elm-json/RoundTrip*, elm/TailRec*, elm/Equality*, etc.) | One or more kernel .cpp files incorrectly converted to HPtr — all crash with `raw=0xfefefefe` | OPEN |
 
 ---

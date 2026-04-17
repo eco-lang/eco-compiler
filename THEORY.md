@@ -532,7 +532,7 @@ Stage 2 passes transform ECO dialect toward LLVM:
 
 Final lowering from ECO dialect to LLVM dialect. As of Feb 2026, the pass underwent significant simplification: all closure calling logic is centralized in `EcoToLLVMClosures.cpp`, and the pass no longer reverse-engineers kernel ABI types (the compiler is the sole ABI arbiter).
 
-- Type conversion: `!eco.value` → `i64` (tagged pointers)
+- Type conversion: `!eco.value` → `ptr addrspace(1)` (GC-managed pointer); `ptrtoint`/`inttoptr` only at heap/global/closure storage boundaries
 - Heap allocation via runtime calls (fast path: nursery bump; slow path: GC safepoint)
 - GC roots attached to allocation ops by EcoGCPrepare, passed through to `emitAllocWithSafepoint`
 - Closure creation and invocation (centralized in `EcoToLLVMClosures.cpp`)

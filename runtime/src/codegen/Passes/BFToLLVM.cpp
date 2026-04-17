@@ -43,7 +43,8 @@ public:
         });
 
         // Convert eco.value to i64 for BF ops that take/produce eco.value.
-        // BF dialect uses i64 directly for HPointer-typed values.
+        // BF test files use raw i64 for BF op result types, so this must stay i64
+        // until all 88 BF test files are migrated to !eco.value.
         addConversion([](eco::ValueType type) -> Type {
             return IntegerType::get(type.getContext(), 64);
         });
@@ -109,7 +110,8 @@ static BFRuntimeFuncs ensureRuntimeFunctions(ModuleOp module, OpBuilder &builder
 
     auto i64 = builder.getI64Type();
 
-    // ByteBuffer operations — BF dialect uses i64 for HPointers directly
+    // ByteBuffer operations — BF uses i64 for HPointers at LLVM level
+    // (matches BFTypeConverter which maps eco.value → i64)
     funcs.allocBytebuffer = declareFunc("elm_alloc_bytebuffer", i64, {i32});
     funcs.bytebufferLen = declareFunc("elm_bytebuffer_len", i32, {i64});
     funcs.bytebufferData = declareFunc("elm_bytebuffer_data", i8Ptr, {i64});

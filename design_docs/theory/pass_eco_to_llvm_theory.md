@@ -36,7 +36,7 @@ runtime/src/codegen/Passes/
 
 ### Shared Infrastructure
 
-**EcoTypeConverter**: Extends `LLVMTypeConverter` to convert `!eco.value` → `i64`.
+**EcoTypeConverter**: Extends `LLVMTypeConverter` to convert `!eco.value` → `ptr addrspace(1)` (GC-managed pointer). `ptrtoint`/`inttoptr` conversions appear only at heap/global/closure storage boundaries (i64 memory slots) and for embedded constant encoding.
 
 **EcoRuntime**: Lightweight helper (passed by value) for declaring and caching runtime function references. Provides `getOrCreate*()` methods for all runtime functions.
 
@@ -88,7 +88,7 @@ The pass uses `EcoTypeConverter`, extending `LLVMTypeConverter`:
 
 | ECO Type | LLVM Type | Notes |
 |----------|-----------|-------|
-| `!eco.value` | `i64` | Tagged pointer representation |
+| `!eco.value` | `ptr addrspace(1)` | GC-managed pointer (HPtr) |
 | `i1`, `i16`, `i32`, `i64` | Same | Preserved |
 | `f64` | Same | Preserved |
 
@@ -558,7 +558,7 @@ This registers global variables as GC roots.
 
 1. All ECO dialect operations are converted to LLVM/arith/cf dialects
 2. All `func.func` operations are converted to `llvm.func`
-3. `!eco.value` types are converted to `i64`
+3. `!eco.value` types are converted to `ptr addrspace(1)`
 4. Global root initialization function is generated
 5. Module is valid LLVM dialect IR
 6. All non-external functions carry `gc "statepoint-example"` attribute *(Mar 2026)*
