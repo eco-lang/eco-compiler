@@ -57,9 +57,9 @@ inline int hexToInt(char c) {
 
 extern "C" {
 
-uint64_t Elm_Kernel_Url_percentEncode(uint64_t str) {
+HPtr Elm_Kernel_Url_percentEncode(HPtr str) {
     // Percent-encode a string for use in URLs.
-    void* ptr = Export::toPtr(str);
+    void* ptr = Export::toPtr(str.toBits());
     std::string input = elmStringToStd(ptr);
 
     std::ostringstream encoded;
@@ -75,13 +75,13 @@ uint64_t Elm_Kernel_Url_percentEncode(uint64_t str) {
     }
 
     HPointer result = alloc::allocStringFromUTF8(encoded.str());
-    return Export::encode(result);
+    return HPtr::fromBits(Export::encode(result));
 }
 
-uint64_t Elm_Kernel_Url_percentDecode(uint64_t str) {
+HPtr Elm_Kernel_Url_percentDecode(HPtr str) {
     // Percent-decode a URL-encoded string.
     // Returns Maybe String (Just decoded or Nothing if invalid).
-    void* ptr = Export::toPtr(str);
+    void* ptr = Export::toPtr(str.toBits());
     std::string input = elmStringToStd(ptr);
 
     std::string decoded;
@@ -91,13 +91,13 @@ uint64_t Elm_Kernel_Url_percentDecode(uint64_t str) {
         if (input[i] == '%') {
             if (i + 2 >= input.length()) {
                 // Invalid: not enough characters after %.
-                return Export::encode(alloc::nothing());
+                return HPtr::fromBits(Export::encode(alloc::nothing()));
             }
             int high = hexToInt(input[i + 1]);
             int low = hexToInt(input[i + 2]);
             if (high < 0 || low < 0) {
                 // Invalid hex characters.
-                return Export::encode(alloc::nothing());
+                return HPtr::fromBits(Export::encode(alloc::nothing()));
             }
             decoded += static_cast<char>((high << 4) | low);
             i += 2;
@@ -113,7 +113,7 @@ uint64_t Elm_Kernel_Url_percentDecode(uint64_t str) {
     Unboxable val;
     val.p = decodedStr;
     HPointer result = alloc::just(val, true);  // true = boxed pointer
-    return Export::encode(result);
+    return HPtr::fromBits(Export::encode(result));
 }
 
 } // extern "C"

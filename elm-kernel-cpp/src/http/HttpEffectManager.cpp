@@ -71,7 +71,7 @@ static void* httpMapHandler(void* args[]) {
     uint64_t valueEnc = reinterpret_cast<uint64_t>(args[1]);
 
     // Apply mapper to value
-    uint64_t mappedEnc = eco_apply_closure(mapperEnc, &valueEnc, 1);
+    uint64_t mappedEnc = eco_apply_closure(HPtr::fromBits(mapperEnc), &valueEnc, 1).toBits();
 
     // Return Task.succeed(mappedValue)
     HPointer task = Scheduler::instance().taskSucceed(decodeHP(mappedEnc));
@@ -142,7 +142,7 @@ static void* httpOnEffectsEvaluator(void* args[]) {
                 HPointer result = decodeHP(resultEnc);
 
                 // Call tagger(result) to get the message
-                uint64_t msgEnc = eco_apply_closure(taggerEnc, &resultEnc, 1);
+                uint64_t msgEnc = eco_apply_closure(HPtr::fromBits(taggerEnc), &resultEnc, 1).toBits();
                 HPointer msg = decodeHP(msgEnc);
 
                 // Send to app

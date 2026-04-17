@@ -29,13 +29,14 @@ struct ConstantOpLowering : public OpConversionPattern<ConstantOp> {
         auto loc = op.getLoc();
         auto *ctx = rewriter.getContext();
         auto i64Ty = IntegerType::get(ctx, 64);
+        auto hptrTy = getHPtrLLVMType(*ctx);
 
         // Get the constant kind and encode it in the HPointer format.
-        // The ConstantKind enum values are 1-based, matching the HPointer encoding.
         int64_t kindValue = static_cast<int64_t>(op.getKind());
         int64_t encoded = value_enc::encodeConstant(kindValue);
 
-        auto result = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, encoded);
+        Value i64Val = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, encoded);
+        Value result = rewriter.create<LLVM::IntToPtrOp>(loc, hptrTy, i64Val);
         rewriter.replaceOp(op, result);
         return success();
     }
@@ -64,10 +65,13 @@ struct StringLiteralOpLowering : public OpConversionPattern<StringLiteralOp> {
 
         StringRef value = op.getValue();
 
+        auto hptrTy = getHPtrLLVMType(*ctx);
+
         // Empty string -> use embedded constant
         if (value.empty()) {
             int64_t encoded = value_enc::encodeConstant(value_enc::EmptyString);
-            auto result = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, encoded);
+            Value i64Val = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, encoded);
+            Value result = rewriter.create<LLVM::IntToPtrOp>(loc, hptrTy, i64Val);
             rewriter.replaceOp(op, result);
             return success();
         }

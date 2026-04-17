@@ -16,8 +16,8 @@ extern "C" uint32_t elm_bytebuffer_len(uint64_t bb);
 
 // Declare the closure call function from RuntimeExports
 namespace Elm { struct EvalParamLayout; }
-extern "C" uint64_t eco_closure_call_saturated(uint64_t closure_hptr, uint64_t* new_args, uint32_t num_newargs, const Elm::EvalParamLayout* layout);
-extern "C" uint64_t eco_alloc_int(int64_t value);
+extern "C" HPtr eco_closure_call_saturated(HPtr closure_hptr, uint64_t* new_args, uint32_t num_newargs, const Elm::EvalParamLayout* layout);
+extern "C" HPtr eco_alloc_int(int64_t value);
 
 using namespace Elm;
 using namespace Elm::Kernel;
@@ -274,7 +274,7 @@ static void writeEncoder(Custom* encoder, u8* buf, size_t& offset) {
 //
 // IMPORTANT: The argument order for arity-3 read functions is determined by
 // the PAP capture order in the Elm decoder combinators:
-//   papCreate(read_fn, arity=3) → papExtend(pap, first_captured) → call(bytes, offset)
+//   papCreate(read_fn, arity=3) -> papExtend(pap, first_captured) -> call(bytes, offset)
 // So arity-3: (first_captured_arg, bytes, offset)
 // And arity-2: (bytes, offset)
 //
@@ -287,22 +287,23 @@ static void writeEncoder(Custom* encoder, u8* buf, size_t& offset) {
 
 extern "C" {
 
-uint64_t Elm_Kernel_Bytes_width(uint64_t bytes) {
-    return static_cast<uint64_t>(elm_bytebuffer_len(bytes));
+HPtr Elm_Kernel_Bytes_width(HPtr bytes) {
+    return HPtr::fromBits(static_cast<uint64_t>(elm_bytebuffer_len(bytes.toBits())));
 }
 
-uint64_t Elm_Kernel_Bytes_getHostEndianness() {
+HPtr Elm_Kernel_Bytes_getHostEndianness() {
     uint16_t test = 1;
     bool isLE = (*reinterpret_cast<uint8_t*>(&test) == 1);
-    return isLE ? 0 : 1;
+    return HPtr::fromBits(isLE ? 0 : 1);
 }
 
-int64_t Elm_Kernel_Bytes_getStringWidth(uint64_t str) {
-    HPointer h = Export::decode(str);
+int64_t Elm_Kernel_Bytes_getStringWidth(HPtr str) {
+    uint64_t strBits = str.toBits();
+    HPointer h = Export::decode(strBits);
     if (h.constant == Const_EmptyString + 1) {
         return 0;
     }
-    void* ptr = Export::toPtr(str);
+    void* ptr = Export::toPtr(strBits);
     if (!ptr) return 0;
     ElmString* elmStr = static_cast<ElmString*>(ptr);
     uint32_t utf16_length = elmStr->header.size;
@@ -335,9 +336,10 @@ int64_t Elm_Kernel_Bytes_getStringWidth(uint64_t str) {
     return utf8_bytes;
 }
 
-uint64_t Elm_Kernel_Bytes_encode(uint64_t encoderVal) {
+HPtr Elm_Kernel_Bytes_encode(HPtr encoderVal) {
+    uint64_t encoderBits = encoderVal.toBits();
     auto& allocator = Allocator::instance();
-    HPointer h = Export::decode(encoderVal);
+    HPointer h = Export::decode(encoderBits);
     void* ptr = allocator.resolve(h);
     Custom* encoder = static_cast<Custom*>(ptr);
 
@@ -350,17 +352,19 @@ uint64_t Elm_Kernel_Bytes_encode(uint64_t encoderVal) {
 
     size_t offset = 0;
     writeEncoder(encoder, result->bytes, offset);
-    return Export::encode(allocator.wrap(result));
+    return HPtr::fromBits(Export::encode(allocator.wrap(result)));
 }
 
-uint64_t Elm_Kernel_Bytes_decode(uint64_t decoder, uint64_t bytes) {
+HPtr Elm_Kernel_Bytes_decode(HPtr decoder, HPtr bytes) {
+    uint64_t decoderBits = decoder.toBits();
+    uint64_t bytesBits = bytes.toBits();
     auto& allocator = Allocator::instance();
 
     // Call the decoder closure with (bytes, offset=0).
     // The decoder is a function: (eco.value, i64) -> eco.value (Tuple2)
     // The offset (Int) must be boxed as HPointer for the wrapper.
-    uint64_t args[2] = { bytes, eco_alloc_int(0) };
-    uint64_t result = eco_closure_call_saturated(decoder, args, 2, /*layout=*/nullptr);
+    uint64_t args[2] = { bytesBits, eco_alloc_int(0).toBits() };
+    uint64_t result = eco_closure_call_saturated(decoder, args, 2, /*layout=*/nullptr).toBits();
 
     // Result is a Tuple2(new_offset: i64, decoded_value).
     HPointer resultHP = Export::decode(result);
@@ -383,32 +387,32 @@ uint64_t Elm_Kernel_Bytes_decode(uint64_t decoder, uint64_t bytes) {
         just->values[0].p = tuple->b.p;
     }
 
-    return Export::encode(allocator.wrap(just));
+    return HPtr::fromBits(Export::encode(allocator.wrap(just)));
 }
 
-uint64_t Elm_Kernel_Bytes_decodeFailure() {
-    return Export::encode(alloc::nothing());
+HPtr Elm_Kernel_Bytes_decodeFailure() {
+    return HPtr::fromBits(Export::encode(alloc::nothing()));
 }
 
 // --- arity 2 read functions: (bytes, offset) ---
 
-uint64_t Elm_Kernel_Bytes_read_i8(uint64_t bytes, int64_t offset) {
-    ByteBuffer* bb = resolveByteBuffer(bytes);
+HPtr Elm_Kernel_Bytes_read_i8(HPtr bytes, int64_t offset) {
+    ByteBuffer* bb = resolveByteBuffer(bytes.toBits());
     int8_t val = static_cast<int8_t>(bb->bytes[offset]);
-    return makeTuple2_ii(offset + 1, static_cast<int64_t>(val));
+    return HPtr::fromBits(makeTuple2_ii(offset + 1, static_cast<int64_t>(val)));
 }
 
-uint64_t Elm_Kernel_Bytes_read_u8(uint64_t bytes, int64_t offset) {
-    ByteBuffer* bb = resolveByteBuffer(bytes);
+HPtr Elm_Kernel_Bytes_read_u8(HPtr bytes, int64_t offset) {
+    ByteBuffer* bb = resolveByteBuffer(bytes.toBits());
     uint8_t val = bb->bytes[offset];
-    return makeTuple2_ii(offset + 1, static_cast<int64_t>(val));
+    return HPtr::fromBits(makeTuple2_ii(offset + 1, static_cast<int64_t>(val)));
 }
 
 // --- arity 3 read functions: (isLE_or_length, bytes, offset) ---
 
-uint64_t Elm_Kernel_Bytes_read_i16(uint64_t isLE, uint64_t bytes, int64_t offset) {
-    ByteBuffer* bb = resolveByteBuffer(bytes);
-    bool le = isLittleEndian(isLE);
+HPtr Elm_Kernel_Bytes_read_i16(HPtr isLE, HPtr bytes, int64_t offset) {
+    ByteBuffer* bb = resolveByteBuffer(bytes.toBits());
+    bool le = isLittleEndian(isLE.toBits());
     int16_t val;
     if (le) {
         val = static_cast<int16_t>(bb->bytes[offset]) |
@@ -417,12 +421,12 @@ uint64_t Elm_Kernel_Bytes_read_i16(uint64_t isLE, uint64_t bytes, int64_t offset
         val = (static_cast<int16_t>(bb->bytes[offset]) << 8) |
               static_cast<int16_t>(bb->bytes[offset + 1]);
     }
-    return makeTuple2_ii(offset + 2, static_cast<int64_t>(val));
+    return HPtr::fromBits(makeTuple2_ii(offset + 2, static_cast<int64_t>(val)));
 }
 
-uint64_t Elm_Kernel_Bytes_read_i32(uint64_t isLE, uint64_t bytes, int64_t offset) {
-    ByteBuffer* bb = resolveByteBuffer(bytes);
-    bool le = isLittleEndian(isLE);
+HPtr Elm_Kernel_Bytes_read_i32(HPtr isLE, HPtr bytes, int64_t offset) {
+    ByteBuffer* bb = resolveByteBuffer(bytes.toBits());
+    bool le = isLittleEndian(isLE.toBits());
     uint32_t raw;
     if (le) {
         raw = static_cast<uint32_t>(bb->bytes[offset]) |
@@ -436,12 +440,12 @@ uint64_t Elm_Kernel_Bytes_read_i32(uint64_t isLE, uint64_t bytes, int64_t offset
               static_cast<uint32_t>(bb->bytes[offset + 3]);
     }
     int32_t val = static_cast<int32_t>(raw);
-    return makeTuple2_ii(offset + 4, static_cast<int64_t>(val));
+    return HPtr::fromBits(makeTuple2_ii(offset + 4, static_cast<int64_t>(val)));
 }
 
-uint64_t Elm_Kernel_Bytes_read_u16(uint64_t isLE, uint64_t bytes, int64_t offset) {
-    ByteBuffer* bb = resolveByteBuffer(bytes);
-    bool le = isLittleEndian(isLE);
+HPtr Elm_Kernel_Bytes_read_u16(HPtr isLE, HPtr bytes, int64_t offset) {
+    ByteBuffer* bb = resolveByteBuffer(bytes.toBits());
+    bool le = isLittleEndian(isLE.toBits());
     uint16_t val;
     if (le) {
         val = static_cast<uint16_t>(bb->bytes[offset]) |
@@ -450,12 +454,12 @@ uint64_t Elm_Kernel_Bytes_read_u16(uint64_t isLE, uint64_t bytes, int64_t offset
         val = (static_cast<uint16_t>(bb->bytes[offset]) << 8) |
               static_cast<uint16_t>(bb->bytes[offset + 1]);
     }
-    return makeTuple2_ii(offset + 2, static_cast<int64_t>(val));
+    return HPtr::fromBits(makeTuple2_ii(offset + 2, static_cast<int64_t>(val)));
 }
 
-uint64_t Elm_Kernel_Bytes_read_u32(uint64_t isLE, uint64_t bytes, int64_t offset) {
-    ByteBuffer* bb = resolveByteBuffer(bytes);
-    bool le = isLittleEndian(isLE);
+HPtr Elm_Kernel_Bytes_read_u32(HPtr isLE, HPtr bytes, int64_t offset) {
+    ByteBuffer* bb = resolveByteBuffer(bytes.toBits());
+    bool le = isLittleEndian(isLE.toBits());
     uint32_t val;
     if (le) {
         val = static_cast<uint32_t>(bb->bytes[offset]) |
@@ -468,12 +472,12 @@ uint64_t Elm_Kernel_Bytes_read_u32(uint64_t isLE, uint64_t bytes, int64_t offset
               (static_cast<uint32_t>(bb->bytes[offset + 2]) << 8) |
               static_cast<uint32_t>(bb->bytes[offset + 3]);
     }
-    return makeTuple2_ii(offset + 4, static_cast<int64_t>(val));
+    return HPtr::fromBits(makeTuple2_ii(offset + 4, static_cast<int64_t>(val)));
 }
 
-uint64_t Elm_Kernel_Bytes_read_f32(uint64_t isLE, uint64_t bytes, int64_t offset) {
-    ByteBuffer* bb = resolveByteBuffer(bytes);
-    bool le = isLittleEndian(isLE);
+HPtr Elm_Kernel_Bytes_read_f32(HPtr isLE, HPtr bytes, int64_t offset) {
+    ByteBuffer* bb = resolveByteBuffer(bytes.toBits());
+    bool le = isLittleEndian(isLE.toBits());
     uint32_t bits;
     if (le) {
         bits = static_cast<uint32_t>(bb->bytes[offset]) |
@@ -488,12 +492,12 @@ uint64_t Elm_Kernel_Bytes_read_f32(uint64_t isLE, uint64_t bytes, int64_t offset
     }
     float fval;
     std::memcpy(&fval, &bits, sizeof(float));
-    return makeTuple2_if(offset + 4, static_cast<double>(fval));
+    return HPtr::fromBits(makeTuple2_if(offset + 4, static_cast<double>(fval)));
 }
 
-uint64_t Elm_Kernel_Bytes_read_f64(uint64_t isLE, uint64_t bytes, int64_t offset) {
-    ByteBuffer* bb = resolveByteBuffer(bytes);
-    bool le = isLittleEndian(isLE);
+HPtr Elm_Kernel_Bytes_read_f64(HPtr isLE, HPtr bytes, int64_t offset) {
+    ByteBuffer* bb = resolveByteBuffer(bytes.toBits());
+    bool le = isLittleEndian(isLE.toBits());
     uint64_t bits = 0;
     if (le) {
         for (int i = 0; i < 8; i++)
@@ -504,12 +508,12 @@ uint64_t Elm_Kernel_Bytes_read_f64(uint64_t isLE, uint64_t bytes, int64_t offset
     }
     double dval;
     std::memcpy(&dval, &bits, sizeof(double));
-    return makeTuple2_if(offset + 8, dval);
+    return HPtr::fromBits(makeTuple2_if(offset + 8, dval));
 }
 
-uint64_t Elm_Kernel_Bytes_read_bytes(int64_t length, uint64_t bytes, int64_t offset) {
+HPtr Elm_Kernel_Bytes_read_bytes(int64_t length, HPtr bytes, int64_t offset) {
     auto& allocator = Allocator::instance();
-    ByteBuffer* src = resolveByteBuffer(bytes);
+    ByteBuffer* src = resolveByteBuffer(bytes.toBits());
 
     size_t allocSize = sizeof(ByteBuffer) + length;
     allocSize = (allocSize + 7) & ~7;
@@ -517,12 +521,12 @@ uint64_t Elm_Kernel_Bytes_read_bytes(int64_t length, uint64_t bytes, int64_t off
     slice->header.size = static_cast<u32>(length);
     std::memcpy(slice->bytes, src->bytes + offset, length);
 
-    return makeTuple2_ip(offset + length, allocator.wrap(slice));
+    return HPtr::fromBits(makeTuple2_ip(offset + length, allocator.wrap(slice)));
 }
 
-uint64_t Elm_Kernel_Bytes_read_string(int64_t length, uint64_t bytes, int64_t offset) {
+HPtr Elm_Kernel_Bytes_read_string(int64_t length, HPtr bytes, int64_t offset) {
     auto& allocator = Allocator::instance();
-    ByteBuffer* bb = resolveByteBuffer(bytes);
+    ByteBuffer* bb = resolveByteBuffer(bytes.toBits());
     const u8* src = bb->bytes + offset;
 
     // Count UTF-16 code units needed for the UTF-8 input.
@@ -585,7 +589,7 @@ uint64_t Elm_Kernel_Bytes_read_string(int64_t length, uint64_t bytes, int64_t of
         }
     }
 
-    return makeTuple2_ip(offset + length, allocator.wrap(str));
+    return HPtr::fromBits(makeTuple2_ip(offset + length, allocator.wrap(str)));
 }
 
 // --- write functions: create Encoder tree nodes (Custom types) ---
@@ -647,7 +651,7 @@ static uint64_t makeEncoder1_p(u16 tag, uint64_t ptr) {
 }
 
 // Helper to create UTF8 encoder with size + string pointer
-static uint64_t makeEncoderUtf8(uint64_t str) {
+static uint64_t makeEncoderUtf8(HPtr str) {
     auto& allocator = Allocator::instance();
 
     // Calculate UTF-8 byte count
@@ -660,7 +664,7 @@ static uint64_t makeEncoderUtf8(uint64_t str) {
     enc->ctor = ENC_UTF8;
     enc->unboxed = 1;  // field 0 unboxed (size), field 1 boxed (string)
     enc->values[0].i = utf8Size;
-    enc->values[1].p = Export::decode(str);
+    enc->values[1].p = Export::decode(str.toBits());
     return Export::encode(allocator.wrap(enc));
 }
 
@@ -677,44 +681,44 @@ static uint64_t makeEncoderBytes(uint64_t bytes) {
     return Export::encode(allocator.wrap(enc));
 }
 
-uint64_t Elm_Kernel_Bytes_write_i8(int64_t value) {
-    return makeEncoder1(ENC_I8, value);
+HPtr Elm_Kernel_Bytes_write_i8(int64_t value) {
+    return HPtr::fromBits(makeEncoder1(ENC_I8, value));
 }
 
-uint64_t Elm_Kernel_Bytes_write_i16(uint64_t endianness, int64_t value) {
-    return makeEncoder2_pi(ENC_I16, endianness, value);
+HPtr Elm_Kernel_Bytes_write_i16(HPtr endianness, int64_t value) {
+    return HPtr::fromBits(makeEncoder2_pi(ENC_I16, endianness.toBits(), value));
 }
 
-uint64_t Elm_Kernel_Bytes_write_i32(uint64_t endianness, int64_t value) {
-    return makeEncoder2_pi(ENC_I32, endianness, value);
+HPtr Elm_Kernel_Bytes_write_i32(HPtr endianness, int64_t value) {
+    return HPtr::fromBits(makeEncoder2_pi(ENC_I32, endianness.toBits(), value));
 }
 
-uint64_t Elm_Kernel_Bytes_write_u8(int64_t value) {
-    return makeEncoder1(ENC_U8, value);
+HPtr Elm_Kernel_Bytes_write_u8(int64_t value) {
+    return HPtr::fromBits(makeEncoder1(ENC_U8, value));
 }
 
-uint64_t Elm_Kernel_Bytes_write_u16(uint64_t endianness, int64_t value) {
-    return makeEncoder2_pi(ENC_U16, endianness, value);
+HPtr Elm_Kernel_Bytes_write_u16(HPtr endianness, int64_t value) {
+    return HPtr::fromBits(makeEncoder2_pi(ENC_U16, endianness.toBits(), value));
 }
 
-uint64_t Elm_Kernel_Bytes_write_u32(uint64_t endianness, int64_t value) {
-    return makeEncoder2_pi(ENC_U32, endianness, value);
+HPtr Elm_Kernel_Bytes_write_u32(HPtr endianness, int64_t value) {
+    return HPtr::fromBits(makeEncoder2_pi(ENC_U32, endianness.toBits(), value));
 }
 
-uint64_t Elm_Kernel_Bytes_write_f32(uint64_t endianness, double value) {
-    return makeEncoder2_pf(ENC_F32, endianness, value);
+HPtr Elm_Kernel_Bytes_write_f32(HPtr endianness, double value) {
+    return HPtr::fromBits(makeEncoder2_pf(ENC_F32, endianness.toBits(), value));
 }
 
-uint64_t Elm_Kernel_Bytes_write_f64(uint64_t endianness, double value) {
-    return makeEncoder2_pf(ENC_F64, endianness, value);
+HPtr Elm_Kernel_Bytes_write_f64(HPtr endianness, double value) {
+    return HPtr::fromBits(makeEncoder2_pf(ENC_F64, endianness.toBits(), value));
 }
 
-uint64_t Elm_Kernel_Bytes_write_bytes(uint64_t bytes) {
-    return makeEncoderBytes(bytes);
+HPtr Elm_Kernel_Bytes_write_bytes(HPtr bytes) {
+    return HPtr::fromBits(makeEncoderBytes(bytes.toBits()));
 }
 
-uint64_t Elm_Kernel_Bytes_write_string(uint64_t str) {
-    return makeEncoderUtf8(str);
+HPtr Elm_Kernel_Bytes_write_string(HPtr str) {
+    return HPtr::fromBits(makeEncoderUtf8(str));
 }
 
 } // extern "C"

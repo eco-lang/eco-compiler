@@ -120,10 +120,13 @@ struct BoxOpLowering : public OpConversionPattern<BoxOp> {
                 ValueRange{input}, liveRoots);
         } else if (inputType.isInteger(1)) {
             // Box i1 (bool) -> use embedded constant True/False (no allocation)
-            auto trueCst = rewriter.create<LLVM::ConstantOp>(
+            auto hptrTy = getHPtrLLVMType(*ctx);
+            Value trueI64 = rewriter.create<LLVM::ConstantOp>(
                 loc, i64Ty, value_enc::encodeConstant(value_enc::True));
-            auto falseCst = rewriter.create<LLVM::ConstantOp>(
+            Value trueCst = rewriter.create<LLVM::IntToPtrOp>(loc, hptrTy, trueI64);
+            Value falseI64 = rewriter.create<LLVM::ConstantOp>(
                 loc, i64Ty, value_enc::encodeConstant(value_enc::False));
+            Value falseCst = rewriter.create<LLVM::IntToPtrOp>(loc, hptrTy, falseI64);
             result = rewriter.create<LLVM::SelectOp>(loc, input, trueCst, falseCst);
         } else {
             return op.emitError("unsupported type for boxing: ") << inputType;
@@ -160,8 +163,10 @@ struct UnboxOpLowering : public OpConversionPattern<UnboxOp> {
 
         // Special case for i1 (Bool): boxed bools are embedded constants
         if (resultType == i1Ty) {
-            auto trueConst = rewriter.create<LLVM::ConstantOp>(
+            auto hptrTy = getHPtrLLVMType(*ctx);
+            Value trueI64 = rewriter.create<LLVM::ConstantOp>(
                 loc, i64Ty, value_enc::encodeConstant(value_enc::True));
+            Value trueConst = rewriter.create<LLVM::IntToPtrOp>(loc, hptrTy, trueI64);
             Value result = rewriter.create<LLVM::ICmpOp>(
                 loc, LLVM::ICmpPredicate::eq, input, trueConst);
             rewriter.replaceOp(op, result);
@@ -301,12 +306,13 @@ struct ListConstructOpLowering : public OpConversionPattern<ListConstructOp> {
         auto i32Ty = IntegerType::get(ctx, 32);
         auto i64Ty = IntegerType::get(ctx, 64);
 
-        auto headVal = adaptor.getHead();
-        auto tailVal = adaptor.getTail();
+        Value headVal = adaptor.getHead();
+        Value tailVal = adaptor.getTail();
         uint32_t headUnboxed = op.getHeadUnboxed() ? 1 : 0;
         auto headUnboxedVal = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, headUnboxed);
 
-        // eco_alloc_cons expects i64 for head; convert unboxed types to i64
+        // eco_alloc_cons expects i64 for head, hptr for tail
+        headVal = valueToI64(rewriter, loc, headVal);
         if (auto intTy = dyn_cast<IntegerType>(headVal.getType())) {
             if (intTy.getWidth() < 64) {
                 headVal = rewriter.create<LLVM::ZExtOp>(loc, i64Ty, headVal);
@@ -314,6 +320,7 @@ struct ListConstructOpLowering : public OpConversionPattern<ListConstructOp> {
         } else if (headVal.getType().isF64()) {
             headVal = rewriter.create<LLVM::BitcastOp>(loc, i64Ty, headVal);
         }
+        // tailVal is already ptr<1> from the adaptor — pass directly
 
         Value result = emitAllocWithSafepoint(
             op, rewriter, runtime,
@@ -369,8 +376,7 @@ struct ListHeadOpLowering : public OpConversionPattern<ListHeadOp> {
             return success();
         }
 
-        // For !eco.value (HPointer), load directly from Cons.head offset.
-        // This handles the case where we want the HPointer itself (boxed or unboxed).
+        // For !eco.value (HPointer), load i64 from Cons.head then convert to ptr<1>.
         auto i64Ty = IntegerType::get(ctx, 64);
         auto i8Ty = IntegerType::get(ctx, 8);
         auto ptrTy = LLVM::LLVMPointerType::get(ctx);
@@ -383,8 +389,9 @@ struct ListHeadOpLowering : public OpConversionPattern<ListHeadOp> {
         auto fieldPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i8Ty, ptr,
                                                       ValueRange{offset});
 
-        Type resultType = getTypeConverter()->convertType(op.getResult().getType());
-        Value result = rewriter.create<LLVM::LoadOp>(loc, resultType, fieldPtr);
+        // Heap slots store i64; load i64 then convert to ptr<1>
+        Value loaded = rewriter.create<LLVM::LoadOp>(loc, i64Ty, fieldPtr);
+        Value result = i64ToValue(rewriter, loc, loaded);
         rewriter.replaceOp(op, result);
         return success();
     }
@@ -419,8 +426,9 @@ struct ListTailOpLowering : public OpConversionPattern<ListTailOp> {
         auto fieldPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i8Ty, ptr,
                                                       ValueRange{offset});
 
-        Type resultType = getTypeConverter()->convertType(op.getResult().getType());
-        Value result = rewriter.create<LLVM::LoadOp>(loc, resultType, fieldPtr);
+        // Heap slots store i64; load and convert to ptr<1>
+        Value loaded = rewriter.create<LLVM::LoadOp>(loc, i64Ty, fieldPtr);
+        Value result = i64ToValue(rewriter, loc, loaded);
         rewriter.replaceOp(op, result);
         return success();
     }
@@ -436,6 +444,8 @@ static Value widenFieldToI64(Value val, Location loc,
                              ConversionPatternRewriter &rewriter) {
     auto i64Ty = IntegerType::get(rewriter.getContext(), 64);
     Type ty = val.getType();
+    if (isHPtrLLVMType(ty))
+        return rewriter.create<LLVM::PtrToIntOp>(loc, i64Ty, val);
     if (auto intTy = dyn_cast<IntegerType>(ty)) {
         if (intTy.getWidth() < 64)
             return rewriter.create<LLVM::ZExtOp>(loc, i64Ty, val);
@@ -548,8 +558,14 @@ struct Tuple2ProjectOpLowering : public OpConversionPattern<Tuple2ProjectOp> {
                                                       ValueRange{offset});
 
         Type resultType = getTypeConverter()->convertType(op.getResult().getType());
-        Value result = rewriter.create<LLVM::LoadOp>(loc, resultType, fieldPtr);
-        rewriter.replaceOp(op, result);
+        if (isHPtrLLVMType(resultType)) {
+            // Heap slots store i64; load i64 then convert to ptr<1>
+            Value loaded = rewriter.create<LLVM::LoadOp>(loc, i64Ty, fieldPtr);
+            rewriter.replaceOp(op, i64ToValue(rewriter, loc, loaded));
+        } else {
+            Value result = rewriter.create<LLVM::LoadOp>(loc, resultType, fieldPtr);
+            rewriter.replaceOp(op, result);
+        }
         return success();
     }
 };
@@ -588,8 +604,13 @@ struct Tuple3ProjectOpLowering : public OpConversionPattern<Tuple3ProjectOp> {
                                                       ValueRange{offset});
 
         Type resultType = getTypeConverter()->convertType(op.getResult().getType());
-        Value result = rewriter.create<LLVM::LoadOp>(loc, resultType, fieldPtr);
-        rewriter.replaceOp(op, result);
+        if (isHPtrLLVMType(resultType)) {
+            Value loaded = rewriter.create<LLVM::LoadOp>(loc, i64Ty, fieldPtr);
+            rewriter.replaceOp(op, i64ToValue(rewriter, loc, loaded));
+        } else {
+            Value result = rewriter.create<LLVM::LoadOp>(loc, resultType, fieldPtr);
+            rewriter.replaceOp(op, result);
+        }
         return success();
     }
 };
@@ -654,6 +675,7 @@ struct RecordConstructOpLowering : public OpConversionPattern<RecordConstructOp>
                 rewriter.create<LLVM::CallOp>(loc, storeI64Func,
                     ValueRange{objHPtr, idx, fieldVal});
             } else {
+                // eco.value → ptr<1> from adaptor; pass directly (store takes hptr val)
                 rewriter.create<LLVM::CallOp>(loc, storeFunc,
                     ValueRange{objHPtr, idx, fieldVal});
             }
@@ -698,8 +720,13 @@ struct RecordProjectOpLowering : public OpConversionPattern<RecordProjectOp> {
                                                       ValueRange{offset});
 
         Type resultType = getTypeConverter()->convertType(op.getResult().getType());
-        Value result = rewriter.create<LLVM::LoadOp>(loc, resultType, fieldPtr);
-        rewriter.replaceOp(op, result);
+        if (isHPtrLLVMType(resultType)) {
+            Value loaded = rewriter.create<LLVM::LoadOp>(loc, i64Ty, fieldPtr);
+            rewriter.replaceOp(op, i64ToValue(rewriter, loc, loaded));
+        } else {
+            Value result = rewriter.create<LLVM::LoadOp>(loc, resultType, fieldPtr);
+            rewriter.replaceOp(op, result);
+        }
         return success();
     }
 };
@@ -763,6 +790,7 @@ struct CustomConstructOpLowering : public OpConversionPattern<CustomConstructOp>
                 rewriter.create<LLVM::CallOp>(loc, storeI64Func,
                     ValueRange{objHPtr, idx, fieldVal});
             } else {
+                // eco.value → ptr<1> from adaptor; pass directly (store takes hptr val)
                 rewriter.create<LLVM::CallOp>(loc, storeFunc,
                     ValueRange{objHPtr, idx, fieldVal});
             }
@@ -815,8 +843,13 @@ struct CustomProjectOpLowering : public OpConversionPattern<CustomProjectOp> {
                                                       ValueRange{offset});
 
         Type resultType = getTypeConverter()->convertType(op.getResult().getType());
-        Value result = rewriter.create<LLVM::LoadOp>(loc, resultType, fieldPtr);
-        rewriter.replaceOp(op, result);
+        if (isHPtrLLVMType(resultType)) {
+            Value loaded = rewriter.create<LLVM::LoadOp>(loc, i64Ty, fieldPtr);
+            rewriter.replaceOp(op, i64ToValue(rewriter, loc, loaded));
+        } else {
+            Value result = rewriter.create<LLVM::LoadOp>(loc, resultType, fieldPtr);
+            rewriter.replaceOp(op, result);
+        }
         return success();
     }
 };
@@ -909,8 +942,11 @@ struct ArrayGetOpLowering : public OpConversionPattern<ArrayGetOp> {
 
         // Interpret based on result type
         Type origResultType = op.getResult().getType();
-        if (isa<eco::ValueType>(origResultType) || origResultType.isInteger(64)) {
-            // eco.value or Int: raw i64 is the result directly
+        if (isa<eco::ValueType>(origResultType)) {
+            // eco.value: load i64 then convert to ptr<1>
+            rewriter.replaceOp(op, i64ToValue(rewriter, loc, raw));
+        } else if (origResultType.isInteger(64)) {
+            // Int: raw i64 is the result directly
             rewriter.replaceOp(op, raw);
         } else if (origResultType.isF64()) {
             // Float: bitcast i64 to f64
@@ -977,8 +1013,11 @@ struct ArraySetOpLowering : public OpConversionPattern<ArraySetOp> {
         // Normalize value to i64 for storage in Unboxable slot
         Type origValueType = op.getValue().getType();
         Value raw;
-        if (isa<eco::ValueType>(origValueType) || origValueType.isInteger(64)) {
-            // eco.value or Int: already i64
+        if (isa<eco::ValueType>(origValueType)) {
+            // eco.value: ptr<1> from adaptor, convert to i64
+            raw = valueToI64(rewriter, loc, valueVal);
+        } else if (origValueType.isInteger(64)) {
+            // Int: already i64
             raw = valueVal;
         } else if (origValueType.isF64()) {
             // Float: bitcast f64 to i64
@@ -1005,22 +1044,60 @@ struct ArraySetOpLowering : public OpConversionPattern<ArraySetOp> {
 // Allocation Group Lowering
 //===----------------------------------------------------------------------===//
 
-/// Convert an !eco.value SSA value to i64 by inserting an
-/// UnrealizedConversionCastOp. Returns the value as-is if already i64.
+/// Convert an !eco.value or ptr<1> SSA value to i64 by inserting the
+/// appropriate cast. Returns the value as-is if already i64.
+/// For eco.value inputs that are actually unrealized casts from ptr<1>,
+/// look through the cast to avoid creating unresolvable cast chains.
 static Value castToI64(OpBuilder &builder, Location loc, Value v) {
     if (v.getType().isInteger(64))
         return v;
+    if (isHPtrLLVMType(v.getType())) {
+        auto i64Ty = IntegerType::get(builder.getContext(), 64);
+        return builder.create<LLVM::PtrToIntOp>(loc, i64Ty, v);
+    }
+    // Check if v is an unrealized_conversion_cast(ptr<1> → eco.value).
+    // If so, look through the cast and use PtrToIntOp on the original ptr<1>.
+    if (auto castOp = v.getDefiningOp<UnrealizedConversionCastOp>()) {
+        if (castOp.getNumOperands() == 1 &&
+            isHPtrLLVMType(castOp.getOperand(0).getType())) {
+            auto i64Ty = IntegerType::get(builder.getContext(), 64);
+            return builder.create<LLVM::PtrToIntOp>(loc, i64Ty,
+                                                     castOp.getOperand(0));
+        }
+    }
     auto i64Ty = IntegerType::get(builder.getContext(), 64);
     return builder.create<UnrealizedConversionCastOp>(loc, i64Ty, v)
         .getResult(0);
 }
 
+/// Convert an !eco.value SSA value to ptr<1> for passing to runtime functions
+/// that expect HPTR_TY. If already ptr<1>, return as-is.
+/// For eco.value inputs from unrealized casts, look through the cast.
+static Value castToHPtr(OpBuilder &builder, Location loc, Value v) {
+    if (isHPtrLLVMType(v.getType()))
+        return v;
+    auto hptrTy = LLVM::LLVMPointerType::get(builder.getContext(), /*addressSpace=*/1);
+    if (v.getType().isInteger(64))
+        return builder.create<LLVM::IntToPtrOp>(loc, hptrTy, v);
+    // Check if v is an unrealized_conversion_cast(ptr<1> → eco.value).
+    if (auto castOp = v.getDefiningOp<UnrealizedConversionCastOp>()) {
+        if (castOp.getNumOperands() == 1 &&
+            isHPtrLLVMType(castOp.getOperand(0).getType()))
+            return castOp.getOperand(0);
+    }
+    // Fallback: unrealized cast
+    return builder.create<UnrealizedConversionCastOp>(loc, hptrTy, v)
+        .getResult(0);
+}
+
 /// Widen a primitive SSA value to i64 for Unboxable slot storage.
-/// i64 passes through. f64 → bitcast. i16/i1 → zext.
+/// i64 passes through. ptr<1> → ptrtoint. f64 → bitcast. i16/i1 → zext.
 static Value widenToI64ForInit(OpBuilder &builder, Location loc, Value v) {
     auto i64Ty = IntegerType::get(builder.getContext(), 64);
     Type ty = v.getType();
     if (ty.isInteger(64)) return v;
+    if (isHPtrLLVMType(ty))
+        return builder.create<LLVM::PtrToIntOp>(loc, i64Ty, v);
     if (isa<eco::ValueType>(ty))
         return castToI64(builder, loc, v);
     if (auto intTy = dyn_cast<IntegerType>(ty)) {
@@ -1089,7 +1166,7 @@ static Value emitInitAtPtr(
 
     if (auto listOp = dyn_cast<ListConstructOp>(op)) {
         Value head = widenToI64ForInit(builder, loc, listOp.getHead());
-        Value tail = castToI64(builder, loc, listOp.getTail());
+        Value tail = castToHPtr(builder, loc, listOp.getTail());
         uint32_t headUnboxed = listOp.getHeadUnboxed() ? 1 : 0;
         auto headUnboxedVal = builder.create<LLVM::ConstantOp>(loc, i32Ty, headUnboxed);
         return builder.create<LLVM::CallOp>(
@@ -1170,7 +1247,7 @@ static void emitFieldStoresForOp(
             // Check if this field is another group member's result
             auto it = memberResultMap.find(fieldVal);
             if (it != memberResultMap.end()) {
-                // Use the i64 merge-block value directly for store
+                // Merge-block value is hptr — pass directly (store_field takes hptr val)
                 builder.create<LLVM::CallOp>(loc, storeFunc,
                     ValueRange{hptr, idx, it->second});
                 continue;
@@ -1187,10 +1264,10 @@ static void emitFieldStoresForOp(
                 builder.create<LLVM::CallOp>(loc, storeI64Func,
                     ValueRange{hptr, idx, fieldVal});
             } else {
-                // eco.value — cast to i64
-                Value valI64 = castToI64(builder, loc, fieldVal);
+                // eco.value or ptr<1> — cast to hptr for store (avoids unrealized casts)
+                Value valHPtr = castToHPtr(builder, loc, fieldVal);
                 builder.create<LLVM::CallOp>(loc, storeFunc,
-                    ValueRange{hptr, idx, valI64});
+                    ValueRange{hptr, idx, valHPtr});
             }
         }
         return;
@@ -1211,6 +1288,7 @@ static void emitFieldStoresForOp(
 
             auto it = memberResultMap.find(fieldVal);
             if (it != memberResultMap.end()) {
+                // Merge-block value is hptr — pass directly
                 builder.create<LLVM::CallOp>(loc, storeFunc,
                     ValueRange{hptr, idx, it->second});
                 continue;
@@ -1227,9 +1305,9 @@ static void emitFieldStoresForOp(
                 builder.create<LLVM::CallOp>(loc, storeI64Func,
                     ValueRange{hptr, idx, fieldVal});
             } else {
-                Value valI64 = castToI64(builder, loc, fieldVal);
+                Value valHPtr = castToHPtr(builder, loc, fieldVal);
                 builder.create<LLVM::CallOp>(loc, storeFunc,
-                    ValueRange{hptr, idx, valI64});
+                    ValueRange{hptr, idx, valHPtr});
             }
         }
 
@@ -1286,9 +1364,10 @@ static void lowerOneAllocGroup(
     parentRegion->getBlocks().insertAfter(Region::iterator(fastBlock), slowBlock);
     parentRegion->getBlocks().insertAfter(Region::iterator(slowBlock), mergeBlock);
 
-    // Add merge block args: one i64 per group member (HPointers).
+    // Add merge block args: one hptr per group member (HPointers).
+    auto hptrTy = LLVM::LLVMPointerType::get(ctx, /*addressSpace=*/1);
     for (size_t i = 0; i < groupSize; i++)
-        mergeBlock->addArgument(i64Ty, loc);
+        mergeBlock->addArgument(hptrTy, loc);
 
     // Move afterBlock's ops into mergeBlock (merge block IS the continuation).
     mergeBlock->getOperations().splice(
@@ -1330,12 +1409,9 @@ static void lowerOneAllocGroup(
     builder.setInsertionPointToEnd(slowBlock);
 
     if (!liveRoots.empty()) {
-        auto gcPtrTy = LLVM::LLVMPointerType::get(ctx, /*addressSpace=*/1);
         SmallVector<Value, 4> gcPtrs;
         for (auto val : liveRoots) {
-            Value valI64 = castToI64(builder, loc, val);
-            auto ptr = builder.create<LLVM::IntToPtrOp>(loc, gcPtrTy, valI64);
-            gcPtrs.push_back(ptr);
+            gcPtrs.push_back(castToHPtr(builder, loc, val));
         }
         runtime.getOrCreateSafepointMarker(builder);
         auto voidTy = LLVM::LLVMVoidType::get(ctx);

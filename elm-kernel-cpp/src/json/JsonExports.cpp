@@ -24,7 +24,7 @@ using namespace Elm::Kernel;
 using namespace Elm::alloc;
 
 // Declare closure call
-extern "C" uint64_t eco_apply_closure(uint64_t closure, uint64_t* args, uint32_t num_args);
+extern "C" HPtr eco_apply_closure(HPtr closure, uint64_t* args, uint32_t num_args);
 
 //===----------------------------------------------------------------------===//
 // JSON Value Heap ADT
@@ -764,7 +764,7 @@ static uint64_t runDecoder(Custom* decoder, uint64_t jvalEnc) {
             HPointer value = getOkValue(innerResult);
 
             uint64_t args[1] = { Export::encode(value) };
-            uint64_t newDecEnc = eco_apply_closure(Export::encode(callback), args, 1);
+            uint64_t newDecEnc = eco_apply_closure(HPtr::fromBits(Export::encode(callback)), args, 1).toBits();
 
             // Run the new decoder on the same JSON value.
             void* newDecPtr = Export::toPtr(newDecEnc);
@@ -806,7 +806,7 @@ static uint64_t runDecoder(Custom* decoder, uint64_t jvalEnc) {
 
             HPointer callback = decoder->values[0].p;
             uint64_t args[1] = { Export::encode(getOkValue(result1)) };
-            uint64_t mapped = eco_apply_closure(Export::encode(callback), args, 1);
+            uint64_t mapped = eco_apply_closure(HPtr::fromBits(Export::encode(callback)), args, 1).toBits();
 
             return makeOk(Export::decode(mapped));
         }
@@ -832,7 +832,7 @@ static uint64_t runDecoder(Custom* decoder, uint64_t jvalEnc) {
                 Export::encode(getOkValue(result1)),
                 Export::encode(getOkValue(result2))
             };
-            uint64_t mapped = eco_apply_closure(Export::encode(callback), args, 2);
+            uint64_t mapped = eco_apply_closure(HPtr::fromBits(Export::encode(callback)), args, 2).toBits();
 
             return makeOk(Export::decode(mapped));
         }
@@ -861,7 +861,7 @@ static uint64_t runDecoder(Custom* decoder, uint64_t jvalEnc) {
             for (int i = 0; i < n; i++) {
                 args[i] = Export::encode(getOkValue(results[i]));
             }
-            uint64_t mapped = eco_apply_closure(Export::encode(callback), args, static_cast<u32>(n));
+            uint64_t mapped = eco_apply_closure(HPtr::fromBits(Export::encode(callback)), args, static_cast<u32>(n)).toBits();
 
             return makeOk(Export::decode(mapped));
         }
@@ -989,79 +989,79 @@ extern "C" {
 // Primitive Decoders
 //===----------------------------------------------------------------------===//
 
-uint64_t Elm_Kernel_Json_decodeString() {
-    return makeDecoder0(DEC_STRING);
+HPtr Elm_Kernel_Json_decodeString() {
+    return HPtr::fromBits(makeDecoder0(DEC_STRING));
 }
 
-uint64_t Elm_Kernel_Json_decodeBool() {
-    return makeDecoder0(DEC_BOOL);
+HPtr Elm_Kernel_Json_decodeBool() {
+    return HPtr::fromBits(makeDecoder0(DEC_BOOL));
 }
 
-uint64_t Elm_Kernel_Json_decodeInt() {
-    return makeDecoder0(DEC_INT);
+HPtr Elm_Kernel_Json_decodeInt() {
+    return HPtr::fromBits(makeDecoder0(DEC_INT));
 }
 
-uint64_t Elm_Kernel_Json_decodeFloat() {
-    return makeDecoder0(DEC_FLOAT);
+HPtr Elm_Kernel_Json_decodeFloat() {
+    return HPtr::fromBits(makeDecoder0(DEC_FLOAT));
 }
 
-uint64_t Elm_Kernel_Json_decodeNull(uint64_t fallback) {
-    return makeDecoder1(DEC_NULL, fallback);
+HPtr Elm_Kernel_Json_decodeNull(HPtr fallback) {
+    return HPtr::fromBits(makeDecoder1(DEC_NULL, fallback.toBits()));
 }
 
-uint64_t Elm_Kernel_Json_decodeList(uint64_t decoder) {
-    return makeDecoder1(DEC_LIST, decoder);
+HPtr Elm_Kernel_Json_decodeList(HPtr decoder) {
+    return HPtr::fromBits(makeDecoder1(DEC_LIST, decoder.toBits()));
 }
 
-uint64_t Elm_Kernel_Json_decodeArray(uint64_t decoder) {
-    return makeDecoder1(DEC_ARRAY, decoder);
+HPtr Elm_Kernel_Json_decodeArray(HPtr decoder) {
+    return HPtr::fromBits(makeDecoder1(DEC_ARRAY, decoder.toBits()));
 }
 
-uint64_t Elm_Kernel_Json_decodeField(uint64_t fieldName, uint64_t decoder) {
-    return makeDecoder2(DEC_FIELD, fieldName, decoder);
+HPtr Elm_Kernel_Json_decodeField(HPtr fieldName, HPtr decoder) {
+    return HPtr::fromBits(makeDecoder2(DEC_FIELD, fieldName.toBits(), decoder.toBits()));
 }
 
-uint64_t Elm_Kernel_Json_decodeIndex(int64_t index, uint64_t decoder) {
-    return makeDecoder2ip(DEC_INDEX, index, decoder);
+HPtr Elm_Kernel_Json_decodeIndex(int64_t index, HPtr decoder) {
+    return HPtr::fromBits(makeDecoder2ip(DEC_INDEX, index, decoder.toBits()));
 }
 
-uint64_t Elm_Kernel_Json_decodeKeyValuePairs(uint64_t decoder) {
-    return makeDecoder1(DEC_KEYVALUE, decoder);
+HPtr Elm_Kernel_Json_decodeKeyValuePairs(HPtr decoder) {
+    return HPtr::fromBits(makeDecoder1(DEC_KEYVALUE, decoder.toBits()));
 }
 
-uint64_t Elm_Kernel_Json_decodeValue() {
-    return makeDecoder0(DEC_VALUE);
+HPtr Elm_Kernel_Json_decodeValue() {
+    return HPtr::fromBits(makeDecoder0(DEC_VALUE));
 }
 
 //===----------------------------------------------------------------------===//
 // Decoder Combinators
 //===----------------------------------------------------------------------===//
 
-uint64_t Elm_Kernel_Json_succeed(uint64_t value) {
-    return makeDecoder1(DEC_SUCCEED, value);
+HPtr Elm_Kernel_Json_succeed(HPtr value) {
+    return HPtr::fromBits(makeDecoder1(DEC_SUCCEED, value.toBits()));
 }
 
-uint64_t Elm_Kernel_Json_fail(uint64_t message) {
-    return makeDecoder1(DEC_FAIL, message);
+HPtr Elm_Kernel_Json_fail(HPtr message) {
+    return HPtr::fromBits(makeDecoder1(DEC_FAIL, message.toBits()));
 }
 
-uint64_t Elm_Kernel_Json_andThen(uint64_t closure, uint64_t decoder) {
-    return makeDecoder2(DEC_ANDTHEN, closure, decoder);
+HPtr Elm_Kernel_Json_andThen(HPtr closure, HPtr decoder) {
+    return HPtr::fromBits(makeDecoder2(DEC_ANDTHEN, closure.toBits(), decoder.toBits()));
 }
 
-uint64_t Elm_Kernel_Json_oneOf(uint64_t decoders) {
-    return makeDecoder1(DEC_ONEOF, decoders);
+HPtr Elm_Kernel_Json_oneOf(HPtr decoders) {
+    return HPtr::fromBits(makeDecoder1(DEC_ONEOF, decoders.toBits()));
 }
 
 //===----------------------------------------------------------------------===//
 // Map Functions
 //===----------------------------------------------------------------------===//
 
-uint64_t Elm_Kernel_Json_map1(uint64_t closure, uint64_t d1) {
-    return makeDecoder2(DEC_MAP1, closure, d1);
+HPtr Elm_Kernel_Json_map1(HPtr closure, HPtr d1) {
+    return HPtr::fromBits(makeDecoder2(DEC_MAP1, closure.toBits(), d1.toBits()));
 }
 
-uint64_t Elm_Kernel_Json_map2(uint64_t closure, uint64_t d1, uint64_t d2) {
+HPtr Elm_Kernel_Json_map2(HPtr closure, HPtr d1, HPtr d2) {
     auto& allocator = Allocator::instance();
     size_t size = sizeof(Custom) + 3 * sizeof(Unboxable);
     size = (size + 7) & ~7;
@@ -1069,13 +1069,13 @@ uint64_t Elm_Kernel_Json_map2(uint64_t closure, uint64_t d1, uint64_t d2) {
     dec->header.size = 3;
     dec->ctor = DEC_MAP2;
     dec->unboxed = 0;
-    dec->values[0].p = Export::decode(closure);
-    dec->values[1].p = Export::decode(d1);
-    dec->values[2].p = Export::decode(d2);
-    return Export::encode(allocator.wrap(dec));
+    dec->values[0].p = Export::decode(closure.toBits());
+    dec->values[1].p = Export::decode(d1.toBits());
+    dec->values[2].p = Export::decode(d2.toBits());
+    return HPtr::fromBits(Export::encode(allocator.wrap(dec)));
 }
 
-uint64_t Elm_Kernel_Json_map3(uint64_t closure, uint64_t d1, uint64_t d2, uint64_t d3) {
+HPtr Elm_Kernel_Json_map3(HPtr closure, HPtr d1, HPtr d2, HPtr d3) {
     auto& allocator = Allocator::instance();
     size_t size = sizeof(Custom) + 4 * sizeof(Unboxable);
     size = (size + 7) & ~7;
@@ -1083,14 +1083,14 @@ uint64_t Elm_Kernel_Json_map3(uint64_t closure, uint64_t d1, uint64_t d2, uint64
     dec->header.size = 4;
     dec->ctor = DEC_MAP3;
     dec->unboxed = 0;
-    dec->values[0].p = Export::decode(closure);
-    dec->values[1].p = Export::decode(d1);
-    dec->values[2].p = Export::decode(d2);
-    dec->values[3].p = Export::decode(d3);
-    return Export::encode(allocator.wrap(dec));
+    dec->values[0].p = Export::decode(closure.toBits());
+    dec->values[1].p = Export::decode(d1.toBits());
+    dec->values[2].p = Export::decode(d2.toBits());
+    dec->values[3].p = Export::decode(d3.toBits());
+    return HPtr::fromBits(Export::encode(allocator.wrap(dec)));
 }
 
-uint64_t Elm_Kernel_Json_map4(uint64_t closure, uint64_t d1, uint64_t d2, uint64_t d3, uint64_t d4) {
+HPtr Elm_Kernel_Json_map4(HPtr closure, HPtr d1, HPtr d2, HPtr d3, HPtr d4) {
     auto& allocator = Allocator::instance();
     size_t size = sizeof(Custom) + 5 * sizeof(Unboxable);
     size = (size + 7) & ~7;
@@ -1098,15 +1098,15 @@ uint64_t Elm_Kernel_Json_map4(uint64_t closure, uint64_t d1, uint64_t d2, uint64
     dec->header.size = 5;
     dec->ctor = DEC_MAP4;
     dec->unboxed = 0;
-    dec->values[0].p = Export::decode(closure);
-    dec->values[1].p = Export::decode(d1);
-    dec->values[2].p = Export::decode(d2);
-    dec->values[3].p = Export::decode(d3);
-    dec->values[4].p = Export::decode(d4);
-    return Export::encode(allocator.wrap(dec));
+    dec->values[0].p = Export::decode(closure.toBits());
+    dec->values[1].p = Export::decode(d1.toBits());
+    dec->values[2].p = Export::decode(d2.toBits());
+    dec->values[3].p = Export::decode(d3.toBits());
+    dec->values[4].p = Export::decode(d4.toBits());
+    return HPtr::fromBits(Export::encode(allocator.wrap(dec)));
 }
 
-uint64_t Elm_Kernel_Json_map5(uint64_t closure, uint64_t d1, uint64_t d2, uint64_t d3, uint64_t d4, uint64_t d5) {
+HPtr Elm_Kernel_Json_map5(HPtr closure, HPtr d1, HPtr d2, HPtr d3, HPtr d4, HPtr d5) {
     auto& allocator = Allocator::instance();
     size_t size = sizeof(Custom) + 6 * sizeof(Unboxable);
     size = (size + 7) & ~7;
@@ -1114,16 +1114,16 @@ uint64_t Elm_Kernel_Json_map5(uint64_t closure, uint64_t d1, uint64_t d2, uint64
     dec->header.size = 6;
     dec->ctor = DEC_MAP5;
     dec->unboxed = 0;
-    dec->values[0].p = Export::decode(closure);
-    dec->values[1].p = Export::decode(d1);
-    dec->values[2].p = Export::decode(d2);
-    dec->values[3].p = Export::decode(d3);
-    dec->values[4].p = Export::decode(d4);
-    dec->values[5].p = Export::decode(d5);
-    return Export::encode(allocator.wrap(dec));
+    dec->values[0].p = Export::decode(closure.toBits());
+    dec->values[1].p = Export::decode(d1.toBits());
+    dec->values[2].p = Export::decode(d2.toBits());
+    dec->values[3].p = Export::decode(d3.toBits());
+    dec->values[4].p = Export::decode(d4.toBits());
+    dec->values[5].p = Export::decode(d5.toBits());
+    return HPtr::fromBits(Export::encode(allocator.wrap(dec)));
 }
 
-uint64_t Elm_Kernel_Json_map6(uint64_t closure, uint64_t d1, uint64_t d2, uint64_t d3, uint64_t d4, uint64_t d5, uint64_t d6) {
+HPtr Elm_Kernel_Json_map6(HPtr closure, HPtr d1, HPtr d2, HPtr d3, HPtr d4, HPtr d5, HPtr d6) {
     auto& allocator = Allocator::instance();
     size_t size = sizeof(Custom) + 7 * sizeof(Unboxable);
     size = (size + 7) & ~7;
@@ -1131,17 +1131,17 @@ uint64_t Elm_Kernel_Json_map6(uint64_t closure, uint64_t d1, uint64_t d2, uint64
     dec->header.size = 7;
     dec->ctor = DEC_MAP6;
     dec->unboxed = 0;
-    dec->values[0].p = Export::decode(closure);
-    dec->values[1].p = Export::decode(d1);
-    dec->values[2].p = Export::decode(d2);
-    dec->values[3].p = Export::decode(d3);
-    dec->values[4].p = Export::decode(d4);
-    dec->values[5].p = Export::decode(d5);
-    dec->values[6].p = Export::decode(d6);
-    return Export::encode(allocator.wrap(dec));
+    dec->values[0].p = Export::decode(closure.toBits());
+    dec->values[1].p = Export::decode(d1.toBits());
+    dec->values[2].p = Export::decode(d2.toBits());
+    dec->values[3].p = Export::decode(d3.toBits());
+    dec->values[4].p = Export::decode(d4.toBits());
+    dec->values[5].p = Export::decode(d5.toBits());
+    dec->values[6].p = Export::decode(d6.toBits());
+    return HPtr::fromBits(Export::encode(allocator.wrap(dec)));
 }
 
-uint64_t Elm_Kernel_Json_map7(uint64_t closure, uint64_t d1, uint64_t d2, uint64_t d3, uint64_t d4, uint64_t d5, uint64_t d6, uint64_t d7) {
+HPtr Elm_Kernel_Json_map7(HPtr closure, HPtr d1, HPtr d2, HPtr d3, HPtr d4, HPtr d5, HPtr d6, HPtr d7) {
     auto& allocator = Allocator::instance();
     size_t size = sizeof(Custom) + 8 * sizeof(Unboxable);
     size = (size + 7) & ~7;
@@ -1149,18 +1149,18 @@ uint64_t Elm_Kernel_Json_map7(uint64_t closure, uint64_t d1, uint64_t d2, uint64
     dec->header.size = 8;
     dec->ctor = DEC_MAP7;
     dec->unboxed = 0;
-    dec->values[0].p = Export::decode(closure);
-    dec->values[1].p = Export::decode(d1);
-    dec->values[2].p = Export::decode(d2);
-    dec->values[3].p = Export::decode(d3);
-    dec->values[4].p = Export::decode(d4);
-    dec->values[5].p = Export::decode(d5);
-    dec->values[6].p = Export::decode(d6);
-    dec->values[7].p = Export::decode(d7);
-    return Export::encode(allocator.wrap(dec));
+    dec->values[0].p = Export::decode(closure.toBits());
+    dec->values[1].p = Export::decode(d1.toBits());
+    dec->values[2].p = Export::decode(d2.toBits());
+    dec->values[3].p = Export::decode(d3.toBits());
+    dec->values[4].p = Export::decode(d4.toBits());
+    dec->values[5].p = Export::decode(d5.toBits());
+    dec->values[6].p = Export::decode(d6.toBits());
+    dec->values[7].p = Export::decode(d7.toBits());
+    return HPtr::fromBits(Export::encode(allocator.wrap(dec)));
 }
 
-uint64_t Elm_Kernel_Json_map8(uint64_t closure, uint64_t d1, uint64_t d2, uint64_t d3, uint64_t d4, uint64_t d5, uint64_t d6, uint64_t d7, uint64_t d8) {
+HPtr Elm_Kernel_Json_map8(HPtr closure, HPtr d1, HPtr d2, HPtr d3, HPtr d4, HPtr d5, HPtr d6, HPtr d7, HPtr d8) {
     auto& allocator = Allocator::instance();
     size_t size = sizeof(Custom) + 9 * sizeof(Unboxable);
     size = (size + 7) & ~7;
@@ -1168,35 +1168,39 @@ uint64_t Elm_Kernel_Json_map8(uint64_t closure, uint64_t d1, uint64_t d2, uint64
     dec->header.size = 9;
     dec->ctor = DEC_MAP8;
     dec->unboxed = 0;
-    dec->values[0].p = Export::decode(closure);
-    dec->values[1].p = Export::decode(d1);
-    dec->values[2].p = Export::decode(d2);
-    dec->values[3].p = Export::decode(d3);
-    dec->values[4].p = Export::decode(d4);
-    dec->values[5].p = Export::decode(d5);
-    dec->values[6].p = Export::decode(d6);
-    dec->values[7].p = Export::decode(d7);
-    dec->values[8].p = Export::decode(d8);
-    return Export::encode(allocator.wrap(dec));
+    dec->values[0].p = Export::decode(closure.toBits());
+    dec->values[1].p = Export::decode(d1.toBits());
+    dec->values[2].p = Export::decode(d2.toBits());
+    dec->values[3].p = Export::decode(d3.toBits());
+    dec->values[4].p = Export::decode(d4.toBits());
+    dec->values[5].p = Export::decode(d5.toBits());
+    dec->values[6].p = Export::decode(d6.toBits());
+    dec->values[7].p = Export::decode(d7.toBits());
+    dec->values[8].p = Export::decode(d8.toBits());
+    return HPtr::fromBits(Export::encode(allocator.wrap(dec)));
 }
 
 //===----------------------------------------------------------------------===//
 // Running Decoders
 //===----------------------------------------------------------------------===//
 
-uint64_t Elm_Kernel_Json_run(uint64_t decoder, uint64_t value) {
+HPtr Elm_Kernel_Json_run(HPtr decoder, HPtr value) {
     // Value is a heap-resident JSON value (CTOR_JSON_* Custom).
-    void* decPtr = Export::toPtr(decoder);
+    uint64_t decoderEnc = decoder.toBits();
+    uint64_t valueEnc = value.toBits();
+    void* decPtr = Export::toPtr(decoderEnc);
     if (!decPtr) {
-        return makeErr("Invalid decoder");
+        return HPtr::fromBits(makeErr("Invalid decoder"));
     }
     Custom* dec = static_cast<Custom*>(decPtr);
 
-    return runDecoder(dec, value);
+    return HPtr::fromBits(runDecoder(dec, valueEnc));
 }
 
-uint64_t Elm_Kernel_Json_runOnString(uint64_t decoder, uint64_t jsonString) {
-    std::string str = elmStringToStd(jsonString);
+HPtr Elm_Kernel_Json_runOnString(HPtr decoder, HPtr jsonString) {
+    uint64_t decoderEnc = decoder.toBits();
+    uint64_t jsonStringEnc = jsonString.toBits();
+    std::string str = elmStringToStd(jsonStringEnc);
 
     try {
         json jval = json::parse(str);
@@ -1205,12 +1209,12 @@ uint64_t Elm_Kernel_Json_runOnString(uint64_t decoder, uint64_t jsonString) {
         HPointer heapJson = jsonToHeap(jval);
         // nlohmann::json falls out of scope here - no leak.
 
-        void* decPtr = Export::toPtr(decoder);
+        void* decPtr = Export::toPtr(decoderEnc);
         Custom* dec = static_cast<Custom*>(decPtr);
 
-        return runDecoder(dec, Export::encode(heapJson));
+        return HPtr::fromBits(runDecoder(dec, Export::encode(heapJson)));
     } catch (const json::parse_error& e) {
-        return makeErr(std::string("Problem with the given value:\n\n") + e.what());
+        return HPtr::fromBits(makeErr(std::string("Problem with the given value:\n\n") + e.what()));
     }
 }
 
@@ -1218,8 +1222,9 @@ uint64_t Elm_Kernel_Json_runOnString(uint64_t decoder, uint64_t jsonString) {
 // Encoding
 //===----------------------------------------------------------------------===//
 
-uint64_t Elm_Kernel_Json_encode(int64_t indent, uint64_t value) {
-    json j = elmToJson(value);
+HPtr Elm_Kernel_Json_encode(int64_t indent, HPtr value) {
+    uint64_t valueEnc = value.toBits();
+    json j = elmToJson(valueEnc);
     std::string str;
     if (indent > 0) {
         str = j.dump(static_cast<int>(indent));
@@ -1227,15 +1232,16 @@ uint64_t Elm_Kernel_Json_encode(int64_t indent, uint64_t value) {
         str = j.dump();
     }
     HPointer result = allocElmString(str);
-    return Export::encode(result);
+    return HPtr::fromBits(Export::encode(result));
 }
 
-uint64_t Elm_Kernel_Json_wrap(uint64_t value) {
+HPtr Elm_Kernel_Json_wrap(HPtr value) {
+    uint64_t valueEnc = value.toBits();
     // Wrap a boxed Elm value into an encoder Custom object for elmToJson.
     // Called with AllBoxed ABI: the compiler auto-boxes primitives (i64→ElmInt,
     // f64→ElmFloat) before calling, so we always receive an HPointer.
     auto& allocator = Allocator::instance();
-    HPointer h = Export::decode(value);
+    HPointer h = Export::decode(valueEnc);
 
     // Embedded constant booleans → ENC_BOOL
     if (h.constant == Const_True + 1 || h.constant == Const_False + 1) {
@@ -1245,7 +1251,7 @@ uint64_t Elm_Kernel_Json_wrap(uint64_t value) {
         enc->ctor = ENC_BOOL;
         enc->unboxed = 0;
         enc->values[0].p = (h.constant == Const_True + 1) ? elmTrue() : elmFalse();
-        return Export::encode(allocator.wrap(enc));
+        return HPtr::fromBits(Export::encode(allocator.wrap(enc)));
     }
 
     // Other embedded constants (Unit, Nil, Nothing) → ENC_NULL
@@ -1253,7 +1259,7 @@ uint64_t Elm_Kernel_Json_wrap(uint64_t value) {
         return Elm_Kernel_Json_encodeNull();
     }
 
-    void* ptr = Export::toPtr(value);
+    void* ptr = Export::toPtr(valueEnc);
     if (!ptr) return Elm_Kernel_Json_encodeNull();
 
     Header* header = static_cast<Header*>(ptr);
@@ -1266,7 +1272,7 @@ uint64_t Elm_Kernel_Json_wrap(uint64_t value) {
         enc->ctor = ENC_INT;
         enc->unboxed = 1;
         enc->values[0].i = i->value;
-        return Export::encode(allocator.wrap(enc));
+        return HPtr::fromBits(Export::encode(allocator.wrap(enc)));
     }
 
     if (header->tag == Tag_Float) {
@@ -1277,7 +1283,7 @@ uint64_t Elm_Kernel_Json_wrap(uint64_t value) {
         enc->ctor = ENC_FLOAT;
         enc->unboxed = 1;
         enc->values[0].f = f->value;
-        return Export::encode(allocator.wrap(enc));
+        return HPtr::fromBits(Export::encode(allocator.wrap(enc)));
     }
 
     if (header->tag == Tag_String) {
@@ -1287,14 +1293,14 @@ uint64_t Elm_Kernel_Json_wrap(uint64_t value) {
         enc->ctor = ENC_STRING;
         enc->unboxed = 0;
         enc->values[0].p = h;
-        return Export::encode(allocator.wrap(enc));
+        return HPtr::fromBits(Export::encode(allocator.wrap(enc)));
     }
 
     // Already an encoder Custom (ENC_OBJECT, ENC_ARRAY, etc.) — return as-is.
     return value;
 }
 
-uint64_t Elm_Kernel_Json_encodeNull() {
+HPtr Elm_Kernel_Json_encodeNull() {
     auto& allocator = Allocator::instance();
     size_t size = sizeof(Custom);
     size = (size + 7) & ~7;
@@ -1302,10 +1308,10 @@ uint64_t Elm_Kernel_Json_encodeNull() {
     enc->header.size = 0;
     enc->ctor = ENC_NULL;
     enc->unboxed = 0;
-    return Export::encode(allocator.wrap(enc));
+    return HPtr::fromBits(Export::encode(allocator.wrap(enc)));
 }
 
-uint64_t Elm_Kernel_Json_emptyArray() {
+HPtr Elm_Kernel_Json_emptyArray() {
     auto& allocator = Allocator::instance();
     size_t size = sizeof(Custom) + sizeof(Unboxable);
     size = (size + 7) & ~7;
@@ -1314,10 +1320,10 @@ uint64_t Elm_Kernel_Json_emptyArray() {
     enc->ctor = ENC_ARRAY;
     enc->unboxed = 0;
     enc->values[0].p = listNil();
-    return Export::encode(allocator.wrap(enc));
+    return HPtr::fromBits(Export::encode(allocator.wrap(enc)));
 }
 
-uint64_t Elm_Kernel_Json_emptyObject() {
+HPtr Elm_Kernel_Json_emptyObject() {
     auto& allocator = Allocator::instance();
     size_t size = sizeof(Custom) + sizeof(Unboxable);
     size = (size + 7) & ~7;
@@ -1326,18 +1332,21 @@ uint64_t Elm_Kernel_Json_emptyObject() {
     enc->ctor = ENC_OBJECT;
     enc->unboxed = 0;
     enc->values[0].p = listNil();
-    return Export::encode(allocator.wrap(enc));
+    return HPtr::fromBits(Export::encode(allocator.wrap(enc)));
 }
 
-uint64_t Elm_Kernel_Json_addEntry(uint64_t func, uint64_t entry, uint64_t array) {
+HPtr Elm_Kernel_Json_addEntry(HPtr func, HPtr entry, HPtr array) {
     auto& allocator = Allocator::instance();
+    uint64_t funcEnc = func.toBits();
+    uint64_t entryEnc = entry.toBits();
+    uint64_t arrayEnc = array.toBits();
 
     // Call the encoder function on the entry: encoded = func(entry)
-    uint64_t args[] = { entry };
-    uint64_t encoded = eco_apply_closure(func, args, 1);
+    uint64_t args[] = { entryEnc };
+    uint64_t encoded = eco_apply_closure(HPtr::fromBits(funcEnc), args, 1).toBits();
 
     // Re-resolve array after potential GC from the closure call
-    void* arrPtr = Export::toPtr(array);
+    void* arrPtr = Export::toPtr(arrayEnc);
     Custom* arr = static_cast<Custom*>(arrPtr);
 
     HPointer newList = cons(boxed(Export::decode(encoded)), arr->values[0].p, true);
@@ -1350,19 +1359,22 @@ uint64_t Elm_Kernel_Json_addEntry(uint64_t func, uint64_t entry, uint64_t array)
     enc->unboxed = 0;
     enc->values[0].p = newList;
 
-    return Export::encode(allocator.wrap(enc));
+    return HPtr::fromBits(Export::encode(allocator.wrap(enc)));
 }
 
-uint64_t Elm_Kernel_Json_addField(uint64_t key, uint64_t value, uint64_t object) {
+HPtr Elm_Kernel_Json_addField(HPtr key, HPtr value, HPtr object) {
     auto& allocator = Allocator::instance();
+    uint64_t keyEnc = key.toBits();
+    uint64_t valueEnc = value.toBits();
+    uint64_t objectEnc = object.toBits();
 
-    void* objPtr = Export::toPtr(object);
+    void* objPtr = Export::toPtr(objectEnc);
     Custom* obj = static_cast<Custom*>(objPtr);
 
     Tuple2* tuple = static_cast<Tuple2*>(allocator.allocate(sizeof(Tuple2), Tag_Tuple2));
     tuple->header.unboxed = 0;
-    tuple->a.p = Export::decode(key);
-    tuple->b.p = Export::decode(value);
+    tuple->a.p = Export::decode(keyEnc);
+    tuple->b.p = Export::decode(valueEnc);
 
     HPointer newList = cons(boxed(allocator.wrap(tuple)), obj->values[0].p, true);
 
@@ -1374,7 +1386,7 @@ uint64_t Elm_Kernel_Json_addField(uint64_t key, uint64_t value, uint64_t object)
     enc->unboxed = 0;
     enc->values[0].p = newList;
 
-    return Export::encode(allocator.wrap(enc));
+    return HPtr::fromBits(Export::encode(allocator.wrap(enc)));
 }
 
 } // extern "C"

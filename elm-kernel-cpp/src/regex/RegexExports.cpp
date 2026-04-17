@@ -11,8 +11,7 @@
 #include "allocator/RuntimeExports.h"
 #include "../../vendor/srell.hpp"
 
-// Declare closure call
-extern "C" uint64_t eco_apply_closure(uint64_t closure, uint64_t* args, uint32_t num_args);
+// eco_apply_closure is declared in RuntimeExports.h (included above)
 #include <cmath>
 #include <string>
 #include <unordered_map>
@@ -180,7 +179,7 @@ int64_t byteOffsetToCharIndex(const std::string& str, size_t byteOffset) {
 
 extern "C" {
 
-uint64_t Elm_Kernel_Regex_never() {
+HPtr Elm_Kernel_Regex_never() {
     // Return a regex that never matches anything.
     try {
         srell::regex* re = new srell::regex("(?!)", srell::regex::ECMAScript);
@@ -193,9 +192,9 @@ uint64_t Elm_Kernel_Regex_never() {
 
         // All fields are unboxed (plain integers, not heap pointers)
         HPointer regex = custom(CTOR_REGEX, values, 0b111);
-        return Export::encode(regex);
+        return HPtr::fromBits(Export::encode(regex));
     } catch (...) {
-        return Export::encode(nothing());
+        return HPtr::fromBits(Export::encode(nothing()));
     }
 }
 
@@ -204,14 +203,16 @@ double Elm_Kernel_Regex_infinity() {
     return std::numeric_limits<double>::infinity();
 }
 
-uint64_t Elm_Kernel_Regex_fromStringWith(uint64_t optionsEnc, uint64_t patternEnc) {
+HPtr Elm_Kernel_Regex_fromStringWith(HPtr options, HPtr pattern) {
+    uint64_t optionsEnc = options.toBits();
+    uint64_t patternEnc = pattern.toBits();
     // Options is a record: { caseInsensitive : Bool, multiline : Bool }
     // Fields in canonical order: caseInsensitive, multiline
     // Returns Maybe Regex
 
     void* optPtr = Export::toPtr(optionsEnc);
     if (!optPtr) {
-        return Export::encode(nothing());
+        return HPtr::fromBits(Export::encode(nothing()));
     }
 
     Record* opts = static_cast<Record*>(optPtr);
@@ -219,7 +220,7 @@ uint64_t Elm_Kernel_Regex_fromStringWith(uint64_t optionsEnc, uint64_t patternEn
     bool caseInsensitive = Export::decodeBoxedBool(Export::encode(opts->values[0].p));
     bool multiline = Export::decodeBoxedBool(Export::encode(opts->values[1].p));
 
-    std::string pattern = elmStringToUTF8(patternEnc);
+    std::string patternStr = elmStringToUTF8(patternEnc);
 
     try {
         srell::regex_constants::syntax_option_type flags = srell::regex::ECMAScript;
@@ -230,7 +231,7 @@ uint64_t Elm_Kernel_Regex_fromStringWith(uint64_t optionsEnc, uint64_t patternEn
             flags |= srell::regex::multiline;
         }
 
-        srell::regex* re = new srell::regex(pattern, flags);
+        srell::regex* re = new srell::regex(patternStr, flags);
         int64_t id = registerRegex(re);
 
         std::vector<Unboxable> values(3);
@@ -240,52 +241,56 @@ uint64_t Elm_Kernel_Regex_fromStringWith(uint64_t optionsEnc, uint64_t patternEn
 
         HPointer regex = custom(CTOR_REGEX, values, 0b111);
         HPointer result = just(boxed(regex), true);
-        return Export::encode(result);
+        return HPtr::fromBits(Export::encode(result));
     } catch (const srell::regex_error&) {
         // Invalid regex pattern
-        return Export::encode(nothing());
+        return HPtr::fromBits(Export::encode(nothing()));
     } catch (...) {
-        return Export::encode(nothing());
+        return HPtr::fromBits(Export::encode(nothing()));
     }
 }
 
-uint64_t Elm_Kernel_Regex_contains(uint64_t regexEnc, uint64_t strEnc) {
+HPtr Elm_Kernel_Regex_contains(HPtr regex, HPtr str) {
     // Returns Bool (boxed as True/False HPointer constant)
+    uint64_t regexEnc = regex.toBits();
+    uint64_t strEnc = str.toBits();
     srell::regex* re = getCompiledRegex(regexEnc);
     if (!re) {
-        return Export::encodeBoxedBool(false);
+        return HPtr::fromBits(Export::encodeBoxedBool(false));
     }
 
-    std::string str = elmStringToUTF8(strEnc);
+    std::string strUtf8 = elmStringToUTF8(strEnc);
 
     try {
-        bool result = srell::regex_search(str, *re);
-        return Export::encodeBoxedBool(result);
+        bool result = srell::regex_search(strUtf8, *re);
+        return HPtr::fromBits(Export::encodeBoxedBool(result));
     } catch (...) {
-        return Export::encodeBoxedBool(false);
+        return HPtr::fromBits(Export::encodeBoxedBool(false));
     }
 }
 
-uint64_t Elm_Kernel_Regex_findAtMost(int64_t n, uint64_t regexEnc, uint64_t strEnc) {
+HPtr Elm_Kernel_Regex_findAtMost(int64_t n, HPtr regex, HPtr str) {
+    uint64_t regexEnc = regex.toBits();
+    uint64_t strEnc = str.toBits();
     // Returns List Match
     // n is the maximum number of matches to find (negative = unlimited)
 
     if (n == 0) {
-        return Export::encode(listNil());
+        return HPtr::fromBits(Export::encode(listNil()));
     }
 
     srell::regex* re = getCompiledRegex(regexEnc);
     if (!re) {
-        return Export::encode(listNil());
+        return HPtr::fromBits(Export::encode(listNil()));
     }
 
-    std::string str = elmStringToUTF8(strEnc);
+    std::string strUtf8 = elmStringToUTF8(strEnc);
 
     std::vector<HPointer> matches;
     int64_t matchNum = 0;
 
     try {
-        auto begin = srell::sregex_iterator(str.begin(), str.end(), *re);
+        auto begin = srell::sregex_iterator(strUtf8.begin(), strUtf8.end(), *re);
         auto end = srell::sregex_iterator();
 
         for (auto it = begin; it != end; ++it) {
@@ -295,7 +300,7 @@ uint64_t Elm_Kernel_Regex_findAtMost(int64_t n, uint64_t regexEnc, uint64_t strE
 
             std::string matchStr = match.str();
             size_t byteOffset = static_cast<size_t>(match.position());
-            int64_t charIndex = byteOffsetToCharIndex(str, byteOffset);
+            int64_t charIndex = byteOffsetToCharIndex(strUtf8, byteOffset);
 
             // Build submatches (skip index 0 which is the full match)
             std::vector<std::pair<bool, std::string>> submatches;
@@ -312,15 +317,17 @@ uint64_t Elm_Kernel_Regex_findAtMost(int64_t n, uint64_t regexEnc, uint64_t strE
             ++matchNum;
         }
     } catch (...) {
-        return Export::encode(listNil());
+        return HPtr::fromBits(Export::encode(listNil()));
     }
 
     // Build list from matches (in order)
-    return Export::encode(listFromPointers(matches));
+    return HPtr::fromBits(Export::encode(listFromPointers(matches)));
 }
 
-uint64_t Elm_Kernel_Regex_replaceAtMost(int64_t n, uint64_t regexEnc,
-                                         uint64_t closureEnc, uint64_t strEnc) {
+HPtr Elm_Kernel_Regex_replaceAtMost(int64_t n, HPtr regex, HPtr closure, HPtr str) {
+    uint64_t regexEnc = regex.toBits();
+    uint64_t closureEnc = closure.toBits();
+    uint64_t strEnc = str.toBits();
     // Replaces up to n matches using the callback closure
     // closure : Match -> String
     // Returns String
@@ -328,20 +335,20 @@ uint64_t Elm_Kernel_Regex_replaceAtMost(int64_t n, uint64_t regexEnc,
     srell::regex* re = getCompiledRegex(regexEnc);
     if (!re) {
         // Return original string if no regex
-        return strEnc;
+        return str;
     }
 
     if (n == 0) {
-        return strEnc;
+        return str;
     }
 
-    std::string str = elmStringToUTF8(strEnc);
+    std::string strUtf8 = elmStringToUTF8(strEnc);
     std::string result;
     size_t lastEnd = 0;
     int64_t matchNum = 0;
 
     try {
-        auto begin = srell::sregex_iterator(str.begin(), str.end(), *re);
+        auto begin = srell::sregex_iterator(strUtf8.begin(), strUtf8.end(), *re);
         auto end = srell::sregex_iterator();
 
         for (auto it = begin; it != end; ++it) {
@@ -352,11 +359,11 @@ uint64_t Elm_Kernel_Regex_replaceAtMost(int64_t n, uint64_t regexEnc,
             size_t matchLen = match.length();
 
             // Append text before this match
-            result.append(str.substr(lastEnd, matchStart - lastEnd));
+            result.append(strUtf8.substr(lastEnd, matchStart - lastEnd));
 
             // Build Match record for callback
             std::string matchStr = match.str();
-            int64_t charIndex = byteOffsetToCharIndex(str, matchStart);
+            int64_t charIndex = byteOffsetToCharIndex(strUtf8, matchStart);
 
             std::vector<std::pair<bool, std::string>> submatches;
             for (size_t i = 1; i < match.size(); ++i) {
@@ -371,7 +378,7 @@ uint64_t Elm_Kernel_Regex_replaceAtMost(int64_t n, uint64_t regexEnc,
 
             // Call the closure with the Match record
             uint64_t matchEnc = Export::encode(matchRecord);
-            uint64_t replacementEnc = eco_apply_closure(closureEnc, &matchEnc, 1);
+            uint64_t replacementEnc = eco_apply_closure(HPtr::fromBits(closureEnc), &matchEnc, 1).toBits();
 
             // Get replacement string
             std::string replacement = elmStringToUTF8(replacementEnc);
@@ -382,33 +389,35 @@ uint64_t Elm_Kernel_Regex_replaceAtMost(int64_t n, uint64_t regexEnc,
         }
 
         // Append remaining text after last match
-        result.append(str.substr(lastEnd));
+        result.append(strUtf8.substr(lastEnd));
 
     } catch (...) {
         // On error, return original string
-        return strEnc;
+        return str;
     }
 
     HPointer resultStr = utf8ToElmString(result);
-    return Export::encode(resultStr);
+    return HPtr::fromBits(Export::encode(resultStr));
 }
 
-uint64_t Elm_Kernel_Regex_splitAtMost(int64_t n, uint64_t regexEnc, uint64_t strEnc) {
+HPtr Elm_Kernel_Regex_splitAtMost(int64_t n, HPtr regex, HPtr str) {
+    uint64_t regexEnc = regex.toBits();
+    uint64_t strEnc = str.toBits();
     // Splits the string at up to n regex matches
     // Returns List String
 
     srell::regex* re = getCompiledRegex(regexEnc);
     if (!re) {
         // Return list containing just the original string
-        HPointer str = Export::decode(strEnc);
-        return Export::encode(cons(boxed(str), listNil(), true));
+        HPointer strHP = Export::decode(strEnc);
+        return HPtr::fromBits(Export::encode(cons(boxed(strHP), listNil(), true)));
     }
 
-    std::string str = elmStringToUTF8(strEnc);
+    std::string strUtf8 = elmStringToUTF8(strEnc);
 
-    if (n == 0 || str.empty()) {
+    if (n == 0 || strUtf8.empty()) {
         HPointer elmStr = Export::decode(strEnc);
-        return Export::encode(cons(boxed(elmStr), listNil(), true));
+        return HPtr::fromBits(Export::encode(cons(boxed(elmStr), listNil(), true)));
     }
 
     std::vector<HPointer> parts;
@@ -416,7 +425,7 @@ uint64_t Elm_Kernel_Regex_splitAtMost(int64_t n, uint64_t regexEnc, uint64_t str
     int64_t splitCount = 0;
 
     try {
-        auto begin = srell::sregex_iterator(str.begin(), str.end(), *re);
+        auto begin = srell::sregex_iterator(strUtf8.begin(), strUtf8.end(), *re);
         auto end = srell::sregex_iterator();
 
         for (auto it = begin; it != end; ++it) {
@@ -427,7 +436,7 @@ uint64_t Elm_Kernel_Regex_splitAtMost(int64_t n, uint64_t regexEnc, uint64_t str
             size_t matchLen = match.length();
 
             // Add part before the match
-            std::string part = str.substr(lastEnd, matchStart - lastEnd);
+            std::string part = strUtf8.substr(lastEnd, matchStart - lastEnd);
             parts.push_back(utf8ToElmString(part));
 
             lastEnd = matchStart + matchLen;
@@ -435,16 +444,16 @@ uint64_t Elm_Kernel_Regex_splitAtMost(int64_t n, uint64_t regexEnc, uint64_t str
         }
 
         // Add final part after last match
-        std::string finalPart = str.substr(lastEnd);
+        std::string finalPart = strUtf8.substr(lastEnd);
         parts.push_back(utf8ToElmString(finalPart));
 
     } catch (...) {
         // On error, return list with just original string
         HPointer elmStr = Export::decode(strEnc);
-        return Export::encode(cons(boxed(elmStr), listNil(), true));
+        return HPtr::fromBits(Export::encode(cons(boxed(elmStr), listNil(), true)));
     }
 
-    return Export::encode(listFromPointers(parts));
+    return HPtr::fromBits(Export::encode(listFromPointers(parts)));
 }
 
 } // extern "C"

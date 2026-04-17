@@ -11,7 +11,11 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "Heap.hpp"
+
 namespace Elm { struct EvalParamLayout; }
+
+using Elm::HPtr;
 
 extern "C" {
 
@@ -38,21 +42,21 @@ void* eco_get_output_stream();
 /// @param field_count Number of pointer-sized fields
 /// @param scalar_bytes Additional bytes for unboxed scalar fields
 /// @return HPointer (as uint64_t) to the allocated object
-uint64_t eco_alloc_custom(uint32_t ctor_id, uint32_t field_count, uint32_t scalar_bytes);
+HPtr eco_alloc_custom(uint32_t ctor_id, uint32_t field_count, uint32_t scalar_bytes);
 
 /// Allocates and initializes a Cons cell (list node).
 /// @param head The head element value (HPointer or unboxed primitive as uint64_t)
 /// @param tail The tail list HPointer (as uint64_t)
 /// @param head_unboxed 0 if head is a boxed pointer, 1 if head is an unboxed primitive
 /// @return HPointer (as uint64_t) to the allocated Cons object
-uint64_t eco_alloc_cons(uint64_t head, uint64_t tail, uint32_t head_unboxed);
+HPtr eco_alloc_cons(uint64_t head, HPtr tail, uint32_t head_unboxed);
 
 /// Allocates and initializes a Tuple2.
 /// @param a First element (HPointer or unboxed primitive as uint64_t)
 /// @param b Second element (HPointer or unboxed primitive as uint64_t)
 /// @param unboxed_mask Bitmap: bit 0 = a is unboxed, bit 1 = b is unboxed
 /// @return HPointer (as uint64_t) to the allocated Tuple2 object
-uint64_t eco_alloc_tuple2(uint64_t a, uint64_t b, uint32_t unboxed_mask);
+HPtr eco_alloc_tuple2(uint64_t a, uint64_t b, uint32_t unboxed_mask);
 
 /// Allocates and initializes a Tuple3.
 /// @param a First element (HPointer or unboxed primitive as uint64_t)
@@ -60,106 +64,106 @@ uint64_t eco_alloc_tuple2(uint64_t a, uint64_t b, uint32_t unboxed_mask);
 /// @param c Third element (HPointer or unboxed primitive as uint64_t)
 /// @param unboxed_mask Bitmap: bit 0 = a, bit 1 = b, bit 2 = c
 /// @return HPointer (as uint64_t) to the allocated Tuple3 object
-uint64_t eco_alloc_tuple3(uint64_t a, uint64_t b, uint64_t c, uint32_t unboxed_mask);
+HPtr eco_alloc_tuple3(uint64_t a, uint64_t b, uint64_t c, uint32_t unboxed_mask);
 
 /// Allocates a Record with the specified number of fields.
 /// Fields must be stored separately using eco_store_record_field* functions.
 /// @param field_count Number of fields in the record
 /// @param unboxed_bitmap Bitmap indicating which fields are unboxed primitives
 /// @return HPointer (as uint64_t) to the allocated Record object
-uint64_t eco_alloc_record(uint32_t field_count, uint64_t unboxed_bitmap);
+HPtr eco_alloc_record(uint32_t field_count, uint64_t unboxed_bitmap);
 
 /// Stores a boxed pointer field in a Record.
 /// @param record HPointer (as uint64_t) to the Record object
 /// @param index Field index
 /// @param value HPointer value to store (as uint64_t)
-void eco_store_record_field(uint64_t record, uint32_t index, uint64_t value);
+void eco_store_record_field(HPtr record, uint32_t index, HPtr value);
 
 /// Stores an unboxed i64 field in a Record.
 /// @param record HPointer (as uint64_t) to the Record object
 /// @param index Field index
 /// @param value Integer value to store
-void eco_store_record_field_i64(uint64_t record, uint32_t index, int64_t value);
+void eco_store_record_field_i64(HPtr record, uint32_t index, int64_t value);
 
 /// Stores an unboxed f64 field in a Record.
 /// @param record HPointer (as uint64_t) to the Record object
 /// @param index Field index
 /// @param value Float value to store
-void eco_store_record_field_f64(uint64_t record, uint32_t index, double value);
+void eco_store_record_field_f64(HPtr record, uint32_t index, double value);
 
 /// Allocates a string with the specified length.
 /// @param length Number of UTF-16 code units
 /// @return HPointer (as uint64_t) to the allocated ElmString object
-uint64_t eco_alloc_string(uint32_t length);
+HPtr eco_alloc_string(uint32_t length);
 
 /// Allocates a string literal directly in old generation (permanent, never collected).
 /// Used for compile-time string constants.
 /// @param chars Pointer to UTF-16 character data
 /// @param length Number of UTF-16 code units
 /// @return HPointer (as uint64_t) to the allocated ElmString object
-uint64_t eco_alloc_string_literal(const uint16_t* chars, uint32_t length);
+HPtr eco_alloc_string_literal(const uint16_t* chars, uint32_t length);
 
 /// Allocates a closure object.
 /// @param func_ptr Pointer to the evaluator function
 /// @param num_captures Number of captured values
 /// @return HPointer (as uint64_t) to the allocated Closure object
-uint64_t eco_alloc_closure(void* func_ptr, uint32_t num_captures);
+HPtr eco_alloc_closure(void* func_ptr, uint32_t num_captures);
 
 /// Allocates a boxed Int.
 /// @param value The integer value
 /// @return HPointer (as uint64_t) to the allocated ElmInt object
-uint64_t eco_alloc_int(int64_t value);
+HPtr eco_alloc_int(int64_t value);
 
 /// Allocates a boxed Float.
 /// @param value The floating-point value
 /// @return HPointer (as uint64_t) to the allocated ElmFloat object
-uint64_t eco_alloc_float(double value);
+HPtr eco_alloc_float(double value);
 
 /// Allocates a boxed Char.
 /// @param value The character (Unicode code point)
 /// @return HPointer (as uint64_t) to the allocated ElmChar object
-uint64_t eco_alloc_char(uint32_t value);
+HPtr eco_alloc_char(uint32_t value);
 
 /// Generic allocation with specified size and tag.
 /// @param size Size in bytes to allocate
 /// @param tag Object type tag (Tag enum value)
 /// @return HPointer (as uint64_t) to the allocated object
-uint64_t eco_allocate(uint64_t size, uint32_t tag);
+HPtr eco_allocate(uint64_t size, uint32_t tag);
 
 /// Sets the unboxed bitmap for a heap object.
 /// @param obj HPointer (as uint64_t) to the heap object
 /// @param bitmap Bitmap indicating which fields are unboxed
-void eco_set_unboxed(uint64_t obj, uint64_t bitmap);
+void eco_set_unboxed(HPtr obj, uint64_t bitmap);
 
 //===----------------------------------------------------------------------===//
 // Fast Allocation Functions (bump-pointer only, no GC, return 0 on failure)
 //===----------------------------------------------------------------------===//
 
-uint64_t eco_alloc_custom_fast(uint32_t ctor_id, uint32_t field_count, uint32_t scalar_bytes);
-uint64_t eco_alloc_cons_fast(uint64_t head, uint64_t tail, uint32_t head_unboxed);
-uint64_t eco_alloc_tuple2_fast(uint64_t a, uint64_t b, uint32_t unboxed_mask);
-uint64_t eco_alloc_tuple3_fast(uint64_t a, uint64_t b, uint64_t c, uint32_t unboxed_mask);
-uint64_t eco_alloc_record_fast(uint32_t field_count, uint64_t unboxed_bitmap);
-uint64_t eco_alloc_string_fast(uint32_t length);
-uint64_t eco_alloc_closure_fast(void* func_ptr, uint32_t num_captures);
-uint64_t eco_alloc_int_fast(int64_t value);
-uint64_t eco_alloc_float_fast(double value);
-uint64_t eco_alloc_char_fast(uint32_t value);
+HPtr eco_alloc_custom_fast(uint32_t ctor_id, uint32_t field_count, uint32_t scalar_bytes);
+HPtr eco_alloc_cons_fast(uint64_t head, HPtr tail, uint32_t head_unboxed);
+HPtr eco_alloc_tuple2_fast(uint64_t a, uint64_t b, uint32_t unboxed_mask);
+HPtr eco_alloc_tuple3_fast(uint64_t a, uint64_t b, uint64_t c, uint32_t unboxed_mask);
+HPtr eco_alloc_record_fast(uint32_t field_count, uint64_t unboxed_bitmap);
+HPtr eco_alloc_string_fast(uint32_t length);
+HPtr eco_alloc_closure_fast(void* func_ptr, uint32_t num_captures);
+HPtr eco_alloc_int_fast(int64_t value);
+HPtr eco_alloc_float_fast(double value);
+HPtr eco_alloc_char_fast(uint32_t value);
 
 //===----------------------------------------------------------------------===//
 // Slow Allocation Functions (may GC, always succeed — used behind statepoint)
 //===----------------------------------------------------------------------===//
 
-uint64_t eco_alloc_custom_slow(uint32_t ctor_id, uint32_t field_count, uint32_t scalar_bytes);
-uint64_t eco_alloc_cons_slow(uint64_t head, uint64_t tail, uint32_t head_unboxed);
-uint64_t eco_alloc_tuple2_slow(uint64_t a, uint64_t b, uint32_t unboxed_mask);
-uint64_t eco_alloc_tuple3_slow(uint64_t a, uint64_t b, uint64_t c, uint32_t unboxed_mask);
-uint64_t eco_alloc_record_slow(uint32_t field_count, uint64_t unboxed_bitmap);
-uint64_t eco_alloc_string_slow(uint32_t length);
-uint64_t eco_alloc_closure_slow(void* func_ptr, uint32_t num_captures);
-uint64_t eco_alloc_int_slow(int64_t value);
-uint64_t eco_alloc_float_slow(double value);
-uint64_t eco_alloc_char_slow(uint32_t value);
+HPtr eco_alloc_custom_slow(uint32_t ctor_id, uint32_t field_count, uint32_t scalar_bytes);
+HPtr eco_alloc_cons_slow(uint64_t head, HPtr tail, uint32_t head_unboxed);
+HPtr eco_alloc_tuple2_slow(uint64_t a, uint64_t b, uint32_t unboxed_mask);
+HPtr eco_alloc_tuple3_slow(uint64_t a, uint64_t b, uint64_t c, uint32_t unboxed_mask);
+HPtr eco_alloc_record_slow(uint32_t field_count, uint64_t unboxed_bitmap);
+HPtr eco_alloc_string_slow(uint32_t length);
+HPtr eco_alloc_closure_slow(void* func_ptr, uint32_t num_captures);
+HPtr eco_alloc_int_slow(int64_t value);
+HPtr eco_alloc_float_slow(double value);
+HPtr eco_alloc_char_slow(uint32_t value);
 
 //===----------------------------------------------------------------------===//
 // Region Allocation (fast returns nullptr, slow may GC)
@@ -173,15 +177,15 @@ void* eco_gc_alloc_region_slow(size_t total);
 // Initialize an object at a pre-allocated pointer and return HPointer.
 //===----------------------------------------------------------------------===//
 
-uint64_t eco_init_int_at(void* ptr, int64_t value);
-uint64_t eco_init_float_at(void* ptr, double value);
-uint64_t eco_init_char_at(void* ptr, uint32_t value);
-uint64_t eco_init_cons_at(void* ptr, uint64_t head, uint64_t tail, uint32_t head_unboxed);
-uint64_t eco_init_tuple2_at(void* ptr, uint64_t a, uint64_t b, uint32_t unboxed_mask);
-uint64_t eco_init_tuple3_at(void* ptr, uint64_t a, uint64_t b, uint64_t c, uint32_t unboxed_mask);
-uint64_t eco_init_record_at(void* ptr, uint32_t field_count, uint64_t unboxed_bitmap);
-uint64_t eco_init_custom_at(void* ptr, uint32_t ctor_id, uint32_t field_count, uint32_t scalar_bytes);
-uint64_t eco_init_string_at(void* ptr, uint32_t length);
+HPtr eco_init_int_at(void* ptr, int64_t value);
+HPtr eco_init_float_at(void* ptr, double value);
+HPtr eco_init_char_at(void* ptr, uint32_t value);
+HPtr eco_init_cons_at(void* ptr, uint64_t head, HPtr tail, uint32_t head_unboxed);
+HPtr eco_init_tuple2_at(void* ptr, uint64_t a, uint64_t b, uint32_t unboxed_mask);
+HPtr eco_init_tuple3_at(void* ptr, uint64_t a, uint64_t b, uint64_t c, uint32_t unboxed_mask);
+HPtr eco_init_record_at(void* ptr, uint32_t field_count, uint64_t unboxed_bitmap);
+HPtr eco_init_custom_at(void* ptr, uint32_t ctor_id, uint32_t field_count, uint32_t scalar_bytes);
+HPtr eco_init_string_at(void* ptr, uint32_t length);
 
 //===----------------------------------------------------------------------===//
 // Field Store Functions
@@ -191,19 +195,19 @@ uint64_t eco_init_string_at(void* ptr, uint32_t length);
 /// @param obj HPointer (as uint64_t) to the heap object
 /// @param index Field index
 /// @param value Value to store (as i64 tagged pointer)
-void eco_store_field(uint64_t obj, uint32_t index, uint64_t value);
+void eco_store_field(HPtr obj, uint32_t index, HPtr value);
 
 /// Stores an unboxed i64 field in an object.
 /// @param obj HPointer (as uint64_t) to the heap object
 /// @param index Field index
 /// @param value Value to store
-void eco_store_field_i64(uint64_t obj, uint32_t index, int64_t value);
+void eco_store_field_i64(HPtr obj, uint32_t index, int64_t value);
 
 /// Stores an unboxed f64 field in an object.
 /// @param obj HPointer (as uint64_t) to the heap object
 /// @param index Field index
 /// @param value Value to store
-void eco_store_field_f64(uint64_t obj, uint32_t index, double value);
+void eco_store_field_f64(HPtr obj, uint32_t index, double value);
 
 //===----------------------------------------------------------------------===//
 // Closure Operations
@@ -218,7 +222,7 @@ void eco_store_field_f64(uint64_t obj, uint32_t index, double value);
 /// @param args Array of arguments (as i64 tagged pointers / HPointer-encoded)
 /// @param num_args Number of arguments
 /// @return Result value or new closure (as HPointer uint64_t)
-uint64_t eco_apply_closure(uint64_t closure, uint64_t* args, uint32_t num_args);
+HPtr eco_apply_closure(HPtr closure, uint64_t* args, uint32_t num_args);
 
 /// Extends a PAP with more arguments (partial application).
 /// Creates a new closure with the combined captured values.
@@ -227,7 +231,7 @@ uint64_t eco_apply_closure(uint64_t closure, uint64_t* args, uint32_t num_args);
 /// @param num_newargs Number of new arguments
 /// @param new_unboxed_bitmap Bitmap indicating which new args are unboxed primitives
 /// @return New closure with additional captured values (as HPointer uint64_t)
-uint64_t eco_pap_extend(uint64_t closure, uint64_t* args, uint32_t num_newargs, uint64_t new_unboxed_bitmap);
+HPtr eco_pap_extend(HPtr closure, uint64_t* args, uint32_t num_newargs, uint64_t new_unboxed_bitmap);
 
 /// Calls a fully saturated closure.
 /// Combines captured values with new args and invokes the evaluator.
@@ -235,7 +239,7 @@ uint64_t eco_pap_extend(uint64_t closure, uint64_t* args, uint32_t num_newargs, 
 /// @param new_args Array of new arguments
 /// @param num_newargs Number of new arguments (n_values + num_newargs must equal max_values)
 /// @return Result of the function call (as i64)
-uint64_t eco_closure_call_saturated(uint64_t closure, uint64_t* new_args, uint32_t num_newargs, const Elm::EvalParamLayout* layout);
+HPtr eco_closure_call_saturated(HPtr closure, uint64_t* new_args, uint32_t num_newargs, const Elm::EvalParamLayout* layout);
 
 /// Applies arguments to a closure with known ABI but unknown staging.
 /// Reads the closure header to determine saturation at runtime.
@@ -247,7 +251,7 @@ uint64_t eco_closure_call_saturated(uint64_t closure, uint64_t* new_args, uint32
 /// @param unboxed_bitmap Bitmap indicating which typed_args are unboxed primitives
 /// @param boxed_args Array of same args but all HPointer-encoded
 /// @return Result of the application (as HPointer i64)
-uint64_t eco_apply_segmentation_unknown(uint64_t closure, uint64_t* typed_args,
+HPtr eco_apply_segmentation_unknown(HPtr closure, uint64_t* typed_args,
                                         uint32_t num_args, uint64_t unboxed_bitmap,
                                         uint64_t* boxed_args);
 
@@ -257,7 +261,7 @@ uint64_t eco_apply_segmentation_unknown(uint64_t closure, uint64_t* typed_args,
 
 /// Crashes the program with an error message.
 /// @param message HPointer (as uint64_t) to an ElmString containing the error message
-[[noreturn]] void eco_crash(uint64_t message);
+[[noreturn]] void eco_crash(HPtr message);
 
 /// Debug print for boxed values (for eco.dbg op).
 /// @param args Array of values to print
@@ -297,24 +301,24 @@ void eco_output_text(const char* text);
 /// Prints an Elm value to the current output stream in Elm syntax.
 /// Used by eco.dbg and Debug.toString.
 /// @param value The value to print (as 64-bit encoded pointer)
-void eco_print_value(uint64_t value);
+void eco_print_value(HPtr value);
 
 /// Prints an Elm value, unwrapping Ctor0 box wrappers from Guida compiler.
 /// Used by Debug.log to show clean Elm values without internal wrappers.
 /// @param value The value to print (as 64-bit encoded pointer)
-void eco_print_elm_value(uint64_t value);
+void eco_print_elm_value(HPtr value);
 
 /// Converts an Elm value to its string representation.
 /// Allocates and returns a new ElmString.
 /// @param value The value to convert (as 64-bit encoded pointer)
 /// @return HPointer (as uint64_t) to the allocated ElmString
-uint64_t eco_value_to_string(uint64_t value);
+HPtr eco_value_to_string(HPtr value);
 
 /// Convert a value to its string representation using type graph information.
 /// @param value The value to convert (as 64-bit encoded pointer)
 /// @param type_id The type graph type ID for the value (-1 for untyped fallback)
 /// @return HPointer (as uint64_t) to the allocated ElmString
-uint64_t eco_value_to_string_typed(uint64_t value, int64_t type_id);
+HPtr eco_value_to_string_typed(HPtr value, int64_t type_id);
 
 //===----------------------------------------------------------------------===//
 // GC Interface
@@ -362,12 +366,12 @@ void     eco_gc_restore_stack_range_point(size_t point);
 /// Extracts the Header.tag field from a heap object.
 /// @param obj HPointer (as uint64_t) to the heap object
 /// @return The tag value (Tag enum)
-uint32_t eco_get_header_tag(uint64_t obj);
+uint32_t eco_get_header_tag(HPtr obj);
 
 /// Extracts the Custom.ctor field from a Custom object.
 /// @param obj HPointer (as uint64_t) to the Custom object
 /// @return The constructor tag
-uint32_t eco_get_custom_ctor(uint64_t obj);
+uint32_t eco_get_custom_ctor(HPtr obj);
 
 /// Get constructor tag for a value, handling both heap objects and embedded constants.
 /// For heap Custom objects: returns the ctor field (16-bit constructor tag).
@@ -377,7 +381,7 @@ uint32_t eco_get_custom_ctor(uint64_t obj);
 ///   - Other embedded constants -> tag=0
 /// @param val HPointer (as uint64_t) to the value
 /// @return The constructor tag
-uint32_t eco_get_tag(uint64_t val);
+uint32_t eco_get_tag(HPtr val);
 
 //===----------------------------------------------------------------------===//
 // List Element Access
@@ -389,7 +393,7 @@ uint32_t eco_get_tag(uint64_t val);
 /// - If head is boxed: resolves the HPointer and loads from ElmInt.value
 /// @param cons HPointer (as uint64_t) to the Cons cell
 /// @return The head value as i64
-int64_t eco_cons_head_i64(uint64_t cons);
+int64_t eco_cons_head_i64(HPtr cons);
 
 /// Gets the head of a Cons cell as an unboxed f64.
 /// Handles both boxed and unboxed heads:
@@ -397,7 +401,7 @@ int64_t eco_cons_head_i64(uint64_t cons);
 /// - If head is boxed: resolves the HPointer and loads from ElmFloat.value
 /// @param cons HPointer (as uint64_t) to the Cons cell
 /// @return The head value as f64
-double eco_cons_head_f64(uint64_t cons);
+double eco_cons_head_f64(HPtr cons);
 
 /// Gets the head of a Cons cell as an unboxed i16 (Elm Char).
 /// Handles both boxed and unboxed heads:
@@ -405,7 +409,7 @@ double eco_cons_head_f64(uint64_t cons);
 /// - If head is boxed: resolves the HPointer and loads from ElmChar.value
 /// @param cons HPointer (as uint64_t) to the Cons cell
 /// @return The head value as i16
-int16_t eco_cons_head_i16(uint64_t cons);
+int16_t eco_cons_head_i16(HPtr cons);
 
 //===----------------------------------------------------------------------===//
 // Arithmetic Helpers
@@ -433,13 +437,13 @@ int64_t eco_int_pow(int64_t base, int64_t exp);
 ///
 /// @param hptr HPointer value (as uint64_t)
 /// @return Raw pointer to the heap object, or nullptr
-void* eco_resolve_hptr(uint64_t hptr);
+void* eco_resolve_hptr(HPtr hptr);
 
 /// Clone an ElmArray, returning a new array with the same contents.
 /// Used by eco.array.set lowering for functional array update.
 /// @param array_hptr HPointer to source ElmArray (as uint64_t)
 /// @return HPointer to new ElmArray copy (as uint64_t)
-uint64_t eco_clone_array(uint64_t array_hptr);
+HPtr eco_clone_array(HPtr array_hptr);
 
 } // extern "C"
 

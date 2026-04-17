@@ -21,8 +21,7 @@
 #include <cstring>
 #include <mutex>
 
-// Declare closure call
-extern "C" uint64_t eco_apply_closure(uint64_t closure, uint64_t* args, uint32_t num_args);
+// eco_apply_closure is declared in RuntimeExports.h (included above)
 
 using namespace Elm;
 using namespace Elm::Kernel;
@@ -236,7 +235,7 @@ void httpWorkerThread(HttpContext ctx) {
         HPointer failTask = Scheduler::instance().taskFail(error);
 
         uint64_t resultEnc = encodeHP(failTask);
-        eco_apply_closure(ctx.resumeClosureEnc, &resultEnc, 1);
+        eco_apply_closure(HPtr::fromBits(ctx.resumeClosureEnc), &resultEnc, 1);
         return;
     }
 
@@ -323,7 +322,7 @@ void httpWorkerThread(HttpContext ctx) {
 
         // Call the expect handler with the response to get Result Error a
         uint64_t responseEnc = encodeHP(response);
-        uint64_t resultEnc = eco_apply_closure(ctx.expectHandlerEnc, &responseEnc, 1);
+        uint64_t resultEnc = eco_apply_closure(HPtr::fromBits(ctx.expectHandlerEnc), &responseEnc, 1).toBits();
 
         // The result is already a Result, so we need to convert it to Task
         HPointer result = decodeHP(resultEnc);
@@ -350,7 +349,7 @@ void httpWorkerThread(HttpContext ctx) {
 
     // Call the resume closure with the result task
     uint64_t taskEnc = encodeHP(resultTask);
-    eco_apply_closure(ctx.resumeClosureEnc, &taskEnc, 1);
+    eco_apply_closure(HPtr::fromBits(ctx.resumeClosureEnc), &taskEnc, 1);
 }
 #endif // HTTP_CURL_AVAILABLE
 
@@ -439,7 +438,7 @@ static void* composeExpectEvaluator(void* args[]) {
     uint64_t responseEnc = reinterpret_cast<uint64_t>(args[2]);
 
     // First call handler with response
-    uint64_t resultEnc = eco_apply_closure(handlerEnc, &responseEnc, 1);
+    uint64_t resultEnc = eco_apply_closure(HPtr::fromBits(handlerEnc), &responseEnc, 1).toBits();
 
     // result is Result Error a
     // If Ok, map the value; if Err, return unchanged
@@ -451,7 +450,7 @@ static void* composeExpectEvaluator(void* args[]) {
         if (resultCustom->ctor == 0) {
             // Ok value - apply mapper
             uint64_t okValueEnc = encodeHP(resultCustom->values[0].p);
-            uint64_t mappedEnc = eco_apply_closure(mapperEnc, &okValueEnc, 1);
+            uint64_t mappedEnc = eco_apply_closure(HPtr::fromBits(mapperEnc), &okValueEnc, 1).toBits();
 
             // Wrap in Ok
             HPointer mappedValue = decodeHP(mappedEnc);
@@ -468,20 +467,22 @@ static void* composeExpectEvaluator(void* args[]) {
 
 extern "C" {
 
-uint64_t Elm_Kernel_Http_emptyBody() {
+HPtr Elm_Kernel_Http_emptyBody() {
     // Return a Body Custom type representing empty body
     std::vector<Unboxable> values;  // No values for empty body
     HPointer body = custom(BODY_EMPTY, values, 0);
-    return Export::encode(body);
+    return HPtr::fromBits(Export::encode(body));
 }
 
-uint64_t Elm_Kernel_Http_pair(uint64_t keyEnc, uint64_t valueEnc) {
+HPtr Elm_Kernel_Http_pair(HPtr key, HPtr value) {
     // Return a Header tuple (String, String)
-    HPointer key = Export::decode(keyEnc);
-    HPointer value = Export::decode(valueEnc);
+    uint64_t keyEnc = key.toBits();
+    uint64_t valueEnc = value.toBits();
+    HPointer keyHP = Export::decode(keyEnc);
+    HPointer valueHP = Export::decode(valueEnc);
 
-    HPointer header = tuple2(boxed(key), boxed(value), 0);  // Both boxed strings
-    return Export::encode(header);
+    HPointer header = tuple2(boxed(keyHP), boxed(valueHP), 0);  // Both boxed strings
+    return HPtr::fromBits(Export::encode(header));
 }
 
 // Side table for HTTP binding capture data. Maps integer IDs to capture
@@ -497,7 +498,8 @@ static std::unordered_map<int64_t, BindingCaptureData*>& captureTable() {
     return table;
 }
 
-uint64_t Elm_Kernel_Http_toTask(uint64_t requestEnc) {
+HPtr Elm_Kernel_Http_toTask(HPtr request) {
+    uint64_t requestEnc = request.toBits();
 #ifdef HTTP_CURL_AVAILABLE
     // Create a Task that performs the HTTP request
     // This creates a Binding task that spawns a thread
@@ -508,7 +510,7 @@ uint64_t Elm_Kernel_Http_toTask(uint64_t requestEnc) {
     if (!extractRequest(requestEnc, ctx, expectHandler)) {
         HPointer error = createError(ERR_BAD_URL, utf8ToElmString("Invalid request"));
         HPointer failTask = Scheduler::instance().taskFail(error);
-        return Export::encode(failTask);
+        return HPtr::fromBits(Export::encode(failTask));
     }
 
     // Store request info in a side table, keyed by integer ID.
@@ -558,19 +560,20 @@ uint64_t Elm_Kernel_Http_toTask(uint64_t requestEnc) {
 
     // Create the binding task
     HPointer task = Scheduler::instance().taskBinding(bindingCallback);
-    return Export::encode(task);
+    return HPtr::fromBits(Export::encode(task));
 #else
     // HTTP not available - return NetworkError
     (void)requestEnc;
     HPointer error = createError(ERR_NETWORK_ERROR);
     HPointer failTask = Scheduler::instance().taskFail(error);
-    return Export::encode(failTask);
+    return HPtr::fromBits(Export::encode(failTask));
 #endif
 }
 
-uint64_t Elm_Kernel_Http_expect(uint64_t responseToResultEnc) {
+HPtr Elm_Kernel_Http_expect(HPtr responseToResult) {
     // Create an Expect value that wraps the response-to-result function
     // Expect = Custom { ctor: EXPECT_CTOR, values: [handler] }
+    uint64_t responseToResultEnc = responseToResult.toBits();
 
     HPointer handler = Export::decode(responseToResultEnc);
 
@@ -578,17 +581,19 @@ uint64_t Elm_Kernel_Http_expect(uint64_t responseToResultEnc) {
     values[0].p = handler;
 
     HPointer expect = custom(EXPECT_CTOR, values, 0);  // handler is boxed
-    return Export::encode(expect);
+    return HPtr::fromBits(Export::encode(expect));
 }
 
-uint64_t Elm_Kernel_Http_mapExpect(uint64_t closureEnc, uint64_t expectEnc) {
+HPtr Elm_Kernel_Http_mapExpect(HPtr closure, HPtr expectVal) {
     // Map a function over an Expect
     // Returns a new Expect that applies the mapper to the result
+    uint64_t closureEnc = closure.toBits();
+    uint64_t expectEnc = expectVal.toBits();
 
     // Get the original handler
     void* expectPtr = Export::toPtr(expectEnc);
     if (!expectPtr) {
-        return expectEnc;  // Return unchanged if invalid
+        return expectVal;  // Return unchanged if invalid
     }
 
     Custom* expect = static_cast<Custom*>(expectPtr);
@@ -611,48 +616,48 @@ uint64_t Elm_Kernel_Http_mapExpect(uint64_t closureEnc, uint64_t expectEnc) {
     values[0].p = composed;
 
     HPointer newExpect = custom(EXPECT_CTOR, values, 0);
-    return Export::encode(newExpect);
+    return HPtr::fromBits(Export::encode(newExpect));
 }
 
-uint64_t Elm_Kernel_Http_bytesToBlob(uint64_t bytesEnc, uint64_t mimeTypeEnc) {
+HPtr Elm_Kernel_Http_bytesToBlob(HPtr bytes, HPtr mimeType) {
     // Create a Body from Bytes with a mime type
     // Body = Custom { ctor: BODY_BLOB, values: [bytes, mimeType] }
 
-    HPointer bytes = Export::decode(bytesEnc);
-    HPointer mimeType = Export::decode(mimeTypeEnc);
+    HPointer bytesHP = Export::decode(bytes.toBits());
+    HPointer mimeTypeHP = Export::decode(mimeType.toBits());
 
     std::vector<Unboxable> values(2);
-    values[0].p = bytes;
-    values[1].p = mimeType;
+    values[0].p = bytesHP;
+    values[1].p = mimeTypeHP;
 
     HPointer body = custom(BODY_BLOB, values, 0);  // both boxed
-    return Export::encode(body);
+    return HPtr::fromBits(Export::encode(body));
 }
 
-uint64_t Elm_Kernel_Http_toDataView(uint64_t bytesEnc) {
+HPtr Elm_Kernel_Http_toDataView(HPtr bytes) {
     // Create a Body from Bytes (raw bytes body)
     // Body = Custom { ctor: BODY_BYTES, values: [bytes] }
 
-    HPointer bytes = Export::decode(bytesEnc);
+    HPointer bytesHP = Export::decode(bytes.toBits());
 
     std::vector<Unboxable> values(1);
-    values[0].p = bytes;
+    values[0].p = bytesHP;
 
     HPointer body = custom(BODY_BYTES, values, 0);
-    return Export::encode(body);
+    return HPtr::fromBits(Export::encode(body));
 }
 
-uint64_t Elm_Kernel_Http_toFormData(uint64_t partsEnc) {
+HPtr Elm_Kernel_Http_toFormData(HPtr parts) {
     // Create a multipart form Body from a list of parts
     // Body = Custom { ctor: BODY_FORM, values: [parts] }
 
-    HPointer parts = Export::decode(partsEnc);
+    HPointer partsHP = Export::decode(parts.toBits());
 
     std::vector<Unboxable> values(1);
-    values[0].p = parts;
+    values[0].p = partsHP;
 
     HPointer body = custom(BODY_FORM, values, 0);
-    return Export::encode(body);
+    return HPtr::fromBits(Export::encode(body));
 }
 
 #ifdef HTTP_CURL_AVAILABLE

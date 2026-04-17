@@ -46,12 +46,18 @@ struct SafepointInfo {
 
 } // anonymous namespace
 
+/// Extract the underlying GC root value from a marker argument.
 /// If value is an IntToPtrInst(i64 -> ptr addrspace(1)), return the i64
-/// operand. SafepointOpLowering always emits this pattern for live roots.
+/// operand (legacy pattern). If value is already ptr addrspace(1), return
+/// it as-is (new pattern: roots are directly ptr<1>).
 static Value *stripIntToPtr(Value *V) {
     if (auto *I2P = dyn_cast<IntToPtrInst>(V))
         if (I2P->getSrcTy()->isIntegerTy(64))
             return I2P->getOperand(0);
+    // New pattern: value is already ptr addrspace(1)
+    if (auto *PT = dyn_cast<PointerType>(V->getType()))
+        if (PT->getAddressSpace() == 1)
+            return V;
     return nullptr;
 }
 
@@ -75,9 +81,14 @@ static CallInst *findTargetCall(Instruction *after) {
     return nullptr;
 }
 
-/// Returns true if the type is a GC-managed type (i64 = HPointer representation).
+/// Returns true if the type is a GC-managed type.
+/// Handles both old (i64) and new (ptr addrspace(1)) representations.
 static bool isGCManagedType(Type *T) {
-    return T->isIntegerTy(64);
+    if (T->isIntegerTy(64))
+        return true;
+    if (auto *PT = dyn_cast<PointerType>(T))
+        return PT->getAddressSpace() == 1;
+    return false;
 }
 
 //===----------------------------------------------------------------------===//
@@ -244,10 +255,11 @@ static bool rewriteGCRootsWithAllocas(
 
     auto &ctx = F.getContext();
     auto *i64Ty = Type::getInt64Ty(ctx);
+    auto *gcPtrTy = PointerType::get(ctx, 1);
 
     auto *relocateDecl = Intrinsic::getOrInsertDeclaration(
         F.getParent(), Intrinsic::experimental_gc_relocate,
-        {PointerType::get(ctx, 1)});
+        {gcPtrTy});
 
     // 4a. Collect all unique GC root values
     DenseSet<Value *> rootSet;
@@ -262,13 +274,15 @@ static bool rewriteGCRootsWithAllocas(
     if (roots.empty())
         return false;
 
-    // 4b. Create one alloca per GC root in the entry block
+    // 4b. Create one alloca per GC root in the entry block.
+    // Use the root's own type (ptr<1> or i64) for the alloca.
     DenseMap<Value *, AllocaInst *> Allocas;
     SmallVector<AllocaInst *, 16> AllocaVec;
     IRBuilder<> entryBuilder(&F.getEntryBlock(), F.getEntryBlock().getFirstInsertionPt());
 
     for (auto *root : roots) {
-        auto *alloca = entryBuilder.CreateAlloca(i64Ty, nullptr,
+        Type *allocaTy = root->getType();
+        auto *alloca = entryBuilder.CreateAlloca(allocaTy, nullptr,
             root->getName() + ".gcroot");
         Allocas[root] = alloca;
         AllocaVec.push_back(alloca);
@@ -324,8 +338,11 @@ static bool rewriteGCRootsWithAllocas(
             auto *idx = ConstantInt::get(Type::getInt32Ty(ctx), sp.LiveIndices[i]);
             auto *relocate = builder.CreateCall(
                 relocateDecl, {sp.Statepoint, idx, idx});
-            auto *relocated = builder.CreatePtrToInt(relocate, i64Ty);
-            builder.CreateStore(relocated, Allocas[sp.LiveRoots[i]]);
+            // gc.relocate returns ptr<1>. If root was i64, convert back.
+            Value *toStore = relocate;
+            if (sp.LiveRoots[i]->getType()->isIntegerTy(64))
+                toStore = builder.CreatePtrToInt(relocate, i64Ty);
+            builder.CreateStore(toStore, Allocas[sp.LiveRoots[i]]);
         }
     }
 
@@ -363,13 +380,12 @@ static bool rewriteGCRootsWithAllocas(
                 loadBuilder.SetInsertPoint(incomingBB->getTerminator());
             }
 
-            auto *load = loadBuilder.CreateLoad(i64Ty, alloca, root->getName() + ".reload");
+            Type *loadTy = alloca->getAllocatedType();
+            auto *load = loadBuilder.CreateLoad(loadTy, alloca, root->getName() + ".reload");
 
             // Check if this use is a gc-live bundle operand (expects ptr addrspace(1))
-            // If so, we need inttoptr
             bool isGCLiveUse = false;
             if (auto *CB = dyn_cast<CallBase>(userInst)) {
-                // Check if this use index falls within an operand bundle
                 for (unsigned b = 0; b < CB->getNumOperandBundles(); b++) {
                     auto bundle = CB->getOperandBundleAt(b);
                     if (bundle.getTagName() == "gc-live") {
@@ -384,7 +400,8 @@ static bool rewriteGCRootsWithAllocas(
                 }
             }
 
-            if (isGCLiveUse) {
+            if (isGCLiveUse && loadTy->isIntegerTy(64)) {
+                // gc-live expects ptr<1>; convert i64 load
                 auto *ptrVal = loadBuilder.CreateIntToPtr(load,
                     PointerType::get(ctx, 1));
                 U->set(ptrVal);

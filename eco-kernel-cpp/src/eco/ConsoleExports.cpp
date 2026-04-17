@@ -4,15 +4,16 @@
 #include "Console.hpp"
 
 using namespace Eco::Kernel;
+using Elm::HPtr;
 
-uint64_t Eco_Kernel_Console_write(uint64_t handle, uint64_t content) {
-    return Console::write(handle, content);
+HPtr Eco_Kernel_Console_write(HPtr handle, HPtr content) {
+    return HPtr::fromBits(Console::write(handle.toBits(), content.toBits()));
 }
 
-uint64_t Eco_Kernel_Console_readLine() {
-    return Console::readLine();
+HPtr Eco_Kernel_Console_readLine() {
+    return HPtr::fromBits(Console::readLine());
 }
 
-uint64_t Eco_Kernel_Console_readAll() {
-    return Console::readAll();
+HPtr Eco_Kernel_Console_readAll() {
+    return HPtr::fromBits(Console::readAll());
 }

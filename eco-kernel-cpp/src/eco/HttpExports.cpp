@@ -4,11 +4,12 @@
 #include "Http.hpp"
 
 using namespace Eco::Kernel;
+using Elm::HPtr;
 
-uint64_t Eco_Kernel_Http_fetch(uint64_t method, uint64_t url, uint64_t headers) {
-    return Http::fetch(method, url, headers);
+HPtr Eco_Kernel_Http_fetch(HPtr method, HPtr url, HPtr headers) {
+    return HPtr::fromBits(Http::fetch(method.toBits(), url.toBits(), headers.toBits()));
 }
 
-uint64_t Eco_Kernel_Http_getArchive(uint64_t url) {
-    return Http::getArchive(url);
+HPtr Eco_Kernel_Http_getArchive(HPtr url) {
+    return HPtr::fromBits(Http::getArchive(url.toBits()));
 }

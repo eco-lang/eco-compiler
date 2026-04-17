@@ -89,7 +89,7 @@ void timerWorker(double intervalMs) {
 
         // Call tagger(posix) to get the message
         uint64_t posixEnc = encodeHP(posix);
-        uint64_t msgEnc = eco_apply_closure(state->taggerEnc, &posixEnc, 1);
+        uint64_t msgEnc = eco_apply_closure(HPtr::fromBits(state->taggerEnc), &posixEnc, 1).toBits();
 
         // Send to app via router
         HPointer router = decodeHP(state->routerEnc);
@@ -252,10 +252,10 @@ static void* composedTaggerEvaluator(void* args[]) {
     uint64_t timeEnc = reinterpret_cast<uint64_t>(args[2]);
 
     // Call origTagger(time)
-    uint64_t msgEnc = eco_apply_closure(taggerEnc, &timeEnc, 1);
+    uint64_t msgEnc = eco_apply_closure(HPtr::fromBits(taggerEnc), &timeEnc, 1).toBits();
 
     // Call mapper(msg)
-    uint64_t resultEnc = eco_apply_closure(mapperEnc, &msgEnc, 1);
+    uint64_t resultEnc = eco_apply_closure(HPtr::fromBits(mapperEnc), &msgEnc, 1).toBits();
 
     return reinterpret_cast<void*>(resultEnc);
 }

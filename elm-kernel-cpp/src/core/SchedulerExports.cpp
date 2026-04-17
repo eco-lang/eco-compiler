@@ -13,42 +13,50 @@ using Export::decode;
 
 extern "C" {
 
-uint64_t Elm_Kernel_Scheduler_succeed(uint64_t value) {
-    HPointer v = decode(value);
+HPtr Elm_Kernel_Scheduler_succeed(HPtr value) {
+    uint64_t value_bits = value.toBits();
+    HPointer v = decode(value_bits);
     HPointer t = Elm::Platform::Scheduler::instance().taskSucceed(v);
-    return encode(t);
+    return HPtr::fromBits(encode(t));
 }
 
-uint64_t Elm_Kernel_Scheduler_fail(uint64_t error) {
-    HPointer e = decode(error);
+HPtr Elm_Kernel_Scheduler_fail(HPtr error) {
+    uint64_t error_bits = error.toBits();
+    HPointer e = decode(error_bits);
     HPointer t = Elm::Platform::Scheduler::instance().taskFail(e);
-    return encode(t);
+    return HPtr::fromBits(encode(t));
 }
 
-uint64_t Elm_Kernel_Scheduler_andThen(uint64_t closure, uint64_t task) {
-    HPointer cb = decode(closure);
-    HPointer tk = decode(task);
+HPtr Elm_Kernel_Scheduler_andThen(HPtr closure, HPtr task) {
+    uint64_t closure_bits = closure.toBits();
+    uint64_t task_bits = task.toBits();
+    HPointer cb = decode(closure_bits);
+    HPointer tk = decode(task_bits);
     HPointer t = Elm::Platform::Scheduler::instance().taskAndThen(cb, tk);
-    return encode(t);
+    return HPtr::fromBits(encode(t));
 }
 
-uint64_t Elm_Kernel_Scheduler_onError(uint64_t closure, uint64_t task) {
-    HPointer cb = decode(closure);
-    HPointer tk = decode(task);
+HPtr Elm_Kernel_Scheduler_onError(HPtr closure, HPtr task) {
+    uint64_t closure_bits = closure.toBits();
+    uint64_t task_bits = task.toBits();
+    HPointer cb = decode(closure_bits);
+    HPointer tk = decode(task_bits);
     HPointer t = Elm::Platform::Scheduler::instance().taskOnError(cb, tk);
-    return encode(t);
+    return HPtr::fromBits(encode(t));
 }
 
-uint64_t Elm_Kernel_Scheduler_spawn(uint64_t task) {
-    HPointer tk = decode(task);
+HPtr Elm_Kernel_Scheduler_spawn(HPtr task) {
+    uint64_t task_bits = task.toBits();
+    HPointer tk = decode(task_bits);
     HPointer t = Elm::Platform::Scheduler::instance().spawnTask(tk);
-    return encode(t);
+    return HPtr::fromBits(encode(t));
 }
 
-uint64_t Elm_Kernel_Scheduler_kill(uint64_t process) {
-    HPointer proc = decode(process);
+HPtr Elm_Kernel_Scheduler_kill(HPtr process) {
+    uint64_t process_bits = process.toBits();
+    HPointer proc = decode(process_bits);
     HPointer t = Elm::Platform::Scheduler::instance().killTask(proc);
-    return encode(t);
+    return HPtr::fromBits(encode(t));
 }
 
 } // extern "C"

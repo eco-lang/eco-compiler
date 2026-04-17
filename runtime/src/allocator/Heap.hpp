@@ -27,6 +27,7 @@
 #define ECO_HEAP_H
 
 #include <assert.h>
+#include <cstring>
 
 namespace Elm {
 
@@ -116,6 +117,20 @@ typedef struct {
     u64 padding : 20; // Reserved for future use.
 } HPointer;
 static_assert(sizeof(HPointer) == 8, "HPointer must be 64 bits");
+
+// Opaque 64-bit HPointer representation for C-linkage boundaries.
+// On the LLVM side this is declared as ptr addrspace(1); on x86-64 SysV ABI
+// a single-member struct and a pointer are both passed/returned in a register,
+// so the calling convention matches. Internal code converts to/from HPointer
+// via memcpy (same as before with uint64_t).
+struct HPtr {
+    u64 bits;
+    static HPtr fromBits(u64 b) { return HPtr{b}; }
+    u64 toBits() const { return bits; }
+    static HPtr fromHPointer(HPointer hp) { HPtr h; memcpy(&h.bits, &hp, 8); return h; }
+    HPointer toHPointer() const { HPointer hp; memcpy(&hp, &bits, 8); return hp; }
+};
+static_assert(sizeof(HPtr) == 8, "HPtr must be 64 bits");
 
 // A pointer or unboxed primitive.
 // Used in structures with an unboxed bitmap that indicates which fields are pointers vs primitives.

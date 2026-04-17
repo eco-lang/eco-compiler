@@ -74,7 +74,7 @@ static void* sleepBindingEvaluator(void* rawArgs[]) {
 
 extern "C" {
 
-uint64_t Elm_Kernel_Process_sleep(double time) {
+HPtr Elm_Kernel_Process_sleep(double time) {
     // Create a boxed Float for the time value
     HPointer timeHP = Elm::alloc::allocFloat(time);
 
@@ -88,7 +88,7 @@ uint64_t Elm_Kernel_Process_sleep(double time) {
 
     // Create a Binding task with this callback
     HPointer task = Elm::Platform::Scheduler::instance().taskBinding(bindingCB);
-    return encode(task);
+    return HPtr::fromBits(encode(task));
 }
 
 } // extern "C"

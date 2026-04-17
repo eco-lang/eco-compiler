@@ -16,82 +16,82 @@ using namespace Elm::Kernel;
 
 extern "C" {
 
-uint64_t Elm_Kernel_File_decoder() {
+HPtr Elm_Kernel_File_decoder() {
     // Returns a JSON decoder for File objects.
     assert(false && "Elm_Kernel_File_decoder not implemented");
-    return 0;
+    return HPtr::fromBits(0);
 }
 
-uint64_t Elm_Kernel_File_name(uint64_t file) {
+HPtr Elm_Kernel_File_name(HPtr file) {
     (void)file;
     assert(false && "Elm_Kernel_File_name not implemented");
-    return 0;
+    return HPtr::fromBits(0);
 }
 
-uint64_t Elm_Kernel_File_mime(uint64_t file) {
+HPtr Elm_Kernel_File_mime(HPtr file) {
     (void)file;
     assert(false && "Elm_Kernel_File_mime not implemented");
-    return 0;
+    return HPtr::fromBits(0);
 }
 
-int64_t Elm_Kernel_File_size(uint64_t file) {
+int64_t Elm_Kernel_File_size(HPtr file) {
     (void)file;
     assert(false && "Elm_Kernel_File_size not implemented");
     return 0;
 }
 
-int64_t Elm_Kernel_File_lastModified(uint64_t file) {
+int64_t Elm_Kernel_File_lastModified(HPtr file) {
     (void)file;
     assert(false && "Elm_Kernel_File_lastModified not implemented");
     return 0;
 }
 
-uint64_t Elm_Kernel_File_toString(uint64_t file) {
+HPtr Elm_Kernel_File_toString(HPtr file) {
     (void)file;
     assert(false && "Elm_Kernel_File_toString not implemented");
-    return 0;
+    return HPtr::fromBits(0);
 }
 
-uint64_t Elm_Kernel_File_toBytes(uint64_t file) {
+HPtr Elm_Kernel_File_toBytes(HPtr file) {
     (void)file;
     assert(false && "Elm_Kernel_File_toBytes not implemented");
-    return 0;
+    return HPtr::fromBits(0);
 }
 
-uint64_t Elm_Kernel_File_toUrl(uint64_t file) {
+HPtr Elm_Kernel_File_toUrl(HPtr file) {
     (void)file;
     assert(false && "Elm_Kernel_File_toUrl not implemented");
-    return 0;
+    return HPtr::fromBits(0);
 }
 
-uint64_t Elm_Kernel_File_download(uint64_t name, uint64_t mime, uint64_t content) {
+HPtr Elm_Kernel_File_download(HPtr name, HPtr mime, HPtr content) {
     (void)name;
     (void)mime;
     (void)content;
     assert(false && "Elm_Kernel_File_download not implemented");
-    return 0;
+    return HPtr::fromBits(0);
 }
 
-uint64_t Elm_Kernel_File_downloadUrl(uint64_t name, uint64_t url) {
+HPtr Elm_Kernel_File_downloadUrl(HPtr name, HPtr url) {
     (void)name;
     (void)url;
     assert(false && "Elm_Kernel_File_downloadUrl not implemented");
-    return 0;
+    return HPtr::fromBits(0);
 }
 
-uint64_t Elm_Kernel_File_uploadOne(uint64_t mimes) {
+HPtr Elm_Kernel_File_uploadOne(HPtr mimes) {
     (void)mimes;
     assert(false && "Elm_Kernel_File_uploadOne not implemented");
-    return 0;
+    return HPtr::fromBits(0);
 }
 
-uint64_t Elm_Kernel_File_uploadOneOrMore(uint64_t mimes) {
+HPtr Elm_Kernel_File_uploadOneOrMore(HPtr mimes) {
     (void)mimes;
     assert(false && "Elm_Kernel_File_uploadOneOrMore not implemented");
-    return 0;
+    return HPtr::fromBits(0);
 }
 
-uint64_t Elm_Kernel_File_makeBytesSafeForInternetExplorer(uint64_t bytes) {
+HPtr Elm_Kernel_File_makeBytesSafeForInternetExplorer(HPtr bytes) {
     // This is an IE-specific workaround that's probably not needed.
     // Just return the bytes unchanged.
     return bytes;

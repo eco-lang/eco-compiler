@@ -27,16 +27,14 @@ static LowerToLLVMOptions ecoLLVMOptions(MLIRContext *ctx) {
 
 EcoTypeConverter::EcoTypeConverter(MLIRContext *ctx)
     : LLVMTypeConverter(ctx, ecoLLVMOptions(ctx)) {
-    // Convert eco.value -> i64 (tagged pointer representation).
+    // Convert eco.value -> ptr addrspace(1) (GC-managed pointer).
     // This implements CGEN_012 for the eco.value type.
     addConversion([ctx](eco::ValueType type) {
-        return IntegerType::get(ctx, 64);
+        return LLVM::LLVMPointerType::get(ctx, /*addressSpace=*/1);
     });
 
-    // Source materialization: create i64 from !eco.value
+    // Source materialization: create ptr<1> from !eco.value
     // This is called when converted operations need values from unconverted operations.
-    // Since eco.value is represented as i64 (tagged pointer), no actual conversion
-    // is needed at runtime - they're the same bit representation.
     // Use UnrealizedConversionCastOp which works with any types.
     addSourceMaterialization([](OpBuilder &builder, Type resultType,
                                 ValueRange inputs, Location loc) -> Value {
@@ -45,7 +43,7 @@ EcoTypeConverter::EcoTypeConverter(MLIRContext *ctx)
         return builder.create<UnrealizedConversionCastOp>(loc, resultType, inputs).getResult(0);
     });
 
-    // Target materialization: create !eco.value from i64
+    // Target materialization: create !eco.value from ptr<1>
     // This is called when unconverted operations need values from converted operations.
     addTargetMaterialization([](OpBuilder &builder, Type resultType,
                                 ValueRange inputs, Location loc) -> Value {
@@ -83,6 +81,7 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateFunc(
 #define I1_TY IntegerType::get(ctx, 1)
 #define F64_TY Float64Type::get(ctx)
 #define PTR_TY LLVM::LLVMPointerType::get(ctx)
+#define HPTR_TY LLVM::LLVMPointerType::get(ctx, /*addressSpace=*/1)
 #define VOID_TY LLVM::LLVMVoidType::get(ctx)
 
 //===----------------------------------------------------------------------===//
@@ -90,72 +89,71 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateFunc(
 //===----------------------------------------------------------------------===//
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocInt(OpBuilder &builder) const {
-    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {I64_TY});
+    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {I64_TY});
     return getOrCreateFunc(builder, "eco_alloc_int", funcTy);
 }
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocFloat(OpBuilder &builder) const {
-    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {F64_TY});
+    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {F64_TY});
     return getOrCreateFunc(builder, "eco_alloc_float", funcTy);
 }
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocChar(OpBuilder &builder) const {
-    // eco_alloc_char(value: i16) -> i64 (i16 maps to Elm Char, promoted to i32 at ABI)
-    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {I16_TY});
+    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {I16_TY});
     return getOrCreateFunc(builder, "eco_alloc_char", funcTy);
 }
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocCons(OpBuilder &builder) const {
-    // eco_alloc_cons(head: i64, tail: i64, head_unboxed: i32) -> i64
-    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {I64_TY, I64_TY, I32_TY});
+    // eco_alloc_cons(head: i64, tail: hptr, head_unboxed: i32) -> hptr
+    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {I64_TY, HPTR_TY, I32_TY});
     return getOrCreateFunc(builder, "eco_alloc_cons", funcTy);
 }
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocTuple2(OpBuilder &builder) const {
-    // eco_alloc_tuple2(a: i64, b: i64, unboxed_mask: i32) -> i64
-    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {I64_TY, I64_TY, I32_TY});
+    // eco_alloc_tuple2(a: i64, b: i64, unboxed_mask: i32) -> hptr
+    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {I64_TY, I64_TY, I32_TY});
     return getOrCreateFunc(builder, "eco_alloc_tuple2", funcTy);
 }
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocTuple3(OpBuilder &builder) const {
-    // eco_alloc_tuple3(a: i64, b: i64, c: i64, unboxed_mask: i32) -> i64
-    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {I64_TY, I64_TY, I64_TY, I32_TY});
+    // eco_alloc_tuple3(a: i64, b: i64, c: i64, unboxed_mask: i32) -> hptr
+    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {I64_TY, I64_TY, I64_TY, I32_TY});
     return getOrCreateFunc(builder, "eco_alloc_tuple3", funcTy);
 }
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocRecord(OpBuilder &builder) const {
-    // eco_alloc_record(field_count: i32, unboxed_bitmap: i64) -> i64
-    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {I32_TY, I64_TY});
+    // eco_alloc_record(field_count: i32, unboxed_bitmap: i64) -> hptr
+    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {I32_TY, I64_TY});
     return getOrCreateFunc(builder, "eco_alloc_record", funcTy);
 }
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocCustom(OpBuilder &builder) const {
-    // eco_alloc_custom(ctor_id: i32, field_count: i32, scalar_bytes: i32) -> i64
-    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {I32_TY, I32_TY, I32_TY});
+    // eco_alloc_custom(ctor_id: i32, field_count: i32, scalar_bytes: i32) -> hptr
+    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {I32_TY, I32_TY, I32_TY});
     return getOrCreateFunc(builder, "eco_alloc_custom", funcTy);
 }
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocString(OpBuilder &builder) const {
-    // eco_alloc_string(length: i32) -> i64
-    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {I32_TY});
+    // eco_alloc_string(length: i32) -> hptr
+    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {I32_TY});
     return getOrCreateFunc(builder, "eco_alloc_string", funcTy);
 }
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocStringLiteral(OpBuilder &builder) const {
-    // eco_alloc_string_literal(chars: ptr, length: i32) -> i64
-    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {PTR_TY, I32_TY});
+    // eco_alloc_string_literal(chars: ptr, length: i32) -> hptr
+    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {PTR_TY, I32_TY});
     return getOrCreateFunc(builder, "eco_alloc_string_literal", funcTy);
 }
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocClosure(OpBuilder &builder) const {
-    // eco_alloc_closure(func_ptr: ptr, num_captures: i32) -> i64
-    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {PTR_TY, I32_TY});
+    // eco_alloc_closure(func_ptr: ptr, num_captures: i32) -> hptr
+    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {PTR_TY, I32_TY});
     return getOrCreateFunc(builder, "eco_alloc_closure", funcTy);
 }
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocate(OpBuilder &builder) const {
-    // eco_allocate(size: i64, tag: i32) -> i64
-    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {I64_TY, I32_TY});
+    // eco_allocate(size: i64, tag: i32) -> hptr
+    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {I64_TY, I32_TY});
     return getOrCreateFunc(builder, "eco_allocate", funcTy);
 }
 
@@ -164,52 +162,52 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocate(OpBuilder &builder) const {
 //===----------------------------------------------------------------------===//
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocIntFast(OpBuilder &builder) const {
-    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {I64_TY});
+    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {I64_TY});
     return getOrCreateFunc(builder, "eco_alloc_int_fast", funcTy);
 }
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocFloatFast(OpBuilder &builder) const {
-    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {F64_TY});
+    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {F64_TY});
     return getOrCreateFunc(builder, "eco_alloc_float_fast", funcTy);
 }
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocCharFast(OpBuilder &builder) const {
-    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {I16_TY});
+    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {I16_TY});
     return getOrCreateFunc(builder, "eco_alloc_char_fast", funcTy);
 }
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocConsFast(OpBuilder &builder) const {
-    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {I64_TY, I64_TY, I32_TY});
+    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {I64_TY, HPTR_TY, I32_TY});
     return getOrCreateFunc(builder, "eco_alloc_cons_fast", funcTy);
 }
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocTuple2Fast(OpBuilder &builder) const {
-    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {I64_TY, I64_TY, I32_TY});
+    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {I64_TY, I64_TY, I32_TY});
     return getOrCreateFunc(builder, "eco_alloc_tuple2_fast", funcTy);
 }
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocTuple3Fast(OpBuilder &builder) const {
-    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {I64_TY, I64_TY, I64_TY, I32_TY});
+    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {I64_TY, I64_TY, I64_TY, I32_TY});
     return getOrCreateFunc(builder, "eco_alloc_tuple3_fast", funcTy);
 }
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocRecordFast(OpBuilder &builder) const {
-    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {I32_TY, I64_TY});
+    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {I32_TY, I64_TY});
     return getOrCreateFunc(builder, "eco_alloc_record_fast", funcTy);
 }
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocCustomFast(OpBuilder &builder) const {
-    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {I32_TY, I32_TY, I32_TY});
+    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {I32_TY, I32_TY, I32_TY});
     return getOrCreateFunc(builder, "eco_alloc_custom_fast", funcTy);
 }
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocStringFast(OpBuilder &builder) const {
-    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {I32_TY});
+    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {I32_TY});
     return getOrCreateFunc(builder, "eco_alloc_string_fast", funcTy);
 }
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocClosureFast(OpBuilder &builder) const {
-    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {PTR_TY, I32_TY});
+    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {PTR_TY, I32_TY});
     return getOrCreateFunc(builder, "eco_alloc_closure_fast", funcTy);
 }
 
@@ -218,52 +216,52 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocClosureFast(OpBuilder &builder) con
 //===----------------------------------------------------------------------===//
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocIntSlow(OpBuilder &builder) const {
-    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {I64_TY});
+    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {I64_TY});
     return getOrCreateFunc(builder, "eco_alloc_int_slow", funcTy);
 }
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocFloatSlow(OpBuilder &builder) const {
-    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {F64_TY});
+    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {F64_TY});
     return getOrCreateFunc(builder, "eco_alloc_float_slow", funcTy);
 }
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocCharSlow(OpBuilder &builder) const {
-    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {I16_TY});
+    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {I16_TY});
     return getOrCreateFunc(builder, "eco_alloc_char_slow", funcTy);
 }
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocConsSlow(OpBuilder &builder) const {
-    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {I64_TY, I64_TY, I32_TY});
+    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {I64_TY, HPTR_TY, I32_TY});
     return getOrCreateFunc(builder, "eco_alloc_cons_slow", funcTy);
 }
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocTuple2Slow(OpBuilder &builder) const {
-    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {I64_TY, I64_TY, I32_TY});
+    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {I64_TY, I64_TY, I32_TY});
     return getOrCreateFunc(builder, "eco_alloc_tuple2_slow", funcTy);
 }
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocTuple3Slow(OpBuilder &builder) const {
-    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {I64_TY, I64_TY, I64_TY, I32_TY});
+    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {I64_TY, I64_TY, I64_TY, I32_TY});
     return getOrCreateFunc(builder, "eco_alloc_tuple3_slow", funcTy);
 }
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocRecordSlow(OpBuilder &builder) const {
-    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {I32_TY, I64_TY});
+    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {I32_TY, I64_TY});
     return getOrCreateFunc(builder, "eco_alloc_record_slow", funcTy);
 }
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocCustomSlow(OpBuilder &builder) const {
-    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {I32_TY, I32_TY, I32_TY});
+    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {I32_TY, I32_TY, I32_TY});
     return getOrCreateFunc(builder, "eco_alloc_custom_slow", funcTy);
 }
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocStringSlow(OpBuilder &builder) const {
-    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {I32_TY});
+    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {I32_TY});
     return getOrCreateFunc(builder, "eco_alloc_string_slow", funcTy);
 }
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocClosureSlow(OpBuilder &builder) const {
-    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {PTR_TY, I32_TY});
+    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {PTR_TY, I32_TY});
     return getOrCreateFunc(builder, "eco_alloc_closure_slow", funcTy);
 }
 
@@ -288,56 +286,56 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocRegionSlow(OpBuilder &builder) cons
 //===----------------------------------------------------------------------===//
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateInitIntAt(OpBuilder &builder) const {
-    // eco_init_int_at(ptr, value: i64) -> i64
-    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {PTR_TY, I64_TY});
+    // eco_init_int_at(ptr, value: i64) -> hptr
+    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {PTR_TY, I64_TY});
     return getOrCreateFunc(builder, "eco_init_int_at", funcTy);
 }
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateInitFloatAt(OpBuilder &builder) const {
-    // eco_init_float_at(ptr, value: f64) -> i64
-    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {PTR_TY, F64_TY});
+    // eco_init_float_at(ptr, value: f64) -> hptr
+    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {PTR_TY, F64_TY});
     return getOrCreateFunc(builder, "eco_init_float_at", funcTy);
 }
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateInitCharAt(OpBuilder &builder) const {
-    // eco_init_char_at(ptr, value: i32) -> i64
-    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {PTR_TY, I32_TY});
+    // eco_init_char_at(ptr, value: i32) -> hptr
+    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {PTR_TY, I32_TY});
     return getOrCreateFunc(builder, "eco_init_char_at", funcTy);
 }
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateInitConsAt(OpBuilder &builder) const {
-    // eco_init_cons_at(ptr, head: i64, tail: i64, head_unboxed: i32) -> i64
-    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {PTR_TY, I64_TY, I64_TY, I32_TY});
+    // eco_init_cons_at(ptr, head: i64, tail: hptr, head_unboxed: i32) -> hptr
+    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {PTR_TY, I64_TY, HPTR_TY, I32_TY});
     return getOrCreateFunc(builder, "eco_init_cons_at", funcTy);
 }
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateInitTuple2At(OpBuilder &builder) const {
-    // eco_init_tuple2_at(ptr, a: i64, b: i64, unboxed: i32) -> i64
-    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {PTR_TY, I64_TY, I64_TY, I32_TY});
+    // eco_init_tuple2_at(ptr, a: i64, b: i64, unboxed: i32) -> hptr
+    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {PTR_TY, I64_TY, I64_TY, I32_TY});
     return getOrCreateFunc(builder, "eco_init_tuple2_at", funcTy);
 }
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateInitTuple3At(OpBuilder &builder) const {
-    // eco_init_tuple3_at(ptr, a: i64, b: i64, c: i64, unboxed: i32) -> i64
-    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {PTR_TY, I64_TY, I64_TY, I64_TY, I32_TY});
+    // eco_init_tuple3_at(ptr, a: i64, b: i64, c: i64, unboxed: i32) -> hptr
+    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {PTR_TY, I64_TY, I64_TY, I64_TY, I32_TY});
     return getOrCreateFunc(builder, "eco_init_tuple3_at", funcTy);
 }
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateInitRecordAt(OpBuilder &builder) const {
-    // eco_init_record_at(ptr, field_count: i32, unboxed_bitmap: i64) -> i64
-    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {PTR_TY, I32_TY, I64_TY});
+    // eco_init_record_at(ptr, field_count: i32, unboxed_bitmap: i64) -> hptr
+    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {PTR_TY, I32_TY, I64_TY});
     return getOrCreateFunc(builder, "eco_init_record_at", funcTy);
 }
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateInitCustomAt(OpBuilder &builder) const {
-    // eco_init_custom_at(ptr, ctor_id: i32, field_count: i32, scalar_bytes: i32) -> i64
-    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {PTR_TY, I32_TY, I32_TY, I32_TY});
+    // eco_init_custom_at(ptr, ctor_id: i32, field_count: i32, scalar_bytes: i32) -> hptr
+    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {PTR_TY, I32_TY, I32_TY, I32_TY});
     return getOrCreateFunc(builder, "eco_init_custom_at", funcTy);
 }
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateInitStringAt(OpBuilder &builder) const {
-    // eco_init_string_at(ptr, length: i32) -> i64
-    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {PTR_TY, I32_TY});
+    // eco_init_string_at(ptr, length: i32) -> hptr
+    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {PTR_TY, I32_TY});
     return getOrCreateFunc(builder, "eco_init_string_at", funcTy);
 }
 
@@ -346,44 +344,44 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateInitStringAt(OpBuilder &builder) const {
 //===----------------------------------------------------------------------===//
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateStoreField(OpBuilder &builder) const {
-    // eco_store_field(obj_hptr: i64, index: i32, value: i64) -> void
-    auto funcTy = LLVM::LLVMFunctionType::get(VOID_TY, {I64_TY, I32_TY, I64_TY});
+    // eco_store_field(obj_hptr: hptr, index: i32, value: hptr) -> void
+    auto funcTy = LLVM::LLVMFunctionType::get(VOID_TY, {HPTR_TY, I32_TY, HPTR_TY});
     return getOrCreateFunc(builder, "eco_store_field", funcTy);
 }
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateStoreFieldI64(OpBuilder &builder) const {
-    // eco_store_field_i64(obj_hptr: i64, index: i32, value: i64) -> void
-    auto funcTy = LLVM::LLVMFunctionType::get(VOID_TY, {I64_TY, I32_TY, I64_TY});
+    // eco_store_field_i64(obj_hptr: hptr, index: i32, value: i64) -> void
+    auto funcTy = LLVM::LLVMFunctionType::get(VOID_TY, {HPTR_TY, I32_TY, I64_TY});
     return getOrCreateFunc(builder, "eco_store_field_i64", funcTy);
 }
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateStoreFieldF64(OpBuilder &builder) const {
-    // eco_store_field_f64(obj_hptr: i64, index: i32, value: f64) -> void
-    auto funcTy = LLVM::LLVMFunctionType::get(VOID_TY, {I64_TY, I32_TY, F64_TY});
+    // eco_store_field_f64(obj_hptr: hptr, index: i32, value: f64) -> void
+    auto funcTy = LLVM::LLVMFunctionType::get(VOID_TY, {HPTR_TY, I32_TY, F64_TY});
     return getOrCreateFunc(builder, "eco_store_field_f64", funcTy);
 }
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateStoreRecordField(OpBuilder &builder) const {
-    // eco_store_record_field(record_hptr: i64, index: i32, value: i64) -> void
-    auto funcTy = LLVM::LLVMFunctionType::get(VOID_TY, {I64_TY, I32_TY, I64_TY});
+    // eco_store_record_field(record_hptr: hptr, index: i32, value: hptr) -> void
+    auto funcTy = LLVM::LLVMFunctionType::get(VOID_TY, {HPTR_TY, I32_TY, HPTR_TY});
     return getOrCreateFunc(builder, "eco_store_record_field", funcTy);
 }
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateStoreRecordFieldI64(OpBuilder &builder) const {
-    // eco_store_record_field_i64(record_hptr: i64, index: i32, value: i64) -> void
-    auto funcTy = LLVM::LLVMFunctionType::get(VOID_TY, {I64_TY, I32_TY, I64_TY});
+    // eco_store_record_field_i64(record_hptr: hptr, index: i32, value: i64) -> void
+    auto funcTy = LLVM::LLVMFunctionType::get(VOID_TY, {HPTR_TY, I32_TY, I64_TY});
     return getOrCreateFunc(builder, "eco_store_record_field_i64", funcTy);
 }
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateStoreRecordFieldF64(OpBuilder &builder) const {
-    // eco_store_record_field_f64(record_hptr: i64, index: i32, value: f64) -> void
-    auto funcTy = LLVM::LLVMFunctionType::get(VOID_TY, {I64_TY, I32_TY, F64_TY});
+    // eco_store_record_field_f64(record_hptr: hptr, index: i32, value: f64) -> void
+    auto funcTy = LLVM::LLVMFunctionType::get(VOID_TY, {HPTR_TY, I32_TY, F64_TY});
     return getOrCreateFunc(builder, "eco_store_record_field_f64", funcTy);
 }
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateSetUnboxed(OpBuilder &builder) const {
-    // eco_set_unboxed(obj_hptr: i64, bitmap: i64) -> void
-    auto funcTy = LLVM::LLVMFunctionType::get(VOID_TY, {I64_TY, I64_TY});
+    // eco_set_unboxed(obj_hptr: hptr, bitmap: i64) -> void
+    auto funcTy = LLVM::LLVMFunctionType::get(VOID_TY, {HPTR_TY, I64_TY});
     return getOrCreateFunc(builder, "eco_set_unboxed", funcTy);
 }
 
@@ -392,28 +390,27 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateSetUnboxed(OpBuilder &builder) const {
 //===----------------------------------------------------------------------===//
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreatePapExtend(OpBuilder &builder) const {
-    // eco_pap_extend(closure_hptr: i64, args: ptr, num_args: i32, new_unboxed_bitmap: i64) -> i64
-    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {I64_TY, PTR_TY, I32_TY, I64_TY});
+    // eco_pap_extend(closure_hptr: hptr, args: ptr, num_args: i32, new_unboxed_bitmap: i64) -> hptr
+    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {HPTR_TY, PTR_TY, I32_TY, I64_TY});
     return getOrCreateFunc(builder, "eco_pap_extend", funcTy);
 }
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateClosureCallSaturated(OpBuilder &builder) const {
-    // eco_closure_call_saturated(closure_hptr: i64, new_args: ptr, num_newargs: i32, layout: ptr) -> i64
-    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {I64_TY, PTR_TY, I32_TY, PTR_TY});
+    // eco_closure_call_saturated(closure_hptr: hptr, new_args: ptr, num_newargs: i32, layout: ptr) -> hptr
+    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {HPTR_TY, PTR_TY, I32_TY, PTR_TY});
     return getOrCreateFunc(builder, "eco_closure_call_saturated", funcTy);
 }
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateApplyClosure(OpBuilder &builder) const {
-    // eco_apply_closure(closure_hptr: i64, args: ptr, num_args: i32) -> i64
-    // Generic apply: handles under/exact/over-saturated by reading closure header.
-    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {I64_TY, PTR_TY, I32_TY});
+    // eco_apply_closure(closure_hptr: hptr, args: ptr, num_args: i32) -> hptr
+    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {HPTR_TY, PTR_TY, I32_TY});
     return getOrCreateFunc(builder, "eco_apply_closure", funcTy);
 }
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateApplySegmentationUnknown(OpBuilder &builder) const {
-    // eco_apply_segmentation_unknown(closure: i64, typed_args: ptr, num_args: i32,
-    //                                bitmap: i64, boxed_args: ptr) -> i64
-    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {I64_TY, PTR_TY, I32_TY, I64_TY, PTR_TY});
+    // eco_apply_segmentation_unknown(closure: hptr, typed_args: ptr, num_args: i32,
+    //                                bitmap: i64, boxed_args: ptr) -> hptr
+    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {HPTR_TY, PTR_TY, I32_TY, I64_TY, PTR_TY});
     return getOrCreateFunc(builder, "eco_apply_segmentation_unknown", funcTy);
 }
 
@@ -422,44 +419,40 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateApplySegmentationUnknown(OpBuilder &buil
 //===----------------------------------------------------------------------===//
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateResolveHPtr(OpBuilder &builder) const {
-    // eco_resolve_hptr(hptr: i64) -> ptr
-    auto funcTy = LLVM::LLVMFunctionType::get(PTR_TY, {I64_TY});
+    // eco_resolve_hptr(hptr: hptr) -> ptr
+    auto funcTy = LLVM::LLVMFunctionType::get(PTR_TY, {HPTR_TY});
     return getOrCreateFunc(builder, "eco_resolve_hptr", funcTy);
 }
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateGetTag(OpBuilder &builder) const {
-    // eco_get_tag(value: i64) -> i32
-    // Handles both heap Custom objects and embedded constants (Nothing, Nil).
-    auto funcTy = LLVM::LLVMFunctionType::get(I32_TY, {I64_TY});
+    // eco_get_tag(value: hptr) -> i32
+    auto funcTy = LLVM::LLVMFunctionType::get(I32_TY, {HPTR_TY});
     return getOrCreateFunc(builder, "eco_get_tag", funcTy);
 }
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateConsHeadI64(OpBuilder &builder) const {
-    // eco_cons_head_i64(cons: i64) -> i64
-    // Gets head of Cons cell, handling both boxed and unboxed heads.
-    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {I64_TY});
+    // eco_cons_head_i64(cons: hptr) -> i64
+    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {HPTR_TY});
     return getOrCreateFunc(builder, "eco_cons_head_i64", funcTy);
 }
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateConsHeadF64(OpBuilder &builder) const {
-    // eco_cons_head_f64(cons: i64) -> f64
-    // Gets head of Cons cell, handling both boxed and unboxed heads.
+    // eco_cons_head_f64(cons: hptr) -> f64
     auto f64Ty = Float64Type::get(ctx);
-    auto funcTy = LLVM::LLVMFunctionType::get(f64Ty, {I64_TY});
+    auto funcTy = LLVM::LLVMFunctionType::get(f64Ty, {HPTR_TY});
     return getOrCreateFunc(builder, "eco_cons_head_f64", funcTy);
 }
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateConsHeadI16(OpBuilder &builder) const {
-    // eco_cons_head_i16(cons: i64) -> i16
-    // Gets head of Cons cell (Char), handling both boxed and unboxed heads.
+    // eco_cons_head_i16(cons: hptr) -> i16
     auto i16Ty = IntegerType::get(ctx, 16);
-    auto funcTy = LLVM::LLVMFunctionType::get(i16Ty, {I64_TY});
+    auto funcTy = LLVM::LLVMFunctionType::get(i16Ty, {HPTR_TY});
     return getOrCreateFunc(builder, "eco_cons_head_i16", funcTy);
 }
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateCrash(OpBuilder &builder) const {
-    // eco_crash(message_val: i64) -> void
-    auto funcTy = LLVM::LLVMFunctionType::get(VOID_TY, {I64_TY});
+    // eco_crash(message_val: hptr) -> void
+    auto funcTy = LLVM::LLVMFunctionType::get(VOID_TY, {HPTR_TY});
     return getOrCreateFunc(builder, "eco_crash", funcTy);
 }
 
@@ -497,10 +490,8 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateIntPow(OpBuilder &builder) const {
 }
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateUtilsEqual(OpBuilder &builder) const {
-    // Elm_Kernel_Utils_equal(a: i64, b: i64) -> i64 (boxed Bool)
-    // Returns a boxed Bool (True/False embedded constant) if the two Elm values
-    // are structurally equal. Caller must unbox by comparing with True constant.
-    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {I64_TY, I64_TY});
+    // Elm_Kernel_Utils_equal(a: hptr, b: hptr) -> hptr (boxed Bool)
+    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {HPTR_TY, HPTR_TY});
     return getOrCreateFunc(builder, "Elm_Kernel_Utils_equal", funcTy);
 }
 
@@ -509,9 +500,8 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateUtilsEqual(OpBuilder &builder) const {
 //===----------------------------------------------------------------------===//
 
 LLVM::LLVMFuncOp EcoRuntime::getOrCreateCloneArray(OpBuilder &builder) const {
-    // eco_clone_array(array_hptr: i64) -> i64
-    // Clones an ElmArray for functional update (eco.array.set).
-    auto funcTy = LLVM::LLVMFunctionType::get(I64_TY, {I64_TY});
+    // eco_clone_array(array_hptr: hptr) -> hptr
+    auto funcTy = LLVM::LLVMFunctionType::get(HPTR_TY, {HPTR_TY});
     return getOrCreateFunc(builder, "eco_clone_array", funcTy);
 }
 
@@ -579,6 +569,7 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateAtan2(OpBuilder &builder) const {
 #undef I8_TY
 #undef F64_TY
 #undef PTR_TY
+#undef HPTR_TY
 #undef VOID_TY
 
 //===----------------------------------------------------------------------===//
@@ -630,16 +621,21 @@ Value eco::detail::emitAllocWithSafepoint(
             llvm::errs() << "  root[" << i << "] = " << liveRoots[i] << "\n";
     }
 #endif
-    // liveRoots are pre-converted i64 values from the op adaptor.
+    // liveRoots are pre-converted ptr<1> values from the op adaptor.
     // They were computed by EcoGCPrepare at the Eco IR level and carried
     // as explicit operands through type conversion — no recomputation needed.
     if (!liveRoots.empty()) {
         auto gcPtrTy = LLVM::LLVMPointerType::get(ctx, /*addressSpace=*/1);
 
+        // Convert any non-ptr<1> roots (e.g. i64) to ptr<1> for the marker.
         SmallVector<Value, 4> gcPtrs;
         for (auto val : liveRoots) {
-            auto ptr = rewriter.create<LLVM::IntToPtrOp>(loc, gcPtrTy, val);
-            gcPtrs.push_back(ptr);
+            if (isHPtrLLVMType(val.getType())) {
+                gcPtrs.push_back(val);
+            } else {
+                auto ptr = rewriter.create<LLVM::IntToPtrOp>(loc, gcPtrTy, val);
+                gcPtrs.push_back(ptr);
+            }
         }
 
         runtime.getOrCreateSafepointMarker(rewriter);
@@ -692,8 +688,12 @@ void eco::detail::emitSafepointMarker(
 
     SmallVector<Value, 4> gcPtrs;
     for (auto val : liveRoots) {
-        auto ptr = rewriter.create<LLVM::IntToPtrOp>(loc, gcPtrTy, val);
-        gcPtrs.push_back(ptr);
+        if (isHPtrLLVMType(val.getType())) {
+            gcPtrs.push_back(val);
+        } else {
+            auto ptr = rewriter.create<LLVM::IntToPtrOp>(loc, gcPtrTy, val);
+            gcPtrs.push_back(ptr);
+        }
     }
 
     runtime.getOrCreateSafepointMarker(rewriter);
@@ -725,8 +725,12 @@ void eco::detail::emitWrapperSafepointMarker(
 
     SmallVector<Value, 4> gcPtrs;
     for (auto val : liveRoots) {
-        auto ptr = builder.create<LLVM::IntToPtrOp>(loc, gcPtrTy, val);
-        gcPtrs.push_back(ptr);
+        if (isHPtrLLVMType(val.getType())) {
+            gcPtrs.push_back(val);
+        } else {
+            auto ptr = builder.create<LLVM::IntToPtrOp>(loc, gcPtrTy, val);
+            gcPtrs.push_back(ptr);
+        }
     }
 
     runtime.getOrCreateSafepointMarker(builder);

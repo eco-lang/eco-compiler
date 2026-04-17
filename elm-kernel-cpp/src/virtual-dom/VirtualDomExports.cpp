@@ -40,203 +40,203 @@ std::string elmStringToStd(void* ptr) {
 
 extern "C" {
 
-uint64_t Elm_Kernel_VirtualDom_text(uint64_t str) {
-    auto vnode = VirtualDom::text(Export::toPtr(str));
-    return Export::encode(VirtualDom::wrapVNode(vnode));
+HPtr Elm_Kernel_VirtualDom_text(HPtr str) {
+    auto vnode = VirtualDom::text(Export::toPtr(str.toBits()));
+    return HPtr::fromBits(Export::encode(VirtualDom::wrapVNode(vnode)));
 }
 
-uint64_t Elm_Kernel_VirtualDom_node(uint64_t tag, uint64_t factList, uint64_t kidList) {
+HPtr Elm_Kernel_VirtualDom_node(HPtr tag, HPtr factList, HPtr kidList) {
     auto vnode = VirtualDom::node(
-        Export::toPtr(tag),
-        Export::decode(factList),
-        Export::decode(kidList)
+        Export::toPtr(tag.toBits()),
+        Export::decode(factList.toBits()),
+        Export::decode(kidList.toBits())
     );
-    return Export::encode(VirtualDom::wrapVNode(vnode));
+    return HPtr::fromBits(Export::encode(VirtualDom::wrapVNode(vnode)));
 }
 
-uint64_t Elm_Kernel_VirtualDom_nodeNS(uint64_t ns, uint64_t tag, uint64_t factList, uint64_t kidList) {
+HPtr Elm_Kernel_VirtualDom_nodeNS(HPtr ns, HPtr tag, HPtr factList, HPtr kidList) {
     auto vnode = VirtualDom::nodeNS(
-        Export::toPtr(ns),
-        Export::toPtr(tag),
-        Export::decode(factList),
-        Export::decode(kidList)
+        Export::toPtr(ns.toBits()),
+        Export::toPtr(tag.toBits()),
+        Export::decode(factList.toBits()),
+        Export::decode(kidList.toBits())
     );
-    return Export::encode(VirtualDom::wrapVNode(vnode));
+    return HPtr::fromBits(Export::encode(VirtualDom::wrapVNode(vnode)));
 }
 
-uint64_t Elm_Kernel_VirtualDom_keyedNode(uint64_t tag, uint64_t factList, uint64_t keyedKidList) {
+HPtr Elm_Kernel_VirtualDom_keyedNode(HPtr tag, HPtr factList, HPtr keyedKidList) {
     auto vnode = VirtualDom::keyedNode(
-        Export::toPtr(tag),
-        Export::decode(factList),
-        Export::decode(keyedKidList)
+        Export::toPtr(tag.toBits()),
+        Export::decode(factList.toBits()),
+        Export::decode(keyedKidList.toBits())
     );
-    return Export::encode(VirtualDom::wrapVNode(vnode));
+    return HPtr::fromBits(Export::encode(VirtualDom::wrapVNode(vnode)));
 }
 
-uint64_t Elm_Kernel_VirtualDom_keyedNodeNS(uint64_t ns, uint64_t tag, uint64_t factList, uint64_t keyedKidList) {
+HPtr Elm_Kernel_VirtualDom_keyedNodeNS(HPtr ns, HPtr tag, HPtr factList, HPtr keyedKidList) {
     auto vnode = VirtualDom::keyedNodeNS(
-        Export::toPtr(ns),
-        Export::toPtr(tag),
-        Export::decode(factList),
-        Export::decode(keyedKidList)
+        Export::toPtr(ns.toBits()),
+        Export::toPtr(tag.toBits()),
+        Export::decode(factList.toBits()),
+        Export::decode(keyedKidList.toBits())
     );
-    return Export::encode(VirtualDom::wrapVNode(vnode));
+    return HPtr::fromBits(Export::encode(VirtualDom::wrapVNode(vnode)));
 }
 
-uint64_t Elm_Kernel_VirtualDom_attribute(uint64_t key, uint64_t value) {
-    auto fact = VirtualDom::attribute(Export::toPtr(key), Export::toPtr(value));
+HPtr Elm_Kernel_VirtualDom_attribute(HPtr key, HPtr value) {
+    auto fact = VirtualDom::attribute(Export::toPtr(key.toBits()), Export::toPtr(value.toBits()));
     // For now, wrap the fact as a Custom type - full implementation needed
     // This is a stub that returns Nothing
-    return Export::encode(Elm::alloc::nothing());
+    return HPtr::fromBits(Export::encode(Elm::alloc::nothing()));
 }
 
-uint64_t Elm_Kernel_VirtualDom_attributeNS(uint64_t ns, uint64_t key, uint64_t value) {
-    auto fact = VirtualDom::attributeNS(Export::toPtr(ns), Export::toPtr(key), Export::toPtr(value));
-    return Export::encode(Elm::alloc::nothing());
+HPtr Elm_Kernel_VirtualDom_attributeNS(HPtr ns, HPtr key, HPtr value) {
+    auto fact = VirtualDom::attributeNS(Export::toPtr(ns.toBits()), Export::toPtr(key.toBits()), Export::toPtr(value.toBits()));
+    return HPtr::fromBits(Export::encode(Elm::alloc::nothing()));
 }
 
-uint64_t Elm_Kernel_VirtualDom_property(uint64_t key, uint64_t value) {
-    auto fact = VirtualDom::property(Export::toPtr(key), Export::decode(value));
-    return Export::encode(Elm::alloc::nothing());
+HPtr Elm_Kernel_VirtualDom_property(HPtr key, HPtr value) {
+    auto fact = VirtualDom::property(Export::toPtr(key.toBits()), Export::decode(value.toBits()));
+    return HPtr::fromBits(Export::encode(Elm::alloc::nothing()));
 }
 
-uint64_t Elm_Kernel_VirtualDom_style(uint64_t key, uint64_t value) {
-    auto fact = VirtualDom::style(Export::toPtr(key), Export::toPtr(value));
-    return Export::encode(Elm::alloc::nothing());
+HPtr Elm_Kernel_VirtualDom_style(HPtr key, HPtr value) {
+    auto fact = VirtualDom::style(Export::toPtr(key.toBits()), Export::toPtr(value.toBits()));
+    return HPtr::fromBits(Export::encode(Elm::alloc::nothing()));
 }
 
-uint64_t Elm_Kernel_VirtualDom_on(uint64_t event, uint64_t decoder) {
+HPtr Elm_Kernel_VirtualDom_on(HPtr event, HPtr decoder) {
     (void)event;
     (void)decoder;
     assert(false && "Elm_Kernel_VirtualDom_on not implemented - requires event system");
-    return 0;
+    return HPtr::fromBits(0);
 }
 
-uint64_t Elm_Kernel_VirtualDom_map(uint64_t closure, uint64_t vnode) {
+HPtr Elm_Kernel_VirtualDom_map(HPtr closure, HPtr vnode) {
     (void)closure;
     (void)vnode;
     assert(false && "Elm_Kernel_VirtualDom_map not implemented");
-    return 0;
+    return HPtr::fromBits(0);
 }
 
-uint64_t Elm_Kernel_VirtualDom_mapAttribute(uint64_t closure, uint64_t fact) {
+HPtr Elm_Kernel_VirtualDom_mapAttribute(HPtr closure, HPtr fact) {
     (void)closure;
     (void)fact;
     assert(false && "Elm_Kernel_VirtualDom_mapAttribute not implemented");
-    return 0;
+    return HPtr::fromBits(0);
 }
 
 //===----------------------------------------------------------------------===//
 // Lazy nodes (stubs)
 //===----------------------------------------------------------------------===//
 
-uint64_t Elm_Kernel_VirtualDom_lazy(uint64_t closure, uint64_t arg) {
+HPtr Elm_Kernel_VirtualDom_lazy(HPtr closure, HPtr arg) {
     (void)closure;
     (void)arg;
     assert(false && "Elm_Kernel_VirtualDom_lazy not implemented");
-    return 0;
+    return HPtr::fromBits(0);
 }
 
-uint64_t Elm_Kernel_VirtualDom_lazy2(uint64_t closure, uint64_t a, uint64_t b) {
+HPtr Elm_Kernel_VirtualDom_lazy2(HPtr closure, HPtr a, HPtr b) {
     (void)closure; (void)a; (void)b;
     assert(false && "Elm_Kernel_VirtualDom_lazy2 not implemented");
-    return 0;
+    return HPtr::fromBits(0);
 }
 
-uint64_t Elm_Kernel_VirtualDom_lazy3(uint64_t closure, uint64_t a, uint64_t b, uint64_t c_arg) {
+HPtr Elm_Kernel_VirtualDom_lazy3(HPtr closure, HPtr a, HPtr b, HPtr c_arg) {
     (void)closure; (void)a; (void)b; (void)c_arg;
     assert(false && "Elm_Kernel_VirtualDom_lazy3 not implemented");
-    return 0;
+    return HPtr::fromBits(0);
 }
 
-uint64_t Elm_Kernel_VirtualDom_lazy4(uint64_t closure, uint64_t a, uint64_t b, uint64_t c_arg, uint64_t d) {
+HPtr Elm_Kernel_VirtualDom_lazy4(HPtr closure, HPtr a, HPtr b, HPtr c_arg, HPtr d) {
     (void)closure; (void)a; (void)b; (void)c_arg; (void)d;
     assert(false && "Elm_Kernel_VirtualDom_lazy4 not implemented");
-    return 0;
+    return HPtr::fromBits(0);
 }
 
-uint64_t Elm_Kernel_VirtualDom_lazy5(uint64_t closure, uint64_t a, uint64_t b, uint64_t c_arg, uint64_t d, uint64_t e) {
+HPtr Elm_Kernel_VirtualDom_lazy5(HPtr closure, HPtr a, HPtr b, HPtr c_arg, HPtr d, HPtr e) {
     (void)closure; (void)a; (void)b; (void)c_arg; (void)d; (void)e;
     assert(false && "Elm_Kernel_VirtualDom_lazy5 not implemented");
-    return 0;
+    return HPtr::fromBits(0);
 }
 
-uint64_t Elm_Kernel_VirtualDom_lazy6(uint64_t closure, uint64_t a, uint64_t b, uint64_t c_arg, uint64_t d, uint64_t e, uint64_t f) {
+HPtr Elm_Kernel_VirtualDom_lazy6(HPtr closure, HPtr a, HPtr b, HPtr c_arg, HPtr d, HPtr e, HPtr f) {
     (void)closure; (void)a; (void)b; (void)c_arg; (void)d; (void)e; (void)f;
     assert(false && "Elm_Kernel_VirtualDom_lazy6 not implemented");
-    return 0;
+    return HPtr::fromBits(0);
 }
 
-uint64_t Elm_Kernel_VirtualDom_lazy7(uint64_t closure, uint64_t a, uint64_t b, uint64_t c_arg, uint64_t d, uint64_t e, uint64_t f, uint64_t g) {
+HPtr Elm_Kernel_VirtualDom_lazy7(HPtr closure, HPtr a, HPtr b, HPtr c_arg, HPtr d, HPtr e, HPtr f, HPtr g) {
     (void)closure; (void)a; (void)b; (void)c_arg; (void)d; (void)e; (void)f; (void)g;
     assert(false && "Elm_Kernel_VirtualDom_lazy7 not implemented");
-    return 0;
+    return HPtr::fromBits(0);
 }
 
-uint64_t Elm_Kernel_VirtualDom_lazy8(uint64_t closure, uint64_t a, uint64_t b, uint64_t c_arg, uint64_t d, uint64_t e, uint64_t f, uint64_t g, uint64_t h) {
+HPtr Elm_Kernel_VirtualDom_lazy8(HPtr closure, HPtr a, HPtr b, HPtr c_arg, HPtr d, HPtr e, HPtr f, HPtr g, HPtr h) {
     (void)closure; (void)a; (void)b; (void)c_arg; (void)d; (void)e; (void)f; (void)g; (void)h;
     assert(false && "Elm_Kernel_VirtualDom_lazy8 not implemented");
-    return 0;
+    return HPtr::fromBits(0);
 }
 
 //===----------------------------------------------------------------------===//
 // Security/XSS protection
 //===----------------------------------------------------------------------===//
 
-uint64_t Elm_Kernel_VirtualDom_noScript(uint64_t tag) {
+HPtr Elm_Kernel_VirtualDom_noScript(HPtr tag) {
     // Prevent <script> tags.
-    std::string tagStr = elmStringToStd(Export::toPtr(tag));
+    std::string tagStr = elmStringToStd(Export::toPtr(tag.toBits()));
 
     if (tagStr == "script" || tagStr == "SCRIPT") {
         // Replace with a <p> tag.
         HPointer safe = alloc::allocStringFromUTF8("p");
-        return Export::encode(safe);
+        return HPtr::fromBits(Export::encode(safe));
     }
     return tag;
 }
 
-uint64_t Elm_Kernel_VirtualDom_noOnOrFormAction(uint64_t key) {
+HPtr Elm_Kernel_VirtualDom_noOnOrFormAction(HPtr key) {
     // Prevent on* attributes and formaction.
-    std::string keyStr = elmStringToStd(Export::toPtr(key));
+    std::string keyStr = elmStringToStd(Export::toPtr(key.toBits()));
 
     if (keyStr.length() >= 2 && keyStr[0] == 'o' && keyStr[1] == 'n') {
-        return Export::encode(alloc::nothing());
+        return HPtr::fromBits(Export::encode(alloc::nothing()));
     }
     if (keyStr == "formaction" || keyStr == "formAction") {
-        return Export::encode(alloc::nothing());
+        return HPtr::fromBits(Export::encode(alloc::nothing()));
     }
 
-    return Export::encode(alloc::just(alloc::boxed(Export::decode(key)), true));
+    return HPtr::fromBits(Export::encode(alloc::just(alloc::boxed(Export::decode(key.toBits())), true)));
 }
 
-uint64_t Elm_Kernel_VirtualDom_noInnerHtmlOrFormAction(uint64_t key) {
+HPtr Elm_Kernel_VirtualDom_noInnerHtmlOrFormAction(HPtr key) {
     // Prevent innerHTML and formaction.
-    std::string keyStr = elmStringToStd(Export::toPtr(key));
+    std::string keyStr = elmStringToStd(Export::toPtr(key.toBits()));
 
     if (keyStr == "innerHTML" || keyStr == "formaction" || keyStr == "formAction") {
-        return Export::encode(alloc::nothing());
+        return HPtr::fromBits(Export::encode(alloc::nothing()));
     }
 
-    return Export::encode(alloc::just(alloc::boxed(Export::decode(key)), true));
+    return HPtr::fromBits(Export::encode(alloc::just(alloc::boxed(Export::decode(key.toBits())), true)));
 }
 
-uint64_t Elm_Kernel_VirtualDom_noJavaScriptOrHtmlUri(uint64_t value) {
+HPtr Elm_Kernel_VirtualDom_noJavaScriptOrHtmlUri(HPtr value) {
     // Prevent javascript: and data:text/html URIs.
-    std::string valStr = elmStringToStd(Export::toPtr(value));
+    std::string valStr = elmStringToStd(Export::toPtr(value.toBits()));
 
     if (valStr.length() >= 11 && valStr.substr(0, 11) == "javascript:") {
-        return Export::encode(alloc::nothing());
+        return HPtr::fromBits(Export::encode(alloc::nothing()));
     }
     if (valStr.length() >= 14 && valStr.substr(0, 14) == "data:text/html") {
-        return Export::encode(alloc::nothing());
+        return HPtr::fromBits(Export::encode(alloc::nothing()));
     }
 
-    return Export::encode(alloc::just(alloc::boxed(Export::decode(value)), true));
+    return HPtr::fromBits(Export::encode(alloc::just(alloc::boxed(Export::decode(value.toBits())), true)));
 }
 
-uint64_t Elm_Kernel_VirtualDom_noJavaScriptOrHtmlJson(uint64_t value) {
+HPtr Elm_Kernel_VirtualDom_noJavaScriptOrHtmlJson(HPtr value) {
     // Similar to noJavaScriptOrHtmlUri but for JSON values.
-    return Export::encode(alloc::just(alloc::boxed(Export::decode(value)), true));
+    return HPtr::fromBits(Export::encode(alloc::just(alloc::boxed(Export::decode(value.toBits())), true)));
 }
 
 } // extern "C"

@@ -92,21 +92,21 @@ HPointer Scheduler::taskReceive(HPointer callback) {
 HPointer Scheduler::callClosure1(HPointer closurePtr, HPointer arg) {
     // Encode argument as uint64_t to survive GC
     uint64_t argEnc = encodeHP(arg);
-    uint64_t closureEnc = encodeHP(closurePtr);
+    HPtr closureHPtr = HPtr::fromBits(encodeHP(closurePtr));
 
     // Use eco_apply_closure which handles PAP/saturated correctly
-    uint64_t result = eco_apply_closure(closureEnc, &argEnc, 1);
-    return decodeHP(result);
+    HPtr result = eco_apply_closure(closureHPtr, &argEnc, 1);
+    return decodeHP(result.toBits());
 }
 
 HPointer Scheduler::callClosure2(HPointer closurePtr, HPointer arg1, HPointer arg2) {
     uint64_t args[2];
     args[0] = encodeHP(arg1);
     args[1] = encodeHP(arg2);
-    uint64_t closureEnc = encodeHP(closurePtr);
+    HPtr closureHPtr = HPtr::fromBits(encodeHP(closurePtr));
 
-    uint64_t result = eco_apply_closure(closureEnc, args, 2);
-    return decodeHP(result);
+    HPtr result = eco_apply_closure(closureHPtr, args, 2);
+    return decodeHP(result.toBits());
 }
 
 HPointer Scheduler::callClosure4(HPointer closurePtr, HPointer arg1, HPointer arg2,
@@ -116,10 +116,10 @@ HPointer Scheduler::callClosure4(HPointer closurePtr, HPointer arg1, HPointer ar
     args[1] = encodeHP(arg2);
     args[2] = encodeHP(arg3);
     args[3] = encodeHP(arg4);
-    uint64_t closureEnc = encodeHP(closurePtr);
+    HPtr closureHPtr = HPtr::fromBits(encodeHP(closurePtr));
 
-    uint64_t result = eco_apply_closure(closureEnc, args, 4);
-    return decodeHP(result);
+    HPtr result = eco_apply_closure(closureHPtr, args, 4);
+    return decodeHP(result.toBits());
 }
 
 // ============================================================================

@@ -10,43 +10,45 @@ using namespace Elm::Kernel;
 
 extern "C" {
 
-uint64_t Elm_Kernel_Utils_compare(uint64_t a, uint64_t b) {
-    HPointer result = Utils::compare(Export::toPtr(a), Export::toPtr(b));
-    return Export::encode(result);
+HPtr Elm_Kernel_Utils_compare(HPtr a, HPtr b) {
+    HPointer result = Utils::compare(Export::toPtr(a.toBits()), Export::toPtr(b.toBits()));
+    return HPtr::fromBits(Export::encode(result));
 }
 
-uint64_t Elm_Kernel_Utils_equal(uint64_t a, uint64_t b) {
-    return Export::encodeBoxedBool(Utils::equal(Export::toPtr(a), Export::toPtr(b)));
+HPtr Elm_Kernel_Utils_equal(HPtr a, HPtr b) {
+    return HPtr::fromBits(Export::encodeBoxedBool(Utils::equal(Export::toPtr(a.toBits()), Export::toPtr(b.toBits()))));
 }
 
-uint64_t Elm_Kernel_Utils_notEqual(uint64_t a, uint64_t b) {
-    return Export::encodeBoxedBool(Utils::notEqual(Export::toPtr(a), Export::toPtr(b)));
+HPtr Elm_Kernel_Utils_notEqual(HPtr a, HPtr b) {
+    return HPtr::fromBits(Export::encodeBoxedBool(Utils::notEqual(Export::toPtr(a.toBits()), Export::toPtr(b.toBits()))));
 }
 
-uint64_t Elm_Kernel_Utils_lt(uint64_t a, uint64_t b) {
-    return Export::encodeBoxedBool(Utils::lt(Export::toPtr(a), Export::toPtr(b)));
+HPtr Elm_Kernel_Utils_lt(HPtr a, HPtr b) {
+    return HPtr::fromBits(Export::encodeBoxedBool(Utils::lt(Export::toPtr(a.toBits()), Export::toPtr(b.toBits()))));
 }
 
-uint64_t Elm_Kernel_Utils_le(uint64_t a, uint64_t b) {
-    return Export::encodeBoxedBool(Utils::le(Export::toPtr(a), Export::toPtr(b)));
+HPtr Elm_Kernel_Utils_le(HPtr a, HPtr b) {
+    return HPtr::fromBits(Export::encodeBoxedBool(Utils::le(Export::toPtr(a.toBits()), Export::toPtr(b.toBits()))));
 }
 
-uint64_t Elm_Kernel_Utils_gt(uint64_t a, uint64_t b) {
-    return Export::encodeBoxedBool(Utils::gt(Export::toPtr(a), Export::toPtr(b)));
+HPtr Elm_Kernel_Utils_gt(HPtr a, HPtr b) {
+    return HPtr::fromBits(Export::encodeBoxedBool(Utils::gt(Export::toPtr(a.toBits()), Export::toPtr(b.toBits()))));
 }
 
-uint64_t Elm_Kernel_Utils_ge(uint64_t a, uint64_t b) {
-    return Export::encodeBoxedBool(Utils::ge(Export::toPtr(a), Export::toPtr(b)));
+HPtr Elm_Kernel_Utils_ge(HPtr a, HPtr b) {
+    return HPtr::fromBits(Export::encodeBoxedBool(Utils::ge(Export::toPtr(a.toBits()), Export::toPtr(b.toBits()))));
 }
 
-uint64_t Elm_Kernel_Utils_append(uint64_t a, uint64_t b) {
-    void* ptrA = Export::toPtr(a);
-    void* ptrB = Export::toPtr(b);
+HPtr Elm_Kernel_Utils_append(HPtr a, HPtr b) {
+    uint64_t a_bits = a.toBits();
+    uint64_t b_bits = b.toBits();
+    void* ptrA = Export::toPtr(a_bits);
+    void* ptrB = Export::toPtr(b_bits);
     // Both are embedded constants (e.g. "" ++ "" or [] ++ []).
     // toPtr returns nullptr for embedded constants, so return either one directly.
     if (!ptrA && !ptrB) return a;
     HPointer result = Utils::append(ptrA, ptrB);
-    return Export::encode(result);
+    return HPtr::fromBits(Export::encode(result));
 }
 
 } // extern "C"

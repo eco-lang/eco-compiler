@@ -4,7 +4,8 @@
 #include "Crash.hpp"
 
 using namespace Eco::Kernel;
+using Elm::HPtr;
 
-uint64_t Eco_Kernel_Crash_crash(uint64_t message) {
-    return Crash::crash(message);
+HPtr Eco_Kernel_Crash_crash(HPtr message) {
+    return HPtr::fromBits(Crash::crash(message.toBits()));
 }

@@ -44,10 +44,10 @@ static void test_eco_alloc_int_stores_value() {
         initAllocator();
         i64 value = *rc::gen::arbitrary<i64>();
 
-        uint64_t hptr = eco_alloc_int(value);
-        RC_ASSERT(hptr != 0);
+        auto hptr = eco_alloc_int(value);
+        RC_ASSERT(hptr.toBits() != 0);
 
-        void* obj = hptrToRaw(hptr);
+        void* obj = hptrToRaw(hptr.toBits());
         RC_ASSERT(static_cast<bool>(obj));
 
         ElmInt* elmInt = static_cast<ElmInt*>(obj);
@@ -64,10 +64,10 @@ static void test_eco_alloc_float_stores_value() {
             return static_cast<double>(x) / 100.0;
         });
 
-        uint64_t hptr = eco_alloc_float(value);
-        RC_ASSERT(hptr != 0);
+        auto hptr = eco_alloc_float(value);
+        RC_ASSERT(hptr.toBits() != 0);
 
-        void* obj = hptrToRaw(hptr);
+        void* obj = hptrToRaw(hptr.toBits());
         RC_ASSERT(static_cast<bool>(obj));
 
         ElmFloat* elmFloat = static_cast<ElmFloat*>(obj);
@@ -82,10 +82,10 @@ static void test_eco_alloc_char_stores_value() {
         // Generate valid Unicode code points (BMP range for u16)
         uint32_t value = *rc::gen::inRange<uint32_t>(0, 0xFFFF);
 
-        uint64_t hptr = eco_alloc_char(value);
-        RC_ASSERT(hptr != 0);
+        auto hptr = eco_alloc_char(value);
+        RC_ASSERT(hptr.toBits() != 0);
 
-        void* obj = hptrToRaw(hptr);
+        void* obj = hptrToRaw(hptr.toBits());
         RC_ASSERT(static_cast<bool>(obj));
 
         ElmChar* elmChar = static_cast<ElmChar*>(obj);
@@ -100,10 +100,10 @@ static void test_eco_alloc_cons_correct_tag() {
 
         // eco_alloc_cons takes (head, tail, head_unboxed) - use Nil for empty values
         uint64_t nil = nilHPtr();
-        uint64_t hptr = eco_alloc_cons(nil, nil, 0);
-        RC_ASSERT(hptr != 0);
+        auto hptr = eco_alloc_cons(nil, HPtr::fromBits(nil), 0);
+        RC_ASSERT(hptr.toBits() != 0);
 
-        void* obj = hptrToRaw(hptr);
+        void* obj = hptrToRaw(hptr.toBits());
         RC_ASSERT(static_cast<bool>(obj));
 
         Header* header = static_cast<Header*>(obj);
@@ -116,10 +116,10 @@ static void test_eco_alloc_tuple2_correct_tag() {
         initAllocator();
 
         // eco_alloc_tuple2 takes (a, b, unboxed_mask) - use 0 for null values
-        uint64_t hptr = eco_alloc_tuple2(0, 0, 0);
-        RC_ASSERT(hptr != 0);
+        auto hptr = eco_alloc_tuple2(0, 0, 0);
+        RC_ASSERT(hptr.toBits() != 0);
 
-        void* obj = hptrToRaw(hptr);
+        void* obj = hptrToRaw(hptr.toBits());
         RC_ASSERT(static_cast<bool>(obj));
 
         Header* header = static_cast<Header*>(obj);
@@ -132,10 +132,10 @@ static void test_eco_alloc_tuple3_correct_tag() {
         initAllocator();
 
         // eco_alloc_tuple3 takes (a, b, c, unboxed_mask)
-        uint64_t hptr = eco_alloc_tuple3(0, 0, 0, 0);
-        RC_ASSERT(hptr != 0);
+        auto hptr = eco_alloc_tuple3(0, 0, 0, 0);
+        RC_ASSERT(hptr.toBits() != 0);
 
-        void* obj = hptrToRaw(hptr);
+        void* obj = hptrToRaw(hptr.toBits());
         RC_ASSERT(static_cast<bool>(obj));
 
         Header* header = static_cast<Header*>(obj);
@@ -149,10 +149,10 @@ static void test_eco_alloc_custom_fields() {
         uint32_t ctor_tag = *rc::gen::inRange<uint32_t>(0, 100);
         uint32_t field_count = *rc::gen::inRange<uint32_t>(0, 10);
 
-        uint64_t hptr = eco_alloc_custom(ctor_tag, field_count, 0);
-        RC_ASSERT(hptr != 0);
+        auto hptr = eco_alloc_custom(ctor_tag, field_count, 0);
+        RC_ASSERT(hptr.toBits() != 0);
 
-        void* obj = hptrToRaw(hptr);
+        void* obj = hptrToRaw(hptr.toBits());
         RC_ASSERT(static_cast<bool>(obj));
 
         Custom* custom = static_cast<Custom*>(obj);
@@ -168,10 +168,10 @@ static void test_eco_alloc_string_length() {
         initAllocator();
         uint32_t length = *rc::gen::inRange<uint32_t>(1, 1000);
 
-        uint64_t hptr = eco_alloc_string(length);
-        RC_ASSERT(hptr != 0);
+        auto hptr = eco_alloc_string(length);
+        RC_ASSERT(hptr.toBits() != 0);
 
-        void* obj = hptrToRaw(hptr);
+        void* obj = hptrToRaw(hptr.toBits());
         RC_ASSERT(static_cast<bool>(obj));
 
         ElmString* str = static_cast<ElmString*>(obj);
@@ -188,10 +188,10 @@ static void test_eco_alloc_closure_metadata() {
         // Use a dummy function pointer
         void* func_ptr = reinterpret_cast<void*>(0x12345678);
 
-        uint64_t hptr = eco_alloc_closure(func_ptr, num_captures);
-        RC_ASSERT(hptr != 0);
+        auto hptr = eco_alloc_closure(func_ptr, num_captures);
+        RC_ASSERT(hptr.toBits() != 0);
 
-        void* obj = hptrToRaw(hptr);
+        void* obj = hptrToRaw(hptr.toBits());
         RC_ASSERT(static_cast<bool>(obj));
 
         Closure* closure = static_cast<Closure*>(obj);
@@ -207,23 +207,23 @@ static void test_eco_allocate_generic() {
         initAllocator();
 
         // Test with Tag_Int
-        uint64_t intHptr = eco_allocate(sizeof(ElmInt), Tag_Int);
-        RC_ASSERT(intHptr != 0);
-        void* intObj = hptrToRaw(intHptr);
+        auto intHptr = eco_allocate(sizeof(ElmInt), Tag_Int);
+        RC_ASSERT(intHptr.toBits() != 0);
+        void* intObj = hptrToRaw(intHptr.toBits());
         RC_ASSERT(static_cast<bool>(intObj));
         RC_ASSERT(static_cast<Header*>(intObj)->tag == Tag_Int);
 
         // Test with Tag_Float
-        uint64_t floatHptr = eco_allocate(sizeof(ElmFloat), Tag_Float);
-        RC_ASSERT(floatHptr != 0);
-        void* floatObj = hptrToRaw(floatHptr);
+        auto floatHptr = eco_allocate(sizeof(ElmFloat), Tag_Float);
+        RC_ASSERT(floatHptr.toBits() != 0);
+        void* floatObj = hptrToRaw(floatHptr.toBits());
         RC_ASSERT(static_cast<bool>(floatObj));
         RC_ASSERT(static_cast<Header*>(floatObj)->tag == Tag_Float);
 
         // Test with Tag_Cons
-        uint64_t consHptr = eco_allocate(sizeof(Cons), Tag_Cons);
-        RC_ASSERT(consHptr != 0);
-        void* consObj = hptrToRaw(consHptr);
+        auto consHptr = eco_allocate(sizeof(Cons), Tag_Cons);
+        RC_ASSERT(consHptr.toBits() != 0);
+        void* consObj = hptrToRaw(consHptr.toBits());
         RC_ASSERT(static_cast<bool>(consObj));
         RC_ASSERT(static_cast<Header*>(consObj)->tag == Tag_Cons);
     });
@@ -240,12 +240,12 @@ static void test_eco_store_field_custom() {
         uint32_t index = *rc::gen::inRange<uint32_t>(0, field_count);
         uint64_t value = *rc::gen::arbitrary<uint64_t>();
 
-        uint64_t hptr = eco_alloc_custom(0, field_count, 0);
-        RC_ASSERT(hptr != 0);
+        auto hptr = eco_alloc_custom(0, field_count, 0);
+        RC_ASSERT(hptr.toBits() != 0);
 
-        eco_store_field(hptr, index, value);
+        eco_store_field(hptr, index, HPtr::fromBits(value));
 
-        void* obj = hptrToRaw(hptr);
+        void* obj = hptrToRaw(hptr.toBits());
         Custom* custom = static_cast<Custom*>(obj);
         RC_ASSERT(static_cast<uint64_t>(custom->values[index].i) == value);
     });
@@ -258,10 +258,10 @@ static void test_eco_store_field_tuple2() {
         uint64_t val_b = *rc::gen::arbitrary<uint64_t>();
 
         // eco_alloc_tuple2 now initializes fields directly with uint64_t values
-        uint64_t hptr = eco_alloc_tuple2(val_a, val_b, 0);
-        RC_ASSERT(hptr != 0);
+        auto hptr = eco_alloc_tuple2(val_a, val_b, 0);
+        RC_ASSERT(hptr.toBits() != 0);
 
-        void* obj = hptrToRaw(hptr);
+        void* obj = hptrToRaw(hptr.toBits());
         Tuple2* tuple = static_cast<Tuple2*>(obj);
         RC_ASSERT(static_cast<uint64_t>(tuple->a.i) == static_cast<i64>(val_a));
         RC_ASSERT(static_cast<uint64_t>(tuple->b.i) == static_cast<i64>(val_b));
@@ -276,10 +276,10 @@ static void test_eco_store_field_tuple3() {
         uint64_t val_c = *rc::gen::arbitrary<uint64_t>();
 
         // eco_alloc_tuple3 now initializes fields directly with uint64_t values
-        uint64_t hptr = eco_alloc_tuple3(val_a, val_b, val_c, 0);
-        RC_ASSERT(hptr != 0);
+        auto hptr = eco_alloc_tuple3(val_a, val_b, val_c, 0);
+        RC_ASSERT(hptr.toBits() != 0);
 
-        void* obj = hptrToRaw(hptr);
+        void* obj = hptrToRaw(hptr.toBits());
         Tuple3* tuple = static_cast<Tuple3*>(obj);
         RC_ASSERT(static_cast<uint64_t>(tuple->a.i) == static_cast<i64>(val_a));
         RC_ASSERT(static_cast<uint64_t>(tuple->b.i) == static_cast<i64>(val_b));
@@ -294,10 +294,10 @@ static void test_eco_store_field_cons() {
         uint64_t nil = nilHPtr();
 
         // eco_alloc_cons now initializes head directly with uint64_t value
-        uint64_t hptr = eco_alloc_cons(head_val, nil, 0);
-        RC_ASSERT(hptr != 0);
+        auto hptr = eco_alloc_cons(head_val, HPtr::fromBits(nil), 0);
+        RC_ASSERT(hptr.toBits() != 0);
 
-        void* obj = hptrToRaw(hptr);
+        void* obj = hptrToRaw(hptr.toBits());
         Cons* cons = static_cast<Cons*>(obj);
         RC_ASSERT(static_cast<uint64_t>(cons->head.i) == static_cast<i64>(head_val));
     });
@@ -310,12 +310,12 @@ static void test_eco_store_field_closure() {
         uint32_t index = *rc::gen::inRange<uint32_t>(0, num_captures);
         uint64_t value = *rc::gen::arbitrary<uint64_t>();
 
-        uint64_t hptr = eco_alloc_closure(nullptr, num_captures);
-        RC_ASSERT(hptr != 0);
+        auto hptr = eco_alloc_closure(nullptr, num_captures);
+        RC_ASSERT(hptr.toBits() != 0);
 
-        eco_store_field(hptr, index, value);
+        eco_store_field(hptr, index, HPtr::fromBits(value));
 
-        void* obj = hptrToRaw(hptr);
+        void* obj = hptrToRaw(hptr.toBits());
         Closure* closure = static_cast<Closure*>(obj);
         RC_ASSERT(static_cast<uint64_t>(closure->values[index].i) == value);
     });
@@ -326,12 +326,12 @@ static void test_eco_store_field_i64() {
         initAllocator();
         i64 value = *rc::gen::arbitrary<i64>();
 
-        uint64_t hptr = eco_alloc_custom(0, 1, 0);
-        RC_ASSERT(hptr != 0);
+        auto hptr = eco_alloc_custom(0, 1, 0);
+        RC_ASSERT(hptr.toBits() != 0);
 
         eco_store_field_i64(hptr, 0, value);
 
-        void* obj = hptrToRaw(hptr);
+        void* obj = hptrToRaw(hptr.toBits());
         Custom* custom = static_cast<Custom*>(obj);
         RC_ASSERT(custom->values[0].i == value);
     });
@@ -345,12 +345,12 @@ static void test_eco_store_field_f64() {
             return static_cast<double>(x) / 100.0;
         });
 
-        uint64_t hptr = eco_alloc_custom(0, 1, 0);
-        RC_ASSERT(hptr != 0);
+        auto hptr = eco_alloc_custom(0, 1, 0);
+        RC_ASSERT(hptr.toBits() != 0);
 
         eco_store_field_f64(hptr, 0, value);
 
-        void* obj = hptrToRaw(hptr);
+        void* obj = hptrToRaw(hptr.toBits());
         Custom* custom = static_cast<Custom*>(obj);
         RC_ASSERT(custom->values[0].f == value);
     });
@@ -366,31 +366,31 @@ static void test_eco_get_header_tag() {
         uint64_t nil = nilHPtr();
 
         // Test various object types
-        uint64_t intHptr = eco_alloc_int(42);
+        auto intHptr = eco_alloc_int(42);
         RC_ASSERT(eco_get_header_tag(intHptr) == Tag_Int);
 
-        uint64_t floatHptr = eco_alloc_float(3.14);
+        auto floatHptr = eco_alloc_float(3.14);
         RC_ASSERT(eco_get_header_tag(floatHptr) == Tag_Float);
 
-        uint64_t charHptr = eco_alloc_char('A');
+        auto charHptr = eco_alloc_char('A');
         RC_ASSERT(eco_get_header_tag(charHptr) == Tag_Char);
 
-        uint64_t consHptr = eco_alloc_cons(nil, nil, 0);
+        auto consHptr = eco_alloc_cons(nil, HPtr::fromBits(nil), 0);
         RC_ASSERT(eco_get_header_tag(consHptr) == Tag_Cons);
 
-        uint64_t tuple2Hptr = eco_alloc_tuple2(0, 0, 0);
+        auto tuple2Hptr = eco_alloc_tuple2(0, 0, 0);
         RC_ASSERT(eco_get_header_tag(tuple2Hptr) == Tag_Tuple2);
 
-        uint64_t tuple3Hptr = eco_alloc_tuple3(0, 0, 0, 0);
+        auto tuple3Hptr = eco_alloc_tuple3(0, 0, 0, 0);
         RC_ASSERT(eco_get_header_tag(tuple3Hptr) == Tag_Tuple3);
 
-        uint64_t customHptr = eco_alloc_custom(5, 2, 0);
+        auto customHptr = eco_alloc_custom(5, 2, 0);
         RC_ASSERT(eco_get_header_tag(customHptr) == Tag_Custom);
 
-        uint64_t stringHptr = eco_alloc_string(10);
+        auto stringHptr = eco_alloc_string(10);
         RC_ASSERT(eco_get_header_tag(stringHptr) == Tag_String);
 
-        uint64_t closureHptr = eco_alloc_closure(nullptr, 3);
+        auto closureHptr = eco_alloc_closure(nullptr, 3);
         RC_ASSERT(eco_get_header_tag(closureHptr) == Tag_Closure);
     });
 }
@@ -400,8 +400,8 @@ static void test_eco_get_custom_ctor() {
         initAllocator();
         uint32_t ctor_tag = *rc::gen::inRange<uint32_t>(0, 1000);
 
-        uint64_t hptr = eco_alloc_custom(ctor_tag, 0, 0);
-        RC_ASSERT(hptr != 0);
+        auto hptr = eco_alloc_custom(ctor_tag, 0, 0);
+        RC_ASSERT(hptr.toBits() != 0);
 
         RC_ASSERT(eco_get_custom_ctor(hptr) == ctor_tag);
     });
@@ -416,13 +416,12 @@ static void test_allocated_objects_survive_minor_gc() {
         auto& alloc = initAllocator();
         i64 value = *rc::gen::arbitrary<i64>();
 
-        // Allocate an int - returns HPointer as uint64_t
-        uint64_t hptr = eco_alloc_int(value);
-        RC_ASSERT(hptr != 0);
+        // Allocate an int - returns HPtr
+        auto hptr = eco_alloc_int(value);
+        RC_ASSERT(hptr.toBits() != 0);
 
         // Convert to HPointer struct for rooting
-        HPointer ptr;
-        std::memcpy(&ptr, &hptr, sizeof(ptr));
+        HPointer ptr = hptr.toHPointer();
 
         // Register as root
         alloc.getRootSet().addRoot(&ptr);
@@ -447,11 +446,10 @@ static void test_allocated_objects_survive_major_gc() {
         i64 value = *rc::gen::arbitrary<i64>();
 
         // Allocate an int
-        uint64_t hptr = eco_alloc_int(value);
-        RC_ASSERT(hptr != 0);
+        auto hptr = eco_alloc_int(value);
+        RC_ASSERT(hptr.toBits() != 0);
 
-        HPointer ptr;
-        std::memcpy(&ptr, &hptr, sizeof(ptr));
+        HPointer ptr = hptr.toHPointer();
         alloc.getRootSet().addRoot(&ptr);
 
         // Promote to old gen
@@ -476,27 +474,26 @@ static void test_field_values_preserved_after_gc() {
         auto& alloc = initAllocator();
 
         // Create a tuple2 - allocators now initialize fields directly
-        uint64_t tupleHptr = eco_alloc_tuple2(0, 0, 0);
-        RC_ASSERT(tupleHptr != 0);
+        auto tupleH = eco_alloc_tuple2(0, 0, 0);
+        RC_ASSERT(tupleH.toBits() != 0);
 
         // Allocate two integers
         i64 val1 = *rc::gen::inRange<i64>(-1000, 1000);
         i64 val2 = *rc::gen::inRange<i64>(-1000, 1000);
 
-        uint64_t int1Hptr = eco_alloc_int(val1);
-        uint64_t int2Hptr = eco_alloc_int(val2);
-        RC_ASSERT(int1Hptr != 0);
-        RC_ASSERT(int2Hptr != 0);
+        auto int1H = eco_alloc_int(val1);
+        auto int2H = eco_alloc_int(val2);
+        RC_ASSERT(int1H.toBits() != 0);
+        RC_ASSERT(int2H.toBits() != 0);
 
         // Store the integer HPointers in the tuple fields
-        eco_store_field(tupleHptr, 0, int1Hptr);
-        eco_store_field(tupleHptr, 1, int2Hptr);
+        eco_store_field(tupleH, 0, int1H);
+        eco_store_field(tupleH, 1, int2H);
 
         // Convert to HPointer structs and root
-        HPointer tuplePtr, int1Ptr, int2Ptr;
-        std::memcpy(&tuplePtr, &tupleHptr, sizeof(tuplePtr));
-        std::memcpy(&int1Ptr, &int1Hptr, sizeof(int1Ptr));
-        std::memcpy(&int2Ptr, &int2Hptr, sizeof(int2Ptr));
+        HPointer tuplePtr = tupleH.toHPointer();
+        HPointer int1Ptr = int1H.toHPointer();
+        HPointer int2Ptr = int2H.toHPointer();
 
         alloc.getRootSet().addRoot(&tuplePtr);
         alloc.getRootSet().addRoot(&int1Ptr);
@@ -530,26 +527,25 @@ static void test_multiple_alloc_types_survive_gc() {
         auto& alloc = initAllocator();
         uint64_t nil = nilHPtr();
 
-        // Allocate various types - now returns HPointer as uint64_t
-        uint64_t intHptr = eco_alloc_int(42);
-        uint64_t floatHptr = eco_alloc_float(3.14159);
-        uint64_t charHptr = eco_alloc_char('X');
-        uint64_t consHptr = eco_alloc_cons(nil, nil, 0);
-        uint64_t customHptr = eco_alloc_custom(7, 2, 0);
+        // Allocate various types - now returns HPtr
+        auto intH = eco_alloc_int(42);
+        auto floatH = eco_alloc_float(3.14159);
+        auto charH = eco_alloc_char('X');
+        auto consH = eco_alloc_cons(nil, HPtr::fromBits(nil), 0);
+        auto customH = eco_alloc_custom(7, 2, 0);
 
-        RC_ASSERT(intHptr != 0);
-        RC_ASSERT(floatHptr != 0);
-        RC_ASSERT(charHptr != 0);
-        RC_ASSERT(consHptr != 0);
-        RC_ASSERT(customHptr != 0);
+        RC_ASSERT(intH.toBits() != 0);
+        RC_ASSERT(floatH.toBits() != 0);
+        RC_ASSERT(charH.toBits() != 0);
+        RC_ASSERT(consH.toBits() != 0);
+        RC_ASSERT(customH.toBits() != 0);
 
         // Convert to HPointer structs and root them
-        HPointer intPtr, floatPtr, charPtr, consPtr, customPtr;
-        std::memcpy(&intPtr, &intHptr, sizeof(intPtr));
-        std::memcpy(&floatPtr, &floatHptr, sizeof(floatPtr));
-        std::memcpy(&charPtr, &charHptr, sizeof(charPtr));
-        std::memcpy(&consPtr, &consHptr, sizeof(consPtr));
-        std::memcpy(&customPtr, &customHptr, sizeof(customPtr));
+        HPointer intPtr = intH.toHPointer();
+        HPointer floatPtr = floatH.toHPointer();
+        HPointer charPtr = charH.toHPointer();
+        HPointer consPtr = consH.toHPointer();
+        HPointer customPtr = customH.toHPointer();
 
         alloc.getRootSet().addRoot(&intPtr);
         alloc.getRootSet().addRoot(&floatPtr);
@@ -560,13 +556,12 @@ static void test_multiple_alloc_types_survive_gc() {
         // Trigger GC
         alloc.minorGC();
 
-        // Convert back to uint64_t for tag checking
-        uint64_t intHptrNew, floatHptrNew, charHptrNew, consHptrNew, customHptrNew;
-        std::memcpy(&intHptrNew, &intPtr, sizeof(intHptrNew));
-        std::memcpy(&floatHptrNew, &floatPtr, sizeof(floatHptrNew));
-        std::memcpy(&charHptrNew, &charPtr, sizeof(charHptrNew));
-        std::memcpy(&consHptrNew, &consPtr, sizeof(consHptrNew));
-        std::memcpy(&customHptrNew, &customPtr, sizeof(customHptrNew));
+        // Convert back to HPtr for tag checking
+        HPtr intHptrNew = HPtr::fromHPointer(intPtr);
+        HPtr floatHptrNew = HPtr::fromHPointer(floatPtr);
+        HPtr charHptrNew = HPtr::fromHPointer(charPtr);
+        HPtr consHptrNew = HPtr::fromHPointer(consPtr);
+        HPtr customHptrNew = HPtr::fromHPointer(customPtr);
 
         // Verify all tags preserved
         RC_ASSERT(eco_get_header_tag(intHptrNew) == Tag_Int);

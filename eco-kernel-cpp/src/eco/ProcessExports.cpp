@@ -4,19 +4,20 @@
 #include "Process.hpp"
 
 using namespace Eco::Kernel;
+using Elm::HPtr;
 
-uint64_t Eco_Kernel_Process_exit(int64_t code) {
-    return Process::exit(code);
+HPtr Eco_Kernel_Process_exit(int64_t code) {
+    return HPtr::fromBits(Process::exit(code));
 }
 
-uint64_t Eco_Kernel_Process_spawn(uint64_t cmd, uint64_t args) {
-    return Process::spawn(cmd, args);
+uint64_t Eco_Kernel_Process_spawn(HPtr cmd, HPtr args) {
+    return Process::spawn(cmd.toBits(), args.toBits());
 }
 
-uint64_t Eco_Kernel_Process_spawnProcess(uint64_t cmd, uint64_t args, uint64_t stdin_, uint64_t stdout_, uint64_t stderr_) {
-    return Process::spawnProcess(cmd, args, stdin_, stdout_, stderr_);
+HPtr Eco_Kernel_Process_spawnProcess(HPtr cmd, HPtr args, HPtr stdin_, HPtr stdout_, HPtr stderr_) {
+    return HPtr::fromBits(Process::spawnProcess(cmd.toBits(), args.toBits(), stdin_.toBits(), stdout_.toBits(), stderr_.toBits()));
 }
 
-uint64_t Eco_Kernel_Process_wait(uint64_t handle) {
-    return Process::wait(handle);
+uint64_t Eco_Kernel_Process_wait(HPtr handle) {
+    return Process::wait(handle.toBits());
 }

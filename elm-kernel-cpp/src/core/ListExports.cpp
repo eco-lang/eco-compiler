@@ -21,31 +21,31 @@ namespace {
 // Closure-calling helpers (INV_2: delegate to runtime via eco_closure_call_saturated)
 //===----------------------------------------------------------------------===//
 
-inline uint64_t callUnaryClosure(uint64_t closure_hptr, uint64_t arg) {
+inline uint64_t callUnaryClosure(HPtr closure_hptr, uint64_t arg) {
     uint64_t args[1] = { arg };
-    return eco_closure_call_saturated(closure_hptr, args, 1, /*layout=*/nullptr);
+    return eco_closure_call_saturated(closure_hptr, args, 1, /*layout=*/nullptr).toBits();
 }
 
-inline uint64_t callBinaryClosure(uint64_t closure_hptr, uint64_t arg1, uint64_t arg2) {
+inline uint64_t callBinaryClosure(HPtr closure_hptr, uint64_t arg1, uint64_t arg2) {
     uint64_t args[2] = { arg1, arg2 };
-    return eco_closure_call_saturated(closure_hptr, args, 2, /*layout=*/nullptr);
+    return eco_closure_call_saturated(closure_hptr, args, 2, /*layout=*/nullptr).toBits();
 }
 
-inline uint64_t callTernaryClosure(uint64_t closure_hptr, uint64_t arg1, uint64_t arg2, uint64_t arg3) {
+inline uint64_t callTernaryClosure(HPtr closure_hptr, uint64_t arg1, uint64_t arg2, uint64_t arg3) {
     uint64_t args[3] = { arg1, arg2, arg3 };
-    return eco_closure_call_saturated(closure_hptr, args, 3, /*layout=*/nullptr);
+    return eco_closure_call_saturated(closure_hptr, args, 3, /*layout=*/nullptr).toBits();
 }
 
-inline uint64_t callQuaternaryClosure(uint64_t closure_hptr, uint64_t arg1, uint64_t arg2,
+inline uint64_t callQuaternaryClosure(HPtr closure_hptr, uint64_t arg1, uint64_t arg2,
                                        uint64_t arg3, uint64_t arg4) {
     uint64_t args[4] = { arg1, arg2, arg3, arg4 };
-    return eco_closure_call_saturated(closure_hptr, args, 4, /*layout=*/nullptr);
+    return eco_closure_call_saturated(closure_hptr, args, 4, /*layout=*/nullptr).toBits();
 }
 
-inline uint64_t callQuinaryClosure(uint64_t closure_hptr, uint64_t arg1, uint64_t arg2,
+inline uint64_t callQuinaryClosure(HPtr closure_hptr, uint64_t arg1, uint64_t arg2,
                                     uint64_t arg3, uint64_t arg4, uint64_t arg5) {
     uint64_t args[5] = { arg1, arg2, arg3, arg4, arg5 };
-    return eco_closure_call_saturated(closure_hptr, args, 5, /*layout=*/nullptr);
+    return eco_closure_call_saturated(closure_hptr, args, 5, /*layout=*/nullptr).toBits();
 }
 
 //===----------------------------------------------------------------------===//
@@ -134,24 +134,27 @@ extern "C" {
 
 // Simple cons that treats head as boxed pointer.
 // For unboxed primitives, a different signature would be needed.
-uint64_t Elm_Kernel_List_cons(uint64_t head, uint64_t tail) {
+HPtr Elm_Kernel_List_cons(HPtr head, HPtr tail) {
+    uint64_t head_bits = head.toBits();
+    uint64_t tail_bits = tail.toBits();
     Unboxable headVal;
-    headVal.p = Export::decode(head);
-    HPointer result = List::cons(headVal, Export::decode(tail), true);
-    return Export::encode(result);
+    headVal.p = Export::decode(head_bits);
+    HPointer result = List::cons(headVal, Export::decode(tail_bits), true);
+    return HPtr::fromBits(Export::encode(result));
 }
 
-uint64_t Elm_Kernel_List_fromArray(uint64_t array) {
+HPtr Elm_Kernel_List_fromArray(HPtr array) {
+    uint64_t array_bits = array.toBits();
     // Check for embedded constants first (e.g., Nil).
-    HPointer hp = Export::decode(array);
+    HPointer hp = Export::decode(array_bits);
     if (hp.constant != 0) {
         // Already a constant (Nil, etc.) — pass through unchanged.
         return array;
     }
 
-    void* arr_ptr = Export::toPtr(array);
+    void* arr_ptr = Export::toPtr(array_bits);
     if (!arr_ptr) {
-        return Export::encode(alloc::listNil());
+        return HPtr::fromBits(Export::encode(alloc::listNil()));
     }
 
     Header* hdr = static_cast<Header*>(arr_ptr);
@@ -165,7 +168,7 @@ uint64_t Elm_Kernel_List_fromArray(uint64_t array) {
     }
 
     if (hdr->tag != Tag_Array) {
-        return Export::encode(alloc::listNil());
+        return HPtr::fromBits(Export::encode(alloc::listNil()));
     }
 
     ElmArray* elmArr = static_cast<ElmArray*>(arr_ptr);
@@ -178,20 +181,21 @@ uint64_t Elm_Kernel_List_fromArray(uint64_t array) {
         result = List::cons(head, result, !isUnboxed);
     }
 
-    return Export::encode(result);
+    return HPtr::fromBits(Export::encode(result));
 }
 
-uint64_t Elm_Kernel_List_toArray(uint64_t list) {
+HPtr Elm_Kernel_List_toArray(HPtr list) {
+    uint64_t list_bits = list.toBits();
     // In the C++ backend, kernel functions already work with Cons lists.
     // The Elm source wraps some kernel calls with toArray (because the JS
     // kernel expects JS Arrays), but in C++ this conversion is unnecessary.
     // Pass through Cons lists and Nil unchanged.
-    HPointer hp = Export::decode(list);
+    HPointer hp = Export::decode(list_bits);
     if (hp.constant != 0) {
         // Embedded constant (e.g., Nil) — pass through.
         return list;
     }
-    void* ptr = Export::toPtr(list);
+    void* ptr = Export::toPtr(list_bits);
     if (ptr) {
         Header* hdr = static_cast<Header*>(ptr);
         if (hdr->tag == Tag_Cons) {
@@ -201,7 +205,7 @@ uint64_t Elm_Kernel_List_toArray(uint64_t list) {
     }
 
     // Genuine Array-to-List conversion (fallback for other callers).
-    std::vector<uint64_t> vec = listToVectorU64(Export::decode(list));
+    std::vector<uint64_t> vec = listToVectorU64(Export::decode(list_bits));
 
     HPointer arr = alloc::allocArray(static_cast<u32>(vec.size()));
     void* arr_ptr = Allocator::instance().resolve(arr);
@@ -213,16 +217,17 @@ uint64_t Elm_Kernel_List_toArray(uint64_t list) {
     elmArr->length = static_cast<u32>(vec.size());
     elmArr->header.unboxed = 0;  // Elements are boxed
 
-    return Export::encode(arr);
+    return HPtr::fromBits(Export::encode(arr));
 }
 
 //===----------------------------------------------------------------------===//
 // Higher-order List functions (implemented with closure calling)
 //===----------------------------------------------------------------------===//
 
-uint64_t Elm_Kernel_List_map2(uint64_t closure, uint64_t xs, uint64_t ys) {
-    HPointer xList = Export::decode(xs);
-    HPointer yList = Export::decode(ys);
+HPtr Elm_Kernel_List_map2(HPtr closure, HPtr xs, HPtr ys) {
+    uint64_t closure_bits = closure.toBits();
+    HPointer xList = Export::decode(xs.toBits());
+    HPointer yList = Export::decode(ys.toBits());
     auto& allocator = Allocator::instance();
 
     std::vector<uint64_t> results;
@@ -248,13 +253,13 @@ uint64_t Elm_Kernel_List_map2(uint64_t closure, uint64_t xs, uint64_t ys) {
     }
 
     // Results are always HPointer-encoded (boxed)
-    return Export::encode(vectorU64ToList(results, true));
+    return HPtr::fromBits(Export::encode(vectorU64ToList(results, true)));
 }
 
-uint64_t Elm_Kernel_List_map3(uint64_t closure, uint64_t xs, uint64_t ys, uint64_t zs) {
-    HPointer xList = Export::decode(xs);
-    HPointer yList = Export::decode(ys);
-    HPointer zList = Export::decode(zs);
+HPtr Elm_Kernel_List_map3(HPtr closure, HPtr xs, HPtr ys, HPtr zs) {
+    HPointer xList = Export::decode(xs.toBits());
+    HPointer yList = Export::decode(ys.toBits());
+    HPointer zList = Export::decode(zs.toBits());
     auto& allocator = Allocator::instance();
 
     std::vector<uint64_t> results;
@@ -276,14 +281,14 @@ uint64_t Elm_Kernel_List_map3(uint64_t closure, uint64_t xs, uint64_t ys, uint64
         xList = xTail; yList = yTail; zList = zTail;
     }
 
-    return Export::encode(vectorU64ToList(results, true));
+    return HPtr::fromBits(Export::encode(vectorU64ToList(results, true)));
 }
 
-uint64_t Elm_Kernel_List_map4(uint64_t closure, uint64_t ws, uint64_t xs, uint64_t ys, uint64_t zs) {
-    HPointer wList = Export::decode(ws);
-    HPointer xList = Export::decode(xs);
-    HPointer yList = Export::decode(ys);
-    HPointer zList = Export::decode(zs);
+HPtr Elm_Kernel_List_map4(HPtr closure, HPtr ws, HPtr xs, HPtr ys, HPtr zs) {
+    HPointer wList = Export::decode(ws.toBits());
+    HPointer xList = Export::decode(xs.toBits());
+    HPointer yList = Export::decode(ys.toBits());
+    HPointer zList = Export::decode(zs.toBits());
     auto& allocator = Allocator::instance();
 
     std::vector<uint64_t> results;
@@ -308,16 +313,16 @@ uint64_t Elm_Kernel_List_map4(uint64_t closure, uint64_t ws, uint64_t xs, uint64
         wList = wT; xList = xT; yList = yT; zList = zT;
     }
 
-    return Export::encode(vectorU64ToList(results, true));
+    return HPtr::fromBits(Export::encode(vectorU64ToList(results, true)));
 }
 
-uint64_t Elm_Kernel_List_map5(uint64_t closure, uint64_t vs, uint64_t ws,
-                               uint64_t xs, uint64_t ys, uint64_t zs) {
-    HPointer vList = Export::decode(vs);
-    HPointer wList = Export::decode(ws);
-    HPointer xList = Export::decode(xs);
-    HPointer yList = Export::decode(ys);
-    HPointer zList = Export::decode(zs);
+HPtr Elm_Kernel_List_map5(HPtr closure, HPtr vs, HPtr ws,
+                           HPtr xs, HPtr ys, HPtr zs) {
+    HPointer vList = Export::decode(vs.toBits());
+    HPointer wList = Export::decode(ws.toBits());
+    HPointer xList = Export::decode(xs.toBits());
+    HPointer yList = Export::decode(ys.toBits());
+    HPointer zList = Export::decode(zs.toBits());
     auto& allocator = Allocator::instance();
 
     std::vector<uint64_t> results;
@@ -345,15 +350,16 @@ uint64_t Elm_Kernel_List_map5(uint64_t closure, uint64_t vs, uint64_t ws,
         vList = vT; wList = wT; xList = xT; yList = yT; zList = zT;
     }
 
-    return Export::encode(vectorU64ToList(results, true));
+    return HPtr::fromBits(Export::encode(vectorU64ToList(results, true)));
 }
 
-uint64_t Elm_Kernel_List_sortBy(uint64_t closure, uint64_t list) {
-    std::vector<uint64_t> elements = listToVectorU64(Export::decode(list));
+HPtr Elm_Kernel_List_sortBy(HPtr closure, HPtr list) {
+    uint64_t list_bits = list.toBits();
+    std::vector<uint64_t> elements = listToVectorU64(Export::decode(list_bits));
     auto& allocator = Allocator::instance();
 
     if (elements.empty()) {
-        return Export::encode(alloc::listNil());
+        return HPtr::fromBits(Export::encode(alloc::listNil()));
     }
 
     // Build key cache: extract key for each element via closure
@@ -388,20 +394,21 @@ uint64_t Elm_Kernel_List_sortBy(uint64_t closure, uint64_t list) {
 
     // Sort preserves element types - check if original was unboxed
     bool elemIsUnboxed = false;
-    HPointer origList = Export::decode(list);
+    HPointer origList = Export::decode(list_bits);
     if (!alloc::isNil(origList)) {
         Header* h = static_cast<Header*>(allocator.resolve(origList));
         elemIsUnboxed = (h->unboxed & 1);
     }
-    return Export::encode(vectorU64ToList(sorted, !elemIsUnboxed));
+    return HPtr::fromBits(Export::encode(vectorU64ToList(sorted, !elemIsUnboxed)));
 }
 
-uint64_t Elm_Kernel_List_sortWith(uint64_t closure, uint64_t list) {
-    std::vector<uint64_t> elements = listToVectorU64(Export::decode(list));
+HPtr Elm_Kernel_List_sortWith(HPtr closure, HPtr list) {
+    uint64_t list_bits = list.toBits();
+    std::vector<uint64_t> elements = listToVectorU64(Export::decode(list_bits));
     auto& allocator = Allocator::instance();
 
     if (elements.empty()) {
-        return Export::encode(alloc::listNil());
+        return HPtr::fromBits(Export::encode(alloc::listNil()));
     }
 
     std::stable_sort(elements.begin(), elements.end(), [&](uint64_t a, uint64_t b) {
@@ -414,12 +421,12 @@ uint64_t Elm_Kernel_List_sortWith(uint64_t closure, uint64_t list) {
 
     // sortWith preserves element types - check if original was unboxed
     bool elemIsUnboxed = false;
-    HPointer origList = Export::decode(list);
+    HPointer origList = Export::decode(list_bits);
     if (!alloc::isNil(origList)) {
         Header* h = static_cast<Header*>(allocator.resolve(origList));
         elemIsUnboxed = (h->unboxed & 1);
     }
-    return Export::encode(vectorU64ToList(elements, !elemIsUnboxed));
+    return HPtr::fromBits(Export::encode(vectorU64ToList(elements, !elemIsUnboxed)));
 }
 
 } // extern "C"

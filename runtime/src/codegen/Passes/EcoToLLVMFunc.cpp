@@ -46,20 +46,19 @@ struct KernelFuncOpLowering : public OpConversionPattern<func::FuncOp> {
 
         // Convert function type
         auto funcType = funcOp.getFunctionType();
+        auto hptrTy = getHPtrLLVMType(*ctx);
         SmallVector<Type> argTypes;
         for (Type t : funcType.getInputs()) {
-            // !eco.value becomes i64
             if (isa<ValueType>(t))
-                argTypes.push_back(IntegerType::get(ctx, 64));
+                argTypes.push_back(hptrTy);
             else
                 argTypes.push_back(t);
         }
 
         SmallVector<Type> resultTypes;
         for (Type t : funcType.getResults()) {
-            // !eco.value becomes i64
             if (isa<ValueType>(t))
-                resultTypes.push_back(IntegerType::get(ctx, 64));
+                resultTypes.push_back(hptrTy);
             else
                 resultTypes.push_back(t);
         }

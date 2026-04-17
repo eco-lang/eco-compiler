@@ -136,9 +136,9 @@ HPointer PlatformRuntime::setupEffects(HPointer sendToAppClosure) {
         if (!alloc::isNil(initTask) && !hpIsConstant(initTask)) {
             void* initPtr = resolveHP(initTask);
             if (initPtr && static_cast<Header*>(initPtr)->tag == Tag_Closure) {
-                uint64_t closureEnc = encodeHP(initTask);
-                uint64_t result = eco_apply_closure(closureEnc, nullptr, 0);
-                initTask = decodeHP(result);
+                HPtr closureHPtr = HPtr::fromBits(encodeHP(initTask));
+                HPtr result = eco_apply_closure(closureHPtr, nullptr, 0);
+                initTask = decodeHP(result.toBits());
             }
         }
 

@@ -43,7 +43,7 @@ public:
         });
 
         // Convert eco.value to i64 for BF ops that take/produce eco.value.
-        // At runtime, eco.value is represented as i64.
+        // BF dialect uses i64 directly for HPointer-typed values.
         addConversion([](eco::ValueType type) -> Type {
             return IntegerType::get(type.getContext(), 64);
         });
@@ -90,7 +90,6 @@ static BFRuntimeFuncs ensureRuntimeFunctions(ModuleOp module, OpBuilder &builder
     auto ctx = module.getContext();
     auto i8Ptr = LLVM::LLVMPointerType::get(ctx);
     auto i32 = builder.getI32Type();
-    auto i64 = builder.getI64Type();
 
     // Build a symbol table for O(1) lookups during declaration
     mlir::SymbolTable symTable(module);
@@ -108,7 +107,9 @@ static BFRuntimeFuncs ensureRuntimeFunctions(ModuleOp module, OpBuilder &builder
 
     BFRuntimeFuncs funcs;
 
-    // ByteBuffer operations
+    auto i64 = builder.getI64Type();
+
+    // ByteBuffer operations — BF dialect uses i64 for HPointers directly
     funcs.allocBytebuffer = declareFunc("elm_alloc_bytebuffer", i64, {i32});
     funcs.bytebufferLen = declareFunc("elm_bytebuffer_len", i32, {i64});
     funcs.bytebufferData = declareFunc("elm_bytebuffer_data", i8Ptr, {i64});
@@ -118,7 +119,7 @@ static BFRuntimeFuncs ensureRuntimeFunctions(ModuleOp module, OpBuilder &builder
     funcs.utf8Copy = declareFunc("elm_utf8_copy", i32, {i64, i8Ptr});
     funcs.utf8Decode = declareFunc("elm_utf8_decode", i64, {i8Ptr, i32});
 
-    // Maybe operations (not cached — rarely used)
+    // Maybe operations
     declareFunc("elm_maybe_nothing", i64, {});
     declareFunc("elm_maybe_just", i64, {i64});
 

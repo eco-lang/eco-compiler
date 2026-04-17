@@ -4,21 +4,22 @@
 #include "Runtime.hpp"
 
 using namespace Eco::Kernel;
+using Elm::HPtr;
 
-uint64_t Eco_Kernel_Runtime_dirname() {
-    return Runtime::dirname();
+HPtr Eco_Kernel_Runtime_dirname() {
+    return HPtr::fromBits(Runtime::dirname());
 }
 
 uint64_t Eco_Kernel_Runtime_random() {
     return Runtime::random();
 }
 
-uint64_t Eco_Kernel_Runtime_saveState(uint64_t state) {
-    return Runtime::saveState(state);
+HPtr Eco_Kernel_Runtime_saveState(HPtr state) {
+    return HPtr::fromBits(Runtime::saveState(state.toBits()));
 }
 
-uint64_t Eco_Kernel_Runtime_loadState() {
-    return Runtime::loadState();
+HPtr Eco_Kernel_Runtime_loadState() {
+    return HPtr::fromBits(Runtime::loadState());
 }
 
 extern "C" void Eco_Kernel_Runtime_register_gc_roots() {

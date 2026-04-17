@@ -38,10 +38,12 @@ std::string elmStringToStd(void* ptr) {
 
 extern "C" {
 
-uint64_t Elm_Kernel_Debug_log(uint64_t tag, uint64_t value) {
+HPtr Elm_Kernel_Debug_log(HPtr tag, HPtr value) {
+    uint64_t tag_bits = tag.toBits();
+    uint64_t value_bits = value.toBits();
     // log prints the tag and value, then returns the value unchanged
     // In JIT mode, parameters are HPointers (logical pointers)
-    std::string tagStr = elmStringToStd(Elm::Kernel::Export::toPtr(tag));
+    std::string tagStr = elmStringToStd(Elm::Kernel::Export::toPtr(tag_bits));
 
     // Output to the captured stream (or stderr if not capturing)
     // Use eco_print_elm_value to unwrap Guida's Ctor0 box wrappers
@@ -54,20 +56,21 @@ uint64_t Elm_Kernel_Debug_log(uint64_t tag, uint64_t value) {
     return value;
 }
 
-uint64_t Elm_Kernel_Debug_todo(uint64_t message) {
+HPtr Elm_Kernel_Debug_todo(HPtr message) {
+    uint64_t message_bits = message.toBits();
     // In JIT mode, parameters are HPointers (logical pointers)
-    std::string msgStr = elmStringToStd(Elm::Kernel::Export::toPtr(message));
+    std::string msgStr = elmStringToStd(Elm::Kernel::Export::toPtr(message_bits));
     eco_output_text("Debug.todo: ");
     eco_output_text(msgStr.c_str());
     eco_output_text("\n");
     exit(1);
     // Never reached, but needed for return type
-    return 0;
+    return HPtr::fromBits(0);
 }
 
-uint64_t Elm_Kernel_Debug_toString(uint64_t value, int64_t type_id) {
+HPtr Elm_Kernel_Debug_toString(HPtr value, int64_t type_id) {
     // Convert the value to its string representation using type info
-    // eco_value_to_string_typed returns HPointer as uint64_t
+    // eco_value_to_string_typed returns HPtr
     return eco_value_to_string_typed(value, type_id);
 }
 

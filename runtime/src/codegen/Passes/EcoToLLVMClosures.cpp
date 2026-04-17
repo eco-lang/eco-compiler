@@ -122,26 +122,27 @@ static BoxedArgsResult emitRootedBoxedArgsArray(
         Type origType = (i < origNewArgTypes.size()) ? origNewArgTypes[i] : Type();
 
         if (origType && isa<eco::ValueType>(origType)) {
-            if (isa<LLVM::LLVMPointerType>(arg.getType())) {
-                arg = rewriter.create<LLVM::PtrToIntOp>(loc, i64Ty, arg);
-            }
+            // eco.value → ptr<1>; convert to i64 for the boxed args array
+            arg = valueToI64(rewriter, loc, arg);
         } else if (origType && origType.isInteger(64)) {
             auto allocIntFunc = runtime.getOrCreateAllocInt(rewriter);
             emitSafepointMarker(safeOp, rewriter, runtime, liveRoots);
-            arg = rewriter.create<LLVM::CallOp>(loc, allocIntFunc, ValueRange{arg}).getResult();
+            auto boxed = rewriter.create<LLVM::CallOp>(loc, allocIntFunc, ValueRange{arg}).getResult();
+            arg = valueToI64(rewriter, loc, boxed);
         } else if (origType && origType.isF64()) {
             auto allocFloatFunc = runtime.getOrCreateAllocFloat(rewriter);
             emitSafepointMarker(safeOp, rewriter, runtime, liveRoots);
-            arg = rewriter.create<LLVM::CallOp>(loc, allocFloatFunc, ValueRange{arg}).getResult();
+            auto boxed = rewriter.create<LLVM::CallOp>(loc, allocFloatFunc, ValueRange{arg}).getResult();
+            arg = valueToI64(rewriter, loc, boxed);
         } else if (origType && isa<IntegerType>(origType) &&
                    cast<IntegerType>(origType).getWidth() < 64) {
             auto allocCharFunc = runtime.getOrCreateAllocChar(rewriter);
             emitSafepointMarker(safeOp, rewriter, runtime, liveRoots);
-            arg = rewriter.create<LLVM::CallOp>(loc, allocCharFunc, ValueRange{arg}).getResult();
+            auto boxed = rewriter.create<LLVM::CallOp>(loc, allocCharFunc, ValueRange{arg}).getResult();
+            arg = valueToI64(rewriter, loc, boxed);
         } else {
-            if (isa<LLVM::LLVMPointerType>(arg.getType())) {
-                arg = rewriter.create<LLVM::PtrToIntOp>(loc, i64Ty, arg);
-            }
+            // Convert any pointer type (including ptr<1>) to i64
+            arg = valueToI64(rewriter, loc, arg);
         }
 
         rewriter.create<LLVM::StoreOp>(loc, arg, slotPtr);
@@ -202,8 +203,9 @@ struct ProjectClosureOpLowering : public OpConversionPattern<ProjectClosureOp> {
             }
             // else: i64, no conversion needed
         } else {
-            // Boxed value (!eco.value) - keep as i64
-            // Result type should be i64 after type conversion
+            // Boxed value (!eco.value) - load i64 from heap slot then convert to ptr<1>
+            if (isHPtrLLVMType(resultType))
+                result = i64ToValue(rewriter, loc, loadedValue);
         }
 
         rewriter.replaceOp(op, result);
@@ -432,18 +434,21 @@ static LLVM::LLVMFuncOp getOrCreateWrapper(PatternRewriter &rewriter, ModuleOp m
         Value convertedArg = argI64;
 
         if (origType && isa<eco::ValueType>(origType)) {
-            // !eco.value param: arg is HPointer, inner function expects i64 HPointer
-            // Pass through as-is (argI64 is already i64 HPointer bits)
+            // !eco.value param: arg is HPointer i64 from args array.
+            // Inner function expects ptr<1>; convert.
+            convertedArg = i64ToValue(rewriter, loc, argI64);
         } else if (origType && origType.isInteger(64)) {
             // Int param: arg is HPointer to ElmInt → resolve and read value at offset 8
-            auto resolved = rewriter.create<LLVM::CallOp>(loc, resolveFunc, ValueRange{argI64});
+            Value hptr = i64ToValue(rewriter, loc, argI64);
+            auto resolved = rewriter.create<LLVM::CallOp>(loc, resolveFunc, ValueRange{hptr});
             auto off8 = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, layout::HeaderSize);
             auto valPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i8Ty,
                                                         resolved.getResult(), ValueRange{off8});
             convertedArg = rewriter.create<LLVM::LoadOp>(loc, i64Ty, valPtr);
         } else if (origType && origType.isF64()) {
             // Float param: arg is HPointer to ElmFloat → resolve, read i64 at offset 8, bitcast
-            auto resolved = rewriter.create<LLVM::CallOp>(loc, resolveFunc, ValueRange{argI64});
+            Value hptr = i64ToValue(rewriter, loc, argI64);
+            auto resolved = rewriter.create<LLVM::CallOp>(loc, resolveFunc, ValueRange{hptr});
             auto off8 = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, layout::HeaderSize);
             auto valPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i8Ty,
                                                         resolved.getResult(), ValueRange{off8});
@@ -451,7 +456,8 @@ static LLVM::LLVMFuncOp getOrCreateWrapper(PatternRewriter &rewriter, ModuleOp m
             convertedArg = rewriter.create<LLVM::BitcastOp>(loc, f64Ty, loadedI64);
         } else if (auto intTy = dyn_cast<IntegerType>(targetType); intTy && intTy.getWidth() < 64) {
             // Char (i16/i32): arg is HPointer to ElmChar → resolve and read value at offset 8
-            auto resolved = rewriter.create<LLVM::CallOp>(loc, resolveFunc, ValueRange{argI64});
+            Value hptr = i64ToValue(rewriter, loc, argI64);
+            auto resolved = rewriter.create<LLVM::CallOp>(loc, resolveFunc, ValueRange{hptr});
             auto off8 = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, layout::HeaderSize);
             auto valPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i8Ty,
                                                         resolved.getResult(), ValueRange{off8});
@@ -459,7 +465,8 @@ static LLVM::LLVMFuncOp getOrCreateWrapper(PatternRewriter &rewriter, ModuleOp m
             convertedArg = rewriter.create<LLVM::TruncOp>(loc, targetType, fullVal);
         } else if (targetType == f64Ty && !origType) {
             // Fallback: no orig types, target is f64 → unbox from HPointer
-            auto resolved = rewriter.create<LLVM::CallOp>(loc, resolveFunc, ValueRange{argI64});
+            Value hptr = i64ToValue(rewriter, loc, argI64);
+            auto resolved = rewriter.create<LLVM::CallOp>(loc, resolveFunc, ValueRange{hptr});
             auto off8 = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, layout::HeaderSize);
             auto valPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i8Ty,
                                                         resolved.getResult(), ValueRange{off8});
@@ -488,45 +495,50 @@ static LLVM::LLVMFuncOp getOrCreateWrapper(PatternRewriter &rewriter, ModuleOp m
     Value resultValue = call.getResult();
     Value resultPtr;
 
+    // Helper: convert an HPointer (ptr<1>) to ptr (AS0) for wrapper return
+    auto hptrToPtr = [&](Value hptr) -> Value {
+        Value asI64 = valueToI64(rewriter, loc, hptr);
+        return rewriter.create<LLVM::IntToPtrOp>(loc, ptrTy, ValueRange{asI64});
+    };
+
     if (origResultType && isa<eco::ValueType>(origResultType)) {
-        // !eco.value result: inner function returns i64 HPointer → convert to ptr
-        resultPtr = rewriter.create<LLVM::IntToPtrOp>(loc, ptrTy, ValueRange{resultValue});
+        // !eco.value result: inner function returns ptr<1> → convert to ptr
+        resultPtr = hptrToPtr(resultValue);
     } else if (origResultType && origResultType.isInteger(64)) {
         // Int result: inner function returns raw i64 → box via eco_alloc_int
         emitWrapperSafepointMarker(rewriter, runtime, loc, liveRoots);
         auto allocIntFunc = runtime.getOrCreateAllocInt(rewriter);
         auto boxCall = rewriter.create<LLVM::CallOp>(loc, allocIntFunc, ValueRange{resultValue});
-        resultPtr = rewriter.create<LLVM::IntToPtrOp>(loc, ptrTy, ValueRange{boxCall.getResult()});
+        resultPtr = hptrToPtr(boxCall.getResult());
     } else if (origResultType && origResultType.isF64()) {
-        // Float result: inner function returns f64 → box via eco_alloc_float
         emitWrapperSafepointMarker(rewriter, runtime, loc, liveRoots);
         auto allocFloatFunc = runtime.getOrCreateAllocFloat(rewriter);
         auto boxCall = rewriter.create<LLVM::CallOp>(loc, allocFloatFunc, ValueRange{resultValue});
-        resultPtr = rewriter.create<LLVM::IntToPtrOp>(loc, ptrTy, ValueRange{boxCall.getResult()});
+        resultPtr = hptrToPtr(boxCall.getResult());
     } else if (origResultType && isa<IntegerType>(origResultType) &&
                cast<IntegerType>(origResultType).getWidth() < 64) {
-        // Char result: inner function returns i16 → box via eco_alloc_char
         emitWrapperSafepointMarker(rewriter, runtime, loc, liveRoots);
         auto allocCharFunc = runtime.getOrCreateAllocChar(rewriter);
         auto boxCall = rewriter.create<LLVM::CallOp>(loc, allocCharFunc, ValueRange{resultValue});
-        resultPtr = rewriter.create<LLVM::IntToPtrOp>(loc, ptrTy, ValueRange{boxCall.getResult()});
+        resultPtr = hptrToPtr(boxCall.getResult());
     } else if (isa<LLVM::LLVMPointerType>(targetResultType)) {
-        // ptr result: pass through
-        resultPtr = resultValue;
+        // ptr or ptr<1> result: convert to ptr AS0
+        if (isHPtrLLVMType(targetResultType)) {
+            resultPtr = hptrToPtr(resultValue);
+        } else {
+            resultPtr = resultValue;
+        }
     } else if (targetResultType == f64Ty && !origResultType) {
-        // Fallback: no orig types, target returns f64 → box
         emitWrapperSafepointMarker(rewriter, runtime, loc, liveRoots);
         auto allocFloatFunc = runtime.getOrCreateAllocFloat(rewriter);
         auto boxCall = rewriter.create<LLVM::CallOp>(loc, allocFloatFunc, ValueRange{resultValue});
-        resultPtr = rewriter.create<LLVM::IntToPtrOp>(loc, ptrTy, ValueRange{boxCall.getResult()});
+        resultPtr = hptrToPtr(boxCall.getResult());
     } else if (auto intTy = dyn_cast<IntegerType>(targetResultType); intTy && !origResultType) {
-        // Fallback: no orig types, target returns integer
         if (intTy.getWidth() < 64) {
-            // Char: box via eco_alloc_char
             emitWrapperSafepointMarker(rewriter, runtime, loc, liveRoots);
             auto allocCharFunc = runtime.getOrCreateAllocChar(rewriter);
             auto boxCall = rewriter.create<LLVM::CallOp>(loc, allocCharFunc, ValueRange{resultValue});
-            resultPtr = rewriter.create<LLVM::IntToPtrOp>(loc, ptrTy, ValueRange{boxCall.getResult()});
+            resultPtr = hptrToPtr(boxCall.getResult());
         } else {
             // i64 with no orig type → assume HPointer, pass through
             resultPtr = rewriter.create<LLVM::IntToPtrOp>(loc, ptrTy, ValueRange{resultValue});
@@ -636,13 +648,15 @@ struct PapCreateOpLowering : public OpConversionPattern<PapCreateOp> {
         // This implements recursive closure backpatching.
         // Note: self_capture_indices is emitted as array<i64: ...> (DenseI64ArrayAttr).
         if (auto selfCaptureAttr = op->getAttrOfType<DenseI64ArrayAttr>("self_capture_indices")) {
+            // Convert closure HPointer (ptr<1>) to i64 for heap storage
+            Value closureI64 = valueToI64(rewriter, loc, closureHPtr);
             for (int64_t selfIdx : selfCaptureAttr.asArrayRef()) {
                 int64_t valueOffset = layout::ClosureValuesOffset + selfIdx * layout::PtrSize;
                 auto offsetConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty,
                     rewriter.getI64IntegerAttr(valueOffset));
                 auto valuePtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i8Ty, closurePtr,
                     ValueRange{offsetConst});
-                rewriter.create<LLVM::StoreOp>(loc, closureHPtr, valuePtr);
+                rewriter.create<LLVM::StoreOp>(loc, closureI64, valuePtr);
             }
         }
 
@@ -1017,9 +1031,10 @@ static Value emitInlineClosureCall(ConversionPatternRewriter &rewriter, Location
     //   - No orig type → fallback
     auto resolveFunc = runtime.getOrCreateResolveHPtr(rewriter);
 
+    // resultI64 is now ptr<1> (HPTR_TY) from the runtime call.
     Value result;
     if (origResultType && isa<eco::ValueType>(origResultType)) {
-        // !eco.value → HPointer pass through
+        // !eco.value → ptr<1> pass through
         result = resultI64;
     } else if (origResultType && origResultType.isInteger(64)) {
         // Int → unbox: resolve HPointer → load i64 value at offset 8
@@ -1029,7 +1044,6 @@ static Value emitInlineClosureCall(ConversionPatternRewriter &rewriter, Location
                                                     resolveResult.getResult(), ValueRange{off8});
         result = rewriter.create<LLVM::LoadOp>(loc, i64Ty, valPtr);
     } else if (origResultType && origResultType.isF64()) {
-        // Float → unbox: resolve → load i64 → bitcast to f64
         auto resolveResult = rewriter.create<LLVM::CallOp>(loc, resolveFunc, ValueRange{resultI64});
         auto off8 = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, layout::HeaderSize);
         auto valPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i8Ty,
@@ -1038,7 +1052,6 @@ static Value emitInlineClosureCall(ConversionPatternRewriter &rewriter, Location
         result = rewriter.create<LLVM::BitcastOp>(loc, f64Ty, loadedI64);
     } else if (origResultType && isa<IntegerType>(origResultType) &&
                cast<IntegerType>(origResultType).getWidth() < 64) {
-        // Char → unbox: resolve → load i64 → trunc
         auto resolveResult = rewriter.create<LLVM::CallOp>(loc, resolveFunc, ValueRange{resultI64});
         auto off8 = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, layout::HeaderSize);
         auto valPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i8Ty,
@@ -1046,17 +1059,17 @@ static Value emitInlineClosureCall(ConversionPatternRewriter &rewriter, Location
         Value loadedI64 = rewriter.create<LLVM::LoadOp>(loc, i64Ty, valPtr);
         result = rewriter.create<LLVM::TruncOp>(loc, resultType, loadedI64);
     } else if (!origResultType && resultType == f64Ty) {
-        // Fallback: no orig type, converted type is f64 → unbox
         auto resolveResult = rewriter.create<LLVM::CallOp>(loc, resolveFunc, ValueRange{resultI64});
         auto off8 = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, layout::HeaderSize);
         auto valPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i8Ty,
                                                     resolveResult.getResult(), ValueRange{off8});
         Value loadedI64 = rewriter.create<LLVM::LoadOp>(loc, i64Ty, valPtr);
         result = rewriter.create<LLVM::BitcastOp>(loc, f64Ty, loadedI64);
-    } else if (isa<LLVM::LLVMPointerType>(resultType)) {
-        result = rewriter.create<LLVM::IntToPtrOp>(loc, resultType, resultI64);
+    } else if (isHPtrLLVMType(resultType)) {
+        // ptr<1> result — pass through
+        result = resultI64;
     } else {
-        // Default: i64 with no orig type → assume HPointer, pass through
+        // Default: pass through
         result = resultI64;
     }
 

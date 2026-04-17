@@ -4,95 +4,96 @@
 #include "File.hpp"
 
 using namespace Eco::Kernel;
+using Elm::HPtr;
 
-uint64_t Eco_Kernel_File_readString(uint64_t path) {
-    return File::readString(path);
+HPtr Eco_Kernel_File_readString(HPtr path) {
+    return HPtr::fromBits(File::readString(path.toBits()));
 }
 
-uint64_t Eco_Kernel_File_writeString(uint64_t path, uint64_t content) {
-    return File::writeString(path, content);
+HPtr Eco_Kernel_File_writeString(HPtr path, HPtr content) {
+    return HPtr::fromBits(File::writeString(path.toBits(), content.toBits()));
 }
 
-uint64_t Eco_Kernel_File_readBytes(uint64_t path) {
-    return File::readBytes(path);
+HPtr Eco_Kernel_File_readBytes(HPtr path) {
+    return HPtr::fromBits(File::readBytes(path.toBits()));
 }
 
-uint64_t Eco_Kernel_File_writeBytes(uint64_t path, uint64_t bytes) {
-    return File::writeBytes(path, bytes);
+HPtr Eco_Kernel_File_writeBytes(HPtr path, HPtr bytes) {
+    return HPtr::fromBits(File::writeBytes(path.toBits(), bytes.toBits()));
 }
 
-uint64_t Eco_Kernel_File_open(uint64_t path, uint64_t mode) {
-    return File::open(path, mode);
+HPtr Eco_Kernel_File_open(HPtr path, HPtr mode) {
+    return HPtr::fromBits(File::open(path.toBits(), mode.toBits()));
 }
 
-uint64_t Eco_Kernel_File_close(uint64_t handle) {
-    return File::close(handle);
+HPtr Eco_Kernel_File_close(HPtr handle) {
+    return HPtr::fromBits(File::close(handle.toBits()));
 }
 
-uint64_t Eco_Kernel_File_size(uint64_t handle) {
-    return File::size(handle);
+uint64_t Eco_Kernel_File_size(HPtr handle) {
+    return File::size(handle.toBits());
 }
 
-uint64_t Eco_Kernel_File_lock(uint64_t path) {
-    return File::lock(path);
+HPtr Eco_Kernel_File_lock(HPtr path) {
+    return HPtr::fromBits(File::lock(path.toBits()));
 }
 
-uint64_t Eco_Kernel_File_unlock(uint64_t path) {
-    return File::unlock(path);
+HPtr Eco_Kernel_File_unlock(HPtr path) {
+    return HPtr::fromBits(File::unlock(path.toBits()));
 }
 
-uint64_t Eco_Kernel_File_fileExists(uint64_t path) {
-    return File::fileExists(path);
+HPtr Eco_Kernel_File_fileExists(HPtr path) {
+    return HPtr::fromBits(File::fileExists(path.toBits()));
 }
 
-uint64_t Eco_Kernel_File_dirExists(uint64_t path) {
-    return File::dirExists(path);
+HPtr Eco_Kernel_File_dirExists(HPtr path) {
+    return HPtr::fromBits(File::dirExists(path.toBits()));
 }
 
-uint64_t Eco_Kernel_File_findExecutable(uint64_t name) {
-    return File::findExecutable(name);
+HPtr Eco_Kernel_File_findExecutable(HPtr name) {
+    return HPtr::fromBits(File::findExecutable(name.toBits()));
 }
 
-uint64_t Eco_Kernel_File_list(uint64_t path) {
-    return File::list(path);
+HPtr Eco_Kernel_File_list(HPtr path) {
+    return HPtr::fromBits(File::list(path.toBits()));
 }
 
-uint64_t Eco_Kernel_File_modificationTime(uint64_t path) {
-    return File::modificationTime(path);
+uint64_t Eco_Kernel_File_modificationTime(HPtr path) {
+    return File::modificationTime(path.toBits());
 }
 
-uint64_t Eco_Kernel_File_getCwd() {
-    return File::getCwd();
+HPtr Eco_Kernel_File_getCwd() {
+    return HPtr::fromBits(File::getCwd());
 }
 
-uint64_t Eco_Kernel_File_setCwd(uint64_t path) {
-    return File::setCwd(path);
+HPtr Eco_Kernel_File_setCwd(HPtr path) {
+    return HPtr::fromBits(File::setCwd(path.toBits()));
 }
 
-uint64_t Eco_Kernel_File_canonicalize(uint64_t path) {
-    return File::canonicalize(path);
+HPtr Eco_Kernel_File_canonicalize(HPtr path) {
+    return HPtr::fromBits(File::canonicalize(path.toBits()));
 }
 
-uint64_t Eco_Kernel_File_appDataDir(uint64_t name) {
-    return File::appDataDir(name);
+HPtr Eco_Kernel_File_appDataDir(HPtr name) {
+    return HPtr::fromBits(File::appDataDir(name.toBits()));
 }
 
-uint64_t Eco_Kernel_File_createDir(uint64_t createParents, uint64_t path) {
-    return File::createDir(createParents, path);
+HPtr Eco_Kernel_File_createDir(HPtr createParents, HPtr path) {
+    return HPtr::fromBits(File::createDir(createParents.toBits(), path.toBits()));
 }
 
-uint64_t Eco_Kernel_File_removeFile(uint64_t path) {
-    return File::removeFile(path);
+HPtr Eco_Kernel_File_removeFile(HPtr path) {
+    return HPtr::fromBits(File::removeFile(path.toBits()));
 }
 
-uint64_t Eco_Kernel_File_removeDir(uint64_t path) {
-    return File::removeDir(path);
+HPtr Eco_Kernel_File_removeDir(HPtr path) {
+    return HPtr::fromBits(File::removeDir(path.toBits()));
 }
 
-uint64_t Eco_Kernel_File_hWriteString(uint64_t handle, uint64_t content) {
-    return File::hWriteString(handle, content);
+HPtr Eco_Kernel_File_hWriteString(HPtr handle, HPtr content) {
+    return HPtr::fromBits(File::hWriteString(handle.toBits(), content.toBits()));
 }
 
-uint64_t Eco_Kernel_File_touch(uint64_t path) {
-    return File::touch(path);
+HPtr Eco_Kernel_File_touch(HPtr path) {
+    return HPtr::fromBits(File::touch(path.toBits()));
 }

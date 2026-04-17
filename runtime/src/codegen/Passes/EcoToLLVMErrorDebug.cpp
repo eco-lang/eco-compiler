@@ -72,11 +72,16 @@ struct SafepointOpLowering : public OpConversionPattern<SafepointOp> {
 
         auto gcPtrTy = LLVM::LLVMPointerType::get(ctx, /*addressSpace=*/1);
 
-        // Convert each i64 live value to ptr addrspace(1)
+        // Live values are now ptr<1> from the type converter.
+        // Pass directly; convert any remaining i64 for backwards compat.
         SmallVector<Value, 4> gcPtrs;
         for (auto val : liveValues) {
-            auto ptr = rewriter.create<LLVM::IntToPtrOp>(loc, gcPtrTy, val);
-            gcPtrs.push_back(ptr);
+            if (isHPtrLLVMType(val.getType())) {
+                gcPtrs.push_back(val);
+            } else {
+                auto ptr = rewriter.create<LLVM::IntToPtrOp>(loc, gcPtrTy, val);
+                gcPtrs.push_back(ptr);
+            }
         }
 
         // Emit call to __eco_safepoint_marker with GC root pointers.
@@ -154,12 +159,9 @@ struct DbgOpLowering : public OpConversionPattern<DbgOp> {
                 Value arg = args[i];
                 int64_t typeId = (*argTypeIds)[i];
 
-                // INVARIANT: All eco.dbg operands are !eco.value, which converts
-                // to i64 (HPointer) via EcoTypeConverter. No primitive conversions
-                // needed - the Elm frontend boxes primitives before eco.dbg.
-                assert(arg.getType().isInteger(64) &&
-                       "eco.dbg argument must be i64 (boxed !eco.value)");
-                Value valAsI64 = arg;
+                // All eco.dbg operands are !eco.value, which converts to ptr<1>
+                // via EcoTypeConverter. Convert to i64 for the debug array.
+                Value valAsI64 = valueToI64(rewriter, loc, arg);
 
                 // Store value
                 auto idx = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, (int64_t)i);
@@ -205,11 +207,12 @@ struct DbgOpLowering : public OpConversionPattern<DbgOp> {
                     auto one = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, 1);
                     auto alloca = rewriter.create<LLVM::AllocaOp>(loc, ptrTy, arrayTy, one);
 
-                    // Store the value
+                    // Store the value as i64
                     auto zero = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, 0);
                     auto gep = rewriter.create<LLVM::GEPOp>(loc, ptrTy, arrayTy, alloca,
                                                             ValueRange{zero, zero});
-                    rewriter.create<LLVM::StoreOp>(loc, arg, gep);
+                    Value argI64 = valueToI64(rewriter, loc, arg);
+                    rewriter.create<LLVM::StoreOp>(loc, argI64, gep);
 
                     // Call eco_dbg_print
                     rewriter.create<LLVM::CallOp>(loc, func, ValueRange{alloca, one});

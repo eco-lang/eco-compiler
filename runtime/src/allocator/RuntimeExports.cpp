@@ -32,11 +32,9 @@ namespace {
 /// The HPointer will have constant=0, indicating a regular heap pointer.
 /// Note: Elm never produces null pointers, so obj must be a valid heap pointer.
 /// Validation is performed in Allocator::wrap().
-inline uint64_t ptrToHPointer(void* obj) {
+inline HPtr ptrToHPointer(void* obj) {
     HPointer hp = Allocator::instance().wrap(obj);
-    uint64_t result;
-    memcpy(&result, &hp, sizeof(result));
-    return result;
+    return HPtr::fromHPointer(hp);
 }
 
 /// Convert a uint64_t HPointer representation to a raw void* pointer.
@@ -135,12 +133,12 @@ extern "C" void* eco_get_output_stream() {
 // Allocation Functions
 //===----------------------------------------------------------------------===//
 
-extern "C" uint64_t eco_alloc_custom(uint32_t ctor_id, uint32_t field_count, uint32_t scalar_bytes) {
+extern "C" HPtr eco_alloc_custom(uint32_t ctor_id, uint32_t field_count, uint32_t scalar_bytes) {
     // Calculate size: Header + ctor/unboxed (8 bytes) + fields
     size_t size = sizeof(Header) + 8 + field_count * sizeof(Unboxable) + scalar_bytes;
 
     void* obj = Allocator::instance().allocate(size, Tag_Custom);
-    if (!obj) return 0;
+    if (!obj) return HPtr::fromBits(0);
 
     Custom* custom = static_cast<Custom*>(obj);
     custom->ctor = ctor_id;
@@ -149,8 +147,8 @@ extern "C" uint64_t eco_alloc_custom(uint32_t ctor_id, uint32_t field_count, uin
     return ptrToHPointer(obj);
 }
 
-extern "C" void eco_set_unboxed(uint64_t obj_hptr, uint64_t bitmap) {
-    void* obj = hpointerToPtr(obj_hptr);
+extern "C" void eco_set_unboxed(HPtr obj_hptr, uint64_t bitmap) {
+    void* obj = hpointerToPtr(obj_hptr.toBits());
     if (!obj) return;
 
     Header* header = static_cast<Header*>(obj);
@@ -182,13 +180,14 @@ extern "C" void eco_set_unboxed(uint64_t obj_hptr, uint64_t bitmap) {
     }
 }
 
-extern "C" uint64_t eco_alloc_cons(uint64_t head, uint64_t tail, uint32_t head_unboxed) {
+extern "C" HPtr eco_alloc_cons(uint64_t head, HPtr tail, uint32_t head_unboxed) {
     size_t size = sizeof(Cons);
+    uint64_t tail_bits = tail.toBits();
 
     // Root head and tail across allocate() which may trigger GC.
     // Build a 2-element array: [head, tail]. Mask: bit 0 = head (boxed unless
     // head_unboxed), bit 1 = tail (always boxed).
-    uint64_t roots[2] = { head, tail };
+    uint64_t roots[2] = { head, tail_bits };
     uint64_t mask = head_unboxed ? 0x2 : 0x3;
     size_t saved = eco_gc_stack_range_point();
     eco_gc_push_stack_range(roots, 2, mask);
@@ -196,12 +195,12 @@ extern "C" uint64_t eco_alloc_cons(uint64_t head, uint64_t tail, uint32_t head_u
     void* obj = Allocator::instance().allocate(size, Tag_Cons);
     if (!obj) {
         eco_gc_restore_stack_range_point(saved);
-        return 0;
+        return HPtr::fromBits(0);
     }
 
     // Re-read from rooted array (may have been updated by GC).
     head = roots[0];
-    tail = roots[1];
+    tail_bits = roots[1];
 
     eco_gc_restore_stack_range_point(saved);
 
@@ -209,13 +208,13 @@ extern "C" uint64_t eco_alloc_cons(uint64_t head, uint64_t tail, uint32_t head_u
     cons->header.unboxed = static_cast<u8>(head_unboxed);
     cons->head.i = static_cast<i64>(head);
     HPointer tail_hp;
-    memcpy(&tail_hp, &tail, sizeof(tail_hp));
+    memcpy(&tail_hp, &tail_bits, sizeof(tail_hp));
     cons->tail = tail_hp;
 
     return ptrToHPointer(obj);
 }
 
-extern "C" uint64_t eco_alloc_tuple2(uint64_t a, uint64_t b, uint32_t unboxed_mask) {
+extern "C" HPtr eco_alloc_tuple2(uint64_t a, uint64_t b, uint32_t unboxed_mask) {
     size_t size = sizeof(Tuple2);
 
     // Root a and b across allocate().
@@ -225,7 +224,7 @@ extern "C" uint64_t eco_alloc_tuple2(uint64_t a, uint64_t b, uint32_t unboxed_ma
     if (mask) eco_gc_push_stack_range(roots, 2, mask);
 
     void* obj = Allocator::instance().allocate(size, Tag_Tuple2);
-    if (!obj) { eco_gc_restore_stack_range_point(saved); return 0; }
+    if (!obj) { eco_gc_restore_stack_range_point(saved); return HPtr::fromBits(0); }
 
     a = roots[0]; b = roots[1];
     eco_gc_restore_stack_range_point(saved);
@@ -238,7 +237,7 @@ extern "C" uint64_t eco_alloc_tuple2(uint64_t a, uint64_t b, uint32_t unboxed_ma
     return ptrToHPointer(obj);
 }
 
-extern "C" uint64_t eco_alloc_tuple3(uint64_t a, uint64_t b, uint64_t c, uint32_t unboxed_mask) {
+extern "C" HPtr eco_alloc_tuple3(uint64_t a, uint64_t b, uint64_t c, uint32_t unboxed_mask) {
     size_t size = sizeof(Tuple3);
 
     uint64_t roots[3] = { a, b, c };
@@ -247,7 +246,7 @@ extern "C" uint64_t eco_alloc_tuple3(uint64_t a, uint64_t b, uint64_t c, uint32_
     if (mask) eco_gc_push_stack_range(roots, 3, mask);
 
     void* obj = Allocator::instance().allocate(size, Tag_Tuple3);
-    if (!obj) { eco_gc_restore_stack_range_point(saved); return 0; }
+    if (!obj) { eco_gc_restore_stack_range_point(saved); return HPtr::fromBits(0); }
 
     a = roots[0]; b = roots[1]; c = roots[2];
     eco_gc_restore_stack_range_point(saved);
@@ -261,11 +260,11 @@ extern "C" uint64_t eco_alloc_tuple3(uint64_t a, uint64_t b, uint64_t c, uint32_
     return ptrToHPointer(obj);
 }
 
-extern "C" uint64_t eco_alloc_record(uint32_t field_count, uint64_t unboxed_bitmap) {
+extern "C" HPtr eco_alloc_record(uint32_t field_count, uint64_t unboxed_bitmap) {
     // Size: Header (8) + unboxed bitmap (8) + fields (N * 8).
     size_t size = sizeof(Header) + 8 + field_count * sizeof(Unboxable);
     void* obj = Allocator::instance().allocate(size, Tag_Record);
-    if (!obj) return 0;
+    if (!obj) return HPtr::fromBits(0);
 
     Record* rec = static_cast<Record*>(obj);
     rec->header.size = field_count;
@@ -274,35 +273,35 @@ extern "C" uint64_t eco_alloc_record(uint32_t field_count, uint64_t unboxed_bitm
     return ptrToHPointer(obj);
 }
 
-extern "C" void eco_store_record_field(uint64_t record_hptr, uint32_t index, uint64_t value) {
-    void* record = hpointerToPtr(record_hptr);
+extern "C" void eco_store_record_field(HPtr record_hptr, uint32_t index, HPtr value) {
+    void* record = hpointerToPtr(record_hptr.toBits());
     if (!record) return;
     Record* rec = static_cast<Record*>(record);
     // Store as raw 64-bit value (HPointer).
-    rec->values[index].i = static_cast<i64>(value);
+    rec->values[index].i = static_cast<i64>(value.toBits());
 }
 
-extern "C" void eco_store_record_field_i64(uint64_t record_hptr, uint32_t index, int64_t value) {
-    void* record = hpointerToPtr(record_hptr);
+extern "C" void eco_store_record_field_i64(HPtr record_hptr, uint32_t index, int64_t value) {
+    void* record = hpointerToPtr(record_hptr.toBits());
     if (!record) return;
     Record* rec = static_cast<Record*>(record);
     rec->values[index].i = value;
 }
 
-extern "C" void eco_store_record_field_f64(uint64_t record_hptr, uint32_t index, double value) {
-    void* record = hpointerToPtr(record_hptr);
+extern "C" void eco_store_record_field_f64(HPtr record_hptr, uint32_t index, double value) {
+    void* record = hpointerToPtr(record_hptr.toBits());
     if (!record) return;
     Record* rec = static_cast<Record*>(record);
     rec->values[index].f = value;
 }
 
-extern "C" uint64_t eco_alloc_string(uint32_t length) {
+extern "C" HPtr eco_alloc_string(uint32_t length) {
     // Size: Header + length * sizeof(u16), aligned to 8 bytes
     size_t size = sizeof(Header) + length * sizeof(u16);
     size = (size + 7) & ~7;  // Align to 8 bytes
 
     void* obj = Allocator::instance().allocate(size, Tag_String);
-    if (!obj) return 0;
+    if (!obj) return HPtr::fromBits(0);
 
     ElmString* str = static_cast<ElmString*>(obj);
     str->header.size = length;
@@ -310,14 +309,14 @@ extern "C" uint64_t eco_alloc_string(uint32_t length) {
     return ptrToHPointer(obj);
 }
 
-extern "C" uint64_t eco_alloc_string_literal(const uint16_t* chars, uint32_t length) {
+extern "C" HPtr eco_alloc_string_literal(const uint16_t* chars, uint32_t length) {
     // Allocate string literal directly in old generation (permanent, never collected).
     // Size: Header + length * sizeof(u16), aligned to 8 bytes
     size_t size = sizeof(Header) + length * sizeof(u16);
     size = (size + 7) & ~7;  // Align to 8 bytes
 
     void* obj = Allocator::instance().allocatePermanent(size, Tag_String);
-    if (!obj) return 0;
+    if (!obj) return HPtr::fromBits(0);
 
     ElmString* str = static_cast<ElmString*>(obj);
     str->header.size = length;
@@ -326,12 +325,12 @@ extern "C" uint64_t eco_alloc_string_literal(const uint16_t* chars, uint32_t len
     return ptrToHPointer(obj);
 }
 
-extern "C" uint64_t eco_alloc_closure(void* func_ptr, uint32_t num_captures) {
+extern "C" HPtr eco_alloc_closure(void* func_ptr, uint32_t num_captures) {
     // Size: Header + metadata (8 bytes) + evaluator ptr + captures
     size_t size = sizeof(Header) + 8 + sizeof(EvalFunction) + num_captures * sizeof(Unboxable);
 
     void* obj = Allocator::instance().allocate(size, Tag_Closure);
-    if (!obj) return 0;
+    if (!obj) return HPtr::fromBits(0);
 
     Closure* closure = static_cast<Closure*>(obj);
     closure->n_values = 0;
@@ -339,9 +338,9 @@ extern "C" uint64_t eco_alloc_closure(void* func_ptr, uint32_t num_captures) {
     closure->unboxed = 0;
     closure->evaluator = reinterpret_cast<EvalFunction>(func_ptr);
 
-    uint64_t hptr_val = ptrToHPointer(obj);
+    HPtr hptr_val = ptrToHPointer(obj);
     // DIAG: Verify closure integrity after allocation — check preceding object
-    if (hptr_val == 0x4005883) {
+    if (hptr_val.toBits() == 0x4005883) {
         void* ret_addr = __builtin_return_address(0);
         fprintf(stderr, "DIAG: eco_alloc_closure hptr=0x4005883 ptr=%p num_captures=%u max_values=%u eval=%p caller=%p\n",
                 obj, num_captures, (unsigned)closure->max_values, func_ptr, ret_addr);
@@ -365,9 +364,9 @@ extern "C" uint64_t eco_alloc_closure(void* func_ptr, uint32_t num_captures) {
     return hptr_val;
 }
 
-extern "C" uint64_t eco_alloc_int(int64_t value) {
+extern "C" HPtr eco_alloc_int(int64_t value) {
     void* obj = Allocator::instance().allocate(sizeof(ElmInt), Tag_Int);
-    if (!obj) return 0;
+    if (!obj) return HPtr::fromBits(0);
 
     ElmInt* elmInt = static_cast<ElmInt*>(obj);
     elmInt->value = value;
@@ -375,9 +374,9 @@ extern "C" uint64_t eco_alloc_int(int64_t value) {
     return ptrToHPointer(obj);
 }
 
-extern "C" uint64_t eco_alloc_float(double value) {
+extern "C" HPtr eco_alloc_float(double value) {
     void* obj = Allocator::instance().allocate(sizeof(ElmFloat), Tag_Float);
-    if (!obj) return 0;
+    if (!obj) return HPtr::fromBits(0);
 
     ElmFloat* elmFloat = static_cast<ElmFloat*>(obj);
     elmFloat->value = value;
@@ -385,9 +384,9 @@ extern "C" uint64_t eco_alloc_float(double value) {
     return ptrToHPointer(obj);
 }
 
-extern "C" uint64_t eco_alloc_char(uint32_t value) {
+extern "C" HPtr eco_alloc_char(uint32_t value) {
     void* obj = Allocator::instance().allocate(sizeof(ElmChar), Tag_Char);
-    if (!obj) return 0;
+    if (!obj) return HPtr::fromBits(0);
 
     ElmChar* elmChar = static_cast<ElmChar*>(obj);
     elmChar->value = static_cast<u16>(value);
@@ -395,7 +394,7 @@ extern "C" uint64_t eco_alloc_char(uint32_t value) {
     return ptrToHPointer(obj);
 }
 
-extern "C" uint64_t eco_allocate(uint64_t size, uint32_t tag) {
+extern "C" HPtr eco_allocate(uint64_t size, uint32_t tag) {
     // Generic allocation with specified size and tag.
     // The tag should be one of the Tag enum values from Heap.hpp.
     void* obj = Allocator::instance().allocate(static_cast<size_t>(size), static_cast<Tag>(tag));
@@ -409,10 +408,10 @@ extern "C" uint64_t eco_allocate(uint64_t size, uint32_t tag) {
 // Slow variants: may trigger GC, always succeed or abort.
 //===----------------------------------------------------------------------===//
 
-extern "C" uint64_t eco_alloc_custom_fast(uint32_t ctor_id, uint32_t field_count, uint32_t scalar_bytes) {
+extern "C" HPtr eco_alloc_custom_fast(uint32_t ctor_id, uint32_t field_count, uint32_t scalar_bytes) {
     size_t size = sizeof(Header) + 8 + field_count * sizeof(Unboxable) + scalar_bytes;
     void* obj = Allocator::instance().allocateFast(size);
-    if (!obj) return 0;
+    if (!obj) return HPtr::fromBits(0);
 
     // Init header + ctor
     Header* hdr = getHeader(obj);
@@ -426,10 +425,10 @@ extern "C" uint64_t eco_alloc_custom_fast(uint32_t ctor_id, uint32_t field_count
     return ptrToHPointer(obj);
 }
 
-extern "C" uint64_t eco_alloc_custom_slow(uint32_t ctor_id, uint32_t field_count, uint32_t scalar_bytes) {
+extern "C" HPtr eco_alloc_custom_slow(uint32_t ctor_id, uint32_t field_count, uint32_t scalar_bytes) {
     size_t size = sizeof(Header) + 8 + field_count * sizeof(Unboxable) + scalar_bytes;
     void* obj = Allocator::instance().allocateSlow(size, Tag_Custom);
-    if (!obj) return 0;
+    if (!obj) return HPtr::fromBits(0);
 
     Custom* custom = static_cast<Custom*>(obj);
     custom->ctor = ctor_id;
@@ -438,10 +437,10 @@ extern "C" uint64_t eco_alloc_custom_slow(uint32_t ctor_id, uint32_t field_count
     return ptrToHPointer(obj);
 }
 
-extern "C" uint64_t eco_alloc_cons_fast(uint64_t head, uint64_t tail, uint32_t head_unboxed) {
+extern "C" HPtr eco_alloc_cons_fast(uint64_t head, HPtr tail, uint32_t head_unboxed) {
     size_t size = sizeof(Cons);
     void* obj = Allocator::instance().allocateFast(size);
-    if (!obj) return 0;
+    if (!obj) return HPtr::fromBits(0);
 
     Header* hdr = getHeader(obj);
     std::memset(hdr, 0, sizeof(Header));
@@ -450,32 +449,34 @@ extern "C" uint64_t eco_alloc_cons_fast(uint64_t head, uint64_t tail, uint32_t h
     Cons* cons = static_cast<Cons*>(obj);
     cons->header.unboxed = static_cast<u8>(head_unboxed);
     cons->head.i = static_cast<i64>(head);
+    uint64_t tail_bits = tail.toBits();
     HPointer tail_hp;
-    memcpy(&tail_hp, &tail, sizeof(tail_hp));
+    memcpy(&tail_hp, &tail_bits, sizeof(tail_hp));
     cons->tail = tail_hp;
 
     return ptrToHPointer(obj);
 }
 
-extern "C" uint64_t eco_alloc_cons_slow(uint64_t head, uint64_t tail, uint32_t head_unboxed) {
+extern "C" HPtr eco_alloc_cons_slow(uint64_t head, HPtr tail, uint32_t head_unboxed) {
     size_t size = sizeof(Cons);
     void* obj = Allocator::instance().allocateSlow(size, Tag_Cons);
-    if (!obj) return 0;
+    if (!obj) return HPtr::fromBits(0);
 
     Cons* cons = static_cast<Cons*>(obj);
     cons->header.unboxed = static_cast<u8>(head_unboxed);
     cons->head.i = static_cast<i64>(head);
+    uint64_t tail_bits = tail.toBits();
     HPointer tail_hp;
-    memcpy(&tail_hp, &tail, sizeof(tail_hp));
+    memcpy(&tail_hp, &tail_bits, sizeof(tail_hp));
     cons->tail = tail_hp;
 
     return ptrToHPointer(obj);
 }
 
-extern "C" uint64_t eco_alloc_tuple2_fast(uint64_t a, uint64_t b, uint32_t unboxed_mask) {
+extern "C" HPtr eco_alloc_tuple2_fast(uint64_t a, uint64_t b, uint32_t unboxed_mask) {
     size_t size = sizeof(Tuple2);
     void* obj = Allocator::instance().allocateFast(size);
-    if (!obj) return 0;
+    if (!obj) return HPtr::fromBits(0);
 
     Header* hdr = getHeader(obj);
     std::memset(hdr, 0, sizeof(Header));
@@ -489,10 +490,10 @@ extern "C" uint64_t eco_alloc_tuple2_fast(uint64_t a, uint64_t b, uint32_t unbox
     return ptrToHPointer(obj);
 }
 
-extern "C" uint64_t eco_alloc_tuple2_slow(uint64_t a, uint64_t b, uint32_t unboxed_mask) {
+extern "C" HPtr eco_alloc_tuple2_slow(uint64_t a, uint64_t b, uint32_t unboxed_mask) {
     size_t size = sizeof(Tuple2);
     void* obj = Allocator::instance().allocateSlow(size, Tag_Tuple2);
-    if (!obj) return 0;
+    if (!obj) return HPtr::fromBits(0);
 
     Tuple2* tup = static_cast<Tuple2*>(obj);
     tup->header.unboxed = static_cast<u8>(unboxed_mask);
@@ -502,10 +503,10 @@ extern "C" uint64_t eco_alloc_tuple2_slow(uint64_t a, uint64_t b, uint32_t unbox
     return ptrToHPointer(obj);
 }
 
-extern "C" uint64_t eco_alloc_tuple3_fast(uint64_t a, uint64_t b, uint64_t c, uint32_t unboxed_mask) {
+extern "C" HPtr eco_alloc_tuple3_fast(uint64_t a, uint64_t b, uint64_t c, uint32_t unboxed_mask) {
     size_t size = sizeof(Tuple3);
     void* obj = Allocator::instance().allocateFast(size);
-    if (!obj) return 0;
+    if (!obj) return HPtr::fromBits(0);
 
     Header* hdr = getHeader(obj);
     std::memset(hdr, 0, sizeof(Header));
@@ -520,10 +521,10 @@ extern "C" uint64_t eco_alloc_tuple3_fast(uint64_t a, uint64_t b, uint64_t c, ui
     return ptrToHPointer(obj);
 }
 
-extern "C" uint64_t eco_alloc_tuple3_slow(uint64_t a, uint64_t b, uint64_t c, uint32_t unboxed_mask) {
+extern "C" HPtr eco_alloc_tuple3_slow(uint64_t a, uint64_t b, uint64_t c, uint32_t unboxed_mask) {
     size_t size = sizeof(Tuple3);
     void* obj = Allocator::instance().allocateSlow(size, Tag_Tuple3);
-    if (!obj) return 0;
+    if (!obj) return HPtr::fromBits(0);
 
     Tuple3* tup = static_cast<Tuple3*>(obj);
     tup->header.unboxed = static_cast<u8>(unboxed_mask);
@@ -534,10 +535,10 @@ extern "C" uint64_t eco_alloc_tuple3_slow(uint64_t a, uint64_t b, uint64_t c, ui
     return ptrToHPointer(obj);
 }
 
-extern "C" uint64_t eco_alloc_record_fast(uint32_t field_count, uint64_t unboxed_bitmap) {
+extern "C" HPtr eco_alloc_record_fast(uint32_t field_count, uint64_t unboxed_bitmap) {
     size_t size = sizeof(Header) + 8 + field_count * sizeof(Unboxable);
     void* obj = Allocator::instance().allocateFast(size);
-    if (!obj) return 0;
+    if (!obj) return HPtr::fromBits(0);
 
     Header* hdr = getHeader(obj);
     std::memset(hdr, 0, sizeof(Header));
@@ -549,10 +550,10 @@ extern "C" uint64_t eco_alloc_record_fast(uint32_t field_count, uint64_t unboxed
     return ptrToHPointer(obj);
 }
 
-extern "C" uint64_t eco_alloc_record_slow(uint32_t field_count, uint64_t unboxed_bitmap) {
+extern "C" HPtr eco_alloc_record_slow(uint32_t field_count, uint64_t unboxed_bitmap) {
     size_t size = sizeof(Header) + 8 + field_count * sizeof(Unboxable);
     void* obj = Allocator::instance().allocateSlow(size, Tag_Record);
-    if (!obj) return 0;
+    if (!obj) return HPtr::fromBits(0);
 
     Record* rec = static_cast<Record*>(obj);
     rec->header.size = field_count;
@@ -561,11 +562,11 @@ extern "C" uint64_t eco_alloc_record_slow(uint32_t field_count, uint64_t unboxed
     return ptrToHPointer(obj);
 }
 
-extern "C" uint64_t eco_alloc_string_fast(uint32_t length) {
+extern "C" HPtr eco_alloc_string_fast(uint32_t length) {
     size_t size = sizeof(Header) + length * sizeof(u16);
     size = (size + 7) & ~7;
     void* obj = Allocator::instance().allocateFast(size);
-    if (!obj) return 0;
+    if (!obj) return HPtr::fromBits(0);
 
     Header* hdr = getHeader(obj);
     std::memset(hdr, 0, sizeof(Header));
@@ -575,11 +576,11 @@ extern "C" uint64_t eco_alloc_string_fast(uint32_t length) {
     return ptrToHPointer(obj);
 }
 
-extern "C" uint64_t eco_alloc_string_slow(uint32_t length) {
+extern "C" HPtr eco_alloc_string_slow(uint32_t length) {
     size_t size = sizeof(Header) + length * sizeof(u16);
     size = (size + 7) & ~7;
     void* obj = Allocator::instance().allocateSlow(size, Tag_String);
-    if (!obj) return 0;
+    if (!obj) return HPtr::fromBits(0);
 
     ElmString* str = static_cast<ElmString*>(obj);
     str->header.size = length;
@@ -587,10 +588,10 @@ extern "C" uint64_t eco_alloc_string_slow(uint32_t length) {
     return ptrToHPointer(obj);
 }
 
-extern "C" uint64_t eco_alloc_closure_fast(void* func_ptr, uint32_t num_captures) {
+extern "C" HPtr eco_alloc_closure_fast(void* func_ptr, uint32_t num_captures) {
     size_t size = sizeof(Header) + 8 + sizeof(EvalFunction) + num_captures * sizeof(Unboxable);
     void* obj = Allocator::instance().allocateFast(size);
-    if (!obj) return 0;
+    if (!obj) return HPtr::fromBits(0);
 
     Header* hdr = getHeader(obj);
     std::memset(hdr, 0, sizeof(Header));
@@ -605,10 +606,10 @@ extern "C" uint64_t eco_alloc_closure_fast(void* func_ptr, uint32_t num_captures
     return ptrToHPointer(obj);
 }
 
-extern "C" uint64_t eco_alloc_closure_slow(void* func_ptr, uint32_t num_captures) {
+extern "C" HPtr eco_alloc_closure_slow(void* func_ptr, uint32_t num_captures) {
     size_t size = sizeof(Header) + 8 + sizeof(EvalFunction) + num_captures * sizeof(Unboxable);
     void* obj = Allocator::instance().allocateSlow(size, Tag_Closure);
-    if (!obj) return 0;
+    if (!obj) return HPtr::fromBits(0);
 
     Closure* closure = static_cast<Closure*>(obj);
     closure->n_values = 0;
@@ -619,9 +620,9 @@ extern "C" uint64_t eco_alloc_closure_slow(void* func_ptr, uint32_t num_captures
     return ptrToHPointer(obj);
 }
 
-extern "C" uint64_t eco_alloc_int_fast(int64_t value) {
+extern "C" HPtr eco_alloc_int_fast(int64_t value) {
     void* obj = Allocator::instance().allocateFast(sizeof(ElmInt));
-    if (!obj) return 0;
+    if (!obj) return HPtr::fromBits(0);
 
     Header* hdr = getHeader(obj);
     std::memset(hdr, 0, sizeof(Header));
@@ -633,9 +634,9 @@ extern "C" uint64_t eco_alloc_int_fast(int64_t value) {
     return ptrToHPointer(obj);
 }
 
-extern "C" uint64_t eco_alloc_int_slow(int64_t value) {
+extern "C" HPtr eco_alloc_int_slow(int64_t value) {
     void* obj = Allocator::instance().allocateSlow(sizeof(ElmInt), Tag_Int);
-    if (!obj) return 0;
+    if (!obj) return HPtr::fromBits(0);
 
     ElmInt* elmInt = static_cast<ElmInt*>(obj);
     elmInt->value = value;
@@ -643,9 +644,9 @@ extern "C" uint64_t eco_alloc_int_slow(int64_t value) {
     return ptrToHPointer(obj);
 }
 
-extern "C" uint64_t eco_alloc_float_fast(double value) {
+extern "C" HPtr eco_alloc_float_fast(double value) {
     void* obj = Allocator::instance().allocateFast(sizeof(ElmFloat));
-    if (!obj) return 0;
+    if (!obj) return HPtr::fromBits(0);
 
     Header* hdr = getHeader(obj);
     std::memset(hdr, 0, sizeof(Header));
@@ -657,9 +658,9 @@ extern "C" uint64_t eco_alloc_float_fast(double value) {
     return ptrToHPointer(obj);
 }
 
-extern "C" uint64_t eco_alloc_float_slow(double value) {
+extern "C" HPtr eco_alloc_float_slow(double value) {
     void* obj = Allocator::instance().allocateSlow(sizeof(ElmFloat), Tag_Float);
-    if (!obj) return 0;
+    if (!obj) return HPtr::fromBits(0);
 
     ElmFloat* elmFloat = static_cast<ElmFloat*>(obj);
     elmFloat->value = value;
@@ -667,9 +668,9 @@ extern "C" uint64_t eco_alloc_float_slow(double value) {
     return ptrToHPointer(obj);
 }
 
-extern "C" uint64_t eco_alloc_char_fast(uint32_t value) {
+extern "C" HPtr eco_alloc_char_fast(uint32_t value) {
     void* obj = Allocator::instance().allocateFast(sizeof(ElmChar));
-    if (!obj) return 0;
+    if (!obj) return HPtr::fromBits(0);
 
     Header* hdr = getHeader(obj);
     std::memset(hdr, 0, sizeof(Header));
@@ -681,9 +682,9 @@ extern "C" uint64_t eco_alloc_char_fast(uint32_t value) {
     return ptrToHPointer(obj);
 }
 
-extern "C" uint64_t eco_alloc_char_slow(uint32_t value) {
+extern "C" HPtr eco_alloc_char_slow(uint32_t value) {
     void* obj = Allocator::instance().allocateSlow(sizeof(ElmChar), Tag_Char);
-    if (!obj) return 0;
+    if (!obj) return HPtr::fromBits(0);
 
     ElmChar* elmChar = static_cast<ElmChar*>(obj);
     elmChar->value = static_cast<u16>(value);
@@ -703,7 +704,7 @@ extern "C" void* eco_gc_alloc_region_slow(size_t total) {
 // Init-at-pointer Functions (for group allocation)
 //===----------------------------------------------------------------------===//
 
-extern "C" uint64_t eco_init_int_at(void* obj, int64_t value) {
+extern "C" HPtr eco_init_int_at(void* obj, int64_t value) {
     Header* hdr = getHeader(obj);
     std::memset(hdr, 0, sizeof(Header));
     hdr->tag = Tag_Int;
@@ -713,7 +714,7 @@ extern "C" uint64_t eco_init_int_at(void* obj, int64_t value) {
     return ptrToHPointer(obj);
 }
 
-extern "C" uint64_t eco_init_float_at(void* obj, double value) {
+extern "C" HPtr eco_init_float_at(void* obj, double value) {
     Header* hdr = getHeader(obj);
     std::memset(hdr, 0, sizeof(Header));
     hdr->tag = Tag_Float;
@@ -723,7 +724,7 @@ extern "C" uint64_t eco_init_float_at(void* obj, double value) {
     return ptrToHPointer(obj);
 }
 
-extern "C" uint64_t eco_init_char_at(void* obj, uint32_t value) {
+extern "C" HPtr eco_init_char_at(void* obj, uint32_t value) {
     Header* hdr = getHeader(obj);
     std::memset(hdr, 0, sizeof(Header));
     hdr->tag = Tag_Char;
@@ -733,7 +734,7 @@ extern "C" uint64_t eco_init_char_at(void* obj, uint32_t value) {
     return ptrToHPointer(obj);
 }
 
-extern "C" uint64_t eco_init_cons_at(void* obj, uint64_t head, uint64_t tail, uint32_t head_unboxed) {
+extern "C" HPtr eco_init_cons_at(void* obj, uint64_t head, HPtr tail, uint32_t head_unboxed) {
     Header* hdr = getHeader(obj);
     std::memset(hdr, 0, sizeof(Header));
     hdr->tag = Tag_Cons;
@@ -741,13 +742,14 @@ extern "C" uint64_t eco_init_cons_at(void* obj, uint64_t head, uint64_t tail, ui
     Cons* cons = static_cast<Cons*>(obj);
     cons->header.unboxed = static_cast<u8>(head_unboxed);
     cons->head.i = static_cast<i64>(head);
+    uint64_t tail_bits = tail.toBits();
     HPointer tail_hp;
-    memcpy(&tail_hp, &tail, sizeof(tail_hp));
+    memcpy(&tail_hp, &tail_bits, sizeof(tail_hp));
     cons->tail = tail_hp;
     return ptrToHPointer(obj);
 }
 
-extern "C" uint64_t eco_init_tuple2_at(void* obj, uint64_t a, uint64_t b, uint32_t unboxed_mask) {
+extern "C" HPtr eco_init_tuple2_at(void* obj, uint64_t a, uint64_t b, uint32_t unboxed_mask) {
     Header* hdr = getHeader(obj);
     std::memset(hdr, 0, sizeof(Header));
     hdr->tag = Tag_Tuple2;
@@ -759,7 +761,7 @@ extern "C" uint64_t eco_init_tuple2_at(void* obj, uint64_t a, uint64_t b, uint32
     return ptrToHPointer(obj);
 }
 
-extern "C" uint64_t eco_init_tuple3_at(void* obj, uint64_t a, uint64_t b, uint64_t c, uint32_t unboxed_mask) {
+extern "C" HPtr eco_init_tuple3_at(void* obj, uint64_t a, uint64_t b, uint64_t c, uint32_t unboxed_mask) {
     Header* hdr = getHeader(obj);
     std::memset(hdr, 0, sizeof(Header));
     hdr->tag = Tag_Tuple3;
@@ -772,7 +774,7 @@ extern "C" uint64_t eco_init_tuple3_at(void* obj, uint64_t a, uint64_t b, uint64
     return ptrToHPointer(obj);
 }
 
-extern "C" uint64_t eco_init_record_at(void* obj, uint32_t field_count, uint64_t unboxed_bitmap) {
+extern "C" HPtr eco_init_record_at(void* obj, uint32_t field_count, uint64_t unboxed_bitmap) {
     size_t size = sizeof(Header) + 8 + field_count * sizeof(Unboxable);
     Header* hdr = getHeader(obj);
     std::memset(hdr, 0, sizeof(Header));
@@ -783,7 +785,7 @@ extern "C" uint64_t eco_init_record_at(void* obj, uint32_t field_count, uint64_t
     return ptrToHPointer(obj);
 }
 
-extern "C" uint64_t eco_init_custom_at(void* obj, uint32_t ctor_id, uint32_t field_count, uint32_t scalar_bytes) {
+extern "C" HPtr eco_init_custom_at(void* obj, uint32_t ctor_id, uint32_t field_count, uint32_t scalar_bytes) {
     Header* hdr = getHeader(obj);
     std::memset(hdr, 0, sizeof(Header));
     hdr->tag = Tag_Custom;
@@ -794,7 +796,7 @@ extern "C" uint64_t eco_init_custom_at(void* obj, uint32_t ctor_id, uint32_t fie
     return ptrToHPointer(obj);
 }
 
-extern "C" uint64_t eco_init_string_at(void* obj, uint32_t length) {
+extern "C" HPtr eco_init_string_at(void* obj, uint32_t length) {
     size_t size = sizeof(Header) + length * sizeof(u16);
     size = (size + 7) & ~7;
     Header* hdr = getHeader(obj);
@@ -808,8 +810,8 @@ extern "C" uint64_t eco_init_string_at(void* obj, uint32_t length) {
 // Field Store Functions
 //===----------------------------------------------------------------------===//
 
-extern "C" void eco_store_field(uint64_t obj_hptr, uint32_t index, uint64_t value) {
-    void* obj = hpointerToPtr(obj_hptr);
+extern "C" void eco_store_field(HPtr obj_hptr, uint32_t index, HPtr value) {
+    void* obj = hpointerToPtr(obj_hptr.toBits());
     if (!obj) return;
 
     // Get the header to determine object type
@@ -819,40 +821,41 @@ extern "C" void eco_store_field(uint64_t obj_hptr, uint32_t index, uint64_t valu
     // Store the full value directly in the Unboxable union's i field.
     // This preserves all 64 bits for proper pointer traversal.
 
+    uint64_t value_bits = value.toBits();
     switch (header->tag) {
         case Tag_Custom: {
             Custom* custom = static_cast<Custom*>(obj);
-            custom->values[index].i = static_cast<i64>(value);
+            custom->values[index].i = static_cast<i64>(value_bits);
             break;
         }
         case Tag_Tuple2: {
             Tuple2* tuple = static_cast<Tuple2*>(obj);
             Unboxable* field = (index == 0) ? &tuple->a : &tuple->b;
-            field->i = static_cast<i64>(value);
+            field->i = static_cast<i64>(value_bits);
             break;
         }
         case Tag_Tuple3: {
             Tuple3* tuple = static_cast<Tuple3*>(obj);
             Unboxable* field = (index == 0) ? &tuple->a : (index == 1) ? &tuple->b : &tuple->c;
-            field->i = static_cast<i64>(value);
+            field->i = static_cast<i64>(value_bits);
             break;
         }
         case Tag_Cons: {
             Cons* cons = static_cast<Cons*>(obj);
             if (index == 0) {
-                cons->head.i = static_cast<i64>(value);
+                cons->head.i = static_cast<i64>(value_bits);
             } else {
                 // Tail is HPointer, not Unboxable - store as raw bits
                 // Note: This may cause issues with 64-bit pointers in JIT mode
-                cons->tail.ptr = value & 0xFFFFFFFFFF;
-                cons->tail.constant = (value >> 40) & 0xF;
+                cons->tail.ptr = value_bits & 0xFFFFFFFFFF;
+                cons->tail.constant = (value_bits >> 40) & 0xF;
                 cons->tail.padding = 0;
             }
             break;
         }
         case Tag_Closure: {
             Closure* closure = static_cast<Closure*>(obj);
-            closure->values[index].i = static_cast<i64>(value);
+            closure->values[index].i = static_cast<i64>(value_bits);
             break;
         }
         default:
@@ -862,8 +865,8 @@ extern "C" void eco_store_field(uint64_t obj_hptr, uint32_t index, uint64_t valu
     }
 }
 
-extern "C" void eco_store_field_i64(uint64_t obj_hptr, uint32_t index, int64_t value) {
-    void* obj = hpointerToPtr(obj_hptr);
+extern "C" void eco_store_field_i64(HPtr obj_hptr, uint32_t index, int64_t value) {
+    void* obj = hpointerToPtr(obj_hptr.toBits());
     if (!obj) return;
 
     Header* header = static_cast<Header*>(obj);
@@ -903,8 +906,8 @@ extern "C" void eco_store_field_i64(uint64_t obj_hptr, uint32_t index, int64_t v
     }
 }
 
-extern "C" void eco_store_field_f64(uint64_t obj_hptr, uint32_t index, double value) {
-    void* obj = hpointerToPtr(obj_hptr);
+extern "C" void eco_store_field_f64(HPtr obj_hptr, uint32_t index, double value) {
+    void* obj = hpointerToPtr(obj_hptr.toBits());
     if (!obj) return;
 
     Header* header = static_cast<Header*>(obj);
@@ -986,20 +989,20 @@ size_t buildEvaluatorArgs(
         if ((bitmap >> i) & 1) {
             if (!layout) {
                 // Legacy fallback: all unboxed captures treated as Int.
-                val = eco_alloc_int(static_cast<int64_t>(val));
+                val = eco_alloc_int(static_cast<int64_t>(val)).toBits();
             } else {
                 switch (static_cast<ParamKind>(layout->kinds[i])) {
                     case PK_Int:
-                        val = eco_alloc_int(static_cast<int64_t>(val));
+                        val = eco_alloc_int(static_cast<int64_t>(val)).toBits();
                         break;
                     case PK_Float: {
                         double f;
                         memcpy(&f, &val, sizeof(double));
-                        val = eco_alloc_float(f);
+                        val = eco_alloc_float(f).toBits();
                         break;
                     }
                     case PK_Char:
-                        val = eco_alloc_char(static_cast<uint32_t>(val & 0xFFFF));
+                        val = eco_alloc_char(static_cast<uint32_t>(val & 0xFFFF)).toBits();
                         break;
                     case PK_Boxed:
                         assert(false && "bitmap says unboxed but layout says PK_Boxed");
@@ -1030,9 +1033,10 @@ static inline uint64_t hptr_mask_clamp(uint64_t raw, size_t count) {
 
 } // anonymous namespace
 
-extern "C" uint64_t eco_apply_closure(uint64_t closure_hptr, uint64_t* args, uint32_t num_args) {
-    void* closure_ptr = hpointerToPtr(closure_hptr);
-    if (!closure_ptr) return 0;
+extern "C" HPtr eco_apply_closure(HPtr closure_hptr, uint64_t* args, uint32_t num_args) {
+    uint64_t closure_bits = closure_hptr.toBits();
+    void* closure_ptr = hpointerToPtr(closure_bits);
+    if (!closure_ptr) return HPtr::fromBits(0);
 
     Closure* closure = static_cast<Closure*>(closure_ptr);
     uint32_t n_values = closure->n_values;
@@ -1040,27 +1044,27 @@ extern "C" uint64_t eco_apply_closure(uint64_t closure_hptr, uint64_t* args, uin
     assert(max_values <= 63 && "max_values exceeds 6-bit field cap");
     uint32_t remaining = max_values - n_values;
 
-    // Root `closure_hptr` and `args` for the duration of this call.
+    // Root `closure_bits` and `args` for the duration of this call.
     size_t saved_range = eco_gc_stack_range_point();
-    eco_gc_push_stack_range(&closure_hptr, 1, 1);
+    eco_gc_push_stack_range(&closure_bits, 1, 1);
     if (num_args > 0) {
         eco_gc_push_stack_range(args, num_args, hptr_mask_all(num_args));
     }
 
-    uint64_t result;
+    HPtr result;
     if (num_args == remaining) {
         // Exactly saturated: call evaluator with all args (INV_1).
-        result = eco_closure_call_saturated(closure_hptr, args, num_args, /*layout=*/nullptr);
+        result = eco_closure_call_saturated(HPtr::fromBits(closure_bits), args, num_args, /*layout=*/nullptr);
     } else if (num_args < remaining) {
         // Under-saturated: create new PAP with additional args.
         // New args are treated as boxed (!eco.value) with unboxed_bitmap=0.
-        result = eco_pap_extend(closure_hptr, args, num_args, 0);
+        result = eco_pap_extend(HPtr::fromBits(closure_bits), args, num_args, 0);
     } else {
         // Over-saturated: saturate this stage, then chain to the next.
         // The result of the evaluator call is a closure for the next stage,
         // which has its own n_values/max_values header. We recursively apply
         // the remaining arguments to it.
-        uint64_t intermediate = eco_closure_call_saturated(closure_hptr, args, remaining, /*layout=*/nullptr);
+        HPtr intermediate = eco_closure_call_saturated(HPtr::fromBits(closure_bits), args, remaining, /*layout=*/nullptr);
         result = eco_apply_closure(intermediate, args + remaining, num_args - remaining);
     }
 
@@ -1068,13 +1072,14 @@ extern "C" uint64_t eco_apply_closure(uint64_t closure_hptr, uint64_t* args, uin
     return result;
 }
 
-extern "C" uint64_t eco_apply_segmentation_unknown(uint64_t closure_hptr,
+extern "C" HPtr eco_apply_segmentation_unknown(HPtr closure_hptr,
                                                     uint64_t* typed_args,
                                                     uint32_t num_args,
                                                     uint64_t unboxed_bitmap,
                                                     uint64_t* boxed_args) {
-    void* closure_ptr = hpointerToPtr(closure_hptr);
-    if (!closure_ptr) return 0;
+    uint64_t closure_bits = closure_hptr.toBits();
+    void* closure_ptr = hpointerToPtr(closure_bits);
+    if (!closure_ptr) return HPtr::fromBits(0);
 
     Closure* closure = static_cast<Closure*>(closure_ptr);
     uint32_t n_values = closure->n_values;
@@ -1086,7 +1091,7 @@ extern "C" uint64_t eco_apply_segmentation_unknown(uint64_t closure_hptr,
         memcpy(&packed, reinterpret_cast<char*>(closure_ptr) + 8, sizeof(packed));
         // Check if the closure has been forwarded (GC moved it)
         fprintf(stderr, "DIAG: eco_apply_segmentation_unknown bad closure: hptr=0x%lx ptr=%p tag=%u n_values=%u max_values=%u num_args=%u packed=0x%lx\n",
-                closure_hptr, closure_ptr, closure->header.tag, n_values, max_values, num_args, packed);
+                closure_bits, closure_ptr, closure->header.tag, n_values, max_values, num_args, packed);
         fprintf(stderr, "  header: color=%u pin=%u epoch=%u age=%u unboxed=%u size=%u\n",
                 closure->header.color, closure->header.pin, closure->header.epoch,
                 closure->header.age, closure->header.unboxed, closure->header.size);
@@ -1097,10 +1102,10 @@ extern "C" uint64_t eco_apply_segmentation_unknown(uint64_t closure_hptr,
     }
     uint32_t remaining = max_values - n_values;
 
-    // Root closure_hptr and the appropriate arg array across the inner call.
+    // Root closure_bits and the appropriate arg array across the inner call.
     size_t saved_range = eco_gc_stack_range_point();
-    eco_gc_push_stack_range(&closure_hptr, 1, 1);
-    uint64_t result;
+    eco_gc_push_stack_range(&closure_bits, 1, 1);
+    HPtr result;
 
     if (num_args < remaining) {
         // Under-saturated: use typed args with bitmap to preserve unboxed values.
@@ -1112,7 +1117,7 @@ extern "C" uint64_t eco_apply_segmentation_unknown(uint64_t closure_hptr,
                 eco_gc_push_stack_range(typed_args, num_args, mask);
             }
         }
-        result = eco_pap_extend(closure_hptr, typed_args, num_args, unboxed_bitmap);
+        result = eco_pap_extend(HPtr::fromBits(closure_bits), typed_args, num_args, unboxed_bitmap);
     } else {
         // Exactly saturated or over-saturated: use boxed args via eco_apply_closure
         // which handles both cases (exact call or chain of saturate + recursive apply).
@@ -1120,17 +1125,18 @@ extern "C" uint64_t eco_apply_segmentation_unknown(uint64_t closure_hptr,
         if (num_args > 0) {
             eco_gc_push_stack_range(boxed_args, num_args, hptr_mask_all(num_args));
         }
-        result = eco_apply_closure(closure_hptr, boxed_args, num_args);
+        result = eco_apply_closure(HPtr::fromBits(closure_bits), boxed_args, num_args);
     }
 
     eco_gc_restore_stack_range_point(saved_range);
     return result;
 }
 
-extern "C" uint64_t eco_pap_extend(uint64_t closure_hptr, uint64_t* args, uint32_t num_newargs,
+extern "C" HPtr eco_pap_extend(HPtr closure_hptr, uint64_t* args, uint32_t num_newargs,
                                    uint64_t new_unboxed_bitmap) {
-    void* closure_ptr = hpointerToPtr(closure_hptr);
-    if (!closure_ptr) return 0;
+    uint64_t closure_bits = closure_hptr.toBits();
+    void* closure_ptr = hpointerToPtr(closure_bits);
+    if (!closure_ptr) return HPtr::fromBits(0);
 
     Closure* old_closure = static_cast<Closure*>(closure_ptr);
 
@@ -1147,14 +1153,14 @@ extern "C" uint64_t eco_pap_extend(uint64_t closure_hptr, uint64_t* args, uint32
     if (new_n_values > max_values) {
         fprintf(stderr, "eco_pap_extend: new_n_values (%u) exceeds max_values (%u)\n",
                 new_n_values, max_values);
-        return 0;
+        return HPtr::fromBits(0);
     }
 
-    // Root `closure_hptr` and `args` across the allocate() call below.
-    // allocate() may trigger GC. Without rooting, closure_hptr and the
+    // Root `closure_bits` and `args` across the allocate() call below.
+    // allocate() may trigger GC. Without rooting, closure_bits and the
     // HPointer entries in `args` would be stale post-GC.
     size_t saved_range = eco_gc_stack_range_point();
-    eco_gc_push_stack_range(&closure_hptr, 1, 1);
+    eco_gc_push_stack_range(&closure_bits, 1, 1);
     if (num_newargs > 0) {
         uint64_t mask = hptr_mask_clamp(~new_unboxed_bitmap, num_newargs);
         if (mask != 0) {
@@ -1167,11 +1173,11 @@ extern "C" uint64_t eco_pap_extend(uint64_t closure_hptr, uint64_t* args, uint32
     void* obj = Allocator::instance().allocate(size, Tag_Closure);
     if (!obj) {
         eco_gc_restore_stack_range_point(saved_range);
-        return 0;
+        return HPtr::fromBits(0);
     }
 
     // Re-resolve old_closure: allocate() may have triggered GC and moved it.
-    old_closure = static_cast<Closure*>(hpointerToPtr(closure_hptr));
+    old_closure = static_cast<Closure*>(hpointerToPtr(closure_bits));
 
     Closure* new_closure = static_cast<Closure*>(obj);
 
@@ -1200,9 +1206,10 @@ extern "C" uint64_t eco_pap_extend(uint64_t closure_hptr, uint64_t* args, uint32
     return ptrToHPointer(obj);
 }
 
-extern "C" uint64_t eco_closure_call_saturated(uint64_t closure_hptr, uint64_t* new_args, uint32_t num_newargs, const EvalParamLayout* layout) {
-    void* closure_ptr = hpointerToPtr(closure_hptr);
-    if (!closure_ptr) return 0;
+extern "C" HPtr eco_closure_call_saturated(HPtr closure_hptr, uint64_t* new_args, uint32_t num_newargs, const EvalParamLayout* layout) {
+    uint64_t closure_bits = closure_hptr.toBits();
+    void* closure_ptr = hpointerToPtr(closure_bits);
+    if (!closure_ptr) return HPtr::fromBits(0);
 
     Closure* closure = static_cast<Closure*>(closure_ptr);
     uint32_t max_values = closure->max_values;
@@ -1221,9 +1228,9 @@ extern "C" uint64_t eco_closure_call_saturated(uint64_t closure_hptr, uint64_t* 
     // Zero-init so GC sees valid values for not-yet-populated slots.
     memset(combined_args, 0, max_values * sizeof(void*));
 
-    // Root closure_hptr and combined_args across buildEvaluatorArgs + evaluator call.
+    // Root closure_bits and combined_args across buildEvaluatorArgs + evaluator call.
     size_t saved_range = eco_gc_stack_range_point();
-    eco_gc_push_stack_range(&closure_hptr, 1, 1);
+    eco_gc_push_stack_range(&closure_bits, 1, 1);
     if (max_values > 0) {
         uint64_t mask = (uint64_t{1} << max_values) - 1;
         eco_gc_push_stack_range(
@@ -1233,24 +1240,24 @@ extern "C" uint64_t eco_closure_call_saturated(uint64_t closure_hptr, uint64_t* 
     }
 
     // Single implementation of bitmap interpretation + boxing (INV_1).
-    buildEvaluatorArgs(closure_hptr, new_args, num_newargs, combined_args, layout);
+    buildEvaluatorArgs(closure_bits, new_args, num_newargs, combined_args, layout);
 
     // Re-resolve closure after buildEvaluatorArgs: boxing allocs inside
     // may have triggered GC and moved the closure.
-    closure = static_cast<Closure*>(hpointerToPtr(closure_hptr));
+    closure = static_cast<Closure*>(hpointerToPtr(closure_bits));
     void* result = closure->evaluator(combined_args);
 
     eco_gc_restore_stack_range_point(saved_range);
-    return reinterpret_cast<uint64_t>(result);
+    return HPtr::fromBits(reinterpret_cast<uint64_t>(result));
 }
 
 //===----------------------------------------------------------------------===//
 // Runtime Utilities
 //===----------------------------------------------------------------------===//
 
-extern "C" [[noreturn]] void eco_crash(uint64_t message_val) {
+extern "C" [[noreturn]] void eco_crash(HPtr message_val) {
     // message_val must be an HPointer to a heap-allocated string
-    void* message = hpointerToPtr(message_val);
+    void* message = hpointerToPtr(message_val.toBits());
 
     // Print error message if it's a valid string
     if (message) {
@@ -2298,20 +2305,21 @@ extern "C" void eco_output_text(const char* text) {
 }
 
 // Print an Elm value to the current output stream
-extern "C" void eco_print_value(uint64_t value) {
-    print_value(value, 0);
+extern "C" void eco_print_value(HPtr value) {
+    print_value(value.toBits(), 0);
 }
 
 // Print an Elm value, unwrapping the Ctor0 box wrapper used by Guida compiler.
 // This is used by Debug.log to show clean Elm values.
-extern "C" void eco_print_elm_value(uint64_t value) {
+extern "C" void eco_print_elm_value(HPtr value) {
+    uint64_t value_bits = value.toBits();
     // Check for embedded constants first
-    if (print_if_constant(value)) {
+    if (print_if_constant(value_bits)) {
         return;
     }
 
     // Convert HPointer to raw pointer via allocator
-    void* ptr = hpointerToPtr(value);
+    void* ptr = hpointerToPtr(value_bits);
     if (!ptr) {
         output_text("<null>");
         return;
@@ -2334,7 +2342,7 @@ extern "C" void eco_print_elm_value(uint64_t value) {
                     output_format("%lld", (long long)inner);
                 } else if (!print_if_constant(inner)) {
                     // Recursively print the inner value (also unwrapping if needed)
-                    eco_print_elm_value(inner);
+                    eco_print_elm_value(HPtr::fromBits(inner));
                 }
             }
             return;
@@ -2342,18 +2350,18 @@ extern "C" void eco_print_elm_value(uint64_t value) {
     }
 
     // Not a wrapper, print normally
-    print_value(value, 0);
+    print_value(value_bits, 0);
 }
 
 // Convert an Elm value to its string representation
-extern "C" uint64_t eco_value_to_string(uint64_t value) {
+extern "C" HPtr eco_value_to_string(HPtr value) {
     // Temporarily capture output to a string
     std::ostringstream capture;
     std::ostringstream* prev = tl_output_stream;
     tl_output_stream = &capture;
 
     // Print the value
-    print_value(value, 0);
+    print_value(value.toBits(), 0);
 
     // Restore previous stream
     tl_output_stream = prev;
@@ -2362,13 +2370,11 @@ extern "C" uint64_t eco_value_to_string(uint64_t value) {
     std::string result = capture.str();
     HPointer strPtr = alloc::allocStringFromUTF8(result);
 
-    // Return as HPointer (uint64_t)
-    uint64_t hptr_result;
-    memcpy(&hptr_result, &strPtr, sizeof(hptr_result));
-    return hptr_result;
+    return HPtr::fromHPointer(strPtr);
 }
 
-extern "C" uint64_t eco_value_to_string_typed(uint64_t value, int64_t type_id) {
+extern "C" HPtr eco_value_to_string_typed(HPtr value, int64_t type_id) {
+    uint64_t value_bits = value.toBits();
     // Temporarily capture output to a string
     std::ostringstream capture;
     std::ostringstream* prev = tl_output_stream;
@@ -2377,9 +2383,9 @@ extern "C" uint64_t eco_value_to_string_typed(uint64_t value, int64_t type_id) {
     // Print the value using type information for constructor names
     if (type_id >= 0 && g_type_graph && g_type_graph->types &&
         static_cast<uint32_t>(type_id) < g_type_graph->type_count) {
-        print_typed_value(value, static_cast<uint32_t>(type_id), 0);
+        print_typed_value(value_bits, static_cast<uint32_t>(type_id), 0);
     } else {
-        print_value(value, 0);
+        print_value(value_bits, 0);
     }
 
     // Restore previous stream
@@ -2389,9 +2395,7 @@ extern "C" uint64_t eco_value_to_string_typed(uint64_t value, int64_t type_id) {
     std::string result = capture.str();
     HPointer strPtr = alloc::allocStringFromUTF8(result);
 
-    uint64_t hptr_result;
-    memcpy(&hptr_result, &strPtr, sizeof(hptr_result));
-    return hptr_result;
+    return HPtr::fromHPointer(strPtr);
 }
 
 //===----------------------------------------------------------------------===//
@@ -2449,16 +2453,16 @@ extern "C" void eco_gc_restore_stack_range_point(size_t point) {
 // Tag Extraction
 //===----------------------------------------------------------------------===//
 
-extern "C" uint32_t eco_get_header_tag(uint64_t obj_hptr) {
-    void* obj = hpointerToPtr(obj_hptr);
+extern "C" uint32_t eco_get_header_tag(HPtr obj_hptr) {
+    void* obj = hpointerToPtr(obj_hptr.toBits());
     if (!obj) return 0;
 
     Header* header = static_cast<Header*>(obj);
     return header->tag;
 }
 
-extern "C" uint32_t eco_get_custom_ctor(uint64_t obj_hptr) {
-    void* obj = hpointerToPtr(obj_hptr);
+extern "C" uint32_t eco_get_custom_ctor(HPtr obj_hptr) {
+    void* obj = hpointerToPtr(obj_hptr.toBits());
     if (!obj) return 0;
 
     Custom* custom = static_cast<Custom*>(obj);
@@ -2471,9 +2475,8 @@ extern "C" uint32_t eco_get_custom_ctor(uint64_t obj_hptr) {
 ///   - Nothing (kind=6) -> tag=1 (second constructor of Maybe)
 ///   - Nil (kind=5) -> tag=0 (first constructor of List)
 ///   - Other embedded constants -> tag=0
-extern "C" uint32_t eco_get_tag(uint64_t val) {
-    HPointer hp;
-    memcpy(&hp, &val, sizeof(hp));
+extern "C" uint32_t eco_get_tag(HPtr val) {
+    HPointer hp = val.toHPointer();
 
     // Check if this is an embedded constant (constant field != 0).
     if (hp.constant != 0) {
@@ -2507,9 +2510,8 @@ extern "C" uint32_t eco_get_tag(uint64_t val) {
 
 /// Gets the head of a Cons cell as an unboxed i64.
 /// Handles both boxed and unboxed heads.
-extern "C" int64_t eco_cons_head_i64(uint64_t cons) {
-    HPointer hp;
-    memcpy(&hp, &cons, sizeof(hp));
+extern "C" int64_t eco_cons_head_i64(HPtr cons) {
+    HPointer hp = cons.toHPointer();
 
     // Resolve the Cons cell pointer.
     void* obj = Allocator::instance().resolve(hp);
@@ -2536,9 +2538,8 @@ extern "C" int64_t eco_cons_head_i64(uint64_t cons) {
 
 /// Gets the head of a Cons cell as an unboxed f64.
 /// Handles both boxed and unboxed heads.
-extern "C" double eco_cons_head_f64(uint64_t cons) {
-    HPointer hp;
-    memcpy(&hp, &cons, sizeof(hp));
+extern "C" double eco_cons_head_f64(HPtr cons) {
+    HPointer hp = cons.toHPointer();
 
     // Resolve the Cons cell pointer.
     void* obj = Allocator::instance().resolve(hp);
@@ -2565,9 +2566,8 @@ extern "C" double eco_cons_head_f64(uint64_t cons) {
 
 /// Gets the head of a Cons cell as an unboxed i16 (Elm Char).
 /// Handles both boxed and unboxed heads.
-extern "C" int16_t eco_cons_head_i16(uint64_t cons) {
-    HPointer hp;
-    memcpy(&hp, &cons, sizeof(hp));
+extern "C" int16_t eco_cons_head_i16(HPtr cons) {
+    HPointer hp = cons.toHPointer();
 
     // Resolve the Cons cell pointer.
     void* obj = Allocator::instance().resolve(hp);
@@ -2624,20 +2624,21 @@ extern "C" int64_t eco_int_pow(int64_t base, int64_t exp) {
 // HPointer Conversion
 //===----------------------------------------------------------------------===//
 
-extern "C" void* eco_resolve_hptr(uint64_t hptr) {
-    void* ptr = hpointerToPtr(hptr);
+extern "C" void* eco_resolve_hptr(HPtr hptr) {
+    void* ptr = hpointerToPtr(hptr.toBits());
     assert(ptr && "eco_resolve_hptr: received an embedded constant (not a heap pointer)");
     return ptr;
 }
 
-extern "C" uint64_t eco_clone_array(uint64_t array_hptr) {
-    void* srcPtr = hpointerToPtr(array_hptr);
+extern "C" HPtr eco_clone_array(HPtr array_hptr) {
+    uint64_t array_bits = array_hptr.toBits();
+    void* srcPtr = hpointerToPtr(array_bits);
     ElmArray* src = static_cast<ElmArray*>(srcPtr);
     uint32_t len = src->length;
 
     HPointer resultHp = alloc::allocArray(len);
     // Re-resolve source in case allocation triggered GC and moved it
-    srcPtr = hpointerToPtr(array_hptr);
+    srcPtr = hpointerToPtr(array_bits);
     src = static_cast<ElmArray*>(srcPtr);
 
     void* dstPtr = Allocator::instance().resolve(resultHp);
@@ -2650,7 +2651,5 @@ extern "C" uint64_t eco_clone_array(uint64_t array_hptr) {
         dst->elements[i] = src->elements[i];
     }
 
-    uint64_t result;
-    memcpy(&result, &resultHp, sizeof(result));
-    return result;
+    return HPtr::fromHPointer(resultHp);
 }

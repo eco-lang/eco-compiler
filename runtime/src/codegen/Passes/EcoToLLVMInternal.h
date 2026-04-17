@@ -27,12 +27,52 @@ namespace detail {
 // Type Converter
 //===----------------------------------------------------------------------===//
 
-/// Type converter that converts eco.value to i64 (tagged pointer representation).
-/// Implements CGEN_012: MInt->i64, MFloat->f64, MBool->i1, MChar->i32, others->eco.value->i64.
+/// Type converter that converts eco.value to ptr addrspace(1) (GC-managed pointer).
+/// Implements CGEN_012: MInt->i64, MFloat->f64, MBool->i1, MChar->i32, others->eco.value->ptr<1>.
 class EcoTypeConverter : public mlir::LLVMTypeConverter {
 public:
     explicit EcoTypeConverter(mlir::MLIRContext *ctx);
 };
+
+//===----------------------------------------------------------------------===//
+// HPointer Type Helpers
+//===----------------------------------------------------------------------===//
+
+/// Return the LLVM type used for GC-managed HPointers: ptr addrspace(1).
+inline mlir::Type getHPtrLLVMType(mlir::MLIRContext &ctx) {
+    return mlir::LLVM::LLVMPointerType::get(&ctx, /*addressSpace=*/1);
+}
+
+/// Check whether a type is the HPointer LLVM representation (ptr addrspace(1)).
+inline bool isHPtrLLVMType(mlir::Type t) {
+    if (auto ptrTy = mlir::dyn_cast<mlir::LLVM::LLVMPointerType>(t))
+        return ptrTy.getAddressSpace() == 1;
+    return false;
+}
+
+/// Convert an SSA value to i64 for storage in a heap slot or runtime call.
+/// If the value is ptr<1>, emit ptrtoint. If already i64, pass through.
+inline mlir::Value valueToI64(mlir::OpBuilder &builder, mlir::Location loc, mlir::Value v) {
+    if (v.getType().isInteger(64))
+        return v;
+    if (isHPtrLLVMType(v.getType())) {
+        auto i64Ty = mlir::IntegerType::get(builder.getContext(), 64);
+        return builder.create<mlir::LLVM::PtrToIntOp>(loc, i64Ty, v);
+    }
+    return v;
+}
+
+/// Convert an i64 value loaded from a heap slot to ptr<1> (HPointer).
+/// If already ptr<1>, pass through.
+inline mlir::Value i64ToValue(mlir::OpBuilder &builder, mlir::Location loc, mlir::Value v) {
+    if (isHPtrLLVMType(v.getType()))
+        return v;
+    if (v.getType().isInteger(64)) {
+        auto hptrTy = mlir::LLVM::LLVMPointerType::get(builder.getContext(), /*addressSpace=*/1);
+        return builder.create<mlir::LLVM::IntToPtrOp>(loc, hptrTy, v);
+    }
+    return v;
+}
 
 //===----------------------------------------------------------------------===//
 // Value Encoding Constants (HEAP_008, HEAP_010, HEAP_014)

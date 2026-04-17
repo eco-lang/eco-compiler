@@ -140,7 +140,9 @@ double Elm_Kernel_Basics_log(double x) {
 }
 
 // Polymorphic pow - examines tags to determine Int or Float arithmetic.
-uint64_t Elm_Kernel_Basics_pow(uint64_t base_ptr, uint64_t exp_ptr) {
+HPtr Elm_Kernel_Basics_pow(HPtr base, HPtr exp) {
+    uint64_t base_ptr = base.toBits();
+    uint64_t exp_ptr = exp.toBits();
     Elm::i64 base_i, exp_i;
     Elm::f64 base_f, exp_f;
     bool base_is_int = getNumericValue(base_ptr, base_i, base_f);
@@ -151,7 +153,7 @@ uint64_t Elm_Kernel_Basics_pow(uint64_t base_ptr, uint64_t exp_ptr) {
         // Integer power - use repeated multiplication for positive exponents
         if (exp_i < 0) {
             // Negative exponent with ints -> result is 0 (integer division)
-            return boxInt(0);
+            return HPtr::fromBits(boxInt(0));
         }
         Elm::i64 result = 1;
         Elm::i64 b = base_i;
@@ -161,17 +163,19 @@ uint64_t Elm_Kernel_Basics_pow(uint64_t base_ptr, uint64_t exp_ptr) {
             b *= b;
             e >>= 1;
         }
-        return boxInt(result);
+        return HPtr::fromBits(boxInt(result));
     }
 
     // At least one is a float - convert to float arithmetic
     Elm::f64 base_val = base_is_int ? static_cast<Elm::f64>(base_i) : base_f;
     Elm::f64 exp_val = exp_is_int ? static_cast<Elm::f64>(exp_i) : exp_f;
-    return boxFloat(std::pow(base_val, exp_val));
+    return HPtr::fromBits(boxFloat(std::pow(base_val, exp_val)));
 }
 
 // Polymorphic add - examines tags to determine Int or Float arithmetic.
-uint64_t Elm_Kernel_Basics_add(uint64_t a_ptr, uint64_t b_ptr) {
+HPtr Elm_Kernel_Basics_add(HPtr a, HPtr b) {
+    uint64_t a_ptr = a.toBits();
+    uint64_t b_ptr = b.toBits();
     Elm::i64 a_i, b_i;
     Elm::f64 a_f, b_f;
     bool a_is_int = getNumericValue(a_ptr, a_i, a_f);
@@ -179,17 +183,19 @@ uint64_t Elm_Kernel_Basics_add(uint64_t a_ptr, uint64_t b_ptr) {
 
     // If both are ints, do integer addition
     if (a_is_int && b_is_int) {
-        return boxInt(a_i + b_i);
+        return HPtr::fromBits(boxInt(a_i + b_i));
     }
 
     // At least one is a float - convert to float arithmetic
     Elm::f64 a_val = a_is_int ? static_cast<Elm::f64>(a_i) : a_f;
     Elm::f64 b_val = b_is_int ? static_cast<Elm::f64>(b_i) : b_f;
-    return boxFloat(a_val + b_val);
+    return HPtr::fromBits(boxFloat(a_val + b_val));
 }
 
 // Polymorphic sub - examines tags to determine Int or Float arithmetic.
-uint64_t Elm_Kernel_Basics_sub(uint64_t a_ptr, uint64_t b_ptr) {
+HPtr Elm_Kernel_Basics_sub(HPtr a, HPtr b) {
+    uint64_t a_ptr = a.toBits();
+    uint64_t b_ptr = b.toBits();
     Elm::i64 a_i, b_i;
     Elm::f64 a_f, b_f;
     bool a_is_int = getNumericValue(a_ptr, a_i, a_f);
@@ -197,17 +203,19 @@ uint64_t Elm_Kernel_Basics_sub(uint64_t a_ptr, uint64_t b_ptr) {
 
     // If both are ints, do integer subtraction
     if (a_is_int && b_is_int) {
-        return boxInt(a_i - b_i);
+        return HPtr::fromBits(boxInt(a_i - b_i));
     }
 
     // At least one is a float - convert to float arithmetic
     Elm::f64 a_val = a_is_int ? static_cast<Elm::f64>(a_i) : a_f;
     Elm::f64 b_val = b_is_int ? static_cast<Elm::f64>(b_i) : b_f;
-    return boxFloat(a_val - b_val);
+    return HPtr::fromBits(boxFloat(a_val - b_val));
 }
 
 // Polymorphic mul - examines tags to determine Int or Float arithmetic.
-uint64_t Elm_Kernel_Basics_mul(uint64_t a_ptr, uint64_t b_ptr) {
+HPtr Elm_Kernel_Basics_mul(HPtr a, HPtr b) {
+    uint64_t a_ptr = a.toBits();
+    uint64_t b_ptr = b.toBits();
     Elm::i64 a_i, b_i;
     Elm::f64 a_f, b_f;
     bool a_is_int = getNumericValue(a_ptr, a_i, a_f);
@@ -215,13 +223,13 @@ uint64_t Elm_Kernel_Basics_mul(uint64_t a_ptr, uint64_t b_ptr) {
 
     // If both are ints, do integer multiplication
     if (a_is_int && b_is_int) {
-        return boxInt(a_i * b_i);
+        return HPtr::fromBits(boxInt(a_i * b_i));
     }
 
     // At least one is a float - convert to float arithmetic
     Elm::f64 a_val = a_is_int ? static_cast<Elm::f64>(a_i) : a_f;
     Elm::f64 b_val = b_is_int ? static_cast<Elm::f64>(b_i) : b_f;
-    return boxFloat(a_val * b_val);
+    return HPtr::fromBits(boxFloat(a_val * b_val));
 }
 
 double Elm_Kernel_Basics_e() {
@@ -268,28 +276,28 @@ double Elm_Kernel_Basics_toFloat(int64_t x) {
     return Basics::toFloat(x);
 }
 
-uint64_t Elm_Kernel_Basics_isInfinite(double x) {
-    return Export::encodeBoxedBool(Basics::isInfinite(x));
+HPtr Elm_Kernel_Basics_isInfinite(double x) {
+    return HPtr::fromBits(Export::encodeBoxedBool(Basics::isInfinite(x)));
 }
 
-uint64_t Elm_Kernel_Basics_isNaN(double x) {
-    return Export::encodeBoxedBool(Basics::isNaN(x));
+HPtr Elm_Kernel_Basics_isNaN(double x) {
+    return HPtr::fromBits(Export::encodeBoxedBool(Basics::isNaN(x)));
 }
 
-uint64_t Elm_Kernel_Basics_and(uint64_t a, uint64_t b) {
-    return Export::encodeBoxedBool(Basics::and_(Export::decodeBoxedBool(a), Export::decodeBoxedBool(b)));
+HPtr Elm_Kernel_Basics_and(HPtr a, HPtr b) {
+    return HPtr::fromBits(Export::encodeBoxedBool(Basics::and_(Export::decodeBoxedBool(a.toBits()), Export::decodeBoxedBool(b.toBits()))));
 }
 
-uint64_t Elm_Kernel_Basics_or(uint64_t a, uint64_t b) {
-    return Export::encodeBoxedBool(Basics::or_(Export::decodeBoxedBool(a), Export::decodeBoxedBool(b)));
+HPtr Elm_Kernel_Basics_or(HPtr a, HPtr b) {
+    return HPtr::fromBits(Export::encodeBoxedBool(Basics::or_(Export::decodeBoxedBool(a.toBits()), Export::decodeBoxedBool(b.toBits()))));
 }
 
-uint64_t Elm_Kernel_Basics_xor(uint64_t a, uint64_t b) {
-    return Export::encodeBoxedBool(Basics::xor_(Export::decodeBoxedBool(a), Export::decodeBoxedBool(b)));
+HPtr Elm_Kernel_Basics_xor(HPtr a, HPtr b) {
+    return HPtr::fromBits(Export::encodeBoxedBool(Basics::xor_(Export::decodeBoxedBool(a.toBits()), Export::decodeBoxedBool(b.toBits()))));
 }
 
-uint64_t Elm_Kernel_Basics_not(uint64_t a) {
-    return Export::encodeBoxedBool(Basics::not_(Export::decodeBoxedBool(a)));
+HPtr Elm_Kernel_Basics_not(HPtr a) {
+    return HPtr::fromBits(Export::encodeBoxedBool(Basics::not_(Export::decodeBoxedBool(a.toBits()))));
 }
 
 } // extern "C"

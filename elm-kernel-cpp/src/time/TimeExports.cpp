@@ -154,7 +154,7 @@ std::string getTimezoneName() {
 
 extern "C" {
 
-uint64_t Elm_Kernel_Time_now() {
+HPtr Elm_Kernel_Time_now() {
     // Returns Task x Posix
     // Posix is just an Int (milliseconds since epoch)
 
@@ -165,20 +165,20 @@ uint64_t Elm_Kernel_Time_now() {
 
     HPointer posix = allocInt(ms);
     HPointer task = Scheduler::instance().taskSucceed(posix);
-    return Export::encode(task);
+    return HPtr::fromBits(Export::encode(task));
 }
 
-uint64_t Elm_Kernel_Time_here() {
+HPtr Elm_Kernel_Time_here() {
     // Returns Task x Zone
     // Zone is the local timezone
 
     int offsetMinutes = getLocalTimezoneOffset();
     HPointer zone = createZone(offsetMinutes);
     HPointer task = Scheduler::instance().taskSucceed(zone);
-    return Export::encode(task);
+    return HPtr::fromBits(Export::encode(task));
 }
 
-uint64_t Elm_Kernel_Time_getZoneName() {
+HPtr Elm_Kernel_Time_getZoneName() {
     // Returns Task x ZoneName
     // ZoneName = Name String | Offset Int
 
@@ -194,10 +194,10 @@ uint64_t Elm_Kernel_Time_getZoneName() {
     }
 
     HPointer task = Scheduler::instance().taskSucceed(zoneName);
-    return Export::encode(task);
+    return HPtr::fromBits(Export::encode(task));
 }
 
-uint64_t Elm_Kernel_Time_setInterval(double intervalMs, uint64_t tagger) {
+HPtr Elm_Kernel_Time_setInterval(double intervalMs, HPtr task) {
     // Returns a Sub descriptor (Custom type)
     // The actual timer is started by the Time effect manager's onEffects
     //
@@ -206,12 +206,12 @@ uint64_t Elm_Kernel_Time_setInterval(double intervalMs, uint64_t tagger) {
     //            values: [interval (unboxed Float), tagger (boxed Closure)] }
 
     std::vector<Unboxable> values(2);
-    values[0].f = intervalMs;             // interval in milliseconds (unboxed)
-    values[1].p = Export::decode(tagger); // tagger closure (boxed)
+    values[0].f = intervalMs;                   // interval in milliseconds (unboxed)
+    values[1].p = Export::decode(task.toBits()); // tagger closure (boxed)
 
     // Field 0 is unboxed (Float), field 1 is boxed (Closure)
     HPointer sub = custom(CTOR_TIME_EVERY, values, 0b01);
-    return Export::encode(sub);
+    return HPtr::fromBits(Export::encode(sub));
 }
 
 } // extern "C"

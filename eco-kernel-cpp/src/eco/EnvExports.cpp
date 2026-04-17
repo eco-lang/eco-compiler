@@ -4,11 +4,12 @@
 #include "Env.hpp"
 
 using namespace Eco::Kernel;
+using Elm::HPtr;
 
-uint64_t Eco_Kernel_Env_lookup(uint64_t name) {
-    return Env::lookup(name);
+HPtr Eco_Kernel_Env_lookup(HPtr name) {
+    return HPtr::fromBits(Env::lookup(name.toBits()));
 }
 
-uint64_t Eco_Kernel_Env_rawArgs() {
-    return Env::rawArgs();
+HPtr Eco_Kernel_Env_rawArgs() {
+    return HPtr::fromBits(Env::rawArgs());
 }
