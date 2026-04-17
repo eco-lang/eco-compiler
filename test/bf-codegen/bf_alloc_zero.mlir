@@ -6,13 +6,16 @@ module {
   func.func @main() -> i64 {
     // Allocate empty buffer (0 bytes)
     %size = arith.constant 0 : i32
-    %buffer = bf.alloc %size : i64
+    %buffer = bf.alloc %size : !eco.value
 
-    // Verify buffer is still a valid allocation
-    %zero64 = arith.constant 0 : i64
-    %is_valid = arith.cmpi ne, %buffer, %zero64 : i64
-    %valid_int = arith.extui %is_valid : i1 to i64
-    eco.dbg %valid_int : i64
+    // Verify buffer is a valid allocation by initializing a cursor
+    %c0 = bf.cursor.init %buffer : !eco.value -> !bf.cursor
+
+    // Require 0 bytes should succeed on empty buffer
+    %needed = arith.constant 0 : i32
+    %ok = bf.require %c0, %needed : i1
+    %ok_int = arith.extui %ok : i1 to i64
+    eco.dbg %ok_int : i64
     // CHECK: 1
 
     %zero = arith.constant 0 : i64

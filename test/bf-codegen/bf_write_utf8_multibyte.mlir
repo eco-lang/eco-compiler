@@ -10,20 +10,20 @@ module {
     // "é" (U+00E9) encodes as 2 bytes: 0xC3 0xA9
     // "日" (U+65E5) encodes as 3 bytes: 0xE6 0x97 0xA5
     %str = eco.string_literal "\C3\A9" : !eco.value
-    %width = bf.utf8_width %str : i64 -> i32
+    %width = bf.utf8_width %str : !eco.value -> i32
     %width64 = arith.extsi %width : i32 to i64
     eco.dbg %width64 : i64
     // CHECK: 2
 
     // Allocate buffer and write
     %size = arith.constant 8 : i32
-    %buffer = bf.alloc %size : i64
-    %cursor0 = bf.cursor.init %buffer : i64 -> !bf.cursor
+    %buffer = bf.alloc %size : !eco.value
+    %cursor0 = bf.cursor.init %buffer : !eco.value -> !bf.cursor
 
     %cursor1 = bf.write.utf8 %cursor0, %str : !bf.cursor
 
     // Read back first byte (0xC3 = 195)
-    %read_cursor0 = bf.decoder.cursor.init %buffer : i64 -> !bf.cursor
+    %read_cursor0 = bf.decoder.cursor.init %buffer : !eco.value -> !bf.cursor
     %r1, %read_cursor1 = bf.read.u8 %read_cursor0 : i64, !bf.cursor
     eco.dbg %r1 : i64
     // CHECK: 195

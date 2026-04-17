@@ -51,13 +51,24 @@ struct SafepointInfo {
 /// operand (legacy pattern). If value is already ptr addrspace(1), return
 /// it as-is (new pattern: roots are directly ptr<1>).
 static Value *stripIntToPtr(Value *V) {
-    if (auto *I2P = dyn_cast<IntToPtrInst>(V))
-        if (I2P->getSrcTy()->isIntegerTy(64))
-            return I2P->getOperand(0);
+    if (auto *I2P = dyn_cast<IntToPtrInst>(V)) {
+        if (I2P->getSrcTy()->isIntegerTy(64)) {
+            Value *src = I2P->getOperand(0);
+            // Skip constants — they don't move during GC and shouldn't be roots.
+            if (isa<Constant>(src))
+                return nullptr;
+            return src;
+        }
+    }
     // New pattern: value is already ptr addrspace(1)
-    if (auto *PT = dyn_cast<PointerType>(V->getType()))
-        if (PT->getAddressSpace() == 1)
+    if (auto *PT = dyn_cast<PointerType>(V->getType())) {
+        if (PT->getAddressSpace() == 1) {
+            // Skip constants (ConstantPointerNull, ConstantExpr, etc.)
+            if (isa<Constant>(V))
+                return nullptr;
             return V;
+        }
+    }
     return nullptr;
 }
 

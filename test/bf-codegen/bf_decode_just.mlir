@@ -6,14 +6,14 @@ module {
   func.func @main() -> i64 {
     // Create buffer with valid data
     %size = arith.constant 4 : i32
-    %buffer = bf.alloc %size : i64
-    %cursor0 = bf.cursor.init %buffer : i64 -> !bf.cursor
+    %buffer = bf.alloc %size : !eco.value
+    %cursor0 = bf.cursor.init %buffer : !eco.value -> !bf.cursor
 
     %val = arith.constant 42 : i64
     %cursor1 = bf.write.u8 %cursor0, %val : !bf.cursor
 
     // Decode with bounds check
-    %rc0 = bf.decoder.cursor.init %buffer : i64 -> !bf.cursor
+    %rc0 = bf.decoder.cursor.init %buffer : !eco.value -> !bf.cursor
     %needed = arith.constant 1 : i32
     %ok = bf.require %rc0, %needed : i1
 

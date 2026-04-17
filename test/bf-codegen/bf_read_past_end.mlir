@@ -6,9 +6,9 @@ module {
   func.func @main() -> i64 {
     // Create small buffer
     %size = arith.constant 2 : i32
-    %buffer = bf.alloc %size : i64
+    %buffer = bf.alloc %size : !eco.value
 
-    %cursor = bf.decoder.cursor.init %buffer : i64 -> !bf.cursor
+    %cursor = bf.decoder.cursor.init %buffer : !eco.value -> !bf.cursor
 
     // Check if we can read 4 bytes (should fail)
     %needed = arith.constant 4 : i32

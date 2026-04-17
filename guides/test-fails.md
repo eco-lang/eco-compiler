@@ -7,7 +7,7 @@
 ## Current (2026-04-17, ptr<1> migration in progress)
 - **elm-test**: 12664 passed, 0 failed (unaffected by backend changes)
 - **E2E (codegen only)**: 312 passed, 1 failed out of 313 (1 pre-existing)
-- **E2E (full)**: not yet measured post-fix
+- **E2E (full)**: 1017 passed, 2 failed out of 1019 (was 901/118 baseline → net +116)
 
 ## Fix Order (by root cause, earliest compiler phase first)
 
@@ -25,8 +25,12 @@
 | 10 | ptr<1>: Closure wrapper returns `<fn>` | pap_basic +14 others | Codegen .mlir tests had hardcoded `i64` runtime function declarations instead of `ptr<1>` | FIXED |
 | 11 | ptr<1>: Closure numeric wrong output | allocate_closure_funcptr +9 others | Same as Cat 10 — hardcoded i64 signatures in test MLIR | FIXED |
 | 12 | ptr<1>: Statepoint CHECK pattern | safepoint_loop_gc_relocate | Test expected `ptrtoint` which is no longer emitted with ptr<1> roots | FIXED (removed CHECK: ptrtoint) |
-| 13 | BF bf_alloc_large pre-existing | bf_alloc_large | Pre-existing baseline failure — 64KB allocation returns 0; not caused by ptr<1> migration. BF dialect not yet migrated to ptr<1> (88 test files need !eco.value conversion); C++ BF runtime uses HPtr but BF LLVM declarations still use i64 (ABI-compatible) | PRE-EXISTING |
-| 14 | ptr<1>: C++ HPtr conversion regressions | ~31 E2E tests (elm-bytes/DecodeMap*, elm-json/RoundTrip*, elm/TailRec*, elm/Equality*, etc.) | One or more kernel .cpp files incorrectly converted to HPtr — all crash with `raw=0xfefefefe` | OPEN |
+| 13 | BF bf_alloc_large | bf_alloc_large | Was pre-existing; now FIXED as part of BF migration to ptr<1> | FIXED |
+| 14 | ptr<1>: C++ HPtr conversion regressions | ~31 E2E tests | Superseded — actually Bool ZExt (Cat 15) + BF mismatch (Cat 16) | RESOLVED |
+| 15 | ptr<1>: Constants as GC roots in StatepointConversion | CaseBoolTest +24 others | Constants excluded from GC roots in both EcoGCPrepare and StatepointConversion | FIXED |
+| 16 | ptr<1>: BF/Eco type converter unified | All 51 elm-bytes/* + 88 BF codegen tests | BFTypeConverter unified to ptr<1>; all BF test .mlir files updated; bf.read.utf8 null comparison fixed | FIXED |
+| 17 | ptr<1>: String case True constant comparison | CaseStringTest +8 others | String case lowering compared ptr<1> result from Elm_Kernel_Utils_equal with i64 True constant; fixed to use ptr<1> True constant via inttoptr | FIXED |
+| 18 | ptr<1>: ClosureCaptureTupleTest unrealized cast | ClosureCaptureTupleTest | Tuple deconstruction in closures has unresolvable unrealized_conversion_cast | OPEN |
 
 ---
 
@@ -261,26 +265,162 @@ BFTypeConverter still maps `eco.value → i64` (reverted during migration). The 
 
 ---
 
-## OPEN: Category 14 — C++ HPtr Conversion Regressions (ptr<1> migration)
+## RESOLVED: Category 14 — C++ HPtr Conversion Regressions (reclassified)
 
-**Tests**: ~31 E2E tests that passed before the C++ HPtr changes but now crash
+Most of the ~31 failures previously attributed to C++ HPtr conversion bugs were actually caused by
+Bool field ZExtOp (now Category 15) or BF type mismatch (Category 16). The HPtr ABI itself is correct —
+`struct HPtr { uint64_t bits; }` is ABI-compatible with `ptr addrspace(1)` on x86-64 SysV ABI (both
+pass/return in a single 64-bit register). After fixing Categories 9-12 (codegen tests), the E2E results
+improved from 211 failures to 89, confirming the HPtr conversion is sound.
 
-**Error**: All crash with `resolve() bad HPointer: raw=0xfefefefe`
+---
+
+## OPEN: Category 15 — Bool Field ZExtOp on ptr<1> (ptr<1> migration)
+
+**Tests (25)**: elm/CaseBoolTest, elm/CaseSingleCtorBoolMultiTypeTest, elm/CaseSingleCtorBoolTest,
+elm/EqualityStringChainCaseTest, elm/ListAnyBoolTest, elm/ListMapBoolTest,
+elm/SingleCtorPairBoolCharTest, elm/SingleCtorPairBoolFloatTest, elm/SingleCtorPairBoolIntBidiTest,
+elm/SingleCtorPairFloatBoolTest, elm/SingleCtorPairStringBoolTest,
+elm-core/JsArrayIndexedFilterTest, elm-core/JsArrayPushSliceTest, elm-core/TestIndexedMap, elm-core/TestIndexedMap3,
+elm-core/BasicsIsNaNTest, elm-core/DebugToStringTest, elm-core/JsArrayBasicsTest,
+elm-json/RoundTripBoolTest, elm/ClosureCaptureBoolTest, elm/CustomTypeMultiFieldTest,
+elm/EmbeddedMixedConstantsTest, elm/MaybeJustTest, elm/TypeAliasCtorTest, elm/UnboxWrapperTrueFalseTest
+
+**Error**: SIGSEGV or SIGABRT — all involve Bool values stored in record/custom fields
 
 ### Root Cause
 
-During the HPtr migration, ~30 kernel .cpp files and RuntimeExports.cpp were updated by agents to change function signatures from `uint64_t` to `HPtr` and add `.toBits()`/`HPtr::fromBits()` at boundaries. One or more files have incorrect conversions — likely a function that reads HPtr.bits incorrectly or passes the wrong variable.
+In `CustomConstructOpLowering` and `RecordConstructOpLowering` (EcoToLLVMHeap.cpp), the code checks
+`origType.isInteger(1)` (Bool) and does `ZExtOp(fieldVal, i64)`. But after type conversion by
+EcoTypeConverter, Bool fields that came from `eco.box i1` are embedded constants represented as
+`ptr<1>` (via `inttoptr`), NOT raw `i1`. Attempting `ZExtOp` on a `ptr<1>` is invalid and produces
+garbage, which later crashes when resolved via `eco_resolve_hptr`.
 
-The `0xfefefefe` pattern (32-bit debug fill) appears in ALL crashes, suggesting a systematic issue rather than individual per-file bugs. Possible causes:
-- A helper function (e.g., in ExportHelpers.hpp or a closure-calling helper) still expects uint64_t but receives HPtr
-- A GC root rooting call (`eco_gc_push_stack_range`) passes an `HPtr*` instead of `uint64_t*`
-- An internal function stores HPtr into a uint64_t array without `.toBits()`
+The existing helper `widenFieldToI64` (EcoToLLVMHeap.cpp:443) already handles `ptr<1>` correctly
+via `PtrToIntOp`, but is NOT used in Custom/RecordConstructOpLowering — those use ad-hoc ZExt instead.
 
-### Debugging Approach
+### Fix
 
-1. Binary search: revert half the kernel .cpp changes and re-test to narrow which file(s) introduce the bug
-2. Check all `eco_gc_push_stack_range` calls — they take `uint64_t*` but if someone passes `&hptr_var` (HPtr*) the GC would read struct bytes as raw uint64_t
-3. Check all internal helper functions (callUnaryClosure, callBinaryClosure, etc.) that bridge between HPtr and uint64_t* arrays
+In `EcoToLLVMHeap.cpp`, in both `CustomConstructOpLowering::matchAndRewrite` and
+`RecordConstructOpLowering::matchAndRewrite`, replace the Bool field branch:
+
+```cpp
+// BEFORE (broken):
+} else if (origType.isInteger(1) || origType.isInteger(16)) {
+    auto extended = rewriter.create<LLVM::ZExtOp>(loc, i64Ty, fieldVal);
+    rewriter.create<LLVM::CallOp>(loc, storeI64Func, ...{extended});
+}
+
+// AFTER (correct):
+} else if (origType.isInteger(1) || origType.isInteger(16)) {
+    // fieldVal may be ptr<1> (boxed Bool) or i1/i16 (unboxed).
+    // widenFieldToI64 handles all cases correctly.
+    Value widened = widenFieldToI64(fieldVal, loc, rewriter);
+    rewriter.create<LLVM::CallOp>(loc, storeI64Func, ...{widened});
+}
+```
+
+The `widenFieldToI64` function (line 443) already has the correct logic:
+- `ptr<1>` → `PtrToIntOp(ptr<1> → i64)` (preserves embedded constant bits)
+- `i1`/`i16` → `ZExtOp(narrow → i64)`
+- `i64` → passthrough
+- `f64` → `BitcastOp`
+
+### Key Files
+
+- `runtime/src/codegen/Passes/EcoToLLVMHeap.cpp` — CustomConstructOpLowering (~line 785), RecordConstructOpLowering (~line 670)
+
+---
+
+## OPEN: Category 16 — BF/Eco Type Converter Mismatch (ptr<1> migration)
+
+**Tests (52)**: All 51 elm-bytes/* tests + elm/ClosureCaptureTupleTest
+
+**Error**: `Failed to create execution engine: could not convert to LLVM IR` — unrealized_conversion_cast remains
+
+### Root Cause
+
+BFTypeConverter (in BFToLLVM.cpp) maps `eco.value → i64`, while EcoTypeConverter maps `eco.value → ptr<1>`.
+When BF-lowered code (which produces `i64` for Elm values) feeds into Eco-lowered code (which expects
+`ptr<1>`), the dialect conversion creates `unrealized_conversion_cast(i64 → ptr<1>)` ops. The reconcile
+pass cannot resolve these because there's no IntToPtrOp/PtrToIntOp insertion rule for unrealized casts.
+
+ClosureCaptureTupleTest has a similar type bridge issue — tuple deconstruction in closures hits a path
+where the type converter produces an unresolvable cast.
+
+### Fix (preferred: unify BF on ptr<1>)
+
+1. **BFTypeConverter**: Change `eco.value → i64` to `eco.value → getHPtrLLVMType(ctx)` (ptr<1>)
+2. **BF runtime declarations**: Change LLVM declarations for `elm_alloc_bytebuffer`, `elm_bytebuffer_len`,
+   `elm_bytebuffer_data`, `elm_utf8_*`, `elm_maybe_*`, `elm_list_reverse` to use `ptr<1>` for HPtr params/returns
+3. **BF .mlir test files**: 88 files under `test/bf-codegen/` use raw `i64` for BF op result types.
+   Change them to use `!eco.value` and let the type converter handle mapping to `ptr<1>`.
+   This is a large mechanical change but each file is small.
+4. **ClosureCaptureTupleTest**: Re-test after BF unification. If it still fails, look for remaining
+   `unrealized_conversion_cast(i64 ↔ ptr<1>)` not from BF.
+
+### Fix (fallback: insert explicit casts at BF→Eco boundary)
+
+Add a post-conversion canonicalization that replaces `unrealized_conversion_cast(i64 → ptr<1>)` with
+`IntToPtrOp` and `cast(ptr<1> → i64)` with `PtrToIntOp`. Brittle — the unification approach is preferred.
+
+### Key Files
+
+- `runtime/src/codegen/Passes/BFToLLVM.cpp` — BFTypeConverter (line ~47), ensureRuntimeFunctions (line ~87)
+- `runtime/src/allocator/ElmBytesRuntime.h/.cpp` — C++ already uses HPtr (updated earlier)
+- `test/bf-codegen/*.mlir` — 88 files need `i64` → `!eco.value` for BF op result types
+
+---
+
+## OPEN: Category 17 — String Case Lowering ABI (ptr<1> migration)
+
+**Tests (5 new + 4 pre-existing)**: elm/CaseStringTest, elm/CaseStringEscapeTest,
+elm/CaseStringManyBranchTest, elm/EqualityIntPapWithStringChainTest,
+elm-json/JsonDecoderSelfRecursiveNoLazyTest (new);
+CaseSharedBranchTest, CaseReturningLambdaTest, LargeDispatchCaseTest, NestedCaseReturnTest (pre-existing Cat 6/8)
+
+**Error**: `JIT execution failed: Lowering pipeline failed`
+
+### Root Cause
+
+String case lowering in `EcoToLLVMControlFlow.cpp` emits a `func::CallOp` to `Elm_Kernel_Utils_equal`.
+During the Eco→LLVM conversion, this `func::CallOp` must be lowered to `llvm.call`. The kernel
+function's LLVM declaration has `(ptr<1>, ptr<1>) → ptr<1>` signature (set by KernelFuncOpLowering),
+but the `func::CallOp` lowering encounters a type mismatch — the call's operand or result types
+don't resolve cleanly through the standard FuncToLLVM conversion path.
+
+The 4 pre-existing failures (CaseSharedBranch, CaseReturningLambda, LargeDispatch, NestedCaseReturn)
+have deeper bugs from Category 6/8, not caused by ptr<1>.
+
+### Fix
+
+In `EcoToLLVMControlFlow.cpp`, the string case lowering (lowerStringCase method) should emit an
+`LLVM::CallOp` directly instead of `func::CallOp`, bypassing the FuncToLLVM conversion:
+
+```cpp
+// Use EcoRuntime to get the LLVM-level kernel function
+auto equalFunc = runtime.getOrCreateUtilsEqual(rewriter);
+
+// Both scrutinee and pattern are already ptr<1> from type converter
+auto call = rewriter.create<LLVM::CallOp>(loc, equalFunc,
+    ValueRange{scrutineeVal, patternVal});
+Value eqResult = call.getResult();
+
+// Unbox Bool result: compare with True constant (also ptr<1>)
+auto hptrTy = getHPtrLLVMType(*ctx);
+Value trueI64 = rewriter.create<LLVM::ConstantOp>(loc, i64Ty,
+    value_enc::encodeConstant(value_enc::True));
+Value trueConst = rewriter.create<LLVM::IntToPtrOp>(loc, hptrTy, trueI64);
+Value isEqual = rewriter.create<LLVM::ICmpOp>(loc,
+    LLVM::ICmpPredicate::eq, eqResult, trueConst);
+```
+
+This keeps everything in the LLVM dialect and avoids the func::CallOp → llvm.call conversion
+path that fails.
+
+### Key Files
+
+- `runtime/src/codegen/Passes/EcoToLLVMControlFlow.cpp` — lowerStringCase method (~line 292)
 
 ---
 

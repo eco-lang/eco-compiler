@@ -6,10 +6,10 @@ module {
   func.func @main() -> i64 {
     // Create empty buffer
     %size = arith.constant 0 : i32
-    %buffer = bf.alloc %size : i64
+    %buffer = bf.alloc %size : !eco.value
 
     // Try to decode with bounds check
-    %rc0 = bf.decoder.cursor.init %buffer : i64 -> !bf.cursor
+    %rc0 = bf.decoder.cursor.init %buffer : !eco.value -> !bf.cursor
     %needed = arith.constant 1 : i32
     %ok = bf.require %rc0, %needed : i1
 

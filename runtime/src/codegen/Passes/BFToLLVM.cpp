@@ -42,11 +42,9 @@ public:
                                                      {ptrType, ptrType});
         });
 
-        // Convert eco.value to i64 for BF ops that take/produce eco.value.
-        // BF test files use raw i64 for BF op result types, so this must stay i64
-        // until all 88 BF test files are migrated to !eco.value.
+        // Convert eco.value to ptr addrspace(1), matching EcoTypeConverter.
         addConversion([](eco::ValueType type) -> Type {
-            return IntegerType::get(type.getContext(), 64);
+            return LLVM::LLVMPointerType::get(type.getContext(), /*addressSpace=*/1);
         });
 
         // Add source materialization for eco.value -> i64 conversion.
@@ -108,22 +106,21 @@ static BFRuntimeFuncs ensureRuntimeFunctions(ModuleOp module, OpBuilder &builder
 
     BFRuntimeFuncs funcs;
 
-    auto i64 = builder.getI64Type();
+    auto hptr = LLVM::LLVMPointerType::get(ctx, /*addressSpace=*/1);
 
-    // ByteBuffer operations — BF uses i64 for HPointers at LLVM level
-    // (matches BFTypeConverter which maps eco.value → i64)
-    funcs.allocBytebuffer = declareFunc("elm_alloc_bytebuffer", i64, {i32});
-    funcs.bytebufferLen = declareFunc("elm_bytebuffer_len", i32, {i64});
-    funcs.bytebufferData = declareFunc("elm_bytebuffer_data", i8Ptr, {i64});
+    // ByteBuffer operations
+    funcs.allocBytebuffer = declareFunc("elm_alloc_bytebuffer", hptr, {i32});
+    funcs.bytebufferLen = declareFunc("elm_bytebuffer_len", i32, {hptr});
+    funcs.bytebufferData = declareFunc("elm_bytebuffer_data", i8Ptr, {hptr});
 
     // UTF-8 operations
-    funcs.utf8Width = declareFunc("elm_utf8_width", i32, {i64});
-    funcs.utf8Copy = declareFunc("elm_utf8_copy", i32, {i64, i8Ptr});
-    funcs.utf8Decode = declareFunc("elm_utf8_decode", i64, {i8Ptr, i32});
+    funcs.utf8Width = declareFunc("elm_utf8_width", i32, {hptr});
+    funcs.utf8Copy = declareFunc("elm_utf8_copy", i32, {hptr, i8Ptr});
+    funcs.utf8Decode = declareFunc("elm_utf8_decode", hptr, {i8Ptr, i32});
 
     // Maybe operations
-    declareFunc("elm_maybe_nothing", i64, {});
-    declareFunc("elm_maybe_just", i64, {i64});
+    declareFunc("elm_maybe_nothing", hptr, {});
+    declareFunc("elm_maybe_just", hptr, {hptr});
 
     return funcs;
 }
@@ -943,11 +940,11 @@ struct ReadUtf8OpLowering : public OpConversionPattern<bf::ReadUtf8Op> {
             loc, rt.utf8Decode, ValueRange{ptr, adaptor.getLen()});
         Value stringVal = decodeCall.getResult();
 
-        // ok = (stringVal != 0)
-        Value zero = rewriter.create<LLVM::ConstantOp>(
-            loc, rewriter.getI64Type(), 0);
+        // ok = (stringVal != null)
+        auto hptrTy = LLVM::LLVMPointerType::get(rewriter.getContext(), 1);
+        Value nullPtr = rewriter.create<LLVM::ZeroOp>(loc, hptrTy);
         Value ok = rewriter.create<LLVM::ICmpOp>(
-            loc, LLVM::ICmpPredicate::ne, stringVal, zero);
+            loc, LLVM::ICmpPredicate::ne, stringVal, nullPtr);
 
         // Advance cursor by len
         Value newCursor = advanceCursor(rewriter, loc, adaptor.getCursor(),

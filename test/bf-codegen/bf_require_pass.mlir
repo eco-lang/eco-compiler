@@ -6,8 +6,8 @@ module {
   func.func @main() -> i64 {
     // Create buffer with 8 bytes
     %size = arith.constant 8 : i32
-    %buffer = bf.alloc %size : i64
-    %cursor = bf.decoder.cursor.init %buffer : i64 -> !bf.cursor
+    %buffer = bf.alloc %size : !eco.value
+    %cursor = bf.decoder.cursor.init %buffer : !eco.value -> !bf.cursor
 
     // Require 4 bytes (should succeed)
     %req_bytes = arith.constant 4 : i32

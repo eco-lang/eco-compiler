@@ -6,8 +6,8 @@ module {
   func.func @main() -> i64 {
     // Create buffer: count (4 bytes) + one u8 item
     %size = arith.constant 8 : i32
-    %buffer = bf.alloc %size : i64
-    %cursor0 = bf.cursor.init %buffer : i64 -> !bf.cursor
+    %buffer = bf.alloc %size : !eco.value
+    %cursor0 = bf.cursor.init %buffer : !eco.value -> !bf.cursor
 
     // Write count = 1
     %count = arith.constant 1 : i64
@@ -18,7 +18,7 @@ module {
     %cursor2 = bf.write.u8 %cursor1, %item : !bf.cursor
 
     // Read count and item
-    %rc0 = bf.decoder.cursor.init %buffer : i64 -> !bf.cursor
+    %rc0 = bf.decoder.cursor.init %buffer : !eco.value -> !bf.cursor
     %read_count, %rc1 = bf.read.u32 %rc0 (le) : i64, !bf.cursor
     %read_item, %rc2 = bf.read.u8 %rc1 : i64, !bf.cursor
 

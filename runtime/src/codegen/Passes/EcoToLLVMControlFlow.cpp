@@ -417,9 +417,11 @@ struct CaseOpLowering : public OpConversionPattern<CaseOp> {
                 ValueRange{scrutinee, patternValue});
             Value boxedResult = cmpCall.getResult();
 
-            // Unbox the result: compare with True constant to get i1
-            auto trueConst = rewriter.create<LLVM::ConstantOp>(
+            // Unbox the result: compare with True constant (ptr<1>) to get i1
+            auto hptrTy = getHPtrLLVMType(*ctx);
+            Value trueI64 = rewriter.create<LLVM::ConstantOp>(
                 loc, i64Ty, value_enc::encodeConstant(value_enc::True));
+            Value trueConst = rewriter.create<LLVM::IntToPtrOp>(loc, hptrTy, trueI64);
             Value isEqual = rewriter.create<LLVM::ICmpOp>(
                 loc, LLVM::ICmpPredicate::eq, boxedResult, trueConst);
 

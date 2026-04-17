@@ -17,14 +17,14 @@ module {
 
     // Allocate buffer for UTF-8 output
     %size = arith.constant 16 : i32
-    %buffer = bf.alloc %size : i64
-    %cursor0 = bf.cursor.init %buffer : i64 -> !bf.cursor
+    %buffer = bf.alloc %size : !eco.value
+    %cursor0 = bf.cursor.init %buffer : !eco.value -> !bf.cursor
 
     // Write "Hi" as UTF-8
     %cursor1 = bf.write.utf8 %cursor0, %str : !eco.value -> !bf.cursor
 
     // Read back first byte ('H' = 72)
-    %read_cursor0 = bf.decoder.cursor.init %buffer : i64 -> !bf.cursor
+    %read_cursor0 = bf.decoder.cursor.init %buffer : !eco.value -> !bf.cursor
     %byte1, %read_cursor1 = bf.read.u8 %read_cursor0 : i64, !bf.cursor
     eco.dbg %byte1 : i64
     // CHECK: 72

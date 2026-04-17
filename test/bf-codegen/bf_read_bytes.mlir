@@ -6,8 +6,8 @@ module {
   func.func @main() -> i64 {
     // Create buffer with some bytes
     %size = arith.constant 8 : i32
-    %buffer = bf.alloc %size : i64
-    %cursor0 = bf.cursor.init %buffer : i64 -> !bf.cursor
+    %buffer = bf.alloc %size : !eco.value
+    %cursor0 = bf.cursor.init %buffer : !eco.value -> !bf.cursor
 
     // Write known byte pattern
     %v1 = arith.constant 0x11 : i64
@@ -20,9 +20,9 @@ module {
     %cursor4 = bf.write.u8 %cursor3, %v4 : !bf.cursor
 
     // Read 4 bytes
-    %read_cursor0 = bf.decoder.cursor.init %buffer : i64 -> !bf.cursor
+    %read_cursor0 = bf.decoder.cursor.init %buffer : !eco.value -> !bf.cursor
     %len = arith.constant 4 : i32
-    %bytes, %read_cursor1, %ok = bf.read.bytes %read_cursor0, %len : i64, !bf.cursor, i1
+    %bytes, %read_cursor1, %ok = bf.read.bytes %read_cursor0, %len : !eco.value, !bf.cursor, i1
 
     // Verify ok flag
     %ok_int = arith.extui %ok : i1 to i64
@@ -30,7 +30,7 @@ module {
     // CHECK: 1
 
     // Read back from the new ByteBuffer
-    %new_read_cursor = bf.decoder.cursor.init %bytes : i64 -> !bf.cursor
+    %new_read_cursor = bf.decoder.cursor.init %bytes : !eco.value -> !bf.cursor
     %r1, %new_read_cursor1 = bf.read.u8 %new_read_cursor : i64, !bf.cursor
     eco.dbg %r1 : i64
     // CHECK: 17

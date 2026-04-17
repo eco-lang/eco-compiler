@@ -6,8 +6,8 @@ module {
   func.func @main() -> i64 {
     // Create buffer with boundary values
     %size = arith.constant 4 : i32
-    %buffer = bf.alloc %size : i64
-    %cursor0 = bf.cursor.init %buffer : i64 -> !bf.cursor
+    %buffer = bf.alloc %size : !eco.value
+    %cursor0 = bf.cursor.init %buffer : !eco.value -> !bf.cursor
 
     // Write: 0, 127, 128, 255
     %v0 = arith.constant 0 : i64
@@ -20,7 +20,7 @@ module {
     %cursor4 = bf.write.u8 %cursor3, %v255 : !bf.cursor
 
     // Read back
-    %read_cursor0 = bf.decoder.cursor.init %buffer : i64 -> !bf.cursor
+    %read_cursor0 = bf.decoder.cursor.init %buffer : !eco.value -> !bf.cursor
     %r0, %read_cursor1 = bf.read.u8 %read_cursor0 : i64, !bf.cursor
     %r1, %read_cursor2 = bf.read.u8 %read_cursor1 : i64, !bf.cursor
     %r2, %read_cursor3 = bf.read.u8 %read_cursor2 : i64, !bf.cursor

@@ -8,12 +8,12 @@ module {
 
     // Create buffer and write
     %size = arith.constant 8 : i32
-    %buffer = bf.alloc %size : i64
-    %cursor0 = bf.cursor.init %buffer : i64 -> !bf.cursor
+    %buffer = bf.alloc %size : !eco.value
+    %cursor0 = bf.cursor.init %buffer : !eco.value -> !bf.cursor
     %cursor1 = bf.write.f32 %cursor0, %val (le) : !bf.cursor
 
     // Read back
-    %read_cursor0 = bf.decoder.cursor.init %buffer : i64 -> !bf.cursor
+    %read_cursor0 = bf.decoder.cursor.init %buffer : !eco.value -> !bf.cursor
     %result, %read_cursor1 = bf.read.f32 %read_cursor0 (le) : f64, !bf.cursor
 
     // Verify match (-2.25 is exactly representable)

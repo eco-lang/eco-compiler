@@ -7,8 +7,8 @@ module {
   func.func @main() -> i64 {
     // Allocate buffer for: u32 count + 3 x u16
     %size = arith.constant 16 : i32
-    %buffer = bf.alloc %size : i64
-    %c0 = bf.cursor.init %buffer : i64 -> !bf.cursor
+    %buffer = bf.alloc %size : !eco.value
+    %c0 = bf.cursor.init %buffer : !eco.value -> !bf.cursor
 
     // Write count = 3
     %count = arith.constant 3 : i64
@@ -23,7 +23,7 @@ module {
     %c4 = bf.write.u16 %c3, %v3 (le) : !bf.cursor
 
     // Decode: read count then items
-    %rc0 = bf.decoder.cursor.init %buffer : i64 -> !bf.cursor
+    %rc0 = bf.decoder.cursor.init %buffer : !eco.value -> !bf.cursor
     %read_count, %rc1 = bf.read.u32 %rc0 (le) : i64, !bf.cursor
 
     eco.dbg %read_count : i64

@@ -667,13 +667,15 @@ struct RecordConstructOpLowering : public OpConversionPattern<RecordConstructOp>
             if (origType.isF64()) {
                 rewriter.create<LLVM::CallOp>(loc, storeF64Func,
                     ValueRange{objHPtr, idx, fieldVal});
-            } else if (origType.isInteger(1) || origType.isInteger(16)) {
-                auto extended = rewriter.create<LLVM::ZExtOp>(loc, i64Ty, fieldVal);
-                rewriter.create<LLVM::CallOp>(loc, storeI64Func,
-                    ValueRange{objHPtr, idx, extended});
             } else if (origType.isInteger(64)) {
                 rewriter.create<LLVM::CallOp>(loc, storeI64Func,
                     ValueRange{objHPtr, idx, fieldVal});
+            } else if (origType.isInteger(1) || origType.isInteger(16)) {
+                // Bool (i1) or Char (i16): after type conversion, Bool may be
+                // ptr<1> (embedded constant). widenFieldToI64 handles all cases.
+                Value widened = widenFieldToI64(fieldVal, loc, rewriter);
+                rewriter.create<LLVM::CallOp>(loc, storeI64Func,
+                    ValueRange{objHPtr, idx, widened});
             } else {
                 // eco.value → ptr<1> from adaptor; pass directly (store takes hptr val)
                 rewriter.create<LLVM::CallOp>(loc, storeFunc,
@@ -782,13 +784,13 @@ struct CustomConstructOpLowering : public OpConversionPattern<CustomConstructOp>
             if (origType.isF64()) {
                 rewriter.create<LLVM::CallOp>(loc, storeF64Func,
                     ValueRange{objHPtr, idx, fieldVal});
-            } else if (origType.isInteger(1) || origType.isInteger(16)) {
-                auto extended = rewriter.create<LLVM::ZExtOp>(loc, i64Ty, fieldVal);
-                rewriter.create<LLVM::CallOp>(loc, storeI64Func,
-                    ValueRange{objHPtr, idx, extended});
             } else if (origType.isInteger(64)) {
                 rewriter.create<LLVM::CallOp>(loc, storeI64Func,
                     ValueRange{objHPtr, idx, fieldVal});
+            } else if (origType.isInteger(1) || origType.isInteger(16)) {
+                Value widened = widenFieldToI64(fieldVal, loc, rewriter);
+                rewriter.create<LLVM::CallOp>(loc, storeI64Func,
+                    ValueRange{objHPtr, idx, widened});
             } else {
                 // eco.value → ptr<1> from adaptor; pass directly (store takes hptr val)
                 rewriter.create<LLVM::CallOp>(loc, storeFunc,

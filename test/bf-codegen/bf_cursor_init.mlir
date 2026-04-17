@@ -6,10 +6,10 @@ module {
   func.func @main() -> i64 {
     // Allocate buffer
     %size = arith.constant 32 : i32
-    %buffer = bf.alloc %size : i64
+    %buffer = bf.alloc %size : !eco.value
 
     // Initialize cursor from buffer
-    %cursor = bf.cursor.init %buffer : i64 -> !bf.cursor
+    %cursor = bf.cursor.init %buffer : !eco.value -> !bf.cursor
 
     // Extract pointer - should be non-null
     %ptr = bf.cursor.ptr %cursor : i64
