@@ -69,8 +69,16 @@
 #include "Passes.h"
 #include "EcoPipeline.h"
 #include "RuntimeSymbols.h"
-#include "Passes/StatepointConversion.h"
 #include "EcoJIT.h"
+
+#include "llvm/Transforms/Scalar/RewriteStatepointsForGC.h"
+#include "llvm/Passes/PassBuilder.h"
+#include "llvm/Analysis/TargetLibraryInfo.h"
+
+namespace eco { void linkEcoGCStrategy(); }
+static struct EcoGCStrategyLinker {
+    EcoGCStrategyLinker() { eco::linkEcoGCStrategy(); }
+} ecoGCStrategyLinker;
 #include "../allocator/StackMap.hpp"
 
 #include "../allocator/Allocator.hpp"
@@ -185,10 +193,23 @@ static int dumpLLVMIR(ModuleOp module) {
         return 1;
     }
 
-    // Convert safepoint markers to gc.statepoint intrinsics with gc.relocate.
-    eco::convertSafepointMarkers(*llvmModule);
-    assert(!llvmModule->getFunction("__eco_safepoint_marker") &&
-           "All safepoint markers must be converted to statepoints");
+    // Run RS4GC: inserts gc.statepoint/gc.relocate for all
+    // GC-triggering calls in functions with gc "eco-gc".
+    {
+        llvm::LoopAnalysisManager LAM;
+        llvm::FunctionAnalysisManager FAM;
+        llvm::CGSCCAnalysisManager CGAM;
+        llvm::ModuleAnalysisManager MAM;
+        llvm::PassBuilder PB;
+        PB.registerModuleAnalyses(MAM);
+        PB.registerCGSCCAnalyses(CGAM);
+        PB.registerFunctionAnalyses(FAM);
+        PB.registerLoopAnalyses(LAM);
+        PB.crossRegisterProxies(LAM, FAM, CGAM, MAM);
+        llvm::ModulePassManager MPM;
+        MPM.addPass(llvm::RewriteStatepointsForGC());
+        MPM.run(*llvmModule, MAM);
+    }
 
     // Initialize LLVM targets for the host platform.
     llvm::InitializeNativeTarget();
@@ -242,12 +263,24 @@ static int runJIT(ModuleOp module) {
         ? makeOptimizingTransformer(3, 0, nullptr)
         : makeOptimizingTransformer(0, 0, nullptr);
     options.transformer = [baseTransformer](llvm::Module *m) -> llvm::Error {
-        eco::convertSafepointMarkers(*m);
-        assert(!m->getFunction("__eco_safepoint_marker") &&
-               "All safepoint markers must be converted to statepoints");
+        // Run RS4GC: inserts gc.statepoint/gc.relocate for all
+        // GC-triggering calls in functions with gc "eco-gc".
+        llvm::LoopAnalysisManager LAM;
+        llvm::FunctionAnalysisManager FAM;
+        llvm::CGSCCAnalysisManager CGAM;
+        llvm::ModuleAnalysisManager MAM;
+        llvm::PassBuilder PB;
+        PB.registerModuleAnalyses(MAM);
+        PB.registerCGSCCAnalyses(CGAM);
+        PB.registerFunctionAnalyses(FAM);
+        PB.registerLoopAnalyses(LAM);
+        PB.crossRegisterProxies(LAM, FAM, CGAM, MAM);
+        llvm::ModulePassManager MPM;
+        MPM.addPass(llvm::RewriteStatepointsForGC());
+        MPM.run(*m, MAM);
+
         auto err = baseTransformer(m);
         if (err) return err;
-        eco::removeDeadGCRelocates(*m);
         return llvm::Error::success();
     };
 

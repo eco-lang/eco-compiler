@@ -353,7 +353,7 @@ struct EcoToLLVMPass : public PassWrapper<EcoToLLVMPass, OperationPass<ModuleOp>
         // statepoint intrinsics are recognized by LLVM's GC infrastructure.
         module.walk([](LLVM::LLVMFuncOp func) {
             if (!func.isExternal() && !func.getGarbageCollector()) {
-                func.setGarbageCollector("statepoint-example");
+                func.setGarbageCollector("eco-gc");
             }
         });
 

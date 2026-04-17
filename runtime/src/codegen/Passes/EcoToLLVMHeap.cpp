@@ -4,10 +4,10 @@
 // box, unbox, allocate, construct, and project operations.
 //
 // Allocation ops are lowered to calls to runtime C ABI functions (eco_alloc_*).
-// These functions may trigger GC. The GC root tracking is handled by:
-// 1. EcoGCPrepare pass computes live !eco.value sets at each eco.safepoint.
-// 2. SafepointOpLowering emits __eco_safepoint_marker with gc roots.
-// 3. StatepointConversion (post-LLVM lowering) wraps calls in gc.statepoint.
+// These functions may trigger GC. GC root tracking is handled by LLVM's
+// RewriteStatepointsForGC (RS4GC) pass, which automatically inserts
+// gc.statepoint/gc.relocate around calls to non-gc-leaf functions in
+// functions with gc "eco-gc". GC pointers are identified as ptr addrspace(1).
 //
 // Fast/slow allocation splitting is available in the runtime (eco_alloc_*_fast/slow)
 // but is not yet used in codegen — allocation calls use the unified functions
@@ -1417,20 +1417,7 @@ static void lowerOneAllocGroup(
     // --- Slow block: safepoint marker + region slow alloc + init ---
     builder.setInsertionPointToEnd(slowBlock);
 
-    if (!liveRoots.empty()) {
-        SmallVector<Value, 4> gcPtrs;
-        for (auto val : liveRoots) {
-            gcPtrs.push_back(castToHPtr(builder, loc, val));
-        }
-        runtime.getOrCreateSafepointMarker(builder);
-        auto voidTy = LLVM::LLVMVoidType::get(ctx);
-        auto markerFuncTy = LLVM::LLVMFunctionType::get(
-            voidTy, {}, /*isVarArg=*/true);
-        builder.create<LLVM::CallOp>(
-            loc, markerFuncTy,
-            FlatSymbolRefAttr::get(ctx, "__eco_safepoint_marker"),
-            gcPtrs);
-    }
+    // RS4GC handles safepoint insertion around the slow alloc call automatically.
 
     auto totalBytesValSlow = builder.create<LLVM::ConstantOp>(loc, i64Ty, totalBytes);
     auto baseSlowCall = builder.create<LLVM::CallOp>(

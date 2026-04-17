@@ -220,10 +220,13 @@ struct EcoRuntime {
     }
 
     /// Get or create a runtime function declaration.
+    /// If gcLeaf is true, the function is marked with gc-leaf-function
+    /// (tells RS4GC not to insert a gc.statepoint around calls to it).
     mlir::LLVM::LLVMFuncOp getOrCreateFunc(
         mlir::OpBuilder &builder,
         llvm::StringRef name,
-        mlir::LLVM::LLVMFunctionType funcType) const;
+        mlir::LLVM::LLVMFunctionType funcType,
+        bool gcLeaf = false) const;
 
     // Allocation functions (original — may GC)
     mlir::LLVM::LLVMFuncOp getOrCreateAllocInt(mlir::OpBuilder &builder) const;
@@ -311,9 +314,6 @@ struct EcoRuntime {
     // Array functions
     mlir::LLVM::LLVMFuncOp getOrCreateCloneArray(mlir::OpBuilder &builder) const;
 
-    // Safepoint marker function
-    mlir::LLVM::LLVMFuncOp getOrCreateSafepointMarker(mlir::OpBuilder &builder) const;
-
     // Debug functions
     mlir::LLVM::LLVMFuncOp getOrCreateDbgPrint(mlir::OpBuilder &builder) const;
     mlir::LLVM::LLVMFuncOp getOrCreateDbgPrintInt(mlir::OpBuilder &builder) const;
@@ -377,11 +377,8 @@ void emitSafepointMarker(
     const EcoRuntime &runtime,
     mlir::ValueRange liveRoots);
 
-/// Emit __eco_safepoint_marker in a wrapper function body.
-/// Unlike emitSafepointMarker, this takes OpBuilder & and Location directly
-/// (no source Operation* needed), making it suitable for use inside
-/// getOrCreateWrapper where we build a new function body.
-/// liveRoots: i64 SSA values representing HPointers that must survive GC.
+/// No-op stub (RS4GC handles safepoint insertion automatically).
+/// Retained for API compatibility with existing call sites.
 void emitWrapperSafepointMarker(
     mlir::OpBuilder &builder,
     const EcoRuntime &runtime,

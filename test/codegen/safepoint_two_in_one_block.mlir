@@ -1,21 +1,18 @@
 // RUN: %ecoc %s -emit=llvm 2>&1 | %FileCheck %s
 //
-// Test two safepoints in a single basic block. Each wraps
-// __eco_safepoint_poll. The second statepoint uses the relocated
-// value from the first statepoint.
+// Test that RS4GC wraps multiple non-leaf calls in a single basic
+// block, each getting its own gc.statepoint. The second statepoint
+// uses the relocated value from the first.
 //
 // CHECK: @llvm.experimental.gc.statepoint.p0
-// CHECK: __eco_safepoint_poll
 // CHECK: @llvm.experimental.gc.statepoint.p0
-// CHECK: __eco_safepoint_poll
 
 module {
   func.func @test_two_safepoints(%a: !eco.value) -> !eco.value {
-    // First safepoint wraps first call to @foo
+    // eco.safepoint ops are no-ops under RS4GC
     eco.safepoint %a : !eco.value
     %r1 = "eco.call"(%a) <{_operand_types = [!eco.value], callee = @foo}> : (!eco.value) -> !eco.value
 
-    // Second safepoint wraps second call to @foo
     eco.safepoint %a, %r1 : !eco.value, !eco.value
     %r2 = "eco.call"(%r1) <{_operand_types = [!eco.value], callee = @foo}> : (!eco.value) -> !eco.value
 

@@ -297,10 +297,6 @@ static llvm::orc::SymbolMap buildRuntimeSymbolMap(
             llvm::orc::ExecutorSymbolDef(
                 llvm::orc::ExecutorAddr::fromPtr(&eco_safepoint),
                 llvm::JITSymbolFlags::Exported);
-        symbolMap[interner("__eco_safepoint_poll")] =
-            llvm::orc::ExecutorSymbolDef(
-                llvm::orc::ExecutorAddr::fromPtr(&__eco_safepoint_poll),
-                llvm::JITSymbolFlags::Exported);
         symbolMap[interner("eco_minor_gc")] =
             llvm::orc::ExecutorSymbolDef(
                 llvm::orc::ExecutorAddr::fromPtr(&eco_minor_gc),

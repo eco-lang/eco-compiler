@@ -217,8 +217,8 @@ add_mlir_library(EcoPasses
     Passes/EcoToLLVMGlobals.cpp
     Passes/EcoToLLVMErrorDebug.cpp
     Passes/EcoToLLVMFunc.cpp
-    # Post-MLIR LLVM IR passes
-    Passes/StatepointConversion.cpp
+    # GC strategy registration + post-MLIR LLVM IR passes
+    Passes/EcoGCStrategy.cpp
     # BF (ByteFusion) dialect lowering
     Passes/BFToLLVM.cpp
 

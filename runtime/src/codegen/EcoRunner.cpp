@@ -48,8 +48,16 @@ extern "C" __attribute__((weak)) void Eco_Kernel_register_all_gc_roots();
 #include "Passes.h"
 #include "EcoPipeline.h"
 #include "RuntimeSymbols.h"
-#include "Passes/StatepointConversion.h"
 #include "EcoJIT.h"
+
+#include "llvm/Transforms/Scalar/RewriteStatepointsForGC.h"
+#include "llvm/Passes/PassBuilder.h"
+#include "llvm/Analysis/TargetLibraryInfo.h"
+
+namespace eco { void linkEcoGCStrategy(); }
+static struct EcoGCStrategyLinker {
+    EcoGCStrategyLinker() { eco::linkEcoGCStrategy(); }
+} ecoGCStrategyLinker;
 #include "../allocator/StackMap.hpp"
 
 #include "../allocator/RuntimeExports.h"
@@ -186,12 +194,24 @@ private:
             ? makeOptimizingTransformer(3, 0, nullptr)
             : makeOptimizingTransformer(0, 0, nullptr);
         jitOptions.transformer = [baseTransformer](llvm::Module *m) -> llvm::Error {
-            eco::convertSafepointMarkers(*m);
-            assert(!m->getFunction("__eco_safepoint_marker") &&
-                   "All safepoint markers must be converted to statepoints");
+            // Run RS4GC: inserts gc.statepoint/gc.relocate for all
+            // GC-triggering calls in functions with gc "eco-gc".
+            llvm::LoopAnalysisManager LAM;
+            llvm::FunctionAnalysisManager FAM;
+            llvm::CGSCCAnalysisManager CGAM;
+            llvm::ModuleAnalysisManager MAM;
+            llvm::PassBuilder PB;
+            PB.registerModuleAnalyses(MAM);
+            PB.registerCGSCCAnalyses(CGAM);
+            PB.registerFunctionAnalyses(FAM);
+            PB.registerLoopAnalyses(LAM);
+            PB.crossRegisterProxies(LAM, FAM, CGAM, MAM);
+            llvm::ModulePassManager MPM;
+            MPM.addPass(llvm::RewriteStatepointsForGC());
+            MPM.run(*m, MAM);
+
             auto err = baseTransformer(m);
             if (err) return err;
-            eco::removeDeadGCRelocates(*m);
             return llvm::Error::success();
         };
 

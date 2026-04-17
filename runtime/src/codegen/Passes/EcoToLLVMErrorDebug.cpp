@@ -30,27 +30,6 @@ namespace {
 //   5. All downstream uses of the original value are replaced
 //===----------------------------------------------------------------------===//
 
-/// Get or create the __eco_safepoint_poll function declaration.
-/// This is the statepoint target: StatepointConversion wraps this call
-/// in gc.statepoint with the gc-live bundle from the preceding marker.
-static LLVM::LLVMFuncOp getOrCreateSafepointPoll(
-    const EcoRuntime &runtime, OpBuilder &builder) {
-    auto name = "__eco_safepoint_poll";
-    if (auto func = runtime.lookupSymbol<LLVM::LLVMFuncOp>(name))
-        return func;
-
-    auto *ctx = builder.getContext();
-    auto voidTy = LLVM::LLVMVoidType::get(ctx);
-    auto funcTy = LLVM::LLVMFunctionType::get(voidTy, {}, /*isVarArg=*/false);
-
-    OpBuilder::InsertionGuard guard(builder);
-    builder.setInsertionPointToStart(runtime.module.getBody());
-    auto func = builder.create<LLVM::LLVMFuncOp>(
-        runtime.module.getLoc(), name, funcTy);
-    runtime.cacheSymbol(func);
-    return func;
-}
-
 struct SafepointOpLowering : public OpConversionPattern<SafepointOp> {
     const EcoRuntime &runtime;
 
@@ -61,56 +40,7 @@ struct SafepointOpLowering : public OpConversionPattern<SafepointOp> {
     LogicalResult
     matchAndRewrite(SafepointOp op, OpAdaptor adaptor,
                     ConversionPatternRewriter &rewriter) const override {
-        auto loc = op.getLoc();
-        auto *ctx = rewriter.getContext();
-        auto liveValues = adaptor.getLiveRoots(); // Already converted to i64
-
-        if (liveValues.empty()) {
-            rewriter.eraseOp(op);
-            return success();
-        }
-
-        auto gcPtrTy = LLVM::LLVMPointerType::get(ctx, /*addressSpace=*/1);
-
-        // Live values are now ptr<1> from the type converter.
-        // Pass directly; convert any remaining i64 for backwards compat.
-        SmallVector<Value, 4> gcPtrs;
-        for (auto val : liveValues) {
-            if (isHPtrLLVMType(val.getType())) {
-                gcPtrs.push_back(val);
-            } else {
-                auto ptr = rewriter.create<LLVM::IntToPtrOp>(loc, gcPtrTy, val);
-                gcPtrs.push_back(ptr);
-            }
-        }
-
-        // Emit call to __eco_safepoint_marker with GC root pointers.
-        // StatepointConversion pass converts this to gc.statepoint after
-        // MLIR→LLVM IR translation.
-        runtime.getOrCreateSafepointMarker(rewriter);
-
-        auto voidTy = LLVM::LLVMVoidType::get(ctx);
-        auto markerFuncTy = LLVM::LLVMFunctionType::get(
-            voidTy, {}, /*isVarArg=*/true);
-
-        rewriter.create<LLVM::CallOp>(
-            loc, markerFuncTy,
-            FlatSymbolRefAttr::get(ctx, "__eco_safepoint_marker"),
-            gcPtrs);
-
-        // Emit call to __eco_safepoint_poll immediately after the marker.
-        // This is the statepoint target: StatepointConversion wraps this
-        // call in gc.statepoint with the gc-live bundle.
-        getOrCreateSafepointPoll(runtime, rewriter);
-
-        auto pollFuncTy = LLVM::LLVMFunctionType::get(
-            voidTy, {}, /*isVarArg=*/false);
-
-        rewriter.create<LLVM::CallOp>(
-            loc, pollFuncTy,
-            FlatSymbolRefAttr::get(ctx, "__eco_safepoint_poll"),
-            ValueRange{});
-
+        // RS4GC handles safepoint insertion automatically — just erase the op.
         rewriter.eraseOp(op);
         return success();
     }
