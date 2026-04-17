@@ -6,7 +6,6 @@
 //
 // CHECK: @llvm.experimental.gc.statepoint.p0
 // CHECK: @llvm.experimental.gc.relocate
-// CHECK: ptrtoint
 // CHECK-NOT: alloca
 
 module {

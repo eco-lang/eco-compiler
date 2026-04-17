@@ -26,9 +26,12 @@ module {
     %b1 = llvm.load %p1 : !llvm.ptr -> i64
     %b2 = llvm.load %p2 : !llvm.ptr -> i64
 
-    %ptr0 = llvm.call @eco_resolve_hptr(%b0) : (i64) -> !llvm.ptr
-    %ptr1 = llvm.call @eco_resolve_hptr(%b1) : (i64) -> !llvm.ptr
-    %ptr2 = llvm.call @eco_resolve_hptr(%b2) : (i64) -> !llvm.ptr
+    %b0_as_ptr1 = llvm.inttoptr %b0 : i64 to !llvm.ptr<1>
+    %ptr0 = llvm.call @eco_resolve_hptr(%b0_as_ptr1) : (!llvm.ptr<1>) -> !llvm.ptr
+    %b1_as_ptr1 = llvm.inttoptr %b1 : i64 to !llvm.ptr<1>
+    %ptr1 = llvm.call @eco_resolve_hptr(%b1_as_ptr1) : (!llvm.ptr<1>) -> !llvm.ptr
+    %b2_as_ptr1 = llvm.inttoptr %b2 : i64 to !llvm.ptr<1>
+    %ptr2 = llvm.call @eco_resolve_hptr(%b2_as_ptr1) : (!llvm.ptr<1>) -> !llvm.ptr
 
     %vp0 = llvm.getelementptr %ptr0[%c8] : (!llvm.ptr, i64) -> !llvm.ptr, i8
     %vp1 = llvm.getelementptr %ptr1[%c8] : (!llvm.ptr, i64) -> !llvm.ptr, i8
@@ -41,12 +44,13 @@ module {
     %s1 = llvm.add %v0, %v1 : i64
     %sum = llvm.add %s1, %v2 : i64
 
-    %result = llvm.call @eco_alloc_int(%sum) : (i64) -> i64
+    %result_ptr1 = llvm.call @eco_alloc_int(%sum) : (i64) -> !llvm.ptr<1>
+    %result = llvm.ptrtoint %result_ptr1 : !llvm.ptr<1> to i64
     llvm.return %result : i64
   }
 
-  llvm.func @eco_alloc_int(i64) -> i64
-  llvm.func @eco_resolve_hptr(i64) -> !llvm.ptr
+  llvm.func @eco_alloc_int(i64) -> !llvm.ptr<1>
+  llvm.func @eco_resolve_hptr(!llvm.ptr<1>) -> !llvm.ptr
 
   func.func @main() -> i64 {
     %c1 = arith.constant 1 : i64

@@ -34,12 +34,18 @@ module {
     %a5_i64 = llvm.load %ptr5 : !llvm.ptr -> i64
 
     // Unbox each
-    %p0 = llvm.call @eco_resolve_hptr(%a0_i64) : (i64) -> !llvm.ptr
-    %p1 = llvm.call @eco_resolve_hptr(%a1_i64) : (i64) -> !llvm.ptr
-    %p2 = llvm.call @eco_resolve_hptr(%a2_i64) : (i64) -> !llvm.ptr
-    %p3 = llvm.call @eco_resolve_hptr(%a3_i64) : (i64) -> !llvm.ptr
-    %p4 = llvm.call @eco_resolve_hptr(%a4_i64) : (i64) -> !llvm.ptr
-    %p5 = llvm.call @eco_resolve_hptr(%a5_i64) : (i64) -> !llvm.ptr
+    %a0_i64_as_ptr1 = llvm.inttoptr %a0_i64 : i64 to !llvm.ptr<1>
+    %p0 = llvm.call @eco_resolve_hptr(%a0_i64_as_ptr1) : (!llvm.ptr<1>) -> !llvm.ptr
+    %a1_i64_as_ptr1 = llvm.inttoptr %a1_i64 : i64 to !llvm.ptr<1>
+    %p1 = llvm.call @eco_resolve_hptr(%a1_i64_as_ptr1) : (!llvm.ptr<1>) -> !llvm.ptr
+    %a2_i64_as_ptr1 = llvm.inttoptr %a2_i64 : i64 to !llvm.ptr<1>
+    %p2 = llvm.call @eco_resolve_hptr(%a2_i64_as_ptr1) : (!llvm.ptr<1>) -> !llvm.ptr
+    %a3_i64_as_ptr1 = llvm.inttoptr %a3_i64 : i64 to !llvm.ptr<1>
+    %p3 = llvm.call @eco_resolve_hptr(%a3_i64_as_ptr1) : (!llvm.ptr<1>) -> !llvm.ptr
+    %a4_i64_as_ptr1 = llvm.inttoptr %a4_i64 : i64 to !llvm.ptr<1>
+    %p4 = llvm.call @eco_resolve_hptr(%a4_i64_as_ptr1) : (!llvm.ptr<1>) -> !llvm.ptr
+    %a5_i64_as_ptr1 = llvm.inttoptr %a5_i64 : i64 to !llvm.ptr<1>
+    %p5 = llvm.call @eco_resolve_hptr(%a5_i64_as_ptr1) : (!llvm.ptr<1>) -> !llvm.ptr
 
     %vp0 = llvm.getelementptr %p0[%c8] : (!llvm.ptr, i64) -> !llvm.ptr, i8
     %vp1 = llvm.getelementptr %p1[%c8] : (!llvm.ptr, i64) -> !llvm.ptr, i8
@@ -62,12 +68,13 @@ module {
     %s4 = llvm.add %s3, %v4 : i64
     %s5 = llvm.add %s4, %v5 : i64
 
-    %result = llvm.call @eco_alloc_int(%s5) : (i64) -> i64
+    %result_ptr1 = llvm.call @eco_alloc_int(%s5) : (i64) -> !llvm.ptr<1>
+    %result = llvm.ptrtoint %result_ptr1 : !llvm.ptr<1> to i64
     llvm.return %result : i64
   }
 
-  llvm.func @eco_alloc_int(i64) -> i64
-  llvm.func @eco_resolve_hptr(i64) -> !llvm.ptr
+  llvm.func @eco_alloc_int(i64) -> !llvm.ptr<1>
+  llvm.func @eco_resolve_hptr(!llvm.ptr<1>) -> !llvm.ptr
 
   func.func @main() -> i64 {
     // Create boxed integers 1-6

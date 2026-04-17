@@ -20,8 +20,10 @@ module {
     %b_i64 = llvm.load %ptr1 : !llvm.ptr -> i64
 
     // Unbox
-    %a_ptr = llvm.call @eco_resolve_hptr(%a_i64) : (i64) -> !llvm.ptr
-    %b_ptr = llvm.call @eco_resolve_hptr(%b_i64) : (i64) -> !llvm.ptr
+    %a_i64_as_ptr1 = llvm.inttoptr %a_i64 : i64 to !llvm.ptr<1>
+    %a_ptr = llvm.call @eco_resolve_hptr(%a_i64_as_ptr1) : (!llvm.ptr<1>) -> !llvm.ptr
+    %b_i64_as_ptr1 = llvm.inttoptr %b_i64 : i64 to !llvm.ptr<1>
+    %b_ptr = llvm.call @eco_resolve_hptr(%b_i64_as_ptr1) : (!llvm.ptr<1>) -> !llvm.ptr
     %a_val_ptr = llvm.getelementptr %a_ptr[%c8] : (!llvm.ptr, i64) -> !llvm.ptr, i8
     %b_val_ptr = llvm.getelementptr %b_ptr[%c8] : (!llvm.ptr, i64) -> !llvm.ptr, i8
     %a = llvm.load %a_val_ptr : !llvm.ptr -> i64
@@ -29,12 +31,13 @@ module {
 
     // Add
     %sum = llvm.add %a, %b : i64
-    %result = llvm.call @eco_alloc_int(%sum) : (i64) -> i64
+    %result_ptr1 = llvm.call @eco_alloc_int(%sum) : (i64) -> !llvm.ptr<1>
+    %result = llvm.ptrtoint %result_ptr1 : !llvm.ptr<1> to i64
     llvm.return %result : i64
   }
 
-  llvm.func @eco_alloc_int(i64) -> i64
-  llvm.func @eco_resolve_hptr(i64) -> !llvm.ptr
+  llvm.func @eco_alloc_int(i64) -> !llvm.ptr<1>
+  llvm.func @eco_resolve_hptr(!llvm.ptr<1>) -> !llvm.ptr
 
   func.func @main() -> i64 {
     // Create closure for add function

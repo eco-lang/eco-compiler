@@ -16,8 +16,10 @@ module {
     %v0_i64 = llvm.load %ptr0 : !llvm.ptr -> i64
     %v1_i64 = llvm.load %ptr1 : !llvm.ptr -> i64
 
-    %v0_ptr = llvm.call @eco_resolve_hptr(%v0_i64) : (i64) -> !llvm.ptr
-    %v1_ptr = llvm.call @eco_resolve_hptr(%v1_i64) : (i64) -> !llvm.ptr
+    %v0_i64_as_ptr1 = llvm.inttoptr %v0_i64 : i64 to !llvm.ptr<1>
+    %v0_ptr = llvm.call @eco_resolve_hptr(%v0_i64_as_ptr1) : (!llvm.ptr<1>) -> !llvm.ptr
+    %v1_i64_as_ptr1 = llvm.inttoptr %v1_i64 : i64 to !llvm.ptr<1>
+    %v1_ptr = llvm.call @eco_resolve_hptr(%v1_i64_as_ptr1) : (!llvm.ptr<1>) -> !llvm.ptr
 
     %val0_ptr = llvm.getelementptr %v0_ptr[%c8] : (!llvm.ptr, i64) -> !llvm.ptr, i8
     %val1_ptr = llvm.getelementptr %v1_ptr[%c8] : (!llvm.ptr, i64) -> !llvm.ptr, i8
@@ -27,12 +29,13 @@ module {
 
     %product = llvm.mul %a, %b : i64
 
-    %boxed = llvm.call @eco_alloc_int(%product) : (i64) -> i64
+    %boxed_ptr1 = llvm.call @eco_alloc_int(%product) : (i64) -> !llvm.ptr<1>
+    %boxed = llvm.ptrtoint %boxed_ptr1 : !llvm.ptr<1> to i64
     llvm.return %boxed : i64
   }
 
-  llvm.func @eco_alloc_int(i64) -> i64
-  llvm.func @eco_resolve_hptr(i64) -> !llvm.ptr
+  llvm.func @eco_alloc_int(i64) -> !llvm.ptr<1>
+  llvm.func @eco_resolve_hptr(!llvm.ptr<1>) -> !llvm.ptr
 
   func.func @main() -> i64 {
     %c7 = arith.constant 7 : i64

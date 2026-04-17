@@ -9,6 +9,7 @@
 #ifndef ECO_GC_LIVENESS_H
 #define ECO_GC_LIVENESS_H
 
+#include "../EcoOps.h"
 #include "../EcoTypes.h"
 #include "mlir/Analysis/Liveness.h"
 #include "mlir/IR/Value.h"
@@ -37,6 +38,9 @@ computeLiveRoots(mlir::Liveness &liveness, mlir::Operation *targetOp) {
 
     auto consider = [&](mlir::Value v) {
         if (!isEcoValue(v)) return;
+        // Skip embedded constants — they are not heap objects (HEAP_014)
+        // and never need GC relocation.
+        if (v.getDefiningOp<eco::ConstantOp>()) return;
         if (!seen.insert(v).second) return;
         if (!liveness.isDeadAfter(v, targetOp))
             roots.push_back(v);

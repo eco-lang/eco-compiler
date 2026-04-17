@@ -248,7 +248,8 @@ private:
             {
                 llvm::DenseSet<Value> already(liveRoots.begin(), liveRoots.end());
                 for (Value v : group.front()->getOperands()) {
-                    if (isEcoValue(v) && already.insert(v).second)
+                    if (isEcoValue(v) && !v.getDefiningOp<eco::ConstantOp>() &&
+                        already.insert(v).second)
                         liveRoots.push_back(v);
                 }
             }
@@ -304,7 +305,8 @@ private:
 
             llvm::DenseSet<Value> already(liveRoots.begin(), liveRoots.end());
             for (Value v : safepointOp.getLiveRoots()) {
-                if (isEcoValue(v) && already.insert(v).second)
+                if (isEcoValue(v) && !v.getDefiningOp<eco::ConstantOp>() &&
+                    already.insert(v).second)
                     liveRoots.push_back(v);
             }
 
@@ -339,9 +341,11 @@ private:
             SmallVector<Value, 8> liveRoots = computeLiveRoots(liveness, &op);
 
             // Union with the op's own !eco.value operands.
+            // Skip embedded constants — not heap objects, don't need GC tracking.
             llvm::DenseSet<Value> already(liveRoots.begin(), liveRoots.end());
             for (Value v : op.getOperands()) {
-                if (isEcoValue(v) && already.insert(v).second)
+                if (isEcoValue(v) && !v.getDefiningOp<eco::ConstantOp>() &&
+                    already.insert(v).second)
                     liveRoots.push_back(v);
             }
 

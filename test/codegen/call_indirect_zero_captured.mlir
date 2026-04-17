@@ -14,7 +14,8 @@ module {
     %box_i64 = llvm.load %ptr0 : !llvm.ptr -> i64
 
     // Unbox
-    %box_ptr = llvm.call @eco_resolve_hptr(%box_i64) : (i64) -> !llvm.ptr
+    %box_i64_as_ptr1 = llvm.inttoptr %box_i64 : i64 to !llvm.ptr<1>
+    %box_ptr = llvm.call @eco_resolve_hptr(%box_i64_as_ptr1) : (!llvm.ptr<1>) -> !llvm.ptr
     %val_ptr = llvm.getelementptr %box_ptr[%c8] : (!llvm.ptr, i64) -> !llvm.ptr, i8
     %val = llvm.load %val_ptr : !llvm.ptr -> i64
 
@@ -23,12 +24,13 @@ module {
     %doubled = llvm.mul %val, %c2 : i64
 
     // Box result
-    %result = llvm.call @eco_alloc_int(%doubled) : (i64) -> i64
+    %result_ptr1 = llvm.call @eco_alloc_int(%doubled) : (i64) -> !llvm.ptr<1>
+    %result = llvm.ptrtoint %result_ptr1 : !llvm.ptr<1> to i64
     llvm.return %result : i64
   }
 
-  llvm.func @eco_alloc_int(i64) -> i64
-  llvm.func @eco_resolve_hptr(i64) -> !llvm.ptr
+  llvm.func @eco_alloc_int(i64) -> !llvm.ptr<1>
+  llvm.func @eco_resolve_hptr(!llvm.ptr<1>) -> !llvm.ptr
 
   func.func @main() -> i64 {
     // Create closure with 0 captured values

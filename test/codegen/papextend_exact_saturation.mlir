@@ -20,9 +20,12 @@ module {
     %v2_i64 = llvm.load %ptr2 : !llvm.ptr -> i64
 
     // Unbox all three
-    %v0_ptr = llvm.call @eco_resolve_hptr(%v0_i64) : (i64) -> !llvm.ptr
-    %v1_ptr = llvm.call @eco_resolve_hptr(%v1_i64) : (i64) -> !llvm.ptr
-    %v2_ptr = llvm.call @eco_resolve_hptr(%v2_i64) : (i64) -> !llvm.ptr
+    %v0_i64_as_ptr1 = llvm.inttoptr %v0_i64 : i64 to !llvm.ptr<1>
+    %v0_ptr = llvm.call @eco_resolve_hptr(%v0_i64_as_ptr1) : (!llvm.ptr<1>) -> !llvm.ptr
+    %v1_i64_as_ptr1 = llvm.inttoptr %v1_i64 : i64 to !llvm.ptr<1>
+    %v1_ptr = llvm.call @eco_resolve_hptr(%v1_i64_as_ptr1) : (!llvm.ptr<1>) -> !llvm.ptr
+    %v2_i64_as_ptr1 = llvm.inttoptr %v2_i64 : i64 to !llvm.ptr<1>
+    %v2_ptr = llvm.call @eco_resolve_hptr(%v2_i64_as_ptr1) : (!llvm.ptr<1>) -> !llvm.ptr
 
     %c8 = llvm.mlir.constant(8 : i64) : i64
     %val0_ptr = llvm.getelementptr %v0_ptr[%c8] : (!llvm.ptr, i64) -> !llvm.ptr, i8
@@ -38,12 +41,13 @@ module {
     %sum = llvm.add %ab, %c : i64
 
     // Box result
-    %boxed = llvm.call @eco_alloc_int(%sum) : (i64) -> i64
+    %boxed_ptr1 = llvm.call @eco_alloc_int(%sum) : (i64) -> !llvm.ptr<1>
+    %boxed = llvm.ptrtoint %boxed_ptr1 : !llvm.ptr<1> to i64
     llvm.return %boxed : i64
   }
 
-  llvm.func @eco_alloc_int(i64) -> i64
-  llvm.func @eco_resolve_hptr(i64) -> !llvm.ptr
+  llvm.func @eco_alloc_int(i64) -> !llvm.ptr<1>
+  llvm.func @eco_resolve_hptr(!llvm.ptr<1>) -> !llvm.ptr
 
   func.func @main() -> i64 {
     %c10 = arith.constant 10 : i64

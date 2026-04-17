@@ -4,9 +4,10 @@
 - **elm-test**: 11667 passed, 1 failed
 - **E2E**: 923 passed, 16 failed
 
-## Current (2026-03-23)
-- **elm-test**: 11667 passed, 1 failed
-- **E2E**: 927 passed, 16 failed (was 925/18 before Category 6 fix)
+## Current (2026-04-17, ptr<1> migration in progress)
+- **elm-test**: 12664 passed, 0 failed (unaffected by backend changes)
+- **E2E (codegen only)**: 312 passed, 1 failed out of 313 (1 pre-existing)
+- **E2E (full)**: not yet measured post-fix
 
 ## Fix Order (by root cause, earliest compiler phase first)
 
@@ -20,6 +21,12 @@
 | 6 | Branch operand mismatch in cf.SwitchOp | CaseSharedBranchTest, CaseReturningLambdaTest, LargeDispatchCaseTest, NestedCaseReturnTest | CaseOpLowering uses mergeBlock as SwitchOp default with 0 operands, but mergeBlock expects 1 | FIXED (2/4 tests pass; 2 have deeper pre-existing bugs) |
 | 7 | scf.while do-region has multiple blocks | TailRecCaseMultiBranchTypesTest, TailRecDecoderLoopTest, TailRecMultiCaseWhileTest, TailRecTypeTraversalTest | Elm compiler emits scf.while with nested string eco.case in do-region | SKIPPED (3 attempts) |
 | 8 | Unmasked: closure arity + SIGSEGV | CaseReturningLambdaTest (closure_call_saturated), LargeDispatchCaseTest (SIGSEGV) | Previously masked by Category 6 branch bug; now reveal deeper combinator/staging bugs | SKIPPED (same root causes as Cat 4/5) |
+| 9 | ptr<1>: Embedded constants as GC roots → undef | construct_constants +14 others | EcoGCPrepare treated embedded constants as GC roots; PromoteMemToReg introduced `undef` → gc.relocate produced garbage 0xfefefefe | FIXED |
+| 10 | ptr<1>: Closure wrapper returns `<fn>` | pap_basic +14 others | Codegen .mlir tests had hardcoded `i64` runtime function declarations instead of `ptr<1>` | FIXED |
+| 11 | ptr<1>: Closure numeric wrong output | allocate_closure_funcptr +9 others | Same as Cat 10 — hardcoded i64 signatures in test MLIR | FIXED |
+| 12 | ptr<1>: Statepoint CHECK pattern | safepoint_loop_gc_relocate | Test expected `ptrtoint` which is no longer emitted with ptr<1> roots | FIXED (removed CHECK: ptrtoint) |
+| 13 | BF bf_alloc_large pre-existing | bf_alloc_large | Pre-existing baseline failure — 64KB allocation returns 0; not caused by ptr<1> migration | PRE-EXISTING |
+| 14 | ptr<1>: C++ HPtr conversion regressions | ~31 E2E tests (elm-bytes/DecodeMap*, elm-json/RoundTrip*, elm/TailRec*, elm/Equality*, etc.) | One or more kernel .cpp files incorrectly converted to HPtr — all crash with `raw=0xfefefefe` | OPEN |
 
 ---
 
@@ -142,6 +149,138 @@ at the end. The `eco.case` inside `scf.while` creates a circular dependency:
 loop body contains a string case, emit `eco.joinpoint` + `eco.jump` instead of `scf.while`.
 The C++ `EcoControlFlowToSCF` pass will then handle SCF lowering for eligible joinpoints,
 correctly excluding ones with nested string cases.
+
+---
+
+---
+
+## FIXED: Category 9 — Embedded Constants as GC Roots → undef (ptr<1> migration)
+
+**Tests**: 15 codegen tests — all now pass.
+
+**Fix**: Skip `eco::ConstantOp` results in three places in EcoGCPrepare.cpp where live roots are collected:
+1. `computeLiveRoots()` in EcoGCLiveness.h — the `consider` lambda
+2. Alloc-group leader union (line ~250)
+3. Call safepoint union (line ~344)
+4. Safepoint op union (line ~307)
+
+Also updated `codegen/safepoint_statepoint_emission.mlir` to use a heap-allocated value instead of embedded constants as the test root.
+
+**Files**: `EcoGCLiveness.h`, `EcoGCPrepare.cpp`, `safepoint_statepoint_emission.mlir`
+
+---
+
+## OPEN: Category 10 — Closure Wrapper Returns `<fn>` (ptr<1> migration)
+
+**Tests**: 15 codegen tests (all pap_* and allocate_closure_* and call_indirect_* and closure_recursive)
+
+**Error**: Tests expect a numeric result but print `<fn>` (the debug representation of an unevaluated closure)
+
+### Root Cause
+
+The closure calling chain involves:
+1. `eco_pap_extend(HPtr closure, uint64_t* args, ...)` → returns new PAP as HPtr
+2. When saturated, `eco_closure_call_saturated(HPtr closure, uint64_t* args, ...)` → calls evaluator → returns result HPtr
+3. The `getOrCreateWrapper` in EcoToLLVMClosures.cpp creates wrapper functions that:
+   - Load i64 args from the void** array
+   - Convert eco.value args to ptr<1> via `i64ToValue`
+   - Call the target Elm function
+   - Convert ptr<1> result to ptr (AS0) for the runtime via `hptrToPtr`
+
+The `<fn>` output means the closure HPtr (the closure OBJECT) is being returned to the caller instead of the closure's COMPUTED RESULT. This indicates the dispatch path is either:
+- Not calling the evaluator at all (returning the PAP directly)
+- Calling but losing the result somewhere in the ptr<1>→ptr conversion chain
+
+### Debugging Approach
+
+1. Pick `codegen/pap_basic.mlir`. Dump LLVM IR with `ecoc -emit=llvm`.
+2. Find the `eco_closure_call_saturated` call and trace its return value through the wrapper.
+3. Instrument `getOrCreateWrapper` result path: print the target function's return HPtr bits vs the wrapper's final return value.
+4. Check: is the wrapper's result chain `target_result(ptr<1>) → ptrtoint → inttoptr(ptr)` preserving the correct bits?
+5. Check: does the CALLER of the wrapper correctly interpret the `ptr` return as an HPtr value?
+
+### Key Code Locations
+
+- `EcoToLLVMClosures.cpp`: `getOrCreateWrapper` (line ~280), result conversion chain (line ~498)
+- `EcoToLLVMClosures.cpp`: `emitClosureCall` (line ~920), result interpretation (line ~1025)
+- `EcoToLLVMRuntime.cpp`: `eco_closure_call_saturated` declaration (line ~400)
+
+---
+
+## OPEN: Category 11 — Closure Numeric Wrong Output (ptr<1> migration)
+
+**Tests**: 10 codegen tests (allocate_closure_funcptr, call_indirect, call_indirect_closure_only, call_indirect_many_captured, call_indirect_zero_args, closure_higher_order, map_closure, pap_extend_chain_saturate, papextend_exact_saturation, papextend_mixed_unboxed)
+
+**Error**: Tests expect specific numeric values but get different numbers
+
+### Root Cause
+
+Same family as Category 10. These tests reach the point of producing output (unlike Category 10 which gets `<fn>`), but the values are wrong. Likely causes:
+- The args array population in `emitRootedBoxedArgsArray` converts ptr<1> values to i64 for the uint64_t* array. If `valueToI64` truncates or reinterprets bits incorrectly, the arguments seen by the evaluator function are wrong.
+- The wrapper's argument loading (`i64ToValue` converting loaded i64 back to ptr<1>) may lose bits.
+- The result chain from evaluator → wrapper → caller may have an extra indirection or missing conversion.
+
+### Debugging Approach
+
+Same as Category 10 but focus on the ARGUMENT conversion path rather than the result path. Print raw bits at each stage: original ptr<1> → i64 (stored in array) → loaded back → i64ToValue → ptr<1> passed to callee.
+
+---
+
+## OPEN: Category 12 — Statepoint CHECK Pattern (ptr<1> migration)
+
+**Test**: codegen/safepoint_loop_gc_relocate.mlir
+
+**Error**: `Missing pattern: ptrtoint`
+
+### Root Cause
+
+The test's `// CHECK: ptrtoint` expects the old pattern where gc.relocate results (ptr<1>) were converted to i64 via `CreatePtrToInt` before storing into allocas. With ptr<1>-typed roots, allocas are `ptr<1>` and gc.relocate results are stored directly — no ptrtoint.
+
+### Fix
+
+Update the test's CHECK lines to match the new IR shape. Replace `CHECK: ptrtoint` with appropriate patterns (e.g., `CHECK: store ptr addrspace(1)` or `CHECK: gc.relocate`).
+
+---
+
+## OPEN: Category 13 — BF Dialect Not Migrated (ptr<1> migration)
+
+**Test**: codegen-bf/bf_alloc_large.mlir
+
+**Error**: `Missing pattern: 1`
+
+### Root Cause
+
+BFTypeConverter still maps `eco.value → i64` (reverted during migration). The BF test uses raw `i64` types in its MLIR. With runtime functions now expecting HPtr (ptr<1>) on the C++ side, the i64 values don't match.
+
+### Fix
+
+1. Change BFTypeConverter to map `eco.value → ptr<1>` using `getHPtrLLVMType`
+2. Change BF runtime function declarations to use `ptr<1>` for Elm values
+3. Update BF .mlir tests to use `!eco.value` instead of raw `i64` for heap values
+4. Add `valueToI64`/`i64ToValue` at BF heap slot boundaries
+
+---
+
+## OPEN: Category 14 — C++ HPtr Conversion Regressions (ptr<1> migration)
+
+**Tests**: ~31 E2E tests that passed before the C++ HPtr changes but now crash
+
+**Error**: All crash with `resolve() bad HPointer: raw=0xfefefefe`
+
+### Root Cause
+
+During the HPtr migration, ~30 kernel .cpp files and RuntimeExports.cpp were updated by agents to change function signatures from `uint64_t` to `HPtr` and add `.toBits()`/`HPtr::fromBits()` at boundaries. One or more files have incorrect conversions — likely a function that reads HPtr.bits incorrectly or passes the wrong variable.
+
+The `0xfefefefe` pattern (32-bit debug fill) appears in ALL crashes, suggesting a systematic issue rather than individual per-file bugs. Possible causes:
+- A helper function (e.g., in ExportHelpers.hpp or a closure-calling helper) still expects uint64_t but receives HPtr
+- A GC root rooting call (`eco_gc_push_stack_range`) passes an `HPtr*` instead of `uint64_t*`
+- An internal function stores HPtr into a uint64_t array without `.toBits()`
+
+### Debugging Approach
+
+1. Binary search: revert half the kernel .cpp changes and re-test to narrow which file(s) introduce the bug
+2. Check all `eco_gc_push_stack_range` calls — they take `uint64_t*` but if someone passes `&hptr_var` (HPtr*) the GC would read struct bytes as raw uint64_t
+3. Check all internal helper functions (callUnaryClosure, callBinaryClosure, etc.) that bridge between HPtr and uint64_t* arrays
 
 ---
 

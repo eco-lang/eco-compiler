@@ -19,12 +19,14 @@ module {
     %b_i64 = llvm.load %ptr1 : !llvm.ptr -> i64
 
     // Unbox: values are boxed ElmInt HPointers, resolve to raw pointer then load value field at offset 8
-    %a_ptr = llvm.call @eco_resolve_hptr(%a_i64) : (i64) -> !llvm.ptr
+    %a_i64_as_ptr1 = llvm.inttoptr %a_i64 : i64 to !llvm.ptr<1>
+    %a_ptr = llvm.call @eco_resolve_hptr(%a_i64_as_ptr1) : (!llvm.ptr<1>) -> !llvm.ptr
     %c8 = llvm.mlir.constant(8 : i64) : i64
     %a_val_ptr = llvm.getelementptr %a_ptr[%c8] : (!llvm.ptr, i64) -> !llvm.ptr, i8
     %a = llvm.load %a_val_ptr : !llvm.ptr -> i64
 
-    %b_ptr = llvm.call @eco_resolve_hptr(%b_i64) : (i64) -> !llvm.ptr
+    %b_i64_as_ptr1 = llvm.inttoptr %b_i64 : i64 to !llvm.ptr<1>
+    %b_ptr = llvm.call @eco_resolve_hptr(%b_i64_as_ptr1) : (!llvm.ptr<1>) -> !llvm.ptr
     %b_val_ptr = llvm.getelementptr %b_ptr[%c8] : (!llvm.ptr, i64) -> !llvm.ptr, i8
     %b = llvm.load %b_val_ptr : !llvm.ptr -> i64
 
@@ -32,13 +34,14 @@ module {
     %sum = llvm.add %a, %b : i64
 
     // Box the result by calling eco_alloc_int
-    %result = llvm.call @eco_alloc_int(%sum) : (i64) -> i64
+    %result_ptr1 = llvm.call @eco_alloc_int(%sum) : (i64) -> !llvm.ptr<1>
+    %result = llvm.ptrtoint %result_ptr1 : !llvm.ptr<1> to i64
 
     llvm.return %result : i64
   }
 
-  llvm.func @eco_alloc_int(i64) -> i64
-  llvm.func @eco_resolve_hptr(i64) -> !llvm.ptr
+  llvm.func @eco_alloc_int(i64) -> !llvm.ptr<1>
+  llvm.func @eco_resolve_hptr(!llvm.ptr<1>) -> !llvm.ptr
 
   func.func @main() -> i64 {
     // Create boxed integers

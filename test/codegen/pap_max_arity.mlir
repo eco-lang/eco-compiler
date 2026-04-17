@@ -40,14 +40,22 @@ module {
     %b7 = llvm.load %p7 : !llvm.ptr -> i64
 
     // Convert to pointers and get value (offset 8 for ElmInt)
-    %ptr0 = llvm.call @eco_resolve_hptr(%b0) : (i64) -> !llvm.ptr
-    %ptr1 = llvm.call @eco_resolve_hptr(%b1) : (i64) -> !llvm.ptr
-    %ptr2 = llvm.call @eco_resolve_hptr(%b2) : (i64) -> !llvm.ptr
-    %ptr3 = llvm.call @eco_resolve_hptr(%b3) : (i64) -> !llvm.ptr
-    %ptr4 = llvm.call @eco_resolve_hptr(%b4) : (i64) -> !llvm.ptr
-    %ptr5 = llvm.call @eco_resolve_hptr(%b5) : (i64) -> !llvm.ptr
-    %ptr6 = llvm.call @eco_resolve_hptr(%b6) : (i64) -> !llvm.ptr
-    %ptr7 = llvm.call @eco_resolve_hptr(%b7) : (i64) -> !llvm.ptr
+    %b0_as_ptr1 = llvm.inttoptr %b0 : i64 to !llvm.ptr<1>
+    %ptr0 = llvm.call @eco_resolve_hptr(%b0_as_ptr1) : (!llvm.ptr<1>) -> !llvm.ptr
+    %b1_as_ptr1 = llvm.inttoptr %b1 : i64 to !llvm.ptr<1>
+    %ptr1 = llvm.call @eco_resolve_hptr(%b1_as_ptr1) : (!llvm.ptr<1>) -> !llvm.ptr
+    %b2_as_ptr1 = llvm.inttoptr %b2 : i64 to !llvm.ptr<1>
+    %ptr2 = llvm.call @eco_resolve_hptr(%b2_as_ptr1) : (!llvm.ptr<1>) -> !llvm.ptr
+    %b3_as_ptr1 = llvm.inttoptr %b3 : i64 to !llvm.ptr<1>
+    %ptr3 = llvm.call @eco_resolve_hptr(%b3_as_ptr1) : (!llvm.ptr<1>) -> !llvm.ptr
+    %b4_as_ptr1 = llvm.inttoptr %b4 : i64 to !llvm.ptr<1>
+    %ptr4 = llvm.call @eco_resolve_hptr(%b4_as_ptr1) : (!llvm.ptr<1>) -> !llvm.ptr
+    %b5_as_ptr1 = llvm.inttoptr %b5 : i64 to !llvm.ptr<1>
+    %ptr5 = llvm.call @eco_resolve_hptr(%b5_as_ptr1) : (!llvm.ptr<1>) -> !llvm.ptr
+    %b6_as_ptr1 = llvm.inttoptr %b6 : i64 to !llvm.ptr<1>
+    %ptr6 = llvm.call @eco_resolve_hptr(%b6_as_ptr1) : (!llvm.ptr<1>) -> !llvm.ptr
+    %b7_as_ptr1 = llvm.inttoptr %b7 : i64 to !llvm.ptr<1>
+    %ptr7 = llvm.call @eco_resolve_hptr(%b7_as_ptr1) : (!llvm.ptr<1>) -> !llvm.ptr
 
     %vp0 = llvm.getelementptr %ptr0[%c8] : (!llvm.ptr, i64) -> !llvm.ptr, i8
     %vp1 = llvm.getelementptr %ptr1[%c8] : (!llvm.ptr, i64) -> !llvm.ptr, i8
@@ -76,12 +84,13 @@ module {
     %s6 = llvm.add %s5, %v6 : i64
     %sum = llvm.add %s6, %v7 : i64
 
-    %result = llvm.call @eco_alloc_int(%sum) : (i64) -> i64
+    %result_ptr1 = llvm.call @eco_alloc_int(%sum) : (i64) -> !llvm.ptr<1>
+    %result = llvm.ptrtoint %result_ptr1 : !llvm.ptr<1> to i64
     llvm.return %result : i64
   }
 
-  llvm.func @eco_alloc_int(i64) -> i64
-  llvm.func @eco_resolve_hptr(i64) -> !llvm.ptr
+  llvm.func @eco_alloc_int(i64) -> !llvm.ptr<1>
+  llvm.func @eco_resolve_hptr(!llvm.ptr<1>) -> !llvm.ptr
 
   func.func @main() -> i64 {
     %c1 = arith.constant 1 : i64
