@@ -302,8 +302,9 @@ Processes in the run queue are stored as encoded `HPointer` values (`RootedProc.
 *(Apr 2026 — GC Safety Fixes)*:
 - **`pushStack` / `mailboxPushBack`**: Now take `HPointer procHP` (not raw `Process*`) and re-resolve the process pointer after allocation calls that may trigger GC, preventing writes to stale addresses.
 - **Current process rooting**: The currently running Process is registered as a stack root while off the run queue, ensuring it is not collected during GC.
-- **External GC root scanning**: `RootSet` supports external root providers (e.g., `modelStorage_` in PlatformRuntime).
+- **External GC root scanning**: `RootSet` supports external root providers (e.g., `modelStorage_` in PlatformRuntime). *(Apr 15)* `MVar::s_mvars` and `Runtime::s_savedState` are also registered as external root scanners via `Eco_Kernel_{MVar,Runtime}_register_gc_roots` and aggregator `Eco_Kernel_register_all_gc_roots`, invoked after `Allocator::initThread()` in the AOT entry (`eco_entry.cpp`) and weakly in JIT entries (`EcoRunner.cpp`, `ecoc.cpp`, since `EcoKernel` libs aren't linked there). Each scanner encodes → evacuates → decodes each stored HPointer in place.
 - **StackRootGuard**: RAII helper in `HeapHelpers.hpp` roots captured HPointers across allocations in kernel helpers (`allocTask`, `allocProcess`, `cons`, etc.), preventing use-after-move when GC relocates objects.
+- **`Export::toPtr` hardening** *(Apr 15)*: both `reinterpret_cast<void*>(val)` branches dropped — any non-zero constant returns `nullptr`, and non-zero padding asserts instead of fabricating a raw pointer from an HPointer that happens to encode a sentinel.
 - **stepProcess**: "No matching handler" branch now only logs for `Task_Fail` (unhandled failure) and stays quiet for `Task_Succeed` (normal process completion). Added heap-tag sanity check for early corruption detection.
 
 ## Key Constants

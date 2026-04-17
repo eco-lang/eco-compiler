@@ -221,6 +221,20 @@ Same as generic path, but emits a diagnostic warning during lowering.
 - Fast calls resolve symbols at compile time
 - Kernel function calls use compiler-declared ABI types without inference or repair
 
+### Type-Aware Evaluator Args (`_capture_abi`, Apr 15 2026)
+
+Previously `buildEvaluatorArgs` re-boxed all unboxed closure captures as `ElmInt` regardless of type — which corrupted primitive tags and broke `Debug.log` printing. Now:
+
+- The MLIR emitter tracks accumulated arg types across staged calls (both captures and per-stage params) and emits a `_capture_abi` attribute on the lowered closure call
+- LLVM lowering builds an `EvalParamLayout` (per-slot type descriptor) and passes it as a layout global to the runtime
+- `buildEvaluatorArgs` dispatches per slot to `eco_alloc_int` / `eco_alloc_float` / `eco_alloc_char`
+- `eco_pap_extend` keeps Char unboxed (zero-extended to i64), consistent with Int and Float; the two paths that pre-boxed Char as `ElmChar` have been removed
+- Shared `emitRootedBoxedArgsArray` helper encapsulates the alloca → zero-init → GC-root → box-and-populate pattern used by `lowerGenericApply` and `lowerSegmentationUnknown`
+
+### GC root carrier for closure calls
+
+`eco.call` and `eco.papExtend` carry GC root operands supplied by `EcoGCPrepare` (Apr 13, 2026). Safepoint marker emission was moved from the top of each call/PAP lowering to immediately before each final GC-triggering call inside closure dispatch helpers (`emitFastClosureCall`, `emitClosureCall`, `emitInlineClosureCall`, `lowerSegmentationUnknown`, `lowerGenericApply`, and their boxing calls), so `StatepointConversion::findTargetCall` latches onto the correct target. The alloca'd args buffers inside `eco_apply_closure` / `eco_apply_segmentation_unknown` / `eco_pap_extend` / `eco_closure_call_saturated` are registered as shadow stack ranges (`eco_gc_push_stack_range`) around allocation, since static stack maps cannot describe them. `buildEvaluatorArgs` re-resolves the closure pointer from its HPointer before each `values[i]` load.
+
 ## Example
 
 ### Source

@@ -22,7 +22,7 @@ Consider `List.cons : a -> List a -> List a`. This function is polymorphic—it 
 2. Store them in the list without type-specific code
 3. Work with the garbage collector
 
-This requires a **boxed ABI** where all values are passed as `uint64_t` (HPointer representation).
+This requires a **boxed ABI** where all values are passed as `uint64_t` (HPointer representation) at the C++ boundary. Inside the MLIR LLVM dialect the same values are `ptr addrspace(1)` (see REP_LLVM_001); `ptrtoint`/`inttoptr` conversions happen at the kernel call boundary.
 
 However, some kernels (like `Basics.add : Int -> Int -> Int`) are monomorphic and can use typed parameters directly.
 

@@ -234,6 +234,12 @@ MonoCall func args resultType ->
             -- eco.papExtend or saturated call
 ```
 
+#### `_capture_abi` Attribute *(Apr 15, 2026)*
+
+For indirect closure calls (those that dispatch through the generic evaluator), the MLIR emitter tracks the **accumulated types of each argument slot** across staged calls — both the closure's captures and the per-stage parameters. It emits these as a `_capture_abi` attribute on the lowered `eco.call` / `eco.papExtend` op.
+
+LLVM lowering uses this attribute to build an `EvalParamLayout` global and passes it to the runtime so `buildEvaluatorArgs` can re-box each slot with the correct primitive tag (`eco_alloc_int` / `_float` / `_char`). Without this attribute the runtime re-boxed every unboxed capture as `ElmInt`, corrupting `Debug.log` output and tag-driven dispatch.
+
 ### Let Expressions
 
 ```

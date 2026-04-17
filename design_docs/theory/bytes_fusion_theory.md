@@ -279,6 +279,8 @@ The BF dialect is lowered to LLVM in `BFToLLVM.cpp`:
 4. `bf.read_*` → bounds check + dereference + endian swap + advance
 5. Endian swaps use `llvm.bswap` intrinsic when needed
 
+**Type converter unification** *(Apr 17, 2026)*: `BFTypeConverter` is now unified with `EcoTypeConverter` — both map `!eco.value` → `ptr addrspace(1)`. All BF runtime LLVM declarations use `ptr<1>` for HPtr params/returns. `BF op` result types that were `i64` for HPointer-valued results are now `!eco.value` (in MLIR) / `ptr addrspace(1)` (in LLVM). `ReadUtf8OpLowering` compares `elm_utf8_decode` result against a null `ptr<1>` via `LLVM::ZeroOp` instead of an `i64` zero constant. 88 BF test `.mlir` files were updated accordingly.
+
 ## Performance Benefits
 
 1. **No interpreter overhead**: Direct cursor operations instead of closure interpretation

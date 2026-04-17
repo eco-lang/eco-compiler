@@ -8,7 +8,7 @@ This document describes how Elm values are represented in memory, bridging compi
 
 **Pipeline Position**: Cross-cutting concern from type specialization to GC
 
-**Key Invariants**: REP_*, HEAP_*, XPHASE_*
+**Key Invariants**: REP_*, REP_LLVM_*, HEAP_*, XPHASE_*
 
 ## The Four Representation Models
 
@@ -54,6 +54,20 @@ Heap object fields:
 - Determined by layout metadata (RecordLayout, TupleLayout, CtorLayout)
 - Independent of ABI and SSA representation
 - Uses unboxed bitmaps to mark inline fields
+
+### LLVM Representation (REP_LLVM_001, Apr 17 2026)
+
+At the LLVM dialect and below:
+- `!eco.value` → `ptr addrspace(1)` (GC-managed pointer)
+- Primitives (`i64`, `f64`, `i16`) pass through unchanged
+- `ptrtoint`/`inttoptr` conversions only at:
+  - Heap storage boundaries (fields stored as i64 in heap layout)
+  - Global storage boundaries (globals have i64 slots)
+  - Closure capture storage boundaries (closure values are i64)
+  - Embedded-constant encoding (40-bit tagged word)
+  - Bit manipulation of constant field on ADT-case scrutinee (via `valueToI64`)
+- The BF dialect's `BFTypeConverter` is unified with `EcoTypeConverter` so BF runtime declarations also use `ptr<1>` for HPtr params/returns
+- Bool widening in heap/record/custom field stores: `widenFieldToI64` dispatches on type (Bool constants go through `PtrToIntOp`; primitives use `ZExt`)
 
 ### Logical Representation
 

@@ -210,19 +210,29 @@ The `ThreadLocalHeap` coordinates its nursery and old gen:
 
 The `EcoGCPrepare` MLIR pass detects all potentially allocating operations and attaches live GC roots as explicit operands. This ensures the runtime has accurate root information when the slow path triggers GC.
 
-**Allocation coalescing**: Nearby allocations within the same basic block may be conservatively coalesced into a single size check, reducing the number of slow-path transitions.
+**Allocation groups — single safepoint per group** *(Apr 16, 2026)*: Adjacent fixed-size allocations identified by `EcoGCPrepare` lower to a single fast/slow/merge CFG. The fast path calls `eco_gc_alloc_region_fast(totalBytes)`; on null the slow path emits one `__eco_safepoint_marker` + `eco_gc_alloc_region_slow`. Each member is initialized at its offset via `eco_init_*_at` runtime functions that write the header/fields into the reserved region and return the HPointer. Variable-size ops (`AllocateClosureOp`, `AllocateOp`) are excluded from groups; group size is capped below the 32 KiB large-object threshold.
 
 ### Stack Root Tracing
 
 *(Mar-Apr 2026)* Precise GC stack root tracing is implemented via LLVM statepoints:
 
 1. **Compiler emits `eco.safepoint`**: Each safepoint carries live `!eco.value` variables as operands
-2. **EcoGCPrepare**: Attaches GC roots to allocation ops, call ops, and papExtend ops
-3. **StatepointConversion**: Converts safepoint markers to LLVM `gc.statepoint` intrinsics wrapping the actual allocating/calling function
+2. **EcoGCPrepare**: Attaches GC roots to allocation ops, call ops, `papExtend` ops, and allocation-group leaders. Uses MLIR's inter-block `Liveness` analysis, unions with front-end operands (root set only ever grows), walks nested regions (`scf.while`/`scf.if`) via `func.walk()`, and excludes embedded constants.
+3. **StatepointConversion**: Converts safepoint markers to LLVM `gc.statepoint` intrinsics wrapping the actual allocating/calling function. `stripIntToPtr` returns nullptr for `inttoptr(ConstantInt)` so constants never become GC roots.
 4. **Alloca+mem2reg rewriting**: Two-phase approach creates an alloca per GC root, emits `gc.relocate` + store after each statepoint, then `PromoteMemToReg` converts back to SSA with correct phi nodes at loop headers
-5. **Runtime stack map parsing**: `StackMap.cpp` parses LLVM v3 stack map format; `collectStackRootsFromStackMap()` walks x86-64 frame pointer chain
+5. **Runtime stack map parsing**: `StackMap.cpp` parses LLVM v3 stack map format; `collectStackRootsFromStackMap()` walks x86-64 frame pointer chain; `StackUnwind.cpp` handles RSP-relative locations that appear even with `-fno-omit-frame-pointer`
 
 **StackRootGuard**: RAII helper in `HeapHelpers.hpp` that pushes HPointers onto `RootSet::stack_roots` and restores on destruction. Used by kernel helpers (`allocTask`, `allocProcess`, `cons`, `tuple2`, etc.) to root captured HPointers across allocations that may trigger GC.
+
+**Shadow stack root ranges** *(Apr 13, 2026)*: Closure dispatch helpers (`eco_apply_closure`, `eco_apply_segmentation_unknown`, `eco_pap_extend`, `eco_closure_call_saturated`) alloca `uint64_t*` arg buffers at runtime — a layout static stack maps cannot describe. These buffers are pushed onto `RootSet::stack_ranges` (a "shadow stack") via `eco_gc_push_stack_range` before allocation and popped after. Each range carries an unboxed-bitmap mask so the GC visits only the HPointer slots.
+
+**Closure wrapper safepoints** *(Apr 13, 2026)*: Generated `__closure_wrapper_*` functions emit `__eco_safepoint_marker` before the target Elm call and before every `eco_alloc_*` boxing call, with all loaded arg HPointers tracked as live roots. `eco_resolve_hptr` is documented as a non-allocating GC invariant so it does not need a safepoint.
+
+**Closure pointer re-resolution** *(Apr 15, 2026)*: `buildEvaluatorArgs` takes `closure_hptr` (not raw `Closure*`) and re-resolves via `hpointerToPtr` before each `values[i]` load. `eco_pap_extend` re-resolves `old_closure` from the authoritative `closure_hptr` after `Allocator::allocate()` since GC may have relocated the old closure.
+
+**External GC roots** *(Apr 15, 2026)*: `MVar::s_mvars` and `Runtime::s_savedState` are registered as external root scanners (encode → evacuate → decode each stored HPointer) via `Eco_Kernel_{MVar,Runtime}_register_gc_roots` + aggregator `Eco_Kernel_register_all_gc_roots`, invoked after `Allocator::initThread()` in AOT (and weakly in JIT) entries.
+
+**GC diagnostics** *(Apr 15-16, 2026)*: `ECO_GC_DEBUG` CMake option (default on in Debug builds) adds ghost-data clearing — `clearToSpaceFreeRegion()` zeroes all free to-space bytes after each minor GC, and `debugAssertValidNurseryPointer` fires in `evacuate`/`Allocator::resolve` if a nursery pointer targets unallocated space. `ECO_GC_DEBUG_LIVENESS` enables `EcoGCLivenessAudit`, which audits `EcoGCPrepare`'s root sets against MLIR liveness (skipping `eco.gc_group_member` ops since their liveness is covered by the group leader's root set). See `guides/gc-diagnostics.md`.
 
 ### Large Object Allocation
 
@@ -532,13 +542,16 @@ Stage 2 passes transform ECO dialect toward LLVM:
 
 Final lowering from ECO dialect to LLVM dialect. As of Feb 2026, the pass underwent significant simplification: all closure calling logic is centralized in `EcoToLLVMClosures.cpp`, and the pass no longer reverse-engineers kernel ABI types (the compiler is the sole ABI arbiter).
 
-- Type conversion: `!eco.value` → `ptr addrspace(1)` (GC-managed pointer); `ptrtoint`/`inttoptr` only at heap/global/closure storage boundaries
+- Type conversion: `!eco.value` → `ptr addrspace(1)` (GC-managed pointer; **REP_LLVM_001**, Apr 17, 2026). `ptrtoint`/`inttoptr` conversions appear only at heap/global/closure storage boundaries (i64 memory slots) and for embedded-constant encoding. `BFTypeConverter` is unified with `EcoTypeConverter` so all BF runtime LLVM decls use `ptr<1>` for HPtr params/returns.
 - Heap allocation via runtime calls (fast path: nursery bump; slow path: GC safepoint)
-- GC roots attached to allocation ops by EcoGCPrepare, passed through to `emitAllocWithSafepoint`
-- Closure creation and invocation (centralized in `EcoToLLVMClosures.cpp`)
+- **Allocation groups** *(Apr 16, 2026)*: Adjacent fixed-size alloc ops lower to a single fast/slow/merge CFG using `eco_gc_alloc_region_fast`/`_slow`; members are initialized at fixed offsets via `eco_init_*_at` runtime functions.
+- GC roots attached to allocation ops, calls, and papExtend ops by `EcoGCPrepare`, passed through to `emitAllocWithSafepoint`
+- Closure creation and invocation (centralized in `EcoToLLVMClosures.cpp`), with shared `emitRootedBoxedArgsArray` for rooted boxed-args construction
 - Tagged pointer encoding for embedded constants
+- `_capture_abi` attribute drives type-aware `buildEvaluatorArgs` so captured Int/Float/Char are boxed with correct primitive tags (`eco_alloc_int`/`_float`/`_char`), enabling correct `Debug.log` output on primitives
+- `widenFieldToI64` handles Bool `ptr<1>` constants via `PtrToIntOp` (pointer ZExt would crash); ADT case bit manipulation lifts `ptr<1>` scrutinee to `i64` via `valueToI64` before `LShr`/`And`
 - Kernel calls reflect compiler-declared types without repair
-- Safepoint lowering: `eco.safepoint` operands converted to `ptr addrspace(1)` via inttoptr, emitted as `__eco_safepoint_marker` calls, then post-processed by `StatepointConversion` into `gc.statepoint` intrinsics wrapping the actual allocating/calling function
+- Safepoint lowering: `eco.safepoint` operands converted to `ptr addrspace(1)` via inttoptr, emitted as `__eco_safepoint_marker` calls, then post-processed by `StatepointConversion` into `gc.statepoint` intrinsics wrapping the actual allocating/calling function. Safepoint markers emitted immediately before each final GC-triggering call inside closure dispatch helpers so `findTargetCall` latches onto the right target.
 - All non-external functions carry `gc "statepoint-example"` attribute
 
 **PAP Wrapper Elimination (Typed Closure Calling)**: The compiler generates direct function calls even when partial application and closures are involved:
@@ -666,6 +679,7 @@ All compiler invariants are documented in [`design_docs/invariants.csv`](design_
 | MONO | MONO_001-027 | MonoType completeness, layouts, specialization registry, arity consistency |
 | GOPT | GOPT_001-014 | Staging canonicalization, call information, closure arity |
 | CGEN | CGEN_001-057+ | Boxing rules, SSA consistency, operation attributes, kernel declarations, projection layout consistency |
+| REP_LLVM | REP_LLVM_001 | `!eco.value` → `ptr addrspace(1)` in LLVM dialect; conversions only at storage boundaries *(Apr 17, 2026)* |
 
 ### MLIR AST Inspection
 

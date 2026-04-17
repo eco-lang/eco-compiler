@@ -525,11 +525,55 @@ eco.dbg %args -> call eco_dbg_print[_int|_float|_char] per arg type
 
 *(Mar-Apr 2026)*: Safepoints are no longer erased. The full GC integration pipeline:
 
-1. **EcoGCPrepare** (Stage 2): Attaches live GC roots as explicit operands on allocation ops (`eco.allocate_*`), `eco.call`, and `eco.papExtend`. Roots are pre-converted by the type-converter adaptor.
+1. **EcoGCPrepare** (Stage 2): Attaches live GC roots as explicit operands on allocation ops (`eco.allocate_*`), `eco.call`, `eco.papExtend`, and allocation-group leaders. Uses MLIR inter-block `Liveness` analysis unioned with the front-end's operands (root set only ever grows). `func.walk()` visits nested regions (`scf.while`/`scf.if`). Embedded constants excluded. Roots are pre-converted by the type-converter adaptor.
 2. **SafepointOpLowering** (this pass): Converts each `!eco.value` operand to `ptr addrspace(1)` via inttoptr, declares `@__eco_safepoint_marker` as a vararg function, emits call with GC root pointers.
-3. **Allocation lowering**: `emitAllocWithSafepoint` receives pre-converted roots from the adaptor and emits fast/slow allocation paths. Fast path: nursery bump. Slow path: allocation inside GC safepoint.
-4. **StatepointConversion** (post-MLIR LLVM IR pass): Finds all `@__eco_safepoint_marker` calls, wraps the next CallInst (the actual allocating/calling function) in `gc.statepoint` with `gc-live` operand bundles. Two-phase alloca+mem2reg approach for GC root relocation.
-5. All non-external functions carry `gc "statepoint-example"` attribute.
+3. **Allocation lowering**: `emitAllocWithSafepoint` receives pre-converted roots from the adaptor and emits fast/slow allocation paths. Fast path: nursery bump. Slow path: allocation inside GC safepoint. Adjacent fixed-size allocs lower to a single fast/slow/merge group (see §Allocation Groups).
+4. **Closure dispatch safepoint positioning** *(Apr 13, 2026)*: Safepoint marker emission moved from top of call/PAP lowering to immediately before each final GC-triggering call inside closure dispatch helpers (`emitFastClosureCall`, `emitClosureCall`, `emitInlineClosureCall`, `lowerSegmentationUnknown`, `lowerGenericApply`, and their boxing calls) so `findTargetCall` latches onto the correct target (not intermediate `eco_resolve_hptr` or boxing calls).
+5. **StatepointConversion** (post-MLIR LLVM IR pass): Finds all `@__eco_safepoint_marker` calls, wraps the next CallInst (the actual allocating/calling function) in `gc.statepoint` with `gc-live` operand bundles. `stripIntToPtr` returns `nullptr` for `inttoptr(ConstantInt)` so constants never become GC roots. Two-phase alloca+mem2reg approach for GC root relocation.
+6. All non-external functions carry `gc "statepoint-example"` attribute.
+
+## Allocation Groups
+
+*(Apr 16, 2026)* Adjacent fixed-size alloc ops identified by `EcoGCPrepare` lower to a single fast/slow/merge CFG:
+
+```
+fastBlock:
+    result = call eco_gc_alloc_region_fast(totalBytes)
+    br (result == null) ? slowBlock : mergeBlock
+
+slowBlock:
+    call @__eco_safepoint_marker(%root1, %root2, ...)
+    result = call eco_gc_alloc_region_slow(totalBytes)
+    br mergeBlock
+
+mergeBlock(result):
+    %m0 = call eco_init_cons_at(result + 0,    head, tail, ...)
+    %m1 = call eco_init_tuple2_at(result + 24, a, b, ...)
+    ...
+```
+
+- `eco_init_*_at` helpers write header/fields into the pre-allocated region and return the HPointer of that member
+- One `__eco_safepoint_marker` covers the whole group
+- Variable-size ops (`AllocateClosureOp`, `AllocateOp`) are excluded from groups
+- Group size is capped below the 32 KiB large-object threshold
+- `EcoGCPrepare` step 2 unions the alloc group leader's own `!eco.value` operands into `liveRoots` (matching step 4 for call safepoints), so construct-op field values are included in the statepoint's gc-live bundle
+- `EcoGCLivenessAudit` skips `eco.gc_group_member` ops since their liveness is covered by the leader's root set
+
+## eco.value → ptr addrspace(1)
+
+*(Apr 17, 2026, REP_LLVM_001)* `!eco.value` now lowers to `ptr addrspace(1)` (GC-managed pointer) instead of `i64`:
+
+- Primary type conversion in `EcoTypeConverter` and unified in `BFTypeConverter`
+- `ptrtoint`/`inttoptr` conversions only at:
+  - Heap storage boundaries (i64 slots in heap objects)
+  - Global storage boundaries (globals are i64)
+  - Closure capture storage boundaries (closure values are i64)
+  - Embedded-constant encoding (`ConstantKind << 40`)
+  - ADT case bit manipulation: `valueToI64` converts `ptr<1>` scrutinee before `LShr`/`And` to extract the constant-field
+- `widenToI64ForInit` for alloc-group member operands routes through `castToHPtr` first (eco.value → ptr<1>) then `PtrToIntOp`, so after replacement the inverse casts ptr<1> → eco.value → ptr<1> cancel in the reconcile pass
+- `widenFieldToI64` (Custom/RecordConstructOp lowering) handles Bool `ptr<1>` constants via `PtrToIntOp` instead of pointer ZExt (which would crash)
+- String case True comparison compares `Elm_Kernel_Utils_equal` result (`ptr<1>`) against a `ptr<1>` True constant via inttoptr — not a raw i64 constant
+- BF runtime LLVM declarations use `ptr<1>` for HPtr params/returns; `ReadUtf8OpLowering` compares `elm_utf8_decode` result against null `ptr<1>` via `LLVM::ZeroOp`
 
 ## Global Root Initialization
 

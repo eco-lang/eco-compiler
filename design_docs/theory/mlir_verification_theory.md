@@ -11,6 +11,8 @@ The ECO compiler includes a verification infrastructure that validates MLIR oper
 **Related Files**:
 - `runtime/src/codegen/EcoOps.cpp` — Operation verifiers
 - `runtime/src/codegen/Passes/CheckEcoClosureCaptures.cpp` — Closure capture verification pass
+- `runtime/src/codegen/Passes/EcoGCLivenessAudit.cpp` — GC liveness audit pass *(Apr 16, 2026)*
+- `runtime/src/codegen/Passes/EcoGCLiveness.h` — GC liveness shared utilities
 - `compiler/tests/TestLogic/Generate/CodeGen/Invariants.elm` — Elm-side invariant testing
 
 ## Types of Verification
@@ -102,6 +104,20 @@ LogicalResult PapExtendOp::verify() {
     // newargs_unboxed bitmap must be consistent with types
 }
 ```
+
+## EcoGCLivenessAudit Pass
+
+*(Apr 16, 2026)* A debug-only verification pass (enabled via `ECO_GC_DEBUG_LIVENESS` CMake option) that audits `EcoGCPrepare`'s attached GC root sets against MLIR's inter-block `Liveness` analysis.
+
+**Purpose**: Catches bugs where a live `!eco.value` is not included in an op's GC roots, which would leave it invisible to the collector across a safepoint.
+
+**Semantics**:
+- For each allocation op, call op, papExtend op, or allocation-group leader, compare its attached root operands against the liveness set
+- Report any live SSA value missing from the root set
+- **Skips `eco.gc_group_member` ops**: their liveness is covered by the group leader's root set (by construction), so auditing them separately would produce false positives
+- **Skips embedded constants**: constants are excluded from root sets by design
+
+The pass is off by default in Release builds to avoid compile-time cost.
 
 ## CheckEcoClosureCaptures Pass
 
