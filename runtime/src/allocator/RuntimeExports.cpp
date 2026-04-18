@@ -814,7 +814,13 @@ extern "C" void eco_store_field(HPtr obj_hptr, uint32_t index, HPtr value) {
 #if ECO_GC_DEBUG
     // Validate the value pointer early to catch stale writes at the moment
     // they happen, producing a backtrace showing the compiled function.
-    hpointerToPtr(value.toBits());
+    // Skip null/zero and embedded constants — only validate real heap pointers.
+    {
+        HPointer hp;
+        memcpy(&hp, &value, sizeof(hp));
+        if (hp.constant == 0 && hp.ptr != 0)
+            hpointerToPtr(value.toBits());
+    }
 #endif
     void* obj = hpointerToPtr(obj_hptr.toBits());
     if (!obj) return;

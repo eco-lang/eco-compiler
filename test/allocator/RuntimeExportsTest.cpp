@@ -238,16 +238,21 @@ static void test_eco_store_field_custom() {
         initAllocator();
         uint32_t field_count = *rc::gen::inRange<uint32_t>(1, 5);
         uint32_t index = *rc::gen::inRange<uint32_t>(0, field_count);
-        uint64_t value = *rc::gen::arbitrary<uint64_t>();
+
+        // eco_store_field stores boxed HPointer values (not raw bits).
+        // Allocate a real heap object to use as the stored value.
+        i64 inner_val = *rc::gen::arbitrary<i64>();
+        auto value_hptr = eco_alloc_int(inner_val);
+        RC_ASSERT(value_hptr.toBits() != 0);
 
         auto hptr = eco_alloc_custom(0, field_count, 0);
         RC_ASSERT(hptr.toBits() != 0);
 
-        eco_store_field(hptr, index, HPtr::fromBits(value));
+        eco_store_field(hptr, index, value_hptr);
 
         void* obj = hptrToRaw(hptr.toBits());
         Custom* custom = static_cast<Custom*>(obj);
-        RC_ASSERT(static_cast<uint64_t>(custom->values[index].i) == value);
+        RC_ASSERT(static_cast<uint64_t>(custom->values[index].i) == static_cast<i64>(value_hptr.toBits()));
     });
 }
 
@@ -308,16 +313,21 @@ static void test_eco_store_field_closure() {
         initAllocator();
         uint32_t num_captures = *rc::gen::inRange<uint32_t>(1, 5);
         uint32_t index = *rc::gen::inRange<uint32_t>(0, num_captures);
-        uint64_t value = *rc::gen::arbitrary<uint64_t>();
+
+        // eco_store_field stores boxed HPointer values.
+        // Allocate a real heap object to use as the stored value.
+        i64 inner_val = *rc::gen::arbitrary<i64>();
+        auto value_hptr = eco_alloc_int(inner_val);
+        RC_ASSERT(value_hptr.toBits() != 0);
 
         auto hptr = eco_alloc_closure(nullptr, num_captures);
         RC_ASSERT(hptr.toBits() != 0);
 
-        eco_store_field(hptr, index, HPtr::fromBits(value));
+        eco_store_field(hptr, index, value_hptr);
 
         void* obj = hptrToRaw(hptr.toBits());
         Closure* closure = static_cast<Closure*>(obj);
-        RC_ASSERT(static_cast<uint64_t>(closure->values[index].i) == value);
+        RC_ASSERT(static_cast<uint64_t>(closure->values[index].i) == static_cast<i64>(value_hptr.toBits()));
     });
 }
 
