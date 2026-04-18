@@ -50,9 +50,9 @@ extern "C" __attribute__((weak)) void Eco_Kernel_register_all_gc_roots();
 #include "RuntimeSymbols.h"
 #include "EcoJIT.h"
 
-#include "llvm/Transforms/Scalar/RewriteStatepointsForGC.h"
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/Analysis/TargetLibraryInfo.h"
+#include "Passes/EcoPtrIntVerify.h"
 
 namespace eco { void linkEcoGCStrategy(); }
 static struct EcoGCStrategyLinker {
@@ -207,7 +207,7 @@ private:
             PB.registerLoopAnalyses(LAM);
             PB.crossRegisterProxies(LAM, FAM, CGAM, MAM);
             llvm::ModulePassManager MPM;
-            MPM.addPass(llvm::RewriteStatepointsForGC());
+            eco::addEcoGCPipeline(MPM);
             MPM.run(*m, MAM);
 
             // Force frame pointers on all functions so that libunwind

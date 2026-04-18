@@ -67,7 +67,7 @@ struct LoadGlobalOpLowering : public OpConversionPattern<LoadGlobalOp> {
 
         // Load i64 from global then convert to ptr<1>
         auto loadedValue = rewriter.create<LLVM::LoadOp>(loc, i64Ty, globalAddr);
-        Value result = i64ToValue(rewriter, loc, loadedValue.getResult());
+        Value result = globalLoadI64ToValue(rewriter, loc, loadedValue.getResult());
 
         rewriter.replaceOp(op, result);
         return success();
@@ -93,7 +93,7 @@ struct StoreGlobalOpLowering : public OpConversionPattern<StoreGlobalOp> {
             loc, ptrTy, op.getGlobal());
 
         // Convert ptr<1> to i64 for global storage
-        Value valI64 = valueToI64(rewriter, loc, adaptor.getValue());
+        Value valI64 = globalStoreValueToI64(rewriter, loc, adaptor.getValue());
         rewriter.create<LLVM::StoreOp>(loc, valI64, globalAddr);
 
         rewriter.eraseOp(op);

@@ -72,9 +72,9 @@
 #include "Passes.h"
 #include "EcoPipeline.h"
 
-#include "llvm/Transforms/Scalar/RewriteStatepointsForGC.h"
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/Analysis/TargetLibraryInfo.h"
+#include "Passes/EcoPtrIntVerify.h"
 
 namespace eco { void linkEcoGCStrategy(); }
 static struct EcoGCStrategyLinker {
@@ -626,7 +626,7 @@ int main(int argc, char **argv) {
         PB.registerLoopAnalyses(LAM);
         PB.crossRegisterProxies(LAM, FAM, CGAM, MAM);
         llvm::ModulePassManager MPM;
-        MPM.addPass(llvm::RewriteStatepointsForGC());
+        eco::addEcoGCPipeline(MPM);
         MPM.run(*llvmModule, MAM);
     }
 

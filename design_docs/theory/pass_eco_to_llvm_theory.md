@@ -680,3 +680,28 @@ This means the lowering pass is now a straightforward type-reflecting translator
 ### 3. Removal of fixCallResultTypes
 
 The `fixCallResultTypes` pass that was previously part of `EcoPAPSimplify.cpp` has been removed. It was a compensating pass that corrected incorrect `papExtend` result types after the fact. With the **CGEN_056** invariant now enforced at the compiler level, saturating `papExtend` operations always carry correct result types from the start, making the fixup pass unnecessary.
+
+### 4. ptr<1> ↔ i64 Boundary
+
+All conversions between `ptr addrspace(1)` (HPointer) and `i64` are funnelled
+through role-specific helpers defined in `EcoToLLVMInternal.h`:
+
+| Helper | Role | Allowed pattern |
+| --- | --- | --- |
+| `heapStoreValueToI64` / `heapLoadI64ToValue` | Heap field store/load | Result immediately stored into / loaded from a heap struct GEP |
+| `globalStoreValueToI64` / `globalLoadI64ToValue` | Module-level eco.value | Result immediately stored into / loaded from a global address |
+| `closureStoreValueToI64` / `closureLoadI64ToValue` | Closure.values[] | Result immediately stored into / loaded from closure values GEP |
+| `argsSlotStoreValueToI64` / `argsSlotLoadI64ToValue` | Stack args arrays | Alloca registered via `eco_gc_push_stack_range` |
+| `caseScrutineeToI64` | ADT case tag tests | Consumed by lshr/and/icmp in the same basic block |
+| `wrapperReturnValueToPtr0` | Wrapper return bridging | ptr<1> → i64 → ptr AS0, the only GC→AS0 exit |
+| `wrapperLoadArgSlotToValue` | Wrapper arg unboxing | LoadOp from wrapper args array GEP |
+
+These helpers are thin wrappers over the raw `valueToI64`/`i64ToValue` primitives
+(also in `EcoToLLVMInternal.h`), but their names encode the boundary role for
+documentation, code review, and verifier diagnostics.
+
+**Post-RS4GC verification:** `EcoPtrIntVerify` (gated by `ECO_GC_DEBUG_LIVENESS`)
+runs as a function pass after `RewriteStatepointsForGC`. It scans for
+`ptrtoint`/`inttoptr` instructions involving `ptr addrspace(1)` and rejects any
+that escape the allow-listed patterns with a hard error. See `EcoPtrIntVerify.cpp`
+and `guides/gc-diagnostics.md` for details.

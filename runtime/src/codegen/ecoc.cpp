@@ -71,9 +71,9 @@
 #include "RuntimeSymbols.h"
 #include "EcoJIT.h"
 
-#include "llvm/Transforms/Scalar/RewriteStatepointsForGC.h"
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/Analysis/TargetLibraryInfo.h"
+#include "Passes/EcoPtrIntVerify.h"
 
 namespace eco { void linkEcoGCStrategy(); }
 static struct EcoGCStrategyLinker {
@@ -213,7 +213,7 @@ static int dumpLLVMIR(ModuleOp module) {
         PB.registerLoopAnalyses(LAM);
         PB.crossRegisterProxies(LAM, FAM, CGAM, MAM);
         llvm::ModulePassManager MPM;
-        MPM.addPass(llvm::RewriteStatepointsForGC());
+        eco::addEcoGCPipeline(MPM);
         MPM.run(*llvmModule, MAM);
     }
 
@@ -295,7 +295,7 @@ static int runJIT(ModuleOp module) {
         PB.registerLoopAnalyses(LAM);
         PB.crossRegisterProxies(LAM, FAM, CGAM, MAM);
         llvm::ModulePassManager MPM;
-        MPM.addPass(llvm::RewriteStatepointsForGC());
+        eco::addEcoGCPipeline(MPM);
         MPM.run(*m, MAM);
 
         // Force frame pointers on all functions so that libunwind

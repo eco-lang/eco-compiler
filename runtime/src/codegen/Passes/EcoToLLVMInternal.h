@@ -50,8 +50,9 @@ inline bool isHPtrLLVMType(mlir::Type t) {
     return false;
 }
 
-/// Convert an SSA value to i64 for storage in a heap slot or runtime call.
+/// Raw primitive: convert an SSA value to i64 for storage.
 /// If the value is ptr<1>, emit ptrtoint. If already i64, pass through.
+/// Prefer the role-specific wrappers below for new code.
 inline mlir::Value valueToI64(mlir::OpBuilder &builder, mlir::Location loc, mlir::Value v) {
     if (v.getType().isInteger(64))
         return v;
@@ -62,8 +63,9 @@ inline mlir::Value valueToI64(mlir::OpBuilder &builder, mlir::Location loc, mlir
     return v;
 }
 
-/// Convert an i64 value loaded from a heap slot to ptr<1> (HPointer).
+/// Raw primitive: convert an i64 value to ptr<1> (HPointer).
 /// If already ptr<1>, pass through.
+/// Prefer the role-specific wrappers below for new code.
 inline mlir::Value i64ToValue(mlir::OpBuilder &builder, mlir::Location loc, mlir::Value v) {
     if (isHPtrLLVMType(v.getType()))
         return v;
@@ -72,6 +74,92 @@ inline mlir::Value i64ToValue(mlir::OpBuilder &builder, mlir::Location loc, mlir
         return builder.create<mlir::LLVM::IntToPtrOp>(loc, hptrTy, v);
     }
     return v;
+}
+
+//===----------------------------------------------------------------------===//
+// Role-specific ptr<1> ↔ i64 boundary helpers
+//
+// Each helper documents the single allowed pattern it authorizes.
+// The verifier pass (EcoPtrIntVerify) can key diagnostics on these roles.
+// Result of store helpers must be consumed immediately by a StoreOp or
+// gc-leaf CallOp argument — never reused across calls.
+//===----------------------------------------------------------------------===//
+
+/// Heap field store: ptr<1> → i64 for storing into a heap object field.
+/// Result must be immediately stored via StoreOp into a heap struct slot.
+inline mlir::Value heapStoreValueToI64(mlir::OpBuilder &b, mlir::Location loc, mlir::Value v) {
+    return valueToI64(b, loc, v);
+}
+
+/// Heap field load: i64 loaded from a heap object field → ptr<1>.
+/// Operand must come directly from a LoadOp on a heap struct GEP.
+inline mlir::Value heapLoadI64ToValue(mlir::OpBuilder &b, mlir::Location loc, mlir::Value v) {
+    return i64ToValue(b, loc, v);
+}
+
+/// Global store: ptr<1> → i64 for storing into a module-level eco.value global.
+/// Result must be immediately stored via StoreOp into the global address.
+inline mlir::Value globalStoreValueToI64(mlir::OpBuilder &b, mlir::Location loc, mlir::Value v) {
+    return valueToI64(b, loc, v);
+}
+
+/// Global load: i64 loaded from a module-level eco.value global → ptr<1>.
+/// Operand must come directly from a LoadOp on a global AddressOfOp.
+inline mlir::Value globalLoadI64ToValue(mlir::OpBuilder &b, mlir::Location loc, mlir::Value v) {
+    return i64ToValue(b, loc, v);
+}
+
+/// Closure store: ptr<1> → i64 for storing into Closure.values[] slots.
+/// Result must be immediately stored via StoreOp into a closure values GEP.
+inline mlir::Value closureStoreValueToI64(mlir::OpBuilder &b, mlir::Location loc, mlir::Value v) {
+    return valueToI64(b, loc, v);
+}
+
+/// Closure load: i64 loaded from Closure.values[] → ptr<1>.
+/// Operand must come directly from a LoadOp on a closure values GEP.
+inline mlir::Value closureLoadI64ToValue(mlir::OpBuilder &b, mlir::Location loc, mlir::Value v) {
+    return i64ToValue(b, loc, v);
+}
+
+/// Args-array store: ptr<1> → i64 for storing into a stack-allocated args
+/// buffer registered via eco_gc_push_stack_range.
+/// Result must be immediately stored via StoreOp into an args alloca slot.
+inline mlir::Value argsSlotStoreValueToI64(mlir::OpBuilder &b, mlir::Location loc, mlir::Value v) {
+    return valueToI64(b, loc, v);
+}
+
+/// Args-array load: i64 loaded from an args alloca slot → ptr<1>.
+/// Operand must come directly from a LoadOp on an args alloca GEP.
+inline mlir::Value argsSlotLoadI64ToValue(mlir::OpBuilder &b, mlir::Location loc, mlir::Value v) {
+    return i64ToValue(b, loc, v);
+}
+
+/// ADT case scrutinee: ptr<1> → i64 for tag bit-tests.
+/// Result must stay within the same basic block and be consumed only by
+/// lshr/and/icmp bit-test chains — never stored or passed across calls.
+inline mlir::Value caseScrutineeToI64(mlir::OpBuilder &b, mlir::Location loc, mlir::Value v) {
+    return valueToI64(b, loc, v);
+}
+
+/// Wrapper return bridging: ptr<1> → i64 → ptr AS0.
+/// This is the only GC-world → AS0 exit path for HPointers.
+/// Used by evaluator wrapper functions to return values in the runtime ABI.
+inline mlir::Value wrapperReturnValueToPtr0(mlir::OpBuilder &b, mlir::Location loc,
+                                            mlir::Value v, mlir::Type retPtrTy) {
+    mlir::Value asI64 = valueToI64(b, loc, v);
+    return b.create<mlir::LLVM::IntToPtrOp>(loc, retPtrTy, mlir::ValueRange{asI64});
+}
+
+/// Wrapper arg-slot unboxing: load i64 from wrapper args alloca, convert
+/// to the target type (ptr<1> for !eco.value, or pass through for primitives).
+/// The loadOp must be a LoadOp from the wrapper's args array GEP.
+inline mlir::Value wrapperLoadArgSlotToValue(mlir::OpBuilder &b, mlir::Location loc,
+                                             mlir::Value loadedI64, mlir::Type targetType) {
+    if (isHPtrLLVMType(targetType))
+        return i64ToValue(b, loc, loadedI64);
+    if (mlir::isa<mlir::LLVM::LLVMPointerType>(targetType))
+        return b.create<mlir::LLVM::IntToPtrOp>(loc, targetType, mlir::ValueRange{loadedI64});
+    return loadedI64;
 }
 
 //===----------------------------------------------------------------------===//

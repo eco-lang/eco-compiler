@@ -220,6 +220,8 @@ add_mlir_library(EcoPasses
     Passes/EcoToLLVMFunc.cpp
     # GC strategy registration + post-MLIR LLVM IR passes
     Passes/EcoGCStrategy.cpp
+    # Post-RS4GC ptr<1>↔i64 boundary verifier (gated by ECO_GC_DEBUG_LIVENESS)
+    Passes/EcoPtrIntVerify.cpp
     # BF (ByteFusion) dialect lowering
     Passes/BFToLLVM.cpp
 

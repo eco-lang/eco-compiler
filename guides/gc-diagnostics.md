@@ -15,6 +15,7 @@ GC diagnostics are split into two independent flags:
 |------|---------|---------|-----------------|
 | `ECO_GC_DEBUG` | ON for Debug, OFF for Release | `ecor`, `EcoRunner`, `EcoRuntimeStatic`, `EcoEntryStatic` (+ top-level `add_compile_definitions`) | Runtime instrumentation: stale-pointer checks, GC phase tracing, stackmap scanning, store-time validation |
 | `ECO_GC_DEBUG_COMP` | OFF | `obj.EcoPasses` | Compile-time instrumentation: GCRootCarrier root dumps during MLIR lowering |
+| `ECO_GC_DEBUG_LIVENESS` | OFF | `obj.EcoPasses`, `ecoc`, `obj.EcoRunner`, `eco-boot-native` | Post-RS4GC verification: `EcoGCLivenessAudit` (pre-RS4GC MLIR-level) and `EcoPtrIntVerify` (post-RS4GC LLVM-level ptr<1>↔i64 boundary check) |
 
 The flags are independent. Enable only `ECO_GC_DEBUG` for runtime-only
 investigation (the common case). Enable `ECO_GC_DEBUG_COMP` when you need to
@@ -54,6 +55,34 @@ and `StatepointConversion`. Now RS4GC handles both automatically. The main new f
 - A non-leaf function marked `gc-leaf-function` (RS4GC skips it entirely)
 - RS4GC's liveness analysis misses a live root due to complex control flow
 - A `ptr addrspace(1)` value is cast to/from a non-GC type, hiding it from RS4GC
+
+### EcoPtrIntVerify (post-RS4GC LLVM-level)
+
+`EcoPtrIntVerify` is a post-RS4GC LLVM `FunctionPass` that scans for
+`ptrtoint`/`inttoptr` instructions involving `ptr addrspace(1)` and rejects any
+that escape the allowed boundary patterns. It catches the "HPtr → i64 →
+untracked → ptr<1>" loophole by construction.
+
+**When to use:** enable `ECO_GC_DEBUG_LIVENESS` and rebuild. The pass runs
+automatically after `RewriteStatepointsForGC` in all pipelines (ecoc,
+EcoRunner, eco-boot-native).
+
+```bash
+cmake -B build -DECO_GC_DEBUG_LIVENESS=ON
+cmake --build build --target full
+```
+
+**Diagnostic format:** hard error via `llvm::report_fatal_error`:
+```
+EcoPtrIntVerify: ptrtoint ptr addrspace(1) result escapes allowed patterns in function <F>; may be live across GC
+EcoPtrIntVerify: inttoptr i64 -> ptr addrspace(1) from non-heap/non-args source in <F>
+```
+
+**Relationship to EcoGCLivenessAudit:** `EcoGCLivenessAudit` operates at the
+MLIR level *before* RS4GC and verifies eco.value liveness annotations.
+`EcoPtrIntVerify` operates at the LLVM IR level *after* RS4GC and verifies
+that ptr<1>↔i64 crossings respect the allowed boundary patterns. Both are
+gated by the same `ECO_GC_DEBUG_LIVENESS` flag.
 
 ---
 

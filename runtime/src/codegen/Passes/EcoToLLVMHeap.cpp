@@ -312,7 +312,7 @@ struct ListConstructOpLowering : public OpConversionPattern<ListConstructOp> {
         auto headUnboxedVal = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, headUnboxed);
 
         // eco_alloc_cons expects i64 for head, hptr for tail
-        headVal = valueToI64(rewriter, loc, headVal);
+        headVal = heapStoreValueToI64(rewriter, loc, headVal);
         if (auto intTy = dyn_cast<IntegerType>(headVal.getType())) {
             if (intTy.getWidth() < 64) {
                 headVal = rewriter.create<LLVM::ZExtOp>(loc, i64Ty, headVal);
@@ -391,7 +391,7 @@ struct ListHeadOpLowering : public OpConversionPattern<ListHeadOp> {
 
         // Heap slots store i64; load i64 then convert to ptr<1>
         Value loaded = rewriter.create<LLVM::LoadOp>(loc, i64Ty, fieldPtr);
-        Value result = i64ToValue(rewriter, loc, loaded);
+        Value result = heapLoadI64ToValue(rewriter, loc, loaded);
         rewriter.replaceOp(op, result);
         return success();
     }
@@ -440,12 +440,14 @@ struct ListTailOpLowering : public OpConversionPattern<ListTailOp> {
 // i64 and ptr (eco.value → i64) pass through unchanged.
 //===----------------------------------------------------------------------===//
 
+/// Widen an SSA field value to i64 for runtime Unboxable slots.
+/// Caller must consume the result immediately in a store or gc-leaf call argument.
 static Value widenFieldToI64(Value val, Location loc,
                              ConversionPatternRewriter &rewriter) {
     auto i64Ty = IntegerType::get(rewriter.getContext(), 64);
     Type ty = val.getType();
     if (isHPtrLLVMType(ty))
-        return rewriter.create<LLVM::PtrToIntOp>(loc, i64Ty, val);
+        return heapStoreValueToI64(rewriter, loc, val);
     if (auto intTy = dyn_cast<IntegerType>(ty)) {
         if (intTy.getWidth() < 64)
             return rewriter.create<LLVM::ZExtOp>(loc, i64Ty, val);
@@ -561,7 +563,7 @@ struct Tuple2ProjectOpLowering : public OpConversionPattern<Tuple2ProjectOp> {
         if (isHPtrLLVMType(resultType)) {
             // Heap slots store i64; load i64 then convert to ptr<1>
             Value loaded = rewriter.create<LLVM::LoadOp>(loc, i64Ty, fieldPtr);
-            rewriter.replaceOp(op, i64ToValue(rewriter, loc, loaded));
+            rewriter.replaceOp(op, heapLoadI64ToValue(rewriter, loc, loaded));
         } else {
             Value result = rewriter.create<LLVM::LoadOp>(loc, resultType, fieldPtr);
             rewriter.replaceOp(op, result);
@@ -606,7 +608,7 @@ struct Tuple3ProjectOpLowering : public OpConversionPattern<Tuple3ProjectOp> {
         Type resultType = getTypeConverter()->convertType(op.getResult().getType());
         if (isHPtrLLVMType(resultType)) {
             Value loaded = rewriter.create<LLVM::LoadOp>(loc, i64Ty, fieldPtr);
-            rewriter.replaceOp(op, i64ToValue(rewriter, loc, loaded));
+            rewriter.replaceOp(op, heapLoadI64ToValue(rewriter, loc, loaded));
         } else {
             Value result = rewriter.create<LLVM::LoadOp>(loc, resultType, fieldPtr);
             rewriter.replaceOp(op, result);
@@ -724,7 +726,7 @@ struct RecordProjectOpLowering : public OpConversionPattern<RecordProjectOp> {
         Type resultType = getTypeConverter()->convertType(op.getResult().getType());
         if (isHPtrLLVMType(resultType)) {
             Value loaded = rewriter.create<LLVM::LoadOp>(loc, i64Ty, fieldPtr);
-            rewriter.replaceOp(op, i64ToValue(rewriter, loc, loaded));
+            rewriter.replaceOp(op, heapLoadI64ToValue(rewriter, loc, loaded));
         } else {
             Value result = rewriter.create<LLVM::LoadOp>(loc, resultType, fieldPtr);
             rewriter.replaceOp(op, result);
@@ -847,7 +849,7 @@ struct CustomProjectOpLowering : public OpConversionPattern<CustomProjectOp> {
         Type resultType = getTypeConverter()->convertType(op.getResult().getType());
         if (isHPtrLLVMType(resultType)) {
             Value loaded = rewriter.create<LLVM::LoadOp>(loc, i64Ty, fieldPtr);
-            rewriter.replaceOp(op, i64ToValue(rewriter, loc, loaded));
+            rewriter.replaceOp(op, heapLoadI64ToValue(rewriter, loc, loaded));
         } else {
             Value result = rewriter.create<LLVM::LoadOp>(loc, resultType, fieldPtr);
             rewriter.replaceOp(op, result);
@@ -946,7 +948,7 @@ struct ArrayGetOpLowering : public OpConversionPattern<ArrayGetOp> {
         Type origResultType = op.getResult().getType();
         if (isa<eco::ValueType>(origResultType)) {
             // eco.value: load i64 then convert to ptr<1>
-            rewriter.replaceOp(op, i64ToValue(rewriter, loc, raw));
+            rewriter.replaceOp(op, heapLoadI64ToValue(rewriter, loc, raw));
         } else if (origResultType.isInteger(64)) {
             // Int: raw i64 is the result directly
             rewriter.replaceOp(op, raw);
@@ -1017,7 +1019,7 @@ struct ArraySetOpLowering : public OpConversionPattern<ArraySetOp> {
         Value raw;
         if (isa<eco::ValueType>(origValueType)) {
             // eco.value: ptr<1> from adaptor, convert to i64
-            raw = valueToI64(rewriter, loc, valueVal);
+            raw = heapStoreValueToI64(rewriter, loc, valueVal);
         } else if (origValueType.isInteger(64)) {
             // Int: already i64
             raw = valueVal;

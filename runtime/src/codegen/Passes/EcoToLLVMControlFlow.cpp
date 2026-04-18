@@ -596,8 +596,9 @@ struct CaseOpLowering : public OpConversionPattern<CaseOp> {
         if (isI1Scrutinee) {
             ctorTag = rewriter.create<LLVM::ZExtOp>(loc, i32Ty, scrutinee);
         } else {
-            // Convert ptr<1> scrutinee to i64 for bit manipulation
-            Value scrutineeI64 = valueToI64(rewriter, loc, scrutinee);
+            // Convert ptr<1> scrutinee to i64 for ADT tag bit-tests.
+            // Result stays in this basic block: lshr → and → icmp chain only.
+            Value scrutineeI64 = caseScrutineeToI64(rewriter, loc, scrutinee);
 
             // Check for embedded constant
             auto shift40 = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, value_enc::ConstFieldShift);
