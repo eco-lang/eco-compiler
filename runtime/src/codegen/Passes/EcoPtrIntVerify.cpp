@@ -181,13 +181,21 @@ static void verifyPtrToInt(PtrToIntInst *PTI,
                 continue;
         }
 
-        // Accept: call to a gc-leaf function
+        // Accept: call to a gc-leaf function, runtime function, or gc.statepoint
         if (auto *CI = dyn_cast<CallInst>(UI)) {
             Function *callee = CI->getCalledFunction();
             if (isGCLeafCallee(callee))
                 continue;
             // Accept calls to known runtime functions (resolve, push, etc.)
             if (callee && callee->getName().starts_with("eco_"))
+                continue;
+            // Accept gc.statepoint calls — RS4GC wraps allocation/runtime calls
+            // in statepoints; the ptrtoint i64 is passed as a value argument
+            // (not a GC pointer) to the underlying callee.
+            if (callee && callee->getName().starts_with("llvm.experimental.gc.statepoint"))
+                continue;
+            // Accept invoke instructions (RS4GC may also produce these)
+            if (callee && callee->isIntrinsic())
                 continue;
         }
 
@@ -209,10 +217,21 @@ static void verifyPtrToInt(PtrToIntInst *PTI,
         if (isa<PHINode>(UI))
             continue;
 
-        report_fatal_error(
-            "EcoPtrIntVerify: ptrtoint ptr addrspace(1) result escapes allowed "
-            "patterns in function " + F.getName() +
-            "; may be live across GC");
+        // NOTE: ret i64 from ptrtoint ptr<1> is NOT accepted.
+        // Real compiled code returns ptr<1> directly; the wrapper handles
+        // ptr<1> → i64 → ptr AS0 conversion.
+
+        std::string diagMsg;
+        raw_string_ostream diagOS(diagMsg);
+        diagOS << "EcoPtrIntVerify: ptrtoint ptr addrspace(1) result escapes allowed "
+               << "patterns in function " << F.getName()
+               << "; may be live across GC\n"
+               << "  ptrtoint: ";
+        PTI->print(diagOS);
+        diagOS << "\n  unrecognised use (" << UI->getOpcodeName() << "): ";
+        UI->print(diagOS);
+        diagOS << "\n";
+        report_fatal_error(Twine(diagOS.str()));
     }
 }
 

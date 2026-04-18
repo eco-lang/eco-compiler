@@ -6,7 +6,7 @@
 module {
   // A function that computes a*x + b
   // Linear function: takes coefficients a, b and input x
-  llvm.func @linear(%args: !llvm.ptr) -> i64 {
+  llvm.func @linear(%args: !llvm.ptr) -> !llvm.ptr<1> {
     %c8 = llvm.mlir.constant(8 : i64) : i64
 
     // Load args[0] = a (multiplier)
@@ -41,8 +41,7 @@ module {
     %result_val = llvm.add %ax, %b : i64
 
     %result_ptr1 = llvm.call @eco_alloc_int(%result_val) : (i64) -> !llvm.ptr<1>
-    %result = llvm.ptrtoint %result_ptr1 : !llvm.ptr<1> to i64
-    llvm.return %result : i64
+    llvm.return %result_ptr1 : !llvm.ptr<1>
   }
 
   llvm.func @eco_alloc_int(i64) -> !llvm.ptr<1>

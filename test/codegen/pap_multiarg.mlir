@@ -6,7 +6,7 @@
 module {
   // A function that computes (a + b) * (c + d)
   // Takes 4 boxed integer arguments
-  llvm.func @quadfunc(%args: !llvm.ptr) -> i64 {
+  llvm.func @quadfunc(%args: !llvm.ptr) -> !llvm.ptr<1> {
     %c8 = llvm.mlir.constant(8 : i64) : i64
 
     // Load args[0..3]
@@ -49,8 +49,7 @@ module {
 
     // Box result
     %result_ptr1 = llvm.call @eco_alloc_int(%result_val) : (i64) -> !llvm.ptr<1>
-    %result = llvm.ptrtoint %result_ptr1 : !llvm.ptr<1> to i64
-    llvm.return %result : i64
+    llvm.return %result_ptr1 : !llvm.ptr<1>
   }
 
   llvm.func @eco_alloc_int(i64) -> !llvm.ptr<1>

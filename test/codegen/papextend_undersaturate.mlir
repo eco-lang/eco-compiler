@@ -5,7 +5,7 @@
 
 module {
   // A function that takes 4 arguments and computes a + b + c + d
-  llvm.func @sum_four(%args: !llvm.ptr) -> i64 {
+  llvm.func @sum_four(%args: !llvm.ptr) -> !llvm.ptr<1> {
     %c8 = llvm.mlir.constant(8 : i64) : i64
 
     // Load and unbox all 4 arguments
@@ -47,8 +47,7 @@ module {
     %result_val = llvm.add %abc, %d : i64
 
     %result_ptr1 = llvm.call @eco_alloc_int(%result_val) : (i64) -> !llvm.ptr<1>
-    %result = llvm.ptrtoint %result_ptr1 : !llvm.ptr<1> to i64
-    llvm.return %result : i64
+    llvm.return %result_ptr1 : !llvm.ptr<1>
   }
 
   llvm.func @eco_alloc_int(i64) -> !llvm.ptr<1>

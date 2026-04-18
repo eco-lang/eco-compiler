@@ -6,7 +6,7 @@
 
 module {
   // Square evaluator
-  llvm.func @square_eval(%args: !llvm.ptr) -> i64 {
+  llvm.func @square_eval(%args: !llvm.ptr) -> !llvm.ptr<1> {
     %c0 = llvm.mlir.constant(0 : i64) : i64
     %c8 = llvm.mlir.constant(8 : i64) : i64
 
@@ -23,8 +23,7 @@ module {
 
     // Box result
     %boxed_ptr1 = llvm.call @eco_alloc_int(%result) : (i64) -> !llvm.ptr<1>
-    %boxed = llvm.ptrtoint %boxed_ptr1 : !llvm.ptr<1> to i64
-    llvm.return %boxed : i64
+    llvm.return %boxed_ptr1 : !llvm.ptr<1>
   }
 
   llvm.func @eco_alloc_int(i64) -> !llvm.ptr<1>

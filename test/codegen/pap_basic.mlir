@@ -7,7 +7,7 @@ module {
   // A simple function that adds two integers.
   // Takes args array: args[0] = a, args[1] = b
   // Returns boxed (a + b)
-  llvm.func @add_two(%args: !llvm.ptr) -> i64 {
+  llvm.func @add_two(%args: !llvm.ptr) -> !llvm.ptr<1> {
     // Load args[0] (first argument)
     %c0 = llvm.mlir.constant(0 : i64) : i64
     %ptr0 = llvm.getelementptr %args[%c0] : (!llvm.ptr, i64) -> !llvm.ptr, i64
@@ -35,9 +35,7 @@ module {
 
     // Box the result by calling eco_alloc_int
     %result_ptr1 = llvm.call @eco_alloc_int(%sum) : (i64) -> !llvm.ptr<1>
-    %result = llvm.ptrtoint %result_ptr1 : !llvm.ptr<1> to i64
-
-    llvm.return %result : i64
+    llvm.return %result_ptr1 : !llvm.ptr<1>
   }
 
   llvm.func @eco_alloc_int(i64) -> !llvm.ptr<1>

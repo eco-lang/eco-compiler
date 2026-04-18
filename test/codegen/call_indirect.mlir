@@ -6,7 +6,7 @@
 module {
   // Evaluator function that adds 1 to its argument
   // Takes pointer to args array, returns pointer to result
-  llvm.func @add_one_eval(%args: !llvm.ptr) -> i64 {
+  llvm.func @add_one_eval(%args: !llvm.ptr) -> !llvm.ptr<1> {
     // Load args[0]
     %c0 = llvm.mlir.constant(0 : i64) : i64
     %ptr0 = llvm.getelementptr %args[%c0] : (!llvm.ptr, i64) -> !llvm.ptr, i64
@@ -25,8 +25,7 @@ module {
 
     // Box result
     %boxed_ptr1 = llvm.call @eco_alloc_int(%result) : (i64) -> !llvm.ptr<1>
-    %boxed = llvm.ptrtoint %boxed_ptr1 : !llvm.ptr<1> to i64
-    llvm.return %boxed : i64
+    llvm.return %boxed_ptr1 : !llvm.ptr<1>
   }
 
   llvm.func @eco_alloc_int(i64) -> !llvm.ptr<1>

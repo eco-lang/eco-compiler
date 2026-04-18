@@ -5,7 +5,7 @@
 
 module {
   // Function that takes 3 boxed args and returns their sum
-  llvm.func @sum3_eval(%args: !llvm.ptr) -> i64 {
+  llvm.func @sum3_eval(%args: !llvm.ptr) -> !llvm.ptr<1> {
     %c0 = llvm.mlir.constant(0 : i64) : i64
     %c1 = llvm.mlir.constant(1 : i64) : i64
     %c2 = llvm.mlir.constant(2 : i64) : i64
@@ -38,8 +38,7 @@ module {
     %sum = llvm.add %ab, %c : i64
 
     %boxed_ptr1 = llvm.call @eco_alloc_int(%sum) : (i64) -> !llvm.ptr<1>
-    %boxed = llvm.ptrtoint %boxed_ptr1 : !llvm.ptr<1> to i64
-    llvm.return %boxed : i64
+    llvm.return %boxed_ptr1 : !llvm.ptr<1>
   }
 
   llvm.func @eco_alloc_int(i64) -> !llvm.ptr<1>

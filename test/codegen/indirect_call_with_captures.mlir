@@ -5,7 +5,7 @@
 
 module {
   // Function: add(a, b) = a + b
-  llvm.func @add_eval(%args: !llvm.ptr) -> i64 {
+  llvm.func @add_eval(%args: !llvm.ptr) -> !llvm.ptr<1> {
     %c8 = llvm.mlir.constant(8 : i64) : i64
 
     // Load args[0]
@@ -28,12 +28,11 @@ module {
 
     %sum = llvm.add %a, %b : i64
     %result_ptr1 = llvm.call @eco_alloc_int(%sum) : (i64) -> !llvm.ptr<1>
-    %result = llvm.ptrtoint %result_ptr1 : !llvm.ptr<1> to i64
-    llvm.return %result : i64
+    llvm.return %result_ptr1 : !llvm.ptr<1>
   }
 
   // Function: mul(a, b) = a * b
-  llvm.func @mul_eval(%args: !llvm.ptr) -> i64 {
+  llvm.func @mul_eval(%args: !llvm.ptr) -> !llvm.ptr<1> {
     %c8 = llvm.mlir.constant(8 : i64) : i64
 
     %c0 = llvm.mlir.constant(0 : i64) : i64
@@ -54,8 +53,7 @@ module {
 
     %prod = llvm.mul %a, %b : i64
     %result_ptr1 = llvm.call @eco_alloc_int(%prod) : (i64) -> !llvm.ptr<1>
-    %result = llvm.ptrtoint %result_ptr1 : !llvm.ptr<1> to i64
-    llvm.return %result : i64
+    llvm.return %result_ptr1 : !llvm.ptr<1>
   }
 
   llvm.func @eco_alloc_int(i64) -> !llvm.ptr<1>
