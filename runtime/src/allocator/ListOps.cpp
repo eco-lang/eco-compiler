@@ -105,8 +105,12 @@ HPointer map(MapperWithBoxed mapper, HPointer list) {
         Header* hdr = getHeader(cell);
         bool is_boxed = !(hdr->unboxed & 1);
 
-        mapped.push_back(mapper(c->head, is_boxed));
-        current = c->tail;
+        // Save head and tail BEFORE mapper callback which can trigger GC.
+        Unboxable head = c->head;
+        HPointer next = c->tail;
+
+        mapped.push_back(mapper(head, is_boxed));
+        current = next;
     }
 
     // Build result list in reverse
@@ -136,9 +140,13 @@ HPointer indexedMap(IndexedMapper mapper, HPointer list) {
         Header* hdr = getHeader(cell);
         bool is_boxed = !(hdr->unboxed & 1);
 
-        mapped.push_back(mapper(index, c->head, is_boxed));
+        // Save head and tail BEFORE mapper callback which can trigger GC.
+        Unboxable head = c->head;
+        HPointer next = c->tail;
+
+        mapped.push_back(mapper(index, head, is_boxed));
         ++index;
-        current = c->tail;
+        current = next;
     }
 
     // Build result list in reverse
@@ -167,10 +175,14 @@ HPointer filter(Predicate pred, HPointer list) {
         Header* hdr = getHeader(cell);
         bool is_boxed = !(hdr->unboxed & 1);
 
-        if (pred(c->head, is_boxed)) {
-            passing.emplace_back(c->head, is_boxed);
+        // Save head and tail BEFORE pred callback which can trigger GC.
+        Unboxable head = c->head;
+        HPointer next = c->tail;
+
+        if (pred(head, is_boxed)) {
+            passing.emplace_back(head, is_boxed);
         }
-        current = c->tail;
+        current = next;
     }
 
     // Build result list in reverse
@@ -199,7 +211,11 @@ HPointer filterMap(FilterMapper mapper, HPointer list) {
         Header* hdr = getHeader(cell);
         bool is_boxed = !(hdr->unboxed & 1);
 
-        HPointer maybeResult = mapper(c->head, is_boxed);
+        // Save head and tail BEFORE mapper callback which can trigger GC.
+        Unboxable head = c->head;
+        HPointer next = c->tail;
+
+        HPointer maybeResult = mapper(head, is_boxed);
 
         // Check if it's Just (not Nothing)
         if (!alloc::isConstant(maybeResult)) {
@@ -214,7 +230,7 @@ HPointer filterMap(FilterMapper mapper, HPointer list) {
             }
         }
 
-        current = c->tail;
+        current = next;
     }
 
     // Build result list in reverse
@@ -407,12 +423,16 @@ HPointer partition(Predicate pred, HPointer list) {
         Header* hdr = getHeader(cell);
         bool is_boxed = !(hdr->unboxed & 1);
 
-        if (pred(c->head, is_boxed)) {
-            passing.emplace_back(c->head, is_boxed);
+        // Save head and tail BEFORE pred callback which can trigger GC.
+        Unboxable head = c->head;
+        HPointer next = c->tail;
+
+        if (pred(head, is_boxed)) {
+            passing.emplace_back(head, is_boxed);
         } else {
-            failing.emplace_back(c->head, is_boxed);
+            failing.emplace_back(head, is_boxed);
         }
-        current = c->tail;
+        current = next;
     }
 
     // Build passing list
@@ -443,8 +463,12 @@ Unboxable foldl(Folder fold, Unboxable acc, HPointer list) {
         Header* hdr = getHeader(cell);
         bool is_boxed = !(hdr->unboxed & 1);
 
-        result = fold(c->head, is_boxed, result);
-        current = c->tail;
+        // Save head and tail BEFORE fold callback which can trigger GC.
+        Unboxable head = c->head;
+        HPointer next = c->tail;
+
+        result = fold(head, is_boxed, result);
+        current = next;
     }
 
     return result;
@@ -477,8 +501,13 @@ HPointer reverse(HPointer list) {
         Header* hdr = getHeader(cell);
         bool is_boxed = !(hdr->unboxed & 1);
 
-        result = alloc::cons(c->head, result, is_boxed);
-        current = c->tail;
+        // Save head and tail BEFORE alloc::cons which can trigger GC.
+        // After GC, the raw Cons* c is stale (cell may have moved).
+        Unboxable head = c->head;
+        HPointer next = c->tail;
+
+        result = alloc::cons(head, result, is_boxed);
+        current = next;
     }
 
     return result;

@@ -4,10 +4,10 @@
 - **elm-test**: 11667 passed, 1 failed
 - **E2E**: 923 passed, 16 failed
 
-## Current (2026-04-17, ptr<1> migration in progress)
+## Current (2026-04-18, RS4GC migration)
 - **elm-test**: 12664 passed, 0 failed (unaffected by backend changes)
-- **E2E (codegen only)**: 312 passed, 1 failed out of 313 (1 pre-existing)
-- **E2E (full)**: 1017 passed, 2 failed out of 1019 (was 901/118 baseline → net +116)
+- **E2E (full)**: 1018 passed, 1 failed out of 1019 (LetDestructFuncTupleTest pre-existing)
+- **Stress**: 0 passed, 1 failed (ListReverseStressTest — correctness bug)
 
 ## Fix Order (by root cause, earliest compiler phase first)
 
@@ -455,3 +455,47 @@ The accessor monomorphization needs to be fixed in `Specialize.elm:1975-2001`:
 - This requires propagating the enclosing function's record parameter type into the case branch where the accessor appears
 - Alternatively, the `PendingAccessor` mechanism (currently only for call arguments) should be extended to handle standalone accessors in tuple expressions
 - The setter lambdas should also inherit the correct `unboxed_bitmap` from the original record type
+
+---
+
+## OPEN: Category 19 — GC root tracking bug in LLVM-compiled List operations
+
+**Test**: stress-elm/ListReverseStressTest
+**Error**: `roundtrip: False` (1000 reverses) or SIGABRT (50-100 reverses) — depends on
+how many GC cycles occur during the reverses
+
+### Root Cause
+
+**Two separate issues found:**
+
+**Issue A (C++ kernel — FIXED):** In `ListOps.cpp`, raw `Cons*` pointers were read AFTER
+GC-triggering operations (`alloc::cons`, `fold` callback, `mapper` callback). The raw
+pointer becomes stale when GC evacuates the cons cell. Fixed by saving `c->head` and
+`c->tail` into local variables BEFORE any GC-triggering call. Applied to `reverse`,
+`foldl`, `map`, `indexedMap`, `filter`, `filterMap`, `partition`.
+
+**Issue B (LLVM-compiled code — OPEN):** The LLVM-compiled `List.reverse` (which calls
+`List.foldl` internally) has a stale-HPointer bug under RS4GC. With 2 or 10 reverses
+(no GC triggered), the test passes. With 50+ reverses (GC triggered), it crashes with
+SIGABRT (stale nursery pointer assertion). With 1000 reverses (many GC cycles), it runs
+to completion but produces wrong results (`start` list appears empty).
+
+This is the same class of bug as Stage 7 (bootstrap Failure #3): an HPointer that has
+been `ptrtoint`'d to `i64` for the args array escapes GC root tracking. The
+`eco_gc_push_stack_range` mechanism protects the args array, but some intermediate value
+in the call chain is not being relocated.
+
+### Evidence
+
+- 2 reverses → PASS (no GC triggered)
+- 10 reverses → PASS (no GC triggered)
+- 50 reverses → SIGABRT (GC assertion — stale pointer)
+- 100 reverses → SIGABRT
+- 1000 reverses → wrong result, no crash (GC corrupts but doesn't hit assertion)
+
+The LLVM IR for `List_foldl_$_19` shows correct gc-live bundles — the cons tail `%19`
+is tracked across both `eco_alloc_int` and `eco_apply_closure` statepoints. The bug is
+in a deeper interaction between the stack range mechanism and RS4GC statepoint relocation.
+
+**Status:** OPEN (same root cause as bootstrap Failure #3)
+**Attempts:** 1 (C++ kernel fix applied but LLVM-side bug remains)
