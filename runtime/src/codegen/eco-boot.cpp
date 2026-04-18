@@ -151,6 +151,12 @@ static cl::opt<std::string> dumpRS4GCIR(
     cl::value_desc("filename"),
     cl::init(""));
 
+static cl::opt<std::string> dumpPreRS4GCIR(
+    "dump-pre-rs4gc-ir",
+    cl::desc("Dump LLVM IR to file before RS4GC pass (for GC diagnostics)"),
+    cl::value_desc("filename"),
+    cl::init(""));
+
 //===----------------------------------------------------------------------===//
 // Frontend Invocation
 //===----------------------------------------------------------------------===//
@@ -594,6 +600,16 @@ int main(int argc, char **argv) {
         if (!tempMlirFile.empty())
             llvm::sys::fs::remove(tempMlirFile);
         return 1;
+    }
+
+    // Optionally dump LLVM IR before RS4GC for comparison.
+    if (!dumpPreRS4GCIR.empty()) {
+        std::error_code ec;
+        llvm::raw_fd_ostream out(dumpPreRS4GCIR, ec);
+        if (!ec) {
+            out << *llvmModule;
+            llvm::errs() << "[pre-rs4gc] Dumped pre-RS4GC IR to " << dumpPreRS4GCIR << "\n";
+        }
     }
 
     // Run RS4GC: inserts gc.statepoint/gc.relocate for all

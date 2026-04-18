@@ -402,7 +402,9 @@ void NurserySpace::checkAndGrow() {
 void NurserySpace::minorGC(OldGenSpace &oldgen) {
 #if ECO_GC_DEBUG
     in_minor_gc_ = true;
-    std::fprintf(stderr, "[gc] minorGC start from_is_low=%d\n", (int)from_is_low_);
+    static size_t gc_cycle_count = 0;
+    gc_cycle_count++;
+    std::fprintf(stderr, "[gc] minorGC start #%zu from_is_low=%d\n", gc_cycle_count, (int)from_is_low_);
 #endif
 
 #if ENABLE_GC_STATS
@@ -500,6 +502,126 @@ void NurserySpace::minorGC(OldGenSpace &oldgen) {
     clearToSpaceFreeRegion();
 
 #if ECO_GC_DEBUG
+    // Post-GC validation: check that all stack root ranges have been relocated.
+    // If any entry still points to from-space, it was missed during evacuation.
+    for (const auto &range : root_set.getStackRootRanges()) {
+        HPointer *base = range.base;
+        uint64_t mask  = range.hpointer_mask;
+        for (size_t i = 0; i < range.count; ++i) {
+            if (!(mask & (1ULL << i))) continue;
+            HPointer hp = base[i];
+            if (hp.constant != 0 || hp.ptr == 0) continue;
+            void *obj = Allocator::fromPointerRaw(hp);
+            if (obj && isInFromSpace(obj)) {
+                Header *hdr = getHeader(obj);
+                if (hdr->tag != Tag_Forward) {
+                    uint64_t raw = 0;
+                    memcpy(&raw, &hp, sizeof(raw));
+                    std::fprintf(stderr,
+                        "[gc-post-check] UNRELOCATED stack range root! range base=%p idx=%zu raw=0x%lx obj=%p tag=%u\n",
+                        (void*)base, i, (unsigned long)raw, obj, (unsigned)hdr->tag);
+                }
+            }
+        }
+    }
+    // Also check stackmap-pushed stack roots
+    for (HPointer *root : root_set.getStackRoots()) {
+        HPointer hp = *root;
+        if (hp.constant != 0 || hp.ptr == 0) continue;
+        void *obj = Allocator::fromPointerRaw(hp);
+        if (obj && isInFromSpace(obj)) {
+            Header *hdr = getHeader(obj);
+            if (hdr->tag != Tag_Forward) {
+                uint64_t raw = 0;
+                memcpy(&raw, &hp, sizeof(raw));
+                std::fprintf(stderr,
+                    "[gc-post-check] UNRELOCATED stack root! slot=%p raw=0x%lx obj=%p tag=%u\n",
+                    (void*)root, (unsigned long)raw, obj, (unsigned)hdr->tag);
+            }
+        }
+    }
+    // Post-GC heap integrity check: walk all surviving objects in to-space
+    // and verify every boxed child pointer is NOT in from-space.
+    {
+        std::vector<char*>& to = from_is_low_ ? high_blocks_ : low_blocks_;
+        for (size_t blk = 0; blk <= current_to_idx_ && blk < to.size(); ++blk) {
+            char* scan = to[blk];
+            char* end = (blk < current_to_idx_) ? to[blk] + block_size_ : copy_ptr_;
+            while (scan < end) {
+                Header* h = getHeader(scan);
+                auto checkChild = [&](HPointer &hp, const char* desc, int idx) {
+                    if (hp.constant != 0 || hp.ptr == 0) return;
+                    void* child = Allocator::fromPointerRaw(hp);
+                    if (child && isInFromSpace(child)) {
+                        Header* ch = getHeader(child);
+                        if (ch->tag != Tag_Forward) {
+                            uint64_t raw = 0;
+                            memcpy(&raw, &hp, sizeof(raw));
+                            std::fprintf(stderr,
+                                "[gc-heap-check] STALE CHILD in to-space obj=%p tag=%u size=%u %s[%d] -> raw=0x%lx child=%p child_tag=%u\n",
+                                (void*)scan, (unsigned)h->tag, (unsigned)h->size, desc, idx,
+                                (unsigned long)raw, child, (unsigned)ch->tag);
+                        }
+                    }
+                };
+                switch (h->tag) {
+                    case Tag_Cons: {
+                        Cons* c = static_cast<Cons*>(static_cast<void*>(scan));
+                        if (!(h->unboxed & 1)) checkChild(c->head.p, "head", 0);
+                        checkChild(c->tail, "tail", 0);
+                        break;
+                    }
+                    case Tag_Tuple2: {
+                        Tuple2* t = static_cast<Tuple2*>(static_cast<void*>(scan));
+                        if (!(h->unboxed & 1)) checkChild(t->a.p, "a", 0);
+                        if (!(h->unboxed & 2)) checkChild(t->b.p, "b", 1);
+                        break;
+                    }
+                    case Tag_Tuple3: {
+                        Tuple3* t = static_cast<Tuple3*>(static_cast<void*>(scan));
+                        if (!(h->unboxed & 1)) checkChild(t->a.p, "a", 0);
+                        if (!(h->unboxed & 2)) checkChild(t->b.p, "b", 1);
+                        if (!(h->unboxed & 4)) checkChild(t->c.p, "c", 2);
+                        break;
+                    }
+                    case Tag_Custom: {
+                        Custom* c = static_cast<Custom*>(static_cast<void*>(scan));
+                        for (u32 i = 0; i < h->size && i < 48; i++) {
+                            if (!(c->unboxed & (1ULL << i)))
+                                checkChild(c->values[i].p, "custom", i);
+                        }
+                        break;
+                    }
+                    case Tag_Record: {
+                        Record* r = static_cast<Record*>(static_cast<void*>(scan));
+                        for (u32 i = 0; i < h->size && i < 64; i++) {
+                            if (!(r->unboxed & (1ULL << i)))
+                                checkChild(r->values[i].p, "record", i);
+                        }
+                        break;
+                    }
+                    case Tag_Closure: {
+                        Closure* cl = static_cast<Closure*>(static_cast<void*>(scan));
+                        for (u32 i = 0; i < h->size; i++) {
+                            if (!(cl->unboxed & (1ULL << i)))
+                                checkChild(cl->values[i].p, "closure", i);
+                        }
+                        break;
+                    }
+                    case Tag_DynRecord: {
+                        DynRecord* dr = static_cast<DynRecord*>(static_cast<void*>(scan));
+                        checkChild(dr->fieldgroup, "fieldgroup", 0);
+                        for (u32 i = 0; i < h->size; i++)
+                            checkChild(dr->values[i], "dynrec", i);
+                        break;
+                    }
+                    default: break;
+                }
+                scan += getObjectSize(scan);
+            }
+        }
+    }
+
     in_minor_gc_ = false;
 #endif
 
@@ -1193,6 +1315,12 @@ void NurserySpace::debugAssertValidNurseryPointer(void* ptr) const {
     }
 
     if (!ok) {
+        // Compute the HPointer value from the physical address
+        char* heap_base = allocator_->getHeapBase();
+        uint64_t hptr_val = (reinterpret_cast<char*>(ptr) - heap_base) / 8;
+        std::fprintf(stderr, "[gc-debug] STALE hptr value=0x%lx (physical %p, heap_base=%p)\n",
+                     (unsigned long)hptr_val, ptr, (void*)heap_base);
+
         const std::vector<char*>& from_blocks = from_is_low_ ? low_blocks_ : high_blocks_;
         const std::vector<char*>& to_blocks   = from_is_low_ ? high_blocks_ : low_blocks_;
         std::fprintf(stderr,

@@ -1073,6 +1073,25 @@ extern "C" HPtr eco_apply_closure(HPtr closure_hptr, uint64_t* args, uint32_t nu
         result = eco_apply_closure(intermediate, args + remaining, num_args - remaining);
     }
 
+#if ECO_GC_DEBUG
+    // Validate args after inner call — catches stale args from stack range failure
+    for (uint32_t dbg_i = 0; dbg_i < num_args; ++dbg_i) {
+        uint64_t raw = args[dbg_i];
+        HPointer hp;
+        memcpy(&hp, &raw, sizeof(hp));
+        if (hp.constant == 0 && hp.ptr != 0) {
+            hpointerToPtr(raw);
+        }
+    }
+    // Also validate closure_bits
+    {
+        HPointer hp;
+        memcpy(&hp, &closure_bits, sizeof(hp));
+        if (hp.constant == 0 && hp.ptr != 0)
+            hpointerToPtr(closure_bits);
+    }
+#endif
+
     eco_gc_restore_stack_range_point(saved_range);
     return result;
 }
@@ -1250,6 +1269,17 @@ extern "C" HPtr eco_closure_call_saturated(HPtr closure_hptr, uint64_t* new_args
     // Re-resolve closure after buildEvaluatorArgs: boxing allocs inside
     // may have triggered GC and moved the closure.
     closure = static_cast<Closure*>(hpointerToPtr(closure_bits));
+#if ECO_GC_DEBUG
+    // Validate combined_args before calling evaluator.
+    for (uint32_t dbg_i = 0; dbg_i < max_values; ++dbg_i) {
+        uint64_t raw = reinterpret_cast<uint64_t>(combined_args[dbg_i]);
+        HPointer hp;
+        memcpy(&hp, &raw, sizeof(hp));
+        if (hp.constant == 0 && hp.ptr != 0) {
+            hpointerToPtr(raw); // triggers debugAssertValidNurseryPointer
+        }
+    }
+#endif
     void* result = closure->evaluator(combined_args);
 
     eco_gc_restore_stack_range_point(saved_range);

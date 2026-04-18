@@ -203,24 +203,61 @@ bool StackMap::parse(const uint8_t* data, size_t size, uint64_t loadBase) {
         reader.alignTo(8);
 
         // Compute return address: function base + instruction offset
+        uint64_t returnAddr = 0;
         if (funcIdx < numFunctions) {
-            uint64_t returnAddr =
-                functions_[funcIdx].address + record.instructionOffset;
+            returnAddr = functions_[funcIdx].address + record.instructionOffset;
             records_[returnAddr] = std::move(record);
         }
 #if ECO_GC_DEBUG
         static size_t debugCount = 0;
         if (debugCount < 20 && funcIdx < numFunctions) {
-            uint64_t addr = functions_[funcIdx].address + record.instructionOffset;
+            auto& stored = records_[returnAddr];
             fprintf(stderr, "[stackmap-parse] record %u: func=0x%lx instOff=%u -> key=0x%lx numLocs=%u\n",
-                    i, functions_[funcIdx].address, record.instructionOffset,
-                    addr, (unsigned)record.locations.size());
+                    i, functions_[funcIdx].address, stored.instructionOffset,
+                    returnAddr, (unsigned)stored.locations.size());
+            for (size_t j = 0; j < stored.locations.size() && j < 16; j++) {
+                const auto& loc = stored.locations[j];
+                const char* kindName = loc.kind == 1 ? "Register" :
+                                       loc.kind == 2 ? "Direct" :
+                                       loc.kind == 3 ? "Indirect" :
+                                       loc.kind == 4 ? "Constant" :
+                                       loc.kind == 5 ? "ConstIdx" : "???";
+                fprintf(stderr, "[stackmap-parse]   loc[%zu] %s reg=%u off=%d size=%u\n",
+                        j, kindName, (unsigned)loc.dwarfRegNum,
+                        (int)loc.offset, (unsigned)loc.sizeInBytes);
+            }
             debugCount++;
         }
 #endif
 
         recordsForFunc++;
     }
+
+#if ECO_GC_DEBUG
+    {
+        size_t totalLocs = 0, nRegister = 0, nDirect = 0, nIndirect = 0, nConst = 0, nConstIdx = 0, nOther = 0;
+        size_t zeroLocRecords = 0;
+        for (auto& [addr, rec] : records_) {
+            if (rec.locations.empty()) zeroLocRecords++;
+            for (auto& loc : rec.locations) {
+                totalLocs++;
+                switch (loc.kind) {
+                    case StackMapLocation::Register:     nRegister++; break;
+                    case StackMapLocation::Direct:       nDirect++; break;
+                    case StackMapLocation::Indirect:     nIndirect++; break;
+                    case StackMapLocation::Constant:     nConst++; break;
+                    case StackMapLocation::ConstantIndex: nConstIdx++; break;
+                    default: nOther++; break;
+                }
+            }
+        }
+        fprintf(stderr,
+            "[stackmap-summary] %zu records (%zu with 0 locs), %zu total locations\n"
+            "  Register=%zu Direct=%zu Indirect=%zu Constant=%zu ConstIndex=%zu Other=%zu\n",
+            records_.size(), zeroLocRecords, totalLocs,
+            nRegister, nDirect, nIndirect, nConst, nConstIdx, nOther);
+    }
+#endif
 
     return true;
 }
