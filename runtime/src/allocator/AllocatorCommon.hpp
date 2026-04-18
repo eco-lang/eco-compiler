@@ -40,8 +40,8 @@ enum class Color : u32 {
 // ============================================================================
 
 // Heap sizing.
-constexpr size_t DEFAULT_MAX_HEAP_SIZE = 1ULL * 1024 * 1024 * 1024;  // 1 GB address space.
-constexpr size_t INITIAL_OLD_GEN_SIZE = 1 * 1024 * 1024;             // 1 MB initial commit.
+constexpr size_t DEFAULT_MAX_HEAP_SIZE = 8ULL * 1024 * 1024 * 1024;  // 8 GB address space.
+constexpr size_t INITIAL_OLD_GEN_SIZE = 16 * 1024 * 1024;            // 16 MB initial commit.
 
 // AllocBuffer sizing.
 constexpr size_t ALLOC_BUFFER_SIZE = 128 * 1024;  // 128 KB default AllocBuffer.
@@ -51,7 +51,7 @@ constexpr size_t ALLOC_BUFFER_SIZE = 128 * 1024;  // 128 KB default AllocBuffer.
 constexpr size_t NURSERY_BLOCK_COUNT = 32;  // 32 blocks = 4 MB total (16 per semi-space).
 
 // Promotion and GC triggers.
-constexpr u32 PROMOTION_AGE = 1;                            // Promote after surviving 1 minor GC.
+constexpr u32 PROMOTION_AGE = 2;                            // Promote after surviving 2 minor GCs.
 constexpr float NURSERY_GC_THRESHOLD = 0.9f;                // Trigger minor GC at 90% full.
 
 // Returns the header of a heap object.
@@ -166,7 +166,7 @@ struct HeapConfig {
     // Default: max(8 KiB, alloc_buffer_size / 4). With the default
     // alloc_buffer_size of 128 KiB this resolves to 32 KiB.
     size_t large_object_threshold =
-        (ALLOC_BUFFER_SIZE / 4 > 8 * 1024) ? (ALLOC_BUFFER_SIZE / 4) : (8 * 1024);
+        (ALLOC_BUFFER_SIZE / 16 > 8 * 1024) ? (ALLOC_BUFFER_SIZE / 16) : (8 * 1024);
 
     // Derived value: total nursery size in bytes.
     size_t nurserySize() const { return nursery_block_count * alloc_buffer_size; }
