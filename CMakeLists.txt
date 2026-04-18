@@ -133,6 +133,17 @@ add_custom_target(run-tests
     USES_TERMINAL
 )
 
+# Usage: cmake --build build --target stress
+# Usage with filter: TEST_FILTER=reverse cmake --build build --target stress
+# Runs the separate stress-test binary (longer/larger Elm programs).
+add_custom_target(stress
+    COMMAND ${CMAKE_COMMAND} -E rm -rf "${CMAKE_SOURCE_DIR}/test/stress-elm/eco-stuff"
+    COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target stress-test
+    COMMAND sh -c "${CMAKE_BINARY_DIR}/test/stress-test $\${TEST_FILTER:+--filter \"$$TEST_FILTER\"}"
+    COMMENT "Build and run Elm stress tests"
+    USES_TERMINAL
+)
+
 # Usage: cmake --build build --target full
 # Usage with filter: TEST_FILTER=elm cmake --build build --target full
 add_custom_target(full

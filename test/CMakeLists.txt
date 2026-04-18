@@ -38,3 +38,12 @@ target_compile_options(test PRIVATE -fexceptions)
 # Use --whole-archive for EcoRunner so that Scheduler/PlatformRuntime symbols
 # are available when ElmKernel transitive dependencies are processed by the linker.
 target_link_libraries(test rapidcheck -Wl,--whole-archive EcoRunner -Wl,--no-whole-archive)
+
+# Stress test runner — a separate binary so these can be built/run independently
+# of the main E2E suite. Reuses ElmE2ETestBase/TestSuite/IsolatedTestRunner.
+add_executable(stress-test
+        stress-elm/main.cpp
+)
+target_compile_features(stress-test PRIVATE cxx_std_20)
+target_compile_options(stress-test PRIVATE -fexceptions)
+target_link_libraries(stress-test -Wl,--whole-archive EcoRunner -Wl,--no-whole-archive)
