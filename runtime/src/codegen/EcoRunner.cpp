@@ -219,6 +219,7 @@ private:
 
             auto err = baseTransformer(m);
             if (err) return err;
+
             return llvm::Error::success();
         };
 

@@ -103,10 +103,10 @@ HPointer unsafeSet(u32 index, HPointer value, void* array) {
     std::vector<Unboxable> elems(src->elements, src->elements + len);
 
     auto& rs = Allocator::instance().getRootSet();
-    size_t saved = rs.stackRootPoint();
-    rs.pushStackRoot(&value);
+    size_t saved = rs.stackRangePoint();
+    rs.pushStackRootRange(&value, 1, 1);
     if (!srcUnboxed) {
-        for (auto& e : elems) rs.pushStackRoot(&e.p);
+        for (auto& e : elems) rs.pushStackRootRange(&e.p, 1, 1);
     }
 
     HPointer newArr = alloc::allocArray(len);
@@ -121,7 +121,7 @@ HPointer unsafeSet(u32 index, HPointer value, void* array) {
         }
     }
 
-    rs.restoreStackRootPoint(saved);
+    rs.restoreStackRangePoint(saved);
     return newArr;
 }
 
@@ -138,10 +138,10 @@ HPointer push(HPointer value, void* array) {
     std::vector<Unboxable> elems(src->elements, src->elements + len);
 
     auto& rs = Allocator::instance().getRootSet();
-    size_t saved = rs.stackRootPoint();
-    rs.pushStackRoot(&value);
+    size_t saved = rs.stackRangePoint();
+    rs.pushStackRootRange(&value, 1, 1);
     if (!srcUnboxed) {
-        for (auto& e : elems) rs.pushStackRoot(&e.p);
+        for (auto& e : elems) rs.pushStackRootRange(&e.p, 1, 1);
     }
 
     HPointer newArr = alloc::allocArray(len + 1);
@@ -154,7 +154,7 @@ HPointer push(HPointer value, void* array) {
     void* dstObj = allocator.resolve(newArr);
     alloc::arrayPush(dstObj, alloc::boxed(value), true);
 
-    rs.restoreStackRootPoint(saved);
+    rs.restoreStackRangePoint(saved);
     return newArr;
 }
 
@@ -172,9 +172,9 @@ HPointer foldl(FoldFunc func, HPointer acc, void* array) {
 
     auto& allocator = Allocator::instance();
     auto& rs = allocator.getRootSet();
-    size_t saved = rs.stackRootPoint();
+    size_t saved = rs.stackRangePoint();
     if (!srcUnboxed) {
-        for (auto& e : elems) rs.pushStackRoot(&e.p);
+        for (auto& e : elems) rs.pushStackRootRange(&e.p, 1, 1);
     }
 
     HPointer result = acc;
@@ -192,7 +192,7 @@ HPointer foldl(FoldFunc func, HPointer acc, void* array) {
         result = func(elem, accObj);
     }
 
-    rs.restoreStackRootPoint(saved);
+    rs.restoreStackRangePoint(saved);
     return result;
 }
 
@@ -206,9 +206,9 @@ HPointer foldr(FoldFunc func, HPointer acc, void* array) {
 
     auto& allocator = Allocator::instance();
     auto& rs = allocator.getRootSet();
-    size_t saved = rs.stackRootPoint();
+    size_t saved = rs.stackRangePoint();
     if (!srcUnboxed) {
-        for (auto& e : elems) rs.pushStackRoot(&e.p);
+        for (auto& e : elems) rs.pushStackRootRange(&e.p, 1, 1);
     }
 
     HPointer result = acc;
@@ -228,7 +228,7 @@ HPointer foldr(FoldFunc func, HPointer acc, void* array) {
         result = func(elem, accObj);
     }
 
-    rs.restoreStackRootPoint(saved);
+    rs.restoreStackRangePoint(saved);
     return result;
 }
 
@@ -246,13 +246,13 @@ HPointer map(MapFunc func, void* array) {
     std::vector<Unboxable> elems(arr->elements, arr->elements + len);
 
     auto& rs = allocator.getRootSet();
-    size_t saved = rs.stackRootPoint();
+    size_t saved = rs.stackRangePoint();
     if (!srcUnboxed) {
-        for (auto& e : elems) rs.pushStackRoot(&e.p);
+        for (auto& e : elems) rs.pushStackRootRange(&e.p, 1, 1);
     }
 
     HPointer newArr = alloc::allocArray(len);
-    rs.pushStackRoot(&newArr);
+    rs.pushStackRootRange(&newArr, 1, 1);
 
     for (u32 i = 0; i < len; ++i) {
         void* elem;
@@ -268,7 +268,7 @@ HPointer map(MapFunc func, void* array) {
         alloc::arrayPush(dstObj, alloc::boxed(result), true);
     }
 
-    rs.restoreStackRootPoint(saved);
+    rs.restoreStackRangePoint(saved);
     return newArr;
 }
 
@@ -282,13 +282,13 @@ HPointer indexedMap(IndexedMapFunc func, u32 offset, void* array) {
     std::vector<Unboxable> elems(arr->elements, arr->elements + len);
 
     auto& rs = allocator.getRootSet();
-    size_t saved = rs.stackRootPoint();
+    size_t saved = rs.stackRangePoint();
     if (!srcUnboxed) {
-        for (auto& e : elems) rs.pushStackRoot(&e.p);
+        for (auto& e : elems) rs.pushStackRootRange(&e.p, 1, 1);
     }
 
     HPointer newArr = alloc::allocArray(len);
-    rs.pushStackRoot(&newArr);
+    rs.pushStackRootRange(&newArr, 1, 1);
 
     for (u32 i = 0; i < len; ++i) {
         void* elem;
@@ -304,7 +304,7 @@ HPointer indexedMap(IndexedMapFunc func, u32 offset, void* array) {
         alloc::arrayPush(dstObj, alloc::boxed(result), true);
     }
 
-    rs.restoreStackRootPoint(saved);
+    rs.restoreStackRangePoint(saved);
     return newArr;
 }
 
@@ -335,9 +335,9 @@ HPointer slice(i64 start, i64 end, void* array) {
     std::vector<Unboxable> elems(arr->elements + start, arr->elements + end);
 
     auto& rs = Allocator::instance().getRootSet();
-    size_t saved = rs.stackRootPoint();
+    size_t saved = rs.stackRangePoint();
     if (!srcUnboxed) {
-        for (auto& e : elems) rs.pushStackRoot(&e.p);
+        for (auto& e : elems) rs.pushStackRootRange(&e.p, 1, 1);
     }
 
     HPointer newArr = alloc::allocArray(newLen);
@@ -348,7 +348,7 @@ HPointer slice(i64 start, i64 end, void* array) {
         alloc::arrayPush(dstObj, elems[i], !srcUnboxed);
     }
 
-    rs.restoreStackRootPoint(saved);
+    rs.restoreStackRangePoint(saved);
     return newArr;
 }
 
@@ -373,12 +373,12 @@ HPointer appendN(u32 n, void* dest, void* source) {
     std::vector<Unboxable> srcElems(srcArr->elements, srcArr->elements + itemsToCopy);
 
     auto& rs = Allocator::instance().getRootSet();
-    size_t saved = rs.stackRootPoint();
+    size_t saved = rs.stackRangePoint();
     if (!destUnboxed) {
-        for (auto& e : destElems) rs.pushStackRoot(&e.p);
+        for (auto& e : destElems) rs.pushStackRootRange(&e.p, 1, 1);
     }
     if (!srcUnboxed) {
-        for (auto& e : srcElems) rs.pushStackRoot(&e.p);
+        for (auto& e : srcElems) rs.pushStackRootRange(&e.p, 1, 1);
     }
 
     HPointer newArr = alloc::allocArray(totalLen);
@@ -393,7 +393,7 @@ HPointer appendN(u32 n, void* dest, void* source) {
         alloc::arrayPush(resultObj, srcElems[i], !srcUnboxed);
     }
 
-    rs.restoreStackRootPoint(saved);
+    rs.restoreStackRangePoint(saved);
     return newArr;
 }
 

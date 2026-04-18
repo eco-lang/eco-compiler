@@ -572,13 +572,13 @@ HPointer map2(HPointer listA, HPointer listB) {
 
     // Phase 2: build tuples and list with rooting
     auto& rs = Allocator::instance().getRootSet();
-    size_t saved = rs.stackRootPoint();
+    size_t saved = rs.stackRangePoint();
     for (auto& r : raw) {
-        if (r.a_boxed) rs.pushStackRoot(&r.a.p);
-        if (r.b_boxed) rs.pushStackRoot(&r.b.p);
+        if (r.a_boxed) rs.pushStackRootRange(&r.a.p, 1, 1);
+        if (r.b_boxed) rs.pushStackRootRange(&r.b.p, 1, 1);
     }
     HPointer result = alloc::listNil();
-    rs.pushStackRoot(&result);
+    rs.pushStackRootRange(&result, 1, 1);
 
     for (auto it = raw.rbegin(); it != raw.rend(); ++it) {
         u32 mask = 0;
@@ -588,7 +588,7 @@ HPointer map2(HPointer listA, HPointer listB) {
         result = alloc::cons(alloc::boxed(tuple), result, true);
     }
 
-    rs.restoreStackRootPoint(saved);
+    rs.restoreStackRangePoint(saved);
     return result;
 }
 
@@ -635,14 +635,14 @@ HPointer map3(HPointer listA, HPointer listB, HPointer listC) {
 
     // Phase 2: build tuples and list with rooting
     auto& rs = Allocator::instance().getRootSet();
-    size_t saved = rs.stackRootPoint();
+    size_t saved = rs.stackRangePoint();
     for (auto& r : raw) {
-        if (r.a_boxed) rs.pushStackRoot(&r.a.p);
-        if (r.b_boxed) rs.pushStackRoot(&r.b.p);
-        if (r.c_boxed) rs.pushStackRoot(&r.c.p);
+        if (r.a_boxed) rs.pushStackRootRange(&r.a.p, 1, 1);
+        if (r.b_boxed) rs.pushStackRootRange(&r.b.p, 1, 1);
+        if (r.c_boxed) rs.pushStackRootRange(&r.c.p, 1, 1);
     }
     HPointer result = alloc::listNil();
-    rs.pushStackRoot(&result);
+    rs.pushStackRootRange(&result, 1, 1);
 
     for (auto it = raw.rbegin(); it != raw.rend(); ++it) {
         u32 mask = 0;
@@ -653,7 +653,7 @@ HPointer map3(HPointer listA, HPointer listB, HPointer listC) {
         result = alloc::cons(alloc::boxed(tuple), result, true);
     }
 
-    rs.restoreStackRootPoint(saved);
+    rs.restoreStackRangePoint(saved);
     return result;
 }
 

@@ -178,22 +178,22 @@ HPointer createResponse(const std::string& url, long statusCode, const std::stri
                         const std::vector<std::pair<std::string, std::string>>& headers,
                         HPointer body) {
     auto& rs = Allocator::instance().getRootSet();
-    size_t saved = rs.stackRootPoint();
-    rs.pushStackRoot(&body);
+    size_t saved = rs.stackRangePoint();
+    rs.pushStackRootRange(&body, 1, 1);
 
     // Build headers list with rooting
     HPointer headersList = listNil();
-    rs.pushStackRoot(&headersList);
+    rs.pushStackRootRange(&headersList, 1, 1);
     for (auto it = headers.rbegin(); it != headers.rend(); ++it) {
         HPointer key = utf8ToElmString(it->first);
-        rs.pushStackRoot(&key);
+        rs.pushStackRootRange(&key, 1, 1);
         HPointer val = utf8ToElmString(it->second);
         HPointer pair = tuple2(boxed(key), boxed(val), 0);
         headersList = cons(boxed(pair), headersList, true);
     }
 
     HPointer urlStr = utf8ToElmString(url);
-    rs.pushStackRoot(&urlStr);
+    rs.pushStackRootRange(&urlStr, 1, 1);
     HPointer statusTextStr = utf8ToElmString(statusText);
 
     // Record fields in canonical order: body, headers, statusCode, statusText, url
@@ -205,7 +205,7 @@ HPointer createResponse(const std::string& url, long statusCode, const std::stri
     fields[4].p = urlStr;
 
     HPointer result = record(fields, 0b00100);
-    rs.restoreStackRootPoint(saved);
+    rs.restoreStackRangePoint(saved);
     return result;
 }
 

@@ -63,12 +63,12 @@ inline HPointer repeat(i64 n, Unboxable value, bool is_boxed) {
 
     HPointer result = alloc::listNil();
     auto& rs = Allocator::instance().getRootSet();
-    size_t saved = rs.stackRootPoint();
-    if (is_boxed) rs.pushStackRoot(&value.p);
+    size_t saved = rs.stackRangePoint();
+    if (is_boxed) rs.pushStackRootRange(&value.p, 1, 1);
     for (i64 i = 0; i < n; ++i) {
         result = alloc::cons(value, result, is_boxed);
     }
-    rs.restoreStackRootPoint(saved);
+    rs.restoreStackRangePoint(saved);
     return result;
 }
 

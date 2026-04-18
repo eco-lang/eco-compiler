@@ -238,8 +238,8 @@ HPointer split(void* sep, void* str) {
     size_t numParts = splitPositions.size() + 1;
     std::vector<HPointer> parts(numParts, alloc::listNil());
     auto& rs = Allocator::instance().getRootSet();
-    size_t saved = rs.stackRootPoint();
-    for (auto& hp : parts) rs.pushStackRoot(&hp);
+    size_t saved = rs.stackRangePoint();
+    for (auto& hp : parts) rs.pushStackRootRange(&hp, 1, 1);
 
     size_t start = 0;
     for (size_t idx = 0; idx < splitPositions.size(); ++idx) {
@@ -250,7 +250,7 @@ HPointer split(void* sep, void* str) {
     parts[splitPositions.size()] = alloc::allocString(strData.data() + start,
                                                        str_len - start);
 
-    rs.restoreStackRootPoint(saved);
+    rs.restoreStackRangePoint(saved);
     return alloc::listFromPointers(parts);
 }
 
@@ -266,14 +266,14 @@ HPointer toList(void* str) {
     // Create character strings with rooting
     std::vector<HPointer> charPtrs(len, alloc::listNil());
     auto& rs = Allocator::instance().getRootSet();
-    size_t saved = rs.stackRootPoint();
-    for (auto& hp : charPtrs) rs.pushStackRoot(&hp);
+    size_t saved = rs.stackRangePoint();
+    for (auto& hp : charPtrs) rs.pushStackRootRange(&hp, 1, 1);
 
     for (size_t i = 0; i < len; ++i) {
         charPtrs[i] = fromChar(chars[i]);
     }
 
-    rs.restoreStackRootPoint(saved);
+    rs.restoreStackRangePoint(saved);
     return alloc::listFromPointers(charPtrs);
 }
 

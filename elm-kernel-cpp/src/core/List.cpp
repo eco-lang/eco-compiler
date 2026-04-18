@@ -29,8 +29,8 @@ std::vector<HPointer> toArray(HPointer list) {
     std::vector<HPointer> result(pairs.size(), alloc::listNil());
 
     auto& rs = Allocator::instance().getRootSet();
-    size_t saved = rs.stackRootPoint();
-    for (auto& hp : result) rs.pushStackRoot(&hp);
+    size_t saved = rs.stackRangePoint();
+    for (auto& hp : result) rs.pushStackRootRange(&hp, 1, 1);
 
     for (size_t i = 0; i < pairs.size(); ++i) {
         if (pairs[i].second) {
@@ -40,7 +40,7 @@ std::vector<HPointer> toArray(HPointer list) {
         }
     }
 
-    rs.restoreStackRootPoint(saved);
+    rs.restoreStackRangePoint(saved);
     return result;
 }
 
@@ -73,16 +73,16 @@ HPointer map2(Map2Func func, HPointer xs, HPointer ys) {
 
     // Phase 2: build with rooting
     auto& rs = Allocator::instance().getRootSet();
-    size_t saved = rs.stackRootPoint();
+    size_t saved = rs.stackRangePoint();
     for (auto& r : raw) {
-        if (r.x_boxed) rs.pushStackRoot(&r.x.p);
-        if (r.y_boxed) rs.pushStackRoot(&r.y.p);
+        if (r.x_boxed) rs.pushStackRootRange(&r.x.p, 1, 1);
+        if (r.y_boxed) rs.pushStackRootRange(&r.y.p, 1, 1);
     }
     std::vector<HPointer> results(raw.size(), alloc::listNil());
-    for (auto& hp : results) rs.pushStackRoot(&hp);
+    for (auto& hp : results) rs.pushStackRootRange(&hp, 1, 1);
     HPointer tempX = alloc::listNil(), tempY = alloc::listNil();
-    rs.pushStackRoot(&tempX);
-    rs.pushStackRoot(&tempY);
+    rs.pushStackRootRange(&tempX, 1, 1);
+    rs.pushStackRootRange(&tempY, 1, 1);
 
     for (size_t i = 0; i < raw.size(); ++i) {
         tempX = raw[i].x_boxed ? raw[i].x.p : alloc::allocInt(raw[i].x.i);
@@ -90,7 +90,7 @@ HPointer map2(Map2Func func, HPointer xs, HPointer ys) {
         results[i] = func(allocator.resolve(tempX), allocator.resolve(tempY));
     }
 
-    rs.restoreStackRootPoint(saved);
+    rs.restoreStackRangePoint(saved);
     return alloc::listFromPointers(results);
 }
 
@@ -122,16 +122,16 @@ HPointer map3(Map3Func func, HPointer xs, HPointer ys, HPointer zs) {
     if (raw.empty()) return alloc::listNil();
 
     auto& rs = Allocator::instance().getRootSet();
-    size_t saved = rs.stackRootPoint();
+    size_t saved = rs.stackRangePoint();
     for (auto& r : raw) {
-        if (r.xb) rs.pushStackRoot(&r.x.p);
-        if (r.yb) rs.pushStackRoot(&r.y.p);
-        if (r.zb) rs.pushStackRoot(&r.z.p);
+        if (r.xb) rs.pushStackRootRange(&r.x.p, 1, 1);
+        if (r.yb) rs.pushStackRootRange(&r.y.p, 1, 1);
+        if (r.zb) rs.pushStackRootRange(&r.z.p, 1, 1);
     }
     std::vector<HPointer> results(raw.size(), alloc::listNil());
-    for (auto& hp : results) rs.pushStackRoot(&hp);
+    for (auto& hp : results) rs.pushStackRootRange(&hp, 1, 1);
     HPointer tX = alloc::listNil(), tY = alloc::listNil(), tZ = alloc::listNil();
-    rs.pushStackRoot(&tX); rs.pushStackRoot(&tY); rs.pushStackRoot(&tZ);
+    rs.pushStackRootRange(&tX, 1, 1); rs.pushStackRootRange(&tY, 1, 1); rs.pushStackRootRange(&tZ, 1, 1);
 
     for (size_t i = 0; i < raw.size(); ++i) {
         tX = raw[i].xb ? raw[i].x.p : alloc::allocInt(raw[i].x.i);
@@ -140,7 +140,7 @@ HPointer map3(Map3Func func, HPointer xs, HPointer ys, HPointer zs) {
         results[i] = func(allocator.resolve(tX), allocator.resolve(tY), allocator.resolve(tZ));
     }
 
-    rs.restoreStackRootPoint(saved);
+    rs.restoreStackRangePoint(saved);
     return alloc::listFromPointers(results);
 }
 
@@ -168,15 +168,15 @@ HPointer map4(Map4Func func, HPointer ws, HPointer xs, HPointer ys, HPointer zs)
     if (raw.empty()) return alloc::listNil();
 
     auto& rs = Allocator::instance().getRootSet();
-    size_t saved = rs.stackRootPoint();
+    size_t saved = rs.stackRangePoint();
     for (auto& r : raw) {
-        if (r.wb) rs.pushStackRoot(&r.w.p); if (r.xb) rs.pushStackRoot(&r.x.p);
-        if (r.yb) rs.pushStackRoot(&r.y.p); if (r.zb) rs.pushStackRoot(&r.z.p);
+        if (r.wb) rs.pushStackRootRange(&r.w.p, 1, 1); if (r.xb) rs.pushStackRootRange(&r.x.p, 1, 1);
+        if (r.yb) rs.pushStackRootRange(&r.y.p, 1, 1); if (r.zb) rs.pushStackRootRange(&r.z.p, 1, 1);
     }
     std::vector<HPointer> results(raw.size(), alloc::listNil());
-    for (auto& hp : results) rs.pushStackRoot(&hp);
+    for (auto& hp : results) rs.pushStackRootRange(&hp, 1, 1);
     HPointer tW = alloc::listNil(), tX = alloc::listNil(), tY = alloc::listNil(), tZ = alloc::listNil();
-    rs.pushStackRoot(&tW); rs.pushStackRoot(&tX); rs.pushStackRoot(&tY); rs.pushStackRoot(&tZ);
+    rs.pushStackRootRange(&tW, 1, 1); rs.pushStackRootRange(&tX, 1, 1); rs.pushStackRootRange(&tY, 1, 1); rs.pushStackRootRange(&tZ, 1, 1);
 
     for (size_t i = 0; i < raw.size(); ++i) {
         tW = raw[i].wb ? raw[i].w.p : alloc::allocInt(raw[i].w.i);
@@ -186,7 +186,7 @@ HPointer map4(Map4Func func, HPointer ws, HPointer xs, HPointer ys, HPointer zs)
         results[i] = func(allocator.resolve(tW), allocator.resolve(tX),
                           allocator.resolve(tY), allocator.resolve(tZ));
     }
-    rs.restoreStackRootPoint(saved);
+    rs.restoreStackRangePoint(saved);
     return alloc::listFromPointers(results);
 }
 
@@ -219,18 +219,18 @@ HPointer map5(Map5Func func, HPointer vs, HPointer ws, HPointer xs, HPointer ys,
     if (raw.empty()) return alloc::listNil();
 
     auto& rs = Allocator::instance().getRootSet();
-    size_t saved = rs.stackRootPoint();
+    size_t saved = rs.stackRangePoint();
     for (auto& r : raw) {
-        if (r.vb) rs.pushStackRoot(&r.v.p); if (r.wb) rs.pushStackRoot(&r.w.p);
-        if (r.xb) rs.pushStackRoot(&r.x.p); if (r.yb) rs.pushStackRoot(&r.y.p);
-        if (r.zb) rs.pushStackRoot(&r.z.p);
+        if (r.vb) rs.pushStackRootRange(&r.v.p, 1, 1); if (r.wb) rs.pushStackRootRange(&r.w.p, 1, 1);
+        if (r.xb) rs.pushStackRootRange(&r.x.p, 1, 1); if (r.yb) rs.pushStackRootRange(&r.y.p, 1, 1);
+        if (r.zb) rs.pushStackRootRange(&r.z.p, 1, 1);
     }
     std::vector<HPointer> results(raw.size(), alloc::listNil());
-    for (auto& hp : results) rs.pushStackRoot(&hp);
+    for (auto& hp : results) rs.pushStackRootRange(&hp, 1, 1);
     HPointer tV = alloc::listNil(), tW = alloc::listNil(), tX = alloc::listNil();
     HPointer tY = alloc::listNil(), tZ = alloc::listNil();
-    rs.pushStackRoot(&tV); rs.pushStackRoot(&tW); rs.pushStackRoot(&tX);
-    rs.pushStackRoot(&tY); rs.pushStackRoot(&tZ);
+    rs.pushStackRootRange(&tV, 1, 1); rs.pushStackRootRange(&tW, 1, 1); rs.pushStackRootRange(&tX, 1, 1);
+    rs.pushStackRootRange(&tY, 1, 1); rs.pushStackRootRange(&tZ, 1, 1);
 
     for (size_t i = 0; i < raw.size(); ++i) {
         tV = raw[i].vb ? raw[i].v.p : alloc::allocInt(raw[i].v.i);
@@ -241,7 +241,7 @@ HPointer map5(Map5Func func, HPointer vs, HPointer ws, HPointer xs, HPointer ys,
         results[i] = func(allocator.resolve(tV), allocator.resolve(tW), allocator.resolve(tX),
                           allocator.resolve(tY), allocator.resolve(tZ));
     }
-    rs.restoreStackRootPoint(saved);
+    rs.restoreStackRangePoint(saved);
     return alloc::listFromPointers(results);
 }
 

@@ -191,14 +191,14 @@ HPointer lines(void* str) {
     // Phase 2: create strings with rooting
     std::vector<HPointer> parts(ranges.size(), alloc::listNil());
     auto& rs = Allocator::instance().getRootSet();
-    size_t saved = rs.stackRootPoint();
-    for (auto& hp : parts) rs.pushStackRoot(&hp);
+    size_t saved = rs.stackRangePoint();
+    for (auto& hp : parts) rs.pushStackRootRange(&hp, 1, 1);
 
     for (size_t i = 0; i < ranges.size(); ++i) {
         parts[i] = alloc::allocString(strData.data() + ranges[i].start, ranges[i].len);
     }
 
-    rs.restoreStackRootPoint(saved);
+    rs.restoreStackRangePoint(saved);
     return alloc::listFromPointers(parts);
 }
 
@@ -246,14 +246,14 @@ HPointer words(void* str) {
     // Phase 2: create strings with rooting
     std::vector<HPointer> parts(ranges.size(), alloc::listNil());
     auto& rs = Allocator::instance().getRootSet();
-    size_t saved = rs.stackRootPoint();
-    for (auto& hp : parts) rs.pushStackRoot(&hp);
+    size_t saved = rs.stackRangePoint();
+    for (auto& hp : parts) rs.pushStackRootRange(&hp, 1, 1);
 
     for (size_t i = 0; i < ranges.size(); ++i) {
         parts[i] = alloc::allocString(strData.data() + ranges[i].start, ranges[i].len);
     }
 
-    rs.restoreStackRootPoint(saved);
+    rs.restoreStackRangePoint(saved);
     return alloc::listFromPointers(parts);
 }
 

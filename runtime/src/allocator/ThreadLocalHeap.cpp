@@ -301,7 +301,11 @@ void ThreadLocalHeap::collectStackRootsFromStackMap() {
     }
 
     RootSet& roots = nursery_.getRootSet();
-    // Clear previous stack roots from stack map walking
+    // Clear previous stackmap-derived stack roots.
+    // NOTE: This clears ALL entries in the stack-roots vector, which is safe
+    // because C++ kernel code must use pushStackRootRange (not pushStackRoot)
+    // to root values across allocation calls. pushStackRootRange entries live
+    // in a separate vector that is NOT cleared here.
     roots.restoreStackRootPoint(0);
 
     // Walk the call stack using libunwind.
@@ -360,6 +364,27 @@ void ThreadLocalHeap::collectStackRootsFromStackMap() {
 #if ECO_GC_DEBUG
     fprintf(stderr, "[gc-stackmap-summary] stack roots pushed: %zu\n",
             roots.getStackRoots().size());
+    // Print all stack roots with their values
+    for (size_t ri = 0; ri < roots.getStackRoots().size(); ++ri) {
+        HPointer* slot = roots.getStackRoots()[ri];
+        HPointer val = *slot;
+        uint64_t raw;
+        memcpy(&raw, &val, sizeof(raw));
+        fprintf(stderr, "[gc-stackmap-root] root[%zu] slot=%p val=0x%016lx (ptr=0x%lx const=%u)\n",
+                ri, (void*)slot, raw, (unsigned long)val.ptr, (unsigned)val.constant);
+    }
+    // Print all stack root ranges with their values
+    for (size_t ri = 0; ri < roots.getStackRootRanges().size(); ++ri) {
+        auto& range = roots.getStackRootRanges()[ri];
+        fprintf(stderr, "[gc-stackrange] range[%zu] base=%p count=%zu mask=0x%lx\n",
+                ri, (void*)range.base, range.count, (unsigned long)range.hpointer_mask);
+        for (size_t j = 0; j < range.count; ++j) {
+            uint64_t raw;
+            memcpy(&raw, &range.base[j], sizeof(raw));
+            fprintf(stderr, "[gc-stackrange]   [%zu] val=0x%016lx %s\n",
+                    j, raw, (range.hpointer_mask & (1ULL << j)) ? "(HPTR)" : "(skip)");
+        }
+    }
 #endif
 }
 

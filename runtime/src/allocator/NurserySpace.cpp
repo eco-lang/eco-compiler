@@ -494,6 +494,7 @@ void NurserySpace::minorGC(OldGenSpace &oldgen) {
         scanObject(promoted_objects[i], oldgen, &promoted_objects);
     }
 
+
     // Phase 4: Check occupancy and grow if needed.
     checkAndGrow();
 
