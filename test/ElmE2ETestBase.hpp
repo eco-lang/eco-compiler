@@ -54,12 +54,20 @@ struct ElmSharedTestResult {
     uint64_t objects_promoted;
     uint64_t bytes_freed;
     uint64_t total_minor_gc_time_ns;
+    uint64_t min_minor_gc_time_ns;
+    uint64_t max_minor_gc_time_ns;
+    uint64_t minor_time_histogram[Elm::GCStats::HISTOGRAM_BUCKETS];
     uint64_t major_gc_count;
     uint64_t total_major_gc_time_ns;
+    uint64_t min_major_gc_time_ns;
+    uint64_t max_major_gc_time_ns;
+    uint64_t major_time_histogram[Elm::GCStats::HISTOGRAM_BUCKETS];
     uint64_t buffers_allocated;
     uint64_t buffers_filled;
     uint64_t concurrent_marks_started;
     uint64_t mark_sweeps_completed;
+    uint64_t incremental_mark_calls;
+    uint64_t total_incremental_mark_work_units;
 };
 
 inline Elm::GCStats& getAccumulatedStats() {
@@ -77,12 +85,24 @@ inline void copyStatsToShared(ElmSharedTestResult* shared) {
     shared->objects_promoted = stats.objects_promoted;
     shared->bytes_freed = stats.bytes_freed;
     shared->total_minor_gc_time_ns = stats.total_minor_gc_time_ns;
+    shared->min_minor_gc_time_ns = stats.min_minor_gc_time_ns;
+    shared->max_minor_gc_time_ns = stats.max_minor_gc_time_ns;
+    for (int i = 0; i < Elm::GCStats::HISTOGRAM_BUCKETS; i++) {
+        shared->minor_time_histogram[i] = stats.minor_time_histogram[i];
+    }
     shared->major_gc_count = stats.major_gc_count;
     shared->total_major_gc_time_ns = stats.total_major_gc_time_ns;
+    shared->min_major_gc_time_ns = stats.min_major_gc_time_ns;
+    shared->max_major_gc_time_ns = stats.max_major_gc_time_ns;
+    for (int i = 0; i < Elm::GCStats::HISTOGRAM_BUCKETS; i++) {
+        shared->major_time_histogram[i] = stats.major_time_histogram[i];
+    }
     shared->buffers_allocated = stats.buffers_allocated;
     shared->buffers_filled = stats.buffers_filled;
     shared->concurrent_marks_started = stats.concurrent_marks_started;
     shared->mark_sweeps_completed = stats.mark_sweeps_completed;
+    shared->incremental_mark_calls = stats.incremental_mark_calls;
+    shared->total_incremental_mark_work_units = stats.total_incremental_mark_work_units;
 #endif
 }
 
@@ -95,12 +115,24 @@ inline void accumulateFromShared(const ElmSharedTestResult* shared) {
     childStats.objects_promoted = shared->objects_promoted;
     childStats.bytes_freed = shared->bytes_freed;
     childStats.total_minor_gc_time_ns = shared->total_minor_gc_time_ns;
+    childStats.min_minor_gc_time_ns = shared->min_minor_gc_time_ns;
+    childStats.max_minor_gc_time_ns = shared->max_minor_gc_time_ns;
+    for (int i = 0; i < Elm::GCStats::HISTOGRAM_BUCKETS; i++) {
+        childStats.minor_time_histogram[i] = shared->minor_time_histogram[i];
+    }
     childStats.major_gc_count = shared->major_gc_count;
     childStats.total_major_gc_time_ns = shared->total_major_gc_time_ns;
+    childStats.min_major_gc_time_ns = shared->min_major_gc_time_ns;
+    childStats.max_major_gc_time_ns = shared->max_major_gc_time_ns;
+    for (int i = 0; i < Elm::GCStats::HISTOGRAM_BUCKETS; i++) {
+        childStats.major_time_histogram[i] = shared->major_time_histogram[i];
+    }
     childStats.buffers_allocated = shared->buffers_allocated;
     childStats.buffers_filled = shared->buffers_filled;
     childStats.concurrent_marks_started = shared->concurrent_marks_started;
     childStats.mark_sweeps_completed = shared->mark_sweeps_completed;
+    childStats.incremental_mark_calls = shared->incremental_mark_calls;
+    childStats.total_incremental_mark_work_units = shared->total_incremental_mark_work_units;
 
     getAccumulatedStats().combine(childStats);
 }
