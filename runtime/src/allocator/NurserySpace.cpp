@@ -672,6 +672,8 @@ void NurserySpace::minorGC(OldGenSpace &oldgen) {
 void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void*> *promoted_objects) {
     if (ptr.constant != 0)
         return;  // It's a constant.
+    if (ptr.ptr == 0)
+        return;  // Null/zero HPointer (e.g. unfilled closure capture slot).
 
     void *obj = Allocator::fromPointerRaw(ptr);
     if (!obj)
