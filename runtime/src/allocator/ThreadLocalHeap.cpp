@@ -11,6 +11,8 @@
 #include "StackUnwind.hpp"
 #include <cassert>
 #include <cstring>
+#include <execinfo.h>
+#include <execinfo.h>
 
 namespace Elm {
 
@@ -287,6 +289,13 @@ std::unordered_set<HPointer*> ThreadLocalHeap::collectRoots() {
 }
 
 void ThreadLocalHeap::collectStackRootsFromStackMap() {
+#if ECO_GC_DEBUG
+    {
+        void *bt[64];
+        int n = backtrace(bt, 64);
+        fprintf(stderr, "[gc-backtrace] %d frames\n", n);
+    }
+#endif
     StackMap& sm = globalStackMap();
     if (!sm.hasRecords()) {
 #if ECO_GC_DEBUG

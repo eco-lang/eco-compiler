@@ -210,6 +210,13 @@ private:
             MPM.addPass(llvm::RewriteStatepointsForGC());
             MPM.run(*m, MAM);
 
+            // Force frame pointers on all functions so that libunwind
+            // can walk through JIT'd frames for GC root discovery.
+            for (auto &F : *m) {
+                if (!F.isDeclaration())
+                    F.addFnAttr("frame-pointer", "all");
+            }
+
             auto err = baseTransformer(m);
             if (err) return err;
             return llvm::Error::success();
