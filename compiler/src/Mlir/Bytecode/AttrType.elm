@@ -54,6 +54,7 @@ type Entry
     | EDenseArrayAttr MlirType (List Int)
     | ESymbolRefAttr String
     | EDictAttr (Dict String MlirAttr)
+    | EUnitAttr
       -- Builtin types
     | EIntegerType Int
     | EFloat64Type
@@ -160,6 +161,9 @@ attrToKey attr =
 
         VisibilityAttr Private ->
             "s:private"
+
+        UnitAttr ->
+            "u:"
 
 
 dictToKey : Dict String MlirAttr -> String
@@ -473,6 +477,9 @@ attrToEntry attr =
 
         VisibilityAttr Private ->
             EStringAttr "private"
+
+        UnitAttr ->
+            EUnitAttr
 
 
 typeToEntry : MlirType -> Entry
@@ -882,6 +889,10 @@ encodeEntry st tbl entry =
                     attrIndex (StringAttr s) tbl
             in
             BE.sequence [ encodeVarInt 4, encodeVarInt strAttrIdx ]
+
+        EUnitAttr ->
+            -- MLIR bytecode code 7 = UnitAttr (no payload)
+            BE.sequence [ encodeVarInt 7 ]
 
         EDictAttr attrs ->
             let

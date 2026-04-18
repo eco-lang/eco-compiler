@@ -88,6 +88,23 @@ generateNode ctx specId node =
         ( ops, dirtyCtx ) =
             generateNodeInner ctx funcName specId node
 
+        -- Mark the main entrypoint's func.func with eco.shadow_roots so that
+        -- EcoToLLVM installs a shadow root frame for its parameters (TCO safety).
+        isMainEntry =
+            case Registry.lookupSpecKey specId ctx.registry of
+                Just ( Mono.Global _ name, _, _ ) ->
+                    name == "main"
+
+                _ ->
+                    False
+
+        finalOps =
+            if isMainEntry then
+                List.map addShadowRootsAttr ops
+
+            else
+                ops
+
         -- Reset varMappings and definedSsaVars after each node.
         -- Each node generates one or more top-level func.func ops, each with
         -- their own SSA scope. The dirty context carries stale var entries
@@ -95,7 +112,7 @@ generateNode ctx specId node =
         cleanCtx =
             { dirtyCtx | varMappings = Dict.empty, definedSsaVars = Set.empty }
     in
-    ( ops, cleanCtx )
+    ( finalOps, cleanCtx )
 
 
 generateNodeInner : Ctx.Context -> String -> Mono.SpecId -> Mono.MonoNode -> ( List MlirOp, Ctx.Context )
@@ -174,6 +191,19 @@ specIdToFuncName registry specId =
 
         Nothing ->
             "unknown_$_" ++ String.fromInt specId
+
+
+{-| Add the eco.shadow\_roots unit attribute to a func.func op.
+This tells EcoToLLVM to install a shadow root frame for the function's
+parameters, protecting them from LLVM's sibling-call TCO across GC.
+-}
+addShadowRootsAttr : MlirOp -> MlirOp
+addShadowRootsAttr op =
+    if op.name == "func.func" then
+        { op | attrs = Dict.insert "eco.shadow_roots" UnitAttr op.attrs }
+
+    else
+        op
 
 
 

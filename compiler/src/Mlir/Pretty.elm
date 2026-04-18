@@ -392,7 +392,12 @@ ppAttrs attrs =
             Dict.toList attrs
 
         render ( k, a ) =
-            k ++ " = " ++ ppAttr a
+            case a of
+                UnitAttr ->
+                    k
+
+                _ ->
+                    k ++ " = " ++ ppAttr a
     in
     case pairs of
         [] ->
@@ -603,6 +608,9 @@ ppAttr attr =
 
         SymbolRefAttr s ->
             "@" ++ s
+
+        UnitAttr ->
+            ""
 
         VisibilityAttr v ->
             case v of

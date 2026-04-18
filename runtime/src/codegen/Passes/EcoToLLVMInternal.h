@@ -446,6 +446,52 @@ void populateEcoFuncPatterns(
     EcoTypeConverter &typeConverter,
     mlir::RewritePatternSet &patterns);
 
+//===----------------------------------------------------------------------===//
+// Shadow Root Frame (TCO-safe GC rooting for func.func parameters)
+//===----------------------------------------------------------------------===//
+
+/// Holds the state for a shadow root frame installed in a function prologue.
+/// The frame parks !eco.value parameters in a stack-allocated i64 array
+/// registered with the GC via eco_gc_push_stack_range, so the collector
+/// can relocate them in place across safepoints (including LLVM TCO).
+struct ShadowRootFrame {
+    mlir::Value savedPoint;   // i64 returned by eco_gc_stack_range_point
+    mlir::Value basePtr;      // ptr to roots[0] (alloca'd i64 array)
+    llvm::DenseMap<mlir::BlockArgument, mlir::Value> slotForArg; // arg -> i64* slot
+};
+
+/// Install the shadow root prologue at the start of a post-conversion
+/// LLVM::LLVMFuncOp: alloca, memset, stack_range_point, store args, push_range.
+/// Returns an empty frame (basePtr == nullptr) if the function has no
+/// ptr addrspace(1) parameters.
+ShadowRootFrame installShadowRootPrologue(
+    mlir::LLVM::LLVMFuncOp func,
+    mlir::OpBuilder &builder,
+    const EcoRuntime &runtime);
+
+/// Emit a load from the shadow slot for a rooted BlockArgument:
+///   %hp = load i64, ptr %slot
+///   %v  = inttoptr i64 %hp to ptr addrspace(1)
+mlir::Value loadValueFromShadowSlot(
+    const ShadowRootFrame &frame,
+    mlir::BlockArgument arg,
+    mlir::OpBuilder &builder,
+    mlir::Location loc);
+
+/// Rewrite all uses of a rooted BlockArgument to load from its shadow slot.
+void rewriteUsesViaShadowSlot(
+    const ShadowRootFrame &frame,
+    mlir::BlockArgument arg,
+    mlir::OpBuilder &builder);
+
+/// Insert eco_gc_restore_stack_range_point(savedPoint) before every
+/// LLVM::ReturnOp in the function.
+void emitShadowRootEpilogues(
+    const ShadowRootFrame &frame,
+    mlir::LLVM::LLVMFuncOp func,
+    mlir::OpBuilder &builder,
+    const EcoRuntime &runtime);
+
 /// Generate the __eco_init_globals function to register GC roots.
 void createGlobalRootInitFunction(
     mlir::ModuleOp module,

@@ -247,8 +247,13 @@ struct EcoToLLVMPass : public PassWrapper<EcoToLLVMPass, OperationPass<ModuleOp>
         // This is needed because getOrCreateWrapper must distinguish primitive
         // params (Int i64) from !eco.value params (HPointer i64), but after
         // conversion both become LLVM i64 and the func::FuncOp is gone.
+        // Also collect functions marked with eco.shadow_roots for the
+        // post-conversion shadow root frame installation.
+        llvm::DenseSet<llvm::StringRef> shadowRootFuncs;
         module.walk([&](func::FuncOp funcOp) {
             runtime.origFuncTypes[funcOp.getSymName()] = funcOp.getFunctionType();
+            if (funcOp->hasAttr("eco.shadow_roots"))
+                shadowRootFuncs.insert(funcOp.getSymName());
         });
 
         // NOTE: The papCreate/papExtend type-inference scan that was here
@@ -356,6 +361,23 @@ struct EcoToLLVMPass : public PassWrapper<EcoToLLVMPass, OperationPass<ModuleOp>
                 func.setGarbageCollector("eco-gc");
             }
         });
+
+        // Install shadow root frames for functions marked with eco.shadow_roots.
+        // This runs post-conversion so args are already ptr addrspace(1) and
+        // we emit pure LLVM dialect ops.
+        if (!shadowRootFuncs.empty()) {
+            module.walk([&](LLVM::LLVMFuncOp func) {
+                if (func.isExternal()) return;
+                if (!shadowRootFuncs.contains(func.getSymName())) return;
+                OpBuilder builder(func.getContext());
+                auto frame = installShadowRootPrologue(func, builder, runtime);
+                if (frame.basePtr) {
+                    for (auto &entry : frame.slotForArg)
+                        rewriteUsesViaShadowSlot(frame, entry.first, builder);
+                    emitShadowRootEpilogues(frame, func, builder, runtime);
+                }
+            });
+        }
 
         // Generate global root initialization function
         createGlobalRootInitFunction(module, runtime);

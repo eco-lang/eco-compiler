@@ -164,6 +164,9 @@ collectAttr attr st =
         VisibilityAttr _ ->
             addString "private" st
 
+        UnitAttr ->
+            st
+
 
 collectType : MlirType -> StringTable -> StringTable
 collectType ty st =

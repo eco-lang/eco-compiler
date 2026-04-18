@@ -61,6 +61,7 @@ type MlirAttr
     | ArrayAttr (Maybe MlirType) (List MlirAttr)
     | SymbolRefAttr String
     | VisibilityAttr Visibility
+    | UnitAttr
 
 
 {-| Function visibility attribute values.
