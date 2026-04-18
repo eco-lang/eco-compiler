@@ -66,9 +66,9 @@ namespace Elm {
 // ============================================================================
 //
 // Roots one or more HPointer locals on the C++ stack so that they survive any
-// allocation that triggers a minor GC. The GC walks `getStackRoots()` and
-// updates the pointed-to HPointer values in place to their post-evacuation
-// locations. The destructor restores the prior stack-root point.
+// allocation that triggers a minor GC. The GC walks `RootSet::getStackRootRanges()`
+// and updates the pointed-to HPointer values in place to their post-evacuation
+// locations. The destructor restores the prior stack-range point.
 //
 // Use this around any code path that:
 //   1) holds an HPointer in a C++ local that refers to a heap object, AND
@@ -86,9 +86,7 @@ namespace Elm {
 //   }
 class StackRootGuard {
 public:
-    // Uses stack root RANGES (not pushStackRoot) so that roots survive
-    // across collectStackRootsFromStackMap(), which clears pushStackRoot
-    // entries during GC.  Each pointer is registered as a 1-element range.
+    // Each pointer is registered as a 1-element stack root range.
     StackRootGuard(HPointer* a) {
         auto& rs = Allocator::instance().getRootSet();
         savedPoint_ = rs.stackRangePoint();
@@ -475,9 +473,7 @@ inline const u16* stringData(void* str) {
  */
 inline HPointer cons(Unboxable head, HPointer tail, bool head_is_boxed) {
     auto& allocator = Allocator::instance();
-    // Root tail and head across allocate() using stack root RANGES
-    // (not pushStackRoot, which is reserved for stackmap-derived roots
-    // and gets cleared by collectStackRootsFromStackMap during GC).
+    // Root tail and head across allocate() using stack root ranges.
     auto& rs = Allocator::instance().getRootSet();
     size_t saved = rs.stackRangePoint();
     rs.pushStackRootRange(&tail, 1, 1);

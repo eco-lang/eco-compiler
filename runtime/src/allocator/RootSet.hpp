@@ -45,27 +45,6 @@ public:
     // Returns the set of JIT root pointers.
     const std::unordered_set<uint64_t *> &getJitRoots() const { return jit_roots; }
 
-    // ===== Stack roots (temporary, frame-based) =====
-
-    // Returns the current stack root point (for later restoration).
-    size_t stackRootPoint() const { return stack_roots.size(); }
-
-    // Pushes a new stack root.
-    void pushStackRoot(HPointer *root) { stack_roots.push_back(root); }
-
-    // Replaces the value stored at the top stack root location.
-    void replaceHead(HPointer new_value) {
-        if (!stack_roots.empty()) {
-            *stack_roots.back() = new_value;
-        }
-    }
-
-    // Restores to a previous stack root point, discarding all pushes since.
-    void restoreStackRootPoint(size_t point) { stack_roots.resize(point); }
-
-    // Returns the list of stack root pointers.
-    const std::vector<HPointer *> &getStackRoots() const { return stack_roots; }
-
     // ===== Stack root ranges (temporary, frame-based) =====
     // A contiguous range of stack-allocated i64 values that may contain HPointers.
     // hpointer_mask is MANDATORY for correctness on mixed arrays:
@@ -118,7 +97,6 @@ public:
 private:
     std::unordered_set<HPointer *> roots;     // Long-lived roots (O(1) add/remove).
     std::unordered_set<uint64_t *> jit_roots; // JIT roots storing raw 64-bit pointers.
-    std::vector<HPointer *> stack_roots;      // Temporary stack roots.
     std::vector<ExternalRootScanner> external_scanners; // External root callbacks.
     std::vector<StackRootRange> stack_root_ranges;     // Temporary stack root ranges.
 };

@@ -5,6 +5,7 @@
 #include "AllocatorCommon.hpp"
 #include "NurserySpace.hpp"
 #include "OldGenSpace.hpp"
+#include "StackMapRoots.hpp"
 #include "GCStats.hpp"
 
 namespace Elm {
@@ -105,6 +106,10 @@ public:
     /** Returns the root set for this thread. */
     RootSet& getRootSet() { return nursery_.getRootSet(); }
 
+    /** Returns the stackmap roots (GC-internal only). */
+    StackMapRoots& getStackMapRoots() { return stack_map_roots_; }
+    const StackMapRoots& getStackMapRoots() const { return stack_map_roots_; }
+
     /** Returns the nursery space. */
     NurserySpace& getNursery() { return nursery_; }
 
@@ -155,6 +160,7 @@ private:
     const HeapConfig* config_;    // Heap configuration
     NurserySpace nursery_;        // Thread-local nursery
     OldGenSpace old_gen_;         // Thread-local old generation
+    StackMapRoots stack_map_roots_; // Stackmap-derived roots (GC-internal)
     bool force_gc_ = false;       // Force GC at next safepoint (for test harness/debugger)
 
 #if ENABLE_GC_STATS

@@ -109,14 +109,14 @@ inline uint64_t taskSucceedMaybeString(const char* value) {
 inline uint64_t taskSucceedStringList(const std::vector<std::string>& items) {
     std::vector<HPointer> ptrs(items.size(), listNil());
     auto& rs = Allocator::instance().getRootSet();
-    size_t saved = rs.stackRootPoint();
-    for (auto& hp : ptrs) rs.pushStackRoot(&hp);
+    size_t saved = rs.stackRangePoint();
+    for (auto& hp : ptrs) rs.pushStackRootRange(&hp, 1, 1);
 
     for (size_t i = 0; i < items.size(); ++i) {
         ptrs[i] = allocStringFromUTF8(items[i]);
     }
 
-    rs.restoreStackRootPoint(saved);
+    rs.restoreStackRangePoint(saved);
     return taskSucceed(listFromPointers(ptrs));
 }
 

@@ -247,17 +247,16 @@ static HPointer createIntList(Allocator& alloc, size_t size) {
     HPointer list = createNil();
 
     // Register list as stack root so GC can update it during allocations.
-    size_t root_point = alloc.getRootSet().stackRootPoint();
-    alloc.getRootSet().pushStackRoot(&list);
+    size_t root_point = alloc.getRootSet().stackRangePoint();
+    alloc.getRootSet().pushStackRootRange(&list, 1, 1);
 
     for (size_t i = size; i > 0; i--) {
         HPointer new_cons = allocateConsInt(alloc, static_cast<i64>(i - 1), list);
-        alloc.getRootSet().replaceHead(new_cons);
         list = new_cons;
         ++tl_cons_count;
     }
 
-    alloc.getRootSet().restoreStackRootPoint(root_point);
+    alloc.getRootSet().restoreStackRangePoint(root_point);
     return list;
 }
 
@@ -270,14 +269,14 @@ static HPointer createIntList(Allocator& alloc, size_t size) {
 static HPointer reverseList(Allocator& alloc, HPointer list) {
     HPointer acc = createNil();
 
-    // Track acc as a stack root - it will be updated via replaceHead as we build.
-    size_t root_point = alloc.getRootSet().stackRootPoint();
-    alloc.getRootSet().pushStackRoot(&acc);
+    // Track acc as a stack root via range-based rooting.
+    size_t root_point = alloc.getRootSet().stackRangePoint();
+    alloc.getRootSet().pushStackRootRange(&acc, 1, 1);
 
     while (list.constant != Const_Nil) {
         void* obj = alloc.resolve(list);
         if (!obj) {
-            alloc.getRootSet().restoreStackRootPoint(root_point);
+            alloc.getRootSet().restoreStackRangePoint(root_point);
             throw CorruptHeapError("Null pointer encountered during list reversal");
         }
 
@@ -294,7 +293,7 @@ static HPointer reverseList(Allocator& alloc, HPointer list) {
         // Allocate new cons cell with head prepended to accumulator.
         void* new_obj = alloc.allocate(sizeof(Cons), Tag_Cons);
         if (!new_obj) {
-            alloc.getRootSet().restoreStackRootPoint(root_point);
+            alloc.getRootSet().restoreStackRangePoint(root_point);
             throw AllocationError("Failed to allocate Cons during list reversal");
         }
 
@@ -303,13 +302,11 @@ static HPointer reverseList(Allocator& alloc, HPointer list) {
         new_cons->head = head_copy;
         new_cons->tail = acc;
 
-        // Update acc via replaceHead to track the new cons cell.
-        alloc.getRootSet().replaceHead(alloc.wrap(new_obj));
         acc = alloc.wrap(new_obj);
         ++tl_cons_count;
     }
 
-    alloc.getRootSet().restoreStackRootPoint(root_point);
+    alloc.getRootSet().restoreStackRangePoint(root_point);
 
     return acc;
 }

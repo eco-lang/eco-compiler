@@ -399,7 +399,7 @@ void NurserySpace::checkAndGrow() {
  * Key optimization: Elm's immutability guarantees no old-to-young pointers,
  * so no remembered set or write barriers are needed.
  */
-void NurserySpace::minorGC(OldGenSpace &oldgen) {
+void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_roots) {
 #if ECO_GC_DEBUG
     in_minor_gc_ = true;
     static size_t gc_cycle_count = 0;
@@ -435,11 +435,11 @@ void NurserySpace::minorGC(OldGenSpace &oldgen) {
         evacuate(*root, oldgen, &promoted_objects);
     }
 
-    // Phase 1b: Evacuate stack roots (temporary roots from current call stack).
+    // Phase 1b: Evacuate stackmap-derived roots (discovered from LLVM StackMaps).
 #if ECO_GC_DEBUG
-    std::fprintf(stderr, "[gc] phase 1b: %zu stack roots\n", root_set.getStackRoots().size());
+    std::fprintf(stderr, "[gc] phase 1b: %zu stackmap roots\n", stackmap_roots.get().size());
 #endif
-    for (HPointer *root: root_set.getStackRoots()) {
+    for (HPointer *root: stackmap_roots.get()) {
         evacuate(*root, oldgen, &promoted_objects);
     }
 
@@ -525,8 +525,8 @@ void NurserySpace::minorGC(OldGenSpace &oldgen) {
             }
         }
     }
-    // Also check stackmap-pushed stack roots
-    for (HPointer *root : root_set.getStackRoots()) {
+    // Also check stackmap-derived roots
+    for (HPointer *root : stackmap_roots.get()) {
         HPointer hp = *root;
         if (hp.constant != 0 || hp.ptr == 0) continue;
         void *obj = Allocator::fromPointerRaw(hp);

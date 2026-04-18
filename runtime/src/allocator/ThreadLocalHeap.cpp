@@ -225,7 +225,7 @@ void ThreadLocalHeap::collectAtSafepoint() {
 
 void ThreadLocalHeap::minorGC() {
     collectStackRootsFromStackMap();
-    nursery_.minorGC(old_gen_);
+    nursery_.minorGC(old_gen_, stack_map_roots_);
 }
 
 void ThreadLocalHeap::majorGC() {
@@ -235,16 +235,32 @@ void ThreadLocalHeap::majorGC() {
 
     collectStackRootsFromStackMap();
 
-    // Collect all roots from this thread.
+    // Collect long-lived roots from this thread.
     std::unordered_set<HPointer*> roots = collectRoots();
     const std::unordered_set<uint64_t*>& jit_roots = nursery_.getRootSet().getJitRoots();
 
-    // Start marking phase.
+    // Start marking phase with long-lived and JIT roots.
 #if ENABLE_GC_STATS
     old_gen_.startMark(roots, jit_roots, *parent_, stats_);
 #else
     old_gen_.startMark(roots, jit_roots, *parent_);
 #endif
+
+    // Mark stackmap-derived roots.
+    for (HPointer* slot : stack_map_roots_.get()) {
+        old_gen_.markHPointer(*slot);
+    }
+
+    // Mark stack root ranges.
+    for (const auto& range : nursery_.getRootSet().getStackRootRanges()) {
+        HPointer* base = range.base;
+        uint64_t mask = range.hpointer_mask;
+        for (size_t i = 0; i < range.count; ++i) {
+            if (mask & (1ULL << i)) {
+                old_gen_.markHPointer(base[i]);
+            }
+        }
+    }
 
     // Continue with marking and sweep.
 #if ENABLE_GC_STATS
@@ -266,25 +282,9 @@ bool ThreadLocalHeap::isNurseryNearFull(float threshold) const {
 }
 
 std::unordered_set<HPointer*> ThreadLocalHeap::collectRoots() {
-    // Start with the long-lived roots (already an unordered_set).
-    std::unordered_set<HPointer*> all_roots = nursery_.getRootSet().getRoots();
-
-    // Add stack roots.
-    const auto& stack_roots = nursery_.getRootSet().getStackRoots();
-    all_roots.insert(stack_roots.begin(), stack_roots.end());
-
-    // Stack root ranges (alloca-backed args arrays).
-    for (const auto &range : nursery_.getRootSet().getStackRootRanges()) {
-        HPointer *base = range.base;
-        uint64_t mask  = range.hpointer_mask;
-        for (size_t i = 0; i < range.count; ++i) {
-            if (mask & (1ULL << i)) {
-                all_roots.insert(&base[i]);
-            }
-        }
-    }
-
-    return all_roots;
+    // Returns only long-lived roots. Stackmap roots and stack root ranges
+    // are marked via explicit loops in majorGC().
+    return nursery_.getRootSet().getRoots();
 }
 
 void ThreadLocalHeap::collectStackRootsFromStackMap() {
@@ -300,13 +300,8 @@ void ThreadLocalHeap::collectStackRootsFromStackMap() {
         return;
     }
 
-    RootSet& roots = nursery_.getRootSet();
-    // Clear previous stackmap-derived stack roots.
-    // NOTE: This clears ALL entries in the stack-roots vector, which is safe
-    // because C++ kernel code must use pushStackRootRange (not pushStackRoot)
-    // to root values across allocation calls. pushStackRootRange entries live
-    // in a separate vector that is NOT cleared here.
-    roots.restoreStackRootPoint(0);
+    StackMapRoots& sm_roots = stack_map_roots_;
+    sm_roots.clear();
 
     // Walk the call stack using libunwind.
     // For each frame, look up the IP in the stack map and process
@@ -355,7 +350,7 @@ void ThreadLocalHeap::collectStackRootsFromStackMap() {
                 }
                 void* phys = alloc.resolve(potential);
                 if (phys != nullptr && alloc.isInHeap(phys)) {
-                    roots.pushStackRoot(slot);
+                    sm_roots.push(slot);
                 }
             }
         }
@@ -363,10 +358,10 @@ void ThreadLocalHeap::collectStackRootsFromStackMap() {
 
 #if ECO_GC_DEBUG
     fprintf(stderr, "[gc-stackmap-summary] stack roots pushed: %zu\n",
-            roots.getStackRoots().size());
-    // Print all stack roots with their values
-    for (size_t ri = 0; ri < roots.getStackRoots().size(); ++ri) {
-        HPointer* slot = roots.getStackRoots()[ri];
+            sm_roots.get().size());
+    // Print all stackmap roots with their values
+    for (size_t ri = 0; ri < sm_roots.get().size(); ++ri) {
+        HPointer* slot = sm_roots.get()[ri];
         HPointer val = *slot;
         uint64_t raw;
         memcpy(&raw, &val, sizeof(raw));
@@ -374,6 +369,7 @@ void ThreadLocalHeap::collectStackRootsFromStackMap() {
                 ri, (void*)slot, raw, (unsigned long)val.ptr, (unsigned)val.constant);
     }
     // Print all stack root ranges with their values
+    RootSet& roots = nursery_.getRootSet();
     for (size_t ri = 0; ri < roots.getStackRootRanges().size(); ++ri) {
         auto& range = roots.getStackRootRanges()[ri];
         fprintf(stderr, "[gc-stackrange] range[%zu] base=%p count=%zu mask=0x%lx\n",

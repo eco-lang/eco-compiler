@@ -198,9 +198,9 @@ uint64_t getArchive(uint64_t url) {
 
     // Build records with rooting
     auto& rs = Allocator::instance().getRootSet();
-    size_t saved = rs.stackRootPoint();
+    size_t saved = rs.stackRangePoint();
     std::vector<HPointer> fileRecords(entries.size(), listNil());
-    for (auto& hp : fileRecords) rs.pushStackRoot(&hp);
+    for (auto& hp : fileRecords) rs.pushStackRootRange(&hp, 1, 1);
 
     for (size_t i = 0; i < entries.size(); ++i) {
         std::vector<Unboxable> fields(2);
@@ -211,7 +211,7 @@ uint64_t getArchive(uint64_t url) {
         }
         fileRecords[i] = record(fields, 0b00);
     }
-    rs.restoreStackRootPoint(saved);
+    rs.restoreStackRangePoint(saved);
 
     HPointer archiveList = listFromPointers(fileRecords);
     std::vector<Unboxable> outerFields(2);

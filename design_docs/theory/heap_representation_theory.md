@@ -431,7 +431,7 @@ This prevents excessively large objects from fragmenting the nursery's semi-spac
 
 ## GC Root Safety for Heap Construction
 
-*(Apr 2026)*: When constructing heap objects, any HPointers captured into a buffer before calling `allocator.allocate()` must be rooted. The `StackRootGuard` RAII helper pushes HPointers onto `RootSet::stack_roots` and restores on destruction:
+*(Apr 2026)*: When constructing heap objects, any HPointers captured into a buffer before calling `allocator.allocate()` must be rooted. The `StackRootGuard` RAII helper pushes HPointers onto `RootSet::stack_root_ranges` (as 1-element ranges) and restores on destruction:
 
 ```cpp
 StackRootGuard guard(rootSet, value, callback, innerTask);

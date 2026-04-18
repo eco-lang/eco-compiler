@@ -7,6 +7,7 @@
 #include "GCStats.hpp"
 #include "OldGenSpace.hpp"
 #include "RootSet.hpp"
+#include "StackMapRoots.hpp"
 
 namespace Elm {
 
@@ -99,7 +100,7 @@ private:
     void initialize(ThreadLocalHeap* heap, const HeapConfig* config);
 
     // Performs minor GC, evacuating live objects to to_space or promoting to old gen.
-    void minorGC(OldGenSpace &oldgen);
+    void minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_roots);
 
     // Zeros the free region of to-space after evacuation completes.
     // Prevents ghost headers from surviving into the next GC cycle.
