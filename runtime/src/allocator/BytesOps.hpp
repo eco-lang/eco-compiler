@@ -122,8 +122,10 @@ inline HPointer slice(void* buf, i64 start, i64 end) {
 
     if (start >= end) return empty();
 
+    // Copy data before allocation (void* buf can move during GC)
     size_t slice_len = static_cast<size_t>(end - start);
-    return alloc::allocByteBuffer(b->bytes + start, slice_len);
+    std::vector<u8> data(b->bytes + start, b->bytes + start + slice_len);
+    return alloc::allocByteBuffer(data.data(), slice_len);
 }
 
 // ============================================================================
@@ -370,18 +372,13 @@ inline HPointer append(void* a, void* b) {
     if (len_a == 0) return Allocator::instance().wrap(b);
     if (len_b == 0) return Allocator::instance().wrap(a);
 
+    // Copy data before allocation (void* ptrs can become stale after GC)
     size_t total_len = len_a + len_b;
-    size_t total_size = sizeof(ByteBuffer) + total_len;
-    total_size = (total_size + 7) & ~7;
+    std::vector<u8> data(total_len);
+    std::memcpy(data.data(), ba->bytes, len_a);
+    std::memcpy(data.data() + len_a, bb->bytes, len_b);
 
-    auto& allocator = Allocator::instance();
-    ByteBuffer* result = static_cast<ByteBuffer*>(allocator.allocate(total_size, Tag_ByteBuffer));
-    result->header.size = static_cast<u32>(total_len);
-
-    std::memcpy(result->bytes, ba->bytes, len_a);
-    std::memcpy(result->bytes + len_a, bb->bytes, len_b);
-
-    return allocator.wrap(result);
+    return alloc::allocByteBuffer(data.data(), total_len);
 }
 
 /**

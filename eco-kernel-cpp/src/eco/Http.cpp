@@ -74,29 +74,37 @@ uint64_t fetch(uint64_t method, uint64_t url, uint64_t headers) {
     curl_easy_cleanup(curl);
 
     if (res != CURLE_OK) {
-        // Network error: return Err with error record.
-        // Record: { statusCode : Int, statusText : String, url : String }
-        // Layout (unboxed-first): [statusCode, statusText, url], bitmap 0b001
         std::vector<Unboxable> fields(3);
         fields[0].i = 0;
         fields[1].p = allocStringFromUTF8(std::string(curl_easy_strerror(res)));
-        fields[2].p = allocStringFromUTF8(urlStr);
+        {
+            Elm::StackRootGuard guard(&fields[1].p);
+            fields[2].p = allocStringFromUTF8(urlStr);
+        }
         HPointer errRec = record(fields, 0b001);
-        return taskSucceed(err(boxed(errRec), true));
+        Elm::StackRootGuard guard(&errRec);
+        HPointer errVal = err(boxed(errRec), true);
+        return taskSucceed(errVal);
     }
 
     if (statusCode >= 200 && statusCode < 300) {
         HPointer body = allocStringFromUTF8(responseBody);
-        return taskSucceed(ok(boxed(body), true));
+        Elm::StackRootGuard guard(&body);
+        HPointer okVal = ok(boxed(body), true);
+        return taskSucceed(okVal);
     } else {
-        // Non-2xx: return Err with error record.
         std::string statusText = "HTTP " + std::to_string(statusCode);
         std::vector<Unboxable> fields(3);
         fields[0].i = static_cast<int64_t>(statusCode);
         fields[1].p = allocStringFromUTF8(statusText);
-        fields[2].p = allocStringFromUTF8(urlStr);
+        {
+            Elm::StackRootGuard guard(&fields[1].p);
+            fields[2].p = allocStringFromUTF8(urlStr);
+        }
         HPointer errRec = record(fields, 0b001);
-        return taskSucceed(err(boxed(errRec), true));
+        Elm::StackRootGuard guard(&errRec);
+        HPointer errVal = err(boxed(errRec), true);
+        return taskSucceed(errVal);
     }
 }
 
@@ -158,20 +166,18 @@ uint64_t getArchive(uint64_t url) {
         return taskSucceed(err(boxed(errStr), true));
     }
 
-    // Build list of { data : String, relativePath : String } records.
-    // Layout (all boxed): [data, relativePath], bitmap 0b00
-    std::vector<HPointer> fileRecords;
+    // Collect file data first (no allocation yet)
+    struct FileEntry { std::string content; std::string relativePath; };
+    std::vector<FileEntry> entries;
     zip_int64_t numEntries = zip_get_num_entries(archive, 0);
     for (zip_int64_t i = 0; i < numEntries; ++i) {
         const char* name = zip_get_name(archive, i, 0);
         if (!name) continue;
         std::string entryName(name);
-        // Skip directories.
         if (!entryName.empty() && entryName.back() == '/') continue;
 
         zip_stat_t st;
         zip_stat_index(archive, i, 0, &st);
-
         zip_file_t* f = zip_fopen_index(archive, i, 0);
         if (!f) continue;
 
@@ -179,30 +185,45 @@ uint64_t getArchive(uint64_t url) {
         zip_fread(f, content.data(), st.size);
         zip_fclose(f);
 
-        // Strip leading directory component (e.g., "repo-hash/src/..." -> "src/...").
         std::string relativePath = entryName;
         auto slashPos = relativePath.find('/');
         if (slashPos != std::string::npos) {
             relativePath = relativePath.substr(slashPos + 1);
         }
-
-        std::vector<Unboxable> fields(2);
-        fields[0].p = allocStringFromUTF8(content);      // data
-        fields[1].p = allocStringFromUTF8(relativePath);  // relativePath
-        fileRecords.push_back(record(fields, 0b00));
+        entries.push_back({std::move(content), std::move(relativePath)});
     }
 
     zip_close(archive);
     zip_error_fini(&zipError);
 
-    // Build outer record: { archive : List (...), sha : String }
-    // Layout (all boxed): [archive, sha], bitmap 0b00
+    // Build records with rooting
+    auto& rs = Allocator::instance().getRootSet();
+    size_t saved = rs.stackRootPoint();
+    std::vector<HPointer> fileRecords(entries.size(), listNil());
+    for (auto& hp : fileRecords) rs.pushStackRoot(&hp);
+
+    for (size_t i = 0; i < entries.size(); ++i) {
+        std::vector<Unboxable> fields(2);
+        fields[0].p = allocStringFromUTF8(entries[i].content);
+        {
+            Elm::StackRootGuard guard(&fields[0].p);
+            fields[1].p = allocStringFromUTF8(entries[i].relativePath);
+        }
+        fileRecords[i] = record(fields, 0b00);
+    }
+    rs.restoreStackRootPoint(saved);
+
     HPointer archiveList = listFromPointers(fileRecords);
     std::vector<Unboxable> outerFields(2);
-    outerFields[0].p = archiveList;                     // archive
-    outerFields[1].p = allocStringFromUTF8(shaHex);     // sha
+    outerFields[0].p = archiveList;
+    {
+        Elm::StackRootGuard guard(&outerFields[0].p);
+        outerFields[1].p = allocStringFromUTF8(shaHex);
+    }
     HPointer outerRec = record(outerFields, 0b00);
-    return taskSucceed(ok(boxed(outerRec), true));
+    Elm::StackRootGuard guard2(&outerRec);
+    HPointer okVal = ok(boxed(outerRec), true);
+    return taskSucceed(okVal);
 #else
     // No libzip available.
     HPointer errStr = allocStringFromUTF8("Archive extraction not available (libzip not found)");

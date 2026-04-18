@@ -85,19 +85,13 @@ inline HPointer append(void* a, void* b) {
     if (len_a == 0) return Allocator::instance().wrap(b);
     if (len_b == 0) return Allocator::instance().wrap(a);
 
+    // Copy data before allocation (void* ptrs can become stale after GC)
     size_t total_len = len_a + len_b;
-    size_t data_size = total_len * sizeof(u16);
-    size_t total_size = sizeof(ElmString) + data_size;
-    total_size = (total_size + 7) & ~7;
+    std::vector<u16> data(total_len);
+    std::memcpy(data.data(), sa->chars, len_a * sizeof(u16));
+    std::memcpy(data.data() + len_a, sb->chars, len_b * sizeof(u16));
 
-    auto& allocator = Allocator::instance();
-    ElmString* result = static_cast<ElmString*>(allocator.allocate(total_size, Tag_String));
-    result->header.size = static_cast<u32>(total_len);
-
-    std::memcpy(result->chars, sa->chars, len_a * sizeof(u16));
-    std::memcpy(result->chars + len_a, sb->chars, len_b * sizeof(u16));
-
-    return allocator.wrap(result);
+    return alloc::allocString(data.data(), total_len);
 }
 
 /**
@@ -135,8 +129,10 @@ inline HPointer slice(void* str, i64 start, i64 end) {
 
     if (start >= end) return alloc::emptyString();
 
+    // Copy slice data before allocation (void* str can move during GC)
     size_t slice_len = static_cast<size_t>(end - start);
-    return alloc::allocString(s->chars + start, slice_len);
+    std::vector<u16> data(s->chars + start, s->chars + start + slice_len);
+    return alloc::allocString(data.data(), slice_len);
 }
 
 /**
@@ -270,24 +266,14 @@ inline HPointer toUpper(void* str) {
 
     if (len == 0) return alloc::emptyString();
 
-    size_t data_size = len * sizeof(u16);
-    size_t total_size = sizeof(ElmString) + data_size;
-    total_size = (total_size + 7) & ~7;
-
-    auto& allocator = Allocator::instance();
-    ElmString* result = static_cast<ElmString*>(allocator.allocate(total_size, Tag_String));
-    result->header.size = static_cast<u32>(len);
-
+    // Copy data before allocation (void* str can become stale after GC)
+    std::vector<u16> data(s->chars, s->chars + len);
     for (size_t i = 0; i < len; ++i) {
-        u16 c = s->chars[i];
-        if (c >= 'a' && c <= 'z') {
-            result->chars[i] = c - 32;
-        } else {
-            result->chars[i] = c;
-        }
+        u16 c = data[i];
+        if (c >= 'a' && c <= 'z') data[i] = c - 32;
     }
 
-    return allocator.wrap(result);
+    return alloc::allocString(data.data(), len);
 }
 
 /**
@@ -300,24 +286,14 @@ inline HPointer toLower(void* str) {
 
     if (len == 0) return alloc::emptyString();
 
-    size_t data_size = len * sizeof(u16);
-    size_t total_size = sizeof(ElmString) + data_size;
-    total_size = (total_size + 7) & ~7;
-
-    auto& allocator = Allocator::instance();
-    ElmString* result = static_cast<ElmString*>(allocator.allocate(total_size, Tag_String));
-    result->header.size = static_cast<u32>(len);
-
+    // Copy data before allocation (void* str can become stale after GC)
+    std::vector<u16> data(s->chars, s->chars + len);
     for (size_t i = 0; i < len; ++i) {
-        u16 c = s->chars[i];
-        if (c >= 'A' && c <= 'Z') {
-            result->chars[i] = c + 32;
-        } else {
-            result->chars[i] = c;
-        }
+        u16 c = data[i];
+        if (c >= 'A' && c <= 'Z') data[i] = c + 32;
     }
 
-    return allocator.wrap(result);
+    return alloc::allocString(data.data(), len);
 }
 
 /**
@@ -331,19 +307,13 @@ inline HPointer reverse(void* str) {
     if (len == 0) return alloc::emptyString();
     if (len == 1) return Allocator::instance().wrap(str);
 
-    size_t data_size = len * sizeof(u16);
-    size_t total_size = sizeof(ElmString) + data_size;
-    total_size = (total_size + 7) & ~7;
-
-    auto& allocator = Allocator::instance();
-    ElmString* result = static_cast<ElmString*>(allocator.allocate(total_size, Tag_String));
-    result->header.size = static_cast<u32>(len);
-
+    // Copy and reverse data before allocation (void* str can move during GC)
+    std::vector<u16> data(len);
     for (size_t i = 0; i < len; ++i) {
-        result->chars[i] = s->chars[len - 1 - i];
+        data[i] = s->chars[len - 1 - i];
     }
 
-    return allocator.wrap(result);
+    return alloc::allocString(data.data(), len);
 }
 
 /**
@@ -439,20 +409,15 @@ inline HPointer repeat(void* str, i64 n) {
 
     if (len == 0) return alloc::emptyString();
 
+    // Copy data before allocation (void* str can move during GC)
+    std::vector<u16> srcData(s->chars, s->chars + len);
     size_t total_len = len * static_cast<size_t>(n);
-    size_t data_size = total_len * sizeof(u16);
-    size_t total_size = sizeof(ElmString) + data_size;
-    total_size = (total_size + 7) & ~7;
-
-    auto& allocator = Allocator::instance();
-    ElmString* result = static_cast<ElmString*>(allocator.allocate(total_size, Tag_String));
-    result->header.size = static_cast<u32>(total_len);
-
+    std::vector<u16> data(total_len);
     for (i64 i = 0; i < n; ++i) {
-        std::memcpy(result->chars + (i * len), s->chars, len * sizeof(u16));
+        std::memcpy(data.data() + (i * len), srcData.data(), len * sizeof(u16));
     }
 
-    return allocator.wrap(result);
+    return alloc::allocString(data.data(), total_len);
 }
 
 /**
@@ -460,41 +425,24 @@ inline HPointer repeat(void* str, i64 n) {
  */
 inline HPointer padLeft(void* str, i64 n, u16 padChar) {
     if (!str) {
-        // Empty string needs full padding
         size_t total_len = static_cast<size_t>(n > 0 ? n : 0);
         if (total_len == 0) return alloc::emptyString();
-        size_t data_size = total_len * sizeof(u16);
-        size_t total_size = sizeof(ElmString) + data_size;
-        total_size = (total_size + 7) & ~7;
-        auto& allocator = Allocator::instance();
-        ElmString* result = static_cast<ElmString*>(allocator.allocate(total_size, Tag_String));
-        result->header.size = static_cast<u32>(total_len);
-        for (size_t i = 0; i < total_len; ++i) result->chars[i] = padChar;
-        return allocator.wrap(result);
+        std::vector<u16> data(total_len, padChar);
+        return alloc::allocString(data.data(), total_len);
     }
     ElmString* s = static_cast<ElmString*>(str);
     i64 len = static_cast<i64>(s->header.size);
 
     if (len >= n) return Allocator::instance().wrap(str);
 
+    // Copy data before allocation (void* str can move during GC)
     size_t pad_count = static_cast<size_t>(n - len);
     size_t total_len = static_cast<size_t>(n);
-    size_t data_size = total_len * sizeof(u16);
-    size_t total_size = sizeof(ElmString) + data_size;
-    total_size = (total_size + 7) & ~7;
+    std::vector<u16> data(total_len);
+    for (size_t i = 0; i < pad_count; ++i) data[i] = padChar;
+    std::memcpy(data.data() + pad_count, s->chars, len * sizeof(u16));
 
-    auto& allocator = Allocator::instance();
-    ElmString* result = static_cast<ElmString*>(allocator.allocate(total_size, Tag_String));
-    result->header.size = static_cast<u32>(total_len);
-
-    // Fill padding
-    for (size_t i = 0; i < pad_count; ++i) {
-        result->chars[i] = padChar;
-    }
-    // Copy original
-    std::memcpy(result->chars + pad_count, s->chars, len * sizeof(u16));
-
-    return allocator.wrap(result);
+    return alloc::allocString(data.data(), total_len);
 }
 
 /**
@@ -504,37 +452,20 @@ inline HPointer padRight(void* str, i64 n, u16 padChar) {
     if (!str) {
         size_t total_len = static_cast<size_t>(n > 0 ? n : 0);
         if (total_len == 0) return alloc::emptyString();
-        size_t data_size = total_len * sizeof(u16);
-        size_t total_size = sizeof(ElmString) + data_size;
-        total_size = (total_size + 7) & ~7;
-        auto& allocator = Allocator::instance();
-        ElmString* result = static_cast<ElmString*>(allocator.allocate(total_size, Tag_String));
-        result->header.size = static_cast<u32>(total_len);
-        for (size_t i = 0; i < total_len; ++i) result->chars[i] = padChar;
-        return allocator.wrap(result);
+        std::vector<u16> data(total_len, padChar);
+        return alloc::allocString(data.data(), total_len);
     }
     ElmString* s = static_cast<ElmString*>(str);
     i64 len = static_cast<i64>(s->header.size);
 
     if (len >= n) return Allocator::instance().wrap(str);
 
+    // Copy data before allocation (void* str can move during GC)
     size_t total_len = static_cast<size_t>(n);
-    size_t data_size = total_len * sizeof(u16);
-    size_t total_size = sizeof(ElmString) + data_size;
-    total_size = (total_size + 7) & ~7;
+    std::vector<u16> data(total_len, padChar);
+    std::memcpy(data.data(), s->chars, len * sizeof(u16));
 
-    auto& allocator = Allocator::instance();
-    ElmString* result = static_cast<ElmString*>(allocator.allocate(total_size, Tag_String));
-    result->header.size = static_cast<u32>(total_len);
-
-    // Copy original
-    std::memcpy(result->chars, s->chars, len * sizeof(u16));
-    // Fill padding
-    for (size_t i = static_cast<size_t>(len); i < total_len; ++i) {
-        result->chars[i] = padChar;
-    }
-
-    return allocator.wrap(result);
+    return alloc::allocString(data.data(), total_len);
 }
 
 // ============================================================================

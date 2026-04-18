@@ -78,6 +78,9 @@ HPtr Elm_Kernel_Process_sleep(double time) {
     // Create a boxed Float for the time value
     HPointer timeHP = Elm::alloc::allocFloat(time);
 
+    // Root timeHP across allocClosure (which may trigger GC)
+    Elm::StackRootGuard guard(&timeHP);
+
     // Create a binding callback closure that captures the time
     HPointer bindingCB = Elm::alloc::allocClosure(
         reinterpret_cast<EvalFunction>(sleepBindingEvaluator), 2);

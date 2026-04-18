@@ -45,37 +45,11 @@ HPointer uncons(void* str) {
 
 HPointer fromList(HPointer chars) {
     // Convert list of Char values to a single string.
-    // List heads can be either:
-    //   - Unboxed: raw i16 char value in head.c (header.unboxed bit 0 set)
-    //   - Boxed: HPointer to ElmChar in head.p (header.unboxed bit 0 clear)
     auto& allocator = Allocator::instance();
 
-    // First pass: count total characters (one per cons cell)
-    size_t total_len = 0;
+    // Collect all char values first (no allocation)
+    std::vector<u16> charData;
     HPointer current = chars;
-
-    while (!alloc::isNil(current)) {
-        void* cell = allocator.resolve(current);
-        if (!cell) break;
-
-        Cons* c = static_cast<Cons*>(cell);
-        total_len++;
-        current = c->tail;
-    }
-
-    if (total_len == 0) return alloc::emptyString();
-
-    // Allocate result
-    size_t data_size = total_len * sizeof(u16);
-    size_t total_size = sizeof(ElmString) + data_size;
-    total_size = (total_size + 7) & ~7;
-
-    ElmString* result = static_cast<ElmString*>(allocator.allocate(total_size, Tag_String));
-    result->header.size = static_cast<u32>(total_len);
-
-    // Second pass: extract char values
-    size_t offset = 0;
-    current = chars;
 
     while (!alloc::isNil(current)) {
         void* cell = allocator.resolve(current);
@@ -84,19 +58,19 @@ HPointer fromList(HPointer chars) {
         Cons* c = static_cast<Cons*>(cell);
         u16 charVal;
         if (c->header.unboxed & 1) {
-            // Unboxed: raw char value stored directly
             charVal = c->head.c;
         } else {
-            // Boxed: HPointer to ElmChar
             void* charObj = allocator.resolve(c->head.p);
             ElmChar* ec = static_cast<ElmChar*>(charObj);
             charVal = ec->value;
         }
-        result->chars[offset++] = charVal;
+        charData.push_back(charVal);
         current = c->tail;
     }
 
-    return allocator.wrap(result);
+    if (charData.empty()) return alloc::emptyString();
+
+    return alloc::allocString(charData.data(), charData.size());
 }
 
 // ============================================================================
@@ -128,10 +102,13 @@ HPointer foldl(FoldFunc func, HPointer acc, void* str) {
     auto& allocator = Allocator::instance();
     ElmString* s = static_cast<ElmString*>(str);
 
+    // Copy char data before any allocation (func may trigger GC)
+    std::vector<u16> chars(s->chars, s->chars + s->header.size);
+
     HPointer result = acc;
-    for (u32 i = 0; i < s->header.size; ++i) {
+    for (size_t i = 0; i < chars.size(); ++i) {
         void* accObj = allocator.resolve(result);
-        result = func(s->chars[i], accObj);
+        result = func(chars[i], accObj);
     }
     return result;
 }
@@ -141,10 +118,13 @@ HPointer foldr(FoldFunc func, HPointer acc, void* str) {
     auto& allocator = Allocator::instance();
     ElmString* s = static_cast<ElmString*>(str);
 
+    // Copy char data before any allocation (func may trigger GC)
+    std::vector<u16> chars(s->chars, s->chars + s->header.size);
+
     HPointer result = acc;
-    for (i64 i = s->header.size - 1; i >= 0; --i) {
+    for (i64 i = static_cast<i64>(chars.size()) - 1; i >= 0; --i) {
         void* accObj = allocator.resolve(result);
-        result = func(s->chars[i], accObj);
+        result = func(chars[i], accObj);
     }
     return result;
 }
@@ -169,44 +149,56 @@ HPointer lines(void* str) {
     if (!str) {
         return alloc::cons(alloc::boxed(alloc::emptyString()), alloc::listNil(), true);
     }
-    // Split by \r\n, \r, or \n
     ElmString* s = static_cast<ElmString*>(str);
     size_t len = s->header.size;
 
     if (len == 0) {
-        // Empty string -> list with one empty string
         return alloc::cons(alloc::boxed(alloc::emptyString()), alloc::listNil(), true);
     }
 
-    std::vector<HPointer> parts;
+    // Copy string data before any allocation (void* str can move during GC)
+    std::vector<u16> strData(s->chars, s->chars + len);
+
+    // Phase 1: find line boundaries (no allocation)
+    struct LineRange { size_t start; size_t len; };
+    std::vector<LineRange> ranges;
     size_t start = 0;
 
     for (size_t i = 0; i < len; ++i) {
         bool is_line_end = false;
         size_t skip = 0;
 
-        if (s->chars[i] == '\r') {
+        if (strData[i] == '\r') {
             is_line_end = true;
-            if (i + 1 < len && s->chars[i + 1] == '\n') {
-                skip = 2;  // \r\n
+            if (i + 1 < len && strData[i + 1] == '\n') {
+                skip = 2;
             } else {
-                skip = 1;  // \r
+                skip = 1;
             }
-        } else if (s->chars[i] == '\n') {
+        } else if (strData[i] == '\n') {
             is_line_end = true;
-            skip = 1;  // \n
+            skip = 1;
         }
 
         if (is_line_end) {
-            parts.push_back(alloc::allocString(s->chars + start, i - start));
+            ranges.push_back({start, i - start});
             start = i + skip;
-            i = start - 1;  // Will be incremented by loop
+            i = start - 1;
         }
     }
+    ranges.push_back({start, len - start});
 
-    // Add final part
-    parts.push_back(alloc::allocString(s->chars + start, len - start));
+    // Phase 2: create strings with rooting
+    std::vector<HPointer> parts(ranges.size(), alloc::listNil());
+    auto& rs = Allocator::instance().getRootSet();
+    size_t saved = rs.stackRootPoint();
+    for (auto& hp : parts) rs.pushStackRoot(&hp);
 
+    for (size_t i = 0; i < ranges.size(); ++i) {
+        parts[i] = alloc::allocString(strData.data() + ranges[i].start, ranges[i].len);
+    }
+
+    rs.restoreStackRootPoint(saved);
     return alloc::listFromPointers(parts);
 }
 
@@ -222,18 +214,23 @@ HPointer words(void* str) {
     ElmString* s = static_cast<ElmString*>(allocator.resolve(trimmed));
     size_t len = s->header.size;
 
-    std::vector<HPointer> parts;
+    // Copy string data before any allocation
+    std::vector<u16> strData(s->chars, s->chars + len);
+
+    // Phase 1: find word boundaries (no allocation)
+    struct WordRange { size_t start; size_t len; };
+    std::vector<WordRange> ranges;
     size_t start = 0;
     bool in_word = false;
 
     for (size_t i = 0; i <= len; ++i) {
         bool is_whitespace = (i == len) ||
-            s->chars[i] == ' ' || s->chars[i] == '\t' ||
-            s->chars[i] == '\n' || s->chars[i] == '\r';
+            strData[i] == ' ' || strData[i] == '\t' ||
+            strData[i] == '\n' || strData[i] == '\r';
 
         if (is_whitespace) {
             if (in_word) {
-                parts.push_back(alloc::allocString(s->chars + start, i - start));
+                ranges.push_back({start, i - start});
                 in_word = false;
             }
         } else {
@@ -244,6 +241,19 @@ HPointer words(void* str) {
         }
     }
 
+    if (ranges.empty()) return alloc::listNil();
+
+    // Phase 2: create strings with rooting
+    std::vector<HPointer> parts(ranges.size(), alloc::listNil());
+    auto& rs = Allocator::instance().getRootSet();
+    size_t saved = rs.stackRootPoint();
+    for (auto& hp : parts) rs.pushStackRoot(&hp);
+
+    for (size_t i = 0; i < ranges.size(); ++i) {
+        parts[i] = alloc::allocString(strData.data() + ranges[i].start, ranges[i].len);
+    }
+
+    rs.restoreStackRootPoint(saved);
     return alloc::listFromPointers(parts);
 }
 

@@ -16,6 +16,35 @@
  *   - Unboxable: Union of i64/f64/char16_t/HPointer for polymorphic storage
  *   - Embedded constants: Nil, True, False, Unit, Nothing stored in HPointer
  *   - Unboxing: Primitives stored directly without heap allocation
+ *
+ * ============================================================================
+ * GC Rooting Patterns (mandatory for all runtime/kernel C++)
+ * ============================================================================
+ *
+ * Pattern 1 — Root across a GC-capable call:
+ *   Any helper that stores existing HPointers or boxed Unboxable slots into a
+ *   freshly allocated object must either:
+ *   (a) call a centralized alloc::* helper whose internal implementation
+ *       already roots (cons, tuple2/3, custom, record, just, ok, err,
+ *       stackFrame, listFromPointers, arrayFromPointers, allocTask,
+ *       allocProcess), or
+ *   (b) wrap the boxed locals in a StackRootGuard (<=~8 slots) or
+ *       StackRootRangeGuard (contiguous buffer) for the lifetime of the
+ *       allocation.
+ *   Raw Allocator::allocate calls outside HeapHelpers.hpp are permitted only
+ *   when all stored fields are unboxed primitives or newly-initialized memory.
+ *
+ * Pattern 2 — GC-safe collect-then-build:
+ *   Kernel/runtime C++ that constructs an Elm list from a pre-collected batch
+ *   of values MUST use one of:
+ *   - alloc::listFromPointers     (input: std::vector<HPointer>)
+ *   - alloc::listFromUnboxables   (input: std::vector<pair<Unboxable,bool>>)
+ *   Hand-rolled loops over alloc::cons across a std::vector are forbidden.
+ *
+ * Pattern 3 — void* parameters:
+ *   Functions receiving void* (resolved heap pointers) must copy any data
+ *   they need from the object BEFORE performing any allocation, because GC
+ *   can move the object and invalidate the void* pointer.
  */
 
 #ifndef ECO_HEAP_HELPERS_H
@@ -83,6 +112,13 @@ public:
         rs.pushStackRoot(c);
         rs.pushStackRoot(d);
     }
+    StackRootGuard(std::initializer_list<HPointer*> roots) {
+        auto& rs = Allocator::instance().getRootSet();
+        savedPoint_ = rs.stackRootPoint();
+        for (HPointer* r : roots) {
+            if (r != nullptr) rs.pushStackRoot(r);
+        }
+    }
     ~StackRootGuard() {
         Allocator::instance().getRootSet().restoreStackRootPoint(savedPoint_);
     }
@@ -92,6 +128,24 @@ public:
 
 private:
     size_t savedPoint_;
+};
+
+// RAII wrapper for pushStackRootRange / restoreStackRangePoint.
+// Use for contiguous buffers of HPointers (e.g. std::vector<HPointer>).
+class StackRootRangeGuard {
+public:
+    StackRootRangeGuard(HPointer* base, size_t count, uint64_t hpointer_mask) {
+        auto& rs = Allocator::instance().getRootSet();
+        saved_ = rs.stackRangePoint();
+        rs.pushStackRootRange(base, count, hpointer_mask);
+    }
+    ~StackRootRangeGuard() {
+        Allocator::instance().getRootSet().restoreStackRangePoint(saved_);
+    }
+    StackRootRangeGuard(const StackRootRangeGuard&) = delete;
+    StackRootRangeGuard& operator=(const StackRootRangeGuard&) = delete;
+private:
+    size_t saved_;
 };
 
 namespace alloc {
@@ -480,6 +534,47 @@ inline HPointer listFromFloats(const std::vector<f64>& elements) {
     for (auto it = elements.rbegin(); it != elements.rend(); ++it) {
         result = cons(unboxedFloat(*it), result, false);
     }
+    return result;
+}
+
+/**
+ * Builds a list from a vector of (Unboxable, is_boxed) pairs with proper
+ * GC rooting. All boxed entries are registered as stack roots for the
+ * duration of the build phase, so a minor GC triggered by any cons()
+ * call updates them in place.
+ *
+ * @param elems    Mutable ref to (value, is_boxed) pairs. Boxed entries
+ *                 may be updated in-place by GC. Must not be resized
+ *                 during the call (addresses registered as roots).
+ * @param tail     Initial tail for the list (default: Nil).
+ * @param reversed If true, iterate forward (producing a reversed list).
+ */
+inline HPointer listFromUnboxables(
+        std::vector<std::pair<Unboxable, bool>>& elems,
+        HPointer tail = listNil(),
+        bool reversed = false) {
+    if (elems.empty()) return tail;
+
+    HPointer result = tail;
+    auto& rs = Allocator::instance().getRootSet();
+    size_t saved = rs.stackRootPoint();
+
+    rs.pushStackRoot(&result);
+    for (auto& [val, is_boxed] : elems) {
+        if (is_boxed) rs.pushStackRoot(&val.p);
+    }
+
+    if (reversed) {
+        for (auto& [val, is_boxed] : elems) {
+            result = cons(val, result, is_boxed);
+        }
+    } else {
+        for (auto it = elems.rbegin(); it != elems.rend(); ++it) {
+            result = cons(it->first, result, it->second);
+        }
+    }
+
+    rs.restoreStackRootPoint(saved);
     return result;
 }
 

@@ -26,17 +26,21 @@ HPointer fromArray(const std::vector<HPointer>& array) {
 std::vector<HPointer> toArray(HPointer list) {
     // Convert list to vector, boxing any unboxed values.
     auto pairs = ListOps::toVector(list);
-    std::vector<HPointer> result;
-    result.reserve(pairs.size());
+    std::vector<HPointer> result(pairs.size(), alloc::listNil());
 
-    for (const auto& [val, is_boxed] : pairs) {
-        if (is_boxed) {
-            result.push_back(val.p);
+    auto& rs = Allocator::instance().getRootSet();
+    size_t saved = rs.stackRootPoint();
+    for (auto& hp : result) rs.pushStackRoot(&hp);
+
+    for (size_t i = 0; i < pairs.size(); ++i) {
+        if (pairs[i].second) {
+            result[i] = pairs[i].first.p;
         } else {
-            result.push_back(alloc::allocInt(val.i));
+            result[i] = alloc::allocInt(pairs[i].first.i);
         }
     }
 
+    rs.restoreStackRootPoint(saved);
     return result;
 }
 
@@ -48,46 +52,45 @@ HPointer map2(Map2Func func, HPointer xs, HPointer ys) {
     if (alloc::isNil(xs) || alloc::isNil(ys)) return alloc::listNil();
 
     auto& allocator = Allocator::instance();
-    std::vector<HPointer> results;
 
-    HPointer currX = xs;
-    HPointer currY = ys;
-
+    // Phase 1: collect raw values (no allocation)
+    struct RawPair { Unboxable x; bool x_boxed; Unboxable y; bool y_boxed; };
+    std::vector<RawPair> raw;
+    HPointer currX = xs, currY = ys;
     while (!alloc::isNil(currX) && !alloc::isNil(currY)) {
         void* cellX = allocator.resolve(currX);
         void* cellY = allocator.resolve(currY);
         if (!cellX || !cellY) break;
-
         Cons* cX = static_cast<Cons*>(cellX);
         Cons* cY = static_cast<Cons*>(cellY);
         Header* hdrX = static_cast<Header*>(cellX);
         Header* hdrY = static_cast<Header*>(cellY);
-
-        // Resolve elements, boxing unboxed values.
-        void* elemX;
-        void* elemY;
-
-        if (!(hdrX->unboxed & 1)) {
-            elemX = allocator.resolve(cX->head.p);
-        } else {
-            HPointer boxed = alloc::allocInt(cX->head.i);
-            elemX = allocator.resolve(boxed);
-        }
-
-        if (!(hdrY->unboxed & 1)) {
-            elemY = allocator.resolve(cY->head.p);
-        } else {
-            HPointer boxed = alloc::allocInt(cY->head.i);
-            elemY = allocator.resolve(boxed);
-        }
-
-        HPointer result = func(elemX, elemY);
-        results.push_back(result);
-
+        raw.push_back({cX->head, !(hdrX->unboxed & 1), cY->head, !(hdrY->unboxed & 1)});
         currX = cX->tail;
         currY = cY->tail;
     }
+    if (raw.empty()) return alloc::listNil();
 
+    // Phase 2: build with rooting
+    auto& rs = Allocator::instance().getRootSet();
+    size_t saved = rs.stackRootPoint();
+    for (auto& r : raw) {
+        if (r.x_boxed) rs.pushStackRoot(&r.x.p);
+        if (r.y_boxed) rs.pushStackRoot(&r.y.p);
+    }
+    std::vector<HPointer> results(raw.size(), alloc::listNil());
+    for (auto& hp : results) rs.pushStackRoot(&hp);
+    HPointer tempX = alloc::listNil(), tempY = alloc::listNil();
+    rs.pushStackRoot(&tempX);
+    rs.pushStackRoot(&tempY);
+
+    for (size_t i = 0; i < raw.size(); ++i) {
+        tempX = raw[i].x_boxed ? raw[i].x.p : alloc::allocInt(raw[i].x.i);
+        tempY = raw[i].y_boxed ? raw[i].y.p : alloc::allocInt(raw[i].y.i);
+        results[i] = func(allocator.resolve(tempX), allocator.resolve(tempY));
+    }
+
+    rs.restoreStackRootPoint(saved);
     return alloc::listFromPointers(results);
 }
 
@@ -97,41 +100,47 @@ HPointer map3(Map3Func func, HPointer xs, HPointer ys, HPointer zs) {
     }
 
     auto& allocator = Allocator::instance();
-    std::vector<HPointer> results;
-
-    HPointer currX = xs;
-    HPointer currY = ys;
-    HPointer currZ = zs;
-
+    struct Raw3 { Unboxable x; bool xb; Unboxable y; bool yb; Unboxable z; bool zb; };
+    std::vector<Raw3> raw;
+    HPointer currX = xs, currY = ys, currZ = zs;
     while (!alloc::isNil(currX) && !alloc::isNil(currY) && !alloc::isNil(currZ)) {
         void* cellX = allocator.resolve(currX);
         void* cellY = allocator.resolve(currY);
         void* cellZ = allocator.resolve(currZ);
         if (!cellX || !cellY || !cellZ) break;
-
         Cons* cX = static_cast<Cons*>(cellX);
         Cons* cY = static_cast<Cons*>(cellY);
         Cons* cZ = static_cast<Cons*>(cellZ);
         Header* hdrX = static_cast<Header*>(cellX);
         Header* hdrY = static_cast<Header*>(cellY);
         Header* hdrZ = static_cast<Header*>(cellZ);
+        raw.push_back({cX->head, !(hdrX->unboxed & 1),
+                        cY->head, !(hdrY->unboxed & 1),
+                        cZ->head, !(hdrZ->unboxed & 1)});
+        currX = cX->tail; currY = cY->tail; currZ = cZ->tail;
+    }
+    if (raw.empty()) return alloc::listNil();
 
-        // Resolve elements, boxing unboxed values.
-        void* elemX = (!(hdrX->unboxed & 1)) ? allocator.resolve(cX->head.p)
-                     : allocator.resolve(alloc::allocInt(cX->head.i));
-        void* elemY = (!(hdrY->unboxed & 1)) ? allocator.resolve(cY->head.p)
-                     : allocator.resolve(alloc::allocInt(cY->head.i));
-        void* elemZ = (!(hdrZ->unboxed & 1)) ? allocator.resolve(cZ->head.p)
-                     : allocator.resolve(alloc::allocInt(cZ->head.i));
+    auto& rs = Allocator::instance().getRootSet();
+    size_t saved = rs.stackRootPoint();
+    for (auto& r : raw) {
+        if (r.xb) rs.pushStackRoot(&r.x.p);
+        if (r.yb) rs.pushStackRoot(&r.y.p);
+        if (r.zb) rs.pushStackRoot(&r.z.p);
+    }
+    std::vector<HPointer> results(raw.size(), alloc::listNil());
+    for (auto& hp : results) rs.pushStackRoot(&hp);
+    HPointer tX = alloc::listNil(), tY = alloc::listNil(), tZ = alloc::listNil();
+    rs.pushStackRoot(&tX); rs.pushStackRoot(&tY); rs.pushStackRoot(&tZ);
 
-        HPointer result = func(elemX, elemY, elemZ);
-        results.push_back(result);
-
-        currX = cX->tail;
-        currY = cY->tail;
-        currZ = cZ->tail;
+    for (size_t i = 0; i < raw.size(); ++i) {
+        tX = raw[i].xb ? raw[i].x.p : alloc::allocInt(raw[i].x.i);
+        tY = raw[i].yb ? raw[i].y.p : alloc::allocInt(raw[i].y.i);
+        tZ = raw[i].zb ? raw[i].z.p : alloc::allocInt(raw[i].z.i);
+        results[i] = func(allocator.resolve(tX), allocator.resolve(tY), allocator.resolve(tZ));
     }
 
+    rs.restoreStackRootPoint(saved);
     return alloc::listFromPointers(results);
 }
 
@@ -141,47 +150,43 @@ HPointer map4(Map4Func func, HPointer ws, HPointer xs, HPointer ys, HPointer zs)
     }
 
     auto& allocator = Allocator::instance();
-    std::vector<HPointer> results;
-
-    HPointer currW = ws;
-    HPointer currX = xs;
-    HPointer currY = ys;
-    HPointer currZ = zs;
-
-    while (!alloc::isNil(currW) && !alloc::isNil(currX) && !alloc::isNil(currY) && !alloc::isNil(currZ)) {
-        void* cellW = allocator.resolve(currW);
-        void* cellX = allocator.resolve(currX);
-        void* cellY = allocator.resolve(currY);
-        void* cellZ = allocator.resolve(currZ);
+    struct Raw4 { Unboxable w; bool wb; Unboxable x; bool xb; Unboxable y; bool yb; Unboxable z; bool zb; };
+    std::vector<Raw4> raw;
+    HPointer cW = ws, cX = xs, cY = ys, cZ = zs;
+    while (!alloc::isNil(cW) && !alloc::isNil(cX) && !alloc::isNil(cY) && !alloc::isNil(cZ)) {
+        void* cellW = allocator.resolve(cW); void* cellX = allocator.resolve(cX);
+        void* cellY = allocator.resolve(cY); void* cellZ = allocator.resolve(cZ);
         if (!cellW || !cellX || !cellY || !cellZ) break;
-
-        Cons* cW = static_cast<Cons*>(cellW);
-        Cons* cX = static_cast<Cons*>(cellX);
-        Cons* cY = static_cast<Cons*>(cellY);
-        Cons* cZ = static_cast<Cons*>(cellZ);
-        Header* hdrW = static_cast<Header*>(cellW);
-        Header* hdrX = static_cast<Header*>(cellX);
-        Header* hdrY = static_cast<Header*>(cellY);
-        Header* hdrZ = static_cast<Header*>(cellZ);
-
-        void* elemW = (!(hdrW->unboxed & 1)) ? allocator.resolve(cW->head.p)
-                     : allocator.resolve(alloc::allocInt(cW->head.i));
-        void* elemX = (!(hdrX->unboxed & 1)) ? allocator.resolve(cX->head.p)
-                     : allocator.resolve(alloc::allocInt(cX->head.i));
-        void* elemY = (!(hdrY->unboxed & 1)) ? allocator.resolve(cY->head.p)
-                     : allocator.resolve(alloc::allocInt(cY->head.i));
-        void* elemZ = (!(hdrZ->unboxed & 1)) ? allocator.resolve(cZ->head.p)
-                     : allocator.resolve(alloc::allocInt(cZ->head.i));
-
-        HPointer result = func(elemW, elemX, elemY, elemZ);
-        results.push_back(result);
-
-        currW = cW->tail;
-        currX = cX->tail;
-        currY = cY->tail;
-        currZ = cZ->tail;
+        Cons* dW = static_cast<Cons*>(cellW); Cons* dX = static_cast<Cons*>(cellX);
+        Cons* dY = static_cast<Cons*>(cellY); Cons* dZ = static_cast<Cons*>(cellZ);
+        Header* hW = static_cast<Header*>(cellW); Header* hX = static_cast<Header*>(cellX);
+        Header* hY = static_cast<Header*>(cellY); Header* hZ = static_cast<Header*>(cellZ);
+        raw.push_back({dW->head, !(hW->unboxed & 1), dX->head, !(hX->unboxed & 1),
+                        dY->head, !(hY->unboxed & 1), dZ->head, !(hZ->unboxed & 1)});
+        cW = dW->tail; cX = dX->tail; cY = dY->tail; cZ = dZ->tail;
     }
+    if (raw.empty()) return alloc::listNil();
 
+    auto& rs = Allocator::instance().getRootSet();
+    size_t saved = rs.stackRootPoint();
+    for (auto& r : raw) {
+        if (r.wb) rs.pushStackRoot(&r.w.p); if (r.xb) rs.pushStackRoot(&r.x.p);
+        if (r.yb) rs.pushStackRoot(&r.y.p); if (r.zb) rs.pushStackRoot(&r.z.p);
+    }
+    std::vector<HPointer> results(raw.size(), alloc::listNil());
+    for (auto& hp : results) rs.pushStackRoot(&hp);
+    HPointer tW = alloc::listNil(), tX = alloc::listNil(), tY = alloc::listNil(), tZ = alloc::listNil();
+    rs.pushStackRoot(&tW); rs.pushStackRoot(&tX); rs.pushStackRoot(&tY); rs.pushStackRoot(&tZ);
+
+    for (size_t i = 0; i < raw.size(); ++i) {
+        tW = raw[i].wb ? raw[i].w.p : alloc::allocInt(raw[i].w.i);
+        tX = raw[i].xb ? raw[i].x.p : alloc::allocInt(raw[i].x.i);
+        tY = raw[i].yb ? raw[i].y.p : alloc::allocInt(raw[i].y.i);
+        tZ = raw[i].zb ? raw[i].z.p : alloc::allocInt(raw[i].z.i);
+        results[i] = func(allocator.resolve(tW), allocator.resolve(tX),
+                          allocator.resolve(tY), allocator.resolve(tZ));
+    }
+    rs.restoreStackRootPoint(saved);
     return alloc::listFromPointers(results);
 }
 
@@ -191,55 +196,52 @@ HPointer map5(Map5Func func, HPointer vs, HPointer ws, HPointer xs, HPointer ys,
     }
 
     auto& allocator = Allocator::instance();
-    std::vector<HPointer> results;
-
-    HPointer currV = vs;
-    HPointer currW = ws;
-    HPointer currX = xs;
-    HPointer currY = ys;
-    HPointer currZ = zs;
-
-    while (!alloc::isNil(currV) && !alloc::isNil(currW) && !alloc::isNil(currX) &&
-           !alloc::isNil(currY) && !alloc::isNil(currZ)) {
-        void* cellV = allocator.resolve(currV);
-        void* cellW = allocator.resolve(currW);
-        void* cellX = allocator.resolve(currX);
-        void* cellY = allocator.resolve(currY);
-        void* cellZ = allocator.resolve(currZ);
+    struct Raw5 { Unboxable v; bool vb; Unboxable w; bool wb; Unboxable x; bool xb; Unboxable y; bool yb; Unboxable z; bool zb; };
+    std::vector<Raw5> raw;
+    HPointer cV = vs, cW = ws, cX = xs, cY = ys, cZ = zs;
+    while (!alloc::isNil(cV) && !alloc::isNil(cW) && !alloc::isNil(cX) &&
+           !alloc::isNil(cY) && !alloc::isNil(cZ)) {
+        void* cellV = allocator.resolve(cV); void* cellW = allocator.resolve(cW);
+        void* cellX = allocator.resolve(cX); void* cellY = allocator.resolve(cY);
+        void* cellZ = allocator.resolve(cZ);
         if (!cellV || !cellW || !cellX || !cellY || !cellZ) break;
-
-        Cons* cV = static_cast<Cons*>(cellV);
-        Cons* cW = static_cast<Cons*>(cellW);
-        Cons* cX = static_cast<Cons*>(cellX);
-        Cons* cY = static_cast<Cons*>(cellY);
-        Cons* cZ = static_cast<Cons*>(cellZ);
-        Header* hdrV = static_cast<Header*>(cellV);
-        Header* hdrW = static_cast<Header*>(cellW);
-        Header* hdrX = static_cast<Header*>(cellX);
-        Header* hdrY = static_cast<Header*>(cellY);
-        Header* hdrZ = static_cast<Header*>(cellZ);
-
-        void* elemV = (!(hdrV->unboxed & 1)) ? allocator.resolve(cV->head.p)
-                     : allocator.resolve(alloc::allocInt(cV->head.i));
-        void* elemW = (!(hdrW->unboxed & 1)) ? allocator.resolve(cW->head.p)
-                     : allocator.resolve(alloc::allocInt(cW->head.i));
-        void* elemX = (!(hdrX->unboxed & 1)) ? allocator.resolve(cX->head.p)
-                     : allocator.resolve(alloc::allocInt(cX->head.i));
-        void* elemY = (!(hdrY->unboxed & 1)) ? allocator.resolve(cY->head.p)
-                     : allocator.resolve(alloc::allocInt(cY->head.i));
-        void* elemZ = (!(hdrZ->unboxed & 1)) ? allocator.resolve(cZ->head.p)
-                     : allocator.resolve(alloc::allocInt(cZ->head.i));
-
-        HPointer result = func(elemV, elemW, elemX, elemY, elemZ);
-        results.push_back(result);
-
-        currV = cV->tail;
-        currW = cW->tail;
-        currX = cX->tail;
-        currY = cY->tail;
-        currZ = cZ->tail;
+        Cons* dV = static_cast<Cons*>(cellV); Cons* dW = static_cast<Cons*>(cellW);
+        Cons* dX = static_cast<Cons*>(cellX); Cons* dY = static_cast<Cons*>(cellY);
+        Cons* dZ = static_cast<Cons*>(cellZ);
+        Header* hV = static_cast<Header*>(cellV); Header* hW = static_cast<Header*>(cellW);
+        Header* hX = static_cast<Header*>(cellX); Header* hY = static_cast<Header*>(cellY);
+        Header* hZ = static_cast<Header*>(cellZ);
+        raw.push_back({dV->head, !(hV->unboxed & 1), dW->head, !(hW->unboxed & 1),
+                        dX->head, !(hX->unboxed & 1), dY->head, !(hY->unboxed & 1),
+                        dZ->head, !(hZ->unboxed & 1)});
+        cV = dV->tail; cW = dW->tail; cX = dX->tail; cY = dY->tail; cZ = dZ->tail;
     }
+    if (raw.empty()) return alloc::listNil();
 
+    auto& rs = Allocator::instance().getRootSet();
+    size_t saved = rs.stackRootPoint();
+    for (auto& r : raw) {
+        if (r.vb) rs.pushStackRoot(&r.v.p); if (r.wb) rs.pushStackRoot(&r.w.p);
+        if (r.xb) rs.pushStackRoot(&r.x.p); if (r.yb) rs.pushStackRoot(&r.y.p);
+        if (r.zb) rs.pushStackRoot(&r.z.p);
+    }
+    std::vector<HPointer> results(raw.size(), alloc::listNil());
+    for (auto& hp : results) rs.pushStackRoot(&hp);
+    HPointer tV = alloc::listNil(), tW = alloc::listNil(), tX = alloc::listNil();
+    HPointer tY = alloc::listNil(), tZ = alloc::listNil();
+    rs.pushStackRoot(&tV); rs.pushStackRoot(&tW); rs.pushStackRoot(&tX);
+    rs.pushStackRoot(&tY); rs.pushStackRoot(&tZ);
+
+    for (size_t i = 0; i < raw.size(); ++i) {
+        tV = raw[i].vb ? raw[i].v.p : alloc::allocInt(raw[i].v.i);
+        tW = raw[i].wb ? raw[i].w.p : alloc::allocInt(raw[i].w.i);
+        tX = raw[i].xb ? raw[i].x.p : alloc::allocInt(raw[i].x.i);
+        tY = raw[i].yb ? raw[i].y.p : alloc::allocInt(raw[i].y.i);
+        tZ = raw[i].zb ? raw[i].z.p : alloc::allocInt(raw[i].z.i);
+        results[i] = func(allocator.resolve(tV), allocator.resolve(tW), allocator.resolve(tX),
+                          allocator.resolve(tY), allocator.resolve(tZ));
+    }
+    rs.restoreStackRootPoint(saved);
     return alloc::listFromPointers(results);
 }
 

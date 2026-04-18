@@ -62,9 +62,13 @@ inline HPointer repeat(i64 n, Unboxable value, bool is_boxed) {
     if (n <= 0) return alloc::listNil();
 
     HPointer result = alloc::listNil();
+    auto& rs = Allocator::instance().getRootSet();
+    size_t saved = rs.stackRootPoint();
+    if (is_boxed) rs.pushStackRoot(&value.p);
     for (i64 i = 0; i < n; ++i) {
         result = alloc::cons(value, result, is_boxed);
     }
+    rs.restoreStackRootPoint(saved);
     return result;
 }
 
@@ -426,19 +430,8 @@ inline std::vector<i64> toIntVector(HPointer list) {
     return result;
 }
 
-/**
- * Creates a list from a std::vector with a mapper that provides boxing info.
- */
-template<typename T>
-HPointer fromVector(const std::vector<T>& vec,
-                    std::function<std::pair<Unboxable, bool>(const T&)> converter) {
-    HPointer result = alloc::listNil();
-    for (auto it = vec.rbegin(); it != vec.rend(); ++it) {
-        auto [val, is_boxed] = converter(*it);
-        result = alloc::cons(val, result, is_boxed);
-    }
-    return result;
-}
+// fromVector has been retired. Use alloc::listFromUnboxables,
+// alloc::listFromPointers, or alloc::listFromInts instead.
 
 } // namespace ListOps
 } // namespace Elm

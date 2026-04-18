@@ -32,6 +32,9 @@ HPointer concat(HPointer stringList) {
 
     if (total_len == 0) return alloc::emptyString();
 
+    // Root stringList across the allocation so GC updates it
+    Elm::StackRootGuard guard(&stringList);
+
     // Allocate result
     size_t data_size = total_len * sizeof(u16);
     size_t total_size = sizeof(ElmString) + data_size;
@@ -40,7 +43,7 @@ HPointer concat(HPointer stringList) {
     ElmString* result = static_cast<ElmString*>(allocator.allocate(total_size, Tag_String));
     result->header.size = static_cast<u32>(total_len);
 
-    // Second pass: copy strings
+    // Second pass: copy strings (stringList updated by GC if needed)
     size_t offset = 0;
     current = stringList;
 
@@ -67,6 +70,9 @@ HPointer join(void* sep, HPointer stringList) {
     auto& allocator = Allocator::instance();
     ElmString* separator = static_cast<ElmString*>(sep);
     size_t sep_len = separator ? separator->header.size : 0;
+
+    // Wrap separator as HPointer for rooting across allocation
+    HPointer sepHp = sep ? allocator.wrap(sep) : alloc::emptyString();
 
     // First pass: count strings and total length
     size_t total_len = 0;
@@ -95,6 +101,9 @@ HPointer join(void* sep, HPointer stringList) {
     // Add separator lengths
     total_len += sep_len * (count - 1);
 
+    // Root separator and stringList across allocation
+    Elm::StackRootGuard guard(&sepHp, &stringList);
+
     // Allocate result
     size_t data_size = total_len * sizeof(u16);
     size_t total_size = sizeof(ElmString) + data_size;
@@ -102,6 +111,10 @@ HPointer join(void* sep, HPointer stringList) {
 
     ElmString* result = static_cast<ElmString*>(allocator.allocate(total_size, Tag_String));
     result->header.size = static_cast<u32>(total_len);
+
+    // Re-resolve separator after allocation (GC may have moved it)
+    separator = alloc::isEmbeddedConstant(sepHp) ? nullptr
+        : static_cast<ElmString*>(allocator.resolve(sepHp));
 
     // Second pass: copy strings with separators
     size_t offset = 0;
@@ -204,27 +217,40 @@ HPointer split(void* sep, void* str) {
         return toList(str);
     }
 
-    // Collect substrings
-    std::vector<HPointer> parts;
-    size_t start = 0;
+    // Copy string data before any allocation (void* ptrs become stale after GC)
+    std::vector<u16> strData(s->chars, s->chars + str_len);
+    std::vector<u16> sepData(separator->chars, separator->chars + sep_len);
 
+    // Phase 1: find split positions (no allocation)
+    std::vector<size_t> splitPositions;
     for (size_t i = 0; i <= str_len - sep_len; ++i) {
         bool match = true;
         for (size_t j = 0; j < sep_len && match; ++j) {
-            if (s->chars[i + j] != separator->chars[j]) match = false;
+            if (strData[i + j] != sepData[j]) match = false;
         }
-
         if (match) {
-            // Found separator - add substring before it
-            parts.push_back(alloc::allocString(s->chars + start, i - start));
-            start = i + sep_len;
-            i = start - 1;  // Will be incremented by loop
+            splitPositions.push_back(i);
+            i += sep_len - 1;  // Will be incremented by loop
         }
     }
 
-    // Add final substring
-    parts.push_back(alloc::allocString(s->chars + start, str_len - start));
+    // Phase 2: create substrings with rooting
+    size_t numParts = splitPositions.size() + 1;
+    std::vector<HPointer> parts(numParts, alloc::listNil());
+    auto& rs = Allocator::instance().getRootSet();
+    size_t saved = rs.stackRootPoint();
+    for (auto& hp : parts) rs.pushStackRoot(&hp);
 
+    size_t start = 0;
+    for (size_t idx = 0; idx < splitPositions.size(); ++idx) {
+        parts[idx] = alloc::allocString(strData.data() + start,
+                                         splitPositions[idx] - start);
+        start = splitPositions[idx] + sep_len;
+    }
+    parts[splitPositions.size()] = alloc::allocString(strData.data() + start,
+                                                       str_len - start);
+
+    rs.restoreStackRootPoint(saved);
     return alloc::listFromPointers(parts);
 }
 
@@ -232,16 +258,23 @@ HPointer toList(void* str) {
     ElmString* s = static_cast<ElmString*>(str);
     if (!s) return alloc::listNil();
     size_t len = s->header.size;
+    if (len == 0) return alloc::listNil();
 
-    HPointer result = alloc::listNil();
+    // Copy character data before any allocation (void* str can move)
+    std::vector<u16> chars(s->chars, s->chars + len);
 
-    // Build list in reverse order for efficiency
-    for (size_t i = len; i > 0; --i) {
-        HPointer charStr = fromChar(s->chars[i - 1]);
-        result = alloc::cons(alloc::boxed(charStr), result, true);
+    // Create character strings with rooting
+    std::vector<HPointer> charPtrs(len, alloc::listNil());
+    auto& rs = Allocator::instance().getRootSet();
+    size_t saved = rs.stackRootPoint();
+    for (auto& hp : charPtrs) rs.pushStackRoot(&hp);
+
+    for (size_t i = 0; i < len; ++i) {
+        charPtrs[i] = fromChar(chars[i]);
     }
 
-    return result;
+    rs.restoreStackRootPoint(saved);
+    return alloc::listFromPointers(charPtrs);
 }
 
 HPointer uncons(void* str) {
@@ -269,19 +302,13 @@ HPointer map(CharToCharMapper mapFunc, void* str) {
 
     if (len == 0) return alloc::emptyString();
 
-    size_t data_size = len * sizeof(u16);
-    size_t total_size = sizeof(ElmString) + data_size;
-    total_size = (total_size + 7) & ~7;
-
-    auto& allocator = Allocator::instance();
-    ElmString* result = static_cast<ElmString*>(allocator.allocate(total_size, Tag_String));
-    result->header.size = static_cast<u32>(len);
-
+    // Copy and transform data before allocation (void* str can move during GC)
+    std::vector<u16> data(len);
     for (size_t i = 0; i < len; ++i) {
-        result->chars[i] = mapFunc(s->chars[i]);
+        data[i] = mapFunc(s->chars[i]);
     }
 
-    return allocator.wrap(result);
+    return alloc::allocString(data.data(), len);
 }
 
 HPointer filter(CharPredicate pred, void* str) {
@@ -290,33 +317,17 @@ HPointer filter(CharPredicate pred, void* str) {
 
     if (len == 0) return alloc::emptyString();
 
-    // First pass: count matching chars
-    size_t match_count = 0;
+    // Collect matching chars before allocation (void* str can move during GC)
+    std::vector<u16> data;
+    data.reserve(len);
     for (size_t i = 0; i < len; ++i) {
-        if (pred(s->chars[i])) ++match_count;
+        if (pred(s->chars[i])) data.push_back(s->chars[i]);
     }
 
-    if (match_count == 0) return alloc::emptyString();
-    if (match_count == len) return Allocator::instance().wrap(str);
+    if (data.empty()) return alloc::emptyString();
+    if (data.size() == len) return Allocator::instance().wrap(str);
 
-    // Allocate result
-    size_t data_size = match_count * sizeof(u16);
-    size_t total_size = sizeof(ElmString) + data_size;
-    total_size = (total_size + 7) & ~7;
-
-    auto& allocator = Allocator::instance();
-    ElmString* result = static_cast<ElmString*>(allocator.allocate(total_size, Tag_String));
-    result->header.size = static_cast<u32>(match_count);
-
-    // Second pass: copy matching chars
-    size_t j = 0;
-    for (size_t i = 0; i < len; ++i) {
-        if (pred(s->chars[i])) {
-            result->chars[j++] = s->chars[i];
-        }
-    }
-
-    return allocator.wrap(result);
+    return alloc::allocString(data.data(), data.size());
 }
 
 Unboxable foldl(CharFolder fold, Unboxable acc, void* str) {

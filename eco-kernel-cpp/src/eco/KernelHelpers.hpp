@@ -62,7 +62,9 @@ inline uint64_t taskFail(HPointer error) {
 
 // Wrap a string error message in Task.fail.
 inline uint64_t taskFailString(const std::string& msg) {
-    return taskFail(allocStringFromUTF8(msg));
+    HPointer str = allocStringFromUTF8(msg);
+    Elm::StackRootGuard guard(&str);
+    return taskFail(str);
 }
 
 // Wrap a boxed Bool in Task.succeed.
@@ -72,24 +74,32 @@ inline uint64_t taskSucceedBool(bool b) {
 
 // Wrap an unboxed Int in Task.succeed (boxes it first).
 inline uint64_t taskSucceedInt(int64_t value) {
-    return taskSucceed(allocInt(value));
+    HPointer v = allocInt(value);
+    Elm::StackRootGuard guard(&v);
+    return taskSucceed(v);
 }
 
 // Wrap an unboxed Float in Task.succeed (boxes it first).
 inline uint64_t taskSucceedFloat(double value) {
-    return taskSucceed(allocFloat(value));
+    HPointer v = allocFloat(value);
+    Elm::StackRootGuard guard(&v);
+    return taskSucceed(v);
 }
 
 // Wrap an ElmString (as uint64_t) in Task.succeed.
 inline uint64_t taskSucceedString(const std::string& s) {
-    return taskSucceed(allocStringFromUTF8(s));
+    HPointer str = allocStringFromUTF8(s);
+    Elm::StackRootGuard guard(&str);
+    return taskSucceed(str);
 }
 
 // Wrap a Maybe String in Task.succeed.
 inline uint64_t taskSucceedMaybeString(const char* value) {
     if (value) {
         HPointer str = allocStringFromUTF8(std::string(value));
-        return taskSucceed(just(boxed(str), true));
+        Elm::StackRootGuard guard(&str);
+        HPointer wrapped = just(boxed(str), true);
+        return taskSucceed(wrapped);
     } else {
         return taskSucceed(nothing());
     }
@@ -97,11 +107,16 @@ inline uint64_t taskSucceedMaybeString(const char* value) {
 
 // Wrap a List String in Task.succeed.
 inline uint64_t taskSucceedStringList(const std::vector<std::string>& items) {
-    std::vector<HPointer> ptrs;
-    ptrs.reserve(items.size());
-    for (const auto& s : items) {
-        ptrs.push_back(allocStringFromUTF8(s));
+    std::vector<HPointer> ptrs(items.size(), listNil());
+    auto& rs = Allocator::instance().getRootSet();
+    size_t saved = rs.stackRootPoint();
+    for (auto& hp : ptrs) rs.pushStackRoot(&hp);
+
+    for (size_t i = 0; i < items.size(); ++i) {
+        ptrs[i] = allocStringFromUTF8(items[i]);
     }
+
+    rs.restoreStackRootPoint(saved);
     return taskSucceed(listFromPointers(ptrs));
 }
 

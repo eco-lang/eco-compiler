@@ -113,13 +113,7 @@ HPointer map(MapperWithBoxed mapper, HPointer list) {
         current = next;
     }
 
-    // Build result list in reverse
-    HPointer result = alloc::listNil();
-    for (auto it = mapped.rbegin(); it != mapped.rend(); ++it) {
-        result = alloc::cons(it->first, result, it->second);
-    }
-
-    return result;
+    return alloc::listFromUnboxables(mapped);
 }
 
 HPointer indexedMap(IndexedMapper mapper, HPointer list) {
@@ -149,13 +143,7 @@ HPointer indexedMap(IndexedMapper mapper, HPointer list) {
         current = next;
     }
 
-    // Build result list in reverse
-    HPointer result = alloc::listNil();
-    for (auto it = mapped.rbegin(); it != mapped.rend(); ++it) {
-        result = alloc::cons(it->first, result, it->second);
-    }
-
-    return result;
+    return alloc::listFromUnboxables(mapped);
 }
 
 HPointer filter(Predicate pred, HPointer list) {
@@ -185,13 +173,7 @@ HPointer filter(Predicate pred, HPointer list) {
         current = next;
     }
 
-    // Build result list in reverse
-    HPointer result = alloc::listNil();
-    for (auto it = passing.rbegin(); it != passing.rend(); ++it) {
-        result = alloc::cons(it->first, result, it->second);
-    }
-
-    return result;
+    return alloc::listFromUnboxables(passing);
 }
 
 HPointer filterMap(FilterMapper mapper, HPointer list) {
@@ -233,13 +215,7 @@ HPointer filterMap(FilterMapper mapper, HPointer list) {
         current = next;
     }
 
-    // Build result list in reverse
-    HPointer result = alloc::listNil();
-    for (auto it = results.rbegin(); it != results.rend(); ++it) {
-        result = alloc::cons(it->first, result, it->second);
-    }
-
-    return result;
+    return alloc::listFromUnboxables(results);
 }
 
 HPointer append(HPointer a, HPointer b) {
@@ -264,13 +240,7 @@ HPointer append(HPointer a, HPointer b) {
         current = c->tail;
     }
 
-    // Build result by prepending a's elements to b
-    HPointer result = b;
-    for (auto it = elements.rbegin(); it != elements.rend(); ++it) {
-        result = alloc::cons(it->first, result, it->second);
-    }
-
-    return result;
+    return alloc::listFromUnboxables(elements, b);
 }
 
 HPointer concat(HPointer listOfLists) {
@@ -305,13 +275,7 @@ HPointer concat(HPointer listOfLists) {
         outer = outerCons->tail;
     }
 
-    // Build result list in reverse
-    HPointer result = alloc::listNil();
-    for (auto it = allElements.rbegin(); it != allElements.rend(); ++it) {
-        result = alloc::cons(it->first, result, it->second);
-    }
-
-    return result;
+    return alloc::listFromUnboxables(allElements);
 }
 
 HPointer intersperse(Unboxable sep, bool sep_is_boxed, HPointer list) {
@@ -339,16 +303,15 @@ HPointer intersperse(Unboxable sep, bool sep_is_boxed, HPointer list) {
         return list;  // Nothing to intersperse
     }
 
-    // Build result with separators in reverse
-    HPointer result = alloc::listNil();
-    for (size_t i = elements.size(); i > 0; --i) {
-        result = alloc::cons(elements[i - 1].first, result, elements[i - 1].second);
-        if (i > 1) {
-            result = alloc::cons(sep, result, sep_is_boxed);
-        }
+    // Expand with separators interleaved
+    std::vector<std::pair<Unboxable, bool>> expanded;
+    expanded.reserve(elements.size() * 2 - 1);
+    for (size_t i = 0; i < elements.size(); ++i) {
+        if (i > 0) expanded.emplace_back(sep, sep_is_boxed);
+        expanded.push_back(elements[i]);
     }
 
-    return result;
+    return alloc::listFromUnboxables(expanded);
 }
 
 HPointer take(i64 n, HPointer list) {
@@ -374,13 +337,7 @@ HPointer take(i64 n, HPointer list) {
         current = c->tail;
     }
 
-    // Build result list in reverse
-    HPointer result = alloc::listNil();
-    for (auto it = elements.rbegin(); it != elements.rend(); ++it) {
-        result = alloc::cons(it->first, result, it->second);
-    }
-
-    return result;
+    return alloc::listFromUnboxables(elements);
 }
 
 HPointer drop(i64 n, HPointer list) {
@@ -435,16 +392,11 @@ HPointer partition(Predicate pred, HPointer list) {
         current = next;
     }
 
-    // Build passing list
-    HPointer passingList = alloc::listNil();
-    for (auto it = passing.rbegin(); it != passing.rend(); ++it) {
-        passingList = alloc::cons(it->first, passingList, it->second);
-    }
-
-    // Build failing list
-    HPointer failingList = alloc::listNil();
-    for (auto it = failing.rbegin(); it != failing.rend(); ++it) {
-        failingList = alloc::cons(it->first, failingList, it->second);
+    HPointer passingList = alloc::listFromUnboxables(passing);
+    HPointer failingList;
+    {
+        Elm::StackRootGuard guard(&passingList);
+        failingList = alloc::listFromUnboxables(failing);
     }
 
     return alloc::tuple2(alloc::boxed(passingList), alloc::boxed(failingList), 0);
@@ -489,28 +441,8 @@ Unboxable foldr(Folder fold, Unboxable acc, HPointer list) {
 HPointer reverse(HPointer list) {
     if (alloc::isNil(list)) return alloc::listNil();
 
-    auto& allocator = Allocator::instance();
-    HPointer result = alloc::listNil();
-    HPointer current = list;
-
-    while (!alloc::isNil(current)) {
-        void* cell = allocator.resolve(current);
-        if (!cell) break;
-
-        Cons* c = static_cast<Cons*>(cell);
-        Header* hdr = getHeader(cell);
-        bool is_boxed = !(hdr->unboxed & 1);
-
-        // Save head and tail BEFORE alloc::cons which can trigger GC.
-        // After GC, the raw Cons* c is stale (cell may have moved).
-        Unboxable head = c->head;
-        HPointer next = c->tail;
-
-        result = alloc::cons(head, result, is_boxed);
-        current = next;
-    }
-
-    return result;
+    auto elements = toVector(list);
+    return alloc::listFromUnboxables(elements, alloc::listNil(), true);
 }
 
 bool member(Unboxable value, bool is_boxed, HPointer list) {
@@ -564,13 +496,7 @@ HPointer sortBy(KeyExtractor keyFn, HPointer list) {
                   return keyFn(a.first, a.second) < keyFn(b.first, b.second);
               });
 
-    // Build result list
-    HPointer result = alloc::listNil();
-    for (auto it = elements.rbegin(); it != elements.rend(); ++it) {
-        result = alloc::cons(it->first, result, it->second);
-    }
-
-    return result;
+    return alloc::listFromUnboxables(elements);
 }
 
 HPointer sortWith(Comparator cmp, HPointer list) {
@@ -584,13 +510,7 @@ HPointer sortWith(Comparator cmp, HPointer list) {
                   return cmp(a.first, a.second, b.first, b.second) < 0;
               });
 
-    // Build result list
-    HPointer result = alloc::listNil();
-    for (auto it = elements.rbegin(); it != elements.rend(); ++it) {
-        result = alloc::cons(it->first, result, it->second);
-    }
-
-    return result;
+    return alloc::listFromUnboxables(elements);
 }
 
 HPointer maximum(HPointer list) {
@@ -625,8 +545,10 @@ HPointer map2(HPointer listA, HPointer listB) {
     if (alloc::isNil(listA) || alloc::isNil(listB)) return alloc::listNil();
 
     auto& allocator = Allocator::instance();
-    std::vector<HPointer> pairs;
 
+    // Phase 1: collect raw values (no allocation)
+    struct RawPair { Unboxable a; bool a_boxed; Unboxable b; bool b_boxed; };
+    std::vector<RawPair> raw;
     HPointer currA = listA;
     HPointer currB = listB;
 
@@ -639,22 +561,35 @@ HPointer map2(HPointer listA, HPointer listB) {
         Cons* cB = static_cast<Cons*>(cellB);
         Header* hdrA = getHeader(cellA);
         Header* hdrB = getHeader(cellB);
-        bool boxedA = !(hdrA->unboxed & 1);
-        bool boxedB = !(hdrB->unboxed & 1);
 
-        // Create tuple (a, b)
-        u32 unboxedMask = 0;
-        if (!boxedA) unboxedMask |= 1;
-        if (!boxedB) unboxedMask |= 2;
-
-        HPointer tuple = alloc::tuple2(cA->head, cB->head, unboxedMask);
-        pairs.push_back(tuple);
-
+        raw.push_back({cA->head, !(hdrA->unboxed & 1),
+                        cB->head, !(hdrB->unboxed & 1)});
         currA = cA->tail;
         currB = cB->tail;
     }
 
-    return alloc::listFromPointers(pairs);
+    if (raw.empty()) return alloc::listNil();
+
+    // Phase 2: build tuples and list with rooting
+    auto& rs = Allocator::instance().getRootSet();
+    size_t saved = rs.stackRootPoint();
+    for (auto& r : raw) {
+        if (r.a_boxed) rs.pushStackRoot(&r.a.p);
+        if (r.b_boxed) rs.pushStackRoot(&r.b.p);
+    }
+    HPointer result = alloc::listNil();
+    rs.pushStackRoot(&result);
+
+    for (auto it = raw.rbegin(); it != raw.rend(); ++it) {
+        u32 mask = 0;
+        if (!it->a_boxed) mask |= 1;
+        if (!it->b_boxed) mask |= 2;
+        HPointer tuple = alloc::tuple2(it->a, it->b, mask);
+        result = alloc::cons(alloc::boxed(tuple), result, true);
+    }
+
+    rs.restoreStackRootPoint(saved);
+    return result;
 }
 
 HPointer map3(HPointer listA, HPointer listB, HPointer listC) {
@@ -663,8 +598,14 @@ HPointer map3(HPointer listA, HPointer listB, HPointer listC) {
     }
 
     auto& allocator = Allocator::instance();
-    std::vector<HPointer> triples;
 
+    // Phase 1: collect raw values (no allocation)
+    struct RawTriple {
+        Unboxable a; bool a_boxed;
+        Unboxable b; bool b_boxed;
+        Unboxable c; bool c_boxed;
+    };
+    std::vector<RawTriple> raw;
     HPointer currA = listA;
     HPointer currB = listB;
     HPointer currC = listC;
@@ -681,25 +622,39 @@ HPointer map3(HPointer listA, HPointer listB, HPointer listC) {
         Header* hdrA = getHeader(cellA);
         Header* hdrB = getHeader(cellB);
         Header* hdrC = getHeader(cellC);
-        bool boxedA = !(hdrA->unboxed & 1);
-        bool boxedB = !(hdrB->unboxed & 1);
-        bool boxedC = !(hdrC->unboxed & 1);
 
-        // Create tuple (a, b, c)
-        u32 unboxedMask = 0;
-        if (!boxedA) unboxedMask |= 1;
-        if (!boxedB) unboxedMask |= 2;
-        if (!boxedC) unboxedMask |= 4;
-
-        HPointer tuple = alloc::tuple3(cA->head, cB->head, cC->head, unboxedMask);
-        triples.push_back(tuple);
-
+        raw.push_back({cA->head, !(hdrA->unboxed & 1),
+                        cB->head, !(hdrB->unboxed & 1),
+                        cC->head, !(hdrC->unboxed & 1)});
         currA = cA->tail;
         currB = cB->tail;
         currC = cC->tail;
     }
 
-    return alloc::listFromPointers(triples);
+    if (raw.empty()) return alloc::listNil();
+
+    // Phase 2: build tuples and list with rooting
+    auto& rs = Allocator::instance().getRootSet();
+    size_t saved = rs.stackRootPoint();
+    for (auto& r : raw) {
+        if (r.a_boxed) rs.pushStackRoot(&r.a.p);
+        if (r.b_boxed) rs.pushStackRoot(&r.b.p);
+        if (r.c_boxed) rs.pushStackRoot(&r.c.p);
+    }
+    HPointer result = alloc::listNil();
+    rs.pushStackRoot(&result);
+
+    for (auto it = raw.rbegin(); it != raw.rend(); ++it) {
+        u32 mask = 0;
+        if (!it->a_boxed) mask |= 1;
+        if (!it->b_boxed) mask |= 2;
+        if (!it->c_boxed) mask |= 4;
+        HPointer tuple = alloc::tuple3(it->a, it->b, it->c, mask);
+        result = alloc::cons(alloc::boxed(tuple), result, true);
+    }
+
+    rs.restoreStackRootPoint(saved);
+    return result;
 }
 
 HPointer unzip(HPointer listOfPairs) {
@@ -734,16 +689,11 @@ HPointer unzip(HPointer listOfPairs) {
         current = c->tail;
     }
 
-    // Build first list
-    HPointer firstList = alloc::listNil();
-    for (auto it = firsts.rbegin(); it != firsts.rend(); ++it) {
-        firstList = alloc::cons(it->first, firstList, it->second);
-    }
-
-    // Build second list
-    HPointer secondList = alloc::listNil();
-    for (auto it = seconds.rbegin(); it != seconds.rend(); ++it) {
-        secondList = alloc::cons(it->first, secondList, it->second);
+    HPointer firstList = alloc::listFromUnboxables(firsts);
+    HPointer secondList;
+    {
+        Elm::StackRootGuard guard(&firstList);
+        secondList = alloc::listFromUnboxables(seconds);
     }
 
     return alloc::tuple2(alloc::boxed(firstList), alloc::boxed(secondList), 0);

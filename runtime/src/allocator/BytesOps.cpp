@@ -15,8 +15,8 @@ namespace BytesOps {
 HPointer fromList(HPointer list) {
     auto& allocator = Allocator::instance();
 
-    // First pass: count elements
-    size_t count = 0;
+    // Collect all byte values first (no allocation)
+    std::vector<u8> bytes;
     HPointer current = list;
 
     while (!alloc::isNil(current)) {
@@ -24,35 +24,13 @@ HPointer fromList(HPointer list) {
         if (!cell) break;
 
         Cons* c = static_cast<Cons*>(cell);
-        ++count;
+        bytes.push_back(static_cast<u8>(c->head.i & 0xFF));
         current = c->tail;
     }
 
-    if (count == 0) return empty();
+    if (bytes.empty()) return empty();
 
-    // Allocate buffer
-    size_t total_size = sizeof(ByteBuffer) + count;
-    total_size = (total_size + 7) & ~7;
-
-    ByteBuffer* buf = static_cast<ByteBuffer*>(allocator.allocate(total_size, Tag_ByteBuffer));
-    buf->header.size = static_cast<u32>(count);
-
-    // Second pass: fill bytes
-    current = list;
-    size_t i = 0;
-
-    while (!alloc::isNil(current) && i < count) {
-        void* cell = allocator.resolve(current);
-        if (!cell) break;
-
-        Cons* c = static_cast<Cons*>(cell);
-        // Truncate to 8 bits
-        buf->bytes[i] = static_cast<u8>(c->head.i & 0xFF);
-        ++i;
-        current = c->tail;
-    }
-
-    return allocator.wrap(buf);
+    return alloc::allocByteBuffer(bytes.data(), bytes.size());
 }
 
 // Creates a ByteBuffer from a UTF-8 encoded string.
@@ -216,6 +194,9 @@ HPointer concat(HPointer bufferList) {
 
     if (total_len == 0) return empty();
 
+    // Root bufferList across allocation so GC updates it
+    Elm::StackRootGuard guard(&bufferList);
+
     // Allocate result
     size_t total_size = sizeof(ByteBuffer) + total_len;
     total_size = (total_size + 7) & ~7;
@@ -223,7 +204,7 @@ HPointer concat(HPointer bufferList) {
     ByteBuffer* result = static_cast<ByteBuffer*>(allocator.allocate(total_size, Tag_ByteBuffer));
     result->header.size = static_cast<u32>(total_len);
 
-    // Second pass: copy buffers
+    // Second pass: copy buffers (bufferList updated by GC if needed)
     size_t offset = 0;
     current = bufferList;
 

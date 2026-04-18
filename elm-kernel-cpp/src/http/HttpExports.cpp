@@ -177,29 +177,36 @@ static size_t headerCallback(char* buffer, size_t size, size_t nitems, void* use
 HPointer createResponse(const std::string& url, long statusCode, const std::string& statusText,
                         const std::vector<std::pair<std::string, std::string>>& headers,
                         HPointer body) {
-    // Build headers Dict (we'll use a simple list of tuples for now)
-    // TODO: proper Dict implementation
+    auto& rs = Allocator::instance().getRootSet();
+    size_t saved = rs.stackRootPoint();
+    rs.pushStackRoot(&body);
+
+    // Build headers list with rooting
     HPointer headersList = listNil();
+    rs.pushStackRoot(&headersList);
     for (auto it = headers.rbegin(); it != headers.rend(); ++it) {
         HPointer key = utf8ToElmString(it->first);
+        rs.pushStackRoot(&key);
         HPointer val = utf8ToElmString(it->second);
-        HPointer pair = tuple2(boxed(key), boxed(val), 0);  // both boxed
+        HPointer pair = tuple2(boxed(key), boxed(val), 0);
         headersList = cons(boxed(pair), headersList, true);
     }
 
     HPointer urlStr = utf8ToElmString(url);
+    rs.pushStackRoot(&urlStr);
     HPointer statusTextStr = utf8ToElmString(statusText);
 
     // Record fields in canonical order: body, headers, statusCode, statusText, url
     std::vector<Unboxable> fields(5);
-    fields[0].p = body;                                    // body (boxed)
-    fields[1].p = headersList;                             // headers (boxed, using list instead of Dict)
-    fields[2].i = static_cast<i64>(statusCode);            // statusCode (unboxed)
-    fields[3].p = statusTextStr;                           // statusText (boxed)
-    fields[4].p = urlStr;                                  // url (boxed)
+    fields[0].p = body;
+    fields[1].p = headersList;
+    fields[2].i = static_cast<i64>(statusCode);
+    fields[3].p = statusTextStr;
+    fields[4].p = urlStr;
 
-    // Unboxed mask: bit 2 = statusCode is unboxed
-    return record(fields, 0b00100);
+    HPointer result = record(fields, 0b00100);
+    rs.restoreStackRootPoint(saved);
+    return result;
 }
 
 // Create an Error value
@@ -317,6 +324,7 @@ void httpWorkerThread(HttpContext ctx) {
             statusText = "Error";
         }
 
+        // bodyStr is rooted inside createResponse via its body parameter
         HPointer response = createResponse(finalUrl, httpCode, statusText,
                                            headerData.headers, bodyStr);
 
@@ -598,15 +606,15 @@ HPtr Elm_Kernel_Http_mapExpect(HPtr closure, HPtr expectVal) {
 
     Custom* expect = static_cast<Custom*>(expectPtr);
     HPointer originalHandler = expect->values[0].p;
+    HPointer mapper = Export::decode(closureEnc);
 
-    // Create a new handler that composes: closure ∘ originalHandler
-    // This is: \response -> mapper (originalHandler response)
+    // Root across allocClosure (which may trigger GC)
+    Elm::StackRootGuard guard(&originalHandler, &mapper);
 
-    // Allocate composed closure with static evaluator
+    // Create a new handler that composes: closure . originalHandler
     HPointer composed = allocClosure(composeExpectEvaluator, 3);
     void* clPtr = Allocator::instance().resolve(composed);
     if (clPtr) {
-        HPointer mapper = Export::decode(closureEnc);
         closureCapture(clPtr, boxed(mapper), true);
         closureCapture(clPtr, boxed(originalHandler), true);
     }

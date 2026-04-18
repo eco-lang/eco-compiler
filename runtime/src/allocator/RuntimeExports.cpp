@@ -2673,14 +2673,22 @@ extern "C" void* eco_resolve_hptr(HPtr hptr) {
 
 extern "C" HPtr eco_clone_array(HPtr array_hptr) {
     uint64_t array_bits = array_hptr.toBits();
+
+    // Root source array across allocation so GC updates it
+    auto& rs = Allocator::instance().getRootSet();
+    size_t saved = rs.stackRangePoint();
+    rs.pushStackRootRange(reinterpret_cast<HPointer*>(&array_bits), 1, 1);
+
     void* srcPtr = hpointerToPtr(array_bits);
     ElmArray* src = static_cast<ElmArray*>(srcPtr);
     uint32_t len = src->length;
 
     HPointer resultHp = alloc::allocArray(len);
-    // Re-resolve source in case allocation triggered GC and moved it
+    // Re-resolve source (GC may have updated array_bits through the root)
     srcPtr = hpointerToPtr(array_bits);
     src = static_cast<ElmArray*>(srcPtr);
+
+    rs.restoreStackRangePoint(saved);
 
     void* dstPtr = Allocator::instance().resolve(resultHp);
     ElmArray* dst = static_cast<ElmArray*>(dstPtr);
