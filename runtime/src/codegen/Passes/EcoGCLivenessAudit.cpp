@@ -81,7 +81,9 @@ struct EcoGCLivenessAuditPass
                 llvm::DenseSet<Value> already(shouldBeLive.begin(),
                                               shouldBeLive.end());
                 for (Value v : op->getOperands()) {
-                    if (eco::isEcoValue(v) && already.insert(v).second)
+                    if (eco::isEcoValue(v) &&
+                        !v.getDefiningOp<eco::ConstantOp>() &&
+                        already.insert(v).second)
                         shouldBeLive.push_back(v);
                 }
             }

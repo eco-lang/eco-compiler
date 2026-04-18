@@ -42,16 +42,8 @@ struct StackMapData {
     bool empty() const { return bytes.empty(); }
 };
 
-/// Holds .eh_frame data extracted from JIT'd objects and registered
-/// with the platform unwinder via __register_frame / __deregister_frame.
-struct EhFrameData {
-    std::vector<uint8_t> bytes;
-    bool registered = false;
-
-    const uint8_t *data() const { return bytes.data(); }
-    size_t size() const { return bytes.size(); }
-    bool empty() const { return bytes.empty(); }
-};
+// .eh_frame registration is handled automatically by
+// RTDyldMemoryManager::registerEHFrames() — no manual tracking needed.
 
 //===----------------------------------------------------------------------===//
 // EcoJIT Options
@@ -117,10 +109,7 @@ private:
     /// Stack map data extracted from JIT'd objects.
     StackMapData stackMapData_;
 
-    /// .eh_frame data extracted from JIT'd objects (for libunwind).
-    EhFrameData ehFrameData_;
-
-    /// JIT event listener for stack map and .eh_frame extraction (raw pointer,
+    /// JIT event listener for stack map extraction (raw pointer,
     /// registered with the object layer which does not take ownership).
     class StackMapListener;
     std::unique_ptr<StackMapListener> stackMapListener_;

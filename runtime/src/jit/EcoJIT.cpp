@@ -35,10 +35,6 @@ namespace eco {
 // StackMapListener - extracts __LLVM_StackMaps from loaded objects
 //===----------------------------------------------------------------------===//
 
-// Provided by libgcc / compiler-rt — registers .eh_frame with the platform unwinder.
-extern "C" void __register_frame(const void *);
-extern "C" void __deregister_frame(const void *);
-
 // Reads the post-relocation bytes of a section out of its loaded memory,
 // preferring them over the file-contents view returned by
 // SectionRef::getContents(). RuntimeDyld applies relocations to loaded
@@ -68,8 +64,8 @@ readLoadedSectionBytes(const object::SectionRef &Section,
 
 class EcoJIT::StackMapListener : public JITEventListener {
 public:
-    explicit StackMapListener(StackMapData &smData, EhFrameData &ehData)
-        : smData_(smData), ehData_(ehData) {}
+    explicit StackMapListener(StackMapData &smData)
+        : smData_(smData) {}
 
     void notifyObjectLoaded(ObjectKey K, const object::ObjectFile &Obj,
                             const RuntimeDyld::LoadedObjectInfo &L) override {
@@ -88,30 +84,19 @@ public:
                 smData_.bytes = readLoadedSectionBytes(Section, L);
             }
 
-            // Capture .eh_frame for libunwind JIT frame walking
-            if (name == ".eh_frame") {
-                auto contentsOrErr = Section.getContents();
-                if (!contentsOrErr)
-                    continue;
-
-                StringRef contents = *contentsOrErr;
-                // Deregister previous .eh_frame if any
-                if (ehData_.registered) {
-                    __deregister_frame(ehData_.data());
-                    ehData_.registered = false;
-                }
-                ehData_.bytes.assign(contents.begin(), contents.end());
-                if (!ehData_.empty()) {
-                    __register_frame(ehData_.data());
-                    ehData_.registered = true;
-                }
-            }
+            // .eh_frame registration is handled automatically by
+            // RTDyldMemoryManager::registerEHFrames(), which uses the
+            // loaded (relocated) section address. We do NOT manually
+            // call __register_frame here — doing so with the raw object
+            // bytes (pre-relocation) produces FDEs with wrong pc-begin
+            // addresses, preventing libunwind from stepping through
+            // JIT'd frames. This caused the GC stack walker to miss
+            // frames and lose roots, corrupting heap objects.
         }
     }
 
 private:
     StackMapData &smData_;
-    EhFrameData &ehData_;
 };
 
 //===----------------------------------------------------------------------===//
@@ -191,11 +176,6 @@ EcoJIT::~EcoJIT() {
         // Destroy JIT before the listener to avoid dangling references
         jit_.reset();
     }
-    // Deregister .eh_frame before tearing down
-    if (ehFrameData_.registered) {
-        __deregister_frame(ehFrameData_.data());
-        ehFrameData_.registered = false;
-    }
     stackMapListener_.reset();
 }
 
@@ -203,10 +183,9 @@ Expected<std::unique_ptr<EcoJIT>>
 EcoJIT::create(mlir::Operation *m, const EcoJITOptions &options) {
     auto engine = std::unique_ptr<EcoJIT>(new EcoJIT());
 
-    // Create stack map and .eh_frame listener
+    // Create stack map listener (.eh_frame is handled by RTDyldMemoryManager)
     engine->stackMapListener_ =
-        std::make_unique<StackMapListener>(engine->stackMapData_,
-                                           engine->ehFrameData_);
+        std::make_unique<StackMapListener>(engine->stackMapData_);
 
     // Translate MLIR to LLVM IR
     std::unique_ptr<LLVMContext> ctx(new LLVMContext);
@@ -229,7 +208,8 @@ EcoJIT::create(mlir::Operation *m, const EcoJITOptions &options) {
 
     auto dataLayout = llvmModule->getDataLayout();
 
-    // Object linking layer creator — registers our stack map listener
+    // Object linking layer creator — registers our stack map listener.
+    // Object linking layer creator — registers our stack map listener.
     auto objectLinkingLayerCreator =
         [&engine](ExecutionSession &session) {
             auto objectLayer = std::make_unique<RTDyldObjectLinkingLayer>(
