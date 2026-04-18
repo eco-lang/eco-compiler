@@ -27,24 +27,6 @@ main =
             reverseNTimes 1000 start
 
         _ =
-            Debug.log "start-first-10" (List.take 10 start)
-
-        _ =
-            Debug.log "finished-first-10" (List.take 10 finished)
-
-        _ =
-            Debug.log "start-last-10" (List.drop 990 start)
-
-        _ =
-            Debug.log "finished-last-10" (List.drop 990 finished)
-
-        _ =
-            Debug.log "start-length" (List.length start)
-
-        _ =
-            Debug.log "finished-length" (List.length finished)
-
-        _ =
             Debug.log "roundtrip" (start == finished)
     in
     text "done"
