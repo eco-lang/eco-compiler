@@ -1,6 +1,9 @@
 cmake_minimum_required(VERSION 3.20)
 project(EcoRuntime LANGUAGES C CXX)
 
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
+include(LLVMLibunwind)
+
 # Runtime GC debug assertions: default ON for Debug builds, OFF for Release.
 # Declared at top level so EVERY target that includes the allocator headers
 # (NurserySpace, ThreadLocalHeap, Allocator) sees the same value of
@@ -51,9 +54,9 @@ target_link_libraries(ecor PRIVATE rapidcheck)
 find_package(Threads REQUIRED)
 target_link_libraries(ecor PRIVATE Threads::Threads)
 
-# libunwind for stack unwinding in GC root scanning
-find_library(LIBUNWIND_LIB unwind REQUIRED)
-target_link_libraries(ecor PRIVATE ${LIBUNWIND_LIB})
+# libunwind for stack unwinding in GC root scanning — specifically LLVM's
+# libunwind (from LLVM_ENABLE_RUNTIMES); see cmake/LLVMLibunwind.cmake.
+target_link_libraries(ecor PRIVATE eco::llvm_libunwind)
 
 # Export symbols for stack traces (enables function names in backtrace)
 target_link_options(ecor PRIVATE -rdynamic)

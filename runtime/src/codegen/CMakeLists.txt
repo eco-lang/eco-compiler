@@ -371,9 +371,9 @@ endif()
 find_package(Threads REQUIRED)
 target_link_libraries(ecoc PRIVATE Threads::Threads)
 
-# libunwind for stack unwinding in GC root scanning
-find_library(LIBUNWIND_LIB unwind REQUIRED)
-target_link_libraries(ecoc PRIVATE ${LIBUNWIND_LIB})
+# libunwind for stack unwinding in GC root scanning — LLVM's libunwind,
+# located via cmake/LLVMLibunwind.cmake from the top-level CMakeLists.
+target_link_libraries(ecoc PRIVATE eco::llvm_libunwind)
 
 #------------------------------------------------------------------------------
 # Build the EcoRunner library (for in-process test execution)
@@ -455,7 +455,9 @@ if(ECO_GC_DEBUG_LIVENESS)
     target_compile_definitions(obj.EcoRunner PRIVATE ECO_GC_DEBUG_LIVENESS=1)
 endif()
 target_link_libraries(obj.EcoRunner PRIVATE Threads::Threads)
-target_link_libraries(EcoRunner PUBLIC ${LIBUNWIND_LIB})
+# PUBLIC so that test/stress-test, which link against EcoRunner, transitively
+# get LLVM libunwind's include dir, library, and rpath flag.
+target_link_libraries(EcoRunner PUBLIC eco::llvm_libunwind)
 
 #------------------------------------------------------------------------------
 # Build the EcoRuntimeStatic library (for linking into AOT-compiled binaries)
@@ -487,8 +489,9 @@ target_include_directories(EcoRuntimeStatic PRIVATE
 target_compile_features(EcoRuntimeStatic PRIVATE cxx_std_20)
 target_compile_options(EcoRuntimeStatic PRIVATE -fexceptions -UNDEBUG)
 
-# libunwind for stack unwinding in GC root scanning (PUBLIC so AOT consumers get -lunwind)
-target_link_libraries(EcoRuntimeStatic PUBLIC ${LIBUNWIND_LIB})
+# PUBLIC so AOT consumers inherit LLVM libunwind's include dir, library, and
+# rpath flag. See cmake/LLVMLibunwind.cmake.
+target_link_libraries(EcoRuntimeStatic PUBLIC eco::llvm_libunwind)
 
 if(ECO_GC_DEBUG)
     target_compile_definitions(EcoRuntimeStatic PRIVATE ECO_GC_DEBUG=1)
@@ -538,7 +541,11 @@ string(APPEND ECO_BOOT_CONFIG_CONTENT "#include <string>\n\n")
 string(APPEND ECO_BOOT_CONFIG_CONTENT "namespace eco {\n")
 string(APPEND ECO_BOOT_CONFIG_CONTENT "namespace config {\n\n")
 string(APPEND ECO_BOOT_CONFIG_CONTENT "inline const char *entryLib = \"$<TARGET_FILE:EcoEntryStatic>\";\n")
-string(APPEND ECO_BOOT_CONFIG_CONTENT "inline const char *runtimeLib = \"$<TARGET_FILE:EcoRuntimeStatic>\";\n\n")
+string(APPEND ECO_BOOT_CONFIG_CONTENT "inline const char *runtimeLib = \"$<TARGET_FILE:EcoRuntimeStatic>\";\n")
+# LLVM libunwind — passed as a full library path (not -lunwind) so AOT links
+# do NOT accidentally pick up the system (nongnu) libunwind.
+string(APPEND ECO_BOOT_CONFIG_CONTENT "inline const char *unwindLib = \"${LLVM_LIBUNWIND_LIBRARY}\";\n")
+string(APPEND ECO_BOOT_CONFIG_CONTENT "inline const char *unwindLibDir = \"${LLVM_LIBUNWIND_LIBRARY_DIR}\";\n\n")
 string(APPEND ECO_BOOT_CONFIG_CONTENT "inline std::vector<std::string> elmKernelLibs() {\n")
 string(APPEND ECO_BOOT_CONFIG_CONTENT "    return {\n")
 foreach(mod ${ECO_ELM_KERNEL_MODS})

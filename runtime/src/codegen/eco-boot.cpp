@@ -442,8 +442,15 @@ static int linkExecutable(const std::string &objectFile,
     args.push_back("-lcurl");
     args.push_back("-lssl");
     args.push_back("-lcrypto");
-    args.push_back("-lunwind");
+    // LLVM libunwind — passed by absolute path (NOT -lunwind) so the linker
+    // cannot silently pick up the system (nongnu) libunwind instead.
+    args.push_back(eco::config::unwindLib);
     args.push_back("-Wl,--end-group");
+
+    // Embed an rpath entry so the produced AOT binary can locate the LLVM
+    // libunwind shared library at runtime without LD_LIBRARY_PATH.
+    std::string rpathArg = std::string("-Wl,-rpath,") + eco::config::unwindLibDir;
+    args.push_back(rpathArg);
 
     if (verbose) {
         llvm::errs() << "[eco-boot] link:";
