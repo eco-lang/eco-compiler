@@ -7,7 +7,7 @@
 ## Current (2026-04-18, RS4GC migration)
 - **elm-test**: 12664 passed, 0 failed (unaffected by backend changes)
 - **E2E (full)**: 1018 passed, 1 failed out of 1019 (LetDestructFuncTupleTest pre-existing)
-- **Stress**: 0 passed, 1 failed (ListReverseStressTest — correctness bug)
+- **Stress**: 3 passed, 28 failed (all failures involve GC-heavy heap allocation; root cause is structural equality / GC interaction — see Category 19)
 
 ## Fix Order (by root cause, earliest compiler phase first)
 
@@ -18,6 +18,7 @@
 | 3 | Kernel raw-ptr vs HPointer (SIGSEGV) | PolyEscapeRecordTest | C++ kernels boxInt/boxFloat returned raw pointers, not HPointers | FIXED |
 | 4 | Closure arity mismatch (SIGABRT) | CombinatorBComposeTest, CombinatorBSumMapTest, CombinatorCConsTest, CombinatorCFlipTest, CombinatorListStringTest, CombinatorTPipeTest, CombinatorTThrushTest, CombinatorTest, CombinatorSpMulTest + elm-test SKI | TWO bugs: (1) staging uses type-derived arities that don't match runtime (FIXED via generic_apply fallback), (2) monomorphizer picks wrong k specialization for combinators | SKIPPED (3 attempts — requires deep monomorphizer type unification change) |
 | 5 | LetDestructFuncTupleTest (SIGSEGV) | LetDestructFuncTupleTest | Standalone accessor gets generic type; record unboxed_bitmap mismatch | SKIPPED (3 attempts — requires Specialize.elm accessor type propagation) |
+| 20 | Alloca-in-loop stack exhaustion | Stress tests with 900K+ closure calls | LLVM::AllocaOp emitted inside loop bodies for args arrays; accumulates stack space | FIXED (hoisted allocas to entry block) |
 | 6 | Branch operand mismatch in cf.SwitchOp | CaseSharedBranchTest, CaseReturningLambdaTest, LargeDispatchCaseTest, NestedCaseReturnTest | CaseOpLowering uses mergeBlock as SwitchOp default with 0 operands, but mergeBlock expects 1 | FIXED (2/4 tests pass; 2 have deeper pre-existing bugs) |
 | 7 | scf.while do-region has multiple blocks | TailRecCaseMultiBranchTypesTest, TailRecDecoderLoopTest, TailRecMultiCaseWhileTest, TailRecTypeTraversalTest | Elm compiler emits scf.while with nested string eco.case in do-region | SKIPPED (3 attempts) |
 | 8 | Unmasked: closure arity + SIGSEGV | CaseReturningLambdaTest (closure_call_saturated), LargeDispatchCaseTest (SIGSEGV) | Previously masked by Category 6 branch bug; now reveal deeper combinator/staging bugs | SKIPPED (same root causes as Cat 4/5) |
@@ -458,44 +459,129 @@ The accessor monomorphization needs to be fixed in `Specialize.elm:1975-2001`:
 
 ---
 
-## OPEN: Category 19 — GC root tracking bug in LLVM-compiled List operations
+## OPEN: Category 19 — Structural equality (`==`) returns wrong results after GC
 
-**Test**: stress-elm/ListReverseStressTest
-**Error**: `roundtrip: False` (1000 reverses) or SIGABRT (50-100 reverses) — depends on
-how many GC cycles occur during the reverses
+**Tests**: stress-elm/ListReverseStressTest + 27 other stress tests
+**Error**: `roundtrip: False` (data comparison fails) or SIGSEGV/SIGABRT (heap corruption)
+
+### Root Cause (revised 2026-04-18 — thorough re-investigation)
+
+**Previous hypothesis was wrong.** The GC root tracking is NOT the bug. Thorough
+investigation with instrumented GC (unconditional post-GC validation of all stackmap
+roots and stack root ranges) proved:
+
+1. All stackmap roots are correctly discovered (18-20 indirect locations per GC cycle)
+2. All stack root ranges are correctly evacuated
+3. No roots point to from-space after GC completes
+4. The EcoPtrIntVerify pass finds zero violations in the compiled LLVM IR
+
+**The actual bug is genuine heap corruption from GC.** Evidence:
+
+| Test variant | Result |
+|---|---|
+| 10 elements, 10 reverses, `start == finished` | **PASS** (no GC triggered) |
+| 1000 elements, 60 reverses, `start == finished` | **PASS** (1 GC cycle) |
+| 1000 elements, 100 reverses, `start == finished` | **FAIL** (3 GC cycles) |
+| 1000 elements, 100 reverses, pairwise comparison | **FAIL** — wildcard case hit (one list appears as `[]`) |
+| 1000 elements, 1000 reverses, pairwise comparison | **FAIL** — same (10000 mismatches = wildcard) |
+| 100 elements, 100 reverses, pairwise comparison | **PASS** (low GC pressure — lucky) |
+
+After multiple GC cycles, list cons cells have corrupted structure — one list's
+first cons cell appears as Nil to pattern matching. Individual `List.length` calls
+sometimes return correct values (different code path), but structural traversal
+via pattern match or `==` sees corruption.
+
+With ECO_GC_DEBUG=ON, the assertion `hdr->tag < Tag_Forward && "Invalid tag after
+forward resolution"` fires (SIGABRT), confirming the forwarding chain is corrupted.
+
+### What was ruled out
+
+1. **Stackmap root discovery**: instrumented GC shows 18-20 indirect stackmap roots
+   correctly discovered and evacuated per cycle.
+2. **Stack root range tracking**: all `eco_gc_push_stack_range` ranges are correctly
+   evacuated. Post-GC unconditional validation confirms NO roots point to from-space.
+3. **EcoPtrIntVerify**: zero violations in compiled LLVM IR (all ptrtoint/inttoptr
+   involving ptr<1> follow allowed boundary patterns).
+4. **gc-leaf marking**: marking `Elm_Kernel_Utils_equal` as gc-leaf does not fix it,
+   confirming the issue is in the data, not the comparison mechanism.
+5. **Hybrid DFS list copying**: disabling `use_hybrid_dfs` does not fix it.
+
+### Mechanism (not yet fully identified)
+
+The LLVM-compiled `List_foldl` function loads cons tail fields via:
+```llvm
+%16 = call ptr @eco_resolve_hptr(ptr addrspace(1) %6)  ; resolve cons → raw ptr
+%17 = getelementptr i8, ptr %16, i64 16                ; tail field offset
+%18 = load i64, ptr %17                                 ; load tail as i64
+%19 = inttoptr i64 %18 to ptr addrspace(1)              ; i64 → ptr<1>
+```
+The raw pointer `%16` is from gc-leaf `eco_resolve_hptr` — no GC during the load.
+The resulting `%19` is in the gc-live bundle for subsequent statepoints. RS4GC
+should track it correctly.
+
+One remaining hypothesis: the **double-rooting** of the args array (once by compiled
+code via `eco_gc_push_stack_range`, then again by `eco_apply_closure` C++ runtime)
+may cause a subtle ordering issue where the same HPointer slot is updated by two
+different root sources in the same GC cycle.
+
+### Affected tests (28 of 31 stress tests)
+
+**Category A — Wrong result (4 tests):** CharListRoundtrip, ClosureCaptureVary,
+DeepTreeMap, ListReverseStressTest
+
+**Category B — SIGSEGV (22 tests):** DictFoldRebuild, DictFromListToList,
+DictUnionDiff, DictMapRoundtrip, ListConcatMap, ListFilterRebuild, ListMapRoundtrip,
+ListIntersperse, ListSort, ListZipUnzip, MaybeChainMap, MixedAlloc, MultiVariantADT,
+NestedListMap, NestedMaybeMap, NestedRecord, PartialAppList, RecordUpdateList,
+ResultMapChain, SetBuildFold, TreeBuildFold, TupleMapList
+
+**Category C — SIGABRT (2 tests):** ClosureAccum, TailRecurseCallback
+
+**Passing (3 tests):** TailRecurse (no heap alloc), StringSplitJoin, StringBuildChunk
+(C++ kernel only, no LLVM-compiled list ops)
+
+### Key Files
+
+- `elm-kernel-cpp/src/core/Utils.cpp:244` — `eqHelp` structural equality traversal
+- `elm-kernel-cpp/src/ExportHelpers.hpp:47` — `Export::toPtr` HPointer → raw ptr
+- `runtime/src/allocator/RuntimeExports.cpp:1047` — `eco_apply_closure` double-rooting
+- `runtime/src/allocator/NurserySpace.cpp:458` — Phase 1e stack range evacuation
+
+**Status:** SKIPPED (3 attempts)
+**Attempts:** 3 (1: C++ kernel ListOps fix; 2: gc-leaf on Utils_equal — no effect; 3: full instrumented investigation ruled out stackmap/root-range tracking bugs, identified alloca-in-loop as separate issue (Cat 20, FIXED), but GC corruption mechanism remains unidentified)
+**Trace report:** See `/work/gc-stress-trace-report.md` for full investigation details.
+
+---
+
+## FIXED: Category 20 — Alloca-in-loop stack exhaustion (stress tests)
+
+**Tests**: Stress tests with 900K+ closure call iterations (TailRecurseCallback, MinGcTest reproducer)
+**Error**: SIGSEGV with 0 GC cycles (stack overflow, not GC corruption)
 
 ### Root Cause
 
-**Two separate issues found:**
+`LLVM::AllocaOp` in `emitRootedBoxedArgsArray` (EcoToLLVMClosures.cpp:106) and 3 other
+sites was emitted at the current insertion point, which for `papExtend` ops inside
+`scf.while` loop bodies placed the alloca inside the loop. Each iteration allocated stack
+space that was never freed, causing stack overflow after ~900K iterations (8 bytes per
+alloca * 900K = 7.2MB, exceeding the 8MB stack limit).
 
-**Issue A (C++ kernel — FIXED):** In `ListOps.cpp`, raw `Cons*` pointers were read AFTER
-GC-triggering operations (`alloc::cons`, `fold` callback, `mapper` callback). The raw
-pointer becomes stale when GC evacuates the cons cell. Fixed by saving `c->head` and
-`c->tail` into local variables BEFORE any GC-triggering call. Applied to `reverse`,
-`foldl`, `map`, `indexedMap`, `filter`, `filterMap`, `partition`.
+### Fix
 
-**Issue B (LLVM-compiled code — OPEN):** The LLVM-compiled `List.reverse` (which calls
-`List.foldl` internally) has a stale-HPointer bug under RS4GC. With 2 or 10 reverses
-(no GC triggered), the test passes. With 50+ reverses (GC triggered), it crashes with
-SIGABRT (stale nursery pointer assertion). With 1000 reverses (many GC cycles), it runs
-to completion but produces wrong results (`start` list appears empty).
+Hoisted all 4 args-array `AllocaOp` emissions to the function entry block using
+`InsertionGuard` + `setInsertionPointToStart(entryBlock)`. The alloca becomes a fixed-size
+stack frame slot that is reused (via memset zero-init) on each iteration.
 
-This is the same class of bug as Stage 7 (bootstrap Failure #3): an HPointer that has
-been `ptrtoint`'d to `i64` for the args array escapes GC root tracking. The
-`eco_gc_push_stack_range` mechanism protects the args array, but some intermediate value
-in the call chain is not being relocated.
+**Note:** `llvm.stacksave`/`llvm.stackrestore` was tried first but CANNOT be used because
+RS4GC may spill gc-live values to the same stack region; `stackrestore` would invalidate
+those spill slots, causing crashes in `collectStackRootsFromStackMap`.
 
-### Evidence
+### Files Changed
 
-- 2 reverses → PASS (no GC triggered)
-- 10 reverses → PASS (no GC triggered)
-- 50 reverses → SIGABRT (GC assertion — stale pointer)
-- 100 reverses → SIGABRT
-- 1000 reverses → wrong result, no crash (GC corrupts but doesn't hit assertion)
+- `runtime/src/codegen/Passes/EcoToLLVMClosures.cpp` — 4 alloca sites hoisted to entry block
 
-The LLVM IR for `List_foldl_$_19` shows correct gc-live bundles — the cons tail `%19`
-is tracked across both `eco_alloc_int` and `eco_apply_closure` statepoints. The bug is
-in a deeper interaction between the stack range mechanism and RS4GC statepoint relocation.
+### Verification
 
-**Status:** OPEN (same root cause as bootstrap Failure #3)
-**Attempts:** 1 (C++ kernel fix applied but LLVM-side bug remains)
+- MinGcTest (1M iterations, 16 GC cycles): PASSED
+- E2E tests: 1018/1019 passed (zero regressions)
+- Stress tests: same pass/fail count (alloca fix only prevents stack overflow; GC corruption from Category 19 remains)

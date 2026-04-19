@@ -100,11 +100,20 @@ static BoxedArgsResult emitRootedBoxedArgsArray(
     auto ptrTy = LLVM::LLVMPointerType::get(ctx);
     int64_t numNewArgs = newargs.size();
 
-    // Alloca for the boxed args array.
+    // Alloca for the boxed args array — hoisted to function entry block
+    // so it doesn't accumulate stack space inside loops.
     auto numArgsConst = rewriter.create<LLVM::ConstantOp>(
         loc, i64Ty, rewriter.getI64IntegerAttr(numNewArgs));
-    Value argsArray = rewriter.create<LLVM::AllocaOp>(
-        loc, ptrTy, i64Ty, numArgsConst);
+    Value argsArray;
+    {
+        OpBuilder::InsertionGuard allocaGuard(rewriter);
+        auto parentFunc = safeOp->getParentOfType<LLVM::LLVMFuncOp>();
+        if (parentFunc)
+            rewriter.setInsertionPointToStart(&parentFunc.getBody().front());
+        auto sizeConst = rewriter.create<LLVM::ConstantOp>(
+            loc, i64Ty, rewriter.getI64IntegerAttr(numNewArgs));
+        argsArray = rewriter.create<LLVM::AllocaOp>(loc, ptrTy, i64Ty, sizeConst);
+    }
 
     // Zero-init + register as all-HPointer root range before population.
     uint64_t allBoxedMask = (numNewArgs >= 64) ? ~0ULL : ((1ULL << numNewArgs) - 1);
@@ -953,9 +962,15 @@ static Value emitInlineClosureCall(ConversionPatternRewriter &rewriter, Location
     auto allocFloatFunc = runtime.getOrCreateAllocFloat(rewriter);
     bool hasOrigNewArgTypes = !origNewArgTypes.empty();
 
-    // Allocate array for new args only (runtime handles captures)
-    auto numNewArgsConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, numNewArgs);
-    Value newArgsArray = rewriter.create<LLVM::AllocaOp>(loc, ptrTy, i64Ty, numNewArgsConst);
+    // Allocate array for new args only — hoisted to entry block.
+    Value newArgsArray;
+    {
+        OpBuilder::InsertionGuard allocaGuard(rewriter);
+        auto parentFunc = safeOp->getParentOfType<LLVM::LLVMFuncOp>();
+        if (parentFunc) rewriter.setInsertionPointToStart(&parentFunc.getBody().front());
+        auto numNewArgsConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, numNewArgs);
+        newArgsArray = rewriter.create<LLVM::AllocaOp>(loc, ptrTy, i64Ty, numNewArgsConst);
+    }
 
     // All-boxed array: register as GC root range before population.
     uint64_t allBoxedMask = (numNewArgs >= 64) ? ~0ULL : ((1ULL << numNewArgs) - 1);
@@ -1121,9 +1136,15 @@ struct PapExtendOpLowering : public OpConversionPattern<PapExtendOp> {
 
         uint64_t newargsBitmap = op.getNewargsUnboxedBitmap();
 
-        // === 1. Alloca + zero-init typed args array ===
-        auto numArgsI64 = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, numNewArgs);
-        Value typedArgsArray = rewriter.create<LLVM::AllocaOp>(loc, ptrTy, i64Ty, numArgsI64);
+        // === 1. Alloca + zero-init typed args array — hoisted to entry block ===
+        Value typedArgsArray;
+        {
+            OpBuilder::InsertionGuard allocaGuard(rewriter);
+            auto parentFunc = op->getParentOfType<LLVM::LLVMFuncOp>();
+            if (parentFunc) rewriter.setInsertionPointToStart(&parentFunc.getBody().front());
+            auto numArgsI64 = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, numNewArgs);
+            typedArgsArray = rewriter.create<LLVM::AllocaOp>(loc, ptrTy, i64Ty, numArgsI64);
+        }
         {
             auto i8Ty = IntegerType::get(ctx, 8);
             auto zeroVal = rewriter.create<LLVM::ConstantOp>(loc, i8Ty, 0);
@@ -1310,9 +1331,15 @@ struct PapExtendOpLowering : public OpConversionPattern<PapExtendOp> {
             // Partial application: use runtime helper to create extended closure
             auto helperFunc = runtime.getOrCreatePapExtend(rewriter);
 
-            // Build args array on stack
-            auto numArgsConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, rewriter.getI64IntegerAttr(numNewArgs));
-            Value argsArray = rewriter.create<LLVM::AllocaOp>(loc, ptrTy, i64Ty, numArgsConst);
+            // Build args array on stack — hoisted to entry block
+            Value argsArray;
+            {
+                OpBuilder::InsertionGuard allocaGuard(rewriter);
+                auto parentFunc = op->getParentOfType<LLVM::LLVMFuncOp>();
+                if (parentFunc) rewriter.setInsertionPointToStart(&parentFunc.getBody().front());
+                auto numArgsConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, rewriter.getI64IntegerAttr(numNewArgs));
+                argsArray = rewriter.create<LLVM::AllocaOp>(loc, ptrTy, i64Ty, numArgsConst);
+            }
 
             // Zero-init the array for GC safety (will register range after loop).
             {
