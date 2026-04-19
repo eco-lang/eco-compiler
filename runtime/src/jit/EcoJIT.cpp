@@ -29,6 +29,47 @@
 using namespace llvm;
 using namespace llvm::orc;
 
+// Declared at file scope — not inside namespace eco or the anonymous
+// namespace below — so these resolve against the C entry points exported
+// by LLVM libunwind (libgcc-compatible). Nested extern "C" inside a class
+// would create class members; inside a namespace it would still be C linkage
+// but clutters the lookup path.
+extern "C" void __register_frame(void *);
+extern "C" void __deregister_frame(void *);
+
+namespace {
+
+// EcoSectionMemoryManager overrides EH-frame registration so that we hand
+// LLVM libunwind the whole .eh_frame block at once, matching its section-style
+// API. (a) The stock SectionMemoryManager inherits RTDyldMemoryManager's
+// registerEHFrames, which walks the block and calls __register_frame once per
+// FDE. LLVM libunwind treats each such call as a malformed section and rejects
+// it with "bad fde: FDE is really a CIE", so JIT frames were never registered
+// — breaking libunwind-based GC stack walks of JIT code. (b) Passing the
+// section base address once gives libunwind a well-formed CIE+FDEs chain, as
+// it already expects for dlopen'd sections. (c) ORC's RTDyldObjectLinkingLayer
+// guarantees that each (Addr, Size) handed to registerEHFrames is handed back
+// via deregisterEHFrames on teardown; we record them in the base class's
+// EHFrames vector and replay them in order.
+class EcoSectionMemoryManager : public llvm::SectionMemoryManager {
+public:
+    void registerEHFrames(uint8_t *Addr, uint64_t /*LoadAddr*/,
+                          size_t Size) override {
+        if (!Addr || Size == 0)
+            return;
+        __register_frame(Addr);
+        EHFrames.push_back({Addr, Size});
+    }
+
+    void deregisterEHFrames() override {
+        for (auto &F : EHFrames)
+            __deregister_frame(F.Addr);
+        EHFrames.clear();
+    }
+};
+
+} // anonymous namespace
+
 namespace eco {
 
 //===----------------------------------------------------------------------===//
@@ -84,14 +125,9 @@ public:
                 smData_.bytes = readLoadedSectionBytes(Section, L);
             }
 
-            // .eh_frame registration is handled automatically by
-            // RTDyldMemoryManager::registerEHFrames(), which uses the
-            // loaded (relocated) section address. We do NOT manually
-            // call __register_frame here — doing so with the raw object
-            // bytes (pre-relocation) produces FDEs with wrong pc-begin
-            // addresses, preventing libunwind from stepping through
-            // JIT'd frames. This caused the GC stack walker to miss
-            // frames and lose roots, corrupting heap objects.
+            // .eh_frame registration lives in
+            // EcoSectionMemoryManager::registerEHFrames (file-scope above),
+            // not here — see the commentary on that class for rationale.
         }
     }
 
@@ -208,13 +244,14 @@ EcoJIT::create(mlir::Operation *m, const EcoJITOptions &options) {
 
     auto dataLayout = llvmModule->getDataLayout();
 
-    // Object linking layer creator — registers our stack map listener.
-    // Object linking layer creator — registers our stack map listener.
+    // Object linking layer creator — installs our custom memory manager so
+    // JIT .eh_frame is registered section-style, and registers our stack map
+    // listener.
     auto objectLinkingLayerCreator =
         [&engine](ExecutionSession &session) {
             auto objectLayer = std::make_unique<RTDyldObjectLinkingLayer>(
                 session, [](const MemoryBuffer &) {
-                    return std::make_unique<SectionMemoryManager>();
+                    return std::make_unique<EcoSectionMemoryManager>();
                 });
 
             // Register our stack map extraction listener

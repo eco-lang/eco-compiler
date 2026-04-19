@@ -42,8 +42,9 @@ struct StackMapData {
     bool empty() const { return bytes.empty(); }
 };
 
-// .eh_frame registration is handled automatically by
-// RTDyldMemoryManager::registerEHFrames() — no manual tracking needed.
+// JIT code's .eh_frame is registered section-style (once per section, not
+// per FDE) via a custom SectionMemoryManager defined in EcoJIT.cpp. AOT
+// binaries are unaffected: their .eh_frame is registered by the ELF loader.
 
 //===----------------------------------------------------------------------===//
 // EcoJIT Options
