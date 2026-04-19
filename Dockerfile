@@ -17,6 +17,7 @@ RUN git clone --depth=1 --single-branch --branch "llvmorg-${LLVM_VERSION}" https
 WORKDIR /src/llvm-project
 RUN cmake -S llvm -B build -G Ninja \
       -DLLVM_ENABLE_PROJECTS="mlir" \
+      -DLLVM_ENABLE_RUNTIMES="libunwind" \
       -DLLVM_TARGETS_TO_BUILD="Native;NVPTX;AMDGPU" \
       -DLLVM_ENABLE_ASSERTIONS=ON \
       -DLLVM_ENABLE_RTTI=ON \
@@ -48,8 +49,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     less \
     # HTTP/HTTPS support for elm/http kernel
     libcurl4-openssl-dev libssl-dev \
-    # Stack unwinding (required for GC stack root scanning via stackmaps)
-    libunwind-dev \
     # Debugging and profiling tools (essential for GC development)
     gdb lldb linux-perf strace \
     # Code quality tools
