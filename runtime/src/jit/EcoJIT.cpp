@@ -10,6 +10,8 @@
 
 #include "EcoJIT.h"
 
+#include <cstring>
+
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Target/LLVMIR/Export.h"
@@ -39,31 +41,67 @@ extern "C" void __deregister_frame(void *);
 
 namespace {
 
-// EcoSectionMemoryManager overrides EH-frame registration so that we hand
-// LLVM libunwind the whole .eh_frame block at once, matching its section-style
-// API. (a) The stock SectionMemoryManager inherits RTDyldMemoryManager's
-// registerEHFrames, which walks the block and calls __register_frame once per
-// FDE. LLVM libunwind treats each such call as a malformed section and rejects
-// it with "bad fde: FDE is really a CIE", so JIT frames were never registered
-// — breaking libunwind-based GC stack walks of JIT code. (b) Passing the
-// section base address once gives libunwind a well-formed CIE+FDEs chain, as
-// it already expects for dlopen'd sections. (c) ORC's RTDyldObjectLinkingLayer
-// guarantees that each (Addr, Size) handed to registerEHFrames is handed back
-// via deregisterEHFrames on teardown; we record them in the base class's
-// EHFrames vector and replay them in order.
+// EcoSectionMemoryManager overrides EH-frame registration for JIT objects.
+// LLVM libunwind's __register_frame takes a single FDE pointer (see
+// /opt/llvm-mlir/include/unwind.h: "The FDE must use pc-rel addressing to
+// point to its function"); a .eh_frame section begins with a CIE, so passing
+// the section base produces "bad fde: FDE is really a CIE" and registers
+// zero FDEs. We walk the section and call __register_frame per FDE, skipping
+// CIEs. ORC's RTDyldObjectLinkingLayer guarantees the same (Addr, Size) comes
+// back via deregisterEHFrames on teardown, so we replay the walk in reverse.
 class EcoSectionMemoryManager : public llvm::SectionMemoryManager {
 public:
     void registerEHFrames(uint8_t *Addr, uint64_t /*LoadAddr*/,
                           size_t Size) override {
         if (!Addr || Size == 0)
             return;
-        __register_frame(Addr);
+        // LLVM libunwind's __register_frame expects a single FDE pointer, not
+        // a section base (per /opt/llvm-mlir/include/unwind.h: "The FDE must
+        // use pc-rel addressing to point to its function"). Walk the section
+        // and pass each FDE individually; skip CIE records (cie_pointer == 0).
+        uint8_t *P = Addr;
+        uint8_t *End = Addr + Size;
+        while (P < End) {
+            uint32_t length;
+            memcpy(&length, P, 4);
+            if (length == 0)
+                break; // terminator
+            size_t fullLen = 4 + length;
+            if (length == 0xffffffff) {
+                uint64_t extLen;
+                memcpy(&extLen, P + 4, 8);
+                fullLen = 4 + 8 + extLen;
+            }
+            uint32_t ciePointer;
+            memcpy(&ciePointer, P + 4, 4);
+            if (ciePointer != 0)
+                __register_frame(P);
+            P += fullLen;
+        }
         EHFrames.push_back({Addr, Size});
     }
 
     void deregisterEHFrames() override {
-        for (auto &F : EHFrames)
-            __deregister_frame(F.Addr);
+        for (auto &F : EHFrames) {
+            uint8_t *P = F.Addr;
+            uint8_t *End = F.Addr + F.Size;
+            while (P < End) {
+                uint32_t length;
+                memcpy(&length, P, 4);
+                if (length == 0) break;
+                size_t fullLen = 4 + length;
+                if (length == 0xffffffff) {
+                    uint64_t extLen;
+                    memcpy(&extLen, P + 4, 8);
+                    fullLen = 4 + 8 + extLen;
+                }
+                uint32_t ciePointer;
+                memcpy(&ciePointer, P + 4, 4);
+                if (ciePointer != 0)
+                    __deregister_frame(P);
+                P += fullLen;
+            }
+        }
         EHFrames.clear();
     }
 };
