@@ -22,13 +22,17 @@ Then continue — do NOT stop or produce a report.
 Pick the next failure from @test-fails.md that is not FIXED or SKIPPED.
 If there are none, go to DONE.
 
-### Step 3 — Investigate (time-boxed)
+### Step 3 — Investigate (thorough)
 
-Investigate the root cause. Keep investigation SHORT — read only what you
-need to form a hypothesis and propose a concrete fix. Do NOT exhaustively
-trace the entire pipeline. Stop as soon as you have a plausible fix.
+Investigate the root cause thoroughly. Read as much code as needed to fully
+understand the failure. Trace execution paths analytically, add targeted
+debug instrumentation, and use tooling (gdb, heap dumps, IR dumps) as
+appropriate. Do NOT stop at a plausible guess — build a solid chain of
+evidence from source code and runtime traces that conclusively identifies
+the root cause before proposing a fix.
 
-Write a 1–3 sentence hypothesis in @test-fails.md under the failure entry.
+Write a detailed hypothesis with supporting evidence in @test-fails.md
+under the failure entry.
 
 ### Step 4 — Apply the fix
 

@@ -18,7 +18,6 @@
 | 3 | Kernel raw-ptr vs HPointer (SIGSEGV) | PolyEscapeRecordTest | C++ kernels boxInt/boxFloat returned raw pointers, not HPointers | FIXED |
 | 4 | Closure arity mismatch (SIGABRT) | CombinatorBComposeTest, CombinatorBSumMapTest, CombinatorCConsTest, CombinatorCFlipTest, CombinatorListStringTest, CombinatorTPipeTest, CombinatorTThrushTest, CombinatorTest, CombinatorSpMulTest + elm-test SKI | TWO bugs: (1) staging uses type-derived arities that don't match runtime (FIXED via generic_apply fallback), (2) monomorphizer picks wrong k specialization for combinators | SKIPPED (3 attempts — requires deep monomorphizer type unification change) |
 | 5 | LetDestructFuncTupleTest (SIGSEGV) | LetDestructFuncTupleTest | Standalone accessor gets generic type; record unboxed_bitmap mismatch | SKIPPED (3 attempts — requires Specialize.elm accessor type propagation) |
-| 20 | Alloca-in-loop stack exhaustion | Stress tests with 900K+ closure calls | LLVM::AllocaOp emitted inside loop bodies for args arrays; accumulates stack space | FIXED (hoisted allocas to entry block) |
 | 6 | Branch operand mismatch in cf.SwitchOp | CaseSharedBranchTest, CaseReturningLambdaTest, LargeDispatchCaseTest, NestedCaseReturnTest | CaseOpLowering uses mergeBlock as SwitchOp default with 0 operands, but mergeBlock expects 1 | FIXED (2/4 tests pass; 2 have deeper pre-existing bugs) |
 | 7 | scf.while do-region has multiple blocks | TailRecCaseMultiBranchTypesTest, TailRecDecoderLoopTest, TailRecMultiCaseWhileTest, TailRecTypeTraversalTest | Elm compiler emits scf.while with nested string eco.case in do-region | SKIPPED (3 attempts) |
 | 8 | Unmasked: closure arity + SIGSEGV | CaseReturningLambdaTest (closure_call_saturated), LargeDispatchCaseTest (SIGSEGV) | Previously masked by Category 6 branch bug; now reveal deeper combinator/staging bugs | SKIPPED (same root causes as Cat 4/5) |
@@ -32,6 +31,14 @@
 | 16 | ptr<1>: BF/Eco type converter unified | All 51 elm-bytes/* + 88 BF codegen tests | BFTypeConverter unified to ptr<1>; all BF test .mlir files updated; bf.read.utf8 null comparison fixed | FIXED |
 | 17 | ptr<1>: String case True constant comparison | CaseStringTest +8 others | String case lowering compared ptr<1> result from Elm_Kernel_Utils_equal with i64 True constant; fixed to use ptr<1> True constant via inttoptr | FIXED |
 | 18 | ptr<1>: ClosureCaptureTupleTest unrealized cast | ClosureCaptureTupleTest | Tuple deconstruction in closures has unresolvable unrealized_conversion_cast | OPEN |
+| 19 | GC heap corruption in stress tests | 28 stress tests | Cons cell data corrupted after 2+ GC cycles; exact mechanism TBD | SKIPPED (3 attempts — see Categories 21-26 for sub-investigations) |
+| 20 | Alloca-in-loop stack exhaustion | Stress tests with 900K+ closure calls | LLVM::AllocaOp inside loop bodies accumulates stack | FIXED |
+| 21 | Shadow-stack arg ranges mis-described | 28 stress tests | Wrong bitmap/length/base in eco_gc_push_stack_range for closure arg buffers | OPEN |
+| 22 | Double-rooting of same arg buffer | 28 stress tests | Compiled code + C++ runtime both register same args alloca as GC root range | OPEN |
+| 23 | Mis-sized or mis-scanned object layouts | 28 stress tests | getObjectSize / scanObject mismatch for Cons/Closure under heavy GC | OPEN |
+| 24 | Unboxed vs boxed slot mis-handling | 28 stress tests | Wrong unboxed bitmap in heap objects or arg arrays | OPEN |
+| 25 | ptr<1>↔i64 conversion escaping role | 28 stress tests | A boundary crossing not using the intended role-specific helper | OPEN |
+| 26 | Generational invariant violation | 28 stress tests | Old-to-young pointer from mutation/backpatching without write barrier | OPEN |
 
 ---
 
@@ -547,8 +554,12 @@ ResultMapChain, SetBuildFold, TreeBuildFold, TupleMapList
 - `runtime/src/allocator/RuntimeExports.cpp:1047` — `eco_apply_closure` double-rooting
 - `runtime/src/allocator/NurserySpace.cpp:458` — Phase 1e stack range evacuation
 
-**Status:** SKIPPED (3 attempts)
-**Attempts:** 3 (1: C++ kernel ListOps fix; 2: gc-leaf on Utils_equal — no effect; 3: full instrumented investigation ruled out stackmap/root-range tracking bugs, identified alloca-in-loop as separate issue (Cat 20, FIXED), but GC corruption mechanism remains unidentified)
+**Status:** OPEN (root cause identified — LLVM backend stackmap bug)
+**Attempts:** 4
+- Attempt 1: C++ kernel ListOps stale-pointer fix (applied, partial)
+- Attempt 2: gc-leaf on Utils_equal — no effect
+- Attempt 3: Full instrumented investigation — ruled out root tracking, found alloca-in-loop (Cat 20, FIXED)
+- Attempt 4: Root cause identified — LLVM backend encodes gc-live values as Constant (kind=4) in stackmap instead of Indirect (kind=3). Attempted EcoGCLiveSpill LLVM pass to force alloca+store+load for gc-live values — crashes due to statepoint operand bundle rebuild complexity. Need different approach.
 **Trace report:** See `/work/gc-stress-trace-report.md` for full investigation details.
 
 ---
@@ -585,3 +596,267 @@ those spill slots, causing crashes in `collectStackRootsFromStackMap`.
 - MinGcTest (1M iterations, 16 GC cycles): PASSED
 - E2E tests: 1018/1019 passed (zero regressions)
 - Stress tests: same pass/fail count (alloca fix only prevents stack overflow; GC corruption from Category 19 remains)
+
+---
+
+## OPEN: Category 21 — Shadow-stack arg ranges mis-described (bitmap / length / base)
+
+**Related to:** Category 19 (GC heap corruption in stress tests)
+
+The closure dispatch helpers (`eco_apply_closure`, `eco_apply_segmentation_unknown`,
+`eco_pap_extend`, `eco_closure_call_saturated`) build `uint64_t` arg buffers on the
+stack and register them with the GC via `eco_gc_push_stack_range`, each range carrying
+an unboxed bitmap so the collector only visits HPointer slots.
+
+If any of the following is wrong:
+- The range start/end pointer (off-by-one, wrong alloca, reused after hoisting)
+- The count of words in the range
+- The bitmap for which slots are pointers vs unboxed ints
+
+then during GC the collector will either skip a real pointer root (use-after-free) or
+**treat a non-pointer word as an HPointer**, resolve it, and evacuate random heap
+memory. The second case fits the observed symptoms: corruption only shows up after a
+few cycles (bad "pointer" gets forwarded and re-forwarded), `Allocator::resolve`
+follows a bogus forward chain and hits an invalid tag.
+
+The failing scenario is heavy in closure calls (`foldl`/`reverse`), exactly the users
+of these arg buffers. The recent alloca-hoisting change (Category 20) altered where
+arg arrays live on the stack — if the range metadata (base pointer, count, or bitmap)
+doesn't match the hoisted alloca, the GC will scan the wrong memory.
+
+### Investigation approach
+
+- In `eco_apply_closure`, `eco_closure_call_saturated`, `eco_pap_extend`: assert that
+  the `base` pointer passed to `eco_gc_push_stack_range` points to valid stack memory
+  and that `count * 8` bytes from `base` are within the current stack frame.
+- Compare the bitmap passed by compiled code (in `emitRootedBoxedArgsArray` /
+  `emitPushArgsRootRange`) with the bitmap assumed by the C++ runtime helper.
+- Check whether `eco_gc_restore_stack_range_point` pops the correct range (especially
+  after the alloca-hoisting change where the same alloca is reused across iterations).
+
+### Key Files
+
+- `runtime/src/codegen/Passes/EcoToLLVMClosures.cpp` — `emitRootedBoxedArgsArray`,
+  `emitPushArgsRootRange`, `lowerSegmentationUnknown`, `lowerGenericApply`
+- `runtime/src/allocator/RuntimeExports.cpp` — `eco_apply_closure` (line 1047),
+  `eco_closure_call_saturated` (line 1239), `eco_pap_extend`
+- `runtime/src/allocator/NurserySpace.cpp` — Phase 1e stack range evacuation (line 458)
+
+**Status:** OPEN
+**Attempts:** 0
+
+---
+
+## OPEN: Category 22 — Double-rooting / stale shadow-stack ranges on same buffer
+
+**Related to:** Category 19 (GC heap corruption in stress tests)
+
+The GC has two root sources: statepoint-derived stackmap roots (from RS4GC) and
+shadow-stack ranges (`RootSet::stack_ranges`) for dynamic buffers. The compiled code
+registers an alloca'd args buffer as a root range, then calls `eco_apply_closure`
+which *also* registers the same buffer as a root range.
+
+If the same physical memory is registered twice with different bitmaps or lengths, a
+GC cycle can:
+- Relocate pointers in the buffer based on one range description, then
+- Re-process the same address range with a different bitmap or length, treating stale
+  or dead words as HPointers.
+
+This can produce inconsistent pointer graphs where some slots are updated twice and
+others once, or dead stack words that look like random HPointer bit patterns cause the
+resolver to chase garbage and lay down `Tag_Forward` headers into arbitrary objects.
+
+This matches the observation that either rooting mechanism alone appears correct in
+isolation, but over multiple cycles the forwarding chain becomes impossible.
+
+### Investigation approach
+
+- Add a debug assertion in `eco_gc_push_stack_range` that checks whether the new range
+  overlaps any existing range in the stack. If so, verify the bitmaps are compatible.
+- In `NurserySpace::minorGC`, Phase 1e, log any range whose base pointer falls within
+  another range's extent.
+- Check whether `eco_gc_restore_stack_range_point` in the C++ runtime correctly
+  unregisters the inner range before the outer range is accessed again.
+
+### Key Files
+
+- `runtime/src/allocator/RuntimeExports.cpp` — `eco_apply_closure` (line 1059-1063),
+  `eco_closure_call_saturated` (line 1262-1270)
+- `runtime/src/allocator/NurserySpace.cpp` — Phase 1e (line 458)
+- `runtime/src/allocator/RootSet.hpp` — `pushStackRootRange`, `restoreStackRangePoint`
+
+**Status:** OPEN
+**Attempts:** 0
+
+---
+
+## OPEN: Category 23 — Mis-sized or mis-scanned object layouts (Cons / Closure)
+
+**Related to:** Category 19 (GC heap corruption in stress tests)
+
+`getObjectSize()` and the tag-based layout logic are a known source of bugs; tag
+completely determines layout and size, and `getObjectSize` must match the C++ struct
+definitions exactly. A previous bug was fixed where Closure Cheney-copy used
+`n_values` instead of `hdr->size`.
+
+A similar off-by-N or wrong-field bug in:
+- `getObjectSize` for Cons, Closure, Custom, etc.
+- `scanObject` in the nursery (visiting too few or too many child slots)
+- `markChildren` in the old gen
+
+could produce copy/scan loops that run past the true end of an object, overwriting
+the header of the next object with `Tag_Forward` or junk. Alternatively, incomplete
+child updates (some pointers within a cons cell still point to from-space) will later
+be re-followed and double-forwarded.
+
+The corrupted thing is a **Cons cell tail** (list structure breaks but elements are
+fine). `List.reverse` uses many cons cells plus closures, both relying on correct
+size/scan metadata. Failure appears only after several GCs — typical of an off-by-one
+in scanning where the right heap shape is needed for one object to overrun its neighbor.
+
+### Investigation approach
+
+- In `scanObject` Tag_Cons case, assert `sizeof(Cons) == getObjectSize(obj)`.
+- In `evacuate`, after copying an object to to-space, validate that the forwarding
+  pointer's target object has a valid header.
+- Add a full-heap validation pass after each minor GC (under ECO_GC_DEBUG): walk all
+  live objects in to-space and verify every child pointer is either a constant, points
+  to to-space/old-gen, or has been forwarded.
+
+### Key Files
+
+- `runtime/src/allocator/NurserySpace.cpp` — `scanObject` (line 982), `evacuate` (line 673)
+- `runtime/src/allocator/Heap.hpp` — Cons/Closure/Custom struct definitions
+- `runtime/src/allocator/HeapHelpers.hpp` — `getObjectSize`
+
+**Status:** OPEN
+**Attempts:** 0
+
+---
+
+## OPEN: Category 24 — Mis-handling of unboxed vs boxed slots in heap and arg arrays
+
+**Related to:** Category 19 (GC heap corruption in stress tests)
+
+Heap objects and arg arrays use `Unboxable` to mix pointers and primitives, with an
+`unboxed` bitmap in the header or range metadata so GC knows which fields are pointers
+vs raw data. If any of the following is wrong:
+- The header's `unboxed` bits for a given tag
+- The per-object interpretation of those bits in `scanObject` / `markChildren`
+- The arg-range bitmap associated with a particular closure call pattern
+
+then the collector may treat an integer or float payload as an HPointer, follow it,
+and overwrite some real object with a forwarding pointer. Or it may fail to follow a
+real HPointer, leaving a from-space reference that later resolves to a bogus forwarded
+object.
+
+This is particularly plausible for `foldl` and list operations, which pass around
+accumulator and element values that can be primitive or composite, and rely heavily
+on correct unboxed bitmaps in both closures and transient arg buffers.
+
+### Investigation approach
+
+- In `scanObject`, for each child visited via `evacuateUnboxable`, log the raw bits
+  and the `is_boxed` flag. Check whether any "boxed" value looks like a raw integer
+  (e.g. small values like 1-1000 that couldn't be valid heap offsets).
+- In `emitRootedBoxedArgsArray`, verify the bitmap matches the actual types stored:
+  - `eco.value` args → HPointer (bitmap bit = 1)
+  - Boxed Int/Float/Char (result of eco_alloc_*) → HPointer (bitmap bit = 1)
+  - Raw i64/f64 → NOT HPointer (bitmap bit = 0)
+- Cross-check the compiler-emitted `unboxed_bitmap` attribute on `papCreate`/`papExtend`
+  with the runtime's bitmap interpretation in `buildEvaluatorArgs`.
+
+### Key Files
+
+- `runtime/src/codegen/Passes/EcoToLLVMClosures.cpp` — `emitRootedBoxedArgsArray`,
+  `emitPushArgsRootRange` (bitmap computation)
+- `runtime/src/allocator/RuntimeExports.cpp` — `buildEvaluatorArgs` (bitmap interpretation)
+- `runtime/src/allocator/NurserySpace.cpp` — `scanObject`, `evacuateUnboxable`
+- `runtime/src/allocator/Heap.hpp` — `Unboxable` union, header `unboxed` field
+
+**Status:** OPEN
+**Attempts:** 0
+
+---
+
+## OPEN: Category 25 — ptr<1>↔i64 conversion escaping its intended role
+
+**Related to:** Category 19 (GC heap corruption in stress tests)
+
+The RS4GC integration funnels all ptr<1>↔i64 conversions through role-specific helpers
+(`heapLoadI64ToValue`, `closureLoadI64ToValue`, `argsSlotStoreValueToI64`, etc.) and
+the post-RS4GC verifier (`EcoPtrIntVerify`) rejects casts outside the allow-listed
+patterns.
+
+If there is one path where a value loaded from the heap (like a cons tail pointer) is
+converted int→ptr→int and then stored in a way that bypasses the intended helper, or a
+helper meant for one "role" (heap slot vs closure vs arg slot) is accidentally used for
+another, then RS4GC will still see a valid-looking `ptr addrspace(1)` in the live set,
+but the runtime side might misinterpret the bits (wrong base, wrong tagging), producing
+an HPointer that doesn't correspond to any valid header or that points into the middle
+of another object.
+
+The `List_foldl` IR does `load i64` from the cons tail field and then `inttoptr` to
+`ptr addrspace(1)` — exactly the style of boundary the pass regulates. A subtle
+mismatch between which helper the lowering uses and what the GC/runtime assumes could
+give rare, data-dependent corruption.
+
+### Investigation approach
+
+- Audit every `inttoptr i64 → ptr addrspace(1)` in the compiled LLVM IR for
+  `ListReverseStressTest` and verify its operand comes from one of the allowed sources
+  (heap field load, closure slot load, args alloca load, or embedded constant).
+- Check that the `heapLoadI64ToValue` helper is used consistently for ALL heap field
+  loads, not just the ones touched by the boundary refactor.
+- Look for any remaining direct `LLVM::IntToPtrOp` / `LLVM::PtrToIntOp` creation in
+  the lowering code that doesn't go through a role-specific helper.
+
+### Key Files
+
+- `runtime/src/codegen/Passes/EcoToLLVMInternal.h` — role-specific helpers
+- `runtime/src/codegen/Passes/EcoToLLVMHeap.cpp` — heap field load/store
+- `runtime/src/codegen/Passes/EcoToLLVMClosures.cpp` — closure/args slot load/store
+- `runtime/src/codegen/Passes/EcoPtrIntVerify.cpp` — boundary verifier
+
+**Status:** OPEN
+**Attempts:** 0
+
+---
+
+## OPEN: Category 26 — Violated generational invariant (old-to-young pointer)
+
+**Related to:** Category 19 (GC heap corruption in stress tests)
+
+The GC design assumes Elm immutability, so there are never old-to-young pointers and
+no write barrier. An explicit invariant test asserts old-gen objects never point into
+the nursery.
+
+If any part of the runtime mutates old-gen objects to point to nursery objects (e.g.
+through a kernel primitive, mutable ByteBuffer, closure self-capture backpatching, or
+an "optimization"), minor GC would miss those edges and later end up tracing or
+forwarding through partially-collected structures, leading to invalid headers and
+forward chains.
+
+This seems less likely for pure list reversal, but if `List.reverse` happens to
+involve any long-lived structures or kernel helpers that cache things in old gen
+(e.g. the `(::)` closure that gets promoted after many uses), this is worth ruling out.
+
+### Investigation approach
+
+- Under ECO_GC_DEBUG, after each minor GC, walk all promoted/old-gen objects and
+  verify that no child pointer references nursery (from-space or to-space) memory.
+- Check `PapCreateOp` self-capture backpatching: the self_capture_indices write
+  directly into closure values after allocation. If the closure has been promoted to
+  old gen before the write, this creates an old-to-young pointer.
+- Check kernel primitives (`ListOps`, `DictOps`) for any in-place mutation of objects
+  that might have been promoted.
+
+### Key Files
+
+- `runtime/src/allocator/NurserySpace.cpp` — post-GC validation (ECO_GC_DEBUG block)
+- `runtime/src/codegen/Passes/EcoToLLVMClosures.cpp` — `PapCreateOpLowering`,
+  self_capture_indices handling (line 650)
+- `runtime/src/allocator/ListOps.cpp` — `reverse`, `foldl`, etc.
+
+**Status:** OPEN
+**Attempts:** 0
