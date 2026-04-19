@@ -2352,8 +2352,19 @@ specializeExpr expr subst state =
                         )
                         ( [], state1 )
                         updates
+
+                resultMonoType =
+                    case ( recordMonoType, monoType ) of
+                        ( Mono.MRecord recordFields, Mono.MRecord resultFields ) ->
+                            Mono.forceCNumberToInt (Mono.MRecord (Dict.union resultFields recordFields))
+
+                        ( Mono.MRecord _, _ ) ->
+                            Utils.Crash.crash "Specialize.TOpt.Update: record with non-record result type"
+
+                        ( _, _ ) ->
+                            Utils.Crash.crash "Specialize.TOpt.Update: input expression is not a record"
             in
-            ( Mono.MonoRecordUpdate monoRecord monoUpdates monoType, state2 )
+            ( Mono.MonoRecordUpdate monoRecord monoUpdates resultMonoType, state2 )
 
         TOpt.Record fields meta ->
             let

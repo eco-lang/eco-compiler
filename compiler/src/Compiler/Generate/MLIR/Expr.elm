@@ -418,10 +418,12 @@ generateExpr ctx expr =
 
         Mono.MonoRecordUpdate record namedUpdates monoType ->
             let
-                layout =
-                    Types.computeRecordLayout (getRecordFields monoType)
+                recordType =
+                    Mono.typeOf record
 
-                -- Convert named updates to indexed updates
+                layout =
+                    Types.computeRecordLayout (getRecordFields recordType)
+
                 indexedUpdates =
                     List.filterMap
                         (\( name, updateExpr ) ->
