@@ -75,6 +75,13 @@ private:
     size_t scan_block_idx_;           // Index of to-space block containing scan_ptr.
     char* scan_ptr_;                  // Cheney scan pointer (next object to process).
 
+    // Recorded copy_ptr_ at the moment copyToSpace abandoned a to-space block.
+    // Valid only for block indices < current_to_idx_; used by the Cheney scan
+    // to skip the untouched tail gap that `copyToSpace` leaves behind when an
+    // object doesn't fit in the remaining space of the current block.
+    // Unused entry value = corresponding block_end (= block_start + block_size_).
+    std::vector<char*> block_end_of_objects_;
+
     // Growth tracking for adaptive nursery sizing.
     float growth_threshold_;          // Request more blocks when to-space exceeds this occupancy.
 

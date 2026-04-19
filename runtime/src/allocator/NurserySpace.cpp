@@ -274,6 +274,11 @@ void* NurserySpace::copyToSpace(size_t size) {
 
     std::vector<char*>& to_blocks = from_is_low_ ? high_blocks_ : low_blocks_;
 
+    // Record end-of-objects for the block we're abandoning so the Cheney scan
+    // can stop before the uninitialised tail gap. Without this, the scan
+    // reads stale pre-GC bytes here as if they were a live object header.
+    block_end_of_objects_[current_to_idx_] = copy_ptr_;
+
     // Slow path: advance to next block.
     ++current_to_idx_;
     if (current_to_idx_ < to_blocks.size()) {
@@ -304,9 +309,14 @@ bool NurserySpace::scanHasMore() const {
 void NurserySpace::advanceScanIfNeeded() {
     const std::vector<char*>& to_blocks = from_is_low_ ? high_blocks_ : low_blocks_;
 
-    // If scan_ptr reached end of current block, move to next.
-    char* block_end = to_blocks[scan_block_idx_] + block_size_;
-    if (scan_ptr_ >= block_end) {
+    // For blocks that copyToSpace has already abandoned, stop at the recorded
+    // end-of-objects rather than block_end — the remainder is an untouched
+    // tail gap that may still hold stale bytes from prior GCs.
+    char* scan_block_end = (scan_block_idx_ < current_to_idx_)
+        ? block_end_of_objects_[scan_block_idx_]
+        : to_blocks[scan_block_idx_] + block_size_;
+
+    if (scan_ptr_ >= scan_block_end) {
         ++scan_block_idx_;
         if (scan_block_idx_ < to_blocks.size()) {
             scan_ptr_ = to_blocks[scan_block_idx_];
@@ -423,6 +433,13 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
     // Reset scan pointers.
     scan_block_idx_ = 0;
     scan_ptr_ = to_blocks[0];
+
+    // Default end-of-objects = block_end for each block. copyToSpace overwrites
+    // [i] with the real end when it abandons block i to move to block i+1.
+    block_end_of_objects_.resize(to_blocks.size());
+    for (size_t i = 0; i < to_blocks.size(); ++i) {
+        block_end_of_objects_[i] = to_blocks[i] + block_size_;
+    }
 
     // Buffer for promoted objects that need scanning.
     std::vector<void*> promoted_objects;
