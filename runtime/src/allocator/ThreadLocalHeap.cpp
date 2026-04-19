@@ -348,6 +348,13 @@ void ThreadLocalHeap::collectStackRootsFromStackMap() {
                 if (potential.constant != 0) {
                     continue;
                 }
+                // Null HPointers are legitimately tracked by RS4GC (e.g.
+                // unfilled closure capture slots, statically-null derived
+                // pointers). resolve(null) would dereference heap_base, which
+                // is part of the reserved-but-not-committed address range.
+                if (potential.ptr == 0) {
+                    continue;
+                }
                 void* phys = alloc.resolve(potential);
                 if (phys != nullptr && alloc.isInHeap(phys)) {
                     sm_roots.push(slot);
