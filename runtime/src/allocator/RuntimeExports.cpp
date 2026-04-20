@@ -154,41 +154,44 @@ extern "C" void eco_set_unboxed(HPtr obj_hptr, uint64_t bitmap) {
     Header* header = static_cast<Header*>(obj);
     switch (header->tag) {
         case Tag_Custom: {
+            // Custom's 48-bit bitmap stores 24 × 2-bit kinds.
+            assert((bitmap >> 48) == 0 && "Custom unboxed bitmap overflow (>48 bits)");
             Custom* custom = static_cast<Custom*>(obj);
-            custom->unboxed = static_cast<u32>(bitmap);
+            custom->unboxed = bitmap & 0x0000FFFFFFFFFFFFULL;
             break;
         }
         case Tag_Tuple2: {
             Tuple2* tuple = static_cast<Tuple2*>(obj);
-            tuple->header.unboxed = static_cast<u8>(bitmap);
+            tuple->header.unboxed = static_cast<u8>(bitmap & 0xF);
             break;
         }
         case Tag_Tuple3: {
             Tuple3* tuple = static_cast<Tuple3*>(obj);
-            tuple->header.unboxed = static_cast<u8>(bitmap);
+            tuple->header.unboxed = static_cast<u8>(bitmap & 0x3F);
             break;
         }
         case Tag_Cons: {
             Cons* cons = static_cast<Cons*>(obj);
-            cons->header.unboxed = static_cast<u8>(bitmap);
+            cons->header.unboxed = static_cast<u8>(bitmap & 0x3);
             break;
         }
         default:
-            // For other types, set in header
-            header->unboxed = static_cast<u8>(bitmap);
+            // For other types (e.g. Array's uniform kind), set in header.
+            header->unboxed = static_cast<u8>(bitmap & 0x3);
             break;
     }
 }
 
-extern "C" HPtr eco_alloc_cons(uint64_t head, HPtr tail, uint32_t head_unboxed) {
+// `head_kind`: 2-bit primitive kind for the head slot (0=boxed, 1=Int, 2=Float,
+// 3=Char). Stored into `cons->header.unboxed` at slot 0 (bits 1:0).
+extern "C" HPtr eco_alloc_cons(uint64_t head, HPtr tail, uint32_t head_kind) {
     size_t size = sizeof(Cons);
     uint64_t tail_bits = tail.toBits();
 
     // Root head and tail across allocate() which may trigger GC.
-    // Build a 2-element array: [head, tail]. Mask: bit 0 = head (boxed unless
-    // head_unboxed), bit 1 = tail (always boxed).
+    // Mask bit i set iff slot i is an HPointer.
     uint64_t roots[2] = { head, tail_bits };
-    uint64_t mask = head_unboxed ? 0x2 : 0x3;
+    uint64_t mask = (head_kind != 0) ? 0x2 : 0x3;
     size_t saved = eco_gc_stack_range_point();
     eco_gc_push_stack_range(roots, 2, mask);
 
@@ -205,7 +208,7 @@ extern "C" HPtr eco_alloc_cons(uint64_t head, HPtr tail, uint32_t head_unboxed) 
     eco_gc_restore_stack_range_point(saved);
 
     Cons* cons = static_cast<Cons*>(obj);
-    cons->header.unboxed = static_cast<u8>(head_unboxed);
+    cons->header.unboxed = static_cast<u8>(head_kind & 0x3);
     cons->head.i = static_cast<i64>(head);
     HPointer tail_hp;
     memcpy(&tail_hp, &tail_bits, sizeof(tail_hp));
@@ -214,12 +217,13 @@ extern "C" HPtr eco_alloc_cons(uint64_t head, HPtr tail, uint32_t head_unboxed) 
     return ptrToHPointer(obj);
 }
 
+// `unboxed_mask`: 2-bit-per-slot kind bitmap (4 bits used for 2 slots).
 extern "C" HPtr eco_alloc_tuple2(uint64_t a, uint64_t b, uint32_t unboxed_mask) {
     size_t size = sizeof(Tuple2);
 
     // Root a and b across allocate().
     uint64_t roots[2] = { a, b };
-    uint64_t mask = ~static_cast<uint64_t>(unboxed_mask) & 0x3;
+    uint64_t mask = pointerMaskFromKindBitmap(unboxed_mask, 2);
     size_t saved = eco_gc_stack_range_point();
     if (mask) eco_gc_push_stack_range(roots, 2, mask);
 
@@ -230,18 +234,19 @@ extern "C" HPtr eco_alloc_tuple2(uint64_t a, uint64_t b, uint32_t unboxed_mask) 
     eco_gc_restore_stack_range_point(saved);
 
     Tuple2* tup = static_cast<Tuple2*>(obj);
-    tup->header.unboxed = static_cast<u8>(unboxed_mask);
+    tup->header.unboxed = static_cast<u8>(unboxed_mask & 0xF);
     tup->a.i = static_cast<i64>(a);
     tup->b.i = static_cast<i64>(b);
 
     return ptrToHPointer(obj);
 }
 
+// `unboxed_mask`: 2-bit-per-slot kind bitmap (6 bits used for 3 slots).
 extern "C" HPtr eco_alloc_tuple3(uint64_t a, uint64_t b, uint64_t c, uint32_t unboxed_mask) {
     size_t size = sizeof(Tuple3);
 
     uint64_t roots[3] = { a, b, c };
-    uint64_t mask = ~static_cast<uint64_t>(unboxed_mask) & 0x7;
+    uint64_t mask = pointerMaskFromKindBitmap(unboxed_mask, 3);
     size_t saved = eco_gc_stack_range_point();
     if (mask) eco_gc_push_stack_range(roots, 3, mask);
 
@@ -437,7 +442,7 @@ extern "C" HPtr eco_alloc_custom_slow(uint32_t ctor_id, uint32_t field_count, ui
     return ptrToHPointer(obj);
 }
 
-extern "C" HPtr eco_alloc_cons_fast(uint64_t head, HPtr tail, uint32_t head_unboxed) {
+extern "C" HPtr eco_alloc_cons_fast(uint64_t head, HPtr tail, uint32_t head_kind) {
     size_t size = sizeof(Cons);
     void* obj = Allocator::instance().allocateFast(size);
     if (!obj) return HPtr::fromBits(0);
@@ -447,7 +452,7 @@ extern "C" HPtr eco_alloc_cons_fast(uint64_t head, HPtr tail, uint32_t head_unbo
     hdr->tag = Tag_Cons;
     hdr->size = static_cast<u32>(size);
     Cons* cons = static_cast<Cons*>(obj);
-    cons->header.unboxed = static_cast<u8>(head_unboxed);
+    cons->header.unboxed = static_cast<u8>(head_kind & 0x3);
     cons->head.i = static_cast<i64>(head);
     uint64_t tail_bits = tail.toBits();
     HPointer tail_hp;
@@ -457,13 +462,13 @@ extern "C" HPtr eco_alloc_cons_fast(uint64_t head, HPtr tail, uint32_t head_unbo
     return ptrToHPointer(obj);
 }
 
-extern "C" HPtr eco_alloc_cons_slow(uint64_t head, HPtr tail, uint32_t head_unboxed) {
+extern "C" HPtr eco_alloc_cons_slow(uint64_t head, HPtr tail, uint32_t head_kind) {
     size_t size = sizeof(Cons);
     void* obj = Allocator::instance().allocateSlow(size, Tag_Cons);
     if (!obj) return HPtr::fromBits(0);
 
     Cons* cons = static_cast<Cons*>(obj);
-    cons->header.unboxed = static_cast<u8>(head_unboxed);
+    cons->header.unboxed = static_cast<u8>(head_kind & 0x3);
     cons->head.i = static_cast<i64>(head);
     uint64_t tail_bits = tail.toBits();
     HPointer tail_hp;
@@ -483,7 +488,7 @@ extern "C" HPtr eco_alloc_tuple2_fast(uint64_t a, uint64_t b, uint32_t unboxed_m
     hdr->tag = Tag_Tuple2;
     hdr->size = static_cast<u32>(size);
     Tuple2* tup = static_cast<Tuple2*>(obj);
-    tup->header.unboxed = static_cast<u8>(unboxed_mask);
+    tup->header.unboxed = static_cast<u8>(unboxed_mask & 0xF);
     tup->a.i = static_cast<i64>(a);
     tup->b.i = static_cast<i64>(b);
 
@@ -496,7 +501,7 @@ extern "C" HPtr eco_alloc_tuple2_slow(uint64_t a, uint64_t b, uint32_t unboxed_m
     if (!obj) return HPtr::fromBits(0);
 
     Tuple2* tup = static_cast<Tuple2*>(obj);
-    tup->header.unboxed = static_cast<u8>(unboxed_mask);
+    tup->header.unboxed = static_cast<u8>(unboxed_mask & 0xF);
     tup->a.i = static_cast<i64>(a);
     tup->b.i = static_cast<i64>(b);
 
@@ -513,7 +518,7 @@ extern "C" HPtr eco_alloc_tuple3_fast(uint64_t a, uint64_t b, uint64_t c, uint32
     hdr->tag = Tag_Tuple3;
     hdr->size = static_cast<u32>(size);
     Tuple3* tup = static_cast<Tuple3*>(obj);
-    tup->header.unboxed = static_cast<u8>(unboxed_mask);
+    tup->header.unboxed = static_cast<u8>(unboxed_mask & 0x3F);
     tup->a.i = static_cast<i64>(a);
     tup->b.i = static_cast<i64>(b);
     tup->c.i = static_cast<i64>(c);
@@ -527,7 +532,7 @@ extern "C" HPtr eco_alloc_tuple3_slow(uint64_t a, uint64_t b, uint64_t c, uint32
     if (!obj) return HPtr::fromBits(0);
 
     Tuple3* tup = static_cast<Tuple3*>(obj);
-    tup->header.unboxed = static_cast<u8>(unboxed_mask);
+    tup->header.unboxed = static_cast<u8>(unboxed_mask & 0x3F);
     tup->a.i = static_cast<i64>(a);
     tup->b.i = static_cast<i64>(b);
     tup->c.i = static_cast<i64>(c);
@@ -734,13 +739,13 @@ extern "C" HPtr eco_init_char_at(void* obj, uint32_t value) {
     return ptrToHPointer(obj);
 }
 
-extern "C" HPtr eco_init_cons_at(void* obj, uint64_t head, HPtr tail, uint32_t head_unboxed) {
+extern "C" HPtr eco_init_cons_at(void* obj, uint64_t head, HPtr tail, uint32_t head_kind) {
     Header* hdr = getHeader(obj);
     std::memset(hdr, 0, sizeof(Header));
     hdr->tag = Tag_Cons;
     hdr->size = static_cast<u32>(sizeof(Cons));
     Cons* cons = static_cast<Cons*>(obj);
-    cons->header.unboxed = static_cast<u8>(head_unboxed);
+    cons->header.unboxed = static_cast<u8>(head_kind & 0x3);
     cons->head.i = static_cast<i64>(head);
     uint64_t tail_bits = tail.toBits();
     HPointer tail_hp;
@@ -755,7 +760,7 @@ extern "C" HPtr eco_init_tuple2_at(void* obj, uint64_t a, uint64_t b, uint32_t u
     hdr->tag = Tag_Tuple2;
     hdr->size = static_cast<u32>(sizeof(Tuple2));
     Tuple2* tup = static_cast<Tuple2*>(obj);
-    tup->header.unboxed = static_cast<u8>(unboxed_mask);
+    tup->header.unboxed = static_cast<u8>(unboxed_mask & 0xF);
     tup->a.i = static_cast<i64>(a);
     tup->b.i = static_cast<i64>(b);
     return ptrToHPointer(obj);
@@ -767,7 +772,7 @@ extern "C" HPtr eco_init_tuple3_at(void* obj, uint64_t a, uint64_t b, uint64_t c
     hdr->tag = Tag_Tuple3;
     hdr->size = static_cast<u32>(sizeof(Tuple3));
     Tuple3* tup = static_cast<Tuple3*>(obj);
-    tup->header.unboxed = static_cast<u8>(unboxed_mask);
+    tup->header.unboxed = static_cast<u8>(unboxed_mask & 0x3F);
     tup->a.i = static_cast<i64>(a);
     tup->b.i = static_cast<i64>(b);
     tup->c.i = static_cast<i64>(c);
@@ -997,10 +1002,35 @@ size_t buildEvaluatorArgs(
         // Re-resolve: a prior iteration's alloc may have triggered GC.
         closure = static_cast<Closure*>(hpointerToPtr(closure_hptr));
         uint64_t val = closure->values[i].i;
-        if ((bitmap >> i) & 1) {
+        const uint64_t kind = fieldKind(bitmap, i);
+        // Cross-check: when both _capture_abi layout and the closure bitmap are
+        // present, their per-slot primitive kind must agree (XPHASE_001).
+        if (layout) {
+            const uint64_t layoutKind = static_cast<uint64_t>(layout->kinds[i]);
+            assert(kind == layoutKind
+                   && "buildEvaluatorArgs: _capture_abi kind disagrees with closure->unboxed kind");
+            (void)layoutKind;
+        }
+        if (kind != 0) {
             if (!layout) {
-                // Legacy fallback: all unboxed captures treated as Int.
-                val = eco_alloc_int(static_cast<int64_t>(val)).toBits();
+                // Use the 2-bit kind from the bitmap to box correctly.
+                switch (kind) {
+                    case 1:
+                        val = eco_alloc_int(static_cast<int64_t>(val)).toBits();
+                        break;
+                    case 2: {
+                        double f;
+                        memcpy(&f, &val, sizeof(double));
+                        val = eco_alloc_float(f).toBits();
+                        break;
+                    }
+                    case 3:
+                        val = eco_alloc_char(static_cast<uint32_t>(val & 0xFFFF)).toBits();
+                        break;
+                    default:
+                        assert(false && "unreachable kind");
+                        __builtin_unreachable();
+                }
             } else {
                 switch (static_cast<ParamKind>(layout->kinds[i])) {
                     case PK_Int:
@@ -1122,8 +1152,8 @@ extern "C" HPtr eco_apply_segmentation_unknown(HPtr closure_hptr,
         // Check if the closure has been forwarded (GC moved it)
         fprintf(stderr, "DIAG: eco_apply_segmentation_unknown bad closure: hptr=0x%lx ptr=%p tag=%u n_values=%u max_values=%u num_args=%u packed=0x%lx\n",
                 closure_bits, closure_ptr, closure->header.tag, n_values, max_values, num_args, packed);
-        fprintf(stderr, "  header: color=%u pin=%u epoch=%u age=%u unboxed=%u size=%u\n",
-                closure->header.color, closure->header.pin, closure->header.epoch,
+        fprintf(stderr, "  header: color=%u pin=%u age=%u unboxed=%u size=%u\n",
+                closure->header.color, closure->header.pin,
                 closure->header.age, closure->header.unboxed, closure->header.size);
         fprintf(stderr, "  evaluator=%p\n", (void*)closure->evaluator);
         fflush(stderr);
@@ -1139,10 +1169,10 @@ extern "C" HPtr eco_apply_segmentation_unknown(HPtr closure_hptr,
 
     if (num_args < remaining) {
         // Under-saturated: use typed args with bitmap to preserve unboxed values.
-        // typed_args is mixed unboxed/boxed; bit i==1 means slot i is an unboxed
-        // primitive (Int/Float/Char) and must NOT be treated as an HPointer.
+        // The 2-bit-per-slot `unboxed_bitmap` encodes kinds; slot i is an HPointer
+        // iff its kind is 0.
         if (num_args > 0) {
-            uint64_t mask = hptr_mask_clamp(~unboxed_bitmap, num_args);
+            uint64_t mask = pointerMaskFromKindBitmap(unboxed_bitmap, num_args);
             if (mask != 0) {
                 eco_gc_push_stack_range(typed_args, num_args, mask);
             }
@@ -1192,7 +1222,7 @@ extern "C" HPtr eco_pap_extend(HPtr closure_hptr, uint64_t* args, uint32_t num_n
     size_t saved_range = eco_gc_stack_range_point();
     eco_gc_push_stack_range(&closure_bits, 1, 1);
     if (num_newargs > 0) {
-        uint64_t mask = hptr_mask_clamp(~new_unboxed_bitmap, num_newargs);
+        uint64_t mask = pointerMaskFromKindBitmap(new_unboxed_bitmap, num_newargs);
         if (mask != 0) {
             eco_gc_push_stack_range(args, num_newargs, mask);
         }
@@ -1216,10 +1246,11 @@ extern "C" HPtr eco_pap_extend(HPtr closure_hptr, uint64_t* args, uint32_t num_n
     new_closure->max_values = max_values;
     new_closure->evaluator = old_closure->evaluator;
 
-    // Merge unboxed bitmaps: old bits + new bits shifted by old_n_values.
-    // Mask new_unboxed_bitmap to num_newargs bits, then shift into position.
-    uint64_t masked_new_bitmap = new_unboxed_bitmap & ((1ULL << num_newargs) - 1);
-    uint64_t shifted_new_bitmap = masked_new_bitmap << old_n_values;
+    // Merge 2-bit-per-slot unboxed bitmaps: old kinds + new kinds shifted by
+    // old_n_values * 2 bits per slot.
+    uint64_t new_bitmap_width = num_newargs < 32 ? (1ULL << (2 * num_newargs)) - 1 : ~0ULL;
+    uint64_t masked_new_bitmap = new_unboxed_bitmap & new_bitmap_width;
+    uint64_t shifted_new_bitmap = masked_new_bitmap << (2 * old_n_values);
     new_closure->unboxed = old_unboxed | shifted_new_bitmap;
 
     // Copy old captured values.
@@ -1488,9 +1519,10 @@ static bool is_nil(uint64_t val) {
 // MLIR generates: List Nil with tag=0, size=0; List Cons with tag=1, size=2.
 // The tail (field 1) must be boxed (not unboxed) since it points to next cell or Nil.
 static inline bool is_list_cons(const Custom* custom) {
+    // Field 1 (the tail) must be boxed: kind 0 at bits [2,3] → mask 0xC is zero.
     return custom->ctor == 1 &&
            custom->header.size == 2 &&
-           (custom->unboxed & 2) == 0;
+           fieldKind(custom->unboxed, 1) == 0;
 }
 
 // Print a list in Elm syntax: [1, 2, 3]
@@ -1545,13 +1577,15 @@ static void print_list(uint64_t val, int depth) {
             first = false;
 
             // Print the head element (field 0)
-            // In JIT mode, values are stored as full 64-bit integers
-            if (custom->unboxed & 1) {
-                output_format("%lld", (long long)custom->values[0].i);
-            } else {
-                // Read the full 64-bit value
-                uint64_t head_val = static_cast<uint64_t>(custom->values[0].i);
-                print_value(head_val, depth + 1);
+            switch (fieldKind(custom->unboxed, 0)) {
+                case 1: output_format("%lld", (long long)custom->values[0].i); break;
+                case 2: output_format("%g", (double)custom->values[0].f); break;
+                case 3: output_format("'%c'", (int)custom->values[0].c); break;
+                default: {
+                    uint64_t head_val = static_cast<uint64_t>(custom->values[0].i);
+                    print_value(head_val, depth + 1);
+                    break;
+                }
             }
 
             // Move to tail (field 1) - read as full 64-bit value
@@ -1565,12 +1599,16 @@ static void print_list(uint64_t val, int depth) {
             first = false;
 
             // Print the head element
-            if (header->unboxed & 1) {
-                output_format("%lld", (long long)cons->head.i);
-            } else {
-                uint64_t head_val = cons->head.p.ptr |
-                                   (static_cast<uint64_t>(cons->head.p.constant) << 40);
-                print_value(head_val, depth + 1);
+            switch (tupleFieldKind(header->unboxed, 0)) {
+                case 1: output_format("%lld", (long long)cons->head.i); break;
+                case 2: output_format("%g", (double)cons->head.f); break;
+                case 3: output_format("'%c'", (int)cons->head.c); break;
+                default: {
+                    uint64_t head_val = cons->head.p.ptr |
+                                       (static_cast<uint64_t>(cons->head.p.constant) << 40);
+                    print_value(head_val, depth + 1);
+                    break;
+                }
             }
 
             // Move to tail
@@ -1591,57 +1629,32 @@ static void print_list(uint64_t val, int depth) {
     output_char(']');
 }
 
+// Print a single slot whose kind is encoded in `kind` (0=boxed, 1=Int, 2=Float, 3=Char).
+static void print_unboxable_slot(const Unboxable& v, uint32_t kind, int depth) {
+    switch (kind) {
+        case 1: output_format("%lld", (long long)v.i); break;
+        case 2: output_format("%g", (double)v.f); break;
+        case 3: output_format("'%c'", (int)v.c); break;
+        default: print_value(static_cast<uint64_t>(v.i), depth + 1); break;
+    }
+}
+
 // Print a tuple
 static void print_tuple2(Tuple2* tuple, int depth) {
     output_char('(');
-
-    // Print first element - read as full 64-bit value for JIT mode
-    if (tuple->header.unboxed & 1) {
-        output_format("%lld", (long long)tuple->a.i);
-    } else {
-        print_value(static_cast<uint64_t>(tuple->a.i), depth + 1);
-    }
-
+    print_unboxable_slot(tuple->a, tupleFieldKind(tuple->header.unboxed, 0), depth);
     output_text(", ");
-
-    // Print second element
-    if (tuple->header.unboxed & 2) {
-        output_format("%lld", (long long)tuple->b.i);
-    } else {
-        print_value(static_cast<uint64_t>(tuple->b.i), depth + 1);
-    }
-
+    print_unboxable_slot(tuple->b, tupleFieldKind(tuple->header.unboxed, 1), depth);
     output_char(')');
 }
 
 static void print_tuple3(Tuple3* tuple, int depth) {
     output_char('(');
-
-    // Print first element - read as full 64-bit value for JIT mode
-    if (tuple->header.unboxed & 1) {
-        output_format("%lld", (long long)tuple->a.i);
-    } else {
-        print_value(static_cast<uint64_t>(tuple->a.i), depth + 1);
-    }
-
+    print_unboxable_slot(tuple->a, tupleFieldKind(tuple->header.unboxed, 0), depth);
     output_text(", ");
-
-    // Print second element
-    if (tuple->header.unboxed & 2) {
-        output_format("%lld", (long long)tuple->b.i);
-    } else {
-        print_value(static_cast<uint64_t>(tuple->b.i), depth + 1);
-    }
-
+    print_unboxable_slot(tuple->b, tupleFieldKind(tuple->header.unboxed, 1), depth);
     output_text(", ");
-
-    // Print third element
-    if (tuple->header.unboxed & 4) {
-        output_format("%lld", (long long)tuple->c.i);
-    } else {
-        print_value(static_cast<uint64_t>(tuple->c.i), depth + 1);
-    }
-
+    print_unboxable_slot(tuple->c, tupleFieldKind(tuple->header.unboxed, 2), depth);
     output_char(')');
 }
 
@@ -1659,9 +1672,9 @@ static void print_custom(Custom* custom, int depth) {
         for (uint32_t i = 0; i < size; i++) {
             if (i > 0) output_char(' ');
 
-            // Check if field is unboxed
-            if (custom->unboxed & (1ULL << i)) {
-                output_format("%lld", (long long)custom->values[i].i);
+            uint32_t k = static_cast<uint32_t>(fieldKind(custom->unboxed, i));
+            if (k != 0) {
+                print_unboxable_slot(custom->values[i], k, depth);
             } else {
                 // Read as full 64-bit value for JIT mode
                 uint64_t val = static_cast<uint64_t>(custom->values[i].i);
@@ -1697,9 +1710,9 @@ static void print_record(Record* record, int depth) {
         // We don't have field names, so use numeric indices
         output_format("f%u = ", i);
 
-        // Check if field is unboxed
-        if (record->unboxed & (1ULL << i)) {
-            output_format("%lld", (long long)record->values[i].i);
+        uint32_t k = static_cast<uint32_t>(fieldKind(record->unboxed, i));
+        if (k != 0) {
+            print_unboxable_slot(record->values[i], k, depth);
         } else {
             // Read as full 64-bit value for JIT mode
             print_value(static_cast<uint64_t>(record->values[i].i), depth + 1);
@@ -1733,12 +1746,12 @@ static void print_dynrecord(DynRecord* dynrec, int depth) {
 // Print an array
 static void print_array(ElmArray* array, int depth) {
     output_text("Array.fromList [");
-    bool is_unboxed = array->header.unboxed;
+    uint32_t kind = array->header.unboxed & 0x3;
     for (uint32_t i = 0; i < array->length; i++) {
         if (i > 0) output_text(", ");
 
-        if (is_unboxed) {
-            output_format("%lld", (long long)array->elements[i].i);
+        if (kind != 0) {
+            print_unboxable_slot(array->elements[i], kind, depth);
         } else {
             // Read as full 64-bit value for JIT mode
             print_value(static_cast<uint64_t>(array->elements[i].i), depth + 1);
@@ -2034,13 +2047,13 @@ static void print_typed_value(uint64_t value, uint32_t type_id, int depth) {
             if (header->tag == Tag_Cons) {
                 Cons* cons = static_cast<Cons*>(ptr);
                 head_val = static_cast<uint64_t>(cons->head.i);
-                head_unboxed = (cons->header.unboxed & 1);
+                head_unboxed = (tupleFieldKind(cons->header.unboxed, 0) != 0);
                 tail_val = cons->tail.ptr | (static_cast<uint64_t>(cons->tail.constant) << 40);
             } else if (header->tag == Tag_Custom) {
                 Custom* custom = static_cast<Custom*>(ptr);
                 if (!is_list_cons(custom)) break;
                 head_val = static_cast<uint64_t>(custom->values[0].i);
-                head_unboxed = (custom->unboxed & 1);
+                head_unboxed = (fieldKind(custom->unboxed, 0) != 0);
                 tail_val = static_cast<uint64_t>(custom->values[1].i);
             } else {
                 break;
@@ -2110,7 +2123,7 @@ static void print_typed_value(uint64_t value, uint32_t type_id, int depth) {
 
             output_char('(');
             // Field a
-            if (unboxed & 1) {
+            if (tupleFieldKind(unboxed, 0) != 0) {
                 const Elm::EcoTypeInfo* ft = &g_type_graph->types[type_a];
                 assert(ft->kind == Elm::EcoTypeKind::Primitive &&
                        "Tuple field a is unboxed but type is not primitive");
@@ -2120,7 +2133,7 @@ static void print_typed_value(uint64_t value, uint32_t type_id, int depth) {
             }
             output_text(", ");
             // Field b
-            if (unboxed & 2) {
+            if (tupleFieldKind(unboxed, 1) != 0) {
                 const Elm::EcoTypeInfo* ft = &g_type_graph->types[type_b];
                 assert(ft->kind == Elm::EcoTypeKind::Primitive &&
                        "Tuple field b is unboxed but type is not primitive");
@@ -2138,7 +2151,7 @@ static void print_typed_value(uint64_t value, uint32_t type_id, int depth) {
 
             output_char('(');
             // Field a
-            if (unboxed & 1) {
+            if (tupleFieldKind(unboxed, 0) != 0) {
                 const Elm::EcoTypeInfo* ft = &g_type_graph->types[type_a];
                 assert(ft->kind == Elm::EcoTypeKind::Primitive &&
                        "Tuple3 field a is unboxed but type is not primitive");
@@ -2148,7 +2161,7 @@ static void print_typed_value(uint64_t value, uint32_t type_id, int depth) {
             }
             output_text(", ");
             // Field b
-            if (unboxed & 2) {
+            if (tupleFieldKind(unboxed, 1) != 0) {
                 const Elm::EcoTypeInfo* ft = &g_type_graph->types[type_b];
                 assert(ft->kind == Elm::EcoTypeKind::Primitive &&
                        "Tuple3 field b is unboxed but type is not primitive");
@@ -2158,7 +2171,7 @@ static void print_typed_value(uint64_t value, uint32_t type_id, int depth) {
             }
             output_text(", ");
             // Field c
-            if (unboxed & 4) {
+            if (tupleFieldKind(unboxed, 2) != 0) {
                 const Elm::EcoTypeInfo* ft = &g_type_graph->types[type_c];
                 assert(ft->kind == Elm::EcoTypeKind::Primitive &&
                        "Tuple3 field c is unboxed but type is not primitive");
@@ -2213,7 +2226,7 @@ static void print_typed_value(uint64_t value, uint32_t type_id, int depth) {
 
                 // Print field value - check unboxed bitmap from heap
                 uint64_t field_val = static_cast<uint64_t>(record->values[i].i);
-                bool is_unboxed = (unboxed & (1ULL << i)) != 0;
+                bool is_unboxed = fieldKind(unboxed, i) != 0;
 
                 if (is_unboxed) {
                     const Elm::EcoTypeInfo* ft = &g_type_graph->types[field->type_id];
@@ -2287,7 +2300,7 @@ static void print_typed_value(uint64_t value, uint32_t type_id, int depth) {
                 output_char(' ');
 
                 uint64_t field_val = static_cast<uint64_t>(custom->values[i].i);
-                bool is_unboxed = (custom->unboxed & (1ULL << i)) != 0;
+                bool is_unboxed = fieldKind(custom->unboxed, i) != 0;
 
                 // Get field type from ctor info
                 uint32_t field_type_id = g_type_graph->fields[ctor_info->first_field + i].type_id;
@@ -2373,9 +2386,9 @@ extern "C" void eco_print_elm_value(HPtr value) {
         Custom* custom = static_cast<Custom*>(ptr);
         if (custom->ctor == 0 && custom->header.size == 1) {
             // Unwrap: print the inner value directly
-            if (custom->unboxed & 1) {
-                // Field is unboxed integer
-                output_format("%lld", (long long)custom->values[0].i);
+            uint32_t k = static_cast<uint32_t>(fieldKind(custom->unboxed, 0));
+            if (k != 0) {
+                print_unboxable_slot(custom->values[0], k, 0);
             } else {
                 uint64_t inner = static_cast<uint64_t>(custom->values[0].i);
                 // Safety check for small integers
@@ -2560,8 +2573,8 @@ extern "C" int64_t eco_cons_head_i64(HPtr cons) {
 
     Cons* consCell = static_cast<Cons*>(obj);
 
-    // Check if head is unboxed (bit 0 of Header.unboxed field).
-    if (consCell->header.unboxed & 1) {
+    // Head is unboxed iff slot-0 kind is non-zero (2-bit encoding).
+    if (tupleFieldKind(consCell->header.unboxed, 0) != 0) {
         // Head is unboxed: return the i64 value directly.
         return consCell->head.i;
     } else {
@@ -2588,8 +2601,8 @@ extern "C" double eco_cons_head_f64(HPtr cons) {
 
     Cons* consCell = static_cast<Cons*>(obj);
 
-    // Check if head is unboxed (bit 0 of Header.unboxed field).
-    if (consCell->header.unboxed & 1) {
+    // Head is unboxed iff slot-0 kind is non-zero (2-bit encoding).
+    if (tupleFieldKind(consCell->header.unboxed, 0) != 0) {
         // Head is unboxed: return the f64 value directly.
         return consCell->head.f;
     } else {
@@ -2616,8 +2629,8 @@ extern "C" int16_t eco_cons_head_i16(HPtr cons) {
 
     Cons* consCell = static_cast<Cons*>(obj);
 
-    // Check if head is unboxed (bit 0 of Header.unboxed field).
-    if (consCell->header.unboxed & 1) {
+    // Head is unboxed iff slot-0 kind is non-zero (2-bit encoding).
+    if (tupleFieldKind(consCell->header.unboxed, 0) != 0) {
         // Head is unboxed: return the i16 value directly.
         return consCell->head.c;
     } else {

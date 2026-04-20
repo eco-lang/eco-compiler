@@ -14,7 +14,7 @@ module {
     %obj1 = eco.construct.custom(%i1, %i2, %i3, %i4) {
       tag = 0 : i64,
       size = 4 : i64,
-      unboxed_bitmap = 15 : i64
+      unboxed_bitmap = 85 : i64
     } : (i64, i64, i64, i64) -> !eco.value
     eco.dbg %obj1 : !eco.value
     // CHECK: Ctor
@@ -40,7 +40,7 @@ module {
     %obj2 = eco.construct.custom(%i1, %b10, %i3, %b30) {
       tag = 1 : i64,
       size = 4 : i64,
-      unboxed_bitmap = 5 : i64
+      unboxed_bitmap = 17 : i64
     } : (i64, !eco.value, i64, !eco.value) -> !eco.value
     eco.dbg %obj2 : !eco.value
     // CHECK: Ctor
@@ -63,7 +63,7 @@ module {
     %obj3 = eco.construct.custom(%b10, %i2, %b30, %i4) {
       tag = 2 : i64,
       size = 4 : i64,
-      unboxed_bitmap = 10 : i64
+      unboxed_bitmap = 68 : i64
     } : (!eco.value, i64, !eco.value, i64) -> !eco.value
     eco.dbg %obj3 : !eco.value
     // CHECK: Ctor

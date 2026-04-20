@@ -11,8 +11,8 @@ module {
     %i4 = arith.constant 4 : i64
 
     // Construct with 4 unboxed i64 fields
-    // unboxed_bitmap = 0b1111 = 15
-    %ctor4 = eco.construct.custom(%i1, %i2, %i3, %i4) {tag = 0 : i64, size = 4 : i64, unboxed_bitmap = 15 : i64} : (i64, i64, i64, i64) -> !eco.value
+    // 2-bit encoding: 4 Ints = 0b01_01_01_01 = 0x55 = 85
+    %ctor4 = eco.construct.custom(%i1, %i2, %i3, %i4) {tag = 0 : i64, size = 4 : i64, unboxed_bitmap = 85 : i64} : (i64, i64, i64, i64) -> !eco.value
 
     eco.dbg %ctor4 : !eco.value
     // CHECK: Ctor0
@@ -38,8 +38,9 @@ module {
     %f1 = arith.constant 1.5 : f64
     %f2 = arith.constant 2.5 : f64
 
-    // 2 i64 + 2 f64, all unboxed: bitmap = 0b1111 = 15
-    %mixed = eco.construct.custom(%i1, %f1, %i2, %f2) {tag = 1 : i64, size = 4 : i64, unboxed_bitmap = 15 : i64} : (i64, f64, i64, f64) -> !eco.value
+    // 2 i64 + 2 f64, all unboxed
+    // 2-bit encoding: Int, Float, Int, Float = 0b10_01_10_01 = 0x99 = 153
+    %mixed = eco.construct.custom(%i1, %f1, %i2, %f2) {tag = 1 : i64, size = 4 : i64, unboxed_bitmap = 153 : i64} : (i64, f64, i64, f64) -> !eco.value
 
     %pm0 = eco.project.custom %mixed[0] : !eco.value -> i64
     eco.dbg %pm0 : i64

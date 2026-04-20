@@ -195,10 +195,21 @@ ecoConstantEmptyString ctx resultVar =
 ecoConstructList : Ctx.Context -> String -> ( String, MlirType ) -> ( String, MlirType ) -> Bool -> ( Ctx.Context, MlirOp )
 ecoConstructList ctx resultVar ( headVar, headType ) ( tailVar, tailType ) headUnboxed =
     let
+        -- `head_kind` encodes the 2-bit slot kind (0=boxed, 1=Int, 2=Float, 3=Char)
+        -- derived from the head operand type. Lowering reads this to populate
+        -- `cons->header.unboxed` slot 0.
+        headKind =
+            if headUnboxed then
+                Types.mlirTypeToKind headType
+
+            else
+                0
+
         attrs =
             Dict.fromList
                 [ ( "_operand_types", ArrayAttr Nothing [ TypeAttr headType, TypeAttr tailType ] )
                 , ( "head_unboxed", BoolAttr headUnboxed )
+                , ( "head_kind", IntAttr Nothing headKind )
                 ]
     in
     mlirOp ctx "eco.construct.list"

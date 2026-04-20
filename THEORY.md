@@ -177,10 +177,17 @@ Configuration is validated on `Allocator::initialize()` to catch invalid combina
 Objects are promoted from nursery to old gen after surviving `PROMOTION_AGE` minor GCs (default 1, configurable via `HeapConfig`). The age is tracked in the header:
 
 ```cpp
-u32 age : 2;    // Survives up to 3 GCs before promotion
-u32 epoch : 2;  // GC epoch when last marked (for incremental marking)
-u32 pin : 1;    // Prevents relocation (for FFI or debugging)
+u32 age : 2;      // Survives up to 3 GCs before promotion
+u32 pin : 1;      // Prevents relocation (for FFI or debugging)
+u32 unboxed : 6;  // 2 bits/slot; per-slot primitive kind (Cons/Tuple/ElmArray)
 ```
+
+The `unboxed` bitfield encodes a 2-bit primitive kind per slot (00=boxed
+HPointer, 01=Int, 10=Float, 11=Char) for `Cons` (1 slot), `Tuple2`/`Tuple3`
+(2/3 slots), and `ElmArray` (1 uniform kind). `Custom`, `Record`, and
+`DynRecord` carry separate wider bitmaps in their own structures (48, 64,
+and 64 bits respectively, all 2-bit-per-slot). See
+`design_docs/theory/heap_representation_theory.md` for details.
 
 When `evacuate()` sees an object that has reached promotion age, it allocates in the old gen instead of to-space. Promoted objects are added to a buffer and scanned to update their child pointers, since they may reference other nursery objects that haven't been evacuated yet.
 

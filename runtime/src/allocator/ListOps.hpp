@@ -254,7 +254,7 @@ inline i64 sum(HPointer list) {
         Header* hdr = getHeader(cell);
 
         // If unboxed (primitive), get the int value directly
-        if (hdr->unboxed & 1) {
+        if (tupleFieldKind(hdr->unboxed, 0) != 0) {
             total += c->head.i;
         }
         current = c->tail;
@@ -278,7 +278,7 @@ inline i64 product(HPointer list) {
         Cons* c = static_cast<Cons*>(cell);
         Header* hdr = getHeader(cell);
 
-        if (hdr->unboxed & 1) {
+        if (tupleFieldKind(hdr->unboxed, 0) != 0) {
             total *= c->head.i;
         }
         current = c->tail;
@@ -316,7 +316,7 @@ inline bool all(Predicate pred, HPointer list) {
 
         Cons* c = static_cast<Cons*>(cell);
         Header* hdr = getHeader(cell);
-        bool is_boxed = !(hdr->unboxed & 1);
+        bool is_boxed = tupleFieldKind(hdr->unboxed, 0) == 0;
 
         if (!pred(c->head, is_boxed)) return false;
         current = c->tail;
@@ -338,7 +338,7 @@ inline bool any(Predicate pred, HPointer list) {
 
         Cons* c = static_cast<Cons*>(cell);
         Header* hdr = getHeader(cell);
-        bool is_boxed = !(hdr->unboxed & 1);
+        bool is_boxed = tupleFieldKind(hdr->unboxed, 0) == 0;
 
         if (pred(c->head, is_boxed)) return true;
         current = c->tail;
@@ -401,7 +401,7 @@ inline std::vector<std::pair<Unboxable, bool>> toVector(HPointer list) {
 
         Cons* c = static_cast<Cons*>(cell);
         Header* hdr = getHeader(cell);
-        bool is_boxed = !(hdr->unboxed & 1);
+        bool is_boxed = tupleFieldKind(hdr->unboxed, 0) == 0;
 
         result.emplace_back(c->head, is_boxed);
         current = c->tail;

@@ -46,11 +46,22 @@ The compiler defines **four distinct data representation models**:
 
 Unit, True, False, Nil, Nothing, EmptyString, EmptyRec are **HPointer values with nonzero constant bits** - never heap allocated.
 
-## Unboxed Bitmap Rules
+## Unboxed Bitmap Rules (Updated 2026-04-20: 2-bit per slot)
 
-**CGEN_026**: For eco.construct.*, unboxed_bitmap derived from SSA operand MLIR types: bit set iff operand is i64, f64, or i16.
+Every container bitmap (Cons/Tuple/Record/Custom/DynRecord/Closure/ElmArray) encodes **2 bits per slot** for the slot's primitive kind:
 
-**CGEN_003**: Closure unboxed bitmaps match SSA operand types after closure-boundary normalization.
+| Kind bits | Meaning | Slot storage |
+|-----------|---------|--------------|
+| `00` | Boxed HPointer | `.p` |
+| `01` | Unboxed Int (i64) | `.i` |
+| `10` | Unboxed Float (f64) | `.f` |
+| `11` | Unboxed Char (u16) | `.c` |
+
+Slot i's kind lives at bits [2i, 2i+1]. Capacity limits: Custom ≤24 typed slots (48-bit bitmap), Record/DynRecord ≤32 (64-bit), Closure ≤26 (52-bit). Bool and String are always boxed.
+
+**CGEN_026**: For eco.construct.*, unboxed_bitmap derived from SSA operand MLIR types via `encodeUnboxedKind` (01 for i64, 10 for f64, 11 for i16, 00 otherwise).
+
+**CGEN_003**: Closure unboxed bitmaps' 2-bit slot kinds match captured operand SSA types exactly.
 
 ## Control Flow (CGEN_010, CGEN_028, CGEN_042-CGEN_054)
 

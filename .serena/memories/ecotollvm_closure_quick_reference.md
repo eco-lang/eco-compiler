@@ -1,5 +1,21 @@
 # EcoToLLVM Closure Lowering - Quick Reference
 
+## Representation change (2026-04-20)
+
+Every closure `unboxed_bitmap` (and all container bitmaps: Cons/Tuple/Record/
+Custom/ElmArray) now encodes **2 bits per slot**:
+
+| Kind bits | Meaning | Slot storage |
+|-----------|---------|--------------|
+| `00` | Boxed HPointer | `.p` |
+| `01` | Unboxed Int (i64) | `.i` |
+| `10` | Unboxed Float (f64) | `.f` |
+| `11` | Unboxed Char (u16) | `.c` |
+
+Slot i's kind lives at bits [2i, 2i+1]. Closures fit 26 typed captures in
+the 52-bit bitfield. Older "bit i = is unboxed" semantics are gone — use
+`fieldKind(bitmap, i)` (runtime) or `Types.mlirTypeToKind` (compiler) instead.
+
 ## File Organization
 
 | File | Lines | Purpose |
@@ -83,7 +99,7 @@ Offset  Size  Field           Encoding
 |------|-------|-----------|
 | 0-5 | n_values | 63 |
 | 6-11 | max_values (arity) | 63 |
-| 12+ | unboxed bitmap | 2^52 |
+| 12-63 | unboxed bitmap (2-bit-per-slot kinds, max 26 typed slots) | 2^52 |
 
 ## Runtime Functions Called
 
@@ -137,7 +153,7 @@ Unboxed Capture  → Conditionally box if bitmap bit set
 |-----------|------|-------|---------|
 | `_closure_kind` | IntegerAttr or StringAttr | ID or "heterogeneous" | Which closure structure |
 | `_fast_evaluator` | SymbolRefAttr | @fn$cap | Fast clone function (optional) |
-| `unboxed_bitmap` | IntegerAttr | Bits | Which captures are unboxed |
+| `unboxed_bitmap` | IntegerAttr | 2-bit kinds | Per-capture slot kind (00=boxed, 01=Int, 10=Float, 11=Char) |
 | `self_capture_indices` | ArrayAttr | [0, 2, ...] | Closure backrefs (optional) |
 
 ### On eco.call / papExtend

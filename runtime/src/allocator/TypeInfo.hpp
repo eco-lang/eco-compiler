@@ -26,20 +26,25 @@
  *
  * ### 2. Unboxed fields inside heap objects
  *
- * Certain heap layouts store primitive values unboxed for performance:
- *   - Cons: Header.unboxed bit 0 indicates head is unboxed
- *   - Tuple2/Tuple3: Header.unboxed bits 0-2 for fields a/b/c
- *   - Record: record->unboxed bitmap (up to 64 fields)
- *   - Custom: custom->unboxed bitmap (up to 48 fields)
- *   - ElmArray: Header.unboxed bit 0 (uniform: all boxed or all unboxed)
- *   - Closure: closure->unboxed bitmap for captured values
+ * Certain heap layouts store primitive values unboxed for performance. Each
+ * slot's kind is encoded as 2 bits in the container's unboxed bitmap:
+ *   `00` = boxed HPointer, `01` = Int (i64), `10` = Float (f64), `11` = Char (u16).
+ * Slot i's kind lives at bits [2i, 2i+1].
  *
- * For unboxed fields, when the type is primitive, the 64-bit slot contains:
- *   - EcoPrimKind::Int    -> int64_t value
- *   - EcoPrimKind::Float  -> double (IEEE 754 bits)
- *   - EcoPrimKind::Char   -> Unicode code point in low 16 bits
- *   - EcoPrimKind::Bool   -> 0 or 1
- *   - EcoPrimKind::String -> NEVER unboxed (always HPointer)
+ *   - Cons: Header.unboxed (6 bits, slot 0 used for head kind)
+ *   - Tuple2/Tuple3: Header.unboxed (4 / 6 bits used)
+ *   - Record: record->unboxed bitmap (up to 32 typed fields in 64 bits)
+ *   - Custom: custom->unboxed bitmap (up to 24 typed fields in 48 bits)
+ *   - ElmArray: Header.unboxed (low 2 bits, uniform kind for all elements)
+ *   - Closure: closure->unboxed bitmap (up to 26 typed captures in 52 bits)
+ *
+ * Kind-to-EcoPrimKind mapping for unboxed slots:
+ *   bitmap kind == 0  ⇒ slot is boxed HPointer; EcoPrimKind (from the type graph)
+ *                        may be Bool, String, or any non-primitive Elm type.
+ *   bitmap kind == 1  ⇒ slot is unboxed Int; EcoPrimKind must be Int if present.
+ *   bitmap kind == 2  ⇒ slot is unboxed Float; EcoPrimKind must be Float.
+ *   bitmap kind == 3  ⇒ slot is unboxed Char; EcoPrimKind must be Char.
+ * There is no encoding for unboxed Bool or unboxed String.
  *
  * Only container printers (printList, printTuple, printRecord, printCustom)
  * interpret unboxed bits, and only after consulting the unboxed bitmap AND

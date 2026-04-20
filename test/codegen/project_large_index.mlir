@@ -53,7 +53,7 @@ module {
     // CHECK: 107
 
     // Create an 8-field constructor with unboxed integers
-    %obj2 = eco.construct.custom(%i0, %i1, %i2, %i3, %i4, %i5, %i6, %i7) {tag = 8 : i64, size = 8 : i64, unboxed_bitmap = 255 : i64} : (i64, i64, i64, i64, i64, i64, i64, i64) -> !eco.value
+    %obj2 = eco.construct.custom(%i0, %i1, %i2, %i3, %i4, %i5, %i6, %i7) {tag = 8 : i64, size = 8 : i64, unboxed_bitmap = 21845 : i64} : (i64, i64, i64, i64, i64, i64, i64, i64) -> !eco.value
     eco.dbg %obj2 : !eco.value
     // CHECK: Ctor8 100 101 102 103 104 105 106 107
 

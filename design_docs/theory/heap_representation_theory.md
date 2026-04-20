@@ -139,10 +139,17 @@ Heap layout:
 
 ### Container Unboxing
 
-The `unboxed` bits in the heap object Header indicate whether container elements are stored unboxed. This mechanism is shared by `Cons`, `Tuple2`, `Tuple3`, and `ElmArray`:
+The `unboxed` bits in the heap object Header indicate whether container elements are stored unboxed. The field holds **2 bits per slot**:
+
+| Bits | Kind | Storage |
+|---|---|---|
+| `00` | Boxed HPointer | `.p` |
+| `01` | Int (i64) | `.i` |
+| `10` | Float (f64) | `.f` |
+| `11` | Char (u16) | `.c` |
 
 ```cpp
-u32 unboxed : 3; // Unboxed flags for Cons, Tuple2, Tuple3, ElmArray (bit 0).
+u32 unboxed : 6; // 2 bits/slot; Cons (1 slot), Tuple2 (2), Tuple3 (3), ElmArray (1 uniform).
 ```
 
 **Lists** can store unboxed head values:
@@ -252,17 +259,17 @@ Every heap object starts with an 8-byte header:
 
 ```cpp
 struct Header {
-    uint64_t tag : 5;        // Object kind (Tag enum)
-    uint64_t color : 2;      // GC color
-    uint64_t age : 2;        // Survival count
-    uint64_t epoch : 2;      // GC epoch
-    uint64_t pin : 1;        // Pinned flag
-    uint64_t unboxed : 3;    // Unboxed flags for Cons, Tuple2, Tuple3, ElmArray (bit 0)
-    uint64_t size : 49;      // Object-specific (varies by type)
+    uint32_t tag : 5;        // Object kind (Tag enum)
+    uint32_t color : 2;      // GC color
+    uint32_t pin : 1;        // Pinned flag
+    uint32_t age : 2;        // Survival count
+    uint32_t unboxed : 6;    // 2 bits/slot — kinds for Cons/Tuple2/Tuple3/ElmArray
+    uint32_t refcount : 16;  // Reserved
+    uint32_t size;           // Object-specific (varies by type)
 };
 ```
 
-The `unboxed` field stores per-element unboxing flags. For `Cons`, bit 0 indicates an unboxed head. For `Tuple2`, bits 0-1 correspond to each element. For `Tuple3`, bits 0-2 correspond to each element. For `ElmArray`, bit 0 indicates whether all elements are stored unboxed.
+The `unboxed` field holds per-slot primitive kinds (2 bits each): `00` = boxed HPointer, `01` = Int, `10` = Float, `11` = Char. Slot `i` lives at bits `[2i, 2i+1]`. For `Cons`, slot 0 is the head kind. For `Tuple2`/`Tuple3`, slots 0..1 / 0..2 are per-element kinds. For `ElmArray`, slot 0 is a uniform kind applied to all elements.
 
 ### Cons (List Node)
 
@@ -368,8 +375,8 @@ void scanObject(void* obj) {
         case Tag_Record: {
             Record* rec = (Record*)obj;
             for (int i = 0; i < hdr->size; i++) {
-                if (!(rec->unboxed & (1 << i))) {
-                    // Field is a pointer—trace it
+                if (fieldKind(rec->unboxed, i) == 0) {
+                    // Slot is a boxed HPointer—trace it.
                     trace(rec->values[i].hptr);
                 }
             }
@@ -377,13 +384,13 @@ void scanObject(void* obj) {
         }
         case Tag_ElmArray: {
             ElmArray* arr = (ElmArray*)obj;
-            if (!(hdr->unboxed & 1)) {
-                // Elements are boxed HPointers—trace them
+            if ((hdr->unboxed & 0x3) == 0) {
+                // Uniform kind is boxed—trace every element.
                 for (int i = 0; i < hdr->size; i++) {
                     trace(arr->values[i].hptr);
                 }
             }
-            // If unboxed bit 0 is set, elements are raw primitives—skip tracing
+            // Non-zero uniform kind ⇒ elements are raw primitives—skip tracing.
             break;
         }
         // ...

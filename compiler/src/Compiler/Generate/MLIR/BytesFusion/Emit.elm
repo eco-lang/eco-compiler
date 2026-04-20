@@ -1267,18 +1267,14 @@ emitApplyNested _ fnExpr argPlaceholders resultPlaceholder restOps state =
         allOperandTypes =
             fnResult.resultType :: actualArgTypes
 
-        -- Compute unboxed bitmap from actual arg types
+        -- 2-bit-per-slot unboxed bitmap from actual arg types.
         newargsUnboxedBitmap =
-            List.indexedMap
-                (\i ty ->
-                    if Types.isUnboxable ty then
-                        Bitwise.shiftLeftBy i 1
-
-                    else
-                        0
-                )
-                actualArgTypes
-                |> List.foldl Bitwise.or 0
+            List.indexedMap Tuple.pair actualArgTypes
+                |> List.foldl
+                    (\( i, ty ) acc ->
+                        Types.bitmapSetKind acc i (Types.mlirTypeToKind ty)
+                    )
+                    0
 
         papExtendAttrs =
             Dict.fromList
@@ -1466,14 +1462,17 @@ emitJustResultWithVar varName state =
                 |> Maybe.withDefault Types.ecoValue
     in
     if Types.isUnboxable varType then
-        -- Primitive types are stored unboxed in Just (matches type registry expectations)
+        -- Primitive types are stored unboxed in Just (matches type registry expectations).
+        -- 2-bit encoding: slot 0 kind derived from varType.
         let
             ( justVar, ctx1 ) =
                 Context.freshVar state.ctx
 
-            -- Use eco.construct.custom with constructor "Just", tag 0, size 1, unboxed_bitmap = 1
+            bitmap =
+                Types.bitmapSetKind 0 0 (Types.mlirTypeToKind varType)
+
             ( ctx2, justOp ) =
-                Ops.ecoConstructCustom ctx1 justVar 0 1 1 [ ( varName, varType ) ] (Just "Just")
+                Ops.ecoConstructCustom ctx1 justVar 0 1 bitmap [ ( varName, varType ) ] (Just "Just")
         in
         ( [ justOp ], justVar, ctx2 )
 
@@ -2056,13 +2055,9 @@ emitReadThenApply1 byteCount readOpName maybeEndian resultType fnExpr argPlaceho
         ( resVar, ctx2 ) =
             Context.freshVar fnResult.ctx
 
-        -- Compute unboxed bitmap for the decoded value
+        -- 2-bit-per-slot unboxed bitmap for the single decoded value.
         newargsUnboxedBitmap =
-            if Types.isUnboxable resultType then
-                1
-
-            else
-                0
+            Types.bitmapSetKind 0 0 (Types.mlirTypeToKind resultType)
 
         papExtendAttrs =
             Dict.fromList
@@ -2129,16 +2124,12 @@ emitTwoReadsThenApply2 read1 read2 fnExpr _ state =
             [ read1Type, read2Type ]
 
         newargsUnboxedBitmap =
-            List.indexedMap
-                (\i ty ->
-                    if Types.isUnboxable ty then
-                        Bitwise.shiftLeftBy i 1
-
-                    else
-                        0
-                )
-                argTypes
-                |> List.foldl Bitwise.or 0
+            List.indexedMap Tuple.pair argTypes
+                |> List.foldl
+                    (\( i, ty ) acc ->
+                        Types.bitmapSetKind acc i (Types.mlirTypeToKind ty)
+                    )
+                    0
 
         papExtendAttrs =
             Dict.fromList

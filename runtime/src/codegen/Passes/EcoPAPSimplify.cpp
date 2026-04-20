@@ -177,13 +177,16 @@ struct FusePapExtendChainPattern : public OpRewritePattern<PapExtendOp> {
         fusedNewargs.append(extendOp.getNewargs().begin(),
                            extendOp.getNewargs().end());
 
-        // Compute bitmap from SSA types (source-of-truth approach)
-        // Bit i is set if newarg[i] is NOT !eco.value (i.e., is unboxed primitive)
+        // Compute 2-bit-per-slot bitmap from SSA types (source-of-truth approach).
+        // Kind: 0=boxed (!eco.value), 1=Int (i64), 2=Float (f64), 3=Char (i16).
         uint64_t fusedBitmap = 0;
         for (size_t i = 0; i < fusedNewargs.size(); ++i) {
-            if (!isa<ValueType>(fusedNewargs[i].getType())) {
-                fusedBitmap |= (1ULL << i);
-            }
+            Type ty = fusedNewargs[i].getType();
+            uint64_t kind = 0;
+            if (ty.isInteger(64)) kind = 1;
+            else if (ty.isF64()) kind = 2;
+            else if (ty.isInteger(16)) kind = 3;
+            fusedBitmap |= (kind << (2 * i));
         }
 
         // Get result type from current extendOp

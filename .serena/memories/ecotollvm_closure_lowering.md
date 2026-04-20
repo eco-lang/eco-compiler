@@ -58,7 +58,7 @@ namespace layout {
 **Packed Field Encoding**:
 - Bits 0-5: `n_values` - number of currently captured values
 - Bits 6-11: `max_values` - arity (maximum values when fully saturated)
-- Bits 12+: `unboxed` - 52-bit bitmap indicating which captures are unboxed (raw Int/Float bits vs HPointer)
+- Bits 12-63: `unboxed` - 52-bit bitmap encoding a 2-bit primitive kind per slot (00=boxed HPointer, 01=Int, 10=Float, 11=Char). Up to 26 typed captures. Slot i's kind lives at bits [2i, 2i+1] of the bitmap (Updated 2026-04-20).
 
 ### Type Conversion
 

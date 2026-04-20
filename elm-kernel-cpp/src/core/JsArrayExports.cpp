@@ -94,9 +94,9 @@ HPtr Elm_Kernel_JsArray_unsafeGet(HPtr index_val, HPtr array) {
     ElmArray* arr = static_cast<ElmArray*>(ptr);
     Unboxable val = alloc::arrayGet(ptr, static_cast<uint32_t>(idx));
 
-    if (arr->header.unboxed) {
-        // Unboxed element: box it back to HPtr for the caller
-        return eco_alloc_int(val.i);
+    uint32_t kind = arr->header.unboxed & 0x3;
+    if (kind != 0) {
+        return HPtr::fromBits(Export::encode(alloc::boxElement(val, kind)));
     } else {
         return HPtr::fromBits(Export::encode(val.p));
     }
@@ -275,7 +275,7 @@ HPtr Elm_Kernel_JsArray_map(HPtr closure, HPtr array) {
     void* srcPtr = Export::toPtr(array_bits);
     ElmArray* src = static_cast<ElmArray*>(srcPtr);
     uint32_t len = src->length;
-    bool srcUnboxed = src->header.unboxed != 0;
+    uint32_t srcKind = src->header.unboxed & 0x3;
 
     HPointer arr = alloc::allocArray(len);
     auto& allocator = Allocator::instance();
@@ -284,10 +284,10 @@ HPtr Elm_Kernel_JsArray_map(HPtr closure, HPtr array) {
         // Re-resolve source after potential GC from callback
         srcPtr = Export::toPtr(array_bits);
         src = static_cast<ElmArray*>(srcPtr);
-        // For unboxed arrays, box the element before passing to callback
+        // For unboxed arrays, box the element using the array's kind.
         uint64_t elem;
-        if (srcUnboxed) {
-            elem = eco_alloc_int(src->elements[i].i).toBits();
+        if (srcKind != 0) {
+            elem = Export::encode(alloc::boxElement(src->elements[i], srcKind));
         } else {
             elem = Export::encode(src->elements[i].p);
         }
@@ -308,7 +308,7 @@ HPtr Elm_Kernel_JsArray_indexedMap(HPtr closure, HPtr offset_val, HPtr array) {
     void* srcPtr = Export::toPtr(array_bits);
     ElmArray* src = static_cast<ElmArray*>(srcPtr);
     uint32_t len = src->length;
-    bool srcUnboxed = src->header.unboxed != 0;
+    uint32_t srcKind = src->header.unboxed & 0x3;
 
     HPointer arr = alloc::allocArray(len);
     auto& allocator = Allocator::instance();
@@ -318,8 +318,8 @@ HPtr Elm_Kernel_JsArray_indexedMap(HPtr closure, HPtr offset_val, HPtr array) {
         srcPtr = Export::toPtr(array_bits);
         src = static_cast<ElmArray*>(srcPtr);
         uint64_t elem;
-        if (srcUnboxed) {
-            elem = eco_alloc_int(src->elements[i].i).toBits();
+        if (srcKind != 0) {
+            elem = Export::encode(alloc::boxElement(src->elements[i], srcKind));
         } else {
             elem = Export::encode(src->elements[i].p);
         }
@@ -338,7 +338,7 @@ HPtr Elm_Kernel_JsArray_foldl(HPtr closure, HPtr acc, HPtr array) {
     void* srcPtr = Export::toPtr(array_bits);
     ElmArray* src = static_cast<ElmArray*>(srcPtr);
     uint32_t len = src->length;
-    bool srcUnboxed = src->header.unboxed != 0;
+    uint32_t srcKind = src->header.unboxed & 0x3;
 
     uint64_t accumulator = acc.toBits();
     for (uint32_t i = 0; i < len; i++) {
@@ -346,8 +346,8 @@ HPtr Elm_Kernel_JsArray_foldl(HPtr closure, HPtr acc, HPtr array) {
         srcPtr = Export::toPtr(array_bits);
         src = static_cast<ElmArray*>(srcPtr);
         uint64_t elem;
-        if (srcUnboxed) {
-            elem = eco_alloc_int(src->elements[i].i).toBits();
+        if (srcKind != 0) {
+            elem = Export::encode(alloc::boxElement(src->elements[i], srcKind));
         } else {
             elem = Export::encode(src->elements[i].p);
         }
@@ -361,7 +361,7 @@ HPtr Elm_Kernel_JsArray_foldr(HPtr closure, HPtr acc, HPtr array) {
     void* srcPtr = Export::toPtr(array_bits);
     ElmArray* src = static_cast<ElmArray*>(srcPtr);
     uint32_t len = src->length;
-    bool srcUnboxed = src->header.unboxed != 0;
+    uint32_t srcKind = src->header.unboxed & 0x3;
 
     uint64_t accumulator = acc.toBits();
     for (uint32_t i = len; i > 0; i--) {
@@ -370,8 +370,8 @@ HPtr Elm_Kernel_JsArray_foldr(HPtr closure, HPtr acc, HPtr array) {
         srcPtr = Export::toPtr(array_bits);
         src = static_cast<ElmArray*>(srcPtr);
         uint64_t elem;
-        if (srcUnboxed) {
-            elem = eco_alloc_int(src->elements[idx].i).toBits();
+        if (srcKind != 0) {
+            elem = Export::encode(alloc::boxElement(src->elements[idx], srcKind));
         } else {
             elem = Export::encode(src->elements[idx].p);
         }

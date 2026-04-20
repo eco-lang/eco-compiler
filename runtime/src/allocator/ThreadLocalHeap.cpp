@@ -186,10 +186,8 @@ void* ThreadLocalHeap::allocateLargePinned(size_t size, Tag tag) {
     // then set pin LAST so it survives any prior writes. Color was set by
     // OldGenSpace::allocate based on GC phase; preserve it.
     u32 saved_color = hdr->color;
-    u32 saved_epoch = hdr->epoch;
     initHeaderForTag(hdr, tag, size);
     hdr->color = saved_color;
-    hdr->epoch = saved_epoch;
     hdr->pin = 1;
     return obj;
 }
@@ -201,10 +199,8 @@ void* ThreadLocalHeap::allocatePermanent(size_t size, Tag tag) {
     if (obj) {
         Header* hdr = getHeader(obj);
         u32 saved_color = hdr->color;
-        u32 saved_epoch = hdr->epoch;
         initHeaderForTag(hdr, tag, size);
         hdr->color = saved_color;
-        hdr->epoch = saved_epoch;
         return obj;
     }
 

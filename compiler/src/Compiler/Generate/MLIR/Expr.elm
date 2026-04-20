@@ -1018,20 +1018,15 @@ generateClosure ctx closureInfo body monoType =
         captureTypes =
             List.map (\( name, expr, _ ) -> ( name, Mono.typeOf expr )) closureInfo.captures
 
-        -- Compute unboxed_bitmap from capture types
-        -- Only i64 and f64 are unboxable; all other types are boxed (!eco.value)
+        -- Compute 2-bit-per-slot unboxed_bitmap from capture SSA types.
         unboxedBitmap : Int
         unboxedBitmap =
-            List.indexedMap
-                (\i ( _, mlirTy ) ->
-                    if Types.isUnboxable mlirTy then
-                        Bitwise.shiftLeftBy i 1
-
-                    else
-                        0
-                )
-                boxedCaptureVarsWithTypes
-                |> List.foldl Bitwise.or 0
+            List.indexedMap Tuple.pair boxedCaptureVarsWithTypes
+                |> List.foldl
+                    (\( i, ( _, mlirTy ) ) acc ->
+                        Types.bitmapSetKind acc i (Types.mlirTypeToKind mlirTy)
+                    )
+                    0
 
         -- Use currentLetSiblings only for mutually recursive let bindings.
         -- Do NOT fall back to varMappings; non-recursive closures must capture
@@ -1402,18 +1397,14 @@ generateGenericApply ctx func args _ _ =
         allOperandTypes =
             funcResult.resultType :: List.map Tuple.second argsForClosure
 
-        -- Compute bitmap: marks which newargs are unboxed primitives
+        -- 2-bit-per-slot bitmap: each slot's kind (0=boxed, 1=Int, 2=Float, 3=Char).
         newargsUnboxedBitmap =
-            List.indexedMap
-                (\i ( _, mlirTy ) ->
-                    if Types.isUnboxable mlirTy then
-                        Bitwise.shiftLeftBy i 1
-
-                    else
-                        0
-                )
-                argsForClosure
-                |> List.foldl Bitwise.or 0
+            List.indexedMap Tuple.pair argsForClosure
+                |> List.foldl
+                    (\( i, ( _, mlirTy ) ) acc ->
+                        Types.bitmapSetKind acc i (Types.mlirTypeToKind mlirTy)
+                    )
+                    0
 
         ( resVar, ctx3 ) =
             Ctx.freshVar ctx2
@@ -1501,18 +1492,14 @@ generateUnknownSegmentationCall ctx func args _ _ =
         allOperandTypes =
             funcResult.resultType :: List.map Tuple.second argsForClosure
 
-        -- Compute bitmap: marks which newargs are unboxed primitives
+        -- 2-bit-per-slot bitmap: each slot's kind (0=boxed, 1=Int, 2=Float, 3=Char).
         newargsUnboxedBitmap =
-            List.indexedMap
-                (\i ( _, mlirTy ) ->
-                    if Types.isUnboxable mlirTy then
-                        Bitwise.shiftLeftBy i 1
-
-                    else
-                        0
-                )
-                argsForClosure
-                |> List.foldl Bitwise.or 0
+            List.indexedMap Tuple.pair argsForClosure
+                |> List.foldl
+                    (\( i, ( _, mlirTy ) ) acc ->
+                        Types.bitmapSetKind acc i (Types.mlirTypeToKind mlirTy)
+                    )
+                    0
 
         ( resVar, ctx3 ) =
             Ctx.freshVar ctx2
@@ -1611,18 +1598,14 @@ applyByStages ctx funcVar funcMlirType sourceRemaining remainingStageArities sat
                     rest =
                         List.drop batchSize args
 
-                    -- Compute bitmap for this batch only
+                    -- 2-bit-per-slot bitmap for this batch.
                     newargsUnboxedBitmap =
-                        List.indexedMap
-                            (\i ( _, mlirTy ) ->
-                                if Types.isUnboxable mlirTy then
-                                    Bitwise.shiftLeftBy i 1
-
-                                else
-                                    0
-                            )
-                            batch
-                            |> List.foldl Bitwise.or 0
+                        List.indexedMap Tuple.pair batch
+                            |> List.foldl
+                                (\( i, ( _, mlirTy ) ) acc ->
+                                    Types.bitmapSetKind acc i (Types.mlirTypeToKind mlirTy)
+                                )
+                                0
 
                     ( resVar, ctx1 ) =
                         Ctx.freshVar ctx
@@ -1793,16 +1776,12 @@ generateFlattenedPartialApplication ctx func args resultType =
             funcResult.resultType :: List.map Tuple.second boxedArgsWithTypes
 
         newargsUnboxedBitmap =
-            List.indexedMap
-                (\i ( _, mlirTy ) ->
-                    if Types.isUnboxable mlirTy then
-                        Bitwise.shiftLeftBy i 1
-
-                    else
-                        0
-                )
-                boxedArgsWithTypes
-                |> List.foldl Bitwise.or 0
+            List.indexedMap Tuple.pair boxedArgsWithTypes
+                |> List.foldl
+                    (\( i, ( _, mlirTy ) ) acc ->
+                        Types.bitmapSetKind acc i (Types.mlirTypeToKind mlirTy)
+                    )
+                    0
 
         -- CGEN_052: remaining_arity is the SOURCE PAP's remaining, not the result's
         remainingArity =
@@ -3859,16 +3838,12 @@ generateLet ctx def body =
                     Ctx.freshVar ctx1
 
                 unboxedBitmap =
-                    List.indexedMap
-                        (\i mlirTy ->
-                            if Types.isUnboxable mlirTy then
-                                Bitwise.shiftLeftBy i 1
-
-                            else
-                                0
-                        )
-                        captureMlirTypes
-                        |> List.foldl Bitwise.or 0
+                    List.indexedMap Tuple.pair captureMlirTypes
+                        |> List.foldl
+                            (\( i, mlirTy ) acc ->
+                                Types.bitmapSetKind acc i (Types.mlirTypeToKind mlirTy)
+                            )
+                            0
 
                 operandTypesAttr =
                     if List.isEmpty captureMlirTypes then

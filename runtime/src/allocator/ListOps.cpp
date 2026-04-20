@@ -19,9 +19,10 @@ HPointer head(HPointer list) {
 
     Cons* c = static_cast<Cons*>(cell);
     Header* hdr = getHeader(cell);
-    bool is_boxed = !(hdr->unboxed & 1);
+    u8 head_kind = static_cast<u8>(tupleFieldKind(hdr->unboxed, 0));
+        bool is_boxed = (head_kind == 0);
 
-    return alloc::just(c->head, is_boxed);
+    return alloc::justKind(c->head, head_kind);
 }
 
 HPointer tail(HPointer list) {
@@ -52,8 +53,9 @@ HPointer getAt(i64 index, HPointer list) {
 
         if (i == index) {
             Header* hdr = getHeader(cell);
-            bool is_boxed = !(hdr->unboxed & 1);
-            return alloc::just(c->head, is_boxed);
+            u8 head_kind = static_cast<u8>(tupleFieldKind(hdr->unboxed, 0));
+        bool is_boxed = (head_kind == 0);
+            return alloc::justKind(c->head, head_kind);
         }
 
         ++i;
@@ -71,7 +73,7 @@ HPointer last(HPointer list) {
     auto& allocator = Allocator::instance();
     HPointer current = list;
     Unboxable lastVal;
-    bool lastBoxed = false;
+    u8 lastKind = 0;
 
     while (!alloc::isNil(current)) {
         void* cell = allocator.resolve(current);
@@ -81,11 +83,11 @@ HPointer last(HPointer list) {
         Header* hdr = getHeader(cell);
 
         lastVal = c->head;
-        lastBoxed = !(hdr->unboxed & 1);
+        lastKind = static_cast<u8>(tupleFieldKind(hdr->unboxed, 0));
         current = c->tail;
     }
 
-    return alloc::just(lastVal, lastBoxed);
+    return alloc::justKind(lastVal, lastKind);
 }
 
 HPointer map(MapperWithBoxed mapper, HPointer list) {
@@ -103,7 +105,8 @@ HPointer map(MapperWithBoxed mapper, HPointer list) {
 
         Cons* c = static_cast<Cons*>(cell);
         Header* hdr = getHeader(cell);
-        bool is_boxed = !(hdr->unboxed & 1);
+        u8 head_kind = static_cast<u8>(tupleFieldKind(hdr->unboxed, 0));
+        bool is_boxed = (head_kind == 0);
 
         // Save head and tail BEFORE mapper callback which can trigger GC.
         Unboxable head = c->head;
@@ -132,7 +135,8 @@ HPointer indexedMap(IndexedMapper mapper, HPointer list) {
 
         Cons* c = static_cast<Cons*>(cell);
         Header* hdr = getHeader(cell);
-        bool is_boxed = !(hdr->unboxed & 1);
+        u8 head_kind = static_cast<u8>(tupleFieldKind(hdr->unboxed, 0));
+        bool is_boxed = (head_kind == 0);
 
         // Save head and tail BEFORE mapper callback which can trigger GC.
         Unboxable head = c->head;
@@ -161,7 +165,8 @@ HPointer filter(Predicate pred, HPointer list) {
 
         Cons* c = static_cast<Cons*>(cell);
         Header* hdr = getHeader(cell);
-        bool is_boxed = !(hdr->unboxed & 1);
+        u8 head_kind = static_cast<u8>(tupleFieldKind(hdr->unboxed, 0));
+        bool is_boxed = (head_kind == 0);
 
         // Save head and tail BEFORE pred callback which can trigger GC.
         Unboxable head = c->head;
@@ -191,7 +196,8 @@ HPointer filterMap(FilterMapper mapper, HPointer list) {
 
         Cons* c = static_cast<Cons*>(cell);
         Header* hdr = getHeader(cell);
-        bool is_boxed = !(hdr->unboxed & 1);
+        u8 head_kind = static_cast<u8>(tupleFieldKind(hdr->unboxed, 0));
+        bool is_boxed = (head_kind == 0);
 
         // Save head and tail BEFORE mapper callback which can trigger GC.
         Unboxable head = c->head;
@@ -205,8 +211,8 @@ HPointer filterMap(FilterMapper mapper, HPointer list) {
             if (justCell) {
                 Custom* just = static_cast<Custom*>(justCell);
                 if (just->header.tag == Tag_Custom && just->ctor == 0) {
-                    // It's Just - extract the value
-                    bool val_boxed = !(just->unboxed & 1);
+                    // It's Just - extract the value; slot 0 kind 0 means boxed.
+                    bool val_boxed = fieldKind(just->unboxed, 0) == 0;
                     results.emplace_back(just->values[0], val_boxed);
                 }
             }
@@ -234,7 +240,8 @@ HPointer append(HPointer a, HPointer b) {
 
         Cons* c = static_cast<Cons*>(cell);
         Header* hdr = getHeader(cell);
-        bool is_boxed = !(hdr->unboxed & 1);
+        u8 head_kind = static_cast<u8>(tupleFieldKind(hdr->unboxed, 0));
+        bool is_boxed = (head_kind == 0);
 
         elements.emplace_back(c->head, is_boxed);
         current = c->tail;
@@ -266,7 +273,8 @@ HPointer concat(HPointer listOfLists) {
 
             Cons* innerCons = static_cast<Cons*>(innerCell);
             Header* hdr = getHeader(innerCell);
-            bool is_boxed = !(hdr->unboxed & 1);
+            u8 head_kind = static_cast<u8>(tupleFieldKind(hdr->unboxed, 0));
+        bool is_boxed = (head_kind == 0);
 
             allElements.emplace_back(innerCons->head, is_boxed);
             innerList = innerCons->tail;
@@ -293,7 +301,8 @@ HPointer intersperse(Unboxable sep, bool sep_is_boxed, HPointer list) {
 
         Cons* c = static_cast<Cons*>(cell);
         Header* hdr = getHeader(cell);
-        bool is_boxed = !(hdr->unboxed & 1);
+        u8 head_kind = static_cast<u8>(tupleFieldKind(hdr->unboxed, 0));
+        bool is_boxed = (head_kind == 0);
 
         elements.emplace_back(c->head, is_boxed);
         current = c->tail;
@@ -330,7 +339,8 @@ HPointer take(i64 n, HPointer list) {
 
         Cons* c = static_cast<Cons*>(cell);
         Header* hdr = getHeader(cell);
-        bool is_boxed = !(hdr->unboxed & 1);
+        u8 head_kind = static_cast<u8>(tupleFieldKind(hdr->unboxed, 0));
+        bool is_boxed = (head_kind == 0);
 
         elements.emplace_back(c->head, is_boxed);
         ++count;
@@ -378,7 +388,8 @@ HPointer partition(Predicate pred, HPointer list) {
 
         Cons* c = static_cast<Cons*>(cell);
         Header* hdr = getHeader(cell);
-        bool is_boxed = !(hdr->unboxed & 1);
+        u8 head_kind = static_cast<u8>(tupleFieldKind(hdr->unboxed, 0));
+        bool is_boxed = (head_kind == 0);
 
         // Save head and tail BEFORE pred callback which can trigger GC.
         Unboxable head = c->head;
@@ -413,7 +424,8 @@ Unboxable foldl(Folder fold, Unboxable acc, HPointer list) {
 
         Cons* c = static_cast<Cons*>(cell);
         Header* hdr = getHeader(cell);
-        bool is_boxed = !(hdr->unboxed & 1);
+        u8 head_kind = static_cast<u8>(tupleFieldKind(hdr->unboxed, 0));
+        bool is_boxed = (head_kind == 0);
 
         // Save head and tail BEFORE fold callback which can trigger GC.
         Unboxable head = c->head;
@@ -679,8 +691,8 @@ HPointer unzip(HPointer listOfPairs) {
             Tuple2* tuple = static_cast<Tuple2*>(tupleObj);
             Header* hdr = getHeader(tupleObj);
 
-            bool aBoxed = !(hdr->unboxed & 1);
-            bool bBoxed = !(hdr->unboxed & 2);
+            bool aBoxed = tupleFieldKind(hdr->unboxed, 0) == 0;
+            bool bBoxed = tupleFieldKind(hdr->unboxed, 1) == 0;
 
             firsts.emplace_back(tuple->a, aBoxed);
             seconds.emplace_back(tuple->b, bBoxed);

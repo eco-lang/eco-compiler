@@ -288,23 +288,46 @@ LogicalResult CustomConstructOp::verify() {
            << size << ")";
   }
 
-  // Verify unboxed_bitmap only for the actual fields (first `size` entries).
+  // Custom's 48-bit bitmap supports at most 24 typed slots under 2-bit encoding.
+  if (size > 24) {
+    return emitOpError("size (")
+           << size
+           << ") exceeds Custom's 24-slot limit under 2-bit kind encoding";
+  }
+
+  // Verify the 2-bit kind per slot matches the field SSA types.
   int64_t unboxedBits = getUnboxedBitmap();
   auto fields = getFields();
   for (int64_t i = 0; i < size; i++) {
-    bool bitmapSaysUnboxed = (unboxedBits & (1LL << i)) != 0;
+    const uint64_t shift = 2ULL * static_cast<uint64_t>(i);
+    const uint64_t kind = (static_cast<uint64_t>(unboxedBits) >> shift) & 0x3ULL;
     Type fieldType = fields[i].getType();
 
-    // Check if field type is actually unboxed (primitive type).
-    bool isUnboxedType = fieldType.isInteger(64) ||  // i64 int
-                         fieldType.isF64() ||         // f64 float
-                         fieldType.isInteger(16) ||   // i16 char
-                         fieldType.isInteger(1);      // i1 bool
-
-    if (bitmapSaysUnboxed && !isUnboxedType) {
-      return emitOpError("unboxed_bitmap bit ")
-             << i << " is set but field has boxed type "
-             << fieldType << "; only primitive types can be unboxed";
+    switch (kind) {
+      case 0:  // Boxed HPointer (!eco.value)
+        if (!isa<eco::ValueType>(fieldType) && !fieldType.isInteger(1)) {
+          return emitOpError("field ") << i
+                 << " has kind=boxed but non-boxed SSA type " << fieldType;
+        }
+        break;
+      case 1:  // Unboxed Int
+        if (!fieldType.isInteger(64)) {
+          return emitOpError("field ") << i
+                 << " has kind=Int but SSA type " << fieldType;
+        }
+        break;
+      case 2:  // Unboxed Float
+        if (!fieldType.isF64()) {
+          return emitOpError("field ") << i
+                 << " has kind=Float but SSA type " << fieldType;
+        }
+        break;
+      case 3:  // Unboxed Char
+        if (!fieldType.isInteger(16)) {
+          return emitOpError("field ") << i
+                 << " has kind=Char but SSA type " << fieldType;
+        }
+        break;
     }
   }
 
@@ -345,7 +368,7 @@ LogicalResult PapCreateOp::verify() {
            << ") exceeds 6-bit max_values limit (63)";
   }
 
-  // Verify unboxed_bitmap constraints.
+  // Verify unboxed_bitmap constraints (2-bit-per-slot kinds).
   uint64_t bitmap = getUnboxedBitmap();
 
   // Bitmap must fit in 52 bits (runtime Closure struct constraint).
@@ -353,26 +376,57 @@ LogicalResult PapCreateOp::verify() {
     return emitOpError("unboxed_bitmap exceeds 52-bit capacity");
   }
 
-  // No bits should be set beyond num_captured.
+  // At most 26 typed captures fit in 52 bits (2 bits each).
+  if (numCaptured > 26) {
+    return emitOpError("num_captured (")
+           << numCaptured
+           << ") exceeds 26-slot limit under 2-bit kind encoding";
+  }
+
+  // No bits should be set beyond num_captured's slot range (2 bits/slot).
   if (numCaptured > 0) {
-    uint64_t validMask = (1ULL << numCaptured) - 1;
-    if (bitmap & ~validMask) {
-      return emitOpError("unboxed_bitmap has bits set beyond num_captured");
+    const unsigned usedBits = 2 * static_cast<unsigned>(numCaptured);
+    if (usedBits < 64) {
+      const uint64_t validMask = (1ULL << usedBits) - 1;
+      if (bitmap & ~validMask) {
+        return emitOpError("unboxed_bitmap has bits set beyond num_captured");
+      }
     }
   } else if (bitmap != 0) {
     return emitOpError("unboxed_bitmap must be 0 when num_captured is 0");
   }
 
-  // Verify bitmap matches operand types.
+  // Verify per-slot kind matches operand SSA type.
   auto captured = getCaptured();
   for (size_t i = 0; i < captured.size(); ++i) {
-    bool isBitSet = (bitmap >> i) & 1;
-    bool isUnboxedType = !isa<eco::ValueType>(captured[i].getType());
-    if (isBitSet != isUnboxedType) {
-      return emitOpError("unboxed_bitmap bit ")
-             << i << " doesn't match operand type: bit is "
-             << (isBitSet ? "set" : "unset") << " but operand type is "
-             << captured[i].getType();
+    const uint64_t shift = 2ULL * i;
+    const uint64_t kind = (bitmap >> shift) & 0x3ULL;
+    Type ty = captured[i].getType();
+    switch (kind) {
+      case 0:
+        if (!isa<eco::ValueType>(ty)) {
+          return emitOpError("capture ") << i
+                 << " has kind=boxed but non-boxed SSA type " << ty;
+        }
+        break;
+      case 1:
+        if (!ty.isInteger(64)) {
+          return emitOpError("capture ") << i
+                 << " has kind=Int but SSA type " << ty;
+        }
+        break;
+      case 2:
+        if (!ty.isF64()) {
+          return emitOpError("capture ") << i
+                 << " has kind=Float but SSA type " << ty;
+        }
+        break;
+      case 3:
+        if (!ty.isInteger(16)) {
+          return emitOpError("capture ") << i
+                 << " has kind=Char but SSA type " << ty;
+        }
+        break;
     }
   }
 
@@ -405,25 +459,56 @@ LogicalResult PapExtendOp::verify() {
     return emitOpError("newargs_unboxed_bitmap exceeds 52-bit capacity");
   }
 
-  // No bits should be set beyond newargs size.
+  // At most 26 typed newargs fit in 52 bits (2 bits each).
+  if (realNewargsCount > 26) {
+    return emitOpError("newargs count (")
+           << realNewargsCount
+           << ") exceeds 26-slot limit under 2-bit kind encoding";
+  }
+
+  // No bits should be set beyond newargs size's slot range.
   if (realNewargsCount > 0) {
-    uint64_t validMask = (1ULL << realNewargsCount) - 1;
-    if (bitmap & ~validMask) {
-      return emitOpError("newargs_unboxed_bitmap has bits set beyond newargs count");
+    const unsigned usedBits = 2 * static_cast<unsigned>(realNewargsCount);
+    if (usedBits < 64) {
+      const uint64_t validMask = (1ULL << usedBits) - 1;
+      if (bitmap & ~validMask) {
+        return emitOpError("newargs_unboxed_bitmap has bits set beyond newargs count");
+      }
     }
   } else if (bitmap != 0) {
     return emitOpError("newargs_unboxed_bitmap must be 0 when there are no newargs");
   }
 
-  // Verify bitmap matches operand types (only real newargs, not roots).
+  // Verify per-slot kind matches operand SSA type (only real newargs, not roots).
   for (size_t i = 0; i < realNewargsCount; ++i) {
-    bool isBitSet = (bitmap >> i) & 1;
-    bool isUnboxedType = !isa<eco::ValueType>(allNewargs[i].getType());
-    if (isBitSet != isUnboxedType) {
-      return emitOpError("newargs_unboxed_bitmap bit ")
-             << i << " doesn't match operand type: bit is "
-             << (isBitSet ? "set" : "unset") << " but operand type is "
-             << allNewargs[i].getType();
+    const uint64_t shift = 2ULL * i;
+    const uint64_t kind = (bitmap >> shift) & 0x3ULL;
+    Type ty = allNewargs[i].getType();
+    switch (kind) {
+      case 0:
+        if (!isa<eco::ValueType>(ty)) {
+          return emitOpError("newarg ") << i
+                 << " has kind=boxed but non-boxed SSA type " << ty;
+        }
+        break;
+      case 1:
+        if (!ty.isInteger(64)) {
+          return emitOpError("newarg ") << i
+                 << " has kind=Int but SSA type " << ty;
+        }
+        break;
+      case 2:
+        if (!ty.isF64()) {
+          return emitOpError("newarg ") << i
+                 << " has kind=Float but SSA type " << ty;
+        }
+        break;
+      case 3:
+        if (!ty.isInteger(16)) {
+          return emitOpError("newarg ") << i
+                 << " has kind=Char but SSA type " << ty;
+        }
+        break;
     }
   }
 

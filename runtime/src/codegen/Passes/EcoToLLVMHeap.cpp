@@ -308,8 +308,9 @@ struct ListConstructOpLowering : public OpConversionPattern<ListConstructOp> {
 
         Value headVal = adaptor.getHead();
         Value tailVal = adaptor.getTail();
-        uint32_t headUnboxed = op.getHeadUnboxed() ? 1 : 0;
-        auto headUnboxedVal = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, headUnboxed);
+        // Pass the 2-bit head kind (0=boxed, 1=Int, 2=Float, 3=Char) directly.
+        uint32_t headKind = static_cast<uint32_t>(op.getHeadKind()) & 0x3;
+        auto headUnboxedVal = rewriter.create<LLVM::ConstantOp>(loc, i32Ty, headKind);
 
         // eco_alloc_cons expects i64 for head, hptr for tail
         headVal = heapStoreValueToI64(rewriter, loc, headVal);
@@ -1178,8 +1179,8 @@ static Value emitInitAtPtr(
     if (auto listOp = dyn_cast<ListConstructOp>(op)) {
         Value head = widenToI64ForInit(builder, loc, listOp.getHead());
         Value tail = castToHPtr(builder, loc, listOp.getTail());
-        uint32_t headUnboxed = listOp.getHeadUnboxed() ? 1 : 0;
-        auto headUnboxedVal = builder.create<LLVM::ConstantOp>(loc, i32Ty, headUnboxed);
+        uint32_t headKind = static_cast<uint32_t>(listOp.getHeadKind()) & 0x3;
+        auto headUnboxedVal = builder.create<LLVM::ConstantOp>(loc, i32Ty, headKind);
         return builder.create<LLVM::CallOp>(
             loc, runtime.getOrCreateInitConsAt(builder),
             ValueRange{objPtr, head, tail, headUnboxedVal}).getResult();

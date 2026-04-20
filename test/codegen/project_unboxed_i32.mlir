@@ -12,10 +12,10 @@ module {
 
     // Construct with unboxed i16 fields
     // bitmap bit 0 and 1 set for i16 fields
-    %ctor = eco.construct.custom(%char_A, %char_z) {tag = 0 : i64, size = 2 : i64, unboxed_bitmap = 3 : i64} : (i16, i16) -> !eco.value
+    %ctor = eco.construct.custom(%char_A, %char_z) {tag = 0 : i64, size = 2 : i64, unboxed_bitmap = 15 : i64} : (i16, i16) -> !eco.value
 
     eco.dbg %ctor : !eco.value
-    // CHECK: [eco.dbg] Ctor0 65 122
+    // CHECK: [eco.dbg] Ctor0 'A' 'z'
 
     // Project char fields
     %p0 = eco.project.custom %ctor[0] : !eco.value -> i16
@@ -27,14 +27,14 @@ module {
     // CHECK: [eco.dbg] 'z'
 
     // Test with BMP Unicode codepoint
-    %ctor2 = eco.construct.custom(%char_emoji) {tag = 1 : i64, size = 1 : i64, unboxed_bitmap = 1 : i64} : (i16) -> !eco.value
+    %ctor2 = eco.construct.custom(%char_emoji) {tag = 1 : i64, size = 1 : i64, unboxed_bitmap = 3 : i64} : (i16) -> !eco.value
     %p2 = eco.project.custom %ctor2[0] : !eco.value -> i16
     eco.dbg %p2 : i16
     // CHECK: [eco.dbg] '\u263A'
 
     // Mix boxed eco.value and unboxed i16
     %boxed = eco.box %char_A : i16 -> !eco.value
-    %ctor3 = eco.construct.custom(%boxed, %char_z) {tag = 2 : i64, size = 2 : i64, unboxed_bitmap = 2 : i64} : (!eco.value, i16) -> !eco.value
+    %ctor3 = eco.construct.custom(%boxed, %char_z) {tag = 2 : i64, size = 2 : i64, unboxed_bitmap = 12 : i64} : (!eco.value, i16) -> !eco.value
 
     %p3_boxed = eco.project.custom %ctor3[0] : !eco.value -> !eco.value
     eco.dbg %p3_boxed : !eco.value

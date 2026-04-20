@@ -16,17 +16,17 @@ REP_LLVM_001;CrossPhase;LLVM;enforced;At LLVM IR level every SSA value whose sou
 
 REP_HEAP_001;Runtime_Heap;Representation;enforced;Heap object field representation is determined solely by layout metadata (RecordLayout, TupleLayout, CtorLayout) produced during monomorphization and is independent of ABI and SSA operand representation;MONO_006|MONO_013|XPHASE_001
 
-REP_HEAP_002;Runtime_Heap;Representation;enforced;Heap objects may contain unboxed fields when and only when the corresponding layout bitmap marks the slot as unboxed; GC and debug logic must rely exclusively on the unboxed bitmap in object headers or on constant bits in HPointer values to distinguish pointers from unboxed values;HEAP_019|HEAP_010|HEAP_014
+REP_HEAP_002;Runtime_Heap;Representation;enforced;Each unboxed slot carries a 2-bit kind (00=boxed HPointer, 01=Int, 10=Float, 11=Char) at bits [2i, 2i+1] of the container bitmap; GC and debug logic must rely exclusively on this 2-bit kind or on constant bits in HPointer values to distinguish pointers from unboxed values (Updated 2026-04-20: bitmap now encodes 2-bit primitive kinds per slot);HEAP_019|HEAP_010|HEAP_014
 
-REP_BOUNDARY_001;CrossPhase;Boundaries;enforced;Projection from heap objects into SSA produces immediate MLIR operand values exactly when the heap layout bitmap indicates an unboxed field; otherwise projection yields !eco.value;CGEN_005|HEAP_019
+REP_BOUNDARY_001;CrossPhase;Boundaries;enforced;Projection from heap objects into SSA produces immediate MLIR operand values whose MLIR type matches the slot's 2-bit kind (01→i64, 10→f64, 11→i16); kind=00 yields !eco.value (Updated 2026-04-20: bitmap now encodes 2-bit primitive kinds per slot);CGEN_005|HEAP_019
 
-REP_BOUNDARY_002;CrossPhase;Boundaries;enforced;Construction of heap objects from SSA values sets unboxed bitmaps based solely on SSA operand MLIR types (i64, f64, i16), and the runtime layout must match the bitmap exactly;CGEN_026|CGEN_027|XPHASE_001
+REP_BOUNDARY_002;CrossPhase;Boundaries;enforced;Construction of heap objects from SSA values sets per-slot 2-bit kinds based solely on SSA operand MLIR types (i64→01, f64→10, i16→11, else→00), and the runtime layout must match the bitmap exactly (Updated 2026-04-20: bitmap now encodes 2-bit primitive kinds per slot);CGEN_026|CGEN_027|XPHASE_001
 
 REP_BOUNDARY_003;CrossPhase;Boundaries;tested;For every monomorphized specialization and every eco.project.* op that reads a heap field (including list_head, tuple, record, and custom projections), the MLIR result type must be exactly the SSA type implied by the projected field’s MonoType: MInt→i64, MFloat→f64, MChar→i16, and all other types→!eco.value; in particular, eco.project.list_head on an MList elemType yields an immediate i64/f64/i16 result iff the element type is Int/Float/Char respectively, and !eco.value otherwise.;TestLogic.ProjectionHeapLayoutConsistency
 
-REP_CLOSURE_001;CrossPhase;Closures;enforced;Closure objects capture values using SSA representation rules: only immediate operands are stored in unboxed fields and all other values (including Bool) are stored as !eco.value; closure capture layout and unboxed bitmaps must exactly match captured operand MLIR types after this normalization;CGEN_003|CGEN_012|CGEN_049|HEAP_010
+REP_CLOSURE_001;CrossPhase;Closures;enforced;Closure objects capture values using SSA representation rules: immediate operands are stored with a 2-bit kind (01=Int, 10=Float, 11=Char), Bool and all other values are stored as !eco.value (kind 00); at most 26 typed captures fit in the 52-bit bitmap (Updated 2026-04-20: bitmap now encodes 2-bit primitive kinds per slot; max 26 typed slots);CGEN_003|CGEN_012|CGEN_049|HEAP_010
 
-REP_CLOSURE_002;CrossPhase;Closures;enforced;Closure application preserves captured value representation: captured unboxed fields remain unboxed across partial application extension and captured boxed values remain !eco.value, with bitmap merging performed by the runtime;CGEN_003|CGEN_034|CGEN_049
+REP_CLOSURE_002;CrossPhase;Closures;enforced;Closure application preserves captured value representation: 2-bit slot kinds are preserved across partial application extension; eco_pap_extend merges old and new bitmaps with a 2*old_n_values shift (Updated 2026-04-20: merge uses 2-bit-per-slot shift);CGEN_003|CGEN_034|CGEN_049
 
 
 CGEN_CLOSURE_003;Mono+MLIR;Closures;enforced;For every closure lambda FV(body) is a subset of params union captures union siblingMappings keys: all free variables in the body must be either parameters or explicitly captured or mutually-recursive siblings. Prevents missing captures and cross-function SSA leakage into lambda bodies;Compiler.Monomorphize.Closure|Compiler.Generate.MLIR.Lambdas|CheckEcoClosureCaptures.cpp
@@ -145,7 +145,7 @@ MONO_004;Monomorphization;Closures;enforced;Every MonoNode whose MonoType is a f
 
 MONO_005;Monomorphization;Specialization;enforced;Each specialization identified by Global plus MonoType plus optional LambdaId has a unique SpecId recorded in SpecializationRegistry every MonoVarGlobal that mentions that SpecId refers to exactly one MonoNode implementing that specialization and there are no missing or orphan entries in the registry for any used instantiation;Compiler.AST.Monomorphized
 
-MONO_006;Monomorphization;Layouts;documented;RecordLayout and TupleLayout store fieldCount indices and unboxedBitmap so field order indices and unboxing decisions for records and tuples are completely determined by these layouts;Compiler.AST.Monomorphized
+MONO_006;Monomorphization;Layouts;documented;RecordLayout and TupleLayout store fieldCount indices and a 2-bit-per-slot unboxedBitmap so field order indices and per-slot primitive kinds (00=boxed, 01=Int, 10=Float, 11=Char) for records and tuples are completely determined by these layouts (Updated 2026-04-20: bitmap now encodes 2-bit primitive kinds per slot);Compiler.AST.Monomorphized
 
 MONO_007;Monomorphization;Access;enforced;Record field access computes fieldIndex and isUnboxed from the record MonoType layout so MonoRecordAccess and MonoRecordUpdate always use indices and unboxing consistent with RecordLayout;Compiler.Generate.Monomorphize
 
@@ -159,9 +159,9 @@ MONO_011;Monomorphization;Graph;documented;MonoGraph is closed and hygienic ever
 
 MONO_012;Monomorphization;Closures;documented;For every function or closure node the function MonoType flattened arity (computed by recursively peeling nested MFunction layers e.g. MFunction [a] (MFunction [b] c) has flattened arity 2) is at least as large as the parameter list length and all call sites supply arguments not exceeding that flattened arity so full and partial applications are always well formed and closures returning functions (nested lambdas) are valid;Compiler.Generate.Monomorphize
 
-MONO_013;Monomorphization;Layouts;documented;For each custom type every constructor has a CtorLayout whose field count ordering and unboxedBitmap match the constructor's fields and all construction and pattern matching nodes that use that constructor are consistent with its CtorLayout;Compiler.AST.Monomorphized
+MONO_013;Monomorphization;Layouts;documented;For each custom type every constructor has a CtorLayout whose field count ordering and 2-bit-per-slot unboxedBitmap match the constructor's fields; all construction and pattern matching nodes that use that constructor are consistent with its CtorLayout (Updated 2026-04-20: bitmap now encodes 2-bit primitive kinds per slot; Custom supports up to 24 typed slots);Compiler.AST.Monomorphized
 
-MONO_014;Monomorphization;Layouts;documented;Structurally equivalent record and tuple types share RecordLayout or TupleLayout identifiers or at least have layouts with identical indices and unboxedBitmap so layout metadata is canonical and does not spuriously duplicate equivalent layouts;Compiler.AST.Monomorphized
+MONO_014;Monomorphization;Layouts;documented;Structurally equivalent record and tuple types share RecordLayout or TupleLayout identifiers or at least have layouts with identical indices and 2-bit-per-slot unboxedBitmap so layout metadata is canonical and does not spuriously duplicate equivalent layouts (Updated 2026-04-20: bitmap now encodes 2-bit primitive kinds per slot);Compiler.AST.Monomorphized
 
 MONO_015;Monomorphization;Accessors;enforced;When an accessor like .name with canonical type { ext | name : T } -> T is passed as a first-class function argument to a call site the accessor extension variable ext must be unified with the full record type inferred from other arguments at that call site so that specialization receives the complete record layout not just the explicitly named fields;Compiler.Generate.Monomorphize.Specialize|Compiler.Generate.Monomorphize.TypeSubst
 
@@ -222,7 +222,7 @@ CGEN_003;MLIR_Codegen;Closures;enforced;Closure partial application and applicat
 
 CGEN_004;MLIR_Codegen;Destruct;enforced;generateDestruct and generateMonoPath always use the destructor MonoType to determine the path target MLIR type and never use the body result type so destruct paths yield their natural type and do not spuriously unbox;Compiler.Generate.MLIRMono
 
-CGEN_005;MLIR_Codegen;Projection;enforced;generateMonoPath projects heap fields into SSA operands: if the heap layout bitmap marks the field unboxed, the result is an immediate SSA operand; otherwise the result is !eco.value;Compiler.Generate.MLIRMono
+CGEN_005;MLIR_Codegen;Projection;enforced;generateMonoPath projects heap fields into SSA operands: when the 2-bit slot kind in the heap layout is non-zero the result is an immediate SSA operand of the matching primitive type (i64/f64/i16); kind=00 yields !eco.value (Updated 2026-04-20: bitmap now encodes 2-bit primitive kinds per slot);Compiler.Generate.MLIRMono
 
 CGEN_006;MLIR_Codegen;Let;enforced;generateLet binds let names directly to the SSA value and MLIR type of the defining expression without wrapping in eco.construct so variable bindings preserve original boxed or unboxed representation;Compiler.Generate.MLIRMono
 
@@ -252,7 +252,7 @@ CGEN_018;MLIR_Codegen;Construction;enforced;Records are constructed with eco.con
 
 CGEN_019;MLIR_Codegen;Constants;enforced;Well known singleton values Unit True False Nil Nothing EmptyString and EmptyRec are always created via eco.constant and never via eco.construct or allocation;Compiler.Generate.MLIR.Ops and Compiler.Generate.MLIR.Expr
 
-CGEN_020;MLIR_Codegen;Construction;enforced;eco.construct.custom is used only for user defined custom ADTs and its tag size and unboxed_bitmap attributes and operand count match the CtorLayout selected from MonoGraph.ctorLayouts;Compiler.Generate.MLIR.Functions and Compiler.Generate.MLIR.Expr and Compiler.Generate.Monomorphize
+CGEN_020;MLIR_Codegen;Construction;enforced;eco.construct.custom is used only for user defined custom ADTs and its tag size and 2-bit-per-slot unboxed_bitmap attributes and operand count match the CtorLayout selected from MonoGraph.ctorLayouts (Updated 2026-04-20: bitmap now encodes 2-bit primitive kinds per slot; size <= 24);Compiler.Generate.MLIR.Functions and Compiler.Generate.MLIR.Expr and Compiler.Generate.Monomorphize
 
 CGEN_021;MLIR_Codegen;Projection;enforced;List destructuring uses eco.project.list_head and eco.project.list_tail only and never eco.project.custom or tuple or record projection ops;Compiler.Generate.MLIR.Ops and runtime/src/codegen/Ops.td
 
@@ -264,9 +264,9 @@ CGEN_024;MLIR_Codegen;Projection;enforced;Custom ADT field access uses eco.proje
 
 CGEN_025;MLIR_Codegen;TypeConsistency;enforced;All eco.construct.* operations produce !eco.value results regardless of whether any fields are stored unboxed;runtime/src/codegen/Ops.td
 
-CGEN_026;MLIR_Codegen;UnboxedBitmap;enforced;For eco.construct.tuple2 eco.construct.tuple3 eco.construct.record and eco.construct.custom the unboxed_bitmap is derived solely from SSA operand MLIR types: a bit is set iff the operand MLIR type is i64, f64, or i16;runtime/src/codegen/Ops.td and Compiler.Generate.MLIR.Expr and Compiler.Generate.MLIR.Ops
+CGEN_026;MLIR_Codegen;UnboxedBitmap;enforced;For eco.construct.tuple2 eco.construct.tuple3 eco.construct.record and eco.construct.custom the unboxed_bitmap is derived solely from SSA operand MLIR types via encodeUnboxedKind; slot i occupies bits [2i, 2i+1] with kind 00=boxed, 01=i64 (Int), 10=f64 (Float), 11=i16 (Char) (Updated 2026-04-20: bitmap now encodes 2-bit primitive kinds per slot);runtime/src/codegen/Ops.td and Compiler.Generate.MLIR.Expr and Compiler.Generate.MLIR.Ops
 
-CGEN_027;MLIR_Codegen;UnboxedBitmap;enforced;For eco.construct.list the head_unboxed attribute is true iff the SSA head operand MLIR type is i64, f64, or i16;runtime/src/codegen/Ops.td and Compiler.Generate.MLIR.Ops
+CGEN_027;MLIR_Codegen;UnboxedBitmap;enforced;For eco.construct.list the head_unboxed boolean is true iff the SSA head operand type is unboxable and the paired head_kind attribute encodes the 2-bit slot kind (00=boxed, 01=Int, 10=Float, 11=Char) stored into cons->header.unboxed slot 0 (Updated 2026-04-20: head_kind attribute added alongside head_unboxed);runtime/src/codegen/Ops.td and Compiler.Generate.MLIR.Ops
 
 CGEN_028;MLIR_Codegen;ControlFlow;enforced;Every eco.case alternative region terminates with eco.yield and no alternative falls through past the end of a region; eco.return, eco.jump, eco.crash, and eco.unreachable are forbidden inside eco.case alternatives (except if nested under other non-eco.case regions that are never emitted directly by MLIR codegen);runtime/src/codegen/Ops.td and Compiler.Generate.MLIR.Expr
 
@@ -310,7 +310,7 @@ CGEN_047;MLIR_Codegen;ControlFlow;enforced;Every decider region that becomes an 
 
 CGEN_048;MLIR_Codegen;ControlFlow;enforced;The EcoControlFlowToSCF pass matches value-producing eco.case regardless of its position in a block, and rewrites it to scf.if or scf.index_switch by translating eco.yield terminators in alternatives to scf.yield and replacing the original eco.case results with the SCF op results;runtime/src/codegen/Passes/EcoControlFlowToSCF.cpp
 
-CGEN_049;MLIR_Codegen;Closures;enforced;eco.papCreate and eco.papExtend unboxed_bitmap attributes are limited to 52 bits and total captures plus arity must not exceed 52 and the number of set bits in unboxed_bitmap must equal the count of immediate MLIR operand typed operands so bitmap and operands stay consistent;runtime/src/codegen/EcoOps.cpp and Compiler.Generate.MLIR.Expr
+CGEN_049;MLIR_Codegen;Closures;enforced;eco.papCreate and eco.papExtend unboxed_bitmap attributes are limited to 52 bits supporting at most 26 typed captures under 2-bit kind encoding; slot i kind at bits [2i, 2i+1] must match the i-th operand SSA type (kind 00 ↔ !eco.value, 01 ↔ i64, 10 ↔ f64, 11 ↔ i16) (Updated 2026-04-20: bitmap now encodes 2-bit primitive kinds per slot; max 26 typed slots);runtime/src/codegen/EcoOps.cpp and Compiler.Generate.MLIR.Expr
 
 CGEN_050;MLIR_Codegen;Lambdas;enforced;Lambda functions use typed signatures where capture parameters have their actual MonoType mapped to MLIR types and return types match the body expression type rather than always using eco.value so no internal boxing or unboxing is needed for immediate captures and returns;Compiler.Generate.MLIR.Lambdas
 
@@ -380,7 +380,7 @@ HEAP_017;Runtime_Heap;NoNullPointers;enforced;Elm never produces null pointers s
 
 HEAP_018;Runtime_Heap;NoCyclicValues;enforced;Elm values are always acyclic because Elm is a pure functional language with immutable data and no recursive let bindings so any traversal of a value graph is guaranteed to terminate and runtime operations like debug printing may safely follow nested references without cycle detection;Language semantics
 
-HEAP_019;Runtime_Heap;UnboxedBitmap;enforced;Container heap objects such as Custom Cons ElmArray and Record store an unboxed bitmap indicating which fields contain unboxed runtime values (Int, Float, Char) rather than HPointer references and GC and debug logic must use this bitmap to distinguish pointers from unboxed values;Heap.hpp and RuntimeExports.cpp
+HEAP_019;Runtime_Heap;UnboxedBitmap;enforced;Container heap objects such as Custom Cons ElmArray and Record store a 2-bit-per-slot unboxed bitmap (00=boxed HPointer, 01=Int, 10=Float, 11=Char) with slot i at bits [2i, 2i+1]; GC and debug logic must use this bitmap to distinguish pointers from unboxed values and to select the correct primitive type (Updated 2026-04-20: bitmap now encodes 2-bit primitive kinds per slot);Heap.hpp and RuntimeExports.cpp
 
 
 # =============================================================================
@@ -483,7 +483,7 @@ BFOPS_038;BytesFusion_Ops;PerfDeterministicFusion;documented;Fusion success is d
 # CROSS-PHASE INVARIANTS - Constraints spanning multiple phases (always last)
 # =============================================================================
 
-XPHASE_001;CrossPhase;Layouts;implied;RecordLayout TupleLayout and CtorLayout from the monomorphized IR must agree with eco.construct attributes tag size and unboxed_bitmap and with the Custom and Record C plus plus structs so that MLIR objects match runtime layouts;Compiler.AST.Monomorphized and Compiler.Generate.MLIRMono and Heap.hpp
+XPHASE_001;CrossPhase;Layouts;implied;RecordLayout TupleLayout and CtorLayout from the monomorphized IR must agree with eco.construct attributes tag size and 2-bit-per-slot unboxed_bitmap and with the Custom and Record C plus plus structs so that MLIR objects match runtime layouts; Elm-side encodeUnboxedKind and runtime fieldKind must use the same encoding (Updated 2026-04-20: bitmap now encodes 2-bit primitive kinds per slot);Compiler.AST.Monomorphized and Compiler.Generate.MLIRMono and Heap.hpp
 
 XPHASE_002;CrossPhase;Types;documented;All !eco.value SSA operands produced by codegen must correspond to valid HPointer values (heap pointers or embedded constants) that satisfy runtime heap alignment and header invariants;THEORY.md and Heap.hpp and Compiler.Generate.MLIRMono
 
@@ -495,7 +495,7 @@ XPHASE_011;CrossPhase;Types;tested;Between Monomorphization and GlobalOpt MonoTy
 # FORBIDDEN INVARIANTS - What not to do
 # =============================================================================
 
-FORBID_REP_001;CrossPhase;ForbiddenAssumptions;enforced;No phase may assume that an SSA operand of immediate MLIR operand type corresponds to an unboxed field in any heap object unless an explicit layout bitmap is consulted;XPHASE_001|REP_HEAP_002
+FORBID_REP_001;CrossPhase;ForbiddenAssumptions;enforced;No phase may assume that an SSA operand of immediate MLIR operand type corresponds to an unboxed slot in any heap object or closure unless the 2-bit slot kind from the explicit layout bitmap is consulted (Updated 2026-04-20: bitmap now encodes 2-bit primitive kinds per slot);XPHASE_001|REP_HEAP_002
 
 FORBID_REP_002;CrossPhase;ForbiddenAssumptions;enforced;No phase may assume that a value passed as a pass-by-value MLIR type at an ABI boundary is stored as an unboxed field in heap objects or closures;REP_ABI_001|REP_HEAP_001
 

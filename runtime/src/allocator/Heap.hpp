@@ -85,14 +85,17 @@ typedef enum {
 } Tag;
 
 // Heap header that every heap object must have.
+//
+// The `unboxed` bitfield holds 2 bits per slot: 00=boxed HPointer, 01=Int (i64),
+// 10=Float (f64), 11=Char (u16). Cons uses 1 slot (bits 1:0), Tuple2 uses 2
+// slots (bits 3:0), Tuple3 uses 3 slots (bits 5:0), ElmArray uses 1 uniform
+// kind (bits 1:0).
 typedef struct {
     u32 tag : TAG_BITS;
     u32 color : 2; // White, Grey, or Black for tri-color mark-and-sweep.
     u32 pin : 1; // Memory-pinned object (prevents relocation).
-    u32 epoch : 2; // GC epoch when this object was last marked.
     u32 age : 2; // Number of minor GC cycles survived.
-    u32 unboxed : 3; // Unboxed flags for Cons, Tuple2, Tuple3, ElmArray (bit 0).
-    u32 padding : 1;
+    u32 unboxed : 6; // 2 bits per slot; used by Cons/Tuple2/Tuple3/ElmArray.
     u32 refcount : 16; // Reference count (unused currently).
     u32 size; // Object size in type-specific units.
 } Header;
@@ -141,6 +144,44 @@ typedef union {
     u16 c;
 } Unboxable;
 static_assert(sizeof(Unboxable) == 8, "Unboxable must be 64 bits");
+
+// ============================================================================
+// 2-Bit Unboxed Bitmap Accessors
+// ============================================================================
+//
+// Every container bitmap (Cons/Tuple header.unboxed, Custom.unboxed,
+// Record.unboxed, DynRecord.unboxed, Closure.unboxed, ElmArray header.unboxed)
+// encodes 2 bits per slot:
+//   00 = boxed HPointer (`.p`)
+//   01 = unboxed Int i64 (`.i`)
+//   10 = unboxed Float f64 (`.f`)
+//   11 = unboxed Char u16 (`.c`)
+//
+// Slot i's kind lives at bits [2i, 2i+1]. Bool and String are always boxed.
+
+inline u64 fieldKind(u64 bitmap, unsigned index) {
+    return (bitmap >> (2 * index)) & 0x3ULL;
+}
+
+inline u32 tupleFieldKind(u32 headerUnboxed, unsigned index) {
+    return (headerUnboxed >> (2 * index)) & 0x3U;
+}
+
+inline u64 bitmapSetKind(u64 bitmap, unsigned index, u64 kind) {
+    const u64 shift = 2ULL * index;
+    const u64 mask  = 0x3ULL << shift;
+    return (bitmap & ~mask) | ((kind & 0x3ULL) << shift);
+}
+
+// Derives a 1-bit-per-slot HPointer mask from a 2-bit-per-slot kind bitmap.
+// Output bit i is set iff the kind at slot i is 0 (boxed).
+inline u64 pointerMaskFromKindBitmap(u64 kindBitmap, unsigned numSlots) {
+    u64 mask = 0;
+    for (unsigned i = 0; i < numSlots; ++i) {
+        if (fieldKind(kindBitmap, i) == 0) mask |= (1ULL << i);
+    }
+    return mask;
+}
 
 // ============================================================================
 // Elm Value Types

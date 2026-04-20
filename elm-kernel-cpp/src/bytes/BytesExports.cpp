@@ -38,7 +38,8 @@ static bool isLittleEndian(uint64_t isLE) {
 static uint64_t makeTuple2_ii(int64_t a, int64_t b) {
     auto& allocator = Allocator::instance();
     Tuple2* t = static_cast<Tuple2*>(allocator.allocate(sizeof(Tuple2), Tag_Tuple2));
-    t->header.unboxed = 3;  // both fields unboxed
+    // 2-bit kinds: slot 0 Int (01) + slot 1 Int (01) = 0b0101 = 5
+    t->header.unboxed = 5;
     t->a.i = a;
     t->b.i = b;
     return Export::encode(allocator.wrap(t));
@@ -47,7 +48,8 @@ static uint64_t makeTuple2_ii(int64_t a, int64_t b) {
 static uint64_t makeTuple2_if(int64_t a, double b) {
     auto& allocator = Allocator::instance();
     Tuple2* t = static_cast<Tuple2*>(allocator.allocate(sizeof(Tuple2), Tag_Tuple2));
-    t->header.unboxed = 3;  // both fields unboxed
+    // 2-bit kinds: slot 0 Int (01) + slot 1 Float (10) = 0b1001 = 9
+    t->header.unboxed = 9;
     t->a.i = a;
     t->b.f = b;
     return Export::encode(allocator.wrap(t));
@@ -378,14 +380,10 @@ HPtr Elm_Kernel_Bytes_decode(HPtr decoder, HPtr bytes) {
     just->header.size = 1;
     just->ctor = 0;  // Just
 
-    // Copy decoded value from Tuple2 field b, preserving boxed/unboxed status.
-    if (tuple->header.unboxed & 0x2) {
-        just->unboxed = 1;
-        just->values[0].i = tuple->b.i;
-    } else {
-        just->unboxed = 0;
-        just->values[0].p = tuple->b.p;
-    }
+    // Copy decoded value from Tuple2 field b, preserving kind.
+    uint32_t bKind = Elm::tupleFieldKind(tuple->header.unboxed, 1);
+    just->unboxed = bKind;  // slot 0 kind matches source slot 1 kind
+    just->values[0] = tuple->b;
 
     return HPtr::fromBits(Export::encode(allocator.wrap(just)));
 }
@@ -618,7 +616,8 @@ static uint64_t makeEncoder2_pi(u16 tag, uint64_t endianness, int64_t value) {
     Custom* enc = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
     enc->header.size = 2;
     enc->ctor = tag;
-    enc->unboxed = 2;  // field 1 unboxed (value), field 0 boxed (endianness)
+    // 2-bit kinds: slot 0 boxed (00) + slot 1 Int (01) = 0b0100 = 4
+    enc->unboxed = 4;
     enc->values[0].p = Export::decode(endianness);
     enc->values[1].i = value;
     return Export::encode(allocator.wrap(enc));
@@ -631,7 +630,8 @@ static uint64_t makeEncoder2_pf(u16 tag, uint64_t endianness, double value) {
     Custom* enc = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
     enc->header.size = 2;
     enc->ctor = tag;
-    enc->unboxed = 2;  // field 1 unboxed (value), field 0 boxed (endianness)
+    // 2-bit kinds: slot 0 boxed (00) + slot 1 Float (10) = 0b1000 = 8
+    enc->unboxed = 8;
     enc->values[0].p = Export::decode(endianness);
     enc->values[1].f = value;
     return Export::encode(allocator.wrap(enc));

@@ -16,7 +16,7 @@ module {
     %v7 = arith.constant 80 : i64
 
     // All 8 fields unboxed: bitmap = 0xFF = 255
-    %ctor8 = eco.construct.custom(%v0, %v1, %v2, %v3, %v4, %v5, %v6, %v7) {tag = 0 : i64, size = 8 : i64, unboxed_bitmap = 255 : i64} : (i64, i64, i64, i64, i64, i64, i64, i64) -> !eco.value
+    %ctor8 = eco.construct.custom(%v0, %v1, %v2, %v3, %v4, %v5, %v6, %v7) {tag = 0 : i64, size = 8 : i64, unboxed_bitmap = 21845 : i64} : (i64, i64, i64, i64, i64, i64, i64, i64) -> !eco.value
 
     eco.dbg %ctor8 : !eco.value
     // CHECK: Ctor0

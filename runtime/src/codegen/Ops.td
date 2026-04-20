@@ -489,15 +489,17 @@ def Eco_ListConstructOp : Eco_Op<"construct.list", [Pure,
   let description = [{
     Allocate a list cons cell: head :: tail.
 
-    Head can be boxed (!eco.value) or unboxed primitive (i64, f64, etc.).
+    Head can be boxed (!eco.value) or unboxed primitive (i64, f64, i16).
     Tail is always boxed (!eco.value). Nil is represented as an embedded
     constant via `eco.constant Nil`, not heap-allocated.
 
-    The `head_unboxed` attribute indicates whether head is stored unboxed.
+    `head_unboxed` is a boolean flag (true iff head is a primitive).
+    `head_kind` is the 2-bit slot kind stored into `cons->header.unboxed`
+    slot 0: `00` = boxed HPointer, `01` = Int, `10` = Float, `11` = Char.
 
     Example:
     ```mlir
-    %cons = eco.construct.list %head, %tail {head_unboxed = false}
+    %cons = eco.construct.list %head, %tail {head_unboxed = false, head_kind = 0}
       : !eco.value, !eco.value -> !eco.value
     ```
   }];
@@ -506,7 +508,8 @@ def Eco_ListConstructOp : Eco_Op<"construct.list", [Pure,
     Eco_AnyValue:$head,
     Eco_Value:$tail,
     Variadic<Eco_Value>:$live_roots,
-    DefaultValuedAttr<BoolAttr, "false">:$head_unboxed
+    DefaultValuedAttr<BoolAttr, "false">:$head_unboxed,
+    DefaultValuedAttr<I64Attr, "0">:$head_kind
   );
   let results = (outs Eco_Value:$result);
 
@@ -559,8 +562,11 @@ def Eco_Tuple2ConstructOp : Eco_Op<"construct.tuple2", [Pure,
   let summary = "Construct a 2-tuple";
   let description = [{
     Construct a 2-tuple value. Elements may be boxed (!eco.value) or
-    unboxed primitives. The `unboxed_bitmap` attribute indicates which
-    fields are stored unboxed (bit 0 = a, bit 1 = b).
+    unboxed primitives (i64, f64, i16).
+
+    Each slot occupies 2 bits of `unboxed_bitmap`: `00` = boxed HPointer,
+    `01` = Int, `10` = Float, `11` = Char. Slot i's kind lives at bits
+    [2i, 2i+1]. Tuple2 uses 4 bits (slots 0 and 1).
 
     Example:
     ```mlir
@@ -585,8 +591,11 @@ def Eco_Tuple3ConstructOp : Eco_Op<"construct.tuple3", [Pure,
 ]> {
   let summary = "Construct a 3-tuple";
   let description = [{
-    Construct a 3-tuple value. The `unboxed_bitmap` attribute indicates
-    which fields are stored unboxed (bits 0-2 for a, b, c).
+    Construct a 3-tuple value.
+
+    Each slot occupies 2 bits of `unboxed_bitmap`: `00` = boxed HPointer,
+    `01` = Int, `10` = Float, `11` = Char. Slot i's kind lives at bits
+    [2i, 2i+1]. Tuple3 uses 6 bits (slots 0, 1, 2).
 
     Example:
     ```mlir
@@ -651,9 +660,13 @@ def Eco_RecordConstructOp : Eco_Op<"construct.record", [Pure,
 ]> {
   let summary = "Construct an Elm record";
   let description = [{
-    Construct a record with a fixed set of fields. The `field_count` and
-    `unboxed_bitmap` attributes describe layout. Fields may be boxed or
-    unboxed primitives.
+    Construct a record with a fixed set of fields. `field_count` gives
+    the slot count; `unboxed_bitmap` carries the 2-bit-per-slot kinds.
+
+    Each slot occupies 2 bits of `unboxed_bitmap`: `00` = boxed HPointer,
+    `01` = Int, `10` = Float, `11` = Char. Slot i's kind lives at bits
+    [2i, 2i+1]. Record's bitmap is 64 bits wide (up to 32 fields with
+    typed slots); fields beyond index 31 are stored boxed.
 
     GC live roots may be appended after the fields by EcoGCPrepare.
     The first `field_count` operands are fields; any beyond that are
@@ -710,8 +723,12 @@ def Eco_CustomConstructOp : Eco_Op<"construct.custom", [Pure,
     - Records (use eco.construct.record)
 
     The tag is the numeric constructor discriminant. The size must match
-    the number of field operands. The unboxed_bitmap indicates which fields
-    are unboxed primitives (bit N is set if field N is unboxed).
+    the number of field operands.
+
+    Each slot occupies 2 bits of `unboxed_bitmap`: `00` = boxed HPointer,
+    `01` = Int, `10` = Float, `11` = Char. Slot i's kind lives at bits
+    [2i, 2i+1]. Custom's bitmap is 48 bits wide (up to 24 fields with
+    typed slots); fields beyond index 23 are stored boxed.
 
     The optional constructor attribute is for MLIR readability only and is
     not stored at runtime. Debug printing uses generic Ctor1, Ctor2, etc.
@@ -913,8 +930,10 @@ def Eco_PapCreateOp : Eco_Op<"papCreate", [
     with some captured arguments. The remaining arity after creation is
     (arity - num_captured).
 
-    The `unboxed_bitmap` attribute indicates which captured values are
-    stored as unboxed primitives (bit N set = capture N is unboxed).
+    Each captured slot occupies 2 bits of `unboxed_bitmap`: `00` = boxed
+    HPointer, `01` = Int, `10` = Float, `11` = Char. Slot i's kind lives
+    at bits [2i, 2i+1]. The 52-bit bitmap supports at most 26 typed
+    captures (captures beyond that are stored boxed).
     This is the source-of-truth; lowering trusts this value.
 
     For typed closure calling, closures with captures have:
@@ -978,8 +997,10 @@ def Eco_PapExtendOp : Eco_Op<"papExtend", [
     Result type must be !eco.value. CGEN_052/CGEN_056 do not apply.
     Typed closure calling attributes are ignored.
 
-    The `newargs_unboxed_bitmap` attribute indicates which new arguments
-    are unboxed primitives (bit N set = newarg N is unboxed).
+    Each new-arg slot occupies 2 bits of `newargs_unboxed_bitmap`: `00` =
+    boxed HPointer, `01` = Int, `10` = Float, `11` = Char. Slot i's kind
+    lives at bits [2i, 2i+1]. At most 26 typed new-args fit in the
+    resulting closure's 52-bit bitmap.
     This is the source-of-truth; lowering trusts this value.
 
     For typed closure calling (typed mode only):

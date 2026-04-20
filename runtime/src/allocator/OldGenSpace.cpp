@@ -142,7 +142,7 @@ void *OldGenSpace::allocate(size_t size) {
             hdr->color = static_cast<u32>(Color::Grey);
             markChildren(obj);
             hdr->color = static_cast<u32>(Color::Black);
-            hdr->epoch = current_epoch & 3;
+
 
             mark_budget = (mark_budget > 1) ? mark_budget - 1 : 0;
         }
@@ -171,7 +171,7 @@ void *OldGenSpace::allocate(size_t size) {
         // During marking or sweeping, new objects must be Black to survive this cycle.
         if (marking_active || gc_phase_ != GCPhase::Idle) {
             hdr->color = static_cast<u32>(Color::Black);
-            hdr->epoch = current_epoch & 3;
+
         } else {
             hdr->color = static_cast<u32>(Color::White);
         }
@@ -194,7 +194,7 @@ void *OldGenSpace::allocate(size_t size) {
             Header* hdr = reinterpret_cast<Header*>(result);
             std::memset(hdr, 0, sizeof(Header));
             hdr->color = static_cast<u32>(Color::Black);
-            hdr->epoch = current_epoch & 3;
+
 
             return result;
         }
@@ -269,7 +269,7 @@ void* OldGenSpace::allocateLargeBlock(size_t size) {
     std::memset(hdr, 0, sizeof(Header));
     if (marking_active || gc_phase_ == GCPhase::Sweeping) {
         hdr->color = static_cast<u32>(Color::Black);
-        hdr->epoch = current_epoch & 3;
+
     } else {
         hdr->color = static_cast<u32>(Color::White);
     }
@@ -295,7 +295,7 @@ void* OldGenSpace::bumpAllocate(size_t size) {
             // During marking or sweeping, new objects must be Black to survive this cycle.
             if (marking_active || gc_phase_ == GCPhase::Sweeping) {
                 hdr->color = static_cast<u32>(Color::Black);
-                hdr->epoch = current_epoch & 3;
+
             } else {
                 hdr->color = static_cast<u32>(Color::White);
             }
@@ -341,7 +341,7 @@ void* OldGenSpace::bumpAllocate(size_t size) {
     // During marking or sweeping, new objects must be Black to survive this cycle.
     if (marking_active || gc_phase_ == GCPhase::Sweeping) {
         hdr->color = static_cast<u32>(Color::Black);
-        hdr->epoch = current_epoch & 3;
+
     } else {
         hdr->color = static_cast<u32>(Color::White);
     }
@@ -439,7 +439,7 @@ bool OldGenSpace::incrementalMark(size_t work_units) {
 
         // Mark black.
         hdr->color = static_cast<u32>(Color::Black);
-        hdr->epoch = current_epoch & 3;
+
 
         units_done++;
     }
@@ -457,34 +457,34 @@ void OldGenSpace::markChildren(void *obj) {
     switch (hdr->tag) {
         case Tag_Tuple2: {
             Tuple2 *t = static_cast<Tuple2 *>(obj);
-            markUnboxable(t->a, !(hdr->unboxed & 1));
-            markUnboxable(t->b, !(hdr->unboxed & 2));
+            markUnboxable(t->a, tupleFieldKind(hdr->unboxed, 0) == 0);
+            markUnboxable(t->b, tupleFieldKind(hdr->unboxed, 1) == 0);
             break;
         }
         case Tag_Tuple3: {
             Tuple3 *t = static_cast<Tuple3 *>(obj);
-            markUnboxable(t->a, !(hdr->unboxed & 1));
-            markUnboxable(t->b, !(hdr->unboxed & 2));
-            markUnboxable(t->c, !(hdr->unboxed & 4));
+            markUnboxable(t->a, tupleFieldKind(hdr->unboxed, 0) == 0);
+            markUnboxable(t->b, tupleFieldKind(hdr->unboxed, 1) == 0);
+            markUnboxable(t->c, tupleFieldKind(hdr->unboxed, 2) == 0);
             break;
         }
         case Tag_Cons: {
             Cons *c = static_cast<Cons *>(obj);
-            markUnboxable(c->head, !(hdr->unboxed & 1));
+            markUnboxable(c->head, tupleFieldKind(hdr->unboxed, 0) == 0);
             markHPointer(c->tail);
             break;
         }
         case Tag_Custom: {
             Custom *c = static_cast<Custom *>(obj);
-            for (u32 i = 0; i < hdr->size && i < 48; i++) {
-                markUnboxable(c->values[i], !(c->unboxed & (1ULL << i)));
+            for (u32 i = 0; i < hdr->size && i < 24; i++) {
+                markUnboxable(c->values[i], fieldKind(c->unboxed, i) == 0);
             }
             break;
         }
         case Tag_Record: {
             Record *r = static_cast<Record *>(obj);
-            for (u32 i = 0; i < hdr->size && i < 64; i++) {
-                markUnboxable(r->values[i], !(r->unboxed & (1ULL << i)));
+            for (u32 i = 0; i < hdr->size && i < 32; i++) {
+                markUnboxable(r->values[i], fieldKind(r->unboxed, i) == 0);
             }
             break;
         }
@@ -499,7 +499,7 @@ void OldGenSpace::markChildren(void *obj) {
         case Tag_Closure: {
             Closure *cl = static_cast<Closure *>(obj);
             for (u32 i = 0; i < cl->n_values; i++) {
-                markUnboxable(cl->values[i], !(cl->unboxed & (1ULL << i)));
+                markUnboxable(cl->values[i], fieldKind(cl->unboxed, i) == 0);
             }
             break;
         }
@@ -520,7 +520,7 @@ void OldGenSpace::markChildren(void *obj) {
         }
         case Tag_Array: {
             ElmArray *arr = static_cast<ElmArray *>(obj);
-            bool is_boxed = !arr->header.unboxed;
+            bool is_boxed = (arr->header.unboxed & 0x3) == 0;
             for (u32 i = 0; i < arr->length; i++) {
                 markUnboxable(arr->elements[i], is_boxed);
             }
@@ -1119,34 +1119,34 @@ void OldGenSpace::fixPointersInObject(void* obj) {
     switch (hdr->tag) {
         case Tag_Tuple2: {
             Tuple2* t = static_cast<Tuple2*>(obj);
-            fixUnboxable(t->a, !(hdr->unboxed & 1));
-            fixUnboxable(t->b, !(hdr->unboxed & 2));
+            fixUnboxable(t->a, tupleFieldKind(hdr->unboxed, 0) == 0);
+            fixUnboxable(t->b, tupleFieldKind(hdr->unboxed, 1) == 0);
             break;
         }
         case Tag_Tuple3: {
             Tuple3* t = static_cast<Tuple3*>(obj);
-            fixUnboxable(t->a, !(hdr->unboxed & 1));
-            fixUnboxable(t->b, !(hdr->unboxed & 2));
-            fixUnboxable(t->c, !(hdr->unboxed & 4));
+            fixUnboxable(t->a, tupleFieldKind(hdr->unboxed, 0) == 0);
+            fixUnboxable(t->b, tupleFieldKind(hdr->unboxed, 1) == 0);
+            fixUnboxable(t->c, tupleFieldKind(hdr->unboxed, 2) == 0);
             break;
         }
         case Tag_Cons: {
             Cons* c = static_cast<Cons*>(obj);
-            fixUnboxable(c->head, !(hdr->unboxed & 1));
+            fixUnboxable(c->head, tupleFieldKind(hdr->unboxed, 0) == 0);
             fixHPointer(c->tail);
             break;
         }
         case Tag_Custom: {
             Custom* c = static_cast<Custom*>(obj);
-            for (u32 i = 0; i < hdr->size && i < 48; i++) {
-                fixUnboxable(c->values[i], !(c->unboxed & (1ULL << i)));
+            for (u32 i = 0; i < hdr->size && i < 24; i++) {
+                fixUnboxable(c->values[i], fieldKind(c->unboxed, i) == 0);
             }
             break;
         }
         case Tag_Record: {
             Record* r = static_cast<Record*>(obj);
-            for (u32 i = 0; i < hdr->size && i < 64; i++) {
-                fixUnboxable(r->values[i], !(r->unboxed & (1ULL << i)));
+            for (u32 i = 0; i < hdr->size && i < 32; i++) {
+                fixUnboxable(r->values[i], fieldKind(r->unboxed, i) == 0);
             }
             break;
         }
@@ -1161,7 +1161,7 @@ void OldGenSpace::fixPointersInObject(void* obj) {
         case Tag_Closure: {
             Closure* cl = static_cast<Closure*>(obj);
             for (u32 i = 0; i < cl->n_values; i++) {
-                fixUnboxable(cl->values[i], !(cl->unboxed & (1ULL << i)));
+                fixUnboxable(cl->values[i], fieldKind(cl->unboxed, i) == 0);
             }
             break;
         }
@@ -1182,7 +1182,7 @@ void OldGenSpace::fixPointersInObject(void* obj) {
         }
         case Tag_Array: {
             ElmArray* arr = static_cast<ElmArray*>(obj);
-            bool is_boxed = !arr->header.unboxed;
+            bool is_boxed = (arr->header.unboxed & 0x3) == 0;
             for (u32 i = 0; i < arr->length; i++) {
                 fixUnboxable(arr->elements[i], is_boxed);
             }

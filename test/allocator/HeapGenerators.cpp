@@ -18,12 +18,15 @@ static HPointer createConstant(Constant c) {
     return ptr;
 }
 
-// Helper to build unboxed bitmap for variable-sized structures.
+// Helper to build a 2-bit-per-slot unboxed bitmap for variable-sized structures.
+// `max_bits` is the bitmap width (as used by the container); slots consume
+// 2 bits each. Test harnesses pass Int (kind 01) as the default primitive kind.
 static u64 buildUnboxedBitmap(const std::vector<bool>& boxed_flags, size_t max_bits) {
     u64 bitmap = 0;
-    for (size_t i = 0; i < std::min(boxed_flags.size(), max_bits); i++) {
-        if (!boxed_flags[i]) {  // Unboxed when flag is false.
-            bitmap |= (1ULL << i);
+    const size_t max_slots = max_bits / 2;
+    for (size_t i = 0; i < std::min(boxed_flags.size(), max_slots); i++) {
+        if (!boxed_flags[i]) {  // Unboxed when flag is false — encode as Int (kind 01).
+            bitmap |= (1ULL << (2 * i));
         }
     }
     return bitmap;

@@ -11,7 +11,7 @@ module {
     %i3 = arith.constant 3 : i64
     %i4 = arith.constant 4 : i64
 
-    %quad = eco.construct.custom(%i1, %i2, %i3, %i4) {tag = 10 : i64, size = 4 : i64, unboxed_bitmap = 15 : i64} : (i64, i64, i64, i64) -> !eco.value
+    %quad = eco.construct.custom(%i1, %i2, %i3, %i4) {tag = 10 : i64, size = 4 : i64, unboxed_bitmap = 85 : i64} : (i64, i64, i64, i64) -> !eco.value
     eco.dbg %quad : !eco.value
     // CHECK: Ctor10 1 2 3 4
 
@@ -34,7 +34,7 @@ module {
 
     // 5 unboxed integers: unboxed_bitmap = 31 (0b11111)
     %i5 = arith.constant 5 : i64
-    %quint = eco.construct.custom(%i1, %i2, %i3, %i4, %i5) {tag = 11 : i64, size = 5 : i64, unboxed_bitmap = 31 : i64} : (i64, i64, i64, i64, i64) -> !eco.value
+    %quint = eco.construct.custom(%i1, %i2, %i3, %i4, %i5) {tag = 11 : i64, size = 5 : i64, unboxed_bitmap = 341 : i64} : (i64, i64, i64, i64, i64) -> !eco.value
     eco.dbg %quint : !eco.value
     // CHECK: Ctor11 1 2 3 4 5
 
@@ -49,7 +49,7 @@ module {
     %f3 = arith.constant 3.3 : f64
     %f4 = arith.constant 4.4 : f64
 
-    %quad_float = eco.construct.custom(%f1, %f2, %f3, %f4) {tag = 20 : i64, size = 4 : i64, unboxed_bitmap = 15 : i64} : (f64, f64, f64, f64) -> !eco.value
+    %quad_float = eco.construct.custom(%f1, %f2, %f3, %f4) {tag = 20 : i64, size = 4 : i64, unboxed_bitmap = 170 : i64} : (f64, f64, f64, f64) -> !eco.value
     // Note: Unboxed floats print as raw bits in custom print
     eco.dbg %quad_float : !eco.value
     // CHECK: Ctor20
@@ -69,7 +69,7 @@ module {
     %neg3 = arith.constant -300 : i64
     %neg4 = arith.constant -400 : i64
 
-    %quad_neg = eco.construct.custom(%neg1, %neg2, %neg3, %neg4) {tag = 30 : i64, size = 4 : i64, unboxed_bitmap = 15 : i64} : (i64, i64, i64, i64) -> !eco.value
+    %quad_neg = eco.construct.custom(%neg1, %neg2, %neg3, %neg4) {tag = 30 : i64, size = 4 : i64, unboxed_bitmap = 85 : i64} : (i64, i64, i64, i64) -> !eco.value
     eco.dbg %quad_neg : !eco.value
     // CHECK: Ctor30 -100 -200 -300 -400
 

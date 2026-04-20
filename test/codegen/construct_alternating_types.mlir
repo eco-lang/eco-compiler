@@ -17,7 +17,7 @@ module {
     // field 2: i16 (unboxed)
     // field 3: !eco.value (boxed)
     // unboxed_bitmap = 0b0111 = 7 (bits 0, 1, 2 set)
-    %ctor = eco.construct.custom(%int_val, %float_val, %char_val, %boxed_val) {tag = 0 : i64, size = 4 : i64, unboxed_bitmap = 7 : i64} : (i64, f64, i16, !eco.value) -> !eco.value
+    %ctor = eco.construct.custom(%int_val, %float_val, %char_val, %boxed_val) {tag = 0 : i64, size = 4 : i64, unboxed_bitmap = 57 : i64} : (i64, f64, i16, !eco.value) -> !eco.value
 
     // Project and print each field
     %p0 = eco.project.custom %ctor[0] : !eco.value -> i64

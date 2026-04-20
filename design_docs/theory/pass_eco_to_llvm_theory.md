@@ -167,10 +167,12 @@ eco.allocate_closure   -> eco_alloc_closure(func_ptr, arity)
 
 **Lists:**
 ```
-eco.construct.list %head, %tail, head_unboxed
-    -> eco_alloc_cons(inttoptr head, inttoptr tail, head_unboxed)
+eco.construct.list %head, %tail, head_unboxed, head_kind
+    -> eco_alloc_cons(inttoptr head, inttoptr tail, head_kind)
     -> ptrtoint result
 ```
+The `head_kind` attribute encodes the 2-bit slot kind (0=boxed HPointer,
+1=Int, 2=Float, 3=Char) stored into `cons->header.unboxed` slot 0.
 
 **Tuples:**
 ```
@@ -182,6 +184,7 @@ eco.construct.tuple3 %a, %b, %c, unboxed_bitmap
     -> eco_alloc_tuple3(inttoptr a, b, c, bitmap)
     -> ptrtoint result
 ```
+`unboxed_bitmap` is 2-bit-per-slot: slot i's kind lives at bits [2i, 2i+1].
 
 **Records:**
 ```
@@ -226,6 +229,9 @@ eco.project.custom %c, index -> inttoptr -> gep[16 + index*8] -> load
 [Header:8][packed:8][evaluator:8][values:N*8]
 packed = n_values:6 | max_values:6 | unboxed:52
 ```
+`unboxed` is 2-bit-per-slot encoding kinds for captured values (max 26 typed
+captures). Kind 00=boxed HPointer, 01=Int, 10=Float, 11=Char. Slot i's kind
+lives at bits [2i, 2i+1].
 
 **papCreate (create partial application):**
 ```

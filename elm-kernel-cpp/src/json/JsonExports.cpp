@@ -233,7 +233,7 @@ static HPointer makeJsonFloat(f64 val) {
     Custom* c = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
     c->header.size = 1;
     c->ctor = CTOR_JSON_FLOAT;
-    c->unboxed = 1;
+    c->unboxed = 2;  // kind=Float at slot 0
     c->values[0].f = val;
     return allocator.wrap(c);
 }
@@ -1281,7 +1281,7 @@ HPtr Elm_Kernel_Json_wrap(HPtr value) {
         Custom* enc = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
         enc->header.size = 1;
         enc->ctor = ENC_FLOAT;
-        enc->unboxed = 1;
+        enc->unboxed = 2;  // kind=Float at slot 0
         enc->values[0].f = f->value;
         return HPtr::fromBits(Export::encode(allocator.wrap(enc)));
     }

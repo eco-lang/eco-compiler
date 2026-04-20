@@ -67,8 +67,9 @@ std::vector<uint64_t> listToVectorU64(HPointer list) {
         if (hdr->tag != Tag_Cons) break;
 
         Cons* cons = static_cast<Cons*>(ptr);
-        if (hdr->unboxed & 1) {
-            result.push_back(Export::encode(alloc::allocInt(static_cast<int64_t>(cons->head.i))));
+        uint32_t kind = Elm::tupleFieldKind(hdr->unboxed, 0);
+        if (kind != 0) {
+            result.push_back(Export::encode(alloc::boxElement(cons->head, kind)));
         } else {
             result.push_back(Export::encode(cons->head.p));
         }
@@ -121,8 +122,9 @@ std::vector<void*> listToVector(HPointer list) {
 // For unboxed ints, boxes via allocInt so the wrapper can unbox.
 // For boxed values, returns encoded HPointer directly.
 inline uint64_t getConsHead(Cons* cons, Header* hdr) {
-    if (hdr->unboxed & 1) {
-        return Export::encode(alloc::allocInt(static_cast<int64_t>(cons->head.i)));
+    uint32_t kind = Elm::tupleFieldKind(hdr->unboxed, 0);
+    if (kind != 0) {
+        return Export::encode(alloc::boxElement(cons->head, kind));
     } else {
         return Export::encode(cons->head.p);
     }
@@ -392,14 +394,10 @@ HPtr Elm_Kernel_List_sortBy(HPtr closure, HPtr list) {
         sorted.push_back(elements[idx]);
     }
 
-    // Sort preserves element types - check if original was unboxed
-    bool elemIsUnboxed = false;
-    HPointer origList = Export::decode(list_bits);
-    if (!alloc::isNil(origList)) {
-        Header* h = static_cast<Header*>(allocator.resolve(origList));
-        elemIsUnboxed = (h->unboxed & 1);
-    }
-    return HPtr::fromBits(Export::encode(vectorU64ToList(sorted, !elemIsUnboxed)));
+    // The sorted vector holds HPointer-encoded values; build a boxed-head list.
+    // Callers can re-unbox via projection if they need primitive-kind slots.
+    (void)list_bits;
+    return HPtr::fromBits(Export::encode(vectorU64ToList(sorted, true)));
 }
 
 HPtr Elm_Kernel_List_sortWith(HPtr closure, HPtr list) {
@@ -419,14 +417,8 @@ HPtr Elm_Kernel_List_sortWith(HPtr closure, HPtr list) {
         return orderVal->ctor == 0;  // LT means a < b
     });
 
-    // sortWith preserves element types - check if original was unboxed
-    bool elemIsUnboxed = false;
-    HPointer origList = Export::decode(list_bits);
-    if (!alloc::isNil(origList)) {
-        Header* h = static_cast<Header*>(allocator.resolve(origList));
-        elemIsUnboxed = (h->unboxed & 1);
-    }
-    return HPtr::fromBits(Export::encode(vectorU64ToList(elements, !elemIsUnboxed)));
+    // Boxed-head result list; projection handles re-unboxing as needed.
+    return HPtr::fromBits(Export::encode(vectorU64ToList(elements, true)));
 }
 
 } // extern "C"

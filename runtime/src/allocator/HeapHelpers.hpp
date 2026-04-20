@@ -471,20 +471,28 @@ inline const u16* stringData(void* str) {
  *
  * The unboxed flag is stored in the header for GC scanning.
  */
-inline HPointer cons(Unboxable head, HPointer tail, bool head_is_boxed) {
+// `head_kind`: 2-bit slot kind (0=boxed HPointer, 1=Int, 2=Float, 3=Char).
+inline HPointer cons(Unboxable head, HPointer tail, u8 head_kind) {
     auto& allocator = Allocator::instance();
     // Root tail and head across allocate() using stack root ranges.
     auto& rs = Allocator::instance().getRootSet();
     size_t saved = rs.stackRangePoint();
     rs.pushStackRootRange(&tail, 1, 1);
+    const bool head_is_boxed = (head_kind == 0);
     if (head_is_boxed) rs.pushStackRootRange(&head.p, 1, 1);
     Cons* cell = static_cast<Cons*>(allocator.allocate(sizeof(Cons), Tag_Cons));
     cell->header.size = 0;
-    cell->header.unboxed = head_is_boxed ? 0 : 1;  // unboxed=1 means head is primitive
+    cell->header.unboxed = head_kind & 0x3;
     cell->head = head;
     cell->tail = tail;
     rs.restoreStackRangePoint(saved);
     return allocator.wrap(cell);
+}
+
+// Boolean-friendly overload: true = boxed (kind 0), false = Int (kind 1).
+// Preserved for callers that previously used the bool API and meant Int.
+inline HPointer cons(Unboxable head, HPointer tail, bool head_is_boxed) {
+    return cons(head, tail, static_cast<u8>(head_is_boxed ? 0 : 1));
 }
 
 /**
@@ -519,7 +527,7 @@ inline HPointer listFromPointers(const std::vector<HPointer>& elements) {
 inline HPointer listFromInts(const std::vector<i64>& elements) {
     HPointer result = listNil();
     for (auto it = elements.rbegin(); it != elements.rend(); ++it) {
-        result = cons(unboxedInt(*it), result, false);
+        result = cons(unboxedInt(*it), result, static_cast<u8>(1));
     }
     return result;
 }
@@ -533,7 +541,7 @@ inline HPointer listFromInts(const std::vector<i64>& elements) {
 inline HPointer listFromFloats(const std::vector<f64>& elements) {
     HPointer result = listNil();
     for (auto it = elements.rbegin(); it != elements.rend(); ++it) {
-        result = cons(unboxedFloat(*it), result, false);
+        result = cons(unboxedFloat(*it), result, static_cast<u8>(2));
     }
     return result;
 }
@@ -591,16 +599,16 @@ inline HPointer listFromUnboxables(
  * @param unboxed_mask Bitmask: bit 0 = a is unboxed, bit 1 = b is unboxed.
  * @return HPointer to the allocated tuple.
  */
+// `unboxed_mask`: 2-bit-per-slot kind bitmap (4 bits used for 2 slots).
 inline HPointer tuple2(Unboxable a, Unboxable b, u32 unboxed_mask) {
     auto& allocator = Allocator::instance();
-    // Root pointer-typed entries across allocate().
     auto& rs = Allocator::instance().getRootSet();
     size_t saved = rs.stackRangePoint();
-    if (!(unboxed_mask & 0x1)) rs.pushStackRootRange(&a.p, 1, 1);
-    if (!(unboxed_mask & 0x2)) rs.pushStackRootRange(&b.p, 1, 1);
+    if (tupleFieldKind(unboxed_mask, 0) == 0) rs.pushStackRootRange(&a.p, 1, 1);
+    if (tupleFieldKind(unboxed_mask, 1) == 0) rs.pushStackRootRange(&b.p, 1, 1);
     Tuple2* tuple = static_cast<Tuple2*>(allocator.allocate(sizeof(Tuple2), Tag_Tuple2));
     tuple->header.size = 0;
-    tuple->header.unboxed = unboxed_mask & 0x3;  // Only 2 bits used for Tuple2
+    tuple->header.unboxed = unboxed_mask & 0xF;
     tuple->a = a;
     tuple->b = b;
     rs.restoreStackRangePoint(saved);
@@ -616,16 +624,17 @@ inline HPointer tuple2(Unboxable a, Unboxable b, u32 unboxed_mask) {
  * @param unboxed_mask Bitmask: bit 0 = a, bit 1 = b, bit 2 = c is unboxed.
  * @return HPointer to the allocated tuple.
  */
+// `unboxed_mask`: 2-bit-per-slot kind bitmap (6 bits used for 3 slots).
 inline HPointer tuple3(Unboxable a, Unboxable b, Unboxable c, u32 unboxed_mask) {
     auto& allocator = Allocator::instance();
     auto& rs = Allocator::instance().getRootSet();
     size_t saved = rs.stackRangePoint();
-    if (!(unboxed_mask & 0x1)) rs.pushStackRootRange(&a.p, 1, 1);
-    if (!(unboxed_mask & 0x2)) rs.pushStackRootRange(&b.p, 1, 1);
-    if (!(unboxed_mask & 0x4)) rs.pushStackRootRange(&c.p, 1, 1);
+    if (tupleFieldKind(unboxed_mask, 0) == 0) rs.pushStackRootRange(&a.p, 1, 1);
+    if (tupleFieldKind(unboxed_mask, 1) == 0) rs.pushStackRootRange(&b.p, 1, 1);
+    if (tupleFieldKind(unboxed_mask, 2) == 0) rs.pushStackRootRange(&c.p, 1, 1);
     Tuple3* tuple = static_cast<Tuple3*>(allocator.allocate(sizeof(Tuple3), Tag_Tuple3));
     tuple->header.size = 0;
-    tuple->header.unboxed = unboxed_mask & 0x7;  // Only 3 bits used for Tuple3
+    tuple->header.unboxed = unboxed_mask & 0x3F;
     tuple->a = a;
     tuple->b = b;
     tuple->c = c;
@@ -645,21 +654,21 @@ inline HPointer tuple3(Unboxable a, Unboxable b, Unboxable c, u32 unboxed_mask) 
  * @param unboxed_mask Bitmap indicating which fields are unboxed.
  * @return HPointer to the allocated Custom value.
  */
+// `unboxed_mask`: 2-bit-per-slot kind bitmap (up to 24 fields, 48 bits used).
 inline HPointer custom(u16 ctor, const std::vector<Unboxable>& values, u64 unboxed_mask) {
+    assert((unboxed_mask >> 48) == 0 && "Custom unboxed bitmap overflow (>48 bits)");
     auto& allocator = Allocator::instance();
     size_t total_size = sizeof(Custom) + values.size() * sizeof(Unboxable);
     total_size = (total_size + 7) & ~7;
 
     // Copy values into a mutable buffer and root the pointer-typed entries
-    // (those with bit clear in unboxed_mask) across the allocation, so a
-    // minor GC inside allocate() updates them in place. Without this we'd
-    // copy stale from-space HPointers into the new Custom object.
+    // (those whose kind is 0) across the allocation, so a minor GC inside
+    // allocate() updates them in place.
     std::vector<Unboxable> rooted_values = values;
     auto& rs = Allocator::instance().getRootSet();
     size_t saved = rs.stackRangePoint();
     for (size_t i = 0; i < rooted_values.size(); ++i) {
-        bool is_unboxed = (unboxed_mask >> i) & 0x1;
-        if (!is_unboxed) {
+        if (fieldKind(unboxed_mask, i) == 0) {
             rs.pushStackRootRange(&rooted_values[i].p, 1, 1);
         }
     }
@@ -682,10 +691,15 @@ inline HPointer custom(u16 ctor, const std::vector<Unboxable>& values, u64 unbox
  * @param is_boxed True if value is a heap pointer.
  * @return HPointer to the Just value.
  */
-inline HPointer just(Unboxable value, bool is_boxed) {
+// `kind`: 0=boxed, 1=Int, 2=Float, 3=Char.
+inline HPointer justKind(Unboxable value, u8 kind) {
     std::vector<Unboxable> vals = {value};
-    u64 mask = is_boxed ? 0 : 1;
-    return custom(0, vals, mask);  // Just is ctor 0 for Maybe
+    u64 mask = static_cast<u64>(kind) & 0x3;
+    return custom(0, vals, mask);
+}
+
+inline HPointer just(Unboxable value, bool is_boxed) {
+    return justKind(value, static_cast<u8>(is_boxed ? 0 : 1));
 }
 
 /**
@@ -725,6 +739,7 @@ inline HPointer err(Unboxable value, bool is_boxed) {
  * @param unboxed_mask Bitmap indicating which fields are unboxed.
  * @return HPointer to the allocated Record.
  */
+// `unboxed_mask`: 2-bit-per-slot kind bitmap (up to 32 fields, 64 bits used).
 inline HPointer record(const std::vector<Unboxable>& values, u64 unboxed_mask) {
     if (values.empty()) {
         return emptyRecord();
@@ -739,8 +754,7 @@ inline HPointer record(const std::vector<Unboxable>& values, u64 unboxed_mask) {
     auto& rs = Allocator::instance().getRootSet();
     size_t saved = rs.stackRangePoint();
     for (size_t i = 0; i < rooted_values.size(); ++i) {
-        bool is_unboxed = (unboxed_mask >> i) & 0x1;
-        if (!is_unboxed) {
+        if (fieldKind(unboxed_mask, i) == 0) {
             rs.pushStackRootRange(&rooted_values[i].p, 1, 1);
         }
     }
@@ -883,7 +897,7 @@ inline HPointer arrayFromInts(const std::vector<i64>& elements) {
     ElmArray* arr = static_cast<ElmArray*>(allocator.allocate(total_size, Tag_Array));
     arr->header.size = static_cast<u32>(capacity);
     arr->length = static_cast<u32>(elements.size());
-    arr->header.unboxed = 1;  // All elements are unboxed
+    arr->header.unboxed = 1;  // Uniform kind: Int (kind 01)
     arr->padding = 0;
 
     for (size_t i = 0; i < elements.size(); ++i) {
@@ -928,12 +942,25 @@ inline bool arrayPush(void* arr, Unboxable value, bool is_boxed) {
     size_t idx = a->length;
     a->elements[idx] = value;
 
-    // Set unboxed flag on first push; arrays are uniform
+    // Set uniform kind on first push (0=boxed, 1=Int for legacy callers).
     if (idx == 0) {
         a->header.unboxed = is_boxed ? 0 : 1;
     }
     // Note: subsequent pushes must be consistent (not enforced here)
 
+    a->length++;
+    return true;
+}
+
+// Variant of arrayPush that takes an explicit kind (0=boxed, 1=Int, 2=Float, 3=Char).
+inline bool arrayPushKind(void* arr, Unboxable value, u8 kind) {
+    ElmArray* a = static_cast<ElmArray*>(arr);
+    if (a->length >= a->header.size) return false;
+    size_t idx = a->length;
+    a->elements[idx] = value;
+    if (idx == 0) {
+        a->header.unboxed = kind & 0x3;
+    }
     a->length++;
     return true;
 }
@@ -960,7 +987,15 @@ inline Unboxable arrayGet(void* arr, size_t index) {
  */
 inline bool arrayIsUnboxed(void* arr) {
     ElmArray* a = static_cast<ElmArray*>(arr);
-    return a->header.unboxed != 0;
+    return (a->header.unboxed & 0x3) != 0;
+}
+
+/**
+ * Returns the uniform-kind code for an Array's elements (0=boxed, 1=Int, 2=Float, 3=Char).
+ */
+inline u32 arrayElementKind(void* arr) {
+    ElmArray* a = static_cast<ElmArray*>(arr);
+    return a->header.unboxed & 0x3;
 }
 
 // ============================================================================
@@ -996,7 +1031,10 @@ inline HPointer allocClosure(EvalFunction evaluator, u32 max_values) {
  * @param is_boxed  True if value is a heap pointer.
  * @return True if successful, false if at capacity.
  */
-inline bool closureCapture(void* closure, Unboxable value, bool is_boxed) {
+// `kind`: 2-bit slot kind. 0 = boxed HPointer, 1 = Int, 2 = Float, 3 = Char.
+// Only the first 26 typed slots fit in the 52-bit 2-bit-encoded bitfield;
+// later slots fall through as boxed with no primitive bit set.
+inline bool closureCapture(void* closure, Unboxable value, ParamKind kind) {
     Closure* cl = static_cast<Closure*>(closure);
     if (cl->n_values >= cl->max_values) {
         return false;
@@ -1005,13 +1043,30 @@ inline bool closureCapture(void* closure, Unboxable value, bool is_boxed) {
     size_t idx = cl->n_values;
     cl->values[idx] = value;
 
-    // Update unboxed bitmap
-    if (!is_boxed && idx < 52) {
-        cl->unboxed |= (1ULL << idx);
+    if (kind != PK_Boxed && idx < 26) {
+        cl->unboxed = bitmapSetKind(cl->unboxed, static_cast<unsigned>(idx),
+                                    static_cast<u64>(kind));
     }
 
     cl->n_values++;
     return true;
+}
+
+// Boolean-friendly overload: true = boxed, false = legacy Int (kind 1).
+inline bool closureCapture(void* closure, Unboxable value, bool is_boxed) {
+    return closureCapture(closure, value, is_boxed ? PK_Boxed : PK_Int);
+}
+
+// Boxes an Unboxable slot back into an HPointer based on its 2-bit kind.
+// For kind==0 the value is already an HPointer and returned directly;
+// for Int/Float/Char kinds, allocates the appropriate boxed primitive.
+inline HPointer boxElement(Unboxable v, u32 kind) {
+    switch (kind) {
+        case 1: return allocInt(v.i);
+        case 2: return allocFloat(v.f);
+        case 3: return allocChar(v.c);
+        default: return v.p;
+    }
 }
 
 // ============================================================================

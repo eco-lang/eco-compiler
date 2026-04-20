@@ -213,16 +213,12 @@ generateLambdaFunc ctx lambda =
                                 List.map (\( _, monoTy ) -> Types.monoTypeToAbi monoTy) lambda.captures
 
                             selfUnboxedBitmap =
-                                List.indexedMap
-                                    (\i mlirTy ->
-                                        if Types.isUnboxable mlirTy then
-                                            Bitwise.shiftLeftBy i 1
-
-                                        else
-                                            0
-                                    )
-                                    captureMlirTypes
-                                    |> List.foldl Bitwise.or 0
+                                List.indexedMap Tuple.pair captureMlirTypes
+                                    |> List.foldl
+                                        (\( i, mlirTy ) acc ->
+                                            Types.bitmapSetKind acc i (Types.mlirTypeToKind mlirTy)
+                                        )
+                                        0
 
                             selfOperandTypesAttr =
                                 if List.isEmpty captureMlirTypes then

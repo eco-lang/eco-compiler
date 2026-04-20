@@ -3,7 +3,8 @@ module Compiler.Generate.MLIR.Types exposing
     , monoTypeToAbi, monoTypeToOperand
     , mlirTypeToString
     , isFunctionType, countTotalArity, flattenFunctionType, isEcoValueType
-    , isUnboxable
+    , isUnboxable, mlirTypeToKind
+    , encodeUnboxedKind, bitmapSetKind
     , RecordLayout, FieldInfo, TupleLayout, CtorLayout
     , computeRecordLayout, computeTupleLayout, computeCtorLayout
     )
@@ -60,6 +61,7 @@ These are computed from MonoType shapes during code generation.
 
 -}
 
+import Bitwise
 import Compiler.AST.Monomorphized as Mono
 import Compiler.Data.Name exposing (Name)
 import Dict exposing (Dict)
@@ -323,6 +325,31 @@ isUnboxable ty =
             False
 
 
+{-| Encode an `MlirType` as a 2-bit primitive kind matching
+`encodeUnboxedKind` for `MonoType`:
+
+  - `I64` -> 1 (Int)
+  - `F64` -> 2 (Float)
+  - `I16` -> 3 (Char)
+  - anything else -> 0 (boxed)
+
+-}
+mlirTypeToKind : MlirType -> Int
+mlirTypeToKind ty =
+    case ty of
+        I64 ->
+            1
+
+        F64 ->
+            2
+
+        I16 ->
+            3
+
+        _ ->
+            0
+
+
 {-| Convert an MLIR type to its string representation.
 -}
 mlirTypeToString : MlirType -> String
@@ -414,6 +441,46 @@ type alias TupleLayout =
 -- ============================================================================
 
 
+{-| Encodes a monotype as a 2-bit primitive kind:
+
+  - `Mono.MInt`   -> 1 (i64)
+  - `Mono.MFloat` -> 2 (f64)
+  - `Mono.MChar`  -> 3 (u16)
+  - anything else -> 0 (boxed HPointer)
+
+-}
+encodeUnboxedKind : Mono.MonoType -> Int
+encodeUnboxedKind monoType =
+    case monoType of
+        Mono.MInt ->
+            1
+
+        Mono.MFloat ->
+            2
+
+        Mono.MChar ->
+            3
+
+        _ ->
+            0
+
+
+{-| Sets the 2-bit kind at slot `index` into an Int-encoded bitmap.
+-}
+bitmapSetKind : Int -> Int -> Int -> Int
+bitmapSetKind bitmap index kind =
+    let
+        shift =
+            2 * index
+
+        mask =
+            Bitwise.shiftLeftBy shift 3
+    in
+    Bitwise.or
+        (Bitwise.and bitmap (Bitwise.complement mask))
+        (Bitwise.shiftLeftBy shift (Bitwise.and kind 3))
+
+
 {-| Compute runtime layout for a record type, ordering fields to place unboxed values first.
 
 This is called during code generation to compute the layout from a record's
@@ -452,12 +519,25 @@ computeRecordLayout fields =
         unboxedCount =
             List.length sortedUnboxed
 
+        -- Record.unboxed is a full 64-bit word; 2-bit kinds fit up to 32 fields.
+        -- Fields beyond index 31 silently demote to boxed (kind 0); the
+        -- MLIR verifier enforces the cap downstream when the field count
+        -- would be emitted as an actual construct op.
         unboxedBitmap =
-            if unboxedCount == 0 then
-                0
+            List.foldl
+                (\field acc ->
+                    let
+                        kind =
+                            if field.isUnboxed && field.index < 32 then
+                                encodeUnboxedKind field.monoType
 
-            else
-                (2 ^ unboxedCount) - 1
+                            else
+                                0
+                    in
+                    bitmapSetKind acc field.index kind
+                )
+                0
+                indexedFields
     in
     { fieldCount = List.length orderedFields
     , unboxedCount = unboxedCount
@@ -478,17 +558,22 @@ computeTupleLayout types =
         elements =
             List.map (\t -> ( t, canUnbox t )) types
 
+        -- 2-bit kind per slot; tuples have up to 3 slots (6 bits).
         unboxedBitmap =
-            List.indexedMap
-                (\i ( _, isUnboxed ) ->
-                    if isUnboxed then
-                        2 ^ i
+            List.indexedMap Tuple.pair elements
+                |> List.foldl
+                    (\( i, ( ty, isUnboxed ) ) acc ->
+                        let
+                            kind =
+                                if isUnboxed then
+                                    encodeUnboxedKind ty
 
-                    else
-                        0
-                )
-                elements
-                |> List.sum
+                                else
+                                    0
+                        in
+                        bitmapSetKind acc i kind
+                    )
+                    0
     in
     { arity = List.length types
     , unboxedBitmap = unboxedBitmap
@@ -516,15 +601,22 @@ computeCtorLayout shape =
                 )
                 shape.fieldTypes
 
-        -- Clamp to 32 bits: the runtime Custom.unboxed field is only 32 bits wide.
+        -- Custom.unboxed is 48 bits wide; 2-bit kinds fit up to 24 fields.
+        -- Fields beyond index 23 silently demote to boxed (kind 0); the
+        -- verifier's size <= 24 check in EcoOps.cpp catches the overflow
+        -- if an overflowing constructor is actually emitted.
         unboxedBitmap =
             List.foldl
-                (\field a ->
-                    if field.isUnboxed && field.index < 32 then
-                        a + (2 ^ field.index)
+                (\field acc ->
+                    let
+                        kind =
+                            if field.isUnboxed && field.index < 24 then
+                                encodeUnboxedKind field.monoType
 
-                    else
-                        a
+                            else
+                                0
+                    in
+                    bitmapSetKind acc field.index kind
                 )
                 0
                 fields

@@ -72,13 +72,13 @@ struct HeapSnapshot {
             switch (hdr->tag) {
                 case Tag_Tuple2: {
                     Tuple2 *t = static_cast<Tuple2 *>(obj);
-                    if (!(hdr->unboxed & 1) && t->a.p.constant == 0) {
+                    if (Elm::tupleFieldKind(hdr->unboxed, 0) == 0 && t->a.p.constant == 0) {
                         void *child = AllocatorTestAccess::fromPointer(t->a.p);
                         if (child && allocated_set.count(child) && reachable.insert(child).second) {
                             worklist.push_back(child);
                         }
                     }
-                    if (!(hdr->unboxed & 2) && t->b.p.constant == 0) {
+                    if (Elm::tupleFieldKind(hdr->unboxed, 1) == 0 && t->b.p.constant == 0) {
                         void *child = AllocatorTestAccess::fromPointer(t->b.p);
                         if (child && allocated_set.count(child) && reachable.insert(child).second) {
                             worklist.push_back(child);
@@ -88,19 +88,19 @@ struct HeapSnapshot {
                 }
                 case Tag_Tuple3: {
                     Tuple3 *t = static_cast<Tuple3 *>(obj);
-                    if (!(hdr->unboxed & 1) && t->a.p.constant == 0) {
+                    if (Elm::tupleFieldKind(hdr->unboxed, 0) == 0 && t->a.p.constant == 0) {
                         void *child = AllocatorTestAccess::fromPointer(t->a.p);
                         if (child && allocated_set.count(child) && reachable.insert(child).second) {
                             worklist.push_back(child);
                         }
                     }
-                    if (!(hdr->unboxed & 2) && t->b.p.constant == 0) {
+                    if (Elm::tupleFieldKind(hdr->unboxed, 1) == 0 && t->b.p.constant == 0) {
                         void *child = AllocatorTestAccess::fromPointer(t->b.p);
                         if (child && allocated_set.count(child) && reachable.insert(child).second) {
                             worklist.push_back(child);
                         }
                     }
-                    if (!(hdr->unboxed & 4) && t->c.p.constant == 0) {
+                    if (Elm::tupleFieldKind(hdr->unboxed, 2) == 0 && t->c.p.constant == 0) {
                         void *child = AllocatorTestAccess::fromPointer(t->c.p);
                         if (child && allocated_set.count(child) && reachable.insert(child).second) {
                             worklist.push_back(child);
@@ -110,7 +110,7 @@ struct HeapSnapshot {
                 }
                 case Tag_Cons: {
                     Cons *cons = static_cast<Cons *>(obj);
-                    if (!(hdr->unboxed & 1) && cons->head.p.constant == 0) {
+                    if (Elm::tupleFieldKind(hdr->unboxed, 0) == 0 && cons->head.p.constant == 0) {
                         void *child = AllocatorTestAccess::fromPointer(cons->head.p);
                         if (child && allocated_set.count(child) && reachable.insert(child).second) {
                             worklist.push_back(child);
@@ -127,7 +127,7 @@ struct HeapSnapshot {
                 case Tag_Custom: {
                     Custom *custom = static_cast<Custom *>(obj);
                     for (size_t i = 0; i < hdr->size && i < 48; i++) {
-                        if (!(custom->unboxed & (1ULL << i)) && custom->values[i].p.constant == 0) {
+                        if (Elm::fieldKind(custom->unboxed, i) == 0 && custom->values[i].p.constant == 0) {
                             void *child = AllocatorTestAccess::fromPointer(custom->values[i].p);
                             if (child && allocated_set.count(child) && reachable.insert(child).second) {
                                 worklist.push_back(child);
@@ -139,7 +139,7 @@ struct HeapSnapshot {
                 case Tag_Record: {
                     Record *record = static_cast<Record *>(obj);
                     for (size_t i = 0; i < hdr->size && i < 64; i++) {
-                        if (!(record->unboxed & (1ULL << i)) && record->values[i].p.constant == 0) {
+                        if (Elm::fieldKind(record->unboxed, i) == 0 && record->values[i].p.constant == 0) {
                             void *child = AllocatorTestAccess::fromPointer(record->values[i].p);
                             if (child && allocated_set.count(child) && reachable.insert(child).second) {
                                 worklist.push_back(child);
@@ -169,7 +169,7 @@ struct HeapSnapshot {
                 case Tag_Closure: {
                     Closure *closure = static_cast<Closure *>(obj);
                     for (size_t i = 0; i < closure->n_values && i < 52; i++) {
-                        if (!(closure->unboxed & (1ULL << i)) && closure->values[i].p.constant == 0) {
+                        if (Elm::fieldKind(closure->unboxed, i) == 0 && closure->values[i].p.constant == 0) {
                             void *child = AllocatorTestAccess::fromPointer(closure->values[i].p);
                             if (child && allocated_set.count(child) && reachable.insert(child).second) {
                                 worklist.push_back(child);
@@ -242,13 +242,13 @@ struct HeapSnapshot {
             switch (hdr->tag) {
                 case Tag_Tuple2: {
                     Tuple2 *t = static_cast<Tuple2 *>(obj);
-                    if (!(hdr->unboxed & 1) && t->a.p.constant == 0) {
+                    if (Elm::tupleFieldKind(hdr->unboxed, 0) == 0 && t->a.p.constant == 0) {
                         void *child = AllocatorTestAccess::fromPointer(t->a.p);
                         if (child && obj_to_idx.count(child)) {
                             nodes[node_idx].children.push_back(obj_to_idx[child]);
                         }
                     }
-                    if (!(hdr->unboxed & 2) && t->b.p.constant == 0) {
+                    if (Elm::tupleFieldKind(hdr->unboxed, 1) == 0 && t->b.p.constant == 0) {
                         void *child = AllocatorTestAccess::fromPointer(t->b.p);
                         if (child && obj_to_idx.count(child)) {
                             nodes[node_idx].children.push_back(obj_to_idx[child]);
@@ -258,19 +258,19 @@ struct HeapSnapshot {
                 }
                 case Tag_Tuple3: {
                     Tuple3 *t = static_cast<Tuple3 *>(obj);
-                    if (!(hdr->unboxed & 1) && t->a.p.constant == 0) {
+                    if (Elm::tupleFieldKind(hdr->unboxed, 0) == 0 && t->a.p.constant == 0) {
                         void *child = AllocatorTestAccess::fromPointer(t->a.p);
                         if (child && obj_to_idx.count(child)) {
                             nodes[node_idx].children.push_back(obj_to_idx[child]);
                         }
                     }
-                    if (!(hdr->unboxed & 2) && t->b.p.constant == 0) {
+                    if (Elm::tupleFieldKind(hdr->unboxed, 1) == 0 && t->b.p.constant == 0) {
                         void *child = AllocatorTestAccess::fromPointer(t->b.p);
                         if (child && obj_to_idx.count(child)) {
                             nodes[node_idx].children.push_back(obj_to_idx[child]);
                         }
                     }
-                    if (!(hdr->unboxed & 4) && t->c.p.constant == 0) {
+                    if (Elm::tupleFieldKind(hdr->unboxed, 2) == 0 && t->c.p.constant == 0) {
                         void *child = AllocatorTestAccess::fromPointer(t->c.p);
                         if (child && obj_to_idx.count(child)) {
                             nodes[node_idx].children.push_back(obj_to_idx[child]);
@@ -281,7 +281,7 @@ struct HeapSnapshot {
                 case Tag_Cons: {
                     Cons *cons = static_cast<Cons *>(obj);
                     // Track head if boxed.
-                    if (!(hdr->unboxed & 1) && cons->head.p.constant == 0) {
+                    if (Elm::tupleFieldKind(hdr->unboxed, 0) == 0 && cons->head.p.constant == 0) {
                         void *child = AllocatorTestAccess::fromPointer(cons->head.p);
                         if (child && obj_to_idx.count(child)) {
                             nodes[node_idx].children.push_back(obj_to_idx[child]);
@@ -299,7 +299,7 @@ struct HeapSnapshot {
                 case Tag_Custom: {
                     Custom *custom = static_cast<Custom *>(obj);
                     for (size_t i = 0; i < hdr->size && i < 48; i++) {
-                        if (!(custom->unboxed & (1ULL << i)) && custom->values[i].p.constant == 0) {
+                        if (Elm::fieldKind(custom->unboxed, i) == 0 && custom->values[i].p.constant == 0) {
                             void *child = AllocatorTestAccess::fromPointer(custom->values[i].p);
                             if (child && obj_to_idx.count(child)) {
                                 nodes[node_idx].children.push_back(obj_to_idx[child]);
@@ -311,7 +311,7 @@ struct HeapSnapshot {
                 case Tag_Record: {
                     Record *record = static_cast<Record *>(obj);
                     for (size_t i = 0; i < hdr->size && i < 64; i++) {
-                        if (!(record->unboxed & (1ULL << i)) && record->values[i].p.constant == 0) {
+                        if (Elm::fieldKind(record->unboxed, i) == 0 && record->values[i].p.constant == 0) {
                             void *child = AllocatorTestAccess::fromPointer(record->values[i].p);
                             if (child && obj_to_idx.count(child)) {
                                 nodes[node_idx].children.push_back(obj_to_idx[child]);
@@ -343,7 +343,7 @@ struct HeapSnapshot {
                 case Tag_Closure: {
                     Closure *closure = static_cast<Closure *>(obj);
                     for (size_t i = 0; i < closure->n_values && i < 52; i++) {
-                        if (!(closure->unboxed & (1ULL << i)) && closure->values[i].p.constant == 0) {
+                        if (Elm::fieldKind(closure->unboxed, i) == 0 && closure->values[i].p.constant == 0) {
                             void *child = AllocatorTestAccess::fromPointer(closure->values[i].p);
                             if (child && obj_to_idx.count(child)) {
                                 nodes[node_idx].children.push_back(obj_to_idx[child]);

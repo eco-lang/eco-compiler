@@ -58,6 +58,54 @@ static int resolveAndCompare(Allocator& allocator, HPointer ap, HPointer bp,
     return 1;  // Need recursive comparison
 }
 
+// Forward decls
+static bool eqHelp(void* a, void* b, int depth);
+
+// Compare two Unboxable slots structurally for equality.
+// Returns true iff the slots are equal. Mixed kinds compare as unequal.
+static bool eqUnboxableSlot(Allocator& allocator,
+                             Elm::Unboxable a, Elm::Unboxable b,
+                             uint32_t aKind, uint32_t bKind, int depth) {
+    if (aKind != bKind) return false;
+    switch (aKind) {
+        case 1: return a.i == b.i;
+        case 2: return a.f == b.f;
+        case 3: return a.c == b.c;
+        default: {
+            void* ao; void* bo; bool eq;
+            if (resolveAndCompare(allocator, a.p, b.p, &ao, &bo, &eq) == 0) return eq;
+            return eqHelp(ao, bo, depth + 1);
+        }
+    }
+}
+
+// Compare two Unboxable slots whose kinds agree (0=boxed, 1=Int, 2=Float, 3=Char).
+// Returns -1, 0, or 1.
+static int compareUnboxableSlot(Allocator& allocator,
+                                 Elm::Unboxable a, Elm::Unboxable b, uint32_t kind,
+                                 int (*cmpFn)(void*, void*)) {
+    switch (kind) {
+        case 1:
+            if (a.i == b.i) return 0;
+            return a.i < b.i ? -1 : 1;
+        case 2:
+            if (a.f == b.f) return 0;
+            return a.f < b.f ? -1 : 1;
+        case 3:
+            if (a.c == b.c) return 0;
+            return a.c < b.c ? -1 : 1;
+        default: {
+            // Both slots are boxed HPointers - recurse.
+            void* ao; void* bo; bool eq;
+            if (resolveAndCompare(allocator, a.p, b.p, &ao, &bo, &eq) == 0) {
+                if (eq) return 0;
+                return a.p.constant < b.p.constant ? -1 : 1;
+            }
+            return cmpFn(ao, bo);
+        }
+    }
+}
+
 // Low-level comparison returning -1 (LT), 0 (EQ), or 1 (GT)
 static int cmp(void* a, void* b) {
     // Null checks
@@ -110,39 +158,20 @@ static int cmp(void* a, void* b) {
             Header* ahdr = getHeader(a);
             Header* bhdr = getHeader(b);
 
-            // Field a (bit 0)
+            // Field a (slot 0)
             {
-                bool aUb = (ahdr->unboxed & 1);
-                bool bUb = (bhdr->unboxed & 1);
-                if (aUb && bUb) {
-                    if (atup->a.i != btup->a.i) return atup->a.i < btup->a.i ? -1 : 1;
-                } else if (!aUb && !bUb) {
-                    void* a1; void* b1; bool eq;
-                    if (resolveAndCompare(allocator, atup->a.p, btup->a.p, &a1, &b1, &eq) == 0) {
-                        if (!eq) return atup->a.p.constant < btup->a.p.constant ? -1 : 1;
-                    } else {
-                        int ord = cmp(a1, b1);
-                        if (ord != 0) return ord;
-                    }
-                } else {
-                    return aUb ? -1 : 1;  // unboxed sorts before boxed (arbitrary but total)
-                }
+                uint32_t aKind = Elm::tupleFieldKind(ahdr->unboxed, 0);
+                uint32_t bKind = Elm::tupleFieldKind(bhdr->unboxed, 0);
+                if (aKind != bKind) return aKind < bKind ? -1 : 1;
+                int ord = compareUnboxableSlot(allocator, atup->a, btup->a, aKind, cmp);
+                if (ord != 0) return ord;
             }
-            // Field b (bit 1)
+            // Field b (slot 1)
             {
-                bool aUb = (ahdr->unboxed & 2);
-                bool bUb = (bhdr->unboxed & 2);
-                if (aUb && bUb) {
-                    return (atup->b.i == btup->b.i) ? 0 : (atup->b.i < btup->b.i ? -1 : 1);
-                }
-                if (!aUb && !bUb) {
-                    void* a2; void* b2; bool eq;
-                    if (resolveAndCompare(allocator, atup->b.p, btup->b.p, &a2, &b2, &eq) == 0) {
-                        return eq ? 0 : (atup->b.p.constant < btup->b.p.constant ? -1 : 1);
-                    }
-                    return cmp(a2, b2);
-                }
-                return aUb ? -1 : 1;
+                uint32_t aKind = Elm::tupleFieldKind(ahdr->unboxed, 1);
+                uint32_t bKind = Elm::tupleFieldKind(bhdr->unboxed, 1);
+                if (aKind != bKind) return aKind < bKind ? -1 : 1;
+                return compareUnboxableSlot(allocator, atup->b, btup->b, aKind, cmp);
             }
         }
 
@@ -152,58 +181,16 @@ static int cmp(void* a, void* b) {
             Header* ahdr = getHeader(a);
             Header* bhdr = getHeader(b);
 
-            // Field a (bit 0)
-            {
-                bool aUb = (ahdr->unboxed & 1);
-                bool bUb = (bhdr->unboxed & 1);
-                if (aUb && bUb) {
-                    if (atup->a.i != btup->a.i) return atup->a.i < btup->a.i ? -1 : 1;
-                } else if (!aUb && !bUb) {
-                    void* a1; void* b1; bool eq;
-                    if (resolveAndCompare(allocator, atup->a.p, btup->a.p, &a1, &b1, &eq) == 0) {
-                        if (!eq) return atup->a.p.constant < btup->a.p.constant ? -1 : 1;
-                    } else {
-                        int ord = cmp(a1, b1);
-                        if (ord != 0) return ord;
-                    }
-                } else {
-                    return aUb ? -1 : 1;
-                }
+            for (unsigned i = 0; i < 3; ++i) {
+                uint32_t aKind = Elm::tupleFieldKind(ahdr->unboxed, i);
+                uint32_t bKind = Elm::tupleFieldKind(bhdr->unboxed, i);
+                if (aKind != bKind) return aKind < bKind ? -1 : 1;
+                Elm::Unboxable aSlot = (i == 0) ? atup->a : (i == 1) ? atup->b : atup->c;
+                Elm::Unboxable bSlot = (i == 0) ? btup->a : (i == 1) ? btup->b : btup->c;
+                int ord = compareUnboxableSlot(allocator, aSlot, bSlot, aKind, cmp);
+                if (ord != 0 || i == 2) return ord;
             }
-            // Field b (bit 1)
-            {
-                bool aUb = (ahdr->unboxed & 2);
-                bool bUb = (bhdr->unboxed & 2);
-                if (aUb && bUb) {
-                    if (atup->b.i != btup->b.i) return atup->b.i < btup->b.i ? -1 : 1;
-                } else if (!aUb && !bUb) {
-                    void* a2; void* b2; bool eq;
-                    if (resolveAndCompare(allocator, atup->b.p, btup->b.p, &a2, &b2, &eq) == 0) {
-                        if (!eq) return atup->b.p.constant < btup->b.p.constant ? -1 : 1;
-                    } else {
-                        int ord = cmp(a2, b2);
-                        if (ord != 0) return ord;
-                    }
-                } else {
-                    return aUb ? -1 : 1;
-                }
-            }
-            // Field c (bit 2)
-            {
-                bool aUb = (ahdr->unboxed & 4);
-                bool bUb = (bhdr->unboxed & 4);
-                if (aUb && bUb) {
-                    return (atup->c.i == btup->c.i) ? 0 : (atup->c.i < btup->c.i ? -1 : 1);
-                }
-                if (!aUb && !bUb) {
-                    void* a3; void* b3; bool eq;
-                    if (resolveAndCompare(allocator, atup->c.p, btup->c.p, &a3, &b3, &eq) == 0) {
-                        return eq ? 0 : (atup->c.p.constant < btup->c.p.constant ? -1 : 1);
-                    }
-                    return cmp(a3, b3);
-                }
-                return aUb ? -1 : 1;
-            }
+            return 0;
         }
 
         case Tag_Cons: {
@@ -215,36 +202,52 @@ static int cmp(void* a, void* b) {
                 Header* ahdr = getHeader(ax);
                 Header* bhdr = getHeader(bx);
 
-                bool aHUnboxed = (ahdr->unboxed & 1);
-                bool bHUnboxed = (bhdr->unboxed & 1);
+                uint32_t aKind = Elm::tupleFieldKind(ahdr->unboxed, 0);
+                uint32_t bKind = Elm::tupleFieldKind(bhdr->unboxed, 0);
 
-                if (aHUnboxed && bHUnboxed) {
-                    if (ax->head.i != bx->head.i) {
-                        return ax->head.i < bx->head.i ? -1 : 1;
-                    }
-                } else if (!aHUnboxed && !bHUnboxed) {
-                    void* aHead; void* bHead; bool eq;
-                    if (resolveAndCompare(allocator, ax->head.p, bx->head.p,
-                                          &aHead, &bHead, &eq) == 0) {
-                        if (!eq) return ax->head.p.constant < bx->head.p.constant ? -1 : 1;
-                    } else {
-                        int ord = cmp(aHead, bHead);
-                        if (ord != 0) return ord;
-                    }
+                if (aKind == bKind) {
+                    int ord = compareUnboxableSlot(allocator, ax->head, bx->head, aKind, cmp);
+                    if (ord != 0) return ord;
                 } else {
-                    // Mixed unboxed/boxed: resolve the boxed head for comparison.
-                    i64 unboxedVal = aHUnboxed ? ax->head.i : bx->head.i;
-                    HPointer boxedHP = aHUnboxed ? bx->head.p : ax->head.p;
-                    void* boxedPtr = safeResolve(allocator, boxedHP);
-                    if (!boxedPtr) return aHUnboxed ? -1 : 1;
-                    Header* hdr = static_cast<Header*>(boxedPtr);
-                    if (hdr->tag == Tag_Int) {
-                        i64 boxedVal = static_cast<ElmInt*>(boxedPtr)->value;
-                        if (unboxedVal != boxedVal) {
-                            return unboxedVal < boxedVal ? -1 : 1;
+                    // Mixed kinds — attempt mixed Int+boxed-Int comparison for backward
+                    // compatibility with mono-type lists; otherwise arbitrary total order
+                    // by kind.
+                    if (aKind == 0 || bKind == 0) {
+                        // One side boxed, the other primitive: resolve boxed and compare
+                        // if both are the same primitive type.
+                        HPointer boxedHP = (aKind == 0) ? ax->head.p : bx->head.p;
+                        Elm::Unboxable prim = (aKind == 0) ? bx->head : ax->head;
+                        uint32_t primKind = (aKind == 0) ? bKind : aKind;
+                        void* boxedPtr = safeResolve(allocator, boxedHP);
+                        if (!boxedPtr) return (aKind == 0) ? 1 : -1;
+                        Header* hdr = static_cast<Header*>(boxedPtr);
+                        if ((hdr->tag == Tag_Int && primKind == 1)
+                         || (hdr->tag == Tag_Float && primKind == 2)
+                         || (hdr->tag == Tag_Char && primKind == 3)) {
+                            // Compare boxed primitive vs unboxed primitive.
+                            int ord = 0;
+                            if (primKind == 1) {
+                                i64 bv = static_cast<ElmInt*>(boxedPtr)->value;
+                                i64 uv = prim.i;
+                                if (aKind == 0) { ord = (bv == uv) ? 0 : (bv < uv ? -1 : 1); }
+                                else             { ord = (uv == bv) ? 0 : (uv < bv ? -1 : 1); }
+                            } else if (primKind == 2) {
+                                f64 bv = static_cast<ElmFloat*>(boxedPtr)->value;
+                                f64 uv = prim.f;
+                                if (aKind == 0) { ord = (bv == uv) ? 0 : (bv < uv ? -1 : 1); }
+                                else             { ord = (uv == bv) ? 0 : (uv < bv ? -1 : 1); }
+                            } else {
+                                u16 bv = static_cast<ElmChar*>(boxedPtr)->value;
+                                u16 uv = prim.c;
+                                if (aKind == 0) { ord = (bv == uv) ? 0 : (bv < uv ? -1 : 1); }
+                                else             { ord = (uv == bv) ? 0 : (uv < bv ? -1 : 1); }
+                            }
+                            if (ord != 0) return ord;
+                        } else {
+                            return aKind < bKind ? -1 : 1;
                         }
                     } else {
-                        return aHUnboxed ? -1 : 1;
+                        return aKind < bKind ? -1 : 1;
                     }
                 }
 
@@ -282,9 +285,6 @@ HPointer compare(void* a, void* b) {
 // ============================================================================
 // Equality Operations
 // ============================================================================
-
-// Forward declaration
-static bool eqHelp(void* a, void* b, int depth);
 
 bool equal(void* a, void* b) {
     return eqHelp(a, b, 0);
@@ -338,38 +338,12 @@ static bool eqHelp(void* a, void* b, int depth) {
             Elm::Tuple2* btup = static_cast<Elm::Tuple2*>(b);
             Header* ahdr = getHeader(a);
             Header* bhdr = getHeader(b);
-
-            // Field a (bit 0 of unboxed)
-            {
-                bool aUb = (ahdr->unboxed & 1);
-                bool bUb = (bhdr->unboxed & 1);
-                if (aUb && bUb) {
-                    if (atup->a.i != btup->a.i) return false;
-                } else if (!aUb && !bUb) {
-                    void* a1; void* b1; bool eq;
-                    if (resolveAndCompare(allocator, atup->a.p, btup->a.p, &a1, &b1, &eq) == 0) {
-                        if (!eq) return false;
-                    } else {
-                        if (!eqHelp(a1, b1, depth + 1)) return false;
-                    }
-                } else {
-                    return false;  // mixed unboxed/boxed — never equal structurally
-                }
-            }
-            // Field b (bit 1 of unboxed)
-            {
-                bool aUb = (ahdr->unboxed & 2);
-                bool bUb = (bhdr->unboxed & 2);
-                if (aUb && bUb) return atup->b.i == btup->b.i;
-                if (!aUb && !bUb) {
-                    void* a2; void* b2; bool eq;
-                    if (resolveAndCompare(allocator, atup->b.p, btup->b.p, &a2, &b2, &eq) == 0) {
-                        return eq;
-                    }
-                    return eqHelp(a2, b2, depth + 1);
-                }
-                return false;  // mixed
-            }
+            if (!eqUnboxableSlot(allocator, atup->a, btup->a,
+                                  Elm::tupleFieldKind(ahdr->unboxed, 0),
+                                  Elm::tupleFieldKind(bhdr->unboxed, 0), depth)) return false;
+            return eqUnboxableSlot(allocator, atup->b, btup->b,
+                                    Elm::tupleFieldKind(ahdr->unboxed, 1),
+                                    Elm::tupleFieldKind(bhdr->unboxed, 1), depth);
         }
 
         case Tag_Tuple3: {
@@ -377,55 +351,15 @@ static bool eqHelp(void* a, void* b, int depth) {
             Elm::Tuple3* btup = static_cast<Elm::Tuple3*>(b);
             Header* ahdr = getHeader(a);
             Header* bhdr = getHeader(b);
-
-            // Field a (bit 0)
-            {
-                bool aUb = (ahdr->unboxed & 1);
-                bool bUb = (bhdr->unboxed & 1);
-                if (aUb && bUb) {
-                    if (atup->a.i != btup->a.i) return false;
-                } else if (!aUb && !bUb) {
-                    void* a1; void* b1; bool eq;
-                    if (resolveAndCompare(allocator, atup->a.p, btup->a.p, &a1, &b1, &eq) == 0) {
-                        if (!eq) return false;
-                    } else {
-                        if (!eqHelp(a1, b1, depth + 1)) return false;
-                    }
-                } else {
-                    return false;
-                }
-            }
-            // Field b (bit 1)
-            {
-                bool aUb = (ahdr->unboxed & 2);
-                bool bUb = (bhdr->unboxed & 2);
-                if (aUb && bUb) {
-                    if (atup->b.i != btup->b.i) return false;
-                } else if (!aUb && !bUb) {
-                    void* a2; void* b2; bool eq;
-                    if (resolveAndCompare(allocator, atup->b.p, btup->b.p, &a2, &b2, &eq) == 0) {
-                        if (!eq) return false;
-                    } else {
-                        if (!eqHelp(a2, b2, depth + 1)) return false;
-                    }
-                } else {
-                    return false;
-                }
-            }
-            // Field c (bit 2)
-            {
-                bool aUb = (ahdr->unboxed & 4);
-                bool bUb = (bhdr->unboxed & 4);
-                if (aUb && bUb) return atup->c.i == btup->c.i;
-                if (!aUb && !bUb) {
-                    void* a3; void* b3; bool eq;
-                    if (resolveAndCompare(allocator, atup->c.p, btup->c.p, &a3, &b3, &eq) == 0) {
-                        return eq;
-                    }
-                    return eqHelp(a3, b3, depth + 1);
-                }
-                return false;
-            }
+            if (!eqUnboxableSlot(allocator, atup->a, btup->a,
+                                  Elm::tupleFieldKind(ahdr->unboxed, 0),
+                                  Elm::tupleFieldKind(bhdr->unboxed, 0), depth)) return false;
+            if (!eqUnboxableSlot(allocator, atup->b, btup->b,
+                                  Elm::tupleFieldKind(ahdr->unboxed, 1),
+                                  Elm::tupleFieldKind(bhdr->unboxed, 1), depth)) return false;
+            return eqUnboxableSlot(allocator, atup->c, btup->c,
+                                    Elm::tupleFieldKind(ahdr->unboxed, 2),
+                                    Elm::tupleFieldKind(bhdr->unboxed, 2), depth);
         }
 
         case Tag_Cons: {
@@ -436,34 +370,31 @@ static bool eqHelp(void* a, void* b, int depth) {
             while (ax && bx) {
                 Header* ahdr = getHeader(ax);
                 Header* bhdr = getHeader(bx);
+                uint32_t aKind = Elm::tupleFieldKind(ahdr->unboxed, 0);
+                uint32_t bKind = Elm::tupleFieldKind(bhdr->unboxed, 0);
 
-                // Compare heads
-                bool aHUnboxed = (ahdr->unboxed & 1);
-                bool bHUnboxed = (bhdr->unboxed & 1);
-
-                if (aHUnboxed && bHUnboxed) {
-                    if (ax->head.i != bx->head.i) return false;
-                } else if (aHUnboxed != bHUnboxed) {
-                    // Mixed: one head is unboxed (raw i64), other is boxed (HPointer).
-                    // Resolve the boxed head and compare values.
-                    i64 unboxedVal = aHUnboxed ? ax->head.i : bx->head.i;
-                    HPointer boxedHP = aHUnboxed ? bx->head.p : ax->head.p;
+                if (aKind == bKind) {
+                    if (!eqUnboxableSlot(allocator, ax->head, bx->head, aKind, bKind, depth)) return false;
+                } else if (aKind == 0 || bKind == 0) {
+                    // One boxed, one unboxed primitive. Resolve boxed side to check if
+                    // it matches the primitive value.
+                    HPointer boxedHP = (aKind == 0) ? ax->head.p : bx->head.p;
+                    Elm::Unboxable prim = (aKind == 0) ? bx->head : ax->head;
+                    uint32_t primKind = (aKind == 0) ? bKind : aKind;
                     void* boxedPtr = safeResolve(allocator, boxedHP);
                     if (!boxedPtr) return false;
                     Header* hdr = static_cast<Header*>(boxedPtr);
-                    if (hdr->tag == Tag_Int) {
-                        if (static_cast<ElmInt*>(boxedPtr)->value != unboxedVal) return false;
+                    if (hdr->tag == Tag_Int && primKind == 1) {
+                        if (static_cast<ElmInt*>(boxedPtr)->value != prim.i) return false;
+                    } else if (hdr->tag == Tag_Float && primKind == 2) {
+                        if (static_cast<ElmFloat*>(boxedPtr)->value != prim.f) return false;
+                    } else if (hdr->tag == Tag_Char && primKind == 3) {
+                        if (static_cast<ElmChar*>(boxedPtr)->value != prim.c) return false;
                     } else {
                         return false;
                     }
                 } else {
-                    void* aHead; void* bHead; bool eq;
-                    if (resolveAndCompare(allocator, ax->head.p, bx->head.p,
-                                          &aHead, &bHead, &eq) == 0) {
-                        if (!eq) return false;
-                    } else {
-                        if (!eqHelp(aHead, bHead, depth + 1)) return false;
-                    }
+                    return false;
                 }
 
                 // Move to tails
@@ -483,32 +414,13 @@ static bool eqHelp(void* a, void* b, int depth) {
 
             if (ac->ctor != bc->ctor) return false;
 
-            // Compare fields
             u32 fieldCount = ac->header.size;
             if (fieldCount != bc->header.size) return false;
 
             for (u32 i = 0; i < fieldCount; ++i) {
-                bool aUnboxed = (ac->unboxed >> i) & 1;
-                bool bUnboxed = (bc->unboxed >> i) & 1;
-
-                if (aUnboxed && bUnboxed) {
-                    // Both unboxed - compare raw values
-                    if (ac->values[i].i != bc->values[i].i) return false;
-                } else if (aUnboxed || bUnboxed) {
-                    // Mixed unboxed/boxed - not equal
-                    return false;
-                } else {
-                    // Both boxed - handle embedded constants
-                    void* aVal;
-                    void* bVal;
-                    bool eqResult;
-                    if (resolveAndCompare(allocator, ac->values[i].p, bc->values[i].p,
-                                          &aVal, &bVal, &eqResult) == 0) {
-                        if (!eqResult) return false;
-                    } else {
-                        if (!eqHelp(aVal, bVal, depth + 1)) return false;
-                    }
-                }
+                uint32_t aKind = static_cast<uint32_t>(Elm::fieldKind(ac->unboxed, i));
+                uint32_t bKind = static_cast<uint32_t>(Elm::fieldKind(bc->unboxed, i));
+                if (!eqUnboxableSlot(allocator, ac->values[i], bc->values[i], aKind, bKind, depth)) return false;
             }
 
             return true;
@@ -522,22 +434,9 @@ static bool eqHelp(void* a, void* b, int depth) {
             if (fieldCount != br->header.size) return false;
 
             for (u32 i = 0; i < fieldCount; ++i) {
-                bool aUnboxed = (ar->unboxed >> i) & 1;
-                bool bUnboxed = (br->unboxed >> i) & 1;
-
-                if (aUnboxed && bUnboxed) {
-                    if (ar->values[i].i != br->values[i].i) return false;
-                } else if (aUnboxed || bUnboxed) {
-                    return false;
-                } else {
-                    void* aVal; void* bVal; bool eq;
-                    if (resolveAndCompare(allocator, ar->values[i].p, br->values[i].p,
-                                          &aVal, &bVal, &eq) == 0) {
-                        if (!eq) return false;
-                    } else {
-                        if (!eqHelp(aVal, bVal, depth + 1)) return false;
-                    }
-                }
+                uint32_t aKind = static_cast<uint32_t>(Elm::fieldKind(ar->unboxed, i));
+                uint32_t bKind = static_cast<uint32_t>(Elm::fieldKind(br->unboxed, i));
+                if (!eqUnboxableSlot(allocator, ar->values[i], br->values[i], aKind, bKind, depth)) return false;
             }
 
             return true;
@@ -549,23 +448,12 @@ static bool eqHelp(void* a, void* b, int depth) {
 
             if (aa->length != ba->length) return false;
 
-            bool aUnboxed = aa->header.unboxed != 0;
-            bool bUnboxed = ba->header.unboxed != 0;
-
-            if (aUnboxed != bUnboxed) return false;
+            uint32_t aKind = aa->header.unboxed & 0x3;
+            uint32_t bKind = ba->header.unboxed & 0x3;
+            if (aKind != bKind) return false;
 
             for (u32 i = 0; i < aa->length; ++i) {
-                if (aUnboxed) {
-                    if (aa->elements[i].i != ba->elements[i].i) return false;
-                } else {
-                    void* aVal; void* bVal; bool eq;
-                    if (resolveAndCompare(allocator, aa->elements[i].p, ba->elements[i].p,
-                                          &aVal, &bVal, &eq) == 0) {
-                        if (!eq) return false;
-                    } else {
-                        if (!eqHelp(aVal, bVal, depth + 1)) return false;
-                    }
-                }
+                if (!eqUnboxableSlot(allocator, aa->elements[i], ba->elements[i], aKind, bKind, depth)) return false;
             }
 
             return true;

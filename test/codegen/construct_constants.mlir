@@ -87,13 +87,13 @@ module {
 
     // unboxed_bitmap = 2 means field 1 is unboxed
     %i20 = arith.constant 20 : i64
-    %mix_unboxed2 = eco.construct.custom(%true, %i20) {tag = 31 : i64, size = 2 : i64, unboxed_bitmap = 2 : i64} : (!eco.value, i64) -> !eco.value
+    %mix_unboxed2 = eco.construct.custom(%true, %i20) {tag = 31 : i64, size = 2 : i64, unboxed_bitmap = 4 : i64} : (!eco.value, i64) -> !eco.value
     eco.dbg %mix_unboxed2 : !eco.value
     // CHECK: Ctor31 True 20
 
     // unboxed_bitmap = 5 (0b101) means fields 0 and 2 are unboxed
     %i30 = arith.constant 30 : i64
-    %mix_unboxed3 = eco.construct.custom(%i10, %false, %i30) {tag = 32 : i64, size = 3 : i64, unboxed_bitmap = 5 : i64} : (i64, !eco.value, i64) -> !eco.value
+    %mix_unboxed3 = eco.construct.custom(%i10, %false, %i30) {tag = 32 : i64, size = 3 : i64, unboxed_bitmap = 17 : i64} : (i64, !eco.value, i64) -> !eco.value
     eco.dbg %mix_unboxed3 : !eco.value
     // CHECK: Ctor32 10 False 30
 

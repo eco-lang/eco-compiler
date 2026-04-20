@@ -67,15 +67,14 @@ HPointer initializeFromList(u32 max, HPointer list) {
         Cons* c = static_cast<Cons*>(cell);
         Header* hdr = static_cast<Header*>(cell);
 
-        // Check if head is unboxed
-        bool isBoxed = !(hdr->unboxed & 1);
+        uint32_t kind = Elm::tupleFieldKind(hdr->unboxed, 0);
         void* arrObj = allocator.resolve(arr);
 
-        if (isBoxed) {
+        if (kind == 0) {
             alloc::arrayPush(arrObj, alloc::boxed(c->head.p), true);
         } else {
-            // For unboxed values, we can store them directly
-            alloc::arrayPush(arrObj, c->head, false);
+            // Unboxed primitive — use kind-aware push to set the array's uniform kind.
+            alloc::arrayPushKind(arrObj, c->head, static_cast<u8>(kind));
         }
 
         current = c->tail;

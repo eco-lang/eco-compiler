@@ -116,6 +116,9 @@ static BoxedArgsResult emitRootedBoxedArgsArray(
     }
 
     // Zero-init + register as all-HPointer root range before population.
+    // Note: eco_gc_push_stack_range uses a 1-bit-per-slot mask (shadow-stack
+    // encoding), distinct from the 2-bit-per-slot kind encoding used in heap
+    // objects and closures. This buffer contains all HPointer-encoded args.
     uint64_t allBoxedMask = (numNewArgs >= 64) ? ~0ULL : ((1ULL << numNewArgs) - 1);
     Value savedDepth = emitPushArgsRootRange(
         rewriter, loc, runtime, argsArray, numNewArgs, allBoxedMask);
@@ -973,6 +976,8 @@ static Value emitInlineClosureCall(ConversionPatternRewriter &rewriter, Location
     }
 
     // All-boxed array: register as GC root range before population.
+    // The shadow-stack mask is 1-bit-per-slot (GC treats every slot as HPointer);
+    // distinct from the 2-bit-per-slot kind encoding used in heap/closure bitmaps.
     uint64_t allBoxedMask = (numNewArgs >= 64) ? ~0ULL : ((1ULL << numNewArgs) - 1);
     Value savedRange = emitPushArgsRootRange(rewriter, loc, runtime, newArgsArray, numNewArgs, allBoxedMask);
 
@@ -1169,8 +1174,13 @@ struct PapExtendOpLowering : public OpConversionPattern<PapExtendOp> {
         }
 
         // === 3. Root typed array BEFORE boxing calls can trigger GC ===
-        uint64_t countMask = (numNewArgs >= 64) ? ~0ULL : ((1ULL << numNewArgs) - 1);
-        uint64_t typedMask = ~newargsBitmap & countMask;
+        // Under the 2-bit-per-slot encoding, HPointer slots are those with kind 0.
+        uint64_t typedMask = 0;
+        for (unsigned i = 0; i < numNewArgs; ++i) {
+            if (((newargsBitmap >> (2 * i)) & 0x3ULL) == 0) {
+                typedMask |= (1ULL << i);
+            }
+        }
         Value typedSavedDepth;
         {
             auto rangePointFunc = runtime.getOrCreateGcStackRangePoint(rewriter);
@@ -1371,9 +1381,13 @@ struct PapExtendOpLowering : public OpConversionPattern<PapExtendOp> {
                 rewriter.create<LLVM::StoreOp>(loc, arg, slotPtr);
             }
 
-            // Register with correct mask: ~newargsBitmap marks HPointer slots.
-            uint64_t countMask = (numNewArgs >= 64) ? ~0ULL : ((1ULL << numNewArgs) - 1);
-            uint64_t hptrMask = ~newargsBitmap & countMask;
+            // Under 2-bit-per-slot encoding, HPointer slots are those with kind 0.
+            uint64_t hptrMask = 0;
+            for (unsigned i = 0; i < numNewArgs; ++i) {
+                if (((newargsBitmap >> (2 * i)) & 0x3ULL) == 0) {
+                    hptrMask |= (1ULL << i);
+                }
+            }
             {
                 auto pushFunc = runtime.getOrCreateGcPushStackRange(rewriter);
                 auto countConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, numNewArgs);

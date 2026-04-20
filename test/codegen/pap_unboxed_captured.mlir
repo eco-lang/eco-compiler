@@ -24,7 +24,7 @@ module {
       function = @add_three_ints,
       arity = 3 : i64,
       num_captured = 2 : i64,
-      unboxed_bitmap = 3 : i64
+      unboxed_bitmap = 5 : i64
     } : (i64, i64) -> !eco.value
     eco.dbg %pap : !eco.value
     // CHECK: <fn>
@@ -47,7 +47,7 @@ module {
       function = @add_three_ints,
       arity = 3 : i64,
       num_captured = 2 : i64,
-      unboxed_bitmap = 3 : i64
+      unboxed_bitmap = 5 : i64
     } : (i64, i64) -> !eco.value
 
     %i50 = arith.constant 50 : i64

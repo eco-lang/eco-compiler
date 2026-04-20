@@ -585,35 +585,35 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
                 switch (h->tag) {
                     case Tag_Cons: {
                         Cons* c = static_cast<Cons*>(static_cast<void*>(scan));
-                        if (!(h->unboxed & 1)) checkChild(c->head.p, "head", 0);
+                        if (Elm::tupleFieldKind(h->unboxed, 0) == 0) checkChild(c->head.p, "head", 0);
                         checkChild(c->tail, "tail", 0);
                         break;
                     }
                     case Tag_Tuple2: {
                         Tuple2* t = static_cast<Tuple2*>(static_cast<void*>(scan));
-                        if (!(h->unboxed & 1)) checkChild(t->a.p, "a", 0);
-                        if (!(h->unboxed & 2)) checkChild(t->b.p, "b", 1);
+                        if (Elm::tupleFieldKind(h->unboxed, 0) == 0) checkChild(t->a.p, "a", 0);
+                        if (Elm::tupleFieldKind(h->unboxed, 1) == 0) checkChild(t->b.p, "b", 1);
                         break;
                     }
                     case Tag_Tuple3: {
                         Tuple3* t = static_cast<Tuple3*>(static_cast<void*>(scan));
-                        if (!(h->unboxed & 1)) checkChild(t->a.p, "a", 0);
-                        if (!(h->unboxed & 2)) checkChild(t->b.p, "b", 1);
-                        if (!(h->unboxed & 4)) checkChild(t->c.p, "c", 2);
+                        if (Elm::tupleFieldKind(h->unboxed, 0) == 0) checkChild(t->a.p, "a", 0);
+                        if (Elm::tupleFieldKind(h->unboxed, 1) == 0) checkChild(t->b.p, "b", 1);
+                        if (Elm::tupleFieldKind(h->unboxed, 2) == 0) checkChild(t->c.p, "c", 2);
                         break;
                     }
                     case Tag_Custom: {
                         Custom* c = static_cast<Custom*>(static_cast<void*>(scan));
-                        for (u32 i = 0; i < h->size && i < 48; i++) {
-                            if (!(c->unboxed & (1ULL << i)))
+                        for (u32 i = 0; i < h->size && i < 24; i++) {
+                            if (Elm::fieldKind(c->unboxed, i) == 0)
                                 checkChild(c->values[i].p, "custom", i);
                         }
                         break;
                     }
                     case Tag_Record: {
                         Record* r = static_cast<Record*>(static_cast<void*>(scan));
-                        for (u32 i = 0; i < h->size && i < 64; i++) {
-                            if (!(r->unboxed & (1ULL << i)))
+                        for (u32 i = 0; i < h->size && i < 32; i++) {
+                            if (Elm::fieldKind(r->unboxed, i) == 0)
                                 checkChild(r->values[i].p, "record", i);
                         }
                         break;
@@ -621,7 +621,7 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
                     case Tag_Closure: {
                         Closure* cl = static_cast<Closure*>(static_cast<void*>(scan));
                         for (u32 i = 0; i < h->size; i++) {
-                            if (!(cl->unboxed & (1ULL << i)))
+                            if (Elm::fieldKind(cl->unboxed, i) == 0)
                                 checkChild(cl->values[i].p, "closure", i);
                         }
                         break;
@@ -940,28 +940,28 @@ void NurserySpace::scanObject(void *obj, OldGenSpace &oldgen, std::vector<void*>
 
         case Tag_Tuple2: {
             Tuple2 *t = static_cast<Tuple2 *>(obj);
-            evacuateUnboxable(t->a, !(hdr->unboxed & 1), oldgen, promoted_objects);
-            evacuateUnboxable(t->b, !(hdr->unboxed & 2), oldgen, promoted_objects);
+            evacuateUnboxable(t->a, Elm::tupleFieldKind(hdr->unboxed, 0) == 0, oldgen, promoted_objects);
+            evacuateUnboxable(t->b, Elm::tupleFieldKind(hdr->unboxed, 1) == 0, oldgen, promoted_objects);
             break;
         }
         case Tag_Tuple3: {
             Tuple3 *t = static_cast<Tuple3 *>(obj);
-            evacuateUnboxable(t->a, !(hdr->unboxed & 1), oldgen, promoted_objects);
-            evacuateUnboxable(t->b, !(hdr->unboxed & 2), oldgen, promoted_objects);
-            evacuateUnboxable(t->c, !(hdr->unboxed & 4), oldgen, promoted_objects);
+            evacuateUnboxable(t->a, Elm::tupleFieldKind(hdr->unboxed, 0) == 0, oldgen, promoted_objects);
+            evacuateUnboxable(t->b, Elm::tupleFieldKind(hdr->unboxed, 1) == 0, oldgen, promoted_objects);
+            evacuateUnboxable(t->c, Elm::tupleFieldKind(hdr->unboxed, 2) == 0, oldgen, promoted_objects);
             break;
         }
         case Tag_Custom: {
             Custom *c = static_cast<Custom *>(obj);
-            for (u32 i = 0; i < hdr->size && i < 48; i++) {
-                evacuateUnboxable(c->values[i], !(c->unboxed & (1ULL << i)), oldgen, promoted_objects);
+            for (u32 i = 0; i < hdr->size && i < 24; i++) {
+                evacuateUnboxable(c->values[i], Elm::fieldKind(c->unboxed, i) == 0, oldgen, promoted_objects);
             }
             break;
         }
         case Tag_Record: {
             Record *r = static_cast<Record *>(obj);
-            for (u32 i = 0; i < hdr->size && i < 64; i++) {
-                evacuateUnboxable(r->values[i], !(r->unboxed & (1ULL << i)), oldgen, promoted_objects);
+            for (u32 i = 0; i < hdr->size && i < 32; i++) {
+                evacuateUnboxable(r->values[i], Elm::fieldKind(r->unboxed, i) == 0, oldgen, promoted_objects);
             }
             break;
         }
@@ -976,7 +976,7 @@ void NurserySpace::scanObject(void *obj, OldGenSpace &oldgen, std::vector<void*>
         case Tag_Closure: {
             Closure *cl = static_cast<Closure *>(obj);
             for (u32 i = 0; i < hdr->size; i++) {
-                evacuateUnboxable(cl->values[i], !(cl->unboxed & (1ULL << i)), oldgen, promoted_objects);
+                evacuateUnboxable(cl->values[i], Elm::fieldKind(cl->unboxed, i) == 0, oldgen, promoted_objects);
             }
             break;
         }
@@ -993,7 +993,7 @@ void NurserySpace::scanObject(void *obj, OldGenSpace &oldgen, std::vector<void*>
                 // Pass 2: Copy heads (only if needed)
 
                 // First evacuate this cell's head
-                evacuateUnboxable(c->head, !(hdr->unboxed & 1), oldgen, promoted_objects);
+                evacuateUnboxable(c->head, Elm::tupleFieldKind(hdr->unboxed, 0) == 0, oldgen, promoted_objects);
 
                 // Then copy the tail spine if it's in from-space
                 if (c->tail.constant == 0) {
@@ -1013,7 +1013,7 @@ void NurserySpace::scanObject(void *obj, OldGenSpace &oldgen, std::vector<void*>
                 // If tail is Nil constant, nothing to do
             } else {
                 // Standard BFS: evacuate head and tail normally
-                evacuateUnboxable(c->head, !(hdr->unboxed & 1), oldgen, promoted_objects);
+                evacuateUnboxable(c->head, Elm::tupleFieldKind(hdr->unboxed, 0) == 0, oldgen, promoted_objects);
                 evacuate(c->tail, oldgen, promoted_objects);
             }
             break;
@@ -1042,7 +1042,7 @@ void NurserySpace::scanObject(void *obj, OldGenSpace &oldgen, std::vector<void*>
 
         case Tag_Array: {
             ElmArray *arr = static_cast<ElmArray *>(obj);
-            bool is_boxed = !arr->header.unboxed;
+            bool is_boxed = (arr->header.unboxed & 0x3) == 0;
             for (u32 i = 0; i < arr->length; i++) {
                 evacuateUnboxable(arr->elements[i], is_boxed, oldgen, promoted_objects);
             }
@@ -1132,7 +1132,7 @@ void* NurserySpace::evacuateListSpine(HPointer &ptr, OldGenSpace &oldgen,
         Cons* cons = static_cast<Cons*>(obj);
 
         // Check if head needs evacuation (boxed pointer, not a constant)
-        bool head_is_boxed = !(hdr->unboxed & 1);
+        bool head_is_boxed = Elm::tupleFieldKind(hdr->unboxed, 0) == 0;
         if (head_is_boxed && cons->head.p.constant == 0) {
             needs_head_pass = true;
         }
@@ -1221,7 +1221,7 @@ void NurserySpace::evacuateListHeads(void* first_cons, OldGenSpace &oldgen,
         Cons* cons = static_cast<Cons*>(current);
 
         // Evacuate head if it's boxed
-        bool head_is_boxed = !(hdr->unboxed & 1);
+        bool head_is_boxed = Elm::tupleFieldKind(hdr->unboxed, 0) == 0;
         if (head_is_boxed) {
             evacuate(cons->head.p, oldgen, promoted_objects);
         }

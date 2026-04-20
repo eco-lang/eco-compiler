@@ -93,7 +93,7 @@ module {
     // === Test constant at end of structure with multiple unboxed fields ===
     // i64, f64, !eco.value - unboxed_bitmap = 3 (fields 0 and 1 are unboxed)
     %pi = arith.constant 3.14159 : f64
-    %mix3 = eco.construct.custom(%raw42, %pi, %false) {tag = 12 : i64, size = 3 : i64, unboxed_bitmap = 3 : i64} : (i64, f64, !eco.value) -> !eco.value
+    %mix3 = eco.construct.custom(%raw42, %pi, %false) {tag = 12 : i64, size = 3 : i64, unboxed_bitmap = 9 : i64} : (i64, f64, !eco.value) -> !eco.value
     eco.dbg %mix3 : !eco.value
     // CHECK: Ctor12
 
@@ -104,7 +104,7 @@ module {
     // === Test constant in middle of structure ===
     // i64, !eco.value, i64 - unboxed_bitmap = 5 (0b101, fields 0 and 2 are unboxed)
     %i99 = arith.constant 99 : i64
-    %mix4 = eco.construct.custom(%raw42, %nil, %i99) {tag = 13 : i64, size = 3 : i64, unboxed_bitmap = 5 : i64} : (i64, !eco.value, i64) -> !eco.value
+    %mix4 = eco.construct.custom(%raw42, %nil, %i99) {tag = 13 : i64, size = 3 : i64, unboxed_bitmap = 17 : i64} : (i64, !eco.value, i64) -> !eco.value
     eco.dbg %mix4 : !eco.value
     // CHECK: Ctor13 42 [] 99
 

@@ -57,7 +57,8 @@ HPointer fromList(HPointer chars) {
 
         Cons* c = static_cast<Cons*>(cell);
         u16 charVal;
-        if (c->header.unboxed & 1) {
+        if (Elm::tupleFieldKind(c->header.unboxed, 0) != 0) {
+            // Unboxed slot — for a char list this should be kind 3 (Char).
             charVal = c->head.c;
         } else {
             void* charObj = allocator.resolve(c->head.p);

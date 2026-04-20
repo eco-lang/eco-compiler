@@ -21,7 +21,7 @@ module {
       function = @add_floats,
       arity = 2 : i64,
       num_captured = 1 : i64,
-      unboxed_bitmap = 1 : i64
+      unboxed_bitmap = 2 : i64
     } : (f64) -> !eco.value
 
     // Extend with second f64 argument - should saturate and return f64
@@ -30,7 +30,7 @@ module {
     // newargs_unboxed_bitmap = 1 (arg 0 is unboxed f64)
     %result = "eco.papExtend"(%pap, %arg) {
       remaining_arity = 1 : i64,
-      newargs_unboxed_bitmap = 1 : i64
+      newargs_unboxed_bitmap = 2 : i64
     } : (!eco.value, f64) -> f64
 
     // Expected: 10.5 + 5.25 = 15.75
@@ -51,7 +51,7 @@ module {
     // Extend with both args at once - saturates immediately
     %result2 = "eco.papExtend"(%pap2, %arg1, %arg2) {
       remaining_arity = 2 : i64,
-      newargs_unboxed_bitmap = 3 : i64
+      newargs_unboxed_bitmap = 10 : i64
     } : (!eco.value, f64, f64) -> f64
 
     // Expected: 100.0 + 23.5 = 123.5

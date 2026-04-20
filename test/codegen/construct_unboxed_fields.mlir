@@ -30,7 +30,7 @@ module {
     // unboxed_bitmap = 3 (0b11) means both fields are unboxed
     %i10 = arith.constant 10 : i64
     %i20 = arith.constant 20 : i64
-    %pair_ints = eco.construct.custom(%i10, %i20) {tag = 10 : i64, size = 2 : i64, unboxed_bitmap = 3 : i64} : (i64, i64) -> !eco.value
+    %pair_ints = eco.construct.custom(%i10, %i20) {tag = 10 : i64, size = 2 : i64, unboxed_bitmap = 5 : i64} : (i64, i64) -> !eco.value
     eco.dbg %pair_ints : !eco.value
     // CHECK: Ctor10 10 20
 
@@ -48,7 +48,7 @@ module {
     %i100 = arith.constant 100 : i64
     %i200 = arith.constant 200 : i64
     %i300 = arith.constant 300 : i64
-    %triple_ints = eco.construct.custom(%i100, %i200, %i300) {tag = 11 : i64, size = 3 : i64, unboxed_bitmap = 7 : i64} : (i64, i64, i64) -> !eco.value
+    %triple_ints = eco.construct.custom(%i100, %i200, %i300) {tag = 11 : i64, size = 3 : i64, unboxed_bitmap = 21 : i64} : (i64, i64, i64) -> !eco.value
     eco.dbg %triple_ints : !eco.value
     // CHECK: Ctor11 100 200 300
 
@@ -61,7 +61,7 @@ module {
     // unboxed_bitmap = 2 (0b10) means field 1 is unboxed
     %b42 = eco.box %i42 : i64 -> !eco.value
     %i99 = arith.constant 99 : i64
-    %mixed = eco.construct.custom(%b42, %i99) {tag = 5 : i64, size = 2 : i64, unboxed_bitmap = 2 : i64} : (!eco.value, i64) -> !eco.value
+    %mixed = eco.construct.custom(%b42, %i99) {tag = 5 : i64, size = 2 : i64, unboxed_bitmap = 4 : i64} : (!eco.value, i64) -> !eco.value
     eco.dbg %mixed : !eco.value
     // CHECK: Ctor5 42 99
 
@@ -75,9 +75,9 @@ module {
     // The eco.project verifies the values are stored correctly
     %f1 = arith.constant 3.14 : f64
     %f2 = arith.constant 2.718 : f64
-    %pair_floats = eco.construct.custom(%f1, %f2) {tag = 1 : i64, size = 2 : i64, unboxed_bitmap = 3 : i64} : (f64, f64) -> !eco.value
+    %pair_floats = eco.construct.custom(%f1, %f2) {tag = 1 : i64, size = 2 : i64, unboxed_bitmap = 10 : i64} : (f64, f64) -> !eco.value
     eco.dbg %pair_floats : !eco.value
-    // CHECK: Ctor1 4614253070214989087 4613302810693613912
+    // CHECK: Ctor1 3.14 2.718
 
     // Project unboxed float
     %float_field = eco.project.custom %pair_floats[0] : !eco.value -> f64
@@ -89,9 +89,9 @@ module {
     // The eco.project verifies the values are stored correctly
     %cA = arith.constant 65 : i16
     %cB = arith.constant 66 : i16
-    %pair_chars = eco.construct.custom(%cA, %cB) {tag = 2 : i64, size = 2 : i64, unboxed_bitmap = 3 : i64} : (i16, i16) -> !eco.value
+    %pair_chars = eco.construct.custom(%cA, %cB) {tag = 2 : i64, size = 2 : i64, unboxed_bitmap = 15 : i64} : (i16, i16) -> !eco.value
     eco.dbg %pair_chars : !eco.value
-    // CHECK: Ctor2 65 66
+    // CHECK: Ctor2 'A' 'B'
 
     // Project unboxed char
     %char_field = eco.project.custom %pair_chars[0] : !eco.value -> i16

@@ -1315,8 +1315,11 @@ Testing::TestCase testClosureMixedCapturesSurviveMinorGC("Closure mixed captures
         Closure* cp = static_cast<Closure*>(alloc.resolve(cl));
         RC_ASSERT(static_cast<bool>(cp));
         RC_ASSERT(cp->n_values == 3);
-        // Bits 1,2 set for unboxed captures
-        RC_ASSERT((cp->unboxed & 0x6) == 0x6);
+        // 2-bit kinds: slot 0 boxed (00), slots 1 and 2 Int (01 each).
+        // Bitmap = (01 << 2) | (01 << 4) = 0b010100 = 0x14.
+        RC_ASSERT(fieldKind(cp->unboxed, 0) == 0);
+        RC_ASSERT(fieldKind(cp->unboxed, 1) == 1);
+        RC_ASSERT(fieldKind(cp->unboxed, 2) == 1);
         RC_ASSERT((cp->unboxed & 0x1) == 0);
 
         ElmInt* r0 = static_cast<ElmInt*>(alloc.resolve(cp->values[0].p));
@@ -1506,6 +1509,60 @@ Testing::TestCase testFieldGroupSurvivesMinorGC("FieldGroup survives minor GC", 
 });
 
 // ============================================================================
+// 2-bit bitmap overflow policy (§0.3 of the 2-bit migration plan).
+// Closure.unboxed is 52 bits wide → 26 typed slots max. Captures beyond
+// slot 25 silently demote to kind 0 in the bitmap; the slot storage itself
+// still holds whatever the caller passed.
+// ============================================================================
+
+Testing::UnitTest testClosureCaptureBeyond26DemotedToBoxed(
+    "closureCapture beyond slot 25 demotes to boxed",
+    []() {
+        initAllocator();
+
+        const u32 capacity = 30;
+        HPointer cl = allocClosure(nullptr, capacity);
+        void* clObj = Allocator::instance().resolve(cl);
+
+        for (u32 i = 0; i < capacity; ++i) {
+            closureCapture(clObj, unboxedInt(static_cast<i64>(i)), PK_Int);
+        }
+
+        Closure* cp = static_cast<Closure*>(clObj);
+        TEST_ASSERT(cp->n_values == capacity);
+        for (u32 i = 0; i < 26; ++i) {
+            TEST_ASSERT(fieldKind(cp->unboxed, i) == 1);
+        }
+        for (u32 i = 26; i < capacity; ++i) {
+            TEST_ASSERT(fieldKind(cp->unboxed, i) == 0);
+        }
+    });
+
+Testing::UnitTest testArrayUniformKindRoundtripsAllPrimitiveKinds(
+    "arrayPushKind records correct uniform kind",
+    []() {
+        initAllocator();
+
+        for (u8 kind : {u8(1), u8(2), u8(3)}) {
+            HPointer arr = allocArray(1);
+            void* arrObj = Allocator::instance().resolve(arr);
+            Unboxable slot;
+            slot.i = 42;
+            arrayPushKind(arrObj, slot, kind);
+            TEST_ASSERT(arrayElementKind(arrObj) == kind);
+            TEST_ASSERT(arrayIsUnboxed(arrObj));
+        }
+
+        HPointer arr = allocArray(1);
+        void* arrObj = Allocator::instance().resolve(arr);
+        Unboxable slot;
+        slot.p = listNil();
+        arrayPushKind(arrObj, slot, 0);
+        TEST_ASSERT(arrayElementKind(arrObj) == 0);
+        TEST_ASSERT(!arrayIsUnboxed(arrObj));
+    });
+
+// ============================================================================
 // Test Registration
 // ============================================================================
 
@@ -1606,4 +1663,8 @@ void registerHeapHelpersTests(Testing::TestSuite& suite) {
     // DynRecord / FieldGroup GC survival
     suite.add(testDynRecordSurvivesMinorGC);
     suite.add(testFieldGroupSurvivesMinorGC);
+
+    // 2-bit bitmap overflow policy
+    suite.add(testClosureCaptureBeyond26DemotedToBoxed);
+    suite.add(testArrayUniformKindRoundtripsAllPrimitiveKinds);
 }

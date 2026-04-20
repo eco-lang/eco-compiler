@@ -68,8 +68,8 @@ HPointer size(void* file) {
     if (rec->header.tag != Tag_Record) return alloc::allocInt(0);
     if (rec->header.size <= FIELD_SIZE) return alloc::allocInt(0);
 
-    // Size might be unboxed
-    if ((rec->unboxed >> FIELD_SIZE) & 1) {
+    // Size field might be unboxed Int.
+    if (Elm::fieldKind(rec->unboxed, FIELD_SIZE) != 0) {
         return alloc::allocInt(rec->values[FIELD_SIZE].i);
     }
     return rec->values[FIELD_SIZE].p;
@@ -82,8 +82,8 @@ HPointer lastModified(void* file) {
     if (rec->header.tag != Tag_Record) return alloc::allocInt(0);
     if (rec->header.size <= FIELD_LAST_MODIFIED) return alloc::allocInt(0);
 
-    // lastModified might be unboxed
-    if ((rec->unboxed >> FIELD_LAST_MODIFIED) & 1) {
+    // lastModified might be unboxed Int.
+    if (Elm::fieldKind(rec->unboxed, FIELD_LAST_MODIFIED) != 0) {
         return alloc::allocInt(rec->values[FIELD_LAST_MODIFIED].i);
     }
     return rec->values[FIELD_LAST_MODIFIED].p;

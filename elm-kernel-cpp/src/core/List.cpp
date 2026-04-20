@@ -24,20 +24,27 @@ HPointer fromArray(const std::vector<HPointer>& array) {
 }
 
 std::vector<HPointer> toArray(HPointer list) {
-    // Convert list to vector, boxing any unboxed values.
-    auto pairs = ListOps::toVector(list);
-    std::vector<HPointer> result(pairs.size(), alloc::listNil());
+    // Convert list to vector, boxing any unboxed values using head-kind from each cell.
+    auto& allocator = Allocator::instance();
+    std::vector<std::pair<Unboxable, u8>> rawElems;
+    HPointer current = list;
+    while (!alloc::isNil(current)) {
+        void* cell = allocator.resolve(current);
+        if (!cell) break;
+        Cons* c = static_cast<Cons*>(cell);
+        Header* hdr = static_cast<Header*>(cell);
+        rawElems.push_back({c->head, static_cast<u8>(tupleFieldKind(hdr->unboxed, 0))});
+        current = c->tail;
+    }
 
+    std::vector<HPointer> result(rawElems.size(), alloc::listNil());
     auto& rs = Allocator::instance().getRootSet();
     size_t saved = rs.stackRangePoint();
     for (auto& hp : result) rs.pushStackRootRange(&hp, 1, 1);
+    for (auto& r : rawElems) if (r.second == 0) rs.pushStackRootRange(&r.first.p, 1, 1);
 
-    for (size_t i = 0; i < pairs.size(); ++i) {
-        if (pairs[i].second) {
-            result[i] = pairs[i].first.p;
-        } else {
-            result[i] = alloc::allocInt(pairs[i].first.i);
-        }
+    for (size_t i = 0; i < rawElems.size(); ++i) {
+        result[i] = alloc::boxElement(rawElems[i].first, rawElems[i].second);
     }
 
     rs.restoreStackRangePoint(saved);
@@ -54,7 +61,7 @@ HPointer map2(Map2Func func, HPointer xs, HPointer ys) {
     auto& allocator = Allocator::instance();
 
     // Phase 1: collect raw values (no allocation)
-    struct RawPair { Unboxable x; bool x_boxed; Unboxable y; bool y_boxed; };
+    struct RawPair { Unboxable x; u8 x_kind; Unboxable y; u8 y_kind; };
     std::vector<RawPair> raw;
     HPointer currX = xs, currY = ys;
     while (!alloc::isNil(currX) && !alloc::isNil(currY)) {
@@ -65,7 +72,8 @@ HPointer map2(Map2Func func, HPointer xs, HPointer ys) {
         Cons* cY = static_cast<Cons*>(cellY);
         Header* hdrX = static_cast<Header*>(cellX);
         Header* hdrY = static_cast<Header*>(cellY);
-        raw.push_back({cX->head, !(hdrX->unboxed & 1), cY->head, !(hdrY->unboxed & 1)});
+        raw.push_back({cX->head, static_cast<u8>(tupleFieldKind(hdrX->unboxed, 0)),
+                        cY->head, static_cast<u8>(tupleFieldKind(hdrY->unboxed, 0))});
         currX = cX->tail;
         currY = cY->tail;
     }
@@ -75,8 +83,8 @@ HPointer map2(Map2Func func, HPointer xs, HPointer ys) {
     auto& rs = Allocator::instance().getRootSet();
     size_t saved = rs.stackRangePoint();
     for (auto& r : raw) {
-        if (r.x_boxed) rs.pushStackRootRange(&r.x.p, 1, 1);
-        if (r.y_boxed) rs.pushStackRootRange(&r.y.p, 1, 1);
+        if (r.x_kind == 0) rs.pushStackRootRange(&r.x.p, 1, 1);
+        if (r.y_kind == 0) rs.pushStackRootRange(&r.y.p, 1, 1);
     }
     std::vector<HPointer> results(raw.size(), alloc::listNil());
     for (auto& hp : results) rs.pushStackRootRange(&hp, 1, 1);
@@ -85,8 +93,8 @@ HPointer map2(Map2Func func, HPointer xs, HPointer ys) {
     rs.pushStackRootRange(&tempY, 1, 1);
 
     for (size_t i = 0; i < raw.size(); ++i) {
-        tempX = raw[i].x_boxed ? raw[i].x.p : alloc::allocInt(raw[i].x.i);
-        tempY = raw[i].y_boxed ? raw[i].y.p : alloc::allocInt(raw[i].y.i);
+        tempX = alloc::boxElement(raw[i].x, raw[i].x_kind);
+        tempY = alloc::boxElement(raw[i].y, raw[i].y_kind);
         results[i] = func(allocator.resolve(tempX), allocator.resolve(tempY));
     }
 
@@ -100,7 +108,7 @@ HPointer map3(Map3Func func, HPointer xs, HPointer ys, HPointer zs) {
     }
 
     auto& allocator = Allocator::instance();
-    struct Raw3 { Unboxable x; bool xb; Unboxable y; bool yb; Unboxable z; bool zb; };
+    struct Raw3 { Unboxable x; u8 xk; Unboxable y; u8 yk; Unboxable z; u8 zk; };
     std::vector<Raw3> raw;
     HPointer currX = xs, currY = ys, currZ = zs;
     while (!alloc::isNil(currX) && !alloc::isNil(currY) && !alloc::isNil(currZ)) {
@@ -114,9 +122,9 @@ HPointer map3(Map3Func func, HPointer xs, HPointer ys, HPointer zs) {
         Header* hdrX = static_cast<Header*>(cellX);
         Header* hdrY = static_cast<Header*>(cellY);
         Header* hdrZ = static_cast<Header*>(cellZ);
-        raw.push_back({cX->head, !(hdrX->unboxed & 1),
-                        cY->head, !(hdrY->unboxed & 1),
-                        cZ->head, !(hdrZ->unboxed & 1)});
+        raw.push_back({cX->head, static_cast<u8>(tupleFieldKind(hdrX->unboxed, 0)),
+                        cY->head, static_cast<u8>(tupleFieldKind(hdrY->unboxed, 0)),
+                        cZ->head, static_cast<u8>(tupleFieldKind(hdrZ->unboxed, 0))});
         currX = cX->tail; currY = cY->tail; currZ = cZ->tail;
     }
     if (raw.empty()) return alloc::listNil();
@@ -124,9 +132,9 @@ HPointer map3(Map3Func func, HPointer xs, HPointer ys, HPointer zs) {
     auto& rs = Allocator::instance().getRootSet();
     size_t saved = rs.stackRangePoint();
     for (auto& r : raw) {
-        if (r.xb) rs.pushStackRootRange(&r.x.p, 1, 1);
-        if (r.yb) rs.pushStackRootRange(&r.y.p, 1, 1);
-        if (r.zb) rs.pushStackRootRange(&r.z.p, 1, 1);
+        if (r.xk == 0) rs.pushStackRootRange(&r.x.p, 1, 1);
+        if (r.yk == 0) rs.pushStackRootRange(&r.y.p, 1, 1);
+        if (r.zk == 0) rs.pushStackRootRange(&r.z.p, 1, 1);
     }
     std::vector<HPointer> results(raw.size(), alloc::listNil());
     for (auto& hp : results) rs.pushStackRootRange(&hp, 1, 1);
@@ -134,9 +142,9 @@ HPointer map3(Map3Func func, HPointer xs, HPointer ys, HPointer zs) {
     rs.pushStackRootRange(&tX, 1, 1); rs.pushStackRootRange(&tY, 1, 1); rs.pushStackRootRange(&tZ, 1, 1);
 
     for (size_t i = 0; i < raw.size(); ++i) {
-        tX = raw[i].xb ? raw[i].x.p : alloc::allocInt(raw[i].x.i);
-        tY = raw[i].yb ? raw[i].y.p : alloc::allocInt(raw[i].y.i);
-        tZ = raw[i].zb ? raw[i].z.p : alloc::allocInt(raw[i].z.i);
+        tX = alloc::boxElement(raw[i].x, raw[i].xk);
+        tY = alloc::boxElement(raw[i].y, raw[i].yk);
+        tZ = alloc::boxElement(raw[i].z, raw[i].zk);
         results[i] = func(allocator.resolve(tX), allocator.resolve(tY), allocator.resolve(tZ));
     }
 
@@ -150,7 +158,7 @@ HPointer map4(Map4Func func, HPointer ws, HPointer xs, HPointer ys, HPointer zs)
     }
 
     auto& allocator = Allocator::instance();
-    struct Raw4 { Unboxable w; bool wb; Unboxable x; bool xb; Unboxable y; bool yb; Unboxable z; bool zb; };
+    struct Raw4 { Unboxable w; u8 wk; Unboxable x; u8 xk; Unboxable y; u8 yk; Unboxable z; u8 zk; };
     std::vector<Raw4> raw;
     HPointer cW = ws, cX = xs, cY = ys, cZ = zs;
     while (!alloc::isNil(cW) && !alloc::isNil(cX) && !alloc::isNil(cY) && !alloc::isNil(cZ)) {
@@ -161,8 +169,10 @@ HPointer map4(Map4Func func, HPointer ws, HPointer xs, HPointer ys, HPointer zs)
         Cons* dY = static_cast<Cons*>(cellY); Cons* dZ = static_cast<Cons*>(cellZ);
         Header* hW = static_cast<Header*>(cellW); Header* hX = static_cast<Header*>(cellX);
         Header* hY = static_cast<Header*>(cellY); Header* hZ = static_cast<Header*>(cellZ);
-        raw.push_back({dW->head, !(hW->unboxed & 1), dX->head, !(hX->unboxed & 1),
-                        dY->head, !(hY->unboxed & 1), dZ->head, !(hZ->unboxed & 1)});
+        raw.push_back({dW->head, static_cast<u8>(tupleFieldKind(hW->unboxed, 0)),
+                        dX->head, static_cast<u8>(tupleFieldKind(hX->unboxed, 0)),
+                        dY->head, static_cast<u8>(tupleFieldKind(hY->unboxed, 0)),
+                        dZ->head, static_cast<u8>(tupleFieldKind(hZ->unboxed, 0))});
         cW = dW->tail; cX = dX->tail; cY = dY->tail; cZ = dZ->tail;
     }
     if (raw.empty()) return alloc::listNil();
@@ -170,8 +180,10 @@ HPointer map4(Map4Func func, HPointer ws, HPointer xs, HPointer ys, HPointer zs)
     auto& rs = Allocator::instance().getRootSet();
     size_t saved = rs.stackRangePoint();
     for (auto& r : raw) {
-        if (r.wb) rs.pushStackRootRange(&r.w.p, 1, 1); if (r.xb) rs.pushStackRootRange(&r.x.p, 1, 1);
-        if (r.yb) rs.pushStackRootRange(&r.y.p, 1, 1); if (r.zb) rs.pushStackRootRange(&r.z.p, 1, 1);
+        if (r.wk == 0) rs.pushStackRootRange(&r.w.p, 1, 1);
+        if (r.xk == 0) rs.pushStackRootRange(&r.x.p, 1, 1);
+        if (r.yk == 0) rs.pushStackRootRange(&r.y.p, 1, 1);
+        if (r.zk == 0) rs.pushStackRootRange(&r.z.p, 1, 1);
     }
     std::vector<HPointer> results(raw.size(), alloc::listNil());
     for (auto& hp : results) rs.pushStackRootRange(&hp, 1, 1);
@@ -179,10 +191,10 @@ HPointer map4(Map4Func func, HPointer ws, HPointer xs, HPointer ys, HPointer zs)
     rs.pushStackRootRange(&tW, 1, 1); rs.pushStackRootRange(&tX, 1, 1); rs.pushStackRootRange(&tY, 1, 1); rs.pushStackRootRange(&tZ, 1, 1);
 
     for (size_t i = 0; i < raw.size(); ++i) {
-        tW = raw[i].wb ? raw[i].w.p : alloc::allocInt(raw[i].w.i);
-        tX = raw[i].xb ? raw[i].x.p : alloc::allocInt(raw[i].x.i);
-        tY = raw[i].yb ? raw[i].y.p : alloc::allocInt(raw[i].y.i);
-        tZ = raw[i].zb ? raw[i].z.p : alloc::allocInt(raw[i].z.i);
+        tW = alloc::boxElement(raw[i].w, raw[i].wk);
+        tX = alloc::boxElement(raw[i].x, raw[i].xk);
+        tY = alloc::boxElement(raw[i].y, raw[i].yk);
+        tZ = alloc::boxElement(raw[i].z, raw[i].zk);
         results[i] = func(allocator.resolve(tW), allocator.resolve(tX),
                           allocator.resolve(tY), allocator.resolve(tZ));
     }
@@ -196,7 +208,7 @@ HPointer map5(Map5Func func, HPointer vs, HPointer ws, HPointer xs, HPointer ys,
     }
 
     auto& allocator = Allocator::instance();
-    struct Raw5 { Unboxable v; bool vb; Unboxable w; bool wb; Unboxable x; bool xb; Unboxable y; bool yb; Unboxable z; bool zb; };
+    struct Raw5 { Unboxable v; u8 vk; Unboxable w; u8 wk; Unboxable x; u8 xk; Unboxable y; u8 yk; Unboxable z; u8 zk; };
     std::vector<Raw5> raw;
     HPointer cV = vs, cW = ws, cX = xs, cY = ys, cZ = zs;
     while (!alloc::isNil(cV) && !alloc::isNil(cW) && !alloc::isNil(cX) &&
@@ -211,9 +223,11 @@ HPointer map5(Map5Func func, HPointer vs, HPointer ws, HPointer xs, HPointer ys,
         Header* hV = static_cast<Header*>(cellV); Header* hW = static_cast<Header*>(cellW);
         Header* hX = static_cast<Header*>(cellX); Header* hY = static_cast<Header*>(cellY);
         Header* hZ = static_cast<Header*>(cellZ);
-        raw.push_back({dV->head, !(hV->unboxed & 1), dW->head, !(hW->unboxed & 1),
-                        dX->head, !(hX->unboxed & 1), dY->head, !(hY->unboxed & 1),
-                        dZ->head, !(hZ->unboxed & 1)});
+        raw.push_back({dV->head, static_cast<u8>(tupleFieldKind(hV->unboxed, 0)),
+                        dW->head, static_cast<u8>(tupleFieldKind(hW->unboxed, 0)),
+                        dX->head, static_cast<u8>(tupleFieldKind(hX->unboxed, 0)),
+                        dY->head, static_cast<u8>(tupleFieldKind(hY->unboxed, 0)),
+                        dZ->head, static_cast<u8>(tupleFieldKind(hZ->unboxed, 0))});
         cV = dV->tail; cW = dW->tail; cX = dX->tail; cY = dY->tail; cZ = dZ->tail;
     }
     if (raw.empty()) return alloc::listNil();
@@ -221,9 +235,11 @@ HPointer map5(Map5Func func, HPointer vs, HPointer ws, HPointer xs, HPointer ys,
     auto& rs = Allocator::instance().getRootSet();
     size_t saved = rs.stackRangePoint();
     for (auto& r : raw) {
-        if (r.vb) rs.pushStackRootRange(&r.v.p, 1, 1); if (r.wb) rs.pushStackRootRange(&r.w.p, 1, 1);
-        if (r.xb) rs.pushStackRootRange(&r.x.p, 1, 1); if (r.yb) rs.pushStackRootRange(&r.y.p, 1, 1);
-        if (r.zb) rs.pushStackRootRange(&r.z.p, 1, 1);
+        if (r.vk == 0) rs.pushStackRootRange(&r.v.p, 1, 1);
+        if (r.wk == 0) rs.pushStackRootRange(&r.w.p, 1, 1);
+        if (r.xk == 0) rs.pushStackRootRange(&r.x.p, 1, 1);
+        if (r.yk == 0) rs.pushStackRootRange(&r.y.p, 1, 1);
+        if (r.zk == 0) rs.pushStackRootRange(&r.z.p, 1, 1);
     }
     std::vector<HPointer> results(raw.size(), alloc::listNil());
     for (auto& hp : results) rs.pushStackRootRange(&hp, 1, 1);
@@ -233,11 +249,11 @@ HPointer map5(Map5Func func, HPointer vs, HPointer ws, HPointer xs, HPointer ys,
     rs.pushStackRootRange(&tY, 1, 1); rs.pushStackRootRange(&tZ, 1, 1);
 
     for (size_t i = 0; i < raw.size(); ++i) {
-        tV = raw[i].vb ? raw[i].v.p : alloc::allocInt(raw[i].v.i);
-        tW = raw[i].wb ? raw[i].w.p : alloc::allocInt(raw[i].w.i);
-        tX = raw[i].xb ? raw[i].x.p : alloc::allocInt(raw[i].x.i);
-        tY = raw[i].yb ? raw[i].y.p : alloc::allocInt(raw[i].y.i);
-        tZ = raw[i].zb ? raw[i].z.p : alloc::allocInt(raw[i].z.i);
+        tV = alloc::boxElement(raw[i].v, raw[i].vk);
+        tW = alloc::boxElement(raw[i].w, raw[i].wk);
+        tX = alloc::boxElement(raw[i].x, raw[i].xk);
+        tY = alloc::boxElement(raw[i].y, raw[i].yk);
+        tZ = alloc::boxElement(raw[i].z, raw[i].zk);
         results[i] = func(allocator.resolve(tV), allocator.resolve(tW), allocator.resolve(tX),
                           allocator.resolve(tY), allocator.resolve(tZ));
     }
@@ -250,9 +266,7 @@ HPointer map5(Map5Func func, HPointer vs, HPointer ws, HPointer xs, HPointer ys,
 // ============================================================================
 
 HPointer sortBy(KeyFunc keyFunc, HPointer list) {
-    // Wrap the KeyFunc to match ListOps::KeyExtractor signature
-    // KeyExtractor: (Unboxable, bool) -> i64
-    // KeyFunc: (void*) -> HPointer
+    // Wrap KeyFunc (void* -> HPointer) to the kind-aware ListOps::KeyExtractor.
     auto& allocator = Allocator::instance();
 
     ListOps::KeyExtractor extractor = [&allocator, keyFunc](Unboxable val, bool is_boxed) -> i64 {
@@ -260,13 +274,13 @@ HPointer sortBy(KeyFunc keyFunc, HPointer list) {
         if (is_boxed) {
             elem = allocator.resolve(val.p);
         } else {
-            // Box for the callback
+            // Cannot distinguish Int/Float/Char here; fall back to heuristic via allocInt.
+            // Kind-aware sortByKind should be used instead.
             HPointer boxed = alloc::allocInt(val.i);
             elem = allocator.resolve(boxed);
         }
 
         HPointer keyResult = keyFunc(elem);
-        // Assume key is an int for sorting
         void* keyObj = allocator.resolve(keyResult);
         if (keyObj) {
             ElmInt* intVal = static_cast<ElmInt*>(keyObj);
@@ -279,26 +293,34 @@ HPointer sortBy(KeyFunc keyFunc, HPointer list) {
 }
 
 HPointer sortWith(CmpFunc cmpFunc, HPointer list) {
-    // Wrap the CmpFunc to match ListOps::Comparator signature
-    // Comparator: (Unboxable, bool, Unboxable, bool) -> int
-    // CmpFunc: (void*, void*) -> i64
     auto& allocator = Allocator::instance();
 
-    ListOps::Comparator comparator = [&allocator, cmpFunc](Unboxable a, bool a_boxed, Unboxable b, bool b_boxed) -> int {
+    // Fish out the element kind from the first Cons cell so the callback can
+    // re-box unboxed Int/Float/Char heads correctly.
+    u8 element_kind = 0;
+    if (!alloc::isNil(list)) {
+        void* cell = allocator.resolve(list);
+        if (cell) {
+            Header* hdr = static_cast<Header*>(cell);
+            element_kind = static_cast<u8>(tupleFieldKind(hdr->unboxed, 0));
+        }
+    }
+
+    ListOps::Comparator comparator = [&allocator, cmpFunc, element_kind](Unboxable a, bool a_boxed, Unboxable b, bool b_boxed) -> int {
         void* elemA;
         void* elemB;
 
         if (a_boxed) {
             elemA = allocator.resolve(a.p);
         } else {
-            HPointer boxed = alloc::allocInt(a.i);
+            HPointer boxed = alloc::boxElement(a, element_kind);
             elemA = allocator.resolve(boxed);
         }
 
         if (b_boxed) {
             elemB = allocator.resolve(b.p);
         } else {
-            HPointer boxed = alloc::allocInt(b.i);
+            HPointer boxed = alloc::boxElement(b, element_kind);
             elemB = allocator.resolve(boxed);
         }
 

@@ -124,46 +124,72 @@ checkContainerBitmap op =
 
 checkBitmapBit : MlirOp -> Int -> Int -> MlirType -> Maybe Violation
 checkBitmapBit op bitmap index operandType =
-    let
-        bitIsSet =
-            Bitwise.and bitmap (Bitwise.shiftLeftBy index 1) /= 0
+    checkBitmapKind op bitmap index operandType "unboxed_bitmap" "operand"
 
-        typeIsUnboxable =
-            isUnboxable operandType
+
+{-| 2-bit kind decode at slot `index` from a bitmap.
+-}
+slotKind : Int -> Int -> Int
+slotKind bitmap index =
+    Bitwise.and (Bitwise.shiftRightZfBy (2 * index) bitmap) 3
+
+
+{-| Expected 2-bit kind for an MLIR operand SSA type:
+0 = boxed (!eco.value or i1), 1 = Int (i64), 2 = Float (f64), 3 = Char (i16).
+-}
+typeToKind : MlirType -> Int
+typeToKind ty =
+    case ty of
+        I64 ->
+            1
+
+        F64 ->
+            2
+
+        I16 ->
+            3
+
+        _ ->
+            0
+
+
+checkBitmapKind : MlirOp -> Int -> Int -> MlirType -> String -> String -> Maybe Violation
+checkBitmapKind op bitmap index operandType bitmapName operandLabel =
+    let
+        kindFromBitmap =
+            slotKind bitmap index
+
+        kindFromType =
+            typeToKind operandType
     in
-    -- Bool (i1) is always a violation at heap/closure boundaries
+    -- Bool (i1) is always a violation at heap/closure boundaries.
     if operandType == I1 then
         Just
             { opId = op.id
             , opName = op.name
             , message =
-                "operand "
+                operandLabel
+                    ++ " "
                     ++ String.fromInt index
                     ++ " is i1 (Bool) but must be !eco.value at heap boundary"
             }
 
-    else if bitIsSet && not typeIsUnboxable then
+    else if kindFromBitmap /= kindFromType then
         Just
             { opId = op.id
             , opName = op.name
             , message =
-                "unboxed_bitmap bit "
+                bitmapName
+                    ++ " slot "
                     ++ String.fromInt index
-                    ++ " is set but operand type is "
+                    ++ " encodes kind "
+                    ++ String.fromInt kindFromBitmap
+                    ++ " but "
+                    ++ operandLabel
+                    ++ " type "
                     ++ typeToString operandType
-                    ++ ", expected unboxable (i64, f64, i16)"
-            }
-
-    else if not bitIsSet && typeIsUnboxable then
-        Just
-            { opId = op.id
-            , opName = op.name
-            , message =
-                "unboxed_bitmap bit "
-                    ++ String.fromInt index
-                    ++ " is clear but operand type is "
-                    ++ typeToString operandType
-                    ++ ", expected !eco.value"
+                    ++ " requires kind "
+                    ++ String.fromInt kindFromType
             }
 
     else
@@ -249,50 +275,7 @@ checkPapCreateBitmap op =
 
 checkPapCreateBit : MlirOp -> Int -> Int -> MlirType -> Maybe Violation
 checkPapCreateBit op bitmap index operandType =
-    let
-        bitIsSet =
-            Bitwise.and bitmap (Bitwise.shiftLeftBy index 1) /= 0
-
-        typeIsUnboxable =
-            isUnboxable operandType
-    in
-    -- Bool (i1) is always a violation at closure boundaries
-    if operandType == I1 then
-        Just
-            { opId = op.id
-            , opName = op.name
-            , message =
-                "captured operand "
-                    ++ String.fromInt index
-                    ++ " is i1 (Bool) but must be !eco.value at closure boundary"
-            }
-
-    else if bitIsSet && not typeIsUnboxable then
-        Just
-            { opId = op.id
-            , opName = op.name
-            , message =
-                "unboxed_bitmap bit "
-                    ++ String.fromInt index
-                    ++ " is set but captured operand type is "
-                    ++ typeToString operandType
-                    ++ ", expected unboxable (i64, f64, i16)"
-            }
-
-    else if not bitIsSet && typeIsUnboxable then
-        Just
-            { opId = op.id
-            , opName = op.name
-            , message =
-                "unboxed_bitmap bit "
-                    ++ String.fromInt index
-                    ++ " is clear but captured operand type is "
-                    ++ typeToString operandType
-                    ++ ", expected !eco.value"
-            }
-
-    else
-        Nothing
+    checkBitmapKind op bitmap index operandType "unboxed_bitmap" "captured operand"
 
 
 {-| Check eco.papExtend newargs\_unboxed\_bitmap against new argument operand types (CGEN\_049).
@@ -327,50 +310,7 @@ checkPapExtendBitmap op =
 
 checkPapExtendBit : MlirOp -> Int -> Int -> MlirType -> Maybe Violation
 checkPapExtendBit op bitmap index operandType =
-    let
-        bitIsSet =
-            Bitwise.and bitmap (Bitwise.shiftLeftBy index 1) /= 0
-
-        typeIsUnboxable =
-            isUnboxable operandType
-    in
-    -- Bool (i1) is always a violation at closure boundaries
-    if operandType == I1 then
-        Just
-            { opId = op.id
-            , opName = op.name
-            , message =
-                "new arg operand "
-                    ++ String.fromInt index
-                    ++ " is i1 (Bool) but must be !eco.value at closure boundary"
-            }
-
-    else if bitIsSet && not typeIsUnboxable then
-        Just
-            { opId = op.id
-            , opName = op.name
-            , message =
-                "newargs_unboxed_bitmap bit "
-                    ++ String.fromInt index
-                    ++ " is set but new arg operand type is "
-                    ++ typeToString operandType
-                    ++ ", expected unboxable (i64, f64, i16)"
-            }
-
-    else if not bitIsSet && typeIsUnboxable then
-        Just
-            { opId = op.id
-            , opName = op.name
-            , message =
-                "newargs_unboxed_bitmap bit "
-                    ++ String.fromInt index
-                    ++ " is clear but new arg operand type is "
-                    ++ typeToString operandType
-                    ++ ", expected !eco.value"
-            }
-
-    else
-        Nothing
+    checkBitmapKind op bitmap index operandType "newargs_unboxed_bitmap" "new arg operand"
 
 
 typeToString : MlirType -> String
