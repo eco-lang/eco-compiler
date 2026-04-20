@@ -231,6 +231,13 @@ static void writeEncoder(Custom* encoder, u8* buf, size_t& offset) {
             break;
         }
         case ENC_UTF8: {
+            // Empty strings are represented as the EmptyString embedded constant,
+            // which resolve() cannot dereference. encoderSize already returned 0
+            // for this case (values[0].i == 0), so there is simply nothing to
+            // write.
+            if (alloc::isEmptyString(encoder->values[1].p)) {
+                break;
+            }
             void* strPtr = allocator.resolve(encoder->values[1].p);
             ElmString* str = static_cast<ElmString*>(strPtr);
             for (u32 i = 0; i < str->header.size; i++) {
@@ -524,6 +531,16 @@ HPtr Elm_Kernel_Bytes_read_bytes(int64_t length, HPtr bytes, int64_t offset) {
 
 HPtr Elm_Kernel_Bytes_read_string(int64_t length, HPtr bytes, int64_t offset) {
     auto& allocator = Allocator::instance();
+
+    // An empty string must round-trip to the EmptyString embedded constant, not
+    // a zero-length heap ElmString — otherwise Utils::equal compares them as
+    // unequal (one side is nullptr via toPtr, the other is a real pointer).
+    // The function signature requires a Tuple2(new_offset, value), so wrap the
+    // constant in the same makeTuple2_ip the non-empty path uses.
+    if (length == 0) {
+        return HPtr::fromBits(makeTuple2_ip(offset, alloc::emptyString()));
+    }
+
     ByteBuffer* bb = resolveByteBuffer(bytes.toBits());
     const u8* src = bb->bytes + offset;
 

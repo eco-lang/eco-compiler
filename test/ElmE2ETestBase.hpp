@@ -785,6 +785,25 @@ inline IsolatedTestRunner::ParallelTestSummary runMlirTestsParallel(
 // Test Discovery
 // ============================================================================
 
+// A runnable test file declares a top-level `main`. Library/helper modules
+// imported by tests (e.g. stress-elm/Gen.elm, stress-elm/Xorshift32.elm) have
+// no `main` and must be skipped — otherwise the Elm compiler's "NO MAIN" error
+// surfaces as a spurious test failure.
+inline bool hasTopLevelMain(const std::filesystem::path& elmFile) {
+    std::ifstream f(elmFile);
+    if (!f) return false;
+    std::string line;
+    while (std::getline(f, line)) {
+        if (line.size() >= 4 && line.compare(0, 4, "main") == 0) {
+            char next = line[4];
+            if (next == ' ' || next == '\t' || next == ':' || next == '=') {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 inline std::vector<std::string> discoverTests(const std::string& testDir) {
     std::vector<std::string> tests;
 
@@ -794,7 +813,8 @@ inline std::vector<std::string> discoverTests(const std::string& testDir) {
     }
 
     for (const auto& entry : std::filesystem::directory_iterator(srcDir)) {
-        if (entry.is_regular_file() && entry.path().extension() == ".elm") {
+        if (entry.is_regular_file() && entry.path().extension() == ".elm" &&
+            hasTopLevelMain(entry.path())) {
             tests.push_back(entry.path().string());
         }
     }

@@ -7,9 +7,20 @@ import Html exposing (text)
 import Parser
 
 
+hexInt : Parser.Parser Int
+hexInt =
+    Parser.number
+        { int = Nothing
+        , hex = Just identity
+        , octal = Nothing
+        , binary = Nothing
+        , float = Nothing
+        }
+
+
 main =
     let
-        _ = Debug.log "hex_ff" (Parser.run Parser.int "0xFF")
-        _ = Debug.log "hex_deadbeef" (Parser.run Parser.int "0xdeadbeef")
+        _ = Debug.log "hex_ff" (Parser.run hexInt "0xFF")
+        _ = Debug.log "hex_deadbeef" (Parser.run hexInt "0xdeadbeef")
     in
     text "done"
