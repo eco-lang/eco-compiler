@@ -29,6 +29,7 @@
 #include "elm-bytes/ElmBytesTest.hpp"
 #include "elm-core/ElmCoreTest.hpp"
 #include "elm-json/ElmJsonTest.hpp"
+#include "elm-parser/ElmParserTest.hpp"
 #include "elm-regex/ElmRegexTest.hpp"
 #include "elm-url/ElmUrlTest.hpp"
 #include "elm-http/ElmHttpTest.hpp"
@@ -680,6 +681,7 @@ int main(int argc, char* argv[]) {
     // Elm package E2E tests
     auto elmCoreTests = ElmCoreTest::buildElmCoreTestSuite();
     auto elmJsonTests = ElmJsonTest::buildElmJsonTestSuite();
+    auto elmParserTests = ElmParserTest::buildElmParserTestSuite();
     auto elmRegexTests = ElmRegexTest::buildElmRegexTestSuite();
     auto elmUrlTests = ElmUrlTest::buildElmUrlTestSuite();
     auto elmHttpTests = ElmHttpTest::buildElmHttpTestSuite();
@@ -704,6 +706,7 @@ int main(int argc, char* argv[]) {
     suite.add(std::move(elmBytesTests));
     suite.add(std::move(elmCoreTests));
     suite.add(std::move(elmJsonTests));
+    suite.add(std::move(elmParserTests));
     suite.add(std::move(elmRegexTests));
     suite.add(std::move(elmUrlTests));
     suite.add(std::move(elmHttpTests));
