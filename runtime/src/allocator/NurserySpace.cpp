@@ -488,7 +488,7 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
 #endif
     for (auto& scanner : root_set.getExternalRootScanners()) {
         scanner([this, &oldgen, &promoted_objects](uint64_t& ref) {
-            evacuateJitPtr(ref, oldgen, &promoted_objects);
+            evacuateValueSlot(ref, oldgen, &promoted_objects);
         });
     }
 
@@ -912,6 +912,17 @@ void NurserySpace::evacuateJitPtr(uint64_t &ptr, OldGenSpace &oldgen, std::vecto
 
     // Update the root with the new raw pointer.
     ptr = reinterpret_cast<uint64_t>(new_obj);
+}
+
+void NurserySpace::evacuateValueSlot(uint64_t &encoded, OldGenSpace &oldgen,
+                                     std::vector<void*> *promoted_objects) {
+    HPointer &hp = reinterpret_cast<HPointer&>(encoded);
+    // Constants (constant != 0) are non-heap per HEAP_010/014.
+    if (hp.constant != 0) {
+        return;
+    }
+    evacuate(hp, oldgen, promoted_objects);
+    // evacuate updates hp in place; encoded now holds relocated HPointer bits.
 }
 
 /**

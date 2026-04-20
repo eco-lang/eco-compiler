@@ -363,13 +363,27 @@ void Scheduler::decrementPendingAsync() {
 // Step Loop
 // ============================================================================
 
+namespace {
+
+struct EncodedStackRootGuard {
+    size_t saved_;
+    EncodedStackRootGuard(uint64_t* slot) {
+        saved_ = eco_gc_stack_range_point();
+        eco_gc_push_stack_range(slot, 1, /*hpointer_mask=*/1);
+    }
+    ~EncodedStackRootGuard() {
+        eco_gc_restore_stack_range_point(saved_);
+    }
+    EncodedStackRootGuard(const EncodedStackRootGuard&) = delete;
+    EncodedStackRootGuard& operator=(const EncodedStackRootGuard&) = delete;
+};
+
+} // namespace
+
 void Scheduler::stepProcess(uint64_t procEncoded) {
-    // Register procEncoded as a GC stack root so the GC updates it in-place
-    // when the Process is evacuated. This is critical because the process was
-    // popped from the runQueue_ and is no longer covered by the external root
-    // scanner. Without this, procEncoded becomes dangling after two+ GC cycles.
-    auto& rootSet = Allocator::instance().getRootSet();
-    rootSet.addJitRoot(&procEncoded);
+    // Root procEncoded as an encoded HPointer stack value so GC updates it
+    // in place when the Process is evacuated out of the nursery.
+    EncodedStackRootGuard root_guard(&procEncoded);
 
     // Helper lambdas to re-resolve proc from the GC-rooted procEncoded.
     // After any GC point (allocation, closure call), all raw pointers and
@@ -389,7 +403,7 @@ void Scheduler::stepProcess(uint64_t procEncoded) {
     };
 
     Process* proc = resolveProc();
-    if (!proc) { rootSet.removeJitRoot(&procEncoded); return; }
+    if (!proc) { return; }
 
     while (true) {
         proc = resolveProc();
@@ -539,7 +553,6 @@ void Scheduler::stepProcess(uint64_t procEncoded) {
         }
     }
 
-    rootSet.removeJitRoot(&procEncoded);
 }
 
 } // namespace Elm::Platform

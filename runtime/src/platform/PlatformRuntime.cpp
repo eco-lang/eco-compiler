@@ -457,7 +457,7 @@ HPointer PlatformRuntime::initWorker(HPointer impl) {
     // Phase 3: Set up model storage as a GC root
     modelStorage_ = encodeHP(model);
     if (!modelRooted_) {
-        eco_gc_add_root(&modelStorage_);
+        eco_gc_add_value_root(&modelStorage_);
         modelRooted_ = true;
     }
 

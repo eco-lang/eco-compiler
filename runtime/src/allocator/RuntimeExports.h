@@ -351,6 +351,16 @@ void eco_gc_remove_root(uint64_t* root_ptr);
 /// Returns the number of registered JIT roots (for testing).
 uint64_t eco_gc_jit_root_count();
 
+/// Registers an Elm value slot as a GC root (encoded HPointer).
+/// @param value_ptr Pointer to a location holding an encoded Elm value
+///        (HPointer representation: heap offsets + embedded constants).
+/// The collector treats *value_ptr as an HPointer: heap objects are traced
+/// and updated in place; embedded constants (constant!=0) are ignored.
+void eco_gc_add_value_root(uint64_t* value_ptr);
+
+/// Unregisters an Elm value root previously registered with eco_gc_add_value_root.
+void eco_gc_remove_value_root(uint64_t* value_ptr);
+
 /// Stack root range management for compiled code and C++ runtime.
 /// Registers contiguous stack arrays as GC root ranges so the collector
 /// can trace HPointers stored in alloca- or stack-backed args arrays

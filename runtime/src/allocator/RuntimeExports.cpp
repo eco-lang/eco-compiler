@@ -2488,6 +2488,14 @@ extern "C" uint64_t eco_gc_jit_root_count() {
     return Allocator::instance().getRootSet().getJitRoots().size();
 }
 
+extern "C" void eco_gc_add_value_root(uint64_t* value_ptr) {
+    Allocator::instance().getRootSet().addRoot(reinterpret_cast<HPointer*>(value_ptr));
+}
+
+extern "C" void eco_gc_remove_value_root(uint64_t* value_ptr) {
+    Allocator::instance().getRootSet().removeRoot(reinterpret_cast<HPointer*>(value_ptr));
+}
+
 extern "C" size_t eco_gc_stack_range_point() {
     return Allocator::instance().getRootSet().stackRangePoint();
 }
