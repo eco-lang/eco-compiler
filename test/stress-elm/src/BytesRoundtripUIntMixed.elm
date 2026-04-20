@@ -1,0 +1,152 @@
+module BytesRoundtripUIntMixed exposing (main)
+
+-- CHECK: roundtrip: True
+
+import Bytes exposing (Endianness(..))
+import Bytes.Decode as D
+import Bytes.Encode as E
+import Gen exposing (Seed)
+import Html exposing (text)
+
+
+n : Int
+n =
+    1000
+
+
+m : Int
+m =
+    1000
+
+
+initialSeed : Seed
+initialSeed =
+    0x12345678
+
+
+type Item
+    = U8 Int
+    | U16 Int
+    | U32 Int
+
+
+genItem : Seed -> ( Item, Seed )
+genItem seed =
+    let
+        ( tag, s1 ) =
+            Gen.intIn 0 2 seed
+    in
+    case tag of
+        0 ->
+            let
+                ( v, s2 ) =
+                    Gen.uint8 s1
+            in
+            ( U8 v, s2 )
+
+        1 ->
+            let
+                ( v, s2 ) =
+                    Gen.uint16 s1
+            in
+            ( U16 v, s2 )
+
+        _ ->
+            let
+                ( v, s2 ) =
+                    Gen.uint32 s1
+            in
+            ( U32 v, s2 )
+
+
+gen : Seed -> ( List Item, Seed )
+gen seed =
+    Gen.listOf m genItem seed
+
+
+encodeItem : Item -> E.Encoder
+encodeItem item =
+    case item of
+        U8 v ->
+            E.sequence [ E.unsignedInt8 0, E.unsignedInt8 v ]
+
+        U16 v ->
+            E.sequence [ E.unsignedInt8 1, E.unsignedInt16 BE v ]
+
+        U32 v ->
+            E.sequence [ E.unsignedInt8 2, E.unsignedInt32 BE v ]
+
+
+encoder : List Item -> E.Encoder
+encoder xs =
+    E.sequence (List.map encodeItem xs)
+
+
+decodeItem : D.Decoder Item
+decodeItem =
+    D.unsignedInt8
+        |> D.andThen
+            (\tag ->
+                case tag of
+                    0 ->
+                        D.unsignedInt8 |> D.map U8
+
+                    1 ->
+                        D.unsignedInt16 BE |> D.map U16
+
+                    2 ->
+                        D.unsignedInt32 BE |> D.map U32
+
+                    _ ->
+                        D.fail
+            )
+
+
+decoder : D.Decoder (List Item)
+decoder =
+    D.loop ( m, [] )
+        (\( remaining, acc ) ->
+            if remaining <= 0 then
+                D.succeed (D.Done (List.reverse acc))
+
+            else
+                decodeItem |> D.map (\v -> D.Loop ( remaining - 1, v :: acc ))
+        )
+
+
+loop : Seed -> Int -> Bool -> Bool
+loop seed count ok =
+    if count <= 0 then
+        ok
+
+    else
+        let
+            ( original, seed1 ) =
+                gen seed
+
+            encoded =
+                E.encode (encoder original)
+
+            decoded =
+                D.decode decoder encoded
+
+            ok2 =
+                case decoded of
+                    Just v ->
+                        v == original
+
+                    Nothing ->
+                        False
+        in
+        loop seed1 (count - 1) (ok && ok2)
+
+
+main =
+    let
+        result =
+            loop initialSeed n True
+
+        _ =
+            Debug.log "roundtrip" result
+    in
+    text "done"
