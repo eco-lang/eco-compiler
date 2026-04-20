@@ -99,6 +99,27 @@ static int compareUnboxableSlot(Allocator& allocator,
             void* ao; void* bo; bool eq;
             if (resolveAndCompare(allocator, a.p, b.p, &ao, &bo, &eq) == 0) {
                 if (eq) return 0;
+                // One or both are embedded constants. The raw constant-bit
+                // ordering only agrees with Elm semantics when both share the
+                // same constant family. Special-case Const_EmptyString vs a
+                // heap ElmString so `compare ("", "z") ("a", "")` yields LT.
+                bool aConst = alloc::isConstant(a.p);
+                bool bConst = alloc::isConstant(b.p);
+                constexpr unsigned EmptyStringTag = Const_EmptyString + 1;
+                if (aConst && a.p.constant == EmptyStringTag && !bConst) {
+                    void* bo2 = allocator.resolve(b.p);
+                    if (bo2 && getTag(bo2) == Tag_String) {
+                        ElmString* bs = static_cast<ElmString*>(bo2);
+                        return bs->header.size == 0 ? 0 : -1;
+                    }
+                }
+                if (bConst && b.p.constant == EmptyStringTag && !aConst) {
+                    void* ao2 = allocator.resolve(a.p);
+                    if (ao2 && getTag(ao2) == Tag_String) {
+                        ElmString* as = static_cast<ElmString*>(ao2);
+                        return as->header.size == 0 ? 0 : 1;
+                    }
+                }
                 return a.p.constant < b.p.constant ? -1 : 1;
             }
             return cmpFn(ao, bo);
