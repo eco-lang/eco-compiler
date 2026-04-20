@@ -107,53 +107,102 @@ static int cmp(void* a, void* b) {
         case Tag_Tuple2: {
             Elm::Tuple2* atup = static_cast<Elm::Tuple2*>(a);
             Elm::Tuple2* btup = static_cast<Elm::Tuple2*>(b);
+            Header* ahdr = getHeader(a);
+            Header* bhdr = getHeader(b);
 
+            // Field a (bit 0)
             {
-                void* a1; void* b1; bool eq;
-                if (resolveAndCompare(allocator, atup->a.p, btup->a.p, &a1, &b1, &eq) == 0) {
-                    if (!eq) return atup->a.p.constant < btup->a.p.constant ? -1 : 1;
+                bool aUb = (ahdr->unboxed & 1);
+                bool bUb = (bhdr->unboxed & 1);
+                if (aUb && bUb) {
+                    if (atup->a.i != btup->a.i) return atup->a.i < btup->a.i ? -1 : 1;
+                } else if (!aUb && !bUb) {
+                    void* a1; void* b1; bool eq;
+                    if (resolveAndCompare(allocator, atup->a.p, btup->a.p, &a1, &b1, &eq) == 0) {
+                        if (!eq) return atup->a.p.constant < btup->a.p.constant ? -1 : 1;
+                    } else {
+                        int ord = cmp(a1, b1);
+                        if (ord != 0) return ord;
+                    }
                 } else {
-                    int ord = cmp(a1, b1);
-                    if (ord != 0) return ord;
+                    return aUb ? -1 : 1;  // unboxed sorts before boxed (arbitrary but total)
                 }
             }
+            // Field b (bit 1)
             {
-                void* a2; void* b2; bool eq;
-                if (resolveAndCompare(allocator, atup->b.p, btup->b.p, &a2, &b2, &eq) == 0) {
-                    return eq ? 0 : (atup->b.p.constant < btup->b.p.constant ? -1 : 1);
+                bool aUb = (ahdr->unboxed & 2);
+                bool bUb = (bhdr->unboxed & 2);
+                if (aUb && bUb) {
+                    return (atup->b.i == btup->b.i) ? 0 : (atup->b.i < btup->b.i ? -1 : 1);
                 }
-                return cmp(a2, b2);
+                if (!aUb && !bUb) {
+                    void* a2; void* b2; bool eq;
+                    if (resolveAndCompare(allocator, atup->b.p, btup->b.p, &a2, &b2, &eq) == 0) {
+                        return eq ? 0 : (atup->b.p.constant < btup->b.p.constant ? -1 : 1);
+                    }
+                    return cmp(a2, b2);
+                }
+                return aUb ? -1 : 1;
             }
         }
 
         case Tag_Tuple3: {
             Elm::Tuple3* atup = static_cast<Elm::Tuple3*>(a);
             Elm::Tuple3* btup = static_cast<Elm::Tuple3*>(b);
+            Header* ahdr = getHeader(a);
+            Header* bhdr = getHeader(b);
 
+            // Field a (bit 0)
             {
-                void* a1; void* b1; bool eq;
-                if (resolveAndCompare(allocator, atup->a.p, btup->a.p, &a1, &b1, &eq) == 0) {
-                    if (!eq) return atup->a.p.constant < btup->a.p.constant ? -1 : 1;
+                bool aUb = (ahdr->unboxed & 1);
+                bool bUb = (bhdr->unboxed & 1);
+                if (aUb && bUb) {
+                    if (atup->a.i != btup->a.i) return atup->a.i < btup->a.i ? -1 : 1;
+                } else if (!aUb && !bUb) {
+                    void* a1; void* b1; bool eq;
+                    if (resolveAndCompare(allocator, atup->a.p, btup->a.p, &a1, &b1, &eq) == 0) {
+                        if (!eq) return atup->a.p.constant < btup->a.p.constant ? -1 : 1;
+                    } else {
+                        int ord = cmp(a1, b1);
+                        if (ord != 0) return ord;
+                    }
                 } else {
-                    int ord = cmp(a1, b1);
-                    if (ord != 0) return ord;
+                    return aUb ? -1 : 1;
                 }
             }
+            // Field b (bit 1)
             {
-                void* a2; void* b2; bool eq;
-                if (resolveAndCompare(allocator, atup->b.p, btup->b.p, &a2, &b2, &eq) == 0) {
-                    if (!eq) return atup->b.p.constant < btup->b.p.constant ? -1 : 1;
+                bool aUb = (ahdr->unboxed & 2);
+                bool bUb = (bhdr->unboxed & 2);
+                if (aUb && bUb) {
+                    if (atup->b.i != btup->b.i) return atup->b.i < btup->b.i ? -1 : 1;
+                } else if (!aUb && !bUb) {
+                    void* a2; void* b2; bool eq;
+                    if (resolveAndCompare(allocator, atup->b.p, btup->b.p, &a2, &b2, &eq) == 0) {
+                        if (!eq) return atup->b.p.constant < btup->b.p.constant ? -1 : 1;
+                    } else {
+                        int ord = cmp(a2, b2);
+                        if (ord != 0) return ord;
+                    }
                 } else {
-                    int ord = cmp(a2, b2);
-                    if (ord != 0) return ord;
+                    return aUb ? -1 : 1;
                 }
             }
+            // Field c (bit 2)
             {
-                void* a3; void* b3; bool eq;
-                if (resolveAndCompare(allocator, atup->c.p, btup->c.p, &a3, &b3, &eq) == 0) {
-                    return eq ? 0 : (atup->c.p.constant < btup->c.p.constant ? -1 : 1);
+                bool aUb = (ahdr->unboxed & 4);
+                bool bUb = (bhdr->unboxed & 4);
+                if (aUb && bUb) {
+                    return (atup->c.i == btup->c.i) ? 0 : (atup->c.i < btup->c.i ? -1 : 1);
                 }
-                return cmp(a3, b3);
+                if (!aUb && !bUb) {
+                    void* a3; void* b3; bool eq;
+                    if (resolveAndCompare(allocator, atup->c.p, btup->c.p, &a3, &b3, &eq) == 0) {
+                        return eq ? 0 : (atup->c.p.constant < btup->c.p.constant ? -1 : 1);
+                    }
+                    return cmp(a3, b3);
+                }
+                return aUb ? -1 : 1;
             }
         }
 
@@ -287,50 +336,95 @@ static bool eqHelp(void* a, void* b, int depth) {
         case Tag_Tuple2: {
             Elm::Tuple2* atup = static_cast<Elm::Tuple2*>(a);
             Elm::Tuple2* btup = static_cast<Elm::Tuple2*>(b);
+            Header* ahdr = getHeader(a);
+            Header* bhdr = getHeader(b);
 
+            // Field a (bit 0 of unboxed)
             {
-                void* a1; void* b1; bool eq;
-                if (resolveAndCompare(allocator, atup->a.p, btup->a.p, &a1, &b1, &eq) == 0) {
-                    if (!eq) return false;
+                bool aUb = (ahdr->unboxed & 1);
+                bool bUb = (bhdr->unboxed & 1);
+                if (aUb && bUb) {
+                    if (atup->a.i != btup->a.i) return false;
+                } else if (!aUb && !bUb) {
+                    void* a1; void* b1; bool eq;
+                    if (resolveAndCompare(allocator, atup->a.p, btup->a.p, &a1, &b1, &eq) == 0) {
+                        if (!eq) return false;
+                    } else {
+                        if (!eqHelp(a1, b1, depth + 1)) return false;
+                    }
                 } else {
-                    if (!eqHelp(a1, b1, depth + 1)) return false;
+                    return false;  // mixed unboxed/boxed — never equal structurally
                 }
             }
+            // Field b (bit 1 of unboxed)
             {
-                void* a2; void* b2; bool eq;
-                if (resolveAndCompare(allocator, atup->b.p, btup->b.p, &a2, &b2, &eq) == 0) {
-                    return eq;
+                bool aUb = (ahdr->unboxed & 2);
+                bool bUb = (bhdr->unboxed & 2);
+                if (aUb && bUb) return atup->b.i == btup->b.i;
+                if (!aUb && !bUb) {
+                    void* a2; void* b2; bool eq;
+                    if (resolveAndCompare(allocator, atup->b.p, btup->b.p, &a2, &b2, &eq) == 0) {
+                        return eq;
+                    }
+                    return eqHelp(a2, b2, depth + 1);
                 }
-                return eqHelp(a2, b2, depth + 1);
+                return false;  // mixed
             }
         }
 
         case Tag_Tuple3: {
             Elm::Tuple3* atup = static_cast<Elm::Tuple3*>(a);
             Elm::Tuple3* btup = static_cast<Elm::Tuple3*>(b);
+            Header* ahdr = getHeader(a);
+            Header* bhdr = getHeader(b);
 
+            // Field a (bit 0)
             {
-                void* a1; void* b1; bool eq;
-                if (resolveAndCompare(allocator, atup->a.p, btup->a.p, &a1, &b1, &eq) == 0) {
-                    if (!eq) return false;
+                bool aUb = (ahdr->unboxed & 1);
+                bool bUb = (bhdr->unboxed & 1);
+                if (aUb && bUb) {
+                    if (atup->a.i != btup->a.i) return false;
+                } else if (!aUb && !bUb) {
+                    void* a1; void* b1; bool eq;
+                    if (resolveAndCompare(allocator, atup->a.p, btup->a.p, &a1, &b1, &eq) == 0) {
+                        if (!eq) return false;
+                    } else {
+                        if (!eqHelp(a1, b1, depth + 1)) return false;
+                    }
                 } else {
-                    if (!eqHelp(a1, b1, depth + 1)) return false;
+                    return false;
                 }
             }
+            // Field b (bit 1)
             {
-                void* a2; void* b2; bool eq;
-                if (resolveAndCompare(allocator, atup->b.p, btup->b.p, &a2, &b2, &eq) == 0) {
-                    if (!eq) return false;
+                bool aUb = (ahdr->unboxed & 2);
+                bool bUb = (bhdr->unboxed & 2);
+                if (aUb && bUb) {
+                    if (atup->b.i != btup->b.i) return false;
+                } else if (!aUb && !bUb) {
+                    void* a2; void* b2; bool eq;
+                    if (resolveAndCompare(allocator, atup->b.p, btup->b.p, &a2, &b2, &eq) == 0) {
+                        if (!eq) return false;
+                    } else {
+                        if (!eqHelp(a2, b2, depth + 1)) return false;
+                    }
                 } else {
-                    if (!eqHelp(a2, b2, depth + 1)) return false;
+                    return false;
                 }
             }
+            // Field c (bit 2)
             {
-                void* a3; void* b3; bool eq;
-                if (resolveAndCompare(allocator, atup->c.p, btup->c.p, &a3, &b3, &eq) == 0) {
-                    return eq;
+                bool aUb = (ahdr->unboxed & 4);
+                bool bUb = (bhdr->unboxed & 4);
+                if (aUb && bUb) return atup->c.i == btup->c.i;
+                if (!aUb && !bUb) {
+                    void* a3; void* b3; bool eq;
+                    if (resolveAndCompare(allocator, atup->c.p, btup->c.p, &a3, &b3, &eq) == 0) {
+                        return eq;
+                    }
+                    return eqHelp(a3, b3, depth + 1);
                 }
-                return eqHelp(a3, b3, depth + 1);
+                return false;
             }
         }
 

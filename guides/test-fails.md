@@ -860,3 +860,475 @@ involve any long-lived structures or kernel helpers that cache things in old gen
 
 **Status:** OPEN
 **Attempts:** 0
+
+---
+
+## FIXED: Category 27 — JIT `.eh_frame` registered section-style to LLVM libunwind
+
+**Tests**: all stress tests + E2E `elm/LetDestructFuncTupleTest` + routine output of
+`libunwind: __unw_add_dynamic_fde: bad fde: FDE is really a CIE` warnings.
+
+### Root cause
+
+`EcoSectionMemoryManager::registerEHFrames` in `runtime/src/jit/EcoJIT.cpp` called
+`__register_frame(section_base)` once per `.eh_frame` section. LLVM libunwind's
+`__register_frame` expects a **single FDE pointer** (per `/opt/llvm-mlir/include/unwind.h:133`:
+"The FDE must use pc-rel addressing to point to its function"); a `.eh_frame` section
+begins with a CIE, so libunwind rejects every call with "bad fde: FDE is really a CIE"
+and registers **zero** FDEs. Without FDE info, libunwind cannot unwind across the
+C++ → JIT boundary: `ThreadLocalHeap::collectStackRootsFromStackMap` walks only 8
+C++ frames, `unw_step` returns `rc=0`, and the GC never visits JIT stack-map roots
+(`[gc] phase 1b: 0 stackmap roots`). Live Elm values in JIT spill slots go
+unforwarded and manifest as stale HPointers in downstream resolves.
+
+Byte evidence — the first 16 bytes of the section handed to `__register_frame`:
+`14 00 00 00 00 00 00 00 01 7a 52 00 01 78 10 01` — length 20, CIE_id 0,
+augmentation `"zR"`: a textbook CIE.
+
+### Fix
+
+`runtime/src/jit/EcoJIT.cpp`: walk the `.eh_frame` block and call `__register_frame(fde)`
+per FDE, skipping CIEs (`cie_pointer == 0`). This is what stock
+`RTDyldMemoryManager::registerEHFrames` does internally; we do it ourselves to keep
+the memory-manager hook for future diagnostics.
+
+### Impact
+
+With the fix, phase 1b stackmap roots jump from 0 to 114–728 per GC, all `bad fde`
+warnings disappear. Stress tests pass rate 8/31 → 19/31. E2E test `LetDestructFuncTupleTest`
+is still failing, but with different evidence (see Cat 5 / compiler-side bugs).
+
+**Status:** FIXED
+**Attempts:** 1
+**Full report:** `notes/stress-test-root-cause.md`
+
+---
+
+## FIXED: Category 28 — Cheney scan overruns tail gap after `copyToSpace` block advance
+
+**Tests**: `stress-elm/MaybeChainMap` (crashes in evacuator), plausibly several other
+GC-heavy stress tests hitting the same overrun. Was masked by Cat 27.
+
+### Root cause
+
+`NurserySpace::copyToSpace` (NurserySpace.cpp:267–291) advances `current_to_idx_` to the
+next block when an object doesn't fit in the remaining space of the current block,
+leaving an **uninitialised tail gap** between the old block's last copied object and
+`block_end`. `clearToSpaceFreeRegion` (line 1260–1273) only zeros
+`[current_to_idx_ .. end)`, so the gap in any earlier block is left holding
+stale bytes from prior GC cycles.
+
+The Cheney scan's `advanceScanIfNeeded` (line 304–315) advances to the next block
+only when `scan_ptr_ >= block_end`. Between the last legitimate object end and
+`block_end`, the scan reads the stale bytes as if they were a real object header,
+picks a bogus `{tag, size}`, and either (a) mis-advances `scan_ptr_`, or (b) calls
+`evacuate` on a "child field" read from the next block → SIGSEGV.
+
+Byte evidence (MaybeChainMap, GC #2):
+
+```
+[scan] obj=0x…_01ffe0 header=0x0000000100000807 tag=7 size=1 decoded=24   ← last legit
+[scan-loop] OVERRUN scan_ptr=0x…_01fff8 block_end=0x…_20000
+            rem=8 obj_size=40 scan_block_idx=0 current_to_idx=1
+[scan] obj=0x…_01fff8 header=0x00000000000003cc tag=12 size=0 decoded=40   ← STALE
+```
+
+Tag 12 = `Tag_Process`, color=Black, age=3, epoch=3 — values the minor GC never
+writes; must be residue from a prior cycle.
+
+### Fix
+
+Add a `std::vector<char*> block_end_of_objects_` sibling to `to_blocks`; record
+`copy_ptr_` at the moment `copyToSpace` abandons a block. `advanceScanIfNeeded`
+stops at the recorded end when `scan_block_idx_ < current_to_idx_` rather than at
+`block_end`. Initialise entries to `block_start + block_size_` (safe default) at
+the top of `minorGC`.
+
+### Impact
+
+Stress: 19/31 → 20/31 (MaybeChainMap moves from SIGSEGV to `roundtrip: True`).
+Other still-failing stress tests turn out to have different root causes (Cat 29–33
+below).
+
+**Status:** FIXED
+**Attempts:** 1
+**Full report:** `notes/cheney-tail-gap-bug.md`
+
+---
+
+## FIXED: Category 29 — `collectStackRootsFromStackMap` crashes on null HPointer in tracked slot
+
+**Tests**: 6 of 12 crashing stress tests (`ListSort`, `ListFilterRebuild`, `ListIntersperse`,
+`ListConcatMap`, `ListZipUnzip`, `MixedAlloc`)
+
+### Root cause
+
+`ThreadLocalHeap::collectStackRootsFromStackMap` (ThreadLocalHeap.cpp:335–356) skips
+HPointers with `constant != 0` (embedded constants) before calling
+`Allocator::resolve`, but does not skip HPointers with `ptr == 0`. RS4GC
+legitimately records slots that are statically null at a statepoint (unfilled
+closure capture, null-base derived pointer), matching the existing skip in
+`NurserySpace::evacuate` (NurserySpace.cpp:676: `if (ptr.ptr == 0) return;`).
+
+With `raw = 0`, `Allocator::resolve` computes `obj = heap_base + (0 << 3) = heap_base`,
+which is the bottom of the 2 GB reserved-but-not-committed nursery address range
+(`0x7fef00000000` in the captured trace). Dereferencing `obj` to read the header
+(Allocator.cpp:417) → SIGSEGV.
+
+Per-slot trace of the crashing call:
+```
+[sm-slot] locIdx=7 reg=7 off=24 raw=0x0000000000000000 ptr=0x0 const=0
+[resolve] enter raw=0x0 ptr=0x0 obj=0x7fef00000000 heap_base=0x7fef00000000
+← SIGSEGV
+```
+
+Same pattern verified on MixedAlloc and ListConcatMap.
+
+### Fix
+
+`runtime/src/allocator/ThreadLocalHeap.cpp`: before calling `alloc.resolve(potential)`,
+add the symmetric skip:
+
+```cpp
+if (potential.constant != 0) continue;
++if (potential.ptr == 0) continue;    // matches NurserySpace::evacuate
+void* phys = alloc.resolve(potential);
+```
+
+### Impact
+
+Stress: 20/31 → 26/31 (6 tests move from crash to OK).
+
+**Status:** FIXED
+**Attempts:** 1
+**Full report:** `notes/stress-test-round3.md`
+
+---
+
+## SKIPPED: Category 30 — Record-update lambda loses fields when specialised through polymorphic wrapper
+
+**Tests**: `stress-elm/RecordUpdateList` — runs to completion, produces `roundtrip: False`;
+also blocks the remaining 2 wrong-result tests in spirit.
+
+### Root cause
+
+When `\r -> { r | a = -r.a }` is passed through the polymorphic
+`applyNTimes : Int -> (a -> a) -> a -> a`, monomorphisation fixes the lambda's
+`MonoType` to `MRecord { a: Int }` — the row mentioned inside the lambda body only —
+even though callers pass full `Rec = { a: Int, b: Int, c: Int }`. Codegen at
+`Compiler/Generate/MLIR/Expr.elm:419–433` drives `generateRecordUpdate` with
+`layout.fieldCount = 1, layout.unboxedBitmap = 1`, so `eco.construct.record` emits
+a 24-byte 1-field record. Later `eco.project.record` calls at `field_index = 1` and
+`2` read past the end of the record, straight into the adjacent `Cons` cell that
+`List.map` allocates next. Observed first record of `transformed`:
+`{ a = -1, b = 6, c = <HPointer-shaped value> }` — where `b = 6` is literally
+`Tag_Cons = 6` of the following object's header and `c` is the `Cons.head` HPointer.
+
+### Bisection
+
+Same lambda text, same `buildRecs` tail-recursive builder, 7 variants. The *only*
+change that flips the MLIR from 3-field to 1-field is introducing `applyNTimes`.
+Without the polymorphic wrapper (direct `List.map λ lst`), lambda emits
+`field_count = 3, unboxed_bitmap = 7` and the test passes.
+
+### Fix (suggested, not yet applied)
+
+In `Compiler/Monomorphize/Specialize.elm:2308–2356` (`TOpt.Update` specialisation),
+fall back to `Mono.typeOf monoRecord` when the derived `monoType` has strictly fewer
+fields than the already-specialised input record. This guarantees the output row is
+at least as wide as the input row.
+
+Alternatively, at `Compiler/Monomorphize/Specialize.elm:507–581` (`specializeLambda`),
+when the lambda parameter type is an `MRecord`, propagate extra rows discovered at
+the call site into the lambda's `refinedSubst` before specialising the body.
+
+### Key files
+
+- `compiler/src/Compiler/Monomorphize/Specialize.elm:2308–2356`
+- `compiler/src/Compiler/Generate/MLIR/Expr.elm:419–433, 4774–4852, 5075–5082`
+- `runtime/src/allocator/Heap.hpp:202–213` — `Record` layout
+
+**Status:** SKIPPED
+**Attempts:** 1
+- Attempt 1 (code review, no compile): the existing `TOpt.Update` handler at
+  `Specialize.elm:2356–2359` already merges `recordMonoType` (from
+  `Mono.typeOf monoRecord`) with `monoType` (from
+  `applySubstFV state subst canType`) via `Dict.union`. This is the only
+  widening intervention available at the `Update` site. When both maps are
+  identically narrowed — which is the case when the record is the lambda's
+  parameter flowing through a polymorphic wrapper — the union also has
+  only the narrow set of fields. No fix is possible at this level without
+  the same substantial compiler change identified in Cat 31 attempt 2
+  (refining `specializeLambda`'s parameter-type derivation so caller
+  substitutions propagate into the lambda's body). Since Cat 30 and Cat 31
+  share a root cause and Cat 31 was already SKIPPED with full reasoning,
+  a repeated trial here is unproductive.
+**Full report:** `notes/bug-B-record-row-narrowing.md`
+
+---
+
+## SKIPPED: Category 31 — Tuple-create lambda loses element types through polymorphic wrapper
+
+**Tests**: `stress-elm/TupleMapList` — crashes with SIGSEGV inside
+`NurserySpace::evacuate` on the first minor GC.
+
+### Root cause
+
+Direct tuple variant of Cat 30. The `swap` lambda `\(a, b) -> (b, a)` passed through
+`applyNTimes (List.map swap)` is specialised with tuple elements erased to
+`!eco.value`, so it emits:
+
+```mlir
+%9 = "eco.construct.tuple2"(%8, %6)
+       {_operand_types = [!eco.value, !eco.value], unboxed_bitmap = 0}
+       : (!eco.value, !eco.value) -> !eco.value
+```
+
+where `buildTuples` (which is not inside the polymorphic wrapper) correctly emits
+`unboxed_bitmap = 3` for `(Int, Int)`.
+
+The resulting Tuple2 has `header.unboxed == 0`. `scanObject`'s Tag_Tuple2 branch
+(NurserySpace.cpp:924–929) sees `is_boxed = true` for both fields, calls
+`evacuateUnboxable`, which calls `evacuate` on the raw `i64` Int value (e.g.
+`-1000 = 0xfffffffffffffc18`) treated as an HPointer. `Allocator::resolve` → SIGSEGV.
+
+### Fix (suggested, not yet applied)
+
+Symmetric to Cat 30, but for the `MTuple` branch: the monomorphiser must not
+drop tuple element types when the lambda flows through a polymorphic type variable.
+Fix site is the same pass (`Compiler/Monomorphize/Specialize.elm`), with analogous
+treatment in `TOpt.Tuple`'s `monoType` derivation and in `specializeLambda` for
+`MTuple`-typed parameters.
+
+### Key files
+
+- `compiler/src/Compiler/Monomorphize/Specialize.elm` — tuple specialisation
+- `compiler/src/Compiler/Generate/MLIR/Expr.elm` — `MonoTupleCreate` codegen
+- `runtime/src/allocator/NurserySpace.cpp:924–929` — `scanObject` Tuple2 dispatch
+- `runtime/src/allocator/Heap.hpp:183–194` — Tuple2/Tuple3 layout
+
+**Status:** SKIPPED
+**Attempts:** 2
+- Attempt 1: modified `TOpt.Tuple` monoType derivation in `Specialize.elm`
+  to prefer `Mono.MTuple (List.map Mono.typeOf allExprs)` over
+  `applySubstFV canType`. Result: no effect. `construct.tuple2` still emits
+  `unboxed_bitmap = 0`. The tuple's operand types are determined at the
+  surrounding `eco.project.tuple2` ops, which are themselves erased (return
+  `!eco.value`) because the lambda's argument tuple type is already erased.
+  The fix targeted the wrong layer. Reverted.
+- Attempt 2: considered a codegen-layer fix in `generateTupleCreate` that
+  would infer unboxed bitmap from the actual SSA types of the input
+  expressions rather than from `layout.unboxedBitmap`. On code review this
+  was also a no-op: by the time codegen runs, the element SSA values are
+  already `!eco.value` (boxed) because the upstream projections erased
+  them; there is no primitive i64 SSA value at this point to salvage.
+- Why remaining fixes are non-trivial: root cause is at the lambda-argument
+  type derivation in `Specialize.elm:507–581` (specializeLambda). The
+  substitution (`refinedSubst`) applied to `paramCanType` does not resolve
+  the lambda's row/tuple-element type variables when the lambda flows
+  through a polymorphic type variable in a wrapper like
+  `applyNTimes : (a -> a) -> a -> a`. Fixing this requires either
+  (a) changing the monomorphization traversal order so the caller's
+  concrete type flows back into the lambda's specialization before its
+  body is visited, or (b) a post-specialization re-sync pass that patches
+  lambda parameter types using the call-site substitution. Both are
+  substantive compiler changes with cross-cutting risk to all other
+  polymorphic-higher-order uses (fold, map, compose, …) — well beyond the
+  scope of a small targeted fix.
+**Full report:** `notes/stress-test-3segvs.md`
+
+---
+
+## FIXED: Category 32 — `Kernel::Utils::eqHelp`/`cmp` Tuple2/Tuple3 case skips unboxed check
+
+**Tests**: `stress-elm/DictFromListToList` — crashes with SIGSEGV inside
+`Kernel::Utils::equal → eqHelp → resolveAndCompare → Allocator::resolve` on the
+first equality comparison, before any GC runs.
+
+### Root cause
+
+The `Tag_Tuple2` and `Tag_Tuple3` cases in both `cmp` (Utils.cpp:107–158) and
+`eqHelp` (Utils.cpp:287–335) read `atup->a.p` / `atup->b.p` / `atup->c.p` directly —
+the `.p` (HPointer) arm of the `Unboxable` union — without consulting
+`header.unboxed`. `Tag_Cons` (Utils.cpp:168–198 / 337–385), `Tag_Custom`
+(Utils.cpp:396–415), and `Tag_Record` all check the unboxed bits first and dispatch
+to raw-i64 comparison for unboxed fields. Tuple2/Tuple3 don't.
+
+For `List (Int, Int)` — exactly what `buildPairs` creates and what `Dict.toList`
+reconstructs — tuples have `header.unboxed = 3`; `atup->a.p` returns an HPointer
+whose bit pattern is the raw Int value. `resolveAndCompare` finds `constant = 0`,
+calls `allocator.resolve(HPointer{ptr=1, const=0})`, which maps to
+`heap_base + 8`. That address is inside the reserved-but-uncommitted nursery range
+(e.g. `0x7fef00000008`); the header-read dereference SEGVs.
+
+### Fix (suggested, not yet applied)
+
+In `elm-kernel-cpp/src/core/Utils.cpp`, rewrite the four Tuple2/Tuple3 cases in the
+shape of the working `Tag_Cons` branch:
+
+```cpp
+case Tag_Tuple2: {
+    auto* atup = static_cast<Elm::Tuple2*>(a);
+    auto* btup = static_cast<Elm::Tuple2*>(b);
+    bool aUb = ahdr->unboxed & 1, bUb = bhdr->unboxed & 1;
+    if (aUb && bUb) {
+        if (atup->a.i != btup->a.i) return false;
+    } else if (!aUb && !bUb) {
+        /* existing resolveAndCompare(atup->a.p, btup->a.p) path */
+    } else { /* mixed — one boxed, one raw */ }
+    /* same for field b with (unboxed & 2) */
+}
+```
+
+Runtime C++ only — no compiler changes.
+
+### Key files
+
+- `elm-kernel-cpp/src/core/Utils.cpp` — all four Tuple2/Tuple3 cases (cmp + eqHelp) rewritten to mirror the Tag_Cons unboxed-aware pattern
+- `elm-kernel-cpp/src/core/Utils.cpp` Tag_Cons (168–198, 337–385) — template copied from
+
+**Status:** FIXED
+**Attempts:** 1
+**Result:** stress 26/31 → 27/31 (DictFromListToList passes); elm-test 12799/12799 passing; no regressions.
+**Full report:** `notes/stress-test-3segvs.md`
+
+---
+
+## SKIPPED: Category 33 — `Dict.remove` of an existing key passes Int where HPointer expected
+
+**Tests**: `stress-elm/DictUnionDiff` — crashes with SIGSEGV inside
+`eco_get_tag → Allocator::resolve`, *before* any GC. Same class of crash in any
+program that does `Dict.remove k d` where `k ∈ keys(d)`.
+
+### Root cause (narrowed, not fully pinned)
+
+Deterministic reducer:
+```elm
+d1 = Dict.insert 42 10 Dict.empty
+d2 = Dict.remove 42 d1       -- crashes
+```
+With `42` in the dict, `eco_get_tag` is eventually called with `raw = 0x2a` (=42).
+With a different key (`Dict.remove 1 d1`), the bad value is `0x1` (=1). With
+`Dict.remove k d` where `k ∉ keys(d)`, no crash. The i64 key value is flowing into
+a register/slot where a Dict `!eco.value` is expected.
+
+The generated MLIR is clean: every `eco.get_tag` operand is `!eco.value`, and every
+use of `%targetKey: i64` stays as `i64` (never crossed to `!eco.value` in MLIR).
+So this is NOT a Bug B-family source-level type narrowing and NOT a runtime
+equality bug like Cat 32.
+
+Observed runtime symptom: the first ~96 294 `eco_get_tag` calls in
+`DictUnionDiff` succeeded with proper Dict HPointers. Exactly one call arrives
+with the raw Int. The bug is triggered by the `Dict.diff` path — whose lambda
+`\k _ t -> Dict.remove k t` (papCreated with `num_captured = 0, unboxed_bitmap = 0`,
+NO `_fast_evaluator` attribute) saturates via papExtend with
+`newargs_unboxed_bitmap = 3`, invoking `eco_apply_segmentation_unknown`'s
+"unknown" path. Somewhere between that runtime dispatch and the underlying call
+chain `Dict_remove → Dict_removeHelp → Dict_removeHelpEQGT → Dict_balance`, the
+i64 key flows into a pointer slot.
+
+Two candidates worth instrumenting next:
+1. `EcoToLLVMClosures.cpp` `getOrCreateWrapper` — the wrapper emitted for
+   functions with mixed `i64` / `!eco.value` signatures (e.g. `Dict_balance :
+   (!eco.value, i64, i64, !eco.value, !eco.value) -> !eco.value`). If the wrapper
+   mis-numbers the unboxed columns of `combined_args`, an Int ends up in a
+   `!eco.value` position.
+2. `eco_apply_segmentation_unknown`'s marshalling when
+   `newargs_unboxed_bitmap != 0` AND the target function's signature mixes
+   boxed/unboxed slots. The fact that `DUDDiff_lambda_2` has no
+   `_fast_evaluator` means the "unknown" runtime path is used rather than the
+   fast clone.
+
+### Investigation approach
+
+- Dump LLVM IR (`ecoc --emit=llvm`) for `Dict_balance`, `Dict_removeHelpEQGT`,
+  `Dict_getMin`, and `Dict_removeMin`. Check argument marshalling at every call
+  site.
+- Instrument `buildEvaluatorArgs` (RuntimeExports.cpp:977–1034) to print each
+  slot's raw value and the interpreted bitmap for the lambda's closure on entry
+  to `eco_closure_call_saturated`.
+- Check whether the wrapper generated by `getOrCreateWrapper` for
+  `DUDDiff_lambda_2` reads `combined_args[0]` as `i64` (correct) or as an
+  HPointer (would be the bug).
+
+### Key files
+
+- `runtime/src/codegen/Passes/EcoToLLVMClosures.cpp` — `getOrCreateWrapper`,
+  closure/PAP lowering
+- `runtime/src/allocator/RuntimeExports.cpp:977–1034` — `buildEvaluatorArgs`
+- `runtime/src/allocator/RuntimeExports.cpp:1106–1180` —
+  `eco_apply_segmentation_unknown`
+- `runtime/src/allocator/RuntimeExports.cpp:1239–1293` —
+  `eco_closure_call_saturated`
+
+**Status:** SKIPPED
+**Attempts:** 1
+- Attempt 1 (code-review only): considered adding a defensive guard in
+  `eco_get_tag` to detect `hp.ptr < heap_low_threshold` and return the
+  Int tag, skipping the crash-producing `resolve`. Rejected on code
+  review: this would mask the SEGV but produce wrong control flow —
+  the JIT pattern-match would take the `Tag_Int` branch on what is
+  meant to be a Dict node, and Dict rebalancing would corrupt the
+  tree silently. Runtime-level patches cannot fix this without
+  finding the exact lowering/ABI site that leaks the Int. The
+  investigation narrowed to either `EcoToLLVMClosures.cpp`'s
+  `getOrCreateWrapper` for mixed-ABI signatures
+  (`(!eco.value, i64, i64, !eco.value, !eco.value) -> !eco.value`)
+  or `eco_apply_segmentation_unknown`'s marshalling when
+  `newargs_unboxed_bitmap != 0` interacts with a target function of
+  mixed signature. Confirming either requires dumping and auditing
+  the generated LLVM IR for `Dict_balance` /
+  `Dict_removeHelpEQGT` / `Dict_getMin` / `Dict_removeMin` at each
+  call boundary — significant work beyond a quick loop iteration.
+**Full report:** `notes/stress-test-3segvs.md`
+
+---
+
+## SKIPPED: Category 34 — DictFoldRebuild produces `roundtrip: False`
+
+**Test**: `stress-elm/DictFoldRebuild.elm` — completes all 26 minor GC cycles
+without assertion or crash; returns wrong `roundtrip: False` where the program
+semantics require `True` (two applications of negate-values through
+`Dict.foldl (\k v acc -> Dict.insert k (-v) acc) Dict.empty` should round-trip
+through `applyNTimes 1000`).
+
+### Root cause class (not pinned)
+
+Test uses the same polymorphic higher-order wrapper pattern
+(`applyNTimes : Int -> (a -> a) -> a -> a` with `a = Dict Int Int`) that
+is the root of Cat 30/31. The rebuild helper's
+`DictFoldRebuild_lambda_1 : (i64, i64, !eco.value) -> !eco.value` MLIR is
+correctly typed, and all Dict kernel signatures are consistent — so at MLIR
+level this does not show the tuple/record-row narrowing shape. Two plausible
+places the incorrectness could live:
+
+1. Same family as Cat 33 — a lowering/ABI confusion in Dict's RBT helpers
+   (`Dict_balance`, `Dict_removeHelpEQGT`) when called via the polymorphic
+   `applyNTimes`-wrapped path, producing silent tree corruption instead of
+   SEGV.
+2. A distinct closure-evaluation bug where `eco_closure_call_saturated`'s
+   argument marshalling for the "unknown" segmentation path produces
+   valid-looking but wrong values for one of the Dict entries.
+
+### Key files
+
+- `runtime/src/codegen/Passes/EcoToLLVMClosures.cpp` —
+  `getOrCreateWrapper`, `eco_apply_segmentation_unknown` dispatch
+- `elm-kernel-cpp/src/core/Dict*.elm` — Dict.insert / Dict.foldl
+- `compiler/src/Compiler/Monomorphize/Specialize.elm` — if this turns
+  out to be a row-narrowing sibling of Cat 30/31
+
+**Status:** SKIPPED
+**Attempts:** 1
+- Attempt 1 (code-review only): inspected `rebuildWithTransform` and
+  `DictFoldRebuild_lambda_1` MLIR — both emit correctly typed
+  `(i64, i64, !eco.value)` signatures, correct `Dict_foldl` call, correct
+  `Dict_insert` call. At the MLIR level the test does not exhibit the
+  Cat 30/31 row-narrowing shape. Without a compact, deterministic
+  reducer (the stress-test's m=1000/n=1000 is too large for pattern
+  inspection), pinning the exact failure site needs instrumented JIT IR
+  dumps. Same class of investigation as Cat 33.
+
+**Full report:** (none standalone — investigation was brief, see
+notes/stress-test-3segvs.md §"Remaining stress-suite status" for the
+initial classification.)
