@@ -224,7 +224,6 @@ target_compile_features(ElmKernel_Http PUBLIC cxx_std_20)
 
 # Parser module
 add_library(ElmKernel_Parser STATIC
-    src/parser/Parser.cpp
     src/parser/ParserExports.cpp
 )
 target_include_directories(ElmKernel_Parser PUBLIC

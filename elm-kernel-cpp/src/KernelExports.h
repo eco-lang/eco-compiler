@@ -388,13 +388,21 @@ HPtr Elm_Kernel_File_uploadOneOrMore(HPtr mimes);
 HPtr Elm_Kernel_File_makeBytesSafeForInternetExplorer(HPtr bytes);
 
 //===----------------------------------------------------------------------===//
-// Parser Module (elm/parser) - STUBS
+// Parser Module (elm/parser)
 //===----------------------------------------------------------------------===//
 
-HPtr Elm_Kernel_Parser_isSubChar(HPtr closure, int64_t offset, HPtr str);
+// Signatures match the ABI inferred by the MLIR compiler from Elm types:
+//   isSubChar    : (Char -> Bool) -> Int -> String -> Int
+//   isSubString  : String -> Int -> Int -> Int -> String -> (Int, Int, Int)
+//   findSubString: String -> Int -> Int -> Int -> String -> (Int, Int, Int)
+//   chompBase10  : Int -> String -> Int
+//   consumeBase  : Int -> Int -> String -> (Int, Int)
+//   consumeBase16: Int -> String -> (Int, Int)
+//   isAsciiCode  : Int -> Int -> String -> Bool
+int64_t Elm_Kernel_Parser_isSubChar(HPtr closure, int64_t offset, HPtr str);
 HPtr Elm_Kernel_Parser_isSubString(HPtr target, int64_t offset, int64_t row, int64_t col, HPtr str);
-int64_t Elm_Kernel_Parser_findSubString(HPtr target, int64_t offset, int64_t row, int64_t col, HPtr str);
-HPtr Elm_Kernel_Parser_chompBase10(int64_t offset, HPtr str);
+HPtr Elm_Kernel_Parser_findSubString(HPtr target, int64_t offset, int64_t row, int64_t col, HPtr str);
+int64_t Elm_Kernel_Parser_chompBase10(int64_t offset, HPtr str);
 HPtr Elm_Kernel_Parser_consumeBase(int64_t base, int64_t offset, HPtr str);
 HPtr Elm_Kernel_Parser_consumeBase16(int64_t offset, HPtr str);
 HPtr Elm_Kernel_Parser_isAsciiCode(int64_t code, int64_t offset, HPtr str);
