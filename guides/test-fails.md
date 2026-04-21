@@ -82,10 +82,10 @@ rather than merging prematurely.
 Most recent whole-suite run. Update after each full test pass. Keep only the latest
 baseline here; prior baselines belong in git history.
 
-- **Date:** 2026-04-20 (post-ParserHexIntTest fix)
-- **elm-test:** 12799 passed, 0 failed (skip marker expected; not re-run for test/kernel-only fixes)
-- **E2E (`full`):** 1102 run, 1094 passed, 8 failed (was 1093/9; +1 pass: Issue #7)
-- **Stress:** 69 run, 51 passed, 18 failed
+- **Date:** 2026-04-20 (post-Float-monomorphization fix)
+- **elm-test:** 12799 passed, 0 failed (skip marker expected)
+- **E2E (`full`):** 1102 run, 1099 passed, 3 failed (was 1094/8; +5 pass: Issues #2–#6)
+- **Stress:** 69 run, 51 passed, 18 failed (not re-run this session)
 
 ---
 
@@ -96,20 +96,54 @@ baseline here; prior baselines belong in git history.
 - **Suite:** E2E
 - **Test(s):** `elm/LetDestructFuncTupleTest.elm`
 - **Status:** OPEN
-- **Attempts:** 0 this session; git history records 3 prior attempts
+- **Attempts:** 0 this session; git history records 3 prior attempts; root cause now identified in this session
 - **First seen:** 2026-04-20
 - **Last updated:** 2026-04-20
+- **Related:** Issue #8, #9 (similar class — concrete types lost through specialization boundary)
 
 **Failure mode:** Output mismatch
 
 **Observed:**
 - Expected: `get: 10` (and `set: 99`)
-- Actual:   `get: 0`, `set: 536870993` (`0x2000_0011` — looks like a primitive slot mis-interpreted as an Int).
+- Actual:   `get: 0`, `set: 536870993` (`0x2000_0011` — HPointer bits read as i64).
 
-**Hypothesis (from prior-session analysis, now in git history):** The test builds `(.a, \x m -> { m | a = x })` — a tuple whose first field is a standalone record accessor `.a` and whose second is an update lambda. The compiler gives the standalone accessor a generic type in `Specialize.elm`, producing a tuple/record `unboxed_bitmap` mismatch when the accessor and the update lambda are built together as tuple fields inside a `case` expression. Three prior fix attempts all failed to propagate accessor types correctly without regressing other sites.
+**Root cause (CONFIRMED via MLIR inspection):**
+
+The test's `choose` function does:
+```elm
+(getter, setter) =
+    case loc of
+        First -> ( .a, \x m -> { m | a = x } )
+        Second -> ( .b, \x m -> { m | b = x } )
+```
+
+In generated MLIR, the record-update lambda `\x m -> { m | a = x }` compiles to:
+```
+^bb0(%x: !eco.value, %m: !eco.value):
+    %18 = eco.project.record(%m) {field_index = 1} : (!eco.value) -> !eco.value  // b
+    %19 = eco.construct.record(%x, %18) {field_count = 2, unboxed_bitmap = 0}     // all-BOXED!
+```
+
+But the caller (main) reads the returned record with `unboxed_bitmap = 5` (both fields Int, unboxed):
+```
+%15 = eco.project.record(%9) {field_index = 0} : (!eco.value) -> i64
+```
+
+→ Caller reads HPointer bits (to an ElmInt) as a raw i64, gets `0x20000011 = 536870993`.
+
+**Why the mismatch:** In Elm, `\x m -> { m | a = x }` has type `a -> { r | a : a } -> { r | a : a }`. The `r` is an extensible-record variable. At the point the lambda is specialized (inside the case branch of `choose`, at tuple construction time), the substitution has NO binding for `r` yet — it only acquires `r = {b: Int}` later when `setter rec` is applied to the concrete record. So the lambda gets specialized with `m` typed as `MRecord {a: MVar, b: MVar}` (both fields polymorphic), for which `canUnbox = False`, giving `unboxed_bitmap = 0` in the construction. The `b` field must already be in the MonoType (since `field_count = 2`) — this comes from the outer substitution already having `r → {b: Int}` transitively from `choose`'s own parameter `rec : {a:Int, b:Int}` — but `b`'s concrete type `Int` doesn't propagate into the lambda's inner record layout because the lambda's canonical record type only declares `a` explicitly and uses the extension variable `r` for other fields.
+
+**Why prior fix attempts failed:** The 3 git-history attempts tried to propagate accessor types. But the problem is symmetric: both the accessor (`.a`) and the update lambda have the same polymorphic-record issue.
+
+**Fix sketch:**
+The lambda needs per-use specialization so each `setter rec` call site can resolve `r = {b: Int}` concretely before the lambda body is compiled. This requires either:
+1. Extending `shouldUseValueMulti` to trigger on destructured polymorphic-record bindings (currently only triggers on let-bindings the body uses directly via `TOpt.Access`), OR
+2. Inlining simple record-update lambdas at each use site.
+
+Either is ~day-scale compiler surgery.
 
 **Attempt log:**
-- **Skip rationale (2026-04-20):** No fresh hypothesis beyond the prior three attempts in git history. Fix requires an accessor-type-propagation change in `Specialize.elm` that is deeper than this session's budget allows. Marked SKIPPED.
+- **Skip rationale (2026-04-20):** Root cause confirmed in this session via direct MLIR inspection. Fix requires either (a) extending value-multi specialization to cover destructured bindings (currently limited to TOpt.Access), or (b) inlining record-update lambdas. Both are substantial compiler changes beyond this session's remaining budget after the Float-monomorphization fix (which flipped Issues #2-#6).
 
 ---
 
@@ -117,8 +151,8 @@ baseline here; prior baselines belong in git history.
 
 - **Suite:** E2E
 - **Test(s):** `elm/ListMap2FloatSumTest.elm`
-- **Status:** OPEN
-- **Attempts:** 0 this session; git history records 1 prior attempt
+- **Status:** FIXED
+- **Attempts:** 1 this session; git history records 1 prior attempt
 - **First seen:** 2026-04-20
 - **Last updated:** 2026-04-20
 - **Related:** Issue #3, Issue #4, Issue #5, Issue #6
@@ -129,10 +163,30 @@ baseline here; prior baselines belong in git history.
 - Expected: `result: [12, 23]`
 - Actual:   Float bit-patterns printed as signed i64 (e.g. `[-9215209262530166784, …]`).
 
-**Hypothesis (shared with #3–#6):** In `processCallArg` (`Specialize.elm` ~line 2708), the `_ → TOpt.VarGlobal` fallthrough only defers a global arg when `Mono.containsCEcoMVar monoType` is True. For `Basics.add : number -> number -> number`, `applySubst` calls `resolveMonoVars` which defaults unresolved `CNumber` MVars to `MInt`, so `monoType = MInt -> MInt -> MInt` and `containsCEcoMVar` returns False. The global is specialised as Int before `refineSubstFromArgExprs` propagates `a = Float` from the list args, producing a closure that re-interprets IEEE 754 Float bits as Int.
+**Hypothesis (shared with #3–#6) — CONFIRMED via text MLIR dump of JsArrayFloatFoldlTest:**
+
+In the generated MLIR for `Array.foldl (+) 0.0 (Array.fromList [1.5, 2.5, 3.0])`:
+```
+%5 = "eco.papCreate"() {arity=2, function=@Basics_add_$_1, ...}
+...
+"func.func"() ({
+    ^bb0(%arg0: i64, %arg1: i64):
+      %2 = "eco.int.add"(%arg0, %arg1) ...
+}) {function_type = (i64, i64) -> (i64), sym_name = "Basics_add_$_1", ...}
+```
+
+`Basics_add_$_1` is specialized as **(i64, i64) -> i64** using `eco.int.add`, when it should be **(f64, f64) -> f64** using `eco.float.add`. By contrast, `Basics_max_$_5` in the same test IS specialized as `(f64, f64) -> f64`, because `max` doesn't rely on CNumber (it has explicit ordering).
+
+**Root cause:** In `processCallArg` (Specialize.elm ~2708), the `VarGlobal` deferral check is `Mono.containsCEcoMVar monoType`. For `Basics.add : number -> number -> number`, `applySubst` runs on the canonical type; since the CNumber TVar is unresolved at that point, `resolveMonoVars` (TypeSubst.elm:535) defaults `CNumber -> MInt`, producing `monoType = MInt -> MInt -> MInt`. `containsCEcoMVar` returns False (no CEcoValue MVars), so the global is specialized immediately as Int. Later args (`0.0 : Float`, `Array Float`) would reveal `number = Float`, but `(+)` is already committed.
+
+**Fix plan:**
+1. Add `applySubstNoDefault` helper in TypeSubst.elm that applies the substitution but preserves unresolved CNumber as `MVar _ CNumber` (instead of defaulting to MInt).
+2. Modify `processCallArg` VarGlobal case to use this helper; if `containsAnyMVar monoType` is True, defer as PendingGlobal.
+3. The preserved-MVar monoType flows into `unifyCallSiteDirect`, which transitively binds CNumber→MFloat via the other args' concrete Float types. The deferred `resolveProcessedArg PendingGlobal` then uses `unifyExtend canType paramType` (already correct) to refine subst before `specializeExpr`.
 
 **Attempt log:**
-- **Skip rationale (2026-04-20):** Prior session's attempt 1 added `canTypeHasAnyTVar` + an extended deferral condition and confirmed it was necessary but NOT sufficient — a complete fix requires also reporting a non-committed `argMono` (MVars preserved) for `PendingGlobal` in `extractParamTypes` / `resolveProcessedArgs`, plus coordinated changes in `refineSubstFromArgExprs` and `unifyCallSiteDirect`. Multi-site compiler surgery with high regression risk across 1100+ E2E tests; out of this session's budget.
+- **Skip rationale (2026-04-20):** Prior session marked SKIPPED noting multi-site compiler surgery. This session will execute the fix plan above — changes are localized to Specialize.elm + 1 helper in TypeSubst.elm.
+- **Attempt 1 (2026-04-20):** Added `applySubstKeepNumber` + `resolveMonoVarsKeepNumber` to TypeSubst.elm — preserves CNumber MVars instead of defaulting to MInt. Modified `processCallArg` VarGlobal case to use this helper and defer (PendingGlobal) when `containsAnyMVar` is True (instead of only `containsCEcoMVar`). Post-fix verification: `Basics_add_$_1` now specialized as `(f64, f64) -> f64`; Basics_mul correspondingly Float. Test counts: elm-test 12799/0 (unchanged); E2E 1102/1099/3 — five tests flipped to pass (Issues #2–#6). No regressions. FIXED.
 
 ---
 
@@ -140,8 +194,8 @@ baseline here; prior baselines belong in git history.
 
 - **Suite:** E2E
 - **Test(s):** `elm/ListMap2FloatTest.elm`
-- **Status:** OPEN
-- **Attempts:** 0 this session; git history records 1 prior attempt (shared root cause)
+- **Status:** FIXED
+- **Attempts:** 1 this session (jointly with Issue #2)
 - **First seen:** 2026-04-20
 - **Last updated:** 2026-04-20
 - **Related:** Issue #2, Issue #4, Issue #5, Issue #6
@@ -152,10 +206,10 @@ baseline here; prior baselines belong in git history.
 - Expected: `map2Add: [11, 22, 33]`
 - Actual:   Float bit-patterns: `[-9217742537320562688, -9208735338065821696, -9203668788485029888]`.
 
-**Hypothesis:** See Issue #2. Same root cause.
+**Hypothesis:** Same root cause as Issue #2 — `(+)` and `(*)` specialized as Int when called on List Float.
 
 **Attempt log:**
-- **Skip rationale (2026-04-20):** See Issue #2.
+- **Attempt 1 (2026-04-20):** Fixed jointly with Issue #2. After the `applySubstKeepNumber` fix, `Basics_add_$_1` / `Basics_mul_$_3` now specialize as `(f64, f64) -> f64`. FIXED.
 
 ---
 
@@ -163,8 +217,8 @@ baseline here; prior baselines belong in git history.
 
 - **Suite:** E2E
 - **Test(s):** `elm-core/ArrayFoldrFloatSumTest.elm`
-- **Status:** OPEN
-- **Attempts:** 0 this session
+- **Status:** FIXED
+- **Attempts:** 1 this session (jointly with Issue #2)
 - **First seen:** 2026-04-20
 - **Last updated:** 2026-04-20
 - **Related:** Issue #2, Issue #3, Issue #5, Issue #6
@@ -175,10 +229,10 @@ baseline here; prior baselines belong in git history.
 - Expected: `result: 7`
 - Actual:   `result: -2.5` (sum of float bit-patterns)
 
-**Hypothesis:** See Issue #2. Same root cause.
+**Hypothesis:** Same root cause as Issue #2.
 
 **Attempt log:**
-- **Skip rationale (2026-04-20):** See Issue #2.
+- **Attempt 1 (2026-04-20):** Fixed jointly with Issue #2. FIXED.
 
 ---
 
@@ -186,8 +240,8 @@ baseline here; prior baselines belong in git history.
 
 - **Suite:** E2E
 - **Test(s):** `elm-core/ArrayFoldlFloatSumTest.elm`
-- **Status:** OPEN
-- **Attempts:** 0 this session
+- **Status:** FIXED
+- **Attempts:** 1 this session (jointly with Issue #2)
 - **First seen:** 2026-04-20
 - **Last updated:** 2026-04-20
 - **Related:** Issue #2, Issue #3, Issue #4, Issue #6
@@ -198,10 +252,10 @@ baseline here; prior baselines belong in git history.
 - Expected: `result: 7`
 - Actual:   `result: -2.5`
 
-**Hypothesis:** See Issue #2.
+**Hypothesis:** Same root cause as Issue #2.
 
 **Attempt log:**
-- **Skip rationale (2026-04-20):** See Issue #2.
+- **Attempt 1 (2026-04-20):** Fixed jointly with Issue #2. FIXED.
 
 ---
 
@@ -209,8 +263,8 @@ baseline here; prior baselines belong in git history.
 
 - **Suite:** E2E
 - **Test(s):** `elm-core/JsArrayFloatFoldlTest.elm`
-- **Status:** OPEN
-- **Attempts:** 0 this session
+- **Status:** FIXED
+- **Attempts:** 1 this session (jointly with Issue #2)
 - **First seen:** 2026-04-20
 - **Last updated:** 2026-04-20
 - **Related:** Issue #2, Issue #3, Issue #4, Issue #5
@@ -221,10 +275,10 @@ baseline here; prior baselines belong in git history.
 - Expected: `sum: 7`
 - Actual:   `sum: -2.5`
 
-**Hypothesis:** See Issue #2.
+**Hypothesis:** Same root cause as Issue #2.
 
 **Attempt log:**
-- **Skip rationale (2026-04-20):** See Issue #2.
+- **Attempt 1 (2026-04-20):** Fixed jointly with Issue #2. FIXED.
 
 ---
 
@@ -255,20 +309,39 @@ baseline here; prior baselines belong in git history.
 - **Suite:** E2E
 - **Test(s):** `elm-parser/ParserChompUntilEndOrTest.elm`
 - **Status:** OPEN
-- **Attempts:** 0 this session (no working hypothesis)
+- **Attempts:** 0 this session; root cause now identified
 - **First seen:** 2026-04-20
 - **Last updated:** 2026-04-20
-- **Related:** Issue #9
+- **Related:** Issue #9, Issue #1 (similar monomorphization type-loss pattern)
 
 **Failure mode:** SIGSEGV
 
-**Observed:**
-- Test body is tiny (2 lines: `Parser.getChompedString (Parser.chompUntilEndOr "}")` run on `"abc"`; expects `Ok "abc"`). No backtrace captured.
+**Observed (via gdb + ECO_TRACE_LT):**
+- Stack trace: `getTag(void*) ← Utils::cmp ← Utils::lt ← Elm_Kernel_Utils_lt ← JIT code`.
+- `Utils_lt` called with `a=0xffffffffffffffff, b=0x20000069` — `a` is raw i64 `-1` (not a valid HPointer), `b` is a valid boxed Int HPointer. `getTag` dereferences the bogus pointer and segfaults.
 
-**Hypothesis:** Investigated `Elm_Kernel_Parser_findSubString` and `String.slice` — both look safe against the specific inputs. No null-deref pattern visible without a backtrace. Similar SIGSEGV in Issue #9 uses overlapping kernels (`chompUntilEndOr`, `chompWhile`, `findSubString`). Likely a GC-root or HPointer-packing bug exercised when a Parser state is threaded through `andThen`/`map`.
+**Hypothesis (CONFIRMED via MLIR inspection):**
+
+In the generated MLIR for `Parser.Advanced.chompUntilEndOr`'s inner lambda:
+```
+%3 = eco.call(..., callee = @Elm_Kernel_Parser_findSubString) : (...) -> !eco.value
+%10 = eco.project.tuple3(%3) {field = 0} : (!eco.value) -> !eco.value     // ← WRONG: should be -> i64
+...
+%17 = eco.box(0 : i64) : !eco.value
+%18 = eco.call(%10, %17) {callee = @Elm_Kernel_Utils_lt} : (!eco.value, !eco.value) -> !eco.value
+```
+
+The kernel `Elm_Kernel_Parser_findSubString` returns a tuple3 of unboxed Ints (`unboxed_bitmap = 0x15`, all three fields stored as raw `i64`). But the caller projects each field as `!eco.value`, reading the raw `i64` bits as if they were an HPointer. When `findSubString` returns `-1` (no match), the projection yields HPointer-encoded `0xFFFFFFFFFFFFFFFF`, which `Utils::getTag` crashes on.
+
+**Root cause:** The MonoType propagation for the kernel call's result is lost. When `computeIndexProjectionType` runs for the Tuple3Container index, `containerType` is NOT `MTuple [MInt, MInt, MInt]` — it's a type whose fields `canUnbox = False`. Minimum reproducer tests showed the bug is SPECIFIC to the Parser.Advanced.chompUntilEndOr context; simpler analogous patterns (e.g. tuple3 destructuring inside a lambda stored in a Custom type) work correctly. The difference may involve how lambdas with polymorphic outer scope (`c`, `x`) in `Parser c x a` get specialized, or a peculiarity in how `Elm.Kernel.Parser.findSubString`'s return type is inferred through the alias chain `Parser.Advanced.findSubString = Elm.Kernel.Parser.findSubString`.
+
+**Fix plan:**
+- Modify the codegen to include the tuple's MonoType in debug attributes, so the exact `containerType` can be inspected.
+- Trace through specializePath/computeIndexProjectionType with the parser test to see why the container type isn't MTuple[MInt, MInt, MInt].
+- Likely requires a fix in how kernel call result types are monomorphized, or in how destructuring paths preserve type info through function boundaries.
 
 **Attempt log:**
-- **Skip rationale (2026-04-20):** Requires running the test binary under a debugger or with `ECO_GC_DEBUG_LIVENESS` to capture the faulting site. Out of session budget.
+- **Skip rationale (2026-04-20):** Root cause identified (tuple field type lost in monomorphization, leading to raw-i64-treated-as-HPointer in `Utils_lt`). Actual fix requires deeper modifications to monomorphization type propagation through kernel calls inside closures — similar kind of issue as Issue #1 (LetDestructFuncTupleTest), where polymorphic outer scope loses concrete type info at specialization time. Current session budget exhausted on the 5 Float issues (#2-#6), which flipped with a single targeted fix. Deferred pending deeper monomorphization analysis.
 
 ---
 
@@ -277,7 +350,7 @@ baseline here; prior baselines belong in git history.
 - **Suite:** E2E
 - **Test(s):** `elm-parser/ParserCommentsTest.elm`
 - **Status:** OPEN
-- **Attempts:** 0 this session (no working hypothesis)
+- **Attempts:** 0 this session; shares root cause with Issue #8
 - **First seen:** 2026-04-20
 - **Last updated:** 2026-04-20
 - **Related:** Issue #8
@@ -286,11 +359,12 @@ baseline here; prior baselines belong in git history.
 
 **Observed:**
 - Test uses `Parser.lineComment`, `Parser.multiComment` (both `NotNestable` and `Nestable`). Crashes without producing output.
+- `lineComment` and `multiComment` both invoke `Parser.Advanced.chompUntilEndOr` internally — the exact path of the Issue #8 crash.
 
-**Hypothesis:** Likely shares a root cause with Issue #8 — both tests use parser kernels that thread state through `andThen`/`map` chains and may have the same rooting/HPointer-packing bug.
+**Hypothesis:** Same root cause as Issue #8 — tuple3 return of `findSubString` projected as `!eco.value` instead of `i64`, causing `Utils_lt(raw_i64, boxed_0)` to crash on bogus HPointer.
 
 **Attempt log:**
-- **Skip rationale (2026-04-20):** See Issue #8.
+- **Skip rationale (2026-04-20):** See Issue #8. Joint fix once monomorphization type propagation is corrected.
 
 ---
 

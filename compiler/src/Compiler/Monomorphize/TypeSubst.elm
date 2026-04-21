@@ -4,6 +4,7 @@ module Compiler.Monomorphize.TypeSubst exposing
     , unify, unifyExtend, unifyArgsOnly, unifyCallSiteDirect
     , buildSchemeInfo, refreshSchemeInfo
     , applySubstWithFreeVars
+    , applySubstKeepNumber
     )
 
 {-| Type substitution and unification for monomorphization.
@@ -918,6 +919,188 @@ applySubstLambdaChain env subst argsAcc to =
                 )
                 ( resultMono, env1 )
                 argsAcc
+
+
+{-| Like `applySubst`, but preserves unresolved `CNumber` TVars as `Mono.MVar _ CNumber`
+instead of defaulting them to `MInt`.
+
+Used by `processCallArg` in `Specialize.elm` to compute a representative monoType
+for a polymorphic-number argument (e.g. `Basics.add : number -> number -> number`)
+without committing to `Int`. The preserved MVars flow through `unifyCallSiteDirect`
+so later args (e.g. `Array Float`) can transitively bind `number = Float`, then
+`resolveProcessedArg PendingGlobal` unifies with the callee's param type and
+specialises with the correct element type.
+
+-}
+applySubstKeepNumber : MVarEnv -> Substitution -> Can.Type MVarId -> Mono.MonoType
+applySubstKeepNumber env subst canType =
+    case canType of
+        Can.TVar mvarId ->
+            let
+                key =
+                    Id.toComparable mvarId
+            in
+            case Dict.get key subst of
+                Just monoType ->
+                    resolveMonoVarsKeepNumber subst monoType
+
+                Nothing ->
+                    Mono.MVar mvarId (constraintOf mvarId env)
+
+        Can.TLambda from to ->
+            applySubstLambdaChainKeepNumber env subst [ from ] to
+
+        Can.TType canonical name args ->
+            let
+                monoArgs =
+                    List.map (applySubstKeepNumber env subst) args
+
+                isElmCore =
+                    case canonical of
+                        IO.Canonical ( "elm", "core" ) _ ->
+                            True
+
+                        _ ->
+                            False
+            in
+            if isElmCore then
+                case name of
+                    "Int" ->
+                        Mono.MInt
+
+                    "Float" ->
+                        Mono.MFloat
+
+                    "Bool" ->
+                        Mono.MBool
+
+                    "Char" ->
+                        Mono.MChar
+
+                    "String" ->
+                        Mono.MString
+
+                    "List" ->
+                        case monoArgs of
+                            [ inner ] ->
+                                Mono.MList inner
+
+                            _ ->
+                                Mono.MList Mono.MUnit
+
+                    _ ->
+                        Mono.MCustom canonical name monoArgs
+
+            else
+                Mono.MCustom canonical name monoArgs
+
+        Can.TRecord fields maybeExtension ->
+            let
+                baseFields =
+                    case maybeExtension of
+                        Just extMvarId ->
+                            case Dict.get (Id.toComparable extMvarId) subst of
+                                Just (Mono.MRecord baseFieldsDict) ->
+                                    baseFieldsDict
+
+                                _ ->
+                                    Dict.empty
+
+                        Nothing ->
+                            Dict.empty
+
+                monoFields =
+                    Dict.foldl
+                        (\k (Can.FieldType _ t) acc ->
+                            Dict.insert k (applySubstKeepNumber env subst t) acc
+                        )
+                        baseFields
+                        fields
+            in
+            Mono.MRecord monoFields
+
+        Can.TTuple a b rest ->
+            Mono.MTuple (List.map (applySubstKeepNumber env subst) (a :: b :: rest))
+
+        Can.TUnit ->
+            Mono.MUnit
+
+        Can.TAlias _ _ _ (Can.Filled inner) ->
+            applySubstKeepNumber env subst inner
+
+        Can.TAlias _ _ args (Can.Holey inner) ->
+            let
+                newSubst =
+                    List.foldl
+                        (\( paramId, t ) s ->
+                            Dict.insert (Id.toComparable paramId) (applySubstKeepNumber env subst t) s
+                        )
+                        subst
+                        args
+            in
+            applySubstKeepNumber env newSubst inner
+
+
+applySubstLambdaChainKeepNumber : MVarEnv -> Substitution -> List (Can.Type MVarId) -> Can.Type MVarId -> Mono.MonoType
+applySubstLambdaChainKeepNumber env subst argsAcc to =
+    case to of
+        Can.TLambda from innerTo ->
+            applySubstLambdaChainKeepNumber env subst (from :: argsAcc) innerTo
+
+        _ ->
+            List.foldl
+                (\argType acc ->
+                    Mono.MFunction [ applySubstKeepNumber env subst argType ] acc
+                )
+                (applySubstKeepNumber env subst to)
+                argsAcc
+
+
+{-| Like `resolveMonoVars` but preserves unresolved `CNumber` as `MVar _ CNumber`.
+-}
+resolveMonoVarsKeepNumber : Substitution -> Mono.MonoType -> Mono.MonoType
+resolveMonoVarsKeepNumber subst monoType =
+    resolveMonoVarsKeepNumberHelp Set.empty subst monoType
+
+
+resolveMonoVarsKeepNumberHelp : Set Int -> Substitution -> Mono.MonoType -> Mono.MonoType
+resolveMonoVarsKeepNumberHelp visiting subst monoType =
+    case monoType of
+        Mono.MVar mvarId _ ->
+            let
+                key =
+                    Id.toComparable mvarId
+            in
+            if Set.member key visiting then
+                monoType
+
+            else
+                case Dict.get key subst of
+                    Just resolved ->
+                        resolveMonoVarsKeepNumberHelp (Set.insert key visiting) subst resolved
+
+                    Nothing ->
+                        monoType
+
+        Mono.MFunction args ret ->
+            Mono.MFunction
+                (List.map (resolveMonoVarsKeepNumberHelp visiting subst) args)
+                (resolveMonoVarsKeepNumberHelp visiting subst ret)
+
+        Mono.MList inner ->
+            Mono.MList (resolveMonoVarsKeepNumberHelp visiting subst inner)
+
+        Mono.MTuple elems ->
+            Mono.MTuple (List.map (resolveMonoVarsKeepNumberHelp visiting subst) elems)
+
+        Mono.MRecord fields ->
+            Mono.MRecord (Dict.map (\_ t -> resolveMonoVarsKeepNumberHelp visiting subst t) fields)
+
+        Mono.MCustom can name args ->
+            Mono.MCustom can name (List.map (resolveMonoVarsKeepNumberHelp visiting subst) args)
+
+        _ ->
+            monoType
 
 
 {-| Convert a canonical type to a monomorphic type using a substitution.

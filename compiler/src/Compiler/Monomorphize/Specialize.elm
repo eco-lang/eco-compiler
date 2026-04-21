@@ -2712,10 +2712,16 @@ processCallArg subst arg ( accArgs, accTypes, st ) =
                         canType =
                             meta.tipe
 
+                        -- Preserve unresolved CNumber as MVar so that later call-site
+                        -- unification (unifyCallSiteDirect) can transitively bind
+                        -- `number = Float` via concrete-typed sibling args (e.g.
+                        -- `Array Float` for `Array.foldl (+) 0.0 arr`). Without
+                        -- preservation, CNumber defaults to MInt and `Basics.add`
+                        -- gets specialised as `Int -> Int -> Int`.
                         monoType =
-                            Mono.forceCNumberToInt (applySubstFV st subst canType)
+                            TypeSubst.applySubstKeepNumber st.ctx.mvarEnv subst canType
                     in
-                    if Mono.containsCEcoMVar monoType then
+                    if Mono.containsAnyMVar monoType then
                         ( PendingGlobal arg subst canType :: accArgs
                         , monoType :: accTypes
                         , st
