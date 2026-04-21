@@ -163,8 +163,8 @@ struct HeapConfig {
     // Large-object threshold (bytes). Allocations of this size or larger
     // bypass the nursery and are placed directly in old gen as pinned
     // objects (Header.pin = 1) so the compactor leaves them in place.
-    // Default: max(8 KiB, alloc_buffer_size / 4). With the default
-    // alloc_buffer_size of 128 KiB this resolves to 32 KiB.
+    // Default: max(8 KiB, alloc_buffer_size / 16). With the default
+    // alloc_buffer_size of 128 KiB this resolves to 8 KiB.
     size_t large_object_threshold =
         (ALLOC_BUFFER_SIZE / 16 > 8 * 1024) ? (ALLOC_BUFFER_SIZE / 16) : (8 * 1024);
 
