@@ -282,11 +282,23 @@ type alias LocalMultiState =
 
 {-| Information about a single value-multi instance discovered during
 specialization of a let-bound value whose type contains lambdas.
+
+    - freshName              : the generated name for the specialized def
+    - monoType               : the root container MonoType used as the instance key
+    - subst                  : accumulated substitution; refined by destructor
+                               call-site unification so emit-time specialization
+                               sees concrete field/lambda types
+    - derivedDestructorNames : set of local names introduced by destructors
+                               over this instance (e.g. `getter`/`setter`).
+                               Used at call sites to thread call-site
+                               refinements back into `subst`.
+
 -}
 type alias ValueInstanceInfo =
     { freshName : Name
     , monoType : Mono.MonoType
     , subst : Substitution
+    , derivedDestructorNames : Set.Set Name
     }
 
 

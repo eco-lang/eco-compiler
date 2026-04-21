@@ -35,6 +35,7 @@ import Compiler.Reporting.Annotation as A
 import Data.Map
 import Data.Set as EverySet
 import Dict
+import Set
 import System.TypeCheck.IO as IO
 import Utils.Crash
 
@@ -762,6 +763,7 @@ updateValueMultiStack defName key monoType currentSubst stack =
                                 { freshName = freshName_
                                 , monoType = monoType
                                 , subst = currentSubst
+                                , derivedDestructorNames = Set.empty
                                 }
 
                             newInstances =
@@ -778,6 +780,126 @@ updateValueMultiStack defName key monoType currentSubst stack =
                         updateValueMultiStack defName key monoType currentSubst rest
                 in
                 ( entry :: updatedRest, freshName_ )
+
+
+{-| Record that a destructor-introduced local `destructorName` belongs to the
+instance keyed by `instanceKey` on the `valueMulti` entry for `defName`.
+
+Used at `TOpt.Destruct` creation time so later call sites of the destructor can
+find which value-multi instance to refine. Crashes on missing keys per design
+decision D7: silently skipping would reintroduce exactly the class of bugs this
+tagging fixes.
+-}
+tagValueInstanceWithDestructor :
+    Name
+    -> String
+    -> Name
+    -> List ValueMultiState
+    -> List ValueMultiState
+tagValueInstanceWithDestructor defName instanceKey destructorName stack =
+    case stack of
+        [] ->
+            Utils.Crash.crash
+                ("Specialize.tagValueInstanceWithDestructor: defName not found: " ++ defName)
+
+        entry :: rest ->
+            if entry.defName == defName then
+                case Dict.get instanceKey entry.instances of
+                    Just info ->
+                        let
+                            newInfo =
+                                { info
+                                    | derivedDestructorNames =
+                                        Set.insert destructorName info.derivedDestructorNames
+                                }
+
+                            newInstances =
+                                Dict.insert instanceKey newInfo entry.instances
+                        in
+                        { entry | instances = newInstances } :: rest
+
+                    Nothing ->
+                        Utils.Crash.crash
+                            ("Specialize.tagValueInstanceWithDestructor: instance key not found for "
+                                ++ defName
+                                ++ " / "
+                                ++ instanceKey
+                            )
+
+            else
+                entry :: tagValueInstanceWithDestructor defName instanceKey destructorName rest
+
+
+{-| If `funcName` is a destructor registered on some value-multi instance,
+refine that instance's `subst` using `unifyArgsOnly` against the destructor's
+canonical function type and the call-site argument MonoTypes, then return the
+refined substitution, updated `MVarEnv`, and stack with the instance updated.
+
+Walks the stack head-to-tail (innermost-first) and stops at the first match
+(D3). Returns `Nothing` if no stack entry has an instance claiming `funcName`.
+
+`unifyArgsOnly` is monotone: bindings only become more concrete, so repeatedly
+extending `info.subst` this way cannot regress a `MInt` back into an alias.
+-}
+refineValueMultiForDestructorCall :
+    Name
+    -> Can.Type MVarId
+    -> List Mono.MonoType
+    -> MVarEnv
+    -> List ValueMultiState
+    -> Maybe ( Substitution, MVarEnv, List ValueMultiState )
+refineValueMultiForDestructorCall funcName funcCanType argTypes mvarEnv stack =
+    case stack of
+        [] ->
+            Nothing
+
+        entry :: rest ->
+            case findInstanceByDestructor funcName (Dict.toList entry.instances) of
+                Just ( instanceKey, info ) ->
+                    let
+                        ( newSubst, newEnv ) =
+                            TypeSubst.unifyArgsOnly mvarEnv funcCanType argTypes info.subst
+
+                        newInfo =
+                            { info | subst = newSubst }
+
+                        newInstances =
+                            Dict.insert instanceKey newInfo entry.instances
+
+                        newEntry =
+                            { entry | instances = newInstances }
+                    in
+                    Just ( newSubst, newEnv, newEntry :: rest )
+
+                Nothing ->
+                    case refineValueMultiForDestructorCall funcName funcCanType argTypes mvarEnv rest of
+                        Just ( newSubst, newEnv, newRest ) ->
+                            Just ( newSubst, newEnv, entry :: newRest )
+
+                        Nothing ->
+                            Nothing
+
+
+{-| Linear scan of a single valueMulti entry's instances for one whose
+`derivedDestructorNames` contains `funcName`. Returns the (key, info) on the
+first match; only one match can exist because a destructor local belongs to
+exactly one instance.
+-}
+findInstanceByDestructor :
+    Name
+    -> List ( String, State.ValueInstanceInfo )
+    -> Maybe ( String, State.ValueInstanceInfo )
+findInstanceByDestructor funcName pairs =
+    case pairs of
+        [] ->
+            Nothing
+
+        ( key, info ) :: rest ->
+            if Set.member funcName info.derivedDestructorNames then
+                Just ( key, info )
+
+            else
+                findInstanceByDestructor funcName rest
 
 
 {-| Specialize a lambda expression (Function or TrackedFunction).
@@ -1929,80 +2051,84 @@ specializeExpr expr subst state =
 
                 _ ->
                     -- Fallback: locally-bound or non-global function.
+                    -- Checked in order:
+                    --   1. Destructor-call branch: `func` is a local whose name is
+                    --      registered on some enclosing value-multi instance. Refine
+                    --      that instance's `subst` with call-site unification so the
+                    --      eventual emit sees concrete field/lambda types.
+                    --   2. LocalMulti branch: `func` names a let-bound function being
+                    --      multi-specialized.
+                    --   3. Non-local scheme branch: everything else.
                     let
                         funcCanType =
                             TOpt.typeOf func
 
-                        localMultiName =
+                        maybeFuncName =
                             case func of
                                 TOpt.VarLocal name _ ->
-                                    if isLocalMultiTarget name state1 then
-                                        Just name
-
-                                    else
-                                        Nothing
+                                    Just name
 
                                 TOpt.TrackedVarLocal _ name _ ->
-                                    if isLocalMultiTarget name state1 then
-                                        Just name
-
-                                    else
-                                        Nothing
+                                    Just name
 
                                 _ ->
                                     Nothing
+
+                        maybeDestructorRefinement =
+                            case maybeFuncName of
+                                Just fname ->
+                                    refineValueMultiForDestructorCall fname
+                                        funcCanType
+                                        argTypes
+                                        state1r.ctx.mvarEnv
+                                        state1r.ctx.valueMulti
+
+                                Nothing ->
+                                    Nothing
+
+                        localMultiName =
+                            case maybeFuncName of
+                                Just name ->
+                                    if isLocalMultiTarget name state1 then
+                                        Just name
+
+                                    else
+                                        Nothing
+
+                                Nothing ->
+                                    Nothing
                     in
-                    case localMultiName of
-                        Just name ->
-                            -- Local multi target: type variables are shared with enclosing
-                            -- scope, so we must NOT rename them (no unifyFuncCall).
-                            -- Use unifyArgsOnly to extend the caller's subst with arg bindings.
+                    case maybeDestructorRefinement of
+                        Just ( callSubst, newEnv, newStack ) ->
+                            -- Destructor call on a value-multi instance: the refined
+                            -- `callSubst` has already been written back onto that
+                            -- instance inside refineValueMultiForDestructorCall; here we
+                            -- just use it for this call's own specialization.
                             let
-                                callSubst =
-                                    Tuple.first (TypeSubst.unifyArgsOnly state1.ctx.mvarEnv funcCanType argTypes subst)
+                                state1d =
+                                    let
+                                        ctx =
+                                            state1r.ctx
+                                    in
+                                    { state1r
+                                        | ctx =
+                                            { ctx
+                                                | mvarEnv = newEnv
+                                                , valueMulti = newStack
+                                            }
+                                    }
 
                                 funcMonoType =
-                                    Mono.forceCNumberToInt (applySubstFV state1 callSubst funcCanType)
+                                    Mono.forceCNumberToInt (applySubstFV state1d callSubst funcCanType)
 
                                 paramTypes =
                                     TypeSubst.extractParamTypes funcMonoType
 
                                 ( monoArgs, state2 ) =
-                                    resolveProcessedArgs processedArgs paramTypes callSubst state1
+                                    resolveProcessedArgs processedArgs paramTypes callSubst state1d
 
                                 resultMonoType =
-                                    callResultMonoType state1.ctx.mvarEnv state1.ctx.currentFreeVars callSubst canType
-
-                                ( freshName, state3 ) =
-                                    getOrCreateLocalInstance name funcMonoType callSubst state2
-
-                                monoFunc =
-                                    Mono.MonoVarLocal freshName funcMonoType
-                            in
-                            ( Mono.MonoCall region monoFunc monoArgs resultMonoType Mono.defaultCallInfo
-                            , state3
-                            )
-
-                        Nothing ->
-                            -- Non-local function: direct unification (no renaming needed with global MVarIds)
-                            let
-                                ( schemeInfo, state1a ) =
-                                    getOrBuildSchemeInfo funcCanType Nothing state1r
-
-                                ( callSubst, funcMonoTypeRaw, _ ) =
-                                    TypeSubst.unifyCallSiteDirect state1a.ctx.mvarEnv schemeInfo.argTypes schemeInfo.resultType argTypes substForCall
-
-                                funcMonoType =
-                                    Mono.forceCNumberToInt funcMonoTypeRaw
-
-                                paramTypes =
-                                    TypeSubst.extractParamTypes funcMonoType
-
-                                ( monoArgs, state2 ) =
-                                    resolveProcessedArgs processedArgs paramTypes callSubst state1a
-
-                                resultMonoType =
-                                    callResultMonoType state1a.ctx.mvarEnv state1a.ctx.currentFreeVars callSubst canType
+                                    callResultMonoType state2.ctx.mvarEnv state2.ctx.currentFreeVars callSubst canType
 
                                 ( monoFunc, state3 ) =
                                     specializeExpr func callSubst state2
@@ -2010,6 +2136,66 @@ specializeExpr expr subst state =
                             ( Mono.MonoCall region monoFunc monoArgs resultMonoType Mono.defaultCallInfo
                             , state3
                             )
+
+                        Nothing ->
+                            case localMultiName of
+                                Just name ->
+                                    -- Local multi target: type variables are shared with enclosing
+                                    -- scope, so we must NOT rename them (no unifyFuncCall).
+                                    -- Use unifyArgsOnly to extend the caller's subst with arg bindings.
+                                    let
+                                        callSubst =
+                                            Tuple.first (TypeSubst.unifyArgsOnly state1.ctx.mvarEnv funcCanType argTypes subst)
+
+                                        funcMonoType =
+                                            Mono.forceCNumberToInt (applySubstFV state1 callSubst funcCanType)
+
+                                        paramTypes =
+                                            TypeSubst.extractParamTypes funcMonoType
+
+                                        ( monoArgs, state2 ) =
+                                            resolveProcessedArgs processedArgs paramTypes callSubst state1
+
+                                        resultMonoType =
+                                            callResultMonoType state1.ctx.mvarEnv state1.ctx.currentFreeVars callSubst canType
+
+                                        ( freshName, state3 ) =
+                                            getOrCreateLocalInstance name funcMonoType callSubst state2
+
+                                        monoFunc =
+                                            Mono.MonoVarLocal freshName funcMonoType
+                                    in
+                                    ( Mono.MonoCall region monoFunc monoArgs resultMonoType Mono.defaultCallInfo
+                                    , state3
+                                    )
+
+                                Nothing ->
+                                    -- Non-local function: direct unification (no renaming needed with global MVarIds)
+                                    let
+                                        ( schemeInfo, state1a ) =
+                                            getOrBuildSchemeInfo funcCanType Nothing state1r
+
+                                        ( callSubst, funcMonoTypeRaw, _ ) =
+                                            TypeSubst.unifyCallSiteDirect state1a.ctx.mvarEnv schemeInfo.argTypes schemeInfo.resultType argTypes substForCall
+
+                                        funcMonoType =
+                                            Mono.forceCNumberToInt funcMonoTypeRaw
+
+                                        paramTypes =
+                                            TypeSubst.extractParamTypes funcMonoType
+
+                                        ( monoArgs, state2 ) =
+                                            resolveProcessedArgs processedArgs paramTypes callSubst state1a
+
+                                        resultMonoType =
+                                            callResultMonoType state1a.ctx.mvarEnv state1a.ctx.currentFreeVars callSubst canType
+
+                                        ( monoFunc, state3 ) =
+                                            specializeExpr func callSubst state2
+                                    in
+                                    ( Mono.MonoCall region monoFunc monoArgs resultMonoType Mono.defaultCallInfo
+                                    , state3
+                                    )
 
         TOpt.TailCall name args meta ->
             let
@@ -2388,6 +2574,14 @@ specializeExpr expr subst state =
 
                                 else
                                     -- We have instances: specialize def once per requested type.
+                                    --
+                                    -- Per D6, `info.monoType` is only the coarse container shape
+                                    -- used as the instance key; `info.subst` carries the fine-
+                                    -- grained bindings accumulated from destructor-path refinement
+                                    -- AND from call-site unification threaded back by the
+                                    -- destructor-call branch (refineValueMultiForDestructorCall).
+                                    -- Re-derive the instance MonoType from `info.subst` + defCanType
+                                    -- so the varEnv and unifyExtend both see the refined type.
                                     let
                                         instancesList =
                                             Dict.values topEntry.instances
@@ -2396,14 +2590,18 @@ specializeExpr expr subst state =
                                             List.foldl
                                                 (\info ( defsAcc, stAcc ) ->
                                                     let
-                                                        -- Base on info.subst so destructor-path refinements
-                                                        -- (e.g. tuple-element type-var bindings) propagate into
-                                                        -- the def's specialization, reaching lambdas nested
-                                                        -- inside the value-multi body. Using the outer `subst`
-                                                        -- alone would drop those finer constraints; info.monoType
-                                                        -- only carries the coarse tuple/record shape.
+                                                        instanceDefMonoType0 =
+                                                            Mono.forceCNumberToInt
+                                                                (applySubstFV stateAfterBody info.subst defCanType)
+
                                                         mergedSubst =
-                                                            Tuple.first (TypeSubst.unifyExtend state.ctx.mvarEnv defCanType info.monoType info.subst)
+                                                            Tuple.first
+                                                                (TypeSubst.unifyExtend
+                                                                    state.ctx.mvarEnv
+                                                                    defCanType
+                                                                    instanceDefMonoType0
+                                                                    info.subst
+                                                                )
 
                                                         ( monoDef0, st1 ) =
                                                             specializeDef def mergedSubst stAcc
@@ -2428,6 +2626,11 @@ specializeExpr expr subst state =
                                         stateWithVars =
                                             List.foldl
                                                 (\info st ->
+                                                    let
+                                                        instanceDefMonoType0 =
+                                                            Mono.forceCNumberToInt
+                                                                (applySubstFV stateAfterBody info.subst defCanType)
+                                                    in
                                                     { st
                                                         | ctx =
                                                             let
@@ -2436,7 +2639,7 @@ specializeExpr expr subst state =
                                                             in
                                                             { cvmv
                                                                 | varEnv =
-                                                                    State.insertVar info.freshName info.monoType cvmv.varEnv
+                                                                    State.insertVar info.freshName instanceDefMonoType0 cvmv.varEnv
                                                             }
                                                     }
                                                 )
@@ -2513,7 +2716,7 @@ specializeExpr expr subst state =
                 monoType0 =
                     Mono.forceCNumberToInt (applySubstFV state subst canType)
 
-                (TOpt.Destructor _ destructorPath destructorMeta) =
+                (TOpt.Destructor dname destructorPath destructorMeta) =
                     destructor
 
                 maybeValueMultiRefinement =
@@ -2546,22 +2749,43 @@ specializeExpr expr subst state =
                                                 refinedSubst
                                                 stateR
 
-                                        rewrittenDestructor =
-                                            case destructor of
-                                                TOpt.Destructor dname dpath dmeta ->
-                                                    TOpt.Destructor dname
-                                                        (rewriteRootInPath rootName
-                                                            freshRootName
-                                                            dpath
-                                                        )
-                                                        dmeta
+                                        -- Record `dname` on the owning instance so later
+                                        -- call sites of this destructor can refine `info.subst`
+                                        -- via refineValueMultiForDestructorCall. Uses the same
+                                        -- comparable-MonoType key as getOrCreateValueInstance.
+                                        instanceKey =
+                                            Mono.toComparableMonoType rootInstanceMonoType
 
-                                        stateWithRoot =
+                                        taggedStack =
+                                            tagValueInstanceWithDestructor rootName
+                                                instanceKey
+                                                dname
+                                                stateI.ctx.valueMulti
+
+                                        stateT =
                                             { stateI
                                                 | ctx =
                                                     let
-                                                        c =
+                                                        ct =
                                                             stateI.ctx
+                                                    in
+                                                    { ct | valueMulti = taggedStack }
+                                            }
+
+                                        rewrittenDestructor =
+                                            TOpt.Destructor dname
+                                                (rewriteRootInPath rootName
+                                                    freshRootName
+                                                    destructorPath
+                                                )
+                                                destructorMeta
+
+                                        stateWithRoot =
+                                            { stateT
+                                                | ctx =
+                                                    let
+                                                        c =
+                                                            stateT.ctx
                                                     in
                                                     { c
                                                         | varEnv =
