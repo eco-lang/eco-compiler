@@ -406,8 +406,14 @@ void NurserySpace::checkAndGrow() {
  *   4. Check occupancy and grow nursery if needed.
  *   5. Swap from-space and to-space.
  *
- * Key optimization: Elm's immutability guarantees no old-to-young pointers,
- * so no remembered set or write barriers are needed.
+ * Note on old→young pointers: Elm's immutability guarantees no old→nursery
+ * pointers can exist. An object can only reference values that already existed
+ * when it was created, so any object's children are always at least as old as
+ * the object itself. When a nursery object reaches promotion_age, all of its
+ * transitively-reachable children must also have reached promotion_age and are
+ * promoted together in the same phase-3 scan. The assertion in evacuate() enforces
+ * this: if phase 3 ever encounters a from-space child whose age < promotion_age,
+ * that is a bug (heap corruption), not a case to handle gracefully.
  */
 void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_roots) {
 #if ECO_GC_DEBUG
@@ -457,6 +463,11 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
     std::fprintf(stderr, "[gc] phase 1b: %zu stackmap roots\n", stackmap_roots.get().size());
 #endif
     for (HPointer *root: stackmap_roots.get()) {
+#if ECO_GC_DEBUG
+        uint64_t rv; memcpy(&rv, root, sizeof(rv));
+        if (rv == 0x20039995ULL)
+            std::fprintf(stderr, "[gc-debug] phase1b: FOUND target 0x20039995 in stackmap root %p\n", (void*)root);
+#endif
         evacuate(*root, oldgen, &promoted_objects);
     }
 
@@ -477,6 +488,12 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
         uint64_t mask  = range.hpointer_mask;
         for (size_t i = 0; i < range.count; ++i) {
             if (mask & (1ULL << i)) {
+#if ECO_GC_DEBUG
+                uint64_t rv; memcpy(&rv, &base[i], sizeof(rv));
+                if (rv == 0x20039995ULL)
+                    std::fprintf(stderr, "[gc-debug] phase1e: FOUND target 0x20039995 in stack range %p idx %zu\n",
+                                 (void*)base, i);
+#endif
                 evacuate(base[i], oldgen, &promoted_objects);
             }
         }
@@ -506,10 +523,19 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
     }
 
     // Phase 3: Process promoted objects until buffer is empty.
+    // By Elm's immutability invariant, every child of a promoted object must be
+    // at least as old as the parent and therefore also qualify for promotion.
+    // in_phase3_ arms the assertion in evacuate() that catches any violation.
     // Use index-based loop since vector may grow during iteration.
+#if ECO_GC_DEBUG
+    in_phase3_ = true;
+#endif
     for (size_t i = 0; i < promoted_objects.size(); i++) {
         scanObject(promoted_objects[i], oldgen, &promoted_objects);
     }
+#if ECO_GC_DEBUG
+    in_phase3_ = false;
+#endif
 
 
     // Phase 4: Check occupancy and grow if needed.
@@ -636,6 +662,109 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
                     default: break;
                 }
                 scan += getObjectSize(scan);
+            }
+        }
+    }
+
+    // Post-GC old-gen integrity check: scan every old-gen object and report
+    // any boxed field that still points into (old) from-space.
+    // This catches old→nursery pointers that bypass the normal promotion path.
+    {
+        // The GC has not yet flipped from_is_low_, so from-space is still the
+        // space we just evacuated FROM.  Objects there are garbage / stale.
+        auto isInCurrentFromSpace = [this](void* p) -> bool {
+            return isInFromSpace(p);
+        };
+
+        auto checkOGChild = [&](HPointer &hp, void* parent, const char* field, int idx) {
+            if (hp.constant != 0 || hp.ptr == 0) return;
+            void* child = Allocator::fromPointerRaw(hp);
+            if (!child) return;
+            if (!isInCurrentFromSpace(child)) return;
+            // child still points into old from-space — dangling old→nursery pointer
+            uint64_t raw = 0;
+            memcpy(&raw, &hp, sizeof(raw));
+            std::fprintf(stderr,
+                "[gc-old-check] OLD-GEN→NURSERY(stale): parent=%p %s[%d] raw=0x%016lx child=%p\n",
+                parent, field, idx, (unsigned long)raw, child);
+            Header* ph = getHeader(parent);
+            Header* ch = getHeader(child);
+            std::fprintf(stderr,
+                "  parent tag=%u size=%u age=%u  child tag=%u size=%u age=%u\n",
+                (unsigned)ph->tag, (unsigned)ph->size, (unsigned)ph->age,
+                (unsigned)ch->tag, (unsigned)ch->size, (unsigned)ch->age);
+            std::fflush(stderr);
+        };
+
+        for (const auto& blk : oldgen.blocks_) {
+            char* scan = blk.start;
+            char* end  = blk.alloc_ptr;
+            while (scan < end) {
+                Header* h = getHeader(scan);
+                if (h->tag == 0 || h->tag > Tag_Forward) {
+                    // Uninitialized / swept / header sentinel — skip 8 bytes.
+                    scan += 8;
+                    continue;
+                }
+                if (h->tag == Tag_Forward) {
+                    scan += 8;
+                    continue;
+                }
+                size_t obj_size = getObjectSize(scan);
+                switch (h->tag) {
+                    case Tag_Closure: {
+                        Closure* cl = static_cast<Closure*>(static_cast<void*>(scan));
+                        for (u32 i = 0; i < h->size; i++) {
+                            if (Elm::fieldKind(cl->unboxed, i) == 0)
+                                checkOGChild(cl->values[i].p, scan, "capture", i);
+                        }
+                        break;
+                    }
+                    case Tag_Tuple2: {
+                        Tuple2* t = static_cast<Tuple2*>(static_cast<void*>(scan));
+                        if (Elm::tupleFieldKind(h->unboxed, 0) == 0) checkOGChild(t->a.p, scan, "a", 0);
+                        if (Elm::tupleFieldKind(h->unboxed, 1) == 0) checkOGChild(t->b.p, scan, "b", 1);
+                        break;
+                    }
+                    case Tag_Tuple3: {
+                        Tuple3* t = static_cast<Tuple3*>(static_cast<void*>(scan));
+                        if (Elm::tupleFieldKind(h->unboxed, 0) == 0) checkOGChild(t->a.p, scan, "a", 0);
+                        if (Elm::tupleFieldKind(h->unboxed, 1) == 0) checkOGChild(t->b.p, scan, "b", 1);
+                        if (Elm::tupleFieldKind(h->unboxed, 2) == 0) checkOGChild(t->c.p, scan, "c", 2);
+                        break;
+                    }
+                    case Tag_Custom: {
+                        Custom* c = static_cast<Custom*>(static_cast<void*>(scan));
+                        for (u32 i = 0; i < h->size && i < 24; i++) {
+                            if (Elm::fieldKind(c->unboxed, i) == 0)
+                                checkOGChild(c->values[i].p, scan, "custom", i);
+                        }
+                        break;
+                    }
+                    case Tag_Record: {
+                        Record* r = static_cast<Record*>(static_cast<void*>(scan));
+                        for (u32 i = 0; i < h->size && i < 32; i++) {
+                            if (Elm::fieldKind(r->unboxed, i) == 0)
+                                checkOGChild(r->values[i].p, scan, "record", i);
+                        }
+                        break;
+                    }
+                    case Tag_Cons: {
+                        Cons* c = static_cast<Cons*>(static_cast<void*>(scan));
+                        if (Elm::tupleFieldKind(h->unboxed, 0) == 0) checkOGChild(c->head.p, scan, "head", 0);
+                        checkOGChild(c->tail, scan, "tail", 0);
+                        break;
+                    }
+                    case Tag_DynRecord: {
+                        DynRecord* dr = static_cast<DynRecord*>(static_cast<void*>(scan));
+                        checkOGChild(dr->fieldgroup, scan, "fieldgroup", 0);
+                        for (u32 i = 0; i < h->size; i++)
+                            checkOGChild(dr->values[i], scan, "dynrec", i);
+                        break;
+                    }
+                    default: break;
+                }
+                scan += obj_size;
             }
         }
     }
@@ -786,6 +915,37 @@ void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void
 
     // Copy to to_space if not promoted.
     if (!new_obj) {
+#if ECO_GC_DEBUG
+        // Elm's immutability invariant: every child of a promoted object must be
+        // at least as old as the parent, so it must also qualify for promotion.
+        // If we reach here during phase 3 it means the invariant is violated.
+        if (in_phase3_) {
+            std::fprintf(stderr,
+                "[gc-debug] INVARIANT VIOLATION: phase 3 child not old enough to promote!\n"
+                "  child obj=%p tag=%u age=%u promotion_age=%u\n",
+                obj, (unsigned)hdr->tag, (unsigned)hdr->age,
+                (unsigned)config_->promotion_age);
+            uint64_t raw_hptr;
+            memcpy(&raw_hptr, &ptr, sizeof(raw_hptr));
+            std::fprintf(stderr, "  child hptr raw=0x%016lx\n", (unsigned long)raw_hptr);
+            if (g_scan_parent) {
+                Header *phdr = getHeader(g_scan_parent);
+                std::fprintf(stderr,
+                    "  parent(old-gen) obj=%p tag=%u size=%u age=%u\n",
+                    g_scan_parent, g_scan_tag, (unsigned)g_scan_size,
+                    (unsigned)phdr->age);
+                uint64_t *pw = reinterpret_cast<uint64_t*>(g_scan_parent);
+                for (int x = -1; x < (int)g_scan_size + 2 && x < 10; x++) {
+                    std::fprintf(stderr, "  parent[%d] = 0x%016lx\n", x, pw[x]);
+                }
+            }
+            std::fflush(stderr);
+            void *bt[40];
+            int n = backtrace(bt, 40);
+            backtrace_symbols_fd(bt, n, fileno(stderr));
+            assert(false && "Elm invariant: child of promoted object has age < promotion_age");
+        }
+#endif
         // Allocate in to_space.
         new_obj = copyToSpace(size);
         assert(new_obj && "Failed to copy to to-space during evacuation!");
@@ -987,7 +1147,24 @@ void NurserySpace::scanObject(void *obj, OldGenSpace &oldgen, std::vector<void*>
         case Tag_Closure: {
             Closure *cl = static_cast<Closure *>(obj);
             for (u32 i = 0; i < hdr->size; i++) {
-                evacuateUnboxable(cl->values[i], Elm::fieldKind(cl->unboxed, i) == 0, oldgen, promoted_objects);
+                bool is_boxed = Elm::fieldKind(cl->unboxed, i) == 0;
+#if ECO_GC_DEBUG
+                if (!is_boxed) {
+                    // Warn if a "unboxed" slot has a value that looks like a nursery HPointer
+                    uint64_t raw; memcpy(&raw, &cl->values[i], sizeof(raw));
+                    HPointer hp; memcpy(&hp, &raw, sizeof(hp));
+                    if (hp.constant == 0 && hp.ptr != 0 && raw == 0x20039995ULL)
+                        std::fprintf(stderr, "[gc-debug] closure scan: FOUND 0x20039995 in UNBOXED slot! closure=%p idx=%u kind=%llu unboxed=0x%llx\n",
+                                     obj, i, (unsigned long long)Elm::fieldKind(cl->unboxed, i),
+                                     (unsigned long long)cl->unboxed);
+                } else {
+                    uint64_t raw; memcpy(&raw, &cl->values[i], sizeof(raw));
+                    if (raw == 0x20039995ULL)
+                        std::fprintf(stderr, "[gc-debug] closure scan: FOUND 0x20039995 in BOXED slot (should be evacuated): closure=%p idx=%u\n",
+                                     obj, i);
+                }
+#endif
+                evacuateUnboxable(cl->values[i], is_boxed, oldgen, promoted_objects);
             }
             break;
         }

@@ -35,19 +35,25 @@ static Endianness getEndian(bool littleEndian) {
 
 // Helper to create a successful read result: Just(Tuple2(value, newOffset))
 static HPointer readSuccessBoxed(HPointer value, i64 newOffset) {
-    HPointer tuple = alloc::tuple2(alloc::boxed(value), alloc::unboxedInt(newOffset), 0x2);
+    // 2-bit-per-slot bitmap: field 0 = kind 0 (boxed HPointer), field 1 = kind 1 (Int)
+    // = bits[1:0]=00, bits[3:2]=01 => 0x4
+    HPointer tuple = alloc::tuple2(alloc::boxed(value), alloc::unboxedInt(newOffset), 0x4);
     return alloc::just(alloc::boxed(tuple), true);
 }
 
 // Helper for unboxed int results
 static HPointer readSuccessUnboxedInt(i64 value, i64 newOffset) {
-    HPointer tuple = alloc::tuple2(alloc::unboxedInt(value), alloc::unboxedInt(newOffset), 0x3);
+    // 2-bit-per-slot bitmap: field 0 = kind 1 (Int), field 1 = kind 1 (Int)
+    // = bits[1:0]=01, bits[3:2]=01 => 0x5
+    HPointer tuple = alloc::tuple2(alloc::unboxedInt(value), alloc::unboxedInt(newOffset), 0x5);
     return alloc::just(alloc::boxed(tuple), true);
 }
 
 // Helper for unboxed float results
 static HPointer readSuccessUnboxedFloat(f64 value, i64 newOffset) {
-    HPointer tuple = alloc::tuple2(alloc::unboxedFloat(value), alloc::unboxedInt(newOffset), 0x2);
+    // 2-bit-per-slot bitmap: field 0 = kind 2 (Float), field 1 = kind 1 (Int)
+    // = bits[1:0]=10, bits[3:2]=01 => 0x6
+    HPointer tuple = alloc::tuple2(alloc::unboxedFloat(value), alloc::unboxedInt(newOffset), 0x6);
     return alloc::just(alloc::boxed(tuple), true);
 }
 

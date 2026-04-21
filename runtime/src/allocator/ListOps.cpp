@@ -20,8 +20,6 @@ HPointer head(HPointer list) {
     Cons* c = static_cast<Cons*>(cell);
     Header* hdr = getHeader(cell);
     u8 head_kind = static_cast<u8>(tupleFieldKind(hdr->unboxed, 0));
-        bool is_boxed = (head_kind == 0);
-
     return alloc::justKind(c->head, head_kind);
 }
 
@@ -54,7 +52,6 @@ HPointer getAt(i64 index, HPointer list) {
         if (i == index) {
             Header* hdr = getHeader(cell);
             u8 head_kind = static_cast<u8>(tupleFieldKind(hdr->unboxed, 0));
-        bool is_boxed = (head_kind == 0);
             return alloc::justKind(c->head, head_kind);
         }
 
@@ -559,7 +556,8 @@ HPointer map2(HPointer listA, HPointer listB) {
     auto& allocator = Allocator::instance();
 
     // Phase 1: collect raw values (no allocation)
-    struct RawPair { Unboxable a; bool a_boxed; Unboxable b; bool b_boxed; };
+    // Store 2-bit kinds (0=boxed, 1=Int, 2=Float, 3=Char) from source cons headers.
+    struct RawPair { Unboxable a; u8 a_kind; Unboxable b; u8 b_kind; };
     std::vector<RawPair> raw;
     HPointer currA = listA;
     HPointer currB = listB;
@@ -574,8 +572,9 @@ HPointer map2(HPointer listA, HPointer listB) {
         Header* hdrA = getHeader(cellA);
         Header* hdrB = getHeader(cellB);
 
-        raw.push_back({cA->head, !(hdrA->unboxed & 1),
-                        cB->head, !(hdrB->unboxed & 1)});
+        u8 kindA = static_cast<u8>(tupleFieldKind(hdrA->unboxed, 0));
+        u8 kindB = static_cast<u8>(tupleFieldKind(hdrB->unboxed, 0));
+        raw.push_back({cA->head, kindA, cB->head, kindB});
         currA = cA->tail;
         currB = cB->tail;
     }
@@ -586,16 +585,16 @@ HPointer map2(HPointer listA, HPointer listB) {
     auto& rs = Allocator::instance().getRootSet();
     size_t saved = rs.stackRangePoint();
     for (auto& r : raw) {
-        if (r.a_boxed) rs.pushStackRootRange(&r.a.p, 1, 1);
-        if (r.b_boxed) rs.pushStackRootRange(&r.b.p, 1, 1);
+        if (r.a_kind == 0) rs.pushStackRootRange(&r.a.p, 1, 1);
+        if (r.b_kind == 0) rs.pushStackRootRange(&r.b.p, 1, 1);
     }
     HPointer result = alloc::listNil();
     rs.pushStackRootRange(&result, 1, 1);
 
     for (auto it = raw.rbegin(); it != raw.rend(); ++it) {
-        u32 mask = 0;
-        if (!it->a_boxed) mask |= 1;
-        if (!it->b_boxed) mask |= 2;
+        // 2-bit-per-slot bitmap: set each field's kind in its 2-bit slot.
+        u32 mask = static_cast<u32>(bitmapSetKind(0, 0, it->a_kind));
+        mask = static_cast<u32>(bitmapSetKind(mask, 1, it->b_kind));
         HPointer tuple = alloc::tuple2(it->a, it->b, mask);
         result = alloc::cons(alloc::boxed(tuple), result, true);
     }
@@ -612,10 +611,11 @@ HPointer map3(HPointer listA, HPointer listB, HPointer listC) {
     auto& allocator = Allocator::instance();
 
     // Phase 1: collect raw values (no allocation)
+    // Store 2-bit kinds (0=boxed, 1=Int, 2=Float, 3=Char) from source cons headers.
     struct RawTriple {
-        Unboxable a; bool a_boxed;
-        Unboxable b; bool b_boxed;
-        Unboxable c; bool c_boxed;
+        Unboxable a; u8 a_kind;
+        Unboxable b; u8 b_kind;
+        Unboxable c; u8 c_kind;
     };
     std::vector<RawTriple> raw;
     HPointer currA = listA;
@@ -635,9 +635,10 @@ HPointer map3(HPointer listA, HPointer listB, HPointer listC) {
         Header* hdrB = getHeader(cellB);
         Header* hdrC = getHeader(cellC);
 
-        raw.push_back({cA->head, !(hdrA->unboxed & 1),
-                        cB->head, !(hdrB->unboxed & 1),
-                        cC->head, !(hdrC->unboxed & 1)});
+        u8 kindA = static_cast<u8>(tupleFieldKind(hdrA->unboxed, 0));
+        u8 kindB = static_cast<u8>(tupleFieldKind(hdrB->unboxed, 0));
+        u8 kindC = static_cast<u8>(tupleFieldKind(hdrC->unboxed, 0));
+        raw.push_back({cA->head, kindA, cB->head, kindB, cC->head, kindC});
         currA = cA->tail;
         currB = cB->tail;
         currC = cC->tail;
@@ -649,18 +650,18 @@ HPointer map3(HPointer listA, HPointer listB, HPointer listC) {
     auto& rs = Allocator::instance().getRootSet();
     size_t saved = rs.stackRangePoint();
     for (auto& r : raw) {
-        if (r.a_boxed) rs.pushStackRootRange(&r.a.p, 1, 1);
-        if (r.b_boxed) rs.pushStackRootRange(&r.b.p, 1, 1);
-        if (r.c_boxed) rs.pushStackRootRange(&r.c.p, 1, 1);
+        if (r.a_kind == 0) rs.pushStackRootRange(&r.a.p, 1, 1);
+        if (r.b_kind == 0) rs.pushStackRootRange(&r.b.p, 1, 1);
+        if (r.c_kind == 0) rs.pushStackRootRange(&r.c.p, 1, 1);
     }
     HPointer result = alloc::listNil();
     rs.pushStackRootRange(&result, 1, 1);
 
     for (auto it = raw.rbegin(); it != raw.rend(); ++it) {
-        u32 mask = 0;
-        if (!it->a_boxed) mask |= 1;
-        if (!it->b_boxed) mask |= 2;
-        if (!it->c_boxed) mask |= 4;
+        // 2-bit-per-slot bitmap: set each field's kind in its 2-bit slot.
+        u32 mask = static_cast<u32>(bitmapSetKind(0, 0, it->a_kind));
+        mask = static_cast<u32>(bitmapSetKind(mask, 1, it->b_kind));
+        mask = static_cast<u32>(bitmapSetKind(mask, 2, it->c_kind));
         HPointer tuple = alloc::tuple3(it->a, it->b, it->c, mask);
         result = alloc::cons(alloc::boxed(tuple), result, true);
     }

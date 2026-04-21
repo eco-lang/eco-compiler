@@ -95,6 +95,7 @@ private:
 
 #if ECO_GC_DEBUG
     bool in_minor_gc_ = false;        // True only during minorGC execution.
+    bool in_phase3_   = false;        // True only during phase 3 (promoted-object scan).
 #endif
 
     // ========== Internal Methods ==========

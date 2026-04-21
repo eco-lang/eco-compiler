@@ -331,7 +331,8 @@ Testing::TestCase testTuple2PreservesValues("tuple2 preserves values", []() {
         i64 a = *rc::gen::arbitrary<i64>();
         i64 b = *rc::gen::arbitrary<i64>();
 
-        HPointer ptr = tuple2(unboxedInt(a), unboxedInt(b), 0x3);
+        // 2-bit-per-slot: both Int (kind=1) => bits[1:0]=01, bits[3:2]=01 = 0x5
+        HPointer ptr = tuple2(unboxedInt(a), unboxedInt(b), 0x5);
 
         void* obj = alloc.resolve(ptr);
         RC_ASSERT(static_cast<bool>(obj));
@@ -340,7 +341,7 @@ Testing::TestCase testTuple2PreservesValues("tuple2 preserves values", []() {
         RC_ASSERT(tuple->header.tag == Tag_Tuple2);
         RC_ASSERT(tuple->a.i == a);
         RC_ASSERT(tuple->b.i == b);
-        RC_ASSERT(tuple->header.unboxed == 3);
+        RC_ASSERT(tuple->header.unboxed == 5);
     });
 });
 
@@ -352,7 +353,8 @@ Testing::TestCase testTuple3PreservesValues("tuple3 preserves values", []() {
         i64 b = *rc::gen::arbitrary<i64>();
         i64 c = *rc::gen::arbitrary<i64>();
 
-        HPointer ptr = tuple3(unboxedInt(a), unboxedInt(b), unboxedInt(c), 0x7);
+        // 2-bit-per-slot: all Int (kind=1) => bits[1:0]=01, bits[3:2]=01, bits[5:4]=01 = 0x15
+        HPointer ptr = tuple3(unboxedInt(a), unboxedInt(b), unboxedInt(c), 0x15);
 
         void* obj = alloc.resolve(ptr);
         Tuple3* tuple = static_cast<Tuple3*>(obj);
@@ -361,7 +363,7 @@ Testing::TestCase testTuple3PreservesValues("tuple3 preserves values", []() {
         RC_ASSERT(tuple->a.i == a);
         RC_ASSERT(tuple->b.i == b);
         RC_ASSERT(tuple->c.i == c);
-        RC_ASSERT(tuple->header.unboxed == 7);
+        RC_ASSERT(tuple->header.unboxed == 0x15);
     });
 });
 
@@ -1029,15 +1031,15 @@ Testing::TestCase testTuple3UnboxedSurvivesMinorGC("Tuple3 unboxed fields surviv
         i64 vb = *rc::gen::inRange<i64>(-1000, 1000);
         i64 vc = *rc::gen::inRange<i64>(-1000, 1000);
 
-        // All unboxed: unboxed_mask = 7
-        HPointer t = tuple3(unboxedInt(va), unboxedInt(vb), unboxedInt(vc), 7);
+        // All Int: 2-bit-per-slot mask = 0x15 (kind=1 per slot)
+        HPointer t = tuple3(unboxedInt(va), unboxedInt(vb), unboxedInt(vc), 0x15);
         alloc.getRootSet().addRoot(&t);
 
         alloc.minorGC();
 
         Tuple3* tp = static_cast<Tuple3*>(alloc.resolve(t));
         RC_ASSERT(static_cast<bool>(tp));
-        RC_ASSERT(tp->header.unboxed == 7);
+        RC_ASSERT(tp->header.unboxed == 0x15);
         RC_ASSERT(tp->a.i == va);
         RC_ASSERT(tp->b.i == vb);
         RC_ASSERT(tp->c.i == vc);
@@ -1055,15 +1057,16 @@ Testing::TestCase testTuple3MixedSurvivesMinorGC("Tuple3 mixed boxed/unboxed sur
         i64 vc = *rc::gen::inRange<i64>(-1000, 1000);
 
         HPointer ia = allocInt(va);
-        // a=boxed, b=unboxed, c=unboxed -> mask = 0b110 = 6
-        HPointer t = tuple3(boxed(ia), unboxedInt(vb), unboxedInt(vc), 6);
+        // 2-bit-per-slot: a=boxed(kind=0), b=Int(kind=1), c=Int(kind=1)
+        // bits[1:0]=00, bits[3:2]=01, bits[5:4]=01 = 0x14
+        HPointer t = tuple3(boxed(ia), unboxedInt(vb), unboxedInt(vc), 0x14);
         alloc.getRootSet().addRoot(&t);
 
         alloc.minorGC();
 
         Tuple3* tp = static_cast<Tuple3*>(alloc.resolve(t));
         RC_ASSERT(static_cast<bool>(tp));
-        RC_ASSERT(tp->header.unboxed == 6);
+        RC_ASSERT(tp->header.unboxed == 0x14);
 
         ElmInt* ra = static_cast<ElmInt*>(alloc.resolve(tp->a.p));
         RC_ASSERT(ra->value == va);
@@ -1123,7 +1126,8 @@ Testing::TestCase testCustomUnboxedFieldsSurviveMinorGC("Custom unboxed fields s
             i64 v = *rc::gen::inRange<i64>(-100000, 100000);
             vals.push_back(v);
             fields.push_back(unboxedInt(v));
-            mask |= (1ULL << i);
+            // 2-bit-per-slot: Int is kind=1, placed at bits [2i:2i+1]
+            mask |= (1ULL << (2 * i));
         }
 
         HPointer c = custom(0, fields, mask);
@@ -1147,7 +1151,8 @@ Testing::TestCase testCustomMixedFieldsSurviveMinorGC("Custom mixed boxed/unboxe
     rc::check([]() {
         auto& alloc = initAllocator();
 
-        // 4 fields: 0,2 boxed; 1,3 unboxed -> mask = 0b1010 = 0xA
+        // 4 fields: 0,2 boxed(kind=0); 1,3 Int(kind=1)
+        // 2-bit-per-slot mask: slot0=00, slot1=01, slot2=00, slot3=01 = 0x44
         i64 v0 = *rc::gen::inRange<i64>(-1000, 1000);
         i64 v1 = *rc::gen::inRange<i64>(-100000, 100000);
         i64 v2 = *rc::gen::inRange<i64>(-1000, 1000);
@@ -1159,14 +1164,14 @@ Testing::TestCase testCustomMixedFieldsSurviveMinorGC("Custom mixed boxed/unboxe
         fields[2] = boxed(allocInt(v2));
         fields[3] = unboxedInt(v3);
 
-        HPointer c = custom(0, fields, 0xA);
+        HPointer c = custom(0, fields, 0x44);
         alloc.getRootSet().addRoot(&c);
 
         alloc.minorGC();
 
         Custom* cp = static_cast<Custom*>(alloc.resolve(c));
         RC_ASSERT(static_cast<bool>(cp));
-        RC_ASSERT(cp->unboxed == 0xA);
+        RC_ASSERT(cp->unboxed == 0x44);
 
         ElmInt* r0 = static_cast<ElmInt*>(alloc.resolve(cp->values[0].p));
         RC_ASSERT(r0->value == v0);
@@ -1220,7 +1225,8 @@ Testing::TestCase testRecordMixedFieldsSurviveMinorGC("Record mixed boxed/unboxe
     rc::check([]() {
         auto& alloc = initAllocator();
 
-        // 4 fields: 0,2 boxed; 1,3 unboxed -> mask = 0xA
+        // 4 fields: 0,2 boxed(kind=0); 1,3 Int(kind=1)
+        // 2-bit-per-slot mask: slot0=00, slot1=01, slot2=00, slot3=01 = 0x44
         i64 v0 = *rc::gen::inRange<i64>(-1000, 1000);
         i64 v1 = *rc::gen::inRange<i64>(-100000, 100000);
         i64 v2 = *rc::gen::inRange<i64>(-1000, 1000);
@@ -1232,14 +1238,14 @@ Testing::TestCase testRecordMixedFieldsSurviveMinorGC("Record mixed boxed/unboxe
         fields[2] = boxed(allocInt(v2));
         fields[3] = unboxedInt(v3);
 
-        HPointer r = record(fields, 0xA);
+        HPointer r = record(fields, 0x44);
         alloc.getRootSet().addRoot(&r);
 
         alloc.minorGC();
 
         Record* rp = static_cast<Record*>(alloc.resolve(r));
         RC_ASSERT(static_cast<bool>(rp));
-        RC_ASSERT(rp->unboxed == 0xA);
+        RC_ASSERT(rp->unboxed == 0x44);
 
         ElmInt* r0 = static_cast<ElmInt*>(alloc.resolve(rp->values[0].p));
         RC_ASSERT(r0->value == v0);

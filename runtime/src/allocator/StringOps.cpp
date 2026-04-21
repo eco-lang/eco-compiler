@@ -291,8 +291,9 @@ HPointer uncons(void* str) {
     Unboxable charVal = alloc::unboxedChar(firstChar);
     Unboxable restVal = alloc::boxed(rest);
 
-    // Return Just (char, rest) - tuple with char unboxed, rest boxed
-    HPointer tuple = alloc::tuple2(charVal, restVal, 0x1);  // bit 0 = a is unboxed
+    // 2-bit-per-slot bitmap: field 0 = kind 3 (Char), field 1 = kind 0 (boxed HPointer)
+    // bits[1:0]=11, bits[3:2]=00 => 0x3
+    HPointer tuple = alloc::tuple2(charVal, restVal, 0x3);
     return alloc::just(alloc::boxed(tuple), true);
 }
 

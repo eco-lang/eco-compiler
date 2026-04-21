@@ -343,30 +343,7 @@ extern "C" HPtr eco_alloc_closure(void* func_ptr, uint32_t num_captures) {
     closure->unboxed = 0;
     closure->evaluator = reinterpret_cast<EvalFunction>(func_ptr);
 
-    HPtr hptr_val = ptrToHPointer(obj);
-    // DIAG: Verify closure integrity after allocation — check preceding object
-    if (hptr_val.toBits() == 0x4005883) {
-        void* ret_addr = __builtin_return_address(0);
-        fprintf(stderr, "DIAG: eco_alloc_closure hptr=0x4005883 ptr=%p num_captures=%u max_values=%u eval=%p caller=%p\n",
-                obj, num_captures, (unsigned)closure->max_values, func_ptr, ret_addr);
-        // Dump preceding objects to find what was allocated just before
-        char* p = static_cast<char*>(obj);
-        for (int off = -128; off < 0; off += 8) {
-            uint64_t val;
-            memcpy(&val, p + off, sizeof(val));
-            // Check if this looks like a header (tag in low 5 bits, 0-15)
-            uint32_t maybe_tag = val & 0x1F;
-            uint32_t maybe_size = (val >> 32) & 0xFFFFFFFF;
-            if (maybe_tag <= 15 && maybe_size < 10000 && (val & 0xFFFF0000) == 0) {
-                fprintf(stderr, "  [%+d] HEADER? tag=%u size=%u raw=0x%016lx\n", off, maybe_tag, maybe_size, val);
-            } else {
-                fprintf(stderr, "  [%+d] 0x%016lx\n", off, val);
-            }
-        }
-        fflush(stderr);
-    }
-
-    return hptr_val;
+    return ptrToHPointer(obj);
 }
 
 extern "C" HPtr eco_alloc_int(int64_t value) {
@@ -1093,6 +1070,17 @@ extern "C" HPtr eco_apply_closure(HPtr closure_hptr, uint64_t* args, uint32_t nu
     }
 
     HPtr result;
+#if ECO_GC_DEBUG
+    // Pre-call: validate args are not stale before any inner allocation
+    for (uint32_t dbg_i = 0; dbg_i < num_args; ++dbg_i) {
+        uint64_t raw = args[dbg_i];
+        HPointer hp;
+        memcpy(&hp, &raw, sizeof(hp));
+        if (hp.constant == 0 && hp.ptr != 0) {
+            hpointerToPtr(raw);
+        }
+    }
+#endif
     if (num_args == remaining) {
         // Exactly saturated: call evaluator with all args (INV_1).
         result = eco_closure_call_saturated(HPtr::fromBits(closure_bits), args, num_args, /*layout=*/nullptr);
@@ -1185,6 +1173,19 @@ extern "C" HPtr eco_apply_segmentation_unknown(HPtr closure_hptr,
         if (num_args > 0) {
             eco_gc_push_stack_range(boxed_args, num_args, hptr_mask_all(num_args));
         }
+        // Pre-call validation: check if boxed_args already contains stale pointers
+        // BEFORE eco_apply_closure gets to root them. This catches the case where
+        // ECO-compiled code passes a stale pointer at the C++ call boundary.
+#if ECO_GC_DEBUG
+        for (uint32_t dbg_i = 0; dbg_i < num_args; ++dbg_i) {
+            uint64_t raw = boxed_args[dbg_i];
+            HPointer hp;
+            memcpy(&hp, &raw, sizeof(hp));
+            if (hp.constant == 0 && hp.ptr != 0) {
+                hpointerToPtr(raw); // triggers debugAssertValidNurseryPointer if stale
+            }
+        }
+#endif
         result = eco_apply_closure(HPtr::fromBits(closure_bits), boxed_args, num_args);
     }
 
@@ -1313,6 +1314,16 @@ extern "C" HPtr eco_closure_call_saturated(HPtr closure_hptr, uint64_t* new_args
         HPointer hp;
         memcpy(&hp, &raw, sizeof(hp));
         if (hp.constant == 0 && hp.ptr != 0) {
+            uint32_t bitmap_slot = Elm::fieldKind(closure->unboxed, dbg_i);
+            bool is_capture = dbg_i < closure->n_values;
+            fprintf(stderr,
+                "[DBG] eco_closure_call_saturated: checking arg[%u] "
+                "(is_capture=%d, n_values=%u, max_values=%u) "
+                "unboxed=0x%013llx bitmap_slot[%u]=%u raw=0x%016llx\n",
+                dbg_i, (int)is_capture,
+                (unsigned)closure->n_values, (unsigned)max_values,
+                (unsigned long long)closure->unboxed, dbg_i, bitmap_slot,
+                (unsigned long long)raw);
             hpointerToPtr(raw); // triggers debugAssertValidNurseryPointer
         }
     }

@@ -550,6 +550,11 @@ static void test_multiple_alloc_types_survive_gc() {
         RC_ASSERT(consH.toBits() != 0);
         RC_ASSERT(customH.toBits() != 0);
 
+        // Initialize custom fields to Nil before GC; uninitialized boxed fields
+        // are unsafe because GC follows them as HPointers.
+        eco_store_field(customH, 0, HPtr::fromBits(nil));
+        eco_store_field(customH, 1, HPtr::fromBits(nil));
+
         // Convert to HPointer structs and root them
         HPointer intPtr = intH.toHPointer();
         HPointer floatPtr = floatH.toHPointer();
