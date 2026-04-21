@@ -757,7 +757,6 @@ extern "C" HPtr eco_init_tuple3_at(void* obj, uint64_t a, uint64_t b, uint64_t c
 }
 
 extern "C" HPtr eco_init_record_at(void* obj, uint32_t field_count, uint64_t unboxed_bitmap) {
-    size_t size = sizeof(Header) + 8 + field_count * sizeof(Unboxable);
     Header* hdr = getHeader(obj);
     std::memset(hdr, 0, sizeof(Header));
     hdr->tag = Tag_Record;
@@ -779,8 +778,6 @@ extern "C" HPtr eco_init_custom_at(void* obj, uint32_t ctor_id, uint32_t field_c
 }
 
 extern "C" HPtr eco_init_string_at(void* obj, uint32_t length) {
-    size_t size = sizeof(Header) + length * sizeof(u16);
-    size = (size + 7) & ~7;
     Header* hdr = getHeader(obj);
     std::memset(hdr, 0, sizeof(Header));
     hdr->tag = Tag_String;
@@ -1042,11 +1039,6 @@ size_t buildEvaluatorArgs(
 // Build (1<<count)-1, safely handling count==64 (avoids UB).
 static inline uint64_t hptr_mask_all(size_t count) {
     return (count >= 64) ? ~uint64_t{0} : ((uint64_t{1} << count) - 1);
-}
-
-// Clamp `raw` to the low `count` bits, safely handling count==64.
-static inline uint64_t hptr_mask_clamp(uint64_t raw, size_t count) {
-    return raw & hptr_mask_all(count);
 }
 
 } // anonymous namespace

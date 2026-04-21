@@ -34,13 +34,6 @@ namespace {
 // Allocation coalescing helpers (Phase 4 infrastructure)
 //===----------------------------------------------------------------------===//
 
-/// Check if an operation is a group member (not the leader) — if so, it was
-/// already lowered as part of the group leader. Returns true if the op should
-/// be skipped because it's a group member whose allocation was coalesced.
-static bool isCoalescedGroupMember(Operation *op) {
-    return op->hasAttr("eco.gc_group_member");
-}
-
 /// Compute the aligned allocation size for a given Eco allocation op.
 /// Returns 0 if the size cannot be statically determined.
 static int64_t computeAllocSize(Operation *op) {

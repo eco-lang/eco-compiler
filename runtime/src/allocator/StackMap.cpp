@@ -241,7 +241,9 @@ bool StackMap::parse(const uint8_t* data, size_t size, uint64_t loadBase) {
             if (rec.locations.empty()) zeroLocRecords++;
             for (auto& loc : rec.locations) {
                 totalLocs++;
-                switch (loc.kind) {
+                // Cast to integer so `default` remains reachable for values
+                // parsed from the binary stackmap that fall outside the enum.
+                switch (static_cast<unsigned>(loc.kind)) {
                     case StackMapLocation::Register:     nRegister++; break;
                     case StackMapLocation::Direct:       nDirect++; break;
                     case StackMapLocation::Indirect:     nIndirect++; break;
