@@ -745,7 +745,32 @@ updateValueMultiStack defName key monoType currentSubst stack =
             if entry.defName == defName then
                 case Dict.get key entry.instances of
                     Just info ->
-                        ( stack, info.freshName )
+                        -- Instance exists but this call supplies a new
+                        -- `currentSubst` derived from a different destructor
+                        -- path on the same root. That path may expose type
+                        -- vars for slots the earlier destructor never touched
+                        -- (e.g. the second destructor in `( getter, setter )`
+                        -- binds the setter's own MVarIds which the getter's
+                        -- partial container never mentioned).
+                        --
+                        -- Merge new-only bindings from `currentSubst` into
+                        -- `info.subst` via Dict.union (left-biased): existing
+                        -- entries — potentially strengthened by later call-
+                        -- site refinement — are preserved, while fresh
+                        -- destructor-path bindings get picked up. Both sides
+                        -- derive from the same outer `subst`, so any key
+                        -- common to both already agrees.
+                        let
+                            newInfo =
+                                { info | subst = Dict.union info.subst currentSubst }
+
+                            newInstances =
+                                Dict.insert key newInfo entry.instances
+
+                            newEntry =
+                                { entry | instances = newInstances }
+                        in
+                        ( newEntry :: rest, info.freshName )
 
                     Nothing ->
                         let
