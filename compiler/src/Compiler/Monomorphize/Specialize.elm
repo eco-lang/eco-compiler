@@ -391,6 +391,312 @@ getValueMultiVar expr state =
             Nothing
 
 
+{-| Walk a TOpt.Path to its Root, then check whether the Root name is a valueMulti
+target. Returns the root name and its canonical type (as recorded on the
+valueMulti stack) when it is; otherwise Nothing.
+-}
+getValueMultiRootFromPath : TOpt.Path -> MonoState -> Maybe ( Name, Can.Type MVarId )
+getValueMultiRootFromPath path state =
+    case path of
+        TOpt.Root name ->
+            findValueMultiEntry name state.ctx.valueMulti
+
+        TOpt.Index _ _ subPath ->
+            getValueMultiRootFromPath subPath state
+
+        TOpt.ArrayIndex _ subPath ->
+            getValueMultiRootFromPath subPath state
+
+        TOpt.Field _ subPath ->
+            getValueMultiRootFromPath subPath state
+
+        TOpt.Unbox subPath ->
+            getValueMultiRootFromPath subPath state
+
+
+findValueMultiEntry : Name -> List ValueMultiState -> Maybe ( Name, Can.Type MVarId )
+findValueMultiEntry name stack =
+    case stack of
+        [] ->
+            Nothing
+
+        entry :: rest ->
+            if entry.defName == name then
+                Just ( entry.defName, entry.defCanType )
+
+            else
+                findValueMultiEntry name rest
+
+
+{-| Rewrite the Root name inside a TOpt.Path, preserving the surrounding
+Index/ArrayIndex/Field/Unbox chain. Used when a destructor is re-targeted at a
+fresh value-multi instance.
+-}
+rewriteRootInPath : Name -> Name -> TOpt.Path -> TOpt.Path
+rewriteRootInPath oldName newName path =
+    case path of
+        TOpt.Root name ->
+            if name == oldName then
+                TOpt.Root newName
+
+            else
+                path
+
+        TOpt.Index idx hint subPath ->
+            TOpt.Index idx hint (rewriteRootInPath oldName newName subPath)
+
+        TOpt.ArrayIndex idx subPath ->
+            TOpt.ArrayIndex idx (rewriteRootInPath oldName newName subPath)
+
+        TOpt.Field fieldName subPath ->
+            TOpt.Field fieldName (rewriteRootInPath oldName newName subPath)
+
+        TOpt.Unbox subPath ->
+            TOpt.Unbox (rewriteRootInPath oldName newName subPath)
+
+
+{-| Build a partial MonoType container by walking a TOpt.Path outward from the
+Root, placing `leafMonoType` at the Root position and fresh MVars for sibling
+positions. Returns Nothing for shapes we don't yet know how to synthesize
+(Index + HintCustom, Index + HintList, ArrayIndex); callers should fall back
+to the non-valueMulti code path.
+
+Examples:
+    Index 0 HintTuple2 (Root n)         -> MTuple [leaf, MVar fresh]
+    Index 1 HintTuple3 (Root n)         -> MTuple [MVar, leaf, MVar]
+    Field "a" (Root n)                  -> MRecord (Dict.singleton "a" leaf)
+    Unbox (Root n)                      -> leaf  (wrapper's payload is the leaf)
+-}
+buildPartialContainer : TOpt.Path -> Mono.MonoType -> MonoState -> Maybe ( Mono.MonoType, MonoState )
+buildPartialContainer path leafMonoType state =
+    case path of
+        TOpt.Root _ ->
+            Just ( leafMonoType, state )
+
+        TOpt.Index idx hint subPath ->
+            case hint of
+                TOpt.HintTuple2 ->
+                    let
+                        ( fillerId, env1 ) =
+                            State.freshMVar Mono.CEcoValue state.ctx.mvarEnv
+
+                        state1 =
+                            setMVarEnv env1 state
+
+                        filler =
+                            Mono.MVar fillerId Mono.CEcoValue
+
+                        elems =
+                            case Index.toMachine idx of
+                                0 ->
+                                    [ leafMonoType, filler ]
+
+                                _ ->
+                                    [ filler, leafMonoType ]
+                    in
+                    buildPartialContainer subPath (Mono.MTuple elems) state1
+
+                TOpt.HintTuple3 ->
+                    let
+                        ( fillerA, envA ) =
+                            State.freshMVar Mono.CEcoValue state.ctx.mvarEnv
+
+                        ( fillerB, envB ) =
+                            State.freshMVar Mono.CEcoValue envA
+
+                        state1 =
+                            setMVarEnv envB state
+
+                        mvA =
+                            Mono.MVar fillerA Mono.CEcoValue
+
+                        mvB =
+                            Mono.MVar fillerB Mono.CEcoValue
+
+                        elems =
+                            case Index.toMachine idx of
+                                0 ->
+                                    [ leafMonoType, mvA, mvB ]
+
+                                1 ->
+                                    [ mvA, leafMonoType, mvB ]
+
+                                _ ->
+                                    [ mvA, mvB, leafMonoType ]
+                    in
+                    buildPartialContainer subPath (Mono.MTuple elems) state1
+
+                _ ->
+                    -- HintList, HintCustom: not synthesized here; fall back.
+                    Nothing
+
+        TOpt.Field fieldName subPath ->
+            buildPartialContainer subPath
+                (Mono.MRecord (Dict.singleton fieldName leafMonoType))
+                state
+
+        TOpt.Unbox subPath ->
+            -- A single-field wrapper: the wrapper's payload is the leaf, so
+            -- the container viewed at the next level out is the leaf itself.
+            -- This is an approximation — once that outer level is a known
+            -- MCustom/MRecord the existing layout logic takes over; for now
+            -- we punt.
+            buildPartialContainer subPath leafMonoType state
+
+        TOpt.ArrayIndex _ _ ->
+            Nothing
+
+
+setMVarEnv : MVarEnv -> MonoState -> MonoState
+setMVarEnv env state =
+    { state
+        | ctx =
+            let
+                c =
+                    state.ctx
+            in
+            { c | mvarEnv = env }
+    }
+
+
+{-| Recursive MonoType debug printer for trace logging.
+-}
+debugMono : Mono.MonoType -> String
+debugMono m =
+    case m of
+        Mono.MInt ->
+            "Int"
+
+        Mono.MFloat ->
+            "Float"
+
+        Mono.MBool ->
+            "Bool"
+
+        Mono.MChar ->
+            "Char"
+
+        Mono.MString ->
+            "String"
+
+        Mono.MUnit ->
+            "()"
+
+        Mono.MList t ->
+            "List " ++ debugMono t
+
+        Mono.MTuple ts ->
+            "(" ++ String.join ", " (List.map debugMono ts) ++ ")"
+
+        Mono.MRecord fs ->
+            "{"
+                ++ String.join ", "
+                    (Dict.foldl (\n t acc -> (n ++ ":" ++ debugMono t) :: acc) [] fs)
+                ++ "}"
+
+        Mono.MCustom _ name args ->
+            case args of
+                [] ->
+                    name
+
+                _ ->
+                    "(" ++ name ++ " " ++ String.join " " (List.map debugMono args) ++ ")"
+
+        Mono.MFunction params result ->
+            "(" ++ String.join "," (List.map debugMono params) ++ ")->" ++ debugMono result
+
+        Mono.MVar mvarId constraint ->
+            case constraint of
+                Mono.CNumber ->
+                    "Mvar#" ++ String.fromInt (Id.toComparable mvarId) ++ ":Num"
+
+                Mono.CEcoValue ->
+                    "Mvar#" ++ String.fromInt (Id.toComparable mvarId)
+
+
+{-| Compact Can.Type MVarId debug printer for trace logging.
+-}
+debugCanType : Can.Type MVarId -> String
+debugCanType canType =
+    case canType of
+        Can.TVar mvarId ->
+            "TVar#" ++ String.fromInt (Id.toComparable mvarId)
+
+        Can.TLambda a b ->
+            "(" ++ debugCanType a ++ " -> " ++ debugCanType b ++ ")"
+
+        Can.TType _ name args ->
+            case args of
+                [] ->
+                    name
+
+                _ ->
+                    "(" ++ name ++ " " ++ String.join " " (List.map debugCanType args) ++ ")"
+
+        Can.TRecord fields _ ->
+            "{"
+                ++ String.join ", "
+                    (Dict.foldl
+                        (\n (Can.FieldType _ t) acc ->
+                            (n ++ ":" ++ debugCanType t) :: acc
+                        )
+                        []
+                        fields
+                    )
+                ++ "}"
+
+        Can.TUnit ->
+            "()"
+
+        Can.TTuple a b rest ->
+            "("
+                ++ debugCanType a
+                ++ ", "
+                ++ debugCanType b
+                ++ (case rest of
+                        [] ->
+                            ""
+
+                        _ ->
+                            ", " ++ String.join ", " (List.map debugCanType rest)
+                   )
+                ++ ")"
+
+        Can.TAlias _ name _ _ ->
+            "Alias(" ++ name ++ ")"
+
+
+{-| Strip exactly `numArgs` parameter layers from a curried `MonoType`. Used at
+kernel call sites to compute the call's result type from the kernel's ABI
+function type (which, after `applySubstLambdaChain`, is a chain of single-param
+`MFunction`s). `Mono.resultTypeOf` is unsafe here because it drills through all
+layers, giving the wrong type for partial applications.
+-}
+peelCallResult : Int -> Mono.MonoType -> Mono.MonoType
+peelCallResult numArgs monoType =
+    if numArgs <= 0 then
+        monoType
+
+    else
+        case monoType of
+            Mono.MFunction params result ->
+                let
+                    pcount =
+                        List.length params
+                in
+                if pcount > numArgs then
+                    Mono.MFunction (List.drop numArgs params) result
+
+                else if pcount == numArgs then
+                    result
+
+                else
+                    peelCallResult (numArgs - pcount) result
+
+            _ ->
+                monoType
+
+
 {-| Allocate or reuse a value instance for a let-bound value with lambdas.
 -}
 getOrCreateValueInstance :
@@ -1555,8 +1861,24 @@ specializeExpr expr subst state =
                         ( monoArgs, state2 ) =
                             resolveProcessedArgs processedArgs paramTypes callSubst state1a
 
+                        -- Prefer the kernel ABI's result type when it is already
+                        -- fully concrete (no free MVars). The enclosing canType
+                        -- may still carry MVars from a polymorphic wrapper, so
+                        -- re-deriving from it would lose the ABI's concreteness
+                        -- (root cause of heap-layout mismatches for kernels like
+                        -- Parser.findSubString returning (Int, Int, Int)).
+                        -- Peel exactly as many layers as arguments applied —
+                        -- kernels may be partially applied, so Mono.resultTypeOf
+                        -- (which drills to the leaf) is unsafe.
+                        abiResultType =
+                            peelCallResult (List.length argTypes) funcMonoType
+
                         resultMonoType =
-                            callResultMonoType state1a.ctx.mvarEnv state1a.ctx.currentFreeVars callSubst canType
+                            if Mono.containsAnyMVar abiResultType then
+                                callResultMonoType state1a.ctx.mvarEnv state1a.ctx.currentFreeVars callSubst canType
+
+                            else
+                                abiResultType
 
                         monoFunc =
                             Mono.MonoVarKernel funcRegion kernelPrefix home name funcMonoType
@@ -1585,8 +1907,20 @@ specializeExpr expr subst state =
                         ( monoArgs, state2 ) =
                             resolveProcessedArgs processedArgs paramTypes callSubst state1a
 
+                        -- Same invariant as VarKernel: trust the ABI-derived result
+                        -- type when it is fully concrete; otherwise fall back to
+                        -- the enclosing canType so MVar IDs stay aligned with the
+                        -- enclosing spec key. Peel exactly the applied-arg count
+                        -- to handle partial applications correctly.
+                        abiResultType =
+                            peelCallResult (List.length argTypes) funcMonoType
+
                         resultMonoType =
-                            callResultMonoType state1a.ctx.mvarEnv state1a.ctx.currentFreeVars callSubst canType
+                            if Mono.containsAnyMVar abiResultType then
+                                callResultMonoType state1a.ctx.mvarEnv state1a.ctx.currentFreeVars callSubst canType
+
+                            else
+                                abiResultType
 
                         monoFunc =
                             Mono.MonoVarKernel funcRegion "Elm" "Debug" name funcMonoType
@@ -2062,8 +2396,14 @@ specializeExpr expr subst state =
                                             List.foldl
                                                 (\info ( defsAcc, stAcc ) ->
                                                     let
+                                                        -- Base on info.subst so destructor-path refinements
+                                                        -- (e.g. tuple-element type-var bindings) propagate into
+                                                        -- the def's specialization, reaching lambdas nested
+                                                        -- inside the value-multi body. Using the outer `subst`
+                                                        -- alone would drop those finer constraints; info.monoType
+                                                        -- only carries the coarse tuple/record shape.
                                                         mergedSubst =
-                                                            Tuple.first (TypeSubst.unifyExtend state.ctx.mvarEnv defCanType info.monoType subst)
+                                                            Tuple.first (TypeSubst.unifyExtend state.ctx.mvarEnv defCanType info.monoType info.subst)
 
                                                         ( monoDef0, st1 ) =
                                                             specializeDef def mergedSubst stAcc
@@ -2173,24 +2513,103 @@ specializeExpr expr subst state =
                 monoType0 =
                     Mono.forceCNumberToInt (applySubstFV state subst canType)
 
+                (TOpt.Destructor _ destructorPath destructorMeta) =
+                    destructor
+
+                maybeValueMultiRefinement =
+                    case getValueMultiRootFromPath destructorPath state of
+                        Just ( rootName, rootCanType ) ->
+                            let
+                                destrMonoType0 =
+                                    Mono.forceCNumberToInt
+                                        (applySubstFV state subst destructorMeta.tipe)
+                            in
+                            case buildPartialContainer destructorPath destrMonoType0 state of
+                                Just ( partialContainerMono, stateP ) ->
+                                    let
+                                        ( refinedSubst, mvarEnv1 ) =
+                                            TypeSubst.unifyExtend stateP.ctx.mvarEnv
+                                                rootCanType
+                                                partialContainerMono
+                                                subst
+
+                                        stateR =
+                                            setMVarEnv mvarEnv1 stateP
+
+                                        rootInstanceMonoType =
+                                            Mono.forceCNumberToInt
+                                                (applySubstFV stateR refinedSubst rootCanType)
+
+                                        ( freshRootName, stateI ) =
+                                            getOrCreateValueInstance rootName
+                                                rootInstanceMonoType
+                                                refinedSubst
+                                                stateR
+
+                                        rewrittenDestructor =
+                                            case destructor of
+                                                TOpt.Destructor dname dpath dmeta ->
+                                                    TOpt.Destructor dname
+                                                        (rewriteRootInPath rootName
+                                                            freshRootName
+                                                            dpath
+                                                        )
+                                                        dmeta
+
+                                        stateWithRoot =
+                                            { stateI
+                                                | ctx =
+                                                    let
+                                                        c =
+                                                            stateI.ctx
+                                                    in
+                                                    { c
+                                                        | varEnv =
+                                                            State.insertVar freshRootName
+                                                                rootInstanceMonoType
+                                                                c.varEnv
+                                                    }
+                                            }
+                                    in
+                                    Just ( rewrittenDestructor, refinedSubst, stateWithRoot )
+
+                                Nothing ->
+                                    Nothing
+
+                        Nothing ->
+                            Nothing
+
+                ( effectiveDestructor, effectiveSubst, stateForDestruct ) =
+                    case maybeValueMultiRefinement of
+                        Just triple ->
+                            triple
+
+                        Nothing ->
+                            ( destructor, subst, state )
+
                 monoDestructor =
-                    specializeDestructor destructor subst state.ctx.mvarEnv state.ctx.varEnv state.ctx.globalTypeEnv state.ctx.currentGlobal
+                    specializeDestructor effectiveDestructor
+                        effectiveSubst
+                        stateForDestruct.ctx.mvarEnv
+                        stateForDestruct.ctx.varEnv
+                        stateForDestruct.ctx.globalTypeEnv
+                        stateForDestruct.ctx.currentGlobal
 
                 (Mono.MonoDestructor destructorName _ destructorType) =
                     monoDestructor
 
                 stateWithVar =
-                    { state
+                    { stateForDestruct
                         | ctx =
                             let
                                 cd =
-                                    state.ctx
+                                    stateForDestruct.ctx
                             in
                             { cd | varEnv = State.insertVar destructorName destructorType cd.varEnv }
                     }
 
                 ( monoBody, stateAfter ) =
-                    specializeExpr body subst stateWithVar
+                    specializeExpr body effectiveSubst stateWithVar
 
                 monoType =
                     if Mono.containsAnyMVar monoType0 then
