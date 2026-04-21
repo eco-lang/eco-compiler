@@ -30,9 +30,17 @@ runtime/src/codegen/Passes/
 ├── EcoToLLVMErrorDebug.cpp    # Crash, expect, dbg, safepoint
 ├── EcoToLLVMFunc.cpp          # func.func lowering (kernel declarations reflected from compiler-declared types)
 ├── EcoGCPrepare.cpp           # GC root attachment on allocating ops (Stage 2, runs before EcoToLLVM)
-├── StatepointConversion.cpp   # Post-MLIR pass: safepoint markers → gc.statepoint intrinsics
-└── StatepointConversion.h     # Header for statepoint conversion
+└── EcoGCStrategy.cpp          # Registers the "eco-gc" GC strategy with LLVM (drives RS4GC)
 ```
+
+Statepoints themselves (`gc.statepoint` / `gc.relocate`) are inserted by
+LLVM's upstream **`RewriteStatepointsForGC`** (RS4GC) pass, which runs as a
+function pass on the translated LLVM IR immediately after MLIR → LLVM
+translation and before the base optimizer. RS4GC identifies GC pointers by
+type (`ptr addrspace(1)`, per the `"eco-gc"` strategy), computes liveness
+at the LLVM IR level via backward dataflow, and handles relocation via
+alloca+mem2reg internally — Eco contributes no custom statepoint-insertion
+pass.
 
 ### Shared Infrastructure
 
@@ -522,21 +530,22 @@ eco.expect %cond, %msg, %passthrough
 
 ```
 eco.safepoint %root1, %root2 : !eco.value, !eco.value
-    -> inttoptr each operand to ptr addrspace(1)
-    -> call @__eco_safepoint_marker(%root1_ptr, %root2_ptr)
-    (StatepointConversion post-pass converts these to gc.statepoint intrinsics)
+    -> erased by SafepointOpLowering
 
 eco.dbg %args -> call eco_dbg_print[_int|_float|_char] per arg type
 ```
 
-*(Mar-Apr 2026)*: Safepoints are no longer erased. The full GC integration pipeline:
+The `eco.safepoint` op is a front-end marker that does not survive into
+LLVM IR. Statepoint insertion is fully delegated to LLVM's
+`RewriteStatepointsForGC`. The integration pipeline:
 
-1. **EcoGCPrepare** (Stage 2): Attaches live GC roots as explicit operands on allocation ops (`eco.allocate_*`), `eco.call`, `eco.papExtend`, and allocation-group leaders. Uses MLIR inter-block `Liveness` analysis unioned with the front-end's operands (root set only ever grows). `func.walk()` visits nested regions (`scf.while`/`scf.if`). Embedded constants excluded. Roots are pre-converted by the type-converter adaptor.
-2. **SafepointOpLowering** (this pass): Converts each `!eco.value` operand to `ptr addrspace(1)` via inttoptr, declares `@__eco_safepoint_marker` as a vararg function, emits call with GC root pointers.
-3. **Allocation lowering**: `emitAllocWithSafepoint` receives pre-converted roots from the adaptor and emits fast/slow allocation paths. Fast path: nursery bump. Slow path: allocation inside GC safepoint. Adjacent fixed-size allocs lower to a single fast/slow/merge group (see §Allocation Groups).
-4. **Closure dispatch safepoint positioning** *(Apr 13, 2026)*: Safepoint marker emission moved from top of call/PAP lowering to immediately before each final GC-triggering call inside closure dispatch helpers (`emitFastClosureCall`, `emitClosureCall`, `emitInlineClosureCall`, `lowerSegmentationUnknown`, `lowerGenericApply`, and their boxing calls) so `findTargetCall` latches onto the correct target (not intermediate `eco_resolve_hptr` or boxing calls).
-5. **StatepointConversion** (post-MLIR LLVM IR pass): Finds all `@__eco_safepoint_marker` calls, wraps the next CallInst (the actual allocating/calling function) in `gc.statepoint` with `gc-live` operand bundles. `stripIntToPtr` returns `nullptr` for `inttoptr(ConstantInt)` so constants never become GC roots. Two-phase alloca+mem2reg approach for GC root relocation.
-6. All non-external functions carry `gc "statepoint-example"` attribute.
+1. **EcoGCPrepare** (Stage 2): Groups adjacent fixed-size allocations into a single allocation region, and attaches live `!eco.value` roots to allocation-group leaders, `eco.call`, and `eco.papExtend` via the GCRootCarrier interface. Uses MLIR inter-block `Liveness` analysis; embedded constants are excluded. These operands become redundant once RS4GC recomputes liveness at the LLVM level, but they are harmless.
+2. **SafepointOpLowering** (this pass): Erases every `eco.safepoint` op — RS4GC will insert the real `gc.statepoint` intrinsics directly at non-leaf calls.
+3. **Allocation lowering**: `emitAllocWithSafepoint` simply emits the allocation call (no custom marker). Adjacent fixed-size allocs lower to a single fast/slow/merge group (see §Allocation Groups). In the slow path, `eco_gc_alloc_region_slow` is a non-leaf call, so RS4GC wraps it in a statepoint.
+4. **Leaf annotation**: Runtime helpers declared in `EcoToLLVMRuntime.cpp` that cannot trigger GC (`eco_*_fast`, `eco_store_*`, `eco_init_*_at`, `eco_get_*`, `eco_gc_add_root`, math kernels, etc.) are tagged `gc-leaf-function` via the MLIR `passthrough` attribute. RS4GC skips these when deciding where statepoints go. Non-leaf helpers (`eco_alloc_*`, `eco_alloc_*_slow`, `eco_apply_closure`, `eco_pap_extend`, `eco_closure_call_saturated`, `eco_clone_array`, `eco_minor_gc`, `eco_major_gc`) do **not** carry the attribute and thus become RS4GC safepoints automatically.
+5. **GC attribute**: All non-external functions carry `gc "eco-gc"`. The matching `EcoGCStrategy` (in `EcoGCStrategy.cpp`) tells LLVM that `ptr addrspace(1)` identifies a GC-managed pointer and that `RewriteStatepointsForGC` should run.
+6. **RewriteStatepointsForGC** (LLVM function pass, scheduled by driver transformers): For every non-leaf call/invoke in a `gc "eco-gc"` function, RS4GC computes the live `ptr addrspace(1)` set via backward dataflow, wraps the call in `llvm.experimental.gc.statepoint` with a `gc-live` operand bundle, emits `llvm.experimental.gc.relocate` for each live pointer, and rewrites post-safepoint uses through alloca + `PromoteMemToReg`. Constants (including `inttoptr` of constant integers) are excluded by `GCStrategy::isGCManagedPointer` + RS4GC's constant filtering, so embedded `ConstantKind << 40` values never enter `gc-live`.
+7. **EcoPtrIntVerify** (optional, gated by `ECO_GC_DEBUG_LIVENESS`): Function pass that runs **after** RS4GC and checks that every `ptrtoint`/`inttoptr` involving `ptr addrspace(1)` is one of the allow-listed boundary patterns. See `EcoPtrIntVerify.cpp` and `guides/gc-diagnostics.md`.
 
 ## Allocation Groups
 
@@ -544,25 +553,24 @@ eco.dbg %args -> call eco_dbg_print[_int|_float|_char] per arg type
 
 ```
 fastBlock:
-    result = call eco_gc_alloc_region_fast(totalBytes)
+    result = call eco_gc_alloc_region_fast(totalBytes)    ; gc-leaf-function
     br (result == null) ? slowBlock : mergeBlock
 
 slowBlock:
-    call @__eco_safepoint_marker(%root1, %root2, ...)
-    result = call eco_gc_alloc_region_slow(totalBytes)
+    result = call eco_gc_alloc_region_slow(totalBytes)    ; non-leaf — RS4GC statepoint
     br mergeBlock
 
 mergeBlock(result):
-    %m0 = call eco_init_cons_at(result + 0,    head, tail, ...)
-    %m1 = call eco_init_tuple2_at(result + 24, a, b, ...)
+    %m0 = call eco_init_cons_at(result + 0,    head, tail, ...)   ; gc-leaf-function
+    %m1 = call eco_init_tuple2_at(result + 24, a, b, ...)         ; gc-leaf-function
     ...
 ```
 
-- `eco_init_*_at` helpers write header/fields into the pre-allocated region and return the HPointer of that member
-- One `__eco_safepoint_marker` covers the whole group
+- `eco_init_*_at` helpers write header/fields into the pre-allocated region and return the HPointer of that member; they are marked `gc-leaf-function` so RS4GC does not treat them as safepoints
+- `eco_gc_alloc_region_slow` is the sole non-leaf call in the group, so RS4GC wraps exactly that call in a `gc.statepoint` — one safepoint per group
 - Variable-size ops (`AllocateClosureOp`, `AllocateOp`) are excluded from groups
 - Group size is capped below the 32 KiB large-object threshold
-- `EcoGCPrepare` step 2 unions the alloc group leader's own `!eco.value` operands into `liveRoots` (matching step 4 for call safepoints), so construct-op field values are included in the statepoint's gc-live bundle
+- `EcoGCPrepare` unions the alloc group leader's own `!eco.value` operands into its attached root set so construct-op field values are visible to any downstream debugging tool that consumes the MLIR-level root annotations; RS4GC recomputes liveness independently at the LLVM level, so the `gc-live` bundle on the resulting statepoint is always complete regardless
 - `EcoGCLivenessAudit` skips `eco.gc_group_member` ops since their liveness is covered by the leader's root set
 
 ## eco.value → ptr addrspace(1)
@@ -611,9 +619,9 @@ This registers global variables as GC roots.
 3. `!eco.value` types are converted to `ptr addrspace(1)`
 4. Global root initialization function is generated
 5. Module is valid LLVM dialect IR
-6. All non-external functions carry `gc "statepoint-example"` attribute *(Mar 2026)*
-7. Safepoint markers emitted for StatepointConversion post-pass *(Mar 2026)*
-8. Allocation ops carry pre-converted GC root operands from EcoGCPrepare *(Apr 2026)*
+6. All non-external functions carry `gc "eco-gc"` attribute
+7. Leaf runtime helpers carry `gc-leaf-function` (via MLIR `passthrough`); non-leaf helpers do not, so RS4GC promotes their callsites to statepoints automatically
+8. `eco.safepoint` ops are erased; no custom safepoint-marker call remains in LLVM IR
 
 ## Pass Behavior Guarantees
 
@@ -709,5 +717,6 @@ documentation, code review, and verifier diagnostics.
 **Post-RS4GC verification:** `EcoPtrIntVerify` (gated by `ECO_GC_DEBUG_LIVENESS`)
 runs as a function pass after `RewriteStatepointsForGC`. It scans for
 `ptrtoint`/`inttoptr` instructions involving `ptr addrspace(1)` and rejects any
-that escape the allow-listed patterns with a hard error. See `EcoPtrIntVerify.cpp`
-and `guides/gc-diagnostics.md` for details.
+that escape the allow-listed boundary helpers (heap/global/closure/args-slot
+stores and loads, case scrutinee, wrapper bridges) with a hard error. See
+`EcoPtrIntVerify.cpp` and `guides/gc-diagnostics.md` for details.

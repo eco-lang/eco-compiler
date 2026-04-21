@@ -217,23 +217,25 @@ The `ThreadLocalHeap` coordinates its nursery and old gen:
 
 The `EcoGCPrepare` MLIR pass detects all potentially allocating operations and attaches live GC roots as explicit operands. This ensures the runtime has accurate root information when the slow path triggers GC.
 
-**Allocation groups — single safepoint per group** *(Apr 16, 2026)*: Adjacent fixed-size allocations identified by `EcoGCPrepare` lower to a single fast/slow/merge CFG. The fast path calls `eco_gc_alloc_region_fast(totalBytes)`; on null the slow path emits one `__eco_safepoint_marker` + `eco_gc_alloc_region_slow`. Each member is initialized at its offset via `eco_init_*_at` runtime functions that write the header/fields into the reserved region and return the HPointer. Variable-size ops (`AllocateClosureOp`, `AllocateOp`) are excluded from groups; group size is capped below the 32 KiB large-object threshold.
+**Allocation groups — single safepoint per group** *(Apr 16, 2026)*: Adjacent fixed-size allocations identified by `EcoGCPrepare` lower to a single fast/slow/merge CFG. The fast path calls `eco_gc_alloc_region_fast(totalBytes)` (a `gc-leaf-function`, never a safepoint); on null the slow path calls `eco_gc_alloc_region_slow(totalBytes)`, which is non-leaf and is therefore wrapped in a `gc.statepoint` by RS4GC. Each member is initialized at its offset via `eco_init_*_at` runtime functions (leaf) that write the header/fields into the reserved region and return the HPointer. Variable-size ops (`AllocateClosureOp`, `AllocateOp`) are excluded from groups; group size is capped below the 32 KiB large-object threshold.
 
 ### Stack Root Tracing
 
-*(Mar-Apr 2026)* Precise GC stack root tracing is implemented via LLVM statepoints:
+Precise GC stack root tracing is implemented via LLVM statepoints, with LLVM's upstream `RewriteStatepointsForGC` (RS4GC) doing the heavy lifting:
 
-1. **Compiler emits `eco.safepoint`**: Each safepoint carries live `!eco.value` variables as operands
-2. **EcoGCPrepare**: Attaches GC roots to allocation ops, call ops, `papExtend` ops, and allocation-group leaders. Uses MLIR's inter-block `Liveness` analysis, unions with front-end operands (root set only ever grows), walks nested regions (`scf.while`/`scf.if`) via `func.walk()`, and excludes embedded constants.
-3. **StatepointConversion**: Converts safepoint markers to LLVM `gc.statepoint` intrinsics wrapping the actual allocating/calling function. `stripIntToPtr` returns nullptr for `inttoptr(ConstantInt)` so constants never become GC roots.
-4. **Alloca+mem2reg rewriting**: Two-phase approach creates an alloca per GC root, emits `gc.relocate` + store after each statepoint, then `PromoteMemToReg` converts back to SSA with correct phi nodes at loop headers
-5. **Runtime stack map parsing**: `StackMap.cpp` parses LLVM v3 stack map format; `collectStackRootsFromStackMap()` walks x86-64 frame pointer chain; `StackUnwind.cpp` handles RSP-relative locations that appear even with `-fno-omit-frame-pointer`
+1. **EcoGCStrategy** (`runtime/src/codegen/Passes/EcoGCStrategy.cpp`): Registers the `"eco-gc"` strategy with LLVM. `isGCManagedPointer()` returns true for any `ptr addrspace(1)`, and `UseRS4GC = true` drives `RewriteStatepointsForGC`. All non-external Eco functions are tagged `gc "eco-gc"`.
+2. **EcoGCPrepare** (MLIR Stage 2): Groups adjacent fixed-size allocations so that one allocation region covers multiple construct ops, and walks MLIR's inter-block `Liveness` analysis to attach live `!eco.value` roots to allocation-group leaders and call-like ops. These operands survive into LLVM IR, but RS4GC does not require them — it recomputes liveness itself.
+3. **Leaf annotations**: Runtime helpers that cannot trigger GC (`eco_*_fast`, `eco_store_*`, `eco_init_*_at`, `eco_get_*`, `eco_gc_add_root`, math kernels, etc.) carry `gc-leaf-function` on their LLVM declarations. Non-leaf functions (`eco_alloc_*`, `eco_alloc_*_slow`, `eco_gc_alloc_region_slow`, `eco_apply_closure`, `eco_pap_extend`, `eco_closure_call_saturated`, `eco_clone_array`, `eco_minor_gc`, `eco_major_gc`) are the calls RS4GC treats as safepoints.
+4. **RewriteStatepointsForGC** (LLVM function pass, run between MLIR translation and the base optimizer): For every non-leaf call/invoke inside a `gc "eco-gc"` function, RS4GC (a) computes live `ptr addrspace(1)` values via type-based backward dataflow, (b) infers base pointers (trivial here — every HPointer is its own base), (c) wraps the call in `llvm.experimental.gc.statepoint` with a `gc-live` operand bundle, (d) emits `llvm.experimental.gc.relocate` for each live pointer, and (e) rewrites uses via one alloca per live pointer plus `PromoteMemToReg`. The result is clean SSA where every post-safepoint use observes the relocated pointer.
+5. **Runtime stack map parsing**: `StackMap.cpp` parses LLVM v3 stack map format; `collectStackRootsFromStackMap()` walks the x86-64 frame pointer chain; `StackUnwind.cpp` handles RSP-relative locations that appear even with `-fno-omit-frame-pointer`.
+
+Because RS4GC identifies GC pointers purely by type (`ptr addrspace(1)`), the front-end/compiler does **not** need to hand-roll liveness: attaching `!eco.value` operands in EcoGCPrepare is belt-and-suspenders, and nothing can "fall through the cracks" because the LLVM type system enforces visibility.
 
 **StackRootGuard**: RAII helper in `HeapHelpers.hpp` that pushes HPointers onto `RootSet::stack_root_ranges` (as 1-element ranges) and restores on destruction. Used by kernel helpers (`allocTask`, `allocProcess`, `cons`, `tuple2`, etc.) to root captured HPointers across allocations that may trigger GC. Stackmap-derived roots live in a separate `StackMapRoots` container owned by `ThreadLocalHeap`, populated only by `collectStackRootsFromStackMap()` and cleared each GC cycle.
 
 **Shadow stack root ranges** *(Apr 13, 2026)*: Closure dispatch helpers (`eco_apply_closure`, `eco_apply_segmentation_unknown`, `eco_pap_extend`, `eco_closure_call_saturated`) alloca `uint64_t*` arg buffers at runtime — a layout static stack maps cannot describe. These buffers are pushed onto `RootSet::stack_ranges` (a "shadow stack") via `eco_gc_push_stack_range` before allocation and popped after. Each range carries an unboxed-bitmap mask so the GC visits only the HPointer slots.
 
-**Closure wrapper safepoints** *(Apr 13, 2026)*: Generated `__closure_wrapper_*` functions emit `__eco_safepoint_marker` before the target Elm call and before every `eco_alloc_*` boxing call, with all loaded arg HPointers tracked as live roots. `eco_resolve_hptr` is documented as a non-allocating GC invariant so it does not need a safepoint.
+**Closure wrapper safepoints**: Generated `__closure_wrapper_*` functions carry `gc "eco-gc"` like any other Elm function. The target Elm call and every `eco_alloc_*` boxing call inside the wrapper are non-leaf, so `RewriteStatepointsForGC` automatically wraps each in a `gc.statepoint` that captures all live `ptr addrspace(1)` arg HPointers. `eco_resolve_hptr` is a `gc-leaf-function` — it is a non-allocating invariant and therefore never becomes a safepoint.
 
 **Closure pointer re-resolution** *(Apr 15, 2026)*: `buildEvaluatorArgs` takes `closure_hptr` (not raw `Closure*`) and re-resolves via `hpointerToPtr` before each `values[i]` load. `eco_pap_extend` re-resolves `old_closure` from the authoritative `closure_hptr` after `Allocator::allocate()` since GC may have relocated the old closure.
 
@@ -399,12 +401,16 @@ Elm Source
 │    ↓                                                │
 │  LLVM Dialect (Stage 3)                             │
 │    - EcoToLLVM lowering                             │
+│    - Functions tagged gc "eco-gc"                   │
 │    ↓                                                │
-│  Statepoint Conversion                              │
-│    - LLVM gc.statepoint intrinsics                  │
-│    - Alloca+mem2reg for GC root relocation          │
+│  MLIR → LLVM IR Translation                         │
 │    ↓                                                │
-│  LLVM IR → Native Code                              │
+│  RewriteStatepointsForGC (LLVM)                     │
+│    - gc.statepoint/gc.relocate for every            │
+│      non-leaf call in gc "eco-gc" functions         │
+│    - Liveness, base inference, alloca+mem2reg       │
+│    ↓                                                │
+│  LLVM IR → Native Code + stackmap                   │
 └─────────────────────────────────────────────────────┘
 ```
 
@@ -558,8 +564,8 @@ Final lowering from ECO dialect to LLVM dialect. As of Feb 2026, the pass underw
 - `_capture_abi` attribute drives type-aware `buildEvaluatorArgs` so captured Int/Float/Char are boxed with correct primitive tags (`eco_alloc_int`/`_float`/`_char`), enabling correct `Debug.log` output on primitives
 - `widenFieldToI64` handles Bool `ptr<1>` constants via `PtrToIntOp` (pointer ZExt would crash); ADT case bit manipulation lifts `ptr<1>` scrutinee to `i64` via `valueToI64` before `LShr`/`And`
 - Kernel calls reflect compiler-declared types without repair
-- Safepoint lowering: `eco.safepoint` operands converted to `ptr addrspace(1)` via inttoptr, emitted as `__eco_safepoint_marker` calls, then post-processed by `StatepointConversion` into `gc.statepoint` intrinsics wrapping the actual allocating/calling function. Safepoint markers emitted immediately before each final GC-triggering call inside closure dispatch helpers so `findTargetCall` latches onto the right target.
-- All non-external functions carry `gc "statepoint-example"` attribute
+- Safepoint lowering: `eco.safepoint` is erased at LLVM lowering time; the MLIR op is retained only as a front-end marker. RS4GC inserts statepoints directly at every non-leaf call (the real GC-triggering boundary), so no intermediate marker call is needed.
+- All non-external functions carry `gc "eco-gc"` attribute; runtime helpers that cannot trigger GC are annotated `gc-leaf-function` so RS4GC skips them
 
 **PAP Wrapper Elimination (Typed Closure Calling)**: The compiler generates direct function calls even when partial application and closures are involved:
 
