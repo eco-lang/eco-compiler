@@ -41,6 +41,7 @@ import Compiler.AST.Canonical as Can
 import Compiler.AST.Monomorphized as Mono
 import Compiler.AST.TypeEnv as TypeEnv
 import Compiler.AST.TypeIds as TypeIds
+import Compiler.Data.CtorTag as CtorTag
 import Compiler.Data.Id as Id
 import Compiler.Data.Index as Index
 import Compiler.Data.Name exposing (Name)
@@ -394,9 +395,13 @@ lookupUnion typeEnv canonical typeName =
 
 {-| Build complete CtorShapes for all constructors in a union.
 Uses TypeSubst.applySubst to convert Can.Type Name to MonoType.
+
+`home` is the canonical module that owns the type; it lets us assign reserved
+runtime tags to constructors of types the runtime recognises (e.g. `Dict`).
+
 -}
-buildCompleteCtorShapes : MVarEnv -> List Name -> List Mono.MonoType -> List Can.Ctor -> ( List Mono.CtorShape, MVarEnv )
-buildCompleteCtorShapes env vars monoArgs alts =
+buildCompleteCtorShapes : IO.Canonical -> MVarEnv -> List Name -> List Mono.MonoType -> List Can.Ctor -> ( List Mono.CtorShape, MVarEnv )
+buildCompleteCtorShapes home env vars monoArgs alts =
     let
         -- Allocate fresh MVarIds for each type parameter name and build the substitution
         -- Build a name-to-MVarId mapping for converting Can.Type Name to Can.Type MVarId
@@ -432,7 +437,7 @@ buildCompleteCtorShapes env vars monoArgs alts =
                 (\ctor ( acc, e ) ->
                     let
                         ( shape, e1 ) =
-                            buildCtorShapeFromUnion e substById nameToId ctor
+                            buildCtorShapeFromUnion home e substById nameToId ctor
                     in
                     ( shape :: acc, e1 )
                 )
@@ -445,9 +450,13 @@ buildCompleteCtorShapes env vars monoArgs alts =
 {-| Build a CtorShape from a Can.Ctor using the given substitution.
 Converts Can.Type Name field types to Can.Type MVarId using nameToId mapping,
 then applies the Int-keyed substitution.
+
+`home` is used to pick a reserved ctor tag for runtime-recognised types
+(see `Compiler.Data.CtorTag`).
+
 -}
-buildCtorShapeFromUnion : MVarEnv -> Substitution -> Dict.Dict Name TypeIds.MVarId -> Can.Ctor -> ( Mono.CtorShape, MVarEnv )
-buildCtorShapeFromUnion env subst nameToId (Can.Ctor ctorData) =
+buildCtorShapeFromUnion : IO.Canonical -> MVarEnv -> Substitution -> Dict.Dict Name TypeIds.MVarId -> Can.Ctor -> ( Mono.CtorShape, MVarEnv )
+buildCtorShapeFromUnion home env subst nameToId (Can.Ctor ctorData) =
     let
         ( revMonoFieldTypes, env1 ) =
             List.foldl
@@ -468,7 +477,7 @@ buildCtorShapeFromUnion env subst nameToId (Can.Ctor ctorData) =
             List.reverse revMonoFieldTypes
     in
     ( { name = ctorData.name
-      , tag = Index.toMachine ctorData.index
+      , tag = CtorTag.effective home ctorData.name ctorData.index
       , fieldTypes = monoFieldTypes
       }
     , env1
@@ -576,7 +585,7 @@ computeCtorShapesForGraph globalTypeEnv nodes =
                         Just (Can.Union unionData) ->
                             let
                                 ( completeCtors, _ ) =
-                                    buildCompleteCtorShapes (State.initMVarEnv TypeIds.firstMVarId Set.empty) unionData.vars monoArgs unionData.alts
+                                    buildCompleteCtorShapes canonical (State.initMVarEnv TypeIds.firstMVarId Set.empty) unionData.vars monoArgs unionData.alts
                             in
                             Dict.insert key completeCtors acc
 

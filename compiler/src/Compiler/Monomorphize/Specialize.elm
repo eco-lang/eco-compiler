@@ -20,6 +20,7 @@ import Compiler.AST.TypeEnv as TypeEnv
 import Compiler.AST.TypeIds exposing (MVarId)
 import Compiler.AST.TypedOptimized as TOpt
 import Compiler.Data.BitSet as BitSet
+import Compiler.Data.CtorTag as CtorTag
 import Compiler.Data.Id as Id
 import Compiler.Data.Index as Index
 import Compiler.Data.Name as Name exposing (Name)
@@ -1162,14 +1163,31 @@ specializeNode ctorName node requestedMonoType state =
             ( Mono.MonoDefine monoExpr actualType, state1 )
 
         TOpt.Ctor index arity canType ->
-            specializeCtorViaScheme ctorName (Index.toMachine index) arity canType requestedMonoType state
+            let
+                ctorHome =
+                    case state.ctx.currentGlobal of
+                        Just (Mono.Global canonical _) ->
+                            canonical
+
+                        _ ->
+                            Utils.Crash.crash "specializeNode TOpt.Ctor: currentGlobal must be a Global"
+            in
+            specializeCtorViaScheme ctorName (CtorTag.effective ctorHome ctorName index) arity canType requestedMonoType state
 
         TOpt.Enum tag canType ->
             let
                 monoType =
                     Mono.forceCNumberToInt (Tuple.first (TypeSubst.applySubst state.ctx.mvarEnv (Tuple.first (TypeSubst.unify state.ctx.mvarEnv canType requestedMonoType)) canType))
+
+                enumHome =
+                    case state.ctx.currentGlobal of
+                        Just (Mono.Global canonical _) ->
+                            canonical
+
+                        _ ->
+                            Utils.Crash.crash "specializeNode TOpt.Enum: currentGlobal must be a Global"
             in
-            ( Mono.MonoEnum (Index.toMachine tag) monoType, state )
+            ( Mono.MonoEnum (CtorTag.effective enumHome ctorName tag) monoType, state )
 
         TOpt.Box canType ->
             -- @unbox types have a single constructor (tag=0) with one field (arity=1).

@@ -16,6 +16,7 @@ This module handles:
 
 import Compiler.AST.DecisionTree.Test as Test
 import Compiler.AST.Monomorphized as Mono
+import Compiler.Data.CtorTag as CtorTag
 import Compiler.Data.Index as Index
 import Compiler.Data.Name as Name
 import Compiler.Generate.MLIR.Context as Ctx
@@ -126,10 +127,10 @@ generateMonoTest ctx ( dtPath, test ) =
             generateMonoDtPath ctx dtPath targetType
     in
     case test of
-        Test.IsCtor _ _ index _ _ ->
+        Test.IsCtor home ctorName index _ _ ->
             let
                 expectedTag =
-                    Index.toMachine index
+                    CtorTag.effective home ctorName index
 
                 ( tagVar, ctx2 ) =
                     Ctx.freshVar ctx1
@@ -776,8 +777,8 @@ boxPrimitive ctx resultVar primitiveVar primType =
 testToTagInt : DT.Test -> Int
 testToTagInt test =
     case test of
-        Test.IsCtor _ _ index _ _ ->
-            Index.toMachine index
+        Test.IsCtor home ctorName index _ _ ->
+            CtorTag.effective home ctorName index
 
         Test.IsCons ->
             1

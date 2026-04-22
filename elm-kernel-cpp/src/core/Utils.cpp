@@ -10,6 +10,8 @@
 #include "allocator/StringOps.hpp"
 #include "allocator/ListOps.hpp"
 
+#include <vector>
+
 namespace Elm::Kernel::Utils {
 
 // Order type: type_id 0 is reserved for built-in Order type
@@ -17,6 +19,20 @@ constexpr u16 ORDER_TYPE_ID = 0;
 constexpr u16 ORDER_LT = 0;
 constexpr u16 ORDER_EQ = 1;
 constexpr u16 ORDER_GT = 2;
+
+// Reserved ctor tags for runtime-recognised types. Must match
+// `Compiler.Data.CtorTag` in the compiler.
+//
+// `Dict.RBNode_elm_builtin` and `Dict.RBEmpty_elm_builtin` are tagged so the
+// runtime can compare two Dicts by content (in-order key/value traversal)
+// instead of by the tree shape that happens to be produced by Elm's LLRB
+// `insertHelp`. Stock Elm JS achieves the same thing via a negative `$` tag.
+constexpr u16 CTOR_DICT_RBNODE = 0xFFFF;
+constexpr u16 CTOR_DICT_RBEMPTY = 0xFFFE;
+
+static bool isDictCtor(u16 ctor) {
+    return ctor == CTOR_DICT_RBNODE || ctor == CTOR_DICT_RBEMPTY;
+}
 
 // ============================================================================
 // Helper Functions
@@ -60,6 +76,7 @@ static int resolveAndCompare(Allocator& allocator, HPointer ap, HPointer bp,
 
 // Forward decls
 static bool eqHelp(void* a, void* b, int depth);
+static bool dictEq(void* a, void* b, int depth);
 
 // Compare two Unboxable slots structurally for equality.
 // Returns true iff the slots are equal. Mixed kinds compare as unequal.
@@ -441,6 +458,13 @@ static bool eqHelp(void* a, void* b, int depth) {
             Custom* ac = static_cast<Custom*>(a);
             Custom* bc = static_cast<Custom*>(b);
 
+            // Dict equality: compare by content so that two dicts with the
+            // same key/value pairs but different insertion-order tree shapes
+            // compare equal. (See notes on CTOR_DICT_RBNODE/CTOR_DICT_RBEMPTY.)
+            if (isDictCtor(ac->ctor) || isDictCtor(bc->ctor)) {
+                return dictEq(a, b, depth);
+            }
+
             if (ac->ctor != bc->ctor) return false;
 
             u32 fieldCount = ac->header.size;
@@ -503,6 +527,69 @@ static bool eqHelp(void* a, void* b, int depth) {
         default:
             return false;
     }
+}
+
+// Compare two Dicts by content: equal iff they contain the same key/value
+// pairs under the same comparable ordering. Uses iterative in-order traversal
+// over both trees in lockstep, so we never materialise intermediate lists.
+//
+// Dict's constructor layout is
+//   RBNode_elm_builtin NColor k v left right
+// with values[0]=color, values[1]=k, values[2]=v, values[3]=left, values[4]=right.
+// RBEmpty_elm_builtin has no fields.
+//
+// Color is deliberately ignored: for two LLRB trees representing the same
+// key/value set, the colour on individual nodes depends on insertion order.
+static bool dictEq(void* a, void* b, int depth) {
+    auto& allocator = Allocator::instance();
+
+    // Resolve a subtree HPointer to its Custom header. Returns nullptr if the
+    // HPointer is an embedded constant or the resolved tag isn't Custom (the
+    // latter would indicate malformed input, not a normal empty subtree —
+    // RBEmpty is a heap-allocated Custom with ctor == CTOR_DICT_RBEMPTY).
+    auto resolveCustom = [&allocator](HPointer hp) -> Custom* {
+        if (alloc::isConstant(hp)) return nullptr;
+        void* obj = allocator.resolve(hp);
+        if (!obj) return nullptr;
+        Header* hdr = static_cast<Header*>(obj);
+        if (hdr->tag != Tag_Custom) return nullptr;
+        return static_cast<Custom*>(obj);
+    };
+
+    auto pushLeftSpine = [&resolveCustom](std::vector<Custom*>& stack, Custom* node) {
+        while (node != nullptr && node->ctor == CTOR_DICT_RBNODE) {
+            stack.push_back(node);
+            node = resolveCustom(node->values[3].p);
+        }
+    };
+
+    std::vector<Custom*> aStack, bStack;
+    pushLeftSpine(aStack, static_cast<Custom*>(a));
+    pushLeftSpine(bStack, static_cast<Custom*>(b));
+
+    while (!aStack.empty() && !bStack.empty()) {
+        Custom* aNode = aStack.back(); aStack.pop_back();
+        Custom* bNode = bStack.back(); bStack.pop_back();
+
+        uint32_t aKKind = static_cast<uint32_t>(Elm::fieldKind(aNode->unboxed, 1));
+        uint32_t bKKind = static_cast<uint32_t>(Elm::fieldKind(bNode->unboxed, 1));
+        if (!eqUnboxableSlot(allocator, aNode->values[1], bNode->values[1],
+                              aKKind, bKKind, depth)) {
+            return false;
+        }
+
+        uint32_t aVKind = static_cast<uint32_t>(Elm::fieldKind(aNode->unboxed, 2));
+        uint32_t bVKind = static_cast<uint32_t>(Elm::fieldKind(bNode->unboxed, 2));
+        if (!eqUnboxableSlot(allocator, aNode->values[2], bNode->values[2],
+                              aVKind, bVKind, depth)) {
+            return false;
+        }
+
+        pushLeftSpine(aStack, resolveCustom(aNode->values[4].p));
+        pushLeftSpine(bStack, resolveCustom(bNode->values[4].p));
+    }
+
+    return aStack.empty() && bStack.empty();
 }
 
 bool notEqual(void* a, void* b) {

@@ -2279,9 +2279,17 @@ static void print_typed_value(uint64_t value, uint32_t type_id, int depth) {
         // Assert constructor info is available
         assert(g_type_graph->ctors && "Type graph has no ctors array");
         assert(ctor_count > 0 && "Custom type has no constructors in type graph - codegen bug");
-        assert(ctor_id < ctor_count && "Constructor id out of bounds");
 
-        const Elm::EcoCtorInfo* ctor_info = &g_type_graph->ctors[first_ctor + ctor_id];
+        // Runtime-recognised types (e.g. Dict) use reserved ctor_id values
+        // outside 0..ctor_count-1, so search linearly instead of indexing.
+        const Elm::EcoCtorInfo* ctor_info = nullptr;
+        for (uint32_t ci = 0; ci < ctor_count; ++ci) {
+            if (g_type_graph->ctors[first_ctor + ci].ctor_id == ctor_id) {
+                ctor_info = &g_type_graph->ctors[first_ctor + ci];
+                break;
+            }
+        }
+        assert(ctor_info != nullptr && "Constructor id not found in type graph");
 
         // Assert constructor name is available
         assert(g_type_graph->strings && "Type graph has no strings array");

@@ -590,8 +590,12 @@ compileCaseLeafStep ctx loopSpec choice jumpLookup =
 
 {-| Chain node: sequence of tests culminating in success/failure subtrees.
 
-We compile the chain condition to an i1, then build a 2-way eco.caseMany
-on that condition where each alternative yields the full step tuple.
+Tests in the chain must be evaluated with short-circuit semantics: the path
+navigations inside a later test are only valid after earlier guards pass (e.g.
+projecting a field from an RBNode is undefined if the scrutinee is actually an
+RBEmpty embedded constant). We achieve this by nesting each remaining test
+inside the preceding test's "then" region, so a failing guard skips all
+subsequent projections. This mirrors `Expr.generateChainGeneralWithJumps`.
 
 -}
 compileCaseChainStep :
@@ -603,98 +607,92 @@ compileCaseChainStep :
     -> Array (Maybe Mono.MonoExpr)
     -> StepResult
 compileCaseChainStep ctx loopSpec testChain success failure jumpLookup =
-    let
-        -- Compute the boolean condition (i1)
-        ( condOps, condVar, condCtx ) =
-            Patterns.generateMonoChainCondition ctx testChain
+    case testChain of
+        [] ->
+            compileCaseDeciderStep ctx loopSpec success jumpLookup
 
-        -- Then branch
-        thenStep =
-            compileCaseDeciderStep condCtx loopSpec success jumpLookup
+        firstTest :: restTests ->
+            let
+                ( firstOps, firstVar, ctx1 ) =
+                    Patterns.generateMonoTest ctx firstTest
 
-        thenYieldOperands =
-            thenStep.nextParams
-                ++ [ ( thenStep.doneVar, I1 )
-                   , ( thenStep.resultVar, thenStep.resultType )
-                   ]
+                -- Then: evaluate remaining tests (or success if none remain)
+                thenStep =
+                    compileCaseChainStep ctx1 loopSpec restTests success failure jumpLookup
 
-        ( thenYieldCtx, thenYieldOp ) =
-            Ops.ecoYieldMany thenStep.ctx thenYieldOperands
+                thenYieldOperands =
+                    thenStep.nextParams
+                        ++ [ ( thenStep.doneVar, I1 )
+                           , ( thenStep.resultVar, thenStep.resultType )
+                           ]
 
-        thenRegion =
-            mkSingleBlockRegion [] thenStep.ops thenYieldOp
+                ( thenYieldCtx, thenYieldOp ) =
+                    Ops.ecoYieldMany thenStep.ctx thenYieldOperands
 
-        -- Else branch: reuse condCtx bindings but propagate accumulated state
-        -- from the then branch (nextVar to avoid SSA conflicts, plus pendingLambdas,
-        -- pendingFuncOps, and kernelDecls which accumulate across branches).
-        ctxForElse =
-            { condCtx
-                | nextVar = thenYieldCtx.nextVar
-                , pendingLambdas = thenYieldCtx.pendingLambdas
-                , pendingFuncOps = thenYieldCtx.pendingFuncOps
-                , kernelDecls = thenYieldCtx.kernelDecls
+                thenRegion =
+                    mkSingleBlockRegion [] thenStep.ops thenYieldOp
+
+                ctxForElse =
+                    Ctx.ctxForSiblingRegion ctx1 thenYieldCtx
+
+                -- Else: first test failed, go to failure subtree
+                elseStep =
+                    compileCaseDeciderStep ctxForElse loopSpec failure jumpLookup
+
+                elseYieldOperands =
+                    elseStep.nextParams
+                        ++ [ ( elseStep.doneVar, I1 )
+                           , ( elseStep.resultVar, elseStep.resultType )
+                           ]
+
+                ( elseYieldCtx, elseYieldOp ) =
+                    Ops.ecoYieldMany elseStep.ctx elseYieldOperands
+
+                elseRegion =
+                    mkSingleBlockRegion [] elseStep.ops elseYieldOp
+
+                numParams =
+                    List.length loopSpec.paramVars
+
+                paramTypes =
+                    List.map Tuple.second loopSpec.paramVars
+
+                ( caseResultNames, ctxWithResults ) =
+                    allocateFreshVars elseYieldCtx (numParams + 2)
+
+                caseResultPairs =
+                    zip caseResultNames (paramTypes ++ [ I1, loopSpec.retType ])
+
+                ( ctxAfterCase, caseOp ) =
+                    Ops.ecoCaseMany
+                        ctxWithResults
+                        firstVar
+                        I1
+                        "bool"
+                        [ 1, 0 ]
+                        [ thenRegion, elseRegion ]
+                        caseResultPairs
+
+                nextParamVars =
+                    List.take numParams caseResultPairs
+
+                doneResultVar =
+                    List.drop numParams caseResultNames
+                        |> List.head
+                        |> Maybe.withDefault "%error_no_done"
+
+                resultResultVar =
+                    List.drop (numParams + 1) caseResultNames
+                        |> List.head
+                        |> Maybe.withDefault "%error_no_result"
+            in
+            { ops = firstOps ++ [ caseOp ]
+            , nextParams = nextParamVars
+            , doneVar = doneResultVar
+            , resultVar = resultResultVar
+            , resultType = loopSpec.retType
+            , ctx = Ctx.ctxAfterBranchOp ctx1 ctxAfterCase caseResultNames
             }
-
-        elseStep =
-            compileCaseDeciderStep ctxForElse loopSpec failure jumpLookup
-
-        elseYieldOperands =
-            elseStep.nextParams
-                ++ [ ( elseStep.doneVar, I1 )
-                   , ( elseStep.resultVar, elseStep.resultType )
-                   ]
-
-        ( elseYieldCtx, elseYieldOp ) =
-            Ops.ecoYieldMany elseStep.ctx elseYieldOperands
-
-        elseRegion =
-            mkSingleBlockRegion [] elseStep.ops elseYieldOp
-
-        -- Step tuple types: (paramTypes..., i1, retTy)
-        numParams =
-            List.length loopSpec.paramVars
-
-        paramTypes =
-            List.map Tuple.second loopSpec.paramVars
-
-        -- Allocate result names for the step tuple
-        ( caseResultNames, ctxWithResults ) =
-            allocateFreshVars elseYieldCtx (numParams + 2)
-
-        caseResultPairs =
-            zip caseResultNames (paramTypes ++ [ I1, loopSpec.retType ])
-
-        -- eco.case on i1: tag 1 for True (then), tag 0 for False (else)
-        ( ctxAfterCase, caseOp ) =
-            Ops.ecoCaseMany
-                ctxWithResults
-                condVar
-                I1
-                "bool"
-                [ 1, 0 ]
-                [ thenRegion, elseRegion ]
-                caseResultPairs
-
-        nextParamVars =
-            List.take numParams caseResultPairs
-
-        doneResultVar =
-            List.drop numParams caseResultNames
-                |> List.head
-                |> Maybe.withDefault "%error_no_done"
-
-        resultResultVar =
-            List.drop (numParams + 1) caseResultNames
-                |> List.head
-                |> Maybe.withDefault "%error_no_result"
-    in
-    { ops = condOps ++ [ caseOp ]
-    , nextParams = nextParamVars
-    , doneVar = doneResultVar
-    , resultVar = resultResultVar
-    , resultType = loopSpec.retType
-    , ctx = Ctx.ctxAfterBranchOp condCtx ctxAfterCase caseResultNames
-    }
 
 
 {-| FanOut node: multi-way branching on constructor tags, ints, chars, or strings.

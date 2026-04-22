@@ -4,13 +4,17 @@ Baseline (2026-04-22):
 - elm-test: 12799/12799 pass, 0 fail
 - E2E: 1117/1122 pass, 5 fail
 
+Current state (2026-04-22 re-run after prior fixes):
+- elm-test: 12799/12799 pass, 0 fail
+- E2E: 1123/1123 pass, 0 fail (added DictRemoveMinimalTest as repro aid).
+
 ## Order (best-to-tackle first)
 
-1. ArrayAppendCanonicalTest — suspected tree-shape / equality bug
-2. ArrayAppendRepeatedTest — likely same root cause as #1
-3. DictFromListToListRoundtripTest — dict equality / tree-shape
-4. DictUnionDiffIterTest — SIGSEGV, likely related to dict ops
-5. DecodeArrayShapeTest — SIGABRT with bad HPointer (JSON/Array decoding issue)
+1. ArrayAppendCanonicalTest — FIXED
+2. ArrayAppendRepeatedTest — FIXED
+3. DecodeArrayShapeTest — FIXED
+4. DictUnionDiffIterTest — FIXED
+5. DictFromListToListRoundtripTest — FIXED
 
 ---
 
@@ -35,68 +39,90 @@ Same root cause as #1 (appendN bug). Fixed by same change.
 
 Attempts: 1 (successful, same fix as #1)
 
-## 3. DictFromListToListRoundtripTest — SKIPPED
+## 3. DictFromListToListRoundtripTest — FIXED
 
-Root cause: Stock Elm JS has a special case in `_Utils_eqHelp` that
-detects Dict/Set (via `$ < 0` negative ctor tag marker) and compares
-via `Dict.toList` instead of tree-shape structural equality. ECO's
-runtime equality (Utils.cpp `eqHelp`) lacks this special case, so
-two Dicts with identical content but different insertion-order-derived
-tree shapes compare as unequal.
+Root cause: ECO's structural equality (`Utils.cpp eqHelp`) compared
+two Customs by tag + field-wise walk. For `Dict`, this is a tree-shape
+comparison: two dicts with identical key/value sets but different
+insertion orders (and therefore different LLRB tree shapes) compared
+as unequal. Stock Elm JS avoids this by marking Dict/Set ctors with
+negative `$` tags and branching to `Dict.toList` comparison in
+`_Utils_eqHelp`.
 
-Verified: manually traced Elm's LLRB `insertHelp`/`balance` for
-ascending vs descending key inserts — they produce DIFFERENT tree
-shapes. Stock Elm JS hides this because `==` on Dict converts both
-sides to sorted `toList` before comparing. Confirmed by running the
-same test in stock Elm: all three checks return True.
+Fix (compiler + runtime):
 
-A proper fix requires:
-1. Compiler-side: mark Dict.RBNode_elm_builtin / RBEmpty_elm_builtin
-   ctor tags with a reserved bit or ID range (analogous to Elm JS's
-   negative-ctor convention).
-2. Runtime-side: in Utils.cpp `eqHelp`, detect the marker and compare
-   via in-order tree walk (key-value pair list).
+Compiler — new `Compiler.Data.CtorTag` module exposing reserved tag
+constants and an `effective` helper that returns
+`0xFFFF` for `Dict.RBNode_elm_builtin`, `0xFFFE` for
+`Dict.RBEmpty_elm_builtin`, and `Index.toMachine` otherwise. Wired
+through:
+- `Compiler.Monomorphize.Analysis.buildCtorShapeFromUnion` (for the
+  type table entries and for `MonoCtor` shape construction via
+  `computeCtorShapesForGraph`).
+- `Compiler.Monomorphize.Specialize.specializeNode` for the
+  `TOpt.Ctor` and `TOpt.Enum` specialisation paths so the tag baked
+  into `MonoCtor`/`MonoEnum` shape/tag fields matches.
+- `Compiler.Generate.MLIR.Patterns.generateMonoTest` and
+  `testToTagInt` so pattern matches check the same reserved tag.
 
-Duck-typing at runtime (ctor==0 + 5 fields pattern) is fragile: user
-types with matching shape would false-positive. Safe detection needs
-compiler cooperation.
+Runtime — `elm-kernel-cpp/src/core/Utils.cpp` gained `CTOR_DICT_RBNODE`
+/ `CTOR_DICT_RBEMPTY` constants that mirror the compiler's reserved
+tags, plus a new `dictEq` that walks both trees in lockstep via
+iterative in-order traversal (left spine stacks) and compares the
+yielded key/value pairs with `eqUnboxableSlot`. The `Tag_Custom` path
+in `eqHelp` dispatches to `dictEq` whenever either side's ctor is a
+Dict marker. Colour field is ignored — it varies with insertion order
+but doesn't affect set membership.
 
-Deferring: significant architectural change out of scope for the
-isolated test-fix loop. Test failure is a known semantic gap.
+Also updated `RuntimeExports.cpp` `print_typed_value` Custom case to
+locate `EcoCtorInfo` by a linear search for the matching `ctor_id`
+instead of indexing `ctors[first_ctor + ctor_id]`. The old code
+assumed `ctor_id < ctor_count` which no longer holds for
+runtime-recognised types with reserved tags.
 
-Attempts: 0 (skipped without attempt due to architectural complexity)
+Attempts: 1 (successful)
 
-## 4. DictUnionDiffIterTest — SKIPPED
+## 4. DictUnionDiffIterTest — FIXED
 
-Root cause: Crash is in `Dict.remove` (called by `Dict.diff`). Stack
-shows `eco_get_tag → Allocator::resolve` with a bad HPointer
-(observed: raw=0x140000, which is an unusually-small offset
-inconsistent with other live pointers seen during the same run).
+Root cause: **Tail-recursion lowering in
+`compiler/src/Compiler/Generate/MLIR/TailRec.elm` did not use
+short-circuit evaluation for chains of pattern tests.** The old
+`compileCaseChainStep` called `Patterns.generateMonoChainCondition`,
+which emits all test ops upfront and ANDs the i1 results together.
+Path navigations in later tests therefore executed regardless of
+whether earlier guards held.
 
-Isolation: Reduced to the minimal repro `Dict.remove 1 (Dict.insert 2 20
-(Dict.singleton 1 10))` — crashes. `Dict.remove 1 (Dict.singleton 1 10)`
-works (returns RBEmpty). `Dict.remove 99 d` works. `Dict.get`/`insert`/
-`size` all work. Failure only on removal of an *existing* key in a
-tree with 2+ elements.
+For `Dict.getMin` (compiled as an scf.while tail-recursive loop), the
+condition of the loop body is `dict.tag == RBNode AND dict.left.tag ==
+RBNode`. With the eager lowering, `project.custom(dict, field=3)`
+(i.e. `dict.left`) executes even when `dict` is the `RBEmpty`
+embedded constant. Reading "field 3" of an embedded constant produces
+a garbage `!eco.value`; subsequent `eco.get_tag` → `resolve()` then
+dereferences an invalid heap offset (raw=0x140000-style) → SIGSEGV in
+`Elm::Allocator::resolve`.
 
-Dict's `moveRedLeft`/`moveRedRight` compiles to deeply nested
-`eco.project.custom` + `eco.get_tag` + `eco.case` chains. Replicating
-the same pattern shapes in a user-defined Tree type did NOT crash,
-ruling out pattern-match codegen in isolation.
+Evidence chain:
+1. gdb backtrace from the child process shows crash in
+   `Allocator::resolve` called from `eco_get_tag`.
+2. MLIR for `Dict_getMin_$_32` (text dump) contains an scf.while whose
+   body computes `eco.project.custom(%dict, field_index=3)` and
+   `eco.get_tag` on the result BEFORE the `eco.case` that checks
+   whether `%dict` is an RBNode.
+3. Minimal Elm repro `Dict.remove 1 (Dict.insert 2 20 (Dict.singleton
+   1 10))` crashes — matches: removal in a 2-element tree reaches
+   `getMin`, which loops with `dict=RBEmpty` after one step.
+4. `Expr.generateChainGeneralWithJumps` in the non-tail path already
+   uses the correct short-circuit nesting ("Multi-test chain:
+   short-circuit by nesting remaining tests inside the first test's
+   'then' branch"), but `TailRec.compileCaseChainStep` did not.
 
-Likely subtle issues with:
-- GC root tracking across the many safepoints in the nested cases
-- ABI / boxing of `NColor` or comparable values across the deep call
-  chain (Dict.remove → removeHelp → removeHelpPrepEQGT → moveRedLeft
-  / moveRedRight → balance)
-- Some compiler pass mis-handling a specific combination of deep
-  nested patterns + `as` binding + recursive self-calls
+Fix: rewrote `compileCaseChainStep` to recurse on the test chain,
+nesting each subsequent test inside the preceding test's "then"
+region (`[] → go to success`, `firstTest :: restTests → eco.case on
+firstTest with then = compileCaseChainStep restTests`). This mirrors
+the non-tail-recursive path and restores short-circuit semantics.
 
-Root cause not conclusively identified from MLIR inspection; no
-single ABI-level fix is obvious. Needs further deep dive (LLVM IR
-inspection, gdb with source symbols, stackmap validation).
-
-Attempts: 0 (skipped without attempt; needs deeper runtime debugging)
+Attempts: 1 (successful)
 
 ## 5. DecodeArrayShapeTest — FIXED
 
