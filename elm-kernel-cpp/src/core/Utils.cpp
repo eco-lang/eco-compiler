@@ -322,7 +322,15 @@ static bool eqHelp(void* a, void* b, int depth) {
     Tag tagB = getTag(b);
 
     // Type mismatch
-    if (tagA != tagB) return false;
+    if (tagA != tagB) {
+        // TRACE: log tag mismatches to stderr for debugging.
+        static int traceCount = 0;
+        if (traceCount < 10) {
+            fprintf(stderr, "[eq] tag mismatch: %d vs %d\n", (int)tagA, (int)tagB);
+            traceCount++;
+        }
+        return false;
+    }
 
     // Depth limit check (prevent stack overflow on deep structures)
     if (depth > 100) {

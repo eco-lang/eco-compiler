@@ -565,6 +565,19 @@ static uint64_t runDecoder(Custom* decoder, uint64_t jvalEnc) {
             void* elemDecPtr = allocator.resolve(decoder->values[0].p);
             Custom* elemDec = static_cast<Custom*>(elemDecPtr);
 
+            // Decide element kind for Cons cells based on the element decoder.
+            // The monomorphizer specializes `List a` for concrete `a`:
+            //   `a = Int`/`Float`/`Char` → caller expects unboxed cons head.
+            //   otherwise (Bool/String/Value/composite) → boxed HPointer head.
+            // We must match that convention here or the caller will read garbage
+            // when it projects `head` at the expected kind.
+            u8 elemConsKind = 0;  // 0 = boxed
+            switch (elemDec->ctor) {
+                case DEC_INT:   elemConsKind = 1; break;  // unboxed i64
+                case DEC_FLOAT: elemConsKind = 2; break;  // unboxed f64
+                default:        elemConsKind = 0; break;  // boxed HPointer
+            }
+
             // Get the ElmArray.
             void* arrPtr = allocator.resolve(jval->values[0].p);
             ElmArray* arr = static_cast<ElmArray*>(arrPtr);
@@ -588,7 +601,20 @@ static uint64_t runDecoder(Custom* decoder, uint64_t jvalEnc) {
                     return elemResult;
                 }
                 HPointer elemVal = getOkValue(elemResult);
-                result = cons(boxed(elemVal), result, true);
+
+                // Unwrap primitive wrappers so the Cons head holds the unboxed
+                // value directly when the caller expects that representation.
+                Unboxable headSlot;
+                if (elemConsKind == 1) {
+                    ElmInt* ei = static_cast<ElmInt*>(allocator.resolve(elemVal));
+                    headSlot.i = ei->value;
+                } else if (elemConsKind == 2) {
+                    ElmFloat* ef = static_cast<ElmFloat*>(allocator.resolve(elemVal));
+                    headSlot.f = ef->value;
+                } else {
+                    headSlot.p = elemVal;
+                }
+                result = cons(headSlot, result, elemConsKind);
             }
             return makeOk(result);
         }
@@ -884,6 +910,7 @@ static json elmToJson(uint64_t valueEnc) {
     if (h.constant == Const_True + 1) return json(true);
     if (h.constant == Const_False + 1) return json(false);
     if (h.constant == Const_Nil + 1) return json::array();
+    if (h.constant == Const_EmptyString + 1) return json("");
     if (h.constant != 0 && h.constant != Const_Unit + 1) return json(nullptr);
 
     void* ptr = Export::toPtr(valueEnc);
@@ -1251,6 +1278,19 @@ HPtr Elm_Kernel_Json_wrap(HPtr value) {
         enc->ctor = ENC_BOOL;
         enc->unboxed = 0;
         enc->values[0].p = (h.constant == Const_True + 1) ? elmTrue() : elmFalse();
+        return HPtr::fromBits(Export::encode(allocator.wrap(enc)));
+    }
+
+    // Embedded empty-string constant → ENC_STRING wrapping the Const_EmptyString pointer.
+    // (The heap-string path below also builds an ENC_STRING; both must serialize via
+    // elmStringToStd, which handles the Const_EmptyString constant itself.)
+    if (h.constant == Const_EmptyString + 1) {
+        size_t size = (sizeof(Custom) + sizeof(Unboxable) + 7) & ~7;
+        Custom* enc = static_cast<Custom*>(allocator.allocate(size, Tag_Custom));
+        enc->header.size = 1;
+        enc->ctor = ENC_STRING;
+        enc->unboxed = 0;
+        enc->values[0].p = h;
         return HPtr::fromBits(Export::encode(allocator.wrap(enc)));
     }
 

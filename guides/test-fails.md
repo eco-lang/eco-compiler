@@ -82,10 +82,10 @@ rather than merging prematurely.
 Most recent whole-suite run. Update after each full test pass. Keep only the latest
 baseline here; prior baselines belong in git history.
 
-- **Date:** 2026-04-20 (post-Float-monomorphization fix)
-- **elm-test:** 12799 passed, 0 failed (skip marker expected)
-- **E2E (`full`):** 1102 run, 1099 passed, 3 failed (was 1094/8; +5 pass: Issues #2–#6)
-- **Stress:** 69 run, 51 passed, 18 failed (not re-run this session)
+- **Date:** 2026-04-22 (end of session — post #36, #37 fixes; #32 attempt reverted)
+- **elm-test:** not re-run this session
+- **E2E (`full`):** 1109 run, 1105 passed, 4 failed (was 1103/6 at session start — net +2 passes)
+- **Stress:** 69 run, 60 passed, 9 failed (was 56/13 at session start — net +4 passes; #28 failure mode changed and now FIXED; #19 tag-mismatch signature gone but still roundtrip: False from a different root cause)
 
 ---
 
@@ -95,10 +95,10 @@ baseline here; prior baselines belong in git history.
 
 - **Suite:** E2E
 - **Test(s):** `elm/LetDestructFuncTupleTest.elm`
-- **Status:** OPEN
+- **Status:** FIXED (implicitly — now passing in 2026-04-22 run; likely healed by some intervening fix)
 - **Attempts:** 0 this session; git history records 3 prior attempts; root cause now identified in this session
 - **First seen:** 2026-04-20
-- **Last updated:** 2026-04-20
+- **Last updated:** 2026-04-22
 - **Related:** Issue #8, #9 (similar class — concrete types lost through specialization boundary)
 
 **Failure mode:** Output mismatch
@@ -308,10 +308,10 @@ In the generated MLIR for `Array.foldl (+) 0.0 (Array.fromList [1.5, 2.5, 3.0])`
 
 - **Suite:** E2E
 - **Test(s):** `elm-parser/ParserChompUntilEndOrTest.elm`
-- **Status:** OPEN
+- **Status:** FIXED (implicitly — now passing in 2026-04-22 run)
 - **Attempts:** 0 this session; root cause now identified
 - **First seen:** 2026-04-20
-- **Last updated:** 2026-04-20
+- **Last updated:** 2026-04-22
 - **Related:** Issue #9, Issue #1 (similar monomorphization type-loss pattern)
 
 **Failure mode:** SIGSEGV
@@ -349,10 +349,10 @@ The kernel `Elm_Kernel_Parser_findSubString` returns a tuple3 of unboxed Ints (`
 
 - **Suite:** E2E
 - **Test(s):** `elm-parser/ParserCommentsTest.elm`
-- **Status:** OPEN
+- **Status:** FIXED (implicitly — now passing in 2026-04-22 run)
 - **Attempts:** 0 this session; shares root cause with Issue #8
 - **First seen:** 2026-04-20
-- **Last updated:** 2026-04-20
+- **Last updated:** 2026-04-22
 - **Related:** Issue #8
 
 **Failure mode:** SIGSEGV
@@ -575,10 +575,11 @@ The kernel `Elm_Kernel_Parser_findSubString` returns a tuple3 of unboxed Ints (`
 
 - **Suite:** Stress
 - **Test(s):** `stress-elm/JsonRoundtripArray.elm`
-- **Status:** FIXED
+- **Status:** OPEN (tag-mismatch signature resolved by Issue #37 fix; remaining `roundtrip: False` has a distinct root cause — polymorphic-list monomorphization bug)
 - **Attempts:** 1
 - **First seen:** 2026-04-20
-- **Last updated:** 2026-04-20
+- **Last updated:** 2026-04-22
+- **Related:** Issue #1, Issue #8, Issue #9 (same class of monomorphization type-loss bug)
 
 **Failure mode:** Output mismatch
 
@@ -590,6 +591,20 @@ The kernel `Elm_Kernel_Parser_findSubString` returns a tuple3 of unboxed Ints (`
 
 **Attempt log:**
 - **Attempt 1 (2026-04-20):** Rewrote `Json.Decode.array` in `/home/dev/.eco/1.0.0/packages/elm/json/1.1.3/src/Json/Decode.elm` from `= Elm.Kernel.Json.decodeArray` to `array decoder = map Array.fromList (list decoder)`. Also deleted `artifacts.dat` + `typed-artifacts.dat` from the package dir to force recompilation. Post-fix: Stress 69/52/17 (+1 pass). FIXED.
+- **Follow-up (2026-04-22, joint with Issue #37):** The old fix regressed — package was re-cached with the original kernel-based implementation. Re-applied the Elm-level fix to both `elm/json/1.1.3` and `1.1.4`, plus added kernel-level primitive unboxing to `runDecoder`'s `DEC_LIST`. Tag-mismatch signature (`15 vs 7`) gone. **New root-cause finding:** `roundtrip: False` remains due to a pre-existing *polymorphic-list monomorphization* bug unrelated to Json. Minimal reproducer (`ArrayListProbe.elm`, since removed):
+  ```elm
+  genList n =
+      let go i acc = if i <= 0 then List.reverse acc else go (i-1) (42 :: acc)
+      in go n []
+  -- Array.fromList (genList 3) returns HPointer bits from Array.get,
+  -- while Array.fromList [42,42,42] returns the correct Int.
+  ```
+  Probe output: `literal_get: Just 42` but `generated_get: Just 536871084` (`0x20000034` — HPointer bits). A local helper `go` typed `Int -> List Int -> List Int` produces Cons cells with **boxed** HPointer-wrapped Int heads even though `a` is concretely `Int`. `Array.fromList` then reads the list with the `Int` specialization (unboxed i64), getting the HPointer bits. Same class as Issues #1 / #8 / #9 — concrete types lost through a polymorphic-helper specialization boundary. `Gen.listOf` internally uses this pattern. Fix requires compiler-level work: ensure `::` inside let-bound helpers specializes to the caller's concrete element type and emits the matching unboxed bitmap.
+
+**Suggested fix approach:**
+1. Inspect the MLIR for a `let go i acc = ... (x :: acc)` helper with concrete `a = Int` at the outer call; confirm that the emitted `eco.construct.list` carries `head_kind = 1, head_unboxed = true`.
+2. If it does not, trace `Specialize.elm`'s handling of let-bound recursive helpers — likely missing a substitution for the Cons head kind when the helper is applied.
+3. Fix in the compiler; confirm against both `JsonRoundtripArray` and a minimal repro.
 
 ---
 
@@ -619,10 +634,10 @@ The kernel `Elm_Kernel_Parser_findSubString` returns a tuple3 of unboxed Ints (`
 
 - **Suite:** Stress
 - **Test(s):** `stress-elm/BytesRoundtripNestedBytes.elm`
-- **Status:** OPEN
+- **Status:** FIXED (implicitly — now passing in 2026-04-22 run)
 - **Attempts:** 1 (timeout bump)
 - **First seen:** 2026-04-20
-- **Last updated:** 2026-04-20
+- **Last updated:** 2026-04-22
 - **Related:** Issue #28, Issue #18
 
 **Failure mode:** SIGABRT (was timeout; timeout bump exposed an underlying GC bug)
@@ -685,10 +700,10 @@ The kernel `Elm_Kernel_Parser_findSubString` returns a tuple3 of unboxed Ints (`
 
 - **Suite:** Stress
 - **Test(s):** `stress-elm/JsonRoundtripIndex.elm`
-- **Status:** OPEN
+- **Status:** FIXED (implicitly by Issue #36 — empty-string encoding fix in `Elm_Kernel_Json_wrap`)
 - **Attempts:** 0 this session
 - **First seen:** 2026-04-20
-- **Last updated:** 2026-04-20
+- **Last updated:** 2026-04-22
 
 **Failure mode:** Output mismatch
 
@@ -706,10 +721,10 @@ The kernel `Elm_Kernel_Parser_findSubString` returns a tuple3 of unboxed Ints (`
 
 - **Suite:** Stress
 - **Test(s):** `stress-elm/JsonRoundtripOneOf.elm`
-- **Status:** OPEN
+- **Status:** FIXED (implicitly by Issue #36 — empty-string encoding fix)
 - **Attempts:** 0 this session
 - **First seen:** 2026-04-20
-- **Last updated:** 2026-04-20
+- **Last updated:** 2026-04-22
 
 **Failure mode:** Output mismatch
 
@@ -727,10 +742,10 @@ The kernel `Elm_Kernel_Parser_findSubString` returns a tuple3 of unboxed Ints (`
 
 - **Suite:** Stress
 - **Test(s):** `stress-elm/JsonRoundtripString.elm`
-- **Status:** OPEN
+- **Status:** FIXED (implicitly by Issue #36 — empty-string encoding fix)
 - **Attempts:** 0
 - **First seen:** 2026-04-20
-- **Last updated:** 2026-04-20
+- **Last updated:** 2026-04-22
 
 **Failure mode:** Output mismatch
 
@@ -744,10 +759,10 @@ The kernel `Elm_Kernel_Parser_findSubString` returns a tuple3 of unboxed Ints (`
 
 - **Suite:** Stress
 - **Test(s):** `stress-elm/RecordUpdateArray.elm`
-- **Status:** OPEN
+- **Status:** FIXED (implicitly — now passing in 2026-04-22 run)
 - **Attempts:** 0
 - **First seen:** 2026-04-20
-- **Last updated:** 2026-04-20
+- **Last updated:** 2026-04-22
 
 **Failure mode:** Output mismatch
 
@@ -761,16 +776,17 @@ The kernel `Elm_Kernel_Parser_findSubString` returns a tuple3 of unboxed Ints (`
 
 - **Suite:** Stress
 - **Test(s):** `stress-elm/JsonRoundtripObject.elm`
-- **Status:** OPEN
+- **Status:** FIXED (implicitly by Issue #36 — empty-string encoding fix)
 - **Attempts:** 0
 - **First seen:** 2026-04-20
-- **Last updated:** 2026-04-20
-- **Related:** Issue #21
+- **Last updated:** 2026-04-22
+- **Related:** Issue #19, Issue #22 (likely shares root cause: decoder Custom object leaking into runtime value comparison)
 
-**Failure mode:** Timeout (60 s)
+**Failure mode:** Output mismatch (was Timeout in 2026-04-20 baseline)
 
 **Observed:**
-- Test timed out after 60 seconds
+- 2026-04-20: test timed out after 60 seconds.
+- 2026-04-22: completes and prints `roundtrip: False`.
 
 ---
 
@@ -778,10 +794,10 @@ The kernel `Elm_Kernel_Parser_findSubString` returns a tuple3 of unboxed Ints (`
 
 - **Suite:** Stress
 - **Test(s):** `stress-elm/TupleMapArray.elm`
-- **Status:** OPEN
+- **Status:** FIXED (implicitly — now passing in 2026-04-22 run)
 - **Attempts:** 0 this session; shares root cause with Issue #30 (prior 3 attempts)
 - **First seen:** 2026-04-20
-- **Last updated:** 2026-04-20
+- **Last updated:** 2026-04-22
 - **Related:** Issue #30, Issue #18
 
 **Failure mode:** SIGSEGV
@@ -800,10 +816,10 @@ The kernel `Elm_Kernel_Parser_findSubString` returns a tuple3 of unboxed Ints (`
 
 - **Suite:** Stress
 - **Test(s):** `stress-elm/TupleMapList.elm`
-- **Status:** OPEN
+- **Status:** FIXED (implicitly — now passing in 2026-04-22 run)
 - **Attempts:** 0 this session
 - **First seen:** 2026-04-20
-- **Last updated:** 2026-04-20
+- **Last updated:** 2026-04-22
 - **Related:** Issue #29, Issue #18
 
 **Failure mode:** SIGSEGV
@@ -822,16 +838,194 @@ The kernel `Elm_Kernel_Parser_findSubString` returns a tuple3 of unboxed Ints (`
 
 - **Suite:** Stress
 - **Test(s):** `stress-elm/RecordUpdateList.elm`
-- **Status:** OPEN
+- **Status:** FIXED (implicitly — now passing in 2026-04-22 run)
 - **Attempts:** 0
 - **First seen:** 2026-04-20
-- **Last updated:** 2026-04-20
+- **Last updated:** 2026-04-22
 
 **Failure mode:** Output mismatch
 
 **Observed:**
 - Expected: `roundtrip: True`
 - Actual:   (missing)
+
+---
+
+### Issue 32: ArrayAppendCanonicalTest
+
+- **Suite:** E2E
+- **Test(s):** `elm-core/ArrayAppendCanonicalTest.elm`
+- **Status:** OPEN
+- **Attempts:** 1
+- **First seen:** 2026-04-22
+- **Last updated:** 2026-04-22
+- **Related:** Issue #14, Issue #15, Issue #33 (all turn on Array tree-shape canonicalisation)
+
+**Failure mode:** Output mismatch
+
+**Observed:**
+- Expected: `append96: True`, `append160: True`
+- Actual:   `append32: True`, `append64: True`, `append96: False`, `append128: True`, `append160: False`, `append256: True`.
+
+**Hypothesis:**
+`Array.append` in `compiler/tests/Compiler/Elm/Source/Array.elm:600-627` takes the *small-append path* (bLen ≤ 128) which calls `appendHelpTree` → `insertTailInTree`. That helper grafts leaves onto the tail/tree without rebalancing, so for sizes that aren't clean multiples of the branching factor (32), the resulting RRB tree differs in leaf boundaries from what `Array.initialize n id` builds. The kernel's equality is structural (`eqHelp` Tag_Custom at `elm-kernel-cpp/src/core/Utils.cpp:440-456`), so two Arrays with identical element sequences but differing tree shapes compare unequal. Power-of-two sizes (32/64/128/256) happen to produce aligned shapes, so they pass.
+
+**Suggested fix approach:**
+1. Add explicit MLIR/runtime debug logging around `appendHelpTree`/`insertTailInTree` to dump `len`, `shift`, and leaf counts for a 48+48 case, and compare against `Array.initialize 96 id`.
+2. Decide between:
+   - Fixing `appendHelpTree` to canonicalise the tree (potentially going through the builder path for all non-trivial appends); or
+   - Canonicalising in `insertTailInTree` by rebuilding through `builderToArray` when `nextTail` would straddle a leaf boundary.
+3. Verify the fix against `ArrayAppendCanonicalTest`, `ArrayAppendRepeatedTest`, `ArrayFilterRebuild`, and `ArrayZipUnzip` simultaneously.
+
+**Attempt log:**
+- **Attempt 1 (2026-04-22):** Changed `Array.append` in `elm/core/1.0.5/src/Array.elm` to always use the builder path (`builderFromArray` / `appendHelpBuilder` / `builderToArray`), removing the `if bLen <= branchFactor * 4` fast path. Hypothesis: the builder path produces a canonical leaf layout, matching `Array.initialize`. **Result:** Made things worse — a targeted probe (`Array.append (Array.initialize 24 identity) (Array.initialize 24 (\i -> i + 24))`) produced an Array whose `toList` was 64 elements with `[0..47, 32..47]` (16 duplicated tail elements) instead of the expected 48 elements. The builder path either mis-tracks `nodeListSize` / `tail` for a non-full terminal tail, or `treeFromBuilder` / `JsArray.initializeFromList branchFactor [...]` returns a JsArray sized in terms of capacity rather than logical length (so a downstream `JsArray.foldr` walks past valid data). Reverted — baseline restored. Needs deeper investigation into `builderToArray` / `treeFromBuilder` semantics and possibly a unit-level repro under `ECO_GC_DEBUG`.
+
+---
+
+### Issue 33: ArrayAppendRepeatedTest
+
+- **Suite:** E2E
+- **Test(s):** `elm-core/ArrayAppendRepeatedTest.elm`
+- **Status:** OPEN
+- **Attempts:** 0
+- **First seen:** 2026-04-22
+- **Last updated:** 2026-04-22
+- **Related:** Issue #32
+
+**Failure mode:** Output mismatch
+
+**Observed:**
+- Expected: `finalLength: 300`
+- Actual:   `finalLength: 108`, `firstElem: Just 80`, `lastElem: Just 3`.
+
+**Hypothesis:**
+Each repeated `Array.append` takes the small-append path; `appendHelpTree`/`insertTailInTree` mis-accounts for the number of elements carried into the subsequent tail and drops/overwrites elements after a few iterations. The fact that `finalLength` is 108 (not 300) implies a length counter that is being reset rather than incremented, or that `Array.length` is reading the tree's `size` field from a stale snapshot. Likely surfaces the same canonicalisation bug as #32 but with a more severe length-accounting failure for repeated appends.
+
+**Suggested fix approach:**
+1. Add runtime tracing of `Array.length` and the `Array_elm_builtin` size field after each append iteration to identify whether the bug is in `len` accounting or in leaf placement.
+2. Joint fix with Issue #32.
+
+---
+
+### Issue 34: DictFromListToListRoundtripTest
+
+- **Suite:** E2E
+- **Test(s):** `elm-core/DictFromListToListRoundtripTest.elm`
+- **Status:** OPEN
+- **Attempts:** 0
+- **First seen:** 2026-04-22
+- **Last updated:** 2026-04-22
+- **Related:** Issue #20, Issue #22, Issue #35 (Dict structural equality)
+
+**Failure mode:** Output mismatch
+
+**Observed:**
+- Expected: `roundtripMixed: True`, `roundtripDesc: True`, `descEqualsAsc: True`
+- Actual:   all three False.
+
+**Hypothesis:**
+Kernel equality at `elm-kernel-cpp/src/core/Utils.cpp:440-456` (`eqHelp` Tag_Custom path) compares `RBNode_elm_builtin` nodes *structurally* — including child pointers and `color`. In Elm semantics, `Dict a b` equality is value-based; two dicts with identical (key,value) sets must be equal regardless of insertion order. Because the Elm/core RB implementation is not canonical (insertion order affects rotations/colorings), `Dict.fromList (Dict.toList d) == d` can be structurally false even though logically true.
+
+**Suggested fix approach:**
+1. Confirm via debug prints that two Dicts with identical key/value sets differ in rotation/coloring (dump tree shape from Elm side via a test-only `Dict.toString`-style walker).
+2. Two principled fixes to choose between:
+   - **Make kernel equality dispatch on a semantic key for `RBNode_elm_builtin`**: detect the Dict-specific ctor pair and compare by in-order key-value traversal. Risk: couples kernel equality to a specific Elm module; must also apply to Set.
+   - **Canonicalise the RB tree** such that insertion order doesn't matter (likely by always rebuilding from an in-order list on mutating operations, or switching to a deterministic canonicalisation pass). Risk: perf regression.
+3. Whichever fix is chosen, verify against #20, #22, #34, #35 and the tight Set tests.
+
+---
+
+### Issue 35: DictUnionDiffIterTest
+
+- **Suite:** E2E
+- **Test(s):** `elm-core/DictUnionDiffIterTest.elm`
+- **Status:** OPEN
+- **Attempts:** 0
+- **First seen:** 2026-04-22
+- **Last updated:** 2026-04-22
+- **Related:** Issue #18 (stress variant crashes identically)
+
+**Failure mode:** Crash — SIGSEGV
+
+**Observed:**
+- Test crashes without producing output during Dict union/diff iteration.
+
+**Hypothesis:**
+Likely the same GC-under-pressure / Custom-bitmap class as Issue #18. `Dict.union`/`Dict.diff` allocate many intermediate `RBNode_elm_builtin` instances; if any slot's unboxed-bitmap mis-labels a boxed child as unboxed Int (or vice versa), a GC during the traversal will either misroot or corrupt a header, leading to a later SIGSEGV.
+
+**Suggested fix approach:**
+1. Build with `ECO_GC_DEBUG_LIVENESS` (or add targeted `DIAG` prints inside `RBNode_elm_builtin` construction to dump bitmap and field kinds).
+2. Reproduce with the minimum iteration count that still crashes, then bisect insert/delete order.
+3. Joint fix with Issue #18.
+
+---
+
+### Issue 36: EncodeEmptyStringTest
+
+- **Suite:** E2E
+- **Test(s):** `elm-json/EncodeEmptyStringTest.elm`
+- **Status:** FIXED
+- **Attempts:** 1
+- **First seen:** 2026-04-22
+- **Last updated:** 2026-04-22
+- **Related:** Issue #13, Issue #16, Issue #17 (prior Bytes empty-string handling); also implicitly fixed stress Issues #24, #25, #26, #28 that use strings with min-length 0
+
+**Failure mode:** Output mismatch
+
+**Observed:**
+- Expected: `encoded: "\"\""`
+- Actual:   `encoded: "null"`, `encoded_len: 4`, `decoded: Err (Field "Expecting a STRING" [])`
+
+**Hypothesis (CONFIRMED via static inspection):**
+
+`elm-kernel-cpp/src/json/JsonExports.cpp:887-889` detects `Const_EmptyString + 1` but only prints a diagnostic and falls through. Line 890 then returns `json(nullptr)` because the constant is non-zero and not `Const_Unit + 1`:
+
+```cpp
+if (h.constant == Const_EmptyString + 1) {
+    fprintf(stderr, "[json-enc] EmptyString constant encountered -> (currently falls through to null)\n");
+}
+if (h.constant != 0 && h.constant != Const_Unit + 1) return json(nullptr);
+```
+
+So `Json.Encode.string ""` produces JSON `null`. The decoder then reports `Expecting a STRING`, matching the test's observed actual output.
+
+**Suggested fix approach:**
+1. Inside the `ENC_STRING` branch of `elmToJson`, handle the `Const_EmptyString + 1` case by returning an empty-string `json("")` (or the library's equivalent). Remove the stderr diagnostic.
+2. Audit neighbouring kernel entry points that also receive the ENC_STRING wrapper (decoder `decodeString`, `decodeKeyValuePairs`, etc.) to make sure they handle `Const_EmptyString` too — absence of a return here strongly suggests the rest of the Json kernel expects callers to normalise empty-string constants before handoff, and we should pick one convention and stick to it.
+3. Guard with a regression test that round-trips `""` through both `Encode.string` and `Decode.string`.
+
+**Attempt log:**
+- **Attempt 1 (2026-04-22):** Verified via debug trace (`[json-enc] wrap called, h.constant=7` → `wrap falling through to ENC_NULL (constant=7)`): `Elm_Kernel_Json_wrap` (`JsonExports.cpp:1241`) hit the catch-all `if (h.constant != 0) return Elm_Kernel_Json_encodeNull();` for `Const_EmptyString + 1`, turning `""` into an ENC_NULL wrapper before `elmToJson` ran. The `elmToJson` diagnostic at lines 887-889 was therefore dead code. Principled fix: added an explicit `Const_EmptyString + 1` branch in `Elm_Kernel_Json_wrap` that constructs an `ENC_STRING` Custom with `values[0].p = h` (the Const_EmptyString HPointer itself); `elmStringToStd` already handles that constant to return `""`. Also replaced the dead diagnostic in `elmToJson` with `return json("")` as a defensive redundancy for any top-level empty-string constant. Post-fix: E2E 1109/1104/5 (+1 pass), Stress 69/60/9 (+4 passes — Issues #24, #25, #26, #28 implicitly fixed). No regressions. FIXED.
+
+---
+
+### Issue 37: DecodeArrayShapeTest
+
+- **Suite:** E2E
+- **Test(s):** `elm-json/DecodeArrayShapeTest.elm`
+- **Status:** FIXED
+- **Attempts:** 1
+- **First seen:** 2026-04-22
+- **Last updated:** 2026-04-22
+- **Related:** Issue #19 (REGRESSED — shared root cause), Issue #22, Issue #28 (decoder-object leak class)
+
+**Failure mode:** Crash — SIGABRT
+
+**Observed:**
+- `DIAG: resolve() bad HPointer: raw=0x100000007 constant=0 heap_base=0x7f5721a37000 heap_end=0x7f5921a37000 obj=0x7f5f21a37038`
+- `Assertion 'static_cast<char*>(obj) < heap_base + heap_reserved && "Pointer above heap end"' failed.`
+
+**Hypothesis:**
+`0x100000007` is a 64-bit value whose low 32 bits hold the small decoder-ctor id `7` (= `DEC_FIELD` per `JsonExports.cpp:44-65`) and whose high 32 bits contain `1`. When the decoder result makes its way through `Export::encode`/`decode` (used by `makeDecoder*` / `arrayFromPointers`), a field that should be a raw `uint64_t` payload is instead being interpreted as an HPointer by `Allocator::resolve` (`runtime/src/allocator/Allocator.cpp:414`) and the shift in `fromPointerRaw` scatters it 4 GB beyond heap base. Most likely the Json decoder combinators are storing a decoder object (ctor id) in a slot the runtime treats as a boxed HPointer — consistent with the `[eq] tag mismatch: 15 vs 7` seen in Issue #19.
+
+**Suggested fix approach:**
+1. Add runtime tracing to `resolve()` to print the caller's backtrace only when the out-of-heap case fires; correlate with the specific decoder combinator path.
+2. In `JsonExports.cpp`, dump every construction of a decoder Custom (ctor + field kinds) plus every `Export::encode/decode` that crosses the kernel boundary with its HPointer round-trip.
+3. Confirm the mismatch: slot expected `uint64_t` payload but contains an encoded HPointer; or slot expected HPointer but contains a ctor id.
+4. Principled fix: treat decoder objects as always-boxed HPointers (Custom with well-defined ctor ids) and thread them through the kernel boundary via `alloc::wrap` / `alloc::resolve` — never via `Export::encode/decode` raw uint64.
+
+**Attempt log:**
+- **Attempt 1 (2026-04-22):** Root cause via backtrace + MLIR inspection: `Elm.Kernel.Json.decodeArray` builds a flat `Tag_Array` ElmArray, but all Elm Array operations (`length`, `get`, `==`) assume `Array_elm_builtin` (Tag_Custom HAMT). `Array.get` projects field 2 (tree) as `!eco.value` and does `eco.array.get` on what is actually an ElmInt, producing the garbage HPointer `0x100000007`. Principled fix applied in two layers: (a) **Elm-level:** rewrote `Json.Decode.array` in both `elm/json/1.1.3` and `1.1.4` from `= Elm.Kernel.Json.decodeArray` to `array decoder = map Array.fromList (list decoder)` so the decoded value flows through the normal Array constructor pipeline. (b) **Kernel-level:** modified `runDecoder`'s `DEC_LIST` case in `elm-kernel-cpp/src/json/JsonExports.cpp:559-594` to inspect the element decoder's `ctor`: when it is `DEC_INT`/`DEC_FLOAT`, unwrap the boxed `ElmInt`/`ElmFloat` and cons with kind=1/2 (unboxed), matching the representation the monomorphizer specializes for `List Int`/`List Float`; other element types remain boxed. Also cleared stale `artifacts.dat`/`typed-artifacts.dat` in the json package dirs so the Elm-level change picks up on next compile. Post-fix: E2E 1109/1105/4 (+1 pass, 0 regressions); Stress 69/60/9 (unchanged; JsonRoundtripArray's `[eq] tag mismatch: 15 vs 7` signature is gone — the remaining `roundtrip: False` is a different failure). FIXED.
 
 ---
 
