@@ -82,10 +82,10 @@ rather than merging prematurely.
 Most recent whole-suite run. Update after each full test pass. Keep only the latest
 baseline here; prior baselines belong in git history.
 
-- **Date:** 2026-04-22 (end of session — post #36, #37 fixes; #32 attempt reverted)
+- **Date:** 2026-04-22 (new session baseline — user merged new tests)
 - **elm-test:** not re-run this session
-- **E2E (`full`):** 1109 run, 1105 passed, 4 failed (was 1103/6 at session start — net +2 passes)
-- **Stress:** 69 run, 60 passed, 9 failed (was 56/13 at session start — net +4 passes; #28 failure mode changed and now FIXED; #19 tag-mismatch signature gone but still roundtrip: False from a different root cause)
+- **E2E (`full`):** 1122 run, 1118 passed, 4 failed (same 4 pre-existing: #32, #33, #34, #35)
+- **Stress:** 97 run, 79 passed, 18 failed (9 pre-existing + 9 NEW; see issues #38–#46)
 
 ---
 
@@ -1035,3 +1035,114 @@ _None — all historical content was archived to git history when this file was
 reset on 2026-04-20. See `git log guides/test-fails.md` for prior triage notes,
 including the 2026-03 SKIPPED analyses of Float re-boxing, tuple `compare` fix,
 and the Dict/Tuple SIGSEGV work._
+
+---
+
+## New OPEN issues from 2026-04-22 baseline
+
+### Issue 38: MVar "not found" assertion class
+
+- **Suite:** Stress
+- **Test(s):** `stress-elm/MVarBackgroundWriterLikeStress.elm`, `stress-elm/MVarChanPipelineStress.elm`, `stress-elm/MVarChurnNewDropStress.elm`, `stress-elm/ModifyMVarAccumulateListStress.elm`, `stress-elm/ModifyMVarCounterStress.elm`
+- **Status:** OPEN
+- **Attempts:** 1
+- **First seen:** 2026-04-22
+- **Last updated:** 2026-04-22
+- **Related:** Issue #39 (same MVar subsystem, different assertion)
+
+**Failure mode:** SIGABRT
+
+**Observed:**
+- `/work/eco-kernel-cpp/src/eco/MVar.cpp:46: uint64_t Eco::Kernel::MVar::take(uint64_t): Assertion 'it != s_mvars.end() && "MVar not found"' failed.`
+- Each failing test has repeated `[mvar] put id=0x1 (1) (s_mvars.size=1)` traces before the crash; the crash fires on the next `take`. Only a single MVar (the persistent one) is normally alive; the churn loop creates, puts, drops before the next iteration.
+
+**Hypothesis:**
+The Elm-side MVar type is `type MVar a = MVar Int` (`/work/eco-kernel-cpp/src/Eco/MVar.elm:36-37`). For `MVar Int` at a stress-test call site, the Custom wrapping the Int should have `unboxed_bitmap = 1` so the GC doesn't trace the ID as a pointer. If monomorphization emits bitmap `0` (boxed) for that field, then the ID is treated as an HPointer by the GC — either followed into garbage and/or overwritten by the copy collector — and subsequent `take id` lands on an ID that is no longer in `s_mvars`. Consistent with:
+- `put` succeeding (the kernel accepts any int it sees and stores in the map keyed by that int).
+- `take` failing after a GC occurs (between put and take, allocations happen via `Task.andThen`/closures/`List.sum` etc.).
+- Puts consistently showing `id=0x1`: the persistent MVar is stored in the final task state, which might root differently from the ID inside churn's local `m : MVar Int`.
+
+**Suggested fix approach:**
+1. Add `fprintf(stderr, "[mvar] take id=%lld (s_mvars.size=%zu)\n", ...)` at `MVar.cpp:44` to confirm the ID the runtime sees in `take` (distinguishing "stale ID" from "ID corrupted post-GC").
+2. Dump the `unboxed_bitmap` attribute on the `eco.construct.custom` MLIR op that builds `MVar Int` from the kernel `new`'s return value — if it is `0`, the monomorphizer is treating the payload Int as boxed and we need to propagate the concrete `Int` specialization through the `Task.map MVar` boundary.
+3. Principled fix lives at the monomorphizer / codegen level: ensure that constructing a concrete-typed Custom whose field is `Int` always emits `unboxed_bitmap = 1` for that slot.
+
+**Attempt log:**
+- **Attempt 1 (2026-04-22):** Added `[mvar] take id=…` trace to `MVar.cpp:take`. Confirmed: first 48 takes read `id=0x1 (1)` correctly, then the 49th fires with `id=0x1000000000 (68719476736)`. Also added `[mvar-diag] new id=N, boxedId HPointer raw=0x…` in `Eco_Kernel_MVar_new` — the raw HPointer bits of the `allocInt`-ed ElmInt start around `0x20000051` and walk upward as the nursery fills. So take's early-success `id=0x1` is NOT the HPointer bits of the boxed ElmInt; *something unboxes*. But after many GC cycles take sees `0x1000000000` (≈ `1 << 36`, consistent with an HPointer pointing ~32 GB past heap base — i.e., either a stale HPointer from a prior evacuation pass or the raw HPointer-encoded bits of an ElmInt that has since been moved). Tried swapping the kernel to construct the `MVar` Custom directly (avoiding `Task.map MVar`) — didn't help: the new assertion fired in `put` instead, with `id=0x10000` (the ctor/unboxed bitfield read as i64, suggesting my hand-built Custom layout was misread by `project.custom` somehow). Reverted both changes; baseline restored. The MVar ID-corruption path involves a subtle interaction between the scheduler's closure-calling (HPointer args passed to closures expecting unboxed i64), monomorphization-driven ABI transitions, and GC movement. Needs deeper investigation into: (a) why the first 48 takes see `0x1` — is there a hidden auto-unbox step for `Task Never Int` values; (b) why take #49 suddenly reads HPointer bits — presumably a GC cycle evacuates an object that was serving as the "id source" and the post-forward HPointer differs; and (c) whether the principled fix is to add an auto-unbox step in `buildEvaluatorArgs` for new_args driven by the closure's evaluator signature.
+
+---
+
+### Issue 39: MVar "Invalid tag after forward resolution"
+
+- **Suite:** Stress
+- **Test(s):** `stress-elm/MVarHoldingHugeListAcrossGC.elm`
+- **Status:** OPEN
+- **Attempts:** 0
+- **First seen:** 2026-04-22
+- **Last updated:** 2026-04-22
+- **Related:** Issue #38
+
+**Failure mode:** SIGABRT
+
+**Observed:**
+- `/work/runtime/src/allocator/Allocator.cpp:425: void *Elm::Allocator::resolve(Elm::HPointer): Assertion 'hdr->tag < Tag_Forward && "Invalid tag after forward resolution"' failed.`
+- Trace before the crash shows `[mvar] newEmpty -> id=1` and `[mvar] put id=0x1 (1) (s_mvars.size=1)`.
+
+**Hypothesis:**
+Different symptom, likely same root class as Issue #38. The kernel's MVar GC scanner (`MVar.cpp:71-81`) calls `evacuate(encoded)` on every live MVar value and writes back the forwarded pointer via `slot.value = Export::decode(encoded)`. For very large payloads (huge lists), the scanner may follow a forwarded pointer twice — if the slot was already evacuated in an earlier phase, re-evacuating chases a forwarding pointer whose target was since rewritten, producing an invalid tag. Alternatively, the Elm-side `MVar Int` wrapping the list inside the live value causes the list HPointer to be miscategorized.
+
+**Suggested fix approach:**
+1. Add `fprintf` around the scanner's `evacuate` call to dump before/after HPointer bits for the held value.
+2. Confirm whether re-entry into the scanner on a single GC cycle (two collections in a row?) is the culprit, or whether it's payload-specific.
+3. If the scanner double-evacuates, guard it with a sentinel (idempotent evacuation).
+
+---
+
+### Issue 40: TaskAndThenPapCapture — Nursery block exhausted
+
+- **Suite:** Stress
+- **Test(s):** `stress-elm/TaskAndThenPapCapture.elm`, `stress-elm/SpawnThenAndThenChain.elm`
+- **Status:** OPEN
+- **Attempts:** 0 (root cause identified)
+- **First seen:** 2026-04-22
+- **Last updated:** 2026-04-22
+- **Related:** Issue #41 (SpawnGCChurn — likely same class)
+
+**Failure mode:** SIGABRT
+
+**Observed:**
+- `/work/runtime/src/allocator/NurserySpace.cpp:114: void Elm::NurserySpace::initialize(Elm::ThreadLocalHeap *, const Elm::HeapConfig *): Assertion 'block && "Failed to acquire nursery block from low region"' failed.`
+
+**Root cause (identified by inspection):**
+`NurserySpace::~NurserySpace()` (`/work/runtime/src/allocator/NurserySpace.cpp:60-62`) is empty and has a comment "No need to free memory — blocks are part of the main heap". But `Allocator::acquireNurseryBlockLow`/`High` (`/work/runtime/src/allocator/Allocator.cpp:243-301`) use a *linear-bump* offset (`nursery_low_committed_`, `nursery_high_committed_`) and never recycle — there is no free-list or release function. Spawn-heavy tests create a fresh `ThreadLocalHeap` for each task, each of which claims `nursery_block_count` blocks from each region. After enough spawns, the bump offset exceeds the region size and the next acquisition returns `nullptr`, tripping the assertion. The bug is not a leak of virtual memory per se — the blocks are still committed — but a leak of the committed-offset pointer: already-commited blocks from retired thread heaps are never returned to the allocator's pool.
+
+**Suggested fix approach:**
+1. Add `Allocator::releaseNurseryBlockLow(char* block, size_t size)` and `releaseNurseryBlockHigh`, each pushing the block onto a per-region free-list.
+2. In `acquireNurseryBlockLow`/`High`, pop from the free-list before falling back to incrementing `nursery_*_committed_`.
+3. In `NurserySpace::~NurserySpace()`, iterate `low_blocks_` / `high_blocks_` and release each back to the allocator.
+4. Joint fix with Issue #41.
+
+---
+
+### Issue 41: SpawnGCChurn — SIGSEGV
+
+- **Suite:** Stress
+- **Test(s):** `stress-elm/SpawnGCChurn.elm`
+- **Status:** OPEN
+- **Attempts:** 0
+- **First seen:** 2026-04-22
+- **Last updated:** 2026-04-22
+- **Related:** Issue #40
+
+**Failure mode:** SIGSEGV
+
+**Observed:**
+- Test crashes without producing output under heavy Spawn + GC workload.
+
+**Hypothesis:**
+Likely the same Spawn/thread-heap lifecycle issue as Issue #40; SpawnGCChurn specifically churns spawn+GC so may trip a different code path (thread-heap teardown races with GC root scanning).
+
+**Suggested fix approach:**
+1. Reduce iteration count to find the minimum reproducer.
+2. Run under `ECO_GC_DEBUG_LIVENESS` to convert the SIGSEGV into a targeted assertion.
+3. Joint fix with Issue #40 if root cause overlaps.
