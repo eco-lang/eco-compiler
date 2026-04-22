@@ -58,7 +58,19 @@ NurserySpace::NurserySpace() :
 }
 
 NurserySpace::~NurserySpace() {
-    // No need to free memory - blocks are part of the main heap.
+    // Return our blocks to the allocator's free-list so a subsequent
+    // ThreadLocalHeap (e.g. a freshly-spawned task) can reuse the committed
+    // address-space slots. Without this, each spawn grows
+    // `nursery_{low,high}_committed_` monotonically and the nursery region
+    // exhausts under spawn-heavy workloads (see Issue #40).
+    if (allocator_) {
+        for (char* block : low_blocks_) {
+            allocator_->releaseNurseryBlockLow(block, block_size_);
+        }
+        for (char* block : high_blocks_) {
+            allocator_->releaseNurseryBlockHigh(block, block_size_);
+        }
+    }
 }
 
 void NurserySpace::initialize(Allocator* allocator, const HeapConfig* config) {

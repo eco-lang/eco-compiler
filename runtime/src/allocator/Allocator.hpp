@@ -5,6 +5,8 @@
 #include <mutex>
 #include <thread>
 #include <unordered_map>
+#include <utility>
+#include <vector>
 #include "AllocatorCommon.hpp"
 #include "NurserySpace.hpp"
 #include "OldGenSpace.hpp"
@@ -141,6 +143,11 @@ private:
     size_t nursery_offset;        // Byte offset where nursery region begins (heap midpoint).
     size_t nursery_low_committed_;   // Committed bytes in first half of nursery region.
     size_t nursery_high_committed_;  // Committed bytes in second half of nursery region.
+    // Free-lists of previously-released nursery blocks, reused by subsequent
+    // acquires before we bump the committed pointer. Entries are pairs of
+    // (block pointer, block size); acquires pop a block whose size matches.
+    std::vector<std::pair<char*, size_t>> nursery_low_freelist_;
+    std::vector<std::pair<char*, size_t>> nursery_high_freelist_;
     bool initialized;             // True after initialize() has been called.
 
 #if ENABLE_GC_STATS
@@ -177,11 +184,24 @@ private:
 
     // Acquires a block of memory from the lower nursery region.
     // Thread-safe: acquires thread_mutex_.
+    // First tries to reuse a block from the free-list populated by
+    // releaseNurseryBlockLow; if that's empty, bumps nursery_low_committed_.
     char* acquireNurseryBlockLow(size_t size);
 
     // Acquires a block of memory from the upper nursery region.
     // Thread-safe: acquires thread_mutex_.
+    // First tries to reuse a block from the free-list; otherwise bumps the
+    // committed pointer.
     char* acquireNurseryBlockHigh(size_t size);
+
+    // Returns a low-region nursery block to the free-list for reuse by a
+    // later acquireNurseryBlockLow. Called by ~NurserySpace when a
+    // ThreadLocalHeap is destroyed. Thread-safe.
+    void releaseNurseryBlockLow(char* block, size_t size);
+
+    // Returns a high-region nursery block to the free-list for reuse by a
+    // later acquireNurseryBlockHigh. Thread-safe.
+    void releaseNurseryBlockHigh(char* block, size_t size);
 
     // Acquires a block of memory from the old gen region.
     // Thread-safe: acquires thread_mutex_.

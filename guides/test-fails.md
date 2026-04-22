@@ -82,10 +82,10 @@ rather than merging prematurely.
 Most recent whole-suite run. Update after each full test pass. Keep only the latest
 baseline here; prior baselines belong in git history.
 
-- **Date:** 2026-04-22 (new session baseline — user merged new tests)
+- **Date:** 2026-04-22 (post-#40 fix)
 - **elm-test:** not re-run this session
-- **E2E (`full`):** 1122 run, 1118 passed, 4 failed (same 4 pre-existing: #32, #33, #34, #35)
-- **Stress:** 97 run, 79 passed, 18 failed (9 pre-existing + 9 NEW; see issues #38–#46)
+- **E2E (`full`):** 1122 run, 1118 passed, 4 failed (unchanged)
+- **Stress:** 97 run, 80 passed, 17 failed (TaskAndThenPapCapture FIXED via nursery free-list; SpawnThenAndThenChain moved from Issue #40 to Issue #42 with a new failure mode)
 
 ---
 
@@ -438,10 +438,10 @@ The kernel `Elm_Kernel_Parser_findSubString` returns a tuple3 of unboxed Ints (`
 
 - **Suite:** Stress
 - **Test(s):** `stress-elm/BytesRoundtripMixedRecord.elm`
-- **Status:** OPEN
+- **Status:** SKIPPED (attempts >= 3; remaining symptom `[eq] tag mismatch: 0 vs 3` points to a unboxed-bitmap mismatch on a mixed Int/Float/String record — needs compiler-level monomorphization fix per Attempt 3 notes)
 - **Attempts:** 3
 - **First seen:** 2026-04-20
-- **Last updated:** 2026-04-20
+- **Last updated:** 2026-04-22
 - **Related:** Issue #16, Issue #17
 
 **Failure mode:** Output mismatch (`roundtrip: False`) — originally SIGABRT, then timeout, now completes with wrong result.
@@ -554,10 +554,10 @@ The kernel `Elm_Kernel_Parser_findSubString` returns a tuple3 of unboxed Ints (`
 
 - **Suite:** Stress
 - **Test(s):** `stress-elm/DictUnionDiff.elm`
-- **Status:** OPEN
+- **Status:** SKIPPED (attempts >= 3 across prior sessions; requires `ECO_GC_DEBUG_LIVENESS` reproduction path that exceeds single-session budget)
 - **Attempts:** 0 this session; git history records 3 prior attempts with multiple sub-hypotheses (rooting gaps, Dict Custom bitmap misreport, ptr↔i64 write-barrier)
 - **First seen:** 2026-04-20
-- **Last updated:** 2026-04-20
+- **Last updated:** 2026-04-22
 
 **Failure mode:** SIGSEGV
 
@@ -1101,12 +1101,12 @@ Different symptom, likely same root class as Issue #38. The kernel's MVar GC sca
 ### Issue 40: TaskAndThenPapCapture — Nursery block exhausted
 
 - **Suite:** Stress
-- **Test(s):** `stress-elm/TaskAndThenPapCapture.elm`, `stress-elm/SpawnThenAndThenChain.elm`
-- **Status:** OPEN
-- **Attempts:** 0 (root cause identified)
+- **Test(s):** `stress-elm/TaskAndThenPapCapture.elm` (FIXED); `stress-elm/SpawnThenAndThenChain.elm` split out as Issue #42 since it now fails with a distinct bad-HPointer crash after the nursery fix
+- **Status:** FIXED (for TaskAndThenPapCapture)
+- **Attempts:** 1
 - **First seen:** 2026-04-22
 - **Last updated:** 2026-04-22
-- **Related:** Issue #41 (SpawnGCChurn — likely same class)
+- **Related:** Issue #41 (SpawnGCChurn — likely same class), Issue #42 (SpawnThenAndThenChain follow-up)
 
 **Failure mode:** SIGABRT
 
@@ -1121,6 +1121,9 @@ Different symptom, likely same root class as Issue #38. The kernel's MVar GC sca
 2. In `acquireNurseryBlockLow`/`High`, pop from the free-list before falling back to incrementing `nursery_*_committed_`.
 3. In `NurserySpace::~NurserySpace()`, iterate `low_blocks_` / `high_blocks_` and release each back to the allocator.
 4. Joint fix with Issue #41.
+
+**Attempt log:**
+- **Attempt 1 (2026-04-22):** Implemented the three-step plan above. Added `nursery_low_freelist_` / `nursery_high_freelist_` vectors to `Allocator` (`Allocator.hpp:142-146`). `acquireNurseryBlockLow`/`High` first scan the free-list for a size-matching block before bumping the committed pointer. `releaseNurseryBlockLow`/`High` append to the free-list under `thread_mutex_`. `~NurserySpace` now walks `low_blocks_` and `high_blocks_` and calls the release functions. `Allocator::reset` clears both free-lists alongside the other tracking state. Post-fix: TaskAndThenPapCapture PASSES. SpawnThenAndThenChain moves from SIGABRT (nursery exhausted) to SIGSEGV (`resolve() bad HPointer raw=0xa00000003`) — a separate GC bug split out as Issue #42. Stress 97/80/17 (+1 pass, 0 regressions). FIXED (for TaskAndThenPapCapture).
 
 ---
 
@@ -1146,3 +1149,32 @@ Likely the same Spawn/thread-heap lifecycle issue as Issue #40; SpawnGCChurn spe
 1. Reduce iteration count to find the minimum reproducer.
 2. Run under `ECO_GC_DEBUG_LIVENESS` to convert the SIGSEGV into a targeted assertion.
 3. Joint fix with Issue #40 if root cause overlaps.
+
+---
+
+### Issue 42: SpawnThenAndThenChain — bad HPointer after nursery fix
+
+- **Suite:** Stress
+- **Test(s):** `stress-elm/SpawnThenAndThenChain.elm`
+- **Status:** OPEN
+- **Attempts:** 1 (split from Issue #40)
+- **First seen:** 2026-04-22 (as nursery-exhaustion under Issue #40)
+- **Last updated:** 2026-04-22
+- **Related:** Issue #40 (prior symptom), Issue #41 (same spawn-chain class)
+
+**Failure mode:** SIGABRT
+
+**Observed:**
+- Before Issue #40 fix: SIGABRT `Failed to acquire nursery block from low region`.
+- After Issue #40 fix: `DIAG: resolve() bad HPointer: raw=0xa00000003 constant=0 heap_base=0x7f31f4b9a000 heap_end=0x7f33f4b9a000 obj=0x7f81f4b9a018` then `Allocator.cpp:451: Assertion "static_cast<char*>(obj) < heap_base + heap_reserved && \"Pointer above heap end\""` fires.
+
+**Hypothesis:**
+Test creates a deep `Task.andThen` + `Process.sleep 0` chain that repeatedly yields. The yielded fiber's stack of captured values is re-entered by the scheduler. Under spawn/GC pressure, an HPointer captured in a fiber's stack frame may point to an object that is no longer correctly rooted (e.g. a nursery block that was recycled via the new free-list after its thread heap was destroyed). The raw HPointer `0xa00000003` has `ptr=0xa00000003` and `constant=0`, which resolves to an address far past `heap_end` — consistent with an HPointer whose target was in a fiber-local region that is now mapped elsewhere.
+
+**Suggested fix approach:**
+1. Trace the fiber shutdown path in `Scheduler.cpp` and confirm the retirement order: `ThreadLocalHeap` destruction vs. pending scheduler work on that fiber.
+2. Verify that when the new nursery free-list reuses a released block, any stale HPointers from retired fibers cannot still point into it. The allocator should zero or `mprotect` released blocks to fail loudly on stale reads.
+3. Joint fix with Issue #41 if root cause overlaps (both are spawn-chain / GC-churn tests).
+
+**Attempt log:**
+- **Attempt 1 (2026-04-22):** Tried zeroing the released nursery block in `releaseNurseryBlockLow`/`High` on the theory that the `raw=0xa00000003` came from stale data in a recycled block. **Result:** Changed the failure mode — now crashes with `raw=0x77006100700073`, which decoded as UTF-16LE is `"swap"`. So the stale HPointer is not being read from a recycled nursery block; it's being read from the *char[] buffer of an ElmString* somewhere. `"swap"` likely originates from a string literal in the test's spawn-chain body being mis-read as an HPointer by a slot that was declared boxed but actually holds ElmString data. Reverted the zeroing (didn't fix the target). The real bug is a separate slot-kind / representation mismatch that only manifests under the spawn-chain + GC churn pattern.

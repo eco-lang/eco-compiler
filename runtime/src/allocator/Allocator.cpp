@@ -246,6 +246,16 @@ char* Allocator::acquireNurseryBlockLow(size_t size) {
     // Align size to 8 bytes.
     size = (size + 7) & ~7;
 
+    // Reuse a previously-released block of the same size before growing.
+    for (auto it = nursery_low_freelist_.begin();
+         it != nursery_low_freelist_.end(); ++it) {
+        if (it->second == size) {
+            char* block = it->first;
+            nursery_low_freelist_.erase(it);
+            return block;
+        }
+    }
+
     // Nursery is split into two halves: low and high.
     // Low region: [nursery_offset .. nursery_offset + nursery_space/2)
     size_t nursery_space = heap_reserved - nursery_offset;
@@ -269,6 +279,12 @@ char* Allocator::acquireNurseryBlockLow(size_t size) {
     return block_base;
 }
 
+void Allocator::releaseNurseryBlockLow(char* block, size_t size) {
+    std::lock_guard<std::recursive_mutex> lock(thread_mutex_);
+    size = (size + 7) & ~7;
+    nursery_low_freelist_.emplace_back(block, size);
+}
+
 // Acquires a block from the high nursery region.
 // Thread-safe: acquires thread_mutex_ to update shared committed counters.
 char* Allocator::acquireNurseryBlockHigh(size_t size) {
@@ -276,6 +292,16 @@ char* Allocator::acquireNurseryBlockHigh(size_t size) {
 
     // Align size to 8 bytes.
     size = (size + 7) & ~7;
+
+    // Reuse a previously-released block of the same size before growing.
+    for (auto it = nursery_high_freelist_.begin();
+         it != nursery_high_freelist_.end(); ++it) {
+        if (it->second == size) {
+            char* block = it->first;
+            nursery_high_freelist_.erase(it);
+            return block;
+        }
+    }
 
     // Nursery is split into two halves: low and high.
     // High region: [nursery_offset + nursery_space/2 .. heap_reserved)
@@ -299,6 +325,12 @@ char* Allocator::acquireNurseryBlockHigh(size_t size) {
 
     nursery_high_committed_ += size;
     return block_base;
+}
+
+void Allocator::releaseNurseryBlockHigh(char* block, size_t size) {
+    std::lock_guard<std::recursive_mutex> lock(thread_mutex_);
+    size = (size + 7) & ~7;
+    nursery_high_freelist_.emplace_back(block, size);
 }
 
 // Acquires a block from the old gen region.
@@ -381,6 +413,11 @@ void Allocator::reset(const HeapConfig* new_config) {
     old_gen_committed = 0;
     nursery_low_committed_ = 0;
     nursery_high_committed_ = 0;
+
+    // Free-lists refer to blocks in the old committed range; they are no
+    // longer usable once we reset the bump pointers to 0.
+    nursery_low_freelist_.clear();
+    nursery_high_freelist_.clear();
 }
 
 // ============================================================================
