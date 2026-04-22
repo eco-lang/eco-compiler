@@ -2542,7 +2542,6 @@ extern "C" uint32_t eco_get_custom_ctor(HPtr obj_hptr) {
 ///   - Other embedded constants -> tag=0
 extern "C" uint32_t eco_get_tag(HPtr val) {
     HPointer hp = val.toHPointer();
-
     // Check if this is an embedded constant (constant field != 0).
     if (hp.constant != 0) {
         if (hp.constant == 6) {  // Nothing

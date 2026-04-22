@@ -624,20 +624,29 @@ static uint64_t runDecoder(Custom* decoder, uint64_t jvalEnc) {
                 return makeErr("Expecting an ARRAY");
             }
 
-            // Get element decoder.
+            // Determine element kind from the element decoder so the result's
+            // JsArray stores the same representation that Elm's Array.fromList
+            // would produce (required for structural equality on Array a).
             void* elemDecPtr = allocator.resolve(decoder->values[0].p);
             Custom* elemDec = static_cast<Custom*>(elemDecPtr);
+            u8 elemKind = 0;  // 0=boxed, 1=Int, 2=Float, 3=Char
+            switch (elemDec->ctor) {
+                case DEC_INT:   elemKind = 1; break;
+                case DEC_FLOAT: elemKind = 2; break;
+                // DEC_STRING / composites stay boxed (kind 0)
+                default:        elemKind = 0; break;
+            }
 
-            // Get the ElmArray.
+            // Get the source JSON array's ElmArray. This was built via
+            // arrayFromPointers so its length == header.size (use length).
             void* arrPtr = allocator.resolve(jval->values[0].p);
             ElmArray* arr = static_cast<ElmArray*>(arrPtr);
-            u32 len = arr->header.size;
+            u32 len = arr->length;
 
             // Decode each element, collecting results.
             std::vector<HPointer> elements;
             elements.reserve(len);
             for (u32 i = 0; i < len; i++) {
-                // Re-resolve after allocations in recursive calls.
                 arrPtr = allocator.resolve(jval->values[0].p);
                 arr = static_cast<ElmArray*>(arrPtr);
 
@@ -653,8 +662,136 @@ static uint64_t runDecoder(Custom* decoder, uint64_t jvalEnc) {
                 elements.push_back(getOkValue(elemResult));
             }
 
-            // Build ElmArray from results.
-            HPointer resultArr = arrayFromPointers(elements);
+            // Build Elm `Array a` = `Array_elm_builtin Int Int (Tree a) (JsArray a)`.
+            // Array_elm_builtin is the first (and only) ctor of `Array`, so
+            // ctor index = 0. Fields:
+            //   0: length      (Int, unboxed  → kind 01)
+            //   1: startShift  (Int, unboxed  → kind 01)
+            //   2: tree        (JsArray Node  → boxed HPointer)
+            //   3: tail        (JsArray a     → boxed HPointer)
+            // Unboxed bitmap (2 bits/slot): slot0=01, slot1=01, slot2=00, slot3=00 → 0b0101 = 0x5.
+            auto buildElmArray = [&](HPointer tree_hp, HPointer tail_hp, u32 length) -> HPointer {
+                // Root tree and tail HPointers across the allocation.
+                auto& rs = Allocator::instance().getRootSet();
+                size_t saved = rs.stackRangePoint();
+                HPointer tree_root = tree_hp;
+                HPointer tail_root = tail_hp;
+                rs.pushStackRootRange(&tree_root, 1, 1);
+                rs.pushStackRootRange(&tail_root, 1, 1);
+
+                size_t sz = sizeof(Custom) + 4 * sizeof(Unboxable);
+                sz = (sz + 7) & ~7;
+                Custom* c = static_cast<Custom*>(
+                    Allocator::instance().allocate(sz, Tag_Custom));
+                c->header.size = 4;
+                c->ctor = 0;       // Array_elm_builtin
+                c->unboxed = 0x5;  // field 0 and 1 are unboxed Int
+                c->values[0].i = static_cast<i64>(length);
+                c->values[1].i = 5;  // shiftStep
+                c->values[2].p = tree_root;
+                c->values[3].p = tail_root;
+
+                HPointer result = Allocator::instance().wrap(c);
+                rs.restoreStackRangePoint(saved);
+                return result;
+            };
+
+            // Helper: allocate a JsArray of a given uniform kind and length,
+            // initialized from `elements[start..start+count)`. For boxed kind
+            // (0) elements are HPointers; for unboxed kinds the decoded values
+            // are boxed primitives and we unbox them into the element slot.
+            auto buildJsArray = [&](size_t start, size_t count, u8 kind) -> HPointer {
+                // Root the element HPointers across the allocation.
+                std::vector<HPointer> rooted(elements.begin() + start,
+                                              elements.begin() + start + count);
+                auto& rs = Allocator::instance().getRootSet();
+                size_t saved = rs.stackRangePoint();
+                for (auto& hp : rooted) rs.pushStackRootRange(&hp, 1, 1);
+
+                HPointer jsArr = alloc::allocArray(count);
+                auto& allocLocal = Allocator::instance();
+                for (size_t i = 0; i < count; ++i) {
+                    void* arrObj = allocLocal.resolve(jsArr);
+                    if (kind == 1) {
+                        ElmInt* ei = static_cast<ElmInt*>(allocLocal.resolve(rooted[i]));
+                        Unboxable u; u.i = ei->value;
+                        alloc::arrayPushKind(arrObj, u, 1);
+                    } else if (kind == 2) {
+                        ElmFloat* ef = static_cast<ElmFloat*>(allocLocal.resolve(rooted[i]));
+                        Unboxable u; u.f = ef->value;
+                        alloc::arrayPushKind(arrObj, u, 2);
+                    } else {
+                        Unboxable u; u.p = rooted[i];
+                        alloc::arrayPush(arrObj, u, true);
+                    }
+                }
+                rs.restoreStackRangePoint(saved);
+                return jsArr;
+            };
+
+            // Replicate Array.fromList's layout: partition into fixed-size
+            // leaves (branchFactor = 32) with a remainder tail. For small
+            // arrays (len < 32) the tree is empty and everything lives in tail.
+            constexpr u32 kBranch = 32;
+            u32 tailStart = (len / kBranch) * kBranch;
+            u32 tailLen = len - tailStart;
+
+            // Build the tail JsArray (can be empty for len multiple of 32).
+            HPointer tailJsArr = buildJsArray(tailStart, tailLen, elemKind);
+
+            // Build leaf Nodes and the tree JsArray. For len < 32 the tree
+            // is empty (alloc::allocArray(0)). Root the tail across leaf /
+            // node / tree allocations.
+            HPointer treeJsArr;
+            {
+                auto& rs = Allocator::instance().getRootSet();
+                size_t saved = rs.stackRangePoint();
+                HPointer tailRoot = tailJsArr;
+                rs.pushStackRootRange(&tailRoot, 1, 1);
+
+                u32 numLeaves = tailStart / kBranch;
+                std::vector<HPointer> leafNodes;
+                leafNodes.reserve(numLeaves);
+                for (u32 k = 0; k < numLeaves; ++k) {
+                    // Root prior leaves across this leaf's allocations.
+                    for (auto& hp : leafNodes) rs.pushStackRootRange(&hp, 1, 1);
+
+                    HPointer leafJsArr = buildJsArray(k * kBranch, kBranch, elemKind);
+
+                    // Build `Leaf (JsArray a)` Custom. In Array.elm's Node type,
+                    // `SubTree` is ctor 0 and `Leaf` is ctor 1 (declaration order).
+                    HPointer leafRoot = leafJsArr;
+                    rs.pushStackRootRange(&leafRoot, 1, 1);
+                    size_t sz = sizeof(Custom) + 1 * sizeof(Unboxable);
+                    sz = (sz + 7) & ~7;
+                    Custom* node = static_cast<Custom*>(
+                        Allocator::instance().allocate(sz, Tag_Custom));
+                    node->header.size = 1;
+                    node->ctor = 1;      // Leaf
+                    node->unboxed = 0;   // field 0 (JsArray) is boxed
+                    node->values[0].p = leafRoot;
+                    leafNodes.push_back(Allocator::instance().wrap(node));
+
+                    rs.restoreStackRangePoint(saved);
+                    rs.pushStackRootRange(&tailRoot, 1, 1);
+                }
+
+                // Build the tree as a JsArray of leaf Nodes (boxed, kind 0).
+                for (auto& hp : leafNodes) rs.pushStackRootRange(&hp, 1, 1);
+                treeJsArr = alloc::allocArray(numLeaves);
+                void* tObj = Allocator::instance().resolve(treeJsArr);
+                for (u32 k = 0; k < numLeaves; ++k) {
+                    Unboxable u; u.p = leafNodes[k];
+                    alloc::arrayPush(tObj, u, true);
+                    tObj = Allocator::instance().resolve(treeJsArr);
+                }
+
+                // Update tailJsArr from the root in case GC moved it.
+                tailJsArr = tailRoot;
+                rs.restoreStackRangePoint(saved);
+            }
+
+            HPointer resultArr = buildElmArray(treeJsArr, tailJsArr, len);
             return makeOk(resultArr);
         }
 

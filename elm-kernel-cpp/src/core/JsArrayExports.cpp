@@ -219,7 +219,10 @@ HPtr Elm_Kernel_JsArray_appendN(HPtr n_val, HPtr dest, HPtr source) {
 
     uint32_t destLen = destArr->length;
     uint32_t srcLen = srcArr->length;
-    uint32_t toCopy = (n < srcLen) ? n : srcLen;
+    // Elm semantics: appendN n dest source means cap total at n.
+    // Copy min(n - destLen, srcLen) from source, or 0 if destLen >= n.
+    uint32_t available = (destLen < n) ? (n - destLen) : 0u;
+    uint32_t toCopy = (available < srcLen) ? available : srcLen;
     uint32_t newLen = destLen + toCopy;
 
     HPointer result = alloc::allocArray(newLen);
