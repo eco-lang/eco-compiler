@@ -44,7 +44,7 @@ See design\_docs/invariants.csv for REP\_ABI\_001, REP\_CLOSURE\_001, REP\_SSA\_
 
 # Primitive Type Checks
 
-@docs isUnboxable
+@docs isUnboxable, mlirTypeToKind, encodeUnboxedKind, bitmapSetKind
 
 
 # Runtime Layouts

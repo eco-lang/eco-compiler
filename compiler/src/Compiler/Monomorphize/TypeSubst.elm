@@ -26,7 +26,7 @@ by MVarId (as Int via Id.toComparable), not by Name.
 
 # Unification
 
-@docs unify, unifyExtend, unifyArgsOnly, unifyCallSiteDirect
+@docs unify, unifyExtend, unifyArgsOnly, unifyCallSiteDirect, unifyCallSiteDirectWithExpected
 
 
 # Scheme Construction
@@ -36,10 +36,7 @@ by MVarId (as Int via Id.toComparable), not by Name.
 
 # Substitution with Free Variables
 
-@docs applySubstWithFreeVars
-
-
-# Type Flattening
+@docs applySubstWithFreeVars, applySubstKeepNumber
 
 -}
 
