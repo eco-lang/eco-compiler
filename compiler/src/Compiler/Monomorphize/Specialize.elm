@@ -1956,11 +1956,12 @@ specializeExpr expr subst state =
                                 getOrBuildSchemeInfo funcCanType (Just global) state1r
 
                             ( callSubst, funcMonoTypeRaw, _ ) =
-                                TypeSubst.unifyCallSiteDirect
+                                TypeSubst.unifyCallSiteDirectWithExpected
                                     state1a.ctx.mvarEnv
                                     schemeInfo.argTypes
                                     schemeInfo.resultType
                                     argTypes
+                                    (Just canType)
                                     substForCall
 
                             funcMonoType =

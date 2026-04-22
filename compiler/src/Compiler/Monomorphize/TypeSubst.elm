@@ -1,7 +1,7 @@
 module Compiler.Monomorphize.TypeSubst exposing
     ( applySubst
     , canTypeToMonoType, extractParamTypes
-    , unify, unifyExtend, unifyArgsOnly, unifyCallSiteDirect
+    , unify, unifyExtend, unifyArgsOnly, unifyCallSiteDirect, unifyCallSiteDirectWithExpected
     , buildSchemeInfo, refreshSchemeInfo
     , applySubstWithFreeVars
     , applySubstKeepNumber
@@ -1454,14 +1454,77 @@ unifyCallSiteDirect :
     -> Substitution
     -> ( Substitution, Mono.MonoType, MVarEnv )
 unifyCallSiteDirect env schemeArgTypes schemeResultType argMonoTypes baseSubst =
+    unifyCallSiteDirectWithExpected env schemeArgTypes schemeResultType argMonoTypes Nothing baseSubst
+
+
+{-| Variant of unifyCallSiteDirect that additionally constrains the scheme by
+unifying the scheme's residual type (after consuming the supplied argument
+positions) with the call's expected result canonical type. This lets
+concrete information encoded in the outer expression's result type (e.g. the
+fact that `List.map swap` at a given use site returns `List (Int, Int)`) flow
+back into the scheme's type variables, and through them into the arg
+expressions' own free type variables. Without this, a polymorphic arg such as
+a let-bound `swap : (ta, tb) -> (tb, ta)` passed as a first-class function
+would remain unresolved and get specialized as `(!eco.value, !eco.value)`.
+-}
+unifyCallSiteDirectWithExpected :
+    MVarEnv
+    -> List (Can.Type MVarId)
+    -> Can.Type MVarId
+    -> List Mono.MonoType
+    -> Maybe (Can.Type MVarId)
+    -> Substitution
+    -> ( Substitution, Mono.MonoType, MVarEnv )
+unifyCallSiteDirectWithExpected env schemeArgTypes schemeResultType argMonoTypes maybeCallResultCanType baseSubst =
     let
         -- Unify each scheme arg type with the corresponding call-site mono type
-        ( substAfterArgs, env1 ) =
+        ( substAfterArgs0, env0 ) =
             unifyArgTypesZip env schemeArgTypes argMonoTypes baseSubst
 
-        -- Resolve supplied arg mono types through updated substitution
+        -- Additionally, if we know the call's own expected result canonical
+        -- type, unify the scheme's residual (remaining scheme args + scheme
+        -- result, curried as a function chain) with it. This pushes concrete
+        -- information from the enclosing context back into scheme type
+        -- variables.
+        ( substAfterArgs, env1 ) =
+            case maybeCallResultCanType of
+                Just callResultCanType ->
+                    let
+                        schemeResidual =
+                            buildCurriedCanType (List.drop (List.length argMonoTypes) schemeArgTypes) schemeResultType
+
+                        ( expectedResidualMono, envR ) =
+                            applySubst env0 substAfterArgs0 callResultCanType
+                    in
+                    unifyHelp envR schemeResidual expectedResidualMono substAfterArgs0
+
+                Nothing ->
+                    ( substAfterArgs0, env0 )
+
+        -- Derive supplied arg types by applying the final substitution to the
+        -- scheme's arg types, not from argMonoTypes directly. This matters when
+        -- a supplied arg was a row-polymorphic local function whose argMono was
+        -- narrowed (e.g. its record extension var was unbound at argument
+        -- preparation time). Pulling from scheme-via-applySubst lets the cross-
+        -- arg unification (e.g. a third arg giving the full record shape) flow
+        -- back into the earlier positions instead of preserving the narrow type.
+        suppliedSchemeArgs =
+            List.take (List.length argMonoTypes) schemeArgTypes
+
+        ( revResolvedSupplied, envS ) =
+            List.foldl
+                (\canArg ( accArgs, accEnv ) ->
+                    let
+                        ( monoArg, envN ) =
+                            applySubst accEnv substAfterArgs canArg
+                    in
+                    ( monoArg :: accArgs, envN )
+                )
+                ( [], env1 )
+                suppliedSchemeArgs
+
         resolvedSuppliedArgs =
-            List.map (resolveMonoVars substAfterArgs) argMonoTypes
+            List.reverse revResolvedSupplied
 
         -- Resolve REMAINING scheme arg types through substitution
         remainingSchemeArgs =
@@ -1476,7 +1539,7 @@ unifyCallSiteDirect env schemeArgTypes schemeResultType argMonoTypes baseSubst =
                     in
                     ( monoArg :: accArgs, envN )
                 )
-                ( [], env1 )
+                ( [], envS )
                 remainingSchemeArgs
 
         resolvedAllArgs =
@@ -1520,6 +1583,19 @@ buildCurriedFuncType schemeArgs resolvedArgs resultMono =
 
         _ ->
             resultMono
+
+
+{-| Build a curried Can.Type chain: args ++ result → TLambda arg0 (TLambda arg1 ... result).
+When args is empty, returns result unchanged.
+-}
+buildCurriedCanType : List (Can.Type MVarId) -> Can.Type MVarId -> Can.Type MVarId
+buildCurriedCanType args result =
+    case args of
+        [] ->
+            result
+
+        first :: rest ->
+            Can.TLambda first (buildCurriedCanType rest result)
 
 
 
