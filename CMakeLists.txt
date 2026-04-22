@@ -81,6 +81,7 @@ add_subdirectory(compiler)
 set_property(DIRECTORY APPEND PROPERTY ADDITIONAL_CLEAN_FILES
     "${CMAKE_SOURCE_DIR}/test/elm/eco-stuff"
     "${CMAKE_SOURCE_DIR}/test/elm-bytes/eco-stuff"
+    "${CMAKE_SOURCE_DIR}/test/eco-kernel/eco-stuff"
     "${CMAKE_SOURCE_DIR}/test/elm-core/eco-stuff"
     "${CMAKE_SOURCE_DIR}/test/elm-http/eco-stuff"
     "${CMAKE_SOURCE_DIR}/test/elm-json/eco-stuff"
@@ -92,6 +93,7 @@ set_property(DIRECTORY APPEND PROPERTY ADDITIONAL_CLEAN_FILES
 set_property(DIRECTORY APPEND PROPERTY ADDITIONAL_MAKE_CLEAN_FILES
     "${CMAKE_SOURCE_DIR}/test/elm/eco-stuff"
     "${CMAKE_SOURCE_DIR}/test/elm-bytes/eco-stuff"
+    "${CMAKE_SOURCE_DIR}/test/eco-kernel/eco-stuff"
     "${CMAKE_SOURCE_DIR}/test/elm-core/eco-stuff"
     "${CMAKE_SOURCE_DIR}/test/elm-http/eco-stuff"
     "${CMAKE_SOURCE_DIR}/test/elm-json/eco-stuff"
@@ -106,6 +108,7 @@ set_property(DIRECTORY APPEND PROPERTY ADDITIONAL_MAKE_CLEAN_FILES
 add_custom_target(rebuild
     COMMAND ${CMAKE_COMMAND} -E rm -rf "${CMAKE_SOURCE_DIR}/test/elm/eco-stuff"
     COMMAND ${CMAKE_COMMAND} -E rm -rf "${CMAKE_SOURCE_DIR}/test/elm-bytes/eco-stuff"
+    COMMAND ${CMAKE_COMMAND} -E rm -rf "${CMAKE_SOURCE_DIR}/test/eco-kernel/eco-stuff"
     COMMAND ${CMAKE_COMMAND} -E rm -rf "${CMAKE_SOURCE_DIR}/test/elm-core/eco-stuff"
     COMMAND ${CMAKE_COMMAND} -E rm -rf "${CMAKE_SOURCE_DIR}/test/elm-http/eco-stuff"
     COMMAND ${CMAKE_COMMAND} -E rm -rf "${CMAKE_SOURCE_DIR}/test/elm-json/eco-stuff"
@@ -152,6 +155,7 @@ add_custom_target(stress
 add_custom_target(full
     COMMAND ${CMAKE_COMMAND} -E rm -rf "${CMAKE_SOURCE_DIR}/test/elm/eco-stuff"
     COMMAND ${CMAKE_COMMAND} -E rm -rf "${CMAKE_SOURCE_DIR}/test/elm-bytes/eco-stuff"
+    COMMAND ${CMAKE_COMMAND} -E rm -rf "${CMAKE_SOURCE_DIR}/test/eco-kernel/eco-stuff"
     COMMAND ${CMAKE_COMMAND} -E rm -rf "${CMAKE_SOURCE_DIR}/test/elm-core/eco-stuff"
     COMMAND ${CMAKE_COMMAND} -E rm -rf "${CMAKE_SOURCE_DIR}/test/elm-http/eco-stuff"
     COMMAND ${CMAKE_COMMAND} -E rm -rf "${CMAKE_SOURCE_DIR}/test/elm-json/eco-stuff"

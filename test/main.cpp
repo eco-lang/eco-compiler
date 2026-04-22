@@ -27,6 +27,7 @@
 #include "bf-codegen/BFCodegenTest.hpp"
 #include "elm/ElmTest.hpp"
 #include "elm-bytes/ElmBytesTest.hpp"
+#include "eco-kernel/EcoKernelTest.hpp"
 #include "elm-core/ElmCoreTest.hpp"
 #include "elm-json/ElmJsonTest.hpp"
 #include "elm-parser/ElmParserTest.hpp"
@@ -678,6 +679,10 @@ int main(int argc, char* argv[]) {
     // Elm Bytes end-to-end tests (test Bytes.Encode/Decode through full pipeline)
     auto elmBytesTests = ElmBytesTest::buildElmBytesTestSuite();
 
+    // Eco kernel E2E tests (direct Eco.MVar etc.) — compiled with
+    // --local-package eco/kernel so imports resolve to eco-kernel-cpp.
+    auto ecoKernelTests = EcoKernelTest::buildEcoKernelTestSuite();
+
     // Elm package E2E tests
     auto elmCoreTests = ElmCoreTest::buildElmCoreTestSuite();
     auto elmJsonTests = ElmJsonTest::buildElmJsonTestSuite();
@@ -704,6 +709,7 @@ int main(int argc, char* argv[]) {
     suite.add(std::move(bfCodegenTests));
     suite.add(std::move(elmE2ETests));
     suite.add(std::move(elmBytesTests));
+    suite.add(std::move(ecoKernelTests));
     suite.add(std::move(elmCoreTests));
     suite.add(std::move(elmJsonTests));
     suite.add(std::move(elmParserTests));

@@ -37,7 +37,19 @@ target_compile_features(test PRIVATE cxx_std_20)
 target_compile_options(test PRIVATE -fexceptions)
 # Use --whole-archive for EcoRunner so that Scheduler/PlatformRuntime symbols
 # are available when ElmKernel transitive dependencies are processed by the linker.
-target_link_libraries(test rapidcheck -Wl,--whole-archive EcoRunner -Wl,--no-whole-archive)
+#
+# Also whole-archive EcoKernel_MVar + EcoKernel_Runtime so the JIT's
+# DynamicLibrarySearchGenerator can dlsym the `Eco_Kernel_MVar_*` kernel
+# symbols (test/eco-kernel E2E suite drives the MVar kernel directly).
+target_link_libraries(test rapidcheck
+    -Wl,--whole-archive
+        EcoRunner
+        EcoKernel_MVar
+        EcoKernel_Runtime
+    -Wl,--no-whole-archive
+)
+# Export symbols so the JIT can find them via dlsym.
+set_target_properties(test PROPERTIES ENABLE_EXPORTS ON)
 
 # Stress test runner — a separate binary so these can be built/run independently
 # of the main E2E suite. Reuses ElmE2ETestBase/TestSuite/IsolatedTestRunner.
@@ -46,4 +58,12 @@ add_executable(stress-test
 )
 target_compile_features(stress-test PRIVATE cxx_std_20)
 target_compile_options(stress-test PRIVATE -fexceptions)
-target_link_libraries(stress-test -Wl,--whole-archive EcoRunner -Wl,--no-whole-archive)
+# Mirror the kernel wiring on stress-test so stress-elm MVar cases work.
+target_link_libraries(stress-test
+    -Wl,--whole-archive
+        EcoRunner
+        EcoKernel_MVar
+        EcoKernel_Runtime
+    -Wl,--no-whole-archive
+)
+set_target_properties(stress-test PROPERTIES ENABLE_EXPORTS ON)

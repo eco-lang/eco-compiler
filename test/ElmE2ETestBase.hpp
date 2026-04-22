@@ -272,7 +272,7 @@ inline void ensureMlirDirExists(const std::string& testDir) {
     std::filesystem::create_directories(mlirDir);
 }
 
-inline CompileResult compileElmToMlir(const std::string& testDir, const std::string& elmPath, const std::string& buildDir = "") {
+inline CompileResult compileElmToMlir(const std::string& testDir, const std::string& elmPath, const std::string& buildDir = "", const std::string& extraFlags = "") {
     CompileResult result;
     result.elmPath = elmPath;
     result.mlirPath = getMlirPath(testDir, elmPath);
@@ -289,6 +289,9 @@ inline CompileResult compileElmToMlir(const std::string& testDir, const std::str
                              "\" make \"" + elmPath + "\" --output=\"" + result.mlirPath + "\"" + getTextMlirFlag();
     if (!buildDir.empty()) {
         compileCmd += " --builddir=\"" + buildDir + "\"";
+    }
+    if (!extraFlags.empty()) {
+        compileCmd += extraFlags;
     }
 
     auto [exitCode, output] = executeCommand(compileCmd);
@@ -319,7 +322,8 @@ inline CompileResult compileElmToMlir(const std::string& testDir, const std::str
 
 inline std::vector<CompileResult> compileAllElmTests(const std::string& testDir,
                                                        const std::string& suiteName,
-                                                       const std::vector<std::string>& elmPaths) {
+                                                       const std::vector<std::string>& elmPaths,
+                                                       const std::string& extraFlags = "") {
     std::vector<CompileResult> results;
     results.resize(elmPaths.size());
 
@@ -362,7 +366,7 @@ inline std::vector<CompileResult> compileAllElmTests(const std::string& testDir,
         std::string filename = std::filesystem::path(firstPath).stem().string();
 
         std::cout << "  [1/" << needsCompile.size() << "] " << filename << " (initial)" << std::flush;
-        auto result = compileElmToMlir(testDir, firstPath, filename);
+        auto result = compileElmToMlir(testDir, firstPath, filename, extraFlags);
         results[firstIdx] = result;
 
         if (result.success) {
@@ -394,10 +398,11 @@ inline std::vector<CompileResult> compileAllElmTests(const std::string& testDir,
                 const auto& elmPath = elmPaths[idx];
                 std::string filename = std::filesystem::path(elmPath).stem().string();
                 std::string td = testDir;
+                std::string ef = extraFlags;
 
                 active.push_back({
-                    std::async(std::launch::async, [td, elmPath, filename]() {
-                        return compileElmToMlir(td, elmPath, filename);
+                    std::async(std::launch::async, [td, elmPath, filename, ef]() {
+                        return compileElmToMlir(td, elmPath, filename, ef);
                     }),
                     idx,
                     filename
@@ -854,8 +859,10 @@ class ElmE2EParallelTestSuite : public Testing::Test {
 public:
     ElmE2EParallelTestSuite(const std::string& testDir,
                              const std::string& suiteName,
-                             const std::string& testPrefix)
-        : name_(suiteName), testDir_(testDir), testPrefix_(testPrefix) {
+                             const std::string& testPrefix,
+                             const std::string& extraCompileFlags = "")
+        : name_(suiteName), testDir_(testDir), testPrefix_(testPrefix),
+          extraCompileFlags_(extraCompileFlags) {
         auto testPaths = discoverTests(testDir);
 
         for (const auto& path : testPaths) {
@@ -913,7 +920,7 @@ public:
         lastFailedTests_.clear();
 
         // PHASE 1: Compile all Elm files to MLIR
-        auto compileResults = compileAllElmTests(testDir_, name_, pathsToRun);
+        auto compileResults = compileAllElmTests(testDir_, name_, pathsToRun, extraCompileFlags_);
 
         std::vector<std::string> mlirPaths;
         std::vector<std::string> elmPaths;
@@ -959,6 +966,7 @@ private:
     std::string name_;
     std::string testDir_;
     std::string testPrefix_;
+    std::string extraCompileFlags_;
     std::vector<std::unique_ptr<ElmE2ETestEntry>> testEntries_;
 
     mutable size_t lastPassCount_ = 0;
@@ -989,14 +997,15 @@ inline std::string findTestDir(const std::string& dirName) {
 inline std::unique_ptr<ElmE2EParallelTestSuite> buildTestSuite(
     const std::string& dirName,
     const std::string& suiteName,
-    const std::string& testPrefix) {
+    const std::string& testPrefix,
+    const std::string& extraCompileFlags = "") {
     std::string testDir = findTestDir(dirName);
 
     if (!std::filesystem::exists(testDir) || !std::filesystem::is_directory(testDir)) {
         std::cerr << "Warning: Could not find test directory: " << testDir << std::endl;
     }
 
-    return std::make_unique<ElmE2EParallelTestSuite>(testDir, suiteName, testPrefix);
+    return std::make_unique<ElmE2EParallelTestSuite>(testDir, suiteName, testPrefix, extraCompileFlags);
 }
 
 }  // namespace ElmE2EBase
