@@ -83,17 +83,45 @@ static bool dictEq(void* a, void* b, int depth);
 static bool eqUnboxableSlot(Allocator& allocator,
                              Elm::Unboxable a, Elm::Unboxable b,
                              uint32_t aKind, uint32_t bKind, int depth) {
-    if (aKind != bKind) return false;
-    switch (aKind) {
-        case 1: return a.i == b.i;
-        case 2: return a.f == b.f;
-        case 3: return a.c == b.c;
-        default: {
-            void* ao; void* bo; bool eq;
-            if (resolveAndCompare(allocator, a.p, b.p, &ao, &bo, &eq) == 0) return eq;
-            return eqHelp(ao, bo, depth + 1);
+    if (aKind == bKind) {
+        switch (aKind) {
+            case 1: return a.i == b.i;
+            case 2: return a.f == b.f;
+            case 3: return a.c == b.c;
+            default: {
+                void* ao; void* bo; bool eq;
+                if (resolveAndCompare(allocator, a.p, b.p, &ao, &bo, &eq) == 0) return eq;
+                return eqHelp(ao, bo, depth + 1);
+            }
         }
     }
+
+    // Mixed kinds: one slot stores a primitive unboxed (kind 1/2/3) while the
+    // other stores a boxed HPointer (kind 0) to the matching primitive heap
+    // type. This happens legitimately when the two containers were built via
+    // different paths — e.g. a List.range boxed-Int Cons list vs an
+    // Array.fromList literal, or a JSON-decoded Int array vs one built via
+    // Array.fromList over a boxed list. Fall through to the Tag_Cons-style
+    // primitive cross-check.
+    if (aKind == 0 || bKind == 0) {
+        HPointer boxedHP = (aKind == 0) ? a.p : b.p;
+        Elm::Unboxable prim = (aKind == 0) ? b : a;
+        uint32_t primKind = (aKind == 0) ? bKind : aKind;
+        void* boxedPtr = safeResolve(allocator, boxedHP);
+        if (!boxedPtr) return false;
+        Header* hdr = static_cast<Header*>(boxedPtr);
+        if (hdr->tag == Tag_Int && primKind == 1) {
+            return static_cast<ElmInt*>(boxedPtr)->value == prim.i;
+        }
+        if (hdr->tag == Tag_Float && primKind == 2) {
+            return static_cast<ElmFloat*>(boxedPtr)->value == prim.f;
+        }
+        if (hdr->tag == Tag_Char && primKind == 3) {
+            return static_cast<ElmChar*>(boxedPtr)->value == prim.c;
+        }
+    }
+
+    return false;
 }
 
 // Compare two Unboxable slots whose kinds agree (0=boxed, 1=Int, 2=Float, 3=Char).
@@ -503,8 +531,13 @@ static bool eqHelp(void* a, void* b, int depth) {
 
             uint32_t aKind = aa->header.unboxed & 0x3;
             uint32_t bKind = ba->header.unboxed & 0x3;
-            if (aKind != bKind) return false;
 
+            // Two arrays representing the same element sequence may disagree on
+            // the uniform "unboxed kind" stored in the header — e.g. one built
+            // via Array.fromList over a boxed-Int Cons list (kind 0) vs one
+            // decoded from JSON with an Int decoder (kind 1). Delegate to
+            // eqUnboxableSlot per-element, which handles mixed boxed/unboxed
+            // primitive comparisons (same logic the Tag_Cons path uses).
             for (u32 i = 0; i < aa->length; ++i) {
                 if (!eqUnboxableSlot(allocator, aa->elements[i], ba->elements[i], aKind, bKind, depth)) return false;
             }

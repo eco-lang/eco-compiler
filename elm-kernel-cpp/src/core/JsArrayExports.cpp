@@ -49,6 +49,36 @@ static uint64_t callUnaryMapClosure(HPtr closure_hptr, uint64_t elem) {
     return eco_closure_call_saturated(closure_hptr, args, 1, /*layout=*/nullptr).toBits();
 }
 
+// Push the closure's return value into `arrObj`, unboxing primitive wrappers
+// so the uniform-kind Int/Float/Char arrays match the representation
+// Array.fromList / JsArray.initializeFromList would produce for the same
+// element type. Shared helper used by initialize / map / indexedMap.
+static void pushUnboxedResult(void* arrObj, uint64_t result) {
+    auto& allocator = Allocator::instance();
+    HPointer hp = Export::decode(result);
+    void* elemPtr = alloc::isConstant(hp) ? nullptr : allocator.resolve(hp);
+    if (elemPtr) {
+        Header* hdr = static_cast<Header*>(elemPtr);
+        if (hdr->tag == Tag_Int) {
+            Unboxable u; u.i = static_cast<ElmInt*>(elemPtr)->value;
+            alloc::arrayPushKind(arrObj, u, 1);
+            return;
+        }
+        if (hdr->tag == Tag_Float) {
+            Unboxable u; u.f = static_cast<ElmFloat*>(elemPtr)->value;
+            alloc::arrayPushKind(arrObj, u, 2);
+            return;
+        }
+        if (hdr->tag == Tag_Char) {
+            Unboxable u; u.c = static_cast<ElmChar*>(elemPtr)->value;
+            alloc::arrayPushKind(arrObj, u, 3);
+            return;
+        }
+    }
+    Unboxable u; u.p = hp;
+    alloc::arrayPush(arrObj, u, true);  // boxed
+}
+
 // Call a closure with two arguments (index, element for indexedMap).
 // index is boxed, element is HPointer-encoded.
 static uint64_t callBinaryIndexMapClosure(HPtr closure_hptr, int64_t index, uint64_t elem) {
@@ -241,7 +271,24 @@ HPtr Elm_Kernel_JsArray_appendN(HPtr n_val, HPtr dest, HPtr source) {
         resultArr->elements[destLen + i] = srcArr->elements[i];
     }
     resultArr->length = newLen;
-    resultArr->header.unboxed = destArr->header.unboxed;
+    // Pick the result kind from whichever operand has elements. If dest is
+    // empty, inherit src's kind (otherwise the copied elements silently
+    // become the wrong kind — e.g. unboxed Ints copied into a kind-0 result).
+    // Conversely, if src contributed zero elements keep dest's kind.
+    uint32_t destKind = destArr->header.unboxed & 0x3;
+    uint32_t srcKind = srcArr->header.unboxed & 0x3;
+    uint32_t resultKind;
+    if (destLen == 0) {
+        resultKind = srcKind;
+    } else if (toCopy == 0) {
+        resultKind = destKind;
+    } else {
+        // Both contribute elements; they must agree on kind.
+        assert(destKind == srcKind &&
+               "JsArray.appendN: dest and src kinds disagree");
+        resultKind = destKind;
+    }
+    resultArr->header.unboxed = resultKind;
 
     return HPtr::fromBits(Export::encode(result));
 }
@@ -260,9 +307,7 @@ HPtr Elm_Kernel_JsArray_initialize(HPtr size_val, HPtr offset_val, HPtr closure)
     for (int64_t i = 0; i < size; i++) {
         uint64_t value = callUnaryInitClosure(closure, offset + i);
         void* arrObj = allocator.resolve(arr);
-        Unboxable elem;
-        elem.p = Export::decode(value);
-        alloc::arrayPush(arrObj, elem, true);  // isBoxed=true
+        pushUnboxedResult(arrObj, value);
     }
     return HPtr::fromBits(Export::encode(arr));
 }
@@ -297,9 +342,7 @@ HPtr Elm_Kernel_JsArray_map(HPtr closure, HPtr array) {
         uint64_t result = callUnaryMapClosure(closure, elem);
 
         void* arrObj = allocator.resolve(arr);
-        Unboxable val;
-        val.p = Export::decode(result);
-        alloc::arrayPush(arrObj, val, true);  // results are boxed
+        pushUnboxedResult(arrObj, result);
     }
     return HPtr::fromBits(Export::encode(arr));
 }
@@ -329,9 +372,7 @@ HPtr Elm_Kernel_JsArray_indexedMap(HPtr closure, HPtr offset_val, HPtr array) {
         uint64_t result = callBinaryIndexMapClosure(closure, offset + i, elem);
 
         void* arrObj = allocator.resolve(arr);
-        Unboxable val;
-        val.p = Export::decode(result);
-        alloc::arrayPush(arrObj, val, true);  // results are boxed
+        pushUnboxedResult(arrObj, result);
     }
     return HPtr::fromBits(Export::encode(arr));
 }

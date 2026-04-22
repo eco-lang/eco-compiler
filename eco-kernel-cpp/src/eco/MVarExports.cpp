@@ -8,6 +8,8 @@
 using namespace Eco::Kernel;
 using Elm::HPtr;
 
+extern "C" {
+
 HPtr Eco_Kernel_MVar_new() {
     int64_t id = MVar::newEmpty();
     // Wrap as Task Never Int: taskSucceed(boxed Int).
@@ -34,3 +36,5 @@ HPtr Eco_Kernel_MVar_drop(uint64_t id) {
 extern "C" void Eco_Kernel_MVar_register_gc_roots() {
     MVar::registerGcRootScanner();
 }
+
+} // extern "C"

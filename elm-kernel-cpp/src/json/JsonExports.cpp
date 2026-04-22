@@ -862,6 +862,21 @@ static uint64_t runDecoder(Custom* decoder, uint64_t jvalEnc) {
             void* valDecPtr = allocator.resolve(decoder->values[0].p);
             Custom* valDec = static_cast<Custom*>(valDecPtr);
 
+            // Decide value kind for the tuple's second slot based on the value
+            // decoder. Matches DEC_LIST's convention — the monomorphizer
+            // specializes `(String, a)` for concrete `a`, so the caller expects
+            // an unboxed slot for primitive `a` and a boxed slot otherwise.
+            // Key is always String (boxed, kind 0).
+            u8 valKind = 0;  // 0 = boxed
+            switch (valDec->ctor) {
+                case DEC_INT:   valKind = 1; break;  // unboxed i64
+                case DEC_FLOAT: valKind = 2; break;  // unboxed f64
+                default:        valKind = 0; break;  // boxed HPointer
+            }
+            // Tuple bitmap: slot 0 (key) always boxed (kind 0), slot 1 (value)
+            // kind = valKind. 2-bit-per-slot encoding: slot1 kind occupies bits 2-3.
+            u64 tupleBitmap = static_cast<u64>(valKind) << 2;
+
             // Collect key-value pairs into a vector first, then build the list
             // in reverse to preserve original order.
             HPointer kvList = jval->values[0].p;
@@ -896,8 +911,23 @@ static uint64_t runDecoder(Custom* decoder, uint64_t jvalEnc) {
 
                 HPointer decodedVal = getOkValue(valResult);
 
-                // Create result Tuple2 (key, decodedValue).
-                HPointer resTup = tuple2(boxed(keyStr), boxed(decodedVal), 0);
+                // Unwrap primitive wrappers so tuple slot 1 matches the kind
+                // the caller's destructure expects (see comment above about
+                // tupleBitmap).
+                Unboxable valSlot;
+                if (valKind == 1) {
+                    ElmInt* ei = static_cast<ElmInt*>(allocator.resolve(decodedVal));
+                    valSlot.i = ei->value;
+                } else if (valKind == 2) {
+                    ElmFloat* ef = static_cast<ElmFloat*>(allocator.resolve(decodedVal));
+                    valSlot.f = ef->value;
+                } else {
+                    valSlot.p = decodedVal;
+                }
+
+                // Create result Tuple2 (key, decodedValue) with the inferred
+                // bitmap so primitive values are stored unboxed.
+                HPointer resTup = tuple2(boxed(keyStr), valSlot, tupleBitmap);
                 result = cons(boxed(resTup), result, true);
             }
             return makeOk(result);
