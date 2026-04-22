@@ -429,9 +429,31 @@ static void* workerSendToAppEvaluator(void* rawArgs[]) {
     return reinterpret_cast<void*>(encodeHP(Elm::alloc::unit()));
 }
 
+// Builds an Elm Record for `StressFlags` matching the shape:
+//   { maxSize : Int, numLoops : Int, seed : Int,
+//     startMs : Int, timeoutMs : Int, verbose : Bool }
+// Fields are in alphabetical (canonical) order. The first five are unboxed
+// Ints (slot kind 1); verbose is a boxed HPointer to True/False.
+static HPointer buildStressFlagsRecord(const StressFlags& f) {
+    std::vector<Unboxable> vals(6);
+    vals[0] = unboxedInt(f.maxSize);    // maxSize
+    vals[1] = unboxedInt(f.numLoops);   // numLoops
+    vals[2] = unboxedInt(f.seed);       // seed
+    vals[3] = unboxedInt(f.startMs);    // startMs
+    vals[4] = unboxedInt(f.timeoutMs);  // timeoutMs
+    vals[5] = boxed(f.verbose ? elmTrue() : elmFalse());  // verbose
+    // 2-bit mask per slot: slots 0..4 = kind 1 (Int), slot 5 = kind 0 (boxed).
+    // Slot i occupies bits (2i .. 2i+1). 0x155 = 0b0101_0101_0101.
+    uint64_t mask = 0x155;
+    return record(vals, mask);
+}
+
 HPointer PlatformRuntime::initWorker(HPointer impl) {
-    // Phase 1: Decode flags (minimal path: use Unit)
-    HPointer flags = unit();
+    // Phase 1: Decode flags. If a StressFlags struct is pending from the
+    // test harness, build a flag record; otherwise pass Unit (default).
+    HPointer flags = hasPendingFlags_
+        ? buildStressFlagsRecord(pendingFlags_)
+        : unit();
 
     // Phase 2: Call init
     void* implPtr = resolveHP(impl);

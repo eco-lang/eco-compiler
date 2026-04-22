@@ -1,32 +1,42 @@
 module ListReverseStressTest exposing (main)
 
--- CHECK: roundtrip: True
+-- CHECK: ListReverseStressTest: True
 
-import Html exposing (text)
-
-
-initialList : List Int
-initialList =
-    List.range 1 1000
+import StressHarness exposing (StressFlags)
 
 
-reverseNTimes : Int -> List a -> List a
-reverseNTimes n list =
-    if n <= 0 then
-        list
-    else
-        reverseNTimes (n - 1) (List.reverse list)
+type alias State =
+    { list : List Int
+    , original : List Int
+    }
 
 
-main =
+seed : StressFlags -> State
+seed flags =
     let
-        start =
-            initialList
-
-        finished =
-            reverseNTimes 1000 start
-
-        _ =
-            Debug.log "roundtrip" (start == finished)
+        xs =
+            List.range 1 flags.maxSize
     in
-    text "done"
+    { list = xs, original = xs }
+
+
+{-| Reverse twice per step so the list is guaranteed to match `original`
+regardless of the parity of `numLoops`. -}
+step : State -> State
+step s =
+    { s | list = List.reverse (List.reverse s.list) }
+
+
+check : State -> Bool
+check s =
+    s.list == s.original
+
+
+main : Program StressFlags StressHarness.Model StressHarness.Msg
+main =
+    StressHarness.program
+        { label = "ListReverseStressTest"
+        , seed = seed
+        , step = step
+        , check = check
+        }
