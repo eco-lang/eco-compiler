@@ -269,14 +269,13 @@ void GCStats::print() const {
     }
 
     // ========== Major GC Event Stats ==========
-    if (major_gc_count > 0 || concurrent_marks_started > 0) {
-        std::cout << "\nMajor GC:" << std::endl;
-        std::cout << "  Major GC cycles:       " << std::setw(12) << major_gc_count << std::endl;
-        std::cout << "  Concurrent marks:      " << std::setw(12) << concurrent_marks_started << std::endl;
-        std::cout << "  Mark-sweeps completed: " << std::setw(12) << mark_sweeps_completed << std::endl;
-        std::cout << "  Incremental marks:     " << std::setw(12) << incremental_mark_calls << std::endl;
-        std::cout << "  Total work units:      " << std::setw(12) << total_incremental_mark_work_units << std::endl;
-    }
+    // Always printed so a run with zero major GC activity is visible rather than omitted.
+    std::cout << "\nMajor GC:" << std::endl;
+    std::cout << "  Major GC cycles:       " << std::setw(12) << major_gc_count << std::endl;
+    std::cout << "  Concurrent marks:      " << std::setw(12) << concurrent_marks_started << std::endl;
+    std::cout << "  Mark-sweeps completed: " << std::setw(12) << mark_sweeps_completed << std::endl;
+    std::cout << "  Incremental marks:     " << std::setw(12) << incremental_mark_calls << std::endl;
+    std::cout << "  Total work units:      " << std::setw(12) << total_incremental_mark_work_units << std::endl;
 
     // ========== Major GC Timing Stats ==========
     if (major_gc_count > 0) {
