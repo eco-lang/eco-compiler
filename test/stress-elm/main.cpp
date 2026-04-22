@@ -20,6 +20,12 @@ struct StressConfig {
     bool verbose = false;
     bool list_tests = false;
     int repeat = 1;
+    // Number of outer iterations per stress program (threaded to Elm as
+    // StressFlags.numLoops).
+    int num_test_loops = 100;
+    // Secondary "size" knob for stress programs (threaded as StressFlags.maxSize).
+    int max_size = 100;
+    uint64_t seed = 0;
     std::optional<std::chrono::seconds> duration;
     std::optional<std::chrono::seconds> timeout;
     std::string filter = "";
@@ -63,31 +69,37 @@ static void printHelp(const char* prog) {
     std::cout << "Usage: " << prog << " [OPTIONS]\n\n"
               << "Eco Stress Test Runner (Elm E2E, larger/longer programs)\n\n"
               << "Options:\n"
-              << "  -f, --filter <PAT>     Run only tests whose name contains PAT\n"
-              << "  -r, --repeat <N>       Run the suite N times (default 1)\n"
-              << "  -t, --duration <TIME>  Run repeatedly for TIME (e.g. 30s, 5m), then exit 0\n"
-              << "      --timeout <TIME>   Fail if tests exceed TIME (e.g. 5m)\n"
-              << "      --list             List discovered tests and exit\n"
-              << "  -v, --verbose          Verbose output\n"
-              << "  -h, --help             Show this help\n";
+              << "  -f, --filter <PAT>           Run only tests whose name contains PAT\n"
+              << "  -r, --repeat <N>             Run the suite N times (default 1)\n"
+              << "  -t, --duration <TIME>        Run repeatedly for TIME (e.g. 30s, 5m), then exit 0\n"
+              << "      --timeout <TIME>         Fail if tests exceed TIME (e.g. 5m)\n"
+              << "  -n, --num-test-loops <N>     Outer iteration count per stress program (default 100)\n"
+              << "  -m, --max-size <M>           Secondary size knob (default 100)\n"
+              << "  -s, --seed <SEED>            Seed (0 = time-based)\n"
+              << "      --list                   List discovered tests and exit\n"
+              << "  -v, --verbose                Verbose output\n"
+              << "  -h, --help                   Show this help\n";
 }
 
 static StressConfig parseCommandLine(int argc, char* argv[]) {
     StressConfig config;
 
     static struct option long_options[] = {
-        {"filter",   required_argument, 0, 'f'},
-        {"repeat",   required_argument, 0, 'r'},
-        {"duration", required_argument, 0, 't'},
-        {"timeout",  required_argument, 0, 'T'},
-        {"list",     no_argument,       0, 'L'},
-        {"verbose",  no_argument,       0, 'v'},
-        {"help",     no_argument,       0, 'h'},
+        {"filter",          required_argument, 0, 'f'},
+        {"repeat",          required_argument, 0, 'r'},
+        {"duration",        required_argument, 0, 't'},
+        {"timeout",         required_argument, 0, 'T'},
+        {"num-test-loops",  required_argument, 0, 'n'},
+        {"max-size",        required_argument, 0, 'm'},
+        {"seed",            required_argument, 0, 's'},
+        {"list",            no_argument,       0, 'L'},
+        {"verbose",         no_argument,       0, 'v'},
+        {"help",            no_argument,       0, 'h'},
         {0, 0, 0, 0}
     };
 
     int opt, idx = 0;
-    while ((opt = getopt_long(argc, argv, "f:r:t:vh", long_options, &idx)) != -1) {
+    while ((opt = getopt_long(argc, argv, "f:r:t:n:m:s:vh", long_options, &idx)) != -1) {
         switch (opt) {
             case 'f': config.filter = optarg; break;
             case 'r':
@@ -106,6 +118,21 @@ static StressConfig parseCommandLine(int argc, char* argv[]) {
                 config.timeout = d;
                 break;
             }
+            case 'n':
+                config.num_test_loops = std::atoi(optarg);
+                if (config.num_test_loops <= 0) {
+                    std::cerr << "Error: --num-test-loops must be positive\n"; exit(1);
+                }
+                break;
+            case 'm':
+                config.max_size = std::atoi(optarg);
+                if (config.max_size <= 0) {
+                    std::cerr << "Error: --max-size must be positive\n"; exit(1);
+                }
+                break;
+            case 's':
+                config.seed = std::stoull(optarg);
+                break;
             case 'L': config.list_tests = true; break;
             case 'v': config.verbose = true; break;
             case 'h': printHelp(argv[0]); exit(0);
@@ -146,7 +173,20 @@ static void printSummary(const Testing::TestSuiteResult& r) {
 int main(int argc, char* argv[]) {
     StressConfig config = parseCommandLine(argc, argv);
 
-    auto stressTests = StressElmTest::buildStressElmTestSuite();
+    // Translate CLI config into the StressFlags record passed to
+    // Platform.worker-based stress programs. startMs is refreshed per-run
+    // inside ElmE2EParallelTestSuite.
+    Elm::Platform::StressFlags stressFlags{};
+    stressFlags.numLoops  = config.num_test_loops;
+    stressFlags.maxSize   = config.max_size;
+    stressFlags.timeoutMs = config.timeout.has_value()
+        ? static_cast<int64_t>(config.timeout->count()) * 1000
+        : 0;
+    stressFlags.seed      = static_cast<int64_t>(config.seed);
+    stressFlags.startMs   = 0;
+    stressFlags.verbose   = config.verbose;
+
+    auto stressTests = StressElmTest::buildStressElmTestSuite(stressFlags);
 
     Testing::TestSuite suite("Stress Tests");
     suite.add(std::move(stressTests));
@@ -165,6 +205,9 @@ int main(int argc, char* argv[]) {
 
     if (config.verbose) {
         std::cout << "Configuration:\n";
+        std::cout << "  num_test_loops: " << config.num_test_loops << "\n";
+        std::cout << "  max_size:       " << config.max_size << "\n";
+        std::cout << "  seed:           " << config.seed << "\n";
         if (config.duration.has_value()) {
             std::cout << "  Duration: " << formatDuration(*config.duration) << "\n";
         } else {

@@ -11,6 +11,20 @@
 
 namespace Elm::Platform {
 
+/// Stress-test flags passed to Platform.worker as the `flags` argument.
+///
+/// Consumed by stress-elm programs that opt in by declaring
+/// `main : Program StressFlags Model Msg` via StressHarness. When unset
+/// (default), initWorker passes Unit so existing tests are unaffected.
+struct StressFlags {
+    int64_t numLoops;
+    int64_t maxSize;
+    int64_t timeoutMs;
+    int64_t seed;
+    int64_t startMs;
+    bool    verbose;
+};
+
 class PlatformRuntime {
 public:
     static PlatformRuntime& instance();
@@ -38,6 +52,14 @@ public:
 
     // Platform.worker initialization
     HPointer initWorker(HPointer impl);
+
+    // Optional stress-test flags: if set, initWorker builds a StressFlags
+    // record and passes it as the `flags` arg. Clear to fall back to Unit.
+    void setPendingFlags(const StressFlags& flags) {
+        pendingFlags_ = flags;
+        hasPendingFlags_ = true;
+    }
+    void clearPendingFlags() { hasPendingFlags_ = false; }
 
     // Model storage access (for workerSendToAppEvaluator)
     uint64_t getModelStorage() const { return modelStorage_; }
@@ -77,6 +99,11 @@ private:
 
     // sendToApp closure for the current program
     uint64_t sendToAppClosure_ = 0;
+
+    // Optional pending flags built into the `flags` arg for the next
+    // initWorker call. When absent, initWorker passes Unit.
+    StressFlags pendingFlags_{};
+    bool hasPendingFlags_ = false;
 };
 
 } // namespace Elm::Platform

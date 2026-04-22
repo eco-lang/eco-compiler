@@ -137,9 +137,9 @@ void printHelp(const char* program_name) {
     std::cout << "Usage: " << program_name << " [OPTIONS]\n\n";
     std::cout << "Eco Runtime GC Property-Based Test Suite\n\n";
     std::cout << "Options:\n";
-    std::cout << "  -n, --num-tests <N>         Number of test iterations (default: 5)\n";
+    std::cout << "  -n, --num-test-loops <N>    Number of test iterations (default: 5; alias: --num-tests)\n";
     std::cout << "  -s, --seed <SEED>           Random seed for reproducibility\n";
-    std::cout << "      --max-size <N>          Maximum size parameter for generators (default: 50)\n";
+    std::cout << "  -m, --max-size <N>          Maximum size parameter for generators (default: 50)\n";
     std::cout << "      --max-discard-ratio <N> Maximum ratio of discarded tests (default: 10)\n";
     std::cout << "  -v, --verbose               Verbose output with statistics\n";
     std::cout << "      --list                  List available tests without running\n";
@@ -239,9 +239,10 @@ TestConfig parseCommandLine(int argc, char* argv[]) {
     TestConfig config;
 
     static struct option long_options[] = {
-        {"num-tests",          required_argument, 0, 'n'},
+        {"num-test-loops",     required_argument, 0, 'n'},
+        {"num-tests",          required_argument, 0, 'n'},  // deprecated alias
         {"seed",               required_argument, 0, 's'},
-        {"max-size",           required_argument, 0, 'M'},
+        {"max-size",           required_argument, 0, 'm'},
         {"max-discard-ratio",  required_argument, 0, 'D'},
         {"verbose",            no_argument,       0, 'v'},
         {"list",               no_argument,       0, 'L'},
@@ -260,19 +261,19 @@ TestConfig parseCommandLine(int argc, char* argv[]) {
     int opt;
     int option_index = 0;
 
-    while ((opt = getopt_long(argc, argv, "n:s:vhf:r:t:i", long_options, &option_index)) != -1) {
+    while ((opt = getopt_long(argc, argv, "n:s:m:vhf:r:t:i", long_options, &option_index)) != -1) {
         switch (opt) {
             case 'n':
                 config.num_tests = std::atoi(optarg);
                 if (config.num_tests <= 0) {
-                    std::cerr << "Error: num-tests must be positive\n";
+                    std::cerr << "Error: num-test-loops must be positive\n";
                     exit(1);
                 }
                 break;
             case 's':
                 config.seed = std::stoull(optarg);
                 break;
-            case 'M':
+            case 'm':
                 config.max_size = std::atoi(optarg);
                 if (config.max_size <= 0) {
                     std::cerr << "Error: max-size must be positive\n";

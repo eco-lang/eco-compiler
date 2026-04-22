@@ -115,7 +115,10 @@ cmake --preset ninja-clang-lld-linux-debug
 cmake --build build
 ```
 
-### Running tests
+### Running the functional test suite
+
+The functional suite covers the C++ runtime (GC, allocator, kernel ops),
+MLIR codegen, and Elm end-to-end tests (compile Elm → MLIR → JIT).
 
 ```bash
 # Incremental build + run all tests
@@ -128,11 +131,11 @@ cmake --build build --target full
 TEST_FILTER=elm cmake --build build --target check
 TEST_FILTER=String cmake --build build --target run-tests
 
-# Compiler frontend tests
-cd compiler && npx elm-test-rs --fuzz 1
+# Compiler frontend tests (Elm-side unit tests, run via elm-test-rs)
+cd compiler && npx elm-test-rs --project build-xhr --fuzz 1
 ```
 
-### Build targets
+#### Build targets
 
 | Target | Description |
 |--------|-------------|
@@ -141,15 +144,65 @@ cd compiler && npx elm-test-rs --fuzz 1
 | `rebuild` | Clean + rebuild (no tests) |
 | `full` | Clean + rebuild + run tests |
 
-### Running the test binary directly
+#### Running the test binary directly
 
 ```bash
-./build/test/test                    # Run all tests
-./build/test/test --filter elm       # Filter by name
-./build/test/test -n 1000           # Run 1000 tests
-./build/test/test --seed 42          # Reproducible run
-./build/test/test --max-size 500     # Higher complexity tests
+./build/test/test                             # Run all tests
+./build/test/test --filter elm                # Filter by name
+./build/test/test -n 1000                     # 1000 property-test iterations
+./build/test/test -n 1000 --num-tests 1000    # --num-tests is an alias for -n
+./build/test/test --num-test-loops 1000       # Canonical long form
+./build/test/test -m 500 --max-size 500       # Secondary size (generator complexity)
+./build/test/test --seed 42                   # Reproducible run
+./build/test/test --timeout 5m                # Fail if the suite takes > 5m
+./build/test/test --list                      # List tests without running
+./build/test/test -i                          # Interactive test picker
 ```
+
+`-n` and `-m` are shared with the stress runner below and control the
+rapidcheck `max_success` and `max_size` parameters here.
+
+### Running the stress test suite
+
+The stress suite runs longer-lived Elm programs that exercise the
+runtime and GC under sustained load. It lives in a separate binary
+(`stress-test`) so its high iteration counts don't slow down the
+normal `check` cycle.
+
+```bash
+# Build only the stress binary (faster than a full rebuild)
+cmake --build build --target stress-test
+
+# Run the full stress suite with default parameters
+./build/test/stress-test
+
+# Scale work per-test via the shared -n / -m knobs
+./build/test/stress-test -n 500 -m 200
+
+# Filter to a single stress program
+./build/test/stress-test --filter ListReverseStressTest -n 1000 -m 100
+
+# List the discovered stress programs
+./build/test/stress-test --list
+
+# Other options
+./build/test/stress-test --timeout 5m          # Per-suite wall-clock budget
+./build/test/stress-test -t 30s                # Run repeatedly for 30 seconds
+./build/test/stress-test -r 5                  # Repeat the whole suite 5x
+./build/test/stress-test --seed 42             # Seed for reproducible runs
+./build/test/stress-test -v                    # Verbose (prints config + flags)
+```
+
+Stress programs that opt in to parameterization use the shared
+`StressHarness` module (`test/stress-elm/src/StressHarness.elm`): they
+receive a `StressFlags` record (`maxSize`, `numLoops`, `seed`,
+`startMs`, `timeoutMs`, `verbose`) built from the CLI flags above and
+use it to size their input and loop count. `-n` sets `numLoops` (outer
+iteration count) and `-m` sets `maxSize` (secondary size knob, e.g.
+list/array length). `--timeout` is threaded through as `timeoutMs`, so
+a harness-based program can bail from its inner loop once the
+wall-clock budget is exhausted instead of relying on the backstop
+SIGKILL.
 
 ## Docker development
 

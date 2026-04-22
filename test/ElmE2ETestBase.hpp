@@ -5,6 +5,7 @@
 #include "../runtime/src/codegen/EcoRunner.hpp"
 #include "../runtime/src/allocator/GCStats.hpp"
 #include "../runtime/src/allocator/Allocator.hpp"
+#include "../runtime/src/platform/PlatformRuntime.hpp"
 
 #include <algorithm>
 #include <array>
@@ -17,7 +18,9 @@
 #include <iomanip>
 #include <iostream>
 #include <memory>
+#include <optional>
 #include <regex>
+#include <chrono>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -462,7 +465,9 @@ inline eco::EcoRunner& getRunner() {
     return runner;
 }
 
-inline void runElmTestFromMlir(const std::string& mlirPath, const std::string& elmPath) {
+inline void runElmTestFromMlir(const std::string& mlirPath,
+                               const std::string& elmPath,
+                               const std::optional<Elm::Platform::StressFlags>& flags = std::nullopt) {
     std::string elmContent = readFile(elmPath);
     auto checkPatterns = extractCheckPatterns(elmContent);
     std::string expectedOutput = extractExpectedOutput(elmContent);
@@ -478,6 +483,15 @@ inline void runElmTestFromMlir(const std::string& mlirPath, const std::string& e
 
     auto& runner = getRunner();
     runner.reset();
+
+    // Platform.worker reads the pending flags (if any) to build its
+    // `flags` argument. Absent → Unit (default for non-stress tests).
+    auto& platform = Elm::Platform::PlatformRuntime::instance();
+    if (flags.has_value()) {
+        platform.setPendingFlags(*flags);
+    } else {
+        platform.clearPendingFlags();
+    }
 
     auto result = runner.runFile(mlirPath);
 
@@ -509,7 +523,8 @@ inline void runElmTestFromMlir(const std::string& mlirPath, const std::string& e
 inline IsolatedTestRunner::ParallelTestSummary runMlirTestsParallel(
     const std::vector<std::string>& mlirPaths,
     const std::vector<std::string>& elmPaths,
-    const std::vector<std::string>& testNames)
+    const std::vector<std::string>& testNames,
+    const std::optional<Elm::Platform::StressFlags>& flags = std::nullopt)
 {
     using namespace IsolatedTestRunner;
 
@@ -612,7 +627,7 @@ inline IsolatedTestRunner::ParallelTestSummary runMlirTestsParallel(
                 close(ctx.outputPipe[1]);
 
                 try {
-                    runElmTestFromMlir(ctx.mlirPath, ctx.elmPath);
+                    runElmTestFromMlir(ctx.mlirPath, ctx.elmPath, flags);
                     ctx.shared->passed = true;
                     ctx.shared->completed = true;
                 } catch (const std::exception& e) {
@@ -860,9 +875,11 @@ public:
     ElmE2EParallelTestSuite(const std::string& testDir,
                              const std::string& suiteName,
                              const std::string& testPrefix,
-                             const std::string& extraCompileFlags = "")
+                             const std::string& extraCompileFlags = "",
+                             std::optional<Elm::Platform::StressFlags> stressFlags = std::nullopt)
         : name_(suiteName), testDir_(testDir), testPrefix_(testPrefix),
-          extraCompileFlags_(extraCompileFlags) {
+          extraCompileFlags_(extraCompileFlags),
+          stressFlags_(stressFlags) {
         auto testPaths = discoverTests(testDir);
 
         for (const auto& path : testPaths) {
@@ -946,7 +963,15 @@ public:
 
         IsolatedTestRunner::ParallelTestSummary summary;
         if (!mlirPaths.empty()) {
-            summary = runMlirTestsParallel(mlirPaths, elmPaths, testNames);
+            // Refresh startMs per-run so each fork sees a near-current zero
+            // point for wall-clock timeouts.
+            auto flagsPerRun = stressFlags_;
+            if (flagsPerRun.has_value()) {
+                flagsPerRun->startMs = static_cast<int64_t>(
+                    std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::system_clock::now().time_since_epoch()).count());
+            }
+            summary = runMlirTestsParallel(mlirPaths, elmPaths, testNames, flagsPerRun);
         }
 
         lastPassCount_ = summary.passCount;
@@ -967,6 +992,7 @@ private:
     std::string testDir_;
     std::string testPrefix_;
     std::string extraCompileFlags_;
+    std::optional<Elm::Platform::StressFlags> stressFlags_;
     std::vector<std::unique_ptr<ElmE2ETestEntry>> testEntries_;
 
     mutable size_t lastPassCount_ = 0;
@@ -998,14 +1024,16 @@ inline std::unique_ptr<ElmE2EParallelTestSuite> buildTestSuite(
     const std::string& dirName,
     const std::string& suiteName,
     const std::string& testPrefix,
-    const std::string& extraCompileFlags = "") {
+    const std::string& extraCompileFlags = "",
+    std::optional<Elm::Platform::StressFlags> stressFlags = std::nullopt) {
     std::string testDir = findTestDir(dirName);
 
     if (!std::filesystem::exists(testDir) || !std::filesystem::is_directory(testDir)) {
         std::cerr << "Warning: Could not find test directory: " << testDir << std::endl;
     }
 
-    return std::make_unique<ElmE2EParallelTestSuite>(testDir, suiteName, testPrefix, extraCompileFlags);
+    return std::make_unique<ElmE2EParallelTestSuite>(
+        testDir, suiteName, testPrefix, extraCompileFlags, stressFlags);
 }
 
 }  // namespace ElmE2EBase
