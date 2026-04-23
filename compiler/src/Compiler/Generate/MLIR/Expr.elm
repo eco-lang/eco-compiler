@@ -3935,9 +3935,12 @@ generateDestruct ctx (Mono.MonoDestructor name path _) body _ =
         --   - The destructor's monoType may be MVar "value" (not in substitution)
         --   - But the path's resultType is correctly MInt
         --
-        -- By using the path's type, we ensure correct primitive types are used.
+        -- If the path itself still has an unresolved MVar at its top (e.g.
+        -- polymorphic `Done a` partially specialized), fall back to the ctor
+        -- shape registry so the destructor type matches the constructor
+        -- wrapper's actual heap layout.
         pathResultType =
-            Mono.getMonoPathType path
+            Patterns.resolvePathResultType ctx path
 
         -- Convert to MLIR type
         destructorMlirType =

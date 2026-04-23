@@ -1,4 +1,4 @@
-module Compiler.Generate.MLIR.Patterns exposing (generateMonoPath, generateMonoDtPath, generateMonoTest, generateMonoChainCondition, testToTagInt, caseKindFromTest, scrutineeTypeFromCaseKind, computeFallbackTag)
+module Compiler.Generate.MLIR.Patterns exposing (generateMonoPath, generateMonoDtPath, generateMonoTest, generateMonoChainCondition, testToTagInt, caseKindFromTest, scrutineeTypeFromCaseKind, computeFallbackTag, resolvePathResultType)
 
 {-| Pattern matching and path generation for MLIR code generation.
 
@@ -497,39 +497,52 @@ generateMonoPathHelper ctx path targetType revAcc =
                                 containerType =
                                     Mono.getMonoPathType subPath
 
-                                maybeIsUnboxed =
-                                    lookupFieldIsUnboxed ctx2 containerType ctorName index
+                                maybeFieldInfo =
+                                    lookupCtorFieldInfo ctx2 containerType ctorName index
                             in
-                            case maybeIsUnboxed of
-                                Just True ->
-                                    -- Field is stored unboxed (as primitive).
-                                    -- Project as primitive type, then box if caller needs eco.value.
-                                    let
-                                        fieldMlirType =
-                                            Types.monoTypeToAbi resultType
-
-                                        ( primitiveVar, ctx3_ ) =
-                                            Ctx.freshVar ctx2
-
-                                        ( ctx4, projectOp ) =
-                                            Ops.ecoProjectCustom ctx3_ primitiveVar index fieldMlirType subVar
-                                    in
-                                    if Types.isEcoValueType targetType then
-                                        -- Caller wants eco.value, need to box the primitive
+                            case maybeFieldInfo of
+                                Just fieldInfo ->
+                                    if fieldInfo.isUnboxed then
+                                        -- Field is stored unboxed (as primitive).
+                                        -- Use fieldInfo.monoType (from the shape registry, always
+                                        -- fully substituted via buildCtorShapeFromUnion) rather
+                                        -- than the MonoPath's resultType, which can be stale or
+                                        -- polymorphic for specialized polymorphic ctors like
+                                        -- `Done a` at `a = Int` / `Float` / `Char`.
                                         let
-                                            ( boxedVar, ctx5 ) =
-                                                Ctx.freshVar ctx4
+                                            fieldMlirType =
+                                                Types.monoTypeToAbi fieldInfo.monoType
 
-                                            ( ctx6, boxOp ) =
-                                                boxPrimitive ctx5 boxedVar primitiveVar fieldMlirType
+                                            ( primitiveVar, ctx3_ ) =
+                                                Ctx.freshVar ctx2
+
+                                            ( ctx4, projectOp ) =
+                                                Ops.ecoProjectCustom ctx3_ primitiveVar index fieldMlirType subVar
                                         in
-                                        ( [ projectOp, boxOp ], boxedVar, ctx6 )
+                                        if Types.isEcoValueType targetType then
+                                            -- Caller wants eco.value, need to box the primitive
+                                            let
+                                                ( boxedVar, ctx5 ) =
+                                                    Ctx.freshVar ctx4
+
+                                                ( ctx6, boxOp ) =
+                                                    boxPrimitive ctx5 boxedVar primitiveVar fieldMlirType
+                                            in
+                                            ( [ projectOp, boxOp ], boxedVar, ctx6 )
+
+                                        else
+                                            -- Caller wants primitive, return directly
+                                            ( [ projectOp ], primitiveVar, ctx4 )
 
                                     else
-                                        -- Caller wants primitive, return directly
-                                        ( [ projectOp ], primitiveVar, ctx4 )
+                                        -- Field is stored boxed (as eco.value).
+                                        let
+                                            ( ctx_, op ) =
+                                                Ops.ecoProjectCustom ctx2 resultVar index targetType subVar
+                                        in
+                                        ( [ op ], resultVar, ctx_ )
 
-                                _ ->
+                                Nothing ->
                                     -- Field is stored boxed (as eco.value) or no layout found.
                                     -- Use the MonoPath's declared resultType to determine the
                                     -- correct projection type (CGEN_004).
@@ -726,35 +739,186 @@ Returns Just True if unboxed, Just False if boxed, Nothing if no layout found.
 -}
 lookupFieldIsUnboxed : Ctx.Context -> Mono.MonoType -> Name.Name -> Int -> Maybe Bool
 lookupFieldIsUnboxed ctx containerType ctorName fieldIndex =
+    Maybe.map .isUnboxed (lookupCtorFieldInfo ctx containerType ctorName fieldIndex)
+
+
+{-| Resolve a `MonoPath`'s top-level result type, preferring a concrete
+constructor-field type from the shape registry over an unresolved polymorphic
+`MVar`.
+
+`Mono.getMonoPathType` reads whatever result-type annotation was cached during
+`Specialize.specializePath`. When a polymorphic constructor like `Done a` is
+specialized at `a = Int` but the surrounding call site leaves `a` only
+partially unified, that annotation can remain an `MVar`. Downstream codegen
+would then pick `!eco.value` as the destructor's MLIR type, even though the
+actual runtime field is stored unboxed (because the constructor wrapper was
+emitted for the fully-concrete specialization). This helper restores the
+concrete type so `generateDestruct` produces a matching projection.
+
+-}
+resolvePathResultType : Ctx.Context -> Mono.MonoPath -> Mono.MonoType
+resolvePathResultType ctx path =
+    let
+        raw =
+            Mono.getMonoPathType path
+    in
+    if Mono.containsAnyMVar raw then
+        case path of
+            Mono.MonoIndex index (Mono.CustomContainer ctorName) _ subPath ->
+                let
+                    containerType =
+                        Mono.getMonoPathType subPath
+                in
+                case lookupCtorFieldInfo ctx containerType ctorName index of
+                    Just fieldInfo ->
+                        if fieldIsConcrete fieldInfo then
+                            fieldInfo.monoType
+
+                        else
+                            raw
+
+                    Nothing ->
+                        raw
+
+            _ ->
+                raw
+
+    else
+        raw
+
+
+{-| Look up the full FieldInfo for a constructor's field from the ctor shape
+registry. Returns Nothing if no shape for the container type has a concretely
+typed field at this index for the named constructor.
+
+The registry's FieldInfo is authoritative for the field's ABI because shapes
+are built via `Analysis.buildCtorShapeFromUnion` with full type-variable
+substitution. Codegen should prefer `fieldInfo.monoType` over a MonoPath's
+`resultType` for deciding the projection's MLIR type.
+
+If the shape keyed by `containerType` leaves the field as an unresolved `MVar`
+(partial polymorphic specialization — e.g. `Step[Int, <MVar>]` because the
+call-site didn't pin `a`), we scan all other registered shapes for the same
+constructor name and return a concretely-typed field-info if one exists. The
+constructor wrapper (`generateCtor`) is unique per ctor specialization and its
+layout matches whichever specialization pinned the type variables, so we must
+use that authoritative layout for projection to agree with the heap format.
+
+-}
+lookupCtorFieldInfo : Ctx.Context -> Mono.MonoType -> Name.Name -> Int -> Maybe Types.FieldInfo
+lookupCtorFieldInfo ctx containerType ctorName fieldIndex =
     let
         typeKey =
             Mono.toComparableMonoType containerType
 
-        maybeShapes =
+        preferredShapes : Maybe (List Mono.CtorShape)
+        preferredShapes =
             Dict.get typeKey ctx.typeRegistry.ctorShapes
+
+        preferred : Maybe Types.FieldInfo
+        preferred =
+            Maybe.andThen (ctorFieldFromShapes ctorName fieldIndex) preferredShapes
     in
-    case maybeShapes of
+    case preferred of
+        Just info ->
+            if fieldIsConcrete info then
+                Just info
+
+            else
+                -- Registered shape has an unresolved polymorphic MVar in this
+                -- slot. Fall back to scanning other specializations of the
+                -- *same union*, identified by having the same set of ctor
+                -- names, and prefer one with a concrete field type.
+                Just (Maybe.withDefault info (findConcreteCtorField ctx preferredShapes ctorName fieldIndex))
+
         Nothing ->
-            Nothing
+            findConcreteCtorField ctx preferredShapes ctorName fieldIndex
 
-        Just shapes ->
-            -- Find the constructor by name
-            case List.filter (\shape -> shape.name == ctorName) shapes of
-                shape :: _ ->
-                    -- Compute layout and find the field by index
-                    let
-                        layout =
-                            Types.computeCtorLayout shape
-                    in
-                    case List.drop fieldIndex layout.fields of
-                        fieldInfo :: _ ->
-                            Just fieldInfo.isUnboxed
 
-                        [] ->
-                            Nothing
+ctorFieldFromShapes : Name.Name -> Int -> List Mono.CtorShape -> Maybe Types.FieldInfo
+ctorFieldFromShapes ctorName fieldIndex shapes =
+    case List.filter (\shape -> shape.name == ctorName) shapes of
+        shape :: _ ->
+            case List.drop fieldIndex (Types.computeCtorLayout shape).fields of
+                fieldInfo :: _ ->
+                    Just fieldInfo
 
                 [] ->
                     Nothing
+
+        [] ->
+            Nothing
+
+
+{-| Scan registered ctor-shape entries that belong to the *same union* as the
+given reference (same sorted set of ctor names) and return a concretely-typed
+field at `fieldIndex` for `ctorName` if every concrete specialization agrees
+on that field's type.
+
+The constructor wrapper is emitted per concrete ctor specialization, so when
+the container's keyed shape left a field as an unresolved `MVar`, another
+specialization of the same union often holds the concrete heap layout that
+all specializations share (e.g. `Done a` with a = Int always stores an `i64`
+at field 0 regardless of which surrounding context instantiated it).
+
+To avoid picking the wrong answer when the field is genuinely polymorphic
+across specializations (e.g. `Problem a` where some sites use `a = Int` and
+others use `a = String`), we require **agreement**: all concrete fieldInfo
+entries for this ctor+index across same-union shapes must yield the same
+MonoType. If they disagree, or if no concrete entry exists, return `Nothing`
+and let the caller fall back to the unresolved type.
+
+If `referenceShapes` is `Nothing`, the scan finds no match (we can't identify
+the union).
+
+-}
+findConcreteCtorField : Ctx.Context -> Maybe (List Mono.CtorShape) -> Name.Name -> Int -> Maybe Types.FieldInfo
+findConcreteCtorField ctx referenceShapes ctorName fieldIndex =
+    case referenceShapes of
+        Nothing ->
+            Nothing
+
+        Just refShapes ->
+            let
+                refNames : List Name.Name
+                refNames =
+                    List.sort (List.map .name refShapes)
+
+                sameUnion : List Mono.CtorShape -> Bool
+                sameUnion shapes =
+                    List.sort (List.map .name shapes) == refNames
+
+                concreteCandidates : List Types.FieldInfo
+                concreteCandidates =
+                    Dict.values ctx.typeRegistry.ctorShapes
+                        |> List.filter sameUnion
+                        |> List.filterMap (ctorFieldFromShapes ctorName fieldIndex)
+                        |> List.filter fieldIsConcrete
+            in
+            case concreteCandidates of
+                [] ->
+                    Nothing
+
+                firstInfo :: rest ->
+                    let
+                        firstKey =
+                            Mono.toComparableMonoType firstInfo.monoType
+
+                        allAgree =
+                            List.all
+                                (\fi -> Mono.toComparableMonoType fi.monoType == firstKey)
+                                rest
+                    in
+                    if allAgree then
+                        Just firstInfo
+
+                    else
+                        Nothing
+
+
+fieldIsConcrete : Types.FieldInfo -> Bool
+fieldIsConcrete info =
+    not (Mono.containsAnyMVar info.monoType)
 
 
 {-| Box a primitive value into an eco.value.

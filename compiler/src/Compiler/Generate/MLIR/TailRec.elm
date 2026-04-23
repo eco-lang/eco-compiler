@@ -1135,10 +1135,13 @@ compileDestructStep ctx loopSpec (Mono.MonoDestructor name path _) body =
     let
         -- Use the path's actual result type, as in Expr.generateDestruct.
         -- The destructor's monoType may still contain unsubstituted vars;
-        -- the path carries the correctly-specialized concrete type.
+        -- the path carries the correctly-specialized concrete type. If the
+        -- path's own top-level annotation is itself a stale MVar (polymorphic
+        -- ctor partially specialized — e.g. `Done a` at `a = Int`), fall back
+        -- to the ctor shape registry so we agree with the heap layout.
         pathResultType : Mono.MonoType
         pathResultType =
-            Mono.getMonoPathType path
+            Patterns.resolvePathResultType ctx path
 
         destructorMlirType : MlirType
         destructorMlirType =
