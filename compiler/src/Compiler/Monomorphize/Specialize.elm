@@ -1419,7 +1419,24 @@ specializeValueInCycle requestedCanonical requestedName requestedMonoType shared
         ( nextNodes, accState2 )
 
 
-{-| Specialize a cycle containing function definitions by creating separate nodes for each function.
+{-| Specialize a cycle that contains at least one function definition, by
+creating separate nodes for each function in `funcDefs` AND each zero-arg value
+in `valueDefs`.
+
+This generalizes the previous function-only behavior to cover mixed
+value+function SCCs. `specializeValueCycle` still handles pure-value SCCs.
+
+  * `sharedSubst` is derived from the requested member, which may be either
+    a function (in `funcDefs`) or a value (in `valueDefs`). The two sources
+    are combined via `TypeSubst.unifyExtend` so neither overrides the other.
+    In practice only one ever applies because a given top-level name is
+    either a `Define` (value) or a `Def`/`TailDef` (function), never both
+    (see specialize-cycle disjointness invariant).
+  * All `funcDefs` are specialized via `specializeFunc`.
+  * All `valueDefs` are specialized via `specializeValueInCycle`.
+
+This guarantees that any requested global in the SCC (function or value) gets
+a real MonoNode instead of falling back to MonoExtern.
 -}
 specializeFunctionCycle :
     IO.Canonical
@@ -1429,29 +1446,64 @@ specializeFunctionCycle :
     -> Mono.MonoType
     -> MonoState
     -> ( Mono.MonoNode, MonoState )
-specializeFunctionCycle requestedCanonical requestedName _ funcDefs requestedMonoType state =
+specializeFunctionCycle requestedCanonical requestedName valueDefs funcDefs requestedMonoType state =
     let
         maybeRequestedDef =
-            List.filter (defHasName requestedName) funcDefs |> List.head
+            List.filter (defHasName requestedName) funcDefs
+                |> List.head
 
-        sharedSubst : Substitution
-        sharedSubst =
+        maybeRequestedExpr =
+            List.filter (\( n, _ ) -> n == requestedName) valueDefs
+                |> List.head
+
+        -- Seed with the function-derived subst if the requested name is a
+        -- function. If not, this stays empty and unifyExtend below will build
+        -- the subst from the value expression alone.
+        substFromFunc : Substitution
+        substFromFunc =
             case maybeRequestedDef of
                 Just def ->
-                    let
-                        canType =
-                            getDefCanonicalType def
-                    in
-                    Tuple.first (TypeSubst.unify state.ctx.mvarEnv canType requestedMonoType)
+                    Tuple.first
+                        (TypeSubst.unify
+                            state.ctx.mvarEnv
+                            (getDefCanonicalType def)
+                            requestedMonoType
+                        )
 
                 Nothing ->
                     Dict.empty
 
-        ( newNodes, stateAfter ) =
+        -- Extend with value-derived bindings if the requested name is a value.
+        -- Using unifyExtend mirrors how `specializeNode`'s TOpt.Define /
+        -- TrackedDefine cases enrich substitutions.
+        sharedSubst : Substitution
+        sharedSubst =
+            case maybeRequestedExpr of
+                Just ( _, expr ) ->
+                    Tuple.first
+                        (TypeSubst.unifyExtend
+                            state.ctx.mvarEnv
+                            (TOpt.typeOf expr)
+                            requestedMonoType
+                            substFromFunc
+                        )
+
+                Nothing ->
+                    substFromFunc
+
+        -- Specialize all functions in the cycle under sharedSubst.
+        ( nodesAfterFuncs, stateAfterFuncs ) =
             List.foldl
                 (specializeFunc requestedCanonical requestedName requestedMonoType sharedSubst)
                 ( state.accum.nodes, state )
                 funcDefs
+
+        -- Specialize all values in the cycle under the same sharedSubst.
+        ( newNodes, stateAfter ) =
+            List.foldl
+                (specializeValueInCycle requestedCanonical requestedName requestedMonoType sharedSubst)
+                ( nodesAfterFuncs, stateAfterFuncs )
+                valueDefs
 
         requestedGlobal =
             Mono.Global requestedCanonical requestedName
@@ -1473,6 +1525,9 @@ specializeFunctionCycle requestedCanonical requestedName _ funcDefs requestedMon
             )
 
         Nothing ->
+            -- Should not occur once mixed cycles populate values: the
+            -- requested name is guaranteed to be in `names` of the Cycle.
+            -- Retain the MonoExtern fallback as a belt-and-braces guard.
             ( Mono.MonoExtern requestedMonoType
             , { stateAfter
                 | accum =
