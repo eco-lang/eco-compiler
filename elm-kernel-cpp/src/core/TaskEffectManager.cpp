@@ -86,32 +86,46 @@ static void* taskOnEffectsEvaluator(void* args[]) {
         closureCapture(clPtr, boxed(router), true);
     }
 
-    // Iterate over the commands list
+    // Iterate over the commands list.
+    //
+    // `current` (the list cursor) and `sendToAppCl` both survive across
+    // `taskAndThen` / `rawSpawn`, which allocate and may GC; without
+    // rooting, their raw C++ locals would become stale. Root both via
+    // StackRootGuard so GC updates them in place.
+    //
+    // NB: reading `cell->tail` *after* the allocations (via a cached
+    // `Cons*`) is unsafe — the old Cons location gets a Forward header
+    // after evacuation and its payload bytes are cleared the next time
+    // `clearToSpaceFreeRegion` runs. Snapshot the tail HP *before* any
+    // allocation, so the loop never dereferences a stale pointer.
     HPointer current = cmds;
-    while (!isNil(current)) {
-        void* cellPtr = Allocator::instance().resolve(current);
-        if (!cellPtr) break;
+    {
+        Elm::StackRootGuard guard(&current, &sendToAppCl);
 
-        Cons* cell = static_cast<Cons*>(cellPtr);
-        HPointer cmdHP = cell->head.p;
+        while (!isNil(current)) {
+            void* cellPtr = Allocator::instance().resolve(current);
+            if (!cellPtr) break;
 
-        // Each cmd is a Perform(task) Custom with values[0] = the task
-        void* cmdPtr = Allocator::instance().resolve(cmdHP);
-        if (cmdPtr) {
-            Custom* cmd = static_cast<Custom*>(cmdPtr);
-            HPointer innerTask = cmd->values[0].p;
+            // Snapshot tail and cmd HP before any allocation can move the Cons.
+            Cons* cell = static_cast<Cons*>(cellPtr);
+            HPointer nextTail = cell->tail;
+            HPointer cmdHP = cell->head.p;
 
-            // Re-resolve sendToAppCl after any potential GC from previous iteration
-            sendToAppCl = decodeHP(encodeHP(sendToAppCl));
+            // Each cmd is a Perform(task) Custom with values[0] = the task.
+            void* cmdPtr = Allocator::instance().resolve(cmdHP);
+            if (cmdPtr) {
+                Custom* cmd = static_cast<Custom*>(cmdPtr);
+                HPointer innerTask = cmd->values[0].p;
 
-            // Chain: innerTask |> andThen(\value -> sendToApp(router, value))
-            HPointer chainedTask = Scheduler::instance().taskAndThen(sendToAppCl, innerTask);
+                // Chain: innerTask |> andThen(\value -> sendToApp(router, value))
+                HPointer chainedTask = Scheduler::instance().taskAndThen(sendToAppCl, innerTask);
 
-            // Spawn the chained task as a process
-            Scheduler::instance().rawSpawn(chainedTask);
+                // Spawn the chained task as a process
+                Scheduler::instance().rawSpawn(chainedTask);
+            }
+
+            current = nextTail;
         }
-
-        current = cell->tail;
     }
 
     // Return Task.succeed(state)

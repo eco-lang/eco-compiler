@@ -64,17 +64,12 @@ static void* sleepBindingEvaluator(void* rawArgs[]) {
 
         if (!cancelledForThread->load() && !Elm::alloc::isNil(resumeClosure)) {
             // Resume the process with Task.succeed(Unit)
-            HPointer succeedTask = Elm::Platform::Scheduler::instance().taskSucceed(
-                Elm::alloc::unit());
-
-            // Call resume(succeedTask) — this calls enqueue() which just pushes
-            // to the run queue and signals the CV (doesn't call drain)
+            HPointer succeedTask =
+                Elm::Platform::Scheduler::instance().taskSucceed(Elm::alloc::unit());
             Elm::Platform::Scheduler::callClosure1(resumeClosure, succeedTask);
         }
 
-        // Decrement AFTER enqueue to prevent transient (empty, 0) state
         Elm::Platform::Scheduler::instance().decrementPendingAsync();
-
         Allocator::instance().cleanupThread();
     }).detach();
 
