@@ -327,11 +327,11 @@ void eco_register_time_effect_manager() {
 
     // Register with PlatformRuntime
     PlatformRuntime::ManagerInfo info;
-    info.init = initCl;
-    info.onEffects = onEffectsCl;
-    info.onSelfMsg = onSelfMsgCl;
-    info.cmdMap = listNil();  // No commands
-    info.subMap = subMapCl;
+    info.init = encodeHP(initCl);
+    info.onEffects = encodeHP(onEffectsCl);
+    info.onSelfMsg = encodeHP(onSelfMsgCl);
+    info.cmdMap = encodeHP(listNil());  // No commands
+    info.subMap = encodeHP(subMapCl);
 
     PlatformRuntime::instance().registerManager("Time", info);
 }

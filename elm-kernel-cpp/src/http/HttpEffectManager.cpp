@@ -260,11 +260,11 @@ void eco_register_http_effect_manager() {
 
     // Register with PlatformRuntime
     PlatformRuntime::ManagerInfo info;
-    info.init = initCl;
-    info.onEffects = onEffectsCl;
-    info.onSelfMsg = onSelfMsgCl;
-    info.cmdMap = cmdMapCl;
-    info.subMap = listNil();  // No subscriptions
+    info.init = encodeHP(initCl);
+    info.onEffects = encodeHP(onEffectsCl);
+    info.onSelfMsg = encodeHP(onSelfMsgCl);
+    info.cmdMap = encodeHP(cmdMapCl);
+    info.subMap = encodeHP(listNil());  // No subscriptions
 
     PlatformRuntime::instance().registerManager("Http", info);
 }

@@ -1,99 +1,66 @@
-# Stress Test Failures
+# Stress-Test Failures — Test-Fix Loop Log
 
-Baseline (2026-04-22, after Dict fixes from previous session):
-- elm-test: 12799/12799 pass, 0 fail
-- E2E: 1124/1124 pass, 0 fail
-- Stress (n=10 m=10): 83/97 pass, 14 fail
+Baseline (2026-04-23, before session start): 97 tests, 13 failing.
 
-After this session's fixes:
-- elm-test: 12799/12799 pass, 0 fail
-- E2E: 1123/1123 pass, 0 fail (no regressions)
-- Stress (n=1 m=1): 87/97 pass, 10 fail
+After this session's two fixes:
+- elm-test: 12799/12799 passing (no regressions).
+- E2E `check`: 1123/1123 passing (no regressions).
+- stress-test: **95/97 passing** (+11 fixed), 2 failing.
 
-## Fixed
+## FIXED (this session)
 
-### JsonRoundtripArray — FIXED
+### Fix 1 — Process logically immutable
+Every update to `root`/`stack`/`mailbox` now allocates a new Process and
+updates the holder via a `latestProc_` registry indexed by process id.
+Also:
+- `ManagerInfo` (`registerManager`) stores closures as encoded `uint64_t`
+  HPointers; walked by the external root scanner.
+- `initWorker`/`dispatchEffects` capture `procId` before `drain()` and use
+  `latestProcessById(id)` after.
 
-Root cause: `Json.Decode.array`'s `DEC_ARRAY` built a JsArray with the
-declared element kind (kind 1 for Int via DEC_INT), but the "original"
-array built via `Array.fromList (List.range ...)` had a JsArray with
-kind 0 (boxed), because `List.range` uses the kernel `cons` that
-produces boxed-head Cons cells and `JsArray.initializeFromList`
-inherits that kind. The resulting arrays compared unequal because
-`Utils.cpp eqHelp`'s `Tag_Array` branch rejected any kind mismatch.
+Files: `Scheduler.{hpp,cpp}`, `PlatformRuntime.{hpp,cpp}`,
+`elm-kernel-cpp/src/{core/TaskEffectManager,http/HttpEffectManager,
+time/TimeEffectManager}.cpp`.
 
-Fix: `eqUnboxableSlot` now handles mixed boxed/unboxed-primitive
-slots by resolving the boxed side and comparing the primitive values
-(same logic the `Tag_Cons` branch already had). `Tag_Array` now
-delegates to the per-element comparator instead of failing on
-header-kind mismatch.
+Unblocked: **ModifyMVarCounterStress** plus 9 other MVar/Spawn stress
+tests.
 
-### JsonRoundtripKeyValuePairs — FIXED
+### Fix 2 — Sleep resume closure GC-rooted across timer thread
+`sleepBindingEvaluator` was capturing the resume closure HPointer as a
+raw `uint64_t` in the spawned timer thread — stale after any main-thread
+GC. Added `Scheduler::registerPendingResume` / `takePendingResume` with
+a scanned `pendingResumes_` map; timer thread now captures an opaque
+token and recovers the (post-GC, possibly-evacuated) closure via token
+lookup.
 
-### JsonRoundtripDict — FIXED (joint with above)
+Files: `Scheduler.{hpp,cpp}`, `elm-kernel-cpp/src/core/ProcessExports.cpp`.
 
-Root cause: `Json.Decode.keyValuePairs` / `Json.Decode.dict` build a
-list of `(String, a)` tuples via `DEC_KEYVALUE` in
-`elm-kernel-cpp/src/json/JsonExports.cpp`. The tuples were always
-constructed with `unboxed_mask = 0` — both slots boxed. But callers
-like `Dict.fromList` destructure at the monomorphized type,
-projecting slot 1 as `i64` for a `(String, Int)` tuple. Reading the
-boxed HPointer bits as `i64` yielded HPointer-encoded values (e.g.
-`Just 536871077` instead of `Just 1`), corrupting the Dict.
+Unblocked: **SpawnThenAndThenChain**.
 
-Fix: `DEC_KEYVALUE` now inspects the value decoder's ctor (matching
-`DEC_LIST`'s existing approach) and builds each Tuple2 with the
-correct 2-bit-per-slot `tupleBitmap`:
-- `DEC_INT`  → slot 1 kind 01 (i64), unbox the decoded ElmInt.
-- `DEC_FLOAT`→ slot 1 kind 10 (f64), unbox the ElmFloat.
-- other     → slot 1 kind 00 (boxed HPointer), unchanged.
+## OPEN — 2 remaining failures
 
-### ArrayZipUnzip — FIXED
-### ArrayConcatMap — FIXED (joint with above)
+### 1. SpawnGCChurn — SIGABRT (bogus closure)
 
-Root cause: `Elm_Kernel_JsArray_initialize` / `_map` / `_indexedMap`
-in `elm-kernel-cpp/src/core/JsArrayExports.cpp` always pushed the
-closure's return value as a boxed HPointer (kind 0), but downstream
-code expects uniform-kind arrays that match how
-`Array.fromList`/`JsArray.initializeFromList` would represent the
-same element type. For `Array Int`, callers like `Array.get` that
-project the element as `i64` would read HPointer bits instead of Int
-values (e.g. `Just 536871040`).
+```
+DIAG: eco_apply_segmentation_unknown bad closure:
+  hptr=0x2000... ptr=0x7f...  tag=0 n_values=0 max_values=0 evaluator=(nil)
+```
+Not fixed by Fix 2 (sleep resume rooting), so a different closure is
+going stale. SpawnGCChurn pipelines `Process.spawn` over 300 fibers with
+nested `Task.andThen`s, so candidates include the andThen callback
+captured in a `StackFrame` Custom, or the closure produced by
+`spawnTask` returning `Task.succeed(process)`. Needs a minimal repro
+/ trace to confirm.
 
-Separately, `Elm_Kernel_JsArray_appendN` preserved `destArr`'s kind
-even when `dest` was empty — a 0-element array necessarily has kind
-0 from `allocArray`, so concatenating onto an empty tail produced
-kind-0 arrays with kind-1 element bits, silently corrupting Ints in
-`Array.append`.
+Attempts: 1 (sleep-rooting fix, no effect on this test).
 
-Fix:
-- Added `pushUnboxedResult` helper that inspects the returned
-  HPointer's tag and unboxes `Tag_Int`/`Tag_Float`/`Tag_Char` using
-  `arrayPushKind` (kinds 01/10/11), falling back to boxed otherwise.
-  Used by `_initialize`, `_map`, and `_indexedMap`.
-- `_appendN` now picks the result kind from whichever operand
-  contributed elements: inherit src's kind if dest is empty, dest's
-  kind if src contributed nothing, with an assert that both agree
-  when both contribute.
+### 2. BytesRoundtripMixedRecord — missing pattern (roundtrip mismatch)
 
-## Remaining OPEN
+```
+[eq] tag mismatch: 0 vs 3
+FAILED: Missing pattern: roundtrip: True
+```
+Unrelated to async/scheduler paths; likely a latent GC bug in the bytes
+round-trip code. Needs separate investigation.
 
-Order best-to-tackle first:
-
-1. **BytesRoundtripMixedRecord** — roundtrip False. Prior diagnosis
-   (`guides/test-fails.md` #13): unboxed-bitmap mismatch on a mixed
-   Int/Float/String record. Similar in spirit to the tuple/dict
-   bitmap fixes above but in the Bytes encode/decode path.
-2. **MVar family (6 tests)** — SIGABRT "MVar not found" after ~410
-   iterations. Observed values[0] of the MVar Custom is overwritten
-   with an ElmInt header bit pattern (0x1000000100 = Header{tag=
-   Tag_Int, age=1, size=16}) after GC. Strongly suggests a stale
-   HPointer to a reclaimed from-space location being dereferenced in
-   a closure capture slot. Requires `ECO_GC_DEBUG_LIVENESS` pass +
-   deeper GC root-tracking audit to localize the specific mis-traced
-   capture. Known SKIPPED in prior sessions.
-3. **SpawnGCChurn / SpawnThenAndThenChain** — SIGABRT, almost
-   certainly the same root cause as the MVar family (shared task
-   scheduler + closure capture machinery).
-4. **JsonRoundtripIndex** — flaky 60s timeout (passed earlier). Not
-   strictly "broken" but benchmark-sensitive.
+Attempts: 0.

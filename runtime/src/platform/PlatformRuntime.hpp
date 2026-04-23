@@ -30,12 +30,15 @@ public:
     static PlatformRuntime& instance();
 
     // Manager registry
+    // All fields are encoded HPointers (uint64_t) so the external root
+    // scanner can walk/rewrite them across GC. `registerManager` converts
+    // HPointer arguments to encoded form; accessors decode on read.
     struct ManagerInfo {
-        HPointer init;        // Task (initial state)
-        HPointer onEffects;   // router -> List cmd -> List sub -> state -> Task state
-        HPointer onSelfMsg;   // router -> selfMsg -> state -> Task state
-        HPointer cmdMap;      // nullable (Nil if no commands)
-        HPointer subMap;      // nullable (Nil if no subscriptions)
+        uint64_t init;        // encoded HPointer to Task or 0-arg Closure
+        uint64_t onEffects;   // encoded HPointer to 4-arg Closure
+        uint64_t onSelfMsg;   // encoded HPointer to 3-arg Closure
+        uint64_t cmdMap;      // encoded HPointer (Nil if no commands)
+        uint64_t subMap;      // encoded HPointer (Nil if no subscriptions)
     };
 
     void registerManager(const std::string& home, const ManagerInfo& info);

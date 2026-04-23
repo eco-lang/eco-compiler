@@ -76,6 +76,17 @@ PlatformRuntime::PlatformRuntime() {
             if (modelStorage_ != 0)
                 evacuate(modelStorage_);
 
+            // Per-manager registered closures (init/onEffects/onSelfMsg/
+            // cmdMap/subMap). Stored as encoded HPointers so they can be
+            // rewritten here across GC.
+            for (auto& [home, info] : managers_) {
+                evacuate(info.init);
+                evacuate(info.onEffects);
+                evacuate(info.onSelfMsg);
+                evacuate(info.cmdMap);
+                evacuate(info.subMap);
+            }
+
             // Per-manager state: selfProcess, router, and current state
             for (auto& [home, ms] : managerStates_) {
                 evacuate(ms.selfProcess);
@@ -111,7 +122,7 @@ HPointer PlatformRuntime::setupEffects(HPointer sendToAppClosure) {
     for (auto& [home, info] : managers_) {
         // Create the manager's self-process
         // The self-process runs a Receive loop that handles onSelfMsg
-        HPointer recvCallback = info.onSelfMsg;  // will be wrapped later
+        HPointer recvCallback = decodeHP(info.onSelfMsg);  // will be wrapped later
         HPointer selfProc = sched.rawSpawn(
             sched.taskReceive(recvCallback));
 
@@ -131,7 +142,7 @@ HPointer PlatformRuntime::setupEffects(HPointer sendToAppClosure) {
         // closure first to obtain the actual Task; otherwise we'd hand a
         // Closure to rawSpawn and the scheduler would treat its bytes as a
         // Task header, silently dropping the init effect.
-        HPointer initTask = info.init;
+        HPointer initTask = decodeHP(info.init);
         HPointer initialState = listNil();  // fallback
         if (!alloc::isNil(initTask) && !hpIsConstant(initTask)) {
             void* initPtr = resolveHP(initTask);
@@ -143,13 +154,17 @@ HPointer PlatformRuntime::setupEffects(HPointer sendToAppClosure) {
         }
 
         if (!alloc::isNil(initTask) && !hpIsConstant(initTask)) {
-            // Spawn a process to run the init task
+            // Spawn a process to run the init task.
             HPointer initProc = sched.rawSpawn(initTask);
+            // Capture the id BEFORE drain — Process is logically immutable so
+            // `initProc` becomes stale as soon as stepProcess produces new
+            // values. The id is stable; use it to look up the latest version
+            // after drain.
+            u32 procId = static_cast<u32>(static_cast<Process*>(resolveHP(initProc))->id);
             sched.drain();
 
-            // Extract the result from the completed process
-            // The process root should now be Task_Succeed with the state value
-            void* procPtr = resolveHP(initProc);
+            HPointer latestProc = sched.latestProcessById(procId);
+            void* procPtr = resolveHP(latestProc);
             if (procPtr) {
                 Process* proc = static_cast<Process*>(procPtr);
                 void* rootPtr = resolveHP(proc->root);
@@ -235,7 +250,7 @@ void PlatformRuntime::dispatchEffects(HPointer cmdBag, HPointer subBag) {
         // Call onEffects(router, cmdList, subList, state) -> Task newState
         HPointer router = decodeHP(ms.router);
         HPointer state = decodeHP(ms.state);
-        HPointer onEffectsFn = managerIt->second.onEffects;
+        HPointer onEffectsFn = decodeHP(managerIt->second.onEffects);
 
         // Only call if onEffects is not nil
         if (!alloc::isNil(onEffectsFn) && !hpIsConstant(onEffectsFn)) {
@@ -244,10 +259,16 @@ void PlatformRuntime::dispatchEffects(HPointer cmdBag, HPointer subBag) {
 
             // Run the returned Task to get the new state
             HPointer effectProc = sched.rawSpawn(newStateTask);
+            // Capture the id BEFORE drain — Process is logically immutable so
+            // `effectProc` becomes stale as soon as stepProcess produces new
+            // values. The id is stable; use it to look up the latest version
+            // after drain.
+            u32 procId = static_cast<u32>(static_cast<Process*>(resolveHP(effectProc))->id);
             sched.drain();
 
-            // Extract the result and update the manager state
-            void* procPtr = resolveHP(effectProc);
+            // Look up the latest Process (after drain's immutable updates).
+            HPointer latestProc = sched.latestProcessById(procId);
+            void* procPtr = resolveHP(latestProc);
             if (procPtr) {
                 Process* proc = static_cast<Process*>(procPtr);
                 void* rootPtr = resolveHP(proc->root);

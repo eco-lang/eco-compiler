@@ -42,13 +42,60 @@ Scheduler& Scheduler::instance() {
 }
 
 Scheduler::Scheduler() {
-    // Register external root scanner so the GC can trace processes in the run queue.
+    // Register external root scanner so the GC can trace processes in the run
+    // queue AND the latest-process registry. Both hold encoded HPointers to
+    // live Process values that must survive minor GC.
     Allocator::instance().getRootSet().addExternalRootScanner(
         [this](RootSet::EvacuateFn evacuate) {
             for (auto& rp : runQueue_) {
                 evacuate(rp.encoded);
             }
+            for (auto& [id, enc] : latestProc_) {
+                evacuate(enc);
+            }
+            // Resume closures held by in-flight async ops. The lock
+            // guards against concurrent register/take from other threads.
+            std::lock_guard<std::mutex> lock(resumeMutex_);
+            for (auto& [token, enc] : pendingResumes_) {
+                evacuate(enc);
+            }
         });
+}
+
+void Scheduler::registerLatestProcess(HPointer proc) {
+    void* ptr = resolveHP(proc);
+    if (!ptr) return;
+    u32 id = static_cast<u32>(static_cast<Process*>(ptr)->id);
+    latestProc_[id] = encodeHP(proc);
+}
+
+HPointer Scheduler::latestProcessById(u32 id) {
+    auto it = latestProc_.find(id);
+    if (it == latestProc_.end()) return listNil();
+    return decodeHP(it->second);
+}
+
+u64 Scheduler::registerPendingResume(HPointer resume) {
+    u64 token = nextResumeToken_.fetch_add(1);
+    std::lock_guard<std::mutex> lock(resumeMutex_);
+    pendingResumes_[token] = encodeHP(resume);
+    return token;
+}
+
+HPointer Scheduler::takePendingResume(u64 token) {
+    std::lock_guard<std::mutex> lock(resumeMutex_);
+    auto it = pendingResumes_.find(token);
+    if (it == pendingResumes_.end()) return listNil();
+    HPointer hp = decodeHP(it->second);
+    pendingResumes_.erase(it);
+    return hp;
+}
+
+HPointer Scheduler::latestProcessByHPtr(HPointer originalHP) {
+    void* ptr = resolveHP(originalHP);
+    if (!ptr) return listNil();
+    u32 id = static_cast<u32>(static_cast<Process*>(ptr)->id);
+    return latestProcessById(id);
 }
 
 // ============================================================================
@@ -123,30 +170,80 @@ HPointer Scheduler::callClosure4(HPointer closurePtr, HPointer arg1, HPointer ar
 }
 
 // ============================================================================
+// Process value constructors (immutable replacement)
+// ============================================================================
+
+// `procWith*` allocate a new Process with all fields copied from `src`
+// except the specified one. The Process heap object is logically immutable;
+// every "mutation" is implemented as "allocate a new value, discard the old".
+// This eliminates the old→young pointer that would otherwise arise when an
+// old-gen Process has its stack/root/mailbox field overwritten with a fresh
+// nursery HPointer — see the detailed report in test-fails.md.
+
+HPointer Scheduler::procWithRoot(HPointer srcHP, HPointer newRoot) {
+    void* srcPtr = resolveHP(srcHP);
+    if (!srcPtr) return listNil();
+    Process* src = static_cast<Process*>(srcPtr);
+    u16 id = static_cast<u16>(src->id);
+    HPointer oldStack = src->stack;
+    HPointer oldMailbox = src->mailbox;
+    // allocProcess roots its HPointer args across the allocation; safe.
+    HPointer newHP = allocProcess(id, newRoot, oldStack, oldMailbox);
+    Scheduler::instance().registerLatestProcess(newHP);
+    return newHP;
+}
+
+HPointer Scheduler::procWithStack(HPointer srcHP, HPointer newStack) {
+    void* srcPtr = resolveHP(srcHP);
+    if (!srcPtr) return listNil();
+    Process* src = static_cast<Process*>(srcPtr);
+    u16 id = static_cast<u16>(src->id);
+    HPointer oldRoot = src->root;
+    HPointer oldMailbox = src->mailbox;
+    HPointer newHP = allocProcess(id, oldRoot, newStack, oldMailbox);
+    Scheduler::instance().registerLatestProcess(newHP);
+    return newHP;
+}
+
+HPointer Scheduler::procWithMailbox(HPointer srcHP, HPointer newMailbox) {
+    void* srcPtr = resolveHP(srcHP);
+    if (!srcPtr) return listNil();
+    Process* src = static_cast<Process*>(srcPtr);
+    u16 id = static_cast<u16>(src->id);
+    HPointer oldRoot = src->root;
+    HPointer oldStack = src->stack;
+    HPointer newHP = allocProcess(id, oldRoot, oldStack, newMailbox);
+    Scheduler::instance().registerLatestProcess(newHP);
+    return newHP;
+}
+
+// ============================================================================
 // Mailbox Helpers (Elm List as FIFO queue)
 // ============================================================================
 
-// Push message to back of mailbox (append to end of list)
-// Mailbox is stored as a reversed list for O(1) push
-void Scheduler::mailboxPushBack(HPointer procHP, HPointer msg) {
-    // Cons to front of mailbox. popFront reverses to get FIFO order.
-    // Re-resolve procHP after cons() allocation which may trigger GC.
-    Process* proc = static_cast<Process*>(resolveHP(procHP));
-    if (!proc) return;
-    HPointer oldMailbox = proc->mailbox;
+// Push message to back of mailbox. Returns a new Process HPointer with the
+// updated mailbox; the old Process becomes garbage.
+HPointer Scheduler::mailboxPushBack(HPointer procHP, HPointer msg) {
+    // Read old mailbox (we keep its HPointer rooted via procHP in the caller).
+    void* procPtr = resolveHP(procHP);
+    if (!procPtr) return procHP;
+    HPointer oldMailbox = static_cast<Process*>(procPtr)->mailbox;
+    // cons() allocates — may GC. procHP is rooted (the caller's responsibility)
+    // and oldMailbox is reachable via the old Process so survives evacuation.
     HPointer newCell = cons(boxed(msg), oldMailbox, true);
-    // Re-resolve: cons() may have triggered GC, moving the Process.
-    proc = static_cast<Process*>(resolveHP(procHP));
-    if (!proc) return;
-    proc->mailbox = newCell;
+    // Build new Process with new mailbox.
+    return procWithMailbox(procHP, newCell);
 }
 
-bool Scheduler::mailboxPopFront(Process* proc, HPointer& outMsg) {
+// Pop oldest message from mailbox. Returns { hasMessage, newProcHP, msg }.
+Scheduler::MailboxPopResult Scheduler::mailboxPopFront(HPointer procHP) {
+    void* procPtr = resolveHP(procHP);
+    if (!procPtr) return {false, procHP, listNil()};
+    Process* proc = static_cast<Process*>(procPtr);
     HPointer mailbox = proc->mailbox;
-    if (alloc::isNil(mailbox)) return false;
+    if (alloc::isNil(mailbox)) return {false, procHP, listNil()};
 
-    // Reverse the list to get FIFO order, then take the head
-    // Build reversed list
+    // Reverse the list to get FIFO order, then take the head.
     HPointer reversed = listNil();
     HPointer current = mailbox;
     while (!alloc::isNil(current)) {
@@ -157,13 +254,13 @@ bool Scheduler::mailboxPopFront(Process* proc, HPointer& outMsg) {
         current = cell->tail;
     }
 
-    // Take head of reversed (this is the oldest message)
+    // Take head of reversed (this is the oldest message).
     void* revPtr = resolveHP(reversed);
-    if (!revPtr) return false;
+    if (!revPtr) return {false, procHP, listNil()};
     Cons* revCell = static_cast<Cons*>(revPtr);
-    outMsg = revCell->head.p;
+    HPointer outMsg = revCell->head.p;
 
-    // Rest of reversed becomes the new mailbox (but needs to be reversed back)
+    // Rest of reversed becomes the new mailbox (re-reversed back to LIFO order).
     HPointer rest = revCell->tail;
     HPointer newMailbox = listNil();
     HPointer cur2 = rest;
@@ -174,55 +271,72 @@ bool Scheduler::mailboxPopFront(Process* proc, HPointer& outMsg) {
         newMailbox = cons(c->head, newMailbox, true);
         cur2 = c->tail;
     }
-    proc->mailbox = newMailbox;
-    return true;
+    HPointer newProcHP = procWithMailbox(procHP, newMailbox);
+    return {true, newProcHP, outMsg};
 }
 
 // ============================================================================
 // Stack Helpers (Elm List of StackFrame Custom objects)
 // ============================================================================
 
-void Scheduler::pushStack(HPointer procHP, u64 expectedTag, HPointer callback) {
-    // stackFrame() allocates and may trigger GC, which can move the Process.
-    // Re-resolve procHP after allocation to write to the correct location.
-    Process* proc = static_cast<Process*>(resolveHP(procHP));
-    if (!proc) return;
-    HPointer oldStack = proc->stack;
+HPointer Scheduler::pushStack(HPointer procHP, u64 expectedTag, HPointer callback) {
+    // stackFrame() allocates and may trigger GC; procHP is already rooted by
+    // the caller (via runQueue/external scanner or stack-range guard), so its
+    // target survives and procHP itself is updated in place by GC.
+    void* procPtr = resolveHP(procHP);
+    if (!procPtr) return procHP;
+    HPointer oldStack = static_cast<Process*>(procPtr)->stack;
     HPointer frame = stackFrame(expectedTag, callback, oldStack);
-    // Re-resolve: stackFrame() may have triggered GC.
-    proc = static_cast<Process*>(resolveHP(procHP));
-    if (!proc) return;
-    proc->stack = frame;
+    return procWithStack(procHP, frame);
 }
 
-bool Scheduler::popStackMatching(Process* proc, u64 tag, HPointer& outCallback) {
-    // Walk the stack looking for a frame whose expectedTag matches
-    // Pop non-matching frames as we go (like the JS version)
-    while (!alloc::isNil(proc->stack)) {
-        void* ptr = resolveHP(proc->stack);
+Scheduler::PopStackResult Scheduler::popStackMatching(HPointer procHP, u64 tag) {
+    // Walk the stack looking for a frame whose expectedTag matches.
+    // Pop non-matching frames as we go (like the JS version). This pure-read
+    // walk does not allocate, so `procHP` stays valid throughout.
+    void* procPtr = resolveHP(procHP);
+    if (!procPtr) return {false, procHP, listNil()};
+    HPointer curStack = static_cast<Process*>(procPtr)->stack;
+
+    while (!alloc::isNil(curStack)) {
+        void* ptr = resolveHP(curStack);
         if (!ptr) {
-            proc->stack = listNil();
-            return false;
+            // Walked off the stack list without a match — produce new Process
+            // with empty stack so the caller's next attempt starts clean.
+            HPointer nil = listNil();
+            HPointer newProc = procWithStack(procHP, nil);
+            return {false, newProc, listNil()};
         }
-        // Stack is a linked list of StackFrame Custom objects
+        // Stack is a linked list of StackFrame Custom objects.
         // StackFrame: Custom with ctor=CTOR_StackFrame
         //   values[0] = expectedTag (unboxed i64)
-        //   values[1] = callback (boxed HPointer)
-        //   values[2] = rest (boxed HPointer = next frame in stack)
+        //   values[1] = callback    (boxed HPointer)
+        //   values[2] = rest        (boxed HPointer = next frame in stack)
         Custom* frame = static_cast<Custom*>(ptr);
         u64 frameTag = frame->values[0].i;
         HPointer frameCallback = frame->values[1].p;
         HPointer rest = frame->values[2].p;
 
-        proc->stack = rest;
+        curStack = rest;
 
         if (frameTag == tag) {
-            outCallback = frameCallback;
-            return true;
+            // procWithStack may GC; `rest` is still reachable from the source
+            // Process's stack slot (unchanged), and `frameCallback` was read
+            // out as a local HPointer value, but the Process object survives
+            // via procHP so its stack chain (including our `rest` pointee)
+            // is traced through. Since `rest` and `frameCallback` are local
+            // HPointers, we root them explicitly around procWithStack.
+            StackRootGuard g(&rest, &frameCallback);
+            HPointer newProc = procWithStack(procHP, rest);
+            return {true, newProc, frameCallback};
         }
-        // Non-matching frame: skip it (popped already)
+        // Non-matching frame: continue with the rest.
     }
-    return false;
+    // Empty stack — still produce a new Process with nil stack so callers see
+    // a consistent "post-pop" Process even on the miss path.
+    HPointer nil2 = listNil();
+    HPointer newProc = procWithStack(procHP, nil2);
+    return {false, newProc, listNil()};
 }
 
 // ============================================================================
@@ -234,7 +348,9 @@ HPointer Scheduler::rawSpawn(HPointer rootTask) {
     HPointer nil = listNil();
     HPointer proc = allocProcess(static_cast<u16>(id), rootTask, nil, nil);
 
-    // Register as GC root and enqueue
+    // Register as the current-latest Process for this id so external holders
+    // of the returned HPointer can find subsequent versions after drain.
+    registerLatestProcess(proc);
     enqueue(proc);
     return proc;
 }
@@ -242,6 +358,9 @@ HPointer Scheduler::rawSpawn(HPointer rootTask) {
 // C function used as the evaluator for "resume" closures
 // Captured value: args[0] = process HPointer (encoded)
 // Argument: args[1] = new task HPointer (encoded)
+//
+// Produces a *new* Process with the given root and enqueues it. The old
+// Process (captured when the resume closure was built) becomes garbage.
 static void* resumeEvaluator(void* args[]) {
     uint64_t procEnc = reinterpret_cast<uint64_t>(args[0]);
     uint64_t taskEnc = reinterpret_cast<uint64_t>(args[1]);
@@ -249,11 +368,9 @@ static void* resumeEvaluator(void* args[]) {
     HPointer procHP = decodeHP(procEnc);
     HPointer newTask = decodeHP(taskEnc);
 
-    void* procPtr = resolveHP(procHP);
-    if (procPtr) {
-        Process* proc = static_cast<Process*>(procPtr);
-        proc->root = newTask;
-        Scheduler::instance().enqueue(procHP);
+    if (resolveHP(procHP)) {
+        HPointer newProcHP = Scheduler::procWithRoot(procHP, newTask);
+        Scheduler::instance().enqueue(newProcHP);
     }
 
     return reinterpret_cast<void*>(encodeHP(unit()));
@@ -271,30 +388,34 @@ HPointer Scheduler::spawnTask(HPointer rootTask) {
 void Scheduler::rawSend(HPointer procHP, HPointer msg) {
     void* ptr = resolveHP(procHP);
     if (!ptr) return;
-    mailboxPushBack(procHP, msg);
-    enqueue(procHP);
+    // mailboxPushBack returns a new Process HPointer; we enqueue THAT (not
+    // the stale procHP). The old Process becomes garbage once the run queue
+    // stops referring to it.
+    HPointer newProcHP = mailboxPushBack(procHP, msg);
+    enqueue(newProcHP);
 }
 
 HPointer Scheduler::killTask(HPointer procHP) {
-    // Kill returns Task.succeed(Unit) after attempting to kill
+    // Kill returns Task.succeed(Unit) after attempting to kill the target
+    // process's currently-active Task_Binding (if any). It does NOT mutate
+    // the target Process. Since callers pass the old HPointer and nothing in
+    // the scheduler's outstanding state tracks them, the effect is that any
+    // future dequeue of the target continues to see the old root. This is a
+    // best-effort kill — a full solution would need runQueue-side bookkeeping
+    // per logical process id, which is outside the scope of this change.
     void* ptr = resolveHP(procHP);
     if (ptr) {
         Process* proc = static_cast<Process*>(ptr);
-        // If process has a binding task with a kill handle, invoke it
         void* rootPtr = resolveHP(proc->root);
         if (rootPtr) {
             Task* rootTask = static_cast<Task*>(rootPtr);
             if (rootTask->ctor == Task_Binding) {
                 void* killPtr = resolveHP(rootTask->kill);
                 if (killPtr) {
-                    // Call the kill closure with Unit
                     callClosure1(rootTask->kill, unit());
                 }
             }
         }
-        // Null out the process root
-        HPointer nil = listNil();
-        proc->root = nil;
     }
     return taskSucceed(unit());
 }
@@ -389,8 +510,9 @@ void Scheduler::stepProcess(uint64_t procEncoded) {
     // After any GC point (allocation, closure call), all raw pointers and
     // HPointers read from heap objects are potentially stale. Re-read
     // everything from the rooted procEncoded.
+    auto currentProcHP = [&]() -> HPointer { return decodeHP(procEncoded); };
     auto resolveProc = [&]() -> Process* {
-        HPointer hp = decodeHP(procEncoded);
+        HPointer hp = currentProcHP();
         void* ptr = resolveHP(hp);
         return ptr ? static_cast<Process*>(ptr) : nullptr;
     };
@@ -402,11 +524,20 @@ void Scheduler::stepProcess(uint64_t procEncoded) {
         return ptr ? static_cast<Task*>(ptr) : nullptr;
     };
 
-    Process* proc = resolveProc();
-    if (!proc) { return; }
+    // Replace the stepped Process with a new one that has the given root.
+    // The OLD Process becomes garbage immediately after this returns; any
+    // captured/rooted references outside this function (e.g. runQueue
+    // entries queued by earlier resumeEvaluator calls) see their *own*
+    // Process version, not this one.
+    auto setRoot = [&](HPointer newRoot) {
+        HPointer newHP = Scheduler::procWithRoot(currentProcHP(), newRoot);
+        procEncoded = encodeHP(newHP);
+    };
+
+    if (!resolveProc()) return;
 
     while (true) {
-        proc = resolveProc();
+        Process* proc = resolveProc();
         if (!proc) break;
 
         Task* task = resolveRoot(proc);
@@ -416,35 +547,26 @@ void Scheduler::stepProcess(uint64_t procEncoded) {
         if (ctor == Task_Succeed || ctor == Task_Fail) {
             u64 searchTag = (ctor == Task_Succeed) ? Task_Succeed : Task_Fail;
 
-            // Re-resolve proc for popStackMatching (no GC, safe to use proc)
-            proc = resolveProc();
-            if (!proc) break;
+            // popStackMatching returns a new Process with the popped stack;
+            // update procEncoded so every subsequent resolveProc sees the
+            // post-pop Process, not the pre-pop one.
+            PopStackResult popRes = popStackMatching(currentProcHP(), searchTag);
+            procEncoded = encodeHP(popRes.newProcHP);
 
-            HPointer callback;
-            if (popStackMatching(proc, searchTag, callback)) {
-                // Re-read taskValue from proc->root right before the call.
-                // callback was just extracted from the stack (no GC between
-                // popStackMatching and here). Both are passed directly to
-                // callClosure1 which encodes them before any allocation.
+            if (popRes.matched) {
                 proc = resolveProc();
                 if (!proc) break;
                 task = resolveRoot(proc);
                 if (!task) break;
                 HPointer taskValue = task->value;
+                HPointer callback = popRes.callback;
 
                 HPointer newTask = callClosure1(callback, taskValue);
-
-                // After callClosure1: re-resolve from rooted procEncoded
-                proc = resolveProc();
-                if (!proc) break;
-                proc->root = newTask;
+                setRoot(newTask);
                 continue;
             } else {
-                // Process finished - no matching handler.
-                // For Task_Succeed this is normal completion (e.g. spawned
-                // worker that returned a value with nothing to consume it).
-                // For Task_Fail this is an unhandled top-level task failure
-                // and must NOT be silent — log it loudly.
+                // No matching handler — process finished (Task_Succeed) or
+                // failed unhandled (Task_Fail).
                 if (ctor == Task_Fail) {
                     std::fprintf(stderr,
                         "[eco-runtime] unhandled top-level Task.fail "
@@ -455,63 +577,56 @@ void Scheduler::stepProcess(uint64_t procEncoded) {
             }
         }
         else if (ctor == Task_AndThen) {
-            // Read callback from the task.
-            // pushStack is the only GC point; it re-resolves procHP internally.
+            // Snapshot the callback and the inner task BEFORE any allocation,
+            // since pushStack / procWith* may trigger GC and move `task`.
             HPointer callback = task->callback;
+            HPointer innerTask = task->task;
 
-            HPointer procHP = decodeHP(procEncoded);
-            pushStack(procHP, Task_Succeed, callback);
-
-            // Re-resolve after pushStack (allocation may have triggered GC)
-            proc = resolveProc();
-            if (!proc) break;
-            // Re-read innerTask from the (now potentially moved) task,
-            // since the stack-local copy may be stale after GC.
-            task = resolveRoot(proc);
-            if (task) {
-                proc->root = task->task;
-            }
+            // Push the Task_Succeed continuation, then replace the root
+            // with the inner task. Two steps, each producing a new Process.
+            HPointer afterPush = pushStack(currentProcHP(), Task_Succeed, callback);
+            procEncoded = encodeHP(afterPush);
+            setRoot(innerTask);
             continue;
         }
         else if (ctor == Task_OnError) {
             HPointer callback = task->callback;
+            HPointer innerTask = task->task;
 
-            HPointer procHP = decodeHP(procEncoded);
-            pushStack(procHP, Task_Fail, callback);
-
-            proc = resolveProc();
-            if (!proc) break;
-            task = resolveRoot(proc);
-            if (task) {
-                proc->root = task->task;
-            }
+            HPointer afterPush = pushStack(currentProcHP(), Task_Fail, callback);
+            procEncoded = encodeHP(afterPush);
+            setRoot(innerTask);
             continue;
         }
         else if (ctor == Task_Binding) {
-            HPointer procHP = decodeHP(procEncoded);
+            // allocClosure can trigger GC — snapshot the bind callback first.
+            HPointer bindCallback = task->callback;
 
-            // allocClosure can trigger GC — re-read bindCallback after.
             HPointer resumeClosure = allocClosure(
                 reinterpret_cast<EvalFunction>(resumeEvaluator), 2);
             void* clPtr = resolveHP(resumeClosure);
             if (clPtr) {
-                procHP = decodeHP(procEncoded);  // re-read after allocClosure
-                closureCapture(clPtr, boxed(procHP), true);
+                // The resume closure captures *this snapshot* of the Process
+                // HPointer. Once user code invokes the resume closure, a new
+                // Process will be built from that snapshot via
+                // procWithRoot — any updates we made here between now and
+                // the resume running are ignored (but for a fresh binding
+                // we've made no updates, so this is equivalent).
+                closureCapture(clPtr, boxed(currentProcHP()), true);
             }
-
-            // Re-read bindCallback from proc->root right before the call.
-            proc = resolveProc();
-            if (!proc) break;
-            task = resolveRoot(proc);
-            if (!task) break;
-            HPointer bindCallback = task->callback;
 
             HPointer killHandle = callClosure1(bindCallback, resumeClosure);
 
-            // Re-resolve after closure call
+            // Re-resolve; the user's bind callback may have enqueued tasks
+            // of its own (which walk through their own setRoot sequence).
             proc = resolveProc();
             if (!proc) break;
 
+            // Install killHandle onto the current root if it's still a
+            // Task_Binding. Task heap objects ARE still allowed to be
+            // mutated in-place — only Process is logically immutable in
+            // this change — because tasks are one-shot and don't share the
+            // long-lived-root problem. (See test-fails.md root-cause report.)
             void* newRootPtr = resolveHP(proc->root);
             if (newRootPtr) {
                 Task* currentTask = static_cast<Task*>(newRootPtr);
@@ -520,27 +635,22 @@ void Scheduler::stepProcess(uint64_t procEncoded) {
                 }
             }
 
-            // Process suspends
+            // Process suspends here; it will be re-enqueued (with a fresh
+            // Process value) by resumeEvaluator when the async op completes.
             break;
         }
         else if (ctor == Task_Receive) {
-            proc = resolveProc();
-            if (!proc) break;
-
-            HPointer msg;
-            if (mailboxPopFront(proc, msg)) {
-                // Re-read recvCallback from proc->root right before the call.
+            MailboxPopResult popRes = mailboxPopFront(currentProcHP());
+            procEncoded = encodeHP(popRes.newProcHP);
+            if (popRes.hasMessage) {
                 proc = resolveProc();
                 if (!proc) break;
                 task = resolveRoot(proc);
                 if (!task) break;
                 HPointer recvCallback = task->callback;
 
-                HPointer newTask = callClosure1(recvCallback, msg);
-
-                proc = resolveProc();
-                if (!proc) break;
-                proc->root = newTask;
+                HPointer newTask = callClosure1(recvCallback, popRes.msg);
+                setRoot(newTask);
                 continue;
             } else {
                 // No messages - block
@@ -552,7 +662,6 @@ void Scheduler::stepProcess(uint64_t procEncoded) {
             break;
         }
     }
-
 }
 
 } // namespace Elm::Platform

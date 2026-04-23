@@ -36,11 +36,19 @@ static void* sleepBindingEvaluator(void* rawArgs[]) {
     auto cancelled = std::make_shared<std::atomic<bool>>(false);
     auto cancelledForThread = cancelled;
 
+    // Register the resume closure as a GC root for the lifetime of the
+    // timer thread. A raw captured HPointer would become stale after any
+    // GC on the main thread; the token-based registry keeps the closure
+    // tracked and evacuated correctly.
+    HPointer resumeHP = Export::decode(resumeEnc);
+    uint64_t resumeToken =
+        Elm::Platform::Scheduler::instance().registerPendingResume(resumeHP);
+
     // Track pending async work before spawning thread
     Elm::Platform::Scheduler::instance().incrementPendingAsync();
 
     // Spawn timer thread
-    std::thread([resumeEnc, millis, cancelledForThread]() {
+    std::thread([resumeToken, millis, cancelledForThread]() {
         // Init GC for this thread so we can allocate heap objects
         Allocator::instance().initThread();
 
@@ -49,11 +57,15 @@ static void* sleepBindingEvaluator(void* rawArgs[]) {
             std::this_thread::sleep_for(std::chrono::milliseconds(static_cast<int64_t>(millis)));
         }
 
-        if (!cancelledForThread->load()) {
+        // Retrieve the (possibly-evacuated) resume closure and clear the
+        // registry entry so its storage is freed on the next GC.
+        HPointer resumeClosure =
+            Elm::Platform::Scheduler::instance().takePendingResume(resumeToken);
+
+        if (!cancelledForThread->load() && !Elm::alloc::isNil(resumeClosure)) {
             // Resume the process with Task.succeed(Unit)
             HPointer succeedTask = Elm::Platform::Scheduler::instance().taskSucceed(
                 Elm::alloc::unit());
-            HPointer resumeClosure = Export::decode(resumeEnc);
 
             // Call resume(succeedTask) — this calls enqueue() which just pushes
             // to the run queue and signals the CV (doesn't call drain)

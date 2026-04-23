@@ -442,12 +442,6 @@ void* Allocator::resolve(HPointer ptr) {
 
     // Validate pointer is within the reserved heap address space.
     assert(static_cast<char*>(obj) >= heap_base && "Pointer below heap base");
-    if (static_cast<char*>(obj) >= heap_base + heap_reserved) {
-        uint64_t raw;
-        memcpy(&raw, &ptr, sizeof(raw));
-        fprintf(stderr, "DIAG: resolve() bad HPointer: raw=0x%lx constant=%u heap_base=%p heap_end=%p obj=%p\n",
-                raw, ptr.constant, (void*)heap_base, (void*)(heap_base + heap_reserved), obj);
-    }
     assert(static_cast<char*>(obj) < heap_base + heap_reserved && "Pointer above heap end");
 
     // Follow forwarding chain to final location.
