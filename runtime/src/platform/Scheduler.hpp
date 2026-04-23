@@ -40,6 +40,10 @@ public:
     void incrementPendingAsync();
     void decrementPendingAsync();
 
+    // Called by helper threads (e.g. TimerService worker) to wake the main
+    // event loop when new async work is ready. Must not allocate or touch GC.
+    void notifyWorkAvailableFromAsync();
+
     // Closure calling helper: calls a 1-arg Elm closure, returns result
     static HPointer callClosure1(HPointer closurePtr, HPointer arg);
     // Calls a 2-arg Elm closure
@@ -84,6 +88,12 @@ private:
     Scheduler();
 
     void stepProcess(uint64_t procEncoded);
+
+    // Drain TimerService's ready-token queue: for each token, resolve the
+    // corresponding resume closure from pendingResumes_, allocate
+    // Task.succeed(unit), invoke callClosure1, and decrement pendingAsync_.
+    // Runs only on the main scheduler thread.
+    void processReadyAsync();
 
     // Mailbox helpers (Elm List as queue).
     // These allocate a new Process with the updated mailbox and return its

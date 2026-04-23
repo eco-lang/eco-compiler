@@ -314,6 +314,7 @@ add_llvm_executable(ecoc
     ../allocator/BytesOps.cpp
     ../allocator/ElmBytesRuntime.cpp
     ../platform/Scheduler.cpp
+    ../platform/TimerService.cpp
     ../platform/PlatformRuntime.cpp
     PARTIAL_SOURCES_INTENDED
 )
@@ -398,6 +399,7 @@ add_mlir_library(EcoRunner
     ../allocator/BytesOps.cpp
     ../allocator/ElmBytesRuntime.cpp
     ../platform/Scheduler.cpp
+    ../platform/TimerService.cpp
     ../platform/PlatformRuntime.cpp
     PARTIAL_SOURCES_INTENDED
 
@@ -478,6 +480,7 @@ add_library(EcoRuntimeStatic STATIC
     ../allocator/BytesOps.cpp
     ../allocator/ElmBytesRuntime.cpp
     ../platform/Scheduler.cpp
+    ../platform/TimerService.cpp
     ../platform/PlatformRuntime.cpp
 )
 

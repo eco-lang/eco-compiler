@@ -1,4 +1,5 @@
 #include "Scheduler.hpp"
+#include "TimerService.hpp"
 #include "allocator/Allocator.hpp"
 #include "allocator/HeapHelpers.hpp"
 #include "allocator/RuntimeExports.h"
@@ -457,16 +458,23 @@ void Scheduler::drain() {
 
 void Scheduler::runEventLoop() {
     while (true) {
-        drain();  // Process all queued work on main thread
+        drain();               // run all queued work on main thread
+        processReadyAsync();   // resolve any fired timers; may enqueue procs
+
+        // If processReadyAsync produced new work, drain it before sleeping;
+        // otherwise the predicate below would trivially pass and we'd take
+        // an extra lap through wait+drain for no reason.
+        if (!runQueue_.empty()) continue;
 
         std::unique_lock<std::mutex> lock(mutex_);
-        // Exit when no queued work AND no pending async operations
-        if (runQueue_.empty() && pendingAsync_.load() == 0) {
-            break;
-        }
-        // Block until something is enqueued or all async work finishes
+        if (runQueue_.empty() && pendingAsync_.load() == 0) break;
+        // Also wake if the timer worker pushed a token after our last
+        // processReadyAsync but before we took the lock — closes the
+        // missed-wakeup window.
         eventCV_.wait(lock, [this] {
-            return !runQueue_.empty() || pendingAsync_.load() == 0;
+            return !runQueue_.empty()
+                || pendingAsync_.load() == 0
+                || TimerService::instance().hasReadyTokens();
         });
     }
 }
@@ -478,6 +486,34 @@ void Scheduler::incrementPendingAsync() {
 void Scheduler::decrementPendingAsync() {
     pendingAsync_.fetch_sub(1);
     eventCV_.notify_one();
+}
+
+void Scheduler::notifyWorkAvailableFromAsync() {
+    // Taking mutex_ is cheap and mirrors the enqueue/decrementPendingAsync
+    // pattern; it closes the missed-wakeup window where the predicate could
+    // observe empty state just before a worker's ready-queue push.
+    std::lock_guard<std::mutex> lk(mutex_);
+    eventCV_.notify_one();
+}
+
+void Scheduler::processReadyAsync() {
+    std::uint64_t token;
+    while (TimerService::instance().tryPopReadyToken(token)) {
+        HPointer resumeClosure = takePendingResume(token);
+        if (alloc::isNil(resumeClosure)) {
+            decrementPendingAsync();
+            continue;
+        }
+        // Root resumeClosure and succeedTask across taskSucceed +
+        // callClosure1, both of which may trigger GC inside the callee.
+        HPointer succeedTask = listNil();
+        {
+            StackRootGuard guard(&resumeClosure, &succeedTask);
+            succeedTask = taskSucceed(unit());
+            callClosure1(resumeClosure, succeedTask);
+        }
+        decrementPendingAsync();
+    }
 }
 
 // ============================================================================
