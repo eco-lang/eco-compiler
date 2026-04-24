@@ -673,6 +673,221 @@ struct PapCreateOpLowering : public OpConversionPattern<PapCreateOp> {
 };
 
 //===----------------------------------------------------------------------===//
+// eco.papCreateGroup -> one eco_alloc_closure_group_slow call
+//===----------------------------------------------------------------------===//
+
+struct PapCreateGroupOpLowering : public OpConversionPattern<PapCreateGroupOp> {
+    const EcoRuntime &runtime;
+
+    PapCreateGroupOpLowering(EcoTypeConverter &typeConverter, MLIRContext *ctx,
+                             const EcoRuntime &runtime)
+        : OpConversionPattern(typeConverter, ctx), runtime(runtime) {}
+
+    LogicalResult matchAndRewrite(PapCreateGroupOp op, OpAdaptor adaptor,
+                                  ConversionPatternRewriter &rewriter) const override {
+        auto loc = op.getLoc();
+        auto *ctx = rewriter.getContext();
+        auto i32Ty = IntegerType::get(ctx, 32);
+        auto i64Ty = IntegerType::get(ctx, 64);
+        auto ptrTy = LLVM::LLVMPointerType::get(ctx);
+
+        auto functions = op.getFunctions();
+        auto fastEvaluators = op.getFastEvaluators();
+        auto arities = op.getArities();
+        auto numCapturedArr = op.getNumCaptured();
+        auto unboxedBitmaps = op.getUnboxedBitmaps();
+        auto captureCounts = op.getCaptureCounts();
+        auto crossEdges = op.getCrossEdges();
+
+        const unsigned numSiblings = functions.size();
+
+        // Partition adapted operands into captures (= sum of capture_counts)
+        // followed by GC roots.
+        auto [realOperands, liveRoots] =
+            splitAdaptedRoots(op, adaptor.getOperands());
+
+        // Resolve wrapper-function pointer for each sibling. Group members
+        // always have captures so we use the fast_evaluator ($cap) form.
+        auto module = op->getParentOfType<ModuleOp>();
+        SmallVector<Value> wrapperPtrs;
+        wrapperPtrs.reserve(numSiblings);
+        for (unsigned i = 0; i < numSiblings; ++i) {
+            StringRef funcSymbol =
+                cast<FlatSymbolRefAttr>(fastEvaluators[i]).getValue();
+            int64_t arity = cast<IntegerAttr>(arities[i]).getInt();
+            auto wrapperFunc = getOrCreateWrapper(
+                rewriter, module, funcSymbol, arity, loc,
+                getTypeConverter(), runtime);
+            Value funcPtr = rewriter.create<LLVM::AddressOfOp>(
+                loc, ptrTy, wrapperFunc.getSymName());
+            wrapperPtrs.push_back(funcPtr);
+        }
+
+        // Allocate stack arrays to pass to the runtime.
+        auto numSiblingsConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty,
+            rewriter.getI64IntegerAttr(numSiblings));
+        auto numSiblingsPlus1Const = rewriter.create<LLVM::ConstantOp>(loc, i64Ty,
+            rewriter.getI64IntegerAttr(numSiblings + 1));
+
+        Value evaluatorsArr = rewriter.create<LLVM::AllocaOp>(
+            loc, ptrTy, ptrTy, numSiblingsConst);
+        Value aritiesArr = rewriter.create<LLVM::AllocaOp>(
+            loc, ptrTy, i32Ty, numSiblingsConst);
+        Value numCapturedArrAlloca = rewriter.create<LLVM::AllocaOp>(
+            loc, ptrTy, i32Ty, numSiblingsConst);
+        Value unboxedBitmapsArr = rewriter.create<LLVM::AllocaOp>(
+            loc, ptrTy, i64Ty, numSiblingsConst);
+        Value captureOffsetsArr = rewriter.create<LLVM::AllocaOp>(
+            loc, ptrTy, i32Ty, numSiblingsPlus1Const);
+        Value outClosuresArr = rewriter.create<LLVM::AllocaOp>(
+            loc, ptrTy, i64Ty, numSiblingsConst);
+
+        // Store per-sibling static metadata.
+        uint32_t runningOffset = 0;
+        for (unsigned i = 0; i < numSiblings; ++i) {
+            uint32_t arity = static_cast<uint32_t>(
+                cast<IntegerAttr>(arities[i]).getInt());
+            uint32_t nc = static_cast<uint32_t>(
+                cast<IntegerAttr>(numCapturedArr[i]).getInt());
+            uint64_t bitmap = static_cast<uint64_t>(
+                cast<IntegerAttr>(unboxedBitmaps[i]).getInt());
+            uint32_t cc = static_cast<uint32_t>(
+                cast<IntegerAttr>(captureCounts[i]).getInt());
+
+            auto idxConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty,
+                rewriter.getI64IntegerAttr(i));
+
+            // evaluators[i] = wrapperPtrs[i]
+            auto evPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, ptrTy,
+                evaluatorsArr, ValueRange{idxConst});
+            rewriter.create<LLVM::StoreOp>(loc, wrapperPtrs[i], evPtr);
+
+            // arities[i] = arity
+            auto arConst = rewriter.create<LLVM::ConstantOp>(loc, i32Ty,
+                rewriter.getI32IntegerAttr(static_cast<int32_t>(arity)));
+            auto arPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i32Ty,
+                aritiesArr, ValueRange{idxConst});
+            rewriter.create<LLVM::StoreOp>(loc, arConst, arPtr);
+
+            // numCaptured[i] = nc
+            auto ncConst = rewriter.create<LLVM::ConstantOp>(loc, i32Ty,
+                rewriter.getI32IntegerAttr(static_cast<int32_t>(nc)));
+            auto ncPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i32Ty,
+                numCapturedArrAlloca, ValueRange{idxConst});
+            rewriter.create<LLVM::StoreOp>(loc, ncConst, ncPtr);
+
+            // unboxedBitmaps[i] = bitmap
+            auto bmConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty,
+                rewriter.getI64IntegerAttr(static_cast<int64_t>(bitmap)));
+            auto bmPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i64Ty,
+                unboxedBitmapsArr, ValueRange{idxConst});
+            rewriter.create<LLVM::StoreOp>(loc, bmConst, bmPtr);
+
+            // captureOffsets[i] = runningOffset
+            auto offConst = rewriter.create<LLVM::ConstantOp>(loc, i32Ty,
+                rewriter.getI32IntegerAttr(static_cast<int32_t>(runningOffset)));
+            auto offPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i32Ty,
+                captureOffsetsArr, ValueRange{idxConst});
+            rewriter.create<LLVM::StoreOp>(loc, offConst, offPtr);
+            runningOffset += cc;
+        }
+        // captureOffsets[N] = totalCaptures
+        {
+            auto idxConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty,
+                rewriter.getI64IntegerAttr(numSiblings));
+            auto offConst = rewriter.create<LLVM::ConstantOp>(loc, i32Ty,
+                rewriter.getI32IntegerAttr(static_cast<int32_t>(runningOffset)));
+            auto offPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i32Ty,
+                captureOffsetsArr, ValueRange{idxConst});
+            rewriter.create<LLVM::StoreOp>(loc, offConst, offPtr);
+        }
+
+        const uint32_t totalCaptures = runningOffset;
+        auto totalCapturesConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty,
+            rewriter.getI64IntegerAttr(totalCaptures == 0 ? 1 : totalCaptures));
+        Value capturesArr = rewriter.create<LLVM::AllocaOp>(
+            loc, ptrTy, i64Ty, totalCapturesConst);
+
+        // Convert each capture to i64 and store in captures[].
+        // realOperands is ordered [sibling0_caps..., sibling1_caps..., ...].
+        for (uint32_t k = 0; k < totalCaptures; ++k) {
+            Value capValue = realOperands[k];
+            if (auto intTy = dyn_cast<IntegerType>(capValue.getType());
+                intTy && intTy.getWidth() < 64) {
+                capValue = rewriter.create<LLVM::ZExtOp>(loc, i64Ty, capValue);
+            } else if (capValue.getType() == Float64Type::get(ctx)) {
+                capValue = rewriter.create<LLVM::BitcastOp>(loc, i64Ty, capValue);
+            } else if (isa<LLVM::LLVMPointerType>(capValue.getType())) {
+                capValue = closureStoreValueToI64(rewriter, loc, capValue);
+            }
+            auto idxConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty,
+                rewriter.getI64IntegerAttr(k));
+            auto capPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i64Ty,
+                capturesArr, ValueRange{idxConst});
+            rewriter.create<LLVM::StoreOp>(loc, capValue, capPtr);
+        }
+
+        // cross_edges[] flat i64 triples.
+        const uint64_t numCrossEdges = crossEdges.size() / 3;
+        auto crossSizeConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty,
+            rewriter.getI64IntegerAttr(crossEdges.empty() ? 1 : crossEdges.size()));
+        Value crossEdgesArr = rewriter.create<LLVM::AllocaOp>(
+            loc, ptrTy, i64Ty, crossSizeConst);
+        for (size_t k = 0; k < crossEdges.size(); ++k) {
+            int64_t v = cast<IntegerAttr>(crossEdges[k]).getInt();
+            auto vConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty,
+                rewriter.getI64IntegerAttr(v));
+            auto idxConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty,
+                rewriter.getI64IntegerAttr(k));
+            auto slotPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i64Ty,
+                crossEdgesArr, ValueRange{idxConst});
+            rewriter.create<LLVM::StoreOp>(loc, vConst, slotPtr);
+        }
+
+        auto numCrossConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty,
+            rewriter.getI64IntegerAttr(static_cast<int64_t>(numCrossEdges)));
+
+        emitSafepointMarker(op, rewriter, runtime, liveRoots);
+
+        auto groupFunc = runtime.getOrCreateAllocClosureGroupSlow(rewriter);
+        rewriter.create<LLVM::CallOp>(loc, groupFunc, ValueRange{
+            numSiblingsConst,
+            evaluatorsArr,
+            aritiesArr,
+            numCapturedArrAlloca,
+            unboxedBitmapsArr,
+            captureOffsetsArr,
+            capturesArr,
+            crossEdgesArr,
+            numCrossConst,
+            outClosuresArr
+        });
+
+        // Load result HPointers from outClosures[] and deliver them as the
+        // op's results. Each load yields an i64 which we turn into ptr<1>
+        // (the closure Eco_Value SSA type).
+        auto hptrPtrTy = getHPtrLLVMType(*ctx);
+        SmallVector<Value> results;
+        results.reserve(numSiblings);
+        for (unsigned i = 0; i < numSiblings; ++i) {
+            auto idxConst = rewriter.create<LLVM::ConstantOp>(loc, i64Ty,
+                rewriter.getI64IntegerAttr(i));
+            auto slotPtr = rewriter.create<LLVM::GEPOp>(loc, ptrTy, i64Ty,
+                outClosuresArr, ValueRange{idxConst});
+            Value loadedI64 = rewriter.create<LLVM::LoadOp>(loc, i64Ty, slotPtr);
+            Value asHPtr = rewriter.create<LLVM::IntToPtrOp>(
+                loc, hptrPtrTy, ValueRange{loadedI64});
+            results.push_back(asHPtr);
+        }
+
+        rewriter.replaceOp(op, results);
+        return success();
+    }
+
+    // Suppress unused-variable warnings for i8Ty in some configurations.
+};
+
+//===----------------------------------------------------------------------===//
 // Typed closure call helpers (Phase 5 - Typed Closure Calling)
 //===----------------------------------------------------------------------===//
 
@@ -1510,6 +1725,7 @@ void eco::detail::populateEcoClosurePatterns(EcoTypeConverter &typeConverter, Re
     patterns.add<ProjectClosureOpLowering>(typeConverter, ctx, runtime);
     patterns.add<AllocateClosureOpLowering>(typeConverter, ctx, runtime);
     patterns.add<PapCreateOpLowering>(typeConverter, ctx, runtime);
+    patterns.add<PapCreateGroupOpLowering>(typeConverter, ctx, runtime);
     patterns.add<PapExtendOpLowering>(typeConverter, ctx, runtime);
     patterns.add<CallOpLowering>(typeConverter, ctx, runtime);
 }

@@ -682,6 +682,86 @@ extern "C" void* eco_gc_alloc_region_slow(size_t total) {
     return Allocator::instance().allocateRegionSlow(total);
 }
 
+extern "C" void eco_alloc_closure_group_slow(
+    uint64_t numSiblings,
+    const void* const* evaluators,
+    const uint32_t* arities,
+    const uint32_t* numCaptured,
+    const uint64_t* unboxedBitmaps,
+    const uint32_t* captureOffsets,
+    const uint64_t* captures,
+    const uint64_t* crossEdges,
+    uint64_t numCrossEdges,
+    uint64_t* outClosures) {
+    // Compute total size: sum of per-sibling closure sizes, all naturally
+    // 8-byte aligned since Header/metadata/EvalFunction/Unboxable are each
+    // 8 bytes. Closure capacity uses `arities[i]` (max_values) so the
+    // allocated storage has room for future PAP-extend slots too.
+    size_t totalBytes = 0;
+    for (uint64_t i = 0; i < numSiblings; ++i) {
+        const size_t perSibling = sizeof(Header) + 8 + sizeof(EvalFunction)
+                                + static_cast<size_t>(arities[i]) * sizeof(Unboxable);
+        totalBytes += perSibling;
+    }
+
+    // Reserve one contiguous region so every sibling lives in a single
+    // generation (nursery or pinned large-obj). Any GC triggered by the
+    // slow path happens BEFORE any sibling is written, so input
+    // `captures[]` raw HPointers passed in must have been kept alive by
+    // the caller's GC-root frame up to this call.
+    void* region = eco_gc_alloc_region_fast(totalBytes);
+    if (!region) {
+        region = eco_gc_alloc_region_slow(totalBytes);
+    }
+
+    // First pass: initialize each sibling's header and publish HPointer.
+    // Producers need each sibling's HPointer to be known before we wire
+    // up cross-edges in pass two.
+    char* cursor = static_cast<char*>(region);
+    for (uint64_t i = 0; i < numSiblings; ++i) {
+        const uint32_t arity = arities[i];
+        const uint32_t nc = numCaptured[i];
+        const size_t perSibling = sizeof(Header) + 8 + sizeof(EvalFunction)
+                                + static_cast<size_t>(arity) * sizeof(Unboxable);
+
+        void* obj = cursor;
+        Header* hdr = getHeader(obj);
+        std::memset(hdr, 0, sizeof(Header));
+        hdr->tag = Tag_Closure;
+        hdr->size = static_cast<u32>(
+            (perSibling - sizeof(Closure)) / sizeof(Unboxable));
+
+        Closure* closure = static_cast<Closure*>(obj);
+        closure->n_values = nc;
+        closure->max_values = arity;
+        closure->unboxed = unboxedBitmaps[i];
+        closure->evaluator = reinterpret_cast<EvalFunction>(
+            const_cast<void*>(evaluators[i]));
+
+        // Non-sibling captures: pre-ordered into slots [0 .. capture_counts[i]).
+        const uint32_t capStart = captureOffsets[i];
+        const uint32_t capEnd = captureOffsets[i + 1];
+        for (uint32_t k = capStart, slot = 0; k < capEnd; ++k, ++slot) {
+            closure->values[slot].i = static_cast<i64>(captures[k]);
+        }
+
+        outClosures[i] = ptrToHPointer(obj).toBits();
+        cursor += perSibling;
+    }
+
+    // Second pass: wire cross-edges. All siblings share a generation so a
+    // plain i64 store is correct — no write barrier needed.
+    for (uint64_t e = 0; e < numCrossEdges; ++e) {
+        const uint64_t producer = crossEdges[3 * e + 0];
+        const uint64_t consumer = crossEdges[3 * e + 1];
+        const uint64_t slot     = crossEdges[3 * e + 2];
+
+        Closure* consumerClosure = static_cast<Closure*>(
+            hpointerToPtr(outClosures[consumer]));
+        consumerClosure->values[slot].i = static_cast<i64>(outClosures[producer]);
+    }
+}
+
 //===----------------------------------------------------------------------===//
 // Init-at-pointer Functions (for group allocation)
 //===----------------------------------------------------------------------===//

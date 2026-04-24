@@ -353,6 +353,7 @@ struct EcoRuntime {
     mlir::LLVM::LLVMFuncOp getOrCreateAllocCustomSlow(mlir::OpBuilder &builder) const;
     mlir::LLVM::LLVMFuncOp getOrCreateAllocStringSlow(mlir::OpBuilder &builder) const;
     mlir::LLVM::LLVMFuncOp getOrCreateAllocClosureSlow(mlir::OpBuilder &builder) const;
+    mlir::LLVM::LLVMFuncOp getOrCreateAllocClosureGroupSlow(mlir::OpBuilder &builder) const;
 
     // Region allocation (fast returns nullptr, slow may GC)
     mlir::LLVM::LLVMFuncOp getOrCreateAllocRegionFast(mlir::OpBuilder &builder) const;

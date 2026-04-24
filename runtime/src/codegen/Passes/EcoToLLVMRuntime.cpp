@@ -275,6 +275,20 @@ LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocClosureSlow(OpBuilder &builder) con
     return getOrCreateFunc(builder, "eco_alloc_closure_slow", funcTy);
 }
 
+LLVM::LLVMFuncOp EcoRuntime::getOrCreateAllocClosureGroupSlow(OpBuilder &builder) const {
+    // eco_alloc_closure_group_slow(
+    //   numSiblings: i64,
+    //   evaluators: ptr, arities: ptr, numCaptured: ptr,
+    //   unboxedBitmaps: ptr, captureOffsets: ptr, captures: ptr,
+    //   crossEdges: ptr, numCrossEdges: i64,
+    //   outClosures: ptr
+    // ) -> void
+    auto funcTy = LLVM::LLVMFunctionType::get(
+        LLVM::LLVMVoidType::get(builder.getContext()),
+        {I64_TY, PTR_TY, PTR_TY, PTR_TY, PTR_TY, PTR_TY, PTR_TY, PTR_TY, I64_TY, PTR_TY});
+    return getOrCreateFunc(builder, "eco_alloc_closure_group_slow", funcTy);
+}
+
 //===----------------------------------------------------------------------===//
 // Region Allocation Functions
 //===----------------------------------------------------------------------===//

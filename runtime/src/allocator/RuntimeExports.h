@@ -161,6 +161,29 @@ HPtr eco_alloc_tuple3_slow(uint64_t a, uint64_t b, uint64_t c, uint32_t unboxed_
 HPtr eco_alloc_record_slow(uint32_t field_count, uint64_t unboxed_bitmap);
 HPtr eco_alloc_string_slow(uint32_t length);
 HPtr eco_alloc_closure_slow(void* func_ptr, uint32_t num_captures);
+
+/// Allocate a group of sibling closures atomically for mutually-recursive
+/// let-rec. All siblings co-reside in a single contiguous region, so
+/// cross-sibling HPointer stores after allocation need no write barrier
+/// (same-generation). `arities[i]` is max_values (total closure capacity),
+/// `numCaptured[i]` is n_values (the count of already-captured slots).
+/// Non-sibling captures are written from a flat `captures[]` array
+/// partitioned by `captureOffsets` (prefix sums, length numSiblings+1).
+/// Cross-sibling captures are written after all HPointers are known,
+/// using `crossEdges` flat triples [producer, consumer, slot] of length
+/// `3 * numCrossEdges`. The resulting HPointers are stored in
+/// `outClosures[0..numSiblings)` in sibling order.
+void eco_alloc_closure_group_slow(
+    uint64_t numSiblings,
+    const void* const* evaluators,
+    const uint32_t* arities,
+    const uint32_t* numCaptured,
+    const uint64_t* unboxedBitmaps,
+    const uint32_t* captureOffsets,
+    const uint64_t* captures,
+    const uint64_t* crossEdges,
+    uint64_t numCrossEdges,
+    uint64_t* outClosures);
 HPtr eco_alloc_int_slow(int64_t value);
 HPtr eco_alloc_float_slow(double value);
 HPtr eco_alloc_char_slow(uint32_t value);

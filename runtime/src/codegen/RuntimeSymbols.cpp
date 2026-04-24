@@ -147,6 +147,10 @@ static llvm::orc::SymbolMap buildRuntimeSymbolMap(
             llvm::orc::ExecutorSymbolDef(
                 llvm::orc::ExecutorAddr::fromPtr(&eco_alloc_closure_slow),
                 llvm::JITSymbolFlags::Exported);
+        symbolMap[interner("eco_alloc_closure_group_slow")] =
+            llvm::orc::ExecutorSymbolDef(
+                llvm::orc::ExecutorAddr::fromPtr(&eco_alloc_closure_group_slow),
+                llvm::JITSymbolFlags::Exported);
         symbolMap[interner("eco_alloc_int_slow")] =
             llvm::orc::ExecutorSymbolDef(
                 llvm::orc::ExecutorAddr::fromPtr(&eco_alloc_int_slow),

@@ -9,6 +9,7 @@ module Compiler.Generate.MLIR.Ops exposing
     , arithConstantInt, arithConstantInt32, arithConstantFloat, arithConstantBool, arithConstantChar, arithCmpI
     , scfWhile, scfCondition
     , ecoCaseMany, ecoCaseStringMany, ecoYieldMany, scfYieldMany
+    , ecoPapCreateGroup, GroupSibling
     )
 
 {-| MLIR operation builders.
@@ -1002,4 +1003,107 @@ scfCondition ctx condVar args =
         |> opBuilder.withOperands (condVar :: argVars)
         |> opBuilder.withAttrs attrs
         |> opBuilder.isTerminator True
+        |> opBuilder.build
+
+
+
+-- ====== ECO papCreateGroup ======
+
+
+{-| Describes one sibling in a `eco.papCreateGroup` op.
+-}
+type alias GroupSibling =
+    { functionName : String
+    , fastEvaluator : String
+    , arity : Int
+    , numCaptured : Int
+    , unboxedBitmap : Int
+    , captureVars : List String
+    , captureTypes : List MlirType
+    }
+
+
+{-| Emit a single `eco.papCreateGroup` op that atomically allocates
+a group of sibling closures for mutual let-rec. See the runtime op
+description for details on the attribute layout.
+
+`siblings` are listed in sibling-index order. `crossEdges` is a list of
+`(producer, consumer, slot)` triples where slot indexes into the
+consumer's `values[]` array. `resultVars` are the SSA names to bind
+the resulting closure HPointers to, in sibling order.
+
+-}
+ecoPapCreateGroup :
+    Ctx.Context
+    -> List GroupSibling
+    -> List ( Int, Int, Int )
+    -> List String
+    -> ( Ctx.Context, MlirOp )
+ecoPapCreateGroup ctx siblings crossEdges resultVars =
+    let
+        functions =
+            siblings |> List.map (.functionName >> SymbolRefAttr) |> ArrayAttr Nothing
+
+        fastEvaluators =
+            siblings |> List.map (.fastEvaluator >> SymbolRefAttr) |> ArrayAttr Nothing
+
+        -- Emit as a standard ArrayAttr<IntegerAttr<i64>> (printed as
+        -- `[1 : i64, 2 : i64, ...]`) — matches TableGen `I64ArrayAttr`.
+        -- `ArrayAttr (Just I64) ...` would serialize as the distinct
+        -- `DenseI64ArrayAttr` form (`array<i64: ...>`), which the op
+        -- verifier does not accept.
+        i64Array ints =
+            ArrayAttr Nothing (List.map (\i -> IntAttr (Just I64) i) ints)
+
+        arities =
+            siblings |> List.map .arity |> i64Array
+
+        numCaptured =
+            siblings |> List.map .numCaptured |> i64Array
+
+        unboxedBitmaps =
+            siblings |> List.map .unboxedBitmap |> i64Array
+
+        captureCounts =
+            siblings |> List.map (.captureVars >> List.length) |> i64Array
+
+        flatCrossEdges =
+            crossEdges
+                |> List.concatMap (\( p, c, s ) -> [ p, c, s ])
+                |> i64Array
+
+        operandVars =
+            List.concatMap .captureVars siblings
+
+        operandTypes =
+            List.concatMap .captureTypes siblings
+
+        operandTypesAttr =
+            if List.isEmpty operandTypes then
+                Dict.empty
+
+            else
+                Dict.singleton "_operand_types"
+                    (ArrayAttr Nothing (List.map TypeAttr operandTypes))
+
+        attrs =
+            Dict.union operandTypesAttr
+                (Dict.fromList
+                    [ ( "functions", functions )
+                    , ( "fast_evaluators", fastEvaluators )
+                    , ( "arities", arities )
+                    , ( "num_captured", numCaptured )
+                    , ( "unboxed_bitmaps", unboxedBitmaps )
+                    , ( "capture_counts", captureCounts )
+                    , ( "cross_edges", flatCrossEdges )
+                    ]
+                )
+
+        results =
+            List.map (\v -> ( v, Types.ecoValue )) resultVars
+    in
+    mlirOp ctx "eco.papCreateGroup"
+        |> opBuilder.withOperands operandVars
+        |> opBuilder.withResults results
+        |> opBuilder.withAttrs attrs
         |> opBuilder.build

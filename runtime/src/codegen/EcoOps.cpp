@@ -65,6 +65,32 @@ LogicalResult PapExtendOp::verifySymbolUses(SymbolTableCollection &symbolTable) 
   return success();
 }
 
+LogicalResult PapCreateGroupOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
+  auto funcs = getFunctions();
+  for (Attribute a : funcs) {
+    auto sym = dyn_cast<FlatSymbolRefAttr>(a);
+    if (!sym)
+      return emitOpError("functions attribute must contain FlatSymbolRefAttr entries");
+    if (failed(verifySymRef(*this, sym, symbolTable, "sibling function")))
+      return failure();
+    // CGEN_057: kernel functions must have declarations
+    auto fn = sym.getValue();
+    if (fn.starts_with("Elm_Kernel_")) {
+      if (!symbolTable.lookupNearestSymbolFrom<func::FuncOp>(*this, sym))
+        return emitOpError("kernel function '") << fn
+               << "' has no func.func declaration; compiler must emit one (CGEN_057)";
+    }
+  }
+  for (Attribute a : getFastEvaluators()) {
+    auto sym = dyn_cast<FlatSymbolRefAttr>(a);
+    if (!sym)
+      return emitOpError("fast_evaluators attribute must contain FlatSymbolRefAttr entries");
+    if (failed(verifySymRef(*this, sym, symbolTable, "sibling fast evaluator")))
+      return failure();
+  }
+  return success();
+}
+
 LogicalResult AllocateClosureOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
   return verifySymRef(*this, getFunctionAttr(), symbolTable, "function");
 }
@@ -542,6 +568,143 @@ LogicalResult PapExtendOp::verify() {
   return success();
 }
 
+LogicalResult PapCreateGroupOp::verify() {
+  const size_t numSiblings = getClosures().size();
+  if (numSiblings < 2)
+    return emitOpError("expects at least 2 siblings, got ") << numSiblings;
+
+  auto functions = getFunctions();
+  auto fastEvaluators = getFastEvaluators();
+  auto arities = getArities();
+  auto numCaptured = getNumCaptured();
+  auto unboxedBitmaps = getUnboxedBitmaps();
+  auto captureCounts = getCaptureCounts();
+  auto crossEdges = getCrossEdges();
+
+  // Per-sibling arrays must all have size numSiblings.
+  if (functions.size() != numSiblings ||
+      fastEvaluators.size() != numSiblings ||
+      arities.size() != numSiblings ||
+      numCaptured.size() != numSiblings ||
+      unboxedBitmaps.size() != numSiblings ||
+      captureCounts.size() != numSiblings) {
+    return emitOpError("per-sibling attribute arrays must all have length ")
+           << numSiblings;
+  }
+
+  // cross_edges must be flat triples of I64 attrs.
+  if (crossEdges.size() % 3 != 0)
+    return emitOpError("cross_edges must be flat triples, length ")
+           << crossEdges.size() << " is not a multiple of 3";
+
+  // Count cross-edges per consumer to validate num_captured relation.
+  SmallVector<int64_t, 8> crossEdgeInDegree(numSiblings, 0);
+  for (size_t i = 0; i < crossEdges.size(); i += 3) {
+    int64_t producer = cast<IntegerAttr>(crossEdges[i]).getInt();
+    int64_t consumer = cast<IntegerAttr>(crossEdges[i + 1]).getInt();
+    int64_t slot = cast<IntegerAttr>(crossEdges[i + 2]).getInt();
+    if (producer < 0 || producer >= static_cast<int64_t>(numSiblings))
+      return emitOpError("cross_edges producer ") << producer << " out of range";
+    if (consumer < 0 || consumer >= static_cast<int64_t>(numSiblings))
+      return emitOpError("cross_edges consumer ") << consumer << " out of range";
+    int64_t consumerCap = cast<IntegerAttr>(numCaptured[consumer]).getInt();
+    if (slot < 0 || slot >= consumerCap)
+      return emitOpError("cross_edges slot ") << slot
+             << " out of range for consumer " << consumer
+             << " with num_captured " << consumerCap;
+    // Cross-edge slot must be boxed (bit 2*slot of unboxed_bitmap[consumer] == 0).
+    uint64_t bitmap = cast<IntegerAttr>(unboxedBitmaps[consumer]).getInt();
+    if (((bitmap >> (2ULL * static_cast<uint64_t>(slot))) & 0x3ULL) != 0)
+      return emitOpError("cross-edge consumer ") << consumer
+             << " slot " << slot << " must be boxed (unboxed_bitmap bit is set)";
+    crossEdgeInDegree[consumer] += 1;
+  }
+
+  // Per-sibling num_captured == capture_counts[i] + cross-edge in-degree for i.
+  int64_t totalCaptures = 0;
+  for (size_t i = 0; i < numSiblings; ++i) {
+    int64_t cap = cast<IntegerAttr>(numCaptured[i]).getInt();
+    int64_t cc = cast<IntegerAttr>(captureCounts[i]).getInt();
+    if (cc < 0)
+      return emitOpError("capture_counts[") << i << "] is negative";
+    if (cap != cc + crossEdgeInDegree[i])
+      return emitOpError("sibling ") << i << " num_captured (" << cap
+             << ") must equal capture_counts (" << cc
+             << ") + cross-edge in-degree (" << crossEdgeInDegree[i] << ")";
+    int64_t arity = cast<IntegerAttr>(arities[i]).getInt();
+    if (cap >= arity)
+      return emitOpError("sibling ") << i << " num_captured (" << cap
+             << ") must be less than arity (" << arity << ")";
+    if (cap > 63)
+      return emitOpError("sibling ") << i << " num_captured (" << cap
+             << ") exceeds 6-bit n_values limit (63)";
+    if (arity > 63)
+      return emitOpError("sibling ") << i << " arity ("
+             << arity << ") exceeds 6-bit max_values limit (63)";
+    if (cap > 26)
+      return emitOpError("sibling ") << i << " num_captured (" << cap
+             << ") exceeds 26-slot limit under 2-bit kind encoding";
+    uint64_t bitmap = cast<IntegerAttr>(unboxedBitmaps[i]).getInt();
+    if (bitmap >= (1ULL << 52))
+      return emitOpError("sibling ") << i
+             << " unboxed_bitmap exceeds 52-bit capacity";
+    totalCaptures += cc;
+  }
+
+  // Operand partition: [captures..., roots...].
+  unsigned rootCount = getGCRootsCountAttr(getOperation());
+  int64_t realOperandCount =
+      static_cast<int64_t>(getOperands().size()) - rootCount;
+  if (realOperandCount != totalCaptures)
+    return emitOpError("operand count minus GC roots (")
+           << realOperandCount
+           << ") must equal sum of capture_counts ("
+           << totalCaptures << ")";
+
+  // Per-slot kind check on the captures prefix (mirrors papCreate).
+  auto captures = getOperands().take_front(totalCaptures);
+  size_t operandCursor = 0;
+  for (size_t i = 0; i < numSiblings; ++i) {
+    int64_t cc = cast<IntegerAttr>(captureCounts[i]).getInt();
+    uint64_t bitmap = cast<IntegerAttr>(unboxedBitmaps[i]).getInt();
+    for (int64_t j = 0; j < cc; ++j) {
+      // Non-sibling captures occupy the low slots [0..cc); sibling captures
+      // (cross-edge consumers) live at the remaining slots.
+      const uint64_t shift = 2ULL * static_cast<uint64_t>(j);
+      const uint64_t kind = (bitmap >> shift) & 0x3ULL;
+      Type ty = captures[operandCursor + j].getType();
+      switch (kind) {
+        case 0:
+          if (!isa<eco::ValueType>(ty))
+            return emitOpError("sibling ") << i << " capture " << j
+                   << " has kind=boxed but non-boxed SSA type " << ty;
+          break;
+        case 1:
+          if (!ty.isInteger(64))
+            return emitOpError("sibling ") << i << " capture " << j
+                   << " has kind=Int but SSA type " << ty;
+          break;
+        case 2:
+          if (!ty.isF64())
+            return emitOpError("sibling ") << i << " capture " << j
+                   << " has kind=Float but SSA type " << ty;
+          break;
+        case 3:
+          if (!ty.isInteger(16))
+            return emitOpError("sibling ") << i << " capture " << j
+                   << " has kind=Char but SSA type " << ty;
+          break;
+      }
+      if (ty.isInteger(1))
+        return emitOpError("sibling ") << i << " captured Bool (i1) at slot "
+               << j << " violates REP_CLOSURE_001: Bool must be boxed";
+    }
+    operandCursor += cc;
+  }
+
+  return success();
+}
+
 LogicalResult ProjectClosureOp::verify() {
   // Verify index is non-negative
   int64_t index = getIndex();
@@ -732,6 +895,24 @@ ValueRange PapCreateOp::getGCRoots() {
     return all.drop_front(all.size() - rootCount);
 }
 void PapCreateOp::setGCRoots(ValueRange newRoots) {
+    unsigned oldRootCount = getGCRootsCountAttr(getOperation());
+    auto all = getOperation()->getOperands();
+    unsigned nonRootCount = all.size() - oldRootCount;
+    SmallVector<Value, 8> ops(all.begin(), all.begin() + nonRootCount);
+    ops.append(newRoots.begin(), newRoots.end());
+    getOperation()->setOperands(ops);
+    OpBuilder b(getOperation());
+    getOperation()->setAttr("eco.gc_roots_count",
+        b.getI64IntegerAttr(newRoots.size()));
+}
+
+ValueRange PapCreateGroupOp::getGCRoots() {
+    unsigned rootCount = getGCRootsCountAttr(getOperation());
+    if (rootCount == 0) return {};
+    auto all = getOperation()->getOperands();
+    return all.drop_front(all.size() - rootCount);
+}
+void PapCreateGroupOp::setGCRoots(ValueRange newRoots) {
     unsigned oldRootCount = getGCRootsCountAttr(getOperation());
     auto all = getOperation()->getOperands();
     unsigned nonRootCount = all.size() - oldRootCount;

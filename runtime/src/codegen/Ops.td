@@ -970,6 +970,69 @@ def Eco_PapCreateOp : Eco_Op<"papCreate", [
   let hasVerifier = 1;
 }
 
+def Eco_PapCreateGroupOp : Eco_Op<"papCreateGroup", [
+    Pure,
+    DeclareOpInterfaceMethods<SymbolUserOpInterface>,
+    DeclareOpInterfaceMethods<Eco_GCRootCarrierOpInterface>
+]> {
+  let summary = "Create a group of mutually-recursive PAP closures atomically";
+  let description = [{
+    Allocates N sibling closures in a single contiguous runtime region and
+    wires cross-sibling captures after all HPointers are known. This
+    eliminates the SSA-dominance problem of mutual let-rec closures (where
+    sibling A needs sibling B's HPointer as a capture, but B is not yet
+    defined at A's papCreate) without introducing a write barrier: all
+    siblings are co-allocated in the same generation so there is no
+    old->young pointer.
+
+    Operand layout:
+      [sibling0_captures..., sibling1_captures..., ...,
+       siblingN-1_captures..., roots...]
+    Per-sibling capture count is `capture_counts[i]`; the captures for
+    sibling i live at operands[prefix_i .. prefix_i + capture_counts[i]).
+    All trailing operands (after `sum(capture_counts)`) are GC live roots,
+    consumed by the GCRootCarrier interface. `eco.gc_roots_count`
+    tracks how many trailing operands are roots.
+
+    Results: N `!eco.value` HPointers in sibling order.
+
+    Attributes:
+    - `functions`: ArrayAttr of FlatSymbolRefAttr, one per sibling,
+      the $clo clone used by generic closure dispatch.
+    - `fast_evaluators`: ArrayAttr of FlatSymbolRefAttr, one per sibling,
+      the $cap clone used by typed closure dispatch. Group members all
+      have captures (cross-edges count as captures), so every sibling
+      has a fast evaluator.
+    - `arities`: I64 ArrayAttr, one entry per sibling.
+    - `num_captured`: I64 ArrayAttr, single source of truth for each
+      sibling's Closure.n_values. Must satisfy
+      `num_captured[i] == capture_counts[i] +
+        count{(p,c,s) in cross_edges | c == i}`.
+    - `unboxed_bitmaps`: I64 ArrayAttr of per-sibling unboxed_bitmap.
+    - `capture_counts`: I64 ArrayAttr, non-sibling capture count per
+      sibling, used to partition the operand list.
+    - `cross_edges`: I64 ArrayAttr, flat triples of
+      [producer, consumer, slot]. Cross-edge slots must be boxed
+      (bit 2*slot of unboxed_bitmap[consumer] is zero).
+    - `_operand_types`: optional ArrayAttr of TypeAttr, one per capture
+      operand (before roots), mirroring the papCreate convention.
+  }];
+
+  let arguments = (ins
+    Variadic<Eco_AnyValue>:$operands,
+    ArrayAttr:$functions,
+    ArrayAttr:$fast_evaluators,
+    I64ArrayAttr:$arities,
+    I64ArrayAttr:$num_captured,
+    I64ArrayAttr:$unboxed_bitmaps,
+    I64ArrayAttr:$capture_counts,
+    I64ArrayAttr:$cross_edges
+  );
+  let results = (outs Variadic<Eco_Value>:$closures);
+
+  let hasVerifier = 1;
+}
+
 def Eco_PapExtendOp : Eco_Op<"papExtend", [
     DeclareOpInterfaceMethods<SymbolUserOpInterface>,
     DeclareOpInterfaceMethods<Eco_GCRootCarrierOpInterface>

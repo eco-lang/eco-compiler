@@ -3560,10 +3560,323 @@ addPlaceholderMappings names ctx =
         names
 
 
+{-| Closure-binding view of a MonoDef. Collected for each candidate SCC
+member so that group codegen can see the binding name, closure info,
+lambda body, and overall result type together.
+-}
+type alias ClosureBinding =
+    { name : Name.Name
+    , closureInfo : Mono.ClosureInfo
+    , lambdaBody : Mono.MonoExpr
+    , monoType : Mono.MonoType
+    }
+
+
+{-| Classify a MonoDef as a closure binding. Returns a `ClosureBinding`
+record when the RHS is a `Mono.MonoClosure`; otherwise Nothing.
+-}
+classifyClosureDef : Mono.MonoDef -> Maybe ClosureBinding
+classifyClosureDef def =
+    case def of
+        Mono.MonoDef name (Mono.MonoClosure closureInfo body monoType) ->
+            Just
+                { name = name
+                , closureInfo = closureInfo
+                , lambdaBody = body
+                , monoType = monoType
+                }
+
+        _ ->
+            Nothing
+
+
+{-| Extract the set of sibling names directly referenced by a closure
+binding's captures (ignoring self-references). This is used to build the
+mutual-recursion capture graph.
+
+Each capture entry in `ClosureInfo.captures` carries the capture expression;
+a capture referencing sibling `B` reads `MonoVarLocal B _`.
+-}
+closureSiblingRefs :
+    Set.Set Name.Name
+    -> Name.Name
+    -> Mono.ClosureInfo
+    -> Set.Set Name.Name
+closureSiblingRefs boundSet selfName info =
+    List.foldl
+        (\( _, captureExpr, _ ) acc ->
+            case captureExpr of
+                Mono.MonoVarLocal refName _ ->
+                    if refName /= selfName && Set.member refName boundSet then
+                        Set.insert refName acc
+
+                    else
+                        acc
+
+                _ ->
+                    acc
+        )
+        Set.empty
+        info.captures
+
+
+{-| Compute the SCC of the capture graph containing `startName`, using
+iterative DFS to avoid deep recursion. Only names in `closureNames` (the
+contiguous-closure window) are considered reachable.
+
+This is a simple meet-in-the-middle: forward reachable from startName,
+backward reachable from startName, and the intersection is the SCC.
+-}
+computeSCC :
+    Set.Set Name.Name
+    -> Dict.Dict Name.Name (Set.Set Name.Name)
+    -> Name.Name
+    -> Set.Set Name.Name
+computeSCC closureNames forwardGraph startName =
+    let
+        reverseGraph =
+            Dict.foldl
+                (\from tos acc ->
+                    Set.foldl
+                        (\to acc2 ->
+                            let
+                                existing =
+                                    Dict.get to acc2
+                                        |> Maybe.withDefault Set.empty
+                            in
+                            Dict.insert to (Set.insert from existing) acc2
+                        )
+                        acc
+                        tos
+                )
+                Dict.empty
+                forwardGraph
+
+        bfs graph start =
+            let
+                step visited frontier =
+                    if Set.isEmpty frontier then
+                        visited
+
+                    else
+                        let
+                            nextFrontier =
+                                Set.foldl
+                                    (\n acc ->
+                                        Dict.get n graph
+                                            |> Maybe.withDefault Set.empty
+                                            |> Set.foldl
+                                                (\next a ->
+                                                    if
+                                                        Set.member next closureNames
+                                                            && not (Set.member next visited)
+                                                    then
+                                                        Set.insert next a
+
+                                                    else
+                                                        a
+                                                )
+                                                acc
+                                    )
+                                    Set.empty
+                                    frontier
+
+                            newVisited =
+                                Set.union visited nextFrontier
+                        in
+                        step newVisited nextFrontier
+            in
+            step (Set.singleton start) (Set.singleton start)
+
+        forward =
+            bfs forwardGraph startName
+
+        backward =
+            bfs reverseGraph startName
+    in
+    Set.intersect forward backward
+
+
+{-| Detect a contiguous mutual-recursion closure SCC of size >= 2 starting
+at `def`. Returns the SCC members (in let-chain order) paired with the
+let-chain body following them. Returns Nothing when:
+
+- the starting def is not a closure binding
+- the SCC containing it has size 1 (self-recursion or no recursion)
+- the SCC members are not contiguous and adjacent in the let-chain
+- any SCC member is not a closure binding (v1 constraint)
+
+-}
+detectMutualRecGroup :
+    Mono.MonoDef
+    -> Mono.MonoExpr
+    -> Maybe ( List ClosureBinding, Mono.MonoExpr )
+detectMutualRecGroup def body =
+    case classifyClosureDef def of
+        Nothing ->
+            Nothing
+
+        Just firstClosure ->
+            let
+                ( followingDefs, finalBody ) =
+                    splitLetChain body
+
+                -- Collect the maximal contiguous prefix of closure bindings
+                -- starting with `def`; a non-closure binding terminates the
+                -- window.
+                ( closureWindow, tailAfterWindow ) =
+                    collectClosurePrefix (def :: followingDefs)
+
+                windowNames =
+                    closureWindow |> List.map .name
+
+                boundSet =
+                    Set.fromList windowNames
+
+                -- Build capture graph over the window.
+                forwardGraph =
+                    List.foldl
+                        (\cb acc ->
+                            Dict.insert cb.name
+                                (closureSiblingRefs boundSet cb.name cb.closureInfo)
+                                acc
+                        )
+                        Dict.empty
+                        closureWindow
+
+                scc =
+                    computeSCC boundSet forwardGraph firstClosure.name
+            in
+            if Set.size scc < 2 then
+                Nothing
+
+            else
+                -- SCC must be a contiguous prefix of the window for v1.
+                let
+                    windowWithIdx =
+                        List.indexedMap Tuple.pair closureWindow
+
+                    sccIndices =
+                        windowWithIdx
+                            |> List.filterMap
+                                (\( i, cb ) ->
+                                    if Set.member cb.name scc then
+                                        Just i
+
+                                    else
+                                        Nothing
+                                )
+
+                    maxIdx =
+                        List.maximum sccIndices |> Maybe.withDefault 0
+
+                    minIdx =
+                        List.minimum sccIndices |> Maybe.withDefault 0
+
+                    isContiguous =
+                        minIdx == 0 && (maxIdx - minIdx + 1 == Set.size scc)
+                in
+                if not isContiguous then
+                    Nothing
+
+                else
+                    let
+                        ( members, rest ) =
+                            splitAtIndex (Set.size scc) closureWindow
+
+                        -- Re-wrap any remaining closure-prefix defs that are
+                        -- after the SCC as regular MonoLets, then splice on
+                        -- the tail of non-closure defs + final body.
+                        restAsDefs =
+                            List.map closureBindingToDef rest
+
+                        bodyAfterGroup =
+                            rebuildLetChainFromDefs
+                                (restAsDefs ++ tailAfterWindow)
+                                finalBody
+                    in
+                    Just ( members, bodyAfterGroup )
+
+
+closureBindingToDef : ClosureBinding -> Mono.MonoDef
+closureBindingToDef cb =
+    Mono.MonoDef cb.name
+        (Mono.MonoClosure cb.closureInfo cb.lambdaBody cb.monoType)
+
+
+rebuildLetChainFromDefs : List Mono.MonoDef -> Mono.MonoExpr -> Mono.MonoExpr
+rebuildLetChainFromDefs defs finalBody =
+    case defs of
+        [] ->
+            finalBody
+
+        d :: rest ->
+            Mono.MonoLet d
+                (rebuildLetChainFromDefs rest finalBody)
+                (Mono.typeOf finalBody)
+
+
+{-| Split a list of MonoDefs into a prefix of closure bindings and the
+remaining non-closure MonoDefs (which become the tail of the let chain).
+The prefix stops at the first non-closure binding or when the chain ends.
+-}
+collectClosurePrefix :
+    List Mono.MonoDef
+    -> ( List ClosureBinding, List Mono.MonoDef )
+collectClosurePrefix defs =
+    case defs of
+        [] ->
+            ( [], [] )
+
+        d :: rest ->
+            case classifyClosureDef d of
+                Just c ->
+                    let
+                        ( prefix, tailRest ) =
+                            collectClosurePrefix rest
+                    in
+                    ( c :: prefix, tailRest )
+
+                Nothing ->
+                    ( [], d :: rest )
+
+
+splitAtIndex : Int -> List a -> ( List a, List a )
+splitAtIndex n xs =
+    ( List.take n xs, List.drop n xs )
+
+
+{-| Split a MonoLet chain into its list of defs and the final body. Mirrors
+`Closure.collectLetChain` (not exposed from that module).
+-}
+splitLetChain : Mono.MonoExpr -> ( List Mono.MonoDef, Mono.MonoExpr )
+splitLetChain expr =
+    case expr of
+        Mono.MonoLet def body _ ->
+            let
+                ( rest, finalBody ) =
+                    splitLetChain body
+            in
+            ( def :: rest, finalBody )
+
+        _ ->
+            ( [], expr )
+
+
 {-| Generate MLIR code for a let expression.
 -}
 generateLet : Ctx.Context -> Mono.MonoDef -> Mono.MonoExpr -> ExprResult
 generateLet ctx def body =
+    case detectMutualRecGroup def body of
+        Just ( members, restBody ) ->
+            generateLetGroup ctx members restBody
+
+        Nothing ->
+            generateLetSingle ctx def body
+
+
+generateLetSingle : Ctx.Context -> Mono.MonoDef -> Mono.MonoExpr -> ExprResult
+generateLetSingle ctx def body =
     -- For mutually recursive definitions, add placeholder mappings for all
     -- names in the Let chain before generating any closures.
     -- We also set currentLetSiblings so that closures created in this group
@@ -3913,6 +4226,324 @@ generateLet ctx def body =
             , ctx = ctxOut
             , isTerminated = finalIsTerminated
             }
+
+
+{-| Generate a `eco.papCreateGroup` op for a mutually-recursive SCC of
+closure bindings. This replaces per-sibling `papCreate` + placeholder/
+`fixSelfCaptures` for true mutual let-rec (SCC size >= 2): all siblings
+are allocated in one runtime call, so cross-sibling captures can be
+written after all HPointers are known — eliminating the
+"operand #0 does not dominate this use" dominance hazard without adding
+a GC write barrier.
+-}
+generateLetGroup :
+    Ctx.Context
+    -> List ClosureBinding
+    -> Mono.MonoExpr
+    -> ExprResult
+generateLetGroup ctx members body =
+    let
+        -- Stable sibling indices (let-chain order).
+        memberNames =
+            List.map .name members
+
+        -- Install placeholder mappings for the full let-chain (including
+        -- post-group bindings) so downstream ops can reference them; also
+        -- put sibling names into currentLetSiblings for nested closures.
+        boundNames =
+            collectLetBoundNames (wrapDefsIntoLet members body)
+
+        outerSiblings =
+            ctx.currentLetSiblings
+
+        groupVarMappings =
+            addPlaceholderMappings boundNames ctx
+
+        letBoundSiblings =
+            List.foldl
+                (\n acc ->
+                    case Dict.get n groupVarMappings.varMappings of
+                        Just info ->
+                            Dict.insert n info acc
+
+                        Nothing ->
+                            acc
+                )
+                Dict.empty
+                boundNames
+
+        ctxWithPlaceholders =
+            { groupVarMappings | currentLetSiblings = letBoundSiblings }
+
+        memberNameSet =
+            Set.fromList memberNames
+
+        memberIndex : Dict.Dict Name.Name Int
+        memberIndex =
+            List.indexedMap (\i n -> ( n, i )) memberNames |> Dict.fromList
+
+        -- For each sibling, split its captures into (non-sibling, sibling),
+        -- preserving the original capture order (slot layout). Non-sibling
+        -- captures get generated into operand ops; sibling captures become
+        -- cross-edges. Slot indices in the resulting Closure.values[] are
+        -- `[non-sibling captures..., sibling captures...]` for each sibling.
+        buildSiblingData ( consumerIdx, member ) acc =
+            let
+                closureInfo =
+                    member.closureInfo
+
+                ( nonSiblingCaptures, siblingCaptures ) =
+                    List.partition
+                        (\( _, captureExpr, _ ) ->
+                            case captureExpr of
+                                Mono.MonoVarLocal refName _ ->
+                                    not (Set.member refName memberNameSet)
+
+                                _ ->
+                                    True
+                        )
+                        closureInfo.captures
+
+                -- Generate non-sibling capture operand ops.
+                ( captureOpsRev, captureVarsRev, ctxAfter ) =
+                    List.foldl
+                        (\( _, expr, _ ) ( ops, vars, ctx2 ) ->
+                            let
+                                r =
+                                    generateExpr ctx2 expr
+                            in
+                            ( List.reverse r.ops ++ ops
+                            , ( r.resultVar, r.resultType ) :: vars
+                            , r.ctx
+                            )
+                        )
+                        ( [], [], acc.ctx )
+                        nonSiblingCaptures
+
+                capVars0 =
+                    List.reverse captureVarsRev
+
+                -- Box primitives at the closure boundary (REP_CLOSURE_001).
+                ( boxOps, capVarsBoxed, ctxAfterBox ) =
+                    boxArgsForClosureBoundary False ctxAfter capVars0
+
+                captureVarNames =
+                    List.map Tuple.first capVarsBoxed
+
+                captureTypes =
+                    List.map Tuple.second capVarsBoxed
+
+                nonSiblingCount =
+                    List.length capVarsBoxed
+
+                crossEdgesForSibling =
+                    List.indexedMap
+                        (\j ( _, captureExpr, _ ) ->
+                            case captureExpr of
+                                Mono.MonoVarLocal refName _ ->
+                                    case Dict.get refName memberIndex of
+                                        Just producerIdx ->
+                                            Just
+                                                ( producerIdx
+                                                , consumerIdx
+                                                , nonSiblingCount + j
+                                                )
+
+                                        Nothing ->
+                                            Nothing
+
+                                _ ->
+                                    Nothing
+                        )
+                        siblingCaptures
+                        |> List.filterMap identity
+
+                numCaptured =
+                    nonSiblingCount + List.length siblingCaptures
+
+                -- unboxed_bitmap: only non-sibling slots may be unboxed.
+                -- Sibling (cross-edge consumer) slots stay boxed (bits = 00).
+                unboxedBitmap =
+                    capVarsBoxed
+                        |> List.indexedMap Tuple.pair
+                        |> List.foldl
+                            (\( i, ( _, mlirTy ) ) ub ->
+                                Types.bitmapSetKind ub i (Types.mlirTypeToKind mlirTy)
+                            )
+                            0
+
+                baseFuncName =
+                    lambdaIdToString closureInfo.lambdaId
+
+                siblingMeta =
+                    { functionName = baseFuncName ++ "$clo"
+                    , fastEvaluator = baseFuncName ++ "$cap"
+                    , arity = numCaptured + List.length closureInfo.params
+                    , numCaptured = numCaptured
+                    , unboxedBitmap = unboxedBitmap
+                    , captureVars = captureVarNames
+                    , captureTypes = captureTypes
+                    }
+
+                thisOps =
+                    List.reverse captureOpsRev ++ boxOps
+            in
+            { ctx = ctxAfterBox
+            , siblingsRev = siblingMeta :: acc.siblingsRev
+            , crossEdges = crossEdgesForSibling ++ acc.crossEdges
+            , opsRev = List.reverse thisOps ++ acc.opsRev
+            }
+
+        groupAcc =
+            List.foldl
+                buildSiblingData
+                { ctx = ctxWithPlaceholders
+                , siblingsRev = []
+                , crossEdges = []
+                , opsRev = []
+                }
+                (List.indexedMap Tuple.pair members)
+
+        ctxAfterSiblings =
+            groupAcc.ctx
+
+        siblingMetaList =
+            List.reverse groupAcc.siblingsRev
+
+        crossEdges =
+            groupAcc.crossEdges
+
+        captureOpsAll =
+            List.reverse groupAcc.opsRev
+
+        -- Result SSA vars bind to each sibling's placeholder so downstream
+        -- code references them via varMappings without needing rename.
+        resultVars =
+            List.map
+                (\m -> Ctx.lookupVar ctxAfterSiblings m.name |> Tuple.first)
+                members
+
+        ( ctxWithGroupOp, groupOp ) =
+            Ops.ecoPapCreateGroup
+                ctxAfterSiblings
+                siblingMetaList
+                crossEdges
+                resultVars
+
+        -- Register pending lambdas for each sibling (one per member) so
+        -- the lambda bodies get compiled. Capture types and sibling
+        -- mappings mirror what generateClosure sets up; isTailRecursive is
+        -- False — the group op handles mutual-rec through cross-edges.
+        pendingLambdas =
+            List.map2
+                (\member siblingMeta ->
+                    let
+                        closureInfo =
+                            member.closureInfo
+
+                        -- PendingLambda's captures list uses the ordered
+                        -- Name/MonoType pairs so lambda codegen projects
+                        -- them from the right positions. Slot layout is
+                        -- non-sibling captures first, then sibling captures.
+                        ( nonSibCapEntries, sibCapEntries ) =
+                            List.partition
+                                (\( _, captureExpr, _ ) ->
+                                    case captureExpr of
+                                        Mono.MonoVarLocal refName _ ->
+                                            not (Set.member refName memberNameSet)
+
+                                        _ ->
+                                            True
+                                )
+                                closureInfo.captures
+
+                        toNameType ( name, captureExpr, _ ) =
+                            ( name, Mono.typeOf captureExpr )
+
+                        capturesOrdered =
+                            List.map toNameType nonSibCapEntries
+                                ++ List.map toNameType sibCapEntries
+                    in
+                    { name = siblingMeta.functionName |> stripCloSuffix
+                    , captures = capturesOrdered
+                    , params = closureInfo.params
+                    , body = member.lambdaBody
+                    , returnType = Mono.typeOf member.lambdaBody
+                    , siblingMappings = letBoundSiblings
+                    , isTailRecursive = False
+                    , selfBindingName = Nothing
+                    }
+                )
+                members
+                siblingMetaList
+
+        ctxAfterLambdas =
+            { ctxWithGroupOp
+                | pendingLambdas = pendingLambdas ++ ctxWithGroupOp.pendingLambdas
+            }
+
+        -- Re-register each sibling's name so varMappings contains the real
+        -- result type (ecoValue) for downstream references. These were already
+        -- mapped to the placeholder var by addPlaceholderMappings; we just
+        -- mark those SSA vars as defined (by the group op) for safepoint tracking.
+        ctxReady =
+            List.foldl
+                (\member c ->
+                    let
+                        ( ssaVar, _ ) =
+                            Ctx.lookupVar c member.name
+                    in
+                    Ctx.addVarMapping member.name ssaVar Types.ecoValue c
+                )
+                ctxAfterLambdas
+                members
+
+        bodyResult =
+            generateExpr ctxReady body
+
+        bodyCtx =
+            bodyResult.ctx
+
+        ctxOut =
+            { bodyCtx | currentLetSiblings = outerSiblings }
+
+        finalIsTerminated =
+            bodyResult.isTerminated
+    in
+    { ops = captureOpsAll ++ [ groupOp ] ++ bodyResult.ops
+    , resultVar = bodyResult.resultVar
+    , resultType = bodyResult.resultType
+    , ctx = ctxOut
+    , isTerminated = finalIsTerminated
+    }
+
+
+{-| Helper: remove the "$clo" suffix from a function name for use as the
+PendingLambda base name (which gets $clo/$cap appended again during
+lambda code generation).
+-}
+stripCloSuffix : String -> String
+stripCloSuffix s =
+    if String.endsWith "$clo" s then
+        String.dropRight 4 s
+
+    else
+        s
+
+
+wrapDefsIntoLet : List ClosureBinding -> Mono.MonoExpr -> Mono.MonoExpr
+wrapDefsIntoLet members tail =
+    case members of
+        [] ->
+            tail
+
+        m :: rest ->
+            Mono.MonoLet
+                (Mono.MonoDef m.name
+                    (Mono.MonoClosure m.closureInfo m.lambdaBody m.monoType)
+                )
+                (wrapDefsIntoLet rest tail)
+                (Mono.typeOf tail)
 
 
 
