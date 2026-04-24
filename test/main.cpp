@@ -578,6 +578,13 @@ int main(int argc, char* argv[]) {
     oldGenTests.add(testEmptyHeapBehavior);
     oldGenTests.add(testAllGarbageHeap);
     oldGenTests.add(testAllLiveHeap);
+    // Embedded-constant coverage (regression guards for the fromPointerRaw
+    // assertion in the mark path).
+    oldGenTests.add(testStartMarkSkipsEmbeddedConstantRoot);
+    oldGenTests.add(testStartMarkAcceptsAllEmbeddedConstantTags);
+    oldGenTests.add(testMarkConsTailIsEmbeddedNil);
+    oldGenTests.add(testMarkDynRecordWithEmbeddedConstants);
+    oldGenTests.add(testMarkClosureCapturesEmbeddedConstant);
 
     Testing::TestSuite allocatorTests("Allocator");
     allocatorTests.add(testPromotionToOldGen);

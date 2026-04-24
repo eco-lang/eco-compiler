@@ -1087,3 +1087,259 @@ Testing::TestCase testAllLiveHeap("GC preserves all objects when all are rooted"
         }
     });
 });
+
+// ============================================================================
+// Embedded-constant HPointer coverage
+// ============================================================================
+//
+// Embedded constants (Unit, EmptyRec, True, False, Nil, Nothing, EmptyString)
+// are encoded in the HPointer `constant` field (values 1..7; the Heap.hpp
+// `Constant` enum is off-by-one from the MLIR/runtime encoding, so these
+// tests build HPointers directly using the runtime encoding 1..7).
+//
+// `Allocator::fromPointerRaw` asserts that `constant == 0`. Every mark-path
+// site must therefore filter embedded constants *before* the call, otherwise
+// a major GC crashes as soon as an embedded constant appears as a root or
+// an object field. This suite pins that contract.
+//
+// Encoding (from RuntimeExports.cpp:MlirConstantKind):
+//   1=Unit 2=EmptyRec 3=True 4=False 5=Nil 6=Nothing 7=EmptyString
+
+namespace {
+
+constexpr u64 kConstUnit        = 1;
+constexpr u64 kConstEmptyRec    = 2;
+constexpr u64 kConstTrue        = 3;
+constexpr u64 kConstFalse       = 4;
+constexpr u64 kConstNil         = 5;
+constexpr u64 kConstNothing     = 6;
+constexpr u64 kConstEmptyString = 7;
+
+// Build an HPointer that encodes one of the seven embedded constants.
+HPointer makeEmbeddedConstant(u64 constant_index) {
+    HPointer hp;
+    hp.ptr      = 0;
+    hp.constant = constant_index;
+    hp.padding  = 0;
+    return hp;
+}
+
+} // namespace
+
+// Regression: startMark currently calls `fromPointerRaw(*root)` unconditionally,
+// so registering any embedded-constant HPointer as a root fires the
+// `ptr.constant == 0` assertion in debug builds. The jit_roots loop in the
+// same function already filters values with a non-zero constant tag; the
+// root-HPointer loop must do the same.
+Testing::TestCase testStartMarkSkipsEmbeddedConstantRoot(
+    "startMark does not crash when an embedded-constant HPointer is in the root set",
+    []() {
+    rc::check([]() {
+        auto& alloc = initAllocator();
+        auto& oldgen = getOldGen(alloc);
+        auto& rootset = alloc.getRootSet();
+
+        HPointer nil_root = makeEmbeddedConstant(kConstNil);
+        rootset.addRoot(&nil_root);
+
+        void* real_obj = allocateIntInOldGen(oldgen, 42);
+        HPointer real_root = AllocatorTestAccess::toPointer(real_obj);
+        rootset.addRoot(&real_root);
+
+#if ENABLE_GC_STATS
+        GCStats& stats = getStats(alloc);
+        OldGenSpaceTestAccess::startMark(oldgen, rootset.getRoots(),
+                                         Allocator::instance(), stats);
+        OldGenSpaceTestAccess::finishMarkAndSweep(oldgen, stats);
+#else
+        OldGenSpaceTestAccess::startMark(oldgen, rootset.getRoots(),
+                                         Allocator::instance());
+        OldGenSpaceTestAccess::finishMarkAndSweep(oldgen);
+#endif
+
+        // Real rooted object is the authoritative signal that startMark
+        // walked the root set without aborting.
+        ElmInt* live = static_cast<ElmInt*>(readBarrier(real_root));
+        if (!live) RC_FAIL("real root did not survive mark/sweep");
+        RC_ASSERT(live->value == 42);
+
+        // Embedded-constant root must be unchanged — no forwarding, no mutation.
+        RC_ASSERT(nil_root.ptr == 0);
+        RC_ASSERT(nil_root.constant == kConstNil);
+
+        rootset.removeRoot(&nil_root);
+        rootset.removeRoot(&real_root);
+    });
+});
+
+// Exhaustive coverage of every embedded-constant tag value to catch a
+// regression if a new kind is added without extending the filter.
+Testing::TestCase testStartMarkAcceptsAllEmbeddedConstantTags(
+    "startMark accepts all seven embedded-constant tags as roots",
+    []() {
+    rc::check([]() {
+        auto& alloc = initAllocator();
+        auto& oldgen = getOldGen(alloc);
+        auto& rootset = alloc.getRootSet();
+
+        std::vector<HPointer> const_roots;
+        for (u64 k : {kConstUnit, kConstEmptyRec, kConstTrue, kConstFalse,
+                      kConstNil, kConstNothing, kConstEmptyString}) {
+            const_roots.push_back(makeEmbeddedConstant(k));
+        }
+        for (auto& r : const_roots) rootset.addRoot(&r);
+
+        void* obj = allocateIntInOldGen(oldgen, 7);
+        HPointer obj_root = AllocatorTestAccess::toPointer(obj);
+        rootset.addRoot(&obj_root);
+
+#if ENABLE_GC_STATS
+        GCStats& stats = getStats(alloc);
+        OldGenSpaceTestAccess::startMark(oldgen, rootset.getRoots(),
+                                         Allocator::instance(), stats);
+        OldGenSpaceTestAccess::finishMarkAndSweep(oldgen, stats);
+#else
+        OldGenSpaceTestAccess::startMark(oldgen, rootset.getRoots(),
+                                         Allocator::instance());
+        OldGenSpaceTestAccess::finishMarkAndSweep(oldgen);
+#endif
+
+        ElmInt* live = static_cast<ElmInt*>(readBarrier(obj_root));
+        if (!live) RC_FAIL("real root did not survive mark/sweep");
+        RC_ASSERT(live->value == 7);
+
+        for (size_t i = 0; i < const_roots.size(); i++) {
+            RC_ASSERT(const_roots[i].ptr == 0);
+            RC_ASSERT(const_roots[i].constant == (i + 1));
+        }
+
+        for (auto& r : const_roots) rootset.removeRoot(&r);
+        rootset.removeRoot(&obj_root);
+    });
+});
+
+// Cons.tail = Nil is the most common embedded-constant field site: every
+// list terminates here. markHPointer handles it correctly; this test locks
+// that in.
+Testing::TestCase testMarkConsTailIsEmbeddedNil(
+    "Mark traversal skips Nil embedded constant in Cons.tail",
+    []() {
+    rc::check([]() {
+        auto& alloc = initAllocator();
+        auto& oldgen = getOldGen(alloc);
+        auto& rootset = alloc.getRootSet();
+
+        void* head_obj = allocateIntInOldGen(oldgen, 123);
+
+        void* cons_obj = oldgen.allocate(sizeof(Cons));
+        if (!cons_obj) RC_FAIL("failed to allocate Cons in old gen");
+        Header* cons_hdr = getHeader(cons_obj);
+        cons_hdr->tag = Tag_Cons;
+        Cons* cons = static_cast<Cons*>(cons_obj);
+        cons->head.p = AllocatorTestAccess::toPointer(head_obj);
+        cons->tail   = makeEmbeddedConstant(kConstNil);
+
+        HPointer cons_root = AllocatorTestAccess::toPointer(cons_obj);
+        rootset.addRoot(&cons_root);
+
+        runMarkAndSweep(alloc);
+
+        Cons* live_cons = static_cast<Cons*>(readBarrier(cons_root));
+        RC_ASSERT(getHeader(live_cons)->tag == Tag_Cons);
+        RC_ASSERT(live_cons->tail.ptr == 0);
+        RC_ASSERT(live_cons->tail.constant == kConstNil);
+
+        ElmInt* live_head = static_cast<ElmInt*>(
+            AllocatorTestAccess::fromPointer(live_cons->head.p));
+        RC_ASSERT(live_head->value == 123);
+
+        rootset.removeRoot(&cons_root);
+    });
+});
+
+// DynRecord.fieldgroup = EmptyRec arises for `{}`; values may also hold
+// embedded constants. markChildren walks both through markHPointer.
+Testing::TestCase testMarkDynRecordWithEmbeddedConstants(
+    "Mark traversal handles DynRecord with embedded-constant fieldgroup and values",
+    []() {
+    rc::check([]() {
+        auto& alloc = initAllocator();
+        auto& oldgen = getOldGen(alloc);
+        auto& rootset = alloc.getRootSet();
+
+        const u32 num_fields = 2;
+        size_t size = sizeof(DynRecord) + num_fields * sizeof(HPointer);
+        void* dr_obj = oldgen.allocate(size);
+        if (!dr_obj) RC_FAIL("failed to allocate DynRecord in old gen");
+
+        Header* dr_hdr = getHeader(dr_obj);
+        dr_hdr->tag  = Tag_DynRecord;
+        dr_hdr->size = num_fields;
+
+        DynRecord* dr = static_cast<DynRecord*>(dr_obj);
+        dr->unboxed    = 0;
+        dr->fieldgroup = makeEmbeddedConstant(kConstEmptyRec);
+        dr->values[0]  = makeEmbeddedConstant(kConstTrue);
+
+        void* int_obj = allocateIntInOldGen(oldgen, 99);
+        dr->values[1] = AllocatorTestAccess::toPointer(int_obj);
+
+        HPointer dr_root = AllocatorTestAccess::toPointer(dr_obj);
+        rootset.addRoot(&dr_root);
+
+        runMarkAndSweep(alloc);
+
+        DynRecord* live = static_cast<DynRecord*>(readBarrier(dr_root));
+        RC_ASSERT(getHeader(live)->tag == Tag_DynRecord);
+        RC_ASSERT(live->fieldgroup.ptr == 0);
+        RC_ASSERT(live->fieldgroup.constant == kConstEmptyRec);
+        RC_ASSERT(live->values[0].ptr == 0);
+        RC_ASSERT(live->values[0].constant == kConstTrue);
+
+        ElmInt* live_int = static_cast<ElmInt*>(
+            AllocatorTestAccess::fromPointer(live->values[1]));
+        RC_ASSERT(live_int->value == 99);
+
+        rootset.removeRoot(&dr_root);
+    });
+});
+
+// Closures routinely capture Bool/Maybe values, which are embedded constants
+// in the ABI. Exercises the boxed-slot branch of Tag_Closure in markChildren.
+Testing::TestCase testMarkClosureCapturesEmbeddedConstant(
+    "Mark traversal handles Closure capturing an embedded-constant boolean",
+    []() {
+    rc::check([]() {
+        auto& alloc = initAllocator();
+        auto& oldgen = getOldGen(alloc);
+        auto& rootset = alloc.getRootSet();
+
+        const u32 n_captures = 1;
+        size_t size = sizeof(Closure) + n_captures * sizeof(Unboxable);
+        void* clo_obj = oldgen.allocate(size);
+        if (!clo_obj) RC_FAIL("failed to allocate Closure in old gen");
+
+        Header* clo_hdr = getHeader(clo_obj);
+        clo_hdr->tag  = Tag_Closure;
+        clo_hdr->size = n_captures;
+
+        Closure* clo = static_cast<Closure*>(clo_obj);
+        clo->n_values   = n_captures;
+        clo->max_values = n_captures;
+        clo->unboxed    = 0;
+        clo->evaluator  = nullptr;
+        clo->values[0].p = makeEmbeddedConstant(kConstFalse);
+
+        HPointer clo_root = AllocatorTestAccess::toPointer(clo_obj);
+        rootset.addRoot(&clo_root);
+
+        runMarkAndSweep(alloc);
+
+        Closure* live = static_cast<Closure*>(readBarrier(clo_root));
+        RC_ASSERT(getHeader(live)->tag == Tag_Closure);
+        RC_ASSERT(live->values[0].p.ptr == 0);
+        RC_ASSERT(live->values[0].p.constant == kConstFalse);
+
+        rootset.removeRoot(&clo_root);
+    });
+});

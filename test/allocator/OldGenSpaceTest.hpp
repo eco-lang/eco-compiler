@@ -38,3 +38,11 @@ extern Testing::TestCase testHeaderConsistency;
 extern Testing::TestCase testEmptyHeapBehavior;
 extern Testing::TestCase testAllGarbageHeap;
 extern Testing::TestCase testAllLiveHeap;
+
+// Embedded-constant HPointer coverage (Unit/EmptyRec/True/False/Nil/Nothing/
+// EmptyString in roots and object fields).
+extern Testing::TestCase testStartMarkSkipsEmbeddedConstantRoot;
+extern Testing::TestCase testStartMarkAcceptsAllEmbeddedConstantTags;
+extern Testing::TestCase testMarkConsTailIsEmbeddedNil;
+extern Testing::TestCase testMarkDynRecordWithEmbeddedConstants;
+extern Testing::TestCase testMarkClosureCapturesEmbeddedConstant;
