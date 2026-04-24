@@ -391,7 +391,14 @@ void OldGenSpace::startMark(const std::unordered_set<HPointer*> &roots,
     // Push ALL roots onto mark stack - including nursery objects.
     // Nursery objects will be marked (grey->black) like old gen objects.
     // This is harmless since minor GC uses forwarding pointers, not colors.
+    //
+    // Embedded constants (Unit/EmptyRec/True/False/Nil/Nothing/EmptyString)
+    // live entirely in the `constant` tag of an HPointer; they are not heap
+    // pointers and must be filtered before `fromPointerRaw`, which asserts
+    // `ptr.constant == 0`. The JIT-roots loop below does the equivalent
+    // check against the raw 64-bit encoding.
     for (HPointer *root: roots) {
+        if (root->constant != 0) continue;
         void *obj = Allocator::fromPointerRaw(*root);
         if (obj && alloc.isInHeap(obj)) {
             mark_stack.push_back(obj);
