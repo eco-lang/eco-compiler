@@ -401,7 +401,13 @@ basicsIntrinsic name argTypes resultType =
         ( "neq", [ Mono.MFloat, Mono.MFloat ] ) ->
             Just (FloatComparison { op = "eco.float.ne" })
 
-        -- Boolean operations
+        -- Boolean operations.
+        --
+        -- `eco.bool.and` / `eco.bool.or` are strict in both arguments; they are
+        -- only reached for first-class references to Basics.and / Basics.or
+        -- (e.g. `(&&)` passed as a value). Short-circuit semantics for the
+        -- (&&) / (||) operators are implemented earlier in TypedOptimized by
+        -- rewriting Binop to If, and do not flow through this path.
         ( "not", [ Mono.MBool ] ) ->
             Just (UnaryBool { op = "eco.bool.not" })
 

@@ -85,6 +85,22 @@ peelFunctionType n tipe =
                 tipe
 
 
+{-| The canonical `Bool` type.
+-}
+boolType : Can.Type Name
+boolType =
+    Can.TType ModuleName.basics "Bool" []
+
+
+{-| Synthesize a TypedOptimized `Bool` literal carrying consistent Meta.
+Threading the outer `tvar` keeps the synthesized node mapped to the same
+solver variable as the surrounding expression.
+-}
+boolLit : A.Region -> Bool -> Maybe IO.Variable -> TOpt.Expr Name
+boolLit region value tv =
+    TOpt.Bool region value { tipe = boolType, tvar = tv }
+
+
 {-| Find the solver tvar for a local variable by scanning a Canonical
 expression for `VarLocal name` occurrences.
 
@@ -415,25 +431,56 @@ optimizeExpr kernelEnv annotations exprTypes exprVars home cycle region tipe tva
                             |> Names.map (\optSub -> TOpt.Call region func [ optSub ] { tipe = tipe, tvar = tvar })
                     )
 
-        -- Binop: use the annotation from the constructor
+        -- Binop: use the annotation from the constructor.
+        --
+        -- (&&) / (||) are rewritten to TOpt.If so that every downstream backend
+        -- inherits correct short-circuit evaluation from the If codegen path.
+        -- Strict `Basics.and` / `Basics.or` call sites (e.g. `List.foldl (&&)`)
+        -- still reach the strict intrinsics via the non-Binop VarOperator path.
         Can.Binop _ binopHome name (Can.Forall _ funcType) left right ->
             let
                 optimizeArg =
                     optimize kernelEnv annotations exprTypes exprVars home cycle << TCanBuild.toTypedExpr exprTypes exprVars
+
+                lowerShortCircuit buildBranch =
+                    optimizeArg left
+                        |> Names.andThen
+                            (\optLeft ->
+                                optimizeArg right
+                                    |> Names.map
+                                        (\optRight ->
+                                            let
+                                                ( cond, thenE, elseE ) =
+                                                    buildBranch optLeft optRight
+                                            in
+                                            TOpt.If [ ( cond, thenE ) ] elseE { tipe = tipe, tvar = tvar }
+                                        )
+                            )
             in
-            Names.registerGlobal region binopHome name funcType Nothing
-                |> Names.andThen
-                    (\optFunc ->
-                        optimizeArg left
-                            |> Names.andThen
-                                (\optLeft ->
-                                    optimizeArg right
-                                        |> Names.map
-                                            (\optRight ->
-                                                TOpt.Call region optFunc [ optLeft, optRight ] { tipe = tipe, tvar = tvar }
-                                            )
-                                )
-                    )
+            if binopHome == ModuleName.basics && name == "and" then
+                -- a && b  ==>  if a then b else False
+                lowerShortCircuit
+                    (\l r -> ( l, r, boolLit region False tvar ))
+
+            else if binopHome == ModuleName.basics && name == "or" then
+                -- a || b  ==>  if a then True else b
+                lowerShortCircuit
+                    (\l r -> ( l, boolLit region True tvar, r ))
+
+            else
+                Names.registerGlobal region binopHome name funcType Nothing
+                    |> Names.andThen
+                        (\optFunc ->
+                            optimizeArg left
+                                |> Names.andThen
+                                    (\optLeft ->
+                                        optimizeArg right
+                                            |> Names.map
+                                                (\optRight ->
+                                                    TOpt.Call region optFunc [ optLeft, optRight ] { tipe = tipe, tvar = tvar }
+                                                )
+                                    )
+                        )
 
         Can.Lambda args body ->
             destructArgs exprTypes exprVars args

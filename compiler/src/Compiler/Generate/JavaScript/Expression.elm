@@ -722,6 +722,10 @@ generateBasicsCall mode parentModule pos home name args =
                         "ge" ->
                             cmp JS.OpGe JS.OpGt -1 left right
 
+                        -- Reached only for strict function-call uses of
+                        -- Basics.and / Basics.or. Operator uses of (&&) / (||)
+                        -- are lowered to TOpt.If in TypedOptimized and hit the
+                        -- regular `if` emission path.
                         "or" ->
                             JS.ExprInfix JS.OpOr left right
 

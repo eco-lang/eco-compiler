@@ -11,8 +11,8 @@ module BoolShortCircuitParserIdiomTest exposing (main)
 
 -}
 
--- CHECK: peek at past-end: none
--- CHECK: peek at first: H
+-- CHECK: peek at past-end: "none"
+-- CHECK: peek at first: "H"
 
 import Html exposing (text)
 
