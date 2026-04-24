@@ -2629,6 +2629,13 @@ extern "C" uint32_t eco_get_custom_ctor(HPtr obj_hptr) {
 ///   - Nil (kind=5) -> tag=0 (first constructor of List)
 ///   - Other embedded constants -> tag=0
 extern "C" uint32_t eco_get_tag(HPtr val) {
+    // Null HPointer (bits == 0) is neither an embedded constant nor a valid
+    // heap allocation — offset 0 in the heap is never the address of a real
+    // object. Seeing this indicates an upstream bug (uninitialized field or
+    // stale reference after GC). Abort loudly rather than silently reading
+    // heap_base and returning a bogus tag, which can mask bugs as infinite
+    // recursion (see stage-7 Dict_foldl crash, 2026-04-24).
+    assert(val.bits != 0 && "eco_get_tag: null HPointer");
     HPointer hp = val.toHPointer();
     // Check if this is an embedded constant (constant field != 0).
     if (hp.constant != 0) {
