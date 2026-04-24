@@ -134,6 +134,19 @@ public:
     // Returns the start offset of the nursery region (== old-gen cap).
     size_t getOldGenMaxBytes() const { return nursery_offset; }
 
+    // Returns true when `old_gen_committed / nursery_offset` has reached
+    // `major_gc_initiating_occupancy` AND committed has grown past the
+    // watermark set at the last major GC (prevents repeated re-triggering
+    // once the threshold is crossed — see
+    // `old_gen_committed_major_gc_watermark_`). Cheap: reads two scalars,
+    // no lock.
+    bool shouldTriggerMajorGC() const;
+
+    // Called at the tail of every major GC to re-arm the 75% trigger. The
+    // trigger fires only after `old_gen_committed` has grown past this
+    // mark since the last reset.
+    void notifyMajorGCComplete();
+
     // Diagnostics: dumps heap state (old-gen + nursery commit counters plus
     // per-thread allocated_bytes and block counts) to stderr. Always emits;
     // callers guard with heapTraceEnabled() when the dump is only useful
@@ -163,6 +176,12 @@ private:
     size_t nursery_offset;        // Byte offset where nursery region begins (heap midpoint).
     size_t nursery_low_committed_;   // Committed bytes in first half of nursery region.
     size_t nursery_high_committed_;  // Committed bytes in second half of nursery region.
+    // Watermark for the 75% old-gen-occupancy trigger. `old_gen_committed`
+    // only grows, so to avoid re-firing the trigger after every minor GC
+    // once we've crossed the threshold, we re-arm the trigger only after
+    // `old_gen_committed` has grown past this mark. Updated by the major
+    // GC paths to the post-GC committed size.
+    size_t old_gen_committed_major_gc_watermark_ = 0;
     // Free-lists of previously-released nursery blocks, reused by subsequent
     // acquires before we bump the committed pointer. Entries are pairs of
     // (block pointer, block size); acquires pop a block whose size matches.
@@ -227,6 +246,13 @@ private:
     // Thread-safe: acquires thread_mutex_.
     // Returns pointer to base of committed block.
     char* acquireOldGenBlock(size_t size);
+
+    // Post-major-GC growth hook: if an OldGenSpace has post-GC occupancy
+    // above `major_gc_initiating_occupancy`, grow its committed range up to
+    // `new_capacity_bytes` by acquiring additional old-gen blocks. Stops
+    // early at the global old-gen cap. Best-effort: the caller must not
+    // assume the requested capacity was achieved.
+    void ensureOldGenCapacityFor(OldGenSpace& space, size_t new_capacity_bytes);
 
     // Acquires a contiguous region from the old gen address space.
     // Pre-condition: caller must hold thread_mutex_.

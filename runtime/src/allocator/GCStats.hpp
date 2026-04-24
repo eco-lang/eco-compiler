@@ -73,6 +73,12 @@ public:
     uint64_t incremental_mark_calls = 0;
     uint64_t total_incremental_mark_work_units = 0;
 
+    // Distinguishes *why* a major GC ran: the 75% occupancy-initiating
+    // trigger (soft, scheduled at a safepoint) vs. an allocation hitting
+    // the old-gen cap (hard, inline in the alloc slow path).
+    uint64_t major_gc_occupancy_triggers    = 0;
+    uint64_t major_gc_alloc_failure_triggers = 0;
+
     // ========== Major GC Timing Stats ==========
     uint64_t major_gc_count = 0;
     uint64_t total_major_gc_time_ns = 0;

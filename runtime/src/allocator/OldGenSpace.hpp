@@ -286,6 +286,11 @@ private:
     void lazySweep(size_t target_class, size_t work_budget);
     void onSweepComplete();
 
+    // Post-major-GC growth: if live/capacity > initiating_occupancy, grow
+    // committed capacity so live/capacity <= target_utilization. Bounded by
+    // the global old-gen cap. See `major_gc_75_50_policy.md`.
+    void adjustCapacityAfterMajorGC();
+
     // Fragmentation and compaction methods.
     bool shouldCompact() const;
     void computeFragmentationStats();

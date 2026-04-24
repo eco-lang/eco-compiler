@@ -17,6 +17,7 @@
 #include <limits>
 #include <algorithm>
 #include <cassert>
+#include <cmath>
 #include <cstring>
 #include <functional>
 
@@ -657,6 +658,10 @@ void OldGenSpace::sweep() {
 
     // Compute fragmentation stats from buffer metadata.
     computeFragmentationStats();
+
+    // Synchronous mark-sweep path: invoke the 75/50 growth rule here too,
+    // since this path does not go through `onSweepComplete`.
+    adjustCapacityAfterMajorGC();
 }
 
 /**
@@ -768,11 +773,44 @@ void OldGenSpace::lazySweep(size_t target_class, size_t work_budget) {
 void OldGenSpace::onSweepComplete() {
     computeFragmentationStats();
 
+    // Now that `frag_stats_.live_bytes` reflects the complete post-GC live
+    // set, consult the 75/50 growth policy.
+    adjustCapacityAfterMajorGC();
+
     // Note: Actual compaction implementation is deferred to Phase 6.
     // For now, just compute the stats and check if compaction would be needed.
     // if (shouldCompact()) {
     //     scheduleCompaction();
     // }
+}
+
+void OldGenSpace::adjustCapacityAfterMajorGC() {
+    if (region_base_ == nullptr || region_end_ <= region_base_) return;
+
+    const size_t capacity = static_cast<size_t>(region_end_ - region_base_);
+    const size_t live     = frag_stats_.live_bytes;
+    if (live == 0 || capacity == 0) return;
+
+    const double occupancy = static_cast<double>(live) / capacity;
+    const float grow_threshold = config_->major_gc_initiating_occupancy;
+    const float target         = config_->major_gc_target_utilization;
+
+    // Hysteresis: only grow once we cross the initiating threshold. The
+    // band [target, grow_threshold) is tolerated so the grow rule cannot
+    // fire while live/capacity is still below where a new GC would be
+    // scheduled — that would produce an endless grow-loop.
+    if (occupancy <= target)         return;
+    if (occupancy <  grow_threshold) return;
+
+    // Target capacity = live / target_utilization (round up).
+    size_t desired = static_cast<size_t>(
+        std::ceil(static_cast<double>(live) / static_cast<double>(target)));
+
+    const size_t global_cap = allocator_->getOldGenMaxBytes();
+    if (desired > global_cap) desired = global_cap;
+    if (desired <= capacity)  return;
+
+    allocator_->ensureOldGenCapacityFor(*this, desired);
 }
 
 /**

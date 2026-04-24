@@ -153,6 +153,17 @@ struct HeapConfig {
     u32 promotion_age = PROMOTION_AGE;
     float nursery_gc_threshold = NURSERY_GC_THRESHOLD;
 
+    // Major GC policy (old-gen).
+    //  * initiating_occupancy: fraction of old-gen cap that, once crossed by
+    //    `old_gen_committed`, schedules a major GC at the next safepoint.
+    //  * target_utilization:   immediately after a major GC, if
+    //    live / committed > initiating_occupancy, grow committed capacity so
+    //    that live / committed <= target (bounded by the global old-gen cap).
+    // Invariant: initiating_occupancy > target_utilization (prevents a
+    // grow-loop where post-grow occupancy re-triggers the rule).
+    float major_gc_initiating_occupancy = 0.75f;
+    float major_gc_target_utilization   = 0.50f;
+
     // List locality optimization: two-pass spine copying.
     // When enabled, Cons list spines are copied contiguously using a two-pass
     // algorithm (pass 1: copy tail chain, pass 2: evacuate heads), which
@@ -269,6 +280,24 @@ struct HeapConfig {
         if (nursery_gc_threshold <= 0.0f || nursery_gc_threshold > 1.0f) {
             throw std::invalid_argument(
                 "nursery_gc_threshold must be in (0.0, 1.0]");
+        }
+
+        if (major_gc_initiating_occupancy <= 0.0f ||
+            major_gc_initiating_occupancy >= 1.0f) {
+            throw std::invalid_argument(
+                "major_gc_initiating_occupancy must be in (0.0, 1.0)");
+        }
+
+        if (major_gc_target_utilization <= 0.0f ||
+            major_gc_target_utilization >= 1.0f) {
+            throw std::invalid_argument(
+                "major_gc_target_utilization must be in (0.0, 1.0)");
+        }
+
+        if (major_gc_initiating_occupancy <= major_gc_target_utilization) {
+            throw std::invalid_argument(
+                "major_gc_initiating_occupancy must be > "
+                "major_gc_target_utilization");
         }
     }
 };

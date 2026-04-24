@@ -148,6 +148,9 @@ void* ThreadLocalHeap::allocateRegionSlow(size_t total) {
         // Large regions go to old gen directly.
         void* obj = old_gen_.allocate(total);
         if (!obj) {
+#if ENABLE_GC_STATS
+            stats_.major_gc_alloc_failure_triggers++;
+#endif
             majorGC();
             obj = old_gen_.allocate(total);
         }
@@ -172,6 +175,9 @@ void* ThreadLocalHeap::allocateLargePinned(size_t size, Tag tag) {
     void* obj = old_gen_.allocate(size);
     if (!obj) {
         // Try once after a major GC to reclaim space.
+#if ENABLE_GC_STATS
+        stats_.major_gc_alloc_failure_triggers++;
+#endif
         majorGC();
         obj = old_gen_.allocate(size);
     }
@@ -211,12 +217,28 @@ void* ThreadLocalHeap::allocatePermanent(size_t size, Tag tag) {
 bool ThreadLocalHeap::shouldCollectAtSafepoint() const {
     if (force_gc_)
         return true;
-    return isNurseryNearFull(config_->nursery_gc_threshold);
+    if (isNurseryNearFull(config_->nursery_gc_threshold))
+        return true;
+    // The 75% old-gen occupancy trigger also elects to stop at the next
+    // safepoint so we can run a major GC before the cap is hit.
+    return parent_->shouldTriggerMajorGC();
 }
 
 void ThreadLocalHeap::collectAtSafepoint() {
     force_gc_ = false;
-    minorGC();
+    // Minor GC is now threshold-gated: without this, a forced safepoint
+    // (e.g. from a single `force_gc_ = true`) could run a minor GC when
+    // the nursery is near-empty, which is wasted work. `minorGC()` itself
+    // chains into a major GC when the 75% old-gen trigger is live, so
+    // covering the non-nursery-full case is enough here.
+    if (isNurseryNearFull(config_->nursery_gc_threshold)) {
+        minorGC();
+    } else if (parent_->shouldTriggerMajorGC()) {
+#if ENABLE_GC_STATS
+        stats_.major_gc_occupancy_triggers++;
+#endif
+        majorGC();
+    }
 }
 
 void ThreadLocalHeap::minorGC() {
@@ -227,6 +249,18 @@ void ThreadLocalHeap::minorGC() {
     nursery_.minorGC(old_gen_, stack_map_roots_);
     if (Allocator::heapTraceEnabled()) {
         parent_->dumpHeapState("minorGC end");
+    }
+
+    // 75% occupancy trigger: minor GC promotes into old gen, so old-gen
+    // committed bytes can cross the initiating threshold here. Safepoint
+    // polling is not dense in MLIR-generated code, so we also check at the
+    // end of every minor GC to avoid running the cap into the ground
+    // before the next safepoint fires.
+    if (parent_->shouldTriggerMajorGC()) {
+#if ENABLE_GC_STATS
+        stats_.major_gc_occupancy_triggers++;
+#endif
+        majorGC();
     }
 }
 
@@ -281,6 +315,12 @@ void ThreadLocalHeap::majorGC() {
 #endif
 
     parent_->dumpHeapState("majorGC end");
+
+    // Re-arm the 75% occupancy trigger. `old_gen_committed` only grows;
+    // without this watermark, `shouldTriggerMajorGC()` would stay true
+    // forever after the first crossing and every minor GC would chain
+    // into another major GC.
+    parent_->notifyMajorGCComplete();
 }
 
 bool ThreadLocalHeap::isNurseryNearFull(float threshold) const {

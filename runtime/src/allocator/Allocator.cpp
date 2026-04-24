@@ -450,6 +450,64 @@ char* Allocator::acquireOldGenBlock(size_t size) {
     return block_base;
 }
 
+bool Allocator::shouldTriggerMajorGC() const {
+    if (nursery_offset == 0) return false;
+    if (old_gen_committed <= old_gen_committed_major_gc_watermark_) return false;
+    return static_cast<double>(old_gen_committed) / nursery_offset
+           >= config_.major_gc_initiating_occupancy;
+}
+
+void Allocator::notifyMajorGCComplete() {
+    // Watermark is the committed size at the instant the major GC
+    // finished. `shouldTriggerMajorGC` requires further growth beyond
+    // this mark before re-firing, preventing back-to-back majors when
+    // `old_gen_committed` (monotonic) sits slightly above the 75% line.
+    old_gen_committed_major_gc_watermark_ = old_gen_committed;
+}
+
+void Allocator::ensureOldGenCapacityFor(OldGenSpace& space,
+                                        size_t new_capacity_bytes) {
+    std::lock_guard<std::recursive_mutex> lock(thread_mutex_);
+
+    auto currentCapacity = [&]() -> size_t {
+        if (space.region_base_ == nullptr || space.region_end_ == nullptr) {
+            return 0;
+        }
+        return static_cast<size_t>(space.region_end_ - space.region_base_);
+    };
+
+    if (new_capacity_bytes <= currentCapacity()) return;
+
+    // Grow by acquiring fresh old-gen blocks. `acquireOldGenBlock` enforces
+    // the global `nursery_offset` cap, so we just loop until we hit the
+    // requested capacity or the allocator refuses.
+    const size_t block_size = config_.alloc_buffer_size;
+
+    while (currentCapacity() < new_capacity_bytes) {
+        char* block_base = acquireOldGenBlock(block_size);
+        if (block_base == nullptr) {
+            // Hit the global old-gen cap — stop, caller tolerates partial grow.
+            break;
+        }
+
+        BlockInfo new_block;
+        new_block.start = block_base;
+        new_block.end = block_base + block_size;
+        new_block.alloc_ptr = block_base;  // Empty: sweep/alloc paths will fill.
+
+        space.blocks_.push_back(new_block);
+        space.buffer_meta_.push_back(
+            {space.blocks_.size() - 1, 0, 0, false});
+
+        if (space.region_base_ == nullptr || block_base < space.region_base_) {
+            space.region_base_ = block_base;
+        }
+        if (block_base + block_size > space.region_end_) {
+            space.region_end_ = block_base + block_size;
+        }
+    }
+}
+
 // Reserves a region for old gen with initial commit and growth capacity.
 // Pre-condition: caller must hold thread_mutex_.
 char* Allocator::acquireOldGenRegion(size_t initial_size, size_t max_size) {
