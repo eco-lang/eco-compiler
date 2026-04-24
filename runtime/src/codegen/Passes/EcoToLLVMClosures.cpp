@@ -883,8 +883,6 @@ struct PapCreateGroupOpLowering : public OpConversionPattern<PapCreateGroupOp> {
         rewriter.replaceOp(op, results);
         return success();
     }
-
-    // Suppress unused-variable warnings for i8Ty in some configurations.
 };
 
 //===----------------------------------------------------------------------===//

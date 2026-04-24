@@ -362,9 +362,13 @@ struct CaseOpLowering : public OpConversionPattern<CaseOp> {
             // Create string literal for this pattern
             Value patternValue;
             if (pattern.empty()) {
-                // Empty string is an embedded constant
+                // Empty string is an embedded HPointer constant. Wrap the
+                // encoded i64 in an inttoptr so it has the `ptr<1>` type
+                // Elm_Kernel_Utils_equal expects for both operands.
                 int64_t emptyStringVal = static_cast<int64_t>(value_enc::EmptyString) << value_enc::ConstFieldShift;
-                patternValue = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, emptyStringVal);
+                auto hptrTy = getHPtrLLVMType(*ctx);
+                Value emptyI64 = rewriter.create<LLVM::ConstantOp>(loc, i64Ty, emptyStringVal);
+                patternValue = rewriter.create<LLVM::IntToPtrOp>(loc, hptrTy, emptyI64);
             } else {
                 // Create global for non-empty string
                 // Convert UTF-8 to UTF-16
