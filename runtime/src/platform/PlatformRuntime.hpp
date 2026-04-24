@@ -71,14 +71,23 @@ public:
 private:
     PlatformRuntime();
 
+    // Per-manager scratch: accumulated Cmd/Sub message HPointers for one
+    // effect batch. Stored on the runtime so the external root scanner can
+    // traverse them across any GC that runs during gatherEffects /
+    // onEffects / drain.
+    struct PerManagerEffects {
+        std::vector<uint64_t> cmdHPs;  // encoded HPointers (Cmd msg values)
+        std::vector<uint64_t> subHPs;  // encoded HPointers (Sub msg values)
+    };
+
     // Gather effects from bag tree into per-manager lists
     void gatherEffects(bool isCmd, HPointer bag,
-                       std::unordered_map<std::string, std::pair<std::vector<uint64_t>, std::vector<uint64_t>>>& effects,
+                       std::unordered_map<std::string, PerManagerEffects>& effects,
                        HPointer taggers);
 
     HPointer applyTaggers(HPointer taggers, HPointer value);
 
-    void dispatchEffects(HPointer cmdBag, HPointer subBag);
+    void dispatchEffects();  // reads activeBatch_ and writes effectsScratch_
 
     // Manager registry
     std::unordered_map<std::string, ManagerInfo> managers_;
@@ -95,6 +104,17 @@ private:
     struct FxBatch { uint64_t cmdBag; uint64_t subBag; };
     std::vector<FxBatch> effectsQueue_;
     bool effectsActive_ = false;
+
+    // Batch currently being dispatched. Valid only while dispatchActive_
+    // is true; scanned by the external root scanner during that window so
+    // its cmdBag/subBag survive any GC triggered inside dispatchEffects.
+    FxBatch activeBatch_{0, 0};
+    bool dispatchActive_ = false;
+
+    // Per-manager scratch populated by gatherEffects and drained by
+    // dispatchEffects. Scanned by the external root scanner while
+    // dispatchActive_ is true.
+    std::unordered_map<std::string, PerManagerEffects> effectsScratch_;
 
     // Global model state for worker (GC-rooted)
     uint64_t modelStorage_ = 0;  // encoded HPointer

@@ -99,6 +99,19 @@ PlatformRuntime::PlatformRuntime() {
                 evacuate(batch.cmdBag);
                 evacuate(batch.subBag);
             }
+
+            // Currently-dispatching batch + per-manager scratch, live only
+            // while dispatchEffects is on the stack. Keeping them here
+            // avoids having to root every intermediate HPointer produced
+            // by gatherEffects or held across callClosure4 / drain().
+            if (dispatchActive_) {
+                evacuate(activeBatch_.cmdBag);
+                evacuate(activeBatch_.subBag);
+                for (auto& [home, per] : effectsScratch_) {
+                    for (auto& enc : per.cmdHPs) evacuate(enc);
+                    for (auto& enc : per.subHPs) evacuate(enc);
+                }
+            }
         });
 }
 
@@ -199,84 +212,97 @@ void PlatformRuntime::enqueueEffects(HPointer cmdBag, HPointer subBag) {
     effectsActive_ = true;
 
     while (!effectsQueue_.empty()) {
-        FxBatch batch = effectsQueue_.front();
+        // Move the front batch into activeBatch_ *before* erasing it from
+        // the queue, so at least one GC-rooted copy of the bag HPointers
+        // exists at every point during dispatch. dispatchActive_ tells the
+        // external root scanner to include activeBatch_ + effectsScratch_.
+        activeBatch_ = effectsQueue_.front();
         effectsQueue_.erase(effectsQueue_.begin());
-        dispatchEffects(decodeHP(batch.cmdBag), decodeHP(batch.subBag));
+
+        dispatchActive_ = true;
+        dispatchEffects();
+        dispatchActive_ = false;
+
+        effectsScratch_.clear();
+        activeBatch_ = FxBatch{0, 0};
     }
 
     effectsActive_ = false;
 }
 
-void PlatformRuntime::dispatchEffects(HPointer cmdBag, HPointer subBag) {
-    // Gather effects per manager home
-    // For now, this is a simplified implementation
-    // Full version would walk the bag trees and call onEffects for each manager
+// Decode a vector of encoded HPointers and build an Elm list via the
+// GC-safe listFromPointers helper. The caller's uint64_t vector remains
+// reachable through the external root scanner, so if GC fires inside
+// listFromPointers both copies are evacuated consistently.
+static HPointer listFromEncoded(const std::vector<uint64_t>& encoded) {
+    std::vector<HPointer> decoded;
+    decoded.reserve(encoded.size());
+    for (uint64_t e : encoded) decoded.push_back(decodeHP(e));
+    return alloc::listFromPointers(decoded);
+}
 
-    // If no managers registered, nothing to do
+void PlatformRuntime::dispatchEffects() {
     if (managers_.empty()) return;
 
-    // Gather cmd and sub effects
-    std::unordered_map<std::string, std::pair<std::vector<uint64_t>, std::vector<uint64_t>>> effects;
+    HPointer cmdBag = decodeHP(activeBatch_.cmdBag);
+    HPointer subBag = decodeHP(activeBatch_.subBag);
 
-    // Initialize empty lists for all managers
+    // Initialize empty entries for every registered manager so gatherEffects
+    // can find the slot for any home it encounters.
+    effectsScratch_.clear();
     for (auto& [home, _] : managers_) {
-        effects[home] = {{}, {}};
+        effectsScratch_[home];  // default-construct PerManagerEffects
     }
 
     HPointer nilTaggers = listNil();
-    gatherEffects(true, cmdBag, effects, nilTaggers);
-    gatherEffects(false, subBag, effects, nilTaggers);
+    gatherEffects(true,  cmdBag, effectsScratch_, nilTaggers);
+    gatherEffects(false, subBag, effectsScratch_, nilTaggers);
 
-    // Dispatch to each manager
     auto& sched = Scheduler::instance();
-    for (auto& [home, efx] : effects) {
-        auto it = managerStates_.find(home);
-        if (it == managerStates_.end()) continue;
-        auto& ms = it->second;
-        auto managerIt = managers_.find(home);
-        if (managerIt == managers_.end()) continue;
+    for (auto& [home, per] : effectsScratch_) {
+        auto msIt = managerStates_.find(home);
+        if (msIt == managerStates_.end()) continue;
+        auto miIt = managers_.find(home);
+        if (miIt == managers_.end()) continue;
 
-        // Build Elm lists of cmd effects and sub effects
-        HPointer cmdList = listNil();
-        for (auto rit = efx.first.rbegin(); rit != efx.first.rend(); ++rit) {
-            cmdList = cons(boxed(decodeHP(*rit)), cmdList, true);
-        }
+        HPointer onEffectsFn = decodeHP(miIt->second.onEffects);
+        if (alloc::isNil(onEffectsFn) || hpIsConstant(onEffectsFn)) continue;
 
-        HPointer subList = listNil();
-        for (auto rit = efx.second.rbegin(); rit != efx.second.rend(); ++rit) {
-            subList = cons(boxed(decodeHP(*rit)), subList, true);
-        }
+        // Build cmd/sub Elm lists via the GC-safe helper. Replaces the
+        // old manual cons() loop whose accumulator + un-consumed HPointers
+        // were unrooted across each cons allocation.
+        HPointer cmdList = listFromEncoded(per.cmdHPs);
+        HPointer subList = listFromEncoded(per.subHPs);
 
-        // Call onEffects(router, cmdList, subList, state) -> Task newState
+        // Re-read router / state / fn from the rooted maps after list
+        // construction: any GC inside listFromEncoded could have moved
+        // them, but managers_/managerStates_ are both scanned.
+        ManagerState& ms = msIt->second;
         HPointer router = decodeHP(ms.router);
-        HPointer state = decodeHP(ms.state);
-        HPointer onEffectsFn = decodeHP(managerIt->second.onEffects);
+        HPointer state  = decodeHP(ms.state);
+        HPointer fn     = decodeHP(miIt->second.onEffects);
 
-        // Only call if onEffects is not nil
-        if (!alloc::isNil(onEffectsFn) && !hpIsConstant(onEffectsFn)) {
-            HPointer newStateTask = Scheduler::callClosure4(
-                onEffectsFn, router, cmdList, subList, state);
+        HPointer newStateTask = Scheduler::callClosure4(
+            fn, router, cmdList, subList, state);
 
-            // Run the returned Task to get the new state
-            HPointer effectProc = sched.rawSpawn(newStateTask);
-            // Capture the id BEFORE drain — Process is logically immutable so
-            // `effectProc` becomes stale as soon as stepProcess produces new
-            // values. The id is stable; use it to look up the latest version
-            // after drain.
-            u32 procId = static_cast<u32>(static_cast<Process*>(resolveHP(effectProc))->id);
-            sched.drain();
+        // Run the returned Task to get the new state.
+        HPointer effectProc = sched.rawSpawn(newStateTask);
+        // Capture the id BEFORE drain — Process is logically immutable so
+        // effectProc becomes stale as soon as stepProcess produces new
+        // values. The id is stable; use it to look up the latest version
+        // after drain.
+        u32 procId = static_cast<u32>(static_cast<Process*>(resolveHP(effectProc))->id);
+        sched.drain();
 
-            // Look up the latest Process (after drain's immutable updates).
-            HPointer latestProc = sched.latestProcessById(procId);
-            void* procPtr = resolveHP(latestProc);
-            if (procPtr) {
-                Process* proc = static_cast<Process*>(procPtr);
-                void* rootPtr = resolveHP(proc->root);
-                if (rootPtr) {
-                    Task* rootTask = static_cast<Task*>(rootPtr);
-                    if (rootTask->ctor == Task_Succeed) {
-                        ms.state = encodeHP(rootTask->value);
-                    }
+        HPointer latestProc = sched.latestProcessById(procId);
+        void* procPtr = resolveHP(latestProc);
+        if (procPtr) {
+            Process* proc = static_cast<Process*>(procPtr);
+            void* rootPtr = resolveHP(proc->root);
+            if (rootPtr) {
+                Task* rootTask = static_cast<Task*>(rootPtr);
+                if (rootTask->ctor == Task_Succeed) {
+                    ms.state = encodeHP(rootTask->value);
                 }
             }
         }
@@ -286,7 +312,7 @@ void PlatformRuntime::dispatchEffects(HPointer cmdBag, HPointer subBag) {
 void PlatformRuntime::gatherEffects(
     bool isCmd,
     HPointer bag,
-    std::unordered_map<std::string, std::pair<std::vector<uint64_t>, std::vector<uint64_t>>>& effects,
+    std::unordered_map<std::string, PerManagerEffects>& effects,
     HPointer taggers)
 {
     if (alloc::isNil(bag) || hpIsConstant(bag)) return;
@@ -314,9 +340,9 @@ void PlatformRuntime::gatherEffects(
         auto it = effects.find(home);
         if (it != effects.end()) {
             if (isCmd) {
-                it->second.first.push_back(encodeHP(taggedValue));
+                it->second.cmdHPs.push_back(encodeHP(taggedValue));
             } else {
-                it->second.second.push_back(encodeHP(taggedValue));
+                it->second.subHPs.push_back(encodeHP(taggedValue));
             }
         }
         // If manager not registered, silently drop the effect

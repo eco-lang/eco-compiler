@@ -192,17 +192,30 @@ Called once during `Platform.worker` initialization:
 `enqueueEffects` buffers effect batches and processes them sequentially to prevent re-entrant dispatch:
 
 1. Push `(cmdBag, subBag)` onto `effectsQueue_`.
-2. If not already active (`effectsActive_`), drain the queue by calling `dispatchEffects` for each batch.
+2. If not already active (`effectsActive_`), drain the queue: for each batch, move it into `activeBatch_`, set `dispatchActive_`, call `dispatchEffects()`, then clear `effectsScratch_`.
 
-`dispatchEffects` does the actual work:
+`dispatchEffects` does the actual work, reading the bag HPointers from `activeBatch_`:
 
-1. Initialize empty effect lists for all registered managers.
-2. Call `gatherEffects` on the cmd bag and sub bag to populate per-manager lists.
+1. Initialize empty `PerManagerEffects` entries for all registered managers in `effectsScratch_`.
+2. Call `gatherEffects` on the cmd bag and sub bag to populate `effectsScratch_[home].cmdHPs` / `subHPs`.
 3. For each manager with a non-nil `onEffects`:
-   - Build Elm lists from the gathered cmd/sub vectors.
-   - Call `onEffects(router, cmdList, subList, state)`.
+   - Build Elm lists from the gathered cmd/sub vectors via `alloc::listFromPointers` (the only supported, GC-safe way — a manual `cons()` loop would leave the accumulator and un-consumed elements unrooted across allocations).
+   - Call `onEffects(router, cmdList, subList, state)`. `router`, `state`, and the closure are re-read from the rooted `managerStates_` / `managers_` maps on each use so GC moves are picked up.
    - Spawn and drain the returned task to get the new state.
    - Update `ManagerState.state`.
+
+#### GC rooting discipline
+
+All HPointers that must survive a GC triggered during `gatherEffects`, `onEffects`, or `drain()` live in GC-visible `PlatformRuntime` member fields, never in unrooted C++ locals:
+
+| Field | Always rooted? | Scanned when |
+|-------|---------------|--------------|
+| `effectsQueue_` | yes | always |
+| `activeBatch_` | while `dispatchActive_` | inside `dispatchEffects` |
+| `effectsScratch_` | while `dispatchActive_` | inside `dispatchEffects` |
+| `managers_`, `managerStates_`, `sendToAppClosure_`, `modelStorage_` | yes | always |
+
+Visibility is provided by the single external root scanner registered in the `PlatformRuntime` constructor via `RootSet::addExternalRootScanner`. Duplicate evacuation of the same encoded HPointer (e.g. `modelStorage_` scanned both as a JIT root and via this scanner) is safe: `EvacuateFn` is idempotent.
 
 ## Router and Process Communication
 
