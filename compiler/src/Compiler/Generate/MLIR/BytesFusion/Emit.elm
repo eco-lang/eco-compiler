@@ -8,7 +8,6 @@ Takes Loop IR operations and emits bf dialect MLIR ops.
 
 -}
 
-import Bitwise
 import Compiler.AST.Monomorphized as Mono
 import Compiler.Generate.MLIR.BytesFusion.LoopIR as IR exposing (DecoderOp(..), Endianness(..), Op(..), WidthExpr(..))
 import Compiler.Generate.MLIR.Context as Context exposing (Context)

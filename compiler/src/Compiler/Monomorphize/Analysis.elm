@@ -43,7 +43,6 @@ import Compiler.AST.TypeEnv as TypeEnv
 import Compiler.AST.TypeIds as TypeIds
 import Compiler.Data.CtorTag as CtorTag
 import Compiler.Data.Id as Id
-import Compiler.Data.Index as Index
 import Compiler.Data.Name exposing (Name)
 import Compiler.Elm.ModuleName as ModuleName
 import Compiler.Monomorphize.State as State exposing (MVarEnv, Substitution)

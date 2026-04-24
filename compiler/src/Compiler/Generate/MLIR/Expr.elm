@@ -47,7 +47,6 @@ This module handles generation of MLIR code for all Elm expressions.
 -}
 
 import Array exposing (Array)
-import Bitwise
 import Compiler.AST.DecisionTree.Test as Test
 import Compiler.AST.Monomorphized as Mono
 import Compiler.Data.Name as Name

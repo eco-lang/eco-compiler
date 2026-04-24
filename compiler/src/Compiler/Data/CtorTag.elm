@@ -1,8 +1,4 @@
-module Compiler.Data.CtorTag exposing
-    ( dictRBNode
-    , dictRBEmpty
-    , effective
-    )
+module Compiler.Data.CtorTag exposing (effective)
 
 {-| Runtime ctor-tag conventions shared between monomorphization (which sets
 `CtorShape.tag` used at construction time) and code generation (which emits the
@@ -18,7 +14,7 @@ for those markers; the values must stay in sync with
 The current reservations cover `Dict`/`Set` so that `Dict` equality compares
 by content (in-order key/value traversal) instead of by tree shape.
 
-@docs dictRBNode, dictRBEmpty, effective
+@docs effective
 
 -}
 

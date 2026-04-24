@@ -3,8 +3,7 @@ module Compiler.Generate.MLIR.Types exposing
     , monoTypeToAbi, monoTypeToOperand
     , mlirTypeToString
     , isFunctionType, countTotalArity, flattenFunctionType, isEcoValueType
-    , isUnboxable, mlirTypeToKind
-    , encodeUnboxedKind, bitmapSetKind
+    , isUnboxable, mlirTypeToKind, bitmapSetKind
     , RecordLayout, FieldInfo, TupleLayout, CtorLayout
     , computeRecordLayout, computeTupleLayout, computeCtorLayout
     )
@@ -44,7 +43,7 @@ See design\_docs/invariants.csv for REP\_ABI\_001, REP\_CLOSURE\_001, REP\_SSA\_
 
 # Primitive Type Checks
 
-@docs isUnboxable, mlirTypeToKind, encodeUnboxedKind, bitmapSetKind
+@docs isUnboxable, mlirTypeToKind, bitmapSetKind
 
 
 # Runtime Layouts
@@ -443,9 +442,9 @@ type alias TupleLayout =
 
 {-| Encodes a monotype as a 2-bit primitive kind:
 
-  - `Mono.MInt`   -> 1 (i64)
+  - `Mono.MInt` -> 1 (i64)
   - `Mono.MFloat` -> 2 (f64)
-  - `Mono.MChar`  -> 3 (u16)
+  - `Mono.MChar` -> 3 (u16)
   - anything else -> 0 (boxed HPointer)
 
 -}

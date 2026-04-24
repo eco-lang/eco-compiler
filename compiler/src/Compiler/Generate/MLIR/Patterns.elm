@@ -1,4 +1,7 @@
-module Compiler.Generate.MLIR.Patterns exposing (generateMonoPath, generateMonoDtPath, generateMonoTest, generateMonoChainCondition, testToTagInt, caseKindFromTest, scrutineeTypeFromCaseKind, computeFallbackTag, resolvePathResultType)
+module Compiler.Generate.MLIR.Patterns exposing
+    ( generateMonoPath, generateMonoDtPath, generateMonoTest, testToTagInt, caseKindFromTest, scrutineeTypeFromCaseKind, computeFallbackTag
+    , resolvePathResultType
+    )
 
 {-| Pattern matching and path generation for MLIR code generation.
 
@@ -10,14 +13,13 @@ This module handles:
   - Scrutinee type determination
   - Fallback tag computation
 
-@docs generateMonoPath, generateMonoDtPath, generateMonoTest, generateMonoChainCondition, testToTagInt, caseKindFromTest, scrutineeTypeFromCaseKind, computeFallbackTag
+@docs generateMonoPath, generateMonoDtPath, generateMonoTest, testToTagInt, caseKindFromTest, scrutineeTypeFromCaseKind, computeFallbackTag, resolvePathResultType
 
 -}
 
 import Compiler.AST.DecisionTree.Test as Test
 import Compiler.AST.Monomorphized as Mono
 import Compiler.Data.CtorTag as CtorTag
-import Compiler.Data.Index as Index
 import Compiler.Data.Name as Name
 import Compiler.Generate.MLIR.Context as Ctx
 import Compiler.Generate.MLIR.Intrinsics as Intrinsics
@@ -297,50 +299,6 @@ generateMonoTest ctx ( dtPath, test ) =
                     Ops.arithConstantBool ctx2 resVar True
             in
             ( pathOps ++ [ constOp ], resVar, ctx3 )
-
-
-{-| Generate a chain condition from a list of MonoDtPath tests.
--}
-generateMonoChainCondition : Ctx.Context -> List ( Mono.MonoDtPath, DT.Test ) -> ( List MlirOp, String, Ctx.Context )
-generateMonoChainCondition ctx tests =
-    case tests of
-        [] ->
-            let
-                ( resVar, ctx1 ) =
-                    Ctx.freshVar ctx
-
-                ( ctx2, constOp ) =
-                    Ops.arithConstantBool ctx1 resVar True
-            in
-            ( [ constOp ], resVar, ctx2 )
-
-        [ singleTest ] ->
-            generateMonoTest ctx singleTest
-
-        firstTest :: restTests ->
-            let
-                ( firstOps, firstVar, ctx1 ) =
-                    generateMonoTest ctx firstTest
-
-                ( revOps, finalVar, finalCtx ) =
-                    List.foldl
-                        (\test ( accRevOps, prevVar, accCtx ) ->
-                            let
-                                ( testOps, testVar, ctx2 ) =
-                                    generateMonoTest accCtx test
-
-                                ( resVar, ctx3 ) =
-                                    Ctx.freshVar ctx2
-
-                                ( ctx4, andOp ) =
-                                    Ops.ecoBinaryOp ctx3 "arith.andi" resVar ( prevVar, I1 ) ( testVar, I1 ) I1
-                            in
-                            ( andOp :: List.foldl (::) accRevOps testOps, resVar, ctx4 )
-                        )
-                        ( List.foldl (::) [] firstOps, firstVar, ctx1 )
-                        restTests
-            in
-            ( List.reverse revOps, finalVar, finalCtx )
 
 
 {-| Internal helper for generateMonoPath that accumulates ops in reverse order
@@ -740,16 +698,6 @@ generateMonoPathHelper ctx path targetType revAcc =
                     ( revAcc1, subVar, ctx1 )
 
 
-{-| Look up whether a field in a custom type constructor is stored unboxed.
-
-Returns Just True if unboxed, Just False if boxed, Nothing if no layout found.
-
--}
-lookupFieldIsUnboxed : Ctx.Context -> Mono.MonoType -> Name.Name -> Int -> Maybe Bool
-lookupFieldIsUnboxed ctx containerType ctorName fieldIndex =
-    Maybe.map .isUnboxed (lookupCtorFieldInfo ctx containerType ctorName fieldIndex)
-
-
 {-| Resolve a `MonoPath`'s top-level result type, preferring a concrete
 constructor-field type from the shape registry over an unresolved polymorphic
 `MVar`.
@@ -858,7 +806,7 @@ ctorFieldFromShapes ctorName fieldIndex shapes =
             Nothing
 
 
-{-| Scan registered ctor-shape entries that belong to the *same union* as the
+{-| Scan registered ctor-shape entries that belong to the _same union_ as the
 given reference (same sorted set of ctor names) and return a concretely-typed
 field at `fieldIndex` for `ctorName` if every concrete specialization agrees
 on that field's type.

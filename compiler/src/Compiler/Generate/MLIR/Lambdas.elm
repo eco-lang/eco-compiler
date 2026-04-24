@@ -9,7 +9,6 @@ with typed ABIs (parameters in their actual types, not all boxed).
 
 -}
 
-import Bitwise
 import Compiler.Generate.MLIR.Context as Ctx
 import Compiler.Generate.MLIR.Expr as Expr
 import Compiler.Generate.MLIR.Functions as Functions

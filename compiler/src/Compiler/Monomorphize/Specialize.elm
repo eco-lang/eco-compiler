@@ -464,10 +464,11 @@ positions. Returns Nothing for shapes we don't yet know how to synthesize
 to the non-valueMulti code path.
 
 Examples:
-    Index 0 HintTuple2 (Root n)         -> MTuple [leaf, MVar fresh]
-    Index 1 HintTuple3 (Root n)         -> MTuple [MVar, leaf, MVar]
-    Field "a" (Root n)                  -> MRecord (Dict.singleton "a" leaf)
-    Unbox (Root n)                      -> leaf  (wrapper's payload is the leaf)
+Index 0 HintTuple2 (Root n) -> MTuple [leaf, MVar fresh]
+Index 1 HintTuple3 (Root n) -> MTuple [MVar, leaf, MVar]
+Field "a" (Root n) -> MRecord (Dict.singleton "a" leaf)
+Unbox (Root n) -> leaf (wrapper's payload is the leaf)
+
 -}
 buildPartialContainer : TOpt.Path -> Mono.MonoType -> MonoState -> Maybe ( Mono.MonoType, MonoState )
 buildPartialContainer path leafMonoType state =
@@ -559,113 +560,6 @@ setMVarEnv env state =
             in
             { c | mvarEnv = env }
     }
-
-
-{-| Recursive MonoType debug printer for trace logging.
--}
-debugMono : Mono.MonoType -> String
-debugMono m =
-    case m of
-        Mono.MInt ->
-            "Int"
-
-        Mono.MFloat ->
-            "Float"
-
-        Mono.MBool ->
-            "Bool"
-
-        Mono.MChar ->
-            "Char"
-
-        Mono.MString ->
-            "String"
-
-        Mono.MUnit ->
-            "()"
-
-        Mono.MList t ->
-            "List " ++ debugMono t
-
-        Mono.MTuple ts ->
-            "(" ++ String.join ", " (List.map debugMono ts) ++ ")"
-
-        Mono.MRecord fs ->
-            "{"
-                ++ String.join ", "
-                    (Dict.foldl (\n t acc -> (n ++ ":" ++ debugMono t) :: acc) [] fs)
-                ++ "}"
-
-        Mono.MCustom _ name args ->
-            case args of
-                [] ->
-                    name
-
-                _ ->
-                    "(" ++ name ++ " " ++ String.join " " (List.map debugMono args) ++ ")"
-
-        Mono.MFunction params result ->
-            "(" ++ String.join "," (List.map debugMono params) ++ ")->" ++ debugMono result
-
-        Mono.MVar mvarId constraint ->
-            case constraint of
-                Mono.CNumber ->
-                    "Mvar#" ++ String.fromInt (Id.toComparable mvarId) ++ ":Num"
-
-                Mono.CEcoValue ->
-                    "Mvar#" ++ String.fromInt (Id.toComparable mvarId)
-
-
-{-| Compact Can.Type MVarId debug printer for trace logging.
--}
-debugCanType : Can.Type MVarId -> String
-debugCanType canType =
-    case canType of
-        Can.TVar mvarId ->
-            "TVar#" ++ String.fromInt (Id.toComparable mvarId)
-
-        Can.TLambda a b ->
-            "(" ++ debugCanType a ++ " -> " ++ debugCanType b ++ ")"
-
-        Can.TType _ name args ->
-            case args of
-                [] ->
-                    name
-
-                _ ->
-                    "(" ++ name ++ " " ++ String.join " " (List.map debugCanType args) ++ ")"
-
-        Can.TRecord fields _ ->
-            "{"
-                ++ String.join ", "
-                    (Dict.foldl
-                        (\n (Can.FieldType _ t) acc ->
-                            (n ++ ":" ++ debugCanType t) :: acc
-                        )
-                        []
-                        fields
-                    )
-                ++ "}"
-
-        Can.TUnit ->
-            "()"
-
-        Can.TTuple a b rest ->
-            "("
-                ++ debugCanType a
-                ++ ", "
-                ++ debugCanType b
-                ++ (case rest of
-                        [] ->
-                            ""
-
-                        _ ->
-                            ", " ++ String.join ", " (List.map debugCanType rest)
-                   )
-                ++ ")"
-
-        Can.TAlias _ name _ _ ->
-            "Alias(" ++ name ++ ")"
 
 
 {-| Strip exactly `numArgs` parameter layers from a curried `MonoType`. Used at
@@ -815,6 +709,7 @@ Used at `TOpt.Destruct` creation time so later call sites of the destructor can
 find which value-multi instance to refine. Crashes on missing keys per design
 decision D7: silently skipping would reintroduce exactly the class of bugs this
 tagging fixes.
+
 -}
 tagValueInstanceWithDestructor :
     Name
@@ -866,6 +761,7 @@ Walks the stack head-to-tail (innermost-first) and stops at the first match
 
 `unifyArgsOnly` is monotone: bindings only become more concrete, so repeatedly
 extending `info.subst` this way cannot regress a `MInt` back into an alias.
+
 -}
 refineValueMultiForDestructorCall :
     Name
@@ -1426,17 +1322,18 @@ in `valueDefs`.
 This generalizes the previous function-only behavior to cover mixed
 value+function SCCs. `specializeValueCycle` still handles pure-value SCCs.
 
-  * `sharedSubst` is derived from the requested member, which may be either
+  - `sharedSubst` is derived from the requested member, which may be either
     a function (in `funcDefs`) or a value (in `valueDefs`). The two sources
     are combined via `TypeSubst.unifyExtend` so neither overrides the other.
     In practice only one ever applies because a given top-level name is
     either a `Define` (value) or a `Def`/`TailDef` (function), never both
     (see specialize-cycle disjointness invariant).
-  * All `funcDefs` are specialized via `specializeFunc`.
-  * All `valueDefs` are specialized via `specializeValueInCycle`.
+  - All `funcDefs` are specialized via `specializeFunc`.
+  - All `valueDefs` are specialized via `specializeValueInCycle`.
 
 This guarantees that any requested global in the SCC (function or value) gets
 a real MonoNode instead of falling back to MonoExtern.
+
 -}
 specializeFunctionCycle :
     IO.Canonical
@@ -3103,7 +3000,7 @@ specializeExpr expr subst state =
                         ( Mono.MRecord _, _ ) ->
                             Utils.Crash.crash "Specialize.TOpt.Update: record with non-record result type"
 
-                        ( _, _ ) ->
+                        _ ->
                             Utils.Crash.crash "Specialize.TOpt.Update: input expression is not a record"
             in
             ( Mono.MonoRecordUpdate monoRecord monoUpdates resultMonoType, state2 )
