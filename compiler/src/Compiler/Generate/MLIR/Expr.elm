@@ -3921,7 +3921,7 @@ generateLet ctx def body =
 
 
 generateDestruct : Ctx.Context -> Mono.MonoDestructor -> Mono.MonoExpr -> Mono.MonoType -> ExprResult
-generateDestruct ctx (Mono.MonoDestructor name path _) body _ =
+generateDestruct ctx (Mono.MonoDestructor name path destructorMonoType) body _ =
     let
         -- Use the path's actual result type for generating the destructor.
         -- The path's MonoIndex/MonoField/etc. nodes carry the correctly-specialized
@@ -3938,9 +3938,21 @@ generateDestruct ctx (Mono.MonoDestructor name path _) body _ =
         -- If the path itself still has an unresolved MVar at its top (e.g.
         -- polymorphic `Done a` partially specialized), fall back to the ctor
         -- shape registry so the destructor type matches the constructor
-        -- wrapper's actual heap layout.
-        pathResultType =
+        -- wrapper's actual heap layout. As a further fallback, the destructor's
+        -- own monoType is sometimes pinned by the outer subst even when the
+        -- containerType at the scrutinee left the relevant type argument as a
+        -- free MVar (e.g. `loop`'s `a` resolved from the callback's return type,
+        -- while the scrutinee's Step type arg stayed polymorphic). Prefer that
+        -- concrete answer over a still-polymorphic path result.
+        pathResultRaw =
             Patterns.resolvePathResultType ctx path
+
+        pathResultType =
+            if Mono.containsAnyMVar pathResultRaw && not (Mono.containsAnyMVar destructorMonoType) then
+                destructorMonoType
+
+            else
+                pathResultRaw
 
         -- Convert to MLIR type
         destructorMlirType =

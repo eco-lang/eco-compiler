@@ -535,7 +535,15 @@ generateMonoPathHelper ctx path targetType revAcc =
                                             ( [ projectOp ], primitiveVar, ctx4 )
 
                                     else
-                                        -- Field is stored boxed (as eco.value).
+                                        -- Field is stored boxed (as eco.value). `targetType` is
+                                        -- the projection's result type, which the caller
+                                        -- (generateDestruct / compileDestructStep) sets from the
+                                        -- destructor's monoType when that is more concrete than
+                                        -- the path's annotation. Emit the projection at the
+                                        -- caller-requested type so it agrees with downstream
+                                        -- consumers like eco.construct.tuple2 even when the ctor
+                                        -- shape registry only has a polymorphic entry for this
+                                        -- container.
                                         let
                                             ( ctx_, op ) =
                                                 Ops.ecoProjectCustom ctx2 resultVar index targetType subVar

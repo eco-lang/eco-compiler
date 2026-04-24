@@ -1131,17 +1131,28 @@ compileDestructStep :
     -> Mono.MonoDestructor
     -> Mono.MonoExpr
     -> StepResult
-compileDestructStep ctx loopSpec (Mono.MonoDestructor name path _) body =
+compileDestructStep ctx loopSpec (Mono.MonoDestructor name path destructorMonoType) body =
     let
         -- Use the path's actual result type, as in Expr.generateDestruct.
         -- The destructor's monoType may still contain unsubstituted vars;
         -- the path carries the correctly-specialized concrete type. If the
         -- path's own top-level annotation is itself a stale MVar (polymorphic
         -- ctor partially specialized — e.g. `Done a` at `a = Int`), fall back
-        -- to the ctor shape registry so we agree with the heap layout.
+        -- to the ctor shape registry so we agree with the heap layout. If
+        -- that also yields a free MVar (multiple disagreeing specializations
+        -- in the registry), prefer the destructor's own monoType when the
+        -- outer subst pinned it concretely.
+        pathResultRaw : Mono.MonoType
+        pathResultRaw =
+            Patterns.resolvePathResultType ctx path
+
         pathResultType : Mono.MonoType
         pathResultType =
-            Patterns.resolvePathResultType ctx path
+            if Mono.containsAnyMVar pathResultRaw && not (Mono.containsAnyMVar destructorMonoType) then
+                destructorMonoType
+
+            else
+                pathResultRaw
 
         destructorMlirType : MlirType
         destructorMlirType =
