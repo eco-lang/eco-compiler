@@ -18,6 +18,9 @@ extern "C" uint32_t elm_bytebuffer_len(uint64_t bb);
 namespace Elm { struct EvalParamLayout; }
 extern "C" HPtr eco_closure_call_saturated(HPtr closure_hptr, uint64_t* new_args, uint32_t num_newargs, const Elm::EvalParamLayout* layout);
 extern "C" HPtr eco_alloc_int(int64_t value);
+extern "C" size_t eco_gc_stack_range_point();
+extern "C" void   eco_gc_push_stack_range(uint64_t* base, size_t count, uint64_t hpointer_mask);
+extern "C" void   eco_gc_restore_stack_range_point(size_t saved);
 
 using namespace Elm;
 using namespace Elm::Kernel;
@@ -57,7 +60,17 @@ static uint64_t makeTuple2_if(int64_t a, double b) {
 
 static uint64_t makeTuple2_ip(int64_t a, HPointer b) {
     auto& allocator = Allocator::instance();
+    // Root `b` across the allocation: Allocator::allocate may fire a minor GC
+    // that relocates `b`'s referent. `b` is a C++ parameter and is not visible
+    // to the compiler's stackmap, so without a manual stack-range push, `b`
+    // would hold a stale HPointer after GC.
+    uint64_t roots[1];
+    std::memcpy(&roots[0], &b, sizeof(b));
+    size_t saved = eco_gc_stack_range_point();
+    eco_gc_push_stack_range(roots, 1, 1);
     Tuple2* t = static_cast<Tuple2*>(allocator.allocate(sizeof(Tuple2), Tag_Tuple2));
+    std::memcpy(&b, &roots[0], sizeof(b));
+    eco_gc_restore_stack_range_point(saved);
     t->header.unboxed = 1;  // only field a unboxed
     t->a.i = a;
     t->b.p = b;
