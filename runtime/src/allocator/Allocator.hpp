@@ -124,6 +124,26 @@ public:
     // Returns the current number of bytes allocated in thread-local old gen.
     size_t getOldGenAllocatedBytes() const;
 
+    // Returns committed bytes in the shared old-gen region (all threads).
+    size_t getOldGenCommittedBytes() const { return old_gen_committed; }
+
+    // Returns committed bytes in the low / high nursery regions.
+    size_t getNurseryLowCommittedBytes() const { return nursery_low_committed_; }
+    size_t getNurseryHighCommittedBytes() const { return nursery_high_committed_; }
+
+    // Returns the start offset of the nursery region (== old-gen cap).
+    size_t getOldGenMaxBytes() const { return nursery_offset; }
+
+    // Diagnostics: dumps heap state (old-gen + nursery commit counters plus
+    // per-thread allocated_bytes and block counts) to stderr. Always emits;
+    // callers guard with heapTraceEnabled() when the dump is only useful
+    // during verbose tracing.
+    void dumpHeapState(const char* label, size_t pending_size = 0) const;
+
+    // Returns true when the environment variable ECO_HEAP_TRACE is set to a
+    // non-zero / non-empty value. Queried once per process and cached.
+    static bool heapTraceEnabled();
+
 #if ENABLE_GC_STATS
     // Returns combined statistics from all thread heaps.
     // Thread-safe: acquires mutex to iterate all thread heaps.

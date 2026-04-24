@@ -30,9 +30,9 @@
 #include "Allocator.hpp"
 #include "ThreadLocalHeap.hpp"
 #include <cassert>
+#include <cstdio>
 #include <cstring>
 #if ECO_GC_DEBUG
-#include <cstdio>
 #include <execinfo.h>
 #endif
 
@@ -405,6 +405,15 @@ void NurserySpace::checkAndGrow() {
 
     // Update cached bounds.
     updateBounds();
+
+    if (Allocator::heapTraceEnabled()) {
+        std::fprintf(stderr,
+            "[heap-trace] nursery grew: +%zu low blocks, +%zu high blocks "
+            "(now %zu/%zu, block_size=%zu KB, semi-space=%.2f MB)\n",
+            low_added, high_added, low_blocks_.size(), high_blocks_.size(),
+            block_size_ / 1024,
+            (low_blocks_.size() * block_size_) / (1024.0 * 1024.0));
+    }
 }
 
 /**

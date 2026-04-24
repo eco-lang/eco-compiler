@@ -220,11 +220,21 @@ void ThreadLocalHeap::collectAtSafepoint() {
 }
 
 void ThreadLocalHeap::minorGC() {
+    if (Allocator::heapTraceEnabled()) {
+        parent_->dumpHeapState("minorGC begin");
+    }
     collectStackRootsFromStackMap();
     nursery_.minorGC(old_gen_, stack_map_roots_);
+    if (Allocator::heapTraceEnabled()) {
+        parent_->dumpHeapState("minorGC end");
+    }
 }
 
 void ThreadLocalHeap::majorGC() {
+    // Always dump sizes at major GC so the reproduction log makes it easy to
+    // see whether a major GC actually ran before the old-gen assert fired.
+    parent_->dumpHeapState("majorGC begin");
+
 #if ENABLE_GC_STATS
     auto gc_start = GC_STATS_TIMER_START();
 #endif
@@ -269,6 +279,8 @@ void ThreadLocalHeap::majorGC() {
     uint64_t elapsed_ns = GC_STATS_TIMER_ELAPSED_NS(gc_start);
     GC_STATS_MAJOR_RECORD_GC_END(stats_, elapsed_ns);
 #endif
+
+    parent_->dumpHeapState("majorGC end");
 }
 
 bool ThreadLocalHeap::isNurseryNearFull(float threshold) const {

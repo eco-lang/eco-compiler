@@ -14,6 +14,8 @@
 #include "Allocator.hpp"
 #include "ThreadLocalHeap.hpp"
 #include <cassert>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <new>
 #include <sys/mman.h>
@@ -22,6 +24,54 @@ namespace Elm {
 
 // Global heap base for pointer conversion (used by fromPointerRaw/toPointerRaw).
 char* g_heap_base = nullptr;
+
+namespace {
+
+// Coarse milestone interval for heap-growth traces. Emitting one line per
+// block acquire is prohibitively spammy (a 4 GB old-gen fill is ~32k blocks
+// at 128 KB each); logging only when the committed counter crosses a
+// multiple of this granularity gives a readable growth history.
+constexpr size_t HEAP_TRACE_OLDGEN_INTERVAL   = 32 * 1024 * 1024;  // 32 MB.
+constexpr size_t HEAP_TRACE_NURSERY_INTERVAL  = 16 * 1024 * 1024;  // 16 MB.
+
+}  // namespace
+
+bool Allocator::heapTraceEnabled() {
+    static const bool enabled = []{
+        const char* e = std::getenv("ECO_HEAP_TRACE");
+        if (e == nullptr || e[0] == '\0') return false;
+        // Treat "0" (single-char) as disabled, everything else as enabled.
+        return !(e[0] == '0' && e[1] == '\0');
+    }();
+    return enabled;
+}
+
+void Allocator::dumpHeapState(const char* label, size_t pending_size) const {
+    std::fprintf(stderr,
+        "[heap-trace] %s oldgen_committed=%.2f MB nursery_low=%.2f MB "
+        "nursery_high=%.2f MB (oldgen_cap=%.2f GB, heap_reserved=%.2f GB)",
+        label,
+        old_gen_committed / (1024.0 * 1024.0),
+        nursery_low_committed_ / (1024.0 * 1024.0),
+        nursery_high_committed_ / (1024.0 * 1024.0),
+        nursery_offset / (1024.0 * 1024.0 * 1024.0),
+        heap_reserved / (1024.0 * 1024.0 * 1024.0));
+
+    if (pending_size != 0) {
+        std::fprintf(stderr, " pending_size=%zu B (%.2f KB)",
+                     pending_size, pending_size / 1024.0);
+    }
+
+    // Thread-local detail for the calling thread (other thread heaps exist
+    // but walking them requires the mutex; the caller may already hold it,
+    // so we stick to the cheap current-thread view).
+    if (tl_heap_) {
+        std::fprintf(stderr,
+                     " tl.oldgen_allocated=%.2f MB",
+                     tl_heap_->getOldGenAllocatedBytes() / (1024.0 * 1024.0));
+    }
+    std::fputc('\n', stderr);
+}
 
 // Thread-local heap pointer for fast access.
 thread_local ThreadLocalHeap* Allocator::tl_heap_ = nullptr;
@@ -263,6 +313,9 @@ char* Allocator::acquireNurseryBlockLow(size_t size) {
 
     // Check if we have space in low region.
     if (nursery_low_committed_ + size > low_region_size) {
+        if (heapTraceEnabled()) {
+            dumpHeapState("acquireNurseryBlockLow OUT OF SPACE", size);
+        }
         return nullptr;  // Out of low region address space.
     }
 
@@ -275,7 +328,17 @@ char* Allocator::acquireNurseryBlockLow(size_t size) {
         return nullptr;
     }
 
+    size_t before = nursery_low_committed_;
     nursery_low_committed_ += size;
+
+    // Log every time the low-region commit counter crosses a milestone so
+    // the trace captures monotonic nursery growth without line-per-block noise.
+    if (heapTraceEnabled() &&
+        before / HEAP_TRACE_NURSERY_INTERVAL !=
+            nursery_low_committed_ / HEAP_TRACE_NURSERY_INTERVAL) {
+        dumpHeapState("nursery-low grew", size);
+    }
+
     return block_base;
 }
 
@@ -311,6 +374,9 @@ char* Allocator::acquireNurseryBlockHigh(size_t size) {
 
     // Check if we have space in high region.
     if (nursery_high_committed_ + size > high_region_size) {
+        if (heapTraceEnabled()) {
+            dumpHeapState("acquireNurseryBlockHigh OUT OF SPACE", size);
+        }
         return nullptr;  // Out of high region address space.
     }
 
@@ -323,7 +389,15 @@ char* Allocator::acquireNurseryBlockHigh(size_t size) {
         return nullptr;
     }
 
+    size_t before = nursery_high_committed_;
     nursery_high_committed_ += size;
+
+    if (heapTraceEnabled() &&
+        before / HEAP_TRACE_NURSERY_INTERVAL !=
+            nursery_high_committed_ / HEAP_TRACE_NURSERY_INTERVAL) {
+        dumpHeapState("nursery-high grew", size);
+    }
+
     return block_base;
 }
 
@@ -343,6 +417,9 @@ char* Allocator::acquireOldGenBlock(size_t size) {
 
     // Check if we have space in old gen region.
     if (old_gen_committed + size > nursery_offset) {
+        // Always log the exhaustion: this is the failure path that triggers
+        // the OldGenSpace::bumpAllocate assertion further up the stack.
+        dumpHeapState("acquireOldGenBlock OUT OF SPACE (returning nullptr)", size);
         return nullptr;  // Out of old gen address space.
     }
 
@@ -353,10 +430,23 @@ char* Allocator::acquireOldGenBlock(size_t size) {
                         MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
 
     if (result == MAP_FAILED) {
+        if (heapTraceEnabled()) {
+            dumpHeapState("acquireOldGenBlock MAP_FAILED", size);
+        }
         return nullptr;
     }
 
+    size_t before = old_gen_committed;
     old_gen_committed += size;
+
+    // Milestone-based growth log so we can see the committed counter
+    // climbing through the available old-gen region.
+    if (heapTraceEnabled() &&
+        before / HEAP_TRACE_OLDGEN_INTERVAL !=
+            old_gen_committed / HEAP_TRACE_OLDGEN_INTERVAL) {
+        dumpHeapState("oldgen grew", size);
+    }
+
     return block_base;
 }
 

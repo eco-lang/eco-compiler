@@ -309,6 +309,21 @@ void* OldGenSpace::bumpAllocate(size_t size) {
     assert(size <= config_->alloc_buffer_size && "Object too large for block");
 
     char* block_base = allocator_->acquireOldGenBlock(config_->alloc_buffer_size);
+    if (block_base == nullptr) {
+        // Unconditional dump — this is the failure that the user is trying
+        // to diagnose. Include current-thread block count and allocated_bytes
+        // so the report captures both the committed-region cap and the
+        // live/tracked bytes at the crash point.
+        std::fprintf(stderr,
+            "[heap-trace] OldGenSpace::bumpAllocate FATAL: out of old-gen space. "
+            "req=%zu KB buffer=%zu KB blocks=%zu tracked_bytes=%.2f MB\n",
+            size / 1024,
+            config_->alloc_buffer_size / 1024,
+            blocks_.size(),
+            allocated_bytes / (1024.0 * 1024.0));
+        allocator_->dumpHeapState("old-gen exhausted (pre-assert)",
+                                  config_->alloc_buffer_size);
+    }
     assert(block_base && "Failed to acquire old gen block");
 
     // Create new block info.
