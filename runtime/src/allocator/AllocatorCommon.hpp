@@ -40,7 +40,7 @@ enum class Color : u32 {
 // ============================================================================
 
 // Heap sizing.
-constexpr size_t DEFAULT_MAX_HEAP_SIZE = 32ULL * 1024 * 1024 * 1024;  // 32 GB address space (16 GB old gen + 16 GB nursery).
+constexpr size_t DEFAULT_MAX_HEAP_SIZE = 24ULL * 1024 * 1024 * 1024;  // 32 GB address space (12 GB old gen + 12 GB nursery).
 constexpr size_t INITIAL_OLD_GEN_SIZE = 16 * 1024 * 1024;            // 16 MB initial commit.
 
 // AllocBuffer sizing.
