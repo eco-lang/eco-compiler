@@ -266,6 +266,10 @@ The callsite derivation determines which entry point to use based on whether the
 - **Direct calls**: Most calls are direct function calls, not indirect through PAP machinery
 - **Better optimization**: LLVM can inline and optimize direct calls
 
+### GC Safepoint Placement *(Apr 2026)*
+
+GC safepoint emission was moved off the top of `CallOp` / `PapExtendOp` / `PapCreateOp`. These ops now supply GC roots; the safepoint marker is emitted immediately before each final GC-triggering call inside the closure dispatch helpers. No changes to currying shape or segmentation semantics.
+
 ## Implementation Details
 
 ### Staging Detection

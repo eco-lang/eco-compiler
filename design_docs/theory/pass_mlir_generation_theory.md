@@ -310,6 +310,10 @@ MonoCustom tag fields ->
     eco.construct.custom tag size [fieldVars] unboxedBitmap
 ```
 
+### Record Update Heap Layout *(Apr 21, 2026)*
+
+`MonoRecordUpdate` codegen now derives the heap layout from the source record's `MonoType`, not the result type — this fixes row-poly record updates that previously lost field ordering. `Specialize TOpt.Update` widens the stored result type accordingly.
+
 ### Data Projection
 
 ```
@@ -418,6 +422,14 @@ The MLIR codegen is organized into 11 modules under `compiler/src/Compiler/Gener
 | `Patterns` | `generateDTPath` | Navigate decision tree paths |
 | `Patterns` | `caseKindFromTest` | Determine case operation kind |
 
+### Streaming Bytecode Emission *(Apr 18-20, 2026)*
+
+MLIR is emitted directly as MLIR binary bytecode in a streaming fashion rather than materialising a textual string. This dramatically reduces peak compiler memory for large programs; bootstrap-scale inputs are now tractable. Text-mode MLIR (`--text-mlir`) is retained for debugging but is no longer the default.
+
+See [MLIR Bytecode Theory](mlir_bytecode_theory.md) for encoder details.
+
+**Attribute table split** *(Apr 18, 2026)*: The bytecode encoder's attribute table is split into separate location and string buckets so location attrs don't inflate the string table and vice-versa.
+
 ### MLIR Text Emission
 
 Operations are serialized to MLIR text format:
@@ -451,6 +463,7 @@ type alias MlirOp =
 6. GC safepoints emitted before all allocation sites with live `!eco.value` variables as operands *(Mar 2026)*
 7. SSA variable scoping correct across case/if branches (`ctxAfterBranchOp` restores pre-branch state) *(Mar 2026)*
 8. `definedSsaVars` reset at function scope boundaries (no cross-function leakage) *(Apr 2026)*
+9. **`varMappings` / `definedSsaVars` discipline** *(Apr 18-19, 2026)*: reset discipline is now tightened across `generateNode`, `generateLambdaFunc`, `generateLet`, and `ctxForSiblingRegion` — this prevents leakage of SSA value mappings across regions and across sibling `scf.if` arms.
 
 ## Example
 

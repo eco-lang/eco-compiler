@@ -42,6 +42,17 @@ at the LLVM IR level via backward dataflow, and handles relocation via
 alloca+mem2reg internally — Eco contributes no custom statepoint-insertion
 pass.
 
+### RewriteStatepointsForGC migration *(Apr 18-22, 2026)*
+
+The bespoke `StatepointConversion` pass that Eco used to carry has been
+retired and replaced with LLVM's upstream `RewriteStatepointsForGC`. The new
+`EcoGCStrategy.cpp` registers an `eco-gc` GC strategy; non-leaf calls in
+functions marked `gc "eco-gc"` automatically get `gc.statepoint` /
+`gc.relocate` pairs emitted by RS4GC, with liveness and base-pointer
+inference done upstream. Runtime helpers that cannot trigger GC are
+annotated `gc-leaf-function` (via the MLIR `passthrough` attribute) so RS4GC
+skips them when choosing statepoint sites.
+
 ### Shared Infrastructure
 
 **EcoTypeConverter**: Extends `LLVMTypeConverter` to convert `!eco.value` → `ptr addrspace(1)` (GC-managed pointer). `ptrtoint`/`inttoptr` conversions appear only at heap/global/closure storage boundaries (i64 memory slots) and for embedded constant encoding.
@@ -549,7 +560,7 @@ LLVM IR. Statepoint insertion is fully delegated to LLVM's
 
 ## Allocation Groups
 
-*(Apr 16, 2026)* Adjacent fixed-size alloc ops identified by `EcoGCPrepare` lower to a single fast/slow/merge CFG:
+*(Apr 16, 2026)* Adjacent fixed-size alloc ops identified by `EcoGCPrepare` lower to a single fast/slow/merge CFG. The fast path calls `eco_gc_alloc_region_fast` (a gc-leaf-function) guarded by a shared `__eco_safepoint_marker`; on bump-pointer exhaustion control falls through to `eco_gc_alloc_region_slow`, and members are initialized at fixed offsets via `eco_init_*_at` runtime functions:
 
 ```
 fastBlock:
@@ -573,9 +584,25 @@ mergeBlock(result):
 - `EcoGCPrepare` unions the alloc group leader's own `!eco.value` operands into its attached root set so construct-op field values are visible to any downstream debugging tool that consumes the MLIR-level root annotations; RS4GC recomputes liveness independently at the LLVM level, so the `gc-live` bundle on the resulting statepoint is always complete regardless
 - `EcoGCLivenessAudit` skips `eco.gc_group_member` ops since their liveness is covered by the leader's root set
 
+## EcoGCPrepare Liveness
+
+`EcoGCPrepare` uses MLIR's inter-block `Liveness` analysis, unioned with each carrier op's front-end operand set, to compute the live `!eco.value` root set attached to each allocating op. Roots are pre-converted by the type-converter adaptor to avoid `!eco.value` type erasure races during dialect conversion. The pass walks nested regions (`scf.while`, `scf.if`, ...) via `func.walk()` so roots inside loop bodies are not missed. `arith.constant` and other embedded-constant ops are excluded from root sets (they are not GC-managed). GC roots are supplied to `eco.call`, `eco.papExtend`, and `eco.papCreate` as well as to allocation-group leaders.
+
+## Shadow Stack *(Apr 18, 2026)*
+
+`eco.shadow_roots` is a `UnitAttr` attached by the compiler on `main_$_0` and on tail join blocks; it declares that the function participates in shadow-stack rooting. `RootSet::stack_ranges` is the shadow stack proper — it holds ranges for dynamic arg arrays (alloca'd `uint64_t*` buffers) that static stack maps cannot describe. The runtime closure dispatch helpers — `eco_apply_closure`, `eco_apply_segmentation_unknown`, `eco_pap_extend`, `eco_closure_call_saturated` — register their combined / unboxed-masked arg arrays via `eco_gc_push_stack_range` before allocating and `pop` after returning. The shared `emitRootedBoxedArgsArray` helper encapsulates the alloca → zero-init → push-range → box-and-populate pattern used by the generic-apply and segmentation-unknown lowerings.
+
+### StackMapRoots class split *(Apr 18, 2026)*
+
+Stack-map-derived roots now live in their own `StackMapRoots` class owned by `ThreadLocalHeap`, separated from `RootSet`'s shadow / stack ranges. This makes the two root sources independently mutable (RS4GC-driven stack maps vs. shadow-stack push/pop) and clarifies which roots a minor GC walks.
+
+### LLVM libunwind *(Apr 19-21, 2026)*
+
+`libunwind` is built directly into the JIT, with per-FDE `.eh_frame` registration for every emitted function. All emitted functions carry `frame-pointer=all` so libunwind can walk the stack reliably for stack-map scanning and for native-backtrace diagnostics.
+
 ## eco.value → ptr addrspace(1)
 
-*(Apr 17, 2026, REP_LLVM_001)* `!eco.value` now lowers to `ptr addrspace(1)` (GC-managed pointer) instead of `i64`:
+*(Apr 17, 2026, REP_LLVM_001)* `!eco.value` now lowers to `ptr addrspace(1)` (GC-managed pointer) instead of `i64`. The migration spanned every EcoToLLVM module (Heap, Closures, Func, Runtime, ControlFlow, Globals, Types) and the BFToLLVM pass:
 
 - Primary type conversion in `EcoTypeConverter` and unified in `BFTypeConverter`
 - `ptrtoint`/`inttoptr` conversions only at:
@@ -584,10 +611,21 @@ mergeBlock(result):
   - Closure capture storage boundaries (closure values are i64)
   - Embedded-constant encoding (`ConstantKind << 40`)
   - ADT case bit manipulation: `valueToI64` converts `ptr<1>` scrutinee before `LShr`/`And` to extract the constant-field
+- Role-specific boundary helpers (`heap*`, `global*`, `closure*`, `argsSlot*`, `caseScrutineeToI64`, `wrapperReturnValueToPtr0`, `wrapperLoadArgSlotToValue` — see §4 below) funnel every `ptr<1>↔i64` conversion through a named, documented path.
 - `widenToI64ForInit` for alloc-group member operands routes through `castToHPtr` first (eco.value → ptr<1>) then `PtrToIntOp`, so after replacement the inverse casts ptr<1> → eco.value → ptr<1> cancel in the reconcile pass
-- `widenFieldToI64` (Custom/RecordConstructOp lowering) handles Bool `ptr<1>` constants via `PtrToIntOp` instead of pointer ZExt (which would crash)
+- `widenFieldToI64` (Custom/RecordConstructOp lowering) handles Bool `ptr<1>` constants via `PtrToIntOp` instead of pointer ZExt (which would crash — pointer ZExt is not legal on `ptr<1>`)
+- ADT case bit manipulation lifts the `ptr<1>` scrutinee to `i64` via `valueToI64` before extracting the constant-field bits
 - String case True comparison compares `Elm_Kernel_Utils_equal` result (`ptr<1>`) against a `ptr<1>` True constant via inttoptr — not a raw i64 constant
 - BF runtime LLVM declarations use `ptr<1>` for HPtr params/returns; `ReadUtf8OpLowering` compares `elm_utf8_decode` result against null `ptr<1>` via `LLVM::ZeroOp`
+
+### EcoPtrIntVerify
+
+`EcoPtrIntVerify` is a post-RS4GC LLVM function pass that walks every
+`ptrtoint`/`inttoptr` involving `ptr addrspace(1)` and rejects any that
+escapes the allow-listed boundary helpers. It is the enforcement mechanism
+for the addrspace(1) boundary invariants (heap / global / closure / args
+slot / case scrutinee / wrapper bridges); see `EcoPtrIntVerify.cpp` and
+`guides/gc-diagnostics.md`.
 
 ## Global Root Initialization
 

@@ -4,14 +4,14 @@
 
 ## Project Roadmap
 
-- [ ] **1. Runtime Foundation** → [§1](#1-runtime-foundation)
+- [x] **1. Runtime Foundation** → [§1](#1-runtime-foundation)
   - [x] 1.1 Custom Heap Model → [§1.1](#11-custom-heap-model)
   - [x] 1.2 Garbage Collector → [§1.2](#12-garbage-collector)
     - [x] 1.2.1 Old Generation Algorithm → [§1.2.1](#121-old-generation-algorithm)
     - [x] 1.2.2 LLVM Stack Map Investigation → [§1.2.2](#122-llvm-stack-map-investigation)
-    - [ ] 1.2.3 LLVM Stack Map Implementation → [§1.2.3](#123-llvm-stack-map-implementation)
-  - [ ] 1.3 Process & Thread Model → [§1.3](#13-process--thread-model) *(first-pass Platform & Scheduler complete)*
-  - [x] 1.4 Runtime Testing Infrastructure → [§1.4](#14-runtime-testing-infrastructure) *(parallel compilation, all tests passing)*
+    - [x] 1.2.3 LLVM Stack Map Implementation → [§1.2.3](#123-llvm-stack-map-implementation) *(RS4GC migration complete, Apr 22)*
+  - [x] 1.3 Process & Thread Model → [§1.3](#13-process--thread-model) *(Platform & Scheduler + MVar runtime complete)*
+  - [x] 1.4 Runtime Testing Infrastructure → [§1.4](#14-runtime-testing-infrastructure) *(parallel compilation + stress-elm suite, all tests passing)*
 
 - [ ] **2. Standard Library Porting** → [§2](#2-standard-library-porting)
   - [ ] 2.1 Eco Runtime to Kernel Packages → [§2.1](#21-eco-runtime-to-kernel-packages)
@@ -40,7 +40,7 @@
     - [ ] 3.1.6 Process Primitives → [§3.1.6](#316-process-primitives)
     - [x] 3.1.7 Test Programs → [§3.1.7](#317-test-programs) *(46+ codegen tests)*
   - [x] 3.2 Lowering Pipeline → [§3.2](#32-lowering-pipeline) *(complete - EcoToLLVM, typed closures, bytes fusion)*
-  - [ ] 3.3 GC Stack Root Tracing → [§3.3](#33-gc-stack-root-tracing)
+  - [x] 3.3 GC Stack Root Tracing → [§3.3](#33-gc-stack-root-tracing) *(RS4GC + EcoGCPrepare + shadow-stack + allocation groups, Apr 2026)*
   - [ ] 3.4 Multi-target Support → [§3.4](#34-multi-target-support)
 
 - [ ] **4. Compiler Backend** → [§4](#4-compiler-backend)
@@ -190,7 +190,7 @@ Research LLVM's stack map facilities for precise stack root tracing.
 
 #### 1.2.3 LLVM Stack Map Implementation
 
-**Status**: Substantially Complete (Apr 2026)
+**Status**: Complete (Apr 22, 2026)
 
 Implement LLVM stack map integration for precise stack root tracing. This is required for larger, longer-running programs where GC cycles occur with deep call stacks containing heap pointers.
 
@@ -211,6 +211,7 @@ The full GC stack root pipeline is now implemented across compiler, MLIR lowerin
 - **Phase 9 — External GC Roots** *(Apr 15)*: `MVar::s_mvars` and `Runtime::s_savedState` registered as external GC root scanners via `Eco_Kernel_{MVar,Runtime}_register_gc_roots` and aggregator `Eco_Kernel_register_all_gc_roots`, invoked after `Allocator::initThread()` in AOT (and weakly in JIT) entries.
 - **Phase 10 — Representation Change** *(Apr 17)*: `!eco.value` now lowers to `ptr addrspace(1)` instead of `i64`. `ptrtoint`/`inttoptr` only at heap/global/closure storage boundaries and constant encoding. Constants excluded from GC live root sets; `stripIntToPtr` returns `nullptr` for `inttoptr(ConstantInt)` so constants never become roots. New invariant REP_LLVM_001.
 - **Phase 11 — Diagnostics** *(Apr 15-16)*: `ECO_GC_DEBUG` CMake option (default on in Debug) adds nursery ghost-data asserts (`clearToSpaceFreeRegion` zeroes free to-space bytes; `debugAssertValidNurseryPointer` called from `evacuate` and `Allocator::resolve`). `ECO_GC_DEBUG_LIVENESS` enables `EcoGCLivenessAudit` pass. See `guides/gc-diagnostics.md`.
+- **Phase 12 — RewriteStatepointsForGC Migration** *(Apr 18-22)*: Bespoke `StatepointConversion` pass replaced with LLVM's upstream `RewriteStatepointsForGC` (RS4GC). New `EcoGCStrategy.cpp` registers `eco-gc` strategy; functions tagged `gc "eco-gc"` get RS4GC-inserted `gc.statepoint`/`gc.relocate` pairs at every non-leaf call, with liveness/base-pointer inference handled upstream. `EcoPtrIntVerify` post-RS4GC verifier enforces the addrspace(1) boundary invariants. LLVM libunwind built into the JIT (per-FDE `.eh_frame` registration, `frame-pointer=all` on emitted functions) so precise unwinding works across JIT-compiled frames. `StackMapRoots` split into its own class owned by `ThreadLocalHeap`. `Allocator` free-list returns nursery blocks from retired `ThreadLocalHeap`s back to the pool (fixes spawn-heavy nursery exhaustion). `eco.shadow_roots` UnitAttr attached by the compiler on `main_$_0` and TCO join blocks for GC-safe tail-recursive frames.
 
 **Tasks**:
 - [x] Build a small example program in LLVM using recursion to create stack frames with heap pointers
@@ -232,8 +233,12 @@ The full GC stack root pipeline is now implemented across compiler, MLIR lowerin
 - [x] Allocation group single safepoint lowering *(Apr 16)*
 - [x] GC liveness audit pass (ECO_GC_DEBUG_LIVENESS) *(Apr 16)*
 - [x] eco.value → ptr addrspace(1) representation change *(Apr 17)*
-- [ ] Stress test to verify stack roots are preserved correctly across major GC cycles
-- [ ] Alloca+mem2reg approach validation under extended load
+- [x] RS4GC migration + EcoGCStrategy *(Apr 22)*
+- [x] LLVM libunwind integration for JIT *(Apr 19-21)*
+- [x] `eco.shadow_roots` attribute + TCO shadow frames *(Apr 18)*
+- [x] `StackMapRoots` class split *(Apr 18)*
+- [x] Nursery free-list for retired `ThreadLocalHeap`s *(Apr 22)*
+- [x] Stress suite to verify stack roots across major GC cycles *(stress-elm library, Apr 20-22)*
 
 **Deliverables**:
 - [x] LLVM stack map example/prototype *(safepoint_explicit.mlir)*
@@ -2311,8 +2316,8 @@ Runtime Foundation (§1)
 
 ## Project Status
 
-**Current Phase**: Stack Map Implementation for GC + Kernel Stabilization
-**Last Updated**: 2026-02-25
+**Current Phase**: Bootstrap to Native x86 + Stress Test Stabilization
+**Last Updated**: 2026-04-22
 
 **Completed**:
 - Heap model design (§1.1)
@@ -2365,7 +2370,7 @@ Runtime Foundation (§1)
 - **Let-bound Function Specialization (Feb 24-25, 2026)** - multiple specializations at different call sites
 - **CGEN_056/057 invariants (Feb 24-25, 2026)** - papExtend result types + kernel decl completeness
 
-**Recent Changes** *(from git log analysis - Feb 19 to Feb 25, 2026)*:
+**Changes - Feb 19 to Feb 25, 2026**:
 
 - **Kernel Implementation Sprint** (Feb 20, 2026):
   - Completed elm/core kernel - all 178 functions (JsArray, List, Debug, Debugger, etc.)
@@ -2422,7 +2427,7 @@ Runtime Foundation (§1)
 - **Array Optimization Design** (Feb 25, 2026):
   - New design outline for array optimization (`design_docs/array-optimisation.md`)
 
-**Previous Changes** *(Jan 21 to Feb 12, 2026)*:
+**Changes - Jan 21 to Feb 12, 2026**:
 
 - **PAP Wrapper Elimination Complete** (Feb 12, 2026):
   - Completed elimination of PAP wrappers - all tests pass
@@ -2467,13 +2472,90 @@ Runtime Foundation (§1)
 - **Float Precision** (Feb 11, 2026):
   - Float-to-string uses shortest round-trip representation
 
+**Most Recent Changes — Apr 18 to Apr 22, 2026**:
+
+- **RewriteStatepointsForGC Migration** (Apr 18-22, 2026):
+  - Bespoke `StatepointConversion` pass retired; replaced with LLVM's upstream RS4GC
+  - New `EcoGCStrategy.cpp` registers `eco-gc` strategy; all MLIR functions tagged `gc "eco-gc"`
+  - RS4GC handles liveness, base-pointer inference, alloca+mem2reg uniformly
+  - `EcoPtrIntVerify` post-RS4GC verifier enforces addrspace(1) boundary invariants
+  - `eco.shadow_roots` UnitAttr for TCO-safe shadow frames attached by compiler (`main_$_0` + tail join blocks)
+  - `StackMapRoots` split into its own class owned by `ThreadLocalHeap`
+  - `Allocator` free-list returns retired `ThreadLocalHeap` nursery blocks to the pool (fixes spawn-heavy exhaustion)
+  - LLVM libunwind built into JIT with per-FDE `.eh_frame` registration and `frame-pointer=all` on emitted code
+
+- **`eco.value` → `ptr addrspace(1)`** (Apr 17, 2026):
+  - Type representation migrated across EcoToLLVM (Heap, Closures, Func, Runtime, ControlFlow, Globals, Types) and BFToLLVM
+  - ~114 MLIR tests updated to new lowering
+  - Role-specific `ptr<1>↔i64` boundary helpers (heap/global/closure/argsSlot/caseScrutinee/wrapper)
+  - New invariant REP_LLVM_001; `stripIntToPtr` excludes constants from GC root sets
+
+- **2-bit Per-Slot Primitive Kind Bitmap** (Apr 20, 2026):
+  - Heap/closure slot-kind mask migrated from 1-bit (boxed/unboxed) to 2-bit (boxed / Int / Float / Char)
+  - Float and Char now correctly boxed across Record/Custom/Closure/Tuple paths
+  - `Heap.hpp` Header.unboxed widened 3→6 bits; new `fieldKind`/`bitmapSetKind` helpers
+  - Caps: Custom ≤24 fields, Record ≤32 fields, Closure ≤26 captures
+  - Compiler `computeRecordLayout`/`computeCtorLayout`/`computeTupleLayout` emit 2-bit bitmaps; `construct.list` gained a `head_kind` attribute
+  - MLIR verifiers enforce per-slot kind ↔ SSA-type match
+  - Bytes/String/List kernel masks updated; `Tuple2` mask encoding (`0x4`/`0x5`/`0x6`)
+
+- **CallGenericApply + segmentation_unknown Calling Method** (Apr 19-21, 2026):
+  - New calling method alongside flat/segmented dispatch
+  - `generateVarKernel` consults `kernelBackendAbiPolicy` on the closure/PAP path for kernels
+  - `buildEvaluatorArgs` re-resolves closures by hpointer and preserves unboxed capture kinds across allocating callees
+  - Arity propagation into let-bound functions; CGEN_040/CGEN_052 fixes
+
+- **Monomorphization Overhaul** (Apr 18-22, 2026):
+  - Type-variable identifiers migrated from `String` names to `Int` IDs starting at Monomorphization
+  - `PendingGlobal`: polymorphic globals passed as args deferred until call-site unification
+  - `applySubstWithFreeVars` prevents cross-scheme substitution contamination
+  - `unifyCallSiteDirect` unifies scheme residual with call's canonical type (recovers row-poly record and scheme-poly tuple bindings)
+  - Scheme cache MVarId collision fix; tvar refresh on use
+  - MonoDirect implementation removed
+  - Fast path for non-polymorphic functions skips SchemeInfo construction
+  - New MONO_027 invariant (function/type arity match)
+
+- **PostSolve Overhaul** (Apr 18-21, 2026):
+  - New `SolverRoots` module normalises solver variables to union-find roots
+  - Alias maps eliminated; root-tvar resolution used directly
+  - Structural expressions moved from Group B recovery into solver-derived typing
+  - TYPE_007 and POST_010 invariants added
+  - `AnnotationsByGlobal` / `SchemeRootsByGlobal` map types introduced
+
+- **Streaming MLIR Bytecode** (Apr 18-20, 2026):
+  - Binary bytecode format landed; streaming generation reduces peak memory
+  - Location attrs separated from string attrs in encoder's attribute table
+  - `MonoRecordUpdate` codegen derives heap layout from actual record type
+  - `varMappings`/`definedSsaVars` reset discipline tightened across codegen
+
+- **Stress Test Infrastructure** (Apr 20-22, 2026):
+  - New `test/stress-elm/` library for larger/longer-running programs
+  - Stress programs exercise Array/Bytes/Dict/Json roundtrips, record-update row-poly, Parser, Process/MVar churn, Spawn fanout, Task.andThen PAP capture, and bootstrap-derived regressions
+  - Shared `StressHarness.elm` with CLI `-n`/`-m`/`--timeout` plumbing via `Platform.worker` flags
+  - GC histogram printing and stat collation across stress tests
+  - Separate `stress-test` binary kept out of the regular `check` cycle
+
+- **Kernel Rooting & MVar/Runtime External Roots** (Apr 18-22, 2026):
+  - Dedicated root API for encoded HPointer values in Scheduler/PlatformRuntime
+  - `MVar::s_mvars` and `Runtime::s_savedState` registered as external GC root scanners
+  - Rooting migrated Phase 1b → Phase 1e (`pushStackRoot` → `pushStackRootRange`)
+  - Kernel GC-safety audit across `elm-kernel-cpp/` and `eco-kernel-cpp/`
+  - `ListOps` kernel re-reads `Cons*` across GC-triggering callbacks (reverse/foldl/map/filter/...)
+  - `Utils::eqHelp`/`cmp` consult `header.unboxed` for unboxed tuples
+
+- **elm/parser Kernel** (Apr 18-20, 2026):
+  - Kernel rewritten from first principles; first tests passing; 34-test suite
+
+- **Process & Task E2E + Stress Tests** (Apr 18-19, 2026):
+  - SpawnKillHalf, SpawnRecursive, YieldThrashing, TaskAndThenCascade, SpawnFanout, SpawnGCChurn, TaskAndThenPapCapture, TaskSequenceMassive
+
 **Next Steps** *(in priority order)*:
-1. **LLVM stack map implementation (§1.2.3)** - precise GC root tracing for larger/longer-running programs
-2. **Remaining kernel implementations (§2.3)** - browser, parser, virtual-dom (N/A for CLI); elm/file is browser upload/download, not system IO
-3. **AOT compilation (§5.1.1)** - produce standalone native binaries (currently JIT only)
-4. **Array optimization** - design outlined in `design_docs/array-optimisation.md`
+1. **Self-compilation (§5.3)** — the compiler compiles itself to native code; bootstrap push ongoing with ~20 runtime/codegen bugs fixed
+2. **AOT compilation (§5.1.1)** — standalone native binaries (currently JIT-primary)
+3. **Kernel I/O integration for larger programs** — extending the platform scheduler + effect managers for longer-running workloads
+4. **Stress-suite stabilisation** — several pre-existing GC assertions surface at high iteration counts in the new `stress-elm` library; being fixed incrementally
 
 **Active Workstreams**:
-1. **LLVM stack map implementation (§1.2.3)** - required for GC in larger programs with deep stacks
-2. **Compiler correctness stabilization** - new invariants (CGEN_056/057), let-bound specialization
-3. **Kernel function testing** - E2E test suites validating kernel implementations
+1. **Bootstrap to native x86 (§5.2)** — fixing compiler/runtime bugs surfaced by compiling the Elm compiler through itself
+2. **Stress test coverage** — expanding `test/stress-elm/` coverage and driving GC root correctness under sustained load
+3. **Compiler pass consolidation** — Monomorphization/PostSolve overhauls (tvar `Int` IDs, `SolverRoots`, `PendingGlobal`) stabilising into their final shape

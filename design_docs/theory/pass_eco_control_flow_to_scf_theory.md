@@ -206,6 +206,8 @@ FUNCTION matchAndRewrite(joinpointOp):
 
 `eco.case` ops nested inside `scf.while` regions must not be prematurely lowered to multi-block CF control flow. Both `CaseOp` and `ReturnOp` deferral checks now include `scf::WhileOp` as a parent to defer.
 
+*(Apr 2026)*: `scf::WhileOp` was added to the set of ops considered by `CaseOp`/`ReturnOp` deferral checks. A general ADT / Bool case `SwitchOp` default-block fix also landed (see below).
+
 ### String Case in scf.while *(Mar 27, 2026)*
 
 `CaseStringToScfIfChainPattern` now recognizes `scf::WhileOp` as a valid SCF parent, so string case expressions inside tail-recursive loop bodies can be lowered to SCF if-chains. `buildStringIfChain` returns multi-result `scf::IfOp` and restores the rewriter insertion point correctly after recursive calls.

@@ -68,6 +68,7 @@ At the LLVM dialect and below:
   - Bit manipulation of constant field on ADT-case scrutinee (via `valueToI64`)
 - The BF dialect's `BFTypeConverter` is unified with `EcoTypeConverter` so BF runtime declarations also use `ptr<1>` for HPtr params/returns
 - Bool widening in heap/record/custom field stores: `widenFieldToI64` dispatches on type (Bool constants go through `PtrToIntOp`; primitives use `ZExt`)
+- **i64-encoded heap-storage ABI**: `EcoPtrIntVerify` permits `i64` storage in heap slots (values arrays) and globals — these are the allow-listed `ptrtoint`/`inttoptr` boundaries. `i64` is **forbidden** as the return type of functions whose logical result is an HPtr; returns must be `ptr addrspace(1)`.
 
 ### Logical Representation
 
@@ -139,7 +140,7 @@ Heap layout:
 
 ### Container Unboxing
 
-The `unboxed` bits in the heap object Header indicate whether container elements are stored unboxed. The field holds **2 bits per slot**:
+The `unboxed` bits in the heap object Header indicate whether container elements are stored unboxed. *(Apr 20, 2026)* The field holds **2 bits per slot**, replacing the earlier 1-bit (boxed / unboxed) bitmap. The 2-bit kind scheme applies uniformly to `Record.unboxed`, `Custom.unboxed`, `Closure.unboxed`, the `ElmArray` header kind, and `Cons.header.unboxed`:
 
 | Bits | Kind | Storage |
 |---|---|---|
@@ -151,6 +152,21 @@ The `unboxed` bits in the heap object Header indicate whether container elements
 ```cpp
 u32 unboxed : 6; // 2 bits/slot; Cons (1 slot), Tuple2 (2), Tuple3 (3), ElmArray (1 uniform).
 ```
+
+Header.unboxed was widened from 3 bits → **6 bits** to hold up to 3 per-slot kinds for Tuple3 / ElmArray header. Bitmap capacity limits:
+
+| Container | Max slots |
+|---|---|
+| Custom (ADT) | 24 fields (2×24 = 48 bits within `ctor_unboxed`) |
+| Record | 32 fields (64-bit `unboxed`) |
+| Closure | 26 captures (52-bit `unboxed` field of `packed`) |
+
+New runtime helpers:
+- `fieldKind(bitmap, idx)` — extract the 2-bit kind for slot `idx`
+- `bitmapSetKind(bitmap, idx, kind)` — set the 2-bit kind for slot `idx`
+- `pointerMaskFromKindBitmap(bitmap, count)` — derive a 1-bit-per-slot pointer mask (kind==0 ⇒ trace) for Cheney/mark-sweep scanning
+
+The compiler emits 2-bit bitmaps via `computeRecordLayout`, `computeCtorLayout`, and `computeTupleLayout`. `eco.construct.list` gained a `head_kind` attribute (vs. the old `head_unboxed` bit). MLIR verifiers enforce that each declared per-slot kind matches the SSA type of the operand stored into that slot.
 
 **Lists** can store unboxed head values:
 
@@ -250,6 +266,11 @@ Well-known constants are never heap-allocated:
 | EmptyRec | 9 |
 
 These use nonzero `constant` bits in HPointer and are distinguished from heap pointers by checking `constant != 0`.
+
+*(Apr 2026)* Embedded constants — `Nil`, `Unit`, `True`, `False`, `EmptyRecord` (`EmptyRec`), `Nothing`, `EmptyString` — are stored as tagged-pointer constants and never live in the heap. GC rooting machinery treats them specially:
+
+- `stripIntToPtr` returns `nullptr` for `inttoptr(ConstantInt)`, so constants can never enter GC root sets at statepoints.
+- `compareUnboxableSlot`, `Utils::eqHelp`/`Utils::cmp`, and kernel equality code consult `header.unboxed` / the 2-bit bitmap to decide whether a given slot holds an unboxed primitive vs. a HPointer, and to compare constants directly when the bits match.
 
 ## Heap Object Layouts
 
@@ -435,6 +456,8 @@ Common issues and how to identify them:
 - Have their size tracked in the old generation's allocation metadata
 
 This prevents excessively large objects from fragmenting the nursery's semi-space copying collector.
+
+Large-object allocation is supported in-block as well: the nursery/old-gen spaces track a per-block `block_end_of_objects_` vector recording the real end-of-objects offset within each block. The Cheney scan uses this cutoff so it does not walk past the last live object into uninitialized tail bytes when a block contains a large object that did not fill it.
 
 ## GC Root Safety for Heap Construction
 

@@ -199,6 +199,14 @@ eco.call %closure(%args) {_dispatch_mode = "unknown"}
 
 Same as generic path, but emits a diagnostic warning during lowering.
 
+### `CallGenericApply` calling method *(Apr 19-21, 2026)*
+
+Alongside the existing flat and segmented dispatch paths, the compiler now emits a `CallGenericApply` calling method when it cannot statically determine the arity or segmentation shape of a callee. This lowers to the runtime's `eco_apply_*` family of dynamic-arity wrappers, which inspect the closure at runtime and dispatch to the right segmented-call slot.
+
+### `segmentation_unknown` convention *(Mar 30 → Apr, 2026)*
+
+`segmentation_unknown` is a first-class calling convention for fully-dynamic callees — callers whose segmentation pattern is not known until runtime. It propagates through arity analysis into let-bound functions so that inner lambdas escaping through polymorphic parameters still get a correct convention. The bug fixes landed against CGEN_040 and CGEN_052 as part of this work.
+
 ## Integration Points
 
 ### GlobalOpt
@@ -228,8 +236,17 @@ Previously `buildEvaluatorArgs` re-boxed all unboxed closure captures as `ElmInt
 - The MLIR emitter tracks accumulated arg types across staged calls (both captures and per-stage params) and emits a `_capture_abi` attribute on the lowered closure call
 - LLVM lowering builds an `EvalParamLayout` (per-slot type descriptor) and passes it as a layout global to the runtime
 - `buildEvaluatorArgs` dispatches per slot to `eco_alloc_int` / `eco_alloc_float` / `eco_alloc_char`
+- `_capture_abi` drives type-aware arg-array construction so captured Int/Float/Char get boxed with correct primitive tags when they must be passed through the generic evaluator path
 - `eco_pap_extend` keeps Char unboxed (zero-extended to i64), consistent with Int and Float; the two paths that pre-boxed Char as `ElmChar` have been removed
 - Shared `emitRootedBoxedArgsArray` helper encapsulates the alloca → zero-init → GC-root → box-and-populate pattern used by `lowerGenericApply` and `lowerSegmentationUnknown`
+
+### `buildEvaluatorArgs` closure re-resolution
+
+`buildEvaluatorArgs` takes the closure `HPointer` (not a raw pointer) and re-resolves it via `hpointerToPtr` before every single `values[i]` load. This is required because boxing allocations during arg-array construction can trigger GC, which may relocate the closure — caching the raw pointer once would leave a stale reference. The closure HPtr is held across the call in a GC root, and each per-slot load starts from the freshly resolved pointer.
+
+### `kernelBackendAbiPolicy` on the closure path
+
+`generateVarKernel` consults `kernelBackendAbiPolicy` on the closure/PAP path for kernels (not just on the direct-call path). This ensures that when a kernel appears in closure position — captured into a PAP, extended, or stored as an evaluator — the kernel's declared ABI types are propagated correctly into the `func.func` declaration emitted for the closure body.
 
 ### GC root carrier for closure calls
 

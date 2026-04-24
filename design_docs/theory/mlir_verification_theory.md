@@ -290,6 +290,8 @@ Verification runs at multiple points:
 3. **CheckEcoClosureCaptures**: Runs after MLIR generation, before lowering
 4. **EcoPAPSimplify**: Includes verification after PAP transformations
 
+*(Apr 2026)*: Inter-pass MLIR verification was toggled off then re-enabled after tuning for perf — no semantic changes to the verifier set.
+
 ### Enabling Debug Verification
 
 ```bash

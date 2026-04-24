@@ -536,7 +536,9 @@ Converts MonoGraph to MLIR using the ECO dialect.
 - `Emit.elm`: Emits fused BF dialect ops from reified nodes
 - `BFOps.td`: Defines the BF MLIR dialect (alloc, cursor, read/write ops)
 
-**See**: [MLIR Generation Theory](design_docs/theory/pass_mlir_generation_theory.md), [Type Table Theory](design_docs/theory/pass_type_table_theory.md)
+**Streaming bytecode emission** *(Apr 18-20, 2026)*: MLIR is emitted directly as MLIR binary bytecode in a streaming fashion rather than materialising a textual string. The bytecode encoder splits its attribute table into separate location and string buckets so location attrs don't inflate the string table. The streaming emitter dramatically reduces peak compiler memory for large programs; bootstrap-scale inputs are now tractable. Text-mode MLIR (`--text-mlir`) is retained for debugging.
+
+**See**: [MLIR Generation Theory](design_docs/theory/pass_mlir_generation_theory.md), [MLIR Bytecode Theory](design_docs/theory/mlir_bytecode_theory.md), [Type Table Theory](design_docs/theory/pass_type_table_theory.md)
 
 ### ECO Dialect Lowering
 

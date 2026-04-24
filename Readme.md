@@ -8,20 +8,18 @@ Eco compiles Elm to native x86 binaries via MLIR and LLVM. The compiler is writt
 
 **Working today:**
 
-- Elm source code compiles through: Elm → IR → custom MLIR dialect (`eco`) → LLVM (AOT and JIT execution)
-- Full program optimisation and monomorphisation pass
+- Elm source code compiles through: Elm → typed AST → LocalOpt → Monomorphization → GlobalOpt → custom MLIR dialect (`eco`) → LLVM (AOT and JIT execution)
+- Whole-program monomorphisation and optimisation pipeline (type-directed specialisation, unboxing, erasure, staged currying, ABI cloning)
 - Bytes fusion DSL compilation (a dedicated MLIR dialect compiling `Bytes.Encode`/`Bytes.Decode` pipelines into fused loops)
 - 144 MLIR operations across the `eco` and `bf` (bytes fusion) dialects, with lowering to LLVM
 - C++ implementations of Elm kernel packages: core, json, bytes, time, http, regex, url, parser, file, browser, virtual-dom
-- Generational garbage collector exploiting Elm's immutability (no write barrier needed)
-- Extensive test coverage: 466 codegen/E2E test programs, 87 compiler test suites (~8,000 fuzz iterations), property-based GC tests
+- Generational garbage collector exploiting Elm's immutability (no write barrier needed), with LLVM statepoint-based stack root tracing
+- Platform.worker event loop, scheduler, and effect managers (Task, Time, HTTP) for long-running programs
+- Extensive test coverage: 466 codegen/E2E test programs, 87 compiler test suites (~8,000 fuzz iterations), property-based GC tests, parameterised Elm stress suite
 
 **In progress towards 0.1.0:**
 
-- Bootstrapping (the compiler compiles itself to native code)
-- Kernel I/O integration for building larger programs
-- Scheduler and effects runtime correctness for real applications
-- GC stack root tracing via LLVM stack maps (required for long-running programs)
+- Bootstrapping (the compiler compiles itself to native code) — ~20 runtime/codegen bugs fixed, bootstrap push ongoing
 
 ## 0.1.0 Criteria
 
@@ -33,10 +31,10 @@ The initial release establishing the foundation of the Eco compiler toolchain.
 - [x] Full program optimisation and monomorphisation pass
 - [x] Extensive test suite confirming compiler correctness
 - [x] Generational garbage collector
+- [x] GC stack root tracing for long-running programs
+- [x] Scheduler correctness for effect managers
+- [x] Linux only
 - [ ] Self-compilation (bootstrapping in progress)
-- [ ] GC stack root tracing for long-running programs
-- [ ] Scheduler correctness for effect managers
-- [ ] Linux only
 
 ## Architecture
 
@@ -44,35 +42,53 @@ The initial release establishing the foundation of the Eco compiler toolchain.
   Elm source
       │
       ▼
-┌──────────┐   compiler/     Elm compiler written in Elm
-│  Parse &  │                 (forked from Guida)
+┌───────────┐    compiler/                   Elm compiler written in Elm
+│  Parse &  │                                (forked from Guida)
 │ Typecheck │
-└────┬─────┘
-     │  Typed AST
-     ▼
-┌──────────┐   compiler/src/Compiler/Generate/MLIR/
-│  MLIR    │                 Monomorphisation, optimisation,
-│  Codegen │                 bytes fusion, code generation
-└────┬─────┘
-     │  eco dialect MLIR
-     ▼
-┌──────────┐   runtime/src/codegen/
-│  LLVM    │                 EcoToLLVM lowering passes
-│ Lowering │
-└────┬─────┘
-     │  LLVM IR
-     ▼
-┌──────────┐
-│  Native  │   x86 binary (AOT) or JIT execution
-│  Code    │
-└──────────┘
-     │
-     ▼
-┌──────────┐   runtime/src/allocator/
-│ Runtime  │                 GC, heap, process scheduling
-│          │   elm-kernel-cpp/
-│          │                 C++ kernel implementations
-└──────────┘
+└─────┬─────┘
+      │  Typed AST
+      ▼
+┌───────────┐    compiler/src/Compiler/LocalOpt/
+│  LocalOpt │                                Per-module simplification,
+│           │                                inlining, case-of-case, DCE
+└─────┬─────┘
+      │  Optimised AST
+      ▼
+┌───────────┐    compiler/src/Compiler/Monomorphize/
+│ Monomor-  │                                Type-directed specialisation,
+│ phization │                                unboxing, erasure
+└─────┬─────┘
+      │  Monomorphic AST
+      ▼
+┌───────────┐    compiler/src/Compiler/GlobalOpt/
+│ GlobalOpt │                                Whole-program: staged currying,
+│           │                                ABI cloning, call annotation
+└─────┬─────┘
+      │
+      ▼
+┌───────────┐    compiler/src/Compiler/Generate/MLIR/
+│   MLIR    │                                Lambda lowering, bytes fusion,
+│  Codegen  │                                MLIR bytecode emission
+└─────┬─────┘
+      │  eco dialect MLIR
+      ▼
+┌───────────┐    runtime/src/codegen/
+│   LLVM    │                                EcoToLLVM lowering passes
+│  Lowering │
+└─────┬─────┘
+      │  LLVM IR
+      ▼
+┌───────────┐
+│   Native  │    x86 binary (AOT) or JIT execution
+│    Code   │
+└───────────┘
+      │
+      ▼
+┌───────────┐    runtime/src/allocator/
+│  Runtime  │                                GC, heap, process scheduling
+│           │    elm-kernel-cpp/
+│           │                                C++ kernel implementations
+└───────────┘
 ```
 
 ### Key directories

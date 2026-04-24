@@ -86,7 +86,7 @@ type GlobalGraph =
 
 *(Apr 2026)*: Annotations are now keyed by full `Global` (module + name) instead of bare `Name`, preventing cross-module annotation collisions. `SchemeRootsByGlobal` maps each definition to its solver root variable set, enabling solver root-backed MVarId assignment in monomorphization.
 
-*(Apr 2026)*: Constructor type annotations (e.g., `Just : a -> Maybe a`) are now added to the `AnnotationsByGlobal` map during typed optimization, so the monomorphizer's scheme cache stores polymorphic constructor types instead of being poisoned by the first concrete usage.
+*(Apr 2026)*: Constructor type annotations (e.g., `Just : a -> Maybe a`) are now recorded in the `AnnotationsByGlobal` map during typed optimization, so the monomorphizer's scheme cache stores polymorphic constructor types instead of being poisoned by the first concrete usage. When building the TypedOptimized IR, the solver-inferred type is used for `VarGlobal` references.
 
 ### Node Types
 

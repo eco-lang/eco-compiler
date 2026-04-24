@@ -91,7 +91,7 @@ Maps type variable IDs to concrete MonoTypes:
 type alias Substitution = Dict MVarId MonoType
 ```
 
-*(Mar 30 – Apr 1, 2026)*: Type variable names were changed from `String` to `Int` (`MVarId`) throughout monomorphization. The `AssignMVarIds` module assigns globally unique Int IDs to all type variables in the TypedOptimized IR at the start of monomorphization.
+*(Mar 30 – Apr 1, 2026)*: Type variable names were changed from `String` to `Int` (`MVarId`) throughout monomorphization. The `AssignMVarIds` module assigns globally unique Int IDs to all type variables in the TypedOptimized IR at the start of monomorphization. All downstream monomorphizer data structures key on MVarId; string-based substitutions are gone.
 
 ### Solver Root-Backed MVarIds
 
@@ -110,13 +110,33 @@ The `schemeRoots` field (mapping definition names to root variable sets) is thre
 - Collision between scheme variables and the caller's existing substitution entries
 - Cross-specialization contamination when the same scheme is reused at different call sites
 
+**Scheme cache fix** *(Apr 2026)*: An MVarId collision bug in the scheme cache was fixed; tvar refresh on use now guarantees fresh globally-unique MVarIds on each instantiation.
+
+**Fast path for non-polymorphic functions** *(Apr 2026)*: `SchemeInfo` construction is skipped when a function has no free type variables, avoiding unnecessary work for monomorphic bodies.
+
 ### Free-Vars-Aware Substitution
 
-*(Apr 2, 2026)*: `applySubstWithFreeVars` filters the substitution to only the MVarIds that appear in the canonical type being resolved (plus their transitive closure through MVar references in bound MonoTypes). This prevents bindings from unrelated specializations from leaking through and producing incorrect monomorphized types.
+*(Apr 2, 2026)*: `applySubstWithFreeVars` filters the substitution to only the MVarIds that appear in the canonical type being resolved (plus their transitive closure through MVar references in bound MonoTypes). This prevents cross-scheme contamination when a single substitution is shared across schemes, and stops bindings from unrelated specializations from leaking through and producing incorrect monomorphized types.
+
+### Scheme-Residual Unification at Call Sites
+
+*(Apr 2026)*: `unifyCallSiteDirect` now unifies the scheme residual with the call's canonical type, recovering row-poly record bindings and scheme-poly tuple bindings that were previously lost during call-site specialization.
 
 ### PendingCall Deferral
 
 *(Apr 5, 2026)*: When a nested Call expression is used as an argument and its result type is still polymorphic (contains unresolved type variables), specialization is deferred by wrapping it in a `PendingCall` variant. Later, once the outer callee's expected parameter type is known, it unifies that type against the saved canonical type to refine the substitution before specializing the inner call.
+
+### PendingGlobal Deferral
+
+*(~Apr 5-10, 2026)*: Polymorphic globals passed as function arguments are wrapped in a `PendingGlobal` variant and deferred until call-site unification. The outer callee's expected parameter type refines the substitution before specializing the inner reference. This mirrors `PendingCall` but for direct global references that would otherwise specialize too early with unresolved type variables.
+
+### Accessor Specialization Fallback
+
+*(Apr 2026)*: When direct accessor specialization fails (for example, when the surrounding record type is not yet fully resolved at specialization time), specialization now falls back to a lambda with the accessor's function type rather than erroring out.
+
+### MonoDirect Removed
+
+*(Apr 2026)*: The experimental `MonoDirect` solver-directed monomorphizer has been deleted. Only `Monomorphize` (the main pass described in this document) remains.
 
 ### Phantom Type Var Normalization
 
@@ -592,6 +612,7 @@ monomorphize :
 6. Type variables use Int MVarIds (not Strings), with solver root-backed allocation ensuring unified type variables share IDs (Apr 2026)
 7. Surviving `MVar _ CEcoValue` in spec keys are normalized to sentinel values to prevent phantom type var divergence (Apr 2026)
 8. `MonoCycle` constructor is removed; value-only recursive cycles are individual `MonoDefine` nodes (Apr 2026)
+9. **MONO_027**: function arity must match the arity of its declared type at specialization (Apr 2026)
 
 ## Example
 

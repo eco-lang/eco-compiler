@@ -19,11 +19,23 @@ The Elm type solver uses synthetic type variables for certain expressions. These
 
 *(Mar 28, 2026)*: All structural expression types (List, Tuple, Record, Lambda, Accessor, Let) were moved from Group B to Group A, deriving their types directly from the solver. PostSolve was cleaned up to remove unnecessary work recovering these structural types.
 
+*(Apr 2026)*: Structural expressions — containers (List/Tuple/Record), lambdas, accessors, let expressions and similar — are now entirely solver-derived (Group A), not recovered in PostSolve's Group B pass. PostSolve's scope is now narrowed to scalar literal typing and kernel-function type inference.
+
+**TYPE_007 / POST_010 invariants** *(Apr 2026)*: Added; `constrainIfWithIdsProg` was fixed to respect them.
+
 ### Problem 2: VarKernel Types
 
 Kernel functions (`VarKernel`) don't have type annotations in Elm source. Their types must be inferred from:
 1. **Alias seeding**: When an Elm definition is a direct alias to a kernel function
 2. **Usage inference**: When a kernel function is called, its type is inferred from argument/result types
+
+### SolverRoots and MVarId Stability *(Apr 4, 2026)*
+
+The `SolverRoots` module normalises solver variables to their union-find roots. `ensureMVarIdForRoot` guarantees that two type variables sharing the same solver root always receive the same MVarId, eliminating spurious specialization divergence caused by aliased type variables. This replaces the old alias-map approach — the bespoke alias-map tracking is gone; PostSolve consults solver roots directly via `SolverRoots`.
+
+### `AnnotationsByGlobal` / `SchemeRootsByGlobal`
+
+*(Apr 2026)*: New map types capturing per-global annotations and scheme roots for downstream consumers (typed optimization and monomorphization).
 
 ## Algorithm Overview
 

@@ -12,6 +12,10 @@ Both formats use the same `.mlir` file extension. MLIR's C++ `parseSourceFile` t
 
 The text MLIR output for a large compilation (e.g., compiler self-compilation: ~240 modules) can reach ~76MB. The bytecode format achieves roughly 3-5x compression over text, reducing I/O and parse time. More importantly, the **streaming bytecode encoder** avoids holding all generated `MlirOp` values in memory simultaneously — a critical property for large compilations where the full in-memory representation would peak at ~2.5GB.
 
+### Streaming Bytecode Path *(Apr 18-20, 2026)*
+
+This is now the **primary emission path**. It eliminates the intermediate textual-MLIR string; binary bytecode is written as the encoder walks the program. Peak memory drops sharply; bootstrap-scale compiler inputs become tractable. Text mode (`--text-mlir`) is retained for human inspection / debugger pipelines but is no longer the default.
+
 ## Bytecode Format
 
 ECO targets **MLIR bytecode version 4** (pre-properties), which avoids the ODS properties segment complexity of versions 5-6. MLIR's parser supports all bytecode versions back to 0, so version 4 is fully compatible with the LLVM/MLIR toolchain.
@@ -191,6 +195,10 @@ The text MLIR printer does not emit source locations. The bytecode encoder match
 ### Location/String Attribute Separation *(Mar 27, 2026)*
 
 Location attributes and string attributes are separated in the bytecode encoder's attribute table by giving locations their own key prefix (`LOC:`) and dedicated `addLocEntry` path. Without this, string literals like `"__mlir_unknown_loc__"` could be misidentified as location entries, causing bytecode corruption.
+
+### Attribute-Table Split *(Apr 18, 2026)*
+
+Locations and strings live in separate attribute buckets in the encoder. Previously, emitting many distinct locations polluted the string table (and vice-versa). The split improves deduplication and reduces output size.
 
 ### Same File Extension
 

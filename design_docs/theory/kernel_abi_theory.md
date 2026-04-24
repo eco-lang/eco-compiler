@@ -244,11 +244,13 @@ This ensures that aliased kernels get correct types rather than inheriting from 
 Kernels are declared (not defined) in MLIR:
 
 ```mlir
-func.func private @Elm_Kernel_List_cons(!eco.value, !eco.value) -> !eco.value
+func.func private @Eco_Kernel_List_cons(!eco.value, !eco.value) -> !eco.value
     attributes {is_kernel = true}
 ```
 
 The `is_kernel` attribute marks declarations for linker resolution.
+
+*(Apr 2026)* The hardcoded `Elm_Kernel_` C symbol prefix has been removed; Eco kernel functions now use their own `Eco_Kernel_*` prefix. `generateVarKernel` routes kernel lowering through `kernelBackendAbiPolicy` so the prefix, ABI, and mangling are all decided in one place.
 
 ### Boxing at Call Sites
 
@@ -333,6 +335,28 @@ extern "C" int64_t Elm_Kernel_Basics_modBy(int64_t modulus, int64_t x) {
     return result;
 }
 ```
+
+## Kernel GC Integration *(Apr 2026)*
+
+### External GC Root Scanners
+
+`MVar::s_mvars` and `Runtime::s_savedState` are registered as external GC root scanners via `Eco_Kernel_MVar_register_gc_roots` and `Eco_Kernel_Runtime_register_gc_roots`. Both are aggregated by the umbrella `Eco_Kernel_register_all_gc_roots`, which the runtime invokes immediately after `Allocator::initThread()` so these roots participate in the very first minor GC. A dedicated value-root API handles encoded HPointer values (constants are filtered out; heap-backed HPtrs are traced).
+
+### Task-Result Validity
+
+Several kernel functions were fixed to return valid `Task` heap objects rather than raw results wrapped incorrectly. The leading `typeTag` argument was removed from MVar kernel signatures, simplifying the ABI and matching the general convention that polymorphic payloads are HPtrs whose tag is on the heap object itself.
+
+### `dropMVar` API
+
+A new `dropMVar` kernel entry was added for explicit MVar disposal, used by stress tests and churn workloads that need to exercise MVar allocation/free paths without relying on GC alone.
+
+### Rooting Migration (Phase 1b → 1e)
+
+Kernel code has been migrated from `pushStackRoot` (single HPointer) to `pushStackRootRange` (pointer + length). This matches the range-based shadow-stack API that the rest of the runtime uses (`RootSet::stack_ranges`, see `eco_gc_push_stack_range`).
+
+### `ListOps` GC-Safety
+
+List kernels that iterate over `Cons` cells across a user-supplied callback — `reverse`, `foldl`, `map`, `filter`, and friends — now re-read the `Cons*` after every GC-triggering call. A minor GC inside the user function can relocate the Cons cell, so caching the raw `Cons*` pointer across the callback is unsafe; the kernels hold the HPointer in a root and re-resolve it each iteration.
 
 ## Key Constants
 

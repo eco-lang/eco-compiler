@@ -168,6 +168,8 @@ type alias CallInfo =
 
 **Why this matters**: MLIR's `generateCall` switches on `callInfo.callModel` and uses the pre-computed arities for `papExtend` operations.
 
+**`sourceArityForCallee` fallback** *(Apr 2026)*: `sourceArityForCallee` now has a fallback path that fixes CGEN_052 (root cause: missing arity on some let-bound callees). After `InlineSimplify`, `callEdges`, `specHasEffects`, and `specValueUsed` are dropped for memory.
+
 ## The Staging Subsystem
 
 The staging analysis is implemented as a graph-based constraint solver in `compiler/src/Compiler/GlobalOpt/Staging/`. This subsystem determines the canonical segmentation for all functions by analyzing data flow through the program.
