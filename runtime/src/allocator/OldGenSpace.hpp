@@ -163,6 +163,17 @@ public:
     // Returns the current number of bytes allocated in this old gen space.
     size_t getAllocatedBytes() const { return allocated_bytes; }
 
+    // Returns committed capacity of this thread-local old gen (bytes).
+    size_t getCommittedBytes() const {
+        return (region_end_ > region_base_)
+                   ? static_cast<size_t>(region_end_ - region_base_)
+                   : 0;
+    }
+
+    // True when allocated/committed has reached major_gc_initiating_occupancy.
+    // Thread-local: each thread's old gen triggers its own major GC.
+    bool shouldTriggerMajorGC() const;
+
     // Returns true if the pointer is within this old gen's committed region.
     // O(1) check using cached bounds. Inlined for performance.
     inline bool contains(void* ptr) const {

@@ -219,9 +219,9 @@ bool ThreadLocalHeap::shouldCollectAtSafepoint() const {
         return true;
     if (isNurseryNearFull(config_->nursery_gc_threshold))
         return true;
-    // The 75% old-gen occupancy trigger also elects to stop at the next
-    // safepoint so we can run a major GC before the cap is hit.
-    return parent_->shouldTriggerMajorGC();
+    // 75% old-gen occupancy trigger: stop at the next safepoint so we can
+    // run a major GC before this thread's old gen is exhausted.
+    return old_gen_.shouldTriggerMajorGC();
 }
 
 void ThreadLocalHeap::collectAtSafepoint() {
@@ -233,7 +233,7 @@ void ThreadLocalHeap::collectAtSafepoint() {
     // covering the non-nursery-full case is enough here.
     if (isNurseryNearFull(config_->nursery_gc_threshold)) {
         minorGC();
-    } else if (parent_->shouldTriggerMajorGC()) {
+    } else if (old_gen_.shouldTriggerMajorGC()) {
 #if ENABLE_GC_STATS
         stats_.major_gc_occupancy_triggers++;
 #endif
@@ -251,12 +251,12 @@ void ThreadLocalHeap::minorGC() {
         parent_->dumpHeapState("minorGC end");
     }
 
-    // 75% occupancy trigger: minor GC promotes into old gen, so old-gen
-    // committed bytes can cross the initiating threshold here. Safepoint
-    // polling is not dense in MLIR-generated code, so we also check at the
-    // end of every minor GC to avoid running the cap into the ground
-    // before the next safepoint fires.
-    if (parent_->shouldTriggerMajorGC()) {
+    // 75% occupancy trigger: minor GC promotes into old gen, so allocated
+    // bytes can cross the initiating threshold here. Safepoint polling is
+    // not dense in MLIR-generated code, so we also check at the end of
+    // every minor GC to avoid filling the old gen before the next
+    // safepoint fires.
+    if (old_gen_.shouldTriggerMajorGC()) {
 #if ENABLE_GC_STATS
         stats_.major_gc_occupancy_triggers++;
 #endif
@@ -315,12 +315,6 @@ void ThreadLocalHeap::majorGC() {
 #endif
 
     parent_->dumpHeapState("majorGC end");
-
-    // Re-arm the 75% occupancy trigger. `old_gen_committed` only grows;
-    // without this watermark, `shouldTriggerMajorGC()` would stay true
-    // forever after the first crossing and every minor GC would chain
-    // into another major GC.
-    parent_->notifyMajorGCComplete();
 }
 
 bool ThreadLocalHeap::isNurseryNearFull(float threshold) const {

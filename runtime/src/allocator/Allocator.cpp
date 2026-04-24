@@ -450,21 +450,6 @@ char* Allocator::acquireOldGenBlock(size_t size) {
     return block_base;
 }
 
-bool Allocator::shouldTriggerMajorGC() const {
-    if (nursery_offset == 0) return false;
-    if (old_gen_committed <= old_gen_committed_major_gc_watermark_) return false;
-    return static_cast<double>(old_gen_committed) / nursery_offset
-           >= config_.major_gc_initiating_occupancy;
-}
-
-void Allocator::notifyMajorGCComplete() {
-    // Watermark is the committed size at the instant the major GC
-    // finished. `shouldTriggerMajorGC` requires further growth beyond
-    // this mark before re-firing, preventing back-to-back majors when
-    // `old_gen_committed` (monotonic) sits slightly above the 75% line.
-    old_gen_committed_major_gc_watermark_ = old_gen_committed;
-}
-
 void Allocator::ensureOldGenCapacityFor(OldGenSpace& space,
                                         size_t new_capacity_bytes) {
     std::lock_guard<std::recursive_mutex> lock(thread_mutex_);

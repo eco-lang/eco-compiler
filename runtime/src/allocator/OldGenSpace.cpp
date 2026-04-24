@@ -791,6 +791,13 @@ void OldGenSpace::onSweepComplete() {
     // }
 }
 
+bool OldGenSpace::shouldTriggerMajorGC() const {
+    const size_t committed = getCommittedBytes();
+    if (committed == 0) return false;
+    return static_cast<double>(allocated_bytes) / committed
+           >= config_->major_gc_initiating_occupancy;
+}
+
 void OldGenSpace::adjustCapacityAfterMajorGC() {
     if (region_base_ == nullptr || region_end_ <= region_base_) return;
 
