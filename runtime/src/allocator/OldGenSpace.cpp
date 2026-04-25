@@ -98,7 +98,15 @@ void OldGenSpace::initialize(Allocator* allocator, const HeapConfig* config) {
             unassigned_blocks_.reserve(num_pages);
             for (size_t i = 0; i < num_pages; ++i) {
                 char* page_start = region_base + i * page_size;
-                unassigned_blocks_.emplace_back(page_start, page_start + page_size);
+                char* page_end = page_start + page_size;
+                // Reserve `heap_base + 0`: HPointer{ptr=0, constant=0} encodes
+                // to bits=0, which the runtime (eco_get_tag) treats as null.
+                // Any cell handed out at heap_base+0 would look null to a
+                // reader. Bump page 0's start past offset 0 to avoid this.
+                if (page_start == g_heap_base) {
+                    page_start += 8;
+                }
+                unassigned_blocks_.emplace_back(page_start, page_end);
             }
         }
     }
@@ -152,6 +160,13 @@ void OldGenSpace::reset(const HeapConfig* new_config) {
 // Header initialization helper.
 // ---------------------------------------------------------------------------
 void OldGenSpace::initObjectHeader(void* obj) {
+    // Defense: never hand out heap_base+0. Its HPointer encoding is bits=0,
+    // which the runtime treats as null (eco_get_tag asserts). The bag is
+    // initialized in OldGenSpace::initialize so the first page skips offset 0,
+    // but assert here in case future code changes regress this invariant.
+    assert(reinterpret_cast<char*>(obj) != g_heap_base &&
+           "OldGenSpace handed out heap_base+0; HPointer encoding would be null");
+
     Header* hdr = reinterpret_cast<Header*>(obj);
     std::memset(hdr, 0, sizeof(Header));
     // Mid-cycle allocations must be Black so the current sweep does not
