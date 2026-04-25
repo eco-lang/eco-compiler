@@ -812,6 +812,20 @@ inline void pushCoalescedFreeCell(FreeCell** free_lists, char* span_start,
     pushSpanOnFreeLists(free_lists, span_start, span_bytes);
 }
 
+// Bytes to advance per step when walking a block linearly. Size-class
+// blocks reserve a fixed cell per object (slack between the object's
+// logical size and the cell boundary belongs to that allocation), so the
+// walk must advance by the cell size, not the object's logical size, or
+// it will land mid-cell and start parsing FreeCell.next pointers as if
+// they were object headers. Bag pages and large blocks pack tightly, so
+// they advance by the object's logical size.
+inline size_t walkStep(const BlockInfo& block, size_t obj_size) {
+    if (block.size_class < NUM_SIZE_CLASSES) {
+        return OldGenSpaceTestAccess::classToSize(block.size_class);
+    }
+    return obj_size;
+}
+
 }  // namespace
 
 void OldGenSpace::sweep() {
@@ -840,7 +854,7 @@ void OldGenSpace::sweep() {
 
         while (ptr < used_end) {
             Header* hdr = reinterpret_cast<Header*>(ptr);
-            size_t obj_size = getObjectSize(ptr);
+            size_t step = walkStep(block, getObjectSize(ptr));
 
             if (hdr->color == static_cast<u32>(Color::Black)) {
                 // Flush any pending garbage span.
@@ -852,17 +866,17 @@ void OldGenSpace::sweep() {
                 }
 
                 hdr->color = static_cast<u32>(Color::White);
-                buffer_meta_[buf_idx].live_bytes += obj_size;
+                buffer_meta_[buf_idx].live_bytes += step;
             } else {
                 // Garbage or pre-existing Tag_Free; merge into current run.
                 if (run_start == nullptr) {
                     run_start = ptr;
                     run_bytes = 0;
                 }
-                run_bytes += obj_size;
+                run_bytes += step;
             }
 
-            ptr += obj_size;
+            ptr += step;
         }
 
         if (run_start != nullptr) {
@@ -937,7 +951,7 @@ void OldGenSpace::lazySweep(size_t target_class, size_t work_budget) {
 
         while (sweep_cursor_ < used_end && work_done < work_budget) {
             Header* hdr = reinterpret_cast<Header*>(sweep_cursor_);
-            size_t obj_size = getObjectSize(sweep_cursor_);
+            size_t step = walkStep(block, getObjectSize(sweep_cursor_));
 
             if (sweep_buffer_index_ < buffer_meta_.size()) {
                 BufferMetadata& meta = buffer_meta_[sweep_buffer_index_];
@@ -946,18 +960,18 @@ void OldGenSpace::lazySweep(size_t target_class, size_t work_budget) {
                     // Flush pending garbage run before processing live object.
                     flushRun(sweep_buffer_index_);
                     hdr->color = static_cast<u32>(Color::White);
-                    meta.live_bytes += obj_size;
+                    meta.live_bytes += step;
                 } else {
                     if (run_start == nullptr) {
                         run_start = sweep_cursor_;
                         run_bytes = 0;
                     }
-                    run_bytes += obj_size;
+                    run_bytes += step;
                 }
             }
 
-            sweep_cursor_ += obj_size;
-            work_done += obj_size;
+            sweep_cursor_ += step;
+            work_done += step;
         }
 
         if (sweep_cursor_ >= used_end) {
@@ -1165,10 +1179,11 @@ size_t OldGenSpace::evacuateSlice(size_t work_budget) {
         while (evac_cursor_ < end && work_done < work_budget) {
             Header* hdr = reinterpret_cast<Header*>(evac_cursor_);
             size_t obj_size = getObjectSize(evac_cursor_);
+            size_t step = walkStep(src_block, obj_size);
 
             // Free cells: nothing to evacuate; advance.
             if (hdr->tag == Tag_Free) {
-                evac_cursor_ += obj_size;
+                evac_cursor_ += step;
                 continue;
             }
 
@@ -1177,11 +1192,15 @@ size_t OldGenSpace::evacuateSlice(size_t work_budget) {
             // getForwardingAddress without any other code changes.
             if (hdr->tag != Tag_Forward && hdr->pin) {
                 installForwardingPointer(evac_cursor_, evac_cursor_);
-                evac_cursor_ += obj_size;
+                evac_cursor_ += step;
                 continue;
             }
 
             if (hdr->tag != Tag_Forward) {
+                // Copy only the object's logical bytes; slack between
+                // obj_size and step (cell size, for size-class blocks) is
+                // dead weight in the source cell and not worth carrying
+                // to the evacuation destination, which packs tightly.
                 void* dest = allocateForEvacuation(obj_size);
                 if (dest == nullptr) {
                     // Out of space - abort compaction.
@@ -1193,10 +1212,10 @@ size_t OldGenSpace::evacuateSlice(size_t work_budget) {
                 std::memcpy(dest, evac_cursor_, obj_size);
                 installForwardingPointer(evac_cursor_, dest);
 
-                work_done += obj_size;
+                work_done += step;
             }
 
-            evac_cursor_ += obj_size;
+            evac_cursor_ += step;
         }
 
         if (evac_cursor_ >= end) {
@@ -1311,15 +1330,15 @@ void OldGenSpace::fixReferencesSlice(size_t work_budget) {
 
         while (fixup_cursor_ < end && work_done < work_budget) {
             Header* hdr = reinterpret_cast<Header*>(fixup_cursor_);
-            size_t obj_size = getObjectSize(fixup_cursor_);
+            size_t step = walkStep(block, getObjectSize(fixup_cursor_));
 
             // Skip free cells and forwarding pointers.
             if (hdr->tag != Tag_Forward && hdr->tag != Tag_Free) {
                 fixPointersInObject(fixup_cursor_);
             }
 
-            fixup_cursor_ += obj_size;
-            work_done += obj_size;
+            fixup_cursor_ += step;
+            work_done += step;
         }
 
         if (fixup_cursor_ >= end) {
