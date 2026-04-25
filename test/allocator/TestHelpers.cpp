@@ -56,6 +56,32 @@ Allocator& initAllocatorScaled(int rc_size) {
     return initAllocator(scaledHeapConfig(rc_size));
 }
 
+HeapConfig pressureHeapConfig() {
+    // Pressure-test sizing rationale:
+    //   alloc_buffer_size = 16 KiB. A nursery block must be at least as large
+    //     as the biggest object the nursery may hold; the fragmentation test
+    //     (C3) allocates 6 KiB byte buffers, so the page must be > that.
+    //   nursery_block_count = 16 → 256 KiB nursery total (128 KiB per
+    //     semi-space). Small enough that many minor GCs fire per test.
+    //   initial_old_gen_size = 256 KiB committed up front. Must be a
+    //     multiple of alloc_buffer_size and < max_heap_size/2.
+    //   max_heap_size = 64 MiB nominally; the singleton allocator only
+    //     reserves heap on first init (subsequent resets keep the address
+    //     space), so this is mainly an upper bound on what we'll commit.
+    //   large_object_threshold = 16 KiB so allocations >= one page bypass
+    //     the nursery entirely and become pinned old-gen objects (Group C2).
+    HeapConfig cfg;
+    cfg.alloc_buffer_size       = 16 * 1024;
+    cfg.nursery_block_count     = 16;
+    cfg.initial_old_gen_size    = 256 * 1024;
+    cfg.max_heap_size           = 64ULL * 1024 * 1024;
+    cfg.large_object_threshold  = 16 * 1024;
+    cfg.major_gc_initiating_occupancy = 0.75f;
+    cfg.major_gc_target_utilization   = 0.50f;
+    cfg.validate();
+    return cfg;
+}
+
 // ============================================================================
 // 2. Create and Root Multiple ElmInts
 // ============================================================================

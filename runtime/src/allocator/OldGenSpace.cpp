@@ -247,15 +247,20 @@ void* OldGenSpace::allocateFromSizeClass(size_t cls, size_t requested_size) {
     assert(cls < num_size_classes_ && "size class out of range");
 
     // 1) Pop from this class's free list if non-empty.
+    //    Cell carries the full class size; the slack between requested_size
+    //    and classToSize(cls) is unrecoverable, so the cell-size is the
+    //    correct figure for getAllocatedBytes() until the next sweep.
     if (free_lists_[cls] != nullptr) {
         FreeCell* cell = free_lists_[cls];
         free_lists_[cls] = cell->next;
         void* result = static_cast<void*>(cell);
         initObjectHeader(result);
+        allocated_bytes += classToSize(cls);
         return result;
     }
 
-    // 2) Try splitting a larger free cell.
+    // 2) Try splitting a larger free cell. The split path itself accounts
+    //    for the carved-out portion via allocated_bytes += alloc_size.
     if (void* result = tryAllocateBySplittingLarger(cls, classToSize(cls))) {
         return result;
     }
@@ -267,13 +272,13 @@ void* OldGenSpace::allocateFromSizeClass(size_t cls, size_t requested_size) {
             free_lists_[cls] = cell->next;
             void* result = static_cast<void*>(cell);
             initObjectHeader(result);
+            allocated_bytes += classToSize(cls);
             return result;
         }
     }
 
     // 4) Last resort: split from a freshly-pulled page treated as one big
-    //    cell. populateFromBlock failed (bag empty); allocateFromBagPage will
-    //    also fail in that case but allows the caller to observe nullptr.
+    //    cell. allocateFromBagPage accounts for its own bytes.
     if (void* result = allocateFromBagPage(requested_size)) {
         return result;
     }
@@ -331,6 +336,7 @@ void* OldGenSpace::tryAllocateBySplittingLarger(size_t target_cls,
 
                 void* result = static_cast<void*>(base);
                 initObjectHeader(result);
+                allocated_bytes += alloc_size;
                 return result;
             }
 
@@ -408,6 +414,7 @@ void* OldGenSpace::allocateFromBagPage(size_t requested_size) {
 
     void* result = static_cast<void*>(page_start);
     initObjectHeader(result);
+    allocated_bytes += requested_size;
     return result;
 }
 
@@ -673,8 +680,14 @@ void OldGenSpace::markChildren(void *obj) {
             break;
         }
         case Tag_Closure: {
+            // Iterate hdr->size (== max_values) to match the nursery scan
+            // (NurserySpace::scanObject Tag_Closure). n_values is the count
+            // of slots already written by the closure-construction sequence
+            // and may be less than max_values mid-construction; using it
+            // here would skip captures that are stored but not yet "applied"
+            // and let major GC reclaim them.
             Closure *cl = static_cast<Closure *>(obj);
-            for (u32 i = 0; i < cl->n_values; i++) {
+            for (u32 i = 0; i < hdr->size; i++) {
                 markUnboxable(cl->values[i], fieldKind(cl->unboxed, i) == 0);
             }
             break;
@@ -1360,8 +1373,10 @@ void OldGenSpace::fixPointersInObject(void* obj) {
             break;
         }
         case Tag_Closure: {
+            // Iterate hdr->size to match the nursery scan and the marking
+            // pass above; see comment there for the rationale.
             Closure* cl = static_cast<Closure*>(obj);
-            for (u32 i = 0; i < cl->n_values; i++) {
+            for (u32 i = 0; i < hdr->size; i++) {
                 fixUnboxable(cl->values[i], fieldKind(cl->unboxed, i) == 0);
             }
             break;

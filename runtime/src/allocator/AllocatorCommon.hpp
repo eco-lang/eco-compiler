@@ -274,6 +274,22 @@ struct HeapConfig {
                 "large_object_threshold must be <= max_heap_size / 2 "
                 "(can't exceed old gen space)");
         }
+        // Any object below large_object_threshold is allocated in the
+        // nursery, where the unit of allocation is a single block of
+        // alloc_buffer_size bytes. The semi-space evacuator can only
+        // copy an object that fits in a single block. So every object
+        // routed through the nursery — i.e. every object whose aligned
+        // size is < large_object_threshold — must also be < alloc_buffer_size.
+        // The simplest sufficient invariant: large_object_threshold <=
+        // alloc_buffer_size. Otherwise an allocation in the gap would
+        // either fail to allocate or fail to evacuate after one minor GC.
+        if (large_object_threshold > alloc_buffer_size) {
+            throw std::invalid_argument(
+                "large_object_threshold must be <= alloc_buffer_size "
+                "(otherwise objects in [alloc_buffer_size, "
+                "large_object_threshold) take the nursery path but cannot "
+                "fit in a single nursery block)");
+        }
 
         // ========== 5. Promotion Constraints ==========
 

@@ -23,6 +23,7 @@
 #include "allocator/BytesOpsTest.hpp"
 #include "allocator/RuntimeExportsTest.hpp"
 #include "allocator/GenericApplyBoxingTest.hpp"
+#include "allocator/GCPressureTest.hpp"
 #include "codegen/CodegenIsolatedTest.hpp"
 #include "bf-codegen/BFCodegenTest.hpp"
 #include "elm/ElmTest.hpp"
@@ -674,6 +675,32 @@ int main(int argc, char* argv[]) {
     Testing::TestSuite genericApplyBoxingTests("GenericApplyBoxing");
     registerGenericApplyBoxingTests(genericApplyBoxingTests);
 
+    // Sustained-pressure GC tests (multi-MB nursery + old gen, real eco_alloc_*).
+    Testing::TestSuite gcPressureTests("GCPressure");
+    // Group A — Allocator-API pressure tests.
+    gcPressureTests.add(testNurseryChurnPromotesRootedFraction);
+    gcPressureTests.add(testMajorGCTriggersAfterPromotionFloodAllocator);
+    gcPressureTests.add(testOldGenGrowsTowardCapWithoutFailure);
+    gcPressureTests.add(testCyclicGarbageBetweenGenerations);
+    gcPressureTests.add(testWriteBarrierIntegrityAcrossGenerations);
+    // Group B — eco_alloc_* runtime tests.
+    gcPressureTests.add(testEcoAllocChurnSurvivesManyMinorGCs);
+    gcPressureTests.add(testEcoAllocClosureCapturesSurviveGC);
+    gcPressureTests.add(testEcoAllocRecordWithMixedFieldsAfterGC);
+    gcPressureTests.add(testEcoAllocStringChurnAndPromotion);
+    gcPressureTests.add(testEcoAllocConsListLongPromotion);
+    gcPressureTests.add(testEcoAllocCustomManyConstructors);
+    // Group C — Old-gen-focused tests.
+    gcPressureTests.add(testOldGenSizeClassChurn);
+    gcPressureTests.add(testLargeObjectPinnedAcrossMajorGC);
+    gcPressureTests.add(testFragmentationAndCoalescingAfterRepeatedSweeps);
+    gcPressureTests.add(testMajorGCInitiatedByOccupancyAndAllocFailure);
+    // Group D — Integration / mixed workloads.
+    gcPressureTests.add(testRandomizedPressureWorkload);
+    gcPressureTests.add(testRetentionRateSweep);
+    gcPressureTests.add(testStackRootRangeUnderPressure);
+    gcPressureTests.add(testSafepointPollingDrainsPressure);
+
     // Codegen tests (MLIR lowering and JIT execution) - parallel isolated execution
     auto codegenTests = CodegenIsolatedTest::buildCodegenTestSuite();
 
@@ -713,6 +740,7 @@ int main(int argc, char* argv[]) {
     suite.add(std::move(bytesOpsTests));
     suite.add(std::move(runtimeExportsTests));
     suite.add(std::move(genericApplyBoxingTests));
+    suite.add(std::move(gcPressureTests));
     suite.add(std::move(codegenTests));
     suite.add(std::move(bfCodegenTests));
     suite.add(std::move(elmE2ETests));

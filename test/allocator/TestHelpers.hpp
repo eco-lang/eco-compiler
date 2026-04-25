@@ -45,6 +45,14 @@ HeapConfig scaledHeapConfig(int rc_size);
 // Convenience wrapper for: initAllocator(scaledHeapConfig(size))
 Allocator& initAllocatorScaled(int rc_size);
 
+// Builds a HeapConfig sized for sustained-pressure GC tests:
+//   - Small alloc-buffer pages so many minor GCs fire per MB allocated.
+//   - Multi-MB nursery and old-gen, with old-gen max larger than initial
+//     so ensureOldGenCapacityFor exercises growth.
+// The returned config is intentionally tight: fits comfortably in CI but
+// large enough that several minor + major GC cycles run inside one test.
+HeapConfig pressureHeapConfig();
+
 // ============================================================================
 // 2. Create and Root Multiple ElmInts
 // ============================================================================
