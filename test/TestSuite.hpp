@@ -261,6 +261,12 @@ public:
         return name_;
     }
 
+    // Exposes the underlying test function so external runners (e.g. a
+    // forked-process runner) can invoke it without re-printing the name.
+    const std::function<void()>& getFunc() const {
+        return testFunc_;
+    }
+
     // A single test case counts as 1.
     size_t countTests() const override {
         return 1;

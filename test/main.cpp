@@ -9,6 +9,7 @@
 #include <unordered_set>
 #include <vector>
 #include "Allocator.hpp"
+#include "IsolatedTestRunner.hpp"
 #include "allocator/AllocatorCommonTest.hpp"
 #include "allocator/NurserySpaceTest.hpp"
 #include "Heap.hpp"
@@ -676,30 +677,32 @@ int main(int argc, char* argv[]) {
     registerGenericApplyBoxingTests(genericApplyBoxingTests);
 
     // Sustained-pressure GC tests (multi-MB nursery + old gen, real eco_alloc_*).
-    Testing::TestSuite gcPressureTests("GCPressure");
+    // Run each case in a forked child so a SEGV/abort in one test only fails
+    // that test instead of taking down the whole binary.
+    auto gcPressureTests = std::make_unique<IsolatedTestRunner::IsolatedTestCaseSuite>("GCPressure");
     // Group A — Allocator-API pressure tests.
-    gcPressureTests.add(testNurseryChurnPromotesRootedFraction);
-    gcPressureTests.add(testMajorGCTriggersAfterPromotionFloodAllocator);
-    gcPressureTests.add(testOldGenGrowsTowardCapWithoutFailure);
-    gcPressureTests.add(testCyclicGarbageBetweenGenerations);
-    gcPressureTests.add(testWriteBarrierIntegrityAcrossGenerations);
+    gcPressureTests->add(testNurseryChurnPromotesRootedFraction);
+    gcPressureTests->add(testMajorGCTriggersAfterPromotionFloodAllocator);
+    gcPressureTests->add(testOldGenGrowsTowardCapWithoutFailure);
+    gcPressureTests->add(testCyclicGarbageBetweenGenerations);
+    gcPressureTests->add(testWriteBarrierIntegrityAcrossGenerations);
     // Group B — eco_alloc_* runtime tests.
-    gcPressureTests.add(testEcoAllocChurnSurvivesManyMinorGCs);
-    gcPressureTests.add(testEcoAllocClosureCapturesSurviveGC);
-    gcPressureTests.add(testEcoAllocRecordWithMixedFieldsAfterGC);
-    gcPressureTests.add(testEcoAllocStringChurnAndPromotion);
-    gcPressureTests.add(testEcoAllocConsListLongPromotion);
-    gcPressureTests.add(testEcoAllocCustomManyConstructors);
+    gcPressureTests->add(testEcoAllocChurnSurvivesManyMinorGCs);
+    gcPressureTests->add(testEcoAllocClosureCapturesSurviveGC);
+    gcPressureTests->add(testEcoAllocRecordWithMixedFieldsAfterGC);
+    gcPressureTests->add(testEcoAllocStringChurnAndPromotion);
+    gcPressureTests->add(testEcoAllocConsListLongPromotion);
+    gcPressureTests->add(testEcoAllocCustomManyConstructors);
     // Group C — Old-gen-focused tests.
-    gcPressureTests.add(testOldGenSizeClassChurn);
-    gcPressureTests.add(testLargeObjectPinnedAcrossMajorGC);
-    gcPressureTests.add(testFragmentationAndCoalescingAfterRepeatedSweeps);
-    gcPressureTests.add(testMajorGCInitiatedByOccupancyAndAllocFailure);
+    gcPressureTests->add(testOldGenSizeClassChurn);
+    gcPressureTests->add(testLargeObjectPinnedAcrossMajorGC);
+    gcPressureTests->add(testFragmentationAndCoalescingAfterRepeatedSweeps);
+    gcPressureTests->add(testMajorGCInitiatedByOccupancyAndAllocFailure);
     // Group D — Integration / mixed workloads.
-    gcPressureTests.add(testRandomizedPressureWorkload);
-    gcPressureTests.add(testRetentionRateSweep);
-    gcPressureTests.add(testStackRootRangeUnderPressure);
-    gcPressureTests.add(testSafepointPollingDrainsPressure);
+    gcPressureTests->add(testRandomizedPressureWorkload);
+    gcPressureTests->add(testRetentionRateSweep);
+    gcPressureTests->add(testStackRootRangeUnderPressure);
+    gcPressureTests->add(testSafepointPollingDrainsPressure);
 
     // Codegen tests (MLIR lowering and JIT execution) - parallel isolated execution
     auto codegenTests = CodegenIsolatedTest::buildCodegenTestSuite();

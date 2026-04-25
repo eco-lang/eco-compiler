@@ -614,4 +614,144 @@ private:
     std::string path_;
 };
 
+// ============================================================================
+// Parallel Test-Case Runner (no file paths)
+// ============================================================================
+
+/**
+ * Run a list of in-process test functions in parallel-forked children.
+ *
+ * Sibling of runTestsParallel for callers that already have the test bodies
+ * as std::function<void()> (e.g. Testing::TestCase) rather than file paths.
+ * Each function runs in its own forked child, so a SIGSEGV/abort in one
+ * test only fails that test instead of taking down the entire test binary.
+ *
+ * Implementation note: piggybacks on runTestsParallel by encoding each
+ * test's index as the "path" string and looking it up in the closure.
+ * The forked child inherits the captured vector via copy-on-write.
+ */
+inline ParallelTestSummary runTestCasesParallel(
+    const std::vector<std::function<void()>>& testFuncs,
+    const std::vector<std::string>& testNames)
+{
+    if (testFuncs.size() != testNames.size() || testFuncs.empty()) {
+        return {};
+    }
+
+    std::vector<std::string> indices;
+    indices.reserve(testFuncs.size());
+    for (size_t i = 0; i < testFuncs.size(); i++) {
+        indices.push_back(std::to_string(i));
+    }
+
+    auto runTest = [&testFuncs](const std::string& path) {
+        size_t idx = static_cast<size_t>(std::stoul(path));
+        testFuncs[idx]();
+    };
+
+    return runTestsParallel(indices, testNames, runTest);
+}
+
+// ============================================================================
+// IsolatedTestCaseSuite — Test-case suite with fork-per-test isolation
+// ============================================================================
+
+/**
+ * A Test container that runs each Testing::TestCase in a forked child.
+ *
+ * Drop-in replacement for Testing::TestSuite when individual cases may
+ * crash the process (e.g. GC pressure tests that may SEGV/abort the
+ * runtime). A crash in one case is reported as a single FAILED line and
+ * the remaining cases still run.
+ *
+ * Caveat: per-process state mutated by a test (e.g. global allocator
+ * statistics) is not visible to the parent — every test starts in a
+ * pristine address space.
+ */
+class IsolatedTestCaseSuite : public Testing::Test {
+public:
+    explicit IsolatedTestCaseSuite(std::string name)
+        : name_(std::move(name)) {}
+
+    // Adds a property/unit-style test case. The function is extracted and
+    // the case object is discarded — only name + body are retained.
+    void add(const Testing::TestCase& test) {
+        const std::string& testName = test.getName();
+        funcs_.push_back(test.getFunc());
+        entries_.push_back(std::make_unique<IsolatedTestEntry>(testName, ""));
+    }
+
+    void run() const override {
+        runWithResult();
+    }
+
+    bool runWithResult() const override {
+        return runFiltered(Testing::CurrentFilter::get());
+    }
+
+    const std::string& getName() const override {
+        return name_;
+    }
+
+    size_t countTests() const override {
+        return entries_.size();
+    }
+
+    void collectTests(std::vector<const Testing::Test*>& out,
+                      const std::string& pattern = "") const override {
+        for (const auto& entry : entries_) {
+            entry->collectTests(out, pattern);
+        }
+    }
+
+    bool runFiltered(const std::string& filter) const {
+        std::vector<std::function<void()>> funcsToRun;
+        std::vector<std::string> namesToRun;
+        for (size_t i = 0; i < entries_.size(); i++) {
+            const std::string& n = entries_[i]->getName();
+            if (filter.empty() || n.find(filter) != std::string::npos) {
+                funcsToRun.push_back(funcs_[i]);
+                namesToRun.push_back(n);
+            }
+        }
+
+        if (funcsToRun.empty()) {
+            lastPassCount_ = 0;
+            lastFailCount_ = 0;
+            lastFailedTests_.clear();
+            return true;
+        }
+
+        // Match Testing::TestSuite::runHierarchical's suite header so output
+        // looks the same as the in-process suite this replaces.
+        if (!name_.empty()) {
+            std::cout << Testing::Color::bold() << Testing::Color::cyan()
+                      << "  === " << name_ << " ==="
+                      << Testing::Color::reset() << std::endl;
+        }
+
+        auto summary = runTestCasesParallel(funcsToRun, namesToRun);
+        lastPassCount_ = summary.passCount;
+        lastFailCount_ = summary.failCount;
+        lastFailedTests_ = summary.failedTests;
+        return lastFailCount_ == 0;
+    }
+
+    bool hasDetailedResults() const override { return true; }
+    size_t getLastPassCount() const override { return lastPassCount_; }
+    size_t getLastFailCount() const override { return lastFailCount_; }
+    const std::vector<std::string>& getLastFailedTests() const override {
+        return lastFailedTests_;
+    }
+
+private:
+    std::string name_;
+    std::vector<std::function<void()>> funcs_;
+    std::vector<std::unique_ptr<IsolatedTestEntry>> entries_;
+
+    mutable size_t lastPassCount_ = 0;
+    mutable size_t lastFailCount_ = 0;
+    mutable std::vector<std::string> lastFailedTests_;
+};
+
 }  // namespace IsolatedTestRunner
