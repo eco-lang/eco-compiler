@@ -1,44 +1,19 @@
 module TaskSequenceMassive exposing (main)
 
-{-| Task.sequence applied to a 2000-element list of tasks alternating
+{-| Task.sequence applied to an `m`-element list of tasks alternating
 between synchronous (Task.succeed i) and asynchronous
 (Process.sleep 0 |> map (\_ -> i)) leaves. Sum the resulting list and
 check the total.
 
 Stresses Task.sequence's cons-fold allocation path and the run queue
-under mixed sync / async leaves. The async leaves force the scheduler
-to yield to the event loop 1000 times over the course of one
-sequenced task.
+under mixed sync / async leaves.
 -}
 
--- CHECK: seq: 499500
+-- CHECK: TaskSequenceMassive: True
 
-import Platform
 import Process
+import StressHarness exposing (StressFlags)
 import Task exposing (Task)
-
-
-type Msg
-    = Done Int
-
-
-type alias Model =
-    {}
-
-
-n : Int
-n =
-    1000
-
-
-m : Int
-m =
-    1000
-
-
-leafCount : Int
-leafCount =
-    m
 
 
 leaf : Int -> Task Never Int
@@ -50,8 +25,8 @@ leaf i =
         Process.sleep 0 |> Task.map (\_ -> i)
 
 
-buildTasks : List (Task Never Int)
-buildTasks =
+buildTasks : Int -> List (Task Never Int)
+buildTasks leafCount =
     let
         go i acc =
             if i < 0 then
@@ -63,33 +38,27 @@ buildTasks =
     go (leafCount - 1) []
 
 
-init : () -> ( Model, Cmd Msg )
-init _ =
-    ( {}
-    , Task.sequence buildTasks
-        |> Task.map (List.foldl (+) 0)
-        |> Task.perform Done
-    )
-
-
-update : Msg -> Model -> ( Model, Cmd Msg )
-update (Done v) model =
+cycle : Int -> Task Never Bool
+cycle leafCount =
     let
-        _ =
-            Debug.log "seq" v
+        expected =
+            leafCount * (leafCount - 1) // 2
     in
-    ( model, Cmd.none )
+    Task.sequence (buildTasks leafCount)
+        |> Task.map (List.foldl (+) 0)
+        |> Task.map (\v -> v == expected)
 
 
-subscriptions : Model -> Sub Msg
-subscriptions _ =
-    Sub.none
+run : StressFlags -> Task.Task Never Bool
+run flags =
+    StressHarness.loopWhile flags
+        flags.numLoops
+        (\_ -> cycle flags.maxSize)
 
 
-main : Program () Model Msg
+main : Program StressFlags StressHarness.Model StressHarness.Msg
 main =
-    Platform.worker
-        { init = init
-        , update = update
-        , subscriptions = subscriptions
+    StressHarness.taskProgram
+        { label = "TaskSequenceMassive"
+        , run = run
         }

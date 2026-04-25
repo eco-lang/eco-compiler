@@ -1,25 +1,11 @@
 module DictFromArrayToArray exposing (main)
 
--- CHECK: roundtrip: True
+-- CHECK: DictFromArrayToArray: True
 
 import Array exposing (Array)
 import Dict exposing (Dict)
-import Html exposing (text)
-
-
-n : Int
-n =
-    1000
-
-
-m : Int
-m =
-    1000
-
-
-loopCount : Int
-loopCount =
-    n // 2
+import StressHarness exposing (StressFlags)
+import Task
 
 
 buildPairs : Int -> Array ( Int, Int )
@@ -34,31 +20,35 @@ buildPairs count =
         )
 
 
-loop : Array ( Int, Int ) -> Int -> Bool -> Bool
-loop original count ok =
-    if count <= 0 then
-        ok
-    else
-        let
-            dict =
-                original |> Array.toList |> Dict.fromList
-
-            back =
-                dict |> Dict.toList |> Array.fromList
-        in
-        loop original (count - 1) (ok && back == original)
-
-
-main =
+cycle : Array ( Int, Int ) -> Bool
+cycle original =
     let
-        -- Array.initialize counts 0..m-1 → (1,7),(2,14),...,(m,m*7) in key-sorted order
-        original =
-            buildPairs m
+        dict =
+            original |> Array.toList |> Dict.fromList
 
-        result =
-            loop original loopCount True
-
-        _ =
-            Debug.log "roundtrip" result
+        back =
+            dict |> Dict.toList |> Array.fromList
     in
-    text "done"
+    back == original
+
+
+run : StressFlags -> Task.Task Never Bool
+run flags =
+    let
+        original =
+            buildPairs flags.maxSize
+
+        loopCount =
+            flags.numLoops // 2
+    in
+    StressHarness.loopWhile flags
+        loopCount
+        (\_ -> Task.succeed (cycle original))
+
+
+main : Program StressFlags StressHarness.Model StressHarness.Msg
+main =
+    StressHarness.taskProgram
+        { label = "DictFromArrayToArray"
+        , run = run
+        }

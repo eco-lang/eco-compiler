@@ -7,33 +7,19 @@ module BytesRoundtripNestedRecord exposing (main)
     matching the compiler's own interface-cache decoders.
 -}
 
--- CHECK: roundtrip: True
+-- CHECK: BytesRoundtripNestedRecord: True
 
 import Bytes exposing (Endianness(..))
 import Bytes.Decode as D
 import Bytes.Encode as E
 import Gen exposing (Seed)
-import Html exposing (text)
-
-
-n : Int
-n =
-    1000
-
-
-m : Int
-m =
-    1000
+import StressHarness exposing (StressFlags)
+import Task
 
 
 defsPerModule : Int
 defsPerModule =
     10
-
-
-loopCount : Int
-loopCount =
-    n // 100
 
 
 initialSeed : Seed
@@ -86,14 +72,14 @@ genModule seed =
     ( { name = name, defs = defs }, s2 )
 
 
-gen : Seed -> ( Interface, Seed )
-gen seed =
+gen : Int -> Seed -> ( Interface, Seed )
+gen size seed =
     let
         ( ver, s1 ) =
             Gen.int32 seed
 
         ( mods, s2 ) =
-            Gen.listOf m genModule s1
+            Gen.listOf size genModule s1
     in
     ( { version = ver, modules = mods }, s2 )
 
@@ -192,15 +178,11 @@ decoder =
             )
 
 
-loop : Seed -> Int -> Bool -> Bool
-loop seed count ok =
-    if count <= 0 then
-        ok
-
-    else
-        let
+cycleStep : Int -> Seed -> ( Seed, Bool )
+cycleStep size seed =
+    let
             ( original, seed1 ) =
-                gen seed
+                gen size seed
 
             encoded =
                 E.encode (encoder original)
@@ -215,16 +197,25 @@ loop seed count ok =
 
                     Nothing ->
                         False
-        in
-        loop seed1 (count - 1) (ok && ok2)
-
-
-main =
-    let
-        result =
-            loop initialSeed loopCount True
-
-        _ =
-            Debug.log "roundtrip" result
     in
-    text "done"
+    ( seed1, ok2 )
+
+
+run : StressFlags -> Task.Task Never Bool
+run flags =
+    let
+        loopCount =
+            flags.numLoops // 100
+    in
+    StressHarness.loopWhileState flags
+        loopCount
+        initialSeed
+        (\_ s -> Task.succeed (cycleStep flags.maxSize s))
+
+
+main : Program StressFlags StressHarness.Model StressHarness.Msg
+main =
+    StressHarness.taskProgram
+        { label = "BytesRoundtripNestedRecord"
+        , run = run
+        }

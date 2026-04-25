@@ -1,19 +1,10 @@
 module ArraySort exposing (main)
 
--- CHECK: result: True
+-- CHECK: ArraySort: True
 
 import Array exposing (Array)
-import Html exposing (text)
-
-
-n : Int
-n =
-    1000
-
-
-m : Int
-m =
-    1000
+import StressHarness exposing (StressFlags)
+import Task
 
 
 reverse : Array a -> Array a
@@ -26,30 +17,25 @@ sortArray arr =
     arr |> Array.toList |> List.sort |> Array.fromList
 
 
-loop : Array Int -> Int -> Bool -> Bool
-loop sorted count ok =
-    if count <= 0 then
-        ok
-    else
-        let
-            reversed =
-                reverse sorted
-
-            reSorted =
-                sortArray reversed
-        in
-        loop reSorted (count - 1) (ok && reSorted == sorted)
+cycle : Array Int -> Bool
+cycle sorted =
+    sortArray (reverse sorted) == sorted
 
 
-main =
+run : StressFlags -> Task.Task Never Bool
+run flags =
     let
         sorted =
-            Array.initialize m (\i -> i + 1)
-
-        result =
-            loop sorted n True
-
-        _ =
-            Debug.log "result" result
+            Array.initialize flags.maxSize (\i -> i + 1)
     in
-    text "done"
+    StressHarness.loopWhile flags
+        flags.numLoops
+        (\_ -> Task.succeed (cycle sorted))
+
+
+main : Program StressFlags StressHarness.Model StressHarness.Msg
+main =
+    StressHarness.taskProgram
+        { label = "ArraySort"
+        , run = run
+        }

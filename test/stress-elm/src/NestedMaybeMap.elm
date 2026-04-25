@@ -1,24 +1,16 @@
 module NestedMaybeMap exposing (main)
 
--- CHECK: roundtrip: True
+-- CHECK: NestedMaybeMap: True
 
-import Html exposing (text)
-
-
-n : Int
-n =
-    1000
-
-
-m : Int
-m =
-    1000
+import StressHarness exposing (StressFlags)
+import Task
 
 
 buildTripleMaybes : Int -> List (Maybe (Maybe (Maybe Int))) -> List (Maybe (Maybe (Maybe Int)))
 buildTripleMaybes i acc =
     if i <= 0 then
         acc
+
     else
         buildTripleMaybes (i - 1) (Just (Just (Just i)) :: acc)
 
@@ -28,26 +20,28 @@ tripleNestedNegate =
     Maybe.map (Maybe.map (Maybe.map negate))
 
 
-applyNTimes : Int -> (a -> a) -> a -> a
-applyNTimes count f val =
-    if count <= 0 then
-        val
-    else
-        applyNTimes (count - 1) f (f val)
+cycle : List (Maybe (Maybe (Maybe Int))) -> Bool
+cycle original =
+    List.map tripleNestedNegate (List.map tripleNestedNegate original) == original
 
 
-main =
+run : StressFlags -> Task.Task Never Bool
+run flags =
     let
         original =
-            buildTripleMaybes m []
+            buildTripleMaybes flags.maxSize []
 
-        transformed =
-            applyNTimes n (List.map tripleNestedNegate) original
-
-        roundtrip =
-            original == transformed
-
-        _ =
-            Debug.log "roundtrip" roundtrip
+        loopCount =
+            flags.numLoops // 2
     in
-    text "done"
+    StressHarness.loopWhile flags
+        loopCount
+        (\_ -> Task.succeed (cycle original))
+
+
+main : Program StressFlags StressHarness.Model StressHarness.Msg
+main =
+    StressHarness.taskProgram
+        { label = "NestedMaybeMap"
+        , run = run
+        }

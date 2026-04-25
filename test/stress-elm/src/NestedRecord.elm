@@ -1,18 +1,9 @@
 module NestedRecord exposing (main)
 
--- CHECK: roundtrip: True
+-- CHECK: NestedRecord: True
 
-import Html exposing (text)
-
-
-n : Int
-n =
-    1000
-
-
-m : Int
-m =
-    1000
+import StressHarness exposing (StressFlags)
+import Task
 
 
 type alias Inner =
@@ -31,16 +22,9 @@ buildRecords : Int -> List Outer -> List Outer
 buildRecords i acc =
     if i <= 0 then
         acc
+
     else
         buildRecords (i - 1) ({ label = i, inner = { x = i, y = -i } } :: acc)
-
-
-applyNTimes : Int -> (a -> a) -> a -> a
-applyNTimes count f val =
-    if count <= 0 then
-        val
-    else
-        applyNTimes (count - 1) f (f val)
 
 
 negateInner : Outer -> Outer
@@ -48,18 +32,28 @@ negateInner r =
     { r | inner = { x = -r.inner.x, y = -r.inner.y } }
 
 
-main =
+cycle : List Outer -> Bool
+cycle original =
+    List.map negateInner (List.map negateInner original) == original
+
+
+run : StressFlags -> Task.Task Never Bool
+run flags =
     let
         original =
-            buildRecords m []
+            buildRecords flags.maxSize []
 
-        transformed =
-            applyNTimes n (List.map negateInner) original
-
-        roundtrip =
-            original == transformed
-
-        _ =
-            Debug.log "roundtrip" roundtrip
+        loopCount =
+            flags.numLoops // 2
     in
-    text "done"
+    StressHarness.loopWhile flags
+        loopCount
+        (\_ -> Task.succeed (cycle original))
+
+
+main : Program StressFlags StressHarness.Model StressHarness.Msg
+main =
+    StressHarness.taskProgram
+        { label = "NestedRecord"
+        , run = run
+        }

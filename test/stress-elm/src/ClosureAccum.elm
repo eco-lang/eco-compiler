@@ -1,24 +1,16 @@
 module ClosureAccum exposing (main)
 
--- CHECK: result: 500500000
+-- CHECK: ClosureAccum: True
 
-import Html exposing (text)
-
-
-n : Int
-n =
-    1000
-
-
-m : Int
-m =
-    1000
+import StressHarness exposing (StressFlags)
+import Task
 
 
 buildClosures : Int -> List (Int -> Int) -> List (Int -> Int)
 buildClosures i acc =
     if i <= 0 then
         acc
+
     else
         buildClosures (i - 1) ((\k x -> x + k) i :: acc)
 
@@ -33,25 +25,28 @@ applyAll fns acc =
             applyAll rest (f acc)
 
 
-loop : List (Int -> Int) -> Int -> Int -> Int
-loop fns count acc =
-    if count <= 0 then
-        acc
-    else
-        loop fns (count - 1) (applyAll fns acc)
+cycle : List (Int -> Int) -> Int -> Int
+cycle closures acc =
+    applyAll closures acc
 
 
-main =
+run : StressFlags -> Task.Task Never Bool
+run flags =
     let
         closures =
-            buildClosures m []
+            buildClosures flags.maxSize []
 
-        -- Each applyAll adds sum(1..m) = m*(m+1)/2 = 500500
-        -- After n iterations: n * 500500 = 500500000
-        result =
-            loop closures n 0
-
-        _ =
-            Debug.log "result" result
+        expectedPerCycle =
+            flags.maxSize * (flags.maxSize + 1) // 2
     in
-    text "done"
+    StressHarness.loopWhile flags
+        flags.numLoops
+        (\_ -> Task.succeed (cycle closures 0 == expectedPerCycle))
+
+
+main : Program StressFlags StressHarness.Model StressHarness.Msg
+main =
+    StressHarness.taskProgram
+        { label = "ClosureAccum"
+        , run = run
+        }

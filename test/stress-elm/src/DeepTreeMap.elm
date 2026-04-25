@@ -1,18 +1,9 @@
 module DeepTreeMap exposing (main)
 
--- CHECK: roundtrip: True
+-- CHECK: DeepTreeMap: True
 
-import Html exposing (text)
-
-
-n : Int
-n =
-    1000
-
-
-m : Int
-m =
-    1000
+import StressHarness exposing (StressFlags)
+import Task
 
 
 type Tree
@@ -24,6 +15,7 @@ buildTree : Int -> Int -> Tree
 buildTree lo hi =
     if lo >= hi then
         Leaf lo
+
     else
         let
             mid =
@@ -42,26 +34,28 @@ mapTree f tree =
             Branch (mapTree f left) (mapTree f right)
 
 
-applyNTimes : Int -> (a -> a) -> a -> a
-applyNTimes count f val =
-    if count <= 0 then
-        val
-    else
-        applyNTimes (count - 1) f (f val)
+cycle : Tree -> Bool
+cycle original =
+    mapTree negate (mapTree negate original) == original
 
 
-main =
+run : StressFlags -> Task.Task Never Bool
+run flags =
     let
         original =
-            buildTree 1 m
+            buildTree 1 flags.maxSize
 
-        transformed =
-            applyNTimes n (mapTree negate) original
-
-        roundtrip =
-            original == transformed
-
-        _ =
-            Debug.log "roundtrip" roundtrip
+        loopCount =
+            flags.numLoops // 2
     in
-    text "done"
+    StressHarness.loopWhile flags
+        loopCount
+        (\_ -> Task.succeed (cycle original))
+
+
+main : Program StressFlags StressHarness.Model StressHarness.Msg
+main =
+    StressHarness.taskProgram
+        { label = "DeepTreeMap"
+        , run = run
+        }

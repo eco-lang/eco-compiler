@@ -11,36 +11,8 @@ module ManyLiveMVarsStress exposing (main)
 import Bytes.Decode as BD
 import Bytes.Encode as BE
 import Eco.MVar as MV
-import Platform
+import StressHarness exposing (StressFlags)
 import Task
-
-
-type Msg
-    = GotResult Bool
-
-
-type alias Model =
-    Maybe Bool
-
-
-n : Int
-n =
-    1000
-
-
-m : Int
-m =
-    1000
-
-
-loopCount : Int
-loopCount =
-    n // 100
-
-
-mvarCount : Int
-mvarCount =
-    m // 2
 
 
 intEnc : Int -> BE.Encoder
@@ -53,13 +25,12 @@ intDec =
     BD.succeed 0
 
 
-heavyAlloc : Task.Task Never Int
-heavyAlloc =
-    Task.succeed (List.sum (List.range 1 m))
+heavyAlloc : Int -> Task.Task Never Int
+heavyAlloc size =
+    Task.succeed (List.sum (List.range 1 size))
 
 
-{-| Make `total` MVars each pre-filled with its index `i` in [1..total]. Returns
-    the list of MVars in index order. -}
+{-| Make `total` MVars each pre-filled with its index `i` in [1..total]. -}
 makeAll : Int -> Task.Task Never (List (MV.MVar Int))
 makeAll total =
     let
@@ -95,56 +66,39 @@ takeAll mvars =
     go mvars []
 
 
-singleCycle : Task.Task Never Bool
-singleCycle =
+cycle : Int -> Int -> Task.Task Never Bool
+cycle mvarCount allocSize =
     makeAll mvarCount
         |> Task.andThen
             (\mvars ->
-                heavyAlloc
-                    |> Task.andThen (\_ -> heavyAlloc)
-                    |> Task.andThen (\_ -> heavyAlloc)
+                heavyAlloc allocSize
+                    |> Task.andThen (\_ -> heavyAlloc allocSize)
+                    |> Task.andThen (\_ -> heavyAlloc allocSize)
                     |> Task.andThen (\_ -> takeAll mvars)
             )
         |> Task.map (\vs -> vs == List.range 1 mvarCount)
 
 
-repeatCycle : Int -> Task.Task Never Bool
-repeatCycle remaining =
-    if remaining <= 0 then
-        Task.succeed True
+run : StressFlags -> Task.Task Never Bool
+run flags =
+    let
+        loopCount =
+            flags.numLoops // 100
 
-    else
-        singleCycle
-            |> Task.andThen
-                (\ok ->
-                    if ok then
-                        repeatCycle (remaining - 1)
+        mvarCount =
+            flags.maxSize // 2
 
-                    else
-                        Task.succeed False
-                )
-
-
-init : () -> ( Model, Cmd Msg )
-init _ =
-    ( Nothing, Task.perform GotResult (repeatCycle loopCount) )
+        allocSize =
+            flags.maxSize
+    in
+    StressHarness.loopWhile flags
+        loopCount
+        (\_ -> cycle mvarCount allocSize)
 
 
-update : Msg -> Model -> ( Model, Cmd Msg )
-update msg _ =
-    case msg of
-        GotResult ok ->
-            let
-                _ =
-                    Debug.log "ManyLiveMVarsStress" ok
-            in
-            ( Just ok, Cmd.none )
-
-
-main : Program () Model Msg
+main : Program StressFlags StressHarness.Model StressHarness.Msg
 main =
-    Platform.worker
-        { init = init
-        , update = update
-        , subscriptions = \_ -> Sub.none
+    StressHarness.taskProgram
+        { label = "ManyLiveMVarsStress"
+        , run = run
         }

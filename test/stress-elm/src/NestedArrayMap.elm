@@ -1,19 +1,10 @@
 module NestedArrayMap exposing (main)
 
--- CHECK: roundtrip: True
+-- CHECK: NestedArrayMap: True
 
 import Array exposing (Array)
-import Html exposing (text)
-
-
-n : Int
-n =
-    1000
-
-
-m : Int
-m =
-    1000
+import StressHarness exposing (StressFlags)
+import Task
 
 
 innerSize : Int
@@ -27,30 +18,31 @@ buildNested outerCount =
         (\i -> Array.initialize innerSize (\k -> i * innerSize + k + 1))
 
 
-applyNTimes : Int -> (a -> a) -> a -> a
-applyNTimes count f val =
-    if count <= 0 then
-        val
-    else
-        applyNTimes (count - 1) f (f val)
+cycle : Array (Array Int) -> Bool
+cycle original =
+    Array.map (Array.map negate) (Array.map (Array.map negate) original) == original
 
 
-main =
+run : StressFlags -> Task.Task Never Bool
+run flags =
     let
-        -- m/innerSize outer arrays, each with innerSize elements = m total elements
         outerCount =
-            m // innerSize
+            flags.maxSize // innerSize
 
         original =
             buildNested outerCount
 
-        transformed =
-            applyNTimes n (Array.map (Array.map negate)) original
-
-        roundtrip =
-            original == transformed
-
-        _ =
-            Debug.log "roundtrip" roundtrip
+        loopCount =
+            flags.numLoops // 2
     in
-    text "done"
+    StressHarness.loopWhile flags
+        loopCount
+        (\_ -> Task.succeed (cycle original))
+
+
+main : Program StressFlags StressHarness.Model StressHarness.Msg
+main =
+    StressHarness.taskProgram
+        { label = "NestedArrayMap"
+        , run = run
+        }

@@ -1,26 +1,12 @@
 module JsonRoundtripNestedTree exposing (main)
 
--- CHECK: roundtrip: True
+-- CHECK: JsonRoundtripNestedTree: True
 
 import Gen exposing (Seed)
-import Html exposing (text)
 import Json.Decode as D
 import Json.Encode as E
-
-
-n : Int
-n =
-    1000
-
-
-m : Int
-m =
-    1000
-
-
-loopCount : Int
-loopCount =
-    n // 4
+import StressHarness exposing (StressFlags)
+import Task
 
 
 {-| Balanced binary tree of depth 9 ≈ 1023 internal nodes — stresses lazy recursion. -}
@@ -82,13 +68,9 @@ decodeTree =
         ]
 
 
-loop : Seed -> Int -> Bool -> Bool
-loop seed count ok =
-    if count <= 0 then
-        ok
-
-    else
-        let
+cycleStep : Int -> Seed -> ( Seed, Bool )
+cycleStep size seed =
+    let
             ( original, seed1 ) =
                 genTree treeDepth seed
 
@@ -105,16 +87,25 @@ loop seed count ok =
 
                     Err _ ->
                         False
-        in
-        loop seed1 (count - 1) (ok && ok2)
-
-
-main =
-    let
-        result =
-            loop initialSeed loopCount True
-
-        _ =
-            Debug.log "roundtrip" result
     in
-    text "done"
+    ( seed1, ok2 )
+
+
+run : StressFlags -> Task.Task Never Bool
+run flags =
+    let
+        loopCount =
+            flags.numLoops // 4
+    in
+    StressHarness.loopWhileState flags
+        loopCount
+        initialSeed
+        (\_ s -> Task.succeed (cycleStep flags.maxSize s))
+
+
+main : Program StressFlags StressHarness.Model StressHarness.Msg
+main =
+    StressHarness.taskProgram
+        { label = "JsonRoundtripNestedTree"
+        , run = run
+        }

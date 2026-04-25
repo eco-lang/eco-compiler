@@ -1,55 +1,42 @@
 module StringSplitJoin exposing (main)
 
--- CHECK: roundtrip: True
+-- CHECK: StringSplitJoin: True
 
-import Html exposing (text)
-
-
-n : Int
-n =
-    1000
-
-
-m : Int
-m =
-    1000
+import StressHarness exposing (StressFlags)
+import Task
 
 
 buildWords : Int -> List String -> List String
 buildWords i acc =
     if i <= 0 then
         acc
+
     else
         buildWords (i - 1) (String.fromInt i :: acc)
 
 
-loop : String -> Int -> Bool -> Bool
-loop original count ok =
-    if count <= 0 then
-        ok
-    else
-        let
-            parts =
-                String.words original
-
-            rejoined =
-                String.join " " parts
-        in
-        loop original (count - 1) (ok && rejoined == original)
+cycle : String -> Bool
+cycle original =
+    String.join " " (String.words original) == original
 
 
-main =
+run : StressFlags -> Task.Task Never Bool
+run flags =
     let
         words =
-            buildWords m []
+            buildWords flags.maxSize []
 
         original =
             String.join " " words
-
-        result =
-            loop original n True
-
-        _ =
-            Debug.log "roundtrip" result
     in
-    text "done"
+    StressHarness.loopWhile flags
+        flags.numLoops
+        (\_ -> Task.succeed (cycle original))
+
+
+main : Program StressFlags StressHarness.Model StressHarness.Msg
+main =
+    StressHarness.taskProgram
+        { label = "StringSplitJoin"
+        , run = run
+        }

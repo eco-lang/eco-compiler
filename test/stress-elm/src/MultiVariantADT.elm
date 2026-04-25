@@ -1,18 +1,9 @@
 module MultiVariantADT exposing (main)
 
--- CHECK: roundtrip: True
+-- CHECK: MultiVariantADT: True
 
-import Html exposing (text)
-
-
-n : Int
-n =
-    1000
-
-
-m : Int
-m =
-    1000
+import StressHarness exposing (StressFlags)
+import Task
 
 
 type Shape
@@ -27,6 +18,7 @@ buildShapes : Int -> List Shape -> List Shape
 buildShapes i acc =
     if i <= 0 then
         acc
+
     else
         let
             shape =
@@ -68,26 +60,28 @@ negateShape shape =
             Quad (-a) (-b) (-c) (-d)
 
 
-applyNTimes : Int -> (a -> a) -> a -> a
-applyNTimes count f val =
-    if count <= 0 then
-        val
-    else
-        applyNTimes (count - 1) f (f val)
+cycle : List Shape -> Bool
+cycle original =
+    List.map negateShape (List.map negateShape original) == original
 
 
-main =
+run : StressFlags -> Task.Task Never Bool
+run flags =
     let
         original =
-            buildShapes m []
+            buildShapes flags.maxSize []
 
-        transformed =
-            applyNTimes n (List.map negateShape) original
-
-        roundtrip =
-            original == transformed
-
-        _ =
-            Debug.log "roundtrip" roundtrip
+        loopCount =
+            flags.numLoops // 2
     in
-    text "done"
+    StressHarness.loopWhile flags
+        loopCount
+        (\_ -> Task.succeed (cycle original))
+
+
+main : Program StressFlags StressHarness.Model StressHarness.Msg
+main =
+    StressHarness.taskProgram
+        { label = "MultiVariantADT"
+        , run = run
+        }

@@ -1,49 +1,37 @@
 module ListConcatMap exposing (main)
 
--- CHECK: result: True
+-- CHECK: ListConcatMap: True
 
-import Html exposing (text)
-
-
-n : Int
-n =
-    1000
+import StressHarness exposing (StressFlags)
+import Task
 
 
-m : Int
-m =
-    1000
-
-
-loopCount : Int
-loopCount =
-    n // 2
-
-
-loop : Int -> Bool -> Bool
-loop count ok =
-    if count <= 0 then
-        ok
-    else
-        let
-            original =
-                List.range 1 m
-
-            expanded =
-                List.concatMap (\x -> [ x, x + m, x + m * 2 ]) original
-
-            len =
-                List.length expanded
-        in
-        loop (count - 1) (ok && len == m * 3)
-
-
-main =
+cycle : Int -> Bool
+cycle size =
     let
-        result =
-            loop loopCount True
+        original =
+            List.range 1 size
 
-        _ =
-            Debug.log "result" result
+        expanded =
+            List.concatMap (\x -> [ x, x + size, x + size * 2 ]) original
     in
-    text "done"
+    List.length expanded == size * 3
+
+
+run : StressFlags -> Task.Task Never Bool
+run flags =
+    let
+        loopCount =
+            flags.numLoops // 2
+    in
+    StressHarness.loopWhile flags
+        loopCount
+        (\_ -> Task.succeed (cycle flags.maxSize))
+
+
+main : Program StressFlags StressHarness.Model StressHarness.Msg
+main =
+    StressHarness.taskProgram
+        { label = "ListConcatMap"
+        , run = run
+        }

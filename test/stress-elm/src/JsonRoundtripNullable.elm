@@ -1,26 +1,12 @@
 module JsonRoundtripNullable exposing (main)
 
--- CHECK: roundtrip: True
+-- CHECK: JsonRoundtripNullable: True
 
 import Gen exposing (Seed)
-import Html exposing (text)
 import Json.Decode as D
 import Json.Encode as E
-
-
-n : Int
-n =
-    1000
-
-
-m : Int
-m =
-    1000
-
-
-loopCount : Int
-loopCount =
-    n // 2
+import StressHarness exposing (StressFlags)
+import Task
 
 
 initialSeed : Seed
@@ -45,9 +31,9 @@ genItem seed =
         ( Just v, s2 )
 
 
-gen : Seed -> ( List (Maybe Int), Seed )
-gen seed =
-    Gen.listOf m genItem seed
+gen : Int -> Seed -> ( List (Maybe Int), Seed )
+gen size seed =
+    Gen.listOf size genItem seed
 
 
 encodeItem : Maybe Int -> E.Value
@@ -70,15 +56,11 @@ decoder =
     D.list (D.nullable D.int)
 
 
-loop : Seed -> Int -> Bool -> Bool
-loop seed count ok =
-    if count <= 0 then
-        ok
-
-    else
-        let
+cycleStep : Int -> Seed -> ( Seed, Bool )
+cycleStep size seed =
+    let
             ( original, seed1 ) =
-                gen seed
+                gen size seed
 
             encoded =
                 encoder original
@@ -93,16 +75,25 @@ loop seed count ok =
 
                     Err _ ->
                         False
-        in
-        loop seed1 (count - 1) (ok && ok2)
-
-
-main =
-    let
-        result =
-            loop initialSeed loopCount True
-
-        _ =
-            Debug.log "roundtrip" result
     in
-    text "done"
+    ( seed1, ok2 )
+
+
+run : StressFlags -> Task.Task Never Bool
+run flags =
+    let
+        loopCount =
+            flags.numLoops // 2
+    in
+    StressHarness.loopWhileState flags
+        loopCount
+        initialSeed
+        (\_ s -> Task.succeed (cycleStep flags.maxSize s))
+
+
+main : Program StressFlags StressHarness.Model StressHarness.Msg
+main =
+    StressHarness.taskProgram
+        { label = "JsonRoundtripNullable"
+        , run = run
+        }

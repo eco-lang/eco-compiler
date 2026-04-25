@@ -1,6 +1,6 @@
 module MVarHoldingHugeListAcrossGC exposing (main)
 
-{-| Put a 20 000-element `List Int` into an MVar, force several minor
+{-| Put a `m * 20` element `List Int` into an MVar, force several minor
     GCs, take it back. Stresses Cons-spine evacuation rooted from an
     MVar: every Cons cell must be copied through the scanner on every
     collection.
@@ -11,46 +11,13 @@ module MVarHoldingHugeListAcrossGC exposing (main)
 import Bytes.Decode as BD
 import Bytes.Encode as BE
 import Eco.MVar as MV
-import Platform
+import StressHarness exposing (StressFlags)
 import Task
 
 
-type Msg
-    = GotResult Bool
-
-
-type alias Model =
-    Maybe Bool
-
-
-n : Int
-n =
-    1000
-
-
-m : Int
-m =
-    1000
-
-
-loopCount : Int
-loopCount =
-    n // 100
-
-
-listLen : Int
-listLen =
-    m * 20
-
-
-original : List Int
-original =
-    List.range 1 listLen
-
-
-heavyAlloc : Task.Task Never Int
-heavyAlloc =
-    Task.succeed (List.sum (List.range 1 m))
+heavyAlloc : Int -> Task.Task Never Int
+heavyAlloc size =
+    Task.succeed (List.sum (List.range 1 size))
 
 
 lEnc : List Int -> BE.Encoder
@@ -63,15 +30,15 @@ lDec =
     BD.succeed []
 
 
-singleCycle : Task.Task Never Bool
-singleCycle =
+cycle : List Int -> Int -> Int -> Task.Task Never Bool
+cycle original listLen size =
     MV.new
         |> Task.andThen
             (\mv ->
                 MV.put lEnc mv original
-                    |> Task.andThen (\_ -> heavyAlloc)
-                    |> Task.andThen (\_ -> heavyAlloc)
-                    |> Task.andThen (\_ -> heavyAlloc)
+                    |> Task.andThen (\_ -> heavyAlloc size)
+                    |> Task.andThen (\_ -> heavyAlloc size)
+                    |> Task.andThen (\_ -> heavyAlloc size)
                     |> Task.andThen (\_ -> MV.take lDec mv)
             )
         |> Task.map
@@ -80,43 +47,26 @@ singleCycle =
             )
 
 
-repeatCycle : Int -> Task.Task Never Bool
-repeatCycle remaining =
-    if remaining <= 0 then
-        Task.succeed True
+run : StressFlags -> Task.Task Never Bool
+run flags =
+    let
+        listLen =
+            flags.maxSize * 20
 
-    else
-        singleCycle
-            |> Task.andThen
-                (\ok ->
-                    if ok then
-                        repeatCycle (remaining - 1)
+        original =
+            List.range 1 listLen
 
-                    else
-                        Task.succeed False
-                )
-
-
-init : () -> ( Model, Cmd Msg )
-init _ =
-    ( Nothing, Task.perform GotResult (repeatCycle loopCount) )
+        loopCount =
+            flags.numLoops // 100
+    in
+    StressHarness.loopWhile flags
+        loopCount
+        (\_ -> cycle original listLen flags.maxSize)
 
 
-update : Msg -> Model -> ( Model, Cmd Msg )
-update msg _ =
-    case msg of
-        GotResult ok ->
-            let
-                _ =
-                    Debug.log "MVarHoldingHugeListAcrossGC" ok
-            in
-            ( Just ok, Cmd.none )
-
-
-main : Program () Model Msg
+main : Program StressFlags StressHarness.Model StressHarness.Msg
 main =
-    Platform.worker
-        { init = init
-        , update = update
-        , subscriptions = \_ -> Sub.none
+    StressHarness.taskProgram
+        { label = "MVarHoldingHugeListAcrossGC"
+        , run = run
         }

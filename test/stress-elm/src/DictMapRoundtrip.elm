@@ -1,49 +1,43 @@
 module DictMapRoundtrip exposing (main)
 
--- CHECK: roundtrip: True
+-- CHECK: DictMapRoundtrip: True
 
 import Dict exposing (Dict)
-import Html exposing (text)
-
-
-n : Int
-n =
-    1000
-
-
-m : Int
-m =
-    1000
+import StressHarness exposing (StressFlags)
+import Task
 
 
 buildDict : Int -> Dict Int String -> Dict Int String
 buildDict i acc =
     if i <= 0 then
         acc
+
     else
         buildDict (i - 1) (Dict.insert i (String.fromInt i) acc)
 
 
-applyNTimes : Int -> (a -> a) -> a -> a
-applyNTimes count f val =
-    if count <= 0 then
-        val
-    else
-        applyNTimes (count - 1) f (f val)
+cycle : Dict Int String -> Bool
+cycle original =
+    Dict.map (\_ v -> String.reverse v) (Dict.map (\_ v -> String.reverse v) original) == original
 
 
-main =
+run : StressFlags -> Task.Task Never Bool
+run flags =
     let
         original =
-            buildDict m Dict.empty
+            buildDict flags.maxSize Dict.empty
 
-        transformed =
-            applyNTimes n (Dict.map (\_ v -> String.reverse v)) original
-
-        roundtrip =
-            original == transformed
-
-        _ =
-            Debug.log "roundtrip" roundtrip
+        loopCount =
+            flags.numLoops // 2
     in
-    text "done"
+    StressHarness.loopWhile flags
+        loopCount
+        (\_ -> Task.succeed (cycle original))
+
+
+main : Program StressFlags StressHarness.Model StressHarness.Msg
+main =
+    StressHarness.taskProgram
+        { label = "DictMapRoundtrip"
+        , run = run
+        }

@@ -10,41 +10,13 @@ module MVarHoldingLargeStringAcrossGC exposing (main)
 import Bytes.Decode as BD
 import Bytes.Encode as BE
 import Eco.MVar as MV
-import Platform
+import StressHarness exposing (StressFlags)
 import Task
 
 
-type Msg
-    = GotResult Bool
-
-
-type alias Model =
-    Maybe Bool
-
-
-n : Int
-n =
-    1000
-
-
-m : Int
-m =
-    1000
-
-
-loopCount : Int
-loopCount =
-    n // 100
-
-
-original : String
-original =
-    String.repeat (m // 2) "The quick brown fox jumps over the lazy dog. "
-
-
-heavyAlloc : Task.Task Never Int
-heavyAlloc =
-    Task.succeed (List.sum (List.range 1 m))
+heavyAlloc : Int -> Task.Task Never Int
+heavyAlloc size =
+    Task.succeed (List.sum (List.range 1 size))
 
 
 sEnc : String -> BE.Encoder
@@ -57,57 +29,37 @@ sDec =
     BD.succeed ""
 
 
-singleCycle : Task.Task Never Bool
-singleCycle =
+cycle : String -> Int -> Task.Task Never Bool
+cycle original size =
     MV.new
         |> Task.andThen
             (\mv ->
                 MV.put sEnc mv original
-                    |> Task.andThen (\_ -> heavyAlloc)
-                    |> Task.andThen (\_ -> heavyAlloc)
-                    |> Task.andThen (\_ -> heavyAlloc)
+                    |> Task.andThen (\_ -> heavyAlloc size)
+                    |> Task.andThen (\_ -> heavyAlloc size)
+                    |> Task.andThen (\_ -> heavyAlloc size)
                     |> Task.andThen (\_ -> MV.take sDec mv)
             )
         |> Task.map (\v -> v == original)
 
 
-repeatCycle : Int -> Task.Task Never Bool
-repeatCycle remaining =
-    if remaining <= 0 then
-        Task.succeed True
+run : StressFlags -> Task.Task Never Bool
+run flags =
+    let
+        original =
+            String.repeat (flags.maxSize // 2) "The quick brown fox jumps over the lazy dog. "
 
-    else
-        singleCycle
-            |> Task.andThen
-                (\ok ->
-                    if ok then
-                        repeatCycle (remaining - 1)
-
-                    else
-                        Task.succeed False
-                )
+        loopCount =
+            flags.numLoops // 100
+    in
+    StressHarness.loopWhile flags
+        loopCount
+        (\_ -> cycle original flags.maxSize)
 
 
-init : () -> ( Model, Cmd Msg )
-init _ =
-    ( Nothing, Task.perform GotResult (repeatCycle loopCount) )
-
-
-update : Msg -> Model -> ( Model, Cmd Msg )
-update msg _ =
-    case msg of
-        GotResult ok ->
-            let
-                _ =
-                    Debug.log "MVarHoldingLargeStringAcrossGC" ok
-            in
-            ( Just ok, Cmd.none )
-
-
-main : Program () Model Msg
+main : Program StressFlags StressHarness.Model StressHarness.Msg
 main =
-    Platform.worker
-        { init = init
-        , update = update
-        , subscriptions = \_ -> Sub.none
+    StressHarness.taskProgram
+        { label = "MVarHoldingLargeStringAcrossGC"
+        , run = run
         }

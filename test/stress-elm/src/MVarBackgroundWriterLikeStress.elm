@@ -18,26 +18,8 @@ module MVarBackgroundWriterLikeStress exposing (main)
 import Bytes.Decode as BD
 import Bytes.Encode as BE
 import Eco.MVar as MV
-import Platform
+import StressHarness exposing (StressFlags)
 import Task
-
-
-type Msg
-    = GotResult Bool
-
-
-type alias Model =
-    Maybe Bool
-
-
-n : Int
-n =
-    1000
-
-
-m : Int
-m =
-    1000
 
 
 unitEnc : () -> BE.Encoder
@@ -60,9 +42,9 @@ listDec =
     BD.succeed []
 
 
-smallAlloc : Task.Task Never Int
-smallAlloc =
-    Task.succeed (List.sum (List.range 1 m))
+smallAlloc : Int -> Task.Task Never Int
+smallAlloc size =
+    Task.succeed (List.sum (List.range 1 size))
 
 
 addOne : MV.MVar (List (MV.MVar ())) -> Task.Task Never ()
@@ -76,48 +58,39 @@ addOne workList =
             )
 
 
-loop : MV.MVar (List (MV.MVar ())) -> Int -> Task.Task Never ()
-loop workList remaining =
+loop : Int -> MV.MVar (List (MV.MVar ())) -> Int -> Task.Task Never ()
+loop size workList remaining =
     if remaining <= 0 then
         Task.succeed ()
 
     else
         addOne workList
-            |> Task.andThen (\_ -> smallAlloc)
-            |> Task.andThen (\_ -> loop workList (remaining - 1))
+            |> Task.andThen (\_ -> smallAlloc size)
+            |> Task.andThen (\_ -> loop size workList (remaining - 1))
 
 
-init : () -> ( Model, Cmd Msg )
-init _ =
+run : StressFlags -> Task.Task Never Bool
+run flags =
     let
-        task =
-            MV.new
-                |> Task.andThen
-                    (\workList ->
-                        MV.put listEnc workList []
-                            |> Task.andThen (\_ -> loop workList n)
-                            |> Task.andThen (\_ -> MV.take listDec workList)
-                    )
-                |> Task.map (\xs -> List.length xs == n)
+        count =
+            flags.numLoops
+
+        size =
+            flags.maxSize
     in
-    ( Nothing, Task.perform GotResult task )
+    MV.new
+        |> Task.andThen
+            (\workList ->
+                MV.put listEnc workList []
+                    |> Task.andThen (\_ -> loop size workList count)
+                    |> Task.andThen (\_ -> MV.take listDec workList)
+            )
+        |> Task.map (\xs -> List.length xs == count)
 
 
-update : Msg -> Model -> ( Model, Cmd Msg )
-update msg _ =
-    case msg of
-        GotResult ok ->
-            let
-                _ =
-                    Debug.log "MVarBackgroundWriterLikeStress" ok
-            in
-            ( Just ok, Cmd.none )
-
-
-main : Program () Model Msg
+main : Program StressFlags StressHarness.Model StressHarness.Msg
 main =
-    Platform.worker
-        { init = init
-        , update = update
-        , subscriptions = \_ -> Sub.none
+    StressHarness.taskProgram
+        { label = "MVarBackgroundWriterLikeStress"
+        , run = run
         }

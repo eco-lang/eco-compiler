@@ -13,26 +13,8 @@ module MVarChurnNewDropStress exposing (main)
 import Bytes.Decode as BD
 import Bytes.Encode as BE
 import Eco.MVar as MV
-import Platform
+import StressHarness exposing (StressFlags)
 import Task
-
-
-type Msg
-    = GotResult Bool
-
-
-type alias Model =
-    Maybe Bool
-
-
-n : Int
-n =
-    1000
-
-
-m : Int
-m =
-    1000
 
 
 intEnc : Int -> BE.Encoder
@@ -46,13 +28,13 @@ intDec =
 
 
 {-| Builds a throwaway list to churn nursery memory on each churn iter. -}
-smallAlloc : Task.Task Never Int
-smallAlloc =
-    Task.succeed (List.sum (List.range 1 m))
+smallAlloc : Int -> Task.Task Never Int
+smallAlloc size =
+    Task.succeed (List.sum (List.range 1 size))
 
 
-churn : MV.MVar Int -> Int -> Task.Task Never ()
-churn persistent i =
+churn : Int -> MV.MVar Int -> Int -> Task.Task Never ()
+churn size persistent i =
     if i <= 0 then
         Task.succeed ()
 
@@ -62,7 +44,7 @@ churn persistent i =
                 (\mv ->
                     MV.put intEnc mv i
                         |> Task.andThen (\_ -> MV.drop mv)
-                        |> Task.andThen (\_ -> smallAlloc)
+                        |> Task.andThen (\_ -> smallAlloc size)
                         |> Task.andThen
                             (\_ ->
                                 if modBy 16 i == 0 then
@@ -70,46 +52,37 @@ churn persistent i =
                                         |> Task.andThen
                                             (\v ->
                                                 MV.put intEnc persistent (v + 1)
-                                                    |> Task.andThen (\_ -> churn persistent (i - 1))
+                                                    |> Task.andThen (\_ -> churn size persistent (i - 1))
                                             )
 
                                 else
-                                    churn persistent (i - 1)
+                                    churn size persistent (i - 1)
                             )
                 )
 
 
-init : () -> ( Model, Cmd Msg )
-init _ =
+run : StressFlags -> Task.Task Never Bool
+run flags =
     let
-        task =
-            MV.new
-                |> Task.andThen
-                    (\persistent ->
-                        MV.put intEnc persistent 0
-                            |> Task.andThen (\_ -> churn persistent n)
-                            |> Task.andThen (\_ -> MV.take intDec persistent)
-                    )
-                |> Task.map (\final -> final == n // 16)
+        count =
+            flags.numLoops
+
+        size =
+            flags.maxSize
     in
-    ( Nothing, Task.perform GotResult task )
+    MV.new
+        |> Task.andThen
+            (\persistent ->
+                MV.put intEnc persistent 0
+                    |> Task.andThen (\_ -> churn size persistent count)
+                    |> Task.andThen (\_ -> MV.take intDec persistent)
+            )
+        |> Task.map (\final -> final == count // 16)
 
 
-update : Msg -> Model -> ( Model, Cmd Msg )
-update msg _ =
-    case msg of
-        GotResult ok ->
-            let
-                _ =
-                    Debug.log "MVarChurnNewDropStress" ok
-            in
-            ( Just ok, Cmd.none )
-
-
-main : Program () Model Msg
+main : Program StressFlags StressHarness.Model StressHarness.Msg
 main =
-    Platform.worker
-        { init = init
-        , update = update
-        , subscriptions = \_ -> Sub.none
+    StressHarness.taskProgram
+        { label = "MVarChurnNewDropStress"
+        , run = run
         }

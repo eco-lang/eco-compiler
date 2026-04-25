@@ -1,44 +1,39 @@
 module ArrayMapRoundtrip exposing (main)
 
--- CHECK: roundtrip: True
+-- CHECK: ArrayMapRoundtrip: True
 
 import Array exposing (Array)
-import Html exposing (text)
+import StressHarness exposing (StressFlags)
+import Task
 
 
-n : Int
-n =
-    1000
+negate_ : Int -> Int
+negate_ x =
+    -x
 
 
-m : Int
-m =
-    1000
+cycle : Array Int -> Bool
+cycle original =
+    Array.map negate_ (Array.map negate_ original) == original
 
 
-applyNTimes : Int -> (a -> a) -> a -> a
-applyNTimes count f val =
-    if count <= 0 then
-        val
-    else
-        applyNTimes (count - 1) f (f val)
-
-
-main =
+run : StressFlags -> Task.Task Never Bool
+run flags =
     let
         original =
-            Array.initialize m (\i -> i + 1)
+            Array.initialize flags.maxSize (\i -> i + 1)
 
-        negate x =
-            -x
-
-        transformed =
-            applyNTimes n (Array.map negate) original
-
-        roundtrip =
-            original == transformed
-
-        _ =
-            Debug.log "roundtrip" roundtrip
+        loopCount =
+            flags.numLoops // 2
     in
-    text "done"
+    StressHarness.loopWhile flags
+        loopCount
+        (\_ -> Task.succeed (cycle original))
+
+
+main : Program StressFlags StressHarness.Model StressHarness.Msg
+main =
+    StressHarness.taskProgram
+        { label = "ArrayMapRoundtrip"
+        , run = run
+        }

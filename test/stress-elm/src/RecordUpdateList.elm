@@ -1,18 +1,9 @@
 module RecordUpdateList exposing (main)
 
--- CHECK: roundtrip: True
+-- CHECK: RecordUpdateList: True
 
-import Html exposing (text)
-
-
-n : Int
-n =
-    1000
-
-
-m : Int
-m =
-    1000
+import StressHarness exposing (StressFlags)
+import Task
 
 
 type alias Rec =
@@ -26,34 +17,38 @@ buildRecs : Int -> List Rec -> List Rec
 buildRecs i acc =
     if i <= 0 then
         acc
+
     else
         buildRecs (i - 1) ({ a = i, b = i * 2, c = i * 3 } :: acc)
 
 
-applyNTimes : Int -> (a -> a) -> a -> a
-applyNTimes count f val =
-    if count <= 0 then
-        val
-    else
-        applyNTimes (count - 1) f (f val)
+flipA : Rec -> Rec
+flipA r =
+    { r | a = -r.a }
 
 
-main =
+cycle : List Rec -> Bool
+cycle original =
+    List.map flipA (List.map flipA original) == original
+
+
+run : StressFlags -> Task.Task Never Bool
+run flags =
     let
         original =
-            buildRecs m []
+            buildRecs flags.maxSize []
 
-        -- Negate field a each iteration; n is even so it round-trips
-        transform =
-            List.map (\r -> { r | a = -r.a })
-
-        transformed =
-            applyNTimes n transform original
-
-        roundtrip =
-            original == transformed
-
-        _ =
-            Debug.log "roundtrip" roundtrip
+        loopCount =
+            flags.numLoops // 2
     in
-    text "done"
+    StressHarness.loopWhile flags
+        loopCount
+        (\_ -> Task.succeed (cycle original))
+
+
+main : Program StressFlags StressHarness.Model StressHarness.Msg
+main =
+    StressHarness.taskProgram
+        { label = "RecordUpdateList"
+        , run = run
+        }
