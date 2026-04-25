@@ -411,6 +411,19 @@ private:
     // the remainder onto the appropriate free list.
     void* tryAllocateBySplittingLarger(size_t target_cls, size_t alloc_size);
 
+    // Linear scan over `blocks_` to find the BlockInfo whose [start, end)
+    // contains addr. Returns nullptr if no block matches (e.g. the address
+    // is from a freshly-acquired bag page that hasn't been registered yet).
+    // Linear cost: blocks_.size() is bounded by total committed pages.
+    const BlockInfo* findBlockContaining(char* addr) const {
+        for (const auto& block : blocks_) {
+            if (addr >= block.start && addr < block.end) {
+                return &block;
+            }
+        }
+        return nullptr;
+    }
+
     // Pulls a page from `unassigned_blocks_`, slices it into uniform cells
     // of `classToSize(cls)`, and links them onto `free_lists_[cls]`. Returns
     // true if a page was available and populated.

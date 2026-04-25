@@ -25,7 +25,8 @@ extern char* g_heap_base;
 // above the definition.
 namespace {
 inline void pushSpanOnFreeLists(FreeCell** free_lists, char* span_start,
-                                size_t span_bytes);
+                                size_t span_bytes,
+                                const BlockInfo* block);
 }
 
 // Read barrier - converts logical pointer to physical address.
@@ -301,8 +302,16 @@ void* OldGenSpace::tryAllocateBySplittingLarger(size_t target_cls,
                                                 size_t alloc_size) {
     // Walk higher classes; for each, scan the free list for a cell large
     // enough to satisfy `alloc_size` while leaving room for either an
-    // allocation or a usable Tag_Free remainder. We accept either a
-    // perfect-fit (no remainder) or a remainder >= MIN_FREE_CELL_SIZE.
+    // allocation or a usable Tag_Free remainder.
+    //
+    // Uniformity invariant: cells inside a size-class block (block.size_class
+    // < NUM_SIZE_CLASSES) MUST all be exactly classToSize(block.size_class)
+    // bytes — sweep walks such blocks by that fixed step, and a smaller
+    // sub-cell embedded in such a block would cause sweep to mis-step
+    // mid-cell. Therefore: when the candidate cell lives in a uniform
+    // block, accept ONLY exact fits (remainder == 0). Splitting is reserved
+    // for cells in mixed blocks (size_class == NUM_SIZE_CLASSES) — those
+    // came from `allocateFromBagPage` and sweep walks them by header size.
     for (size_t cls = target_cls + 1; cls < NUM_SIZE_CLASSES; ++cls) {
         if (free_lists_[cls] == nullptr) continue;
 
@@ -314,20 +323,25 @@ void* OldGenSpace::tryAllocateBySplittingLarger(size_t target_cls,
                                          ? cell_bytes - alloc_size
                                          : 0;
 
-            // Accept either an exact fit or one that leaves a usable cell.
+            const BlockInfo* block =
+                findBlockContaining(reinterpret_cast<char*>(curr));
+            const bool is_uniform_block =
+                block != nullptr && block->size_class < NUM_SIZE_CLASSES;
+
+            // Skip cells in uniform blocks unless this would be an exact fit.
+            const bool acceptable_for_block =
+                !is_uniform_block || remainder == 0;
+
             if (cell_bytes >= alloc_size &&
-                (remainder == 0 || remainder >= MIN_FREE_CELL_SIZE)) {
+                (remainder == 0 || remainder >= MIN_FREE_CELL_SIZE) &&
+                acceptable_for_block) {
                 // Unlink curr from this list.
                 *prev = curr->next;
 
                 char* base = reinterpret_cast<char*>(curr);
                 if (remainder > 0) {
-                    // Push the back as one or more Tag_Free cells whose
-                    // sizes match their class's cellSize exactly. Routing
-                    // via `freeListClassFor` (round-down) prevents
-                    // under-sized cells from being placed on a class whose
-                    // fast path would later overflow them.
-                    pushSpanOnFreeLists(free_lists_, base + alloc_size, remainder);
+                    pushSpanOnFreeLists(free_lists_, base + alloc_size,
+                                        remainder, block);
                 }
 
                 void* result = static_cast<void*>(base);
@@ -392,9 +406,12 @@ void* OldGenSpace::allocateFromBagPage(size_t requested_size) {
 
     // Carve the request off the front; route the remainder via the recursive
     // span-pusher so each placed cell exactly matches its class's cellSize.
+    // The block was just created with size_class = NUM_SIZE_CLASSES (mixed),
+    // so `pushSpanOnFreeLists` will use its any-class packing scheme.
     const size_t remainder = page_size - requested_size;
     if (remainder >= MIN_FREE_CELL_SIZE) {
-        pushSpanOnFreeLists(free_lists_, page_start + requested_size, remainder);
+        pushSpanOnFreeLists(free_lists_, page_start + requested_size,
+                            remainder, &blocks_.back());
     }
 
     void* result = static_cast<void*>(page_start);
@@ -777,7 +794,38 @@ namespace {
 // (< MIN_FREE_CELL_SIZE) get a non-linked Tag_Free header so block-walking
 // sweep can still parse them.
 inline void pushSpanOnFreeLists(FreeCell** free_lists, char* span_start,
-                                size_t span_bytes) {
+                                size_t span_bytes,
+                                const BlockInfo* block = nullptr) {
+    // For UNIFORM size-class blocks, walkStep advances by classToSize(cls),
+    // so every cell in the block must be exactly classToSize(cls) bytes.
+    // Slice the span into class-sized cells so sweep's next walk does not
+    // misstep mid-cell.
+    if (block != nullptr && block->size_class < NUM_SIZE_CLASSES) {
+        size_t cls = block->size_class;
+        size_t cellSize = OldGenSpaceTestAccess::classToSize(cls);
+        while (span_bytes >= cellSize) {
+            FreeCell* cell = reinterpret_cast<FreeCell*>(span_start);
+            std::memset(&cell->header, 0, sizeof(Header));
+            cell->header.tag = Tag_Free;
+            cell->header.size = static_cast<u32>(cellSize);
+            cell->header.color = static_cast<u32>(Color::White);
+            cell->next = free_lists[cls];
+            free_lists[cls] = cell;
+            span_start += cellSize;
+            span_bytes -= cellSize;
+        }
+        if (span_bytes >= sizeof(Header)) {
+            Header* hdr = reinterpret_cast<Header*>(span_start);
+            std::memset(hdr, 0, sizeof(Header));
+            hdr->tag = Tag_Free;
+            hdr->size = static_cast<u32>(span_bytes);
+            hdr->color = static_cast<u32>(Color::White);
+        }
+        return;
+    }
+
+    // Mixed/large block (or no block info): pack into the largest classes
+    // that fit, descending. This is the original behaviour.
     while (span_bytes >= MIN_FREE_CELL_SIZE) {
         size_t cls = OldGenSpaceTestAccess::freeListClassFor(span_bytes);
         if (cls >= NUM_SIZE_CLASSES) break;  // Below smallest class.
@@ -808,8 +856,9 @@ inline void pushSpanOnFreeLists(FreeCell** free_lists, char* span_start,
 }
 
 inline void pushCoalescedFreeCell(FreeCell** free_lists, char* span_start,
-                                  size_t span_bytes) {
-    pushSpanOnFreeLists(free_lists, span_start, span_bytes);
+                                  size_t span_bytes,
+                                  const BlockInfo* block = nullptr) {
+    pushSpanOnFreeLists(free_lists, span_start, span_bytes, block);
 }
 
 // Bytes to advance per step when walking a block linearly. Size-class
@@ -859,7 +908,7 @@ void OldGenSpace::sweep() {
             if (hdr->color == static_cast<u32>(Color::Black)) {
                 // Flush any pending garbage span.
                 if (run_start != nullptr) {
-                    pushCoalescedFreeCell(free_lists_, run_start, run_bytes);
+                    pushCoalescedFreeCell(free_lists_, run_start, run_bytes, &block);
                     buffer_meta_[buf_idx].garbage_bytes += run_bytes;
                     run_start = nullptr;
                     run_bytes = 0;
@@ -880,7 +929,7 @@ void OldGenSpace::sweep() {
         }
 
         if (run_start != nullptr) {
-            pushCoalescedFreeCell(free_lists_, run_start, run_bytes);
+            pushCoalescedFreeCell(free_lists_, run_start, run_bytes, &block);
             buffer_meta_[buf_idx].garbage_bytes += run_bytes;
         }
     }
@@ -928,7 +977,9 @@ void OldGenSpace::lazySweep(size_t target_class, size_t work_budget) {
 
     auto flushRun = [&](size_t buf_idx) {
         if (run_start == nullptr) return;
-        pushCoalescedFreeCell(free_lists_, run_start, run_bytes);
+        const BlockInfo* block_for_run =
+            (buf_idx < blocks_.size()) ? &blocks_[buf_idx] : nullptr;
+        pushCoalescedFreeCell(free_lists_, run_start, run_bytes, block_for_run);
         if (buf_idx < buffer_meta_.size()) {
             buffer_meta_[buf_idx].garbage_bytes += run_bytes;
         }
