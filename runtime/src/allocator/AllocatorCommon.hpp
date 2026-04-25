@@ -108,6 +108,11 @@ inline size_t getObjectSize(void *obj) {
         case Tag_Forward:
             size = sizeof(Forward);
             break;
+        case Tag_Free:
+            // Free cells store their full byte size directly in header.size.
+            // Already 8-byte aligned at the time the cell was created.
+            size = hdr->size;
+            break;
         case Tag_ByteBuffer:
             // Header size field stores byte count.
             size = sizeof(ByteBuffer) + hdr->size * sizeof(u8);
@@ -249,6 +254,13 @@ struct HeapConfig {
             throw std::invalid_argument(
                 "alloc_buffer_size must be <= max_heap_size / 2 "
                 "(can't exceed old gen space)");
+        }
+
+        // Old gen is sliced into BBoP pages of `alloc_buffer_size` at init.
+        if (initial_old_gen_size % alloc_buffer_size != 0) {
+            throw std::invalid_argument(
+                "initial_old_gen_size must be a multiple of alloc_buffer_size "
+                "(old gen is sliced into pages at init time)");
         }
 
         // ========== 4b. Large-Object Threshold Constraints ==========

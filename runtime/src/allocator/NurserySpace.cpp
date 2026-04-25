@@ -719,7 +719,7 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
 
         for (const auto& blk : oldgen.blocks_) {
             char* scan = blk.start;
-            char* end  = blk.alloc_ptr;
+            char* end  = blk.end_of_objects;
             while (scan < end) {
                 Header* h = getHeader(scan);
                 if (h->tag == 0 || h->tag > Tag_Forward) {

@@ -66,15 +66,10 @@ ThreadLocalHeap::ThreadLocalHeap(Allocator* parent,
     // Note: nursery_base and old_gen_base may be null if memory is allocated
     // on demand via acquireNurseryBlock/acquireAllocBuffer.
 
-    // Initialize old gen with reference to parent Allocator (for buffer acquisition).
+    // Initialize old gen with reference to parent Allocator. The initialize
+    // call now pre-commits `initial_old_gen_size` as one contiguous region
+    // and slices it into pages stored in `unassigned_blocks_` (BBoP).
     old_gen_.initialize(parent_, config_);
-
-    // Pre-commit the configured initial capacity. Keeps the 75% occupancy
-    // trigger from firing on the very first block and gives allocated_bytes
-    // a stable denominator to grow against before the grow policy kicks in.
-    if (config_->initial_old_gen_size > 0) {
-        parent_->ensureOldGenCapacityFor(old_gen_, config_->initial_old_gen_size);
-    }
 
     // Initialize nursery with reference to this heap for promotion.
     nursery_.initialize(this, config_);

@@ -475,14 +475,9 @@ void Allocator::ensureOldGenCapacityFor(OldGenSpace& space,
             break;
         }
 
-        BlockInfo new_block;
-        new_block.start = block_base;
-        new_block.end = block_base + block_size;
-        new_block.alloc_ptr = block_base;  // Empty: sweep/alloc paths will fill.
-
-        space.blocks_.push_back(new_block);
-        space.buffer_meta_.push_back(
-            {space.blocks_.size() - 1, 0, 0, false});
+        // Add to the bag of unassigned pages; the BBoP allocator will pull it
+        // out and materialize a BlockInfo on first use.
+        space.unassigned_blocks_.emplace_back(block_base, block_base + block_size);
 
         if (space.region_base_ == nullptr || block_base < space.region_base_) {
             space.region_base_ = block_base;
@@ -493,29 +488,39 @@ void Allocator::ensureOldGenCapacityFor(OldGenSpace& space,
     }
 }
 
-// Reserves a region for old gen with initial commit and growth capacity.
+// Commits a contiguous region of `initial_size` bytes in the old-gen address
+// space and returns the base. Used by `OldGenSpace::initialize` to obtain
+// the BBoP region in a single mmap. The `max_size` parameter is retained for
+// signature compatibility but only `initial_size` is committed and reserved.
 // Pre-condition: caller must hold thread_mutex_.
-char* Allocator::acquireOldGenRegion(size_t initial_size, size_t max_size) {
-    // Align sizes to 8 bytes.
-    initial_size = (initial_size + 7) & ~7;
-    max_size = (max_size + 7) & ~7;
+char* Allocator::acquireOldGenRegion(size_t initial_size, size_t /*max_size*/) {
+    std::lock_guard<std::recursive_mutex> lock(thread_mutex_);
 
-    // Check if we have space in old gen region.
-    if (old_gen_committed + max_size > nursery_offset) {
-        return nullptr;  // Out of old gen address space.
+    // Align size to 8 bytes.
+    initial_size = (initial_size + 7) & ~7;
+
+    if (initial_size == 0) return nullptr;
+
+    if (old_gen_committed + initial_size > nursery_offset) {
+        if (heapTraceEnabled()) {
+            dumpHeapState("acquireOldGenRegion OUT OF SPACE", initial_size);
+        }
+        return nullptr;
     }
 
     char* region_base = heap_base + old_gen_committed;
 
-    // Commit initial physical memory.
     void* result = mmap(region_base, initial_size, PROT_READ | PROT_WRITE,
                         MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
 
     if (result == MAP_FAILED) {
+        if (heapTraceEnabled()) {
+            dumpHeapState("acquireOldGenRegion MAP_FAILED", initial_size);
+        }
         return nullptr;
     }
 
-    old_gen_committed += max_size;  // Reserve the full max size.
+    old_gen_committed += initial_size;
     return region_base;
 }
 

@@ -81,7 +81,8 @@ typedef enum {
     Tag_Array,       // Mutable/growable array of Elm values.
     // Tag_Slice - String or even List or Array or Bytes slice (future).
     // Tag_Tensor - Tensors (future).
-    Tag_Forward,     // Must be last - used for forwarding pointers during GC.
+    Tag_Free,        // Free cell on a segregated free list (header.size = byte size).
+    Tag_Forward,     // Used for forwarding pointers during GC.
 } Tag;
 
 // Heap header that every heap object must have.

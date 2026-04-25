@@ -1970,6 +1970,11 @@ static void print_value(uint64_t val, int depth) {
             break;
         }
 
+        case Tag_Free: {
+            output_text("<free>");
+            break;
+        }
+
         default:
             output_format("<unknown_tag_%u>", header->tag);
             break;

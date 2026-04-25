@@ -2,6 +2,7 @@
 #define ECO_OLDGENSPACE_H
 
 #include <unordered_set>
+#include <utility>
 #include <vector>
 #include "AllocatorCommon.hpp"
 #include "RootSet.hpp"
@@ -20,14 +21,42 @@ enum class GCPhase {
 };
 
 // ============================================================================
-// Free-List Constants
+// Free-List Constants (Segregated-Fits + Big Bag of Pages)
 // ============================================================================
+//
+// The old gen is a segregated-fits allocator backed by a "Big Bag of Pages":
+//
+//   - At init, the configured initial_old_gen_size is committed as one
+//     contiguous region and sliced into pages of `alloc_buffer_size` bytes.
+//     Each page extent lives in `unassigned_blocks_` until it is first used.
+//
+//   - Allocation requests of size < `large_object_threshold` are routed to a
+//     fixed-cell size class: small classes (8..256, step 8) and medium
+//     classes (powers of two: 512, 1024, 2048, ...). On first use, a class
+//     pulls a page from the bag and slices it into uniform Tag_Free cells.
+//
+//   - Allocation requests in [large_object_threshold, alloc_buffer_size) pull
+//     a page from the bag, install a single Tag_Free cell spanning the page,
+//     and split it via the larger-cell path (no fixed-cell slicing).
+//
+//   - Allocation requests >= `alloc_buffer_size` go to allocateLargeBlock,
+//     which acquires a dedicated pinned block sized to fit the object.
+//
+//   - Sweep coalesces adjacent garbage into a single Tag_Free cell and pushes
+//     it onto the free list of the appropriate size class. Splitting is the
+//     only mechanism that re-divides large free cells into smaller ones.
 
-// Number of segregated free lists (size classes 0-31 for 8-256 byte objects).
-static constexpr size_t NUM_SIZE_CLASSES = 32;
-
-// Maximum object size for free list allocation (larger objects use bump allocation).
+// Small classes: 32 classes covering 8..256 bytes in steps of 8.
+static constexpr size_t NUM_SMALL_CLASSES = 32;
 static constexpr size_t MAX_SMALL_SIZE = 256;
+
+// Medium classes: powers of two starting at 512 B. We statically reserve room
+// up through 65536 B (8 medium classes), but the runtime cap is set from
+// `large_object_threshold` so the actual class count is config-dependent.
+static constexpr size_t MEDIUM_CLASS_BASE = 512;
+static constexpr size_t NUM_MEDIUM_CLASSES_MAX = 8;  // 512..65536
+static constexpr size_t NUM_SIZE_CLASSES =
+    NUM_SMALL_CLASSES + NUM_MEDIUM_CLASSES_MAX;
 
 // Bytes to sweep per allocation slow-path invocation.
 static constexpr size_t SWEEP_WORK_BUDGET = 4096;
@@ -38,47 +67,34 @@ static constexpr size_t MARK_WORK_RATIO = 2;
 // ============================================================================
 // Free Cell Structure
 // ============================================================================
-
-// A free cell in the segregated free list.
-// Overlays a freed object's memory, preserving the header for size calculation.
 //
-// The original Header is preserved to allow getObjectSize() to work correctly
-// during subsequent GC sweeps. The next pointer is stored after the header,
-// in the space that would normally hold object data. This requires all free
-// list objects to be at least sizeof(Header) + sizeof(FreeCell*) = 16 bytes.
+// A free cell overlays a span of unallocated bytes and chains into a per-class
+// free list. The header carries Tag_Free and the cell's full byte size, so
+// any sweep walk can skip over it just like any other heap object.
 struct FreeCell {
-    Header header;    // Preserved original header (8 bytes)
-    FreeCell* next;   // Free list link (8 bytes, stored in object's data area)
+    Header header;    // Tag_Free; header.size = byte size of this cell.
+    FreeCell* next;   // Free-list link, stored in the cell's data area.
 };
+
+// Smallest free cell that can be linked into a free list.
+static constexpr size_t MIN_FREE_CELL_SIZE = sizeof(FreeCell);
 
 // ============================================================================
 // Block Info Structure
 // ============================================================================
 
-// Tracks a memory block for bump-pointer allocation.
-// Simpler replacement for the previous AllocBuffer abstraction.
+// Tracks a page (or large block) currently materialized in `blocks_`. A page
+// enters `blocks_` only once it has been pulled from `unassigned_blocks_` and
+// either populated for a size class or wrapped as a single splittable cell.
 struct BlockInfo {
-    char* start;        // Start of the memory block.
-    char* end;          // End of the memory block (exclusive).
-    char* alloc_ptr;    // Current allocation pointer (bump pointer).
+    char* start;            // Start of the page/block (inclusive).
+    char* end;              // End of the page/block (exclusive).
+    char* end_of_objects;   // Sweep watermark: parse [start, end_of_objects).
+    size_t size_class;      // Advisory: preferred class for this page (or
+                            // NUM_SIZE_CLASSES if mixed/large).
+    bool is_large;          // True for dedicated large-object (pinned) blocks.
 
-    // Returns the number of bytes used in this block.
-    size_t usedBytes() const { return alloc_ptr - start; }
-
-    // Returns the number of remaining bytes available for allocation.
-    size_t remainingBytes() const { return end - alloc_ptr; }
-
-    // Allocates memory from this block using bump pointer.
-    // Returns nullptr if not enough space.
-    void* allocate(size_t size) {
-        size = (size + 7) & ~7;  // Align to 8 bytes.
-        if (alloc_ptr + size > end) {
-            return nullptr;
-        }
-        void* result = alloc_ptr;
-        alloc_ptr += size;
-        return result;
-    }
+    size_t totalBytes() const { return static_cast<size_t>(end - start); }
 };
 
 // ============================================================================
@@ -140,10 +156,9 @@ void* readBarrier(HPointer& ptr);
 /**
  * Old generation with mark-and-sweep collection.
  *
- * Uses block-based bump-pointer allocation with lazy sweeping. Each block
- * is a contiguous region obtained from the Allocator. Objects are allocated
- * by bumping a pointer within the current block, falling back to free lists
- * for smaller objects after sweeping.
+ * Segregated-fits allocator backed by a "Big Bag of Pages": the initial
+ * old-gen region is precommitted and sliced into pages, each pulled from the
+ * bag on demand. See the file-level comment block above for the full design.
  *
  * Thread-local (one instance per thread).
  */
@@ -154,8 +169,9 @@ public:
 
     // ========== Allocation ==========
 
-    // Allocates memory using bump pointer allocation.
-    // Acquires a new block from the Allocator if the current block is exhausted.
+    // Allocates memory using the segregated-fits + BBoP scheme described
+    // above. Acquires additional capacity from the Allocator only if the bag
+    // of pages is empty AND no free cell of sufficient size is available.
     void *allocate(size_t size);
 
     // ========== Queries ==========
@@ -187,11 +203,19 @@ private:
     const HeapConfig* config_;    // Heap configuration parameters.
     Allocator* allocator_;        // Back-reference for acquiring buffers.
 
+    // Runtime number of size classes; depends on `large_object_threshold`.
+    // Always satisfies NUM_SMALL_CLASSES <= num_size_classes_ <= NUM_SIZE_CLASSES.
+    size_t num_size_classes_;
+
     // ========== Block Management ==========
 
-    std::vector<BlockInfo> blocks_;        // All memory blocks owned by this old gen.
-    size_t current_block_index_;           // Index of active allocation block (or -1).
+    std::vector<BlockInfo> blocks_;        // Pages currently in use.
     size_t allocated_bytes;                // Total bytes currently allocated.
+
+    // Bag of pre-committed-but-unassigned pages (start, end). Each entry is
+    // a page of `alloc_buffer_size` bytes carved from the initial region or
+    // a post-GC capacity grow.
+    std::vector<std::pair<char*, char*>> unassigned_blocks_;
 
     // Cached bounds for O(1) membership checks (updated when blocks change).
     char* region_base_;                    // Start of old gen region.
@@ -224,6 +248,8 @@ private:
     std::vector<size_t> evacuation_set_;      // Block indices selected for evacuation.
     size_t current_evac_index_;               // Index within evacuation_set_ being processed.
     char* evac_cursor_;                       // Position within current evacuation block.
+    size_t evac_block_index_;                 // Destination block for evacuation bump-allocation.
+    char* evac_alloc_ptr_;                    // Bump pointer within evacuation destination block.
     size_t fixup_buffer_index_;               // Block index for reference fixup pass.
     char* fixup_cursor_;                      // Position within current fixup block.
 
@@ -235,24 +261,35 @@ private:
 
     // ========== Size Class Helpers ==========
 
-    // Maps an allocation size to its segregated free list index.
-    // Returns NUM_SIZE_CLASSES for sizes > MAX_SMALL_SIZE (use bump allocation).
+    // Maps an allocation size to its size-class index. Returns NUM_SIZE_CLASSES
+    // if the size doesn't fit any fixed-cell class (caller must use the
+    // page-as-single-cell + split path).
     static size_t sizeClass(size_t size) {
-        size = (size + 7) & ~7;  // Align to 8 bytes.
+        size = (size + 7) & ~7;
         if (size <= MAX_SMALL_SIZE) {
-            return (size / 8) - 1;  // Classes 0-31 map to sizes 8-256.
+            return (size / 8) - 1;  // Classes 0..31 cover 8..256.
         }
-        return NUM_SIZE_CLASSES;  // Large object indicator.
+        // Medium classes 32..(NUM_SMALL_CLASSES + NUM_MEDIUM_CLASSES_MAX - 1).
+        // Class i (i >= 32) holds cells of size MEDIUM_CLASS_BASE << (i - 32).
+        // Find smallest medium class that holds `size`.
+        size_t cell = MEDIUM_CLASS_BASE;
+        for (size_t i = 0; i < NUM_MEDIUM_CLASSES_MAX; ++i) {
+            if (size <= cell) return NUM_SMALL_CLASSES + i;
+            cell <<= 1;
+        }
+        return NUM_SIZE_CLASSES;  // Doesn't fit any fixed class.
     }
 
     // Maps a size class index back to its allocation size in bytes.
     static size_t classToSize(size_t cls) {
-        return (cls + 1) * 8;
+        if (cls < NUM_SMALL_CLASSES) return (cls + 1) * 8;
+        return MEDIUM_CLASS_BASE << (cls - NUM_SMALL_CLASSES);
     }
 
     // ========== Internal Methods ==========
 
-    // Initializes this old gen space with allocator reference and configuration.
+    // Initializes this old gen space: precommits `initial_old_gen_size` and
+    // slices it into pages stored in `unassigned_blocks_`.
     void initialize(Allocator* allocator, const HeapConfig* config);
 
     // Resets to initial state (clears all blocks, stats, and GC state).
@@ -320,8 +357,33 @@ private:
     bool isInEvacuationSet(size_t buffer_index) const;
     void freeEvacuatedBuffers();
 
-    // Helper for bump allocation (used when free list is empty).
-    void* bumpAllocate(size_t size);
+    // ========== Segregated-Fits + BBoP Internal Helpers ==========
+
+    // Top-level dispatch for non-large allocations: tries the size-class
+    // fast path, then splitting from larger cells, then population from a
+    // bag page.
+    void* allocateFromSizeClass(size_t cls, size_t requested_size);
+
+    // Allocates by pulling an unassigned page, wrapping it as a single
+    // Tag_Free cell, and splitting off a `requested_size` chunk. Used for
+    // allocations in the [large_object_threshold, alloc_buffer_size) range,
+    // and as a fallback when no fixed-cell class can satisfy a request.
+    void* allocateFromBagPage(size_t requested_size);
+
+    // Walks free lists for classes > target_cls; if a cell large enough is
+    // found, carves off `alloc_size` bytes and returns the front, pushing
+    // the remainder onto the appropriate free list.
+    void* tryAllocateBySplittingLarger(size_t target_cls, size_t alloc_size);
+
+    // Pulls a page from `unassigned_blocks_`, slices it into uniform cells
+    // of `classToSize(cls)`, and links them onto `free_lists_[cls]`. Returns
+    // true if a page was available and populated.
+    bool populateFromBlock(size_t cls);
+
+    // Initializes an object header in newly allocated memory. Sets color to
+    // Black during marking/sweeping (so the object is not treated as garbage
+    // mid-cycle), White otherwise. Tag/size are written by the caller.
+    void initObjectHeader(void* obj);
 
     // Allocates a single object that exceeds alloc_buffer_size by acquiring
     // a dedicated old-gen block sized exactly to fit it. The caller is
@@ -411,6 +473,10 @@ public:
     }
     static const std::vector<BlockInfo>& getBlocks(const OldGenSpace& oldgen) {
         return oldgen.blocks_;
+    }
+    static const std::vector<std::pair<char*, char*>>& getUnassignedBlocks(
+            const OldGenSpace& oldgen) {
+        return oldgen.unassigned_blocks_;
     }
 
     // Manual control of lazy sweeping for testing.
