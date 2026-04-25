@@ -21,6 +21,13 @@ namespace Elm {
 // Global heap base (defined in Allocator.cpp).
 extern char* g_heap_base;
 
+// Forward decl — defined later in this TU; called from member functions
+// above the definition.
+namespace {
+inline void pushSpanOnFreeLists(FreeCell** free_lists, char* span_start,
+                                size_t span_bytes);
+}
+
 // Read barrier - converts logical pointer to physical address.
 // Does not follow forwarding pointers (use Allocator::resolve() for that).
 void* readBarrier(HPointer& ptr) {
@@ -315,23 +322,12 @@ void* OldGenSpace::tryAllocateBySplittingLarger(size_t target_cls,
 
                 char* base = reinterpret_cast<char*>(curr);
                 if (remainder > 0) {
-                    // Carve the front for the allocation; push the back as a
-                    // new Tag_Free cell on the appropriate class.
-                    FreeCell* tail = reinterpret_cast<FreeCell*>(base + alloc_size);
-                    std::memset(&tail->header, 0, sizeof(Header));
-                    tail->header.tag = Tag_Free;
-                    tail->header.size = static_cast<u32>(remainder);
-                    tail->header.color = static_cast<u32>(Color::White);
-
-                    size_t tail_cls = sizeClass(remainder);
-                    if (tail_cls >= NUM_SIZE_CLASSES) {
-                        // Remainder doesn't fit any class (rare: larger than
-                        // any medium class). Park it on the largest medium
-                        // class; future splits can carve it further.
-                        tail_cls = NUM_SIZE_CLASSES - 1;
-                    }
-                    tail->next = free_lists_[tail_cls];
-                    free_lists_[tail_cls] = tail;
+                    // Push the back as one or more Tag_Free cells whose
+                    // sizes match their class's cellSize exactly. Routing
+                    // via `freeListClassFor` (round-down) prevents
+                    // under-sized cells from being placed on a class whose
+                    // fast path would later overflow them.
+                    pushSpanOnFreeLists(free_lists_, base + alloc_size, remainder);
                 }
 
                 void* result = static_cast<void*>(base);
@@ -394,22 +390,11 @@ void* OldGenSpace::allocateFromBagPage(size_t requested_size) {
     whole->header.size = static_cast<u32>(page_size);
     whole->header.color = static_cast<u32>(Color::White);
 
-    // Carve the request off the front. The remainder, if any, becomes a
-    // Tag_Free cell pushed onto the appropriate free list.
+    // Carve the request off the front; route the remainder via the recursive
+    // span-pusher so each placed cell exactly matches its class's cellSize.
     const size_t remainder = page_size - requested_size;
     if (remainder >= MIN_FREE_CELL_SIZE) {
-        FreeCell* tail = reinterpret_cast<FreeCell*>(page_start + requested_size);
-        std::memset(&tail->header, 0, sizeof(Header));
-        tail->header.tag = Tag_Free;
-        tail->header.size = static_cast<u32>(remainder);
-        tail->header.color = static_cast<u32>(Color::White);
-
-        size_t tail_cls = sizeClass(remainder);
-        if (tail_cls >= NUM_SIZE_CLASSES) {
-            tail_cls = NUM_SIZE_CLASSES - 1;
-        }
-        tail->next = free_lists_[tail_cls];
-        free_lists_[tail_cls] = tail;
+        pushSpanOnFreeLists(free_lists_, page_start + requested_size, remainder);
     }
 
     void* result = static_cast<void*>(page_start);
@@ -785,22 +770,46 @@ namespace {
 
 // Pushes a coalesced free span onto the appropriate per-class free list.
 // Goes via the test-access wrapper to avoid taking a friend-only entry point.
+// Recursively splits `span` into exact-cellSize cells, one per non-empty
+// class chosen by `freeListClassFor`. Maintains the invariant that every
+// cell on free_lists_[cls] satisfies header.size == classToSize(cls), so
+// the size-class fast path can pop without any size check. Trailing bytes
+// (< MIN_FREE_CELL_SIZE) get a non-linked Tag_Free header so block-walking
+// sweep can still parse them.
+inline void pushSpanOnFreeLists(FreeCell** free_lists, char* span_start,
+                                size_t span_bytes) {
+    while (span_bytes >= MIN_FREE_CELL_SIZE) {
+        size_t cls = OldGenSpaceTestAccess::freeListClassFor(span_bytes);
+        if (cls >= NUM_SIZE_CLASSES) break;  // Below smallest class.
+        size_t cellSize = OldGenSpaceTestAccess::classToSize(cls);
+
+        FreeCell* cell = reinterpret_cast<FreeCell*>(span_start);
+        std::memset(&cell->header, 0, sizeof(Header));
+        cell->header.tag = Tag_Free;
+        cell->header.size = static_cast<u32>(cellSize);
+        cell->header.color = static_cast<u32>(Color::White);
+        cell->next = free_lists[cls];
+        free_lists[cls] = cell;
+
+        span_start += cellSize;
+        span_bytes -= cellSize;
+    }
+
+    // Trailing bytes too small for any class: leave a parseable Tag_Free
+    // header so sweep can walk over them. Always 8-aligned for 8-aligned
+    // input, so >= sizeof(Header) when non-zero.
+    if (span_bytes >= sizeof(Header)) {
+        Header* hdr = reinterpret_cast<Header*>(span_start);
+        std::memset(hdr, 0, sizeof(Header));
+        hdr->tag = Tag_Free;
+        hdr->size = static_cast<u32>(span_bytes);
+        hdr->color = static_cast<u32>(Color::White);
+    }
+}
+
 inline void pushCoalescedFreeCell(FreeCell** free_lists, char* span_start,
                                   size_t span_bytes) {
-    if (span_bytes < MIN_FREE_CELL_SIZE) return;  // Cannot link a tiny span.
-
-    FreeCell* cell = reinterpret_cast<FreeCell*>(span_start);
-    std::memset(&cell->header, 0, sizeof(Header));
-    cell->header.tag = Tag_Free;
-    cell->header.size = static_cast<u32>(span_bytes);
-    cell->header.color = static_cast<u32>(Color::White);
-
-    size_t cls = OldGenSpaceTestAccess::sizeClass(span_bytes);
-    if (cls >= NUM_SIZE_CLASSES) {
-        cls = NUM_SIZE_CLASSES - 1;  // Park oversize spans on the largest class.
-    }
-    cell->next = free_lists[cls];
-    free_lists[cls] = cell;
+    pushSpanOnFreeLists(free_lists, span_start, span_bytes);
 }
 
 }  // namespace

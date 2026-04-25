@@ -261,7 +261,9 @@ private:
 
     // ========== Size Class Helpers ==========
 
-    // Maps an allocation size to its size-class index. Returns NUM_SIZE_CLASSES
+    // Maps an allocation request size to its size-class index. Used at
+    // ALLOCATION time: returns the smallest class whose cellSize >= size, so
+    // a popped cell can always satisfy the request. Returns NUM_SIZE_CLASSES
     // if the size doesn't fit any fixed-cell class (caller must use the
     // page-as-single-cell + split path).
     static size_t sizeClass(size_t size) {
@@ -278,6 +280,40 @@ private:
             cell <<= 1;
         }
         return NUM_SIZE_CLASSES;  // Doesn't fit any fixed class.
+    }
+
+    // Maps a free-cell SPAN size to the class it can safely live on. Used
+    // at PLACEMENT time (split tails, coalesced runs, bag-page tails): returns
+    // the LARGEST class whose cellSize <= span, so the fast-path consumer of
+    // free_lists_[cls] is guaranteed a cell of at least classToSize(cls)
+    // bytes (the invariant the fast path relies on). Returns NUM_SIZE_CLASSES
+    // if span is below the smallest cell size (caller must drop or merge it).
+    //
+    // This differs from `sizeClass` (which rounds UP for allocation lookup):
+    // medium classes step by powers of 2, so a 352-byte span placed via
+    // sizeClass would land on cls=32 (cellSize=512). The fast path would
+    // then hand it out as a 512-byte slot, causing buffer overflow when the
+    // caller writes more than 352 bytes. freeListClassFor instead routes
+    // 352 bytes to cls=31 (cellSize=256), and leftover bytes are pushed onto
+    // smaller classes by the cell-placement helper.
+    static size_t freeListClassFor(size_t span) {
+        span &= ~static_cast<size_t>(7);
+        if (span < 8) return NUM_SIZE_CLASSES;
+        if (span <= MAX_SMALL_SIZE) {
+            // Small classes step by 8: largest cls with (cls+1)*8 <= span.
+            return (span / 8) - 1;
+        }
+        if (span < MEDIUM_CLASS_BASE) {
+            // span in (256, 512): no medium fits. Largest small class (256).
+            return NUM_SMALL_CLASSES - 1;
+        }
+        // Medium: largest k with (MEDIUM_CLASS_BASE << k) <= span.
+        size_t k = 0;
+        while (k + 1 < NUM_MEDIUM_CLASSES_MAX &&
+               (MEDIUM_CLASS_BASE << (k + 1)) <= span) {
+            ++k;
+        }
+        return NUM_SMALL_CLASSES + k;
     }
 
     // Maps a size class index back to its allocation size in bytes.
@@ -449,6 +485,9 @@ public:
     // Size class helpers.
     static size_t sizeClass(size_t size) { return OldGenSpace::sizeClass(size); }
     static size_t classToSize(size_t cls) { return OldGenSpace::classToSize(cls); }
+    static size_t freeListClassFor(size_t span) {
+        return OldGenSpace::freeListClassFor(span);
+    }
 
     // GC phase state.
     static GCPhase getGCPhase(const OldGenSpace& oldgen) { return oldgen.gc_phase_; }
