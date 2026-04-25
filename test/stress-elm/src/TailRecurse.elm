@@ -1,34 +1,34 @@
 module TailRecurse exposing (main)
 
--- CHECK: result: 1000000
+-- CHECK: TailRecurse: True
 
-import Html exposing (text)
-
-
-n : Int
-n =
-    1000
-
-
-m : Int
-m =
-    1000
+import StressHarness exposing (StressFlags)
+import Task
 
 
 loop : Int -> Int -> Int
 loop count acc =
     if count <= 0 then
         acc
+
     else
         loop (count - 1) (acc + 1)
 
 
-main =
+run : StressFlags -> Task.Task Never Bool
+run flags =
     let
-        result =
-            loop (n * m) 0
-
-        _ =
-            Debug.log "result" result
+        size =
+            flags.maxSize
     in
-    text "done"
+    StressHarness.loopWhile flags
+        flags.numLoops
+        (\_ -> Task.succeed (loop size 0 == size))
+
+
+main : Program StressFlags StressHarness.Model StressHarness.Msg
+main =
+    StressHarness.taskProgram
+        { label = "TailRecurse"
+        , run = run
+        }

@@ -9,28 +9,14 @@ module BytesRoundtripAndThenChain exposing (main)
     deep capture chain is live.
 -}
 
--- CHECK: roundtrip: True
+-- CHECK: BytesRoundtripAndThenChain: True
 
 import Bytes exposing (Endianness(..))
 import Bytes.Decode as D
 import Bytes.Encode as E
 import Gen exposing (Seed)
-import Html exposing (text)
-
-
-n : Int
-n =
-    1000
-
-
-m : Int
-m =
-    1000
-
-
-loopCount : Int
-loopCount =
-    n // 20
+import StressHarness exposing (StressFlags)
+import Task
 
 
 initialSeed : Seed
@@ -72,9 +58,9 @@ genRec seed =
     ( { a = a, b = b, c = c, d = d, e = e, f = f }, s6 )
 
 
-gen : Seed -> ( List Rec, Seed )
-gen seed =
-    Gen.listOf m genRec seed
+gen : Int -> Seed -> ( List Rec, Seed )
+gen size seed =
+    Gen.listOf size genRec seed
 
 
 encodeRec : Rec -> E.Encoder
@@ -145,15 +131,11 @@ decoder =
             )
 
 
-loop : Seed -> Int -> Bool -> Bool
-loop seed count ok =
-    if count <= 0 then
-        ok
-
-    else
-        let
+cycleStep : Int -> Seed -> ( Seed, Bool )
+cycleStep size seed =
+    let
             ( original, seed1 ) =
-                gen seed
+                gen size seed
 
             encoded =
                 E.encode (encoder original)
@@ -168,16 +150,25 @@ loop seed count ok =
 
                     Nothing ->
                         False
-        in
-        loop seed1 (count - 1) (ok && ok2)
-
-
-main =
-    let
-        result =
-            loop initialSeed loopCount True
-
-        _ =
-            Debug.log "roundtrip" result
     in
-    text "done"
+    ( seed1, ok2 )
+
+
+run : StressFlags -> Task.Task Never Bool
+run flags =
+    let
+        loopCount =
+            flags.numLoops // 20
+    in
+    StressHarness.loopWhileState flags
+        loopCount
+        initialSeed
+        (\_ s -> Task.succeed (cycleStep flags.maxSize s))
+
+
+main : Program StressFlags StressHarness.Model StressHarness.Msg
+main =
+    StressHarness.taskProgram
+        { label = "BytesRoundtripAndThenChain"
+        , run = run
+        }

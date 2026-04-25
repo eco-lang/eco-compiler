@@ -1,24 +1,16 @@
 module ResultMapChain exposing (main)
 
--- CHECK: roundtrip: True
+-- CHECK: ResultMapChain: True
 
-import Html exposing (text)
-
-
-n : Int
-n =
-    1000
-
-
-m : Int
-m =
-    1000
+import StressHarness exposing (StressFlags)
+import Task
 
 
 buildResults : Int -> List (Result String Int) -> List (Result String Int)
 buildResults i acc =
     if i <= 0 then
         acc
+
     else
         let
             val =
@@ -31,26 +23,28 @@ buildResults i acc =
         buildResults (i - 1) (val :: acc)
 
 
-applyNTimes : Int -> (a -> a) -> a -> a
-applyNTimes count f val =
-    if count <= 0 then
-        val
-    else
-        applyNTimes (count - 1) f (f val)
+cycle : List (Result String Int) -> Bool
+cycle original =
+    List.map (Result.map negate) (List.map (Result.map negate) original) == original
 
 
-main =
+run : StressFlags -> Task.Task Never Bool
+run flags =
     let
         original =
-            buildResults m []
+            buildResults flags.maxSize []
 
-        transformed =
-            applyNTimes n (List.map (Result.map negate)) original
-
-        roundtrip =
-            original == transformed
-
-        _ =
-            Debug.log "roundtrip" roundtrip
+        loopCount =
+            flags.numLoops // 2
     in
-    text "done"
+    StressHarness.loopWhile flags
+        loopCount
+        (\_ -> Task.succeed (cycle original))
+
+
+main : Program StressFlags StressHarness.Model StressHarness.Msg
+main =
+    StressHarness.taskProgram
+        { label = "ResultMapChain"
+        , run = run
+        }

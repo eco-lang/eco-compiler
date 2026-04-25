@@ -1,57 +1,43 @@
 module SetBuildFold exposing (main)
 
--- CHECK: result: 250250000
+-- CHECK: SetBuildFold: True
 
-import Html exposing (text)
 import Set exposing (Set)
-
-
-n : Int
-n =
-    1000
-
-
-m : Int
-m =
-    1000
-
-
-loopCount : Int
-loopCount =
-    n // 2
+import StressHarness exposing (StressFlags)
+import Task
 
 
 buildSet : Int -> Set Int -> Set Int
 buildSet i acc =
     if i <= 0 then
         acc
+
     else
         buildSet (i - 1) (Set.insert i acc)
 
 
-loop : Int -> Int -> Int
-loop count acc =
-    if count <= 0 then
-        acc
-    else
-        let
-            s =
-                buildSet m Set.empty
-
-            sum =
-                Set.foldl (+) 0 s
-        in
-        loop (count - 1) (acc + sum)
+cycle : Int -> Int
+cycle size =
+    Set.foldl (+) 0 (buildSet size Set.empty)
 
 
-main =
+run : StressFlags -> Task.Task Never Bool
+run flags =
     let
-        -- Each set fold sums 1..m = m*(m+1)/2 = 500500
-        -- After n iterations: n * 500500 = 500500000
-        result =
-            loop loopCount 0
+        loopCount =
+            flags.numLoops // 2
 
-        _ =
-            Debug.log "result" result
+        expectedPerCycle =
+            flags.maxSize * (flags.maxSize + 1) // 2
     in
-    text "done"
+    StressHarness.loopWhile flags
+        loopCount
+        (\_ -> Task.succeed (cycle flags.maxSize == expectedPerCycle))
+
+
+main : Program StressFlags StressHarness.Model StressHarness.Msg
+main =
+    StressHarness.taskProgram
+        { label = "SetBuildFold"
+        , run = run
+        }

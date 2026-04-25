@@ -1,72 +1,59 @@
 module DictUnionDiff exposing (main)
 
--- CHECK: result: True
+-- CHECK: DictUnionDiff: True
 
 import Dict exposing (Dict)
-import Html exposing (text)
-
-
-n : Int
-n =
-    1000
-
-
-m : Int
-m =
-    1000
-
-
-loopCount : Int
-loopCount =
-    n // 4
-
-
-half : Int
-half =
-    m // 2
+import StressHarness exposing (StressFlags)
+import Task
 
 
 buildDict : Int -> Int -> Dict Int Int -> Dict Int Int
 buildDict lo hi acc =
     if lo > hi then
         acc
+
     else
         buildDict (lo + 1) hi (Dict.insert lo (lo * 10) acc)
 
 
-loop : Dict Int Int -> Dict Int Int -> Int -> Bool -> Bool
-loop left right count ok =
-    if count <= 0 then
-        ok
-    else
-        let
-            merged =
-                Dict.union left right
-
-            mergedSize =
-                Dict.size merged
-
-            diffed =
-                Dict.diff merged right
-
-            diffedSize =
-                Dict.size diffed
-        in
-        loop left right (count - 1) (ok && mergedSize == m && diffedSize == half)
-
-
-main =
+cycle : Dict Int Int -> Dict Int Int -> Int -> Int -> Bool
+cycle left right size half =
     let
+        merged =
+            Dict.union left right
+
+        diffed =
+            Dict.diff merged right
+    in
+    Dict.size merged == size && Dict.size diffed == half
+
+
+run : StressFlags -> Task.Task Never Bool
+run flags =
+    let
+        m =
+            flags.maxSize
+
+        half =
+            m // 2
+
+        loopCount =
+            flags.numLoops // 4
+
         left =
             buildDict 1 half Dict.empty
 
         right =
             buildDict (half + 1) m Dict.empty
-
-        result =
-            loop left right loopCount True
-
-        _ =
-            Debug.log "result" result
     in
-    text "done"
+    StressHarness.loopWhile flags
+        loopCount
+        (\_ -> Task.succeed (cycle left right m half))
+
+
+main : Program StressFlags StressHarness.Model StressHarness.Msg
+main =
+    StressHarness.taskProgram
+        { label = "DictUnionDiff"
+        , run = run
+        }

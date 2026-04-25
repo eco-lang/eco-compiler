@@ -1,19 +1,10 @@
 module RecordUpdateArray exposing (main)
 
--- CHECK: roundtrip: True
+-- CHECK: RecordUpdateArray: True
 
 import Array exposing (Array)
-import Html exposing (text)
-
-
-n : Int
-n =
-    1000
-
-
-m : Int
-m =
-    1000
+import StressHarness exposing (StressFlags)
+import Task
 
 
 type alias Rec =
@@ -35,30 +26,33 @@ buildRecs count =
         )
 
 
-applyNTimes : Int -> (a -> a) -> a -> a
-applyNTimes count f val =
-    if count <= 0 then
-        val
-    else
-        applyNTimes (count - 1) f (f val)
+flipA : Rec -> Rec
+flipA r =
+    { r | a = -r.a }
 
 
-main =
+cycle : Array Rec -> Bool
+cycle original =
+    Array.map flipA (Array.map flipA original) == original
+
+
+run : StressFlags -> Task.Task Never Bool
+run flags =
     let
         original =
-            buildRecs m
+            buildRecs flags.maxSize
 
-        -- Negate field a each iteration; n is even so it round-trips
-        transform =
-            Array.map (\r -> { r | a = -r.a })
-
-        transformed =
-            applyNTimes n transform original
-
-        roundtrip =
-            original == transformed
-
-        _ =
-            Debug.log "roundtrip" roundtrip
+        loopCount =
+            flags.numLoops // 2
     in
-    text "done"
+    StressHarness.loopWhile flags
+        loopCount
+        (\_ -> Task.succeed (cycle original))
+
+
+main : Program StressFlags StressHarness.Model StressHarness.Msg
+main =
+    StressHarness.taskProgram
+        { label = "RecordUpdateArray"
+        , run = run
+        }

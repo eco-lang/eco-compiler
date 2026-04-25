@@ -20,31 +20,8 @@ module MVarChanPipelineStress exposing (main)
 import Bytes.Decode as BD
 import Bytes.Encode as BE
 import Eco.MVar as MV
-import Platform
+import StressHarness exposing (StressFlags)
 import Task
-
-
-type Msg
-    = GotResult Bool
-
-
-type alias Model =
-    Maybe Bool
-
-
-n : Int
-n =
-    1000
-
-
-m : Int
-m =
-    1000
-
-
-loopCount : Int
-loopCount =
-    n // 100
 
 
 listEnc : List Int -> BE.Encoder
@@ -57,9 +34,9 @@ listDec =
     BD.succeed []
 
 
-smallAlloc : Task.Task Never Int
-smallAlloc =
-    Task.succeed (List.sum (List.range 1 (m // 8)))
+smallAlloc : Int -> Task.Task Never Int
+smallAlloc size =
+    Task.succeed (List.sum (List.range 1 (size // 8)))
 
 
 push : MV.MVar (List Int) -> Int -> Task.Task Never ()
@@ -68,66 +45,43 @@ push chan v =
         |> Task.andThen (\xs -> MV.put listEnc chan (xs ++ [ v ]))
 
 
-pushMany : MV.MVar (List Int) -> Int -> Task.Task Never ()
-pushMany chan i =
-    if i > m then
+pushMany : Int -> MV.MVar (List Int) -> Int -> Task.Task Never ()
+pushMany size chan i =
+    if i > size then
         Task.succeed ()
 
     else
         push chan i
-            |> Task.andThen (\_ -> smallAlloc)
-            |> Task.andThen (\_ -> pushMany chan (i + 1))
+            |> Task.andThen (\_ -> smallAlloc size)
+            |> Task.andThen (\_ -> pushMany size chan (i + 1))
 
 
-singleCycle : Task.Task Never Bool
-singleCycle =
+cycle : Int -> Task.Task Never Bool
+cycle size =
     MV.new
         |> Task.andThen
             (\chan ->
                 MV.put listEnc chan []
-                    |> Task.andThen (\_ -> pushMany chan 1)
+                    |> Task.andThen (\_ -> pushMany size chan 1)
                     |> Task.andThen (\_ -> MV.take listDec chan)
             )
-        |> Task.map (\xs -> xs == List.range 1 m)
+        |> Task.map (\xs -> xs == List.range 1 size)
 
 
-repeatCycle : Int -> Task.Task Never Bool
-repeatCycle remaining =
-    if remaining <= 0 then
-        Task.succeed True
-
-    else
-        singleCycle
-            |> Task.andThen
-                (\ok ->
-                    if ok then
-                        repeatCycle (remaining - 1)
-
-                    else
-                        Task.succeed False
-                )
+run : StressFlags -> Task.Task Never Bool
+run flags =
+    let
+        loopCount =
+            flags.numLoops // 100
+    in
+    StressHarness.loopWhile flags
+        loopCount
+        (\_ -> cycle flags.maxSize)
 
 
-init : () -> ( Model, Cmd Msg )
-init _ =
-    ( Nothing, Task.perform GotResult (repeatCycle loopCount) )
-
-
-update : Msg -> Model -> ( Model, Cmd Msg )
-update msg _ =
-    case msg of
-        GotResult ok ->
-            let
-                _ =
-                    Debug.log "MVarChanPipelineStress" ok
-            in
-            ( Just ok, Cmd.none )
-
-
-main : Program () Model Msg
+main : Program StressFlags StressHarness.Model StressHarness.Msg
 main =
-    Platform.worker
-        { init = init
-        , update = update
-        , subscriptions = \_ -> Sub.none
+    StressHarness.taskProgram
+        { label = "MVarChanPipelineStress"
+        , run = run
         }

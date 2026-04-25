@@ -1,24 +1,16 @@
 module ClosureCaptureVary exposing (main)
 
--- CHECK: result: True
+-- CHECK: ClosureCaptureVary: True
 
-import Html exposing (text)
-
-
-n : Int
-n =
-    1000
-
-
-m : Int
-m =
-    1000
+import StressHarness exposing (StressFlags)
+import Task
 
 
 buildClosures : Int -> List (Int -> Int) -> List (Int -> Int)
 buildClosures i acc =
     if i <= 0 then
         acc
+
     else
         let
             kind =
@@ -27,23 +19,18 @@ buildClosures i acc =
             closure =
                 case kind of
                     0 ->
-                        -- captures 1 value
                         \x -> x + i
 
                     1 ->
-                        -- captures 2 values (i and kind)
                         \x -> x + i + kind
 
                     2 ->
-                        -- captures 1 value, different operation
                         \x -> x + i * 2
 
                     3 ->
-                        -- captures 2 values
                         \x -> x + i - kind
 
                     _ ->
-                        -- captures 1 value
                         \x -> x + i + 1
         in
         buildClosures (i - 1) (closure :: acc)
@@ -59,32 +46,28 @@ applyAll fns acc =
             applyAll rest (f acc)
 
 
-loop : List (Int -> Int) -> Int -> Int -> Int
-loop closures count acc =
-    if count <= 0 then
-        acc
-    else
-        loop closures (count - 1) (applyAll closures acc)
+cycle : List (Int -> Int) -> Int -> Bool
+cycle closures expected =
+    applyAll closures 0 == expected
 
 
-main =
+run : StressFlags -> Task.Task Never Bool
+run flags =
     let
         closures =
-            buildClosures m []
+            buildClosures flags.maxSize []
 
-        -- Run once to get the per-iteration sum
-        onePass =
+        expected =
             applyAll closures 0
-
-        -- Run n iterations
-        total =
-            loop closures n 0
-
-        -- total should equal n * onePass since each pass adds the same constant
-        result =
-            total == n * onePass
-
-        _ =
-            Debug.log "result" result
     in
-    text "done"
+    StressHarness.loopWhile flags
+        flags.numLoops
+        (\_ -> Task.succeed (cycle closures expected))
+
+
+main : Program StressFlags StressHarness.Model StressHarness.Msg
+main =
+    StressHarness.taskProgram
+        { label = "ClosureCaptureVary"
+        , run = run
+        }

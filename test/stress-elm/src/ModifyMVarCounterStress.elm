@@ -13,26 +13,8 @@ module ModifyMVarCounterStress exposing (main)
 import Bytes.Decode as BD
 import Bytes.Encode as BE
 import Eco.MVar as MV
-import Platform
+import StressHarness exposing (StressFlags)
 import Task
-
-
-type Msg
-    = GotResult Bool
-
-
-type alias Model =
-    Maybe Bool
-
-
-n : Int
-n =
-    1000
-
-
-m : Int
-m =
-    1000
 
 
 intEnc : Int -> BE.Encoder
@@ -45,9 +27,9 @@ intDec =
     BD.succeed 0
 
 
-smallAlloc : Task.Task Never Int
-smallAlloc =
-    Task.succeed (List.sum (List.range 1 m))
+smallAlloc : Int -> Task.Task Never Int
+smallAlloc size =
+    Task.succeed (List.sum (List.range 1 size))
 
 
 modifyInc : MV.MVar Int -> Task.Task Never ()
@@ -56,48 +38,39 @@ modifyInc mvar =
         |> Task.andThen (\v -> MV.put intEnc mvar (v + 1))
 
 
-loop : MV.MVar Int -> Int -> Task.Task Never ()
-loop mvar remaining =
+loop : Int -> Int -> MV.MVar Int -> Int -> Task.Task Never ()
+loop count size mvar remaining =
     if remaining <= 0 then
         Task.succeed ()
 
     else
         modifyInc mvar
-            |> Task.andThen (\_ -> smallAlloc)
-            |> Task.andThen (\_ -> loop mvar (remaining - 1))
+            |> Task.andThen (\_ -> smallAlloc size)
+            |> Task.andThen (\_ -> loop count size mvar (remaining - 1))
 
 
-init : () -> ( Model, Cmd Msg )
-init _ =
+run : StressFlags -> Task.Task Never Bool
+run flags =
     let
-        task =
-            MV.new
-                |> Task.andThen
-                    (\mvar ->
-                        MV.put intEnc mvar 0
-                            |> Task.andThen (\_ -> loop mvar n)
-                            |> Task.andThen (\_ -> MV.take intDec mvar)
-                    )
-                |> Task.map (\v -> v == n)
+        count =
+            flags.numLoops
+
+        size =
+            flags.maxSize
     in
-    ( Nothing, Task.perform GotResult task )
+    MV.new
+        |> Task.andThen
+            (\mvar ->
+                MV.put intEnc mvar 0
+                    |> Task.andThen (\_ -> loop count size mvar count)
+                    |> Task.andThen (\_ -> MV.take intDec mvar)
+            )
+        |> Task.map (\v -> v == count)
 
 
-update : Msg -> Model -> ( Model, Cmd Msg )
-update msg _ =
-    case msg of
-        GotResult ok ->
-            let
-                _ =
-                    Debug.log "ModifyMVarCounterStress" ok
-            in
-            ( Just ok, Cmd.none )
-
-
-main : Program () Model Msg
+main : Program StressFlags StressHarness.Model StressHarness.Msg
 main =
-    Platform.worker
-        { init = init
-        , update = update
-        , subscriptions = \_ -> Sub.none
+    StressHarness.taskProgram
+        { label = "ModifyMVarCounterStress"
+        , run = run
         }

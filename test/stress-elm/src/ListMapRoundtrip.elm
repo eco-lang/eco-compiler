@@ -1,43 +1,38 @@
 module ListMapRoundtrip exposing (main)
 
--- CHECK: roundtrip: True
+-- CHECK: ListMapRoundtrip: True
 
-import Html exposing (text)
-
-
-n : Int
-n =
-    1000
+import StressHarness exposing (StressFlags)
+import Task
 
 
-m : Int
-m =
-    1000
+negate_ : Int -> Int
+negate_ x =
+    -x
 
 
-applyNTimes : Int -> (a -> a) -> a -> a
-applyNTimes count f val =
-    if count <= 0 then
-        val
-    else
-        applyNTimes (count - 1) f (f val)
+cycle : List Int -> Bool
+cycle original =
+    List.map negate_ (List.map negate_ original) == original
 
 
-main =
+run : StressFlags -> Task.Task Never Bool
+run flags =
     let
         original =
-            List.range 1 m
+            List.range 1 flags.maxSize
 
-        negate x =
-            -x
-
-        transformed =
-            applyNTimes n (List.map negate) original
-
-        roundtrip =
-            original == transformed
-
-        _ =
-            Debug.log "roundtrip" roundtrip
+        loopCount =
+            flags.numLoops // 2
     in
-    text "done"
+    StressHarness.loopWhile flags
+        loopCount
+        (\_ -> Task.succeed (cycle original))
+
+
+main : Program StressFlags StressHarness.Model StressHarness.Msg
+main =
+    StressHarness.taskProgram
+        { label = "ListMapRoundtrip"
+        , run = run
+        }

@@ -1,27 +1,13 @@
 module BytesRoundtripInt16Mixed exposing (main)
 
--- CHECK: roundtrip: True
+-- CHECK: BytesRoundtripInt16Mixed: True
 
 import Bytes exposing (Endianness(..))
 import Bytes.Decode as D
 import Bytes.Encode as E
 import Gen exposing (Seed)
-import Html exposing (text)
-
-
-n : Int
-n =
-    1000
-
-
-m : Int
-m =
-    1000
-
-
-loopCount : Int
-loopCount =
-    n // 4
+import StressHarness exposing (StressFlags)
+import Task
 
 
 initialSeed : Seed
@@ -41,9 +27,9 @@ genItem seed =
     ( ( isBE, v ), s2 )
 
 
-gen : Seed -> ( List ( Bool, Int ), Seed )
-gen seed =
-    Gen.listOf m genItem seed
+gen : Int -> Seed -> ( List ( Bool, Int ), Seed )
+gen size seed =
+    Gen.listOf size genItem seed
 
 
 encoder : List ( Bool, Int ) -> E.Encoder
@@ -86,9 +72,9 @@ decodeOne =
             )
 
 
-decoder : D.Decoder (List ( Bool, Int ))
-decoder =
-    D.loop ( m, [] )
+decoder : Int -> D.Decoder (List ( Bool, Int ))
+decoder size =
+    D.loop ( size, [] )
         (\( remaining, acc ) ->
             if remaining <= 0 then
                 D.succeed (D.Done (List.reverse acc))
@@ -98,21 +84,17 @@ decoder =
         )
 
 
-loop : Seed -> Int -> Bool -> Bool
-loop seed count ok =
-    if count <= 0 then
-        ok
-
-    else
-        let
+cycleStep : Int -> Seed -> ( Seed, Bool )
+cycleStep size seed =
+    let
             ( original, seed1 ) =
-                gen seed
+                gen size seed
 
             encoded =
                 E.encode (encoder original)
 
             decoded =
-                D.decode decoder encoded
+                D.decode (decoder size) encoded
 
             ok2 =
                 case decoded of
@@ -121,16 +103,25 @@ loop seed count ok =
 
                     Nothing ->
                         False
-        in
-        loop seed1 (count - 1) (ok && ok2)
-
-
-main =
-    let
-        result =
-            loop initialSeed loopCount True
-
-        _ =
-            Debug.log "roundtrip" result
     in
-    text "done"
+    ( seed1, ok2 )
+
+
+run : StressFlags -> Task.Task Never Bool
+run flags =
+    let
+        loopCount =
+            flags.numLoops // 4
+    in
+    StressHarness.loopWhileState flags
+        loopCount
+        initialSeed
+        (\_ s -> Task.succeed (cycleStep flags.maxSize s))
+
+
+main : Program StressFlags StressHarness.Model StressHarness.Msg
+main =
+    StressHarness.taskProgram
+        { label = "BytesRoundtripInt16Mixed"
+        , run = run
+        }

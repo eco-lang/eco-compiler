@@ -1,51 +1,47 @@
 module TupleMapList exposing (main)
 
--- CHECK: roundtrip: True
+-- CHECK: TupleMapList: True
 
-import Html exposing (text)
-
-
-n : Int
-n =
-    1000
-
-
-m : Int
-m =
-    1000
+import StressHarness exposing (StressFlags)
+import Task
 
 
 buildTuples : Int -> List ( Int, Int ) -> List ( Int, Int )
 buildTuples i acc =
     if i <= 0 then
         acc
+
     else
         buildTuples (i - 1) (( i, -i ) :: acc)
 
 
-applyNTimes : Int -> (a -> a) -> a -> a
-applyNTimes count f val =
-    if count <= 0 then
-        val
-    else
-        applyNTimes (count - 1) f (f val)
+swap : ( a, b ) -> ( b, a )
+swap ( a, b ) =
+    ( b, a )
 
 
-main =
+cycle : List ( Int, Int ) -> Bool
+cycle original =
+    List.map swap (List.map swap original) == original
+
+
+run : StressFlags -> Task.Task Never Bool
+run flags =
     let
         original =
-            buildTuples m []
+            buildTuples flags.maxSize []
 
-        swap ( a, b ) =
-            ( b, a )
-
-        transformed =
-            applyNTimes n (List.map swap) original
-
-        roundtrip =
-            original == transformed
-
-        _ =
-            Debug.log "roundtrip" roundtrip
+        loopCount =
+            flags.numLoops // 2
     in
-    text "done"
+    StressHarness.loopWhile flags
+        loopCount
+        (\_ -> Task.succeed (cycle original))
+
+
+main : Program StressFlags StressHarness.Model StressHarness.Msg
+main =
+    StressHarness.taskProgram
+        { label = "TupleMapList"
+        , run = run
+        }

@@ -20,31 +20,8 @@ module MVarHoldingEmbeddedConstantsAcrossGC exposing (main)
 import Bytes.Decode as BD
 import Bytes.Encode as BE
 import Eco.MVar as MV
-import Platform
+import StressHarness exposing (StressFlags)
 import Task
-
-
-type Msg
-    = GotResult Bool
-
-
-type alias Model =
-    Maybe Bool
-
-
-n : Int
-n =
-    1000
-
-
-m : Int
-m =
-    1000
-
-
-loopCount : Int
-loopCount =
-    n // 100
 
 
 type alias Mvars =
@@ -57,9 +34,9 @@ type alias Mvars =
 
 
 {-| Forces ≥ 1 minor GC by building a large throwaway list. -}
-heavyAlloc : Task.Task Never Int
-heavyAlloc =
-    Task.succeed (List.sum (List.range 1 m))
+heavyAlloc : Int -> Task.Task Never Int
+heavyAlloc size =
+    Task.succeed (List.sum (List.range 1 size))
 
 
 maybeEnc : Maybe Int -> BE.Encoder
@@ -127,8 +104,8 @@ buildMvars =
             )
 
 
-singleCycle : Task.Task Never Bool
-singleCycle =
+cycle : Int -> Task.Task Never Bool
+cycle size =
     buildMvars
         |> Task.andThen
             (\mv ->
@@ -137,9 +114,9 @@ singleCycle =
                     |> Task.andThen (\_ -> MV.put boolEnc mv.vTrue True)
                     |> Task.andThen (\_ -> MV.put boolEnc mv.vFalse False)
                     |> Task.andThen (\_ -> MV.put strEnc mv.emptyStr "")
-                    |> Task.andThen (\_ -> heavyAlloc)
-                    |> Task.andThen (\_ -> heavyAlloc)
-                    |> Task.andThen (\_ -> heavyAlloc)
+                    |> Task.andThen (\_ -> heavyAlloc size)
+                    |> Task.andThen (\_ -> heavyAlloc size)
+                    |> Task.andThen (\_ -> heavyAlloc size)
                     |> Task.andThen
                         (\_ ->
                             MV.take maybeDec mv.nothing
@@ -167,43 +144,20 @@ singleCycle =
             )
 
 
-repeatCycle : Int -> Task.Task Never Bool
-repeatCycle remaining =
-    if remaining <= 0 then
-        Task.succeed True
-
-    else
-        singleCycle
-            |> Task.andThen
-                (\ok ->
-                    if ok then
-                        repeatCycle (remaining - 1)
-
-                    else
-                        Task.succeed False
-                )
+run : StressFlags -> Task.Task Never Bool
+run flags =
+    let
+        loopCount =
+            flags.numLoops // 100
+    in
+    StressHarness.loopWhile flags
+        loopCount
+        (\_ -> cycle flags.maxSize)
 
 
-init : () -> ( Model, Cmd Msg )
-init _ =
-    ( Nothing, Task.perform GotResult (repeatCycle loopCount) )
-
-
-update : Msg -> Model -> ( Model, Cmd Msg )
-update msg _ =
-    case msg of
-        GotResult ok ->
-            let
-                _ =
-                    Debug.log "MVarHoldingEmbeddedConstantsAcrossGC" ok
-            in
-            ( Just ok, Cmd.none )
-
-
-main : Program () Model Msg
+main : Program StressFlags StressHarness.Model StressHarness.Msg
 main =
-    Platform.worker
-        { init = init
-        , update = update
-        , subscriptions = \_ -> Sub.none
+    StressHarness.taskProgram
+        { label = "MVarHoldingEmbeddedConstantsAcrossGC"
+        , run = run
         }

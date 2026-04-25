@@ -1,27 +1,13 @@
 module JsonRoundtripKeyValuePairs exposing (main)
 
--- CHECK: roundtrip: True
+-- CHECK: JsonRoundtripKeyValuePairs: True
 
 import Dict
 import Gen exposing (Seed)
-import Html exposing (text)
 import Json.Decode as D
 import Json.Encode as E
-
-
-n : Int
-n =
-    1000
-
-
-m : Int
-m =
-    1000
-
-
-loopCount : Int
-loopCount =
-    n // 8
+import StressHarness exposing (StressFlags)
+import Task
 
 
 initialSeed : Seed
@@ -34,8 +20,8 @@ keyAt i =
     "k" ++ String.fromInt i
 
 
-gen : Seed -> ( List ( String, Int ), Seed )
-gen seed =
+gen : Int -> Seed -> ( List ( String, Int ), Seed )
+gen size seed =
     let
         go i s acc =
             if i <= 0 then
@@ -46,9 +32,9 @@ gen seed =
                     ( v, s2 ) =
                         Gen.int32 s
                 in
-                go (i - 1) s2 (( keyAt (m - i), v ) :: acc)
+                go (i - 1) s2 (( keyAt (size - i), v ) :: acc)
     in
-    go m seed []
+    go size seed []
 
 
 encoder : List ( String, Int ) -> String
@@ -62,15 +48,11 @@ decoder =
     D.keyValuePairs D.int
 
 
-loop : Seed -> Int -> Bool -> Bool
-loop seed count ok =
-    if count <= 0 then
-        ok
-
-    else
-        let
+cycleStep : Int -> Seed -> ( Seed, Bool )
+cycleStep size seed =
+    let
             ( original, seed1 ) =
-                gen seed
+                gen size seed
 
             encoded =
                 encoder original
@@ -85,16 +67,25 @@ loop seed count ok =
 
                     Err _ ->
                         False
-        in
-        loop seed1 (count - 1) (ok && ok2)
-
-
-main =
-    let
-        result =
-            loop initialSeed loopCount True
-
-        _ =
-            Debug.log "roundtrip" result
     in
-    text "done"
+    ( seed1, ok2 )
+
+
+run : StressFlags -> Task.Task Never Bool
+run flags =
+    let
+        loopCount =
+            flags.numLoops // 8
+    in
+    StressHarness.loopWhileState flags
+        loopCount
+        initialSeed
+        (\_ s -> Task.succeed (cycleStep flags.maxSize s))
+
+
+main : Program StressFlags StressHarness.Model StressHarness.Msg
+main =
+    StressHarness.taskProgram
+        { label = "JsonRoundtripKeyValuePairs"
+        , run = run
+        }

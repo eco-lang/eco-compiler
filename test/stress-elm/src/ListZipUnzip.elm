@@ -1,18 +1,9 @@
 module ListZipUnzip exposing (main)
 
--- CHECK: roundtrip: True
+-- CHECK: ListZipUnzip: True
 
-import Html exposing (text)
-
-
-n : Int
-n =
-    1000
-
-
-m : Int
-m =
-    1000
+import StressHarness exposing (StressFlags)
+import Task
 
 
 zip : List a -> List b -> List ( a, b ) -> List ( a, b )
@@ -40,33 +31,35 @@ unzipHelper pairs accA accB =
             unzipHelper rest (a :: accA) (b :: accB)
 
 
-loop : List Int -> List Int -> Int -> Bool -> Bool
-loop as_ bs count ok =
-    if count <= 0 then
-        ok
-    else
-        let
-            zipped =
-                zip as_ bs []
+cycle : List Int -> List Int -> Bool
+cycle as_ bs =
+    let
+        zipped =
+            zip as_ bs []
 
-            ( as2, bs2 ) =
-                unzip zipped
-        in
-        loop as2 bs2 (count - 1) (ok && as_ == as2 && bs == bs2)
+        ( as2, bs2 ) =
+            unzip zipped
+    in
+    as_ == as2 && bs == bs2
 
 
-main =
+run : StressFlags -> Task.Task Never Bool
+run flags =
     let
         as_ =
-            List.range 1 m
+            List.range 1 flags.maxSize
 
         bs =
-            List.range (m + 1) (m * 2)
-
-        result =
-            loop as_ bs n True
-
-        _ =
-            Debug.log "roundtrip" result
+            List.range (flags.maxSize + 1) (flags.maxSize * 2)
     in
-    text "done"
+    StressHarness.loopWhile flags
+        flags.numLoops
+        (\_ -> Task.succeed (cycle as_ bs))
+
+
+main : Program StressFlags StressHarness.Model StressHarness.Msg
+main =
+    StressHarness.taskProgram
+        { label = "ListZipUnzip"
+        , run = run
+        }

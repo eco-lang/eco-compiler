@@ -1,24 +1,10 @@
 module ArrayZipUnzip exposing (main)
 
--- CHECK: roundtrip: True
+-- CHECK: ArrayZipUnzip: True
 
 import Array exposing (Array)
-import Html exposing (text)
-
-
-n : Int
-n =
-    1000
-
-
-m : Int
-m =
-    1000
-
-
-loopCount : Int
-loopCount =
-    n // 2
+import StressHarness exposing (StressFlags)
+import Task
 
 
 zip : Array Int -> Array Int -> Array ( Int, Int )
@@ -42,33 +28,41 @@ unzip pairs =
     )
 
 
-loop : Array Int -> Array Int -> Int -> Bool -> Bool
-loop as_ bs count ok =
-    if count <= 0 then
-        ok
-    else
-        let
-            zipped =
-                zip as_ bs
-
-            ( as2, bs2 ) =
-                unzip zipped
-        in
-        loop as2 bs2 (count - 1) (ok && as_ == as2 && bs == bs2)
-
-
-main =
+cycle : Array Int -> Array Int -> Bool
+cycle as_ bs =
     let
+        zipped =
+            zip as_ bs
+
+        ( as2, bs2 ) =
+            unzip zipped
+    in
+    as_ == as2 && bs == bs2
+
+
+run : StressFlags -> Task.Task Never Bool
+run flags =
+    let
+        size =
+            flags.maxSize
+
         as_ =
-            Array.initialize m (\i -> i + 1)
+            Array.initialize size (\i -> i + 1)
 
         bs =
-            Array.initialize m (\i -> i + 1 + m)
+            Array.initialize size (\i -> i + 1 + size)
 
-        result =
-            loop as_ bs loopCount True
-
-        _ =
-            Debug.log "roundtrip" result
+        loopCount =
+            flags.numLoops // 2
     in
-    text "done"
+    StressHarness.loopWhile flags
+        loopCount
+        (\_ -> Task.succeed (cycle as_ bs))
+
+
+main : Program StressFlags StressHarness.Model StressHarness.Msg
+main =
+    StressHarness.taskProgram
+        { label = "ArrayZipUnzip"
+        , run = run
+        }

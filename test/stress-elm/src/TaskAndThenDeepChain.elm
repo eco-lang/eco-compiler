@@ -1,43 +1,19 @@
 module TaskAndThenDeepChain exposing (main)
 
-{-| Build a 2000-deep Task.andThen chain counting up from 0, with a
+{-| Build an `m`-deep Task.andThen chain counting up from 0, with a
 Process.sleep 0 yield every 32 steps so the scheduler actually
 re-enters the fiber. Checks the final accumulated value.
 
-Stresses construction of TASK_AND_THEN heap nodes (the chain allocates
-2000 of them before scheduling), the stack-frame list built up in
-stepProcess during unwinding, and the interaction between synchronous
-andThen folding and periodic BINDING yields.
+Stresses construction of TASK_AND_THEN heap nodes, the stack-frame list
+built up in stepProcess during unwinding, and the interaction between
+synchronous andThen folding and periodic BINDING yields.
 -}
 
--- CHECK: chain: 1000
+-- CHECK: TaskAndThenDeepChain: True
 
-import Platform
 import Process
+import StressHarness exposing (StressFlags)
 import Task exposing (Task)
-
-
-type Msg
-    = Done Int
-
-
-type alias Model =
-    {}
-
-
-n : Int
-n =
-    1000
-
-
-m : Int
-m =
-    1000
-
-
-chainDepth : Int
-chainDepth =
-    m
 
 
 yieldEvery : Int
@@ -54,11 +30,11 @@ step i x =
         Task.succeed (x + 1)
 
 
-buildChain : Task Never Int
-buildChain =
+buildChain : Int -> Task Never Int
+buildChain depth =
     let
         go i task =
-            if i > chainDepth then
+            if i > depth then
                 task
 
             else
@@ -67,31 +43,26 @@ buildChain =
     go 1 (Task.succeed 0)
 
 
-init : () -> ( Model, Cmd Msg )
-init _ =
-    ( {}
-    , buildChain |> Task.perform Done
-    )
+cycle : Int -> Task Never Bool
+cycle depth =
+    buildChain depth
+        |> Task.map (\v -> v == depth)
 
 
-update : Msg -> Model -> ( Model, Cmd Msg )
-update (Done v) model =
+run : StressFlags -> Task.Task Never Bool
+run flags =
     let
-        _ =
-            Debug.log "chain" v
+        depth =
+            flags.maxSize
     in
-    ( model, Cmd.none )
+    StressHarness.loopWhile flags
+        flags.numLoops
+        (\_ -> cycle depth)
 
 
-subscriptions : Model -> Sub Msg
-subscriptions _ =
-    Sub.none
-
-
-main : Program () Model Msg
+main : Program StressFlags StressHarness.Model StressHarness.Msg
 main =
-    Platform.worker
-        { init = init
-        , update = update
-        , subscriptions = subscriptions
+    StressHarness.taskProgram
+        { label = "TaskAndThenDeepChain"
+        , run = run
         }

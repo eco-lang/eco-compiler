@@ -1,47 +1,18 @@
 module SpawnFanout exposing (main)
 
-{-| Spawn 1000 fibers in a tight loop, each of which yields via
+{-| Spawn many fibers in a tight loop, each of which yields via
 Process.sleep 0 and then performs a small fold. The parent waits
-long enough for the run queue to drain, then logs "done".
+long enough for the run queue to drain, then reports True.
 
 Stresses rawSpawn throughput, nextProcessId_, enqueue under an
 active drain, and GC of many short-lived Process heap objects.
 -}
 
--- CHECK: fanout: "done"
+-- CHECK: SpawnFanout: True
 
-import Platform
 import Process
+import StressHarness exposing (StressFlags)
 import Task
-
-
-type Msg
-    = Spawned
-    | AllDone
-
-
-type alias Model =
-    {}
-
-
-n : Int
-n =
-    1000
-
-
-m : Int
-m =
-    1000
-
-
-loopCount : Int
-loopCount =
-    n // 100
-
-
-totalFibers : Int
-totalFibers =
-    m * loopCount
 
 
 sumTo : Int -> Int -> Int
@@ -66,11 +37,11 @@ worker i =
             )
 
 
-spawnAll : Task.Task Never ()
-spawnAll =
+spawnAll : Int -> Task.Task Never ()
+spawnAll fiberCount =
     let
         go k =
-            if k > totalFibers then
+            if k > fiberCount then
                 Task.succeed ()
 
             else
@@ -80,39 +51,23 @@ spawnAll =
     go 1
 
 
-init : () -> ( Model, Cmd Msg )
-init _ =
-    ( {}
-    , spawnAll |> Task.perform (\_ -> Spawned)
-    )
+run : StressFlags -> Task.Task Never Bool
+run flags =
+    let
+        loopCount =
+            flags.numLoops // 100
+
+        fiberCount =
+            flags.maxSize * loopCount
+    in
+    spawnAll fiberCount
+        |> Task.andThen (\_ -> Process.sleep 500)
+        |> Task.map (\_ -> True)
 
 
-update : Msg -> Model -> ( Model, Cmd Msg )
-update msg model =
-    case msg of
-        Spawned ->
-            ( model
-            , Process.sleep 500
-                |> Task.perform (\_ -> AllDone)
-            )
-
-        AllDone ->
-            let
-                _ =
-                    Debug.log "fanout" "done"
-            in
-            ( model, Cmd.none )
-
-
-subscriptions : Model -> Sub Msg
-subscriptions _ =
-    Sub.none
-
-
-main : Program () Model Msg
+main : Program StressFlags StressHarness.Model StressHarness.Msg
 main =
-    Platform.worker
-        { init = init
-        , update = update
-        , subscriptions = subscriptions
+    StressHarness.taskProgram
+        { label = "SpawnFanout"
+        , run = run
         }

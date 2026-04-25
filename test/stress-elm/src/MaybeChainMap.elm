@@ -1,51 +1,47 @@
 module MaybeChainMap exposing (main)
 
--- CHECK: roundtrip: True
+-- CHECK: MaybeChainMap: True
 
-import Html exposing (text)
-
-
-n : Int
-n =
-    1000
-
-
-m : Int
-m =
-    1000
+import StressHarness exposing (StressFlags)
+import Task
 
 
 buildMaybes : Int -> List (Maybe Int) -> List (Maybe Int)
 buildMaybes i acc =
     if i <= 0 then
         acc
+
     else
         buildMaybes (i - 1) (Just i :: acc)
 
 
-applyNTimes : Int -> (a -> a) -> a -> a
-applyNTimes count f val =
-    if count <= 0 then
-        val
-    else
-        applyNTimes (count - 1) f (f val)
+negate_ : Int -> Int
+negate_ x =
+    -x
 
 
-main =
+cycle : List (Maybe Int) -> Bool
+cycle original =
+    List.map (Maybe.map negate_) (List.map (Maybe.map negate_) original) == original
+
+
+run : StressFlags -> Task.Task Never Bool
+run flags =
     let
         original =
-            buildMaybes m []
+            buildMaybes flags.maxSize []
 
-        negate x =
-            -x
-
-        transformed =
-            applyNTimes n (List.map (Maybe.map negate)) original
-
-        roundtrip =
-            original == transformed
-
-        _ =
-            Debug.log "roundtrip" roundtrip
+        loopCount =
+            flags.numLoops // 2
     in
-    text "done"
+    StressHarness.loopWhile flags
+        loopCount
+        (\_ -> Task.succeed (cycle original))
+
+
+main : Program StressFlags StressHarness.Model StressHarness.Msg
+main =
+    StressHarness.taskProgram
+        { label = "MaybeChainMap"
+        , run = run
+        }

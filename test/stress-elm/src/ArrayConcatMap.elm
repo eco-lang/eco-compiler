@@ -1,19 +1,10 @@
 module ArrayConcatMap exposing (main)
 
--- CHECK: result: True
+-- CHECK: ArrayConcatMap: True
 
 import Array exposing (Array)
-import Html exposing (text)
-
-
-n : Int
-n =
-    1000
-
-
-m : Int
-m =
-    1000
+import StressHarness exposing (StressFlags)
+import Task
 
 
 concatMap : (a -> Array b) -> Array a -> Array b
@@ -21,30 +12,28 @@ concatMap f arr =
     Array.foldl (\x acc -> Array.append acc (f x)) Array.empty arr
 
 
-loop : Int -> Bool -> Bool
-loop count ok =
-    if count <= 0 then
-        ok
-    else
-        let
-            original =
-                Array.initialize m (\i -> i + 1)
-
-            expanded =
-                concatMap (\x -> Array.fromList [ x, x + m, x + m * 2 ]) original
-
-            len =
-                Array.length expanded
-        in
-        loop (count - 1) (ok && len == m * 3)
-
-
-main =
+cycle : Int -> Bool
+cycle size =
     let
-        result =
-            loop n True
+        original =
+            Array.initialize size (\i -> i + 1)
 
-        _ =
-            Debug.log "result" result
+        expanded =
+            concatMap (\x -> Array.fromList [ x, x + size, x + size * 2 ]) original
     in
-    text "done"
+    Array.length expanded == size * 3
+
+
+run : StressFlags -> Task.Task Never Bool
+run flags =
+    StressHarness.loopWhile flags
+        flags.numLoops
+        (\_ -> Task.succeed (cycle flags.maxSize))
+
+
+main : Program StressFlags StressHarness.Model StressHarness.Msg
+main =
+    StressHarness.taskProgram
+        { label = "ArrayConcatMap"
+        , run = run
+        }

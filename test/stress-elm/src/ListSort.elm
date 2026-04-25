@@ -1,44 +1,30 @@
 module ListSort exposing (main)
 
--- CHECK: result: True
+-- CHECK: ListSort: True
 
-import Html exposing (text)
-
-
-n : Int
-n =
-    1000
+import StressHarness exposing (StressFlags)
+import Task
 
 
-m : Int
-m =
-    1000
+cycle : List Int -> Bool
+cycle sorted =
+    List.sort (List.reverse sorted) == sorted
 
 
-loop : List Int -> Int -> Bool -> Bool
-loop sorted count ok =
-    if count <= 0 then
-        ok
-    else
-        let
-            reversed =
-                List.reverse sorted
-
-            reSorted =
-                List.sort reversed
-        in
-        loop reSorted (count - 1) (ok && reSorted == sorted)
-
-
-main =
+run : StressFlags -> Task.Task Never Bool
+run flags =
     let
         sorted =
-            List.range 1 m
-
-        result =
-            loop sorted n True
-
-        _ =
-            Debug.log "result" result
+            List.range 1 flags.maxSize
     in
-    text "done"
+    StressHarness.loopWhile flags
+        flags.numLoops
+        (\_ -> Task.succeed (cycle sorted))
+
+
+main : Program StressFlags StressHarness.Model StressHarness.Msg
+main =
+    StressHarness.taskProgram
+        { label = "ListSort"
+        , run = run
+        }

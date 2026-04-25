@@ -1,19 +1,10 @@
 module PartialAppArray exposing (main)
 
--- CHECK: result: 500500000
+-- CHECK: PartialAppArray: True
 
 import Array exposing (Array)
-import Html exposing (text)
-
-
-n : Int
-n =
-    1000
-
-
-m : Int
-m =
-    1000
+import StressHarness exposing (StressFlags)
+import Task
 
 
 add3 : Int -> Int -> Int -> Int
@@ -31,25 +22,23 @@ applyAll paps acc =
     Array.foldl (\f a -> a + f 0 0) acc paps
 
 
-loop : Array (Int -> Int -> Int) -> Int -> Int -> Int
-loop paps count acc =
-    if count <= 0 then
-        acc
-    else
-        loop paps (count - 1) (applyAll paps acc)
-
-
-main =
+run : StressFlags -> Task.Task Never Bool
+run flags =
     let
         partials =
-            buildPartials m
+            buildPartials flags.maxSize
 
-        -- Each applyAll adds sum(1..m) = 500500 (since add3 i 0 0 = i)
-        -- After n iterations: n * 500500 = 500500000
-        result =
-            loop partials n 0
-
-        _ =
-            Debug.log "result" result
+        expectedPerCycle =
+            flags.maxSize * (flags.maxSize + 1) // 2
     in
-    text "done"
+    StressHarness.loopWhile flags
+        flags.numLoops
+        (\_ -> Task.succeed (applyAll partials 0 == expectedPerCycle))
+
+
+main : Program StressFlags StressHarness.Model StressHarness.Msg
+main =
+    StressHarness.taskProgram
+        { label = "PartialAppArray"
+        , run = run
+        }

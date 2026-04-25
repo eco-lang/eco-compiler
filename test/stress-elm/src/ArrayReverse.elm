@@ -1,24 +1,10 @@
 module ArrayReverse exposing (main)
 
--- CHECK: roundtrip: True
+-- CHECK: ArrayReverse: True
 
 import Array exposing (Array)
-import Html exposing (text)
-
-
-n : Int
-n =
-    1000
-
-
-m : Int
-m =
-    1000
-
-
-initialArray : Array Int
-initialArray =
-    Array.initialize m (\i -> i + 1)
+import StressHarness exposing (StressFlags)
+import Task
 
 
 reverse : Array a -> Array a
@@ -30,19 +16,31 @@ reverseNTimes : Int -> Array a -> Array a
 reverseNTimes count arr =
     if count <= 0 then
         arr
+
     else
         reverseNTimes (count - 1) (reverse arr)
 
 
-main =
+cycle : Int -> Int -> Bool
+cycle size depth =
     let
-        start =
-            initialArray
+        original =
+            Array.initialize size (\i -> i + 1)
 
         finished =
-            reverseNTimes n start
-
-        _ =
-            Debug.log "roundtrip" (start == finished)
+            reverseNTimes depth original
     in
-    text "done"
+    finished == original
+
+
+run : StressFlags -> Task.Task Never Bool
+run flags =
+    Task.succeed (cycle flags.maxSize (2 * (flags.numLoops // 2)))
+
+
+main : Program StressFlags StressHarness.Model StressHarness.Msg
+main =
+    StressHarness.taskProgram
+        { label = "ArrayReverse"
+        , run = run
+        }
