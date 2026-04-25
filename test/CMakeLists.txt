@@ -22,6 +22,7 @@ add_executable(test
         allocator/TestHelpers.cpp
         allocator/NurserySpaceTest.cpp
         allocator/OldGenSpaceTest.cpp
+        allocator/OldGenCapacityTest.cpp
         allocator/AllocatorTest.cpp
         allocator/AllocatorCommonTest.cpp
         allocator/ElmTest.cpp

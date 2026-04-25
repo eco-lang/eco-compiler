@@ -149,6 +149,7 @@ void OldGenSpace::reset(const HeapConfig* new_config) {
     for (size_t i = 0; i < NUM_SIZE_CLASSES; i++) {
         free_lists_[i] = nullptr;
     }
+    free_large_blocks_.clear();
 
     // Reset fragmentation stats.
     frag_stats_ = {0, 0, 0};
@@ -489,10 +490,101 @@ bool OldGenSpace::populateFromBlock(size_t cls) {
 // ---------------------------------------------------------------------------
 // Dedicated large block (>= alloc_buffer_size).
 // ---------------------------------------------------------------------------
+
+void OldGenSpace::markBlockAsFreeLarge(size_t block_index) {
+    assert(block_index < blocks_.size() && "markBlockAsFreeLarge: index OOB");
+    assert(blocks_[block_index].is_large &&
+           "markBlockAsFreeLarge: block must be is_large");
+#if ECO_GC_DEBUG
+    for (size_t idx : free_large_blocks_) {
+        assert(idx != block_index &&
+               "markBlockAsFreeLarge: duplicate entry");
+    }
+#endif
+    free_large_blocks_.push_back(block_index);
+}
+
+void* OldGenSpace::allocateFromFreeLargeBlocks(size_t size) {
+    size = (size + 7) & ~7;
+
+    for (size_t k = 0; k < free_large_blocks_.size(); ++k) {
+        const size_t idx = free_large_blocks_[k];
+        if (idx >= blocks_.size()) continue;
+        BlockInfo& blk = blocks_[idx];
+        if (blk.totalBytes() < size) continue;
+
+        // swap-remove from free list.
+        free_large_blocks_[k] = free_large_blocks_.back();
+        free_large_blocks_.pop_back();
+
+        // Resurrect the BlockInfo: parseable region covers just the new
+        // object so sweep walks one header.
+        const size_t total = blk.totalBytes();
+        blk.end_of_objects = blk.start + size;
+
+        // Reset metadata.
+        if (idx < buffer_meta_.size()) {
+            buffer_meta_[idx].live_bytes = size;
+            buffer_meta_[idx].garbage_bytes =
+                (total >= size) ? (total - size) : 0;
+            buffer_meta_[idx].fully_swept = true;
+        }
+
+        frag_stats_.live_bytes += size;
+        allocated_bytes += size;
+
+        initObjectHeader(blk.start);
+        return static_cast<void*>(blk.start);
+    }
+    return nullptr;
+}
+
+void* OldGenSpace::allocateFromEmptyRegularBlocks(size_t size) {
+    size = (size + 7) & ~7;
+
+    for (size_t i = 0; i < blocks_.size(); ++i) {
+        if (i >= buffer_meta_.size()) continue;
+        const BufferMetadata& meta = buffer_meta_[i];
+        if (!meta.fully_swept || meta.live_bytes != 0) continue;
+        if (blocks_[i].is_large) continue;
+        if (blocks_[i].totalBytes() < size) continue;
+
+        // Drop any embedded free cells before flipping is_large; otherwise
+        // the next sweep would walk the now-large block as if it were a
+        // size-class page.
+        removeFreeCellsForBlock(i);
+
+        BlockInfo& blk = blocks_[i];
+        const size_t total = blk.totalBytes();
+        blk.is_large = true;
+        blk.size_class = NUM_SIZE_CLASSES;
+        blk.end_of_objects = blk.start + size;
+
+        buffer_meta_[i].live_bytes = size;
+        buffer_meta_[i].garbage_bytes =
+            (total >= size) ? (total - size) : 0;
+        buffer_meta_[i].fully_swept = true;
+
+        frag_stats_.live_bytes += size;
+        allocated_bytes += size;
+
+        initObjectHeader(blk.start);
+        return static_cast<void*>(blk.start);
+    }
+    return nullptr;
+}
+
 void* OldGenSpace::allocateLargeBlock(size_t size) {
     assert(allocator_ && "OldGenSpace not initialized with Allocator");
     assert(size >= config_->alloc_buffer_size && "allocateLargeBlock used for small size");
 
+    // 1) Reuse a dedicated large block whose object died in the last sweep.
+    if (void* p = allocateFromFreeLargeBlocks(size)) return p;
+
+    // 2) Repurpose a fully-free regular page large enough to host the object.
+    if (void* p = allocateFromEmptyRegularBlocks(size)) return p;
+
+    // 3) Acquire a fresh block from the Allocator.
     // mmap requires page-aligned offsets, and acquireOldGenBlock advances a
     // bump cursor by the requested size. Round up to the OS page boundary so
     // the next acquire stays aligned.
@@ -896,6 +988,23 @@ void OldGenSpace::sweep() {
         buffer_meta_[buf_idx].garbage_bytes = 0;
         buffer_meta_[buf_idx].fully_swept = true;
 
+        // Large/pinned blocks hold a single object. If it died, register the
+        // whole block on `free_large_blocks_` rather than building a Tag_Free
+        // cell — these blocks can't be sliced for size classes anyway, and
+        // recording a free-large entry lets the next allocateLargeBlock reuse
+        // the same address.
+        if (block.is_large && ptr < used_end) {
+            Header* hdr = reinterpret_cast<Header*>(ptr);
+            if (hdr->color == static_cast<u32>(Color::Black)) {
+                hdr->color = static_cast<u32>(Color::White);
+                buffer_meta_[buf_idx].live_bytes = block.totalBytes();
+            } else {
+                buffer_meta_[buf_idx].garbage_bytes = block.totalBytes();
+                markBlockAsFreeLarge(buf_idx);
+            }
+            continue;
+        }
+
         // Coalescing run: accumulate adjacent non-Black bytes into a single
         // Tag_Free span, flushing whenever we hit a Black object or block end.
         char* run_start = nullptr;
@@ -1000,6 +1109,29 @@ void OldGenSpace::lazySweep(size_t target_class, size_t work_budget) {
         BlockInfo& block = blocks_[sweep_buffer_index_];
         char* used_end = block.end_of_objects;
 
+        // Large/pinned blocks hold a single object. Decide live vs. dead in
+        // one shot rather than running the coalescing walk: a dead large
+        // block becomes a `free_large_blocks_` entry so the next
+        // allocateLargeBlock reuses its address.
+        if (block.is_large && sweep_cursor_ == block.start &&
+            sweep_cursor_ < used_end) {
+            Header* hdr = reinterpret_cast<Header*>(sweep_cursor_);
+            if (sweep_buffer_index_ < buffer_meta_.size()) {
+                BufferMetadata& meta = buffer_meta_[sweep_buffer_index_];
+                if (hdr->color == static_cast<u32>(Color::Black)) {
+                    hdr->color = static_cast<u32>(Color::White);
+                    meta.live_bytes = block.totalBytes();
+                } else {
+                    meta.garbage_bytes = block.totalBytes();
+                    markBlockAsFreeLarge(sweep_buffer_index_);
+                }
+                meta.fully_swept = true;
+            }
+            work_done += static_cast<size_t>(used_end - sweep_cursor_);
+            sweep_cursor_ = used_end;
+            // Fall through to the block-boundary handling below.
+        }
+
         while (sweep_cursor_ < used_end && work_done < work_budget) {
             Header* hdr = reinterpret_cast<Header*>(sweep_cursor_);
             size_t step = walkStep(block, getObjectSize(sweep_cursor_));
@@ -1076,14 +1208,24 @@ void OldGenSpace::adjustCapacityAfterMajorGC() {
 
     const size_t capacity = static_cast<size_t>(region_end_ - region_base_);
     const size_t live     = frag_stats_.live_bytes;
-    if (live == 0 || capacity == 0) return;
+    if (capacity == 0) return;
 
-    const double occupancy = static_cast<double>(live) / capacity;
+    const double occupancy = capacity > 0
+        ? static_cast<double>(live) / capacity
+        : 0.0;
     const float grow_threshold = config_->major_gc_initiating_occupancy;
     const float target         = config_->major_gc_target_utilization;
 
-    if (occupancy <= target)         return;
-    if (occupancy <  grow_threshold) return;
+    // Shrink branch: heap is well under the target band — release fully-free
+    // pages back to the global allocator. `maybeShrinkCapacity` applies its
+    // own hysteresis and floor checks, and is a no-op when conditions are
+    // not met.
+    if (live == 0 || occupancy <= target) {
+        maybeShrinkCapacity();
+        return;
+    }
+
+    if (occupancy < grow_threshold) return;
 
     size_t desired = static_cast<size_t>(
         std::ceil(static_cast<double>(live) / static_cast<double>(target)));
@@ -1093,6 +1235,267 @@ void OldGenSpace::adjustCapacityAfterMajorGC() {
     if (desired <= capacity)  return;
 
     allocator_->ensureOldGenCapacityFor(*this, desired);
+}
+
+// Shrink path: returns fully-free pages back to the Allocator so
+// `old_gen_committed` can drop after a major GC reclaims most live data.
+//
+// Locking: this function MUST NOT be called while holding
+// `Allocator::thread_mutex_`. Each `releaseOldGenBlock` /
+// `releaseUnassignedBlockToAllocator` call acquires the mutex transiently
+// inside the Allocator. The shrink path runs at the end of major GC, with
+// the mutator stopped — so `removeFreeCellsForBlock` and the swap-remove
+// from `blocks_` cannot race against `allocateFromEmptyRegularBlocks`.
+void OldGenSpace::maybeShrinkCapacity() {
+    if (compact_phase_ != CompactionPhase::Idle) return;
+    if (gc_phase_      != GCPhase::Idle)         return;
+    if (allocator_     == nullptr)               return;
+
+    const size_t live = frag_stats_.live_bytes;
+    const float target = config_->major_gc_target_utilization;
+
+    // Floor: never drop below max(initial_old_gen_size, alloc_buffer_size).
+    // The first ensures we honor the user's configured starting capacity;
+    // the second ensures at least one page is retained for new allocations.
+    const size_t min_heap = std::max(config_->initial_old_gen_size,
+                                     config_->alloc_buffer_size);
+
+    // Desired heap derived from target utilization, clamped below by min_heap.
+    size_t desired_heap;
+    if (target > 0.0f && live > 0) {
+        desired_heap = static_cast<size_t>(
+            std::ceil(static_cast<double>(live) / static_cast<double>(target)));
+    } else {
+        desired_heap = min_heap;
+    }
+    if (desired_heap < min_heap) desired_heap = min_heap;
+
+    // Current heap = sum of materialized block bytes + bag-page bytes.
+    auto computeCurrentHeap = [&]() -> size_t {
+        size_t total = 0;
+        for (const auto& b : blocks_) total += b.totalBytes();
+        for (const auto& e : unassigned_blocks_) {
+            total += static_cast<size_t>(e.second - e.first);
+        }
+        return total;
+    };
+
+    size_t current_heap = computeCurrentHeap();
+
+    // Hysteresis gate: only proceed if utilization is well below target AND
+    // the heap is meaningfully larger than the desired size. Both must hold;
+    // otherwise we'd churn at the boundary on every GC.
+    const double occupancy = current_heap > 0
+        ? static_cast<double>(live) / static_cast<double>(current_heap)
+        : 0.0;
+    const bool below_band = occupancy < (static_cast<double>(target) * 0.8);
+    const bool well_above_desired =
+        current_heap > desired_heap + (desired_heap / 5);  // > 1.2x
+
+    if (!below_band || !well_above_desired) return;
+
+    // ---------- Pass 1: fully-free regular pages. ----------
+    // Walk back-to-front so swap-removes don't disturb yet-to-visit indices.
+    for (size_t i = blocks_.size(); i > 0;) {
+        --i;
+        if (current_heap <= desired_heap) break;
+        if (i >= buffer_meta_.size()) continue;
+        const BufferMetadata& meta = buffer_meta_[i];
+        if (!meta.fully_swept || meta.live_bytes != 0) continue;
+        if (blocks_[i].is_large) continue;  // Pass 2 handles these.
+
+        const size_t bytes = blocks_[i].totalBytes();
+        // Don't drop below desired_heap: only release if we'd still be at or
+        // above target after the release.
+        if (current_heap < bytes) break;
+        if (current_heap - bytes < desired_heap) {
+            // Would overshoot; skip this block but continue scanning smaller
+            // ones (in case a later block fits within the budget).
+            continue;
+        }
+
+        releaseBlockToAllocator(i);
+        current_heap -= bytes;
+    }
+
+    // ---------- Pass 2: fully-free large blocks. ----------
+    for (size_t i = blocks_.size(); i > 0;) {
+        --i;
+        if (current_heap <= desired_heap) break;
+        if (i >= buffer_meta_.size()) continue;
+        const BufferMetadata& meta = buffer_meta_[i];
+        if (!meta.fully_swept || meta.live_bytes != 0) continue;
+        if (!blocks_[i].is_large) continue;
+
+        const size_t bytes = blocks_[i].totalBytes();
+        if (current_heap < bytes) break;
+        if (current_heap - bytes < desired_heap) continue;
+
+        releaseBlockToAllocator(i);
+        current_heap -= bytes;
+    }
+
+    // ---------- Pass 3: unassigned bag pages. ----------
+    for (size_t i = unassigned_blocks_.size(); i > 0;) {
+        --i;
+        if (current_heap <= desired_heap) break;
+        const size_t bytes =
+            static_cast<size_t>(unassigned_blocks_[i].second
+                                - unassigned_blocks_[i].first);
+        if (current_heap < bytes) break;
+        if (current_heap - bytes < desired_heap) continue;
+
+        releaseUnassignedBlockToAllocator(i);
+        current_heap -= bytes;
+    }
+}
+
+void OldGenSpace::removeFreeCellsForBlock(size_t block_index) {
+    if (block_index >= blocks_.size()) return;
+    char* lo = blocks_[block_index].start;
+    char* hi = blocks_[block_index].end;
+
+    for (size_t cls = 0; cls < NUM_SIZE_CLASSES; ++cls) {
+        FreeCell** prev = &free_lists_[cls];
+        FreeCell* curr = free_lists_[cls];
+        while (curr != nullptr) {
+            char* p = reinterpret_cast<char*>(curr);
+            FreeCell* next = curr->next;
+            if (p >= lo && p < hi) {
+                *prev = next;  // unlink
+            } else {
+                prev = &curr->next;
+            }
+            curr = next;
+        }
+    }
+}
+
+void OldGenSpace::fixupIndicesAfterBlockMove(size_t old_idx, size_t new_idx) {
+    if (old_idx == new_idx) return;
+
+    // BufferMetadata::block_index is denormalized; rewrite if it pointed at
+    // the moved entry. (Note: callers also swap-remove buffer_meta_, so this
+    // mostly normalizes the back-reference.)
+    for (auto& m : buffer_meta_) {
+        if (m.block_index == old_idx) m.block_index = new_idx;
+    }
+
+    for (size_t& idx : evacuation_set_) {
+        if (idx == old_idx) idx = new_idx;
+    }
+    for (size_t& idx : free_large_blocks_) {
+        if (idx == old_idx) idx = new_idx;
+    }
+
+    if (evac_block_index_ == old_idx)  evac_block_index_  = new_idx;
+    if (sweep_buffer_index_ == old_idx) sweep_buffer_index_ = new_idx;
+    if (fixup_buffer_index_ == old_idx) fixup_buffer_index_ = new_idx;
+}
+
+void OldGenSpace::releaseBlockToAllocator(size_t block_index) {
+    if (block_index >= blocks_.size()) return;
+
+    BlockInfo blk = blocks_[block_index];
+    const size_t total = blk.totalBytes();
+
+    // Unlink any free-list entries that overlap this block before the
+    // virtual address range becomes reusable.
+    removeFreeCellsForBlock(block_index);
+
+    // Drop a free_large_blocks_ entry that points at this index (if any).
+    for (size_t k = 0; k < free_large_blocks_.size();) {
+        if (free_large_blocks_[k] == block_index) {
+            free_large_blocks_[k] = free_large_blocks_.back();
+            free_large_blocks_.pop_back();
+        } else {
+            ++k;
+        }
+    }
+
+    // Hand the address range back to the Allocator.
+    allocator_->releaseOldGenBlock(blk.start, total);
+
+    // Maintain frag_stats_.heap_bytes (sum of block parseable spans).
+    const size_t parseable =
+        static_cast<size_t>(blk.end_of_objects - blk.start);
+    if (frag_stats_.heap_bytes >= parseable) {
+        frag_stats_.heap_bytes -= parseable;
+    } else {
+        frag_stats_.heap_bytes = 0;
+    }
+
+    // Swap-remove from blocks_ and buffer_meta_.
+    const size_t last = blocks_.size() - 1;
+    if (block_index != last) {
+        blocks_[block_index] = blocks_[last];
+    }
+    blocks_.pop_back();
+
+    if (block_index < buffer_meta_.size()) {
+        const size_t meta_last = buffer_meta_.size() - 1;
+        if (block_index != meta_last) {
+            buffer_meta_[block_index] = buffer_meta_[meta_last];
+        }
+        buffer_meta_.pop_back();
+    }
+
+    // Patch any state that referred to the moved-from slot.
+    if (block_index != last) {
+        fixupIndicesAfterBlockMove(last, block_index);
+    }
+
+    // Recompute region_base_ / region_end_ if either was anchored to the
+    // released extent. A linear scan is fine — `blocks_` is bounded by the
+    // committed page count.
+    if (blk.start == region_base_ || blk.end == region_end_) {
+        char* new_base = nullptr;
+        char* new_end = nullptr;
+        for (const auto& b : blocks_) {
+            if (new_base == nullptr || b.start < new_base) new_base = b.start;
+            if (b.end > new_end) new_end = b.end;
+        }
+        for (const auto& e : unassigned_blocks_) {
+            if (new_base == nullptr || e.first < new_base) new_base = e.first;
+            if (e.second > new_end) new_end = e.second;
+        }
+        region_base_ = new_base;
+        region_end_  = new_end;
+    }
+}
+
+void OldGenSpace::releaseUnassignedBlockToAllocator(size_t unassigned_index) {
+    if (unassigned_index >= unassigned_blocks_.size()) return;
+
+    auto extent = unassigned_blocks_[unassigned_index];
+    char* start = extent.first;
+    char* end   = extent.second;
+    const size_t bytes = static_cast<size_t>(end - start);
+
+    allocator_->releaseOldGenBlock(start, bytes);
+
+    // Swap-remove.
+    const size_t last = unassigned_blocks_.size() - 1;
+    if (unassigned_index != last) {
+        unassigned_blocks_[unassigned_index] = unassigned_blocks_[last];
+    }
+    unassigned_blocks_.pop_back();
+
+    // Recompute bounds if anchored to the released extent.
+    if (start == region_base_ || end == region_end_) {
+        char* new_base = nullptr;
+        char* new_end = nullptr;
+        for (const auto& b : blocks_) {
+            if (new_base == nullptr || b.start < new_base) new_base = b.start;
+            if (b.end > new_end) new_end = b.end;
+        }
+        for (const auto& e : unassigned_blocks_) {
+            if (new_base == nullptr || e.first < new_base) new_base = e.first;
+            if (e.second > new_end) new_end = e.second;
+        }
+        region_base_ = new_base;
+        region_end_  = new_end;
+    }
 }
 
 /**

@@ -47,15 +47,22 @@ bool Allocator::heapTraceEnabled() {
 }
 
 void Allocator::dumpHeapState(const char* label, size_t pending_size) const {
+    // Aggregate size of released-but-not-yet-reused old-gen blocks.
+    size_t free_blocks_bytes = 0;
+    for (const auto& fb : old_gen_free_blocks_) free_blocks_bytes += fb.second;
+
     std::fprintf(stderr,
         "[heap-trace] %s oldgen_committed=%.2f MB nursery_low=%.2f MB "
-        "nursery_high=%.2f MB (oldgen_cap=%.2f GB, heap_reserved=%.2f GB)",
+        "nursery_high=%.2f MB (oldgen_cap=%.2f GB, heap_reserved=%.2f GB) "
+        "freed_oldgen_blocks=%zu (%.2f MB)",
         label,
         old_gen_committed / (1024.0 * 1024.0),
         nursery_low_committed_ / (1024.0 * 1024.0),
         nursery_high_committed_ / (1024.0 * 1024.0),
         nursery_offset / (1024.0 * 1024.0 * 1024.0),
-        heap_reserved / (1024.0 * 1024.0 * 1024.0));
+        heap_reserved / (1024.0 * 1024.0 * 1024.0),
+        old_gen_free_blocks_.size(),
+        free_blocks_bytes / (1024.0 * 1024.0));
 
     if (pending_size != 0) {
         std::fprintf(stderr, " pending_size=%zu B (%.2f KB)",
@@ -66,9 +73,28 @@ void Allocator::dumpHeapState(const char* label, size_t pending_size) const {
     // but walking them requires the mutex; the caller may already hold it,
     // so we stick to the cheap current-thread view).
     if (tl_heap_) {
+        const OldGenSpace& og = tl_heap_->getOldGen();
+        const auto& meta = OldGenSpaceTestAccess::getBufferMeta(og);
+        size_t free_pages = 0;
+        for (const auto& m : meta) {
+            if (m.fully_swept && m.live_bytes == 0) ++free_pages;
+        }
+        const auto& frag = OldGenSpaceTestAccess::getFragStats(og);
+        const double util = frag.heap_bytes > 0
+            ? static_cast<double>(frag.live_bytes) / frag.heap_bytes
+            : 0.0;
         std::fprintf(stderr,
-                     " tl.oldgen_allocated=%.2f MB",
-                     tl_heap_->getOldGenAllocatedBytes() / (1024.0 * 1024.0));
+                     " tl.oldgen_allocated=%.2f MB tl.committed=%.2f MB"
+                     " tl.live=%.2f MB tl.heap=%.2f MB tl.util=%.2f"
+                     " tl.free_large=%zu tl.free_pages=%zu tl.unassigned=%zu",
+                     tl_heap_->getOldGenAllocatedBytes() / (1024.0 * 1024.0),
+                     og.getCommittedBytes() / (1024.0 * 1024.0),
+                     frag.live_bytes / (1024.0 * 1024.0),
+                     frag.heap_bytes / (1024.0 * 1024.0),
+                     util,
+                     OldGenSpaceTestAccess::getFreeLargeBlocks(og).size(),
+                     free_pages,
+                     OldGenSpaceTestAccess::getUnassignedBlocks(og).size());
     }
     std::fputc('\n', stderr);
 }
@@ -409,11 +435,38 @@ void Allocator::releaseNurseryBlockHigh(char* block, size_t size) {
 
 // Acquires a block from the old gen region.
 // Thread-safe: acquires thread_mutex_ to update shared committed counters.
+// First-fit reuse: scan the free list for a released block with size >= request.
 char* Allocator::acquireOldGenBlock(size_t size) {
     std::lock_guard<std::recursive_mutex> lock(thread_mutex_);
 
     // Align size to 8 bytes.
     size = (size + 7) & ~7;
+
+    // First-fit reuse from previously-released old-gen blocks. Splitting an
+    // oversized cell is out of scope; we accept the slack on a larger reuse
+    // since current callers request whole pages or whole large-block extents.
+    for (auto it = old_gen_free_blocks_.begin();
+         it != old_gen_free_blocks_.end(); ++it) {
+        if (it->second >= size) {
+            char* block = it->first;
+            size_t block_size = it->second;
+            // swap-remove
+            *it = old_gen_free_blocks_.back();
+            old_gen_free_blocks_.pop_back();
+
+            // The virtual mapping was never released, just (optionally)
+            // decommitted. Hint to the kernel that it'll be touched soon;
+            // a no-op if the pages were never decommitted.
+            madvise(block, block_size, MADV_WILLNEED);
+
+            old_gen_committed += block_size;
+
+            if (heapTraceEnabled()) {
+                dumpHeapState("oldgen reused released block", block_size);
+            }
+            return block;
+        }
+    }
 
     // Check if we have space in old gen region.
     if (old_gen_committed + size > nursery_offset) {
@@ -448,6 +501,31 @@ char* Allocator::acquireOldGenBlock(size_t size) {
     }
 
     return block_base;
+}
+
+// Returns a previously-acquired old-gen block for reuse. The virtual mapping
+// is retained; physical RSS may be released via madvise. Caller must not
+// hold thread_mutex_ (the lock is acquired here).
+void Allocator::releaseOldGenBlock(char* block, size_t size) {
+    std::lock_guard<std::recursive_mutex> lock(thread_mutex_);
+
+    size = (size + 7) & ~7;
+
+    if (config_.decommit_on_oldgen_release) {
+        // Drop physical RSS while keeping the virtual mapping reserved so a
+        // later acquireOldGenBlock can reuse the same address range.
+        madvise(block, size, MADV_DONTNEED);
+    }
+
+    old_gen_free_blocks_.emplace_back(block, size);
+
+    assert(old_gen_committed >= size &&
+           "releaseOldGenBlock: committed underflow");
+    old_gen_committed -= size;
+
+    if (heapTraceEnabled()) {
+        dumpHeapState("oldgen released block", size);
+    }
 }
 
 void Allocator::ensureOldGenCapacityFor(OldGenSpace& space,
@@ -556,6 +634,7 @@ void Allocator::reset(const HeapConfig* new_config) {
     // longer usable once we reset the bump pointers to 0.
     nursery_low_freelist_.clear();
     nursery_high_freelist_.clear();
+    old_gen_free_blocks_.clear();
 }
 
 // ============================================================================

@@ -12,7 +12,12 @@ namespace TestHelpers {
 
 Allocator& initAllocator(const HeapConfig& config) {
     auto& alloc = Allocator::instance();
-    // Reset first (clears all thread heaps), then init thread with new config.
+    // Ensure the global heap mmap exists. On the first ever call this seeds
+    // config_ with `config`; subsequent calls are no-ops because `initialize`
+    // exits early when `initialized` is true.
+    alloc.initialize(config);
+    // Reset clears thread heaps and updates config_ to the new value (this
+    // is the path that takes effect for every call after the first).
     AllocatorTestAccess::reset(alloc, &config);
     alloc.initThread();
     return alloc;

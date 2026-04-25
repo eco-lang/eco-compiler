@@ -18,6 +18,7 @@
 #include "allocator/ElmTest.hpp"
 #include "allocator/AllocatorTest.hpp"
 #include "allocator/OldGenSpaceTest.hpp"
+#include "allocator/OldGenCapacityTest.hpp"
 #include "allocator/HeapHelpersTest.hpp"
 #include "allocator/StringOpsTest.hpp"
 #include "allocator/ListOpsTest.hpp"
@@ -587,6 +588,14 @@ int main(int argc, char* argv[]) {
     oldGenTests.add(testMarkConsTailIsEmbeddedNil);
     oldGenTests.add(testMarkDynRecordWithEmbeddedConstants);
     oldGenTests.add(testMarkClosureCapturesEmbeddedConstant);
+    // Capacity-shrink and large/pinned page reuse coverage.
+    oldGenTests.add(testCapacityShrinksAfterMajorGC);
+    oldGenTests.add(testLargeBlockReuseSameAddress);
+    oldGenTests.add(testEmptyPageConvertedToLarge);
+    oldGenTests.add(testShrinkHysteresisGuard);
+    oldGenTests.add(testShrinkHonorsFloor);
+    oldGenTests.add(testUnassignedBlocksShrink);
+    oldGenTests.add(testDecommitFlagPathExercised);
 
     Testing::TestSuite allocatorTests("Allocator");
     allocatorTests.add(testPromotionToOldGen);

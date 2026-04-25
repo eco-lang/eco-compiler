@@ -259,6 +259,11 @@ private:
     // Each list contains free cells of size classToSize(i).
     FreeCell* free_lists_[NUM_SIZE_CLASSES];
 
+    // Indices into `blocks_` of large/pinned blocks whose single object died
+    // in the most recent sweep. `allocateLargeBlock` consults this list
+    // before asking the Allocator for a fresh block.
+    std::vector<size_t> free_large_blocks_;
+
     // ========== Size Class Helpers ==========
 
     // Maps an allocation request size to its size-class index. Used at
@@ -440,6 +445,58 @@ private:
     // excluded from compaction.
     void* allocateLargeBlock(size_t size);
 
+    // ========== Large-block reuse helpers ==========
+
+    // Marks `blocks_[idx]` (an `is_large` block whose single object died) as
+    // available for reuse via `allocateFromFreeLargeBlocks`. Asserts that
+    // the block is not already on the list.
+    void markBlockAsFreeLarge(size_t block_index);
+
+    // Returns a previously-released large block sized >= `size`, or nullptr
+    // if no such block is available. On success, resets the block's
+    // BufferMetadata to live, re-initialises the object header, and updates
+    // bookkeeping. The caller initialises the tag/size after.
+    void* allocateFromFreeLargeBlocks(size_t size);
+
+    // Looks for a fully-free regular page large enough to host `size` and
+    // re-purposes it as a large block. On success, flips `is_large = true`,
+    // drops embedded free cells, resets `end_of_objects` and bookkeeping,
+    // and returns the page base. Returns nullptr if no such page exists.
+    void* allocateFromEmptyRegularBlocks(size_t size);
+
+    // ========== Shrink path helpers ==========
+    //
+    // Called from `adjustCapacityAfterMajorGC` to release fully-free pages
+    // back to the Allocator after a major GC reclaims most live data.
+    // Must NOT be called while holding `Allocator::thread_mutex_`; each
+    // helper acquires it transiently inside the Allocator.
+
+    // Releases a fully-free block from `blocks_` back to the Allocator.
+    // Walks free lists to drop any FreeCell that lies inside the block, drops
+    // a `free_large_blocks_` entry if applicable, removes the BlockInfo and
+    // BufferMetadata, and patches indices that referenced the moved-from slot.
+    void releaseBlockToAllocator(size_t block_index);
+
+    // Releases an unassigned bag-page extent back to the Allocator. These
+    // pages were never materialized into `blocks_`, so this is just an
+    // Allocator round-trip plus a swap-remove from `unassigned_blocks_`.
+    void releaseUnassignedBlockToAllocator(size_t unassigned_index);
+
+    // Removes any FreeCell that lies inside `[blocks_[idx].start, ...end)`
+    // from every per-class free list. Called before releasing a block so
+    // its embedded free cells don't leave dangling free-list pointers.
+    void removeFreeCellsForBlock(size_t block_index);
+
+    // Patches indices stored in BufferMetadata, evacuation_set_,
+    // evac_block_index_, sweep_buffer_index_, fixup_buffer_index_, and
+    // free_large_blocks_ when blocks_ has had a swap-remove move the
+    // last-index entry to old_idx. Called by releaseBlockToAllocator.
+    void fixupIndicesAfterBlockMove(size_t old_idx, size_t new_idx);
+
+    // Inspects post-GC live/heap and, if heap is well above the desired
+    // capacity, releases fully-free pages until heap ≈ desired_heap.
+    void maybeShrinkCapacity();
+
     friend class Allocator;
     friend class NurserySpace;
     friend class ThreadLocalHeap;
@@ -529,6 +586,10 @@ public:
     static const std::vector<std::pair<char*, char*>>& getUnassignedBlocks(
             const OldGenSpace& oldgen) {
         return oldgen.unassigned_blocks_;
+    }
+    static const std::vector<size_t>& getFreeLargeBlocks(
+            const OldGenSpace& oldgen) {
+        return oldgen.free_large_blocks_;
     }
 
     // Manual control of lazy sweeping for testing.

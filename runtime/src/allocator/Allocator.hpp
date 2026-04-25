@@ -168,6 +168,12 @@ private:
     // (block pointer, block size); acquires pop a block whose size matches.
     std::vector<std::pair<char*, size_t>> nursery_low_freelist_;
     std::vector<std::pair<char*, size_t>> nursery_high_freelist_;
+    // Free list of previously-released old-gen blocks (pages or large blocks)
+    // that have been returned by `releaseOldGenBlock`. The virtual mapping is
+    // retained; physical RSS may have been dropped via `madvise(MADV_DONTNEED)`.
+    // `acquireOldGenBlock` consults this list (first-fit by size) before
+    // bumping `old_gen_committed`.
+    std::vector<std::pair<char*, size_t>> old_gen_free_blocks_;
     bool initialized;             // True after initialize() has been called.
 
 #if ENABLE_GC_STATS
@@ -226,7 +232,18 @@ private:
     // Acquires a block of memory from the old gen region.
     // Thread-safe: acquires thread_mutex_.
     // Returns pointer to base of committed block.
+    // First scans `old_gen_free_blocks_` for a previously-released block of
+    // size >= requested. On hit, optionally `madvise(MADV_WILLNEED)` and
+    // re-add the size to `old_gen_committed`. Otherwise bumps the committed
+    // pointer, calling `mmap` to materialize the page.
     char* acquireOldGenBlock(size_t size);
+
+    // Returns an old-gen block to the free list for reuse by a later
+    // `acquireOldGenBlock`. The virtual mapping is retained; if
+    // `config_.decommit_on_oldgen_release` is true, also drops the physical
+    // RSS via `madvise(MADV_DONTNEED)`. Subtracts `size` from
+    // `old_gen_committed`. Thread-safe: acquires `thread_mutex_`.
+    void releaseOldGenBlock(char* block, size_t size);
 
     // Post-major-GC growth hook: if an OldGenSpace has post-GC occupancy
     // above `major_gc_initiating_occupancy`, grow its committed range up to
