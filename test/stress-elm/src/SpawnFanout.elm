@@ -24,9 +24,24 @@ type alias Model =
     {}
 
 
-fiberCount : Int
-fiberCount =
+n : Int
+n =
     1000
+
+
+m : Int
+m =
+    1000
+
+
+loopCount : Int
+loopCount =
+    n // 100
+
+
+totalFibers : Int
+totalFibers =
+    m * loopCount
 
 
 sumTo : Int -> Int -> Int
@@ -55,7 +70,7 @@ spawnAll : Task.Task Never ()
 spawnAll =
     let
         go k =
-            if k > fiberCount then
+            if k > totalFibers then
                 Task.succeed ()
 
             else

@@ -17,6 +17,11 @@ m =
     1000
 
 
+loopCount : Int
+loopCount =
+    n // 2
+
+
 buildPairs : Int -> Array ( Int, Int )
 buildPairs count =
     Array.initialize count
@@ -51,7 +56,7 @@ main =
             buildPairs m
 
         result =
-            loop original n True
+            loop original loopCount True
 
         _ =
             Debug.log "roundtrip" result

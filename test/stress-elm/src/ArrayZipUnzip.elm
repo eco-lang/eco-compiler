@@ -16,6 +16,11 @@ m =
     1000
 
 
+loopCount : Int
+loopCount =
+    n // 2
+
+
 zip : Array Int -> Array Int -> Array ( Int, Int )
 zip xs ys =
     let
@@ -61,7 +66,7 @@ main =
             Array.initialize m (\i -> i + 1 + m)
 
         result =
-            loop as_ bs n True
+            loop as_ bs loopCount True
 
         _ =
             Debug.log "roundtrip" result

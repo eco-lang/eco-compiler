@@ -30,9 +30,14 @@ type alias Model =
     Maybe Bool
 
 
-iterations : Int
-iterations =
-    1500
+n : Int
+n =
+    1000
+
+
+m : Int
+m =
+    1000
 
 
 unitEnc : () -> BE.Encoder
@@ -57,7 +62,7 @@ listDec =
 
 smallAlloc : Task.Task Never Int
 smallAlloc =
-    Task.succeed (List.sum (List.range 1 200))
+    Task.succeed (List.sum (List.range 1 m))
 
 
 addOne : MV.MVar (List (MV.MVar ())) -> Task.Task Never ()
@@ -72,14 +77,14 @@ addOne workList =
 
 
 loop : MV.MVar (List (MV.MVar ())) -> Int -> Task.Task Never ()
-loop workList n =
-    if n <= 0 then
+loop workList remaining =
+    if remaining <= 0 then
         Task.succeed ()
 
     else
         addOne workList
             |> Task.andThen (\_ -> smallAlloc)
-            |> Task.andThen (\_ -> loop workList (n - 1))
+            |> Task.andThen (\_ -> loop workList (remaining - 1))
 
 
 init : () -> ( Model, Cmd Msg )
@@ -90,10 +95,10 @@ init _ =
                 |> Task.andThen
                     (\workList ->
                         MV.put listEnc workList []
-                            |> Task.andThen (\_ -> loop workList iterations)
+                            |> Task.andThen (\_ -> loop workList n)
                             |> Task.andThen (\_ -> MV.take listDec workList)
                     )
-                |> Task.map (\xs -> List.length xs == iterations)
+                |> Task.map (\xs -> List.length xs == n)
     in
     ( Nothing, Task.perform GotResult task )
 

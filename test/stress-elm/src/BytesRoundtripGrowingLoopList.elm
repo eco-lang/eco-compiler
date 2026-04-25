@@ -17,14 +17,19 @@ import Gen exposing (Seed)
 import Html exposing (text)
 
 
-listLen : Int
-listLen =
-    5000
+n : Int
+n =
+    1000
+
+
+m : Int
+m =
+    1000
 
 
 loopCount : Int
 loopCount =
-    2
+    n // 20
 
 
 initialSeed : Seed
@@ -43,7 +48,7 @@ genString seed =
 
 gen : Seed -> ( List String, Seed )
 gen seed =
-    Gen.listOf listLen genString seed
+    Gen.listOf m genString seed
 
 
 encodeString : String -> E.Encoder

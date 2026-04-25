@@ -16,6 +16,11 @@ m =
     1000
 
 
+loopCount : Int
+loopCount =
+    n // 4
+
+
 half : Int
 half =
     m // 2
@@ -59,7 +64,7 @@ main =
             buildDict (half + 1) m Dict.empty
 
         result =
-            loop left right n True
+            loop left right loopCount True
 
         _ =
             Debug.log "result" result

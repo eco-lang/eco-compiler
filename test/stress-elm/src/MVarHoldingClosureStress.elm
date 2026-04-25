@@ -27,6 +27,21 @@ type alias Model =
     Maybe Bool
 
 
+n : Int
+n =
+    1000
+
+
+m : Int
+m =
+    1000
+
+
+loopCount : Int
+loopCount =
+    n // 100
+
+
 makeAdder : Int -> (Int -> Int -> Int)
 makeAdder captured =
     \x y -> x + y + captured
@@ -44,28 +59,47 @@ fnDec =
 
 heavyAlloc : Task.Task Never Int
 heavyAlloc =
-    Task.succeed (List.sum (List.range 1 8000))
+    Task.succeed (List.sum (List.range 1 m))
+
+
+singleCycle : Task.Task Never Bool
+singleCycle =
+    let
+        f =
+            makeAdder 100
+    in
+    MV.new
+        |> Task.andThen
+            (\mv ->
+                MV.put fnEnc mv f
+                    |> Task.andThen (\_ -> heavyAlloc)
+                    |> Task.andThen (\_ -> heavyAlloc)
+                    |> Task.andThen (\_ -> heavyAlloc)
+                    |> Task.andThen (\_ -> MV.take fnDec mv)
+            )
+        |> Task.map (\g -> g 3 4 == 107)
+
+
+repeatCycle : Int -> Task.Task Never Bool
+repeatCycle remaining =
+    if remaining <= 0 then
+        Task.succeed True
+
+    else
+        singleCycle
+            |> Task.andThen
+                (\ok ->
+                    if ok then
+                        repeatCycle (remaining - 1)
+
+                    else
+                        Task.succeed False
+                )
 
 
 init : () -> ( Model, Cmd Msg )
 init _ =
-    let
-        f =
-            makeAdder 100
-
-        task =
-            MV.new
-                |> Task.andThen
-                    (\m ->
-                        MV.put fnEnc m f
-                            |> Task.andThen (\_ -> heavyAlloc)
-                            |> Task.andThen (\_ -> heavyAlloc)
-                            |> Task.andThen (\_ -> heavyAlloc)
-                            |> Task.andThen (\_ -> MV.take fnDec m)
-                    )
-                |> Task.map (\g -> g 3 4 == 107)
-    in
-    ( Nothing, Task.perform GotResult task )
+    ( Nothing, Task.perform GotResult (repeatCycle loopCount) )
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )

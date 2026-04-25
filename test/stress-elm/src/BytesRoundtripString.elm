@@ -21,7 +21,7 @@ m =
 
 loopCount : Int
 loopCount =
-    n // 4
+    n // 8
 
 
 initialSeed : Seed

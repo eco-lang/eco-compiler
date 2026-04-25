@@ -23,9 +23,24 @@ type alias Model =
     Maybe Bool
 
 
-count : Int
-count =
-    500
+n : Int
+n =
+    1000
+
+
+m : Int
+m =
+    1000
+
+
+loopCount : Int
+loopCount =
+    n // 100
+
+
+mvarCount : Int
+mvarCount =
+    m // 2
 
 
 intEnc : Int -> BE.Encoder
@@ -40,25 +55,25 @@ intDec =
 
 heavyAlloc : Task.Task Never Int
 heavyAlloc =
-    Task.succeed (List.sum (List.range 1 8000))
+    Task.succeed (List.sum (List.range 1 m))
 
 
-{-| Make `n` MVars each pre-filled with its index `i` in [1..n]. Returns
+{-| Make `total` MVars each pre-filled with its index `i` in [1..total]. Returns
     the list of MVars in index order. -}
 makeAll : Int -> Task.Task Never (List (MV.MVar Int))
-makeAll n =
+makeAll total =
     let
         go : Int -> List (MV.MVar Int) -> Task.Task Never (List (MV.MVar Int))
         go i acc =
-            if i > n then
+            if i > total then
                 Task.succeed (List.reverse acc)
 
             else
                 MV.new
                     |> Task.andThen
-                        (\m ->
-                            MV.put intEnc m i
-                                |> Task.andThen (\_ -> go (i + 1) (m :: acc))
+                        (\mv ->
+                            MV.put intEnc mv i
+                                |> Task.andThen (\_ -> go (i + 1) (mv :: acc))
                         )
     in
     go 1 []
@@ -73,28 +88,46 @@ takeAll mvars =
                 [] ->
                     Task.succeed (List.reverse acc)
 
-                m :: rest ->
-                    MV.take intDec m
+                mv :: rest ->
+                    MV.take intDec mv
                         |> Task.andThen (\v -> go rest (v :: acc))
     in
     go mvars []
 
 
+singleCycle : Task.Task Never Bool
+singleCycle =
+    makeAll mvarCount
+        |> Task.andThen
+            (\mvars ->
+                heavyAlloc
+                    |> Task.andThen (\_ -> heavyAlloc)
+                    |> Task.andThen (\_ -> heavyAlloc)
+                    |> Task.andThen (\_ -> takeAll mvars)
+            )
+        |> Task.map (\vs -> vs == List.range 1 mvarCount)
+
+
+repeatCycle : Int -> Task.Task Never Bool
+repeatCycle remaining =
+    if remaining <= 0 then
+        Task.succeed True
+
+    else
+        singleCycle
+            |> Task.andThen
+                (\ok ->
+                    if ok then
+                        repeatCycle (remaining - 1)
+
+                    else
+                        Task.succeed False
+                )
+
+
 init : () -> ( Model, Cmd Msg )
 init _ =
-    let
-        task =
-            makeAll count
-                |> Task.andThen
-                    (\mvars ->
-                        heavyAlloc
-                            |> Task.andThen (\_ -> heavyAlloc)
-                            |> Task.andThen (\_ -> heavyAlloc)
-                            |> Task.andThen (\_ -> takeAll mvars)
-                    )
-                |> Task.map (\vs -> vs == List.range 1 count)
-    in
-    ( Nothing, Task.perform GotResult task )
+    ( Nothing, Task.perform GotResult (repeatCycle loopCount) )
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )

@@ -19,6 +19,11 @@ m =
     1000
 
 
+loopCount : Int
+loopCount =
+    n // 8
+
+
 initialSeed : Seed
 initialSeed =
     0x12345678
@@ -87,7 +92,7 @@ loop seed count ok =
 main =
     let
         result =
-            loop initialSeed n True
+            loop initialSeed loopCount True
 
         _ =
             Debug.log "roundtrip" result

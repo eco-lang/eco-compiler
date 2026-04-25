@@ -25,9 +25,14 @@ type alias Model =
     Maybe Bool
 
 
-churnCount : Int
-churnCount =
-    2000
+n : Int
+n =
+    1000
+
+
+m : Int
+m =
+    1000
 
 
 intEnc : Int -> BE.Encoder
@@ -43,7 +48,7 @@ intDec =
 {-| Builds a throwaway list to churn nursery memory on each churn iter. -}
 smallAlloc : Task.Task Never Int
 smallAlloc =
-    Task.succeed (List.sum (List.range 1 100))
+    Task.succeed (List.sum (List.range 1 m))
 
 
 churn : MV.MVar Int -> Int -> Task.Task Never ()
@@ -54,9 +59,9 @@ churn persistent i =
     else
         MV.new
             |> Task.andThen
-                (\m ->
-                    MV.put intEnc m i
-                        |> Task.andThen (\_ -> MV.drop m)
+                (\mv ->
+                    MV.put intEnc mv i
+                        |> Task.andThen (\_ -> MV.drop mv)
                         |> Task.andThen (\_ -> smallAlloc)
                         |> Task.andThen
                             (\_ ->
@@ -82,10 +87,10 @@ init _ =
                 |> Task.andThen
                     (\persistent ->
                         MV.put intEnc persistent 0
-                            |> Task.andThen (\_ -> churn persistent churnCount)
+                            |> Task.andThen (\_ -> churn persistent n)
                             |> Task.andThen (\_ -> MV.take intDec persistent)
                     )
-                |> Task.map (\final -> final == churnCount // 16)
+                |> Task.map (\final -> final == n // 16)
     in
     ( Nothing, Task.perform GotResult task )
 

@@ -23,6 +23,21 @@ type alias Model =
     Maybe Bool
 
 
+n : Int
+n =
+    1000
+
+
+m : Int
+m =
+    1000
+
+
+loopCount : Int
+loopCount =
+    n // 100
+
+
 type alias Inner =
     { name : String, values : List Int }
 
@@ -45,7 +60,7 @@ original =
 
 heavyAlloc : Task.Task Never Int
 heavyAlloc =
-    Task.succeed (List.sum (List.range 1 8000))
+    Task.succeed (List.sum (List.range 1 m))
 
 
 recEnc : Nested -> BE.Encoder
@@ -58,22 +73,40 @@ recDec =
     BD.succeed { id = 0, label = "", children = [] }
 
 
+singleCycle : Task.Task Never Bool
+singleCycle =
+    MV.new
+        |> Task.andThen
+            (\mv ->
+                MV.put recEnc mv original
+                    |> Task.andThen (\_ -> heavyAlloc)
+                    |> Task.andThen (\_ -> heavyAlloc)
+                    |> Task.andThen (\_ -> heavyAlloc)
+                    |> Task.andThen (\_ -> MV.take recDec mv)
+            )
+        |> Task.map (\v -> v == original)
+
+
+repeatCycle : Int -> Task.Task Never Bool
+repeatCycle remaining =
+    if remaining <= 0 then
+        Task.succeed True
+
+    else
+        singleCycle
+            |> Task.andThen
+                (\ok ->
+                    if ok then
+                        repeatCycle (remaining - 1)
+
+                    else
+                        Task.succeed False
+                )
+
+
 init : () -> ( Model, Cmd Msg )
 init _ =
-    let
-        task =
-            MV.new
-                |> Task.andThen
-                    (\m ->
-                        MV.put recEnc m original
-                            |> Task.andThen (\_ -> heavyAlloc)
-                            |> Task.andThen (\_ -> heavyAlloc)
-                            |> Task.andThen (\_ -> heavyAlloc)
-                            |> Task.andThen (\_ -> MV.take recDec m)
-                    )
-                |> Task.map (\v -> v == original)
-    in
-    ( Nothing, Task.perform GotResult task )
+    ( Nothing, Task.perform GotResult (repeatCycle loopCount) )
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )

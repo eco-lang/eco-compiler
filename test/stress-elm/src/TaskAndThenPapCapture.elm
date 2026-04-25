@@ -10,7 +10,7 @@ level yields via Process.sleep 0 so the scheduler must re-enter the
 fiber with the growing capture chain live on its stack-frame list.
 -}
 
--- CHECK: papCapture: 20500
+-- CHECK: papCapture: 41000
 
 import Platform
 import Process
@@ -25,9 +25,14 @@ type alias Model =
     {}
 
 
-outerCount : Int
-outerCount =
-    500
+n : Int
+n =
+    1000
+
+
+m : Int
+m =
+    1000
 
 
 {-| Six-deep andThen chain where each callback captures every value
@@ -90,7 +95,7 @@ runAll =
             else
                 sixLevel 0 |> Task.andThen (\v -> go (i - 1) (acc + v))
     in
-    go outerCount 0
+    go m 0
 
 
 init : () -> ( Model, Cmd Msg )

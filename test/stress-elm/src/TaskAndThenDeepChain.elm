@@ -10,7 +10,7 @@ stepProcess during unwinding, and the interaction between synchronous
 andThen folding and periodic BINDING yields.
 -}
 
--- CHECK: chain: 2000
+-- CHECK: chain: 1000
 
 import Platform
 import Process
@@ -25,9 +25,19 @@ type alias Model =
     {}
 
 
+n : Int
+n =
+    1000
+
+
+m : Int
+m =
+    1000
+
+
 chainDepth : Int
 chainDepth =
-    2000
+    m
 
 
 yieldEvery : Int

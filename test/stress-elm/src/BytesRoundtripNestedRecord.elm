@@ -16,9 +16,14 @@ import Gen exposing (Seed)
 import Html exposing (text)
 
 
-moduleCount : Int
-moduleCount =
-    200
+n : Int
+n =
+    1000
+
+
+m : Int
+m =
+    1000
 
 
 defsPerModule : Int
@@ -28,7 +33,7 @@ defsPerModule =
 
 loopCount : Int
 loopCount =
-    3
+    n // 100
 
 
 initialSeed : Seed
@@ -63,10 +68,10 @@ genDef seed =
         ( name, s1 ) =
             genString 8 seed
 
-        ( n, s2 ) =
+        ( v, s2 ) =
             Gen.int32 s1
     in
-    ( ( name, n ), s2 )
+    ( ( name, v ), s2 )
 
 
 genModule : Seed -> ( Module, Seed )
@@ -88,7 +93,7 @@ gen seed =
             Gen.int32 seed
 
         ( mods, s2 ) =
-            Gen.listOf moduleCount genModule s1
+            Gen.listOf m genModule s1
     in
     ( { version = ver, modules = mods }, s2 )
 
@@ -103,16 +108,16 @@ encodeString s =
 
 
 encodeDef : Def -> E.Encoder
-encodeDef ( name, n ) =
-    E.sequence [ encodeString name, E.signedInt32 BE n ]
+encodeDef ( name, v ) =
+    E.sequence [ encodeString name, E.signedInt32 BE v ]
 
 
 encodeModule : Module -> E.Encoder
-encodeModule m =
+encodeModule mod =
     E.sequence
-        [ encodeString m.name
-        , E.unsignedInt16 BE (List.length m.defs)
-        , E.sequence (List.map encodeDef m.defs)
+        [ encodeString mod.name
+        , E.unsignedInt16 BE (List.length mod.defs)
+        , E.sequence (List.map encodeDef mod.defs)
         ]
 
 
@@ -135,7 +140,7 @@ decodeDef =
     decodeString
         |> D.andThen
             (\name ->
-                D.signedInt32 BE |> D.map (\n -> ( name, n ))
+                D.signedInt32 BE |> D.map (\v -> ( name, v ))
             )
 
 

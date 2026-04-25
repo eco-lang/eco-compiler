@@ -16,9 +16,14 @@ import Gen exposing (Seed)
 import Html exposing (text)
 
 
-outerLen : Int
-outerLen =
-    400
+n : Int
+n =
+    1000
+
+
+m : Int
+m =
+    1000
 
 
 innerLenMax : Int
@@ -28,7 +33,7 @@ innerLenMax =
 
 loopCount : Int
 loopCount =
-    3
+    n // 100
 
 
 initialSeed : Seed
@@ -56,7 +61,7 @@ genInner seed =
 
 gen : Seed -> ( List (List String), Seed )
 gen seed =
-    Gen.listOf outerLen genInner seed
+    Gen.listOf m genInner seed
 
 
 encodeString : String -> E.Encoder

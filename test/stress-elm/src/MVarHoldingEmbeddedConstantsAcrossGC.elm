@@ -32,6 +32,21 @@ type alias Model =
     Maybe Bool
 
 
+n : Int
+n =
+    1000
+
+
+m : Int
+m =
+    1000
+
+
+loopCount : Int
+loopCount =
+    n // 100
+
+
 type alias Mvars =
     { nothing : MV.MVar (Maybe Int)
     , nil : MV.MVar (List Int)
@@ -44,7 +59,7 @@ type alias Mvars =
 {-| Forces ≥ 1 minor GC by building a large throwaway list. -}
 heavyAlloc : Task.Task Never Int
 heavyAlloc =
-    Task.succeed (List.sum (List.range 1 8000))
+    Task.succeed (List.sum (List.range 1 m))
 
 
 maybeEnc : Maybe Int -> BE.Encoder
@@ -91,7 +106,7 @@ buildMvars : Task.Task Never Mvars
 buildMvars =
     MV.new
         |> Task.andThen
-            (\n ->
+            (\nv ->
                 MV.new
                     |> Task.andThen
                         (\l ->
@@ -104,7 +119,7 @@ buildMvars =
                                                     MV.new
                                                         |> Task.map
                                                             (\s ->
-                                                                { nothing = n, nil = l, vTrue = t, vFalse = f, emptyStr = s }
+                                                                { nothing = nv, nil = l, vTrue = t, vFalse = f, emptyStr = s }
                                                             )
                                                 )
                                     )
@@ -112,48 +127,66 @@ buildMvars =
             )
 
 
+singleCycle : Task.Task Never Bool
+singleCycle =
+    buildMvars
+        |> Task.andThen
+            (\mv ->
+                MV.put maybeEnc mv.nothing Nothing
+                    |> Task.andThen (\_ -> MV.put listEnc mv.nil [])
+                    |> Task.andThen (\_ -> MV.put boolEnc mv.vTrue True)
+                    |> Task.andThen (\_ -> MV.put boolEnc mv.vFalse False)
+                    |> Task.andThen (\_ -> MV.put strEnc mv.emptyStr "")
+                    |> Task.andThen (\_ -> heavyAlloc)
+                    |> Task.andThen (\_ -> heavyAlloc)
+                    |> Task.andThen (\_ -> heavyAlloc)
+                    |> Task.andThen
+                        (\_ ->
+                            MV.take maybeDec mv.nothing
+                                |> Task.andThen
+                                    (\vNothing ->
+                                        MV.take listDec mv.nil
+                                            |> Task.andThen
+                                                (\vNil ->
+                                                    MV.take boolDec mv.vTrue
+                                                        |> Task.andThen
+                                                            (\vTrue ->
+                                                                MV.take boolDec mv.vFalse
+                                                                    |> Task.andThen
+                                                                        (\vFalse ->
+                                                                            MV.take strDec mv.emptyStr
+                                                                                |> Task.map
+                                                                                    (\vEmptyStr ->
+                                                                                        vNothing == Nothing && vNil == [] && vTrue == True && vFalse == False && vEmptyStr == ""
+                                                                                    )
+                                                                        )
+                                                            )
+                                                )
+                                    )
+                        )
+            )
+
+
+repeatCycle : Int -> Task.Task Never Bool
+repeatCycle remaining =
+    if remaining <= 0 then
+        Task.succeed True
+
+    else
+        singleCycle
+            |> Task.andThen
+                (\ok ->
+                    if ok then
+                        repeatCycle (remaining - 1)
+
+                    else
+                        Task.succeed False
+                )
+
+
 init : () -> ( Model, Cmd Msg )
 init _ =
-    let
-        task =
-            buildMvars
-                |> Task.andThen
-                    (\m ->
-                        MV.put maybeEnc m.nothing Nothing
-                            |> Task.andThen (\_ -> MV.put listEnc m.nil [])
-                            |> Task.andThen (\_ -> MV.put boolEnc m.vTrue True)
-                            |> Task.andThen (\_ -> MV.put boolEnc m.vFalse False)
-                            |> Task.andThen (\_ -> MV.put strEnc m.emptyStr "")
-                            |> Task.andThen (\_ -> heavyAlloc)
-                            |> Task.andThen (\_ -> heavyAlloc)
-                            |> Task.andThen (\_ -> heavyAlloc)
-                            |> Task.andThen
-                                (\_ ->
-                                    MV.take maybeDec m.nothing
-                                        |> Task.andThen
-                                            (\vNothing ->
-                                                MV.take listDec m.nil
-                                                    |> Task.andThen
-                                                        (\vNil ->
-                                                            MV.take boolDec m.vTrue
-                                                                |> Task.andThen
-                                                                    (\vTrue ->
-                                                                        MV.take boolDec m.vFalse
-                                                                            |> Task.andThen
-                                                                                (\vFalse ->
-                                                                                    MV.take strDec m.emptyStr
-                                                                                        |> Task.map
-                                                                                            (\vEmptyStr ->
-                                                                                                vNothing == Nothing && vNil == [] && vTrue == True && vFalse == False && vEmptyStr == ""
-                                                                                            )
-                                                                                )
-                                                                    )
-                                                        )
-                                            )
-                                )
-                    )
-    in
-    ( Nothing, Task.perform GotResult task )
+    ( Nothing, Task.perform GotResult (repeatCycle loopCount) )
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )

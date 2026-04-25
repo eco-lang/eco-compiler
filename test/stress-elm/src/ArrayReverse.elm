@@ -6,9 +6,19 @@ import Array exposing (Array)
 import Html exposing (text)
 
 
+n : Int
+n =
+    1000
+
+
+m : Int
+m =
+    1000
+
+
 initialArray : Array Int
 initialArray =
-    Array.initialize 1000 (\i -> i + 1)
+    Array.initialize m (\i -> i + 1)
 
 
 reverse : Array a -> Array a
@@ -30,7 +40,7 @@ main =
             initialArray
 
         finished =
-            reverseNTimes 1000 start
+            reverseNTimes n start
 
         _ =
             Debug.log "roundtrip" (start == finished)

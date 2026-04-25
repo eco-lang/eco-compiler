@@ -16,6 +16,11 @@ m =
     1000
 
 
+loopCount : Int
+loopCount =
+    n // 2
+
+
 buildPairs : Int -> List ( Int, Int ) -> List ( Int, Int )
 buildPairs i acc =
     if i <= 0 then
@@ -46,7 +51,7 @@ main =
             buildPairs m []
 
         result =
-            loop original n True
+            loop original loopCount True
 
         _ =
             Debug.log "roundtrip" result

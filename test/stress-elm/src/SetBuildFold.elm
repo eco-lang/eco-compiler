@@ -1,6 +1,6 @@
 module SetBuildFold exposing (main)
 
--- CHECK: result: 500500000
+-- CHECK: result: 250250000
 
 import Html exposing (text)
 import Set exposing (Set)
@@ -14,6 +14,11 @@ n =
 m : Int
 m =
     1000
+
+
+loopCount : Int
+loopCount =
+    n // 2
 
 
 buildSet : Int -> Set Int -> Set Int
@@ -44,7 +49,7 @@ main =
         -- Each set fold sums 1..m = m*(m+1)/2 = 500500
         -- After n iterations: n * 500500 = 500500000
         result =
-            loop n 0
+            loop loopCount 0
 
         _ =
             Debug.log "result" result

@@ -27,14 +27,29 @@ type alias Model =
     {}
 
 
+n : Int
+n =
+    1000
+
+
+m : Int
+m =
+    1000
+
+
+loopCount : Int
+loopCount =
+    n // 1000
+
+
 fiberCount : Int
 fiberCount =
-    300
+    m // 3
 
 
 allocSize : Int
 allocSize =
-    200
+    m // 5
 
 
 yieldCount : Int
@@ -44,11 +59,11 @@ yieldCount =
 
 parentFoldSize : Int
 parentFoldSize =
-    8000
+    m * 8
 
 
 buildList : Int -> List Int
-buildList n =
+buildList count =
     let
         go k acc =
             if k <= 0 then
@@ -57,7 +72,7 @@ buildList n =
             else
                 go (k - 1) (k :: acc)
     in
-    go n []
+    go count []
 
 
 worker : Task.Task Never ()

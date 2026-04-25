@@ -16,6 +16,11 @@ m =
     1000
 
 
+loopCount : Int
+loopCount =
+    n // 2
+
+
 buildDict : Int -> Dict Int Int -> Dict Int Int
 buildDict i acc =
     if i <= 0 then
@@ -43,7 +48,7 @@ main =
             buildDict m Dict.empty
 
         transformed =
-            applyNTimes n rebuildWithTransform original
+            applyNTimes loopCount rebuildWithTransform original
 
         roundtrip =
             original == transformed

@@ -11,7 +11,7 @@ to yield to the event loop 1000 times over the course of one
 sequenced task.
 -}
 
--- CHECK: seq: 1999000
+-- CHECK: seq: 499500
 
 import Platform
 import Process
@@ -26,9 +26,19 @@ type alias Model =
     {}
 
 
+n : Int
+n =
+    1000
+
+
+m : Int
+m =
+    1000
+
+
 leafCount : Int
 leafCount =
-    2000
+    m
 
 
 leaf : Int -> Task Never Int

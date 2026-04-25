@@ -20,14 +20,19 @@ import Gen exposing (Seed)
 import Html exposing (text)
 
 
-outerCount : Int
-outerCount =
-    4000
+n : Int
+n =
+    1000
+
+
+m : Int
+m =
+    1000
 
 
 loopCount : Int
 loopCount =
-    3
+    n // 20
 
 
 initialSeed : Seed
@@ -83,7 +88,7 @@ genItem seed =
 
 gen : Seed -> ( List Item, Seed )
 gen seed =
-    Gen.listOf outerCount genItem seed
+    Gen.listOf m genItem seed
 
 
 encodeRec : Rec -> E.Encoder
@@ -98,8 +103,8 @@ encodeRec r =
 
 
 encodeItem : Item -> E.Encoder
-encodeItem m =
-    case m of
+encodeItem item =
+    case item of
         Nothing ->
             E.unsignedInt8 0
 

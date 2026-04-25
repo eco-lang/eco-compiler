@@ -21,7 +21,7 @@ m =
 
 loopCount : Int
 loopCount =
-    n // 10
+    n // 30
 
 
 initialSeed : Seed

@@ -34,9 +34,24 @@ type alias Model =
     Maybe Bool
 
 
+n : Int
+n =
+    1000
+
+
+m : Int
+m =
+    1000
+
+
+loopCount : Int
+loopCount =
+    n // 100
+
+
 expected : Int
 expected =
-    4242
+    m * 4 + 242
 
 
 {-| The kernel MVar store ignores these encoders/decoders —
@@ -58,25 +73,43 @@ reader dataMVar resultMVar =
         |> Task.andThen (\v -> MV.put intEnc resultMVar v)
 
 
+singleCycle : Task.Task Never Bool
+singleCycle =
+    MV.new
+        |> Task.andThen
+            (\dataMVar ->
+                MV.new
+                    |> Task.andThen
+                        (\resultMVar ->
+                            Process.spawn (reader dataMVar resultMVar)
+                                |> Task.andThen (\_ -> Process.sleep 100)
+                                |> Task.andThen (\_ -> MV.put intEnc dataMVar expected)
+                                |> Task.andThen (\_ -> MV.take intDec resultMVar)
+                        )
+            )
+        |> Task.map (\v -> v == expected)
+
+
+repeatCycle : Int -> Task.Task Never Bool
+repeatCycle remaining =
+    if remaining <= 0 then
+        Task.succeed True
+
+    else
+        singleCycle
+            |> Task.andThen
+                (\ok ->
+                    if ok then
+                        repeatCycle (remaining - 1)
+
+                    else
+                        Task.succeed False
+                )
+
+
 init : () -> ( Model, Cmd Msg )
 init _ =
-    let
-        task =
-            MV.new
-                |> Task.andThen
-                    (\dataMVar ->
-                        MV.new
-                            |> Task.andThen
-                                (\resultMVar ->
-                                    Process.spawn (reader dataMVar resultMVar)
-                                        |> Task.andThen (\_ -> Process.sleep 100)
-                                        |> Task.andThen (\_ -> MV.put intEnc dataMVar expected)
-                                        |> Task.andThen (\_ -> MV.take intDec resultMVar)
-                                )
-                    )
-                |> Task.map (\v -> v == expected)
-    in
-    ( Nothing, Task.perform GotResult task )
+    ( Nothing, Task.perform GotResult (repeatCycle loopCount) )
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )

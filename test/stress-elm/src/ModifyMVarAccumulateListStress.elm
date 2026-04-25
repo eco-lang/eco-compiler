@@ -6,7 +6,7 @@ module ModifyMVarAccumulateListStress exposing (main)
     graph expands linearly, so the scanner's re-encode/evacuate cost
     climbs across GCs.
 
-    End state: list length == iterations, head is the last-pushed value.
+    End state: list length == n, head is the last-pushed value.
 -}
 
 -- CHECK: ModifyMVarAccumulateListStress: True
@@ -26,9 +26,14 @@ type alias Model =
     Maybe Bool
 
 
-iterations : Int
-iterations =
-    1500
+n : Int
+n =
+    1000
+
+
+m : Int
+m =
+    1000
 
 
 listEnc : List String -> BE.Encoder
@@ -43,31 +48,31 @@ listDec =
 
 smallAlloc : Task.Task Never Int
 smallAlloc =
-    Task.succeed (List.sum (List.range 1 200))
+    Task.succeed (List.sum (List.range 1 m))
 
 
 prependOne : MV.MVar (List String) -> Int -> Task.Task Never ()
-prependOne m i =
-    MV.take listDec m
+prependOne mvar i =
+    MV.take listDec mvar
         |> Task.andThen
             (\xs ->
                 let
                     s =
                         "v" ++ String.fromInt i
                 in
-                MV.put listEnc m (s :: xs)
+                MV.put listEnc mvar (s :: xs)
             )
 
 
 loop : MV.MVar (List String) -> Int -> Task.Task Never ()
-loop m i =
-    if i > iterations then
+loop mvar i =
+    if i > n then
         Task.succeed ()
 
     else
-        prependOne m i
+        prependOne mvar i
             |> Task.andThen (\_ -> smallAlloc)
-            |> Task.andThen (\_ -> loop m (i + 1))
+            |> Task.andThen (\_ -> loop mvar (i + 1))
 
 
 init : () -> ( Model, Cmd Msg )
@@ -76,14 +81,14 @@ init _ =
         task =
             MV.new
                 |> Task.andThen
-                    (\m ->
-                        MV.put listEnc m []
-                            |> Task.andThen (\_ -> loop m 1)
-                            |> Task.andThen (\_ -> MV.take listDec m)
+                    (\mvar ->
+                        MV.put listEnc mvar []
+                            |> Task.andThen (\_ -> loop mvar 1)
+                            |> Task.andThen (\_ -> MV.take listDec mvar)
                     )
                 |> Task.map
                     (\xs ->
-                        List.length xs == iterations && List.head xs == Just ("v" ++ String.fromInt iterations)
+                        List.length xs == n && List.head xs == Just ("v" ++ String.fromInt n)
                     )
     in
     ( Nothing, Task.perform GotResult task )

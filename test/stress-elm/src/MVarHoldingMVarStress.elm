@@ -23,6 +23,21 @@ type alias Model =
     Maybe Bool
 
 
+n : Int
+n =
+    1000
+
+
+m : Int
+m =
+    1000
+
+
+loopCount : Int
+loopCount =
+    n // 100
+
+
 intEnc : Int -> BE.Encoder
 intEnc _ =
     BE.unsignedInt8 0
@@ -45,31 +60,49 @@ mvarDec =
 
 heavyAlloc : Task.Task Never Int
 heavyAlloc =
-    Task.succeed (List.sum (List.range 1 8000))
+    Task.succeed (List.sum (List.range 1 m))
+
+
+singleCycle : Task.Task Never Bool
+singleCycle =
+    MV.new
+        |> Task.andThen
+            (\inner ->
+                MV.put intEnc inner 424242
+                    |> Task.andThen (\_ -> MV.new)
+                    |> Task.andThen
+                        (\outer ->
+                            MV.put mvarEnc outer inner
+                                |> Task.andThen (\_ -> heavyAlloc)
+                                |> Task.andThen (\_ -> heavyAlloc)
+                                |> Task.andThen (\_ -> heavyAlloc)
+                                |> Task.andThen (\_ -> MV.take mvarDec outer)
+                        )
+                    |> Task.andThen (MV.take intDec)
+            )
+        |> Task.map (\v -> v == 424242)
+
+
+repeatCycle : Int -> Task.Task Never Bool
+repeatCycle remaining =
+    if remaining <= 0 then
+        Task.succeed True
+
+    else
+        singleCycle
+            |> Task.andThen
+                (\ok ->
+                    if ok then
+                        repeatCycle (remaining - 1)
+
+                    else
+                        Task.succeed False
+                )
 
 
 init : () -> ( Model, Cmd Msg )
 init _ =
-    let
-        task =
-            MV.new
-                |> Task.andThen
-                    (\inner ->
-                        MV.put intEnc inner 424242
-                            |> Task.andThen (\_ -> MV.new)
-                            |> Task.andThen
-                                (\outer ->
-                                    MV.put mvarEnc outer inner
-                                        |> Task.andThen (\_ -> heavyAlloc)
-                                        |> Task.andThen (\_ -> heavyAlloc)
-                                        |> Task.andThen (\_ -> heavyAlloc)
-                                        |> Task.andThen (\_ -> MV.take mvarDec outer)
-                                )
-                            |> Task.andThen (MV.take intDec)
-                    )
-                |> Task.map (\v -> v == 424242)
-    in
-    ( Nothing, Task.perform GotResult task )
+    ( Nothing, Task.perform GotResult (repeatCycle loopCount) )
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )

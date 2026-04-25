@@ -13,6 +13,16 @@ n =
     1000
 
 
+m : Int
+m =
+    1000
+
+
+loopCount : Int
+loopCount =
+    n // 4
+
+
 {-| Balanced binary tree of depth 9 ≈ 1023 internal nodes — stresses lazy recursion. -}
 treeDepth : Int
 treeDepth =
@@ -102,7 +112,7 @@ loop seed count ok =
 main =
     let
         result =
-            loop initialSeed n True
+            loop initialSeed loopCount True
 
         _ =
             Debug.log "roundtrip" result

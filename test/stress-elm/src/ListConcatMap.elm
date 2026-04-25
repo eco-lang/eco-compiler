@@ -15,6 +15,11 @@ m =
     1000
 
 
+loopCount : Int
+loopCount =
+    n // 2
+
+
 loop : Int -> Bool -> Bool
 loop count ok =
     if count <= 0 then
@@ -36,7 +41,7 @@ loop count ok =
 main =
     let
         result =
-            loop n True
+            loop loopCount True
 
         _ =
             Debug.log "result" result

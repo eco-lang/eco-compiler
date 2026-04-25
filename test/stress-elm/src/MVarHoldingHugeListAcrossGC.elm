@@ -23,9 +23,24 @@ type alias Model =
     Maybe Bool
 
 
+n : Int
+n =
+    1000
+
+
+m : Int
+m =
+    1000
+
+
+loopCount : Int
+loopCount =
+    n // 100
+
+
 listLen : Int
 listLen =
-    20000
+    m * 20
 
 
 original : List Int
@@ -35,7 +50,7 @@ original =
 
 heavyAlloc : Task.Task Never Int
 heavyAlloc =
-    Task.succeed (List.sum (List.range 1 8000))
+    Task.succeed (List.sum (List.range 1 m))
 
 
 lEnc : List Int -> BE.Encoder
@@ -48,25 +63,43 @@ lDec =
     BD.succeed []
 
 
+singleCycle : Task.Task Never Bool
+singleCycle =
+    MV.new
+        |> Task.andThen
+            (\mv ->
+                MV.put lEnc mv original
+                    |> Task.andThen (\_ -> heavyAlloc)
+                    |> Task.andThen (\_ -> heavyAlloc)
+                    |> Task.andThen (\_ -> heavyAlloc)
+                    |> Task.andThen (\_ -> MV.take lDec mv)
+            )
+        |> Task.map
+            (\v ->
+                List.length v == listLen && List.sum v == List.sum original
+            )
+
+
+repeatCycle : Int -> Task.Task Never Bool
+repeatCycle remaining =
+    if remaining <= 0 then
+        Task.succeed True
+
+    else
+        singleCycle
+            |> Task.andThen
+                (\ok ->
+                    if ok then
+                        repeatCycle (remaining - 1)
+
+                    else
+                        Task.succeed False
+                )
+
+
 init : () -> ( Model, Cmd Msg )
 init _ =
-    let
-        task =
-            MV.new
-                |> Task.andThen
-                    (\m ->
-                        MV.put lEnc m original
-                            |> Task.andThen (\_ -> heavyAlloc)
-                            |> Task.andThen (\_ -> heavyAlloc)
-                            |> Task.andThen (\_ -> heavyAlloc)
-                            |> Task.andThen (\_ -> MV.take lDec m)
-                    )
-                |> Task.map
-                    (\v ->
-                        List.length v == listLen && List.sum v == List.sum original
-                    )
-    in
-    ( Nothing, Task.perform GotResult task )
+    ( Nothing, Task.perform GotResult (repeatCycle loopCount) )
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )

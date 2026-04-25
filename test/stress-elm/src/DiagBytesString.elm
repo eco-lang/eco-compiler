@@ -11,12 +11,17 @@ import Html exposing (text)
 
 n : Int
 n =
-    5
+    1000
 
 
 m : Int
 m =
-    5
+    1000
+
+
+loopCount : Int
+loopCount =
+    n // 200
 
 
 initialSeed : Seed
@@ -107,7 +112,7 @@ loop seed count ok =
 main =
     let
         result =
-            loop initialSeed n True
+            loop initialSeed loopCount True
 
         _ =
             Debug.log "roundtrip" result

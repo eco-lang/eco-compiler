@@ -5,7 +5,7 @@ module ModifyMVarCounterStress exposing (main)
     counter loop N k times with per-iteration allocation pressure to
     force minor GCs during the take/put sequence.
 
-    End state: counter == iterations.
+    End state: counter == n.
 -}
 
 -- CHECK: ModifyMVarCounterStress: True
@@ -25,9 +25,14 @@ type alias Model =
     Maybe Bool
 
 
-iterations : Int
-iterations =
-    3000
+n : Int
+n =
+    1000
+
+
+m : Int
+m =
+    1000
 
 
 intEnc : Int -> BE.Encoder
@@ -42,24 +47,24 @@ intDec =
 
 smallAlloc : Task.Task Never Int
 smallAlloc =
-    Task.succeed (List.sum (List.range 1 200))
+    Task.succeed (List.sum (List.range 1 m))
 
 
 modifyInc : MV.MVar Int -> Task.Task Never ()
-modifyInc m =
-    MV.take intDec m
-        |> Task.andThen (\v -> MV.put intEnc m (v + 1))
+modifyInc mvar =
+    MV.take intDec mvar
+        |> Task.andThen (\v -> MV.put intEnc mvar (v + 1))
 
 
 loop : MV.MVar Int -> Int -> Task.Task Never ()
-loop m n =
-    if n <= 0 then
+loop mvar remaining =
+    if remaining <= 0 then
         Task.succeed ()
 
     else
-        modifyInc m
+        modifyInc mvar
             |> Task.andThen (\_ -> smallAlloc)
-            |> Task.andThen (\_ -> loop m (n - 1))
+            |> Task.andThen (\_ -> loop mvar (remaining - 1))
 
 
 init : () -> ( Model, Cmd Msg )
@@ -68,12 +73,12 @@ init _ =
         task =
             MV.new
                 |> Task.andThen
-                    (\m ->
-                        MV.put intEnc m 0
-                            |> Task.andThen (\_ -> loop m iterations)
-                            |> Task.andThen (\_ -> MV.take intDec m)
+                    (\mvar ->
+                        MV.put intEnc mvar 0
+                            |> Task.andThen (\_ -> loop mvar n)
+                            |> Task.andThen (\_ -> MV.take intDec mvar)
                     )
-                |> Task.map (\v -> v == iterations)
+                |> Task.map (\v -> v == n)
     in
     ( Nothing, Task.perform GotResult task )
 

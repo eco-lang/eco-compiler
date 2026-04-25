@@ -32,9 +32,19 @@ type alias Model =
     Maybe Bool
 
 
-items : Int
-items =
+n : Int
+n =
     1000
+
+
+m : Int
+m =
+    1000
+
+
+loopCount : Int
+loopCount =
+    n // 100
 
 
 listEnc : List Int -> BE.Encoder
@@ -49,10 +59,9 @@ listDec =
 
 smallAlloc : Task.Task Never Int
 smallAlloc =
-    Task.succeed (List.sum (List.range 1 150))
+    Task.succeed (List.sum (List.range 1 (m // 8)))
 
 
-{-| Append one value to the queue via take/modify/put. -}
 push : MV.MVar (List Int) -> Int -> Task.Task Never ()
 push chan v =
     MV.take listDec chan
@@ -61,7 +70,7 @@ push chan v =
 
 pushMany : MV.MVar (List Int) -> Int -> Task.Task Never ()
 pushMany chan i =
-    if i > items then
+    if i > m then
         Task.succeed ()
 
     else
@@ -70,20 +79,38 @@ pushMany chan i =
             |> Task.andThen (\_ -> pushMany chan (i + 1))
 
 
+singleCycle : Task.Task Never Bool
+singleCycle =
+    MV.new
+        |> Task.andThen
+            (\chan ->
+                MV.put listEnc chan []
+                    |> Task.andThen (\_ -> pushMany chan 1)
+                    |> Task.andThen (\_ -> MV.take listDec chan)
+            )
+        |> Task.map (\xs -> xs == List.range 1 m)
+
+
+repeatCycle : Int -> Task.Task Never Bool
+repeatCycle remaining =
+    if remaining <= 0 then
+        Task.succeed True
+
+    else
+        singleCycle
+            |> Task.andThen
+                (\ok ->
+                    if ok then
+                        repeatCycle (remaining - 1)
+
+                    else
+                        Task.succeed False
+                )
+
+
 init : () -> ( Model, Cmd Msg )
 init _ =
-    let
-        task =
-            MV.new
-                |> Task.andThen
-                    (\chan ->
-                        MV.put listEnc chan []
-                            |> Task.andThen (\_ -> pushMany chan 1)
-                            |> Task.andThen (\_ -> MV.take listDec chan)
-                    )
-                |> Task.map (\xs -> xs == List.range 1 items)
-    in
-    ( Nothing, Task.perform GotResult task )
+    ( Nothing, Task.perform GotResult (repeatCycle loopCount) )
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )

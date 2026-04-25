@@ -25,14 +25,29 @@ type alias Model =
     {}
 
 
+n : Int
+n =
+    1000
+
+
+m : Int
+m =
+    1000
+
+
+loopCount : Int
+loopCount =
+    n // 1000
+
+
 fiberCount : Int
 fiberCount =
-    200
+    m // 5
 
 
 chainDepth : Int
 chainDepth =
-    50
+    m // 20
 
 
 innerChain : Int -> Int -> Task.Task Never Int
