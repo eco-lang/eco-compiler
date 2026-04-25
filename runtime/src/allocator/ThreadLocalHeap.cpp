@@ -309,6 +309,26 @@ void ThreadLocalHeap::majorGC() {
         }
     }
 
+    // Mark external roots (Scheduler run queue, PlatformRuntime state,
+    // MVar slots, Eco kernel Runtime state). Minor GC scans these in
+    // NurserySpace phase 1d, but major GC was missing them — causing any
+    // object reachable only via an external root (e.g. a Dict held only
+    // by an MVar between put/take) to be swept and have its slot reused
+    // by later allocations. Stage-7 Dict_foldl crash (2026-04-24): the
+    // statusDict in Builder.Build was only rooted by an MVar; after the
+    // second major GC its slot was overwritten by String allocations,
+    // and Dict.diff treated the resulting non-Dict bytes as an RBNode.
+    //
+    // Major GC is non-moving (mark-and-sweep with free-list reclaim), so
+    // the EvacuateFn just marks; the encoded HPointer value is not changed.
+    for (auto& scanner : nursery_.getRootSet().getExternalRootScanners()) {
+        scanner([this](uint64_t& ref) {
+            HPointer hp;
+            std::memcpy(&hp, &ref, sizeof(hp));
+            old_gen_.markHPointer(hp);
+        });
+    }
+
     // Continue with marking and sweep.
 #if ENABLE_GC_STATS
     old_gen_.finishMarkAndSweep(stats_);
