@@ -9,10 +9,13 @@
 
 #include "OldGenSpace.hpp"
 #include "Allocator.hpp"
+#include <chrono>
 #include <limits>
 #include <algorithm>
 #include <cassert>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <functional>
 
@@ -700,6 +703,45 @@ void OldGenSpace::startMark(const std::unordered_set<HPointer*> &roots,
     if (marking_active)
         return;
 
+    // Defense-in-depth: reset any Black cell in old gen back to White before
+    // we begin marking. Sweep already does this for every cell it walks, but
+    // a stale Black can still reach old gen via the minor-GC promotion /
+    // to-space `memcpy` (it copies the source header verbatim — see the
+    // matching color reset in NurserySpace::evacuate). If any leak path is
+    // missed, the next mark cycle would see a Black cell as already-processed
+    // and skip its children, leaving them White → swept → Tag_Free, and
+    // subsequent reads of the parent's pointer fields hit a freed cell.
+    //
+    // O(N) per major GC; toggled off with ECO_GC_RESET_BLACK_AT_MARK=0.
+    {
+        const char* e = std::getenv("ECO_GC_RESET_BLACK_AT_MARK");
+        const bool enabled = !(e && e[0] == '0' && e[1] == '\0');
+        if (enabled) {
+            for (auto& blk : blocks_) {
+                char* p = blk.start;
+                char* end = blk.end_of_objects;
+                while (p < end) {
+                    Header* hdr = reinterpret_cast<Header*>(p);
+                    size_t step;
+                    if (hdr->tag == Tag_Free) {
+                        step = hdr->size;
+                    } else if (blk.is_large) {
+                        step = blk.totalBytes();
+                    } else {
+                        step = (getObjectSize(p) + 7) & ~static_cast<size_t>(7);
+                        if (step < 8) step = 8;
+                    }
+                    if (hdr->tag != Tag_Free &&
+                        hdr->color == static_cast<u32>(Color::Black)) {
+                        hdr->color = static_cast<u32>(Color::White);
+                    }
+                    p += step;
+                    if (step == 0) break;
+                }
+            }
+        }
+    }
+
     marking_active = true;
     current_epoch++;
     mark_stack.clear();
@@ -916,6 +958,38 @@ void OldGenSpace::finishMarkAndSweep(GCStats &stats) {
 
     GC_STATS_MAJOR_INC_MARK_SWEEP(stats);
 }
+
+void OldGenSpace::finishMarkAndSweep(GCStats &stats,
+                                     MajorGCPhaseProfile &profile) {
+    auto t_mark_start = std::chrono::high_resolution_clock::now();
+    while (true) {
+        if (mark_stack.size() > profile.mark_stack_peak)
+            profile.mark_stack_peak = mark_stack.size();
+        bool more = incrementalMark(1000, stats);
+        profile.mark_iterations++;
+        if (!more) break;
+    }
+    auto t_mark_end = std::chrono::high_resolution_clock::now();
+
+    auto t_sweep_start = t_mark_end;
+    sweep();
+    auto t_sweep_end = std::chrono::high_resolution_clock::now();
+
+    profile.mark_ns =
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            t_mark_end - t_mark_start).count();
+    profile.sweep_ns =
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            t_sweep_end - t_sweep_start).count();
+
+    profile.blocks_scanned = blocks_.size();
+    profile.live_bytes_after = frag_stats_.live_bytes;
+    profile.garbage_bytes    = frag_stats_.total_free_bytes;
+
+    marking_active = false;
+
+    GC_STATS_MAJOR_INC_MARK_SWEEP(stats);
+}
 #else
 void OldGenSpace::finishMarkAndSweep() {
     while (incrementalMark(1000)) {
@@ -923,6 +997,34 @@ void OldGenSpace::finishMarkAndSweep() {
     }
 
     sweep();
+
+    marking_active = false;
+}
+
+void OldGenSpace::finishMarkAndSweep(MajorGCPhaseProfile &profile) {
+    auto t_mark_start = std::chrono::high_resolution_clock::now();
+    while (true) {
+        if (mark_stack.size() > profile.mark_stack_peak)
+            profile.mark_stack_peak = mark_stack.size();
+        bool more = incrementalMark(1000);
+        profile.mark_iterations++;
+        if (!more) break;
+    }
+    auto t_mark_end = std::chrono::high_resolution_clock::now();
+
+    sweep();
+    auto t_sweep_end = std::chrono::high_resolution_clock::now();
+
+    profile.mark_ns =
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            t_mark_end - t_mark_start).count();
+    profile.sweep_ns =
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            t_sweep_end - t_mark_end).count();
+
+    profile.blocks_scanned = blocks_.size();
+    profile.live_bytes_after = frag_stats_.live_bytes;
+    profile.garbage_bytes    = frag_stats_.total_free_bytes;
 
     marking_active = false;
 }
@@ -1885,6 +1987,14 @@ size_t OldGenSpace::evacuateSlice(size_t work_budget) {
                 }
 
                 std::memcpy(dest, evac_cursor_, obj_size);
+                // Reset color: see the matching reset in
+                // NurserySpace::evacuate. allocateForEvacuation does not go
+                // through initObjectHeader, so the destination's color is
+                // whatever bytes were there; the memcpy then clobbers it with
+                // the source's color. Force White so the next major mark
+                // visits this object and processes its children.
+                Header* dest_hdr = getHeader(dest);
+                dest_hdr->color = static_cast<u32>(Color::White);
                 installForwardingPointer(evac_cursor_, dest);
 
                 work_done += step;

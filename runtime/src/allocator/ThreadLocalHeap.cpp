@@ -10,8 +10,35 @@
 #include "StackMap.hpp"
 #include "StackUnwind.hpp"
 #include <cassert>
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <execinfo.h>
+#include <sys/resource.h>
+
+namespace {
+
+// Latched once per process. Reads ECO_GC_PHASE_PROFILE.
+//   "0" / unset / empty -> disabled
+//   any other value     -> enabled
+inline bool gcPhaseProfileEnabled() {
+    static const bool enabled = []{
+        const char* e = std::getenv("ECO_GC_PHASE_PROFILE");
+        if (e == nullptr || e[0] == '\0') return false;
+        return !(e[0] == '0' && e[1] == '\0');
+    }();
+    return enabled;
+}
+
+inline uint64_t nsBetween(
+        const std::chrono::high_resolution_clock::time_point& a,
+        const std::chrono::high_resolution_clock::time_point& b) {
+    return static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(b - a).count());
+}
+
+}  // namespace
 
 namespace Elm {
 
@@ -267,6 +294,8 @@ void ThreadLocalHeap::minorGC() {
 }
 
 void ThreadLocalHeap::majorGC() {
+    const bool profile_phases = gcPhaseProfileEnabled();
+
     // Always dump sizes at major GC so the reproduction log makes it easy to
     // see whether a major GC actually ran before the old-gen assert fired.
     parent_->dumpHeapState("majorGC begin");
@@ -275,11 +304,27 @@ void ThreadLocalHeap::majorGC() {
     auto gc_start = GC_STATS_TIMER_START();
 #endif
 
+    // Per-phase profiling state (zero-cost when profile_phases is false —
+    // the rusage calls and clock reads still happen but their cost is
+    // negligible compared to the GC pause itself).
+    auto t_enter = std::chrono::high_resolution_clock::now();
+    struct rusage ru_enter;
+    long pf_enter_minor = 0, pf_enter_major = 0;
+    long ctx_enter_vol = 0, ctx_enter_invol = 0;
+    if (profile_phases && getrusage(RUSAGE_THREAD, &ru_enter) == 0) {
+        pf_enter_minor = ru_enter.ru_minflt;
+        pf_enter_major = ru_enter.ru_majflt;
+        ctx_enter_vol  = ru_enter.ru_nvcsw;
+        ctx_enter_invol = ru_enter.ru_nivcsw;
+    }
+
     collectStackRootsFromStackMap();
 
     // Collect long-lived roots from this thread.
     std::unordered_set<HPointer*> roots = collectRoots();
     const std::unordered_set<uint64_t*>& jit_roots = nursery_.getRootSet().getJitRoots();
+
+    auto t_after_root_collect = std::chrono::high_resolution_clock::now();
 
     // Start marking phase with long-lived and JIT roots.
 #if ENABLE_GC_STATS
@@ -288,9 +333,14 @@ void ThreadLocalHeap::majorGC() {
     old_gen_.startMark(roots, jit_roots, *parent_);
 #endif
 
+    size_t stackmap_roots_pushed = 0;
+    size_t stackrange_roots_pushed = 0;
+    size_t external_roots_pushed = 0;
+
     // Mark stackmap-derived roots.
     for (HPointer* slot : stack_map_roots_.get()) {
         old_gen_.markHPointer(*slot);
+        ++stackmap_roots_pushed;
     }
 
     // Mark stack root ranges.
@@ -300,41 +350,106 @@ void ThreadLocalHeap::majorGC() {
         for (size_t i = 0; i < range.count; ++i) {
             if (mask & (1ULL << i)) {
                 old_gen_.markHPointer(base[i]);
+                ++stackrange_roots_pushed;
             }
         }
     }
 
     // Mark external roots (Scheduler run queue, PlatformRuntime state,
-    // MVar slots, Eco kernel Runtime state). Minor GC scans these in
-    // NurserySpace phase 1d, but major GC was missing them — causing any
-    // object reachable only via an external root (e.g. a Dict held only
-    // by an MVar between put/take) to be swept and have its slot reused
-    // by later allocations. Stage-7 Dict_foldl crash (2026-04-24): the
-    // statusDict in Builder.Build was only rooted by an MVar; after the
-    // second major GC its slot was overwritten by String allocations,
-    // and Dict.diff treated the resulting non-Dict bytes as an RBNode.
-    //
-    // Major GC is non-moving (mark-and-sweep with free-list reclaim), so
-    // the EvacuateFn just marks; the encoded HPointer value is not changed.
+    // MVar slots, Eco kernel Runtime state).
     for (auto& scanner : nursery_.getRootSet().getExternalRootScanners()) {
-        scanner([this](uint64_t& ref) {
+        scanner([this, &external_roots_pushed](uint64_t& ref) {
             HPointer hp;
             std::memcpy(&hp, &ref, sizeof(hp));
             old_gen_.markHPointer(hp);
+            ++external_roots_pushed;
         });
     }
 
+    auto t_after_root_push = std::chrono::high_resolution_clock::now();
+
     // Continue with marking and sweep.
+    Elm::MajorGCPhaseProfile phase_profile;
 #if ENABLE_GC_STATS
-    old_gen_.finishMarkAndSweep(stats_);
+    if (profile_phases) {
+        old_gen_.finishMarkAndSweep(stats_, phase_profile);
+    } else {
+        old_gen_.finishMarkAndSweep(stats_);
+    }
 #else
-    old_gen_.finishMarkAndSweep();
+    if (profile_phases) {
+        old_gen_.finishMarkAndSweep(phase_profile);
+    } else {
+        old_gen_.finishMarkAndSweep();
+    }
 #endif
+
+    auto t_done = std::chrono::high_resolution_clock::now();
 
 #if ENABLE_GC_STATS
     uint64_t elapsed_ns = GC_STATS_TIMER_ELAPSED_NS(gc_start);
     GC_STATS_MAJOR_RECORD_GC_END(stats_, elapsed_ns);
 #endif
+
+    if (profile_phases) {
+        struct rusage ru_done;
+        long pf_minor_delta = 0, pf_major_delta = 0;
+        long ctx_vol_delta = 0, ctx_invol_delta = 0;
+        if (getrusage(RUSAGE_THREAD, &ru_done) == 0) {
+            pf_minor_delta = ru_done.ru_minflt - pf_enter_minor;
+            pf_major_delta = ru_done.ru_majflt - pf_enter_major;
+            ctx_vol_delta  = ru_done.ru_nvcsw - ctx_enter_vol;
+            ctx_invol_delta = ru_done.ru_nivcsw - ctx_enter_invol;
+        }
+
+        const uint64_t total_ns      = nsBetween(t_enter, t_done);
+        const uint64_t root_scan_ns  = nsBetween(t_enter, t_after_root_collect);
+        const uint64_t root_push_ns  = nsBetween(t_after_root_collect, t_after_root_push);
+        // Time inside finishMarkAndSweep that wasn't accounted for as mark or
+        // sweep (e.g. computeFragmentationStats + adjustCapacityAfterMajorGC,
+        // both invoked inside sweep()). The phase_profile.sweep_ns covers the
+        // entire sweep() call including those, but we also report the
+        // measured wall-clock for the finishMarkAndSweep block as a sanity check.
+        const uint64_t finish_ns     = nsBetween(t_after_root_push, t_done);
+        const uint64_t accounted_ns  = root_scan_ns + root_push_ns
+                                     + phase_profile.mark_ns
+                                     + phase_profile.sweep_ns;
+        const int64_t  unaccounted_ns =
+            static_cast<int64_t>(total_ns) - static_cast<int64_t>(accounted_ns);
+
+        std::fprintf(stderr,
+            "[gc-profile] major #%llu total=%.3fms"
+            " root_scan=%.3fms (long=%zu jit=%zu)"
+            " root_push=%.3fms (stackmap=%zu range=%zu external=%zu)"
+            " mark=%.3fms (iters=%llu peak_stack=%zu)"
+            " sweep=%.3fms (blocks=%zu live=%zu garbage=%zu)"
+            " finish_block=%.3fms"
+            " unaccounted=%.3fms"
+            " minor_pf=%ld major_pf=%ld vol_csw=%ld invol_csw=%ld\n",
+            (unsigned long long)stats_.major_gc_count,
+            total_ns / 1.0e6,
+            root_scan_ns / 1.0e6,
+            roots.size(),
+            jit_roots.size(),
+            root_push_ns / 1.0e6,
+            stackmap_roots_pushed,
+            stackrange_roots_pushed,
+            external_roots_pushed,
+            phase_profile.mark_ns / 1.0e6,
+            (unsigned long long)phase_profile.mark_iterations,
+            phase_profile.mark_stack_peak,
+            phase_profile.sweep_ns / 1.0e6,
+            phase_profile.blocks_scanned,
+            phase_profile.live_bytes_after,
+            phase_profile.garbage_bytes,
+            finish_ns / 1.0e6,
+            unaccounted_ns / 1.0e6,
+            pf_minor_delta,
+            pf_major_delta,
+            ctx_vol_delta,
+            ctx_invol_delta);
+        std::fflush(stderr);
+    }
 
     parent_->dumpHeapState("majorGC end");
 }

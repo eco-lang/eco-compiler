@@ -20,6 +20,22 @@ enum class GCPhase {
     Sweeping    // Lazy sweeping in progress.
 };
 
+// Per-major-GC phase telemetry. Filled in by majorGC()/finishMarkAndSweep
+// when ECO_GC_PHASE_PROFILE is set. Costs nothing when disabled.
+struct MajorGCPhaseProfile {
+    uint64_t mark_ns        = 0;
+    uint64_t sweep_ns       = 0;
+    uint64_t capacity_ns    = 0;
+    uint64_t mark_iterations = 0;  // Calls to incrementalMark(1000) in the loop.
+    uint64_t mark_units_done = 0;  // Total objects popped from mark stack.
+    size_t   mark_stack_peak = 0;  // Peak mark-stack depth observed.
+    size_t   blocks_scanned  = 0;  // Buffer count walked in sweep.
+    size_t   live_bytes_after = 0;
+    size_t   garbage_bytes    = 0;
+    size_t   shrink_blocks_released = 0;
+    size_t   shrink_bytes_released  = 0;
+};
+
 // ============================================================================
 // Free-List Constants (Segregated-Fits + Big Bag of Pages)
 // ============================================================================
@@ -361,8 +377,10 @@ private:
     // Finishes any remaining marking work and transitions to lazy sweeping.
 #if ENABLE_GC_STATS
     void finishMarkAndSweep(GCStats &stats);
+    void finishMarkAndSweep(GCStats &stats, MajorGCPhaseProfile &profile);
 #else
     void finishMarkAndSweep();
+    void finishMarkAndSweep(MajorGCPhaseProfile &profile);
 #endif
 
     void markChildren(void *obj);
