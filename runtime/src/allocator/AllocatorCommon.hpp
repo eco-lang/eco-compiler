@@ -192,7 +192,13 @@ struct HeapConfig {
     // When `releaseOldGenBlock` is called, also `madvise(MADV_DONTNEED)` the
     // released extent so its physical RSS drops. The virtual mapping is
     // retained either way; this flag controls only the RSS behaviour.
-    bool decommit_on_oldgen_release = true;
+    //
+    // TEMP: defaulting to false while debugging missed-mark-roots that
+    // produce stale HPointers into released pages. With decommit ON, those
+    // stale pointers read zero (madvise zeros); with decommit OFF, the bytes
+    // stay intact so the symptom either disappears (if it really was just
+    // zero reads) or shifts to a clearly observable mark-phase issue.
+    bool decommit_on_oldgen_release = false;
 
     // Derived value: total nursery size in bytes.
     size_t nurserySize() const { return nursery_block_count * alloc_buffer_size; }
