@@ -565,6 +565,11 @@ void Allocator::ensureOldGenCapacityFor(OldGenSpace& space,
             space.region_end_ = block_base + block_size;
         }
     }
+
+    // Resize the page-index for the (possibly grown) committed region. New
+    // slots default to NO_BLOCK; populateFromBlock / allocateFromBagPage
+    // assigns them as bag pages get materialized.
+    space.resizePageIndexForRegion();
 }
 
 // Commits a contiguous region of `initial_size` bytes in the old-gen address

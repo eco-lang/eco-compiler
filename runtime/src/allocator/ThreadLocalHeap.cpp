@@ -423,6 +423,7 @@ void ThreadLocalHeap::majorGC() {
             " root_push=%.3fms (stackmap=%zu range=%zu external=%zu)"
             " mark=%.3fms (iters=%llu peak_stack=%zu)"
             " sweep=%.3fms (blocks=%zu live=%zu garbage=%zu)"
+            " alldead=%zu/%zub initial_sweep=%zub sweep_pending=%zub"
             " finish_block=%.3fms"
             " unaccounted=%.3fms"
             " minor_pf=%ld major_pf=%ld vol_csw=%ld invol_csw=%ld\n",
@@ -442,6 +443,10 @@ void ThreadLocalHeap::majorGC() {
             phase_profile.blocks_scanned,
             phase_profile.live_bytes_after,
             phase_profile.garbage_bytes,
+            phase_profile.alldead_blocks_released,
+            phase_profile.alldead_bytes_released,
+            phase_profile.initial_sweep_budget_bytes,
+            phase_profile.sweep_pending_blocks,
             finish_ns / 1.0e6,
             unaccounted_ns / 1.0e6,
             pf_minor_delta,

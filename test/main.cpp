@@ -19,6 +19,7 @@
 #include "allocator/AllocatorTest.hpp"
 #include "allocator/OldGenSpaceTest.hpp"
 #include "allocator/OldGenCapacityTest.hpp"
+#include "allocator/OldGenLazySweepTest.hpp"
 #include "allocator/HeapHelpersTest.hpp"
 #include "allocator/StringOpsTest.hpp"
 #include "allocator/ListOpsTest.hpp"
@@ -596,6 +597,12 @@ int main(int argc, char* argv[]) {
     oldGenTests.add(testShrinkHonorsFloor);
     oldGenTests.add(testUnassignedBlocksShrink);
     oldGenTests.add(testDecommitFlagPathExercised);
+    // Lazy-sweep / mark-driven shrink coverage.
+    oldGenTests.add(testAllDeadBlockReclaimSkipsCells);
+    oldGenTests.add(testLazySweepDrivenFromAllocation);
+    oldGenTests.add(testShrinkUsesMarkLiveBytes);
+    oldGenTests.add(testCompactionBlockedDuringSweep);
+    oldGenTests.add(testPageIndexBlockLookup);
 
     Testing::TestSuite allocatorTests("Allocator");
     allocatorTests.add(testPromotionToOldGen);

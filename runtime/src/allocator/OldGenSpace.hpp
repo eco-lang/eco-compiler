@@ -34,6 +34,14 @@ struct MajorGCPhaseProfile {
     size_t   garbage_bytes    = 0;
     size_t   shrink_blocks_released = 0;
     size_t   shrink_bytes_released  = 0;
+    // All-dead block fast path (Step 3): blocks released in O(#blocks) without
+    // scanning their cells.
+    size_t   alldead_blocks_released = 0;
+    size_t   alldead_bytes_released  = 0;
+    // Lazy sweep (Step 4): how much sweep work is being deferred to the mutator
+    // after finishMarkAndSweep returns.
+    size_t   initial_sweep_budget_bytes = 0;
+    size_t   sweep_pending_blocks = 0;
 };
 
 // ============================================================================
@@ -76,6 +84,12 @@ static constexpr size_t NUM_SIZE_CLASSES =
 
 // Bytes to sweep per allocation slow-path invocation.
 static constexpr size_t SWEEP_WORK_BUDGET = 4096;
+
+// Bytes to sweep in the initial slice that finishMarkAndSweep runs before
+// returning. Sized to seed free lists for the first few allocations after
+// major GC; small enough that the post-mark pause stays bounded on a
+// multi-GB heap. Per-allocation slices use SWEEP_WORK_BUDGET.
+static constexpr size_t INITIAL_SWEEP_BUDGET = SWEEP_WORK_BUDGET * 16;
 
 // Incremental marking work ratio (mark N bytes for each byte allocated).
 static constexpr size_t MARK_WORK_RATIO = 2;
@@ -250,6 +264,15 @@ private:
     // Cached bounds for O(1) membership checks (updated when blocks change).
     char* region_base_;                    // Start of old gen region.
     char* region_end_;                     // End of committed old gen region.
+
+    // Maps page slot (= (p - region_base_) / alloc_buffer_size) to the
+    // blocks_ index that owns the page, enabling O(1) blockIndexFor. Sized
+    // to ceil(committed / alloc_buffer_size) and grown alongside region_end_.
+    // Slots whose page currently belongs to no entry in blocks_ (bag pages
+    // before population, or just-released pages) hold the sentinel NO_BLOCK.
+    // For is_large blocks, every page slot the extent spans is filled with
+    // the same blocks_ index so the O(1) lookup works regardless of kind.
+    std::vector<size_t> page_to_block_index_;
 
     // ========== GC State Machine ==========
 
@@ -534,9 +557,80 @@ private:
     // last-index entry to old_idx. Called by releaseBlockToAllocator.
     void fixupIndicesAfterBlockMove(size_t old_idx, size_t new_idx);
 
-    // Inspects post-GC live/heap and, if heap is well above the desired
-    // capacity, releases fully-free pages until heap ≈ desired_heap.
-    void maybeShrinkCapacity();
+    // Inspects post-mark live/heap and, if heap is well above the desired
+    // capacity, releases fully-free pages until heap ≈ desired_heap_bytes.
+    // The caller (adjustCapacityAfterMajorGC) computes desired_heap_bytes
+    // from mark-derived live bytes. `light_pass=true` skips releases unless
+    // current_heap > desired_heap * 1.5 — used at onSweepComplete to avoid
+    // double-shrink churn after the heavy pass already ran post-mark.
+    void maybeShrinkCapacity(size_t desired_heap_bytes,
+                             bool light_pass = false);
+
+    // ========== Page-index helpers (Step 1) ==========
+
+    // Resizes page_to_block_index_ to cover [region_base_, region_end_).
+    // Newly-added slots are filled with NO_BLOCK. Called after any commit/grow
+    // that moves region_end_ forward.
+    void resizePageIndexForRegion();
+
+    // Returns the first / last page slot the block covers, or SIZE_MAX if
+    // region_base_ is not set / the block lies outside the indexed region.
+    size_t firstPageIndex(const BlockInfo& block) const;
+    size_t lastPageIndex(const BlockInfo& block) const;
+
+    // Writes `block_index` into every page_to_block_index_ slot the block's
+    // extent covers. Used when a block enters blocks_.
+    void assignPageIndexForBlock(size_t block_index);
+
+    // Clears every page_to_block_index_ slot the block's extent covers
+    // back to NO_BLOCK. Used immediately before a block leaves blocks_.
+    void clearPageIndexForBlock(size_t block_index);
+
+    // Returns the blocks_ index of the block containing `obj`, or
+    // blocks_.size() if `obj` lies outside the committed region or no block
+    // currently owns its page. O(1) when the page index is hot; falls back to
+    // a linear scan if the slot is NO_BLOCK (defensive).
+    size_t blockIndexFor(const void* obj) const;
+
+    // ========== Mark-time live-bytes attribution (Step 2) ==========
+
+    // Performs the White → Grey → Black transition on `obj`, recursively
+    // pushes children via markChildren, and attributes the object's
+    // walkStep-aligned size to buffer_meta_[blockIndexFor(obj)].live_bytes.
+    // Skips Tag_Free and already-Black objects. For nursery objects, only
+    // calls markChildren — major GC must not write into nursery headers and
+    // nursery cells aren't tracked in buffer_meta_. Returns true if the
+    // object did real work (popped one work unit).
+    bool markOneObject(void* obj);
+
+    // O(#blocks) reset of buffer_meta_ to match blocks_, called at major-GC
+    // start so live_bytes attribution can begin from zero.
+    void resetBufferMetaForMark();
+
+    // After the mark stack drains: clamp meta.live_bytes <= block.totalBytes(),
+    // set meta.garbage_bytes = block.totalBytes() - meta.live_bytes, and
+    // populate frag_stats_.{live_bytes, heap_bytes, total_free_bytes} from the
+    // mark-derived totals. Called from finishMarkAndSweep.
+    void finalizeMetaAfterMark();
+
+    // Resets meta.garbage_bytes and meta.fully_swept for every block in
+    // preparation for lazy sweep, while preserving mark-derived
+    // meta.live_bytes (which the post-mark shrink depends on).
+    void prepareMetaForLazySweep();
+
+    // ========== All-dead block fast path (Step 3) ==========
+
+    struct AllDeadReclaimStats {
+        size_t blocks_released = 0;
+        size_t bytes_released  = 0;
+    };
+
+    // Walks buffer_meta_ back-to-front and releases every non-large block
+    // whose live_bytes == 0 via releaseBlockToAllocator. Brackets the loop
+    // with g_batch_release_depth and recomputes region_base_/region_end_
+    // once at the end. Excludes is_large blocks (which continue to flow
+    // through markBlockAsFreeLarge / allocateFromFreeLargeBlocks).
+    AllDeadReclaimStats reclaimAllDeadBlocksFromMeta();
 
     friend class Allocator;
     friend class NurserySpace;
@@ -637,6 +731,29 @@ public:
     static void transitionToSweeping(OldGenSpace& oldgen) { oldgen.transitionToSweeping(); }
     static void lazySweep(OldGenSpace& oldgen, size_t target_class, size_t work_budget) {
         oldgen.lazySweep(target_class, work_budget);
+    }
+
+    // Page-index access for tests (Step 1).
+    static size_t blockIndexFor(const OldGenSpace& oldgen, const void* obj) {
+        return oldgen.blockIndexFor(obj);
+    }
+    static const std::vector<size_t>& getPageToBlockIndex(
+            const OldGenSpace& oldgen) {
+        return oldgen.page_to_block_index_;
+    }
+
+    // Mark-time live attribution (Step 2): drive the helper directly.
+    static void resetBufferMetaForMark(OldGenSpace& oldgen) {
+        oldgen.resetBufferMetaForMark();
+    }
+    static void finalizeMetaAfterMark(OldGenSpace& oldgen) {
+        oldgen.finalizeMetaAfterMark();
+    }
+
+    // All-dead reclaim (Step 3) for tests.
+    static OldGenSpace::AllDeadReclaimStats reclaimAllDeadBlocksFromMeta(
+            OldGenSpace& oldgen) {
+        return oldgen.reclaimAllDeadBlocksFromMeta();
     }
 
     // Compaction control for testing.

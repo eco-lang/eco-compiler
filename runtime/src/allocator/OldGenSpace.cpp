@@ -52,6 +52,23 @@ void* readBarrier(HPointer& ptr) {
 // Sentinel value indicating no current block.
 static constexpr size_t NO_BLOCK = std::numeric_limits<size_t>::max();
 
+// Bytes to advance per step when walking a block linearly. Size-class
+// blocks reserve a fixed cell per object (slack between the object's
+// logical size and the cell boundary belongs to that allocation), so the
+// walk must advance by the cell size, not the object's logical size, or
+// it will land mid-cell and start parsing FreeCell.next pointers as if
+// they were object headers. Bag pages and large blocks pack tightly, so
+// they advance by the object's logical size.
+//
+// Hoisted to file scope so member functions (markOneObject, sweep,
+// lazySweep, evacuateSlice, fixReferencesSlice) can all share it.
+static inline size_t walkStepFor(const BlockInfo& block, size_t obj_size) {
+    if (block.size_class < NUM_SIZE_CLASSES) {
+        return OldGenSpaceTestAccess::classToSize(block.size_class);
+    }
+    return obj_size;
+}
+
 OldGenSpace::OldGenSpace() :
     config_(nullptr), allocator_(nullptr),
     num_size_classes_(NUM_SMALL_CLASSES),
@@ -126,6 +143,11 @@ void OldGenSpace::initialize(Allocator* allocator, const HeapConfig* config) {
                 }
                 unassigned_blocks_.emplace_back(page_start, page_end);
             }
+
+            // Step 1: size the page-index for the committed region. All
+            // pages start as bag pages (no blocks_ entry), so every slot
+            // is NO_BLOCK at this point.
+            resizePageIndexForRegion();
         }
     }
 }
@@ -143,6 +165,7 @@ void OldGenSpace::reset(const HeapConfig* new_config) {
     blocks_.clear();
     buffer_meta_.clear();
     unassigned_blocks_.clear();
+    page_to_block_index_.clear();
 
     // Reset state.
     allocated_bytes = 0;
@@ -197,6 +220,102 @@ void OldGenSpace::initObjectHeader(void* obj) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Page-index helpers (Step 1).
+// ---------------------------------------------------------------------------
+
+void OldGenSpace::resizePageIndexForRegion() {
+    if (region_base_ == nullptr || region_end_ <= region_base_) return;
+    const size_t page_size = config_->alloc_buffer_size;
+    if (page_size == 0) return;
+    const size_t span = static_cast<size_t>(region_end_ - region_base_);
+    const size_t needed = (span + page_size - 1) / page_size;
+    if (page_to_block_index_.size() < needed) {
+        page_to_block_index_.resize(needed, NO_BLOCK);
+    }
+}
+
+size_t OldGenSpace::firstPageIndex(const BlockInfo& block) const {
+    if (region_base_ == nullptr) return std::numeric_limits<size_t>::max();
+    const size_t page_size = config_->alloc_buffer_size;
+    if (page_size == 0) return std::numeric_limits<size_t>::max();
+    if (block.start < region_base_) return std::numeric_limits<size_t>::max();
+    return static_cast<size_t>(block.start - region_base_) / page_size;
+}
+
+size_t OldGenSpace::lastPageIndex(const BlockInfo& block) const {
+    if (region_base_ == nullptr) return std::numeric_limits<size_t>::max();
+    const size_t page_size = config_->alloc_buffer_size;
+    if (page_size == 0) return std::numeric_limits<size_t>::max();
+    // block.end is the exclusive upper bound; the last page slot it covers
+    // is (end - region_base_ - 1) / page_size. Defensive: never underflow.
+    if (block.end <= region_base_) return std::numeric_limits<size_t>::max();
+    return static_cast<size_t>(block.end - region_base_ - 1) / page_size;
+}
+
+void OldGenSpace::assignPageIndexForBlock(size_t block_index) {
+    if (block_index >= blocks_.size()) return;
+    const BlockInfo& block = blocks_[block_index];
+    const size_t first = firstPageIndex(block);
+    const size_t last  = lastPageIndex(block);
+    if (first == std::numeric_limits<size_t>::max() ||
+        last == std::numeric_limits<size_t>::max()) {
+        return;
+    }
+    if (last >= page_to_block_index_.size()) {
+        page_to_block_index_.resize(last + 1, NO_BLOCK);
+    }
+    for (size_t p = first; p <= last; ++p) {
+        page_to_block_index_[p] = block_index;
+    }
+}
+
+void OldGenSpace::clearPageIndexForBlock(size_t block_index) {
+    if (block_index >= blocks_.size()) return;
+    const BlockInfo& block = blocks_[block_index];
+    const size_t first = firstPageIndex(block);
+    const size_t last  = lastPageIndex(block);
+    if (first == std::numeric_limits<size_t>::max() ||
+        last == std::numeric_limits<size_t>::max()) {
+        return;
+    }
+    const size_t cap = page_to_block_index_.size();
+    if (first >= cap) return;
+    const size_t end = std::min(last, cap - 1);
+    for (size_t p = first; p <= end; ++p) {
+        // Only clear slots we actually own; an overlapping clear from a sibling
+        // path could otherwise wipe a valid index.
+        if (page_to_block_index_[p] == block_index) {
+            page_to_block_index_[p] = NO_BLOCK;
+        }
+    }
+}
+
+size_t OldGenSpace::blockIndexFor(const void* obj) const {
+    const char* p = static_cast<const char*>(obj);
+    if (p < region_base_ || p >= region_end_) return blocks_.size();
+    const size_t page_size = config_->alloc_buffer_size;
+    if (page_size == 0) return blocks_.size();
+    const size_t page = static_cast<size_t>(p - region_base_) / page_size;
+    if (page < page_to_block_index_.size()) {
+        const size_t idx = page_to_block_index_[page];
+        if (idx != NO_BLOCK && idx < blocks_.size()) {
+            // Defensive: confirm the block actually contains the pointer
+            // (handles rare cases where a block was just released and the
+            // index slot wasn't cleared yet).
+            const BlockInfo& blk = blocks_[idx];
+            if (p >= blk.start && p < blk.end) return idx;
+        }
+    }
+    // Fallback: linear scan. Should be unreachable in steady state; guards
+    // against the page index being stale or sized too small.
+    for (size_t i = 0; i < blocks_.size(); ++i) {
+        const BlockInfo& blk = blocks_[i];
+        if (p >= blk.start && p < blk.end) return i;
+    }
+    return blocks_.size();
+}
+
 /**
  * Allocates memory in the old generation.
  *
@@ -215,28 +334,19 @@ void *OldGenSpace::allocate(size_t size) {
     GC_STATS_OLDGEN_RECORD_ALLOC(alloc_stats_, size);
 
     // Allocation-paced marking: do marking work proportional to allocation.
+    // Both branches now call markOneObject so live-bytes attribution stays
+    // consistent regardless of which path runs.
     if (gc_phase_ == GCPhase::Marking && !mark_stack.empty()) {
         size_t mark_budget = size * MARK_WORK_RATIO;
 #if ENABLE_GC_STATS
-        // Stats are not available on the allocation hot path; inline a
-        // minimal marking step that mirrors incrementalMark without
-        // touching the stats counters.
+        // Stats are not available on the allocation hot path; loop
+        // markOneObject directly to avoid touching the stats counters.
         while (mark_budget > 0 && !mark_stack.empty()) {
             void *obj = mark_stack.back();
             mark_stack.pop_back();
-            Header *hdr = getHeader(obj);
-            if (hdr->tag == Tag_Free) continue;
-            if (allocator_ref_ && allocator_ref_->isInNursery(obj)) {
-                // See incrementalMark: nursery cells are traversed without
-                // header writes; cycles are broken by nursery_visited_.
-                markChildren(obj);
-            } else {
-                if (hdr->color == static_cast<u32>(Color::Black)) continue;
-                hdr->color = static_cast<u32>(Color::Grey);
-                markChildren(obj);
-                hdr->color = static_cast<u32>(Color::Black);
+            if (markOneObject(obj)) {
+                mark_budget = (mark_budget > 1) ? mark_budget - 1 : 0;
             }
-            mark_budget = (mark_budget > 1) ? mark_budget - 1 : 0;
         }
 #else
         incrementalMark(mark_budget);
@@ -448,6 +558,7 @@ void* OldGenSpace::allocateFromBagPage(size_t requested_size) {
             if (base + config_->alloc_buffer_size > region_end_) {
                 region_end_ = base + config_->alloc_buffer_size;
             }
+            resizePageIndexForRegion();
         }
     }
     if (unassigned_blocks_.empty()) return nullptr;
@@ -471,7 +582,12 @@ void* OldGenSpace::allocateFromBagPage(size_t requested_size) {
     bi.is_large = false;
     blocks_.push_back(bi);
     const size_t block_idx = blocks_.size() - 1;
-    buffer_meta_.push_back({block_idx, 0, 0, false});
+    // See populateFromBlock: mid-cycle blocks are marked fully_swept so
+    // lazy sweep skips the freshly-placed Tag_Free cells.
+    const bool mid_cycle =
+        marking_active || gc_phase_ != GCPhase::Idle;
+    buffer_meta_.push_back({block_idx, 0, 0, mid_cycle});
+    assignPageIndexForBlock(block_idx);
 
     // Wrap the entire page as one Tag_Free cell, then split off the request.
     FreeCell* whole = reinterpret_cast<FreeCell*>(page_start);
@@ -511,6 +627,7 @@ bool OldGenSpace::populateFromBlock(size_t cls) {
             if (base + config_->alloc_buffer_size > region_end_) {
                 region_end_ = base + config_->alloc_buffer_size;
             }
+            resizePageIndexForRegion();
         }
     }
     if (unassigned_blocks_.empty()) return false;
@@ -544,7 +661,14 @@ bool OldGenSpace::populateFromBlock(size_t cls) {
     bi.is_large = false;
     blocks_.push_back(bi);
     const size_t block_idx = blocks_.size() - 1;
-    buffer_meta_.push_back({block_idx, 0, 0, false});
+    // Mid-cycle population (gc_phase_ != Idle) marks the block fully_swept
+    // up front so lazy sweep won't re-visit and coalesce the Tag_Free cells
+    // we just placed on free_lists_; doing so would overwrite their headers
+    // and dangle the free-list pointers.
+    const bool mid_cycle =
+        marking_active || gc_phase_ != GCPhase::Idle;
+    buffer_meta_.push_back({block_idx, 0, 0, mid_cycle});
+    assignPageIndexForBlock(block_idx);
 
     // Slice into uniform Tag_Free cells and link onto the class's free list.
     // Push in reverse so iteration order matches address order.
@@ -682,7 +806,11 @@ void* OldGenSpace::allocateLargeBlock(size_t size) {
     bi.is_large = true;
     blocks_.push_back(bi);
     const size_t block_idx = blocks_.size() - 1;
-    buffer_meta_.push_back({block_idx, size, 0, false});
+    // Mid-cycle large blocks are fully_swept so lazy sweep skips them — the
+    // single live object's Black header would otherwise get reset to White.
+    const bool mid_cycle_large =
+        marking_active || gc_phase_ != GCPhase::Idle;
+    buffer_meta_.push_back({block_idx, size, 0, mid_cycle_large});
 
     // Maintain the cached contains() bounds.
     if (region_base_ == nullptr || block_base < region_base_) {
@@ -691,6 +819,11 @@ void* OldGenSpace::allocateLargeBlock(size_t size) {
     if (block_base + block_size > region_end_) {
         region_end_ = block_base + block_size;
     }
+    // Resize the page-index now that the region grew, then assign every page
+    // slot the large block spans to its blocks_ index. For large blocks this
+    // can be many pages (block_size may exceed alloc_buffer_size).
+    resizePageIndexForRegion();
+    assignPageIndexForBlock(block_idx);
 
     allocated_bytes += size;
 
@@ -713,6 +846,20 @@ void OldGenSpace::startMark(const std::unordered_set<HPointer*> &roots,
 #endif
     if (marking_active)
         return;
+
+    // Drain any in-progress lazy sweep before starting a new mark cycle.
+    // The previous major GC's finishMarkAndSweep may have left gc_phase_ in
+    // Sweeping (initial slice + mutator-driven slices). If we begin a new
+    // mark while sweep state is partial, the new finalize/reclaim/shrink
+    // would race against partially-rebuilt free lists and meta. Draining
+    // here ensures a clean Idle starting state. In practice this is rare —
+    // it only fires if the mutator allocated very little between cycles.
+    if (gc_phase_ == GCPhase::Sweeping) {
+        while (gc_phase_ == GCPhase::Sweeping) {
+            lazySweep(NUM_SIZE_CLASSES,
+                      std::numeric_limits<size_t>::max() / 2);
+        }
+    }
 
     // Defense-in-depth: reset any Black cell in old gen back to White before
     // we begin marking. Sweep already does this for every cell it walks, but
@@ -760,6 +907,11 @@ void OldGenSpace::startMark(const std::unordered_set<HPointer*> &roots,
 
     // Store Allocator reference for nursery checks during marking.
     allocator_ref_ = &alloc;
+
+    // Step 2: zero per-block live-bytes accounting so markOneObject can
+    // attribute reachable objects to their owning blocks. The all-dead
+    // fast path (Step 3) keys off this counter being still zero post-mark.
+    resetBufferMetaForMark();
 
     // Push ALL roots onto mark stack - including nursery objects.
     // Embedded constants live entirely in the `constant` tag; filter them.
@@ -811,39 +963,7 @@ bool OldGenSpace::incrementalMark(size_t work_units) {
     while (!mark_stack.empty() && units_done < work_units) {
         void *obj = mark_stack.back();
         mark_stack.pop_back();
-
-        Header *hdr = getHeader(obj);
-
-        // Skip free cells defensively (a stale mark-stack entry could in
-        // principle point at one if the heap layout were inconsistent; the
-        // marker should never traverse Tag_Free).
-        if (hdr->tag == Tag_Free) continue;
-
-        if (allocator_ref_ && allocator_ref_->isInNursery(obj)) {
-            // Nursery cell: traverse children to keep reachable old-gen
-            // objects alive, but never write into the header. Cycles are
-            // broken via nursery_visited_ in pushMarkRoot.
-            markChildren(obj);
-            units_done++;
-            continue;
-        }
-
-        // Skip if already black.
-        if (hdr->color == static_cast<u32>(Color::Black)) {
-            continue;
-        }
-
-        // Mark grey first.
-        hdr->color = static_cast<u32>(Color::Grey);
-
-        // Process children.
-        markChildren(obj);
-
-        // Mark black.
-        hdr->color = static_cast<u32>(Color::Black);
-
-
-        units_done++;
+        if (markOneObject(obj)) ++units_done;
     }
 
 #if ENABLE_GC_STATS
@@ -980,8 +1100,99 @@ void OldGenSpace::markUnboxable(Unboxable &val, bool is_boxed) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Mark-time live-bytes attribution (Step 2).
+// ---------------------------------------------------------------------------
+
+bool OldGenSpace::markOneObject(void* obj) {
+    Header* hdr = getHeader(obj);
+
+    // Defensive: stale mark-stack entry pointing at a free cell.
+    if (hdr->tag == Tag_Free) return false;
+
+    // Nursery objects: traverse children but never write into the header,
+    // and don't attribute bytes (nursery cells aren't tracked in
+    // buffer_meta_; only old-gen blocks are). The cycle break lives in
+    // pushMarkRoot via nursery_visited_.
+    if (allocator_ref_ && allocator_ref_->isInNursery(obj)) {
+        markChildren(obj);
+        return true;
+    }
+
+    // Old-gen object: skip if already Black, otherwise tri-color it and
+    // attribute its walkStep-aligned size to the owning block.
+    if (hdr->color == static_cast<u32>(Color::Black)) return false;
+
+    hdr->color = static_cast<u32>(Color::Grey);
+    markChildren(obj);
+    hdr->color = static_cast<u32>(Color::Black);
+
+    const size_t blk_idx = blockIndexFor(obj);
+    if (blk_idx < blocks_.size()) {
+        const size_t step = walkStepFor(blocks_[blk_idx], getObjectSize(obj));
+        if (blk_idx < buffer_meta_.size()) {
+            buffer_meta_[blk_idx].live_bytes += step;
+        }
+    }
+    return true;
+}
+
+void OldGenSpace::resetBufferMetaForMark() {
+    if (buffer_meta_.size() < blocks_.size()) {
+        buffer_meta_.resize(blocks_.size(), {0, 0, 0, false});
+    }
+    for (size_t i = 0; i < blocks_.size(); ++i) {
+        buffer_meta_[i].block_index = i;
+        buffer_meta_[i].live_bytes = 0;
+        buffer_meta_[i].garbage_bytes = 0;
+        buffer_meta_[i].fully_swept = false;
+    }
+}
+
+void OldGenSpace::finalizeMetaAfterMark() {
+    size_t total_live = 0;
+    size_t total_heap = 0;
+
+    for (size_t i = 0; i < blocks_.size() && i < buffer_meta_.size(); ++i) {
+        const BlockInfo& blk = blocks_[i];
+        const size_t parseable =
+            static_cast<size_t>(blk.end_of_objects - blk.start);
+        BufferMetadata& meta = buffer_meta_[i];
+
+        if (meta.live_bytes > parseable) meta.live_bytes = parseable;
+        meta.garbage_bytes = parseable - meta.live_bytes;
+
+        total_live += meta.live_bytes;
+        total_heap += parseable;
+    }
+
+    frag_stats_.live_bytes = total_live;
+    frag_stats_.heap_bytes = total_heap;
+    // Estimate; lazy sweep refines this as it pushes free cells.
+    frag_stats_.total_free_bytes =
+        (total_heap >= total_live) ? (total_heap - total_live) : 0;
+    allocated_bytes = total_live;
+}
+
+void OldGenSpace::prepareMetaForLazySweep() {
+    if (buffer_meta_.size() < blocks_.size()) {
+        buffer_meta_.resize(blocks_.size(), {0, 0, 0, false});
+    }
+    for (size_t i = 0; i < blocks_.size(); ++i) {
+        buffer_meta_[i].block_index = i;
+        // Preserve mark-derived live_bytes: the post-mark shrink decision
+        // uses it, and lazy sweep recomputes the same value as it walks.
+        buffer_meta_[i].garbage_bytes = 0;
+        buffer_meta_[i].fully_swept = false;
+    }
+}
+
 /**
- * Complete marking phase and perform sweep.
+ * Complete marking phase, run the all-dead fast path and post-mark shrink,
+ * and start lazy sweep. Returns with `gc_phase_ == Sweeping` for any
+ * non-trivial heap; the mutator's allocation slow-path drives lazy sweep
+ * to completion. See plans/gc-mark-driven-live-lazy-sweep.md for the
+ * design and the rationale behind each step.
  */
 #if ENABLE_GC_STATS
 void OldGenSpace::finishMarkAndSweep(GCStats &stats) {
@@ -989,7 +1200,11 @@ void OldGenSpace::finishMarkAndSweep(GCStats &stats) {
         // Keep marking.
     }
 
-    sweep();
+    finalizeMetaAfterMark();
+    transitionToSweeping();
+    reclaimAllDeadBlocksFromMeta();
+    adjustCapacityAfterMajorGC();
+    lazySweep(NUM_SIZE_CLASSES, INITIAL_SWEEP_BUDGET);
 
     marking_active = false;
 
@@ -1009,7 +1224,19 @@ void OldGenSpace::finishMarkAndSweep(GCStats &stats,
     auto t_mark_end = std::chrono::high_resolution_clock::now();
 
     auto t_sweep_start = t_mark_end;
-    sweep();
+
+    finalizeMetaAfterMark();
+    // transitionToSweeping clears free_lists_ and free_large_blocks_, which
+    // makes the per-block removeFreeCellsForBlock inside releaseBlockToAllocator
+    // a no-op. Doing it BEFORE reclaim turns reclaim from O(B*F) (B blocks
+    // released, F free-list cells) into O(B). Lazy sweep rebuilds free
+    // lists as it walks the surviving blocks. prepareMetaForLazySweep
+    // preserves mark-derived live_bytes so reclaim's check is unchanged.
+    transitionToSweeping();
+    AllDeadReclaimStats alldead = reclaimAllDeadBlocksFromMeta();
+    adjustCapacityAfterMajorGC();
+    lazySweep(NUM_SIZE_CLASSES, INITIAL_SWEEP_BUDGET);
+
     auto t_sweep_end = std::chrono::high_resolution_clock::now();
 
     profile.mark_ns =
@@ -1022,6 +1249,15 @@ void OldGenSpace::finishMarkAndSweep(GCStats &stats,
     profile.blocks_scanned = blocks_.size();
     profile.live_bytes_after = frag_stats_.live_bytes;
     profile.garbage_bytes    = frag_stats_.total_free_bytes;
+    profile.alldead_blocks_released = alldead.blocks_released;
+    profile.alldead_bytes_released  = alldead.bytes_released;
+    profile.initial_sweep_budget_bytes = INITIAL_SWEEP_BUDGET;
+    // After the initial slice, sweep_buffer_index_ tracks how far we got.
+    // Anything from there to blocks_.size() is deferred to the mutator.
+    profile.sweep_pending_blocks =
+        (sweep_buffer_index_ < blocks_.size())
+            ? (blocks_.size() - sweep_buffer_index_)
+            : 0;
 
     marking_active = false;
 
@@ -1033,7 +1269,11 @@ void OldGenSpace::finishMarkAndSweep() {
         // Keep marking.
     }
 
-    sweep();
+    finalizeMetaAfterMark();
+    transitionToSweeping();
+    reclaimAllDeadBlocksFromMeta();
+    adjustCapacityAfterMajorGC();
+    lazySweep(NUM_SIZE_CLASSES, INITIAL_SWEEP_BUDGET);
 
     marking_active = false;
 }
@@ -1049,7 +1289,18 @@ void OldGenSpace::finishMarkAndSweep(MajorGCPhaseProfile &profile) {
     }
     auto t_mark_end = std::chrono::high_resolution_clock::now();
 
-    sweep();
+    finalizeMetaAfterMark();
+    // transitionToSweeping clears free_lists_ and free_large_blocks_, which
+    // makes the per-block removeFreeCellsForBlock inside releaseBlockToAllocator
+    // a no-op. Doing it BEFORE reclaim turns reclaim from O(B*F) (B blocks
+    // released, F free-list cells) into O(B). Lazy sweep rebuilds free
+    // lists as it walks the surviving blocks. prepareMetaForLazySweep
+    // preserves mark-derived live_bytes so reclaim's check is unchanged.
+    transitionToSweeping();
+    AllDeadReclaimStats alldead = reclaimAllDeadBlocksFromMeta();
+    adjustCapacityAfterMajorGC();
+    lazySweep(NUM_SIZE_CLASSES, INITIAL_SWEEP_BUDGET);
+
     auto t_sweep_end = std::chrono::high_resolution_clock::now();
 
     profile.mark_ns =
@@ -1062,6 +1313,13 @@ void OldGenSpace::finishMarkAndSweep(MajorGCPhaseProfile &profile) {
     profile.blocks_scanned = blocks_.size();
     profile.live_bytes_after = frag_stats_.live_bytes;
     profile.garbage_bytes    = frag_stats_.total_free_bytes;
+    profile.alldead_blocks_released = alldead.blocks_released;
+    profile.alldead_bytes_released  = alldead.bytes_released;
+    profile.initial_sweep_budget_bytes = INITIAL_SWEEP_BUDGET;
+    profile.sweep_pending_blocks =
+        (sweep_buffer_index_ < blocks_.size())
+            ? (blocks_.size() - sweep_buffer_index_)
+            : 0;
 
     marking_active = false;
 }
@@ -1172,97 +1430,29 @@ inline void pushCoalescedFreeCell(FreeCell** free_lists, char* span_start,
     pushSpanOnFreeLists(free_lists, span_start, span_bytes, block);
 }
 
-// Bytes to advance per step when walking a block linearly. Size-class
-// blocks reserve a fixed cell per object (slack between the object's
-// logical size and the cell boundary belongs to that allocation), so the
-// walk must advance by the cell size, not the object's logical size, or
-// it will land mid-cell and start parsing FreeCell.next pointers as if
-// they were object headers. Bag pages and large blocks pack tightly, so
-// they advance by the object's logical size.
+// Per-block step size. Defers to the hoisted file-scope `walkStepFor` so
+// member functions (markOneObject and friends) and the sweep helpers in
+// this anonymous namespace agree on the policy.
 inline size_t walkStep(const BlockInfo& block, size_t obj_size) {
-    if (block.size_class < NUM_SIZE_CLASSES) {
-        return OldGenSpaceTestAccess::classToSize(block.size_class);
-    }
-    return obj_size;
+    return walkStepFor(block, obj_size);
 }
 
 }  // namespace
 
+/**
+ * Defensive loop-to-completion helper. Production paths reach the same
+ * end state via `finishMarkAndSweep` (initial slice) and the mutator's
+ * allocation slow-path (per-call slices). Tests and rare callers that
+ * need "sweep is finished by the time this returns" can call here.
+ */
 void OldGenSpace::sweep() {
-    // Clear all free lists before rebuilding them.
-    for (size_t i = 0; i < NUM_SIZE_CLASSES; i++) {
-        free_lists_[i] = nullptr;
+    if (gc_phase_ != GCPhase::Sweeping) {
+        transitionToSweeping();
     }
-
-    while (buffer_meta_.size() < blocks_.size()) {
-        buffer_meta_.push_back({buffer_meta_.size(), 0, 0, false});
+    while (gc_phase_ == GCPhase::Sweeping) {
+        lazySweep(NUM_SIZE_CLASSES,
+                  std::numeric_limits<size_t>::max() / 2);
     }
-
-    for (size_t buf_idx = 0; buf_idx < blocks_.size(); buf_idx++) {
-        BlockInfo& block = blocks_[buf_idx];
-        char* ptr = block.start;
-        char* used_end = block.end_of_objects;
-
-        buffer_meta_[buf_idx].live_bytes = 0;
-        buffer_meta_[buf_idx].garbage_bytes = 0;
-        buffer_meta_[buf_idx].fully_swept = true;
-
-        // Large/pinned blocks hold a single object. If it died, register the
-        // whole block on `free_large_blocks_` rather than building a Tag_Free
-        // cell — these blocks can't be sliced for size classes anyway, and
-        // recording a free-large entry lets the next allocateLargeBlock reuse
-        // the same address.
-        if (block.is_large && ptr < used_end) {
-            Header* hdr = reinterpret_cast<Header*>(ptr);
-            if (hdr->color == static_cast<u32>(Color::Black)) {
-                hdr->color = static_cast<u32>(Color::White);
-                buffer_meta_[buf_idx].live_bytes = block.totalBytes();
-            } else {
-                buffer_meta_[buf_idx].garbage_bytes = block.totalBytes();
-                markBlockAsFreeLarge(buf_idx);
-            }
-            continue;
-        }
-
-        // Coalescing run: accumulate adjacent non-Black bytes into a single
-        // Tag_Free span, flushing whenever we hit a Black object or block end.
-        char* run_start = nullptr;
-        size_t run_bytes = 0;
-
-        while (ptr < used_end) {
-            Header* hdr = reinterpret_cast<Header*>(ptr);
-            size_t step = walkStep(block, getObjectSize(ptr));
-
-            if (hdr->color == static_cast<u32>(Color::Black)) {
-                // Flush any pending garbage span.
-                if (run_start != nullptr) {
-                    pushCoalescedFreeCell(free_lists_, run_start, run_bytes, &block);
-                    buffer_meta_[buf_idx].garbage_bytes += run_bytes;
-                    run_start = nullptr;
-                    run_bytes = 0;
-                }
-
-                hdr->color = static_cast<u32>(Color::White);
-                buffer_meta_[buf_idx].live_bytes += step;
-            } else {
-                // Garbage or pre-existing Tag_Free; merge into current run.
-                if (run_start == nullptr) {
-                    run_start = ptr;
-                    run_bytes = 0;
-                }
-                run_bytes += step;
-            }
-
-            ptr += step;
-        }
-
-        if (run_start != nullptr) {
-            pushCoalescedFreeCell(free_lists_, run_start, run_bytes, &block);
-            buffer_meta_[buf_idx].garbage_bytes += run_bytes;
-        }
-    }
-
-    computeFragmentationStats();
 
     // Diagnostic (gated on ECO_OLDGEN_DEBUG): validate every free-list cell
     // is in-heap. Detects sweep-time corruption before shrink walks the lists.
@@ -1287,13 +1477,14 @@ void OldGenSpace::sweep() {
             }
         }
     }
-
-    adjustCapacityAfterMajorGC();
 }
 
 /**
  * Transition from marking phase to sweeping phase.
- * Prepares for lazy sweeping by initializing sweep state.
+ * Prepares for lazy sweeping by initializing sweep state. Free-list cells
+ * are dropped because lazy sweep rebuilds them as it walks. The per-block
+ * meta is reset via `prepareMetaForLazySweep`, which preserves
+ * mark-derived live_bytes (the post-mark shrink decision depends on it).
  */
 void OldGenSpace::transitionToSweeping() {
     gc_phase_ = GCPhase::Sweeping;
@@ -1304,16 +1495,13 @@ void OldGenSpace::transitionToSweeping() {
     for (size_t i = 0; i < NUM_SIZE_CLASSES; i++) {
         free_lists_[i] = nullptr;
     }
+    // free_large_blocks_ entries reference blocks_ indices; the blocks
+    // themselves remain (large dead blocks are reclaimed via this path,
+    // not via reclaimAllDeadBlocksFromMeta), so we keep the list intact
+    // and let lazy sweep re-seed it as it walks each large block.
+    free_large_blocks_.clear();
 
-    while (buffer_meta_.size() < blocks_.size()) {
-        buffer_meta_.push_back({buffer_meta_.size(), 0, 0, false});
-    }
-
-    for (auto& meta : buffer_meta_) {
-        meta.live_bytes = 0;
-        meta.garbage_bytes = 0;
-        meta.fully_swept = false;
-    }
+    prepareMetaForLazySweep();
 }
 
 /**
@@ -1347,7 +1535,25 @@ void OldGenSpace::lazySweep(size_t target_class, size_t work_budget) {
                 onSweepComplete();
                 return;
             }
+            // Skip blocks that were materialized mid-cycle (populated /
+            // freshly-acquired during sweeping). Their meta.fully_swept is
+            // pre-set to true so we walk past them — re-walking would
+            // coalesce the Tag_Free cells we just placed on free_lists_,
+            // overwriting their headers and dangling the free-list links.
+            if (sweep_buffer_index_ < buffer_meta_.size() &&
+                buffer_meta_[sweep_buffer_index_].fully_swept) {
+                sweep_buffer_index_++;
+                continue;
+            }
             sweep_cursor_ = blocks_[sweep_buffer_index_].start;
+            // Reset per-block live_bytes so the per-step accumulation below
+            // produces a clean count, even when finalizeMetaAfterMark already
+            // wrote a mark-derived value into this slot. The two values agree
+            // by construction; resetting keeps the assertion-style debug
+            // check (Step 2.4) meaningful without double-counting.
+            if (sweep_buffer_index_ < buffer_meta_.size()) {
+                buffer_meta_[sweep_buffer_index_].live_bytes = 0;
+            }
         }
 
         BlockInfo& block = blocks_[sweep_buffer_index_];
@@ -1433,14 +1639,34 @@ void OldGenSpace::lazySweep(size_t target_class, size_t work_budget) {
 
 /**
  * Called when lazy sweeping completes.
- * Computes fragmentation statistics and may trigger compaction.
+ * Computes a precise post-sweep snapshot, then runs a light second-pass
+ * shrink to mop up blocks that became fully empty through padCellSlack /
+ * splitting after the heavy post-mark shrink. Compaction is decided on
+ * the post-sweep stats.
  */
 void OldGenSpace::onSweepComplete() {
     computeFragmentationStats();
-    adjustCapacityAfterMajorGC();
+
+    // Light-pass shrink: only fires if heap is still well above desired.
+    // The heavy pass already ran at finishMarkAndSweep time using
+    // mark-derived live; this catches blocks that drained later.
+    const size_t live = frag_stats_.live_bytes;
+    const float target = config_->major_gc_target_utilization;
+    size_t desired_heap = (target > 0.0f && live > 0)
+        ? static_cast<size_t>(std::ceil(
+              static_cast<double>(live) / static_cast<double>(target)))
+        : 0;
+    maybeShrinkCapacity(desired_heap, /*light_pass=*/true);
 }
 
 bool OldGenSpace::shouldTriggerMajorGC() const {
+    // With lazy sweep replacing STW sweep, "earlier" major GC triggers are
+    // cheap: the post-mark pause is bounded by mark + initial sweep slice;
+    // remaining sweep work is amortized across mutator allocations. The
+    // numbers below are unchanged from the pre-lazy-sweep regime — the win
+    // here comes from (a) accurate `allocated_bytes` and (b) the post-mark
+    // shrink + all-dead reclaim keeping committed from ballooning between
+    // majors, NOT from lower thresholds.
     const float threshold = config_->major_gc_initiating_occupancy;
 
     // Per-thread trigger: allocated bytes are crowding the local committed span.
@@ -1492,29 +1718,42 @@ void OldGenSpace::adjustCapacityAfterMajorGC() {
     const float grow_threshold = config_->major_gc_initiating_occupancy;
     const float target         = config_->major_gc_target_utilization;
 
-    // Shrink branch: heap is well under the target band — release fully-free
-    // pages back to the global allocator. `maybeShrinkCapacity` applies its
-    // own hysteresis and floor checks, and is a no-op when conditions are
-    // not met.
+    // Compute desired heap from mark-derived live bytes, clamped by the
+    // floor inside maybeShrinkCapacity. Used by both the shrink branch (to
+    // release surplus capacity) and the grow branch (to extend committed).
+    size_t desired_heap = (target > 0.0f && live > 0)
+        ? static_cast<size_t>(std::ceil(
+              static_cast<double>(live) / static_cast<double>(target)))
+        : capacity;
+
+    // Shrink branch: heap is at or below the target band — release fully-free
+    // pages back to the global allocator. Heavy pass: hysteresis still
+    // applies (1.2x desired), but the global-pressure bypass kicks in when
+    // committed is approaching the cap.
     if (live == 0 || occupancy <= target) {
-        maybeShrinkCapacity();
+        maybeShrinkCapacity(desired_heap, /*light_pass=*/false);
         return;
     }
 
     if (occupancy < grow_threshold) return;
 
-    size_t desired = static_cast<size_t>(
-        std::ceil(static_cast<double>(live) / static_cast<double>(target)));
-
     const size_t global_cap = allocator_->getOldGenMaxBytes();
-    if (desired > global_cap) desired = global_cap;
-    if (desired <= capacity)  return;
+    if (desired_heap > global_cap) desired_heap = global_cap;
+    if (desired_heap <= capacity)  return;
 
-    allocator_->ensureOldGenCapacityFor(*this, desired);
+    allocator_->ensureOldGenCapacityFor(*this, desired_heap);
 }
 
 // Shrink path: returns fully-free pages back to the Allocator so
 // `old_gen_committed` can drop after a major GC reclaims most live data.
+// `desired_heap_bytes` is the post-mark target supplied by
+// adjustCapacityAfterMajorGC; this function applies the floor, hysteresis,
+// and global-pressure bypass on top.
+//
+// `light_pass=true` is used at onSweepComplete — it skips releases unless
+// current_heap is well above desired (1.5x), since the heavy post-mark
+// pass already ran and we just want to mop up blocks that became empty
+// through padCellSlack/splitting after that.
 //
 // Locking: this function MUST NOT be called while holding
 // `Allocator::thread_mutex_`. Each `releaseOldGenBlock` /
@@ -1522,10 +1761,14 @@ void OldGenSpace::adjustCapacityAfterMajorGC() {
 // inside the Allocator. The shrink path runs at the end of major GC, with
 // the mutator stopped — so `removeFreeCellsForBlock` and the swap-remove
 // from `blocks_` cannot race against `allocateFromEmptyRegularBlocks`.
-void OldGenSpace::maybeShrinkCapacity() {
+void OldGenSpace::maybeShrinkCapacity(size_t desired_heap_bytes,
+                                      bool light_pass) {
     if (compact_phase_ != CompactionPhase::Idle) return;
-    if (gc_phase_      != GCPhase::Idle)         return;
     if (allocator_     == nullptr)               return;
+    // Note: gc_phase_ may now be Sweeping when called from finishMarkAndSweep
+    // (heavy pass) or Idle when called from onSweepComplete (light pass).
+    // The Marking phase guard is unnecessary because finishMarkAndSweep has
+    // already drained the mark stack before calling here.
 
     const size_t live = frag_stats_.live_bytes;
     const float target = config_->major_gc_target_utilization;
@@ -1536,14 +1779,7 @@ void OldGenSpace::maybeShrinkCapacity() {
     const size_t min_heap = std::max(config_->initial_old_gen_size,
                                      config_->alloc_buffer_size);
 
-    // Desired heap derived from target utilization, clamped below by min_heap.
-    size_t desired_heap;
-    if (target > 0.0f && live > 0) {
-        desired_heap = static_cast<size_t>(
-            std::ceil(static_cast<double>(live) / static_cast<double>(target)));
-    } else {
-        desired_heap = min_heap;
-    }
+    size_t desired_heap = desired_heap_bytes;
     if (desired_heap < min_heap) desired_heap = min_heap;
 
     // Current heap = sum of materialized block bytes + bag-page bytes.
@@ -1558,36 +1794,41 @@ void OldGenSpace::maybeShrinkCapacity() {
 
     size_t current_heap = computeCurrentHeap();
 
-    // Hysteresis gate: only proceed if utilization is well below target AND
-    // the heap is meaningfully larger than the desired size. Both must hold;
-    // otherwise we'd churn at the boundary on every GC.
+    // Hysteresis gate. Two flavors:
+    //   heavy pass: 1.2x desired AND occupancy below band.
+    //   light pass: 1.5x desired (no occupancy gate, no global bypass) —
+    //               just a mop-up, won't churn near the boundary.
     //
-    // EXCEPTION: when the global old-gen committed is approaching the cap,
-    // we MUST shrink even inside the hysteresis band. Otherwise the global
-    // pressure trigger in `shouldTriggerMajorGC` re-fires the GC every
-    // safepoint without ever freeing committed bytes, looping until we hit
-    // the cap for real.
-    const double occupancy = current_heap > 0
-        ? static_cast<double>(live) / static_cast<double>(current_heap)
-        : 0.0;
-    const bool below_band = occupancy < (static_cast<double>(target) * 0.8);
-    const bool well_above_desired =
-        current_heap > desired_heap + (desired_heap / 5);  // > 1.2x
+    // EXCEPTION (heavy only): when the global old-gen committed is
+    // approaching the cap, we MUST shrink even inside the hysteresis band.
+    // Otherwise the global pressure trigger in `shouldTriggerMajorGC`
+    // re-fires the GC every safepoint without ever freeing committed bytes,
+    // looping until we hit the cap for real.
+    if (light_pass) {
+        if (current_heap <= desired_heap + (desired_heap / 2)) return;
+    } else {
+        const double occupancy = current_heap > 0
+            ? static_cast<double>(live) / static_cast<double>(current_heap)
+            : 0.0;
+        const bool below_band = occupancy < (static_cast<double>(target) * 0.8);
+        const bool well_above_desired =
+            current_heap > desired_heap + (desired_heap / 5);  // > 1.2x
 
-    bool global_pressure = false;
-    if (allocator_ != nullptr) {
-        const size_t global_committed = allocator_->getOldGenCommittedBytes();
-        const size_t cap = allocator_->getOldGenMaxBytes();
-        const double global_pressure_threshold =
-            static_cast<double>(config_->major_gc_initiating_occupancy) / 3.0;
-        if (cap > 0 &&
-            static_cast<double>(global_committed) / cap >=
-                global_pressure_threshold) {
-            global_pressure = true;
+        bool global_pressure = false;
+        if (allocator_ != nullptr) {
+            const size_t global_committed = allocator_->getOldGenCommittedBytes();
+            const size_t cap = allocator_->getOldGenMaxBytes();
+            const double global_pressure_threshold =
+                static_cast<double>(config_->major_gc_initiating_occupancy) / 3.0;
+            if (cap > 0 &&
+                static_cast<double>(global_committed) / cap >=
+                    global_pressure_threshold) {
+                global_pressure = true;
+            }
         }
-    }
 
-    if (!global_pressure && (!below_band || !well_above_desired)) return;
+        if (!global_pressure && (!below_band || !well_above_desired)) return;
+    }
 
     // First decide which blocks to release. Walking back-to-front means
     // releaseBlockToAllocator's swap-remove never disturbs yet-to-visit
@@ -1771,6 +2012,11 @@ void OldGenSpace::releaseBlockToAllocator(size_t block_index) {
         }
     }
 
+    // Clear the page-index slots this block owned BEFORE the swap-remove,
+    // so the moved-from block's slot rewrite below is the only update that
+    // can reference this address range.
+    clearPageIndexForBlock(block_index);
+
     // Hand the address range back to the Allocator.
     allocator_->releaseOldGenBlock(blk.start, total);
 
@@ -1801,6 +2047,10 @@ void OldGenSpace::releaseBlockToAllocator(size_t block_index) {
     // Patch any state that referred to the moved-from slot.
     if (block_index != last) {
         fixupIndicesAfterBlockMove(last, block_index);
+        // The swap-remove moved the last entry into block_index; rewrite its
+        // page-index slots so future blockIndexFor lookups land at the new
+        // index instead of the now-stale `last`.
+        assignPageIndexForBlock(block_index);
     }
 
     // Recompute region_base_ / region_end_ if either was anchored to the
@@ -1858,6 +2108,79 @@ void OldGenSpace::releaseUnassignedBlockToAllocator(size_t unassigned_index) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// All-dead block fast path (Step 3).
+// ---------------------------------------------------------------------------
+
+OldGenSpace::AllDeadReclaimStats
+OldGenSpace::reclaimAllDeadBlocksFromMeta() {
+    AllDeadReclaimStats stats;
+
+    // Floor: never drop committed below max(initial_old_gen_size,
+    // alloc_buffer_size). Mirrors maybeShrinkCapacity so reclaim and the
+    // shrink path agree on the minimum.
+    const size_t min_heap =
+        std::max(config_->initial_old_gen_size, config_->alloc_buffer_size);
+
+    // Compute current committed bytes (materialized blocks + bag pages) up
+    // front so the floor check can preview each release.
+    size_t current_heap = 0;
+    for (const auto& b : blocks_) current_heap += b.totalBytes();
+    for (const auto& e : unassigned_blocks_) {
+        current_heap += static_cast<size_t>(e.second - e.first);
+    }
+
+    // Collect indices of non-large blocks whose mark-derived live_bytes is
+    // zero. is_large blocks are intentionally excluded — they continue to
+    // flow through markBlockAsFreeLarge / allocateFromFreeLargeBlocks so
+    // their virtual address can be reused without touching the OS. Skip
+    // releases that would push committed below min_heap.
+    std::vector<size_t> dead;
+    dead.reserve(blocks_.size() / 4);
+    for (size_t i = 0; i < blocks_.size() && i < buffer_meta_.size(); ++i) {
+        if (blocks_[i].is_large) continue;
+        if (buffer_meta_[i].live_bytes != 0) continue;
+        const size_t bytes = blocks_[i].totalBytes();
+        if (current_heap < bytes) continue;
+        if (current_heap - bytes < min_heap) continue;
+        dead.push_back(i);
+        current_heap -= bytes;
+    }
+    if (dead.empty()) return stats;
+
+    // Tally bytes for the profile log before mutation.
+    for (size_t idx : dead) {
+        stats.bytes_released += blocks_[idx].totalBytes();
+    }
+    stats.blocks_released = dead.size();
+
+    // Bracket the loop so each release skips its O(N) bounds recompute; we
+    // recompute once at the end. Walk back-to-front so swap-remove indices
+    // never move blocks we're still planning to release.
+    std::sort(dead.begin(), dead.end());
+    ++g_batch_release_depth;
+    for (auto it = dead.rbegin(); it != dead.rend(); ++it) {
+        releaseBlockToAllocator(*it);
+    }
+    --g_batch_release_depth;
+
+    // One-shot recompute of region_base_ / region_end_.
+    char* new_base = nullptr;
+    char* new_end = nullptr;
+    for (const auto& b : blocks_) {
+        if (new_base == nullptr || b.start < new_base) new_base = b.start;
+        if (b.end > new_end) new_end = b.end;
+    }
+    for (const auto& e : unassigned_blocks_) {
+        if (new_base == nullptr || e.first < new_base) new_base = e.first;
+        if (e.second > new_end) new_end = e.second;
+    }
+    region_base_ = new_base;
+    region_end_  = new_end;
+
+    return stats;
+}
+
 /**
  * Computes heap-wide fragmentation statistics from per-block metadata.
  */
@@ -1881,9 +2204,15 @@ void OldGenSpace::computeFragmentationStats() {
 
 /**
  * Returns true if compaction should be triggered.
- * Based on heap utilization falling below threshold.
+ * Based on heap utilization falling below threshold. Compaction is
+ * forbidden while lazy sweep is in progress (the partially-rebuilt
+ * meta.fully_swept flags would mislead selectEvacuationSet, and the
+ * post-mark live_bytes attribution differs from the post-sweep value
+ * compaction expects). The mutator drains lazy sweep before we can
+ * legally schedule compaction.
  */
 bool OldGenSpace::shouldCompact() const {
+    if (gc_phase_ != GCPhase::Idle) return false;
     return frag_stats_.utilization() < UTILIZATION_THRESHOLD;
 }
 
@@ -1893,6 +2222,9 @@ bool OldGenSpace::shouldCompact() const {
 
 void OldGenSpace::scheduleCompaction() {
     if (compact_phase_ != CompactionPhase::Idle) return;
+    // Same gate as shouldCompact: compaction must wait for lazy sweep to
+    // finish so meta is fully rebuilt and free_lists_ are stable.
+    if (gc_phase_ != GCPhase::Idle) return;
 
     evacuation_set_ = selectEvacuationSet(COMPACTION_WORK_BUDGET * 10);
     if (evacuation_set_.empty()) return;
@@ -2085,6 +2417,7 @@ void* OldGenSpace::allocateForEvacuation(size_t size) {
                 if (base + config_->alloc_buffer_size > region_end_) {
                     region_end_ = base + config_->alloc_buffer_size;
                 }
+                resizePageIndexForRegion();
             }
         }
         if (unassigned_blocks_.empty()) return nullptr;
@@ -2102,6 +2435,7 @@ void* OldGenSpace::allocateForEvacuation(size_t size) {
     blocks_.push_back(bi);
     evac_block_index_ = blocks_.size() - 1;
     buffer_meta_.push_back({evac_block_index_, 0, 0, true});
+    assignPageIndexForBlock(evac_block_index_);
     evac_alloc_ptr_ = bi.start;
 
     return bumpInBlock(evac_block_index_);
@@ -2353,6 +2687,16 @@ void OldGenSpace::freeEvacuatedBuffers() {
                 evac_block_index_--;
             }
         }
+    }
+
+    // The erase-shifts above invalidated blocks_-indices stored in
+    // page_to_block_index_. Rebuild it from the new blocks_ layout. The
+    // post-compaction blocks_ size is bounded (<= original count), and this
+    // path runs only at compaction completion, so the O(#pages + #blocks)
+    // rebuild is acceptable.
+    std::fill(page_to_block_index_.begin(), page_to_block_index_.end(), NO_BLOCK);
+    for (size_t i = 0; i < blocks_.size(); ++i) {
+        assignPageIndexForBlock(i);
     }
 
     evacuation_set_.clear();
