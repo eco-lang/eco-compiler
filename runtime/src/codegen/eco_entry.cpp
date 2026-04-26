@@ -8,12 +8,15 @@
 
 #include "../allocator/Allocator.hpp"
 #include "../allocator/StackMap.hpp"
+#include "../allocator/GCStats.hpp"
 #include "../../eco-kernel-cpp/src/eco/Env.hpp"
 
 #include <pthread.h>
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>
+#include <atomic>
+#include <csignal>
 #include <elf.h>
 #include <link.h>
 
@@ -159,7 +162,79 @@ static void *eco_main_thread(void *arg) {
     return nullptr;
 }
 
+// ============================================================================
+// GC stats reporting on exit / crash.
+// ============================================================================
+//
+// On normal exit, an atexit handler prints the combined GC statistics. To
+// also cover crashes (SIGABRT from assert(), SIGSEGV, etc.) we install a
+// signal handler that prints the same stats then restores the default
+// disposition and re-raises so a core dump (or the assertion message) is
+// still produced.
+//
+// The print path uses iostreams (and acquires a recursive mutex inside
+// getCombinedStats), which are not strictly async-signal-safe. In practice
+// this is good enough for SIGABRT from assertion failures and for
+// SIGINT/SIGTERM, which is the case Stage 7 needs. SIGSEGV from heap
+// corruption may deadlock or crash inside the print — accepted risk.
+#if ENABLE_GC_STATS
+static std::atomic<bool> g_stats_printed{false};
+
+static void printGCStatsOnce(const char *reason) {
+    if (g_stats_printed.exchange(true)) return;
+    std::fprintf(stderr, "\n[gc-stats] %s — printing GC statistics\n", reason);
+    std::fflush(stderr);
+    Elm::Allocator::instance().getCombinedStats().print();
+    std::fflush(stdout);
+}
+
+static void atexitPrintStats() {
+    printGCStatsOnce("normal exit");
+}
+
+static void signalPrintStats(int sig) {
+    // Restore the default handler so the re-raise produces the usual
+    // termination effect (core dump for SIGSEGV/SIGABRT, exit for SIGTERM).
+    std::signal(sig, SIG_DFL);
+    const char *name = "signal";
+    switch (sig) {
+        case SIGABRT: name = "SIGABRT"; break;
+        case SIGSEGV: name = "SIGSEGV"; break;
+        case SIGBUS:  name = "SIGBUS";  break;
+        case SIGFPE:  name = "SIGFPE";  break;
+        case SIGILL:  name = "SIGILL";  break;
+        case SIGINT:  name = "SIGINT";  break;
+        case SIGTERM: name = "SIGTERM"; break;
+        case SIGQUIT: name = "SIGQUIT"; break;
+        case SIGPIPE: name = "SIGPIPE"; break;
+    }
+    printGCStatsOnce(name);
+    std::raise(sig);
+}
+
+static void installStatsHandlers() {
+    std::atexit(atexitPrintStats);
+
+    struct sigaction sa{};
+    sa.sa_handler = signalPrintStats;
+    sigemptyset(&sa.sa_mask);
+    // Don't set SA_RESETHAND; we restore SIG_DFL inside the handler.
+    sa.sa_flags = SA_NODEFER;
+    int signals[] = {
+        SIGABRT, SIGSEGV, SIGBUS, SIGFPE, SIGILL,
+        SIGINT, SIGTERM, SIGQUIT, SIGPIPE
+    };
+    for (int s : signals) {
+        sigaction(s, &sa, nullptr);
+    }
+}
+#else
+static void installStatsHandlers() {}
+#endif
+
 int main(int argc, char **argv) {
+    installStatsHandlers();
+
     MainArgs args{argc, argv, 0};
 
     pthread_attr_t attr;
