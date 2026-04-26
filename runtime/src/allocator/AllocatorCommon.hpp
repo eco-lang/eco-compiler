@@ -118,9 +118,14 @@ inline size_t getObjectSize(void *obj) {
             size = sizeof(ByteBuffer) + hdr->size * sizeof(u8);
             break;
         case Tag_Array: {
-            // Size based on length (used elements), not capacity.
+            // Size based on CAPACITY (header.size), not length: the heap
+            // object occupies bytes for the full capacity reserved at
+            // allocation time, so sweep must walk by capacity to land on
+            // the next object's header. Iterating only `length` elements
+            // is for marking/copying/fixup — but the heap footprint and
+            // the per-object stride during sweep both need capacity.
             ElmArray *arr = static_cast<ElmArray *>(obj);
-            size = sizeof(ElmArray) + arr->length * sizeof(Unboxable);
+            size = sizeof(ElmArray) + arr->header.size * sizeof(Unboxable);
             break;
         }
         default:

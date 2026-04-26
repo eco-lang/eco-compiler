@@ -27,6 +27,13 @@ namespace {
 inline void pushSpanOnFreeLists(FreeCell** free_lists, char* span_start,
                                 size_t span_bytes,
                                 const BlockInfo* block);
+
+// When non-zero, releaseBlockToAllocator skips the per-call recomputation
+// of region_base_/region_end_ — the caller (typically `maybeShrinkCapacity`)
+// is in batch mode and will recompute bounds once at the end. Avoids an
+// O(N) scan inside each release call when shrink is freeing thousands of
+// blocks in one pass.
+thread_local int g_batch_release_depth = 0;
 }
 
 // Read barrier - converts logical pointer to physical address.
@@ -250,6 +257,37 @@ void *OldGenSpace::allocate(size_t size) {
 }
 
 // ---------------------------------------------------------------------------
+// Helpers for size-class slack handling in MIXED blocks.
+// ---------------------------------------------------------------------------
+//
+// Sweep walks size-class blocks by classToSize(block.size_class) (fixed step)
+// and MIXED blocks by getObjectSize (object's logical size). When a size-class
+// allocation lands in a MIXED block (e.g. via tryAllocateBySplittingLarger
+// from a coalesced span), the object's hdr->size formula gives back
+// requested_size, but the cell that backs it is classToSize(cls) bytes wide.
+// The slack `cell_size - requested_size` is invisible to the object's size
+// formula, so a MIXED-block sweep walks into it and mis-interprets zero
+// bytes as Tag_Int(0) objects.
+//
+// Fix: write a Tag_Free trailing header at `obj + requested_size` whenever
+// there is slack >= sizeof(Header). For MIXED blocks the trailing makes
+// sweep step over the slack correctly. For size-class blocks the trailing
+// is unread (sweep walks by fixed cellSize), so it's a no-op there.
+static inline void padCellSlack(void* obj, size_t requested_size,
+                                size_t cell_size) {
+    requested_size = (requested_size + 7) & ~static_cast<size_t>(7);
+    if (cell_size <= requested_size) return;
+    const size_t slack = cell_size - requested_size;
+    if (slack < sizeof(Header)) return;
+    Header* trailing = reinterpret_cast<Header*>(
+        static_cast<char*>(obj) + requested_size);
+    std::memset(trailing, 0, sizeof(Header));
+    trailing->tag = Tag_Free;
+    trailing->size = static_cast<u32>(slack);
+    trailing->color = static_cast<u32>(Color::White);
+}
+
+// ---------------------------------------------------------------------------
 // Size-class fast path.
 // ---------------------------------------------------------------------------
 void* OldGenSpace::allocateFromSizeClass(size_t cls, size_t requested_size) {
@@ -257,30 +295,40 @@ void* OldGenSpace::allocateFromSizeClass(size_t cls, size_t requested_size) {
 
     // 1) Pop from this class's free list if non-empty.
     //    Cell carries the full class size; the slack between requested_size
-    //    and classToSize(cls) is unrecoverable, so the cell-size is the
-    //    correct figure for getAllocatedBytes() until the next sweep.
+    //    and classToSize(cls) is unrecoverable for re-allocation, so the
+    //    cell-size is the correct figure for getAllocatedBytes() until the
+    //    next sweep. We DO write a Tag_Free trailing into the slack so
+    //    sweep walks past this cell correctly even when it lives in a
+    //    MIXED block (size_class == NUM_SIZE_CLASSES).
     if (free_lists_[cls] != nullptr) {
         FreeCell* cell = free_lists_[cls];
         free_lists_[cls] = cell->next;
         void* result = static_cast<void*>(cell);
         initObjectHeader(result);
+        padCellSlack(result, requested_size, classToSize(cls));
         allocated_bytes += classToSize(cls);
         return result;
     }
 
     // 2) Try splitting a larger free cell. The split path itself accounts
-    //    for the carved-out portion via allocated_bytes += alloc_size.
+    //    for the carved-out portion via allocated_bytes += alloc_size and
+    //    pads the slack with a Tag_Free trailing for MIXED-block sweeps.
     if (void* result = tryAllocateBySplittingLarger(cls, classToSize(cls))) {
+        padCellSlack(result, requested_size, classToSize(cls));
         return result;
     }
 
-    // 3) Pull a page from the bag and slice it into uniform cells.
+    // 3) Pull a page from the bag and slice it into uniform cells. Cells
+    //    from a freshly-populated page are in a size-class block (sweep
+    //    walks by classToSize), so the slack pad is a no-op for sweep
+    //    correctness, but still safe.
     if (populateFromBlock(cls)) {
         FreeCell* cell = free_lists_[cls];
         if (cell != nullptr) {
             free_lists_[cls] = cell->next;
             void* result = static_cast<void*>(cell);
             initObjectHeader(result);
+            padCellSlack(result, requested_size, classToSize(cls));
             allocated_bytes += classToSize(cls);
             return result;
         }
@@ -309,12 +357,23 @@ void* OldGenSpace::tryAllocateBySplittingLarger(size_t target_cls,
     // < NUM_SIZE_CLASSES) MUST all be exactly classToSize(block.size_class)
     // bytes — sweep walks such blocks by that fixed step, and a smaller
     // sub-cell embedded in such a block would cause sweep to mis-step
-    // mid-cell. Therefore: when the candidate cell lives in a uniform
-    // block, accept ONLY exact fits (remainder == 0). Splitting is reserved
-    // for cells in mixed blocks (size_class == NUM_SIZE_CLASSES) — those
-    // came from `allocateFromBagPage` and sweep walks them by header size.
+    // mid-cell. Splitting is reserved for cells in mixed blocks
+    // (size_class == NUM_SIZE_CLASSES) — those came from
+    // `allocateFromBagPage` and sweep walks them by header size.
+    //
+    // Performance shortcut: cells on free_lists_[N] for N < num_size_classes_
+    // could be in EITHER a uniform-N block (the common case, from
+    // populateFromBlock) OR a mixed block (rare, from sweep coalescing in
+    // mixed blocks). Calling `findBlockContaining` per cell is O(blocks_)
+    // which dominates Stage-7 mutator time. Conservative treat-as-uniform:
+    // for cls < num_size_classes_, only accept EXACT fits. Cells on classes
+    // >= num_size_classes_ exist only in mixed blocks (no uniform block
+    // populates those classes), so splits from those are safe with a
+    // null block-context.
     for (size_t cls = target_cls + 1; cls < NUM_SIZE_CLASSES; ++cls) {
         if (free_lists_[cls] == nullptr) continue;
+
+        const bool maybe_uniform_block = cls < num_size_classes_;
 
         FreeCell** prev = &free_lists_[cls];
         FreeCell* curr = free_lists_[cls];
@@ -324,14 +383,12 @@ void* OldGenSpace::tryAllocateBySplittingLarger(size_t target_cls,
                                          ? cell_bytes - alloc_size
                                          : 0;
 
-            const BlockInfo* block =
-                findBlockContaining(reinterpret_cast<char*>(curr));
-            const bool is_uniform_block =
-                block != nullptr && block->size_class < NUM_SIZE_CLASSES;
-
-            // Skip cells in uniform blocks unless this would be an exact fit.
+            // For potentially-uniform classes (cls < num_size_classes_)
+            // accept only exact fits to preserve the uniform-block invariant
+            // without paying for an O(N) lookup. For higher classes, splits
+            // are always safe.
             const bool acceptable_for_block =
-                !is_uniform_block || remainder == 0;
+                !maybe_uniform_block || remainder == 0;
 
             if (cell_bytes >= alloc_size &&
                 (remainder == 0 || remainder >= MIN_FREE_CELL_SIZE) &&
@@ -341,8 +398,12 @@ void* OldGenSpace::tryAllocateBySplittingLarger(size_t target_cls,
 
                 char* base = reinterpret_cast<char*>(curr);
                 if (remainder > 0) {
+                    // No block context passed: cells we split came from a
+                    // class >= num_size_classes_, which only exists in mixed
+                    // blocks, so the mixed (any-class packing) path in
+                    // pushSpanOnFreeLists is correct.
                     pushSpanOnFreeLists(free_lists_, base + alloc_size,
-                                        remainder, block);
+                                        remainder, nullptr);
                 }
 
                 void* result = static_cast<void*>(base);
@@ -888,6 +949,25 @@ namespace {
 inline void pushSpanOnFreeLists(FreeCell** free_lists, char* span_start,
                                 size_t span_bytes,
                                 const BlockInfo* block = nullptr) {
+    // Diagnostic (gated on ECO_OLDGEN_DEBUG): catch sweep bugs where step >
+    // remaining bytes pushes a coalesced run past the block boundary, which
+    // would corrupt cells in subsequent blocks. Shipped guarded so production
+    // pays nothing.
+    static const bool kDbg = std::getenv("ECO_OLDGEN_DEBUG") != nullptr;
+    if (kDbg && block != nullptr) {
+        char* span_end = span_start + span_bytes;
+        if (span_start < block->start || span_end > block->end) {
+            std::fprintf(stderr,
+                "[oldgen-debug] pushSpanOnFreeLists OOB: span [%p,%p) bytes=%zu"
+                " block [%p,%p) end_of_objects=%p is_large=%d size_class=%zu\n",
+                (void*)span_start, (void*)span_end, span_bytes,
+                (void*)block->start, (void*)block->end,
+                (void*)block->end_of_objects, (int)block->is_large,
+                block->size_class);
+            std::fflush(stderr);
+            std::abort();
+        }
+    }
     // For UNIFORM size-class blocks, walkStep advances by classToSize(cls),
     // so every cell in the block must be exactly classToSize(cls) bytes.
     // Slice the span into class-sized cells so sweep's next walk does not
@@ -1044,6 +1124,31 @@ void OldGenSpace::sweep() {
     }
 
     computeFragmentationStats();
+
+    // Diagnostic (gated on ECO_OLDGEN_DEBUG): validate every free-list cell
+    // is in-heap. Detects sweep-time corruption before shrink walks the lists.
+    static const bool kSweepDebug = std::getenv("ECO_OLDGEN_DEBUG") != nullptr;
+    if (kSweepDebug && allocator_ != nullptr) {
+        char* heap_lo = allocator_->heap_base;
+        char* heap_hi = allocator_->heap_base + allocator_->getOldGenMaxBytes();
+        for (size_t cls = 0; cls < NUM_SIZE_CLASSES; ++cls) {
+            FreeCell* curr = free_lists_[cls];
+            size_t depth = 0;
+            while (curr != nullptr) {
+                char* p = reinterpret_cast<char*>(curr);
+                if (p < heap_lo || p >= heap_hi) {
+                    std::fprintf(stderr,
+                        "[oldgen-debug] sweep produced bad free cell:"
+                        " cls=%zu depth=%zu curr=%p\n",
+                        cls, depth, (void*)curr);
+                    std::abort();
+                }
+                curr = curr->next;
+                if (++depth > 100000000ULL) break;
+            }
+        }
+    }
+
     adjustCapacityAfterMajorGC();
 }
 
@@ -1197,10 +1302,42 @@ void OldGenSpace::onSweepComplete() {
 }
 
 bool OldGenSpace::shouldTriggerMajorGC() const {
+    const float threshold = config_->major_gc_initiating_occupancy;
+
+    // Per-thread trigger: allocated bytes are crowding the local committed span.
     const size_t committed = getCommittedBytes();
-    if (committed == 0) return false;
-    return static_cast<double>(allocated_bytes) / committed
-           >= config_->major_gc_initiating_occupancy;
+    if (committed != 0 &&
+        static_cast<double>(allocated_bytes) / committed >= threshold) {
+        return true;
+    }
+
+    // Global pressure trigger: total old-gen committed grew well past the
+    // post-last-GC working set. Without this, a workload that grows the
+    // committed counter faster than `allocated_bytes` (e.g.
+    // `allocateFromBagPage` burning a fresh page per request even when the
+    // requested chunk is much smaller than the page) can run the address
+    // space all the way to the cap before the per-thread ratio crosses the
+    // threshold.
+    //
+    // We use 1/3 of `initiating_occupancy` (≈0.25 with the default 0.75)
+    // as the global cap threshold. A major GC fires at ~25% of the cap so
+    // the per-thread shrink path can release the freshly-emptied pages
+    // before the cap is approached, and the mutator never gets close to
+    // OOM. Empirically: triggering later (e.g. at 0.75 of cap) means each
+    // GC cycle has to sweep many more blocks at once, which is slower
+    // overall than several smaller cycles.
+    if (allocator_ != nullptr) {
+        const size_t global_committed = allocator_->getOldGenCommittedBytes();
+        const size_t cap = allocator_->getOldGenMaxBytes();
+        const double global_pressure_threshold =
+            static_cast<double>(threshold) / 3.0;
+        if (cap > 0 &&
+            static_cast<double>(global_committed) / cap >=
+                global_pressure_threshold) {
+            return true;
+        }
+    }
+    return false;
 }
 
 void OldGenSpace::adjustCapacityAfterMajorGC() {
@@ -1285,6 +1422,12 @@ void OldGenSpace::maybeShrinkCapacity() {
     // Hysteresis gate: only proceed if utilization is well below target AND
     // the heap is meaningfully larger than the desired size. Both must hold;
     // otherwise we'd churn at the boundary on every GC.
+    //
+    // EXCEPTION: when the global old-gen committed is approaching the cap,
+    // we MUST shrink even inside the hysteresis band. Otherwise the global
+    // pressure trigger in `shouldTriggerMajorGC` re-fires the GC every
+    // safepoint without ever freeing committed bytes, looping until we hit
+    // the cap for real.
     const double occupancy = current_heap > 0
         ? static_cast<double>(live) / static_cast<double>(current_heap)
         : 0.0;
@@ -1292,33 +1435,48 @@ void OldGenSpace::maybeShrinkCapacity() {
     const bool well_above_desired =
         current_heap > desired_heap + (desired_heap / 5);  // > 1.2x
 
-    if (!below_band || !well_above_desired) return;
+    bool global_pressure = false;
+    if (allocator_ != nullptr) {
+        const size_t global_committed = allocator_->getOldGenCommittedBytes();
+        const size_t cap = allocator_->getOldGenMaxBytes();
+        const double global_pressure_threshold =
+            static_cast<double>(config_->major_gc_initiating_occupancy) / 3.0;
+        if (cap > 0 &&
+            static_cast<double>(global_committed) / cap >=
+                global_pressure_threshold) {
+            global_pressure = true;
+        }
+    }
 
-    // ---------- Pass 1: fully-free regular pages. ----------
-    // Walk back-to-front so swap-removes don't disturb yet-to-visit indices.
+    if (!global_pressure && (!below_band || !well_above_desired)) return;
+
+    // First decide which blocks to release. Walking back-to-front means
+    // releaseBlockToAllocator's swap-remove never disturbs yet-to-visit
+    // indices.
+    std::vector<size_t> to_release;
+    to_release.reserve(blocks_.size() / 4);
+
+    auto canRelease = [&](size_t bytes) -> bool {
+        if (current_heap < bytes) return false;
+        if (current_heap - bytes < desired_heap) return false;
+        return true;
+    };
+
+    // Pass 1: fully-free regular pages.
     for (size_t i = blocks_.size(); i > 0;) {
         --i;
         if (current_heap <= desired_heap) break;
         if (i >= buffer_meta_.size()) continue;
         const BufferMetadata& meta = buffer_meta_[i];
         if (!meta.fully_swept || meta.live_bytes != 0) continue;
-        if (blocks_[i].is_large) continue;  // Pass 2 handles these.
-
+        if (blocks_[i].is_large) continue;
         const size_t bytes = blocks_[i].totalBytes();
-        // Don't drop below desired_heap: only release if we'd still be at or
-        // above target after the release.
-        if (current_heap < bytes) break;
-        if (current_heap - bytes < desired_heap) {
-            // Would overshoot; skip this block but continue scanning smaller
-            // ones (in case a later block fits within the budget).
-            continue;
-        }
-
-        releaseBlockToAllocator(i);
+        if (!canRelease(bytes)) continue;
+        to_release.push_back(i);
         current_heap -= bytes;
     }
 
-    // ---------- Pass 2: fully-free large blocks. ----------
+    // Pass 2: fully-free large blocks.
     for (size_t i = blocks_.size(); i > 0;) {
         --i;
         if (current_heap <= desired_heap) break;
@@ -1326,25 +1484,86 @@ void OldGenSpace::maybeShrinkCapacity() {
         const BufferMetadata& meta = buffer_meta_[i];
         if (!meta.fully_swept || meta.live_bytes != 0) continue;
         if (!blocks_[i].is_large) continue;
-
         const size_t bytes = blocks_[i].totalBytes();
-        if (current_heap < bytes) break;
-        if (current_heap - bytes < desired_heap) continue;
-
-        releaseBlockToAllocator(i);
+        if (!canRelease(bytes)) continue;
+        to_release.push_back(i);
         current_heap -= bytes;
     }
 
-    // ---------- Pass 3: unassigned bag pages. ----------
+    if (!to_release.empty()) {
+        // O(N+M) batch unlink: walk every per-class free list ONCE, dropping
+        // any cell whose address falls in ANY block we're about to release.
+        // Avoids the O(N*M) cost of calling `removeFreeCellsForBlock` per
+        // released block, which is the dominant cost when blocks_ contains
+        // tens of thousands of pages with millions of free cells (the
+        // Stage 7 workload).
+        std::sort(to_release.begin(), to_release.end());
+        std::vector<std::pair<char*, char*>> ranges;
+        ranges.reserve(to_release.size());
+        for (size_t idx : to_release) {
+            ranges.emplace_back(blocks_[idx].start, blocks_[idx].end);
+        }
+        std::sort(ranges.begin(), ranges.end());
+        auto inAnyRange = [&](char* p) -> bool {
+            // Binary search for the range whose start <= p, then check end.
+            auto it = std::upper_bound(
+                ranges.begin(), ranges.end(),
+                std::make_pair(p, static_cast<char*>(nullptr)));
+            if (it == ranges.begin()) return false;
+            --it;
+            return p < it->second;
+        };
+        for (size_t cls = 0; cls < NUM_SIZE_CLASSES; ++cls) {
+            FreeCell** prev = &free_lists_[cls];
+            FreeCell* curr = free_lists_[cls];
+            while (curr != nullptr) {
+                FreeCell* next = curr->next;
+                if (inAnyRange(reinterpret_cast<char*>(curr))) {
+                    *prev = next;  // unlink
+                } else {
+                    prev = &curr->next;
+                }
+                curr = next;
+            }
+        }
+        // Now release each block. The per-block `removeFreeCellsForBlock`
+        // call inside `releaseBlockToAllocator` becomes a no-op since we
+        // already cleared the lists above — kept for safety against a
+        // future caller that doesn't pre-clean.
+        // Walk back-to-front (highest indices first) so the swap-remove in
+        // releaseBlockToAllocator never moves an index we're still planning
+        // to release. (We sorted ascending above; iterate reversed.)
+        // Bracket the loop with the batch flag so each release skips its
+        // O(N) bounds recomputation; we recompute once after.
+        ++g_batch_release_depth;
+        for (auto it = to_release.rbegin(); it != to_release.rend(); ++it) {
+            releaseBlockToAllocator(*it);
+        }
+        --g_batch_release_depth;
+
+        // One-shot recompute of region_base_ / region_end_ over the new state.
+        char* new_base = nullptr;
+        char* new_end = nullptr;
+        for (const auto& b : blocks_) {
+            if (new_base == nullptr || b.start < new_base) new_base = b.start;
+            if (b.end > new_end) new_end = b.end;
+        }
+        for (const auto& e : unassigned_blocks_) {
+            if (new_base == nullptr || e.first < new_base) new_base = e.first;
+            if (e.second > new_end) new_end = e.second;
+        }
+        region_base_ = new_base;
+        region_end_  = new_end;
+    }
+
+    // Pass 3: unassigned bag pages.
     for (size_t i = unassigned_blocks_.size(); i > 0;) {
         --i;
         if (current_heap <= desired_heap) break;
         const size_t bytes =
             static_cast<size_t>(unassigned_blocks_[i].second
                                 - unassigned_blocks_[i].first);
-        if (current_heap < bytes) break;
-        if (current_heap - bytes < desired_heap) continue;
-
+        if (!canRelease(bytes)) continue;
         releaseUnassignedBlockToAllocator(i);
         current_heap -= bytes;
     }
@@ -1446,9 +1665,11 @@ void OldGenSpace::releaseBlockToAllocator(size_t block_index) {
     }
 
     // Recompute region_base_ / region_end_ if either was anchored to the
-    // released extent. A linear scan is fine — `blocks_` is bounded by the
-    // committed page count.
-    if (blk.start == region_base_ || blk.end == region_end_) {
+    // released extent. A linear scan is fine for one-off releases — but in
+    // batch mode (shrink path) we let the caller recompute once at the end
+    // to avoid an O(N²) per-release cost.
+    if (g_batch_release_depth == 0 &&
+        (blk.start == region_base_ || blk.end == region_end_)) {
         char* new_base = nullptr;
         char* new_end = nullptr;
         for (const auto& b : blocks_) {

@@ -44,10 +44,17 @@ constexpr size_t LARGE_PAYLOAD = 64 * 1024 - sizeof(Header);
 
 // Allocates a large pinned ByteBuffer of `bytes` payload and returns the
 // HPointer wrap of the resulting object.
+//
+// Note: `Allocator::allocate` invokes `initHeaderForTag` which writes
+// `hdr->size = total_aligned_size` for the default branch (Tag_ByteBuffer
+// falls through). The runtime helpers (`alloc::allocByteBuffer`) re-set
+// `hdr->size = payload_bytes` afterwards so `getObjectSize` returns the
+// right answer; we replicate that here.
 HPointer allocLargeByteBuffer(Allocator& alloc, size_t payload_bytes) {
     void* obj = alloc.allocate(sizeof(ByteBuffer) + payload_bytes, Tag_ByteBuffer);
     TEST_ASSERT(obj != nullptr);
     ByteBuffer* buf = static_cast<ByteBuffer*>(obj);
+    buf->header.size = static_cast<u32>(payload_bytes);
     std::memset(buf->bytes, 0xAB, payload_bytes);
     return AllocatorTestAccess::toPointer(obj);
 }
