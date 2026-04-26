@@ -166,6 +166,8 @@ void OldGenSpace::reset(const HeapConfig* new_config) {
     buffer_meta_.clear();
     unassigned_blocks_.clear();
     page_to_block_index_.clear();
+    mark_bits_.clear();
+    large_block_mark_.clear();
 
     // Reset state.
     allocated_bytes = 0;
@@ -211,10 +213,18 @@ void OldGenSpace::initObjectHeader(void* obj) {
 
     Header* hdr = reinterpret_cast<Header*>(obj);
     std::memset(hdr, 0, sizeof(Header));
-    // Mid-cycle allocations must be Black so the current sweep does not
-    // reclaim them; otherwise White (the next GC cycle will mark them).
+    // Mid-cycle allocations must survive the current sweep cycle. With
+    // bitmap liveness, that means setting the bit for this slot. The
+    // header color is no longer load-bearing for sweep, but we keep
+    // writing it so any debug asserts that still inspect color stay valid.
     if (marking_active || gc_phase_ != GCPhase::Idle) {
         hdr->color = static_cast<u32>(Color::Black);
+        if (contains(obj)) {
+            const size_t block_index = blockIndexFor(obj);
+            if (block_index < blocks_.size()) {
+                setMarkBitInBlock(block_index, obj);
+            }
+        }
     } else {
         hdr->color = static_cast<u32>(Color::White);
     }
@@ -587,6 +597,8 @@ void* OldGenSpace::allocateFromBagPage(size_t requested_size) {
     const bool mid_cycle =
         marking_active || gc_phase_ != GCPhase::Idle;
     buffer_meta_.push_back({block_idx, 0, 0, mid_cycle});
+    mark_bits_.emplace_back(bitmapBytesForBlock(blocks_.back()), 0);
+    large_block_mark_.push_back(0);
     assignPageIndexForBlock(block_idx);
 
     // Wrap the entire page as one Tag_Free cell, then split off the request.
@@ -668,6 +680,8 @@ bool OldGenSpace::populateFromBlock(size_t cls) {
     const bool mid_cycle =
         marking_active || gc_phase_ != GCPhase::Idle;
     buffer_meta_.push_back({block_idx, 0, 0, mid_cycle});
+    mark_bits_.emplace_back(bitmapBytesForBlock(blocks_.back()), 0);
+    large_block_mark_.push_back(0);
     assignPageIndexForBlock(block_idx);
 
     // Slice into uniform Tag_Free cells and link onto the class's free list.
@@ -728,6 +742,15 @@ void* OldGenSpace::allocateFromFreeLargeBlocks(size_t size) {
                 (total >= size) ? (total - size) : 0;
             buffer_meta_[idx].fully_swept = true;
         }
+        // Defensive zero of the bitmap before any mark/sweep can observe
+        // this re-purposed block. mark_bits_[idx] is empty for is_large
+        // blocks; large_block_mark_[idx] is the single live/dead bit.
+        if (idx < mark_bits_.size()) {
+            std::fill(mark_bits_[idx].begin(), mark_bits_[idx].end(), 0);
+        }
+        if (idx < large_block_mark_.size()) {
+            large_block_mark_[idx] = 0;
+        }
 
         frag_stats_.live_bytes += size;
         allocated_bytes += size;
@@ -763,6 +786,15 @@ void* OldGenSpace::allocateFromEmptyRegularBlocks(size_t size) {
         buffer_meta_[i].garbage_bytes =
             (total >= size) ? (total - size) : 0;
         buffer_meta_[i].fully_swept = true;
+        // Block flipped to is_large: drop the per-slot bitmap and use the
+        // single-bit large_block_mark_ slot. Defensive zero on both.
+        if (i < mark_bits_.size()) {
+            mark_bits_[i].clear();
+            mark_bits_[i].shrink_to_fit();
+        }
+        if (i < large_block_mark_.size()) {
+            large_block_mark_[i] = 0;
+        }
 
         frag_stats_.live_bytes += size;
         allocated_bytes += size;
@@ -811,6 +843,9 @@ void* OldGenSpace::allocateLargeBlock(size_t size) {
     const bool mid_cycle_large =
         marking_active || gc_phase_ != GCPhase::Idle;
     buffer_meta_.push_back({block_idx, size, 0, mid_cycle_large});
+    // Large blocks use large_block_mark_ for liveness; mark_bits_ stays empty.
+    mark_bits_.emplace_back();
+    large_block_mark_.push_back(0);
 
     // Maintain the cached contains() bounds.
     if (region_base_ == nullptr || block_base < region_base_) {
@@ -861,44 +896,11 @@ void OldGenSpace::startMark(const std::unordered_set<HPointer*> &roots,
         }
     }
 
-    // Defense-in-depth: reset any Black cell in old gen back to White before
-    // we begin marking. Sweep already does this for every cell it walks, but
-    // a stale Black can still reach old gen via the minor-GC promotion /
-    // to-space `memcpy` (it copies the source header verbatim — see the
-    // matching color reset in NurserySpace::evacuate). If any leak path is
-    // missed, the next mark cycle would see a Black cell as already-processed
-    // and skip its children, leaving them White → swept → Tag_Free, and
-    // subsequent reads of the parent's pointer fields hit a freed cell.
-    //
-    // O(N) per major GC; toggled off with ECO_GC_RESET_BLACK_AT_MARK=0.
-    {
-        const char* e = std::getenv("ECO_GC_RESET_BLACK_AT_MARK");
-        const bool enabled = !(e && e[0] == '0' && e[1] == '\0');
-        if (enabled) {
-            for (auto& blk : blocks_) {
-                char* p = blk.start;
-                char* end = blk.end_of_objects;
-                while (p < end) {
-                    Header* hdr = reinterpret_cast<Header*>(p);
-                    size_t step;
-                    if (hdr->tag == Tag_Free) {
-                        step = hdr->size;
-                    } else if (blk.is_large) {
-                        step = blk.totalBytes();
-                    } else {
-                        step = (getObjectSize(p) + 7) & ~static_cast<size_t>(7);
-                        if (step < 8) step = 8;
-                    }
-                    if (hdr->tag != Tag_Free &&
-                        hdr->color == static_cast<u32>(Color::Black)) {
-                        hdr->color = static_cast<u32>(Color::White);
-                    }
-                    p += step;
-                    if (step == 0) break;
-                }
-            }
-        }
-    }
+    // With per-block mark bitmaps as the liveness source (Step 7), a stale
+    // Header::color is no longer load-bearing. The ECO_GC_RESET_BLACK_AT_MARK
+    // defense (which walked every cell to reset color before mark) has been
+    // removed: bitmaps are zero between cycles, so a carry-over Black header
+    // cannot mis-classify a cell as already-marked.
 
     marking_active = true;
     current_epoch++;
@@ -1080,7 +1082,7 @@ void OldGenSpace::markHPointer(HPointer &ptr) {
 void OldGenSpace::pushMarkRoot(void *obj) {
     // Major GC must not write into nursery headers; minor GC owns those.
     // Use nursery_visited_ to break cycles when traversing through nursery
-    // objects, instead of the header `color` field.
+    // objects, instead of per-block bitmaps (which only cover old gen).
     if (allocator_ref_->isInNursery(obj)) {
         if (nursery_visited_.insert(obj).second) {
             mark_stack.push_back(obj);
@@ -1088,10 +1090,16 @@ void OldGenSpace::pushMarkRoot(void *obj) {
         return;
     }
 
-    Header *hdr = getHeader(obj);
-    if (hdr->color != static_cast<u32>(Color::Black)) {
-        mark_stack.push_back(obj);
-    }
+    // Old-gen path: bitmap discovery via O(1) page-table lookup. Setting
+    // the bit IS the grey transition; popping + markChildren IS the
+    // blackening. Bit stays set until sweep clears it.
+    if (!contains(obj)) return;
+    const size_t block_index = blockIndexFor(obj);
+    if (block_index >= blocks_.size()) return;
+
+    if (isMarkedInBlock(block_index, obj)) return;
+    setMarkBitInBlock(block_index, obj);
+    mark_stack.push_back(obj);
 }
 
 void OldGenSpace::markUnboxable(Unboxable &val, bool is_boxed) {
@@ -1105,10 +1113,13 @@ void OldGenSpace::markUnboxable(Unboxable &val, bool is_boxed) {
 // ---------------------------------------------------------------------------
 
 bool OldGenSpace::markOneObject(void* obj) {
+    if (!obj) return false;
     Header* hdr = getHeader(obj);
 
-    // Defensive: stale mark-stack entry pointing at a free cell.
-    if (hdr->tag == Tag_Free) return false;
+    // Defensive: stale mark-stack entry pointing at a free cell or a
+    // forwarding pointer (compaction can leave Tag_Forward stubs behind
+    // until fixup completes).
+    if (hdr->tag == Tag_Free || hdr->tag == Tag_Forward) return false;
 
     // Nursery objects: traverse children but never write into the header,
     // and don't attribute bytes (nursery cells aren't tracked in
@@ -1119,21 +1130,20 @@ bool OldGenSpace::markOneObject(void* obj) {
         return true;
     }
 
-    // Old-gen object: skip if already Black, otherwise tri-color it and
-    // attribute its walkStep-aligned size to the owning block.
-    if (hdr->color == static_cast<u32>(Color::Black)) return false;
-
-    hdr->color = static_cast<u32>(Color::Grey);
-    markChildren(obj);
-    hdr->color = static_cast<u32>(Color::Black);
-
+    // Old-gen object: the bit was already set by pushMarkRoot when this
+    // object was discovered, so we don't need to test it again here. Just
+    // attribute live bytes and recurse into children. markChildren may
+    // call back into pushMarkRoot for child references; those will set
+    // their own bits and push themselves on the mark stack.
+    if (!contains(obj)) return false;
     const size_t blk_idx = blockIndexFor(obj);
-    if (blk_idx < blocks_.size()) {
-        const size_t step = walkStepFor(blocks_[blk_idx], getObjectSize(obj));
-        if (blk_idx < buffer_meta_.size()) {
-            buffer_meta_[blk_idx].live_bytes += step;
-        }
+    if (blk_idx >= blocks_.size()) return false;
+
+    const size_t step = walkStepFor(blocks_[blk_idx], getObjectSize(obj));
+    if (blk_idx < buffer_meta_.size()) {
+        buffer_meta_[blk_idx].live_bytes += step;
     }
+    markChildren(obj);
     return true;
 }
 
@@ -1546,14 +1556,9 @@ void OldGenSpace::lazySweep(size_t target_class, size_t work_budget) {
                 continue;
             }
             sweep_cursor_ = blocks_[sweep_buffer_index_].start;
-            // Reset per-block live_bytes so the per-step accumulation below
-            // produces a clean count, even when finalizeMetaAfterMark already
-            // wrote a mark-derived value into this slot. The two values agree
-            // by construction; resetting keeps the assertion-style debug
-            // check (Step 2.4) meaningful without double-counting.
-            if (sweep_buffer_index_ < buffer_meta_.size()) {
-                buffer_meta_[sweep_buffer_index_].live_bytes = 0;
-            }
+            // live_bytes is fully populated by markOneObject during mark,
+            // so sweep no longer needs to accumulate it. finalizeMetaAfterMark
+            // wrote the authoritative value into this slot.
         }
 
         BlockInfo& block = blocks_[sweep_buffer_index_];
@@ -1565,12 +1570,14 @@ void OldGenSpace::lazySweep(size_t target_class, size_t work_budget) {
         // allocateLargeBlock reuses its address.
         if (block.is_large && sweep_cursor_ == block.start &&
             sweep_cursor_ < used_end) {
-            Header* hdr = reinterpret_cast<Header*>(sweep_cursor_);
+            // Liveness comes from large_block_mark_; testAndClear leaves
+            // the bit at zero so the next mark cycle starts clean.
+            const bool live =
+                testAndClearMarkBitInBlock(sweep_buffer_index_, sweep_cursor_);
             if (sweep_buffer_index_ < buffer_meta_.size()) {
                 BufferMetadata& meta = buffer_meta_[sweep_buffer_index_];
-                if (hdr->color == static_cast<u32>(Color::Black)) {
-                    hdr->color = static_cast<u32>(Color::White);
-                    meta.live_bytes = block.totalBytes();
+                if (live) {
+                    // live_bytes was attributed during mark; nothing to do.
                 } else {
                     meta.garbage_bytes = block.totalBytes();
                     markBlockAsFreeLarge(sweep_buffer_index_);
@@ -1586,21 +1593,21 @@ void OldGenSpace::lazySweep(size_t target_class, size_t work_budget) {
             Header* hdr = reinterpret_cast<Header*>(sweep_cursor_);
             size_t step = walkStep(block, getObjectSize(sweep_cursor_));
 
-            if (sweep_buffer_index_ < buffer_meta_.size()) {
-                BufferMetadata& meta = buffer_meta_[sweep_buffer_index_];
+            // Liveness from per-block bitmap. testAndClear keeps the
+            // post-sweep invariant that mark_bits_ is all-zero.
+            const bool live = (hdr->tag != Tag_Free) &&
+                testAndClearMarkBitInBlock(sweep_buffer_index_, sweep_cursor_);
 
-                if (hdr->color == static_cast<u32>(Color::Black)) {
-                    // Flush pending garbage run before processing live object.
-                    flushRun(sweep_buffer_index_);
-                    hdr->color = static_cast<u32>(Color::White);
-                    meta.live_bytes += step;
-                } else {
-                    if (run_start == nullptr) {
-                        run_start = sweep_cursor_;
-                        run_bytes = 0;
-                    }
-                    run_bytes += step;
+            if (live) {
+                // Flush pending garbage run before processing live object.
+                // live_bytes was attributed by markOneObject during mark.
+                flushRun(sweep_buffer_index_);
+            } else {
+                if (run_start == nullptr) {
+                    run_start = sweep_cursor_;
+                    run_bytes = 0;
                 }
+                run_bytes += step;
             }
 
             sweep_cursor_ += step;
@@ -2044,6 +2051,24 @@ void OldGenSpace::releaseBlockToAllocator(size_t block_index) {
         buffer_meta_.pop_back();
     }
 
+    // Mirror swap-remove on the per-block bitmap vectors so the
+    // mark_bits_.size() == large_block_mark_.size() == blocks_.size()
+    // invariant holds across the release.
+    if (block_index < mark_bits_.size()) {
+        const size_t mark_last = mark_bits_.size() - 1;
+        if (block_index != mark_last) {
+            mark_bits_[block_index] = std::move(mark_bits_[mark_last]);
+        }
+        mark_bits_.pop_back();
+    }
+    if (block_index < large_block_mark_.size()) {
+        const size_t lbm_last = large_block_mark_.size() - 1;
+        if (block_index != lbm_last) {
+            large_block_mark_[block_index] = large_block_mark_[lbm_last];
+        }
+        large_block_mark_.pop_back();
+    }
+
     // Patch any state that referred to the moved-from slot.
     if (block_index != last) {
         fixupIndicesAfterBlockMove(last, block_index);
@@ -2435,6 +2460,8 @@ void* OldGenSpace::allocateForEvacuation(size_t size) {
     blocks_.push_back(bi);
     evac_block_index_ = blocks_.size() - 1;
     buffer_meta_.push_back({evac_block_index_, 0, 0, true});
+    mark_bits_.emplace_back(bitmapBytesForBlock(blocks_.back()), 0);
+    large_block_mark_.push_back(0);
     assignPageIndexForBlock(evac_block_index_);
     evac_alloc_ptr_ = bi.start;
 
@@ -2675,6 +2702,14 @@ void OldGenSpace::freeEvacuatedBuffers() {
         }
         if (idx < buffer_meta_.size()) {
             buffer_meta_.erase(buffer_meta_.begin() + idx);
+        }
+        // Mirror erase on the per-block bitmap vectors so the
+        // size invariant with blocks_ holds post-compaction.
+        if (idx < mark_bits_.size()) {
+            mark_bits_.erase(mark_bits_.begin() + idx);
+        }
+        if (idx < large_block_mark_.size()) {
+            large_block_mark_.erase(large_block_mark_.begin() + idx);
         }
 
         // Compaction's bump cursor lives in evac_block_index_; if that block

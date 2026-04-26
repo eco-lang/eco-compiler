@@ -102,10 +102,9 @@ Testing::TestCase testRootsMarkedAtStart("startMark pushes roots to mark stack",
 #endif
         (void)more_work;
 
-        // All roots should now be marked Black.
+        // All roots should now be marked in the per-block bitmap.
         for (void* obj : objects) {
-            Header* hdr = getHeader(obj);
-            RC_ASSERT(hdr->color == static_cast<u32>(Color::Black));
+            RC_ASSERT(OldGenSpaceTestAccess::isObjectMarked(oldgen, obj));
         }
 
         // Clean up roots.
@@ -154,11 +153,10 @@ Testing::TestCase testRootsPreservedAfterIncrementalMark("Roots remain marked Bl
             if (!more) break;
         }
 
-        // All rooted objects should be Black after full marking.
+        // All rooted objects should be marked in the per-block bitmap.
         for (size_t idx : graph.root_indices) {
             if (idx < objects.size()) {
-                Header* hdr = getHeader(objects[idx]);
-                RC_ASSERT(hdr->color == static_cast<u32>(Color::Black));
+                RC_ASSERT(OldGenSpaceTestAccess::isObjectMarked(oldgen, objects[idx]));
             }
         }
 
@@ -239,10 +237,9 @@ Testing::TestCase testGarbageUnmarkedInIncrementalSteps("Objects with no roots r
 #endif
         RC_ASSERT(!more_work);  // No roots means no work.
 
-        // All garbage objects should still be White (unmarked).
+        // All garbage objects should be unmarked in the per-block bitmap.
         for (void* obj : garbage_objects) {
-            Header* hdr = getHeader(obj);
-            RC_ASSERT(hdr->color == static_cast<u32>(Color::White));
+            RC_ASSERT(!OldGenSpaceTestAccess::isObjectMarked(oldgen, obj));
         }
 
         // Clean up by running sweep.
@@ -600,11 +597,10 @@ Testing::TestCase testIncrementalMarkEquivalence("Incremental marking produces s
             RC_ASSERT(total_steps < 10000);  // Sanity check.
         }
 
-        // All rooted objects and their transitive closure should be Black.
+        // All rooted objects and their transitive closure should be marked.
         for (size_t idx : graph.root_indices) {
             if (idx < objects.size()) {
-                Header* hdr = getHeader(objects[idx]);
-                RC_ASSERT(hdr->color == static_cast<u32>(Color::Black));
+                RC_ASSERT(OldGenSpaceTestAccess::isObjectMarked(oldgen, objects[idx]));
             }
         }
 
@@ -668,9 +664,9 @@ Testing::TestCase testMarkingWithAllocation("New allocations during marking surv
             new_roots.push_back(AllocatorTestAccess::toPointer(obj));
             new_values.push_back(val);
 
-            // New objects should be Black (survive this cycle).
-            Header* hdr = getHeader(obj);
-            RC_ASSERT(hdr->color == static_cast<u32>(Color::Black));
+            // New objects should be marked (survive this cycle): initObjectHeader
+            // sets the bit when allocating mid-cycle.
+            RC_ASSERT(OldGenSpaceTestAccess::isObjectMarked(oldgen, obj));
         }
 
         for (auto& root : new_roots) {

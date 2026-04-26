@@ -296,6 +296,17 @@ private:
     char* sweep_cursor_;              // Current position within sweep block.
     std::vector<BufferMetadata> buffer_meta_;  // Per-block metadata for compaction.
 
+    // ========== Per-Block Mark Bitmaps ==========
+    //
+    // Liveness for old-gen objects is tracked in per-block bitmaps (1 bit per
+    // 8-byte slot). Headers retain a `color` field for compaction's debug
+    // asserts but are NOT load-bearing for sweep liveness. mark_bits_[i]
+    // covers regular blocks; large_block_mark_[i] is a single-bit
+    // live/dead flag for is_large blocks (their mark_bits_[i] stays empty).
+    // Invariant: mark_bits_.size() == large_block_mark_.size() == blocks_.size().
+    std::vector<std::vector<uint8_t>> mark_bits_;
+    std::vector<uint8_t>              large_block_mark_;
+
     // ========== Fragmentation Statistics ==========
 
     FragmentationStats frag_stats_;   // Heap-wide fragmentation stats (updated after sweep).
@@ -592,6 +603,88 @@ private:
     // a linear scan if the slot is NO_BLOCK (defensive).
     size_t blockIndexFor(const void* obj) const;
 
+    // ========== Per-Block Mark Bitmap Helpers ==========
+
+    // Bitmap granularity: one bit per 8-byte heap slot. Header is 8 bytes
+    // and all heap allocations are 8-byte-aligned, so bits map 1:1 to
+    // possible object start addresses.
+    static constexpr size_t MARK_ALIGNMENT = 8;
+
+    // Number of 8-byte slots in this block (regular blocks only). For
+    // is_large blocks the per-byte vector stays empty.
+    size_t slotsForBlock(const BlockInfo& block) const {
+        return block.totalBytes() / MARK_ALIGNMENT;
+    }
+
+    size_t bitmapBytesForBlock(const BlockInfo& block) const {
+        return (slotsForBlock(block) + 7) / 8;
+    }
+
+    // Computes the (byte_index, mask) for the bit covering `obj` inside
+    // block_index. Caller is responsible for routing is_large blocks to
+    // large_block_mark_ instead of calling this.
+    void markBitLocation(size_t block_index, const void* obj,
+                         size_t* byte_index, uint8_t* mask) const {
+        const BlockInfo& block = blocks_[block_index];
+        const char* p = static_cast<const char*>(obj);
+        const size_t offset = static_cast<size_t>(p - block.start);
+        const size_t slot = offset / MARK_ALIGNMENT;
+        *byte_index = slot / 8;
+        *mask = static_cast<uint8_t>(1u << (slot & 7));
+    }
+
+    bool isMarkedInBlock(size_t block_index, const void* obj) const {
+        if (block_index >= blocks_.size()) return false;
+        if (blocks_[block_index].is_large) {
+            return large_block_mark_[block_index] != 0;
+        }
+        size_t byte_index;
+        uint8_t mask;
+        markBitLocation(block_index, obj, &byte_index, &mask);
+        const auto& bits = mark_bits_[block_index];
+        if (byte_index >= bits.size()) return false;
+        return (bits[byte_index] & mask) != 0;
+    }
+
+    // Sets the bit for `obj` and returns true if the bit was previously
+    // unset (i.e. this caller observed the white→grey transition).
+    bool setMarkBitInBlock(size_t block_index, const void* obj) {
+        if (block_index >= blocks_.size()) return false;
+        if (blocks_[block_index].is_large) {
+            uint8_t prev = large_block_mark_[block_index];
+            large_block_mark_[block_index] = 1;
+            return prev == 0;
+        }
+        size_t byte_index;
+        uint8_t mask;
+        markBitLocation(block_index, obj, &byte_index, &mask);
+        auto& bits = mark_bits_[block_index];
+        if (byte_index >= bits.size()) return false;
+        const bool was_set = (bits[byte_index] & mask) != 0;
+        bits[byte_index] |= mask;
+        return !was_set;
+    }
+
+    // Tests the bit for `obj`, clears it, and returns whether it was set.
+    // Used by sweep so that the bitmap is left all-zero post-sweep
+    // (precondition for the next mark cycle to skip bulk-zeroing).
+    bool testAndClearMarkBitInBlock(size_t block_index, const void* obj) {
+        if (block_index >= blocks_.size()) return false;
+        if (blocks_[block_index].is_large) {
+            uint8_t prev = large_block_mark_[block_index];
+            large_block_mark_[block_index] = 0;
+            return prev != 0;
+        }
+        size_t byte_index;
+        uint8_t mask;
+        markBitLocation(block_index, obj, &byte_index, &mask);
+        auto& bits = mark_bits_[block_index];
+        if (byte_index >= bits.size()) return false;
+        const bool was_set = (bits[byte_index] & mask) != 0;
+        bits[byte_index] &= static_cast<uint8_t>(~mask);
+        return was_set;
+    }
+
     // ========== Mark-time live-bytes attribution (Step 2) ==========
 
     // Performs the White → Grey → Black transition on `obj`, recursively
@@ -740,6 +833,32 @@ public:
     static const std::vector<size_t>& getPageToBlockIndex(
             const OldGenSpace& oldgen) {
         return oldgen.page_to_block_index_;
+    }
+
+    // Per-block mark bitmap access for tests.
+    static const std::vector<uint8_t>& getMarkBitsForBlock(
+            const OldGenSpace& oldgen, size_t i) {
+        return oldgen.mark_bits_[i];
+    }
+    static const std::vector<std::vector<uint8_t>>& getMarkBits(
+            const OldGenSpace& oldgen) {
+        return oldgen.mark_bits_;
+    }
+    static const std::vector<uint8_t>& getLargeBlockMark(
+            const OldGenSpace& oldgen) {
+        return oldgen.large_block_mark_;
+    }
+    static bool isObjectMarked(const OldGenSpace& oldgen, void* obj) {
+        if (!oldgen.contains(obj)) return false;
+        size_t i = oldgen.blockIndexFor(obj);
+        if (i >= oldgen.blocks_.size()) return false;
+        return oldgen.isMarkedInBlock(i, obj);
+    }
+    static bool setObjectMark(OldGenSpace& oldgen, void* obj) {
+        if (!oldgen.contains(obj)) return false;
+        size_t i = oldgen.blockIndexFor(obj);
+        if (i >= oldgen.blocks_.size()) return false;
+        return oldgen.setMarkBitInBlock(i, obj);
     }
 
     // Mark-time live attribution (Step 2): drive the helper directly.
