@@ -258,6 +258,11 @@ private:
     // ========== Marking State ==========
 
     std::vector<void *> mark_stack;   // Stack of objects awaiting marking (grey set).
+    // Nursery objects pushed during the current major-GC mark. Major GC must
+    // not write color into nursery headers (minor GC owns them), so we use
+    // this set instead of the header `color` field to break cycles when
+    // traversing through nursery objects.
+    std::unordered_set<void *> nursery_visited_;
     u32 current_epoch;                // Current GC epoch number (increments each cycle).
     bool marking_active;              // True if marking is in progress (legacy flag).
     Allocator *allocator_ref_;        // Reference to Allocator (for nursery membership checks).
@@ -399,6 +404,10 @@ private:
 
     void markChildren(void *obj);
     void markHPointer(HPointer &ptr);
+    // Pushes a heap object onto the mark stack. Routes nursery objects
+    // through nursery_visited_ (no header color writes) and old-gen objects
+    // through the standard tri-color check.
+    void pushMarkRoot(void *obj);
     void markUnboxable(Unboxable &val, bool is_boxed);
     void sweep();
 

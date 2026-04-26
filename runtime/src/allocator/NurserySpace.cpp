@@ -924,13 +924,10 @@ void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void
 
         Header *new_hdr = getHeader(new_obj);
         new_hdr->age = 0;
-        // Reset color: a previous major GC may have traced this nursery cell
-        // and set color=Black. memcpy carried the stale Black over the White
-        // that oldgen.allocate set via initObjectHeader. Without this reset,
-        // the next major mark sees the cell as already-processed and skips
-        // markChildren, leaving its boxed fields pointing at unmarked cells
-        // that then get swept. Major and minor GC are exclusive, so the
-        // post-memcpy color is always White here.
+        // Defensive: major GC must not write into nursery headers (see
+        // OldGenSpace::pushMarkRoot / incrementalMark), so the source cell's
+        // color should already be White. Reset anyway to keep the promotion
+        // path independent of that invariant.
         new_hdr->color = static_cast<u32>(Color::White);
 
         if (promoted_objects) {
@@ -982,9 +979,7 @@ void NurserySpace::evacuate(HPointer &ptr, OldGenSpace &oldgen, std::vector<void
 
         Header *new_hdr = getHeader(new_obj);
         new_hdr->age++;
-        // Reset color (see promotion path above): the memcpy may have copied
-        // a stale Black left by a previous major-GC mark; the next major mark
-        // must visit this survivor and process its children, so start White.
+        // Defensive (see promotion path above).
         new_hdr->color = static_cast<u32>(Color::White);
 
         GC_STATS_MINOR_INC_SURVIVORS(stats);

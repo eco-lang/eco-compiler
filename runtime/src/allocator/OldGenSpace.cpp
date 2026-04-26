@@ -226,10 +226,16 @@ void *OldGenSpace::allocate(size_t size) {
             mark_stack.pop_back();
             Header *hdr = getHeader(obj);
             if (hdr->tag == Tag_Free) continue;
-            if (hdr->color == static_cast<u32>(Color::Black)) continue;
-            hdr->color = static_cast<u32>(Color::Grey);
-            markChildren(obj);
-            hdr->color = static_cast<u32>(Color::Black);
+            if (allocator_ref_ && allocator_ref_->isInNursery(obj)) {
+                // See incrementalMark: nursery cells are traversed without
+                // header writes; cycles are broken by nursery_visited_.
+                markChildren(obj);
+            } else {
+                if (hdr->color == static_cast<u32>(Color::Black)) continue;
+                hdr->color = static_cast<u32>(Color::Grey);
+                markChildren(obj);
+                hdr->color = static_cast<u32>(Color::Black);
+            }
             mark_budget = (mark_budget > 1) ? mark_budget - 1 : 0;
         }
 #else
@@ -750,21 +756,23 @@ void OldGenSpace::startMark(const std::unordered_set<HPointer*> &roots,
     marking_active = true;
     current_epoch++;
     mark_stack.clear();
+    nursery_visited_.clear();
 
     // Store Allocator reference for nursery checks during marking.
     allocator_ref_ = &alloc;
 
     // Push ALL roots onto mark stack - including nursery objects.
     // Embedded constants live entirely in the `constant` tag; filter them.
+    // Routed through markHPointer so nursery objects are deduped via
+    // nursery_visited_ instead of via the header color (which we must not
+    // write to during major GC).
     for (HPointer *root: roots) {
-        if (root->constant != 0) continue;
-        void *obj = Allocator::fromPointerRaw(*root);
-        if (obj && alloc.isInHeap(obj)) {
-            mark_stack.push_back(obj);
-        }
+        markHPointer(*root);
     }
 
     // Push JIT roots (raw 64-bit heap pointers from JIT-compiled globals).
+    // These are raw addresses, not HPointer encodings (see
+    // plans/value-root-api-for-encoded-hpointers.md), so we don't decode them.
     for (uint64_t *root: jit_roots) {
         uint64_t val = *root;
 
@@ -776,7 +784,7 @@ void OldGenSpace::startMark(const std::unordered_set<HPointer*> &roots,
 
         void *obj = reinterpret_cast<void*>(val);
         if (obj && alloc.isInHeap(obj)) {
-            mark_stack.push_back(obj);
+            pushMarkRoot(obj);
         }
     }
 
@@ -810,6 +818,15 @@ bool OldGenSpace::incrementalMark(size_t work_units) {
         // principle point at one if the heap layout were inconsistent; the
         // marker should never traverse Tag_Free).
         if (hdr->tag == Tag_Free) continue;
+
+        if (allocator_ref_ && allocator_ref_->isInNursery(obj)) {
+            // Nursery cell: traverse children to keep reachable old-gen
+            // objects alive, but never write into the header. Cycles are
+            // broken via nursery_visited_ in pushMarkRoot.
+            markChildren(obj);
+            units_done++;
+            continue;
+        }
 
         // Skip if already black.
         if (hdr->color == static_cast<u32>(Color::Black)) {
@@ -934,11 +951,26 @@ void OldGenSpace::markHPointer(HPointer &ptr) {
     if (!obj)
         return;
 
-    if (allocator_ref_ && allocator_ref_->isInHeap(obj)) {
-        Header *hdr = getHeader(obj);
-        if (hdr->color != static_cast<u32>(Color::Black)) {
+    if (!allocator_ref_ || !allocator_ref_->isInHeap(obj))
+        return;
+
+    pushMarkRoot(obj);
+}
+
+void OldGenSpace::pushMarkRoot(void *obj) {
+    // Major GC must not write into nursery headers; minor GC owns those.
+    // Use nursery_visited_ to break cycles when traversing through nursery
+    // objects, instead of the header `color` field.
+    if (allocator_ref_->isInNursery(obj)) {
+        if (nursery_visited_.insert(obj).second) {
             mark_stack.push_back(obj);
         }
+        return;
+    }
+
+    Header *hdr = getHeader(obj);
+    if (hdr->color != static_cast<u32>(Color::Black)) {
+        mark_stack.push_back(obj);
     }
 }
 
