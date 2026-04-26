@@ -198,7 +198,7 @@ struct HeapConfig {
     // stale pointers read zero (madvise zeros); with decommit OFF, the bytes
     // stay intact so the symptom either disappears (if it really was just
     // zero reads) or shifts to a clearly observable mark-phase issue.
-    bool decommit_on_oldgen_release = false;
+    bool decommit_on_oldgen_release = true;
 
     // Derived value: total nursery size in bytes.
     size_t nurserySize() const { return nursery_block_count * alloc_buffer_size; }
