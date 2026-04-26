@@ -71,6 +71,8 @@ struct ElmSharedTestResult {
     uint64_t mark_sweeps_completed;
     uint64_t incremental_mark_calls;
     uint64_t total_incremental_mark_work_units;
+    uint64_t nursery_alloc_size_histogram[Elm::GCStats::NURSERY_ALLOC_BUCKETS];
+    uint64_t oldgen_alloc_size_histogram[Elm::GCStats::OLDGEN_ALLOC_BUCKETS];
 };
 
 inline Elm::GCStats& getAccumulatedStats() {
@@ -106,6 +108,12 @@ inline void copyStatsToShared(ElmSharedTestResult* shared) {
     shared->mark_sweeps_completed = stats.mark_sweeps_completed;
     shared->incremental_mark_calls = stats.incremental_mark_calls;
     shared->total_incremental_mark_work_units = stats.total_incremental_mark_work_units;
+    for (int i = 0; i < Elm::GCStats::NURSERY_ALLOC_BUCKETS; i++) {
+        shared->nursery_alloc_size_histogram[i] = stats.nursery_alloc_size_histogram[i];
+    }
+    for (int i = 0; i < Elm::GCStats::OLDGEN_ALLOC_BUCKETS; i++) {
+        shared->oldgen_alloc_size_histogram[i] = stats.oldgen_alloc_size_histogram[i];
+    }
 #endif
 }
 
@@ -136,6 +144,12 @@ inline void accumulateFromShared(const ElmSharedTestResult* shared) {
     childStats.mark_sweeps_completed = shared->mark_sweeps_completed;
     childStats.incremental_mark_calls = shared->incremental_mark_calls;
     childStats.total_incremental_mark_work_units = shared->total_incremental_mark_work_units;
+    for (int i = 0; i < Elm::GCStats::NURSERY_ALLOC_BUCKETS; i++) {
+        childStats.nursery_alloc_size_histogram[i] = shared->nursery_alloc_size_histogram[i];
+    }
+    for (int i = 0; i < Elm::GCStats::OLDGEN_ALLOC_BUCKETS; i++) {
+        childStats.oldgen_alloc_size_histogram[i] = shared->oldgen_alloc_size_histogram[i];
+    }
 
     getAccumulatedStats().combine(childStats);
 }

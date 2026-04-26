@@ -209,6 +209,11 @@ void OldGenSpace::initObjectHeader(void* obj) {
 void *OldGenSpace::allocate(size_t size) {
     size = (size + 7) & ~7;  // Align to 8 bytes.
 
+    // Record the requested (post-alignment) size into the size-distribution
+    // histogram. Done up front so allocations that fail later (return nullptr)
+    // still show up as demand on the old-gen size-class distribution.
+    GC_STATS_OLDGEN_RECORD_ALLOC(alloc_stats_, size);
+
     // Allocation-paced marking: do marking work proportional to allocation.
     if (gc_phase_ == GCPhase::Marking && !mark_stack.empty()) {
         size_t mark_budget = size * MARK_WORK_RATIO;

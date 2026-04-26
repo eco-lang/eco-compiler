@@ -213,6 +213,14 @@ public:
         return p >= region_base_ && p < region_end_;
     }
 
+#if ENABLE_GC_STATS
+    // Returns the per-allocation stats accumulated by this old gen. Only the
+    // allocation-size histogram is populated here; major-GC counters are
+    // recorded against the ThreadLocalHeap's stats via passed references.
+    GCStats& getStats() { return alloc_stats_; }
+    const GCStats& getStats() const { return alloc_stats_; }
+#endif
+
 private:
     // ========== Configuration ==========
 
@@ -227,6 +235,12 @@ private:
 
     std::vector<BlockInfo> blocks_;        // Pages currently in use.
     size_t allocated_bytes;                // Total bytes currently allocated.
+
+#if ENABLE_GC_STATS
+    // Records the allocation-size histogram for this old gen. Combined with
+    // ThreadLocalHeap's GCStats by Allocator::getCombinedStats().
+    GCStats alloc_stats_;
+#endif
 
     // Bag of pre-committed-but-unassigned pages (start, end). Each entry is
     // a page of `alloc_buffer_size` bytes carved from the initial region or

@@ -63,6 +63,26 @@ public:
 
     uint64_t minor_time_histogram[HISTOGRAM_BUCKETS] = {0};
 
+    // ========== Allocation Size Histograms ==========
+    //
+    // Power-of-two buckets keyed off the allocation size in bytes. Bucket k
+    // covers [8 << k, 8 << (k+1)); the final bucket is an overflow bucket for
+    // sizes at or above the histogram's upper bound.
+    //
+    // Nursery histogram covers 8 B up to the large-object threshold (8 KiB):
+    //   buckets 0..9  => [8,16) [16,32) ... [4096,8192)
+    //   bucket 10     => >= 8 KiB (objects this large bypass the nursery).
+    //
+    // Old-gen histogram covers 8 B up to 1 MiB:
+    //   buckets 0..16 => [8,16) [16,32) ... [524288,1048576)
+    //   bucket 17     => >= 1 MiB.
+    static constexpr int NURSERY_ALLOC_BUCKETS = 11;
+    static constexpr int OLDGEN_ALLOC_BUCKETS  = 18;
+    static constexpr size_t ALLOC_HISTOGRAM_BASE = 8;  // bucket 0 starts here.
+
+    uint64_t nursery_alloc_size_histogram[NURSERY_ALLOC_BUCKETS] = {0};
+    uint64_t oldgen_alloc_size_histogram[OLDGEN_ALLOC_BUCKETS]   = {0};
+
     // ========== AllocBuffer Stats ==========
     uint64_t buffers_allocated = 0;
     uint64_t buffers_filled = 0;
@@ -90,8 +110,13 @@ public:
 
     // ========== Methods ==========
 
-    // Records an allocation event.
+    // Records a nursery allocation event (count, bytes, size histogram).
     void recordAllocation(size_t bytes);
+
+    // Records an old-generation allocation event into the size histogram.
+    // Old-gen byte totals live elsewhere (Allocator::getOldGenAllocatedBytes);
+    // this only feeds the size-distribution histogram.
+    void recordOldGenAllocation(size_t bytes);
 
     // Records completion of a minor GC cycle with timing and reclaimed bytes.
     void recordMinorGCEnd(uint64_t elapsed_ns, size_t freed);
@@ -122,6 +147,9 @@ private:
 
     #define GC_STATS_MINOR_RECORD_ALLOC(stats, bytes) \
         do { (stats).recordAllocation(bytes); } while(0)
+
+    #define GC_STATS_OLDGEN_RECORD_ALLOC(stats, bytes) \
+        do { (stats).recordOldGenAllocation(bytes); } while(0)
 
     #define GC_STATS_MINOR_RECORD_GC_END(stats, elapsed_ns, freed) \
         do { (stats).recordMinorGCEnd(elapsed_ns, freed); } while(0)
@@ -166,6 +194,7 @@ private:
 #else
     // Stats disabled - all macros expand to nothing (zero overhead).
     #define GC_STATS_MINOR_RECORD_ALLOC(stats, bytes) do {} while(0)
+    #define GC_STATS_OLDGEN_RECORD_ALLOC(stats, bytes) do {} while(0)
     #define GC_STATS_MINOR_RECORD_GC_END(stats, elapsed_ns, freed) do {} while(0)
     #define GC_STATS_MINOR_INC_SURVIVORS(stats) do {} while(0)
     #define GC_STATS_MINOR_INC_PROMOTED(stats) do {} while(0)

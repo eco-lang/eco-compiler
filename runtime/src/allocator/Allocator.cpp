@@ -217,6 +217,7 @@ void Allocator::cleanupThread() {
 #if ENABLE_GC_STATS
         // Accumulate stats from this thread heap before destroying it.
         accumulated_stats_.combine(it->second->getNursery().getStats());
+        accumulated_stats_.combine(it->second->getOldGen().getStats());
         accumulated_stats_.combine(it->second->getStats());
 #endif
         thread_heaps_.erase(it);
@@ -617,6 +618,7 @@ void Allocator::reset(const HeapConfig* new_config) {
     // Accumulate stats from all thread heaps before destroying them.
     for (const auto& [thread_id, heap] : thread_heaps_) {
         accumulated_stats_.combine(heap->getNursery().getStats());
+        accumulated_stats_.combine(heap->getOldGen().getStats());
         accumulated_stats_.combine(heap->getStats());
     }
 #endif
@@ -692,8 +694,10 @@ GCStats Allocator::getCombinedStats() const {
 
     // Add stats from current thread heaps.
     for (const auto& [thread_id, heap] : thread_heaps_) {
-        // Combine both nursery stats and thread-local heap stats.
+        // Combine nursery, old-gen (allocation-size histogram), and
+        // thread-local heap (major-GC) stats.
         combined.combine(heap->getNursery().getStats());
+        combined.combine(heap->getOldGen().getStats());
         combined.combine(heap->getStats());
     }
     return combined;

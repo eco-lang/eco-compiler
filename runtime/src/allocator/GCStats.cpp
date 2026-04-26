@@ -7,12 +7,40 @@
  */
 
 #include <algorithm>
+#include <bit>
 #include <iomanip>
 #include <iostream>
 #include <sstream>
 #include "GCStats.hpp"
 
 namespace Elm {
+
+// Maps an allocation size in bytes to its power-of-two histogram bucket.
+// Bucket k covers [8 << k, 8 << (k+1)); the last bucket absorbs anything
+// at or above the histogram's upper bound.
+static inline size_t allocSizeBucketIndex(size_t bytes, size_t num_buckets) {
+    if (bytes < GCStats::ALLOC_HISTOGRAM_BASE) return 0;
+    // floor(log2(bytes)); bit_width(x) returns 1 + floor(log2(x)) for x > 0.
+    size_t log2_floor = static_cast<size_t>(std::bit_width(bytes)) - 1;
+    // log2(8) = 3, so subtract 3 to make the [8,16) bucket index 0.
+    size_t idx = (log2_floor >= 3) ? (log2_floor - 3) : 0;
+    if (idx >= num_buckets - 1) return num_buckets - 1;
+    return idx;
+}
+
+// Formats a byte size with appropriate units (B, KiB, MiB).
+static std::string formatBytes(size_t bytes) {
+    std::ostringstream oss;
+    oss << std::fixed;
+    if (bytes < 1024) {
+        oss << bytes << " B";
+    } else if (bytes < 1024 * 1024) {
+        oss << std::setprecision(0) << (bytes / 1024.0) << " KiB";
+    } else {
+        oss << std::setprecision(0) << (bytes / (1024.0 * 1024.0)) << " MiB";
+    }
+    return oss.str();
+}
 
 // Helper to format nanoseconds with appropriate units.
 // Returns a string like "123.45 ns", "1.23 µs", "45.67 ms", or "1.23 s"
@@ -40,6 +68,16 @@ static std::string formatTime(uint64_t ns) {
 void GCStats::recordAllocation(size_t bytes) {
     objects_allocated++;
     bytes_allocated += bytes;
+
+    size_t bucket = allocSizeBucketIndex(bytes, NURSERY_ALLOC_BUCKETS);
+    nursery_alloc_size_histogram[bucket]++;
+}
+
+// Records a single old-generation allocation of the given size in the
+// size-distribution histogram only.
+void GCStats::recordOldGenAllocation(size_t bytes) {
+    size_t bucket = allocSizeBucketIndex(bytes, OLDGEN_ALLOC_BUCKETS);
+    oldgen_alloc_size_histogram[bucket]++;
 }
 
 // Records completion of a minor GC cycle with timing and reclaimed bytes.
@@ -160,6 +198,14 @@ void GCStats::combine(const GCStats& other) {
     // Combine Major GC histogram.
     for (int i = 0; i < HISTOGRAM_BUCKETS; i++) {
         major_time_histogram[i] += other.major_time_histogram[i];
+    }
+
+    // Combine allocation-size histograms.
+    for (int i = 0; i < NURSERY_ALLOC_BUCKETS; i++) {
+        nursery_alloc_size_histogram[i] += other.nursery_alloc_size_histogram[i];
+    }
+    for (int i = 0; i < OLDGEN_ALLOC_BUCKETS; i++) {
+        oldgen_alloc_size_histogram[i] += other.oldgen_alloc_size_histogram[i];
     }
 }
 
@@ -351,6 +397,54 @@ void GCStats::print() const {
         }
     }
 
+    // ========== Allocation Size Histograms ==========
+    auto printAllocHistogram = [](const char* title,
+                                  const uint64_t* hist,
+                                  int num_buckets) {
+        uint64_t total = 0;
+        uint64_t max_count = 0;
+        for (int i = 0; i < num_buckets; i++) {
+            total += hist[i];
+            max_count = std::max(max_count, hist[i]);
+        }
+        if (total == 0) return;
+
+        std::cout << "\n" << title << ":" << std::endl;
+        const int BAR_WIDTH = 40;
+
+        for (int i = 0; i < num_buckets; i++) {
+            if (hist[i] == 0) continue;
+
+            // Bucket k covers [BASE << k, BASE << (k+1)); the last bucket
+            // is the overflow bucket for sizes at or above BASE << (n-1).
+            size_t range_start = ALLOC_HISTOGRAM_BASE << i;
+            if (i < num_buckets - 1) {
+                size_t range_end = ALLOC_HISTOGRAM_BASE << (i + 1);
+                std::cout << "  " << std::setw(8) << formatBytes(range_start)
+                          << " - " << std::setw(8) << formatBytes(range_end) << ": ";
+            } else {
+                std::cout << "  >= " << std::setw(8) << formatBytes(range_start)
+                          << "        : ";
+            }
+
+            int bar_len = max_count > 0
+                ? static_cast<int>((hist[i] * BAR_WIDTH) / max_count)
+                : 0;
+            for (int j = 0; j < bar_len; j++) std::cout << "█";
+
+            double percentage = (hist[i] * 100.0) / total;
+            std::cout << " " << hist[i] << " (" << std::fixed
+                      << std::setprecision(1) << percentage << "%)" << std::endl;
+        }
+    };
+
+    printAllocHistogram("Nursery Allocation Size Histogram",
+                        nursery_alloc_size_histogram,
+                        NURSERY_ALLOC_BUCKETS);
+    printAllocHistogram("Old-Gen Allocation Size Histogram",
+                        oldgen_alloc_size_histogram,
+                        OLDGEN_ALLOC_BUCKETS);
+
     std::cout << std::endl;
 }
 
@@ -391,6 +485,13 @@ void GCStats::reset() {
 
     for (int i = 0; i < HISTOGRAM_BUCKETS; i++) {
         major_time_histogram[i] = 0;
+    }
+
+    for (int i = 0; i < NURSERY_ALLOC_BUCKETS; i++) {
+        nursery_alloc_size_histogram[i] = 0;
+    }
+    for (int i = 0; i < OLDGEN_ALLOC_BUCKETS; i++) {
+        oldgen_alloc_size_histogram[i] = 0;
     }
 }
 
