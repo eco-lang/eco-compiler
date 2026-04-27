@@ -190,7 +190,7 @@ generateMonoTest ctx ( dtPath, test ) =
         Test.IsChr c ->
             let
                 charCode =
-                    String.toList c |> List.head |> Maybe.map Char.toCode |> Maybe.withDefault 0
+                    decodeChrPatternCode c
 
                 ( constVar, ctx2 ) =
                     Ctx.freshVar ctx1
