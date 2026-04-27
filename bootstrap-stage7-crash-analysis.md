@@ -459,3 +459,27 @@ The crash fires after the second minor GC, well before the heap pressure reaches
 - `test/stress-elm/src/GetCommentsRepro.elm` — new test (~120 lines including the doc comment that summarises this section).
 - No runtime / compiler source changes were needed to reproduce; the bug fires in stock release-build runtime code paths.
 
+---
+
+# 12. Root cause (2026-04-27)
+
+The §5.3 closure-arity hypothesis turned out to be **wrong** for this specific
+crash. `eco_pap_extend` does produce closures with `header.size < max_values`
+(diagnostics `[DIAG-PAP]` / `[DIAG-CL-SCAN]` confirm it), but those ghost slots
+are never written, so the GC's under-walk doesn't lose any real roots.
+
+The actual bug is a **missed C++ stack root** in
+`PlatformRuntime::initWorker`: the `impl` HPointer parameter is held in
+`%r14` across `Scheduler::callClosure1(initFn, flags)` but never registered
+with the GC root set. When the closure body triggers a minor GC, the
+register's bit pattern still encodes the pre-evacuation address — which
+lands in the dead to-space half of the nursery on the next `resolveHP(impl)`.
+
+A one-line `eco_gc_push_stack_range` patch makes every previously-failing
+size pass, in both the assertions-enabled debug build (was: SIGABRT at
+`-m 30000`) and production (was: SIGSEGV at `-m 36000+`). Both crash
+modes were the same bug at two different downstream consequence sites.
+
+Full root-cause analysis with traces, disassembly evidence, and the
+verification patch: see `bootstrap-stage7-getcomments-rootcause.md`.
+
