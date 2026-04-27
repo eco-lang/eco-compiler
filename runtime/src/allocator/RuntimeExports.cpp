@@ -809,6 +809,7 @@ extern "C" HPtr eco_init_cons_at(void* obj, uint64_t head, HPtr tail, uint32_t h
     HPointer tail_hp;
     memcpy(&tail_hp, &tail_bits, sizeof(tail_hp));
     cons->tail = tail_hp;
+
     return ptrToHPointer(obj);
 }
 

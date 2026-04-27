@@ -896,11 +896,22 @@ void OldGenSpace::startMark(const std::unordered_set<HPointer*> &roots,
         }
     }
 
-    // With per-block mark bitmaps as the liveness source (Step 7), a stale
-    // Header::color is no longer load-bearing. The ECO_GC_RESET_BLACK_AT_MARK
-    // defense (which walked every cell to reset color before mark) has been
-    // removed: bitmaps are zero between cycles, so a carry-over Black header
-    // cannot mis-classify a cell as already-marked.
+    // Clear all mark bits before starting a new cycle.
+    //
+    // The bitmap "is zero between cycles" invariant only holds when sweep
+    // visits every cell — which is NOT true when the mutator pops a cell
+    // off a free list mid-sweep (initObjectHeader sets the bit, but sweep
+    // has already advanced past that block and won't revisit). Those carry-
+    // over bits make pushMarkRoot in the next cycle return early via the
+    // "already marked" check, so markOneObject never runs and the cell's
+    // bytes never get attributed to its block's live_bytes. A block whose
+    // entire live content is carry-over-bit cells then appears "all dead"
+    // and gets released (madvise DONTNEED), zero-filling pages that other
+    // long-lived objects still reference via stale HPointers.
+    for (auto& bits : mark_bits_) {
+        std::fill(bits.begin(), bits.end(), 0);
+    }
+    std::fill(large_block_mark_.begin(), large_block_mark_.end(), 0);
 
     marking_active = true;
     current_epoch++;
