@@ -365,6 +365,34 @@ struct Closure {
 };
 ```
 
+### String (Three Forms) *(Apr 27, 2026)*
+
+`String` has three heap representations with a shared `header.size` semantics — logical UTF-16 code-unit count for all three. Compiler/MLIR allocations only ever produce `Tag_String`; ropes and slices arise inside `Elm::StringOps`.
+
+```cpp
+struct ElmString {                  // Tag_String — flat UTF-16 leaf
+    Header header;                  // header.size = code units
+    u16 chars[];
+};
+
+struct ALIGN(8) ElmStringSlice {    // Tag_StringSlice — view over a leaf
+    Header header;                  // header.size = slice length
+    HPointer base;                  // points to a leaf only (slice-of-slice collapsed)
+    u32 offset;
+    u32 _padding;
+};
+
+struct ALIGN(8) ElmStringRope {     // Tag_StringRope — concat tree node
+    Header header;                  // header.size = total length
+    HPointer left;
+    HPointer right;
+    u32 height;                     // 0 for leaf/slice
+    u32 leafCount;
+};
+```
+
+`header.unboxed` is always 0 for slice and rope (no per-slot kind bitmap). Tracing forwards `base` for slices and `left`/`right` for ropes; `getObjectSize` has dedicated `Tag_StringSlice` / `Tag_StringRope` arms returning the fixed-size struct sizes. See [string_rope_representation_theory.md](string_rope_representation_theory.md) and HEAP_025 for the full contract.
+
 ## Cross-Phase Invariants (XPHASE_*)
 
 ### Layout Consistency (XPHASE_001)
@@ -519,6 +547,7 @@ This applies to `allocTask`, `allocProcess`, `cons`, `tuple2`, `tuple3`, `arrayF
 - [Monomorphization Theory](pass_monomorphization_theory.md) — Layout computation
 - [MLIR Generation Theory](pass_mlir_generation_theory.md) — Construction/projection ops
 - [EcoToLLVM Theory](pass_eco_to_llvm_theory.md) — LLVM lowering of heap ops
+- [String Rope Representation Theory](string_rope_representation_theory.md) — `Tag_String` / `Tag_StringRope` / `Tag_StringSlice` and the StringOps API
 - [THEORY.md](../../THEORY.md) — Runtime GC details
 
 ## See Also

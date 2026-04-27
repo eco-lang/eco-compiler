@@ -2506,6 +2506,28 @@ Runtime Foundation (§1)
 
 **Most Recent Changes — Apr 23 to Apr 27, 2026**:
 
+- **String Ropes + Slices + Structure Sharing** *(Apr 27, 2026)*:
+  - `Tag_StringRope` (concat-tree: `HPointer left`, `HPointer right`, `u32 height`, `u32 leafCount`) and `Tag_StringSlice` (view: `HPointer base`, `u32 offset`, `u32 _padding`) added to the heap. `header.size` is the logical UTF-16 length for all three string forms. New invariant **HEAP_025**.
+  - Compiler/MLIR allocations remain leaf-only (`eco_alloc_string*`, `Eco_StringLiteralOp`); ropes and slices are produced exclusively inside `Elm::StringOps` and the kernel `String` module.
+  - `append` builds a rope when the total exceeds `FLATTEN_LIMIT` (32 K UTF-16 code units); below that the existing memcpy fast path is unchanged. `slice` over a leaf builds a `Tag_StringSlice` for ranges above `TINY_SLICE_LIMIT`; slice-of-slice collapses to a single slice over the underlying leaf. `concat` over long lists uses `buildBalancedRope` (explicit merge stack — `O(n log n)` shape, no left-leaning `O(n²)`).
+  - `charAt` and `toStdU16String` are tag-dispatched: leaves index `chars[]`, slices add `offset`, ropes descend by left subtree length. Both are iterative / use an explicit DFS stack so deep ropes don't blow the C stack.
+  - `equal`/`compare` keep the leaf+leaf `memcmp` fast path; mixed shapes flatten under `FLATTEN_LIMIT` then `memcmp`, and fall back to a bounded-memory char walk above the limit.
+  - GC integration: nursery evacuation forwards `base` (slice) and `left`/`right` (rope); old-gen mark/fixup updated to match; `getObjectSize` has dedicated arms for the two new tags.
+  - Kernel C++ (17 files: `core/{String, Utils, DebugExports}`, `parser/`, `json/`, `bytes/`, `url/`, `http/`, `regex/`, `virtual-dom/`) migrated to `Elm::StringOps::{length, charAt, toStdString, toStdU16String, ensureFlat}` — no direct `s->chars[i]` reads remain. UTF-8 helpers `elm_utf8_width`/`elm_utf8_copy` materialise via `toStdU16String` once.
+  - Heuristics constants: `FLATTEN_LIMIT = 32 KiB UTF-16`, `TINY_SLICE_LIMIT = FLATTEN_LIMIT / 4`, `MAX_HEIGHT = 32`, `LEAFCOUNT_LIMIT = 64`, `MIN_LEAF_SIZE = 128`. Rope rebalance is deferred (`maybeFlattenOrRebalance` records the trigger; rotation TODO).
+  - Empty-string canonicalisation enforced at every constructor — `len == 0` → `Const_EmptyString`, never a heap allocation.
+  - Plan: `plans/string-rope-slice-representation.md`. Theory: [String Rope Representation Theory](design_docs/theory/string_rope_representation_theory.md). New tests: `StringOpsTest.cpp` extensions; regression set `CharThroughFunctionRegressionBTest.elm`, `HeapStringFieldRegressionATest.elm`, `InlineJsonStringParserRegressionCTest.elm`, `ParseLengthSweepRegressionDTest.elm`, `RecordFieldPrimitivesRegressionFTest.elm`, `StateRecordOneOfRegressionGTest.elm`, `StringSourceSweepRegressionETest.elm`.
+
+- **Char Literal Pattern Match Decoding** *(Apr 27, 2026)*:
+  - `Compiler/Generate/MLIR/Patterns.elm` now decodes escaped char pattern literals (`'"'`, `'\n'`, etc.) via `decodeChrPatternCode` instead of comparing on the leading backslash byte. New regressions: `CharLiteralPatternMatchMinimalTest.elm`, `CharLiteralPatternMatchVariousTest.elm`.
+
+- **Closure Header Sizing** *(Apr 27, 2026)*:
+  - `RuntimeExports.cpp` sets `object.size = max_values` on closure allocations so the header records the closure's full stage arity (rather than the count of args applied so far). Trailing unused capture slots are zeroed; trimming them is a future option. The change ensures `Tag_Closure` marking can iterate `hdr->size` and see all capture slots — fixes a class of GC mis-tracing on stored-but-unapplied captures.
+  - Subsequent revert: `object.size` only needs to be large enough to hold the actual args at that stage; the originally proposed full-arity sizing was reverted in commit `9183930` while the underlying GC-mark issue (already fixed independently) is no longer dependent on it.
+
+- **Stack Root Protection in Init/Flags Path** *(Apr 27, 2026)*:
+  - `PlatformRuntime.cpp` init/flags path adds `StackRootGuard`s around early-init allocations so initial-state HPointers survive any GC the boot path triggers.
+
 - **Old-Gen Mark-Driven Live + Lazy Sweep** *(Apr 26, 2026)*:
   - Sweep is now driven by mark-time `live_bytes` attribution rather than a synchronous post-mark cell walk
   - O(1) `page_to_block_index_` page-index replaces linear `findBlockContaining` scans
@@ -2678,5 +2700,7 @@ Runtime Foundation (§1)
 
 **Active Workstreams**:
 1. **Bootstrap to native x86 (§5.2)** — fixing compiler/runtime bugs surfaced by compiling the Elm compiler through itself
-2. **Stress test coverage** — expanding `test/stress-elm/` coverage and driving GC root correctness under sustained load
-3. **Compiler pass consolidation** — Monomorphization/PostSolve overhauls (tvar `Int` IDs, `SolverRoots`, `PendingGlobal`) stabilising into their final shape
+2. **Old-gen GC hardening** — re-enabling `decommit_on_oldgen_release` once the stale-mark-roots issue is resolved; investigating remaining stage-7 closure-arity crashes (see `bootstrap-stage7-crash-analysis.md`)
+3. **Stress test coverage** — expanding `test/stress-elm/` coverage and driving GC root correctness under sustained load
+4. **String rope follow-ups** — actual rope rebalancing (currently only `// TODO`), streaming `equal`/`compare`, streaming UTF-8 encode (Option B), all-ASCII fast-path bit in `ElmStringSlice._padding`
+5. **Compiler pass consolidation** — Monomorphization/PostSolve overhauls (tvar `Int` IDs, `SolverRoots`, `PendingGlobal`) stabilising into their final shape

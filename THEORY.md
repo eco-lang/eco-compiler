@@ -274,7 +274,7 @@ For Elm's typical use case (short-lived web applications with message-passing co
 
 4. **Headers are always first**: Every heap object starts with an 8-byte Header. Size calculation depends on this.
 
-5. **Constants are never heap-allocated**: Nil, True, False, Unit, Nothing, EmptyString, and EmptyRec are embedded in the pointer representation.
+5. **Constants are never heap-allocated**: Nil, True, False, Unit, Nothing, EmptyString, and EmptyRec are embedded in the pointer representation. String length zero anywhere in `StringOps` short-circuits to the embedded `Const_EmptyString` rather than allocating a zero-length leaf.
 
 6. **Allocation may trigger GC**: Callers must assume any allocation could move all live objects. Use `StackRootGuard` to root HPointers across allocation calls.
 
@@ -290,6 +290,7 @@ The `getObjectSize()` function must match object layout exactly. This is a commo
 - **Variable-size types**: Use `hdr->size` to store element count (not byte size).
 - **Closure special case**: Uses `n_values` field, not header size.
 - **Always 8-byte aligned**: `(size + 7) & ~7`
+- **String tags**: `Tag_String` is variable-size (`sizeof(ElmString) + size * sizeof(u16)`); `Tag_StringSlice` and `Tag_StringRope` are fixed-size (`sizeof(ElmStringSlice)`, `sizeof(ElmStringRope)`). For all three, `header.size` is the logical UTF-16 length.
 
 When adding a new type, you must update:
 1. `Tag` enum in Heap.hpp
@@ -297,6 +298,22 @@ When adding a new type, you must update:
 3. `getObjectSize()` switch statement
 4. `scanObject()` in NurserySpace.cpp
 5. `markChildren()` in OldGenSpace.cpp
+
+## String Representation
+
+*(Apr 27, 2026)* `String` is the only Elm value with three concrete heap forms:
+
+- **`Tag_String`** — flat UTF-16 leaf (`Header + u16 chars[]`).
+- **`Tag_StringSlice`** — structural view: `Header + HPointer base + u32 offset + u32 _padding`. `base` always points to a leaf (slice-of-slice collapses at construction).
+- **`Tag_StringRope`** — concat-tree node: `Header + HPointer left + HPointer right + u32 height + u32 leafCount`.
+
+The compiler/MLIR allocates only `Tag_String` leaves (`eco_alloc_string*`, `Eco_StringLiteralOp`). Ropes and slices are produced exclusively inside `Elm::StringOps` to avoid copying for `++`, `slice`, `trim*`, `dropLeft`/`dropRight`, etc. `append` builds a rope when the total exceeds `FLATTEN_LIMIT` (32 K UTF-16 code units); below that it stays on the existing memcpy fast path. `slice` over a leaf builds a `Tag_StringSlice` for ranges above `TINY_SLICE_LIMIT` and a fresh leaf below it. `concat` over a long list of strings builds a balanced rope via an explicit merge stack to avoid `O(n²)` left-leaning shapes.
+
+`charAt` and `toStdU16String` are tag-dispatched: leaves index `chars[]` directly, slices add `offset`, ropes descend by left subtree length. Both are iterative / use an explicit DFS stack so deep ropes don't blow the C stack. `equal`/`compare` keep the leaf+leaf `memcmp` fast path; mixed shapes flatten under `FLATTEN_LIMIT` then `memcmp`, and fall back to a bounded-memory char walk above the limit.
+
+Kernel C++ code never reads `s->chars[i]` directly — all access goes through `Elm::StringOps::{length, charAt, toStdString, toStdU16String, ensureFlat}` or through `HeapHelpers::stringLength` / `isString` (which accept any string tag). `HeapHelpers::stringData` keeps a leaf-only contract (asserts `getTag == Tag_String`).
+
+See [String Rope Representation Theory](design_docs/theory/string_rope_representation_theory.md) for the full design and HEAP_025 in `design_docs/invariants.csv` for the formal contract.
 
 ## Testing Philosophy
 
@@ -688,6 +705,7 @@ Each pass and subsystem has comprehensive documentation in [`design_docs/theory/
 | Document | Description |
 |----------|-------------|
 | [heap_representation_theory.md](design_docs/theory/heap_representation_theory.md) | Four representation models, unboxing, layouts |
+| [string_rope_representation_theory.md](design_docs/theory/string_rope_representation_theory.md) | String tags (leaf/rope/slice), structure sharing, flattening heuristics |
 | [mlir_verification_theory.md](design_docs/theory/mlir_verification_theory.md) | MLIR verifiers and invariant checking |
 | [mlir_bytecode_theory.md](design_docs/theory/mlir_bytecode_theory.md) | MLIR bytecode format, streaming encoder |
 | [platform_scheduler_theory.md](design_docs/theory/platform_scheduler_theory.md) | Platform effect dispatch, task scheduling, process model |
