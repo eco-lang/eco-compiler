@@ -92,9 +92,13 @@ HPointer map(MapperWithBoxed mapper, HPointer list) {
 
     auto& allocator = Allocator::instance();
 
-    // Collect mapped values
+    // Collect mapped values. The spine pointer `current` and each iteration's
+    // `next` snapshot cross the user mapper callback (which can GC), so they
+    // must be registered as stack roots; otherwise GC moves their target and
+    // the next iteration walks into freed memory.
     std::vector<std::pair<Unboxable, bool>> mapped;
     HPointer current = list;
+    Elm::StackRootGuard spine_guard(&current);
 
     while (!alloc::isNil(current)) {
         void* cell = allocator.resolve(current);
@@ -109,7 +113,13 @@ HPointer map(MapperWithBoxed mapper, HPointer list) {
         Unboxable head = c->head;
         HPointer next = c->tail;
 
-        mapped.push_back(mapper(head, is_boxed));
+        std::pair<Unboxable, bool> result;
+        {
+            HPointer* head_root = is_boxed ? &head.p : nullptr;
+            Elm::StackRootGuard iter_guard({&next, head_root});
+            result = mapper(head, is_boxed);
+        }
+        mapped.push_back(result);
         current = next;
     }
 
@@ -121,10 +131,11 @@ HPointer indexedMap(IndexedMapper mapper, HPointer list) {
 
     auto& allocator = Allocator::instance();
 
-    // Collect mapped values
+    // Collect mapped values. See `map` for the rooting rationale.
     std::vector<std::pair<Unboxable, bool>> mapped;
     HPointer current = list;
     i64 index = 0;
+    Elm::StackRootGuard spine_guard(&current);
 
     while (!alloc::isNil(current)) {
         void* cell = allocator.resolve(current);
@@ -139,7 +150,13 @@ HPointer indexedMap(IndexedMapper mapper, HPointer list) {
         Unboxable head = c->head;
         HPointer next = c->tail;
 
-        mapped.push_back(mapper(index, head, is_boxed));
+        std::pair<Unboxable, bool> result;
+        {
+            HPointer* head_root = is_boxed ? &head.p : nullptr;
+            Elm::StackRootGuard iter_guard({&next, head_root});
+            result = mapper(index, head, is_boxed);
+        }
+        mapped.push_back(result);
         ++index;
         current = next;
     }
@@ -152,9 +169,11 @@ HPointer filter(Predicate pred, HPointer list) {
 
     auto& allocator = Allocator::instance();
 
-    // Collect passing elements
+    // Collect passing elements. Spine and per-iteration tail/head must be
+    // rooted across pred() (which can run user code that allocates).
     std::vector<std::pair<Unboxable, bool>> passing;
     HPointer current = list;
+    Elm::StackRootGuard spine_guard(&current);
 
     while (!alloc::isNil(current)) {
         void* cell = allocator.resolve(current);
@@ -169,9 +188,13 @@ HPointer filter(Predicate pred, HPointer list) {
         Unboxable head = c->head;
         HPointer next = c->tail;
 
-        if (pred(head, is_boxed)) {
-            passing.emplace_back(head, is_boxed);
+        bool keep;
+        {
+            HPointer* head_root = is_boxed ? &head.p : nullptr;
+            Elm::StackRootGuard iter_guard({&next, head_root});
+            keep = pred(head, is_boxed);
         }
+        if (keep) passing.emplace_back(head, is_boxed);
         current = next;
     }
 
@@ -183,9 +206,11 @@ HPointer filterMap(FilterMapper mapper, HPointer list) {
 
     auto& allocator = Allocator::instance();
 
-    // Collect non-Nothing results
+    // Collect non-Nothing results. mapper() may GC; spine, head, tail and the
+    // returned `maybeResult` must all be rooted across it.
     std::vector<std::pair<Unboxable, bool>> results;
     HPointer current = list;
+    Elm::StackRootGuard spine_guard(&current);
 
     while (!alloc::isNil(current)) {
         void* cell = allocator.resolve(current);
@@ -200,9 +225,15 @@ HPointer filterMap(FilterMapper mapper, HPointer list) {
         Unboxable head = c->head;
         HPointer next = c->tail;
 
-        HPointer maybeResult = mapper(head, is_boxed);
+        HPointer maybeResult;
+        {
+            HPointer* head_root = is_boxed ? &head.p : nullptr;
+            Elm::StackRootGuard iter_guard({&next, head_root});
+            maybeResult = mapper(head, is_boxed);
+        }
 
-        // Check if it's Just (not Nothing)
+        // Check if it's Just (not Nothing). maybeResult is fresh from mapper
+        // and not held across any further allocation in this branch.
         if (!alloc::isConstant(maybeResult)) {
             void* justCell = allocator.resolve(maybeResult);
             if (justCell) {
@@ -378,6 +409,7 @@ HPointer partition(Predicate pred, HPointer list) {
     std::vector<std::pair<Unboxable, bool>> passing;
     std::vector<std::pair<Unboxable, bool>> failing;
     HPointer current = list;
+    Elm::StackRootGuard spine_guard(&current);
 
     while (!alloc::isNil(current)) {
         void* cell = allocator.resolve(current);
@@ -392,7 +424,13 @@ HPointer partition(Predicate pred, HPointer list) {
         Unboxable head = c->head;
         HPointer next = c->tail;
 
-        if (pred(head, is_boxed)) {
+        bool pass;
+        {
+            HPointer* head_root = is_boxed ? &head.p : nullptr;
+            Elm::StackRootGuard iter_guard({&next, head_root});
+            pass = pred(head, is_boxed);
+        }
+        if (pass) {
             passing.emplace_back(head, is_boxed);
         } else {
             failing.emplace_back(head, is_boxed);
@@ -414,6 +452,11 @@ Unboxable foldl(Folder fold, Unboxable acc, HPointer list) {
     auto& allocator = Allocator::instance();
     Unboxable result = acc;
     HPointer current = list;
+    // Spine pointer must survive each fold callback; the accumulator type is
+    // erased through Unboxable so we can't tell here whether result.p is a
+    // real pointer — leave it to callers that need it (foldl over a boxed
+    // accumulator should root the slot at the caller).
+    Elm::StackRootGuard spine_guard(&current);
 
     while (!alloc::isNil(current)) {
         void* cell = allocator.resolve(current);
@@ -428,7 +471,11 @@ Unboxable foldl(Folder fold, Unboxable acc, HPointer list) {
         Unboxable head = c->head;
         HPointer next = c->tail;
 
-        result = fold(head, is_boxed, result);
+        {
+            HPointer* head_root = is_boxed ? &head.p : nullptr;
+            Elm::StackRootGuard iter_guard({&next, head_root});
+            result = fold(head, is_boxed, result);
+        }
         current = next;
     }
 
