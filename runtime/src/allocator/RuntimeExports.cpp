@@ -1302,18 +1302,8 @@ extern "C" HPtr eco_pap_extend(HPtr closure_hptr, uint64_t* args, uint32_t num_n
         }
     }
 
-    // Allocate a new closure with room for the FULL arity (max_values),
-    // not just the slots currently captured. This keeps the invariant
-    // header.size == max_values that eco_alloc_closure and the compiler's
-    // papCreate lowering both maintain — so the GC scanner (which walks
-    // [0, hdr->size)), the sweep stride (getObjectSize → sizeof(Closure)
-    // + hdr->size*8), and closureCapture (bounded by max_values) all
-    // agree on the slot count. Sizing only for new_n_values left
-    // header.size < max_values on partial PAPs, an inconsistency that
-    // any future write keyed off max_values (e.g. a kernel-side
-    // closureCapture call on a PAP-extended closure) would turn into an
-    // out-of-bounds store.
-    size_t size = sizeof(Header) + 8 + sizeof(EvalFunction) + max_values * sizeof(Unboxable);
+    // Allocate a new closure with room for all captured values.
+    size_t size = sizeof(Header) + 8 + sizeof(EvalFunction) + new_n_values * sizeof(Unboxable);
     void* obj = Allocator::instance().allocate(size, Tag_Closure);
     if (!obj) {
         eco_gc_restore_stack_range_point(saved_range);
@@ -1346,22 +1336,6 @@ extern "C" HPtr eco_pap_extend(HPtr closure_hptr, uint64_t* args, uint32_t num_n
     for (uint32_t i = 0; i < num_newargs; i++) {
         new_closure->values[old_n_values + i].i = static_cast<i64>(args[i]);
     }
-
-    // Zero-init the trailing reserved slots [new_n_values, max_values).
-    // The GC scanner walks all max_values slots; an HPointer-zero
-    // (constant=0, ptr=0) is the early-return case in
-    // NurserySpace::evacuate, so zeros are benign.
-    for (uint32_t i = new_n_values; i < max_values; i++) {
-        new_closure->values[i].i = 0;
-    }
-
-    // Invariant: a Closure's header.size always matches its declared
-    // arity (max_values). Other code (closureCapture, eco_alloc_closure,
-    // the compiler's papCreate lowering) relies on this; mismatched
-    // sizes would mean GC scan / sweep / capture-bounds disagreed on
-    // how many slots the object has.
-    assert(getHeader(obj)->size == max_values
-           && "eco_pap_extend: header.size must equal max_values");
 
     eco_gc_restore_stack_range_point(saved_range);
     return ptrToHPointer(obj);
