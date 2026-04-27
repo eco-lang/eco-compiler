@@ -172,63 +172,50 @@ static uint64_t callFoldClosure(HPtr closure_hptr, uint16_t c, uint64_t acc) {
     return eco_closure_call_saturated(closure_hptr, args, 2, /*layout=*/nullptr).toBits();
 }
 
+// Snapshot a String (any form) into a stable std::vector<u16>. The snapshot
+// lives on the C stack so callbacks that allocate (and may trigger GC) can't
+// invalidate it. Returns an empty vector for nullptr / empty input.
+static std::vector<u16> snapshotChars(void* str) {
+    if (!str) return {};
+    auto u16str = Elm::StringOps::toStdU16String(str);
+    return std::vector<u16>(u16str.begin(), u16str.end());
+}
+
 HPtr Elm_Kernel_String_map(HPtr closure, HPtr str) {
-    uint64_t str_bits = str.toBits();
-    ElmString* s = static_cast<ElmString*>(Export::toPtr(str_bits));
-    if (!s) {
+    auto chars = snapshotChars(Export::toPtr(str.toBits()));
+    if (chars.empty()) {
         return HPtr::fromBits(Export::encode(Elm::alloc::emptyString()));
     }
 
-    // Copy char data before callbacks (callbacks may allocate and move str)
-    u32 len = s->header.size;
-    std::vector<u16> chars(s->chars, s->chars + len);
-
     std::vector<u16> result;
-    result.reserve(len);
-
-    for (u32 i = 0; i < len; i++) {
-        u16 mappedChar = callCharToCharClosure(closure, chars[i]);
-        result.push_back(mappedChar);
+    result.reserve(chars.size());
+    for (u16 c : chars) {
+        result.push_back(callCharToCharClosure(closure, c));
     }
-
     return HPtr::fromBits(Export::encode(Elm::alloc::allocString(result.data(), result.size())));
 }
 
 HPtr Elm_Kernel_String_filter(HPtr closure, HPtr str) {
-    uint64_t str_bits = str.toBits();
-    ElmString* s = static_cast<ElmString*>(Export::toPtr(str_bits));
-    if (!s) {
+    auto chars = snapshotChars(Export::toPtr(str.toBits()));
+    if (chars.empty()) {
         return HPtr::fromBits(Export::encode(Elm::alloc::emptyString()));
     }
 
-    // Copy char data before callbacks (callbacks may allocate and move str)
-    u32 len = s->header.size;
-    std::vector<u16> chars(s->chars, s->chars + len);
-
     std::vector<u16> result;
-    result.reserve(len);
-
-    for (u32 i = 0; i < len; i++) {
-        if (callCharToBoolClosure(closure, chars[i])) {
-            result.push_back(chars[i]);
-        }
+    result.reserve(chars.size());
+    for (u16 c : chars) {
+        if (callCharToBoolClosure(closure, c)) result.push_back(c);
     }
-
     return HPtr::fromBits(Export::encode(Elm::alloc::allocString(result.data(), result.size())));
 }
 
 HPtr Elm_Kernel_String_any(HPtr closure, HPtr str) {
-    uint64_t str_bits = str.toBits();
-    ElmString* s = static_cast<ElmString*>(Export::toPtr(str_bits));
-    if (!s) {
+    auto chars = snapshotChars(Export::toPtr(str.toBits()));
+    if (chars.empty()) {
         return HPtr::fromBits(Export::encodeBoxedBool(false));
     }
-
-    // Copy char data before callbacks (callbacks may allocate and move str)
-    u32 len = s->header.size;
-    std::vector<u16> chars(s->chars, s->chars + len);
-    for (u32 i = 0; i < len; i++) {
-        if (callCharToBoolClosure(closure, chars[i])) {
+    for (u16 c : chars) {
+        if (callCharToBoolClosure(closure, c)) {
             return HPtr::fromBits(Export::encodeBoxedBool(true));
         }
     }
@@ -236,17 +223,13 @@ HPtr Elm_Kernel_String_any(HPtr closure, HPtr str) {
 }
 
 HPtr Elm_Kernel_String_all(HPtr closure, HPtr str) {
-    uint64_t str_bits = str.toBits();
-    ElmString* s = static_cast<ElmString*>(Export::toPtr(str_bits));
-    if (!s) {
-        return HPtr::fromBits(Export::encodeBoxedBool(true)); // Empty string: all chars satisfy any predicate.
+    auto chars = snapshotChars(Export::toPtr(str.toBits()));
+    if (chars.empty()) {
+        // Empty string: all chars satisfy any predicate.
+        return HPtr::fromBits(Export::encodeBoxedBool(true));
     }
-
-    // Copy char data before callbacks (callbacks may allocate and move str)
-    u32 len = s->header.size;
-    std::vector<u16> chars(s->chars, s->chars + len);
-    for (u32 i = 0; i < len; i++) {
-        if (!callCharToBoolClosure(closure, chars[i])) {
+    for (u16 c : chars) {
+        if (!callCharToBoolClosure(closure, c)) {
             return HPtr::fromBits(Export::encodeBoxedBool(false));
         }
     }
@@ -254,36 +237,22 @@ HPtr Elm_Kernel_String_all(HPtr closure, HPtr str) {
 }
 
 HPtr Elm_Kernel_String_foldl(HPtr closure, HPtr acc, HPtr str) {
-    uint64_t str_bits = str.toBits();
-    ElmString* s = static_cast<ElmString*>(Export::toPtr(str_bits));
-    if (!s) {
-        return acc;
-    }
-
-    // Copy char data before callbacks (callbacks may allocate and move str)
-    u32 len = s->header.size;
-    std::vector<u16> chars(s->chars, s->chars + len);
+    auto chars = snapshotChars(Export::toPtr(str.toBits()));
+    if (chars.empty()) return acc;
 
     uint64_t accumulator = acc.toBits();
-    for (u32 i = 0; i < len; i++) {
-        accumulator = callFoldClosure(closure, chars[i], accumulator);
+    for (u16 c : chars) {
+        accumulator = callFoldClosure(closure, c, accumulator);
     }
     return HPtr::fromBits(accumulator);
 }
 
 HPtr Elm_Kernel_String_foldr(HPtr closure, HPtr acc, HPtr str) {
-    uint64_t str_bits = str.toBits();
-    ElmString* s = static_cast<ElmString*>(Export::toPtr(str_bits));
-    if (!s) {
-        return acc;
-    }
-
-    // Copy char data before callbacks (callbacks may allocate and move str)
-    u32 len = s->header.size;
-    std::vector<u16> chars(s->chars, s->chars + len);
+    auto chars = snapshotChars(Export::toPtr(str.toBits()));
+    if (chars.empty()) return acc;
 
     uint64_t accumulator = acc.toBits();
-    for (u32 i = len; i > 0; i--) {
+    for (size_t i = chars.size(); i > 0; --i) {
         accumulator = callFoldClosure(closure, chars[i - 1], accumulator);
     }
     return HPtr::fromBits(accumulator);

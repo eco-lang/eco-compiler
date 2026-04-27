@@ -79,8 +79,9 @@ typedef enum {
     Tag_Task,
     Tag_ByteBuffer,  // Immutable byte array for binary data.
     Tag_Array,       // Mutable/growable array of Elm values.
-    // Tag_Slice - String or even List or Array or Bytes slice (future).
     // Tag_Tensor - Tensors (future).
+    Tag_StringRope,  // Concat tree node: HPointer left, HPointer right, height, leafCount.
+    Tag_StringSlice, // Structural view: HPointer base + offset + length over a String leaf.
     Tag_Free,        // Free cell on a segregated free list (header.size = byte size).
     Tag_Forward,     // Used for forwarding pointers during GC.
 } Tag;
@@ -217,10 +218,38 @@ typedef struct {
 // Without explicit alignment, the compiler might truncate trailing padding.
 #define ALIGN(X) __attribute__((aligned(X)))
 struct ALIGN(8) elm_string {
-    Header header; // Size in header, up to 4G characters.
+    Header header; // header.size = logical UTF-16 length, up to 4G characters.
     u16 chars[];
 };
 typedef struct elm_string ElmString;
+
+// Structural view over a String leaf: header.size = logical UTF-16 length;
+// `base` points to a Tag_String leaf (rope/leaf-of-leaf indirection collapsed
+// at construction). `offset` is the starting index in `base->chars[]`.
+//
+// header.unboxed is always 0 for slices: the only non-Header field is the
+// fully-boxed `base` HPointer; `offset` and `_padding` are scalars and never
+// read by GC. `_padding` is reserved for future flags (e.g. all-ASCII bit).
+struct ALIGN(8) elm_string_slice {
+    Header header;
+    HPointer base;
+    u32 offset;
+    u32 _padding;
+};
+typedef struct elm_string_slice ElmStringSlice;
+
+// Concat-tree node: header.size = total logical UTF-16 length;
+// `left` and `right` are fully-boxed HPointers to either leaves, slices, or
+// other ropes. `height` and `leafCount` are scalars used by the rebalance
+// heuristics. header.unboxed is always 0 (no per-slot bitmap consulted).
+struct ALIGN(8) elm_string_rope {
+    Header header;
+    HPointer left;
+    HPointer right;
+    u32 height;     // 1 + max(leftHeight, rightHeight); pure leaves have height 0.
+    u32 leafCount;  // sum of left + right leaf counts.
+};
+typedef struct elm_string_rope ElmStringRope;
 
 typedef struct {
     Header header; // Header.unboxed indicates which fields are unboxed.
@@ -408,6 +437,8 @@ typedef union HeapValue {
     ElmFloat floatval;
     ElmChar charval;
     ElmString string;
+    ElmStringSlice stringSlice;
+    ElmStringRope stringRope;
     Tuple2 tuple2;
     Tuple3 tuple3;
     Cons cons;

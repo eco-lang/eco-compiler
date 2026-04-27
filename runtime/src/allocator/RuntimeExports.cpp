@@ -9,6 +9,7 @@
 #include "Allocator.hpp"
 #include "Heap.hpp"
 #include "HeapHelpers.hpp"
+#include "StringOps.hpp"
 #include "TypeInfo.hpp"
 
 #include <cassert>
@@ -1437,23 +1438,19 @@ extern "C" HPtr eco_closure_call_saturated(HPtr closure_hptr, uint64_t* new_args
 //===----------------------------------------------------------------------===//
 
 extern "C" [[noreturn]] void eco_crash(HPtr message_val) {
-    // message_val must be an HPointer to a heap-allocated string
+    // message_val must be an HPointer to a heap-allocated string (any form).
     void* message = hpointerToPtr(message_val.toBits());
 
-    // Print error message if it's a valid string
-    if (message) {
-        Header* header = static_cast<Header*>(message);
-        if (header->tag == Tag_String) {
-            ElmString* str = static_cast<ElmString*>(message);
-            // Convert UTF-16 to UTF-8 for printing
-            fprintf(stderr, "Elm runtime error: ");
-            for (uint32_t i = 0; i < header->size; i++) {
-                // Simple ASCII conversion for now
-                char c = (str->chars[i] < 128) ? static_cast<char>(str->chars[i]) : '?';
-                fputc(c, stderr);
-            }
-            fputc('\n', stderr);
+    if (message && alloc::isString(message)) {
+        // Read via charAt so this works for both flat leaves and slices.
+        size_t len = static_cast<Header*>(message)->size;
+        fprintf(stderr, "Elm runtime error: ");
+        for (size_t i = 0; i < len; i++) {
+            u16 cu = Elm::StringOps::charAt(message, static_cast<i64>(i));
+            char c = (cu < 128) ? static_cast<char>(cu) : '?';
+            fputc(c, stderr);
         }
+        fputc('\n', stderr);
     }
 
     // Use exit(1) instead of abort() to avoid triggering LLVM's signal handlers
@@ -1464,40 +1461,44 @@ extern "C" [[noreturn]] void eco_crash(HPtr message_val) {
 // Forward declaration for recursive printing
 static void print_value(uint64_t val, int depth);
 
-// Print string content (without quotes) - for Debug.log labels
-static void print_string_content(ElmString* str) {
-    Header* header = &str->header;
-    for (uint32_t i = 0; i < header->size; i++) {
-        u16 c = str->chars[i];
+// Print string content (without quotes) - for Debug.log labels.
+// Accepts any string form (Tag_String / Tag_StringSlice) via tag-aware
+// Elm::StringOps::charAt.
+static void print_string_content(void* str) {
+    if (!str) return;
+    size_t len = static_cast<Header*>(str)->size;
+    for (size_t i = 0; i < len; i++) {
+        u16 c = Elm::StringOps::charAt(str, static_cast<i64>(i));
         if (c < 128) {
             output_char(static_cast<char>(c));
         } else {
-            // Print non-ASCII as unicode escape
             output_format("\\u%04X", c);
         }
     }
 }
 
-// Print a string value (with quotes)
-static void print_string(ElmString* str) {
-    Header* header = &str->header;
+// Print a string value (with quotes). See print_string_content for tag handling.
+static void print_string(void* str) {
     output_char('"');
-    for (uint32_t i = 0; i < header->size; i++) {
-        u16 c = str->chars[i];
-        if (c == '"') {
-            output_text("\\\"");
-        } else if (c == '\\') {
-            output_text("\\\\");
-        } else if (c == '\n') {
-            output_text("\\n");
-        } else if (c == '\r') {
-            output_text("\\r");
-        } else if (c == '\t') {
-            output_text("\\t");
-        } else if (c < 32 || c >= 127) {
-            output_format("\\u%04X", c);
-        } else {
-            output_char(static_cast<char>(c));
+    if (str) {
+        size_t len = static_cast<Header*>(str)->size;
+        for (size_t i = 0; i < len; i++) {
+            u16 c = Elm::StringOps::charAt(str, static_cast<i64>(i));
+            if (c == '"') {
+                output_text("\\\"");
+            } else if (c == '\\') {
+                output_text("\\\\");
+            } else if (c == '\n') {
+                output_text("\\n");
+            } else if (c == '\r') {
+                output_text("\\r");
+            } else if (c == '\t') {
+                output_text("\\t");
+            } else if (c < 32 || c >= 127) {
+                output_format("\\u%04X", c);
+            } else {
+                output_char(static_cast<char>(c));
+            }
         }
     }
     output_char('"');
@@ -1910,9 +1911,10 @@ static void print_value(uint64_t val, int depth) {
             break;
         }
 
-        case Tag_String: {
-            ElmString* strval = static_cast<ElmString*>(ptr);
-            print_string(strval);
+        case Tag_String:
+        case Tag_StringSlice:
+        case Tag_StringRope: {
+            print_string(ptr);
             break;
         }
 
@@ -2046,16 +2048,14 @@ extern "C" void eco_register_type_graph(const void* graph) {
 // Forward declaration for recursive printing
 static void print_typed_value(uint64_t value, uint32_t type_id, int depth);
 
-// Helper to print a label (string value without quotes)
+// Helper to print a label (string value without quotes).
+// Accepts any string form (leaf or slice) via Elm::alloc::isString.
 static void print_label(uint64_t value) {
     void* ptr = hpointerToPtr(value);
     if (ptr) {
-        Header* header = static_cast<Header*>(ptr);
-        if (header->tag == Tag_String) {
-            ElmString* str = static_cast<ElmString*>(ptr);
-            print_string_content(str);
+        if (alloc::isString(ptr)) {
+            print_string_content(ptr);
         } else {
-            // Not a string, print as value
             print_value(value, 0);
         }
     } else {

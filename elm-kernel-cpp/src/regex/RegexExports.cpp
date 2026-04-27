@@ -9,6 +9,7 @@
 #include "allocator/Heap.hpp"
 #include "allocator/HeapHelpers.hpp"
 #include "allocator/RuntimeExports.h"
+#include "allocator/StringOps.hpp"
 #include "../../vendor/srell.hpp"
 
 // eco_apply_closure is declared in RuntimeExports.h (included above)
@@ -43,57 +44,15 @@ static int64_t registerRegex(srell::regex* re) {
     return id;
 }
 
-// Helper: Convert Elm UTF-16 string to std::string (UTF-8) for SRELL
+// Helper: Convert any Elm String form (leaf or slice) to UTF-8 std::string
+// for SRELL. Routes through StringOps::toStdString.
 std::string elmStringToUTF8(uint64_t strEnc) {
     HPointer hp = Export::decode(strEnc);
-
-    // Check for empty string constant
-    if (hp.constant == Const_EmptyString + 1) {
-        return "";
-    }
+    if (hp.constant == Const_EmptyString + 1) return "";
 
     void* ptr = Export::toPtr(strEnc);
     if (!ptr) return "";
-
-    ElmString* str = static_cast<ElmString*>(ptr);
-    size_t len = str->header.size;
-    if (len == 0) return "";
-
-    // Convert UTF-16 to UTF-8
-    std::string result;
-    result.reserve(len * 3); // Conservative estimate
-
-    for (size_t i = 0; i < len; ++i) {
-        u16 c = str->chars[i];
-
-        // Check for surrogate pair
-        if (c >= 0xD800 && c <= 0xDBFF && i + 1 < len) {
-            u16 c2 = str->chars[i + 1];
-            if (c2 >= 0xDC00 && c2 <= 0xDFFF) {
-                // Decode surrogate pair
-                uint32_t cp = 0x10000 + ((c - 0xD800) << 10) + (c2 - 0xDC00);
-                result.push_back(static_cast<char>(0xF0 | (cp >> 18)));
-                result.push_back(static_cast<char>(0x80 | ((cp >> 12) & 0x3F)));
-                result.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
-                result.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
-                ++i;
-                continue;
-            }
-        }
-
-        if (c < 0x80) {
-            result.push_back(static_cast<char>(c));
-        } else if (c < 0x800) {
-            result.push_back(static_cast<char>(0xC0 | (c >> 6)));
-            result.push_back(static_cast<char>(0x80 | (c & 0x3F)));
-        } else {
-            result.push_back(static_cast<char>(0xE0 | (c >> 12)));
-            result.push_back(static_cast<char>(0x80 | ((c >> 6) & 0x3F)));
-            result.push_back(static_cast<char>(0x80 | (c & 0x3F)));
-        }
-    }
-
-    return result;
+    return Elm::StringOps::toStdString(ptr);
 }
 
 // Helper: Create an Elm string from UTF-8

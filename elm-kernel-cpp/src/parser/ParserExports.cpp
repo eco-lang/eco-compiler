@@ -12,6 +12,7 @@
 #include "allocator/Heap.hpp"
 #include "allocator/HeapHelpers.hpp"
 #include "allocator/RuntimeExports.h"
+#include "allocator/StringOps.hpp"
 
 using namespace Elm;
 using namespace Elm::Kernel;
@@ -24,10 +25,18 @@ namespace {
 constexpr u32 TUPLE2_INT_INT       = 0x5;
 constexpr u32 TUPLE3_INT_INT_INT   = 0x15;
 
-// Resolves an HPtr-encoded string to an ElmString*, or nullptr for the empty
-// string constant. Callers must treat nullptr as a zero-length string.
+// Resolves an HPtr-encoded string to a flat leaf ElmString*, or nullptr for
+// the empty-string constant. The string is unconditionally flattened (slices
+// become leaves) so the parser hot loops can index ->chars[] directly. Per
+// the plan, the parser is the heaviest consumer of String operations and
+// pays a single flatten allocation rather than per-char tag dispatch.
 inline ElmString* resolveString(HPtr str) {
-    return static_cast<ElmString*>(Export::toPtr(str.toBits()));
+    HPointer hp;
+    uint64_t bits = str.toBits();
+    std::memcpy(&hp, &bits, sizeof(hp));
+    HPointer flat = StringOps::ensureFlat(hp);
+    if (alloc::isEmbeddedConstant(flat)) return nullptr;
+    return static_cast<ElmString*>(Allocator::instance().resolve(flat));
 }
 
 inline int64_t stringLen(const ElmString* s) {

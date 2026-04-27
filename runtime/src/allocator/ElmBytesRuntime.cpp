@@ -19,6 +19,7 @@
 #include "HeapHelpers.hpp"
 #include "Allocator.hpp"
 #include "ListOps.hpp"
+#include "StringOps.hpp"
 #include <cstring>
 #include <string>
 #include <vector>
@@ -101,33 +102,30 @@ u8* elm_bytebuffer_data(HPtr bbVal) {
 // ============================================================================
 
 u32 elm_utf8_width(HPtr strVal) {
-    // Check for empty string constant
     Elm::HPointer hp = u64ToHPointer(strVal.toBits());
     if (hp.constant == Elm::Const_EmptyString + 1) {
-        return 0;  // Empty string has 0 UTF-8 bytes
+        return 0;  // Empty string constant
     }
 
     void* ptr = u64ToPtr(strVal.toBits());
-    if (!ptr) return 0;  // Other embedded constant (shouldn't happen)
+    if (!ptr) return 0;
 
-    Elm::ElmString* s = static_cast<Elm::ElmString*>(ptr);
-    size_t len = s->header.size;
-
+    // Materialise contiguous UTF-16 via StringOps; this transparently handles
+    // both flat leaves and slices so we don't need to read s->chars directly.
+    auto buf = Elm::StringOps::toStdU16String(ptr);
+    size_t len = buf.size();
     if (len == 0) return 0;
 
-    // Calculate UTF-8 byte width from UTF-16 code units
     u32 utf8_len = 0;
-
     for (size_t i = 0; i < len; ++i) {
         u32 codepoint;
-        uint16_t c = s->chars[i];
+        uint16_t c = buf[i];
 
-        // Handle surrogate pairs
         if (c >= 0xD800 && c <= 0xDBFF && i + 1 < len) {
-            uint16_t c2 = s->chars[i + 1];
+            uint16_t c2 = buf[i + 1];
             if (c2 >= 0xDC00 && c2 <= 0xDFFF) {
                 codepoint = 0x10000 + ((c - 0xD800) << 10) + (c2 - 0xDC00);
-                ++i;  // Skip second surrogate
+                ++i;
             } else {
                 codepoint = c;
             }
@@ -135,7 +133,6 @@ u32 elm_utf8_width(HPtr strVal) {
             codepoint = c;
         }
 
-        // Count UTF-8 bytes needed for this codepoint
         if (codepoint < 0x80) {
             utf8_len += 1;
         } else if (codepoint < 0x800) {
@@ -151,32 +148,28 @@ u32 elm_utf8_width(HPtr strVal) {
 }
 
 u32 elm_utf8_copy(HPtr strVal, u8* dst) {
-    // Check for empty string constant
     Elm::HPointer hp = u64ToHPointer(strVal.toBits());
     if (hp.constant == Elm::Const_EmptyString + 1) {
-        return 0;  // Empty string - nothing to copy
+        return 0;
     }
 
     void* ptr = u64ToPtr(strVal.toBits());
-    if (!ptr) return 0;  // Other embedded constant (shouldn't happen)
+    if (!ptr) return 0;
 
-    Elm::ElmString* s = static_cast<Elm::ElmString*>(ptr);
-    size_t len = s->header.size;
-
+    auto buf = Elm::StringOps::toStdU16String(ptr);
+    size_t len = buf.size();
     if (len == 0) return 0;
 
     u8* start = dst;
-
     for (size_t i = 0; i < len; ++i) {
         u32 codepoint;
-        uint16_t c = s->chars[i];
+        uint16_t c = buf[i];
 
-        // Handle surrogate pairs
         if (c >= 0xD800 && c <= 0xDBFF && i + 1 < len) {
-            uint16_t c2 = s->chars[i + 1];
+            uint16_t c2 = buf[i + 1];
             if (c2 >= 0xDC00 && c2 <= 0xDFFF) {
                 codepoint = 0x10000 + ((c - 0xD800) << 10) + (c2 - 0xDC00);
-                ++i;  // Skip second surrogate
+                ++i;
             } else {
                 codepoint = c;
             }
@@ -184,7 +177,6 @@ u32 elm_utf8_copy(HPtr strVal, u8* dst) {
             codepoint = c;
         }
 
-        // Encode as UTF-8
         if (codepoint < 0x80) {
             *dst++ = static_cast<u8>(codepoint);
         } else if (codepoint < 0x800) {

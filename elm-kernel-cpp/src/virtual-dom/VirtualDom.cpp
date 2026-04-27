@@ -16,10 +16,11 @@ namespace Elm::Kernel::VirtualDom {
 // Helper functions
 // ============================================================================
 
+// Snapshot any String form (leaf or slice) into a contiguous std::vector<u16>.
 static std::vector<u16> stringToVec(void* str) {
     if (!str) return {};
-    ElmString* s = static_cast<ElmString*>(str);
-    return std::vector<u16>(s->chars, s->chars + s->header.size);
+    auto buf = StringOps::toStdU16String(str);
+    return std::vector<u16>(buf.begin(), buf.end());
 }
 
 static bool startsWith(const std::vector<u16>& str, const char* prefix) {

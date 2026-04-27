@@ -107,24 +107,22 @@ HPointer decodeUtf8(void* buf) {
     return alloc::just(alloc::boxed(result), true);
 }
 
-// Encodes an ElmString as UTF-8 into a ByteBuffer.
+// Encodes a String (any form: leaf or slice) as UTF-8 into a ByteBuffer.
 HPointer encodeUtf8(void* str) {
-    ElmString* s = static_cast<ElmString*>(str);
-    size_t len = s->header.size;
-
+    if (!str) return empty();
+    auto buf = Elm::StringOps::toStdU16String(str);
+    size_t len = buf.size();
     if (len == 0) return empty();
 
-    // Convert UTF-16 to UTF-8
     std::vector<u8> utf8;
-    utf8.reserve(len * 3);  // Worst case
+    utf8.reserve(len * 3);
 
     for (size_t i = 0; i < len; ++i) {
         u32 codepoint;
-        u16 c = s->chars[i];
+        u16 c = buf[i];
 
-        // Handle surrogate pairs
         if (c >= 0xD800 && c <= 0xDBFF && i + 1 < len) {
-            u16 c2 = s->chars[i + 1];
+            u16 c2 = buf[i + 1];
             if (c2 >= 0xDC00 && c2 <= 0xDFFF) {
                 codepoint = 0x10000 + ((c - 0xD800) << 10) + (c2 - 0xDC00);
                 ++i;
@@ -135,7 +133,6 @@ HPointer encodeUtf8(void* str) {
             codepoint = c;
         }
 
-        // Encode as UTF-8
         if (codepoint < 0x80) {
             utf8.push_back(static_cast<u8>(codepoint));
         } else if (codepoint < 0x800) {
@@ -276,32 +273,31 @@ static int base64_decode_char(char16_t c) {
     return -2;
 }
 
-// Decodes a Base64 ElmString into a ByteBuffer.
+// Decodes a Base64 String (any form) into a ByteBuffer.
 HPointer fromBase64(void* str) {
-    ElmString* s = static_cast<ElmString*>(str);
-    size_t len = s->header.size;
+    if (!str) return alloc::just(alloc::boxed(empty()), true);
+    auto buf = Elm::StringOps::toStdU16String(str);
+    size_t len = buf.size();
 
     if (len == 0) return alloc::just(alloc::boxed(empty()), true);
     if (len % 4 != 0) return alloc::nothing();
 
-    // Calculate output length (accounting for padding)
     size_t output_len = (len / 4) * 3;
-    if (len >= 1 && s->chars[len - 1] == '=') output_len--;
-    if (len >= 2 && s->chars[len - 2] == '=') output_len--;
+    if (len >= 1 && buf[len - 1] == '=') output_len--;
+    if (len >= 2 && buf[len - 2] == '=') output_len--;
 
     std::vector<u8> result;
     result.reserve(output_len);
 
     for (size_t i = 0; i < len; i += 4) {
-        int a = base64_decode_char(s->chars[i]);
-        int b = base64_decode_char(s->chars[i + 1]);
-        int c = base64_decode_char(s->chars[i + 2]);
-        int d = base64_decode_char(s->chars[i + 3]);
+        int a = base64_decode_char(buf[i]);
+        int b = base64_decode_char(buf[i + 1]);
+        int c = base64_decode_char(buf[i + 2]);
+        int d = base64_decode_char(buf[i + 3]);
 
         if (a == -2 || b == -2 || (c == -2 && c != -1) || (d == -2 && d != -1)) {
-            return alloc::nothing();  // Invalid character
+            return alloc::nothing();
         }
-
         if (a < 0 || b < 0) return alloc::nothing();
 
         u32 triple = (a << 18) | (b << 12);
@@ -313,8 +309,8 @@ HPointer fromBase64(void* str) {
         if (d >= 0) result.push_back(static_cast<u8>(triple & 0xFF));
     }
 
-    HPointer buf = fromVector(result);
-    return alloc::just(alloc::boxed(buf), true);
+    HPointer hpResult = fromVector(result);
+    return alloc::just(alloc::boxed(hpResult), true);
 }
 
 // Hex encoding table (lowercase).
@@ -348,10 +344,11 @@ static int hex_decode_char(char16_t c) {
     return -1;
 }
 
-// Decodes a hexadecimal ElmString into a ByteBuffer.
+// Decodes a hexadecimal String (any form) into a ByteBuffer.
 HPointer fromHex(void* str) {
-    ElmString* s = static_cast<ElmString*>(str);
-    size_t len = s->header.size;
+    if (!str) return alloc::just(alloc::boxed(empty()), true);
+    auto buf = Elm::StringOps::toStdU16String(str);
+    size_t len = buf.size();
 
     if (len == 0) return alloc::just(alloc::boxed(empty()), true);
     if (len % 2 != 0) return alloc::nothing();
@@ -360,16 +357,16 @@ HPointer fromHex(void* str) {
     result.reserve(len / 2);
 
     for (size_t i = 0; i < len; i += 2) {
-        int hi = hex_decode_char(s->chars[i]);
-        int lo = hex_decode_char(s->chars[i + 1]);
+        int hi = hex_decode_char(buf[i]);
+        int lo = hex_decode_char(buf[i + 1]);
 
         if (hi < 0 || lo < 0) return alloc::nothing();
 
         result.push_back(static_cast<u8>((hi << 4) | lo));
     }
 
-    HPointer buf = fromVector(result);
-    return alloc::just(alloc::boxed(buf), true);
+    HPointer hpResult = fromVector(result);
+    return alloc::just(alloc::boxed(hpResult), true);
 }
 
 } // namespace BytesOps

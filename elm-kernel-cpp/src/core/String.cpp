@@ -101,15 +101,15 @@ bool all(CharPredicate pred, void* str) {
 HPointer foldl(FoldFunc func, HPointer acc, void* str) {
     if (!str) return acc;
     auto& allocator = Allocator::instance();
-    ElmString* s = static_cast<ElmString*>(str);
 
-    // Copy char data before any allocation (func may trigger GC)
-    std::vector<u16> chars(s->chars, s->chars + s->header.size);
+    // Snapshot chars before any allocation. toStdU16String is tag-aware so
+    // a slice input transparently materialises through its base.
+    auto snapshot = StringOps::toStdU16String(str);
 
     HPointer result = acc;
-    for (size_t i = 0; i < chars.size(); ++i) {
+    for (auto c : snapshot) {
         void* accObj = allocator.resolve(result);
-        result = func(chars[i], accObj);
+        result = func(c, accObj);
     }
     return result;
 }
@@ -117,15 +117,13 @@ HPointer foldl(FoldFunc func, HPointer acc, void* str) {
 HPointer foldr(FoldFunc func, HPointer acc, void* str) {
     if (!str) return acc;
     auto& allocator = Allocator::instance();
-    ElmString* s = static_cast<ElmString*>(str);
 
-    // Copy char data before any allocation (func may trigger GC)
-    std::vector<u16> chars(s->chars, s->chars + s->header.size);
+    auto snapshot = StringOps::toStdU16String(str);
 
     HPointer result = acc;
-    for (i64 i = static_cast<i64>(chars.size()) - 1; i >= 0; --i) {
+    for (i64 i = static_cast<i64>(snapshot.size()) - 1; i >= 0; --i) {
         void* accObj = allocator.resolve(result);
-        result = func(chars[i], accObj);
+        result = func(snapshot[i], accObj);
     }
     return result;
 }
@@ -150,15 +148,15 @@ HPointer lines(void* str) {
     if (!str) {
         return alloc::cons(alloc::boxed(alloc::emptyString()), alloc::listNil(), true);
     }
-    ElmString* s = static_cast<ElmString*>(str);
-    size_t len = s->header.size;
+    auto snapshot = StringOps::toStdU16String(str);
+    size_t len = snapshot.size();
 
     if (len == 0) {
         return alloc::cons(alloc::boxed(alloc::emptyString()), alloc::listNil(), true);
     }
 
-    // Copy string data before any allocation (void* str can move during GC)
-    std::vector<u16> strData(s->chars, s->chars + len);
+    // Snapshot already on the C stack; safe across allocations.
+    std::vector<u16> strData(snapshot.begin(), snapshot.end());
 
     // Phase 1: find line boundaries (no allocation)
     struct LineRange { size_t start; size_t len; };
@@ -212,11 +210,11 @@ HPointer words(void* str) {
     }
 
     auto& allocator = Allocator::instance();
-    ElmString* s = static_cast<ElmString*>(allocator.resolve(trimmed));
-    size_t len = s->header.size;
+    void* trimmedObj = allocator.resolve(trimmed);
+    auto snapshot = StringOps::toStdU16String(trimmedObj);
+    size_t len = snapshot.size();
 
-    // Copy string data before any allocation
-    std::vector<u16> strData(s->chars, s->chars + len);
+    std::vector<u16> strData(snapshot.begin(), snapshot.end());
 
     // Phase 1: find word boundaries (no allocation)
     struct WordRange { size_t start; size_t len; };

@@ -39,23 +39,22 @@ static u16 toHex(i64 value) {
     return static_cast<u16>('A' + value - 10);
 }
 
-// Helper: Encode UTF-16 to UTF-8 bytes
-static std::vector<u8> utf16ToUtf8(ElmString* s) {
+// Helper: Encode UTF-16 to UTF-8 bytes. Reads from a contiguous u16 buffer
+// produced by StringOps::toStdU16String (slice-aware).
+static std::vector<u8> utf16ToUtf8(const std::u16string& src) {
     std::vector<u8> result;
 
-    for (u32 i = 0; i < s->header.size; i++) {
-        u32 codepoint = s->chars[i];
+    for (size_t i = 0; i < src.size(); i++) {
+        u32 codepoint = src[i];
 
-        // Handle surrogate pairs
-        if (codepoint >= 0xD800 && codepoint <= 0xDBFF && i + 1 < s->header.size) {
-            u16 low = s->chars[i + 1];
+        if (codepoint >= 0xD800 && codepoint <= 0xDBFF && i + 1 < src.size()) {
+            u16 low = src[i + 1];
             if (low >= 0xDC00 && low <= 0xDFFF) {
                 codepoint = 0x10000 + ((codepoint - 0xD800) << 10) + (low - 0xDC00);
                 i++;
             }
         }
 
-        // Encode codepoint as UTF-8
         if (codepoint < 0x80) {
             result.push_back(static_cast<u8>(codepoint));
         }
@@ -135,8 +134,8 @@ static bool utf8ToUtf16(const std::vector<u8>& bytes, std::vector<u16>& result) 
 }
 
 HPointer percentEncode(void* str) {
-    ElmString* s = static_cast<ElmString*>(str);
-    std::vector<u8> utf8 = utf16ToUtf8(s);
+    auto src = StringOps::toStdU16String(str);
+    std::vector<u8> utf8 = utf16ToUtf8(src);
 
     // Build result string
     std::vector<u16> result;
@@ -154,19 +153,19 @@ HPointer percentEncode(void* str) {
 }
 
 HPointer percentDecode(void* str) {
-    ElmString* s = static_cast<ElmString*>(str);
+    auto src = StringOps::toStdU16String(str);
     std::vector<u8> bytes;
 
-    for (u32 i = 0; i < s->header.size; i++) {
-        u16 c = s->chars[i];
+    for (size_t i = 0; i < src.size(); i++) {
+        u16 c = src[i];
 
         if (c == '%') {
-            if (i + 2 >= s->header.size) {
+            if (i + 2 >= src.size()) {
                 return alloc::nothing();
             }
 
-            i64 high = hexValue(s->chars[i + 1]);
-            i64 low = hexValue(s->chars[i + 2]);
+            i64 high = hexValue(src[i + 1]);
+            i64 low = hexValue(src[i + 2]);
 
             if (high < 0 || low < 0) {
                 return alloc::nothing();
@@ -182,9 +181,8 @@ HPointer percentDecode(void* str) {
             // Non-ASCII character - encode to UTF-8
             u32 codepoint = c;
 
-            // Handle surrogate pair
-            if (c >= 0xD800 && c <= 0xDBFF && i + 1 < s->header.size) {
-                u16 low = s->chars[i + 1];
+            if (c >= 0xD800 && c <= 0xDBFF && i + 1 < src.size()) {
+                u16 low = src[i + 1];
                 if (low >= 0xDC00 && low <= 0xDFFF) {
                     codepoint = 0x10000 + ((c - 0xD800) << 10) + (low - 0xDC00);
                     i++;

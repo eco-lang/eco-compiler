@@ -57,6 +57,13 @@ static void initHeaderForTag(Header* hdr, Tag tag, size_t size) {
         case Tag_String:
             hdr->size = (size - sizeof(ElmString)) / sizeof(u16);
             break;
+        case Tag_StringSlice:
+        case Tag_StringRope:
+            // Constructors (StringOps::makeSlice / makeRope) set header.size
+            // explicitly to the logical UTF-16 length; nothing to derive from
+            // byte size.
+            hdr->size = 0;
+            break;
         case Tag_Custom:
             hdr->size = (size - sizeof(Custom)) / sizeof(Unboxable);
             break;

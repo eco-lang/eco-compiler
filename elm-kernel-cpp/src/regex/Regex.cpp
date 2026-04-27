@@ -27,17 +27,15 @@ RegexPtr never() {
 }
 
 HPointer fromStringWith(void* pattern, bool caseInsensitive, bool multiline) {
-    ElmString* s = static_cast<ElmString*>(pattern);
+    // Snapshot pattern via tag-aware StringOps so a slice input works.
+    auto patternU16 = StringOps::toStdU16String(pattern);
 
     try {
         auto regex = std::make_shared<Regex>();
         regex->caseInsensitive = caseInsensitive;
         regex->multiline = multiline;
+        regex->patternStr.assign(patternU16.begin(), patternU16.end());
 
-        // Copy pattern string
-        regex->patternStr.assign(s->chars, s->chars + s->header.size);
-
-        // Build regex flags
         auto flags = std::regex_constants::ECMAScript;
         if (caseInsensitive) {
             flags |= std::regex_constants::icase;
@@ -46,9 +44,8 @@ HPointer fromStringWith(void* pattern, bool caseInsensitive, bool multiline) {
             flags |= std::regex_constants::multiline;
         }
 
-        // Compile the pattern
-        std::basic_string<char16_t> patternU16(s->chars, s->chars + s->header.size);
-        regex->pattern = std::basic_regex<char16_t>(patternU16, flags);
+        std::basic_string<char16_t> patternBuf(patternU16.begin(), patternU16.end());
+        regex->pattern = std::basic_regex<char16_t>(patternBuf, flags);
 
         // TODO: Need proper way to store RegexPtr in heap
         // For now return Nothing
@@ -62,8 +59,8 @@ HPointer fromStringWith(void* pattern, bool caseInsensitive, bool multiline) {
 bool contains(RegexPtr regex, void* str) {
     if (!regex) return false;
 
-    ElmString* s = static_cast<ElmString*>(str);
-    std::basic_string<char16_t> strU16(s->chars, s->chars + s->header.size);
+    auto buf = StringOps::toStdU16String(str);
+    std::basic_string<char16_t> strU16(buf.begin(), buf.end());
 
     try {
         return std::regex_search(strU16, regex->pattern);

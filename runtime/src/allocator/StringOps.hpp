@@ -31,6 +31,116 @@ namespace Elm {
 namespace StringOps {
 
 // ============================================================================
+// Tag-Aware Helpers (Phase 1: leaf + slice)
+// ============================================================================
+
+/**
+ * True if `obj` is a flat string leaf (Tag_String).
+ * Caller must have already verified `obj` is non-null and a string-like tag.
+ */
+inline bool isLeaf(void* obj) { return alloc::getTag(obj) == Tag_String; }
+
+/**
+ * True if `obj` is a structural string slice (Tag_StringSlice).
+ */
+inline bool isSlice(void* obj) { return alloc::getTag(obj) == Tag_StringSlice; }
+
+/**
+ * True if `obj` is a concat-tree rope node (Tag_StringRope).
+ */
+inline bool isRope(void* obj) { return alloc::getTag(obj) == Tag_StringRope; }
+
+/**
+ * Logical UTF-16 length read directly from the header. Works for any
+ * string tag (Tag_String / Tag_StringSlice / Tag_StringRope) — header.size
+ * is defined to be the logical length for all string forms.
+ */
+inline u32 rawLen(void* obj) { return static_cast<Header*>(obj)->size; }
+
+/**
+ * Tree height of a string. 0 for leaves and slices (slices are flat from a
+ * tree-traversal perspective even though they share a buffer); for ropes,
+ * stored in the rope header.
+ */
+inline u32 heightOf(void* obj) {
+    Tag t = alloc::getTag(obj);
+    if (t == Tag_StringRope) return static_cast<ElmStringRope*>(obj)->height;
+    return 0;
+}
+
+/**
+ * Number of leaves in a string. 1 for leaves; 1 for slices (the slice
+ * resolves to a single underlying leaf); for ropes, stored in the header.
+ */
+inline u32 leafCountOf(void* obj) {
+    Tag t = alloc::getTag(obj);
+    if (t == Tag_StringRope) return static_cast<ElmStringRope*>(obj)->leafCount;
+    return 1;
+}
+
+// Configuration constants (rope/slice heuristics).
+namespace detail {
+    constexpr size_t FLATTEN_LIMIT = 32 * 1024; // ~64 KiB of UTF-16 code units
+    constexpr size_t TINY_SLICE_LIMIT = FLATTEN_LIMIT / 4; // small ranges flatten directly
+    // Rope shape thresholds — only consulted when ropes exist (Phase 2).
+    constexpr u32 MAX_HEIGHT = 32;        // emit rebalance TODO above this depth
+    constexpr u32 LEAFCOUNT_LIMIT = 64;   // many leaves with low avg = candidate for rebalance
+    constexpr u32 MIN_LEAF_SIZE = 128;    // avg below this triggers the TODO when over LEAFCOUNT_LIMIT
+}
+
+enum class FlattenReason {
+    Structural,
+    Equality,
+    Utf8Encode,
+    RandomAccess,
+    Transform,
+};
+
+/**
+ * Allocates a fresh leaf wrapping `len` UTF-16 code units. Routes len==0 to
+ * the embedded empty-string constant (never allocates a zero-length leaf).
+ */
+HPointer makeLeafFromBuffer(const u16* data, u32 len);
+
+/**
+ * Allocates a Tag_StringSlice over leaf `base` with the given `offset` /
+ * `len`. Caller must root `base` across this call. len==0 returns the empty
+ * constant; the constructor never allocates a zero-length slice.
+ */
+HPointer makeSlice(HPointer base, u32 offset, u32 len);
+
+/**
+ * Allocates a Tag_StringRope joining `left` and `right`. Both children
+ * must be rooted by the caller across this call. Empty children are
+ * collapsed: if either side is empty/empty-constant, the other side is
+ * returned directly. The resulting header.size is `leftLen + rightLen`,
+ * and `height` / `leafCount` are computed from the children.
+ */
+HPointer makeRope(HPointer left, HPointer right);
+
+/**
+ * Materialise any string into a fresh leaf. Returns the empty constant for
+ * len==0. Roots `s` across the allocation internally so callers don't need
+ * to (the only field read after the alloc is the leaf's own chars[]).
+ */
+HPointer flattenToLeaf(HPointer s);
+
+/**
+ * Decision point for "should I flatten this string before further work?".
+ * Phase 1 behaviour: leaves and the empty constant pass through; slices
+ * with len <= FLATTEN_LIMIT are flattened; larger slices pass through (the
+ * caller is then responsible for using charAt-style access).
+ */
+HPointer maybeFlattenOrRebalance(HPointer s, FlattenReason reason);
+
+/**
+ * Returns a leaf HPointer for `s`. If `s` is already a leaf or empty
+ * constant, returns it unchanged; otherwise allocates a flat copy.
+ * Caller must root any HPointer it holds across this call (it may allocate).
+ */
+HPointer ensureFlat(HPointer s);
+
+// ============================================================================
 // Length and Character Access
 // ============================================================================
 
@@ -40,8 +150,7 @@ namespace StringOps {
  */
 inline i64 length(void* str) {
     if (!str) return 0;
-    ElmString* s = static_cast<ElmString*>(str);
-    return static_cast<i64>(s->header.size);
+    return static_cast<i64>(rawLen(str));
 }
 
 /**
@@ -51,16 +160,52 @@ inline bool isEmpty(HPointer ptr) {
     return alloc::isConstant(ptr) && ptr.constant == Const_EmptyString + 1;
 }
 
+// Forward declaration so all inline ops below can call toStdU16String to
+// snapshot a string into a contiguous std::u16string before allocation.
+inline std::u16string toStdU16String(void* str);
+
 /**
  * Returns the character at a given index (0-based).
  * Returns 0 if index is out of bounds.
+ *
+ * Tag-dispatched: leaves index chars[] directly; slices resolve their base
+ * and index `chars[offset + idx]`; ropes recurse into left/right based on
+ * the left subtree's length. Resolution does not allocate, so charAt is
+ * safe to call without rooting.
  */
 inline u16 charAt(void* str, i64 index) {
-    ElmString* s = static_cast<ElmString*>(str);
-    if (index < 0 || static_cast<size_t>(index) >= s->header.size) {
-        return 0;
+    if (!str) return 0;
+    auto& allocator = Allocator::instance();
+
+    // Walk down ropes iteratively so deep trees don't blow the C stack.
+    while (true) {
+        Header* hdr = static_cast<Header*>(str);
+        if (index < 0 || static_cast<u32>(index) >= hdr->size) {
+            return 0;
+        }
+        if (hdr->tag == Tag_String) {
+            ElmString* s = static_cast<ElmString*>(str);
+            return s->chars[index];
+        }
+        if (hdr->tag == Tag_StringSlice) {
+            ElmStringSlice* slc = static_cast<ElmStringSlice*>(str);
+            void* base = allocator.resolve(slc->base);
+            if (!base) return 0;
+            ElmString* leaf = static_cast<ElmString*>(base);
+            return leaf->chars[slc->offset + index];
+        }
+        // Tag_StringRope: descend.
+        ElmStringRope* r = static_cast<ElmStringRope*>(str);
+        void* leftObj = allocator.resolve(r->left);
+        u32 leftLen = leftObj ? static_cast<Header*>(leftObj)->size : 0;
+        if (static_cast<u64>(index) < leftLen) {
+            str = leftObj;
+        } else {
+            index -= leftLen;
+            str = allocator.resolve(r->right);
+            if (!str) return 0;
+        }
     }
-    return s->chars[index];
 }
 
 // ============================================================================
@@ -69,29 +214,40 @@ inline u16 charAt(void* str, i64 index) {
 
 /**
  * Appends two strings: a ++ b
+ *
+ * Builds a flat leaf when the total fits in FLATTEN_LIMIT (so short strings
+ * keep the existing memcpy fast path). Above that threshold, builds a
+ * Tag_StringRope joining the two HPointers — sharing both subtrees and
+ * giving O(1) amortised concat for repeated appends.
  */
 inline HPointer append(void* a, void* b) {
-    // Handle nullptr from EmptyString embedded constant
     if (!a && !b) return alloc::emptyString();
     if (!a) return Allocator::instance().wrap(b);
     if (!b) return Allocator::instance().wrap(a);
 
-    ElmString* sa = static_cast<ElmString*>(a);
-    ElmString* sb = static_cast<ElmString*>(b);
-
-    size_t len_a = sa->header.size;
-    size_t len_b = sb->header.size;
+    size_t len_a = rawLen(a);
+    size_t len_b = rawLen(b);
 
     if (len_a == 0) return Allocator::instance().wrap(b);
     if (len_b == 0) return Allocator::instance().wrap(a);
 
-    // Copy data before allocation (void* ptrs can become stale after GC)
     size_t total_len = len_a + len_b;
-    std::vector<u16> data(total_len);
-    std::memcpy(data.data(), sa->chars, len_a * sizeof(u16));
-    std::memcpy(data.data() + len_a, sb->chars, len_b * sizeof(u16));
+    if (total_len <= detail::FLATTEN_LIMIT) {
+        auto bufA = toStdU16String(a);
+        auto bufB = toStdU16String(b);
+        std::vector<u16> data(total_len);
+        std::memcpy(data.data(), bufA.data(), bufA.size() * sizeof(u16));
+        std::memcpy(data.data() + bufA.size(), bufB.data(), bufB.size() * sizeof(u16));
+        return alloc::allocString(data.data(), total_len);
+    }
 
-    return alloc::allocString(data.data(), total_len);
+    // Large total: build a rope. Wrap inputs as HPointers up front so we
+    // can root them across the rope allocation (resolved void*s are unsafe
+    // across allocate(); the wrapped HPointers are GC-tracked).
+    auto& allocator = Allocator::instance();
+    HPointer aHp = allocator.wrap(a);
+    HPointer bHp = allocator.wrap(b);
+    return makeRope(aHp, bHp);
 }
 
 /**
@@ -113,27 +269,13 @@ HPointer join(void* sep, HPointer stringList);
 /**
  * Extracts a substring from start (inclusive) to end (exclusive).
  * Negative indices count from end. Clamps to valid range.
+ *
+ * For ranges below TINY_SLICE_LIMIT, builds a flat leaf (avoids the slice
+ * metadata for short ranges). Larger ranges over a leaf build a
+ * Tag_StringSlice that shares the source buffer. Slice-of-slice collapses
+ * to a single slice over the deepest leaf base.
  */
-inline HPointer slice(void* str, i64 start, i64 end) {
-    if (!str) return alloc::emptyString();
-    ElmString* s = static_cast<ElmString*>(str);
-    i64 len = static_cast<i64>(s->header.size);
-
-    // Normalize negative indices
-    if (start < 0) start = std::max(i64(0), len + start);
-    if (end < 0) end = std::max(i64(0), len + end);
-
-    // Clamp to bounds
-    start = std::max(i64(0), std::min(start, len));
-    end = std::max(i64(0), std::min(end, len));
-
-    if (start >= end) return alloc::emptyString();
-
-    // Copy slice data before allocation (void* str can move during GC)
-    size_t slice_len = static_cast<size_t>(end - start);
-    std::vector<u16> data(s->chars + start, s->chars + start + slice_len);
-    return alloc::allocString(data.data(), slice_len);
-}
+HPointer slice(void* str, i64 start, i64 end);
 
 /**
  * Returns the first n characters.
@@ -148,8 +290,8 @@ inline HPointer left(void* str, i64 n) {
  */
 inline HPointer right(void* str, i64 n) {
     if (n <= 0) return alloc::emptyString();
-    ElmString* s = static_cast<ElmString*>(str);
-    i64 len = static_cast<i64>(s->header.size);
+    if (!str) return alloc::emptyString();
+    i64 len = static_cast<i64>(rawLen(str));
     return slice(str, len - n, len);
 }
 
@@ -158,8 +300,8 @@ inline HPointer right(void* str, i64 n) {
  */
 inline HPointer dropLeft(void* str, i64 n) {
     if (n <= 0) return Allocator::instance().wrap(str);
-    ElmString* s = static_cast<ElmString*>(str);
-    i64 len = static_cast<i64>(s->header.size);
+    if (!str) return alloc::emptyString();
+    i64 len = static_cast<i64>(rawLen(str));
     return slice(str, n, len);
 }
 
@@ -168,8 +310,8 @@ inline HPointer dropLeft(void* str, i64 n) {
  */
 inline HPointer dropRight(void* str, i64 n) {
     if (n <= 0) return Allocator::instance().wrap(str);
-    ElmString* s = static_cast<ElmString*>(str);
-    i64 len = static_cast<i64>(s->header.size);
+    if (!str) return alloc::emptyString();
+    i64 len = static_cast<i64>(rawLen(str));
     return slice(str, 0, len - n);
 }
 
@@ -179,25 +321,24 @@ inline HPointer dropRight(void* str, i64 n) {
 
 /**
  * Checks if the substring needle is contained in haystack.
+ * Both sides are read via tag-aware charAt, so this transparently
+ * handles slice inputs without allocation.
  */
 inline bool contains(void* needle, void* haystack) {
     if (!needle) return true;  // Empty needle always matches
     if (!haystack) return false;  // Empty haystack never contains non-empty
 
-    ElmString* n = static_cast<ElmString*>(needle);
-    ElmString* h = static_cast<ElmString*>(haystack);
-
-    size_t needle_len = n->header.size;
-    size_t haystack_len = h->header.size;
+    size_t needle_len = rawLen(needle);
+    size_t haystack_len = rawLen(haystack);
 
     if (needle_len == 0) return true;
     if (needle_len > haystack_len) return false;
 
-    // Simple substring search
     for (size_t i = 0; i <= haystack_len - needle_len; ++i) {
         bool match = true;
         for (size_t j = 0; j < needle_len && match; ++j) {
-            if (h->chars[i + j] != n->chars[j]) match = false;
+            if (charAt(haystack, static_cast<i64>(i + j)) !=
+                charAt(needle, static_cast<i64>(j))) match = false;
         }
         if (match) return true;
     }
@@ -211,16 +352,13 @@ inline bool startsWith(void* prefix, void* str) {
     if (!prefix) return true;   // Empty prefix always matches
     if (!str) return false;     // Empty string only starts with empty
 
-    ElmString* p = static_cast<ElmString*>(prefix);
-    ElmString* s = static_cast<ElmString*>(str);
-
-    size_t prefix_len = p->header.size;
-    size_t str_len = s->header.size;
+    size_t prefix_len = rawLen(prefix);
+    size_t str_len = rawLen(str);
 
     if (prefix_len > str_len) return false;
 
     for (size_t i = 0; i < prefix_len; ++i) {
-        if (s->chars[i] != p->chars[i]) return false;
+        if (charAt(str, static_cast<i64>(i)) != charAt(prefix, static_cast<i64>(i))) return false;
     }
     return true;
 }
@@ -232,17 +370,15 @@ inline bool endsWith(void* suffix, void* str) {
     if (!suffix) return true;   // Empty suffix always matches
     if (!str) return false;     // Empty string only ends with empty
 
-    ElmString* x = static_cast<ElmString*>(suffix);
-    ElmString* s = static_cast<ElmString*>(str);
-
-    size_t suffix_len = x->header.size;
-    size_t str_len = s->header.size;
+    size_t suffix_len = rawLen(suffix);
+    size_t str_len = rawLen(str);
 
     if (suffix_len > str_len) return false;
 
     size_t offset = str_len - suffix_len;
     for (size_t i = 0; i < suffix_len; ++i) {
-        if (s->chars[offset + i] != x->chars[i]) return false;
+        if (charAt(str, static_cast<i64>(offset + i)) !=
+            charAt(suffix, static_cast<i64>(i))) return false;
     }
     return true;
 }
@@ -261,19 +397,14 @@ HPointer indexes(void* needle, void* haystack);
  */
 inline HPointer toUpper(void* str) {
     if (!str) return alloc::emptyString();
-    ElmString* s = static_cast<ElmString*>(str);
-    size_t len = s->header.size;
+    auto buf = toStdU16String(str);
+    if (buf.empty()) return alloc::emptyString();
 
-    if (len == 0) return alloc::emptyString();
-
-    // Copy data before allocation (void* str can become stale after GC)
-    std::vector<u16> data(s->chars, s->chars + len);
-    for (size_t i = 0; i < len; ++i) {
-        u16 c = data[i];
-        if (c >= 'a' && c <= 'z') data[i] = c - 32;
+    std::vector<u16> data(buf.begin(), buf.end());
+    for (auto& c : data) {
+        if (c >= 'a' && c <= 'z') c = c - 32;
     }
-
-    return alloc::allocString(data.data(), len);
+    return alloc::allocString(data.data(), data.size());
 }
 
 /**
@@ -281,19 +412,14 @@ inline HPointer toUpper(void* str) {
  */
 inline HPointer toLower(void* str) {
     if (!str) return alloc::emptyString();
-    ElmString* s = static_cast<ElmString*>(str);
-    size_t len = s->header.size;
+    auto buf = toStdU16String(str);
+    if (buf.empty()) return alloc::emptyString();
 
-    if (len == 0) return alloc::emptyString();
-
-    // Copy data before allocation (void* str can become stale after GC)
-    std::vector<u16> data(s->chars, s->chars + len);
-    for (size_t i = 0; i < len; ++i) {
-        u16 c = data[i];
-        if (c >= 'A' && c <= 'Z') data[i] = c + 32;
+    std::vector<u16> data(buf.begin(), buf.end());
+    for (auto& c : data) {
+        if (c >= 'A' && c <= 'Z') c = c + 32;
     }
-
-    return alloc::allocString(data.data(), len);
+    return alloc::allocString(data.data(), data.size());
 }
 
 /**
@@ -301,49 +427,38 @@ inline HPointer toLower(void* str) {
  */
 inline HPointer reverse(void* str) {
     if (!str) return alloc::emptyString();
-    ElmString* s = static_cast<ElmString*>(str);
-    size_t len = s->header.size;
-
+    auto buf = toStdU16String(str);
+    size_t len = buf.size();
     if (len == 0) return alloc::emptyString();
-    if (len == 1) return Allocator::instance().wrap(str);
+    if (len == 1 && isLeaf(str)) return Allocator::instance().wrap(str);
 
-    // Copy and reverse data before allocation (void* str can move during GC)
     std::vector<u16> data(len);
     for (size_t i = 0; i < len; ++i) {
-        data[i] = s->chars[len - 1 - i];
+        data[i] = buf[len - 1 - i];
     }
-
     return alloc::allocString(data.data(), len);
 }
 
 /**
- * Trims whitespace from both ends.
+ * Trims whitespace from both ends. Returns a slice of the source where
+ * possible (no buffer copy) by delegating to slice().
  */
 inline HPointer trim(void* str) {
     if (!str) return alloc::emptyString();
-    ElmString* s = static_cast<ElmString*>(str);
-    size_t len = s->header.size;
-
+    auto buf = toStdU16String(str);
+    size_t len = buf.size();
     if (len == 0) return alloc::emptyString();
 
-    // Find first non-whitespace
     size_t start = 0;
-    while (start < len && (s->chars[start] == ' ' ||
-                           s->chars[start] == '\t' ||
-                           s->chars[start] == '\n' ||
-                           s->chars[start] == '\r')) {
+    while (start < len && (buf[start] == ' ' || buf[start] == '\t' ||
+                           buf[start] == '\n' || buf[start] == '\r')) {
         ++start;
     }
-
-    // Find last non-whitespace
     size_t end = len;
-    while (end > start && (s->chars[end - 1] == ' ' ||
-                           s->chars[end - 1] == '\t' ||
-                           s->chars[end - 1] == '\n' ||
-                           s->chars[end - 1] == '\r')) {
+    while (end > start && (buf[end - 1] == ' ' || buf[end - 1] == '\t' ||
+                           buf[end - 1] == '\n' || buf[end - 1] == '\r')) {
         --end;
     }
-
     if (start >= end) return alloc::emptyString();
     if (start == 0 && end == len) return Allocator::instance().wrap(str);
 
@@ -355,19 +470,15 @@ inline HPointer trim(void* str) {
  */
 inline HPointer trimLeft(void* str) {
     if (!str) return alloc::emptyString();
-    ElmString* s = static_cast<ElmString*>(str);
-    size_t len = s->header.size;
-
+    auto buf = toStdU16String(str);
+    size_t len = buf.size();
     if (len == 0) return alloc::emptyString();
 
     size_t start = 0;
-    while (start < len && (s->chars[start] == ' ' ||
-                           s->chars[start] == '\t' ||
-                           s->chars[start] == '\n' ||
-                           s->chars[start] == '\r')) {
+    while (start < len && (buf[start] == ' ' || buf[start] == '\t' ||
+                           buf[start] == '\n' || buf[start] == '\r')) {
         ++start;
     }
-
     if (start == 0) return Allocator::instance().wrap(str);
     if (start >= len) return alloc::emptyString();
 
@@ -379,19 +490,15 @@ inline HPointer trimLeft(void* str) {
  */
 inline HPointer trimRight(void* str) {
     if (!str) return alloc::emptyString();
-    ElmString* s = static_cast<ElmString*>(str);
-    size_t len = s->header.size;
-
+    auto buf = toStdU16String(str);
+    size_t len = buf.size();
     if (len == 0) return alloc::emptyString();
 
     size_t end = len;
-    while (end > 0 && (s->chars[end - 1] == ' ' ||
-                       s->chars[end - 1] == '\t' ||
-                       s->chars[end - 1] == '\n' ||
-                       s->chars[end - 1] == '\r')) {
+    while (end > 0 && (buf[end - 1] == ' ' || buf[end - 1] == '\t' ||
+                       buf[end - 1] == '\n' || buf[end - 1] == '\r')) {
         --end;
     }
-
     if (end == len) return Allocator::instance().wrap(str);
     if (end == 0) return alloc::emptyString();
 
@@ -404,19 +511,15 @@ inline HPointer trimRight(void* str) {
 inline HPointer repeat(void* str, i64 n) {
     if (n <= 0 || !str) return alloc::emptyString();
 
-    ElmString* s = static_cast<ElmString*>(str);
-    size_t len = s->header.size;
-
+    auto srcBuf = toStdU16String(str);
+    size_t len = srcBuf.size();
     if (len == 0) return alloc::emptyString();
 
-    // Copy data before allocation (void* str can move during GC)
-    std::vector<u16> srcData(s->chars, s->chars + len);
     size_t total_len = len * static_cast<size_t>(n);
     std::vector<u16> data(total_len);
     for (i64 i = 0; i < n; ++i) {
-        std::memcpy(data.data() + (i * len), srcData.data(), len * sizeof(u16));
+        std::memcpy(data.data() + (i * len), srcBuf.data(), len * sizeof(u16));
     }
-
     return alloc::allocString(data.data(), total_len);
 }
 
@@ -430,18 +533,15 @@ inline HPointer padLeft(void* str, i64 n, u16 padChar) {
         std::vector<u16> data(total_len, padChar);
         return alloc::allocString(data.data(), total_len);
     }
-    ElmString* s = static_cast<ElmString*>(str);
-    i64 len = static_cast<i64>(s->header.size);
-
+    auto buf = toStdU16String(str);
+    i64 len = static_cast<i64>(buf.size());
     if (len >= n) return Allocator::instance().wrap(str);
 
-    // Copy data before allocation (void* str can move during GC)
     size_t pad_count = static_cast<size_t>(n - len);
     size_t total_len = static_cast<size_t>(n);
     std::vector<u16> data(total_len);
     for (size_t i = 0; i < pad_count; ++i) data[i] = padChar;
-    std::memcpy(data.data() + pad_count, s->chars, len * sizeof(u16));
-
+    std::memcpy(data.data() + pad_count, buf.data(), len * sizeof(u16));
     return alloc::allocString(data.data(), total_len);
 }
 
@@ -455,16 +555,13 @@ inline HPointer padRight(void* str, i64 n, u16 padChar) {
         std::vector<u16> data(total_len, padChar);
         return alloc::allocString(data.data(), total_len);
     }
-    ElmString* s = static_cast<ElmString*>(str);
-    i64 len = static_cast<i64>(s->header.size);
-
+    auto buf = toStdU16String(str);
+    i64 len = static_cast<i64>(buf.size());
     if (len >= n) return Allocator::instance().wrap(str);
 
-    // Copy data before allocation (void* str can move during GC)
     size_t total_len = static_cast<size_t>(n);
     std::vector<u16> data(total_len, padChar);
-    std::memcpy(data.data(), s->chars, len * sizeof(u16));
-
+    std::memcpy(data.data(), buf.data(), len * sizeof(u16));
     return alloc::allocString(data.data(), total_len);
 }
 
@@ -492,26 +589,20 @@ HPointer toList(void* str);
  */
 inline HPointer toInt(void* str) {
     if (!str) return alloc::nothing();
-    ElmString* s = static_cast<ElmString*>(str);
-    size_t len = s->header.size;
-
+    auto buf = toStdU16String(str);
+    size_t len = buf.size();
     if (len == 0) return alloc::nothing();
 
-    // Convert to narrow string for parsing
     std::string narrow;
     narrow.reserve(len);
-    for (size_t i = 0; i < len; ++i) {
-        u16 c = s->chars[i];
-        if (c > 127) return alloc::nothing();  // Non-ASCII
+    for (auto c : buf) {
+        if (c > 127) return alloc::nothing();
         narrow.push_back(static_cast<char>(c));
     }
 
-    // Parse
     char* end;
     errno = 0;
     long long val = std::strtoll(narrow.c_str(), &end, 10);
-
-    // Check for parse errors
     if (end != narrow.c_str() + narrow.size()) return alloc::nothing();
     if (errno == ERANGE) return alloc::nothing();
 
@@ -524,26 +615,20 @@ inline HPointer toInt(void* str) {
  */
 inline HPointer toFloat(void* str) {
     if (!str) return alloc::nothing();
-    ElmString* s = static_cast<ElmString*>(str);
-    size_t len = s->header.size;
-
+    auto buf = toStdU16String(str);
+    size_t len = buf.size();
     if (len == 0) return alloc::nothing();
 
-    // Convert to narrow string for parsing
     std::string narrow;
     narrow.reserve(len);
-    for (size_t i = 0; i < len; ++i) {
-        u16 c = s->chars[i];
-        if (c > 127) return alloc::nothing();  // Non-ASCII
+    for (auto c : buf) {
+        if (c > 127) return alloc::nothing();
         narrow.push_back(static_cast<char>(c));
     }
 
-    // Parse
     char* end;
     errno = 0;
     double val = std::strtod(narrow.c_str(), &end);
-
-    // Check for parse errors
     if (end != narrow.c_str() + narrow.size()) return alloc::nothing();
     if (errno == ERANGE) return alloc::nothing();
     if (std::isinf(val) || std::isnan(val)) return alloc::nothing();
@@ -592,25 +677,21 @@ inline HPointer fromChar(u16 c) {
 
 /**
  * Prepends a character to a string: cons.
+ *
+ * Snapshots the source bytes via toStdU16String first so a slice input
+ * works the same as a leaf input. Always returns a flat leaf in Phase 1.
  */
 inline HPointer cons(u16 c, void* str) {
     if (!str) return fromChar(c);
-    ElmString* s = static_cast<ElmString*>(str);
-    size_t len = s->header.size;
+    auto buf = toStdU16String(str);
+    size_t len = buf.size();
     size_t total_len = len + 1;
 
-    size_t data_size = total_len * sizeof(u16);
-    size_t total_size = sizeof(ElmString) + data_size;
-    total_size = (total_size + 7) & ~7;
+    std::vector<u16> data(total_len);
+    data[0] = c;
+    if (len > 0) std::memcpy(data.data() + 1, buf.data(), len * sizeof(u16));
 
-    auto& allocator = Allocator::instance();
-    ElmString* result = static_cast<ElmString*>(allocator.allocate(total_size, Tag_String));
-    result->header.size = static_cast<u32>(total_len);
-
-    result->chars[0] = c;
-    std::memcpy(result->chars + 1, s->chars, len * sizeof(u16));
-
-    return allocator.wrap(result);
+    return alloc::allocString(data.data(), total_len);
 }
 
 /**
@@ -660,9 +741,10 @@ Unboxable foldr(CharFolder fold, Unboxable acc, void* str);
  * Checks if all characters satisfy a predicate.
  */
 inline bool all(CharPredicate pred, void* str) {
-    ElmString* s = static_cast<ElmString*>(str);
-    for (size_t i = 0; i < s->header.size; ++i) {
-        if (!pred(s->chars[i])) return false;
+    if (!str) return true;
+    size_t len = rawLen(str);
+    for (size_t i = 0; i < len; ++i) {
+        if (!pred(charAt(str, static_cast<i64>(i)))) return false;
     }
     return true;
 }
@@ -671,9 +753,10 @@ inline bool all(CharPredicate pred, void* str) {
  * Checks if any character satisfies a predicate.
  */
 inline bool any(CharPredicate pred, void* str) {
-    ElmString* s = static_cast<ElmString*>(str);
-    for (size_t i = 0; i < s->header.size; ++i) {
-        if (pred(s->chars[i])) return true;
+    if (!str) return false;
+    size_t len = rawLen(str);
+    for (size_t i = 0; i < len; ++i) {
+        if (pred(charAt(str, static_cast<i64>(i)))) return true;
     }
     return false;
 }
@@ -683,11 +766,64 @@ inline bool any(CharPredicate pred, void* str) {
 // ============================================================================
 
 /**
- * Converts an ElmString to a std::u16string (for interop/debugging).
+ * Converts a String into a contiguous std::u16string. Tag-aware: leaves
+ * copy directly from chars[]; slices resolve their base and copy with
+ * offset; ropes traverse the tree filling a pre-sized buffer in order.
+ * Does not allocate on the Elm heap.
  */
 inline std::u16string toStdU16String(void* str) {
-    ElmString* s = static_cast<ElmString*>(str);
-    return std::u16string(reinterpret_cast<const char16_t*>(s->chars), s->header.size);
+    if (!str) return {};
+    Header* hdr = static_cast<Header*>(str);
+    if (hdr->tag == Tag_String) {
+        ElmString* s = static_cast<ElmString*>(str);
+        return std::u16string(reinterpret_cast<const char16_t*>(s->chars), s->header.size);
+    }
+    if (hdr->tag == Tag_StringSlice) {
+        ElmStringSlice* slc = static_cast<ElmStringSlice*>(str);
+        u32 len = slc->header.size;
+        u32 offset = slc->offset;
+        void* base = Allocator::instance().resolve(slc->base);
+        if (!base) return {};
+        ElmString* leaf = static_cast<ElmString*>(base);
+        return std::u16string(reinterpret_cast<const char16_t*>(leaf->chars + offset), len);
+    }
+    // Tag_StringRope: in-order DFS, copying each leaf/slice segment into the
+    // result buffer. The buffer is pre-sized to avoid reallocation. We use an
+    // explicit stack so deep ropes don't blow the C stack.
+    auto& allocator = Allocator::instance();
+    std::u16string out;
+    out.resize(hdr->size);
+    char16_t* dst = reinterpret_cast<char16_t*>(out.data());
+
+    std::vector<void*> stack;
+    stack.reserve(32);
+    stack.push_back(str);
+    while (!stack.empty()) {
+        void* top = stack.back();
+        stack.pop_back();
+        Header* h = static_cast<Header*>(top);
+        if (h->tag == Tag_String) {
+            ElmString* s = static_cast<ElmString*>(top);
+            std::memcpy(dst, s->chars, s->header.size * sizeof(u16));
+            dst += s->header.size;
+        } else if (h->tag == Tag_StringSlice) {
+            ElmStringSlice* slc = static_cast<ElmStringSlice*>(top);
+            void* base = allocator.resolve(slc->base);
+            if (base) {
+                ElmString* leaf = static_cast<ElmString*>(base);
+                std::memcpy(dst, leaf->chars + slc->offset, slc->header.size * sizeof(u16));
+                dst += slc->header.size;
+            }
+        } else if (h->tag == Tag_StringRope) {
+            ElmStringRope* r = static_cast<ElmStringRope*>(top);
+            // Push right then left so we visit left first (in-order).
+            void* rightObj = allocator.resolve(r->right);
+            void* leftObj = allocator.resolve(r->left);
+            if (rightObj) stack.push_back(rightObj);
+            if (leftObj) stack.push_back(leftObj);
+        }
+    }
+    return out;
 }
 
 /**
@@ -696,34 +832,90 @@ inline std::u16string toStdU16String(void* str) {
 std::string toStdString(void* str);
 
 /**
- * Compares two strings for equality.
+ * Compares two strings for equality. Pure leaf+leaf path is unchanged
+ * (memcmp on chars[]). If either side is a slice or rope and the total
+ * length is below FLATTEN_LIMIT, both are snapshotted via toStdU16String
+ * and compared with memcmp. Above the limit, falls back to a char-by-char
+ * walk via charAt to keep peak memory bounded (// TODO: streaming compare).
  */
 inline bool equal(void* a, void* b) {
-    ElmString* sa = static_cast<ElmString*>(a);
-    ElmString* sb = static_cast<ElmString*>(b);
+    if (!a || !b) return a == b;  // both nullptr means both EmptyString
+    Header* ha = static_cast<Header*>(a);
+    Header* hb = static_cast<Header*>(b);
+    if (ha->size != hb->size) return false;
 
-    if (sa->header.size != sb->header.size) return false;
+    if (ha->tag == Tag_String && hb->tag == Tag_String) {
+        ElmString* sa = static_cast<ElmString*>(a);
+        ElmString* sb = static_cast<ElmString*>(b);
+        return std::memcmp(sa->chars, sb->chars, ha->size * sizeof(u16)) == 0;
+    }
 
-    return std::memcmp(sa->chars, sb->chars, sa->header.size * sizeof(u16)) == 0;
+    if (ha->size <= detail::FLATTEN_LIMIT) {
+        auto sa = toStdU16String(a);
+        auto sb = toStdU16String(b);
+        if (sa.size() != sb.size()) return false;
+        return std::memcmp(sa.data(), sb.data(), sa.size() * sizeof(u16)) == 0;
+    }
+
+    // Bounded-memory path for very large mixed-form strings.
+    // TODO: streaming compare without per-char tag dispatch.
+    size_t len = ha->size;
+    for (size_t i = 0; i < len; ++i) {
+        if (charAt(a, static_cast<i64>(i)) != charAt(b, static_cast<i64>(i))) {
+            return false;
+        }
+    }
+    return true;
 }
 
 /**
  * Compares two strings lexicographically.
  * Returns negative if a < b, 0 if a == b, positive if a > b.
+ *
+ * Pure leaf+leaf path is unchanged. Otherwise, snapshots via toStdU16String
+ * when the longest side fits in FLATTEN_LIMIT, falling back to a charAt
+ * walk for very large mixed-form inputs (// TODO: streaming compare).
  */
 inline int compare(void* a, void* b) {
-    ElmString* sa = static_cast<ElmString*>(a);
-    ElmString* sb = static_cast<ElmString*>(b);
+    if (!a && !b) return 0;
+    if (!a) return -1;
+    if (!b) return 1;
+    Header* ha = static_cast<Header*>(a);
+    Header* hb = static_cast<Header*>(b);
 
-    size_t min_len = std::min(sa->header.size, sb->header.size);
-
-    for (size_t i = 0; i < min_len; ++i) {
-        if (sa->chars[i] != sb->chars[i]) {
-            return static_cast<int>(sa->chars[i]) - static_cast<int>(sb->chars[i]);
+    if (ha->tag == Tag_String && hb->tag == Tag_String) {
+        ElmString* sa = static_cast<ElmString*>(a);
+        ElmString* sb = static_cast<ElmString*>(b);
+        size_t min_len = std::min<size_t>(ha->size, hb->size);
+        for (size_t i = 0; i < min_len; ++i) {
+            if (sa->chars[i] != sb->chars[i]) {
+                return static_cast<int>(sa->chars[i]) - static_cast<int>(sb->chars[i]);
+            }
         }
+        return static_cast<int>(ha->size) - static_cast<int>(hb->size);
     }
 
-    return static_cast<int>(sa->header.size) - static_cast<int>(sb->header.size);
+    size_t maxLen = std::max<size_t>(ha->size, hb->size);
+    if (maxLen <= detail::FLATTEN_LIMIT) {
+        auto sa = toStdU16String(a);
+        auto sb = toStdU16String(b);
+        size_t min_len = std::min(sa.size(), sb.size());
+        for (size_t i = 0; i < min_len; ++i) {
+            if (sa[i] != sb[i]) {
+                return static_cast<int>(sa[i]) - static_cast<int>(sb[i]);
+            }
+        }
+        return static_cast<int>(sa.size()) - static_cast<int>(sb.size());
+    }
+
+    // TODO: streaming compare. Bounded-memory char walk.
+    size_t min_len = std::min<size_t>(ha->size, hb->size);
+    for (size_t i = 0; i < min_len; ++i) {
+        u16 ca = charAt(a, static_cast<i64>(i));
+        u16 cb = charAt(b, static_cast<i64>(i));
+        if (ca != cb) return static_cast<int>(ca) - static_cast<int>(cb);
+    }
+    return static_cast<int>(ha->size) - static_cast<int>(hb->size);
 }
 
 } // namespace StringOps

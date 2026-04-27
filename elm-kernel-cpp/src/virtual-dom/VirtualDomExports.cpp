@@ -5,6 +5,7 @@
 #include "VirtualDom.hpp"
 #include "allocator/Heap.hpp"
 #include "allocator/HeapHelpers.hpp"
+#include "allocator/StringOps.hpp"
 #include <cassert>
 #include <string>
 #include <cstring>
@@ -14,26 +15,9 @@ using namespace Elm::Kernel;
 
 namespace {
 
-// Convert ElmString to std::string (UTF-16 to UTF-8)
+// Convert any String form (leaf or slice) to a UTF-8 std::string.
 std::string elmStringToStd(void* ptr) {
-    if (!ptr) return "";
-    ElmString* s = static_cast<ElmString*>(ptr);
-    std::string result;
-    result.reserve(s->header.size);
-    for (u32 i = 0; i < s->header.size; i++) {
-        u16 c = s->chars[i];
-        if (c < 0x80) {
-            result.push_back(static_cast<char>(c));
-        } else if (c < 0x800) {
-            result.push_back(static_cast<char>(0xC0 | (c >> 6)));
-            result.push_back(static_cast<char>(0x80 | (c & 0x3F)));
-        } else {
-            result.push_back(static_cast<char>(0xE0 | (c >> 12)));
-            result.push_back(static_cast<char>(0x80 | ((c >> 6) & 0x3F)));
-            result.push_back(static_cast<char>(0x80 | (c & 0x3F)));
-        }
-    }
-    return result;
+    return Elm::StringOps::toStdString(ptr);
 }
 
 } // anonymous namespace

@@ -11,6 +11,7 @@
 #include "allocator/HeapHelpers.hpp"
 #include "allocator/Allocator.hpp"
 #include "allocator/RuntimeExports.h"
+#include "allocator/StringOps.hpp"
 #include <nlohmann/json.hpp>
 #include <string>
 #include <cstring>
@@ -83,7 +84,8 @@ static HPointer allocElmString(const std::string& str) {
     return allocStringFromUTF8(str);
 }
 
-// Convert Elm String to C++ string (UTF-16 to UTF-8 conversion).
+// Convert any Elm String form (leaf or slice) to a UTF-8 C++ string.
+// Routes through StringOps::toStdString — the canonical interop path.
 static std::string elmStringToStd(uint64_t strEnc) {
     HPointer h = Export::decode(strEnc);
     if (h.constant == Const_EmptyString + 1) {
@@ -91,41 +93,7 @@ static std::string elmStringToStd(uint64_t strEnc) {
     }
 
     void* ptr = Export::toPtr(strEnc);
-    if (!ptr) return "";
-
-    ElmString* str = static_cast<ElmString*>(ptr);
-    std::string result;
-
-    for (u32 i = 0; i < str->header.size; i++) {
-        u16 ch = str->chars[i];
-
-        // Handle surrogate pairs
-        if (ch >= 0xD800 && ch <= 0xDBFF && i + 1 < str->header.size) {
-            u16 lo = str->chars[i + 1];
-            if (lo >= 0xDC00 && lo <= 0xDFFF) {
-                uint32_t cp = 0x10000 + ((ch - 0xD800) << 10) + (lo - 0xDC00);
-                result.push_back(static_cast<char>(0xF0 | ((cp >> 18) & 0x07)));
-                result.push_back(static_cast<char>(0x80 | ((cp >> 12) & 0x3F)));
-                result.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
-                result.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
-                i++;
-                continue;
-            }
-        }
-
-        if (ch < 0x80) {
-            result.push_back(static_cast<char>(ch));
-        } else if (ch < 0x800) {
-            result.push_back(static_cast<char>(0xC0 | ((ch >> 6) & 0x1F)));
-            result.push_back(static_cast<char>(0x80 | (ch & 0x3F)));
-        } else {
-            result.push_back(static_cast<char>(0xE0 | ((ch >> 12) & 0x0F)));
-            result.push_back(static_cast<char>(0x80 | ((ch >> 6) & 0x3F)));
-            result.push_back(static_cast<char>(0x80 | (ch & 0x3F)));
-        }
-    }
-
-    return result;
+    return Elm::StringOps::toStdString(ptr);
 }
 
 // Create Ok result.

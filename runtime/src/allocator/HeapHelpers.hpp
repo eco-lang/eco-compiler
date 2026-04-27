@@ -442,17 +442,22 @@ inline HPointer allocStringFromUTF8(const std::string& utf8) {
 }
 
 /**
- * Returns the length (in code units) of an ElmString.
+ * Returns the length (in code units) of any String form (Tag_String or
+ * Tag_StringSlice). header.size carries the logical length for both.
  */
 inline size_t stringLength(void* str) {
-    ElmString* s = static_cast<ElmString*>(str);
-    return s->header.size;
+    if (!str) return 0;
+    return static_cast<Header*>(str)->size;
 }
 
 /**
- * Returns a pointer to the character data of an ElmString.
+ * Returns a pointer to the character data of a flat ElmString leaf.
+ * Asserts the object is a leaf — slice/rope callers must go through
+ * Elm::StringOps::charAt or toStdU16String / ensureFlat instead.
  */
 inline const u16* stringData(void* str) {
+    Header* hdr = static_cast<Header*>(str);
+    assert(hdr->tag == Tag_String && "stringData() requires a flat Tag_String leaf");
     ElmString* s = static_cast<ElmString*>(str);
     return s->chars;
 }
@@ -1154,9 +1159,19 @@ inline bool isCons(void* obj) {
 }
 
 /**
- * Returns true if the object is an ElmString.
+ * Returns true if the object is any String form
+ * (Tag_String / Tag_StringSlice / Tag_StringRope).
  */
 inline bool isString(void* obj) {
+    Tag t = getTag(obj);
+    return t == Tag_String || t == Tag_StringSlice || t == Tag_StringRope;
+}
+
+/**
+ * Returns true iff the object is a flat string leaf (Tag_String).
+ * Use this when you specifically need a leaf (e.g. for chars[] access).
+ */
+inline bool isStringLeaf(void* obj) {
     return getTag(obj) == Tag_String;
 }
 

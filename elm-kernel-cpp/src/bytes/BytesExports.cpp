@@ -7,6 +7,7 @@
 #include "../KernelExports.h"
 #include "../ExportHelpers.hpp"
 #include "allocator/BytesOps.hpp"
+#include "allocator/StringOps.hpp"
 #include <cassert>
 #include <cstdint>
 #include <cstring>
@@ -252,11 +253,12 @@ static void writeEncoder(Custom* encoder, u8* buf, size_t& offset) {
                 break;
             }
             void* strPtr = allocator.resolve(encoder->values[1].p);
-            ElmString* str = static_cast<ElmString*>(strPtr);
-            for (u32 i = 0; i < str->header.size; i++) {
-                u16 ch = str->chars[i];
-                if (ch >= 0xD800 && ch <= 0xDBFF && i + 1 < str->header.size) {
-                    u16 lo = str->chars[i + 1];
+            // Tag-aware snapshot: works for both flat leaves and slices.
+            auto snapshot = Elm::StringOps::toStdU16String(strPtr);
+            for (size_t i = 0; i < snapshot.size(); i++) {
+                u16 ch = snapshot[i];
+                if (ch >= 0xD800 && ch <= 0xDBFF && i + 1 < snapshot.size()) {
+                    u16 lo = snapshot[i + 1];
                     if (lo >= 0xDC00 && lo <= 0xDFFF) {
                         uint32_t cp = 0x10000 + ((ch - 0xD800) << 10) + (lo - 0xDC00);
                         buf[offset++] = static_cast<u8>(0xF0 | ((cp >> 18) & 0x07));
@@ -327,13 +329,13 @@ int64_t Elm_Kernel_Bytes_getStringWidth(HPtr str) {
     }
     void* ptr = Export::toPtr(strBits);
     if (!ptr) return 0;
-    ElmString* elmStr = static_cast<ElmString*>(ptr);
-    uint32_t utf16_length = elmStr->header.size;
+
+    auto chars = Elm::StringOps::toStdU16String(ptr);
+    size_t utf16_length = chars.size();
     if (utf16_length == 0) return 0;
 
     int64_t utf8_bytes = 0;
-    const uint16_t* chars = elmStr->chars;
-    for (uint32_t i = 0; i < utf16_length; i++) {
+    for (size_t i = 0; i < utf16_length; i++) {
         uint16_t codeUnit = chars[i];
         if (codeUnit >= 0xD800 && codeUnit <= 0xDBFF) {
             if (i + 1 < utf16_length) {

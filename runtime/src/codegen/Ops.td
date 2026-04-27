@@ -863,6 +863,12 @@ def Eco_StringLiteralOp : Eco_Op<"string_literal", [Pure]> {
 
     Strings are UTF-16 encoded internally (matching Elm's String type).
 
+    Representation: this op always lowers to a flat `Tag_String` leaf in the
+    runtime heap. The runtime String operations (StringOps, kernel String
+    module) may transform results into structural views (`Tag_StringSlice`,
+    Phase 1) or rope nodes (`Tag_StringRope`, Phase 2). MLIR/codegen never
+    directly produces those tags — they arise only from runtime operations.
+
     Example:
     ```mlir
     %hello = eco.string_literal "Hello, World!"
@@ -1221,6 +1227,10 @@ def Eco_AllocateStringOp : Eco_Op<"allocate_string", [
   let description = [{
     Allocate storage for a string of the specified length (in UTF-16 code
     units). The string content must be written separately after allocation.
+
+    Representation: always allocates a flat `Tag_String` leaf. Runtime ops
+    may later return slices (`Tag_StringSlice`) or ropes (`Tag_StringRope`)
+    when transforming such leaves; allocate_string itself does not.
 
     The optional live_roots operands are GC roots that must be tracked
     across this allocation (populated by EcoGCPrepare).

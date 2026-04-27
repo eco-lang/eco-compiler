@@ -1056,6 +1056,17 @@ void OldGenSpace::markChildren(void *obj) {
             }
             break;
         }
+        case Tag_StringSlice: {
+            ElmStringSlice *slc = static_cast<ElmStringSlice *>(obj);
+            markHPointer(slc->base);
+            break;
+        }
+        case Tag_StringRope: {
+            ElmStringRope *r = static_cast<ElmStringRope *>(obj);
+            markHPointer(r->left);
+            markHPointer(r->right);
+            break;
+        }
         // Tag_ByteBuffer: No pointers to mark (raw bytes only).
         // Tag_FieldGroup: No pointers to mark (field IDs only).
         // Tag_Int, Tag_Float, Tag_Char, Tag_String: No children.
@@ -2613,6 +2624,17 @@ void OldGenSpace::fixPointersInObject(void* obj) {
             for (u32 i = 0; i < arr->length; i++) {
                 fixUnboxable(arr->elements[i], is_boxed);
             }
+            break;
+        }
+        case Tag_StringSlice: {
+            ElmStringSlice* slc = static_cast<ElmStringSlice*>(obj);
+            fixHPointer(slc->base);
+            break;
+        }
+        case Tag_StringRope: {
+            ElmStringRope* r = static_cast<ElmStringRope*>(obj);
+            fixHPointer(r->left);
+            fixHPointer(r->right);
             break;
         }
         default:

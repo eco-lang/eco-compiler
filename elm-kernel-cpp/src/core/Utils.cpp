@@ -153,16 +153,15 @@ static int compareUnboxableSlot(Allocator& allocator,
                 constexpr unsigned EmptyStringTag = Const_EmptyString + 1;
                 if (aConst && a.p.constant == EmptyStringTag && !bConst) {
                     void* bo2 = allocator.resolve(b.p);
-                    if (bo2 && getTag(bo2) == Tag_String) {
-                        ElmString* bs = static_cast<ElmString*>(bo2);
-                        return bs->header.size == 0 ? 0 : -1;
+                    if (bo2 && alloc::isString(bo2)) {
+                        // header.size = logical UTF-16 length for any string form.
+                        return static_cast<Header*>(bo2)->size == 0 ? 0 : -1;
                     }
                 }
                 if (bConst && b.p.constant == EmptyStringTag && !aConst) {
                     void* ao2 = allocator.resolve(a.p);
-                    if (ao2 && getTag(ao2) == Tag_String) {
-                        ElmString* as = static_cast<ElmString*>(ao2);
-                        return as->header.size == 0 ? 0 : 1;
+                    if (ao2 && alloc::isString(ao2)) {
+                        return static_cast<Header*>(ao2)->size == 0 ? 0 : 1;
                     }
                 }
                 return a.p.constant < b.p.constant ? -1 : 1;
@@ -181,6 +180,14 @@ static int cmp(void* a, void* b) {
 
     Tag tagA = getTag(a);
     Tag tagB = getTag(b);
+
+    // Strings can appear in multiple representations (Tag_String / Tag_StringSlice).
+    // Two equal-content strings must compare equal regardless of form, so route
+    // any string-vs-string comparison through StringOps::compare before the
+    // generic tag-difference fallback.
+    if (alloc::isString(a) && alloc::isString(b)) {
+        return StringOps::compare(a, b);
+    }
 
     // Different types - compare by tag
     if (tagA != tagB) {
@@ -365,6 +372,13 @@ static bool eqHelp(void* a, void* b, int depth) {
 
     Tag tagA = getTag(a);
     Tag tagB = getTag(b);
+
+    // Strings may appear in multiple representations; route any
+    // string-vs-string equality through StringOps::equal so a leaf and an
+    // equivalent slice compare equal.
+    if (alloc::isString(a) && alloc::isString(b)) {
+        return StringOps::equal(a, b);
+    }
 
     // Type mismatch
     if (tagA != tagB) {
@@ -657,7 +671,9 @@ HPointer append(void* a, void* b) {
     Tag tagA = getTag(a);
     Tag tagB = getTag(b);
 
-    if (tagA == Tag_String && tagB == Tag_String) {
+    // Either side may be a slice; route any string-shaped append through
+    // StringOps::append so slice inputs are handled.
+    if (alloc::isString(a) && alloc::isString(b)) {
         return StringOps::append(a, b);
     }
 

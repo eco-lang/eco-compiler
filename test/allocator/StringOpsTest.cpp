@@ -290,6 +290,298 @@ static void test_equal_reflexive() {
 }
 
 // ============================================================================
+// Slice Tests (Phase 1)
+// ============================================================================
+
+static void test_slice_returns_slice_tag_for_large_range() {
+    rc::check("slice over large range produces Tag_StringSlice", []() {
+        auto& alloc = initAllocator();
+        // Pick a string size large enough to skip the tiny-slice flatten path.
+        size_t baseLen = *rc::gen::inRange<size_t>(20000, 30000);
+        std::string s(baseLen, 'a');
+        HPointer base = makeString(s);
+
+        // A range of >= TINY_SLICE_LIMIT (=8192) UTF-16 code units triggers
+        // the slice path; ask for the inner half.
+        i64 start = static_cast<i64>(baseLen / 8);
+        i64 end = start + 9000;
+
+        void* baseObj = alloc.resolve(base);
+        HPointer sliceHp = StringOps::slice(baseObj, start, end);
+        void* sliceObj = alloc.resolve(sliceHp);
+        RC_ASSERT(static_cast<bool>(sliceObj));
+        RC_ASSERT(alloc::getTag(sliceObj) == Tag_StringSlice);
+        RC_ASSERT(StringOps::length(sliceObj) == end - start);
+    });
+}
+
+static void test_slice_tiny_returns_leaf() {
+    rc::check("slice over tiny range produces a flat leaf", []() {
+        auto& alloc = initAllocator();
+        std::string s(200, 'b');
+        HPointer base = makeString(s);
+        void* baseObj = alloc.resolve(base);
+        HPointer sliceHp = StringOps::slice(baseObj, 10, 20);
+        void* sliceObj = alloc.resolve(sliceHp);
+        RC_ASSERT(static_cast<bool>(sliceObj));
+        RC_ASSERT(alloc::getTag(sliceObj) == Tag_String);
+        RC_ASSERT(StringOps::length(sliceObj) == 10);
+    });
+}
+
+static void test_slice_round_trip_via_toStdU16String() {
+    rc::check("slice content matches reference substring", []() {
+        auto& alloc = initAllocator();
+        // ASCII characters; exercise both leaf and slice with same content.
+        std::string s(*rc::gen::inRange<size_t>(50, 1500), '.');
+        for (size_t i = 0; i < s.size(); ++i) {
+            s[i] = static_cast<char>('A' + (i % 26));
+        }
+        size_t start = *rc::gen::inRange<size_t>(0, s.size());
+        size_t end = *rc::gen::inRange<size_t>(start, s.size());
+
+        HPointer base = makeString(s);
+        void* baseObj = alloc.resolve(base);
+        HPointer sliceHp = StringOps::slice(
+            baseObj, static_cast<i64>(start), static_cast<i64>(end));
+
+        std::string expected = s.substr(start, end - start);
+        std::string actual = getString(sliceHp);
+        RC_ASSERT(actual == expected);
+    });
+}
+
+static void test_slice_of_slice_collapses() {
+    rc::check("slice of slice still produces the right substring", []() {
+        auto& alloc = initAllocator();
+        std::string s(20000, 'X');
+        for (size_t i = 0; i < s.size(); ++i) {
+            s[i] = static_cast<char>('A' + (i % 26));
+        }
+        HPointer base = makeString(s);
+        // First slice — large, so it produces a Tag_StringSlice.
+        void* baseObj = alloc.resolve(base);
+        HPointer slice1Hp = StringOps::slice(baseObj, 1000, 11000);
+        // Second slice into the slice; slice1 has content s[1000..11000), so
+        // slice2 = s[1000+500 .. 1000+9000) = s[1500..10000), length 8500.
+        void* slice1Obj = alloc.resolve(slice1Hp);
+        HPointer slice2Hp = StringOps::slice(slice1Obj, 500, 9000);
+
+        std::string expected = s.substr(1500, 8500);
+        RC_ASSERT(getString(slice2Hp) == expected);
+
+        // The result should still be a Tag_StringSlice over the original
+        // leaf (collapsed), not a slice over a slice.
+        void* slice2Obj = alloc.resolve(slice2Hp);
+        RC_ASSERT(alloc::getTag(slice2Obj) == Tag_StringSlice);
+        ElmStringSlice* slc = static_cast<ElmStringSlice*>(slice2Obj);
+        void* deepBase = alloc.resolve(slc->base);
+        RC_ASSERT(alloc::getTag(deepBase) == Tag_String);
+    });
+}
+
+static void test_slice_equal_to_flat_substring() {
+    rc::check("slice and flat substring compare equal via StringOps::equal", []() {
+        auto& alloc = initAllocator();
+        std::string s(20000, '.');
+        for (size_t i = 0; i < s.size(); ++i) {
+            s[i] = static_cast<char>('a' + (i % 26));
+        }
+        HPointer base = makeString(s);
+        void* baseObj = alloc.resolve(base);
+
+        HPointer sliceHp = StringOps::slice(baseObj, 1000, 11000);
+        // Flat copy of the same substring.
+        std::string expected = s.substr(1000, 10000);
+        HPointer flatHp = makeString(expected);
+
+        void* sliceObj = alloc.resolve(sliceHp);
+        void* flatObj = alloc.resolve(flatHp);
+        RC_ASSERT(StringOps::equal(sliceObj, flatObj));
+        RC_ASSERT(StringOps::compare(sliceObj, flatObj) == 0);
+    });
+}
+
+static void test_slice_charAt_matches_source() {
+    rc::check("charAt on a slice matches direct char read on the source", []() {
+        auto& alloc = initAllocator();
+        std::string s(*rc::gen::inRange<size_t>(20000, 25000), '.');
+        for (size_t i = 0; i < s.size(); ++i) {
+            s[i] = static_cast<char>(' ' + (i % 64));
+        }
+        HPointer base = makeString(s);
+        void* baseObj = alloc.resolve(base);
+        HPointer sliceHp = StringOps::slice(baseObj, 5000, 14000);
+        void* sliceObj = alloc.resolve(sliceHp);
+
+        size_t sliceLen = static_cast<size_t>(StringOps::length(sliceObj));
+        for (size_t i = 0; i < sliceLen; i += 137) {
+            u16 expected = static_cast<u16>(s[5000 + i]);
+            RC_ASSERT(StringOps::charAt(sliceObj, static_cast<i64>(i)) == expected);
+        }
+    });
+}
+
+static void test_slice_survives_gc() {
+    rc::check("slice contents preserved across minor GC", []() {
+        auto& alloc = initAllocator();
+        std::string s(20000, '.');
+        for (size_t i = 0; i < s.size(); ++i) {
+            s[i] = static_cast<char>('a' + (i % 26));
+        }
+        HPointer base = makeString(s);
+        void* baseObj = alloc.resolve(base);
+        HPointer sliceHp = StringOps::slice(baseObj, 100, 9100);
+
+        std::string expected = s.substr(100, 9000);
+
+        // Root the slice across GC so it (and its base) survive.
+        alloc.getRootSet().addRoot(&sliceHp);
+        alloc.minorGC();
+        // After GC the slice and its base should still produce the same content.
+        RC_ASSERT(getString(sliceHp) == expected);
+        alloc.getRootSet().removeRoot(&sliceHp);
+    });
+}
+
+// ============================================================================
+// Rope Tests (Phase 2)
+// ============================================================================
+
+// Build a string of `len` ASCII bytes that vary by position (so equality and
+// indexing tests can distinguish positions, not just count).
+static std::string makeAsciiPattern(size_t len) {
+    std::string s(len, ' ');
+    for (size_t i = 0; i < len; ++i) {
+        s[i] = static_cast<char>('A' + (i % 26));
+    }
+    return s;
+}
+
+static void test_append_above_flatten_limit_builds_rope() {
+    rc::check("append over FLATTEN_LIMIT produces a rope", []() {
+        auto& alloc = initAllocator();
+        // Each side ~half FLATTEN_LIMIT so total > FLATTEN_LIMIT.
+        const size_t halfLimit = 20000;
+        std::string left = makeAsciiPattern(halfLimit);
+        std::string right = makeAsciiPattern(halfLimit);
+
+        HPointer a = makeString(left);
+        HPointer b = makeString(right);
+        void* aObj = alloc.resolve(a);
+        void* bObj = alloc.resolve(b);
+
+        HPointer ropeHp = StringOps::append(aObj, bObj);
+        void* ropeObj = alloc.resolve(ropeHp);
+        RC_ASSERT(static_cast<bool>(ropeObj));
+        RC_ASSERT(alloc::getTag(ropeObj) == Tag_StringRope);
+        RC_ASSERT(StringOps::length(ropeObj) ==
+                  static_cast<i64>(left.size() + right.size()));
+    });
+}
+
+static void test_rope_charAt_matches_concatenation() {
+    rc::check("charAt on a rope follows the logical concatenation", []() {
+        auto& alloc = initAllocator();
+        std::string left = makeAsciiPattern(20000);
+        std::string right = makeAsciiPattern(15000);
+        std::string concatenated = left + right;
+
+        HPointer a = makeString(left);
+        HPointer b = makeString(right);
+        HPointer ropeHp = StringOps::append(alloc.resolve(a), alloc.resolve(b));
+        void* ropeObj = alloc.resolve(ropeHp);
+
+        // Sample positions throughout the rope.
+        for (size_t i = 0; i < concatenated.size(); i += 137) {
+            u16 expected = static_cast<u16>(concatenated[i]);
+            u16 actual = StringOps::charAt(ropeObj, static_cast<i64>(i));
+            RC_ASSERT(actual == expected);
+        }
+    });
+}
+
+static void test_rope_equal_flat_with_same_content() {
+    rc::check("rope and flat string with same content compare equal", []() {
+        auto& alloc = initAllocator();
+        std::string left = makeAsciiPattern(20000);
+        std::string right = makeAsciiPattern(15000);
+        std::string concatenated = left + right;
+
+        HPointer a = makeString(left);
+        HPointer b = makeString(right);
+        HPointer rope = StringOps::append(alloc.resolve(a), alloc.resolve(b));
+
+        // Flat has the same content but is a single Tag_String leaf.
+        HPointer flat = makeString(concatenated);
+
+        RC_ASSERT(StringOps::equal(alloc.resolve(rope), alloc.resolve(flat)));
+        RC_ASSERT(StringOps::compare(alloc.resolve(rope), alloc.resolve(flat)) == 0);
+    });
+}
+
+static void test_rope_toStdU16String_round_trip() {
+    rc::check("toStdU16String on a rope reproduces the logical content", []() {
+        auto& alloc = initAllocator();
+        std::string left = makeAsciiPattern(*rc::gen::inRange<size_t>(15000, 25000));
+        std::string right = makeAsciiPattern(*rc::gen::inRange<size_t>(15000, 25000));
+        std::string concatenated = left + right;
+
+        HPointer a = makeString(left);
+        HPointer b = makeString(right);
+        HPointer rope = StringOps::append(alloc.resolve(a), alloc.resolve(b));
+
+        std::string actual = getString(rope);
+        RC_ASSERT(actual == concatenated);
+    });
+}
+
+static void test_rope_chain_of_appends_survives_gc() {
+    rc::check("a tall rope from many appends survives minor GC", []() {
+        auto& alloc = initAllocator();
+        // Build a rope by chaining many small appends. Each append is
+        // small (< FLATTEN_LIMIT), so we artificially force ropes by
+        // appending one big-enough rope across each step.
+        const size_t segLen = 4000;
+        std::string base = makeAsciiPattern(segLen);
+
+        HPointer running = makeString(base);
+        std::string expected = base;
+        const int steps = 12;
+        alloc.getRootSet().addRoot(&running);
+        for (int i = 0; i < steps; ++i) {
+            HPointer chunk = makeString(base);
+            running = StringOps::append(alloc.resolve(running), alloc.resolve(chunk));
+            expected += base;
+        }
+        // Trigger GC; the rope and all its leaves must still resolve.
+        alloc.minorGC();
+        RC_ASSERT(getString(running) == expected);
+        alloc.getRootSet().removeRoot(&running);
+    });
+}
+
+static void test_rope_slice_yields_correct_substring() {
+    rc::check("slicing across a rope boundary returns the right substring", []() {
+        auto& alloc = initAllocator();
+        std::string left = makeAsciiPattern(20000);
+        std::string right = makeAsciiPattern(15000);
+        std::string concatenated = left + right;
+
+        HPointer a = makeString(left);
+        HPointer b = makeString(right);
+        HPointer rope = StringOps::append(alloc.resolve(a), alloc.resolve(b));
+
+        // Cut from inside left, through the boundary, into right.
+        i64 start = 18000;
+        i64 end = 22000;
+        HPointer slice = StringOps::slice(alloc.resolve(rope), start, end);
+        std::string expected = concatenated.substr(start, end - start);
+        RC_ASSERT(getString(slice) == expected);
+    });
+}
+
+// ============================================================================
 // GC Survival Tests
 // ============================================================================
 
@@ -346,6 +638,36 @@ void registerStringOpsTests(Testing::TestSuite& suite) {
 
     // Comparison tests
     suite.add(Testing::TestCase("StringOps::equal is reflexive", test_equal_reflexive));
+
+    // Slice (Phase 1) tests
+    suite.add(Testing::TestCase("StringOps::slice produces Tag_StringSlice for large ranges",
+                                test_slice_returns_slice_tag_for_large_range));
+    suite.add(Testing::TestCase("StringOps::slice produces flat leaf for tiny ranges",
+                                test_slice_tiny_returns_leaf));
+    suite.add(Testing::TestCase("StringOps::slice content matches reference substring",
+                                test_slice_round_trip_via_toStdU16String));
+    suite.add(Testing::TestCase("StringOps::slice of slice collapses to single slice over leaf",
+                                test_slice_of_slice_collapses));
+    suite.add(Testing::TestCase("StringOps::equal on slice vs flat substring is true",
+                                test_slice_equal_to_flat_substring));
+    suite.add(Testing::TestCase("StringOps::charAt on a slice matches the source",
+                                test_slice_charAt_matches_source));
+    suite.add(Testing::TestCase("StringOps::slice survives minor GC",
+                                test_slice_survives_gc));
+
+    // Rope (Phase 2) tests
+    suite.add(Testing::TestCase("StringOps::append over FLATTEN_LIMIT builds a rope",
+                                test_append_above_flatten_limit_builds_rope));
+    suite.add(Testing::TestCase("StringOps::charAt on a rope follows the concatenation",
+                                test_rope_charAt_matches_concatenation));
+    suite.add(Testing::TestCase("StringOps::equal on rope vs flat with same content",
+                                test_rope_equal_flat_with_same_content));
+    suite.add(Testing::TestCase("StringOps::toStdU16String on a rope round-trips",
+                                test_rope_toStdU16String_round_trip));
+    suite.add(Testing::TestCase("StringOps: rope from many appends survives GC",
+                                test_rope_chain_of_appends_survives_gc));
+    suite.add(Testing::TestCase("StringOps::slice across rope boundary",
+                                test_rope_slice_yields_correct_substring));
 
     // GC tests
     suite.add(Testing::TestCase("StringOps: strings survive GC", test_strings_survive_gc));

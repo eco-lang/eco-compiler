@@ -72,25 +72,21 @@ HPointer getHostEndianness() {
 }
 
 i64 getStringWidth(void* str) {
-    // Calculate UTF-8 byte count for an ElmString
-    ElmString* s = static_cast<ElmString*>(str);
+    // Calculate UTF-8 byte count for any String form (leaf or slice).
+    auto chars = StringOps::toStdU16String(str);
     i64 width = 0;
+    for (size_t i = 0; i < chars.size(); i++) {
+        u16 c = chars[i];
 
-    for (u32 i = 0; i < s->header.size; i++) {
-        u16 c = s->chars[i];
-
-        // Handle surrogate pairs
-        if (c >= 0xD800 && c <= 0xDBFF && i + 1 < s->header.size) {
-            u16 next = s->chars[i + 1];
+        if (c >= 0xD800 && c <= 0xDBFF && i + 1 < chars.size()) {
+            u16 next = chars[i + 1];
             if (next >= 0xDC00 && next <= 0xDFFF) {
-                // Surrogate pair: 4 UTF-8 bytes
                 width += 4;
                 i++;
                 continue;
             }
         }
 
-        // Regular characters
         if (c < 0x80) {
             width += 1;
         } else if (c < 0x800) {

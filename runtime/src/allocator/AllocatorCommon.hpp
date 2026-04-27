@@ -75,6 +75,16 @@ inline size_t getObjectSize(void *obj) {
         case Tag_String:
             size = sizeof(ElmString) + hdr->size * sizeof(u16);
             break;
+        case Tag_StringSlice:
+            // Fixed-size view: header.size is the logical UTF-16 length, not
+            // a byte count. The slice itself is a fixed struct.
+            size = sizeof(ElmStringSlice);
+            break;
+        case Tag_StringRope:
+            // Fixed-size concat-tree node: header.size is the total logical
+            // UTF-16 length; the rope struct itself has fixed footprint.
+            size = sizeof(ElmStringRope);
+            break;
         case Tag_Tuple2:
             size = sizeof(Tuple2);
             break;

@@ -680,6 +680,17 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
                             checkChild(dr->values[i], "dynrec", i);
                         break;
                     }
+                    case Tag_StringSlice: {
+                        ElmStringSlice* slc = static_cast<ElmStringSlice*>(static_cast<void*>(scan));
+                        checkChild(slc->base, "slice-base", 0);
+                        break;
+                    }
+                    case Tag_StringRope: {
+                        ElmStringRope* r = static_cast<ElmStringRope*>(static_cast<void*>(scan));
+                        checkChild(r->left, "rope-left", 0);
+                        checkChild(r->right, "rope-right", 0);
+                        break;
+                    }
                     default: break;
                 }
                 scan += getObjectSize(scan);
@@ -781,6 +792,17 @@ void NurserySpace::minorGC(OldGenSpace &oldgen, const StackMapRoots& stackmap_ro
                         checkOGChild(dr->fieldgroup, scan, "fieldgroup", 0);
                         for (u32 i = 0; i < h->size; i++)
                             checkOGChild(dr->values[i], scan, "dynrec", i);
+                        break;
+                    }
+                    case Tag_StringSlice: {
+                        ElmStringSlice* slc = static_cast<ElmStringSlice*>(static_cast<void*>(scan));
+                        checkOGChild(slc->base, scan, "slice-base", 0);
+                        break;
+                    }
+                    case Tag_StringRope: {
+                        ElmStringRope* r = static_cast<ElmStringRope*>(static_cast<void*>(scan));
+                        checkOGChild(r->left, scan, "rope-left", 0);
+                        checkOGChild(r->right, scan, "rope-right", 0);
                         break;
                     }
                     default: break;
@@ -1259,6 +1281,19 @@ void NurserySpace::scanObject(void *obj, OldGenSpace &oldgen, std::vector<void*>
             for (u32 i = 0; i < arr->length; i++) {
                 evacuateUnboxable(arr->elements[i], is_boxed, oldgen, promoted_objects);
             }
+            break;
+        }
+
+        case Tag_StringSlice: {
+            ElmStringSlice *slc = static_cast<ElmStringSlice *>(obj);
+            evacuate(slc->base, oldgen, promoted_objects);
+            break;
+        }
+
+        case Tag_StringRope: {
+            ElmStringRope *r = static_cast<ElmStringRope *>(obj);
+            evacuate(r->left, oldgen, promoted_objects);
+            evacuate(r->right, oldgen, promoted_objects);
             break;
         }
 
