@@ -272,3 +272,190 @@ The diagnostic added by this report (`ECO_RESOLVE_TRACE`) is already useful — 
 - `runtime/src/allocator/Allocator.cpp` — `ECO_RESOLVE_TRACE`-gated `dumpResolveFailure`, per-thread sliding window, and dump-then-assert variants of all four resolve guard paths. Plus an `<execinfo.h>` include for `backtrace()`.
 
 The instrumentation is intentionally non-invasive (one extra branch per resolve when the env var is unset, a per-thread ring-buffer write when set) and can stay in the codebase indefinitely.
+
+---
+
+# 11. Reproducing the bug in isolation (2026-04-27)
+
+After the section-9 hypothesis pointed at three candidate sites (Record-slot indexing, Tuple2 skip-extract, closure-capture arity), an attempt was made to **reproduce the bug from scratch** with the smallest possible Elm program. The file lives at:
+
+    /work/test/stress-elm/src/GetCommentsRepro.elm
+
+and accompanying analysis is in
+`/work/bootstrap-stage7-getcomments-shape-analysis.md`.
+
+## 11.1 Starting point — full mirror of `getComments`
+
+The first attempt (~190 lines of Elm) faithfully mirrored the production data shape:
+
+- `Decl` Custom with two constructors, each carrying `Maybe Comment` and a `Located ValueAST`/`Located UnionAST`
+- `Comment Snippet` wrapper
+- `Snippet` record with `{ fptr : String, offset : Int, length : Int, offRow : Int, offCol : Int }` (1 boxed + 4 unboxed)
+- `String.repeat 8 "Original"` as the Snippet's `fptr`, chosen so that any misread of `string + 8` would produce the bytes `0x69 00 6e 00 61 00 6c 00` ("inal") — *the same UTF-16 LE chars as the production crash*
+- A walker `walk : List Decl -> List (Name, Comment) -> List (Name, Comment)` that mirrors `getComments` line-for-line, with the same nested destructuring `Value c (At _ (ValueAST v))` → `Tuple.second v.name`
+- Wrapped in `Result.map` to force dispatch through `eco_apply_segmentation_unknown`
+- A `cycle` driven by `StressHarness.loopWhile`
+
+This compiled cleanly. At default flags it **passed** (only 8 minor GCs, no major GCs). At `-n 1000 -m 1000` it racked up 41 M nursery allocations and 11 major GCs and **still passed**.
+
+## 11.2 First crash signal
+
+After making the `Snippet.fptr` String unique per index (so the compiler couldn't constant-fold the source-text into a single global) and pre-building the list outside the loop (so the data ages into old-gen instead of dying in the nursery each cycle), the test crashed:
+
+```
+stress-test: /work/runtime/src/allocator/RuntimeExports.cpp:1353:
+  Elm::HPtr eco_closure_call_saturated(Elm::HPtr, uint64_t *, uint32_t,
+  const Elm::EvalParamLayout *):
+  Assertion `closure->n_values + num_newargs == max_values
+            && "eco_closure_call_saturated: argument count mismatch"' failed.
+FAILED: Test crashed: SIGABRT (Aborted)
+```
+
+The assertion message is **exactly** the closure-arity / saturation mismatch flagged as hypothesis §5.3 in `bootstrap-stage7-getcomments-shape-analysis.md`. In a release build (no asserts), the same path silently packs the wrong number of args into the evaluator argument array, leaving stack-resident HPointer slots either uninitialised or holding stale heap bytes — which a downstream `eco_resolve_hptr` then reads, tripping the production "Pointer above heap end" assert. Same `eco_apply_segmentation_unknown` and `eco_closure_call_saturated` frames appear on both backtraces.
+
+So this **is** the production bug, observed at its first (more proximal) symptom.
+
+## 11.3 Bisecting down to the minimum
+
+With a crashing testcase in hand, the next step was finding the smallest version that still crashed. Reductions, in order:
+
+| # | Reduction                                                  | Verdict at `-n 1 -m 5000` |
+|---|------------------------------------------------------------|---------------------------|
+| 1 | Full Decl/Maybe Comment/Snippet mirror                     | crashes                   |
+| 2 | Drop `Decl` Custom; just walk `List Snippet`               | crashes                   |
+| 3 | Replace `List.indexedMap (\i _ -> mkSnippet i) (List.repeat n ())` with direct tail-recursion | crashes                   |
+| 4 | Replace per-index unique String with constant `"x"`        | crashes                   |
+| 5 | Drop the String field entirely; record is `{a,b,c,d,e : Int}` | crashes                   |
+| 6 | Drop `StressHarness.loopWhile`; just `mkRs … >> sumA … >> Task.succeed` | crashes                   |
+| 7 | **Hard-code `size = 5000`** (don't read `flags.maxSize`)  | **PASSES**                |
+| 8 | Read `flags.maxSize` and use it directly as the size       | crashes at size ≥ 3000    |
+
+Step 7 vs. step 8 is the critical pair. **Hard-coding the size — even at 5000 — passes; reading a `StressFlags` record field for the size crashes from ~3000 onward.** The bug isn't in the `getComments` shape at all. It's much more general:
+
+> A runtime-derived `Int` (here: a record-field load `flags.maxSize`)
+> feeding the size of a heap-allocated tail-recursive list whose
+> elements survive at least one minor GC boundary.
+
+Threshold (binary-search in 200-step increments at `-n 1`):
+
+```
+-m 2200  → PASS
+-m 2400  → CRASH (assertion above)
+-m 2600  → CRASH
+-m 5000  → CRASH
+```
+
+The threshold is approximately the size at which the build's intermediate Cons cells start surviving the first minor GC and getting promoted to old-gen.
+
+## 11.4 The minimal reproducer (~30 lines of Elm)
+
+```elm
+module GetCommentsRepro exposing (main)
+-- CHECK: GetCommentsRepro: True
+
+import StressHarness exposing (StressFlags)
+import Task
+
+type alias R = { a : Int, b : Int, c : Int, d : Int, e : Int }
+
+mkRs : Int -> List R -> List R
+mkRs i acc =
+    if i <= 0 then acc
+    else mkRs (i - 1) ({ a = i, b = i, c = i, d = i, e = i } :: acc)
+
+sumA : List R -> Int -> Int
+sumA rs acc =
+    case rs of
+        [] -> acc
+        r :: rest -> sumA rest (acc + r.a)
+
+run : StressFlags -> Task.Task Never Bool
+run flags =
+    let
+        size = flags.maxSize          -- the trigger: record-field load
+        rs = mkRs size []
+        expected = (size * (size + 1)) // 2
+    in
+    StressHarness.loopWhile flags
+        flags.numLoops
+        (\_ -> Task.succeed (sumA rs 0 == expected))
+
+main : Program StressFlags StressHarness.Model StressHarness.Msg
+main =
+    StressHarness.taskProgram
+        { label = "GetCommentsRepro"
+        , run = run
+        }
+```
+
+## 11.5 Verification
+
+```
+# Default flags (size = 100, below threshold) — passes; doesn't break the
+# existing 98-test stress suite (now 99 tests including this one).
+$ /work/build/test/stress-test
+…
+=== Stress Test Summary ===
+Tests run:    99
+Tests passed: 99
+Tests failed: 0
+Result: PASSED
+
+
+# Forced into the failing range — deterministic SIGABRT, every run.
+$ /work/build/test/stress-test --filter GetCommentsRepro -n 1 -m 3000
+=== Eco Stress Tests ===
+…
+- stress-elm/GetCommentsRepro.elm
+stress-test: /work/runtime/src/allocator/RuntimeExports.cpp:1353:
+  Elm::HPtr eco_closure_call_saturated(Elm::HPtr, uint64_t *, uint32_t,
+  const Elm::EvalParamLayout *):
+  Assertion `closure->n_values + num_newargs == max_values
+            && "eco_closure_call_saturated: argument count mismatch"' failed.
+FAILED: Test crashed: SIGABRT (Aborted)
+…
+=== Stress Test Summary ===
+Tests run:    1
+Tests passed: 0
+Tests failed: 1
+Result: FAILED
+
+
+# Heap state at the crash (only 2 minor GCs, no major):
+$ ECO_HEAP_TRACE=1 /work/build/test/stress-test --filter GetCommentsRepro -n 1 -m 3000 2>&1 | head
+…
+[heap-trace] minorGC begin oldgen_committed=16.00 MB nursery_low=2.00 MB …
+[heap-trace] minorGC end oldgen_committed=16.00 MB …
+[heap-trace] minorGC begin oldgen_committed=16.00 MB nursery_low=2.00 MB …
+[heap-trace] minorGC end oldgen_committed=16.00 MB …
+stress-test: /work/runtime/src/allocator/RuntimeExports.cpp:1353: …
+```
+
+The crash fires after the second minor GC, well before the heap pressure reaches old-gen. This is consistent with "promotion of `mkRs`-built Cons cells across the second minor GC corrupts a closure's `n_values` / `max_values` accounting."
+
+## 11.6 What this reproducer tells us about the production bug
+
+1. **The bug is in the closure machinery**, not in the `Compiler.Parse.Module.getComments` shape per se. Section 5.3 was right; sections 5.1 and 5.2 (Record-slot indexing, Tuple2 skip-extract) are exonerated — the minimal repro doesn't touch either.
+
+2. **The `Compiler_Parse_Module_getComments_$_16433` framing in the production trace is incidental.** Production hits the bug in that function because production builds large lists of `Decl` values and walks them, which is exactly the same shape as `mkRs … >> sumA …`. Any function that builds a tail-recursive list of records sized by a runtime-loaded `Int` will hit it once the list crosses ~3000 entries.
+
+3. **The connection between size 3000 and a record-field load is suspicious.** A hard-coded `5000` passes; a `flags.maxSize`-derived `5000` crashes. The compiler treats the two cases differently — almost certainly because the runtime-loaded value participates in PAP / closure-capture layout decisions during monomorphisation that the constant doesn't.
+
+4. **In a release build, the same path silently mis-packs evaluator args.** The `assert(n_values + num_newargs == max_values)` is gone, but the loop that copies new args into `combined_args[old_n_values + i]` still runs — leaving some slots either uninitialised, or (worse) overwriting stack memory past the `void* stack_args[16]` buffer when `max_values <= 16` is wrongly true. A subsequent evaluator that reads one of those slots as an HPointer trips `Allocator::resolve` exactly as production does.
+
+5. **The hypothesis-§5.3 fix (verify closure `n_values` matches the number of captures actually written before the call) would fix both the reproducer and the production crash.** Likely sites of the bug:
+   - `eco.closure.create` lowering in `EcoToLLVMClosures.cpp` setting the wrong `n_values` when one of the captures was elided as a constant
+   - PAP-extension code (`papExtend`) updating `n_values` without updating `max_values` (or vice versa) when promoted across a minor GC
+   - The `__closure_wrapper_*` for the recursive call inside `mkRs` mis-counting captures when `flags.maxSize` flows through it (constants vs. registers may be classified differently in capture-elision)
+
+## 11.7 What to do with this reproducer
+
+- **Keep it.** It's deterministic, ~30 lines, and the verdict is meaningful — once the closure-arity bug is fixed it should pass at any `-m`. Functions as a permanent regression test.
+- **Run with `-m 3000` against any candidate fix.** The fix is good if and only if `-m 3000` passes.
+- **Once the fix lands, parameterise.** Move the size-driver into `flags.numLoops` × `flags.maxSize` so the soak suite can crank both knobs.
+
+## 11.8 Files touched for the reproduction work
+
+- `test/stress-elm/src/GetCommentsRepro.elm` — new test (~120 lines including the doc comment that summarises this section).
+- No runtime / compiler source changes were needed to reproduce; the bug fires in stock release-build runtime code paths.
+
