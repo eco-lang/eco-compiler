@@ -262,6 +262,10 @@ static HPointer buildBalancedRope(std::vector<HPointer>& parts) {
     };
 
     // Merge adjacent stack entries while top.size() <= second.size().
+    // The merge stack itself holds HPointers that must survive each makeRope
+    // allocation; without rooting `stack.data()`, a GC inside makeRope would
+    // leave the entries we haven't yet merged dangling at their from-space
+    // addresses.
     std::vector<HPointer> stack;
     stack.reserve(parts.size());
     for (auto& hp : parts) {
@@ -270,16 +274,27 @@ static HPointer buildBalancedRope(std::vector<HPointer>& parts) {
             HPointer top = stack[stack.size() - 1];
             HPointer next = stack[stack.size() - 2];
             if (rawSize(top) > rawSize(next)) break;
+            HPointer merged;
+            {
+                Elm::StackRootRangeGuard stack_guard(stack.data(), stack.size(), ~0ULL);
+                merged = makeRope(next, top);
+            }
             stack.pop_back();
             stack.pop_back();
-            HPointer merged = makeRope(next, top);
             stack.push_back(merged);
         }
     }
     while (stack.size() >= 2) {
-        HPointer top = stack.back(); stack.pop_back();
-        HPointer next = stack.back(); stack.pop_back();
-        stack.push_back(makeRope(next, top));
+        HPointer top = stack.back();
+        HPointer next = stack[stack.size() - 2];
+        HPointer merged;
+        {
+            Elm::StackRootRangeGuard stack_guard(stack.data(), stack.size(), ~0ULL);
+            merged = makeRope(next, top);
+        }
+        stack.pop_back();
+        stack.pop_back();
+        stack.push_back(merged);
     }
     return stack[0];
 }

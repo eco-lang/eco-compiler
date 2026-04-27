@@ -119,10 +119,15 @@ HPointer PlatformRuntime::setupEffects(HPointer sendToAppClosure) {
 
     for (auto& [home, info] : managers_) {
         // Create the manager's self-process
-        // The self-process runs a Receive loop that handles onSelfMsg
+        // The self-process runs a Receive loop that handles onSelfMsg.
+        // sendToAppClosure and selfProc must survive each subsequent
+        // allocation (taskReceive, rawSpawn, custom) — any of those can
+        // trigger a GC that moves the values stored in our local copies.
         HPointer recvCallback = decodeHP(info.onSelfMsg);  // will be wrapped later
+        Elm::StackRootGuard cb_guard(&recvCallback, &sendToAppClosure);
         HPointer selfProc = sched.rawSpawn(
             sched.taskReceive(recvCallback));
+        Elm::StackRootGuard self_guard(&selfProc);
 
         // Create router: Custom with ctor=CTOR_Router, 2 boxed fields
         // fields[0] = sendToApp closure, fields[1] = selfProcess
@@ -267,6 +272,11 @@ void PlatformRuntime::dispatchEffects() {
         HPointer state  = decodeHP(ms.state);
         HPointer fn     = decodeHP(miIt->second.onEffects);
 
+        // Pin all four arguments to callClosure4 across the call: although
+        // callClosure4 encodes its args internally, the caller's locals
+        // (router, cmdList, subList, state, fn) live in this stack frame and
+        // would otherwise be invisible to the GC during the closure body.
+        Elm::StackRootGuard call_guard({&router, &cmdList, &subList, &state, &fn});
         HPointer newStateTask = Scheduler::callClosure4(
             fn, router, cmdList, subList, state);
 
@@ -357,16 +367,21 @@ void PlatformRuntime::gatherEffects(
 
 HPointer PlatformRuntime::applyTaggers(HPointer taggers, HPointer value) {
     HPointer result = value;
-    // taggers is a list of functions to apply (innermost first)
-    // Walk the list and apply each
+    // taggers is a list of functions to apply (innermost first).
+    // Walk the list and apply each. result, current and the next-tail must
+    // survive each callClosure1 (which runs Elm code that may GC).
     HPointer current = taggers;
+    Elm::StackRootGuard guard(&result, &current);
     while (!alloc::isNil(current)) {
         void* ptr = resolveHP(current);
         if (!ptr) break;
         Cons* cell = static_cast<Cons*>(ptr);
         HPointer tagger = cell->head.p;
+        // Snapshot tail before the closure call — `cell` is invalidated by
+        // any GC inside callClosure1.
+        HPointer next = cell->tail;
         result = Scheduler::callClosure1(tagger, result);
-        current = cell->tail;
+        current = next;
     }
     return result;
 }
@@ -439,6 +454,10 @@ static void* workerSendToAppEvaluator(void* rawArgs[]) {
     HPointer updateFn = implRec->values[2].p;       // update
     HPointer subscriptionsFn = implRec->values[1].p; // subscriptions
 
+    // subscriptionsFn must survive the update closure (callClosure2 below);
+    // newCmd and newModel must survive the subscriptions closure call.
+    Elm::StackRootGuard subs_guard(&subscriptionsFn);
+
     // Call update(msg, model) -> (newModel, cmd)
     HPointer pair = Scheduler::callClosure2(updateFn, msg, currentModel);
 
@@ -452,7 +471,8 @@ static void* workerSendToAppEvaluator(void* rawArgs[]) {
     // Update model storage
     runtime.setModelStorage(encodeHP(newModel));
 
-    // Get new subscriptions
+    // Get new subscriptions. newCmd survives across this call.
+    Elm::StackRootGuard cmd_guard(&newCmd);
     HPointer newSubs = Scheduler::callClosure1(subscriptionsFn, newModel);
 
     // Enqueue effects
@@ -516,7 +536,10 @@ HPointer PlatformRuntime::initWorker(HPointer impl) {
     implPtr = resolveHP(impl);
     if (!implPtr) return emptyRecord();
 
-    // Extract (model, cmd) from the init result
+    // Extract (model, cmd) from the init result. cmd0 must remain rooted
+    // across allocClosure / setupEffects / callClosure1 below — the GC will
+    // move it during any of those allocations and our local copy would
+    // otherwise become stale by the time we hand it to enqueueEffects.
     void* pairPtr = resolveHP(initPair);
     if (!pairPtr) return emptyRecord();
     Tuple2* initTuple = static_cast<Tuple2*>(pairPtr);
@@ -530,9 +553,13 @@ HPointer PlatformRuntime::initWorker(HPointer impl) {
         modelRooted_ = true;
     }
 
+    // Root impl, cmd0, and sendToAppCl across the remaining allocations.
+    HPointer sendToAppCl = listNil();
+    Elm::StackRootGuard live_guard(&impl, &cmd0, &sendToAppCl);
+
     // Phase 4: Build sendToApp closure
     // Create a closure that captures impl; model is accessed via PlatformRuntime singleton
-    HPointer sendToAppCl = allocClosure(
+    sendToAppCl = allocClosure(
         reinterpret_cast<EvalFunction>(workerSendToAppEvaluator), 2);
     void* clPtr = resolveHP(sendToAppCl);
     if (clPtr) {
@@ -543,7 +570,7 @@ HPointer PlatformRuntime::initWorker(HPointer impl) {
     HPointer ports = setupEffects(sendToAppCl);
 
     // Phase 6: Get initial subscriptions and enqueue initial effects
-    // Re-resolve impl
+    // Re-resolve impl from the rooted slot
     implPtr = resolveHP(impl);
     if (implPtr) {
         implRec = static_cast<Record*>(implPtr);
