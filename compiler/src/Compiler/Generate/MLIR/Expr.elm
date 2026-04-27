@@ -3596,6 +3596,7 @@ mutual-recursion capture graph.
 
 Each capture entry in `ClosureInfo.captures` carries the capture expression;
 a capture referencing sibling `B` reads `MonoVarLocal B _`.
+
 -}
 closureSiblingRefs :
     Set.Set Name.Name
@@ -3626,6 +3627,7 @@ contiguous-closure window) are considered reachable.
 
 This is a simple meet-in-the-middle: forward reachable from startName,
 backward reachable from startName, and the intersection is the SCC.
+
 -}
 computeSCC :
     Set.Set Name.Name
@@ -3701,10 +3703,10 @@ computeSCC closureNames forwardGraph startName =
 at `def`. Returns the SCC members (in let-chain order) paired with the
 let-chain body following them. Returns Nothing when:
 
-- the starting def is not a closure binding
-- the SCC containing it has size 1 (self-recursion or no recursion)
-- the SCC members are not contiguous and adjacent in the let-chain
-- any SCC member is not a closure binding (v1 constraint)
+  - the starting def is not a closure binding
+  - the SCC containing it has size 1 (self-recursion or no recursion)
+  - the SCC members are not contiguous and adjacent in the let-chain
+  - any SCC member is not a closure binding (v1 constraint)
 
 -}
 detectMutualRecGroup :

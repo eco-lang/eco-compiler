@@ -45,8 +45,8 @@ import Compiler.Nitpick.PatternMatches as PatternMatches
 import Compiler.Reporting.Error as E
 import Compiler.Reporting.Render.Type.Localizer as Localizer
 import Compiler.Reporting.Result as ReportingResult
-import Compiler.Type.Constrain.Typed.Module as TypeTyped
 import Compiler.Type.Constrain.Erased.Module as TypeErased
+import Compiler.Type.Constrain.Typed.Module as TypeTyped
 import Compiler.Type.KernelTypes as KernelTypes
 import Compiler.Type.PostSolve as PostSolve
 import Compiler.Type.Solve as Type
@@ -185,10 +185,6 @@ compileTyped pkg ifaces modul =
 
 
 -- ====== Helpers ======
-
-
-
-
 -- ====== Internal Compilation Phases ======
 -- Converts source AST to canonical form, resolving all names and imports.
 

@@ -1,7 +1,4 @@
-module Compiler.Generate.MLIR.Patterns exposing
-    ( generateMonoPath, generateMonoDtPath, generateMonoTest, testToTagInt, caseKindFromTest, scrutineeTypeFromCaseKind, computeFallbackTag
-    , resolvePathResultType
-    )
+module Compiler.Generate.MLIR.Patterns exposing (generateMonoPath, generateMonoDtPath, generateMonoTest, testToTagInt, caseKindFromTest, scrutineeTypeFromCaseKind, computeFallbackTag, resolvePathResultType)
 
 {-| Pattern matching and path generation for MLIR code generation.
 

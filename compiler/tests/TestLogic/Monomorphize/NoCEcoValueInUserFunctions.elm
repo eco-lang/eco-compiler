@@ -63,7 +63,7 @@ Walks every MonoNode and every sub-expression, checking:
   - MonoClosure: closure params, captures, and body expression types
   - MonoTailDef (local tail-recursive defs): parameter types and body types
   - MonoPortIncoming/MonoPortOutgoing: body expression types
-Kernel nodes (MonoExtern, MonoManagerLeaf) are explicitly exempted.
+    Kernel nodes (MonoExtern, MonoManagerLeaf) are explicitly exempted.
 
 -}
 checkNoCEcoValueInUserFunctions : Mono.MonoGraph -> List Violation

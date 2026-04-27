@@ -55,12 +55,23 @@ topLevelCombinatorCases expectFn =
 
 {-| B combinator with top-level definitions:
 
-    k a _ = a
-    s bf uf x = bf x (uf x)
-    b = s (k s) k
-    square x = x * x
-    inc x = x + 1
-    testValue = b square inc 4
+    k a _ =
+        a
+
+    s bf uf x =
+        bf x (uf x)
+
+    b =
+        s (k s) k
+
+    square x =
+        x * x
+
+    inc x =
+        x + 1
+
+    testValue =
+        b square inc 4
 
 -}
 bCombinatorTopLevel : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -96,10 +107,17 @@ bCombinatorTopLevel expectFn _ =
 
 {-| I combinator with top-level definitions (should pass — no truncation):
 
-    k a _ = a
-    s bf uf x = bf x (uf x)
-    i = s k k
-    testValue = i 42
+    k a _ =
+        a
+
+    s bf uf x =
+        bf x (uf x)
+
+    i =
+        s k k
+
+    testValue =
+        i 42
 
 -}
 iCombinatorTopLevel : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -130,9 +148,14 @@ iCombinatorTopLevel expectFn _ =
 
 {-| Partial application of a 3-arg function at top level:
 
-    add3 a b c = a + b + c
-    partialAdd = add3 1
-    testValue = partialAdd 2 3
+    add3 a b c =
+        a + b + c
+
+    partialAdd =
+        add3 1
+
+    testValue =
+        partialAdd 2 3
 
 -}
 partialApp3TopLevel : (Src.Module -> Expectation) -> (() -> Expectation)

@@ -5,7 +5,8 @@ module SourceIR.TypeAliasCtorCases exposing (expectSuite, suite)
 In Elm, a type alias to a record generates a constructor function with the
 alias name. For example:
 
-    type alias Style = { bold : Bool, count : Int }
+    type alias Style =
+        { bold : Bool, count : Int }
 
 generates a constructor function `Style : Bool -> Int -> Style` that can
 be called as `Style True 42`.
@@ -76,12 +77,14 @@ testCases expectFn =
 
 {-| A type alias to a record, with the alias name used as a constructor.
 
-    type alias Style = { bold : Bool, count : Int }
+    type alias Style =
+        { bold : Bool, count : Int }
 
     testValue : Int
     testValue =
         let
-            s = Style True 42
+            s =
+                Style True 42
         in
         s.count
 
@@ -108,7 +111,8 @@ simpleAliasAsCtor expectFn _ =
             , tipe = tType "Int" []
             , body =
                 letExpr
-                    [ define "s" []
+                    [ define "s"
+                        []
                         (callExpr (ctorExpr "Style")
                             [ boolExpr True, intExpr 42 ]
                         )
@@ -133,13 +137,16 @@ simpleAliasAsCtor expectFn _ =
 
 {-| Type alias constructor used to build a record, then passed to a function.
 
-    type alias Style = { bold : Bool, count : Int }
+    type alias Style =
+        { bold : Bool, count : Int }
 
     getCount : Style -> Int
-    getCount s = s.count
+    getCount s =
+        s.count
 
     testValue : Int
-    testValue = getCount (Style True 7)
+    testValue =
+        getCount (Style True 7)
 
 -}
 aliasCtorPassedToFunction : (Src.Module -> Expectation) -> (() -> Expectation)

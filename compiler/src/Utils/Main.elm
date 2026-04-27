@@ -31,8 +31,7 @@ module Utils.Main exposing
     , nonEmptyListTraverse
     , sequenceListMaybe, sequenceNonemptyListResult
     , foldM
-    , dictFromListWith, dictInsertWith, dictIntersectionWith, dictIntersectionWithKey, dictMapMaybe, dictSequenceResult, dictSequenceMaybe, dictTraverse, dictTraverseWithKey, dictTraverseResult, dictTraverseWithKeyResult, dictFromKeysA
-    , dictMapM__, dictUnionWith
+    , dictFromListWith, dictInsertWith, dictIntersectionWith, dictIntersectionWithKey, dictMapMaybe, dictSequenceResult, dictSequenceMaybe, dictTraverse, dictTraverseWithKey, dictTraverseResult, dictTraverseWithKeyResult, dictUnionWith, dictMapM__, dictFromKeysA
     )
 
 {-| Utility module providing data structure utilities, HTTP types, and pure helper functions.

@@ -36,8 +36,8 @@ import Compiler.Reporting.Doc as D
 import Compiler.Reporting.Render.Type as RT
 import Compiler.Reporting.Render.Type.Localizer as L
 import Data.Map as DataMap
-import Dict exposing (Dict)
 import Data.Set as EverySet exposing (EverySet)
+import Dict exposing (Dict)
 import Json.Encode as Encode
 import Maybe.Extra as Maybe
 import System.TypeCheck.IO as IO

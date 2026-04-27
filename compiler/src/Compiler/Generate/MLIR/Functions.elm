@@ -1078,6 +1078,3 @@ generateStubValueFromMlirType ctx resultVar mlirType =
         _ ->
             -- For all other types (EcoValue, etc.), return Unit
             Ops.ecoConstantUnit ctx resultVar
-
-
-

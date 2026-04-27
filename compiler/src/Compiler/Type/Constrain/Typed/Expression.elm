@@ -1792,7 +1792,7 @@ constrainUpdateWithIdsProg rtv region exprId expr locatedFields expected =
                                                         cons =
                                                             Dict.foldr (\_ ( _, _, c ) cs -> c :: cs) [ recordCon ] fieldDict
                                                     in
-                                                    constrainWithIdsProg rtv expr (FromContext region (RecordUpdateKeys (fields)) recordType)
+                                                    constrainWithIdsProg rtv expr (FromContext region (RecordUpdateKeys fields) recordType)
                                                         |> Prog.mapS
                                                             (\exprCon ->
                                                                 Type.exists vars (CAnd (fieldsCon :: exprCon :: cons))

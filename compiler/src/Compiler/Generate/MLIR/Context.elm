@@ -775,7 +775,6 @@ extractNodeSignature node =
                         }
 
 
-
 {-| Build a map of SpecId -> FuncSignature from all nodes in the graph.
 Used for invariant checking at call sites.
 -}

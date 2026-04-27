@@ -479,8 +479,11 @@ exercises only the args-branch lookup of the formal-param name. With
 the buggy code it crashes with "Unbound alias parameter: a"; with the
 fix it passes.
 
-    type alias Phantom a = Int
-    type Marker b = Marker (Phantom b)
+    type alias Phantom a =
+        Int
+
+    type Marker b
+        = Marker (Phantom b)
 
 -}
 ctorFieldReferencingPhantomAlias : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -540,8 +543,11 @@ union's own type variable. Triggers
 Compiler.Monomorphize.Analysis (the TAlias branch incorrectly looks up
 the alias's formal parameter name in the enclosing union's nameToId).
 
-    type alias Pair a = ( a, a )
-    type Box b = Box (Pair b)
+    type alias Pair a =
+        ( a, a )
+
+    type Box b
+        = Box (Pair b)
 
 -}
 ctorFieldReferencingPairAlias : (Src.Module -> Expectation) -> (() -> Expectation)
@@ -598,8 +604,11 @@ ctorFieldReferencingPairAlias expectFn _ =
 {-| Regression: simpler variant of the alias-in-ctor-field bug, using a
 single-parameter identity alias.
 
-    type alias Id a = a
-    type Wrap x = Wrap (Id x)
+    type alias Id a =
+        a
+
+    type Wrap x
+        = Wrap (Id x)
 
 -}
 ctorFieldReferencingIdAlias : (Src.Module -> Expectation) -> (() -> Expectation)

@@ -1,9 +1,9 @@
 module Builder.Deps.Registry exposing
     ( Registry(..), KnownVersions(..)
-    , RegistryPolicy(..)
     , read, fetch, update, latest
     , getVersions, getVersions_
     , registryDecoder, registryEncoder
+    , RegistryPolicy(..)
     )
 
 {-| Manages the package registry, which tracks all available Elm packages and their versions.

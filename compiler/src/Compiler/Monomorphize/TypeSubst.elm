@@ -3,8 +3,7 @@ module Compiler.Monomorphize.TypeSubst exposing
     , canTypeToMonoType, extractParamTypes
     , unify, unifyExtend, unifyArgsOnly, unifyCallSiteDirect, unifyCallSiteDirectWithExpected
     , buildSchemeInfo, refreshSchemeInfo
-    , applySubstWithFreeVars
-    , applySubstKeepNumber
+    , applySubstWithFreeVars, applySubstKeepNumber
     )
 
 {-| Type substitution and unification for monomorphization.

@@ -373,7 +373,6 @@ optimizeExpr kernelEnv annotations exprTypes exprVars home cycle region tipe tva
             let
                 defType =
                     lookupAnnotationType name annotations
-
             in
             if EverySet.member identity name cycle then
                 Names.pure (TOpt.VarCycle region varHome name { tipe = defType, tvar = tvar })

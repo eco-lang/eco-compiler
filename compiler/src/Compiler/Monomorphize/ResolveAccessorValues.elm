@@ -126,7 +126,6 @@ rewriteNode home lambdaCounter node =
 
 
 
-
 -- ============================================================================
 -- ====== TIER 2+3: DATA-FLOW ANALYSIS WITH CONTEXT-ROOTED CLOSURE FALLBACK ==
 -- ============================================================================
