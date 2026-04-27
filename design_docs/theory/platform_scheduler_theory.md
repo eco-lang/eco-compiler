@@ -321,6 +321,7 @@ Processes in the run queue are stored as encoded `HPointer` values (`RootedProc.
 - **StackRootGuard**: RAII helper in `HeapHelpers.hpp` roots captured HPointers across allocations in kernel helpers (`allocTask`, `allocProcess`, `cons`, etc.), preventing use-after-move when GC relocates objects.
 - **`Export::toPtr` hardening** *(Apr 15)*: both `reinterpret_cast<void*>(val)` branches dropped — any non-zero constant returns `nullptr`, and non-zero padding asserts instead of fabricating a raw pointer from an HPointer that happens to encode a sentinel.
 - **stepProcess**: "No matching handler" branch now only logs for `Task_Fail` (unhandled failure) and stays quiet for `Task_Succeed` (normal process completion). Added heap-tag sanity check for early corruption detection.
+- **Thread-safe blocking MVar** *(Apr 24, 2026)*: `eco-kernel-cpp/src/eco/MVar.cpp` reimplemented for thread-safe blocking semantics — `take` and `read` block until a value is `put`, with the wait protected by a mutex/condvar pair so concurrent producers and consumers no longer race. Exercised by `MVarBlockingReadAwaitsPutStress.elm` (which previously failed against the non-blocking implementation).
 
 ## Key Constants
 

@@ -262,6 +262,10 @@ eco.papCreate @func, arity, captured=[]
     -> ptrtoint closure
 ```
 
+**papCreateGroup (mutually-recursive closure SCC, Apr 24, 2026):**
+
+Lowered to a single contiguous-region allocation via a new runtime helper (`eco_alloc_pap_group_region` etc., declared in `RuntimeExports.{h,cpp}`). The lowering writes each sibling's header at its offset, then writes cross-sibling captures after all HPointers in the group are known. Because the writes target same-generation memory, no write barrier is needed. The compiler-side detection lives in `Compiler/Generate/MLIR/Expr.elm`; the dialect op is defined in `runtime/src/codegen/Ops.td` with verifier in `EcoOps.cpp`; closure-capture verification is updated in `CheckEcoClosureCaptures.cpp`. See [MLIR Generation Theory](pass_mlir_generation_theory.md#mutually-recursive-closure-sccs-apr-24-2026) for the front-end side.
+
 **papExtend (apply arguments to closure):**
 
 The `papExtend` operation is now lowered inline (as of Feb 2026) rather than calling a runtime helper. This enables better optimization by LLVM.
@@ -404,6 +408,8 @@ ELSE:
 -> inline each alternative into its case block
 -> replace eco.return with cf.br to mergeBlock
 ```
+
+**String case empty-pattern `inttoptr` fix** *(Apr 24, 2026)*: In `EcoToLLVMControlFlow.cpp` `CaseOpLowering`'s string-case path, the `pattern.empty()` branch was creating the encoded `EmptyString` constant as `i64` and passing it directly to `Elm_Kernel_Utils_equal`, whose declared signature is `(ptr addrspace(1), ptr addrspace(1)) -> ptr addrspace(1)`. Every other embedded-HPointer constant in the file (e.g. the `True` constant a few lines below) wraps the `LLVM::ConstantOp` in an `LLVM::IntToPtrOp` to the `ptr<1>` HPtr type. The fix adds the missing `inttoptr` so both operands match the callee's signature. Regression test: `CaseStringEmptyPatternTest.elm`.
 
 **eco.joinpoint / eco.jump:**
 ```

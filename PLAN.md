@@ -133,47 +133,79 @@ Implement a generational garbage collector as an intermediate solution to de-ris
 **Implementation** (verified from code):
 - Two-generation design (nursery + old generation)
 - Thread-local nursery spaces with Cheney's copying algorithm
-- Mark-and-sweep for old generation with free-list allocation
-- Lazy sweeping and allocation-paced incremental marking
+- Segregated-fits old generation with Big Bag of Pages (BBoP) — see §1.2.1
+- Mark-driven live attribution + lazy sweep on the allocation slow path *(Apr 26, 2026)*
+- Per-block mark bitmap sidetable (no header-color dependency for sweep liveness) *(Apr 26, 2026)*
 - Incremental compaction (implemented, manual trigger only)
 - Optional DFS locality optimization for list copying
-- Promotion age currently set to 1
+- Promotion age currently set to 2
+- Major GC `0.75/0.50` initiating-occupancy / target-utilization policy *(Apr 24-26, 2026)*
 
 **Deliverables**:
 - [x] `allocator.cpp/hpp`: GC implementation
-- [x] `gc_stats.hpp`: Telemetry and diagnostics
-- [x] Property-based test suite
+- [x] `gc_stats.hpp`: Telemetry and diagnostics with per-allocation size histograms (nursery + oldgen) *(Apr 26, 2026)*
+- [x] Property-based test suite + sustained-pressure GC tests *(Apr 25, 2026 — 19 tests)*
 
 #### 1.2.1 Old Generation Algorithm
 
-**Status**: Complete
+**Status**: Complete (rewritten to segregated-fits + BBoP, Apr 25-26, 2026)
 
 Choose and implement an appropriate algorithm for old generation garbage collection.
 
-**Implementation** (verified from `OldGenSpace.cpp`):
-- Free-list allocation with 32 size classes (8-256 bytes) - lines 162-204
-- New allocations marked Black during marking - lines 174-180, 224-229
-- Lazy sweeping state machine (`GCPhase` enum) - lines 540-636
-- Allocation-paced incremental marking (`MARK_WORK_RATIO`) - lines 130-160
-- Fragmentation monitoring (`FragmentationStats`) - lines 652-678
-- Incremental compaction (implemented, not auto-triggered) - lines 680-1104
-- Object graph traversal for all Elm types
-- GC statistics integration (optional)
-- Comprehensive property-based test suite (`test/OldGenSpaceTest.cpp`)
+**Implementation** *(rewritten Apr 25-26, 2026; see `runtime/src/allocator/OldGenSpace.{hpp,cpp}`)*:
+
+The old generation is now a **segregated-fits allocator backed by a Big Bag of Pages (BBoP)**. The initial `initial_old_gen_size` (16 MiB by default) is committed up front and sliced into pages of `alloc_buffer_size` bytes that sit in `unassigned_blocks_` until first use:
+
+- **Small classes** — 32 classes covering 8..256 B in 8-byte steps. On first use a class pulls a page from the bag and slices it into uniform `Tag_Free` cells.
+- **Medium classes** — powers of two starting at 512 B, reserved up through 65536 B (8 medium classes). Class count is capped at runtime by `large_object_threshold`.
+- **Mid-range (between `large_object_threshold` and `alloc_buffer_size`)** — pulls a page from the bag, installs a single page-spanning `Tag_Free` cell, and uses the larger-cell split path (no fixed-cell slicing).
+- **Large objects (≥ `alloc_buffer_size`)** — go through `allocateLargeBlock`, which acquires a dedicated pinned block sized to the object. Large objects in existing blocks are reused before asking the Allocator for a fresh block *(Apr 26, 2026)*.
+- **Round-up vs round-down class selection** *(Apr 25, 2026)*: `sizeClass(size)` rounds up at allocation time so a popped cell can always satisfy the request; `freeListClassFor(span)` rounds down at placement time (split tails, sweep coalesces) so cells on `free_lists_[cls]` always have ≥ `classToSize(cls)` bytes — fixing buffer overflows in `tryAllocateBySplittingLarger`.
+
+**GC pipeline** *(Apr 26, 2026 rewrite)*:
+- **Major GC trigger** — `shouldTriggerMajorGC()` fires when `allocated_bytes / committed_bytes ≥ major_gc_initiating_occupancy` (default 0.75) **OR** when the global old-gen pressure crosses ~25% of the cap. The global trigger catches workloads that keep per-thread occupancy low because `allocateFromBagPage` burns a fresh page per request *(Apr 26, 2026)*.
+- **Mark phase** — incremental marking driven by `MARK_WORK_RATIO`. Liveness is now recorded in per-block bitmaps (1 bit per 8-byte slot) — `mark_bits_` for regular blocks, `large_block_mark_` (single bit) for `is_large` blocks. Headers retain a `color` field for compaction's debug asserts but are no longer load-bearing for sweep liveness *(Apr 26, 2026)*.
+- **External roots scanned during mark** *(Apr 25, 2026)*: Scheduler, PlatformRuntime, MVar, and Runtime root scanners are visited so objects rooted only via external state survive a major GC.
+- **Mark-driven live attribution + lazy sweep** *(Apr 26, 2026)*: Sweep is no longer a synchronous post-mark cell walk. `live_bytes` is attributed during marking; `transitionToSweeping` clears `free_lists_` *before* reclaim (turning per-block release from O(F) to O(1)); an **all-dead block fast path** releases dead non-large blocks without scanning their cells; an **O(1) page-index** (`page_to_block_index_`) replaces a linear `findBlockContaining` scan; `finishMarkAndSweep` returns with `gc_phase_ = Sweeping` after a 64 KiB initial slice; the rest of the work runs in `SWEEP_WORK_BUDGET`-sized slices on the allocation slow path. Stage 7 major GC: 432 s → 16 s (27× faster).
+- **Color reset on every evacuation memcpy** *(Apr 26, 2026)*: nursery promotion, to-space copy, and OldGen compaction all reset `header.color` to White after the memcpy; mark phase also resets at start. Otherwise a stale Black left by an earlier mark would survive the memcpy and cause the next mark to skip the cell as already-processed, with sweep then freeing untraced children.
+- **No GC color marking on objects in the nursery** *(Apr 26, 2026)*: Major GC tracks nursery objects in a `nursery_visited_` set instead of writing into the nursery header `color` field. This keeps minor GC's ownership of the nursery header bits clean.
+- **Embedded-constant skipping in oldgen marking** *(Apr 24, 2026)*: pointer-shaped slots whose `HPointer.constant != 0` are skipped during marking — embedded constants live outside the heap.
+- **Shrink-and-return blocks to the OS** *(Apr 26, 2026)*: post-sweep, surplus blocks below `BUFFER_RETURN_THRESHOLD` are returned to the Allocator's free pool. `decommit_on_oldgen_release` is currently `false` to avoid a stale-pointer-into-decommitted-page corruption (fix in flight; see `bootstrap-stage7-crash-analysis.md`).
+- **Heap-base reservation** *(Apr 25, 2026)*: location 0 in the oldgen heap is reserved so a logical `HPointer` of zero is unambiguously "null".
+- **Fragmentation monitoring** (`FragmentationStats`) and incremental compaction (still manual trigger only).
+
+**Files modified** *(Apr 24-27, 2026)*: `OldGenSpace.{hpp,cpp}`, `Allocator.{hpp,cpp}`, `AllocatorCommon.hpp`, `ThreadLocalHeap.cpp`, `NurserySpace.cpp`, `GCStats.{hpp,cpp}`. New tests: `OldGenLazySweepTest.{cpp,hpp}`, `OldGenCapacityTest.{cpp,hpp}`, `GCPressureTest.{cpp,hpp}`.
+
+**Plans**: `plans/oldgen-segregated-fits-bbop.md`, `plans/major-gc-75-50-policy.md`, `plans/oldgen-capacity-shrink-and-large-reuse.md`, `plans/gc-mark-driven-live-lazy-sweep.md`, `plans/oldgen-per-block-mark-bitmaps.md`.
 
 **Tasks**:
 - [x] Evaluate algorithm options (simple mark-and-sweep vs mark-compact vs other)
 - [x] Implement chosen algorithm
 - [x] Ensure it is well tested
+- [x] Major GC trigger policy (`75/50` initiating-occupancy / target-utilization) *(Apr 24, 2026)*
+- [x] Segregated-fits + BBoP rewrite *(Apr 25, 2026)*
+- [x] Round-down placement vs round-up allocation class selection *(Apr 25, 2026)*
+- [x] External root scanners visited during major-GC mark *(Apr 25, 2026)*
+- [x] Sustained-pressure GC test suite (19 tests) *(Apr 25, 2026)*
+- [x] Color reset after every evacuation memcpy *(Apr 26, 2026)*
+- [x] Mark-driven live + lazy sweep on allocation slow path *(Apr 26, 2026)*
+- [x] Per-block mark bitmap sidetable *(Apr 26, 2026)*
+- [x] Shrink-and-return surplus blocks *(Apr 26, 2026)*
+- [x] Large-object reuse into existing blocks *(Apr 26, 2026)*
+- [x] Allocation size histograms in GCStats *(Apr 26, 2026)*
+- [ ] Re-enable `decommit_on_oldgen_release` once stale-mark-roots issue is resolved
 - [ ] Enable automatic compaction triggering (currently manual only)
 - [x] Expand stress test coverage to exercise all heap object types under GC *(Feb 22, 2026)*
 - [x] Large object allocation and GC *(Apr 8, 2026)*
 - [x] Fixed `getObjectSize()` for Closure *(Apr 11, 2026)*
-- [ ] Verify correctness under extended load testing
+- [ ] Verify correctness under extended load testing — Stage 7 closure-arity crash reproduced *(Apr 27, 2026)*
 
 **Deliverables**:
 - [x] Finalized old generation GC algorithm
 - [x] Stress tests covering core object types
+- [x] Sustained-pressure GC tests (`GCPressureTest`, 19 tests)
+- [x] Lazy-sweep regression tests (`OldGenLazySweepTest`)
+- [x] Capacity-shrink + large-reuse tests (`OldGenCapacityTest`)
 
 #### 1.2.2 LLVM Stack Map Investigation
 
@@ -2316,8 +2348,8 @@ Runtime Foundation (§1)
 
 ## Project Status
 
-**Current Phase**: Bootstrap to Native x86 + Stress Test Stabilization
-**Last Updated**: 2026-04-22
+**Current Phase**: Bootstrap to Native x86 + Old-Gen GC Hardening
+**Last Updated**: 2026-04-27
 
 **Completed**:
 - Heap model design (§1.1)
@@ -2471,6 +2503,95 @@ Runtime Foundation (§1)
 
 - **Float Precision** (Feb 11, 2026):
   - Float-to-string uses shortest round-trip representation
+
+**Most Recent Changes — Apr 23 to Apr 27, 2026**:
+
+- **Old-Gen Mark-Driven Live + Lazy Sweep** *(Apr 26, 2026)*:
+  - Sweep is now driven by mark-time `live_bytes` attribution rather than a synchronous post-mark cell walk
+  - O(1) `page_to_block_index_` page-index replaces linear `findBlockContaining` scans
+  - All-dead block fast path releases dead non-large blocks without scanning their cells
+  - Lazy sweep runs in `SWEEP_WORK_BUDGET`-sized slices on the allocation slow path; `finishMarkAndSweep` returns with `gc_phase_ = Sweeping` after a 64 KiB initial slice
+  - `transitionToSweeping` clears `free_lists_` before reclaim, turning per-block release from O(F) to O(1)
+  - Stage 7 major GC: 432 s → 16 s (27× faster). New `OldGenLazySweepTest`. Plan: `plans/gc-mark-driven-live-lazy-sweep.md`
+
+- **Per-Block Mark Bitmap Sidetable** *(Apr 26, 2026)*:
+  - Liveness recorded in per-block bitmaps (1 bit per 8-byte slot) rather than inspecting object headers
+  - `mark_bits_[i]` covers regular blocks; `large_block_mark_[i]` is a single bit for `is_large` blocks
+  - Headers retain `color` for compaction's debug asserts but are no longer load-bearing for sweep
+  - Plan: `plans/oldgen-per-block-mark-bitmaps.md`
+
+- **Old-Gen Segregated-Fits with Big Bag of Pages** *(Apr 25, 2026)*:
+  - Initial old-gen region is precommitted up front and sliced into pages of `alloc_buffer_size`
+  - Pages live in `unassigned_blocks_` until first use; small classes (8..256 B step 8) and medium classes (powers of two from 512 B) pull pages from the bag and slice them into uniform `Tag_Free` cells
+  - Mid-range allocations (`large_object_threshold`..`alloc_buffer_size`) wrap a single page-spanning cell and split via the larger-cell path; large allocations (`≥ alloc_buffer_size`) get dedicated pinned blocks
+  - `freeListClassFor` (round-down placement) added alongside `sizeClass` (round-up allocation lookup) — fixes Stage 7 SEGV in `tryAllocateBySplittingLarger` where medium-class placement parked under-sized cells on classes whose fast path then overflowed them
+  - Block uniformity preserved through split residuals and sweep coalesces (size-class blocks are walked by `classToSize(cls)` and must be exactly that size)
+  - Mid-class slack handled via `padCellSlack` which writes a `Tag_Free` trailing in the slack at allocation time; `getObjectSize` for `Tag_Array` uses `header.size` (capacity) so sweep stride is correct
+  - Plan: `plans/oldgen-segregated-fits-bbop.md`
+
+- **Old-Gen Capacity Shrink and Large-Block Reuse** *(Apr 26, 2026)*:
+  - Surplus blocks below `BUFFER_RETURN_THRESHOLD` returned to the Allocator's free pool post-sweep
+  - Large-block free list (`free_large_blocks_`) lets `allocateLargeBlock` reuse retired large blocks before asking the Allocator for a fresh one
+  - `decommit_on_oldgen_release` defaulted to `false` while debugging stale-pointer-into-decommitted-page corruption
+  - Plan: `plans/oldgen-capacity-shrink-and-large-reuse.md`
+
+- **Major GC `0.75/0.50` Trigger Policy** *(Apr 24-26, 2026)*:
+  - `shouldTriggerMajorGC` now fires on per-thread `allocated/committed ≥ major_gc_initiating_occupancy` (default 0.75) **OR** at ~25% of the global old-gen cap. Per-thread occupancy alone never crossed 0.75 because `allocateFromBagPage` burns a fresh page per request
+  - `major_gc_target_utilization` (default 0.50) drives post-GC committed-capacity grow
+  - Initial old-gen size of 16 MiB actually implemented; `DEFAULT_MAX_HEAP_SIZE` raised to 24 GiB (12 GiB old gen + 12 GiB nursery)
+  - Plan: `plans/major-gc-75-50-policy.md`
+
+- **GC Color and External-Root Hardening** *(Apr 24-26, 2026)*:
+  - Reset `header.color` to White after every evacuation memcpy (nursery promotion, to-space copy, OldGen compaction) and at the start of each mark phase — prevents a stale Black surviving the memcpy and being skipped by the next mark *(Apr 26)*
+  - Major GC scans Scheduler / PlatformRuntime / MVar / Runtime external root scanners during the mark phase *(Apr 25)*
+  - No GC color marking on objects in the nursery — major GC tracks them in `nursery_visited_` instead of the header *(Apr 26)*
+  - Embedded constants (`HPointer.constant != 0`) skipped during oldgen marking *(Apr 24)*
+  - Location 0 in the oldgen heap reserved so a logical `HPointer` of zero is unambiguously "null" *(Apr 25)*
+  - Allocation size histograms (nursery + oldgen) reported in `GCStats`; `eco-compiler` reports `GCStats` even on signal interrupt *(Apr 26)*
+
+- **Sustained-Pressure GC Test Suite** *(Apr 25, 2026)*:
+  - 19 new tests in `GCPressureTest.cpp` covering nursery churn + promotion, oldgen growth and reclamation, cyclic garbage, write-barrier integrity, the full `eco_alloc_*` runtime path (int/float/char/cons/tuple2/tuple3/custom/record/string/closure), size-class churn, large pinned objects, fragmentation/coalescing, occupancy/alloc-failure triggers, randomized rapidcheck workloads, retention sweeps, stack-range roots, and safepoint polling
+  - Shared `pressureHeapConfig` (16 KiB pages, 256 KiB nursery, 256 KiB initial oldgen) so each test fires many minor + major GCs in seconds
+  - Three runtime fixes surfaced while writing them: `OldGenSpace::allocated_bytes` bumped on every size-class/split/bag-page allocation (was stale between sweeps); `Tag_Closure` marking iterates `hdr->size` instead of `cl->n_values` (so stored-but-unapplied captures survive a major GC); `HeapConfig::validate()` rejects `large_object_threshold > alloc_buffer_size`
+
+- **Stress-Test Library Parameterization** *(Apr 25, 2026)*:
+  - All `test/stress-elm/` programs parameterized with `Platform.worker` flags (`-n`/`-m`/`--timeout`)
+  - Default sizing tuned to ~10 s per test; isolated test runner for GC stress tests
+  - Plan: `plans/stress-test-flags-platform-worker.md`
+
+- **Mutually Recursive Closure SCC Allocation** *(Apr 24, 2026)*:
+  - Fix "operand #0 does not dominate this use" failure on mutually recursive let-bound closures by introducing `eco.papCreateGroup`, which atomically allocates the entire SCC in one contiguous region
+  - Frontend detects contiguous closure-only SCCs of size ≥ 2 in let-chains and emits one group op instead of per-binding `papCreate`s with forward-referenced placeholders
+  - Same-generation, so no write barrier is needed for the cross-sibling capture writes
+  - Self-recursion and non-SCC bindings stay on the existing `fixSelfCaptures` path
+  - Plan: `plans/pap-create-group-mutual-rec-closures.md`
+
+- **Short-Circuit `&&` and `||`** *(Apr 24, 2026)*:
+  - The `Binop` arm of `Compiler/LocalOpt/Typed/Expression.elm` now rewrites `a && b` to `if a then b else False` and `a || b` to `if a then True else b`, so every backend inherits short-circuit semantics from the existing `If` codegen path
+  - The strict `eco.bool.and` / `eco.bool.or` intrinsics and the JS `&&` / `||` infix arms remain for first-class uses of `Basics.and` / `Basics.or`
+  - Plan: `plans/short-circuit-bool-via-if.md`
+
+- **PlatformRuntime Scratch Promoted to GC-Visible Members** *(Apr 24, 2026)*:
+  - Per-batch `FxBatch` and per-manager `Cmd`/`Sub` scratch lifted out of unrooted C++ locals into `PlatformRuntime::activeBatch_` / `effectsScratch_` member fields
+  - External root scanner visits them while `dispatchActive_` is set, so GCs triggered during `gatherEffects`, `onEffects`, or `drain()` evacuate every live HPointer in place
+  - `dispatchEffects` switched from a manual `cons()` accumulator loop to `alloc::listFromPointers`, fixing a second latent rooting bug where the list head and un-consumed elements were unrooted across cons allocations
+  - Plan: `plans/dispatch-effects-gc-visible-scratch.md`
+
+- **Thread-Safe Blocking MVar** *(Apr 24, 2026)*:
+  - `eco-kernel-cpp/src/eco/MVar.cpp` reimplemented for thread-safe blocking semantics, exercising `MVarBlockingReadAwaitsPutStress`
+
+- **String Empty-Pattern `inttoptr` Fix** *(Apr 24, 2026)*:
+  - In `EcoToLLVMControlFlow.cpp` `CaseOpLowering` (string-case path), the `pattern.empty()` branch was creating the encoded empty-string constant as `i64` and passing it to `Elm_Kernel_Utils_equal`, which expects `(ptr<1>, ptr<1>)`
+  - Every other embedded-HPointer constant in the file (e.g. the `True` constant) wraps the `LLVM::ConstantOp` in an `LLVM::IntToPtrOp` to the `ptr addrspace(1)` HPtr type — fix adds the missing `inttoptr`
+
+- **Mutual Let-Rec Many-Captures + Nested Test Coverage** *(Apr 24, 2026)*:
+  - `MutualLetRecManyCapturesTest.elm`, `MutualLetRecNestedTest.elm`, `CaseStringEmptyPatternTest.elm` regression tests
+  - Bytes-to-tuple GC rooting fix in `BytesExports.cpp`
+
+- **Polymorphic Step-Loop Destructor Fallback** *(Apr 24, 2026 — Bootstrap Stage 6 fix)*:
+  - When a polymorphic custom constructor like `Done a` is specialized at `a = Int` but the call site only partially unified `a` (leaving an unresolved MVar on the path), `generate{Destruct,TailRecDestruct}` was deriving `targetType = !eco.value` from the stale path annotation
+  - `generateDestruct` and `compileDestructStep` now fall back to the destructor's own `monoType` (which the outer subst pins concretely via return-type unification) when the path's resolved result type still contains an MVar
+  - New `PolyStepLoopMultiSpecTest` and `PolyStepLoopMinimalDisagreeTest` regressions
 
 **Most Recent Changes — Apr 18 to Apr 22, 2026**:
 

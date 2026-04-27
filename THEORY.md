@@ -58,23 +58,38 @@ This is optimal for high-churn, short-lived allocations. The cost of GC is propo
 
 The key insight: by keeping from-space and to-space in separate address ranges, `isInFromSpace()` becomes a single bounds check cached in member variables (`low_base_`, `low_end_`, `high_base_`, `high_end_`).
 
-### Old Generation: Mark-Sweep with Lazy Sweeping and Incremental Compaction
+### Old Generation: Segregated-Fits + Big Bag of Pages with Mark-Driven Lazy Sweep
 
-Long-lived objects promoted from the nursery live in the old generation, which uses mark-and-sweep with several optimizations:
+Long-lived objects promoted from the nursery live in the old generation. *(Apr 25-26, 2026)* The old gen is a **segregated-fits allocator backed by a Big Bag of Pages (BBoP)** with mark-driven liveness attribution and lazy sweeping on the allocation slow path.
 
-1. **Mark**: Trace from roots, marking reachable objects (tri-color: white/grey/black).
-2. **Lazy Sweep**: Instead of sweeping all objects immediately, sweep on-demand when allocation needs free space.
-3. **Segregated Free Lists**: 32 size classes (8-256 bytes in 8-byte increments) for fast small-object allocation.
-4. **Incremental Compaction**: When fragmentation exceeds a threshold, evacuate sparse blocks incrementally.
+**The Big Bag of Pages**: At init, `initial_old_gen_size` (16 MiB by default) is committed up front and sliced into pages of `alloc_buffer_size` (128 KiB by default). Pages live in `unassigned_blocks_` until first use. Each thread has its own bag; no cross-thread sharing during normal operation.
 
-**Allocation strategy**:
-- Small objects (≤256 bytes): Check segregated free list first, fall back to bump allocation
-- Large objects: Bump allocation from current block
-- When current block exhausted: Trigger lazy sweep to reclaim memory, or acquire new block
+**Size classes**:
+- **Small classes** — 32 classes covering 8..256 B in 8-byte steps.
+- **Medium classes** — powers of two starting at 512 B (up through 65536 B). Class count is capped at runtime by `large_object_threshold`.
+- **Mid-range** (`large_object_threshold` up to `alloc_buffer_size`) — pulls a page from the bag and installs a single page-spanning `Tag_Free` cell, then splits via the larger-cell path.
+- **Large objects** (`≥ alloc_buffer_size`) — go through `allocateLargeBlock` to a dedicated pinned block sized to fit the object. Released large blocks are kept in `free_large_blocks_` and reused before the Allocator hands out a fresh page.
+
+A class pulls a page from the bag on first use and slices it into uniform `Tag_Free` cells. Allocation pops from the class's free list; on miss it tries to split a larger free cell, then falls back to acquiring a new bag page.
+
+**Class-selection asymmetry** *(Apr 25, 2026 — fixes Stage 7 SEGV)*:
+- `sizeClass(size)` rounds **up** at allocation time so a popped cell can always satisfy the request.
+- `freeListClassFor(span)` rounds **down** at placement time (split tails, sweep coalesces, bag-page tails) so cells on `free_lists_[cls]` always have at least `classToSize(cls)` bytes — the invariant the fast path relies on.
+
+Without the round-down placement, a 352-byte span would land on cls=32 (cellSize=512); the fast path would then hand it out as a 512-byte slot, overflowing on the first store.
+
+**Mark-and-sweep** *(Apr 26, 2026 rewrite)*:
+1. **Trigger** — `shouldTriggerMajorGC()` fires when per-thread `allocated/committed ≥ major_gc_initiating_occupancy` (default 0.75) **OR** when the global old-gen pressure crosses ~25% of the cap. The global trigger is needed because `allocateFromBagPage` burns a fresh page per request, so per-thread occupancy alone never crosses 0.75.
+2. **Mark** — incremental marking driven by `MARK_WORK_RATIO`. **Liveness is recorded in per-block bitmaps**, not in the header `color` field. `mark_bits_[i]` is a 1-bit-per-8-byte-slot bitmap for regular blocks; `large_block_mark_[i]` is a single live/dead bit for `is_large` blocks. Headers retain `color` for compaction's debug asserts but are no longer load-bearing for sweep liveness. Major GC visits external root scanners (Scheduler, PlatformRuntime, MVar, Runtime) so objects rooted only via external state survive collection. Embedded constants (`HPointer.constant != 0`) are skipped during marking — they live outside the heap.
+3. **No nursery color writes during major GC**: nursery objects pushed during major-GC mark are tracked in a `nursery_visited_` set instead of writing into nursery header `color` bits, since minor GC owns those bits.
+4. **Mark-driven live attribution + lazy sweep**: `live_bytes` is attributed during marking. `transitionToSweeping` clears `free_lists_` *before* reclaim (turning per-block release from O(F) to O(1)). An **all-dead block fast path** releases dead non-large blocks without scanning their cells. An **O(1) page-index** (`page_to_block_index_`) replaces the old linear `findBlockContaining`. `finishMarkAndSweep` returns with `gc_phase_ = Sweeping` after a 64 KiB initial slice; the rest of the sweep work runs in `SWEEP_WORK_BUDGET`-sized slices on the allocation slow path. (Stage 7 major GC: 432 s → 16 s, 27× faster.)
+5. **Color reset after every evacuation memcpy**: nursery promotion, to-space copy, and OldGen compaction each reset `header.color` to White after the memcpy, and the mark phase resets at start. Without this, a stale Black left by an earlier mark would survive the memcpy and cause the next mark to skip the cell as already-processed, with sweep then freeing untraced children.
+6. **Shrink-and-return**: post-sweep, surplus blocks below `BUFFER_RETURN_THRESHOLD` are returned to the Allocator's free pool. (`decommit_on_oldgen_release` is currently `false` while debugging stale-pointer-into-decommitted-page corruption — see `bootstrap-stage7-crash-analysis.md`.)
+7. **Compaction** — incremental, manual trigger only. Evacuates sparse blocks under a `COMPACTION_WORK_BUDGET` slice budget when fragmentation crosses `UTILIZATION_THRESHOLD`.
 
 **GC phases** (state machine):
 ```
-Idle → Marking → Sweeping → Idle
+Idle → Marking → Sweeping (lazy, paced on alloc slow path) → Idle
                     ↓
               (if fragmented)
                     ↓
@@ -164,7 +179,7 @@ Each thread gets its own regions within these spaces. The Allocator tracks commi
 **Configuration**: Heap parameters are centralized in `HeapConfig`:
 - `nursery_block_count`: Must be even (split between from-space and to-space)
 - `alloc_buffer_size`: Size of each block (default 128KB)
-- `promotion_age`: GC cycles before promotion (default 1)
+- `promotion_age`: GC cycles before promotion (default 2)
 - `nursery_gc_threshold`: Occupancy threshold for minor GC trigger (default 90%)
 - `use_hybrid_dfs`: Enable list locality optimization (default true)
 
@@ -174,7 +189,7 @@ Configuration is validated on `Allocator::initialize()` to catch invalid combina
 
 ## Promotion: When Objects Grow Up
 
-Objects are promoted from nursery to old gen after surviving `PROMOTION_AGE` minor GCs (default 1, configurable via `HeapConfig`). The age is tracked in the header:
+Objects are promoted from nursery to old gen after surviving `PROMOTION_AGE` minor GCs (default 2, configurable via `HeapConfig`). The age is tracked in the header:
 
 ```cpp
 u32 age : 2;      // Survives up to 3 GCs before promotion
@@ -339,7 +354,9 @@ The key questions for debugging:
 
 Several optimizations from PLAN.md §7 have been implemented:
 
-- ✓ **Segregated free lists**: 32 size classes for small objects (8-256 bytes)
+- ✓ **Segregated-fits + BBoP**: 32 small classes (8-256 B) plus medium classes (512 B..65536 B), backed by a Big Bag of Pages *(Apr 25, 2026)*
+- ✓ **Mark-driven live + lazy sweep**: live attribution at mark time, sweep paced on the allocation slow path *(Apr 26, 2026)*
+- ✓ **Per-block mark bitmap sidetable**: liveness no longer rides in object headers *(Apr 26, 2026)*
 - ✓ **Thread-local heaps**: Eliminates cross-thread synchronization
 - ✓ **Incremental compaction**: Spreads defragmentation cost over time
 - ✓ **List locality optimization**: Contiguous spine copying for better cache behavior
@@ -444,6 +461,8 @@ This enables type-directed code generation and monomorphization.
 
 As part of Typed Optimization, the **NormalizeLambdaBoundaries** pass flattens nested lambda structures by lifting let-bindings and case expressions out of lambda boundaries. This reduces spurious staging boundaries for downstream GlobalOpt.
 
+**Short-circuit `&&`/`||`** *(Apr 24, 2026)*: The `Binop` arm of TypedOptimized rewrites `a && b` to `if a then b else False` and `a || b` to `if a then True else b`, so every backend inherits short-circuit semantics from the existing `If` codegen path. The strict `eco.bool.and` / `eco.bool.or` intrinsics and the JS `&&` / `||` infix arms remain for first-class uses of `Basics.and` / `Basics.or`.
+
 **See**: [Typed Optimization Theory](design_docs/theory/pass_typed_optimization_theory.md), [NormalizeLambdaBoundaries Theory](design_docs/theory/pass_normalize_lambda_boundaries_theory.md)
 
 ### Monomorphization
@@ -538,6 +557,8 @@ Converts MonoGraph to MLIR using the ECO dialect.
 
 **Streaming bytecode emission** *(Apr 18-20, 2026)*: MLIR is emitted directly as MLIR binary bytecode in a streaming fashion rather than materialising a textual string. The bytecode encoder splits its attribute table into separate location and string buckets so location attrs don't inflate the string table. The streaming emitter dramatically reduces peak compiler memory for large programs; bootstrap-scale inputs are now tractable. Text-mode MLIR (`--text-mlir`) is retained for debugging.
 
+**Mutually-recursive closure SCC allocation** *(Apr 24, 2026)*: `eco.papCreateGroup` atomically allocates an entire SCC of mutually recursive let-bound closures in one contiguous region. The Elm frontend detects contiguous closure-only SCCs of size ≥ 2 in let-chains and emits one group op instead of per-binding `papCreate`s with forward-referenced placeholders. Cross-sibling captures are written after all HPointers are known; same-generation, so no write barrier. Self-recursion and non-SCC bindings stay on the existing `fixSelfCaptures` path. This fixes a "operand #0 does not dominate this use" failure observed in mutually-recursive parsers.
+
 **See**: [MLIR Generation Theory](design_docs/theory/pass_mlir_generation_theory.md), [MLIR Bytecode Theory](design_docs/theory/mlir_bytecode_theory.md), [Type Table Theory](design_docs/theory/pass_type_table_theory.md)
 
 ### ECO Dialect Lowering
@@ -583,7 +604,7 @@ Final lowering from ECO dialect to LLVM dialect. As of Feb 2026, the pass underw
 
 At execution time, the Platform and Scheduler subsystem implements Elm's effect manager architecture. Commands and subscriptions produced by the Elm update cycle are collected into effect bag trees (`Fx_Leaf`/`Fx_Node`/`Fx_Map`), gathered per manager, and dispatched via `onEffects` callbacks. The Scheduler drives a cooperative task-based concurrency model: each process has a root task, a continuation stack, and a mailbox. The `stepProcess` loop interprets the Task ADT (Succeed/Fail/AndThen/OnError/Binding/Receive) to advance processes through their task chains.
 
-**GC safety** *(Apr 2026)*: `pushStack` and `mailboxPushBack` now take `HPointer` (not raw `Process*`) and re-resolve the process pointer after allocation calls that may trigger GC. The currently running Process is registered as a stack root while off the run queue. External GC root scanning is supported in `RootSet`. `StackRootGuard` RAII helper roots captured HPointers across allocations in kernel helpers.
+**GC safety** *(Apr 2026)*: `pushStack` and `mailboxPushBack` now take `HPointer` (not raw `Process*`) and re-resolve the process pointer after allocation calls that may trigger GC. The currently running Process is registered as a stack root while off the run queue. External GC root scanning is supported in `RootSet`. `StackRootGuard` RAII helper roots captured HPointers across allocations in kernel helpers. *(Apr 24, 2026)* Per-batch `FxBatch` and per-manager scratch lifted out of unrooted C++ locals into `PlatformRuntime::activeBatch_` / `effectsScratch_` member fields, scanned by an external root scanner while `dispatchActive_` is set; `dispatchEffects` builds Elm lists via `alloc::listFromPointers` rather than a manual `cons()` accumulator loop. *(Apr 24, 2026)* `eco-kernel-cpp/src/eco/MVar.cpp` reimplemented for thread-safe blocking semantics.
 
 **See**: [Platform & Scheduler Theory](design_docs/theory/platform_scheduler_theory.md)
 

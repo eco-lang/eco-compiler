@@ -130,6 +130,20 @@ optimizeTyped :
 3. **Simplify Let Bindings**: Float out/inline where beneficial
 4. **Tail Call Optimization**: Mark tail-recursive functions
 5. **Build Dependency Graph**: Track which definitions reference which
+6. **Short-Circuit `&&` / `||`** *(Apr 24, 2026)*: Rewrite to `If`-form for short-circuit semantics
+
+### Short-Circuit `&&` and `||` *(Apr 24, 2026)*
+
+The `Binop` arm of `Compiler/LocalOpt/Typed/Expression.elm` rewrites the boolean `&&` and `||` operators when they appear in expression position:
+
+```
+a && b   →   if a then b else False
+a || b   →   if a then True else b
+```
+
+After this rewrite, every backend inherits short-circuit semantics from the existing `If` codegen path — there is no separate "lazy boolean" lowering to maintain in MLIR generation, JS generation, or any future backend.
+
+The strict `eco.bool.and` / `eco.bool.or` intrinsics and the JS `&&` / `||` infix arms remain for first-class uses of `Basics.and` / `Basics.or` (e.g. when these names are passed as values rather than applied), where strict evaluation is the only option. Plan: `plans/short-circuit-bool-via-if.md`.
 
 ### Decision Trees
 

@@ -447,6 +447,47 @@ Common issues and how to identify them:
 3. **Check construction ops**: Does bitmap match operand types?
 4. **Check ABI boundaries**: Are boxable values properly boxed/unboxed?
 
+## Old Generation Layout *(rewritten Apr 25-26, 2026)*
+
+The old generation is a **segregated-fits allocator backed by a Big Bag of Pages (BBoP)**. The initial `initial_old_gen_size` (16 MiB by default) is committed up front and sliced into pages of `alloc_buffer_size` (128 KiB by default) sitting in `unassigned_blocks_` until first use. See `runtime/src/allocator/OldGenSpace.{hpp,cpp}` for the implementation and [THEORY.md](../../THEORY.md) for the full design.
+
+### Size Classes
+
+| Range | Class scheme | Notes |
+|---|---|---|
+| 8 .. 256 B | 32 small classes, step 8 B | `(size+7)/8 - 1` indexes the class |
+| 512 B .. 65536 B | up to 8 medium classes (powers of two) | runtime cap: `large_object_threshold` |
+| `large_object_threshold` .. `alloc_buffer_size` | mid-range | wraps a single page-spanning `Tag_Free` cell, splits via larger-cell path |
+| ≥ `alloc_buffer_size` | large/pinned | `allocateLargeBlock`; reused from `free_large_blocks_` first |
+
+Each class lazily slices a bag page into uniform `Tag_Free` cells on first use; the cell header carries `Tag_Free` and the cell's full byte size, so any sweep walk can skip over it like any other heap object.
+
+### Class-Selection Asymmetry
+
+Two distinct class lookups are used:
+
+- **`sizeClass(size)` — round up.** Used at allocation time. Returns the smallest class whose `cellSize ≥ size`, so a popped cell can always satisfy the request.
+- **`freeListClassFor(span)` — round down.** Used at placement time (split tails, sweep coalesces, bag-page tails). Returns the largest class whose `cellSize ≤ span`, so cells on `free_lists_[cls]` always have at least `classToSize(cls)` bytes — the invariant the fast path relies on.
+
+Without round-down placement, a 352-byte span placed via `sizeClass` would land on cls=32 (cellSize=512); the fast path would then hand it out as a 512-byte slot, overflowing on the first store. This was the root cause of a Stage 7 SEGV in `tryAllocateBySplittingLarger` *(Apr 25, 2026)*.
+
+### Block Uniformity Invariant
+
+`walkStep` walks size-class blocks by `classToSize(cls)`, so cells in those blocks must all be exactly that size. Split residuals and sweep coalesces respect this: tails that don't fit the current class are repushed at smaller classes via `freeListClassFor`. Mid-class allocations that leave slack (e.g. 360 B in a 512 B cell) write a `Tag_Free` trailer in the slack at allocation time via `padCellSlack` — sweep stride must land on a real header, not zeros it interprets as `Tag_Int(0)`.
+
+### Per-Block Mark Bitmap *(Apr 26, 2026)*
+
+Liveness for old-gen objects is tracked in **per-block bitmaps** (1 bit per 8-byte slot), not in object headers:
+
+- `mark_bits_[i]` covers regular blocks
+- `large_block_mark_[i]` is a single live/dead flag for `is_large` blocks (the matching `mark_bits_[i]` stays empty)
+- Headers retain `header.color` for compaction's debug asserts but are no longer load-bearing for sweep liveness
+- Invariant: `mark_bits_.size() == large_block_mark_.size() == blocks_.size()`
+
+### Page Index *(Apr 26, 2026)*
+
+`page_to_block_index_` maps page slot `(p - region_base_) / alloc_buffer_size` to the `blocks_` index that owns the page, so `blockIndexFor` is O(1) (was a linear `findBlockContaining` scan). Slots whose page belongs to no current `blocks_` entry hold the sentinel `NO_BLOCK`. For `is_large` blocks, every page slot the extent spans is filled with the same `blocks_` index.
+
 ## Large Object Allocation
 
 *(Apr 2026)*: Objects larger than a nursery block are allocated in a dedicated pinned large-object space within the old generation. Large objects:
@@ -458,6 +499,8 @@ Common issues and how to identify them:
 This prevents excessively large objects from fragmenting the nursery's semi-space copying collector.
 
 Large-object allocation is supported in-block as well: the nursery/old-gen spaces track a per-block `block_end_of_objects_` vector recording the real end-of-objects offset within each block. The Cheney scan uses this cutoff so it does not walk past the last live object into uninitialized tail bytes when a block contains a large object that did not fill it.
+
+*(Apr 26, 2026)*: Released large blocks are kept in `free_large_blocks_`; `allocateLargeBlock` consults this list before asking the Allocator for a fresh page.
 
 ## GC Root Safety for Heap Construction
 

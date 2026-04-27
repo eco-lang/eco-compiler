@@ -72,6 +72,7 @@ The ECO dialect defines operations for Elm runtime semantics:
 | Operation | Purpose |
 |-----------|---------|
 | `eco.papCreate` | Create partial application |
+| `eco.papCreateGroup` | Atomically create an SCC of mutually-recursive let-bound closures *(Apr 24, 2026)* |
 | `eco.papExtend` | Extend partial application |
 
 ### Utilities
@@ -290,6 +291,21 @@ MonoFunction params captures body ->
     eco.papCreate @lambdaName, arity, [capturedValues]
 ```
 
+### Mutually-Recursive Closure SCCs *(Apr 24, 2026)*
+
+When the Elm frontend encounters a let-chain whose bindings form a contiguous closure-only strongly-connected component of size ≥ 2, it emits `eco.papCreateGroup` instead of per-binding `eco.papCreate`s with forward-referenced placeholders:
+
+```
+eco.papCreateGroup @fnA, @fnB, @fnC,
+    arities = [2, 1, 3],
+    captures = [[%a0, ...], [%b0, ...], [%c0, ...]]
+    -> [%clA, %clB, %clC]
+```
+
+The lowering reserves one contiguous region (via the existing region allocator), initializes each sibling's header at its offset, and only then writes the cross-sibling captures — at which point every sibling's HPointer is already known. Same-generation, so no write barrier is needed.
+
+This fixes a "operand #0 does not dominate this use" failure observed when mutually recursive closures referenced each other through SSA placeholders that were not yet defined. Self-recursion and non-SCC bindings stay on the existing `fixSelfCaptures` path. Plan: `plans/pap-create-group-mutual-rec-closures.md`.
+
 ### Data Construction
 
 ```
@@ -313,6 +329,12 @@ MonoCustom tag fields ->
 ### Record Update Heap Layout *(Apr 21, 2026)*
 
 `MonoRecordUpdate` codegen now derives the heap layout from the source record's `MonoType`, not the result type — this fixes row-poly record updates that previously lost field ordering. `Specialize TOpt.Update` widens the stored result type accordingly.
+
+### Polymorphic Destructor MonoType Fallback *(Apr 24, 2026 — Bootstrap Stage 6 fix)*
+
+When a polymorphic custom constructor like `Done a` is specialized at `a = Int` but the call site only partially unified `a` (the path's `a` is pinned only by the callback's return type, while `state` came from the callback's input), the resolved type along a `DT.Path` could still contain an `MVar`. `generateDestruct` and `compileDestructStep` (in `Patterns.elm` / `TailRec.elm`) were previously deriving `targetType = !eco.value` from this stale path annotation, so the projection and every downstream consumer (tuple2 build, `get_tag`, etc.) disagreed on the ABI.
+
+The fix: when the path's resolved result type still contains an `MVar`, fall back to the destructor's own `monoType` (which the outer subst pins concretely via return-type unification). Regressions: `PolyStepLoopMultiSpecTest.elm`, `PolyStepLoopMinimalDisagreeTest.elm`.
 
 ### Data Projection
 
