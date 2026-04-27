@@ -22,7 +22,7 @@ full mirror of `getComments` down to the smallest crash:
   - Reducing to a 5-Int record: still crashes.
   - Bypassing `StressHarness.loopWhile`: still crashes.
   - Hard-coding the size to 5000 (ignoring `flags.maxSize`): **PASSES**.
-  - Reading `flags.maxSize` and using it as the size: crashes at size ≥ 3000.
+  - Reading `flags.maxSize` and using it as the size: crashes at size ≥ 30000.
 
 The trigger is therefore:
 
@@ -55,9 +55,9 @@ The default `--max-size 100` is below the crash threshold, so the test
 PASSES under the default `stress-test` invocation (does not break the
 existing 98-test suite). To see the crash:
 
-    /work/build/test/stress-test --filter GetCommentsRepro -n 1 -m 3000
+    /work/build/test/stress-test --filter GetCommentsRepro -n 1 -m 30000
 
-— SIGABRT with the assertion above. PASSES at `-m 2000` and below.
+— SIGABRT with the assertion above. PASSES at `-m 20000` and below.
 
 
 # Once a fix lands

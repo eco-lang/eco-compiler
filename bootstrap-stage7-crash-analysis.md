@@ -319,7 +319,7 @@ So this **is** the production bug, observed at its first (more proximal) symptom
 
 With a crashing testcase in hand, the next step was finding the smallest version that still crashed. Reductions, in order:
 
-| # | Reduction                                                  | Verdict at `-n 1 -m 5000` |
+| # | Reduction                                                  | Verdict at `-n 1 -m 50000` |
 |---|------------------------------------------------------------|---------------------------|
 | 1 | Full Decl/Maybe Comment/Snippet mirror                     | crashes                   |
 | 2 | Drop `Decl` Custom; just walk `List Snippet`               | crashes                   |
@@ -328,9 +328,9 @@ With a crashing testcase in hand, the next step was finding the smallest version
 | 5 | Drop the String field entirely; record is `{a,b,c,d,e : Int}` | crashes                   |
 | 6 | Drop `StressHarness.loopWhile`; just `mkRs … >> sumA … >> Task.succeed` | crashes                   |
 | 7 | **Hard-code `size = 5000`** (don't read `flags.maxSize`)  | **PASSES**                |
-| 8 | Read `flags.maxSize` and use it directly as the size       | crashes at size ≥ 3000    |
+| 8 | Read `flags.maxSize` and use it directly as the size       | crashes at size ≥ 30000   |
 
-Step 7 vs. step 8 is the critical pair. **Hard-coding the size — even at 5000 — passes; reading a `StressFlags` record field for the size crashes from ~3000 onward.** The bug isn't in the `getComments` shape at all. It's much more general:
+Step 7 vs. step 8 is the critical pair. **Hard-coding the size — even at 5000 — passes; reading a `StressFlags` record field for the size crashes from ~30000 onward.** The bug isn't in the `getComments` shape at all. It's much more general:
 
 > A runtime-derived `Int` (here: a record-field load `flags.maxSize`)
 > feeding the size of a heap-allocated tail-recursive list whose
@@ -339,10 +339,10 @@ Step 7 vs. step 8 is the critical pair. **Hard-coding the size — even at 5000 
 Threshold (binary-search in 200-step increments at `-n 1`):
 
 ```
--m 2200  → PASS
--m 2400  → CRASH (assertion above)
--m 2600  → CRASH
--m 5000  → CRASH
+-m 20000 → PASS
+-m 30000 → CRASH (assertion above)
+-m 36000 → CRASH
+-m 50000 → CRASH
 ```
 
 The threshold is approximately the size at which the build's intermediate Cons cells start surviving the first minor GC and getting promoted to old-gen.
@@ -403,7 +403,7 @@ Result: PASSED
 
 
 # Forced into the failing range — deterministic SIGABRT, every run.
-$ /work/build/test/stress-test --filter GetCommentsRepro -n 1 -m 3000
+$ /work/build/test/stress-test --filter GetCommentsRepro -n 1 -m 30000
 === Eco Stress Tests ===
 …
 - stress-elm/GetCommentsRepro.elm
@@ -422,7 +422,7 @@ Result: FAILED
 
 
 # Heap state at the crash (only 2 minor GCs, no major):
-$ ECO_HEAP_TRACE=1 /work/build/test/stress-test --filter GetCommentsRepro -n 1 -m 3000 2>&1 | head
+$ ECO_HEAP_TRACE=1 /work/build/test/stress-test --filter GetCommentsRepro -n 1 -m 30000 2>&1 | head
 …
 [heap-trace] minorGC begin oldgen_committed=16.00 MB nursery_low=2.00 MB …
 [heap-trace] minorGC end oldgen_committed=16.00 MB …
@@ -437,9 +437,9 @@ The crash fires after the second minor GC, well before the heap pressure reaches
 
 1. **The bug is in the closure machinery**, not in the `Compiler.Parse.Module.getComments` shape per se. Section 5.3 was right; sections 5.1 and 5.2 (Record-slot indexing, Tuple2 skip-extract) are exonerated — the minimal repro doesn't touch either.
 
-2. **The `Compiler_Parse_Module_getComments_$_16433` framing in the production trace is incidental.** Production hits the bug in that function because production builds large lists of `Decl` values and walks them, which is exactly the same shape as `mkRs … >> sumA …`. Any function that builds a tail-recursive list of records sized by a runtime-loaded `Int` will hit it once the list crosses ~3000 entries.
+2. **The `Compiler_Parse_Module_getComments_$_16433` framing in the production trace is incidental.** Production hits the bug in that function because production builds large lists of `Decl` values and walks them, which is exactly the same shape as `mkRs … >> sumA …`. Any function that builds a tail-recursive list of records sized by a runtime-loaded `Int` will hit it once the list crosses ~30000 entries.
 
-3. **The connection between size 3000 and a record-field load is suspicious.** A hard-coded `5000` passes; a `flags.maxSize`-derived `5000` crashes. The compiler treats the two cases differently — almost certainly because the runtime-loaded value participates in PAP / closure-capture layout decisions during monomorphisation that the constant doesn't.
+3. **The connection between size 30000 and a record-field load is suspicious.** A hard-coded `5000` passes; a `flags.maxSize`-derived `5000` crashes. The compiler treats the two cases differently — almost certainly because the runtime-loaded value participates in PAP / closure-capture layout decisions during monomorphisation that the constant doesn't.
 
 4. **In a release build, the same path silently mis-packs evaluator args.** The `assert(n_values + num_newargs == max_values)` is gone, but the loop that copies new args into `combined_args[old_n_values + i]` still runs — leaving some slots either uninitialised, or (worse) overwriting stack memory past the `void* stack_args[16]` buffer when `max_values <= 16` is wrongly true. A subsequent evaluator that reads one of those slots as an HPointer trips `Allocator::resolve` exactly as production does.
 
@@ -451,7 +451,7 @@ The crash fires after the second minor GC, well before the heap pressure reaches
 ## 11.7 What to do with this reproducer
 
 - **Keep it.** It's deterministic, ~30 lines, and the verdict is meaningful — once the closure-arity bug is fixed it should pass at any `-m`. Functions as a permanent regression test.
-- **Run with `-m 3000` against any candidate fix.** The fix is good if and only if `-m 3000` passes.
+- **Run with `-m 30000` against any candidate fix.** The fix is good if and only if `-m 30000` passes.
 - **Once the fix lands, parameterise.** Move the size-driver into `flags.numLoops` × `flags.maxSize` so the soak suite can crank both knobs.
 
 ## 11.8 Files touched for the reproduction work
